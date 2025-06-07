@@ -1,0 +1,31 @@
+is_primary: true
+
+mkt_client:
+  # exchange: binance-futures
+  exchange: okex-swap
+  # exchange: bybit
+zmq_proxy:
+  ipc_path: "/tmp/zmq_mkt_feeds.ipc"
+  primary_addr: "38.55.198.59:5555"
+  secondary_addr: "68.64.176.133:5555"
+  hwm: 1000
+
+redis_pubber:
+  host: "124.223.189.200"
+  port: "6379"
+  username: "el_crypto"
+  password: "el_crypto"
+  mode: "FromStart"
+  max_stream_size: 100 #3s一条，保留5min，20*5
+  
+monitor:
+  check_interval: 10000 #10s检查一次
+  restart_duration: 180000 #180s重启一次，奇数偶数决定主备重启 
+
+snapshot_requery_time: "--:--:--"
+
+exec_dir: "./exec_dir"
+
+symbol_socket: "/home/crypto_mkt/symbol_server/exchange"
+
+script_dir: "./script"

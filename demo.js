@@ -1,14 +1,15 @@
 const WebSocket = require('ws');
 
 // Binance WebSocket 地址
-const wsUrl = 'wss://fstream.binance.com/ws';
+// const wsUrl = 'wss://fstream.binance.com/ws';
+const wsUrl = 'wss://data-stream.binance.vision/ws';
 // const wsUrl = 'wss://stream.bybit.com/v5/public/linear';
 
 // 创建 WebSocket 连接
 const ws = new WebSocket(wsUrl);
 
 // 要订阅的币种列表
-const symbols = ['BTCUSDT'];
+const symbols = ['btcusdt'];
 
 ws.on('open', () => {
   console.log('WebSocket 连接已建立');

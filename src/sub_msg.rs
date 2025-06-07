@@ -1,14 +1,32 @@
 use serde_json::Value;
-use crate::args::Args;
+use crate::cfg::Config;
 
 pub struct SubscribeMsgs {
-    exchange: String,
-    subscribe_msgs: Vec<serde_json::Value>
+    inc_subscribe_msgs: Vec<serde_json::Value>,
+    trade_subscribe_msgs: Vec<serde_json::Value>,
 }
 
 impl SubscribeMsgs {
-    fn construct_subscribe_message(&self, symbols: &[String], channel: &str) -> Value {
-        match self.exchange.as_str() {
+    pub fn get_inc_subscribe_msg_len(&self) -> usize {
+        self.inc_subscribe_msgs.len()
+    }
+
+    pub fn get_trade_subscribe_msg_len(&self) -> usize {
+        self.trade_subscribe_msgs.len()
+    }
+
+    pub fn get_inc_subscribe_msg(&self, index: usize) -> &serde_json::Value {
+        &self.inc_subscribe_msgs[index]
+    }
+
+    pub fn get_trade_subscribe_msg(&self, index: usize) -> &serde_json::Value {
+        &self.trade_subscribe_msgs[index]
+    }   
+}
+
+impl SubscribeMsgs {
+    fn construct_subscribe_message(exchange: &str, symbols: &[String], channel: &str) -> Value {
+        match exchange {
             "binance-futures" => {
                 let params: Vec<String> = symbols.iter()
                     .map(|symbol| format!("{}@{}", symbol.to_lowercase(), channel))
@@ -43,35 +61,18 @@ impl SubscribeMsgs {
             _ => panic!("Unsupported exchange: {}", exchange)
         }
     }
-    fn new(args: &Args) -> Self {
-        let symbols = args.get_symbols().unwrap();
-        let batch_size = args.get_batch_size();
-        let mut subscribe_msgs = Vec::new();
+    pub async fn new(cfg: &Config) -> Self {
+        let symbols = cfg.get_symbols().await.unwrap();
+        let batch_size = cfg.get_batch_size();
+        let mut inc_subscribe_msgs = Vec::new();
+        let mut trade_subscribe_msgs = Vec::new();
         for chunk in symbols.chunks(batch_size) {
-            subscribe_msgs.push(self.construct_subscribe_message(chunk, "trade"));
-            subscribe_msgs.push(self.construct_subscribe_message(chunk, "inc"));
+            inc_subscribe_msgs.push(SubscribeMsgs::construct_subscribe_message(&cfg.get_exchange(), chunk, "inc"));
+            trade_subscribe_msgs.push(SubscribeMsgs::construct_subscribe_message(&cfg.get_exchange(), chunk, "trade"));
         }
-        Self { exchange: args.get_exchange(), subscribe_msgs }
-    }
-}
-
-
-struct SubscribClient {
-    tx : broadcast::Sender<Bytes>, //每个batch copy一个tx， 从这个tx发送
-    ws_url: String,
-    subscribe_msgs: SubscribeMsgs,
-    ws_handlers: Vec<Box<dyn WebSocketHandler>>,
-    unix_socket_handler: Box<dyn UnixDomainSocketHandler>,
-}
-
-impl SubscribClient {
-    fn new(args: &Args) -> Self {
-        Self {
-            tx: broadcast::channel::<Bytes>(1000),
-            ws_url: args.get_exchange_url().unwrap(),
-            subscribe_msgs: SubscribeMsgs::new(args),
-            ws_handlers: Vec::new(),
-            unix_socket_handler: Box::new(UnixDomainSocketHandler::new()),
+        Self { 
+            inc_subscribe_msgs,
+            trade_subscribe_msgs,
         }
     }
 }
