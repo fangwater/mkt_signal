@@ -52,6 +52,14 @@ impl MktConnectionManager {
             join_set: JoinSet::new(),
         }   
     }
+
+    pub async fn update_subscribe_msgs(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        log::info!("Try update subscribe msgs start, current symbol count: {:?}", self.subscribe_msgs.get_inc_subscribe_msg_len());
+        let subscribe_msgs = SubscribeMsgs::new(&self.cfg).await;
+        self.subscribe_msgs = subscribe_msgs;
+        log::info!("Update subscribe msgs success, new symbol count: {:?}", self.subscribe_msgs.get_inc_subscribe_msg_len());
+        Ok(())
+    }
     
     pub async fn start_all_connections(&mut self) {
         // 1. 启动所有增量连接

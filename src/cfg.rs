@@ -31,12 +31,6 @@ pub struct RedisPubberCfg {
     pub max_stream_size: u32,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
-pub struct MonitorCfg {
-    pub check_interval: u64,
-    pub restart_duration: u64,
-}
 
 #[derive(Debug, Deserialize, Clone)]
 #[allow(dead_code)]
@@ -45,7 +39,7 @@ pub struct Config {
     pub mkt_client: MarketClient,
     pub zmq_proxy: ZmqProxyCfg,
     pub redis_pubber: RedisPubberCfg,
-    pub monitor: MonitorCfg,
+    pub restart_duration: u64,
     pub snapshot_requery_time: String,
     pub exec_dir: PathBuf,
     pub symbol_socket: String,

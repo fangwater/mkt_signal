@@ -1,4 +1,5 @@
 is_primary: true
+restart_duration: 3 #3分钟重启一次，奇数偶数决定主备重启 
 
 mkt_client:
   # exchange: binance-futures
@@ -18,9 +19,6 @@ redis_pubber:
   mode: "FromStart"
   max_stream_size: 100 #3s一条，保留5min，20*5
   
-monitor:
-  check_interval: 10000 #10s检查一次
-  restart_duration: 180000 #180s重启一次，奇数偶数决定主备重启 
 
 snapshot_requery_time: "--:--:--"
 
