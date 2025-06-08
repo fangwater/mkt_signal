@@ -2,8 +2,8 @@ is_primary: true
 
 mkt_client:
   # exchange: binance-futures
-  exchange: okex-swap
-  # exchange: bybit
+  # exchange: okex-swap
+  exchange: bybit
 zmq_proxy:
   ipc_path: "/tmp/zmq_mkt_feeds.ipc"
   primary_addr: "38.55.198.59:5555"

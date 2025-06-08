@@ -87,10 +87,8 @@ impl ZmqReceiver {
         info!("ZmqReceiver stopped gracefully");
     }
     
-    async fn process_message(&self, msg: &[u8]) {
-        if self.receive_count % 100 == 0 {
-            info!("Received message #{}, size: {} bytes", self.receive_count, msg.len());
-        }
+    async fn process_message(&self, _msg: &[u8]) {
+        //
     }
 }
 

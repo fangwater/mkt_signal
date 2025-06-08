@@ -5,10 +5,11 @@ use bytes::{Bytes, BufMut, BytesMut};
 #[allow(dead_code)]
 pub enum MktMsgType {
     TradeInfo = 1001,
-    OrderBookSnapshot = 1002,
-    OrderBookInc = 1003,
-    SymbolAdd = 1004,
-    SymbolDel = 1005,
+    ParseredTradeInfo = 1002,
+    OrderBookSnapshot = 1003,
+    OrderBookInc = 1004,
+    SymbolAdd = 1005,
+    SymbolDel = 1006,
     TpReset = 2001,
     Error = 2002,
 }

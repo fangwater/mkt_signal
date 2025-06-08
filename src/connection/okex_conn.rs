@@ -82,30 +82,29 @@ impl MktConnectionRunner for OkexConnection {
                                     break;
                                 }
                                 Message::Pong(payload) => {
+                                    warn!("Unexpected pong message: {:?}", payload);
+                                }
+                                Message::Text(text) => {
                                     // 收期待一个文字字符串'pong'作为回应
-                                    if payload.eq(b"pong") {
+                                    if text.eq("pong") {
                                         // 收到pong消息后，等待pong消息设置为false
                                         waiting_pong = false;
                                         // 重置倒计时
                                         reset_timer = Instant::now() + Duration::from_secs(25);
-                                        log::info!("Received pong message: {:?}, reset timer to {:?}", payload, reset_timer);
+                                        log::info!("Received pong message: {:?}, reset timer to {:?}", text, reset_timer);
                                     }else{
-                                        error!("Unexpected pong message: {:?}", payload);
-                                        break;
-                                    }
-                                }
-                                Message::Text(text) => {
-                                    // 收到消息后，如果不是waiting for pong的状态，则重置倒计时
-                                    if !waiting_pong {
-                                        reset_timer = Instant::now() + Duration::from_secs(25);
-                                    }else{
-                                        log::warn!("Receive msg when waiting for pong : {}", text);
-                                    }
-                                    let bytes = Bytes::from(text.into_bytes());
-                                    if let Err(e) = self.base_connection.tx.send(bytes.clone()) {
-                                        //利用shutdown关闭
-                                        error!("failed to broadcast message: {}", e);
-                                        break;
+                                        // 收到消息后，如果不是waiting for pong的状态，则重置倒计时
+                                        if !waiting_pong {
+                                            reset_timer = Instant::now() + Duration::from_secs(25);
+                                        }else{
+                                            log::warn!("Receive msg when waiting for pong : {}", text);
+                                        }
+                                        let bytes = Bytes::from(text.into_bytes());
+                                        if let Err(e) = self.base_connection.tx.send(bytes.clone()) {
+                                            //利用shutdown关闭
+                                            error!("failed to broadcast message: {}", e);
+                                            break;
+                                        }
                                     }
                                 }
                                 Message::Binary(data) => {

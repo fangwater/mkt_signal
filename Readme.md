@@ -98,6 +98,9 @@ pong-timer在倒计时结束前，收到对应的pong，pong-timer停止计时�
 pong-timer到技术结束，没有收到对应的pong 直接重启websocket 恢复到开始
 
 
+6月8日新增
+1、由于okex和bybit的pong回复不在pong消息，需要parser后才知道字端
+
 
 
 

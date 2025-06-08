@@ -15,6 +15,8 @@ pub struct Proxy {
     inc_parser : Box<dyn Parser>,
     trade_parser : Box<dyn Parser>,
     global_shutdown: watch::Receiver<bool>,
+    inc_count: u64,
+    trade_count: u64,
 }
 
 
@@ -28,6 +30,8 @@ impl Proxy {
             inc_parser: Box::new(DefaultIncParser::new()),
             trade_parser: Box::new(DefaultTradeParser::new()),
             global_shutdown: global_shutdown,
+            inc_count: 0,
+            trade_count: 0,
         }
     }
 
@@ -45,6 +49,7 @@ impl Proxy {
                 }
                 msg = self.inc_rx.recv() => {
                     if let Ok(msg) = msg {
+                        self.inc_count += 1;
                         if let Some(parsed_msg) = self.inc_parser.parse(msg) {
                             self.forwarder.send_msg(parsed_msg.to_bytes()).await;
                         }
@@ -52,6 +57,7 @@ impl Proxy {
                 }
                 msg = self.trade_rx.recv() => {
                     if let Ok(msg) = msg {
+                        self.trade_count += 1;
                         if let Some(parsed_msg) = self.trade_parser.parse(msg) {
                             self.forwarder.send_msg(parsed_msg.to_bytes()).await;
                         }
@@ -59,6 +65,9 @@ impl Proxy {
                 }
                 _ = stats_timer.tick() => {
                     self.forwarder.log_stats();
+                    log::info!("inc_count: {}, trade_count: {}", self.inc_count, self.trade_count);
+                    self.inc_count = 0;
+                    self.trade_count = 0;
                 }
             }
         }

@@ -5,6 +5,7 @@ use bytes::Bytes;
 use log::{info, warn, error};
 use async_trait::async_trait;
 use serde_json::json;
+use uuid::Uuid;
 use crate::connection::connection::{MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector};
 
 
@@ -39,6 +40,14 @@ impl BybitConnection {
     }
 }
 
+fn is_bybit_pong_msg(msg: &serde_json::Value) -> bool {
+    // 同时检查操作类型和返回消息内容
+    msg.get("op").map(|v| v == "ping").unwrap_or(false) &&
+    msg.get("ret_msg").map(|v| v == "pong").unwrap_or(false) &&
+    msg.get("success").is_some()
+}
+
+
 #[async_trait]
 impl MktConnectionRunner for BybitConnection {
     async fn run_connection(&mut self) -> anyhow::Result<()> {
@@ -48,8 +57,9 @@ impl MktConnectionRunner for BybitConnection {
         //2、心跳发送后，等待pong消息，如果20s内没有收到pong消息，则重启websocket
         //注意bybit文档并未给出这个超时时间，因此设置为20s，和发送频率保持一致
         // 把问题转化为，必须稳定的收到pong 否则断开
-        let mut reset_timer: Instant = Instant::now() + Duration::from_secs(40); // 倒计时，初始值40s，倒计时结束重启websocket
         let mut ping_timer: Instant = Instant::now() + Duration::from_secs(20); // 心跳计时，初始值20s，倒计时结束发ping消息
+        let mut reset_timer: Instant = ping_timer + Duration::from_secs(5); // 倒计时，初始值40s，倒计时结束重启websocket
+        let mut waiting_pong = false;
         loop {
             let mut ws_stream = self.base_connection.connection.as_mut().unwrap().ws_stream.lock().await;
             tokio::select! {
@@ -66,8 +76,8 @@ impl MktConnectionRunner for BybitConnection {
                     // 发送心跳
                     //ws.send(JSON.stringify({"req_id": "100001", "op": "ping"}));
                     // 生成心跳消息
-                    // 生成一个当前时间戳作为req_id, tokio
-                    let req_id = Instant::now().elapsed().as_millis();
+                    // 生成一个当前时间戳作为req_id, tokio的uuid
+                    let req_id = Uuid::new_v4().to_string();
                     let ping_msg = json!({
                         "req_id": req_id,
                         "op": "ping"
@@ -76,6 +86,7 @@ impl MktConnectionRunner for BybitConnection {
                         error!("Failed to send ping message: {:?}", e);
                         break;
                     }
+                    waiting_pong = true;
                     // 重置心跳计时
                     ping_timer = Instant::now() + Duration::from_secs(20);
                     log::info!("Sent ping message with req_id: {:?}, reset ping timer to {:?}", req_id, ping_timer);
@@ -100,14 +111,29 @@ impl MktConnectionRunner for BybitConnection {
                                     break;
                                 }
                                 Message::Pong(payload) => {
-                                    // 收到pong消息后，重置reset_timer
-                                    reset_timer = Instant::now() + Duration::from_secs(20);
-                                    //parser req_id
-                                    let pong_msg: serde_json::Value = serde_json::from_slice(&payload).unwrap();
-                                    let req_id = pong_msg["req_id"].as_str().unwrap();
-                                    log::info!("Received pong message with req_id: {:?}, reset reset timer to {:?}", req_id, reset_timer);
+                                    //bybit的pong消息不走pong frame，而是走text frame，因此需要特殊处理
+                                    warn!("Unexpected pong message: {:?}", payload);
                                 }
                                 Message::Text(text) => {
+                                    if waiting_pong {
+                                        // 只有在等待pong消息时，需要parser text，检查是否是pong消息
+                                        let msg: serde_json::Value = serde_json::from_slice(&text.as_bytes()).unwrap();
+                                        if is_bybit_pong_msg(&msg) {
+                                            log::info!("Received pong message: {:?}", msg);
+                                            waiting_pong = false;
+                                            let req_id = msg["req_id"].as_str().unwrap();
+                                            reset_timer = ping_timer + Duration::from_secs(5);
+                                            log::info!("Received pong message with req_id: {:?}, reset reset timer to {:?}", req_id, reset_timer);
+                                            //检查pong消息是否是suceess，如果不是，则断开连接
+                                            if !msg["success"].as_bool().unwrap() {
+                                                error!("Bybit: Pong message is not success: {:?}", msg);
+                                                break;
+                                            }
+                                            continue;
+                                        }
+                                    }
+                                    // 1、非等待pong消息，直接广播
+                                    // 2、等待pong消息时，如果is_bybit_pong_msg为false，不会走到continue，而是走到这里，直接广播
                                     let bytes = Bytes::from(text.into_bytes());
                                     if let Err(e) = self.base_connection.tx.send(bytes.clone()) {
                                         //利用shutdown关闭
