@@ -133,7 +133,6 @@ impl ZmqForwarder {
         }
     }
     
-    #[allow(dead_code)]
     pub async fn send_tp_reset_msg(&mut self) -> bool {
         let tp_reset_msg = MktMsg::tp_reset();
         let msg_bytes = tp_reset_msg.to_bytes();

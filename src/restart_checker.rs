@@ -11,7 +11,7 @@ impl RestartChecker {
     pub fn new(is_primary: bool, restart_duration: u64) -> Self {
         Self {
             is_primary,
-            restart_duration_secs: restart_duration * 60,
+            restart_duration_secs: restart_duration,
         }
     }
     /// - 下一个对齐点的tokio Instant, 以及这个对齐的instant，对于初始纪元时间，偏移了多少个interval
@@ -54,10 +54,12 @@ impl RestartChecker {
         if self.is_primary {
             if interval_count % 2 != 0 {
                 //对齐的重启时间点，对应interval_count是奇数，primary直接使用
+                log::info!("current instant: {:?}, next_restart_instant: {:?}", Instant::now(), next_instant);
                 return next_instant;
             }
             else {
                 //对齐的重启时间点，对应interval_count是偶数，primary需要等待一个interval后重启
+                log::info!("current instant: {:?}, next_restart_instant: {:?}", Instant::now(), next_instant);
                 return next_instant + duration;
             }
         }
@@ -65,10 +67,12 @@ impl RestartChecker {
         else {
             if interval_count % 2 == 0 {
                 //对齐的重启时间点，对应interval_count是偶数，secondary直接使用
+                log::info!("current instant: {:?}, next_restart_instant: {:?}", Instant::now(), next_instant);
                 return next_instant;
             }
             else {
                 //对齐的重启时间点，对应interval_count是奇数，secondary需要等待一个interval后重启
+                log::info!("current instant: {:?}, next_restart_instant: {:?}", Instant::now(), next_instant);
                 return next_instant + duration;
             }
         }

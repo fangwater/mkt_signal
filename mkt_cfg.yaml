@@ -1,5 +1,5 @@
 is_primary: true
-restart_duration: 3 #3分钟重启一次，奇数偶数决定主备重启 
+restart_duration_secs: 1800 #30分钟重启一次，奇数偶数决定主备重启 
 
 mkt_client:
   # exchange: binance-futures

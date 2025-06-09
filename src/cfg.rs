@@ -36,10 +36,10 @@ pub struct RedisPubberCfg {
 #[allow(dead_code)]
 pub struct Config {
     pub is_primary: bool,
+    pub restart_duration_secs: u64,
     pub mkt_client: MarketClient,
     pub zmq_proxy: ZmqProxyCfg,
     pub redis_pubber: RedisPubberCfg,
-    pub restart_duration: u64,
     pub snapshot_requery_time: String,
     pub exec_dir: PathBuf,
     pub symbol_socket: String,
