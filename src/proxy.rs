@@ -6,6 +6,8 @@ use tokio::time::interval;
 use tokio::sync::broadcast;
 use crate::parser::default_parser::Parser;
 use tokio::sync::watch;
+use std::sync::Arc;
+use tokio::sync::Notify;
 
 //proxy需要异步运行，因此需要实现send trait
 pub struct Proxy {
@@ -14,14 +16,15 @@ pub struct Proxy {
     trade_rx : broadcast::Receiver<Bytes>,
     inc_parser : Box<dyn Parser>,
     trade_parser : Box<dyn Parser>,
-    global_shutdown: watch::Receiver<bool>,
+    proxy_shutdown: watch::Receiver<bool>,
     inc_count: u64,
     trade_count: u64,
+    tp_reset_notify: Arc<Notify>,
 }
 
 
 impl Proxy {
-    pub fn new(forwarder: ZmqForwarder, inc_rx: broadcast::Receiver<Bytes>, trade_rx: broadcast::Receiver<Bytes>, global_shutdown: watch::Receiver<bool>) -> Self {
+    pub fn new(forwarder: ZmqForwarder, inc_rx: broadcast::Receiver<Bytes>, trade_rx: broadcast::Receiver<Bytes>, proxy_shutdown: watch::Receiver<bool>, tp_reset_notify: Arc<Notify>) -> Self {
         use crate::parser::default_parser::{DefaultIncParser, DefaultTradeParser};
         Self { 
             forwarder, 
@@ -29,9 +32,10 @@ impl Proxy {
             trade_rx,
             inc_parser: Box::new(DefaultIncParser::new()),
             trade_parser: Box::new(DefaultTradeParser::new()),
-            global_shutdown: global_shutdown,
+            proxy_shutdown: proxy_shutdown,
             inc_count: 0,
             trade_count: 0,
+            tp_reset_notify: tp_reset_notify,
         }
     }
 
@@ -42,9 +46,21 @@ impl Proxy {
         
         loop {
             tokio::select! {
-                _ = self.global_shutdown.changed() => {
-                    if *self.global_shutdown.borrow() {
+                _ = self.proxy_shutdown.changed() => {
+                    if *self.proxy_shutdown.borrow() {
                         break;
+                    }
+                }
+                _ = self.tp_reset_notify.notified() => {
+                    log::info!("Sending tp reset message...");
+                    match self.forwarder.send_tp_reset_msg().await {
+                        true => {
+                            log::info!("Sent tp reset message successfully");
+                        }
+                        false => {
+                            log::error!("Failed to send tp reset message");
+                            break;
+                        }
                     }
                 }
                 msg = self.inc_rx.recv() => {

@@ -71,6 +71,40 @@ fn format_status_table(next_restart: u64, next_0030: u64) -> String {
     )
 }
 
+async fn perform_restart(
+    mkt_connection_manager: &mut MktConnectionManager,
+    global_shutdown_tx: &watch::Sender<bool>,
+    reason: &str,
+) -> anyhow::Result<()> {
+    log::info!("Triggering {} restart...", reason);
+    
+    // 发送关闭信号给所有任务
+    let _ = global_shutdown_tx.send(true);
+    
+    // 关闭连接
+    match mkt_connection_manager.shutdown(global_shutdown_tx).await {
+        Ok(_) => log::info!("MktConnectionManager shutdown successfully"),
+        Err(e) => error!("Failed to shutdown MktConnectionManager: {}", e),
+    }
+    
+    // 重置关闭信号
+    let _ = global_shutdown_tx.send(false);
+    
+    // 更新订阅消息
+    match mkt_connection_manager.update_subscribe_msgs().await {
+        Ok(_) => log::info!("Update subscribe msgs successfully"),
+        Err(e) => error!("Failed to update subscribe msgs: {}", e),
+    }
+    //每次重启后，向inc和trade的broadcast发送一条tp-reset-msg, 提示下游时间戳可能不连续
+    //
+    
+    // 启动所有连接
+    mkt_connection_manager.start_all_connections().await;
+    log::info!("Restarting all connections successfully");
+    
+    Ok(())
+}
+
 #[tokio::main(worker_threads = 1)]
 async fn main() -> anyhow::Result<()> {
     std::env::set_var("RUST_LOG", "INFO");
@@ -83,6 +117,7 @@ async fn main() -> anyhow::Result<()> {
     let restart_checker: RestartChecker = RestartChecker::new(cfg.is_primary, cfg.restart_duration_secs);
     //建立connection，并启动
     let mut mkt_connection_manager = MktConnectionManager::new(&cfg, &global_shutdown_tx).await;
+    let tp_reset_notify = mkt_connection_manager.get_tp_reset_notify();
     let forwarder = match ZmqForwarder::new(&cfg) {
         Ok(f) => f,
         Err(e) => {
@@ -107,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
     let proxy_shutdown_rx_clone: watch::Receiver<bool> = proxy_shutdown_rx.clone();
     tokio::spawn(
         async move {
-        let mut proxy: Proxy = Proxy::new(forwarder, mkt_inc_rx, mkt_trade_rx, proxy_shutdown_rx_clone);
+        let mut proxy: Proxy = Proxy::new(forwarder, mkt_inc_rx, mkt_trade_rx, proxy_shutdown_rx_clone, tp_reset_notify);
         proxy.run().await;
     });
     //建立connection，并启动
@@ -152,47 +187,19 @@ async fn main() -> anyhow::Result<()> {
                 ));
             }
             _ = tokio::time::sleep_until(next_0030_instant) => {
-                log::info!("Triggering 00:00:30 restart...");
                 next_0030_instant += tokio::time::Duration::from_secs(24 * 60 * 60);
                 if restart_checker.is_primary {
-                    // 发送关闭信号给所有任务
-                    let _ = global_shutdown_tx.send(true);
-                    match mkt_connection_manager.shutdown(&global_shutdown_tx).await {
-                        Ok(_) => log::info!("MktConnectionManager shutdown successfully"),
-                        Err(e) => error!("Failed to shutdown MktConnectionManager: {}", e),
+                    if let Err(e) = perform_restart(&mut mkt_connection_manager, &global_shutdown_tx, "00:00:30").await {
+                        error!("Failed to perform 00:00:30 restart: {}", e);
                     }
-                    let _ = global_shutdown_tx.send(false);
-                    //更新subscribe_msgs
-                    match mkt_connection_manager.update_subscribe_msgs().await {
-                        Ok(_) => log::info!("Update subscribe msgs successfully"),
-                        Err(e) => error!("Failed to update subscribe msgs: {}", e),
-                    }
-                    //启动所有connection
-                    mkt_connection_manager.start_all_connections().await;
-                    log::info!("Restarting all connections successfully");
                 }
                 log::info!("00:00:30 restart for primary successfully");
             }
             _ = tokio::time::sleep_until(next_restart_instant) => {
-                //重启
-                log::info!("Triggering scheduled restart...");
-                //更新next_restart_instant
                 next_restart_instant += tokio::time::Duration::from_secs(restart_checker.restart_duration_secs) * 2;
-                // 发送关闭信号给所有任务
-                let _ = global_shutdown_tx.send(true);
-                match mkt_connection_manager.shutdown(&global_shutdown_tx).await {
-                    Ok(_) => log::info!("MktConnectionManager shutdown successfully"),
-                    Err(e) => error!("Failed to shutdown MktConnectionManager: {}", e),
+                if let Err(e) = perform_restart(&mut mkt_connection_manager, &global_shutdown_tx, "scheduled").await {
+                    error!("Failed to perform scheduled restart: {}", e);
                 }
-                let _ = global_shutdown_tx.send(false);
-                //更新subscribe_msgs
-                match mkt_connection_manager.update_subscribe_msgs().await {
-                    Ok(_) => log::info!("Update subscribe msgs successfully"),
-                    Err(e) => error!("Failed to update subscribe msgs: {}", e),
-                }
-                //启动所有connection
-                mkt_connection_manager.start_all_connections().await;
-                log::info!("Restarting all connections successfully");
             }
         }
     }

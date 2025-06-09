@@ -4,16 +4,19 @@ use crate::connection::connection::{MktConnection, MktConnectionHandler};
 use crate::connection::binance_conn::BinanceConnection;
 use crate::connection::okex_conn::OkexConnection;
 use crate::connection::bybit_conn::BybitConnection;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, watch, Notify};
 use tokio::task::JoinSet;
 use bytes::Bytes;
 use log::{info, error};
+use std::sync::Arc;
+
 pub struct MktConnectionManager {
     cfg: Config, //进程基本参数
     subscribe_msgs: SubscribeMsgs, //所有的订阅消息
     inc_tx: broadcast::Sender<Bytes>, //行情消息转发通道
     trade_tx: broadcast::Sender<Bytes>, //行情消息转发通道
     global_shutdown_rx: watch::Receiver<bool>, //全局关闭信号
+    tp_reset_notify: Arc<Notify>, //tp重置消息通知
     join_set: JoinSet<()>, //任务集合
 }
 
@@ -49,8 +52,16 @@ impl MktConnectionManager {
             inc_tx: inc_tx,
             trade_tx: trade_tx,
             global_shutdown_rx: global_shutdown.subscribe(),
+            tp_reset_notify: Arc::new(Notify::new()),
             join_set: JoinSet::new(),
         }   
+    }
+    pub fn get_tp_reset_notify(&self) -> Arc<Notify> {
+        self.tp_reset_notify.clone()
+    }
+
+    pub fn notify_tp_reset(&self) {
+        self.tp_reset_notify.notify_waiters();
     }
 
     pub async fn update_subscribe_msgs(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -62,6 +73,7 @@ impl MktConnectionManager {
     }
     
     pub async fn start_all_connections(&mut self) {
+        self.notify_tp_reset();
         // 1. 启动所有增量连接
         for i in 0..self.subscribe_msgs.get_inc_subscribe_msg_len() {
             let exchange = self.cfg.get_exchange().clone();

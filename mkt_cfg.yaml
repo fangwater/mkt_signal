@@ -1,10 +1,10 @@
 is_primary: true
-restart_duration_secs: 1800 #30分钟重启一次，奇数偶数决定主备重启 
+restart_duration_secs: 180 #3分钟重启一次，奇数偶数决定主备重启 
 
 mkt_client:
   # exchange: binance-futures
-  # exchange: okex-swap
-  exchange: bybit
+  exchange: okex-swap
+  # exchange: bybit
 zmq_proxy:
   ipc_path: "/tmp/zmq_mkt_feeds.ipc"
   primary_addr: "38.55.198.59:5555"
