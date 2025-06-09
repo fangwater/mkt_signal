@@ -62,11 +62,11 @@ pub fn next_target_instant(time_str: &str) -> Instant {
 }
 
 fn format_status_table(next_restart: u64, next_0030: u64) -> String {
-    format!(
-        "|---------------------|------------|\n\
+    format!("\n\
+         |---------------------|-------------|\n\
          | Next Restart        | {:>10}s |\n\
          | Next 00:30          | {:>10}s |\n\
-         |---------------------|------------|",
+         |---------------------|-------------|",
         next_restart, next_0030
     )
 }

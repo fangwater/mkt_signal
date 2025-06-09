@@ -65,10 +65,11 @@ impl MktConnectionManager {
     }
 
     pub async fn update_subscribe_msgs(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        log::info!("Try update subscribe msgs start, current symbol count: {:?}", self.subscribe_msgs.get_inc_subscribe_msg_len());
+        //获取之前的活跃symbol
+        let prev_symbols = self.subscribe_msgs.get_active_symbols();
         let subscribe_msgs = SubscribeMsgs::new(&self.cfg).await;
         self.subscribe_msgs = subscribe_msgs;
-        log::info!("Update subscribe msgs success, new symbol count: {:?}", self.subscribe_msgs.get_inc_subscribe_msg_len());
+        SubscribeMsgs::compare_symbol_set(&prev_symbols, &self.subscribe_msgs.get_active_symbols());
         Ok(())
     }
     

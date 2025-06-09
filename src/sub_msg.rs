@@ -1,12 +1,18 @@
 use serde_json::Value;
 use crate::cfg::Config;
+use std::collections::HashSet;
 
 pub struct SubscribeMsgs {
+    active_symbols: HashSet<String>,
     inc_subscribe_msgs: Vec<serde_json::Value>,
     trade_subscribe_msgs: Vec<serde_json::Value>,
 }
 
 impl SubscribeMsgs {
+    pub fn get_active_symbols(&self) -> HashSet<String> {
+        self.active_symbols.clone()
+    }
+
     pub fn get_inc_subscribe_msg_len(&self) -> usize {
         self.inc_subscribe_msgs.len()
     }
@@ -21,6 +27,38 @@ impl SubscribeMsgs {
 
     pub fn get_trade_subscribe_msg(&self, index: usize) -> &serde_json::Value {
         &self.trade_subscribe_msgs[index]
+    }
+
+    pub fn compare_symbol_set(prev_symbols: &HashSet<String>, new_symbols: &HashSet<String>) {
+        println!("Updating symbols (current: {} symbols)", prev_symbols.len());
+        
+        let new_set: HashSet<String> = new_symbols.iter().map(|s| s.clone()).collect();
+        let old_set = &prev_symbols;
+        
+        let added_count = new_set.difference(old_set).count();
+        let removed_count = old_set.difference(&new_set).count();
+        
+        if added_count > 0 || removed_count > 0 {
+            println!("Symbol changes:\n");
+            if added_count > 0 {
+                println!("  Added ({}): {:?}", 
+                    added_count,
+                    new_set.difference(old_set).collect::<Vec<_>>()
+                );
+            }else{
+                println!("  No new symbols added");
+            }
+            if removed_count > 0 {
+                println!("  Removed ({}): {:?}",
+                    removed_count,
+                    old_set.difference(&new_set).collect::<Vec<_>>()
+                );
+            }else{
+                println!("  No symbols removed");
+            }
+        }else{
+            println!("No symbol changes");
+        }
     }
 
     fn get_inc_channel(exchange: &str) -> String {
@@ -95,6 +133,7 @@ impl SubscribeMsgs {
         Self { 
             inc_subscribe_msgs,
             trade_subscribe_msgs,
+            active_symbols: symbols.iter().map(|s| s.clone()).collect(),
         }
     }
 }
