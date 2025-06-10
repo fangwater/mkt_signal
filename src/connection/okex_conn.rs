@@ -54,6 +54,7 @@ impl MktConnectionRunner for OkexConnection {
                     // 如果正在等待pong消息，则重启websocket
                     if waiting_pong {
                         warn!("Okex: Ping timeout detected. reset connecting...");
+                        ws_stream.close(None).await?; // 发送 CLOSE 帧
                         break;
                     } else {
                         // 发送ping消息

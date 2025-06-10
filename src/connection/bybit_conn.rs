@@ -95,6 +95,7 @@ impl MktConnectionRunner for BybitConnection {
                 _ = time::sleep_until(reset_timer) => {
                     // 到期没有收到pong消息，则重启websocket
                     log::error!("Bybit: Ping timeout detected. reset connecting...");
+                    ws_stream.close(None).await?; // 发送 CLOSE 帧
                     break;
                 }
                 // ====处理ws消息====

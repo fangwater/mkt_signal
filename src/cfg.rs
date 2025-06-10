@@ -1,16 +1,10 @@
 use serde::Deserialize;
 use tokio::fs;
 use serde_yaml;
-use std::path::PathBuf;
 use anyhow::{Context, Result};
 use log::info;
 use tokio::net::UnixStream;
 use tokio::io::AsyncReadExt;
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct MarketClient {
-    pub exchange: String,
-}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ZmqProxyCfg {
@@ -37,13 +31,11 @@ pub struct RedisPubberCfg {
 pub struct Config {
     pub is_primary: bool,
     pub restart_duration_secs: u64,
-    pub mkt_client: MarketClient,
+    pub binance_snapshot_requery_time: Option<String>,
+    pub symbol_socket: String,
+    pub exchange: String,
     pub zmq_proxy: ZmqProxyCfg,
     pub redis_pubber: RedisPubberCfg,
-    pub snapshot_requery_time: String,
-    pub exec_dir: PathBuf,
-    pub symbol_socket: String,
-    pub script_dir: String,
 }
 
 impl Config {
@@ -54,7 +46,7 @@ impl Config {
     }
 
     pub fn get_exchange(&self) -> String {
-        self.mkt_client.exchange.clone()
+        self.exchange.clone()
     }
 
     pub fn get_batch_size(&self) -> usize {

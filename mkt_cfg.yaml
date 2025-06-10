@@ -1,10 +1,11 @@
 is_primary: true
 restart_duration_secs: 180 #3分钟重启一次，奇数偶数决定主备重启 
+binance_snapshot_requery_time: "--:--:--"
+symbol_socket: "/home/crypto_mkt/symbol_server/exchange"
+exchange: binance-futures
+# exchange: okex-swap
+# exchange: bybit
 
-mkt_client:
-  # exchange: binance-futures
-  exchange: okex-swap
-  # exchange: bybit
 zmq_proxy:
   ipc_path: "/tmp/zmq_mkt_feeds.ipc"
   primary_addr: "38.55.198.59:5555"
@@ -18,12 +19,3 @@ redis_pubber:
   password: "el_crypto"
   mode: "FromStart"
   max_stream_size: 100 #3s一条，保留5min，20*5
-  
-
-snapshot_requery_time: "--:--:--"
-
-exec_dir: "./exec_dir"
-
-symbol_socket: "/home/crypto_mkt/symbol_server/exchange"
-
-script_dir: "./script"

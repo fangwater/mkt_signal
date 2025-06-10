@@ -19,10 +19,11 @@ use crate::connection::manager::MktConnectionManager;
 use chrono::{Utc, TimeDelta, NaiveTime};
 use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
+use tokio::sync::OnceCell;
+use crate::connection::binance_conn::BinanceFuturesSnapshotQuery;
 
 
 pub fn next_target_instant(time_str: &str) -> Instant {
-    // 处理特殊值：使用当前时间加1分钟
     if time_str == "--:--:--" {
         println!("WARNING: Using fallback time + 30 seconds from now");
         return Instant::now() + Duration::from_secs(30);
@@ -109,8 +110,18 @@ async fn perform_restart(
 async fn main() -> anyhow::Result<()> {
     std::env::set_var("RUST_LOG", "INFO");
     env_logger::init();
-    let cfg = Config::load_config("/root/project/crypto_proxy/mkt_cfg.yaml").await.unwrap();
 
+    static CFG: OnceCell<Config> = OnceCell::const_new();
+
+    async fn get_config() -> &'static Config {
+        CFG.get_or_init(|| async {
+            Config::load_config("/root/project/crypto_proxy/mkt_cfg.yaml").await.unwrap()
+        }).await
+    }
+    
+    let cfg = get_config().await;
+    // 获取exchange
+    let exchange = cfg.get_exchange();
     let (global_shutdown_tx, _) = watch::channel(false);
     let (receiver_shutdown_tx, receiver_shutdown_rx) = watch::channel(false);
     let (proxy_shutdown_tx, proxy_shutdown_rx) = watch::channel(false);
@@ -137,7 +148,7 @@ async fn main() -> anyhow::Result<()> {
     //启动proxy
     let mkt_inc_rx = mkt_connection_manager.get_inc_tx().subscribe();
     let mkt_trade_rx = mkt_connection_manager.get_trade_tx().subscribe();
-    
+    let mkt_inc_tx = mkt_connection_manager.get_inc_tx().clone();
     //使用tokio spwan运行proxy
     let proxy_shutdown_rx_clone: watch::Receiver<bool> = proxy_shutdown_rx.clone();
     tokio::spawn(
@@ -175,8 +186,10 @@ async fn main() -> anyhow::Result<()> {
     log::info!("Next restart instant: {:?}", next_restart_instant);
     // primary额外在在utc时间0点30s重启
     let mut next_0030_instant = next_target_instant("00:30:00");
+    let mut next_snapshot_query_instant = next_target_instant(cfg.binance_snapshot_requery_time.as_ref().unwrap());
     // log 
     let mut log_interval = tokio::time::interval(Duration::from_secs(3));
+    log::info!("exchange: {}", exchange);
     while !token.is_cancelled() {
         tokio::select! {
             _ = log_interval.tick() => {
@@ -185,6 +198,20 @@ async fn main() -> anyhow::Result<()> {
                     next_restart_instant.duration_since(now_instant).as_secs(),
                     next_0030_instant.duration_since(now_instant).as_secs()
                 ));
+            }
+            _ = tokio::time::sleep_until(next_snapshot_query_instant) => {
+                if exchange == "binance-futures" && restart_checker.is_primary {
+                    //只有主节点且exchange为binance-futures时，才做depth快照修正
+                    log::info!("Query depth snapshot at {:?}", next_snapshot_query_instant);
+                    //用tokio的spawn运行，不会阻塞主循环
+                    let mkt_inc_tx_clone = mkt_inc_tx.clone();
+                    tokio::spawn(async move {
+                        let symbols = cfg.get_symbols().await.unwrap();
+                        BinanceFuturesSnapshotQuery::start_fetching_depth(symbols, mkt_inc_tx_clone).await;
+                        log::info!("Query depth snapshot for binance-futures successfully");
+                    });
+                }
+                next_snapshot_query_instant += Duration::from_secs(24 * 60 * 60);
             }
             _ = tokio::time::sleep_until(next_0030_instant) => {
                 next_0030_instant += tokio::time::Duration::from_secs(24 * 60 * 60);
@@ -214,3 +241,15 @@ async fn main() -> anyhow::Result<()> {
     let _ = proxy_shutdown_tx.send(true);
     Ok(())
 }
+
+// #[tokio::main(worker_threads = 1)]
+// async fn main() -> anyhow::Result<()> {
+//     std::env::set_var("RUST_LOG", "INFO");
+//     env_logger::init();
+//     let (tx, _) = tokio::sync::broadcast::channel(100);
+//     // 获取所有symbol
+//     let cfg = Config::load_config("/root/project/crypto_proxy/mkt_cfg.yaml").await.unwrap();
+//     let symbols = cfg.get_symbols().await.unwrap();
+//     BinanceFuturesSnapshotQuery::start_fetching_depth(symbols, tx).await;
+//     Ok(())
+// }

@@ -1,27 +1,31 @@
 use futures_util::{SinkExt, TryStreamExt};
 use tokio::time::{self, Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
+use reqwest::Client;
 use bytes::Bytes;
 use log::{info, warn, error};
 use async_trait::async_trait;
+use serde_json::Value;
+use std::collections::HashSet;
+use tokio::time::sleep;
+use anyhow::Result;
+use crate::mkt_msg::{MktMsg, MktMsgType};
 use crate::connection::connection::{MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector};
+
 
 ///为了支持send，BinanceFuturesConnection的成员需要支持send ---> MktConnection需要send
 pub struct BinanceConnection {
     base_connection: MktConnection,
-    ping_send_timer: Instant,
     delay_interval: Duration,
     ping_interval: Duration,
 }
 
 impl BinanceConnection {
     pub fn new(connection: MktConnection) -> Self {
-        let ping_send_timer_init = Instant::now() + Duration::from_secs(180) + Duration::from_secs(5);
         Self {
             base_connection: connection,
             delay_interval: Duration::from_secs(5),
             ping_interval: Duration::from_secs(180),
-            ping_send_timer: ping_send_timer_init,
         }
     }
 }
@@ -29,6 +33,7 @@ impl BinanceConnection {
 #[async_trait]
 impl MktConnectionRunner for BinanceConnection {
     async fn run_connection(&mut self) -> anyhow::Result<()> {
+        let mut ping_send_timer = Instant::now() + Duration::from_secs(180) + Duration::from_secs(5);
         loop {
             let mut ws_stream = self.base_connection.connection.as_mut().unwrap().ws_stream.lock().await;
             tokio::select! {
@@ -41,8 +46,9 @@ impl MktConnectionRunner for BinanceConnection {
                     }
                 }
                 // ====处理ping超时====
-                _ = time::sleep_until(self.ping_send_timer) => {
+                _ = time::sleep_until(ping_send_timer) => {
                     warn!("Binance-futures: Ping timeout detected. reset connecting...");
+                    ws_stream.close(None).await?; // 发送 CLOSE 帧
                     break;
                 }
                 // ====处理ws消息====
@@ -56,8 +62,8 @@ impl MktConnectionRunner for BinanceConnection {
                                         error!("Failed to send pong message: {:?}", e);
                                         break;
                                     }
-                                    self.ping_send_timer = Instant::now() + self.ping_interval + self.delay_interval;
-                                    info!("Reset ping_send_timer to {:?}", self.ping_send_timer);
+                                    ping_send_timer = Instant::now() + self.ping_interval + self.delay_interval;
+                                    info!("Reset ping_send_timer to {:?}", ping_send_timer);
                                 }
                                 Message::Close(frame) => {
                                     warn!("Received close frame: {:?}", frame);
@@ -121,5 +127,181 @@ impl MktConnectionHandler for BinanceConnection {
                 }
             }
         }
+    }
+}
+
+#[derive(Debug)]
+struct DepthData {
+    symbol: String,
+    data: serde_json::Value,
+    status: u8,
+    error: Option<String>,
+}
+
+pub struct BinanceFuturesSnapshotQuery {}
+
+impl BinanceFuturesSnapshotQuery {
+    const BASE_URL: &str = "https://data-api.binance.vision"; // 币安rest api
+    const ENDPOINT: &str = "/api/v3/depth"; // 获取深度
+    const LIMIT: u32 = 1000; // 获取深度限制
+    const BATCH_SIZE: usize = 20; // 一次性发起的请求数量
+    const MAX_RETRIES: u32 = 3; // 每个请求的最大重试次数
+    const REQUEST_TIMEOUT: Duration = Duration::from_secs(3); // 请求超时时间
+    // 币安服务端限制请求频率，具体的算法为
+    // https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Order-Book
+    // 1000档的请求消耗Weight为50 每秒有1000的配额，对应20次请求次数
+    const COOLDOWN: Duration = Duration::from_secs(60); // 请求间隔时间(币安服务端限制请求频率)
+
+    async fn fetch_symbol_depth(
+        client: &Client,
+        symbol: &str,
+        invalid_symbols: &mut HashSet<String>,
+        mut retry_count: u32,
+    ) -> Result<DepthData> {
+        let upper_symbol = symbol.to_uppercase();
+
+        // 如果是无效的符号，跳过请求, 返回错误
+        if invalid_symbols.contains(&upper_symbol) {
+            log::info!("invalid symbol: {}, skip!", upper_symbol);
+            return Err(anyhow::anyhow!("Invalid symbol: {}", upper_symbol));
+        }
+
+        loop {
+            let response = match client
+                .get(&format!("{}{}", Self::BASE_URL, Self::ENDPOINT))
+                .query(&[("symbol", &upper_symbol), ("limit", &Self::LIMIT.to_string())])
+                .timeout(Self::REQUEST_TIMEOUT)
+                .send()
+                .await
+            {
+                Ok(resp) => resp,
+                Err(e) => {
+                    if retry_count >= Self::MAX_RETRIES {
+                        return Err(anyhow::anyhow!("Max retries exceeded: {} for symbol: {}", e, upper_symbol));
+                    }
+                    let delay: Duration = Duration::from_millis(2u64.pow(retry_count) * 500);
+                    sleep(delay).await;
+                    retry_count += 1;
+                    continue;
+                }
+            };
+
+            // 处理响应
+            let text = match response.text().await {
+                Ok(t) => t,
+                Err(e) => {
+                    if retry_count >= Self::MAX_RETRIES {
+                        return Err(anyhow::anyhow!("Failed to get response text: {} for symbol: {}", e, upper_symbol));
+                    }
+                    let delay = Duration::from_millis(2u64.pow(retry_count) * 500);
+                    sleep(delay).await;
+                    retry_count += 1;
+                    continue;
+                }
+            };
+
+            // 检查是否是无效符号错误
+            if let Ok(body) = serde_json::from_str::<Value>(&text) {
+                if body["code"] == -1121 {
+                    invalid_symbols.insert(upper_symbol.clone());
+                    return Err(anyhow::anyhow!("Invalid symbol: {}", upper_symbol));
+                }
+            }
+
+            // 解析响应数据
+            match serde_json::from_str::<Value>(&text) {
+                Ok(data) => {
+                    return Ok(DepthData {
+                        symbol: upper_symbol,
+                        data,
+                        status: 1, 
+                        error: None,
+                    });
+                }
+                Err(e) => {
+                    // 如果解析失败，返回错误
+                    log::error!("JSON parse error: {} for symbol: {}", e, upper_symbol);
+                    log::error!("response text: {}", text);
+                    return Err(anyhow::anyhow!("JSON parse error: {} for symbol: {}", e, upper_symbol));
+                }
+            }
+        }
+    }
+    pub async fn start_fetching_depth(symbols :Vec<String>, tx: tokio::sync::broadcast::Sender<Bytes>) {
+        let client = Client::builder()
+            .timeout(Self::REQUEST_TIMEOUT)
+            .build()
+            .expect("Failed to create HTTP client");
+    
+        // 创建一个HashSet来跟踪无效的符号
+        let mut invalid_symbols = HashSet::new();
+        // 将symbols分成多个批次
+        let symbol_batches: Vec<_> = symbols.chunks(Self::BATCH_SIZE).collect();
+        // 计算总批次数
+        let total_batches = symbol_batches.len();
+        log::info!("Fetching depth for {} symbols", symbols.len());
+        log::info!("Total batches: {}", total_batches);
+        // 遍历每个批次
+        for (batch_num, batch) in symbol_batches.into_iter().enumerate() {
+            log::info!("Processing batch #{}: {:?}", batch_num + 1, batch);
+            // 记录每个批次的开始时间
+            let batch_start = Instant::now();
+            // 记录每个批次的第一个请求获得相应的时间
+            let mut first_response_time = None;
+            // 遍历每个批次中的每个symbol
+            for symbol in batch {
+                match Self::fetch_symbol_depth(&client, symbol, &mut invalid_symbols, 3).await {
+                    Ok(result) => {
+                        log::info!("fetch depth for {} success", symbol);
+                        let message = serde_json::json!({
+                            "type": "depth",
+                            "data": {
+                                "symbol": result.symbol,
+                                "data": result.data,
+                                "status": result.status,
+                                "error": result.error
+                            }
+                        });
+                        if let Ok(bytes) = serde_json::to_vec(&message) {
+                            //目前只有binance-futures需要在固定的时间点query-depth做快照修正
+                            let mkt_msg = MktMsg::create(MktMsgType::OrderBookSnapshot, Bytes::from(bytes));
+                            match tx.send(mkt_msg.to_bytes()) {
+                                Ok(_) => {
+                                    log::info!("sent depth data for {}", symbol);
+                                }
+                                Err(e) => {
+                                    log::error!("failed to send depth data for {}: {}", symbol, e);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("error: {:?}", e);
+                    }
+                }
+
+                if first_response_time.is_none() {
+                    // 记录每个批次的第一个请求获得响应的时间
+                    first_response_time = Some(Instant::now());
+                }    
+            }
+    
+            // 只有在非最后一批时才进行冷却等待
+            if batch_num + 1 < total_batches {
+                if let Some(first_response_time) = first_response_time {
+                    //计算从第一个请求获得响应到当前批次的开始时间的时间差
+                    let elapsed = first_response_time.duration_since(batch_start);
+                    log::info!("Take {}ms from batch_start to first_response_time", elapsed.as_millis());
+                    let remaining_wait = Self::COOLDOWN.saturating_sub(elapsed);
+                    log::info!("Cooldown: {} ms", remaining_wait.as_millis());
+    
+                    if !remaining_wait.is_zero() {
+                        log::info!("Cooldown: {} ms", remaining_wait.as_millis());
+                        tokio::time::sleep(remaining_wait).await;
+                    }
+                }
+            }
+        }
+        log::info!("total_symbols: {}, processed_symbols: {}", symbols.len(), symbols.len());
     }
 }
