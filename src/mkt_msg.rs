@@ -49,8 +49,8 @@ impl MktMsg {
 
     pub fn to_bytes(&self) -> Bytes {
         let mut buf = BytesMut::with_capacity(8 + self.data.len());
-        buf.put_i32(self.msg_type as i32);
-        buf.put_i32(self.msg_length as i32);
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_u32_le(self.msg_length as u32);
         buf.put(self.data.clone());
         buf.freeze()
     }

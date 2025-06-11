@@ -10,7 +10,7 @@ mod restart_checker;
 use cfg::Config;
 use proxy::Proxy;
 use forwarder::ZmqForwarder;
-use receiver::ZmqReceiver;
+// use receiver::ZmqReceiver;
 use log::error;
 use tokio::signal;
 use tokio::sync::watch;
@@ -138,17 +138,17 @@ async fn main() -> anyhow::Result<()> {
     };
     //建立ipc receiver，用于测试
     //启动receiver
-    log::info!("Starting receiver......");
-    tokio::task::spawn_blocking(move || {
-        let mut receiver: ZmqReceiver = ZmqReceiver::new(&cfg, receiver_shutdown_rx).unwrap();
-        receiver.start_receiving();
-    });
+    // log::info!("Starting receiver......");
+    // tokio::task::spawn_blocking(move || {
+    //     let mut receiver: ZmqReceiver = ZmqReceiver::new(&cfg, receiver_shutdown_rx).unwrap();
+    //     receiver.start_receiving();
+    // });
 
     log::info!("Starting proxy......");
     //启动proxy
     let mkt_inc_rx = mkt_connection_manager.get_inc_tx().subscribe();
     let mkt_trade_rx = mkt_connection_manager.get_trade_tx().subscribe();
-    let mkt_inc_tx = mkt_connection_manager.get_inc_tx().clone();
+    //let mkt_inc_tx = mkt_connection_manager.get_inc_tx().clone();
     //使用tokio spwan运行proxy
     let proxy_shutdown_rx_clone: watch::Receiver<bool> = proxy_shutdown_rx.clone();
     tokio::spawn(
@@ -199,20 +199,20 @@ async fn main() -> anyhow::Result<()> {
                     next_0030_instant.duration_since(now_instant).as_secs()
                 ));
             }
-            _ = tokio::time::sleep_until(next_snapshot_query_instant) => {
-                if exchange == "binance-futures" && restart_checker.is_primary {
-                    //只有主节点且exchange为binance-futures时，才做depth快照修正
-                    log::info!("Query depth snapshot at {:?}", next_snapshot_query_instant);
-                    //用tokio的spawn运行，不会阻塞主循环
-                    let mkt_inc_tx_clone = mkt_inc_tx.clone();
-                    tokio::spawn(async move {
-                        let symbols = cfg.get_symbols().await.unwrap();
-                        BinanceFuturesSnapshotQuery::start_fetching_depth(symbols, mkt_inc_tx_clone).await;
-                        log::info!("Query depth snapshot for binance-futures successfully");
-                    });
-                }
-                next_snapshot_query_instant += Duration::from_secs(24 * 60 * 60);
-            }
+            // _ = tokio::time::sleep_until(next_snapshot_query_instant) => {
+            //     if exchange == "binance-futures" && restart_checker.is_primary {
+            //         //只有主节点且exchange为binance-futures时，才做depth快照修正
+            //         log::info!("Query depth snapshot at {:?}", next_snapshot_query_instant);
+            //         //用tokio的spawn运行，不会阻塞主循环
+            //         let mkt_inc_tx_clone = mkt_inc_tx.clone();
+            //         tokio::spawn(async move {
+            //             let symbols = cfg.get_symbols().await.unwrap();
+            //             BinanceFuturesSnapshotQuery::start_fetching_depth(symbols, mkt_inc_tx_clone).await;
+            //             log::info!("Query depth snapshot for binance-futures successfully");
+            //         });
+            //     }
+            //     next_snapshot_query_instant += Duration::from_secs(24 * 60 * 60);
+            // }
             _ = tokio::time::sleep_until(next_0030_instant) => {
                 next_0030_instant += tokio::time::Duration::from_secs(24 * 60 * 60);
                 if restart_checker.is_primary {
@@ -237,7 +237,7 @@ async fn main() -> anyhow::Result<()> {
         Ok(_) => log::info!("MktConnectionManager shutdown successfully"),
         Err(e) => error!("Failed to shutdown MktConnectionManager: {}", e),
     }
-    let _ = receiver_shutdown_tx.send(true);
+    //let _ = receiver_shutdown_tx.send(true);
     let _ = proxy_shutdown_tx.send(true);
     Ok(())
 }
