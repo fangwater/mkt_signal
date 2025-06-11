@@ -130,14 +130,6 @@ impl MktConnectionHandler for BinanceConnection {
     }
 }
 
-#[derive(Debug)]
-struct DepthData {
-    symbol: String,
-    data: serde_json::Value,
-    status: u8,
-    error: Option<String>,
-}
-
 pub struct BinanceFuturesSnapshotQuery {}
 
 impl BinanceFuturesSnapshotQuery {
@@ -157,7 +149,7 @@ impl BinanceFuturesSnapshotQuery {
         symbol: &str,
         invalid_symbols: &mut HashSet<String>,
         mut retry_count: u32,
-    ) -> Result<DepthData> {
+    ) -> Result<MktMsg, anyhow::Error> {
         let upper_symbol = symbol.to_uppercase();
 
         // 如果是无效的符号，跳过请求, 返回错误
@@ -167,6 +159,7 @@ impl BinanceFuturesSnapshotQuery {
         }
 
         loop {
+            //打印请求的url
             let response = match client
                 .get(&format!("{}{}", Self::BASE_URL, Self::ENDPOINT))
                 .query(&[("symbol", &upper_symbol), ("limit", &Self::LIMIT.to_string())])
@@ -187,7 +180,7 @@ impl BinanceFuturesSnapshotQuery {
             };
 
             // 处理响应
-            let text = match response.text().await {
+            let text: String = match response.text().await {
                 Ok(t) => t,
                 Err(e) => {
                     if retry_count >= Self::MAX_RETRIES {
@@ -210,19 +203,24 @@ impl BinanceFuturesSnapshotQuery {
 
             // 解析响应数据
             match serde_json::from_str::<Value>(&text) {
-                Ok(data) => {
-                    return Ok(DepthData {
-                        symbol: upper_symbol,
-                        data,
-                        status: 1, 
-                        error: None,
-                    });
+                Ok(mut data) => {
+                    // 插入 symbol 字段
+                    data.as_object_mut()
+                        .map(|obj| obj.insert("symbol".into(), Value::String(upper_symbol.clone())));
+                    let json_bytes = match serde_json::to_vec(&data) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            log::warn!("Serialization failed for {}: {}", upper_symbol, e);
+                            return Err(anyhow::anyhow!("Serialization failed for {}: {}", upper_symbol, e));
+                        }
+                    };
+                    let bytes = Bytes::from(json_bytes);                    
+                    // 创建和发送消息
+                    let msg = MktMsg::create(MktMsgType::OrderBookSnapshot, bytes);
+                    return Ok(msg);
                 }
                 Err(e) => {
-                    // 如果解析失败，返回错误
-                    log::error!("JSON parse error: {} for symbol: {}", e, upper_symbol);
-                    log::error!("response text: {}", text);
-                    return Err(anyhow::anyhow!("JSON parse error: {} for symbol: {}", e, upper_symbol));
+                    log::error!("Parse failed for {}: {}\nRaw: {}", upper_symbol, e, text);
                 }
             }
         }
@@ -251,29 +249,13 @@ impl BinanceFuturesSnapshotQuery {
             // 遍历每个批次中的每个symbol
             for symbol in batch {
                 match Self::fetch_symbol_depth(&client, symbol, &mut invalid_symbols, 3).await {
-                    Ok(result) => {
-                        log::info!("fetch depth for {} success", symbol);
-                        let message = serde_json::json!({
-                            "type": "depth",
-                            "data": {
-                                "symbol": result.symbol,
-                                "data": result.data,
-                                "status": result.status,
-                                "error": result.error
-                            }
-                        });
-                        if let Ok(bytes) = serde_json::to_vec(&message) {
-                            //目前只有binance-futures需要在固定的时间点query-depth做快照修正
-                            let mkt_msg = MktMsg::create(MktMsgType::OrderBookSnapshot, Bytes::from(bytes));
-                            match tx.send(mkt_msg.to_bytes()) {
-                                Ok(_) => {
-                                    log::info!("sent depth data for {}", symbol);
-                                }
-                                Err(e) => {
-                                    log::error!("failed to send depth data for {}: {}", symbol, e);
-                                }
-                            }
+                    Ok(msg) => {
+                        if let Err(e) = tx.send(msg.to_bytes()) {
+                            log::warn!("Send failed for {}: {}", symbol, e);
+                        } else {
+                            log::trace!("Snapshot sent for {}", symbol);
                         }
+                        log::info!("fetch depth for {} success", symbol);
                     }
                     Err(e) => {
                         log::error!("error: {:?}", e);

@@ -101,6 +101,25 @@ pong-timer到技术结束，没有收到对应的pong 直接重启websocket 恢�
 6月8日新增
 1、由于okex和bybit的pong回复不在pong消息，需要parser后才知道字端
 
+解决快照问题
+    const BASE_URL: &str = "https://data-api.binance.vision"; // 币安rest api
+    const ENDPOINT: &str = "/api/v3/depth"; // 获取深度 
+是spot的请求方法 limit = 1000
+用curl测试连通性:
+
+用future的 看数据是否一致
+https://fapi.binance.com
+/fapi/v1/depth
+
+香港只能用spot的现货api，不影响，接下来解决utf8无法decode的问题
+
+为什么会有code问题
+
+
+
+
+
+
 
 
 
