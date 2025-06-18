@@ -5,6 +5,7 @@ use log::{info, warn, error};
 use std::time::Duration;
 use tokio::sync::watch;
 /// 接收器，用于接收zmq消息，用于测试
+#[allow(dead_code)]
 pub struct ZmqReceiver{
     zmq_config: ZmqProxyCfg,
     #[allow(dead_code)]
@@ -14,6 +15,7 @@ pub struct ZmqReceiver{
     receiver_shutdown_rx: watch::Receiver<bool>,
 }
 
+#[allow(dead_code)]
 impl ZmqReceiver {
     pub fn new(config: &Config, receiver_shutdown_rx: watch::Receiver<bool>) -> Result<Self, zmq::Error> {
         // 创建ZMQ上下文

@@ -14,6 +14,7 @@ pub struct Proxy {
     forwarder: ZmqForwarder, 
     inc_rx : broadcast::Receiver<Bytes>,
     trade_rx : broadcast::Receiver<Bytes>,
+    binance_snapshot_rx : broadcast::Receiver<Bytes>,
     inc_parser : Box<dyn Parser>,
     trade_parser : Box<dyn Parser>,
     proxy_shutdown: watch::Receiver<bool>,
@@ -24,12 +25,13 @@ pub struct Proxy {
 
 
 impl Proxy {
-    pub fn new(forwarder: ZmqForwarder, inc_rx: broadcast::Receiver<Bytes>, trade_rx: broadcast::Receiver<Bytes>, proxy_shutdown: watch::Receiver<bool>, tp_reset_notify: Arc<Notify>) -> Self {
+    pub fn new(forwarder: ZmqForwarder, inc_rx: broadcast::Receiver<Bytes>, trade_rx: broadcast::Receiver<Bytes>, binance_snapshot_rx: broadcast::Receiver<Bytes>, proxy_shutdown: watch::Receiver<bool>, tp_reset_notify: Arc<Notify>) -> Self {
         use crate::parser::default_parser::{DefaultIncParser, DefaultTradeParser};
         Self { 
             forwarder, 
             inc_rx, 
             trade_rx,
+            binance_snapshot_rx,
             inc_parser: Box::new(DefaultIncParser::new()),
             trade_parser: Box::new(DefaultTradeParser::new()),
             proxy_shutdown: proxy_shutdown,
@@ -77,6 +79,12 @@ impl Proxy {
                         if let Some(parsed_msg) = self.trade_parser.parse(msg) {
                             self.forwarder.send_msg(parsed_msg.to_bytes()).await;
                         }
+                    }
+                }
+                msg = self.binance_snapshot_rx.recv() => {
+                    if let Ok(msg) = msg {
+                        //因为已经构造成MktMsg，所以直接发送
+                        self.forwarder.send_msg(msg).await;
                     }
                 }
                 _ = stats_timer.tick() => {

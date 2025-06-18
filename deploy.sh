@@ -39,7 +39,7 @@ for ip in $primary_ip $secondary_ip; do
     check_status "SSH连接到 $ip"
 done
 
-# 3 确定两台机器上，都有crypto_mkt用户，并有exec_dir目录
+# 3 确定两台机器上，都有crypto_mkt用户
 log "创建目录并设置权限..."
 for ip in $primary_ip $secondary_ip; do
     log "处理服务器 $ip..."
@@ -49,10 +49,6 @@ for ip in $primary_ip $secondary_ip; do
         log "创建crypto_mkt用户..."
         ssh -o ConnectTimeout=$SSH_TIMEOUT root@$ip "useradd -m crypto_mkt"
     }
-    
-    # 创建目录并设置权限
-    ssh -o ConnectTimeout=$SSH_TIMEOUT root@$ip "mkdir -p /home/crypto_mkt/exec_dir"
-    ssh -o ConnectTimeout=$SSH_TIMEOUT root@$ip "chown -R crypto_mkt:crypto_mkt /home/crypto_mkt/exec_dir"
     check_status "服务器 $ip 目录设置"
 done
 
@@ -60,10 +56,10 @@ done
 log "开始部署二进制文件..."
 for ip in $primary_ip $secondary_ip; do
     log "部署到服务器 $ip..."
-    scp -o ConnectTimeout=$SSH_TIMEOUT target/release/stream root@$ip:/home/crypto_mkt/exec_dir
+    scp -o ConnectTimeout=$SSH_TIMEOUT target/release/crypto_proxy root@$ip:/home/crypto_mkt
     check_status "文件传输到 $ip"
     
-    ssh -o ConnectTimeout=$SSH_TIMEOUT root@$ip "chmod 755 /home/crypto_mkt/exec_dir/stream"
+    ssh -o ConnectTimeout=$SSH_TIMEOUT root@$ip "chmod 755 /home/crypto_mkt/crypto_proxy"
     check_status "设置文件权限在 $ip"
 done
 
