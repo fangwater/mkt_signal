@@ -179,7 +179,7 @@ async fn main() -> anyhow::Result<()> {
     log::info!("Next restart instant: {:?}", next_restart_instant);
     // primary额外在在utc时间0点30s重启
     let mut next_0030_instant = next_target_instant("00:30:00");
-    let mut next_snapshot_query_instant = next_target_instant(cfg.binance_snapshot_requery_time.as_ref().unwrap());
+    let mut next_snapshot_query_instant = next_target_instant(cfg.snapshot_requery_time.as_ref().unwrap());
     // log 
     let mut log_interval = tokio::time::interval(Duration::from_secs(3));
     log::info!("exchange: {}", exchange);
@@ -193,7 +193,8 @@ async fn main() -> anyhow::Result<()> {
                 ));
             }
             _ = tokio::time::sleep_until(next_snapshot_query_instant) => {
-                if exchange == "binance-futures" && restart_checker.is_primary {
+                let exchange = cfg.get_exchange().clone();
+                if (exchange == "binance-futures" || exchange == "binance") && restart_checker.is_primary {
                     //只有主节点且exchange为binance-futures时，才做depth快照修正
                     log::info!("Query depth snapshot at {:?}", next_snapshot_query_instant);
                     //用tokio的spawn运行，不会阻塞主循环
@@ -201,7 +202,7 @@ async fn main() -> anyhow::Result<()> {
                     tokio::spawn(async move {
                         let symbols = cfg.get_symbols().await.unwrap();
                         BinanceFuturesSnapshotQuery::start_fetching_depth(symbols, binance_snapshot_tx_clone).await;
-                        log::info!("Query depth snapshot for binance-futures successfully");
+                        log::info!("Query depth snapshot for {} successfully", exchange);
                     });
                 }
                 next_snapshot_query_instant += Duration::from_secs(24 * 60 * 60);

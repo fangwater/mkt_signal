@@ -1,0 +1,3093 @@
+{
+    "lastUpdated": "2025-06-18T16:34:41.300Z",
+    "symbols": [
+        {
+            "symbol_id": "BTC-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BTC-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BTC-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BTC-TRY",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BTC-BRL",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BTC-AUD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BTC-AED",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BTC-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ETH-BTC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ETH-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ETH-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ETHW-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ETHW-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ETH-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ETH-TRY",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ETH-BRL",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ETHFI-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ETH-AUD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ETH-AED",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ETHFI-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ETH-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ETHFI-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ETHW-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BNB-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BNB-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LTC-BTC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LTC-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LTC-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LTC-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LTC-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SOL-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SOL-ETH",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SOL-BTC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SOL-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SOL-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SOL-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SOL-TRY",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SOL-BRL",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SOL-AUD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SOL-AED",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BCH-BTC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BCH-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BCH-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BCH-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "XRP-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "XRP-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "XRP-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "XRP-TRY",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "XRP-BRL",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "XRP-AUD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "XRP-AED",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "XRP-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LUNA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LUNA-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LUNA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "USDT-TRY",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "USDT-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "USDT-BRL",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "USDT-AUD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "USDT-AED",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "USDT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "USDT-SGD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AVAX-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AVAX-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AVAX-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AVAX-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TRX-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TRX-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TRX-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TRX-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ETC-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ETC-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ETC-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DOT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DOT-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DOT-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DOT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LINK-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LINK-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LINK-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LINK-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ADA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ADA-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ADA-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ADA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DOGE-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DOGE-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DOGE-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DOGE-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SHIB-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SHIB-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SHIB-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SHIB-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "UNI-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "UNI-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "UNI-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "UNI-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BSV-BTC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BSV-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BSV-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "XLM-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "XLM-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "XLM-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "XLM-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "XTZ-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "XTZ-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "XTZ-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CRO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CRO-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CRO-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CRO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BAT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BAT-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BAT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "XAUT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BABYDOGE-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BABYDOGE-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BABY-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BABY-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "USTC-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "COMP-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "COMP-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "COMP-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "COMP-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AAVE-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AAVE-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AAVE-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AAVE-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FIL-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FIL-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FIL-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZRX-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZRX-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ALGO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ALGO-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ALGO-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ALGO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "NEO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "NEO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "IOTA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "IOTA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MKR-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MKR-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MKR-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MKR-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "KNC-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "KNC-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "IOST-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "IOST-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ATOM-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ATOM-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ATOM-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ATOM-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZIL-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZIL-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "THETA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "THETA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "QTUM-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "QTUM-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ONT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ONT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "USDC-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "USDC-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "USDC-BRL",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "USDC-AUD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "USDC-SGD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "YFI-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "YFI-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BAL-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BAL-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BAL-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LEO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LEO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CRV-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CRV-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CRV-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CRV-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BAND-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BAND-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LSK-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LSK-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DGB-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DGB-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DAI-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DAI-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DAI-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RVN-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RVN-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SC-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SCR-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SCR-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SC-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ICX-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ICX-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "HBAR-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "HBAR-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "HBAR-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "HBAR-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "OXT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "OXT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ENJ-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ENJ-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SNX-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SNX-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SNX-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RENDER-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RENDER-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LRC-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LRC-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LRC-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RSR-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RSR-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SUSHI-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SUSHI-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SUSHI-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TRB-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TRB-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MANA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MANA-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MANA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "OKB-BTC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "OKB-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "OKB-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "EGLD-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "EGLD-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "EGLD-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BTT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "WBTC-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "WBTC-BTC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "WBTC-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "WBTC-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CVC-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CVC-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "NMR-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "NMR-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DIA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DIA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "KSM-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "KSM-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "UMA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "UMA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FLM-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FLM-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "STORJ-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "STORJ-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MLN-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MLN-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SNT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SNT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ALPHA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ALPHA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AXS-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AXS-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AXS-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "STX-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "STX-BTC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "STX-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "STX-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "STX-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZENT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZENT-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZENT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RUNECOIN-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CELO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CELO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CELR-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CELR-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "NEAR-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "NEAR-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "NEAR-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PROMPT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "EURC-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FORTH-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FORTH-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SKL-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SKL-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GHST-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GHST-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GRT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GRT-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GRT-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GRT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BNT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BNT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CHZ-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CHZ-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CHZ-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CHZ-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "1INCH-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "1INCH-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "1INCH-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TRUMP-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TRUMP-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TRUMP-TRY",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TRUMP-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TRUMP-BRL",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TRUMP-AUD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TRUMP-AED",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "JST-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "JST-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SAND-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SAND-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SAND-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SAND-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BADGER-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BADGER-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RAY-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RAY-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ICP-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ICP-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ICP-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ICP-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FLOW-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FLOW-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FLOW-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GALA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GALA-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GALA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CVX-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CVX-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AR-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ARG-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ARB-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ARB-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ARB-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ARKM-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ARKM-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ARB-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AR-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ARG-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ARKM-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "KDA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "KDA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BORA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BORA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MINA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MINA-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MINA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "YGG-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "YGG-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "YGG-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "YGG-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "WAXP-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "WAXP-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LPT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LPT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "NFT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TON-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TON-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TON-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TON-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ONDO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ONDO-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ONDO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LDO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LDO-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LDO-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LDO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MEW-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MEW-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PENDLE-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PENDLE-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CORE-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CORE-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "APE-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "APE-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "APE-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "APE-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "STRK-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "STRK-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "STRK-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ORDI-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ORDI-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "NOT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "NOT-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "NOT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FLR-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FLR-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FLR-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FLR-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CFX-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CFX-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "NEIRO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "NEIRO-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "NEIRO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DYDX-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DYDX-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DYDX-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DYDX-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "WIN-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "WOO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "WLD-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "WOO-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "W-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "WIF-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "WIF-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "WIF-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "WLD-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "WLD-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "WIN-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "W-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "WIF-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "WCT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "WCT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GOAT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GOAT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ENS-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ENS-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ENS-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BOME-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BOME-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PYUSD-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SAFE-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SAFE-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RON-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RON-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "EIGEN-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "EIGEN-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "EIGEN-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LUNC-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LUNC-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LUNC-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZK-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZKJ-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZK-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZKJ-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZK-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BLUR-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BLUR-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BLUR-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ASTR-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ASTR-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ASTR-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GMT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GMT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MEME-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MEMEFI-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MEME-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MEMEFI-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZRO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZRO-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZRO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PEOPLE-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PEOPLE-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ID-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ID-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MASK-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MASK-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DOGS-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DOGS-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DOGS-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GLM-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GLMR-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GLMR-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GLM-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZETA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZETA-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZETA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "JTO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "JTO-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "JTO-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "JTO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AEVO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AEVO-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AEVO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "METIS-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "METIS-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ELF-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ELF-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GAS-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GAS-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GODS-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GOG-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GALFT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GEAR-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GMX-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "G-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GODS-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GEAR-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "GOG-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "G-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SSV-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SSV-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TRA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "T-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TURBO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TIA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TNSR-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TIA-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TURBO-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "T-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TRA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TNSR-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TIA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "TURBO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RPL-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RPL-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ACT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "NULS-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SWFTC-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CTXC-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "OKT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ORBS-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RIO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AERGO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DEP-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CTC-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "API3-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MDT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PHA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "OM-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BETH-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "VELO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BETH-ETH",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PERP-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DORA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AUCTION-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DAO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "VRA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "XCH-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CSPR-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LAT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CFG-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CLV-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "OMI-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SLP-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ERN-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AGLD-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ILV-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ELON-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "IMX-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "POLYDOGE-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ALCX-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BICO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RACA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MOVR-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ONE-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LOOKS-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ACA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "JOE-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RSS3-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MAGIC-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PSTAKE-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SD-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "OP-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "OP-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "XNO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "OKT-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AGLD-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SWEAT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MENGO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "POR-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CITY-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "APT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "APT-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "OAS-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FLOKI-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RADAR-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "VELODROME-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RDNT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RDNT-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ACH-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LQTY-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BONE-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AIDOGE-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PEPE-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SUI-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CETUS-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FXS-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "STETH-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "STETH-ETH",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BIGTIME-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SPURS-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PYTH-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FET-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "INJ-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ACE-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SATS-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BONK-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ICE-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "JUP-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "IMX-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "APT-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "OP-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "INJ-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FET-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FXS-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "VENOM-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZEUS-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FOXY-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZBCN-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PRCL-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MERL-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PEPE-BRL",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SUI-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SUI-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PEPE-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MERL-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ULTI-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ATH-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PYTH-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CXT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "UXLINK-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SLERF-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DEGEN-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PIXEL-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "POL-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CATI-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "HMSTR-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CATI-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "JUP-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ATH-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BANANA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "X-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CAT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BONK-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "KAIA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PNUT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MOODENG-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PNUT-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MOODENG-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "OL-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MORPHO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MORPHO-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MAJOR-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZEUS-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MOVE-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MOVE-USDC",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ME-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "OKSOL-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "OKSOL-SOL",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PENGU-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BIO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SONIC-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SUI-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PEPE-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AIXBT-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "OP-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DUCK-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "NC-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "S-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "J-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ANIME-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ANIME-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "VINE-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PENGU-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ULTI-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PRCL-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MERL-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DEGEN-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "OL-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ATH-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ME-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "S-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BERA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BERA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ACH-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RADAR-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BANANA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PIXEL-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CITY-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DUCK-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "VELODROME-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "IP-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "IP-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SONIC-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PI-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "KAITO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PI-TRY",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CATI-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "NC-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AIXBT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "UXLINK-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MENGO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ILV-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BIO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PI-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "KAITO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PI-EUR",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PI-BRL",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ERN-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "NULS-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PERP-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MDT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "VENOM-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "XNO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "JOE-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "POR-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DEP-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AERGO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CETUS-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ACE-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CSPR-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CFG-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CAT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BONE-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CTXC-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "DAO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CTC-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ELON-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "HMSTR-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ICE-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LOOKS-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "KAIA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LAT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MAJOR-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "OMI-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RIO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "OAS-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RACA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "POLYDOGE-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "POL-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "OM-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ONE-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MAGIC-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ORBS-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RSS3-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SATS-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SD-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SLP-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SPURS-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "STETH-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SWEAT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SWFTC-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "VELO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "XCH-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZBCN-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "VRA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FLOKI-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "API3-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AUCTION-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "NAVX-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PARTI-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ACA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BICO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CLV-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "NAVX-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FLUID-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "FLUID-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MOVR-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PHA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PSTAKE-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BONK-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "APT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "AGLD-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MOODENG-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MORPHO-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "JUP-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PYTH-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PNUT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "MOVE-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ZEUS-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "CXT-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "IMX-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "BIGTIME-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "PARTI-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "ALCX-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LQTY-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LAYER-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "LAYER-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "JITOSOL-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "HUMA-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SOPH-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "A-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "A-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "KMNO-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "HUMA-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RESOLV-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "RESOLV-USD",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "USDG-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SPK-USDT",
+            "type": "spot"
+        },
+        {
+            "symbol_id": "SPK-USD",
+            "type": "spot"
+        }
+    ]
+}

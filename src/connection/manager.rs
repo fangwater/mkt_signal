@@ -29,12 +29,27 @@ impl MktConnectionManager {
                 let connection: BinanceConnection = BinanceConnection::new(base_connection);
                 Ok(Box::new(connection))
             }
+            "binance" => {
+                let base_connection = MktConnection::new(url, subscribe_msg, tx.clone(), global_shutdown_rx);   
+                let connection: BinanceConnection = BinanceConnection::new(base_connection);
+                Ok(Box::new(connection))
+            }
             "okex-swap" => {
                 let base_connection = MktConnection::new(url, subscribe_msg, tx.clone(), global_shutdown_rx);
                 let connection: OkexConnection = OkexConnection::new(base_connection);
                 Ok(Box::new(connection))
             }
+            "okex" => {
+                let base_connection = MktConnection::new(url, subscribe_msg, tx.clone(), global_shutdown_rx);
+                let connection: OkexConnection = OkexConnection::new(base_connection);
+                Ok(Box::new(connection))
+            }
             "bybit" => {
+                let base_connection = MktConnection::new(url, subscribe_msg, tx.clone(), global_shutdown_rx);
+                let connection: BybitConnection = BybitConnection::new(base_connection);
+                Ok(Box::new(connection))
+            }
+            "bybit-spot" => {
                 let base_connection = MktConnection::new(url, subscribe_msg, tx.clone(), global_shutdown_rx);
                 let connection: BybitConnection = BybitConnection::new(base_connection);
                 Ok(Box::new(connection))

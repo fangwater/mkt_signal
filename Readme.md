@@ -111,9 +111,10 @@ pong-timer到技术结束，没有收到对应的pong 直接重启websocket 恢�
 https://fapi.binance.com
 /fapi/v1/depth
 
-香港只能用spot的现货api，不影响，接下来解决utf8无法decode的问题
 
-为什么会有code问题
+增加币安期货行情对应的现货行情
+1、对于所有在币安期货出现的symbol(xx-usdt)，是否有对应的现货symbol
+2、作为spot组进行订阅
 
 
 

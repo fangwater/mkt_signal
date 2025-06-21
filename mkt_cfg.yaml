@@ -1,6 +1,6 @@
 is_primary: true
 restart_duration_secs: 180 #3分钟重启一次，奇数偶数决定主备重启 
-binance_snapshot_requery_time: "--:--:--"
+snapshot_requery_time: "--:--:--"
 symbol_socket: "/home/crypto_mkt/symbol_server/exchange"
 exchange: binance-futures
 # exchange: okex-swap

@@ -64,8 +64,11 @@ impl SubscribeMsgs {
     fn get_inc_channel(exchange: &str) -> String {
         match exchange {
             "binance-futures" => "depth@0ms".to_string(),
+            "binance" => "depth@100ms".to_string(),
             "okex-swap" => "books".to_string(),
+            "okex" => "books".to_string(),
             "bybit" => "orderbook.500".to_string(),
+            "bybit-spot" => "orderbook.200".to_string(),
             _ => panic!("Unsupported exchange: {}", exchange)
         }
     }
@@ -73,8 +76,11 @@ impl SubscribeMsgs {
     fn get_trade_channel(exchange: &str) -> String {
         match exchange {
             "binance-futures" => "trade".to_string(),
+            "binance" => "trade".to_string(),
             "okex-swap" => "trades".to_string(),
+            "okex" => "trades".to_string(),
             "bybit" => "publicTrade".to_string(),
+            "bybit-spot" => "publicTrade".to_string(),
             _ => panic!("Unsupported exchange: {}", exchange)
         }
     }
@@ -84,7 +90,7 @@ impl SubscribeMsgs {
 impl SubscribeMsgs {
     fn construct_subscribe_message(exchange: &str, symbols: &[String], channel: &str) -> Value {
         match exchange {
-            "binance-futures" => {
+            "binance-futures" | "binance" => {
                 let params: Vec<String> = symbols.iter()
                     .map(|symbol| format!("{}@{}", symbol.to_lowercase(), channel))
                     .collect();
@@ -94,7 +100,7 @@ impl SubscribeMsgs {
                     "id": 1,
                 })
             },
-            "okex-swap" => {
+            "okex-swap" | "okex" => {
                 let args: Vec<Value> = symbols.iter()
                     .map(|symbol| serde_json::json!({
                         "channel": channel,
@@ -106,7 +112,7 @@ impl SubscribeMsgs {
                     "args": args
                 })
             },
-            "bybit" => {
+            "bybit" | "bybit-spot" => {
                 let args: Vec<String> = symbols.iter()
                     .map(|symbol| format!("{}.{}",channel,symbol))
                     .collect();
