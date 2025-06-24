@@ -163,7 +163,14 @@ impl Config {
         info!("Binance spot USDT-denominated symbol count {:?}", symbols.len());
         let futures_symbols = Self::get_symbol_for_binance_futures(symbol_socket).await?;
         info!("Binance futures USDT-denominated symbol count {:?}", futures_symbols.len());
-        let spot_symbols_related_to_futures: Vec<String> = symbols.iter().filter(|s| futures_symbols.contains(s)).cloned().collect();
+        let spot_symbols_related_to_futures: Vec<String> = symbols.iter()
+            .filter(|spot_symbol| {
+                futures_symbols.iter().any(|futures_symbol| {
+                    Self::is_spot_symbol_related_to_futures(spot_symbol, futures_symbol)
+                })
+            })
+            .cloned()
+            .collect();
         info!("Binance spot symbols related to futures {:?}", spot_symbols_related_to_futures.len());
         //用三线表打印，哪些符号在futures中存在，但是在spot中不存在
         print_symbol_comparison(
@@ -224,7 +231,11 @@ impl Config {
         let swap_symbols = Self::get_symbol_for_okex_swap(symbol_socket).await?;
         info!("OKEx swap USDT-denominated symbol count {:?}", swap_symbols.len());
         let spot_symbols_related_to_swap: Vec<String> = symbols.iter()
-            .filter(|s| swap_symbols.contains(s))
+            .filter(|spot_symbol| {
+                swap_symbols.iter().any(|swap_symbol| {
+                    Self::is_spot_symbol_related_to_futures(spot_symbol, swap_symbol)
+                })
+            })
             .cloned()
             .collect();
         info!("OKEx spot symbols related to swap {:?}", spot_symbols_related_to_swap.len());
@@ -264,7 +275,11 @@ impl Config {
         let linear_contract_symbols = Self::get_symbol_for_bybit_linear(symbol_socket).await?;
         info!("Bybit linear USDT-denominated symbol count {:?}", linear_contract_symbols.len());
         let spot_symbols_related_to_linear: Vec<String> = symbols.iter()
-            .filter(|s| linear_contract_symbols.contains(s))
+            .filter(|spot_symbol| {
+                linear_contract_symbols.iter().any(|linear_symbol| {
+                    Self::is_spot_symbol_related_to_futures(spot_symbol, linear_symbol)
+                })
+            })
             .cloned()
             .collect();
         info!("Bybit spot symbols related to linear {:?}", spot_symbols_related_to_linear.len());
@@ -293,5 +308,22 @@ impl Config {
             "bybit-spot" => Self::get_spot_symbols_related_to_bybit(&self.symbol_socket).await,
             _ => anyhow::bail!("Unsupported exchange: {}", self.get_exchange()),
         }
+    }
+
+    // 添加辅助函数来检查现货符号是否与期货符号匹配
+    fn is_spot_symbol_related_to_futures(spot_symbol: &str, futures_symbol: &str) -> bool {
+        // 直接匹配
+        if spot_symbol == futures_symbol {
+            return true;
+        }
+        
+        // 处理杠杆合约的情况：1000XXXUSDT vs XXXUSDT
+        if futures_symbol.starts_with("1000") && futures_symbol.to_lowercase().ends_with("usdt") {
+            let base_symbol = &futures_symbol[4..]; // 去掉"1000"前缀
+            if spot_symbol == base_symbol {
+                return true;
+            }
+        }
+        false
     }
 }
