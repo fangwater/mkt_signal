@@ -21,6 +21,16 @@ use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use tokio::sync::OnceCell;
 use crate::connection::binance_conn::BinanceFuturesSnapshotQuery;
+use clap::Parser;
+
+#[derive(Parser)]
+#[command(name = "crypto_proxy")]
+#[command(about = "config file path")]
+struct Args {
+    /// 配置文件路径
+    #[arg(short, long)]
+    config: String,
+}
 
 
 pub fn next_target_instant(time_str: &str) -> Instant {
@@ -112,15 +122,19 @@ async fn main() -> anyhow::Result<()> {
     std::env::set_var("RUST_LOG", "INFO");
     env_logger::init();
 
+    // 解析命令行参数
+    let args = Args::parse();
+    let config_path = args.config;
+
     static CFG: OnceCell<Config> = OnceCell::const_new();
 
-    async fn get_config() -> &'static Config {
+    async fn get_config(config_path: &str) -> &'static Config {
         CFG.get_or_init(|| async {
-            Config::load_config("./mkt_cfg.yaml").await.unwrap()
+            Config::load_config(config_path).await.unwrap()
         }).await
     }
     
-    let cfg = get_config().await;
+    let cfg = get_config(&config_path).await;
     // 获取exchange
     let exchange = cfg.get_exchange();
     let (global_shutdown_tx, _) = watch::channel(false);
@@ -201,7 +215,7 @@ async fn main() -> anyhow::Result<()> {
                     let binance_snapshot_tx_clone = binance_snapshot_tx.clone();
                     tokio::spawn(async move {
                         let symbols = cfg.get_symbols().await.unwrap();
-                        BinanceFuturesSnapshotQuery::start_fetching_depth(symbols, binance_snapshot_tx_clone).await;
+                        BinanceFuturesSnapshotQuery::start_fetching_depth(exchange.as_str(), symbols, binance_snapshot_tx_clone).await;
                         log::info!("Query depth snapshot for {} successfully", exchange);
                     });
                 }

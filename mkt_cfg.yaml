@@ -1,7 +1,7 @@
 is_primary: true
 restart_duration_secs: 180 #3分钟重启一次，奇数偶数决定主备重启 
 snapshot_requery_time: "--:--:--"
-symbol_socket: "/home/crypto_mkt/symbol_server/exchange"
+symbol_socket: "/home/el02/symbol_server/exchange"
 exchange: binance-futures
 # exchange: okex-swap
 # exchange: bybit
@@ -13,7 +13,7 @@ zmq_proxy:
   hwm: 1000
 
 redis_pubber:
-  host: "124.223.189.200"
+  host: "103.141.183.153"
   port: "6379"
   username: "el_crypto"
   password: "el_crypto"

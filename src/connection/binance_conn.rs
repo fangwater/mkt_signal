@@ -133,8 +133,10 @@ impl MktConnectionHandler for BinanceConnection {
 pub struct BinanceFuturesSnapshotQuery {}
 
 impl BinanceFuturesSnapshotQuery {
-    const BASE_URL: &str = "https://data-api.binance.vision"; // 币安rest api
-    const ENDPOINT: &str = "/api/v3/depth"; // 获取深度
+    const BASE_URL_SPOT: &str = "https://data-api.binance.vision"; // 币安rest 现货 api
+    const BASE_URL_FUTURES: &str = "https://fapi.binance.com"; // 币安rest 合约 api
+    const ENDPOINT_SPOT: &str = "/api/v3/depth"; // 获取深度
+    const ENDPOINT_FUTURES: &str = "/fapi/v1/depth"; // 获取深度
     const LIMIT: u32 = 1000; // 获取深度限制
     const BATCH_SIZE: usize = 20; // 一次性发起的请求数量
     const MAX_RETRIES: u32 = 3; // 每个请求的最大重试次数
@@ -145,6 +147,7 @@ impl BinanceFuturesSnapshotQuery {
     const COOLDOWN: Duration = Duration::from_secs(60); // 请求间隔时间(币安服务端限制请求频率)
 
     async fn fetch_symbol_depth(
+        exchange: &str,
         client: &Client,
         symbol: &str,
         invalid_symbols: &mut HashSet<String>,
@@ -158,10 +161,21 @@ impl BinanceFuturesSnapshotQuery {
             return Err(anyhow::anyhow!("Invalid symbol: {}", upper_symbol));
         }
 
+        let base_url = match exchange {
+            "binance" => Self::BASE_URL_SPOT,
+            "binance-futures" => Self::BASE_URL_FUTURES,
+            _ => return Err(anyhow::anyhow!("Invalid exchange: {}", exchange)),
+        };
+        let endpoint = match exchange {
+            "binance" => Self::ENDPOINT_SPOT,
+            "binance-futures" => Self::ENDPOINT_FUTURES,
+            _ => return Err(anyhow::anyhow!("Invalid exchange: {}", exchange)),
+        };
+
         loop {
             //打印请求的url
             let response = match client
-                .get(&format!("{}{}", Self::BASE_URL, Self::ENDPOINT))
+                .get(&format!("{}{}", base_url, endpoint))
                 .query(&[("symbol", &upper_symbol), ("limit", &Self::LIMIT.to_string())])
                 .timeout(Self::REQUEST_TIMEOUT)
                 .send()
@@ -225,7 +239,7 @@ impl BinanceFuturesSnapshotQuery {
             }
         }
     }
-    pub async fn start_fetching_depth(symbols :Vec<String>, tx: tokio::sync::broadcast::Sender<Bytes>) {
+    pub async fn start_fetching_depth(exchange: &str, symbols :Vec<String>, tx: tokio::sync::broadcast::Sender<Bytes>) {
         let client = Client::builder()
             .timeout(Self::REQUEST_TIMEOUT)
             .build()
@@ -248,7 +262,7 @@ impl BinanceFuturesSnapshotQuery {
             let mut first_response_time = None;
             // 遍历每个批次中的每个symbol
             for symbol in batch {
-                match Self::fetch_symbol_depth(&client, symbol, &mut invalid_symbols, 3).await {
+                match Self::fetch_symbol_depth(exchange, &client, symbol, &mut invalid_symbols, 3).await {
                     Ok(msg) => {
                         if let Err(e) = tx.send(msg.to_bytes()) {
                             log::warn!("Send failed for {}: {}", symbol, e);

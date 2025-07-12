@@ -29,37 +29,35 @@ cargo build --release
 check_status "项目编译"
 
 # 2、给定两台机器的ip，并指定primary_ip和secondary_ip
-primary_ip=38.55.198.59
-secondary_ip=68.64.176.133
+primary_ip=103.141.183.151 
+secondary_ip=103.141.183.152
+user=el02
+exec_dir=/home/$user/crypto_mkt
 
 # 检查SSH连接
 log "检查SSH连接..."
 for ip in $primary_ip $secondary_ip; do
-    ssh -o ConnectTimeout=$SSH_TIMEOUT root@$ip "echo 'SSH连接成功'" > /dev/null 2>&1
+    ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "echo 'SSH连接成功'" > /dev/null 2>&1
     check_status "SSH连接到 $ip"
 done
 
-# 3 确定两台机器上，都有crypto_mkt用户
-log "创建目录并设置权限..."
+# 检查exec_dir目录是否存在
 for ip in $primary_ip $secondary_ip; do
-    log "处理服务器 $ip..."
-    
-    # 检查crypto_mkt用户是否存在
-    ssh -o ConnectTimeout=$SSH_TIMEOUT root@$ip "id crypto_mkt" > /dev/null 2>&1 || {
-        log "创建crypto_mkt用户..."
-        ssh -o ConnectTimeout=$SSH_TIMEOUT root@$ip "useradd -m crypto_mkt"
-    }
-    check_status "服务器 $ip 目录设置"
+    ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "if [ ! -d $exec_dir ]; then mkdir -p $exec_dir; fi"
+    check_status "检查目录在 $ip"
+    ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "chown -R $user:$user $exec_dir"
+    check_status "设置目录权限在 $ip"
 done
 
-# 4、将stream二进制文件拷贝到两台机器上, 并设置权限
+# 将mkt_proxy二进制文件拷贝到两台机器上, 并设置权限
 log "开始部署二进制文件..."
 for ip in $primary_ip $secondary_ip; do
     log "部署到服务器 $ip..."
-    scp -o ConnectTimeout=$SSH_TIMEOUT target/release/crypto_proxy root@$ip:/home/crypto_mkt
+
+    scp -o ConnectTimeout=$SSH_TIMEOUT target/release/mkt_proxy $user@$ip:$exec_dir
     check_status "文件传输到 $ip"
     
-    ssh -o ConnectTimeout=$SSH_TIMEOUT root@$ip "chmod 755 /home/crypto_mkt/crypto_proxy"
+    ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "chmod 755 $exec_dir/mkt_proxy"
     check_status "设置文件权限在 $ip"
 done
 
