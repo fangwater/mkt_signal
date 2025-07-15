@@ -1,21 +1,41 @@
 is_primary: true
-restart_duration_secs: 180 #3分钟重启一次，奇数偶数决定主备重启 
+restart_duration_secs: 1800 #3分钟重启一次，奇数偶数决定主备重启 
 snapshot_requery_time: "--:--:--"
-symbol_socket: "/home/el02/symbol_server/exchange"
-exchange: binance-futures
-# exchange: okex-swap
-# exchange: bybit
+symbol_socket: "/home/el02/crypto_mkt/symbol_server/exchange"
+exchange: binance
 
-zmq_proxy:
-  ipc_path: "/tmp/zmq_mkt_feeds.ipc"
-  primary_addr: "38.55.198.59:5555"
-  secondary_addr: "68.64.176.133:5555"
-  hwm: 1000
+binance_proxy:
+  ipc_path: "/tmp/zmq_mkt_binance_feeds.ipc"
+  primary_addr: "103.141.183.151:5555"
+  secondary_addr: "103.141.183.152:5555"
+  hwm: 5000
 
-redis_pubber:
-  host: "103.141.183.153"
-  port: "6379"
-  username: "el_crypto"
-  password: "el_crypto"
-  mode: "FromStart"
-  max_stream_size: 100 #3s一条，保留5min，20*5
+binance-futures_proxy:
+  ipc_path: "/tmp/zmq_mkt_binance-futures_feeds.ipc"
+  primary_addr: "103.141.183.151:5556"
+  secondary_addr: "103.141.183.152:5556"
+  hwm: 5000
+
+okex_proxy:
+  ipc_path: "/tmp/zmq_mkt_okex_feeds.ipc"
+  primary_addr: "103.141.183.151:5557"
+  secondary_addr: "103.141.183.152:5557"
+  hwm: 5000
+
+okex-swap_proxy:
+  ipc_path: "/tmp/zmq_mkt_okex-swap_feeds.ipc"  
+  primary_addr: "103.141.183.151:5558"
+  secondary_addr: "103.141.183.152:5558"
+  hwm: 5000
+
+bybit_proxy:
+  ipc_path: "/tmp/zmq_mkt_bybit_feeds.ipc"
+  primary_addr: "103.141.183.151:5559"
+  secondary_addr: "103.141.183.152:5559"
+  hwm: 5000
+
+bybit-spot_proxy:
+  ipc_path: "/tmp/zmq_mkt_bybit-spot_feeds.ipc"
+  primary_addr: "103.141.183.151:5560"
+  secondary_addr: "103.141.183.152:5560"
+  hwm: 5000

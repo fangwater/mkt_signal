@@ -26,10 +26,10 @@ impl ZmqReceiver {
         let ipc_socket = context.socket(SocketType::PULL)?;
         
         // 设置接收水位线
-        ipc_socket.set_rcvhwm(config.zmq_proxy.hwm as i32)?;
+        ipc_socket.set_rcvhwm(config.get_zmq_proxy().hwm as i32)?;
         
         let mut receiver = Self {
-            zmq_config: config.zmq_proxy.clone(),
+            zmq_config: config.get_zmq_proxy(),
             context,
             ipc_socket,
             receive_count: 0,

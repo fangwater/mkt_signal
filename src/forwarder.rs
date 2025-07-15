@@ -28,11 +28,11 @@ impl ZmqForwarder {
         let tcp_socket = context.socket(SocketType::PUSH)?;
 
         // 设置水位线
-        ipc_socket.set_sndhwm(config.zmq_proxy.hwm as i32)?;
-        tcp_socket.set_sndhwm(config.zmq_proxy.hwm as i32)?;
+        ipc_socket.set_sndhwm(config.get_zmq_proxy().hwm as i32)?;
+        tcp_socket.set_sndhwm(config.get_zmq_proxy().hwm as i32)?;
 
         let mut forwarder = Self {
-            zmq_config: config.zmq_proxy.clone(),
+            zmq_config: config.get_zmq_proxy(),
             is_primary: config.is_primary,
             context,
             ipc_socket,
@@ -81,7 +81,7 @@ impl ZmqForwarder {
 
     pub async fn send_msg(&mut self, msg: Bytes) -> bool {
         const MAX_RETRIES: usize = 3;
-        const RETRY_DELAY_MS: u64 = 100;
+        const RETRY_DELAY_MS: u64 = 1000;
         let mut retry_count = 0;
         let mut ipc_success = false;
 

@@ -14,17 +14,6 @@ pub struct ZmqProxyCfg {
     pub secondary_addr: String,
     pub hwm: u32,
 }
-
-#[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
-pub struct RedisPubberCfg {
-    pub host: String,
-    pub port: String,
-    pub username: String,
-    pub password: String,
-    pub mode: String,
-    pub max_stream_size: u32,
-}
 // 添加表格打印函数
 fn print_symbol_comparison(
     futures_symbols: &[String],
@@ -86,8 +75,15 @@ pub struct Config {
     pub snapshot_requery_time: Option<String>,
     pub symbol_socket: String,
     pub exchange: String,
-    pub zmq_proxy: ZmqProxyCfg,
-    pub redis_pubber: RedisPubberCfg,
+    pub binance_proxy: ZmqProxyCfg,
+    #[serde(rename = "binance-futures_proxy")]
+    pub binance_futures_proxy: ZmqProxyCfg,
+    pub okex_proxy: ZmqProxyCfg,
+    #[serde(rename = "okex-swap_proxy")]
+    pub okex_swap_proxy: ZmqProxyCfg,
+    pub bybit_proxy: ZmqProxyCfg,
+    #[serde(rename = "bybit-spot_proxy")]
+    pub bybit_spot_proxy: ZmqProxyCfg,
 }
 
 impl Config {
@@ -109,6 +105,18 @@ impl Config {
             "okex" => 100,
             "bybit" => 300,
             "bybit-spot" => 10,
+            _ => panic!("Unsupported exchange: {}", self.get_exchange()),
+        }
+    }
+
+    pub fn get_zmq_proxy(&self) -> ZmqProxyCfg {
+        match self.get_exchange().as_str() {
+            "binance-futures" => self.binance_futures_proxy.clone(),
+            "binance" => self.binance_proxy.clone(),
+            "okex-swap" => self.okex_swap_proxy.clone(),
+            "okex" => self.okex_proxy.clone(),
+            "bybit" => self.bybit_proxy.clone(),
+            "bybit-spot" => self.bybit_spot_proxy.clone(),
             _ => panic!("Unsupported exchange: {}", self.get_exchange()),
         }
     }

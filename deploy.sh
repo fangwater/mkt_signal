@@ -61,6 +61,14 @@ for ip in $primary_ip $secondary_ip; do
     check_status "设置文件权限在 $ip"
 done
 
+log "开始部署start_proxy.sh和stop_proxy.sh文件..."
+for ip in $primary_ip $secondary_ip; do
+    log "部署到服务器 $ip..."
+    scp -o ConnectTimeout=$SSH_TIMEOUT start_proxy.sh stop_proxy.sh $user@$ip:$exec_dir
+    ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "chmod +x $exec_dir/start_proxy.sh $exec_dir/stop_proxy.sh"
+    check_status "文件传输到 $ip"
+done
+
 log "部署完成！"
 
 
