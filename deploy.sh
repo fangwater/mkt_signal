@@ -45,8 +45,6 @@ done
 for ip in $primary_ip $secondary_ip; do
     ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "if [ ! -d $exec_dir ]; then mkdir -p $exec_dir; fi"
     check_status "检查目录在 $ip"
-    ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "chown -R $user:$user $exec_dir"
-    check_status "设置目录权限在 $ip"
 done
 
 # 将mkt_proxy二进制文件拷贝到两台机器上, 并设置权限

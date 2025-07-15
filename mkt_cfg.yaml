@@ -1,8 +1,8 @@
 is_primary: true
 restart_duration_secs: 1800 #3分钟重启一次，奇数偶数决定主备重启 
 snapshot_requery_time: "--:--:--"
-symbol_socket: "/home/el02/crypto_mkt/symbol_server/exchange"
-exchange: binance
+symbol_socket: "/root/project/symbol_server/exchange"
+exchange: okex
 
 binance_proxy:
   ipc_path: "/tmp/zmq_mkt_binance_feeds.ipc"

@@ -241,7 +241,7 @@ impl Config {
         let spot_symbols_related_to_swap: Vec<String> = symbols.iter()
             .filter(|spot_symbol| {
                 swap_symbols.iter().any(|swap_symbol| {
-                    Self::is_spot_symbol_related_to_futures(spot_symbol, swap_symbol)
+                    Self::is_spot_symbol_related_to_okex_swap(spot_symbol, swap_symbol)
                 })
             })
             .cloned()
@@ -332,6 +332,20 @@ impl Config {
                 return true;
             }
         }
+        false
+    }
+    // okex-swap 和 okex 的符号特殊，需要特殊处理
+    fn is_spot_symbol_related_to_okex_swap(spot_symbol: &str, swap_symbol: &str) -> bool {
+        // swap_symbol 是 "TRX-USDT-SWAP"
+        // spot_symbol 是 "TRX-USDT"
+        // 需要判断 swap_symbol 是否是 spot_symbol 的衍生符号
+        // 衍生符号的规则是：swap_symbol 的 "SWAP" 部分去掉，然后加上 "USDT"
+        // 匹配规则是，去掉swap_symbol的"SWAP"部分，然后加上"USDT"，如果和spot_symbol匹配，则返回true
+        let swap_symbol_without_swap = swap_symbol.replace("-SWAP", "");
+        if spot_symbol == swap_symbol_without_swap {
+            return true;
+        }
+        // okex没有杠杆合约的情况，所以不需要处理
         false
     }
 }
