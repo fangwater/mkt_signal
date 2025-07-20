@@ -117,7 +117,7 @@ async fn perform_restart(
     Ok(())
 }
 
-#[tokio::main(worker_threads = 1)]
+#[tokio::main(worker_threads = 3)]
 async fn main() -> anyhow::Result<()> {
     std::env::set_var("RUST_LOG", "INFO");
     env_logger::init();

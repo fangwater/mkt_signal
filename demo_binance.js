@@ -16,20 +16,31 @@ const symbols = ['BTCUSDT'];
 const channel = 'depth@0ms';
 // const channel = 'trade';
 
+
 // 存储ping发送时间
 let pingSentTime = null;
 
 ws.on('open', () => {
   console.log('Binance-spot WebSocket 连接已建立');
 
-  const subscribeMsg = {
+  const subscribeMsg_a = {
     method: "SUBSCRIBE",
     params: symbols.map(symbol => `${symbol.toLowerCase()}@${channel}`),
     id: 1
   };
+  const subscribeMsg_b = {
+    method: "SUBSCRIBE",
+    params: ["btcusdt@depth5@100ms"],
+    id: 1
+  };
+  const subscribeMsg_c = {
+    method: "SUBSCRIBE",
+    params: ["!markPrice@arr"],
+    id: 1
+  };
   // 发送订阅请求
-  ws.send(JSON.stringify(subscribeMsg));
-  console.log('订阅请求已发送:', subscribeMsg);
+  ws.send(JSON.stringify(subscribeMsg_a));
+  console.log('订阅请求已发送:', subscribeMsg_a);
 
   // 每20秒发送一次ping消息
   setInterval(() => {
@@ -64,7 +75,10 @@ ws.on('message', (data) => {
 
   try {
     const message = JSON.parse(dataStr);
-    console.log('收到消息:', message);
+    console.log('E:', message.E);
+    //E时ms时间戳，对比和当前时间，计算延迟
+    const delay = new Date().getTime() - message.E;
+    console.log('延迟:', delay);
   } catch (e) {
     console.log('收到非JSON消息:', dataStr);
   }

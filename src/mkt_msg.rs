@@ -7,11 +7,13 @@ pub enum MktMsgType {
     TradeInfo = 1001,
     ParseredTradeInfo = 1002,
     OrderBookSnapshot = 1003,
-    OrderBookInc = 1004,
-    SymbolAdd = 1005,
-    SymbolDel = 1006,
-    TpReset = 2001,
-    Error = 2002,
+    ParseredOrderBookSnapshot = 1004,
+    OrderBookInc = 1005,
+    ParseredOrderbookInc = 1006,
+    SymbolAdd = 1007,
+    SymbolDel = 1008,
+    TpReset = 1009,
+    Error = 1010,
 }
 
 #[allow(dead_code)]
