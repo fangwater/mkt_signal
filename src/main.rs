@@ -72,13 +72,13 @@ pub fn next_target_instant(time_str: &str) -> Instant {
     Instant::now() + sleep_std
 }
 
-fn format_status_table(next_restart: u64, next_0030: u64) -> String {
+fn format_status_table(next_restart: u64, next_snapshot_query: u64) -> String {
     format!("\n\
-         |---------------------|-------------|\n\
-         | Next Restart        | {:>10}s |\n\
-         | Next 00:30          | {:>10}s |\n\
-         |---------------------|-------------|",
-        next_restart, next_0030
+         |-------------------------|-------------|\n\
+         | Next Restart            | {:>10}s     |\n\
+         | Next Snapshot Query     | {:>10}s     |\n\
+         |-------------------------|-------------|",
+        next_restart, next_snapshot_query
     )
 
 }
@@ -191,10 +191,8 @@ async fn main() -> anyhow::Result<()> {
 
     let mut next_restart_instant = restart_checker.get_next_restart_instant();
     log::info!("Next restart instant: {:?}", next_restart_instant);
-    // primary额外在在utc时间0点30s重启
-    let mut next_0030_instant = next_target_instant("00:30:00");
     let mut next_snapshot_query_instant = next_target_instant(cfg.snapshot_requery_time.as_ref().unwrap());
-    // log 
+    let if_query_snapshot = cfg.snapshot_requery_time.as_ref().unwrap() == "11:11:11"; // 如果snapshot_requery_time为11:11:11，则不进行快照修正
     let mut log_interval = tokio::time::interval(Duration::from_secs(3));
     log::info!("exchange: {}", exchange);
     while !token.is_cancelled() {
@@ -203,12 +201,12 @@ async fn main() -> anyhow::Result<()> {
                 let now_instant = Instant::now();
                 log::info!("{}", format_status_table(
                     next_restart_instant.duration_since(now_instant).as_secs(),
-                    next_0030_instant.duration_since(now_instant).as_secs()
+                    next_snapshot_query_instant.duration_since(now_instant).as_secs()
                 ));
             }
             _ = tokio::time::sleep_until(next_snapshot_query_instant) => {
                 let exchange = cfg.get_exchange().clone();
-                if (exchange == "binance-futures" || exchange == "binance") && restart_checker.is_primary {
+                if (exchange == "binance-futures" || exchange == "binance") && restart_checker.is_primary && if_query_snapshot {
                     //只有主节点且exchange为binance-futures时，才做depth快照修正
                     log::info!("Query depth snapshot at {:?}", next_snapshot_query_instant);
                     //用tokio的spawn运行，不会阻塞主循环
@@ -221,15 +219,15 @@ async fn main() -> anyhow::Result<()> {
                 }
                 next_snapshot_query_instant += Duration::from_secs(24 * 60 * 60);
             }
-            _ = tokio::time::sleep_until(next_0030_instant) => {
-                next_0030_instant += tokio::time::Duration::from_secs(24 * 60 * 60);
-                if restart_checker.is_primary {
-                    if let Err(e) = perform_restart(&mut mkt_connection_manager, &global_shutdown_tx, "00:00:30").await {
-                        error!("Failed to perform 00:00:30 restart: {}", e);
-                    }
-                }
-                log::info!("00:00:30 restart for primary successfully");
-            }
+            // _ = tokio::time::sleep_until(next_0030_instant) => {
+            //     next_0030_instant += tokio::time::Duration::from_secs(24 * 60 * 60);
+            //     if restart_checker.is_primary {
+            //         if let Err(e) = perform_restart(&mut mkt_connection_manager, &global_shutdown_tx, "00:00:30").await {
+            //             error!("Failed to perform 00:00:30 restart: {}", e);
+            //         }
+            //     }
+            //     log::info!("00:00:30 restart for primary successfully");
+            // }
             _ = tokio::time::sleep_until(next_restart_instant) => {
                 next_restart_instant += tokio::time::Duration::from_secs(restart_checker.restart_duration_secs) * 2;
                 if let Err(e) = perform_restart(&mut mkt_connection_manager, &global_shutdown_tx, "scheduled").await {

@@ -24,8 +24,8 @@ impl ZmqForwarder {
         // 创建ZMQ上下文，设置1个I/O线程（与C++版本一致）
         let context = Context::new();
         context.set_io_threads(1)?;
-        let ipc_socket = context.socket(SocketType::PUSH)?;
-        let tcp_socket = context.socket(SocketType::PUSH)?;
+        let ipc_socket = context.socket(SocketType::PUB)?;
+        let tcp_socket = context.socket(SocketType::PUB)?;
 
         // 设置水位线
         ipc_socket.set_sndhwm(config.get_zmq_proxy().hwm as i32)?;
@@ -41,32 +41,30 @@ impl ZmqForwarder {
             tcp_count: 0,
         };
 
-        forwarder.connect()?;
+        forwarder.bind()?;
         Ok(forwarder)
     }
 
-    fn connect(&mut self) -> Result<(), zmq::Error> {
+    fn bind(&mut self) -> Result<(), zmq::Error> {
         // 连接 IPC 和 TCP
         let ipc_addr = format!("ipc://{}", self.zmq_config.ipc_path);
-        let connect_addr = if self.is_primary {
-            // 主节点连接到次节点
-            format!("tcp://{}", self.zmq_config.secondary_addr)
-        } else {
-            // 次节点连接到主节点
+        let bind_addr = if self.is_primary {
             format!("tcp://{}", self.zmq_config.primary_addr)
+        } else {
+            format!("tcp://{}", self.zmq_config.secondary_addr)
         };
 
-        match self.ipc_socket.connect(&ipc_addr) {
+        match self.ipc_socket.bind(&ipc_addr) {
             Ok(_) => {
-                match self.tcp_socket.connect(&connect_addr) {
+                match self.tcp_socket.bind(&bind_addr) {
                     Ok(_) => {
-                        info!("ZmqForwarder connect success, ipc: {}, tcp: {}, is_primary: {}", 
-                              self.zmq_config.ipc_path, connect_addr, self.is_primary);
+                        info!("ZmqForwarder bind success, ipc: {}, tcp: {}, is_primary: {}", 
+                              self.zmq_config.ipc_path, bind_addr, self.is_primary);
                         Ok(())
                     }
                     Err(e) => {
-                        error!("ZmqForwarder TCP connect failed, addr: {}, error: {}", 
-                               connect_addr, e);
+                        error!("ZmqForwarder TCP bind failed, addr: {}, error: {}", 
+                               bind_addr, e);
                         Err(e)
                     }
                 }

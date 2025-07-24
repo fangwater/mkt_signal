@@ -29,8 +29,8 @@ cargo build --release
 check_status "项目编译"
 
 # 2、给定两台机器的ip，并指定primary_ip和secondary_ip
-primary_ip=103.141.183.151 
-secondary_ip=103.141.183.152
+primary_ip=178.173.228.168 
+secondary_ip=178.173.228.169
 user=el02
 exec_dir=/home/$user/crypto_mkt
 

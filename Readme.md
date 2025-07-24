@@ -3,7 +3,7 @@
 币安
 https://developers.binance.com/docs/zh-CN/derivatives/usds-margined-futures/websocket-api-general-info
 
-单次连接API有效期仅为24小时;预计在 24 小时标记后断开连接。
+单次连接API有效期仅为24小时;预计在24小时标记后断开连接。
 
 Websocket服务器每3分钟发送一个ping消息。
 如果 websocket 服务器在10分钟内没有收到来自连接的pong frame，则连接将断开。
@@ -19,7 +19,6 @@ https://www.okx.com/docs-v5/zh/#overview-websocket-overview
 2. 如果定时器被触发（N 秒内没有收到新消息），发送字符串 'ping'。
 3. 期待一个文字字符串'pong'作为回应。如果在N秒内未收到，请发出错误或重新连接。
 
-
 bybit
 Due to network complexity, your may get disconnected at any time. Please follow the instructions below to ensure that you receive WebSocket messages on time:
 Keep connection alive by sending the heartbeat packet
@@ -27,7 +26,6 @@ Reconnect as soon as possible if disconnected
 
 // req_id is a customised ID, which is optional
 ws.send(JSON.stringify({"req_id": "100001", "op": "ping"}));
-
 
 {
     "req_id": "test",
@@ -115,6 +113,13 @@ https://fapi.binance.com
 增加币安期货行情对应的现货行情
 1、对于所有在币安期货出现的symbol(xx-usdt)，是否有对应的现货symbol
 2、作为spot组进行订阅
+
+binance-futures 
+binance
+okex-swap
+okex
+bybit
+bybit-spot
 
 
 
