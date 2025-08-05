@@ -28,9 +28,7 @@ log "开始编译项目..."
 cargo build --release
 check_status "项目编译"
 
-# 2、给定两台机器的ip，并指定primary_ip和secondary_ip
-primary_ip=178.173.228.168 
-secondary_ip=178.173.228.169
+ip_list=(163.227.14.68 163.227.14.69 163.227.14.70 163.227.14.72)
 user=el02
 exec_dir=/home/$user/crypto_mkt
 
@@ -49,7 +47,7 @@ done
 
 # 将mkt_proxy二进制文件拷贝到两台机器上, 并设置权限
 log "开始部署二进制文件..."
-for ip in $primary_ip $secondary_ip; do
+for ip in ${ip_list[@]}; do
     log "部署到服务器 $ip..."
 
     scp -o ConnectTimeout=$SSH_TIMEOUT target/release/mkt_proxy $user@$ip:$exec_dir
@@ -60,7 +58,7 @@ for ip in $primary_ip $secondary_ip; do
 done
 
 log "开始部署start_proxy.sh和stop_proxy.sh文件..."
-for ip in $primary_ip $secondary_ip; do
+for ip in ${ip_list[@]}; do
     log "部署到服务器 $ip..."
     scp -o ConnectTimeout=$SSH_TIMEOUT start_proxy.sh stop_proxy.sh $user@$ip:$exec_dir
     ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "chmod +x $exec_dir/start_proxy.sh $exec_dir/stop_proxy.sh"

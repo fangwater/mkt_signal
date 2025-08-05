@@ -191,8 +191,17 @@ async fn main() -> anyhow::Result<()> {
 
     let mut next_restart_instant = restart_checker.get_next_restart_instant();
     log::info!("Next restart instant: {:?}", next_restart_instant);
-    let mut next_snapshot_query_instant = next_target_instant(cfg.snapshot_requery_time.as_ref().unwrap());
-    let if_query_snapshot = cfg.snapshot_requery_time.as_ref().unwrap() == "11:11:11"; // 如果snapshot_requery_time为11:11:11，则不进行快照修正
+    //特别处理 当snapshot_requery_time为11:11:11时，是因为在hk地区无法收到币安future的快照，无法修正，使用00:00:01，但futures不请求快照
+    let mut next_snapshot_query_instant;    
+    let not_query_snapshot;
+    if cfg.snapshot_requery_time.as_ref().unwrap() == "11:11:11" {
+        log::info!("Skip query depth snapshot for binance-futures in no support area!");
+        next_snapshot_query_instant = next_target_instant("00:00:01");
+        not_query_snapshot = true;
+    } else {
+        next_snapshot_query_instant = next_target_instant(cfg.snapshot_requery_time.as_ref().unwrap());
+        not_query_snapshot = false;
+    }
     let mut log_interval = tokio::time::interval(Duration::from_secs(3));
     log::info!("exchange: {}", exchange);
     while !token.is_cancelled() {
@@ -206,9 +215,14 @@ async fn main() -> anyhow::Result<()> {
             }
             _ = tokio::time::sleep_until(next_snapshot_query_instant) => {
                 let exchange = cfg.get_exchange().clone();
-                if (exchange == "binance-futures" || exchange == "binance") && restart_checker.is_primary && if_query_snapshot {
+                if (exchange == "binance-futures" || exchange == "binance") && restart_checker.is_primary {
                     //只有主节点且exchange为binance-futures时，才做depth快照修正
                     log::info!("Query depth snapshot at {:?}", next_snapshot_query_instant);
+                    if not_query_snapshot && exchange == "binance-futures" {
+                        log::info!("Skip query depth snapshot for binance-futures in no support area!");
+                        next_snapshot_query_instant += Duration::from_secs(24 * 60 * 60);
+                        continue;
+                    }
                     //用tokio的spawn运行，不会阻塞主循环
                     let binance_snapshot_tx_clone = binance_snapshot_tx.clone();
                     tokio::spawn(async move {
