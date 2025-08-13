@@ -122,6 +122,19 @@ bybit
 bybit-spot
 
 
+1、binance-futures 
+https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Mark-Price-Stream-for-All-market
+futures Mark Price Stream for All market 只需要1分钟频率的
+futures Kline/Candlestick Streams 1m 只需要1分钟频率的
+futures Liquidation Order Streams 
+
+spot Kline/Candlestick Streams 1m 只需要1分钟频率的
+
+futures Mark Price Stream for All market
+futures Kline/Candlestick Streams 1m
+spot Kline/Candlestick Streams 1m
+
+
 
 
 
