@@ -49,7 +49,7 @@ ws.on('open', () => {
   // };
   const subscribeMsg = {
     op: "subscribe",
-    args: symbols.map(symbol => `orderbook.500.KOMAUSDT`),
+    args: symbols.map(symbol => `tickers.BTCUSDT`),
         // args: symbols.map(symbol => `orderbook.500.SOLUSDT`),
   };
   // 发送订阅请求

@@ -120,24 +120,7 @@ impl Config {
             _ => panic!("Unsupported exchange: {}", self.get_exchange()),
         }
     }
-
-    pub fn get_exchange_url(&self) -> Result<String> {
-        match self.get_exchange().as_str() {
-            //币安u本位期货合约
-            "binance-futures" => Ok("wss://fstream.binance.com/ws".to_string()),
-            //币安u本位期货合约对应的现货
-            "binance" => Ok("wss://data-stream.binance.vision/ws".to_string()),
-            //OKEXu本位期货合约
-            "okex-swap" => Ok("wss://ws.okx.com:8443/ws/v5/public".to_string()),
-            //OKEXu本位期货合约对应的现货
-            "okex" => Ok("wss://ws.okx.com:8443/ws/v5/public".to_string()),
-            //Bybitu本位期货合约
-            "bybit" => Ok("wss://stream.bybit.com/v5/public/linear".to_string()),
-            //Bybitu本位期货合约对应的现货
-            "bybit-spot" => Ok("wss://stream.bybit.com/v5/public/spot".to_string()),
-            _ => anyhow::bail!("Unsupported exchange: {}", self.get_exchange()),
-        }
-    }
+    
     async fn get_symbol_from_unix_socket(symbol_socket: &str, exchange: &str) -> Result<serde_json::Value> {
         // 连接到symbol socket
         log::info!("Connecting to symbol socket: {}......", symbol_socket);

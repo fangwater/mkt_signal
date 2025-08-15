@@ -12,10 +12,10 @@ const ws = new WebSocket(wsUrl_spot, {
 });
 
 // 要订阅的币种列表和频道
-const symbols = ['FLMUSDT'];
+const symbols = ['BTCUSDT'];
 // const channel = 'depth@0ms';
 // const channel = 'trade';
-const channel = 'depth@100ms';
+const channel = 'kline_1m';
 
 
 // 存储ping发送时间

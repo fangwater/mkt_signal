@@ -15,7 +15,7 @@ use log::error;
 use tokio::signal;
 use tokio::sync::watch;
 use restart_checker::RestartChecker;
-use crate::connection::manager::MktConnectionManager;
+use crate::connection::mkt_manager::MktDataConnectionManager;
 use chrono::{Utc, TimeDelta, NaiveTime};
 use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
@@ -84,7 +84,7 @@ fn format_status_table(next_restart: u64, next_snapshot_query: u64) -> String {
 }
 
 async fn perform_restart(
-    mkt_connection_manager: &mut MktConnectionManager,
+    mkt_connection_manager: &mut MktDataConnectionManager,
     global_shutdown_tx: &watch::Sender<bool>,
     reason: &str,
 ) -> anyhow::Result<()> {
@@ -141,7 +141,7 @@ async fn main() -> anyhow::Result<()> {
     let (proxy_shutdown_tx, proxy_shutdown_rx) = watch::channel(false);
     let restart_checker: RestartChecker = RestartChecker::new(cfg.is_primary, cfg.restart_duration_secs);
     //建立connection，并启动
-    let mut mkt_connection_manager = MktConnectionManager::new(&cfg, &global_shutdown_tx).await;
+    let mut mkt_connection_manager = MktDataConnectionManager::new(&cfg, &global_shutdown_tx).await;
     let tp_reset_notify = mkt_connection_manager.get_tp_reset_notify();
     let forwarder = match ZmqForwarder::new(&cfg) {
         Ok(f) => f,

@@ -35,3 +35,4 @@ impl Parser for DefaultIncParser {
         Some(MktMsg::create(MktMsgType::OrderBookInc, msg))
     }
 }
+

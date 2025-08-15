@@ -1,5 +1,6 @@
 use crate::cfg::Config;
 use crate::sub_msg::SubscribeMsgs;
+use crate::sub_msg::DerivativesMetricsSubscribeMsgs;
 use crate::connection::connection::{MktConnection, MktConnectionHandler};
 use crate::connection::binance_conn::BinanceConnection;
 use crate::connection::okex_conn::OkexConnection;
@@ -10,7 +11,8 @@ use bytes::Bytes;
 use log::{info, error};
 use std::sync::Arc;
 
-pub struct MktConnectionManager {
+//订阅
+pub struct MktDataConnectionManager {
     cfg: Config, //进程基本参数
     subscribe_msgs: SubscribeMsgs, //所有的订阅消息
     inc_tx: broadcast::Sender<Bytes>, //行情消息转发通道
@@ -20,8 +22,25 @@ pub struct MktConnectionManager {
     join_set: JoinSet<()>, //任务集合
 }
 
+pub struct KlineDataConnectionManager {
+    cfg: Config, //进程基本参数
+    subscribe_msgs: SubscribeMsgs, //所有的订阅消息
+    kline_tx: broadcast::Sender<Bytes>, //kline消息转发通道
+    global_shutdown_rx: watch::Receiver<bool>, //全局关闭信号
+    join_set: JoinSet<()>, //任务集合
+}
 
-impl MktConnectionManager {
+pub struct DerivativesMetricsDataConnectionManager {
+    cfg: Config, //进程基本参数
+    subscribe_msgs: DerivativesMetricsSubscribeMsgs, //衍生品指标相关消息
+    kline_tx: broadcast::Sender<Bytes>, //kline消息转发通道
+    global_shutdown_rx: watch::Receiver<bool>, //全局关闭信号
+    join_set: JoinSet<()>, //任务集合
+}
+
+
+
+impl MktDataConnectionManager {
     fn construct_connection(exchange: String, url: String, subscribe_msg: serde_json::Value, tx: broadcast::Sender<Bytes>, global_shutdown_rx: watch::Receiver<bool>) -> anyhow::Result<Box<dyn MktConnectionHandler>> {
         match exchange.as_str() {
             "binance-futures" => {
@@ -87,9 +106,18 @@ impl MktConnectionManager {
         SubscribeMsgs::compare_symbol_set(&prev_symbols, &self.subscribe_msgs.get_active_symbols());
         Ok(())
     }
+
+    pub async fn start_time_signal_connection(&mut self){
+        let exchange = self.cfg.get_exchange().clone();
+        let url = self.cfg.get_exchange_url().unwrap();
+    }
     
     pub async fn start_all_connections(&mut self) {
         self.notify_tp_reset();
+        // 启动一个独立的时间信号源，不同交易所不同
+
+
+
         // 1. 启动所有增量连接
         for i in 0..self.subscribe_msgs.get_inc_subscribe_msg_len() {
             let exchange = self.cfg.get_exchange().clone();

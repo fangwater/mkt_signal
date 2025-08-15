@@ -8,8 +8,8 @@ const ws = new WebSocket(wsUrl);
 
 // 要订阅的币种列表和频道
 // const symbols = ['BTC-USDT'];
-const symbols = ['BTC-USDT-SWAP'];
-const channel = 'trades'; // 可选: tickers, books, trades, candle1m 等
+const symbols = ["BTC-USDT-SWAP"];
+const channel = "mark-price"; // 可选: tickers, books, trades, candle1m 等
 
 // 存储ping发送时间
 let pingSentTime = null;
