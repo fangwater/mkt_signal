@@ -50,7 +50,7 @@ pub struct SubscribeMsgs {
     signal_subscribe_msg: serde_json::Value, //只需要一个，实际是和btc深度有关的某个行情
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BinancePerpsSubscribeMsgs {
     pub mark_price_stream_for_all_market: serde_json::Value, // 币安的markprice订阅全市场，包含资金费率，指数价格等信息
     pub liquidation_orders_msgs: Vec<serde_json::Value>, //强平信息
@@ -76,7 +76,7 @@ impl BinancePerpsSubscribeMsgs {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OkexPerpsSubscribeMsgs {
     pub mark_price_msgs: Vec<serde_json::Value>, //标记价格
     pub index_price_msgs: Vec<serde_json::Value>, //指数价格
@@ -113,7 +113,7 @@ impl OkexPerpsSubscribeMsgs {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BybitPerpsSubscribeMsgs {
     pub ticker_stream_msgs: Vec<serde_json::Value>, //bybit的标记价格、指数价格、资金费率都来自ticker stream
     pub liquidation_orders_msgs: Vec<serde_json::Value>, //强平信息
@@ -137,7 +137,7 @@ impl BybitPerpsSubscribeMsgs {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ExchangePerpsSubscribeMsgs {
     Binance(BinancePerpsSubscribeMsgs),
     Okex(OkexPerpsSubscribeMsgs),
@@ -158,6 +158,10 @@ impl SubscribeMsgs {
 
     pub fn get_kline_subscribe_msg(&self, index: usize) -> &serde_json::Value {
         &self.kline_subscribe_msgs[index]
+    }
+
+    pub fn get_kline_subscribe_msg_len(&self) -> usize {
+        self.kline_subscribe_msgs.len()
     }
 
     pub fn get_active_symbols(&self) -> HashSet<String> {
@@ -354,24 +358,31 @@ impl SubscribeMsgs {
 impl DerivativesMetricsSubscribeMsgs {
     pub async fn new(cfg: &Config) -> Self {
         let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
-        let batch_size = cfg.get_batch_size();
-        let mut inc_subscribe_msgs = Vec::new();
-        let mut trade_subscribe_msgs = Vec::new();
         let exchange = cfg.get_exchange();
-        let inc_channel = SubscribeMsgs::get_inc_channel(&exchange);
-        let trade_channel = SubscribeMsgs::get_trade_channel(&exchange);
-        let kline_channel = SubscribeMsgs::get_kline_channel(&exchange);
-        for chunk in symbols.chunks(batch_size) {
-            inc_subscribe_msgs.push(construct_subscribe_message(&exchange, chunk, &inc_channel));
-            trade_subscribe_msgs.push(construct_subscribe_message(&exchange, chunk, &trade_channel));
-            kline_subscribe_msgs.push(construct_subscribe_message(&exchange, chunk, &kline_channel));
-        }
+        let exchange_msgs = match exchange.as_str() {
+            "binance-futures" => {
+                ExchangePerpsSubscribeMsgs::Binance(BinancePerpsSubscribeMsgs::new(cfg).await)
+            },
+            "okex-swap"=> {
+                ExchangePerpsSubscribeMsgs::Okex(OkexPerpsSubscribeMsgs::new(cfg).await)
+            },
+            "bybit"=> {
+                ExchangePerpsSubscribeMsgs::Bybit(BybitPerpsSubscribeMsgs::new(cfg).await)
+            },
+            _ => panic!("Unsupported exchange: {}", exchange)
+        };
+        
         Self {             
             active_symbols: symbols.iter().map(|s| s.clone()).collect(),
-            inc_subscribe_msgs,
-            trade_subscribe_msgs,
-            kline_subscribe_msgs,
-            signal_subscribe_msg: SubscribeMsgs::get_signal_subscribe_message(&exchange)
+            exchange_msgs,
         }
-    }   
+    }
+
+    pub fn get_active_symbols(&self) -> &HashSet<String> {
+        &self.active_symbols
+    }
+
+    pub fn get_exchange_msgs(&self) -> &ExchangePerpsSubscribeMsgs {
+        &self.exchange_msgs
+    }
 }
