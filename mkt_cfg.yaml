@@ -1,41 +1,47 @@
 is_primary: true
-restart_duration_secs: 1800 #3分钟重启一次，奇数偶数决定主备重启 
-snapshot_requery_time: "--:--:--"
+restart_duration_secs: 1800
+snapshot_requery_time: "--:--:--"  # "--:--:--" 表示立即查询(30秒后)，空字符串禁用快照，可设置如 "02:00:00" 定时查询
 symbol_socket: "/root/project/symbol_server/exchange"
 exchange: binance-futures
-topic: [""]
 
-binance_proxy:
+# 主题配置 - 决定哪些数据类型需要处理
+topics:
+  market_data: true      # 市场数据（深度、交易）
+  kline_data: true       # K线数据
+  derivatives_metrics: true  # 衍生品指标（资金费率、标记价格、指数价格、强平单）
+
+# 交易所配置 - 每个交易所使用相同的 ZMQ 配置，通过 topic 区分数据类型
+binance:
   ipc_path: "/tmp/zmq_mkt_binance_feeds.ipc"
   primary_addr: "103.141.183.151:5555"
   secondary_addr: "103.141.183.152:5555"
   hwm: 5000
 
-binance-futures_proxy:
+binance-futures:
   ipc_path: "/tmp/zmq_mkt_binance-futures_feeds.ipc"
   primary_addr: "103.141.183.151:5556"
   secondary_addr: "103.141.183.152:5556"
   hwm: 5000
 
-okex_proxy:
+okex:
   ipc_path: "/tmp/zmq_mkt_okex_feeds.ipc"
   primary_addr: "103.141.183.151:5557"
   secondary_addr: "103.141.183.152:5557"
   hwm: 5000
 
-okex-swap_proxy:
+okex-swap:
   ipc_path: "/tmp/zmq_mkt_okex-swap_feeds.ipc"  
   primary_addr: "103.141.183.151:5558"
   secondary_addr: "103.141.183.152:5558"
   hwm: 5000
 
-bybit_proxy:
+bybit:
   ipc_path: "/tmp/zmq_mkt_bybit_feeds.ipc"
   primary_addr: "103.141.183.151:5559"
   secondary_addr: "103.141.183.152:5559"
   hwm: 5000
 
-bybit-spot_proxy:
+bybit-spot:
   ipc_path: "/tmp/zmq_mkt_bybit-spot_feeds.ipc"
   primary_addr: "103.141.183.151:5560"
   secondary_addr: "103.141.183.152:5560"

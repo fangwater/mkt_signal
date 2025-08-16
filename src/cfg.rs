@@ -14,6 +14,13 @@ pub struct ZmqProxyCfg {
     pub secondary_addr: String,
     pub hwm: u32,
 }
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct TopicConfig {
+    pub market_data: bool,
+    pub kline_data: bool,
+    pub derivatives_metrics: bool,
+}
 // 添加表格打印函数
 fn print_symbol_comparison(
     futures_symbols: &[String],
@@ -75,15 +82,16 @@ pub struct Config {
     pub snapshot_requery_time: Option<String>,
     pub symbol_socket: String,
     pub exchange: String,
-    pub binance_proxy: ZmqProxyCfg,
-    #[serde(rename = "binance-futures_proxy")]
-    pub binance_futures_proxy: ZmqProxyCfg,
-    pub okex_proxy: ZmqProxyCfg,
-    #[serde(rename = "okex-swap_proxy")]
-    pub okex_swap_proxy: ZmqProxyCfg,
-    pub bybit_proxy: ZmqProxyCfg,
-    #[serde(rename = "bybit-spot_proxy")]
-    pub bybit_spot_proxy: ZmqProxyCfg,
+    pub topics: TopicConfig,
+    pub binance: ZmqProxyCfg,
+    #[serde(rename = "binance-futures")]
+    pub binance_futures: ZmqProxyCfg,
+    pub okex: ZmqProxyCfg,
+    #[serde(rename = "okex-swap")]
+    pub okex_swap: ZmqProxyCfg,
+    pub bybit: ZmqProxyCfg,
+    #[serde(rename = "bybit-spot")]
+    pub bybit_spot: ZmqProxyCfg,
 }
 
 impl Config {
@@ -111,13 +119,22 @@ impl Config {
 
     pub fn get_zmq_proxy(&self) -> ZmqProxyCfg {
         match self.get_exchange().as_str() {
-            "binance-futures" => self.binance_futures_proxy.clone(),
-            "binance" => self.binance_proxy.clone(),
-            "okex-swap" => self.okex_swap_proxy.clone(),
-            "okex" => self.okex_proxy.clone(),
-            "bybit" => self.bybit_proxy.clone(),
-            "bybit-spot" => self.bybit_spot_proxy.clone(),
+            "binance-futures" => self.binance_futures.clone(),
+            "binance" => self.binance.clone(),
+            "okex-swap" => self.okex_swap.clone(),
+            "okex" => self.okex.clone(),
+            "bybit" => self.bybit.clone(),
+            "bybit-spot" => self.bybit_spot.clone(),
             _ => panic!("Unsupported exchange: {}", self.get_exchange()),
+        }
+    }
+
+    pub fn is_topic_enabled(&self, topic: &str) -> bool {
+        match topic {
+            "market_data" => self.topics.market_data,
+            "kline_data" => self.topics.kline_data,
+            "derivatives_metrics" => self.topics.derivatives_metrics,
+            _ => false,
         }
     }
     

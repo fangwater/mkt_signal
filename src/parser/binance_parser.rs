@@ -1,4 +1,4 @@
-use crate::mkt_msg::{SignalMsg, SignalSource, KlineMsg, LiquidationMsg, MarkPriceMsg, IndexPriceMsg, FundingRateMsg, TradeMsg};
+use crate::mkt_msg::{SignalMsg, SignalSource, KlineMsg, LiquidationMsg, MarkPriceMsg, IndexPriceMsg, FundingRateMsg, TradeMsg, IncMsg, Level};
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use tokio::sync::broadcast;
@@ -265,6 +265,160 @@ impl BinanceDerivativesMetricsParser {
     }
 }
 
+pub struct BinanceSnapshotParser;
+
+impl BinanceSnapshotParser {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Parser for BinanceSnapshotParser {
+    fn parse(&self, msg: Bytes, sender: &broadcast::Sender<Bytes>) -> usize {
+        // 解析币安快照消息
+        if let Ok(json_str) = std::str::from_utf8(&msg) {
+            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
+                return self.parse_snapshot_event(&json_value, sender);
+            }
+        }
+        0
+    }
+}
+
+// 公共函数：解析订单簿层级数据
+fn parse_order_book_levels(
+    bids_array: &Vec<serde_json::Value>,
+    asks_array: &Vec<serde_json::Value>,
+    inc_msg: &mut IncMsg,
+) {
+    // 解析bids
+    for (i, bid_item) in bids_array.iter().enumerate() {
+        if let Some(bid_array) = bid_item.as_array() {
+            if bid_array.len() >= 2 {
+                if let (Some(price_str), Some(amount_str)) = (
+                    bid_array[0].as_str(),
+                    bid_array[1].as_str(),
+                ) {
+                    let level = Level::new(price_str, amount_str);
+                    inc_msg.set_bid_level(i, level);
+                }
+            }
+        }
+    }
+    
+    // 解析asks
+    for (i, ask_item) in asks_array.iter().enumerate() {
+        if let Some(ask_array) = ask_item.as_array() {
+            if ask_array.len() >= 2 {
+                if let (Some(price_str), Some(amount_str)) = (
+                    ask_array[0].as_str(),
+                    ask_array[1].as_str(),
+                ) {
+                    let level = Level::new(price_str, amount_str);
+                    inc_msg.set_ask_level(i, level);
+                }
+            }
+        }
+    }
+}
+
+impl BinanceSnapshotParser {
+    fn parse_snapshot_event(&self, json_value: &serde_json::Value, sender: &broadcast::Sender<Bytes>) -> usize {
+        // 从快照数据中提取信息
+        if let (Some(symbol), Some(last_update_id), Some(bids_array), Some(asks_array)) = (
+            json_value.get("s").and_then(|v| v.as_str()),
+            json_value.get("lastUpdateId").and_then(|v| v.as_i64()),
+            json_value.get("bids").and_then(|v| v.as_array()),
+            json_value.get("asks").and_then(|v| v.as_array()),
+        ) {
+            let bids_count = bids_array.len() as u32;
+            let asks_count = asks_array.len() as u32;
+            
+            // 创建快照消息，对于快照消息，first_update_id = last_update_id + 1
+            let mut inc_msg = IncMsg::create(
+                symbol.to_string(),
+                last_update_id + 1,  // first_update_id
+                last_update_id + 1,  // final_update_id（对于快照相同）
+                0,                   // timestamp（快照没有实际时间戳）
+                true,                // is_snapshot = true
+                bids_count,
+                asks_count,
+            );
+            
+            // 使用公共函数解析订单簿层级
+            parse_order_book_levels(bids_array, asks_array, &mut inc_msg);
+            
+            // 发送快照消息
+            if sender.send(inc_msg.to_bytes()).is_ok() {
+                return 1;
+            }
+        }
+        0
+    }
+}
+
+pub struct BinanceIncParser;
+
+impl BinanceIncParser {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Parser for BinanceIncParser {
+    fn parse(&self, msg: Bytes, sender: &broadcast::Sender<Bytes>) -> usize {
+        // 解析币安增量消息
+        if let Ok(json_str) = std::str::from_utf8(&msg) {
+            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
+                // 检查是否是增量更新事件
+                if let Some(event_type) = json_value.get("e").and_then(|v| v.as_str()) {
+                    if event_type == "depthUpdate" {
+                        return self.parse_inc_event(&json_value, sender);
+                    }
+                }
+            }
+        }
+        0
+    }
+}
+
+impl BinanceIncParser {
+    fn parse_inc_event(&self, json_value: &serde_json::Value, sender: &broadcast::Sender<Bytes>) -> usize {
+        // 从增量数据中提取信息
+        if let (Some(symbol), Some(first_update_id), Some(final_update_id), Some(event_time), Some(bids_array), Some(asks_array)) = (
+            json_value.get("s").and_then(|v| v.as_str()),
+            json_value.get("U").and_then(|v| v.as_i64()),  // first update id
+            json_value.get("u").and_then(|v| v.as_i64()),  // final update id
+            json_value.get("E").and_then(|v| v.as_i64()),  // event time
+            json_value.get("b").and_then(|v| v.as_array()), // bids
+            json_value.get("a").and_then(|v| v.as_array()), // asks
+        ) {
+            let bids_count = bids_array.len() as u32;
+            let asks_count = asks_array.len() as u32;
+            
+            // 创建增量消息
+            let mut inc_msg = IncMsg::create(
+                symbol.to_string(),
+                first_update_id,
+                final_update_id,
+                event_time,
+                false,  // is_snapshot = false
+                bids_count,
+                asks_count,
+            );
+            
+            // 使用公共函数解析订单簿层级
+            parse_order_book_levels(bids_array, asks_array, &mut inc_msg);
+            
+            // 发送增量消息
+            if sender.send(inc_msg.to_bytes()).is_ok() {
+                return 1;
+            }
+        }
+        0
+    }
+}
+
 pub struct BinanceTradeParser;
 
 impl BinanceTradeParser {
@@ -335,3 +489,4 @@ impl BinanceTradeParser {
         0
     }
 }
+

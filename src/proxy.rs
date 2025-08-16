@@ -11,15 +11,14 @@ use tokio::sync::Notify;
 //proxy需要异步运行，因此需要实现send trait
 pub struct Proxy {
     forwarder: ZmqForwarder, 
-    out_rx : broadcast::Receiver<Bytes>,
-    binance_snapshot_rx : broadcast::Receiver<Bytes>,
+    out_rx : broadcast::Receiver<Bytes>, //消息的输出通道
     proxy_shutdown: watch::Receiver<bool>,
     tp_reset_notify: Arc<Notify>,
 }
 
 
 impl Proxy {
-    pub fn new(forwarder: ZmqForwarder, out_rx: broadcast::Receiver<Bytes>, trade_rx: broadcast::Receiver<Bytes>, binance_snapshot_rx: broadcast::Receiver<Bytes>, proxy_shutdown: watch::Receiver<bool>, tp_reset_notify: Arc<Notify>) -> Self {
+    pub fn new(forwarder: ZmqForwarder, out_rx: broadcast::Receiver<Bytes>, proxy_shutdown: watch::Receiver<bool>, tp_reset_notify: Arc<Notify>) -> Self {
         Self { 
             forwarder, 
             inc_rx, 
@@ -63,26 +62,6 @@ impl Proxy {
                             self.forwarder.send_msg(parsed_msg.to_bytes()).await;
                         }
                     }
-                }
-                msg = self.trade_rx.recv() => {
-                    if let Ok(msg) = msg {
-                        self.trade_count += 1;
-                        if let Some(parsed_msg) = self.trade_parser.parse(msg) {
-                            self.forwarder.send_msg(parsed_msg.to_bytes()).await;
-                        }
-                    }
-                }
-                msg = self.binance_snapshot_rx.recv() => {
-                    if let Ok(msg) = msg {
-                        //因为已经构造成MktMsg，所以直接发送
-                        self.forwarder.send_msg(msg).await;
-                    }
-                }
-                _ = stats_timer.tick() => {
-                    self.forwarder.log_stats();
-                    log::info!("inc_count: {}, trade_count: {}", self.inc_count, self.trade_count);
-                    self.inc_count = 0;
-                    self.trade_count = 0;
                 }
             }
         }

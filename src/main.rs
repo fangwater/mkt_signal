@@ -30,8 +30,6 @@ struct Args {
     config: String,
 }
 
-
-
 fn format_status_table(next_restart: u64) -> String {
     format!("\n\
          |-------------------------|-------------|\n\
@@ -157,15 +155,6 @@ async fn main() -> anyhow::Result<()> {
                     next_restart_instant.duration_since(now_instant).as_secs()
                 ));
             }
-            // _ = tokio::time::sleep_until(next_0030_instant) => {
-            //     next_0030_instant += tokio::time::Duration::from_secs(24 * 60 * 60);
-            //     if restart_checker.is_primary {
-            //         if let Err(e) = perform_restart(&mut mkt_connection_manager, &global_shutdown_tx, "00:00:30").await {
-            //             error!("Failed to perform 00:00:30 restart: {}", e);
-            //         }
-            //     }
-            //     log::info!("00:00:30 restart for primary successfully");
-            // }
             _ = tokio::time::sleep_until(next_restart_instant) => {
                 next_restart_instant += tokio::time::Duration::from_secs(restart_checker.restart_duration_secs) * 2;
                 if let Err(e) = perform_restart(&mut mkt_connection_manager, &global_shutdown_tx, "scheduled").await {
@@ -185,16 +174,3 @@ async fn main() -> anyhow::Result<()> {
     let _ = proxy_shutdown_tx.send(true);
     Ok(())
 }
-
-// #[tokio::main(worker_threads = 1)]
-// async fn main() -> anyhow::Result<()> {
-//     std::env::set_var("RUST_LOG", "INFO");
-//     env_logger::init();
-//     let (tx, _) = tokio::sync::broadcast::channel(100);
-//     // 获取所有symbol
-//     let cfg = Config::load_config("/root/project/crypto_proxy/mkt_cfg.yaml").await.unwrap();
-//     let symbols = cfg.get_symbols().await.unwrap();
-//     //symbols取slice 前10个
-//     BinanceFuturesSnapshotQuery::start_fetching_depth(symbols[..10].to_vec(), tx).await;
-//     Ok(())
-// }

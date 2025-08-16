@@ -1,4 +1,4 @@
-use crate::mkt_msg::{SignalMsg, SignalSource, KlineMsg, LiquidationMsg, MarkPriceMsg, IndexPriceMsg, FundingRateMsg, TradeMsg};
+use crate::mkt_msg::{SignalMsg, SignalSource, KlineMsg, LiquidationMsg, MarkPriceMsg, IndexPriceMsg, FundingRateMsg, TradeMsg, IncMsg, Level};
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use tokio::sync::broadcast;
@@ -397,6 +397,130 @@ impl OkexTradeParser {
                 // Send trade message
                 if sender.send(trade_msg.to_bytes()).is_ok() {
                     return 1;
+                }
+            }
+        }
+        0
+    }
+}
+
+// 公共函数：解析OKEx订单簿层级数据
+fn parse_okex_order_book_levels(
+    bids_array: &Vec<serde_json::Value>,
+    asks_array: &Vec<serde_json::Value>,
+    inc_msg: &mut IncMsg,
+) {
+    // 解析bids - OKEx格式：[price, amount, deprecated, order_count]
+    for (i, bid_item) in bids_array.iter().enumerate() {
+        if let Some(bid_array) = bid_item.as_array() {
+            if bid_array.len() >= 2 {
+                if let (Some(price_str), Some(amount_str)) = (
+                    bid_array[0].as_str(),
+                    bid_array[1].as_str(),
+                ) {
+                    let level = Level::new(price_str, amount_str);
+                    inc_msg.set_bid_level(i, level);
+                }
+            }
+        }
+    }
+    
+    // 解析asks - OKEx格式：[price, amount, deprecated, order_count]
+    for (i, ask_item) in asks_array.iter().enumerate() {
+        if let Some(ask_array) = ask_item.as_array() {
+            if ask_array.len() >= 2 {
+                if let (Some(price_str), Some(amount_str)) = (
+                    ask_array[0].as_str(),
+                    ask_array[1].as_str(),
+                ) {
+                    let level = Level::new(price_str, amount_str);
+                    inc_msg.set_ask_level(i, level);
+                }
+            }
+        }
+    }
+}
+
+pub struct OkexIncParser;
+
+impl OkexIncParser {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Parser for OkexIncParser {
+    fn parse(&self, msg: Bytes, sender: &broadcast::Sender<Bytes>) -> usize {
+        // 解析OKEx增量/快照消息
+        if let Ok(json_str) = std::str::from_utf8(&msg) {
+            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
+                // 检查是否是订单簿数据 - 通过arg.channel判断
+                if let Some(arg) = json_value.get("arg") {
+                    if let Some(channel) = arg.get("channel").and_then(|v| v.as_str()) {
+                        if channel.starts_with("books") {
+                            return self.parse_orderbook_event(&json_value, sender);
+                        }
+                    }
+                }
+            }
+        }
+        0
+    }
+}
+
+impl OkexIncParser {
+    fn parse_orderbook_event(&self, json_value: &serde_json::Value, sender: &broadcast::Sender<Bytes>) -> usize {
+        // 从OKEx订单簿数据中提取信息
+        if let (Some(action), Some(data_array)) = (
+            json_value.get("action").and_then(|v| v.as_str()),
+            json_value.get("data").and_then(|v| v.as_array()),
+        ) {
+            if let Some(data) = data_array.first() {
+                if let (Some(bids_array), Some(asks_array), Some(seq_id), Some(prev_seq_id), Some(timestamp_str)) = (
+                    data.get("bids").and_then(|v| v.as_array()),
+                    data.get("asks").and_then(|v| v.as_array()),
+                    data.get("seqId").and_then(|v| v.as_i64()),
+                    data.get("prevSeqId").and_then(|v| v.as_i64()),
+                    data.get("ts").and_then(|v| v.as_str()),
+                ) {
+                    // 解析时间戳
+                    let timestamp = match timestamp_str.parse::<i64>() {
+                        Ok(ts) => ts,
+                        Err(_) => return 0,
+                    };
+                    
+                    // 从arg中获取symbol
+                    let symbol = match json_value.get("arg")
+                        .and_then(|arg| arg.get("instId"))
+                        .and_then(|v| v.as_str()) {
+                        Some(s) => s.to_string(),
+                        None => return 0,
+                    };
+                    
+                    let bids_count = bids_array.len() as u32;
+                    let asks_count = asks_array.len() as u32;
+                    
+                    // 判断是否为快照消息
+                    let is_snapshot = action == "snapshot";
+                    
+                    // 创建增量/快照消息
+                    let mut inc_msg = IncMsg::create(
+                        symbol,
+                        seq_id,             // first_update_id
+                        prev_seq_id,        // final_update_id 
+                        timestamp,          // 使用ts时间戳
+                        is_snapshot,        // 根据action字段确定
+                        bids_count,
+                        asks_count,
+                    );
+                    
+                    // 使用公共函数解析订单簿层级
+                    parse_okex_order_book_levels(bids_array, asks_array, &mut inc_msg);
+                    
+                    // 发送消息
+                    if sender.send(inc_msg.to_bytes()).is_ok() {
+                        return 1;
+                    }
                 }
             }
         }

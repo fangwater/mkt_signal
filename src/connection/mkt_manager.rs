@@ -1,9 +1,9 @@
 use crate::cfg::Config;
 use crate::sub_msg::SubscribeMsgs;
-use crate::parser::default_parser::{Parser, DefaultTradeParser, DefaultIncParser};
-use crate::parser::binance_parser::{BinanceSignalParser, BinanceTradeParser};
-use crate::parser::okex_parser::{OkexSignalParser, OkexTradeParser};
-use crate::parser::bybit_parser::{BybitSignalParser, BybitTradeParser};
+use crate::parser::default_parser::{Parser};
+use crate::parser::binance_parser::{BinanceSignalParser, BinanceTradeParser, BinanceSnapshotParser, BinanceIncParser};
+use crate::parser::okex_parser::{OkexSignalParser, OkexTradeParser, OkexIncParser};
+use crate::parser::bybit_parser::{BybitSignalParser, BybitTradeParser, BybitIncParser};
 use crate::connection::connection::construct_connection;
 use crate::connection::binance_conn::BinanceFuturesSnapshotQuery;
 use tokio::sync::{broadcast, watch, Notify};
@@ -107,9 +107,9 @@ impl MktDataConnectionManager {
         }
         
         let snapshot_requery_time = match self.cfg.snapshot_requery_time.as_ref() {
-            Some(time) => time.clone(),
-            None => {
-                error!("未配置 snapshot_requery_time");
+            Some(time) if !time.is_empty() => time.clone(),
+            _ => {
+                info!("快照查询已禁用（snapshot_requery_time 为空或未配置）");
                 return;
             }
         };
@@ -119,17 +119,7 @@ impl MktDataConnectionManager {
         let mkt_tx = self.mkt_tx.clone();
         
         self.join_set.spawn(async move {
-            // 特别处理 当snapshot_requery_time为11:11:11时，是因为在hk地区无法收到币安future的快照，无法修正
-            let mut next_snapshot_query_instant;    
-            let not_query_snapshot;
-            if snapshot_requery_time == "11:11:11" {
-                info!("在不支持地区跳过币安期货深度快照查询!");
-                next_snapshot_query_instant = next_target_instant("00:00:01");
-                not_query_snapshot = true;
-            } else {
-                next_snapshot_query_instant = next_target_instant(&snapshot_requery_time);
-                not_query_snapshot = false;
-            }
+            let mut next_snapshot_query_instant = next_target_instant(&snapshot_requery_time);
             
             info!("币安快照任务已启动，下次查询时间: {:?}", next_snapshot_query_instant);
             
@@ -138,40 +128,33 @@ impl MktDataConnectionManager {
                     _ = tokio::time::sleep_until(next_snapshot_query_instant) => {
                         info!("在 {:?} 查询深度快照", next_snapshot_query_instant);
                         
-                        if not_query_snapshot && exchange == "binance-futures" {
-                            info!("在不支持地区跳过币安期货深度快照查询!");
-                            next_snapshot_query_instant += Duration::from_secs(24 * 60 * 60);
-                            continue;
-                        }
-                        
-                        // 创建快照查询任务，使用 DefaultIncParser 处理快照数据
-                        let mkt_tx_clone = mkt_tx.clone();
-                        let exchange_clone = exchange.clone();
-                        let cfg_clone2 = cfg_clone.clone();
+                        let mkt_tx_for_snapshot = mkt_tx.clone();
+                        let exchange_for_snapshot = exchange.clone();
+                        let cfg_for_snapshot = cfg_clone.clone();
                         tokio::spawn(async move {
                             // Create intermediate channel for snapshot data
                             let (snapshot_raw_tx, mut snapshot_raw_rx) = broadcast::channel(100);
-                            let parser = DefaultIncParser::new();
+                            let parser = BinanceSnapshotParser::new();
                             
                             // Start snapshot fetching task
-                            let snapshot_tx_clone = snapshot_raw_tx.clone();
-                            let exchange_clone2 = exchange_clone.clone();
-                            let cfg_clone3 = cfg_clone2.clone();
+                            let snapshot_tx_for_fetcher = snapshot_raw_tx.clone();
+                            let exchange_for_fetcher = exchange_for_snapshot.clone();
+                            let cfg_for_fetcher = cfg_for_snapshot.clone();
                             tokio::spawn(async move {
-                                let symbols = match cfg_clone3.get_symbols().await {
+                                let symbols = match cfg_for_fetcher.get_symbols().await {
                                     Ok(symbols) => symbols,
                                     Err(e) => {
                                         error!("获取快照查询符号失败: {}", e);
                                         return;
                                     }
                                 };
-                                BinanceFuturesSnapshotQuery::start_fetching_depth(exchange_clone2.as_str(), symbols, snapshot_tx_clone).await;
-                                info!("为 {} 成功查询深度快照", exchange_clone2);
+                                BinanceFuturesSnapshotQuery::start_fetching_depth(exchange_for_fetcher.as_str(), symbols, snapshot_tx_for_fetcher).await;
+                                info!("为 {} 成功查询深度快照", exchange_for_fetcher);
                             });
                             
                             // Parse snapshot data and forward to mkt_tx
                             while let Ok(snapshot_data) = snapshot_raw_rx.recv().await {
-                                let _parsed_count = parser.parse(snapshot_data, &mkt_tx_clone);
+                                let _parsed_count = parser.parse(snapshot_data, &mkt_tx_for_snapshot);
                             }
                         });
                         
@@ -194,9 +177,25 @@ impl MktDataConnectionManager {
             let exchange = self.cfg.get_exchange().clone();
             let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
             let subscribe_msg = self.subscribe_msgs.get_inc_subscribe_msg(i).clone();
-            let parser: Box<dyn Parser> = Box::new(DefaultIncParser::new());
             
-            self.spawn_mkt_connection(exchange, url, subscribe_msg, format!("inc msg batch {}", i), parser).await;
+            // Create inc parser based on exchange (static dispatch for performance)
+            match exchange.as_str() {
+                "binance-futures" | "binance" => {
+                    let parser = BinanceIncParser::new();
+                    self.spawn_mkt_connection_typed(exchange, url, subscribe_msg, format!("inc msg batch {}", i), parser).await;
+                }
+                "bybit" | "bybit-spot" => {
+                    let parser = BybitIncParser::new();
+                    self.spawn_mkt_connection_typed(exchange, url, subscribe_msg, format!("inc msg batch {}", i), parser).await;
+                }
+                "okex-swap" | "okex" => {
+                    let parser = OkexIncParser::new();
+                    self.spawn_mkt_connection_typed(exchange, url, subscribe_msg, format!("inc msg batch {}", i), parser).await;
+                }
+                _ => {
+                    panic!("Unsupported exchange for trade parser: {}", exchange);
+                }
+            }
         }
     
         // 2. 启动所有交易连接
