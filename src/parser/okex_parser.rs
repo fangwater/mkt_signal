@@ -1,4 +1,4 @@
-use crate::mkt_msg::{SignalMsg, SignalSource, KlineMsg, LiquidationMsg, MarkPriceMsg, IndexPriceMsg, FundingRateMsg};
+use crate::mkt_msg::{SignalMsg, SignalSource, KlineMsg, LiquidationMsg, MarkPriceMsg, IndexPriceMsg, FundingRateMsg, TradeMsg};
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use tokio::sync::broadcast;
@@ -125,8 +125,7 @@ pub struct OkexDerivativesMetricsParser {
 }
 
 impl OkexDerivativesMetricsParser {
-    pub fn new(symbols: Vec<String>) -> Self {
-        let symbols_set: HashSet<String> = symbols.into_iter().collect();
+    pub fn new(symbols_set: HashSet<String>) -> Self {
         Self {
             symbols: symbols_set,
         }
@@ -322,6 +321,84 @@ impl OkexDerivativesMetricsParser {
             }
             
             return parsed_count;
+        }
+        0
+    }
+}
+
+pub struct OkexTradeParser;
+
+impl OkexTradeParser {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Parser for OkexTradeParser {
+    fn parse(&self, msg: Bytes, sender: &broadcast::Sender<Bytes>) -> usize {
+        // Parse OKEx trade message
+        if let Ok(json_str) = std::str::from_utf8(&msg) {
+            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
+                // Check if this has data array
+                if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
+                    if !data_array.is_empty() {
+                        return self.parse_trade_event(&data_array[0], sender);
+                    }
+                }
+            }
+        }
+        0
+    }
+}
+
+impl OkexTradeParser {
+    fn parse_trade_event(&self, trade_data: &serde_json::Value, sender: &broadcast::Sender<Bytes>) -> usize {
+        // Extract trade data from OKEx trade message
+        if let (Some(symbol), Some(trade_id_str), Some(price_str), Some(size_str), Some(side_str), Some(timestamp_str)) = (
+            trade_data.get("instId").and_then(|v| v.as_str()),       // 交易对
+            trade_data.get("tradeId").and_then(|v| v.as_str()),      // 交易ID
+            trade_data.get("px").and_then(|v| v.as_str()),           // 成交价格
+            trade_data.get("sz").and_then(|v| v.as_str()),           // 成交数量
+            trade_data.get("side").and_then(|v| v.as_str()),         // 买卖方向
+            trade_data.get("ts").and_then(|v| v.as_str()),           // 时间戳
+        ) {
+            // Parse price, size, trade_id and timestamp
+            if let (Ok(price), Ok(amount), Ok(trade_id), Ok(timestamp)) = (
+                price_str.parse::<f64>(),
+                size_str.parse::<f64>(),
+                trade_id_str.parse::<i64>(),
+                timestamp_str.parse::<i64>(),
+            ) {
+                // Filter out zero values
+                if price <= 0.0 || amount <= 0.0 {
+                    return 0;
+                }
+                
+                // Convert OKEx side to char
+                let side = match side_str {
+                    "sell" => 'S',
+                    "buy" => 'B',
+                    _ => {
+                        eprintln!("Unknown side: {}", side_str);
+                        return 0;
+                    }
+                };
+                
+                // Create trade message
+                let trade_msg = TradeMsg::create(
+                    symbol.to_string(),
+                    trade_id,
+                    timestamp,
+                    side,
+                    price,
+                    amount,
+                );
+                
+                // Send trade message
+                if sender.send(trade_msg.to_bytes()).is_ok() {
+                    return 1;
+                }
+            }
         }
         0
     }

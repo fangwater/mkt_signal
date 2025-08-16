@@ -1,4 +1,4 @@
-use crate::mkt_msg::{SignalMsg, SignalSource, KlineMsg, LiquidationMsg, MarkPriceMsg, IndexPriceMsg, FundingRateMsg};
+use crate::mkt_msg::{SignalMsg, SignalSource, KlineMsg, LiquidationMsg, MarkPriceMsg, IndexPriceMsg, FundingRateMsg, TradeMsg};
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use tokio::sync::broadcast;
@@ -113,8 +113,7 @@ pub struct BinanceDerivativesMetricsParser {
 }
 
 impl BinanceDerivativesMetricsParser {
-    pub fn new(symbols: Vec<String>) -> Self {
-        let symbols_set: HashSet<String> = symbols.into_iter().collect();
+    pub fn new(symbols_set: HashSet<String>) -> Self {
         Self {
             symbols: symbols_set,
         }
@@ -259,6 +258,77 @@ impl BinanceDerivativesMetricsParser {
                         
                         return parsed_count;
                     }
+                }
+            }
+        }
+        0
+    }
+}
+
+pub struct BinanceTradeParser;
+
+impl BinanceTradeParser {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Parser for BinanceTradeParser {
+    fn parse(&self, msg: Bytes, sender: &broadcast::Sender<Bytes>) -> usize {
+        // Parse Binance trade message
+        if let Ok(json_str) = std::str::from_utf8(&msg) {
+            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
+                // Check if this is a trade event
+                if let Some(event_type) = json_value.get("e").and_then(|v| v.as_str()) {
+                    if event_type == "trade" {
+                        return self.parse_trade_event(&json_value, sender);
+                    }
+                }
+            }
+        }
+        0
+    }
+}
+
+impl BinanceTradeParser {
+    fn parse_trade_event(&self, json_value: &serde_json::Value, sender: &broadcast::Sender<Bytes>) -> usize {
+        // Extract trade data from Binance trade message
+        if let (Some(symbol), Some(trade_id), Some(price_str), Some(qty_str), Some(event_time), Some(is_maker)) = (
+            json_value.get("s").and_then(|v| v.as_str()),          // 交易对
+            json_value.get("t").and_then(|v| v.as_i64()),          // 交易ID
+            json_value.get("p").and_then(|v| v.as_str()),          // 成交价格
+            json_value.get("q").and_then(|v| v.as_str()),          // 成交数量
+            json_value.get("E").and_then(|v| v.as_i64()),          // 事件时间
+            json_value.get("m").and_then(|v| v.as_bool()),         // 买方是否是做市方
+        ) {
+            // Parse price and quantity
+            if let (Ok(price), Ok(amount)) = (
+                price_str.parse::<f64>(),
+                qty_str.parse::<f64>(),
+            ) {
+                // Filter out zero values - 币安有时候price和amount会是0，过滤掉不发送
+                if price <= 0.0 || amount <= 0.0 {
+                    return 0;
+                }
+                
+                // Determine side: 买方是否是做市方，'S'表示卖出，'B'表示买入
+                // 如果买方是做市方(true)，那么这是一个主动卖出单，标记为'S'
+                // 如果买方不是做市方(false)，那么这是一个主动买入单，标记为'B'
+                let side = if is_maker { 'S' } else { 'B' };
+                
+                // Create trade message
+                let trade_msg = TradeMsg::create(
+                    symbol.to_string(),
+                    trade_id,
+                    event_time,
+                    side,
+                    price,
+                    amount,
+                );
+                
+                // Send trade message
+                if sender.send(trade_msg.to_bytes()).is_ok() {
+                    return 1;
                 }
             }
         }

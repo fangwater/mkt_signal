@@ -1,16 +1,14 @@
 use crate::cfg::Config;
 use crate::sub_msg::SubscribeMsgs;
-use crate::sub_msg::DerivativesMetricsSubscribeMsgs;
-use crate::connection::connection::{MktConnection, MktConnectionHandler};
-use crate::connection::binance_conn::BinanceConnection;
-use crate::connection::okex_conn::OkexConnection;
-use crate::connection::bybit_conn::BybitConnection;
-use crate::connection::mkt_manager::construct_connection;
-use tokio::sync::{broadcast, watch, Notify};
+use crate::parser::binance_parser::BinanceKlineParser;
+use crate::parser::okex_parser::OkexKlineParser;
+use crate::parser::bybit_parser::BybitKlineParser;
+use crate::parser::default_parser::Parser;
+use crate::connection::connection::construct_connection;
+use tokio::sync::{broadcast, watch};
 use tokio::task::JoinSet;
 use bytes::Bytes;
 use log::{info, error};
-use std::sync::Arc;
 
 pub struct KlineDataConnectionManager {
     cfg: Config,
@@ -39,29 +37,8 @@ impl KlineDataConnectionManager {
             let exchange = self.cfg.get_exchange().clone();
             let url = crate::sub_msg::SubscribeMsgs::get_exchange_kline_data_url(&exchange).to_string();
             let subscribe_msg = self.subscribe_msgs.get_kline_subscribe_msg(i).clone();
-            let tx = self.kline_tx.clone();
-            let global_shutdown_rx = self.global_shutdown_rx.clone();
             
-            self.join_set.spawn(async move {
-                let mut connection = match construct_connection(
-                    exchange, 
-                    url, 
-                    subscribe_msg, 
-                    tx, 
-                    global_shutdown_rx
-                ) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        error!("Failed to create kline connection: {}", e);
-                        return;
-                    }
-                };
-                if let Err(e) = connection.start_ws().await {
-                    error!("Kline connection failed: {}", e);
-                } else {
-                    info!("Kline connection closed. finished task for kline msg batch: {}", i);
-                }
-            });
+            self.spawn_kline_connection(exchange, url, subscribe_msg, format!("kline batch {}", i)).await;
         }
         log::info!("All kline connections started...");
     }
@@ -83,6 +60,102 @@ impl KlineDataConnectionManager {
 
     pub fn get_kline_tx(&self) -> broadcast::Sender<Bytes> {
         self.kline_tx.clone()
+    }
+
+    /// 根据交易所类型构造 Kline parser
+    async fn construct_kline_parser(&self, exchange: &str) -> Result<Box<dyn Parser>, Box<dyn std::error::Error>> {
+        match exchange {
+            "binance-futures" | "binance" => {
+                Ok(Box::new(BinanceKlineParser::new()))
+            }
+            "bybit" | "bybit-spot" => {
+                Ok(Box::new(BybitKlineParser::new()))
+            }
+            "okex-swap" | "okex" => {
+                Ok(Box::new(OkexKlineParser::new()))
+            }
+            _ => {
+                error!("Unsupported exchange for kline: {}", exchange);
+                Err(format!("Unsupported exchange: {}", exchange).into())
+            }
+        }
+    }
+
+    async fn spawn_kline_connection(&mut self, exchange: String, url: String, subscribe_msg: serde_json::Value, description: String) {
+        let kline_tx = self.kline_tx.clone();
+        let global_shutdown_rx = self.global_shutdown_rx.clone();
+        
+        // Create parser before moving into the async block
+        let parser = match self.construct_kline_parser(&exchange).await {
+            Ok(p) => p,
+            Err(e) => {
+                error!("Failed to create kline parser for {}: {}", description, e);
+                return;
+            }
+        };
+        
+        self.join_set.spawn(async move {
+            // Create intermediate channel for raw WebSocket data
+            let (raw_tx, mut raw_rx) = broadcast::channel(1000);
+            
+            // Spawn WebSocket connection task
+            let ws_global_shutdown_rx = global_shutdown_rx.clone();
+            let ws_exchange = exchange.clone();
+            let ws_url = url.clone();
+            let ws_subscribe_msg = subscribe_msg.clone();
+            let ws_description = description.clone();
+            
+            tokio::spawn(async move {
+                let mut connection = match construct_connection(
+                    ws_exchange, 
+                    ws_url, 
+                    ws_subscribe_msg, 
+                    raw_tx, 
+                    ws_global_shutdown_rx
+                ) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        error!("Failed to create connection for {}: {}", ws_description, e);
+                        return;
+                    }
+                };
+                if let Err(e) = connection.start_ws().await {
+                    error!("Connection failed for {}: {}", ws_description, e);
+                } else {
+                    info!("Connection closed for {}", ws_description);
+                }
+            });
+            
+            // Spawn parser task
+            let mut shutdown_rx = global_shutdown_rx.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        msg_result = raw_rx.recv() => {
+                            match msg_result {
+                                Ok(raw_msg) => {
+                                    let _parsed_count = parser.parse(raw_msg, &kline_tx);
+                                }
+                                Err(broadcast::error::RecvError::Closed) => {
+                                    info!("Raw message channel closed for {}", description);
+                                    break;
+                                }
+                                Err(broadcast::error::RecvError::Lagged(_)) => {
+                                    error!("Kline parser lagged for {}", description);
+                                    continue;
+                                }
+                            }
+                        }
+                        _ = shutdown_rx.changed() => {
+                            if *shutdown_rx.borrow() {
+                                info!("Kline parser task shutdown for {}", description);
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        });
     }
 
     pub async fn update_subscribe_msgs(&mut self) -> Result<(), Box<dyn std::error::Error>> {

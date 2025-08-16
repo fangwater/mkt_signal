@@ -116,3 +116,31 @@ pub trait MktConnectionHandler : MktConnectionRunner + Send{
     ///通用trait 只是遵循rust的设计模式，对每个交易所都impl一次
     async fn start_ws(&mut self) -> anyhow::Result<()>;
 }
+
+/// 根据交易所类型构造相应的连接处理器
+pub fn construct_connection(
+    exchange: String, 
+    url: String, 
+    subscribe_msg: serde_json::Value, 
+    tx: broadcast::Sender<Bytes>, 
+    global_shutdown_rx: watch::Receiver<bool>
+) -> anyhow::Result<Box<dyn MktConnectionHandler>> {
+    use crate::connection::binance_conn::BinanceConnection;
+    use crate::connection::okex_conn::OkexConnection;
+    use crate::connection::bybit_conn::BybitConnection;
+    
+    let base_connection = MktConnection::new(url, subscribe_msg, tx, global_shutdown_rx);
+    
+    match exchange.as_str() {
+        "binance-futures" | "binance" => {
+            Ok(Box::new(BinanceConnection::new(base_connection)))
+        }
+        "okex-swap" | "okex" => {
+            Ok(Box::new(OkexConnection::new(base_connection)))
+        }
+        "bybit" | "bybit-spot" => {
+            Ok(Box::new(BybitConnection::new(base_connection)))
+        }
+        _ => Err(anyhow::anyhow!("Unsupported exchange: {}", exchange)),
+    }
+}

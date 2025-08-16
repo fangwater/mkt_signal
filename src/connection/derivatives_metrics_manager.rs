@@ -1,12 +1,11 @@
 use crate::cfg::Config;
-use crate::sub_msg::SubscribeMsgs;
+use crate::parser::binance_parser::BinanceDerivativesMetricsParser;
+use crate::parser::okex_parser::OkexDerivativesMetricsParser;
+use crate::parser::bybit_parser::BybitDerivativesMetricsParser;
+use crate::parser::default_parser::Parser;
 use crate::sub_msg::DerivativesMetricsSubscribeMsgs;
-use crate::connection::connection::{MktConnection, MktConnectionHandler};
-use crate::connection::binance_conn::BinanceConnection;
-use crate::connection::okex_conn::OkexConnection;
-use crate::connection::bybit_conn::BybitConnection;
-use crate::connection::mkt_manager::construct_connection;
-use tokio::sync::{broadcast, watch, Notify};
+use crate::connection::connection::construct_connection;
+use tokio::sync::{broadcast, watch};
 use tokio::task::JoinSet;
 use bytes::Bytes;
 use log::{info, error};
@@ -88,30 +87,100 @@ impl DerivativesMetricsDataConnectionManager {
             self.spawn_connection(exchange.clone(), url.clone(), liquidation_msg.clone(), format!("bybit liquidation batch {}", i)).await;
         }
     }
+    async fn construct_parser(&self, exchange: &str) -> Result<Box<dyn Parser>, Box<dyn std::error::Error>> {
+        // 获取 symbol set
+        let symbols = self.subscribe_msgs.get_active_symbols();
+        
+        match exchange {
+            "binance-futures" => {
+                Ok(Box::new(BinanceDerivativesMetricsParser::new(symbols.clone())))
+            }
+            "bybit" => {
+                Ok(Box::new(BybitDerivativesMetricsParser::new()))
+            }
+            "okex-swap" => {
+                Ok(Box::new(OkexDerivativesMetricsParser::new(symbols.clone())))
+            }
+            _ => {
+                panic!("Unsupported exchange for derivatives metrics: {}", exchange);
+            }
+        }
+    }
 
     async fn spawn_connection(&mut self, exchange: String, url: String, subscribe_msg: serde_json::Value, description: String) {
-        let tx = self.metrics_tx.clone();
+        let metrics_tx = self.metrics_tx.clone();
         let global_shutdown_rx = self.global_shutdown_rx.clone();
         
-        self.join_set.spawn(async move {
-            let mut connection = match construct_connection(
-                exchange, 
-                url, 
-                subscribe_msg, 
-                tx, 
-                global_shutdown_rx
-            ) {
-                Ok(c) => c,
-                Err(e) => {
-                    error!("Failed to create connection for {}: {}", description, e);
-                    return;
-                }
-            };
-            if let Err(e) = connection.start_ws().await {
-                error!("Connection failed for {}: {}", description, e);
-            } else {
-                info!("Connection closed for {}", description);
+        // Create parser before moving into the async block
+        let parser = match self.construct_parser(&exchange).await {
+            Ok(p) => p,
+            Err(e) => {
+                error!("Failed to create parser for {}: {}", description, e);
+                return;
             }
+        };
+        
+        self.join_set.spawn(async move {
+            // Create intermediate channel for raw WebSocket data
+            let (raw_tx, mut raw_rx) = broadcast::channel(1000);
+            // Spawn WebSocket connection task
+            let ws_global_shutdown_rx = global_shutdown_rx.clone();
+            let ws_exchange = exchange.clone();
+            let ws_url = url.clone();
+            let ws_subscribe_msg = subscribe_msg.clone();
+            let ws_description = description.clone();
+            
+            tokio::spawn(async move {
+                let mut connection = match construct_connection(
+                    ws_exchange, 
+                    ws_url, 
+                    ws_subscribe_msg, 
+                    raw_tx, 
+                    ws_global_shutdown_rx
+                ) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        error!("Failed to create connection for {}: {}", ws_description, e);
+                        return;
+                    }
+                };
+                if let Err(e) = connection.start_ws().await {
+                    error!("Connection failed for {}: {}", ws_description, e);
+                } else {
+                    info!("Connection closed for {}", ws_description);
+                }
+            });
+            
+            // Spawn parser task
+            let mut shutdown_rx = global_shutdown_rx.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        msg_result = raw_rx.recv() => {
+                            match msg_result {
+                                Ok(raw_msg) => {
+                                    // TODO(human): Use the parser to process raw_msg and send to metrics_tx
+                                    let _parsed_count = parser.parse(raw_msg, &metrics_tx);
+                                }
+                                Err(broadcast::error::RecvError::Closed) => {
+                                    info!("Raw message channel closed for {}", description);
+                                    break;
+                                }
+                                Err(broadcast::error::RecvError::Lagged(_)) => {
+                                    error!("Parser lagged for {}", description);
+                                    continue;
+                                }
+                            }
+                        }
+                        _ = shutdown_rx.changed() => {
+                            if *shutdown_rx.borrow() {
+                                info!("Parser task shutdown for {}", description);
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
         });
     }
 

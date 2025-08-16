@@ -1,4 +1,4 @@
-use crate::mkt_msg::{SignalMsg, SignalSource, KlineMsg, LiquidationMsg, MarkPriceMsg, IndexPriceMsg, FundingRateMsg};
+use crate::mkt_msg::{SignalMsg, SignalSource, KlineMsg, LiquidationMsg, MarkPriceMsg, IndexPriceMsg, FundingRateMsg, TradeMsg};
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use tokio::sync::broadcast;
@@ -250,6 +250,163 @@ impl BybitDerivativesMetricsParser {
                 }
                 
                 return parsed_count;
+            }
+        }
+        0
+    }
+}
+
+// UUID处理辅助函数
+fn hex_char_to_int(c: char) -> Result<u8, String> {
+    match c {
+        '0'..='9' => Ok(c as u8 - b'0'),
+        'a'..='f' => Ok(10 + (c as u8 - b'a')),
+        'A'..='F' => Ok(10 + (c as u8 - b'A')),
+        _ => Err(format!("Invalid hex character: {}", c)),
+    }
+}
+
+fn is_uuid_fast(s: &str) -> bool {
+    // UUID 标准长度 36 字符（32 十六进制 + 4 短横线）
+    if s.len() != 36 {
+        return false;
+    }
+    
+    // 检查短横线位置是否正确
+    let chars: Vec<char> = s.chars().collect();
+    chars[8] == '-' && chars[13] == '-' && chars[18] == '-' && chars[23] == '-'
+}
+
+fn is_numeric(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
+}
+
+// 解析 8 个十六进制字符 -> u64
+fn parse_hex_u64(hex: &str) -> Result<u64, String> {
+    if hex.len() < 8 {
+        return Err("Hex string too short".to_string());
+    }
+    
+    let mut result = 0u64;
+    for (_i, c) in hex.chars().take(8).enumerate() {
+        result = (result << 4) | (hex_char_to_int(c)? as u64);
+    }
+    Ok(result)
+}
+
+// 主函数：UUID -> int64_t（高低位混合）
+fn uuid_to_int64_mixed(uuid: &str) -> Result<i64, String> {
+    if uuid.len() < 36 {
+        return Err("Invalid UUID format".to_string());
+    }
+    
+    // 高位：前 8 字符（跳过第8位的 '-'）
+    let high = parse_hex_u64(&uuid[0..8])?;
+    
+    // 低位：后 8 字符（从第24位开始，跳过版本标识）
+    let low = parse_hex_u64(&uuid[24..32])?;
+    
+    // 混合高低位（异或减少冲突）
+    Ok((high ^ low) as i64)
+}
+
+pub struct BybitTradeParser;
+
+impl BybitTradeParser {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Parser for BybitTradeParser {
+    fn parse(&self, msg: Bytes, sender: &broadcast::Sender<Bytes>) -> usize {
+        // Parse Bybit trade message
+        if let Ok(json_str) = std::str::from_utf8(&msg) {
+            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
+                // Check if this is a trade topic
+                if let Some(topic) = json_value.get("topic").and_then(|v| v.as_str()) {
+                    if topic.starts_with("publicTrade.") {
+                        return self.parse_trade_event(&json_value, sender);
+                    }
+                }
+            }
+        }
+        0
+    }
+}
+
+impl BybitTradeParser {
+    fn parse_trade_event(&self, json_value: &serde_json::Value, sender: &broadcast::Sender<Bytes>) -> usize {
+        // Extract trade data from Bybit trade message
+        // Bybit trade message format: data is an array with trade objects
+        if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
+            if let Some(trade_data) = data_array.first() {
+                if let (Some(symbol), Some(side_str), Some(price_str), Some(volume_str), Some(timestamp), Some(id_str)) = (
+                    trade_data.get("s").and_then(|v| v.as_str()),          // 交易对
+                    trade_data.get("S").and_then(|v| v.as_str()),          // 买卖方向
+                    trade_data.get("p").and_then(|v| v.as_str()),          // 成交价格
+                    trade_data.get("v").and_then(|v| v.as_str()),          // 成交数量
+                    trade_data.get("T").and_then(|v| v.as_i64()),          // 成交时间
+                    trade_data.get("i").and_then(|v| v.as_str()),          // 交易ID
+                ) {
+                    // Parse price and volume
+                    if let (Ok(price), Ok(amount)) = (
+                        price_str.parse::<f64>(),
+                        volume_str.parse::<f64>(),
+                    ) {
+                        // Filter out zero values
+                        if price <= 0.0 || amount <= 0.0 {
+                            return 0;
+                        }
+                        
+                        // Convert Bybit side to char
+                        let side = match side_str {
+                            "Sell" => 'S',
+                            "Buy" => 'B',
+                            _ => {
+                                eprintln!("Unknown side: {}", side_str);
+                                return 0;
+                            }
+                        };
+                        
+                        // Parse ID - could be UUID or numeric
+                        let trade_id = if is_uuid_fast(id_str) {
+                            match uuid_to_int64_mixed(id_str) {
+                                Ok(id) => id,
+                                Err(e) => {
+                                    eprintln!("Failed to parse UUID {}: {}", id_str, e);
+                                    return 0;
+                                }
+                            }
+                        } else if is_numeric(id_str) {
+                            match id_str.parse::<i64>() {
+                                Ok(id) => id,
+                                Err(e) => {
+                                    eprintln!("Failed to parse numeric ID {}: {}", id_str, e);
+                                    return 0;
+                                }
+                            }
+                        } else {
+                            eprintln!("Unknown ID format: {}", id_str);
+                            return 0;
+                        };
+                        
+                        // Create trade message
+                        let trade_msg = TradeMsg::create(
+                            symbol.to_string(),
+                            trade_id,
+                            timestamp,
+                            side,
+                            price,
+                            amount,
+                        );
+                        
+                        // Send trade message
+                        if sender.send(trade_msg.to_bytes()).is_ok() {
+                            return 1;
+                        }
+                    }
+                }
             }
         }
         0
