@@ -10,27 +10,8 @@ use tokio::sync::{broadcast, watch, Notify};
 use tokio::task::JoinSet;
 use bytes::Bytes;
 use log::{info, error};
-use std::sync::Arc;
 
-//订阅
-pub struct MktDataConnectionManager {
-    cfg: Config, //进程基本参数
-    subscribe_msgs: SubscribeMsgs, //所有的订阅消息
-    inc_tx: broadcast::Sender<Bytes>, //行情消息转发通道
-    trade_tx: broadcast::Sender<Bytes>, //行情消息转发通道
-    global_shutdown_rx: watch::Receiver<bool>, //全局关闭信号
-    tp_reset_notify: Arc<Notify>, //tp重置消息通知
-    join_set: JoinSet<()>, //任务集合
-}
-
-pub struct KlineDataConnectionManager {
-    cfg: Config, //进程基本参数
-    subscribe_msgs: SubscribeMsgs, //所有的订阅消息
-    kline_tx: broadcast::Sender<Bytes>, //kline消息转发通道
-    global_shutdown_rx: watch::Receiver<bool>, //全局关闭信号
-    join_set: JoinSet<()>, //任务集合
-}
-
+//订阅衍生品相关数据
 pub struct DerivativesMetricsDataConnectionManager {
     cfg: Config,
     subscribe_msgs: DerivativesMetricsSubscribeMsgs,

@@ -1,7 +1,7 @@
 const WebSocket = require('ws');
 
 // OKEx WebSocket 地址
-const wsUrl = 'wss://ws.okx.com:8443/ws/v5/public';
+const wsUrl = 'wss://ws.okx.com:8443/ws/v5/';
 
 // 创建 WebSocket 连接
 const ws = new WebSocket(wsUrl);
@@ -9,7 +9,7 @@ const ws = new WebSocket(wsUrl);
 // 要订阅的币种列表和频道
 // const symbols = ['BTC-USDT'];
 const symbols = ["BTC-USDT-SWAP"];
-const channel = "mark-price"; // 可选: tickers, books, trades, candle1m 等
+const channel = "candle1m"; // 可选: tickers, books, trades, candle1m 等
 
 // 存储ping发送时间
 let pingSentTime = null;

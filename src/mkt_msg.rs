@@ -16,8 +16,10 @@ pub enum MktMsgType {
     TpReset = 1009,
     Kline = 1010,
     MarkPrice = 1011,
-    LiquidationOrder = 1012,
-    Error = 1013,
+    IndexPrice = 1012,
+    LiquidationOrder = 1013,
+    FundingRate = 1014,
+    Error = 2222,
 }
 
 #[allow(dead_code)]
@@ -29,8 +31,8 @@ pub struct MktMsg {
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy)]
-enum SignalSource {
-    pubError = 0,
+pub enum SignalSource {
+    Error = 0,
     Ipc = 1,
     Tcp = 2,
 }
@@ -39,6 +41,49 @@ pub struct SignalMsg {
     pub msg_type: MktMsgType,
     pub source: SignalSource,
     pub timestamp: i64
+}
+
+pub struct KlineMsg {
+    pub msg_type: MktMsgType,
+    pub symbol_length: u32,
+    pub symbol: String,
+    pub open_price: f64,
+    pub high_price: f64,
+    pub low_price: f64,
+    pub close_price: f64,
+    pub volume: f64,
+    pub timestamp: i64,
+}
+
+pub struct FundingRateMsg {
+    pub msg_type: MktMsgType,
+    pub symbol_length: u32,
+    pub symbol: String,
+    pub funding_rate: f64,
+    pub next_funding_time: i64,
+    pub timestamp: i64,
+}
+
+pub struct MarkPriceMsg {
+    pub msg_type: MktMsgType,
+    pub symbol_length: u32,
+    pub symbol: String,
+    pub mark_price: f64,
+    pub timestamp: i64,
+}
+
+pub struct IndexPriceMsg {
+    pub msg_type: MktMsgType,
+    pub symbol_length: u32,
+    pub symbol: String,
+    pub index_price: f64,
+    pub timestamp: i64,
+}
+/// 对永续合约来说, 预估结算
+
+impl FundingRateMsg {
+    /// 创建一个费率信息消息
+    pub fn create(src: )
 }
 
 impl SignalMsg {
@@ -60,6 +105,57 @@ impl SignalMsg {
     }
 }
 
+impl KlineMsg {
+    /// Create a kline message
+    pub fn create(
+        symbol: String,
+        open_price: f64,
+        high_price: f64,
+        low_price: f64,
+        close_price: f64,
+        volume: f64,
+        timestamp: i64,
+    ) -> Self {
+        let symbol_length = symbol.len() as u32;
+        Self {
+            msg_type: MktMsgType::Kline,
+            symbol_length,
+            symbol,
+            open_price,
+            high_price,
+            low_price,
+            close_price,
+            volume,
+            timestamp,
+        }
+    }
+
+    /// Convert message to bytes
+    pub fn to_bytes(&self) -> Bytes {
+        // Calculate total size: msg_type(4) + symbol_length(4) + symbol + 5*f64(8*5) + timestamp(8)
+        let total_size = 4 + 4 + self.symbol_length as usize + 5 * 8 + 8;
+        let mut buf = BytesMut::with_capacity(total_size);
+        
+        // Write header
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_u32_le(self.symbol_length);
+        
+        // Write symbol
+        buf.put(self.symbol.as_bytes());
+        
+        // Write OHLCV data
+        buf.put_f64_le(self.open_price);
+        buf.put_f64_le(self.high_price);
+        buf.put_f64_le(self.low_price);
+        buf.put_f64_le(self.close_price);
+        buf.put_f64_le(self.volume);
+        
+        // Write timestamp
+        buf.put_i64_le(self.timestamp);
+        
+        buf.freeze()
+    }
+}
 
 impl MktMsg {
     /// 从bytes创建消息

@@ -1,6 +1,5 @@
 use crate::cfg::Config;
 use crate::sub_msg::SubscribeMsgs;
-use crate::sub_msg::DerivativesMetricsSubscribeMsgs;
 use crate::connection::connection::{MktConnection, MktConnectionHandler};
 use crate::connection::binance_conn::BinanceConnection;
 use crate::connection::okex_conn::OkexConnection;
@@ -11,7 +10,7 @@ use bytes::Bytes;
 use log::{info, error};
 use std::sync::Arc;
 
-//订阅
+//订阅逐笔行情，orderbook增量消息，纯转发
 pub struct MktDataConnectionManager {
     cfg: Config, //进程基本参数
     subscribe_msgs: SubscribeMsgs, //所有的订阅消息
@@ -22,9 +21,6 @@ pub struct MktDataConnectionManager {
     tp_reset_notify: Arc<Notify>, //tp重置消息通知
     join_set: JoinSet<()>, //任务集合
 }
-
-
-
 
 pub fn construct_connection(exchange: String, url: String, subscribe_msg: serde_json::Value, tx: broadcast::Sender<Bytes>, global_shutdown_rx: watch::Receiver<bool>) -> anyhow::Result<Box<dyn MktConnectionHandler>> {
     let base_connection = MktConnection::new(url, subscribe_msg, tx, global_shutdown_rx);
@@ -82,14 +78,14 @@ impl MktDataConnectionManager {
         // 1. 启动所有增量连接
         for i in 0..self.subscribe_msgs.get_inc_subscribe_msg_len() {
             let exchange = self.cfg.get_exchange().clone();
-            let url = self.cfg.get_exchange_url().unwrap();
+            let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange);
             let subscribe_msg = self.subscribe_msgs.get_inc_subscribe_msg(i).clone();
             let tx = self.inc_tx.clone();
             let global_shutdown_rx = self.global_shutdown_rx.clone();
             self.join_set.spawn(async move {
                 let mut connection = match construct_connection(
                     exchange, 
-                    url, 
+                    url.into(), 
                     subscribe_msg, 
                     tx, 
                     global_shutdown_rx
@@ -111,7 +107,7 @@ impl MktDataConnectionManager {
         // 2. 启动所有交易连接
         for i in 0..self.subscribe_msgs.get_trade_subscribe_msg_len() {
             let exchange = self.cfg.get_exchange().clone();
-            let url = self.cfg.get_exchange_url().unwrap();
+            let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange);
             let subscribe_msg = self.subscribe_msgs.get_trade_subscribe_msg(i).clone();
             let tx = self.trade_tx.clone();
             let global_shutdown_rx = self.global_shutdown_rx.clone();
@@ -119,7 +115,7 @@ impl MktDataConnectionManager {
             self.join_set.spawn(async move {
                 let mut connection = match construct_connection(
                     exchange, 
-                    url, 
+                    url.into(), 
                     subscribe_msg, 
                     tx, 
                     global_shutdown_rx
