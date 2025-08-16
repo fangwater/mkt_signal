@@ -6,6 +6,7 @@ use crate::cfg::{ZmqProxyCfg, Config};
 use std::time::Duration;
 use tokio::time::sleep;
 use log::{info, warn, error, debug};
+use std::collections::HashMap;
 
 //zmq_forwarder,通过ipc和tcp转发消息
 pub struct ZmqForwarder{
@@ -17,6 +18,9 @@ pub struct ZmqForwarder{
     tcp_socket: Socket,
     ipc_count: u64,
     tcp_count: u64,
+    ipc_dropped: u64,
+    tcp_dropped: u64,
+    topic_counts: HashMap<String, u64>,
 }
 
 impl ZmqForwarder {
@@ -39,6 +43,9 @@ impl ZmqForwarder {
             tcp_socket,
             ipc_count: 0,
             tcp_count: 0,
+            ipc_dropped: 0,
+            tcp_dropped: 0,
+            topic_counts: HashMap::new(),
         };
 
         forwarder.bind()?;
@@ -78,57 +85,46 @@ impl ZmqForwarder {
     }
 
     pub async fn send_msg(&mut self, msg: Bytes) -> bool {
-        const MAX_RETRIES: usize = 3;
-        const RETRY_DELAY_MS: u64 = 1000;
-        let mut retry_count = 0;
+        // PUB模式下，发送失败通常是缓冲区满，重试意义不大，直接快速失败
         let mut ipc_success = false;
 
-        while !ipc_success && retry_count < MAX_RETRIES {
-            // 先尝试IPC发送
-            match self.ipc_socket.send(&msg[..], zmq::DONTWAIT) {
-                Ok(_) => {
-                    self.ipc_count += 1;
-                    ipc_success = true;
-                    debug!("IPC send success, count: {}", self.ipc_count);
+        // 尝试IPC发送
+        match self.ipc_socket.send(&msg[..], zmq::DONTWAIT) {
+            Ok(_) => {
+                self.ipc_count += 1;
+                ipc_success = true;
+                debug!("IPC send success, count: {}", self.ipc_count);
 
-                    // IPC发送成功后，尝试TCP发送
-                    match self.tcp_socket.send(&msg[..], zmq::DONTWAIT) {
-                        Ok(_) => {
-                            self.tcp_count += 1;
-                            debug!("TCP send success, count: {}", self.tcp_count);
-                        }
-                        Err(e) => {
-                            // TCP发送失败直接忽略
-                            if e != zmq::Error::EAGAIN {
-                                debug!("TCP send error: {}", e);
-                            }
-                        }
+                // IPC发送成功后，尝试TCP发送
+                match self.tcp_socket.send(&msg[..], zmq::DONTWAIT) {
+                    Ok(_) => {
+                        self.tcp_count += 1;
+                        debug!("TCP send success, count: {}", self.tcp_count);
                     }
-                }
-                Err(e) => {
-                    if e == zmq::Error::EAGAIN {
-                        // IPC对端未启动，需要重试
-                        warn!("IPC peer not ready (EAGAIN), attempt {}/{}, error: {}", 
-                              retry_count + 1, MAX_RETRIES, e);
-                        if retry_count < MAX_RETRIES - 1 {
-                            sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+                    Err(e) => {
+                        // TCP发送失败直接忽略
+                        if e == zmq::Error::EAGAIN {
+                            self.tcp_dropped += 1;
+                            debug!("TCP send failed (buffer full), dropped: {}", self.tcp_dropped);
+                        } else {
+                            debug!("TCP send error: {}", e);
                         }
-                    } else {
-                        // 其他错误
-                        error!("IPC error on attempt {}/{}, error: {}", 
-                               retry_count + 1, MAX_RETRIES, e);
                     }
                 }
             }
-            retry_count += 1;
+            Err(e) => {
+                if e == zmq::Error::EAGAIN {
+                    // PUB模式下EAGAIN通常是缓冲区满，重试无意义，直接丢弃
+                    self.ipc_dropped += 1;
+                    debug!("IPC send failed (buffer full), dropped: {}", self.ipc_dropped);
+                } else {
+                    // 其他错误
+                    warn!("IPC send error: {}", e);
+                }
+            }
         }
 
-        if !ipc_success {
-            error!("Failed to send IPC message after {} attempts", MAX_RETRIES);
-            false
-        } else {
-            true
-        }
+        ipc_success
     }
     
     pub async fn send_tp_reset_msg(&mut self) -> bool {
@@ -154,9 +150,12 @@ impl ZmqForwarder {
     }
 
     pub fn log_stats(&mut self) {
-        info!("stats: ipc_count: {}, tcp_count: {}", self.ipc_count, self.tcp_count);
+        info!("stats: ipc_count: {}, tcp_count: {}, ipc_dropped: {}, tcp_dropped: {}", 
+              self.ipc_count, self.tcp_count, self.ipc_dropped, self.tcp_dropped);
         self.ipc_count = 0;
         self.tcp_count = 0;
+        self.ipc_dropped = 0;
+        self.tcp_dropped = 0;
     }
 }
 
