@@ -3,6 +3,7 @@ restart_duration_secs: 1800 #3分钟重启一次，奇数偶数决定主备重�
 snapshot_requery_time: "--:--:--"
 symbol_socket: "/root/project/symbol_server/exchange"
 exchange: binance-futures
+topic: [""]
 
 binance_proxy:
   ipc_path: "/tmp/zmq_mkt_binance_feeds.ipc"

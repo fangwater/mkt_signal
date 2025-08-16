@@ -5,13 +5,56 @@ use crate::parser::binance_parser::{BinanceSignalParser, BinanceTradeParser};
 use crate::parser::okex_parser::{OkexSignalParser, OkexTradeParser};
 use crate::parser::bybit_parser::{BybitSignalParser, BybitTradeParser};
 use crate::connection::connection::construct_connection;
+use crate::connection::binance_conn::BinanceFuturesSnapshotQuery;
 use tokio::sync::{broadcast, watch, Notify};
 use tokio::task::JoinSet;
 use bytes::Bytes;
 use log::{info, error};
 use std::sync::Arc;
+use tokio::time::{Duration, Instant};
+use chrono::{Utc, TimeDelta, NaiveTime};
 
 //订阅逐笔行情，orderbook增量消息，通过parser处理后转发
+
+pub fn next_target_instant(time_str: &str) -> Instant {
+    if time_str == "--:--:--" {
+        log::warn!("Using fallback time + 30 seconds from now");
+        return Instant::now() + Duration::from_secs(5);
+    }
+
+    // 解析时间字符串
+    let target_time = match NaiveTime::parse_from_str(time_str, "%H:%M:%S") {
+        Ok(time) => time,
+        Err(_) => {
+            log::warn!("Invalid time format '{}', using 00:00:00", time_str);
+            NaiveTime::from_hms_opt(0, 0, 0).unwrap()
+        }
+    };
+
+    // 获取当前UTC时间
+    let now = Utc::now();
+    let now_naive = now.naive_utc();
+    
+    // 构造今天的目标时间
+    let today_target = now.date_naive().and_time(target_time);
+    
+    // 计算目标时间（如果已过今天就取明天）
+    let target = if now_naive < today_target {
+        today_target
+    } else {
+        today_target + TimeDelta::days(1)
+    };
+    
+    // 计算需要等待的时间长度
+    let sleep_duration = target - now_naive;
+    
+    // 转换为std::time::Duration
+    let sleep_std = sleep_duration.to_std().unwrap();
+    
+    // 返回目标时刻的tokio Instant
+    Instant::now() + sleep_std
+}
+
 pub struct MktDataConnectionManager {
     cfg: Config, //进程基本参数
     subscribe_msgs: SubscribeMsgs, //所有的订阅消息
@@ -53,6 +96,98 @@ impl MktDataConnectionManager {
     }
 
     
+    pub async fn start_snapshot_task(&mut self) {
+        let exchange = self.cfg.get_exchange().clone();
+        let is_primary = self.cfg.is_primary;
+        
+        // Only start snapshot task for Binance exchanges and primary nodes
+        if (exchange != "binance-futures" && exchange != "binance") || !is_primary {
+            info!("跳过快照任务 - 非币安交易所或非主节点");
+            return;
+        }
+        
+        let snapshot_requery_time = match self.cfg.snapshot_requery_time.as_ref() {
+            Some(time) => time.clone(),
+            None => {
+                error!("未配置 snapshot_requery_time");
+                return;
+            }
+        };
+        
+        let cfg_clone = self.cfg.clone();
+        let mut global_shutdown_rx = self.global_shutdown_rx.clone();
+        let mkt_tx = self.mkt_tx.clone();
+        
+        self.join_set.spawn(async move {
+            // 特别处理 当snapshot_requery_time为11:11:11时，是因为在hk地区无法收到币安future的快照，无法修正
+            let mut next_snapshot_query_instant;    
+            let not_query_snapshot;
+            if snapshot_requery_time == "11:11:11" {
+                info!("在不支持地区跳过币安期货深度快照查询!");
+                next_snapshot_query_instant = next_target_instant("00:00:01");
+                not_query_snapshot = true;
+            } else {
+                next_snapshot_query_instant = next_target_instant(&snapshot_requery_time);
+                not_query_snapshot = false;
+            }
+            
+            info!("币安快照任务已启动，下次查询时间: {:?}", next_snapshot_query_instant);
+            
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep_until(next_snapshot_query_instant) => {
+                        info!("在 {:?} 查询深度快照", next_snapshot_query_instant);
+                        
+                        if not_query_snapshot && exchange == "binance-futures" {
+                            info!("在不支持地区跳过币安期货深度快照查询!");
+                            next_snapshot_query_instant += Duration::from_secs(24 * 60 * 60);
+                            continue;
+                        }
+                        
+                        // 创建快照查询任务，使用 DefaultIncParser 处理快照数据
+                        let mkt_tx_clone = mkt_tx.clone();
+                        let exchange_clone = exchange.clone();
+                        let cfg_clone2 = cfg_clone.clone();
+                        tokio::spawn(async move {
+                            // Create intermediate channel for snapshot data
+                            let (snapshot_raw_tx, mut snapshot_raw_rx) = broadcast::channel(100);
+                            let parser = DefaultIncParser::new();
+                            
+                            // Start snapshot fetching task
+                            let snapshot_tx_clone = snapshot_raw_tx.clone();
+                            let exchange_clone2 = exchange_clone.clone();
+                            let cfg_clone3 = cfg_clone2.clone();
+                            tokio::spawn(async move {
+                                let symbols = match cfg_clone3.get_symbols().await {
+                                    Ok(symbols) => symbols,
+                                    Err(e) => {
+                                        error!("获取快照查询符号失败: {}", e);
+                                        return;
+                                    }
+                                };
+                                BinanceFuturesSnapshotQuery::start_fetching_depth(exchange_clone2.as_str(), symbols, snapshot_tx_clone).await;
+                                info!("为 {} 成功查询深度快照", exchange_clone2);
+                            });
+                            
+                            // Parse snapshot data and forward to mkt_tx
+                            while let Ok(snapshot_data) = snapshot_raw_rx.recv().await {
+                                let _parsed_count = parser.parse(snapshot_data, &mkt_tx_clone);
+                            }
+                        });
+                        
+                        next_snapshot_query_instant += Duration::from_secs(24 * 60 * 60);
+                    }
+                    _ = global_shutdown_rx.changed() => {
+                        if *global_shutdown_rx.borrow() {
+                            info!("币安快照任务关闭");
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     pub async fn start_all_connections(&mut self) {
         // 1. 启动所有增量连接
         for i in 0..self.subscribe_msgs.get_inc_subscribe_msg_len() {
@@ -81,7 +216,7 @@ impl MktDataConnectionManager {
                     self.spawn_mkt_connection_typed(exchange, url, subscribe_msg, format!("trade msg batch {}", i), parser).await;
                 }
                 "okex-swap" | "okex" => {
-                    let parser = OkexTradeParser::new();
+                    let parser  = OkexTradeParser::new();
                     self.spawn_mkt_connection_typed(exchange, url, subscribe_msg, format!("trade msg batch {}", i), parser).await;
                 }
                 _ => {
@@ -95,6 +230,8 @@ impl MktDataConnectionManager {
         
         // 3、启动独立的时间信号源连接
         let exchange = self.cfg.get_exchange().clone();
+
+        // 如果是币安且为主机，额外启动快照query
         let url = crate::sub_msg::SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
         let signal_subscribe_msg = self.subscribe_msgs.get_time_signal_subscribe_msg();
         
@@ -111,8 +248,8 @@ impl MktDataConnectionManager {
         
         self.spawn_mkt_connection(exchange, url, signal_subscribe_msg, "time signal".to_string(), signal_parser).await;
 
-
-
+        // 4. 启动币安快照查询任务（仅主节点且为币安交易所）
+        self.start_snapshot_task().await;
     
         log::info!("All connections started...");
     }

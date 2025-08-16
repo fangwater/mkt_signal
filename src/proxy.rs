@@ -4,7 +4,6 @@ use bytes::Bytes;
 use std::time::Duration;
 use tokio::time::interval;
 use tokio::sync::broadcast;
-use crate::parser::default_parser::Parser;
 use tokio::sync::watch;
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -12,28 +11,20 @@ use tokio::sync::Notify;
 //proxy需要异步运行，因此需要实现send trait
 pub struct Proxy {
     forwarder: ZmqForwarder, 
-    inc_rx : broadcast::Receiver<Bytes>,
-    trade_rx : broadcast::Receiver<Bytes>,
+    out_rx : broadcast::Receiver<Bytes>,
     binance_snapshot_rx : broadcast::Receiver<Bytes>,
-    inc_parser : Box<dyn Parser>,
-    trade_parser : Box<dyn Parser>,
     proxy_shutdown: watch::Receiver<bool>,
-    inc_count: u64,
-    trade_count: u64,
     tp_reset_notify: Arc<Notify>,
 }
 
 
 impl Proxy {
-    pub fn new(forwarder: ZmqForwarder, inc_rx: broadcast::Receiver<Bytes>, trade_rx: broadcast::Receiver<Bytes>, binance_snapshot_rx: broadcast::Receiver<Bytes>, proxy_shutdown: watch::Receiver<bool>, tp_reset_notify: Arc<Notify>) -> Self {
-        use crate::parser::default_parser::{DefaultIncParser, DefaultTradeParser};
+    pub fn new(forwarder: ZmqForwarder, out_rx: broadcast::Receiver<Bytes>, trade_rx: broadcast::Receiver<Bytes>, binance_snapshot_rx: broadcast::Receiver<Bytes>, proxy_shutdown: watch::Receiver<bool>, tp_reset_notify: Arc<Notify>) -> Self {
         Self { 
             forwarder, 
             inc_rx, 
             trade_rx,
             binance_snapshot_rx,
-            inc_parser: Box::new(DefaultIncParser::new()),
-            trade_parser: Box::new(DefaultTradeParser::new()),
             proxy_shutdown: proxy_shutdown,
             inc_count: 0,
             trade_count: 0,

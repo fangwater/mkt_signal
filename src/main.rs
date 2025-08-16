@@ -16,11 +16,9 @@ use tokio::signal;
 use tokio::sync::watch;
 use restart_checker::RestartChecker;
 use crate::connection::mkt_manager::MktDataConnectionManager;
-use chrono::{Utc, TimeDelta, NaiveTime};
 use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use tokio::sync::OnceCell;
-use crate::connection::binance_conn::BinanceFuturesSnapshotQuery;
 use clap::Parser;
 
 #[derive(Parser)]
@@ -33,54 +31,14 @@ struct Args {
 }
 
 
-pub fn next_target_instant(time_str: &str) -> Instant {
-    if time_str == "--:--:--" {
-        println!("WARNING: Using fallback time + 30 seconds from now");
-        return Instant::now() + Duration::from_secs(5);
-    }
 
-    // 解析时间字符串
-    let target_time = match NaiveTime::parse_from_str(time_str, "%H:%M:%S") {
-        Ok(time) => time,
-        Err(_) => {
-            println!("WARNING: Invalid time format '{}', using 00:00:00", time_str);
-            NaiveTime::from_hms_opt(0, 0, 0).unwrap()
-        }
-    };
-
-    // 获取当前UTC时间
-    let now = Utc::now();
-    let now_naive = now.naive_utc();
-    
-    // 构造今天的目标时间
-    let today_target = now.date_naive().and_time(target_time);
-    
-    // 计算目标时间（如果已过今天就取明天）
-    let target = if now_naive < today_target {
-        today_target
-    } else {
-        today_target + TimeDelta::days(1)
-    };
-    
-    // 计算需要等待的时间长度
-    let sleep_duration = target - now_naive;
-    
-    // 转换为std::time::Duration
-    let sleep_std = sleep_duration.to_std().unwrap();
-    
-    // 返回目标时刻的tokio Instant
-    Instant::now() + sleep_std
-}
-
-fn format_status_table(next_restart: u64, next_snapshot_query: u64) -> String {
+fn format_status_table(next_restart: u64) -> String {
     format!("\n\
          |-------------------------|-------------|\n\
          | Next Restart            | {:>10}s     |\n\
-         | Next Snapshot Query     | {:>10}s     |\n\
          |-------------------------|-------------|",
-        next_restart, next_snapshot_query
+        next_restart
     )
-
 }
 
 async fn perform_restart(
@@ -153,14 +111,12 @@ async fn main() -> anyhow::Result<()> {
 
     log::info!("Starting proxy......");
     //启动proxy
-    let mkt_inc_rx = mkt_connection_manager.get_inc_tx().subscribe();
-    let mkt_trade_rx = mkt_connection_manager.get_trade_tx().subscribe();
-    let (binance_snapshot_tx, binance_snapshot_rx) = tokio::sync::broadcast::channel(100);
+    let mkt_rx = mkt_connection_manager.get_mkt_tx().subscribe();
     //使用tokio spwan运行proxy
     let proxy_shutdown_rx_clone: watch::Receiver<bool> = proxy_shutdown_rx.clone();
     tokio::spawn(
         async move {
-        let mut proxy: Proxy = Proxy::new(forwarder, mkt_inc_rx, mkt_trade_rx, binance_snapshot_rx, proxy_shutdown_rx_clone, tp_reset_notify);
+        let mut proxy: Proxy = Proxy::new(forwarder, mkt_rx, proxy_shutdown_rx_clone, tp_reset_notify);
         proxy.run().await;
     });
     //建立connection，并启动
@@ -191,17 +147,6 @@ async fn main() -> anyhow::Result<()> {
 
     let mut next_restart_instant = restart_checker.get_next_restart_instant();
     log::info!("Next restart instant: {:?}", next_restart_instant);
-    //特别处理 当snapshot_requery_time为11:11:11时，是因为在hk地区无法收到币安future的快照，无法修正，使用00:00:01，但futures不请求快照
-    let mut next_snapshot_query_instant;    
-    let not_query_snapshot;
-    if cfg.snapshot_requery_time.as_ref().unwrap() == "11:11:11" {
-        log::info!("Skip query depth snapshot for binance-futures in no support area!");
-        next_snapshot_query_instant = next_target_instant("00:00:01");
-        not_query_snapshot = true;
-    } else {
-        next_snapshot_query_instant = next_target_instant(cfg.snapshot_requery_time.as_ref().unwrap());
-        not_query_snapshot = false;
-    }
     let mut log_interval = tokio::time::interval(Duration::from_secs(3));
     log::info!("exchange: {}", exchange);
     while !token.is_cancelled() {
@@ -209,29 +154,8 @@ async fn main() -> anyhow::Result<()> {
             _ = log_interval.tick() => {
                 let now_instant = Instant::now();
                 log::info!("{}", format_status_table(
-                    next_restart_instant.duration_since(now_instant).as_secs(),
-                    next_snapshot_query_instant.duration_since(now_instant).as_secs()
+                    next_restart_instant.duration_since(now_instant).as_secs()
                 ));
-            }
-            _ = tokio::time::sleep_until(next_snapshot_query_instant) => {
-                let exchange = cfg.get_exchange().clone();
-                if (exchange == "binance-futures" || exchange == "binance") && restart_checker.is_primary {
-                    //只有主节点且exchange为binance-futures时，才做depth快照修正
-                    log::info!("Query depth snapshot at {:?}", next_snapshot_query_instant);
-                    if not_query_snapshot && exchange == "binance-futures" {
-                        log::info!("Skip query depth snapshot for binance-futures in no support area!");
-                        next_snapshot_query_instant += Duration::from_secs(24 * 60 * 60);
-                        continue;
-                    }
-                    //用tokio的spawn运行，不会阻塞主循环
-                    let binance_snapshot_tx_clone = binance_snapshot_tx.clone();
-                    tokio::spawn(async move {
-                        let symbols = cfg.get_symbols().await.unwrap();
-                        BinanceFuturesSnapshotQuery::start_fetching_depth(exchange.as_str(), symbols, binance_snapshot_tx_clone).await;
-                        log::info!("Query depth snapshot for {} successfully", exchange);
-                    });
-                }
-                next_snapshot_query_instant += Duration::from_secs(24 * 60 * 60);
             }
             // _ = tokio::time::sleep_until(next_0030_instant) => {
             //     next_0030_instant += tokio::time::Duration::from_secs(24 * 60 * 60);
