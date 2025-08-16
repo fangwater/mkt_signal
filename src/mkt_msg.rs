@@ -79,12 +79,8 @@ pub struct IndexPriceMsg {
     pub index_price: f64,
     pub timestamp: i64,
 }
-/// 对永续合约来说, 预估结算
+/// 对永续合约来说, 币安的预估结算没有意义，不需要考虑Estimated Settle Price字段
 
-impl FundingRateMsg {
-    /// 创建一个费率信息消息
-    pub fn create(src: )
-}
 
 impl SignalMsg {
     /// 创建一个时间信号消息
@@ -157,6 +153,123 @@ impl KlineMsg {
     }
 }
 
+impl FundingRateMsg {
+    /// Create a funding rate message
+    pub fn create(
+        symbol: String,
+        funding_rate: f64,
+        next_funding_time: i64,
+        timestamp: i64,
+    ) -> Self {
+        let symbol_length = symbol.len() as u32;
+        Self {
+            msg_type: MktMsgType::FundingRate,
+            symbol_length,
+            symbol,
+            funding_rate,
+            next_funding_time,
+            timestamp,
+        }
+    }
+
+    /// Convert message to bytes
+    pub fn to_bytes(&self) -> Bytes {
+        // Calculate total size: msg_type(4) + symbol_length(4) + symbol + funding_rate(8) + next_funding_time(8) + timestamp(8)
+        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 8 + 8;
+        let mut buf = BytesMut::with_capacity(total_size);
+        
+        // Write header
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_u32_le(self.symbol_length);
+        
+        // Write symbol
+        buf.put(self.symbol.as_bytes());
+        
+        // Write funding rate data
+        buf.put_f64_le(self.funding_rate);
+        buf.put_i64_le(self.next_funding_time);
+        buf.put_i64_le(self.timestamp);
+        
+        buf.freeze()
+    }
+}
+
+impl MarkPriceMsg {
+    /// Create a mark price message
+    pub fn create(
+        symbol: String,
+        mark_price: f64,
+        timestamp: i64,
+    ) -> Self {
+        let symbol_length = symbol.len() as u32;
+        Self {
+            msg_type: MktMsgType::MarkPrice,
+            symbol_length,
+            symbol,
+            mark_price,
+            timestamp,
+        }
+    }
+
+    /// Convert message to bytes
+    pub fn to_bytes(&self) -> Bytes {
+        // Calculate total size: msg_type(4) + symbol_length(4) + symbol + mark_price(8) + timestamp(8)
+        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 8;
+        let mut buf = BytesMut::with_capacity(total_size);
+        
+        // Write header
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_u32_le(self.symbol_length);
+        
+        // Write symbol
+        buf.put(self.symbol.as_bytes());
+        
+        // Write mark price data
+        buf.put_f64_le(self.mark_price);
+        buf.put_i64_le(self.timestamp);
+        
+        buf.freeze()
+    }
+}
+
+impl IndexPriceMsg {
+    /// Create an index price message
+    pub fn create(
+        symbol: String,
+        index_price: f64,
+        timestamp: i64,
+    ) -> Self {
+        let symbol_length = symbol.len() as u32;
+        Self {
+            msg_type: MktMsgType::IndexPrice,
+            symbol_length,
+            symbol,
+            index_price,
+            timestamp,
+        }
+    }
+
+    /// Convert message to bytes
+    pub fn to_bytes(&self) -> Bytes {
+        // Calculate total size: msg_type(4) + symbol_length(4) + symbol + index_price(8) + timestamp(8)
+        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 8;
+        let mut buf = BytesMut::with_capacity(total_size);
+        
+        // Write header
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_u32_le(self.symbol_length);
+        
+        // Write symbol
+        buf.put(self.symbol.as_bytes());
+        
+        // Write index price data
+        buf.put_f64_le(self.index_price);
+        buf.put_i64_le(self.timestamp);
+        
+        buf.freeze()
+    }
+}
+
 impl MktMsg {
     /// 从bytes创建消息
     pub fn create(msg_type: MktMsgType, data: Bytes) -> Self {
@@ -166,17 +279,6 @@ impl MktMsg {
             data,
         }
     }
-
-    /// 创建SymbolDel消息
-    // pub fn symbol_del(symbol: impl AsRef<str>) -> Self {
-    //     Self::create(MktMsgType::SymbolDel, Bytes::from(symbol.as_ref().to_string()))
-    // }
-
-    /// 创建错误消息
-    // pub fn error(msg: impl AsRef<str>) -> Self {
-    //     Self::create(MktMsgType::Error, Bytes::from(msg.as_ref().to_string()))
-    // }
-
     /// 创建TP Reset消息
     pub fn tp_reset() -> Self {
         Self::create(MktMsgType::TpReset, Bytes::new())
