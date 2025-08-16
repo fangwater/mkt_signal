@@ -54,10 +54,7 @@ impl DerivativesMetricsDataConnectionManager {
         let url = crate::sub_msg::BinancePerpsSubscribeMsgs::WS_URL.to_string();
         
         self.spawn_connection(exchange.clone(), url.clone(), msgs.mark_price_stream_for_all_market.clone(), "binance mark price".to_string()).await;
-
-        for (i, liquidation_msg) in msgs.liquidation_orders_msgs.iter().enumerate() {
-            self.spawn_connection(exchange.clone(), url.clone(), liquidation_msg.clone(), format!("binance liquidation batch {}", i)).await;
-        }
+        self.spawn_connection(exchange.clone(), url.clone(), msgs.liquidation_orders_msg.clone(), "binance liquidation orders".to_string()).await;
     }
 
     async fn start_okex_connections(&mut self, msgs: &crate::sub_msg::OkexPerpsSubscribeMsgs) {

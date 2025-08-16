@@ -82,6 +82,61 @@ pub struct IndexPriceMsg {
 /// 对永续合约来说, 币安的预估结算没有意义，不需要考虑Estimated Settle Price字段
 
 
+pub struct LiquidationMsg{
+    pub msg_type: MktMsgType,
+    pub symbol_length: u32,
+    pub symbol: String,
+    pub liquidation_side: char,
+    pub executed_qty: f64,
+    pub price: f64,
+    pub timestamp: i64,
+}
+
+
+impl LiquidationMsg {
+    /// Create a liquidation message
+    pub fn create(
+        symbol: String,
+        liquidation_side: char,
+        executed_qty: f64,
+        price: f64,
+        timestamp: i64,
+    ) -> Self {
+        let symbol_length = symbol.len() as u32;
+        Self {
+            msg_type: MktMsgType::LiquidationOrder,
+            symbol_length,
+            symbol,
+            liquidation_side,
+            executed_qty,
+            price,
+            timestamp,
+        }
+    }
+
+    /// Convert message to bytes
+    pub fn to_bytes(&self) -> Bytes {
+        // Calculate total size: msg_type(4) + symbol_length(4) + symbol + liquidation_side(1) + executed_qty(8) + price(8) + timestamp(8)
+        let total_size = 4 + 4 + self.symbol_length as usize + 1 + 8 + 8 + 8;
+        let mut buf = BytesMut::with_capacity(total_size);
+        
+        // Write header
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_u32_le(self.symbol_length);
+        
+        // Write symbol
+        buf.put(self.symbol.as_bytes());
+        
+        // Write liquidation data
+        buf.put_u8(self.liquidation_side as u8);
+        buf.put_f64_le(self.executed_qty);
+        buf.put_f64_le(self.price);
+        buf.put_i64_le(self.timestamp);
+        
+        buf.freeze()
+    }
+}
+
 impl SignalMsg {
     /// 创建一个时间信号消息
     pub fn create(src: SignalSource, tp: i64) -> Self {

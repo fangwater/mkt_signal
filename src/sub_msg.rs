@@ -53,25 +53,23 @@ pub struct SubscribeMsgs {
 #[derive(Debug, Clone)]
 pub struct BinancePerpsSubscribeMsgs {
     pub mark_price_stream_for_all_market: serde_json::Value, // 币安的markprice订阅全市场，包含资金费率，指数价格等信息
-    pub liquidation_orders_msgs: Vec<serde_json::Value>, //强平信息
+    pub liquidation_orders_msg: serde_json::Value,//强平信息
 }
 
 impl BinancePerpsSubscribeMsgs {
     pub const WS_URL: &'static str = "wss://fstream.binance.com/ws"; 
-    pub async fn new(cfg: &Config) -> Self {
-        let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
-        let batch_size = cfg.get_batch_size();
-        let mut liquidation_orders_msgs = Vec::new();
-        for chunk in symbols.chunks(batch_size) {
-            liquidation_orders_msgs.push(construct_subscribe_message(cfg.get_exchange().as_str(), chunk, "forceOrder"));
-        }
+    pub async fn new() -> Self {
         Self {
             mark_price_stream_for_all_market : serde_json::json!({
                     "method": "SUBSCRIBE",
                     "params": "!markPrice@arr@1s",
                     "id": 1,
                 }), 
-            liquidation_orders_msgs : liquidation_orders_msgs
+            liquidation_orders_msg : serde_json::json!({
+                    "method": "SUBSCRIBE",
+                    "params": "!forceOrder@arr",
+                    "id": 1,
+                }), 
         }
     }
 }
@@ -361,7 +359,7 @@ impl DerivativesMetricsSubscribeMsgs {
         let exchange = cfg.get_exchange();
         let exchange_msgs = match exchange.as_str() {
             "binance-futures" => {
-                ExchangePerpsSubscribeMsgs::Binance(BinancePerpsSubscribeMsgs::new(cfg).await)
+                ExchangePerpsSubscribeMsgs::Binance(BinancePerpsSubscribeMsgs::new().await)
             },
             "okex-swap"=> {
                 ExchangePerpsSubscribeMsgs::Okex(OkexPerpsSubscribeMsgs::new(cfg).await)
