@@ -20,8 +20,7 @@ pub struct DerivativesMetricsDataConnectionManager {
 }
 
 impl DerivativesMetricsDataConnectionManager {
-    pub async fn new(cfg: &Config, global_shutdown: &watch::Sender<bool>) -> Self {
-        let (metrics_tx, _) = broadcast::channel(1000);
+    pub async fn new(cfg: &Config, global_shutdown: &watch::Sender<bool>, metrics_tx: broadcast::Sender<Bytes>) -> Self {
         let subscribe_msgs = DerivativesMetricsSubscribeMsgs::new(&cfg).await;
         Self {
             cfg: cfg.clone(),
@@ -199,9 +198,6 @@ impl DerivativesMetricsDataConnectionManager {
         Ok(())
     }
 
-    pub fn get_metrics_tx(&self) -> broadcast::Sender<Bytes> {
-        self.metrics_tx.clone()
-    }
 
     pub async fn update_subscribe_msgs(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let prev_symbols = self.subscribe_msgs.get_active_symbols().clone();

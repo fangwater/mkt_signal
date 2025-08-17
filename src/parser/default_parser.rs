@@ -11,6 +11,7 @@ pub trait Parser: Send {
 
 pub struct DefaultTradeParser;
 
+#[allow(dead_code)]
 impl DefaultTradeParser {
     pub fn new() -> Self {
         Self
@@ -32,6 +33,7 @@ impl Parser for DefaultTradeParser {
 
 pub struct DefaultIncParser;
 
+#[allow(dead_code)]
 impl DefaultIncParser {
     pub fn new() -> Self {
         Self

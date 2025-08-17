@@ -19,8 +19,7 @@ pub struct KlineDataConnectionManager {
 }
 
 impl KlineDataConnectionManager {
-    pub async fn new(cfg: &Config, global_shutdown: &watch::Sender<bool>) -> Self {
-        let (kline_tx, _) = broadcast::channel(1000);
+    pub async fn new(cfg: &Config, global_shutdown: &watch::Sender<bool>, kline_tx: broadcast::Sender<Bytes>) -> Self {
         let subscribe_msgs = SubscribeMsgs::new(&cfg).await;
         Self {
             cfg: cfg.clone(),
@@ -58,9 +57,6 @@ impl KlineDataConnectionManager {
         Ok(())
     }
 
-    pub fn get_kline_tx(&self) -> broadcast::Sender<Bytes> {
-        self.kline_tx.clone()
-    }
 
     /// 根据交易所类型构造 Kline parser
     async fn construct_kline_parser(&self, exchange: &str) -> Result<Box<dyn Parser>, Box<dyn std::error::Error>> {

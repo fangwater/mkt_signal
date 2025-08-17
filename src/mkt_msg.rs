@@ -31,7 +31,6 @@ pub struct MktMsg {
 #[repr(u32)]
 #[derive(Debug, Clone, Copy)]
 pub enum SignalSource {
-    Error = 0,
     Ipc = 1,
     Tcp = 2,
 }
@@ -203,6 +202,7 @@ impl IncMsg {
     }
 
     /// Get the total size of the message
+    #[allow(dead_code)]
     pub fn size(&self) -> usize {
         4 + 4 + self.symbol_length as usize + 8 + 8 + 8 + 8 + 4 + 4 + (self.levels.len() * 16)
     }
@@ -289,6 +289,7 @@ impl TradeMsg {
     }
 
     /// Get the total aligned size of the message
+    #[allow(dead_code)]
     pub fn aligned_size(&self) -> usize {
         4 + 4 + self.symbol_length as usize + 8 + 8 + 8 + 8 + 8  // Last 8 includes side+padding as one 8-byte unit
     }

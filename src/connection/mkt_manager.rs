@@ -66,8 +66,7 @@ pub struct MktDataConnectionManager {
 
 
 impl MktDataConnectionManager {
-    pub async fn new(cfg: &Config, global_shutdown: &watch::Sender<bool>) -> Self {
-        let (mkt_tx, _) = broadcast::channel(1000);
+    pub async fn new(cfg: &Config, global_shutdown: &watch::Sender<bool>, mkt_tx: broadcast::Sender<Bytes>) -> Self {
         let subscribe_msgs = SubscribeMsgs::new(&cfg).await;
         Self {
             cfg: cfg.clone(),
@@ -267,9 +266,6 @@ impl MktDataConnectionManager {
         }
         log::info!("All tasks completed");
         Ok(())
-    }
-    pub fn get_mkt_tx(&self) -> broadcast::Sender<Bytes> {
-        self.mkt_tx.clone()
     }
 
     // 泛型版本的连接函数，避免动态分发开销

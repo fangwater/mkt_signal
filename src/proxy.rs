@@ -1,5 +1,6 @@
 ///proxy 从tokio的broadcast 通过forwarder转发到tcp和ipc
 use crate::forwarder::ZmqForwarder;
+use crate::mkt_msg::MktMsgType;
 use bytes::Bytes;
 use std::time::Duration;
 use tokio::time::interval;
@@ -21,13 +22,66 @@ impl Proxy {
     pub fn new(forwarder: ZmqForwarder, out_rx: broadcast::Receiver<Bytes>, proxy_shutdown: watch::Receiver<bool>, tp_reset_notify: Arc<Notify>) -> Self {
         Self { 
             forwarder, 
-            inc_rx, 
-            trade_rx,
-            binance_snapshot_rx,
-            proxy_shutdown: proxy_shutdown,
-            inc_count: 0,
-            trade_count: 0,
-            tp_reset_notify: tp_reset_notify,
+            out_rx,
+            proxy_shutdown,
+            tp_reset_notify,
+        }
+    }
+
+    /// 根据消息类型确定topic
+    fn get_topic_from_msg_type(msg_type: u32) -> &'static str {
+        // 先尝试转换为枚举类型
+        let mkt_msg_type = match msg_type {
+            1111 => MktMsgType::TimeSignal,
+            1001 => MktMsgType::TradeInfo,
+            1003 => MktMsgType::OrderBookSnapshot,
+            1004 => MktMsgType::ParseredOrderBookSnapshot,
+            1005 => MktMsgType::OrderBookInc,
+            1006 => MktMsgType::ParseredOrderbookInc,
+            1007 => MktMsgType::SymbolAdd,
+            1008 => MktMsgType::SymbolDel,
+            1009 => MktMsgType::TpReset,
+            1010 => MktMsgType::Kline,
+            1011 => MktMsgType::MarkPrice,
+            1012 => MktMsgType::IndexPrice,
+            1013 => MktMsgType::LiquidationOrder,
+            1014 => MktMsgType::FundingRate,
+            _ => MktMsgType::Error,
+        };
+
+        // 根据枚举类型确定topic
+        match mkt_msg_type {
+            // market_data - 市场数据（深度、交易）
+            MktMsgType::TimeSignal |
+            MktMsgType::TradeInfo |
+            MktMsgType::OrderBookSnapshot |
+            MktMsgType::ParseredOrderBookSnapshot |
+            MktMsgType::OrderBookInc |
+            MktMsgType::ParseredOrderbookInc |
+            MktMsgType::SymbolAdd |
+            MktMsgType::SymbolDel |
+            MktMsgType::TpReset => "market_data",
+            
+            // kline_data - K线数据
+            MktMsgType::Kline => "kline_data",
+            
+            // derivatives_metrics - 衍生品指标
+            MktMsgType::MarkPrice |
+            MktMsgType::IndexPrice |
+            MktMsgType::LiquidationOrder |
+            MktMsgType::FundingRate => "derivatives_metrics",
+            
+            // 默认归类到market_data
+            MktMsgType::Error => "market_data",
+        }
+    }
+
+    /// 从bytes消息中提取消息类型
+    fn extract_msg_type(msg: &Bytes) -> u32 {
+        if msg.len() >= 4 {
+            u32::from_le_bytes([msg[0], msg[1], msg[2], msg[3]])
+        } else {
+            2222 // Error type
         }
     }
 
@@ -38,6 +92,9 @@ impl Proxy {
         
         loop {
             tokio::select! {
+                _ = stats_timer.tick() => {
+                    self.forwarder.log_stats();
+                }
                 _ = self.proxy_shutdown.changed() => {
                     if *self.proxy_shutdown.borrow() {
                         break;
@@ -45,7 +102,7 @@ impl Proxy {
                 }
                 _ = self.tp_reset_notify.notified() => {
                     log::info!("Sending tp reset message...");
-                    match self.forwarder.send_tp_reset_msg().await {
+                    match self.forwarder.send_tp_reset_msg("market_data").await {
                         true => {
                             log::info!("Sent tp reset message successfully");
                         }
@@ -55,12 +112,12 @@ impl Proxy {
                         }
                     }
                 }
-                msg = self.inc_rx.recv() => {
+                msg = self.out_rx.recv() => {
                     if let Ok(msg) = msg {
-                        self.inc_count += 1;
-                        if let Some(parsed_msg) = self.inc_parser.parse(msg) {
-                            self.forwarder.send_msg(parsed_msg.to_bytes()).await;
-                        }
+                        // 从消息中提取类型并确定topic
+                        let msg_type = Self::extract_msg_type(&msg);
+                        let topic = Self::get_topic_from_msg_type(msg_type);
+                        self.forwarder.send_msg(msg, topic).await;
                     }
                 }
             }

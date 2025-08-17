@@ -2,7 +2,7 @@ is_primary: true
 restart_duration_secs: 1800
 snapshot_requery_time: "--:--:--"  # "--:--:--" 表示立即查询(30秒后)，空字符串禁用快照，可设置如 "02:00:00" 定时查询
 symbol_socket: "/root/project/symbol_server/exchange"
-exchange: binance-futures
+exchange: binance
 
 # 主题配置 - 决定哪些数据类型需要处理
 topics:

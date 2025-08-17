@@ -380,7 +380,4 @@ impl DerivativesMetricsSubscribeMsgs {
         &self.active_symbols
     }
 
-    pub fn get_exchange_msgs(&self) -> &ExchangePerpsSubscribeMsgs {
-        &self.exchange_msgs
-    }
 }
