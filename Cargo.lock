@@ -385,6 +385,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "crypto_proxy"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "clap",
+ "env_logger",
+ "futures",
+ "futures-util",
+ "local-ip-address",
+ "log",
+ "prettytable",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sonic-rs",
+ "tokio",
+ "tokio-tungstenite",
+ "tokio-util",
+ "url",
+ "uuid",
+ "zeromq",
+ "zmq",
+]
+
+[[package]]
 name = "csv"
 version = "1.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1183,35 +1212,6 @@ dependencies = [
  "libc",
  "wasi 0.11.0+wasi-snapshot-preview1",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "mkt_proxy"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytes",
- "chrono",
- "clap",
- "env_logger",
- "futures",
- "futures-util",
- "local-ip-address",
- "log",
- "prettytable",
- "reqwest",
- "serde",
- "serde_json",
- "serde_yaml",
- "sonic-rs",
- "tokio",
- "tokio-tungstenite",
- "tokio-util",
- "url",
- "uuid",
- "zeromq",
- "zmq",
 ]
 
 [[package]]

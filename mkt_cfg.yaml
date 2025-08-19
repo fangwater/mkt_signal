@@ -1,16 +1,9 @@
 is_primary: true
-restart_duration_secs: 1800
+restart_duration_secs: 18000
 snapshot_requery_time: "--:--:--"  # "--:--:--" 表示立即查询(30秒后)，空字符串禁用快照，可设置如 "02:00:00" 定时查询
 symbol_socket: "/root/project/symbol_server/exchange"
-exchange: binance
 
-# 主题配置 - 决定哪些数据类型需要处理
-topics:
-  market_data: true      # 市场数据（深度、交易）
-  kline_data: true       # K线数据
-  derivatives_metrics: true  # 衍生品指标（资金费率、标记价格、指数价格、强平单）
-
-# 交易所配置 - 每个交易所使用相同的 ZMQ 配置，通过 topic 区分数据类型
+# 交易所配置 - 每个交易所使用相同的 ZMQ 配置，所有数据类型都启用
 binance:
   ipc_path: "/tmp/zmq_mkt_binance_feeds.ipc"
   primary_addr: "103.141.183.151:5555"

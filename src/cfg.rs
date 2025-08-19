@@ -6,6 +6,24 @@ use log::info;
 use tokio::net::UnixStream;
 use tokio::io::AsyncReadExt;
 use prettytable::{Table, Row, Cell, format};
+use crate::Exchange;
+
+#[derive(Debug, Deserialize)]
+struct ConfigFile {
+    is_primary: bool,
+    restart_duration_secs: u64,
+    snapshot_requery_time: Option<String>,
+    symbol_socket: String,
+    binance: ZmqProxyCfg,
+    #[serde(rename = "binance-futures")]
+    binance_futures: ZmqProxyCfg,
+    okex: ZmqProxyCfg,
+    #[serde(rename = "okex-swap")]
+    okex_swap: ZmqProxyCfg,
+    bybit: ZmqProxyCfg,
+    #[serde(rename = "bybit-spot")]
+    bybit_spot: ZmqProxyCfg,
+}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ZmqProxyCfg {
@@ -15,12 +33,6 @@ pub struct ZmqProxyCfg {
     pub hwm: u32,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct TopicConfig {
-    pub market_data: bool,
-    pub kline_data: bool,
-    pub derivatives_metrics: bool,
-}
 // 添加表格打印函数
 fn print_symbol_comparison(
     futures_symbols: &[String],
@@ -81,8 +93,7 @@ pub struct Config {
     pub restart_duration_secs: u64,
     pub snapshot_requery_time: Option<String>,
     pub symbol_socket: String,
-    pub exchange: String,
-    pub topics: TopicConfig,
+    pub exchange: Exchange,  // 在运行时设置，不从配置文件读取
     pub binance: ZmqProxyCfg,
     #[serde(rename = "binance-futures")]
     pub binance_futures: ZmqProxyCfg,
@@ -95,48 +106,61 @@ pub struct Config {
 }
 
 impl Config {
-    pub async fn load_config(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn load_config(path: &str, exchange: Exchange) -> Result<Self, Box<dyn std::error::Error>> {
         let content = fs::read_to_string(path).await?;
-        let config: Config = serde_yaml::from_str(&content)?;
+        let config_file: ConfigFile = serde_yaml::from_str(&content)?;
+        
+        // 构造 Config 结构体
+        let config = Config {
+            is_primary: config_file.is_primary,
+            restart_duration_secs: config_file.restart_duration_secs,
+            snapshot_requery_time: config_file.snapshot_requery_time,
+            symbol_socket: config_file.symbol_socket,
+            exchange,  // 从命令行参数设置
+            binance: config_file.binance,
+            binance_futures: config_file.binance_futures,
+            okex: config_file.okex,
+            okex_swap: config_file.okex_swap,
+            bybit: config_file.bybit,
+            bybit_spot: config_file.bybit_spot,
+        };
+        
         Ok(config)
     }
 
     pub fn get_exchange(&self) -> String {
-        self.exchange.clone()
+        match self.exchange {
+            Exchange::Binance => "binance".to_string(),
+            Exchange::BinanceFutures => "binance-futures".to_string(),
+            Exchange::Okex => "okex".to_string(),
+            Exchange::OkexSwap => "okex-swap".to_string(),
+            Exchange::Bybit => "bybit".to_string(),
+            Exchange::BybitSpot => "bybit-spot".to_string(),
+        }
     }
 
     pub fn get_batch_size(&self) -> usize {
-        match self.get_exchange().as_str() {
-            "binance-futures" => 50,
-            "binance" => 100,
-            "okex-swap" => 100,
-            "okex" => 100,
-            "bybit" => 300,
-            "bybit-spot" => 10,
-            _ => panic!("Unsupported exchange: {}", self.get_exchange()),
+        match self.exchange {
+            Exchange::BinanceFutures => 50,
+            Exchange::Binance => 100,
+            Exchange::OkexSwap => 100,
+            Exchange::Okex => 100,
+            Exchange::Bybit => 300,
+            Exchange::BybitSpot => 10,
         }
     }
 
     pub fn get_zmq_proxy(&self) -> ZmqProxyCfg {
-        match self.get_exchange().as_str() {
-            "binance-futures" => self.binance_futures.clone(),
-            "binance" => self.binance.clone(),
-            "okex-swap" => self.okex_swap.clone(),
-            "okex" => self.okex.clone(),
-            "bybit" => self.bybit.clone(),
-            "bybit-spot" => self.bybit_spot.clone(),
-            _ => panic!("Unsupported exchange: {}", self.get_exchange()),
+        match self.exchange {
+            Exchange::BinanceFutures => self.binance_futures.clone(),
+            Exchange::Binance => self.binance.clone(),
+            Exchange::OkexSwap => self.okex_swap.clone(),
+            Exchange::Okex => self.okex.clone(),
+            Exchange::Bybit => self.bybit.clone(),
+            Exchange::BybitSpot => self.bybit_spot.clone(),
         }
     }
 
-    pub fn is_topic_enabled(&self, topic: &str) -> bool {
-        match topic {
-            "market_data" => self.topics.market_data,
-            "kline_data" => self.topics.kline_data,
-            "derivatives_metrics" => self.topics.derivatives_metrics,
-            _ => false,
-        }
-    }
     
     async fn get_symbol_from_unix_socket(symbol_socket: &str, exchange: &str) -> Result<serde_json::Value> {
         // 连接到symbol socket
@@ -301,20 +325,19 @@ impl Config {
 
 
     pub async fn get_symbols(&self) -> Result<Vec<String>> {
-        match self.get_exchange().as_str() {
+        match self.exchange {
             //币安u本位期货合约
-            "binance-futures" => Self::get_symbol_for_binance_futures(&self.symbol_socket).await,
+            Exchange::BinanceFutures => Self::get_symbol_for_binance_futures(&self.symbol_socket).await,
             //币安u本位期货合约对应的现货
-            "binance" => Self::get_spot_symbols_related_to_binance_futures(&self.symbol_socket).await,
+            Exchange::Binance => Self::get_spot_symbols_related_to_binance_futures(&self.symbol_socket).await,
             //OKEXu本位期货合约
-            "okex-swap" => Self::get_symbol_for_okex_swap(&self.symbol_socket).await,
+            Exchange::OkexSwap => Self::get_symbol_for_okex_swap(&self.symbol_socket).await,
             //OKEXu本位期货合约对应的现货
-            "okex" => Self::get_spot_symbols_related_to_okex_swap(&self.symbol_socket).await,
+            Exchange::Okex => Self::get_spot_symbols_related_to_okex_swap(&self.symbol_socket).await,
             //Bybitu本位期货合约
-            "bybit" => Self::get_symbol_for_bybit_linear(&self.symbol_socket).await,
+            Exchange::Bybit => Self::get_symbol_for_bybit_linear(&self.symbol_socket).await,
             //Bybitu本位期货合约对应的现货
-            "bybit-spot" => Self::get_spot_symbols_related_to_bybit(&self.symbol_socket).await,
-            _ => anyhow::bail!("Unsupported exchange: {}", self.get_exchange()),
+            Exchange::BybitSpot => Self::get_spot_symbols_related_to_bybit(&self.symbol_socket).await,
         }
     }
 

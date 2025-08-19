@@ -23,7 +23,7 @@ if ! echo "${exchange_list[@]}" | grep -wq "$target_exchange"; then
 fi
 
 # pm2 进程名
-PM2_NAME="mkt_proxy_${target_exchange}"
+PM2_NAME="crypto_proxy_${target_exchange}"
 
 # 停止现有进程
 echo "停止现有进程..."
@@ -31,11 +31,11 @@ pm2 delete "$PM2_NAME" 2>/dev/null
 
 # 启动顺序函数
 start_mkt_proxy() {
-    echo "启动 mkt_proxy..."
+    echo "启动 crypto_proxy..."
     pm2 start ./mkt_proxy \
         --name "$PM2_NAME" \
         -- \
-        --config ${target_exchange}_mkt_cfg.yaml
+        --e mkt_cfg.yaml
     # 设置日志路径
     sleep 1
     pm2 describe "$PM2_NAME"

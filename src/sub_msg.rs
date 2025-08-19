@@ -62,12 +62,12 @@ impl BinancePerpsSubscribeMsgs {
         Self {
             mark_price_stream_for_all_market : serde_json::json!({
                     "method": "SUBSCRIBE",
-                    "params": "!markPrice@arr@1s",
+                    "params": ["!markPrice@arr@1s"],
                     "id": 1,
                 }), 
             liquidation_orders_msg : serde_json::json!({
                     "method": "SUBSCRIBE",
-                    "params": "!forceOrder@arr",
+                    "params": ["!forceOrder@arr"],
                     "id": 1,
                 }), 
         }
@@ -288,14 +288,14 @@ impl SubscribeMsgs {
             "binance-futures" => {
                 serde_json::json!({
                     "method": "SUBSCRIBE",
-                    "params": "btcusdt@depth5@100ms",
+                    "params": ["btcusdt@depth5@100ms"],
                     "id": 1,
                 })
             },
             "binance" => {
                 serde_json::json!({
                     "method": "SUBSCRIBE",
-                    "params": "btcusdt@depth@100ms",
+                    "params": ["btcusdt@depth@100ms"],
                     "id": 1,
                 })
             },

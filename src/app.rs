@@ -52,29 +52,23 @@ impl CryptoProxyApp {
         // 创建重启检查器
         let restart_checker = RestartChecker::new(config.is_primary, config.restart_duration_secs);
         
-        // 根据配置选择性创建管理器，直接传递统一的广播发送器
-        let mkt_manager = if config.is_topic_enabled("market_data") {
-            info!("Initializing market data manager");
-            Some(MktDataConnectionManager::new(config, &global_shutdown_tx, unified_tx.clone()).await)
-        } else {
-            info!("Market data disabled in config");
-            None
-        };
+        // 所有管理器都强制启动，直接传递统一的广播发送器
+        info!("Initializing market data manager");
+        let mkt_manager = Some(MktDataConnectionManager::new(config, &global_shutdown_tx, unified_tx.clone()).await);
         
-        let kline_manager = if config.is_topic_enabled("kline_data") {
-            info!("Initializing kline data manager");
-            Some(KlineDataConnectionManager::new(config, &global_shutdown_tx, unified_tx.clone()).await)
-        } else {
-            info!("Kline data disabled in config");
-            None
-        };
+        info!("Initializing kline data manager");
+        let kline_manager = Some(KlineDataConnectionManager::new(config, &global_shutdown_tx, unified_tx.clone()).await);
         
-        let derivatives_manager = if config.is_topic_enabled("derivatives_metrics") {
-            info!("Initializing derivatives metrics manager");
-            Some(DerivativesMetricsDataConnectionManager::new(config, &global_shutdown_tx, unified_tx.clone()).await)
-        } else {
-            info!("Derivatives metrics disabled in config");
-            None
+        // 只为衍生品交易所初始化 derivatives metrics manager
+        let derivatives_manager = match config.get_exchange().as_str() {
+            "binance-futures" | "okex-swap" | "bybit" => {
+                info!("Initializing derivatives metrics manager for {}", config.get_exchange());
+                Some(DerivativesMetricsDataConnectionManager::new(config, &global_shutdown_tx, unified_tx.clone()).await)
+            },
+            _ => {
+                info!("Skipping derivatives metrics manager for spot exchange: {}", config.get_exchange());
+                None
+            }
         };
         
         Ok(Self {

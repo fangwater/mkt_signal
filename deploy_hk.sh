@@ -28,7 +28,8 @@ log "开始编译项目..."
 cargo build --release
 check_status "项目编译"
 
-ip_list=(163.227.14.68 163.227.14.69 163.227.14.70 163.227.14.72)
+# ip_list=(163.227.14.68 163.227.14.69 163.227.14.70 163.227.14.72)
+ip_list=(163.227.14.68 163.227.14.69)
 user=el02
 exec_dir=/home/$user/crypto_mkt
 
@@ -50,10 +51,10 @@ log "开始部署二进制文件..."
 for ip in ${ip_list[@]}; do
     log "部署到服务器 $ip..."
 
-    scp -o ConnectTimeout=$SSH_TIMEOUT target/release/mkt_proxy $user@$ip:$exec_dir
+    scp -o ConnectTimeout=$SSH_TIMEOUT target/release/crypto_proxy $user@$ip:$exec_dir
     check_status "文件传输到 $ip"
     
-    ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "chmod 755 $exec_dir/mkt_proxy"
+    ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "chmod 755 $exec_dir/crypto_proxy"
     check_status "设置文件权限在 $ip"
 done
 

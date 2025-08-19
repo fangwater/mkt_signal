@@ -1,11 +1,11 @@
 const WebSocket = require('ws');
 
 // Binance-spot WebSocket 地址
-const wsUrl_spot = 'wss://data-stream.binance.vision/ws';
-// const wsUrl_futures = 'wss://fstream.binance.com/ws';
+// const wsUrl_spot = 'wss://data-stream.binance.vision/ws';
+const wsUrl_futures = 'wss://fstream.binance.com/ws';
 
 // 创建 WebSocket 连接
-const ws = new WebSocket(wsUrl_spot, {
+const ws = new WebSocket(wsUrl_futures, {
   headers: {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
   }
@@ -15,7 +15,7 @@ const ws = new WebSocket(wsUrl_spot, {
 const symbols = ['BTCUSDT'];
 // const channel = 'depth@0ms';
 // const channel = 'trade';
-const channel = 'kline_1m';
+// const channel = 'kline_1m';
 
 
 // 存储ping发送时间
@@ -41,7 +41,7 @@ ws.on('open', () => {
     id: 1
   };
   // 发送订阅请求
-  ws.send(JSON.stringify(subscribeMsg_a));
+  ws.send(JSON.stringify(subscribeMsg_b));
   console.log('订阅请求已发送:', subscribeMsg_a);
 });
 

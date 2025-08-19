@@ -67,6 +67,13 @@ impl MktConnectionRunner for BinanceConnection {
                                 }
                                 Message::Close(frame) => {
                                     warn!("Received close frame: {:?}", frame);
+                                    if let Some(close_frame) = &frame {
+                                        if close_frame.reason == "Invalid request" {
+                                            error!("Received Invalid request close frame!");
+                                            error!("Subscription message was: {}", self.base_connection.sub_msg);
+                                            std::process::exit(1);
+                                        }
+                                    }
                                     break;
                                 }
                                 Message::Text(text) => {
