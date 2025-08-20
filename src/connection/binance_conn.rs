@@ -237,7 +237,7 @@ impl BinanceFuturesSnapshotQuery {
                     };
                     let bytes = Bytes::from(json_bytes);                    
                     // 创建和发送消息
-                    let msg = MktMsg::create(MktMsgType::OrderBookSnapshot, bytes);
+                    let msg = MktMsg::create(MktMsgType::OrderBookInc, bytes);
                     return Ok(msg);
                 }
                 Err(e) => {

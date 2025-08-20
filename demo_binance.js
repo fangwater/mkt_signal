@@ -25,11 +25,11 @@ let prevE = 0;
 ws.on('open', () => {
   console.log('Binance-spot WebSocket 连接已建立');
 
-  const subscribeMsg_a = {
-    method: "SUBSCRIBE",
-    params: symbols.map(symbol => `${symbol.toLowerCase()}@${channel}`),
-    id: 1
-  };
+  // const subscribeMsg_a = {
+  //   method: "SUBSCRIBE",
+  //   params: symbols.map(symbol => `${symbol.toLowerCase()}@${channel}`),
+  //   id: 1
+  // };
   const subscribeMsg_b = {
     method: "SUBSCRIBE",
     params: ["btcusdt@depth5@100ms"],
@@ -37,12 +37,12 @@ ws.on('open', () => {
   };
   const subscribeMsg_c = {
     method: "SUBSCRIBE",
-    params: ["!markPrice@arr"],
+    params: ["!forceOrder@arr"],
     id: 1
   };
   // 发送订阅请求
-  ws.send(JSON.stringify(subscribeMsg_b));
-  console.log('订阅请求已发送:', subscribeMsg_a);
+  ws.send(JSON.stringify(subscribeMsg_c));
+  console.log('订阅请求已发送:', subscribeMsg_c);
 });
 
 ws.on('pong', (data) => {

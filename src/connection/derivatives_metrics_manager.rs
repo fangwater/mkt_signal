@@ -51,40 +51,69 @@ impl DerivativesMetricsDataConnectionManager {
         let exchange = self.cfg.get_exchange().clone();
         let url = crate::sub_msg::BinancePerpsSubscribeMsgs::WS_URL.to_string();
         
+        info!("Starting Binance derivatives connections for exchange: {}", exchange);
+        info!("Binance derivatives WebSocket URL: {}", url);
+        info!("Initializing {} Binance derivatives streams", 2);
+        
+        info!("Starting Binance mark price stream (全市场标记价格、资金费率、指数价格)");
         self.spawn_connection(exchange.clone(), url.clone(), msgs.mark_price_stream_for_all_market.clone(), "binance mark price".to_string()).await;
+        
+        info!("Starting Binance liquidation orders stream (强平信息)");
         self.spawn_connection(exchange.clone(), url.clone(), msgs.liquidation_orders_msg.clone(), "binance liquidation orders".to_string()).await;
+        
+        info!("Binance derivatives connections initialization completed");
     }
 
     async fn start_okex_connections(&mut self, msgs: &crate::sub_msg::OkexPerpsSubscribeMsgs) {
         let exchange = self.cfg.get_exchange().clone();
         let url = crate::sub_msg::OkexPerpsSubscribeMsgs::WS_URL.to_string();
         
+        let total_streams = msgs.mark_price_msgs.len() + msgs.index_price_msgs.len() + msgs.funding_rate_msgs.len() + 1;
+        info!("Starting OKEx derivatives connections for exchange: {}", exchange);
+        info!("OKEx derivatives WebSocket URL: {}", url);
+        info!("Initializing {} OKEx derivatives streams total", total_streams);
+        
+        info!("Starting {} OKEx mark price streams (标记价格)", msgs.mark_price_msgs.len());
         for (i, mark_price_msg) in msgs.mark_price_msgs.iter().enumerate() {
             self.spawn_connection(exchange.clone(), url.clone(), mark_price_msg.clone(), format!("okex mark price batch {}", i)).await;
         }
         
+        info!("Starting {} OKEx index price streams (指数价格)", msgs.index_price_msgs.len());
         for (i, index_price_msg) in msgs.index_price_msgs.iter().enumerate() {
             self.spawn_connection(exchange.clone(), url.clone(), index_price_msg.clone(), format!("okex index price batch {}", i)).await;
         }
         
+        info!("Starting {} OKEx funding rate streams (资金费率)", msgs.funding_rate_msgs.len());
         for (i, funding_rate_msg) in msgs.funding_rate_msgs.iter().enumerate() {
             self.spawn_connection(exchange.clone(), url.clone(), funding_rate_msg.clone(), format!("okex funding rate batch {}", i)).await;
         }
         
+        info!("Starting OKEx liquidation orders stream (强平信息)");
         self.spawn_connection(exchange.clone(), url.clone(), msgs.liquidation_orders_msg.clone(), "okex liquidation orders".to_string()).await;
+        
+        info!("OKEx derivatives connections initialization completed");
     }
 
     async fn start_bybit_connections(&mut self, msgs: &crate::sub_msg::BybitPerpsSubscribeMsgs) {
         let exchange = self.cfg.get_exchange().clone();
         let url = crate::sub_msg::BybitPerpsSubscribeMsgs::WS_URL.to_string();
         
+        let total_streams = msgs.ticker_stream_msgs.len() + msgs.liquidation_orders_msgs.len();
+        info!("Starting Bybit derivatives connections for exchange: {}", exchange);
+        info!("Bybit derivatives WebSocket URL: {}", url);
+        info!("Initializing {} Bybit derivatives streams total", total_streams);
+        
+        info!("Starting {} Bybit ticker streams (标记价格、指数价格、资金费率)", msgs.ticker_stream_msgs.len());
         for (i, ticker_msg) in msgs.ticker_stream_msgs.iter().enumerate() {
             self.spawn_connection(exchange.clone(), url.clone(), ticker_msg.clone(), format!("bybit ticker batch {}", i)).await;
         }
         
+        info!("Starting {} Bybit liquidation streams (强平信息)", msgs.liquidation_orders_msgs.len());
         for (i, liquidation_msg) in msgs.liquidation_orders_msgs.iter().enumerate() {
             self.spawn_connection(exchange.clone(), url.clone(), liquidation_msg.clone(), format!("bybit liquidation batch {}", i)).await;
         }
+        
+        info!("Bybit derivatives connections initialization completed");
     }
     async fn construct_parser(&self, exchange: &str) -> Result<Box<dyn Parser>, Box<dyn std::error::Error>> {
         // 获取 symbol set
@@ -110,26 +139,40 @@ impl DerivativesMetricsDataConnectionManager {
         let metrics_tx = self.metrics_tx.clone();
         let global_shutdown_rx = self.global_shutdown_rx.clone();
         
+        info!("Creating derivatives connection: {} (exchange: {})", description, exchange);
+        info!("Subscription message: {}", serde_json::to_string(&subscribe_msg).unwrap_or_else(|_| "invalid json".to_string()));
+        
         // Create parser before moving into the async block
         let parser = match self.construct_parser(&exchange).await {
-            Ok(p) => p,
+            Ok(p) => {
+                info!("Parser created successfully for {}", description);
+                p
+            },
             Err(e) => {
                 error!("Failed to create parser for {}: {}", description, e);
                 return;
             }
         };
         
+        info!("Spawning connection task for {}", description);
+        let task_description = description.clone();
+        let ws_description = description.clone();
         self.join_set.spawn(async move {
+            info!("Connection task started for {}", task_description);
+            
             // Create intermediate channel for raw WebSocket data
             let (raw_tx, mut raw_rx) = broadcast::channel(1000);
+            info!("Created raw message channel (capacity: 1000) for {}", task_description);
+            
             // Spawn WebSocket connection task
             let ws_global_shutdown_rx = global_shutdown_rx.clone();
             let ws_exchange = exchange.clone();
             let ws_url = url.clone();
             let ws_subscribe_msg = subscribe_msg.clone();
-            let ws_description = description.clone();
             
+            info!("Creating WebSocket connection task for {}", ws_description);
             tokio::spawn(async move {
+                info!("WebSocket connection task starting for {}", ws_description);
                 let mut connection = match construct_connection(
                     ws_exchange, 
                     ws_url, 
@@ -137,12 +180,17 @@ impl DerivativesMetricsDataConnectionManager {
                     raw_tx, 
                     ws_global_shutdown_rx
                 ) {
-                    Ok(c) => c,
+                    Ok(c) => {
+                        info!("WebSocket connection constructed successfully for {}", ws_description);
+                        c
+                    },
                     Err(e) => {
                         error!("Failed to create connection for {}: {}", ws_description, e);
                         return;
                     }
                 };
+                
+                info!("Starting WebSocket for {}", ws_description);
                 if let Err(e) = connection.start_ws().await {
                     error!("Connection failed for {}: {}", ws_description, e);
                 } else {
@@ -152,35 +200,43 @@ impl DerivativesMetricsDataConnectionManager {
             
             // Spawn parser task
             let mut shutdown_rx = global_shutdown_rx.clone();
+            let parser_description = task_description.clone();
+            info!("Creating parser task for {}", parser_description);
             tokio::spawn(async move {
+                info!("Parser task started for {}", parser_description);
+                
                 loop {
                     tokio::select! {
                         msg_result = raw_rx.recv() => {
                             match msg_result {
                                 Ok(raw_msg) => {
-                                    // TODO(human): Use the parser to process raw_msg and send to metrics_tx
                                     let _parsed_count = parser.parse(raw_msg, &metrics_tx);
                                 }
                                 Err(broadcast::error::RecvError::Closed) => {
-                                    info!("Raw message channel closed for {}", description);
+                                    info!("Raw message channel closed for {}", parser_description);
                                     break;
                                 }
-                                Err(broadcast::error::RecvError::Lagged(_)) => {
-                                    error!("Parser lagged for {}", description);
+                                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                    error!("Parser lagged for {} (skipped {} messages)", parser_description, skipped);
                                     continue;
                                 }
                             }
                         }
                         _ = shutdown_rx.changed() => {
                             if *shutdown_rx.borrow() {
-                                info!("Parser task shutdown for {}", description);
+                                info!("Parser task shutdown for {}", parser_description);
                                 break;
                             }
                         }
                     }
                 }
+                info!("Parser task completed for {}", parser_description);
             });
+            
+            info!("All tasks spawned successfully for {}", task_description);
         });
+        
+        info!("Connection spawning completed for {}", description);
     }
 
     pub async fn shutdown(&mut self, global_shutdown: &watch::Sender<bool>) -> Result<(), Box<dyn std::error::Error>>{

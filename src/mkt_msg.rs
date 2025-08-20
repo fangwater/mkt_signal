@@ -6,12 +6,7 @@ use bytes::{Bytes, BufMut, BytesMut};
 pub enum MktMsgType {
     TimeSignal = 1111,//btc的Partial Book Depth 100ms 推送一次，作为collect的信号
     TradeInfo = 1001,
-    OrderBookSnapshot = 1003,
-    ParseredOrderBookSnapshot = 1004,
     OrderBookInc = 1005,
-    ParseredOrderbookInc = 1006,
-    SymbolAdd = 1007,
-    SymbolDel = 1008,
     TpReset = 1009,
     Kline = 1010,
     MarkPrice = 1011,
@@ -133,7 +128,7 @@ impl IncMsg {
         let levels = vec![Level::from_values(0.0, 0.0); total_levels];
         
         Self {
-            msg_type: if is_snapshot { MktMsgType::ParseredOrderBookSnapshot } else { MktMsgType::ParseredOrderbookInc },
+            msg_type: MktMsgType::OrderBookInc,
             symbol_length,
             symbol,
             first_update_id,

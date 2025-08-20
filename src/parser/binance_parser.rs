@@ -156,8 +156,9 @@ impl BinanceDerivativesMetricsParser {
                 order_data.get("ap").and_then(|v| v.as_str()), // Average Price
                 order_data.get("T").and_then(|v| v.as_i64()), // Order Trade Time
             ) {
-                // Check if symbol is in the allowed list
-                if !self.symbols.contains(symbol) {
+                // Check if symbol is in the allowed list (case-insensitive)
+                let symbol_lower = symbol.to_lowercase();
+                if !self.symbols.contains(&symbol_lower) {
                     return 0;
                 }
                 // Parse quantity and price
@@ -213,8 +214,9 @@ impl BinanceDerivativesMetricsParser {
                     item.get("E").and_then(|v| v.as_i64()),
                     item.get("T").and_then(|v| v.as_i64()),
                 ) {
-                    // Check if symbol is in the allowed list
-                    if !self.symbols.contains(symbol) {
+                    // Check if symbol is in the allowed list (case-insensitive)
+                    let symbol_lower = symbol.to_lowercase();
+                    if !self.symbols.contains(&symbol_lower) {
                         return 0;
                     }
                     // Parse price values
