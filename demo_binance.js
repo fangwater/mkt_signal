@@ -40,9 +40,15 @@ ws.on('open', () => {
     params: ["!forceOrder@arr"],
     id: 1
   };
+  const subscribeMsg_d = {
+    method: "SUBSCRIBE",
+    // params: ["STORJUSDT@markPrice@1s"],
+    params: ["storjusdt@markPrice@1s"],
+    id: 1
+  };
   // 发送订阅请求
-  ws.send(JSON.stringify(subscribeMsg_c));
-  console.log('订阅请求已发送:', subscribeMsg_c);
+  ws.send(JSON.stringify(subscribeMsg_d));
+  console.log('订阅请求已发送:', subscribeMsg_d);
 });
 
 ws.on('pong', (data) => {

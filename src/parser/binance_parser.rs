@@ -3,6 +3,7 @@ use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use tokio::sync::broadcast;
 use std::collections::HashSet;
+use log::{info};
 
 pub struct BinanceSignalParser {
     source: SignalSource,
@@ -75,6 +76,12 @@ impl Parser for BinanceKlineParser {
                             kline_obj.get("v").and_then(|v| v.as_str()),
                             kline_obj.get("t").and_then(|v| v.as_i64()),
                         ) {
+                            // 只为BTCUSDT打印OHLCV数据
+                            if symbol.to_lowercase() == "btcusdt" {
+                                info!("[Binance Kline] BTCUSDT OHLCV: o={}, h={}, l={}, c={}, v={}, t={}", 
+                                      open_str, high_str, low_str, close_str, volume_str, timestamp);
+                            }
+                            
                             // 解析价格和成交量数据
                             if let (Ok(open), Ok(high), Ok(low), Ok(close), Ok(volume)) = (
                                 open_str.parse::<f64>(),
