@@ -37,7 +37,7 @@ ws.on('open', () => {
   };
   const subscribeMsg_c = {
     method: "SUBSCRIBE",
-    params: ["!forceOrder@arr"],
+    params: ["btcusdt@kline_1m"],
     id: 1
   };
   const subscribeMsg_d = {
@@ -46,8 +46,8 @@ ws.on('open', () => {
     id: 1
   };
   // 发送订阅请求
-  ws.send(JSON.stringify(subscribeMsg_d));
-  console.log('订阅请求已发送:', subscribeMsg_d);
+  ws.send(JSON.stringify(subscribeMsg_c));
+  console.log('订阅请求已发送:', subscribeMsg_c);
 });
 
 ws.on('pong', (data) => {

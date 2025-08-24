@@ -85,6 +85,9 @@ impl Parser for BybitKlineParser {
                                             close_str.parse::<f64>(),
                                             volume_str.parse::<f64>(),
                                         ) {
+                                            // 将真实时间转换为封闭时间（对分钟取整）
+                                            let closed_timestamp = (timestamp / 60000) * 60000;
+                                            
                                             // 创建K线消息
                                             let kline_msg = KlineMsg::create(
                                                 symbol.to_string(),
@@ -93,13 +96,13 @@ impl Parser for BybitKlineParser {
                                                 low,
                                                 close,
                                                 volume,
-                                                timestamp,
+                                                closed_timestamp,
                                             );
                                             
                                             // 发送K线消息
                                             if sender.send(kline_msg.to_bytes()).is_ok() {
-                                                info!("[BybitKlineParser] 封闭K线推送成功: {} OHLCV=({},{},{},{},{}) 时间={}", 
-                                                    symbol, open, high, low, close, volume, timestamp);
+                                                info!("[BybitKlineParser] 封闭K线推送成功: {} OHLCV=({},{},{},{},{}) 封闭时间={}", 
+                                                    symbol, open, high, low, close, volume, closed_timestamp);
                                                 return 1;
                                             }
                                         }
