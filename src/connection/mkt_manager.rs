@@ -237,12 +237,7 @@ impl MktDataConnectionManager {
         let signal_parser: Box<dyn Parser> = match exchange.as_str() {
             "binance-futures" | "binance" => Box::new(BinanceSignalParser::new(false)),
             "okex-swap" | "okex" => Box::new(OkexSignalParser::new(false)),
-            "bybit" | "bybit-spot" => {
-                info!("[MktManager] 创建Bybit信号解析器，交易所: {}", exchange);
-                info!("[MktManager] Bybit信号订阅URL: {}", url);
-                info!("[MktManager] Bybit信号订阅消息: {}", serde_json::to_string_pretty(&signal_subscribe_msg).unwrap_or_else(|_| "无效JSON".to_string()));
-                Box::new(BybitSignalParser::new(false))
-            },
+            "bybit" | "bybit-spot" => Box::new(BybitSignalParser::new(false)),
             _ => {
                 error!("Unsupported exchange for signal parser: {}", exchange);
                 return;
