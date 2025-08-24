@@ -19,27 +19,93 @@ impl BybitSignalParser {
 impl Parser for BybitSignalParser {
     fn parse(&self, msg: Bytes, sender: &broadcast::Sender<Bytes>) -> usize {
         // Parse Bybit depth message
-        if let Ok(json_str) = std::str::from_utf8(&msg) {
-            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
-                // Extract Bybit timestamp field "ts"
-                info!("{}",json_value);
-                if let Some(timestamp) = json_value.get("ts").and_then(|v| v.as_i64()) {
-                    // Create signal message
-                    let signal_msg = SignalMsg::create(self.source, timestamp);
-                    info!("=======================================");
-                    info!("signal msg, tp:{}",timestamp);
-                    info!("=======================================");
-                    let signal_bytes = signal_msg.to_bytes();
-                    
-                    // Send signal
-                    if let Err(_) = sender.send(signal_bytes) {
-                        return 0;
+        info!("[BybitSignalParser] 收到原始消息，大小: {} bytes", msg.len());
+        
+        match std::str::from_utf8(&msg) {
+            Ok(json_str) => {
+                info!("[BybitSignalParser] 成功解析UTF-8字符串，长度: {}", json_str.len());
+                info!("[BybitSignalParser] 原始JSON内容: {}", json_str);
+                
+                match serde_json::from_str::<serde_json::Value>(json_str) {
+                    Ok(json_value) => {
+                        info!("[BybitSignalParser] 成功解析JSON，结构: {}", json_value);
+                        
+                        // 尝试多种可能的时间戳字段
+                        let timestamp_candidates = vec!["ts", "cts", "T", "timestamp", "time"];
+                        
+                        for field_name in timestamp_candidates.iter() {
+                            if let Some(ts_value) = json_value.get(field_name) {
+                                info!("[BybitSignalParser] 找到时间戳字段 '{}': {:?}", field_name, ts_value);
+                                
+                                if let Some(timestamp) = ts_value.as_i64() {
+                                    info!("[BybitSignalParser] 成功解析时间戳: {} (字段: {})", timestamp, field_name);
+                                    
+                                    // Create signal message
+                                    let signal_msg = SignalMsg::create(self.source, timestamp);
+                                    info!("=======================================");
+                                    info!("[BybitSignalParser] 创建信号消息成功，时间戳: {}", timestamp);
+                                    info!("=======================================");
+                                    let signal_bytes = signal_msg.to_bytes();
+                                    
+                                    // Send signal
+                                    match sender.send(signal_bytes) {
+                                        Ok(_) => {
+                                            info!("[BybitSignalParser] 信号消息发送成功");
+                                            return 1;
+                                        }
+                                        Err(e) => {
+                                            info!("[BybitSignalParser] 信号消息发送失败: {:?}", e);
+                                            return 0;
+                                        }
+                                    }
+                                } else if let Some(ts_str) = ts_value.as_str() {
+                                    info!("[BybitSignalParser] 时间戳是字符串格式: '{}'，尝试解析", ts_str);
+                                    match ts_str.parse::<i64>() {
+                                        Ok(timestamp) => {
+                                            info!("[BybitSignalParser] 成功解析字符串时间戳: {} (字段: {})", timestamp, field_name);
+                                            
+                                            // Create signal message
+                                            let signal_msg = SignalMsg::create(self.source, timestamp);
+                                            info!("=======================================");
+                                            info!("[BybitSignalParser] 创建信号消息成功，时间戳: {}", timestamp);
+                                            info!("=======================================");
+                                            let signal_bytes = signal_msg.to_bytes();
+                                            
+                                            // Send signal
+                                            match sender.send(signal_bytes) {
+                                                Ok(_) => {
+                                                    info!("[BybitSignalParser] 信号消息发送成功");
+                                                    return 1;
+                                                }
+                                                Err(e) => {
+                                                    info!("[BybitSignalParser] 信号消息发送失败: {:?}", e);
+                                                    return 0;
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            info!("[BybitSignalParser] 字符串时间戳解析失败: {}, 字段: {}", e, field_name);
+                                        }
+                                    }
+                                } else {
+                                    info!("[BybitSignalParser] 字段 '{}' 不是有效的时间戳格式: {:?}", field_name, ts_value);
+                                }
+                            }
+                        }
+                        
+                        info!("[BybitSignalParser] 未找到任何有效的时间戳字段");
                     }
-                    
-                    return 1;
+                    Err(e) => {
+                        info!("[BybitSignalParser] JSON解析失败: {}", e);
+                    }
                 }
             }
+            Err(e) => {
+                info!("[BybitSignalParser] UTF-8解析失败: {}", e);
+            }
         }
+        
+        info!("[BybitSignalParser] 消息处理失败，返回0");
         0
     }
 }
