@@ -323,8 +323,11 @@ impl MktDataConnectionManager {
                                     info!("Raw message channel closed for {}", description);
                                     break;
                                 }
-                                Err(broadcast::error::RecvError::Lagged(_)) => {
-                                    error!("Market data parser lagged for {}", description);
+                                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                    // 如果正在关闭则不打印日志
+                                    if !*shutdown_rx.borrow() {
+                                        error!("Market data parser lagged for {} (skipped {} messages)", description, skipped);
+                                    }
                                     continue;
                                 }
                             }
@@ -391,8 +394,11 @@ impl MktDataConnectionManager {
                                     info!("Raw message channel closed for {}", description);
                                     break;
                                 }
-                                Err(broadcast::error::RecvError::Lagged(_)) => {
-                                    error!("Market data parser lagged for {}", description);
+                                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                    // 如果正在关闭则不打印日志
+                                    if !*shutdown_rx.borrow() {
+                                        error!("Market data parser lagged for {} (skipped {} messages)", description, skipped);
+                                    }
                                     continue;
                                 }
                             }

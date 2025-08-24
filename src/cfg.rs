@@ -143,8 +143,8 @@ impl Config {
         match self.exchange {
             Exchange::BinanceFutures => 50,
             Exchange::Binance => 100,
-            Exchange::OkexSwap => 150,
-            Exchange::Okex => 150,
+            Exchange::OkexSwap => 1000, // 1 batch ?
+            Exchange::Okex => 1000,
             Exchange::Bybit => 300,
             Exchange::BybitSpot => 10,
         }
