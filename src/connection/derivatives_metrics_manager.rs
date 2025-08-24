@@ -68,28 +68,18 @@ impl DerivativesMetricsDataConnectionManager {
         let exchange = self.cfg.get_exchange().clone();
         let url = crate::sub_msg::OkexPerpsSubscribeMsgs::WS_URL.to_string();
         
-        let total_streams = msgs.mark_price_msgs.len() + msgs.index_price_msgs.len() + msgs.funding_rate_msgs.len() + 1;
         info!("Starting OKEx derivatives connections for exchange: {}", exchange);
         info!("OKEx derivatives WebSocket URL: {}", url);
-        info!("Initializing {} OKEx derivatives streams total", total_streams);
+        info!("Initializing {} OKEx unified derivatives streams (包含标记价格、指数价格、资金费率、强平信息)", msgs.unified_perps_msgs.len());
         
-        info!("Starting {} OKEx mark price streams (标记价格)", msgs.mark_price_msgs.len());
-        for (i, mark_price_msg) in msgs.mark_price_msgs.iter().enumerate() {
-            self.spawn_connection(exchange.clone(), url.clone(), mark_price_msg.clone(), format!("okex mark price batch {}", i)).await;
+        for (i, unified_msg) in msgs.unified_perps_msgs.iter().enumerate() {
+            self.spawn_connection(
+                exchange.clone(), 
+                url.clone(), 
+                unified_msg.clone(), 
+                format!("okex unified derivatives batch {}", i)
+            ).await;
         }
-        
-        info!("Starting {} OKEx index price streams (指数价格)", msgs.index_price_msgs.len());
-        for (i, index_price_msg) in msgs.index_price_msgs.iter().enumerate() {
-            self.spawn_connection(exchange.clone(), url.clone(), index_price_msg.clone(), format!("okex index price batch {}", i)).await;
-        }
-        
-        info!("Starting {} OKEx funding rate streams (资金费率)", msgs.funding_rate_msgs.len());
-        for (i, funding_rate_msg) in msgs.funding_rate_msgs.iter().enumerate() {
-            self.spawn_connection(exchange.clone(), url.clone(), funding_rate_msg.clone(), format!("okex funding rate batch {}", i)).await;
-        }
-        
-        info!("Starting OKEx liquidation orders stream (强平信息)");
-        self.spawn_connection(exchange.clone(), url.clone(), msgs.liquidation_orders_msg.clone(), "okex liquidation orders".to_string()).await;
         
         info!("OKEx derivatives connections initialization completed");
     }
