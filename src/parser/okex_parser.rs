@@ -1,6 +1,7 @@
 use crate::mkt_msg::{SignalMsg, SignalSource, KlineMsg, LiquidationMsg, MarkPriceMsg, IndexPriceMsg, FundingRateMsg, TradeMsg, IncMsg, Level};
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
+use log::info;
 use tokio::sync::broadcast;
 use std::collections::HashSet;
 
@@ -106,6 +107,8 @@ impl Parser for OkexKlineParser {
                                         
                                         // Send kline message
                                         if sender.send(kline_msg.to_bytes()).is_ok() {
+                                            info!("[OkexKlineParser] 封闭K线推送成功: {} OHLCV=({},{},{},{},{}) 时间={}", 
+                                                symbol, open, high, low, close, volume, timestamp);
                                             return 1;
                                         }
                                     }
