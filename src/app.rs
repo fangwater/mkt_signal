@@ -46,7 +46,7 @@ impl CryptoProxyApp {
         // 创建通道
         let (global_shutdown_tx, _) = watch::channel(false);
         let (proxy_shutdown_tx, _) = watch::channel(false);
-        let (unified_tx, _) = broadcast::channel(1000);
+        let (unified_tx, _) = broadcast::channel(8192);
         let cancellation_token = CancellationToken::new();
         
         // 创建重启检查器

@@ -28,10 +28,9 @@ log "开始编译项目..."
 cargo build --release
 check_status "项目编译"
 
-# ip_list=(163.227.14.68 163.227.14.69 163.227.14.70 163.227.14.72)
-ip_list=(163.227.14.68 163.227.14.69)
-user=el02
-exec_dir=/home/$user/crypto_mkt
+ip_list=(68.64.176.133)
+user=root
+exec_dir=/$user/crypto_mkt
 
 # 检查SSH连接
 log "检查SSH连接..."

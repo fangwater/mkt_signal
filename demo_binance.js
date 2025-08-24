@@ -42,8 +42,7 @@ ws.on('open', () => {
   };
   const subscribeMsg_d = {
     method: "SUBSCRIBE",
-    // params: ["STORJUSDT@markPrice@1s"],
-    params: ["storjusdt@markPrice@1s"],
+    params: ["!markPrice@arr@1s"],
     id: 1
   };
   // 发送订阅请求

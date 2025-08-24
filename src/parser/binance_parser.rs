@@ -205,7 +205,7 @@ impl BinanceDerivativesMetricsParser {
         for item in data_array {
             total_parsed += self.parse_single_mark_price(item, sender);
         }
-        
+        info!("array length: {}, total_parsed: {}",data_array.len(),total_parsed);
         total_parsed
     }
     
@@ -241,6 +241,7 @@ impl BinanceDerivativesMetricsParser {
                             event_time,
                         );
                         if sender.send(mark_price_msg.to_bytes()).is_ok() {
+                            info!("symbol: {}, price: {}, timestamp: {}", symbol, mark_price, event_time);
                             parsed_count += 1;
                         }
                         

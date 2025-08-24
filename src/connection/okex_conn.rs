@@ -17,12 +17,14 @@ use crate::connection::connection::{MktConnection, MktConnectionHandler, MktConn
 // 3. 期待一个文字字符串'pong'作为回应。如果在 N秒内未收到，请发出错误或重新连接。
 pub struct OkexConnection {
     base_connection: MktConnection,
+    restart_count: u32,
 }
 
 impl OkexConnection {
     pub fn new(connection: MktConnection) -> Self {
         Self {
             base_connection: connection,
+            restart_count: 0,
         }
     }
 }
@@ -121,7 +123,21 @@ impl MktConnectionRunner for OkexConnection {
                             }
                         }
                         Err(e) => {
-                            error!("WebSocket error: {:?}", e);
+                            self.restart_count += 1;
+                            error!("WebSocket error (restart count: {}): {:?}", self.restart_count, e);
+                            // Debug: Print detailed error info and exit for troubleshooting
+                            error!("OKEx connection failed with detailed info (restart #{}):", self.restart_count);
+                            // error!("  URL: {}", &self.base_connection.url);
+                            // error!("  Subscription message: {}", serde_json::to_string_pretty(&self.base_connection.sub_msg).unwrap_or_else(|_| "Failed to serialize".to_string()));
+                            error!("  Error type: {:?}", e);
+                            error!("Exiting for debugging purposes...");
+                            
+                            // TODO(human) - Add exit mechanism here
+                            // You can either:
+                            // 1. std::process::exit(1); for immediate exit
+                            // 2. return Err(e.into()); to propagate error up
+                            // 3. Add conditional debugging flag to control exit behavior
+                            
                             break;
                         }
                         Ok(None) => {
@@ -140,6 +156,10 @@ impl MktConnectionRunner for OkexConnection {
 impl MktConnectionHandler for OkexConnection {
     async fn start_ws(&mut self) -> anyhow::Result<()> {
         loop {
+            // Debug: Print subscription message before attempting connection
+            // info!("OKEx subscription message: {}", serde_json::to_string_pretty(&self.base_connection.sub_msg).unwrap_or_else(|_| "Failed to serialize".to_string()));
+            info!("OKEx WebSocket URL: {}", &self.base_connection.url);
+            
             match WsConnector::connect(&self.base_connection.url, &self.base_connection.sub_msg).await {
                 Ok(connection) => {
                     info!("Successfully connected to okex at {:?}", connection.connected_at);
@@ -149,7 +169,7 @@ impl MktConnectionHandler for OkexConnection {
                     if *self.base_connection.shutdown_rx.borrow() {
                         break Ok(());
                     }else{
-                        info!("Connection closed, reconnecting...");
+                        info!("Connection closed, reconnecting... (total restart count: {})", self.restart_count);
                     }
                 }
                 Err(e) => {
