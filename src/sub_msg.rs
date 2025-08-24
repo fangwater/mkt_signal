@@ -327,19 +327,19 @@ impl SubscribeMsgs {
             "okex-swap" => {
                 serde_json::json!({
                     "op": "subscribe",
-                    "args": serde_json::json!({
+                    "args": [serde_json::json!({
                         "channel": "books5",
                         "instId": "BTC-USDT-SWAP"
-                    })
+                    })]
                 })
             },
             "okex" => {
                 serde_json::json!({
                     "op": "subscribe",
-                    "args": serde_json::json!({
+                    "args": [serde_json::json!({
                         "channel": "books5",
                         "instId": "BTC-USDT"
-                    })
+                    })]
                 })
             },
 
