@@ -346,7 +346,7 @@ impl SubscribeMsgs {
             "bybit" | "bybit-spot" => {
                 serde_json::json!({
                     "op": "subscribe",
-                    "args": "orderbook.rpi.BTCUSDT"
+                    "args": ["orderbook.rpi.BTCUSDT"]
                 })
             },
             _ => panic!("Unsupported exchange: {}", exchange)
