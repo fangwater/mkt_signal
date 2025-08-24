@@ -22,6 +22,7 @@ impl Parser for BybitSignalParser {
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
                 // Extract Bybit timestamp field "ts"
+                info!("{}",json_value);
                 if let Some(timestamp) = json_value.get("ts").and_then(|v| v.as_i64()) {
                     // Create signal message
                     let signal_msg = SignalMsg::create(self.source, timestamp);
