@@ -85,8 +85,8 @@ impl Parser for BybitKlineParser {
                                             close_str.parse::<f64>(),
                                             volume_str.parse::<f64>(),
                                         ) {
-                                            // 将真实时间转换为封闭时间（对分钟取整）
-                                            let closed_timestamp = (timestamp / 60000) * 60000;
+                                            // 将真实时间转换为opentime
+                                            let closed_timestamp = (timestamp / 60000 - 1) * 60000;
                                             
                                             // 创建K线消息
                                             let kline_msg = KlineMsg::create(
