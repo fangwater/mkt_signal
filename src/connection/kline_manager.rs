@@ -92,7 +92,7 @@ impl KlineDataConnectionManager {
         
         self.join_set.spawn(async move {
             // Create intermediate channel for raw WebSocket data
-            let (raw_tx, mut raw_rx) = broadcast::channel(1000);
+            let (raw_tx, mut raw_rx) = broadcast::channel(8192);
             
             // Spawn WebSocket connection task
             let ws_global_shutdown_rx = global_shutdown_rx.clone();

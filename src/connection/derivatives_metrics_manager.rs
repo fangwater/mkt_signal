@@ -150,7 +150,7 @@ impl DerivativesMetricsDataConnectionManager {
             info!("Connection task started for {}", task_description);
             
             // Create intermediate channel for raw WebSocket data
-            let (raw_tx, mut raw_rx) = broadcast::channel(1000);
+            let (raw_tx, mut raw_rx) = broadcast::channel(8192);
             info!("Created raw message channel (capacity: 1000) for {}", task_description);
             
             // Spawn WebSocket connection task

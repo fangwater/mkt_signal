@@ -101,8 +101,6 @@ impl Parser for BybitKlineParser {
                                             
                                             // 发送K线消息
                                             if sender.send(kline_msg.to_bytes()).is_ok() {
-                                                // info!("[BybitKlineParser] 封闭K线推送成功: {} OHLCV=({},{},{},{},{}) 封闭时间={}", 
-                                                //     symbol, open, high, low, close, volume, closed_timestamp);
                                                 return 1;
                                             }
                                         }
