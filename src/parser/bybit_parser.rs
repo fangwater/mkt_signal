@@ -49,147 +49,68 @@ impl BybitKlineParser {
 impl Parser for BybitKlineParser {
     fn parse(&self, msg: Bytes, sender: &broadcast::Sender<Bytes>) -> usize {
         // Parse Bybit kline message
-        info!("[BybitKlineParser] 收到原始消息，大小: {} bytes", msg.len());
-        
-        match std::str::from_utf8(&msg) {
-            Ok(json_str) => {
-                info!("[BybitKlineParser] 成功解析UTF-8字符串，长度: {}", json_str.len());
-                info!("[BybitKlineParser] 原始JSON内容: {}", json_str);
-                
-                match serde_json::from_str::<serde_json::Value>(json_str) {
-                    Ok(json_value) => {
-                        info!("[BybitKlineParser] 成功解析JSON，结构: {}", json_value);
-                        
-                        // 检查topic字段
-                        if let Some(topic) = json_value.get("topic").and_then(|v| v.as_str()) {
-                            info!("[BybitKlineParser] 找到topic字段: {}", topic);
-                            
-                            if topic.starts_with("kline.") {
-                                info!("[BybitKlineParser] 确认是K线消息");
-                                
-                                // 首先检查data数组
-                                if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
-                                    info!("[BybitKlineParser] 找到data数组，长度: {}", data_array.len());
-                                    
-                                    if let Some(kline_data) = data_array.first() {
-                                        info!("[BybitKlineParser] 获取第一个K线数据: {}", kline_data);
-                                        
-                                        // 检查confirm字段
-                                        if let Some(confirm) = kline_data.get("confirm").and_then(|v| v.as_bool()) {
-                                            info!("[BybitKlineParser] 找到confirm字段: {}", confirm);
-                                            
-                                            if confirm == false {
-                                                info!("[BybitKlineParser] K线未确认，跳过处理");
-                                                return 0; // 未确认的K线，不处理
-                                            }
-                                            
-                                            info!("[BybitKlineParser] K线已确认，继续处理");
-                                        } else {
-                                            info!("[BybitKlineParser] 未找到confirm字段或格式无效");
-                                            return 0; // confirm字段无效或缺失
-                                        }
-                                        
-                                        // 从topic字段提取symbol
-                                        if let Some(symbol) = topic.split('.').last() {
-                                            info!("[BybitKlineParser] 提取到交易对: {}", symbol);
-                                            
-                                            // 从kline_data对象中提取OHLCV数据
-                                            let ohlcv_fields = vec!["open", "high", "low", "close", "volume"];
-                                            let mut field_values = Vec::new();
-                                            
-                                            for field in &ohlcv_fields {
-                                                if let Some(value) = kline_data.get(field) {
-                                                    info!("[BybitKlineParser] 找到{}字段: {:?}", field, value);
-                                                    field_values.push(value);
-                                                } else {
-                                                    info!("[BybitKlineParser] 缺少{}字段", field);
-                                                }
-                                            }
-                                            
-                                            if let Some(timestamp_value) = kline_data.get("timestamp") {
-                                                info!("[BybitKlineParser] 找到timestamp字段: {:?}", timestamp_value);
-                                            } else {
-                                                info!("[BybitKlineParser] 缺少timestamp字段");
-                                            }
-                                            
-                                            if let (Some(open_str), Some(high_str), Some(low_str), Some(close_str), Some(volume_str), Some(timestamp)) = (
-                                                kline_data.get("open").and_then(|v| v.as_str()),
-                                                kline_data.get("high").and_then(|v| v.as_str()),
-                                                kline_data.get("low").and_then(|v| v.as_str()),
-                                                kline_data.get("close").and_then(|v| v.as_str()),
-                                                kline_data.get("volume").and_then(|v| v.as_str()),
-                                                kline_data.get("timestamp").and_then(|v| v.as_i64()),
-                                            ) {
-                                                info!("[BybitKlineParser] 成功提取所有字段: open={}, high={}, low={}, close={}, volume={}, timestamp={}", 
-                                                    open_str, high_str, low_str, close_str, volume_str, timestamp);
-                                                
-                                                // 解析价格和成交量数据
-                                                if let (Ok(open), Ok(high), Ok(low), Ok(close), Ok(volume)) = (
-                                                    open_str.parse::<f64>(),
-                                                    high_str.parse::<f64>(),
-                                                    low_str.parse::<f64>(),
-                                                    close_str.parse::<f64>(),
-                                                    volume_str.parse::<f64>(),
-                                                ) {
-                                                    info!("[BybitKlineParser] 成功解析所有数值: open={}, high={}, low={}, close={}, volume={}", 
-                                                        open, high, low, close, volume);
-                                                    
-                                                    // 创建K线消息
-                                                    let kline_msg = KlineMsg::create(
-                                                        symbol.to_string(),
-                                                        open,
-                                                        high,
-                                                        low,
-                                                        close,
-                                                        volume,
-                                                        timestamp,
-                                                    );
-                                                    
-                                                    info!("[BybitKlineParser] 创建K线消息成功");
-                                                    
-                                                    // 发送K线消息
-                                                    match sender.send(kline_msg.to_bytes()) {
-                                                        Ok(_) => {
-                                                            info!("[BybitKlineParser] K线消息发送成功");
-                                                            return 1;
-                                                        }
-                                                        Err(e) => {
-                                                            info!("[BybitKlineParser] K线消息发送失败: {:?}", e);
-                                                        }
-                                                    }
-                                                } else {
-                                                    info!("[BybitKlineParser] 数值解析失败");
-                                                }
-                                            } else {
-                                                info!("[BybitKlineParser] 缺少必要的OHLCV字段");
-                                            }
-                                        } else {
-                                            info!("[BybitKlineParser] 无法从topic中提取交易对");
-                                        }
-                                    } else {
-                                        info!("[BybitKlineParser] data数组为空");
+        if let Ok(json_str) = std::str::from_utf8(&msg) {
+            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
+                // 检查是否是K线消息
+                if let Some(topic) = json_value.get("topic").and_then(|v| v.as_str()) {
+                    if topic.starts_with("kline.") {
+                        // 检查data数组
+                        if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
+                            if let Some(kline_data) = data_array.first() {
+                                // 检查confirm字段 - 只处理已确认的K线数据
+                                if let Some(confirm) = kline_data.get("confirm").and_then(|v| v.as_bool()) {
+                                    if confirm == false {
+                                        return 0; // 未确认的K线，不处理
                                     }
                                 } else {
-                                    info!("[BybitKlineParser] 未找到data数组");
+                                    return 0; // confirm字段无效或缺失
                                 }
-                            } else {
-                                info!("[BybitKlineParser] 不是K线消息，topic: {}", topic);
+                                
+                                // 从topic字段提取symbol
+                                if let Some(symbol) = topic.split('.').last() {
+                                    // 从kline_data对象中提取OHLCV数据
+                                    if let (Some(open_str), Some(high_str), Some(low_str), Some(close_str), Some(volume_str), Some(timestamp)) = (
+                                        kline_data.get("open").and_then(|v| v.as_str()),
+                                        kline_data.get("high").and_then(|v| v.as_str()),
+                                        kline_data.get("low").and_then(|v| v.as_str()),
+                                        kline_data.get("close").and_then(|v| v.as_str()),
+                                        kline_data.get("volume").and_then(|v| v.as_str()),
+                                        kline_data.get("timestamp").and_then(|v| v.as_i64()),
+                                    ) {
+                                        // 解析价格和成交量数据
+                                        if let (Ok(open), Ok(high), Ok(low), Ok(close), Ok(volume)) = (
+                                            open_str.parse::<f64>(),
+                                            high_str.parse::<f64>(),
+                                            low_str.parse::<f64>(),
+                                            close_str.parse::<f64>(),
+                                            volume_str.parse::<f64>(),
+                                        ) {
+                                            // 创建K线消息
+                                            let kline_msg = KlineMsg::create(
+                                                symbol.to_string(),
+                                                open,
+                                                high,
+                                                low,
+                                                close,
+                                                volume,
+                                                timestamp,
+                                            );
+                                            
+                                            // 发送K线消息
+                                            if sender.send(kline_msg.to_bytes()).is_ok() {
+                                                info!("[BybitKlineParser] 封闭K线推送成功: {} OHLCV=({},{},{},{},{}) 时间={}", 
+                                                    symbol, open, high, low, close, volume, timestamp);
+                                                return 1;
+                                            }
+                                        }
+                                    }
+                                }
                             }
-                        } else {
-                            info!("[BybitKlineParser] 未找到topic字段");
                         }
-                    }
-                    Err(e) => {
-                        info!("[BybitKlineParser] JSON解析失败: {}", e);
                     }
                 }
             }
-            Err(e) => {
-                info!("[BybitKlineParser] UTF-8解析失败: {}", e);
-            }
         }
-        
-        info!("[BybitKlineParser] K线消息处理失败，返回0");
         0
     }
 }
