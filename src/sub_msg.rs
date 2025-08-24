@@ -253,7 +253,7 @@ impl SubscribeMsgs {
     fn get_kline_channel(exchange: &str) -> String {
         match exchange {
             "binance-futures" | "binance" => "kline_1m".to_string(),
-            "okex-swap" | "okex" => "candle1D".to_string(),
+            "okex-swap" | "okex" => "candle1m".to_string(),
             "bybit" | "bybit-spot" => "kline.1".to_string(),
             _ => panic!("Unsupported exchange: {}", exchange)
         }
