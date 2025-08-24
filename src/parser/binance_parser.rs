@@ -241,7 +241,6 @@ impl BinanceDerivativesMetricsParser {
                             event_time,
                         );
                         if sender.send(mark_price_msg.to_bytes()).is_ok() {
-                            info!("symbol: {}, price: {}, timestamp: {}", symbol, mark_price, event_time);
                             parsed_count += 1;
                         }
                         

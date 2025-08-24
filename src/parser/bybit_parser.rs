@@ -1,6 +1,7 @@
 use crate::mkt_msg::{SignalMsg, SignalSource, KlineMsg, LiquidationMsg, MarkPriceMsg, IndexPriceMsg, FundingRateMsg, TradeMsg, IncMsg, Level};
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
+use log::info;
 use tokio::sync::broadcast;
 
 pub struct BybitSignalParser {
@@ -24,6 +25,9 @@ impl Parser for BybitSignalParser {
                 if let Some(timestamp) = json_value.get("ts").and_then(|v| v.as_i64()) {
                     // Create signal message
                     let signal_msg = SignalMsg::create(self.source, timestamp);
+                    info!("=======================================");
+                    info!("signal msg, tp:{}",timestamp);
+                    info!("=======================================");
                     let signal_bytes = signal_msg.to_bytes();
                     
                     // Send signal
