@@ -130,8 +130,7 @@ impl DerivativesMetricsDataConnectionManager {
         let global_shutdown_rx = self.global_shutdown_rx.clone();
         
         info!("Creating derivatives connection: {} (exchange: {})", description, exchange);
-        info!("Subscription message: {}", serde_json::to_string(&subscribe_msg).unwrap_or_else(|_| "invalid json".to_string()));
-        
+        // info!("Subscription message: {}", serde_json::to_string(&subscribe_msg).unwrap_or_else(|_| "invalid json".to_string()));
         // Create parser before moving into the async block
         let parser = match self.construct_parser(&exchange).await {
             Ok(p) => {
