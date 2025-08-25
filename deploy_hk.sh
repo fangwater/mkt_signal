@@ -25,7 +25,7 @@ check_status() {
 
 # 1、在当前机器上，编译rust项目，获得stream二进制文件
 log "开始编译项目..."
-cargo build --release
+cargo build --release -j 2
 check_status "项目编译"
 
 ip_list=(68.64.176.133)

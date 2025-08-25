@@ -205,7 +205,6 @@ impl BinanceDerivativesMetricsParser {
         for item in data_array {
             total_parsed += self.parse_single_mark_price(item, sender);
         }
-        info!("array length: {}, total_parsed: {}",data_array.len(),total_parsed);
         total_parsed
     }
     

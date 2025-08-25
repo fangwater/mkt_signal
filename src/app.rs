@@ -31,6 +31,7 @@ pub struct CryptoProxyApp {
     
     // 统一广播通道
     unified_tx: broadcast::Sender<Bytes>,
+    _unified_rx_keepalive: broadcast::Receiver<Bytes>,
     
     // 重启检查器
     restart_checker: RestartChecker,
@@ -46,7 +47,7 @@ impl CryptoProxyApp {
         // 创建通道
         let (global_shutdown_tx, _) = watch::channel(false);
         let (proxy_shutdown_tx, _) = watch::channel(false);
-        let (unified_tx, _) = broadcast::channel(8192);
+        let (unified_tx, _unified_rx_keepalive) = broadcast::channel(8192);
         let cancellation_token = CancellationToken::new();
         
         // 创建重启检查器
@@ -80,6 +81,7 @@ impl CryptoProxyApp {
             proxy_shutdown_tx,
             cancellation_token,
             unified_tx,
+            _unified_rx_keepalive,
             restart_checker,
             config,
         })
@@ -199,24 +201,45 @@ impl CryptoProxyApp {
     }
     
     async fn perform_restart(&mut self, reason: &str) -> Result<()> {
-        info!("Triggering {} restart...", reason);
-        
-        // 发送关闭信号给所有任务
+        info!("触发 {} 重启...", reason);
+
+        // --- 关闭阶段 ---
+        info!("为重启正在关闭所有服务...");
+        // 1. 关闭所有连接
         let _ = self.global_shutdown_tx.send(true);
-        
-        // 关闭所有连接
         self.shutdown_all_connections().await?;
-        
-        // 重置关闭信号
+
+        // 2. 关闭代理
+        if let Some(handle) = self.proxy_handle.take() {
+            let _ = self.proxy_shutdown_tx.send(true);
+            if let Err(e) = handle.await {
+                error!("代理任务未能正常关闭: {:?}", e);
+            }
+        }
+        info!("所有服务已关闭。");
+
+        // 等待旧任务完全终止，避免竞态条件
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        // --- 重启阶段 ---
+        info!("正在重启所有服务...");
+        // 1. 重置全局关闭信号
         let _ = self.global_shutdown_tx.send(false);
         
-        // 更新订阅消息
+        // 2. 为新代理创建新的关闭通道
+        let (proxy_shutdown_tx, _) = watch::channel(false);
+        self.proxy_shutdown_tx = proxy_shutdown_tx;
+
+        // 3. 更新订阅消息
         self.update_all_subscribe_msgs().await?;
         
-        // 重新启动所有连接
-        self.start_all_connections().await;
-        info!("Restarting all connections successfully");
+        // 4. 重新启动代理
+        self.start_proxy().await?;
         
+        // 5. 重新启动所有连接
+        self.start_all_connections().await;
+        
+        info!("所有服务重启成功。");
         Ok(())
     }
     
