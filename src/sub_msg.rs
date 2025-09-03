@@ -48,6 +48,9 @@ pub struct SubscribeMsgs {
     trade_subscribe_msgs: Vec<serde_json::Value>, //逐笔成交
     kline_subscribe_msgs: Vec<serde_json::Value>, //k线
     signal_subscribe_msg: serde_json::Value, //只需要一个，实际是和btc深度有关的某个行情
+    //okex 使用bbo-tbt来获取盘口
+    //币安spot用
+    //Level 1 data, push frequency: 10ms bybit
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +73,27 @@ impl BinancePerpsSubscribeMsgs {
                     "params": ["!forceOrder@arr"],
                     "id": 1,
                 }), 
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BinanceSpotSubscribeMsgs {
+    pub book_ticker_msgs: Vec<serde_json::Value>,//最优挂单信息,
+}
+
+impl BinanceSpotSubscribeMsgs {
+    pub const WS_URL: &'static str = "wss://data-stream.binance.vision/ws"; 
+    pub async fn new(cfg: &Config) -> Self {
+        let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
+        let batch_size = cfg.get_batch_size();
+        let mut book_ticker_msgs = Vec::new();
+        let exchange = cfg.get_exchange();
+        for chunk in symbols.chunks(batch_size) {
+            book_ticker_msgs.push(construct_subscribe_message(&exchange, chunk, "bookTicker"));
+        }
+        Self {
+            book_ticker_msgs : book_ticker_msgs,
         }
     }
 }

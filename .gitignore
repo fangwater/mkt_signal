@@ -4,3 +4,7 @@ logs
 monitor
 *.log
 
+# 批量服务器配置脚本（包含敏感信息）
+batch_setup_servers.sh
+batch_install_dev_tools.sh
+

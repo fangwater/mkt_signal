@@ -41,6 +41,7 @@ impl Parser for BinanceSignalParser {
     }
 }
 
+
 pub struct BinanceKlineParser;
 
 impl BinanceKlineParser {
