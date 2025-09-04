@@ -13,6 +13,7 @@ pub enum MktMsgType {
     IndexPrice = 1012,
     LiquidationOrder = 1013,
     FundingRate = 1014,
+    AskBidSpread = 1015,  // 买卖价差（最优买卖价）
     Error = 2222,
 }
 
@@ -72,6 +73,67 @@ pub struct IndexPriceMsg {
     pub index_price: f64,
     pub timestamp: i64,
 }
+
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct AskBidSpreadMsg {
+    pub msg_type: MktMsgType,
+    pub symbol_length: u32,
+    pub symbol: String,
+    pub timestamp: i64,  // 时间戳，币安现货设为0
+    pub bid_price: f64,  // 最优买价
+    pub bid_amount: f64, // 最优买量
+    pub ask_price: f64,  // 最优卖价
+    pub ask_amount: f64, // 最优卖量
+}
+
+impl AskBidSpreadMsg {
+    /// Create an ask/bid spread message
+    pub fn create(
+        symbol: String,
+        timestamp: i64,
+        bid_price: f64,
+        bid_amount: f64,
+        ask_price: f64,
+        ask_amount: f64,
+    ) -> Self {
+        let symbol_length = symbol.len() as u32;
+        Self {
+            msg_type: MktMsgType::AskBidSpread,
+            symbol_length,
+            symbol,
+            timestamp,
+            bid_price,
+            bid_amount,
+            ask_price,
+            ask_amount,
+        }
+    }
+
+    /// Convert message to bytes
+    pub fn to_bytes(&self) -> Bytes {
+        // Calculate total size: msg_type(4) + symbol_length(4) + symbol + timestamp(8) + 4*f64(32)
+        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 32;
+        let mut buf = BytesMut::with_capacity(total_size);
+        
+        // Write header
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_u32_le(self.symbol_length);
+        
+        // Write symbol
+        buf.put(self.symbol.as_bytes());
+        
+        // Write data
+        buf.put_i64_le(self.timestamp);
+        buf.put_f64_le(self.bid_price);
+        buf.put_f64_le(self.bid_amount);
+        buf.put_f64_le(self.ask_price);
+        buf.put_f64_le(self.ask_amount);
+        
+        buf.freeze()
+    }
+}
+
 /// 对永续合约来说, 币安的预估结算没有意义，不需要考虑Estimated Settle Price字段
 
 #[repr(C)]

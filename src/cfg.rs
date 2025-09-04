@@ -6,14 +6,17 @@ use log::info;
 use tokio::net::UnixStream;
 use tokio::io::AsyncReadExt;
 use prettytable::{Table, Row, Cell, format};
-use crate::Exchange;
+use crate::exchange::Exchange;
 
 #[derive(Debug, Deserialize)]
 struct ConfigFile {
-    is_primary: bool,
     restart_duration_secs: u64,
+    primary_local_ip: String,
+    secondary_local_ip: String,
     snapshot_requery_time: Option<String>,
     symbol_socket: String,
+    // 数据类型开关
+    data_types: DataTypesConfig,
     binance: ZmqProxyCfg,
     #[serde(rename = "binance-futures")]
     binance_futures: ZmqProxyCfg,
@@ -23,6 +26,15 @@ struct ConfigFile {
     bybit: ZmqProxyCfg,
     #[serde(rename = "bybit-spot")]
     bybit_spot: ZmqProxyCfg,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct DataTypesConfig {
+    pub enable_incremental: bool,  // 增量行情
+    pub enable_trade: bool,         // 逐笔成交
+    pub enable_kline: bool,         // K线数据
+    pub enable_derivatives: bool,   // 衍生品指标
+    pub enable_ask_bid_spread: bool, // 买卖价差（最优买卖价）
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -89,10 +101,12 @@ fn print_symbol_comparison(
 #[derive(Debug, Deserialize, Clone)]
 #[allow(dead_code)]
 pub struct Config {
-    pub is_primary: bool,
     pub restart_duration_secs: u64,
+    pub primary_local_ip: String,
+    pub secondary_local_ip: String,
     pub snapshot_requery_time: Option<String>,
     pub symbol_socket: String,
+    pub data_types: DataTypesConfig,  // 数据类型开关
     pub exchange: Exchange,  // 在运行时设置，不从配置文件读取
     pub binance: ZmqProxyCfg,
     #[serde(rename = "binance-futures")]
@@ -112,10 +126,12 @@ impl Config {
         
         // 构造 Config 结构体
         let config = Config {
-            is_primary: config_file.is_primary,
             restart_duration_secs: config_file.restart_duration_secs,
+            primary_local_ip: config_file.primary_local_ip,
+            secondary_local_ip: config_file.secondary_local_ip,
             snapshot_requery_time: config_file.snapshot_requery_time,
             symbol_socket: config_file.symbol_socket,
+            data_types: config_file.data_types,  // 数据类型开关
             exchange,  // 从命令行参数设置
             binance: config_file.binance,
             binance_futures: config_file.binance_futures,

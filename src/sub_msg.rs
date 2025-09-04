@@ -48,9 +48,7 @@ pub struct SubscribeMsgs {
     trade_subscribe_msgs: Vec<serde_json::Value>, //逐笔成交
     kline_subscribe_msgs: Vec<serde_json::Value>, //k线
     signal_subscribe_msg: serde_json::Value, //只需要一个，实际是和btc深度有关的某个行情
-    //okex 使用bbo-tbt来获取盘口
-    //币安spot用
-    //Level 1 data, push frequency: 10ms bybit
+    ask_bid_spread_msgs: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -73,27 +71,6 @@ impl BinancePerpsSubscribeMsgs {
                     "params": ["!forceOrder@arr"],
                     "id": 1,
                 }), 
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct BinanceSpotSubscribeMsgs {
-    pub book_ticker_msgs: Vec<serde_json::Value>,//最优挂单信息,
-}
-
-impl BinanceSpotSubscribeMsgs {
-    pub const WS_URL: &'static str = "wss://data-stream.binance.vision/ws"; 
-    pub async fn new(cfg: &Config) -> Self {
-        let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
-        let batch_size = cfg.get_batch_size();
-        let mut book_ticker_msgs = Vec::new();
-        let exchange = cfg.get_exchange();
-        for chunk in symbols.chunks(batch_size) {
-            book_ticker_msgs.push(construct_subscribe_message(&exchange, chunk, "bookTicker"));
-        }
-        Self {
-            book_ticker_msgs : book_ticker_msgs,
         }
     }
 }
@@ -192,6 +169,7 @@ pub enum ExchangePerpsSubscribeMsgs {
 }
 
 //衍生品(永续合约)的额外消息
+#[derive(Clone)]
 pub struct DerivativesMetricsSubscribeMsgs {
     pub active_symbols: HashSet<String>, //当前所有u本位永续合约的symbol
     pub exchange_msgs: ExchangePerpsSubscribeMsgs,
@@ -221,6 +199,14 @@ impl SubscribeMsgs {
 
     pub fn get_trade_subscribe_msg_len(&self) -> usize {
         self.trade_subscribe_msgs.len()
+    }
+    
+    pub fn get_ask_bid_spread_subscribe_msg_len(&self) -> usize {
+        self.ask_bid_spread_msgs.len()
+    }
+    
+    pub fn get_ask_bid_spread_subscribe_msg(&self, index: usize) -> &serde_json::Value {
+        &self.ask_bid_spread_msgs[index]
     }
 
     pub fn get_inc_subscribe_msg(&self, index: usize) -> &serde_json::Value {
@@ -291,7 +277,15 @@ impl SubscribeMsgs {
             _ => panic!("Unsupported exchange: {}", exchange)
         }
     }
-       
+    
+    fn get_ask_bid_spread_channel(exchange: &str) -> String {
+        match exchange {
+            "binance-futures" | "binance" => "bookTicker".to_string(),
+            "okex-swap" | "okex" => "bbo-tbt".to_string(),
+            "bybit" | "bybit-spot" => "orderbook.1".to_string(),
+            _ => panic!("Unsupported exchange: {}", exchange)
+        }
+    }   
 }
 
 
@@ -382,21 +376,25 @@ impl SubscribeMsgs {
         let mut inc_subscribe_msgs = Vec::new();
         let mut trade_subscribe_msgs = Vec::new();
         let mut kline_subscribe_msgs = Vec::new();
+        let mut ask_bid_spread_msgs = Vec::new();
         let exchange = cfg.get_exchange();
         let inc_channel = SubscribeMsgs::get_inc_channel(&exchange);
         let trade_channel = SubscribeMsgs::get_trade_channel(&exchange);
         let kline_channel = SubscribeMsgs::get_kline_channel(&exchange);
+        let best_price_spread_channel = SubscribeMsgs::get_ask_bid_spread_channel(&exchange);
         for chunk in symbols.chunks(batch_size) {
             inc_subscribe_msgs.push(construct_subscribe_message(&exchange, chunk, &inc_channel));
             trade_subscribe_msgs.push(construct_subscribe_message(&exchange, chunk, &trade_channel));
             kline_subscribe_msgs.push(construct_subscribe_message(&exchange, chunk, &kline_channel));
+            ask_bid_spread_msgs.push(construct_subscribe_message(&exchange, chunk, &best_price_spread_channel));
         }
         Self {             
             active_symbols: symbols.iter().map(|s| s.clone()).collect(),
             inc_subscribe_msgs,
             trade_subscribe_msgs,
             kline_subscribe_msgs,
-            signal_subscribe_msg: SubscribeMsgs::get_signal_subscribe_message(&exchange)
+            signal_subscribe_msg: SubscribeMsgs::get_signal_subscribe_message(&exchange),
+            ask_bid_spread_msgs,
         }
     }
 }

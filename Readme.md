@@ -138,6 +138,7 @@ spot Kline/Candlestick Streams 1m
 
 
 
+我的一个需求，我需要获取交易所到我收到行情的时间差。因此我需要在manager中管理这一点。
 
 
 
@@ -149,5 +150,57 @@ spot Kline/Candlestick Streams 1m
 
 
 
+## 本地 IP 绑定的 WebSocket 连接（tokio + tokio-tungstenite）
 
+项目已支持在 tokio 环境下以“指定本地 IP”建立 WebSocket 连接，兼容 `ws://` 与 `wss://`。
+
+- 入口函数：`src/connection/connection.rs` 中 `WsConnector::connect_with_local_ip(url, sub_msg, local_ip)`。
+- 实现方式：
+  - 使用 `TcpSocket::bind((local_ip, 0))` 绑定本地 IP 后 `connect` 到目标地址；
+  - `ws://` 走 `MaybeTlsStream::Plain` → `client_async`；
+  - `wss://` 先用 `native-tls`/`tokio-native-tls` 做 TLS 握手（SNI 为 URL 的域名），再包裹为 `MaybeTlsStream::NativeTls` → `client_async`；
+  - 最终类型与 `connect_async` 保持一致：`WebSocketStream<MaybeTlsStream<TcpStream>>`。
+
+### Demo：绑定本地 IP 连接并打印消息
+
+已提供最小演示程序：`src/bin/ws_bind_ip_demo.rs`
+
+构建：
+
+```
+cargo build --release
+```
+
+运行示例（Binance 现货 trade 流，按需调整订阅 JSON）：
+
+```
+target/release/ws_bind_ip_demo \
+  --url wss://stream.binance.com:9443/ws \
+  --local-ip 192.168.1.10 \
+  --json '{"method":"SUBSCRIBE","params":["btcusdt@trade"],"id":1}' \
+  --print 5
+```
+
+通用回显服务测试（验证通路）：
+
+```
+target/release/ws_bind_ip_demo \
+  --url wss://echo.websocket.events \
+  --json '"hello"' \
+  --print 1
+```
+
+参数说明：
+
+- `--url`：WebSocket 地址（支持 ws/wss）。
+- `--local-ip`：本地绑定 IP；`0.0.0.0` 或空表示不强制绑定。
+- `--json`：连接后立即发送的 JSON 文本。
+- `--print`：打印收到的消息条数后退出。
+- `--timeout-secs`：整体超时秒数。
+
+注意事项：
+
+- 本地 IP 必须存在于本机网卡；确保与目标地址族（IPv4/IPv6）匹配。
+- `wss://` 场景 TLS 握手使用 URL 的域名作为 SNI（不要用 IP）。
+- 生产使用建议加入重试、超时与清晰日志（本项目内已实现基础重试与日志）。
 

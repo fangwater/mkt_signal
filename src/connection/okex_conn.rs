@@ -160,7 +160,13 @@ impl MktConnectionHandler for OkexConnection {
             // info!("OKEx subscription message: {}", serde_json::to_string_pretty(&self.base_connection.sub_msg).unwrap_or_else(|_| "Failed to serialize".to_string()));
             info!("OKEx WebSocket URL: {}", &self.base_connection.url);
             
-            match WsConnector::connect(&self.base_connection.url, &self.base_connection.sub_msg).await {
+            let connect_result = if let Some(ref local_ip) = self.base_connection.local_ip {
+                WsConnector::connect_with_local_ip(&self.base_connection.url, &self.base_connection.sub_msg, local_ip).await
+            } else {
+                WsConnector::connect(&self.base_connection.url, &self.base_connection.sub_msg).await
+            };
+            
+            match connect_result {
                 Ok(connection) => {
                     info!("Successfully connected to okex at {:?}", connection.connected_at);
                     self.base_connection.connection = Some(connection);

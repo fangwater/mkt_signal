@@ -1,7 +1,19 @@
 [package]
-name = "crypto_proxy"
+name = "mkt_signal"
 version = "0.1.0"
 edition = "2021"
+
+[lib]
+name = "mkt_signal"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mkt_signal"
+path = "src/main.rs"
+
+[[bin]]
+name = "funding_rate_strategy"
+path = "src/bin/funding_rate_strategy.rs"
 
 [dependencies]
 local-ip-address = "0.6"
@@ -18,12 +30,13 @@ env_logger = "0.10"
 anyhow = "1.0"
 futures = "0.3"
 bytes = "1.0"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
-zeromq = "0.4.1"
-zmq = "0.10.0"
-uuid = "1.17.0"
+iceoryx2 = "0.5"
+uuid = { version = "1.17.0", features = ["v4"] }
 sonic-rs = "0.5.1"
 tokio-util = "0.7.15"
 reqwest = "0.12.19"
 prettytable = "0.10.0"
+native-tls = "0.2"
+tokio-native-tls = "0.3"

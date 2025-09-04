@@ -116,7 +116,13 @@ impl MktConnectionRunner for BinanceConnection {
 impl MktConnectionHandler for BinanceConnection {
     async fn start_ws(&mut self) -> anyhow::Result<()> {
         loop {
-            match WsConnector::connect(&self.base_connection.url, &self.base_connection.sub_msg).await {
+            let connect_result = if let Some(ref local_ip) = self.base_connection.local_ip {
+                WsConnector::connect_with_local_ip(&self.base_connection.url, &self.base_connection.sub_msg, local_ip).await
+            } else {
+                WsConnector::connect(&self.base_connection.url, &self.base_connection.sub_msg).await
+            };
+            
+            match connect_result {
                 Ok(connection) => {
                     info!("successfully connected to Binance Futures at {:?}", connection.connected_at);
                     self.base_connection.connection = Some(connection);

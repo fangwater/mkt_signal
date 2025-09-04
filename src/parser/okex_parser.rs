@@ -1,9 +1,10 @@
-use crate::mkt_msg::{SignalMsg, SignalSource, KlineMsg, LiquidationMsg, MarkPriceMsg, IndexPriceMsg, FundingRateMsg, TradeMsg, IncMsg, Level};
+use crate::mkt_msg::{SignalMsg, SignalSource, KlineMsg, LiquidationMsg, MarkPriceMsg, IndexPriceMsg, FundingRateMsg, TradeMsg, IncMsg, Level, AskBidSpreadMsg};
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use std::collections::HashSet;
 
+#[derive(Clone)]
 pub struct OkexSignalParser {
     source: SignalSource,
 }
@@ -17,7 +18,7 @@ impl OkexSignalParser {
 }
 
 impl Parser for OkexSignalParser {
-    fn parse(&self, msg: Bytes, sender: &broadcast::Sender<Bytes>) -> usize {
+    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         // Parse OKEx depth message
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
@@ -33,7 +34,7 @@ impl Parser for OkexSignalParser {
                     let signal_bytes = signal_msg.to_bytes();
                     
                     // Send signal
-                    if sender.send(signal_bytes).is_ok() {
+                    if tx.send(signal_bytes).is_ok() {
                         return 1;
                     }
                 }
@@ -43,6 +44,7 @@ impl Parser for OkexSignalParser {
     }
 }
 
+#[derive(Clone)]
 pub struct OkexKlineParser;
 
 impl OkexKlineParser {
@@ -52,7 +54,7 @@ impl OkexKlineParser {
 }
 
 impl Parser for OkexKlineParser {
-    fn parse(&self, msg: Bytes, sender: &broadcast::Sender<Bytes>) -> usize {
+    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         // Parse OKEx kline message
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
@@ -105,7 +107,7 @@ impl Parser for OkexKlineParser {
                                         );
                                         
                                         // Send kline message
-                                        if sender.send(kline_msg.to_bytes()).is_ok() {
+                                        if tx.send(kline_msg.to_bytes()).is_ok() {
                                             return 1;
                                         }
                                     }
@@ -120,6 +122,7 @@ impl Parser for OkexKlineParser {
     }
 }
 
+#[derive(Clone)]
 pub struct OkexDerivativesMetricsParser {
     symbols: HashSet<String>,
 }
@@ -133,17 +136,17 @@ impl OkexDerivativesMetricsParser {
 }
 
 impl Parser for OkexDerivativesMetricsParser {
-    fn parse(&self, msg: Bytes, sender: &broadcast::Sender<Bytes>) -> usize {
+    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         // Parse OKEx derivatives metrics messages (liquidations + mark price + funding rate + index price)
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
                 if let Some(arg) = json_value.get("arg") {
                     if let Some(channel) = arg.get("channel").and_then(|v| v.as_str()) {
                         match channel {
-                            "liquidation-orders" => return self.parse_liquidation_data(&json_value, sender),
-                            "mark-price" => return self.parse_mark_price_data(&json_value, sender),
-                            "funding-rate" => return self.parse_funding_rate_data(&json_value, sender),
-                            "index-tickers" => return self.parse_index_price_data(&json_value, sender),
+                            "liquidation-orders" => return self.parse_liquidation_data(&json_value, tx),
+                            "mark-price" => return self.parse_mark_price_data(&json_value, tx),
+                            "funding-rate" => return self.parse_funding_rate_data(&json_value, tx),
+                            "index-tickers" => return self.parse_index_price_data(&json_value, tx),
                             _ => return 0,
                         }
                     }
@@ -155,7 +158,7 @@ impl Parser for OkexDerivativesMetricsParser {
 }
 
 impl OkexDerivativesMetricsParser {
-    fn parse_liquidation_data(&self, json_value: &serde_json::Value, sender: &broadcast::Sender<Bytes>) -> usize {
+    fn parse_liquidation_data(&self, json_value: &serde_json::Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         // Parse liquidation data array
         if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
             let mut parsed_count = 0;
@@ -199,7 +202,7 @@ impl OkexDerivativesMetricsParser {
                                     );
                                     
                                     // Send liquidation message
-                                    if sender.send(liquidation_msg.to_bytes()).is_ok() {
+                                    if tx.send(liquidation_msg.to_bytes()).is_ok() {
                                         parsed_count += 1;
                                     }
                                 }
@@ -214,7 +217,7 @@ impl OkexDerivativesMetricsParser {
         0
     }
     
-    fn parse_mark_price_data(&self, json_value: &serde_json::Value, sender: &broadcast::Sender<Bytes>) -> usize {
+    fn parse_mark_price_data(&self, json_value: &serde_json::Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         // Parse mark price data array
         if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
             let mut parsed_count = 0;
@@ -238,7 +241,7 @@ impl OkexDerivativesMetricsParser {
                         );
                         
                         // Send mark price message
-                        if sender.send(mark_price_msg.to_bytes()).is_ok() {
+                        if tx.send(mark_price_msg.to_bytes()).is_ok() {
                             parsed_count += 1;
                         }
                     }
@@ -250,7 +253,7 @@ impl OkexDerivativesMetricsParser {
         0
     }
     
-    fn parse_funding_rate_data(&self, json_value: &serde_json::Value, sender: &broadcast::Sender<Bytes>) -> usize {
+    fn parse_funding_rate_data(&self, json_value: &serde_json::Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         // Parse funding rate data array
         if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
             let mut parsed_count = 0;
@@ -277,7 +280,7 @@ impl OkexDerivativesMetricsParser {
                         );
                         
                         // Send funding rate message
-                        if sender.send(funding_rate_msg.to_bytes()).is_ok() {
+                        if tx.send(funding_rate_msg.to_bytes()).is_ok() {
                             parsed_count += 1;
                         }
                     }
@@ -289,7 +292,7 @@ impl OkexDerivativesMetricsParser {
         0
     }
     
-    fn parse_index_price_data(&self, json_value: &serde_json::Value, sender: &broadcast::Sender<Bytes>) -> usize {
+    fn parse_index_price_data(&self, json_value: &serde_json::Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         // Parse index price data array
         if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
             let mut parsed_count = 0;
@@ -313,7 +316,7 @@ impl OkexDerivativesMetricsParser {
                         );
                         
                         // Send index price message
-                        if sender.send(index_price_msg.to_bytes()).is_ok() {
+                        if tx.send(index_price_msg.to_bytes()).is_ok() {
                             parsed_count += 1;
                         }
                     }
@@ -326,6 +329,7 @@ impl OkexDerivativesMetricsParser {
     }
 }
 
+#[derive(Clone)]
 pub struct OkexTradeParser;
 
 impl OkexTradeParser {
@@ -335,14 +339,14 @@ impl OkexTradeParser {
 }
 
 impl Parser for OkexTradeParser {
-    fn parse(&self, msg: Bytes, sender: &broadcast::Sender<Bytes>) -> usize {
+    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         // Parse OKEx trade message
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
                 // Check if this has data array
                 if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
                     if !data_array.is_empty() {
-                        return self.parse_trade_event(&data_array[0], sender);
+                        return self.parse_trade_event(&data_array[0], tx);
                     }
                 }
             }
@@ -352,7 +356,7 @@ impl Parser for OkexTradeParser {
 }
 
 impl OkexTradeParser {
-    fn parse_trade_event(&self, trade_data: &serde_json::Value, sender: &broadcast::Sender<Bytes>) -> usize {
+    fn parse_trade_event(&self, trade_data: &serde_json::Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         // Extract trade data from OKEx trade message
         if let (Some(symbol), Some(trade_id_str), Some(price_str), Some(size_str), Some(side_str), Some(timestamp_str)) = (
             trade_data.get("instId").and_then(|v| v.as_str()),       // 交易对
@@ -395,8 +399,92 @@ impl OkexTradeParser {
                 );
                 
                 // Send trade message
-                if sender.send(trade_msg.to_bytes()).is_ok() {
+                if tx.send(trade_msg.to_bytes()).is_ok() {
                     return 1;
+                }
+            }
+        }
+        0
+    }
+}
+
+#[derive(Clone)]
+pub struct OkexAskBidSpreadParser;
+
+impl OkexAskBidSpreadParser {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Parser for OkexAskBidSpreadParser {
+    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        // Parse OKEx bbo-tbt message (same format as books)
+        if let Ok(json_str) = std::str::from_utf8(&msg) {
+            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
+                // Check if this is a bbo-tbt event
+                if let Some(arg) = json_value.get("arg").and_then(|v| v.as_object()) {
+                    if let Some(channel) = arg.get("channel").and_then(|v| v.as_str()) {
+                        if channel == "bbo-tbt" {
+                            // Parse data array
+                            if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
+                                for spread_data in data_array {
+                                    // Extract spread data from OKEx bbo-tbt message
+                                    if let (Some(symbol), Some(bids_array), Some(asks_array), Some(timestamp_str)) = (
+                                        arg.get("instId").and_then(|v| v.as_str()),
+                                        spread_data.get("bids").and_then(|v| v.as_array()),
+                                        spread_data.get("asks").and_then(|v| v.as_array()),
+                                        spread_data.get("ts").and_then(|v| v.as_str()),
+                                    ) {
+                                        // Parse timestamp
+                                        let timestamp = timestamp_str.parse::<i64>().unwrap_or(0);
+                                        
+                                        // Parse best bid (first element)
+                                        if let (Some(bid_item), Some(ask_item)) = (bids_array.first(), asks_array.first()) {
+                                            if let (Some(bid_array), Some(ask_array)) = (bid_item.as_array(), ask_item.as_array()) {
+                                                if bid_array.len() >= 2 && ask_array.len() >= 2 {
+                                                    if let (Some(bid_price_str), Some(bid_amount_str), Some(ask_price_str), Some(ask_amount_str)) = (
+                                                        bid_array[0].as_str(),
+                                                        bid_array[1].as_str(),
+                                                        ask_array[0].as_str(),
+                                                        ask_array[1].as_str(),
+                                                    ) {
+                                                        // Parse prices and amounts
+                                                        if let (Ok(bid_price), Ok(bid_amount), Ok(ask_price), Ok(ask_amount)) = (
+                                                            bid_price_str.parse::<f64>(),
+                                                            bid_amount_str.parse::<f64>(),
+                                                            ask_price_str.parse::<f64>(),
+                                                            ask_amount_str.parse::<f64>(),
+                                                        ) {
+                                                            // Filter out zero values
+                                                            if bid_price <= 0.0 || bid_amount <= 0.0 || ask_price <= 0.0 || ask_amount <= 0.0 {
+                                                                continue;
+                                                            }
+                                                            
+                                                            // Create spread message
+                                                            let spread_msg = AskBidSpreadMsg::create(
+                                                                symbol.to_string(),
+                                                                timestamp,
+                                                                bid_price,
+                                                                bid_amount,
+                                                                ask_price,
+                                                                ask_amount,
+                                                            );
+                                                            
+                                                            // Send message
+                                                            if tx.send(spread_msg.to_bytes()).is_ok() {
+                                                                return 1;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -441,6 +529,7 @@ fn parse_okex_order_book_levels(
     }
 }
 
+#[derive(Clone)]
 pub struct OkexIncParser;
 
 impl OkexIncParser {
@@ -450,7 +539,7 @@ impl OkexIncParser {
 }
 
 impl Parser for OkexIncParser {
-    fn parse(&self, msg: Bytes, sender: &broadcast::Sender<Bytes>) -> usize {
+    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         // 解析OKEx增量/快照消息
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
@@ -458,7 +547,7 @@ impl Parser for OkexIncParser {
                 if let Some(arg) = json_value.get("arg") {
                     if let Some(channel) = arg.get("channel").and_then(|v| v.as_str()) {
                         if channel.starts_with("books") {
-                            return self.parse_orderbook_event(&json_value, sender);
+                            return self.parse_orderbook_event(&json_value, tx);
                         }
                     }
                 }
@@ -469,7 +558,7 @@ impl Parser for OkexIncParser {
 }
 
 impl OkexIncParser {
-    fn parse_orderbook_event(&self, json_value: &serde_json::Value, sender: &broadcast::Sender<Bytes>) -> usize {
+    fn parse_orderbook_event(&self, json_value: &serde_json::Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         // 从OKEx订单簿数据中提取信息
         if let (Some(action), Some(data_array)) = (
             json_value.get("action").and_then(|v| v.as_str()),
@@ -518,7 +607,7 @@ impl OkexIncParser {
                     parse_okex_order_book_levels(bids_array, asks_array, &mut inc_msg);
                     
                     // 发送消息
-                    if sender.send(inc_msg.to_bytes()).is_ok() {
+                    if tx.send(inc_msg.to_bytes()).is_ok() {
                         return 1;
                     }
                 }

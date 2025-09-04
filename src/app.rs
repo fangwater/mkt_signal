@@ -1,103 +1,117 @@
 use crate::cfg::Config;
-use crate::connection::mkt_manager::MktDataConnectionManager;
-use crate::connection::kline_manager::KlineDataConnectionManager;
-use crate::connection::derivatives_metrics_manager::DerivativesMetricsDataConnectionManager;
-use crate::forwarder::ZmqForwarder;
-use crate::proxy::Proxy;
+use crate::connection::mkt_manager::{MktManager, MessageQueues};
+use crate::iceoryx_forwarder::IceOryxForwarder;
+use crate::proxy::MpscProxy;
 use crate::restart_checker::RestartChecker;
 
-use tokio::sync::{broadcast, watch};
-use tokio::task::JoinHandle;
+use tokio::sync::{watch, mpsc};
 use tokio::time::{Duration, Instant, interval};
 use tokio_util::sync::CancellationToken;
 use tokio::signal;
-use bytes::Bytes;
 use log::{info, error};
 use anyhow::Result;
+use bytes::Bytes;
 
-pub struct CryptoProxyApp {
-    // 连接管理器（根据配置选择性初始化）
-    mkt_manager: Option<MktDataConnectionManager>,
-    kline_manager: Option<KlineDataConnectionManager>,
-    derivatives_manager: Option<DerivativesMetricsDataConnectionManager>,
-    
-    // 代理
-    proxy_handle: Option<JoinHandle<()>>,
-    
+pub struct MktSignalApp {
     // 信号和通道管理
     global_shutdown_tx: watch::Sender<bool>,
     proxy_shutdown_tx: watch::Sender<bool>,
     cancellation_token: CancellationToken,
     
-    // 统一广播通道
-    unified_tx: broadcast::Sender<Bytes>,
-    _unified_rx_keepalive: broadcast::Receiver<Bytes>,
+    // 代理（不再使用句柄，直接保存proxy）
+    proxy: Option<MpscProxy>,
+    
+    // 主备两个市场数据管理器
+    primary_mkt_manager: Option<MktManager>,
+    secondary_mkt_manager: Option<MktManager>,
     
     // 重启检查器
     restart_checker: RestartChecker,
+    
+    // 主备管理器的下次重启时间
+    next_primary_restart: Instant,
+    next_secondary_restart: Instant,
+    
+    // 消息队列发送端（用于重启时复用）
+    incremental_tx: mpsc::UnboundedSender<Bytes>,
+    trade_tx: mpsc::UnboundedSender<Bytes>,
+    kline_tx: mpsc::UnboundedSender<Bytes>,
+    derivatives_tx: mpsc::UnboundedSender<Bytes>,
+    signal_tx: mpsc::UnboundedSender<Bytes>,
+    ask_bid_spread_tx: mpsc::UnboundedSender<Bytes>,
     
     // 配置
     config: &'static Config,
 }
 
-impl CryptoProxyApp {
+impl MktSignalApp {
     pub async fn new(config: &'static Config) -> Result<Self> {
-        info!("Initializing CryptoProxyApp for exchange: {}", config.get_exchange());
+        info!("Initializing MktSignalApp for exchange: {}", config.get_exchange());
         
         // 创建通道
         let (global_shutdown_tx, _) = watch::channel(false);
         let (proxy_shutdown_tx, _) = watch::channel(false);
-        let (unified_tx, _unified_rx_keepalive) = broadcast::channel(8192);
         let cancellation_token = CancellationToken::new();
         
         // 创建重启检查器
-        let restart_checker = RestartChecker::new(config.is_primary, config.restart_duration_secs);
+        let restart_checker = RestartChecker::new(config.restart_duration_secs);
         
-        // 所有管理器都强制启动，直接传递统一的广播发送器
-        info!("Initializing market data manager");
-        let mkt_manager = Some(MktDataConnectionManager::new(config, &global_shutdown_tx, unified_tx.clone()).await);
+        // 计算主备的初始重启时间
+        // 主：从现在开始等待一个完整的重启周期
+        // 备：错开半个周期
+        let restart_duration = Duration::from_secs(config.restart_duration_secs);
+        let next_primary_restart = Instant::now() + restart_duration;
+        let next_secondary_restart = Instant::now() + restart_duration / 2;
         
-        info!("Initializing kline data manager");
-        let kline_manager = Some(KlineDataConnectionManager::new(config, &global_shutdown_tx, unified_tx.clone()).await);
-        
-        // 只为衍生品交易所初始化 derivatives metrics manager
-        let derivatives_manager = match config.get_exchange().as_str() {
-            "binance-futures" | "okex-swap" | "bybit" => {
-                info!("Initializing derivatives metrics manager for {}", config.get_exchange());
-                Some(DerivativesMetricsDataConnectionManager::new(config, &global_shutdown_tx, unified_tx.clone()).await)
-            },
-            _ => {
-                info!("Skipping derivatives metrics manager for spot exchange: {}", config.get_exchange());
-                None
-            }
-        };
+        // 创建消息队列（这些通道将被所有管理器共享）
+        let message_queues = MessageQueues::new();
         
         Ok(Self {
-            mkt_manager,
-            kline_manager,
-            derivatives_manager,
-            proxy_handle: None,
             global_shutdown_tx,
             proxy_shutdown_tx,
             cancellation_token,
-            unified_tx,
-            _unified_rx_keepalive,
+            proxy: None,
+            primary_mkt_manager: None,
+            secondary_mkt_manager: None,
             restart_checker,
+            next_primary_restart,
+            next_secondary_restart,
+            incremental_tx: message_queues.incremental_tx,
+            trade_tx: message_queues.trade_tx,
+            kline_tx: message_queues.kline_tx,
+            derivatives_tx: message_queues.derivatives_tx,
+            signal_tx: message_queues.signal_tx,
+            ask_bid_spread_tx: message_queues.ask_bid_spread_tx,
             config,
         })
     }
     
     pub async fn run(mut self) -> Result<()> {
-        info!("Starting CryptoProxyApp...");
+        info!("Starting MktSignalApp...");
         
         // 设置信号处理
         self.setup_signal_handlers().await;
         
-        // 启动所有服务
-        self.start_services().await?;
+        // 初始化并启动所有服务
+        self.initialize_and_start().await?;
         
-        // 主事件循环
-        self.main_event_loop().await
+        // 运行proxy和主事件循环
+        let proxy = self.proxy.take();
+        if let Some(mut proxy) = proxy {
+            // 同时运行proxy和主事件循环
+            tokio::select! {
+                _ = proxy.run() => {
+                    info!("Proxy finished");
+                    Ok(())
+                }
+                result = self.main_event_loop() => {
+                    result
+                }
+            }
+        } else {
+            // 如果没有proxy，只运行主事件循环
+            self.main_event_loop().await
+        }
     }
     
     async fn setup_signal_handlers(&self) {
@@ -120,78 +134,123 @@ impl CryptoProxyApp {
         });
     }
     
-    async fn start_services(&mut self) -> Result<()> {
-        info!("Starting all services...");
+    async fn initialize_and_start(&mut self) -> Result<()> {
+        info!("Initializing and starting all services...");
         
-        // 启动代理
-        self.start_proxy().await?;
+        // 创建主市场数据管理器
+        let primary_mkt_manager = MktManager::new(
+            self.config,
+            &self.global_shutdown_tx,
+            self.incremental_tx.clone(),
+            self.trade_tx.clone(),
+            self.kline_tx.clone(),
+            self.derivatives_tx.clone(),
+            self.signal_tx.clone(),
+            self.ask_bid_spread_tx.clone(),
+            self.config.primary_local_ip.clone(),
+        ).await;
         
-        // 启动所有连接
-        self.start_all_connections().await;
+        // 创建备市场数据管理器（使用相同的tx通道）
+        let secondary_mkt_manager = MktManager::new(
+            self.config,
+            &self.global_shutdown_tx,
+            self.incremental_tx.clone(),
+            self.trade_tx.clone(),
+            self.kline_tx.clone(),
+            self.derivatives_tx.clone(),
+            self.signal_tx.clone(),
+            self.ask_bid_spread_tx.clone(),
+            self.config.secondary_local_ip.clone(),
+        ).await;
+        
+        // 启动代理（只在初始化时创建一次）
+        if self.proxy.is_none() {
+            // 创建接收端（只在第一次初始化时创建）
+            let (incremental_tx, incremental_rx) = mpsc::unbounded_channel();
+            let (trade_tx, trade_rx) = mpsc::unbounded_channel();
+            let (kline_tx, kline_rx) = mpsc::unbounded_channel();
+            let (derivatives_tx, derivatives_rx) = mpsc::unbounded_channel();
+            let (signal_tx, signal_rx) = mpsc::unbounded_channel();
+            let (ask_bid_spread_tx, ask_bid_spread_rx) = mpsc::unbounded_channel();
+            
+            // 更新发送端
+            self.incremental_tx = incremental_tx;
+            self.trade_tx = trade_tx;
+            self.kline_tx = kline_tx;
+            self.derivatives_tx = derivatives_tx;
+            self.signal_tx = signal_tx;
+            self.ask_bid_spread_tx = ask_bid_spread_tx;
+            
+            let proxy_shutdown_rx = self.proxy_shutdown_tx.subscribe();
+            let tp_reset_notify = primary_mkt_manager.get_tp_reset_notify();
+            let forwarder = IceOryxForwarder::new(self.config)?;
+            
+            let proxy = MpscProxy::new(
+                forwarder,
+                incremental_rx,
+                trade_rx,
+                kline_rx,
+                derivatives_rx,
+                signal_rx,
+                ask_bid_spread_rx,
+                proxy_shutdown_rx,
+                tp_reset_notify
+            );
+            
+            self.proxy = Some(proxy);
+            info!("Proxy created successfully");
+        }
+        
+        // 保存两个mkt_manager
+        self.primary_mkt_manager = Some(primary_mkt_manager);
+        self.secondary_mkt_manager = Some(secondary_mkt_manager);
+        
+        // 启动主备两个管理器的所有连接
+        if let Some(ref mut manager) = self.primary_mkt_manager {
+            info!("Starting PRIMARY market data connections...");
+            manager.start_all_connections().await;
+        }
+        
+        if let Some(ref mut manager) = self.secondary_mkt_manager {
+            info!("Starting SECONDARY market data connections...");
+            manager.start_all_connections().await;
+        }
         
         info!("All services started successfully");
         Ok(())
     }
     
-    async fn start_proxy(&mut self) -> Result<()> {
-        info!("Starting proxy...");
-        
-        let proxy_shutdown_rx = self.proxy_shutdown_tx.subscribe();
-        let tp_reset_notify = self.get_tp_reset_notify();
-        let unified_rx = self.unified_tx.subscribe();
-        let forwarder = ZmqForwarder::new(self.config)?;
-        
-        let proxy_handle = tokio::spawn(async move {
-            let mut proxy = Proxy::new(forwarder, unified_rx, proxy_shutdown_rx, tp_reset_notify);
-            proxy.run().await;
-        });
-        
-        self.proxy_handle = Some(proxy_handle);
-        info!("Proxy started successfully");
-        Ok(())
-    }
-    
-    async fn start_all_connections(&mut self) {
-        info!("Starting all connections...");
-        
-        if let Some(ref mut manager) = self.mkt_manager {
-            info!("Starting market data connections");
-            manager.start_all_connections().await;
-        }
-        
-        if let Some(ref mut manager) = self.kline_manager {
-            info!("Starting kline data connections");
-            manager.start_all_kline_connections().await;
-        }
-        
-        if let Some(ref mut manager) = self.derivatives_manager {
-            info!("Starting derivatives metrics connections");
-            manager.start_all_derivatives_connections().await;
-        }
-        
-        info!("All connections started");
-    }
-    
     async fn main_event_loop(&mut self) -> Result<()> {
-        let mut next_restart_instant = self.restart_checker.get_next_restart_instant();
-        info!("Next restart instant: {:?}", next_restart_instant);
+        info!("Primary restart scheduled at: {:?}", self.next_primary_restart);
+        info!("Secondary restart scheduled at: {:?}", self.next_secondary_restart);
         
         let mut log_interval = interval(Duration::from_secs(3));
         info!("Exchange: {}", self.config.get_exchange());
         
         while !self.cancellation_token.is_cancelled() {
+            let now = Instant::now();
+            let time_to_primary = self.next_primary_restart.saturating_duration_since(now).as_secs();
+            let time_to_secondary = self.next_secondary_restart.saturating_duration_since(now).as_secs();
+            
             tokio::select! {
                 _ = log_interval.tick() => {
-                    let now_instant = Instant::now();
-                    info!("{}", self.format_status_table(
-                        next_restart_instant.duration_since(now_instant).as_secs()
-                    ));
+                    info!("{}", self.format_status_table_dual(time_to_primary, time_to_secondary));
                 }
-                _ = tokio::time::sleep_until(next_restart_instant) => {
-                    next_restart_instant += Duration::from_secs(self.restart_checker.restart_duration_secs) * 2;
-                    if let Err(e) = self.perform_restart("scheduled").await {
-                        error!("Failed to perform scheduled restart: {}", e);
+                _ = tokio::time::sleep_until(self.next_primary_restart) => {
+                    info!("执行主管理器定时重启");
+                    if let Err(e) = self.restart_primary().await {
+                        error!("Failed to restart primary manager: {}", e);
                     }
+                    // 更新下次主管理器重启时间
+                    self.next_primary_restart = Instant::now() + Duration::from_secs(self.config.restart_duration_secs);
+                }
+                _ = tokio::time::sleep_until(self.next_secondary_restart) => {
+                    info!("执行备管理器定时重启");
+                    if let Err(e) = self.restart_secondary().await {
+                        error!("Failed to restart secondary manager: {}", e);
+                    }
+                    // 更新下次备管理器重启时间
+                    self.next_secondary_restart = Instant::now() + Duration::from_secs(self.config.restart_duration_secs);
                 }
             }
         }
@@ -200,22 +259,106 @@ impl CryptoProxyApp {
         self.shutdown().await
     }
     
+    async fn restart_primary(&mut self) -> Result<()> {
+        info!("正在重启主管理器...");
+        
+        // 关闭当前主管理器
+        if let Some(mut manager) = self.primary_mkt_manager.take() {
+            if let Err(e) = manager.shutdown(&self.global_shutdown_tx).await {
+                error!("Failed to shutdown PRIMARY MktManager: {}", e);
+            }
+        }
+        
+        // 等待短暂时间确保清理完成
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        
+        // 创建新的主管理器（复用相同的通道）
+        let primary_mkt_manager = MktManager::new(
+            self.config,
+            &self.global_shutdown_tx,
+            self.incremental_tx.clone(),
+            self.trade_tx.clone(),
+            self.kline_tx.clone(),
+            self.derivatives_tx.clone(),
+            self.signal_tx.clone(),
+            self.ask_bid_spread_tx.clone(),
+            self.config.primary_local_ip.clone(),
+        ).await;
+        
+        // 启动主管理器
+        self.primary_mkt_manager = Some(primary_mkt_manager);
+        if let Some(ref mut manager) = self.primary_mkt_manager {
+            info!("Starting PRIMARY market data connections...");
+            manager.start_all_connections().await;
+        }
+        
+        info!("主管理器重启成功");
+        Ok(())
+    }
+    
+    async fn restart_secondary(&mut self) -> Result<()> {
+        info!("正在重启备管理器...");
+        
+        // 关闭当前备管理器
+        if let Some(mut manager) = self.secondary_mkt_manager.take() {
+            if let Err(e) = manager.shutdown(&self.global_shutdown_tx).await {
+                error!("Failed to shutdown SECONDARY MktManager: {}", e);
+            }
+        }
+        
+        // 等待短暂时间确保清理完成
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        
+        // 创建新的备管理器（复用相同的通道）
+        let secondary_mkt_manager = MktManager::new(
+            self.config,
+            &self.global_shutdown_tx,
+            self.incremental_tx.clone(),
+            self.trade_tx.clone(),
+            self.kline_tx.clone(),
+            self.derivatives_tx.clone(),
+            self.signal_tx.clone(),
+            self.ask_bid_spread_tx.clone(),
+            self.config.secondary_local_ip.clone(),
+        ).await;
+        
+        // 启动备管理器
+        self.secondary_mkt_manager = Some(secondary_mkt_manager);
+        if let Some(ref mut manager) = self.secondary_mkt_manager {
+            info!("Starting SECONDARY market data connections...");
+            manager.start_all_connections().await;
+        }
+        
+        info!("备管理器重启成功");
+        Ok(())
+    }
+    
     async fn perform_restart(&mut self, reason: &str) -> Result<()> {
         info!("触发 {} 重启...", reason);
 
         // --- 关闭阶段 ---
         info!("为重启正在关闭所有服务...");
-        // 1. 关闭所有连接
+        
+        // 1. 关闭所有市场数据管理器
         let _ = self.global_shutdown_tx.send(true);
-        self.shutdown_all_connections().await?;
-
-        // 2. 关闭代理
-        if let Some(handle) = self.proxy_handle.take() {
-            let _ = self.proxy_shutdown_tx.send(true);
-            if let Err(e) = handle.await {
-                error!("代理任务未能正常关闭: {:?}", e);
+        
+        // 关闭主管理器
+        if let Some(mut manager) = self.primary_mkt_manager.take() {
+            if let Err(e) = manager.shutdown(&self.global_shutdown_tx).await {
+                error!("Failed to shutdown PRIMARY MktManager: {}", e);
             }
         }
+        
+        // 关闭备管理器
+        if let Some(mut manager) = self.secondary_mkt_manager.take() {
+            if let Err(e) = manager.shutdown(&self.global_shutdown_tx).await {
+                error!("Failed to shutdown SECONDARY MktManager: {}", e);
+            }
+        }
+
+        // 2. 关闭代理
+        let _ = self.proxy_shutdown_tx.send(true);
+        // proxy会在主循环中运行，这里只需要发送关闭信号
         info!("所有服务已关闭。");
 
         // 等待旧任务完全终止，避免竞态条件
@@ -223,6 +366,7 @@ impl CryptoProxyApp {
 
         // --- 重启阶段 ---
         info!("正在重启所有服务...");
+        
         // 1. 重置全局关闭信号
         let _ = self.global_shutdown_tx.send(false);
         
@@ -230,103 +374,46 @@ impl CryptoProxyApp {
         let (proxy_shutdown_tx, _) = watch::channel(false);
         self.proxy_shutdown_tx = proxy_shutdown_tx;
 
-        // 3. 更新订阅消息
-        self.update_all_subscribe_msgs().await?;
-        
-        // 4. 重新启动代理
-        self.start_proxy().await?;
-        
-        // 5. 重新启动所有连接
-        self.start_all_connections().await;
+        // 3. 重新初始化并启动所有服务
+        self.initialize_and_start().await?;
         
         info!("所有服务重启成功。");
-        Ok(())
-    }
-    
-    async fn shutdown_all_connections(&mut self) -> Result<()> {
-        if let Some(ref mut manager) = self.mkt_manager {
-            if let Err(e) = manager.shutdown(&self.global_shutdown_tx).await {
-                error!("Failed to shutdown MktConnectionManager: {}", e);
-                return Err(anyhow::anyhow!("MktConnectionManager shutdown failed"));
-            }
-        }
-        
-        if let Some(ref mut manager) = self.kline_manager {
-            if let Err(e) = manager.shutdown(&self.global_shutdown_tx).await {
-                error!("Failed to shutdown KlineConnectionManager: {}", e);
-                return Err(anyhow::anyhow!("KlineConnectionManager shutdown failed"));
-            }
-        }
-        
-        if let Some(ref mut manager) = self.derivatives_manager {
-            if let Err(e) = manager.shutdown(&self.global_shutdown_tx).await {
-                error!("Failed to shutdown DerivativesMetricsConnectionManager: {}", e);
-                return Err(anyhow::anyhow!("DerivativesMetricsConnectionManager shutdown failed"));
-            }
-        }
-        
-        info!("All connection managers shutdown successfully");
-        Ok(())
-    }
-    
-    async fn update_all_subscribe_msgs(&mut self) -> Result<()> {
-        if let Some(ref mut manager) = self.mkt_manager {
-            if let Err(e) = manager.update_subscribe_msgs().await {
-                error!("Failed to update subscribe msgs for MktConnectionManager: {}", e);
-                return Err(anyhow::anyhow!("MktConnectionManager update_subscribe_msgs failed"));
-            }
-        }
-        
-        if let Some(ref mut manager) = self.kline_manager {
-            if let Err(e) = manager.update_subscribe_msgs().await {
-                error!("Failed to update subscribe msgs for KlineConnectionManager: {}", e);
-                return Err(anyhow::anyhow!("KlineConnectionManager update_subscribe_msgs failed"));
-            }
-        }
-        
-        if let Some(ref mut manager) = self.derivatives_manager {
-            if let Err(e) = manager.update_subscribe_msgs().await {
-                error!("Failed to update subscribe msgs for DerivativesMetricsConnectionManager: {}", e);
-                return Err(anyhow::anyhow!("DerivativesMetricsConnectionManager update_subscribe_msgs failed"));
-            }
-        }
-        
-        info!("Update subscribe msgs successfully");
         Ok(())
     }
     
     async fn shutdown(&mut self) -> Result<()> {
         info!("Shutting down application...");
         
-        // 关闭所有连接
-        self.shutdown_all_connections().await?;
+        // 关闭主市场数据管理器
+        if let Some(mut manager) = self.primary_mkt_manager.take() {
+            if let Err(e) = manager.shutdown(&self.global_shutdown_tx).await {
+                error!("Failed to shutdown PRIMARY MktManager: {}", e);
+            }
+        }
+        
+        // 关闭备市场数据管理器
+        if let Some(mut manager) = self.secondary_mkt_manager.take() {
+            if let Err(e) = manager.shutdown(&self.global_shutdown_tx).await {
+                error!("Failed to shutdown SECONDARY MktManager: {}", e);
+            }
+        }
         
         // 关闭代理
         let _ = self.proxy_shutdown_tx.send(true);
-        if let Some(handle) = self.proxy_handle.take() {
-            let _ = handle.await;
-        }
+        // proxy会在主循环中运行，这里只需要发送关闭信号
         
         info!("Application shutdown completed");
         Ok(())
     }
     
-    fn get_tp_reset_notify(&self) -> std::sync::Arc<tokio::sync::Notify> {
-        // 优先从市场数据管理器获取
-        if let Some(ref manager) = self.mkt_manager {
-            return manager.get_tp_reset_notify();
-        }
-        
-        // 如果没有市场数据管理器，创建一个新的
-        std::sync::Arc::new(tokio::sync::Notify::new())
-    }
-    
-    fn format_status_table(&self, next_restart: u64) -> String {
+    fn format_status_table_dual(&self, primary_restart: u64, secondary_restart: u64) -> String {
         format!("\n\
              |-------------------------|-------------|\n\
-             | Next Restart            | {:>10}s     |\n\
+             | Primary Next Restart    | {:>10}s |\n\
+             | Secondary Next Restart  | {:>10}s |\n\
              |-------------------------|-------------|",
-            next_restart
+            primary_restart,
+            secondary_restart
         )
     }
 }

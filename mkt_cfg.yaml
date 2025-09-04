@@ -1,41 +1,72 @@
-is_primary: true
+# 内部会创建两个连接，自动以奇偶间隔错开重启
 restart_duration_secs: 18000
+
+# 主备连接使用的本地IP地址
+primary_local_ip: "0.0.0.0"     # 主连接绑定的本地IP，0.0.0.0表示默认
+secondary_local_ip: "0.0.0.0"   # 备连接绑定的本地IP，0.0.0.0表示默认
 snapshot_requery_time: "--:--:--"  # "--:--:--" 表示立即查询(30秒后)，空字符串禁用快照，可设置如 "02:00:00" 定时查询
 symbol_socket: "/root/project/symbol_server/exchange"
 
-# 交易所配置 - 每个交易所使用相同的 ZMQ 配置，所有数据类型都启用
+# 数据类型开关配置
+data_types:
+  enable_incremental: true    # 增量orderbook数据
+  enable_trade: true          # 逐笔成交数据
+  enable_kline: true          # K线数据
+  enable_derivatives: true    # 衍生品指标数据（仅期货交易所）
+  enable_ask_bid_spread: true # 买卖价差（最优买卖价）数据
+
+# IceOryx配置
+iceoryx:
+  # IceOryx会自动根据交易所名称创建频道
+  # 频道格式: data_pubs/{exchange}/{data_type}
+  # 例如: data_pubs/binance/incremental, data_pubs/binance-futures/derivatives
+  
+  # 缓冲区和历史记录配置
+  incremental:
+    buffer_size: 2048
+    history_size: 100
+    max_subscribers: 10
+  
+  trade:
+    buffer_size: 1024
+    history_size: 100
+    max_subscribers: 10
+  
+  kline:
+    buffer_size: 512
+    history_size: 50
+    max_subscribers: 10
+  
+  derivatives:
+    buffer_size: 1024
+    history_size: 50
+    max_subscribers: 10
+  
+  ask_bid_spread:
+    buffer_size: 512
+    history_size: 100
+    max_subscribers: 10
+  
+  signal:
+    buffer_size: 256
+    history_size: 50
+    max_subscribers: 10
+
+# 交易所配置已简化，IceOryx使用共享内存，不需要网络配置
 binance:
-  ipc_path: "/tmp/zmq_mkt_binance_feeds.ipc"
-  primary_addr: "103.141.183.151:5555"
-  secondary_addr: "103.141.183.152:5555"
-  hwm: 5000
+  enabled: true
 
 binance-futures:
-  ipc_path: "/tmp/zmq_mkt_binance-futures_feeds.ipc"
-  primary_addr: "103.141.183.151:5556"
-  secondary_addr: "103.141.183.152:5556"
-  hwm: 5000
+  enabled: true
 
 okex:
-  ipc_path: "/tmp/zmq_mkt_okex_feeds.ipc"
-  primary_addr: "103.141.183.151:5557"
-  secondary_addr: "103.141.183.152:5557"
-  hwm: 5000
+  enabled: true
 
 okex-swap:
-  ipc_path: "/tmp/zmq_mkt_okex-swap_feeds.ipc"  
-  primary_addr: "103.141.183.151:5558"
-  secondary_addr: "103.141.183.152:5558"
-  hwm: 5000
+  enabled: true
 
 bybit:
-  ipc_path: "/tmp/zmq_mkt_bybit_feeds.ipc"
-  primary_addr: "103.141.183.151:5559"
-  secondary_addr: "103.141.183.152:5559"
-  hwm: 5000
+  enabled: true
 
 bybit-spot:
-  ipc_path: "/tmp/zmq_mkt_bybit-spot_feeds.ipc"
-  primary_addr: "103.141.183.151:5560"
-  secondary_addr: "103.141.183.152:5560"
-  hwm: 5000
+  enabled: true

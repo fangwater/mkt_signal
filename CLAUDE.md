@@ -21,19 +21,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # 构建发布版本
 cargo build --release
 
-# 使用特定交易所配置运行
-./target/release/mkt_proxy --config binance-futures_mkt_cfg.yaml
+# 使用特定交易所配置运行（二进制名称是 crypto_proxy）
+./target/release/crypto_proxy --exchange <exchange>
+
+# 支持的交易所: binance, binance-futures, okex, okex-swap, bybit, bybit-spot
 ```
 
 ### 进程管理（通过 PM2）
 ```bash
-# 启动指定交易所的代理
+# 启动指定交易所的代理（会同时启动现货和期货）
 ./start_proxy.sh <exchange>
 
-# 停止指定交易所的代理
+# 停止指定交易所的代理  
 ./stop_proxy.sh <exchange>
 
-# 支持的交易所: binance, binance-futures, okex-swap, okex, bybit, bybit-spot
+# 支持的交易所组: binance, okex, bybit
+# binance组: binance + binance-futures
+# okex组: okex + okex-swap  
+# bybit组: bybit + bybit-spot
 ```
 
 ### 部署
@@ -47,14 +52,14 @@ cargo build --release
 
 系统使用 YAML 配置文件（`mkt_cfg.yaml`）包含交易所特定的代理设置：
 - **主备设置**: `is_primary` 标志用于高可用性
-- **重启调度**: `restart_duration_secs` 用于定期连接刷新
-- **快照管理**: `snapshot_requery_time` 用于深度快照同步
+- **重启调度**: `restart_duration_secs` 用于定期连接刷新（默认18000秒/5小时）
+- **快照管理**: `snapshot_requery_time` 用于深度快照同步（"--:--:--"立即查询，空字符串禁用）
 - **ZeroMQ 端点**: 交易所特定的 IPC 路径和网络地址
 
 ## 交易所特定实现
 
 每个交易所都需要自定义的 WebSocket 处理，因为心跳协议不同：
-- **币安**: 服务器发起的 ping，需要回显 payload（3分钟间隔）
+- **币安**: 服务器发起的 ping，需要回显 payload（3分钟间隔，10分钟无pong超时）
 - **OKEx**: 客户端发起的 ping/pong，30秒超时逻辑
 - **Bybit**: 固定20秒客户端心跳，带请求/响应跟踪
 

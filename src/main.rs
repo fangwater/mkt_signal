@@ -1,40 +1,23 @@
 mod connection;
 mod sub_msg;
 mod cfg;
-mod forwarder;
+mod exchange;
+mod iceoryx_forwarder;
 mod mkt_msg;
 mod parser;
 mod proxy;
-mod receiver;
 mod restart_checker;
 mod app;
 use cfg::Config;
-use app::CryptoProxyApp;
+use app::MktSignalApp;
+use exchange::Exchange;
 use tokio::sync::OnceCell;
-use clap::{Parser, ValueEnum};
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Debug, ValueEnum, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum Exchange {
-    Binance,
-    #[value(name = "binance-futures")]
-    #[serde(rename = "binance-futures")]
-    BinanceFutures,
-    Okex,
-    #[value(name = "okex-swap")]
-    #[serde(rename = "okex-swap")]
-    OkexSwap,
-    Bybit,
-    #[value(name = "bybit-spot")]
-    #[serde(rename = "bybit-spot")]
-    BybitSpot,
-}
+use clap::Parser;
 
 
 #[derive(Parser)]
-#[command(name = "crypto_proxy")]
-#[command(about = "Cryptocurrency market data proxy")]
+#[command(name = "mkt_signal")]
+#[command(about = "using market data generate signal")]
 struct Args {
     /// Exchange to connect to
     #[arg(short, long)]
@@ -64,6 +47,6 @@ async fn main() -> anyhow::Result<()> {
     let config = get_config(config_path, exchange).await;
     
     // 创建并运行应用
-    let app = CryptoProxyApp::new(config).await?;
+    let app = MktSignalApp::new(config).await?;
     app.run().await
 }
