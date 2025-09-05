@@ -6,7 +6,6 @@ mod iceoryx_forwarder;
 mod mkt_msg;
 mod parser;
 mod proxy;
-mod restart_checker;
 mod app;
 use cfg::Config;
 use app::MktSignalApp;

@@ -2,7 +2,6 @@ use crate::cfg::Config;
 use crate::connection::mkt_manager::{MktManager, MessageQueues};
 use crate::iceoryx_forwarder::IceOryxForwarder;
 use crate::proxy::MpscProxy;
-use crate::restart_checker::RestartChecker;
 
 use tokio::sync::{watch, mpsc};
 use tokio::time::{Duration, Instant, interval};
@@ -26,7 +25,6 @@ pub struct MktSignalApp {
     secondary_mkt_manager: Option<MktManager>,
     
     // 重启检查器
-    restart_checker: RestartChecker,
     
     // 主备管理器的下次重启时间
     next_primary_restart: Instant,
@@ -54,7 +52,6 @@ impl MktSignalApp {
         let cancellation_token = CancellationToken::new();
         
         // 创建重启检查器
-        let restart_checker = RestartChecker::new(config.restart_duration_secs);
         
         // 计算主备的初始重启时间
         // 主：从现在开始等待一个完整的重启周期
@@ -73,7 +70,6 @@ impl MktSignalApp {
             proxy: None,
             primary_mkt_manager: None,
             secondary_mkt_manager: None,
-            restart_checker,
             next_primary_restart,
             next_secondary_restart,
             incremental_tx: message_queues.incremental_tx,
@@ -330,54 +326,6 @@ impl MktSignalApp {
         }
         
         info!("备管理器重启成功");
-        Ok(())
-    }
-    
-    async fn perform_restart(&mut self, reason: &str) -> Result<()> {
-        info!("触发 {} 重启...", reason);
-
-        // --- 关闭阶段 ---
-        info!("为重启正在关闭所有服务...");
-        
-        // 1. 关闭所有市场数据管理器
-        let _ = self.global_shutdown_tx.send(true);
-        
-        // 关闭主管理器
-        if let Some(mut manager) = self.primary_mkt_manager.take() {
-            if let Err(e) = manager.shutdown(&self.global_shutdown_tx).await {
-                error!("Failed to shutdown PRIMARY MktManager: {}", e);
-            }
-        }
-        
-        // 关闭备管理器
-        if let Some(mut manager) = self.secondary_mkt_manager.take() {
-            if let Err(e) = manager.shutdown(&self.global_shutdown_tx).await {
-                error!("Failed to shutdown SECONDARY MktManager: {}", e);
-            }
-        }
-
-        // 2. 关闭代理
-        let _ = self.proxy_shutdown_tx.send(true);
-        // proxy会在主循环中运行，这里只需要发送关闭信号
-        info!("所有服务已关闭。");
-
-        // 等待旧任务完全终止，避免竞态条件
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
-        // --- 重启阶段 ---
-        info!("正在重启所有服务...");
-        
-        // 1. 重置全局关闭信号
-        let _ = self.global_shutdown_tx.send(false);
-        
-        // 2. 为新代理创建新的关闭通道
-        let (proxy_shutdown_tx, _) = watch::channel(false);
-        self.proxy_shutdown_tx = proxy_shutdown_tx;
-
-        // 3. 重新初始化并启动所有服务
-        self.initialize_and_start().await?;
-        
-        info!("所有服务重启成功。");
         Ok(())
     }
     

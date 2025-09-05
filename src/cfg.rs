@@ -17,15 +17,6 @@ struct ConfigFile {
     symbol_socket: String,
     // 数据类型开关
     data_types: DataTypesConfig,
-    binance: ZmqProxyCfg,
-    #[serde(rename = "binance-futures")]
-    binance_futures: ZmqProxyCfg,
-    okex: ZmqProxyCfg,
-    #[serde(rename = "okex-swap")]
-    okex_swap: ZmqProxyCfg,
-    bybit: ZmqProxyCfg,
-    #[serde(rename = "bybit-spot")]
-    bybit_spot: ZmqProxyCfg,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -35,14 +26,6 @@ pub struct DataTypesConfig {
     pub enable_kline: bool,         // K线数据
     pub enable_derivatives: bool,   // 衍生品指标
     pub enable_ask_bid_spread: bool, // 买卖价差（最优买卖价）
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct ZmqProxyCfg {
-    pub ipc_path: String,
-    pub primary_addr: String,
-    pub secondary_addr: String,
-    pub hwm: u32,
 }
 
 // 添加表格打印函数
@@ -108,15 +91,6 @@ pub struct Config {
     pub symbol_socket: String,
     pub data_types: DataTypesConfig,  // 数据类型开关
     pub exchange: Exchange,  // 在运行时设置，不从配置文件读取
-    pub binance: ZmqProxyCfg,
-    #[serde(rename = "binance-futures")]
-    pub binance_futures: ZmqProxyCfg,
-    pub okex: ZmqProxyCfg,
-    #[serde(rename = "okex-swap")]
-    pub okex_swap: ZmqProxyCfg,
-    pub bybit: ZmqProxyCfg,
-    #[serde(rename = "bybit-spot")]
-    pub bybit_spot: ZmqProxyCfg,
 }
 
 impl Config {
@@ -133,12 +107,6 @@ impl Config {
             symbol_socket: config_file.symbol_socket,
             data_types: config_file.data_types,  // 数据类型开关
             exchange,  // 从命令行参数设置
-            binance: config_file.binance,
-            binance_futures: config_file.binance_futures,
-            okex: config_file.okex,
-            okex_swap: config_file.okex_swap,
-            bybit: config_file.bybit,
-            bybit_spot: config_file.bybit_spot,
         };
         
         Ok(config)
@@ -163,17 +131,6 @@ impl Config {
             Exchange::Okex => 50,
             Exchange::Bybit => 300,
             Exchange::BybitSpot => 10,
-        }
-    }
-
-    pub fn get_zmq_proxy(&self) -> ZmqProxyCfg {
-        match self.exchange {
-            Exchange::BinanceFutures => self.binance_futures.clone(),
-            Exchange::Binance => self.binance.clone(),
-            Exchange::OkexSwap => self.okex_swap.clone(),
-            Exchange::Okex => self.okex.clone(),
-            Exchange::Bybit => self.bybit.clone(),
-            Exchange::BybitSpot => self.bybit_spot.clone(),
         }
     }
 

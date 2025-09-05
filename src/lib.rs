@@ -1,4 +1,5 @@
 pub mod app;
+pub mod best_quotes;
 pub mod cfg;
 pub mod common;
 pub mod connection;
@@ -7,5 +8,4 @@ pub mod iceoryx_forwarder;
 pub mod mkt_msg;
 pub mod parser;
 pub mod proxy;
-pub mod restart_checker;
 pub mod sub_msg;

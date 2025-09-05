@@ -2,7 +2,7 @@ use std::fmt::{self, Display};
 use serde::{Deserialize, Serialize};
 use clap::ValueEnum;
 
-#[derive(Debug, Clone, Serialize, Deserialize, ValueEnum)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ValueEnum, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum Exchange {
     Binance,
