@@ -3,6 +3,8 @@ use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 // use log::info;
 use tokio::sync::mpsc;
+use crate::market_state::FundingRateManager;
+use crate::exchange::Exchange;
 
 #[derive(Clone)]
 pub struct BybitSignalParser {
@@ -243,11 +245,16 @@ impl BybitDerivativesMetricsParser {
                         funding_rate_str.parse::<f64>(),
                         next_funding_time_str.parse::<i64>(),
                     ) {
-                        let funding_rate_msg = FundingRateMsg::create(
+                        // enrich with predicted rate from manager
+                        let rate_manager = FundingRateManager::instance();
+                        let rate_data = rate_manager.get_rates_sync(symbol, Exchange::Bybit, timestamp);
+                        let funding_rate_msg = FundingRateMsg::create_with_prediction(
                             symbol.to_string(),
                             funding_rate,
                             next_funding_time,
                             timestamp,
+                            rate_data.predicted_funding_rate,
+                            rate_data.loan_rate_8h,
                         );
                         
                         if tx.send(funding_rate_msg.to_bytes()).is_ok() {

@@ -53,9 +53,11 @@ pub struct FundingRateMsg {
     pub msg_type: MktMsgType,
     pub symbol_length: u32,
     pub symbol: String,
-    pub funding_rate: f64,
+    pub funding_rate: f64,           // 当前资金费率
     pub next_funding_time: i64,
     pub timestamp: i64,
+    pub predicted_funding_rate: f64,  // 预测资金费率（6期移动平均）
+    pub loan_rate_8h: f64,            // 8小时借贷利率（日利率/3）
 }
 
 pub struct MarkPriceMsg {
@@ -483,13 +485,37 @@ impl FundingRateMsg {
             funding_rate,
             next_funding_time,
             timestamp,
+            predicted_funding_rate: 0.0,  // 默认值，后续会更新
+            loan_rate_8h: 0.0,            // 默认值，后续会更新
+        }
+    }
+
+    /// Create a funding rate message with predicted rate and loan rate
+    pub fn create_with_prediction(
+        symbol: String,
+        funding_rate: f64,
+        next_funding_time: i64,
+        timestamp: i64,
+        predicted_funding_rate: f64,
+        loan_rate_8h: f64,
+    ) -> Self {
+        let symbol_length = symbol.len() as u32;
+        Self {
+            msg_type: MktMsgType::FundingRate,
+            symbol_length,
+            symbol,
+            funding_rate,
+            next_funding_time,
+            timestamp,
+            predicted_funding_rate,
+            loan_rate_8h,
         }
     }
 
     /// Convert message to bytes
     pub fn to_bytes(&self) -> Bytes {
-        // Calculate total size: msg_type(4) + symbol_length(4) + symbol + funding_rate(8) + next_funding_time(8) + timestamp(8)
-        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 8 + 8;
+        // Calculate total size: msg_type(4) + symbol_length(4) + symbol + funding_rate(8) + next_funding_time(8) + timestamp(8) + predicted_funding_rate(8) + loan_rate_8h(8)
+        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 8 + 8 + 8 + 8;
         let mut buf = BytesMut::with_capacity(total_size);
         
         // Write header
@@ -503,6 +529,8 @@ impl FundingRateMsg {
         buf.put_f64_le(self.funding_rate);
         buf.put_i64_le(self.next_funding_time);
         buf.put_i64_le(self.timestamp);
+        buf.put_f64_le(self.predicted_funding_rate);
+        buf.put_f64_le(self.loan_rate_8h);
         
         buf.freeze()
     }

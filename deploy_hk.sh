@@ -45,24 +45,23 @@ for ip in $primary_ip $secondary_ip; do
     check_status "检查目录在 $ip"
 done
 
-# 将mkt_proxy二进制文件拷贝到两台机器上, 并设置权限
-log "开始部署二进制文件..."
+# 部署mkt_signal二进制文件和配置文件
+log "开始部署mkt_signal二进制文件..."
 for ip in ${ip_list[@]}; do
     log "部署到服务器 $ip..."
 
-    scp -o ConnectTimeout=$SSH_TIMEOUT target/release/crypto_proxy $user@$ip:$exec_dir
-    check_status "文件传输到 $ip"
+    scp -o ConnectTimeout=$SSH_TIMEOUT target/release/mkt_signal $user@$ip:$exec_dir
+    check_status "二进制文件传输到 $ip"
     
-    ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "chmod 755 $exec_dir/crypto_proxy"
+    ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "chmod 755 $exec_dir/mkt_signal"
     check_status "设置文件权限在 $ip"
 done
 
-log "开始部署start_proxy.sh和stop_proxy.sh文件..."
+log "开始部署配置文件..."
 for ip in ${ip_list[@]}; do
-    log "部署到服务器 $ip..."
-    scp -o ConnectTimeout=$SSH_TIMEOUT start_proxy.sh stop_proxy.sh $user@$ip:$exec_dir
-    ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "chmod +x $exec_dir/start_proxy.sh $exec_dir/stop_proxy.sh"
-    check_status "文件传输到 $ip"
+    log "部署配置文件到服务器 $ip..."
+    scp -o ConnectTimeout=$SSH_TIMEOUT mkt_cfg.yaml $user@$ip:$exec_dir
+    check_status "配置文件传输到 $ip"
 done
 
 log "部署完成！"

@@ -7,6 +7,7 @@ mod mkt_msg;
 mod parser;
 mod proxy;
 mod app;
+mod market_state;
 use cfg::Config;
 use app::MktSignalApp;
 use exchange::Exchange;
@@ -44,6 +45,14 @@ async fn main() -> anyhow::Result<()> {
     }
     
     let config = get_config(config_path, exchange).await;
+    
+    // 初始化资金费率管理器
+    let funding_manager = crate::market_state::FundingRateManager::instance();
+    tokio::spawn(async move {
+        if let Err(e) = funding_manager.initialize().await {
+            log::error!("初始化资金费率管理器失败: {}", e);
+        }
+    });
     
     // 创建并运行应用
     let app = MktSignalApp::new(config).await?;

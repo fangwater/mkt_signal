@@ -3,6 +3,8 @@ use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use tokio::sync::mpsc;
 use std::collections::HashSet;
+use crate::market_state::FundingRateManager;
+use crate::exchange::Exchange;
 
 #[derive(Clone)]
 pub struct OkexSignalParser {
@@ -271,12 +273,17 @@ impl OkexDerivativesMetricsParser {
                         next_funding_time_str.parse::<i64>(),
                         timestamp_str.parse::<i64>(),
                     ) {
-                        // Create funding rate message
-                        let funding_rate_msg = FundingRateMsg::create(
+                        // Enrich with predicted rate and loan rate from manager
+                        let rate_manager = FundingRateManager::instance();
+                        // 使用完整的 OKX 合约ID（如 BTC-USDT-SWAP）并指定交易所为 OkexSwap
+                        let rate_data = rate_manager.get_rates_sync(inst_id, Exchange::OkexSwap, timestamp);
+                        let funding_rate_msg = FundingRateMsg::create_with_prediction(
                             inst_id.to_string(),
                             funding_rate,
                             next_funding_time,
                             timestamp,
+                            rate_data.predicted_funding_rate,
+                            rate_data.loan_rate_8h,
                         );
                         
                         // Send funding rate message

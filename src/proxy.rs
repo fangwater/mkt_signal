@@ -6,64 +6,6 @@ use tokio::time::interval;
 use tokio::sync::{mpsc, broadcast, watch};
 use std::sync::Arc;
 use tokio::sync::Notify;
-
-// 保留原有的Proxy用于兼容
-pub struct Proxy {
-    forwarder: IceOryxForwarder, 
-    out_rx : broadcast::Receiver<Bytes>, //消息的输出通道
-    proxy_shutdown: watch::Receiver<bool>,
-    tp_reset_notify: Arc<Notify>,
-}
-
-impl Proxy {
-    pub fn new(forwarder: IceOryxForwarder, out_rx: broadcast::Receiver<Bytes>, proxy_shutdown: watch::Receiver<bool>, tp_reset_notify: Arc<Notify>) -> Self {
-        Self { 
-            forwarder, 
-            out_rx,
-            proxy_shutdown,
-            tp_reset_notify,
-        }
-    }
-
-    pub async fn run(&mut self) {
-        let mut stats_timer = interval(Duration::from_secs(3));
-        // 跳过第一次立即触发
-        stats_timer.tick().await;
-        
-        loop {
-            tokio::select! {
-                _ = stats_timer.tick() => {
-                    self.forwarder.log_stats();
-                }
-                _ = self.proxy_shutdown.changed() => {
-                    if *self.proxy_shutdown.borrow() {
-                        break;
-                    }
-                }
-                _ = self.tp_reset_notify.notified() => {
-                    log::info!("Sending tp reset message...");
-                    match self.forwarder.send_tp_reset_msg().await {
-                        true => {
-                            log::info!("Sent tp reset message successfully");
-                        }
-                        false => {
-                            log::error!("Failed to send tp reset message");
-                            break;
-                        }
-                    }
-                }
-                msg = self.out_rx.recv() => {
-                    if let Ok(msg) = msg {
-                        // 直接发送消息，不再根据类型分topic
-                        self.forwarder.send_msg(msg).await;
-                    }
-                }
-            }
-        }
-        log::info!("Proxy stopped gracefully");
-    }
-}
-
 // 新的使用mpsc的Proxy
 pub struct MpscProxy {
     forwarder: IceOryxForwarder,
