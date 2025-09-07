@@ -32,6 +32,8 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    std::env::set_var("RUST_LOG", "DEBUG");
+    env_logger::init();
     let args = Args::parse();
 
     let sub_msg: Value = serde_json::from_str(&args.json)

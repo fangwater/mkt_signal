@@ -294,6 +294,7 @@ impl FundingRateStrategy {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
+    std::env::set_var("RUST_LOG", "DEBUG");
     env_logger::init();
     let args = Args::parse();
     
