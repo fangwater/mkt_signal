@@ -29,7 +29,7 @@ iceoryx:
   
   # 缓冲区和历史记录配置
   incremental:
-    buffer_size: 2048
+    buffer_size: 8192
     history_size: 100
     max_subscribers: 10
   
