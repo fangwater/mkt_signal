@@ -248,7 +248,7 @@ impl BybitDerivativesMetricsParser {
                         // enrich with predicted rate from manager
                         let rate_manager = FundingRateManager::instance();
                         let rate_data = rate_manager.get_rates_sync(symbol, Exchange::Bybit, timestamp);
-                        let funding_rate_msg = FundingRateMsg::create_with_prediction(
+                        let funding_rate_msg = FundingRateMsg::create(
                             symbol.to_string(),
                             funding_rate,
                             next_funding_time,

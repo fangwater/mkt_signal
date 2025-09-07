@@ -8,7 +8,7 @@ use log::{info, error};
 use reqwest;
 use serde::Deserialize;
 use crate::exchange::Exchange;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 type HmacSha256 = Hmac<Sha256>;
@@ -32,12 +32,6 @@ struct FundingRateHistory {
     #[serde(rename = "fundingRate")]
     funding_rate: String,
 }
-
-#[derive(Debug, Deserialize)]
-struct PremiumIndexSymbol {
-    symbol: String,
-}
-
 // OKEx 数据结构
 #[derive(Debug, Deserialize)]
 struct OkexFundingRate {
@@ -196,63 +190,6 @@ impl FundingRateManager {
         }
     }
 
-    async fn get_with_retry(
-        &self,
-        url: &str,
-        params: &[(&str, String)],
-        max_retries: u8,
-    ) -> Result<reqwest::Response> {
-        let mut attempt = 0u8;
-        let mut delay_ms = 200u64;
-        loop {
-            let resp = self.client.get(url).query(&params).send().await;
-            match resp {
-                Ok(r) if r.status().is_success() => return Ok(r),
-                Ok(r) => {
-                    let status = r.status();
-                    let body = r.text().await.unwrap_or_default();
-                    
-                    // 不可重试的错误：认证失败、权限不足、请求参数错误等
-                    if status.as_u16() == 401 || status.as_u16() == 403 {
-                        error!("认证失败或权限不足 ({}): {}", status, body);
-                        return Err(anyhow::anyhow!("认证失败或权限不足: {} - {}", status, body));
-                    }
-                    if status.as_u16() == 400 {
-                        error!("请求参数错误 ({}): {}", status, body);
-                        return Err(anyhow::anyhow!("请求参数错误: {} - {}", status, body));
-                    }
-                    
-                    // 可重试的错误：429(限流)、5xx(服务器错误)
-                    if status.as_u16() == 429 || status.is_server_error() {
-                        attempt += 1;
-                        if attempt >= max_retries {
-                            error!("HTTP请求失败，状态码: {}, 响应: {}", status, body);
-                            return Err(anyhow::anyhow!("HTTP请求失败: {} - {}", status, body));
-                        }
-                        info!("可重试错误 ({}), 尝试 {}/{}, 等待 {}ms", status, attempt, max_retries, delay_ms);
-                        sleep(Duration::from_millis(delay_ms)).await;
-                        delay_ms = (delay_ms * 2).min(5_000);
-                    } else {
-                        // 其他错误，不重试
-                        error!("未预期的HTTP错误 ({}): {}", status, body);
-                        return Err(anyhow::anyhow!("未预期的HTTP错误: {} - {}", status, body));
-                    }
-                }
-                Err(e) => {
-                    // 网络错误，可以重试
-                    attempt += 1;
-                    if attempt >= max_retries {
-                        error!("网络请求失败: {}", e);
-                        return Err(anyhow::anyhow!("网络请求失败: {}", e));
-                    }
-                    info!("网络错误, 尝试 {}/{}: {}", attempt, max_retries, e);
-                    sleep(Duration::from_millis(delay_ms)).await;
-                    delay_ms = (delay_ms * 2).min(5_000);
-                }
-            }
-        }
-    }
-
     /// 刷新币安资金费率数据
     async fn refresh_binance_rates(&self) -> Result<()> {
         info!("开始刷新币安资金费率和借贷利率数据");
@@ -281,27 +218,30 @@ impl FundingRateManager {
             let client = self.client.clone();
             let symbol_clone = symbol.clone();
             tasks.push(tokio::spawn(async move {
-                // 重试 3 次
                 let url = "https://fapi.binance.com/fapi/v1/fundingRate";
+                let end_time = Utc::now().timestamp_millis();
+                let start_time = end_time - (2 * 24 * 60 * 60 * 1000);
+                let start_s = start_time.to_string();
+                let end_s = end_time.to_string();
+                let params = [
+                    ("symbol", symbol_clone.as_str()),
+                    ("startTime", start_s.as_str()),
+                    ("endTime", end_s.as_str()),
+                    ("limit", "100"),
+                ];
+                
+                // 使用独立的重试逻辑
                 let mut attempt = 0u8;
                 let mut delay_ms = 200u64;
                 let history = loop {
-                    let end_time = Utc::now().timestamp_millis();
-                    let start_time = end_time - (2 * 24 * 60 * 60 * 1000);
-                    let start_s = start_time.to_string();
-                    let end_s = end_time.to_string();
-                    let params = vec![
-                        ("symbol", symbol_clone.as_str()),
-                        ("startTime", start_s.as_str()),
-                        ("endTime", end_s.as_str()),
-                        ("limit", "100"),
-                    ];
                     match client.get(url).query(&params).send().await {
-                        Ok(r) if r.status().is_success() => match r.json::<Vec<FundingRateHistory>>().await {
-                            Ok(v) => break Ok(v),
-                            Err(e) => {
-                                log::error!("解析资金费率数据失败 ({}): {}", symbol_clone, e);
-                                break Err(anyhow::anyhow!(e));
+                        Ok(r) if r.status().is_success() => {
+                            match r.json::<Vec<FundingRateHistory>>().await {
+                                Ok(v) => break v,
+                                Err(e) => {
+                                    log::error!("解析资金费率数据失败 ({}): {}", symbol_clone, e);
+                                    break vec![];
+                                }
                             }
                         },
                         Ok(r) => {
@@ -311,17 +251,17 @@ impl FundingRateManager {
                             // 4xx错误不重试
                             if status.is_client_error() {
                                 log::error!("获取资金费率失败 ({}) - {}: {}", symbol_clone, status, body);
-                                break Ok(vec![]);
+                                break vec![];
                             }
                             
                             // 5xx或429可以重试
                             attempt += 1;
                             if attempt >= 3 {
                                 log::warn!("获取资金费率失败 ({}) 达到最大重试次数", symbol_clone);
-                                break Ok(vec![]);
+                                break vec![];
                             }
                             log::debug!("获取资金费率重试 ({}) {}/{}", symbol_clone, attempt, 3);
-                            sleep(Duration::from_millis(delay_ms)).await;
+                            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                             delay_ms = (delay_ms * 2).min(5_000);
                         }
                         Err(e) => {
@@ -329,14 +269,14 @@ impl FundingRateManager {
                             attempt += 1;
                             if attempt >= 3 {
                                 log::warn!("获取资金费率网络错误 ({}): {}", symbol_clone, e);
-                                break Ok(vec![]);
+                                break vec![];
                             }
                             log::debug!("获取资金费率网络重试 ({}) {}/{}: {}", symbol_clone, attempt, 3, e);
-                            sleep(Duration::from_millis(delay_ms)).await;
+                            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                             delay_ms = (delay_ms * 2).min(5_000);
                         }
                     }
-                }?;
+                };
                 Ok::<_, anyhow::Error>((symbol_clone, history))
             }));
         }
@@ -640,60 +580,6 @@ impl FundingRateManager {
         Ok(())
     }
 
-    /// 获取币安活跃交易对列表
-    async fn get_binance_symbols(&self) -> Result<Vec<String>> {
-        let url = "https://fapi.binance.com/fapi/v1/premiumIndex";
-        let response = self.client.get(url).send().await?;
-        
-        if response.status().is_success() {
-            let indices: Vec<PremiumIndexSymbol> = response.json().await?;
-            Ok(indices.into_iter().map(|i| i.symbol).collect())
-        } else {
-            error!("获取币安交易对列表失败");
-            Ok(vec![])
-        }
-    }
-
-    /// 获取币安借贷利率（简化版）
-    async fn fetch_binance_loan_rates(&self) -> Result<HashMap<String, f64>> {
-        // 简化处理：对所有币种使用默认借贷利率
-        let mut rates = HashMap::new();
-        let default_rate = 0.0001;  // 默认借贷利率 0.01% per 8h
-        
-        // 为主要交易对设置默认利率
-        for symbol in ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"].iter() {
-            rates.insert(symbol.to_string(), default_rate);
-        }
-        
-        Ok(rates)
-    }
-
-    /// 获取币安单个交易对的历史资金费率
-    async fn fetch_binance_funding_history(
-        client: &reqwest::Client,
-        symbol: &str,
-    ) -> Result<Vec<FundingRateHistory>> {
-        let url = "https://fapi.binance.com/fapi/v1/fundingRate";
-        
-        let end_time = Utc::now().timestamp_millis();
-        let start_time = end_time - (2 * 24 * 60 * 60 * 1000); // 2天前
-        
-        let params = [
-            ("symbol", symbol),
-            ("startTime", &start_time.to_string()),
-            ("endTime", &end_time.to_string()),
-            ("limit", "100"),
-        ];
-        
-        let response = client.get(url).query(&params).send().await?;
-        
-        if response.status().is_success() {
-            Ok(response.json().await?)
-        } else {
-            Ok(vec![])
-        }
-    }
-
     /// 计算币安预测资金费率（6期移动平均）
     fn calculate_predicted_rate_binance(history: &[FundingRateHistory]) -> f64 {
         if history.len() < 6 {
@@ -719,7 +605,7 @@ impl FundingRateManager {
         info!("初始化资金费率数据");
         
         // 加载交易对配置文件
-        let config_path = "predict_funding_rate_tracking_symbol.json";
+        let config_path = "config/tracking_symbol.json";
         match fs::read_to_string(config_path) {
             Ok(content) => {
                 match serde_json::from_str::<TrackingSymbolsConfig>(&content) {

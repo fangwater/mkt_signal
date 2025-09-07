@@ -14,8 +14,6 @@ const SPREAD_MAX_BYTES: usize = 64;
 const SIGNAL_MAX_BYTES: usize = 64;
 
 pub struct IceOryxForwarder {
-    is_futures: bool,  // 判断是期货还是现货
-    
     // Publishers for different message types
     incremental_publisher: Option<Publisher<ipc::Service, [u8; 16384], ()>>,
     trade_publisher: Option<Publisher<ipc::Service, [u8; TRADE_MAX_BYTES], ()>>,
@@ -47,10 +45,8 @@ pub struct IceOryxForwarder {
 impl IceOryxForwarder {
     pub fn new(config: &Config) -> Result<Self> {
         let exchange = config.get_exchange();
-        let is_futures = exchange.contains("futures") || exchange.contains("swap");
         
-        info!("Creating IceOryx forwarder for exchange: {}, is_futures: {}", 
-              exchange, is_futures);
+        info!("Creating IceOryx forwarder for exchange: {}", exchange);
         
         // 创建Node
         let node_name = format!("mkt_signal_{}", exchange.replace("-", "_"));
@@ -69,7 +65,7 @@ impl IceOryxForwarder {
             (h, s)
         };
         let ice = config.iceoryx.as_ref();
-        let (inc_hist, inc_subs) = get_cfg(ice.and_then(|c| c.incremental.as_ref()), 100, 10);
+        let (inc_hist, _inc_subs) = get_cfg(ice.and_then(|c| c.incremental.as_ref()), 100, 10);
         let (trade_hist, trade_subs) = get_cfg(ice.and_then(|c| c.trade.as_ref()), 100, 10);
         let (kline_hist, kline_subs) = get_cfg(ice.and_then(|c| c.kline.as_ref()), 50, 10);
         let (der_hist, der_subs) = get_cfg(ice.and_then(|c| c.derivatives.as_ref()), 50, 10);
@@ -121,8 +117,8 @@ impl IceOryxForwarder {
             None
         };
         
-        // Derivatives频道只给期货创建
-        let derivatives_publisher = if is_futures && config.data_types.enable_derivatives {
+        // Derivatives频道只在启用时创建（仅衍生品交易所使用）
+        let derivatives_publisher = if config.data_types.enable_derivatives {
             let service = node
                 .service_builder(&ServiceName::new(&format!("data_pubs/{}/derivatives", exchange))?)
                 .publish_subscribe::<[u8; DERIVATIVES_MAX_BYTES]>()
@@ -176,7 +172,6 @@ impl IceOryxForwarder {
               signal_publisher.is_some());
         
         Ok(Self {
-            is_futures,
             incremental_publisher,
             trade_publisher,
             kline_publisher,

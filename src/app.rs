@@ -1,5 +1,6 @@
 use crate::cfg::Config;
 use crate::connection::mkt_manager::{MktManager, MessageQueues};
+use crate::sub_msg::{SubscribeMsgs, DerivativesMetricsSubscribeMsgs};
 use crate::iceoryx_forwarder::IceOryxForwarder;
 use crate::proxy::MpscProxy;
 
@@ -25,6 +26,10 @@ pub struct MktSignalApp {
     // 主备两个市场数据管理器
     primary_mkt_manager: Option<MktManager>,
     secondary_mkt_manager: Option<MktManager>,
+    
+    // 订阅消息（由 App 维护，在重启时更新）
+    subscribe_msgs: SubscribeMsgs,
+    derivatives_subscribe_msgs: Option<DerivativesMetricsSubscribeMsgs>,
     
     // 重启检查器
     
@@ -72,6 +77,18 @@ impl MktSignalApp {
         // 创建消息队列（这些通道将被所有管理器共享）
         let message_queues = MessageQueues::new();
         
+        // 初始化订阅消息
+        let subscribe_msgs = SubscribeMsgs::new(&config).await;
+        
+        // 只为期货交易所初始化衍生品订阅消息
+        let derivatives_subscribe_msgs = match config.get_exchange().as_str() {
+            "binance-futures" | "okex-swap" | "bybit" if config.data_types.enable_derivatives => {
+                info!("Initializing derivatives metrics subscriptions for {}", config.get_exchange());
+                Some(DerivativesMetricsSubscribeMsgs::new(&config).await)
+            }
+            _ => None,
+        };
+        
         Ok(Self {
             global_shutdown_tx,
             proxy_shutdown_tx,
@@ -80,6 +97,8 @@ impl MktSignalApp {
             proxy_handle: None,
             primary_mkt_manager: None,
             secondary_mkt_manager: None,
+            subscribe_msgs,
+            derivatives_subscribe_msgs,
             next_primary_restart,
             next_secondary_restart,
             incremental_tx: message_queues.incremental_tx,
@@ -154,6 +173,8 @@ impl MktSignalApp {
         let primary_mkt_manager = MktManager::new(
             self.config,
             &self.global_shutdown_tx,
+            self.subscribe_msgs.clone(),
+            self.derivatives_subscribe_msgs.clone(),
             self.incremental_tx.clone(),
             self.trade_tx.clone(),
             self.kline_tx.clone(),
@@ -167,6 +188,8 @@ impl MktSignalApp {
         let secondary_mkt_manager = MktManager::new(
             self.config,
             &self.global_shutdown_tx,
+            self.subscribe_msgs.clone(),
+            self.derivatives_subscribe_msgs.clone(),
             self.incremental_tx.clone(),
             self.trade_tx.clone(),
             self.kline_tx.clone(),
@@ -264,8 +287,25 @@ impl MktSignalApp {
         self.shutdown().await
     }
     
+    async fn update_subscribe_msgs(&mut self) -> Result<()> {
+        // 更新普通订阅消息并比较
+        let prev_symbols = self.subscribe_msgs.get_active_symbols();
+        self.subscribe_msgs = SubscribeMsgs::new(&self.config).await;
+        SubscribeMsgs::compare_symbol_set(&prev_symbols, &self.subscribe_msgs.get_active_symbols());
+        
+        // 更新衍生品订阅消息
+        if self.derivatives_subscribe_msgs.is_some() {
+            self.derivatives_subscribe_msgs = Some(DerivativesMetricsSubscribeMsgs::new(&self.config).await);
+        }
+        
+        Ok(())
+    }
+    
     async fn restart_primary(&mut self) -> Result<()> {
         info!("正在重启主管理器...");
+        
+        // 先更新订阅消息（会进行比较）
+        self.update_subscribe_msgs().await?;
         
         // 关闭当前主管理器
         if let Some(mut manager) = self.primary_mkt_manager.take() {
@@ -281,6 +321,8 @@ impl MktSignalApp {
         let primary_mkt_manager = MktManager::new(
             self.config,
             &self.global_shutdown_tx,
+            self.subscribe_msgs.clone(),
+            self.derivatives_subscribe_msgs.clone(),
             self.incremental_tx.clone(),
             self.trade_tx.clone(),
             self.kline_tx.clone(),
@@ -304,6 +346,9 @@ impl MktSignalApp {
     async fn restart_secondary(&mut self) -> Result<()> {
         info!("正在重启备管理器...");
         
+        // 先更新订阅消息（会进行比较）
+        self.update_subscribe_msgs().await?;
+        
         // 关闭当前备管理器
         if let Some(mut manager) = self.secondary_mkt_manager.take() {
             if let Err(e) = manager.shutdown(&self.global_shutdown_tx).await {
@@ -318,6 +363,8 @@ impl MktSignalApp {
         let secondary_mkt_manager = MktManager::new(
             self.config,
             &self.global_shutdown_tx,
+            self.subscribe_msgs.clone(),
+            self.derivatives_subscribe_msgs.clone(),
             self.incremental_tx.clone(),
             self.trade_tx.clone(),
             self.kline_tx.clone(),

@@ -84,6 +84,8 @@ impl MktManager {
     pub async fn new(
         cfg: &Config,
         global_shutdown: &watch::Sender<bool>,
+        subscribe_msgs: SubscribeMsgs,
+        derivatives_subscribe_msgs: Option<DerivativesMetricsSubscribeMsgs>,
         incremental_tx: mpsc::UnboundedSender<Bytes>,
         trade_tx: mpsc::UnboundedSender<Bytes>,
         kline_tx: mpsc::UnboundedSender<Bytes>,
@@ -92,16 +94,6 @@ impl MktManager {
         ask_bid_spread_tx: mpsc::UnboundedSender<Bytes>,
         local_ip: String,
     ) -> Self {
-        let subscribe_msgs = SubscribeMsgs::new(&cfg).await;
-        
-        // 只为期货交易所初始化衍生品订阅消息
-        let derivatives_subscribe_msgs = match cfg.get_exchange().as_str() {
-            "binance-futures" | "okex-swap" | "bybit" if cfg.data_types.enable_derivatives => {
-                info!("Initializing derivatives metrics subscriptions for {}", cfg.get_exchange());
-                Some(DerivativesMetricsSubscribeMsgs::new(&cfg).await)
-            }
-            _ => None,
-        };
         
         Self {
             cfg: cfg.clone(),
@@ -128,21 +120,6 @@ impl MktManager {
         self.tp_reset_notify.notify_waiters();
     }
 
-    pub async fn update_subscribe_msgs(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let prev_symbols = self.subscribe_msgs.get_active_symbols();
-        let subscribe_msgs = SubscribeMsgs::new(&self.cfg).await;
-        self.subscribe_msgs = subscribe_msgs;
-        SubscribeMsgs::compare_symbol_set(&prev_symbols, &self.subscribe_msgs.get_active_symbols());
-        
-        // 更新衍生品订阅消息
-        if let Some(_) = self.derivatives_subscribe_msgs {
-            let derivatives_msgs = DerivativesMetricsSubscribeMsgs::new(&self.cfg).await;
-            self.derivatives_subscribe_msgs = Some(derivatives_msgs);
-        }
-        
-        Ok(())
-    }
-    
     pub async fn start_all_connections(&mut self) {
         info!("Starting all connections with data type configuration:");
         info!("  - Incremental: {}", self.cfg.data_types.enable_incremental);

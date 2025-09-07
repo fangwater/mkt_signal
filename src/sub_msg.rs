@@ -42,6 +42,7 @@ fn construct_subscribe_message(exchange: &str, symbols: &[String], channel: &str
 //市场高频数据的订阅消息
 //包含一个信号，用于切分数据
 //其次是增量行情快照数据和逐笔成交数据
+#[derive(Clone)]
 pub struct SubscribeMsgs {
     active_symbols: HashSet<String>,//当前所有u本位符号
     inc_subscribe_msgs: Vec<serde_json::Value>,//增量orderbook

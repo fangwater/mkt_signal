@@ -277,7 +277,7 @@ impl OkexDerivativesMetricsParser {
                         let rate_manager = FundingRateManager::instance();
                         // 使用完整的 OKX 合约ID（如 BTC-USDT-SWAP）并指定交易所为 OkexSwap
                         let rate_data = rate_manager.get_rates_sync(inst_id, Exchange::OkexSwap, timestamp);
-                        let funding_rate_msg = FundingRateMsg::create_with_prediction(
+                        let funding_rate_msg = FundingRateMsg::create(
                             inst_id.to_string(),
                             funding_rate,
                             next_funding_time,

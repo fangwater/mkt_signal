@@ -43,6 +43,7 @@ SYMBOLS = short_trade_list + long_trade_list
 apikey = "z9rb55Ix9vyBvzHjYVxZT0mRshd9Qyvvs40vKoCZPhb7FWwAbiUVVsdfQXv5AHHZ" 
 apisecret = "yVYqipzjCe7S7Eydc4kAEMbEvi68Qmo2un91CAm0lOIXaY5vdoXf4W3YW5dNYkYw" 
 
+
 class binance_rest_client(object):
     def __init__(self, apikey, secret, host='https://api.binance.com'):
         self.apikey = apikey

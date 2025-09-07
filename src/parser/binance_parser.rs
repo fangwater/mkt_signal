@@ -3,7 +3,6 @@ use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use tokio::sync::mpsc;
 use std::collections::HashSet;
-use log::info;
 use crate::market_state::FundingRateManager;
 use crate::exchange::Exchange;
 
@@ -257,7 +256,7 @@ impl BinanceDerivativesMetricsParser {
                         let rate_data = rate_manager.get_rates_sync(&symbol, Exchange::Binance, event_time);
                         
                         // Create and send FundingRateMsg with prediction data
-                        let funding_rate_msg = FundingRateMsg::create_with_prediction(
+                        let funding_rate_msg = FundingRateMsg::create(
                             symbol.to_string(),
                             funding_rate,
                             next_funding_time,

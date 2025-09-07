@@ -27,7 +27,7 @@ struct Args {
 #[tokio::main(worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
     // 设置日志级别：默认 DEBUG，但关闭 tungstenite 和 reqwest 的 debug 日志
-    std::env::set_var("RUST_LOG", "debug,tungstenite=info,reqwest=info");
+    std::env::set_var("RUST_LOG", "info,tungstenite=info,reqwest=info");
     env_logger::init();
 
     // 解析命令行参数
@@ -47,11 +47,13 @@ async fn main() -> anyhow::Result<()> {
     
     let config = get_config(config_path, exchange).await;
     
-    // 根据配置初始化资金费率管理器
+    // 直接根据exchange参数初始化资金费率管理器
     let funding_manager = crate::market_state::FundingRateManager::instance();
-    let enable_binance = config.predicted_funding_rates.enable_binance;
-    let enable_okex = config.predicted_funding_rates.enable_okex;
-    let enable_bybit = config.predicted_funding_rates.enable_bybit;
+    let (enable_binance, enable_okex, enable_bybit) = match exchange {
+        Exchange::Binance | Exchange::BinanceFutures => (true, false, false),
+        Exchange::Okex | Exchange::OkexSwap => (false, true, false),
+        Exchange::Bybit | Exchange::BybitSpot => (false, false, true),
+    };
     
     tokio::spawn(async move {
         if let Err(e) = funding_manager.initialize(enable_binance, enable_okex, enable_bybit).await {

@@ -227,6 +227,7 @@ pub fn construct_connection_with_ip(
 }
 
 /// 根据交易所类型构造相应的连接处理器
+#[allow(unused)]
 pub fn construct_connection(
     exchange: String, 
     url: String, 

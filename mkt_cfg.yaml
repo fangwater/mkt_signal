@@ -15,64 +15,33 @@ data_types:
   enable_derivatives: true    # 衍生品指标数据（仅期货交易所）
   enable_ask_bid_spread: true # 买卖价差（最优买卖价）数据
 
-# 预测资金费率配置
-predicted_funding_rates:
-  enable_binance: true       # 是否启用币安预测资金费率
-  enable_okex: false          # 是否启用OKEx预测资金费率  
-  enable_bybit: false         # 是否启用Bybit预测资金费率
-
 # IceOryx配置
 iceoryx:
   # IceOryx会自动根据交易所名称创建频道
   # 频道格式: data_pubs/{exchange}/{data_type}
   # 例如: data_pubs/binance/incremental, data_pubs/binance-futures/derivatives
   
-  # 缓冲区和历史记录配置
+  # 历史记录和订阅者配置
   incremental:
-    buffer_size: 8192
     history_size: 100
     max_subscribers: 10
   
   trade:
-    buffer_size: 1024
     history_size: 100
     max_subscribers: 10
   
   kline:
-    buffer_size: 512
     history_size: 50
     max_subscribers: 10
   
   derivatives:
-    buffer_size: 1024
     history_size: 50
     max_subscribers: 10
   
   ask_bid_spread:
-    buffer_size: 512
     history_size: 100
     max_subscribers: 10
   
   signal:
-    buffer_size: 256
     history_size: 50
     max_subscribers: 10
-
-# 交易所配置已简化，IceOryx使用共享内存，不需要网络配置
-binance:
-  enabled: true
-
-binance-futures:
-  enabled: true
-
-okex:
-  enabled: true
-
-okex-swap:
-  enabled: true
-
-bybit:
-  enabled: true
-
-bybit-spot:
-  enabled: true

@@ -476,26 +476,6 @@ impl FundingRateMsg {
         funding_rate: f64,
         next_funding_time: i64,
         timestamp: i64,
-    ) -> Self {
-        let symbol_length = symbol.len() as u32;
-        Self {
-            msg_type: MktMsgType::FundingRate,
-            symbol_length,
-            symbol,
-            funding_rate,
-            next_funding_time,
-            timestamp,
-            predicted_funding_rate: 0.0,  // 默认值，后续会更新
-            loan_rate_8h: 0.0,            // 默认值，后续会更新
-        }
-    }
-
-    /// Create a funding rate message with predicted rate and loan rate
-    pub fn create_with_prediction(
-        symbol: String,
-        funding_rate: f64,
-        next_funding_time: i64,
-        timestamp: i64,
         predicted_funding_rate: f64,
         loan_rate_8h: f64,
     ) -> Self {

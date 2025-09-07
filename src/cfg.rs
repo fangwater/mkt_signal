@@ -33,9 +33,7 @@ struct ConfigFile {
     symbol_socket: String,
     // 数据类型开关
     data_types: DataTypesConfig,
-    // 预测资金费率配置
-    predicted_funding_rates: Option<PredictedFundingRatesConfig>,
-    // Iceoryx 配置（当前仅 incremental.buffer_size 生效）
+    // Iceoryx 配置
     iceoryx: Option<IceoryxCfg>,
 }
 
@@ -46,13 +44,6 @@ pub struct DataTypesConfig {
     pub enable_kline: bool,         // K线数据
     pub enable_derivatives: bool,   // 衍生品指标
     pub enable_ask_bid_spread: bool, // 买卖价差（最优买卖价）
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct PredictedFundingRatesConfig {
-    pub enable_binance: bool,  // 是否启用币安预测资金费率
-    pub enable_okex: bool,     // 是否启用OKEx预测资金费率
-    pub enable_bybit: bool,    // 是否启用Bybit预测资金费率
 }
 
 // 添加表格打印函数
@@ -117,7 +108,6 @@ pub struct Config {
     pub snapshot_requery_time: Option<String>,
     pub symbol_socket: String,
     pub data_types: DataTypesConfig,  // 数据类型开关
-    pub predicted_funding_rates: PredictedFundingRatesConfig,  // 预测资金费率配置
     pub exchange: Exchange,  // 在运行时设置，不从配置文件读取
     pub iceoryx: Option<IceoryxCfg>, // Iceoryx 配置（可选）
 }
@@ -135,13 +125,6 @@ impl Config {
             snapshot_requery_time: config_file.snapshot_requery_time,
             symbol_socket: config_file.symbol_socket,
             data_types: config_file.data_types,  // 数据类型开关
-            predicted_funding_rates: config_file.predicted_funding_rates.unwrap_or(
-                PredictedFundingRatesConfig {
-                    enable_binance: false,
-                    enable_okex: false,
-                    enable_bybit: false,
-                }
-            ),  // 预测资金费率配置，默认全部关闭
             iceoryx: config_file.iceoryx,
             exchange,  // 从命令行参数设置
         };

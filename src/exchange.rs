@@ -20,18 +20,6 @@ pub enum Exchange {
 }
 
 impl Exchange {
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "binance" => Some(Exchange::Binance),
-            "binance-futures" => Some(Exchange::BinanceFutures),
-            "okex" => Some(Exchange::Okex),
-            "okex-swap" => Some(Exchange::OkexSwap),
-            "bybit" => Some(Exchange::Bybit),
-            "bybit-spot" => Some(Exchange::BybitSpot),
-            _ => None,
-        }
-    }
-    
     pub fn as_str(&self) -> &str {
         match self {
             Exchange::Binance => "binance",
