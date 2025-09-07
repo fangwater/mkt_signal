@@ -3,7 +3,7 @@ use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use tokio::sync::mpsc;
 use std::collections::HashSet;
-use log::{info};
+use log::{info, warn};
 use crate::market_state::FundingRateManager;
 use crate::exchange::Exchange;
 

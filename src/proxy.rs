@@ -78,31 +78,37 @@ impl MpscProxy {
                 }
                 // 接收增量数据
                 Some(msg) = self.incremental_rx.recv() => {
+                    log::debug!("[Proxy] mpsc incremental -> forwarder");
                     self.forwarder.send_msg(msg).await;
                     msg_count += 1;
                 }
                 // 接收交易数据
                 Some(msg) = self.trade_rx.recv() => {
+                    log::debug!("[Proxy] mpsc trade -> forwarder");
                     self.forwarder.send_msg(msg).await;
                     msg_count += 1;
                 }
                 // 接收K线数据
                 Some(msg) = self.kline_rx.recv() => {
+                    log::debug!("[Proxy] mpsc kline -> forwarder");
                     self.forwarder.send_msg(msg).await;
                     msg_count += 1;
                 }
                 // 接收衍生品数据
                 Some(msg) = self.derivatives_rx.recv() => {
+                    log::debug!("[Proxy] mpsc derivatives -> forwarder");
                     self.forwarder.send_msg(msg).await;
                     msg_count += 1;
                 }
                 // 接收信号数据
                 Some(msg) = self.signal_rx.recv() => {
+                    log::debug!("[Proxy] mpsc signal -> forwarder");
                     self.forwarder.send_msg(msg).await;
                     msg_count += 1;
                 }
                 // 接收买卖价差数据
                 Some(msg) = self.ask_bid_spread_rx.recv() => {
+                    log::debug!("[Proxy] mpsc ask_bid_spread -> forwarder");
                     self.forwarder.send_msg(msg).await;
                     msg_count += 1;
                 }

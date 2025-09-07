@@ -72,7 +72,6 @@ struct BybitResultList {
 pub struct FundingRateData {
     pub predicted_funding_rate: f64,  // 预测资金费率（6期移动平均）
     pub loan_rate_8h: f64,            // 8小时借贷利率
-    pub last_update: i64,              // 最后更新时间
 }
 
 struct ExchangeStore {

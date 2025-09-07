@@ -516,12 +516,19 @@ impl MktManager {
             
             let mut shutdown_rx = global_shutdown_rx.clone();
             tokio::spawn(async move {
+                let mut raw_count: u64 = 0;
+                let mut sent_count: u64 = 0;
                 loop {
                     tokio::select! {
                         msg_result = raw_rx.recv() => {
                             match msg_result {
                                 Ok(raw_msg) => {
-                                    parser.parse(raw_msg, &tx);
+                                    raw_count += 1;
+                                    let n = parser.parse(raw_msg, &tx);
+                                    if n > 0 { sent_count += n as u64; }
+                                    if (raw_count % 1000) == 0 {
+                                        log::debug!("{}: ws_recv={} parsed_sent={} (batch)", description, raw_count, sent_count);
+                                    }
                                 }
                                 Err(broadcast::error::RecvError::Closed) => {
                                     info!("Raw message channel closed for {}", description);
@@ -586,12 +593,19 @@ impl MktManager {
             
             let mut shutdown_rx = global_shutdown_rx.clone();
             tokio::spawn(async move {
+                let mut raw_count: u64 = 0;
+                let mut sent_count: u64 = 0;
                 loop {
                     tokio::select! {
                         msg_result = raw_rx.recv() => {
                             match msg_result {
                                 Ok(raw_msg) => {
-                                    parser.parse(raw_msg, &tx);
+                                    raw_count += 1;
+                                    let n = parser.parse(raw_msg, &tx);
+                                    if n > 0 { sent_count += n as u64; }
+                                    if (raw_count % 1000) == 0 {
+                                        log::debug!("{}: ws_recv={} parsed_sent={} (batch)", description, raw_count, sent_count);
+                                    }
                                 }
                                 Err(broadcast::error::RecvError::Closed) => {
                                     info!("Raw message channel closed for {}", description);
