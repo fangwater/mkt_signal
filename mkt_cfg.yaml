@@ -5,7 +5,7 @@ restart_duration_secs: 18000
 primary_local_ip: "0.0.0.0"     # 主连接绑定的本地IP，0.0.0.0表示默认
 secondary_local_ip: "0.0.0.0"   # 备连接绑定的本地IP，0.0.0.0表示默认
 snapshot_requery_time: "--:--:--"  # "--:--:--" 表示立即查询(30秒后)，空字符串禁用快照，可设置如 "02:00:00" 定时查询
-symbol_socket: "/root/project/symbol_server/exchange"
+symbol_socket: "/home/ubuntu/crypto_mkt/symbol_server/exchange"
 
 # 数据类型开关配置
 data_types:
