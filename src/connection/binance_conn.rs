@@ -124,7 +124,7 @@ impl MktConnectionHandler for BinanceConnection {
             
             match connect_result {
                 Ok(connection) => {
-                    info!("successfully connected to Binance Futures at {:?}", connection.connected_at);
+                    debug!("successfully connected to Binance Futures at {:?}", connection.connected_at);
                     self.base_connection.connection = Some(connection);
                     self.run_connection().await?;
                     //检查shutdown的当前情况，如果是true则break

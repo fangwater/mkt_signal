@@ -2,7 +2,7 @@ use futures_util::{SinkExt, TryStreamExt};
 use tokio::time::{self, Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
 use bytes::Bytes;
-use log::{info, warn, error};
+use log::{info, warn, debug, error};
 use async_trait::async_trait;
 use crate::connection::connection::{MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector};
 
@@ -168,7 +168,7 @@ impl MktConnectionHandler for OkexConnection {
             
             match connect_result {
                 Ok(connection) => {
-                    info!("Successfully connected to okex at {:?}", connection.connected_at);
+                    debug!("Successfully connected to okex at {:?}", connection.connected_at);
                     self.base_connection.connection = Some(connection);
                     self.run_connection().await?;
                     //检查shutdown的当前情况，如果是true则break
