@@ -3,7 +3,7 @@ use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use tokio::sync::mpsc;
 use std::collections::HashSet;
-use log::{info, warn};
+use log::info;
 use crate::market_state::FundingRateManager;
 use crate::exchange::Exchange;
 
@@ -81,12 +81,6 @@ impl Parser for BinanceKlineParser {
                             kline_obj.get("v").and_then(|v| v.as_str()),
                             kline_obj.get("t").and_then(|v| v.as_i64()),
                         ) {
-                            // 只为BTCUSDT打印OHLCV数据
-                            if symbol.to_lowercase() == "btcusdt" {
-                                info!("[Binance Kline] BTCUSDT OHLCV: o={}, h={}, l={}, c={}, v={}, t={}", 
-                                      open_str, high_str, low_str, close_str, volume_str, timestamp);
-                            }
-                            
                             // 解析价格和成交量数据
                             if let (Ok(open), Ok(high), Ok(low), Ok(close), Ok(volume)) = (
                                 open_str.parse::<f64>(),
@@ -108,16 +102,7 @@ impl Parser for BinanceKlineParser {
                                 
                                 // 发送K线消息
                                 let kline_bytes = kline_msg.to_bytes();
-                                if tx.send(kline_bytes).is_ok() {
-                                    if symbol.to_lowercase() == "btcusdt" {
-                                        info!("[Binance Kline] Successfully sent BTCUSDT kline to channel");
-                                    }
-                                    return 1;
-                                } else {
-                                    if symbol.to_lowercase() == "btcusdt" {
-                                        info!("[Binance Kline] Failed to send BTCUSDT kline to channel");
-                                    }
-                                }
+                                if tx.send(kline_bytes).is_ok() { return 1; }
                             }
                         }
                     }

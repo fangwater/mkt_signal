@@ -4,7 +4,7 @@ use iceoryx2::service::ipc;
 use crate::mkt_msg::MktMsg;
 use bytes::Bytes;
 use crate::cfg::Config;
-use log::{info, warn, debug};
+use log::{info, warn};
 use anyhow::Result;
 
 pub struct IceOryxForwarder {
@@ -190,17 +190,6 @@ impl IceOryxForwarder {
                 }
             }
             t if t == crate::mkt_msg::MktMsgType::Kline as u32 => {
-                // 检查是否是BTCUSDT的K线消息（用于调试）
-                if msg.len() >= 132 {
-                    let symbol_bytes = &msg[8..40];
-                    if let Ok(symbol_str) = std::str::from_utf8(symbol_bytes) {
-                        let symbol = symbol_str.trim_end_matches('\0');
-                        if symbol.to_lowercase() == "btcusdt" {
-                            info!("[IceOryx] Processing BTCUSDT Kline message, publisher exists: {}", self.kline_publisher.is_some());
-                        }
-                    }
-                }
-                
                 if let Some(ref publisher) = self.kline_publisher {
                     self.send_with_publisher(publisher, &msg, 512)
                 } else {
@@ -232,10 +221,7 @@ impl IceOryxForwarder {
                     false
                 }
             }
-            _ => {
-                debug!("Unsupported message type: {}", msg_type);
-                false
-            }
+                _ => false,
         };
         
         if result {
@@ -292,20 +278,11 @@ impl IceOryxForwarder {
             Ok(sample) => {
                 let sample = sample.write_payload(buffer);
                 match sample.send() {
-                    Ok(_) => {
-                        debug!("Message sent successfully");
-                        true
-                    }
-                    Err(e) => {
-                        debug!("Failed to send message: {:?}", e);
-                        false
-                    }
+                    Ok(_) => true,
+                    Err(_e) => false,
                 }
             }
-            Err(e) => {
-                debug!("Failed to loan sample: {:?}", e);
-                false
-            }
+            Err(_e) => false,
         }
     }
     
