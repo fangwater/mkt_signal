@@ -17,7 +17,7 @@ struct Args {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    std::env::set_var("RUST_LOG", "DEBUG");
+    std::env::set_var("RUST_LOG", "mkt_signal=DEBUG,loan_rate_demo=DEBUG,info");
     env_logger::init();
     let symbols: Vec<String> = args
         .symbols

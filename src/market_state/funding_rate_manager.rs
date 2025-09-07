@@ -198,11 +198,44 @@ impl FundingRateManager {
             let resp = self.client.get(url).query(&params).send().await;
             match resp {
                 Ok(r) if r.status().is_success() => return Ok(r),
-                _ => {
+                Ok(r) => {
+                    let status = r.status();
+                    let body = r.text().await.unwrap_or_default();
+                    
+                    // 不可重试的错误：认证失败、权限不足、请求参数错误等
+                    if status.as_u16() == 401 || status.as_u16() == 403 {
+                        error!("认证失败或权限不足 ({}): {}", status, body);
+                        return Err(anyhow::anyhow!("认证失败或权限不足: {} - {}", status, body));
+                    }
+                    if status.as_u16() == 400 {
+                        error!("请求参数错误 ({}): {}", status, body);
+                        return Err(anyhow::anyhow!("请求参数错误: {} - {}", status, body));
+                    }
+                    
+                    // 可重试的错误：429(限流)、5xx(服务器错误)
+                    if status.as_u16() == 429 || status.is_server_error() {
+                        attempt += 1;
+                        if attempt >= max_retries {
+                            error!("HTTP请求失败，状态码: {}, 响应: {}", status, body);
+                            return Err(anyhow::anyhow!("HTTP请求失败: {} - {}", status, body));
+                        }
+                        info!("可重试错误 ({}), 尝试 {}/{}, 等待 {}ms", status, attempt, max_retries, delay_ms);
+                        sleep(Duration::from_millis(delay_ms)).await;
+                        delay_ms = (delay_ms * 2).min(5_000);
+                    } else {
+                        // 其他错误，不重试
+                        error!("未预期的HTTP错误 ({}): {}", status, body);
+                        return Err(anyhow::anyhow!("未预期的HTTP错误: {} - {}", status, body));
+                    }
+                }
+                Err(e) => {
+                    // 网络错误，可以重试
                     attempt += 1;
                     if attempt >= max_retries {
-                        return Err(anyhow::anyhow!("HTTP request failed after {} retries", max_retries));
+                        error!("网络请求失败: {}", e);
+                        return Err(anyhow::anyhow!("网络请求失败: {}", e));
                     }
+                    info!("网络错误, 尝试 {}/{}: {}", attempt, max_retries, e);
                     sleep(Duration::from_millis(delay_ms)).await;
                     delay_ms = (delay_ms * 2).min(5_000);
                 }
@@ -246,11 +279,39 @@ impl FundingRateManager {
                     match client.get(url).query(&params).send().await {
                         Ok(r) if r.status().is_success() => match r.json::<Vec<FundingRateHistory>>().await {
                             Ok(v) => break Ok(v),
-                            Err(e) => break Err(anyhow::anyhow!(e)),
+                            Err(e) => {
+                                log::error!("解析资金费率数据失败 ({}): {}", symbol_clone, e);
+                                break Err(anyhow::anyhow!(e));
+                            }
                         },
-                        _ => {
+                        Ok(r) => {
+                            let status = r.status();
+                            let body = r.text().await.unwrap_or_default();
+                            
+                            // 4xx错误不重试
+                            if status.is_client_error() {
+                                log::error!("获取资金费率失败 ({}) - {}: {}", symbol_clone, status, body);
+                                break Ok(vec![]);
+                            }
+                            
+                            // 5xx或429可以重试
                             attempt += 1;
-                            if attempt >= 3 { break Ok(vec![]); }
+                            if attempt >= 3 {
+                                log::warn!("获取资金费率失败 ({}) 达到最大重试次数", symbol_clone);
+                                break Ok(vec![]);
+                            }
+                            log::debug!("获取资金费率重试 ({}) {}/{}", symbol_clone, attempt, 3);
+                            sleep(Duration::from_millis(delay_ms)).await;
+                            delay_ms = (delay_ms * 2).min(5_000);
+                        }
+                        Err(e) => {
+                            // 网络错误，可重试
+                            attempt += 1;
+                            if attempt >= 3 {
+                                log::warn!("获取资金费率网络错误 ({}): {}", symbol_clone, e);
+                                break Ok(vec![]);
+                            }
+                            log::debug!("获取资金费率网络重试 ({}) {}/{}: {}", symbol_clone, attempt, 3, e);
                             sleep(Duration::from_millis(delay_ms)).await;
                             delay_ms = (delay_ms * 2).min(5_000);
                         }
@@ -342,7 +403,23 @@ impl FundingRateManager {
             .await?;
 
         if !resp.status().is_success() {
-            return Err(anyhow::anyhow!("Binance SAPI 返回非200: {}", resp.status()));
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            
+            // 认证相关错误，不应重试
+            if status.as_u16() == 401 || status.as_u16() == 403 {
+                error!("Binance SAPI 认证失败 ({}): {}", status, body);
+                return Err(anyhow::anyhow!("API密钥无效或权限不足: {}", body));
+            }
+            
+            // 参数错误
+            if status.as_u16() == 400 {
+                error!("Binance SAPI 请求参数错误 ({}): {}", status, body);
+                return Err(anyhow::anyhow!("请求参数错误: {}", body));
+            }
+            
+            error!("Binance SAPI 返回错误 ({}): {}", status, body);
+            return Err(anyhow::anyhow!("Binance SAPI 返回非200: {} - {}", status, body));
         }
 
         let val: serde_json::Value = resp.json().await?;
