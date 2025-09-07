@@ -7,22 +7,22 @@ use crate::cfg::Config;
 use log::{info, warn};
 use anyhow::Result;
 
-const TRADE_MAX_BYTES: usize = 1024;
-const KLINE_MAX_BYTES: usize = 512;
-const DERIVATIVES_MAX_BYTES: usize = 1024;
-const SPREAD_MAX_BYTES: usize = 512;
-const SIGNAL_MAX_BYTES: usize = 256;
+const TRADE_MAX_BYTES: usize = 64;
+const KLINE_MAX_BYTES: usize = 128;
+const DERIVATIVES_MAX_BYTES: usize = 128;
+const SPREAD_MAX_BYTES: usize = 64;
+const SIGNAL_MAX_BYTES: usize = 64;
 
 pub struct IceOryxForwarder {
     is_futures: bool,  // 判断是期货还是现货
     
     // Publishers for different message types
-    incremental_publisher: Option<Publisher<ipc::Service, [u8; 8192], ()>>,
-    trade_publisher: Option<Publisher<ipc::Service, [u8; 1024], ()>>,
-    kline_publisher: Option<Publisher<ipc::Service, [u8; 512], ()>>,
-    derivatives_publisher: Option<Publisher<ipc::Service, [u8; 1024], ()>>,  // 只有期货使用
-    ask_bid_spread_publisher: Option<Publisher<ipc::Service, [u8; 512], ()>>,
-    signal_publisher: Option<Publisher<ipc::Service, [u8; 256], ()>>,  // 时间信号
+    incremental_publisher: Option<Publisher<ipc::Service, [u8; 16384], ()>>,
+    trade_publisher: Option<Publisher<ipc::Service, [u8; TRADE_MAX_BYTES], ()>>,
+    kline_publisher: Option<Publisher<ipc::Service, [u8; KLINE_MAX_BYTES], ()>>,
+    derivatives_publisher: Option<Publisher<ipc::Service, [u8; DERIVATIVES_MAX_BYTES], ()>>,  // 只有期货使用
+    ask_bid_spread_publisher: Option<Publisher<ipc::Service, [u8; SPREAD_MAX_BYTES], ()>>,
+    signal_publisher: Option<Publisher<ipc::Service, [u8; SIGNAL_MAX_BYTES], ()>>,  // 时间信号
     
     // Statistics
     incremental_count: u64,
@@ -60,7 +60,7 @@ impl IceOryxForwarder {
         
         // 创建各个频道的publisher
         // 固定增量最大字节（编译期上限 8192），不从配置读取
-        let inc_max = 8192usize;
+        let inc_max = 16384usize;
 
         // 读取各频道的历史与订阅者配置
         let get_cfg = |ch: Option<&crate::cfg::ChannelCfg>, default_hist: usize, default_subs: usize| -> (usize, usize) {
@@ -79,7 +79,7 @@ impl IceOryxForwarder {
         let incremental_publisher = if config.data_types.enable_incremental {
             let service = node
                 .service_builder(&ServiceName::new(&format!("data_pubs/{}/incremental", exchange))?)
-                .publish_subscribe::<[u8; 8192]>()
+                .publish_subscribe::<[u8; 16384]>()
                 .max_publishers(1)
                 .max_subscribers(10)
                 .history_size(inc_hist)
@@ -94,9 +94,9 @@ impl IceOryxForwarder {
         let trade_publisher = if config.data_types.enable_trade {
             let service = node
                 .service_builder(&ServiceName::new(&format!("data_pubs/{}/trade", exchange))?)
-                .publish_subscribe::<[u8; 1024]>()
+                .publish_subscribe::<[u8; TRADE_MAX_BYTES]>()
                 .max_publishers(1)
-                .max_subscribers(10)
+                .max_subscribers(trade_subs)
                 .history_size(trade_hist)
                 .subscriber_max_buffer_size(200)
                 .open_or_create()?;
@@ -109,9 +109,9 @@ impl IceOryxForwarder {
         let kline_publisher = if config.data_types.enable_kline {
             let service = node
                 .service_builder(&ServiceName::new(&format!("data_pubs/{}/kline", exchange))?)
-                .publish_subscribe::<[u8; 512]>()
+                .publish_subscribe::<[u8; KLINE_MAX_BYTES]>()
                 .max_publishers(1)
-                .max_subscribers(10)
+                .max_subscribers(kline_subs)
                 .history_size(kline_hist)
                 .subscriber_max_buffer_size(100)
                 .open_or_create()?;
@@ -125,9 +125,9 @@ impl IceOryxForwarder {
         let derivatives_publisher = if is_futures && config.data_types.enable_derivatives {
             let service = node
                 .service_builder(&ServiceName::new(&format!("data_pubs/{}/derivatives", exchange))?)
-                .publish_subscribe::<[u8; 1024]>()
+                .publish_subscribe::<[u8; DERIVATIVES_MAX_BYTES]>()
                 .max_publishers(1)
-                .max_subscribers(10)
+                .max_subscribers(der_subs)
                 .history_size(der_hist)
                 .subscriber_max_buffer_size(100)
                 .open_or_create()?;
@@ -140,9 +140,9 @@ impl IceOryxForwarder {
         let ask_bid_spread_publisher = if config.data_types.enable_ask_bid_spread {
             let service = node
                 .service_builder(&ServiceName::new(&format!("data_pubs/{}/ask_bid_spread", exchange))?)
-                .publish_subscribe::<[u8; 512]>()
+                .publish_subscribe::<[u8; SPREAD_MAX_BYTES]>()
                 .max_publishers(1)
-                .max_subscribers(10)
+                .max_subscribers(spread_subs)
                 .history_size(spread_hist)
                 .subscriber_max_buffer_size(200)
                 .open_or_create()?;
@@ -156,9 +156,9 @@ impl IceOryxForwarder {
         let signal_publisher = {
             let service = node
                 .service_builder(&ServiceName::new(&format!("data_pubs/{}/signal", exchange))?)
-                .publish_subscribe::<[u8; 256]>()
+                .publish_subscribe::<[u8; SIGNAL_MAX_BYTES]>()
                 .max_publishers(1)
-                .max_subscribers(10)
+                .max_subscribers(signal_subs)
                 .history_size(signal_hist)
                 .subscriber_max_buffer_size(100)
                 .open_or_create()?;
