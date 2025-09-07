@@ -350,7 +350,6 @@ impl FundingRateManager {
                 new_data.insert(symbol.clone(), FundingRateData {
                     predicted_funding_rate: predicted_rate,
                     loan_rate_8h: loan_rate,
-                    last_update: Utc::now().timestamp_millis(),
                 });
             }
         }
@@ -538,7 +537,6 @@ impl FundingRateManager {
                 new_data.insert(inst_id, FundingRateData {
                     predicted_funding_rate: predicted,
                     loan_rate_8h: 0.0001,
-                    last_update: Utc::now().timestamp_millis(),
                 });
             }
         }
@@ -618,7 +616,6 @@ impl FundingRateManager {
                 new_data.insert(symbol, FundingRateData {
                     predicted_funding_rate: predicted,
                     loan_rate_8h: 0.0001,
-                    last_update: Utc::now().timestamp_millis(),
                 });
             }
         }
