@@ -700,15 +700,33 @@ impl FundingRateManager {
     }
 
     /// 手动触发初始化刷新（在应用启动时调用）
-    pub async fn initialize(&self) -> Result<()> {
+    pub async fn initialize(&self, enable_binance: bool, enable_okex: bool, enable_bybit: bool) -> Result<()> {
         info!("初始化资金费率数据");
         
-        // 并发刷新所有交易所
-        for exchange in [Exchange::Binance, Exchange::OkexSwap, Exchange::Bybit] {
+        let mut exchanges = Vec::new();
+        if enable_binance {
+            exchanges.push(Exchange::Binance);
+        }
+        if enable_okex {
+            exchanges.push(Exchange::OkexSwap);
+        }
+        if enable_bybit {
+            exchanges.push(Exchange::Bybit);
+        }
+        
+        // 如果没有启用任何交易所，直接返回
+        if exchanges.is_empty() {
+            info!("没有启用任何交易所的预测资金费率");
+            return Ok(());
+        }
+        
+        // 并发刷新启用的交易所
+        for exchange in exchanges {
             let m = Self::instance();
             tokio::spawn(async move {
+                info!("开始初始化{:?}交易所预测资金费率", exchange);
                 if let Err(e) = m.refresh_exchange_rates(exchange).await {
-                    error!("初始化刷新失败: {}", e);
+                    error!("初始化{:?}预测资金费率失败: {}", exchange, e);
                 }
             });
         }

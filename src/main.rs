@@ -46,10 +46,14 @@ async fn main() -> anyhow::Result<()> {
     
     let config = get_config(config_path, exchange).await;
     
-    // 初始化资金费率管理器
+    // 根据配置初始化资金费率管理器
     let funding_manager = crate::market_state::FundingRateManager::instance();
+    let enable_binance = config.predicted_funding_rates.enable_binance;
+    let enable_okex = config.predicted_funding_rates.enable_okex;
+    let enable_bybit = config.predicted_funding_rates.enable_bybit;
+    
     tokio::spawn(async move {
-        if let Err(e) = funding_manager.initialize().await {
+        if let Err(e) = funding_manager.initialize(enable_binance, enable_okex, enable_bybit).await {
             log::error!("初始化资金费率管理器失败: {}", e);
         }
     });

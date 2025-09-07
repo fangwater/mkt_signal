@@ -15,6 +15,12 @@ data_types:
   enable_derivatives: true    # 衍生品指标数据（仅期货交易所）
   enable_ask_bid_spread: true # 买卖价差（最优买卖价）数据
 
+# 预测资金费率配置
+predicted_funding_rates:
+  enable_binance: true       # 是否启用币安预测资金费率
+  enable_okex: false          # 是否启用OKEx预测资金费率  
+  enable_bybit: false         # 是否启用Bybit预测资金费率
+
 # IceOryx配置
 iceoryx:
   # IceOryx会自动根据交易所名称创建频道
