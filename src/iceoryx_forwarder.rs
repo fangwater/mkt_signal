@@ -190,9 +190,11 @@ impl IceOryxForwarder {
                 }
             }
             t if t == crate::mkt_msg::MktMsgType::Kline as u32 => {
+                debug!("Processing Kline message, publisher exists: {}", self.kline_publisher.is_some());
                 if let Some(ref publisher) = self.kline_publisher {
                     self.send_with_publisher(publisher, &msg, 512)
                 } else {
+                    warn!("Kline publisher is None, dropping message");
                     false
                 }
             }
@@ -232,7 +234,10 @@ impl IceOryxForwarder {
             match msg_type {
                 t if t == crate::mkt_msg::MktMsgType::OrderBookInc as u32 => self.incremental_count += 1,
                 t if t == crate::mkt_msg::MktMsgType::TradeInfo as u32 => self.trade_count += 1,
-                t if t == crate::mkt_msg::MktMsgType::Kline as u32 => self.kline_count += 1,
+                t if t == crate::mkt_msg::MktMsgType::Kline as u32 => {
+                    self.kline_count += 1;
+                    debug!("Kline message sent successfully, total kline count: {}", self.kline_count);
+                }
                 t if t == crate::mkt_msg::MktMsgType::LiquidationOrder as u32 ||
                     t == crate::mkt_msg::MktMsgType::MarkPrice as u32 ||
                     t == crate::mkt_msg::MktMsgType::IndexPrice as u32 ||

@@ -57,13 +57,13 @@ impl MktConnectionRunner for BinanceConnection {
                         Ok(Some(msg)) => {
                             match msg {
                                 Message::Ping(payload) => {
-                                    info!("Sent pong message to server: {:?}", payload);
+                                    debug!("Sent pong message to server: {:?}", payload);
                                     if let Err(e) = ws_stream.send(Message::Pong(payload)).await {
                                         error!("Failed to send pong message: {:?}", e);
                                         break;
                                     }
                                     ping_send_timer = Instant::now() + self.ping_interval + self.delay_interval;
-                                    info!("Reset ping_send_timer to {:?}", ping_send_timer);
+                                    debug!("Reset ping_send_timer to {:?}", ping_send_timer);
                                 }
                                 Message::Close(frame) => {
                                     warn!("Received close frame: {:?}", frame);
