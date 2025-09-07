@@ -13,10 +13,19 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 type HmacSha256 = Hmac<Sha256>;
 use base64::{engine::general_purpose, Engine as _};
+use std::fs;
 
 /// 全局资金费率管理器实例
 static FUNDING_RATE_MANAGER: once_cell::sync::Lazy<Arc<FundingRateManager>> = 
     once_cell::sync::Lazy::new(|| Arc::new(FundingRateManager::new()));
+
+/// 交易对配置
+#[derive(Debug, Deserialize)]
+struct TrackingSymbolsConfig {
+    binance: Vec<String>,
+    okex: Vec<String>,
+    bybit: Vec<String>,
+}
 
 #[derive(Debug, Deserialize)]
 struct FundingRateHistory {
@@ -87,6 +96,7 @@ pub struct FundingRateManager {
     // 每个交易所一个独立的存储与状态，避免大粒度锁竞争
     stores: [ExchangeStore; 6],
     client: reqwest::Client,
+    tracking_symbols: RwLock<Option<TrackingSymbolsConfig>>,
 }
 
 impl FundingRateManager {
@@ -94,6 +104,7 @@ impl FundingRateManager {
         Self {
             stores: from_fn(|_| ExchangeStore::new()),
             client: reqwest::Client::new(),
+            tracking_symbols: RwLock::new(None),
         }
     }
 
@@ -247,8 +258,18 @@ impl FundingRateManager {
     async fn refresh_binance_rates(&self) -> Result<()> {
         info!("开始刷新币安资金费率和借贷利率数据");
         
-        // 获取活跃交易对列表
-        let symbols = self.get_binance_symbols().await?;
+        // 从配置获取要跟踪的交易对
+        let symbols = {
+            let config = self.tracking_symbols.read().unwrap();
+            match &*config {
+                Some(cfg) => cfg.binance.clone(),
+                None => {
+                    error!("未加载交易对配置");
+                    return Err(anyhow::anyhow!("未加载交易对配置"));
+                }
+            }
+        };
+        info!("币安将跟踪 {} 个交易对的预测资金费率", symbols.len());
         
         // 获取借贷利率：优先签名接口、然后覆盖、最后默认
         let loan_rates = self.get_binance_loan_rates().await;
@@ -467,28 +488,29 @@ impl FundingRateManager {
     async fn refresh_okex_rates(&self) -> Result<()> {
         info!("开始刷新OKEx资金费率数据");
 
-        // 获取全部 SWAP 合约列表
-        let instruments_url = "https://www.okx.com/api/v5/public/instruments";
-        let instruments_resp = self.get_with_retry(
-            instruments_url,
-            &[("instType", "SWAP".to_string())],
-            3
-        ).await?;
-
-        #[derive(Deserialize)]
-        struct OkexInst { #[serde(rename = "instId")] inst_id: String }
-        let insts: OkexResponse<OkexInst> = instruments_resp.json().await?;
+        // 从配置获取要跟踪的交易对
+        let inst_ids = {
+            let config = self.tracking_symbols.read().unwrap();
+            match &*config {
+                Some(cfg) => cfg.okex.clone(),
+                None => {
+                    error!("未加载交易对配置");
+                    return Err(anyhow::anyhow!("未加载交易对配置"));
+                }
+            }
+        };
+        info!("OKEx将跟踪 {} 个交易对的预测资金费率", inst_ids.len());
 
         let mut tasks = vec![];
-        for inst in insts.data {
+        for inst_id in inst_ids {
             let client = self.client.clone();
-            let inst_id = inst.inst_id.clone();
+            let inst_id_clone = inst_id.clone();
             tasks.push(tokio::spawn(async move {
                 // 最近6期资金费率历史
                 let history_url = "https://www.okx.com/api/v5/public/funding-rate-history";
                 let resp = client
                     .get(history_url)
-                    .query(&[("instId", inst_id.as_str()), ("limit", "20")])
+                    .query(&[("instId", inst_id_clone.as_str()), ("limit", "20")])
                     .send()
                     .await;
                 let list: Result<Vec<OkexFundingRate>> = match resp {
@@ -498,7 +520,7 @@ impl FundingRateManager {
                     }
                     _ => Ok(vec![]),
                 };
-                Ok::<_, anyhow::Error>((inst_id, list?))
+                Ok::<_, anyhow::Error>((inst_id_clone, list?))
             }));
         }
 
@@ -547,32 +569,29 @@ impl FundingRateManager {
     async fn refresh_bybit_rates(&self) -> Result<()> {
         info!("开始刷新Bybit资金费率数据");
 
-        // 获取全部线性合约列表
-        let inst_url = "https://api.bybit.com/v5/market/instruments-info";
-        let inst_resp = self.get_with_retry(
-            inst_url,
-            &[("category", "linear".to_string())],
-            3
-        ).await?;
-
-        #[derive(Deserialize)]
-        struct BybitInstList { list: Vec<BybitInst> }
-        #[derive(Deserialize)]
-        struct BybitInst { symbol: String }
-        #[derive(Deserialize)]
-        struct BybitInstResp { result: BybitInstList }
-        let inst_parsed: BybitInstResp = inst_resp.json().await?;
+        // 从配置获取要跟踪的交易对
+        let symbols = {
+            let config = self.tracking_symbols.read().unwrap();
+            match &*config {
+                Some(cfg) => cfg.bybit.clone(),
+                None => {
+                    error!("未加载交易对配置");
+                    return Err(anyhow::anyhow!("未加载交易对配置"));
+                }
+            }
+        };
+        info!("Bybit将跟踪 {} 个交易对的预测资金费率", symbols.len());
 
         // 并发获取每个交易对的资金费率历史
         let mut tasks = vec![];
-        for inst in inst_parsed.result.list {
+        for symbol in symbols {
             let client = self.client.clone();
-            let symbol = inst.symbol.clone();
+            let symbol_clone = symbol.clone();
             tasks.push(tokio::spawn(async move {
                 let url = "https://api.bybit.com/v5/market/funding/history";
                 let resp = client
                     .get(url)
-                    .query(&[("category", "linear"), ("symbol", symbol.as_str()), ("limit", "50")])
+                    .query(&[("category", "linear"), ("symbol", symbol_clone.as_str()), ("limit", "50")])
                     .send()
                     .await;
                 let list: Result<Vec<BybitFundingRate>> = match resp {
@@ -582,7 +601,7 @@ impl FundingRateManager {
                     }
                     _ => Ok(vec![]),
                 };
-                Ok::<_, anyhow::Error>((symbol, list?))
+                Ok::<_, anyhow::Error>((symbol_clone, list?))
             }));
         }
 
@@ -702,6 +721,30 @@ impl FundingRateManager {
     /// 手动触发初始化刷新（在应用启动时调用）
     pub async fn initialize(&self, enable_binance: bool, enable_okex: bool, enable_bybit: bool) -> Result<()> {
         info!("初始化资金费率数据");
+        
+        // 加载交易对配置文件
+        let config_path = "predict_funding_rate_tracking_symbol.json";
+        match fs::read_to_string(config_path) {
+            Ok(content) => {
+                match serde_json::from_str::<TrackingSymbolsConfig>(&content) {
+                    Ok(config) => {
+                        info!("成功加载预测资金费率跟踪交易对配置");
+                        info!("币安: {} 个交易对", config.binance.len());
+                        info!("OKEx: {} 个交易对", config.okex.len());
+                        info!("Bybit: {} 个交易对", config.bybit.len());
+                        *self.tracking_symbols.write().unwrap() = Some(config);
+                    }
+                    Err(e) => {
+                        error!("解析预测资金费率跟踪交易对配置失败: {}", e);
+                        return Err(anyhow::anyhow!("解析配置文件失败: {}", e));
+                    }
+                }
+            }
+            Err(e) => {
+                error!("读取预测资金费率跟踪交易对配置文件失败: {}", e);
+                return Err(anyhow::anyhow!("读取配置文件失败: {}", e));
+            }
+        }
         
         let mut exchanges = Vec::new();
         if enable_binance {

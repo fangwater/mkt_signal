@@ -26,7 +26,8 @@ struct Args {
 
 #[tokio::main(worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
-    std::env::set_var("RUST_LOG", "DEBUG");
+    // 设置日志级别：默认 DEBUG，但关闭 tungstenite 和 reqwest 的 debug 日志
+    std::env::set_var("RUST_LOG", "debug,tungstenite=info,reqwest=info");
     env_logger::init();
 
     // 解析命令行参数
