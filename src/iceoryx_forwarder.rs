@@ -177,21 +177,21 @@ impl IceOryxForwarder {
         let result = match msg_type {
             t if t == crate::mkt_msg::MktMsgType::OrderBookInc as u32 => {
                 if let Some(ref publisher) = self.incremental_publisher {
-                    self.send_with_publisher(publisher, &msg, 2048)
+                    self.send_with_publisher(publisher, &msg, 2048, "incremental")
                 } else {
                     false
                 }
             }
             t if t == crate::mkt_msg::MktMsgType::TradeInfo as u32 => {
                 if let Some(ref publisher) = self.trade_publisher {
-                    self.send_with_publisher(publisher, &msg, 1024)
+                    self.send_with_publisher(publisher, &msg, 1024, "trade")
                 } else {
                     false
                 }
             }
             t if t == crate::mkt_msg::MktMsgType::Kline as u32 => {
                 if let Some(ref publisher) = self.kline_publisher {
-                    self.send_with_publisher(publisher, &msg, 512)
+                    self.send_with_publisher(publisher, &msg, 512, "kline")
                 } else {
                     warn!("Kline publisher is None, dropping message");
                     false
@@ -202,21 +202,21 @@ impl IceOryxForwarder {
                 t == crate::mkt_msg::MktMsgType::IndexPrice as u32 ||
                 t == crate::mkt_msg::MktMsgType::FundingRate as u32 => {
                 if let Some(ref publisher) = self.derivatives_publisher {
-                    self.send_with_publisher(publisher, &msg, 1024)
+                    self.send_with_publisher(publisher, &msg, 1024, "derivatives")
                 } else {
                     false
                 }
             }
             t if t == crate::mkt_msg::MktMsgType::AskBidSpread as u32 => {
                 if let Some(ref publisher) = self.ask_bid_spread_publisher {
-                    self.send_with_publisher(publisher, &msg, 512)
+                    self.send_with_publisher(publisher, &msg, 512, "ask_bid_spread")
                 } else {
                     false
                 }
             }
             t if t == crate::mkt_msg::MktMsgType::TimeSignal as u32 => {
                 if let Some(ref publisher) = self.signal_publisher {
-                    self.send_with_publisher(publisher, &msg, 256)
+                    self.send_with_publisher(publisher, &msg, 256, "signal")
                 } else {
                     false
                 }
@@ -263,9 +263,10 @@ impl IceOryxForwarder {
         publisher: &Publisher<ipc::Service, [u8; SIZE], ()>,
         msg: &[u8],
         max_size: usize,
+        label: &str,
     ) -> bool {
         if msg.len() > max_size {
-            warn!("Message size {} exceeds max size {}", msg.len(), max_size);
+            warn!("Message size {} exceeds max size {} for {}", msg.len(), max_size, label);
             return false;
         }
         
@@ -277,10 +278,7 @@ impl IceOryxForwarder {
         match publisher.loan_uninit() {
             Ok(sample) => {
                 let sample = sample.write_payload(buffer);
-                match sample.send() {
-                    Ok(_) => true,
-                    Err(_e) => false,
-                }
+                matches!(sample.send(), Ok(_))
             }
             Err(_e) => false,
         }
@@ -296,13 +294,13 @@ impl IceOryxForwarder {
         let mut sent = false;
         
         if let Some(ref publisher) = self.incremental_publisher {
-            if self.send_with_publisher(publisher, &msg_bytes, 2048) {
+            if self.send_with_publisher(publisher, &msg_bytes, 2048, "tp_reset_incremental") {
                 sent = true;
             }
         }
         
         if let Some(ref publisher) = self.trade_publisher {
-            if self.send_with_publisher(publisher, &msg_bytes, 1024) {
+            if self.send_with_publisher(publisher, &msg_bytes, 1024, "tp_reset_trade") {
                 sent = true;
             }
         }
