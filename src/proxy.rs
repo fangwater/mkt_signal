@@ -69,14 +69,11 @@ impl MpscProxy {
                 }
                 _ = self.tp_reset_notify.notified() => {
                     log::info!("Sending tp reset message...");
-                    match self.forwarder.send_tp_reset_msg().await {
-                        true => {
-                            log::info!("Sent tp reset message successfully");
-                        }
-                        false => {
-                            log::error!("Failed to send tp reset message");
-                            break;
-                        }
+                    if self.forwarder.send_tp_reset_msg().await {
+                        log::info!("Sent tp reset message successfully");
+                    } else {
+                        // 不退出，记录错误并继续运行，避免 proxy 提前终止
+                        log::error!("Failed to send tp reset message");
                     }
                 }
                 // 接收增量数据

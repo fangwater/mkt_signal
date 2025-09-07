@@ -190,7 +190,17 @@ impl IceOryxForwarder {
                 }
             }
             t if t == crate::mkt_msg::MktMsgType::Kline as u32 => {
-                debug!("Processing Kline message, publisher exists: {}", self.kline_publisher.is_some());
+                // 检查是否是BTCUSDT的K线消息（用于调试）
+                if msg.len() >= 132 {
+                    let symbol_bytes = &msg[8..40];
+                    if let Ok(symbol_str) = std::str::from_utf8(symbol_bytes) {
+                        let symbol = symbol_str.trim_end_matches('\0');
+                        if symbol.to_lowercase() == "btcusdt" {
+                            info!("[IceOryx] Processing BTCUSDT Kline message, publisher exists: {}", self.kline_publisher.is_some());
+                        }
+                    }
+                }
+                
                 if let Some(ref publisher) = self.kline_publisher {
                     self.send_with_publisher(publisher, &msg, 512)
                 } else {
@@ -236,7 +246,16 @@ impl IceOryxForwarder {
                 t if t == crate::mkt_msg::MktMsgType::TradeInfo as u32 => self.trade_count += 1,
                 t if t == crate::mkt_msg::MktMsgType::Kline as u32 => {
                     self.kline_count += 1;
-                    debug!("Kline message sent successfully, total kline count: {}", self.kline_count);
+                    // 检查是否是BTCUSDT的K线消息（用于调试）
+                    if msg.len() >= 132 {
+                        let symbol_bytes = &msg[8..40];
+                        if let Ok(symbol_str) = std::str::from_utf8(symbol_bytes) {
+                            let symbol = symbol_str.trim_end_matches('\0');
+                            if symbol.to_lowercase() == "btcusdt" {
+                                info!("[IceOryx] BTCUSDT Kline sent successfully, total kline count: {}", self.kline_count);
+                            }
+                        }
+                    }
                 }
                 t if t == crate::mkt_msg::MktMsgType::LiquidationOrder as u32 ||
                     t == crate::mkt_msg::MktMsgType::MarkPrice as u32 ||

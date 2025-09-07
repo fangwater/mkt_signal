@@ -10,6 +10,7 @@ use tokio::signal;
 use log::{info, error};
 use anyhow::Result;
 use bytes::Bytes;
+use tokio::task::JoinHandle;
 
 pub struct MktSignalApp {
     // 信号和通道管理
@@ -19,6 +20,7 @@ pub struct MktSignalApp {
     
     // 代理（不再使用句柄，直接保存proxy）
     proxy: Option<MpscProxy>,
+    proxy_handle: Option<JoinHandle<()>>, // 后台运行的 proxy 任务句柄
     
     // 主备两个市场数据管理器
     primary_mkt_manager: Option<MktManager>,
@@ -68,6 +70,7 @@ impl MktSignalApp {
             proxy_shutdown_tx,
             cancellation_token,
             proxy: None,
+            proxy_handle: None,
             primary_mkt_manager: None,
             secondary_mkt_manager: None,
             next_primary_restart,
@@ -91,21 +94,22 @@ impl MktSignalApp {
         // 初始化并启动所有服务
         self.initialize_and_start().await?;
         
-        // 运行proxy和主事件循环
+        // 同时运行 proxy 与主事件循环；proxy 仅在收到 shutdown 时退出
         let proxy = self.proxy.take();
         if let Some(mut proxy) = proxy {
-            // 同时运行proxy和主事件循环
             tokio::select! {
                 _ = proxy.run() => {
-                    info!("Proxy finished");
-                    Ok(())
+                    // 一般只有在收到 shutdown 才会返回
+                    info!("Proxy exited; initiating shutdown");
+                    self.cancellation_token.cancel();
+                    self.main_event_loop().await
                 }
                 result = self.main_event_loop() => {
                     result
                 }
             }
         } else {
-            // 如果没有proxy，只运行主事件循环
+            log::warn!("Proxy was not created; running without proxy");
             self.main_event_loop().await
         }
     }
@@ -216,7 +220,7 @@ impl MktSignalApp {
         Ok(())
     }
     
-    async fn main_event_loop(&mut self) -> Result<()> {
+   async fn main_event_loop(&mut self) -> Result<()> {
         info!("Primary restart scheduled at: {:?}", self.next_primary_restart);
         info!("Secondary restart scheduled at: {:?}", self.next_secondary_restart);
         
@@ -348,8 +352,13 @@ impl MktSignalApp {
         
         // 关闭代理
         let _ = self.proxy_shutdown_tx.send(true);
-        // proxy会在主循环中运行，这里只需要发送关闭信号
-        
+        // 等待 proxy 任务结束（如果存在）
+        if let Some(handle) = self.proxy_handle.take() {
+            if let Err(e) = handle.await {
+                error!("Proxy task join error: {:?}", e);
+            }
+        }
+
         info!("Application shutdown completed");
         Ok(())
     }

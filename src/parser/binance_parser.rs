@@ -107,8 +107,16 @@ impl Parser for BinanceKlineParser {
                                 );
                                 
                                 // 发送K线消息
-                                if tx.send(kline_msg.to_bytes()).is_ok() {
+                                let kline_bytes = kline_msg.to_bytes();
+                                if tx.send(kline_bytes).is_ok() {
+                                    if symbol.to_lowercase() == "btcusdt" {
+                                        info!("[Binance Kline] Successfully sent BTCUSDT kline to channel");
+                                    }
                                     return 1;
+                                } else {
+                                    if symbol.to_lowercase() == "btcusdt" {
+                                        warn!("[Binance Kline] Failed to send BTCUSDT kline to channel");
+                                    }
                                 }
                             }
                         }
