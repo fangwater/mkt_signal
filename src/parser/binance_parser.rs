@@ -115,7 +115,7 @@ impl Parser for BinanceKlineParser {
                                     return 1;
                                 } else {
                                     if symbol.to_lowercase() == "btcusdt" {
-                                        warn!("[Binance Kline] Failed to send BTCUSDT kline to channel");
+                                        info!("[Binance Kline] Failed to send BTCUSDT kline to channel");
                                     }
                                 }
                             }
