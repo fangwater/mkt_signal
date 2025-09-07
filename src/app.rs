@@ -39,6 +39,13 @@ pub struct MktSignalApp {
     derivatives_tx: mpsc::UnboundedSender<Bytes>,
     signal_tx: mpsc::UnboundedSender<Bytes>,
     ask_bid_spread_tx: mpsc::UnboundedSender<Bytes>,
+    // 对应接收端（仅创建 proxy 时消耗）
+    incremental_rx: Option<mpsc::UnboundedReceiver<Bytes>>,
+    trade_rx: Option<mpsc::UnboundedReceiver<Bytes>>,
+    kline_rx: Option<mpsc::UnboundedReceiver<Bytes>>,
+    derivatives_rx: Option<mpsc::UnboundedReceiver<Bytes>>,
+    signal_rx: Option<mpsc::UnboundedReceiver<Bytes>>,
+    ask_bid_spread_rx: Option<mpsc::UnboundedReceiver<Bytes>>,
     
     // 配置
     config: &'static Config,
@@ -81,6 +88,12 @@ impl MktSignalApp {
             derivatives_tx: message_queues.derivatives_tx,
             signal_tx: message_queues.signal_tx,
             ask_bid_spread_tx: message_queues.ask_bid_spread_tx,
+            incremental_rx: Some(message_queues.incremental_rx),
+            trade_rx: Some(message_queues.trade_rx),
+            kline_rx: Some(message_queues.kline_rx),
+            derivatives_rx: Some(message_queues.derivatives_rx),
+            signal_rx: Some(message_queues.signal_rx),
+            ask_bid_spread_rx: Some(message_queues.ask_bid_spread_rx),
             config,
         })
     }
@@ -165,26 +178,18 @@ impl MktSignalApp {
         
         // 启动代理（只在初始化时创建一次）
         if self.proxy.is_none() {
-            // 创建接收端（只在第一次初始化时创建）
-            let (incremental_tx, incremental_rx) = mpsc::unbounded_channel();
-            let (trade_tx, trade_rx) = mpsc::unbounded_channel();
-            let (kline_tx, kline_rx) = mpsc::unbounded_channel();
-            let (derivatives_tx, derivatives_rx) = mpsc::unbounded_channel();
-            let (signal_tx, signal_rx) = mpsc::unbounded_channel();
-            let (ask_bid_spread_tx, ask_bid_spread_rx) = mpsc::unbounded_channel();
-            
-            // 更新发送端
-            self.incremental_tx = incremental_tx;
-            self.trade_tx = trade_tx;
-            self.kline_tx = kline_tx;
-            self.derivatives_tx = derivatives_tx;
-            self.signal_tx = signal_tx;
-            self.ask_bid_spread_tx = ask_bid_spread_tx;
-            
+            // 使用在 new() 中创建的通道接收端，避免与 mkt_manager 的发送端不匹配
+            let Some(incremental_rx) = self.incremental_rx.take() else { anyhow::bail!("incremental_rx already taken") };
+            let Some(trade_rx) = self.trade_rx.take() else { anyhow::bail!("trade_rx already taken") };
+            let Some(kline_rx) = self.kline_rx.take() else { anyhow::bail!("kline_rx already taken") };
+            let Some(derivatives_rx) = self.derivatives_rx.take() else { anyhow::bail!("derivatives_rx already taken") };
+            let Some(signal_rx) = self.signal_rx.take() else { anyhow::bail!("signal_rx already taken") };
+            let Some(ask_bid_spread_rx) = self.ask_bid_spread_rx.take() else { anyhow::bail!("ask_bid_spread_rx already taken") };
+
             let proxy_shutdown_rx = self.proxy_shutdown_tx.subscribe();
             let tp_reset_notify = primary_mkt_manager.get_tp_reset_notify();
             let forwarder = IceOryxForwarder::new(self.config)?;
-            
+
             let proxy = MpscProxy::new(
                 forwarder,
                 incremental_rx,
@@ -196,7 +201,7 @@ impl MktSignalApp {
                 proxy_shutdown_rx,
                 tp_reset_notify
             );
-            
+
             self.proxy = Some(proxy);
             info!("Proxy created successfully");
         }
