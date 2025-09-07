@@ -8,6 +8,22 @@ use tokio::io::AsyncReadExt;
 use prettytable::{Table, Row, Cell, format};
 use crate::exchange::Exchange;
 
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ChannelCfg {
+    pub history_size: Option<usize>,
+    pub max_subscribers: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct IceoryxCfg {
+    pub incremental: Option<ChannelCfg>,
+    pub trade: Option<ChannelCfg>,
+    pub kline: Option<ChannelCfg>,
+    pub derivatives: Option<ChannelCfg>,
+    pub ask_bid_spread: Option<ChannelCfg>,
+    pub signal: Option<ChannelCfg>,
+}
+
 #[derive(Debug, Deserialize)]
 struct ConfigFile {
     restart_duration_secs: u64,
@@ -19,6 +35,8 @@ struct ConfigFile {
     data_types: DataTypesConfig,
     // 预测资金费率配置
     predicted_funding_rates: Option<PredictedFundingRatesConfig>,
+    // Iceoryx 配置（当前仅 incremental.buffer_size 生效）
+    iceoryx: Option<IceoryxCfg>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -101,6 +119,7 @@ pub struct Config {
     pub data_types: DataTypesConfig,  // 数据类型开关
     pub predicted_funding_rates: PredictedFundingRatesConfig,  // 预测资金费率配置
     pub exchange: Exchange,  // 在运行时设置，不从配置文件读取
+    pub iceoryx: Option<IceoryxCfg>, // Iceoryx 配置（可选）
 }
 
 impl Config {
@@ -123,6 +142,7 @@ impl Config {
                     enable_bybit: false,
                 }
             ),  // 预测资金费率配置，默认全部关闭
+            iceoryx: config_file.iceoryx,
             exchange,  // 从命令行参数设置
         };
         

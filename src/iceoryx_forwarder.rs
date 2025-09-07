@@ -7,11 +7,17 @@ use crate::cfg::Config;
 use log::{info, warn};
 use anyhow::Result;
 
+const TRADE_MAX_BYTES: usize = 1024;
+const KLINE_MAX_BYTES: usize = 512;
+const DERIVATIVES_MAX_BYTES: usize = 1024;
+const SPREAD_MAX_BYTES: usize = 512;
+const SIGNAL_MAX_BYTES: usize = 256;
+
 pub struct IceOryxForwarder {
     is_futures: bool,  // 判断是期货还是现货
     
     // Publishers for different message types
-    incremental_publisher: Option<Publisher<ipc::Service, [u8; 2048], ()>>,
+    incremental_publisher: Option<Publisher<ipc::Service, [u8; 8192], ()>>,
     trade_publisher: Option<Publisher<ipc::Service, [u8; 1024], ()>>,
     kline_publisher: Option<Publisher<ipc::Service, [u8; 512], ()>>,
     derivatives_publisher: Option<Publisher<ipc::Service, [u8; 1024], ()>>,  // 只有期货使用
@@ -27,6 +33,15 @@ pub struct IceOryxForwarder {
     signal_count: u64,
     message_count: u64,
     dropped_count: u64,
+    incremental_max_bytes: usize,
+
+    // window stats: max message size seen per channel
+    inc_max_seen: usize,
+    trade_max_seen: usize,
+    kline_max_seen: usize,
+    der_max_seen: usize,
+    spread_max_seen: usize,
+    signal_max_seen: usize,
 }
 
 impl IceOryxForwarder {
@@ -44,13 +59,30 @@ impl IceOryxForwarder {
             .create::<ipc::Service>()?;
         
         // 创建各个频道的publisher
+        // 固定增量最大字节（编译期上限 8192），不从配置读取
+        let inc_max = 8192usize;
+
+        // 读取各频道的历史与订阅者配置
+        let get_cfg = |ch: Option<&crate::cfg::ChannelCfg>, default_hist: usize, default_subs: usize| -> (usize, usize) {
+            let h = ch.and_then(|c| c.history_size).unwrap_or(default_hist);
+            let s = ch.and_then(|c| c.max_subscribers).unwrap_or(default_subs);
+            (h, s)
+        };
+        let ice = config.iceoryx.as_ref();
+        let (inc_hist, inc_subs) = get_cfg(ice.and_then(|c| c.incremental.as_ref()), 100, 10);
+        let (trade_hist, trade_subs) = get_cfg(ice.and_then(|c| c.trade.as_ref()), 100, 10);
+        let (kline_hist, kline_subs) = get_cfg(ice.and_then(|c| c.kline.as_ref()), 50, 10);
+        let (der_hist, der_subs) = get_cfg(ice.and_then(|c| c.derivatives.as_ref()), 50, 10);
+        let (spread_hist, spread_subs) = get_cfg(ice.and_then(|c| c.ask_bid_spread.as_ref()), 100, 10);
+        let (signal_hist, signal_subs) = get_cfg(ice.and_then(|c| c.signal.as_ref()), 50, 10);
+
         let incremental_publisher = if config.data_types.enable_incremental {
             let service = node
                 .service_builder(&ServiceName::new(&format!("data_pubs/{}/incremental", exchange))?)
-                .publish_subscribe::<[u8; 2048]>()
+                .publish_subscribe::<[u8; 8192]>()
                 .max_publishers(1)
                 .max_subscribers(10)
-                .history_size(100)
+                .history_size(inc_hist)
                 .subscriber_max_buffer_size(200)
                 .open_or_create()?;
             
@@ -65,7 +97,7 @@ impl IceOryxForwarder {
                 .publish_subscribe::<[u8; 1024]>()
                 .max_publishers(1)
                 .max_subscribers(10)
-                .history_size(100)
+                .history_size(trade_hist)
                 .subscriber_max_buffer_size(200)
                 .open_or_create()?;
             
@@ -80,7 +112,7 @@ impl IceOryxForwarder {
                 .publish_subscribe::<[u8; 512]>()
                 .max_publishers(1)
                 .max_subscribers(10)
-                .history_size(50)
+                .history_size(kline_hist)
                 .subscriber_max_buffer_size(100)
                 .open_or_create()?;
             
@@ -96,7 +128,7 @@ impl IceOryxForwarder {
                 .publish_subscribe::<[u8; 1024]>()
                 .max_publishers(1)
                 .max_subscribers(10)
-                .history_size(50)
+                .history_size(der_hist)
                 .subscriber_max_buffer_size(100)
                 .open_or_create()?;
             
@@ -111,7 +143,7 @@ impl IceOryxForwarder {
                 .publish_subscribe::<[u8; 512]>()
                 .max_publishers(1)
                 .max_subscribers(10)
-                .history_size(100)
+                .history_size(spread_hist)
                 .subscriber_max_buffer_size(200)
                 .open_or_create()?;
             
@@ -127,7 +159,7 @@ impl IceOryxForwarder {
                 .publish_subscribe::<[u8; 256]>()
                 .max_publishers(1)
                 .max_subscribers(10)
-                .history_size(50)
+                .history_size(signal_hist)
                 .subscriber_max_buffer_size(100)
                 .open_or_create()?;
             
@@ -159,6 +191,13 @@ impl IceOryxForwarder {
             signal_count: 0,
             message_count: 0,
             dropped_count: 0,
+            incremental_max_bytes: inc_max,
+            inc_max_seen: 0,
+            trade_max_seen: 0,
+            kline_max_seen: 0,
+            der_max_seen: 0,
+            spread_max_seen: 0,
+            signal_max_seen: 0,
         })
     }
     
@@ -176,22 +215,28 @@ impl IceOryxForwarder {
         // 根据消息类型选择合适的publisher
         let result = match msg_type {
             t if t == crate::mkt_msg::MktMsgType::OrderBookInc as u32 => {
+                let len = msg.len();
+                if len > self.inc_max_seen { self.inc_max_seen = len; }
                 if let Some(ref publisher) = self.incremental_publisher {
-                    self.send_with_publisher(publisher, &msg, 2048, "incremental")
+                    self.send_with_publisher(publisher, &msg, self.incremental_max_bytes, "incremental")
                 } else {
                     false
                 }
             }
             t if t == crate::mkt_msg::MktMsgType::TradeInfo as u32 => {
+                let len = msg.len();
+                if len > self.trade_max_seen { self.trade_max_seen = len; }
                 if let Some(ref publisher) = self.trade_publisher {
-                    self.send_with_publisher(publisher, &msg, 1024, "trade")
+                    self.send_with_publisher(publisher, &msg, TRADE_MAX_BYTES, "trade")
                 } else {
                     false
                 }
             }
             t if t == crate::mkt_msg::MktMsgType::Kline as u32 => {
+                let len = msg.len();
+                if len > self.kline_max_seen { self.kline_max_seen = len; }
                 if let Some(ref publisher) = self.kline_publisher {
-                    self.send_with_publisher(publisher, &msg, 512, "kline")
+                    self.send_with_publisher(publisher, &msg, KLINE_MAX_BYTES, "kline")
                 } else {
                     warn!("Kline publisher is None, dropping message");
                     false
@@ -201,27 +246,33 @@ impl IceOryxForwarder {
                 t == crate::mkt_msg::MktMsgType::MarkPrice as u32 ||
                 t == crate::mkt_msg::MktMsgType::IndexPrice as u32 ||
                 t == crate::mkt_msg::MktMsgType::FundingRate as u32 => {
+                let len = msg.len();
+                if len > self.der_max_seen { self.der_max_seen = len; }
                 if let Some(ref publisher) = self.derivatives_publisher {
-                    self.send_with_publisher(publisher, &msg, 1024, "derivatives")
+                    self.send_with_publisher(publisher, &msg, DERIVATIVES_MAX_BYTES, "derivatives")
                 } else {
                     false
                 }
             }
             t if t == crate::mkt_msg::MktMsgType::AskBidSpread as u32 => {
+                let len = msg.len();
+                if len > self.spread_max_seen { self.spread_max_seen = len; }
                 if let Some(ref publisher) = self.ask_bid_spread_publisher {
-                    self.send_with_publisher(publisher, &msg, 512, "ask_bid_spread")
+                    self.send_with_publisher(publisher, &msg, SPREAD_MAX_BYTES, "ask_bid_spread")
                 } else {
                     false
                 }
             }
             t if t == crate::mkt_msg::MktMsgType::TimeSignal as u32 => {
+                let len = msg.len();
+                if len > self.signal_max_seen { self.signal_max_seen = len; }
                 if let Some(ref publisher) = self.signal_publisher {
-                    self.send_with_publisher(publisher, &msg, 256, "signal")
+                    self.send_with_publisher(publisher, &msg, SIGNAL_MAX_BYTES, "signal")
                 } else {
                     false
                 }
             }
-                _ => false,
+            _ => false,
         };
         
         if result {
@@ -315,17 +366,17 @@ impl IceOryxForwarder {
     }
     
     pub fn log_stats(&mut self) {
-        // 打印统计信息
-        info!("IceOryx stats: total: {}, inc: {}, trade: {}, kline: {}, derivatives: {}, spread: {}, signal: {}, dropped: {}",
+        // 打印统计信息（包含本窗口各类型最大消息大小）
+        info!("IceOryx stats: total: {}, inc: {} (max {}), trade: {} (max {}), kline: {} (max {}), derivatives: {} (max {}), spread: {} (max {}), signal: {} (max {}), dropped: {}",
               self.message_count,
-              self.incremental_count,
-              self.trade_count,
-              self.kline_count,
-              self.derivatives_count,
-              self.ask_bid_spread_count,
-              self.signal_count,
+              self.incremental_count, self.inc_max_seen,
+              self.trade_count, self.trade_max_seen,
+              self.kline_count, self.kline_max_seen,
+              self.derivatives_count, self.der_max_seen,
+              self.ask_bid_spread_count, self.spread_max_seen,
+              self.signal_count, self.signal_max_seen,
               self.dropped_count);
-        
+
         // 清零统计信息
         self.incremental_count = 0;
         self.trade_count = 0;
@@ -335,6 +386,12 @@ impl IceOryxForwarder {
         self.signal_count = 0;
         self.message_count = 0;
         self.dropped_count = 0;
+        self.inc_max_seen = 0;
+        self.trade_max_seen = 0;
+        self.kline_max_seen = 0;
+        self.der_max_seen = 0;
+        self.spread_max_seen = 0;
+        self.signal_max_seen = 0;
     }
 }
 
