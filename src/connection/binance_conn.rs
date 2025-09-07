@@ -3,7 +3,7 @@ use tokio::time::{self, Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
 use reqwest::Client;
 use bytes::Bytes;
-use log::{info, warn, error};
+use log::{info, warn, debug, error};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashSet;
