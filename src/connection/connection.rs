@@ -5,7 +5,7 @@ use anyhow::{Result, Context};
 use tokio_tungstenite::{connect_async, WebSocketStream, MaybeTlsStream, tungstenite::Message, client_async};
 use futures_util::{SinkExt};
 use url::Url;
-use log::{info, error, warn};
+use log::{info, debug, error, warn};
 use tokio::{net::{TcpStream, TcpSocket, lookup_host}, time::{self, Duration, Instant}};
 use async_trait::async_trait;
 use std::net::{IpAddr, SocketAddr};
@@ -86,7 +86,7 @@ impl WsConnector {
         // 解析本地IP
         let local_addr: IpAddr = local_ip.parse()
             .with_context(|| format!("Invalid local IP address: {}", local_ip))?;
-        info!("Using local IP {} for WebSocket connection to {}", local_ip, url);
+        debug!("Using local IP {} for WebSocket connection to {}", local_ip, url);
         
         // 解析URL
         let ws_url = Url::parse(url).with_context(|| "Invalid URL")?;
@@ -143,7 +143,7 @@ impl WsConnector {
         // 发送订阅消息
         ws_stream.send(Message::Text(sub_msg.to_string())).await
             .with_context(|| "Failed to send subscription message")?;
-        info!("Successfully sent subscription message via local IP {}", local_ip);
+        debug!("Successfully sent subscription message via local IP {}", local_ip);
         
         Ok(WsConnectionResult {
             ws_stream: Arc::new(Mutex::new(ws_stream)),

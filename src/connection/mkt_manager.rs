@@ -9,7 +9,7 @@ use crate::connection::binance_conn::BinanceFuturesSnapshotQuery;
 use tokio::sync::{mpsc, broadcast, watch, Notify};
 use tokio::task::JoinSet;
 use bytes::Bytes;
-use log::{info, error};
+use log::{info, debug, error};
 use std::sync::Arc;
 use tokio::time::{Duration, Instant};
 use chrono::{Utc, TimeDelta, NaiveTime};
@@ -487,7 +487,7 @@ impl MktManager {
                 if let Err(e) = connection.start_ws().await {
                     error!("Connection failed for {}: {}", ws_description, e);
                 } else {
-                    info!("Connection closed for {}", ws_description);
+                    debug!("Connection closed for {}", ws_description);
                 }
             });
             
@@ -514,7 +514,7 @@ impl MktManager {
                         }
                         _ = shutdown_rx.changed() => {
                             if *shutdown_rx.borrow() {
-                                info!("Parser task shutdown for {}", description);
+                                debug!("Parser task shutdown for {}", description);
                                 break;
                             }
                         }
@@ -557,7 +557,7 @@ impl MktManager {
                 if let Err(e) = connection.start_ws().await {
                     error!("Connection failed for {}: {}", ws_description, e);
                 } else {
-                    info!("Connection closed for {}", ws_description);
+                    debug!("Connection closed for {}", ws_description);
                 }
             });
             
@@ -584,7 +584,7 @@ impl MktManager {
                         }
                         _ = shutdown_rx.changed() => {
                             if *shutdown_rx.borrow() {
-                                info!("Parser task shutdown for {}", description);
+                                debug!("Parser task shutdown for {}", description);
                                 break;
                             }
                         }
