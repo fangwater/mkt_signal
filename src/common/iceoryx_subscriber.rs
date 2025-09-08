@@ -150,7 +150,7 @@ impl MultiChannelSubscriber {
                     .publish_subscribe::<[u8; 16384]>()
                     .open_or_create()?;
                 let subscriber = service.subscriber_builder()
-                    .buffer_size(1024)  // 增大缓冲区避免数据丢失
+                    .buffer_size(128)  // 保守设置，避免超过服务端限制
                     .create()?;
                 SubscriberEnum::Size16384(subscriber)
             }
@@ -160,7 +160,7 @@ impl MultiChannelSubscriber {
                     .publish_subscribe::<[u8; 64]>()
                     .open_or_create()?;
                 let subscriber = service.subscriber_builder()
-                    .buffer_size(1024)  // 增加缓冲区但不超过发布端限制
+                    .buffer_size(128)  // 保守设置
                     .create()?;
                 SubscriberEnum::Size64(subscriber)
             }
@@ -170,7 +170,7 @@ impl MultiChannelSubscriber {
                     .publish_subscribe::<[u8; 128]>()
                     .open_or_create()?;
                 let subscriber = service.subscriber_builder()
-                    .buffer_size(1024)  // 增大缓冲区
+                    .buffer_size(128)  // 保守设置
                     .create()?;
                 SubscriberEnum::Size128(subscriber)
             }
