@@ -79,7 +79,7 @@ impl IceOryxForwarder {
                 .max_publishers(1)
                 .max_subscribers(10)
                 .history_size(inc_hist)
-                .subscriber_max_buffer_size(200)
+                .subscriber_max_buffer_size(8192)
                 .open_or_create()?;
             
             Some(service.publisher_builder().create()?)
@@ -94,7 +94,7 @@ impl IceOryxForwarder {
                 .max_publishers(1)
                 .max_subscribers(trade_subs)
                 .history_size(trade_hist)
-                .subscriber_max_buffer_size(200)
+                .subscriber_max_buffer_size(8192)
                 .open_or_create()?;
             
             Some(service.publisher_builder().create()?)
@@ -109,7 +109,7 @@ impl IceOryxForwarder {
                 .max_publishers(1)
                 .max_subscribers(kline_subs)
                 .history_size(kline_hist)
-                .subscriber_max_buffer_size(100)
+                .subscriber_max_buffer_size(8192)
                 .open_or_create()?;
             
             Some(service.publisher_builder().create()?)
@@ -125,7 +125,7 @@ impl IceOryxForwarder {
                 .max_publishers(1)
                 .max_subscribers(der_subs)
                 .history_size(der_hist)
-                .subscriber_max_buffer_size(100)
+                .subscriber_max_buffer_size(8192)
                 .open_or_create()?;
             
             Some(service.publisher_builder().create()?)
@@ -140,7 +140,7 @@ impl IceOryxForwarder {
                 .max_publishers(1)
                 .max_subscribers(spread_subs)
                 .history_size(spread_hist)
-                .subscriber_max_buffer_size(200)
+                .subscriber_max_buffer_size(8192)
                 .open_or_create()?;
             
             Some(service.publisher_builder().create()?)
@@ -156,7 +156,7 @@ impl IceOryxForwarder {
                 .max_publishers(1)
                 .max_subscribers(signal_subs)
                 .history_size(signal_hist)
-                .subscriber_max_buffer_size(100)
+                .subscriber_max_buffer_size(8192)
                 .open_or_create()?;
             
             Some(service.publisher_builder().create()?)

@@ -662,8 +662,8 @@ async fn main() -> Result<()> {
             else => {}
         }
         
-        // 轮询消息（每次最多16条）
-        let messages = subscriber.poll_msgs(None);
+        // 轮询消息（提高批量以减少堆积，默认16 -> 1024）
+        let messages = subscriber.poll_msgs(Some(1024));
         
         if messages.is_empty() {
             // 没有消息时短暂休眠，避免CPU占用过高
