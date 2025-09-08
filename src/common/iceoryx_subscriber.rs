@@ -160,7 +160,7 @@ impl MultiChannelSubscriber {
                     .publish_subscribe::<[u8; 64]>()
                     .open_or_create()?;
                 let subscriber = service.subscriber_builder()
-                    .buffer_size(8192)  // 大幅增加缓冲区，spread消息量很大
+                    .buffer_size(4096)  // 增加缓冲区但不超过发布端限制
                     .create()?;
                 SubscriberEnum::Size64(subscriber)
             }
