@@ -5,7 +5,7 @@ use mkt_signal::common::iceoryx_subscriber::{MultiChannelSubscriber, SubscribePa
 use mkt_signal::common::iceoryx_publisher::SignalPublisher;
 use mkt_signal::exchange::Exchange;
 use mkt_signal::mkt_msg::{self, MktMsgType, AskBidSpreadMsg, FundingRateMsg};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -211,6 +211,8 @@ struct FundingRateStrategy {
     spread_updates: u64,
     trade_events_sent: u64,
     last_stats_time: Instant,
+    // 每个周期收到过的symbol（用于调试观测）
+    received_symbols: HashSet<String>,
 }
 
 impl FundingRateStrategy {
@@ -254,6 +256,7 @@ impl FundingRateStrategy {
             spread_updates: 0,
             trade_events_sent: 0,
             last_stats_time: Instant::now(),
+            received_symbols: HashSet::new(),
         }
     }
     
@@ -263,6 +266,8 @@ impl FundingRateStrategy {
         
         // 解析消息
         let symbol = AskBidSpreadMsg::get_symbol(data);
+        // 记录收到的symbol（拷贝为String）
+        self.received_symbols.insert(symbol.to_string());
         
         // 获取symbol的状态
         let symbol_state = match self.binance_symbol_states.get_mut(symbol) {
@@ -300,6 +305,8 @@ impl FundingRateStrategy {
         
         // 使用零拷贝方法解析symbol
         let symbol = FundingRateMsg::get_symbol(data);
+        // 记录收到的symbol（拷贝为String）
+        self.received_symbols.insert(symbol.to_string());
         
         // 获取symbol的状态
         let symbol_state = match self.binance_symbol_states.get_mut(symbol) {
@@ -344,6 +351,18 @@ impl FundingRateStrategy {
                 msg_per_sec,
                 self.binance_symbol_states.len()
             );
+            // 打印本周期收到过的symbol集合（便于排查哪些符号正在更新）
+            if !self.received_symbols.is_empty() {
+                // 为避免日志过长，仅打印最多前20个
+                let mut list: Vec<_> = self.received_symbols.iter().take(20).cloned().collect();
+                list.sort();
+                info!("  received symbols (≤20): {}", list.join(", "));
+                if self.received_symbols.len() > 20 {
+                    info!("  ... and {} more", self.received_symbols.len() - 20);
+                }
+            } else {
+                info!("  received symbols: <none this interval>");
+            }
             
             // 打印一些示例报价
             for (symbol, state) in self.binance_symbol_states.iter().take(3) {
@@ -366,6 +385,8 @@ impl FundingRateStrategy {
                         state.funding_state.loan_rate);
                 }
             }
+            // 清空已收集的symbol集，便于下个统计周期观察
+            self.received_symbols.clear();
         }
     }
     
