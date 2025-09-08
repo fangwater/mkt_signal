@@ -657,8 +657,7 @@ async fn main() -> Result<()> {
                 strategy.print_stats();
             }
             else => {
-                let messages = subscriber.poll_msgs(Some(16));
-                info!("polling msgs...");
+                let messages = subscriber.poll_msgs(Some(1024));
                 for msg_bytes in messages {
                     let msg_type = mkt_msg::get_msg_type(&msg_bytes);
                     match msg_type {
@@ -671,7 +670,6 @@ async fn main() -> Result<()> {
                         _ => {}
                     }
                 }
-                break;
             }
         }
     }
