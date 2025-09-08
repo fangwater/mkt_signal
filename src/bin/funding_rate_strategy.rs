@@ -9,9 +9,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tokio::select;
 use tokio::signal;
-use tokio::time::{interval, Instant};
+use tokio::time::Instant;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use bincode;
 /// 套利策略配置 - 每个交易所包含多个[现货符号, 期货符号, 价差阈值]数组
 #[derive(Debug, Deserialize)]
@@ -642,35 +642,40 @@ async fn main() -> Result<()> {
     subscriber.subscribe_channels(subscriptions)?;
     info!("Subscribed to all channels");
     
-    // 统计定时器
-    let mut stats_timer = interval(Duration::from_secs(5));
-    
-    // 主循环
+    // HFT 模式：忙轮询 + 原子关停标志
+    let shutdown = Arc::new(AtomicBool::new(false));
+    {
+        let s = shutdown.clone();
+        tokio::spawn(async move {
+            let _ = signal::ctrl_c().await;
+            s.store(true, Ordering::SeqCst);
+        });
+    }
+    let mut next_stats = Instant::now() + Duration::from_secs(5);
+
+    // 主循环（高频忙轮询，不阻塞等待）
     loop {
-        // 优先处理控制信号与定时器（非阻塞）
-        select! {
-            _ = signal::ctrl_c() => {
-                info!("Received shutdown signal");
-                break;
-            }
-            _ = stats_timer.tick() => {
-                strategy.print_stats();
-            }
-            else => {
-                info!("do polling");
-                let messages = subscriber.poll_msgs(Some(1024));
-                for msg_bytes in messages {
-                    let msg_type = mkt_msg::get_msg_type(&msg_bytes);
-                    match msg_type {
-                        MktMsgType::AskBidSpread => {
-                            strategy.process_spot_spread(&msg_bytes);
-                        }
-                        MktMsgType::FundingRate => {
-                            strategy.process_funding_rate(&msg_bytes);
-                        }
-                        _ => {}
-                    }
-                }
+        if shutdown.load(Ordering::Relaxed) {
+            info!("Received shutdown signal");
+            break;
+        }
+        if Instant::now() >= next_stats {
+            strategy.print_stats();
+            next_stats += Duration::from_secs(5);
+        }
+        // 高频轮询：每次最多16条
+        let messages = subscriber.poll_msgs(Some(16));
+        if messages.is_empty() {
+            // 忙等待：不 sleep，最低延迟
+            std::hint::spin_loop();
+            continue;
+        }
+        for msg_bytes in messages {
+            let msg_type = mkt_msg::get_msg_type(&msg_bytes);
+            match msg_type {
+                MktMsgType::AskBidSpread => strategy.process_spot_spread(&msg_bytes),
+                MktMsgType::FundingRate => strategy.process_funding_rate(&msg_bytes),
+                _ => {}
             }
         }
     }
