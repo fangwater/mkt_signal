@@ -149,8 +149,8 @@ impl MultiChannelSubscriber {
                     .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; 16384]>()
                     .open_or_create()?;
-                let subscriber = service.subscriber_builder()
-                    .buffer_size(128)  // 保守设置，避免超过服务端限制
+                let subscriber = service
+                    .subscriber_builder()
                     .create()?;
                 SubscriberEnum::Size16384(subscriber)
             }
@@ -159,8 +159,8 @@ impl MultiChannelSubscriber {
                     .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; 64]>()
                     .open_or_create()?;
-                let subscriber = service.subscriber_builder()
-                    .buffer_size(128)  // 保守设置
+                let subscriber = service
+                    .subscriber_builder()
                     .create()?;
                 SubscriberEnum::Size64(subscriber)
             }
@@ -169,8 +169,8 @@ impl MultiChannelSubscriber {
                     .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; 128]>()
                     .open_or_create()?;
-                let subscriber = service.subscriber_builder()
-                    .buffer_size(128)  // 保守设置
+                let subscriber = service
+                    .subscriber_builder()
                     .create()?;
                 SubscriberEnum::Size128(subscriber)
             }
