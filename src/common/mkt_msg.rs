@@ -566,11 +566,11 @@ pub fn get_msg_type(data: &[u8]) -> MktMsgType {
         1001 => MktMsgType::TradeInfo,
         1005 => MktMsgType::OrderBookInc,
         1009 => MktMsgType::TpReset,
-        1010 => MktMsgType::LiquidationOrder,
+        1010 => MktMsgType::Kline,
         1011 => MktMsgType::MarkPrice,
         1012 => MktMsgType::IndexPrice,
-        1013 => MktMsgType::FundingRate,
-        1014 => MktMsgType::Kline,
+        1013 => MktMsgType::LiquidationOrder,
+        1014 => MktMsgType::FundingRate,
         1015 => MktMsgType::AskBidSpread,
         _ => MktMsgType::TpReset, // 默认值
     }

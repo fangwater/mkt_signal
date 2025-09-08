@@ -211,8 +211,11 @@ struct FundingRateStrategy {
     spread_updates: u64,
     trade_events_sent: u64,
     last_stats_time: Instant,
-    // 每个周期收到过的symbol（用于调试观测）
-    received_symbols: HashSet<String>,
+    // 每个周期收到过的symbol（按类型分别收集，且区分是否在跟踪列表中）
+    received_spread_symbols: HashSet<String>,
+    received_funding_symbols: HashSet<String>,
+    untracked_spread_symbols: HashSet<String>,
+    untracked_funding_symbols: HashSet<String>,
 }
 
 impl FundingRateStrategy {
@@ -256,7 +259,10 @@ impl FundingRateStrategy {
             spread_updates: 0,
             trade_events_sent: 0,
             last_stats_time: Instant::now(),
-            received_symbols: HashSet::new(),
+            received_spread_symbols: HashSet::new(),
+            received_funding_symbols: HashSet::new(),
+            untracked_spread_symbols: HashSet::new(),
+            untracked_funding_symbols: HashSet::new(),
         }
     }
     
@@ -266,8 +272,12 @@ impl FundingRateStrategy {
         
         // 解析消息
         let symbol = AskBidSpreadMsg::get_symbol(data);
-        // 记录收到的symbol（拷贝为String）
-        self.received_symbols.insert(symbol.to_string());
+        // 记录收到的symbol（区分是否在跟踪列表中）
+        if self.binance_symbol_states.contains_key(symbol) {
+            self.received_spread_symbols.insert(symbol.to_string());
+        } else {
+            self.untracked_spread_symbols.insert(symbol.to_string());
+        }
         
         // 获取symbol的状态
         let symbol_state = match self.binance_symbol_states.get_mut(symbol) {
@@ -305,8 +315,12 @@ impl FundingRateStrategy {
         
         // 使用零拷贝方法解析symbol
         let symbol = FundingRateMsg::get_symbol(data);
-        // 记录收到的symbol（拷贝为String）
-        self.received_symbols.insert(symbol.to_string());
+        // 记录收到的symbol（区分是否在跟踪列表中）
+        if self.binance_symbol_states.contains_key(symbol) {
+            self.received_funding_symbols.insert(symbol.to_string());
+        } else {
+            self.untracked_funding_symbols.insert(symbol.to_string());
+        }
         
         // 获取symbol的状态
         let symbol_state = match self.binance_symbol_states.get_mut(symbol) {
@@ -351,17 +365,25 @@ impl FundingRateStrategy {
                 msg_per_sec,
                 self.binance_symbol_states.len()
             );
-            // 打印本周期收到过的symbol集合（便于排查哪些符号正在更新）
-            if !self.received_symbols.is_empty() {
-                // 为避免日志过长，仅打印最多前20个
-                let mut list: Vec<_> = self.received_symbols.iter().take(20).cloned().collect();
+            // 打印本周期收到过的symbol集合（分别打印 spread / funding，且仅展示在跟踪列表中的）
+            self.print_symbol_set("spread(tracked)", &self.received_spread_symbols);
+            self.print_symbol_set("funding(tracked)", &self.received_funding_symbols);
+            // 可选：打印未跟踪但收到的符号，帮助排查订阅面过宽
+            if !self.untracked_spread_symbols.is_empty() {
+                let mut list: Vec<_> = self.untracked_spread_symbols.iter().take(10).cloned().collect();
                 list.sort();
-                info!("  received symbols (≤20): {}", list.join(", "));
-                if self.received_symbols.len() > 20 {
-                    info!("  ... and {} more", self.received_symbols.len() - 20);
+                info!("  untracked spread symbols (≤10): {}", list.join(", "));
+                if self.untracked_spread_symbols.len() > 10 {
+                    info!("  ... and {} more", self.untracked_spread_symbols.len() - 10);
                 }
-            } else {
-                info!("  received symbols: <none this interval>");
+            }
+            if !self.untracked_funding_symbols.is_empty() {
+                let mut list: Vec<_> = self.untracked_funding_symbols.iter().take(10).cloned().collect();
+                list.sort();
+                info!("  untracked funding symbols (≤10): {}", list.join(", "));
+                if self.untracked_funding_symbols.len() > 10 {
+                    info!("  ... and {} more", self.untracked_funding_symbols.len() - 10);
+                }
             }
             
             // 打印一些示例报价
@@ -386,7 +408,24 @@ impl FundingRateStrategy {
                 }
             }
             // 清空已收集的symbol集，便于下个统计周期观察
-            self.received_symbols.clear();
+            self.received_spread_symbols.clear();
+            self.received_funding_symbols.clear();
+            self.untracked_spread_symbols.clear();
+            self.untracked_funding_symbols.clear();
+        }
+    }
+
+    fn print_symbol_set(&self, label: &str, set: &HashSet<String>) {
+        if set.is_empty() {
+            info!("  {}: <none this interval>", label);
+            return;
+        }
+        // 为避免日志过长，仅打印最多前20个
+        let mut list: Vec<_> = set.iter().take(20).cloned().collect();
+        list.sort();
+        info!("  {} (≤20): {}", label, list.join(", "));
+        if set.len() > 20 {
+            info!("  ... and {} more in {}", set.len() - 20, label);
         }
     }
     
