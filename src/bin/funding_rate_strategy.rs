@@ -647,6 +647,29 @@ async fn main() -> Result<()> {
     
     // 主循环
     loop {
+        // 轮询消息（提高批量以减少堆积，默认16 -> 1024）
+        let messages = subscriber.poll_msgs(Some(16));
+        // 处理消息
+        for msg_bytes in messages {
+            strategy.messages_processed += 1;
+            
+            // 获取消息类型
+            let msg_type = mkt_msg::get_msg_type(&msg_bytes);
+            
+            match msg_type {
+                MktMsgType::AskBidSpread => {
+                    // 只处理币安现货的买卖价差
+                    strategy.process_spot_spread(&msg_bytes);
+                }
+                MktMsgType::FundingRate => {
+                    // 处理资金费率消息
+                    strategy.process_funding_rate(&msg_bytes);
+                }
+                _ => {
+                    // 忽略其他类型消息
+                }
+            }
+        }
         // 先处理控制信号和定时器
         select! {
             _ = signal::ctrl_c() => {
@@ -660,36 +683,6 @@ async fn main() -> Result<()> {
             
             // 非阻塞检查
             else => {}
-        }
-        
-        // 轮询消息（提高批量以减少堆积，默认16 -> 1024）
-        let messages = subscriber.poll_msgs(Some(1024));
-        
-        if messages.is_empty() {
-            // 没有消息时短暂休眠，避免CPU占用过高
-            tokio::time::sleep(Duration::from_micros(100)).await;
-        } else {
-            // 处理消息
-            for msg_bytes in messages {
-                strategy.messages_processed += 1;
-                
-                // 获取消息类型
-                let msg_type = mkt_msg::get_msg_type(&msg_bytes);
-                
-                match msg_type {
-                    MktMsgType::AskBidSpread => {
-                        // 只处理币安现货的买卖价差
-                        strategy.process_spot_spread(&msg_bytes);
-                    }
-                    MktMsgType::FundingRate => {
-                        // 处理资金费率消息
-                        strategy.process_funding_rate(&msg_bytes);
-                    }
-                    _ => {
-                        // 忽略其他类型消息
-                    }
-                }
-            }
         }
     }
     
