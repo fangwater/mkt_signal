@@ -656,37 +656,23 @@ async fn main() -> Result<()> {
             _ = stats_timer.tick() => {
                 strategy.print_stats();
             }
-            else => {}
-        }
-
-        // 拉取并尽量“抽干”消息队列：每批最多1024条，最多拉取16批，避免长期饥饿定时器
-        let mut batches = 0usize;
-        loop {
-            let messages = subscriber.poll_msgs(Some(1024));
-            if messages.is_empty() { break; }
-
-            for msg_bytes in messages {
-                strategy.messages_processed += 1;
-                let msg_type = mkt_msg::get_msg_type(&msg_bytes);
-                match msg_type {
-                    MktMsgType::AskBidSpread => {
-                        strategy.process_spot_spread(&msg_bytes);
+            else => {
+                let messages = subscriber.poll_msgs(Some(16));
+                for msg_bytes in messages {
+                    let msg_type = mkt_msg::get_msg_type(&msg_bytes);
+                    match msg_type {
+                        MktMsgType::AskBidSpread => {
+                            strategy.process_spot_spread(&msg_bytes);
+                        }
+                        MktMsgType::FundingRate => {
+                            strategy.process_funding_rate(&msg_bytes);
+                        }
+                        _ => {}
                     }
-                    MktMsgType::FundingRate => {
-                        strategy.process_funding_rate(&msg_bytes);
-                    }
-                    _ => {}
                 }
             }
-
-            batches += 1;
-            if batches >= 16 { break; }
         }
-
-        // 若本轮未拉到消息，短暂休眠，避免空转
-        if batches == 0 { tokio::time::sleep(Duration::from_micros(100)).await; }
     }
-    
     info!("Funding rate strategy shutdown");
     Ok(())
 }

@@ -183,40 +183,56 @@ impl MultiChannelSubscriber {
         Ok(())
     }
     
-    /// 轮询所有订阅的消息，最多返回max_msgs条消息
+    /// 轮询所有订阅的消息，尽量抽干，每次最多返回 max_msgs 条（None 表示不限制）
     /// 返回的是消息字节数据，调用者需要根据消息类型自行解析
     pub fn poll_msgs(&mut self, max_msgs: Option<usize>) -> Vec<Bytes> {
-        let max_msgs = max_msgs.unwrap_or(16);
+        let max_msgs = max_msgs.unwrap_or(usize::MAX);
         let mut messages = Vec::new();
-        
+
         if self.poll_keys.is_empty() {
             return messages;
         }
-        
-        let mut checked_channels = 0;
+
         let total_channels = self.poll_keys.len();
-        
-        while messages.len() < max_msgs && checked_channels < total_channels {
-            let key = &self.poll_keys[self.poll_index];
-            
-            if let Some(subscriber) = self.subscribers.get(key) {
-                // 从当前频道尝试获取一条消息
-                if let Ok(Some(msg)) = subscriber.receive_msg() {
-                    messages.push(msg);
-                    
-                    // 更新统计
-                    self.stats.messages_received += 1;
-                    *self.stats.messages_by_channel.entry(key.clone()).or_insert(0) += 1;
-                } else {
-                    // 该频道没有消息，移到下一个
-                    checked_channels += 1;
+        // 连续做完整轮询，直到没有任何频道产出新消息，或达到上限
+        loop {
+            let mut made_progress = false;
+
+            for _ in 0..total_channels {
+                let key = &self.poll_keys[self.poll_index];
+
+                if let Some(subscriber) = self.subscribers.get(key) {
+                    // 在同一频道内尽量多拿几条，直到为空或达到上限
+                    loop {
+                        match subscriber.receive_msg() {
+                            Ok(Some(msg)) => {
+                                messages.push(msg);
+                                self.stats.messages_received += 1;
+                                *self
+                                    .stats
+                                    .messages_by_channel
+                                    .entry(key.clone())
+                                    .or_insert(0) += 1;
+                                made_progress = true;
+                                if messages.len() >= max_msgs {
+                                    return messages;
+                                }
+                            }
+                            Ok(None) => break, // 该频道当前没有更多消息
+                            Err(_) => break,   // 读取错误，跳出该频道
+                        }
+                    }
                 }
+
+                // 轮转到下一个频道
+                self.poll_index = (self.poll_index + 1) % total_channels;
             }
-            
-            // 移动到下一个频道
-            self.poll_index = (self.poll_index + 1) % total_channels;
+
+            if !made_progress {
+                break; // 一轮下来没有任何新消息，结束
+            }
         }
-        
+
         messages
     }
     
