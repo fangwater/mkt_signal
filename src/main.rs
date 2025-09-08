@@ -24,7 +24,7 @@ async fn main() -> anyhow::Result<()> {
     let exchange = args.exchange;
 
     // 固定配置文件路径
-    let config_path = "mkt_cfg.yaml";
+    let config_path = "config/mkt_cfg.yaml";
 
     static CFG: OnceCell<Config> = OnceCell::const_new();
 

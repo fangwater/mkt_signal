@@ -1,5 +1,5 @@
 # 内部会创建两个连接，自动以奇偶间隔错开重启
-restart_duration_secs: 30
+restart_duration_secs: 1800
 
 # 主备连接使用的本地IP地址
 primary_local_ip: "172.31.33.133"     # 主连接绑定的本地IP，0.0.0.0表示默认
