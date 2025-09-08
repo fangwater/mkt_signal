@@ -149,7 +149,9 @@ impl MultiChannelSubscriber {
                     .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; 16384]>()
                     .open_or_create()?;
-                let subscriber = service.subscriber_builder().create()?;
+                let subscriber = service.subscriber_builder()
+                    .buffer_size(4096)  // 增大缓冲区避免数据丢失
+                    .create()?;
                 SubscriberEnum::Size16384(subscriber)
             }
             ChannelType::Trade | ChannelType::AskBidSpread | ChannelType::Signal => {
@@ -157,7 +159,9 @@ impl MultiChannelSubscriber {
                     .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; 64]>()
                     .open_or_create()?;
-                let subscriber = service.subscriber_builder().create()?;
+                let subscriber = service.subscriber_builder()
+                    .buffer_size(8192)  // 大幅增加缓冲区，spread消息量很大
+                    .create()?;
                 SubscriberEnum::Size64(subscriber)
             }
             ChannelType::Kline | ChannelType::Derivatives => {
@@ -165,7 +169,9 @@ impl MultiChannelSubscriber {
                     .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; 128]>()
                     .open_or_create()?;
-                let subscriber = service.subscriber_builder().create()?;
+                let subscriber = service.subscriber_builder()
+                    .buffer_size(4096)  // 增大缓冲区
+                    .create()?;
                 SubscriberEnum::Size128(subscriber)
             }
         };
