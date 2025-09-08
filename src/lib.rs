@@ -1,11 +1,10 @@
-pub mod app;
-pub mod cfg;
+// Normal module declarations
 pub mod common;
-pub mod connection;
-pub mod exchange;
-pub mod iceoryx_forwarder;
-pub mod market_state;
-pub mod mkt_msg;
 pub mod parser;
-pub mod proxy;
-pub mod sub_msg;
+pub mod connection;
+pub mod market_state;
+pub mod mkt_pub;
+
+// Re-export frequently used modules for backward compatibility
+pub use common::{mkt_msg, exchange};
+pub use mkt_pub::{app, cfg, proxy, sub_msg, iceoryx_forwarder};

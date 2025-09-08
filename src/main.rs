@@ -1,19 +1,8 @@
-mod connection;
-mod sub_msg;
-mod cfg;
-mod exchange;
-mod iceoryx_forwarder;
-mod mkt_msg;
-mod parser;
-mod proxy;
-mod app;
-mod market_state;
-use cfg::Config;
-use app::MktSignalApp;
-use exchange::Exchange;
-use tokio::sync::OnceCell;
 use clap::Parser;
-
+use mkt_signal::app::MktSignalApp;
+use mkt_signal::cfg::Config;
+use mkt_signal::exchange::Exchange;
+use tokio::sync::OnceCell;
 
 #[derive(Parser)]
 #[command(name = "mkt_signal")]
@@ -33,35 +22,38 @@ async fn main() -> anyhow::Result<()> {
     // 解析命令行参数
     let args = Args::parse();
     let exchange = args.exchange;
-    
+
     // 固定配置文件路径
     let config_path = "mkt_cfg.yaml";
 
     static CFG: OnceCell<Config> = OnceCell::const_new();
 
     async fn get_config(config_path: &str, exchange: Exchange) -> &'static Config {
-        CFG.get_or_init(|| async {
-            Config::load_config(config_path, exchange).await.unwrap()
-        }).await
+        CFG.get_or_init(|| async { Config::load_config(config_path, exchange).await.unwrap() })
+            .await
     }
-    
+
     let config = get_config(config_path, exchange).await;
-    
-    // 直接根据exchange参数初始化资金费率管理器
-    let funding_manager = crate::market_state::FundingRateManager::instance();
+
+    // 初始化资金费率管理器（异步后台）
+    let funding_manager = mkt_signal::market_state::FundingRateManager::instance();
     let (enable_binance, enable_okex, enable_bybit) = match exchange {
         Exchange::Binance | Exchange::BinanceFutures => (true, false, false),
         Exchange::Okex | Exchange::OkexSwap => (false, true, false),
         Exchange::Bybit | Exchange::BybitSpot => (false, false, true),
     };
-    
+
     tokio::spawn(async move {
-        if let Err(e) = funding_manager.initialize(enable_binance, enable_okex, enable_bybit).await {
+        if let Err(e) = funding_manager
+            .initialize(enable_binance, enable_okex, enable_bybit)
+            .await
+        {
             log::error!("初始化资金费率管理器失败: {}", e);
         }
     });
-    
+
     // 创建并运行应用
     let app = MktSignalApp::new(config).await?;
     app.run().await
 }
+

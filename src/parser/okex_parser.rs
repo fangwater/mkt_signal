@@ -590,7 +590,7 @@ impl OkexIncParser {
                         .and_then(|arg| arg.get("instId"))
                         .and_then(|v| v.as_str()) {
                         Some(s) => s.to_string(),
-                        None => return 0,
+                        _ => return 0,
                     };
                     
                     let bids_count = bids_array.len() as u32;

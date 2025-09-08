@@ -2,17 +2,18 @@
 name = "mkt_signal"
 version = "0.1.0"
 edition = "2021"
+autobins = false
 
 [lib]
 name = "mkt_signal"
 path = "src/lib.rs"
 
 [[bin]]
-name = "mkt_signal"
+name = "mkt_pub"
 path = "src/main.rs"
 
 [[bin]]
-name = "funding_rate_strategy"
+name = "funding_rate_signal"
 path = "src/bin/funding_rate_strategy.rs"
 
 [dependencies]
@@ -45,3 +46,5 @@ hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 base64 = "0.21"
+lazy_static = "1.4"
+bincode = "1.3"

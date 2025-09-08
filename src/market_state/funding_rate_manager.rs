@@ -19,12 +19,12 @@ use std::fs;
 static FUNDING_RATE_MANAGER: once_cell::sync::Lazy<Arc<FundingRateManager>> = 
     once_cell::sync::Lazy::new(|| Arc::new(FundingRateManager::new()));
 
-/// 交易对配置
+/// 交易对配置 - 每个交易所包含多个[现货符号, 期货符号, 价差阈值]数组
 #[derive(Debug, Deserialize)]
 struct TrackingSymbolsConfig {
-    binance: Vec<String>,
-    okex: Vec<String>,
-    bybit: Vec<String>,
+    binance: Vec<(String, String, f64)>,
+    okex: Vec<(String, String, f64)>,
+    bybit: Vec<(String, String, f64)>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -194,12 +194,12 @@ impl FundingRateManager {
     async fn refresh_binance_rates(&self) -> Result<()> {
         info!("开始刷新币安资金费率和借贷利率数据");
         
-        // 从配置获取要跟踪的交易对
-        let symbols = {
+        // 从配置获取要跟踪的交易对（提取期货符号）
+        let symbols: Vec<_> = {
             let config = self.tracking_symbols.read().unwrap();
             match &*config {
-                Some(cfg) => cfg.binance.clone(),
-                None => {
+                Some(cfg) => cfg.binance.iter().map(|(_, futures, _)| futures.clone()).collect(),
+                _ => {
                     error!("未加载交易对配置");
                     return Err(anyhow::anyhow!("未加载交易对配置"));
                 }
@@ -284,6 +284,7 @@ impl FundingRateManager {
         // 收集结果并计算预测值
         for task in tasks {
             if let Ok(Ok((symbol, history))) = task.await {
+                let history: Vec<FundingRateHistory> = history;
                 let predicted_rate = Self::calculate_predicted_rate_binance(&history);
                 let loan_rate = loan_rates.get(&symbol).copied().unwrap_or(0.0);
                 
@@ -426,11 +427,11 @@ impl FundingRateManager {
     async fn refresh_okex_rates(&self) -> Result<()> {
         info!("开始刷新OKEx资金费率数据");
 
-        // 从配置获取要跟踪的交易对
-        let inst_ids = {
+        // 从配置获取要跟踪的交易对（提取期货符号）
+        let inst_ids: Vec<_> = {
             let config = self.tracking_symbols.read().unwrap();
             match &*config {
-                Some(cfg) => cfg.okex.clone(),
+                Some(cfg) => cfg.okex.iter().map(|(_, futures, _)| futures.clone()).collect(),
                 None => {
                     error!("未加载交易对配置");
                     return Err(anyhow::anyhow!("未加载交易对配置"));
@@ -506,11 +507,11 @@ impl FundingRateManager {
     async fn refresh_bybit_rates(&self) -> Result<()> {
         info!("开始刷新Bybit资金费率数据");
 
-        // 从配置获取要跟踪的交易对
-        let symbols = {
+        // 从配置获取要跟踪的交易对（提取期货符号）
+        let symbols: Vec<_> = {
             let config = self.tracking_symbols.read().unwrap();
             match &*config {
-                Some(cfg) => cfg.bybit.clone(),
+                Some(cfg) => cfg.bybit.iter().map(|(_, futures, _)| futures.clone()).collect(),
                 None => {
                     error!("未加载交易对配置");
                     return Err(anyhow::anyhow!("未加载交易对配置"));

@@ -60,6 +60,76 @@ pub struct FundingRateMsg {
     pub loan_rate_8h: f64,            // 8小时借贷利率（日利率/3）
 }
 
+#[allow(dead_code)]
+impl FundingRateMsg {
+    /// 从字节数组获取symbol的引用（零拷贝）
+    #[inline]
+    pub fn get_symbol(data: &[u8]) -> &str {
+        let symbol_length = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        std::str::from_utf8(&data[8..8 + symbol_length]).unwrap()
+    }
+    
+    /// 获取funding_rate（零拷贝）
+    #[inline]
+    pub fn get_funding_rate(data: &[u8]) -> f64 {
+        let symbol_length = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let offset = 8 + symbol_length; // header + symbol
+        
+        f64::from_le_bytes([
+            data[offset], data[offset+1], data[offset+2], data[offset+3],
+            data[offset+4], data[offset+5], data[offset+6], data[offset+7]
+        ])
+    }
+    
+    /// 获取next_funding_time（零拷贝）
+    #[inline]
+    pub fn get_next_funding_time(data: &[u8]) -> i64 {
+        let symbol_length = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let offset = 8 + symbol_length + 8; // header + symbol + funding_rate
+        
+        i64::from_le_bytes([
+            data[offset], data[offset+1], data[offset+2], data[offset+3],
+            data[offset+4], data[offset+5], data[offset+6], data[offset+7]
+        ])
+    }
+    
+    /// 获取timestamp（零拷贝）
+    #[inline]
+    pub fn get_timestamp(data: &[u8]) -> i64 {
+        let symbol_length = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let offset = 8 + symbol_length + 16; // header + symbol + funding_rate + next_funding_time
+        
+        i64::from_le_bytes([
+            data[offset], data[offset+1], data[offset+2], data[offset+3],
+            data[offset+4], data[offset+5], data[offset+6], data[offset+7]
+        ])
+    }
+    
+    /// 获取predicted_funding_rate（零拷贝）
+    #[inline]
+    pub fn get_predicted_funding_rate(data: &[u8]) -> f64 {
+        let symbol_length = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let offset = 8 + symbol_length + 24; // header + symbol + funding_rate + next_funding_time + timestamp
+        
+        f64::from_le_bytes([
+            data[offset], data[offset+1], data[offset+2], data[offset+3],
+            data[offset+4], data[offset+5], data[offset+6], data[offset+7]
+        ])
+    }
+    
+    /// 获取loan_rate_8h（零拷贝）
+    #[inline]
+    pub fn get_loan_rate_8h(data: &[u8]) -> f64 {
+        let symbol_length = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let offset = 8 + symbol_length + 32; // header + symbol + funding_rate + next_funding_time + timestamp + predicted_funding_rate
+        
+        f64::from_le_bytes([
+            data[offset], data[offset+1], data[offset+2], data[offset+3],
+            data[offset+4], data[offset+5], data[offset+6], data[offset+7]
+        ])
+    }
+}
+
 pub struct MarkPriceMsg {
     pub msg_type: MktMsgType,
     pub symbol_length: u32,
@@ -89,6 +159,7 @@ pub struct AskBidSpreadMsg {
     pub ask_amount: f64, // 最优卖量
 }
 
+#[allow(dead_code)]
 impl AskBidSpreadMsg {
     /// Create an ask/bid spread message
     pub fn create(
@@ -133,6 +204,73 @@ impl AskBidSpreadMsg {
         buf.put_f64_le(self.ask_amount);
         
         buf.freeze()
+    }
+    
+    /// 从字节数组获取symbol的引用（零拷贝）
+    #[inline]
+    pub fn get_symbol(data: &[u8]) -> &str {
+        let symbol_length = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        std::str::from_utf8(&data[8..8 + symbol_length]).unwrap()
+    }
+    
+    /// 获取timestamp（零拷贝）
+    #[inline]
+    pub fn get_timestamp(data: &[u8]) -> i64 {
+        let symbol_length = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let offset = 8 + symbol_length;
+        
+        i64::from_le_bytes([
+            data[offset], data[offset+1], data[offset+2], data[offset+3],
+            data[offset+4], data[offset+5], data[offset+6], data[offset+7]
+        ])
+    }
+    
+    /// 获取bid_price（零拷贝）
+    #[inline]
+    pub fn get_bid_price(data: &[u8]) -> f64 {
+        let symbol_length = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let offset = 8 + symbol_length + 8; // header + symbol + timestamp
+        
+        f64::from_le_bytes([
+            data[offset], data[offset+1], data[offset+2], data[offset+3],
+            data[offset+4], data[offset+5], data[offset+6], data[offset+7]
+        ])
+    }
+    
+    /// 获取bid_amount（零拷贝）
+    #[inline]
+    pub fn get_bid_amount(data: &[u8]) -> f64 {
+        let symbol_length = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let offset = 8 + symbol_length + 16; // header + symbol + timestamp + bid_price
+        
+        f64::from_le_bytes([
+            data[offset], data[offset+1], data[offset+2], data[offset+3],
+            data[offset+4], data[offset+5], data[offset+6], data[offset+7]
+        ])
+    }
+    
+    /// 获取ask_price（零拷贝）
+    #[inline]
+    pub fn get_ask_price(data: &[u8]) -> f64 {
+        let symbol_length = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let offset = 8 + symbol_length + 24; // header + symbol + timestamp + bid_price + bid_amount
+        
+        f64::from_le_bytes([
+            data[offset], data[offset+1], data[offset+2], data[offset+3],
+            data[offset+4], data[offset+5], data[offset+6], data[offset+7]
+        ])
+    }
+    
+    /// 获取ask_amount（零拷贝）
+    #[inline]
+    pub fn get_ask_amount(data: &[u8]) -> f64 {
+        let symbol_length = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let offset = 8 + symbol_length + 32; // header + symbol + timestamp + bid_price + bid_amount + ask_price
+        
+        f64::from_le_bytes([
+            data[offset], data[offset+1], data[offset+2], data[offset+3],
+            data[offset+4], data[offset+5], data[offset+6], data[offset+7]
+        ])
     }
 }
 
@@ -414,6 +552,27 @@ impl SignalMsg {
         buf.put_u32_le(self.source as u32);
         buf.put_i64_le(self.timestamp);
         buf.freeze()  
+    }
+}
+
+#[allow(dead_code)]
+#[inline]
+pub fn get_msg_type(data: &[u8]) -> MktMsgType {
+    let msg_type_u32 = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    
+    // 转换为枚举类型，未知类型返回 TpReset 作为默认值
+    match msg_type_u32 {
+        1111 => MktMsgType::TimeSignal,
+        1001 => MktMsgType::TradeInfo,
+        1005 => MktMsgType::OrderBookInc,
+        1009 => MktMsgType::TpReset,
+        1010 => MktMsgType::LiquidationOrder,
+        1011 => MktMsgType::MarkPrice,
+        1012 => MktMsgType::IndexPrice,
+        1013 => MktMsgType::FundingRate,
+        1014 => MktMsgType::Kline,
+        1015 => MktMsgType::AskBidSpread,
+        _ => MktMsgType::TpReset, // 默认值
     }
 }
 
