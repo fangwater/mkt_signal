@@ -647,43 +647,44 @@ async fn main() -> Result<()> {
     
     // 主循环
     loop {
-        // 轮询消息（提高批量以减少堆积，默认16 -> 1024）
-        let messages = subscriber.poll_msgs(Some(16));
-        // 处理消息
-        for msg_bytes in messages {
-            strategy.messages_processed += 1;
-            
-            // 获取消息类型
-            let msg_type = mkt_msg::get_msg_type(&msg_bytes);
-            
-            match msg_type {
-                MktMsgType::AskBidSpread => {
-                    // 只处理币安现货的买卖价差
-                    strategy.process_spot_spread(&msg_bytes);
-                }
-                MktMsgType::FundingRate => {
-                    // 处理资金费率消息
-                    strategy.process_funding_rate(&msg_bytes);
-                }
-                _ => {
-                    // 忽略其他类型消息
-                }
-            }
-        }
-        // 先处理控制信号和定时器
+        // 优先处理控制信号与定时器（非阻塞）
         select! {
             _ = signal::ctrl_c() => {
                 info!("Received shutdown signal");
                 break;
             }
-            
             _ = stats_timer.tick() => {
                 strategy.print_stats();
             }
-            
-            // 非阻塞检查
             else => {}
         }
+
+        // 拉取并尽量“抽干”消息队列：每批最多1024条，最多拉取16批，避免长期饥饿定时器
+        let mut batches = 0usize;
+        loop {
+            let messages = subscriber.poll_msgs(Some(1024));
+            if messages.is_empty() { break; }
+
+            for msg_bytes in messages {
+                strategy.messages_processed += 1;
+                let msg_type = mkt_msg::get_msg_type(&msg_bytes);
+                match msg_type {
+                    MktMsgType::AskBidSpread => {
+                        strategy.process_spot_spread(&msg_bytes);
+                    }
+                    MktMsgType::FundingRate => {
+                        strategy.process_funding_rate(&msg_bytes);
+                    }
+                    _ => {}
+                }
+            }
+
+            batches += 1;
+            if batches >= 16 { break; }
+        }
+
+        // 若本轮未拉到消息，短暂休眠，避免空转
+        if batches == 0 { tokio::time::sleep(Duration::from_micros(100)).await; }
     }
     
     info!("Funding rate strategy shutdown");
