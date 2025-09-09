@@ -211,7 +211,8 @@ impl BinanceApiClient {
         res
     }
 
-    /// 从 PM 账户响应解析资产为“现货仓位”（非稳定币，数量>阈值）
+    /// 从 PM 账户响应解析资产为“现货仓位”（数量>阈值）。
+    /// 稳定币也会展示（USDT/USDC等），其 symbol 直接用资产名，其他资产按 `{ASSET}USDT`。
     fn parse_pm_spot_positions(&self, root: &Value) -> Vec<RawPosition> {
         let mut res = Vec::new();
         let candidates = [
@@ -235,7 +236,7 @@ impl BinanceApiClient {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            if asset.is_empty() || Self::is_stable_asset(&asset) {
+            if asset.is_empty() {
                 continue;
             }
 
@@ -243,6 +244,11 @@ impl BinanceApiClient {
                 .or_else(|| Self::val_as_f64(item.get("walletBalance").unwrap_or(&Value::Null)))
                 .or_else(|| Self::val_as_f64(item.get("marginBalance").unwrap_or(&Value::Null)))
                 .or_else(|| Self::val_as_f64(item.get("balance").unwrap_or(&Value::Null)))
+                .or_else(|| Self::val_as_f64(item.get("equity").unwrap_or(&Value::Null)))
+                .or_else(|| Self::val_as_f64(item.get("availableBalance").unwrap_or(&Value::Null)))
+                .or_else(|| Self::val_as_f64(item.get("crossWalletBalance").unwrap_or(&Value::Null)))
+                .or_else(|| Self::val_as_f64(item.get("totalWalletBalance").unwrap_or(&Value::Null)))
+                .or_else(|| Self::val_as_f64(item.get("netAsset").unwrap_or(&Value::Null)))
                 .or_else(|| {
                     let free = Self::val_as_f64(item.get("free").unwrap_or(&Value::Null)).unwrap_or(0.0);
                     let locked = Self::val_as_f64(item.get("locked").unwrap_or(&Value::Null)).unwrap_or(0.0);
@@ -255,7 +261,7 @@ impl BinanceApiClient {
                 continue;
             }
 
-            let symbol = format!("{}USDT", asset);
+            let symbol = if Self::is_stable_asset(&asset) { asset.clone() } else { format!("{}USDT", asset) };
             res.push(RawPosition {
                 symbol,
                 position_type: PositionType::Spot,
@@ -300,6 +306,24 @@ impl ExchangeApiClient for BinanceApiClient {
     /// 覆盖默认实现：仅用 `/sapi/v1/portfolio/account` 解析所有持仓
     async fn fetch_all_positions(&self) -> Result<Vec<RawPosition>> {
         let data = self.fetch_portfolio_account().await?;
+
+        // 打印收到的原始返回，便于排查字段差异
+        // 默认使用 info 级别，示例中将 logger 默认级别设置为 info
+        match serde_json::to_string_pretty(&data) {
+            Ok(s) => log::info!("PM account raw response:\n{}", s),
+            Err(_) => log::info!("PM account raw response: {}", data),
+        }
+        let pos_cnt = data
+            .get("positions")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        let top_keys = data
+            .as_object()
+            .map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "))
+            .unwrap_or_else(|| "<non-object>".to_string());
+        log::info!("PM account top-level keys: {} | positions count: {}", top_keys, pos_cnt);
+
         let mut positions = self.parse_pm_positions(&data);
         let spot_positions = self.parse_pm_spot_positions(&data);
         positions.extend(spot_positions);

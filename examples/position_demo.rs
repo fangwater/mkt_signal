@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 初始化日志
-    env_logger::init();
+    // 初始化日志（默认INFO级别，便于打印PM原始返回）
+    let mut builder = env_logger::Builder::from_default_env();
+    builder.filter_level(log::LevelFilter::Info).init();
 
     // 方法1: 从环境变量读取配置
     let config = ApiConfig::from_env_binance()?;
