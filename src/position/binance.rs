@@ -4,6 +4,7 @@ use hmac::{Hmac, Mac};
 use reqwest::Client;
 use serde_json::Value;
 use sha2::Sha256;
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::api::{ApiConfig, Balance, ExchangeApiClient, PmAccountSummary, RawPosition};
@@ -145,6 +146,11 @@ impl BinanceApiClient {
             .await
     }
 
+    /// PAPI 余额（补充分账户/统一账户下资产视图）
+    async fn fetch_papi_balance(&self) -> Result<Value> {
+        self.signed_get(&self.spot_base_url, "papi/v1/balance", "").await
+    }
+
     /// 从 PM 账户响应解析持仓（缺失字段置 None）
     fn parse_pm_positions(&self, root: &Value) -> Vec<RawPosition> {
         let mut res = Vec::new();
@@ -279,6 +285,65 @@ impl BinanceApiClient {
         }
         res
     }
+
+    /// 从 PAPI `/papi/v1/balance` 解析资产为“现货仓位”
+    fn parse_papi_spot_positions(&self, root: &Value) -> Vec<RawPosition> {
+        let mut res = Vec::new();
+        let arr = root.as_array();
+        if arr.is_none() {
+            return res;
+        }
+        for item in arr.unwrap() {
+            let asset = item
+                .get("asset")
+                .or_else(|| item.get("coin"))
+                .or_else(|| item.get("currency"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if asset.is_empty() {
+                continue;
+            }
+
+            let total = Self::val_as_f64(item.get("total").unwrap_or(&Value::Null))
+                .or_else(|| Self::val_as_f64(item.get("balance").unwrap_or(&Value::Null)))
+                .or_else(|| Self::val_as_f64(item.get("crossWalletBalance").unwrap_or(&Value::Null)))
+                .or_else(|| Self::val_as_f64(item.get("walletBalance").unwrap_or(&Value::Null)))
+                .or_else(|| Self::val_as_f64(item.get("availableBalance").unwrap_or(&Value::Null)))
+                .or_else(|| Self::val_as_f64(item.get("marginBalance").unwrap_or(&Value::Null)))
+                .or_else(|| {
+                    let free = Self::val_as_f64(item.get("free").unwrap_or(&Value::Null)).unwrap_or(0.0);
+                    let locked = Self::val_as_f64(item.get("locked").unwrap_or(&Value::Null)).unwrap_or(0.0);
+                    let sum = free + locked;
+                    if sum > 0.0 { Some(sum) } else { None }
+                })
+                .unwrap_or(0.0);
+            if total <= 0.0 || total < 0.0001 {
+                continue;
+            }
+
+            let symbol = if Self::is_stable_asset(&asset) {
+                asset.clone()
+            } else {
+                format!("{}USDT", asset)
+            };
+
+            res.push(RawPosition {
+                symbol,
+                position_type: PositionType::Spot,
+                side: PositionSide::Long,
+                quantity: total,
+                entry_price: 0.0,
+                mark_price: Some(1.0),
+                unrealized_pnl: None,
+                realized_pnl: None,
+                margin: None,
+                leverage: None,
+                liquidation_price: None,
+            });
+        }
+        res
+    }
 }
 
 #[async_trait]
@@ -307,8 +372,7 @@ impl ExchangeApiClient for BinanceApiClient {
     async fn fetch_all_positions(&self) -> Result<Vec<RawPosition>> {
         let data = self.fetch_portfolio_account().await?;
 
-        // 打印收到的原始返回，便于排查字段差异
-        // 默认使用 info 级别，示例中将 logger 默认级别设置为 info
+        // 打印 PM 原始返回
         match serde_json::to_string_pretty(&data) {
             Ok(s) => log::info!("PM account raw response:\n{}", s),
             Err(_) => log::info!("PM account raw response: {}", data),
@@ -324,10 +388,48 @@ impl ExchangeApiClient for BinanceApiClient {
             .unwrap_or_else(|| "<non-object>".to_string());
         log::info!("PM account top-level keys: {} | positions count: {}", top_keys, pos_cnt);
 
-        let mut positions = self.parse_pm_positions(&data);
-        let spot_positions = self.parse_pm_spot_positions(&data);
-        positions.extend(spot_positions);
-        Ok(positions)
+        // 解析 PM 衍生品及 PM 资产转现货
+        let pm_perp = self.parse_pm_positions(&data);
+        let pm_spot = self.parse_pm_spot_positions(&data);
+
+        // 解析 PAPI 余额为现货
+        let papi = self.fetch_papi_balance().await?;
+        match serde_json::to_string_pretty(&papi) {
+            Ok(s) => log::info!("PAPI balance raw response:\n{}", s),
+            Err(_) => log::info!("PAPI balance raw response: {}", papi),
+        }
+        let papi_spot = self.parse_papi_spot_positions(&papi);
+
+        // 合并并按 (symbol, position_type) 去重聚合数量
+        let mut map: HashMap<(String, PositionType), RawPosition> = HashMap::new();
+        for p in pm_perp.into_iter().chain(pm_spot).chain(papi_spot) {
+            let key = (p.symbol.clone(), p.position_type);
+            if let Some(e) = map.get_mut(&key) {
+                // 聚合数量（适用于现货映射），保留已有可选字段
+                e.quantity += p.quantity;
+                if e.mark_price.is_none() {
+                    e.mark_price = p.mark_price;
+                }
+                if e.unrealized_pnl.is_none() {
+                    e.unrealized_pnl = p.unrealized_pnl;
+                }
+                if e.realized_pnl.is_none() {
+                    e.realized_pnl = p.realized_pnl;
+                }
+                if e.margin.is_none() {
+                    e.margin = p.margin;
+                }
+                if e.leverage.is_none() {
+                    e.leverage = p.leverage;
+                }
+                if e.liquidation_price.is_none() {
+                    e.liquidation_price = p.liquidation_price;
+                }
+            } else {
+                map.insert(key, p);
+            }
+        }
+        Ok(map.into_values().collect())
     }
 
     /// PM-only：返回组合保证金账户汇总
