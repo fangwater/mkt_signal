@@ -1,12 +1,12 @@
 use anyhow::Result;
-use std::collections::HashMap;
-use tokio::sync::RwLock;
-use std::sync::Arc;
 use chrono::Utc;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
+use super::api::{ExchangeApiClient, PmAccountSummary};
+use super::types::{Position, PositionSide, PositionStatus, PositionSummary, PositionType};
 use crate::common::exchange::Exchange;
-use super::types::{Position, PositionSummary, PositionType, PositionSide, PositionStatus};
-use super::api::ExchangeApiClient;
 
 /// 统一的仓位管理器
 /// 负责管理和维护所有仓位状态
@@ -38,17 +38,17 @@ impl PositionManager {
     pub async fn sync_positions(&self) -> Result<()> {
         // 从API获取所有仓位
         let raw_positions = self.api_client.fetch_all_positions().await?;
-        
+
         // 转换并更新仓位
         let mut positions = self.positions.write().await;
         positions.clear(); // 清空旧数据
-        
+
         for raw in raw_positions {
             let position = self.api_client.normalize_position(raw);
             let key = (position.symbol.clone(), position.position_type);
             positions.insert(key, position);
         }
-        
+
         Ok(())
     }
 
@@ -61,7 +61,11 @@ impl PositionManager {
     }
 
     /// 获取指定交易对的仓位
-    pub async fn get_position(&self, symbol: &str, position_type: PositionType) -> Result<Option<Position>> {
+    pub async fn get_position(
+        &self,
+        symbol: &str,
+        position_type: PositionType,
+    ) -> Result<Option<Position>> {
         let positions = self.positions.read().await;
         Ok(positions.get(&(symbol.to_string(), position_type)).cloned())
     }
@@ -75,19 +79,19 @@ impl PositionManager {
     /// 获取仓位汇总信息
     pub async fn get_summary(&self) -> Result<PositionSummary> {
         let positions = self.positions.read().await;
-        
+
         let mut summary = PositionSummary::default();
         summary.total_positions = positions.len();
-        
+
         for position in positions.values() {
             // 统计开仓数量
             if position.status == PositionStatus::Open {
                 summary.open_positions += 1;
             }
-            
+
             // 累加价值
             summary.total_value += position.value();
-            
+
             // 累加盈亏
             if let Some(unrealized_pnl) = position.unrealized_pnl {
                 summary.total_unrealized_pnl += unrealized_pnl;
@@ -95,11 +99,14 @@ impl PositionManager {
             if let Some(realized_pnl) = position.realized_pnl {
                 summary.total_realized_pnl += realized_pnl;
             }
-            
+
             // 按类型统计
-            *summary.positions_by_type.entry(position.position_type).or_insert(0) += 1;
+            *summary
+                .positions_by_type
+                .entry(position.position_type)
+                .or_insert(0) += 1;
         }
-        
+
         summary.update_time = Utc::now();
         Ok(summary)
     }
@@ -119,26 +126,31 @@ impl PositionManager {
     }
 
     /// 更新标记价格
-    pub async fn update_mark_price(&self, symbol: &str, position_type: PositionType, mark_price: f64) -> Result<()> {
+    pub async fn update_mark_price(
+        &self,
+        symbol: &str,
+        position_type: PositionType,
+        mark_price: f64,
+    ) -> Result<()> {
         let mut positions = self.positions.write().await;
-        
+
         if let Some(position) = positions.get_mut(&(symbol.to_string(), position_type)) {
             position.update_mark_price(mark_price);
         }
-        
+
         Ok(())
     }
 
     /// 批量更新标记价格
     pub async fn batch_update_mark_prices(&self, prices: HashMap<String, f64>) -> Result<()> {
         let mut positions = self.positions.write().await;
-        
+
         for ((symbol, _), position) in positions.iter_mut() {
             if let Some(&mark_price) = prices.get(symbol) {
                 position.update_mark_price(mark_price);
             }
         }
-        
+
         Ok(())
     }
 
@@ -146,21 +158,26 @@ impl PositionManager {
     pub async fn get_positions_by_symbol(&self) -> Result<HashMap<String, Vec<Position>>> {
         let positions = self.positions.read().await;
         let mut grouped: HashMap<String, Vec<Position>> = HashMap::new();
-        
+
         for position in positions.values() {
-            grouped.entry(position.symbol.clone())
+            grouped
+                .entry(position.symbol.clone())
                 .or_insert_with(Vec::new)
                 .push(position.clone());
         }
-        
+
         Ok(grouped)
     }
 
     /// 获取指定类型的所有仓位
-    pub async fn get_positions_by_type(&self, position_type: PositionType) -> Result<Vec<Position>> {
+    pub async fn get_positions_by_type(
+        &self,
+        position_type: PositionType,
+    ) -> Result<Vec<Position>> {
         let positions = self.positions.read().await;
-        
-        Ok(positions.values()
+
+        Ok(positions
+            .values()
             .filter(|p| p.position_type == position_type)
             .cloned()
             .collect())
@@ -169,8 +186,9 @@ impl PositionManager {
     /// 获取盈利的仓位
     pub async fn get_profitable_positions(&self) -> Result<Vec<Position>> {
         let positions = self.positions.read().await;
-        
-        Ok(positions.values()
+
+        Ok(positions
+            .values()
             .filter(|p| p.is_profitable())
             .cloned()
             .collect())
@@ -179,8 +197,9 @@ impl PositionManager {
     /// 获取亏损的仓位
     pub async fn get_losing_positions(&self) -> Result<Vec<Position>> {
         let positions = self.positions.read().await;
-        
-        Ok(positions.values()
+
+        Ok(positions
+            .values()
             .filter(|p| !p.is_profitable() && p.unrealized_pnl.is_some())
             .cloned()
             .collect())
@@ -189,11 +208,9 @@ impl PositionManager {
     /// 计算总资产价值
     pub async fn calculate_total_equity(&self) -> Result<f64> {
         let positions = self.positions.read().await;
-        
-        let total = positions.values()
-            .map(|p| p.value())
-            .sum();
-        
+
+        let total = positions.values().map(|p| p.value()).sum();
+
         Ok(total)
     }
 
@@ -201,11 +218,13 @@ impl PositionManager {
     pub async fn check_liquidation_risk(&self, threshold_percentage: f64) -> Result<Vec<Position>> {
         let positions = self.positions.read().await;
         let mut at_risk = Vec::new();
-        
+
         for position in positions.values() {
             // 只检查合约仓位
             if position.position_type == PositionType::Perpetual {
-                if let (Some(mark_price), Some(liq_price)) = (position.mark_price, position.liquidation_price) {
+                if let (Some(mark_price), Some(liq_price)) =
+                    (position.mark_price, position.liquidation_price)
+                {
                     let distance = match position.side {
                         PositionSide::Long => {
                             // 多头：当前价格距离强平价格的百分比
@@ -216,7 +235,7 @@ impl PositionManager {
                             ((liq_price - mark_price) / mark_price) * 100.0
                         }
                     };
-                    
+
                     // 如果距离强平价格小于阈值，加入风险列表
                     if distance < threshold_percentage && distance > 0.0 {
                         at_risk.push(position.clone());
@@ -224,7 +243,12 @@ impl PositionManager {
                 }
             }
         }
-        
+
         Ok(at_risk)
+    }
+
+    /// 获取组合保证金（Portfolio Margin）账户汇总（若实现方未提供则为None）
+    pub async fn get_pm_summary(&self) -> Result<Option<PmAccountSummary>> {
+        self.api_client.fetch_pm_summary().await
     }
 }

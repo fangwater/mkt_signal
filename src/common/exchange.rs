@@ -1,6 +1,6 @@
-use std::fmt::{self, Display};
-use serde::{Deserialize, Serialize};
 use clap::ValueEnum;
+use serde::{Deserialize, Serialize};
+use std::fmt::{self, Display};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, ValueEnum, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]

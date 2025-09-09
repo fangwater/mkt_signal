@@ -1,5 +1,5 @@
-use bytes::{Bytes, Buf};
 use anyhow::Result;
+use bytes::{Buf, Bytes};
 
 /// 消息类型枚举（与mkt_signal保持一致）
 #[repr(u32)]
@@ -50,34 +50,34 @@ pub fn parse_ask_bid_spread(data: &[u8]) -> Result<AskBidSpreadMsg> {
     if data.len() < 8 {
         anyhow::bail!("Message too short");
     }
-    
+
     let mut cursor = Bytes::copy_from_slice(data);
-    
+
     // 读取消息类型（4字节）
     let msg_type = cursor.get_u32_le();
     if msg_type != MktMsgType::AskBidSpread as u32 {
         anyhow::bail!("Invalid message type: {}", msg_type);
     }
-    
+
     // 读取symbol长度（4字节）
     let symbol_len = cursor.get_u32_le() as usize;
-    
+
     // 读取symbol
     if cursor.len() < symbol_len {
         anyhow::bail!("Invalid symbol length");
     }
     let symbol_bytes = cursor.copy_to_bytes(symbol_len);
     let symbol = String::from_utf8(symbol_bytes.to_vec())?;
-    
+
     // 读取时间戳（8字节）
     let timestamp = cursor.get_i64_le();
-    
+
     // 读取价格和数量（各8字节）
     let bid_price = cursor.get_f64_le();
     let bid_amount = cursor.get_f64_le();
     let ask_price = cursor.get_f64_le();
     let ask_amount = cursor.get_f64_le();
-    
+
     Ok(AskBidSpreadMsg {
         symbol,
         timestamp,
@@ -93,34 +93,34 @@ pub fn parse_funding_rate(data: &[u8]) -> Result<FundingRateMsg> {
     if data.len() < 8 {
         anyhow::bail!("Message too short");
     }
-    
+
     let mut cursor = Bytes::copy_from_slice(data);
-    
+
     // 读取消息类型（4字节）
     let msg_type = cursor.get_u32_le();
     if msg_type != MktMsgType::FundingRate as u32 {
         anyhow::bail!("Invalid message type: {}", msg_type);
     }
-    
+
     // 读取symbol长度（4字节）
     let symbol_len = cursor.get_u32_le() as usize;
-    
+
     // 读取symbol
     if cursor.len() < symbol_len {
         anyhow::bail!("Invalid symbol length");
     }
     let symbol_bytes = cursor.copy_to_bytes(symbol_len);
     let symbol = String::from_utf8(symbol_bytes.to_vec())?;
-    
+
     // 读取资金费率（8字节）
     let funding_rate = cursor.get_f64_le();
-    
+
     // 读取下次资金费时间（8字节）
     let next_funding_time = cursor.get_i64_le();
-    
+
     // 读取时间戳（8字节）
     let timestamp = cursor.get_i64_le();
-    
+
     Ok(FundingRateMsg {
         symbol,
         funding_rate,
@@ -134,31 +134,31 @@ pub fn parse_mark_price(data: &[u8]) -> Result<MarkPriceMsg> {
     if data.len() < 8 {
         anyhow::bail!("Message too short");
     }
-    
+
     let mut cursor = Bytes::copy_from_slice(data);
-    
+
     // 读取消息类型（4字节）
     let msg_type = cursor.get_u32_le();
     if msg_type != MktMsgType::MarkPrice as u32 {
         anyhow::bail!("Invalid message type: {}", msg_type);
     }
-    
+
     // 读取symbol长度（4字节）
     let symbol_len = cursor.get_u32_le() as usize;
-    
+
     // 读取symbol
     if cursor.len() < symbol_len {
         anyhow::bail!("Invalid symbol length");
     }
     let symbol_bytes = cursor.copy_to_bytes(symbol_len);
     let symbol = String::from_utf8(symbol_bytes.to_vec())?;
-    
+
     // 读取标记价格（8字节）
     let mark_price = cursor.get_f64_le();
-    
+
     // 读取时间戳（8字节）
     let timestamp = cursor.get_i64_le();
-    
+
     Ok(MarkPriceMsg {
         symbol,
         mark_price,
@@ -171,9 +171,9 @@ pub fn get_msg_type(data: &[u8]) -> Option<MktMsgType> {
     if data.len() < 4 {
         return None;
     }
-    
+
     let msg_type = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-    
+
     match msg_type {
         1111 => Some(MktMsgType::TimeSignal),
         1001 => Some(MktMsgType::TradeInfo),

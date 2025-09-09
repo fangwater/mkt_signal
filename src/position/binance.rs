@@ -1,13 +1,13 @@
-use async_trait::async_trait;
 use anyhow::Result;
+use async_trait::async_trait;
+use hmac::{Hmac, Mac};
 use reqwest::Client;
 use serde_json::Value;
-use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::api::{ExchangeApiClient, ApiConfig, Balance, RawPosition};
-use super::types::{PositionType, PositionSide};
+use super::api::{ApiConfig, Balance, ExchangeApiClient, PmAccountSummary, RawPosition};
+use super::types::{PositionSide, PositionType};
 
 /// 币安API客户端
 pub struct BinanceApiClient {
@@ -17,31 +17,18 @@ pub struct BinanceApiClient {
     config: ApiConfig,
     /// 现货API基础URL
     spot_base_url: String,
-    /// 合约API基础URL
-    futures_base_url: String,
 }
 
 impl BinanceApiClient {
     /// 创建新的币安API客户端
     pub fn new(config: ApiConfig) -> Self {
-        let (spot_base_url, futures_base_url) = if config.testnet {
-            (
-                "https://testnet.binance.vision".to_string(),
-                "https://testnet.binancefuture.com".to_string(),
-            )
+        let spot_base_url = if config.testnet {
+            "https://testnet.binance.vision".to_string()
         } else {
-            (
-                "https://api.binance.com".to_string(),
-                "https://fapi.binance.com".to_string(),
-            )
+            "https://api.binance.com".to_string()
         };
 
-        Self {
-            client: Client::new(),
-            config,
-            spot_base_url,
-            futures_base_url,
-        }
+        Self { client: Client::new(), config, spot_base_url }
     }
 
     /// 生成签名
@@ -64,192 +51,222 @@ impl BinanceApiClient {
     /// 构建带签名的请求URL
     fn build_signed_url(&self, base_url: &str, endpoint: &str, params: &str) -> String {
         let timestamp = Self::timestamp();
-        let query_string = if params.is_empty() {
-            format!("timestamp={}", timestamp)
-        } else {
-            format!("{}&timestamp={}", params, timestamp)
-        };
+        let mut parts: Vec<String> = Vec::new();
+        if !params.is_empty() {
+            parts.push(params.to_string());
+        }
+        parts.push(format!("timestamp={}", timestamp));
+        // 为提高时间漂移容错，默认加上 recvWindow=5000（如调用方已提供则不重复添加）
+        let has_recv_window = params.contains("recvWindow=");
+        if !has_recv_window {
+            parts.push("recvWindow=5000".to_string());
+        }
+        let query_string = parts.join("&");
         let signature = self.sign(&query_string);
-        format!("{}/{}?{}&signature={}", base_url, endpoint, query_string, signature)
+        format!(
+            "{}/{}?{}&signature={}",
+            base_url, endpoint, query_string, signature
+        )
     }
 
     /// 发送带签名的GET请求
     async fn signed_get(&self, base_url: &str, endpoint: &str, params: &str) -> Result<Value> {
         let url = self.build_signed_url(base_url, endpoint, params);
-        
-        let response = self.client
+
+        let response = self
+            .client
             .get(&url)
             .header("X-MBX-APIKEY", &self.config.api_key)
             .send()
             .await?;
-        
-        if !response.status().is_success() {
-            let error_text = response.text().await?;
-            return Err(anyhow::anyhow!("API request failed: {}", error_text));
+
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            // 尝试解析标准错误格式 { code, msg }
+            let (code, msg) = serde_json::from_str::<Value>(&text)
+                .ok()
+                .and_then(|v| {
+                    Some((
+                        v.get("code").and_then(|c| c.as_i64()),
+                        v.get("msg").and_then(|m| m.as_str()).map(|s| s.to_string()),
+                    ))
+                })
+                .unwrap_or((None, None));
+
+            let rate_limited = status.as_u16() == 429 || status.as_u16() == 418;
+            if rate_limited {
+                return Err(anyhow::anyhow!(
+                    "Binance rate limited ({} {}): code={:?}, msg={:?}, endpoint={}/{}",
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or(""),
+                    code,
+                    msg.as_deref().unwrap_or(&text),
+                    base_url,
+                    endpoint
+                ));
+            } else {
+                return Err(anyhow::anyhow!(
+                    "Binance API error ({} {}): code={:?}, msg={:?}, endpoint={}/{}",
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or(""),
+                    code,
+                    msg.as_deref().unwrap_or(&text),
+                    base_url,
+                    endpoint
+                ));
+            }
         }
-        
+
         Ok(response.json().await?)
+    }
+
+    /// 组合保证金账户（Portfolio Margin）信息（PM-only）
+    async fn fetch_portfolio_account(&self) -> Result<Value> {
+        // 纯 PM-only：只依赖 SAPI 统一账户
+        self.signed_get(&self.spot_base_url, "sapi/v1/portfolio/account", "")
+            .await
+    }
+
+    /// 从 PM 账户响应解析持仓（缺失字段置 None）
+    fn parse_pm_positions(&self, root: &Value) -> Vec<RawPosition> {
+        let mut res = Vec::new();
+        let positions = root.get("positions").and_then(|v| v.as_array());
+        if positions.is_none() {
+            return res;
+        }
+        for item in positions.unwrap() {
+            let symbol = item
+                .get("symbol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if symbol.is_empty() {
+                continue;
+            }
+
+            let position_amt = item
+                .get("positionAmt")
+                .or_else(|| item.get("posAmt"))
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            if position_amt == 0.0 {
+                continue;
+            }
+            let side = if position_amt > 0.0 {
+                PositionSide::Long
+            } else {
+                PositionSide::Short
+            };
+
+            let entry_price = item
+                .get("entryPrice")
+                .or_else(|| item.get("avgEntryPrice"))
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let mark_price = item
+                .get("markPrice")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok());
+            let unrealized_pnl = item
+                .get("unRealizedProfit")
+                .or_else(|| item.get("unrealizedProfit"))
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok());
+            let leverage = item
+                .get("leverage")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<u32>().ok());
+            // PM-only: 不保证有，统一置 None
+            let margin = None;
+            let liquidation_price = item
+                .get("liquidationPrice")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .filter(|&p| p > 0.0);
+
+            res.push(RawPosition {
+                symbol,
+                position_type: PositionType::Perpetual,
+                side,
+                quantity: position_amt.abs(),
+                entry_price,
+                mark_price,
+                unrealized_pnl,
+                realized_pnl: None,
+                margin,
+                leverage,
+                liquidation_price,
+            });
+        }
+        res
     }
 }
 
 #[async_trait]
 impl ExchangeApiClient for BinanceApiClient {
-    /// 获取现货账户余额
+    /// PM-only：现货余额不通过 `api/v3` 获取
     async fn fetch_spot_balances(&self) -> Result<Vec<Balance>> {
-        let data = self.signed_get(&self.spot_base_url, "api/v3/account", "").await?;
-        
-        let mut balances = Vec::new();
-        if let Some(balance_array) = data["balances"].as_array() {
-            for item in balance_array {
-                let asset = item["asset"].as_str().unwrap_or("").to_string();
-                let free = item["free"].as_str()
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .unwrap_or(0.0);
-                let locked = item["locked"].as_str()
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .unwrap_or(0.0);
-                
-                // 只返回有余额的资产
-                if free > 0.0 || locked > 0.0 {
-                    balances.push(Balance {
-                        asset,
-                        free,
-                        locked,
-                        total: free + locked,
-                    });
-                }
-            }
-        }
-        
-        Ok(balances)
+        Ok(Vec::new())
     }
 
-    /// 获取合约账户余额
+    /// PM-only：Futures 余额改由 PM 账户统一体现
     async fn fetch_futures_balances(&self) -> Result<Vec<Balance>> {
-        let data = self.signed_get(&self.futures_base_url, "fapi/v2/account", "").await?;
-        
-        let mut balances = Vec::new();
-        if let Some(asset_array) = data["assets"].as_array() {
-            for item in asset_array {
-                let asset = item["asset"].as_str().unwrap_or("").to_string();
-                let available = item["availableBalance"].as_str()
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .unwrap_or(0.0);
-                let margin = item["marginBalance"].as_str()
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .unwrap_or(0.0);
-                
-                // 只返回有余额的资产
-                if margin > 0.0 {
-                    balances.push(Balance {
-                        asset,
-                        free: available,
-                        locked: margin - available,
-                        total: margin,
-                    });
-                }
-            }
-        }
-        
-        Ok(balances)
+        Ok(Vec::new())
     }
 
-    /// 获取现货持仓（将余额转换为仓位形式）
+    /// PM-only：不从现货余额构造仓位
     async fn fetch_spot_positions(&self) -> Result<Vec<RawPosition>> {
-        let balances = self.fetch_spot_balances().await?;
-        let mut positions = Vec::new();
-        
-        // 获取当前价格（这里简化处理，实际应该批量获取）
-        for balance in balances {
-            // 跳过稳定币和小额余额
-            if balance.asset == "USDT" || balance.asset == "BUSD" || balance.total < 0.0001 {
-                continue;
-            }
-            
-            // 构造交易对符号（假设都是对USDT）
-            let symbol = format!("{}USDT", balance.asset);
-            
-            positions.push(RawPosition {
-                symbol,
-                position_type: PositionType::Spot,
-                side: PositionSide::Long, // 现货默认为多头
-                quantity: balance.total,
-                entry_price: 0.0, // 现货没有开仓价概念，需要从历史订单计算
-                mark_price: None,
-                unrealized_pnl: None,
-                realized_pnl: None,
-                margin: None,
-                leverage: None,
-                liquidation_price: None,
-            });
-        }
-        
-        Ok(positions)
+        Ok(Vec::new())
     }
 
-    /// 获取永续合约持仓
+    /// PM-only：不从 fapi 获取仓位
     async fn fetch_perpetual_positions(&self) -> Result<Vec<RawPosition>> {
-        let data = self.signed_get(&self.futures_base_url, "fapi/v2/positionRisk", "").await?;
-        
-        let mut positions = Vec::new();
-        if let Some(position_array) = data.as_array() {
-            for item in position_array {
-                let position_amt = item["positionAmt"].as_str()
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .unwrap_or(0.0);
-                
-                // 跳过没有持仓的
-                if position_amt == 0.0 {
-                    continue;
-                }
-                
-                let symbol = item["symbol"].as_str().unwrap_or("").to_string();
-                let side = if position_amt > 0.0 {
-                    PositionSide::Long
-                } else {
-                    PositionSide::Short
-                };
-                
-                let entry_price = item["entryPrice"].as_str()
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .unwrap_or(0.0);
-                
-                let mark_price = item["markPrice"].as_str()
-                    .and_then(|s| s.parse::<f64>().ok());
-                
-                let unrealized_pnl = item["unRealizedProfit"].as_str()
-                    .and_then(|s| s.parse::<f64>().ok());
-                
-                let margin = item["isolatedWallet"].as_str()
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .or_else(|| {
-                        item["maintMargin"].as_str()
-                            .and_then(|s| s.parse::<f64>().ok())
-                    });
-                
-                let leverage = item["leverage"].as_str()
-                    .and_then(|s| s.parse::<u32>().ok());
-                
-                let liquidation_price = item["liquidationPrice"].as_str()
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .filter(|&p| p > 0.0); // 过滤掉0值
-                
-                positions.push(RawPosition {
-                    symbol,
-                    position_type: PositionType::Perpetual,
-                    side,
-                    quantity: position_amt.abs(),
-                    entry_price,
-                    mark_price,
-                    unrealized_pnl,
-                    realized_pnl: None, // 需要从历史订单计算
-                    margin,
-                    leverage,
-                    liquidation_price,
-                });
-            }
-        }
-        
-        Ok(positions)
+        Ok(Vec::new())
+    }
+
+    /// 覆盖默认实现：仅用 `/sapi/v1/portfolio/account` 解析所有持仓
+    async fn fetch_all_positions(&self) -> Result<Vec<RawPosition>> {
+        let data = self.fetch_portfolio_account().await?;
+        Ok(self.parse_pm_positions(&data))
+    }
+
+    /// PM-only：返回组合保证金账户汇总
+    async fn fetch_pm_summary(&self) -> Result<Option<PmAccountSummary>> {
+        let data = self.fetch_portfolio_account().await?;
+
+        let s = PmAccountSummary {
+            account_equity: data
+                .get("accountEquity")
+                .or_else(|| data.get("totalCrossWalletBalance"))
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok()),
+            total_maint_margin: data
+                .get("totalMaintMargin")
+                .or_else(|| data.get("maintMargin"))
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok()),
+            total_initial_margin: data
+                .get("totalInitialMargin")
+                .or_else(|| data.get("initialMargin"))
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok()),
+            total_unrealized_pnl: data
+                .get("totalCrossUnPnl")
+                .or_else(|| data.get("unRealizedProfit"))
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok()),
+            total_margin_balance: data
+                .get("totalMarginBalance")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok()),
+            max_withdraw_amount: data
+                .get("maxWithdrawAmount")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok()),
+        };
+        Ok(Some(s))
     }
 }

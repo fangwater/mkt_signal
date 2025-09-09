@@ -1,17 +1,18 @@
-use futures_util::{SinkExt, TryStreamExt};
-use tokio::time::{self, Duration, Instant};
-use tokio_tungstenite::tungstenite::Message;
-use reqwest::Client;
-use bytes::Bytes;
-use log::{info, warn, debug, error};
+use crate::connection::connection::{
+    MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
+};
+use crate::mkt_msg::{MktMsg, MktMsgType};
+use anyhow::Result;
 use async_trait::async_trait;
+use bytes::Bytes;
+use futures_util::{SinkExt, TryStreamExt};
+use log::{debug, error, info, warn};
+use reqwest::Client;
 use serde_json::Value;
 use std::collections::HashSet;
 use tokio::time::sleep;
-use anyhow::Result;
-use crate::mkt_msg::{MktMsg, MktMsgType};
-use crate::connection::connection::{MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector};
-
+use tokio::time::{self, Duration, Instant};
+use tokio_tungstenite::tungstenite::Message;
 
 ///为了支持send，BinanceFuturesConnection的成员需要支持send ---> MktConnection需要send
 pub struct BinanceConnection {
@@ -33,9 +34,17 @@ impl BinanceConnection {
 #[async_trait]
 impl MktConnectionRunner for BinanceConnection {
     async fn run_connection(&mut self) -> anyhow::Result<()> {
-        let mut ping_send_timer = Instant::now() + Duration::from_secs(180) + Duration::from_secs(5);
+        let mut ping_send_timer =
+            Instant::now() + Duration::from_secs(180) + Duration::from_secs(5);
         loop {
-            let mut ws_stream = self.base_connection.connection.as_mut().unwrap().ws_stream.lock().await;
+            let mut ws_stream = self
+                .base_connection
+                .connection
+                .as_mut()
+                .unwrap()
+                .ws_stream
+                .lock()
+                .await;
             tokio::select! {
                 // ===== 优先处理关闭信号 =====
                 _ = self.base_connection.shutdown_rx.changed() => {
@@ -117,20 +126,28 @@ impl MktConnectionHandler for BinanceConnection {
     async fn start_ws(&mut self) -> anyhow::Result<()> {
         loop {
             let connect_result = if let Some(ref local_ip) = self.base_connection.local_ip {
-                WsConnector::connect_with_local_ip(&self.base_connection.url, &self.base_connection.sub_msg, local_ip).await
+                WsConnector::connect_with_local_ip(
+                    &self.base_connection.url,
+                    &self.base_connection.sub_msg,
+                    local_ip,
+                )
+                .await
             } else {
                 WsConnector::connect(&self.base_connection.url, &self.base_connection.sub_msg).await
             };
-            
+
             match connect_result {
                 Ok(connection) => {
-                    debug!("successfully connected to Binance Futures at {:?}", connection.connected_at);
+                    debug!(
+                        "successfully connected to Binance Futures at {:?}",
+                        connection.connected_at
+                    );
                     self.base_connection.connection = Some(connection);
                     self.run_connection().await?;
                     //检查shutdown的当前情况，如果是true则break
                     if *self.base_connection.shutdown_rx.borrow() {
                         break Ok(());
-                    }else{
+                    } else {
                         info!("Connection closed, reconnecting...");
                     }
                 }
@@ -154,9 +171,9 @@ impl BinanceFuturesSnapshotQuery {
     const BATCH_SIZE: usize = 20; // 一次性发起的请求数量
     const MAX_RETRIES: u32 = 3; // 每个请求的最大重试次数
     const REQUEST_TIMEOUT: Duration = Duration::from_secs(3); // 请求超时时间
-    // 币安服务端限制请求频率，具体的算法为
-    // https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Order-Book
-    // 1000档的请求消耗Weight为50 每秒有1000的配额，对应20次请求次数
+                                                              // 币安服务端限制请求频率，具体的算法为
+                                                              // https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Order-Book
+                                                              // 1000档的请求消耗Weight为50 每秒有1000的配额，对应20次请求次数
     const COOLDOWN: Duration = Duration::from_secs(60); // 请求间隔时间(币安服务端限制请求频率)
 
     async fn fetch_symbol_depth(
@@ -189,7 +206,10 @@ impl BinanceFuturesSnapshotQuery {
             //打印请求的url
             let response = match client
                 .get(&format!("{}{}", base_url, endpoint))
-                .query(&[("symbol", &upper_symbol), ("limit", &Self::LIMIT.to_string())])
+                .query(&[
+                    ("symbol", &upper_symbol),
+                    ("limit", &Self::LIMIT.to_string()),
+                ])
                 .timeout(Self::REQUEST_TIMEOUT)
                 .send()
                 .await
@@ -197,7 +217,11 @@ impl BinanceFuturesSnapshotQuery {
                 Ok(resp) => resp,
                 Err(e) => {
                     if retry_count >= Self::MAX_RETRIES {
-                        return Err(anyhow::anyhow!("Max retries exceeded: {} for symbol: {}", e, upper_symbol));
+                        return Err(anyhow::anyhow!(
+                            "Max retries exceeded: {} for symbol: {}",
+                            e,
+                            upper_symbol
+                        ));
                     }
                     let delay: Duration = Duration::from_millis(2u64.pow(retry_count) * 500);
                     sleep(delay).await;
@@ -211,7 +235,11 @@ impl BinanceFuturesSnapshotQuery {
                 Ok(t) => t,
                 Err(e) => {
                     if retry_count >= Self::MAX_RETRIES {
-                        return Err(anyhow::anyhow!("Failed to get response text: {} for symbol: {}", e, upper_symbol));
+                        return Err(anyhow::anyhow!(
+                            "Failed to get response text: {} for symbol: {}",
+                            e,
+                            upper_symbol
+                        ));
                     }
                     let delay = Duration::from_millis(2u64.pow(retry_count) * 500);
                     sleep(delay).await;
@@ -232,16 +260,21 @@ impl BinanceFuturesSnapshotQuery {
             match serde_json::from_str::<Value>(&text) {
                 Ok(mut data) => {
                     // 插入 symbol 字段
-                    data.as_object_mut()
-                        .map(|obj| obj.insert("symbol".into(), Value::String(upper_symbol.clone())));
+                    data.as_object_mut().map(|obj| {
+                        obj.insert("symbol".into(), Value::String(upper_symbol.clone()))
+                    });
                     let json_bytes = match serde_json::to_vec(&data) {
                         Ok(v) => v,
                         Err(e) => {
                             log::warn!("Serialization failed for {}: {}", upper_symbol, e);
-                            return Err(anyhow::anyhow!("Serialization failed for {}: {}", upper_symbol, e));
+                            return Err(anyhow::anyhow!(
+                                "Serialization failed for {}: {}",
+                                upper_symbol,
+                                e
+                            ));
                         }
                     };
-                    let bytes = Bytes::from(json_bytes);                    
+                    let bytes = Bytes::from(json_bytes);
                     // 创建和发送消息
                     let msg = MktMsg::create(MktMsgType::OrderBookInc, bytes);
                     return Ok(msg);
@@ -252,12 +285,16 @@ impl BinanceFuturesSnapshotQuery {
             }
         }
     }
-    pub async fn start_fetching_depth(exchange: &str, symbols :Vec<String>, tx: tokio::sync::broadcast::Sender<Bytes>) {
+    pub async fn start_fetching_depth(
+        exchange: &str,
+        symbols: Vec<String>,
+        tx: tokio::sync::broadcast::Sender<Bytes>,
+    ) {
         let client = Client::builder()
             .timeout(Self::REQUEST_TIMEOUT)
             .build()
             .expect("Failed to create HTTP client");
-    
+
         // 创建一个HashSet来跟踪无效的符号
         let mut invalid_symbols = HashSet::new();
         // 将symbols分成多个批次
@@ -275,7 +312,9 @@ impl BinanceFuturesSnapshotQuery {
             let mut first_response_time = None;
             // 遍历每个批次中的每个symbol
             for symbol in batch {
-                match Self::fetch_symbol_depth(exchange, &client, symbol, &mut invalid_symbols, 3).await {
+                match Self::fetch_symbol_depth(exchange, &client, symbol, &mut invalid_symbols, 3)
+                    .await
+                {
                     Ok(msg) => {
                         if let Err(e) = tx.send(msg.to_bytes()) {
                             log::warn!("Send failed for {}: {}", symbol, e);
@@ -292,18 +331,21 @@ impl BinanceFuturesSnapshotQuery {
                 if first_response_time.is_none() {
                     // 记录每个批次的第一个请求获得响应的时间
                     first_response_time = Some(Instant::now());
-                }    
+                }
             }
-    
+
             // 只有在非最后一批时才进行冷却等待
             if batch_num + 1 < total_batches {
                 if let Some(first_response_time) = first_response_time {
                     //计算从第一个请求获得响应到当前批次的开始时间的时间差
                     let elapsed = first_response_time.duration_since(batch_start);
-                    log::info!("Take {}ms from batch_start to first_response_time", elapsed.as_millis());
+                    log::info!(
+                        "Take {}ms from batch_start to first_response_time",
+                        elapsed.as_millis()
+                    );
                     let remaining_wait = Self::COOLDOWN.saturating_sub(elapsed);
                     log::info!("Cooldown: {} ms", remaining_wait.as_millis());
-    
+
                     if !remaining_wait.is_zero() {
                         log::info!("Cooldown: {} ms", remaining_wait.as_millis());
                         tokio::time::sleep(remaining_wait).await;
@@ -311,6 +353,10 @@ impl BinanceFuturesSnapshotQuery {
                 }
             }
         }
-        log::info!("total_symbols: {}, processed_symbols: {}", symbols.len(), symbols.len());
+        log::info!(
+            "total_symbols: {}, processed_symbols: {}",
+            symbols.len(),
+            symbols.len()
+        );
     }
 }

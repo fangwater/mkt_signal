@@ -1,22 +1,22 @@
+use crate::exchange::Exchange;
 use anyhow::Result;
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::array::from_fn;
 use chrono::Utc;
-use log::{info, error};
+use hmac::{Hmac, Mac};
+use log::{error, info};
 use reqwest;
 use serde::Deserialize;
-use crate::exchange::Exchange;
-use tokio::time::{Duration};
-use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use std::array::from_fn;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::{Arc, RwLock};
+use tokio::time::Duration;
 type HmacSha256 = Hmac<Sha256>;
 use base64::{engine::general_purpose, Engine as _};
 use std::fs;
 
 /// 全局资金费率管理器实例
-static FUNDING_RATE_MANAGER: once_cell::sync::Lazy<Arc<FundingRateManager>> = 
+static FUNDING_RATE_MANAGER: once_cell::sync::Lazy<Arc<FundingRateManager>> =
     once_cell::sync::Lazy::new(|| Arc::new(FundingRateManager::new()));
 
 /// 交易对配置 - 每个交易所包含多个[现货符号, 期货符号, 价差阈值]数组
@@ -64,14 +64,14 @@ struct BybitResultList {
 /// 资金费率数据
 #[derive(Debug, Clone, Default)]
 pub struct FundingRateData {
-    pub predicted_funding_rate: f64,  // 预测资金费率（6期移动平均）
-    pub loan_rate_8h: f64,            // 8小时借贷利率
+    pub predicted_funding_rate: f64, // 预测资金费率（6期移动平均）
+    pub loan_rate_8h: f64,           // 8小时借贷利率
 }
 
 struct ExchangeStore {
-    data: RwLock<HashMap<String, FundingRateData>>,      // 该交易所的所有 symbol 数据
-    last_check_hour_bucket: AtomicI64,                   // 最近一次检查的小时桶
-    refresh_in_progress: AtomicBool,                     // 是否正在刷新
+    data: RwLock<HashMap<String, FundingRateData>>, // 该交易所的所有 symbol 数据
+    last_check_hour_bucket: AtomicI64,              // 最近一次检查的小时桶
+    refresh_in_progress: AtomicBool,                // 是否正在刷新
 }
 
 impl ExchangeStore {
@@ -107,18 +107,29 @@ impl FundingRateManager {
     }
 
     /// 同步获取指定交易对的资金费率数据，根据时间戳判断是否需要刷新
-    pub fn get_rates_sync(&self, symbol: &str, exchange: Exchange, timestamp: i64) -> FundingRateData {
+    pub fn get_rates_sync(
+        &self,
+        symbol: &str,
+        exchange: Exchange,
+        timestamp: i64,
+    ) -> FundingRateData {
         // 检查是否需要触发刷新（基于时间戳）
         self.check_and_trigger_refresh(exchange, timestamp);
 
         // 直接返回当前数据（可能是默认值0）
         let store = &self.stores[Self::ex_idx(exchange)];
         let data = store.data.read().unwrap();
-        if let Some(v) = data.get(symbol) { return v.clone(); }
+        if let Some(v) = data.get(symbol) {
+            return v.clone();
+        }
         let up = symbol.to_uppercase();
-        if let Some(v) = data.get(&up) { return v.clone(); }
+        if let Some(v) = data.get(&up) {
+            return v.clone();
+        }
         let low = symbol.to_lowercase();
-        if let Some(v) = data.get(&low) { return v.clone(); }
+        if let Some(v) = data.get(&low) {
+            return v.clone();
+        }
         FundingRateData::default()
     }
 
@@ -128,12 +139,16 @@ impl FundingRateManager {
 
         // 刷新时间点（UTC 0/8/16时）
         let should_refresh = now_hour == 0 || now_hour == 8 || now_hour == 16;
-        if !should_refresh { return; }
+        if !should_refresh {
+            return;
+        }
 
         let hour_bucket = timestamp / 1000 / 3600; // 小时级别桶
         let store = &self.stores[Self::ex_idx(exchange)];
 
-        let prev = store.last_check_hour_bucket.swap(hour_bucket, Ordering::Relaxed);
+        let prev = store
+            .last_check_hour_bucket
+            .swap(hour_bucket, Ordering::Relaxed);
         if prev == hour_bucket {
             return; // 同一小时已经检查过
         }
@@ -156,7 +171,7 @@ impl FundingRateManager {
             if let Err(e) = manager.refresh_exchange_rates(exchange).await {
                 error!("{:?}交易所异步刷新资金费率失败: {}", exchange, e);
             }
-            
+
             // 刷新完成，释放锁
             let store = &manager.stores[Self::ex_idx(exchange)];
             store.refresh_in_progress.store(false, Ordering::Relaxed);
@@ -178,27 +193,25 @@ impl FundingRateManager {
     /// 根据交易所刷新资金费率数据
     pub async fn refresh_exchange_rates(&self, exchange: Exchange) -> Result<()> {
         match exchange {
-            Exchange::Binance | Exchange::BinanceFutures => {
-                self.refresh_binance_rates().await
-            }
-            Exchange::Okex | Exchange::OkexSwap => {
-                self.refresh_okex_rates().await
-            }
-            Exchange::Bybit | Exchange::BybitSpot => {
-                self.refresh_bybit_rates().await
-            }
+            Exchange::Binance | Exchange::BinanceFutures => self.refresh_binance_rates().await,
+            Exchange::Okex | Exchange::OkexSwap => self.refresh_okex_rates().await,
+            Exchange::Bybit | Exchange::BybitSpot => self.refresh_bybit_rates().await,
         }
     }
 
     /// 刷新币安资金费率数据
     async fn refresh_binance_rates(&self) -> Result<()> {
         info!("开始刷新币安资金费率和借贷利率数据");
-        
+
         // 从配置获取要跟踪的交易对（提取期货符号）
         let symbols: Vec<_> = {
             let config = self.tracking_symbols.read().unwrap();
             match &*config {
-                Some(cfg) => cfg.binance.iter().map(|(_, futures, _)| futures.clone()).collect(),
+                Some(cfg) => cfg
+                    .binance
+                    .iter()
+                    .map(|(_, futures, _)| futures.clone())
+                    .collect(),
                 _ => {
                     error!("未加载交易对配置");
                     return Err(anyhow::anyhow!("未加载交易对配置"));
@@ -206,12 +219,12 @@ impl FundingRateManager {
             }
         };
         info!("币安将跟踪 {} 个交易对的预测资金费率", symbols.len());
-        
+
         // 获取借贷利率：优先签名接口、然后覆盖、最后默认
         let loan_rates = self.get_binance_loan_rates().await;
-        
+
         let mut new_data: HashMap<String, FundingRateData> = HashMap::new();
-        
+
         // 并发获取每个交易对的历史资金费率
         let mut tasks = vec![];
         for symbol in symbols {
@@ -229,7 +242,7 @@ impl FundingRateManager {
                     ("endTime", end_s.as_str()),
                     ("limit", "100"),
                 ];
-                
+
                 // 使用独立的重试逻辑
                 let mut attempt = 0u8;
                 let mut delay_ms = 200u64;
@@ -243,17 +256,22 @@ impl FundingRateManager {
                                     break vec![];
                                 }
                             }
-                        },
+                        }
                         Ok(r) => {
                             let status = r.status();
                             let body = r.text().await.unwrap_or_default();
-                            
+
                             // 4xx错误不重试
                             if status.is_client_error() {
-                                log::error!("获取资金费率失败 ({}) - {}: {}", symbol_clone, status, body);
+                                log::error!(
+                                    "获取资金费率失败 ({}) - {}: {}",
+                                    symbol_clone,
+                                    status,
+                                    body
+                                );
                                 break vec![];
                             }
-                            
+
                             // 5xx或429可以重试
                             attempt += 1;
                             if attempt >= 3 {
@@ -271,7 +289,13 @@ impl FundingRateManager {
                                 log::warn!("获取资金费率网络错误 ({}): {}", symbol_clone, e);
                                 break vec![];
                             }
-                            log::debug!("获取资金费率网络重试 ({}) {}/{}: {}", symbol_clone, attempt, 3, e);
+                            log::debug!(
+                                "获取资金费率网络重试 ({}) {}/{}: {}",
+                                symbol_clone,
+                                attempt,
+                                3,
+                                e
+                            );
                             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                             delay_ms = (delay_ms * 2).min(5_000);
                         }
@@ -280,28 +304,33 @@ impl FundingRateManager {
                 Ok::<_, anyhow::Error>((symbol_clone, history))
             }));
         }
-        
+
         // 收集结果并计算预测值
         for task in tasks {
             if let Ok(Ok((symbol, history))) = task.await {
                 let history: Vec<FundingRateHistory> = history;
                 let predicted_rate = Self::calculate_predicted_rate_binance(&history);
                 let loan_rate = loan_rates.get(&symbol).copied().unwrap_or(0.0);
-                
-                new_data.insert(symbol.clone(), FundingRateData {
-                    predicted_funding_rate: predicted_rate,
-                    loan_rate_8h: loan_rate,
-                });
+
+                new_data.insert(
+                    symbol.clone(),
+                    FundingRateData {
+                        predicted_funding_rate: predicted_rate,
+                        loan_rate_8h: loan_rate,
+                    },
+                );
             }
         }
-        
+
         // 更新数据（写入 Binance 存储）
         if !new_data.is_empty() {
             let store = &self.stores[Self::ex_idx(Exchange::Binance)];
             let mut data = store.data.write().unwrap();
-            for (symbol, value) in new_data { data.insert(symbol, value); }
+            for (symbol, value) in new_data {
+                data.insert(symbol, value);
+            }
         }
-        
+
         info!("成功刷新币安资金费率数据");
         Ok(())
     }
@@ -332,7 +361,11 @@ impl FundingRateManager {
 
         // 3) 默认（为常见交易对填充默认值，不覆盖已有值）
         let default_rate = 0.0001_f64;
-        for sym in ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT"].iter() {
+        for sym in [
+            "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT",
+        ]
+        .iter()
+        {
             result.entry((*sym).to_string()).or_insert(default_rate);
         }
 
@@ -342,8 +375,10 @@ impl FundingRateManager {
     /// 通过币安 SAPI 签名接口获取借贷利率（cross margin dailyInterest / 3 -> 8h），需设置环境变量：
     /// BINANCE_API_KEY, BINANCE_API_SECRET
     async fn fetch_binance_loan_rates_signed(&self) -> Result<HashMap<String, f64>> {
-        let api_key = std::env::var("BINANCE_API_KEY").map_err(|_| anyhow::anyhow!("BINANCE_API_KEY 未设置"))?;
-        let api_secret = std::env::var("BINANCE_API_SECRET").map_err(|_| anyhow::anyhow!("BINANCE_API_SECRET 未设置"))?;
+        let api_key = std::env::var("BINANCE_API_KEY")
+            .map_err(|_| anyhow::anyhow!("BINANCE_API_KEY 未设置"))?;
+        let api_secret = std::env::var("BINANCE_API_SECRET")
+            .map_err(|_| anyhow::anyhow!("BINANCE_API_SECRET 未设置"))?;
 
         let host = "https://api.binance.com";
         let path = "/sapi/v1/margin/crossMarginData";
@@ -356,7 +391,8 @@ impl FundingRateManager {
         let signature = hex::encode(mac.finalize().into_bytes());
 
         let url = format!("{}{}?{}&signature={}", host, path, query, signature);
-        let resp = self.client
+        let resp = self
+            .client
             .get(&url)
             .header("X-MBX-APIKEY", api_key)
             .send()
@@ -365,21 +401,25 @@ impl FundingRateManager {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            
+
             // 认证相关错误，不应重试
             if status.as_u16() == 401 || status.as_u16() == 403 {
                 error!("Binance SAPI 认证失败 ({}): {}", status, body);
                 return Err(anyhow::anyhow!("API密钥无效或权限不足: {}", body));
             }
-            
+
             // 参数错误
             if status.as_u16() == 400 {
                 error!("Binance SAPI 请求参数错误 ({}): {}", status, body);
                 return Err(anyhow::anyhow!("请求参数错误: {}", body));
             }
-            
+
             error!("Binance SAPI 返回错误 ({}): {}", status, body);
-            return Err(anyhow::anyhow!("Binance SAPI 返回非200: {} - {}", status, body));
+            return Err(anyhow::anyhow!(
+                "Binance SAPI 返回非200: {} - {}",
+                status,
+                body
+            ));
         }
 
         let val: serde_json::Value = resp.json().await?;
@@ -391,7 +431,9 @@ impl FundingRateManager {
                 for item in arr {
                     if let (Some(coin), Some(daily)) = (
                         item.get("coin").and_then(|v| v.as_str()),
-                        item.get("dailyInterest").and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok()),
+                        item.get("dailyInterest")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse::<f64>().ok()),
                     ) {
                         let symbol = format!("{}USDT", coin);
                         out.insert(symbol, daily / 3.0);
@@ -410,7 +452,9 @@ impl FundingRateManager {
                         for item in arr {
                             if let (Some(coin), Some(daily)) = (
                                 item.get("coin").and_then(|v| v.as_str()),
-                                item.get("dailyInterest").and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok()),
+                                item.get("dailyInterest")
+                                    .and_then(|v| v.as_str())
+                                    .and_then(|s| s.parse::<f64>().ok()),
                             ) {
                                 push_rate(coin, daily);
                             }
@@ -431,7 +475,11 @@ impl FundingRateManager {
         let inst_ids: Vec<_> = {
             let config = self.tracking_symbols.read().unwrap();
             match &*config {
-                Some(cfg) => cfg.okex.iter().map(|(_, futures, _)| futures.clone()).collect(),
+                Some(cfg) => cfg
+                    .okex
+                    .iter()
+                    .map(|(_, futures, _)| futures.clone())
+                    .collect(),
                 None => {
                     error!("未加载交易对配置");
                     return Err(anyhow::anyhow!("未加载交易对配置"));
@@ -454,7 +502,8 @@ impl FundingRateManager {
                     .await;
                 let list: Result<Vec<OkexFundingRate>> = match resp {
                     Ok(r) if r.status().is_success() => {
-                        let r: OkexResponse<OkexFundingRate> = r.json().await.map_err(|e| anyhow::anyhow!(e))?;
+                        let r: OkexResponse<OkexFundingRate> =
+                            r.json().await.map_err(|e| anyhow::anyhow!(e))?;
                         Ok(r.data)
                     }
                     _ => Ok(vec![]),
@@ -474,11 +523,18 @@ impl FundingRateManager {
                     .filter_map(|x| x.funding_rate.parse::<f64>().ok())
                     .take(6)
                     .collect();
-                let predicted = if rates.is_empty() { 0.0 } else { rates.iter().sum::<f64>() / rates.len() as f64 };
-                new_data.insert(inst_id, FundingRateData {
-                    predicted_funding_rate: predicted,
-                    loan_rate_8h: 0.0001,
-                });
+                let predicted = if rates.is_empty() {
+                    0.0
+                } else {
+                    rates.iter().sum::<f64>() / rates.len() as f64
+                };
+                new_data.insert(
+                    inst_id,
+                    FundingRateData {
+                        predicted_funding_rate: predicted,
+                        loan_rate_8h: 0.0001,
+                    },
+                );
             }
         }
 
@@ -511,7 +567,11 @@ impl FundingRateManager {
         let symbols: Vec<_> = {
             let config = self.tracking_symbols.read().unwrap();
             match &*config {
-                Some(cfg) => cfg.bybit.iter().map(|(_, futures, _)| futures.clone()).collect(),
+                Some(cfg) => cfg
+                    .bybit
+                    .iter()
+                    .map(|(_, futures, _)| futures.clone())
+                    .collect(),
                 None => {
                     error!("未加载交易对配置");
                     return Err(anyhow::anyhow!("未加载交易对配置"));
@@ -529,12 +589,17 @@ impl FundingRateManager {
                 let url = "https://api.bybit.com/v5/market/funding/history";
                 let resp = client
                     .get(url)
-                    .query(&[("category", "linear"), ("symbol", symbol_clone.as_str()), ("limit", "50")])
+                    .query(&[
+                        ("category", "linear"),
+                        ("symbol", symbol_clone.as_str()),
+                        ("limit", "50"),
+                    ])
                     .send()
                     .await;
                 let list: Result<Vec<BybitFundingRate>> = match resp {
                     Ok(r) if r.status().is_success() => {
-                        let r: BybitResponse<BybitResultList> = r.json().await.map_err(|e| anyhow::anyhow!(e))?;
+                        let r: BybitResponse<BybitResultList> =
+                            r.json().await.map_err(|e| anyhow::anyhow!(e))?;
                         Ok(r.result.list)
                     }
                     _ => Ok(vec![]),
@@ -553,11 +618,18 @@ impl FundingRateManager {
                     .filter_map(|x| x.funding_rate.parse::<f64>().ok())
                     .take(6)
                     .collect();
-                let predicted = if rates.is_empty() { 0.0 } else { rates.iter().sum::<f64>() / rates.len() as f64 };
-                new_data.insert(symbol, FundingRateData {
-                    predicted_funding_rate: predicted,
-                    loan_rate_8h: 0.0001,
-                });
+                let predicted = if rates.is_empty() {
+                    0.0
+                } else {
+                    rates.iter().sum::<f64>() / rates.len() as f64
+                };
+                new_data.insert(
+                    symbol,
+                    FundingRateData {
+                        predicted_funding_rate: predicted,
+                        loan_rate_8h: 0.0001,
+                    },
+                );
             }
         }
 
@@ -586,49 +658,52 @@ impl FundingRateManager {
         if history.len() < 6 {
             return 0.0;
         }
-        
+
         let recent_rates: Vec<f64> = history
             .iter()
             .rev()
             .take(6)
             .filter_map(|h| h.funding_rate.parse::<f64>().ok())
             .collect();
-        
+
         if recent_rates.is_empty() {
             return 0.0;
         }
-        
+
         recent_rates.iter().sum::<f64>() / recent_rates.len() as f64
     }
 
     /// 手动触发初始化刷新（在应用启动时调用）
-    pub async fn initialize(&self, enable_binance: bool, enable_okex: bool, enable_bybit: bool) -> Result<()> {
+    pub async fn initialize(
+        &self,
+        enable_binance: bool,
+        enable_okex: bool,
+        enable_bybit: bool,
+    ) -> Result<()> {
         info!("初始化资金费率数据");
-        
+
         // 加载交易对配置文件
         let config_path = "config/tracking_symbol.json";
         match fs::read_to_string(config_path) {
-            Ok(content) => {
-                match serde_json::from_str::<TrackingSymbolsConfig>(&content) {
-                    Ok(config) => {
-                        info!("成功加载预测资金费率跟踪交易对配置");
-                        info!("币安: {} 个交易对", config.binance.len());
-                        info!("OKEx: {} 个交易对", config.okex.len());
-                        info!("Bybit: {} 个交易对", config.bybit.len());
-                        *self.tracking_symbols.write().unwrap() = Some(config);
-                    }
-                    Err(e) => {
-                        error!("解析预测资金费率跟踪交易对配置失败: {}", e);
-                        return Err(anyhow::anyhow!("解析配置文件失败: {}", e));
-                    }
+            Ok(content) => match serde_json::from_str::<TrackingSymbolsConfig>(&content) {
+                Ok(config) => {
+                    info!("成功加载预测资金费率跟踪交易对配置");
+                    info!("币安: {} 个交易对", config.binance.len());
+                    info!("OKEx: {} 个交易对", config.okex.len());
+                    info!("Bybit: {} 个交易对", config.bybit.len());
+                    *self.tracking_symbols.write().unwrap() = Some(config);
                 }
-            }
+                Err(e) => {
+                    error!("解析预测资金费率跟踪交易对配置失败: {}", e);
+                    return Err(anyhow::anyhow!("解析配置文件失败: {}", e));
+                }
+            },
             Err(e) => {
                 error!("读取预测资金费率跟踪交易对配置文件失败: {}", e);
                 return Err(anyhow::anyhow!("读取配置文件失败: {}", e));
             }
         }
-        
+
         let mut exchanges = Vec::new();
         if enable_binance {
             exchanges.push(Exchange::Binance);
@@ -639,13 +714,13 @@ impl FundingRateManager {
         if enable_bybit {
             exchanges.push(Exchange::Bybit);
         }
-        
+
         // 如果没有启用任何交易所，直接返回
         if exchanges.is_empty() {
             info!("没有启用任何交易所的预测资金费率");
             return Ok(());
         }
-        
+
         // 并发刷新启用的交易所
         for exchange in exchanges {
             let m = Self::instance();
@@ -656,7 +731,7 @@ impl FundingRateManager {
                 }
             });
         }
-        
+
         Ok(())
     }
 
@@ -664,7 +739,7 @@ impl FundingRateManager {
     fn extract_base_coin_from_usdt_sym(sym: &str) -> String {
         let s = sym.trim().to_uppercase();
         if s.ends_with("USDT") {
-            let base = &s[..s.len()-4];
+            let base = &s[..s.len() - 4];
             if base.starts_with("1000") {
                 base[4..].to_string()
             } else {
@@ -679,28 +754,36 @@ impl FundingRateManager {
     async fn get_okx_loan_rates(&self) -> HashMap<String, f64> {
         let mut out = match self.fetch_okx_loan_rates_signed().await {
             Ok(m) => m,
-            Err(e) => { error!("获取OKX借贷利率(签名)失败: {}", e); HashMap::new() }
+            Err(e) => {
+                error!("获取OKX借贷利率(签名)失败: {}", e);
+                HashMap::new()
+            }
         };
         if let Ok(overrides) = std::env::var("OKX_LOAN_RATE_OVERRIDES") {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&overrides) {
                 if let Some(obj) = val.as_object() {
-                    for (k,v) in obj {
-                        if let Some(rate) = v.as_f64() { out.insert(k.to_uppercase(), rate); }
+                    for (k, v) in obj {
+                        if let Some(rate) = v.as_f64() {
+                            out.insert(k.to_uppercase(), rate);
+                        }
                     }
                 }
             }
         }
         // 默认填充少量常用币
-        for c in ["BTC","ETH","SOL","XRP","ADA","DOGE"].iter() {
+        for c in ["BTC", "ETH", "SOL", "XRP", "ADA", "DOGE"].iter() {
             out.entry((*c).to_string()).or_insert(0.0001);
         }
         out
     }
 
     async fn fetch_okx_loan_rates_signed(&self) -> Result<HashMap<String, f64>> {
-        let key = std::env::var("OKX_API_KEY").map_err(|_| anyhow::anyhow!("OKX_API_KEY 未设置"))?;
-        let secret = std::env::var("OKX_API_SECRET").map_err(|_| anyhow::anyhow!("OKX_API_SECRET 未设置"))?;
-        let passphrase = std::env::var("OKX_API_PASSPHRASE").map_err(|_| anyhow::anyhow!("OKX_API_PASSPHRASE 未设置"))?;
+        let key =
+            std::env::var("OKX_API_KEY").map_err(|_| anyhow::anyhow!("OKX_API_KEY 未设置"))?;
+        let secret = std::env::var("OKX_API_SECRET")
+            .map_err(|_| anyhow::anyhow!("OKX_API_SECRET 未设置"))?;
+        let passphrase = std::env::var("OKX_API_PASSPHRASE")
+            .map_err(|_| anyhow::anyhow!("OKX_API_PASSPHRASE 未设置"))?;
 
         let host = "https://www.okx.com";
         let path = "/api/v5/asset/interest-rate"; // 若后续有变更，可通过覆盖变量替换
@@ -711,26 +794,32 @@ impl FundingRateManager {
         let sign = general_purpose::STANDARD.encode(mac.finalize().into_bytes());
 
         let url = format!("{}{}", host, path);
-        let resp = self.client
+        let resp = self
+            .client
             .get(&url)
             .header("OK-ACCESS-KEY", key)
             .header("OK-ACCESS-SIGN", sign)
             .header("OK-ACCESS-TIMESTAMP", ts)
             .header("OK-ACCESS-PASSPHRASE", passphrase)
-            .send().await?;
-        if !resp.status().is_success() { return Err(anyhow::anyhow!("OKX 返回非200: {}", resp.status())); }
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(anyhow::anyhow!("OKX 返回非200: {}", resp.status()));
+        }
         let val: serde_json::Value = resp.json().await?;
         let mut out = HashMap::new();
         if let Some(arr) = val.get("data").and_then(|v| v.as_array()) {
             for item in arr {
                 let coin = item.get("ccy").and_then(|v| v.as_str()).unwrap_or("");
-                let rate = item.get("dailyInterest").and_then(|v| v.as_str())
+                let rate = item
+                    .get("dailyInterest")
+                    .and_then(|v| v.as_str())
                     .or_else(|| item.get("interestRate").and_then(|v| v.as_str()))
                     .or_else(|| item.get("rate").and_then(|v| v.as_str()))
                     .and_then(|s| s.parse::<f64>().ok());
                 if !coin.is_empty() {
                     if let Some(daily) = rate {
-                        out.insert(coin.to_uppercase(), daily/3.0);
+                        out.insert(coin.to_uppercase(), daily / 3.0);
                     }
                 }
             }
@@ -742,26 +831,33 @@ impl FundingRateManager {
     async fn get_bybit_loan_rates(&self) -> HashMap<String, f64> {
         let mut out = match self.fetch_bybit_loan_rates_signed().await {
             Ok(m) => m,
-            Err(e) => { error!("获取Bybit借贷利率(签名)失败: {}", e); HashMap::new() }
+            Err(e) => {
+                error!("获取Bybit借贷利率(签名)失败: {}", e);
+                HashMap::new()
+            }
         };
         if let Ok(overrides) = std::env::var("BYBIT_LOAN_RATE_OVERRIDES") {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&overrides) {
                 if let Some(obj) = val.as_object() {
-                    for (k,v) in obj {
-                        if let Some(rate) = v.as_f64() { out.insert(k.to_uppercase(), rate); }
+                    for (k, v) in obj {
+                        if let Some(rate) = v.as_f64() {
+                            out.insert(k.to_uppercase(), rate);
+                        }
                     }
                 }
             }
         }
-        for c in ["BTC","ETH","SOL","XRP","ADA","DOGE"].iter() {
+        for c in ["BTC", "ETH", "SOL", "XRP", "ADA", "DOGE"].iter() {
             out.entry((*c).to_string()).or_insert(0.0001);
         }
         out
     }
 
     async fn fetch_bybit_loan_rates_signed(&self) -> Result<HashMap<String, f64>> {
-        let key = std::env::var("BYBIT_API_KEY").map_err(|_| anyhow::anyhow!("BYBIT_API_KEY 未设置"))?;
-        let secret = std::env::var("BYBIT_API_SECRET").map_err(|_| anyhow::anyhow!("BYBIT_API_SECRET 未设置"))?;
+        let key =
+            std::env::var("BYBIT_API_KEY").map_err(|_| anyhow::anyhow!("BYBIT_API_KEY 未设置"))?;
+        let secret = std::env::var("BYBIT_API_SECRET")
+            .map_err(|_| anyhow::anyhow!("BYBIT_API_SECRET 未设置"))?;
 
         // Bybit v5 签名：sign = HMAC_SHA256(secret, timestamp + api_key + recv_window + queryString)
         let host = "https://api.bybit.com";
@@ -775,14 +871,18 @@ impl FundingRateManager {
         let sign = hex::encode(mac.finalize().into_bytes());
 
         let url = format!("{}{}", host, path);
-        let resp = self.client
+        let resp = self
+            .client
             .get(&url)
             .header("X-BAPI-API-KEY", key)
             .header("X-BAPI-TIMESTAMP", timestamp)
             .header("X-BAPI-RECV-WINDOW", recv_window)
             .header("X-BAPI-SIGN", sign)
-            .send().await?;
-        if !resp.status().is_success() { return Err(anyhow::anyhow!("Bybit 返回非200: {}", resp.status())); }
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(anyhow::anyhow!("Bybit 返回非200: {}", resp.status()));
+        }
         let val: serde_json::Value = resp.json().await?;
         let mut out = HashMap::new();
         // 兼容不同 JSON 结构：在 result 下的 list/rows 等，查找 coin 与 dailyInterest/interestRate
@@ -792,12 +892,14 @@ impl FundingRateManager {
             if let Some(arr) = root.get(*key).and_then(|v| v.as_array()) {
                 for item in arr {
                     if let Some(coin) = item.get("coin").and_then(|v| v.as_str()) {
-                        let rate = item.get("dailyInterest").and_then(|v| v.as_str())
+                        let rate = item
+                            .get("dailyInterest")
+                            .and_then(|v| v.as_str())
                             .or_else(|| item.get("interestRate").and_then(|v| v.as_str()))
                             .or_else(|| item.get("rate").and_then(|v| v.as_str()))
                             .and_then(|s| s.parse::<f64>().ok());
                         if let Some(daily) = rate {
-                            out.insert(coin.to_uppercase(), daily/3.0);
+                            out.insert(coin.to_uppercase(), daily / 3.0);
                         }
                     }
                 }

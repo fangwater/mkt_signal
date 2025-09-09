@@ -1,13 +1,14 @@
+use crate::connection::connection::{
+    MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
+};
+use async_trait::async_trait;
+use bytes::Bytes;
 use futures_util::{SinkExt, TryStreamExt};
+use log::{debug, error, info, warn};
+use serde_json::json;
 use tokio::time::{self, Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
-use bytes::Bytes;
-use log::{info, warn, error,debug };
-use async_trait::async_trait;
-use serde_json::json;
 use uuid::Uuid;
-use crate::connection::connection::{MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector};
-
 
 // bybit
 // Due to network complexity, your may get disconnected at any time. Please follow the instructions below to ensure that you receive WebSocket messages on time:
@@ -16,7 +17,6 @@ use crate::connection::connection::{MktConnection, MktConnectionHandler, MktConn
 
 // // req_id is a customised ID, which is optional
 // ws.send(JSON.stringify({"req_id": "100001", "op": "ping"}));
-
 
 // {
 //     "req_id": "test",
@@ -42,11 +42,10 @@ impl BybitConnection {
 
 fn is_bybit_pong_msg(msg: &serde_json::Value) -> bool {
     // 同时检查操作类型和返回消息内容
-    msg.get("op").map(|v| v == "ping").unwrap_or(false) &&
-    msg.get("ret_msg").map(|v| v == "pong").unwrap_or(false) &&
-    msg.get("success").is_some()
+    msg.get("op").map(|v| v == "ping").unwrap_or(false)
+        && msg.get("ret_msg").map(|v| v == "pong").unwrap_or(false)
+        && msg.get("success").is_some()
 }
-
 
 #[async_trait]
 impl MktConnectionRunner for BybitConnection {
@@ -61,7 +60,14 @@ impl MktConnectionRunner for BybitConnection {
         let mut reset_timer: Instant = ping_timer + Duration::from_secs(5); // 倒计时，初始值40s，倒计时结束重启websocket
         let mut waiting_pong = false;
         loop {
-            let mut ws_stream = self.base_connection.connection.as_mut().unwrap().ws_stream.lock().await;
+            let mut ws_stream = self
+                .base_connection
+                .connection
+                .as_mut()
+                .unwrap()
+                .ws_stream
+                .lock()
+                .await;
             tokio::select! {
                 // ===== 优先处理关闭信号 =====
                 _ = self.base_connection.shutdown_rx.changed() => {
@@ -175,20 +181,28 @@ impl MktConnectionHandler for BybitConnection {
     async fn start_ws(&mut self) -> anyhow::Result<()> {
         loop {
             let connect_result = if let Some(ref local_ip) = self.base_connection.local_ip {
-                WsConnector::connect_with_local_ip(&self.base_connection.url, &self.base_connection.sub_msg, local_ip).await
+                WsConnector::connect_with_local_ip(
+                    &self.base_connection.url,
+                    &self.base_connection.sub_msg,
+                    local_ip,
+                )
+                .await
             } else {
                 WsConnector::connect(&self.base_connection.url, &self.base_connection.sub_msg).await
             };
-            
+
             match connect_result {
                 Ok(connection) => {
-                    debug!("Successfully connected to bybit at {:?}", connection.connected_at);
+                    debug!(
+                        "Successfully connected to bybit at {:?}",
+                        connection.connected_at
+                    );
                     self.base_connection.connection = Some(connection);
                     self.run_connection().await?;
                     //检查shutdown的当前情况，如果是true则break
                     if *self.base_connection.shutdown_rx.borrow() {
                         break Ok(());
-                    }else{
+                    } else {
                         info!("Connection closed, reconnecting...");
                     }
                 }

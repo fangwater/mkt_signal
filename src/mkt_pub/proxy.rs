@@ -1,11 +1,11 @@
 ///proxy 从tokio的mpsc 通过forwarder转发到tcp和ipc
 use crate::iceoryx_forwarder::IceOryxForwarder;
 use bytes::Bytes;
-use std::time::Duration;
-use tokio::time::interval;
-use tokio::sync::{mpsc, watch};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Notify;
+use tokio::sync::{mpsc, watch};
+use tokio::time::interval;
 // 新的使用mpsc的Proxy
 pub struct MpscProxy {
     forwarder: IceOryxForwarder,
@@ -62,7 +62,7 @@ impl MpscProxy {
         let mut stats_timer = interval(Duration::from_secs(3));
         // 跳过第一次立即触发
         stats_timer.tick().await;
-        
+
         let mut msg_count = 0u64;
         let mut last_log_count = 0u64;
         // snapshots for per-channel rate
@@ -72,7 +72,7 @@ impl MpscProxy {
         let mut last_der = 0u64;
         let mut last_signal = 0u64;
         let mut last_spread = 0u64;
-        
+
         loop {
             tokio::select! {
                 _ = stats_timer.tick() => {
@@ -149,6 +149,9 @@ impl MpscProxy {
                 }
             }
         }
-        log::info!("MpscProxy stopped gracefully. Total messages processed: {}", msg_count);
+        log::info!(
+            "MpscProxy stopped gracefully. Total messages processed: {}",
+            msg_count
+        );
     }
 }

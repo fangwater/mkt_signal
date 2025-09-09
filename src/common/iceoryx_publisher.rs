@@ -26,16 +26,19 @@ impl SignalPublisher {
 
         let publisher = service.publisher_builder().create()?;
 
-        info!("Successfully created publisher for channel: {}", channel_name);
+        info!(
+            "Successfully created publisher for channel: {}",
+            channel_name
+        );
 
         Ok(Self { publisher })
     }
-    
+
     pub fn publish(&self, data: &[u8]) -> anyhow::Result<()> {
         if data.len() > 1024 {
             anyhow::bail!("Data size exceeds 1024 bytes");
         }
-        
+
         // Prepare a fixed-size buffer and copy the data
         let mut buffer = [0u8; 1024];
         buffer[..data.len()].copy_from_slice(data);
@@ -44,7 +47,7 @@ impl SignalPublisher {
         let sample = self.publisher.loan_uninit()?;
         let sample = sample.write_payload(buffer);
         sample.send()?;
-        
+
         Ok(())
     }
 }

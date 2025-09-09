@@ -56,4 +56,3 @@ async fn main() -> anyhow::Result<()> {
     let app = MktSignalApp::new(config).await?;
     app.run().await
 }
-

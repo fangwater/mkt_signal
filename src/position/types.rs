@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 
@@ -89,7 +89,7 @@ impl Position {
         Self {
             symbol,
             position_type: PositionType::Spot,
-            side: PositionSide::Long,  // 现货默认为多头
+            side: PositionSide::Long, // 现货默认为多头
             status: PositionStatus::Open,
             quantity,
             entry_price,

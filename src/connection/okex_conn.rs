@@ -1,11 +1,12 @@
+use crate::connection::connection::{
+    MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
+};
+use async_trait::async_trait;
+use bytes::Bytes;
 use futures_util::{SinkExt, TryStreamExt};
+use log::{debug, error, info, warn};
 use tokio::time::{self, Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
-use bytes::Bytes;
-use log::{info, warn, debug, error};
-use async_trait::async_trait;
-use crate::connection::connection::{MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector};
-
 
 // okex
 // https://www.okx.com/docs-v5/zh/#overview-websocket-overview
@@ -41,7 +42,14 @@ impl MktConnectionRunner for OkexConnection {
         let mut reset_timer: Instant = Instant::now() + Duration::from_secs(25); // 倒计时，初始值25s
         let mut waiting_pong: bool = false; // 是否在等待pong消息，初始值false
         loop {
-            let mut ws_stream = self.base_connection.connection.as_mut().unwrap().ws_stream.lock().await;
+            let mut ws_stream = self
+                .base_connection
+                .connection
+                .as_mut()
+                .unwrap()
+                .ws_stream
+                .lock()
+                .await;
             tokio::select! {
                 // ===== 优先处理关闭信号 =====
                 _ = self.base_connection.shutdown_rx.changed() => {
@@ -131,13 +139,13 @@ impl MktConnectionRunner for OkexConnection {
                             // error!("  Subscription message: {}", serde_json::to_string_pretty(&self.base_connection.sub_msg).unwrap_or_else(|_| "Failed to serialize".to_string()));
                             error!("  Error type: {:?}", e);
                             error!("Exiting for debugging purposes...");
-                            
+
                             // TODO(human) - Add exit mechanism here
                             // You can either:
                             // 1. std::process::exit(1); for immediate exit
                             // 2. return Err(e.into()); to propagate error up
                             // 3. Add conditional debugging flag to control exit behavior
-                            
+
                             break;
                         }
                         Ok(None) => {
@@ -159,23 +167,34 @@ impl MktConnectionHandler for OkexConnection {
             // Debug: Print subscription message before attempting connection
             // info!("OKEx subscription message: {}", serde_json::to_string_pretty(&self.base_connection.sub_msg).unwrap_or_else(|_| "Failed to serialize".to_string()));
             info!("OKEx WebSocket URL: {}", &self.base_connection.url);
-            
+
             let connect_result = if let Some(ref local_ip) = self.base_connection.local_ip {
-                WsConnector::connect_with_local_ip(&self.base_connection.url, &self.base_connection.sub_msg, local_ip).await
+                WsConnector::connect_with_local_ip(
+                    &self.base_connection.url,
+                    &self.base_connection.sub_msg,
+                    local_ip,
+                )
+                .await
             } else {
                 WsConnector::connect(&self.base_connection.url, &self.base_connection.sub_msg).await
             };
-            
+
             match connect_result {
                 Ok(connection) => {
-                    debug!("Successfully connected to okex at {:?}", connection.connected_at);
+                    debug!(
+                        "Successfully connected to okex at {:?}",
+                        connection.connected_at
+                    );
                     self.base_connection.connection = Some(connection);
                     self.run_connection().await?;
                     //检查shutdown的当前情况，如果是true则break
                     if *self.base_connection.shutdown_rx.borrow() {
                         break Ok(());
-                    }else{
-                        info!("Connection closed, reconnecting... (total restart count: {})", self.restart_count);
+                    } else {
+                        info!(
+                            "Connection closed, reconnecting... (total restart count: {})",
+                            self.restart_count
+                        );
                     }
                 }
                 Err(e) => {

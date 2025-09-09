@@ -1,8 +1,8 @@
-pub mod types;
-pub mod manager;
 pub mod api;
 pub mod binance;
+pub mod manager;
+pub mod types;
 
-pub use types::{Position, PositionType, PositionSide, PositionStatus};
+pub use api::{ExchangeApiClient, PmAccountSummary};
 pub use manager::PositionManager;
-pub use api::ExchangeApiClient;
+pub use types::{Position, PositionSide, PositionStatus, PositionType};

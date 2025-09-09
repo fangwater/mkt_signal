@@ -1,7 +1,7 @@
 use anyhow::Result;
 use bytes::Bytes;
-use iceoryx2::prelude::*;
 use iceoryx2::port::subscriber::Subscriber;
+use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info};
 use std::collections::HashMap;
@@ -28,7 +28,7 @@ impl ChannelType {
             ChannelType::Signal => "signal",
         }
     }
-    
+
     /// 获取频道的最大消息大小
     pub fn max_size(&self) -> usize {
         match self {
@@ -64,18 +64,20 @@ impl SubscriberEnum {
             SubscriberEnum::Size16384(sub) => Self::receive_from_subscriber(sub),
         }
     }
-    
+
     fn receive_from_subscriber<const SIZE: usize>(
-        subscriber: &Subscriber<ipc::Service, [u8; SIZE], ()>
+        subscriber: &Subscriber<ipc::Service, [u8; SIZE], ()>,
     ) -> Result<Option<Bytes>> {
         match subscriber.receive()? {
             Some(sample) => {
                 let payload = sample.payload();
                 // 找到实际消息长度（去掉尾部的0）
-                let actual_len = payload.iter().rposition(|&x| x != 0)
+                let actual_len = payload
+                    .iter()
+                    .rposition(|&x| x != 0)
                     .map(|pos| pos + 1)
                     .unwrap_or(0);
-                
+
                 if actual_len > 0 {
                     Ok(Some(Bytes::copy_from_slice(&payload[..actual_len])))
                 } else {
@@ -110,7 +112,7 @@ impl MultiChannelSubscriber {
         let node = NodeBuilder::new()
             .name(&NodeName::new(node_name)?)
             .create::<ipc::Service>()?;
-        
+
         Ok(Self {
             node,
             subscribers: HashMap::new(),
@@ -119,7 +121,7 @@ impl MultiChannelSubscriber {
             stats: SubscriberStats::default(),
         })
     }
-    
+
     /// 订阅多个频道
     pub fn subscribe_channels(&mut self, params: Vec<SubscribeParams>) -> Result<()> {
         for param in params {
@@ -127,62 +129,58 @@ impl MultiChannelSubscriber {
         }
         Ok(())
     }
-    
+
     /// 订阅单个频道
     pub fn subscribe_single(&mut self, param: SubscribeParams) -> Result<()> {
-        let service_name: String = format!("data_pubs/{}/{}", 
-                                  param.exchange, 
-                                  param.channel.as_str());
-        
+        let service_name: String =
+            format!("data_pubs/{}/{}", param.exchange, param.channel.as_str());
+
         let key = format!("{}_{}", param.exchange, param.channel.as_str());
-        
+
         // 如果已经订阅，跳过
         if self.subscribers.contains_key(&key) {
             debug!("Already subscribed to {}", service_name);
             return Ok(());
         }
-        
+
         // 根据频道类型创建对应大小的订阅器
         let subscriber_enum = match param.channel {
             ChannelType::Incremental => {
-                let service = self.node
+                let service = self
+                    .node
                     .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; 16384]>()
                     .open_or_create()?;
-                let subscriber = service
-                    .subscriber_builder()
-                    .create()?;
+                let subscriber = service.subscriber_builder().create()?;
                 SubscriberEnum::Size16384(subscriber)
             }
             ChannelType::Trade | ChannelType::AskBidSpread | ChannelType::Signal => {
-                let service = self.node
+                let service = self
+                    .node
                     .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; 64]>()
                     .open_or_create()?;
-                let subscriber = service
-                    .subscriber_builder()
-                    .create()?;
+                let subscriber = service.subscriber_builder().create()?;
                 SubscriberEnum::Size64(subscriber)
             }
             ChannelType::Kline | ChannelType::Derivatives => {
-                let service = self.node
+                let service = self
+                    .node
                     .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; 128]>()
                     .open_or_create()?;
-                let subscriber = service
-                    .subscriber_builder()
-                    .create()?;
+                let subscriber = service.subscriber_builder().create()?;
                 SubscriberEnum::Size128(subscriber)
             }
         };
-        
+
         self.subscribers.insert(key.clone(), subscriber_enum);
         self.poll_keys.push(key);
-        
+
         info!("Subscribed to {}", service_name);
         Ok(())
     }
-    
+
     /// 轮询所有订阅的消息，尽量抽干，每次最多返回 max_msgs 条（None 表示不限制）
     /// 返回的是消息字节数据，调用者需要根据消息类型自行解析
     pub fn poll_msgs(&mut self, max_msgs: Option<usize>) -> Vec<Bytes> {
@@ -235,42 +233,51 @@ impl MultiChannelSubscriber {
 
         messages
     }
-    
+
     /// 轮询单个频道的消息，最多返回max_msgs条消息
-    pub fn poll_channel(&mut self, exchange: &str, channel: &ChannelType, max_msgs: Option<usize>) -> Vec<Bytes> {
+    pub fn poll_channel(
+        &mut self,
+        exchange: &str,
+        channel: &ChannelType,
+        max_msgs: Option<usize>,
+    ) -> Vec<Bytes> {
         let max_msgs = max_msgs.unwrap_or(16);
         let key = format!("{}_{}", exchange, channel.as_str());
         let mut messages = Vec::new();
-        
+
         if let Some(subscriber) = self.subscribers.get(&key) {
             for _ in 0..max_msgs {
                 match subscriber.receive_msg() {
                     Ok(Some(msg)) => {
                         messages.push(msg);
-                        
+
                         // 更新统计
                         self.stats.messages_received += 1;
-                        *self.stats.messages_by_channel.entry(key.clone()).or_insert(0) += 1;
+                        *self
+                            .stats
+                            .messages_by_channel
+                            .entry(key.clone())
+                            .or_insert(0) += 1;
                     }
-                    Ok(None) => break,  // 没有更多消息
+                    Ok(None) => break, // 没有更多消息
                     Err(_) => break,
                 }
             }
         }
-        
+
         messages
     }
-    
+
     /// 获取统计信息
     pub fn get_stats(&self) -> &SubscriberStats {
         &self.stats
     }
-    
+
     /// 重置统计信息
     pub fn reset_stats(&mut self) {
         self.stats = SubscriberStats::default();
     }
-    
+
     /// 获取已订阅的频道列表
     pub fn get_subscribed_channels(&self) -> Vec<String> {
         self.poll_keys.clone()
@@ -280,16 +287,16 @@ impl MultiChannelSubscriber {
 /// 便捷函数：创建一个订阅器并订阅指定频道
 pub fn create_subscriber(
     node_name: &str,
-    subscriptions: Vec<(String, ChannelType)>
+    subscriptions: Vec<(String, ChannelType)>,
 ) -> Result<MultiChannelSubscriber> {
     let mut subscriber = MultiChannelSubscriber::new(node_name)?;
-    
+
     let params: Vec<SubscribeParams> = subscriptions
         .into_iter()
         .map(|(exchange, channel)| SubscribeParams { exchange, channel })
         .collect();
-    
+
     subscriber.subscribe_channels(params)?;
-    
+
     Ok(subscriber)
 }

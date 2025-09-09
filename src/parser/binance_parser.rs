@@ -1,10 +1,13 @@
-use crate::mkt_msg::{SignalMsg, SignalSource, KlineMsg, LiquidationMsg, MarkPriceMsg, IndexPriceMsg, FundingRateMsg, TradeMsg, IncMsg, Level, AskBidSpreadMsg};
+use crate::exchange::Exchange;
+use crate::market_state::FundingRateManager;
+use crate::mkt_msg::{
+    AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg,
+    MarkPriceMsg, SignalMsg, SignalSource, TradeMsg,
+};
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
-use tokio::sync::mpsc;
 use std::collections::HashSet;
-use crate::market_state::FundingRateManager;
-use crate::exchange::Exchange;
+use tokio::sync::mpsc;
 
 #[derive(Clone)]
 pub struct BinanceSignalParser {
@@ -14,7 +17,11 @@ pub struct BinanceSignalParser {
 impl BinanceSignalParser {
     pub fn new(is_ipc: bool) -> Self {
         Self {
-            source: if is_ipc { SignalSource::Ipc } else { SignalSource::Tcp },
+            source: if is_ipc {
+                SignalSource::Ipc
+            } else {
+                SignalSource::Tcp
+            },
         }
     }
 }
@@ -29,12 +36,12 @@ impl Parser for BinanceSignalParser {
                     // Create signal message
                     let signal_msg = SignalMsg::create(self.source, timestamp);
                     let signal_bytes = signal_msg.to_bytes();
-                    
+
                     // Send signal
                     if let Err(_) = tx.send(signal_bytes) {
                         return 0;
                     }
-                    
+
                     return 1;
                 }
             }
@@ -42,7 +49,6 @@ impl Parser for BinanceSignalParser {
         0
     }
 }
-
 
 #[derive(Clone)]
 pub struct BinanceKlineParser;
@@ -70,9 +76,16 @@ impl Parser for BinanceKlineParser {
                         } else {
                             return 0; // x字段无效或缺失
                         }
-                        
+
                         // 从k对象中提取OHLCV数据
-                        if let (Some(open_str), Some(high_str), Some(low_str), Some(close_str), Some(volume_str), Some(timestamp)) = (
+                        if let (
+                            Some(open_str),
+                            Some(high_str),
+                            Some(low_str),
+                            Some(close_str),
+                            Some(volume_str),
+                            Some(timestamp),
+                        ) = (
                             kline_obj.get("o").and_then(|v| v.as_str()),
                             kline_obj.get("h").and_then(|v| v.as_str()),
                             kline_obj.get("l").and_then(|v| v.as_str()),
@@ -98,10 +111,12 @@ impl Parser for BinanceKlineParser {
                                     volume,
                                     timestamp,
                                 );
-                                
+
                                 // 发送K线消息
                                 let kline_bytes = kline_msg.to_bytes();
-                                if tx.send(kline_bytes).is_ok() { return 1; }
+                                if tx.send(kline_bytes).is_ok() {
+                                    return 1;
+                                }
                             }
                         }
                     }
@@ -130,12 +145,11 @@ impl Parser for BinanceDerivativesMetricsParser {
         // Parse Binance derivatives metrics messages (liquidations + mark price)
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
-                
                 // Handle mark price array format: [{e: "markPriceUpdate", ...}, ...]
                 if let Some(data_array) = json_value.as_array() {
                     return self.parse_mark_price_array(data_array, tx);
                 }
-                
+
                 // Handle single liquidation event format: {e: "forceOrder", ...}
                 if let Some(event_type) = json_value.get("e").and_then(|v| v.as_str()) {
                     match event_type {
@@ -151,10 +165,20 @@ impl Parser for BinanceDerivativesMetricsParser {
 }
 
 impl BinanceDerivativesMetricsParser {
-    fn parse_liquidation_event(&self, json_value: &serde_json::Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+    fn parse_liquidation_event(
+        &self,
+        json_value: &serde_json::Value,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> usize {
         // Parse liquidation order data
         if let Some(order_data) = json_value.get("o") {
-            if let (Some(symbol), Some(side), Some(quantity_str), Some(avg_price_str), Some(timestamp)) = (
+            if let (
+                Some(symbol),
+                Some(side),
+                Some(quantity_str),
+                Some(avg_price_str),
+                Some(timestamp),
+            ) = (
                 order_data.get("s").and_then(|v| v.as_str()),
                 order_data.get("S").and_then(|v| v.as_str()),
                 order_data.get("z").and_then(|v| v.as_str()), // Order Filled Accumulated Quantity
@@ -167,17 +191,16 @@ impl BinanceDerivativesMetricsParser {
                     return 0;
                 }
                 // Parse quantity and price
-                if let (Ok(quantity), Ok(avg_price)) = (
-                    quantity_str.parse::<f64>(),
-                    avg_price_str.parse::<f64>(),
-                ) {
+                if let (Ok(quantity), Ok(avg_price)) =
+                    (quantity_str.parse::<f64>(), avg_price_str.parse::<f64>())
+                {
                     // Convert Binance side to liquidation_side char
                     let liquidation_side = match side {
-                        "BUY" => 'B',   // 买入强平
-                        "SELL" => 'S',  // 卖出强平
+                        "BUY" => 'B',  // 买入强平
+                        "SELL" => 'S', // 卖出强平
                         _ => return 0,
                     };
-                    
+
                     // Create liquidation message
                     let liquidation_msg = LiquidationMsg::create(
                         symbol.to_string(),
@@ -186,7 +209,7 @@ impl BinanceDerivativesMetricsParser {
                         avg_price,
                         timestamp,
                     );
-                    
+
                     // Send liquidation message
                     if tx.send(liquidation_msg.to_bytes()).is_ok() {
                         return 1;
@@ -196,21 +219,36 @@ impl BinanceDerivativesMetricsParser {
         }
         0
     }
-    
-    fn parse_mark_price_array(&self, data_array: &Vec<serde_json::Value>, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+
+    fn parse_mark_price_array(
+        &self,
+        data_array: &Vec<serde_json::Value>,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> usize {
         let mut total_parsed = 0;
-        
+
         for item in data_array {
             total_parsed += self.parse_single_mark_price(item, tx);
         }
         total_parsed
     }
-    
-    fn parse_single_mark_price(&self, item: &serde_json::Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+
+    fn parse_single_mark_price(
+        &self,
+        item: &serde_json::Value,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> usize {
         // Check if this is a markPriceUpdate event
         if let Some(event_type) = item.get("e").and_then(|v| v.as_str()) {
             if event_type == "markPriceUpdate" {
-                if let (Some(symbol), Some(mark_price_str), Some(index_price_str), Some(funding_rate_str), Some(event_time), Some(next_funding_time)) = (
+                if let (
+                    Some(symbol),
+                    Some(mark_price_str),
+                    Some(index_price_str),
+                    Some(funding_rate_str),
+                    Some(event_time),
+                    Some(next_funding_time),
+                ) = (
                     item.get("s").and_then(|v| v.as_str()),
                     item.get("p").and_then(|v| v.as_str()),
                     item.get("i").and_then(|v| v.as_str()),
@@ -230,31 +268,26 @@ impl BinanceDerivativesMetricsParser {
                         funding_rate_str.parse::<f64>(),
                     ) {
                         let mut parsed_count = 0;
-                        
+
                         // Create and send MarkPriceMsg
-                        let mark_price_msg = MarkPriceMsg::create(
-                            symbol.to_string(),
-                            mark_price,
-                            event_time,
-                        );
+                        let mark_price_msg =
+                            MarkPriceMsg::create(symbol.to_string(), mark_price, event_time);
                         if tx.send(mark_price_msg.to_bytes()).is_ok() {
                             parsed_count += 1;
                         }
-                        
+
                         // Create and send IndexPriceMsg
-                        let index_price_msg = IndexPriceMsg::create(
-                            symbol.to_string(),
-                            index_price,
-                            event_time,
-                        );
+                        let index_price_msg =
+                            IndexPriceMsg::create(symbol.to_string(), index_price, event_time);
                         if tx.send(index_price_msg.to_bytes()).is_ok() {
                             parsed_count += 1;
                         }
-                        
+
                         // Get predicted rate and loan rate from FundingRateManager
                         let rate_manager = FundingRateManager::instance();
-                        let rate_data = rate_manager.get_rates_sync(&symbol, Exchange::Binance, event_time);
-                        
+                        let rate_data =
+                            rate_manager.get_rates_sync(&symbol, Exchange::Binance, event_time);
+
                         // Create and send FundingRateMsg with prediction data
                         let funding_rate_msg = FundingRateMsg::create(
                             symbol.to_string(),
@@ -267,7 +300,7 @@ impl BinanceDerivativesMetricsParser {
                         if tx.send(funding_rate_msg.to_bytes()).is_ok() {
                             parsed_count += 1;
                         }
-                        
+
                         return parsed_count;
                     }
                 }
@@ -308,25 +341,23 @@ fn parse_order_book_levels(
     for (i, bid_item) in bids_array.iter().enumerate() {
         if let Some(bid_array) = bid_item.as_array() {
             if bid_array.len() >= 2 {
-                if let (Some(price_str), Some(amount_str)) = (
-                    bid_array[0].as_str(),
-                    bid_array[1].as_str(),
-                ) {
+                if let (Some(price_str), Some(amount_str)) =
+                    (bid_array[0].as_str(), bid_array[1].as_str())
+                {
                     let level = Level::new(price_str, amount_str);
                     inc_msg.set_bid_level(i, level);
                 }
             }
         }
     }
-    
+
     // 解析asks
     for (i, ask_item) in asks_array.iter().enumerate() {
         if let Some(ask_array) = ask_item.as_array() {
             if ask_array.len() >= 2 {
-                if let (Some(price_str), Some(amount_str)) = (
-                    ask_array[0].as_str(),
-                    ask_array[1].as_str(),
-                ) {
+                if let (Some(price_str), Some(amount_str)) =
+                    (ask_array[0].as_str(), ask_array[1].as_str())
+                {
                     let level = Level::new(price_str, amount_str);
                     inc_msg.set_ask_level(i, level);
                 }
@@ -336,7 +367,11 @@ fn parse_order_book_levels(
 }
 
 impl BinanceSnapshotParser {
-    fn parse_snapshot_event(&self, json_value: &serde_json::Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+    fn parse_snapshot_event(
+        &self,
+        json_value: &serde_json::Value,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> usize {
         // 从快照数据中提取信息
         if let (Some(symbol), Some(last_update_id), Some(bids_array), Some(asks_array)) = (
             json_value.get("s").and_then(|v| v.as_str()),
@@ -346,21 +381,21 @@ impl BinanceSnapshotParser {
         ) {
             let bids_count = bids_array.len() as u32;
             let asks_count = asks_array.len() as u32;
-            
+
             // 创建快照消息，对于快照消息，first_update_id = last_update_id + 1
             let mut inc_msg = IncMsg::create(
                 symbol.to_string(),
-                last_update_id + 1,  // first_update_id
-                last_update_id + 1,  // final_update_id（对于快照相同）
-                0,                   // timestamp（快照没有实际时间戳）
-                true,                // is_snapshot = true
+                last_update_id + 1, // first_update_id
+                last_update_id + 1, // final_update_id（对于快照相同）
+                0,                  // timestamp（快照没有实际时间戳）
+                true,               // is_snapshot = true
                 bids_count,
                 asks_count,
             );
-            
+
             // 使用公共函数解析订单簿层级
             parse_order_book_levels(bids_array, asks_array, &mut inc_msg);
-            
+
             // 发送快照消息
             if tx.send(inc_msg.to_bytes()).is_ok() {
                 return 1;
@@ -397,33 +432,44 @@ impl Parser for BinanceIncParser {
 }
 
 impl BinanceIncParser {
-    fn parse_inc_event(&self, json_value: &serde_json::Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+    fn parse_inc_event(
+        &self,
+        json_value: &serde_json::Value,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> usize {
         // 从增量数据中提取信息
-        if let (Some(symbol), Some(first_update_id), Some(final_update_id), Some(event_time), Some(bids_array), Some(asks_array)) = (
+        if let (
+            Some(symbol),
+            Some(first_update_id),
+            Some(final_update_id),
+            Some(event_time),
+            Some(bids_array),
+            Some(asks_array),
+        ) = (
             json_value.get("s").and_then(|v| v.as_str()),
-            json_value.get("U").and_then(|v| v.as_i64()),  // first update id
-            json_value.get("u").and_then(|v| v.as_i64()),  // final update id
-            json_value.get("E").and_then(|v| v.as_i64()),  // event time
+            json_value.get("U").and_then(|v| v.as_i64()), // first update id
+            json_value.get("u").and_then(|v| v.as_i64()), // final update id
+            json_value.get("E").and_then(|v| v.as_i64()), // event time
             json_value.get("b").and_then(|v| v.as_array()), // bids
             json_value.get("a").and_then(|v| v.as_array()), // asks
         ) {
             let bids_count = bids_array.len() as u32;
             let asks_count = asks_array.len() as u32;
-            
+
             // 创建增量消息
             let mut inc_msg = IncMsg::create(
                 symbol.to_string(),
                 first_update_id,
                 final_update_id,
                 event_time,
-                false,  // is_snapshot = false
+                false, // is_snapshot = false
                 bids_count,
                 asks_count,
             );
-            
+
             // 使用公共函数解析订单簿层级
             parse_order_book_levels(bids_array, asks_array, &mut inc_msg);
-            
+
             // 发送增量消息
             if tx.send(inc_msg.to_bytes()).is_ok() {
                 return 1;
@@ -469,31 +515,39 @@ impl Parser for BinanceTradeParser {
 }
 
 impl BinanceTradeParser {
-    fn parse_trade_event(&self, json_value: &serde_json::Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+    fn parse_trade_event(
+        &self,
+        json_value: &serde_json::Value,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> usize {
         // Extract trade data from Binance trade message
-        if let (Some(symbol), Some(trade_id), Some(price_str), Some(qty_str), Some(event_time), Some(is_maker)) = (
-            json_value.get("s").and_then(|v| v.as_str()),          // 交易对
-            json_value.get("t").and_then(|v| v.as_i64()),          // 交易ID
-            json_value.get("p").and_then(|v| v.as_str()),          // 成交价格
-            json_value.get("q").and_then(|v| v.as_str()),          // 成交数量
-            json_value.get("E").and_then(|v| v.as_i64()),          // 事件时间
-            json_value.get("m").and_then(|v| v.as_bool()),         // 买方是否是做市方
+        if let (
+            Some(symbol),
+            Some(trade_id),
+            Some(price_str),
+            Some(qty_str),
+            Some(event_time),
+            Some(is_maker),
+        ) = (
+            json_value.get("s").and_then(|v| v.as_str()),  // 交易对
+            json_value.get("t").and_then(|v| v.as_i64()),  // 交易ID
+            json_value.get("p").and_then(|v| v.as_str()),  // 成交价格
+            json_value.get("q").and_then(|v| v.as_str()),  // 成交数量
+            json_value.get("E").and_then(|v| v.as_i64()),  // 事件时间
+            json_value.get("m").and_then(|v| v.as_bool()), // 买方是否是做市方
         ) {
             // Parse price and quantity
-            if let (Ok(price), Ok(amount)) = (
-                price_str.parse::<f64>(),
-                qty_str.parse::<f64>(),
-            ) {
+            if let (Ok(price), Ok(amount)) = (price_str.parse::<f64>(), qty_str.parse::<f64>()) {
                 // Filter out zero values - 币安有时候price和amount会是0，过滤掉不发送
                 if price <= 0.0 || amount <= 0.0 {
                     return 0;
                 }
-                
+
                 // Determine side: 买方是否是做市方，'S'表示卖出，'B'表示买入
                 // 如果买方是做市方(true)，那么这是一个主动卖出单，标记为'S'
                 // 如果买方不是做市方(false)，那么这是一个主动买入单，标记为'B'
                 let side = if is_maker { 'S' } else { 'B' };
-                
+
                 // Create trade message
                 let trade_msg = TradeMsg::create(
                     symbol.to_string(),
@@ -503,7 +557,7 @@ impl BinanceTradeParser {
                     price,
                     amount,
                 );
-                
+
                 // Send trade message
                 if tx.send(trade_msg.to_bytes()).is_ok() {
                     return 1;
@@ -521,19 +575,23 @@ impl Parser for BinanceAskBidSpreadParser {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
                 // 币安期货格式没有 E 和 T 字段，现货有
                 // 统一处理，如果有 E 字段就用，没有就用 0
-                if let (Some(symbol), Some(bid_price_str), Some(bid_qty_str), Some(ask_price_str), Some(ask_qty_str)) = (
-                    json_value.get("s").and_then(|v| v.as_str()),     // symbol
-                    json_value.get("b").and_then(|v| v.as_str()),     // best bid price
-                    json_value.get("B").and_then(|v| v.as_str()),     // best bid qty
-                    json_value.get("a").and_then(|v| v.as_str()),     // best ask price
-                    json_value.get("A").and_then(|v| v.as_str()),     // best ask qty
+                if let (
+                    Some(symbol),
+                    Some(bid_price_str),
+                    Some(bid_qty_str),
+                    Some(ask_price_str),
+                    Some(ask_qty_str),
+                ) = (
+                    json_value.get("s").and_then(|v| v.as_str()), // symbol
+                    json_value.get("b").and_then(|v| v.as_str()), // best bid price
+                    json_value.get("B").and_then(|v| v.as_str()), // best bid qty
+                    json_value.get("a").and_then(|v| v.as_str()), // best ask price
+                    json_value.get("A").and_then(|v| v.as_str()), // best ask qty
                 ) {
                     // 获取时间戳：统一使用u字段（order book updateId）作为索引
                     // 币安现货和期货的bookTicker都有u字段
-                    let timestamp = json_value.get("u")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0);
-                    
+                    let timestamp = json_value.get("u").and_then(|v| v.as_i64()).unwrap_or(0);
+
                     // Parse prices and amounts
                     if let (Ok(bid_price), Ok(bid_amount), Ok(ask_price), Ok(ask_amount)) = (
                         bid_price_str.parse::<f64>(),
@@ -542,10 +600,14 @@ impl Parser for BinanceAskBidSpreadParser {
                         ask_qty_str.parse::<f64>(),
                     ) {
                         // Filter out zero values
-                        if bid_price <= 0.0 || bid_amount <= 0.0 || ask_price <= 0.0 || ask_amount <= 0.0 {
+                        if bid_price <= 0.0
+                            || bid_amount <= 0.0
+                            || ask_price <= 0.0
+                            || ask_amount <= 0.0
+                        {
                             return 0;
                         }
-                        
+
                         // Create spread message
                         let spread_msg = AskBidSpreadMsg::create(
                             symbol.to_string(),
@@ -555,7 +617,7 @@ impl Parser for BinanceAskBidSpreadParser {
                             ask_price,
                             ask_amount,
                         );
-                        
+
                         // Send message
                         if tx.send(spread_msg.to_bytes()).is_ok() {
                             return 1;

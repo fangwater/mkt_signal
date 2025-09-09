@@ -1,7 +1,7 @@
-use async_trait::async_trait;
+use super::types::{Position, PositionSide, PositionType};
 use anyhow::Result;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use super::types::{Position, PositionType, PositionSide};
 
 /// 账户余额信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,56 +43,69 @@ pub struct RawPosition {
     pub liquidation_price: Option<f64>,
 }
 
+/// 组合保证金（Portfolio Margin）账户汇总信息（字段按接口可用性可选）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PmAccountSummary {
+    /// 账户总权益
+    pub account_equity: Option<f64>,
+    /// 总维持保证金
+    pub total_maint_margin: Option<f64>,
+    /// 总初始保证金
+    pub total_initial_margin: Option<f64>,
+    /// 总未实现盈亏
+    pub total_unrealized_pnl: Option<f64>,
+    /// 总保证金余额
+    pub total_margin_balance: Option<f64>,
+    /// 最大可提取金额
+    pub max_withdraw_amount: Option<f64>,
+}
+
 /// 交易所API客户端trait
 /// 不同交易所实现这个trait来提供统一的接口
 #[async_trait]
 pub trait ExchangeApiClient: Send + Sync {
     /// 获取现货账户余额
     async fn fetch_spot_balances(&self) -> Result<Vec<Balance>>;
-    
+
     /// 获取合约账户余额
     async fn fetch_futures_balances(&self) -> Result<Vec<Balance>>;
-    
+
     /// 获取现货持仓（现货实际上是余额）
     async fn fetch_spot_positions(&self) -> Result<Vec<RawPosition>>;
-    
+
     /// 获取永续合约持仓
     async fn fetch_perpetual_positions(&self) -> Result<Vec<RawPosition>>;
-    
+
     /// 获取所有仓位（现货+合约）
     async fn fetch_all_positions(&self) -> Result<Vec<RawPosition>> {
         let mut positions = Vec::new();
-        
+
         // 获取现货仓位
         if let Ok(spot) = self.fetch_spot_positions().await {
             positions.extend(spot);
         }
-        
+
         // 获取合约仓位
         if let Ok(perpetual) = self.fetch_perpetual_positions().await {
             positions.extend(perpetual);
         }
-        
+
         Ok(positions)
     }
-    
+
     /// 将原始仓位转换为标准仓位格式
     fn normalize_position(&self, raw: RawPosition) -> Position {
         let mut position = match raw.position_type {
-            PositionType::Spot => {
-                Position::new_spot(raw.symbol, raw.quantity, raw.entry_price)
-            }
-            PositionType::Perpetual => {
-                Position::new_perpetual(
-                    raw.symbol,
-                    raw.side,
-                    raw.quantity,
-                    raw.entry_price,
-                    raw.leverage.unwrap_or(1),
-                )
-            }
+            PositionType::Spot => Position::new_spot(raw.symbol, raw.quantity, raw.entry_price),
+            PositionType::Perpetual => Position::new_perpetual(
+                raw.symbol,
+                raw.side,
+                raw.quantity,
+                raw.entry_price,
+                raw.leverage.unwrap_or(1),
+            ),
         };
-        
+
         // 设置可选字段
         if let Some(mark_price) = raw.mark_price {
             position.mark_price = Some(mark_price);
@@ -101,8 +114,13 @@ pub trait ExchangeApiClient: Send + Sync {
         position.realized_pnl = raw.realized_pnl;
         position.margin = raw.margin;
         position.liquidation_price = raw.liquidation_price;
-        
+
         position
+    }
+
+    /// 组合保证金账户汇总（默认None，具体交易所可实现）
+    async fn fetch_pm_summary(&self) -> Result<Option<PmAccountSummary>> {
+        Ok(None)
     }
 }
 
@@ -137,7 +155,7 @@ impl ApiConfig {
             base_url: std::env::var("BINANCE_BASE_URL").ok(),
         })
     }
-    
+
     /// 从环境变量创建OKX配置
     pub fn from_env_okx() -> Result<Self> {
         Ok(Self {
@@ -145,8 +163,10 @@ impl ApiConfig {
                 .map_err(|_| anyhow::anyhow!("OKX_API_KEY 未设置"))?,
             api_secret: std::env::var("OKX_API_SECRET")
                 .map_err(|_| anyhow::anyhow!("OKX_API_SECRET 未设置"))?,
-            passphrase: Some(std::env::var("OKX_API_PASSPHRASE")
-                .map_err(|_| anyhow::anyhow!("OKX_API_PASSPHRASE 未设置"))?),
+            passphrase: Some(
+                std::env::var("OKX_API_PASSPHRASE")
+                    .map_err(|_| anyhow::anyhow!("OKX_API_PASSPHRASE 未设置"))?,
+            ),
             testnet: std::env::var("OKX_TESTNET")
                 .unwrap_or_else(|_| "false".to_string())
                 .parse()
@@ -154,7 +174,7 @@ impl ApiConfig {
             base_url: std::env::var("OKX_BASE_URL").ok(),
         })
     }
-    
+
     /// 从环境变量创建Bybit配置
     pub fn from_env_bybit() -> Result<Self> {
         Ok(Self {
