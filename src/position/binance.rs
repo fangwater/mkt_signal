@@ -18,6 +18,8 @@ pub struct BinanceApiClient {
     config: ApiConfig,
     /// 现货API基础URL
     spot_base_url: String,
+    /// PAPI 基础URL（统一账户）
+    papi_base_url: String,
 }
 
 impl BinanceApiClient {
@@ -40,8 +42,10 @@ impl BinanceApiClient {
         } else {
             "https://api.binance.com".to_string()
         };
+        let papi_base_url = std::env::var("BINANCE_PAPI_BASE_URL")
+            .unwrap_or_else(|_| "https://papi.binance.com".to_string());
 
-        Self { client: Client::new(), config, spot_base_url }
+        Self { client: Client::new(), config, spot_base_url, papi_base_url }
     }
 
     /// 生成签名
@@ -148,7 +152,12 @@ impl BinanceApiClient {
 
     /// PAPI 余额（补充分账户/统一账户下资产视图）
     async fn fetch_papi_balance(&self) -> Result<Value> {
-        self.signed_get(&self.spot_base_url, "papi/v1/balance", "").await
+        self.signed_get(&self.papi_base_url, "papi/v1/balance", "").await
+    }
+
+    /// PAPI 账户（统一账户主要信息：资产+持仓）
+    async fn fetch_papi_account(&self) -> Result<Value> {
+        self.signed_get(&self.papi_base_url, "papi/v1/account", "").await
     }
 
     /// 从 PM 账户响应解析持仓（缺失字段置 None）
@@ -368,68 +377,71 @@ impl ExchangeApiClient for BinanceApiClient {
         Ok(Vec::new())
     }
 
-    /// 覆盖默认实现：仅用 `/sapi/v1/portfolio/account` 解析所有持仓
+    /// 覆盖默认实现：优先使用 `/papi/v1/account`，并合并 `/papi/v1/balance`；必要时回退 `/sapi/v1/portfolio/account`
     async fn fetch_all_positions(&self) -> Result<Vec<RawPosition>> {
-        let data = self.fetch_portfolio_account().await?;
-
-        // 打印 PM 原始返回
-        match serde_json::to_string_pretty(&data) {
-            Ok(s) => log::info!("PM account raw response:\n{}", s),
-            Err(_) => log::info!("PM account raw response: {}", data),
+        // 1) 主要来源：PAPI 统一账户
+        let papi_acc = self.fetch_papi_account().await?;
+        match serde_json::to_string_pretty(&papi_acc) {
+            Ok(s) => log::info!("PAPI account raw response:\n{}", s),
+            Err(_) => log::info!("PAPI account raw response: {}", papi_acc),
         }
-        let pos_cnt = data
+        let pos_cnt = papi_acc
             .get("positions")
             .and_then(|v| v.as_array())
             .map(|a| a.len())
             .unwrap_or(0);
-        let top_keys = data
+        let top_keys = papi_acc
             .as_object()
             .map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "))
             .unwrap_or_else(|| "<non-object>".to_string());
-        log::info!("PM account top-level keys: {} | positions count: {}", top_keys, pos_cnt);
+        log::info!(
+            "PAPI account top-level keys: {} | positions count: {}",
+            top_keys, pos_cnt
+        );
 
-        // 解析 PM 衍生品及 PM 资产转现货
-        let pm_perp = self.parse_pm_positions(&data);
-        let pm_spot = self.parse_pm_spot_positions(&data);
-
-        // 解析 PAPI 余额为现货
-        let papi = self.fetch_papi_balance().await?;
-        match serde_json::to_string_pretty(&papi) {
-            Ok(s) => log::info!("PAPI balance raw response:\n{}", s),
-            Err(_) => log::info!("PAPI balance raw response: {}", papi),
-        }
-        let papi_spot = self.parse_papi_spot_positions(&papi);
-
-        // 合并并按 (symbol, position_type) 去重聚合数量
-        let mut map: HashMap<(String, PositionType), RawPosition> = HashMap::new();
-        for p in pm_perp.into_iter().chain(pm_spot).chain(papi_spot) {
+        // 解析 PAPI 衍生品持仓 & 资产→现货
+        let mut combined: HashMap<(String, PositionType), RawPosition> = HashMap::new();
+        for p in self.parse_pm_positions(&papi_acc).into_iter().chain(self.parse_pm_spot_positions(&papi_acc)) {
             let key = (p.symbol.clone(), p.position_type);
-            if let Some(e) = map.get_mut(&key) {
-                // 聚合数量（适用于现货映射），保留已有可选字段
+            combined.entry(key).or_insert(p);
+        }
+
+        // 2) 余额补充：PAPI balance
+        let papi_bal = self.fetch_papi_balance().await?;
+        match serde_json::to_string_pretty(&papi_bal) {
+            Ok(s) => log::info!("PAPI balance raw response:\n{}", s),
+            Err(_) => log::info!("PAPI balance raw response: {}", papi_bal),
+        }
+        for p in self.parse_papi_spot_positions(&papi_bal) {
+            let key = (p.symbol.clone(), p.position_type);
+            if let Some(e) = combined.get_mut(&key) {
                 e.quantity += p.quantity;
                 if e.mark_price.is_none() {
                     e.mark_price = p.mark_price;
                 }
-                if e.unrealized_pnl.is_none() {
-                    e.unrealized_pnl = p.unrealized_pnl;
-                }
-                if e.realized_pnl.is_none() {
-                    e.realized_pnl = p.realized_pnl;
-                }
-                if e.margin.is_none() {
-                    e.margin = p.margin;
-                }
-                if e.leverage.is_none() {
-                    e.leverage = p.leverage;
-                }
-                if e.liquidation_price.is_none() {
-                    e.liquidation_price = p.liquidation_price;
-                }
             } else {
-                map.insert(key, p);
+                combined.insert(key, p);
             }
         }
-        Ok(map.into_values().collect())
+
+        // 3) 回退：如上仍无数据，尝试 SAPI PM 账户
+        if combined.is_empty() {
+            let pm = self.fetch_portfolio_account().await?;
+            match serde_json::to_string_pretty(&pm) {
+                Ok(s) => log::info!("PM account raw response:\n{}", s),
+                Err(_) => log::info!("PM account raw response: {}", pm),
+            }
+            for p in self
+                .parse_pm_positions(&pm)
+                .into_iter()
+                .chain(self.parse_pm_spot_positions(&pm))
+            {
+                let key = (p.symbol.clone(), p.position_type);
+                combined.entry(key).or_insert(p);
+            }
+        }
+
+        Ok(combined.into_values().collect())
     }
 
     /// PM-only：返回组合保证金账户汇总
