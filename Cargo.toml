@@ -16,6 +16,10 @@ path = "src/main.rs"
 name = "funding_rate_signal"
 path = "src/bin/funding_rate_strategy.rs"
 
+[[example]]
+name = "position_demo"
+path = "examples/position_demo.rs"
+
 [dependencies]
 local-ip-address = "0.6"
 serde_yaml = "0.9"

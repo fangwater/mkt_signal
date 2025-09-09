@@ -4,6 +4,7 @@ pub mod parser;
 pub mod connection;
 pub mod market_state;
 pub mod mkt_pub;
+pub mod position;
 
 // Re-export frequently used modules for backward compatibility
 pub use common::{mkt_msg, exchange};
