@@ -20,6 +20,18 @@ pub struct BinanceApiClient {
 }
 
 impl BinanceApiClient {
+    #[inline]
+    fn val_as_f64(v: &Value) -> Option<f64> {
+        v.as_f64()
+            .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+    }
+
+    #[inline]
+    fn val_as_u32(v: &Value) -> Option<u32> {
+        v.as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .or_else(|| v.as_str().and_then(|s| s.parse::<u32>().ok()))
+    }
     /// 创建新的币安API客户端
     pub fn new(config: ApiConfig) -> Self {
         let spot_base_url = if config.testnet {
@@ -46,6 +58,11 @@ impl BinanceApiClient {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64
+    }
+
+    #[inline]
+    fn is_stable_asset(asset: &str) -> bool {
+        matches!(asset, "USDT" | "BUSD" | "USDC" | "FDUSD" | "TUSD" | "DAI" | "SUSD")
     }
 
     /// 构建带签名的请求URL
@@ -148,8 +165,7 @@ impl BinanceApiClient {
             let position_amt = item
                 .get("positionAmt")
                 .or_else(|| item.get("posAmt"))
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok())
+                .and_then(Self::val_as_f64)
                 .unwrap_or(0.0);
             if position_amt == 0.0 {
                 continue;
@@ -163,28 +179,19 @@ impl BinanceApiClient {
             let entry_price = item
                 .get("entryPrice")
                 .or_else(|| item.get("avgEntryPrice"))
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok())
+                .and_then(Self::val_as_f64)
                 .unwrap_or(0.0);
-            let mark_price = item
-                .get("markPrice")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok());
+            let mark_price = item.get("markPrice").and_then(Self::val_as_f64);
             let unrealized_pnl = item
                 .get("unRealizedProfit")
                 .or_else(|| item.get("unrealizedProfit"))
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok());
-            let leverage = item
-                .get("leverage")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<u32>().ok());
+                .and_then(Self::val_as_f64);
+            let leverage = item.get("leverage").and_then(Self::val_as_u32);
             // PM-only: 不保证有，统一置 None
             let margin = None;
             let liquidation_price = item
                 .get("liquidationPrice")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok())
+                .and_then(Self::val_as_f64)
                 .filter(|&p| p > 0.0);
 
             res.push(RawPosition {
@@ -199,6 +206,69 @@ impl BinanceApiClient {
                 margin,
                 leverage,
                 liquidation_price,
+            });
+        }
+        res
+    }
+
+    /// 从 PM 账户响应解析资产为“现货仓位”（非稳定币，数量>阈值）
+    fn parse_pm_spot_positions(&self, root: &Value) -> Vec<RawPosition> {
+        let mut res = Vec::new();
+        let candidates = [
+            "assets",
+            "userAssets",
+            "balances",
+            "uniAccountAssets",
+            "accountAssets",
+        ];
+        let assets_array = candidates
+            .iter()
+            .find_map(|k| root.get(*k).and_then(|v| v.as_array()));
+        if assets_array.is_none() {
+            return res;
+        }
+        for item in assets_array.unwrap() {
+            let asset = item
+                .get("asset")
+                .or_else(|| item.get("coin"))
+                .or_else(|| item.get("currency"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if asset.is_empty() || Self::is_stable_asset(&asset) {
+                continue;
+            }
+
+            let total = Self::val_as_f64(item.get("total").unwrap_or(&Value::Null))
+                .or_else(|| Self::val_as_f64(item.get("walletBalance").unwrap_or(&Value::Null)))
+                .or_else(|| Self::val_as_f64(item.get("marginBalance").unwrap_or(&Value::Null)))
+                .or_else(|| Self::val_as_f64(item.get("balance").unwrap_or(&Value::Null)))
+                .or_else(|| {
+                    let free = Self::val_as_f64(item.get("free").unwrap_or(&Value::Null)).unwrap_or(0.0);
+                    let locked = Self::val_as_f64(item.get("locked").unwrap_or(&Value::Null)).unwrap_or(0.0);
+                    let sum = free + locked;
+                    if sum > 0.0 { Some(sum) } else { None }
+                })
+                .unwrap_or(0.0);
+
+            if total <= 0.0 || total < 0.0001 {
+                continue;
+            }
+
+            let symbol = format!("{}USDT", asset);
+            res.push(RawPosition {
+                symbol,
+                position_type: PositionType::Spot,
+                side: PositionSide::Long,
+                quantity: total,
+                entry_price: 0.0,
+                // 临时占位：现货标记价统一按 1 处理
+                mark_price: Some(1.0),
+                unrealized_pnl: None,
+                realized_pnl: None,
+                margin: None,
+                leverage: None,
+                liquidation_price: None,
             });
         }
         res
@@ -230,7 +300,10 @@ impl ExchangeApiClient for BinanceApiClient {
     /// 覆盖默认实现：仅用 `/sapi/v1/portfolio/account` 解析所有持仓
     async fn fetch_all_positions(&self) -> Result<Vec<RawPosition>> {
         let data = self.fetch_portfolio_account().await?;
-        Ok(self.parse_pm_positions(&data))
+        let mut positions = self.parse_pm_positions(&data);
+        let spot_positions = self.parse_pm_spot_positions(&data);
+        positions.extend(spot_positions);
+        Ok(positions)
     }
 
     /// PM-only：返回组合保证金账户汇总
@@ -241,31 +314,25 @@ impl ExchangeApiClient for BinanceApiClient {
             account_equity: data
                 .get("accountEquity")
                 .or_else(|| data.get("totalCrossWalletBalance"))
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()),
+                .and_then(Self::val_as_f64),
             total_maint_margin: data
                 .get("totalMaintMargin")
                 .or_else(|| data.get("maintMargin"))
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()),
+                .and_then(Self::val_as_f64),
             total_initial_margin: data
                 .get("totalInitialMargin")
                 .or_else(|| data.get("initialMargin"))
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()),
+                .and_then(Self::val_as_f64),
             total_unrealized_pnl: data
                 .get("totalCrossUnPnl")
                 .or_else(|| data.get("unRealizedProfit"))
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()),
+                .and_then(Self::val_as_f64),
             total_margin_balance: data
                 .get("totalMarginBalance")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()),
+                .and_then(Self::val_as_f64),
             max_withdraw_amount: data
                 .get("maxWithdrawAmount")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()),
+                .and_then(Self::val_as_f64),
         };
         Ok(Some(s))
     }
