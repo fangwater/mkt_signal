@@ -223,6 +223,119 @@ impl WsConnector {
             Self::MAX_RETRIES
         ))
     }
+
+    /// Connect without sending any subscribe message (for user-data streams that use URL-only auth)
+    pub async fn connect_raw(url: &str) -> anyhow::Result<WsConnectionResult> {
+        let url = Url::parse(url).with_context(|| "Invalid URL")?;
+        for retry in 0..Self::MAX_RETRIES {
+            match connect_async(url.clone()).await {
+                Ok((ws_stream, _)) => {
+                    return Ok(WsConnectionResult {
+                        ws_stream: Arc::new(Mutex::new(ws_stream)),
+                        connected_at: Instant::now(),
+                    });
+                }
+                Err(e) => {
+                    if Self::is_dns_error(&e) {
+                        error!(
+                            "DNS error, retrying... ({}/{})",
+                            retry + 1,
+                            Self::MAX_RETRIES
+                        );
+                        time::sleep(Self::RETRY_DELAY).await;
+                    } else {
+                        return Err(e.into());
+                    }
+                }
+            }
+        }
+        Err(anyhow::anyhow!(
+            "Failed to connect to WebSocket after {} retries",
+            Self::MAX_RETRIES
+        ))
+    }
+
+    /// Connect binding to a local IP, without sending a subscribe message
+    pub async fn connect_with_local_ip_raw(
+        url: &str,
+        local_ip: &str,
+    ) -> anyhow::Result<WsConnectionResult> {
+        if local_ip == "0.0.0.0" || local_ip.is_empty() {
+            return Self::connect_raw(url).await;
+        }
+
+        let local_addr: IpAddr = local_ip
+            .parse()
+            .with_context(|| format!("Invalid local IP address: {}", local_ip))?;
+        debug!(
+            "Using local IP {} for WebSocket connection to {} (no subscribe)",
+            local_ip, url
+        );
+
+        let ws_url = Url::parse(url).with_context(|| "Invalid URL")?;
+        let scheme = ws_url.scheme();
+        let host = ws_url
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("URL has no host"))?;
+        let port = ws_url
+            .port_or_known_default()
+            .ok_or_else(|| anyhow::anyhow!("URL has no port"))?;
+
+        let mut addrs = lookup_host((host, port))
+            .await
+            .with_context(|| format!("Failed to resolve {}:{}", host, port))?;
+        let target = addrs
+            .find(|sa| match (sa, local_addr) {
+                (SocketAddr::V4(_), IpAddr::V4(_)) => true,
+                (SocketAddr::V6(_), IpAddr::V6(_)) => true,
+                _ => false,
+            })
+            .ok_or_else(|| anyhow::anyhow!("No matching address family for host"))?;
+
+        let socket = match local_addr {
+            IpAddr::V4(ip) => {
+                let s = TcpSocket::new_v4()?;
+                s.bind((ip, 0).into())
+                    .with_context(|| format!("Failed to bind to IPv4 address {}", ip))?;
+                s
+            }
+            IpAddr::V6(ip) => {
+                let s = TcpSocket::new_v6()?;
+                s.bind((ip, 0).into())
+                    .with_context(|| format!("Failed to bind to IPv6 address {}", ip))?;
+                s
+            }
+        };
+
+        let stream = socket
+            .connect(target)
+            .await
+            .with_context(|| format!("Failed to connect to {}", target))?;
+
+        let (ws_stream, _resp) = if scheme.eq_ignore_ascii_case("wss") {
+            let host = ws_url
+                .host_str()
+                .ok_or_else(|| anyhow::anyhow!("URL has no host"))?;
+            let native = NativeTlsConnector::builder()
+                .build()
+                .with_context(|| "Failed to build native-tls connector")?;
+            let connector = TokioTlsConnector::from(native);
+            let tls_stream = connector
+                .connect(host, stream)
+                .await
+                .with_context(|| "TLS handshake failed")?;
+            let tls_wrapped = MaybeTlsStream::NativeTls(tls_stream);
+            client_async(ws_url.as_str(), tls_wrapped).await?
+        } else {
+            let plain_stream = MaybeTlsStream::Plain(stream);
+            client_async(ws_url.as_str(), plain_stream).await?
+        };
+
+        Ok(WsConnectionResult {
+            ws_stream: Arc::new(Mutex::new(ws_stream)),
+            connected_at: Instant::now(),
+        })
+    }
 }
 
 //两个trait，start stop是通用trait，run_connection是交易所的具体实现
