@@ -9,7 +9,7 @@
 //! 使用方式：调用 `start(shutdown_rx)` 获取一个 `watch::Receiver<String>`，
 //! 初次会发出创建到的 listenKey，后续重建也会更新。
 use anyhow::Result;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use reqwest::Client;
 use serde::Deserialize;
 use tokio::time::{self, Duration};
@@ -43,6 +43,7 @@ impl BinanceListenKeyService {
     /// 通过 REST 创建 listenKey
     async fn create_listen_key(&self) -> Result<String> {
         let url = format!("{}{}", self.rest_base, "/papi/v1/listenKey");
+        debug!("[listenKey] Creating on {}", self.rest_base);
         let resp = self
             .client
             .post(url)
@@ -66,6 +67,7 @@ impl BinanceListenKeyService {
     /// 对现有 listenKey 进行保活（有效期延长 60 分钟）
     async fn keepalive_listen_key(&self, key: &str) -> Result<()> {
         let url = format!("{}{}?listenKey={}", self.rest_base, "/papi/v1/listenKey", key);
+        debug!("[listenKey] Keepalive sent");
         let resp = self
             .client
             .put(url)
@@ -89,6 +91,7 @@ impl BinanceListenKeyService {
     /// 删除 listenKey，立即失效
     async fn delete_listen_key(&self, key: &str) -> Result<()> {
         let url = format!("{}{}?listenKey={}", self.rest_base, "/papi/v1/listenKey", key);
+        debug!("[listenKey] Deleting before shutdown");
         let resp = self
             .client
             .delete(url)
@@ -122,7 +125,7 @@ impl BinanceListenKeyService {
                     }
                 }
             };
-            info!("Obtained listenKey");
+            info!("Obtained listenKey, broadcasting to consumers");
             let _ = tx.send(listen_key.clone());
 
             // 2) 定时保活；失败则立即重建并广播新 key
@@ -132,7 +135,7 @@ impl BinanceListenKeyService {
                     _ = ticker.tick() => {
                         match self.keepalive_listen_key(&listen_key).await {
                             Ok(_) => {
-                                info!("listenKey keepalive succeeded");
+                                debug!("listenKey keepalive succeeded");
                             }
                             Err(e) => {
                                 warn!("listenKey keepalive failed: {}. Recreating...", e);
@@ -141,7 +144,7 @@ impl BinanceListenKeyService {
                                     Ok(new_key) => {
                                         listen_key = new_key;
                                         let _ = tx.send(listen_key.clone());
-                                        info!("listenKey recreated and updated to watchers");
+                                        info!("listenKey recreated and broadcast to consumers");
                                     }
                                     Err(e2) => {
                                         error!("Failed to recreate listenKey: {}", e2);
@@ -153,6 +156,7 @@ impl BinanceListenKeyService {
                     _ = shutdown.changed() => {
                         if *shutdown.borrow() {
                             // 3) 应用退出时，尝试删除 listenKey
+                            info!("Shutdown received, deleting listenKey");
                             let _ = self.delete_listen_key(&listen_key).await;
                             break;
                         }

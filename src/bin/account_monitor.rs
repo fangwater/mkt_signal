@@ -52,6 +52,7 @@ async fn main() -> Result<()> {
         .and_then(|e| e.rest.as_ref())
         .and_then(|r| r.pm.clone())
         .unwrap_or_else(|| "https://papi.binance.com".to_string());
+    info!("Config loaded. ws_pm={}, rest_pm={}", ws_pm, rest_pm);
 
     // IP and session settings
     let primary_ip = cfg
@@ -65,6 +66,7 @@ async fn main() -> Result<()> {
         .clone()
         .unwrap_or_else(|| "".to_string());
     let session_max = cfg.general.ws_session_max_secs.map(Duration::from_secs);
+    info!("Primary IP='{}', Secondary IP='{}', session_max={:?}", primary_ip, secondary_ip, session_max);
 
     // Start listenKey service
     let listen_key_rx = BinanceListenKeyService::new(rest_pm.clone(), api_key)
@@ -152,7 +154,7 @@ fn spawn_user_stream_path(
             }
 
             let url = build_ws_url(&ws_base, &listen_key);
-            info!("[{}] connecting to {}", name, url);
+            info!("[{}] connecting to {} (local_ip='{}')", name, url, local_ip);
             let (raw_tx, mut raw_rx) = broadcast::channel::<Bytes>(8192);
             let mut conn = MktConnection::new(url, serde_json::json!({}), raw_tx.clone(), shutdown_rx.clone());
             if !local_ip.is_empty() { conn.local_ip = Some(local_ip.clone()); }
@@ -168,7 +170,7 @@ fn spawn_user_stream_path(
                             match msg {
                                 Ok(b) => { let _ = evt_tx_clone.send(b); }
                                 Err(broadcast::error::RecvError::Closed) => break,
-                                Err(broadcast::error::RecvError::Lagged(_)) => { warn!("[{}] lagged", name); }
+                                Err(broadcast::error::RecvError::Lagged(skipped)) => { warn!("[{}] lagged: skipped {} msgs", name, skipped); }
                             }
                         }
                         _ = consumer_shutdown.changed() => {
@@ -188,7 +190,7 @@ fn spawn_user_stream_path(
             tokio::select! {
                 _ = listen_key_rx.changed() => {
                     let new_key = listen_key_rx.borrow().clone();
-                    if new_key != prev { info!("[{}] detected listenKey rotation", name); }
+                    if new_key != prev { info!("[{}] detected listenKey rotation -> reconnect", name); }
                 }
                 _ = tokio::time::sleep(Duration::from_secs(2)) => {}
             }

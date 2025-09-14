@@ -40,6 +40,7 @@ impl BinanceUserDataConnection {
 impl MktConnectionRunner for BinanceUserDataConnection {
     async fn run_connection(&mut self) -> Result<()> {
         let mut ping_send_timer = Instant::now() + self.ping_interval + self.delay_interval;
+        debug!("[user-ws] entering run loop (ping ~{:?}, session_max={:?})", self.ping_interval, self.session_max);
         let mut session_sleep = if let Some(d) = self.session_max { 
             Box::pin(time::sleep(d))
         } else {
@@ -77,6 +78,7 @@ impl MktConnectionRunner for BinanceUserDataConnection {
                                         break;
                                     }
                                     ping_send_timer = Instant::now() + self.ping_interval + self.delay_interval;
+                                    debug!("[user-ws] pong sent; reset ping timer");
                                 }
                                 Message::Close(frame) => {
                                     warn!("User-data WS received close: {:?}", frame);
@@ -100,6 +102,7 @@ impl MktConnectionRunner for BinanceUserDataConnection {
                             }
                         }
                         Ok(None) => { // stream closed gracefully
+                            debug!("[user-ws] stream closed by server");
                             break;
                         }
                         Err(e) => {
