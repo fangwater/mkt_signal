@@ -20,6 +20,10 @@ path = "src/bin/funding_rate_strategy.rs"
 name = "account_monitor"
 path = "src/bin/account_monitor.rs"
 
+[[bin]]
+name = "trade_engine"
+path = "src/bin/trade_engine.rs"
+
 [dependencies]
 local-ip-address = "0.6"
 serde_yaml = "0.9"

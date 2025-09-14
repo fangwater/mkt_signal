@@ -1,0 +1,27 @@
+order_req_service = "order_reqs/binance"
+order_resp_service = "order_resps/binance"
+exchange = "binance"
+
+[rest]
+base_url = "https://papi.binance.com"
+timeout_ms = 10000
+recv_window_ms = 5000
+
+[limits]
+account_per_min = 1200
+ip_weight_per_min = 6000
+warn_ratio = 0.8
+cooldown_ms_429 = 60000
+ban_backoff_ms_418 = 120000
+
+[network]
+# 可配置多个本地出站IP，用于多IP路由
+local_ips = [
+  "127.0.0.1"
+]
+
+[accounts]
+[[accounts.keys]]
+name = "acct_1"
+key = "YOUR_API_KEY"
+secret = "YOUR_SECRET"
