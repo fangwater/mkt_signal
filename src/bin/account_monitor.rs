@@ -1,6 +1,6 @@
 use anyhow::Result;
 use bytes::Bytes;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::portfolio_margin::binance_user_stream::BinanceUserDataConnection;
 use mkt_signal::portfolio_margin::listen_key::BinanceListenKeyService;
@@ -163,12 +163,20 @@ fn spawn_user_stream_path(
             // consumer
             let mut consumer_shutdown = shutdown_rx.clone();
             let evt_tx_clone = evt_tx.clone();
+            let local_ip_log = local_ip.clone();
             tokio::spawn(async move {
                 loop {
                     tokio::select! {
                         msg = raw_rx.recv() => {
                             match msg {
-                                Ok(b) => { let _ = evt_tx_clone.send(b); }
+                                Ok(b) => {
+                                    if let Ok(s) = std::str::from_utf8(&b) {
+                                        debug!("[{}][ip={}] ws json: {}", name, local_ip_log, s);
+                                    } else {
+                                        debug!("[{}][ip={}] ws bin: {} bytes", name, local_ip_log, b.len());
+                                    }
+                                    let _ = evt_tx_clone.send(b);
+                                }
                                 Err(broadcast::error::RecvError::Closed) => break,
                                 Err(broadcast::error::RecvError::Lagged(skipped)) => { warn!("[{}] lagged: skipped {} msgs", name, skipped); }
                             }
