@@ -45,7 +45,7 @@ impl PmForwarder {
             .max_publishers(1)
             .max_subscribers(subs.unwrap_or(10))
             .history_size(hist.unwrap_or(50))
-            .subscriber_max_buffer_size(8192)
+            .subscriber_max_buffer_size(1024)
             .open_or_create()?;
 
         let publisher = service.publisher_builder().create()?;

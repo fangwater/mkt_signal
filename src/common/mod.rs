@@ -1,3 +1,4 @@
+pub mod account_msg;
 pub mod exchange;
 pub mod iceoryx_publisher;
 pub mod iceoryx_subscriber;

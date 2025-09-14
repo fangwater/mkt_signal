@@ -2,6 +2,8 @@ use anyhow::Result;
 use bytes::Bytes;
 use log::{debug, error, info, warn};
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
+use mkt_signal::parser::binance_account_event_parser::BinanceAccountEventParser;
+use mkt_signal::parser::default_parser::Parser;
 use mkt_signal::portfolio_margin::binance_user_stream::BinanceUserDataConnection;
 use mkt_signal::portfolio_margin::listen_key::BinanceListenKeyService;
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
@@ -164,6 +166,7 @@ fn spawn_user_stream_path(
             let mut consumer_shutdown = shutdown_rx.clone();
             let evt_tx_clone = evt_tx.clone();
             let local_ip_log = local_ip.clone();
+            let parser = BinanceAccountEventParser::new();
             tokio::spawn(async move {
                 loop {
                     tokio::select! {
@@ -175,7 +178,8 @@ fn spawn_user_stream_path(
                                     } else {
                                         debug!("[{}][ip={}] ws bin: {} bytes", name, local_ip_log, b.len());
                                     }
-                                    let _ = evt_tx_clone.send(b);
+                                    // 解析并通过通道发送解析后的账户事件（二进制）
+                                    let _ = parser.parse(b, &evt_tx_clone);
                                 }
                                 Err(broadcast::error::RecvError::Closed) => break,
                                 Err(broadcast::error::RecvError::Lagged(skipped)) => { warn!("[{}] lagged: skipped {} msgs", name, skipped); }

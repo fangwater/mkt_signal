@@ -1,0 +1,985 @@
+use bytes::{BufMut, Bytes, BytesMut};
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum AccountEventType {
+    ConditionalOrderUpdate = 2001,
+    OpenOrderLoss = 2002,
+    AccountPosition = 2003,
+    LiabilityChange = 2004,
+    ExecutionReport = 2005,
+    OrderTradeUpdate = 2006,
+    AccountUpdateBalance = 2007,
+    AccountUpdatePosition = 2008,
+    AccountConfigUpdate = 2009,
+    BalanceUpdate = 2010,
+    Error = 3333,
+}
+
+#[allow(dead_code)]
+pub struct AccountEventMsg {
+    pub msg_type: AccountEventType,
+    pub msg_length: u32,
+    pub data: Bytes,
+}
+
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct ConditionalOrderMsg {
+    pub msg_type: AccountEventType,
+    pub symbol_length: u32,
+    pub symbol: String,
+    pub strategy_id: i64,
+    pub order_id: i64,
+    pub trade_time: i64,
+    pub event_time: i64,
+    pub update_time: i64,
+    pub side: char,
+    pub position_side: char,
+    pub reduce_only: bool,
+    pub close_position: bool,
+    pub padding: [u8; 4],
+    pub quantity: f64,
+    pub price: f64,
+    pub stop_price: f64,
+    pub activation_price: f64,
+    pub callback_rate: f64,
+    pub strategy_type_length: u32,
+    pub strategy_type: String,
+    pub order_status_length: u32,
+    pub order_status: String,
+    pub custom_id_length: u32,
+    pub custom_id: String,
+    pub time_in_force_length: u32,
+    pub time_in_force: String,
+    pub trigger_type_length: u32,
+    pub trigger_type: String,
+}
+
+impl ConditionalOrderMsg {
+    pub fn create(
+        symbol: String,
+        strategy_id: i64,
+        order_id: i64,
+        trade_time: i64,
+        event_time: i64,
+        update_time: i64,
+        side: char,
+        position_side: char,
+        reduce_only: bool,
+        close_position: bool,
+        quantity: f64,
+        price: f64,
+        stop_price: f64,
+        activation_price: f64,
+        callback_rate: f64,
+        strategy_type: String,
+        order_status: String,
+        custom_id: String,
+        time_in_force: String,
+        trigger_type: String,
+    ) -> Self {
+        Self {
+            msg_type: AccountEventType::ConditionalOrderUpdate,
+            symbol_length: symbol.len() as u32,
+            symbol,
+            strategy_id,
+            order_id,
+            trade_time,
+            event_time,
+            update_time,
+            side,
+            position_side,
+            reduce_only,
+            close_position,
+            padding: [0u8; 4],
+            quantity,
+            price,
+            stop_price,
+            activation_price,
+            callback_rate,
+            strategy_type_length: strategy_type.len() as u32,
+            strategy_type,
+            order_status_length: order_status.len() as u32,
+            order_status,
+            custom_id_length: custom_id.len() as u32,
+            custom_id,
+            time_in_force_length: time_in_force.len() as u32,
+            time_in_force,
+            trigger_type_length: trigger_type.len() as u32,
+            trigger_type,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 4 + self.symbol_length as usize
+            + 8 * 5
+            + 8
+            + 8 * 5
+            + 4 + self.strategy_type_length as usize
+            + 4 + self.order_status_length as usize
+            + 4 + self.custom_id_length as usize
+            + 4 + self.time_in_force_length as usize
+            + 4 + self.trigger_type_length as usize;
+
+        let mut buf = BytesMut::with_capacity(total_size);
+
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_u32_le(self.symbol_length);
+        buf.put(self.symbol.as_bytes());
+
+        buf.put_i64_le(self.strategy_id);
+        buf.put_i64_le(self.order_id);
+        buf.put_i64_le(self.trade_time);
+        buf.put_i64_le(self.event_time);
+        buf.put_i64_le(self.update_time);
+
+        buf.put_u8(self.side as u8);
+        buf.put_u8(self.position_side as u8);
+        buf.put_u8(if self.reduce_only { 1 } else { 0 });
+        buf.put_u8(if self.close_position { 1 } else { 0 });
+        buf.put(&self.padding[..]);
+
+        buf.put_f64_le(self.quantity);
+        buf.put_f64_le(self.price);
+        buf.put_f64_le(self.stop_price);
+        buf.put_f64_le(self.activation_price);
+        buf.put_f64_le(self.callback_rate);
+
+        buf.put_u32_le(self.strategy_type_length);
+        buf.put(self.strategy_type.as_bytes());
+
+        buf.put_u32_le(self.order_status_length);
+        buf.put(self.order_status.as_bytes());
+
+        buf.put_u32_le(self.custom_id_length);
+        buf.put(self.custom_id.as_bytes());
+
+        buf.put_u32_le(self.time_in_force_length);
+        buf.put(self.time_in_force.as_bytes());
+
+        buf.put_u32_le(self.trigger_type_length);
+        buf.put(self.trigger_type.as_bytes());
+
+        buf.freeze()
+    }
+}
+
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct OpenOrderLossMsg {
+    pub msg_type: AccountEventType,
+    pub event_time: i64,
+    pub asset_length: u32,
+    pub padding: [u8; 4],
+    pub asset: String,
+    pub amount: f64,
+}
+
+impl OpenOrderLossMsg {
+    pub fn create(event_time: i64, asset: String, amount: f64) -> Self {
+        Self {
+            msg_type: AccountEventType::OpenOrderLoss,
+            event_time,
+            asset_length: asset.len() as u32,
+            padding: [0u8; 4],
+            asset,
+            amount,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 8 + 4 + 4 + self.asset_length as usize + 8;
+
+        let mut buf = BytesMut::with_capacity(total_size);
+
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_i64_le(self.event_time);
+        buf.put_u32_le(self.asset_length);
+        buf.put(&self.padding[..]);
+        buf.put(self.asset.as_bytes());
+        buf.put_f64_le(self.amount);
+
+        buf.freeze()
+    }
+}
+
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct AccountPositionMsg {
+    pub msg_type: AccountEventType,
+    pub event_time: i64,
+    pub update_time: i64,
+    pub update_id: i64,
+    pub asset_length: u32,
+    pub padding: [u8; 4],
+    pub asset: String,
+    pub free_balance: f64,
+    pub locked_balance: f64,
+}
+
+impl AccountPositionMsg {
+    pub fn create(
+        event_time: i64,
+        update_time: i64,
+        update_id: i64,
+        asset: String,
+        free_balance: f64,
+        locked_balance: f64,
+    ) -> Self {
+        Self {
+            msg_type: AccountEventType::AccountPosition,
+            event_time,
+            update_time,
+            update_id,
+            asset_length: asset.len() as u32,
+            padding: [0u8; 4],
+            asset,
+            free_balance,
+            locked_balance,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 8 + 8 + 8 + 4 + 4 + self.asset_length as usize + 8 + 8;
+
+        let mut buf = BytesMut::with_capacity(total_size);
+
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_i64_le(self.event_time);
+        buf.put_i64_le(self.update_time);
+        buf.put_i64_le(self.update_id);
+        buf.put_u32_le(self.asset_length);
+        buf.put(&self.padding[..]);
+        buf.put(self.asset.as_bytes());
+        buf.put_f64_le(self.free_balance);
+        buf.put_f64_le(self.locked_balance);
+
+        buf.freeze()
+    }
+}
+
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct LiabilityChangeMsg {
+    pub msg_type: AccountEventType,
+    pub event_time: i64,
+    pub transaction_id: i64,
+    pub asset_length: u32,
+    pub type_length: u32,
+    pub asset: String,
+    pub liability_type: String,
+    pub principal: f64,
+    pub interest: f64,
+    pub total_liability: f64,
+}
+
+impl LiabilityChangeMsg {
+    pub fn create(
+        event_time: i64,
+        transaction_id: i64,
+        asset: String,
+        liability_type: String,
+        principal: f64,
+        interest: f64,
+        total_liability: f64,
+    ) -> Self {
+        Self {
+            msg_type: AccountEventType::LiabilityChange,
+            event_time,
+            transaction_id,
+            asset_length: asset.len() as u32,
+            type_length: liability_type.len() as u32,
+            asset,
+            liability_type,
+            principal,
+            interest,
+            total_liability,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 8 + 8 + 4 + 4 + self.asset_length as usize + self.type_length as usize + 8 + 8 + 8;
+
+        let mut buf = BytesMut::with_capacity(total_size);
+
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_i64_le(self.event_time);
+        buf.put_i64_le(self.transaction_id);
+        buf.put_u32_le(self.asset_length);
+        buf.put_u32_le(self.type_length);
+        buf.put(self.asset.as_bytes());
+        buf.put(self.liability_type.as_bytes());
+        buf.put_f64_le(self.principal);
+        buf.put_f64_le(self.interest);
+        buf.put_f64_le(self.total_liability);
+
+        buf.freeze()
+    }
+}
+
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct ExecutionReportMsg {
+    pub msg_type: AccountEventType,
+    pub event_time: i64,
+    pub transaction_time: i64,
+    pub order_id: i64,
+    pub trade_id: i64,
+    pub order_creation_time: i64,
+    pub working_time: i64,
+    pub update_id: i64,
+    pub symbol_length: u32,
+    pub client_order_id_length: u32,
+    pub symbol: String,
+    pub client_order_id: String,
+    pub side: char,             // 'B' for BUY, 'S' for SELL
+    pub is_maker: bool,
+    pub is_working: bool,
+    pub padding: [u8; 6],
+    pub price: f64,
+    pub quantity: f64,
+    pub last_executed_quantity: f64,
+    pub cumulative_filled_quantity: f64,
+    pub last_executed_price: f64,
+    pub commission_amount: f64,
+    pub cumulative_quote: f64,
+    pub last_quote: f64,
+    pub quote_order_quantity: f64,
+    pub order_type_length: u32,
+    pub order_type: String,
+    pub time_in_force_length: u32,
+    pub time_in_force: String,
+    pub execution_type_length: u32,
+    pub execution_type: String,
+    pub order_status_length: u32,
+    pub order_status: String,
+    pub commission_asset_length: u32,
+    pub commission_asset: String,
+}
+
+impl ExecutionReportMsg {
+    pub fn create(
+        event_time: i64,
+        transaction_time: i64,
+        order_id: i64,
+        trade_id: i64,
+        order_creation_time: i64,
+        working_time: i64,
+        update_id: i64,
+        symbol: String,
+        client_order_id: String,
+        side: char,
+        is_maker: bool,
+        is_working: bool,
+        price: f64,
+        quantity: f64,
+        last_executed_quantity: f64,
+        cumulative_filled_quantity: f64,
+        last_executed_price: f64,
+        commission_amount: f64,
+        cumulative_quote: f64,
+        last_quote: f64,
+        quote_order_quantity: f64,
+        order_type: String,
+        time_in_force: String,
+        execution_type: String,
+        order_status: String,
+        commission_asset: String,
+    ) -> Self {
+        Self {
+            msg_type: AccountEventType::ExecutionReport,
+            event_time,
+            transaction_time,
+            order_id,
+            trade_id,
+            order_creation_time,
+            working_time,
+            update_id,
+            symbol_length: symbol.len() as u32,
+            client_order_id_length: client_order_id.len() as u32,
+            symbol,
+            client_order_id,
+            side,
+            is_maker,
+            is_working,
+            padding: [0u8; 6],
+            price,
+            quantity,
+            last_executed_quantity,
+            cumulative_filled_quantity,
+            last_executed_price,
+            commission_amount,
+            cumulative_quote,
+            last_quote,
+            quote_order_quantity,
+            order_type_length: order_type.len() as u32,
+            order_type,
+            time_in_force_length: time_in_force.len() as u32,
+            time_in_force,
+            execution_type_length: execution_type.len() as u32,
+            execution_type,
+            order_status_length: order_status.len() as u32,
+            order_status,
+            commission_asset_length: commission_asset.len() as u32,
+            commission_asset,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 8 * 7 + 4 + 4
+            + self.symbol_length as usize
+            + self.client_order_id_length as usize
+            + 1 + 1 + 1 + 6
+            + 8 * 9
+            + 4 + self.order_type_length as usize
+            + 4 + self.time_in_force_length as usize
+            + 4 + self.execution_type_length as usize
+            + 4 + self.order_status_length as usize
+            + 4 + self.commission_asset_length as usize;
+
+        let mut buf = BytesMut::with_capacity(total_size);
+
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_i64_le(self.event_time);
+        buf.put_i64_le(self.transaction_time);
+        buf.put_i64_le(self.order_id);
+        buf.put_i64_le(self.trade_id);
+        buf.put_i64_le(self.order_creation_time);
+        buf.put_i64_le(self.working_time);
+        buf.put_i64_le(self.update_id);
+
+        buf.put_u32_le(self.symbol_length);
+        buf.put_u32_le(self.client_order_id_length);
+        buf.put(self.symbol.as_bytes());
+        buf.put(self.client_order_id.as_bytes());
+
+        buf.put_u8(self.side as u8);
+        buf.put_u8(if self.is_maker { 1 } else { 0 });
+        buf.put_u8(if self.is_working { 1 } else { 0 });
+        buf.put(&self.padding[..]);
+
+        buf.put_f64_le(self.price);
+        buf.put_f64_le(self.quantity);
+        buf.put_f64_le(self.last_executed_quantity);
+        buf.put_f64_le(self.cumulative_filled_quantity);
+        buf.put_f64_le(self.last_executed_price);
+        buf.put_f64_le(self.commission_amount);
+        buf.put_f64_le(self.cumulative_quote);
+        buf.put_f64_le(self.last_quote);
+        buf.put_f64_le(self.quote_order_quantity);
+
+        buf.put_u32_le(self.order_type_length);
+        buf.put(self.order_type.as_bytes());
+
+        buf.put_u32_le(self.time_in_force_length);
+        buf.put(self.time_in_force.as_bytes());
+
+        buf.put_u32_le(self.execution_type_length);
+        buf.put(self.execution_type.as_bytes());
+
+        buf.put_u32_le(self.order_status_length);
+        buf.put(self.order_status.as_bytes());
+
+        buf.put_u32_le(self.commission_asset_length);
+        buf.put(self.commission_asset.as_bytes());
+
+        buf.freeze()
+    }
+}
+
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct OrderTradeUpdateMsg {
+    pub msg_type: AccountEventType,
+    pub event_time: i64,
+    pub transaction_time: i64,
+    pub order_id: i64,
+    pub trade_id: i64,
+    pub strategy_id: i64,
+    pub symbol_length: u32,
+    pub client_order_id_length: u32,
+    pub symbol: String,
+    pub client_order_id: String,
+    pub side: char,
+    pub position_side: char,
+    pub is_maker: bool,
+    pub reduce_only: bool,
+    pub padding: [u8; 4],
+    pub price: f64,
+    pub quantity: f64,
+    pub average_price: f64,
+    pub stop_price: f64,
+    pub last_executed_quantity: f64,
+    pub cumulative_filled_quantity: f64,
+    pub last_executed_price: f64,
+    pub commission_amount: f64,
+    pub buy_notional: f64,
+    pub sell_notional: f64,
+    pub realized_profit: f64,
+    pub order_type_length: u32,
+    pub order_type: String,
+    pub time_in_force_length: u32,
+    pub time_in_force: String,
+    pub execution_type_length: u32,
+    pub execution_type: String,
+    pub order_status_length: u32,
+    pub order_status: String,
+    pub commission_asset_length: u32,
+    pub commission_asset: String,
+    pub strategy_type_length: u32,
+    pub strategy_type: String,
+    pub business_unit_length: u32,
+    pub business_unit: String,
+}
+
+impl OrderTradeUpdateMsg {
+    pub fn create(
+        event_time: i64,
+        transaction_time: i64,
+        order_id: i64,
+        trade_id: i64,
+        strategy_id: i64,
+        symbol: String,
+        client_order_id: String,
+        side: char,
+        position_side: char,
+        is_maker: bool,
+        reduce_only: bool,
+        price: f64,
+        quantity: f64,
+        average_price: f64,
+        stop_price: f64,
+        last_executed_quantity: f64,
+        cumulative_filled_quantity: f64,
+        last_executed_price: f64,
+        commission_amount: f64,
+        buy_notional: f64,
+        sell_notional: f64,
+        realized_profit: f64,
+        order_type: String,
+        time_in_force: String,
+        execution_type: String,
+        order_status: String,
+        commission_asset: String,
+        strategy_type: String,
+        business_unit: String,
+    ) -> Self {
+        Self {
+            msg_type: AccountEventType::OrderTradeUpdate,
+            event_time,
+            transaction_time,
+            order_id,
+            trade_id,
+            strategy_id,
+            symbol_length: symbol.len() as u32,
+            client_order_id_length: client_order_id.len() as u32,
+            symbol,
+            client_order_id,
+            side,
+            position_side,
+            is_maker,
+            reduce_only,
+            padding: [0u8; 4],
+            price,
+            quantity,
+            average_price,
+            stop_price,
+            last_executed_quantity,
+            cumulative_filled_quantity,
+            last_executed_price,
+            commission_amount,
+            buy_notional,
+            sell_notional,
+            realized_profit,
+            order_type_length: order_type.len() as u32,
+            order_type,
+            time_in_force_length: time_in_force.len() as u32,
+            time_in_force,
+            execution_type_length: execution_type.len() as u32,
+            execution_type,
+            order_status_length: order_status.len() as u32,
+            order_status,
+            commission_asset_length: commission_asset.len() as u32,
+            commission_asset,
+            strategy_type_length: strategy_type.len() as u32,
+            strategy_type,
+            business_unit_length: business_unit.len() as u32,
+            business_unit,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 8 * 5 + 4 + 4
+            + self.symbol_length as usize
+            + self.client_order_id_length as usize
+            + 1 + 1 + 1 + 1 + 4
+            + 8 * 11
+            + 4 + self.order_type_length as usize
+            + 4 + self.time_in_force_length as usize
+            + 4 + self.execution_type_length as usize
+            + 4 + self.order_status_length as usize
+            + 4 + self.commission_asset_length as usize
+            + 4 + self.strategy_type_length as usize
+            + 4 + self.business_unit_length as usize;
+
+        let mut buf = BytesMut::with_capacity(total_size);
+
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_i64_le(self.event_time);
+        buf.put_i64_le(self.transaction_time);
+        buf.put_i64_le(self.order_id);
+        buf.put_i64_le(self.trade_id);
+        buf.put_i64_le(self.strategy_id);
+
+        buf.put_u32_le(self.symbol_length);
+        buf.put_u32_le(self.client_order_id_length);
+        buf.put(self.symbol.as_bytes());
+        buf.put(self.client_order_id.as_bytes());
+
+        buf.put_u8(self.side as u8);
+        buf.put_u8(self.position_side as u8);
+        buf.put_u8(if self.is_maker { 1 } else { 0 });
+        buf.put_u8(if self.reduce_only { 1 } else { 0 });
+        buf.put(&self.padding[..]);
+
+        buf.put_f64_le(self.price);
+        buf.put_f64_le(self.quantity);
+        buf.put_f64_le(self.average_price);
+        buf.put_f64_le(self.stop_price);
+        buf.put_f64_le(self.last_executed_quantity);
+        buf.put_f64_le(self.cumulative_filled_quantity);
+        buf.put_f64_le(self.last_executed_price);
+        buf.put_f64_le(self.commission_amount);
+        buf.put_f64_le(self.buy_notional);
+        buf.put_f64_le(self.sell_notional);
+        buf.put_f64_le(self.realized_profit);
+
+        buf.put_u32_le(self.order_type_length);
+        buf.put(self.order_type.as_bytes());
+
+        buf.put_u32_le(self.time_in_force_length);
+        buf.put(self.time_in_force.as_bytes());
+
+        buf.put_u32_le(self.execution_type_length);
+        buf.put(self.execution_type.as_bytes());
+
+        buf.put_u32_le(self.order_status_length);
+        buf.put(self.order_status.as_bytes());
+
+        buf.put_u32_le(self.commission_asset_length);
+        buf.put(self.commission_asset.as_bytes());
+
+        buf.put_u32_le(self.strategy_type_length);
+        buf.put(self.strategy_type.as_bytes());
+
+        buf.put_u32_le(self.business_unit_length);
+        buf.put(self.business_unit.as_bytes());
+
+        buf.freeze()
+    }
+}
+
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct AccountUpdateBalanceMsg {
+    pub msg_type: AccountEventType,
+    pub event_time: i64,
+    pub transaction_time: i64,
+    pub asset_length: u32,
+    pub reason_length: u32,
+    pub business_unit_length: u32,
+    pub padding: [u8; 4],
+    pub asset: String,
+    pub reason: String,
+    pub business_unit: String,
+    pub wallet_balance: f64,
+    pub cross_wallet_balance: f64,
+    pub balance_change: f64,
+}
+
+impl AccountUpdateBalanceMsg {
+    pub fn create(
+        event_time: i64,
+        transaction_time: i64,
+        asset: String,
+        reason: String,
+        business_unit: String,
+        wallet_balance: f64,
+        cross_wallet_balance: f64,
+        balance_change: f64,
+    ) -> Self {
+        Self {
+            msg_type: AccountEventType::AccountUpdateBalance,
+            event_time,
+            transaction_time,
+            asset_length: asset.len() as u32,
+            reason_length: reason.len() as u32,
+            business_unit_length: business_unit.len() as u32,
+            padding: [0u8; 4],
+            asset,
+            reason,
+            business_unit,
+            wallet_balance,
+            cross_wallet_balance,
+            balance_change,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 8 + 8 + 4 + 4 + 4 + 4
+            + self.asset_length as usize
+            + self.reason_length as usize
+            + self.business_unit_length as usize
+            + 8 + 8 + 8;
+
+        let mut buf = BytesMut::with_capacity(total_size);
+
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_i64_le(self.event_time);
+        buf.put_i64_le(self.transaction_time);
+        buf.put_u32_le(self.asset_length);
+        buf.put_u32_le(self.reason_length);
+        buf.put_u32_le(self.business_unit_length);
+        buf.put(&self.padding[..]);
+        buf.put(self.asset.as_bytes());
+        buf.put(self.reason.as_bytes());
+        buf.put(self.business_unit.as_bytes());
+        buf.put_f64_le(self.wallet_balance);
+        buf.put_f64_le(self.cross_wallet_balance);
+        buf.put_f64_le(self.balance_change);
+
+        buf.freeze()
+    }
+}
+
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct AccountUpdatePositionMsg {
+    pub msg_type: AccountEventType,
+    pub event_time: i64,
+    pub transaction_time: i64,
+    pub symbol_length: u32,
+    pub reason_length: u32,
+    pub business_unit_length: u32,
+    pub position_side: char,
+    pub padding: [u8; 3],
+    pub symbol: String,
+    pub reason: String,
+    pub business_unit: String,
+    pub position_amount: f64,
+    pub entry_price: f64,
+    pub accumulated_realized: f64,
+    pub unrealized_pnl: f64,
+    pub breakeven_price: f64,
+}
+
+impl AccountUpdatePositionMsg {
+    pub fn create(
+        event_time: i64,
+        transaction_time: i64,
+        symbol: String,
+        reason: String,
+        business_unit: String,
+        position_side: char,
+        position_amount: f64,
+        entry_price: f64,
+        accumulated_realized: f64,
+        unrealized_pnl: f64,
+        breakeven_price: f64,
+    ) -> Self {
+        Self {
+            msg_type: AccountEventType::AccountUpdatePosition,
+            event_time,
+            transaction_time,
+            symbol_length: symbol.len() as u32,
+            reason_length: reason.len() as u32,
+            business_unit_length: business_unit.len() as u32,
+            position_side,
+            padding: [0u8; 3],
+            symbol,
+            reason,
+            business_unit,
+            position_amount,
+            entry_price,
+            accumulated_realized,
+            unrealized_pnl,
+            breakeven_price,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 8 + 8 + 4 + 4 + 4 + 1 + 3
+            + self.symbol_length as usize
+            + self.reason_length as usize
+            + self.business_unit_length as usize
+            + 8 + 8 + 8 + 8 + 8;
+
+        let mut buf = BytesMut::with_capacity(total_size);
+
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_i64_le(self.event_time);
+        buf.put_i64_le(self.transaction_time);
+        buf.put_u32_le(self.symbol_length);
+        buf.put_u32_le(self.reason_length);
+        buf.put_u32_le(self.business_unit_length);
+        buf.put_u8(self.position_side as u8);
+        buf.put(&self.padding[..]);
+        buf.put(self.symbol.as_bytes());
+        buf.put(self.reason.as_bytes());
+        buf.put(self.business_unit.as_bytes());
+        buf.put_f64_le(self.position_amount);
+        buf.put_f64_le(self.entry_price);
+        buf.put_f64_le(self.accumulated_realized);
+        buf.put_f64_le(self.unrealized_pnl);
+        buf.put_f64_le(self.breakeven_price);
+
+        buf.freeze()
+    }
+}
+
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct AccountConfigUpdateMsg {
+    pub msg_type: AccountEventType,
+    pub event_time: i64,
+    pub transaction_time: i64,
+    pub leverage: i32,
+    pub symbol_length: u32,
+    pub business_unit_length: u32,
+    pub padding: [u8; 4],
+    pub symbol: String,
+    pub business_unit: String,
+}
+
+impl AccountConfigUpdateMsg {
+    pub fn create(
+        event_time: i64,
+        transaction_time: i64,
+        symbol: String,
+        business_unit: String,
+        leverage: i32,
+    ) -> Self {
+        Self {
+            msg_type: AccountEventType::AccountConfigUpdate,
+            event_time,
+            transaction_time,
+            leverage,
+            symbol_length: symbol.len() as u32,
+            business_unit_length: business_unit.len() as u32,
+            padding: [0u8; 4],
+            symbol,
+            business_unit,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 8 + 8 + 4 + 4 + 4 + 4
+            + self.symbol_length as usize
+            + self.business_unit_length as usize;
+
+        let mut buf = BytesMut::with_capacity(total_size);
+
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_i64_le(self.event_time);
+        buf.put_i64_le(self.transaction_time);
+        buf.put_i32_le(self.leverage);
+        buf.put_u32_le(self.symbol_length);
+        buf.put_u32_le(self.business_unit_length);
+        buf.put(&self.padding[..]);
+        buf.put(self.symbol.as_bytes());
+        buf.put(self.business_unit.as_bytes());
+
+        buf.freeze()
+    }
+}
+
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct BalanceUpdateMsg {
+    pub msg_type: AccountEventType,
+    pub event_time: i64,
+    pub transaction_time: i64,
+    pub update_id: i64,
+    pub asset_length: u32,
+    pub padding: [u8; 4],
+    pub asset: String,
+    pub delta: f64,
+}
+
+impl BalanceUpdateMsg {
+    pub fn create(
+        event_time: i64,
+        transaction_time: i64,
+        update_id: i64,
+        asset: String,
+        delta: f64,
+    ) -> Self {
+        Self {
+            msg_type: AccountEventType::BalanceUpdate,
+            event_time,
+            transaction_time,
+            update_id,
+            asset_length: asset.len() as u32,
+            padding: [0u8; 4],
+            asset,
+            delta,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 8 + 8 + 8 + 4 + 4 + self.asset_length as usize + 8;
+
+        let mut buf = BytesMut::with_capacity(total_size);
+
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_i64_le(self.event_time);
+        buf.put_i64_le(self.transaction_time);
+        buf.put_i64_le(self.update_id);
+        buf.put_u32_le(self.asset_length);
+        buf.put(&self.padding[..]);
+        buf.put(self.asset.as_bytes());
+        buf.put_f64_le(self.delta);
+
+        buf.freeze()
+    }
+}
+
+impl AccountEventMsg {
+    pub fn create(msg_type: AccountEventType, data: Bytes) -> Self {
+        Self {
+            msg_type,
+            msg_length: data.len() as u32,
+            data,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::with_capacity(8 + self.data.len());
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_u32_le(self.msg_length);
+        buf.put(self.data.clone());
+        buf.freeze()
+    }
+}
+
+#[allow(dead_code)]
+#[inline]
+pub fn get_event_type(data: &[u8]) -> AccountEventType {
+    let event_type_u32 = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+
+    match event_type_u32 {
+        2001 => AccountEventType::ConditionalOrderUpdate,
+        2002 => AccountEventType::OpenOrderLoss,
+        2003 => AccountEventType::AccountPosition,
+        2004 => AccountEventType::LiabilityChange,
+        2005 => AccountEventType::ExecutionReport,
+        2006 => AccountEventType::OrderTradeUpdate,
+        2007 => AccountEventType::AccountUpdateBalance,
+        2008 => AccountEventType::AccountUpdatePosition,
+        2009 => AccountEventType::AccountConfigUpdate,
+        2010 => AccountEventType::BalanceUpdate,
+        _ => AccountEventType::Error,
+    }
+}
