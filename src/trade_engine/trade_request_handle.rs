@@ -5,6 +5,7 @@ use crate::trade_engine::trade_request::TradeRequestMsg;
 use crate::trade_engine::trade_type_mapping::TradeTypeMapping;
 use tokio::sync::mpsc;
 use crate::trade_engine::trade_response_handle::TradeExecOutcome;
+use log::debug;
 
 /// 启动请求执行器：
 /// - 从 mpsc::UnboundedReceiver<TradeRequestMsg> 读取请求（二进制头+参数）
@@ -22,6 +23,10 @@ pub fn spawn_request_executor(
             let endpoint = TradeTypeMapping::get_endpoint(msg.req_type).to_string();
             let method = TradeTypeMapping::get_method(msg.req_type).to_string();
             let weight = TradeTypeMapping::get_weight(msg.req_type);
+            debug!(
+                "dispatch mapping: type={:?} -> {} {} (weight={})",
+                msg.req_type, method, endpoint, weight
+            );
 
             // Try to parse params as query string into key/value pairs
             let params: std::collections::BTreeMap<String, String> = match std::str::from_utf8(&msg.params) {
@@ -43,9 +48,21 @@ pub fn spawn_request_executor(
                 // Use client_order_id as req_id for correlation
                 req_id: Some(msg.client_order_id.to_string()),
             };
+            debug!(
+                "order event built: endpoint={}, method={}, params_count={}, req_id={}",
+                evt.endpoint, evt.method, evt.params.len(), evt.req_id.as_deref().unwrap_or("")
+            );
 
             match dispatcher.dispatch(evt).await {
                 Ok(outcome) => {
+                    debug!(
+                        "http outcome: status={}, ip={}, used_weight_1m={:?}, order_count_1m={:?}, body_len={}",
+                        outcome.status,
+                        outcome.ip,
+                        outcome.ip_used_weight_1m,
+                        outcome.order_count_1m,
+                        outcome.body.len()
+                    );
                     let _ = resp_tx.send(TradeExecOutcome{
                         req_type: msg.req_type,
                         client_order_id: msg.client_order_id,
@@ -57,6 +74,7 @@ pub fn spawn_request_executor(
                     });
                 }
                 Err(e) => {
+                    debug!("http error: {}", e);
                     let _ = resp_tx.send(TradeExecOutcome{
                         req_type: msg.req_type,
                         client_order_id: msg.client_order_id,

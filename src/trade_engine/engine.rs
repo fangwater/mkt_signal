@@ -8,7 +8,7 @@ use anyhow::Result;
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{info, warn};
+use log::{info, warn, debug};
 
 pub struct TradeEngine {
     cfg: TradeEngineCfg,
@@ -52,6 +52,7 @@ impl TradeEngine {
             .publish_subscribe::<[u8; 4096]>()
             .open_or_create()?;
         let subscriber: Subscriber<ipc::Service, [u8; 4096], ()> = service.subscriber_builder().create()?;
+        debug!("subscriber created for service: {}", self.cfg.order_req_service);
 
         // Result publisher
         let resp_service = node
@@ -60,6 +61,7 @@ impl TradeEngine {
             .history_size(64)
             .open_or_create()?;
         let resp_publisher: Publisher<ipc::Service, [u8; 8192], ()> = resp_service.publisher_builder().create()?;
+        debug!("publisher created for service: {}", self.cfg.order_resp_service);
 
         // Dispatcher (HTTP + limits)
         let dispatcher = Dispatcher::new(&self.cfg)?;
@@ -94,10 +96,17 @@ impl TradeEngine {
                         .unwrap_or(0);
                     if actual_len == 0 { continue; }
                     let bytes = &payload[..actual_len];
+                    debug!("received payload bytes: {}", actual_len);
 
                     // Expect binary TradeRequest
                     match crate::trade_engine::trade_request::TradeRequestMsg::parse(bytes) {
-                        Some(msg) => { let _ = req_tx.send(msg); }
+                        Some(msg) => {
+                            debug!(
+                                "enqueue request: type={:?}, client_order_id={}, params_len={}",
+                                msg.req_type, msg.client_order_id, msg.params.len()
+                            );
+                            let _ = req_tx.send(msg);
+                        }
                         None => { warn!("invalid trade request binary payload (len={})", actual_len); }
                     }
                 }

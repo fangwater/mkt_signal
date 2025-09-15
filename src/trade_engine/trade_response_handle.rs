@@ -4,6 +4,7 @@ use crate::trade_engine::trade_type_mapping::TradeTypeMapping;
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::service::ipc;
 use tokio::sync::mpsc;
+use log::debug;
 
 pub struct TradeExecOutcome {
     pub req_type: TradeRequestType,
@@ -86,6 +87,10 @@ pub fn spawn_response_handle(
                 body_format,
                 body_length: body_bytes.len() as u32,
             };
+            debug!(
+                "response package: msg_type={}, status={}, body_format={}, body_len={}",
+                header.msg_type, header.status, header.body_format, header.body_length
+            );
 
             let hdr = header.to_bytes();
             let mut buf = [0u8; 8192];

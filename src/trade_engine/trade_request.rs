@@ -1,4 +1,5 @@
 use bytes::{BufMut, Bytes, BytesMut};
+use log::debug;
 use std::convert::TryFrom;
 
 #[repr(u32)]
@@ -61,14 +62,27 @@ impl TradeRequestMsg {
     /// Layout (little-endian):
     ///   u32 msg_type, u32 params_length, i64 create_time, i64 client_order_id, [params_length] bytes
     pub fn parse(buf: &[u8]) -> Option<Self> {
-        if buf.len() < 4 + 4 + 8 + 8 { return None; }
+        if buf.len() < 4 + 4 + 8 + 8 {
+            debug!("TradeRequestMsg::parse buffer too short: {}", buf.len());
+            return None;
+        }
         let msg_type = u32::from_le_bytes(buf[0..4].try_into().ok()?);
         let params_len = u32::from_le_bytes(buf[4..8].try_into().ok()?) as usize;
         let create_time = i64::from_le_bytes(buf[8..16].try_into().ok()?);
         let client_order_id = i64::from_le_bytes(buf[16..24].try_into().ok()?);
-        if buf.len() < 24 + params_len { return None; }
+        if buf.len() < 24 + params_len {
+            debug!(
+                "TradeRequestMsg::parse invalid params_len: total={}, params_len={}",
+                buf.len(), params_len
+            );
+            return None;
+        }
         let req_type = TradeRequestType::try_from(msg_type).ok()?;
         let params = Bytes::copy_from_slice(&buf[24..24+params_len]);
+        debug!(
+            "TradeRequest parsed: type={}, params_len={}, client_order_id={}",
+            msg_type, params_len, client_order_id
+        );
         Some(Self { req_type, create_time, client_order_id, params })
     }
 }

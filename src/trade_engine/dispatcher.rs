@@ -2,7 +2,7 @@ use crate::trade_engine::config::{ApiKey, LimitsCfg, RestCfg, TradeEngineCfg};
 use crate::trade_engine::order_event::OrderRequestEvent;
 use anyhow::{anyhow, Result};
 use hmac::{Hmac, Mac};
-use log::{warn};
+use log::{warn, debug};
 use reqwest::{header::HeaderMap, Client};
 use sha2::Sha256;
 use std::net::IpAddr;
@@ -101,6 +101,10 @@ impl Dispatcher {
         let account_name = self.accounts[acc_idx].key.name.clone();
         let api_key_value = self.accounts[acc_idx].key.key.clone();
         let secret_value = self.accounts[acc_idx].key.secret.clone();
+        debug!(
+            "dispatch select: ip={}, account={}",
+            ip, account_name
+        );
 
         // Warn when approaching limits
         let warn_ratio = self.limits.warn_ratio();
@@ -130,6 +134,12 @@ impl Dispatcher {
         let mut ser = url::form_urlencoded::Serializer::new(String::new());
         for (k, v) in &parts { ser.append_pair(k, v); }
         let query = ser.finish();
+        debug!(
+            "dispatch request: method={}, url_path={}, qs_keys={:?}",
+            evt.method,
+            evt.endpoint,
+            parts.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>()
+        );
 
         // HMAC-SHA256 signature
         let mut mac = HmacSha256::new_from_slice(secret_value.as_bytes())
@@ -158,6 +168,10 @@ impl Dispatcher {
 
                 let status = r.status();
                 let text = r.text().await.unwrap_or_default();
+                debug!(
+                    "dispatch response: status={}, ip_used_1m={:?}, acc_used_1m={:?}, body_len={}",
+                    status.as_u16(), ip_used_1m, acc_used_1m, text.len()
+                );
 
                 if status.as_u16() == 429 {
                     warn!("429 Too Many Requests from IP {}. Cooling down.", ip);
@@ -180,6 +194,7 @@ impl Dispatcher {
                 })
             }
             Err(e) => {
+                debug!("dispatch network error: {}", e);
                 Ok(DispatchResponse {
                     status: 0,
                     body: format!("request error: {}", e),
