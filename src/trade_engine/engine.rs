@@ -109,7 +109,10 @@ impl TradeEngine {
                         None => { warn!("invalid trade request binary payload (len={})", actual_len); }
                     }
                 }
-                None => { /* 低延迟优先：不休眠，忙轮询 */ }
+                None => {
+                    // 低延迟优先但仍需让出执行权，避免饿死其他本地任务
+                    tokio::task::yield_now().await;
+                }
             }
         }
     }
