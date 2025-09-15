@@ -58,7 +58,6 @@ impl TradeEngine {
         let resp_service = node
             .service_builder(&ServiceName::new(&self.cfg.order_resp_service)?)
             .publish_subscribe::<[u8; 8192]>()
-            .history_size(64)
             .open_or_create()?;
         let resp_publisher: Publisher<ipc::Service, [u8; 8192], ()> = resp_service.publisher_builder().create()?;
         debug!("publisher created for service: {}", self.cfg.order_resp_service);
