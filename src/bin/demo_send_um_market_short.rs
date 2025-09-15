@@ -46,5 +46,7 @@ fn main() -> Result<()> {
     sample.send()?;
 
     println!("sent UM MARKET SHORT order: {} {}", symbol, qty);
-    Ok(())
+    println!("publisher is kept alive; press Ctrl-C to exit");
+    // 保持 publisher 存活，避免订阅端频繁连接/断开
+    loop { std::thread::sleep(std::time::Duration::from_secs(3600)); }
 }

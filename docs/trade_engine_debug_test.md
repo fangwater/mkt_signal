@@ -42,7 +42,7 @@
 - 新开终端订阅回包：
   ```bash
   export ORDER_RESP_SERVICE="order_resps/binance"
-  cargo run --bin demo_subscribe_resps
+  RUST_LOG=debug cargo run --bin demo_subscribe_resps
   ```
 - 输出内容包含统一头部字段与 body 格式：
   - `body_format=1`：typed 二进制（例如 UM 下单已实现 typed 封装）。
@@ -58,10 +58,11 @@
   # 双向持仓才设置，否则不要设该变量
   export POSITION_SIDE="SHORT"
 
-  cargo run --bin demo_send_um_market_short
+  RUST_LOG=debug cargo run --bin demo_send_um_market_short
   ```
 - DEMO 发送最小参数集：`symbol/side=SELL/type=MARKET/quantity/(positionSide)/newClientOrderId`
 - 引擎自动补齐：`timestamp/recvWindow`，并完成签名。
+- 该 DEMO 会保持 publisher 常驻（直到 Ctrl-C 退出），避免发布端进程退出导致订阅端频繁重连，符合 Iceoryx 的 pub/sub 使用习惯。
 
 注意：实盘会真实下单，请先小额测试；确认账户持仓模式（单向/双向）与最小下单量/精度符合交易所规则。
 
@@ -81,4 +82,3 @@
 - 未收到响应：检查 `ORDER_REQ_SERVICE`/`ORDER_RESP_SERVICE` 与配置一致；确认账户权限与 IP 出口设置有效。
 - 429/418：日志会提示并按配置进行冷却/回退；可适当调低请求速率或增加本地 IP。
 - 需要更多 typed 回包：提供接口的 JSON 示例，维护者将补齐对应的解析封装。
-
