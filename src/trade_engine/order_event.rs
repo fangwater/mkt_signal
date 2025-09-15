@@ -15,18 +15,4 @@ impl OrderRequestEvent {
     pub fn weight(&self) -> u32 { self.weight.unwrap_or(1) }
 }
 
-use serde::Serialize;
-
-#[derive(Debug, Clone, Serialize)]
-pub struct OrderResponseEvent {
-    pub ok: bool,
-    pub status: u16,
-    pub ip: String,
-    pub account: String,
-    pub endpoint: String,
-    pub method: String,
-    pub req_id: Option<String>,
-    pub used_weight_1m: Option<u32>,
-    pub order_count_1m: Option<u32>,
-    pub body: String,
-}
+// 仅保留请求事件，响应已统一改为二进制封装

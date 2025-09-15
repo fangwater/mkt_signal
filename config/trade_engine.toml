@@ -17,11 +17,12 @@ ban_backoff_ms_418 = 120000
 [network]
 # 可配置多个本地出站IP，用于多IP路由
 local_ips = [
-  "127.0.0.1"
+  "172.31.33.133",
+  "172.31.46.90"
 ]
 
 [accounts]
 [[accounts.keys]]
-name = "acct_1"
+name = "acct_fhz"
 key = "YOUR_API_KEY"
 secret = "YOUR_SECRET"

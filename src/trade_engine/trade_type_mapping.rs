@@ -1,4 +1,5 @@
-use super::trade_rsp_msg::{TradeRequestType, TradeResponseType};
+use super::trade_request::TradeRequestType;
+use super::trade_response::TradeResponseType;
 
 pub struct TradeTypeMapping;
 
@@ -10,6 +11,13 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceNewUMConditionalOrder => "/papi/v1/um/conditional/order",
             TradeRequestType::BinanceNewMarginOrder => "/papi/v1/margin/order",
             TradeRequestType::BinanceCancelUMOrder => "/papi/v1/um/order",
+            TradeRequestType::BinanceCancelAllUMOrders => "/papi/v1/um/allOpenOrders",
+            TradeRequestType::BinanceCancelUMConditionalOrder => "/papi/v1/um/conditional/order",
+            TradeRequestType::BinanceCancelAllUMConditionalOrders => "/papi/v1/um/conditional/allOpenOrders",
+            TradeRequestType::BinanceCancelMarginOrder => "/papi/v1/margin/order",
+            TradeRequestType::BinanceModifyUMOrder => "/papi/v1/um/order",
+            TradeRequestType::BinanceQueryUMOrder => "/papi/v1/um/order",
+            TradeRequestType::BinanceQueryUMOpenOrder => "/papi/v1/um/openOrder",
         }
     }
 
@@ -20,6 +28,13 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceNewUMConditionalOrder => "POST",
             TradeRequestType::BinanceNewMarginOrder => "POST",
             TradeRequestType::BinanceCancelUMOrder => "DELETE",
+            TradeRequestType::BinanceCancelAllUMOrders => "DELETE",
+            TradeRequestType::BinanceCancelUMConditionalOrder => "DELETE",
+            TradeRequestType::BinanceCancelAllUMConditionalOrders => "DELETE",
+            TradeRequestType::BinanceCancelMarginOrder => "DELETE",
+            TradeRequestType::BinanceModifyUMOrder => "PUT",
+            TradeRequestType::BinanceQueryUMOrder => "GET",
+            TradeRequestType::BinanceQueryUMOpenOrder => "GET",
         }
     }
 
@@ -30,6 +45,13 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceNewUMConditionalOrder => 1,
             TradeRequestType::BinanceNewMarginOrder => 1,
             TradeRequestType::BinanceCancelUMOrder => 1,
+            TradeRequestType::BinanceCancelAllUMOrders => 1,
+            TradeRequestType::BinanceCancelUMConditionalOrder => 1,
+            TradeRequestType::BinanceCancelAllUMConditionalOrders => 1,
+            TradeRequestType::BinanceCancelMarginOrder => 2,
+            TradeRequestType::BinanceModifyUMOrder => 1,
+            TradeRequestType::BinanceQueryUMOrder => 1,
+            TradeRequestType::BinanceQueryUMOpenOrder => 1,
         }
     }
 
@@ -40,6 +62,13 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceNewUMConditionalOrder => TradeResponseType::BinanceNewUMConditionalOrder,
             TradeRequestType::BinanceNewMarginOrder => TradeResponseType::BinanceNewMarginOrder,
             TradeRequestType::BinanceCancelUMOrder => TradeResponseType::BinanceCancelUMOrder,
+            TradeRequestType::BinanceCancelAllUMOrders => TradeResponseType::BinanceCancelAllUMOrders,
+            TradeRequestType::BinanceCancelUMConditionalOrder => TradeResponseType::BinanceCancelUMConditionalOrder,
+            TradeRequestType::BinanceCancelAllUMConditionalOrders => TradeResponseType::BinanceCancelAllUMConditionalOrders,
+            TradeRequestType::BinanceCancelMarginOrder => TradeResponseType::BinanceCancelMarginOrder,
+            TradeRequestType::BinanceModifyUMOrder => TradeResponseType::BinanceModifyUMOrder,
+            TradeRequestType::BinanceQueryUMOrder => TradeResponseType::BinanceQueryUMOrder,
+            TradeRequestType::BinanceQueryUMOpenOrder => TradeResponseType::BinanceQueryUMOpenOrder,
         }
     }
 
@@ -50,6 +79,13 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceNewUMConditionalOrder => true,
             TradeRequestType::BinanceNewMarginOrder => true,
             TradeRequestType::BinanceCancelUMOrder => true,
+            TradeRequestType::BinanceCancelAllUMOrders => true,
+            TradeRequestType::BinanceCancelUMConditionalOrder => true,
+            TradeRequestType::BinanceCancelAllUMConditionalOrders => true,
+            TradeRequestType::BinanceCancelMarginOrder => true,
+            TradeRequestType::BinanceModifyUMOrder => true,
+            TradeRequestType::BinanceQueryUMOrder => true,
+            TradeRequestType::BinanceQueryUMOpenOrder => true,
         }
     }
 
@@ -60,6 +96,13 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceNewUMConditionalOrder => true,
             TradeRequestType::BinanceNewMarginOrder => true,
             TradeRequestType::BinanceCancelUMOrder => true,
+            TradeRequestType::BinanceCancelAllUMOrders => true,
+            TradeRequestType::BinanceCancelUMConditionalOrder => true,
+            TradeRequestType::BinanceCancelAllUMConditionalOrders => true,
+            TradeRequestType::BinanceCancelMarginOrder => true,
+            TradeRequestType::BinanceModifyUMOrder => true,
+            TradeRequestType::BinanceQueryUMOrder => true,
+            TradeRequestType::BinanceQueryUMOpenOrder => true,
         }
     }
 }

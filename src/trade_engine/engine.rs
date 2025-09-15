@@ -1,20 +1,35 @@
 use crate::trade_engine::config::TradeEngineCfg;
 use crate::trade_engine::dispatcher::Dispatcher;
-use crate::trade_engine::order_event::{OrderRequestEvent, OrderResponseEvent};
+use crate::trade_engine::trade_request::TradeRequestMsg;
+use crate::trade_engine::trade_request_handle::spawn_request_executor;
+use crate::trade_engine::trade_response_handle::spawn_response_handle;
+use crate::common::exchange::Exchange;
 use anyhow::Result;
-use bytes::Bytes;
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{error, info, warn};
-use serde_json::Value;
+use log::{info, warn};
 
 pub struct TradeEngine {
     cfg: TradeEngineCfg,
+    req_tx: Option<tokio::sync::mpsc::UnboundedSender<TradeRequestMsg>>,
 }
 
 impl TradeEngine {
-    pub fn new(cfg: TradeEngineCfg) -> Self { Self { cfg } }
+    pub fn new(cfg: TradeEngineCfg) -> Self { Self { cfg, req_tx: None } }
+
+    /// 返回内部请求通道的一个克隆（在 run() 初始化后可用）
+    pub fn sender(&self) -> Option<tokio::sync::mpsc::UnboundedSender<TradeRequestMsg>> {
+        self.req_tx.clone()
+    }
+    /// 便捷发送接口
+    pub fn send(&self, req: TradeRequestMsg) -> anyhow::Result<()> {
+        if let Some(tx) = &self.req_tx {
+            tx.send(req).map_err(|_| anyhow::anyhow!("trade engine not accepting requests"))
+        } else {
+            Err(anyhow::anyhow!("trade engine not started"))
+        }
+    }
 
     pub async fn run(mut self) -> Result<()> {
         // Single-threaded tokio reactor is enforced by binary attribute.
@@ -47,7 +62,26 @@ impl TradeEngine {
         let resp_publisher: Publisher<ipc::Service, [u8; 8192], ()> = resp_service.publisher_builder().create()?;
 
         // Dispatcher (HTTP + limits)
-        let mut dispatcher = Dispatcher::new(&self.cfg)?;
+        let dispatcher = Dispatcher::new(&self.cfg)?;
+
+        // 解析 exchange 枚举
+        let exchange = match self.cfg.exchange.as_deref() {
+            Some("binance") => Exchange::Binance,
+            Some("binance-futures") => Exchange::BinanceFutures,
+            Some("okex") => Exchange::Okex,
+            Some("okex-swap") => Exchange::OkexSwap,
+            Some("bybit") => Exchange::Bybit,
+            Some("bybit-spot") => Exchange::BybitSpot,
+            _ => Exchange::BinanceFutures,
+        };
+
+        // Internal mpsc pipeline between request executor and response publisher
+        let (req_tx, req_rx) = tokio::sync::mpsc::unbounded_channel::<TradeRequestMsg>();
+        // 暴露内部请求通道（可供外部直接推送请求）
+        self.req_tx = Some(req_tx.clone());
+        let (resp_tx, resp_rx) = tokio::sync::mpsc::unbounded_channel();
+        let _req_worker = spawn_request_executor(dispatcher, exchange, req_rx, resp_tx);
+        let _resp_worker = spawn_response_handle(resp_publisher, resp_rx);
 
         loop {
             match subscriber.receive()? {
@@ -61,74 +95,14 @@ impl TradeEngine {
                     if actual_len == 0 { continue; }
                     let bytes = &payload[..actual_len];
 
-                    // Expect JSON for an order request event
-                    match serde_json::from_slice::<OrderRequestEvent>(bytes) {
-                        Ok(evt) => {
-                            let result = dispatcher.dispatch(evt.clone()).await;
-                            match result {
-                                Ok(outcome) => {
-                                    let ok = outcome.status >= 200 && outcome.status < 300;
-                                    let resp_msg = OrderResponseEvent {
-                                        ok,
-                                        status: outcome.status,
-                                        ip: outcome.ip.to_string(),
-                                        account: outcome.account,
-                                        endpoint: evt.endpoint,
-                                        method: evt.method,
-                                        req_id: evt.req_id,
-                                        used_weight_1m: outcome.ip_used_weight_1m,
-                                        order_count_1m: outcome.order_count_1m,
-                                        body: outcome.body,
-                                    };
-                                    self.publish_response(&resp_publisher, &resp_msg)?;
-                                }
-                                Err(e) => {
-                                    let resp_msg = OrderResponseEvent {
-                                        ok: false,
-                                        status: 0,
-                                        ip: String::new(),
-                                        account: evt.account.unwrap_or_default(),
-                                        endpoint: evt.endpoint,
-                                        method: evt.method,
-                                        req_id: evt.req_id,
-                                        used_weight_1m: None,
-                                        order_count_1m: None,
-                                        body: e.to_string(),
-                                    };
-                                    self.publish_response(&resp_publisher, &resp_msg)?;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!("invalid order event JSON: {}", e);
-                        }
+                    // Expect binary TradeRequest
+                    match crate::trade_engine::trade_request::TradeRequestMsg::parse(bytes) {
+                        Some(msg) => { let _ = req_tx.send(msg); }
+                        None => { warn!("invalid trade request binary payload (len={})", actual_len); }
                     }
                 }
-                None => {
-                    // idle; small sleep to avoid tight loop
-                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                }
+                None => { /* 低延迟优先：不休眠，忙轮询 */ }
             }
         }
-    }
-}
-
-impl TradeEngine {
-    fn publish_response(
-        &self,
-        publisher: &Publisher<ipc::Service, [u8; 8192], ()>,
-        msg: &OrderResponseEvent,
-    ) -> Result<()> {
-        let json = serde_json::to_vec(msg)?;
-        if json.len() > 8192 {
-            warn!("order response too large: {} bytes, truncating", json.len());
-        }
-        let mut buf = [0u8; 8192];
-        let n = json.len().min(8192);
-        buf[..n].copy_from_slice(&json[..n]);
-        let sample = publisher.loan_uninit()?;
-        let sample = sample.write_payload(buf);
-        sample.send()?;
-        Ok(())
     }
 }

@@ -1,12 +1,10 @@
 use crate::trade_engine::config::{ApiKey, LimitsCfg, RestCfg, TradeEngineCfg};
 use crate::trade_engine::order_event::OrderRequestEvent;
 use anyhow::{anyhow, Result};
-use bytes::Bytes;
 use hmac::{Hmac, Mac};
-use log::{debug, error, info, warn};
+use log::{warn};
 use reqwest::{header::HeaderMap, Client};
 use sha2::Sha256;
-use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
