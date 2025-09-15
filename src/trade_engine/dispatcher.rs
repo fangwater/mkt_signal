@@ -168,6 +168,8 @@ impl Dispatcher {
 
                 let status = r.status();
                 let text = r.text().await.unwrap_or_default();
+                // 打印完整响应 JSON（调试模式）
+                debug!("dispatch response body (raw): {}", text);
                 debug!(
                     "dispatch response: status={}, ip_used_1m={:?}, acc_used_1m={:?}, body_len={}",
                     status.as_u16(), ip_used_1m, acc_used_1m, text.len()

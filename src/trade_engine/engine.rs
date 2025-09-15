@@ -87,18 +87,26 @@ impl TradeEngine {
         loop {
             match subscriber.receive()? {
                 Some(sample) => {
-                    let payload = sample.payload();
-                    let actual_len = payload
-                        .iter()
-                        .rposition(|&x| x != 0)
-                        .map(|pos| pos + 1)
-                        .unwrap_or(0);
-                    if actual_len == 0 { continue; }
-                    let bytes = &payload[..actual_len];
+                    // 复制有效负载后尽快释放 sample，避免底层回收异常
+                    let actual_len = {
+                        let payload = sample.payload();
+                        payload
+                            .iter()
+                            .rposition(|&x| x != 0)
+                            .map(|pos| pos + 1)
+                            .unwrap_or(0)
+                    };
+                    if actual_len == 0 { drop(sample); continue; }
+                    let owned = {
+                        let payload = sample.payload();
+                        bytes::Bytes::copy_from_slice(&payload[..actual_len])
+                    };
+                    drop(sample);
+
                     debug!("received payload bytes: {}", actual_len);
 
                     // Expect binary TradeRequest
-                    match crate::trade_engine::trade_request::TradeRequestMsg::parse(bytes) {
+                    match crate::trade_engine::trade_request::TradeRequestMsg::parse(&owned) {
                         Some(msg) => {
                             debug!(
                                 "enqueue request: type={:?}, client_order_id={}, params_len={}",
