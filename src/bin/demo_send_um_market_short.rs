@@ -2,7 +2,8 @@ use anyhow::Result;
 use bytes::Bytes;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use mkt_signal::trade_engine::trade_request::{BinanceNewUMOrderRequest};
+use mkt_signal::trade_engine::trade_request::BinanceNewUMOrderRequest;
+use std::io::{self};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_ms() -> i64 {
@@ -19,17 +20,6 @@ fn main() -> Result<()> {
     let qty = std::env::var("QTY").unwrap_or_else(|_| "0.01".to_string());
     let position_side = std::env::var("POSITION_SIDE").unwrap_or_else(|_| "SHORT".to_string());
 
-    // 以 query-string 形式拼接（引擎侧会解析为键值对并补充签名参数）
-    let create_time = now_ms();
-    let client_order_id = create_time; // 简单用时间戳做ID
-    let qs = format!(
-        "symbol={}&side=SELL&type=MARKET&quantity={}&positionSide={}&newClientOrderId={}",
-        symbol, qty, position_side, client_order_id
-    );
-    let params = Bytes::from(qs);
-    let req = BinanceNewUMOrderRequest::create(create_time, client_order_id, params);
-    let bytes = req.to_bytes();
-
     // Iceoryx 发布
     let node = NodeBuilder::new().name(&NodeName::new("demo_sender")?).create::<ipc::Service>()?;
     let srv = node
@@ -38,15 +28,36 @@ fn main() -> Result<()> {
         .open_or_create()?;
     let publisher = srv.publisher_builder().create()?;
 
-    let mut buf = [0u8; 4096];
-    let n = bytes.len().min(4096);
-    buf[..n].copy_from_slice(&bytes[..n]);
-    let sample = publisher.loan_uninit()?;
-    let sample = sample.write_payload(buf);
-    sample.send()?;
+    println!("interactive UM MARKET SHORT sender ready.");
+    println!("service={}, symbol={}, qty={}, position_side={}", service, symbol, qty, position_side);
+    println!("Press Enter to SEND; type 'q' then Enter to quit.");
 
-    println!("sent UM MARKET SHORT order: {} {}", symbol, qty);
-    println!("publisher is kept alive; press Ctrl-C to exit");
-    // 保持 publisher 存活，避免订阅端频繁连接/断开
-    loop { std::thread::sleep(std::time::Duration::from_secs(3600)); }
+    let stdin = io::stdin();
+    loop {
+        let mut line = String::new();
+        let _ = stdin.read_line(&mut line)?;
+        let cmd = line.trim();
+        if cmd.eq_ignore_ascii_case("q") { break; }
+
+        let create_time = now_ms();
+        let client_order_id = create_time; // 简单用时间戳做ID
+        let qs = format!(
+            "symbol={}&side=SELL&type=MARKET&quantity={}&positionSide={}&newClientOrderId={}",
+            symbol, qty, position_side, client_order_id
+        );
+        let params = Bytes::from(qs);
+        let req = BinanceNewUMOrderRequest::create(create_time, client_order_id, params);
+        let bytes = req.to_bytes();
+
+        let mut buf = [0u8; 4096];
+        let n = bytes.len().min(4096);
+        buf[..n].copy_from_slice(&bytes[..n]);
+        let sample = publisher.loan_uninit()?;
+        let sample = sample.write_payload(buf);
+        sample.send()?;
+        println!("sent UM MARKET SHORT order: {} {} (client_order_id={})", symbol, qty, client_order_id);
+    }
+
+    println!("exit sender");
+    Ok(())
 }

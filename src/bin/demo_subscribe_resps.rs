@@ -1,5 +1,4 @@
 use anyhow::Result;
-use bytes::Buf;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 
@@ -63,4 +62,3 @@ fn main() -> Result<()> {
         }
     }
 }
-

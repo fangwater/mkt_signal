@@ -50,7 +50,7 @@
   - `body_format=2`：错误 typed（包含错误码与错误信息）。
 
 ## 5. 发送测试订单（UM 市价做空 0.01 SOLUSDT）
-- 新开终端发送请求：
+- 推荐先启动 Publisher（避免引擎未启动时立刻发送，可交互触发）：
   ```bash
   export ORDER_REQ_SERVICE="order_reqs/binance"
   export SYMBOL="SOLUSDT"
@@ -59,10 +59,15 @@
   export POSITION_SIDE="SHORT"
 
   RUST_LOG=debug cargo run --bin demo_send_um_market_short
+  # 运行后在终端内：按 Enter 发送一单，输入 q 回车退出
+  ```
+- 再启动引擎（或先启动引擎亦可）：
+  ```bash
+  RUST_LOG=debug cargo run --bin trade_engine
   ```
 - DEMO 发送最小参数集：`symbol/side=SELL/type=MARKET/quantity/(positionSide)/newClientOrderId`
 - 引擎自动补齐：`timestamp/recvWindow`，并完成签名。
-- 该 DEMO 会保持 publisher 常驻（直到 Ctrl-C 退出），避免发布端进程退出导致订阅端频繁重连，符合 Iceoryx 的 pub/sub 使用习惯。
+- 该 DEMO 为交互式，Publisher 常驻，按 Enter 才会发送，符合 Iceoryx pub/sub 的使用习惯。
 
 注意：实盘会真实下单，请先小额测试；确认账户持仓模式（单向/双向）与最小下单量/精度符合交易所规则。
 
