@@ -101,6 +101,11 @@ impl Dispatcher {
         let account_name = self.accounts[acc_idx].key.name.clone();
         let api_key_value = self.accounts[acc_idx].key.key.clone();
         let secret_value = self.accounts[acc_idx].key.secret.clone();
+        let api_key_trimmed = api_key_value.trim();
+        debug!(
+            "using account {}, api key length={}, secret length={}",
+            account_name, api_key_trimmed.len(), secret_value.len()
+        );
         debug!(
             "dispatch select: ip={}, account={}",
             ip, account_name
@@ -158,7 +163,7 @@ impl Dispatcher {
         };
 
         let resp = request_builder
-            .header("X-MBX-APIKEY", &api_key_value)
+            .header("X-MBX-APIKEY", api_key_trimmed)
             .send()
             .await;
 

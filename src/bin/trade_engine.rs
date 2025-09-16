@@ -1,5 +1,5 @@
 use anyhow::Result;
-use log::info;
+use log::{info, debug};
 use mkt_signal::trade_engine::{config::{TradeEngineCfg, ApiKey}, TradeEngine};
 
 #[tokio::main(flavor = "current_thread")]
@@ -10,9 +10,12 @@ async fn main() -> Result<()> {
     let mut cfg = TradeEngineCfg::load(cfg_path).await?;
 
     // 可选：用环境变量覆盖账户（适合临时实盘测试）
-    if let (Ok(key), Ok(secret)) = (std::env::var("BINANCE_API_KEY"), std::env::var("BINANCE_API_SECRET")) {
-        cfg.accounts.keys = vec![ApiKey{ name: std::env::var("BINANCE_API_NAME").unwrap_or_else(|_| "env".into()), key, secret }];
+    if let (Ok(key_raw), Ok(secret_raw)) = (std::env::var("BINANCE_API_KEY"), std::env::var("BINANCE_API_SECRET")) {
+        let key = key_raw.trim().to_string();
+        let secret = secret_raw.trim().to_string();
+        cfg.accounts.keys = vec![ApiKey{ name: std::env::var("BINANCE_API_NAME").unwrap_or_else(|_| "env".into()), key: key.clone(), secret: secret.clone() }];
         info!("trade_engine accounts overridden by env");
+        debug!("env api key length={}, secret length={}", key.len(), secret.len());
     }
 
     info!("trade_engine config loaded");
