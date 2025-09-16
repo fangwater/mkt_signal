@@ -13,12 +13,11 @@ fn now_ms() -> i64 {
 fn main() -> Result<()> {
     env_logger::init();
 
-    // 目标服务名（与引擎一致）
-    let service = std::env::var("ORDER_REQ_SERVICE").unwrap_or_else(|_| "order_reqs/binance".to_string());
-    // 交易参数（SOLUSDT 做空 0.01 市价单，双向持仓）
-    let symbol = std::env::var("SYMBOL").unwrap_or_else(|_| "SOLUSDT".to_string());
-    let qty = std::env::var("QTY").unwrap_or_else(|_| "0.01".to_string());
-    let position_side = std::env::var("POSITION_SIDE").unwrap_or_else(|_| "SHORT".to_string());
+    // 固定服务名与参数（无需环境变量）
+    let service = "order_reqs/binance".to_string();
+    let symbol = "SOLUSDT".to_string();
+    let qty = "0.03".to_string();
+    let position_side = "SHORT".to_string();
 
     // Iceoryx 发布
     let node = NodeBuilder::new().name(&NodeName::new("demo_sender")?).create::<ipc::Service>()?;

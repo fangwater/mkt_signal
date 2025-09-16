@@ -18,6 +18,14 @@ async fn main() -> Result<()> {
         debug!("env api key length={}, secret length={}", key.len(), secret.len());
     }
 
+    // 可选：用环境变量覆盖 iceoryx 服务名，便于测试时快速切换隔离
+    if let Ok(req_svc) = std::env::var("ORDER_REQ_SERVICE") {
+        cfg.order_req_service = req_svc;
+    }
+    if let Ok(resp_svc) = std::env::var("ORDER_RESP_SERVICE") {
+        cfg.order_resp_service = resp_svc;
+    }
+
     info!("trade_engine config loaded");
     let engine = TradeEngine::new(cfg);
     let local = tokio::task::LocalSet::new();

@@ -49,18 +49,16 @@
   - `body_format=0`：原始 HTTP body（字符串或字节）。
   - `body_format=2`：错误 typed（包含错误码与错误信息）。
 
-## 5. 发送测试订单（UM 市价做空 0.01 SOLUSDT）
-- 推荐先启动 Publisher（避免引擎未启动时立刻发送，可交互触发）：
-  ```bash
-  export ORDER_REQ_SERVICE="order_reqs/binance"
-  export SYMBOL="SOLUSDT"
-  export QTY="0.01"
-  # 双向持仓才设置，否则不要设该变量
-  export POSITION_SIDE="SHORT"
-
-  RUST_LOG=debug cargo run --bin demo_send_um_market_short
-  # 运行后在终端内：按 Enter 发送一单，输入 q 回车退出
-  ```
+- 发送 Demo 已写死参数，无需设置环境变量：
+  - 服务名：`order_reqs/binance`
+  - 交易对：`SOLUSDT`
+  - 数量：`0.03`
+  - 方向：`SELL`，`positionSide=SHORT`
+  - 运行：
+    ```bash
+    RUST_LOG=debug cargo run --bin demo_send_um_market_short
+    # 运行后在终端内：按 Enter 发送一单，输入 q 回车退出
+    ```
 - 再启动引擎（或先启动引擎亦可）：
   ```bash
   RUST_LOG=debug cargo run --bin trade_engine
