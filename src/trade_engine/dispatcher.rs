@@ -168,8 +168,11 @@ impl Dispatcher {
 
                 let status = r.status();
                 let text = r.text().await.unwrap_or_default();
-                // 打印完整响应 JSON（调试模式）
+                // 打印完整响应 JSON（调试模式）；4xx/5xx 同时以 warn 级别输出
                 debug!("dispatch response body (raw): {}", text);
+                if !status.is_success() {
+                    warn!("http {} body: {}", status.as_u16(), text);
+                }
                 classify_http_and_log(status.as_u16(), &text);
                 debug!(
                     "dispatch response: status={}, ip_used_1m={:?}, acc_used_1m={:?}, body_len={}",
@@ -275,6 +278,10 @@ fn classify_http_and_log(status: u16, body: &str) {
             } else {
                 hint = "通用 503：建议稍后重试或切换线路".into();
             }
+        }
+        401 => {
+            summary = "401 未授权/权限不足".into();
+            hint = "检查 API Key/Secret 是否正确、IP 白名单、接口域与路径是否匹配(PAPI/FAPI)、密钥是否具备该接口权限".into();
         }
         s if (400..500).contains(&s) => {
             summary = "4XX 客户端请求错误（内容/行为/格式）".into();
