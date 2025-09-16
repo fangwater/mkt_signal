@@ -10,3 +10,7 @@ pub mod trade_engine;
 // Re-export frequently used modules for backward compatibility
 pub use common::{exchange, mkt_msg};
 pub use mkt_pub::{app, cfg, iceoryx_forwarder, proxy, sub_msg};
+pub use trade_engine::{
+    config::{ApiKey, TradeEngineCfg},
+    TradeEngine,
+};

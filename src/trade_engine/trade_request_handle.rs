@@ -19,7 +19,9 @@ pub fn spawn_request_executor(
     resp_tx: mpsc::UnboundedSender<TradeExecOutcome>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_local(async move {
+        //当req-rx监听到消息，进行阻塞式处理
         while let Some(msg) = req_rx.recv().await {
+            //mapping基本的请求方式和url，后续可以兼容其他交易所
             let endpoint = TradeTypeMapping::get_endpoint(msg.req_type).to_string();
             let method = TradeTypeMapping::get_method(msg.req_type).to_string();
             let weight = TradeTypeMapping::get_weight(msg.req_type);

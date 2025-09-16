@@ -1,0 +1,27 @@
+{
+  "base_url": "https://papi.binance.com",
+  "default_leverage": 3,
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "SOLUSDT",
+    "XRPUSDT",
+    "ADAUSDT",
+    "DOGEUSDT",
+    "TRXUSDT",
+    "MATICUSDT",
+    "DOTUSDT",
+    "LTCUSDT",
+    "BCHUSDT",
+    "LINKUSDT",
+    "AVAXUSDT",
+    "ATOMUSDT",
+    "FILUSDT",
+    "APTUSDT",
+    "OPUSDT",
+    "ARBUSDT",
+    "NEARUSDT"
+  ]
+}
+

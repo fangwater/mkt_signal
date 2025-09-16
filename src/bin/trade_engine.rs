@@ -1,6 +1,6 @@
 use anyhow::Result;
-use log::{info, debug};
-use mkt_signal::trade_engine::{config::{TradeEngineCfg, ApiKey}, TradeEngine};
+use log::{debug, info};
+use mkt_signal::{ApiKey, TradeEngine, TradeEngineCfg};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {

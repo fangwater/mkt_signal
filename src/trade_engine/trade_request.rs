@@ -17,6 +17,7 @@ pub enum TradeRequestType {
     BinanceModifyUMOrder = 4009,  // 币安UM合约修改订单请求
     BinanceQueryUMOrder = 4010,  // 币安UM合约查询订单请求
     BinanceQueryUMOpenOrder = 4011,  // 币安UM合约查询当前挂单请求
+    BinanceUMSetLeverage = 4012,  // 币安UM设置杠杆
 }
 
 // 交易请求的公共头部
@@ -52,6 +53,7 @@ impl TryFrom<u32> for TradeRequestType {
             4009 => Ok(TradeRequestType::BinanceModifyUMOrder),
             4010 => Ok(TradeRequestType::BinanceQueryUMOrder),
             4011 => Ok(TradeRequestType::BinanceQueryUMOpenOrder),
+            4012 => Ok(TradeRequestType::BinanceUMSetLeverage),
             _ => Err(()),
         }
     }
@@ -84,6 +86,42 @@ impl TradeRequestMsg {
             msg_type, params_len, client_order_id
         );
         Some(Self { req_type, create_time, client_order_id, params })
+    }
+}
+
+// 币安UM设置杠杆请求
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct BinanceUMSetLeverageRequest {
+    pub header: TradeRequestHeader,
+    pub params: Bytes,  // 包含 symbol=...&leverage=... （其余由引擎补齐并签名）
+}
+
+impl BinanceUMSetLeverageRequest {
+    pub fn create(
+        create_time: i64,
+        client_order_id: i64,
+        params: Bytes,
+    ) -> Self {
+        let header = TradeRequestHeader {
+            msg_type: TradeRequestType::BinanceUMSetLeverage as u32,
+            params_length: params.len() as u32,
+            create_time,
+            client_order_id,
+        };
+
+        Self { header, params }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 4 + 8 + 8 + self.params.len();
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.header.msg_type);
+        buf.put_u32_le(self.header.params_length);
+        buf.put_i64_le(self.header.create_time);
+        buf.put_i64_le(self.header.client_order_id);
+        buf.put(self.params.clone());
+        buf.freeze()
     }
 }
 

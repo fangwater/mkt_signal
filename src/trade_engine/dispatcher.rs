@@ -220,26 +220,40 @@ impl Dispatcher {
 
     fn update_limits_from_headers(&mut self, ip_idx: usize, acc_idx: usize, headers: &HeaderMap) -> (Option<u32>, Option<u32>) {
         // Headers are case-insensitive and stored lowercase in reqwest
-        // X-MBX-USED-WEIGHT(-1m) and X-MBX-ORDER-COUNT(-1m)
+        // Prefer the "-1m" variants when available
+        let mut ip_used_generic: Option<u32> = None;
         let mut ip_used_1m: Option<u32> = None;
+        let mut acc_used_generic: Option<u32> = None;
         let mut acc_used_1m: Option<u32> = None;
+
         for (k, v) in headers.iter() {
             let key = k.as_str();
             if key.starts_with("x-mbx-used-weight") {
-                if let Ok(s) = v.to_str() { if let Ok(n) = s.parse::<u32>() { ip_used_1m = Some(n); } }
+                if let Ok(s) = v.to_str() { debug!("resp header {}: {}", key, s); if let Ok(n) = s.parse::<u32>() {
+                    if key.contains("-1m") { ip_used_1m = Some(n); } else { ip_used_generic = Some(n); }
+                }}
             }
             if key.starts_with("x-mbx-order-count") {
-                if let Ok(s) = v.to_str() { if let Ok(n) = s.parse::<u32>() { acc_used_1m = Some(n); } }
+                if let Ok(s) = v.to_str() { debug!("resp header {}: {}", key, s); if let Ok(n) = s.parse::<u32>() {
+                    if key.contains("-1m") { acc_used_1m = Some(n); } else { acc_used_generic = Some(n); }
+                }}
             }
         }
 
-        if let Some(x) = ip_used_1m { self.ip_clients[ip_idx].used_weight_1m = x; }
+        let ip_final = ip_used_1m.or(ip_used_generic);
+        let acc_final = acc_used_1m.or(acc_used_generic);
+
+        if let Some(x) = ip_final { self.ip_clients[ip_idx].used_weight_1m = x; }
         else { self.ip_clients[ip_idx].used_weight_1m = self.ip_clients[ip_idx].used_weight_1m.saturating_add(1); }
 
-        if let Some(x) = acc_used_1m { self.accounts[acc_idx].used_orders_1m = x; }
+        if let Some(x) = acc_final { self.accounts[acc_idx].used_orders_1m = x; }
         else { self.accounts[acc_idx].used_orders_1m = self.accounts[acc_idx].used_orders_1m.saturating_add(1); }
 
-        (ip_used_1m, acc_used_1m)
+        debug!(
+            "limits from headers => used_weight_1m={:?} (generic={:?}), order_count_1m={:?} (generic={:?})",
+            ip_used_1m, ip_used_generic, acc_used_1m, acc_used_generic
+        );
+        (ip_final, acc_final)
     }
 }
 

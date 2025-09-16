@@ -71,15 +71,17 @@
 
 ## 6. 参数与响应格式说明
 - 请求参数格式：query-string（`k=v&k2=v2`），不支持 JSON。重复 key 仅保留最后一个。
-- 统一响应头（小端序，32 字节）：
-  - `u32 msg_type`（错误时为 ErrorResponse）
-  - `i64 local_recv_time`
-  - `i64 client_order_id`
-  - `u32 exchange`
-  - `u16 status`
-  - `u16 body_format`（0 原始/1 typed/2 错误）
-  - `u32 body_length`
-  - 紧随 `body_length` 字节 body。
+- 响应格式：通用头（40字节，小端）+ 原始 JSON body（UTF-8 文本）
+  - `u32 req_type`（对应 TradeRequestType 编号，例如 BinanceNewUMOrder=4001 等）
+  - `i64 local_recv_time`（本地封包时间戳，毫秒）
+  - `i64 client_order_id`（请求侧的 client_order_id）
+  - `u32 exchange`（交易所枚举）
+  - `u16 status`（HTTP 状态码）
+  - `u16 reserved`（保留字段，0）
+  - `u32 ip_used_weight_1m`（若未知为 `u32::MAX`）
+  - `u32 order_count_1m`（若未知为 `u32::MAX`）
+  - `u32 body_length`（JSON 原始长度，可能大于实际承载长度）
+  - 后续为 `body_length` 字节的 JSON（发布通道 payload 总长 16384，超出会被截断）
 
 ## 7. 常见问题
 - 未收到响应：检查 `ORDER_REQ_SERVICE`/`ORDER_RESP_SERVICE` 与配置一致；确认账户权限与 IP 出口设置有效。

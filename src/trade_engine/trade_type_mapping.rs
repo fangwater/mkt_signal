@@ -1,5 +1,4 @@
 use super::trade_request::TradeRequestType;
-use super::trade_response::TradeResponseType;
 
 pub struct TradeTypeMapping;
 
@@ -18,6 +17,7 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceModifyUMOrder => "/papi/v1/um/order",
             TradeRequestType::BinanceQueryUMOrder => "/papi/v1/um/order",
             TradeRequestType::BinanceQueryUMOpenOrder => "/papi/v1/um/openOrder",
+            TradeRequestType::BinanceUMSetLeverage => "/papi/v1/um/leverage",
         }
     }
 
@@ -35,6 +35,7 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceModifyUMOrder => "PUT",
             TradeRequestType::BinanceQueryUMOrder => "GET",
             TradeRequestType::BinanceQueryUMOpenOrder => "GET",
+            TradeRequestType::BinanceUMSetLeverage => "POST",
         }
     }
 
@@ -52,25 +53,11 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceModifyUMOrder => 1,
             TradeRequestType::BinanceQueryUMOrder => 1,
             TradeRequestType::BinanceQueryUMOpenOrder => 1,
+            TradeRequestType::BinanceUMSetLeverage => 1,
         }
     }
 
-    /// 根据请求类型获取对应的响应类型
-    pub fn get_response_type(request_type: TradeRequestType) -> TradeResponseType {
-        match request_type {
-            TradeRequestType::BinanceNewUMOrder => TradeResponseType::BinanceNewUMOrder,
-            TradeRequestType::BinanceNewUMConditionalOrder => TradeResponseType::BinanceNewUMConditionalOrder,
-            TradeRequestType::BinanceNewMarginOrder => TradeResponseType::BinanceNewMarginOrder,
-            TradeRequestType::BinanceCancelUMOrder => TradeResponseType::BinanceCancelUMOrder,
-            TradeRequestType::BinanceCancelAllUMOrders => TradeResponseType::BinanceCancelAllUMOrders,
-            TradeRequestType::BinanceCancelUMConditionalOrder => TradeResponseType::BinanceCancelUMConditionalOrder,
-            TradeRequestType::BinanceCancelAllUMConditionalOrders => TradeResponseType::BinanceCancelAllUMConditionalOrders,
-            TradeRequestType::BinanceCancelMarginOrder => TradeResponseType::BinanceCancelMarginOrder,
-            TradeRequestType::BinanceModifyUMOrder => TradeResponseType::BinanceModifyUMOrder,
-            TradeRequestType::BinanceQueryUMOrder => TradeResponseType::BinanceQueryUMOrder,
-            TradeRequestType::BinanceQueryUMOpenOrder => TradeResponseType::BinanceQueryUMOpenOrder,
-        }
-    }
+    // 已不再需要响应类型映射（发布原始 JSON 即可）
 
     /// 检查请求类型是否需要签名
     pub fn requires_signature(request_type: TradeRequestType) -> bool {
@@ -86,6 +73,7 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceModifyUMOrder => true,
             TradeRequestType::BinanceQueryUMOrder => true,
             TradeRequestType::BinanceQueryUMOpenOrder => true,
+            TradeRequestType::BinanceUMSetLeverage => true,
         }
     }
 
@@ -103,6 +91,7 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceModifyUMOrder => true,
             TradeRequestType::BinanceQueryUMOrder => true,
             TradeRequestType::BinanceQueryUMOpenOrder => true,
+            TradeRequestType::BinanceUMSetLeverage => true,
         }
     }
 }
