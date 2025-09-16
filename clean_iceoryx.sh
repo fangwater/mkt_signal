@@ -7,37 +7,26 @@ echo "========================================="
 echo "开始清理 Iceoryx2 服务..."
 echo "========================================="
 
-# 1. 杀死所有相关进程
-echo "步骤 1: 终止所有相关进程..."
-pkill -9 -f iceoryx 2>/dev/null
-pkill -9 -f demo_send 2>/dev/null
-pkill -9 -f demo_subscribe 2>/dev/null
-pkill -9 -f trade_engine 2>/dev/null
-pkill -9 -f crypto_proxy 2>/dev/null
-
-# 给进程一点时间完全退出
-sleep 1
-
 # 2. 清理共享内存段
-echo "步骤 2: 清理共享内存..."
+echo "步骤 1: 清理共享内存..."
 ipcs -m | grep $USER | awk '{print $2}' | while read id; do
     [ -n "$id" ] && ipcrm -m $id 2>/dev/null
 done
 
 # 3. 清理信号量
-echo "步骤 3: 清理信号量..."
+echo "步骤 2: 清理信号量..."
 ipcs -s | grep $USER | awk '{print $2}' | while read id; do
     [ -n "$id" ] && ipcrm -s $id 2>/dev/null
 done
 
 # 4. 清理消息队列
-echo "步骤 4: 清理消息队列..."
+echo "步骤 3: 清理消息队列..."
 ipcs -q | grep $USER | awk '{print $2}' | while read id; do
     [ -n "$id" ] && ipcrm -q $id 2>/dev/null
 done
 
 # 5. 清理 iceoryx2 临时文件
-echo "步骤 5: 清理临时文件..."
+echo "步骤 4: 清理临时文件..."
 rm -rf /tmp/iceoryx2* 2>/dev/null
 rm -rf /dev/shm/iceoryx2* 2>/dev/null
 rm -rf /dev/shm/*iox2* 2>/dev/null
@@ -49,7 +38,7 @@ if [ "$EUID" -eq 0 ] || sudo -n true 2>/dev/null; then
     sudo rm -rf /dev/shm/iceoryx2* 2>/dev/null
     sudo rm -rf /dev/shm/*iox2* 2>/dev/null
 else
-    echo "步骤 6: 跳过系统级文件清理（需要 sudo 权限）"
+    echo "步骤 5: 跳过系统级文件清理（需要 sudo 权限）"
 fi
 
 # 7. 验证清理结果
