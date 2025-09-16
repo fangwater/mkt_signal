@@ -170,6 +170,7 @@ impl Dispatcher {
                 let text = r.text().await.unwrap_or_default();
                 // 打印完整响应 JSON（调试模式）
                 debug!("dispatch response body (raw): {}", text);
+                classify_http_and_log(status.as_u16(), &text);
                 debug!(
                     "dispatch response: status={}, ip_used_1m={:?}, acc_used_1m={:?}, body_len={}",
                     status.as_u16(), ip_used_1m, acc_used_1m, text.len()
@@ -242,4 +243,53 @@ pub struct DispatchResponse {
     pub account: String,
     pub ip_used_weight_1m: Option<u32>,
     pub order_count_1m: Option<u32>,
+}
+
+fn classify_http_and_log(status: u16, body: &str) {
+    if status < 400 { return; }
+    let bl = body.to_ascii_lowercase();
+    let summary: String;
+    let mut hint: String;
+
+    match status {
+        403 => {
+            summary = "403 禁止：可能违反 WAF 限制".into();
+            hint = "检查请求频率/白名单/风控策略".into();
+        }
+        418 => {
+            summary = "418 已被封禁（此前 429 后继续访问）".into();
+            hint = "立即停止请求并按照策略退避，等待解封".into();
+        }
+        429 => {
+            summary = "429 访问频次超限（即将被封 IP）".into();
+            hint = "已进入冷却窗口，降低速率或切换出口 IP".into();
+        }
+        503 => {
+            summary = "503 服务不可用/未知结果".into();
+            if bl.contains("unknown error, please check your request or try again later.") {
+                hint = "请求已提交到业务核心但未获响应，结果未知：可能已执行或失败，需要后续确认".into();
+            } else if bl.contains("service unavailable.") {
+                hint = "服务暂不可用：本次请求失败，可稍后重试".into();
+            } else if bl.contains("internal error; unable to process your request. please try again.") {
+                hint = "服务端内部错误：本次请求失败，可选择立即重试".into();
+            } else {
+                hint = "通用 503：建议稍后重试或切换线路".into();
+            }
+        }
+        s if (400..500).contains(&s) => {
+            summary = "4XX 客户端请求错误（内容/行为/格式）".into();
+            hint = "检查参数、签名、权限与持仓模式等".into();
+        }
+        _ => {
+            summary = "5XX 服务端问题".into();
+            hint = "服务异常：建议稍后重试；如频繁出现可切换线路".into();
+        }
+    }
+
+    if bl.contains("request occur unknown error.") {
+        if !hint.is_empty() { hint.push_str("；"); }
+        hint.push_str("检测到 'Request occur unknown error.'，建议稍后重试");
+    }
+
+    warn!("http classify: status={}, {}; 提示：{}", status, summary, hint);
 }
