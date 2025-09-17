@@ -3,8 +3,8 @@ use crate::trade_engine::trade_request::TradeRequestType;
 use bytes::{BufMut, BytesMut};
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::service::ipc;
-use tokio::sync::mpsc;
 use log::debug;
+use tokio::sync::mpsc;
 
 // REST 请求执行后的输出（内部使用）
 pub struct TradeExecOutcome {
@@ -80,7 +80,10 @@ pub fn spawn_response_handle(
             }
             debug!(
                 "publish header+json: type={}, status={}, body_len={}, truncated={}",
-                hdr.req_type, hdr.status, body.len(), body.len() > bcopy
+                hdr.req_type,
+                hdr.status,
+                body.len(),
+                body.len() > bcopy
             );
             // 打印完整 JSON（debug 日志）
             if let Ok(full) = std::str::from_utf8(body) {

@@ -37,10 +37,7 @@ impl PmForwarder {
             .create::<ipc::Service>()?;
 
         let service = node
-            .service_builder(&ServiceName::new(&format!(
-                "account_pubs/{}/pm",
-                exchange
-            ))?)
+            .service_builder(&ServiceName::new(&format!("account_pubs/{}/pm", exchange))?)
             .publish_subscribe::<[u8; PM_MAX_BYTES]>()
             .max_publishers(1)
             .max_subscribers(subs.unwrap_or(10))

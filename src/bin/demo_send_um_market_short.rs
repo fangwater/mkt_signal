@@ -7,7 +7,10 @@ use std::io::{self};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
 }
 
 fn main() -> Result<()> {
@@ -20,7 +23,9 @@ fn main() -> Result<()> {
     let position_side = "SHORT".to_string();
 
     // Iceoryx 发布
-    let node = NodeBuilder::new().name(&NodeName::new("demo_sender")?).create::<ipc::Service>()?;
+    let node = NodeBuilder::new()
+        .name(&NodeName::new("demo_sender")?)
+        .create::<ipc::Service>()?;
     let srv = node
         .service_builder(&ServiceName::new(&service)?)
         .publish_subscribe::<[u8; 4096]>()
@@ -28,7 +33,10 @@ fn main() -> Result<()> {
     let publisher = srv.publisher_builder().create()?;
 
     println!("interactive UM MARKET SHORT sender ready.");
-    println!("service={}, symbol={}, qty={}, position_side={}", service, symbol, qty, position_side);
+    println!(
+        "service={}, symbol={}, qty={}, position_side={}",
+        service, symbol, qty, position_side
+    );
     println!("Press Enter to SEND; type 'q' then Enter to quit.");
 
     let stdin = io::stdin();
@@ -36,7 +44,9 @@ fn main() -> Result<()> {
         let mut line = String::new();
         let _ = stdin.read_line(&mut line)?;
         let cmd = line.trim();
-        if cmd.eq_ignore_ascii_case("q") { break; }
+        if cmd.eq_ignore_ascii_case("q") {
+            break;
+        }
 
         let create_time = now_ms();
         let client_order_id = create_time; // 简单用时间戳做ID
@@ -54,7 +64,10 @@ fn main() -> Result<()> {
         let sample = publisher.loan_uninit()?;
         let sample = sample.write_payload(buf);
         sample.send()?;
-        println!("sent UM MARKET SHORT order: {} {} (client_order_id={})", symbol, qty, client_order_id);
+        println!(
+            "sent UM MARKET SHORT order: {} {} (client_order_id={})",
+            symbol, qty, client_order_id
+        );
     }
 
     println!("exit sender");

@@ -11,7 +11,6 @@ use std::time::Duration;
 use tokio::signal;
 use tokio::sync::{broadcast, watch};
 
-
 /// 构造最终的用户数据 WS URL。
 /// 如果配置的 `ws_base` 已经以 `/ws` 结尾（例如 `.../pm/ws`），则直接追加 listenKey；
 /// 否则默认追加 `/ws/{listenKey}`。
@@ -28,12 +27,11 @@ fn build_ws_url(ws_base: &str, listen_key: &str) -> String {
 async fn main() -> Result<()> {
     env_logger::init();
     // Load TOML config (fixed path)
-    let cfg = mkt_signal::portfolio_margin::pm_cfg::AccountTomlCfg::load("config/account_cfg.toml").await?;
+    let cfg = mkt_signal::portfolio_margin::pm_cfg::AccountTomlCfg::load("config/account_cfg.toml")
+        .await?;
 
     let api_key = std::env::var("BINANCE_API_KEY").map_err(|_| {
-        anyhow::anyhow!(
-            "BINANCE_API_KEY not set. Export it before running account_monitor"
-        )
+        anyhow::anyhow!("BINANCE_API_KEY not set. Export it before running account_monitor")
     })?;
 
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
@@ -68,7 +66,10 @@ async fn main() -> Result<()> {
         .clone()
         .unwrap_or_else(|| "".to_string());
     let session_max = cfg.general.ws_session_max_secs.map(Duration::from_secs);
-    info!("Primary IP='{}', Secondary IP='{}', session_max={:?}", primary_ip, secondary_ip, session_max);
+    info!(
+        "Primary IP='{}', Secondary IP='{}', session_max={:?}",
+        primary_ip, secondary_ip, session_max
+    );
 
     // Start listenKey service
     let listen_key_rx = BinanceListenKeyService::new(rest_pm.clone(), api_key)
@@ -158,8 +159,15 @@ fn spawn_user_stream_path(
             let url = build_ws_url(&ws_base, &listen_key);
             info!("[{}] connecting to {} (local_ip='{}')", name, url, local_ip);
             let (raw_tx, mut raw_rx) = broadcast::channel::<Bytes>(8192);
-            let mut conn = MktConnection::new(url, serde_json::json!({}), raw_tx.clone(), shutdown_rx.clone());
-            if !local_ip.is_empty() { conn.local_ip = Some(local_ip.clone()); }
+            let mut conn = MktConnection::new(
+                url,
+                serde_json::json!({}),
+                raw_tx.clone(),
+                shutdown_rx.clone(),
+            );
+            if !local_ip.is_empty() {
+                conn.local_ip = Some(local_ip.clone());
+            }
             let mut runner = BinanceUserDataConnection::new(conn, session_max);
 
             // consumer

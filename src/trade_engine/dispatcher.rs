@@ -2,7 +2,7 @@ use crate::trade_engine::config::{ApiKey, LimitsCfg, RestCfg, TradeEngineCfg};
 use crate::trade_engine::order_event::OrderRequestEvent;
 use anyhow::{anyhow, Result};
 use hmac::{Hmac, Mac};
-use log::{warn, debug};
+use log::{debug, warn};
 use reqwest::{header::HeaderMap, Client};
 use sha2::Sha256;
 use std::net::IpAddr;
@@ -23,8 +23,16 @@ struct IpClient {
 impl IpClient {
     fn is_available(&self) -> bool {
         let now = Instant::now();
-        if let Some(t) = self.cooldown_until { if now < t { return false; } }
-        if let Some(t) = self.banned_until { if now < t { return false; } }
+        if let Some(t) = self.cooldown_until {
+            if now < t {
+                return false;
+            }
+        }
+        if let Some(t) = self.banned_until {
+            if now < t {
+                return false;
+            }
+        }
         true
     }
 }
@@ -50,23 +58,48 @@ impl Dispatcher {
             let mut builder = reqwest::Client::builder()
                 .local_address(*ip)
                 .tcp_keepalive(Some(Duration::from_secs(30)));
-            if let Some(ms) = cfg.rest.timeout_ms { builder = builder.timeout(Duration::from_millis(ms)); }
+            if let Some(ms) = cfg.rest.timeout_ms {
+                builder = builder.timeout(Duration::from_millis(ms));
+            }
             let client = builder.build()?;
-            ip_clients.push(IpClient{ ip: *ip, client, used_weight_1m: 0, cooldown_until: None, banned_until: None });
+            ip_clients.push(IpClient {
+                ip: *ip,
+                client,
+                used_weight_1m: 0,
+                cooldown_until: None,
+                banned_until: None,
+            });
         }
 
-        let accounts = cfg.accounts.keys.iter().cloned().map(|key| AccountState{ key, used_orders_1m: 0 }).collect();
+        let accounts = cfg
+            .accounts
+            .keys
+            .iter()
+            .cloned()
+            .map(|key| AccountState {
+                key,
+                used_orders_1m: 0,
+            })
+            .collect();
 
-        Ok(Self { rest: cfg.rest.clone(), limits: cfg.limits.clone(), ip_clients, accounts })
+        Ok(Self {
+            rest: cfg.rest.clone(),
+            limits: cfg.limits.clone(),
+            ip_clients,
+            accounts,
+        })
     }
 
     fn select_ip(&self, req_weight: u32) -> Option<usize> {
         let limit = self.limits.ip_weight_limit();
         let mut best: Option<(usize, f32)> = None; // index, score (remaining ratio)
         for (i, c) in self.ip_clients.iter().enumerate() {
-            if !c.is_available() { continue; }
+            if !c.is_available() {
+                continue;
+            }
             let used = c.used_weight_1m as f32;
-            let rem_ratio = ((limit as f32 - used - req_weight as f32) / limit as f32).clamp(-1.0, 1.0);
+            let rem_ratio =
+                ((limit as f32 - used - req_weight as f32) / limit as f32).clamp(-1.0, 1.0);
             if best.map(|(_, s)| rem_ratio > s).unwrap_or(true) {
                 best = Some((i, rem_ratio));
             }
@@ -91,9 +124,11 @@ impl Dispatcher {
     }
 
     pub async fn dispatch(&mut self, evt: OrderRequestEvent) -> Result<DispatchResponse> {
-        let ip_idx = self.select_ip(evt.weight())
+        let ip_idx = self
+            .select_ip(evt.weight())
             .ok_or_else(|| anyhow!("no available IP client (cooldown/banned or all saturated)"))?;
-        let acc_idx = self.select_account(evt.account.as_deref())
+        let acc_idx = self
+            .select_account(evt.account.as_deref())
             .ok_or_else(|| anyhow!("no available account key"))?;
 
         let ip = self.ip_clients[ip_idx].ip;
@@ -104,24 +139,35 @@ impl Dispatcher {
         let api_key_trimmed = api_key_value.trim();
         debug!(
             "using account {}, api key length={}, secret length={}",
-            account_name, api_key_trimmed.len(), secret_value.len()
+            account_name,
+            api_key_trimmed.len(),
+            secret_value.len()
         );
-        debug!(
-            "dispatch select: ip={}, account={}",
-            ip, account_name
-        );
+        debug!("dispatch select: ip={}, account={}", ip, account_name);
 
         // Warn when approaching limits
         let warn_ratio = self.limits.warn_ratio();
         let ip_used = self.ip_clients[ip_idx].used_weight_1m;
         let ip_limit = self.limits.ip_weight_limit();
         if (ip_used as f32) / (ip_limit as f32) > warn_ratio {
-            warn!("IP {} used_weight ~{}/{} > {}%", ip, ip_used, ip_limit, (warn_ratio * 100.0) as u32);
+            warn!(
+                "IP {} used_weight ~{}/{} > {}%",
+                ip,
+                ip_used,
+                ip_limit,
+                (warn_ratio * 100.0) as u32
+            );
         }
         let acc_used = self.accounts[acc_idx].used_orders_1m;
         let acc_limit = self.limits.account_limit();
         if (acc_used as f32) / (acc_limit as f32) > warn_ratio {
-            warn!("Account {} order_count ~{}/{} > {}%", account_name, acc_used, acc_limit, (warn_ratio * 100.0) as u32);
+            warn!(
+                "Account {} order_count ~{}/{} > {}%",
+                account_name,
+                acc_used,
+                acc_limit,
+                (warn_ratio * 100.0) as u32
+            );
         }
 
         let url = format!("{}{}", self.rest.base_url, evt.endpoint);
@@ -137,7 +183,9 @@ impl Dispatcher {
         let mut parts: Vec<(String, String)> = params.into_iter().collect();
         parts.sort_by(|a, b| a.0.cmp(&b.0));
         let mut ser = url::form_urlencoded::Serializer::new(String::new());
-        for (k, v) in &parts { ser.append_pair(k, v); }
+        for (k, v) in &parts {
+            ser.append_pair(k, v);
+        }
         let query = ser.finish();
         debug!(
             "dispatch request: method={}, url_path={}, qs_keys={:?}",
@@ -169,7 +217,8 @@ impl Dispatcher {
 
         match resp {
             Ok(r) => {
-                let (ip_used_1m, acc_used_1m) = self.update_limits_from_headers(ip_idx, acc_idx, r.headers());
+                let (ip_used_1m, acc_used_1m) =
+                    self.update_limits_from_headers(ip_idx, acc_idx, r.headers());
 
                 let status = r.status();
                 let text = r.text().await.unwrap_or_default();
@@ -181,18 +230,23 @@ impl Dispatcher {
                 classify_http_and_log(status.as_u16(), &text);
                 debug!(
                     "dispatch response: status={}, ip_used_1m={:?}, acc_used_1m={:?}, body_len={}",
-                    status.as_u16(), ip_used_1m, acc_used_1m, text.len()
+                    status.as_u16(),
+                    ip_used_1m,
+                    acc_used_1m,
+                    text.len()
                 );
 
                 if status.as_u16() == 429 {
                     warn!("429 Too Many Requests from IP {}. Cooling down.", ip);
                     let ms = self.limits.cooldown_429();
-                    self.ip_clients[ip_idx].cooldown_until = Some(Instant::now() + Duration::from_millis(ms));
+                    self.ip_clients[ip_idx].cooldown_until =
+                        Some(Instant::now() + Duration::from_millis(ms));
                 }
                 if status.as_u16() == 418 {
                     warn!("418 Banned for IP {}. Backing off.", ip);
                     let ms = self.limits.ban_backoff_418();
-                    self.ip_clients[ip_idx].banned_until = Some(Instant::now() + Duration::from_millis(ms));
+                    self.ip_clients[ip_idx].banned_until =
+                        Some(Instant::now() + Duration::from_millis(ms));
                 }
                 // Build uniform response regardless of success or error
                 Ok(DispatchResponse {
@@ -218,7 +272,12 @@ impl Dispatcher {
         }
     }
 
-    fn update_limits_from_headers(&mut self, ip_idx: usize, acc_idx: usize, headers: &HeaderMap) -> (Option<u32>, Option<u32>) {
+    fn update_limits_from_headers(
+        &mut self,
+        ip_idx: usize,
+        acc_idx: usize,
+        headers: &HeaderMap,
+    ) -> (Option<u32>, Option<u32>) {
         // Headers are case-insensitive and stored lowercase in reqwest
         // Prefer the "-1m" variants when available
         let mut ip_used_generic: Option<u32> = None;
@@ -229,25 +288,47 @@ impl Dispatcher {
         for (k, v) in headers.iter() {
             let key = k.as_str();
             if key.starts_with("x-mbx-used-weight") {
-                if let Ok(s) = v.to_str() { debug!("resp header {}: {}", key, s); if let Ok(n) = s.parse::<u32>() {
-                    if key.contains("-1m") { ip_used_1m = Some(n); } else { ip_used_generic = Some(n); }
-                }}
+                if let Ok(s) = v.to_str() {
+                    debug!("resp header {}: {}", key, s);
+                    if let Ok(n) = s.parse::<u32>() {
+                        if key.contains("-1m") {
+                            ip_used_1m = Some(n);
+                        } else {
+                            ip_used_generic = Some(n);
+                        }
+                    }
+                }
             }
             if key.starts_with("x-mbx-order-count") {
-                if let Ok(s) = v.to_str() { debug!("resp header {}: {}", key, s); if let Ok(n) = s.parse::<u32>() {
-                    if key.contains("-1m") { acc_used_1m = Some(n); } else { acc_used_generic = Some(n); }
-                }}
+                if let Ok(s) = v.to_str() {
+                    debug!("resp header {}: {}", key, s);
+                    if let Ok(n) = s.parse::<u32>() {
+                        if key.contains("-1m") {
+                            acc_used_1m = Some(n);
+                        } else {
+                            acc_used_generic = Some(n);
+                        }
+                    }
+                }
             }
         }
 
         let ip_final = ip_used_1m.or(ip_used_generic);
         let acc_final = acc_used_1m.or(acc_used_generic);
 
-        if let Some(x) = ip_final { self.ip_clients[ip_idx].used_weight_1m = x; }
-        else { self.ip_clients[ip_idx].used_weight_1m = self.ip_clients[ip_idx].used_weight_1m.saturating_add(1); }
+        if let Some(x) = ip_final {
+            self.ip_clients[ip_idx].used_weight_1m = x;
+        } else {
+            self.ip_clients[ip_idx].used_weight_1m =
+                self.ip_clients[ip_idx].used_weight_1m.saturating_add(1);
+        }
 
-        if let Some(x) = acc_final { self.accounts[acc_idx].used_orders_1m = x; }
-        else { self.accounts[acc_idx].used_orders_1m = self.accounts[acc_idx].used_orders_1m.saturating_add(1); }
+        if let Some(x) = acc_final {
+            self.accounts[acc_idx].used_orders_1m = x;
+        } else {
+            self.accounts[acc_idx].used_orders_1m =
+                self.accounts[acc_idx].used_orders_1m.saturating_add(1);
+        }
 
         debug!(
             "limits from headers => used_weight_1m={:?} (generic={:?}), order_count_1m={:?} (generic={:?})",
@@ -268,7 +349,9 @@ pub struct DispatchResponse {
 }
 
 fn classify_http_and_log(status: u16, body: &str) {
-    if status < 400 { return; }
+    if status < 400 {
+        return;
+    }
     let bl = body.to_ascii_lowercase();
     let summary: String;
     let mut hint: String;
@@ -289,10 +372,13 @@ fn classify_http_and_log(status: u16, body: &str) {
         503 => {
             summary = "503 服务不可用/未知结果".into();
             if bl.contains("unknown error, please check your request or try again later.") {
-                hint = "请求已提交到业务核心但未获响应，结果未知：可能已执行或失败，需要后续确认".into();
+                hint = "请求已提交到业务核心但未获响应，结果未知：可能已执行或失败，需要后续确认"
+                    .into();
             } else if bl.contains("service unavailable.") {
                 hint = "服务暂不可用：本次请求失败，可稍后重试".into();
-            } else if bl.contains("internal error; unable to process your request. please try again.") {
+            } else if bl
+                .contains("internal error; unable to process your request. please try again.")
+            {
                 hint = "服务端内部错误：本次请求失败，可选择立即重试".into();
             } else {
                 hint = "通用 503：建议稍后重试或切换线路".into();
@@ -313,9 +399,14 @@ fn classify_http_and_log(status: u16, body: &str) {
     }
 
     if bl.contains("request occur unknown error.") {
-        if !hint.is_empty() { hint.push_str("；"); }
+        if !hint.is_empty() {
+            hint.push_str("；");
+        }
         hint.push_str("检测到 'Request occur unknown error.'，建议稍后重试");
     }
 
-    warn!("http classify: status={}, {}; 提示：{}", status, summary, hint);
+    warn!(
+        "http classify: status={}, {}; 提示：{}",
+        status, summary, hint
+    );
 }

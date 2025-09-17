@@ -8,7 +8,9 @@
 //!
 //! 使用：创建 `MktConnection` 时将 `url` 设置为 `.../pm/ws/<listenKey>`，再用
 //! `BinanceUserDataConnection::new(connection, session_max)` 启动连接。
-use crate::connection::connection::{MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector};
+use crate::connection::connection::{
+    MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -40,12 +42,15 @@ impl BinanceUserDataConnection {
 impl MktConnectionRunner for BinanceUserDataConnection {
     async fn run_connection(&mut self) -> Result<()> {
         let mut ping_send_timer = Instant::now() + self.ping_interval + self.delay_interval;
-        debug!("[user-ws] entering run loop (ping ~{:?}, session_max={:?})", self.ping_interval, self.session_max);
-        let mut session_sleep = if let Some(d) = self.session_max { 
+        debug!(
+            "[user-ws] entering run loop (ping ~{:?}, session_max={:?})",
+            self.ping_interval, self.session_max
+        );
+        let mut session_sleep = if let Some(d) = self.session_max {
             Box::pin(time::sleep(d))
         } else {
             // effectively never fires
-            Box::pin(time::sleep(Duration::from_secs(365*24*3600)))
+            Box::pin(time::sleep(Duration::from_secs(365 * 24 * 3600)))
         };
         loop {
             let mut ws_stream = self
@@ -135,7 +140,10 @@ impl MktConnectionHandler for BinanceUserDataConnection {
 
             match connect_result {
                 Ok(connection) => {
-                    debug!("Connected to Binance user-data: {:?}", connection.connected_at);
+                    debug!(
+                        "Connected to Binance user-data: {:?}",
+                        connection.connected_at
+                    );
                     self.base_connection.connection = Some(connection);
                     self.run_connection().await?;
 

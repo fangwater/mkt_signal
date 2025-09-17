@@ -12,7 +12,9 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceCancelUMOrder => "/papi/v1/um/order",
             TradeRequestType::BinanceCancelAllUMOrders => "/papi/v1/um/allOpenOrders",
             TradeRequestType::BinanceCancelUMConditionalOrder => "/papi/v1/um/conditional/order",
-            TradeRequestType::BinanceCancelAllUMConditionalOrders => "/papi/v1/um/conditional/allOpenOrders",
+            TradeRequestType::BinanceCancelAllUMConditionalOrders => {
+                "/papi/v1/um/conditional/allOpenOrders"
+            }
             TradeRequestType::BinanceCancelMarginOrder => "/papi/v1/margin/order",
             TradeRequestType::BinanceModifyUMOrder => "/papi/v1/um/order",
             TradeRequestType::BinanceQueryUMOrder => "/papi/v1/um/order",

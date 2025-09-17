@@ -113,15 +113,22 @@ impl ConditionalOrderMsg {
     }
 
     pub fn to_bytes(&self) -> Bytes {
-        let total_size = 4 + 4 + self.symbol_length as usize
+        let total_size = 4
+            + 4
+            + self.symbol_length as usize
             + 8 * 5
             + 8
             + 8 * 5
-            + 4 + self.strategy_type_length as usize
-            + 4 + self.order_status_length as usize
-            + 4 + self.custom_id_length as usize
-            + 4 + self.time_in_force_length as usize
-            + 4 + self.trigger_type_length as usize;
+            + 4
+            + self.strategy_type_length as usize
+            + 4
+            + self.order_status_length as usize
+            + 4
+            + self.custom_id_length as usize
+            + 4
+            + self.time_in_force_length as usize
+            + 4
+            + self.trigger_type_length as usize;
 
         let mut buf = BytesMut::with_capacity(total_size);
 
@@ -300,7 +307,8 @@ impl LiabilityChangeMsg {
     }
 
     pub fn to_bytes(&self) -> Bytes {
-        let total_size = 4 + 8 + 8 + 4 + 4 + self.asset_length as usize + self.type_length as usize + 8 + 8 + 8;
+        let total_size =
+            4 + 8 + 8 + 4 + 4 + self.asset_length as usize + self.type_length as usize + 8 + 8 + 8;
 
         let mut buf = BytesMut::with_capacity(total_size);
 
@@ -334,7 +342,7 @@ pub struct ExecutionReportMsg {
     pub client_order_id_length: u32,
     pub symbol: String,
     pub client_order_id: String,
-    pub side: char,             // 'B' for BUY, 'S' for SELL
+    pub side: char, // 'B' for BUY, 'S' for SELL
     pub is_maker: bool,
     pub is_working: bool,
     pub padding: [u8; 6],
@@ -428,16 +436,27 @@ impl ExecutionReportMsg {
     }
 
     pub fn to_bytes(&self) -> Bytes {
-        let total_size = 4 + 8 * 7 + 4 + 4
+        let total_size = 4
+            + 8 * 7
+            + 4
+            + 4
             + self.symbol_length as usize
             + self.client_order_id_length as usize
-            + 1 + 1 + 1 + 6
+            + 1
+            + 1
+            + 1
+            + 6
             + 8 * 9
-            + 4 + self.order_type_length as usize
-            + 4 + self.time_in_force_length as usize
-            + 4 + self.execution_type_length as usize
-            + 4 + self.order_status_length as usize
-            + 4 + self.commission_asset_length as usize;
+            + 4
+            + self.order_type_length as usize
+            + 4
+            + self.time_in_force_length as usize
+            + 4
+            + self.execution_type_length as usize
+            + 4
+            + self.order_status_length as usize
+            + 4
+            + self.commission_asset_length as usize;
 
         let mut buf = BytesMut::with_capacity(total_size);
 
@@ -611,18 +630,32 @@ impl OrderTradeUpdateMsg {
     }
 
     pub fn to_bytes(&self) -> Bytes {
-        let total_size = 4 + 8 * 5 + 4 + 4
+        let total_size = 4
+            + 8 * 5
+            + 4
+            + 4
             + self.symbol_length as usize
             + self.client_order_id_length as usize
-            + 1 + 1 + 1 + 1 + 4
+            + 1
+            + 1
+            + 1
+            + 1
+            + 4
             + 8 * 11
-            + 4 + self.order_type_length as usize
-            + 4 + self.time_in_force_length as usize
-            + 4 + self.execution_type_length as usize
-            + 4 + self.order_status_length as usize
-            + 4 + self.commission_asset_length as usize
-            + 4 + self.strategy_type_length as usize
-            + 4 + self.business_unit_length as usize;
+            + 4
+            + self.order_type_length as usize
+            + 4
+            + self.time_in_force_length as usize
+            + 4
+            + self.execution_type_length as usize
+            + 4
+            + self.order_status_length as usize
+            + 4
+            + self.commission_asset_length as usize
+            + 4
+            + self.strategy_type_length as usize
+            + 4
+            + self.business_unit_length as usize;
 
         let mut buf = BytesMut::with_capacity(total_size);
 
@@ -728,11 +761,19 @@ impl AccountUpdateBalanceMsg {
     }
 
     pub fn to_bytes(&self) -> Bytes {
-        let total_size = 4 + 8 + 8 + 4 + 4 + 4 + 4
+        let total_size = 4
+            + 8
+            + 8
+            + 4
+            + 4
+            + 4
+            + 4
             + self.asset_length as usize
             + self.reason_length as usize
             + self.business_unit_length as usize
-            + 8 + 8 + 8;
+            + 8
+            + 8
+            + 8;
 
         let mut buf = BytesMut::with_capacity(total_size);
 
@@ -810,11 +851,22 @@ impl AccountUpdatePositionMsg {
     }
 
     pub fn to_bytes(&self) -> Bytes {
-        let total_size = 4 + 8 + 8 + 4 + 4 + 4 + 1 + 3
+        let total_size = 4
+            + 8
+            + 8
+            + 4
+            + 4
+            + 4
+            + 1
+            + 3
             + self.symbol_length as usize
             + self.reason_length as usize
             + self.business_unit_length as usize
-            + 8 + 8 + 8 + 8 + 8;
+            + 8
+            + 8
+            + 8
+            + 8
+            + 8;
 
         let mut buf = BytesMut::with_capacity(total_size);
 
@@ -875,7 +927,13 @@ impl AccountConfigUpdateMsg {
     }
 
     pub fn to_bytes(&self) -> Bytes {
-        let total_size = 4 + 8 + 8 + 4 + 4 + 4 + 4
+        let total_size = 4
+            + 8
+            + 8
+            + 4
+            + 4
+            + 4
+            + 4
             + self.symbol_length as usize
             + self.business_unit_length as usize;
 

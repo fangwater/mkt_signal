@@ -66,7 +66,10 @@ impl BinanceListenKeyService {
 
     /// 对现有 listenKey 进行保活（有效期延长 60 分钟）
     async fn keepalive_listen_key(&self, key: &str) -> Result<()> {
-        let url = format!("{}{}?listenKey={}", self.rest_base, "/papi/v1/listenKey", key);
+        let url = format!(
+            "{}{}?listenKey={}",
+            self.rest_base, "/papi/v1/listenKey", key
+        );
         debug!("[listenKey] Keepalive sent");
         let resp = self
             .client
@@ -90,7 +93,10 @@ impl BinanceListenKeyService {
 
     /// 删除 listenKey，立即失效
     async fn delete_listen_key(&self, key: &str) -> Result<()> {
-        let url = format!("{}{}?listenKey={}", self.rest_base, "/papi/v1/listenKey", key);
+        let url = format!(
+            "{}{}?listenKey={}",
+            self.rest_base, "/papi/v1/listenKey", key
+        );
         debug!("[listenKey] Deleting before shutdown");
         let resp = self
             .client

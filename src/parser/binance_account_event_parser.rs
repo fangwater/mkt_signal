@@ -1,7 +1,7 @@
 use crate::common::account_msg::{
-    AccountEventMsg, AccountEventType, AccountConfigUpdateMsg, AccountPositionMsg, AccountUpdateBalanceMsg,
-    AccountUpdatePositionMsg, BalanceUpdateMsg, ConditionalOrderMsg, ExecutionReportMsg,
-    LiabilityChangeMsg, OpenOrderLossMsg, OrderTradeUpdateMsg,
+    AccountConfigUpdateMsg, AccountEventMsg, AccountEventType, AccountPositionMsg,
+    AccountUpdateBalanceMsg, AccountUpdatePositionMsg, BalanceUpdateMsg, ConditionalOrderMsg,
+    ExecutionReportMsg, LiabilityChangeMsg, OpenOrderLossMsg, OrderTradeUpdateMsg,
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
@@ -62,7 +62,11 @@ impl Parser for BinanceAccountEventParser {
 impl BinanceAccountEventParser {
     fn parse_conditional_order(&self, json: &Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         if let Some(so) = json.get("so") {
-            let symbol = so.get("s").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let symbol = so
+                .get("s")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let strategy_id = so.get("si").and_then(|v| v.as_i64()).unwrap_or(0);
             let order_id = so.get("i").and_then(|v| v.as_i64()).unwrap_or(0);
             let trade_time = json.get("T").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -85,22 +89,57 @@ impl BinanceAccountEventParser {
             let reduce_only = so.get("R").and_then(|v| v.as_bool()).unwrap_or(false);
             let close_position = so.get("cp").and_then(|v| v.as_bool()).unwrap_or(false);
 
-            let quantity = so.get("q").and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-            let price = so.get("p").and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-            let stop_price = so.get("sp").and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-            let activation_price = so.get("AP").and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-            let callback_rate = so.get("cr").and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+            let quantity = so
+                .get("q")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let price = so
+                .get("p")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let stop_price = so
+                .get("sp")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let activation_price = so
+                .get("AP")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let callback_rate = so
+                .get("cr")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
 
-            let strategy_type = so.get("st").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let order_status = so.get("os").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let custom_id = so.get("c").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let time_in_force = so.get("f").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let trigger_type = so.get("wt").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let strategy_type = so
+                .get("st")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let order_status = so
+                .get("os")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let custom_id = so
+                .get("c")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let time_in_force = so
+                .get("f")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let trigger_type = so
+                .get("wt")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
 
             let msg = ConditionalOrderMsg::create(
                 symbol,
@@ -126,7 +165,8 @@ impl BinanceAccountEventParser {
             );
 
             let bytes = msg.to_bytes();
-            let event_msg = AccountEventMsg::create(AccountEventType::ConditionalOrderUpdate, bytes);
+            let event_msg =
+                AccountEventMsg::create(AccountEventType::ConditionalOrderUpdate, bytes);
 
             if let Err(_) = tx.send(event_msg.to_bytes()) {
                 return 0;
@@ -143,7 +183,11 @@ impl BinanceAccountEventParser {
             let mut count = 0;
 
             for loss_obj in losses_array {
-                let asset = loss_obj.get("a").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let asset = loss_obj
+                    .get("a")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let amount_str = loss_obj.get("o").and_then(|v| v.as_str()).unwrap_or("0");
                 let amount = amount_str.parse::<f64>().unwrap_or(0.0);
 
@@ -171,7 +215,11 @@ impl BinanceAccountEventParser {
             let mut count = 0;
 
             for balance_obj in balances_array {
-                let asset = balance_obj.get("a").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let asset = balance_obj
+                    .get("a")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let free_str = balance_obj.get("f").and_then(|v| v.as_str()).unwrap_or("0");
                 let locked_str = balance_obj.get("l").and_then(|v| v.as_str()).unwrap_or("0");
 
@@ -203,8 +251,16 @@ impl BinanceAccountEventParser {
     fn parse_liability_change(&self, json: &Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
         let transaction_id = json.get("T").and_then(|v| v.as_i64()).unwrap_or(0);
-        let asset = json.get("a").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let liability_type = json.get("t").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let asset = json
+            .get("a")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let liability_type = json
+            .get("t")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
         let principal_str = json.get("p").and_then(|v| v.as_str()).unwrap_or("0");
         let interest_str = json.get("i").and_then(|v| v.as_str()).unwrap_or("0");
@@ -241,8 +297,16 @@ impl BinanceAccountEventParser {
         let working_time = json.get("W").and_then(|v| v.as_i64()).unwrap_or(0);
         let update_id = json.get("I").and_then(|v| v.as_i64()).unwrap_or(0);
 
-        let symbol = json.get("s").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let client_order_id = json.get("c").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let symbol = json
+            .get("s")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let client_order_id = json
+            .get("c")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
         let side = match json.get("S").and_then(|v| v.as_str()).unwrap_or("") {
             "BUY" => 'B',
@@ -253,30 +317,77 @@ impl BinanceAccountEventParser {
         let is_maker = json.get("m").and_then(|v| v.as_bool()).unwrap_or(false);
         let is_working = json.get("w").and_then(|v| v.as_bool()).unwrap_or(false);
 
-        let price = json.get("p").and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-        let quantity = json.get("q").and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-        let last_executed_quantity = json.get("l").and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-        let cumulative_filled_quantity = json.get("z").and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-        let last_executed_price = json.get("L").and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-        let commission_amount = json.get("n").and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-        let cumulative_quote = json.get("Z").and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-        let last_quote = json.get("Y").and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-        let quote_order_quantity = json.get("Q").and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+        let price = json
+            .get("p")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let quantity = json
+            .get("q")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let last_executed_quantity = json
+            .get("l")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let cumulative_filled_quantity = json
+            .get("z")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let last_executed_price = json
+            .get("L")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let commission_amount = json
+            .get("n")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let cumulative_quote = json
+            .get("Z")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let last_quote = json
+            .get("Y")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let quote_order_quantity = json
+            .get("Q")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
 
-        let order_type = json.get("o").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let time_in_force = json.get("f").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let execution_type = json.get("x").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let order_status = json.get("X").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let commission_asset = json.get("N").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let order_type = json
+            .get("o")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let time_in_force = json
+            .get("f")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let execution_type = json
+            .get("x")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let order_status = json
+            .get("X")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let commission_asset = json
+            .get("N")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
         let msg = ExecutionReportMsg::create(
             event_time,
@@ -318,15 +429,27 @@ impl BinanceAccountEventParser {
     fn parse_order_trade_update(&self, json: &Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
         let transaction_time = json.get("T").and_then(|v| v.as_i64()).unwrap_or(0);
-        let business_unit = json.get("fs").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let business_unit = json
+            .get("fs")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
         if let Some(o) = json.get("o") {
             let order_id = o.get("i").and_then(|v| v.as_i64()).unwrap_or(0);
             let trade_id = o.get("t").and_then(|v| v.as_i64()).unwrap_or(0);
             let strategy_id = o.get("si").and_then(|v| v.as_i64()).unwrap_or(0);
 
-            let symbol = o.get("s").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let client_order_id = o.get("c").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let symbol = o
+                .get("s")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let client_order_id = o
+                .get("c")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
 
             let side = match o.get("S").and_then(|v| v.as_str()).unwrap_or("") {
                 "BUY" => 'B',
@@ -344,35 +467,92 @@ impl BinanceAccountEventParser {
             let is_maker = o.get("m").and_then(|v| v.as_bool()).unwrap_or(false);
             let reduce_only = o.get("R").and_then(|v| v.as_bool()).unwrap_or(false);
 
-            let price = o.get("p").and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-            let quantity = o.get("q").and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-            let average_price = o.get("ap").and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-            let stop_price = o.get("sp").and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-            let last_executed_quantity = o.get("l").and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-            let cumulative_filled_quantity = o.get("z").and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-            let last_executed_price = o.get("L").and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-            let commission_amount = o.get("n").and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-            let buy_notional = o.get("b").and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-            let sell_notional = o.get("a").and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-            let realized_profit = o.get("rp").and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+            let price = o
+                .get("p")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let quantity = o
+                .get("q")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let average_price = o
+                .get("ap")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let stop_price = o
+                .get("sp")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let last_executed_quantity = o
+                .get("l")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let cumulative_filled_quantity = o
+                .get("z")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let last_executed_price = o
+                .get("L")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let commission_amount = o
+                .get("n")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let buy_notional = o
+                .get("b")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let sell_notional = o
+                .get("a")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let realized_profit = o
+                .get("rp")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
 
-            let order_type = o.get("o").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let time_in_force = o.get("f").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let execution_type = o.get("x").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let order_status = o.get("X").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let commission_asset = o.get("N").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let strategy_type = o.get("st").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let order_type = o
+                .get("o")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let time_in_force = o
+                .get("f")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let execution_type = o
+                .get("x")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let order_status = o
+                .get("X")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let commission_asset = o
+                .get("N")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let strategy_type = o
+                .get("st")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
 
             let msg = OrderTradeUpdateMsg::create(
                 event_time,
@@ -419,23 +599,44 @@ impl BinanceAccountEventParser {
     fn parse_account_update(&self, json: &Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
         let transaction_time = json.get("T").and_then(|v| v.as_i64()).unwrap_or(0);
-        let business_unit = json.get("fs").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let business_unit = json
+            .get("fs")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
         let mut count = 0;
 
         if let Some(a) = json.get("a") {
-            let reason = a.get("m").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let reason = a
+                .get("m")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
 
             // Parse balances
             if let Some(balances) = a.get("B").and_then(|v| v.as_array()) {
                 for balance in balances {
-                    let asset = balance.get("a").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let wallet_balance = balance.get("wb").and_then(|v| v.as_str())
-                        .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-                    let cross_wallet_balance = balance.get("cw").and_then(|v| v.as_str())
-                        .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-                    let balance_change = balance.get("bc").and_then(|v| v.as_str())
-                        .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+                    let asset = balance
+                        .get("a")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let wallet_balance = balance
+                        .get("wb")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0);
+                    let cross_wallet_balance = balance
+                        .get("cw")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0);
+                    let balance_change = balance
+                        .get("bc")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0);
 
                     let msg = AccountUpdateBalanceMsg::create(
                         event_time,
@@ -448,7 +649,8 @@ impl BinanceAccountEventParser {
                         balance_change,
                     );
                     let bytes = msg.to_bytes();
-                    let event_msg = AccountEventMsg::create(AccountEventType::AccountUpdateBalance, bytes);
+                    let event_msg =
+                        AccountEventMsg::create(AccountEventType::AccountUpdateBalance, bytes);
 
                     if let Err(_) = tx.send(event_msg.to_bytes()) {
                         return count;
@@ -460,25 +662,45 @@ impl BinanceAccountEventParser {
             // Parse positions
             if let Some(positions) = a.get("P").and_then(|v| v.as_array()) {
                 for position in positions {
-                    let symbol = position.get("s").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let symbol = position
+                        .get("s")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
 
-                    let position_side = match position.get("ps").and_then(|v| v.as_str()).unwrap_or("") {
-                        "LONG" => 'L',
-                        "SHORT" => 'S',
-                        "BOTH" => 'B',
-                        _ => 'B',
-                    };
+                    let position_side =
+                        match position.get("ps").and_then(|v| v.as_str()).unwrap_or("") {
+                            "LONG" => 'L',
+                            "SHORT" => 'S',
+                            "BOTH" => 'B',
+                            _ => 'B',
+                        };
 
-                    let position_amount = position.get("pa").and_then(|v| v.as_str())
-                        .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-                    let entry_price = position.get("ep").and_then(|v| v.as_str())
-                        .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-                    let accumulated_realized = position.get("cr").and_then(|v| v.as_str())
-                        .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-                    let unrealized_pnl = position.get("up").and_then(|v| v.as_str())
-                        .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-                    let breakeven_price = position.get("bep").and_then(|v| v.as_str())
-                        .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+                    let position_amount = position
+                        .get("pa")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0);
+                    let entry_price = position
+                        .get("ep")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0);
+                    let accumulated_realized = position
+                        .get("cr")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0);
+                    let unrealized_pnl = position
+                        .get("up")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0);
+                    let breakeven_price = position
+                        .get("bep")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0);
 
                     let msg = AccountUpdatePositionMsg::create(
                         event_time,
@@ -494,7 +716,8 @@ impl BinanceAccountEventParser {
                         breakeven_price,
                     );
                     let bytes = msg.to_bytes();
-                    let event_msg = AccountEventMsg::create(AccountEventType::AccountUpdatePosition, bytes);
+                    let event_msg =
+                        AccountEventMsg::create(AccountEventType::AccountUpdatePosition, bytes);
 
                     if let Err(_) = tx.send(event_msg.to_bytes()) {
                         return count;
@@ -507,13 +730,25 @@ impl BinanceAccountEventParser {
         count
     }
 
-    fn parse_account_config_update(&self, json: &Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+    fn parse_account_config_update(
+        &self,
+        json: &Value,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> usize {
         let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
         let transaction_time = json.get("T").and_then(|v| v.as_i64()).unwrap_or(0);
-        let business_unit = json.get("fs").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let business_unit = json
+            .get("fs")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
         if let Some(ac) = json.get("ac") {
-            let symbol = ac.get("s").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let symbol = ac
+                .get("s")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let leverage = ac.get("l").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
 
             let msg = AccountConfigUpdateMsg::create(
@@ -538,17 +773,15 @@ impl BinanceAccountEventParser {
         let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
         let transaction_time = json.get("T").and_then(|v| v.as_i64()).unwrap_or(0);
         let update_id = json.get("U").and_then(|v| v.as_i64()).unwrap_or(0);
-        let asset = json.get("a").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let asset = json
+            .get("a")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let delta_str = json.get("d").and_then(|v| v.as_str()).unwrap_or("0");
         let delta = delta_str.parse::<f64>().unwrap_or(0.0);
 
-        let msg = BalanceUpdateMsg::create(
-            event_time,
-            transaction_time,
-            update_id,
-            asset,
-            delta,
-        );
+        let msg = BalanceUpdateMsg::create(event_time, transaction_time, update_id, asset, delta);
         let bytes = msg.to_bytes();
         let event_msg = AccountEventMsg::create(AccountEventType::BalanceUpdate, bytes);
 

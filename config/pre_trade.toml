@@ -1,0 +1,16 @@
+# Default configuration for the pre_trade binary.
+# Update service names to match your deployment topology.
+
+[account_stream]
+service = "account_pubs/binance/pm"
+max_payload_bytes = 16384
+label = "account_binance"
+
+[trade_engine]
+service = "order_resps/binance"
+max_payload_bytes = 16384
+label = "trade_resp_binance"
+
+[signals]
+channels = ["mt_arbitrage"]
+max_payload_bytes = 1024

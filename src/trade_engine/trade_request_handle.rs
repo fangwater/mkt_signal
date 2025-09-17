@@ -2,10 +2,10 @@ use crate::common::exchange::Exchange;
 use crate::trade_engine::dispatcher::Dispatcher;
 use crate::trade_engine::order_event::OrderRequestEvent;
 use crate::trade_engine::trade_request::TradeRequestMsg;
-use crate::trade_engine::trade_type_mapping::TradeTypeMapping;
-use tokio::sync::mpsc;
 use crate::trade_engine::trade_response_handle::TradeExecOutcome;
+use crate::trade_engine::trade_type_mapping::TradeTypeMapping;
 use log::debug;
+use tokio::sync::mpsc;
 
 /// 启动请求执行器：
 /// - 从 mpsc::UnboundedReceiver<TradeRequestMsg> 读取请求（二进制头+参数）
@@ -31,15 +31,16 @@ pub fn spawn_request_executor(
             );
 
             // Try to parse params as query string into key/value pairs
-            let params: std::collections::BTreeMap<String, String> = match std::str::from_utf8(&msg.params) {
-                Ok(s) => url::form_urlencoded::parse(s.as_bytes())
-                    .into_owned()
-                    .collect(),
-                Err(_) => {
-                    // Not valid UTF-8, proceed with empty params
-                    std::collections::BTreeMap::new()
-                }
-            };
+            let params: std::collections::BTreeMap<String, String> =
+                match std::str::from_utf8(&msg.params) {
+                    Ok(s) => url::form_urlencoded::parse(s.as_bytes())
+                        .into_owned()
+                        .collect(),
+                    Err(_) => {
+                        // Not valid UTF-8, proceed with empty params
+                        std::collections::BTreeMap::new()
+                    }
+                };
 
             let evt = OrderRequestEvent {
                 endpoint,
@@ -52,7 +53,10 @@ pub fn spawn_request_executor(
             };
             debug!(
                 "order event built: endpoint={}, method={}, params_count={}, req_id={}",
-                evt.endpoint, evt.method, evt.params.len(), evt.req_id.as_deref().unwrap_or("")
+                evt.endpoint,
+                evt.method,
+                evt.params.len(),
+                evt.req_id.as_deref().unwrap_or("")
             );
 
             match dispatcher.dispatch(evt).await {
@@ -65,7 +69,7 @@ pub fn spawn_request_executor(
                         outcome.order_count_1m,
                         outcome.body.len()
                     );
-                    let _ = resp_tx.send(TradeExecOutcome{
+                    let _ = resp_tx.send(TradeExecOutcome {
                         req_type: msg.req_type,
                         client_order_id: msg.client_order_id,
                         status: outcome.status,
@@ -77,7 +81,7 @@ pub fn spawn_request_executor(
                 }
                 Err(e) => {
                     debug!("http error: {}", e);
-                    let _ = resp_tx.send(TradeExecOutcome{
+                    let _ = resp_tx.send(TradeExecOutcome {
                         req_type: msg.req_type,
                         client_order_id: msg.client_order_id,
                         status: 0,

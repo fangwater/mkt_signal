@@ -1,14 +1,14 @@
+use crate::common::exchange::Exchange;
 use crate::trade_engine::config::TradeEngineCfg;
 use crate::trade_engine::dispatcher::Dispatcher;
 use crate::trade_engine::trade_request::TradeRequestMsg;
 use crate::trade_engine::trade_request_handle::spawn_request_executor;
 use crate::trade_engine::trade_response_handle::spawn_response_handle;
-use crate::common::exchange::Exchange;
 use anyhow::Result;
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{info, warn, debug};
+use log::{debug, info, warn};
 
 pub struct TradeEngine {
     cfg: TradeEngineCfg,
@@ -16,7 +16,9 @@ pub struct TradeEngine {
 }
 
 impl TradeEngine {
-    pub fn new(cfg: TradeEngineCfg) -> Self { Self { cfg, req_tx: None } }
+    pub fn new(cfg: TradeEngineCfg) -> Self {
+        Self { cfg, req_tx: None }
+    }
 
     /// 返回内部请求通道的一个克隆（在 run() 初始化后可用）
     pub fn sender(&self) -> Option<tokio::sync::mpsc::UnboundedSender<TradeRequestMsg>> {
@@ -25,7 +27,8 @@ impl TradeEngine {
     /// 便捷发送接口
     pub fn send(&self, req: TradeRequestMsg) -> anyhow::Result<()> {
         if let Some(tx) = &self.req_tx {
-            tx.send(req).map_err(|_| anyhow::anyhow!("trade engine not accepting requests"))
+            tx.send(req)
+                .map_err(|_| anyhow::anyhow!("trade engine not accepting requests"))
         } else {
             Err(anyhow::anyhow!("trade engine not started"))
         }
@@ -41,7 +44,10 @@ impl TradeEngine {
         // Iceoryx subscriber for order requests
         let node_name = format!(
             "trade_engine_{}",
-            self.cfg.exchange.clone().unwrap_or_else(|| "default".to_string())
+            self.cfg
+                .exchange
+                .clone()
+                .unwrap_or_else(|| "default".to_string())
         );
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
@@ -51,16 +57,24 @@ impl TradeEngine {
             .service_builder(&ServiceName::new(&self.cfg.order_req_service)?)
             .publish_subscribe::<[u8; 4096]>()
             .open_or_create()?;
-        let subscriber: Subscriber<ipc::Service, [u8; 4096], ()> = service.subscriber_builder().create()?;
-        debug!("subscriber created for service: {}", self.cfg.order_req_service);
+        let subscriber: Subscriber<ipc::Service, [u8; 4096], ()> =
+            service.subscriber_builder().create()?;
+        debug!(
+            "subscriber created for service: {}",
+            self.cfg.order_req_service
+        );
 
         // Result publisher
         let resp_service = node
             .service_builder(&ServiceName::new(&self.cfg.order_resp_service)?)
             .publish_subscribe::<[u8; 16384]>()
             .open_or_create()?;
-        let resp_publisher: Publisher<ipc::Service, [u8; 16384], ()> = resp_service.publisher_builder().create()?;
-        debug!("publisher created for service: {}", self.cfg.order_resp_service);
+        let resp_publisher: Publisher<ipc::Service, [u8; 16384], ()> =
+            resp_service.publisher_builder().create()?;
+        debug!(
+            "publisher created for service: {}",
+            self.cfg.order_resp_service
+        );
 
         // Dispatcher (HTTP + limits)
         let dispatcher = Dispatcher::new(&self.cfg)?;
@@ -96,7 +110,10 @@ impl TradeEngine {
                             .map(|pos| pos + 1)
                             .unwrap_or(0)
                     };
-                    if actual_len == 0 { drop(sample); continue; }
+                    if actual_len == 0 {
+                        drop(sample);
+                        continue;
+                    }
                     let owned = {
                         let payload = sample.payload();
                         bytes::Bytes::copy_from_slice(&payload[..actual_len])
@@ -110,11 +127,15 @@ impl TradeEngine {
                         Some(msg) => {
                             debug!(
                                 "enqueue request: type={:?}, client_order_id={}, params_len={}",
-                                msg.req_type, msg.client_order_id, msg.params.len()
+                                msg.req_type,
+                                msg.client_order_id,
+                                msg.params.len()
                             );
                             let _ = req_tx.send(msg);
                         }
-                        None => { warn!("invalid trade request binary payload (len={})", actual_len); }
+                        None => {
+                            warn!("invalid trade request binary payload (len={})", actual_len);
+                        }
                     }
                 }
                 None => {

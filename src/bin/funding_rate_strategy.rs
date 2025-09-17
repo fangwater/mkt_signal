@@ -1,14 +1,14 @@
 use anyhow::Result;
-use bincode;
 use lazy_static::lazy_static;
 use log::info;
 use mkt_signal::common::iceoryx_publisher::SignalPublisher;
 use mkt_signal::common::iceoryx_subscriber::{
     ChannelType, MultiChannelSubscriber, SubscribeParams,
 };
+use mkt_signal::common::signal_event::{encode_trade_signal, TradeSignalData};
 use mkt_signal::exchange::Exchange;
 use mkt_signal::mkt_msg::{self, AskBidSpreadMsg, FundingRateMsg, MktMsgType};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::{
@@ -18,6 +18,9 @@ use std::sync::{
 use std::time::Duration;
 use tokio::signal;
 use tokio::time::Instant;
+
+const SIGNAL_CHANNEL_MT_ARBITRAGE: &str = "mt_arbitrage";
+const NODE_FUNDING_STRATEGY_SUB: &str = "funding_rate_strategy";
 /// 套利策略配置 - 每个交易所包含多个[现货符号, 期货符号, 价差阈值]数组
 #[derive(Debug, Deserialize)]
 struct ArbitrageConfig {
@@ -84,39 +87,6 @@ lazy_static! {
         ArbitrageThresholds::load()
             .expect("Failed to load arbitrage config from config/tracking_symbol.json")
     };
-}
-
-/// 交易事件结构体
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct TradeEvent {
-    /// 交易对符号
-    symbol: String,
-    /// 交易所
-    exchange: String,
-    /// 事件类型: "open_long", "open_short", "close_long", "close_short"
-    event_type: String,
-    /// 触发信号类型: "spread" 或 "funding"
-    signal_type: String,
-    /// 价差偏离值（仅spread信号有效）
-    spread_deviation: f64,
-    /// 价差阈值（仅spread信号有效）
-    spread_threshold: f64,
-    /// 当前资金费率
-    funding_rate: f64,
-    /// 预测资金费率
-    predicted_rate: f64,
-    /// 借贷利率
-    loan_rate: f64,
-    /// 买价
-    bid_price: f64,
-    /// 买量
-    bid_amount: f64,
-    /// 卖价
-    ask_price: f64,
-    /// 卖量
-    ask_amount: f64,
-    /// 时间戳（毫秒）
-    timestamp: i64,
 }
 
 /// 资金费率信息
@@ -460,12 +430,10 @@ impl FundingRateStrategy {
     }
 
     /// 发送交易事件
-    fn send_trade_event(&mut self, event: TradeEvent) {
-        // 序列化为字节
-        match bincode::serialize(&event) {
-            Ok(bytes) => {
-                // 发送到IceOryx
-                if let Err(e) = self.publisher.publish(&bytes) {
+    fn send_trade_event(&mut self, event: TradeSignalData) {
+        match encode_trade_signal(&event) {
+            Ok(frame) => {
+                if let Err(e) = self.publisher.publish(&frame) {
                     log::error!("Failed to publish trade event: {}", e);
                 } else {
                     self.trade_events_sent += 1;
@@ -481,7 +449,7 @@ impl FundingRateStrategy {
                 }
             }
             Err(e) => {
-                log::error!("Failed to serialize trade event: {}", e);
+                log::error!("Failed to encode trade signal frame: {}", e);
             }
         }
     }
@@ -489,7 +457,7 @@ impl FundingRateStrategy {
     /// 检查价差信号（开仓信号）
     fn check_spread_signal(&mut self, symbol: &str, timestamp: i64) {
         // 为了避免可变借用冲突，先构建事件数据，再在作用域外发送
-        let mut trade_event_opt: Option<TradeEvent> = None;
+        let mut trade_event_opt: Option<TradeSignalData> = None;
 
         {
             //确认是交易符号
@@ -524,7 +492,7 @@ impl FundingRateStrategy {
                     "open_short".to_string()
                 };
 
-                let trade_event = TradeEvent {
+                let trade_event = TradeSignalData {
                     symbol: symbol.to_string(),
                     exchange: "binance".to_string(),
                     event_type,
@@ -554,7 +522,7 @@ impl FundingRateStrategy {
 
     /// 检查资金费率信号（开仓和平仓信号）
     fn check_funding_signal(&mut self, symbol: &str) {
-        let mut trade_event_opt: Option<TradeEvent> = None;
+        let mut trade_event_opt: Option<TradeSignalData> = None;
 
         {
             let state = match self.binance_symbol_states.get_mut(symbol) {
@@ -610,7 +578,7 @@ impl FundingRateStrategy {
                     0.0
                 };
 
-                let trade_event = TradeEvent {
+                let trade_event = TradeSignalData {
                     symbol: symbol.to_string(),
                     exchange: "binance".to_string(),
                     event_type,
@@ -650,15 +618,14 @@ async fn main() -> Result<()> {
     info!("Starting funding rate strategy");
 
     // 创建 IceOryx 发布器 - MT套利频道
-    let publisher = SignalPublisher::new("mt_arbitrage")?;
+    let publisher = SignalPublisher::new(SIGNAL_CHANNEL_MT_ARBITRAGE)?;
     info!("Created MT arbitrage publisher");
 
     // 创建策略实例
     let mut strategy = FundingRateStrategy::new(publisher);
 
     // 创建 IceOryx 订阅器
-    let node_name = format!("funding_strategy_{}", std::process::id());
-    let mut subscriber = MultiChannelSubscriber::new(&node_name)?;
+    let mut subscriber = MultiChannelSubscriber::new(NODE_FUNDING_STRATEGY_SUB)?;
 
     // 订阅频道
     let subscriptions = vec![
