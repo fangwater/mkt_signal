@@ -14,3 +14,7 @@ label = "trade_resp_binance"
 [signals]
 channels = ["mt_arbitrage"]
 max_payload_bytes = 1024
+
+[risk_checks.binance_pm_um]
+
+[risk_checks.binance_spot]

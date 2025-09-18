@@ -45,6 +45,14 @@ pub struct MarkPriceMsg {
     pub timestamp: i64,
 }
 
+/// 指数价格消息
+#[derive(Debug, Clone)]
+pub struct IndexPriceMsg {
+    pub symbol: String,
+    pub index_price: f64,
+    pub timestamp: i64,
+}
+
 /// 解析买卖价差消息
 pub fn parse_ask_bid_spread(data: &[u8]) -> Result<AskBidSpreadMsg> {
     if data.len() < 8 {
@@ -162,6 +170,36 @@ pub fn parse_mark_price(data: &[u8]) -> Result<MarkPriceMsg> {
     Ok(MarkPriceMsg {
         symbol,
         mark_price,
+        timestamp,
+    })
+}
+
+/// 解析指数价格消息
+pub fn parse_index_price(data: &[u8]) -> Result<IndexPriceMsg> {
+    if data.len() < 8 {
+        anyhow::bail!("Message too short");
+    }
+
+    let mut cursor = Bytes::copy_from_slice(data);
+
+    let msg_type = cursor.get_u32_le();
+    if msg_type != MktMsgType::IndexPrice as u32 {
+        anyhow::bail!("Invalid message type: {}", msg_type);
+    }
+
+    let symbol_len = cursor.get_u32_le() as usize;
+    if cursor.len() < symbol_len {
+        anyhow::bail!("Invalid symbol length");
+    }
+    let symbol_bytes = cursor.copy_to_bytes(symbol_len);
+    let symbol = String::from_utf8(symbol_bytes.to_vec())?;
+
+    let index_price = cursor.get_f64_le();
+    let timestamp = cursor.get_i64_le();
+
+    Ok(IndexPriceMsg {
+        symbol,
+        index_price,
         timestamp,
     })
 }

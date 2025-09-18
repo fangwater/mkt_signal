@@ -1,4 +1,5 @@
-use bytes::{BufMut, Bytes, BytesMut};
+use anyhow::Result;
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -793,6 +794,63 @@ impl AccountUpdateBalanceMsg {
 
         buf.freeze()
     }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        const MIN_SIZE: usize = 4 + 8 + 8 + 4 + 4 + 4 + 4 + 8 + 8 + 8;
+        if data.len() < MIN_SIZE {
+            anyhow::bail!("account update balance msg too short: {}", data.len());
+        }
+
+        let mut cursor = Bytes::copy_from_slice(data);
+        let msg_type = cursor.get_u32_le();
+        if msg_type != AccountEventType::AccountUpdateBalance as u32 {
+            anyhow::bail!("invalid account msg type: {}", msg_type);
+        }
+
+        let event_time = cursor.get_i64_le();
+        let transaction_time = cursor.get_i64_le();
+        let asset_length = cursor.get_u32_le();
+        let reason_length = cursor.get_u32_le();
+        let business_unit_length = cursor.get_u32_le();
+        let mut padding = [0u8; 4];
+        cursor.copy_to_slice(&mut padding);
+
+        let expected =
+            asset_length as usize + reason_length as usize + business_unit_length as usize + 24;
+        if cursor.len() < expected {
+            anyhow::bail!(
+                "account update balance truncated: have {} expect {}",
+                cursor.len(),
+                expected
+            );
+        }
+
+        let asset_bytes = cursor.copy_to_bytes(asset_length as usize);
+        let reason_bytes = cursor.copy_to_bytes(reason_length as usize);
+        let business_bytes = cursor.copy_to_bytes(business_unit_length as usize);
+        let asset = String::from_utf8(asset_bytes.to_vec())?;
+        let reason = String::from_utf8(reason_bytes.to_vec())?;
+        let business_unit = String::from_utf8(business_bytes.to_vec())?;
+        let wallet_balance = cursor.get_f64_le();
+        let cross_wallet_balance = cursor.get_f64_le();
+        let balance_change = cursor.get_f64_le();
+
+        Ok(Self {
+            msg_type: AccountEventType::AccountUpdateBalance,
+            event_time,
+            transaction_time,
+            asset_length,
+            reason_length,
+            business_unit_length,
+            padding,
+            asset,
+            reason,
+            business_unit,
+            wallet_balance,
+            cross_wallet_balance,
+            balance_change,
+        })
+    }
 }
 
 #[repr(C, align(8))]
@@ -888,6 +946,69 @@ impl AccountUpdatePositionMsg {
         buf.put_f64_le(self.breakeven_price);
 
         buf.freeze()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        const MIN_SIZE: usize = 4 + 8 + 8 + 4 + 4 + 4 + 1 + 3 + 8 * 5;
+        if data.len() < MIN_SIZE {
+            anyhow::bail!("account update position msg too short: {}", data.len());
+        }
+
+        let mut cursor = Bytes::copy_from_slice(data);
+        let msg_type = cursor.get_u32_le();
+        if msg_type != AccountEventType::AccountUpdatePosition as u32 {
+            anyhow::bail!("invalid account msg type: {}", msg_type);
+        }
+
+        let event_time = cursor.get_i64_le();
+        let transaction_time = cursor.get_i64_le();
+        let symbol_length = cursor.get_u32_le();
+        let reason_length = cursor.get_u32_le();
+        let business_unit_length = cursor.get_u32_le();
+        let position_side = cursor.get_u8() as char;
+        let mut padding = [0u8; 3];
+        cursor.copy_to_slice(&mut padding);
+
+        let expected =
+            symbol_length as usize + reason_length as usize + business_unit_length as usize + 40;
+        if cursor.len() < expected {
+            anyhow::bail!(
+                "account update position truncated: have {} expect {}",
+                cursor.len(),
+                expected
+            );
+        }
+
+        let symbol_bytes = cursor.copy_to_bytes(symbol_length as usize);
+        let reason_bytes = cursor.copy_to_bytes(reason_length as usize);
+        let business_bytes = cursor.copy_to_bytes(business_unit_length as usize);
+        let symbol = String::from_utf8(symbol_bytes.to_vec())?;
+        let reason = String::from_utf8(reason_bytes.to_vec())?;
+        let business_unit = String::from_utf8(business_bytes.to_vec())?;
+        let position_amount = cursor.get_f64_le();
+        let entry_price = cursor.get_f64_le();
+        let accumulated_realized = cursor.get_f64_le();
+        let unrealized_pnl = cursor.get_f64_le();
+        let breakeven_price = cursor.get_f64_le();
+
+        Ok(Self {
+            msg_type: AccountEventType::AccountUpdatePosition,
+            event_time,
+            transaction_time,
+            symbol_length,
+            reason_length,
+            business_unit_length,
+            position_side,
+            padding,
+            symbol,
+            reason,
+            business_unit,
+            position_amount,
+            entry_price,
+            accumulated_realized,
+            unrealized_pnl,
+            breakeven_price,
+        })
     }
 }
 
@@ -1001,6 +1122,45 @@ impl BalanceUpdateMsg {
         buf.put_f64_le(self.delta);
 
         buf.freeze()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        const MIN_SIZE: usize = 4 + 8 + 8 + 8 + 4 + 4 + 8; // type + event + tx + update + len + padding + delta
+        if data.len() < MIN_SIZE {
+            anyhow::bail!("balance update msg too short: {}", data.len());
+        }
+
+        let msg_type = get_event_type(data);
+        if msg_type != AccountEventType::BalanceUpdate {
+            anyhow::bail!("unexpected account msg type: {:?}", msg_type);
+        }
+
+        let mut cursor = Bytes::copy_from_slice(data);
+        cursor.advance(4); // msg_type already validated
+        let event_time = cursor.get_i64_le();
+        let transaction_time = cursor.get_i64_le();
+        let update_id = cursor.get_i64_le();
+        let asset_length = cursor.get_u32_le();
+        let mut padding = [0u8; 4];
+        cursor.copy_to_slice(&mut padding);
+
+        if cursor.len() < asset_length as usize + 8 {
+            anyhow::bail!("balance update asset length mismatch: {}", asset_length);
+        }
+        let asset_bytes = cursor.copy_to_bytes(asset_length as usize);
+        let asset = String::from_utf8(asset_bytes.to_vec())?;
+        let delta = cursor.get_f64_le();
+
+        Ok(Self {
+            msg_type,
+            event_time,
+            transaction_time,
+            update_id,
+            asset_length,
+            padding,
+            asset,
+            delta,
+        })
     }
 }
 
