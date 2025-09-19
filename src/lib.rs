@@ -7,9 +7,10 @@ pub mod parser;
 pub mod portfolio_margin;
 pub mod pre_trade;
 pub mod trade_engine;
+pub mod signal;
 
 // Re-export frequently used modules for backward compatibility
-pub use common::{exchange, mkt_msg, signal_event};
+pub use common::{exchange, mkt_msg};
 pub use mkt_pub::{app, cfg, iceoryx_forwarder, proxy, sub_msg};
 pub use trade_engine::{
     config::{ApiKey, TradeEngineCfg},

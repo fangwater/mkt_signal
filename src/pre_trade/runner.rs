@@ -3,7 +3,7 @@ use crate::common::account_msg::{
     AccountUpdatePositionMsg, BalanceUpdateMsg,
 };
 use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
-use crate::common::signal_event::{decode_trade_signal, SignalEvent, SignalEventType};
+use crate::common::signal_event::{SignalEvent, SignalEventType};
 use crate::pre_trade::binance_pm_spot_manager::{BinancePmSpotAccountManager, BinanceSpotBalance};
 use crate::pre_trade::binance_pm_um_manager::{
     BinancePmUmAccountManager, BinanceUmPosition, PositionSide,

@@ -1,17 +1,16 @@
-use crate::common::signal_event::{SignalEventHeader, TradeSignalData};
-use chrono::{DateTime, Utc};
+use crate::signal::trade_signal;
 
 #[derive(Debug)]
 pub enum PreTradeEvent {
     Account(AccountEvent),
     TradeResponse(TradeEngineResponse),
-    Signal(TradeSignalEvent),
+    Signal(trade_signal::TradeSignal),
 }
 
 #[derive(Debug)]
 pub struct AccountEvent {
     pub service: String,
-    pub received_at: DateTime<Utc>,
+    pub received_at: i64,
     pub payload: Vec<u8>,
     pub payload_len: usize,
     pub event_type: Option<String>,
@@ -21,7 +20,7 @@ pub struct AccountEvent {
 #[derive(Debug)]
 pub struct TradeEngineResponse {
     pub service: String,
-    pub received_at: DateTime<Utc>,
+    pub received_at: i64,
     pub payload_len: usize,
     pub req_type: u32,
     pub local_recv_time: i64,
@@ -32,14 +31,4 @@ pub struct TradeEngineResponse {
     pub order_count_1m: Option<u32>,
     pub body: Vec<u8>,
     pub body_truncated: bool,
-}
-
-#[derive(Debug)]
-pub struct TradeSignalEvent {
-    pub channel: String,
-    pub received_at: DateTime<Utc>,
-    pub frame_len: usize,
-    pub frame: Vec<u8>,
-    pub header: SignalEventHeader,
-    pub data: TradeSignalData,
 }
