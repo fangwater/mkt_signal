@@ -5,6 +5,18 @@ use crate::pre_trade::order_manager::Order;
 use std::collections::HashMap;
 use bytes::Bytes;
 
+//收到信号后，需要构造一个policy
+//policy表示一个行为，比如买入，卖出，平仓，止损等，可能包含多个订单，可能需要维护状态
+
+//以目前的信号为例，币安fr策略有3种信号
+//BinSingleForwardArbOpen
+//BinSingleForwardArbHedge
+//BinSingleForwardArbClose
+
+//
+
+
+
 pub trait Strategy {
     fn get_id(&self) -> i32;
     fn handle_trade_response(&mut self, trade_msg_raws : &Bytes, success: bool);
