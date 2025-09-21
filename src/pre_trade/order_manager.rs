@@ -1,10 +1,9 @@
 use std::collections::HashMap;
-use std::cell::RefCell;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Side {
-    Buy = 1,   // 买入
-    Sell = 2,  // 卖出
+    Buy = 1,  // 买入
+    Sell = 2, // 卖出
 }
 
 impl Side {
@@ -61,8 +60,7 @@ impl Side {
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u8)]
 pub enum OrderExecutionStatus {
-    Create = 0,    // 构造未提交
-    Commit = 1,    // 已提交，待确认
+    Create = 1,    // 构造未提交
     Acked = 2,     // 已确认，待执行
     Filled = 3,    // 完全成交
     Cancelled = 4, // 已取消
@@ -73,8 +71,7 @@ impl OrderExecutionStatus {
     /// 从 u8 转换为 OrderExecutionStatus
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
-            0 => Some(OrderExecutionStatus::Create),
-            1 => Some(OrderExecutionStatus::Commit),
+            1 => Some(OrderExecutionStatus::Create),
             2 => Some(OrderExecutionStatus::Acked),
             3 => Some(OrderExecutionStatus::Filled),
             4 => Some(OrderExecutionStatus::Cancelled),
@@ -92,7 +89,6 @@ impl OrderExecutionStatus {
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "CREATE" => Some(OrderExecutionStatus::Create),
-            "COMMIT" => Some(OrderExecutionStatus::Commit),
             "ACKED" => Some(OrderExecutionStatus::Acked),
             "FILLED" => Some(OrderExecutionStatus::Filled),
             "CANCELLED" => Some(OrderExecutionStatus::Cancelled),
@@ -105,7 +101,6 @@ impl OrderExecutionStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
             OrderExecutionStatus::Create => "CREATE",
-            OrderExecutionStatus::Commit => "COMMIT",
             OrderExecutionStatus::Acked => "ACKED",
             OrderExecutionStatus::Filled => "FILLED",
             OrderExecutionStatus::Cancelled => "CANCELLED",
@@ -115,35 +110,14 @@ impl OrderExecutionStatus {
 
     /// 是否是终态（不会再变化的状态）
     pub fn is_terminal(&self) -> bool {
-        matches!(self, 
-            OrderExecutionStatus::Filled | 
-            OrderExecutionStatus::Cancelled | 
-            OrderExecutionStatus::Rejected
-        )
-    }
-
-    /// 是否是活跃状态（可能还会变化）
-    pub fn is_active(&self) -> bool {
-        matches!(self, 
-            OrderExecutionStatus::Commit | 
-            OrderExecutionStatus::Acked
-        )
-    }
-
-    /// 是否成功完成
-    pub fn is_success(&self) -> bool {
-        matches!(self, OrderExecutionStatus::Filled)
-    }
-
-    /// 是否失败
-    pub fn is_failed(&self) -> bool {
-        matches!(self, 
-            OrderExecutionStatus::Cancelled | 
-            OrderExecutionStatus::Rejected
+        matches!(
+            self,
+            OrderExecutionStatus::Filled
+                | OrderExecutionStatus::Cancelled
+                | OrderExecutionStatus::Rejected
         )
     }
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -209,111 +183,219 @@ impl OrderType {
 
     /// 是否是限价单类型
     pub fn is_limit(&self) -> bool {
-        matches!(self, 
-            OrderType::Limit | 
-            OrderType::LimitMaker | 
-            OrderType::StopLossLimit | 
-            OrderType::TakeProfitLimit
+        matches!(
+            self,
+            OrderType::Limit
+                | OrderType::LimitMaker
+                | OrderType::StopLossLimit
+                | OrderType::TakeProfitLimit
         )
     }
 
     /// 是否是市价单类型
     pub fn is_market(&self) -> bool {
-        matches!(self, 
-            OrderType::Market | 
-            OrderType::StopMarket | 
-            OrderType::TakeProfitMarket
+        matches!(
+            self,
+            OrderType::Market | OrderType::StopMarket | OrderType::TakeProfitMarket
         )
     }
 
     /// 是否是条件单（止损/止盈）
     pub fn is_conditional(&self) -> bool {
-        !matches!(self, OrderType::Limit | OrderType::LimitMaker | OrderType::Market)
+        !matches!(
+            self,
+            OrderType::Limit | OrderType::LimitMaker | OrderType::Market
+        )
     }
 }
 
-
-thread_local! {
-    static ORDER_MAP: RefCell<HashMap<i64, Order>> = RefCell::new(HashMap::new());
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PositionSide {
+    BOTH = 1,
+    SHORT = 2,
+    LONG = 3,
 }
 
-/// 全局订单管理器
-pub struct OrderManager;
+impl PositionSide {
+    /// 从 u8 转换为 PositionSide
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(PositionSide::BOTH),
+            2 => Some(PositionSide::SHORT),
+            3 => Some(PositionSide::LONG),
+            _ => None,
+        }
+    }
+
+    /// 从字符串解析（交易所 API 格式）
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "BOTH" => Some(PositionSide::BOTH),
+            "SHORT" => Some(PositionSide::SHORT),
+            "LONG" => Some(PositionSide::LONG),
+            _ => None,
+        }
+    }
+
+    /// 转换为字符串（交易所 API 格式）
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PositionSide::BOTH => "BOTH",
+            PositionSide::SHORT => "SHORT",
+            PositionSide::LONG => "LONG",
+        }
+    }
+}
+
+/// 订单管理器
+pub struct OrderManager {
+    orders: HashMap<i64, Order>,                     //映射order id到order
+    pending_limit_order_count: HashMap<String, i32>, //单个交易品种当前有多少待成交的maker单
+}
 
 impl OrderManager {
-    /// 添加订单到全局map
-    pub fn insert(order: Order) {
-        ORDER_MAP.with(|map| {
-            map.borrow_mut().insert(order.order_id, order);
-        });
+    pub fn new() -> Self {
+        Self {
+            orders: HashMap::new(),
+            pending_limit_order_count: HashMap::new(),
+        }
     }
-    
-    /// 根据订单ID获取订单
-    pub fn get(order_id: i64) -> Option<Order> {
-        ORDER_MAP.with(|map| {
-            map.borrow().get(&order_id).cloned()
-        })
+
+    pub fn get_symbol_pending_limit_order_count(&self, symbol: &String) -> i32 {
+        self.pending_limit_order_count
+            .get(symbol)
+            .copied()
+            .unwrap_or(0)
     }
-    
-    /// 根据订单ID获取订单的可变引用并执行操作
-    pub fn update<F>(order_id: i64, f: F) -> bool 
-    where
-        F: FnOnce(&mut Order)
-    {
-        ORDER_MAP.with(|map| {
-            if let Some(order) = map.borrow_mut().get_mut(&order_id) {
-                f(order);
-                true
-            } else {
-                false
+
+    /// 添加订单
+    pub fn insert(&mut self, order: Order) {
+        let is_limit = order.order_type.is_limit();
+        let symbol = if is_limit {
+            Some(order.symbol.clone())
+        } else {
+            None
+        };
+
+        let prev = self.orders.insert(order.order_id, order);
+
+        if let Some(symbol) = symbol {
+            self.increment_pending_limit_count(&symbol);
+        }
+
+        if let Some(prev_order) = prev {
+            if prev_order.order_type.is_limit() {
+                self.decrement_pending_limit_count(&prev_order.symbol);
             }
-        })
+        }
     }
-    
+
+    /// 根据订单ID获取订单
+    pub fn get(&self, order_id: i64) -> Option<Order> {
+        self.orders.get(&order_id).cloned()
+    }
+
+    /// 根据订单ID获取订单的可变引用并执行操作
+    pub fn update<F>(&mut self, order_id: i64, f: F) -> bool
+    where
+        F: FnOnce(&mut Order),
+    {
+        if let Some(order) = self.orders.get_mut(&order_id) {
+            let previous_type = order.order_type;
+            let previous_symbol = order.symbol.clone();
+
+            f(order);
+
+            let current_type = order.order_type;
+            let current_symbol = order.symbol.clone();
+
+            if previous_type.is_limit()
+                && (!current_type.is_limit() || previous_symbol != current_symbol)
+            {
+                self.decrement_pending_limit_count(&previous_symbol);
+            }
+
+            if current_type.is_limit()
+                && (!previous_type.is_limit() || previous_symbol != current_symbol)
+            {
+                self.increment_pending_limit_count(&current_symbol);
+            }
+
+            true
+        } else {
+            false
+        }
+    }
+
     /// 移除订单
-    pub fn remove(order_id: i64) -> Option<Order> {
-        ORDER_MAP.with(|map| {
-            map.borrow_mut().remove(&order_id)
-        })
+    pub fn remove(&mut self, order_id: i64) -> Option<Order> {
+        let removed = self.orders.remove(&order_id);
+
+        if let Some(ref order) = removed {
+            if order.order_type.is_limit() {
+                self.decrement_pending_limit_count(&order.symbol);
+            }
+        }
+
+        removed
     }
-    
+
     /// 获取所有订单ID
-    pub fn get_all_ids() -> Vec<i64> {
-        ORDER_MAP.with(|map| {
-            map.borrow().keys().cloned().collect()
-        })
+    pub fn get_all_ids(&self) -> Vec<i64> {
+        self.orders.keys().cloned().collect()
     }
-    
+
     /// 获取订单数量
-    pub fn count() -> usize {
-        ORDER_MAP.with(|map| {
-            map.borrow().len()
-        })
+    pub fn count(&self) -> usize {
+        self.orders.len()
     }
-    
+
     /// 清空所有订单
-    pub fn clear() {
-        ORDER_MAP.with(|map| {
-            map.borrow_mut().clear();
-        });
+    pub fn clear(&mut self) {
+        self.orders.clear();
+        self.pending_limit_order_count.clear();
+    }
+
+    fn increment_pending_limit_count(&mut self, symbol: &str) {
+        *self
+            .pending_limit_order_count
+            .entry(symbol.to_string())
+            .or_insert(0) += 1;
+    }
+
+    fn decrement_pending_limit_count(&mut self, symbol: &str) {
+        if let Some(entry) = self.pending_limit_order_count.get_mut(symbol) {
+            if *entry > 1 {
+                *entry -= 1;
+            } else {
+                self.pending_limit_order_count.remove(symbol);
+            }
+        }
+    }
+}
+
+impl Default for OrderManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Order {
-    pub order_id: i64,               // 订单ID
-    pub order_type: OrderType,       // 订单类型
-    pub symbol: String,              // 交易对
-    pub side: Side,                  // 买卖方向
-    pub price: Option<f64>,          // 限价单价格, 市价单没有意义
-    pub quantity: f64,               // 数量
+    pub order_id: i64,                // 订单ID
+    pub order_type: OrderType,        // 订单类型
+    pub symbol: String,               // 交易对
+    pub side: Side,                   // 买卖方向
+    pub price: Option<f64>,           // 限价单价格, 市价单没有意义
+    pub quantity: f64,                // 数量
     pub status: OrderExecutionStatus, // 订单执行状态
     // 时间戳记录
-    pub submit_time: i64,            // 订单提交时间(本地时间)
-    pub exec_time: i64,              // trading-engine执行的时间
-    pub ack_time: i64,               // 订单收到交易所回报的时间
-    pub filled_time: i64,            // 订单执行成功的时间（交易所时间）
-    pub end_time: i64,               // 收到成交回报的时间（本地时间）
+    pub submit_time: i64, // 订单提交时间(本地时间)
+    pub exec_time: i64,   // trading-engine执行的时间
+    pub ack_time: i64,    // 订单收到交易所回报的时间
+    pub filled_time: i64, // 订单执行成功的时间（交易所时间）
+    pub end_time: i64,    // 收到成交回报的时间（本地时间）
 }
 
 impl Order {
@@ -321,7 +403,7 @@ impl Order {
     pub fn get_strategy_id(&self) -> i32 {
         (self.order_id >> 32) as i32
     }
-    
+
     /// 创建新订单
     pub fn new(
         order_id: i64,
@@ -346,32 +428,32 @@ impl Order {
             end_time: 0,
         }
     }
-    
+
     /// 更新订单状态
     pub fn update_status(&mut self, status: OrderExecutionStatus) {
         self.status = status;
     }
-    
+
     /// 设置提交时间
     pub fn set_submit_time(&mut self, time: i64) {
         self.submit_time = time;
     }
-    
+
     /// 设置执行时间
     pub fn set_exec_time(&mut self, time: i64) {
         self.exec_time = time;
     }
-    
+
     /// 设置确认时间
     pub fn set_ack_time(&mut self, time: i64) {
         self.ack_time = time;
     }
-    
+
     /// 设置成交时间
     pub fn set_filled_time(&mut self, time: i64) {
         self.filled_time = time;
     }
-    
+
     /// 设置结束时间
     pub fn set_end_time(&mut self, time: i64) {
         self.end_time = time;

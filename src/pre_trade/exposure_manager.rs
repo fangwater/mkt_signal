@@ -4,8 +4,9 @@ use crate::pre_trade::binance_pm_spot_manager::{BinanceSpotBalance, BinanceSpotB
 use crate::pre_trade::binance_pm_um_manager::{
     BinanceUmAccountSnapshot, BinanceUmPosition, PositionSide,
 };
-use log::warn;
+use log::{debug, warn};
 
+/// 单个资产维度的敞口信息。
 #[derive(Debug, Clone)]
 pub struct ExposureEntry {
     pub asset: String,
@@ -18,6 +19,7 @@ pub struct ExposureEntry {
     pub exposure: f64,
 }
 
+/// USDT 资产汇总，用于计算账户总权益。
 #[derive(Debug, Clone)]
 pub struct UsdtSummary {
     pub total_wallet_balance: f64,
@@ -34,9 +36,12 @@ struct UmAggregate {
     open_order_initial_margin: f64,
 }
 
+/// 敞口管理器，负责汇总现货与合约的资产敞口，并提供风控辅助查询。
 pub struct ExposureManager {
     exposures: Vec<ExposureEntry>,
     usdt: Option<UsdtSummary>,
+    total_equity: f64,
+    abs_total_exposure: f64,
 }
 
 impl ExposureManager {
@@ -110,7 +115,37 @@ impl ExposureManager {
             })
             .collect();
 
-        Self { exposures, usdt }
+        let abs_total_exposure = exposures.iter().map(|e| e.exposure.abs()).sum::<f64>();
+        let total_spot_abs = exposures
+            .iter()
+            .map(|e| e.spot_total_wallet.abs())
+            .sum::<f64>();
+        let total_um_abs = exposures
+            .iter()
+            .map(|e| e.um_net_position.abs())
+            .sum::<f64>();
+        let usdt_total_wallet = usdt.as_ref().map(|u| u.total_wallet_balance).unwrap_or(0.0);
+        let total_equity = usdt_total_wallet + total_spot_abs + total_um_abs;
+
+        debug!(
+            "敞口管理器初始化完成: 总权益={:.6}, 总敞口绝对值={:.6}, 资产数={}",
+            total_equity,
+            abs_total_exposure,
+            exposures.len()
+        );
+        for entry in &exposures {
+            debug!(
+                "资产敞口明细: asset={} spot_total={:.6} um_net={:.6} exposure={:.6}",
+                entry.asset, entry.spot_total_wallet, entry.um_net_position, entry.exposure
+            );
+        }
+
+        Self {
+            exposures,
+            usdt,
+            total_equity,
+            abs_total_exposure,
+        }
     }
 
     pub fn exposures(&self) -> &[ExposureEntry] {
@@ -119,6 +154,23 @@ impl ExposureManager {
 
     pub fn usdt_summary(&self) -> Option<&UsdtSummary> {
         self.usdt.as_ref()
+    }
+
+    /// 根据资产名称（大写）查找敞口信息。
+    pub fn exposure_for_asset(&self, asset: &str) -> Option<&ExposureEntry> {
+        self.exposures
+            .iter()
+            .find(|entry| entry.asset.eq_ignore_ascii_case(asset))
+    }
+
+    /// 返回账户总权益（近似值），用于敞口比例计算。
+    pub fn total_equity(&self) -> f64 {
+        self.total_equity
+    }
+
+    /// 返回所有资产敞口绝对值之和。
+    pub fn total_abs_exposure(&self) -> f64 {
+        self.abs_total_exposure
     }
 }
 

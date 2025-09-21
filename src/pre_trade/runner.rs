@@ -4,6 +4,7 @@ use crate::common::account_msg::{
 };
 use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
 use crate::common::signal_event::{SignalEvent, SignalEventType};
+use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::binance_pm_spot_manager::{BinancePmSpotAccountManager, BinanceSpotBalance};
 use crate::pre_trade::binance_pm_um_manager::{
     BinancePmUmAccountManager, BinanceUmPosition, PositionSide,
@@ -620,7 +621,7 @@ async fn account_stream_loop(
         match subscriber.receive() {
             Ok(Some(sample)) => {
                 let payload = trim_payload(sample.payload());
-                let received_at = Utc::now();
+                let received_at = get_timestamp_us();
                 let payload_len = payload.len();
                 let (event_type, event_time_ms) = extract_account_metadata(&payload);
                 let event = AccountEvent {
@@ -827,7 +828,7 @@ fn parse_trade_response(
 
     Ok(TradeEngineResponse {
         service: service_name.to_string(),
-        received_at: Utc::now(),
+        received_at: get_timestamp_us(),
         payload_len: actual_len,
         req_type,
         local_recv_time,

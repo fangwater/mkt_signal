@@ -7,6 +7,7 @@ use log::debug;
 use tokio::sync::mpsc;
 
 // REST 请求执行后的输出（内部使用）
+#[derive(Debug, Clone)]
 pub struct TradeExecOutcome {
     pub req_type: TradeRequestType,
     pub client_order_id: i64,
@@ -15,6 +16,55 @@ pub struct TradeExecOutcome {
     pub exchange: Exchange,
     pub ip_used_weight_1m: Option<u32>,
     pub order_count_1m: Option<u32>,
+}
+
+impl TradeExecOutcome {
+    pub fn parse(raw: &[u8]) -> Option<Self> {
+        if raw.len() < 40 {
+            return None;
+        }
+
+        let req_type_val = u32::from_le_bytes(raw[0..4].try_into().ok()?);
+        let client_order_id = i64::from_le_bytes(raw[12..20].try_into().ok()?);
+        let exchange_val = u32::from_le_bytes(raw[20..24].try_into().ok()?);
+        let status = u16::from_le_bytes(raw[24..26].try_into().ok()?);
+        let ip_used = u32::from_le_bytes(raw[28..32].try_into().ok()?);
+        let order_count = u32::from_le_bytes(raw[32..36].try_into().ok()?);
+        let body_len = u32::from_le_bytes(raw[36..40].try_into().ok()?) as usize;
+
+        if raw.len() < 40 + body_len {
+            return None;
+        }
+
+        let body_slice = &raw[40..40 + body_len];
+        let body = match String::from_utf8(body_slice.to_vec()) {
+            Ok(s) => s,
+            Err(_) => String::from_utf8_lossy(body_slice).to_string(),
+        };
+
+        let req_type = TradeRequestType::try_from(req_type_val).ok()?;
+        let exchange = Exchange::from_u8((exchange_val & 0xFF) as u8)?;
+        let ip_used_weight_1m = if ip_used == u32::MAX {
+            None
+        } else {
+            Some(ip_used)
+        };
+        let order_count_1m = if order_count == u32::MAX {
+            None
+        } else {
+            Some(order_count)
+        };
+
+        Some(Self {
+            req_type,
+            client_order_id,
+            status,
+            body,
+            exchange,
+            ip_used_weight_1m,
+            order_count_1m,
+        })
+    }
 }
 
 // 将原始 HTTP body（JSON 文本）直接发布到响应通道（16384 字节）

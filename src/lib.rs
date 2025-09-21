@@ -6,8 +6,8 @@ pub mod mkt_pub;
 pub mod parser;
 pub mod portfolio_margin;
 pub mod pre_trade;
-pub mod trade_engine;
 pub mod signal;
+pub mod trade_engine;
 
 // Re-export frequently used modules for backward compatibility
 pub use common::{exchange, mkt_msg};

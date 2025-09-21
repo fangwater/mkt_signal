@@ -5,12 +5,12 @@ pub enum SignalType {
     BinSingleForwardArbOpen = 1,  // 币安单所正向套利触发开仓
     BinSingleForwardArbHedge = 2, // 币安单所正向套利触发对冲
     BinSingleForwardArbClose = 3, // 币安单所正向套利触发平仓
-    // 未来可以添加更多信号类型:
-    // BinSingleReverseArb,  // 币安单所反向套利
-    // CrossExchangeArb,     // 跨交易所套利
-    // TriangularArb,        // 三角套利
-    // StatisticalArb,       // 统计套利
-    // etc...
+                                  // 未来可以添加更多信号类型:
+                                  // BinSingleReverseArb,  // 币安单所反向套利
+                                  // CrossExchangeArb,     // 跨交易所套利
+                                  // TriangularArb,        // 三角套利
+                                  // StatisticalArb,       // 统计套利
+                                  // etc...
 }
 
 impl SignalType {
@@ -27,10 +27,10 @@ impl SignalType {
 
 #[derive(Debug, Clone)]
 pub struct TradeSignal {
-    pub signal_type: SignalType,//信号种类
-    pub generation_time: i64, //信号的产生时间
-    pub handle_time: f64, //信号被pre-process处理的时间
-    pub context: Bytes, //信号的具体内容，信号上下文
+    pub signal_type: SignalType, //信号种类
+    pub generation_time: i64,    //信号的产生时间
+    pub handle_time: f64,        //信号被pre-process处理的时间
+    pub context: Bytes,          //信号的具体内容，信号上下文
 }
 
 impl TradeSignal {
@@ -88,14 +88,12 @@ impl TradeSignal {
 
         // 解析生成时间 (offset 4)
         let generation_time = i64::from_le_bytes([
-            data[4], data[5], data[6], data[7],
-            data[8], data[9], data[10], data[11],
+            data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
         ]);
 
         // 解析处理时间 (offset 12)
         let handle_time = f64::from_le_bytes([
-            data[12], data[13], data[14], data[15],
-            data[16], data[17], data[18], data[19],
+            data[12], data[13], data[14], data[15], data[16], data[17], data[18], data[19],
         ]);
 
         // 解析context长度 (offset 20)
@@ -143,8 +141,7 @@ impl TradeSignal {
             return None;
         }
         Some(i64::from_le_bytes([
-            data[4], data[5], data[6], data[7],
-            data[8], data[9], data[10], data[11],
+            data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
         ]))
     }
 
@@ -155,8 +152,7 @@ impl TradeSignal {
             return None;
         }
         Some(f64::from_le_bytes([
-            data[12], data[13], data[14], data[15],
-            data[16], data[17], data[18], data[19],
+            data[12], data[13], data[14], data[15], data[16], data[17], data[18], data[19],
         ]))
     }
 

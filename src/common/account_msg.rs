@@ -507,6 +507,134 @@ impl ExecutionReportMsg {
 
         buf.freeze()
     }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        const MIN_SIZE: usize = 4 + 8 * 7 + 4 + 4 + 1 + 1 + 1 + 6 + 8 * 9 + 4 * 5;
+        if data.len() < MIN_SIZE {
+            anyhow::bail!("execution report msg too short: {}", data.len());
+        }
+
+        let mut cursor = Bytes::copy_from_slice(data);
+        let msg_type = cursor.get_u32_le();
+        if msg_type != AccountEventType::ExecutionReport as u32 {
+            anyhow::bail!("invalid execution report msg type: {}", msg_type);
+        }
+
+        let event_time = cursor.get_i64_le();
+        let transaction_time = cursor.get_i64_le();
+        let order_id = cursor.get_i64_le();
+        let trade_id = cursor.get_i64_le();
+        let order_creation_time = cursor.get_i64_le();
+        let working_time = cursor.get_i64_le();
+        let update_id = cursor.get_i64_le();
+
+        let symbol_length = cursor.get_u32_le();
+        let client_order_id_length = cursor.get_u32_le();
+
+        if cursor.remaining()
+            < (symbol_length + client_order_id_length) as usize + 1 + 1 + 1 + 6
+        {
+            anyhow::bail!("execution report truncated before symbol/client_order_id");
+        }
+
+        let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_length as usize).to_vec())?;
+        let client_order_id =
+            String::from_utf8(cursor.copy_to_bytes(client_order_id_length as usize).to_vec())?;
+
+        let side = cursor.get_u8() as char;
+        let is_maker = cursor.get_u8() != 0;
+        let is_working = cursor.get_u8() != 0;
+        let mut padding = [0u8; 6];
+        cursor.copy_to_slice(&mut padding);
+
+        if cursor.remaining() < 8 * 9 + 4 {
+            anyhow::bail!("execution report truncated before numeric fields");
+        }
+
+        let price = cursor.get_f64_le();
+        let quantity = cursor.get_f64_le();
+        let last_executed_quantity = cursor.get_f64_le();
+        let cumulative_filled_quantity = cursor.get_f64_le();
+        let last_executed_price = cursor.get_f64_le();
+        let commission_amount = cursor.get_f64_le();
+        let cumulative_quote = cursor.get_f64_le();
+        let last_quote = cursor.get_f64_le();
+        let quote_order_quantity = cursor.get_f64_le();
+
+        let order_type_length = cursor.get_u32_le();
+        if cursor.remaining() < order_type_length as usize + 4 {
+            anyhow::bail!("execution report truncated before order_type");
+        }
+        let order_type =
+            String::from_utf8(cursor.copy_to_bytes(order_type_length as usize).to_vec())?;
+
+        let time_in_force_length = cursor.get_u32_le();
+        if cursor.remaining() < time_in_force_length as usize + 4 {
+            anyhow::bail!("execution report truncated before time_in_force");
+        }
+        let time_in_force =
+            String::from_utf8(cursor.copy_to_bytes(time_in_force_length as usize).to_vec())?;
+
+        let execution_type_length = cursor.get_u32_le();
+        if cursor.remaining() < execution_type_length as usize + 4 {
+            anyhow::bail!("execution report truncated before execution_type");
+        }
+        let execution_type =
+            String::from_utf8(cursor.copy_to_bytes(execution_type_length as usize).to_vec())?;
+
+        let order_status_length = cursor.get_u32_le();
+        if cursor.remaining() < order_status_length as usize + 4 {
+            anyhow::bail!("execution report truncated before order_status");
+        }
+        let order_status =
+            String::from_utf8(cursor.copy_to_bytes(order_status_length as usize).to_vec())?;
+
+        let commission_asset_length = cursor.get_u32_le();
+        if cursor.remaining() < commission_asset_length as usize {
+            anyhow::bail!("execution report truncated before commission_asset");
+        }
+        let commission_asset = String::from_utf8(
+            cursor.copy_to_bytes(commission_asset_length as usize).to_vec(),
+        )?;
+
+        Ok(Self {
+            msg_type: AccountEventType::ExecutionReport,
+            event_time,
+            transaction_time,
+            order_id,
+            trade_id,
+            order_creation_time,
+            working_time,
+            update_id,
+            symbol_length,
+            client_order_id_length,
+            symbol,
+            client_order_id,
+            side,
+            is_maker,
+            is_working,
+            padding,
+            price,
+            quantity,
+            last_executed_quantity,
+            cumulative_filled_quantity,
+            last_executed_price,
+            commission_amount,
+            cumulative_quote,
+            last_quote,
+            quote_order_quantity,
+            order_type_length,
+            order_type,
+            time_in_force_length,
+            time_in_force,
+            execution_type_length,
+            execution_type,
+            order_status_length,
+            order_status,
+            commission_asset_length,
+            commission_asset,
+        })
+    }
 }
 
 #[repr(C, align(8))]
@@ -712,6 +840,155 @@ impl OrderTradeUpdateMsg {
         buf.put(self.business_unit.as_bytes());
 
         buf.freeze()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        const MIN_SIZE: usize = 4 + 8 * 5 + 4 + 4 + 1 + 1 + 1 + 1 + 4 + 8 * 11 + 4 * 7;
+        if data.len() < MIN_SIZE {
+            anyhow::bail!("order trade update msg too short: {}", data.len());
+        }
+
+        let mut cursor = Bytes::copy_from_slice(data);
+        let msg_type = cursor.get_u32_le();
+        if msg_type != AccountEventType::OrderTradeUpdate as u32 {
+            anyhow::bail!("invalid order trade update msg type: {}", msg_type);
+        }
+
+        let event_time = cursor.get_i64_le();
+        let transaction_time = cursor.get_i64_le();
+        let order_id = cursor.get_i64_le();
+        let trade_id = cursor.get_i64_le();
+        let strategy_id = cursor.get_i64_le();
+
+        let symbol_length = cursor.get_u32_le();
+        let client_order_id_length = cursor.get_u32_le();
+
+        if cursor.remaining()
+            < (symbol_length + client_order_id_length) as usize + 1 + 1 + 1 + 1 + 4
+        {
+            anyhow::bail!("order trade update truncated before symbol/client order id");
+        }
+
+        let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_length as usize).to_vec())?;
+        let client_order_id =
+            String::from_utf8(cursor.copy_to_bytes(client_order_id_length as usize).to_vec())?;
+
+        let side = cursor.get_u8() as char;
+        let position_side = cursor.get_u8() as char;
+        let is_maker = cursor.get_u8() != 0;
+        let reduce_only = cursor.get_u8() != 0;
+        let mut padding = [0u8; 4];
+        cursor.copy_to_slice(&mut padding);
+
+        if cursor.remaining() < 8 * 11 + 4 {
+            anyhow::bail!("order trade update truncated before numeric fields");
+        }
+
+        let price = cursor.get_f64_le();
+        let quantity = cursor.get_f64_le();
+        let average_price = cursor.get_f64_le();
+        let stop_price = cursor.get_f64_le();
+        let last_executed_quantity = cursor.get_f64_le();
+        let cumulative_filled_quantity = cursor.get_f64_le();
+        let last_executed_price = cursor.get_f64_le();
+        let commission_amount = cursor.get_f64_le();
+        let buy_notional = cursor.get_f64_le();
+        let sell_notional = cursor.get_f64_le();
+        let realized_profit = cursor.get_f64_le();
+
+        let order_type_length = cursor.get_u32_le();
+        if cursor.remaining() < order_type_length as usize + 4 {
+            anyhow::bail!("order trade update truncated before order_type");
+        }
+        let order_type =
+            String::from_utf8(cursor.copy_to_bytes(order_type_length as usize).to_vec())?;
+
+        let time_in_force_length = cursor.get_u32_le();
+        if cursor.remaining() < time_in_force_length as usize + 4 {
+            anyhow::bail!("order trade update truncated before time_in_force");
+        }
+        let time_in_force =
+            String::from_utf8(cursor.copy_to_bytes(time_in_force_length as usize).to_vec())?;
+
+        let execution_type_length = cursor.get_u32_le();
+        if cursor.remaining() < execution_type_length as usize + 4 {
+            anyhow::bail!("order trade update truncated before execution_type");
+        }
+        let execution_type =
+            String::from_utf8(cursor.copy_to_bytes(execution_type_length as usize).to_vec())?;
+
+        let order_status_length = cursor.get_u32_le();
+        if cursor.remaining() < order_status_length as usize + 4 {
+            anyhow::bail!("order trade update truncated before order_status");
+        }
+        let order_status =
+            String::from_utf8(cursor.copy_to_bytes(order_status_length as usize).to_vec())?;
+
+        let commission_asset_length = cursor.get_u32_le();
+        if cursor.remaining() < commission_asset_length as usize + 4 {
+            anyhow::bail!("order trade update truncated before commission_asset");
+        }
+        let commission_asset = String::from_utf8(
+            cursor.copy_to_bytes(commission_asset_length as usize).to_vec(),
+        )?;
+
+        let strategy_type_length = cursor.get_u32_le();
+        if cursor.remaining() < strategy_type_length as usize + 4 {
+            anyhow::bail!("order trade update truncated before strategy_type");
+        }
+        let strategy_type =
+            String::from_utf8(cursor.copy_to_bytes(strategy_type_length as usize).to_vec())?;
+
+        let business_unit_length = cursor.get_u32_le();
+        if cursor.remaining() < business_unit_length as usize {
+            anyhow::bail!("order trade update truncated before business_unit");
+        }
+        let business_unit = String::from_utf8(
+            cursor.copy_to_bytes(business_unit_length as usize).to_vec(),
+        )?;
+
+        Ok(Self {
+            msg_type: AccountEventType::OrderTradeUpdate,
+            event_time,
+            transaction_time,
+            order_id,
+            trade_id,
+            strategy_id,
+            symbol_length,
+            client_order_id_length,
+            symbol,
+            client_order_id,
+            side,
+            position_side,
+            is_maker,
+            reduce_only,
+            padding,
+            price,
+            quantity,
+            average_price,
+            stop_price,
+            last_executed_quantity,
+            cumulative_filled_quantity,
+            last_executed_price,
+            commission_amount,
+            buy_notional,
+            sell_notional,
+            realized_profit,
+            order_type_length,
+            order_type,
+            time_in_force_length,
+            time_in_force,
+            execution_type_length,
+            execution_type,
+            order_status_length,
+            order_status,
+            commission_asset_length,
+            commission_asset,
+            strategy_type_length,
+            strategy_type,
+            business_unit_length,
+            business_unit,
+        })
     }
 }
 

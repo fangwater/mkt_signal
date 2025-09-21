@@ -31,7 +31,7 @@ impl Exchange {
         }
     }
 
-        /// 从 u8 转换为 Exchange
+    /// 从 u8 转换为 Exchange
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
             1 => Some(Exchange::Binance),
