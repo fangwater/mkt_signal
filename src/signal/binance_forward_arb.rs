@@ -5,10 +5,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use log::{debug, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::common::account_msg::{
-    get_event_type as account_event_type_from_bytes, AccountEventType, ExecutionReportMsg,
-    OrderTradeUpdateMsg,
-};
+use crate::common::account_msg::{ExecutionReportMsg,OrderTradeUpdateMsg};
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::exposure_manager::ExposureManager;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
@@ -33,8 +30,7 @@ pub struct BinSingleForwardArbOpenCtx {
 /// 币安单所正向套利平仓信号上下文
 #[derive(Clone, Debug)]
 pub struct BinSingleForwardArbCloseCtx {
-    pub spot_order_id: i64,
-    pub futures_order_id: i64,
+    pub exp_time: i64,
 }
 
 /// 币安单所正向套利对冲信号上下文
@@ -109,27 +105,14 @@ impl BinSingleForwardArbOpenCtx {
 impl BinSingleForwardArbCloseCtx {
     pub fn to_bytes(&self) -> Bytes {
         let mut buf = BytesMut::new();
-
-        buf.put_i64_le(self.spot_order_id);
-        buf.put_i64_le(self.futures_order_id);
-
+        buf.put_i64_le(self.exp_time);
         buf.freeze()
     }
 
     pub fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
-        if bytes.remaining() < 8 {
-            return Err("Not enough bytes for spot_order_id".to_string());
-        }
-        let spot_order_id = bytes.get_i64_le();
-
-        if bytes.remaining() < 8 {
-            return Err("Not enough bytes for futures_order_id".to_string());
-        }
-        let futures_order_id = bytes.get_i64_le();
-
+        let exp_time = bytes.get_i64_le();
         Ok(Self {
-            spot_order_id,
-            futures_order_id,
+            exp_time
         })
     }
 }
@@ -532,16 +515,16 @@ impl BinSingleForwardArbStrategy {
         Ok(())
     }
 
-    fn close_positions(&mut self, close_ctx: &BinSingleForwardArbCloseCtx) -> Result<(), String> {
+    fn close_positions(&mut self) -> Result<(), String> {
         let margin_order = {
             let manager = self.order_manager.borrow();
             manager
-                .get(close_ctx.spot_order_id)
+                .get(self.margin_order_id)
                 .ok_or_else(|| {
                     format!(
                         "{}: 未找到 margin 订单 id={}",
                         Self::strategy_name(),
-                        close_ctx.spot_order_id
+                        self.margin_order_id
                     )
                 })?
                 .clone()
@@ -550,12 +533,12 @@ impl BinSingleForwardArbStrategy {
         let um_order = {
             let manager = self.order_manager.borrow();
             manager
-                .get(close_ctx.futures_order_id)
+                .get(self.um_hedge_order_id)
                 .ok_or_else(|| {
                     format!(
                         "{}: 未找到 UM 订单 id={}",
                         Self::strategy_name(),
-                        close_ctx.futures_order_id
+                        self.um_hedge_order_id
                     )
                 })?
                 .clone()
@@ -662,60 +645,8 @@ impl BinSingleForwardArbStrategy {
         ((strategy_id as i64) << 32) | seq as i64
     }
 
-    fn process_trade_exec_outcome(&mut self, outcome: TradeExecOutcome) {
-        match outcome.req_type {
-            TradeRequestType::BinanceNewMarginOrder | TradeRequestType::BinanceNewUMOrder => {
-                debug!(
-                    "{}: strategy_id={} trade_response req_type={:?} client_order_id={} status={} body_len={}",
-                    Self::strategy_name(),
-                    self.strategy_id,
-                    outcome.req_type,
-                    outcome.client_order_id,
-                    outcome.status,
-                    outcome.body.len()
-                );
-
-                let success = (200..300).contains(&outcome.status);
-                let now = get_timestamp_us();
-
-                let mut manager = self.order_manager.borrow_mut();
-                if !manager.update(outcome.client_order_id, |order| {
-                    if success {
-                        order.update_status(OrderExecutionStatus::Acked);
-                        order.set_ack_time(now);
-                    } else {
-                        order.update_status(OrderExecutionStatus::Rejected);
-                        order.set_end_time(now);
-                    }
-                }) {
-                    warn!(
-                        "{}: strategy_id={} 未找到 client_order_id={} 对应订单",
-                        Self::strategy_name(),
-                        self.strategy_id,
-                        outcome.client_order_id
-                    );
-                }
-
-                if !success {
-                    warn!(
-                        "{}: strategy_id={} 下单失败 req_type={:?} status={} body={}",
-                        Self::strategy_name(),
-                        self.strategy_id,
-                        outcome.req_type,
-                        outcome.status,
-                        outcome.body
-                    );
-                }
-            }
-            _ => {
-                debug!(
-                    "{}: strategy_id={} 忽略响应 req_type={:?}",
-                    Self::strategy_name(),
-                    self.strategy_id,
-                    outcome.req_type
-                );
-            }
-        }
+    fn is_strategy_order(&self, order_id: i64) -> bool {
+        ((order_id >> 32) as i32) == self.strategy_id
     }
 }
 
@@ -796,7 +727,7 @@ impl Strategy for BinSingleForwardArbStrategy {
                 }
                 SignalType::BinSingleForwardArbClose => {
                     match BinSingleForwardArbCloseCtx::from_bytes(signal.context.clone()) {
-                        Ok(ctx) => match self.close_positions(&ctx) {
+                        Ok(_) => match self.close_positions() {
                             Ok(()) => debug!(
                                 "{}: strategy_id={} 成功触发平仓",
                                 Self::strategy_name(),
@@ -826,94 +757,151 @@ impl Strategy for BinSingleForwardArbStrategy {
             ),
         }
     }
+    fn handle_trade_response(&mut self, outcome: &TradeExecOutcome) {
+        if self.is_strategy_order(outcome.client_order_id) {
+            //判断是以下哪个成交回报
+            match outcome.req_type {
+                TradeRequestType::BinanceNewMarginOrder | TradeRequestType::BinanceNewUMOrder => {
+                    debug!(
+                        "{}: strategy_id={} trade_response req_type={:?} client_order_id={} status={} body_len={}",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        outcome.req_type,
+                        outcome.client_order_id,
+                        outcome.status,
+                        outcome.body.len()
+                    );
 
-    fn handle_trade_response(&mut self, response_raws: &Bytes) {
-        if let Some(outcome) = TradeExecOutcome::parse(response_raws) {
-            debug!(
-                "{}: strategy_id={} 收到响应 req_type={:?} client_order_id={} status={}",
-                Self::strategy_name(),
-                self.strategy_id,
-                outcome.req_type,
-                outcome.client_order_id,
-                outcome.status
-            );
-            self.process_trade_exec_outcome(outcome);
-        } else {
-            warn!(
-                "{}: strategy_id={} 无法解析交易响应 len={}",
-                Self::strategy_name(),
-                self.strategy_id,
-                response_raws.len()
-            );
+                    let success = (200..300).contains(&outcome.status);
+                    let now = get_timestamp_us();
+
+                    let mut manager = self.order_manager.borrow_mut();
+                    if !manager.update(outcome.client_order_id, |order| {
+                        if success {
+                            order.update_status(OrderExecutionStatus::Acked);
+                            order.set_ack_time(now);
+                        } else {
+                            order.update_status(OrderExecutionStatus::Rejected);
+                            order.set_end_time(now);
+                        }
+                    }) {
+                        warn!(
+                            "{}: strategy_id={} 未找到 client_order_id={} 对应订单",
+                            Self::strategy_name(),
+                            self.strategy_id,
+                            outcome.client_order_id
+                        );
+                    }
+
+                    if !success {
+                        warn!(
+                            "{}: strategy_id={} 下单失败 req_type={:?} status={} body={}",
+                            Self::strategy_name(),
+                            self.strategy_id,
+                            outcome.req_type,
+                            outcome.status,
+                            outcome.body
+                        );
+                    }
+                }
+                _ => {
+                    debug!(
+                        "{}: strategy_id={} 忽略响应 req_type={:?}",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        outcome.req_type
+                    );
+                }
+            }
         }
     }
 
-    fn handle_account_event(&mut self, account_event_msg_raws: &Bytes) {
-        if account_event_msg_raws.len() < 8 {
-            return;
-        }
-
-        let header = account_event_msg_raws.as_ref();
-        let event_type = account_event_type_from_bytes(header);
-        let payload_len = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
-
-        if header.len() < 8 + payload_len {
-            warn!(
-                "{}: strategy_id={} account event truncated len={} expect {}",
-                Self::strategy_name(),
-                self.strategy_id,
-                header.len(),
-                8 + payload_len
-            );
-            return;
-        }
-
-        let payload = &header[8..8 + payload_len];
-
-        match event_type {
-            AccountEventType::ExecutionReport => {
-                match ExecutionReportMsg::from_bytes(payload) {
-                    Ok(report) => {
-                        debug!(
-                            "{}: strategy_id={} execution_report order_id={} status={}",
-                            Self::strategy_name(),
-                            self.strategy_id,
-                            report.order_id,
-                            report.order_status
-                        );
-                        // TODO: 处理 executionReport 事件
-                    }
-                    Err(err) => warn!(
-                        "{}: strategy_id={} 解析 executionReport 失败: {}",
-                        Self::strategy_name(),
-                        self.strategy_id,
-                        err
-                    ),
-                }
+    fn handle_binance_execution_report(&mut self, report: &ExecutionReportMsg){
+        //先看order id，是否是当前策略
+        let order_id = report.client_order_id;
+        //提取order id的前32位，判断是否是策略id
+        if order_id == self.margin_order_id {
+            //根据标志，更新当前订单状态
+            match report.execution_type {
+                //表示挂单成功，切换订单状态到ACK
+                "NEW
             }
-            AccountEventType::OrderTradeUpdate => {
-                match OrderTradeUpdateMsg::from_bytes(payload) {
-                    Ok(update) => {
-                        debug!(
-                            "{}: strategy_id={} order_trade_update order_id={} trade_id={}",
-                            Self::strategy_name(),
-                            self.strategy_id,
-                            update.order_id,
-                            update.trade_id
-                        );
-                        // TODO: 处理 ORDER_TRADE_UPDATE 事件
-                    }
-                    Err(err) => warn!(
-                        "{}: strategy_id={} 解析 order_trade_update 失败: {}",
-                        Self::strategy_name(),
-                        self.strategy_id,
-                        err
-                    ),
-                }
-            }
-            _ => {}
+        }else if order_id == self.close_margin_order_id {
+
+        }else{
+            //如果是策略id，对应杠杆账户下单、成交事件
         }
     }
+    fn handle_binance_order_trade_update(&mut self, update: &OrderTradeUpdateMsg){
+
+    }
+
+    // fn handle_account_event(&mut self, account_event_msg_raws: &Bytes) {
+    //     if account_event_msg_raws.len() < 8 {
+    //         return;
+    //     }
+
+    //     let header = account_event_msg_raws.as_ref();
+    //     let event_type = account_event_type_from_bytes(header);
+    //     let payload_len = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
+
+    //     if header.len() < 8 + payload_len {
+    //         warn!(
+    //             "{}: strategy_id={} account event truncated len={} expect {}",
+    //             Self::strategy_name(),
+    //             self.strategy_id,
+    //             header.len(),
+    //             8 + payload_len
+    //         );
+    //         return;
+    //     }
+
+    //     let payload = &header[8..8 + payload_len];
+
+    //     match event_type {
+    //         AccountEventType::ExecutionReport => {
+    //             match ExecutionReportMsg::from_bytes(payload) {
+    //                 Ok(report) => {
+    //                     debug!(
+    //                         "{}: strategy_id={} execution_report order_id={} status={}",
+    //                         Self::strategy_name(),
+    //                         self.strategy_id,
+    //                         report.order_id,
+    //                         report.order_status
+    //                     );
+    //                     // TODO: 进一步处理 executionReport 事件
+    //                 }
+    //                 Err(err) => warn!(
+    //                     "{}: strategy_id={} 解析 executionReport 失败: {}",
+    //                     Self::strategy_name(),
+    //                     self.strategy_id,
+    //                     err
+    //                 ),
+    //             }
+    //         }
+    //         AccountEventType::OrderTradeUpdate => {
+    //             match OrderTradeUpdateMsg::from_bytes(payload) {
+    //                 Ok(update) => {
+    //                     debug!(
+    //                         "{}: strategy_id={} order_trade_update order_id={} trade_id={}",
+    //                         Self::strategy_name(),
+    //                         self.strategy_id,
+    //                         update.order_id,
+    //                         update.trade_id
+    //                     );
+    //                     // TODO: 进一步处理 ORDER_TRADE_UPDATE 事件
+    //                 }
+    //                 Err(err) => warn!(
+    //                     "{}: strategy_id={} 解析 order_trade_update 失败: {}",
+    //                     Self::strategy_name(),
+    //                     self.strategy_id,
+    //                     err
+    //                 ),
+    //             }
+    //         }
+    //         _ => {}
+    //     }
+    // }
 
     fn hanle_period_clock(&mut self, current_tp: i64) {
         todo!()

@@ -340,9 +340,8 @@ pub struct ExecutionReportMsg {
     pub working_time: i64,
     pub update_id: i64,
     pub symbol_length: u32,
-    pub client_order_id_length: u32,
     pub symbol: String,
-    pub client_order_id: String,
+    pub client_order_id: i64,
     pub side: char, // 'B' for BUY, 'S' for SELL
     pub is_maker: bool,
     pub is_working: bool,
@@ -378,7 +377,7 @@ impl ExecutionReportMsg {
         working_time: i64,
         update_id: i64,
         symbol: String,
-        client_order_id: String,
+        client_order_id: i64,
         side: char,
         is_maker: bool,
         is_working: bool,
@@ -407,7 +406,6 @@ impl ExecutionReportMsg {
             working_time,
             update_id,
             symbol_length: symbol.len() as u32,
-            client_order_id_length: client_order_id.len() as u32,
             symbol,
             client_order_id,
             side,
@@ -438,11 +436,10 @@ impl ExecutionReportMsg {
 
     pub fn to_bytes(&self) -> Bytes {
         let total_size = 4
-            + 8 * 7
-            + 4
+            + 8 * 8
             + 4
             + self.symbol_length as usize
-            + self.client_order_id_length as usize
+            + 8
             + 1
             + 1
             + 1
@@ -471,9 +468,9 @@ impl ExecutionReportMsg {
         buf.put_i64_le(self.update_id);
 
         buf.put_u32_le(self.symbol_length);
-        buf.put_u32_le(self.client_order_id_length);
         buf.put(self.symbol.as_bytes());
-        buf.put(self.client_order_id.as_bytes());
+
+        buf.put_i64_le(self.client_order_id);
 
         buf.put_u8(self.side as u8);
         buf.put_u8(if self.is_maker { 1 } else { 0 });
@@ -509,7 +506,7 @@ impl ExecutionReportMsg {
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        const MIN_SIZE: usize = 4 + 8 * 7 + 4 + 4 + 1 + 1 + 1 + 6 + 8 * 9 + 4 * 5;
+        const MIN_SIZE: usize = 4 + 8 * 8 + 4 + 1 + 1 + 1 + 6 + 8 * 9 + 4 * 5;
         if data.len() < MIN_SIZE {
             anyhow::bail!("execution report msg too short: {}", data.len());
         }
@@ -529,17 +526,13 @@ impl ExecutionReportMsg {
         let update_id = cursor.get_i64_le();
 
         let symbol_length = cursor.get_u32_le();
-        let client_order_id_length = cursor.get_u32_le();
 
-        if cursor.remaining()
-            < (symbol_length + client_order_id_length) as usize + 1 + 1 + 1 + 6
-        {
+        if cursor.remaining() < symbol_length as usize + 1 + 1 + 1 + 6 + 8 {
             anyhow::bail!("execution report truncated before symbol/client_order_id");
         }
 
         let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_length as usize).to_vec())?;
-        let client_order_id =
-            String::from_utf8(cursor.copy_to_bytes(client_order_id_length as usize).to_vec())?;
+        let client_order_id = cursor.get_i64_le();
 
         let side = cursor.get_u8() as char;
         let is_maker = cursor.get_u8() != 0;
@@ -607,7 +600,6 @@ impl ExecutionReportMsg {
             working_time,
             update_id,
             symbol_length,
-            client_order_id_length,
             symbol,
             client_order_id,
             side,
@@ -647,9 +639,8 @@ pub struct OrderTradeUpdateMsg {
     pub trade_id: i64,
     pub strategy_id: i64,
     pub symbol_length: u32,
-    pub client_order_id_length: u32,
     pub symbol: String,
-    pub client_order_id: String,
+    pub client_order_id: i64,
     pub side: char,
     pub position_side: char,
     pub is_maker: bool,
@@ -690,7 +681,7 @@ impl OrderTradeUpdateMsg {
         trade_id: i64,
         strategy_id: i64,
         symbol: String,
-        client_order_id: String,
+        client_order_id: i64,
         side: char,
         position_side: char,
         is_maker: bool,
@@ -722,7 +713,6 @@ impl OrderTradeUpdateMsg {
             trade_id,
             strategy_id,
             symbol_length: symbol.len() as u32,
-            client_order_id_length: client_order_id.len() as u32,
             symbol,
             client_order_id,
             side,
@@ -760,11 +750,10 @@ impl OrderTradeUpdateMsg {
 
     pub fn to_bytes(&self) -> Bytes {
         let total_size = 4
-            + 8 * 5
-            + 4
+            + 8 * 6
             + 4
             + self.symbol_length as usize
-            + self.client_order_id_length as usize
+            + 8
             + 1
             + 1
             + 1
@@ -796,9 +785,9 @@ impl OrderTradeUpdateMsg {
         buf.put_i64_le(self.strategy_id);
 
         buf.put_u32_le(self.symbol_length);
-        buf.put_u32_le(self.client_order_id_length);
         buf.put(self.symbol.as_bytes());
-        buf.put(self.client_order_id.as_bytes());
+
+        buf.put_i64_le(self.client_order_id);
 
         buf.put_u8(self.side as u8);
         buf.put_u8(self.position_side as u8);
@@ -843,7 +832,7 @@ impl OrderTradeUpdateMsg {
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        const MIN_SIZE: usize = 4 + 8 * 5 + 4 + 4 + 1 + 1 + 1 + 1 + 4 + 8 * 11 + 4 * 7;
+        const MIN_SIZE: usize = 4 + 8 * 6 + 4 + 8 + 1 + 1 + 1 + 1 + 4 + 8 * 11 + 4 * 7;
         if data.len() < MIN_SIZE {
             anyhow::bail!("order trade update msg too short: {}", data.len());
         }
@@ -861,17 +850,13 @@ impl OrderTradeUpdateMsg {
         let strategy_id = cursor.get_i64_le();
 
         let symbol_length = cursor.get_u32_le();
-        let client_order_id_length = cursor.get_u32_le();
 
-        if cursor.remaining()
-            < (symbol_length + client_order_id_length) as usize + 1 + 1 + 1 + 1 + 4
-        {
+        if cursor.remaining() < symbol_length as usize + 1 + 1 + 1 + 1 + 4 + 8 {
             anyhow::bail!("order trade update truncated before symbol/client order id");
         }
 
         let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_length as usize).to_vec())?;
-        let client_order_id =
-            String::from_utf8(cursor.copy_to_bytes(client_order_id_length as usize).to_vec())?;
+        let client_order_id = cursor.get_i64_le();
 
         let side = cursor.get_u8() as char;
         let position_side = cursor.get_u8() as char;
@@ -955,7 +940,6 @@ impl OrderTradeUpdateMsg {
             trade_id,
             strategy_id,
             symbol_length,
-            client_order_id_length,
             symbol,
             client_order_id,
             side,

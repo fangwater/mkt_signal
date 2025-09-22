@@ -305,8 +305,8 @@ impl BinanceAccountEventParser {
         let client_order_id = json
             .get("c")
             .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
 
         let side = match json.get("S").and_then(|v| v.as_str()).unwrap_or("") {
             "BUY" => 'B',
@@ -448,8 +448,8 @@ impl BinanceAccountEventParser {
             let client_order_id = o
                 .get("c")
                 .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0);
 
             let side = match o.get("S").and_then(|v| v.as_str()).unwrap_or("") {
                 "BUY" => 'B',
