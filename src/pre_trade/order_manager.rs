@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+
+use log::{warn};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Side {
@@ -60,8 +62,8 @@ impl Side {
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u8)]
 pub enum OrderExecutionStatus {
-    Create = 1,    // 构造未提交
-    Acked = 2,     // 已确认，待执行
+    Commit = 1,    // 构造未提交
+    Create = 2,     // 已确认，待执行
     Filled = 3,    // 完全成交
     Cancelled = 4, // 已取消
     Rejected = 5,  // 被拒绝
@@ -71,8 +73,8 @@ impl OrderExecutionStatus {
     /// 从 u8 转换为 OrderExecutionStatus
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
-            1 => Some(OrderExecutionStatus::Create),
-            2 => Some(OrderExecutionStatus::Acked),
+            1 => Some(OrderExecutionStatus::Commit),
+            2 => Some(OrderExecutionStatus::Create),
             3 => Some(OrderExecutionStatus::Filled),
             4 => Some(OrderExecutionStatus::Cancelled),
             5 => Some(OrderExecutionStatus::Rejected),
@@ -89,7 +91,7 @@ impl OrderExecutionStatus {
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "CREATE" => Some(OrderExecutionStatus::Create),
-            "ACKED" => Some(OrderExecutionStatus::Acked),
+            "COMMIT" => Some(OrderExecutionStatus::Commit),
             "FILLED" => Some(OrderExecutionStatus::Filled),
             "CANCELLED" => Some(OrderExecutionStatus::Cancelled),
             "REJECTED" => Some(OrderExecutionStatus::Rejected),
@@ -101,7 +103,7 @@ impl OrderExecutionStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
             OrderExecutionStatus::Create => "CREATE",
-            OrderExecutionStatus::Acked => "ACKED",
+            OrderExecutionStatus::Commit => "COMMIT",
             OrderExecutionStatus::Filled => "FILLED",
             OrderExecutionStatus::Cancelled => "CANCELLED",
             OrderExecutionStatus::Rejected => "REJECTED",
@@ -387,15 +389,18 @@ pub struct Order {
     pub order_type: OrderType,        // 订单类型
     pub symbol: String,               // 交易对
     pub side: Side,                   // 买卖方向
-    pub price: Option<f64>,           // 限价单价格, 市价单没有意义
+    pub price: f64,           // 限价单价格, 市价单没有意义
     pub quantity: f64,                // 数量
+    pub cumulative_filled_quantity: f64, // 成交量
+    pub hedged_quantily: f64, // 未对冲量
     pub status: OrderExecutionStatus, // 订单执行状态
     // 时间戳记录
     pub submit_time: i64, // 订单提交时间(本地时间)
-    pub exec_time: i64,   // trading-engine执行的时间
-    pub ack_time: i64,    // 订单收到交易所回报的时间
-    pub filled_time: i64, // 订单执行成功的时间（交易所时间）
-    pub end_time: i64,    // 收到成交回报的时间（本地时间）
+    // "O": 1499405658657,            // Order creation time 对应币安杠杆下单
+    pub create_time: i64,   // 交易所订单创建时间(交易所时间)
+    pub ack_time: i64,    // 订单收到交易所回报的时间(本地时间)
+    pub filled_time: i64, // 订单执行成功的时间（交易所时间，记录最后一次）
+    pub end_time: i64,    // 收到成交回报的时间（本地时间，记录最后一次）
 }
 
 impl Order {
@@ -411,7 +416,7 @@ impl Order {
         symbol: String,
         side: Side,
         quantity: f64,
-        price: Option<f64>,
+        price: f64,
     ) -> Self {
         Order {
             order_id,
@@ -420,18 +425,31 @@ impl Order {
             side,
             price,
             quantity,
-            status: OrderExecutionStatus::Create,
+            status: OrderExecutionStatus::Commit,
             submit_time: 0,
-            exec_time: 0,
+            create_time: 0,
             ack_time: 0,
             filled_time: 0,
             end_time: 0,
+            cumulative_filled_quantity: 0.0,
+            hedged_quantily: 0.0,
         }
     }
 
     /// 更新订单状态
     pub fn update_status(&mut self, status: OrderExecutionStatus) {
+        // 增加订单状态检查
+        if status ==  OrderExecutionStatus::Create {
+            if self.status != OrderExecutionStatus::Commit{
+                //出现非正常的状态切换，打印日志
+                warn!("unexpected OrderExecutionStatus");
+            }
+        }
         self.status = status;
+    }
+    /// 更新订单成交量
+    pub fn update_rem_qty(&mut self, qty: f64){
+        self.quantity = qty;
     }
 
     /// 设置提交时间
@@ -440,8 +458,8 @@ impl Order {
     }
 
     /// 设置执行时间
-    pub fn set_exec_time(&mut self, time: i64) {
-        self.exec_time = time;
+    pub fn set_create_time(&mut self, time: i64) {
+        self.create_time = time;
     }
 
     /// 设置确认时间

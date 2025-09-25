@@ -785,6 +785,7 @@ impl Strategy for BinSingleForwardArbStrategy {
                             order.set_end_time(now);
                         }
                     }) {
+
                         warn!(
                             "{}: strategy_id={} 未找到 client_order_id={} 对应订单",
                             Self::strategy_name(),
@@ -816,24 +817,106 @@ impl Strategy for BinSingleForwardArbStrategy {
         }
     }
 
-    fn handle_binance_execution_report(&mut self, report: &ExecutionReportMsg){
-        //先看order id，是否是当前策略
+    fn handle_binance_execution_report(&mut self, report: &ExecutionReportMsg) {
         let order_id = report.client_order_id;
-        //提取order id的前32位，判断是否是策略id
-        if order_id == self.margin_order_id {
-            //根据标志，更新当前订单状态
-            match report.execution_type {
-                //表示挂单成功，切换订单状态到ACK
-                "NEW
+        if !self.is_strategy_order(order_id) {
+            return;
+        }
+        let _ = match report.order_status.as_str() {
+            "NEW" => {
+                //NEW 更新order的create time，状态修改为ACK
+                let mut manager = self.order_manager.borrow_mut();
+                if !manager.update(order_id, |order| {
+                    //订单从提交转移到确认状态
+                    order.update_status(OrderExecutionStatus::Create);
+                    //确定订单创建的交易所时间
+                    order.set_create_time(report.event_time);
+                    //更新订单成交量
+                    order.update_rem_qty(report.cumulative_filled_quantity);
+                }) {
+                    warn!(
+                        "{}: strategy_id={} execution_report 未找到订单 id={}",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        order_id
+                    );
+                }
             }
-        }else if order_id == self.close_margin_order_id {
+            "FILLED" => {
+                //部分成交，更新订单状态
+                let mut manager = self.order_manager.borrow_mut();
+                let mut qty:f64 = 0.0;
+                if !manager.update(order_id, |order| {
+                    //订单从提交转移到确认状态
+                    order.update_status(OrderExecutionStatus::Filled);
+                    //确定订单创建的交易所时间
+                    order.set_filled_time(report.event_time);
+                    //更新订单成交量
+                    qty = order.quantity;
+                    order.update_rem_qty(report.cumulative_filled_quantity);
+                }) {
+                    warn!(
+                        "{}: strategy_id={} execution_report 未找到订单 id={}",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        order_id
+                    );
+                }
+                //裁决判断当前未对冲的头寸大小，计算usdt价值，是否足够下一单
+                //获取markprice
+                
+                if report.cumulative_filled_quantity {
+                    
 
-        }else{
-            //如果是策略id，对应杠杆账户下单、成交事件
+                }
+            },
+            "CANCELED" | "EXPIRED" => {
+
+            },
+            "REJECTED" | "TRADE_PREVENTION" => {
+
+            },
+            _ => None,
+        };
+
+        let Some(status) = status else {
+            debug!(
+                "{}: strategy_id={} execution_report 未处理的状态 order_status={}",
+                Self::strategy_name(),
+                self.strategy_id,
+                report.order_status
+            );
+            return;
+        };
+
+        if order_id == self.margin_order_id {
+            debug!(
+                "{}: strategy_id={} margin execution report status={}",
+                Self::strategy_name(),
+                self.strategy_id,
+                report.order_status
+            );
+            // TODO: 根据 executionReport 更新杠杆开仓订单状态
+        } else if order_id == self.close_margin_order_id {
+            debug!(
+                "{}: strategy_id={} margin close execution report status={}",
+                Self::strategy_name(),
+                self.strategy_id,
+                report.order_status
+            );
+            // TODO: 根据 executionReport 更新杠杆平仓订单状态
+        } else {
+            debug!(
+                "{}: strategy_id={} UM execution report status={}",
+                Self::strategy_name(),
+                self.strategy_id,
+                report.order_status
+            );
+            // TODO: 处理合约对冲 / 平仓订单执行回报
         }
     }
     fn handle_binance_order_trade_update(&mut self, update: &OrderTradeUpdateMsg){
-
+        
     }
 
     // fn handle_account_event(&mut self, account_event_msg_raws: &Bytes) {
