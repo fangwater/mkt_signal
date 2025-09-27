@@ -284,6 +284,11 @@ impl BinancePmSpotAccountManager {
 
         let status = resp.status();
         let body = resp.text().await?;
+
+        debug!(
+            "Binance PM balance response: status={} body={}",
+            status, body
+        );
         if !status.is_success() {
             return Err(anyhow!(
                 "GET /papi/v1/balance failed: {} - {}",
@@ -369,13 +374,20 @@ fn parse_negative_flag(value: &str, asset: &str) -> Result<bool> {
         return Ok(false);
     }
 
-    match value.trim() {
+    let trimmed = value.trim();
+    match trimmed {
         "0" | "false" | "FALSE" => Ok(false),
         "1" | "true" | "TRUE" => Ok(true),
-        other => Err(anyhow!(
-            "asset={} invalid negativeBalance value: {}",
-            asset,
-            other
-        )),
+        _ => {
+            if let Ok(num) = trimmed.parse::<f64>() {
+                Ok(num != 0.0)
+            } else {
+                Err(anyhow!(
+                    "asset={} invalid negativeBalance value: {}",
+                    asset,
+                    trimmed
+                ))
+            }
+        }
     }
 }
