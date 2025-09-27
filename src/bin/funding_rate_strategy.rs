@@ -245,6 +245,15 @@ impl Default for PositionState {
     }
 }
 
+impl PositionState {
+    fn as_str(&self) -> &'static str {
+        match self {
+            PositionState::Flat => "FLAT",
+            PositionState::Opened => "OPENED",
+        }
+    }
+}
+
 /// 单个交易对的运行时状态
 #[derive(Debug, Clone)]
 struct SymbolState {
@@ -259,6 +268,10 @@ struct SymbolState {
     last_open_ts: Option<i64>,
     last_close_ts: Option<i64>,
     last_signal_ts: Option<i64>,
+    funding_rate: f64,
+    predicted_rate: f64,
+    loan_rate: f64,
+    funding_ts: i64,
 }
 
 impl SymbolState {
@@ -275,6 +288,10 @@ impl SymbolState {
             last_open_ts: None,
             last_close_ts: None,
             last_signal_ts: None,
+            funding_rate: 0.0,
+            predicted_rate: 0.0,
+            loan_rate: 0.0,
+            funding_ts: 0,
         }
     }
 
@@ -348,11 +365,11 @@ impl StrategyEngine {
         if Instant::now() < self.next_reload {
             return;
         }
-        if let Err(err) = self.reload_thresholds() {
-            error!("刷新追踪列表失败: {err:?}");
-        }
         if let Err(err) = self.min_qty.refresh_binance().await {
             warn!("刷新最小下单量失败: {err:?}");
+        }
+        if let Err(err) = self.reload_thresholds() {
+            error!("刷新追踪列表失败: {err:?}");
         }
     }
 
@@ -383,6 +400,7 @@ impl StrategyEngine {
             info!("移除 {} 个不再跟踪的交易对", removed);
         }
         info!("本次加载追踪交易对数量: {}", self.symbols.len());
+        self.log_min_qty_table();
         Ok(())
     }
 
@@ -416,6 +434,104 @@ impl StrategyEngine {
             anyhow::bail!("tracking_symbol.json 未解析到任何有效的 binance 交易对");
         }
         Ok(result)
+    }
+
+    fn log_min_qty_table(&self) {
+        if self.symbols.is_empty() {
+            info!("未追踪任何交易对，跳过最小下单量日志");
+            return;
+        }
+        let mut keys: Vec<String> = self.symbols.keys().cloned().collect();
+        keys.sort();
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        for key in keys {
+            let Some(state) = self.symbols.get(&key) else {
+                continue;
+            };
+            let spot_min = self
+                .min_qty
+                .spot_min_qty_by_symbol(&state.spot_symbol)
+                .unwrap_or(0.0);
+            let futures_min = self
+                .min_qty
+                .futures_um_min_qty_by_symbol(&state.futures_symbol)
+                .unwrap_or(0.0);
+            rows.push(vec![
+                key.clone(),
+                state.spot_symbol.clone(),
+                state.futures_symbol.clone(),
+                format!("{:.8}", spot_min),
+                format!("{:.8}", futures_min),
+            ]);
+        }
+        if rows.is_empty() {
+            info!("最小下单量: 未找到匹配条目");
+            return;
+        }
+        let table = render_three_line_table(
+            &[
+                "Key",
+                "SpotSymbol",
+                "FuturesSymbol",
+                "SpotMinQty",
+                "UMMinQty",
+            ],
+            &rows,
+        );
+        info!("最小下单量快照\n{}", table);
+    }
+
+    fn log_symbol_snapshot(&self) {
+        let mut keys: Vec<String> = self.symbols.keys().cloned().collect();
+        keys.sort();
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        for key in keys {
+            let Some(state) = self.symbols.get(&key) else {
+                continue;
+            };
+            if !(state.spot_quote.is_ready() && state.futures_quote.is_ready()) {
+                continue;
+            }
+            let ratio = state.calc_ratio().unwrap_or(0.0);
+            rows.push(vec![
+                key.clone(),
+                format!("{:.6}", state.spot_quote.bid),
+                format!("{:.6}", state.spot_quote.ask),
+                format!("{:.6}", state.futures_quote.bid),
+                format!("{:.6}", state.futures_quote.ask),
+                format!("{:.6}", ratio),
+                format!("{:.6}", state.open_threshold),
+                format!("{:.6}", state.close_threshold),
+                format!("{:.6}", state.funding_rate),
+                format!("{:.6}", state.predicted_rate),
+                format!("{:.6}", state.loan_rate),
+                state.position.as_str().to_string(),
+            ]);
+        }
+
+        if rows.is_empty() {
+            info!("snapshot: 当前无可用价差信息");
+            return;
+        }
+
+        let table = render_three_line_table(
+            &[
+                "Symbol",
+                "SpotBid",
+                "SpotAsk",
+                "UMBid",
+                "UMAsk",
+                "Ratio",
+                "OpenTh",
+                "CloseTh",
+                "Funding",
+                "Predicted",
+                "Loan",
+                "Pos",
+            ],
+            &rows,
+        );
+        info!("价差/资金费率快照\n{}", table);
     }
 
     fn parse_symbol_entry(value: &serde_json::Value) -> Option<SymbolThreshold> {
@@ -499,11 +615,16 @@ impl StrategyEngine {
             let funding = FundingRateMsg::get_funding_rate(msg);
             let predicted = FundingRateMsg::get_predicted_funding_rate(msg);
             let timestamp = FundingRateMsg::get_timestamp(msg);
+            let loan_rate = FundingRateMsg::get_loan_rate_8h(msg);
             debug!(
                 "资金费率更新: {} funding={:.6} predicted={:.6} ts={}",
                 symbol, funding, predicted, timestamp
             );
             state.last_ratio = state.calc_ratio();
+            state.funding_rate = funding;
+            state.predicted_rate = predicted;
+            state.loan_rate = loan_rate;
+            state.funding_ts = timestamp;
         }
     }
 
@@ -652,7 +773,11 @@ impl StrategyEngine {
 
         debug!(
             "{} 下单数量计算: desired={:.6}, spot_min={:.6}, futures_min={:.6}, final={:.6}",
-            state.spot_symbol, self.cfg.order.amount_u / limit_price, spot_min, futures_min, desired_qty
+            state.spot_symbol,
+            self.cfg.order.amount_u / limit_price,
+            spot_min,
+            futures_min,
+            desired_qty
         );
 
         let qty = desired_qty as f32;
@@ -743,6 +868,69 @@ enum SignalRequest {
     },
 }
 
+fn render_three_line_table(headers: &[&str], rows: &[Vec<String>]) -> String {
+    let widths = compute_widths(headers, rows);
+    let mut out = String::new();
+    out.push_str(&build_separator(&widths, '-'));
+    out.push('\n');
+    out.push_str(&build_row(
+        headers
+            .iter()
+            .map(|h| h.to_string())
+            .collect::<Vec<String>>(),
+        &widths,
+    ));
+    out.push('\n');
+    out.push_str(&build_separator(&widths, '='));
+    if rows.is_empty() {
+        out.push('\n');
+        out.push_str(&build_separator(&widths, '-'));
+        return out;
+    }
+    for row in rows {
+        out.push('\n');
+        out.push_str(&build_row(row.clone(), &widths));
+    }
+    out.push('\n');
+    out.push_str(&build_separator(&widths, '-'));
+    out
+}
+
+fn compute_widths(headers: &[&str], rows: &[Vec<String>]) -> Vec<usize> {
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+    for row in rows {
+        for (idx, cell) in row.iter().enumerate() {
+            if idx >= widths.len() {
+                continue;
+            }
+            widths[idx] = widths[idx].max(cell.len());
+        }
+    }
+    widths
+}
+
+fn build_separator(widths: &[usize], fill: char) -> String {
+    let mut line = String::new();
+    line.push('+');
+    for width in widths {
+        line.push_str(&fill.to_string().repeat(width + 2));
+        line.push('+');
+    }
+    line
+}
+
+fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
+    let mut row = String::new();
+    row.push('|');
+    for (cell, width) in cells.iter().zip(widths.iter()) {
+        row.push(' ');
+        row.push_str(&format!("{:<width$}", cell, width = *width));
+        row.push(' ');
+        row.push('|');
+    }
+    row
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     if std::env::var("RUST_LOG").is_err() {
@@ -755,6 +943,7 @@ async fn main() -> Result<()> {
     let cfg = StrategyConfig::load()?;
     let publisher = SignalPublisher::new(SIGNAL_CHANNEL_MT_ARBITRAGE)?;
     let mut engine = StrategyEngine::new(cfg.clone(), publisher).await?;
+    engine.log_symbol_snapshot();
 
     let mut subscriber = MultiChannelSubscriber::new(NODE_FUNDING_STRATEGY_SUB)?;
     subscriber.subscribe_channels(vec![
@@ -782,6 +971,7 @@ async fn main() -> Result<()> {
     }
 
     let mut next_stat_time = Instant::now() + Duration::from_secs(30);
+    let mut next_snapshot = Instant::now() + Duration::from_secs(3);
 
     loop {
         if shutdown.load(Ordering::Relaxed) {
@@ -816,6 +1006,10 @@ async fn main() -> Result<()> {
         if Instant::now() >= next_stat_time {
             engine.print_stats();
             next_stat_time += Duration::from_secs(30);
+        }
+        if Instant::now() >= next_snapshot {
+            engine.log_symbol_snapshot();
+            next_snapshot += Duration::from_secs(3);
         }
 
         std::hint::spin_loop();
