@@ -2,56 +2,21 @@ use crate::exchange::Exchange;
 use anyhow::Result;
 use chrono::Utc;
 use hmac::{Hmac, Mac};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use reqwest;
 use serde::Deserialize;
 use sha2::Sha256;
 use std::array::from_fn;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::time::Duration;
 type HmacSha256 = Hmac<Sha256>;
 use base64::{engine::general_purpose, Engine as _};
-use std::fs;
 
 /// 全局资金费率管理器实例
 static FUNDING_RATE_MANAGER: once_cell::sync::Lazy<Arc<FundingRateManager>> =
     once_cell::sync::Lazy::new(|| Arc::new(FundingRateManager::new()));
-
-/// 单个交易对配置：现货符号、期货符号、开仓阈值、可选的平仓阈值
-#[derive(Debug, Clone, Deserialize)]
-struct TrackingSymbolEntry(String, String, f64, #[serde(default)] Option<f64>);
-
-impl TrackingSymbolEntry {
-    #[inline]
-    fn spot_symbol(&self) -> &str {
-        &self.0
-    }
-
-    #[inline]
-    fn futures_symbol(&self) -> &str {
-        &self.1
-    }
-
-    #[inline]
-    fn open_threshold(&self) -> f64 {
-        self.2
-    }
-
-    #[inline]
-    fn close_threshold(&self) -> Option<f64> {
-        self.3
-    }
-}
-
-/// 交易对配置 - 每个交易所包含多个 [现货符号, 期货符号, 开仓阈值, 平仓阈值] 数组
-#[derive(Debug, Deserialize)]
-struct TrackingSymbolsConfig {
-    binance: Vec<TrackingSymbolEntry>,
-    okex: Vec<TrackingSymbolEntry>,
-    bybit: Vec<TrackingSymbolEntry>,
-}
 
 #[derive(Debug, Deserialize)]
 struct FundingRateHistory {
@@ -115,7 +80,7 @@ pub struct FundingRateManager {
     // 每个交易所一个独立的存储与状态，避免大粒度锁竞争
     stores: [ExchangeStore; 6],
     client: reqwest::Client,
-    tracking_symbols: RwLock<Option<TrackingSymbolsConfig>>,
+    tracked_symbols: [RwLock<HashSet<String>>; 6],
 }
 
 impl FundingRateManager {
@@ -123,13 +88,68 @@ impl FundingRateManager {
         Self {
             stores: from_fn(|_| ExchangeStore::new()),
             client: reqwest::Client::new(),
-            tracking_symbols: RwLock::new(None),
+            tracked_symbols: from_fn(|_| RwLock::new(HashSet::new())),
         }
     }
 
     /// 获取全局实例
     pub fn instance() -> Arc<FundingRateManager> {
         FUNDING_RATE_MANAGER.clone()
+    }
+
+    fn tracking_group(exchange: Exchange) -> &'static [Exchange] {
+        match exchange {
+            Exchange::Binance | Exchange::BinanceFutures => {
+                &[Exchange::Binance, Exchange::BinanceFutures]
+            }
+            Exchange::Okex | Exchange::OkexSwap => &[Exchange::Okex, Exchange::OkexSwap],
+            Exchange::Bybit | Exchange::BybitSpot => &[Exchange::Bybit, Exchange::BybitSpot],
+        }
+    }
+
+    fn refresh_target(exchange: Exchange) -> Exchange {
+        match exchange {
+            Exchange::Binance | Exchange::BinanceFutures => Exchange::Binance,
+            Exchange::Okex | Exchange::OkexSwap => Exchange::OkexSwap,
+            Exchange::Bybit | Exchange::BybitSpot => Exchange::Bybit,
+        }
+    }
+
+    fn set_tracked_symbols(&self, exchange: Exchange, symbols: &[String]) {
+        let idx = Self::ex_idx(exchange);
+        let mut guard = self.tracked_symbols[idx].write().unwrap();
+        guard.clear();
+        guard.extend(symbols.iter().cloned());
+    }
+
+    fn collect_tracked_symbols(&self, exchanges: &[Exchange]) -> Vec<String> {
+        let mut merged = HashSet::new();
+        for exchange in exchanges {
+            let guard = self.tracked_symbols[Self::ex_idx(*exchange)]
+                .read()
+                .unwrap();
+            merged.extend(guard.iter().cloned());
+        }
+        merged.into_iter().collect()
+    }
+
+    fn normalize_symbols(exchange: Exchange, symbols: Vec<String>) -> Vec<String> {
+        symbols
+            .into_iter()
+            .map(|s| {
+                let upper = s.trim().to_uppercase();
+                match exchange {
+                    Exchange::Okex | Exchange::OkexSwap => {
+                        if upper.ends_with("-SWAP") {
+                            upper
+                        } else {
+                            format!("{}-SWAP", upper)
+                        }
+                    }
+                    _ => upper,
+                }
+            })
+            .collect()
     }
 
     /// 同步获取指定交易对的资金费率数据，根据时间戳判断是否需要刷新
@@ -243,21 +263,12 @@ impl FundingRateManager {
     async fn refresh_binance_rates(&self) -> Result<()> {
         info!("开始刷新币安资金费率和借贷利率数据");
 
-        // 从配置获取要跟踪的交易对（提取期货符号）
-        let symbols: Vec<_> = {
-            let config = self.tracking_symbols.read().unwrap();
-            match &*config {
-                Some(cfg) => cfg
-                    .binance
-                    .iter()
-                    .map(|entry| entry.futures_symbol().to_string())
-                    .collect(),
-                _ => {
-                    error!("未加载交易对配置");
-                    return Err(anyhow::anyhow!("未加载交易对配置"));
-                }
-            }
-        };
+        // 从运行期配置获取要跟踪的交易对
+        let symbols = self.collect_tracked_symbols(Self::tracking_group(Exchange::Binance));
+        if symbols.is_empty() {
+            info!("币安资金费率刷新跳过：未注册任何交易对");
+            return Ok(());
+        }
         info!("币安将跟踪 {} 个交易对的预测资金费率", symbols.len());
 
         // 获取借贷利率：优先签名接口、然后覆盖、最后默认
@@ -511,21 +522,11 @@ impl FundingRateManager {
     async fn refresh_okex_rates(&self) -> Result<()> {
         info!("开始刷新OKEx资金费率数据");
 
-        // 从配置获取要跟踪的交易对（提取期货符号）
-        let inst_ids: Vec<_> = {
-            let config = self.tracking_symbols.read().unwrap();
-            match &*config {
-                Some(cfg) => cfg
-                    .okex
-                    .iter()
-                    .map(|entry| entry.futures_symbol().to_string())
-                    .collect(),
-                None => {
-                    error!("未加载交易对配置");
-                    return Err(anyhow::anyhow!("未加载交易对配置"));
-                }
-            }
-        };
+        let inst_ids = self.collect_tracked_symbols(Self::tracking_group(Exchange::OkexSwap));
+        if inst_ids.is_empty() {
+            info!("OKEx资金费率刷新跳过：未注册任何交易对");
+            return Ok(());
+        }
         info!("OKEx将跟踪 {} 个交易对的预测资金费率", inst_ids.len());
 
         let mut tasks = vec![];
@@ -603,21 +604,11 @@ impl FundingRateManager {
     async fn refresh_bybit_rates(&self) -> Result<()> {
         info!("开始刷新Bybit资金费率数据");
 
-        // 从配置获取要跟踪的交易对（提取期货符号）
-        let symbols: Vec<_> = {
-            let config = self.tracking_symbols.read().unwrap();
-            match &*config {
-                Some(cfg) => cfg
-                    .bybit
-                    .iter()
-                    .map(|entry| entry.futures_symbol().to_string())
-                    .collect(),
-                None => {
-                    error!("未加载交易对配置");
-                    return Err(anyhow::anyhow!("未加载交易对配置"));
-                }
-            }
-        };
+        let symbols = self.collect_tracked_symbols(Self::tracking_group(Exchange::Bybit));
+        if symbols.is_empty() {
+            info!("Bybit资金费率刷新跳过：未注册任何交易对");
+            return Ok(());
+        }
         info!("Bybit将跟踪 {} 个交易对的预测资金费率", symbols.len());
 
         // 并发获取每个交易对的资金费率历史
@@ -714,63 +705,31 @@ impl FundingRateManager {
     }
 
     /// 手动触发初始化刷新（在应用启动时调用）
-    pub async fn initialize(
-        &self,
-        enable_binance: bool,
-        enable_okex: bool,
-        enable_bybit: bool,
-    ) -> Result<()> {
-        info!("初始化资金费率数据");
+    pub async fn initialize(&self, exchange: Exchange, symbols: Vec<String>) -> Result<()> {
+        info!(
+            "初始化资金费率数据: {:?}, 接收到 {} 个 symbol",
+            exchange,
+            symbols.len()
+        );
 
-        // 加载交易对配置文件
-        let config_path = "config/tracking_symbol.json";
-        match fs::read_to_string(config_path) {
-            Ok(content) => match serde_json::from_str::<TrackingSymbolsConfig>(&content) {
-                Ok(config) => {
-                    info!("成功加载预测资金费率跟踪交易对配置");
-                    info!("币安: {} 个交易对", config.binance.len());
-                    info!("OKEx: {} 个交易对", config.okex.len());
-                    info!("Bybit: {} 个交易对", config.bybit.len());
-                    *self.tracking_symbols.write().unwrap() = Some(config);
-                }
-                Err(e) => {
-                    error!("解析预测资金费率跟踪交易对配置失败: {}", e);
-                    return Err(anyhow::anyhow!("解析配置文件失败: {}", e));
-                }
-            },
-            Err(e) => {
-                error!("读取预测资金费率跟踪交易对配置文件失败: {}", e);
-                return Err(anyhow::anyhow!("读取配置文件失败: {}", e));
-            }
-        }
-
-        let mut exchanges = Vec::new();
-        if enable_binance {
-            exchanges.push(Exchange::Binance);
-        }
-        if enable_okex {
-            exchanges.push(Exchange::OkexSwap);
-        }
-        if enable_bybit {
-            exchanges.push(Exchange::Bybit);
-        }
-
-        // 如果没有启用任何交易所，直接返回
-        if exchanges.is_empty() {
-            info!("没有启用任何交易所的预测资金费率");
+        let normalized = Self::normalize_symbols(exchange, symbols);
+        if normalized.is_empty() {
+            warn!("资金费率管理器未注册任何交易对: {:?}", exchange);
             return Ok(());
         }
 
-        // 并发刷新启用的交易所
-        for exchange in exchanges {
-            let m = Self::instance();
-            tokio::spawn(async move {
-                info!("开始初始化{:?}交易所预测资金费率", exchange);
-                if let Err(e) = m.refresh_exchange_rates(exchange).await {
-                    error!("初始化{:?}预测资金费率失败: {}", exchange, e);
-                }
-            });
+        for &ex in Self::tracking_group(exchange) {
+            self.set_tracked_symbols(ex, &normalized);
         }
+
+        let target = Self::refresh_target(exchange);
+        let manager = Self::instance();
+        tokio::spawn(async move {
+            info!("开始初始化 {:?} 交易所预测资金费率", target);
+            if let Err(e) = manager.refresh_exchange_rates(target).await {
+                error!("初始化 {:?} 预测资金费率失败: {}", target, e);
+            }
+        });
 
         Ok(())
     }

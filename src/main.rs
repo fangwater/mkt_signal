@@ -37,15 +37,17 @@ async fn main() -> anyhow::Result<()> {
 
     // 初始化资金费率管理器（异步后台）
     let funding_manager = mkt_signal::market_state::FundingRateManager::instance();
-    let (enable_binance, enable_okex, enable_bybit) = match exchange {
-        Exchange::Binance | Exchange::BinanceFutures => (true, false, false),
-        Exchange::Okex | Exchange::OkexSwap => (false, true, false),
-        Exchange::Bybit | Exchange::BybitSpot => (false, false, true),
+    let symbol_list = match config.get_symbols().await {
+        Ok(list) => list,
+        Err(e) => {
+            log::error!("获取 symbol 列表失败，将以空列表初始化资金费率: {}", e);
+            Vec::new()
+        }
     };
-
+    let funding_exchange = exchange;
     tokio::spawn(async move {
         if let Err(e) = funding_manager
-            .initialize(enable_binance, enable_okex, enable_bybit)
+            .initialize(funding_exchange, symbol_list)
             .await
         {
             log::error!("初始化资金费率管理器失败: {}", e);
