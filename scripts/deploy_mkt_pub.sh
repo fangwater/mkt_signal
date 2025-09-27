@@ -14,4 +14,16 @@ mkdir -p "$TARGET_DIR"
 cp "$BIN_PATH" "$TARGET_DIR/"
 chmod +x "$TARGET_DIR/$BIN_NAME"
 
+for script in start_mkt_pub.sh stop_mkt_pub.sh env.sh; do
+  if [[ "$script" == "env.sh" ]]; then
+    SRC_PATH="$ROOT_DIR/env.sh"
+  else
+    SRC_PATH="$ROOT_DIR/scripts/$script"
+  fi
+  if [[ -f "$SRC_PATH" ]]; then
+    cp "$SRC_PATH" "$TARGET_DIR/"
+    [[ "$script" == "env.sh" ]] || chmod +x "$TARGET_DIR/$script"
+  fi
+done
+
 echo "[INFO] $BIN_NAME 部署完成。"

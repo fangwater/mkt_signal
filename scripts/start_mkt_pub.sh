@@ -1,12 +1,13 @@
 #!/bin/bash
 
-# 停止脚本 - 停止指定交易所的所有代理
 # 候选的exchange list 
 exchange_list=(
     "binance"
     "okex"
     "bybit"
 )
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 exchange=$1
 
@@ -42,40 +43,61 @@ get_exchange_configs() {
     esac
 }
 
-# 停止单个代理的函数
-stop_single_proxy() {
+# 启动单个代理的函数
+start_single_proxy() {
     local config=$1
-    local pm2_name="crypto_proxy_${config}"
-    
-    echo "停止 ${config} 代理..."
-    
+    local pm2_name="mkt_pub_${config}"
+    local bin_path="${DIR}/mkt_pub"
+    local env_file="${DIR}/env.sh"
+
+    echo "启动 ${config} 代理..."
+
+    # 停止现有进程
     pm2 delete "$pm2_name" 2>/dev/null
-    
+
+    if [[ -f "$env_file" ]]; then
+        # shellcheck disable=SC1090
+        source "$env_file"
+    fi
+
+    # 启动新进程
+    pm2 start "$bin_path" \
+        --name "$pm2_name" \
+        -- \
+        --exchange "$config"
+        
     if [ $? -eq 0 ]; then
-        echo "✓ ${config} 代理停止成功"
+        echo "✓ ${config} 代理启动成功"
     else
-        echo "✗ ${config} 代理停止失败（可能本来就没运行）"
+        echo "✗ ${config} 代理启动失败"
+        return 1
     fi
 }
 
-# 主停止函数
-stop_exchange_proxies() {
+# 主启动函数
+start_exchange_proxies() {
     local exchange=$1
     local configs=$(get_exchange_configs "$exchange")
     
-    echo "开始停止 ${exchange} 交易所的代理服务..."
-    echo "将停止以下配置: $configs"
+    echo "开始启动 ${exchange} 交易所的代理服务..."
+    echo "将启动以下配置: $configs"
     echo ""
     
     for config in $configs; do
-        stop_single_proxy "$config"
-        sleep 1
+        start_single_proxy "$config"
+        sleep 2
     done
     
     echo ""
-    echo "${exchange} 交易所所有代理停止完成！"
+    echo "${exchange} 交易所所有代理启动完成！"
+    echo ""
+    echo "查看日志命令:"
+    for config in $configs; do
+        echo "  pm2 logs mkt_pub_${config}"
+    done
+    
     echo ""
     echo "查看状态: pm2 status"
 }
 
-stop_exchange_proxies "$exchange"
+start_exchange_proxies "$exchange"
