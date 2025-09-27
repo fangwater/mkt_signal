@@ -14,6 +14,6 @@ fi
 
 echo "[INFO] Copying configs from $SRC_CONFIG to $DEST_CONFIG"
 mkdir -p "$DEST_CONFIG"
-rsync -av --delete "$SRC_CONFIG/" "$DEST_CONFIG/"
+rsync -a --delete "$SRC_CONFIG/" "$DEST_CONFIG/"
 
 echo "[INFO] Config update complete."

@@ -21,7 +21,7 @@ for script in start_mkt_pub.sh stop_mkt_pub.sh env.sh; do
     SRC_PATH="$ROOT_DIR/scripts/$script"
   fi
   if [[ -f "$SRC_PATH" ]]; then
-    cp "$SRC_PATH" "$TARGET_DIR/"
+    rsync -a "$SRC_PATH" "$TARGET_DIR/"
     [[ "$script" == "env.sh" ]] || chmod +x "$TARGET_DIR/$script"
   fi
 done

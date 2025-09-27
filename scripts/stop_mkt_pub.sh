@@ -11,9 +11,9 @@ fi
 
 for exchange in "$@"; do
   name="${PM2_NAME_PREFIX}${exchange}"
-  if pm2 describe "$name" >/dev/null 2>&1; then
+  if npx pm2 describe "$name" >/dev/null 2>&1; then
     echo "[INFO] 停止 $name"
-    pm2 delete "$name"
+    npx pm2 delete "$name"
   else
     echo "[WARN] 未找到 PM2 进程 $name"
   fi

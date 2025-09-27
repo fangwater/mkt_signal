@@ -17,7 +17,7 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 echo "[INFO] 使用 PM2 启动 $PM2_NAME"
-pm2 delete "$PM2_NAME" 2>/dev/null
-pm2 start "$BIN_PATH" --name "$PM2_NAME"
+npx pm2 delete "$PM2_NAME" 2>/dev/null
+npx pm2 start "$BIN_PATH" --name "$PM2_NAME"
 
 echo "[INFO] $PM2_NAME 已启动"

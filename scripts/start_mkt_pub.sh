@@ -53,7 +53,7 @@ start_single_proxy() {
     echo "启动 ${config} 代理..."
 
     # 停止现有进程
-    pm2 delete "$pm2_name" 2>/dev/null
+    npx pm2 delete "$pm2_name" 2>/dev/null
 
     if [[ -f "$env_file" ]]; then
         # shellcheck disable=SC1090
@@ -61,7 +61,7 @@ start_single_proxy() {
     fi
 
     # 启动新进程
-    pm2 start "$bin_path" \
+    npx pm2 start "$bin_path" \
         --name "$pm2_name" \
         -- \
         --exchange "$config"
@@ -93,11 +93,11 @@ start_exchange_proxies() {
     echo ""
     echo "查看日志命令:"
     for config in $configs; do
-        echo "  pm2 logs mkt_pub_${config}"
+        echo "  npx pm2 logs mkt_pub_${config}"
     done
     
     echo ""
-    echo "查看状态: pm2 status"
+    echo "查看状态: npx pm2 status"
 }
 
 start_exchange_proxies "$exchange"
