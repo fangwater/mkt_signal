@@ -19,12 +19,38 @@ use std::fs;
 static FUNDING_RATE_MANAGER: once_cell::sync::Lazy<Arc<FundingRateManager>> =
     once_cell::sync::Lazy::new(|| Arc::new(FundingRateManager::new()));
 
-/// 交易对配置 - 每个交易所包含多个[现货符号, 期货符号, 价差阈值]数组
+/// 单个交易对配置：现货符号、期货符号、开仓阈值、可选的平仓阈值
+#[derive(Debug, Clone, Deserialize)]
+struct TrackingSymbolEntry(String, String, f64, #[serde(default)] Option<f64>);
+
+impl TrackingSymbolEntry {
+    #[inline]
+    fn spot_symbol(&self) -> &str {
+        &self.0
+    }
+
+    #[inline]
+    fn futures_symbol(&self) -> &str {
+        &self.1
+    }
+
+    #[inline]
+    fn open_threshold(&self) -> f64 {
+        self.2
+    }
+
+    #[inline]
+    fn close_threshold(&self) -> Option<f64> {
+        self.3
+    }
+}
+
+/// 交易对配置 - 每个交易所包含多个 [现货符号, 期货符号, 开仓阈值, 平仓阈值] 数组
 #[derive(Debug, Deserialize)]
 struct TrackingSymbolsConfig {
-    binance: Vec<(String, String, f64)>,
-    okex: Vec<(String, String, f64)>,
-    bybit: Vec<(String, String, f64)>,
+    binance: Vec<TrackingSymbolEntry>,
+    okex: Vec<TrackingSymbolEntry>,
+    bybit: Vec<TrackingSymbolEntry>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -224,7 +250,7 @@ impl FundingRateManager {
                 Some(cfg) => cfg
                     .binance
                     .iter()
-                    .map(|(_, futures, _)| futures.clone())
+                    .map(|entry| entry.futures_symbol().to_string())
                     .collect(),
                 _ => {
                     error!("未加载交易对配置");
@@ -492,7 +518,7 @@ impl FundingRateManager {
                 Some(cfg) => cfg
                     .okex
                     .iter()
-                    .map(|(_, futures, _)| futures.clone())
+                    .map(|entry| entry.futures_symbol().to_string())
                     .collect(),
                 None => {
                     error!("未加载交易对配置");
@@ -584,7 +610,7 @@ impl FundingRateManager {
                 Some(cfg) => cfg
                     .bybit
                     .iter()
-                    .map(|(_, futures, _)| futures.clone())
+                    .map(|entry| entry.futures_symbol().to_string())
                     .collect(),
                 None => {
                     error!("未加载交易对配置");
