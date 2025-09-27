@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -326,6 +327,13 @@ struct EngineStats {
     close_signals: u64,
 }
 
+#[derive(Debug, Clone)]
+struct QtyStepInfo {
+    spot_min: f64,
+    futures_min: f64,
+    step: f64,
+}
+
 /// 主策略执行引擎
 struct StrategyEngine {
     cfg: StrategyConfig,
@@ -335,6 +343,7 @@ struct StrategyEngine {
     next_reload: Instant,
     stats: EngineStats,
     min_qty: MinQtyTable,
+    qty_step_cache: RefCell<HashMap<String, QtyStepInfo>>,
 }
 
 impl StrategyEngine {
@@ -347,6 +356,7 @@ impl StrategyEngine {
             futures_index: HashMap::new(),
             stats: EngineStats::default(),
             min_qty: MinQtyTable::new(),
+            qty_step_cache: RefCell::new(HashMap::new()),
         };
         engine.min_qty.refresh_binance().await?;
         engine.reload_thresholds()?;
@@ -388,6 +398,9 @@ impl StrategyEngine {
         let removed = self.symbols.len();
         self.symbols = new_symbols;
         self.futures_index = new_futures_index;
+        self.qty_step_cache
+            .borrow_mut()
+            .retain(|symbol, _| self.symbols.contains_key(symbol));
         if removed > 0 {
             info!("移除 {} 个不再跟踪的交易对", removed);
         }
@@ -744,7 +757,7 @@ impl StrategyEngine {
             );
             return None;
         }
-        let raw_qty = if limit_price > 0.0 {
+        let base_qty = if limit_price > 0.0 {
             self.cfg.order.amount_u / limit_price
         } else {
             0.0
@@ -759,23 +772,23 @@ impl StrategyEngine {
             .futures_um_min_qty_by_symbol(&state.futures_symbol)
             .unwrap_or(0.0);
 
-        let mut adjusted_qty = raw_qty.max(spot_min).max(futures_min);
+        let mut adjusted_qty = base_qty.max(spot_min).max(futures_min);
         if adjusted_qty <= 0.0 {
             warn!(
-                "{} 计算得到的下单数量非法: desired={:.6}, spot_min={:.6}, futures_min={:.6}",
-                state.spot_symbol, raw_qty, spot_min, futures_min
+                "{} 计算得到的下单数量非法: 基准={:.6}, spot_min={:.6}, futures_min={:.6}",
+                state.spot_symbol, base_qty, spot_min, futures_min
             );
             return None;
         }
 
-        let qty_step = lcm_nonzero(spot_min, futures_min);
+        let qty_step = self.get_qty_step(&state.spot_symbol, spot_min, futures_min);
         if qty_step > 0.0 {
             adjusted_qty = (adjusted_qty / qty_step).ceil() * qty_step;
         }
 
         info!(
-            "{} 下单量整形: raw={:.6} spot_min={:.6} fut_min={:.6} step={:.6} final={:.6}",
-            state.spot_symbol, raw_qty, spot_min, futures_min, qty_step, adjusted_qty
+            "{} 下单量调整: 基准={:.6} spot_min={:.6} fut_min={:.6} 最终={:.6}",
+            state.spot_symbol, base_qty, spot_min, futures_min, adjusted_qty
         );
 
         let qty = adjusted_qty as f32;
@@ -1100,6 +1113,41 @@ fn lcm_nonzero(a: f64, b: f64) -> f64 {
     }
 }
 
+fn compute_step(spot_min: f64, futures_min: f64) -> f64 {
+    let step = lcm_nonzero(spot_min, futures_min);
+    if approx_zero(step) {
+        spot_min.max(futures_min)
+    } else {
+        step
+    }
+}
+
+impl StrategyEngine {
+    fn get_qty_step(&self, symbol: &str, spot_min: f64, futures_min: f64) -> f64 {
+        let mut cache = self.qty_step_cache.borrow_mut();
+        let entry = cache
+            .entry(symbol.to_string())
+            .or_insert_with(|| QtyStepInfo {
+                spot_min,
+                futures_min,
+                step: compute_step(spot_min, futures_min),
+            });
+
+        if !approx_equal(entry.spot_min, spot_min) || !approx_equal(entry.futures_min, futures_min)
+        {
+            entry.spot_min = spot_min;
+            entry.futures_min = futures_min;
+            entry.step = compute_step(spot_min, futures_min);
+        }
+
+        if approx_zero(entry.step) {
+            entry.step = spot_min.max(futures_min);
+        }
+
+        entry.step
+    }
+}
+
 fn to_fraction(value: f64) -> Option<(i64, i64)> {
     if !value.is_finite() || value <= 0.0 {
         return None;
@@ -1135,4 +1183,8 @@ fn lcm_i64(a: i64, b: i64) -> i64 {
 
 fn approx_zero(x: f64) -> bool {
     x.abs() < 1e-12
+}
+
+fn approx_equal(a: f64, b: f64) -> bool {
+    (a - b).abs() < 1e-12
 }
