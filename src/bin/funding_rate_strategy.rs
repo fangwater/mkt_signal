@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use log::{debug, error, info, warn};
 use serde::Deserialize;
 use tokio::signal;
@@ -242,15 +243,6 @@ enum PositionState {
 impl Default for PositionState {
     fn default() -> Self {
         PositionState::Flat
-    }
-}
-
-impl PositionState {
-    fn as_str(&self) -> &'static str {
-        match self {
-            PositionState::Flat => "FLAT",
-            PositionState::Opened => "OPENED",
-        }
     }
 }
 
@@ -505,7 +497,7 @@ impl StrategyEngine {
                 format!("{:.6}", state.funding_rate),
                 format!("{:.6}", state.predicted_rate),
                 format!("{:.6}", state.loan_rate),
-                state.position.as_str().to_string(),
+                format_timestamp(state.last_open_ts),
             ]);
         }
 
@@ -527,7 +519,7 @@ impl StrategyEngine {
                 "Funding",
                 "Predicted",
                 "Loan",
-                "Pos",
+                "LastOpen",
             ],
             &rows,
         );
@@ -645,25 +637,15 @@ impl StrategyEngine {
             match state.position {
                 PositionState::Flat if ratio <= state.open_threshold => {
                     if !state.can_emit_signal(now_us, min_gap_us) {
-                        debug!(
-                            "{} 开仓信号节流：距离上次不足 {}ms",
-                            state.spot_symbol, self.cfg.signal.min_interval_ms
-                        );
-                        None
-                    } else {
-                        self.build_open_request(state, ratio, now_us)
+                        return;
                     }
+                    self.build_open_request(state, ratio, now_us)
                 }
                 PositionState::Opened if ratio >= state.close_threshold => {
                     if !state.can_emit_signal(now_us, min_gap_us) {
-                        debug!(
-                            "{} 平仓信号节流：距离上次不足 {}ms",
-                            state.spot_symbol, self.cfg.signal.min_interval_ms
-                        );
-                        None
-                    } else {
-                        self.build_close_request(state, ratio, now_us)
+                        return;
                     }
+                    self.build_close_request(state, ratio, now_us)
                 }
                 _ => None,
             }
@@ -678,6 +660,21 @@ impl StrategyEngine {
                     price,
                     emit_ts,
                 } => {
+                    match BinSingleForwardArbOpenCtx::from_bytes(ctx.clone()) {
+                        Ok(open_ctx) => debug!(
+                            "发送开仓信号: symbol={} amount={} side={:?} order_type={:?} price={:.6} exp_time={}",
+                            open_ctx.spot_symbol,
+                            open_ctx.amount,
+                            open_ctx.side,
+                            open_ctx.order_type,
+                            open_ctx.price,
+                            open_ctx.exp_time
+                        ),
+                        Err(e) => debug!(
+                            "发送开仓信号: 解析上下文失败 symbol={} err={}",
+                            symbol_key, e
+                        ),
+                    }
                     if let Err(err) = self.publish_signal(SignalType::BinSingleForwardArbOpen, ctx)
                     {
                         error!("发送开仓信号失败 {}: {err:?}", symbol_key);
@@ -702,6 +699,16 @@ impl StrategyEngine {
                     price,
                     emit_ts,
                 } => {
+                    match BinSingleForwardArbCloseMarginCtx::from_bytes(ctx.clone()) {
+                        Ok(close_ctx) => debug!(
+                            "发送平仓信号: symbol={} limit_price={:.6} exp_time={}",
+                            close_ctx.spot_symbol, close_ctx.limit_price, close_ctx.exp_time
+                        ),
+                        Err(e) => debug!(
+                            "发送平仓信号: 解析上下文失败 symbol={} err={}",
+                            symbol_key, e
+                        ),
+                    }
                     if let Err(err) =
                         self.publish_signal(SignalType::BinSingleForwardArbCloseMargin, ctx)
                     {
@@ -934,7 +941,7 @@ fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     if std::env::var("RUST_LOG").is_err() {
-        std::env::set_var("RUST_LOG", "info");
+        std::env::set_var("RUST_LOG", "debug");
     }
     env_logger::init();
 
@@ -1055,4 +1062,20 @@ fn setup_signal_handlers(token: &CancellationToken) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn format_timestamp(ts: Option<i64>) -> String {
+    let Some(us) = ts else {
+        return "-".to_string();
+    };
+    if us <= 0 {
+        return "-".to_string();
+    }
+    let secs = us / 1_000_000;
+    let nanos = ((us % 1_000_000).abs() as u32) * 1_000;
+    if let Some(dt) = DateTime::<Utc>::from_timestamp(secs, nanos) {
+        dt.format("%Y-%m-%d %H:%M:%S").to_string()
+    } else {
+        "-".to_string()
+    }
 }
