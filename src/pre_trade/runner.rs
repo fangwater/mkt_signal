@@ -1079,10 +1079,6 @@ async fn derivatives_loop(
                     },
                     MktMsgType::IndexPrice => match parse_index_price(&payload) {
                         Ok(msg) => {
-                            debug!(
-                                "指数价格更新: symbol={} price={:.6} ts={}",
-                                msg.symbol, msg.index_price, msg.timestamp
-                            );
                             let mut table = price_table.borrow_mut();
                             table.update_index_price(&msg.symbol, msg.index_price, msg.timestamp);
                         }
