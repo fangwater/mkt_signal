@@ -1,0 +1,15 @@
+mode = "local_json"
+tracking_path = "config/tracking_symbol.json"
+
+[order]
+open_range = 0.0002
+close_range = 0.0002
+amount_u = 50.0
+max_open_order_keep_s = 5
+max_close_order_keep_s = 5
+
+[signal]
+min_interval_ms = 1000
+
+[reload]
+interval_secs = 60

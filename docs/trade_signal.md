@@ -61,11 +61,11 @@ Strategy，然后调用handle_trade_response进行处理。
 且无需进行任何风控检查。
 
 [2]BinSingleForwardArbCloseMargin
-收到后，按照上下文给定的限价参数尝试平掉杠杆仓位。平仓成功后，策略会派发
+收到后，按照上下文给定的限价（无需再次传递数量，系统使用当前持仓数量）尝试平掉杠杆仓位。平仓成功后，策略会派发
 BinSingleForwardArbCloseUm 信号继续处理合约侧仓位。
 
 [3]BinSingleForwardArbCloseUm
-收到后，创建 UM 市价单完成对冲仓位的平仓。
+收到后，创建 UM 市价单完成对冲仓位的平仓，数量同样取自当前合约持仓。
 
 
 TradeResponse
@@ -88,7 +88,5 @@ BinSingleForwardArbOpen 开仓信号
 1、订单不允许直接创建，创建之前有一系列的风控检查。
 2、不同的风控规则生效的阶段不同
 3、基于头寸的风控不保证绝对实时性
-
-
 
 

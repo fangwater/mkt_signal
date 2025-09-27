@@ -1,686 +1,826 @@
-use anyhow::Result;
-use lazy_static::lazy_static;
-use log::info;
-use mkt_signal::common::iceoryx_publisher::SignalPublisher;
-use mkt_signal::common::iceoryx_subscriber::{
-    ChannelType, MultiChannelSubscriber, SubscribeParams,
-};
-use mkt_signal::common::signal_event::{encode_trade_signal, TradeSignalData};
-use mkt_signal::exchange::Exchange;
-use mkt_signal::mkt_msg::{self, AskBidSpreadMsg, FundingRateMsg, MktMsgType};
-use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
+use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
 use std::time::Duration;
+
+use anyhow::{Context, Result};
+use bytes::Bytes;
+use log::{debug, error, info, warn};
+use serde::Deserialize;
 use tokio::signal;
 use tokio::time::Instant;
 
+use mkt_signal::common::iceoryx_publisher::SignalPublisher;
+use mkt_signal::common::iceoryx_subscriber::{
+    ChannelType, MultiChannelSubscriber, SubscribeParams,
+};
+use mkt_signal::common::min_qty_table::MinQtyTable;
+use mkt_signal::common::redis_client::RedisSettings;
+use mkt_signal::common::time_util::get_timestamp_us;
+use mkt_signal::mkt_msg::{self, AskBidSpreadMsg, FundingRateMsg, MktMsgType};
+use mkt_signal::pre_trade::order_manager::{OrderType, Side};
+use mkt_signal::signal::binance_forward_arb::{
+    BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbOpenCtx,
+};
+use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
+
 const SIGNAL_CHANNEL_MT_ARBITRAGE: &str = "mt_arbitrage";
 const NODE_FUNDING_STRATEGY_SUB: &str = "funding_rate_strategy";
-/// 套利策略配置 - 每个交易所包含多个[现货符号, 期货符号, 价差阈值]数组
-#[derive(Debug, Deserialize)]
-struct ArbitrageConfig {
-    binance: Vec<(String, String, f64)>,
-    okex: Vec<(String, String, f64)>,
-    bybit: Vec<(String, String, f64)>,
+const DEFAULT_CFG_PATH: &str = "config/funding_rate_strategy.toml";
+const DEFAULT_TRACKING_PATH: &str = "config/tracking_symbol.json";
+
+/// 数据源类型
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DataMode {
+    LocalJson,
+    Redis,
 }
 
-struct ArbitrageThresholds {
-    // exchange -> (spot_symbol, futures_symbol) -> threshold
-    thresholds: HashMap<Exchange, HashMap<(String, String), f64>>,
-}
-
-impl ArbitrageThresholds {
-    fn load() -> Result<Self> {
-        let config_path = "config/tracking_symbol.json";
-        let content = fs::read_to_string(config_path)?;
-
-        // 解析JSON到ArbitrageConfig结构
-        let config: ArbitrageConfig = serde_json::from_str(&content)?;
-
-        let mut thresholds = HashMap::new();
-
-        // 处理币安配置 - 现货和期货符号相同
-        let mut binance_map = HashMap::new();
-        for (spot, futures, threshold) in config.binance {
-            binance_map.insert((spot, futures), threshold);
-        }
-        thresholds.insert(Exchange::Binance, binance_map);
-
-        // 处理OKEx配置
-        let mut okex_map = HashMap::new();
-        for (spot, futures, threshold) in config.okex {
-            okex_map.insert((spot, futures), threshold);
-        }
-        thresholds.insert(Exchange::OkexSwap, okex_map);
-
-        // 处理Bybit配置
-        let mut bybit_map = HashMap::new();
-        for (spot, futures, threshold) in config.bybit {
-            bybit_map.insert((spot, futures), threshold);
-        }
-        thresholds.insert(Exchange::Bybit, bybit_map);
-
-        Ok(Self { thresholds })
-    }
-
-    /// 获取指定交易所的所有阈值
-    fn get_binance_thresholds(&self) -> HashMap<String, f64> {
-        // 对于币安，现货和期货符号相同，只需要一个符号作为键
-        let mut result = HashMap::new();
-        if let Some(map) = self.thresholds.get(&Exchange::Binance) {
-            for ((spot, _), threshold) in map {
-                result.insert(spot.clone(), *threshold);
-            }
-        }
-        result
+impl Default for DataMode {
+    fn default() -> Self {
+        DataMode::LocalJson
     }
 }
 
-// 使用lazy_static进行全局初始化
-lazy_static! {
-    static ref ARBITRAGE_THRESHOLDS: ArbitrageThresholds = {
-        ArbitrageThresholds::load()
-            .expect("Failed to load arbitrage config from config/tracking_symbol.json")
-    };
+/// 下单相关配置
+#[derive(Debug, Clone, Deserialize)]
+struct OrderConfig {
+    #[serde(default = "default_open_range")]
+    open_range: f64,
+    #[serde(default = "default_close_range")]
+    close_range: f64,
+    #[serde(default = "default_order_amount")]
+    amount_u: f64,
+    #[serde(default = "default_max_open_keep")]
+    max_open_order_keep_s: u64,
+    #[serde(default = "default_max_close_keep")]
+    max_close_order_keep_s: u64,
 }
 
-/// 资金费率信息
-#[derive(Debug, Clone)]
-struct FundingRateData {
-    funding_rate: f64,      // 当前资金费率
-    predicted_rate: f64,    // 预测资金费率
-    loan_rate: f64,         // 借贷利率
-    next_funding_time: i64, // 下次结算时间
-    timestamp: i64,         // 更新时间戳
-    // Ready标记
-    funding_rate_ready: bool,
-    predicted_rate_ready: bool,
-    loan_rate_ready: bool,
+const fn default_open_range() -> f64 {
+    0.0002
 }
 
-impl FundingRateData {
-    fn new() -> Self {
+const fn default_close_range() -> f64 {
+    0.0002
+}
+
+const fn default_order_amount() -> f64 {
+    50.0
+}
+
+const fn default_max_open_keep() -> u64 {
+    5
+}
+
+const fn default_max_close_keep() -> u64 {
+    5
+}
+
+impl Default for OrderConfig {
+    fn default() -> Self {
         Self {
-            funding_rate: 0.0,
-            predicted_rate: 0.0,
-            loan_rate: 0.0,
-            next_funding_time: 0,
-            timestamp: 0,
-            funding_rate_ready: false,
-            predicted_rate_ready: false,
-            loan_rate_ready: false,
+            open_range: default_open_range(),
+            close_range: default_close_range(),
+            amount_u: default_order_amount(),
+            max_open_order_keep_s: default_max_open_keep(),
+            max_close_order_keep_s: default_max_close_keep(),
         }
     }
+}
 
-    /// 一次性更新所有资金费率相关字段
-    fn update(
-        &mut self,
-        funding_rate: f64,
-        predicted_rate: f64,
-        loan_rate: f64,
-        next_funding_time: i64,
-        timestamp: i64,
-    ) -> bool {
-        // 检查时间戳是否小于下次结算时间
-        if timestamp >= next_funding_time {
-            // 时间戳已经超过下次结算时间，数据可能过期
-            return false;
+/// 信号节流配置
+#[derive(Debug, Clone, Deserialize)]
+struct SignalConfig {
+    #[serde(default = "default_signal_interval_ms")]
+    min_interval_ms: u64,
+}
+
+const fn default_signal_interval_ms() -> u64 {
+    1_000
+}
+
+impl Default for SignalConfig {
+    fn default() -> Self {
+        Self {
+            min_interval_ms: default_signal_interval_ms(),
         }
+    }
+}
 
-        // 如果已有数据，检查是否是更新的数据
-        if self.timestamp > 0 && timestamp <= self.timestamp {
-            // 新数据的时间戳不比现有数据新，跳过更新
-            return false;
+/// 阈值热更新配置
+#[derive(Debug, Clone, Deserialize)]
+struct ReloadConfig {
+    #[serde(default = "default_reload_interval")]
+    interval_secs: u64,
+}
+
+const fn default_reload_interval() -> u64 {
+    60
+}
+
+impl Default for ReloadConfig {
+    fn default() -> Self {
+        Self {
+            interval_secs: default_reload_interval(),
         }
+    }
+}
 
-        self.funding_rate = funding_rate;
-        self.predicted_rate = predicted_rate;
-        self.loan_rate = loan_rate;
-        self.next_funding_time = next_funding_time;
-        self.timestamp = timestamp;
+/// 策略总体配置
+#[derive(Debug, Clone, Deserialize)]
+struct StrategyConfig {
+    #[serde(default)]
+    mode: DataMode,
+    #[serde(default = "default_tracking_path")]
+    tracking_path: String,
+    #[allow(dead_code)]
+    #[serde(default)]
+    redis: Option<RedisSettings>,
+    #[serde(default)]
+    order: OrderConfig,
+    #[serde(default)]
+    signal: SignalConfig,
+    #[serde(default)]
+    reload: ReloadConfig,
+}
 
-        // 检查每个值是否非零，设置ready标记
-        self.funding_rate_ready = funding_rate != 0.0;
-        self.predicted_rate_ready = predicted_rate != 0.0;
-        self.loan_rate_ready = loan_rate != 0.0;
+fn default_tracking_path() -> String {
+    DEFAULT_TRACKING_PATH.to_string()
+}
 
-        true
+impl StrategyConfig {
+    fn load() -> Result<Self> {
+        let cfg_path =
+            std::env::var("FUNDING_RATE_CFG").unwrap_or_else(|_| DEFAULT_CFG_PATH.to_string());
+        let content = fs::read_to_string(&cfg_path)
+            .with_context(|| format!("读取配置文件失败: {}", cfg_path))?;
+        let mut cfg: StrategyConfig =
+            toml::from_str(&content).with_context(|| format!("解析配置文件失败: {}", cfg_path))?;
+        if cfg.tracking_path.trim().is_empty() {
+            cfg.tracking_path = DEFAULT_TRACKING_PATH.to_string();
+        }
+        if cfg.mode == DataMode::Redis {
+            if let Some(redis_cfg) = cfg.redis.as_ref() {
+                info!(
+                    "Redis 数据源配置: host={} port={} db={} prefix={:?}",
+                    redis_cfg.host, redis_cfg.port, redis_cfg.db, redis_cfg.prefix
+                );
+            } else {
+                warn!("已选择 Redis 模式，但未提供 redis 配置，暂时回退为本地 JSON");
+            }
+            warn!("当前 Redis 模式仅预留实现，策略仍会使用本地 JSON");
+        }
+        info!(
+            "策略配置加载完成: mode={:?} tracking_path={} reload_interval={}s",
+            cfg.mode, cfg.tracking_path, cfg.reload.interval_secs
+        );
+        Ok(cfg)
+    }
+
+    fn tracking_path(&self) -> PathBuf {
+        PathBuf::from(&self.tracking_path)
+    }
+
+    fn reload_interval(&self) -> Duration {
+        Duration::from_secs(self.reload.interval_secs.max(5))
+    }
+
+    fn max_open_keep_us(&self) -> i64 {
+        (self.order.max_open_order_keep_s.max(1) * 1_000_000) as i64
+    }
+
+    fn max_close_keep_us(&self) -> i64 {
+        (self.order.max_close_order_keep_s.max(1) * 1_000_000) as i64
+    }
+
+    fn min_signal_gap_us(&self) -> i64 {
+        (self.signal.min_interval_ms * 1_000) as i64
+    }
+}
+
+/// 价差阈值配置
+#[derive(Debug, Clone)]
+struct SymbolThreshold {
+    spot_symbol: String,
+    futures_symbol: String,
+    open_threshold: f64,
+    close_threshold: f64,
+}
+
+/// 行情报价
+#[derive(Debug, Clone, Copy, Default)]
+struct Quote {
+    bid: f64,
+    ask: f64,
+    ts: i64,
+}
+
+impl Quote {
+    fn update(&mut self, bid: f64, ask: f64, ts: i64) {
+        self.bid = bid;
+        self.ask = ask;
+        self.ts = ts;
     }
 
     fn is_ready(&self) -> bool {
-        self.funding_rate_ready && self.predicted_rate_ready && self.loan_rate_ready
+        self.bid > 0.0 && self.ask > 0.0
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PositionState {
+    Flat,
+    Opened,
+}
+
+impl Default for PositionState {
+    fn default() -> Self {
+        PositionState::Flat
+    }
+}
+
+/// 单个交易对的运行时状态
 #[derive(Debug, Clone)]
 struct SymbolState {
-    // 最优报价字段
-    bid_price: f64,
-    bid_amount: f64,
-    ask_price: f64,
-    ask_amount: f64,
-    last_update_time: i64,
-    // 阈值
-    spread_deviation_threshold: f64,
-    // 资金费率
-    funding_state: FundingRateData,
-    // 信号状态
-    spread_signal: i32,  // 价差信号: 1=做多, -1=做空
-    funding_signal: i32, // 资金费率信号: 1=做多, -1=做空, 2=平空, -2=平多
+    spot_symbol: String,
+    futures_symbol: String,
+    open_threshold: f64,
+    close_threshold: f64,
+    spot_quote: Quote,
+    futures_quote: Quote,
+    position: PositionState,
+    last_ratio: Option<f64>,
+    last_open_ts: Option<i64>,
+    last_close_ts: Option<i64>,
+    last_signal_ts: Option<i64>,
 }
 
-/// 策略主结构
-struct FundingRateStrategy {
-    // 币安的symbol状态，包含最优报价、阈值、资金费率等
-    binance_symbol_states: HashMap<String, SymbolState>,
-    // IceOryx 发布器
-    publisher: SignalPublisher,
-    // 统计
-    messages_processed: u64,
-    spread_messages: u64,
-    funding_messages: u64,
-    spread_updates: u64,
-    trade_events_sent: u64,
-    last_stats_time: Instant,
-    // 每个周期收到过的symbol（按类型分别收集，且区分是否在跟踪列表中）
-    received_spread_symbols: HashSet<String>,
-    received_funding_symbols: HashSet<String>,
-    untracked_spread_symbols: HashSet<String>,
-    untracked_funding_symbols: HashSet<String>,
-}
-
-impl FundingRateStrategy {
-    fn new(publisher: SignalPublisher) -> Self {
-        // 触发配置加载
-        let _ = &*ARBITRAGE_THRESHOLDS;
-
-        // 从配置中获取binance的所有symbol和阈值
-        let mut binance_symbol_states = HashMap::new();
-
-        let symbols_map = ARBITRAGE_THRESHOLDS.get_binance_thresholds();
-        for (symbol, threshold) in symbols_map {
-            // 创建SymbolState
-            let state = SymbolState {
-                // 最优报价字段
-                bid_price: 0.0,
-                bid_amount: 0.0,
-                ask_price: 0.0,
-                ask_amount: 0.0,
-                last_update_time: 0,
-                // 阈值
-                spread_deviation_threshold: threshold,
-                // 资金费率
-                funding_state: FundingRateData::new(),
-                // 信号状态
-                spread_signal: 0,
-                funding_signal: 0,
-            };
-
-            binance_symbol_states.insert(symbol, state);
-        }
-
-        info!(
-            "Loaded {} tracking symbols from config",
-            binance_symbol_states.len()
-        );
-
+impl SymbolState {
+    fn new(threshold: SymbolThreshold) -> Self {
         Self {
-            binance_symbol_states,
-            publisher,
-            messages_processed: 0,
-            spread_messages: 0,
-            funding_messages: 0,
-            spread_updates: 0,
-            trade_events_sent: 0,
-            last_stats_time: Instant::now(),
-            received_spread_symbols: HashSet::new(),
-            received_funding_symbols: HashSet::new(),
-            untracked_spread_symbols: HashSet::new(),
-            untracked_funding_symbols: HashSet::new(),
+            spot_symbol: threshold.spot_symbol,
+            futures_symbol: threshold.futures_symbol,
+            open_threshold: threshold.open_threshold,
+            close_threshold: threshold.close_threshold,
+            spot_quote: Quote::default(),
+            futures_quote: Quote::default(),
+            position: PositionState::Flat,
+            last_ratio: None,
+            last_open_ts: None,
+            last_close_ts: None,
+            last_signal_ts: None,
         }
     }
 
-    /// 处理币安现货买卖价差消息
-    fn process_spot_spread(&mut self, data: &[u8]) {
-        self.spread_messages += 1;
+    fn update_threshold(&mut self, threshold: SymbolThreshold) {
+        self.open_threshold = threshold.open_threshold;
+        self.close_threshold = threshold.close_threshold;
+        self.futures_symbol = threshold.futures_symbol;
+    }
 
-        // 解析消息
-        let symbol = AskBidSpreadMsg::get_symbol(data);
-        // 记录收到的symbol（区分是否在跟踪列表中）
-        if self.binance_symbol_states.contains_key(symbol) {
-            self.received_spread_symbols.insert(symbol.to_string());
-        } else {
-            self.untracked_spread_symbols.insert(symbol.to_string());
+    fn ready_for_eval(&self) -> bool {
+        self.spot_quote.is_ready() && self.futures_quote.is_ready()
+    }
+
+    fn calc_ratio(&self) -> Option<f64> {
+        if self.spot_quote.bid <= 0.0 || self.futures_quote.ask <= 0.0 {
+            return None;
         }
+        Some((self.spot_quote.bid - self.futures_quote.ask) / self.spot_quote.bid)
+    }
 
-        // 获取symbol的状态
-        let symbol_state = match self.binance_symbol_states.get_mut(symbol) {
-            Some(state) => state,
-            None => return, // 不在跟踪列表中，跳过
+    fn can_emit_signal(&self, now_us: i64, min_gap_us: i64) -> bool {
+        if min_gap_us <= 0 {
+            return true;
+        }
+        match self.last_signal_ts {
+            Some(prev) => now_us.saturating_sub(prev) >= min_gap_us,
+            None => true,
+        }
+    }
+
+    fn mark_signal(&mut self, now_us: i64) {
+        self.last_signal_ts = Some(now_us);
+    }
+}
+
+/// 统计信息
+#[derive(Debug, Default)]
+struct EngineStats {
+    open_signals: u64,
+    close_signals: u64,
+}
+
+/// 主策略执行引擎
+struct StrategyEngine {
+    cfg: StrategyConfig,
+    publisher: SignalPublisher,
+    symbols: HashMap<String, SymbolState>,
+    futures_index: HashMap<String, String>,
+    next_reload: Instant,
+    stats: EngineStats,
+    min_qty: MinQtyTable,
+}
+
+impl StrategyEngine {
+    async fn new(cfg: StrategyConfig, publisher: SignalPublisher) -> Result<Self> {
+        let mut engine = Self {
+            next_reload: Instant::now(),
+            cfg,
+            publisher,
+            symbols: HashMap::new(),
+            futures_index: HashMap::new(),
+            stats: EngineStats::default(),
+            min_qty: MinQtyTable::new(),
         };
+        engine.min_qty.refresh_binance().await?;
+        engine.reload_thresholds()?;
+        Ok(engine)
+    }
 
-        let timestamp = AskBidSpreadMsg::get_timestamp(data);
-        let bid_price = AskBidSpreadMsg::get_bid_price(data);
-        let bid_amount = AskBidSpreadMsg::get_bid_amount(data);
-        let ask_price = AskBidSpreadMsg::get_ask_price(data);
-        let ask_amount = AskBidSpreadMsg::get_ask_amount(data);
-
-        // 检查时间戳是否增加
-        if timestamp <= symbol_state.last_update_time && timestamp != 0 {
-            // 时间戳没有增加，跳过
+    async fn maybe_reload(&mut self) {
+        if Instant::now() < self.next_reload {
             return;
         }
-
-        // 更新报价
-        symbol_state.bid_price = bid_price;
-        symbol_state.bid_amount = bid_amount;
-        symbol_state.ask_price = ask_price;
-        symbol_state.ask_amount = ask_amount;
-        symbol_state.last_update_time = timestamp;
-        self.spread_updates += 1;
-
-        // 检查价差信号
-        self.check_spread_signal(symbol, timestamp);
+        if let Err(err) = self.reload_thresholds() {
+            error!("刷新追踪列表失败: {err:?}");
+        }
+        if let Err(err) = self.min_qty.refresh_binance().await {
+            warn!("刷新最小下单量失败: {err:?}");
+        }
     }
 
-    /// 处理资金费率消息
-    fn process_funding_rate(&mut self, data: &[u8]) {
-        self.funding_messages += 1;
+    fn reload_thresholds(&mut self) -> Result<()> {
+        self.next_reload = Instant::now() + self.cfg.reload_interval();
+        let entries = self.load_thresholds()?;
+        let mut new_symbols: HashMap<String, SymbolState> = HashMap::new();
+        let mut new_futures_index: HashMap<String, String> = HashMap::new();
 
-        // 使用零拷贝方法解析symbol
-        let symbol = FundingRateMsg::get_symbol(data);
-        // 记录收到的symbol（区分是否在跟踪列表中）
-        if self.binance_symbol_states.contains_key(symbol) {
-            self.received_funding_symbols.insert(symbol.to_string());
-        } else {
-            self.untracked_funding_symbols.insert(symbol.to_string());
+        for entry in entries {
+            let key = entry.spot_symbol.clone();
+            let fut_key = entry.futures_symbol.clone();
+            if let Some(mut state) = self.symbols.remove(&key) {
+                state.update_threshold(entry.clone());
+                new_futures_index.insert(fut_key, key.clone());
+                new_symbols.insert(key, state);
+            } else {
+                let state = SymbolState::new(entry.clone());
+                new_futures_index.insert(fut_key, key.clone());
+                new_symbols.insert(key, state);
+            }
         }
 
-        // 获取symbol的状态
-        let symbol_state = match self.binance_symbol_states.get_mut(symbol) {
-            Some(state) => state,
-            None => return, // 不在跟踪列表中，跳过
+        let removed = self.symbols.len();
+        self.symbols = new_symbols;
+        self.futures_index = new_futures_index;
+        if removed > 0 {
+            info!("移除 {} 个不再跟踪的交易对", removed);
+        }
+        info!("本次加载追踪交易对数量: {}", self.symbols.len());
+        Ok(())
+    }
+
+    fn load_thresholds(&self) -> Result<Vec<SymbolThreshold>> {
+        match self.cfg.mode {
+            DataMode::LocalJson => self.load_from_json(self.cfg.tracking_path()),
+            DataMode::Redis => {
+                anyhow::bail!("Redis 模式尚未实现")
+            }
+        }
+    }
+
+    fn load_from_json(&self, path: PathBuf) -> Result<Vec<SymbolThreshold>> {
+        let data = fs::read_to_string(&path)
+            .with_context(|| format!("读取 tracking_symbol.json 失败: {}", path.display()))?;
+        let value: serde_json::Value = serde_json::from_str(&data)
+            .with_context(|| format!("解析 tracking_symbol.json 失败: {}", path.display()))?;
+        let mut result = Vec::new();
+        let binance = value
+            .get("binance")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| anyhow::anyhow!("tracking_symbol.json 缺少 binance 数组"))?;
+
+        for entry in binance {
+            if let Some(threshold) = Self::parse_symbol_entry(entry) {
+                result.push(threshold);
+            }
+        }
+
+        if result.is_empty() {
+            anyhow::bail!("tracking_symbol.json 未解析到任何有效的 binance 交易对");
+        }
+        Ok(result)
+    }
+
+    fn parse_symbol_entry(value: &serde_json::Value) -> Option<SymbolThreshold> {
+        match value {
+            serde_json::Value::Array(items) => {
+                if items.len() < 3 {
+                    return None;
+                }
+                let spot = items.get(0)?.as_str()?.to_uppercase();
+                let futures = items.get(1)?.as_str()?.to_uppercase();
+                let open_threshold = items.get(2)?.as_f64()?;
+                let close_threshold = items
+                    .get(3)
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(open_threshold);
+                Some(SymbolThreshold {
+                    spot_symbol: spot,
+                    futures_symbol: futures,
+                    open_threshold,
+                    close_threshold,
+                })
+            }
+            serde_json::Value::Object(map) => {
+                let spot = map.get("spot_symbol")?.as_str()?.to_uppercase();
+                let futures = map
+                    .get("futures_symbol")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&spot)
+                    .to_uppercase();
+                let open_threshold = map.get("open_threshold")?.as_f64()?;
+                let close_threshold = map
+                    .get("close_threshold")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(open_threshold);
+                Some(SymbolThreshold {
+                    spot_symbol: spot,
+                    futures_symbol: futures,
+                    open_threshold,
+                    close_threshold,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_spot_quote(&mut self, msg: &[u8]) {
+        let symbol = AskBidSpreadMsg::get_symbol(msg).to_uppercase();
+        let Some(state) = self.symbols.get_mut(&symbol) else {
+            return;
+        };
+        let timestamp = AskBidSpreadMsg::get_timestamp(msg);
+        let bid_price = AskBidSpreadMsg::get_bid_price(msg);
+        let ask_price = AskBidSpreadMsg::get_ask_price(msg);
+        if bid_price <= 0.0 || ask_price <= 0.0 {
+            return;
+        }
+        state.spot_quote.update(bid_price, ask_price, timestamp);
+        self.evaluate(&symbol);
+    }
+
+    fn handle_futures_quote(&mut self, msg: &[u8]) {
+        let fut_symbol = AskBidSpreadMsg::get_symbol(msg).to_uppercase();
+        let Some(spot_key) = self.futures_index.get(&fut_symbol).cloned() else {
+            return;
+        };
+        if let Some(state) = self.symbols.get_mut(&spot_key) {
+            let timestamp = AskBidSpreadMsg::get_timestamp(msg);
+            let bid_price = AskBidSpreadMsg::get_bid_price(msg);
+            let ask_price = AskBidSpreadMsg::get_ask_price(msg);
+            if bid_price <= 0.0 || ask_price <= 0.0 {
+                return;
+            }
+            state.futures_quote.update(bid_price, ask_price, timestamp);
+        }
+        self.evaluate(&spot_key);
+    }
+
+    fn handle_funding_rate(&mut self, msg: &[u8]) {
+        let symbol = FundingRateMsg::get_symbol(msg).to_uppercase();
+        if let Some(state) = self.symbols.get_mut(&symbol) {
+            let funding = FundingRateMsg::get_funding_rate(msg);
+            let predicted = FundingRateMsg::get_predicted_funding_rate(msg);
+            let timestamp = FundingRateMsg::get_timestamp(msg);
+            debug!(
+                "资金费率更新: {} funding={:.6} predicted={:.6} ts={}",
+                symbol, funding, predicted, timestamp
+            );
+            state.last_ratio = state.calc_ratio();
+        }
+    }
+
+    fn evaluate(&mut self, symbol: &str) {
+        let now_us = get_timestamp_us();
+        let min_gap_us = self.cfg.min_signal_gap_us();
+
+        let request = {
+            let Some(state) = self.symbols.get(symbol) else {
+                return;
+            };
+            if !state.ready_for_eval() {
+                return;
+            }
+            let Some(ratio) = state.calc_ratio() else {
+                return;
+            };
+            match state.position {
+                PositionState::Flat if ratio <= state.open_threshold => {
+                    if !state.can_emit_signal(now_us, min_gap_us) {
+                        debug!(
+                            "{} 开仓信号节流：距离上次不足 {}ms",
+                            state.spot_symbol, self.cfg.signal.min_interval_ms
+                        );
+                        None
+                    } else {
+                        self.build_open_request(state, ratio, now_us)
+                    }
+                }
+                PositionState::Opened if ratio >= state.close_threshold => {
+                    if !state.can_emit_signal(now_us, min_gap_us) {
+                        debug!(
+                            "{} 平仓信号节流：距离上次不足 {}ms",
+                            state.spot_symbol, self.cfg.signal.min_interval_ms
+                        );
+                        None
+                    } else {
+                        self.build_close_request(state, ratio, now_us)
+                    }
+                }
+                _ => None,
+            }
         };
 
-        // 使用零拷贝方法解析所有字段
-        let funding_rate = FundingRateMsg::get_funding_rate(data);
-        let next_funding_time = FundingRateMsg::get_next_funding_time(data);
-        let timestamp = FundingRateMsg::get_timestamp(data);
-        let predicted_rate = FundingRateMsg::get_predicted_funding_rate(data);
-        let loan_rate = FundingRateMsg::get_loan_rate_8h(data);
+        if let Some(req) = request {
+            match req {
+                SignalRequest::Open {
+                    symbol_key,
+                    ctx,
+                    ratio,
+                    price,
+                    emit_ts,
+                } => {
+                    if let Err(err) = self.publish_signal(SignalType::BinSingleForwardArbOpen, ctx)
+                    {
+                        error!("发送开仓信号失败 {}: {err:?}", symbol_key);
+                        return;
+                    }
+                    if let Some(state) = self.symbols.get_mut(&symbol_key) {
+                        state.position = PositionState::Opened;
+                        state.last_ratio = Some(ratio);
+                        state.last_open_ts = Some(emit_ts);
+                        state.mark_signal(emit_ts);
+                    }
+                    self.stats.open_signals += 1;
+                    info!(
+                        "{} 触发开仓信号, spread_ratio={:.6}, 目标价格={:.6}",
+                        symbol_key, ratio, price
+                    );
+                }
+                SignalRequest::Close {
+                    symbol_key,
+                    ctx,
+                    ratio,
+                    price,
+                    emit_ts,
+                } => {
+                    if let Err(err) =
+                        self.publish_signal(SignalType::BinSingleForwardArbCloseMargin, ctx)
+                    {
+                        error!("发送平仓信号失败 {}: {err:?}", symbol_key);
+                        return;
+                    }
+                    if let Some(state) = self.symbols.get_mut(&symbol_key) {
+                        state.position = PositionState::Flat;
+                        state.last_ratio = Some(ratio);
+                        state.last_close_ts = Some(emit_ts);
+                        state.mark_signal(emit_ts);
+                    }
+                    self.stats.close_signals += 1;
+                    info!(
+                        "{} 触发平仓信号, spread_ratio={:.6}, 目标价格={:.6}",
+                        symbol_key, ratio, price
+                    );
+                }
+            }
+        }
+    }
 
-        // 更新资金费率状态
-        let updated = symbol_state.funding_state.update(
-            funding_rate,
-            predicted_rate,
-            loan_rate,
-            next_funding_time,
-            timestamp,
+    fn build_open_request(
+        &self,
+        state: &SymbolState,
+        ratio: f64,
+        emit_ts: i64,
+    ) -> Option<SignalRequest> {
+        if state.spot_quote.bid <= 0.0 {
+            return None;
+        }
+        let limit_price = state.spot_quote.bid * (1.0 - self.cfg.order.open_range);
+        if limit_price <= 0.0 {
+            warn!(
+                "{} 计算得到的开仓价格非法: {:.6}",
+                state.spot_symbol, limit_price
+            );
+            return None;
+        }
+        let mut desired_qty = if limit_price > 0.0 {
+            self.cfg.order.amount_u / limit_price
+        } else {
+            0.0
+        };
+
+        let spot_min = self
+            .min_qty
+            .spot_min_qty_by_symbol(&state.spot_symbol)
+            .unwrap_or(0.0);
+        let futures_min = self
+            .min_qty
+            .futures_um_min_qty_by_symbol(&state.futures_symbol)
+            .unwrap_or(0.0);
+
+        if spot_min > 0.0 && desired_qty < spot_min {
+            desired_qty = spot_min;
+        }
+        if futures_min > 0.0 && desired_qty < futures_min {
+            desired_qty = futures_min;
+        }
+
+        if desired_qty <= 0.0 {
+            warn!(
+                "{} 计算得到的下单数量非法: desired={:.6}, spot_min={:.6}, futures_min={:.6}",
+                state.spot_symbol, desired_qty, spot_min, futures_min
+            );
+            return None;
+        }
+
+        debug!(
+            "{} 下单数量计算: desired={:.6}, spot_min={:.6}, futures_min={:.6}, final={:.6}",
+            state.spot_symbol, self.cfg.order.amount_u / limit_price, spot_min, futures_min, desired_qty
         );
 
-        // 如果更新成功，检查资金费率信号
-        if updated {
-            self.check_funding_signal(symbol);
+        let qty = desired_qty as f32;
+        let ctx = BinSingleForwardArbOpenCtx {
+            spot_symbol: state.spot_symbol.clone(),
+            amount: qty,
+            side: Side::Buy,
+            order_type: OrderType::Limit,
+            price: limit_price as f32,
+            exp_time: self.cfg.max_open_keep_us(),
         }
+        .to_bytes();
+        Some(SignalRequest::Open {
+            symbol_key: state.spot_symbol.clone(),
+            ctx,
+            ratio,
+            price: limit_price,
+            emit_ts,
+        })
     }
 
-    /// 打印统计信息
-    fn print_stats(&mut self) {
-        let elapsed = self.last_stats_time.elapsed().as_secs();
-        if elapsed > 0 {
-            let msg_per_sec = self.messages_processed as f64 / elapsed as f64;
-            info!(
-                "Stats: msgs={} spread={}/{} funding={} events={} msg/s={:.1} symbols={}",
-                self.messages_processed,
-                self.spread_updates,  // 实际更新的
-                self.spread_messages, // 总接收的
-                self.funding_messages,
-                self.trade_events_sent,
-                msg_per_sec,
-                self.binance_symbol_states.len()
+    fn build_close_request(
+        &self,
+        state: &SymbolState,
+        ratio: f64,
+        emit_ts: i64,
+    ) -> Option<SignalRequest> {
+        if state.spot_quote.ask <= 0.0 {
+            return None;
+        }
+        let limit_price = state.spot_quote.ask * (1.0 + self.cfg.order.close_range);
+        if limit_price <= 0.0 {
+            warn!(
+                "{} 计算得到的平仓价格非法: {:.6}",
+                state.spot_symbol, limit_price
             );
-            // 打印本周期收到过的symbol集合（分别打印 spread / funding，且仅展示在跟踪列表中的）
-            self.print_symbol_set("spread(tracked)", &self.received_spread_symbols);
-            self.print_symbol_set("funding(tracked)", &self.received_funding_symbols);
-            // 可选：打印未跟踪但收到的符号，帮助排查订阅面过宽
-            if !self.untracked_spread_symbols.is_empty() {
-                let mut list: Vec<_> = self
-                    .untracked_spread_symbols
-                    .iter()
-                    .take(10)
-                    .cloned()
-                    .collect();
-                list.sort();
-                info!("  untracked spread symbols (≤10): {}", list.join(", "));
-                if self.untracked_spread_symbols.len() > 10 {
-                    info!(
-                        "  ... and {} more",
-                        self.untracked_spread_symbols.len() - 10
-                    );
-                }
-            }
-            if !self.untracked_funding_symbols.is_empty() {
-                let mut list: Vec<_> = self
-                    .untracked_funding_symbols
-                    .iter()
-                    .take(10)
-                    .cloned()
-                    .collect();
-                list.sort();
-                info!("  untracked funding symbols (≤10): {}", list.join(", "));
-                if self.untracked_funding_symbols.len() > 10 {
-                    info!(
-                        "  ... and {} more",
-                        self.untracked_funding_symbols.len() - 10
-                    );
-                }
-            }
-
-            // 打印一些示例报价
-            for (symbol, state) in self.binance_symbol_states.iter().take(3) {
-                let spread_deviation = if state.bid_price > 0.0 {
-                    (state.ask_price - state.bid_price) / state.bid_price
-                } else {
-                    0.0
-                };
-                info!(
-                    "  {} bid={:.2} ask={:.2} spread_signal={} funding_signal={}",
-                    symbol,
-                    state.bid_price,
-                    state.ask_price,
-                    state.spread_signal,
-                    state.funding_signal
-                );
-
-                // 如果资金费率准备好，打印详细信息
-                if state.funding_state.is_ready() {
-                    info!("    deviation={:.6} threshold={:.6} | funding={:.6} predicted={:.6} loan={:.6}",
-                        spread_deviation,
-                        state.spread_deviation_threshold,
-                        state.funding_state.funding_rate,
-                        state.funding_state.predicted_rate,
-                        state.funding_state.loan_rate);
-                }
-            }
-            // 清空已收集的symbol集，便于下个统计周期观察
-            self.received_spread_symbols.clear();
-            self.received_funding_symbols.clear();
-            self.untracked_spread_symbols.clear();
-            self.untracked_funding_symbols.clear();
+            return None;
         }
+        let ctx = BinSingleForwardArbCloseMarginCtx {
+            spot_symbol: state.spot_symbol.clone(),
+            limit_price: limit_price as f32,
+            exp_time: self.cfg.max_close_keep_us(),
+        }
+        .to_bytes();
+        Some(SignalRequest::Close {
+            symbol_key: state.spot_symbol.clone(),
+            ctx,
+            ratio,
+            price: limit_price,
+            emit_ts,
+        })
     }
 
-    fn print_symbol_set(&self, label: &str, set: &HashSet<String>) {
-        if set.is_empty() {
-            info!("  {}: <none this interval>", label);
-            return;
-        }
-        // 为避免日志过长，仅打印最多前20个
-        let mut list: Vec<_> = set.iter().take(20).cloned().collect();
-        list.sort();
-        info!("  {} (≤20): {}", label, list.join(", "));
-        if set.len() > 20 {
-            info!("  ... and {} more in {}", set.len() - 20, label);
-        }
+    fn publish_signal(&self, signal_type: SignalType, context: Bytes) -> Result<()> {
+        let now_us = get_timestamp_us();
+        let signal = TradeSignal::create(signal_type.clone(), now_us, 0.0, context);
+        let frame = signal.to_bytes();
+        self.publisher
+            .publish(&frame)
+            .with_context(|| format!("发布信号 {:?} 失败", signal_type))
     }
 
-    /// 发送交易事件
-    fn send_trade_event(&mut self, event: TradeSignalData) {
-        match encode_trade_signal(&event) {
-            Ok(frame) => {
-                if let Err(e) = self.publisher.publish(&frame) {
-                    log::error!("Failed to publish trade event: {}", e);
-                } else {
-                    self.trade_events_sent += 1;
-                    info!(
-                        "Trade Event: {} {} {} (spread_dev={:.6}, funding={:.6}, predicted={:.6})",
-                        event.event_type,
-                        event.symbol,
-                        event.signal_type,
-                        event.spread_deviation,
-                        event.funding_rate,
-                        event.predicted_rate
-                    );
-                }
-            }
-            Err(e) => {
-                log::error!("Failed to encode trade signal frame: {}", e);
-            }
-        }
+    fn print_stats(&self) {
+        info!(
+            "当前追踪交易对: {} | 开仓信号累计 {} | 平仓信号累计 {}",
+            self.symbols.len(),
+            self.stats.open_signals,
+            self.stats.close_signals
+        );
     }
+}
 
-    /// 检查价差信号（开仓信号）
-    fn check_spread_signal(&mut self, symbol: &str, timestamp: i64) {
-        // 为了避免可变借用冲突，先构建事件数据，再在作用域外发送
-        let mut trade_event_opt: Option<TradeSignalData> = None;
-
-        {
-            //确认是交易符号
-            let state = match self.binance_symbol_states.get_mut(symbol) {
-                Some(s) => s,
-                None => return,
-            };
-
-            //特殊过滤
-            if state.bid_price <= 0.0 {
-                return;
-            }
-
-            let spread_deviation = (state.ask_price - state.bid_price) / state.bid_price;
-            let new_signal = if spread_deviation > state.spread_deviation_threshold {
-                1 // 价差偏离大于阈值，做多
-            } else {
-                -1 // 否则做空
-            };
-
-            // 信号变化时记录并发送交易事件
-            if new_signal != state.spread_signal {
-                info!(
-                    "Spread signal changed for {}: {} -> {} (deviation={:.6})",
-                    symbol, state.spread_signal, new_signal, spread_deviation
-                );
-
-                // 生成交易事件
-                let event_type = if new_signal == 1 {
-                    "open_long".to_string()
-                } else {
-                    "open_short".to_string()
-                };
-
-                let trade_event = TradeSignalData {
-                    symbol: symbol.to_string(),
-                    exchange: "binance".to_string(),
-                    event_type,
-                    signal_type: "spread".to_string(),
-                    spread_deviation,
-                    spread_threshold: state.spread_deviation_threshold,
-                    funding_rate: state.funding_state.funding_rate,
-                    predicted_rate: state.funding_state.predicted_rate,
-                    loan_rate: state.funding_state.loan_rate,
-                    bid_price: state.bid_price,
-                    bid_amount: state.bid_amount,
-                    ask_price: state.ask_price,
-                    ask_amount: state.ask_amount,
-                    timestamp,
-                };
-
-                // 先更新内部状态，再在作用域外发送事件
-                state.spread_signal = new_signal;
-                trade_event_opt = Some(trade_event);
-            }
-        }
-
-        if let Some(event) = trade_event_opt {
-            self.send_trade_event(event);
-        }
-    }
-
-    /// 检查资金费率信号（开仓和平仓信号）
-    fn check_funding_signal(&mut self, symbol: &str) {
-        let mut trade_event_opt: Option<TradeSignalData> = None;
-
-        {
-            let state = match self.binance_symbol_states.get_mut(symbol) {
-                Some(s) => s,
-                None => return,
-            };
-
-            if !state.funding_state.is_ready() {
-                return;
-            }
-
-            // 常量定义
-            const OPEN_SHORT_THRESHOLD: f64 = 0.00008; // 开空仓阈值
-            const OPEN_LONG_THRESHOLD: f64 = -0.00008; // 开多仓阈值
-            const CLOSE_THRESHOLD: f64 = 0.0005; // 平仓阈值
-
-            let predicted = state.funding_state.predicted_rate;
-            let loan_rate = state.funding_state.loan_rate;
-            let current = state.funding_state.funding_rate;
-
-            // 先检查平仓信号（优先级更高）
-            let new_signal = if current > CLOSE_THRESHOLD {
-                -2 // 平多仓
-            } else if current < -CLOSE_THRESHOLD {
-                2 // 平空仓
-            } else if predicted >= OPEN_SHORT_THRESHOLD {
-                -1 // 开空仓
-            } else if predicted + loan_rate <= OPEN_LONG_THRESHOLD {
-                1 // 开多仓
-            } else {
-                state.funding_signal // 保持当前信号
-            };
-
-            // 信号变化时记录并发送交易事件
-            if new_signal != state.funding_signal {
-                info!(
-                    "Funding signal changed for {}: {} -> {} (predicted={:.6}, current={:.6}, loan={:.6})",
-                    symbol, state.funding_signal, new_signal, predicted, current, loan_rate
-                );
-
-                // 生成交易事件
-                let event_type = match new_signal {
-                    1 => "open_long".to_string(),
-                    -1 => "open_short".to_string(),
-                    2 => "close_short".to_string(),
-                    -2 => "close_long".to_string(),
-                    _ => return,
-                };
-
-                let spread_deviation = if state.bid_price > 0.0 {
-                    (state.ask_price - state.bid_price) / state.bid_price
-                } else {
-                    0.0
-                };
-
-                let trade_event = TradeSignalData {
-                    symbol: symbol.to_string(),
-                    exchange: "binance".to_string(),
-                    event_type,
-                    signal_type: "funding".to_string(),
-                    spread_deviation,
-                    spread_threshold: state.spread_deviation_threshold,
-                    funding_rate: current,
-                    predicted_rate: predicted,
-                    loan_rate,
-                    bid_price: state.bid_price,
-                    bid_amount: state.bid_amount,
-                    ask_price: state.ask_price,
-                    ask_amount: state.ask_amount,
-                    timestamp: state.funding_state.timestamp,
-                };
-
-                // 更新状态，再在作用域外发送
-                state.funding_signal = new_signal;
-                trade_event_opt = Some(trade_event);
-            }
-        }
-
-        if let Some(event) = trade_event_opt {
-            self.send_trade_event(event);
-        }
-    }
+#[derive(Debug)]
+enum SignalRequest {
+    Open {
+        symbol_key: String,
+        ctx: Bytes,
+        ratio: f64,
+        price: f64,
+        emit_ts: i64,
+    },
+    Close {
+        symbol_key: String,
+        ctx: Bytes,
+        ratio: f64,
+        price: f64,
+        emit_ts: i64,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    // 初始化日志
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");
     }
     env_logger::init();
 
-    info!("Starting funding rate strategy");
+    info!("启动 Binance Forward Arb 信号策略");
 
-    // 创建 IceOryx 发布器 - MT套利频道
+    let cfg = StrategyConfig::load()?;
     let publisher = SignalPublisher::new(SIGNAL_CHANNEL_MT_ARBITRAGE)?;
-    info!("Created MT arbitrage publisher");
+    let mut engine = StrategyEngine::new(cfg.clone(), publisher).await?;
 
-    // 创建策略实例
-    let mut strategy = FundingRateStrategy::new(publisher);
-
-    // 创建 IceOryx 订阅器
     let mut subscriber = MultiChannelSubscriber::new(NODE_FUNDING_STRATEGY_SUB)?;
-
-    // 订阅频道
-    let subscriptions = vec![
-        // 币安现货买卖价差
+    subscriber.subscribe_channels(vec![
         SubscribeParams {
             exchange: "binance".to_string(),
             channel: ChannelType::AskBidSpread,
         },
-        // 币安期货衍生品数据（包含资金费率）
+        SubscribeParams {
+            exchange: "binance-futures".to_string(),
+            channel: ChannelType::AskBidSpread,
+        },
         SubscribeParams {
             exchange: "binance-futures".to_string(),
             channel: ChannelType::Derivatives,
         },
-    ];
+    ])?;
 
-    subscriber.subscribe_channels(subscriptions)?;
-    info!("Subscribed to all channels");
-
-    // HFT 模式：忙轮询 + 原子关停标志
     let shutdown = Arc::new(AtomicBool::new(false));
     {
-        let s = shutdown.clone();
+        let flag = shutdown.clone();
         tokio::spawn(async move {
             let _ = signal::ctrl_c().await;
-            s.store(true, Ordering::SeqCst);
+            flag.store(true, Ordering::SeqCst);
         });
     }
-    let mut next_stats = Instant::now() + Duration::from_secs(5);
 
-    // 主循环（高频忙轮询，不阻塞等待）
+    let mut next_stat_time = Instant::now() + Duration::from_secs(30);
+
     loop {
         if shutdown.load(Ordering::Relaxed) {
-            info!("Received shutdown signal");
+            info!("收到退出信号，准备关闭");
             break;
         }
-        if Instant::now() >= next_stats {
-            strategy.print_stats();
-            next_stats += Duration::from_secs(5);
-        }
-        // 高频轮询：每次最多16条
-        let messages = subscriber.poll_msgs(Some(16));
-        if messages.is_empty() {
-            // 忙等待：不 sleep，最低延迟
-            std::hint::spin_loop();
-            continue;
-        }
-        for msg_bytes in messages {
-            let msg_type = mkt_msg::get_msg_type(&msg_bytes);
-            match msg_type {
-                MktMsgType::AskBidSpread => strategy.process_spot_spread(&msg_bytes),
-                MktMsgType::FundingRate => strategy.process_funding_rate(&msg_bytes),
-                _ => {}
+
+        engine.maybe_reload().await;
+
+        for msg in subscriber.poll_channel("binance", &ChannelType::AskBidSpread, Some(32)) {
+            let msg_type = mkt_msg::get_msg_type(&msg);
+            if msg_type == MktMsgType::AskBidSpread {
+                engine.handle_spot_quote(&msg);
             }
         }
+
+        for msg in subscriber.poll_channel("binance-futures", &ChannelType::AskBidSpread, Some(32))
+        {
+            let msg_type = mkt_msg::get_msg_type(&msg);
+            if msg_type == MktMsgType::AskBidSpread {
+                engine.handle_futures_quote(&msg);
+            }
+        }
+
+        for msg in subscriber.poll_channel("binance-futures", &ChannelType::Derivatives, Some(32)) {
+            match mkt_msg::get_msg_type(&msg) {
+                MktMsgType::FundingRate => engine.handle_funding_rate(&msg),
+                _ => (),
+            }
+        }
+
+        if Instant::now() >= next_stat_time {
+            engine.print_stats();
+            next_stat_time += Duration::from_secs(30);
+        }
+
+        std::hint::spin_loop();
     }
-    info!("Funding rate strategy shutdown");
+
+    info!("策略进程结束");
     Ok(())
 }

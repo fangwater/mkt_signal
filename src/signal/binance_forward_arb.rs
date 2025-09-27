@@ -12,7 +12,8 @@ use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager,
 use crate::signal::strategy::Strategy;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::trade_engine::trade_request::{
-    BinanceNewMarginOrderRequest, BinanceNewUMOrderRequest, TradeRequestType,
+    BinanceCancelMarginOrderRequest, BinanceNewMarginOrderRequest, BinanceNewUMOrderRequest,
+    TradeRequestType,
 };
 use crate::trade_engine::trade_response_handle::TradeExecOutcome;
 
@@ -243,6 +244,8 @@ pub struct BinSingleForwardArbStrategy {
     pub um_hedge_order_id: i64,
     pub close_margin_order_id: i64,
     pub close_um_hedge_order_id: i64,
+    pub open_timeout_us: Option<i64>,
+    pub close_margin_timeout_us: Option<i64>,
     signal_tx: Option<UnboundedSender<Bytes>>,
     um_close_signal_sent: bool,
     order_seq: u32,
@@ -268,6 +271,8 @@ impl BinSingleForwardArbStrategy {
             um_hedge_order_id: 0,
             close_margin_order_id: 0,
             close_um_hedge_order_id: 0,
+            open_timeout_us: None,
+            close_margin_timeout_us: None,
             signal_tx: None,
             um_close_signal_sent: false,
             order_seq: 0,
@@ -500,6 +505,9 @@ impl BinSingleForwardArbStrategy {
 
         order_manager.insert(order);
         self.margin_order_id = order_id;
+        self.open_timeout_us = (open_ctx.exp_time > 0).then_some(open_ctx.exp_time);
+        self.um_close_signal_sent = false;
+        self.close_margin_timeout_us = None;
 
         debug!(
             "{}: strategy_id={} 创建 margin 订单成功 order_id={} symbol={} qty={:.6} order_type={:?}",
@@ -695,6 +703,7 @@ impl BinSingleForwardArbStrategy {
 
         self.close_margin_order_id = margin_close_id;
         self.um_close_signal_sent = false;
+        self.close_margin_timeout_us = (ctx.exp_time > 0).then_some(ctx.exp_time);
 
         info!(
             "{}: strategy_id={} 提交 margin 限价平仓 symbol={} qty={:.6} price={:.6} order_id={}",
@@ -756,15 +765,6 @@ impl BinSingleForwardArbStrategy {
             ));
         }
 
-        if close_qty <= 0.0 {
-            return Err(format!(
-                "{}: strategy_id={} UM 平仓数量无效 close_qty={}",
-                Self::strategy_name(),
-                self.strategy_id,
-                close_qty
-            ));
-        }
-
         let (close_side_enum, close_side_str, position_side_str) = match um_order.side {
             Side::Buy => (Side::Sell, "SELL", "LONG"),
             Side::Sell => (Side::Buy, "BUY", "SHORT"),
@@ -802,6 +802,8 @@ impl BinSingleForwardArbStrategy {
         }
 
         self.close_um_hedge_order_id = um_close_id;
+        self.um_close_signal_sent = true;
+        self.close_margin_timeout_us = None;
 
         info!(
             "{}: strategy_id={} 提交 UM 市价平仓 symbol={} qty={:.6} order_id={}",
@@ -925,6 +927,9 @@ impl BinSingleForwardArbStrategy {
                 .clone()
         };
 
+        let qty = um_order.quantity;
+        self.close_margin_timeout_us = None;
+
         let ctx = BinSingleForwardArbCloseUmCtx {
             um_symbol: um_order.symbol.clone(),
             exp_time: get_timestamp_us(),
@@ -954,7 +959,7 @@ impl BinSingleForwardArbStrategy {
                     Self::strategy_name(),
                     self.strategy_id,
                     ctx.um_symbol,
-                    um_order.quantity
+                    qty
                 );
             }
         } else {
@@ -964,10 +969,19 @@ impl BinSingleForwardArbStrategy {
                 self.strategy_id
             );
             self.close_um_with_market(&ctx)?;
-            self.um_close_signal_sent = true;
         }
 
         Ok(())
+    }
+
+    fn submit_margin_cancel(&self, symbol: &str, order_id: i64) -> Result<(), String> {
+        let now = get_timestamp_us();
+        let params = Bytes::from(format!("symbol={}&orderId={}", symbol, order_id));
+        let request = BinanceCancelMarginOrderRequest::create(now, order_id, params);
+
+        self.order_tx
+            .send(request.to_bytes())
+            .map_err(|e| format!("{}: 发送 margin 撤单失败: {}", Self::strategy_name(), e))
     }
 
     fn next_order_id(&mut self) -> i64 {
@@ -1248,6 +1262,17 @@ impl Strategy for BinSingleForwardArbStrategy {
                 status_str,
                 execution_type
             );
+
+            match status_str {
+                "FILLED" => {
+                    self.open_timeout_us = None;
+                }
+                "CANCELED" | "EXPIRED" | "REJECTED" | "TRADE_PREVENTION" => {
+                    self.open_timeout_us = None;
+                    self.margin_order_id = 0;
+                }
+                _ => {}
+            }
             return;
         }
 
@@ -1263,6 +1288,7 @@ impl Strategy for BinSingleForwardArbStrategy {
             match status_str {
                 "FILLED" => {
                     self.close_margin_order_id = 0;
+                    self.close_margin_timeout_us = None;
                     if let Err(err) = self.trigger_um_close_signal() {
                         warn!(
                             "{}: strategy_id={} 派发 UM 平仓流程失败: {}",
@@ -1281,6 +1307,8 @@ impl Strategy for BinSingleForwardArbStrategy {
                         execution_type
                     );
                     self.close_margin_order_id = 0;
+                    self.close_margin_timeout_us = None;
+                    self.um_close_signal_sent = false;
                 }
                 _ => {}
             }
@@ -1413,97 +1441,161 @@ impl Strategy for BinSingleForwardArbStrategy {
         }
     }
 
-    // fn handle_account_event(&mut self, account_event_msg_raws: &Bytes) {
-    //     if account_event_msg_raws.len() < 8 {
-    //         return;
-    //     }
+    fn hanle_period_clock(&mut self, current_tp: i64) {
+        // 周期性检查：开仓限价/市价单是否长时间未成交，需要撤单
+        if self.margin_order_id == 0 {
+            warn!(
+                "{}: strategy_id={} 当前无 margin 开仓单，策略将等待回收",
+                Self::strategy_name(),
+                self.strategy_id
+            );
+            self.open_timeout_us = None;
+        } else {
+            let open_order = {
+                let manager = self.order_manager.borrow();
+                manager.get(self.margin_order_id)
+            };
 
-    //     let header = account_event_msg_raws.as_ref();
-    //     let event_type = account_event_type_from_bytes(header);
-    //     let payload_len = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
+            match open_order {
+                Some(order) => {
+                    if order.status.is_terminal() {
+                        self.open_timeout_us = None;
+                    } else if let (Some(timeout_us), submit_time) =
+                        (self.open_timeout_us, order.submit_time)
+                    {
+                        if submit_time > 0 && current_tp.saturating_sub(submit_time) >= timeout_us {
+                            info!(
+                                "{}: strategy_id={} margin 开仓单超时，尝试撤单 order_id={}",
+                                Self::strategy_name(),
+                                self.strategy_id,
+                                order.order_id
+                            );
 
-    //     if header.len() < 8 + payload_len {
-    //         warn!(
-    //             "{}: strategy_id={} account event truncated len={} expect {}",
-    //             Self::strategy_name(),
-    //             self.strategy_id,
-    //             header.len(),
-    //             8 + payload_len
-    //         );
-    //         return;
-    //     }
+                            if let Err(err) =
+                                self.submit_margin_cancel(&order.symbol, order.order_id)
+                            {
+                                warn!(
+                                    "{}: strategy_id={} margin 开仓撤单失败: {}",
+                                    Self::strategy_name(),
+                                    self.strategy_id,
+                                    err
+                                );
+                            } else {
+                                let mut manager = self.order_manager.borrow_mut();
+                                if !manager.update(order.order_id, |o| {
+                                    o.update_status(OrderExecutionStatus::Commit);
+                                    o.set_end_time(current_tp);
+                                }) {
+                                    warn!(
+                                        "{}: strategy_id={} 撤单后更新状态失败 id={}",
+                                        Self::strategy_name(),
+                                        self.strategy_id,
+                                        order.order_id
+                                    );
+                                }
+                                self.open_timeout_us = None;
+                            }
+                        }
+                    }
+                }
+                None => {
+                    warn!(
+                        "{}: strategy_id={} 未找到 margin 开仓单 id={}，清除本地状态",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        self.margin_order_id
+                    );
+                    self.margin_order_id = 0;
+                    self.open_timeout_us = None;
+                }
+            }
+        }
 
-    //     let payload = &header[8..8 + payload_len];
+        // 周期性检查：限价平仓单是否超时
+        if self.close_margin_order_id == 0 {
+            self.close_margin_timeout_us = None;
+        } else {
+            let close_order = {
+                let manager = self.order_manager.borrow();
+                manager.get(self.close_margin_order_id)
+            };
 
-    //     match event_type {
-    //         AccountEventType::ExecutionReport => {
-    //             match ExecutionReportMsg::from_bytes(payload) {
-    //                 Ok(report) => {
-    //                     debug!(
-    //                         "{}: strategy_id={} execution_report order_id={} status={}",
-    //                         Self::strategy_name(),
-    //                         self.strategy_id,
-    //                         report.order_id,
-    //                         report.order_status
-    //                     );
-    //                     // TODO: 进一步处理 executionReport 事件
-    //                 }
-    //                 Err(err) => warn!(
-    //                     "{}: strategy_id={} 解析 executionReport 失败: {}",
-    //                     Self::strategy_name(),
-    //                     self.strategy_id,
-    //                     err
-    //                 ),
-    //             }
-    //         }
-    //         AccountEventType::OrderTradeUpdate => {
-    //             match OrderTradeUpdateMsg::from_bytes(payload) {
-    //                 Ok(update) => {
-    //                     debug!(
-    //                         "{}: strategy_id={} order_trade_update order_id={} trade_id={}",
-    //                         Self::strategy_name(),
-    //                         self.strategy_id,
-    //                         update.order_id,
-    //                         update.trade_id
-    //                     );
-    //                     // TODO: 进一步处理 ORDER_TRADE_UPDATE 事件
-    //                 }
-    //                 Err(err) => warn!(
-    //                     "{}: strategy_id={} 解析 order_trade_update 失败: {}",
-    //                     Self::strategy_name(),
-    //                     self.strategy_id,
-    //                     err
-    //                 ),
-    //             }
-    //         }
-    //         _ => {}
-    //     }
-    // }
+            match close_order {
+                Some(order) => {
+                    if order.status.is_terminal() {
+                        self.close_margin_timeout_us = None;
+                    } else if let (Some(timeout_us), submit_time) =
+                        (self.close_margin_timeout_us, order.submit_time)
+                    {
+                        if submit_time > 0 && current_tp.saturating_sub(submit_time) >= timeout_us {
+                            info!(
+                                "{}: strategy_id={} margin 平仓单超时，尝试撤单 order_id={}",
+                                Self::strategy_name(),
+                                self.strategy_id,
+                                order.order_id
+                            );
 
-    fn hanle_period_clock(&mut self, _current_tp: i64) {
-        todo!()
+                            if let Err(err) =
+                                self.submit_margin_cancel(&order.symbol, order.order_id)
+                            {
+                                warn!(
+                                    "{}: strategy_id={} margin 平仓撤单失败: {}",
+                                    Self::strategy_name(),
+                                    self.strategy_id,
+                                    err
+                                );
+                            } else {
+                                let mut manager = self.order_manager.borrow_mut();
+                                if !manager.update(order.order_id, |o| {
+                                    o.update_status(OrderExecutionStatus::Commit);
+                                    o.set_end_time(current_tp);
+                                }) {
+                                    warn!(
+                                        "{}: strategy_id={} 更新平仓订单状态失败 id={}",
+                                        Self::strategy_name(),
+                                        self.strategy_id,
+                                        order.order_id
+                                    );
+                                }
+                                self.close_margin_timeout_us = None;
+                            }
+                        }
+                    }
+                }
+                None => {
+                    warn!(
+                        "{}: strategy_id={} 未找到 margin 平仓单 id={}，清除本地状态",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        self.close_margin_order_id
+                    );
+                    self.close_margin_order_id = 0;
+                    self.close_margin_timeout_us = None;
+                }
+            }
+        }
     }
 
     fn is_active(&self) -> bool {
         //判断订单是否完全成交，按照执行顺序检查，避免冗余
         let manager = self.order_manager.borrow();
         if self.margin_order_id == 0 {
-            debug!(
-                "{}: strategy_id={} margin 开仓单未创建，策略仍在执行",
+            warn!(
+                "{}: strategy_id={} 缺少 margin 开仓单，返回非活跃",
                 Self::strategy_name(),
                 self.strategy_id
             );
-            return true;
+            return false;
         }
 
         let Some(margin_order) = manager.get(self.margin_order_id) else {
             warn!(
-                "{}: strategy_id={} 未找到 margin 开仓单 id={}，保持激活状态",
+                "{}: strategy_id={} 未找到 margin 开仓单 id={}，返回非活跃",
                 Self::strategy_name(),
                 self.strategy_id,
                 self.margin_order_id
             );
-            return true;
+            return false;
         };
 
         if margin_order.status != OrderExecutionStatus::Filled {

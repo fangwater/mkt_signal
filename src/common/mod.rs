@@ -2,6 +2,8 @@ pub mod account_msg;
 pub mod exchange;
 pub mod iceoryx_publisher;
 pub mod iceoryx_subscriber;
+pub mod min_qty_table;
 pub mod mkt_msg;
 pub mod msg_parser;
+pub mod redis_client;
 pub mod time_util;

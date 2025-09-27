@@ -11,6 +11,8 @@ pub struct PreTradeCfg {
     pub signals: SignalSubscriptionsCfg,
     #[serde(default)]
     pub risk_checks: RiskCheckCfg,
+    #[serde(default)]
+    pub params: Option<StrategyParamsCfg>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -29,6 +31,8 @@ pub struct TradeEngineRespCfg {
     pub max_payload_bytes: usize,
     #[serde(default)]
     pub label: Option<String>,
+    #[serde(default)]
+    pub req_service: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -37,6 +41,12 @@ pub struct SignalSubscriptionsCfg {
     pub channels: Vec<String>,
     #[serde(default = "default_signal_payload")]
     pub max_payload_bytes: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct StrategyParamsCfg {
+    #[serde(default, rename = "max_pos_u")]
+    pub max_pos_u: f64,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

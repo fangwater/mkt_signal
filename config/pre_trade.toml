@@ -8,6 +8,7 @@ label = "account_binance"
 
 [trade_engine]
 service = "order_resps/binance"
+req_service = "order_reqs/binance"
 max_payload_bytes = 16384
 label = "trade_resp_binance"
 
@@ -16,9 +17,4 @@ channels = ["mt_arbitrage"]
 max_payload_bytes = 1024
 
 [params]
-amountu = 50           # 单手交易量(U)
 max_pos_u = 2500.0     # 最大持仓(U)
-open_ranges = [0.0002, 0.0004, 0.0006, 0.0008, 0.001,0.0015,0.002]  #开仓订单 ranges
-close_rb = 0.0003      # 平仓价差
-max_open_order_keep_s = 120   # 开仓单最大存活时间
-max_close_order_keep_s = 30   # 平仓单最大存活时间
