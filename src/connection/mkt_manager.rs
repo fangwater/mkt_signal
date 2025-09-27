@@ -569,26 +569,26 @@ impl MktManager {
 
         self.join_set.spawn(async move {
             let mut next_snapshot_query_instant = next_target_instant(&snapshot_requery_time);
-            
+
             info!("币安快照任务已启动，下次查询时间: {:?}", next_snapshot_query_instant);
-            
+
             loop {
                 tokio::select! {
                     _ = tokio::time::sleep_until(next_snapshot_query_instant) => {
                         info!("在 {:?} 查询深度快照", next_snapshot_query_instant);
-                        
+
                         let incremental_tx_for_snapshot = incremental_tx.clone();
                         let exchange_for_snapshot = exchange.clone();
                         let cfg_for_snapshot = cfg_clone.clone();
-                        
+
                         tokio::spawn(async move {
                             let (snapshot_raw_tx, mut snapshot_raw_rx) = broadcast::channel(100);
                             let parser = BinanceSnapshotParser::new();
-                            
+
                             let snapshot_tx_for_fetcher = snapshot_raw_tx.clone();
                             let exchange_for_fetcher = exchange_for_snapshot.clone();
                             let cfg_for_fetcher = cfg_for_snapshot.clone();
-                            
+
                             tokio::spawn(async move {
                                 let symbols = match cfg_for_fetcher.get_symbols().await {
                                     Ok(symbols) => symbols,
@@ -600,13 +600,13 @@ impl MktManager {
                                 BinanceFuturesSnapshotQuery::start_fetching_depth(exchange_for_fetcher.as_str(), symbols, snapshot_tx_for_fetcher).await;
                                 info!("为 {} 成功查询深度快照", exchange_for_fetcher);
                             });
-                            
+
                             while let Ok(snapshot_data) = snapshot_raw_rx.recv().await {
                                 // 直接使用mpsc发送
                                 parser.parse(snapshot_data, &incremental_tx_for_snapshot);
                             }
                         });
-                        
+
                         next_snapshot_query_instant += Duration::from_secs(24 * 60 * 60);
                     }
                     _ = global_shutdown_rx.changed() => {
@@ -656,20 +656,20 @@ impl MktManager {
 
         self.join_set.spawn(async move {
             let (raw_tx, mut raw_rx) = broadcast::channel(8192);
-            
+
             let ws_global_shutdown_rx = global_shutdown_rx.clone();
             let ws_exchange = exchange.clone();
             let ws_url = url.clone();
             let ws_subscribe_msg = subscribe_msg.clone();
             let ws_description = description.clone();
             let ws_local_ip = local_ip.clone();
-            
+
             tokio::spawn(async move {
                 let mut connection = match construct_connection_with_ip(
-                    ws_exchange, 
-                    ws_url, 
-                    ws_subscribe_msg, 
-                    raw_tx, 
+                    ws_exchange,
+                    ws_url,
+                    ws_subscribe_msg,
+                    raw_tx,
                     ws_global_shutdown_rx,
                     ws_local_ip
                 ) {
@@ -685,7 +685,7 @@ impl MktManager {
                     debug!("Connection closed for {}", ws_description);
                 }
             });
-            
+
             let mut shutdown_rx = global_shutdown_rx.clone();
             tokio::spawn(async move {
                 loop {
@@ -734,20 +734,20 @@ impl MktManager {
 
         self.join_set.spawn(async move {
             let (raw_tx, mut raw_rx) = broadcast::channel(8192);
-            
+
             let ws_global_shutdown_rx = global_shutdown_rx.clone();
             let ws_exchange = exchange.clone();
             let ws_url = url.clone();
             let ws_subscribe_msg = subscribe_msg.clone();
             let ws_description = description.clone();
             let ws_local_ip = local_ip.clone();
-            
+
             tokio::spawn(async move {
                 let mut connection = match construct_connection_with_ip(
-                    ws_exchange, 
-                    ws_url, 
-                    ws_subscribe_msg, 
-                    raw_tx, 
+                    ws_exchange,
+                    ws_url,
+                    ws_subscribe_msg,
+                    raw_tx,
                     ws_global_shutdown_rx,
                     ws_local_ip
                 ) {
@@ -763,7 +763,7 @@ impl MktManager {
                     debug!("Connection closed for {}", ws_description);
                 }
             });
-            
+
             let mut shutdown_rx = global_shutdown_rx.clone();
             tokio::spawn(async move {
                 loop {

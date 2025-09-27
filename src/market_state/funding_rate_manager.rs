@@ -2,7 +2,7 @@ use crate::exchange::Exchange;
 use anyhow::Result;
 use chrono::Utc;
 use hmac::{Hmac, Mac};
-use log::{error, info};
+use log::{debug, error, info};
 use reqwest;
 use serde::Deserialize;
 use sha2::Sha256;
@@ -130,6 +130,10 @@ impl FundingRateManager {
         if let Some(v) = data.get(&low) {
             return v.clone();
         }
+        debug!(
+            "资金费率缓存未命中，返回默认值: exchange={:?} symbol={}",
+            exchange, symbol
+        );
         FundingRateData::default()
     }
 
@@ -153,6 +157,11 @@ impl FundingRateManager {
             return; // 同一小时已经检查过
         }
 
+        info!(
+            "进入资金费率刷新窗口: exchange={:?} hour_bucket={} (prev={})",
+            exchange, hour_bucket, prev
+        );
+
         if store
             .refresh_in_progress
             .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
@@ -160,6 +169,11 @@ impl FundingRateManager {
         {
             // 启动异步刷新任务
             self.trigger_async_refresh(exchange);
+        } else {
+            info!(
+                "资金费率刷新任务已在进行中，跳过重复触发: exchange={:?} hour_bucket={}",
+                exchange, hour_bucket
+            );
         }
     }
 

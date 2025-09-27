@@ -181,7 +181,7 @@ impl IceOryxForwarder {
         info!("IceOryx forwarder created successfully");
         info!("Enabled channels - incremental: {}, trade: {}, kline: {}, derivatives: {}, ask_bid_spread: {}, signal: {}",
               incremental_publisher.is_some(),
-              trade_publisher.is_some(), 
+              trade_publisher.is_some(),
               kline_publisher.is_some(),
               derivatives_publisher.is_some(),
               ask_bid_spread_publisher.is_some(),
