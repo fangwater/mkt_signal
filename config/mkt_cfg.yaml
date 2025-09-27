@@ -9,9 +9,9 @@ symbol_socket: "/home/ubuntu/crypto_mkt/symbol_server/exchange"
 
 # 数据类型开关配置
 data_types:
-  enable_incremental: true    # 增量orderbook数据
-  enable_trade: true          # 逐笔成交数据
-  enable_kline: true          # K线数据
+  enable_incremental: false    # 增量orderbook数据
+  enable_trade: false          # 逐笔成交数据
+  enable_kline: false          # K线数据
   enable_derivatives: true    # 衍生品指标数据（仅期货交易所）
   enable_ask_bid_spread: true # 买卖价差（最优买卖价）数据
 
