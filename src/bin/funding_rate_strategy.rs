@@ -1,10 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -12,7 +8,11 @@ use bytes::Bytes;
 use log::{debug, error, info, warn};
 use serde::Deserialize;
 use tokio::signal;
+#[cfg(unix)]
+use tokio::signal::unix::{signal as unix_signal, SignalKind};
+use tokio::task::yield_now;
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 use mkt_signal::common::iceoryx_publisher::SignalPublisher;
 use mkt_signal::common::iceoryx_subscriber::{
@@ -961,20 +961,14 @@ async fn main() -> Result<()> {
         },
     ])?;
 
-    let shutdown = Arc::new(AtomicBool::new(false));
-    {
-        let flag = shutdown.clone();
-        tokio::spawn(async move {
-            let _ = signal::ctrl_c().await;
-            flag.store(true, Ordering::SeqCst);
-        });
-    }
+    let shutdown = CancellationToken::new();
+    setup_signal_handlers(&shutdown)?;
 
     let mut next_stat_time = Instant::now() + Duration::from_secs(30);
     let mut next_snapshot = Instant::now() + Duration::from_secs(3);
 
     loop {
-        if shutdown.load(Ordering::Relaxed) {
+        if shutdown.is_cancelled() {
             info!("收到退出信号，准备关闭");
             break;
         }
@@ -1012,9 +1006,53 @@ async fn main() -> Result<()> {
             next_snapshot += Duration::from_secs(3);
         }
 
-        std::hint::spin_loop();
+        yield_now().await;
     }
 
+    engine.print_stats();
     info!("策略进程结束");
+    Ok(())
+}
+
+fn setup_signal_handlers(token: &CancellationToken) -> Result<()> {
+    let ctrl_c = token.clone();
+    tokio::spawn(async move {
+        if let Err(e) = signal::ctrl_c().await {
+            error!("监听 Ctrl+C 失败: {}", e);
+            return;
+        }
+        info!("接收到 Ctrl+C 信号");
+        ctrl_c.cancel();
+    });
+
+    #[cfg(unix)]
+    {
+        let term_token = token.clone();
+        tokio::spawn(async move {
+            match unix_signal(SignalKind::terminate()) {
+                Ok(mut sigterm) => {
+                    if sigterm.recv().await.is_some() {
+                        info!("接收到 SIGTERM 信号");
+                        term_token.cancel();
+                    }
+                }
+                Err(e) => error!("监听 SIGTERM 失败: {}", e),
+            }
+        });
+
+        let quit_token = token.clone();
+        tokio::spawn(async move {
+            match unix_signal(SignalKind::quit()) {
+                Ok(mut sigquit) => {
+                    if sigquit.recv().await.is_some() {
+                        info!("接收到 SIGQUIT 信号");
+                        quit_token.cancel();
+                    }
+                }
+                Err(e) => error!("监听 SIGQUIT 失败: {}", e),
+            }
+        });
+    }
+
     Ok(())
 }
