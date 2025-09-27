@@ -608,10 +608,6 @@ impl StrategyEngine {
             let predicted = FundingRateMsg::get_predicted_funding_rate(msg);
             let timestamp = FundingRateMsg::get_timestamp(msg);
             let loan_rate = FundingRateMsg::get_loan_rate_8h(msg);
-            debug!(
-                "资金费率更新: {} funding={:.6} predicted={:.6} ts={}",
-                symbol, funding, predicted, timestamp
-            );
             state.last_ratio = state.calc_ratio();
             state.funding_rate = funding;
             state.predicted_rate = predicted;
@@ -748,7 +744,7 @@ impl StrategyEngine {
             );
             return None;
         }
-        let mut desired_qty = if limit_price > 0.0 {
+        let raw_qty = if limit_price > 0.0 {
             self.cfg.order.amount_u / limit_price
         } else {
             0.0
@@ -763,31 +759,26 @@ impl StrategyEngine {
             .futures_um_min_qty_by_symbol(&state.futures_symbol)
             .unwrap_or(0.0);
 
-        if spot_min > 0.0 && desired_qty < spot_min {
-            desired_qty = spot_min;
-        }
-        if futures_min > 0.0 && desired_qty < futures_min {
-            desired_qty = futures_min;
-        }
-
-        if desired_qty <= 0.0 {
+        let mut adjusted_qty = raw_qty.max(spot_min).max(futures_min);
+        if adjusted_qty <= 0.0 {
             warn!(
                 "{} 计算得到的下单数量非法: desired={:.6}, spot_min={:.6}, futures_min={:.6}",
-                state.spot_symbol, desired_qty, spot_min, futures_min
+                state.spot_symbol, raw_qty, spot_min, futures_min
             );
             return None;
         }
 
-        debug!(
-            "{} 下单数量计算: desired={:.6}, spot_min={:.6}, futures_min={:.6}, final={:.6}",
-            state.spot_symbol,
-            self.cfg.order.amount_u / limit_price,
-            spot_min,
-            futures_min,
-            desired_qty
+        let qty_step = lcm_nonzero(spot_min, futures_min);
+        if qty_step > 0.0 {
+            adjusted_qty = (adjusted_qty / qty_step).ceil() * qty_step;
+        }
+
+        info!(
+            "{} 下单量整形: raw={:.6} spot_min={:.6} fut_min={:.6} step={:.6} final={:.6}",
+            state.spot_symbol, raw_qty, spot_min, futures_min, qty_step, adjusted_qty
         );
 
-        let qty = desired_qty as f32;
+        let qty = adjusted_qty as f32;
         let ctx = BinSingleForwardArbOpenCtx {
             spot_symbol: state.spot_symbol.clone(),
             amount: qty,
@@ -1078,4 +1069,70 @@ fn format_timestamp(ts: Option<i64>) -> String {
     } else {
         "-".to_string()
     }
+}
+
+fn lcm_nonzero(a: f64, b: f64) -> f64 {
+    let a_pos = if a > 0.0 { a } else { 0.0 };
+    let b_pos = if b > 0.0 { b } else { 0.0 };
+    if approx_zero(a_pos) {
+        return b_pos;
+    }
+    if approx_zero(b_pos) {
+        return a_pos;
+    }
+
+    match (to_fraction(a_pos), to_fraction(b_pos)) {
+        (Some((num_a, den_a)), Some((num_b, den_b))) => {
+            let scale = lcm_i64(den_a, den_b);
+            if scale == 0 {
+                return a_pos.max(b_pos);
+            }
+            let scaled_a = num_a * (scale / den_a);
+            let scaled_b = num_b * (scale / den_b);
+            let lcm_int = lcm_i64(scaled_a.abs(), scaled_b.abs());
+            if lcm_int == 0 {
+                a_pos.max(b_pos)
+            } else {
+                (lcm_int as f64) / (scale as f64)
+            }
+        }
+        _ => a_pos.max(b_pos),
+    }
+}
+
+fn to_fraction(value: f64) -> Option<(i64, i64)> {
+    if !value.is_finite() || value <= 0.0 {
+        return None;
+    }
+    let mut denom: i64 = 1;
+    let mut scaled = value;
+    for _ in 0..9 {
+        let rounded = scaled.round();
+        if (scaled - rounded).abs() < 1e-9 {
+            return Some((rounded as i64, denom));
+        }
+        scaled *= 10.0;
+        denom = denom.saturating_mul(10);
+    }
+    None
+}
+
+fn gcd_i64(mut a: i64, mut b: i64) -> i64 {
+    while b != 0 {
+        let tmp = a % b;
+        a = b;
+        b = tmp;
+    }
+    a.abs()
+}
+
+fn lcm_i64(a: i64, b: i64) -> i64 {
+    if a == 0 || b == 0 {
+        return 0;
+    }
+    (a / gcd_i64(a, b)).saturating_mul(b).abs()
+}
+
+fn approx_zero(x: f64) -> bool {
+    x.abs() < 1e-12
 }
