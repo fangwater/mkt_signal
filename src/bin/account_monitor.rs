@@ -23,8 +23,11 @@ fn build_ws_url(ws_base: &str, listen_key: &str) -> String {
     }
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
+    if std::env::var("RUST_LOG").is_err() {
+        std::env::set_var("RUST_LOG", "debug");
+    }
     env_logger::init();
     // Load TOML config (fixed path)
     let cfg = mkt_signal::portfolio_margin::pm_cfg::AccountTomlCfg::load("config/account_cfg.toml")
