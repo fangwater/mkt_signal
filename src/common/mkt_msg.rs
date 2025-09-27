@@ -129,6 +129,10 @@ impl FundingRateMsg {
         let symbol_length = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
         let offset = 8 + symbol_length + 24; // header + symbol + funding_rate + next_funding_time + timestamp
 
+        if data.len() < offset + 8 {
+            return 0.0;
+        }
+
         f64::from_le_bytes([
             data[offset],
             data[offset + 1],
@@ -145,7 +149,13 @@ impl FundingRateMsg {
     #[inline]
     pub fn get_loan_rate_8h(data: &[u8]) -> f64 {
         let symbol_length = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
-        let offset = 8 + symbol_length + 32; // header + symbol + funding_rate + next_funding_time + timestamp + predicted_funding_rate
+        // header + symbol + funding_rate + next_funding_time + timestamp + predicted_funding_rate
+        // loan_rate 目前并非所有推送都会携带，缺省时长度不足。
+        let offset = 8 + symbol_length + 32;
+
+        if data.len() < offset + 8 {
+            return 0.0;
+        }
 
         f64::from_le_bytes([
             data[offset],
