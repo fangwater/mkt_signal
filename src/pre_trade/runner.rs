@@ -784,12 +784,8 @@ fn dispatch_order_trade_update(ctx: &mut RuntimeContext, update: &OrderTradeUpda
 }
 
 fn trim_payload(payload: &[u8]) -> Bytes {
-    let len = payload
-        .iter()
-        .rposition(|&x| x != 0)
-        .map(|idx| idx + 1)
-        .unwrap_or(0);
-    Bytes::copy_from_slice(&payload[..len])
+    // 直接拷贝整个 payload，避免将结尾合法的 0 截断
+    Bytes::copy_from_slice(payload)
 }
 
 fn extract_account_metadata(payload: &[u8]) -> (Option<String>, Option<i64>) {

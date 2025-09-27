@@ -1,6 +1,5 @@
 use anyhow::Result;
 use bytes::{Buf, Bytes};
-use hex;
 
 /// 消息类型枚举（与mkt_signal保持一致）
 #[repr(u32)]
@@ -140,62 +139,19 @@ pub fn parse_funding_rate(data: &[u8]) -> Result<FundingRateMsg> {
 
 /// 解析标记价格消息
 pub fn parse_mark_price(data: &[u8]) -> Result<MarkPriceMsg> {
-    if data.len() < 12 {
-        panic!(
-            "Mark price message too short (len={}) raw={}",
-            data.len(),
-            hex::encode(data)
-        );
-    }
-
     let mut cursor = Bytes::copy_from_slice(data);
 
-    // 读取消息类型（4字节）
     let msg_type = cursor.get_u32_le();
     if msg_type != MktMsgType::MarkPrice as u32 {
         anyhow::bail!("Invalid message type: {}", msg_type);
     }
 
-    // 读取symbol长度（4字节）
-    if cursor.len() < 4 {
-        panic!(
-            "Mark price missing symbol length (remaining={}) raw={}",
-            cursor.len(),
-            hex::encode(data)
-        );
-    }
     let symbol_len = cursor.get_u32_le() as usize;
 
-    // 读取symbol
-    if cursor.len() < symbol_len {
-        panic!(
-            "Mark price payload too short for symbol: need {} have {} raw={}",
-            symbol_len,
-            cursor.len(),
-            hex::encode(data)
-        );
-    }
     let symbol_bytes = cursor.copy_to_bytes(symbol_len);
     let symbol = String::from_utf8(symbol_bytes.to_vec())?;
 
-    // 读取标记价格（8字节）
-    if cursor.len() < 8 {
-        panic!(
-            "Mark price payload missing price field (remaining={}) raw={}",
-            cursor.len(),
-            hex::encode(data)
-        );
-    }
     let mark_price = cursor.get_f64_le();
-
-    // 读取时间戳（8字节）
-    if cursor.len() < 8 {
-        panic!(
-            "Mark price payload missing timestamp field (remaining={}) raw={}",
-            cursor.len(),
-            hex::encode(data)
-        );
-    }
     let timestamp = cursor.get_i64_le();
 
     Ok(MarkPriceMsg {
@@ -207,14 +163,6 @@ pub fn parse_mark_price(data: &[u8]) -> Result<MarkPriceMsg> {
 
 /// 解析指数价格消息
 pub fn parse_index_price(data: &[u8]) -> Result<IndexPriceMsg> {
-    if data.len() < 12 {
-        panic!(
-            "Index price message too short (len={}) raw={}",
-            data.len(),
-            hex::encode(data)
-        );
-    }
-
     let mut cursor = Bytes::copy_from_slice(data);
 
     let msg_type = cursor.get_u32_le();
@@ -222,42 +170,12 @@ pub fn parse_index_price(data: &[u8]) -> Result<IndexPriceMsg> {
         anyhow::bail!("Invalid message type: {}", msg_type);
     }
 
-    if cursor.len() < 4 {
-        panic!(
-            "Index price missing symbol length (remaining={}) raw={}",
-            cursor.len(),
-            hex::encode(data)
-        );
-    }
     let symbol_len = cursor.get_u32_le() as usize;
-
-    if cursor.len() < symbol_len {
-        panic!(
-            "Index price payload too short for symbol: need {} have {} raw={}",
-            symbol_len,
-            cursor.len(),
-            hex::encode(data)
-        );
-    }
 
     let symbol_bytes = cursor.copy_to_bytes(symbol_len);
     let symbol = String::from_utf8(symbol_bytes.to_vec())?;
 
-    if cursor.len() < 8 {
-        panic!(
-            "Index price payload missing price field (remaining={}) raw={}",
-            cursor.len(),
-            hex::encode(data)
-        );
-    }
     let index_price = cursor.get_f64_le();
-    if cursor.len() < 8 {
-        panic!(
-            "Index price payload missing timestamp field (remaining={}) raw={}",
-            cursor.len(),
-            hex::encode(data)
-        );
-    }
     let timestamp = cursor.get_i64_le();
 
     Ok(IndexPriceMsg {
