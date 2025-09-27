@@ -299,19 +299,6 @@ impl BinanceDerivativesMetricsParser {
                             rate_data.predicted_funding_rate,
                             rate_data.loan_rate_8h,
                         );
-                        if matches!(symbol_lower.as_str(), "btcusdt" | "bnbusdt" | "ethusdt") {
-                            log::info!(
-                                "funding_rate_msg of {}: {}, {}, {}, {}",
-                                symbol,
-                                funding_rate,
-                                next_funding_time,
-                                funding_rate_msg.predicted_funding_rate,
-                                funding_rate_msg.loan_rate_8h
-                            );
-                        } else {
-                            log::debug!("skip funding_rate_msg info log for symbol={symbol}");
-                        }
-
                         if tx.send(funding_rate_msg.to_bytes()).is_ok() {
                             parsed_count += 1;
                         }
