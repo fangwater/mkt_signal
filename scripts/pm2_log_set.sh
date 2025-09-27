@@ -46,17 +46,17 @@ check_permissions() {
 
 # 检查PM2是否安装
 check_pm2_installed() {
-    if ! command_exists pm2; then
+    if npx pm2 --version >/dev/null 2>&1; then
+        echo "[SUCCESS] PM2已安装: $(npx pm2 --version)"
+    else
         echo "[ERROR] PM2未安装!" >&2
         if [[ "$INSTALL_MODE" == "user" ]]; then
-            echo "[提示] 对于用户模式，可以执行: npm install pm2 --global" >&2
-            echo "[提示] 或者本地安装: npm install pm2 && npx pm2 ..." >&2
+            echo "[提示] 对于用户模式，可以执行: npm install pm2" >&2
+            echo "[提示] 或全局安装: npm install -g pm2" >&2
         else
-            echo "[提示] 对于全局模式，请执行: sudo npm install pm2 -g" >&2
+            echo "[提示] 对于全局模式，请执行: sudo npm install -g pm2" >&2
         fi
         exit 1
-    else
-        echo "[SUCCESS] PM2已安装: $(pm2 --version)"
     fi
 }
 
@@ -65,19 +65,19 @@ install_logrotate_module() {
     echo "[STEP] 安装PM2日志轮转模块..."
     
     # 检查模块是否已安装
-    if pm2 describe pm2-logrotate >/dev/null 2>&1; then
+    if npx pm2 describe pm2-logrotate >/dev/null 2>&1; then
         echo "[INFO] pm2-logrotate 模块已安装"
     else
         echo "[INFO] 正在安装 pm2-logrotate 模块..."
         if [[ "$INSTALL_MODE" == "global" && $(id -u) -eq 0 ]]; then
-            pm2 install pm2-logrotate
+            npx pm2 install pm2-logrotate
         else
-            pm2 install pm2-logrotate
+            npx pm2 install pm2-logrotate
         fi
         
         if [ $? -eq 0 ]; then
             echo "[SUCCESS] pm2-logrotate 模块安装成功"
-            pm2 save
+            npx pm2 save
         else
             echo "[ERROR] pm2-logrotate 模块安装失败" >&2
             exit 1
@@ -88,23 +88,23 @@ install_logrotate_module() {
 # 配置日志参数
 configure_log_settings() {
     echo "[STEP] 应用日志策略:"
-    pm2 set pm2-logrotate:max_size "$MAX_SIZE"
+    npx pm2 set pm2-logrotate:max_size "$MAX_SIZE"
     echo "  - 设置单文件上限: $MAX_SIZE"
     
-    pm2 set pm2-logrotate:retain "$LOG_RETAIN_DAYS"
+    npx pm2 set pm2-logrotate:retain "$LOG_RETAIN_DAYS"
     echo "  - 设置保留天数: $LOG_RETAIN_DAYS 天"
     
-    pm2 set pm2-logrotate:rotateInterval "$CRON_SCHEDULE"
+    npx pm2 set pm2-logrotate:rotateInterval "$CRON_SCHEDULE"
     echo "  - 设置轮转计划: $CRON_SCHEDULE (crontab)"
     
-    pm2 set pm2-logrotate:compress "$ENABLE_COMPRESS"
+    npx pm2 set pm2-logrotate:compress "$ENABLE_COMPRESS"
     echo "  - 压缩旧日志: $ENABLE_COMPRESS"
     
-    pm2 set pm2-logrotate:rotateModule true
+    npx pm2 set pm2-logrotate:rotateModule true
     echo "  - 应用到所有PM2进程"
     
     # 保存配置
-    pm2 save
+    npx pm2 save
     echo "  - 配置已保存"
 }
 
@@ -130,9 +130,9 @@ echo "====== 配置完成 ======"
 echo "[SUCCESS] PM2 日志轮转配置已完成!"
 echo ""
 echo "[验证] 当前日志轮转设置:"
-pm2 config | grep pm2-logrotate || echo "[WARNING] 无法获取配置信息"
+npx pm2 config | grep pm2-logrotate || echo "[WARNING] 无法获取配置信息"
 echo ""
 echo "[用法] 配置仅对当前用户 $(whoami) 的 PM2 实例生效"
-echo "[提示] 可以使用 'pm2 logs' 命令查看日志"
+echo "[提示] 可以使用 'npx pm2 logs' 命令查看日志"
 echo "[提示] 日志文件位置: ~/.pm2/logs/"
-echo "[提示] 要查看模块状态: pm2 describe pm2-logrotate"
+echo "[提示] 要查看模块状态: npx pm2 describe pm2-logrotate"
