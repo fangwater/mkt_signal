@@ -139,8 +139,8 @@ pub fn parse_funding_rate(data: &[u8]) -> Result<FundingRateMsg> {
 
 /// 解析标记价格消息
 pub fn parse_mark_price(data: &[u8]) -> Result<MarkPriceMsg> {
-    if data.len() < 8 {
-        anyhow::bail!("Message too short");
+    if data.len() < 12 {
+        anyhow::bail!("Mark price message too short");
     }
 
     let mut cursor = Bytes::copy_from_slice(data);
@@ -152,11 +152,18 @@ pub fn parse_mark_price(data: &[u8]) -> Result<MarkPriceMsg> {
     }
 
     // 读取symbol长度（4字节）
+    if cursor.len() < 4 {
+        anyhow::bail!("Missing symbol length field");
+    }
     let symbol_len = cursor.get_u32_le() as usize;
 
     // 读取symbol
-    if cursor.len() < symbol_len {
-        anyhow::bail!("Invalid symbol length");
+    if cursor.len() < symbol_len + 16 {
+        anyhow::bail!(
+            "Mark price payload too short for symbol and fields: expected >= {} got {}",
+            symbol_len + 16,
+            cursor.len()
+        );
     }
     let symbol_bytes = cursor.copy_to_bytes(symbol_len);
     let symbol = String::from_utf8(symbol_bytes.to_vec())?;
