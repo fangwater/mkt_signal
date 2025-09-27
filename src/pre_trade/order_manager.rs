@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use log::{warn};
+use log::warn;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Side {
@@ -63,7 +63,7 @@ impl Side {
 #[repr(u8)]
 pub enum OrderExecutionStatus {
     Commit = 1,    // 构造未提交
-    Create = 2,     // 已确认，待执行
+    Create = 2,    // 已确认，待执行
     Filled = 3,    // 完全成交
     Cancelled = 4, // 已取消
     Rejected = 5,  // 被拒绝
@@ -385,19 +385,19 @@ impl Default for OrderManager {
 
 #[derive(Debug, Clone)]
 pub struct Order {
-    pub order_id: i64,                // 订单ID
-    pub order_type: OrderType,        // 订单类型
-    pub symbol: String,               // 交易对
-    pub side: Side,                   // 买卖方向
-    pub price: f64,           // 限价单价格, 市价单没有意义
-    pub quantity: f64,                // 数量
+    pub order_id: i64,                   // 订单ID
+    pub order_type: OrderType,           // 订单类型
+    pub symbol: String,                  // 交易对
+    pub side: Side,                      // 买卖方向
+    pub price: f64,                      // 限价单价格, 市价单没有意义
+    pub quantity: f64,                   // 数量
     pub cumulative_filled_quantity: f64, // 成交量
-    pub hedged_quantily: f64, // 未对冲量
-    pub status: OrderExecutionStatus, // 订单执行状态
+    pub hedged_quantily: f64,            // 未对冲量
+    pub status: OrderExecutionStatus,    // 订单执行状态
     // 时间戳记录
     pub submit_time: i64, // 订单提交时间(本地时间)
     // "O": 1499405658657,            // Order creation time 对应币安杠杆下单
-    pub create_time: i64,   // 交易所订单创建时间(交易所时间)
+    pub create_time: i64, // 交易所订单创建时间(交易所时间)
     pub ack_time: i64,    // 订单收到交易所回报的时间(本地时间)
     pub filled_time: i64, // 订单执行成功的时间（交易所时间，记录最后一次）
     pub end_time: i64,    // 收到成交回报的时间（本地时间，记录最后一次）
@@ -439,17 +439,18 @@ impl Order {
     /// 更新订单状态
     pub fn update_status(&mut self, status: OrderExecutionStatus) {
         // 增加订单状态检查
-        if status ==  OrderExecutionStatus::Create {
-            if self.status != OrderExecutionStatus::Commit{
+        if status == OrderExecutionStatus::Create {
+            if self.status != OrderExecutionStatus::Commit {
                 //出现非正常的状态切换，打印日志
                 warn!("unexpected OrderExecutionStatus");
             }
         }
         self.status = status;
     }
-    /// 更新订单成交量
-    pub fn update_rem_qty(&mut self, qty: f64){
-        self.quantity = qty;
+    /// 更新订单累计成交量
+    pub fn update_cumulative_filled_quantity(&mut self, qty: f64) {
+        self.cumulative_filled_quantity = qty;
+        self.hedged_quantily = self.quantity - self.cumulative_filled_quantity;
     }
 
     /// 设置提交时间

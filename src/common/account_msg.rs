@@ -572,8 +572,11 @@ impl ExecutionReportMsg {
         if cursor.remaining() < execution_type_length as usize + 4 {
             anyhow::bail!("execution report truncated before execution_type");
         }
-        let execution_type =
-            String::from_utf8(cursor.copy_to_bytes(execution_type_length as usize).to_vec())?;
+        let execution_type = String::from_utf8(
+            cursor
+                .copy_to_bytes(execution_type_length as usize)
+                .to_vec(),
+        )?;
 
         let order_status_length = cursor.get_u32_le();
         if cursor.remaining() < order_status_length as usize + 4 {
@@ -587,7 +590,9 @@ impl ExecutionReportMsg {
             anyhow::bail!("execution report truncated before commission_asset");
         }
         let commission_asset = String::from_utf8(
-            cursor.copy_to_bytes(commission_asset_length as usize).to_vec(),
+            cursor
+                .copy_to_bytes(commission_asset_length as usize)
+                .to_vec(),
         )?;
 
         Ok(Self {
@@ -899,8 +904,11 @@ impl OrderTradeUpdateMsg {
         if cursor.remaining() < execution_type_length as usize + 4 {
             anyhow::bail!("order trade update truncated before execution_type");
         }
-        let execution_type =
-            String::from_utf8(cursor.copy_to_bytes(execution_type_length as usize).to_vec())?;
+        let execution_type = String::from_utf8(
+            cursor
+                .copy_to_bytes(execution_type_length as usize)
+                .to_vec(),
+        )?;
 
         let order_status_length = cursor.get_u32_le();
         if cursor.remaining() < order_status_length as usize + 4 {
@@ -914,7 +922,9 @@ impl OrderTradeUpdateMsg {
             anyhow::bail!("order trade update truncated before commission_asset");
         }
         let commission_asset = String::from_utf8(
-            cursor.copy_to_bytes(commission_asset_length as usize).to_vec(),
+            cursor
+                .copy_to_bytes(commission_asset_length as usize)
+                .to_vec(),
         )?;
 
         let strategy_type_length = cursor.get_u32_le();
@@ -928,9 +938,8 @@ impl OrderTradeUpdateMsg {
         if cursor.remaining() < business_unit_length as usize {
             anyhow::bail!("order trade update truncated before business_unit");
         }
-        let business_unit = String::from_utf8(
-            cursor.copy_to_bytes(business_unit_length as usize).to_vec(),
-        )?;
+        let business_unit =
+            String::from_utf8(cursor.copy_to_bytes(business_unit_length as usize).to_vec())?;
 
         Ok(Self {
             msg_type: AccountEventType::OrderTradeUpdate,

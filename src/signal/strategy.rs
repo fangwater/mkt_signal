@@ -1,14 +1,20 @@
-use crate::{common::{account_msg::{ExecutionReportMsg, OrderTradeUpdateMsg}, time_util::get_timestamp_us}, trade_engine::trade_response_handle::TradeExecOutcome};
+use crate::{
+    common::{
+        account_msg::{ExecutionReportMsg, OrderTradeUpdateMsg},
+        time_util::get_timestamp_us,
+    },
+    trade_engine::trade_response_handle::TradeExecOutcome,
+};
 use bytes::Bytes;
 use std::collections::{HashMap, VecDeque};
 
 pub trait Strategy {
     fn get_id(&self) -> i32;
-    fn is_strategy_order(&self, order_id: i64)->bool;
+    fn is_strategy_order(&self, order_id: i64) -> bool;
     fn handle_trade_signal(&mut self, signal_raws: &Bytes);
     fn handle_trade_response(&mut self, engine_out: &TradeExecOutcome);
-    fn handle_binance_execution_report(&mut self, report: &ExecutionReportMsg);
-    fn handle_binance_order_trade_update(&mut self, update: &OrderTradeUpdateMsg);
+    fn handle_binance_margin_order_update(&mut self, report: &ExecutionReportMsg);
+    fn handle_binance_futures_order_update(&mut self, update: &OrderTradeUpdateMsg);
     fn hanle_period_clock(&mut self, current_tp: i64);
     fn is_active(&self) -> bool;
 }

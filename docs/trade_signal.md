@@ -1,10 +1,11 @@
 收到信号后，需要构造或者映射到一个Strategy，即这笔交易归属的策略
 策略包含整个交易过程的交易订单和动作，比如买入，卖出，平仓，止损等，可能包含多个订单，可能立刻执行，也可能需要驻留在内存中
 
-以目前的信号为例，币安fr策略有3种信号
+以目前的信号为例，币安fr策略有4种信号
 BinSingleForwardArbOpen
 BinSingleForwardArbHedge
-BinSingleForwardArbClose
+BinSingleForwardArbCloseMargin
+BinSingleForwardArbCloseUm
 
 本质上对应的是同一个策略，即币安fr策略，open的时候创建，在Hedge和Close的时候需要映射
 
@@ -59,9 +60,12 @@ Strategy，然后调用handle_trade_response进行处理。
 对于这个策略，Hedge就是创建一个和杠杆下单方向相反，头寸相同的um合约订单做空。
 且无需进行任何风控检查。
 
-[2]BinSingleForwardArbClose
-收到后，填充下单相关数据，同时对现货、合约进行平仓操作。对于这个策略，
-就是创建
+[2]BinSingleForwardArbCloseMargin
+收到后，按照上下文给定的限价参数尝试平掉杠杆仓位。平仓成功后，策略会派发
+BinSingleForwardArbCloseUm 信号继续处理合约侧仓位。
+
+[3]BinSingleForwardArbCloseUm
+收到后，创建 UM 市价单完成对冲仓位的平仓。
 
 
 TradeResponse
@@ -84,8 +88,6 @@ BinSingleForwardArbOpen 开仓信号
 1、订单不允许直接创建，创建之前有一系列的风控检查。
 2、不同的风控规则生效的阶段不同
 3、基于头寸的风控不保证绝对实时性
-
-
 
 
 

@@ -2,15 +2,16 @@ use bytes::{BufMut, Bytes, BytesMut};
 
 #[derive(Debug, Clone)]
 pub enum SignalType {
-    BinSingleForwardArbOpen = 1,  // 币安单所正向套利触发开仓
-    BinSingleForwardArbHedge = 2, // 币安单所正向套利触发对冲
-    BinSingleForwardArbClose = 3, // 币安单所正向套利触发平仓
-                                  // 未来可以添加更多信号类型:
-                                  // BinSingleReverseArb,  // 币安单所反向套利
-                                  // CrossExchangeArb,     // 跨交易所套利
-                                  // TriangularArb,        // 三角套利
-                                  // StatisticalArb,       // 统计套利
-                                  // etc...
+    BinSingleForwardArbOpen = 1,        // 币安单所正向套利触发开仓
+    BinSingleForwardArbHedge = 2,       // 币安单所正向套利触发对冲
+    BinSingleForwardArbCloseMargin = 3, // 币安单所正向套利触发杠杆平仓
+    BinSingleForwardArbCloseUm = 4,     // 币安单所正向套利触发合约平仓
+                                        // 未来可以添加更多信号类型:
+                                        // BinSingleReverseArb,  // 币安单所反向套利
+                                        // CrossExchangeArb,     // 跨交易所套利
+                                        // TriangularArb,        // 三角套利
+                                        // StatisticalArb,       // 统计套利
+                                        // etc...
 }
 
 impl SignalType {
@@ -19,7 +20,8 @@ impl SignalType {
         match value {
             1 => Some(SignalType::BinSingleForwardArbOpen),
             2 => Some(SignalType::BinSingleForwardArbHedge),
-            3 => Some(SignalType::BinSingleForwardArbClose),
+            3 => Some(SignalType::BinSingleForwardArbCloseMargin),
+            4 => Some(SignalType::BinSingleForwardArbCloseUm),
             _ => None,
         }
     }
