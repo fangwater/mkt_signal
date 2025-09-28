@@ -24,8 +24,8 @@ pub struct BinSingleForwardArbOpenCtx {
     pub amount: f32,
     pub side: Side,
     pub order_type: OrderType,
-    pub price: f32,
-    pub price_tick: f32,
+    pub price: f64,
+    pub price_tick: f64,
     pub exp_time: i64,
 }
 
@@ -39,8 +39,8 @@ pub struct BinSingleForwardArbHedgeCtx {
 #[derive(Clone, Debug)]
 pub struct BinSingleForwardArbCloseMarginCtx {
     pub spot_symbol: String,
-    pub limit_price: f32,
-    pub price_tick: f32,
+    pub limit_price: f64,
+    pub price_tick: f64,
     pub exp_time: i64,
 }
 
@@ -71,8 +71,8 @@ impl BinSingleForwardArbOpenCtx {
         buf.put_f32_le(self.amount);
         buf.put_u8(self.side as u8);
         buf.put_u8(self.order_type as u8);
-        buf.put_f32_le(self.price);
-        buf.put_f32_le(self.price_tick);
+        buf.put_f64_le(self.price);
+        buf.put_f64_le(self.price_tick);
         buf.put_i64_le(self.exp_time);
 
         buf.freeze()
@@ -105,15 +105,15 @@ impl BinSingleForwardArbOpenCtx {
         let order_type = OrderType::from_u8(bytes.get_u8())
             .ok_or_else(|| "Invalid order_type value".to_string())?;
 
-        if bytes.remaining() < 4 {
+        if bytes.remaining() < 8 {
             return Err("Not enough bytes for price".to_string());
         }
-        let price = bytes.get_f32_le();
+        let price = bytes.get_f64_le();
 
-        if bytes.remaining() < 4 {
+        if bytes.remaining() < 8 {
             return Err("Not enough bytes for price_tick".to_string());
         }
-        let price_tick = bytes.get_f32_le();
+        let price_tick = bytes.get_f64_le();
 
         if bytes.remaining() < 8 {
             return Err("Not enough bytes for exp_time".to_string());
@@ -157,8 +157,8 @@ impl BinSingleForwardArbCloseMarginCtx {
 
         buf.put_u32_le(self.spot_symbol.len() as u32);
         buf.put_slice(self.spot_symbol.as_bytes());
-        buf.put_f32_le(self.limit_price);
-        buf.put_f32_le(self.price_tick);
+        buf.put_f64_le(self.limit_price);
+        buf.put_f64_le(self.price_tick);
         buf.put_i64_le(self.exp_time);
 
         buf.freeze()
@@ -175,15 +175,15 @@ impl BinSingleForwardArbCloseMarginCtx {
         let spot_symbol = String::from_utf8(bytes.copy_to_bytes(symbol_len).to_vec())
             .map_err(|e| format!("Invalid UTF-8 for spot_symbol: {e}"))?;
 
-        if bytes.remaining() < 4 {
+        if bytes.remaining() < 8 {
             return Err("Not enough bytes for limit_price".to_string());
         }
-        let limit_price = bytes.get_f32_le();
+        let limit_price = bytes.get_f64_le();
 
-        if bytes.remaining() < 4 {
+        if bytes.remaining() < 8 {
             return Err("Not enough bytes for price_tick".to_string());
         }
-        let price_tick = bytes.get_f32_le();
+        let price_tick = bytes.get_f64_le();
 
         if bytes.remaining() < 8 {
             return Err("Not enough bytes for exp_time".to_string());
@@ -553,13 +553,8 @@ impl BinSingleForwardArbStrategy {
             format!("newClientOrderId={}", order_id),
         ];
 
-        let price_tick = if open_ctx.price_tick > 0.0 {
-            open_ctx.price_tick as f64
-        } else {
-            0.0
-        };
-
-        let raw_price = f64::from(open_ctx.price);
+        let price_tick = open_ctx.price_tick.max(0.0);
+        let raw_price = open_ctx.price;
         let mut effective_price = raw_price;
 
         if open_ctx.order_type.is_limit() {
@@ -778,12 +773,8 @@ impl BinSingleForwardArbStrategy {
             Side::Sell => (Side::Buy, "BUY"),
         };
 
-        let price_tick = if ctx.price_tick > 0.0 {
-            ctx.price_tick as f64
-        } else {
-            0.0
-        };
-        let raw_price = f64::from(ctx.limit_price);
+        let price_tick = ctx.price_tick.max(0.0);
+        let raw_price = ctx.limit_price;
         let mut limit_price = raw_price;
         if price_tick > 0.0 {
             limit_price = align_price_ceil(limit_price, price_tick);

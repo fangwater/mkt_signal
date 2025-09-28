@@ -543,8 +543,8 @@ impl MockController {
                 amount: qty,
                 side: Side::Buy,
                 order_type: OrderType::Limit,
-                price: limit_price as f32,
-                price_tick: price_tick as f32,
+                price: limit_price,
+                price_tick,
                 exp_time: self.cfg.max_open_keep_us(),
             }
             .to_bytes();
@@ -604,8 +604,8 @@ impl MockController {
             }
             let ctx = BinSingleForwardArbCloseMarginCtx {
                 spot_symbol: spot_symbol.clone(),
-                limit_price: limit_price as f32,
-                price_tick: price_tick as f32,
+                limit_price,
+                price_tick,
                 exp_time: self.cfg.max_close_keep_us(),
             }
             .to_bytes();
