@@ -691,6 +691,7 @@ fn handle_trade_engine_response(ctx: &mut RuntimeContext, outcome: TradeExecOutc
 }
 
 fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
+    let raw_signal = signal.to_bytes();
     match signal.signal_type {
         SignalType::BinSingleForwardArbOpen => {
             match BinSingleForwardArbOpenCtx::from_bytes(signal.context.clone()) {
@@ -711,7 +712,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                     );
                     strategy.set_signal_sender(signal_tx);
 
-                    strategy.handle_trade_signal(&signal.context);
+                    strategy.handle_trade_signal(&raw_signal);
 
                     if strategy.is_active() {
                         ctx.insert_strategy(symbol, Box::new(strategy));
@@ -723,14 +724,18 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
         SignalType::BinSingleForwardArbHedge
         | SignalType::BinSingleForwardArbCloseMargin
         | SignalType::BinSingleForwardArbCloseUm => {
-            dispatch_signal_to_existing_strategy(ctx, signal);
+            dispatch_signal_to_existing_strategy(ctx, signal, raw_signal);
         }
     }
 
     ctx.cleanup_inactive();
 }
 
-fn dispatch_signal_to_existing_strategy(ctx: &mut RuntimeContext, signal: TradeSignal) {
+fn dispatch_signal_to_existing_strategy(
+    ctx: &mut RuntimeContext,
+    signal: TradeSignal,
+    raw_signal: Bytes,
+) {
     let maybe_symbol = match signal.signal_type {
         SignalType::BinSingleForwardArbHedge => None,
         SignalType::BinSingleForwardArbCloseMargin => {
@@ -765,8 +770,9 @@ fn dispatch_signal_to_existing_strategy(ctx: &mut RuntimeContext, signal: TradeS
     };
 
     for strategy_id in strategy_ids {
+        let signal_bytes = raw_signal.clone();
         ctx.with_strategy_mut(strategy_id, |strategy| {
-            strategy.handle_trade_signal(&signal.context);
+            strategy.handle_trade_signal(&signal_bytes);
         });
     }
 }

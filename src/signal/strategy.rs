@@ -6,7 +6,8 @@ use crate::{
     trade_engine::trade_response_handle::TradeExecOutcome,
 };
 use bytes::Bytes;
-use std::collections::{HashMap, VecDeque};
+use log::info;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 pub trait Strategy {
     fn get_id(&self) -> i32;
@@ -23,6 +24,7 @@ pub trait Strategy {
 pub struct StrategyManager {
     strategies: HashMap<i32, Box<dyn Strategy>>,
     order: VecDeque<i32>,
+    known_ids: HashSet<i32>,
 }
 
 impl StrategyManager {
@@ -31,6 +33,7 @@ impl StrategyManager {
         Self {
             strategies: HashMap::new(),
             order: VecDeque::new(),
+            known_ids: HashSet::new(),
         }
     }
 
@@ -52,9 +55,25 @@ impl StrategyManager {
     /// 插入策略，如果已有同 id 策略则返回旧值
     pub fn insert(&mut self, strategy: Box<dyn Strategy>) -> Option<Box<dyn Strategy>> {
         let id = strategy.get_id();
+        let is_known = self.known_ids.contains(&id);
         let old = self.strategies.insert(id, strategy);
         if old.is_none() {
             self.order.push_back(id);
+        }
+        if !is_known {
+            self.known_ids.insert(id);
+            info!(
+                "策略管理器: 新增策略 id={}，当前活跃策略数={}",
+                id,
+                self.strategies.len()
+            );
+        }
+        if old.is_some() {
+            info!(
+                "策略管理器: 替换已有策略 id={}，当前活跃策略数={}",
+                id,
+                self.strategies.len()
+            );
         }
         old
     }
@@ -62,7 +81,16 @@ impl StrategyManager {
     /// 移除策略
     pub fn remove(&mut self, strategy_id: i32) -> Option<Box<dyn Strategy>> {
         self.order.retain(|id| *id != strategy_id);
-        self.strategies.remove(&strategy_id)
+        let removed = self.strategies.remove(&strategy_id);
+        if removed.is_some() {
+            self.known_ids.remove(&strategy_id);
+            info!(
+                "策略管理器: 移除策略 id={}，剩余活跃策略数={}",
+                strategy_id,
+                self.strategies.len()
+            );
+        }
+        removed
     }
 
     /// 取出指定策略，调用方处理后可重新插入
@@ -91,7 +119,14 @@ impl StrategyManager {
             }
 
             if remove {
-                self.strategies.remove(&strategy_id);
+                if self.strategies.remove(&strategy_id).is_some() {
+                    self.known_ids.remove(&strategy_id);
+                    info!(
+                        "策略管理器: 策略 id={} 在周期检查中被清理，剩余活跃策略数={}",
+                        strategy_id,
+                        self.strategies.len()
+                    );
+                }
             } else {
                 self.order.push_back(strategy_id);
             }
