@@ -1232,6 +1232,7 @@ impl Strategy for BinSingleForwardArbStrategy {
 
                     let success = (200..300).contains(&outcome.status);
                     let now = get_timestamp_us();
+                    let mut final_status: Option<OrderExecutionStatus> = None;
 
                     let mut manager = self.order_manager.borrow_mut();
                     if !manager.update(outcome.client_order_id, |order| {
@@ -1242,6 +1243,7 @@ impl Strategy for BinSingleForwardArbStrategy {
                             order.update_status(OrderExecutionStatus::Rejected);
                             order.set_end_time(now);
                         }
+                        final_status = Some(order.status);
                     }) {
                         warn!(
                             "{}: strategy_id={} 未找到 client_order_id={} 对应订单",
@@ -1249,6 +1251,20 @@ impl Strategy for BinSingleForwardArbStrategy {
                             self.strategy_id,
                             outcome.client_order_id
                         );
+                    } else if outcome.req_type == TradeRequestType::BinanceNewMarginOrder {
+                        if let Some(status) = final_status {
+                            if status.is_terminal() && status != OrderExecutionStatus::Filled {
+                                self.margin_order_id = 0;
+                                self.open_timeout_us = None;
+                                warn!(
+                                    "{}: strategy_id={} margin 开仓回执终止 status={} body={}",
+                                    Self::strategy_name(),
+                                    self.strategy_id,
+                                    status.as_str(),
+                                    outcome.body
+                                );
+                            }
+                        }
                     }
 
                     if !success {
@@ -1709,7 +1725,17 @@ impl Strategy for BinSingleForwardArbStrategy {
             return false;
         };
 
-        if margin_order.status != OrderExecutionStatus::Filled {
+        if margin_order.status == OrderExecutionStatus::Filled {
+            // proceed
+        } else if margin_order.status.is_terminal() {
+            warn!(
+                "{}: strategy_id={} margin 开仓单终结 status={}，策略退出",
+                Self::strategy_name(),
+                self.strategy_id,
+                margin_order.status.as_str()
+            );
+            return false;
+        } else {
             debug!(
                 "{}: strategy_id={} margin 开仓单状态={}，等待成交",
                 Self::strategy_name(),
