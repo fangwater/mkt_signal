@@ -5,7 +5,7 @@ use std::rc::Rc;
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
-use log::{debug, trace, warn};
+use log::{debug, info, trace, warn};
 use reqwest::Client;
 use serde::Deserialize;
 use sha2::Sha256;
@@ -179,6 +179,14 @@ impl BinancePmSpotAccountManager {
             balance.cross_margin_asset = balance.cross_margin_free + balance.cross_margin_locked;
             balance.update_time = update_time;
             balance.negative_balance = balance.cross_margin_free < 0.0;
+            info!(
+                "现货余额增量更新 asset={} delta={} 总余额={} 可用={} 更新时间={}",
+                balance.asset.as_str(),
+                delta,
+                balance.total_wallet_balance,
+                balance.cross_margin_free,
+                update_time
+            );
             return;
         }
 
@@ -197,6 +205,12 @@ impl BinancePmSpotAccountManager {
             update_time,
             negative_balance: delta < 0.0,
         };
+        info!(
+            "新增现货资产 asset={} 初始余额={} 更新时间={}",
+            upper,
+            delta,
+            update_time
+        );
         snapshot.balances.push(new_balance);
     }
 
@@ -233,6 +247,15 @@ impl BinancePmSpotAccountManager {
             balance.update_time = update_time;
             balance.negative_balance =
                 balance.total_wallet_balance < 0.0 || balance.cross_margin_free < 0.0;
+            info!(
+                "现货余额快照更新 asset={} 钱包={} 交割合计={} 可用={} 锁定={} 更新时间={}",
+                balance.asset.as_str(),
+                balance.total_wallet_balance,
+                balance.cross_margin_asset,
+                balance.cross_margin_free,
+                balance.cross_margin_locked,
+                update_time
+            );
             return;
         }
 
@@ -251,6 +274,13 @@ impl BinancePmSpotAccountManager {
             update_time,
             negative_balance: wallet_balance < 0.0 || cross_wallet_balance < 0.0,
         };
+        info!(
+            "新增现货资产快照 asset={} 钱包={} 交割合计={} 更新时间={}",
+            upper,
+            wallet_balance,
+            cross_wallet_balance,
+            update_time
+        );
         snapshot.balances.push(balance);
     }
 

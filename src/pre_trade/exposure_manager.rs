@@ -44,11 +44,84 @@ pub struct ExposureManager {
     abs_total_exposure: f64,
 }
 
+struct ExposureState {
+    exposures: Vec<ExposureEntry>,
+    usdt: Option<UsdtSummary>,
+    total_equity: f64,
+    abs_total_exposure: f64,
+}
+
 impl ExposureManager {
     pub fn new(
         um_snapshot: &BinanceUmAccountSnapshot,
         spot_snapshot: &BinanceSpotBalanceSnapshot,
     ) -> Self {
+        let state = Self::compute_state(um_snapshot, spot_snapshot);
+        Self::log_state("初始化", &state);
+        let ExposureState {
+            exposures,
+            usdt,
+            total_equity,
+            abs_total_exposure,
+        } = state;
+
+        Self {
+            exposures,
+            usdt,
+            total_equity,
+            abs_total_exposure,
+        }
+    }
+
+    pub fn exposures(&self) -> &[ExposureEntry] {
+        &self.exposures
+    }
+
+    pub fn usdt_summary(&self) -> Option<&UsdtSummary> {
+        self.usdt.as_ref()
+    }
+
+    /// 根据资产名称（大写）查找敞口信息。
+    pub fn exposure_for_asset(&self, asset: &str) -> Option<&ExposureEntry> {
+        self.exposures
+            .iter()
+            .find(|entry| entry.asset.eq_ignore_ascii_case(asset))
+    }
+
+    /// 返回账户总权益（近似值），用于敞口比例计算。
+    pub fn total_equity(&self) -> f64 {
+        self.total_equity
+    }
+
+    /// 返回所有资产敞口绝对值之和。
+    pub fn total_abs_exposure(&self) -> f64 {
+        self.abs_total_exposure
+    }
+
+    pub fn recompute(
+        &mut self,
+        um_snapshot: &BinanceUmAccountSnapshot,
+        spot_snapshot: &BinanceSpotBalanceSnapshot,
+    ) {
+        let state = Self::compute_state(um_snapshot, spot_snapshot);
+        Self::log_state("重算", &state);
+        let ExposureState {
+            exposures,
+            usdt,
+            total_equity,
+            abs_total_exposure,
+        } = state;
+
+        self.exposures = exposures;
+        self.usdt = usdt;
+        self.total_equity = total_equity;
+        self.abs_total_exposure = abs_total_exposure;
+    }
+
+    fn compute_state(
+        um_snapshot: &BinanceUmAccountSnapshot,
+        spot_snapshot: &BinanceSpotBalanceSnapshot,
+    ) -> ExposureState {
         let mut spot_map: HashMap<String, BinanceSpotBalance> = HashMap::new();
         for bal in &spot_snapshot.balances {
             spot_map.insert(bal.asset.to_uppercase(), bal.clone());
@@ -72,7 +145,6 @@ impl ExposureManager {
                 continue;
             };
             if base_asset.eq_ignore_ascii_case("USDT") {
-                // USDT 敞口单独处理
                 continue;
             }
             let aggregate = um_map
@@ -127,20 +199,7 @@ impl ExposureManager {
         let usdt_total_wallet = usdt.as_ref().map(|u| u.total_wallet_balance).unwrap_or(0.0);
         let total_equity = usdt_total_wallet + total_spot_abs + total_um_abs;
 
-        debug!(
-            "敞口管理器初始化完成: 总权益={:.6}, 总敞口绝对值={:.6}, 资产数={}",
-            total_equity,
-            abs_total_exposure,
-            exposures.len()
-        );
-        for entry in &exposures {
-            debug!(
-                "资产敞口明细: asset={} spot_total={:.6} um_net={:.6} exposure={:.6}",
-                entry.asset, entry.spot_total_wallet, entry.um_net_position, entry.exposure
-            );
-        }
-
-        Self {
+        ExposureState {
             exposures,
             usdt,
             total_equity,
@@ -148,29 +207,44 @@ impl ExposureManager {
         }
     }
 
-    pub fn exposures(&self) -> &[ExposureEntry] {
-        &self.exposures
-    }
+    fn log_state(stage: &str, state: &ExposureState) {
+        if state.exposures.is_empty() {
+            debug!(
+                "敞口管理器{}完成: 总权益={:.6}, 总敞口绝对值={:.6}, 非 USDT 敞口为空",
+                stage,
+                state.total_equity,
+                state.abs_total_exposure,
+            );
+            return;
+        }
 
-    pub fn usdt_summary(&self) -> Option<&UsdtSummary> {
-        self.usdt.as_ref()
-    }
-
-    /// 根据资产名称（大写）查找敞口信息。
-    pub fn exposure_for_asset(&self, asset: &str) -> Option<&ExposureEntry> {
-        self.exposures
+        let rows: Vec<Vec<String>> = state
+            .exposures
             .iter()
-            .find(|entry| entry.asset.eq_ignore_ascii_case(asset))
-    }
+            .map(|entry| {
+                vec![
+                    entry.asset.clone(),
+                    fmt_decimal(entry.spot_total_wallet),
+                    fmt_decimal(entry.um_net_position),
+                    fmt_decimal(entry.um_position_initial_margin),
+                    fmt_decimal(entry.um_open_order_initial_margin),
+                    fmt_decimal(entry.exposure),
+                ]
+            })
+            .collect();
 
-    /// 返回账户总权益（近似值），用于敞口比例计算。
-    pub fn total_equity(&self) -> f64 {
-        self.total_equity
-    }
+        let table = render_three_line_table(
+            &["Asset", "SpotTotal", "UMNet", "UMPosIM", "UMOpenIM", "Exposure"],
+            &rows,
+        );
 
-    /// 返回所有资产敞口绝对值之和。
-    pub fn total_abs_exposure(&self) -> f64 {
-        self.abs_total_exposure
+        debug!(
+            "敞口管理器{}完成: 总权益={:.6}, 总敞口绝对值={:.6}\n{}",
+            stage,
+            state.total_equity,
+            state.abs_total_exposure,
+            table
+        );
     }
 }
 
@@ -180,6 +254,89 @@ fn signed_position_amount(position: &BinanceUmPosition) -> f64 {
         PositionSide::Long => position.position_amt.abs(),
         PositionSide::Short => -position.position_amt.abs(),
     }
+}
+
+fn fmt_decimal(value: f64) -> String {
+    if value == 0.0 {
+        return "0".to_string();
+    }
+    let mut s = format!("{:.6}", value);
+    if s.contains('.') {
+        while s.ends_with('0') {
+            s.pop();
+        }
+        if s.ends_with('.') {
+            s.pop();
+        }
+    }
+    if s.is_empty() {
+        "0".to_string()
+    } else {
+        s
+    }
+}
+
+fn render_three_line_table(headers: &[&str], rows: &[Vec<String>]) -> String {
+    let widths = compute_widths(headers, rows);
+    let mut out = String::new();
+    out.push_str(&build_separator(&widths, '-'));
+    out.push('\n');
+    out.push_str(&build_row(
+        headers
+            .iter()
+            .map(|h| h.to_string())
+            .collect::<Vec<String>>(),
+        &widths,
+    ));
+    out.push('\n');
+    out.push_str(&build_separator(&widths, '='));
+    if rows.is_empty() {
+        out.push('\n');
+        out.push_str(&build_separator(&widths, '-'));
+        return out;
+    }
+    for row in rows {
+        out.push('\n');
+        out.push_str(&build_row(row.clone(), &widths));
+    }
+    out.push('\n');
+    out.push_str(&build_separator(&widths, '-'));
+    out
+}
+
+fn compute_widths(headers: &[&str], rows: &[Vec<String>]) -> Vec<usize> {
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+    for row in rows {
+        for (idx, cell) in row.iter().enumerate() {
+            if idx >= widths.len() {
+                continue;
+            }
+            widths[idx] = widths[idx].max(cell.len());
+        }
+    }
+    widths
+}
+
+fn build_separator(widths: &[usize], fill: char) -> String {
+    let mut line = String::new();
+    line.push('+');
+    for width in widths {
+        line.push_str(&fill.to_string().repeat(width + 2));
+        line.push('+');
+    }
+    line
+}
+
+fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
+    let mut row = String::new();
+    row.push('|');
+    for (cell, width) in cells.iter().zip(widths.iter()) {
+        row.push(' ');
+        row.push_str(&format!("{:<width$}", cell, width = *width));
+        row.push(' ');
+        row.push('|');
+    }
+    row
 }
 
 fn derive_base_asset(symbol: &str, known_assets: &BTreeSet<String>) -> Option<String> {

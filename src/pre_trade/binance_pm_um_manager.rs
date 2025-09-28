@@ -6,7 +6,7 @@ use std::rc::Rc;
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
-use log::{debug, trace, warn};
+use log::{debug, info, trace, warn};
 use reqwest::Client;
 use serde::Deserialize;
 use sha2::Sha256;
@@ -229,6 +229,15 @@ impl BinancePmUmAccountManager {
             position.entry_price = entry_price;
             position.unrealized_profit = unrealized_pnl;
             position.update_time = update_time;
+            info!(
+                "UM持仓更新 symbol={} side={} 持仓量={} 入场价={} 未实现盈亏={} 更新时间={}",
+                position.symbol.as_str(),
+                position.position_side,
+                position.position_amt,
+                position.entry_price,
+                position.unrealized_profit,
+                update_time
+            );
             return;
         }
 
@@ -252,6 +261,16 @@ impl BinancePmUmAccountManager {
                 symbol, side, breakeven_price, position_amount
             );
         }
+        info!(
+            "新增UM持仓 symbol={} side={} 持仓量={} 入场价={} 未实现盈亏={} breakeven={} 更新时间={}",
+            symbol,
+            side,
+            position_amount,
+            entry_price,
+            unrealized_pnl,
+            breakeven_price,
+            update_time
+        );
         snapshot.positions.push(new_position);
     }
 

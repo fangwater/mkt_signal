@@ -26,7 +26,7 @@ use bytes::Bytes;
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -121,10 +121,15 @@ impl PreTrade {
 }
 
 struct BootstrapResources {
+    //币安 合约资产管理器，基于统一账户update更新
     um_manager: BinancePmUmAccountManager,
+    //币安 现货资产管理器, 基于统一账户update更新
     spot_manager: BinancePmSpotAccountManager,
+    //币安 现货+合约敞口管理器
     exposure_manager: ExposureManager,
+    //币安 标记价格表，辅助计算以usdt计价的资产敞口
     price_table: Rc<RefCell<PriceTable>>,
+    //收取订单请求的服务名称
     order_req_service: String,
 }
 
@@ -319,6 +324,19 @@ impl RuntimeContext {
         self.signal_tx.clone()
     }
 
+    fn refresh_exposures(&mut self) {
+        let Some(spot_snapshot) = self.spot_manager.snapshot() else {
+            return;
+        };
+        let Some(um_snapshot) = self.um_manager.snapshot() else {
+            return;
+        };
+        self
+            .exposure_manager
+            .borrow_mut()
+            .recompute(&um_snapshot, &spot_snapshot);
+    }
+
     fn tick(&mut self) {
         let now = get_timestamp_us();
         self.strategy_mgr.handle_period_clock(now);
@@ -434,6 +452,10 @@ fn spawn_account_listener(cfg: &AccountStreamCfg) -> Result<UnboundedReceiver<Ac
                             event_type,
                             event_time_ms,
                         };
+                        info!(
+                            "account event received: type={:?} time={:?} len={}",
+                            evt.event_type, evt.event_time_ms, evt.payload_len
+                        );
                         if tx.send(evt).is_err() {
                             break;
                         }
@@ -616,6 +638,7 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
             let msg = BalanceUpdateMsg::from_bytes(data)?;
             ctx.spot_manager
                 .apply_balance_delta(&msg.asset, msg.delta, msg.event_time);
+            ctx.refresh_exposures();
         }
         AccountEventType::AccountUpdateBalance => {
             let msg = AccountUpdateBalanceMsg::from_bytes(data)?;
@@ -626,6 +649,7 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
                 msg.balance_change,
                 msg.event_time,
             );
+            ctx.refresh_exposures();
         }
         AccountEventType::AccountUpdatePosition => {
             let msg = AccountUpdatePositionMsg::from_bytes(data)?;
@@ -638,6 +662,7 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
                 msg.breakeven_price,
                 msg.event_time,
             );
+            ctx.refresh_exposures();
         }
         AccountEventType::ExecutionReport => {
             let report = ExecutionReportMsg::from_bytes(data)?;
