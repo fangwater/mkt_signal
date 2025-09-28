@@ -15,7 +15,7 @@ use tokio::signal;
 #[cfg(unix)]
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tokio::sync::mpsc;
-use tokio::time::{interval, Instant, MissedTickBehavior};
+use tokio::time::{interval, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
 use mkt_signal::common::iceoryx_publisher::SignalPublisher;
@@ -33,7 +33,7 @@ use mkt_signal::signal::binance_forward_arb::{
 use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
 
 const SIGNAL_CHANNEL_MT_ARBITRAGE: &str = "mt_arbitrage";
-const NODE_FUNDING_STRATEGY_SUB: &str = "funding_rate_strategy_mock";
+const NODE_FUNDING_STRATEGY_SUB: &str = "funding_rate_strategy";
 const DEFAULT_CFG_PATH: &str = "config/funding_rate_strategy.toml";
 const DEFAULT_TRACKING_PATH: &str = "config/tracking_symbol.json";
 
@@ -315,7 +315,6 @@ struct MockController {
     futures_index: HashMap<String, String>,
     min_qty: MinQtyTable,
     qty_step_cache: RefCell<HashMap<String, QtyStepInfo>>,
-    next_snapshot: Instant,
 }
 
 impl MockController {
@@ -331,7 +330,6 @@ impl MockController {
             futures_index: HashMap::new(),
             min_qty,
             qty_step_cache: RefCell::new(HashMap::new()),
-            next_snapshot: Instant::now() + Duration::from_secs(5),
         };
         controller.reload_symbols()?;
         Ok(controller)
@@ -358,10 +356,6 @@ impl MockController {
 
     fn on_tick(&mut self, subscriber: &mut MultiChannelSubscriber) {
         self.poll_market(subscriber);
-        if Instant::now() >= self.next_snapshot {
-            self.print_symbol_snapshot();
-            self.next_snapshot = Instant::now() + Duration::from_secs(5);
-        }
     }
 
     async fn handle_command(&mut self, line: &str) -> Result<bool> {
