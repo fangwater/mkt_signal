@@ -669,13 +669,32 @@ impl MockController {
                     close_threshold: 0.0,
                 })
             }
+            serde_json::Value::Array(items) => {
+                let spot = items.get(0)?.as_str()?.to_uppercase();
+                let futures_symbol = items
+                    .get(1)
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_uppercase())
+                    .unwrap_or_else(|| spot.clone());
+                let open_threshold = items.get(2).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let close_threshold = items
+                    .get(3)
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(open_threshold);
+                Some(SymbolThreshold {
+                    spot_symbol: spot,
+                    futures_symbol,
+                    open_threshold,
+                    close_threshold,
+                })
+            }
             serde_json::Value::Object(map) => {
                 let spot = map.get("spot_symbol")?.as_str()?.to_uppercase();
-                let fut = map
+                let futures_symbol = map
                     .get("futures_symbol")
                     .and_then(|v| v.as_str())
-                    .unwrap_or(&spot)
-                    .to_uppercase();
+                    .map(|s| s.to_uppercase())
+                    .unwrap_or_else(|| spot.clone());
                 let open_threshold = map.get("open_threshold")?.as_f64()?;
                 let close_threshold = map
                     .get("close_threshold")
@@ -683,7 +702,7 @@ impl MockController {
                     .unwrap_or(open_threshold);
                 Some(SymbolThreshold {
                     spot_symbol: spot,
-                    futures_symbol: fut,
+                    futures_symbol,
                     open_threshold,
                     close_threshold,
                 })
