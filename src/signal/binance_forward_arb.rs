@@ -252,6 +252,8 @@ pub struct BinSingleForwardArbStrategy {
     order_manager: Rc<RefCell<OrderManager>>,
     exposure_manager: Rc<RefCell<ExposureManager>>,
     order_tx: UnboundedSender<Bytes>,
+    max_symbol_exposure_ratio: f64,
+    max_total_exposure_ratio: f64,
 }
 
 impl BinSingleForwardArbStrategy {
@@ -262,8 +264,10 @@ impl BinSingleForwardArbStrategy {
         order_manager: Rc<RefCell<OrderManager>>,
         exposure_manager: Rc<RefCell<ExposureManager>>,
         order_tx: UnboundedSender<Bytes>,
+        max_symbol_exposure_ratio: f64,
+        max_total_exposure_ratio: f64,
     ) -> Self {
-        Self {
+        let strategy = Self {
             strategy_id: id,
             symbol,
             create_time: now,
@@ -279,7 +283,20 @@ impl BinSingleForwardArbStrategy {
             order_manager,
             exposure_manager,
             order_tx,
-        }
+            max_symbol_exposure_ratio,
+            max_total_exposure_ratio,
+        };
+
+        info!(
+            "{}: strategy_id={} 初始化 symbol={} max_symbol_ratio={:.2}% max_total_ratio={:.2}%",
+            Self::strategy_name(),
+            strategy.strategy_id,
+            strategy.symbol,
+            strategy.max_symbol_exposure_ratio * 100.0,
+            strategy.max_total_exposure_ratio * 100.0
+        );
+
+        strategy
     }
 
     pub fn set_signal_sender(&mut self, signal_tx: UnboundedSender<Bytes>) {
@@ -305,8 +322,17 @@ impl BinSingleForwardArbStrategy {
 
     //2、传入binance_pm_spot_manager的ref，检测当前symbol的敞口
     //symbol是xxusdt，查看当前symbol的敞口是否大于总资产比例的3%
-    fn check_for_symbol_exposure(symbol: &String, exposure_manager: &ExposureManager) -> bool {
-        const EXPOSURE_RATIO_LIMIT: f64 = 0.03;
+    fn check_for_symbol_exposure(&self, symbol: &str, exposure_manager: &ExposureManager) -> bool {
+        let limit = self.max_symbol_exposure_ratio;
+        if limit <= 0.0 {
+            debug!(
+                "{}: symbol={} 敞口阈值 <= 0，跳过敞口检查",
+                Self::strategy_name(),
+                symbol
+            );
+            return true;
+        }
+
         let symbol_upper = symbol.to_uppercase();
         let Some(base_asset) = Self::extract_base_asset(&symbol_upper) else {
             warn!(
@@ -336,13 +362,13 @@ impl BinSingleForwardArbStrategy {
         }
 
         let ratio = entry.exposure.abs() / total_equity;
-        if ratio > EXPOSURE_RATIO_LIMIT {
+        if ratio > limit {
             warn!(
                 "{}: 资产 {} 敞口占比 {:.4}% 超过阈值 {:.2}% (敞口={:.6}, 权益={:.6})",
                 Self::strategy_name(),
                 base_asset,
                 ratio * 100.0,
-                EXPOSURE_RATIO_LIMIT * 100.0,
+                limit * 100.0,
                 entry.exposure,
                 total_equity
             );
@@ -360,9 +386,14 @@ impl BinSingleForwardArbStrategy {
         }
     }
 
-    //3、检查总敞口是否大于总资产的3%
-    fn check_for_total_exposure(exposure_manager: &ExposureManager) -> bool {
-        const EXPOSURE_RATIO_LIMIT: f64 = 0.03;
+    //3、检查总敞口是否超过配置阈值
+    fn check_for_total_exposure(&self, exposure_manager: &ExposureManager) -> bool {
+        let limit = self.max_total_exposure_ratio;
+        if limit <= 0.0 {
+            debug!("{}: 总敞口阈值 <= 0，跳过检查", Self::strategy_name());
+            return true;
+        }
+
         let total_equity = exposure_manager.total_equity();
         if total_equity <= f64::EPSILON {
             warn!(
@@ -374,12 +405,12 @@ impl BinSingleForwardArbStrategy {
 
         let abs_total = exposure_manager.total_abs_exposure();
         let ratio = abs_total / total_equity;
-        if ratio > EXPOSURE_RATIO_LIMIT {
+        if ratio > limit {
             warn!(
                 "{}: 总敞口占比 {:.4}% 超过阈值 {:.2}% (总敞口={:.6}, 权益={:.6})",
                 Self::strategy_name(),
                 ratio * 100.0,
-                EXPOSURE_RATIO_LIMIT * 100.0,
+                limit * 100.0,
                 abs_total,
                 total_equity
             );
@@ -437,7 +468,7 @@ impl BinSingleForwardArbStrategy {
 
         {
             let exposure_manager = self.exposure_manager.borrow();
-            if !Self::check_for_symbol_exposure(&open_ctx.spot_symbol, &exposure_manager) {
+            if !self.check_for_symbol_exposure(&open_ctx.spot_symbol, &exposure_manager) {
                 return Err(format!(
                     "{}: symbol={} 敞口校验未通过",
                     Self::strategy_name(),
@@ -445,7 +476,7 @@ impl BinSingleForwardArbStrategy {
                 ));
             }
 
-            if !Self::check_for_total_exposure(&exposure_manager) {
+            if !self.check_for_total_exposure(&exposure_manager) {
                 return Err(format!("{}: 总敞口校验未通过", Self::strategy_name()));
             }
         }

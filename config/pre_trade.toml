@@ -18,6 +18,8 @@ max_payload_bytes = 1024
 
 [params]
 max_pos_u = 2500.0     # 最大持仓(U)
+max_symbol_exposure_ratio = 0.25   # 单一资产最大敞口比例 (25%)
+max_total_exposure_ratio = 0.25    # 总敞口占权益比例 (25%)
 
 [risk_checks.binance_pm_um]
 # REST 接口基地址，可使用默认生产环境

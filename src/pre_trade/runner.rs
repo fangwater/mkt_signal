@@ -9,7 +9,7 @@ use crate::pre_trade::binance_pm_um_manager::{
     BinancePmUmAccountManager, BinanceUmAccountSnapshot, BinanceUmPosition,
 };
 use crate::pre_trade::config::{
-    AccountStreamCfg, PreTradeCfg, SignalSubscriptionsCfg, TradeEngineRespCfg,
+    AccountStreamCfg, PreTradeCfg, SignalSubscriptionsCfg, StrategyParamsCfg, TradeEngineRespCfg,
 };
 use crate::pre_trade::event::AccountEvent;
 use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
@@ -65,11 +65,14 @@ impl PreTrade {
         let (order_tx, order_rx) = mpsc::unbounded_channel::<Bytes>();
         let (signal_tx, signal_rx) = mpsc::unbounded_channel::<Bytes>();
 
+        let strategy_params = self.cfg.params.clone().unwrap_or_default();
+
         let mut runtime = RuntimeContext::new(
             bootstrap,
             order_tx.clone(),
             signal_tx.clone(),
             order_publisher,
+            strategy_params,
         );
 
         let mut order_rx = order_rx;
@@ -237,6 +240,7 @@ struct RuntimeContext {
     order_tx: UnboundedSender<Bytes>,
     signal_tx: UnboundedSender<Bytes>,
     order_publisher: OrderPublisher,
+    strategy_params: StrategyParamsCfg,
 }
 
 impl RuntimeContext {
@@ -245,6 +249,7 @@ impl RuntimeContext {
         order_tx: UnboundedSender<Bytes>,
         signal_tx: UnboundedSender<Bytes>,
         order_publisher: OrderPublisher,
+        strategy_params: StrategyParamsCfg,
     ) -> Self {
         let BootstrapResources {
             um_manager,
@@ -268,6 +273,7 @@ impl RuntimeContext {
             order_tx,
             signal_tx,
             order_publisher,
+            strategy_params,
         }
     }
 
@@ -709,6 +715,8 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                         ctx.order_manager.clone(),
                         ctx.exposure_manager.clone(),
                         order_tx,
+                        ctx.strategy_params.max_symbol_exposure_ratio,
+                        ctx.strategy_params.max_total_exposure_ratio,
                     );
                     strategy.set_signal_sender(signal_tx);
 

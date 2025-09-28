@@ -43,10 +43,24 @@ pub struct SignalSubscriptionsCfg {
     pub max_payload_bytes: usize,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct StrategyParamsCfg {
     #[serde(default, rename = "max_pos_u")]
     pub max_pos_u: f64,
+    #[serde(default = "default_symbol_exposure_ratio")]
+    pub max_symbol_exposure_ratio: f64,
+    #[serde(default = "default_total_exposure_ratio")]
+    pub max_total_exposure_ratio: f64,
+}
+
+impl Default for StrategyParamsCfg {
+    fn default() -> Self {
+        Self {
+            max_pos_u: 0.0,
+            max_symbol_exposure_ratio: default_symbol_exposure_ratio(),
+            max_total_exposure_ratio: default_total_exposure_ratio(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -122,6 +136,14 @@ const fn default_trade_resp_payload() -> usize {
 }
 const fn default_signal_payload() -> usize {
     1_024
+}
+
+const fn default_symbol_exposure_ratio() -> f64 {
+    0.03
+}
+
+const fn default_total_exposure_ratio() -> f64 {
+    0.03
 }
 
 fn default_binance_pm_rest_base() -> String {
