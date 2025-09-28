@@ -211,9 +211,7 @@ impl ExposureManager {
         if state.exposures.is_empty() {
             debug!(
                 "敞口管理器{}完成: 总权益={:.6}, 总敞口绝对值={:.6}, 非 USDT 敞口为空",
-                stage,
-                state.total_equity,
-                state.abs_total_exposure,
+                stage, state.total_equity, state.abs_total_exposure,
             );
             return;
         }
@@ -234,16 +232,20 @@ impl ExposureManager {
             .collect();
 
         let table = render_three_line_table(
-            &["Asset", "SpotTotal", "UMNet", "UMPosIM", "UMOpenIM", "Exposure"],
+            &[
+                "Asset",
+                "SpotTotal",
+                "UMNet",
+                "UMPosIM",
+                "UMOpenIM",
+                "Exposure",
+            ],
             &rows,
         );
 
         debug!(
             "敞口管理器{}完成: 总权益={:.6}, 总敞口绝对值={:.6}\n{}",
-            stage,
-            state.total_equity,
-            state.abs_total_exposure,
-            table
+            stage, state.total_equity, state.abs_total_exposure, table
         );
     }
 }

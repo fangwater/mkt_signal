@@ -331,8 +331,7 @@ impl RuntimeContext {
         let Some(um_snapshot) = self.um_manager.snapshot() else {
             return;
         };
-        self
-            .exposure_manager
+        self.exposure_manager
             .borrow_mut()
             .recompute(&um_snapshot, &spot_snapshot);
     }

@@ -207,9 +207,7 @@ impl BinancePmSpotAccountManager {
         };
         info!(
             "新增现货资产 asset={} 初始余额={} 更新时间={}",
-            upper,
-            delta,
-            update_time
+            upper, delta, update_time
         );
         snapshot.balances.push(new_balance);
     }
@@ -276,10 +274,7 @@ impl BinancePmSpotAccountManager {
         };
         info!(
             "新增现货资产快照 asset={} 钱包={} 交割合计={} 更新时间={}",
-            upper,
-            wallet_balance,
-            cross_wallet_balance,
-            update_time
+            upper, wallet_balance, cross_wallet_balance, update_time
         );
         snapshot.balances.push(balance);
     }

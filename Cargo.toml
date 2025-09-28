@@ -36,6 +36,10 @@ path = "src/bin/demo_send_um_market_short.rs"
 name = "pre_trade"
 path = "src/bin/pre_trade.rs"
 
+[[bin]]
+name = "funding_rate_strategy_mock"
+path = "src/bin/funding_rate_strategy_mock.rs"
+
 [dependencies]
 local-ip-address = "0.6"
 serde_yaml = "0.9"
