@@ -40,7 +40,7 @@ const ORDER_REQ_PAYLOAD: usize = 4_096;
 
 const NODE_PRE_TRADE_ACCOUNT: &str = "pre_trade_account";
 const NODE_PRE_TRADE_TRADE_RESP: &str = "pre_trade_trade_resp";
-const NODE_PRE_TRADE_SIGNAL_PREFIX: &str = "pre_trade_signal_";
+const NODE_PRE_TRADE_SIGNAL_PREFIX: &str = "signals";
 const NODE_PRE_TRADE_ORDER_REQ: &str = "pre_trade_order_req";
 const NODE_PRE_TRADE_DERIVATIVES: &str = "pre_trade_derivatives";
 const DERIVATIVES_SERVICE: &str = "data_pubs/binance-futures/derivatives";
@@ -558,7 +558,7 @@ fn spawn_signal_listeners(cfg: &SignalSubscriptionsCfg) -> Result<UnboundedRecei
                     .create::<ipc::Service>()?;
 
                 let service = node
-                    .service_builder(&ServiceName::new(&service_name)?)
+                    .service_builder(&ServiceName::new(&format!("signal_pubs/{}", channel_name))?)
                     .publish_subscribe::<[u8; SIGNAL_PAYLOAD]>()
                     .open_or_create()?;
                 let subscriber: Subscriber<ipc::Service, [u8; SIGNAL_PAYLOAD], ()> =
@@ -696,14 +696,6 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
             match BinSingleForwardArbOpenCtx::from_bytes(signal.context.clone()) {
                 Ok(open_ctx) => {
                     let symbol = open_ctx.spot_symbol.to_uppercase();
-                    if ctx.symbol_to_strategy.contains_key(&symbol) {
-                        warn!(
-                            "{}: 已存在 symbol={} 的策略，忽略新的开仓信号",
-                            BIN_SINGLE_FORWARD_ARB_NAME, symbol
-                        );
-                        return;
-                    }
-
                     let strategy_id = StrategyManager::generate_strategy_id(1);
                     let order_tx = ctx.order_sender();
                     let signal_tx = ctx.signal_sender();
