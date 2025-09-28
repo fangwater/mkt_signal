@@ -733,11 +733,12 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                     strategy.set_signal_sender(signal_tx);
 
                     debug!(
-                        "strategy init for open signal: strategy_id={} symbol={} qty={:.6} price={:.6} type={:?}",
+                        "strategy init for open signal: strategy_id={} symbol={} qty={:.6} price={:.8} tick={:.8} type={:?}",
                         strategy_id,
                         open_ctx.spot_symbol,
                         open_ctx.amount,
                         open_ctx.price,
+                        open_ctx.price_tick,
                         open_ctx.order_type
                     );
 

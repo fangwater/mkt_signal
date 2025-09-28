@@ -25,6 +25,7 @@ pub struct BinSingleForwardArbOpenCtx {
     pub side: Side,
     pub order_type: OrderType,
     pub price: f32,
+    pub price_tick: f32,
     pub exp_time: i64,
 }
 
@@ -39,6 +40,7 @@ pub struct BinSingleForwardArbHedgeCtx {
 pub struct BinSingleForwardArbCloseMarginCtx {
     pub spot_symbol: String,
     pub limit_price: f32,
+    pub price_tick: f32,
     pub exp_time: i64,
 }
 
@@ -70,6 +72,7 @@ impl BinSingleForwardArbOpenCtx {
         buf.put_u8(self.side as u8);
         buf.put_u8(self.order_type as u8);
         buf.put_f32_le(self.price);
+        buf.put_f32_le(self.price_tick);
         buf.put_i64_le(self.exp_time);
 
         buf.freeze()
@@ -107,6 +110,11 @@ impl BinSingleForwardArbOpenCtx {
         }
         let price = bytes.get_f32_le();
 
+        if bytes.remaining() < 4 {
+            return Err("Not enough bytes for price_tick".to_string());
+        }
+        let price_tick = bytes.get_f32_le();
+
         if bytes.remaining() < 8 {
             return Err("Not enough bytes for exp_time".to_string());
         }
@@ -118,6 +126,7 @@ impl BinSingleForwardArbOpenCtx {
             side,
             order_type,
             price,
+            price_tick,
             exp_time,
         })
     }
@@ -149,6 +158,7 @@ impl BinSingleForwardArbCloseMarginCtx {
         buf.put_u32_le(self.spot_symbol.len() as u32);
         buf.put_slice(self.spot_symbol.as_bytes());
         buf.put_f32_le(self.limit_price);
+        buf.put_f32_le(self.price_tick);
         buf.put_i64_le(self.exp_time);
 
         buf.freeze()
@@ -170,6 +180,11 @@ impl BinSingleForwardArbCloseMarginCtx {
         }
         let limit_price = bytes.get_f32_le();
 
+        if bytes.remaining() < 4 {
+            return Err("Not enough bytes for price_tick".to_string());
+        }
+        let price_tick = bytes.get_f32_le();
+
         if bytes.remaining() < 8 {
             return Err("Not enough bytes for exp_time".to_string());
         }
@@ -178,6 +193,7 @@ impl BinSingleForwardArbCloseMarginCtx {
         Ok(Self {
             spot_symbol,
             limit_price,
+            price_tick,
             exp_time,
         })
     }
@@ -537,9 +553,20 @@ impl BinSingleForwardArbStrategy {
             format!("newClientOrderId={}", order_id),
         ];
 
+        let price_tick = if open_ctx.price_tick > 0.0 {
+            open_ctx.price_tick as f64
+        } else {
+            0.0
+        };
+
+        let mut effective_price = f64::from(open_ctx.price);
+
         if open_ctx.order_type.is_limit() {
             params_parts.push("timeInForce=GTC".to_string());
-            params_parts.push(format!("price={}", format_price(f64::from(open_ctx.price))));
+            if price_tick > 0.0 {
+                effective_price = align_price_floor(effective_price, price_tick);
+            }
+            params_parts.push(format!("price={}", format_price(effective_price)));
         }
 
         debug!(
@@ -570,7 +597,7 @@ impl BinSingleForwardArbStrategy {
             open_ctx.spot_symbol.clone(),
             open_ctx.side,
             f64::from(open_ctx.amount),
-            f64::from(open_ctx.price),
+            effective_price,
         );
         order.set_submit_time(now);
 
@@ -581,13 +608,13 @@ impl BinSingleForwardArbStrategy {
         self.close_margin_timeout_us = None;
 
         info!(
-            "{}: strategy_id={} 提交 margin 开仓请求 symbol={} qty={:.6} type={} price={:.6} order_id={}",
+            "{}: strategy_id={} 提交 margin 开仓请求 symbol={} qty={:.6} type={} price={:.8} order_id={}",
             Self::strategy_name(),
             self.strategy_id,
             open_ctx.spot_symbol,
             open_ctx.amount,
             order_type_str,
-            f64::from(open_ctx.price),
+            effective_price,
             order_id
         );
 
@@ -741,7 +768,15 @@ impl BinSingleForwardArbStrategy {
             Side::Sell => (Side::Buy, "BUY"),
         };
 
-        let limit_price = f64::from(ctx.limit_price);
+        let price_tick = if ctx.price_tick > 0.0 {
+            ctx.price_tick as f64
+        } else {
+            0.0
+        };
+        let mut limit_price = f64::from(ctx.limit_price);
+        if price_tick > 0.0 {
+            limit_price = align_price_ceil(limit_price, price_tick);
+        }
         let margin_close_id = self.next_order_id();
         let now = get_timestamp_us();
 
@@ -778,7 +813,7 @@ impl BinSingleForwardArbStrategy {
         self.close_margin_timeout_us = (ctx.exp_time > 0).then_some(ctx.exp_time);
 
         info!(
-            "{}: strategy_id={} 提交 margin 限价平仓 symbol={} qty={:.6} price={:.6} order_id={}",
+            "{}: strategy_id={} 提交 margin 限价平仓 symbol={} qty={:.6} price={:.8} order_id={}",
             Self::strategy_name(),
             self.strategy_id,
             margin_order.symbol,
@@ -1090,6 +1125,32 @@ fn format_quantity(quantity: f64) -> String {
 
 fn format_price(price: f64) -> String {
     format_decimal(price)
+}
+
+fn align_price_floor(value: f64, tick: f64) -> f64 {
+    if tick <= 0.0 {
+        return value;
+    }
+    let scaled = ((value / tick) + 1e-9).floor();
+    let aligned = scaled * tick;
+    if aligned <= 0.0 {
+        tick
+    } else {
+        aligned
+    }
+}
+
+fn align_price_ceil(value: f64, tick: f64) -> f64 {
+    if tick <= 0.0 {
+        return value;
+    }
+    let scaled = ((value / tick) - 1e-9).ceil();
+    let aligned = scaled * tick;
+    if aligned <= 0.0 {
+        tick
+    } else {
+        aligned
+    }
 }
 
 impl Strategy for BinSingleForwardArbStrategy {

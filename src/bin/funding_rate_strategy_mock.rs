@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use serde::Deserialize;
 use tokio::signal;
 #[cfg(unix)]
@@ -363,7 +363,7 @@ impl MockController {
         if trimmed.is_empty() {
             return Ok(false);
         }
-        let mut parts: Vec<&str> = trimmed.split_whitespace().collect();
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
         if parts.len() == 1 && parts[0].chars().all(|c| c.is_ascii_digit()) {
             let idx = parse_index(parts[0])?;
             self.force_open(idx)?;
@@ -483,15 +483,19 @@ impl MockController {
             if limit_price <= 0.0 {
                 anyhow::bail!("{} 开仓价格非法: {:.6}", spot_symbol, limit_price);
             }
+            let price_tick = self
+                .min_qty
+                .spot_price_tick_by_symbol(&spot_symbol)
+                .unwrap_or(0.0);
             let raw_limit_price = limit_price;
-            if let Some(tick) = self.min_qty.spot_price_tick_by_symbol(&spot_symbol) {
-                limit_price = align_price_floor(limit_price, tick);
+            if price_tick > 0.0 {
+                limit_price = align_price_floor(limit_price, price_tick);
                 if limit_price <= 0.0 {
                     anyhow::bail!(
                         "{} 开仓价格对齐失败: raw={:.6} tick={:.8}",
                         spot_symbol,
                         raw_limit_price,
-                        tick
+                        price_tick
                     );
                 }
             }
@@ -536,6 +540,7 @@ impl MockController {
                 side: Side::Buy,
                 order_type: OrderType::Limit,
                 price: limit_price as f32,
+                price_tick: price_tick as f32,
                 exp_time: self.cfg.max_open_keep_us(),
             }
             .to_bytes();
@@ -549,7 +554,7 @@ impl MockController {
             state.last_open_ts = Some(now);
             state.mark_signal(now);
             info!(
-                "{} mock 强制开仓: qty={:.6} price={:.6}",
+                "{} mock 强制开仓: qty={:.6} price={:.8}",
                 spot_symbol, adjusted_qty, limit_price
             );
             Ok(())
@@ -573,21 +578,26 @@ impl MockController {
             if limit_price <= 0.0 {
                 anyhow::bail!("{} 平仓价格非法: {:.6}", spot_symbol, limit_price);
             }
+            let price_tick = self
+                .min_qty
+                .spot_price_tick_by_symbol(&spot_symbol)
+                .unwrap_or(0.0);
             let raw_limit_price = limit_price;
-            if let Some(tick) = self.min_qty.spot_price_tick_by_symbol(&spot_symbol) {
-                limit_price = align_price_ceil(limit_price, tick);
+            if price_tick > 0.0 {
+                limit_price = align_price_ceil(limit_price, price_tick);
                 if limit_price <= 0.0 {
                     anyhow::bail!(
                         "{} 平仓价格对齐失败: raw={:.6} tick={:.8}",
                         spot_symbol,
                         raw_limit_price,
-                        tick
+                        price_tick
                     );
                 }
             }
             let ctx = BinSingleForwardArbCloseMarginCtx {
                 spot_symbol: spot_symbol.clone(),
                 limit_price: limit_price as f32,
+                price_tick: price_tick as f32,
                 exp_time: self.cfg.max_close_keep_us(),
             }
             .to_bytes();
@@ -600,7 +610,7 @@ impl MockController {
             state.last_ratio = state.calc_ratio();
             state.last_close_ts = Some(now);
             state.mark_signal(now);
-            info!("{} mock 强制平仓: price={:.6}", spot_symbol, limit_price);
+            info!("{} mock 强制平仓: price={:.8}", spot_symbol, limit_price);
             Ok(())
         } else {
             anyhow::bail!("未找到交易对 {key}");
@@ -877,7 +887,7 @@ fn align_price_floor(price: f64, tick: f64) -> f64 {
     if tick <= 0.0 {
         return price;
     }
-    let scaled = (price / tick).floor();
+    let scaled = ((price / tick) + 1e-9).floor();
     let aligned = scaled * tick;
     if aligned <= 0.0 {
         tick
@@ -890,7 +900,7 @@ fn align_price_ceil(price: f64, tick: f64) -> f64 {
     if tick <= 0.0 {
         return price;
     }
-    let scaled = (price / tick).ceil();
+    let scaled = ((price / tick) - 1e-9).ceil();
     let aligned = scaled * tick;
     if aligned <= 0.0 {
         tick

@@ -671,12 +671,13 @@ impl StrategyEngine {
                 } => {
                     match BinSingleForwardArbOpenCtx::from_bytes(ctx.clone()) {
                         Ok(open_ctx) => debug!(
-                            "发送开仓信号: symbol={} amount={} side={:?} order_type={:?} price={:.6} exp_time={}",
+                            "发送开仓信号: symbol={} amount={} side={:?} order_type={:?} price={:.8} tick={:.8} exp_time={}",
                             open_ctx.spot_symbol,
                             open_ctx.amount,
                             open_ctx.side,
                             open_ctx.order_type,
                             open_ctx.price,
+                            open_ctx.price_tick,
                             open_ctx.exp_time
                         ),
                         Err(e) => debug!(
@@ -710,8 +711,11 @@ impl StrategyEngine {
                 } => {
                     match BinSingleForwardArbCloseMarginCtx::from_bytes(ctx.clone()) {
                         Ok(close_ctx) => debug!(
-                            "发送平仓信号: symbol={} limit_price={:.6} exp_time={}",
-                            close_ctx.spot_symbol, close_ctx.limit_price, close_ctx.exp_time
+                            "发送平仓信号: symbol={} limit_price={:.8} tick={:.8} exp_time={}",
+                            close_ctx.spot_symbol,
+                            close_ctx.limit_price,
+                            close_ctx.price_tick,
+                            close_ctx.exp_time
                         ),
                         Err(e) => debug!(
                             "发送平仓信号: 解析上下文失败 symbol={} err={}",
@@ -757,13 +761,17 @@ impl StrategyEngine {
             );
             return None;
         }
+        let price_tick = self
+            .min_qty
+            .spot_price_tick_by_symbol(&state.spot_symbol)
+            .unwrap_or(0.0);
         let raw_limit_price = limit_price;
-        if let Some(tick) = self.min_qty.spot_price_tick_by_symbol(&state.spot_symbol) {
-            limit_price = align_price_floor(limit_price, tick);
+        if price_tick > 0.0 {
+            limit_price = align_price_floor(limit_price, price_tick);
             if limit_price <= 0.0 {
                 warn!(
                     "{} price tick 对齐后开仓价格非法: raw={:.6} tick={:.8}",
-                    state.spot_symbol, raw_limit_price, tick
+                    state.spot_symbol, raw_limit_price, price_tick
                 );
                 return None;
             }
@@ -809,6 +817,7 @@ impl StrategyEngine {
             side: Side::Buy,
             order_type: OrderType::Limit,
             price: limit_price as f32,
+            price_tick: price_tick as f32,
             exp_time: self.cfg.max_open_keep_us(),
         }
         .to_bytes();
@@ -838,13 +847,17 @@ impl StrategyEngine {
             );
             return None;
         }
+        let price_tick = self
+            .min_qty
+            .spot_price_tick_by_symbol(&state.spot_symbol)
+            .unwrap_or(0.0);
         let raw_limit_price = limit_price;
-        if let Some(tick) = self.min_qty.spot_price_tick_by_symbol(&state.spot_symbol) {
-            limit_price = align_price_ceil(limit_price, tick);
+        if price_tick > 0.0 {
+            limit_price = align_price_ceil(limit_price, price_tick);
             if limit_price <= 0.0 {
                 warn!(
                     "{} price tick 对齐后平仓价格非法: raw={:.6} tick={:.8}",
-                    state.spot_symbol, raw_limit_price, tick
+                    state.spot_symbol, raw_limit_price, price_tick
                 );
                 return None;
             }
@@ -852,6 +865,7 @@ impl StrategyEngine {
         let ctx = BinSingleForwardArbCloseMarginCtx {
             spot_symbol: state.spot_symbol.clone(),
             limit_price: limit_price as f32,
+            price_tick: price_tick as f32,
             exp_time: self.cfg.max_close_keep_us(),
         }
         .to_bytes();
@@ -1148,7 +1162,7 @@ fn align_price_floor(price: f64, tick: f64) -> f64 {
     if tick <= 0.0 {
         return price;
     }
-    let scaled = (price / tick).floor();
+    let scaled = ((price / tick) + 1e-9).floor();
     let aligned = scaled * tick;
     if aligned <= 0.0 {
         tick
@@ -1161,7 +1175,7 @@ fn align_price_ceil(price: f64, tick: f64) -> f64 {
     if tick <= 0.0 {
         return price;
     }
-    let scaled = (price / tick).ceil();
+    let scaled = ((price / tick) - 1e-9).ceil();
     let aligned = scaled * tick;
     if aligned <= 0.0 {
         tick
