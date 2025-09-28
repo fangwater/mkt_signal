@@ -559,7 +559,8 @@ impl BinSingleForwardArbStrategy {
             0.0
         };
 
-        let mut effective_price = f64::from(open_ctx.price);
+        let raw_price = f64::from(open_ctx.price);
+        let mut effective_price = raw_price;
 
         if open_ctx.order_type.is_limit() {
             params_parts.push("timeInForce=GTC".to_string());
@@ -568,6 +569,15 @@ impl BinSingleForwardArbStrategy {
             }
             params_parts.push(format!("price={}", format_price(effective_price)));
         }
+
+        debug!(
+            "{}: strategy_id={} margin 开仓价格对齐 raw={:.8} tick={:.8} aligned={:.8}",
+            Self::strategy_name(),
+            self.strategy_id,
+            raw_price,
+            price_tick,
+            effective_price
+        );
 
         debug!(
             "{}: strategy_id={} 构造 margin 开仓参数 {:?}",
@@ -773,7 +783,8 @@ impl BinSingleForwardArbStrategy {
         } else {
             0.0
         };
-        let mut limit_price = f64::from(ctx.limit_price);
+        let raw_price = f64::from(ctx.limit_price);
+        let mut limit_price = raw_price;
         if price_tick > 0.0 {
             limit_price = align_price_ceil(limit_price, price_tick);
         }
@@ -788,6 +799,15 @@ impl BinSingleForwardArbStrategy {
             format_price(limit_price),
             margin_close_id
         ));
+
+        debug!(
+            "{}: strategy_id={} margin 平仓价格对齐 raw={:.8} tick={:.8} aligned={:.8}",
+            Self::strategy_name(),
+            self.strategy_id,
+            raw_price,
+            price_tick,
+            limit_price
+        );
 
         let request = BinanceNewMarginOrderRequest::create(now, margin_close_id, params);
         self.order_tx
@@ -1131,26 +1151,53 @@ fn align_price_floor(value: f64, tick: f64) -> f64 {
     if tick <= 0.0 {
         return value;
     }
-    let scaled = ((value / tick) + 1e-9).floor();
-    let aligned = scaled * tick;
-    if aligned <= 0.0 {
-        tick
-    } else {
-        aligned
+    if let Some((tick_num, tick_den)) = to_fraction(tick) {
+        if tick_num == 0 {
+            return value;
+        }
+        let tick_num = tick_num as i128;
+        let tick_den = tick_den as i128;
+        let units = ((value * tick_den as f64) + 1e-9).floor() as i128;
+        let aligned_units = (units / tick_num) * tick_num;
+        return aligned_units as f64 / tick_den as f64;
     }
+    let scaled = ((value / tick) + 1e-9).floor();
+    scaled * tick
 }
 
 fn align_price_ceil(value: f64, tick: f64) -> f64 {
     if tick <= 0.0 {
         return value;
     }
-    let scaled = ((value / tick) - 1e-9).ceil();
-    let aligned = scaled * tick;
-    if aligned <= 0.0 {
-        tick
-    } else {
-        aligned
+    if let Some((tick_num, tick_den)) = to_fraction(tick) {
+        if tick_num == 0 {
+            return value;
+        }
+        let tick_num = tick_num as i128;
+        let tick_den = tick_den as i128;
+        let units = ((value * tick_den as f64) - 1e-9).ceil() as i128;
+        let aligned_units = ((units + tick_num - 1) / tick_num) * tick_num;
+        return aligned_units as f64 / tick_den as f64;
     }
+    let scaled = ((value / tick) - 1e-9).ceil();
+    scaled * tick
+}
+
+fn to_fraction(value: f64) -> Option<(i64, i64)> {
+    if !value.is_finite() || value <= 0.0 {
+        return None;
+    }
+    let mut denom: i64 = 1;
+    let mut scaled = value;
+    for _ in 0..9 {
+        let rounded = scaled.round();
+        if (scaled - rounded).abs() < 1e-9 {
+            return Some((rounded as i64, denom));
+        }
+        scaled *= 10.0;
+        denom = denom.saturating_mul(10);
+    }
+    None
 }
 
 impl Strategy for BinSingleForwardArbStrategy {

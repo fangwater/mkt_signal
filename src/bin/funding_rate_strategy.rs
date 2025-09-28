@@ -768,9 +768,13 @@ impl StrategyEngine {
         let raw_limit_price = limit_price;
         if price_tick > 0.0 {
             limit_price = align_price_floor(limit_price, price_tick);
+            debug!(
+                "{} 开仓价格对齐: raw={:.8} tick={:.8} aligned={:.8}",
+                state.spot_symbol, raw_limit_price, price_tick, limit_price
+            );
             if limit_price <= 0.0 {
                 warn!(
-                    "{} price tick 对齐后开仓价格非法: raw={:.6} tick={:.8}",
+                    "{} price tick 对齐后开仓价格非法: raw={:.8} tick={:.8}",
                     state.spot_symbol, raw_limit_price, price_tick
                 );
                 return None;
@@ -854,9 +858,13 @@ impl StrategyEngine {
         let raw_limit_price = limit_price;
         if price_tick > 0.0 {
             limit_price = align_price_ceil(limit_price, price_tick);
+            debug!(
+                "{} 平仓价格对齐: raw={:.8} tick={:.8} aligned={:.8}",
+                state.spot_symbol, raw_limit_price, price_tick, limit_price
+            );
             if limit_price <= 0.0 {
                 warn!(
-                    "{} price tick 对齐后平仓价格非法: raw={:.6} tick={:.8}",
+                    "{} price tick 对齐后平仓价格非法: raw={:.8} tick={:.8}",
                     state.spot_symbol, raw_limit_price, price_tick
                 );
                 return None;
@@ -1162,26 +1170,36 @@ fn align_price_floor(price: f64, tick: f64) -> f64 {
     if tick <= 0.0 {
         return price;
     }
-    let scaled = ((price / tick) + 1e-9).floor();
-    let aligned = scaled * tick;
-    if aligned <= 0.0 {
-        tick
-    } else {
-        aligned
+    if let Some((tick_num, tick_den)) = to_fraction(tick) {
+        if tick_num == 0 {
+            return price;
+        }
+        let tick_num = tick_num as i128;
+        let tick_den = tick_den as i128;
+        let units = ((price * tick_den as f64) + 1e-9).floor() as i128;
+        let aligned_units = (units / tick_num) * tick_num;
+        return aligned_units as f64 / tick_den as f64;
     }
+    let scaled = ((price / tick) + 1e-9).floor();
+    scaled * tick
 }
 
 fn align_price_ceil(price: f64, tick: f64) -> f64 {
     if tick <= 0.0 {
         return price;
     }
-    let scaled = ((price / tick) - 1e-9).ceil();
-    let aligned = scaled * tick;
-    if aligned <= 0.0 {
-        tick
-    } else {
-        aligned
+    if let Some((tick_num, tick_den)) = to_fraction(tick) {
+        if tick_num == 0 {
+            return price;
+        }
+        let tick_num = tick_num as i128;
+        let tick_den = tick_den as i128;
+        let units = ((price * tick_den as f64) - 1e-9).ceil() as i128;
+        let aligned_units = ((units + tick_num - 1) / tick_num) * tick_num;
+        return aligned_units as f64 / tick_den as f64;
     }
+    let scaled = ((price / tick) - 1e-9).ceil();
+    scaled * tick
 }
 
 impl StrategyEngine {
