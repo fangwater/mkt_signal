@@ -11,6 +11,7 @@ pub struct MinQtyEntry {
     pub base_asset: String,
     pub quote_asset: String,
     pub min_qty: f64,
+    pub price_tick: Option<f64>,
 }
 
 #[derive(Debug)]
@@ -66,9 +67,25 @@ impl MinQtyTable {
         self.spot.get(&key).map(|entry| entry.min_qty)
     }
 
+    pub fn spot_price_tick_by_symbol(&self, symbol: &str) -> Option<f64> {
+        let key = symbol.to_uppercase();
+        self.spot
+            .get(&key)
+            .and_then(|entry| entry.price_tick)
+            .filter(|tick| *tick > 0.0)
+    }
+
     pub fn futures_um_min_qty_by_symbol(&self, symbol: &str) -> Option<f64> {
         let key = symbol.to_uppercase();
         self.futures_um.get(&key).map(|entry| entry.min_qty)
+    }
+
+    pub fn futures_um_price_tick_by_symbol(&self, symbol: &str) -> Option<f64> {
+        let key = symbol.to_uppercase();
+        self.futures_um
+            .get(&key)
+            .and_then(|entry| entry.price_tick)
+            .filter(|tick| *tick > 0.0)
     }
 
     pub fn spot_min_qty(&self, base_asset: &str, quote_asset: &str) -> Option<f64> {
@@ -106,25 +123,22 @@ impl MinQtyTable {
 
         let mut map = HashMap::new();
         for raw_symbol in exchange_info.symbols {
-            match min_qty_from_filters(&raw_symbol.filters, &raw_symbol.symbol)? {
-                Some(min_qty) => {
-                    let symbol = raw_symbol.symbol.to_uppercase();
-                    let entry = MinQtyEntry {
-                        symbol: symbol.clone(),
-                        base_asset: raw_symbol.base_asset.to_uppercase(),
-                        quote_asset: raw_symbol.quote_asset.to_uppercase(),
-                        min_qty,
-                    };
-                    map.insert(symbol, entry);
-                }
-                None => {
-                    if raw_symbol.status.eq_ignore_ascii_case("TRADING") {
-                        warn!(
-                            "{} missing LOT_SIZE minQty, symbol={}",
-                            label, raw_symbol.symbol
-                        );
-                    }
-                }
+            let filters = extract_filter_values(&raw_symbol.filters, &raw_symbol.symbol)?;
+            if let Some(min_qty) = filters.min_qty {
+                let symbol = raw_symbol.symbol.to_uppercase();
+                let entry = MinQtyEntry {
+                    symbol: symbol.clone(),
+                    base_asset: raw_symbol.base_asset.to_uppercase(),
+                    quote_asset: raw_symbol.quote_asset.to_uppercase(),
+                    min_qty,
+                    price_tick: filters.price_tick,
+                };
+                map.insert(symbol, entry);
+            } else if raw_symbol.status.eq_ignore_ascii_case("TRADING") {
+                warn!(
+                    "{} missing LOT_SIZE minQty, symbol={}",
+                    label, raw_symbol.symbol
+                );
             }
         }
 
@@ -158,18 +172,49 @@ struct RawExchangeFilter {
     filter_type: String,
     #[serde(rename = "minQty")]
     min_qty: Option<String>,
+    #[serde(rename = "stepSize")]
+    step_size: Option<String>,
+    #[serde(rename = "tickSize")]
+    tick_size: Option<String>,
 }
 
-fn min_qty_from_filters(filters: &[RawExchangeFilter], symbol: &str) -> Result<Option<f64>> {
+struct SymbolFilterValues {
+    min_qty: Option<f64>,
+    price_tick: Option<f64>,
+}
+
+fn extract_filter_values(
+    filters: &[RawExchangeFilter],
+    symbol: &str,
+) -> Result<SymbolFilterValues> {
+    let mut min_qty: Option<f64> = None;
+    let mut price_tick: Option<f64> = None;
+
     for filter in filters {
-        if filter.filter_type == "LOT_SIZE" {
-            if let Some(min_qty) = &filter.min_qty {
-                let qty = parse_decimal(min_qty, "minQty", symbol)?;
-                return Ok(Some(qty));
+        match filter.filter_type.as_str() {
+            "LOT_SIZE" => {
+                if let Some(value) = &filter.step_size {
+                    min_qty = Some(parse_decimal(value, "stepSize", symbol)?);
+                } else if let Some(value) = &filter.min_qty {
+                    min_qty = Some(parse_decimal(value, "minQty", symbol)?);
+                }
             }
+            "PRICE_FILTER" => {
+                if let Some(value) = &filter.tick_size {
+                    let tick = parse_decimal(value, "tickSize", symbol)?;
+                    if tick > 0.0 {
+                        price_tick = Some(tick);
+                    }
+                }
+            }
+            _ => {}
         }
     }
-    Ok(None)
+
+    Ok(SymbolFilterValues {
+        min_qty,
+        price_tick,
+    })
 }
 
 fn parse_decimal(value: &str, field: &str, symbol: &str) -> Result<f64> {

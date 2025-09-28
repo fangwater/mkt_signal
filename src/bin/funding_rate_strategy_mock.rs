@@ -479,9 +479,21 @@ impl MockController {
             }
             let spot_symbol = state.spot_symbol.clone();
             let futures_symbol = state.futures_symbol.clone();
-            let limit_price = state.spot_quote.bid * (1.0 - self.cfg.order.open_range);
+            let mut limit_price = state.spot_quote.bid * (1.0 - self.cfg.order.open_range);
             if limit_price <= 0.0 {
                 anyhow::bail!("{} 开仓价格非法: {:.6}", spot_symbol, limit_price);
+            }
+            let raw_limit_price = limit_price;
+            if let Some(tick) = self.min_qty.spot_price_tick_by_symbol(&spot_symbol) {
+                limit_price = align_price_floor(limit_price, tick);
+                if limit_price <= 0.0 {
+                    anyhow::bail!(
+                        "{} 开仓价格对齐失败: raw={:.6} tick={:.8}",
+                        spot_symbol,
+                        raw_limit_price,
+                        tick
+                    );
+                }
             }
             let base_qty = if limit_price > 0.0 {
                 self.cfg.order.amount_u / limit_price
@@ -557,9 +569,21 @@ impl MockController {
                 anyhow::bail!("{} 行情尚未就绪，无法平仓", state.spot_symbol);
             }
             let spot_symbol = state.spot_symbol.clone();
-            let limit_price = state.spot_quote.ask * (1.0 + self.cfg.order.close_range);
+            let mut limit_price = state.spot_quote.ask * (1.0 + self.cfg.order.close_range);
             if limit_price <= 0.0 {
                 anyhow::bail!("{} 平仓价格非法: {:.6}", spot_symbol, limit_price);
+            }
+            let raw_limit_price = limit_price;
+            if let Some(tick) = self.min_qty.spot_price_tick_by_symbol(&spot_symbol) {
+                limit_price = align_price_ceil(limit_price, tick);
+                if limit_price <= 0.0 {
+                    anyhow::bail!(
+                        "{} 平仓价格对齐失败: raw={:.6} tick={:.8}",
+                        spot_symbol,
+                        raw_limit_price,
+                        tick
+                    );
+                }
             }
             let ctx = BinSingleForwardArbCloseMarginCtx {
                 spot_symbol: spot_symbol.clone(),
@@ -846,6 +870,32 @@ fn compute_step(spot_min: f64, futures_min: f64) -> f64 {
         spot_min.max(futures_min)
     } else {
         step
+    }
+}
+
+fn align_price_floor(price: f64, tick: f64) -> f64 {
+    if tick <= 0.0 {
+        return price;
+    }
+    let scaled = (price / tick).floor();
+    let aligned = scaled * tick;
+    if aligned <= 0.0 {
+        tick
+    } else {
+        aligned
+    }
+}
+
+fn align_price_ceil(price: f64, tick: f64) -> f64 {
+    if tick <= 0.0 {
+        return price;
+    }
+    let scaled = (price / tick).ceil();
+    let aligned = scaled * tick;
+    if aligned <= 0.0 {
+        tick
+    } else {
+        aligned
     }
 }
 

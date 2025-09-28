@@ -581,12 +581,13 @@ impl BinSingleForwardArbStrategy {
         self.close_margin_timeout_us = None;
 
         info!(
-            "{}: strategy_id={} 提交 margin 开仓请求 symbol={} qty={:.6} type={} order_id={}",
+            "{}: strategy_id={} 提交 margin 开仓请求 symbol={} qty={:.6} type={} price={:.6} order_id={}",
             Self::strategy_name(),
             self.strategy_id,
             open_ctx.spot_symbol,
             open_ctx.amount,
             order_type_str,
+            f64::from(open_ctx.price),
             order_id
         );
 
