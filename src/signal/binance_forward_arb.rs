@@ -524,6 +524,31 @@ impl BinSingleForwardArbStrategy {
             ));
         }
 
+        let now = get_timestamp_us();
+
+        let side_str = open_ctx.side.as_str();
+        let order_type_str = open_ctx.order_type.as_str();
+        let qty_str = format_quantity(f64::from(open_ctx.amount));
+        let mut params_parts = vec![
+            format!("symbol={}", open_ctx.spot_symbol),
+            format!("side={}", side_str),
+            format!("type={}", order_type_str),
+            format!("quantity={}", qty_str),
+            format!("newClientOrderId={}", order_id),
+        ];
+
+        if open_ctx.order_type.is_limit() {
+            params_parts.push("timeInForce=GTC".to_string());
+            params_parts.push(format!("price={}", format_price(f64::from(open_ctx.price))));
+        }
+
+        let params = Bytes::from(params_parts.join("&"));
+        let request = BinanceNewMarginOrderRequest::create(now, order_id, params);
+
+        self.order_tx
+            .send(request.to_bytes())
+            .map_err(|e| format!("{}: 推送 margin 开仓失败: {}", Self::strategy_name(), e))?;
+
         let mut order = Order::new(
             order_id,
             open_ctx.order_type,
@@ -532,7 +557,7 @@ impl BinSingleForwardArbStrategy {
             f64::from(open_ctx.amount),
             f64::from(open_ctx.price),
         );
-        order.set_submit_time(get_timestamp_us());
+        order.set_submit_time(now);
 
         order_manager.insert(order);
         self.margin_order_id = order_id;
@@ -540,14 +565,14 @@ impl BinSingleForwardArbStrategy {
         self.um_close_signal_sent = false;
         self.close_margin_timeout_us = None;
 
-        debug!(
-            "{}: strategy_id={} 创建 margin 订单成功 order_id={} symbol={} qty={:.6} order_type={:?}",
+        info!(
+            "{}: strategy_id={} 提交 margin 开仓请求 symbol={} qty={:.6} type={} order_id={}",
             Self::strategy_name(),
             self.strategy_id,
-            order_id,
             open_ctx.spot_symbol,
             open_ctx.amount,
-            open_ctx.order_type
+            order_type_str,
+            order_id
         );
 
         Ok(())

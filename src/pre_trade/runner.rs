@@ -26,7 +26,7 @@ use bytes::Bytes;
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -298,6 +298,12 @@ impl RuntimeContext {
         self.symbol_to_strategy
             .insert(upper_symbol.clone(), strategy_id);
         self.strategy_symbols.insert(strategy_id, upper_symbol);
+        debug!(
+            "strategy inserted: strategy_id={} symbol={} active_total={}",
+            strategy_id,
+            symbol,
+            self.strategy_mgr.len()
+        );
     }
 
     fn remove_strategy(&mut self, strategy_id: i32) {
@@ -698,6 +704,12 @@ fn handle_trade_engine_response(ctx: &mut RuntimeContext, outcome: TradeExecOutc
 
 fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
     let raw_signal = signal.to_bytes();
+    debug!(
+        "trade signal received: type={:?} generation_time={} ctx_len={}",
+        signal.signal_type,
+        signal.generation_time,
+        signal.context.len()
+    );
     match signal.signal_type {
         SignalType::BinSingleForwardArbOpen => {
             match BinSingleForwardArbOpenCtx::from_bytes(signal.context.clone()) {
@@ -720,6 +732,15 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                     );
                     strategy.set_signal_sender(signal_tx);
 
+                    debug!(
+                        "strategy init for open signal: strategy_id={} symbol={} qty={:.6} price={:.6} type={:?}",
+                        strategy_id,
+                        open_ctx.spot_symbol,
+                        open_ctx.amount,
+                        open_ctx.price,
+                        open_ctx.order_type
+                    );
+
                     strategy.handle_trade_signal(&raw_signal);
 
                     if strategy.is_active() {
@@ -732,6 +753,11 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
         SignalType::BinSingleForwardArbHedge
         | SignalType::BinSingleForwardArbCloseMargin
         | SignalType::BinSingleForwardArbCloseUm => {
+            debug!(
+                "dispatch signal to existing strategies: type={:?} ctx_len={}",
+                signal.signal_type,
+                signal.context.len()
+            );
             dispatch_signal_to_existing_strategy(ctx, signal, raw_signal);
         }
     }
@@ -780,6 +806,11 @@ fn dispatch_signal_to_existing_strategy(
     for strategy_id in strategy_ids {
         let signal_bytes = raw_signal.clone();
         ctx.with_strategy_mut(strategy_id, |strategy| {
+            debug!(
+                "forward signal to strategy_id={} raw_len={}",
+                strategy.get_id(),
+                signal_bytes.len()
+            );
             strategy.handle_trade_signal(&signal_bytes);
         });
     }
