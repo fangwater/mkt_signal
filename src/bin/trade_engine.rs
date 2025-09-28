@@ -4,6 +4,9 @@ use mkt_signal::{ApiKey, TradeEngine, TradeEngineCfg};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
+    if std::env::var("RUST_LOG").is_err() {
+        std::env::set_var("RUST_LOG", "debug");
+    }
     env_logger::init();
     // 默认读取 config/trade_engine.toml
     let cfg_path = std::env::var("TRADE_ENGINE_CFG")

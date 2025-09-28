@@ -1221,6 +1221,45 @@ impl Strategy for BinSingleForwardArbStrategy {
                         );
                     }
                 }
+                TradeRequestType::BinanceCancelMarginOrder => {
+                    let success = (200..300).contains(&outcome.status);
+                    if success {
+                        let now = get_timestamp_us();
+                        let mut manager = self.order_manager.borrow_mut();
+                        if manager.update(outcome.client_order_id, |order| {
+                            order.update_status(OrderExecutionStatus::Cancelled);
+                            order.set_end_time(now);
+                        }) {
+                            info!(
+                                "{}: strategy_id={} margin 撤单成功 client_order_id={} status={}",
+                                Self::strategy_name(),
+                                self.strategy_id,
+                                outcome.client_order_id,
+                                outcome.status
+                            );
+                        } else {
+                            debug!(
+                                "{}: strategy_id={} margin 撤单响应但未找到订单 id={}",
+                                Self::strategy_name(),
+                                self.strategy_id,
+                                outcome.client_order_id
+                            );
+                        }
+
+                        if self.margin_order_id == outcome.client_order_id {
+                            self.margin_order_id = 0;
+                            self.open_timeout_us = None;
+                        }
+                    } else {
+                        warn!(
+                            "{}: strategy_id={} margin 撤单失败 status={} body={}",
+                            Self::strategy_name(),
+                            self.strategy_id,
+                            outcome.status,
+                            outcome.body
+                        );
+                    }
+                }
                 _ => {
                     debug!(
                         "{}: strategy_id={} 忽略响应 req_type={:?}",
