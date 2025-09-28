@@ -542,12 +542,27 @@ impl BinSingleForwardArbStrategy {
             params_parts.push(format!("price={}", format_price(f64::from(open_ctx.price))));
         }
 
+        debug!(
+            "{}: strategy_id={} 构造 margin 开仓参数 {:?}",
+            Self::strategy_name(),
+            self.strategy_id,
+            params_parts
+        );
+
         let params = Bytes::from(params_parts.join("&"));
         let request = BinanceNewMarginOrderRequest::create(now, order_id, params);
 
         self.order_tx
             .send(request.to_bytes())
             .map_err(|e| format!("{}: 推送 margin 开仓失败: {}", Self::strategy_name(), e))?;
+
+        debug!(
+            "{}: strategy_id={} margin 开仓请求已推送 order_id={} payload_len={}",
+            Self::strategy_name(),
+            self.strategy_id,
+            order_id,
+            request.to_bytes().len()
+        );
 
         let mut order = Order::new(
             order_id,
