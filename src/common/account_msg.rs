@@ -266,6 +266,45 @@ impl AccountPositionMsg {
 
         buf.freeze()
     }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        const MIN_SIZE: usize = 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8;
+        if data.len() < MIN_SIZE {
+            anyhow::bail!("account position msg too short: {}", data.len());
+        }
+
+        let mut cursor = Bytes::copy_from_slice(data);
+        let msg_type = cursor.get_u32_le();
+        if msg_type != AccountEventType::AccountPosition as u32 {
+            anyhow::bail!("invalid account position msg type: {}", msg_type);
+        }
+
+        let event_time = cursor.get_i64_le();
+        let update_time = cursor.get_i64_le();
+        let update_id = cursor.get_i64_le();
+        let asset_length = cursor.get_u32_le();
+        let mut padding = [0u8; 4];
+        cursor.copy_to_slice(&mut padding);
+
+        if cursor.remaining() < asset_length as usize + 8 + 8 {
+            anyhow::bail!("account position truncated before asset/balances");
+        }
+        let asset = String::from_utf8(cursor.copy_to_bytes(asset_length as usize).to_vec())?;
+        let free_balance = cursor.get_f64_le();
+        let locked_balance = cursor.get_f64_le();
+
+        Ok(Self {
+            msg_type: AccountEventType::AccountPosition,
+            event_time,
+            update_time,
+            update_id,
+            asset_length,
+            padding,
+            asset,
+            free_balance,
+            locked_balance,
+        })
+    }
 }
 
 #[repr(C, align(8))]

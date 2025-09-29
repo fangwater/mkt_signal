@@ -279,6 +279,70 @@ impl BinancePmSpotAccountManager {
         snapshot.balances.push(balance);
     }
 
+    /// 处理 outboundAccountPosition 推送（现货 free/locked），
+    /// 在成交时快速刷新对应资产的可用与锁定以及总钱包余额。
+    pub fn apply_account_position(
+        &self,
+        asset: &str,
+        free_balance: f64,
+        locked_balance: f64,
+        update_time: i64,
+    ) {
+        let upper = asset.to_uppercase();
+        let mut state = self.state.borrow_mut();
+        let Some(snapshot) = state.snapshot.as_mut() else {
+            return;
+        };
+
+        snapshot.fetched_at = Utc::now();
+
+        let wallet_balance = free_balance + locked_balance;
+        if let Some(balance) = snapshot
+            .balances
+            .iter_mut()
+            .find(|bal| bal.asset.eq_ignore_ascii_case(&upper))
+        {
+            // 将 free/locked 映射到 cross 可用/锁定，保持内部字段一致
+            balance.total_wallet_balance = wallet_balance;
+            balance.cross_margin_free = free_balance;
+            balance.cross_margin_locked = locked_balance;
+            balance.cross_margin_asset = free_balance + locked_balance;
+            balance.update_time = update_time;
+            balance.negative_balance =
+                balance.total_wallet_balance < 0.0 || balance.cross_margin_free < 0.0;
+            info!(
+                "现货余额(outbound)更新 asset={} free={} locked={} 总钱包={} 更新时间={}",
+                balance.asset.as_str(),
+                balance.cross_margin_free,
+                balance.cross_margin_locked,
+                balance.total_wallet_balance,
+                update_time
+            );
+            return;
+        }
+
+        let balance = BinanceSpotBalance {
+            asset: upper.clone(),
+            total_wallet_balance: wallet_balance,
+            cross_margin_asset: wallet_balance,
+            cross_margin_borrowed: 0.0,
+            cross_margin_free: free_balance,
+            cross_margin_interest: 0.0,
+            cross_margin_locked: locked_balance,
+            um_wallet_balance: 0.0,
+            um_unrealized_pnl: 0.0,
+            cm_wallet_balance: 0.0,
+            cm_unrealized_pnl: 0.0,
+            update_time,
+            negative_balance: wallet_balance < 0.0,
+        };
+        info!(
+            "新增现货余额(outbound) asset={} free={} locked={} 总钱包={} 更新时间={}",
+            upper, free_balance, locked_balance, wallet_balance, update_time
+        );
+        snapshot.balances.push(balance);
+    }
+
     async fn fetch_snapshot(&self) -> Result<BinanceSpotBalanceSnapshot> {
         let mut params = BTreeMap::new();
         params.insert(

@@ -1,6 +1,7 @@
 use crate::common::account_msg::{
-    get_event_type as get_account_event_type, AccountEventType, AccountUpdateBalanceMsg,
-    AccountUpdatePositionMsg, BalanceUpdateMsg, ExecutionReportMsg, OrderTradeUpdateMsg,
+    get_event_type as get_account_event_type, AccountEventType, AccountPositionMsg,
+    AccountUpdateBalanceMsg, AccountUpdatePositionMsg, BalanceUpdateMsg, ExecutionReportMsg,
+    OrderTradeUpdateMsg,
 };
 use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
 use crate::common::time_util::get_timestamp_us;
@@ -662,6 +663,20 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
 
     let data = &evt.payload[8..8 + payload_len];
     match msg_type {
+        AccountEventType::AccountPosition => {
+            let msg = AccountPositionMsg::from_bytes(data)?;
+            debug!(
+                "outboundAccountPosition: asset={}, free={}, locked={}, event_time={}",
+                msg.asset, msg.free_balance, msg.locked_balance, msg.event_time
+            );
+            ctx.spot_manager.apply_account_position(
+                &msg.asset,
+                msg.free_balance,
+                msg.locked_balance,
+                msg.event_time,
+            );
+            ctx.refresh_exposures();
+        }
         AccountEventType::BalanceUpdate => {
             let msg = BalanceUpdateMsg::from_bytes(data)?;
             ctx.spot_manager
