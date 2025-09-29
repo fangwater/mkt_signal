@@ -1115,6 +1115,7 @@ impl BinSingleForwardArbStrategy {
                     other, event
                 );
                 UmOrderUpdateOutcome::Ignored
+            }
         }
     }
 
@@ -1141,8 +1142,8 @@ impl BinSingleForwardArbStrategy {
                 rows.push(vec![
                     ord.order_id.to_string(),
                     ord.side.as_str().to_string(),
-                    fmt_decimal(ord.quantity),
-                    fmt_decimal(ord.price),
+                    Self::format_decimal(ord.quantity),
+                    Self::format_decimal(ord.price),
                     ord.status.as_str().to_string(),
                     age_ms.to_string(),
                 ]);
@@ -1157,98 +1158,101 @@ impl BinSingleForwardArbStrategy {
                 other => other,
             }
         });
-        let table = render_three_line_table(
+        let table = Self::render_three_line_table(
             &["OrderId", "Side", "Qty", "Price", "Status", "Age(ms)"],
             &rows,
         );
         warn!(
             "{}: symbol={} 当前待成交限价单列表\n{}",
-            Self::strategy_name(),
+            BinSingleForwardArbStrategy::strategy_name(),
             symbol,
             table
         );
     }
 }
 
-fn fmt_decimal(value: f64) -> String {
-    if value == 0.0 {
-        return "0".to_string();
-    }
-    let mut s = format!("{:.6}", value);
-    if s.contains('.') {
-        while s.ends_with('0') {
-            s.pop();
+impl BinSingleForwardArbStrategy {
+    fn format_decimal(value: f64) -> String {
+        if value == 0.0 {
+            return "0".to_string();
         }
-        if s.ends_with('.') {
-            s.pop();
-        }
-    }
-    if s.is_empty() { "0".to_string() } else { s }
-}
-
-fn render_three_line_table(headers: &[&str], rows: &[Vec<String>]) -> String {
-    let widths = compute_widths(headers, rows);
-    let mut out = String::new();
-    out.push_str(&build_separator(&widths, '-'));
-    out.push('\n');
-    out.push_str(&build_row(
-        headers
-            .iter()
-            .map(|h| h.to_string())
-            .collect::<Vec<String>>(),
-        &widths,
-    ));
-    out.push('\n');
-    out.push_str(&build_separator(&widths, '='));
-    if rows.is_empty() {
-        out.push('\n');
-        out.push_str(&build_separator(&widths, '-'));
-        return out;
-    }
-    for row in rows {
-        out.push('\n');
-        out.push_str(&build_row(row.clone(), &widths));
-    }
-    out.push('\n');
-    out.push_str(&build_separator(&widths, '-'));
-    out
-}
-
-fn compute_widths(headers: &[&str], rows: &[Vec<String>]) -> Vec<usize> {
-    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
-    for row in rows {
-        for (idx, cell) in row.iter().enumerate() {
-            if idx >= widths.len() {
-                continue;
+        let mut s = format!("{:.6}", value);
+        if s.contains('.') {
+            while s.ends_with('0') {
+                s.pop();
             }
-            widths[idx] = widths[idx].max(cell.len());
+            if s.ends_with('.') {
+                s.pop();
+            }
         }
+        if s.is_empty() { "0".to_string() } else { s }
     }
-    widths
-}
 
-fn build_separator(widths: &[usize], fill: char) -> String {
-    let mut line = String::new();
-    line.push('+');
-    for width in widths {
-        line.push_str(&fill.to_string().repeat(width + 2));
+    fn render_three_line_table(headers: &[&str], rows: &[Vec<String>]) -> String {
+        let widths = Self::compute_widths(headers, rows);
+        let mut out = String::new();
+        out.push_str(&Self::build_separator(&widths, '-'));
+        out.push('\n');
+        out.push_str(&Self::build_row(
+            headers
+                .iter()
+                .map(|h| h.to_string())
+                .collect::<Vec<String>>(),
+            &widths,
+        ));
+        out.push('\n');
+        out.push_str(&Self::build_separator(&widths, '='));
+        if rows.is_empty() {
+            out.push('\n');
+            out.push_str(&Self::build_separator(&widths, '-'));
+            return out;
+        }
+        for row in rows {
+            out.push('\n');
+            out.push_str(&Self::build_row(row.clone(), &widths));
+        }
+        out.push('\n');
+        out.push_str(&Self::build_separator(&widths, '-'));
+        out
+    }
+
+    fn compute_widths(headers: &[&str], rows: &[Vec<String>]) -> Vec<usize> {
+        let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+        for row in rows {
+            for (idx, cell) in row.iter().enumerate() {
+                if idx >= widths.len() {
+                    continue;
+                }
+                widths[idx] = widths[idx].max(cell.len());
+            }
+        }
+        widths
+    }
+
+    fn build_separator(widths: &[usize], fill: char) -> String {
+        let mut line = String::new();
         line.push('+');
+        for width in widths {
+            line.push_str(&fill.to_string().repeat(width + 2));
+            line.push('+');
+        }
+        line
     }
-    line
-}
 
-fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
-    let mut row = String::new();
-    row.push('|');
-    for (cell, width) in cells.iter().zip(widths.iter()) {
-        row.push(' ');
-        row.push_str(&format!("{:<width$}", cell, width = *width));
-        row.push(' ');
+    fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
+        let mut row = String::new();
         row.push('|');
+        for (cell, width) in cells.iter().zip(widths.iter()) {
+            row.push(' ');
+            row.push_str(&format!("{:<width$}", cell, width = *width));
+            row.push(' ');
+            row.push('|');
+        }
+        row
     }
-    row
 }
 
+impl BinSingleForwardArbStrategy {
     fn apply_um_fill_state(order: &mut Order, event: &OrderTradeUpdateMsg) -> UmOrderUpdateOutcome {
         match event.order_status.as_str() {
             "NEW" => {
