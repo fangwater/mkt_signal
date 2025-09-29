@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{anyhow, Context, Result};
-use log::{info, warn};
+use log::{debug, info, warn};
 use reqwest::Client;
 use serde::Deserialize;
 
@@ -50,18 +50,21 @@ impl MinQtyTable {
             .fetch_exchange_filters(
                 "https://api.binance.com/api/v3/exchangeInfo",
                 "binance_spot",
+                false,
             )
             .await?;
         let futures = self
             .fetch_exchange_filters(
                 "https://fapi.binance.com/fapi/v1/exchangeInfo",
                 "binance_um_futures",
+                false,
             )
             .await?;
         let margin = match self
             .fetch_exchange_filters(
                 "https://api.binance.com/sapi/v1/margin/exchangeInfo",
                 "binance_margin",
+                true,
             )
             .await
         {
@@ -156,12 +159,42 @@ impl MinQtyTable {
         &self,
         url: &str,
         label: &str,
+        with_api_key: bool,
     ) -> Result<HashMap<String, MinQtyEntry>> {
-        let resp = self.client.get(url).send().await?;
+        let mut req = self.client.get(url);
+
+        if with_api_key {
+            match std::env::var("BINANCE_API_KEY") {
+                Ok(key) if !key.trim().is_empty() => {
+                    req = req.header("X-MBX-APIKEY", key.trim());
+                }
+                _ => {
+                    debug!(
+                        "{} request without X-MBX-APIKEY (env BINANCE_API_KEY not set)",
+                        label
+                    );
+                }
+            }
+        }
+
+        let resp = req.send().await?;
         let status = resp.status();
         let body = resp.text().await?;
+        debug!(
+            "GET {} ({}) -> status={} bytes={}",
+            url,
+            label,
+            status.as_u16(),
+            body.len()
+        );
         if !status.is_success() {
             return Err(anyhow!("GET {} failed: {} - {}", url, status, body));
+        }
+        if body.trim().is_empty() {
+            return Err(anyhow!(
+                "GET {} returned empty body (status={})",
+                url, status
+            ));
         }
 
         let exchange_info: RawExchangeInfo = serde_json::from_str(&body)

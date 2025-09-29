@@ -470,28 +470,43 @@ fn spawn_account_listener(cfg: &AccountStreamCfg) -> Result<UnboundedReceiver<Ac
                 match subscriber.receive() {
                     Ok(Some(sample)) => {
                         let payload = sample.payload();
-                        let mut buf = payload.to_vec();
                         let received_at = get_timestamp_us();
-                        let (event_type, event_time_ms) = extract_account_metadata(&buf);
+
+                        // Account frames format: [type:4][len:4][data:len]
+                        let (frame_len, event_type_str) = if payload.len() >= 8 {
+                            let msg_type = get_account_event_type(payload);
+                            let body_len = u32::from_le_bytes([
+                                payload[4], payload[5], payload[6], payload[7],
+                            ]) as usize;
+                            let total = 8 + body_len;
+                            let clamped = total.min(payload.len());
+                            (clamped, format!("{:?}", msg_type))
+                        } else {
+                            (payload.len(), "<too_short>".to_string())
+                        };
+
+                        let mut buf = payload[..frame_len].to_vec();
                         debug!(
-                            "account evt received: service={}, type={:?}, event_time_ms={:?}, bytes={}",
+                            "account evt received: service={}, type={}, frame_bytes={}, cap_bytes={}",
                             service_name,
-                            event_type,
-                            event_time_ms,
+                            event_type_str,
+                            buf.len(),
+                            payload.len()
+                        );
+                        info!(
+                            "account event received: type={} len={}",
+                            event_type_str,
                             buf.len()
                         );
+
                         let evt = AccountEvent {
                             service: service_name.clone(),
                             received_at,
                             payload_len: buf.len(),
                             payload: std::mem::take(&mut buf),
-                            event_type,
-                            event_time_ms,
+                            event_type: Some(event_type_str),
+                            event_time_ms: None,
                         };
-                        info!(
-                            "account event received: type={:?} time={:?} len={}",
-                            evt.event_type, evt.event_time_ms, evt.payload_len
-                        );
                         if tx.send(evt).is_err() {
                             break;
                         }
