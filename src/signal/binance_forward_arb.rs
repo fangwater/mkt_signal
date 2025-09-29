@@ -8,6 +8,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::common::account_msg::{ExecutionReportMsg, OrderTradeUpdateMsg};
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::exposure_manager::ExposureManager;
+use crate::common::min_qty_table::MinQtyTable;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::signal::strategy::Strategy;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
@@ -270,6 +271,7 @@ pub struct BinSingleForwardArbStrategy {
     order_tx: UnboundedSender<Bytes>,
     max_symbol_exposure_ratio: f64,
     max_total_exposure_ratio: f64,
+    min_qty_table: std::rc::Rc<MinQtyTable>,
 }
 
 impl BinSingleForwardArbStrategy {
@@ -282,6 +284,7 @@ impl BinSingleForwardArbStrategy {
         order_tx: UnboundedSender<Bytes>,
         max_symbol_exposure_ratio: f64,
         max_total_exposure_ratio: f64,
+        min_qty_table: Rc<MinQtyTable>,
     ) -> Self {
         let strategy = Self {
             strategy_id: id,
@@ -301,6 +304,7 @@ impl BinSingleForwardArbStrategy {
             order_tx,
             max_symbol_exposure_ratio,
             max_total_exposure_ratio,
+            min_qty_table,
         };
 
         info!(
@@ -544,7 +548,86 @@ impl BinSingleForwardArbStrategy {
 
         let side_str = open_ctx.side.as_str();
         let order_type_str = open_ctx.order_type.as_str();
-        let qty_str = format_quantity(f64::from(open_ctx.amount));
+        // 数量 LOT_SIZE 对齐（优先 margin，再退化 spot）并确保不低于 minQty
+        let raw_qty = f64::from(open_ctx.amount);
+        let step = self
+            .min_qty_table
+            .margin_step_by_symbol(&self.symbol)
+            .or_else(|| self.min_qty_table.spot_step_by_symbol(&self.symbol))
+            .unwrap_or(0.0);
+        let min_qty = self
+            .min_qty_table
+            .margin_min_qty_by_symbol(&self.symbol)
+            .or_else(|| self.min_qty_table.spot_min_qty_by_symbol(&self.symbol))
+            .unwrap_or(0.0);
+        let mut eff_qty = if step > 0.0 {
+            align_price_floor(raw_qty, step)
+        } else {
+            raw_qty
+        };
+        if min_qty > 0.0 && eff_qty < min_qty {
+            eff_qty = min_qty;
+        }
+        if eff_qty <= 0.0 {
+            return Err(format!(
+                "{}: symbol={} 数量对齐后为 0，raw_qty={} step={} min_qty={}",
+                Self::strategy_name(),
+                self.symbol,
+                raw_qty,
+                step,
+                min_qty
+            ));
+        }
+        // 价格对齐（限价单）
+        let price_tick = open_ctx.price_tick.max(0.0);
+        let raw_price = open_ctx.price;
+        let mut effective_price = raw_price;
+
+        if open_ctx.order_type.is_limit() {
+            if price_tick > 0.0 {
+                effective_price = align_price_floor(effective_price, price_tick);
+            }
+        }
+
+        // 名义金额下限（minNotional），若有价格可用则按名义金额抬升数量
+        let min_notional = self
+            .min_qty_table
+            .margin_min_notional_by_symbol(&self.symbol)
+            .or_else(|| self.min_qty_table.spot_min_notional_by_symbol(&self.symbol))
+            .unwrap_or(0.0);
+        if min_notional > 0.0 && effective_price > 0.0 {
+            let required_qty = min_notional / effective_price;
+            if eff_qty < required_qty {
+                let before = eff_qty;
+                eff_qty = if step > 0.0 {
+                    align_price_ceil(required_qty, step)
+                } else {
+                    required_qty
+                };
+                debug!(
+                    "{}: strategy_id={} 名义金额对齐 min_notional={:.8} price={:.8} qty_up: {} -> {}",
+                    Self::strategy_name(),
+                    self.strategy_id,
+                    min_notional,
+                    effective_price,
+                    before,
+                    eff_qty
+                );
+            }
+        }
+
+        debug!(
+            "{}: strategy_id={} 数量/名义金额对齐 raw_qty={:.8} step={:.8} min_qty={:.8} min_notional={:.8} price={:.8} aligned_qty={:.8}",
+            Self::strategy_name(),
+            self.strategy_id,
+            raw_qty,
+            step,
+            min_qty,
+            min_notional,
+            effective_price,
+            eff_qty
+        );
+        let qty_str = format_quantity(eff_qty);
         let mut params_parts = vec![
             format!("symbol={}", open_ctx.spot_symbol),
             format!("side={}", side_str),
@@ -552,16 +635,8 @@ impl BinSingleForwardArbStrategy {
             format!("quantity={}", qty_str),
             format!("newClientOrderId={}", order_id),
         ];
-
-        let price_tick = open_ctx.price_tick.max(0.0);
-        let raw_price = open_ctx.price;
-        let mut effective_price = raw_price;
-
         if open_ctx.order_type.is_limit() {
             params_parts.push("timeInForce=GTC".to_string());
-            if price_tick > 0.0 {
-                effective_price = align_price_floor(effective_price, price_tick);
-            }
             params_parts.push(format!("price={}", format_price(effective_price)));
         }
 
@@ -601,7 +676,7 @@ impl BinSingleForwardArbStrategy {
             open_ctx.order_type,
             open_ctx.spot_symbol.clone(),
             open_ctx.side,
-            f64::from(open_ctx.amount),
+            eff_qty,
             effective_price,
         );
         order.set_submit_time(now);
@@ -757,7 +832,73 @@ impl BinSingleForwardArbStrategy {
         }
 
         let expected_qty = margin_order.quantity;
-        let close_qty = expected_qty;
+        // 按 LOT_SIZE 对齐平仓数量，并不低于 minQty，最终不超过 expected_qty
+        let step = self
+            .min_qty_table
+            .margin_step_by_symbol(&margin_order.symbol)
+            .or_else(|| self.min_qty_table.spot_step_by_symbol(&margin_order.symbol))
+            .unwrap_or(0.0);
+        let min_qty = self
+            .min_qty_table
+            .margin_min_qty_by_symbol(&margin_order.symbol)
+            .or_else(|| self.min_qty_table.spot_min_qty_by_symbol(&margin_order.symbol))
+            .unwrap_or(0.0);
+        let mut close_qty = if step > 0.0 {
+            align_price_floor(expected_qty, step)
+        } else {
+            expected_qty
+        };
+        if min_qty > 0.0 && close_qty < min_qty {
+            close_qty = min_qty;
+        }
+        // 名义金额校验（若配置可用）
+        let min_notional = self
+            .min_qty_table
+            .margin_min_notional_by_symbol(&margin_order.symbol)
+            .or_else(|| self.min_qty_table.spot_min_notional_by_symbol(&margin_order.symbol))
+            .unwrap_or(0.0);
+        let price_tick = ctx.price_tick.max(0.0);
+        let mut limit_price = ctx.limit_price;
+        if price_tick > 0.0 {
+            limit_price = align_price_ceil(limit_price, price_tick);
+        }
+        if min_notional > 0.0 && limit_price > 0.0 {
+            let required_qty = min_notional / limit_price;
+            if close_qty < required_qty {
+                let before = close_qty;
+                close_qty = if step > 0.0 { align_price_ceil(required_qty, step) } else { required_qty };
+                debug!(
+                    "{}: strategy_id={} 平仓名义金额对齐 min_notional={:.8} price={:.8} qty_up: {} -> {}",
+                    Self::strategy_name(),
+                    self.strategy_id,
+                    min_notional,
+                    limit_price,
+                    before,
+                    close_qty
+                );
+            }
+        }
+        if close_qty > expected_qty {
+            warn!(
+                "{}: strategy_id={} 平仓可用不足以满足名义下限，将按可用数量下单 required={} expected={}",
+                Self::strategy_name(),
+                self.strategy_id,
+                close_qty,
+                expected_qty
+            );
+            close_qty = expected_qty; // 不超过可平仓数量
+        }
+        debug!(
+            "{}: strategy_id={} 平仓数量对齐 raw_qty={:.8} step={:.8} min_qty={:.8} min_notional={:.8} price={:.8} aligned_qty={:.8}",
+            Self::strategy_name(),
+            self.strategy_id,
+            expected_qty,
+            step,
+            min_qty,
+            min_notional,
+            limit_price,
+            close_qty
+        );
 
         if close_qty <= 0.0 {
             return Err(format!(
@@ -773,12 +914,7 @@ impl BinSingleForwardArbStrategy {
             Side::Sell => (Side::Buy, "BUY"),
         };
 
-        let price_tick = ctx.price_tick.max(0.0);
         let raw_price = ctx.limit_price;
-        let mut limit_price = raw_price;
-        if price_tick > 0.0 {
-            limit_price = align_price_ceil(limit_price, price_tick);
-        }
         let margin_close_id = self.next_order_id();
         let now = get_timestamp_us();
 

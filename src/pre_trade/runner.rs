@@ -4,6 +4,7 @@ use crate::common::account_msg::{
     OrderTradeUpdateMsg,
 };
 use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
+use crate::common::min_qty_table::MinQtyTable;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::binance_pm_spot_manager::{BinancePmSpotAccountManager, BinanceSpotBalance};
 use crate::pre_trade::binance_pm_um_manager::{
@@ -132,6 +133,8 @@ struct BootstrapResources {
     exposure_manager: ExposureManager,
     //币安 标记价格表，辅助计算以usdt计价的资产敞口
     price_table: Rc<RefCell<PriceTable>>,
+    // 交易对最小下单量/步进信息（spot/futures/margin）
+    min_qty_table: Rc<MinQtyTable>,
     //收取订单请求的服务名称
     order_req_service: String,
 }
@@ -218,11 +221,19 @@ impl BootstrapResources {
 
         let order_req_service = resolve_order_req_service(&cfg.trade_engine);
 
+        // 加载交易对 LOT_SIZE/PRICE_FILTER（spot/futures/margin），用于数量/价格对齐
+        let mut min_qty_table = MinQtyTable::new();
+        if let Err(err) = min_qty_table.refresh_binance().await {
+            warn!("failed to refresh Binance exchange filters: {err:#}");
+        }
+        let min_qty_table = Rc::new(min_qty_table);
+
         Ok(Self {
             um_manager,
             spot_manager,
             exposure_manager,
             price_table,
+            min_qty_table,
             order_req_service,
         })
     }
@@ -241,6 +252,7 @@ struct RuntimeContext {
     signal_tx: UnboundedSender<Bytes>,
     order_publisher: OrderPublisher,
     strategy_params: StrategyParamsCfg,
+    min_qty_table: Rc<MinQtyTable>,
 }
 
 impl RuntimeContext {
@@ -256,6 +268,7 @@ impl RuntimeContext {
             spot_manager,
             exposure_manager,
             price_table,
+            min_qty_table,
             order_req_service: _,
         } = bootstrap;
 
@@ -274,6 +287,7 @@ impl RuntimeContext {
             signal_tx,
             order_publisher,
             strategy_params,
+            min_qty_table,
         }
     }
 
@@ -820,6 +834,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                         order_tx,
                         ctx.strategy_params.max_symbol_exposure_ratio,
                         ctx.strategy_params.max_total_exposure_ratio,
+                        ctx.min_qty_table.clone(),
                     );
                     strategy.set_signal_sender(signal_tx);
 

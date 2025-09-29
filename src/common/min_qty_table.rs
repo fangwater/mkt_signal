@@ -10,8 +10,14 @@ pub struct MinQtyEntry {
     pub symbol: String,
     pub base_asset: String,
     pub quote_asset: String,
+    /// 最小可下单量（minQty）
     pub min_qty: f64,
+    /// 数量步进（stepSize）
+    pub step_size: f64,
+    /// 价格步进（tickSize）
     pub price_tick: Option<f64>,
+    /// 名义金额下限（minNotional）
+    pub min_notional: Option<f64>,
 }
 
 #[derive(Debug)]
@@ -19,6 +25,7 @@ pub struct MinQtyTable {
     client: Client,
     spot: HashMap<String, MinQtyEntry>,
     futures_um: HashMap<String, MinQtyEntry>,
+    margin: HashMap<String, MinQtyEntry>,
 }
 
 impl Default for MinQtyTable {
@@ -33,32 +40,48 @@ impl MinQtyTable {
             client: Client::new(),
             spot: HashMap::new(),
             futures_um: HashMap::new(),
+            margin: HashMap::new(),
         }
     }
 
-    /// 刷新币安现货与永续合约最小下单量
+    /// 刷新币安现货/UM永续/保证金的交易对过滤器（minQty/stepSize/tickSize）
     pub async fn refresh_binance(&mut self) -> Result<()> {
         let spot = self
-            .fetch_exchange_min_qty(
+            .fetch_exchange_filters(
                 "https://api.binance.com/api/v3/exchangeInfo",
                 "binance_spot",
             )
             .await?;
         let futures = self
-            .fetch_exchange_min_qty(
+            .fetch_exchange_filters(
                 "https://fapi.binance.com/fapi/v1/exchangeInfo",
                 "binance_um_futures",
             )
             .await?;
+        let margin = match self
+            .fetch_exchange_filters(
+                "https://api.binance.com/sapi/v1/margin/exchangeInfo",
+                "binance_margin",
+            )
+            .await
+        {
+            Ok(m) => m,
+            Err(err) => {
+                warn!("refresh margin exchange info failed: {err:#}");
+                HashMap::new()
+            }
+        };
 
         info!(
-            "刷新最小下单量: spot={} 条目, futures={} 条目",
+            "刷新交易对过滤器: spot={} 条目, futures={} 条目, margin={} 条目",
             spot.len(),
-            futures.len()
+            futures.len(),
+            margin.len()
         );
 
         self.spot = spot;
         self.futures_um = futures;
+        self.margin = margin;
         Ok(())
     }
 
@@ -75,6 +98,11 @@ impl MinQtyTable {
             .filter(|tick| *tick > 0.0)
     }
 
+    pub fn spot_step_by_symbol(&self, symbol: &str) -> Option<f64> {
+        let key = symbol.to_uppercase();
+        self.spot.get(&key).map(|e| e.step_size).filter(|v| *v > 0.0)
+    }
+
     pub fn futures_um_min_qty_by_symbol(&self, symbol: &str) -> Option<f64> {
         let key = symbol.to_uppercase();
         self.futures_um.get(&key).map(|entry| entry.min_qty)
@@ -88,25 +116,43 @@ impl MinQtyTable {
             .filter(|tick| *tick > 0.0)
     }
 
-    pub fn spot_min_qty(&self, base_asset: &str, quote_asset: &str) -> Option<f64> {
-        let symbol = format!(
-            "{}{}",
-            base_asset.to_uppercase(),
-            quote_asset.to_uppercase()
-        );
-        self.spot_min_qty_by_symbol(&symbol)
+    pub fn futures_um_step_by_symbol(&self, symbol: &str) -> Option<f64> {
+        let key = symbol.to_uppercase();
+        self.futures_um
+            .get(&key)
+            .map(|e| e.step_size)
+            .filter(|v| *v > 0.0)
     }
 
-    pub fn futures_um_min_qty(&self, base_asset: &str, quote_asset: &str) -> Option<f64> {
-        let symbol = format!(
-            "{}{}",
-            base_asset.to_uppercase(),
-            quote_asset.to_uppercase()
-        );
-        self.futures_um_min_qty_by_symbol(&symbol)
+    pub fn margin_min_qty_by_symbol(&self, symbol: &str) -> Option<f64> {
+        let key = symbol.to_uppercase();
+        self.margin.get(&key).map(|entry| entry.min_qty)
     }
 
-    async fn fetch_exchange_min_qty(
+    pub fn margin_price_tick_by_symbol(&self, symbol: &str) -> Option<f64> {
+        let key = symbol.to_uppercase();
+        self.margin
+            .get(&key)
+            .and_then(|entry| entry.price_tick)
+            .filter(|tick| *tick > 0.0)
+    }
+
+    pub fn margin_step_by_symbol(&self, symbol: &str) -> Option<f64> {
+        let key = symbol.to_uppercase();
+        self.margin.get(&key).map(|e| e.step_size).filter(|v| *v > 0.0)
+    }
+
+    pub fn spot_min_notional_by_symbol(&self, symbol: &str) -> Option<f64> {
+        let key = symbol.to_uppercase();
+        self.spot.get(&key).and_then(|e| e.min_notional).filter(|v| *v > 0.0)
+    }
+
+    pub fn margin_min_notional_by_symbol(&self, symbol: &str) -> Option<f64> {
+        let key = symbol.to_uppercase();
+        self.margin.get(&key).and_then(|e| e.min_notional).filter(|v| *v > 0.0)
+    }
+
+    async fn fetch_exchange_filters(
         &self,
         url: &str,
         label: &str,
@@ -124,22 +170,18 @@ impl MinQtyTable {
         let mut map = HashMap::new();
         for raw_symbol in exchange_info.symbols {
             let filters = extract_filter_values(&raw_symbol.filters, &raw_symbol.symbol)?;
-            if let Some(min_qty) = filters.min_qty {
-                let symbol = raw_symbol.symbol.to_uppercase();
-                let entry = MinQtyEntry {
-                    symbol: symbol.clone(),
-                    base_asset: raw_symbol.base_asset.to_uppercase(),
-                    quote_asset: raw_symbol.quote_asset.to_uppercase(),
-                    min_qty,
-                    price_tick: filters.price_tick,
-                };
-                map.insert(symbol, entry);
-            } else if raw_symbol.status.eq_ignore_ascii_case("TRADING") {
-                warn!(
-                    "{} missing LOT_SIZE minQty, symbol={}",
-                    label, raw_symbol.symbol
-                );
-            }
+            let symbol = raw_symbol.symbol.to_uppercase();
+            let entry = MinQtyEntry {
+                symbol: symbol.clone(),
+                base_asset: raw_symbol.base_asset.to_uppercase(),
+                quote_asset: raw_symbol.quote_asset.to_uppercase(),
+                min_qty: filters.min_qty.unwrap_or(0.0),
+                step_size: filters.step_size.unwrap_or(0.0),
+                price_tick: filters.price_tick,
+                min_notional: filters
+                    .min_notional,
+            };
+            map.insert(symbol, entry);
         }
 
         Ok(map)
@@ -176,11 +218,15 @@ struct RawExchangeFilter {
     step_size: Option<String>,
     #[serde(rename = "tickSize")]
     tick_size: Option<String>,
+    #[serde(rename = "minNotional")]
+    min_notional: Option<String>,
 }
 
 struct SymbolFilterValues {
     min_qty: Option<f64>,
+    step_size: Option<f64>,
     price_tick: Option<f64>,
+    min_notional: Option<f64>,
 }
 
 fn extract_filter_values(
@@ -188,15 +234,18 @@ fn extract_filter_values(
     symbol: &str,
 ) -> Result<SymbolFilterValues> {
     let mut min_qty: Option<f64> = None;
+    let mut step_size: Option<f64> = None;
     let mut price_tick: Option<f64> = None;
+    let mut min_notional: Option<f64> = None;
 
     for filter in filters {
         match filter.filter_type.as_str() {
             "LOT_SIZE" => {
-                if let Some(value) = &filter.step_size {
-                    min_qty = Some(parse_decimal(value, "stepSize", symbol)?);
-                } else if let Some(value) = &filter.min_qty {
+                if let Some(value) = &filter.min_qty {
                     min_qty = Some(parse_decimal(value, "minQty", symbol)?);
+                }
+                if let Some(value) = &filter.step_size {
+                    step_size = Some(parse_decimal(value, "stepSize", symbol)?);
                 }
             }
             "PRICE_FILTER" => {
@@ -207,13 +256,23 @@ fn extract_filter_values(
                     }
                 }
             }
+            "MIN_NOTIONAL" | "NOTIONAL" => {
+                if let Some(value) = &filter.min_notional {
+                    let v = parse_decimal(value, "minNotional", symbol)?;
+                    if v > 0.0 {
+                        min_notional = Some(v);
+                    }
+                }
+            }
             _ => {}
         }
     }
 
     Ok(SymbolFilterValues {
         min_qty,
+        step_size,
         price_tick,
+        min_notional,
     })
 }
 
