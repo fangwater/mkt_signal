@@ -26,7 +26,7 @@ use bytes::Bytes;
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -426,6 +426,13 @@ fn spawn_account_listener(cfg: &AccountStreamCfg) -> Result<UnboundedReceiver<Ac
                         let mut buf = payload.to_vec();
                         let received_at = get_timestamp_us();
                         let (event_type, event_time_ms) = extract_account_metadata(&buf);
+                        debug!(
+                            "account evt received: service={}, type={:?}, event_time_ms={:?}, bytes={}",
+                            service_name,
+                            event_type,
+                            event_time_ms,
+                            buf.len()
+                        );
                         let evt = AccountEvent {
                             service: service_name.clone(),
                             received_at,
@@ -595,12 +602,22 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
     }
 
     let msg_type = get_account_event_type(&evt.payload);
-    let payload_len = u32::from_le_bytes([
+    let hdr_len_bytes = u32::from_le_bytes([
         evt.payload[4],
         evt.payload[5],
         evt.payload[6],
         evt.payload[7],
     ]) as usize;
+    debug!(
+        "account msg header: service={}, decoded_type={:?}, declared_len={}, evt_meta=({:?},{:?}), first8={:02X?}",
+        evt.service,
+        msg_type,
+        hdr_len_bytes,
+        evt.event_type,
+        evt.event_time_ms,
+        &evt.payload[..8]
+    );
+    let payload_len = hdr_len_bytes;
 
     if evt.payload.len() < 8 + payload_len {
         anyhow::bail!(
@@ -641,10 +658,68 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
         }
         AccountEventType::ExecutionReport => {
             let report = ExecutionReportMsg::from_bytes(data)?;
+            debug!(
+                "executionReport: sym={}, cli_id={}, ord_id={}, trade_id={}, side={}, maker={}, working={}, otype={}, tif={}, x={}, X={}, px={}, qty={}, last_px={}, last_qty={}, cum_qty={}, fee_amt={}, fee_ccy={}, cum_quote={}, last_quote={}, qoq={}, times(E/T/O/W/I)={}/{}/{}/{}/{}",
+                report.symbol,
+                report.client_order_id,
+                report.order_id,
+                report.trade_id,
+                report.side,
+                report.is_maker,
+                report.is_working,
+                report.order_type,
+                report.time_in_force,
+                report.execution_type,
+                report.order_status,
+                report.price,
+                report.quantity,
+                report.last_executed_price,
+                report.last_executed_quantity,
+                report.cumulative_filled_quantity,
+                report.commission_amount,
+                report.commission_asset,
+                report.cumulative_quote,
+                report.last_quote,
+                report.quote_order_quantity,
+                report.event_time,
+                report.transaction_time,
+                report.order_creation_time,
+                report.working_time,
+                report.update_id,
+            );
             dispatch_execution_report(ctx, &report);
         }
         AccountEventType::OrderTradeUpdate => {
             let update = OrderTradeUpdateMsg::from_bytes(data)?;
+            debug!(
+                "orderTradeUpdate: sym={}, cli_id={}, ord_id={}, trade_id={}, side={}, pos_side={}, maker={}, reduce={}, otype={}, tif={}, x={}, X={}, px={}, qty={}, avg_px={}, stop_px={}, last_px={}, last_qty={}, cum_qty={}, fee_amt={}, fee_ccy={}, buy_notional={}, sell_notional={}, realized_pnl={}, times(E/T)={}/{}",
+                update.symbol,
+                update.client_order_id,
+                update.order_id,
+                update.trade_id,
+                update.side,
+                update.position_side,
+                update.is_maker,
+                update.reduce_only,
+                update.order_type,
+                update.time_in_force,
+                update.execution_type,
+                update.order_status,
+                update.price,
+                update.quantity,
+                update.average_price,
+                update.stop_price,
+                update.last_executed_price,
+                update.last_executed_quantity,
+                update.cumulative_filled_quantity,
+                update.commission_amount,
+                update.commission_asset,
+                update.buy_notional,
+                update.sell_notional,
+                update.realized_profit,
+                update.event_time,
+                update.transaction_time,
+            );
             dispatch_order_trade_update(ctx, &update);
         }
         _ => {}
@@ -758,12 +833,21 @@ fn dispatch_signal_to_existing_strategy(ctx: &mut RuntimeContext, signal: TradeS
 fn dispatch_execution_report(ctx: &mut RuntimeContext, report: &ExecutionReportMsg) {
     let order_id = report.client_order_id;
     let strategy_ids: Vec<i32> = ctx.strategy_mgr.iter_ids().cloned().collect();
+    let mut matched = false;
     for strategy_id in strategy_ids {
         ctx.with_strategy_mut(strategy_id, |strategy| {
             if strategy.is_strategy_order(order_id) {
+                matched = true;
                 strategy.handle_binance_margin_order_update(report);
             }
         });
+    }
+
+    if !matched {
+        debug!(
+            "executionReport not matched to any strategy: client_order_id={}",
+            order_id
+        );
     }
 
     ctx.cleanup_inactive();
@@ -772,12 +856,21 @@ fn dispatch_execution_report(ctx: &mut RuntimeContext, report: &ExecutionReportM
 fn dispatch_order_trade_update(ctx: &mut RuntimeContext, update: &OrderTradeUpdateMsg) {
     let order_id = update.client_order_id;
     let strategy_ids: Vec<i32> = ctx.strategy_mgr.iter_ids().cloned().collect();
+    let mut matched = false;
     for strategy_id in strategy_ids {
         ctx.with_strategy_mut(strategy_id, |strategy| {
             if strategy.is_strategy_order(order_id) {
+                matched = true;
                 strategy.handle_binance_futures_order_update(update);
             }
         });
+    }
+
+    if !matched {
+        debug!(
+            "orderTradeUpdate not matched to any strategy: client_order_id={}",
+            order_id
+        );
     }
 
     ctx.cleanup_inactive();
