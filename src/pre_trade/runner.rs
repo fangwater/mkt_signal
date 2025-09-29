@@ -492,11 +492,7 @@ fn spawn_account_listener(cfg: &AccountStreamCfg) -> Result<UnboundedReceiver<Ac
                             buf.len(),
                             payload.len()
                         );
-                        info!(
-                            "account event received: type={} len={}",
-                            event_type_str,
-                            buf.len()
-                        );
+                        // 降低冗余 info 日志（如 AccountPosition），保留上面的 debug 行
 
                         let evt = AccountEvent {
                             service: service_name.clone(),

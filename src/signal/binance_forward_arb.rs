@@ -756,6 +756,17 @@ impl BinSingleForwardArbStrategy {
 
         let request = BinanceNewUMOrderRequest::create(create_time, order_id, params);
         let payload = request.to_bytes();
+        debug!(
+            "{}: strategy_id={} UM 对冲下单参数 symbol={} side={} pos_side={} qty={} clientOrderId={} payload_len={}",
+            Self::strategy_name(),
+            self.strategy_id,
+            hedge_symbol,
+            hedge_side_str,
+            position_side_str,
+            hedge_quantity_str,
+            order_id,
+            payload.len()
+        );
 
         self.order_tx
             .send(payload)
@@ -1851,6 +1862,37 @@ impl Strategy for BinSingleForwardArbStrategy {
                         Self::strategy_name(),
                         self.strategy_id
                     );
+                    // 触发对冲信号，由策略消费并创建 UM 对冲市价单
+                    let ctx = BinSingleForwardArbHedgeCtx { spot_order_id: order_id };
+                    if let Some(tx) = &self.signal_tx {
+                        let sig = TradeSignal::create(
+                            SignalType::BinSingleForwardArbHedge,
+                            get_timestamp_us(),
+                            0.0,
+                            ctx.to_bytes(),
+                        );
+                        if let Err(err) = tx.send(sig.to_bytes()) {
+                            warn!(
+                                "{}: strategy_id={} 发送 Hedge 信号失败: {}",
+                                Self::strategy_name(),
+                                self.strategy_id,
+                                err
+                            );
+                        } else {
+                            debug!(
+                                "{}: strategy_id={} 已派发 Hedge 信号 spot_order_id={}",
+                                Self::strategy_name(),
+                                self.strategy_id,
+                                order_id
+                            );
+                        }
+                    } else {
+                        warn!(
+                            "{}: strategy_id={} signal_tx 未配置，无法派发 Hedge 信号",
+                            Self::strategy_name(),
+                            self.strategy_id
+                        );
+                    }
                 }
                 "CANCELED" | "EXPIRED" | "REJECTED" | "TRADE_PREVENTION" => {
                     self.open_timeout_us = None;
