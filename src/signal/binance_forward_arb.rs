@@ -17,6 +17,7 @@ use crate::trade_engine::trade_request::{
     TradeRequestType,
 };
 use crate::trade_engine::trade_response_handle::TradeExecOutcome;
+use std::cmp::Ordering;
 
 /// 币安单所正向套利开仓信号上下文
 #[derive(Clone, Debug)]
@@ -328,12 +329,14 @@ impl BinSingleForwardArbStrategy {
         let count = order_manager.get_symbol_pending_limit_order_count(symbol);
         if count >= MAX_PENDING_LIMIT {
             warn!(
-                "{}: symbol={} 当前限价挂单数={}，超过上限 {}",
+                "{}: symbol={} 当前限价挂单数={}，达到上限 {}",
                 Self::strategy_name(),
                 symbol,
                 count,
                 MAX_PENDING_LIMIT
             );
+            // 打印该 symbol 下当前挂着的限价单（非终态）
+            Self::log_pending_limit_orders(symbol, order_manager);
             false
         } else {
             true
@@ -1112,9 +1115,139 @@ impl BinSingleForwardArbStrategy {
                     other, event
                 );
                 UmOrderUpdateOutcome::Ignored
-            }
         }
     }
+
+    /// 打印该 symbol 下当前挂着的限价单（非终态）为三线表
+    fn log_pending_limit_orders(symbol: &str, order_manager: &OrderManager) {
+        let now_us = get_timestamp_us();
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        for id in order_manager.get_all_ids() {
+            if let Some(ord) = order_manager.get(id) {
+                if !ord.symbol.eq_ignore_ascii_case(symbol) {
+                    continue;
+                }
+                if !ord.order_type.is_limit() {
+                    continue;
+                }
+                if ord.status.is_terminal() {
+                    continue;
+                }
+                let age_ms = if ord.submit_time > 0 {
+                    (now_us.saturating_sub(ord.submit_time) / 1000) as i64
+                } else {
+                    0
+                };
+                rows.push(vec![
+                    ord.order_id.to_string(),
+                    ord.side.as_str().to_string(),
+                    fmt_decimal(ord.quantity),
+                    fmt_decimal(ord.price),
+                    ord.status.as_str().to_string(),
+                    age_ms.to_string(),
+                ]);
+            }
+        }
+        // 稳定排序：按 age_ms 降序，其次按 order_id 升序
+        rows.sort_by(|a, b| {
+            let age_a: i64 = a[5].parse().unwrap_or(0);
+            let age_b: i64 = b[5].parse().unwrap_or(0);
+            match age_b.cmp(&age_a) {
+                Ordering::Equal => a[0].cmp(&b[0]),
+                other => other,
+            }
+        });
+        let table = render_three_line_table(
+            &["OrderId", "Side", "Qty", "Price", "Status", "Age(ms)"],
+            &rows,
+        );
+        warn!(
+            "{}: symbol={} 当前待成交限价单列表\n{}",
+            Self::strategy_name(),
+            symbol,
+            table
+        );
+    }
+}
+
+fn fmt_decimal(value: f64) -> String {
+    if value == 0.0 {
+        return "0".to_string();
+    }
+    let mut s = format!("{:.6}", value);
+    if s.contains('.') {
+        while s.ends_with('0') {
+            s.pop();
+        }
+        if s.ends_with('.') {
+            s.pop();
+        }
+    }
+    if s.is_empty() { "0".to_string() } else { s }
+}
+
+fn render_three_line_table(headers: &[&str], rows: &[Vec<String>]) -> String {
+    let widths = compute_widths(headers, rows);
+    let mut out = String::new();
+    out.push_str(&build_separator(&widths, '-'));
+    out.push('\n');
+    out.push_str(&build_row(
+        headers
+            .iter()
+            .map(|h| h.to_string())
+            .collect::<Vec<String>>(),
+        &widths,
+    ));
+    out.push('\n');
+    out.push_str(&build_separator(&widths, '='));
+    if rows.is_empty() {
+        out.push('\n');
+        out.push_str(&build_separator(&widths, '-'));
+        return out;
+    }
+    for row in rows {
+        out.push('\n');
+        out.push_str(&build_row(row.clone(), &widths));
+    }
+    out.push('\n');
+    out.push_str(&build_separator(&widths, '-'));
+    out
+}
+
+fn compute_widths(headers: &[&str], rows: &[Vec<String>]) -> Vec<usize> {
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+    for row in rows {
+        for (idx, cell) in row.iter().enumerate() {
+            if idx >= widths.len() {
+                continue;
+            }
+            widths[idx] = widths[idx].max(cell.len());
+        }
+    }
+    widths
+}
+
+fn build_separator(widths: &[usize], fill: char) -> String {
+    let mut line = String::new();
+    line.push('+');
+    for width in widths {
+        line.push_str(&fill.to_string().repeat(width + 2));
+        line.push('+');
+    }
+    line
+}
+
+fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
+    let mut row = String::new();
+    row.push('|');
+    for (cell, width) in cells.iter().zip(widths.iter()) {
+        row.push(' ');
+        row.push_str(&format!("{:<width$}", cell, width = *width));
+        row.push(' ');
+        row.push('|');
+    }
+    row
+}
 
     fn apply_um_fill_state(order: &mut Order, event: &OrderTradeUpdateMsg) -> UmOrderUpdateOutcome {
         match event.order_status.as_str() {
@@ -1522,10 +1655,12 @@ impl Strategy for BinSingleForwardArbStrategy {
                     if success {
                         let now = get_timestamp_us();
                         let mut manager = self.order_manager.borrow_mut();
+                        let mut existed = false;
                         if manager.update(outcome.client_order_id, |order| {
                             order.update_status(OrderExecutionStatus::Cancelled);
                             order.set_end_time(now);
                         }) {
+                            existed = true;
                             info!(
                                 "{}: strategy_id={} margin 撤单成功 client_order_id={} status={}",
                                 Self::strategy_name(),
@@ -1540,6 +1675,10 @@ impl Strategy for BinSingleForwardArbStrategy {
                                 self.strategy_id,
                                 outcome.client_order_id
                             );
+                        }
+                        // 删除订单，释放挂单计数
+                        if existed {
+                            let _ = manager.remove(outcome.client_order_id);
                         }
 
                         if self.margin_order_id == outcome.client_order_id {

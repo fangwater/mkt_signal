@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use log::warn;
+use log::{debug, warn};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Side {
@@ -360,19 +360,44 @@ impl OrderManager {
     }
 
     fn increment_pending_limit_count(&mut self, symbol: &str) {
-        *self
+        let entry = self
             .pending_limit_order_count
             .entry(symbol.to_string())
-            .or_insert(0) += 1;
+            .or_insert(0);
+        let before = *entry;
+        *entry += 1;
+        debug!(
+            "OrderManager: symbol={} pending_limit_count {} -> {} (inc)",
+            symbol,
+            before,
+            *entry
+        );
     }
 
     fn decrement_pending_limit_count(&mut self, symbol: &str) {
         if let Some(entry) = self.pending_limit_order_count.get_mut(symbol) {
+            let before = *entry;
             if *entry > 1 {
                 *entry -= 1;
+                debug!(
+                    "OrderManager: symbol={} pending_limit_count {} -> {} (dec)",
+                    symbol,
+                    before,
+                    *entry
+                );
             } else {
                 self.pending_limit_order_count.remove(symbol);
+                debug!(
+                    "OrderManager: symbol={} pending_limit_count {} -> 0 (remove entry)",
+                    symbol,
+                    before
+                );
             }
+        } else {
+            debug!(
+                "OrderManager: symbol={} pending_limit_count not found when decrement",
+                symbol
+            );
         }
     }
 }

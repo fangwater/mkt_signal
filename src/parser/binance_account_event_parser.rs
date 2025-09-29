@@ -5,7 +5,7 @@ use crate::common::account_msg::{
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
-use log::debug;
+use log::{debug, warn};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -304,6 +304,7 @@ impl BinanceAccountEventParser {
             .unwrap_or("")
             .to_string();
         let client_order_id_raw = json.get("c").and_then(|v| v.as_str());
+        // 策略单使用 i64 自定义 clientOrderId；若解析失败则记为 0（非策略单，不处理）
         let client_order_id = client_order_id_raw
             .and_then(|s| s.parse::<i64>().ok())
             .unwrap_or(0);
@@ -389,6 +390,16 @@ impl BinanceAccountEventParser {
             .unwrap_or("")
             .to_string();
 
+        if client_order_id == 0 {
+            warn!(
+                "parser: skip executionReport with non-i64 clientOrderId c={:?} C={:?} sym={}",
+                client_order_id_raw,
+                json.get("C").and_then(|v| v.as_str()),
+                symbol
+            );
+            return 0;
+        }
+
         let msg = ExecutionReportMsg::create(
             event_time,
             transaction_time,
@@ -461,6 +472,15 @@ impl BinanceAccountEventParser {
             let client_order_id = client_order_id_raw
                 .and_then(|s| s.parse::<i64>().ok())
                 .unwrap_or(0);
+
+            if client_order_id == 0 {
+                warn!(
+                    "parser: skip orderTradeUpdate with non-i64 clientOrderId c={:?} sym={}",
+                    client_order_id_raw,
+                    symbol
+                );
+                return 0;
+            }
 
             let side = match o.get("S").and_then(|v| v.as_str()).unwrap_or("") {
                 "BUY" => 'B',

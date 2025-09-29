@@ -60,20 +60,9 @@ impl MinQtyTable {
                 false,
             )
             .await?;
-        let margin = match self
-            .fetch_exchange_filters(
-                "https://api.binance.com/sapi/v1/margin/exchangeInfo",
-                "binance_margin",
-                true,
-            )
-            .await
-        {
-            Ok(m) => m,
-            Err(err) => {
-                warn!("refresh margin exchange info failed: {err:#}");
-                HashMap::new()
-            }
-        };
+        // 币安保证金过滤器与现货一致，这里直接沿用现货过滤器，避免额外拉取
+        let margin = spot.clone();
+        debug!("reuse spot exchange filters for binance_margin");
 
         info!(
             "刷新交易对过滤器: spot={} 条目, futures={} 条目, margin={} 条目",
@@ -236,7 +225,7 @@ struct RawExchangeSymbol {
     #[serde(rename = "quoteAsset")]
     quote_asset: String,
     #[serde(default, rename = "status")]
-    status: String,
+    _status: String,
     #[serde(default, rename = "filters")]
     filters: Vec<RawExchangeFilter>,
 }

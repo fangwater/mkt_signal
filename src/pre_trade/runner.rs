@@ -371,7 +371,6 @@ impl RuntimeContext {
     }
 }
 
-use crate::pre_trade::dedup::hash64;
 
 struct OrderPublisher {
     _node: Node<ipc::Service>,
@@ -1043,16 +1042,7 @@ fn trim_payload(payload: &[u8]) -> Bytes {
     Bytes::copy_from_slice(payload)
 }
 
-fn extract_account_metadata(payload: &[u8]) -> (Option<String>, Option<i64>) {
-    match serde_json::from_slice::<serde_json::Value>(payload) {
-        Ok(serde_json::Value::Object(map)) => {
-            let event_type = map.get("e").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let event_time = map.get("E").and_then(|v| v.as_i64());
-            (event_type, event_time)
-        }
-        _ => (None, None),
-    }
-}
+// 删除了基于 JSON 的账户元数据提取逻辑，账户事件采用二进制帧头解析
 
 fn signal_node_name(channel: &str) -> String {
     format!(
