@@ -5,6 +5,7 @@ use crate::common::account_msg::{
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
+use log::debug;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -302,9 +303,8 @@ impl BinanceAccountEventParser {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let client_order_id = json
-            .get("c")
-            .and_then(|v| v.as_str())
+        let client_order_id_raw = json.get("c").and_then(|v| v.as_str());
+        let client_order_id = client_order_id_raw
             .and_then(|s| s.parse::<i64>().ok())
             .unwrap_or(0);
 
@@ -416,8 +416,20 @@ impl BinanceAccountEventParser {
             execution_type,
             order_status,
             commission_asset,
+            client_order_id_raw.map(|s| s.to_string()),
         );
         let bytes = msg.to_bytes();
+        debug!(
+            "parser: executionReport parsed sym={} c_raw={:?} cli_id_i64={} x={} X={} qty={} last_qty={} last_px={}",
+            json.get("s").and_then(|v| v.as_str()).unwrap_or(""),
+            client_order_id_raw,
+            client_order_id,
+            json.get("x").and_then(|v| v.as_str()).unwrap_or(""),
+            json.get("X").and_then(|v| v.as_str()).unwrap_or(""),
+            json.get("q").and_then(|v| v.as_str()).unwrap_or(""),
+            json.get("l").and_then(|v| v.as_str()).unwrap_or(""),
+            json.get("L").and_then(|v| v.as_str()).unwrap_or("")
+        );
         let event_msg = AccountEventMsg::create(AccountEventType::ExecutionReport, bytes);
 
         if let Err(_) = tx.send(event_msg.to_bytes()) {
@@ -445,9 +457,8 @@ impl BinanceAccountEventParser {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let client_order_id = o
-                .get("c")
-                .and_then(|v| v.as_str())
+            let client_order_id_raw = o.get("c").and_then(|v| v.as_str());
+            let client_order_id = client_order_id_raw
                 .and_then(|s| s.parse::<i64>().ok())
                 .unwrap_or(0);
 
@@ -584,8 +595,20 @@ impl BinanceAccountEventParser {
                 commission_asset,
                 strategy_type,
                 business_unit,
+                client_order_id_raw.map(|s| s.to_string()),
             );
             let bytes = msg.to_bytes();
+            debug!(
+                "parser: orderTradeUpdate parsed sym={} c_raw={:?} cli_id_i64={} x={} X={} qty={} last_qty={} last_px={}",
+                o.get("s").and_then(|v| v.as_str()).unwrap_or(""),
+                client_order_id_raw,
+                client_order_id,
+                o.get("x").and_then(|v| v.as_str()).unwrap_or(""),
+                o.get("X").and_then(|v| v.as_str()).unwrap_or(""),
+                o.get("q").and_then(|v| v.as_str()).unwrap_or(""),
+                o.get("l").and_then(|v| v.as_str()).unwrap_or(""),
+                o.get("L").and_then(|v| v.as_str()).unwrap_or("")
+            );
             let event_msg = AccountEventMsg::create(AccountEventType::OrderTradeUpdate, bytes);
 
             if let Err(_) = tx.send(event_msg.to_bytes()) {

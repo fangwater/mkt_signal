@@ -709,9 +709,10 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
         AccountEventType::ExecutionReport => {
             let report = ExecutionReportMsg::from_bytes(data)?;
             debug!(
-                "executionReport: sym={}, cli_id={}, ord_id={}, trade_id={}, side={}, maker={}, working={}, otype={}, tif={}, x={}, X={}, px={}, qty={}, last_px={}, last_qty={}, cum_qty={}, fee_amt={}, fee_ccy={}, cum_quote={}, last_quote={}, qoq={}, times(E/T/O/W/I)={}/{}/{}/{}/{}",
+                "executionReport: sym={}, cli_id={}, cli_str='{}', ord_id={}, trade_id={}, side={}, maker={}, working={}, otype={}, tif={}, x={}, X={}, px={}, qty={}, last_px={}, last_qty={}, cum_qty={}, fee_amt={}, fee_ccy={}, cum_quote={}, last_quote={}, qoq={}, times(E/T/O/W/I)={}/{}/{}/{}/{}",
                 report.symbol,
                 report.client_order_id,
+                report.client_order_id_str,
                 report.order_id,
                 report.trade_id,
                 report.side,
@@ -742,9 +743,10 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
         AccountEventType::OrderTradeUpdate => {
             let update = OrderTradeUpdateMsg::from_bytes(data)?;
             debug!(
-                "orderTradeUpdate: sym={}, cli_id={}, ord_id={}, trade_id={}, side={}, pos_side={}, maker={}, reduce={}, otype={}, tif={}, x={}, X={}, px={}, qty={}, avg_px={}, stop_px={}, last_px={}, last_qty={}, cum_qty={}, fee_amt={}, fee_ccy={}, buy_notional={}, sell_notional={}, realized_pnl={}, times(E/T)={}/{}",
+                "orderTradeUpdate: sym={}, cli_id={}, cli_str='{}', ord_id={}, trade_id={}, side={}, pos_side={}, maker={}, reduce={}, otype={}, tif={}, x={}, X={}, px={}, qty={}, avg_px={}, stop_px={}, last_px={}, last_qty={}, cum_qty={}, fee_amt={}, fee_ccy={}, buy_notional={}, sell_notional={}, realized_pnl={}, times(E/T)={}/{}",
                 update.symbol,
                 update.client_order_id,
+                update.client_order_id_str,
                 update.order_id,
                 update.trade_id,
                 update.side,
@@ -921,8 +923,9 @@ fn dispatch_execution_report(ctx: &mut RuntimeContext, report: &ExecutionReportM
 
     if !matched {
         debug!(
-            "executionReport not matched to any strategy: client_order_id={}",
-            order_id
+            "executionReport not matched to any strategy: client_order_id={} client_order_id_str='{}'",
+            order_id,
+            report.client_order_id_str
         );
     }
 
@@ -944,8 +947,9 @@ fn dispatch_order_trade_update(ctx: &mut RuntimeContext, update: &OrderTradeUpda
 
     if !matched {
         debug!(
-            "orderTradeUpdate not matched to any strategy: client_order_id={}",
-            order_id
+            "orderTradeUpdate not matched to any strategy: client_order_id={} client_order_id_str='{}'",
+            order_id,
+            update.client_order_id_str
         );
     }
 

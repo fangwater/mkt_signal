@@ -404,6 +404,9 @@ pub struct ExecutionReportMsg {
     pub order_status: String,
     pub commission_asset_length: u32,
     pub commission_asset: String,
+    // extension: raw clientOrderId string (optional)
+    pub client_order_id_str_length: u32,
+    pub client_order_id_str: String,
 }
 
 impl ExecutionReportMsg {
@@ -434,7 +437,9 @@ impl ExecutionReportMsg {
         execution_type: String,
         order_status: String,
         commission_asset: String,
+        client_order_id_str: Option<String>,
     ) -> Self {
+        let client_order_id_str = client_order_id_str.unwrap_or_default();
         Self {
             msg_type: AccountEventType::ExecutionReport,
             event_time,
@@ -470,6 +475,8 @@ impl ExecutionReportMsg {
             order_status,
             commission_asset_length: commission_asset.len() as u32,
             commission_asset,
+            client_order_id_str_length: client_order_id_str.len() as u32,
+            client_order_id_str,
         }
     }
 
@@ -493,7 +500,9 @@ impl ExecutionReportMsg {
             + 4
             + self.order_status_length as usize
             + 4
-            + self.commission_asset_length as usize;
+            + self.commission_asset_length as usize
+            + 4
+            + self.client_order_id_str_length as usize;
 
         let mut buf = BytesMut::with_capacity(total_size);
 
@@ -540,6 +549,10 @@ impl ExecutionReportMsg {
 
         buf.put_u32_le(self.commission_asset_length);
         buf.put(self.commission_asset.as_bytes());
+
+        // extension
+        buf.put_u32_le(self.client_order_id_str_length);
+        buf.put(self.client_order_id_str.as_bytes());
 
         buf.freeze()
     }
@@ -634,6 +647,22 @@ impl ExecutionReportMsg {
                 .to_vec(),
         )?;
 
+        // optional extension
+        let (client_order_id_str_length, client_order_id_str) = if cursor.remaining() >= 4 {
+            let len = cursor.get_u32_le();
+            if cursor.remaining() < len as usize {
+                anyhow::bail!(
+                    "execution report truncated before client_order_id_str: need {} have {}",
+                    len,
+                    cursor.remaining()
+                );
+            }
+            let s = String::from_utf8(cursor.copy_to_bytes(len as usize).to_vec())?;
+            (len, s)
+        } else {
+            (0, String::new())
+        };
+
         Ok(Self {
             msg_type: AccountEventType::ExecutionReport,
             event_time,
@@ -669,6 +698,8 @@ impl ExecutionReportMsg {
             order_status,
             commission_asset_length,
             commission_asset,
+            client_order_id_str_length,
+            client_order_id_str,
         })
     }
 }
@@ -715,6 +746,9 @@ pub struct OrderTradeUpdateMsg {
     pub strategy_type: String,
     pub business_unit_length: u32,
     pub business_unit: String,
+    // extension: raw clientOrderId string (optional)
+    pub client_order_id_str_length: u32,
+    pub client_order_id_str: String,
 }
 
 impl OrderTradeUpdateMsg {
@@ -748,7 +782,9 @@ impl OrderTradeUpdateMsg {
         commission_asset: String,
         strategy_type: String,
         business_unit: String,
+        client_order_id_str: Option<String>,
     ) -> Self {
+        let client_order_id_str = client_order_id_str.unwrap_or_default();
         Self {
             msg_type: AccountEventType::OrderTradeUpdate,
             event_time,
@@ -789,6 +825,8 @@ impl OrderTradeUpdateMsg {
             strategy_type,
             business_unit_length: business_unit.len() as u32,
             business_unit,
+            client_order_id_str_length: client_order_id_str.len() as u32,
+            client_order_id_str,
         }
     }
 
@@ -817,7 +855,9 @@ impl OrderTradeUpdateMsg {
             + 4
             + self.strategy_type_length as usize
             + 4
-            + self.business_unit_length as usize;
+            + self.business_unit_length as usize
+            + 4
+            + self.client_order_id_str_length as usize;
 
         let mut buf = BytesMut::with_capacity(total_size);
 
@@ -871,6 +911,10 @@ impl OrderTradeUpdateMsg {
 
         buf.put_u32_le(self.business_unit_length);
         buf.put(self.business_unit.as_bytes());
+
+        // extension
+        buf.put_u32_le(self.client_order_id_str_length);
+        buf.put(self.client_order_id_str.as_bytes());
 
         buf.freeze()
     }
@@ -980,6 +1024,22 @@ impl OrderTradeUpdateMsg {
         let business_unit =
             String::from_utf8(cursor.copy_to_bytes(business_unit_length as usize).to_vec())?;
 
+        // optional extension
+        let (client_order_id_str_length, client_order_id_str) = if cursor.remaining() >= 4 {
+            let len = cursor.get_u32_le();
+            if cursor.remaining() < len as usize {
+                anyhow::bail!(
+                    "order trade update truncated before client_order_id_str: need {} have {}",
+                    len,
+                    cursor.remaining()
+                );
+            }
+            let s = String::from_utf8(cursor.copy_to_bytes(len as usize).to_vec())?;
+            (len, s)
+        } else {
+            (0, String::new())
+        };
+
         Ok(Self {
             msg_type: AccountEventType::OrderTradeUpdate,
             event_time,
@@ -1020,6 +1080,8 @@ impl OrderTradeUpdateMsg {
             strategy_type,
             business_unit_length,
             business_unit,
+            client_order_id_str_length,
+            client_order_id_str,
         })
     }
 }
