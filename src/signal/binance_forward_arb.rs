@@ -1094,7 +1094,11 @@ impl BinSingleForwardArbStrategy {
 
     fn submit_margin_cancel(&self, symbol: &str, order_id: i64) -> Result<(), String> {
         let now = get_timestamp_us();
-        let params = Bytes::from(format!("symbol={}&orderId={}", symbol, order_id));
+        // 使用 origClientOrderId 以客户端订单ID撤单；当前未保存交易所 orderId
+        let params = Bytes::from(format!(
+            "symbol={}&origClientOrderId={}",
+            symbol, order_id
+        ));
         let request = BinanceCancelMarginOrderRequest::create(now, order_id, params);
 
         self.order_tx

@@ -90,7 +90,7 @@ async fn main() -> Result<()> {
         .map(|c| (c.history_size, c.max_subscribers))
         .unwrap_or((None, None));
     let mut forwarder = PmForwarder::new("binance", pm_hist, pm_subs)?;
-    let mut stats = tokio::time::interval(Duration::from_secs(3));
+    let mut stats = tokio::time::interval(Duration::from_secs(30));
 
     // Spawn primary and secondary paths
     let mut primary = spawn_user_stream_path(

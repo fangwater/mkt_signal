@@ -46,7 +46,6 @@ const NODE_PRE_TRADE_ORDER_REQ: &str = "pre_trade_order_req";
 const NODE_PRE_TRADE_DERIVATIVES: &str = "pre_trade_derivatives";
 const DERIVATIVES_SERVICE: &str = "data_pubs/binance-futures/derivatives";
 const DERIVATIVES_PAYLOAD: usize = 128;
-const BIN_SINGLE_FORWARD_ARB_NAME: &str = "BinSingleForwardArbStrategy";
 
 pub struct PreTrade {
     cfg: PreTradeCfg,
