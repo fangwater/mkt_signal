@@ -253,6 +253,7 @@ struct RuntimeContext {
     order_publisher: OrderPublisher,
     strategy_params: StrategyParamsCfg,
     min_qty_table: Rc<MinQtyTable>,
+    dedup: crate::pre_trade::dedup::DedupCache,
 }
 
 impl RuntimeContext {
@@ -288,6 +289,7 @@ impl RuntimeContext {
             order_publisher,
             strategy_params,
             min_qty_table,
+            dedup: crate::pre_trade::dedup::DedupCache::new(8192),
         }
     }
 
@@ -368,6 +370,8 @@ impl RuntimeContext {
         self.cleanup_inactive();
     }
 }
+
+use crate::pre_trade::dedup::hash64;
 
 struct OrderPublisher {
     _node: Node<ipc::Service>,
@@ -678,6 +682,14 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
     match msg_type {
         AccountEventType::AccountPosition => {
             let msg = AccountPositionMsg::from_bytes(data)?;
+            let key = crate::pre_trade::dedup::key_account_position(&msg);
+            if !ctx.dedup.insert_check(key) {
+                debug!(
+                    "dedup drop AccountPosition: asset={} update_id={} event_time={}",
+                    msg.asset, msg.update_id, msg.event_time
+                );
+                return Ok(());
+            }
             debug!(
                 "outboundAccountPosition: asset={}, free={}, locked={}, event_time={}",
                 msg.asset, msg.free_balance, msg.locked_balance, msg.event_time
@@ -692,12 +704,28 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
         }
         AccountEventType::BalanceUpdate => {
             let msg = BalanceUpdateMsg::from_bytes(data)?;
+            let key = crate::pre_trade::dedup::key_balance_update(&msg);
+            if !ctx.dedup.insert_check(key) {
+                debug!(
+                    "dedup drop BalanceUpdate: asset={} update_id={} event_time={}",
+                    msg.asset, msg.update_id, msg.event_time
+                );
+                return Ok(());
+            }
             ctx.spot_manager
                 .apply_balance_delta(&msg.asset, msg.delta, msg.event_time);
             ctx.refresh_exposures();
         }
         AccountEventType::AccountUpdateBalance => {
             let msg = AccountUpdateBalanceMsg::from_bytes(data)?;
+            let key = crate::pre_trade::dedup::key_account_update_balance(&msg);
+            if !ctx.dedup.insert_check(key) {
+                debug!(
+                    "dedup drop AccountUpdateBalance: asset={} event_time={}",
+                    msg.asset, msg.event_time
+                );
+                return Ok(());
+            }
             ctx.spot_manager.apply_balance_snapshot(
                 &msg.asset,
                 msg.wallet_balance,
@@ -709,6 +737,14 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
         }
         AccountEventType::AccountUpdatePosition => {
             let msg = AccountUpdatePositionMsg::from_bytes(data)?;
+            let key = crate::pre_trade::dedup::key_account_update_position(&msg);
+            if !ctx.dedup.insert_check(key) {
+                debug!(
+                    "dedup drop AccountUpdatePosition: symbol={} side={} event_time={}",
+                    msg.symbol, msg.position_side, msg.event_time
+                );
+                return Ok(());
+            }
             ctx.um_manager.apply_position_update(
                 &msg.symbol,
                 msg.position_side,
@@ -722,6 +758,14 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
         }
         AccountEventType::ExecutionReport => {
             let report = ExecutionReportMsg::from_bytes(data)?;
+            let key = crate::pre_trade::dedup::key_execution_report(&report);
+            if !ctx.dedup.insert_check(key) {
+                debug!(
+                    "dedup drop ExecutionReport: symbol={} ord={} trade={} x={} X={}",
+                    report.symbol, report.order_id, report.trade_id, report.execution_type, report.order_status
+                );
+                return Ok(());
+            }
             debug!(
                 "executionReport: sym={}, cli_id={}, cli_str='{}', ord_id={}, trade_id={}, side={}, maker={}, working={}, otype={}, tif={}, x={}, X={}, px={}, qty={}, last_px={}, last_qty={}, cum_qty={}, fee_amt={}, fee_ccy={}, cum_quote={}, last_quote={}, qoq={}, times(E/T/O/W/I)={}/{}/{}/{}/{}",
                 report.symbol,
@@ -756,6 +800,14 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
         }
         AccountEventType::OrderTradeUpdate => {
             let update = OrderTradeUpdateMsg::from_bytes(data)?;
+            let key = crate::pre_trade::dedup::key_order_trade_update(&update);
+            if !ctx.dedup.insert_check(key) {
+                debug!(
+                    "dedup drop OrderTradeUpdate: symbol={} ord={} trade={} x={} X={}",
+                    update.symbol, update.order_id, update.trade_id, update.execution_type, update.order_status
+                );
+                return Ok(());
+            }
             debug!(
                 "orderTradeUpdate: sym={}, cli_id={}, cli_str='{}', ord_id={}, trade_id={}, side={}, pos_side={}, maker={}, reduce={}, otype={}, tif={}, x={}, X={}, px={}, qty={}, avg_px={}, stop_px={}, last_px={}, last_qty={}, cum_qty={}, fee_amt={}, fee_ccy={}, buy_notional={}, sell_notional={}, realized_pnl={}, times(E/T)={}/{}",
                 update.symbol,
