@@ -196,8 +196,12 @@ impl ExposureManager {
             .iter()
             .map(|e| e.um_net_position.abs())
             .sum::<f64>();
-        let usdt_total_wallet = usdt.as_ref().map(|u| u.total_wallet_balance).unwrap_or(0.0);
-        let total_equity = usdt_total_wallet + total_spot_abs + total_um_abs;
+        // 将 USDT 视为 markPrice=1 的计价资产：spot + UM + CM 三部分均计入总权益
+        let (usdt_spot, usdt_um, usdt_cm) = usdt
+            .as_ref()
+            .map(|u| (u.total_wallet_balance, u.um_wallet_balance, u.cm_wallet_balance))
+            .unwrap_or((0.0, 0.0, 0.0));
+        let total_equity = usdt_spot + usdt_um + usdt_cm + total_spot_abs + total_um_abs;
 
         ExposureState {
             exposures,
@@ -214,6 +218,15 @@ impl ExposureManager {
                 stage, state.total_equity, state.abs_total_exposure,
             );
             return;
+        }
+
+        if let Some(u) = &state.usdt {
+            debug!(
+                "USDT 汇总: spot={:.6} um={:.6} cm={:.6}",
+                u.total_wallet_balance, u.um_wallet_balance, u.cm_wallet_balance
+            );
+        } else {
+            debug!("USDT 汇总: 无记录 (spot=0 um=0 cm=0)");
         }
 
         let rows: Vec<Vec<String>> = state
