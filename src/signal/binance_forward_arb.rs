@@ -1170,6 +1170,77 @@ impl BinSingleForwardArbStrategy {
         );
     }
 }
+impl Drop for BinSingleForwardArbStrategy {
+    fn drop(&mut self) {
+        // 在回收前输出订单生命周期汇总（开仓/对冲/平仓）
+        let now = get_timestamp_us();
+        let mgr_ro = self.order_manager.borrow();
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        let pairs = [
+            ("MarginOpen", self.margin_order_id),
+            ("UMHedge", self.um_hedge_order_id),
+            ("MarginClose", self.close_margin_order_id),
+            ("UMClose", self.close_um_hedge_order_id),
+        ];
+        for (kind, id) in pairs {
+            if id == 0 { continue; }
+            if let Some(o) = mgr_ro.get(id) {
+                let age_ms = if o.submit_time > 0 { ((now - o.submit_time)/1000) as i64 } else { 0 };
+                rows.push(vec![
+                    id.to_string(),
+                    kind.to_string(),
+                    o.side.as_str().to_string(),
+                    Self::format_decimal(o.quantity),
+                    Self::format_decimal(o.price),
+                    o.status.as_str().to_string(),
+                    age_ms.to_string(),
+                ]);
+            } else {
+                rows.push(vec![
+                    id.to_string(),
+                    kind.to_string(),
+                    "-".to_string(),
+                    "-".to_string(),
+                    "-".to_string(),
+                    "Removed".to_string(),
+                    "0".to_string(),
+                ]);
+            }
+        }
+        drop(mgr_ro);
+
+        if !rows.is_empty() {
+            let table = Self::render_three_line_table(
+                &["OrderId", "Kind", "Side", "Qty", "Price", "Status", "Age(ms)"],
+                &rows,
+            );
+            info!(
+                "{}: strategy_id={} 订单生命周期汇总\n{}",
+                Self::strategy_name(),
+                self.strategy_id,
+                table
+            );
+        }
+
+        // 回收本策略相关订单
+        let mut mgr = self.order_manager.borrow_mut();
+        for id in [
+            self.margin_order_id,
+            self.um_hedge_order_id,
+            self.close_margin_order_id,
+            self.close_um_hedge_order_id,
+        ] {
+            if id != 0 {
+                let _ = mgr.remove(id);
+            }
+        }
+        debug!(
+            "{}: strategy_id={} 生命周期结束，相关订单已回收",
+            Self::strategy_name(),
+            self.strategy_id
+        );
+    }
+}
 
 impl BinSingleForwardArbStrategy {
     fn format_decimal(value: f64) -> String {
@@ -1736,7 +1807,7 @@ impl Strategy for BinSingleForwardArbStrategy {
                     order.update_status(OrderExecutionStatus::Filled);
                     order.set_filled_time(report.event_time);
                     order.update_cumulative_filled_quantity(report.cumulative_filled_quantity);
-                    remove_after_update = true;
+                    // 成功路径不立即移除，等待配对订单也 FILLED 后成对移除
                 }
                 "CANCELED" | "EXPIRED" => {
                     order.update_status(OrderExecutionStatus::Cancelled);
@@ -1775,6 +1846,11 @@ impl Strategy for BinSingleForwardArbStrategy {
             match status_str {
                 "FILLED" => {
                     self.open_timeout_us = None;
+                    debug!(
+                        "{}: strategy_id={} margin 开仓单 FILLED，保留订单供生命周期管理",
+                        Self::strategy_name(),
+                        self.strategy_id
+                    );
                 }
                 "CANCELED" | "EXPIRED" | "REJECTED" | "TRADE_PREVENTION" => {
                     self.open_timeout_us = None;
@@ -1796,8 +1872,8 @@ impl Strategy for BinSingleForwardArbStrategy {
 
             match status_str {
                 "FILLED" => {
-                    self.close_margin_order_id = 0;
                     self.close_margin_timeout_us = None;
+                    // 发出 UM 平仓信号，待整个生命周期结束后统一回收
                     if let Err(err) = self.trigger_um_close_signal() {
                         warn!(
                             "{}: strategy_id={} 派发 UM 平仓流程失败: {}",
@@ -1806,6 +1882,11 @@ impl Strategy for BinSingleForwardArbStrategy {
                             err
                         );
                     }
+                    debug!(
+                        "{}: strategy_id={} margin 平仓单 FILLED，保留订单供生命周期管理",
+                        Self::strategy_name(),
+                        self.strategy_id
+                    );
                 }
                 "CANCELED" | "EXPIRED" | "REJECTED" | "TRADE_PREVENTION" => {
                     warn!(
@@ -1815,7 +1896,6 @@ impl Strategy for BinSingleForwardArbStrategy {
                         status_str,
                         execution_type
                     );
-                    self.close_margin_order_id = 0;
                     self.close_margin_timeout_us = None;
                     self.um_close_signal_sent = false;
                 }
@@ -1939,15 +2019,7 @@ impl Strategy for BinSingleForwardArbStrategy {
             }
         }
 
-        if client_order_id == self.close_um_hedge_order_id {
-            match outcome {
-                UmOrderUpdateOutcome::Filled | UmOrderUpdateOutcome::Expired => {
-                    self.close_um_hedge_order_id = 0;
-                    self.order_manager.borrow_mut().remove(client_order_id);
-                }
-                _ => {}
-            }
-        }
+        // 成功路径不立即移除，保留订单直到策略生命周期结束
     }
 
     fn hanle_period_clock(&mut self, current_tp: i64) {
