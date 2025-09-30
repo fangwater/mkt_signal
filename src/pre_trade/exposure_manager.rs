@@ -103,19 +103,38 @@ impl ExposureManager {
         um_snapshot: &BinanceUmAccountSnapshot,
         spot_snapshot: &BinanceSpotBalanceSnapshot,
     ) {
-        let state = Self::compute_state(um_snapshot, spot_snapshot);
-        Self::log_state("重算", &state);
-        let ExposureState {
-            exposures,
-            usdt,
-            total_equity,
-            abs_total_exposure,
-        } = state;
+        // 先按当前快照计算
+        let mut state = Self::compute_state(um_snapshot, spot_snapshot);
 
-        self.exposures = exposures;
-        self.usdt = usdt;
-        self.total_equity = total_equity;
-        self.abs_total_exposure = abs_total_exposure;
+        // 若本次缺失 USDT 汇总而历史存在，则沿用历史值，保证总权益包含 USDT
+        if state.usdt.is_none() {
+            if let Some(prev) = self.usdt.clone() {
+                state.usdt = Some(prev);
+                // 使用替换后的 usdt 重新计算总权益
+                let total_spot_abs = state
+                    .exposures
+                    .iter()
+                    .map(|e| e.spot_total_wallet.abs())
+                    .sum::<f64>();
+                let total_um_abs = state
+                    .exposures
+                    .iter()
+                    .map(|e| e.um_net_position.abs())
+                    .sum::<f64>();
+                let u = state.usdt.as_ref().unwrap();
+                state.total_equity =
+                    u.total_wallet_balance + u.um_wallet_balance + u.cm_wallet_balance
+                        + total_spot_abs + total_um_abs;
+            }
+        }
+
+        Self::log_state("重算", &state);
+
+        // 提交状态
+        self.exposures = state.exposures;
+        self.usdt = state.usdt;
+        self.total_equity = state.total_equity;
+        self.abs_total_exposure = state.abs_total_exposure;
     }
 
     fn compute_state(
@@ -160,7 +179,7 @@ impl ExposureManager {
         keys.extend(spot_map.keys().cloned());
         keys.extend(um_map.keys().cloned());
 
-        let exposures: Vec<ExposureEntry> = keys
+        let mut exposures: Vec<ExposureEntry> = keys
             .into_iter()
             .filter(|asset| !asset.is_empty() && asset != "USDT")
             .map(|asset| {
@@ -202,6 +221,27 @@ impl ExposureManager {
             .map(|u| (u.total_wallet_balance, u.um_wallet_balance, u.cm_wallet_balance))
             .unwrap_or((0.0, 0.0, 0.0));
         let total_equity = usdt_spot + usdt_um + usdt_cm + total_spot_abs + total_um_abs;
+
+        // 在表格中强制加入 USDT（非敞口），便于对账与肉眼核对
+        let usdt_entry = ExposureEntry {
+            asset: "USDT".to_string(),
+            spot_total_wallet: usdt_spot,
+            spot_cross_free: usdt
+                .as_ref()
+                .map(|u| u.cross_margin_free)
+                .unwrap_or(0.0),
+            spot_cross_locked: usdt
+                .as_ref()
+                .map(|u| u.cross_margin_locked)
+                .unwrap_or(0.0),
+            um_net_position: 0.0,
+            um_position_initial_margin: 0.0,
+            um_open_order_initial_margin: 0.0,
+            // USDT 不计入敞口，显式置 0
+            exposure: 0.0,
+        };
+        // 保证在最末尾显示 USDT 行
+        exposures.push(usdt_entry);
 
         ExposureState {
             exposures,
