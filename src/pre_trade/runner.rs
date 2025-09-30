@@ -594,7 +594,8 @@ fn spawn_signal_listeners(cfg: &SignalSubscriptionsCfg) -> Result<UnboundedRecei
     for channel in &cfg.channels {
         let channel_name = channel.clone();
         let channel_label = channel.clone();
-        let service_name = channel.clone();
+        // Real service path used by publisher/subscriber
+        let service_path = format!("signal_pubs/{}", channel_name);
         let tx_clone = tx.clone();
 
         tokio::task::spawn_local(async move {
@@ -605,21 +606,43 @@ fn spawn_signal_listeners(cfg: &SignalSubscriptionsCfg) -> Result<UnboundedRecei
                     .create::<ipc::Service>()?;
 
                 let service = node
-                    .service_builder(&ServiceName::new(&format!("signal_pubs/{}", channel_name))?)
+                    .service_builder(&ServiceName::new(&service_path)?)
                     .publish_subscribe::<[u8; SIGNAL_PAYLOAD]>()
                     .open_or_create()?;
                 let subscriber: Subscriber<ipc::Service, [u8; SIGNAL_PAYLOAD], ()> =
                     service.subscriber_builder().create()?;
 
                 info!(
-                    "signal subscribed: service={} channel={}",
-                    service_name, channel_name
+                    "signal subscribed: node={} service={} channel={}",
+                    node_name, service.name(), channel_name
                 );
 
                 loop {
                     match subscriber.receive() {
                         Ok(Some(sample)) => {
                             let payload = trim_payload(sample.payload());
+                            if log::log_enabled!(log::Level::Debug) {
+                                let head = &payload[..payload.len().min(24)];
+                                let head_hex: String = head.iter().map(|b| format!("{:02X}", b)).collect();
+                                let st = crate::signal::trade_signal::TradeSignal::get_signal_type(&payload)
+                                    .map(|t| format!("{:?}", t))
+                                    .unwrap_or_else(|| "Unknown".to_string());
+                                let gen_ts = crate::signal::trade_signal::TradeSignal::get_generation_time(&payload)
+                                    .map(|v| v.to_string())
+                                    .unwrap_or_else(|| "-".to_string());
+                                let ctx_len = crate::signal::trade_signal::TradeSignal::get_context_length(&payload)
+                                    .map(|v| v.to_string())
+                                    .unwrap_or_else(|| "-".to_string());
+                                debug!(
+                                    "signal frame received: channel={} bytes={} head24={} type={} gen_ts={} ctx_len={}",
+                                    channel_name,
+                                    payload.len(),
+                                    head_hex,
+                                    st,
+                                    gen_ts,
+                                    ctx_len
+                                );
+                            }
                             if payload.is_empty() {
                                 continue;
                             }
@@ -943,7 +966,13 @@ fn dispatch_signal_to_existing_strategy(
         SignalType::BinSingleForwardArbHedge => None,
         SignalType::BinSingleForwardArbCloseMargin => {
             match BinSingleForwardArbCloseMarginCtx::from_bytes(signal.context.clone()) {
-                Ok(close_ctx) => Some(close_ctx.spot_symbol.to_uppercase()),
+                Ok(close_ctx) => {
+                    debug!(
+                        "decoded margin close ctx: spot_symbol={} limit_price={:.8} tick={:.8} exp_time={}",
+                        close_ctx.spot_symbol, close_ctx.limit_price, close_ctx.price_tick, close_ctx.exp_time
+                    );
+                    Some(close_ctx.spot_symbol.to_uppercase())
+                }
                 Err(err) => {
                     warn!("failed to decode margin close context: {err}");
                     return;
@@ -952,7 +981,13 @@ fn dispatch_signal_to_existing_strategy(
         }
         SignalType::BinSingleForwardArbCloseUm => {
             match BinSingleForwardArbCloseUmCtx::from_bytes(signal.context.clone()) {
-                Ok(um_ctx) => Some(um_ctx.um_symbol.to_uppercase()),
+                Ok(um_ctx) => {
+                    debug!(
+                        "decoded UM close ctx: um_symbol={} exp_time={}",
+                        um_ctx.um_symbol, um_ctx.exp_time
+                    );
+                    Some(um_ctx.um_symbol.to_uppercase())
+                }
                 Err(err) => {
                     warn!("failed to decode UM close context: {err}");
                     return;
@@ -971,6 +1006,10 @@ fn dispatch_signal_to_existing_strategy(
     } else {
         ctx.strategy_mgr.iter_ids().cloned().collect()
     };
+
+    if strategy_ids.is_empty() {
+        debug!("no active strategy matched for this signal");
+    }
 
     for strategy_id in strategy_ids {
         let signal_bytes = raw_signal.clone();

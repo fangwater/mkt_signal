@@ -1,16 +1,19 @@
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::info;
+use log::{debug, info};
 
 pub struct SignalPublisher {
     publisher: Publisher<ipc::Service, [u8; 1024], ()>,
+    channel_name: String,
+    service_name: String,
 }
 
 impl SignalPublisher {
     pub fn new(channel_name: &str) -> anyhow::Result<Self> {
         // Use signal namespace for services
-        let service_name = ServiceName::new(&format!("signal_pubs/{}", channel_name))?;
+        let full_service = format!("signal_pubs/{}", channel_name);
+        let service_name = ServiceName::new(&full_service)?;
 
         info!("Creating IceOryx publisher for channel: {}", channel_name);
 
@@ -31,7 +34,11 @@ impl SignalPublisher {
             channel_name
         );
 
-        Ok(Self { publisher })
+        Ok(Self {
+            publisher,
+            channel_name: channel_name.to_string(),
+            service_name: full_service,
+        })
     }
 
     pub fn publish(&self, data: &[u8]) -> anyhow::Result<()> {
@@ -47,6 +54,19 @@ impl SignalPublisher {
         let sample = self.publisher.loan_uninit()?;
         let sample = sample.write_payload(buffer);
         sample.send()?;
+
+        // Debug log to help diagnose signal publication
+        if log::log_enabled!(log::Level::Debug) {
+            let head = &data[..data.len().min(24)];
+            let head_hex: String = head.iter().map(|b| format!("{:02X}", b)).collect();
+            debug!(
+                "signal published: channel={} service={} payload_len={} head24={}",
+                self.channel_name,
+                self.service_name,
+                data.len(),
+                head_hex
+            );
+        }
 
         Ok(())
     }
