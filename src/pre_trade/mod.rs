@@ -6,6 +6,7 @@ pub mod exposure_manager;
 pub mod order_manager;
 pub mod price_table;
 pub mod dedup;
+pub mod store;
 mod runner;
 
 pub use runner::PreTrade;

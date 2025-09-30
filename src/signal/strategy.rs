@@ -8,8 +8,14 @@ use crate::{
 use bytes::Bytes;
 use log::info;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::any::Any;
 
-pub trait Strategy {
+pub struct StrategySnapshot<'a> {
+    pub type_name: &'a str,
+    pub payload: Bytes,
+}
+
+pub trait Strategy: Any {
     fn get_id(&self) -> i32;
     fn is_strategy_order(&self, order_id: i64) -> bool;
     fn handle_trade_signal(&mut self, signal_raws: &Bytes);
@@ -18,6 +24,7 @@ pub trait Strategy {
     fn handle_binance_futures_order_update(&mut self, update: &OrderTradeUpdateMsg);
     fn hanle_period_clock(&mut self, current_tp: i64);
     fn is_active(&self) -> bool;
+    fn snapshot(&self) -> Option<StrategySnapshot<'_>> { None }
 }
 
 /// Strategy id -> Strategy 映射的简单管理器
@@ -102,6 +109,11 @@ impl StrategyManager {
     /// 遍历所有策略 id
     pub fn iter_ids(&self) -> impl Iterator<Item = &i32> {
         self.strategies.keys()
+    }
+
+    /// 获取只读引用（用于快照）
+    pub fn get(&self, id: i32) -> Option<&dyn Strategy> {
+        self.strategies.get(&id).map(|b| b.as_ref())
     }
 
     /// 触发全部策略的周期检查

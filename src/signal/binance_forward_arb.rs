@@ -10,7 +10,7 @@ use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::exposure_manager::ExposureManager;
 use crate::common::min_qty_table::MinQtyTable;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
-use crate::signal::strategy::Strategy;
+use crate::signal::strategy::{Strategy, StrategySnapshot};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::trade_engine::trade_request::{
     BinanceCancelMarginOrderRequest, BinanceNewMarginOrderRequest, BinanceNewUMOrderRequest,
@@ -18,6 +18,7 @@ use crate::trade_engine::trade_request::{
 };
 use crate::trade_engine::trade_response_handle::TradeExecOutcome;
 use std::cmp::Ordering;
+use serde::{Serialize, Deserialize};
 
 /// 币安单所正向套利开仓信号上下文
 #[derive(Clone, Debug)]
@@ -1180,6 +1181,53 @@ impl BinSingleForwardArbStrategy {
             table
         );
     }
+
+    pub fn snapshot_struct(&self) -> BinSingleForwardArbSnapshot {
+        BinSingleForwardArbSnapshot {
+            strategy_id: self.strategy_id,
+            symbol: self.symbol.clone(),
+            create_time: self.create_time,
+            margin_order_id: self.margin_order_id,
+            um_hedge_order_id: self.um_hedge_order_id,
+            close_margin_order_id: self.close_margin_order_id,
+            close_um_hedge_order_id: self.close_um_hedge_order_id,
+            open_timeout_us: self.open_timeout_us,
+            close_margin_timeout_us: self.close_margin_timeout_us,
+            um_close_signal_sent: self.um_close_signal_sent,
+            order_seq: self.order_seq,
+        }
+    }
+
+    pub fn from_snapshot(
+        snap: &BinSingleForwardArbSnapshot,
+        order_manager: Rc<RefCell<OrderManager>>,
+        exposure_manager: Rc<RefCell<ExposureManager>>,
+        order_tx: UnboundedSender<Bytes>,
+        max_symbol_exposure_ratio: f64,
+        max_total_exposure_ratio: f64,
+        min_qty_table: std::rc::Rc<MinQtyTable>,
+    ) -> Self {
+        let mut s = Self::new(
+            snap.strategy_id,
+            snap.create_time,
+            snap.symbol.clone(),
+            order_manager,
+            exposure_manager,
+            order_tx,
+            max_symbol_exposure_ratio,
+            max_total_exposure_ratio,
+            min_qty_table,
+        );
+        s.margin_order_id = snap.margin_order_id;
+        s.um_hedge_order_id = snap.um_hedge_order_id;
+        s.close_margin_order_id = snap.close_margin_order_id;
+        s.close_um_hedge_order_id = snap.close_um_hedge_order_id;
+        s.open_timeout_us = snap.open_timeout_us;
+        s.close_margin_timeout_us = snap.close_margin_timeout_us;
+        s.um_close_signal_sent = snap.um_close_signal_sent;
+        s.order_seq = snap.order_seq;
+        s
+    }
 }
 impl Drop for BinSingleForwardArbStrategy {
     fn drop(&mut self) {
@@ -2335,5 +2383,39 @@ impl Strategy for BinSingleForwardArbStrategy {
         );
 
         false
+    }
+
+    fn snapshot(&self) -> Option<StrategySnapshot<'_>> {
+        let snap = self.snapshot_struct();
+        let bytes = match snap.to_bytes() {
+            Ok(b) => b,
+            Err(_) => return None,
+        };
+        Some(StrategySnapshot { type_name: "BinSingleForwardArbStrategy", payload: bytes })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinSingleForwardArbSnapshot {
+    pub strategy_id: i32,
+    pub symbol: String,
+    pub create_time: i64,
+    pub margin_order_id: i64,
+    pub um_hedge_order_id: i64,
+    pub close_margin_order_id: i64,
+    pub close_um_hedge_order_id: i64,
+    pub open_timeout_us: Option<i64>,
+    pub close_margin_timeout_us: Option<i64>,
+    pub um_close_signal_sent: bool,
+    pub order_seq: u32,
+}
+
+impl BinSingleForwardArbSnapshot {
+    pub fn to_bytes(&self) -> Result<Bytes, bincode::Error> {
+        let v = bincode::serialize(self)?;
+        Ok(Bytes::from(v))
+    }
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, bincode::Error> {
+        bincode::deserialize(bytes)
     }
 }

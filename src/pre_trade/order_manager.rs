@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use log::{debug, warn};
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Side {
     Buy = 1,  // 买入
@@ -59,7 +60,7 @@ impl Side {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum OrderExecutionStatus {
     Commit = 1,    // 构造未提交
@@ -121,7 +122,7 @@ impl OrderExecutionStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum OrderType {
     Limit = 1,
@@ -211,7 +212,7 @@ impl OrderType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum PositionSide {
     BOTH = 1,
@@ -291,6 +292,8 @@ impl OrderManager {
                 self.decrement_pending_limit_count(&prev_order.symbol);
             }
         }
+
+        // 持久化
     }
 
     /// 根据订单ID获取订单
@@ -324,7 +327,7 @@ impl OrderManager {
                 self.increment_pending_limit_count(&current_symbol);
             }
 
-            true
+        true
         } else {
             false
         }
@@ -403,12 +406,10 @@ impl OrderManager {
 }
 
 impl Default for OrderManager {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Order {
     pub order_id: i64,                   // 订单ID
     pub order_type: OrderType,           // 订单类型
@@ -501,5 +502,19 @@ impl Order {
     /// 设置结束时间
     pub fn set_end_time(&mut self, time: i64) {
         self.end_time = time;
+    }
+}
+
+impl OrderManager {
+    /// 使用快照恢复订单集合
+    pub fn restore_orders(&mut self, orders: Vec<Order>) {
+        self.orders.clear();
+        self.pending_limit_order_count.clear();
+        for o in orders {
+            if o.order_type.is_limit() {
+                self.increment_pending_limit_count(&o.symbol);
+            }
+            self.orders.insert(o.order_id, o);
+        }
     }
 }

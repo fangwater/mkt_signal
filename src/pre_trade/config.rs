@@ -13,6 +13,8 @@ pub struct PreTradeCfg {
     pub risk_checks: RiskCheckCfg,
     #[serde(default)]
     pub params: Option<StrategyParamsCfg>,
+    #[serde(default)]
+    pub store: Option<StoreCfg>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -127,6 +129,25 @@ impl PreTradeCfg {
         Ok(cfg)
     }
 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StoreCfg {
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default = "default_store_redis_url")]
+    pub redis_url: String,
+    #[serde(default = "default_store_prefix")]
+    pub prefix: String,
+}
+
+impl Default for StoreCfg {
+    fn default() -> Self {
+        Self { enable: false, redis_url: default_store_redis_url(), prefix: default_store_prefix() }
+    }
+}
+
+fn default_store_redis_url() -> String { "redis://127.0.0.1/0".to_string() }
+fn default_store_prefix() -> String { "pre_trade".to_string() }
 
 const fn default_account_payload() -> usize {
     16_384

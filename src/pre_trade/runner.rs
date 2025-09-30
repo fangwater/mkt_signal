@@ -18,7 +18,7 @@ use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
 use crate::signal::binance_forward_arb::{
     BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbCloseUmCtx, BinSingleForwardArbOpenCtx,
-    BinSingleForwardArbStrategy,
+    BinSingleForwardArbStrategy, BinSingleForwardArbSnapshot,
 };
 use crate::signal::strategy::{Strategy, StrategyManager};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
@@ -34,6 +34,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use crate::pre_trade::store::{RedisStore, StrategyRecord};
 
 const ACCOUNT_PAYLOAD: usize = 16_384;
 const TRADE_RESP_PAYLOAD: usize = 16_384;
@@ -68,13 +69,32 @@ impl PreTrade {
 
         let strategy_params = self.cfg.params.clone().unwrap_or_default();
 
+        // 可选打开持久化存储
+        let mut store = if let Some(store_cfg) = self.cfg.store.clone() {
+            if store_cfg.enable {
+                match RedisStore::connect(&store_cfg.redis_url, &store_cfg.prefix).await {
+                    Ok(s) => Some(s),
+                    Err(err) => {
+                        warn!("failed to connect redis store: {err:#}");
+                        None
+                    }
+                }
+            } else { None }
+        } else { None };
+
         let mut runtime = RuntimeContext::new(
             bootstrap,
             order_tx.clone(),
             signal_tx.clone(),
             order_publisher,
             strategy_params,
+            store.take(),
         );
+
+        // 启动时恢复
+        if let Err(err) = runtime.try_recover().await {
+            warn!("recovery failed: {err:#}");
+        }
 
         let mut order_rx = order_rx;
         let mut internal_signal_rx = signal_rx;
@@ -90,6 +110,14 @@ impl PreTrade {
 
         loop {
             tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    if let Err(err) = runtime.persist_snapshot().await {
+                        warn!("persist snapshot failed: {err:#}");
+                    } else {
+                        info!("snapshot persisted to redis; exiting");
+                    }
+                    break;
+                }
                 Some(evt) = account_rx.recv() => {
                     if let Err(err) = handle_account_event(&mut runtime, evt) {
                         warn!("handle account event failed: {err:?}");
@@ -254,6 +282,7 @@ struct RuntimeContext {
     strategy_params: StrategyParamsCfg,
     min_qty_table: Rc<MinQtyTable>,
     dedup: crate::pre_trade::dedup::DedupCache,
+    store: Option<RedisStore>,
 }
 
 impl RuntimeContext {
@@ -263,6 +292,7 @@ impl RuntimeContext {
         signal_tx: UnboundedSender<Bytes>,
         order_publisher: OrderPublisher,
         strategy_params: StrategyParamsCfg,
+        store: Option<RedisStore>,
     ) -> Self {
         let BootstrapResources {
             um_manager,
@@ -290,7 +320,113 @@ impl RuntimeContext {
             strategy_params,
             min_qty_table,
             dedup: crate::pre_trade::dedup::DedupCache::new(8192),
+            store,
         }
+    }
+
+    async fn persist_snapshot(&mut self) -> Result<()> {
+        let Some(store) = self.store.as_mut() else {
+            return Ok(());
+        };
+        // 采集订单
+        let order_ids = self.order_manager.borrow().get_all_ids();
+        let mut orders = Vec::with_capacity(order_ids.len());
+        for oid in order_ids {
+            if let Some(o) = self.order_manager.borrow().get(oid) { orders.push(o); }
+        }
+        // 采集策略快照
+        let mut strategies: Vec<StrategyRecord> = Vec::new();
+        for id in self.strategy_mgr.iter_ids().cloned().collect::<Vec<_>>() {
+            if let Some(st) = self.strategy_mgr.get(id) {
+                if let Some(snap) = st.snapshot() {
+                    strategies.push(StrategyRecord { id, type_name: snap.type_name.to_string(), payload: snap.payload });
+                }
+            }
+        }
+        if log::log_enabled!(log::Level::Debug) {
+            use log::debug;
+            debug!(
+                "persist_snapshot: orders={} strategies={}",
+                orders.len(),
+                strategies.len()
+            );
+        }
+        store.save_snapshot(&orders, &strategies).await?;
+        Ok(())
+    }
+
+    async fn try_recover(&mut self) -> Result<()> {
+        let Some(store) = self.store.as_mut() else { return Ok(()); };
+
+        let orders = store.load_orders().await?;
+        if !orders.is_empty() {
+            self.order_manager.borrow_mut().restore_orders(orders.clone());
+            info!("recovered {} orders from store", orders.len());
+            if log::log_enabled!(log::Level::Debug) {
+                for o in &orders {
+                    debug!(
+                        "recovered order: id={} symbol={} type={} side={} qty={:.6} filled={:.6} status={} submit={} create={} filled={} end={}",
+                        o.order_id,
+                        o.symbol,
+                        o.order_type.as_str(),
+                        o.side.as_str(),
+                        o.quantity,
+                        o.cumulative_filled_quantity,
+                        o.status.as_str(),
+                        o.submit_time,
+                        o.create_time,
+                        o.filled_time,
+                        o.end_time
+                    );
+                }
+            }
+        }
+
+        let strategy_records = store.load_strategies().await?;
+        if !strategy_records.is_empty() {
+            let max_symbol_exposure_ratio = self.strategy_params.max_symbol_exposure_ratio;
+            let max_total_exposure_ratio = self.strategy_params.max_total_exposure_ratio;
+            for rec in strategy_records {
+                match rec.type_name.as_str() {
+                    "BinSingleForwardArbStrategy" => {
+                        match BinSingleForwardArbSnapshot::from_bytes(&rec.payload) {
+                            Ok(snap) => {
+                                debug!(
+                                    "recovered strategy: type={} id={} symbol={} margin_open={} um_hedge={} margin_close={} um_close={} open_to={:?} close_to={:?}",
+                                    rec.type_name,
+                                    snap.strategy_id,
+                                    snap.symbol,
+                                    snap.margin_order_id,
+                                    snap.um_hedge_order_id,
+                                    snap.close_margin_order_id,
+                                    snap.close_um_hedge_order_id,
+                                    snap.open_timeout_us,
+                                    snap.close_margin_timeout_us
+                                );
+                                let strategy = BinSingleForwardArbStrategy::from_snapshot(
+                                    &snap,
+                                    self.order_manager.clone(),
+                                    self.exposure_manager.clone(),
+                                    self.order_tx.clone(),
+                                    max_symbol_exposure_ratio,
+                                    max_total_exposure_ratio,
+                                    self.min_qty_table.clone(),
+                                );
+                                let mut strategy = strategy;
+                                strategy.set_signal_sender(self.signal_tx.clone());
+                                self.insert_strategy(snap.symbol.clone(), Box::new(strategy));
+                            }
+                            Err(err) => warn!("failed to decode arb snapshot: {err:#}"),
+                        }
+                    }
+                    other => {
+                        warn!("unknown strategy snapshot type: {}", other);
+                    }
+                }
+            }
+            info!("recovered {} strategies from store", self.strategy_mgr.len());
+        }
+        Ok(())
     }
 
     fn cleanup_inactive(&mut self) {
