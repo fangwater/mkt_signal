@@ -7,3 +7,4 @@ pub mod mkt_msg;
 pub mod msg_parser;
 pub mod redis_client;
 pub mod time_util;
+pub mod viz;
