@@ -1455,10 +1455,13 @@ fn log_exposures(entries: &[ExposureEntry], price_map: &BTreeMap<String, PriceEn
             let exposure_qty = entry.exposure;
             let exposure_usdt = spot_usdt + um_usdt;
 
-            sum_spot_usdt += spot_usdt;
-            sum_um_usdt += um_usdt;
-            sum_exposure_qty += exposure_qty; // 注意：非绝对值
-            sum_exposure_usdt += exposure_usdt; // 注意：非绝对值
+            // TOTAL 汇总排除 USDT 自身，避免把 USDT 当作敞口计入
+            if asset != "USDT" {
+                sum_spot_usdt += spot_usdt;
+                sum_um_usdt += um_usdt;
+                sum_exposure_qty += exposure_qty; // 注意：非绝对值
+                sum_exposure_usdt += exposure_usdt; // 注意：非绝对值
+            }
 
             vec![
                 entry.asset.clone(),

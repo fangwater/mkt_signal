@@ -909,7 +909,16 @@ impl BinSingleForwardArbStrategy {
             ));
         }
 
-        let expected_qty = margin_order.quantity;
+        // 仅按已成交数量进行平仓，避免开仓未成交导致的余额不足
+        let expected_qty = margin_order.cumulative_filled_quantity;
+        if expected_qty <= 0.0 {
+            return Err(format!(
+                "{}: strategy_id={} 原始 margin 订单未成交，无法平仓 filled_qty={}",
+                Self::strategy_name(),
+                self.strategy_id,
+                margin_order.cumulative_filled_quantity
+            ));
+        }
         // 按 LOT_SIZE 对齐平仓数量，并不低于 minQty，最终不超过 expected_qty
         let step = self
             .min_qty_table
@@ -1850,15 +1859,39 @@ impl Strategy for BinSingleForwardArbStrategy {
                         );
                     } else if outcome.req_type == TradeRequestType::BinanceNewMarginOrder {
                         if let Some(status) = final_status {
-                            if status.is_terminal() && status != OrderExecutionStatus::Filled {
-                                self.margin_order_id = 0;
-                                self.open_timeout_us = None;
-                                warn!(
-                                    "{}: strategy_id={} margin 开仓回执终止 status={} body={}",
+                            if outcome.client_order_id == self.margin_order_id {
+                                // 开仓回执
+                                if status.is_terminal() && status != OrderExecutionStatus::Filled {
+                                    self.margin_order_id = 0;
+                                    self.open_timeout_us = None;
+                                    warn!(
+                                        "{}: strategy_id={} margin 开仓回执终止 status={} body={}",
+                                        Self::strategy_name(),
+                                        self.strategy_id,
+                                        status.as_str(),
+                                        outcome.body
+                                    );
+                                }
+                            } else if outcome.client_order_id == self.close_margin_order_id {
+                                // 平仓回执
+                                if status.is_terminal() && status != OrderExecutionStatus::Filled {
+                                    self.close_margin_order_id = 0;
+                                    self.close_margin_timeout_us = None;
+                                    warn!(
+                                        "{}: strategy_id={} margin 平仓回执终止 status={} body={}",
+                                        Self::strategy_name(),
+                                        self.strategy_id,
+                                        status.as_str(),
+                                        outcome.body
+                                    );
+                                }
+                            } else {
+                                debug!(
+                                    "{}: strategy_id={} 收到未知 margin 订单回执 client_order_id={} status={}",
                                     Self::strategy_name(),
                                     self.strategy_id,
-                                    status.as_str(),
-                                    outcome.body
+                                    outcome.client_order_id,
+                                    outcome.status
                                 );
                             }
                         }
