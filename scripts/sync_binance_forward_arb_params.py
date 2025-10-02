@@ -55,7 +55,7 @@ def main() -> int:
     params = {
         # 资金费率预测
         "interval": "6",
-        "predict_num": "0",
+        "predict_num": "1",
         "refresh_secs": "30",
         "fetch_secs": "7200",
         "fetch_offset_secs": "120",
