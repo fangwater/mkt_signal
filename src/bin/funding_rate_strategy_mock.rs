@@ -141,6 +141,9 @@ struct StrategyParams {
     /// funding rate 滚动均值窗口大小（条数）
     #[serde(default = "default_funding_ma_size")] 
     funding_ma_size: usize,
+    /// 结算偏移（秒）：基于 UTC 准点（4h 周期）增加的偏移量
+    #[serde(default = "default_settlement_offset_secs")] 
+    settlement_offset_secs: i64,
 }
 
 const fn default_interval() -> usize { 6 }
@@ -149,6 +152,7 @@ const fn default_fetch_secs() -> u64 { 7200 }
 const fn default_fetch_offset_secs() -> u64 { 120 }
 const fn default_fetch_limit() -> usize { 100 }
 const fn default_funding_ma_size() -> usize { 60 }
+const fn default_settlement_offset_secs() -> i64 { 0 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ParamsSnapshot {
@@ -159,6 +163,7 @@ struct ParamsSnapshot {
     fetch_offset_secs: u64,
     history_limit: u64,
     funding_ma_size: u64,
+    settlement_offset_secs: i64,
 }
 
 impl From<&StrategyParams> for ParamsSnapshot {
@@ -171,6 +176,7 @@ impl From<&StrategyParams> for ParamsSnapshot {
             fetch_offset_secs: p.fetch_offset_secs,
             history_limit: p.history_limit as u64,
             funding_ma_size: p.funding_ma_size as u64,
+            settlement_offset_secs: p.settlement_offset_secs,
         }
     }
 }
@@ -221,10 +227,11 @@ impl StrategyConfig {
             );
         }
         info!(
-            "mock 策略配置加载完成: reload_interval={}s strategy: interval={} predict_num={} refresh_secs={}s fetch_secs={}s fetch_offset={}s history_limit={}",
+            "mock 策略配置加载完成: reload_interval={}s strategy: interval={} predict_num={} refresh_secs={}s fetch_secs={}s fetch_offset={}s history_limit={} settlement_offset_secs={}",
             cfg.reload.interval_secs,
             cfg.strategy.interval, cfg.strategy.predict_num, cfg.strategy.refresh_secs,
-            cfg.strategy.fetch_secs, cfg.strategy.fetch_offset_secs, cfg.strategy.history_limit
+            cfg.strategy.fetch_secs, cfg.strategy.fetch_offset_secs, cfg.strategy.history_limit,
+            cfg.strategy.settlement_offset_secs
         );
         // funding_ma_size 固定为 60，忽略外部配置覆写
         let mut cfg = cfg;
@@ -383,6 +390,7 @@ struct MockController {
     th_4h: RateThresholds,
     th_8h: RateThresholds,
     warmup_done: bool,
+    next_params_reload: std::time::Instant,
 }
 
 impl MockController {
@@ -410,6 +418,7 @@ impl MockController {
             th_4h: RateThresholds::default(),
             th_8h: RateThresholds::default(),
             warmup_done: false,
+            next_params_reload: std::time::Instant::now(),
         };
         // 启动时先加载参数与符号
         let _ = controller.reload_params_if_changed();
@@ -456,7 +465,7 @@ impl MockController {
                 self.recompute_and_print("符号增加或移除");
             }
         }
-        // 结算点触发：更新频率并重算
+        // 结算点触发：更新频率并重算预测
         if self.is_settlement_trigger() {
             debug!("mock 结算点触发: 更新频率并重算");
             if let Err(err) = self.refresh_frequency_all() { debug!("mock 刷新频率失败: {err:?}"); }
@@ -467,10 +476,13 @@ impl MockController {
             self.next_fetch_refresh = self.next_fetch_instant();
             if let Err(err) = self.fetch_histories() { warn!("mock 拉取历史失败: {err:?}"); }
         }
-        // 到点重算预测
-        if now >= self.next_compute_refresh {
-            self.next_compute_refresh = now + std::time::Duration::from_secs(self.cfg.strategy.refresh_secs.max(5));
-            self.compute_predictions();
+        // 按 refresh_secs 仅在“参数变更”时重算
+        if now >= self.next_params_reload {
+            self.next_params_reload = now + std::time::Duration::from_secs(self.cfg.strategy.refresh_secs.max(5));
+            if self.reload_params_if_changed() {
+                self.compute_predictions();
+                self.recompute_and_print("参数修改");
+            }
         }
     }
 
@@ -522,6 +534,9 @@ impl MockController {
             self.compute_predictions();
             self.print_funding_overview_table();
             self.print_symbol_snapshot();
+            // 避免进入事件循环后立刻再次计算，推迟下一次预测
+            self.next_compute_refresh = std::time::Instant::now()
+                + std::time::Duration::from_secs(self.cfg.strategy.refresh_secs.max(5));
         } else if !self.warmup_done {
             self.print_warmup_progress_table();
         }
@@ -574,6 +589,9 @@ impl MockController {
             self.compute_predictions();
             self.print_funding_overview_table();
             self.print_symbol_snapshot();
+            // 推迟下一次周期性预测，避免立即重复计算
+            self.next_compute_refresh = std::time::Instant::now()
+                + std::time::Duration::from_secs(self.cfg.strategy.refresh_secs.max(5));
         } else if !self.warmup_done {
             self.print_warmup_progress_table();
         }
@@ -632,6 +650,7 @@ impl MockController {
         for k in required.iter() { if !map.contains_key(*k) { missing.push(k.to_string()); } }
         if !missing.is_empty() { panic!("mock 缺少资金费率阈值参数: {:?}", missing); }
         let parse_u64 = |k: &str| -> Option<u64> { map.get(k).and_then(|v| v.parse::<u64>().ok()) };
+        let parse_i64 = |k: &str| -> Option<i64> { map.get(k).and_then(|v| v.parse::<i64>().ok()) };
         let parse_f64 = |k: &str| -> Option<f64> { map.get(k).and_then(|v| v.parse::<f64>().ok()) };
         let mut changed = false;
         if let Some(v) = parse_u64("interval") { if self.cfg.strategy.interval as u64 != v { self.cfg.strategy.interval = v as usize; changed = true; } }
@@ -640,6 +659,7 @@ impl MockController {
         if let Some(v) = parse_u64("fetch_secs") { if self.cfg.strategy.fetch_secs != v { self.cfg.strategy.fetch_secs = v; changed = true; } }
         if let Some(v) = parse_u64("fetch_offset_secs") { if self.cfg.strategy.fetch_offset_secs != v { self.cfg.strategy.fetch_offset_secs = v; changed = true; } }
         if let Some(v) = parse_u64("history_limit") { if self.cfg.strategy.history_limit as u64 != v { self.cfg.strategy.history_limit = v as usize; changed = true; } }
+        if let Some(v) = parse_i64("settlement_offset_secs") { if self.cfg.strategy.settlement_offset_secs != v { self.cfg.strategy.settlement_offset_secs = v; changed = true; } }
         if let Some(v) = parse_u64("signal_min_interval_ms") { if self.cfg.signal.min_interval_ms != v { self.cfg.signal.min_interval_ms = v; changed = true; } }
         if let Some(v) = parse_u64("reload_interval_secs") { if self.cfg.reload.interval_secs != v { self.cfg.reload.interval_secs = v; changed = true; } }
         // 阈值（4h/8h）
@@ -660,14 +680,19 @@ impl MockController {
     }
 
     fn is_settlement_trigger(&mut self) -> bool {
+        // 基于 UTC 准点 + 偏移（秒）判断 4h 周期的结算点
         let now_ms = Utc::now().timestamp_millis();
-        let mut min_next: Option<i64> = None;
-        for s in self.symbols.values() {
-            if s.next_funding_time > 0 { min_next = Some(match min_next { Some(m) => m.min(s.next_funding_time), None => s.next_funding_time }); }
+        let offset_ms = self.cfg.strategy.settlement_offset_secs.saturating_mul(1000);
+        let period_ms: i64 = 4 * 3600 * 1000; // 4h schedule
+        let adj = now_ms.saturating_sub(offset_ms);
+        if adj < 0 { return false; }
+        let slot = adj / period_ms;
+        let slot_ms = slot.saturating_mul(period_ms).saturating_add(offset_ms);
+        if self.last_settlement_marker_ms != Some(slot_ms) {
+            self.last_settlement_marker_ms = Some(slot_ms);
+            debug!("mock 结算点触发: slot_ms={} (now_ms={} offset_s={})", slot_ms, now_ms, self.cfg.strategy.settlement_offset_secs);
+            return true;
         }
-        let Some(next_ms) = min_next else { return false; };
-        debug!("mock 结算点检测: now_ms={} next_ms={}", now_ms, next_ms);
-        if now_ms >= next_ms { let changed = self.last_settlement_marker_ms != Some(next_ms); self.last_settlement_marker_ms = Some(next_ms); debug!("mock 结算点触发: changed={}", changed); return changed; }
         false
     }
 
@@ -882,11 +907,15 @@ impl MockController {
             // 仅重算
             self.compute_predictions();
             self.recompute_and_print("参数修改");
+            self.next_compute_refresh = std::time::Instant::now()
+                + std::time::Duration::from_secs(self.cfg.strategy.refresh_secs.max(5));
             return;
         }
         if settlement_triggered {
             self.compute_predictions();
             self.recompute_and_print("结算点触发");
+            self.next_compute_refresh = std::time::Instant::now()
+                + std::time::Duration::from_secs(self.cfg.strategy.refresh_secs.max(5));
             return;
         }
         // 无参数/结算变化，不额外动作
@@ -1169,7 +1198,7 @@ impl MockController {
             .borrow_mut()
             .retain(|symbol, _| self.symbols.contains_key(symbol));
         info!("已加载追踪交易对数量: {}", self.symbols.len());
-        if !added.is_empty() { debug!("mock 新增交易对: {:?}", added.iter().map(|(s, f)| format!("{}/{}", s, f)).collect::<Vec<_>>()); }
+        if !added.is_empty() { debug!("mock 新增交易对: {} 个", added.len()); }
         if !added.is_empty() {
             // 为新增符号推断频率并拉取历史，然后立刻计算预测
             if let Err(err) = self.update_added_symbols_history_and_freq() { warn!("mock 初次加载新增符号失败: {err:?}"); }

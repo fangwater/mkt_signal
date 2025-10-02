@@ -513,6 +513,13 @@ impl RuntimeContext {
         self.exposure_manager
             .borrow_mut()
             .recompute(&um_snapshot, &spot_snapshot);
+
+        // 结合最新标记价格，打印三线表（USDT 计价的敞口），便于核对
+        if let Some(table) = self.price_table.try_borrow().ok() {
+            let price_snap = table.snapshot();
+            let exposures = self.exposure_manager.borrow();
+            log_exposures(exposures.exposures(), &price_snap);
+        }
     }
 
     async fn tick(&mut self) {

@@ -269,9 +269,10 @@ impl ExposureManager {
             debug!("USDT 汇总: 无记录 (spot=0 um=0 cm=0)");
         }
 
-        // 仅打印汇总信息，详细敞口表格在 runner 侧结合 mark price 打印
+        // 仅打印汇总信息（注意：总敞口绝对值为数量绝对值之和，非 USDT 估值）；
+        // 详细三线表（含 USDT 估值）由 runner 结合 mark price 打印
         debug!(
-            "敞口管理器{}完成: 总权益={:.6}, 总敞口绝对值={:.6}",
+            "敞口管理器{}完成: 总权益(USDT近似)={:.6}, 总敞口绝对值(数量)={:.6}",
             stage, state.total_equity, state.abs_total_exposure
         );
     }

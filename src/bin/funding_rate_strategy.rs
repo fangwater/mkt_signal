@@ -148,6 +148,9 @@ struct StrategyParams {
     /// funding rate 滚动均值窗口大小（条数）
     #[serde(default = "default_funding_ma_size")] 
     funding_ma_size: usize,
+    /// 结算偏移（秒）：基于 UTC 准点（4h 周期）增加的偏移量
+    #[serde(default = "default_settlement_offset_secs")] 
+    settlement_offset_secs: i64,
 }
 
 const fn default_interval() -> usize { 6 }
@@ -157,6 +160,7 @@ const fn default_fetch_offset_secs() -> u64 { 120 }
 const fn default_fetch_limit() -> usize { 100 }
 const fn default_resample_ms() -> u64 { 1000 }
 const fn default_funding_ma_size() -> usize { 60 }
+const fn default_settlement_offset_secs() -> i64 { 0 }
 
 /// 策略总体配置
 #[derive(Debug, Clone, Deserialize)]
@@ -218,10 +222,11 @@ impl StrategyConfig {
             );
         }
         info!(
-            "策略配置加载完成: reload_interval={}s strategy: interval={} predict_num={} refresh_secs={}s fetch_secs={}s fetch_offset={}s history_limit={}",
+            "策略配置加载完成: reload_interval={}s strategy: interval={} predict_num={} refresh_secs={}s fetch_secs={}s fetch_offset={}s history_limit={} settlement_offset_secs={}",
             cfg.reload.interval_secs,
             cfg.strategy.interval, cfg.strategy.predict_num, cfg.strategy.refresh_secs,
-            cfg.strategy.fetch_secs, cfg.strategy.fetch_offset_secs, cfg.strategy.history_limit
+            cfg.strategy.fetch_secs, cfg.strategy.fetch_offset_secs, cfg.strategy.history_limit,
+            cfg.strategy.settlement_offset_secs
         );
         // funding_ma_size 固定为 60，忽略外部配置覆写
         let mut cfg = cfg;
@@ -473,16 +478,14 @@ impl StrategyEngine {
         }
         self.history_map = new_history;
         debug!("历史更新完成, symbols={}", self.history_map.len());
-        // warmup 检查：首次完成时，立即计算并打印
+        // warmup 检查：若已完成，则每次 fetch 都重算预测并打印资金费率总览；未完成则打印进度
         let was = self.warmup_done;
         self.warmup_done = self.is_warmup_complete();
-        if !was && self.warmup_done {
-            debug!("warmup 完成: 所有符号资金费率均值达到窗口");
+        if self.warmup_done {
+            if !was { debug!("warmup 完成: 所有符号资金费率均值达到窗口"); }
             self.compute_predictions();
             self.print_funding_overview_table();
-            self.log_symbol_snapshot();
-        } else if !self.warmup_done {
-            // 打印 warmup 进度三线表（每个 symbol 已拉取条数/需求值/频率）
+        } else {
             self.print_warmup_progress_table();
         }
         Ok(())
@@ -609,21 +612,28 @@ impl StrategyEngine {
                 params_changed, symbols_changed, settlement_triggered
             );
             if !reasons.is_empty() {
-                // 仅在结算点触发时更新频率推断
+                // 在结算点触发时更新频率推断并重算预测
                 if settlement_triggered {
                     if let Err(err) = self.refresh_frequency_all().await { debug!("刷新频率推断失败: {err:#}"); }
+                    if self.is_warmup_complete() {
+                        self.compute_predictions();
+                    }
                 }
                 self.recompute_and_log(&reasons.join("、"), symbols_changed).await;
             }
         }
-        // 到点拉取历史
+        // 到点拉取历史（fetch_secs 边界）并在 warmup 完成后重算预测
         if Instant::now() >= self.next_fetch_refresh {
             if let Err(err) = self.fetch_histories().await { warn!("拉取资金费率历史失败: {err:?}"); }
             self.next_fetch_refresh = self.next_fetch_instant();
         }
-        // 到点重算预测（不请求）
+        // 按 refresh_secs 仅检测参数变更，变更时才重算预测
         if Instant::now() >= self.next_compute_refresh {
-            self.compute_predictions();
+            let params_changed = self.reload_params_if_changed().await.unwrap_or(false);
+            if params_changed && self.is_warmup_complete() {
+                self.compute_predictions();
+                self.print_funding_overview_table();
+            }
             self.next_compute_refresh = Instant::now() + Duration::from_secs(self.cfg.strategy.refresh_secs.max(5));
         }
         // 到点刷新借贷利率（Redis）
@@ -692,7 +702,7 @@ impl StrategyEngine {
             info!("移除 {} 个不再跟踪的交易对", removed);
         }
         info!("本次加载追踪交易对数量: {}", self.symbols.len());
-        if !added.is_empty() { debug!("新增交易对: {:?}", added.iter().map(|(s, f)| format!("{}/{}", s, f)).collect::<Vec<_>>() ); }
+        if !added.is_empty() { debug!("新增交易对: {} 个", added.len()); }
         self.log_min_qty_table();
         // 对新增的符号：推断 freq，并拉取历史，更新预测
         if !added.is_empty() {
@@ -1368,6 +1378,7 @@ struct ParamsSnapshot {
     fetch_secs: u64,
     fetch_offset_secs: u64,
     history_limit: u64,
+    settlement_offset_secs: i64,
 }
 
 impl From<&StrategyParams> for ParamsSnapshot {
@@ -1379,6 +1390,7 @@ impl From<&StrategyParams> for ParamsSnapshot {
             fetch_secs: p.fetch_secs,
             fetch_offset_secs: p.fetch_offset_secs,
             history_limit: p.history_limit as u64,
+            settlement_offset_secs: p.settlement_offset_secs,
         }
     }
 }
@@ -1432,6 +1444,7 @@ impl StrategyEngine {
         }
         let mut changed = false;
         let parse_u64 = |k: &str| -> Option<u64> { map.get(k).and_then(|v| v.parse::<u64>().ok()) };
+        let parse_i64 = |k: &str| -> Option<i64> { map.get(k).and_then(|v| v.parse::<i64>().ok()) };
         let parse_f64 = |k: &str| -> Option<f64> { map.get(k).and_then(|v| v.parse::<f64>().ok()) };
         if let Some(v) = parse_u64("interval") { if self.cfg.strategy.interval as u64 != v { self.cfg.strategy.interval = v as usize; changed = true; } }
         if let Some(v) = parse_u64("predict_num") { if self.cfg.strategy.predict_num as u64 != v { self.cfg.strategy.predict_num = v as usize; changed = true; } }
@@ -1441,6 +1454,7 @@ impl StrategyEngine {
         if let Some(v) = parse_u64("fetch_secs") { if self.cfg.strategy.fetch_secs != v { self.cfg.strategy.fetch_secs = v; changed = true; } }
         if let Some(v) = parse_u64("fetch_offset_secs") { if self.cfg.strategy.fetch_offset_secs != v { self.cfg.strategy.fetch_offset_secs = v; changed = true; } }
         if let Some(v) = parse_u64("history_limit") { if self.cfg.strategy.history_limit as u64 != v { self.cfg.strategy.history_limit = v as usize; changed = true; } }
+        if let Some(v) = parse_i64("settlement_offset_secs") { if self.cfg.strategy.settlement_offset_secs != v { self.cfg.strategy.settlement_offset_secs = v; changed = true; } }
 
         // 加载阈值（4h/8h）
         let mut th_changed = false;
@@ -1474,21 +1488,18 @@ impl StrategyEngine {
     }
 
     fn is_settlement_trigger(&mut self) -> bool {
-        // 通过下一结算时间最小值判断是否跨越了结算点
+        // 基于 UTC 准点 + 偏移（秒）判断 4h 周期的结算点
         let now_ms = Utc::now().timestamp_millis();
-        let mut min_next: Option<i64> = None;
-        for s in self.symbols.values() {
-            if s.next_funding_time > 0 {
-                min_next = Some(match min_next { Some(m) => m.min(s.next_funding_time), None => s.next_funding_time });
-            }
-        }
-        let Some(next_ms) = min_next else { return false; };
-        debug!("结算点检测: now_ms={} next_ms={}", now_ms, next_ms);
-        if now_ms >= next_ms {
-            let changed = self.last_settlement_marker_ms != Some(next_ms);
-            self.last_settlement_marker_ms = Some(next_ms);
-            debug!("结算点触发: changed={}", changed);
-            return changed;
+        let offset_ms = self.cfg.strategy.settlement_offset_secs.saturating_mul(1000);
+        let period_ms: i64 = 4 * 3600 * 1000; // 4h 为最小公因数（8h 亦是其倍数）
+        let adj = now_ms.saturating_sub(offset_ms);
+        if adj < 0 { return false; }
+        let slot = adj / period_ms;
+        let slot_ms = slot.saturating_mul(period_ms).saturating_add(offset_ms);
+        if self.last_settlement_marker_ms != Some(slot_ms) {
+            self.last_settlement_marker_ms = Some(slot_ms);
+            debug!("结算点触发: slot_ms={} (now_ms={} offset_s={})", slot_ms, now_ms, self.cfg.strategy.settlement_offset_secs);
+            return true;
         }
         false
     }
