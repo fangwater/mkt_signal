@@ -357,7 +357,7 @@ impl BinancePmSpotAccountManager {
             balance.update_time = update_time;
             balance.negative_balance =
                 balance.total_wallet_balance < 0.0 || balance.cross_margin_free < 0.0;
-            info!(
+            warn!(
                 "现货余额(outbound)更新 asset={} free={} locked={} 总钱包={} 更新时间={}",
                 balance.asset.as_str(),
                 balance.cross_margin_free,
@@ -383,7 +383,7 @@ impl BinancePmSpotAccountManager {
             update_time,
             negative_balance: wallet_balance < 0.0,
         };
-        info!(
+        warn!(
             "新增现货余额(outbound) asset={} free={} locked={} 总钱包={} 更新时间={}",
             upper, free_balance, locked_balance, wallet_balance, update_time
         );
