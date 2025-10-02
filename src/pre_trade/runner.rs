@@ -934,10 +934,10 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
             let msg = AccountPositionMsg::from_bytes(data)?;
             let key = crate::pre_trade::dedup::key_account_position(&msg);
             if !ctx.dedup.insert_check(key) {
-                debug!(
-                    "dedup drop AccountPosition: asset={} update_id={} event_time={}",
-                    msg.asset, msg.update_id, msg.event_time
-                );
+                // debug!(
+                //     "dedup drop AccountPosition: asset={} update_id={} event_time={}",
+                //     msg.asset, msg.update_id, msg.event_time
+                // );
                 return Ok(());
             }
             debug!(
@@ -956,10 +956,10 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
             let msg = BalanceUpdateMsg::from_bytes(data)?;
             let key = crate::pre_trade::dedup::key_balance_update(&msg);
             if !ctx.dedup.insert_check(key) {
-                debug!(
-                    "dedup drop BalanceUpdate: asset={} update_id={} event_time={}",
-                    msg.asset, msg.update_id, msg.event_time
-                );
+                // debug!(
+                //     "dedup drop BalanceUpdate: asset={} update_id={} event_time={}",
+                //     msg.asset, msg.update_id, msg.event_time
+                // );
                 return Ok(());
             }
             debug!(
@@ -974,10 +974,10 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
             let msg = AccountUpdateBalanceMsg::from_bytes(data)?;
             let key = crate::pre_trade::dedup::key_account_update_balance(&msg);
             if !ctx.dedup.insert_check(key) {
-                debug!(
-                    "dedup drop AccountUpdateBalance: asset={} event_time={}",
-                    msg.asset, msg.event_time
-                );
+                // debug!(
+                //     "dedup drop AccountUpdateBalance: asset={} event_time={}",
+                //     msg.asset, msg.event_time
+                // );
                 return Ok(());
             }
             debug!(
@@ -1009,10 +1009,10 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
             let msg = AccountUpdatePositionMsg::from_bytes(data)?;
             let key = crate::pre_trade::dedup::key_account_update_position(&msg);
             if !ctx.dedup.insert_check(key) {
-                debug!(
-                    "dedup drop AccountUpdatePosition: symbol={} side={} event_time={}",
-                    msg.symbol, msg.position_side, msg.event_time
-                );
+                // debug!(
+                //     "dedup drop AccountUpdatePosition: symbol={} side={} event_time={}",
+                //     msg.symbol, msg.position_side, msg.event_time
+                // );
                 return Ok(());
             }
             debug!(
@@ -1044,10 +1044,10 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
             let report = ExecutionReportMsg::from_bytes(data)?;
             let key = crate::pre_trade::dedup::key_execution_report(&report);
             if !ctx.dedup.insert_check(key) {
-                debug!(
-                    "dedup drop ExecutionReport: symbol={} ord={} trade={} x={} X={}",
-                    report.symbol, report.order_id, report.trade_id, report.execution_type, report.order_status
-                );
+                // debug!(
+                //     "dedup drop ExecutionReport: symbol={} ord={} trade={} x={} X={}",
+                //     report.symbol, report.order_id, report.trade_id, report.execution_type, report.order_status
+                // );
                 return Ok(());
             }
             debug!(
