@@ -8,10 +8,13 @@ Behavior
   - Scan Redis keys like `binance:*`, pick only aggregated entries `binance:SYMBOL` (two segments),
     excluding suffixes like `:spot_bookticker` / `:swap_bookticker`.
   - Parse their JSON payloads (tolerate `NaN` by converting to null when possible), and for each symbol keep:
-      ts (milliseconds), bidask_lower, bidask_upper, askbid_lower, askbid_upper
+      ts (milliseconds), bidask_lower, bidask_upper, askbid_lower, askbid_upper (source fields)
   - Filter rule: if any bound is NaN/None/non-finite OR equals 0 (0/0.0/-0.0), skip that symbol.
   - Write results as a Redis HASH at key `binance_arb_price_spread_threshold` (configurable via --write-key),
-    field = symbol, value = compact JSON with fields: symbol, update_tp, bidask_lower/upper, askbid_lower/upper.
+    field = symbol, value = compact JSON with fields:
+      symbol, update_tp,
+      bidask_sr_open_threshold, bidask_sr_close_threshold,
+      askbid_sr_open_threshold, askbid_sr_close_threshold.
   - Optionally clean stale fields from the HASH.
 
 CLI Examples
@@ -134,10 +137,10 @@ def build_rows(sym_to_obj: Dict[str, Dict]) -> Dict[str, Dict]:
         out[sym] = {
             "symbol": sym,
             "update_tp": ts,
-            "bidask_lower": b_lower,
-            "bidask_upper": b_upper,
-            "askbid_lower": a_lower,
-            "askbid_upper": a_upper,
+            "bidask_sr_open_threshold": b_lower,
+            "bidask_sr_close_threshold": b_upper,
+            "askbid_sr_open_threshold": a_lower,
+            "askbid_sr_close_threshold": a_upper,
         }
     return out
 

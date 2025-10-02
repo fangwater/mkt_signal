@@ -7,7 +7,7 @@ Print the first table (binance_arb_price_spread_threshold) from Redis HASH.
 Purpose
   - Read Redis HASH `binance_arb_price_spread_threshold`:
       field = symbol,
-      value = JSON { symbol, update_tp, bidask_lower, bidask_upper, askbid_lower, askbid_upper }
+      value = JSON { symbol, update_tp, bidask_sr_open_threshold, bidask_sr_close_threshold, askbid_sr_open_threshold, askbid_sr_close_threshold }
 
   - Print the table in a "three-line table" (三线表) style:
       top rule, header rule, bottom rule; no vertical grid lines.
@@ -118,10 +118,10 @@ def build_symbol_data(sym_to_obj: Dict[str, Dict]) -> Dict[str, Dict[str, Option
         obj = sym_to_obj.get(sym, {})
         out[sym] = {
             "ts": obj.get("ts"),
-            "bidask_lower": obj.get("bidask_lower"),
-            "bidask_upper": obj.get("bidask_upper"),
-            "askbid_lower": obj.get("askbid_lower"),
-            "askbid_upper": obj.get("askbid_upper"),
+            "bidask_sr_open_threshold": obj.get("bidask_sr_open_threshold"),
+            "bidask_sr_close_threshold": obj.get("bidask_sr_close_threshold"),
+            "askbid_sr_open_threshold": obj.get("askbid_sr_open_threshold"),
+            "askbid_sr_close_threshold": obj.get("askbid_sr_close_threshold"),
         }
     return out
 
@@ -175,10 +175,10 @@ def build_matrix(sym_to_obj: Dict[str, Dict], na: str, tsfmt: str) -> Tuple[List
         row = [
             sym,
             format_ts(obj.get("ts"), tsfmt, na),
-            format_number(obj.get("bidask_lower"), na),
-            format_number(obj.get("bidask_upper"), na),
-            format_number(obj.get("askbid_lower"), na),
-            format_number(obj.get("askbid_upper"), na),
+            format_number(obj.get("bidask_sr_open_threshold"), na),
+            format_number(obj.get("bidask_sr_close_threshold"), na),
+            format_number(obj.get("askbid_sr_open_threshold"), na),
+            format_number(obj.get("askbid_sr_close_threshold"), na),
         ]
         rows.append(row)
     return headers, rows
@@ -192,10 +192,10 @@ def write_to_redis_hash(rds, key: str, sym_rows: Dict[str, Dict[str, Optional[fl
         payload = {
             "symbol": sym,
             "update_tp": row.get("ts"),
-            "bidask_lower": row.get("bidask_lower"),
-            "bidask_upper": row.get("bidask_upper"),
-            "askbid_lower": row.get("askbid_lower"),
-            "askbid_upper": row.get("askbid_upper"),
+            "bidask_sr_open_threshold": row.get("bidask_sr_open_threshold"),
+            "bidask_sr_close_threshold": row.get("bidask_sr_close_threshold"),
+            "askbid_sr_open_threshold": row.get("askbid_sr_open_threshold"),
+            "askbid_sr_close_threshold": row.get("askbid_sr_close_threshold"),
         }
         # Ensure NaN never appears in JSON
         payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))

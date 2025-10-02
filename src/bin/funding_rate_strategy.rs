@@ -641,7 +641,7 @@ impl StrategyEngine {
         let map = client.hgetall_map(&key).await?;
         let mut result = Vec::new();
         for (sym, raw) in map {
-            // Expect payload like { symbol, update_tp, bidask_lower, bidask_upper, ... }
+            // Expect payload like { symbol, update_tp, bidask_sr_open_threshold, bidask_sr_close_threshold, ... }
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
                 let spot_symbol = sym.to_uppercase();
                 let futures_symbol = v
@@ -650,11 +650,11 @@ impl StrategyEngine {
                     .map(|s| s.to_uppercase())
                     .unwrap_or_else(|| spot_symbol.clone());
                 let open_threshold = v
-                    .get("bidask_lower")
+                    .get("bidask_sr_open_threshold")
                     .and_then(|x| x.as_f64())
                     .unwrap_or(0.0);
                 let close_threshold = v
-                    .get("bidask_upper")
+                    .get("bidask_sr_close_threshold")
                     .and_then(|x| x.as_f64())
                     .unwrap_or(open_threshold);
                 result.push(SymbolThreshold { spot_symbol, futures_symbol, open_threshold, close_threshold });

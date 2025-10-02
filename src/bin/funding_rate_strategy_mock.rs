@@ -1020,11 +1020,11 @@ impl MockController {
                     .map(|s| s.to_uppercase())
                     .unwrap_or_else(|| spot_symbol.clone());
                 let open_threshold = v
-                    .get("bidask_lower")
+                    .get("bidask_sr_open_threshold")
                     .and_then(|x| x.as_f64())
                     .unwrap_or(0.0);
                 let close_threshold = v
-                    .get("bidask_upper")
+                    .get("bidask_sr_close_threshold")
                     .and_then(|x| x.as_f64())
                     .unwrap_or(open_threshold);
                 result.push(SymbolThreshold { spot_symbol, futures_symbol, open_threshold, close_threshold });
