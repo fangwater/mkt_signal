@@ -1366,8 +1366,8 @@ impl StrategyEngine {
         if self.last_params.as_ref() != Some(&current) {
             changed = true;
             self.last_params = Some(current);
-            // 重要参数变更时，重设调度时间点
-            self.next_reload = Instant::now() + Duration::from_secs(self.cfg.strategy.refresh_secs.max(5));
+            // 重要参数变更时，重设调度时间点（阈值刷新周期按 reload.interval_secs）
+            self.next_reload = Instant::now() + Duration::from_secs(self.cfg.reload.interval_secs.max(5));
             self.next_fetch_refresh = self.next_fetch_instant();
         }
         debug!("参数变更检测: changed={}", changed);
