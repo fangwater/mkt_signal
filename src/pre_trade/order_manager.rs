@@ -281,10 +281,12 @@ impl OrderManager {
             None
         };
 
-        let prev = self.orders.insert(order.order_id, order);
+        let order_id = order.order_id;
+        let prev = self.orders.insert(order_id, order);
 
         if let Some(symbol) = symbol {
             self.increment_pending_limit_count(&symbol);
+            if let Some(o) = self.orders.get_mut(&order_id) { o.pending_counted = true; }
         }
 
         if let Some(prev_order) = prev {
@@ -309,6 +311,7 @@ impl OrderManager {
         if let Some(order) = self.orders.get_mut(&order_id) {
             let previous_type = order.order_type;
             let previous_symbol = order.symbol.clone();
+            let previous_status = order.status;
 
             f(order);
 
@@ -319,12 +322,24 @@ impl OrderManager {
                 && (!current_type.is_limit() || previous_symbol != current_symbol)
             {
                 self.decrement_pending_limit_count(&previous_symbol);
+                order.pending_counted = false;
             }
 
             if current_type.is_limit()
                 && (!previous_type.is_limit() || previous_symbol != current_symbol)
             {
                 self.increment_pending_limit_count(&current_symbol);
+                order.pending_counted = true;
+            }
+
+            // 限价单在 Filled 时释放 pending count（避免占用挂单限额）
+            if current_type.is_limit()
+                && previous_status != OrderExecutionStatus::Filled
+                && order.status == OrderExecutionStatus::Filled
+                && order.pending_counted
+            {
+                self.decrement_pending_limit_count(&current_symbol);
+                order.pending_counted = false;
             }
 
         true
@@ -338,7 +353,7 @@ impl OrderManager {
         let removed = self.orders.remove(&order_id);
 
         if let Some(ref order) = removed {
-            if order.order_type.is_limit() {
+            if order.order_type.is_limit() && order.pending_counted {
                 self.decrement_pending_limit_count(&order.symbol);
             }
         }
@@ -420,6 +435,8 @@ pub struct Order {
     pub cumulative_filled_quantity: f64, // 成交量
     pub hedged_quantily: f64,            // 未对冲量
     pub status: OrderExecutionStatus,    // 订单执行状态
+    #[serde(default)]
+    pub pending_counted: bool,           // 是否已计入 pending 限价单 count（用于去重防二次递减）
     // 时间戳记录
     pub submit_time: i64, // 订单提交时间(本地时间)
     // "O": 1499405658657,            // Order creation time 对应币安杠杆下单
@@ -459,6 +476,7 @@ impl Order {
             end_time: 0,
             cumulative_filled_quantity: 0.0,
             hedged_quantily: 0.0,
+            pending_counted: order_type.is_limit(),
         }
     }
 

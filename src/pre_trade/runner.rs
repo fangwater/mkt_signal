@@ -1429,7 +1429,12 @@ fn log_exposures(entries: &[ExposureEntry], price_map: &BTreeMap<String, PriceEn
         return;
     }
 
-    let rows: Vec<Vec<String>> = entries
+    let mut sum_spot_usdt = 0.0_f64;
+    let mut sum_um_usdt = 0.0_f64;
+    let mut sum_exposure_qty = 0.0_f64;
+    let mut sum_exposure_usdt = 0.0_f64;
+
+    let mut rows: Vec<Vec<String>> = entries
         .iter()
         .map(|entry| {
             let asset = entry.asset.to_uppercase();
@@ -1442,6 +1447,12 @@ fn log_exposures(entries: &[ExposureEntry], price_map: &BTreeMap<String, PriceEn
             let um_usdt = entry.um_net_position * mark;
             let exposure_qty = entry.exposure;
             let exposure_usdt = spot_usdt + um_usdt;
+
+            sum_spot_usdt += spot_usdt;
+            sum_um_usdt += um_usdt;
+            sum_exposure_qty += exposure_qty; // 注意：非绝对值
+            sum_exposure_usdt += exposure_usdt; // 注意：非绝对值
+
             vec![
                 entry.asset.clone(),
                 fmt_decimal(entry.spot_total_wallet),
@@ -1453,6 +1464,17 @@ fn log_exposures(entries: &[ExposureEntry], price_map: &BTreeMap<String, PriceEn
             ]
         })
         .collect();
+
+    // 增加 TOTAL 行（SpotUSDT、ExposureQty、ExposureUSDT 为正常求和，其它填 "-")
+    rows.push(vec![
+        "TOTAL".to_string(),
+        "-".to_string(),
+        fmt_decimal(sum_spot_usdt),
+        "-".to_string(),
+        "-".to_string(),
+        fmt_decimal(sum_exposure_qty),
+        fmt_decimal(sum_exposure_usdt),
+    ]);
 
     let table = render_three_line_table(
         &[
