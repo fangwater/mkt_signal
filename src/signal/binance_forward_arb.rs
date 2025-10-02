@@ -8,6 +8,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::common::account_msg::{ExecutionReportMsg, OrderTradeUpdateMsg};
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::exposure_manager::ExposureManager;
+use crate::pre_trade::price_table::PriceTable;
 use crate::common::min_qty_table::MinQtyTable;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::signal::strategy::{Strategy, StrategySnapshot};
@@ -274,6 +275,7 @@ pub struct BinSingleForwardArbStrategy {
     max_symbol_exposure_ratio: f64,
     max_total_exposure_ratio: f64,
     min_qty_table: std::rc::Rc<MinQtyTable>,
+    price_table: std::rc::Rc<std::cell::RefCell<PriceTable>>,
 }
 
 impl BinSingleForwardArbStrategy {
@@ -287,6 +289,7 @@ impl BinSingleForwardArbStrategy {
         max_symbol_exposure_ratio: f64,
         max_total_exposure_ratio: f64,
         min_qty_table: Rc<MinQtyTable>,
+        price_table: Rc<std::cell::RefCell<PriceTable>>,
     ) -> Self {
         let strategy = Self {
             strategy_id: id,
@@ -307,6 +310,7 @@ impl BinSingleForwardArbStrategy {
             max_symbol_exposure_ratio,
             max_total_exposure_ratio,
             min_qty_table,
+            price_table,
         };
 
         info!(
@@ -379,31 +383,76 @@ impl BinSingleForwardArbStrategy {
         let total_equity = exposure_manager.total_equity();
         if total_equity <= f64::EPSILON {
             warn!(
-                "{}: 账户总权益近似为 0，无法计算敞口比例",
+                "{}: 账户总权益近似为 0，无法计算敞口占比",
                 Self::strategy_name()
             );
             return false;
         }
 
-        let ratio = entry.exposure.abs() / total_equity;
+        // 使用标记价格将该资产敞口估值为 USDT
+        let mark = if base_asset.eq_ignore_ascii_case("USDT") {
+            1.0
+        } else {
+            let sym = format!("{}USDT", base_asset);
+            // 一次性获取快照，避免持有 RefCell 借用贯穿日志
+            let snap = self.price_table.borrow().snapshot();
+            snap.get(&sym).map(|e| e.mark_price).unwrap_or(0.0)
+        };
+
+        let exposure_usdt = if mark > 0.0 { entry.exposure * mark } else { 0.0 };
+
+        // 若缺少价格但敞口非零，回退到数量比例并提示
+        if mark == 0.0 && entry.exposure != 0.0 {
+            warn!(
+                "{}: 资产 {} 缺少标记价格，回退用数量比例，symbol={}",
+                Self::strategy_name(),
+                base_asset,
+                format!("{}USDT", base_asset)
+            );
+            let ratio = entry.exposure.abs() / total_equity;
+            if ratio > limit {
+                warn!(
+                    "{}: 资产 {} 敞口占比(数量) {:.4}% 超过阈值 {:.2}% (敞口qty={:.6}, 权益={:.6})",
+                    Self::strategy_name(),
+                    base_asset,
+                    ratio * 100.0,
+                    limit * 100.0,
+                    entry.exposure,
+                    total_equity
+                );
+                return false;
+            } else {
+                debug!(
+                    "{}: 资产 {} 敞口占比(数量) {:.4}% 合规 (敞口qty={:.6}, 权益={:.6})",
+                    Self::strategy_name(),
+                    base_asset,
+                    ratio * 100.0,
+                    entry.exposure,
+                    total_equity
+                );
+                return true;
+            }
+        }
+
+        let ratio = exposure_usdt.abs() / total_equity;
         if ratio > limit {
             warn!(
-                "{}: 资产 {} 敞口占比 {:.4}% 超过阈值 {:.2}% (敞口={:.6}, 权益={:.6})",
+                "{}: 资产 {} 敞口占比 {:.4}% 超过阈值 {:.2}% (敞口USDT={:.6}, 权益={:.6})",
                 Self::strategy_name(),
                 base_asset,
                 ratio * 100.0,
                 limit * 100.0,
-                entry.exposure,
+                exposure_usdt,
                 total_equity
             );
             false
         } else {
             debug!(
-                "{}: 资产 {} 敞口占比 {:.4}% 合规 (敞口={:.6}, 权益={:.6})",
+                "{}: 资产 {} 敞口占比 {:.4}% 合规 (敞口USDT={:.6}, 权益={:.6})",
                 Self::strategy_name(),
                 base_asset,
                 ratio * 100.0,
-                entry.exposure,
+                exposure_usdt,
                 total_equity
             );
             true
@@ -427,24 +476,38 @@ impl BinSingleForwardArbStrategy {
             return false;
         }
 
-        let abs_total = exposure_manager.total_abs_exposure();
-        let ratio = abs_total / total_equity;
+        // 使用价格表将所有非 USDT 资产净敞口估值为 USDT，并取绝对值求和
+        let snap = self.price_table.borrow().snapshot();
+        let mut abs_total_usdt = 0.0_f64;
+        for e in exposure_manager.exposures() {
+            let asset = e.asset.to_uppercase();
+            if asset == "USDT" { continue; }
+            let sym = format!("{}USDT", asset);
+            let mark = snap.get(&sym).map(|p| p.mark_price).unwrap_or(0.0);
+            if mark == 0.0 && (e.spot_total_wallet != 0.0 || e.um_net_position != 0.0) {
+                debug!("{}: 总敞口估值缺少价格 symbol={}，按 0 估值", Self::strategy_name(), sym);
+            }
+            let exposure_usdt = (e.spot_total_wallet + e.um_net_position) * mark;
+            abs_total_usdt += exposure_usdt.abs();
+        }
+
+        let ratio = abs_total_usdt / total_equity;
         if ratio > limit {
             warn!(
-                "{}: 总敞口占比 {:.4}% 超过阈值 {:.2}% (总敞口={:.6}, 权益={:.6})",
+                "{}: 总敞口占比 {:.4}% 超过阈值 {:.2}% (总敞口USDT={:.6}, 权益={:.6})",
                 Self::strategy_name(),
                 ratio * 100.0,
                 limit * 100.0,
-                abs_total,
+                abs_total_usdt,
                 total_equity
             );
             false
         } else {
             debug!(
-                "{}: 总敞口占比 {:.4}% 合规 (总敞口={:.6}, 权益={:.6})",
+                "{}: 总敞口占比 {:.4}% 合规 (总敞口USDT={:.6}, 权益={:.6})",
                 Self::strategy_name(),
                 ratio * 100.0,
-                abs_total,
+                abs_total_usdt,
                 total_equity
             );
             true
@@ -1206,6 +1269,7 @@ impl BinSingleForwardArbStrategy {
         max_symbol_exposure_ratio: f64,
         max_total_exposure_ratio: f64,
         min_qty_table: std::rc::Rc<MinQtyTable>,
+        price_table: Rc<std::cell::RefCell<PriceTable>>,
     ) -> Self {
         let mut s = Self::new(
             snap.strategy_id,
@@ -1217,6 +1281,7 @@ impl BinSingleForwardArbStrategy {
             max_symbol_exposure_ratio,
             max_total_exposure_ratio,
             min_qty_table,
+            price_table,
         );
         s.margin_order_id = snap.margin_order_id;
         s.um_hedge_order_id = snap.um_hedge_order_id;

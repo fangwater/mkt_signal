@@ -430,6 +430,7 @@ impl RuntimeContext {
                                     max_symbol_exposure_ratio,
                                     max_total_exposure_ratio,
                                     self.min_qty_table.clone(),
+                                    self.price_table.clone(),
                                 );
                                 let mut strategy = strategy;
                                 strategy.set_signal_sender(self.signal_tx.clone());
@@ -1177,6 +1178,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                         ctx.strategy_params.max_symbol_exposure_ratio,
                         ctx.strategy_params.max_total_exposure_ratio,
                         ctx.min_qty_table.clone(),
+                        ctx.price_table.clone(),
                     );
                     strategy.set_signal_sender(signal_tx);
 
@@ -1470,15 +1472,16 @@ fn log_exposures(entries: &[ExposureEntry], price_map: &BTreeMap<String, PriceEn
         })
         .collect();
 
-    // 增加 TOTAL 行（SpotUSDT、ExposureQty、ExposureUSDT 为正常求和，其它填 "-")
+    // 增加 TOTAL 行：仅汇总 SpotUSDT 与 ExposureUSDT（均为带符号正常加减），
+    // 所有数量（Qty）列使用 "-"，避免单位混淆。
     rows.push(vec![
         "TOTAL".to_string(),
-        "-".to_string(),
-        fmt_decimal(sum_spot_usdt),
-        "-".to_string(),
-        "-".to_string(),
-        fmt_decimal(sum_exposure_qty),
-        fmt_decimal(sum_exposure_usdt),
+        "-".to_string(),              // SpotQty
+        fmt_decimal(sum_spot_usdt),    // SpotUSDT (sum)
+        "-".to_string(),              // UMNetQty
+        "-".to_string(),              // UMNetUSDT (不汇总显示)
+        "-".to_string(),              // ExposureQty（不汇总，用户要求用 "-" 替代）
+        fmt_decimal(sum_exposure_usdt),// ExposureUSDT (sum, signed)
     ]);
 
     let table = render_three_line_table(
