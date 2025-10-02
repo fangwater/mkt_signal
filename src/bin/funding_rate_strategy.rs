@@ -246,8 +246,12 @@ impl StrategyConfig {
 struct SymbolThreshold {
     spot_symbol: String,
     futures_symbol: String,
+    // BidAskSR 阈值（开/关）: (spot_bid - fut_ask) / spot_bid
     open_threshold: f64,
     close_threshold: f64,
+    // AskBidSR 阈值（开/关）: (spot_ask - fut_bid) / spot_ask
+    askbid_open_threshold: f64,
+    askbid_close_threshold: f64,
 }
 
 /// 行情报价
@@ -289,6 +293,8 @@ struct SymbolState {
     futures_symbol: String,
     open_threshold: f64,
     close_threshold: f64,
+    askbid_open_threshold: f64,
+    askbid_close_threshold: f64,
     spot_quote: Quote,
     futures_quote: Quote,
     position: PositionState,
@@ -310,6 +316,8 @@ impl SymbolState {
             futures_symbol: threshold.futures_symbol,
             open_threshold: threshold.open_threshold,
             close_threshold: threshold.close_threshold,
+            askbid_open_threshold: threshold.askbid_open_threshold,
+            askbid_close_threshold: threshold.askbid_close_threshold,
             spot_quote: Quote::default(),
             futures_quote: Quote::default(),
             position: PositionState::Flat,
@@ -329,6 +337,8 @@ impl SymbolState {
         self.open_threshold = threshold.open_threshold;
         self.close_threshold = threshold.close_threshold;
         self.futures_symbol = threshold.futures_symbol;
+        self.askbid_open_threshold = threshold.askbid_open_threshold;
+        self.askbid_close_threshold = threshold.askbid_close_threshold;
     }
 
     fn ready_for_eval(&self) -> bool {
@@ -402,6 +412,8 @@ struct StrategyEngine {
     last_settlement_marker_ms: Option<i64>,     // last settlement time handled
     th_4h: RateThresholds,
     th_8h: RateThresholds,
+    // warmup: 是否所有符号都达到资金费率均值所需的历史点数
+    warmup_done: bool,
 }
 
 impl StrategyEngine {
@@ -458,15 +470,61 @@ impl StrategyEngine {
         }
         self.history_map = new_history;
         debug!("历史更新完成, symbols={}", self.history_map.len());
+        // warmup 检查：首次完成时，立即计算并打印
+        let was = self.warmup_done;
+        self.warmup_done = self.is_warmup_complete();
+        if !was && self.warmup_done {
+            debug!("warmup 完成: 所有符号资金费率均值达到窗口");
+            self.compute_predictions();
+            self.print_funding_overview_table();
+            self.log_symbol_snapshot();
+        }
         Ok(())
     }
 
     fn compute_predictions(&mut self) {
+        // 预热未完成则不计算预测
+        if !self.is_warmup_complete() {
+            debug!("预测计算跳过: warmup 未完成");
+            return;
+        }
         let interval = self.cfg.strategy.interval.max(1);
         let predict_num = self.cfg.strategy.predict_num;
         let mut out = HashMap::new();
         for (sym, rates) in &self.history_map {
-            let pred = compute_predict(rates, interval, predict_num);
+            let n = rates.len();
+            let pred = if n == 0 {
+                debug!("pred calc: {sym} len=0 => 0");
+                0.0
+            } else if interval == 0 {
+                debug!("pred calc: {sym} interval=0 => 0");
+                0.0
+            } else if n - 1 < predict_num {
+                debug!(
+                    "pred calc: {sym} len={} predict_num={} => 不足以回溯 (n-1<predict_num) => 0",
+                    n, predict_num
+                );
+                0.0
+            } else {
+                let end = n - 1 - predict_num;
+                if end + 1 < interval {
+                    debug!(
+                        "pred calc: {sym} len={} interval={} end={} => 窗口不足 (end+1<interval) => 0",
+                        n, interval, end
+                    );
+                    0.0
+                } else {
+                    let start = end + 1 - interval;
+                    let slice = &rates[start..=end];
+                    let sum: f64 = slice.iter().copied().sum();
+                    let mean = sum / (interval as f64);
+                    debug!(
+                        "pred calc: {sym} len={} interval={} predict_num={} start={} end={} mean={:.6}",
+                        n, interval, predict_num, start, end, mean
+                    );
+                    mean
+                }
+            };
             out.insert(sym.clone(), pred);
         }
         self.predicted_map = out;
@@ -514,12 +572,15 @@ impl StrategyEngine {
             last_settlement_marker_ms: None,
             th_4h: RateThresholds::default(),
             th_8h: RateThresholds::default(),
+            warmup_done: false,
         };
         engine.min_qty.refresh_binance().await?;
         // 首次读取参数（来自 Redis），然后加载符号列表
         let _ = engine.reload_params_if_changed().await;
         let _ = engine.reload_thresholds().await?;
         engine.next_fetch_refresh = engine.next_fetch_instant();
+        // 初始 warmup 检查
+        engine.warmup_done = engine.is_warmup_complete();
         Ok(engine)
     }
 
@@ -697,7 +758,15 @@ impl StrategyEngine {
                     .get("bidask_sr_close_threshold")
                     .and_then(|x| x.as_f64())
                     .unwrap_or(open_threshold);
-                result.push(SymbolThreshold { spot_symbol, futures_symbol, open_threshold, close_threshold });
+                let askbid_open_threshold = v
+                    .get("askbid_sr_open_threshold")
+                    .and_then(|x| x.as_f64())
+                    .unwrap_or(open_threshold);
+                let askbid_close_threshold = v
+                    .get("askbid_sr_close_threshold")
+                    .and_then(|x| x.as_f64())
+                    .unwrap_or(close_threshold);
+                result.push(SymbolThreshold { spot_symbol, futures_symbol, open_threshold, close_threshold, askbid_open_threshold, askbid_close_threshold });
             }
         }
         if result.is_empty() {
@@ -762,25 +831,28 @@ impl StrategyEngine {
             if !(state.spot_quote.is_ready() && state.futures_quote.is_ready()) {
                 continue;
             }
-            let ratio = state.calc_ratio().unwrap_or(0.0);
+            // 两个价差因子
+            let bidask_sr = compute_bidask_sr(Some(state.spot_quote.bid), Some(state.futures_quote.ask))
+                .unwrap_or(0.0);
+            let askbid_sr = compute_askbid_sr(Some(state.spot_quote.ask), Some(state.futures_quote.bid))
+                .unwrap_or(0.0);
             rows.push(vec![
                 key.clone(),
                 format!("{:.6}", state.spot_quote.bid),
                 format!("{:.6}", state.spot_quote.ask),
                 format!("{:.6}", state.futures_quote.bid),
                 format!("{:.6}", state.futures_quote.ask),
-                format!("{:.6}", ratio),
+                format!("{:.6}", bidask_sr),
+                format!("{:.6}", askbid_sr),
                 format!("{:.6}", state.open_threshold),
                 format!("{:.6}", state.close_threshold),
-                format!("{:.6}", state.funding_rate),
-                format!("{:.6}", state.predicted_rate),
-                format!("{:.6}", state.loan_rate),
-                format_timestamp(state.last_open_ts),
+                format!("{:.6}", state.askbid_open_threshold),
+                format!("{:.6}", state.askbid_close_threshold),
             ]);
         }
 
         if rows.is_empty() {
-            info!("snapshot: 当前无可用价差信息");
+            info!("snapshot: 当前无可用盘口/价差信息");
             return;
         }
 
@@ -791,17 +863,16 @@ impl StrategyEngine {
                 "SpotAsk",
                 "UMBid",
                 "UMAsk",
-                "Ratio",
-                "OpenTh",
-                "CloseTh",
-                "Funding",
-                "Predicted",
-                "Loan",
-                "LastOpen",
+                "BidAskSR",
+                "AskBidSR",
+                "BA_OpenTh",
+                "BA_CloseTh",
+                "AB_OpenTh",
+                "AB_CloseTh",
             ],
             &rows,
         );
-        info!("价差/资金费率快照\n{}", table);
+        info!("盘口/价差快照\n{}", table);
     }
 
     // 本策略不再从本地 JSON 解析阈值
@@ -870,6 +941,10 @@ impl StrategyEngine {
     }
 
     fn evaluate(&mut self, symbol: &str) {
+        // 预热未完成则不触发任何开/平仓信号
+        if !self.is_warmup_complete() {
+            return;
+        }
         let now_us = get_timestamp_us();
         let min_gap_us = self.cfg.min_signal_gap_us();
 
@@ -1436,12 +1511,17 @@ impl StrategyEngine {
             };
             self.funding_thresholds.insert(key.clone(), entry);
         }
-        // 刷新后打印资金费率总览（三线表）
-        self.print_funding_overview_table();
+        // 刷新后打印资金费率总览（三线表）（仅在 warmup 完成时）
+        if self.is_warmup_complete() {
+            self.print_funding_overview_table();
+        } else {
+            debug!("跳过总览打印: warmup 未完成");
+        }
     }
 
     fn print_funding_overview_table(&self) {
         if self.symbols.is_empty() { return; }
+        if !self.is_warmup_complete() { return; }
         let mut rows: Vec<Vec<String>> = Vec::new();
         let mut keys: Vec<String> = self.symbols.keys().cloned().collect();
         keys.sort();
@@ -1469,8 +1549,17 @@ impl StrategyEngine {
                 let pred = self.get_predicted_for(&fut);
                 (key.clone(), freq, ou, ol, cl, cu, pred)
             };
+            // 使用 REST 历史的最近 funding_ma_size 条计算均值
             let fr_ma = self
-                .calc_funding_ma(&key)
+                .history_map
+                .get(&fut)
+                .and_then(|v| {
+                    let win = self.cfg.strategy.funding_ma_size.max(1);
+                    if v.is_empty() { return None; }
+                    let start = v.len().saturating_sub(win);
+                    let slice = &v[start..];
+                    if slice.is_empty() { None } else { Some(slice.iter().copied().sum::<f64>() / (slice.len() as f64)) }
+                })
                 .map(|v| format!("{:.6}", v))
                 .unwrap_or_else(|| "-".to_string());
             rows.push(vec![
@@ -1543,6 +1632,21 @@ fn render_three_line_table(headers: &[&str], rows: &[Vec<String>]) -> String {
     out
 }
 
+impl StrategyEngine {
+    fn is_warmup_complete(&self) -> bool {
+        if self.symbols.is_empty() { return false; }
+        let need = self.cfg.strategy.funding_ma_size.max(1);
+        for state in self.symbols.values() {
+            let fut = state.futures_symbol.to_uppercase();
+            match self.history_map.get(&fut) {
+                Some(v) if v.len() >= need => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+}
+
 fn compute_widths(headers: &[&str], rows: &[Vec<String>]) -> Vec<usize> {
     let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
     for row in rows {
@@ -1581,7 +1685,7 @@ fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     // 更保守的默认日志过滤，避免输出依赖库的 DEBUG 噪声
-    let default_filter = "info,funding_rate_signal=info,mkt_signal=info,hyper=warn,hyper_util=warn,h2=warn,reqwest=warn";
+    let default_filter = "info,funding_rate_strategy=debug,mkt_signal=info,hyper=warn,hyper_util=warn,h2=warn,reqwest=warn";
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter)).init();
 
     info!("启动 Binance Forward Arb 信号策略");
@@ -1589,9 +1693,13 @@ async fn main() -> Result<()> {
     let cfg = StrategyConfig::load()?;
     let publisher = SignalPublisher::new(SIGNAL_CHANNEL_MT_ARBITRAGE)?;
     let mut engine = StrategyEngine::new(cfg.clone(), publisher).await?;
-    engine.log_symbol_snapshot();
-    // 初始化完成后打印资金费率三线表
-    engine.print_funding_overview_table();
+    // 初始化阶段：等待 warmup 完成后再打印任何表格
+    if engine.is_warmup_complete() {
+        engine.print_funding_overview_table();
+        engine.log_symbol_snapshot();
+    } else {
+        info!("等待资金费率均值预热: 需要每个符号至少 {} 条历史", cfg.strategy.funding_ma_size.max(1));
+    }
 
     let mut subscriber = MultiChannelSubscriber::new(NODE_FUNDING_STRATEGY_SUB)?;
     subscriber.subscribe_channels(vec![
@@ -1651,7 +1759,9 @@ async fn main() -> Result<()> {
             next_stat_time += Duration::from_secs(30);
         }
         if Instant::now() >= next_snapshot {
-            engine.log_symbol_snapshot();
+            if engine.is_warmup_complete() {
+                engine.log_symbol_snapshot();
+            }
             next_snapshot += Duration::from_secs(3);
         }
         if Instant::now() >= engine.next_resample {

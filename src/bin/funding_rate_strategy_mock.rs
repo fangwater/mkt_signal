@@ -29,6 +29,7 @@ use mkt_signal::signal::binance_forward_arb::{
     BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbOpenCtx,
 };
 use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
+use mkt_signal::signal::resample::{compute_askbid_sr, compute_bidask_sr};
 
 const SIGNAL_CHANNEL_MT_ARBITRAGE: &str = "mt_arbitrage";
 const NODE_FUNDING_STRATEGY_SUB: &str = "funding_rate_strategy";
@@ -235,8 +236,12 @@ impl StrategyConfig {
 struct SymbolThreshold {
     spot_symbol: String,
     futures_symbol: String,
+    // BidAskSR 阈值
     open_threshold: f64,
     close_threshold: f64,
+    // AskBidSR 阈值
+    askbid_open_threshold: f64,
+    askbid_close_threshold: f64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -285,6 +290,8 @@ struct SymbolState {
     futures_symbol: String,
     open_threshold: f64,
     close_threshold: f64,
+    askbid_open_threshold: f64,
+    askbid_close_threshold: f64,
     spot_quote: Quote,
     futures_quote: Quote,
     position: PositionState,
@@ -306,6 +313,8 @@ impl SymbolState {
             futures_symbol: threshold.futures_symbol,
             open_threshold: threshold.open_threshold,
             close_threshold: threshold.close_threshold,
+            askbid_open_threshold: threshold.askbid_open_threshold,
+            askbid_close_threshold: threshold.askbid_close_threshold,
             spot_quote: Quote::default(),
             futures_quote: Quote::default(),
             position: PositionState::Flat,
@@ -325,6 +334,8 @@ impl SymbolState {
         self.open_threshold = threshold.open_threshold;
         self.close_threshold = threshold.close_threshold;
         self.futures_symbol = threshold.futures_symbol;
+        self.askbid_open_threshold = threshold.askbid_open_threshold;
+        self.askbid_close_threshold = threshold.askbid_close_threshold;
     }
 
     /// bidask_sr = (spot_bid - futures_ask) / spot_bid
@@ -369,6 +380,7 @@ struct MockController {
     last_settlement_marker_ms: Option<i64>,
     th_4h: RateThresholds,
     th_8h: RateThresholds,
+    warmup_done: bool,
 }
 
 impl MockController {
@@ -395,10 +407,12 @@ impl MockController {
             last_settlement_marker_ms: None,
             th_4h: RateThresholds::default(),
             th_8h: RateThresholds::default(),
+            warmup_done: false,
         };
         // 启动时先加载参数与符号
         let _ = controller.reload_params_if_changed();
         controller.reload_symbols()?;
+        controller.warmup_done = controller.is_warmup_complete();
         Ok(controller)
     }
 
@@ -488,6 +502,15 @@ impl MockController {
         }
         self.history_map = new_history;
         debug!("mock 历史更新完成, symbols={}", self.history_map.len());
+        // warmup 检查：首次完成时，立即计算并打印
+        let was = self.warmup_done;
+        self.warmup_done = self.is_warmup_complete();
+        if !was && self.warmup_done {
+            debug!("mock warmup 完成: 所有符号资金费率均值达到窗口");
+            self.compute_predictions();
+            self.print_funding_overview_table();
+            self.print_symbol_snapshot();
+        }
         Ok(())
     }
 
@@ -521,13 +544,26 @@ impl MockController {
                 self.history_map.insert(fut, rates);
             }
         }
+        // warmup 检查：首次完成时，立即计算并打印
+        let was = self.warmup_done;
+        self.warmup_done = self.is_warmup_complete();
+        if !was && self.warmup_done {
+            debug!("mock warmup 完成(新增符号): 打印总览与价差");
+            self.compute_predictions();
+            self.print_funding_overview_table();
+            self.print_symbol_snapshot();
+        }
         Ok(())
     }
 
     fn recompute_and_print(&mut self, reason: &str) {
         debug!("mock 开始重算资金费率阈值: reason='{}'", reason);
         // 仅重算阈值并打印三线表（不改变其它状态）
-        self.print_funding_overview_table();
+        if self.is_warmup_complete() {
+            self.print_funding_overview_table();
+        } else {
+            debug!("mock 跳过总览打印: warmup 未完成");
+        }
     }
 
     fn thresholds_for_frequency(&self, freq_4h_or_8h: &str) -> (f64, f64, f64, f64) {
@@ -612,11 +648,50 @@ impl MockController {
     }
 
     fn compute_predictions(&mut self) {
+        if !self.is_warmup_complete() {
+            debug!("mock 预测计算跳过: warmup 未完成");
+            return;
+        }
         let interval = self.cfg.strategy.interval.max(1);
         let predict_num = self.cfg.strategy.predict_num;
         let mut map = HashMap::new();
         for (sym, rates) in &self.history_map {
-            let pred = compute_predict_local(rates, interval, predict_num);
+            let n = rates.len();
+            let pred = if n == 0 {
+                debug!("pred calc: {sym} len=0 => 0");
+                0.0
+            } else if interval == 0 {
+                debug!("pred calc: {sym} interval=0 => 0");
+                0.0
+            } else {
+                // 与 compute_predict_local 一致的窗口: 以 n-1-predict_num 为窗口尾
+                if n - 1 < predict_num {
+                    debug!(
+                        "pred calc: {sym} len={} predict_num={} => 不足以回溯 (n-1<predict_num) => 0",
+                        n, predict_num
+                    );
+                    0.0
+                } else {
+                    let end = n - 1 - predict_num;
+                    if end + 1 < interval {
+                        debug!(
+                            "pred calc: {sym} len={} interval={} end={} => 窗口不足 (end+1<interval) => 0",
+                            n, interval, end
+                        );
+                        0.0
+                    } else {
+                        let start = end + 1 - interval;
+                        let slice = &rates[start..=end];
+                        let sum: f64 = slice.iter().copied().sum();
+                        let mean = sum / (interval as f64);
+                        debug!(
+                            "pred calc: {sym} len={} interval={} predict_num={} start={} end={} mean={:.6}",
+                            n, interval, predict_num, start, end, mean
+                        );
+                        mean
+                    }
+                }
+            };
             map.insert(sym.clone(), pred);
         }
         self.predicted_map = map;
@@ -706,6 +781,7 @@ impl MockController {
 
     fn print_funding_overview_table(&self) {
         if self.symbols.is_empty() { return; }
+        if !self.is_warmup_complete() { return; }
         let mut rows: Vec<Vec<String>> = Vec::new();
         let mut keys: Vec<String> = self.symbols.keys().cloned().collect();
         keys.sort();
@@ -769,10 +845,21 @@ impl MockController {
             info!("当前未追踪任何交易对");
             return;
         }
+        if !self.is_warmup_complete() { return; }
         let mut rows = Vec::new();
         for (idx, key) in self.sorted_symbol_keys().iter().enumerate() {
             if let Some(state) = self.symbols.get(key) {
-                let ratio = state.calc_ratio();
+                // 两个价差因子
+                let bidask_sr = compute_bidask_sr(
+                    Some(state.spot_quote.bid),
+                    Some(state.futures_quote.ask),
+                )
+                .unwrap_or(0.0);
+                let askbid_sr = compute_askbid_sr(
+                    Some(state.spot_quote.ask),
+                    Some(state.futures_quote.bid),
+                )
+                .unwrap_or(0.0);
                 rows.push(vec![
                     format!("{:>3}", idx + 1),
                     state.spot_symbol.clone(),
@@ -781,17 +868,19 @@ impl MockController {
                     format_price(state.spot_quote.ask),
                     format_price(state.futures_quote.bid),
                     format_price(state.futures_quote.ask),
-                    format_ratio(ratio),
-                    format!("{:.6}", state.funding_rate),
-                    format!("{:.6}", state.predicted_rate),
-                    state.position.label().to_string(),
+                    format!("{:.6}", bidask_sr),
+                    format!("{:.6}", askbid_sr),
+                    format!("{:.6}", state.open_threshold),
+                    format!("{:.6}", state.close_threshold),
+                    format!("{:.6}", state.askbid_open_threshold),
+                    format!("{:.6}", state.askbid_close_threshold),
                 ]);
             }
         }
         let table = render_three_line_table(
             &[
-                "Idx", "Spot", "Futures", "SpotBid", "SpotAsk", "FutBid", "FutAsk", "Spread",
-                "Funding", "Pred", "Pos",
+                "Idx", "Spot", "Futures", "SpotBid", "SpotAsk", "FutBid", "FutAsk",
+                "BidAskSR", "AskBidSR", "BA_OpenTh", "BA_CloseTh", "AB_OpenTh", "AB_CloseTh",
             ],
             &rows,
         );
@@ -802,6 +891,19 @@ impl MockController {
         let mut keys: Vec<String> = self.symbols.keys().cloned().collect();
         keys.sort();
         keys
+    }
+
+    fn is_warmup_complete(&self) -> bool {
+        if self.symbols.is_empty() { return false; }
+        let need = self.cfg.strategy.funding_ma_size.max(1);
+        for s in self.symbols.values() {
+            let fut = s.futures_symbol.to_uppercase();
+            match self.history_map.get(&fut) {
+                Some(v) if v.len() >= need => {}
+                _ => return false,
+            }
+        }
+        true
     }
 
     fn symbol_key_by_index(&self, index: usize) -> Result<String> {
@@ -970,6 +1072,11 @@ impl MockController {
     }
 
     fn publish_signal(&self, signal_type: SignalType, context: Bytes) -> Result<()> {
+        // 预热未完成则忽略任何信号发布
+        if !self.is_warmup_complete() {
+            warn!("mock 跳过信号发布: warmup 未完成");
+            return Ok(());
+        }
         let now = get_timestamp_us();
         let signal = TradeSignal::create(signal_type.clone(), now, 0.0, context);
         self.publisher
@@ -1012,8 +1119,9 @@ impl MockController {
         info!("已加载追踪交易对数量: {}", self.symbols.len());
         if !added.is_empty() { debug!("mock 新增交易对: {:?}", added.iter().map(|(s, f)| format!("{}/{}", s, f)).collect::<Vec<_>>()); }
         if !added.is_empty() {
-            // 为新增符号推断频率并拉取历史
+            // 为新增符号推断频率并拉取历史，然后立刻计算预测
             if let Err(err) = self.update_added_symbols_history_and_freq() { warn!("mock 初次加载新增符号失败: {err:?}"); }
+            self.compute_predictions();
         }
         Ok(())
     }
@@ -1059,7 +1167,15 @@ impl MockController {
                     .get("bidask_sr_close_threshold")
                     .and_then(|x| x.as_f64())
                     .unwrap_or(open_threshold);
-                result.push(SymbolThreshold { spot_symbol, futures_symbol, open_threshold, close_threshold });
+                let askbid_open_threshold = v
+                    .get("askbid_sr_open_threshold")
+                    .and_then(|x| x.as_f64())
+                    .unwrap_or(open_threshold);
+                let askbid_close_threshold = v
+                    .get("askbid_sr_close_threshold")
+                    .and_then(|x| x.as_f64())
+                    .unwrap_or(close_threshold);
+                result.push(SymbolThreshold { spot_symbol, futures_symbol, open_threshold, close_threshold, askbid_open_threshold, askbid_close_threshold });
             }
         }
         if result.is_empty() { anyhow::bail!("Redis Hash 未解析到有效的 binance 交易对阈值"); }
@@ -1457,7 +1573,7 @@ fn spawn_command_reader(tx: mpsc::UnboundedSender<String>) {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    let default_filter = "info,funding_rate_signal=debug,mkt_signal=debug,hyper=off,hyper_util=off,h2=off,reqwest=warn";
+    let default_filter = "info,funding_rate_strategy_mock=debug,mkt_signal=info,hyper=off,hyper_util=off,h2=off,reqwest=warn";
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter)).init();
 
     info!("启动 Funding Rate Mock 控制台");
