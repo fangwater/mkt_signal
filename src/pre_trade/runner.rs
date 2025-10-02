@@ -1399,6 +1399,9 @@ fn log_exposures(entries: &[ExposureEntry], price_map: &BTreeMap<String, PriceEn
             let asset = entry.asset.to_uppercase();
             let sym = if asset == "USDT" { "USDT".to_string() } else { format!("{}USDT", asset) };
             let mark = if asset == "USDT" { 1.0 } else { price_map.get(&sym).map(|p| p.mark_price).unwrap_or(0.0) };
+            if asset != "USDT" && mark == 0.0 && (entry.spot_total_wallet != 0.0 || entry.um_net_position != 0.0) {
+                debug!("missing mark price for {}, exposure valued as 0", sym);
+            }
             let spot_usdt = entry.spot_total_wallet * mark;
             let um_usdt = entry.um_net_position * mark;
             let exposure_qty = entry.exposure;

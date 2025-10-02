@@ -8,6 +8,7 @@ use hmac::{Hmac, Mac};
 use log::{debug, info, trace, warn};
 use reqwest::Client;
 use serde::Deserialize;
+// use reqwest::blocking as req_blocking;
 use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -278,6 +279,8 @@ impl BinancePmSpotAccountManager {
         );
         snapshot.balances.push(balance);
     }
+
+    // refresh_asset_blocking was removed per request to avoid REST fallback here
 
     /// 处理 outboundAccountPosition 推送（现货 free/locked），
     /// 在成交时快速刷新对应资产的可用与锁定以及总钱包余额。

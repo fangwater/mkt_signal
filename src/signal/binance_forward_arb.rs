@@ -2299,8 +2299,8 @@ impl Strategy for BinSingleForwardArbStrategy {
         }
 
         let Some(um_order) = manager.get(self.um_hedge_order_id) else {
-            warn!(
-                "{}: strategy_id={} 未找到 UM 对冲单 id={}，保持激活状态",
+            info!(
+                "{}: strategy_id={} 未找到 UM 对冲单 id={}，待平仓，保持激活状态",
                 Self::strategy_name(),
                 self.strategy_id,
                 self.um_hedge_order_id
@@ -2328,8 +2328,8 @@ impl Strategy for BinSingleForwardArbStrategy {
         }
 
         let Some(close_margin_order) = manager.get(self.close_margin_order_id) else {
-            warn!(
-                "{}: strategy_id={} 未找到 margin 平仓单 id={}，保持激活状态",
+            info!(
+                "{}: strategy_id={} 未找到 margin 平仓单 id={}，待平仓，保持激活状态",
                 Self::strategy_name(),
                 self.strategy_id,
                 self.close_margin_order_id
@@ -2357,8 +2357,8 @@ impl Strategy for BinSingleForwardArbStrategy {
         }
 
         let Some(close_um_order) = manager.get(self.close_um_hedge_order_id) else {
-            warn!(
-                "{}: strategy_id={} 未找到 UM 平仓单 id={}，保持激活状态",
+            info!(
+                "{}: strategy_id={} 未找到 UM 平仓单 id={}，待平仓，保持激活状态",
                 Self::strategy_name(),
                 self.strategy_id,
                 self.close_um_hedge_order_id
