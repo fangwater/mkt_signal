@@ -701,13 +701,13 @@ fn spawn_account_listener(cfg: &AccountStreamCfg) -> Result<UnboundedReceiver<Ac
                         };
 
                         let mut buf = payload[..frame_len].to_vec();
-                        debug!(
-                            "account evt received: service={}, type={}, frame_bytes={}, cap_bytes={}",
-                            service_name,
-                            event_type_str,
-                            buf.len(),
-                            payload.len()
-                        );
+                        // debug!(
+                        //     "account evt received: service={}, type={}, frame_bytes={}, cap_bytes={}",
+                        //     service_name,
+                        //     event_type_str,
+                        //     buf.len(),
+                        //     payload.len()
+                        // );
                         // 降低冗余 info 日志（如 AccountPosition），保留上面的 debug 行
 
                         let evt = AccountEvent {
@@ -991,13 +991,18 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
                 msg.event_time,
                 msg.transaction_time
             );
-            ctx.spot_manager.apply_balance_snapshot(
-                &msg.asset,
-                msg.wallet_balance,
-                msg.cross_wallet_balance,
-                msg.balance_change,
-                msg.event_time,
-            );
+            if msg.business_unit.eq_ignore_ascii_case("UM") {
+                ctx.spot_manager
+                    .apply_um_wallet_snapshot(&msg.asset, msg.wallet_balance, msg.event_time);
+            } else {
+                ctx.spot_manager.apply_balance_snapshot(
+                    &msg.asset,
+                    msg.wallet_balance,
+                    msg.cross_wallet_balance,
+                    msg.balance_change,
+                    msg.event_time,
+                );
+            }
             ctx.refresh_exposures();
         }
         AccountEventType::AccountUpdatePosition => {

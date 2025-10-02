@@ -280,6 +280,50 @@ impl BinancePmSpotAccountManager {
         snapshot.balances.push(balance);
     }
 
+    /// 仅更新 UM 钱包余额（不影响现货可用/锁定），用于处理 AccountUpdateBalance 中 business_unit=UM 的场景。
+    pub fn apply_um_wallet_snapshot(&self, asset: &str, um_wallet_balance: f64, update_time: i64) {
+        let upper = asset.to_uppercase();
+        let mut state = self.state.borrow_mut();
+        let Some(snapshot) = state.snapshot.as_mut() else { return; };
+        snapshot.fetched_at = Utc::now();
+        if let Some(balance) = snapshot
+            .balances
+            .iter_mut()
+            .find(|bal| bal.asset.eq_ignore_ascii_case(&upper))
+        {
+            balance.um_wallet_balance = um_wallet_balance;
+            balance.update_time = update_time;
+            info!(
+                "UM 钱包快照更新 asset={} um_wallet={} 更新时间={}",
+                balance.asset.as_str(),
+                balance.um_wallet_balance,
+                update_time
+            );
+            return;
+        }
+        // 若不存在该资产，新增行，仅设置 UM 钱包余额，其它置 0
+        let new_balance = BinanceSpotBalance {
+            asset: upper.clone(),
+            total_wallet_balance: 0.0,
+            cross_margin_asset: 0.0,
+            cross_margin_borrowed: 0.0,
+            cross_margin_free: 0.0,
+            cross_margin_interest: 0.0,
+            cross_margin_locked: 0.0,
+            um_wallet_balance,
+            um_unrealized_pnl: 0.0,
+            cm_wallet_balance: 0.0,
+            cm_unrealized_pnl: 0.0,
+            update_time,
+            negative_balance: false,
+        };
+        info!(
+            "新增 UM 钱包快照 asset={} um_wallet={} 更新时间={}",
+            upper, um_wallet_balance, update_time
+        );
+        snapshot.balances.push(new_balance);
+    }
+
     // refresh_asset_blocking was removed per request to avoid REST fallback here
 
     /// 处理 outboundAccountPosition 推送（现货 free/locked），
