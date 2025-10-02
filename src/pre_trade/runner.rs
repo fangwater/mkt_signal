@@ -69,7 +69,7 @@ impl PreTrade {
         let (signal_tx, signal_rx) = mpsc::unbounded_channel::<Bytes>();
 
         // 初始化策略参数从 Redis
-        let mut strategy_params = StrategyParamsCfg::default();
+        let strategy_params = StrategyParamsCfg::default();
 
         // 可选打开持久化存储
         let mut store = if let Some(store_cfg) = self.cfg.store.clone() {

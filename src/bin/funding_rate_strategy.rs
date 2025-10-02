@@ -226,9 +226,7 @@ impl StrategyConfig {
         Ok(cfg)
     }
 
-    fn reload_interval(&self) -> Duration {
-        Duration::from_secs(self.reload.interval_secs.max(5))
-    }
+    // reload_interval() helper was unused; next_reload scheduling uses cfg.reload.interval_secs directly
 
     fn max_open_keep_us(&self) -> i64 {
         (self.order.max_open_order_keep_s.max(1) * 1_000_000) as i64
@@ -1562,7 +1560,7 @@ async fn main() -> Result<()> {
 
     let mut next_stat_time = Instant::now() + Duration::from_secs(30);
     let mut next_snapshot = Instant::now() + Duration::from_secs(3);
-    let mut next_resample = Instant::now();
+    engine.next_resample = Instant::now();
 
     loop {
         if shutdown.is_cancelled() {
@@ -1602,9 +1600,9 @@ async fn main() -> Result<()> {
             engine.log_symbol_snapshot();
             next_snapshot += Duration::from_secs(3);
         }
-        if Instant::now() >= next_resample {
+        if Instant::now() >= engine.next_resample {
             engine.resample_and_publish();
-            next_resample += engine.resample_interval;
+            engine.next_resample += engine.resample_interval;
         }
 
         yield_now().await;

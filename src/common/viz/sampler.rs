@@ -1,5 +1,5 @@
 use anyhow::Result;
-use log::debug;
+// use log::debug;
 
 use crate::common::time_util::get_timestamp_us;
 use crate::exchange::Exchange;

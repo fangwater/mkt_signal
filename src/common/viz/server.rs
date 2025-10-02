@@ -7,7 +7,7 @@ use axum::response::{IntoResponse, Response};
 use axum::extract::Query;
 use axum::routing::get;
 use axum::{Json, Router};
-use log::{debug, info, warn};
+use log::info;
 use tokio::sync::broadcast;
 // 移除 CORS 以简化构建（可按需恢复）
 
