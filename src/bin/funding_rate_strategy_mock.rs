@@ -284,14 +284,7 @@ impl Default for PositionState {
     }
 }
 
-impl PositionState {
-    fn label(&self) -> &'static str {
-        match self {
-            PositionState::Flat => "FLAT",
-            PositionState::Opened => "OPEN",
-        }
-    }
-}
+// note: removed label() as we no longer print Pos column
 
 #[derive(Debug, Clone)]
 struct SymbolState {
@@ -1288,12 +1281,7 @@ fn format_price(value: f64) -> String {
     }
 }
 
-fn format_ratio(ratio: Option<f64>) -> String {
-    match ratio {
-        Some(value) => format!("{:.6}", value),
-        None => "-".to_string(),
-    }
-}
+// note: removed format_ratio as we now print SR values directly
 
 #[derive(Debug, Deserialize)]
 struct BinanceFundingHistItem {
@@ -1357,16 +1345,7 @@ fn infer_binance_funding_frequency_blocking(client: &Client, symbol: &str) -> An
     if median <= six_hours_ms { Ok(Some("4h".to_string())) } else { Ok(Some("8h".to_string())) }
 }
 
-fn compute_predict_local(rates: &[f64], interval: usize, predict_num: usize) -> f64 {
-    if rates.is_empty() || interval == 0 { return 0.0; }
-    let n = rates.len();
-    if n == 0 || n - 1 < predict_num { return 0.0; }
-    let end = n - 1 - predict_num;
-    if end + 1 < interval { return 0.0; }
-    let start = end + 1 - interval;
-    let sum: f64 = rates[start..=end].iter().copied().sum();
-    sum / (interval as f64)
-}
+// note: removed compute_predict_local; compute_predictions now inlines calculation with debug logs
 
 #[derive(Debug, Clone, Default)]
 struct RateThresholds {
