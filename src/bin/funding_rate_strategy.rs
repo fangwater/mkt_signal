@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use log::{debug, error, info, warn};
 use serde::Deserialize;
 use tokio::signal;
@@ -467,7 +467,7 @@ impl StrategyEngine {
         let mut new_history = HashMap::new();
         for t in tasks {
             if let Ok((s, rates)) = t.await {
-                debug!("历史条数: {} -> {} 条", s, rates.len());
+                // no per-symbol count logging to avoid noise
                 new_history.insert(s, rates);
             }
         }
@@ -481,6 +481,9 @@ impl StrategyEngine {
             self.compute_predictions();
             self.print_funding_overview_table();
             self.log_symbol_snapshot();
+        } else if !self.warmup_done {
+            // 打印 warmup 进度三线表（每个 symbol 已拉取条数/需求值/频率）
+            self.print_warmup_progress_table();
         }
         Ok(())
     }
@@ -1586,6 +1589,35 @@ impl StrategyEngine {
             &rows,
         );
         info!("资金费率总览\n{}", table);
+    }
+
+    fn print_warmup_progress_table(&self) {
+        if self.symbols.is_empty() { return; }
+        let need = self.cfg.strategy.funding_ma_size.max(1);
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        let mut keys: Vec<String> = self.symbols.keys().cloned().collect();
+        keys.sort();
+        for key in keys {
+            if let Some(state) = self.symbols.get(&key) {
+                let fut = state.futures_symbol.to_uppercase();
+                let cnt = self.history_map.get(&fut).map(|v| v.len()).unwrap_or(0);
+                let freq = self
+                    .funding_frequency
+                    .get(&fut)
+                    .cloned()
+                    .unwrap_or_else(|| "8h".to_string());
+                rows.push(vec![
+                    key.clone(),
+                    fut,
+                    cnt.to_string(),
+                    need.to_string(),
+                    freq,
+                ]);
+            }
+        }
+        if rows.is_empty() { return; }
+        let table = render_three_line_table(&["Symbol", "Futures", "Count", "Need", "Freq"], &rows);
+        info!("Warmup 进度\n{}", table);
     }
 }
 

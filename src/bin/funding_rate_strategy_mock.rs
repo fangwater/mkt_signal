@@ -497,9 +497,19 @@ impl MockController {
         fut_syms.dedup();
         let mut new_history = HashMap::new();
         let limit = self.cfg.strategy.history_limit;
+        let now = Utc::now().timestamp_millis();
         for sym in fut_syms {
-            let rates = fetch_binance_funding_history_blocking(&self.http, &sym, limit)?;
-            debug!("mock 历史条数: {} -> {} 条", sym, rates.len());
+            // 确认频率；若未知则推断
+            let freq = self
+                .funding_frequency
+                .get(&sym.to_uppercase())
+                .cloned()
+                .or_else(|| infer_binance_funding_frequency_blocking(&self.http, &sym).ok().flatten())
+                .unwrap_or_else(|| "8h".to_string());
+            let hours = if freq.eq_ignore_ascii_case("4h") { 4 } else { 8 };
+            let window_ms = (hours as i64) * 3600 * 1000 * (limit as i64 + 2);
+            let start_time = now.saturating_sub(window_ms);
+            let rates = fetch_binance_funding_history_range_blocking(&self.http, &sym, start_time, now, limit)?;
             new_history.insert(sym, rates);
         }
         self.history_map = new_history;
@@ -512,6 +522,8 @@ impl MockController {
             self.compute_predictions();
             self.print_funding_overview_table();
             self.print_symbol_snapshot();
+        } else if !self.warmup_done {
+            self.print_warmup_progress_table();
         }
         Ok(())
     }
@@ -541,8 +553,16 @@ impl MockController {
                 self.funding_frequency.insert(fut.clone(), freq);
             }
             if !self.history_map.contains_key(&fut) {
-                let rates = fetch_binance_funding_history_blocking(&self.http, &fut, limit)?;
-                debug!("mock 新增符号历史: {} -> {} 条", fut, rates.len());
+                let now = Utc::now().timestamp_millis();
+                let freq = self
+                    .funding_frequency
+                    .get(&fut)
+                    .cloned()
+                    .unwrap_or_else(|| "8h".to_string());
+                let hours = if freq.eq_ignore_ascii_case("4h") { 4 } else { 8 };
+                let window_ms = (hours as i64) * 3600 * 1000 * (limit as i64 + 2);
+                let start_time = now.saturating_sub(window_ms);
+                let rates = fetch_binance_funding_history_range_blocking(&self.http, &fut, start_time, now, limit)?;
                 self.history_map.insert(fut, rates);
             }
         }
@@ -554,6 +574,8 @@ impl MockController {
             self.compute_predictions();
             self.print_funding_overview_table();
             self.print_symbol_snapshot();
+        } else if !self.warmup_done {
+            self.print_warmup_progress_table();
         }
         Ok(())
     }
@@ -822,6 +844,34 @@ impl MockController {
             &rows,
         );
         info!("资金费率总览\n{}", table);
+    }
+
+    fn print_warmup_progress_table(&self) {
+        if self.symbols.is_empty() { return; }
+        let need = self.cfg.strategy.funding_ma_size.max(1);
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        let mut keys: Vec<String> = self.sorted_symbol_keys();
+        for key in keys.drain(..) {
+            if let Some(state) = self.symbols.get(&key) {
+                let fut = state.futures_symbol.to_uppercase();
+                let cnt = self.history_map.get(&fut).map(|v| v.len()).unwrap_or(0);
+                let freq = self
+                    .funding_frequency
+                    .get(&fut)
+                    .cloned()
+                    .unwrap_or_else(|| "8h".to_string());
+                rows.push(vec![
+                    key.clone(),
+                    fut,
+                    cnt.to_string(),
+                    need.to_string(),
+                    freq,
+                ]);
+            }
+        }
+        if rows.is_empty() { return; }
+        let table = render_three_line_table(&["Symbol", "Futures", "Count", "Need", "Freq"], &rows);
+        info!("Warmup 进度\n{}", table);
     }
 
     fn post_operation_maintenance(&mut self) {
@@ -1289,17 +1339,23 @@ struct BinanceFundingHistItem {
     #[serde(rename = "fundingTime")] funding_time: Option<i64>,
 }
 
-fn fetch_binance_funding_history_blocking(client: &Client, symbol: &str, limit: usize) -> AnyResult<Vec<f64>> {
+fn fetch_binance_funding_history_range_blocking(
+    client: &Client,
+    symbol: &str,
+    start_time: i64,
+    end_time: i64,
+    limit: usize,
+) -> AnyResult<Vec<f64>> {
     let url = "https://fapi.binance.com/fapi/v1/fundingRate";
-    let end_time = Utc::now().timestamp_millis();
-    let start_time = end_time - 3 * 24 * 3600 * 1000; // 3d
+    let end = end_time.max(0);
+    let start = start_time.min(end).max(0);
     let limit_s = limit.max(1).min(1000).to_string();
     let resp = client
         .get(url)
         .query(&[
             ("symbol", symbol),
-            ("startTime", &start_time.to_string()),
-            ("endTime", &end_time.to_string()),
+            ("startTime", &start.to_string()),
+            ("endTime", &end.to_string()),
             ("limit", &limit_s),
         ])
         .send()?;
@@ -1308,6 +1364,7 @@ fn fetch_binance_funding_history_blocking(client: &Client, symbol: &str, limit: 
     items.sort_by_key(|it| it.funding_time.unwrap_or_default());
     let mut out = Vec::with_capacity(items.len());
     for it in items { if let Ok(v) = it.funding_rate.parse::<f64>() { out.push(v); } }
+    if out.len() > limit { let drop_n = out.len() - limit; let _ = out.drain(0..drop_n); }
     Ok(out)
 }
 
