@@ -237,9 +237,6 @@ impl BootstrapResources {
             .context("failed to load initial Binance spot snapshot")?;
         log_spot_balances(&spot_snapshot.balances);
 
-        let exposure_manager = ExposureManager::new(&um_snapshot, &spot_snapshot);
-        log_exposures(exposure_manager.exposures());
-
         let mut price_symbols: BTreeSet<String> = BTreeSet::new();
         collect_price_symbols(&mut price_symbols, &um_snapshot, &spot_snapshot);
 
@@ -251,6 +248,12 @@ impl BootstrapResources {
                 .await
                 .context("failed to load initial price table")?;
             log_price_table(&table.snapshot());
+        }
+
+        let exposure_manager = ExposureManager::new(&um_snapshot, &spot_snapshot);
+        {
+            let table = price_table.borrow();
+            log_exposures(exposure_manager.exposures(), &table.snapshot());
         }
 
         let order_req_service = resolve_order_req_service(&cfg.trade_engine);
@@ -1349,7 +1352,7 @@ fn log_spot_balances(balances: &[BinanceSpotBalance]) {
     info!("现货资产概览\n{}", table);
 }
 
-fn log_exposures(entries: &[ExposureEntry]) {
+fn log_exposures(entries: &[ExposureEntry], price_map: &BTreeMap<String, PriceEntry>) {
     if entries.is_empty() {
         info!("非 USDT 资产敞口为空");
         return;
@@ -1358,13 +1361,21 @@ fn log_exposures(entries: &[ExposureEntry]) {
     let rows: Vec<Vec<String>> = entries
         .iter()
         .map(|entry| {
+            let asset = entry.asset.to_uppercase();
+            let sym = if asset == "USDT" { "USDT".to_string() } else { format!("{}USDT", asset) };
+            let mark = if asset == "USDT" { 1.0 } else { price_map.get(&sym).map(|p| p.mark_price).unwrap_or(0.0) };
+            let spot_usdt = entry.spot_total_wallet * mark;
+            let um_usdt = entry.um_net_position * mark;
+            let exposure_qty = entry.exposure;
+            let exposure_usdt = spot_usdt + um_usdt;
             vec![
                 entry.asset.clone(),
                 fmt_decimal(entry.spot_total_wallet),
+                fmt_decimal(spot_usdt),
                 fmt_decimal(entry.um_net_position),
-                fmt_decimal(entry.um_position_initial_margin),
-                fmt_decimal(entry.um_open_order_initial_margin),
-                fmt_decimal(entry.exposure),
+                fmt_decimal(um_usdt),
+                fmt_decimal(exposure_qty),
+                fmt_decimal(exposure_usdt),
             ]
         })
         .collect();
@@ -1372,11 +1383,12 @@ fn log_exposures(entries: &[ExposureEntry]) {
     let table = render_three_line_table(
         &[
             "Asset",
-            "SpotTotal",
-            "UMNet",
-            "UMPosIM",
-            "UMOpenIM",
-            "Exposure",
+            "SpotQty",
+            "SpotUSDT",
+            "UMNetQty",
+            "UMNetUSDT",
+            "ExposureQty",
+            "ExposureUSDT",
         ],
         &rows,
     );

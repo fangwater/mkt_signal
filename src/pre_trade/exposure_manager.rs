@@ -269,36 +269,10 @@ impl ExposureManager {
             debug!("USDT 汇总: 无记录 (spot=0 um=0 cm=0)");
         }
 
-        let rows: Vec<Vec<String>> = state
-            .exposures
-            .iter()
-            .map(|entry| {
-                vec![
-                    entry.asset.clone(),
-                    fmt_decimal(entry.spot_total_wallet),
-                    fmt_decimal(entry.um_net_position),
-                    fmt_decimal(entry.um_position_initial_margin),
-                    fmt_decimal(entry.um_open_order_initial_margin),
-                    fmt_decimal(entry.exposure),
-                ]
-            })
-            .collect();
-
-        let table = render_three_line_table(
-            &[
-                "Asset",
-                "SpotTotal",
-                "UMNet",
-                "UMPosIM",
-                "UMOpenIM",
-                "Exposure",
-            ],
-            &rows,
-        );
-
+        // 仅打印汇总信息，详细敞口表格在 runner 侧结合 mark price 打印
         debug!(
-            "敞口管理器{}完成: 总权益={:.6}, 总敞口绝对值={:.6}\n{}",
-            stage, state.total_equity, state.abs_total_exposure, table
+            "敞口管理器{}完成: 总权益={:.6}, 总敞口绝对值={:.6}",
+            stage, state.total_equity, state.abs_total_exposure
         );
     }
 }
@@ -311,88 +285,7 @@ fn signed_position_amount(position: &BinanceUmPosition) -> f64 {
     }
 }
 
-fn fmt_decimal(value: f64) -> String {
-    if value == 0.0 {
-        return "0".to_string();
-    }
-    let mut s = format!("{:.6}", value);
-    if s.contains('.') {
-        while s.ends_with('0') {
-            s.pop();
-        }
-        if s.ends_with('.') {
-            s.pop();
-        }
-    }
-    if s.is_empty() {
-        "0".to_string()
-    } else {
-        s
-    }
-}
 
-fn render_three_line_table(headers: &[&str], rows: &[Vec<String>]) -> String {
-    let widths = compute_widths(headers, rows);
-    let mut out = String::new();
-    out.push_str(&build_separator(&widths, '-'));
-    out.push('\n');
-    out.push_str(&build_row(
-        headers
-            .iter()
-            .map(|h| h.to_string())
-            .collect::<Vec<String>>(),
-        &widths,
-    ));
-    out.push('\n');
-    out.push_str(&build_separator(&widths, '='));
-    if rows.is_empty() {
-        out.push('\n');
-        out.push_str(&build_separator(&widths, '-'));
-        return out;
-    }
-    for row in rows {
-        out.push('\n');
-        out.push_str(&build_row(row.clone(), &widths));
-    }
-    out.push('\n');
-    out.push_str(&build_separator(&widths, '-'));
-    out
-}
-
-fn compute_widths(headers: &[&str], rows: &[Vec<String>]) -> Vec<usize> {
-    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
-    for row in rows {
-        for (idx, cell) in row.iter().enumerate() {
-            if idx >= widths.len() {
-                continue;
-            }
-            widths[idx] = widths[idx].max(cell.len());
-        }
-    }
-    widths
-}
-
-fn build_separator(widths: &[usize], fill: char) -> String {
-    let mut line = String::new();
-    line.push('+');
-    for width in widths {
-        line.push_str(&fill.to_string().repeat(width + 2));
-        line.push('+');
-    }
-    line
-}
-
-fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
-    let mut row = String::new();
-    row.push('|');
-    for (cell, width) in cells.iter().zip(widths.iter()) {
-        row.push(' ');
-        row.push_str(&format!("{:<width$}", cell, width = *width));
-        row.push(' ');
-        row.push('|');
-    }
-    row
-}
 
 fn derive_base_asset(symbol: &str, known_assets: &BTreeSet<String>) -> Option<String> {
     let upper = symbol.to_uppercase();
