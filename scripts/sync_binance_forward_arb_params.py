@@ -81,7 +81,7 @@ def main() -> int:
         # 下单参数
         "order_open_range": "0.00",
         "order_close_range": "0.00",
-        "order_amount_u": "10.0",
+        "order_amount_u": "15.0",
         "order_max_open_order_keep_s": "10",
         "order_max_close_order_keep_s": "10",
     }
