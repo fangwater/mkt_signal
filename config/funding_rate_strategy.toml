@@ -13,3 +13,6 @@ min_interval_ms = 1000
 
 [reload]
 interval_secs = 60
+
+# 预测资金费率参数（用于 rolling + shift）
+[strategy]

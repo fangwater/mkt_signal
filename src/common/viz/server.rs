@@ -3,14 +3,13 @@ use std::net::SocketAddr;
 use anyhow::Result;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State as AxumState;
-use axum::http::HeaderValue;
 use axum::response::{IntoResponse, Response};
 use axum::extract::Query;
 use axum::routing::get;
 use axum::{Json, Router};
 use log::{debug, info, warn};
 use tokio::sync::broadcast;
-use tower_http::cors::{Any, CorsLayer};
+// 移除 CORS 以简化构建（可按需恢复）
 
 use crate::common::time_util::get_timestamp_us;
 
@@ -34,23 +33,13 @@ impl WsHub {
 }
 
 pub async fn serve_http(cfg: HttpCfg, hub: WsHub) -> Result<()> {
-    let cors = if let Some(origins) = cfg.cors_origins.clone() {
-        let mut layer = CorsLayer::new().allow_methods(Any).allow_headers(Any);
-        for o in origins {
-            if let Ok(h) = o.parse::<HeaderValue>() { layer = layer.clone().allow_origin(h); }
-        }
-        layer
-    } else {
-        CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any)
-    };
 
     let hub_clone = hub.clone();
     let ws_path = cfg.ws_path.clone();
     let app = Router::new()
         .route("/healthz", get(|| async { Json(serde_json::json!({"ok": true, "ts": get_timestamp_us()/1000})) }))
         .route(&ws_path, get(ws_route))
-        .with_state(hub_clone)
-        .layer(cors);
+        .with_state(hub_clone);
 
     let addr: SocketAddr = format!("{}:{}", cfg.bind, cfg.port).parse()?;
     info!("viz_server listening at http://{}{}", addr, cfg.ws_path);

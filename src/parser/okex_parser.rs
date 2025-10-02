@@ -1,5 +1,4 @@
 use crate::exchange::Exchange;
-use crate::market_state::FundingRateManager;
 use crate::mkt_msg::{
     AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg,
     MarkPriceMsg, SignalMsg, SignalSource, TradeMsg,
@@ -315,18 +314,12 @@ impl OkexDerivativesMetricsParser {
                         next_funding_time_str.parse::<i64>(),
                         timestamp_str.parse::<i64>(),
                     ) {
-                        // Enrich with predicted rate and loan rate from manager
-                        let rate_manager = FundingRateManager::instance();
-                        // 使用完整的 OKX 合约ID（如 BTC-USDT-SWAP）并指定交易所为 OkexSwap
-                        let rate_data =
-                            rate_manager.get_rates_sync(inst_id, Exchange::OkexSwap, timestamp);
+                        // Build FundingRate message (prediction no longer embedded)
                         let funding_rate_msg = FundingRateMsg::create(
                             inst_id.to_string(),
                             funding_rate,
                             next_funding_time,
                             timestamp,
-                            rate_data.predicted_funding_rate,
-                            rate_data.loan_rate_8h,
                         );
 
                         // Send funding rate message

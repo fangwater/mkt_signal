@@ -17,7 +17,6 @@ use crate::pre_trade::binance_pm_um_manager::{
 };
 use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
-use crate::market_state::funding_rate_manager::FundingRateManager;
 use crate::exchange::Exchange;
 
 #[derive(Clone)]
@@ -230,13 +229,16 @@ impl SharedState {
         out
     }
 
+    pub fn last_account_update_us(&self) -> i64 { self.inner.last_account_update.get() }
+    pub fn last_price_update_us(&self) -> i64 { self.inner.last_price_update.get() }
+
     pub fn compute_unrealized_pnl(&self) -> f64 {
         let um = self.inner.um_positions.borrow();
         let pt = self.inner.price_table.borrow();
         let table = pt.snapshot();
         let mut map: HashMap<String, (Option<f64>, Option<f64>)> = HashMap::new();
-        for e in table {
-            map.insert(e.symbol.to_uppercase(), (e.mark_price, e.index_price));
+        for (sym, e) in table {
+            map.insert(sym.to_uppercase(), (Some(e.mark_price), Some(e.index_price)));
         }
         let mut pnl = 0.0;
         for pos in &um.positions {
@@ -248,15 +250,14 @@ impl SharedState {
         pnl
     }
 
-    pub fn funding_for(&self, symbol: &str, exchange: Exchange, ts_ms: i64) -> (Option<f64>, f64, Option<i64>, f64) {
+    pub fn funding_for(&self, symbol: &str, _exchange: Exchange, _ts_ms: i64) -> (Option<f64>, f64, Option<i64>, f64) {
         // funding_rate: 首选实时行情缓存，如无则 None
         let fr_cache = self.inner.funding_stream.borrow();
         let key = symbol.to_uppercase();
         let (stream_rate, next_time) = fr_cache.get(&key).map(|(r, n, _)| (*r, *n)).unzip();
         drop(fr_cache);
-        let fr_mgr = FundingRateManager::instance();
-        let rates = fr_mgr.get_rates_sync(symbol, exchange, ts_ms);
-        (stream_rate, rates.predicted_funding_rate, next_time, rates.loan_rate_8h)
+        // 预测/借贷展示从策略迁移后，这里返回0占位
+        (stream_rate, 0.0, next_time, 0.0)
     }
 
     pub fn set_stream_funding(&self, symbol: &str, funding_rate: f64, next_time: i64, ts: i64) {

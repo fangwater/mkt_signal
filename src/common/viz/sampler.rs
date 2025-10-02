@@ -67,8 +67,8 @@ impl Sampler {
 
         // stale 判断
         let now_us = get_timestamp_us();
-        let acc_stale = now_us - self.state.inner.last_account_update.get() > 5_000_000; // 5s
-        let px_stale = now_us - self.state.inner.last_price_update.get() > 5_000_000; // 5s
+        let acc_stale = now_us - self.state.last_account_update_us() > 5_000_000; // 5s
+        let px_stale = now_us - self.state.last_price_update_us() > 5_000_000; // 5s
         let stale = StaleFlags { account: acc_stale, prices: px_stale, funding: false };
 
         Snapshot { ts, account, prices, funding, factors, pnl, stale }

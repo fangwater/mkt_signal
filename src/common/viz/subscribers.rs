@@ -11,9 +11,11 @@ use crate::common::time_util::get_timestamp_us;
 use crate::common::account_msg::get_event_type as get_account_event_type;
 
 use super::state::SharedState;
+use crate::signal::resample::{ResampleBatch, FR_RESAMPLE_CHANNEL};
 
 pub const ACCOUNT_PAYLOAD: usize = 16_384;
 pub const DERIVATIVES_PAYLOAD: usize = 128;
+pub const RESAMPLE_PAYLOAD: usize = 1024;
 
 pub fn spawn_account_listener(service_name: String, label: Option<String>, state: SharedState) -> Result<()> {
     let label = label.unwrap_or_else(|| service_name.clone());
@@ -99,6 +101,53 @@ pub fn spawn_derivatives_listener(service: String, state: SharedState) -> Result
             Ok::<(), anyhow::Error>(())
         };
         if let Err(err) = result.await { warn!("viz derivatives listener exited: {err:?}"); }
+    });
+    Ok(())
+}
+
+/// 订阅 funding resample 批量快照（用于验证解码；当前不更新 UI 状态）
+pub fn spawn_fr_resample_listener(state: SharedState) -> Result<()> {
+    let service_name = format!("signal_pubs/{}", FR_RESAMPLE_CHANNEL);
+    tokio::task::spawn_local(async move {
+        let node_name = "viz_fr_resample".to_string();
+        let result = async move {
+            let node = NodeBuilder::new().name(&NodeName::new(&node_name)?).create::<ipc::Service>()?;
+            let service = node
+                .service_builder(&ServiceName::new(&service_name)?)
+                .publish_subscribe::<[u8; RESAMPLE_PAYLOAD]>()
+                .open_or_create()?;
+            let subscriber: Subscriber<ipc::Service, [u8; RESAMPLE_PAYLOAD], ()> = service.subscriber_builder().create()?;
+            info!("viz fr_resample subscribed: service={}", service.name());
+            loop {
+                match subscriber.receive() {
+                    Ok(Some(sample)) => {
+                        let payload = sample.payload();
+                        if payload.len() < 4 { continue; }
+                        let mut len_bytes = [0u8;4];
+                        len_bytes.copy_from_slice(&payload[..4]);
+                        let data_len = u32::from_le_bytes(len_bytes) as usize;
+                        if data_len == 0 || 4 + data_len > payload.len() { continue; }
+                        let data = &payload[4..4+data_len];
+                        match ResampleBatch::from_bytes(data) {
+                            Ok(batch) => {
+                                debug!("viz fr_resample received items={} ts_ms={}", batch.items.len(), batch.ts_ms);
+                                // 当前仅验证解码，后续可加入到共享状态或另行转发
+                                let _ = &state; // keep lint happy
+                            }
+                            Err(err) => warn!("viz fr_resample decode failed: {err:#}"),
+                        }
+                    }
+                    Ok(None) => tokio::task::yield_now().await,
+                    Err(err) => {
+                        warn!("viz fr_resample receive error: {err}");
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    }
+                }
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        };
+        if let Err(err) = result.await { warn!("viz fr_resample listener exited: {err:?}"); }
     });
     Ok(())
 }

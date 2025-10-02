@@ -1,7 +1,5 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::fs;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -15,13 +13,14 @@ use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tokio::task::yield_now;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
+use reqwest::Client;
 
 use mkt_signal::common::iceoryx_publisher::SignalPublisher;
 use mkt_signal::common::iceoryx_subscriber::{
     ChannelType, MultiChannelSubscriber, SubscribeParams,
 };
 use mkt_signal::common::min_qty_table::MinQtyTable;
-use mkt_signal::common::redis_client::RedisSettings;
+use mkt_signal::common::redis_client::{RedisSettings, RedisClient};
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::mkt_msg::{self, AskBidSpreadMsg, FundingRateMsg, MktMsgType};
 use mkt_signal::pre_trade::order_manager::{OrderType, Side};
@@ -29,25 +28,17 @@ use mkt_signal::signal::binance_forward_arb::{
     BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbOpenCtx,
 };
 use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
+use mkt_signal::signal::resample::{
+    ResampleItem, ResampleBatch, FR_RESAMPLE_CHANNEL, FR_RESAMPLE_MSG_CHANNEL,
+    compute_askbid_sr, compute_bidask_sr,
+};
 
 const SIGNAL_CHANNEL_MT_ARBITRAGE: &str = "mt_arbitrage";
 const NODE_FUNDING_STRATEGY_SUB: &str = "funding_rate_strategy";
 const DEFAULT_CFG_PATH: &str = "config/funding_rate_strategy.toml";
-const DEFAULT_TRACKING_PATH: &str = "config/tracking_symbol.json";
+const DEFAULT_REDIS_HASH_KEY: &str = "binance_arb_price_spread_threshold";
 
-/// 数据源类型
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum DataMode {
-    LocalJson,
-    Redis,
-}
-
-impl Default for DataMode {
-    fn default() -> Self {
-        DataMode::LocalJson
-    }
-}
+// 本策略已移除本地 tracking_symbol.json 模式，仅支持 Redis 阈值
 
 /// 下单相关配置
 #[derive(Debug, Clone, Deserialize)]
@@ -134,59 +125,83 @@ impl Default for ReloadConfig {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+struct StrategyParams {
+    #[serde(default = "default_interval")] 
+    interval: usize,
+    #[serde(default)]
+    predict_num: usize,
+    /// 重算滚动预测频率（秒）
+    #[serde(default = "default_compute_secs")] 
+    refresh_secs: u64,
+    /// 拉取历史频率（秒）
+    #[serde(default = "default_fetch_secs")] 
+    fetch_secs: u64,
+    /// 拉取对齐偏移（秒）
+    #[serde(default = "default_fetch_offset_secs")] 
+    fetch_offset_secs: u64,
+    /// 单次拉取的最大记录条数
+    #[serde(default = "default_fetch_limit")] 
+    history_limit: usize,
+    #[serde(default = "default_resample_ms")] 
+    resample_ms: u64,
+    /// funding rate 滚动均值窗口大小（条数）
+    #[serde(default = "default_funding_ma_size")] 
+    funding_ma_size: usize,
+}
+
+const fn default_interval() -> usize { 6 }
+const fn default_compute_secs() -> u64 { 30 }
+const fn default_fetch_secs() -> u64 { 7200 }
+const fn default_fetch_offset_secs() -> u64 { 120 }
+const fn default_fetch_limit() -> usize { 100 }
+const fn default_resample_ms() -> u64 { 1000 }
+const fn default_funding_ma_size() -> usize { 20 }
+
 /// 策略总体配置
 #[derive(Debug, Clone, Deserialize)]
 struct StrategyConfig {
-    #[serde(default)]
-    mode: DataMode,
-    #[serde(default = "default_tracking_path")]
-    tracking_path: String,
     #[allow(dead_code)]
     #[serde(default)]
     redis: Option<RedisSettings>,
+    /// Redis key 存储 tracking_symbol.json 内容
+    #[serde(default)]
+    redis_key: Option<String>,
     #[serde(default)]
     order: OrderConfig,
     #[serde(default)]
     signal: SignalConfig,
     #[serde(default)]
     reload: ReloadConfig,
-}
-
-fn default_tracking_path() -> String {
-    DEFAULT_TRACKING_PATH.to_string()
+    #[serde(default)]
+    strategy: StrategyParams,
+    #[serde(default)]
+    loan: LoanConfig,
 }
 
 impl StrategyConfig {
     fn load() -> Result<Self> {
         let cfg_path =
             std::env::var("FUNDING_RATE_CFG").unwrap_or_else(|_| DEFAULT_CFG_PATH.to_string());
-        let content = fs::read_to_string(&cfg_path)
+        let content = std::fs::read_to_string(&cfg_path)
             .with_context(|| format!("读取配置文件失败: {}", cfg_path))?;
         let mut cfg: StrategyConfig =
             toml::from_str(&content).with_context(|| format!("解析配置文件失败: {}", cfg_path))?;
-        if cfg.tracking_path.trim().is_empty() {
-            cfg.tracking_path = DEFAULT_TRACKING_PATH.to_string();
-        }
-        if cfg.mode == DataMode::Redis {
-            if let Some(redis_cfg) = cfg.redis.as_ref() {
-                info!(
-                    "Redis 数据源配置: host={} port={} db={} prefix={:?}",
-                    redis_cfg.host, redis_cfg.port, redis_cfg.db, redis_cfg.prefix
-                );
-            } else {
-                warn!("已选择 Redis 模式，但未提供 redis 配置，暂时回退为本地 JSON");
-            }
-            warn!("当前 Redis 模式仅预留实现，策略仍会使用本地 JSON");
+        if let Some(redis_cfg) = cfg.redis.as_ref() {
+            info!(
+                "Redis 数据源配置: host={} port={} db={} prefix={:?}",
+                redis_cfg.host, redis_cfg.port, redis_cfg.db, redis_cfg.prefix
+            );
+        } else {
+            anyhow::bail!("需要配置 redis，已移除本地 tracking_symbol.json 模式");
         }
         info!(
-            "策略配置加载完成: mode={:?} tracking_path={} reload_interval={}s",
-            cfg.mode, cfg.tracking_path, cfg.reload.interval_secs
+            "策略配置加载完成: reload_interval={}s strategy: interval={} predict_num={} refresh_secs={}s fetch_secs={}s fetch_offset={}s history_limit={}",
+            cfg.reload.interval_secs,
+            cfg.strategy.interval, cfg.strategy.predict_num, cfg.strategy.refresh_secs,
+            cfg.strategy.fetch_secs, cfg.strategy.fetch_offset_secs, cfg.strategy.history_limit
         );
         Ok(cfg)
-    }
-
-    fn tracking_path(&self) -> PathBuf {
-        PathBuf::from(&self.tracking_path)
     }
 
     fn reload_interval(&self) -> Duration {
@@ -265,6 +280,7 @@ struct SymbolState {
     predicted_rate: f64,
     loan_rate: f64,
     funding_ts: i64,
+    next_funding_time: i64,
 }
 
 impl SymbolState {
@@ -285,6 +301,7 @@ impl SymbolState {
             predicted_rate: 0.0,
             loan_rate: 0.0,
             funding_ts: 0,
+            next_funding_time: 0,
         }
     }
 
@@ -298,6 +315,7 @@ impl SymbolState {
         self.spot_quote.is_ready() && self.futures_quote.is_ready()
     }
 
+    /// bidask_sr = (spot_bid - futures_ask) / spot_bid
     fn calc_ratio(&self) -> Option<f64> {
         if self.spot_quote.bid <= 0.0 || self.futures_quote.ask <= 0.0 {
             return None;
@@ -344,10 +362,99 @@ struct StrategyEngine {
     stats: EngineStats,
     min_qty: MinQtyTable,
     qty_step_cache: RefCell<HashMap<String, QtyStepInfo>>,
+    history_map: HashMap<String, Vec<f64>>,
+    predicted_map: HashMap<String, f64>,
+    next_compute_refresh: Instant,
+    next_fetch_refresh: Instant,
+    http: Client,
+    // resample
+    resample_interval: Duration,
+    next_resample: Instant,
+    resample_pub: SignalPublisher,
+    resample_msg_pub: SignalPublisher,
+    funding_series: HashMap<String, Vec<f64>>, // per symbol recent funding rates
+    loan_map: HashMap<String, f64>,            // per symbol loan rate 8h
+    next_loan_refresh: Instant,
+    // funding thresholds maintained in program only
+    funding_thresholds: HashMap<String, FundingThresholdEntry>,
+    funding_frequency: HashMap<String, String>, // fut_symbol -> "4h" | "8h"
+    last_params: Option<ParamsSnapshot>,        // last loaded params from Redis
+    last_settlement_marker_ms: Option<i64>,     // last settlement time handled
+    th_4h: RateThresholds,
+    th_8h: RateThresholds,
 }
 
 impl StrategyEngine {
+    fn next_fetch_instant(&self) -> Instant {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let fetch = self.cfg.strategy.fetch_secs.max(600);
+        let offset = self.cfg.strategy.fetch_offset_secs.min(fetch - 1);
+        let next_slot = ((now / fetch) + 1) * fetch + offset;
+        let dur = next_slot.saturating_sub(now);
+        Instant::now() + Duration::from_secs(dur)
+    }
+
+    async fn fetch_histories(&mut self) -> Result<()> {
+        debug!("开始拉取 funding 历史");
+        let mut fut_syms: Vec<String> = self
+            .symbols
+            .values()
+            .map(|s| s.futures_symbol.clone())
+            .collect();
+        fut_syms.sort();
+        fut_syms.dedup();
+        let client = self.http.clone();
+        let limit = self.cfg.strategy.history_limit;
+        let mut tasks = Vec::new();
+        for sym in fut_syms {
+            let s = sym.clone();
+            let c = client.clone();
+            tasks.push(tokio::spawn(async move {
+                let rates = fetch_binance_funding_history(&c, &s, limit).await.unwrap_or_default();
+                (s, rates)
+            }));
+        }
+        let mut new_history = HashMap::new();
+        for t in tasks {
+            if let Ok((s, rates)) = t.await {
+                debug!("历史条数: {} -> {} 条", s, rates.len());
+                new_history.insert(s, rates);
+            }
+        }
+        self.history_map = new_history;
+        debug!("历史更新完成, symbols={}", self.history_map.len());
+        Ok(())
+    }
+
+    fn compute_predictions(&mut self) {
+        let interval = self.cfg.strategy.interval.max(1);
+        let predict_num = self.cfg.strategy.predict_num;
+        let mut out = HashMap::new();
+        for (sym, rates) in &self.history_map {
+            let pred = compute_predict(rates, interval, predict_num);
+            out.insert(sym.clone(), pred);
+        }
+        self.predicted_map = out;
+        if !self.predicted_map.is_empty() {
+            let mut sample: Vec<(&String, &f64)> = self.predicted_map.iter().take(5).collect();
+            sample.sort_by(|a, b| a.0.cmp(b.0));
+            debug!("预测更新完成: {} 项, 示例: {:?}", self.predicted_map.len(), sample);
+        } else {
+            debug!("预测更新完成: 空");
+        }
+    }
+
+    fn get_predicted_for(&self, fut_symbol: &str) -> f64 {
+        self.predicted_map
+            .get(&fut_symbol.to_uppercase())
+            .copied()
+            .unwrap_or(0.0)
+    }
     async fn new(cfg: StrategyConfig, publisher: SignalPublisher) -> Result<Self> {
+        let resample_ms = cfg.strategy.resample_ms.max(100);
         let mut engine = Self {
             next_reload: Instant::now(),
             cfg,
@@ -357,29 +464,109 @@ impl StrategyEngine {
             stats: EngineStats::default(),
             min_qty: MinQtyTable::new(),
             qty_step_cache: RefCell::new(HashMap::new()),
+            history_map: HashMap::new(),
+            predicted_map: HashMap::new(),
+            next_compute_refresh: Instant::now(),
+            next_fetch_refresh: Instant::now(),
+            http: Client::new(),
+            resample_interval: Duration::from_millis(resample_ms),
+            next_resample: Instant::now(),
+            resample_pub: SignalPublisher::new(FR_RESAMPLE_CHANNEL)?,
+            resample_msg_pub: SignalPublisher::new(FR_RESAMPLE_MSG_CHANNEL)?,
+            funding_series: HashMap::new(),
+            loan_map: HashMap::new(),
+            next_loan_refresh: Instant::now(),
+            funding_thresholds: HashMap::new(),
+            funding_frequency: HashMap::new(),
+            last_params: None,
+            last_settlement_marker_ms: None,
+            th_4h: RateThresholds::default(),
+            th_8h: RateThresholds::default(),
         };
         engine.min_qty.refresh_binance().await?;
-        engine.reload_thresholds()?;
+        // 首次读取参数（来自 Redis），然后加载符号列表
+        let _ = engine.reload_params_if_changed().await;
+        let _ = engine.reload_thresholds().await?;
+        engine.next_fetch_refresh = engine.next_fetch_instant();
         Ok(engine)
     }
 
     async fn maybe_reload(&mut self) {
-        if Instant::now() < self.next_reload {
-            return;
+        // 按 refresh_secs 刷新：读取参数 -> 刷新符号 -> 重算阈值（并打印三线表）
+        if Instant::now() >= self.next_reload {
+            if let Err(err) = self.min_qty.refresh_binance().await { warn!("刷新最小下单量失败: {err:?}"); }
+            let params_changed = self.reload_params_if_changed().await.unwrap_or(false);
+            let symbols_changed = match self.reload_thresholds().await {
+                Ok(changed) => changed,
+                Err(err) => { error!("刷新追踪列表失败: {err:?}"); false }
+            };
+            let settlement_triggered = self.is_settlement_trigger();
+            let mut reasons: Vec<&str> = Vec::new();
+            if symbols_changed { reasons.push("符号增加或移除"); }
+            if params_changed { reasons.push("参数修改"); }
+            if settlement_triggered { reasons.push("结算点触发"); }
+            debug!(
+                "refresh 触发: params_changed={} symbols_changed={} settlement_triggered={}",
+                params_changed, symbols_changed, settlement_triggered
+            );
+            if !reasons.is_empty() {
+                // 仅在结算点触发时更新频率推断
+                if settlement_triggered {
+                    if let Err(err) = self.refresh_frequency_all().await { debug!("刷新频率推断失败: {err:#}"); }
+                }
+                self.recompute_and_log(&reasons.join("、"), symbols_changed).await;
+            }
         }
-        if let Err(err) = self.min_qty.refresh_binance().await {
-            warn!("刷新最小下单量失败: {err:?}");
+        // 到点拉取历史
+        if Instant::now() >= self.next_fetch_refresh {
+            if let Err(err) = self.fetch_histories().await { warn!("拉取资金费率历史失败: {err:?}"); }
+            self.next_fetch_refresh = self.next_fetch_instant();
         }
-        if let Err(err) = self.reload_thresholds() {
-            error!("刷新追踪列表失败: {err:?}");
+        // 到点重算预测（不请求）
+        if Instant::now() >= self.next_compute_refresh {
+            self.compute_predictions();
+            self.next_compute_refresh = Instant::now() + Duration::from_secs(self.cfg.strategy.refresh_secs.max(5));
+        }
+        // 到点刷新借贷利率（Redis）
+        if Instant::now() >= self.next_loan_refresh {
+            if let Err(err) = self.reload_loan_rates().await { warn!("刷新借贷利率失败: {err:#}"); }
+            let gap = self.cfg.loan.refresh_secs.max(5);
+            self.next_loan_refresh = Instant::now() + Duration::from_secs(gap);
         }
     }
 
-    fn reload_thresholds(&mut self) -> Result<()> {
-        self.next_reload = Instant::now() + self.cfg.reload_interval();
-        let entries = self.load_thresholds()?;
+    async fn refresh_frequency_all(&mut self) -> Result<()> {
+        if self.symbols.is_empty() { return Ok(()); }
+        let client = self.http.clone();
+        let mut tasks = Vec::new();
+        let futs: Vec<String> = self
+            .symbols
+            .values()
+            .map(|s| s.futures_symbol.to_uppercase())
+            .collect();
+        for fut in futs {
+            let c = client.clone();
+            let s = fut.clone();
+            tasks.push(tokio::spawn(async move { (s.clone(), infer_binance_funding_frequency(&c, &s).await) }));
+        }
+        for t in tasks {
+            if let Ok((fut, freq)) = t.await {
+                if let Some(f) = freq { debug!("频率刷新: {} -> {}", fut, f); self.funding_frequency.insert(fut, f); }
+            }
+        }
+        Ok(())
+    }
+
+    async fn reload_thresholds(&mut self) -> Result<bool> {
+        // Redis-only: refresh thresholds by strategy.refresh_secs
+        let reload_dur = Duration::from_secs(self.cfg.strategy.refresh_secs.max(5));
+        self.next_reload = Instant::now() + reload_dur;
+        debug!("开始刷新追踪交易对(阈值表) ...");
+        let entries = self.load_thresholds().await?;
+        debug!("阈值表条目数: {}", entries.len());
         let mut new_symbols: HashMap<String, SymbolState> = HashMap::new();
         let mut new_futures_index: HashMap<String, String> = HashMap::new();
+        let mut added: Vec<(String, String)> = Vec::new(); // (spot, fut)
 
         for entry in entries {
             let key = entry.spot_symbol.clone();
@@ -392,6 +579,7 @@ impl StrategyEngine {
                 let state = SymbolState::new(entry.clone());
                 new_futures_index.insert(fut_key, key.clone());
                 new_symbols.insert(key, state);
+                added.push((entry.spot_symbol.clone(), entry.futures_symbol.clone()));
             }
         }
 
@@ -405,38 +593,75 @@ impl StrategyEngine {
             info!("移除 {} 个不再跟踪的交易对", removed);
         }
         info!("本次加载追踪交易对数量: {}", self.symbols.len());
+        if !added.is_empty() { debug!("新增交易对: {:?}", added.iter().map(|(s, f)| format!("{}/{}", s, f)).collect::<Vec<_>>() ); }
         self.log_min_qty_table();
-        Ok(())
-    }
-
-    fn load_thresholds(&self) -> Result<Vec<SymbolThreshold>> {
-        match self.cfg.mode {
-            DataMode::LocalJson => self.load_from_json(self.cfg.tracking_path()),
-            DataMode::Redis => {
-                anyhow::bail!("Redis 模式尚未实现")
+        // 对新增的符号：推断 freq，并拉取历史，更新预测
+        if !added.is_empty() {
+            let client = self.http.clone();
+            let limit = self.cfg.strategy.history_limit;
+            let mut tasks = Vec::new();
+            for (_spot, fut) in &added {
+                let s = fut.clone();
+                let c = client.clone();
+                tasks.push(tokio::spawn(async move {
+                    let freq = infer_binance_funding_frequency(&c, &s).await.unwrap_or_else(|| "8h".to_string());
+                    let rates = fetch_binance_funding_history(&c, &s, limit).await.unwrap_or_default();
+                    (s, freq, rates)
+                }));
             }
+            for t in tasks {
+                if let Ok((fut, freq, rates)) = t.await {
+                    debug!("新增符号初始化: {} freq={} history={}条", fut, freq, rates.len());
+                    self.funding_frequency.insert(fut.to_uppercase(), freq);
+                    if !rates.is_empty() { self.history_map.insert(fut.to_uppercase(), rates); }
+                }
+            }
+            self.compute_predictions();
         }
+        Ok(!added.is_empty() || removed > 0)
     }
 
-    fn load_from_json(&self, path: PathBuf) -> Result<Vec<SymbolThreshold>> {
-        let data = fs::read_to_string(&path)
-            .with_context(|| format!("读取 tracking_symbol.json 失败: {}", path.display()))?;
-        let value: serde_json::Value = serde_json::from_str(&data)
-            .with_context(|| format!("解析 tracking_symbol.json 失败: {}", path.display()))?;
+    async fn load_thresholds(&self) -> Result<Vec<SymbolThreshold>> {
+        self.load_from_redis().await
+    }
+
+    async fn load_from_redis(&self) -> Result<Vec<SymbolThreshold>> {
+        let settings = self
+            .cfg
+            .redis
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Redis 模式需要配置 redis 设置"))?;
+        let key = self
+            .cfg
+            .redis_key
+            .clone()
+            .unwrap_or_else(|| DEFAULT_REDIS_HASH_KEY.to_string());
+        let mut client = RedisClient::connect(settings.clone()).await?;
+        // HGETALL to fetch per-symbol thresholds JSON
+        let map = client.hgetall_map(&key).await?;
         let mut result = Vec::new();
-        let binance = value
-            .get("binance")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| anyhow::anyhow!("tracking_symbol.json 缺少 binance 数组"))?;
-
-        for entry in binance {
-            if let Some(threshold) = Self::parse_symbol_entry(entry) {
-                result.push(threshold);
+        for (sym, raw) in map {
+            // Expect payload like { symbol, update_tp, bidask_lower, bidask_upper, ... }
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+                let spot_symbol = sym.to_uppercase();
+                let futures_symbol = v
+                    .get("futures_symbol")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_uppercase())
+                    .unwrap_or_else(|| spot_symbol.clone());
+                let open_threshold = v
+                    .get("bidask_lower")
+                    .and_then(|x| x.as_f64())
+                    .unwrap_or(0.0);
+                let close_threshold = v
+                    .get("bidask_upper")
+                    .and_then(|x| x.as_f64())
+                    .unwrap_or(open_threshold);
+                result.push(SymbolThreshold { spot_symbol, futures_symbol, open_threshold, close_threshold });
             }
         }
-
         if result.is_empty() {
-            anyhow::bail!("tracking_symbol.json 未解析到任何有效的 binance 交易对");
+            anyhow::bail!("Redis Hash 未解析到任何有效的 binance 交易对阈值")
         }
         Ok(result)
     }
@@ -539,48 +764,7 @@ impl StrategyEngine {
         info!("价差/资金费率快照\n{}", table);
     }
 
-    fn parse_symbol_entry(value: &serde_json::Value) -> Option<SymbolThreshold> {
-        match value {
-            serde_json::Value::Array(items) => {
-                if items.len() < 3 {
-                    return None;
-                }
-                let spot = items.get(0)?.as_str()?.to_uppercase();
-                let futures = items.get(1)?.as_str()?.to_uppercase();
-                let open_threshold = items.get(2)?.as_f64()?;
-                let close_threshold = items
-                    .get(3)
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(open_threshold);
-                Some(SymbolThreshold {
-                    spot_symbol: spot,
-                    futures_symbol: futures,
-                    open_threshold,
-                    close_threshold,
-                })
-            }
-            serde_json::Value::Object(map) => {
-                let spot = map.get("spot_symbol")?.as_str()?.to_uppercase();
-                let futures = map
-                    .get("futures_symbol")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&spot)
-                    .to_uppercase();
-                let open_threshold = map.get("open_threshold")?.as_f64()?;
-                let close_threshold = map
-                    .get("close_threshold")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(open_threshold);
-                Some(SymbolThreshold {
-                    spot_symbol: spot,
-                    futures_symbol: futures,
-                    open_threshold,
-                    close_threshold,
-                })
-            }
-            _ => None,
-        }
-    }
+    // 本策略不再从本地 JSON 解析阈值
 
     fn handle_spot_quote(&mut self, msg: &[u8]) {
         let symbol = AskBidSpreadMsg::get_symbol(msg).to_uppercase();
@@ -616,16 +800,32 @@ impl StrategyEngine {
 
     fn handle_funding_rate(&mut self, msg: &[u8]) {
         let symbol = FundingRateMsg::get_symbol(msg).to_uppercase();
+        // 先以不可变方式读取 fut_symbol，避免借用冲突
+        let fut_symbol = self
+            .symbols
+            .get(&symbol)
+            .map(|s| s.futures_symbol.clone())
+            .unwrap_or_default();
+        let predicted = self.get_predicted_for(&fut_symbol);
         if let Some(state) = self.symbols.get_mut(&symbol) {
             let funding = FundingRateMsg::get_funding_rate(msg);
-            let predicted = FundingRateMsg::get_predicted_funding_rate(msg);
+            let next_funding_time = FundingRateMsg::get_next_funding_time(msg);
             let timestamp = FundingRateMsg::get_timestamp(msg);
-            let loan_rate = FundingRateMsg::get_loan_rate_8h(msg);
             state.last_ratio = state.calc_ratio();
             state.funding_rate = funding;
             state.predicted_rate = predicted;
-            state.loan_rate = loan_rate;
+            state.loan_rate = 0.0;
             state.funding_ts = timestamp;
+            state.next_funding_time = next_funding_time;
+            debug!(
+                "Funding 更新: {} funding={:.6} pred={:.6} next={} ts={}",
+                symbol, funding, predicted, next_funding_time, timestamp
+            );
+            // 维护滚动 funding rate 列表
+            let entry = self.funding_series.entry(symbol.clone()).or_default();
+            entry.push(funding);
+            let max_keep = self.cfg.strategy.funding_ma_size.max(1) * 4; // 留存多点以便滑窗
+            if entry.len() > max_keep { let drop_n = entry.len() - max_keep; entry.drain(0..drop_n); }
         }
     }
 
@@ -742,6 +942,118 @@ impl StrategyEngine {
                 }
             }
         }
+    }
+
+    fn resample_and_publish(&mut self) {
+        let ts_ms = (get_timestamp_us() / 1000) as i64;
+        let mut batch_items: Vec<ResampleItem> = Vec::new();
+        // 组装每个 symbol 的切片
+        let mut keys: Vec<String> = self.symbols.keys().cloned().collect();
+        keys.sort();
+        for key in keys {
+            let state = match self.symbols.get(&key) { Some(s) => s, None => continue };
+            let spot_bid = if state.spot_quote.bid > 0.0 { Some(state.spot_quote.bid) } else { None };
+            let spot_ask = if state.spot_quote.ask > 0.0 { Some(state.spot_quote.ask) } else { None };
+            let fut_bid = if state.futures_quote.bid > 0.0 { Some(state.futures_quote.bid) } else { None };
+            let fut_ask = if state.futures_quote.ask > 0.0 { Some(state.futures_quote.ask) } else { None };
+            let bidask_sr = compute_bidask_sr(spot_bid, fut_ask);
+            let askbid_sr = compute_askbid_sr(spot_ask, fut_bid);
+            let funding_rate = if state.funding_rate != 0.0 { Some(state.funding_rate) } else { None };
+            let funding_rate_ma = self.calc_funding_ma(&key);
+            let predicted_rate = Some(self.get_predicted_for(&state.futures_symbol));
+            let loan_rate_8h = self.loan_map.get(&key).copied().or_else(|| if state.loan_rate != 0.0 { Some(state.loan_rate) } else { None });
+
+            let item = ResampleItem {
+                symbol: key.clone(),
+                ts_ms,
+                spot_bid,
+                spot_ask,
+                fut_bid,
+                fut_ask,
+                bidask_sr,
+                askbid_sr,
+                funding_rate,
+                funding_rate_ma,
+                predicted_rate,
+                loan_rate_8h,
+            };
+            // 逐条发送到 msg 通道
+            if let Ok(bytes) = item.to_bytes() {
+                let mut buf = Vec::with_capacity(bytes.len() + 4);
+                let len = bytes.len() as u32;
+                buf.extend_from_slice(&len.to_le_bytes());
+                buf.extend_from_slice(&bytes);
+                if buf.len() <= 1024 {
+                    let _ = self.resample_msg_pub.publish(&buf);
+                }
+            }
+            batch_items.push(item);
+        }
+
+        // 批量发送（控制最大 1024 字节）
+        let batch = ResampleBatch { ts_ms, items: batch_items };
+        if let Ok(mut bytes) = batch.to_bytes() {
+            // Prepend length header
+            let len = bytes.len() as u32;
+            let mut buf = Vec::with_capacity(bytes.len() + 4);
+            buf.extend_from_slice(&len.to_le_bytes());
+            buf.append(&mut bytes);
+            if buf.len() > 1024 { buf.truncate(1024); }
+            let _ = self.resample_pub.publish(&buf);
+        }
+    }
+
+    fn calc_funding_ma(&self, symbol: &str) -> Option<f64> {
+        let win = self.cfg.strategy.funding_ma_size.max(1);
+        let values = self.funding_series.get(symbol)?;
+        if values.is_empty() { return None; }
+        let start = values.len().saturating_sub(win);
+        let slice = &values[start..];
+        use polars::prelude::*;
+        use polars_time::prelude::SeriesOpsTime;
+        let s = Series::new("rate".into(), slice.to_vec());
+        let opts = RollingOptionsFixedWindow { window_size: win, min_periods: 1, ..Default::default() };
+        match s.rolling_mean(opts) {
+            Ok(out) => {
+                let v = out.f64().ok().and_then(|ca| ca.get(slice.len() - 1));
+                debug!(
+                    "资金费率MA(polars): symbol={} win={} slice_len={} value={:?}",
+                    symbol, win, slice.len(), v
+                );
+                v
+            }
+            Err(err) => {
+                debug!("资金费率MA(polars) 失败: symbol={} err={:?}", symbol, err);
+                None
+            }
+        }
+    }
+
+    async fn reload_loan_rates(&mut self) -> Result<()> {
+        // 从 Redis HASH 读取借贷利率，字段为 symbol，值可为数字字符串或 JSON { loan_rate_8h, ts }
+        let settings = self.cfg.redis.clone().ok_or_else(|| anyhow::anyhow!("缺少 Redis 配置"))?;
+        let key = self
+            .cfg
+            .loan
+            .redis_key
+            .clone()
+            .unwrap_or_else(|| "binance_loan_rate_8h".to_string());
+        let mut client = RedisClient::connect(settings).await?;
+        let map = client.hgetall_map(&key).await?;
+        let mut out = HashMap::new();
+        for (sym, raw) in map {
+            let sym_up = sym.to_uppercase();
+            let val = match raw.parse::<f64>() {
+                Ok(v) => Some(v),
+                Err(_) => {
+                    let v: Option<serde_json::Value> = serde_json::from_str(&raw).ok();
+                    v.and_then(|o| o.get("loan_rate_8h").and_then(|x| x.as_f64()))
+                }
+            };
+            if let Some(v) = val { out.insert(sym_up, v); }
+        }
+        self.loan_map = out;
+        Ok(())
     }
 
     fn build_open_request(
@@ -905,6 +1217,204 @@ impl StrategyEngine {
     }
 }
 
+// 阈值获取逻辑改为读取 self.th_4h/self.th_8h，参见 StrategyEngine::thresholds_for_frequency
+
+#[derive(Debug, Clone, Default)]
+struct FundingThresholdEntry {
+    symbol: String,
+    predict_funding_rate: f64,
+    lorn_rate: f64,
+    funding_frequency: String, // "4h" | "8h"
+    open_upper_threshold: f64,
+    open_lower_threshold: f64,
+    close_lower_threshold: f64,
+    close_upper_threshold: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RateThresholds {
+    open_upper: f64,
+    open_lower: f64,
+    close_lower: f64,
+    close_upper: f64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ParamsSnapshot {
+    interval: u64,
+    predict_num: u64,
+    refresh_secs: u64,
+    fetch_secs: u64,
+    fetch_offset_secs: u64,
+    history_limit: u64,
+}
+
+impl From<&StrategyParams> for ParamsSnapshot {
+    fn from(p: &StrategyParams) -> Self {
+        Self {
+            interval: p.interval as u64,
+            predict_num: p.predict_num as u64,
+            refresh_secs: p.refresh_secs,
+            fetch_secs: p.fetch_secs,
+            fetch_offset_secs: p.fetch_offset_secs,
+            history_limit: p.history_limit as u64,
+        }
+    }
+}
+
+impl StrategyEngine {
+    fn thresholds_for_frequency(&self, freq_4h_or_8h: &str) -> (f64, f64, f64, f64) {
+        match freq_4h_or_8h {
+            "4h" | "4H" => (
+                self.th_4h.open_upper,
+                self.th_4h.open_lower,
+                self.th_4h.close_lower,
+                self.th_4h.close_upper,
+            ),
+            "8h" | "8H" => (
+                self.th_8h.open_upper,
+                self.th_8h.open_lower,
+                self.th_8h.close_lower,
+                self.th_8h.close_upper,
+            ),
+            other => panic!("Unsupported funding frequency: {}", other),
+        }
+    }
+    async fn reload_params_if_changed(&mut self) -> Result<bool> {
+        // 从 Redis HASH 读取 binance_forward_arb_params
+        let Some(redis_cfg) = self.cfg.redis.clone() else { return Ok(false); };
+        let mut client = mkt_signal::common::redis_client::RedisClient::connect(redis_cfg).await?;
+        let map = client.hgetall_map("binance_forward_arb_params").await.unwrap_or_default();
+        debug!("参数读取: {:?}", map);
+        // 必须包含 4h/8h 四个阈值共8个键
+        let required = [
+            "fr_4h_open_upper_threshold",
+            "fr_4h_open_lower_threshold",
+            "fr_4h_close_lower_threshold",
+            "fr_4h_close_upper_threshold",
+            "fr_8h_open_upper_threshold",
+            "fr_8h_open_lower_threshold",
+            "fr_8h_close_lower_threshold",
+            "fr_8h_close_upper_threshold",
+        ];
+        let mut missing = Vec::new();
+        for k in required.iter() {
+            if !map.contains_key(*k) {
+                missing.push(k.to_string());
+            }
+        }
+        if !missing.is_empty() {
+            panic!(
+                "缺少资金费率阈值参数: {:?}，请写入 Redis HASH binance_forward_arb_params 再启动",
+                missing
+            );
+        }
+        let mut changed = false;
+        let parse_u64 = |k: &str| -> Option<u64> { map.get(k).and_then(|v| v.parse::<u64>().ok()) };
+        let parse_f64 = |k: &str| -> Option<f64> { map.get(k).and_then(|v| v.parse::<f64>().ok()) };
+        if let Some(v) = parse_u64("interval") { if self.cfg.strategy.interval as u64 != v { self.cfg.strategy.interval = v as usize; changed = true; } }
+        if let Some(v) = parse_u64("predict_num") { if self.cfg.strategy.predict_num as u64 != v { self.cfg.strategy.predict_num = v as usize; changed = true; } }
+        if let Some(v) = parse_u64("refresh_secs") { if self.cfg.strategy.refresh_secs != v { self.cfg.strategy.refresh_secs = v; changed = true; } }
+        if let Some(v) = parse_u64("fetch_secs") { if self.cfg.strategy.fetch_secs != v { self.cfg.strategy.fetch_secs = v; changed = true; } }
+        if let Some(v) = parse_u64("fetch_offset_secs") { if self.cfg.strategy.fetch_offset_secs != v { self.cfg.strategy.fetch_offset_secs = v; changed = true; } }
+        if let Some(v) = parse_u64("history_limit") { if self.cfg.strategy.history_limit as u64 != v { self.cfg.strategy.history_limit = v as usize; changed = true; } }
+
+        // 加载阈值（4h/8h）
+        let mut th_changed = false;
+        if let Some(v) = parse_f64("fr_4h_open_upper_threshold") { if !approx_equal(self.th_4h.open_upper, v) { self.th_4h.open_upper = v; th_changed = true; } }
+        if let Some(v) = parse_f64("fr_4h_open_lower_threshold") { if !approx_equal(self.th_4h.open_lower, v) { self.th_4h.open_lower = v; th_changed = true; } }
+        if let Some(v) = parse_f64("fr_4h_close_lower_threshold") { if !approx_equal(self.th_4h.close_lower, v) { self.th_4h.close_lower = v; th_changed = true; } }
+        if let Some(v) = parse_f64("fr_4h_close_upper_threshold") { if !approx_equal(self.th_4h.close_upper, v) { self.th_4h.close_upper = v; th_changed = true; } }
+        if let Some(v) = parse_f64("fr_8h_open_upper_threshold") { if !approx_equal(self.th_8h.open_upper, v) { self.th_8h.open_upper = v; th_changed = true; } }
+        if let Some(v) = parse_f64("fr_8h_open_lower_threshold") { if !approx_equal(self.th_8h.open_lower, v) { self.th_8h.open_lower = v; th_changed = true; } }
+        if let Some(v) = parse_f64("fr_8h_close_lower_threshold") { if !approx_equal(self.th_8h.close_lower, v) { self.th_8h.close_lower = v; th_changed = true; } }
+        if let Some(v) = parse_f64("fr_8h_close_upper_threshold") { if !approx_equal(self.th_8h.close_upper, v) { self.th_8h.close_upper = v; th_changed = true; } }
+        if th_changed { changed = true; debug!("阈值参数变更: 4h={:?} 8h={:?}", self.th_4h, self.th_8h); }
+
+        let current = ParamsSnapshot::from(&self.cfg.strategy);
+        if self.last_params.as_ref() != Some(&current) {
+            changed = true;
+            self.last_params = Some(current);
+            // 重要参数变更时，重设调度时间点
+            self.next_reload = Instant::now() + Duration::from_secs(self.cfg.strategy.refresh_secs.max(5));
+            self.next_fetch_refresh = self.next_fetch_instant();
+        }
+        debug!("参数变更检测: changed={}", changed);
+        Ok(changed)
+    }
+
+    fn is_settlement_trigger(&mut self) -> bool {
+        // 通过下一结算时间最小值判断是否跨越了结算点
+        let now_ms = Utc::now().timestamp_millis();
+        let mut min_next: Option<i64> = None;
+        for s in self.symbols.values() {
+            if s.next_funding_time > 0 {
+                min_next = Some(match min_next { Some(m) => m.min(s.next_funding_time), None => s.next_funding_time });
+            }
+        }
+        let Some(next_ms) = min_next else { return false; };
+        debug!("结算点检测: now_ms={} next_ms={}", now_ms, next_ms);
+        if now_ms >= next_ms {
+            let changed = self.last_settlement_marker_ms != Some(next_ms);
+            self.last_settlement_marker_ms = Some(next_ms);
+            debug!("结算点触发: changed={}", changed);
+            return changed;
+        }
+        false
+    }
+
+    async fn recompute_and_log(&mut self, reason: &str, symbols_changed: bool) {
+        // 对所有已跟踪交易对按频率和预测值重算
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        debug!("开始重算资金费率阈值: reason='{}' symbols_changed={}", reason, symbols_changed);
+        for (key, state) in &self.symbols {
+            let fut = state.futures_symbol.to_uppercase();
+            let freq = self
+                .funding_frequency
+                .get(&fut)
+                .cloned()
+                .unwrap_or_else(|| "8h".to_string());
+            let (ou, ol, cl, cu) = self.thresholds_for_frequency(&freq);
+            let pred = self.get_predicted_for(&fut);
+            let entry = FundingThresholdEntry {
+                symbol: key.clone(),
+                predict_funding_rate: pred,
+                lorn_rate: 0.0,
+                funding_frequency: freq.clone(),
+                open_upper_threshold: ou,
+                open_lower_threshold: ol,
+                close_lower_threshold: cl,
+                close_upper_threshold: cu,
+            };
+            self.funding_thresholds.insert(key.clone(), entry);
+        }
+        // 打印三线表
+        let mut keys: Vec<String> = self.funding_thresholds.keys().cloned().collect();
+        keys.sort();
+        for k in keys {
+            if let Some(e) = self.funding_thresholds.get(&k) {
+                rows.push(vec![
+                    e.symbol.clone(),
+                    format!("{:.6}", e.predict_funding_rate),
+                    format!("{:.6}", e.lorn_rate),
+                    e.funding_frequency.clone(),
+                    format!("{:.6}", e.open_upper_threshold),
+                    format!("{:.6}", e.open_lower_threshold),
+                    format!("{:.6}", e.close_lower_threshold),
+                    format!("{:.6}", e.close_upper_threshold),
+                ]);
+            }
+        }
+        if rows.is_empty() { return; }
+        let table = render_three_line_table(
+            &["symbol", "predict_funding_rate", "lorn_rate", "funding_frequency", "open_upper_threshold", "open_lower_threshold", "close_lower_threshold", "close_upper_threshold"],
+            &rows,
+        );
+        debug!("资金费率阈值重算: 原因= {}\n{}", reason, table);
+        let _ = symbols_changed;
+    }
+}
+
 #[derive(Debug)]
 enum SignalRequest {
     Open {
@@ -1021,6 +1531,7 @@ async fn main() -> Result<()> {
 
     let mut next_stat_time = Instant::now() + Duration::from_secs(30);
     let mut next_snapshot = Instant::now() + Duration::from_secs(3);
+    let mut next_resample = Instant::now();
 
     loop {
         if shutdown.is_cancelled() {
@@ -1059,6 +1570,10 @@ async fn main() -> Result<()> {
         if Instant::now() >= next_snapshot {
             engine.log_symbol_snapshot();
             next_snapshot += Duration::from_secs(3);
+        }
+        if Instant::now() >= next_resample {
+            engine.resample_and_publish();
+            next_resample += engine.resample_interval;
         }
 
         yield_now().await;
@@ -1268,3 +1783,99 @@ fn approx_zero(x: f64) -> bool {
 fn approx_equal(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-12
 }
+
+// ------- Funding prediction helpers (strategy-side) -------
+
+#[derive(Debug, Deserialize)]
+struct BinanceFundingHistItem {
+    #[serde(rename = "fundingRate")] funding_rate: String,
+    #[serde(rename = "fundingTime")] funding_time: Option<i64>,
+}
+
+async fn fetch_binance_funding_history(client: &Client, symbol: &str, limit: usize) -> Result<Vec<f64>> {
+    let url = "https://fapi.binance.com/fapi/v1/fundingRate";
+    let end_time = Utc::now().timestamp_millis();
+    let start_time = end_time - 3 * 24 * 3600 * 1000; // 3d window
+    let limit_s = limit.max(1).min(1000).to_string();
+    let params = [
+        ("symbol", symbol),
+        ("startTime", &start_time.to_string()),
+        ("endTime", &end_time.to_string()),
+        ("limit", &limit_s),
+    ];
+    let resp = client.get(url).query(&params).send().await?;
+    if !resp.status().is_success() { return Ok(vec![]); }
+    let mut items: Vec<BinanceFundingHistItem> = resp.json().await.unwrap_or_default();
+    // sort by time if available
+    items.sort_by_key(|it| it.funding_time.unwrap_or_default());
+    let mut out = Vec::with_capacity(items.len());
+    for it in items { if let Ok(v) = it.funding_rate.parse::<f64>() { out.push(v); } }
+    Ok(out)
+}
+
+async fn fetch_binance_funding_items(
+    client: &Client,
+    symbol: &str,
+    limit: usize,
+) -> Result<Vec<BinanceFundingHistItem>> {
+    let url = "https://fapi.binance.com/fapi/v1/fundingRate";
+    let end_time = Utc::now().timestamp_millis();
+    let start_time = end_time - 3 * 24 * 3600 * 1000; // 3d window
+    let limit_s = limit.max(1).min(1000).to_string();
+    let params = [
+        ("symbol", symbol),
+        ("startTime", &start_time.to_string()),
+        ("endTime", &end_time.to_string()),
+        ("limit", &limit_s),
+    ];
+    let resp = client.get(url).query(&params).send().await?;
+    if !resp.status().is_success() { return Ok(vec![]); }
+    let mut items: Vec<BinanceFundingHistItem> = resp.json().await.unwrap_or_default();
+    items.sort_by_key(|it| it.funding_time.unwrap_or_default());
+    Ok(items)
+}
+
+async fn infer_binance_funding_frequency(client: &Client, symbol: &str) -> Option<String> {
+    let items = fetch_binance_funding_items(client, symbol, 40).await.ok()?;
+    let mut times: Vec<i64> = items
+        .iter()
+        .filter_map(|it| it.funding_time)
+        .collect();
+    if times.len() < 3 { return Some("8h".to_string()); }
+    times.sort_unstable();
+    let mut diffs: Vec<i64> = Vec::with_capacity(times.len().saturating_sub(1));
+    for w in times.windows(2) { if let [a, b] = w { diffs.push(b - a); } }
+    if diffs.is_empty() { return Some("8h".to_string()); }
+    diffs.sort_unstable();
+    let median = diffs[diffs.len()/2];
+    // 阈值 6 小时分界
+    let six_hours_ms = 6 * 3600 * 1000;
+    let freq = if median <= six_hours_ms { "4h" } else { "8h" };
+    debug!("频率推断: {} median={}ms => {}", symbol, median, freq);
+    Some(freq.to_string())
+}
+
+fn compute_predict(rates: &[f64], interval: usize, predict_num: usize) -> f64 {
+    if rates.is_empty() || interval == 0 { return 0.0; }
+    // pandas rolling mean + shift: take window ending at index n-1-predict_num
+    let n = rates.len();
+    if n == 0 || n - 1 < predict_num { return 0.0; }
+    let end = n - 1 - predict_num;
+    if end + 1 < interval { return 0.0; }
+    let start = end + 1 - interval;
+    let sum: f64 = rates[start..=end].iter().copied().sum();
+    sum / (interval as f64)
+}
+#[derive(Debug, Clone, Deserialize)]
+struct LoanConfig {
+    #[serde(default)]
+    redis_key: Option<String>,
+    #[serde(default = "default_loan_refresh_secs")]
+    refresh_secs: u64,
+}
+
+impl Default for LoanConfig {
+    fn default() -> Self { Self { redis_key: None, refresh_secs: default_loan_refresh_secs() } }
+}
+
+const fn default_loan_refresh_secs() -> u64 { 60 }

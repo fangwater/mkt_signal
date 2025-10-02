@@ -7,6 +7,7 @@ use redis::AsyncCommands;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::HashMap;
 
 /// 通用的 Redis 连接配置
 #[derive(Debug, Clone, Deserialize)]
@@ -148,6 +149,39 @@ impl RedisClient {
         let text = serde_json::to_string(value)
             .with_context(|| format!("序列化 Redis JSON 失败: key={}", key))?;
         self.set_string(key, &text).await
+    }
+
+    /// 获取哈希表的所有字段（值为字符串）
+    pub async fn hgetall_map(&mut self, key: &str) -> Result<HashMap<String, String>> {
+        let full_key = self.key(key);
+        let map: HashMap<String, String> = self.manager.hgetall(full_key).await?;
+        Ok(map)
+    }
+
+    /// 批量写入哈希多个字段（值为字符串）。
+    pub async fn hset_multiple_str(
+        &mut self,
+        key: &str,
+        entries: &[(String, String)],
+    ) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let full_key = self.key(key);
+        // Inference of (F, V) = (String, String); ignore return value
+        let _: () = self.manager.hset_multiple(full_key, entries).await?;
+        Ok(())
+    }
+
+    /// 从哈希中删除多个字段。
+    pub async fn hdel_fields(&mut self, key: &str, fields: &[String]) -> Result<()> {
+        if fields.is_empty() {
+            return Ok(());
+        }
+        let full_key = self.key(key);
+        // redis::AsyncCommands 的 hdel 可接受切片；忽略返回值
+        let _: () = self.manager.hdel(full_key, fields).await?;
+        Ok(())
     }
 }
 

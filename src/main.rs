@@ -35,24 +35,7 @@ async fn main() -> anyhow::Result<()> {
 
     let config = get_config(config_path, exchange).await;
 
-    // 初始化资金费率管理器（异步后台）
-    let funding_manager = mkt_signal::market_state::FundingRateManager::instance();
-    let symbol_list = match config.get_symbols().await {
-        Ok(list) => list,
-        Err(e) => {
-            log::error!("获取 symbol 列表失败，将以空列表初始化资金费率: {}", e);
-            Vec::new()
-        }
-    };
-    let funding_exchange = exchange;
-    tokio::spawn(async move {
-        if let Err(e) = funding_manager
-            .initialize(funding_exchange, symbol_list)
-            .await
-        {
-            log::error!("初始化资金费率管理器失败: {}", e);
-        }
-    });
+    // 资金费率管理器已移除：预测/借贷逻辑在策略进程内处理
 
     // 创建并运行应用
     let app = MktSignalApp::new(config).await?;

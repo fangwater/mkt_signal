@@ -56,8 +56,6 @@ pub struct FundingRateMsg {
     pub funding_rate: f64, // 当前资金费率
     pub next_funding_time: i64,
     pub timestamp: i64,
-    pub predicted_funding_rate: f64, // 预测资金费率（6期移动平均）
-    pub loan_rate_8h: f64,           // 8小时借贷利率（日利率/3）
 }
 
 #[allow(dead_code)]
@@ -123,51 +121,6 @@ impl FundingRateMsg {
         ])
     }
 
-    /// 获取predicted_funding_rate（零拷贝）
-    #[inline]
-    pub fn get_predicted_funding_rate(data: &[u8]) -> f64 {
-        let symbol_length = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
-        let offset = 8 + symbol_length + 24; // header + symbol + funding_rate + next_funding_time + timestamp
-
-        if data.len() < offset + 8 {
-            return 0.0;
-        }
-
-        f64::from_le_bytes([
-            data[offset],
-            data[offset + 1],
-            data[offset + 2],
-            data[offset + 3],
-            data[offset + 4],
-            data[offset + 5],
-            data[offset + 6],
-            data[offset + 7],
-        ])
-    }
-
-    /// 获取loan_rate_8h（零拷贝）
-    #[inline]
-    pub fn get_loan_rate_8h(data: &[u8]) -> f64 {
-        let symbol_length = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
-        // header + symbol + funding_rate + next_funding_time + timestamp + predicted_funding_rate
-        // loan_rate 目前并非所有推送都会携带，缺省时长度不足。
-        let offset = 8 + symbol_length + 32;
-
-        if data.len() < offset + 8 {
-            return 0.0;
-        }
-
-        f64::from_le_bytes([
-            data[offset],
-            data[offset + 1],
-            data[offset + 2],
-            data[offset + 3],
-            data[offset + 4],
-            data[offset + 5],
-            data[offset + 6],
-            data[offset + 7],
-        ])
-    }
 }
 
 pub struct MarkPriceMsg {
@@ -706,8 +659,6 @@ impl FundingRateMsg {
         funding_rate: f64,
         next_funding_time: i64,
         timestamp: i64,
-        predicted_funding_rate: f64,
-        loan_rate_8h: f64,
     ) -> Self {
         let symbol_length = symbol.len() as u32;
         Self {
@@ -717,15 +668,13 @@ impl FundingRateMsg {
             funding_rate,
             next_funding_time,
             timestamp,
-            predicted_funding_rate,
-            loan_rate_8h,
         }
     }
 
     /// Convert message to bytes
     pub fn to_bytes(&self) -> Bytes {
-        // Calculate total size: msg_type(4) + symbol_length(4) + symbol + funding_rate(8) + next_funding_time(8) + timestamp(8) + predicted_funding_rate(8) + loan_rate_8h(8)
-        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 8 + 8 + 8 + 8;
+        // Calculate total size: msg_type(4) + symbol_length(4) + symbol + funding_rate(8) + next_funding_time(8) + timestamp(8)
+        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 8 + 8;
         let mut buf = BytesMut::with_capacity(total_size);
 
         // Write header
@@ -739,8 +688,6 @@ impl FundingRateMsg {
         buf.put_f64_le(self.funding_rate);
         buf.put_i64_le(self.next_funding_time);
         buf.put_i64_le(self.timestamp);
-        buf.put_f64_le(self.predicted_funding_rate);
-        buf.put_f64_le(self.loan_rate_8h);
 
         buf.freeze()
     }

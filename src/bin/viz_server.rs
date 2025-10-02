@@ -4,7 +4,7 @@ use mkt_signal::common::viz::config::VizCfg;
 use mkt_signal::common::viz::sampler::Sampler;
 use mkt_signal::common::viz::server::{serve_http, WsHub};
 use mkt_signal::common::viz::state::SharedState;
-use mkt_signal::common::viz::subscribers::{spawn_account_listener, spawn_derivatives_listener};
+use mkt_signal::common::viz::subscribers::{spawn_account_listener, spawn_derivatives_listener, spawn_fr_resample_listener};
 use mkt_signal::exchange::Exchange;
 
 #[tokio::main(flavor = "current_thread")]
@@ -35,6 +35,11 @@ async fn main() -> Result<()> {
                 }
             } else {
                 warn!("no derivatives source configured; price/factors may be empty");
+            }
+
+            // 订阅 resample 批量快照（默认启用）
+            if let Err(err) = spawn_fr_resample_listener(state.clone()) {
+                warn!("spawn fr_resample listener failed: {err:#}");
             }
 
             // WS Hub & HTTP server

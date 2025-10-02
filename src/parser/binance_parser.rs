@@ -1,5 +1,3 @@
-use crate::exchange::Exchange;
-use crate::market_state::FundingRateManager;
 use crate::mkt_msg::{
     AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg,
     MarkPriceMsg, SignalMsg, SignalSource, TradeMsg,
@@ -285,19 +283,12 @@ impl BinanceDerivativesMetricsParser {
                             parsed_count += 1;
                         }
 
-                        // Get predicted rate and loan rate from FundingRateManager
-                        let rate_manager = FundingRateManager::instance();
-                        let rate_data =
-                            rate_manager.get_rates_sync(&symbol, Exchange::Binance, event_time);
-
-                        // Create and send FundingRateMsg with prediction data
+                        // Create and send FundingRateMsg
                         let funding_rate_msg = FundingRateMsg::create(
                             symbol.to_string(),
                             funding_rate,
                             next_funding_time,
                             event_time,
-                            rate_data.predicted_funding_rate,
-                            rate_data.loan_rate_8h,
                         );
                         if tx.send(funding_rate_msg.to_bytes()).is_ok() {
                             parsed_count += 1;
