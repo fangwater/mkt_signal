@@ -46,6 +46,12 @@ pub fn hash64(parts: &[u64]) -> u64 {
     hasher.finish()
 }
 
+fn hash_str64(s: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut hasher);
+    hasher.finish()
+}
+
 // ---- Key helpers for account event types ----
 
 pub fn key_balance_update(msg: &BalanceUpdateMsg) -> u64 {
@@ -61,7 +67,7 @@ pub fn key_account_update_balance(msg: &AccountUpdateBalanceMsg) -> u64 {
         AccountEventType::AccountUpdateBalance as u32 as u64,
         msg.event_time as u64,
         msg.transaction_time as u64,
-        msg.asset_length as u64,
+        hash_str64(&msg.asset),
     ])
 }
 
@@ -70,6 +76,7 @@ pub fn key_account_position(msg: &AccountPositionMsg) -> u64 {
         AccountEventType::AccountPosition as u32 as u64,
         msg.update_id as u64,
         msg.event_time as u64,
+        hash_str64(&msg.asset),
     ])
 }
 
