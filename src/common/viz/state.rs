@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use anyhow::Result;
 use chrono::Utc;
-use log::{debug, warn};
 
 use crate::common::account_msg::{
     AccountEventType, AccountPositionMsg, AccountUpdateBalanceMsg, AccountUpdatePositionMsg,

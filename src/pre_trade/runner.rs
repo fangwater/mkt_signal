@@ -23,7 +23,6 @@ use crate::signal::binance_forward_arb::{
 use crate::signal::strategy::{Strategy, StrategyManager};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::trade_engine::trade_response_handle::TradeExecOutcome;
-use crate::common::redis_client::{RedisClient, RedisSettings};
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
@@ -94,7 +93,7 @@ impl PreTrade {
         );
 
         // 首次从 Redis 拉取 pre-trade 参数
-        if let Err(err) = runtime.reload_params_blocking() {
+        if let Err(err) = runtime.reload_params().await {
             warn!("pre_trade initial params load failed: {err:#}");
         }
 
@@ -148,7 +147,7 @@ impl PreTrade {
                     }
                 }
                 _ = ticker.tick() => {
-                    runtime.tick();
+                    runtime.tick().await;
                 }
                 else => break,
             }
@@ -511,12 +510,12 @@ impl RuntimeContext {
             .recompute(&um_snapshot, &spot_snapshot);
     }
 
-    fn tick(&mut self) {
+    async fn tick(&mut self) {
         let now = get_timestamp_us();
         self.strategy_mgr.handle_period_clock(now);
         self.cleanup_inactive();
         if std::time::Instant::now() >= self.next_params_refresh {
-            if let Err(err) = self.reload_params_blocking() {
+            if let Err(err) = self.reload_params().await {
                 warn!("pre_trade params refresh failed: {err:#}");
             }
             self.next_params_refresh = std::time::Instant::now()
@@ -526,22 +525,11 @@ impl RuntimeContext {
 }
 
 impl RuntimeContext {
-    fn reload_params_blocking(&mut self) -> Result<()> {
+    async fn reload_params(&mut self) -> Result<()> {
         let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/0".to_string());
-        let rt = tokio::runtime::Handle::current();
-        let params = rt.block_on(async move {
-            // Try using our RedisClient first
-            let mut client = RedisClient::connect(RedisSettings::default()).await?;
-            if url != client.settings().connection_url() {
-                // Fallback to provided URL
-                let cli = redis::Client::open(url.clone())?;
-                let mut mgr = redis::aio::ConnectionManager::new(cli).await?;
-                let map: std::collections::HashMap<String, String> = redis::AsyncCommands::hgetall(&mut mgr, "binance_forward_arb_params").await?;
-                Ok::<_, anyhow::Error>(map)
-            } else {
-                Ok::<_, anyhow::Error>(client.hgetall_map("binance_forward_arb_params").await?)
-            }
-        })?;
+        let cli = redis::Client::open(url.clone())?;
+        let mut mgr = redis::aio::ConnectionManager::new(cli).await?;
+        let params: std::collections::HashMap<String, String> = redis::AsyncCommands::hgetall(&mut mgr, "binance_forward_arb_params").await?;
         let parse_f64 = |k: &str| -> Option<f64> { params.get(k).and_then(|v| v.parse::<f64>().ok()) };
         let parse_u64 = |k: &str| -> Option<u64> { params.get(k).and_then(|v| v.parse::<u64>().ok()) };
         if let Some(v) = parse_u64("pre_trade_refresh_secs") { self.params_refresh_secs = v; }

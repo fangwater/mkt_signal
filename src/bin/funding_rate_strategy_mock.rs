@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use log::{debug, error, info, warn};
 use serde::Deserialize;
 use tokio::signal;
@@ -1231,21 +1231,6 @@ struct RateThresholds {
     open_lower: f64,
     close_lower: f64,
     close_upper: f64,
-}
-
-fn format_timestamp(ts: Option<i64>) -> String {
-    match ts {
-        Some(value) if value > 0 => {
-            let secs = value / 1_000_000;
-            let nanos = ((value % 1_000_000) * 1_000) as u32;
-            if let Some(dt) = DateTime::<Utc>::from_timestamp(secs, nanos) {
-                dt.format("%Y-%m-%d %H:%M:%S").to_string()
-            } else {
-                "-".to_string()
-            }
-        }
-        _ => "-".to_string(),
-    }
 }
 
 fn lcm_nonzero(a: f64, b: f64) -> f64 {

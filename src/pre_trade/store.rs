@@ -86,7 +86,7 @@ pub struct StrategyRecord {
 
 mod bytes_ser {
     use bytes::Bytes;
-    use serde::{Deserialize, Deserializer, Serializer};
+    use serde::{Deserializer, Serializer};
 
     pub fn serialize<S>(bytes: &Bytes, serializer: S) -> Result<S::Ok, S::Error>
     where
