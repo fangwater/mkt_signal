@@ -677,6 +677,10 @@ impl MockController {
         if let Some(v) = parse_u64("fetch_offset_secs") { if self.cfg.strategy.fetch_offset_secs != v { self.cfg.strategy.fetch_offset_secs = v; changed = true; } }
         if let Some(v) = parse_u64("history_limit") { if self.cfg.strategy.history_limit as u64 != v { self.cfg.strategy.history_limit = v as usize; changed = true; } }
         if let Some(v) = parse_i64("settlement_offset_secs") { if self.cfg.strategy.settlement_offset_secs != v { self.cfg.strategy.settlement_offset_secs = v; changed = true; } }
+        // 订单参数（开/平价距与名义下单金额U）
+        if let Some(v) = parse_f64("order_open_range") { if !approx_equal(self.cfg.order.open_range, v) { self.cfg.order.open_range = v; changed = true; } }
+        if let Some(v) = parse_f64("order_close_range") { if !approx_equal(self.cfg.order.close_range, v) { self.cfg.order.close_range = v; changed = true; } }
+        if let Some(v) = parse_f64("order_amount_u") { if !approx_equal(self.cfg.order.amount_u, v) { self.cfg.order.amount_u = v; changed = true; } }
         if let Some(v) = parse_u64("signal_min_interval_ms") { if self.cfg.signal.min_interval_ms != v { self.cfg.signal.min_interval_ms = v; changed = true; } }
         if let Some(v) = parse_u64("reload_interval_secs") { if self.cfg.reload.interval_secs != v { self.cfg.reload.interval_secs = v; changed = true; } }
         // 阈值（4h/8h）

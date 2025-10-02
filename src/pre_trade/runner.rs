@@ -928,6 +928,7 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
     }
 
     let data = &evt.payload[8..8 + payload_len];
+
     match msg_type {
         AccountEventType::AccountPosition => {
             let msg = AccountPositionMsg::from_bytes(data)?;
@@ -961,6 +962,10 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
                 );
                 return Ok(());
             }
+            debug!(
+                "balanceUpdate: asset={} delta={} event_time={} tx_time={} update_id={}",
+                msg.asset, msg.delta, msg.event_time, msg.transaction_time, msg.update_id
+            );
             ctx.spot_manager
                 .apply_balance_delta(&msg.asset, msg.delta, msg.event_time);
             ctx.refresh_exposures();
@@ -975,6 +980,17 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
                 );
                 return Ok(());
             }
+            debug!(
+                "accountUpdateBalance: asset={} reason={} bu={} wallet={} cross_wallet={} change={} event_time={} tx_time={}",
+                msg.asset,
+                msg.reason,
+                msg.business_unit,
+                msg.wallet_balance,
+                msg.cross_wallet_balance,
+                msg.balance_change,
+                msg.event_time,
+                msg.transaction_time
+            );
             ctx.spot_manager.apply_balance_snapshot(
                 &msg.asset,
                 msg.wallet_balance,
@@ -994,6 +1010,20 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
                 );
                 return Ok(());
             }
+            debug!(
+                "accountUpdatePosition: symbol={} side={} pos_amt={} entry_px={} acc_realized={} uPnL={} breakeven={} reason={} bu={} event_time={} tx_time={}",
+                msg.symbol,
+                msg.position_side,
+                msg.position_amount,
+                msg.entry_price,
+                msg.accumulated_realized,
+                msg.unrealized_pnl,
+                msg.breakeven_price,
+                msg.reason,
+                msg.business_unit,
+                msg.event_time,
+                msg.transaction_time
+            );
             ctx.um_manager.apply_position_update(
                 &msg.symbol,
                 msg.position_side,
