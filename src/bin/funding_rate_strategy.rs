@@ -156,7 +156,7 @@ const fn default_fetch_secs() -> u64 { 7200 }
 const fn default_fetch_offset_secs() -> u64 { 120 }
 const fn default_fetch_limit() -> usize { 100 }
 const fn default_resample_ms() -> u64 { 1000 }
-const fn default_funding_ma_size() -> usize { 20 }
+const fn default_funding_ma_size() -> usize { 60 }
 
 /// 策略总体配置
 #[derive(Debug, Clone, Deserialize)]
@@ -223,6 +223,9 @@ impl StrategyConfig {
             cfg.strategy.interval, cfg.strategy.predict_num, cfg.strategy.refresh_secs,
             cfg.strategy.fetch_secs, cfg.strategy.fetch_offset_secs, cfg.strategy.history_limit
         );
+        // funding_ma_size 固定为 60，忽略外部配置覆写
+        let mut cfg = cfg;
+        cfg.strategy.funding_ma_size = 60;
         Ok(cfg)
     }
 

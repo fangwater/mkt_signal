@@ -138,6 +138,9 @@ struct StrategyParams {
     /// 单次拉取的最大记录条数
     #[serde(default = "default_fetch_limit")] 
     history_limit: usize,
+    /// funding rate 滚动均值窗口大小（条数）
+    #[serde(default = "default_funding_ma_size")] 
+    funding_ma_size: usize,
 }
 
 const fn default_interval() -> usize { 6 }
@@ -145,6 +148,7 @@ const fn default_compute_secs() -> u64 { 30 }
 const fn default_fetch_secs() -> u64 { 7200 }
 const fn default_fetch_offset_secs() -> u64 { 120 }
 const fn default_fetch_limit() -> usize { 100 }
+const fn default_funding_ma_size() -> usize { 60 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ParamsSnapshot {
@@ -154,6 +158,7 @@ struct ParamsSnapshot {
     fetch_secs: u64,
     fetch_offset_secs: u64,
     history_limit: u64,
+    funding_ma_size: u64,
 }
 
 impl From<&StrategyParams> for ParamsSnapshot {
@@ -165,6 +170,7 @@ impl From<&StrategyParams> for ParamsSnapshot {
             fetch_secs: p.fetch_secs,
             fetch_offset_secs: p.fetch_offset_secs,
             history_limit: p.history_limit as u64,
+            funding_ma_size: p.funding_ma_size as u64,
         }
     }
 }
@@ -220,6 +226,9 @@ impl StrategyConfig {
             cfg.strategy.interval, cfg.strategy.predict_num, cfg.strategy.refresh_secs,
             cfg.strategy.fetch_secs, cfg.strategy.fetch_offset_secs, cfg.strategy.history_limit
         );
+        // funding_ma_size 固定为 60，忽略外部配置覆写
+        let mut cfg = cfg;
+        cfg.strategy.funding_ma_size = 60;
         Ok(cfg)
     }
 
