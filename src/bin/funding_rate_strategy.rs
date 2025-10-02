@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use chrono::Utc;
+use chrono::{Utc, DateTime};
 use log::{debug, error, info, warn};
 use serde::Deserialize;
 use tokio::signal;
@@ -210,11 +210,16 @@ impl StrategyConfig {
                         history_limit: default_fetch_limit(),
                         resample_ms: default_resample_ms(),
                         funding_ma_size: default_funding_ma_size(),
+                        settlement_offset_secs: default_settlement_offset_secs(),
                     },
                     loan: LoanConfig::default(),
                 }
             }
         };
+        // funding_ma_size 固定为 60；结算偏移与 fetch_offset_secs 对齐
+        let mut cfg = cfg;
+        cfg.strategy.funding_ma_size = 60;
+        cfg.strategy.settlement_offset_secs = cfg.strategy.fetch_offset_secs as i64;
         if let Some(redis_cfg) = cfg.redis.as_ref() {
             info!(
                 "Redis 数据源配置: host={} port={} db={} prefix={:?}",
@@ -228,9 +233,6 @@ impl StrategyConfig {
             cfg.strategy.fetch_secs, cfg.strategy.fetch_offset_secs, cfg.strategy.history_limit,
             cfg.strategy.settlement_offset_secs
         );
-        // funding_ma_size 固定为 60，忽略外部配置覆写
-        let mut cfg = cfg;
-        cfg.strategy.funding_ma_size = 60;
         Ok(cfg)
     }
 
@@ -437,6 +439,16 @@ impl StrategyEngine {
         Instant::now() + Duration::from_secs(dur)
     }
 
+    fn next_fetch_epoch_secs(&self) -> u64 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let fetch = self.cfg.strategy.fetch_secs.max(600);
+        let offset = self.cfg.strategy.fetch_offset_secs.min(fetch - 1);
+        ((now / fetch) + 1) * fetch + offset
+    }
+
     async fn fetch_histories(&mut self) -> Result<()> {
         debug!("开始拉取 funding 历史");
         let mut fut_syms: Vec<String> = self
@@ -588,6 +600,13 @@ impl StrategyEngine {
         let _ = engine.reload_params_if_changed().await;
         let _ = engine.reload_thresholds().await?;
         engine.next_fetch_refresh = engine.next_fetch_instant();
+        // 打印下次拉取历史的 UTC 对齐时刻（fetch_secs + fetch_offset_secs）
+        let next_epoch = engine.next_fetch_epoch_secs() as i64;
+        if let Some(dt) = DateTime::<Utc>::from_timestamp(next_epoch, 0) {
+            info!("下次拉取历史(UTC): {}", dt.format("%Y-%m-%d %H:%M:%S"));
+        } else {
+            info!("下次拉取历史 epoch: {}", next_epoch);
+        }
         // 初始 warmup 检查
         engine.warmup_done = engine.is_warmup_complete();
         Ok(engine)
@@ -612,12 +631,9 @@ impl StrategyEngine {
                 params_changed, symbols_changed, settlement_triggered
             );
             if !reasons.is_empty() {
-                // 在结算点触发时更新频率推断并重算预测
+                // 结算点触发: 仅更新频率与阈值表，不重算预测（预测仅在 fetch 对齐点或参数变更时重算）
                 if settlement_triggered {
                     if let Err(err) = self.refresh_frequency_all().await { debug!("刷新频率推断失败: {err:#}"); }
-                    if self.is_warmup_complete() {
-                        self.compute_predictions();
-                    }
                 }
                 self.recompute_and_log(&reasons.join("、"), symbols_changed).await;
             }
@@ -1444,7 +1460,6 @@ impl StrategyEngine {
         }
         let mut changed = false;
         let parse_u64 = |k: &str| -> Option<u64> { map.get(k).and_then(|v| v.parse::<u64>().ok()) };
-        let parse_i64 = |k: &str| -> Option<i64> { map.get(k).and_then(|v| v.parse::<i64>().ok()) };
         let parse_f64 = |k: &str| -> Option<f64> { map.get(k).and_then(|v| v.parse::<f64>().ok()) };
         if let Some(v) = parse_u64("interval") { if self.cfg.strategy.interval as u64 != v { self.cfg.strategy.interval = v as usize; changed = true; } }
         if let Some(v) = parse_u64("predict_num") { if self.cfg.strategy.predict_num as u64 != v { self.cfg.strategy.predict_num = v as usize; changed = true; } }
@@ -1454,7 +1469,9 @@ impl StrategyEngine {
         if let Some(v) = parse_u64("fetch_secs") { if self.cfg.strategy.fetch_secs != v { self.cfg.strategy.fetch_secs = v; changed = true; } }
         if let Some(v) = parse_u64("fetch_offset_secs") { if self.cfg.strategy.fetch_offset_secs != v { self.cfg.strategy.fetch_offset_secs = v; changed = true; } }
         if let Some(v) = parse_u64("history_limit") { if self.cfg.strategy.history_limit as u64 != v { self.cfg.strategy.history_limit = v as usize; changed = true; } }
-        if let Some(v) = parse_i64("settlement_offset_secs") { if self.cfg.strategy.settlement_offset_secs != v { self.cfg.strategy.settlement_offset_secs = v; changed = true; } }
+        // 结算偏移与 fetch_offset_secs 对齐
+        let new_settle = self.cfg.strategy.fetch_offset_secs as i64;
+        if self.cfg.strategy.settlement_offset_secs != new_settle { self.cfg.strategy.settlement_offset_secs = new_settle; changed = true; }
 
         // 加载阈值（4h/8h）
         let mut th_changed = false;
@@ -1488,17 +1505,21 @@ impl StrategyEngine {
     }
 
     fn is_settlement_trigger(&mut self) -> bool {
-        // 基于 UTC 准点 + 偏移（秒）判断 4h 周期的结算点
+        // 基于 UTC 准点 + 偏移（秒）判断 settlement 周期；周期大小来自 fetch_secs
         let now_ms = Utc::now().timestamp_millis();
         let offset_ms = self.cfg.strategy.settlement_offset_secs.saturating_mul(1000);
-        let period_ms: i64 = 4 * 3600 * 1000; // 4h 为最小公因数（8h 亦是其倍数）
+        let period_s = self.cfg.strategy.fetch_secs.max(60) as i64;
+        let period_ms = period_s.saturating_mul(1000);
         let adj = now_ms.saturating_sub(offset_ms);
         if adj < 0 { return false; }
         let slot = adj / period_ms;
         let slot_ms = slot.saturating_mul(period_ms).saturating_add(offset_ms);
         if self.last_settlement_marker_ms != Some(slot_ms) {
             self.last_settlement_marker_ms = Some(slot_ms);
-            debug!("结算点触发: slot_ms={} (now_ms={} offset_s={})", slot_ms, now_ms, self.cfg.strategy.settlement_offset_secs);
+            debug!(
+                "结算点触发: slot_ms={} (now_ms={} offset_s={} period_s={})",
+                slot_ms, now_ms, self.cfg.strategy.settlement_offset_secs, period_s
+            );
             return true;
         }
         false

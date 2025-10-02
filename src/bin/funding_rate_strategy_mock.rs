@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use chrono::Utc;
+use chrono::{Utc, TimeZone};
 use log::{debug, error, info, warn};
 use serde::Deserialize;
 use tokio::signal;
@@ -220,6 +220,10 @@ impl StrategyConfig {
                 }
             }
         };
+        // funding_ma_size 固定为 60；结算偏移与 fetch_offset_secs 对齐
+        let mut cfg = cfg;
+        cfg.strategy.funding_ma_size = 60;
+        cfg.strategy.settlement_offset_secs = cfg.strategy.fetch_offset_secs as i64;
         if let Some(redis_cfg) = cfg.redis.as_ref() {
             info!(
                 "Redis 数据源配置: host={} port={} db={} prefix={:?}",
@@ -233,9 +237,6 @@ impl StrategyConfig {
             cfg.strategy.fetch_secs, cfg.strategy.fetch_offset_secs, cfg.strategy.history_limit,
             cfg.strategy.settlement_offset_secs
         );
-        // funding_ma_size 固定为 60，忽略外部配置覆写
-        let mut cfg = cfg;
-        cfg.strategy.funding_ma_size = 60;
         Ok(cfg)
     }
 
@@ -424,6 +425,13 @@ impl MockController {
         let _ = controller.reload_params_if_changed();
         controller.reload_symbols()?;
         controller.warmup_done = controller.is_warmup_complete();
+        // 打印下次拉取历史的 UTC 对齐时刻（fetch_secs + fetch_offset_secs）
+        let next_epoch = controller.next_fetch_epoch_secs() as i64;
+        if let Some(dt) = Utc.timestamp_opt(next_epoch, 0).single() {
+            info!("下次拉取历史(UTC): {}", dt.format("%Y-%m-%d %H:%M:%S"));
+        } else {
+            info!("下次拉取历史 epoch: {}", next_epoch);
+        }
         Ok(controller)
     }
 
@@ -465,11 +473,10 @@ impl MockController {
                 self.recompute_and_print("符号增加或移除");
             }
         }
-        // 结算点触发：更新频率并重算预测
+        // 结算点触发：仅更新频率与阈值表，不重算预测
         if self.is_settlement_trigger() {
-            debug!("mock 结算点触发: 更新频率并重算");
+            debug!("mock 结算点触发: 更新频率");
             if let Err(err) = self.refresh_frequency_all() { debug!("mock 刷新频率失败: {err:?}"); }
-            self.compute_predictions();
             self.recompute_and_print("结算点触发");
         }
         if now >= self.next_fetch_refresh {
@@ -496,6 +503,16 @@ impl MockController {
         let next_slot = ((now / fetch) + 1) * fetch + offset;
         let dur = next_slot.saturating_sub(now);
         std::time::Instant::now() + std::time::Duration::from_secs(dur)
+    }
+
+    fn next_fetch_epoch_secs(&self) -> u64 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let fetch = self.cfg.strategy.fetch_secs.max(600);
+        let offset = self.cfg.strategy.fetch_offset_secs.min(fetch - 1);
+        ((now / fetch) + 1) * fetch + offset
     }
 
     fn fetch_histories(&mut self) -> AnyResult<()> {
@@ -680,17 +697,21 @@ impl MockController {
     }
 
     fn is_settlement_trigger(&mut self) -> bool {
-        // 基于 UTC 准点 + 偏移（秒）判断 4h 周期的结算点
+        // 基于 UTC 准点 + 偏移（秒）判断 settlement 周期；周期大小来自 fetch_secs
         let now_ms = Utc::now().timestamp_millis();
         let offset_ms = self.cfg.strategy.settlement_offset_secs.saturating_mul(1000);
-        let period_ms: i64 = 4 * 3600 * 1000; // 4h schedule
+        let period_s = self.cfg.strategy.fetch_secs.max(60) as i64;
+        let period_ms = period_s.saturating_mul(1000);
         let adj = now_ms.saturating_sub(offset_ms);
         if adj < 0 { return false; }
         let slot = adj / period_ms;
         let slot_ms = slot.saturating_mul(period_ms).saturating_add(offset_ms);
         if self.last_settlement_marker_ms != Some(slot_ms) {
             self.last_settlement_marker_ms = Some(slot_ms);
-            debug!("mock 结算点触发: slot_ms={} (now_ms={} offset_s={})", slot_ms, now_ms, self.cfg.strategy.settlement_offset_secs);
+            debug!(
+                "mock 结算点触发: slot_ms={} (now_ms={} offset_s={} period_s={})",
+                slot_ms, now_ms, self.cfg.strategy.settlement_offset_secs, period_s
+            );
             return true;
         }
         false
