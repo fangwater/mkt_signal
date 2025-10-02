@@ -181,19 +181,41 @@ struct StrategyConfig {
 
 impl StrategyConfig {
     fn load() -> Result<Self> {
-        let cfg_path =
-            std::env::var("FUNDING_RATE_CFG").unwrap_or_else(|_| DEFAULT_CFG_PATH.to_string());
-        let content = std::fs::read_to_string(&cfg_path)
-            .with_context(|| format!("读取配置文件失败: {}", cfg_path))?;
-        let mut cfg: StrategyConfig =
-            toml::from_str(&content).with_context(|| format!("解析配置文件失败: {}", cfg_path))?;
+        let cfg_path = std::env::var("FUNDING_RATE_CFG").unwrap_or_else(|_| DEFAULT_CFG_PATH.to_string());
+        let cfg: StrategyConfig = match std::fs::read_to_string(&cfg_path) {
+            Ok(content) => {
+                let mut cfg: StrategyConfig = toml::from_str(&content)
+                    .with_context(|| format!("解析配置文件失败: {}", cfg_path))?;
+                if cfg.redis.is_none() { cfg.redis = Some(RedisSettings::default()); }
+                cfg
+            }
+            Err(err) => {
+                warn!("未找到配置文件或读取失败({err}); 将使用默认配置并从 Redis 读取参数");
+                StrategyConfig {
+                    redis: Some(RedisSettings::default()),
+                    redis_key: None,
+                    order: OrderConfig::default(),
+                    signal: SignalConfig::default(),
+                    reload: ReloadConfig::default(),
+                    strategy: StrategyParams {
+                        interval: default_interval(),
+                        predict_num: 0,
+                        refresh_secs: default_compute_secs(),
+                        fetch_secs: default_fetch_secs(),
+                        fetch_offset_secs: default_fetch_offset_secs(),
+                        history_limit: default_fetch_limit(),
+                        resample_ms: default_resample_ms(),
+                        funding_ma_size: default_funding_ma_size(),
+                    },
+                    loan: LoanConfig::default(),
+                }
+            }
+        };
         if let Some(redis_cfg) = cfg.redis.as_ref() {
             info!(
                 "Redis 数据源配置: host={} port={} db={} prefix={:?}",
                 redis_cfg.host, redis_cfg.port, redis_cfg.db, redis_cfg.prefix
             );
-        } else {
-            anyhow::bail!("需要配置 redis，已移除本地 tracking_symbol.json 模式");
         }
         info!(
             "策略配置加载完成: reload_interval={}s strategy: interval={} predict_num={} refresh_secs={}s fetch_secs={}s fetch_offset={}s history_limit={}",
@@ -559,7 +581,7 @@ impl StrategyEngine {
 
     async fn reload_thresholds(&mut self) -> Result<bool> {
         // Redis-only: refresh thresholds by strategy.refresh_secs
-        let reload_dur = Duration::from_secs(self.cfg.strategy.refresh_secs.max(5));
+        let reload_dur = Duration::from_secs(self.cfg.reload.interval_secs.max(5));
         self.next_reload = Instant::now() + reload_dur;
         debug!("开始刷新追踪交易对(阈值表) ...");
         let entries = self.load_thresholds().await?;
@@ -1315,6 +1337,8 @@ impl StrategyEngine {
         if let Some(v) = parse_u64("interval") { if self.cfg.strategy.interval as u64 != v { self.cfg.strategy.interval = v as usize; changed = true; } }
         if let Some(v) = parse_u64("predict_num") { if self.cfg.strategy.predict_num as u64 != v { self.cfg.strategy.predict_num = v as usize; changed = true; } }
         if let Some(v) = parse_u64("refresh_secs") { if self.cfg.strategy.refresh_secs != v { self.cfg.strategy.refresh_secs = v; changed = true; } }
+        if let Some(v) = parse_u64("reload_interval_secs") { if self.cfg.reload.interval_secs != v { self.cfg.reload.interval_secs = v; changed = true; } }
+        if let Some(v) = parse_u64("signal_min_interval_ms") { if self.cfg.signal.min_interval_ms != v { self.cfg.signal.min_interval_ms = v; changed = true; } }
         if let Some(v) = parse_u64("fetch_secs") { if self.cfg.strategy.fetch_secs != v { self.cfg.strategy.fetch_secs = v; changed = true; } }
         if let Some(v) = parse_u64("fetch_offset_secs") { if self.cfg.strategy.fetch_offset_secs != v { self.cfg.strategy.fetch_offset_secs = v; changed = true; } }
         if let Some(v) = parse_u64("history_limit") { if self.cfg.strategy.history_limit as u64 != v { self.cfg.strategy.history_limit = v as usize; changed = true; } }

@@ -70,6 +70,9 @@ def main() -> int:
         "fr_8h_open_lower_threshold": "-0.00008",
         "fr_8h_close_lower_threshold": "-0.001",
         "fr_8h_close_upper_threshold": "0.001",
+        # Funding strategy reload/signal params
+        "signal_min_interval_ms": "1000",
+        "reload_interval_secs": "60",
         # Pre-trade 限制
         "pre_trade_max_pos_u": "2500.0",
         "pre_trade_max_symbol_exposure_ratio": "0.25",

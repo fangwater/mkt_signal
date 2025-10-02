@@ -1,12 +1,5 @@
 mode = "local_json"
 
-[order]
-open_range = 0.00005
-close_range = 0.00005
-amount_u = 10.0
-max_open_order_keep_s = 10
-max_close_order_keep_s = 10
-
 [signal]
 min_interval_ms = 1000
 
