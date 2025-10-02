@@ -294,6 +294,7 @@ struct RuntimeContext {
     store: Option<RedisStore>,
     next_params_refresh: std::time::Instant,
     params_refresh_secs: u64,
+    last_params_snapshot: Option<PreTradeParamsSnap>,
 }
 
 impl RuntimeContext {
@@ -333,7 +334,8 @@ impl RuntimeContext {
             dedup: crate::pre_trade::dedup::DedupCache::new(8192),
             store,
             next_params_refresh: std::time::Instant::now(),
-            params_refresh_secs: 10,
+            params_refresh_secs: 30,
+            last_params_snapshot: None,
         }
     }
 
@@ -535,21 +537,47 @@ impl RuntimeContext {
         let params: std::collections::HashMap<String, String> = redis::AsyncCommands::hgetall(&mut mgr, "binance_forward_arb_params").await?;
         let parse_f64 = |k: &str| -> Option<f64> { params.get(k).and_then(|v| v.parse::<f64>().ok()) };
         let parse_u64 = |k: &str| -> Option<u64> { params.get(k).and_then(|v| v.parse::<u64>().ok()) };
-        if let Some(v) = parse_u64("pre_trade_refresh_secs") { self.params_refresh_secs = v; }
+        let mut new_refresh = self.params_refresh_secs;
+        if let Some(v) = parse_u64("pre_trade_refresh_secs") { new_refresh = v; }
         let mut sp = self.strategy_params.clone();
         if let Some(v) = parse_f64("pre_trade_max_pos_u") { sp.max_pos_u = v; }
         if let Some(v) = parse_f64("pre_trade_max_symbol_exposure_ratio") { sp.max_symbol_exposure_ratio = v; }
         if let Some(v) = parse_f64("pre_trade_max_total_exposure_ratio") { sp.max_total_exposure_ratio = v; }
+
+        let snapshot = PreTradeParamsSnap {
+            max_pos_u: sp.max_pos_u,
+            max_symbol_exposure_ratio: sp.max_symbol_exposure_ratio,
+            max_total_exposure_ratio: sp.max_total_exposure_ratio,
+            refresh_secs: new_refresh,
+        };
+        let changed = self
+            .last_params_snapshot
+            .as_ref()
+            .map(|old| old != &snapshot)
+            .unwrap_or(true);
+
         self.strategy_params = sp;
-        debug!(
-            "pre_trade params updated: max_pos_u={:.2} sym_ratio={:.4} total_ratio={:.4} refresh={}s",
-            self.strategy_params.max_pos_u,
-            self.strategy_params.max_symbol_exposure_ratio,
-            self.strategy_params.max_total_exposure_ratio,
-            self.params_refresh_secs
-        );
+        self.params_refresh_secs = new_refresh;
+        self.last_params_snapshot = Some(snapshot);
+        if changed {
+            debug!(
+                "pre_trade params updated: max_pos_u={:.2} sym_ratio={:.4} total_ratio={:.4} refresh={}s",
+                self.strategy_params.max_pos_u,
+                self.strategy_params.max_symbol_exposure_ratio,
+                self.strategy_params.max_total_exposure_ratio,
+                self.params_refresh_secs
+            );
+        }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PreTradeParamsSnap {
+    max_pos_u: f64,
+    max_symbol_exposure_ratio: f64,
+    max_total_exposure_ratio: f64,
+    refresh_secs: u64,
 }
 
 

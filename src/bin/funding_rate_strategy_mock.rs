@@ -1,8 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-// use std::fs; // 已弃用本地 JSON 模式
 use std::io::{self, BufRead};
-// use std::path::PathBuf; // 已弃用本地 JSON 模式
 use std::thread;
 use std::time::Duration;
 
