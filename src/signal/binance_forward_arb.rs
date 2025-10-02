@@ -1393,12 +1393,38 @@ impl BinSingleForwardArbStrategy {
             "PARTIALLY_FILLED" => {
                 order.set_create_time(event.event_time);
                 order.update_cumulative_filled_quantity(event.cumulative_filled_quantity);
+                // 市价单填充已知的成交均价/最新成交价，便于生命周期汇总展示
+                if order.order_type.is_market() {
+                    let px = if event.average_price > 0.0 {
+                        event.average_price
+                    } else if event.last_executed_price > 0.0 {
+                        event.last_executed_price
+                    } else {
+                        0.0
+                    };
+                    if px > 0.0 {
+                        order.price = px;
+                    }
+                }
                 UmOrderUpdateOutcome::PartiallyFilled(event.cumulative_filled_quantity)
             }
             "FILLED" => {
                 order.update_status(OrderExecutionStatus::Filled);
                 order.set_filled_time(event.event_time);
                 order.update_cumulative_filled_quantity(event.cumulative_filled_quantity);
+                // 市价单在完全成交时写入最终成交均价
+                if order.order_type.is_market() {
+                    let px = if event.average_price > 0.0 {
+                        event.average_price
+                    } else if event.last_executed_price > 0.0 {
+                        event.last_executed_price
+                    } else {
+                        0.0
+                    };
+                    if px > 0.0 {
+                        order.price = px;
+                    }
+                }
 
                 if order.hedged_quantily.abs() > 1e-8 {
                     panic!(

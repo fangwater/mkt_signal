@@ -909,15 +909,15 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
         evt.payload[6],
         evt.payload[7],
     ]) as usize;
-    debug!(
-        "account msg header: service={}, decoded_type={:?}, declared_len={}, evt_meta=({:?},{:?}), first8={:02X?}",
-        evt.service,
-        msg_type,
-        hdr_len_bytes,
-        evt.event_type,
-        evt.event_time_ms,
-        &evt.payload[..8]
-    );
+    // debug!(
+    //     "account msg header: service={}, decoded_type={:?}, declared_len={}, evt_meta=({:?},{:?}), first8={:02X?}",
+    //     evt.service,
+    //     msg_type,
+    //     hdr_len_bytes,
+    //     evt.event_type,
+    //     evt.event_time_ms,
+    //     &evt.payload[..8]
+    // );
     let payload_len = hdr_len_bytes;
 
     if evt.payload.len() < 8 + payload_len {
@@ -1087,10 +1087,10 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
             let update = OrderTradeUpdateMsg::from_bytes(data)?;
             let key = crate::pre_trade::dedup::key_order_trade_update(&update);
             if !ctx.dedup.insert_check(key) {
-                debug!(
-                    "dedup drop OrderTradeUpdate: symbol={} ord={} trade={} x={} X={}",
-                    update.symbol, update.order_id, update.trade_id, update.execution_type, update.order_status
-                );
+                // debug!(
+                //     "dedup drop OrderTradeUpdate: symbol={} ord={} trade={} x={} X={}",
+                //     update.symbol, update.order_id, update.trade_id, update.execution_type, update.order_status
+                // );
                 return Ok(());
             }
             debug!(
