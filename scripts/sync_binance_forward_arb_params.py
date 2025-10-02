@@ -79,8 +79,8 @@ def main() -> int:
         "pre_trade_max_total_exposure_ratio": "0.25",
         "pre_trade_refresh_secs": "10",
         # 下单参数
-        "order_open_range": "0.00005",
-        "order_close_range": "0.00005",
+        "order_open_range": "0.00",
+        "order_close_range": "0.00",
         "order_amount_u": "10.0",
         "order_max_open_order_keep_s": "10",
         "order_max_close_order_keep_s": "10",

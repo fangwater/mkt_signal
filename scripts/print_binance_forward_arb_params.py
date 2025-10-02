@@ -52,8 +52,43 @@ def read_hash(rds, key: str) -> Dict[str, str]:
     return out
 
 
+PARAM_COMMENTS: Dict[str, str] = {
+    # 资金费率预测
+    "interval": "滚动窗口期数",
+    "predict_num": "预测位移期数",
+    "refresh_secs": "重算预测频率(秒)",
+    "fetch_secs": "拉取历史频率(秒)",
+    "fetch_offset_secs": "拉取对齐偏移(秒)",
+    "history_limit": "历史拉取条数上限",
+    # 4h 阈值
+    "fr_4h_open_upper_threshold": "4h开仓上阈",
+    "fr_4h_open_lower_threshold": "4h开仓下阈",
+    "fr_4h_close_lower_threshold": "4h平仓下阈",
+    "fr_4h_close_upper_threshold": "4h平仓上阈",
+    # 8h 阈值
+    "fr_8h_open_upper_threshold": "8h开仓上阈",
+    "fr_8h_open_lower_threshold": "8h开仓下阈",
+    "fr_8h_close_lower_threshold": "8h平仓下阈",
+    "fr_8h_close_upper_threshold": "8h平仓上阈",
+    # 信号/刷新
+    "signal_min_interval_ms": "信号最小间隔(毫秒)",
+    "reload_interval_secs": "阈值刷新周期(秒)",
+    # Pre-Trade 限制
+    "pre_trade_max_pos_u": "PreTrade最大持仓(U)",
+    "pre_trade_max_symbol_exposure_ratio": "单资产最大敞口占比",
+    "pre_trade_max_total_exposure_ratio": "总敞口占权益比",
+    "pre_trade_refresh_secs": "PreTrade参数刷新周期(秒)",
+    # 下单参数
+    "order_open_range": "开仓价偏移",
+    "order_close_range": "平仓价偏移",
+    "order_amount_u": "下单基础金额(U)",
+    "order_max_open_order_keep_s": "开单保留上限(秒)",
+    "order_max_close_order_keep_s": "平单保留上限(秒)",
+}
+
+
 def build_rows(kv: Dict[str, str], prefix: str | None) -> Tuple[List[str], List[List[str]]]:
-    headers = ["param", "value"]
+    headers = ["param", "value", "comment"]
     rows: List[List[str]] = []
     for k in sorted(kv.keys()):
         if prefix and not k.startswith(prefix):
@@ -75,7 +110,8 @@ def build_rows(kv: Dict[str, str], prefix: str | None) -> Tuple[List[str], List[
                 v = parsed
         except Exception:
             pass
-        rows.append([k, v])
+        comment = PARAM_COMMENTS.get(k, "-")
+        rows.append([k, v, comment])
     return headers, rows
 
 
@@ -133,4 +169,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
