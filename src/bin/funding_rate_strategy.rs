@@ -1448,19 +1448,33 @@ impl StrategyEngine {
         for key in keys {
             let Some(state) = self.symbols.get(&key) else { continue; };
             let fut = state.futures_symbol.to_uppercase();
-            let freq = self
-                .funding_frequency
-                .get(&fut)
-                .cloned()
-                .unwrap_or_else(|| "8h".to_string());
-            let (ou, ol, cl, cu) = self.thresholds_for_frequency(&freq);
-            let pred = self.get_predicted_for(&fut);
+            // 优先使用已重算的阈值表条目，避免触发未使用字段警告
+            let (symbol, freq, ou, ol, cl, cu, pred) = if let Some(e) = self.funding_thresholds.get(&key) {
+                (
+                    e.symbol.clone(),
+                    e.funding_frequency.clone(),
+                    e.open_upper_threshold,
+                    e.open_lower_threshold,
+                    e.close_lower_threshold,
+                    e.close_upper_threshold,
+                    e.predict_funding_rate,
+                )
+            } else {
+                let freq = self
+                    .funding_frequency
+                    .get(&fut)
+                    .cloned()
+                    .unwrap_or_else(|| "8h".to_string());
+                let (ou, ol, cl, cu) = self.thresholds_for_frequency(&freq);
+                let pred = self.get_predicted_for(&fut);
+                (key.clone(), freq, ou, ol, cl, cu, pred)
+            };
             let fr_ma = self
                 .calc_funding_ma(&key)
                 .map(|v| format!("{:.6}", v))
                 .unwrap_or_else(|| "-".to_string());
             rows.push(vec![
-                key.clone(),
+                symbol,
                 freq,
                 fr_ma,
                 format!("{:.6}", pred),
@@ -1469,6 +1483,10 @@ impl StrategyEngine {
                 format!("{:.6}", cl),
                 format!("{:.6}", cu),
             ]);
+            // 读取未使用字段避免 dead_code 警告（例如 lorn_rate）
+            if let Some(e) = self.funding_thresholds.get(&key) {
+                let _ = e.lorn_rate;
+            }
         }
         if rows.is_empty() { return; }
         let table = render_three_line_table(
@@ -1857,26 +1875,7 @@ struct BinanceFundingHistItem {
     #[serde(rename = "fundingTime")] funding_time: Option<i64>,
 }
 
-async fn fetch_binance_funding_history(client: &Client, symbol: &str, limit: usize) -> Result<Vec<f64>> {
-    let url = "https://fapi.binance.com/fapi/v1/fundingRate";
-    let end_time = Utc::now().timestamp_millis();
-    let start_time = end_time - 3 * 24 * 3600 * 1000; // 3d window
-    let limit_s = limit.max(1).min(1000).to_string();
-    let params = [
-        ("symbol", symbol),
-        ("startTime", &start_time.to_string()),
-        ("endTime", &end_time.to_string()),
-        ("limit", &limit_s),
-    ];
-    let resp = client.get(url).query(&params).send().await?;
-    if !resp.status().is_success() { return Ok(vec![]); }
-    let mut items: Vec<BinanceFundingHistItem> = resp.json().await.unwrap_or_default();
-    // sort by time if available
-    items.sort_by_key(|it| it.funding_time.unwrap_or_default());
-    let mut out = Vec::with_capacity(items.len());
-    for it in items { if let Ok(v) = it.funding_rate.parse::<f64>() { out.push(v); } }
-    Ok(out)
-}
+// removed: fetch_binance_funding_history (superseded by range variant)
 
 async fn fetch_binance_funding_items(
     client: &Client,

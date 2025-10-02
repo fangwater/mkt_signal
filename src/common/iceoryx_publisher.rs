@@ -1,12 +1,10 @@
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{debug, info};
+use log::info;
 
 pub struct SignalPublisher {
     publisher: Publisher<ipc::Service, [u8; 1024], ()>,
-    channel_name: String,
-    service_name: String,
 }
 
 impl SignalPublisher {
@@ -34,11 +32,7 @@ impl SignalPublisher {
             channel_name
         );
 
-        Ok(Self {
-            publisher,
-            channel_name: channel_name.to_string(),
-            service_name: full_service,
-        })
+        Ok(Self { publisher })
     }
 
     pub fn publish(&self, data: &[u8]) -> anyhow::Result<()> {
