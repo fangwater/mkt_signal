@@ -1823,21 +1823,7 @@ fn setup_signal_handlers(token: &CancellationToken) -> Result<()> {
     Ok(())
 }
 
-fn format_timestamp(ts: Option<i64>) -> String {
-    let Some(us) = ts else {
-        return "-".to_string();
-    };
-    if us <= 0 {
-        return "-".to_string();
-    }
-    let secs = us / 1_000_000;
-    let nanos = ((us % 1_000_000).abs() as u32) * 1_000;
-    if let Some(dt) = DateTime::<Utc>::from_timestamp(secs, nanos) {
-        dt.format("%Y-%m-%d %H:%M:%S").to_string()
-    } else {
-        "-".to_string()
-    }
-}
+// removed: format_timestamp (no longer used in snapshot output)
 
 fn lcm_nonzero(a: f64, b: f64) -> f64 {
     let a_pos = if a > 0.0 { a } else { 0.0 };
@@ -2064,17 +2050,7 @@ async fn infer_binance_funding_frequency(client: &Client, symbol: &str) -> Optio
     Some(freq.to_string())
 }
 
-fn compute_predict(rates: &[f64], interval: usize, predict_num: usize) -> f64 {
-    if rates.is_empty() || interval == 0 { return 0.0; }
-    // pandas rolling mean + shift: take window ending at index n-1-predict_num
-    let n = rates.len();
-    if n == 0 || n - 1 < predict_num { return 0.0; }
-    let end = n - 1 - predict_num;
-    if end + 1 < interval { return 0.0; }
-    let start = end + 1 - interval;
-    let sum: f64 = rates[start..=end].iter().copied().sum();
-    sum / (interval as f64)
-}
+// removed: compute_predict (compute_predictions inlines the logic with debug logs)
 #[derive(Debug, Clone, Deserialize)]
 struct LoanConfig {
     #[serde(default)]
