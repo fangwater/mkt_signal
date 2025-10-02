@@ -1,9 +1,11 @@
 use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeMap;
 
 use crate::pre_trade::binance_pm_spot_manager::{BinanceSpotBalance, BinanceSpotBalanceSnapshot};
 use crate::pre_trade::binance_pm_um_manager::{
     BinanceUmAccountSnapshot, BinanceUmPosition, PositionSide,
 };
+use crate::pre_trade::price_table::PriceEntry;
 use log::{debug, warn};
 
 /// 单个资产维度的敞口信息。
@@ -137,6 +139,34 @@ impl ExposureManager {
         self.abs_total_exposure = state.abs_total_exposure;
     }
 
+    /// 基于标记价格表将资产敞口估值为 USDT，并更新总权益与总敞口绝对值（USDT 计价）。
+    pub fn revalue_with_prices(&mut self, price_map: &BTreeMap<String, PriceEntry>) {
+        // USDT 三部分直接以 1 计价
+        let (usdt_spot, usdt_um, usdt_cm) = self
+            .usdt
+            .as_ref()
+            .map(|u| (u.total_wallet_balance, u.um_wallet_balance, u.cm_wallet_balance))
+            .unwrap_or((0.0, 0.0, 0.0));
+
+        let mut valued_abs_sum = 0.0_f64; // 非 USDT 资产绝对值估值之和
+        let mut abs_total_exposure_usdt = 0.0_f64; // 净敞口（数量求和后取绝对值）估值之和
+        for e in &self.exposures {
+            let asset = e.asset.to_uppercase();
+            if asset == "USDT" { continue; }
+            let sym = format!("{}USDT", asset);
+            let mark = price_map.get(&sym).map(|p| p.mark_price).unwrap_or(0.0);
+            if mark == 0.0 {
+                // 无价格时按 0 估值，避免量纲错误
+                continue;
+            }
+            valued_abs_sum += (e.spot_total_wallet.abs() + e.um_net_position.abs()) * mark;
+            abs_total_exposure_usdt += ((e.spot_total_wallet + e.um_net_position) * mark).abs();
+        }
+
+        self.total_equity = usdt_spot + usdt_um + usdt_cm + valued_abs_sum;
+        self.abs_total_exposure = abs_total_exposure_usdt;
+    }
+
     fn compute_state(
         um_snapshot: &BinanceUmAccountSnapshot,
         spot_snapshot: &BinanceSpotBalanceSnapshot,
@@ -207,20 +237,14 @@ impl ExposureManager {
             .collect();
 
         let abs_total_exposure = exposures.iter().map(|e| e.exposure.abs()).sum::<f64>();
-        let total_spot_abs = exposures
-            .iter()
-            .map(|e| e.spot_total_wallet.abs())
-            .sum::<f64>();
-        let total_um_abs = exposures
-            .iter()
-            .map(|e| e.um_net_position.abs())
-            .sum::<f64>();
         // 将 USDT 视为 markPrice=1 的计价资产：spot + UM + CM 三部分均计入总权益
         let (usdt_spot, usdt_um, usdt_cm) = usdt
             .as_ref()
             .map(|u| (u.total_wallet_balance, u.um_wallet_balance, u.cm_wallet_balance))
             .unwrap_or((0.0, 0.0, 0.0));
-        let total_equity = usdt_spot + usdt_um + usdt_cm + total_spot_abs + total_um_abs;
+        // 初始阶段不引入非 USDT 资产的“数量”直接相加（量纲不一致），
+        // 仅以 USDT 三部分作为基准权益；如需 USDT 计价的总权益，请配合 revalue_with_prices 调整。
+        let total_equity = usdt_spot + usdt_um + usdt_cm;
 
         // 在表格中强制加入 USDT（非敞口），便于对账与肉眼核对
         let usdt_entry = ExposureEntry {

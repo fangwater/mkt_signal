@@ -308,44 +308,70 @@ impl OrderManager {
     where
         F: FnOnce(&mut Order),
     {
-        if let Some(order) = self.orders.get_mut(&order_id) {
-            let previous_type = order.order_type;
-            let previous_symbol = order.symbol.clone();
-            let previous_status = order.status;
+        // 先在受限作用域内完成对订单本身的修改，并计算需要对计数器执行的动作，
+        // 避免在持有 self.orders 的可变借用时再次可变借用 self（触发 E0499）。
+        let mut dec_prev = false;
+        let mut inc_curr = false;
+        let mut dec_on_fill = false;
+        let mut prev_symbol = String::new();
+        let mut curr_symbol = String::new();
+        let mut existed = false;
 
-            f(order);
+        {
+            if let Some(order) = self.orders.get_mut(&order_id) {
+                existed = true;
+                let previous_type = order.order_type;
+                prev_symbol = order.symbol.clone();
+                let previous_status = order.status;
 
-            let current_type = order.order_type;
-            let current_symbol = order.symbol.clone();
+                // 交给调用方修改订单
+                f(order);
 
-            if previous_type.is_limit()
-                && (!current_type.is_limit() || previous_symbol != current_symbol)
-            {
-                self.decrement_pending_limit_count(&previous_symbol);
-                order.pending_counted = false;
+                let current_type = order.order_type;
+                curr_symbol = order.symbol.clone();
+
+                // 1) 由限价 -> 非限价 或者 symbol 变更时，减少旧 symbol 的 pending 计数
+                if previous_type.is_limit()
+                    && (!current_type.is_limit() || prev_symbol != curr_symbol)
+                {
+                    dec_prev = true;
+                }
+
+                // 2) 由非限价 -> 限价 或者 symbol 变更时，增加新 symbol 的 pending 计数
+                if current_type.is_limit()
+                    && (!previous_type.is_limit() || prev_symbol != curr_symbol)
+                {
+                    inc_curr = true;
+                }
+
+                // 计算本次状态迁移后（执行 1/2 后）是否应被计入 pending
+                let mut will_be_counted = order.pending_counted;
+                if dec_prev { will_be_counted = false; }
+                if inc_curr { will_be_counted = true; }
+
+                // 3) 限价单在转为 Filled 时释放计数（仅当当前处于计数状态时）
+                if current_type.is_limit()
+                    && previous_status != OrderExecutionStatus::Filled
+                    && order.status == OrderExecutionStatus::Filled
+                    && will_be_counted
+                {
+                    dec_on_fill = true;
+                    will_be_counted = false;
+                }
+
+                // 最终同步到订单本身
+                order.pending_counted = will_be_counted;
             }
+        }
 
-            if current_type.is_limit()
-                && (!previous_type.is_limit() || previous_symbol != current_symbol)
-            {
-                self.increment_pending_limit_count(&current_symbol);
-                order.pending_counted = true;
-            }
+        if !existed { return false; }
 
-            // 限价单在 Filled 时释放 pending count（避免占用挂单限额）
-            if current_type.is_limit()
-                && previous_status != OrderExecutionStatus::Filled
-                && order.status == OrderExecutionStatus::Filled
-                && order.pending_counted
-            {
-                self.decrement_pending_limit_count(&current_symbol);
-                order.pending_counted = false;
-            }
+        // 现在已不再持有对 self.orders 的可变借用，可以安全更新计数器
+        if dec_prev { self.decrement_pending_limit_count(&prev_symbol); }
+        if inc_curr { self.increment_pending_limit_count(&curr_symbol); }
+        if dec_on_fill { self.decrement_pending_limit_count(&curr_symbol); }
 
         true
-        } else {
-            false
-        }
     }
 
     /// 移除订单

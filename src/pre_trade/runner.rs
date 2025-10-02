@@ -251,10 +251,13 @@ impl BootstrapResources {
             log_price_table(&table.snapshot());
         }
 
-        let exposure_manager = ExposureManager::new(&um_snapshot, &spot_snapshot);
+        let mut exposure_manager = ExposureManager::new(&um_snapshot, &spot_snapshot);
         {
             let table = price_table.borrow();
-            log_exposures(exposure_manager.exposures(), &table.snapshot());
+            let snap = table.snapshot();
+            // 基于初始价格对总权益/总敞口进行 USDT 计价
+            exposure_manager.revalue_with_prices(&snap);
+            log_exposures(exposure_manager.exposures(), &snap);
         }
 
         let order_req_service = resolve_order_req_service(&cfg.trade_engine);
@@ -511,13 +514,15 @@ impl RuntimeContext {
         let Some(um_snapshot) = self.um_manager.snapshot() else {
             return;
         };
-        self.exposure_manager
-            .borrow_mut()
-            .recompute(&um_snapshot, &spot_snapshot);
+        self.exposure_manager.borrow_mut().recompute(&um_snapshot, &spot_snapshot);
 
-        // 结合最新标记价格，打印三线表（USDT 计价的敞口），便于核对
+        // 结合最新标记价格，估值并打印三线表（USDT 计价的敞口），便于核对
         if let Some(table) = self.price_table.try_borrow().ok() {
             let price_snap = table.snapshot();
+            {
+                let mut mgr = self.exposure_manager.borrow_mut();
+                mgr.revalue_with_prices(&price_snap);
+            }
             let exposures = self.exposure_manager.borrow();
             log_exposures(exposures.exposures(), &price_snap);
         }
