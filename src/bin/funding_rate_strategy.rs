@@ -432,8 +432,20 @@ impl StrategyEngine {
         for sym in fut_syms {
             let s = sym.clone();
             let c = client.clone();
+            // 根据已知频率推断时间窗口；未知默认 8h
+            let freq = self
+                .funding_frequency
+                .get(&s.to_uppercase())
+                .cloned()
+                .unwrap_or_else(|| "8h".to_string());
+            let end_time = Utc::now().timestamp_millis();
+            let hours = if freq.eq_ignore_ascii_case("4h") { 4 } else { 8 };
+            let window_ms = (hours as i64) * 3600 * 1000 * (limit as i64 + 2);
+            let start_time = end_time.saturating_sub(window_ms);
             tasks.push(tokio::spawn(async move {
-                let rates = fetch_binance_funding_history(&c, &s, limit).await.unwrap_or_default();
+                let rates = fetch_binance_funding_history_range(&c, &s, start_time, end_time, limit)
+                    .await
+                    .unwrap_or_default();
                 (s, rates)
             }));
         }
@@ -624,8 +636,16 @@ impl StrategyEngine {
                 let s = fut.clone();
                 let c = client.clone();
                 tasks.push(tokio::spawn(async move {
-                    let freq = infer_binance_funding_frequency(&c, &s).await.unwrap_or_else(|| "8h".to_string());
-                    let rates = fetch_binance_funding_history(&c, &s, limit).await.unwrap_or_default();
+                    let freq = infer_binance_funding_frequency(&c, &s)
+                        .await
+                        .unwrap_or_else(|| "8h".to_string());
+                    let end_time = Utc::now().timestamp_millis();
+                    let hours = if freq.eq_ignore_ascii_case("4h") { 4 } else { 8 };
+                    let window_ms = (hours as i64) * 3600 * 1000 * (limit as i64 + 2);
+                    let start_time = end_time.saturating_sub(window_ms);
+                    let rates = fetch_binance_funding_history_range(&c, &s, start_time, end_time, limit)
+                        .await
+                        .unwrap_or_default();
                     (s, freq, rates)
                 }));
             }
@@ -1393,8 +1413,7 @@ impl StrategyEngine {
     }
 
     async fn recompute_and_log(&mut self, reason: &str, symbols_changed: bool) {
-        // 对所有已跟踪交易对按频率和预测值重算
-        let mut rows: Vec<Vec<String>> = Vec::new();
+        // 重算每个符号对应的阈值条目
         debug!("开始重算资金费率阈值: reason='{}' symbols_changed={}", reason, symbols_changed);
         for (key, state) in &self.symbols {
             let fut = state.futures_symbol.to_uppercase();
@@ -1409,7 +1428,7 @@ impl StrategyEngine {
                 symbol: key.clone(),
                 predict_funding_rate: pred,
                 lorn_rate: 0.0,
-                funding_frequency: freq.clone(),
+                funding_frequency: freq,
                 open_upper_threshold: ou,
                 open_lower_threshold: ol,
                 close_lower_threshold: cl,
@@ -1417,30 +1436,46 @@ impl StrategyEngine {
             };
             self.funding_thresholds.insert(key.clone(), entry);
         }
-        // 打印三线表
-        let mut keys: Vec<String> = self.funding_thresholds.keys().cloned().collect();
+        // 刷新后打印资金费率总览（三线表）
+        self.print_funding_overview_table();
+    }
+
+    fn print_funding_overview_table(&self) {
+        if self.symbols.is_empty() { return; }
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        let mut keys: Vec<String> = self.symbols.keys().cloned().collect();
         keys.sort();
-        for k in keys {
-            if let Some(e) = self.funding_thresholds.get(&k) {
-                rows.push(vec![
-                    e.symbol.clone(),
-                    format!("{:.6}", e.predict_funding_rate),
-                    format!("{:.6}", e.lorn_rate),
-                    e.funding_frequency.clone(),
-                    format!("{:.6}", e.open_upper_threshold),
-                    format!("{:.6}", e.open_lower_threshold),
-                    format!("{:.6}", e.close_lower_threshold),
-                    format!("{:.6}", e.close_upper_threshold),
-                ]);
-            }
+        for key in keys {
+            let Some(state) = self.symbols.get(&key) else { continue; };
+            let fut = state.futures_symbol.to_uppercase();
+            let freq = self
+                .funding_frequency
+                .get(&fut)
+                .cloned()
+                .unwrap_or_else(|| "8h".to_string());
+            let (ou, ol, cl, cu) = self.thresholds_for_frequency(&freq);
+            let pred = self.get_predicted_for(&fut);
+            let fr_ma = self
+                .calc_funding_ma(&key)
+                .map(|v| format!("{:.6}", v))
+                .unwrap_or_else(|| "-".to_string());
+            rows.push(vec![
+                key.clone(),
+                freq,
+                fr_ma,
+                format!("{:.6}", pred),
+                format!("{:.6}", ou),
+                format!("{:.6}", ol),
+                format!("{:.6}", cl),
+                format!("{:.6}", cu),
+            ]);
         }
         if rows.is_empty() { return; }
         let table = render_three_line_table(
-            &["symbol", "predict_funding_rate", "lorn_rate", "funding_frequency", "open_upper_threshold", "open_lower_threshold", "close_lower_threshold", "close_upper_threshold"],
+            &["Symbol", "Freq", "FR_Mean", "Pred", "OpenU", "OpenL", "CloseL", "CloseU"],
             &rows,
         );
-        debug!("资金费率阈值重算: 原因= {}\n{}", reason, table);
-        let _ = symbols_changed;
+        info!("资金费率总览\n{}", table);
     }
 }
 
@@ -1527,10 +1562,9 @@ fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    if std::env::var("RUST_LOG").is_err() {
-        std::env::set_var("RUST_LOG", "debug");
-    }
-    env_logger::init();
+    // 更保守的默认日志过滤，避免输出依赖库的 DEBUG 噪声
+    let default_filter = "info,funding_rate_signal=info,mkt_signal=info,hyper=warn,hyper_util=warn,h2=warn,reqwest=warn";
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter)).init();
 
     info!("启动 Binance Forward Arb 信号策略");
 
@@ -1538,6 +1572,8 @@ async fn main() -> Result<()> {
     let publisher = SignalPublisher::new(SIGNAL_CHANNEL_MT_ARBITRAGE)?;
     let mut engine = StrategyEngine::new(cfg.clone(), publisher).await?;
     engine.log_symbol_snapshot();
+    // 初始化完成后打印资金费率三线表
+    engine.print_funding_overview_table();
 
     let mut subscriber = MultiChannelSubscriber::new(NODE_FUNDING_STRATEGY_SUB)?;
     subscriber.subscribe_channels(vec![
@@ -1862,6 +1898,38 @@ async fn fetch_binance_funding_items(
     let mut items: Vec<BinanceFundingHistItem> = resp.json().await.unwrap_or_default();
     items.sort_by_key(|it| it.funding_time.unwrap_or_default());
     Ok(items)
+}
+
+async fn fetch_binance_funding_history_range(
+    client: &Client,
+    symbol: &str,
+    start_time: i64,
+    end_time: i64,
+    limit: usize,
+) -> Result<Vec<f64>> {
+    let url = "https://fapi.binance.com/fapi/v1/fundingRate";
+    let end = end_time.max(0);
+    let start = start_time.min(end).max(0);
+    let limit_s = limit.max(1).min(1000).to_string();
+    let params = [
+        ("symbol", symbol),
+        ("startTime", &start.to_string()),
+        ("endTime", &end.to_string()),
+        ("limit", &limit_s),
+    ];
+    let resp = client.get(url).query(&params).send().await?;
+    if !resp.status().is_success() { return Ok(vec![]); }
+    let mut items: Vec<BinanceFundingHistItem> = resp.json().await.unwrap_or_default();
+    items.sort_by_key(|it| it.funding_time.unwrap_or_default());
+    let mut out = Vec::with_capacity(items.len());
+    for it in items {
+        if let Ok(v) = it.funding_rate.parse::<f64>() { out.push(v); }
+    }
+    if out.len() > limit {
+        let drop_n = out.len() - limit;
+        out.drain(0..drop_n);
+    }
+    Ok(out)
 }
 
 async fn infer_binance_funding_frequency(client: &Client, symbol: &str) -> Option<String> {

@@ -55,18 +55,7 @@ impl SignalPublisher {
         let sample = sample.write_payload(buffer);
         sample.send()?;
 
-        // Debug log to help diagnose signal publication
-        if log::log_enabled!(log::Level::Debug) {
-            let head = &data[..data.len().min(24)];
-            let head_hex: String = head.iter().map(|b| format!("{:02X}", b)).collect();
-            debug!(
-                "signal published: channel={} service={} payload_len={} head24={}",
-                self.channel_name,
-                self.service_name,
-                data.len(),
-                head_hex
-            );
-        }
+        // 生产环境去除发布详情 DEBUG 日志，避免刷屏
 
         Ok(())
     }

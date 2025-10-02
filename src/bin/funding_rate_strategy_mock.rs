@@ -527,33 +527,7 @@ impl MockController {
     fn recompute_and_print(&mut self, reason: &str) {
         debug!("mock 开始重算资金费率阈值: reason='{}'", reason);
         // 仅重算阈值并打印三线表（不改变其它状态）
-        let mut rows: Vec<Vec<String>> = Vec::new();
-        for (key, state) in &self.symbols {
-            let fut = state.futures_symbol.to_uppercase();
-            let freq = self
-                .funding_frequency
-                .get(&fut)
-                .cloned()
-                .unwrap_or_else(|| "8h".to_string());
-            let (ou, ol, cl, cu) = self.thresholds_for_frequency(&freq);
-            let pred = self.get_predicted_for(&fut);
-            rows.push(vec![
-                key.clone(),
-                format!("{:.6}", pred),
-                format!("{:.6}", 0.0),
-                freq,
-                format!("{:.6}", ou),
-                format!("{:.6}", ol),
-                format!("{:.6}", cl),
-                format!("{:.6}", cu),
-            ]);
-        }
-        if rows.is_empty() { return; }
-        let table = render_three_line_table(
-            &["symbol", "predict_funding_rate", "lorn_rate", "funding_frequency", "open_upper_threshold", "open_lower_threshold", "close_lower_threshold", "close_upper_threshold"],
-            &rows,
-        );
-        debug!("mock 资金费率阈值重算: 原因={}\n{}", reason, table);
+        self.print_funding_overview_table();
     }
 
     fn thresholds_for_frequency(&self, freq_4h_or_8h: &str) -> (f64, f64, f64, f64) {
@@ -703,6 +677,8 @@ impl MockController {
             }
             "refresh" => {
                 self.refresh_min_qty().await?;
+                // 也打印一次价差表，保持“每次操作之后打印两表”的一致性
+                self.print_symbol_snapshot();
             }
             "help" | "h" => {
                 self.print_help();
@@ -718,12 +694,56 @@ impl MockController {
         }
         // 操作后维护：根据参数/符号变化与结算点决定是否重算或拉取历史
         self.post_operation_maintenance();
+        // 每次操作后打印资金费率总览（三线表）
+        self.print_funding_overview_table();
         Ok(false)
     }
 
     fn print_help(&self) {
         info!("命令: list | open <idx> | close <idx> | reload | refresh | help | quit");
         info!("直接输入索引 (例如 `2`) 等同于 open <idx>，索引从 1 开始");
+    }
+
+    fn print_funding_overview_table(&self) {
+        if self.symbols.is_empty() { return; }
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        let mut keys: Vec<String> = self.symbols.keys().cloned().collect();
+        keys.sort();
+        for key in keys {
+            let Some(state) = self.symbols.get(&key) else { continue; };
+            let fut = state.futures_symbol.to_uppercase();
+            let freq = self
+                .funding_frequency
+                .get(&fut)
+                .cloned()
+                .unwrap_or_else(|| "8h".to_string());
+            let (ou, ol, cl, cu) = self.thresholds_for_frequency(&freq);
+            let pred = self.get_predicted_for(&fut);
+            // 使用已拉取的历史计算均值；若无历史则退化为当前 funding_rate
+            let fr_mean = self
+                .history_map
+                .get(&fut)
+                .and_then(|v| if v.is_empty() { None } else { Some(v.iter().copied().sum::<f64>() / (v.len() as f64)) })
+                .or_else(|| if state.funding_rate != 0.0 { Some(state.funding_rate) } else { None })
+                .map(|v| format!("{:.6}", v))
+                .unwrap_or_else(|| "-".to_string());
+            rows.push(vec![
+                key.clone(),
+                freq,
+                fr_mean,
+                format!("{:.6}", pred),
+                format!("{:.6}", ou),
+                format!("{:.6}", ol),
+                format!("{:.6}", cl),
+                format!("{:.6}", cu),
+            ]);
+        }
+        if rows.is_empty() { return; }
+        let table = render_three_line_table(
+            &["Symbol", "Freq", "FR_Mean", "Pred", "OpenU", "OpenL", "CloseL", "CloseU"],
+            &rows,
+        );
+        info!("资金费率总览\n{}", table);
     }
 
     fn post_operation_maintenance(&mut self) {
@@ -1437,10 +1457,8 @@ fn spawn_command_reader(tx: mpsc::UnboundedSender<String>) {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    if std::env::var("RUST_LOG").is_err() {
-        std::env::set_var("RUST_LOG", "debug");
-    }
-    env_logger::init();
+    let default_filter = "info,funding_rate_signal=debug,mkt_signal=debug,hyper=off,hyper_util=off,h2=off,reqwest=warn";
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter)).init();
 
     info!("启动 Funding Rate Mock 控制台");
 
@@ -1449,6 +1467,7 @@ async fn main() -> Result<()> {
     let mut controller = MockController::new(cfg.clone(), publisher).await?;
     controller.print_help();
     controller.print_symbol_snapshot();
+    controller.print_funding_overview_table();
 
     let mut subscriber = MultiChannelSubscriber::new(NODE_FUNDING_STRATEGY_SUB)?;
     subscriber.subscribe_channels(vec![
