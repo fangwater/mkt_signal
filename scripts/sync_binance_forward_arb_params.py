@@ -5,12 +5,10 @@
 将 binance_forward_arb_params 常量参数写入 Redis HASH（覆盖/新增），并可选打印生效值。
 
 参数写入到 HASH `binance_forward_arb_params`（可通过 --key 指定）：
-  - interval = 6
-  - predict_num = 0
-  - refresh_secs = 30
-  - fetch_secs = 7200
-  - fetch_offset_secs = 120
-  - history_limit = 100
+  - 资金费率预测参数: interval, predict_num, refresh_secs, fetch_secs, fetch_offset_secs, history_limit
+  - 4h/8h 阈值参数: fr_4h_* 与 fr_8h_*（共 8 个）
+  - Pre-Trade 限制: pre_trade_max_pos_u, pre_trade_max_symbol_exposure_ratio, pre_trade_max_total_exposure_ratio
+  - 下单参数: order_open_range, order_close_range, order_amount_u, order_max_open_order_keep_s, order_max_close_order_keep_s
 
 示例：
   python scripts/sync_binance_forward_arb_params.py
@@ -55,6 +53,7 @@ def main() -> int:
     )
 
     params = {
+        # 资金费率预测
         "interval": "6",
         "predict_num": "0",
         "refresh_secs": "30",
@@ -71,6 +70,17 @@ def main() -> int:
         "fr_8h_open_lower_threshold": "-0.00008",
         "fr_8h_close_lower_threshold": "-0.001",
         "fr_8h_close_upper_threshold": "0.001",
+        # Pre-trade 限制
+        "pre_trade_max_pos_u": "2500.0",
+        "pre_trade_max_symbol_exposure_ratio": "0.25",
+        "pre_trade_max_total_exposure_ratio": "0.25",
+        "pre_trade_refresh_secs": "10",
+        # 下单参数
+        "order_open_range": "0.00005",
+        "order_close_range": "0.00005",
+        "order_amount_u": "10.0",
+        "order_max_open_order_keep_s": "10",
+        "order_max_close_order_keep_s": "10",
     }
 
     # HMSET (HSET 多字段)

@@ -9,10 +9,9 @@ async fn main() -> Result<()> {
     }
     env_logger::init();
 
-    let cfg_path =
-        std::env::var("PRE_TRADE_CFG").unwrap_or_else(|_| "config/pre_trade.toml".to_string());
+    let cfg_path = std::env::var("PRE_TRADE_CFG").unwrap_or_else(|_| "config/pre_trade.toml".to_string());
     let cfg = PreTradeCfg::load(&cfg_path).await?;
-    info!("pre_trade config loaded from {}", cfg_path);
+    info!("pre_trade base config loaded from {}", cfg_path);
 
     let pre_trade = PreTrade::new(cfg);
     let local = tokio::task::LocalSet::new();

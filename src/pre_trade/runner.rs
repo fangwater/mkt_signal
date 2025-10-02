@@ -23,6 +23,7 @@ use crate::signal::binance_forward_arb::{
 use crate::signal::strategy::{Strategy, StrategyManager};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::trade_engine::trade_response_handle::TradeExecOutcome;
+use crate::common::redis_client::{RedisClient, RedisSettings};
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
@@ -67,7 +68,8 @@ impl PreTrade {
         let (order_tx, order_rx) = mpsc::unbounded_channel::<Bytes>();
         let (signal_tx, signal_rx) = mpsc::unbounded_channel::<Bytes>();
 
-        let strategy_params = self.cfg.params.clone().unwrap_or_default();
+        // 初始化策略参数从 Redis
+        let mut strategy_params = StrategyParamsCfg::default();
 
         // 可选打开持久化存储
         let mut store = if let Some(store_cfg) = self.cfg.store.clone() {
@@ -90,6 +92,11 @@ impl PreTrade {
             strategy_params,
             store.take(),
         );
+
+        // 首次从 Redis 拉取 pre-trade 参数
+        if let Err(err) = runtime.reload_params_blocking() {
+            warn!("pre_trade initial params load failed: {err:#}");
+        }
 
         // 启动时恢复
         if let Err(err) = runtime.try_recover().await {
@@ -283,6 +290,8 @@ struct RuntimeContext {
     min_qty_table: Rc<MinQtyTable>,
     dedup: crate::pre_trade::dedup::DedupCache,
     store: Option<RedisStore>,
+    next_params_refresh: std::time::Instant,
+    params_refresh_secs: u64,
 }
 
 impl RuntimeContext {
@@ -321,6 +330,8 @@ impl RuntimeContext {
             min_qty_table,
             dedup: crate::pre_trade::dedup::DedupCache::new(8192),
             store,
+            next_params_refresh: std::time::Instant::now(),
+            params_refresh_secs: 10,
         }
     }
 
@@ -504,6 +515,49 @@ impl RuntimeContext {
         let now = get_timestamp_us();
         self.strategy_mgr.handle_period_clock(now);
         self.cleanup_inactive();
+        if std::time::Instant::now() >= self.next_params_refresh {
+            if let Err(err) = self.reload_params_blocking() {
+                warn!("pre_trade params refresh failed: {err:#}");
+            }
+            self.next_params_refresh = std::time::Instant::now()
+                + std::time::Duration::from_secs(self.params_refresh_secs.max(5));
+        }
+    }
+}
+
+impl RuntimeContext {
+    fn reload_params_blocking(&mut self) -> Result<()> {
+        let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/0".to_string());
+        let rt = tokio::runtime::Handle::current();
+        let params = rt.block_on(async move {
+            // Try using our RedisClient first
+            let mut client = RedisClient::connect(RedisSettings::default()).await?;
+            if url != client.settings().connection_url() {
+                // Fallback to provided URL
+                let cli = redis::Client::open(url.clone())?;
+                let mut mgr = redis::aio::ConnectionManager::new(cli).await?;
+                let map: std::collections::HashMap<String, String> = redis::AsyncCommands::hgetall(&mut mgr, "binance_forward_arb_params").await?;
+                Ok::<_, anyhow::Error>(map)
+            } else {
+                Ok::<_, anyhow::Error>(client.hgetall_map("binance_forward_arb_params").await?)
+            }
+        })?;
+        let parse_f64 = |k: &str| -> Option<f64> { params.get(k).and_then(|v| v.parse::<f64>().ok()) };
+        let parse_u64 = |k: &str| -> Option<u64> { params.get(k).and_then(|v| v.parse::<u64>().ok()) };
+        if let Some(v) = parse_u64("pre_trade_refresh_secs") { self.params_refresh_secs = v; }
+        let mut sp = self.strategy_params.clone();
+        if let Some(v) = parse_f64("pre_trade_max_pos_u") { sp.max_pos_u = v; }
+        if let Some(v) = parse_f64("pre_trade_max_symbol_exposure_ratio") { sp.max_symbol_exposure_ratio = v; }
+        if let Some(v) = parse_f64("pre_trade_max_total_exposure_ratio") { sp.max_total_exposure_ratio = v; }
+        self.strategy_params = sp;
+        debug!(
+            "pre_trade params updated: max_pos_u={:.2} sym_ratio={:.4} total_ratio={:.4} refresh={}s",
+            self.strategy_params.max_pos_u,
+            self.strategy_params.max_symbol_exposure_ratio,
+            self.strategy_params.max_total_exposure_ratio,
+            self.params_refresh_secs
+        );
+        Ok(())
     }
 }
 

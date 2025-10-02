@@ -164,7 +164,7 @@ struct StrategyConfig {
     #[allow(dead_code)]
     #[serde(default)]
     redis: Option<RedisSettings>,
-    /// Redis key 存储 tracking_symbol.json 内容
+    /// Redis key 存储追踪的价差阈值（无需本地 tracking JSON）
     #[serde(default)]
     redis_key: Option<String>,
     #[serde(default)]
@@ -1330,6 +1330,13 @@ impl StrategyEngine {
         if let Some(v) = parse_f64("fr_8h_close_lower_threshold") { if !approx_equal(self.th_8h.close_lower, v) { self.th_8h.close_lower = v; th_changed = true; } }
         if let Some(v) = parse_f64("fr_8h_close_upper_threshold") { if !approx_equal(self.th_8h.close_upper, v) { self.th_8h.close_upper = v; th_changed = true; } }
         if th_changed { changed = true; debug!("阈值参数变更: 4h={:?} 8h={:?}", self.th_4h, self.th_8h); }
+
+        // 订单参数
+        if let Some(v) = parse_f64("order_open_range") { if !approx_equal(self.cfg.order.open_range, v) { self.cfg.order.open_range = v; changed = true; } }
+        if let Some(v) = parse_f64("order_close_range") { if !approx_equal(self.cfg.order.close_range, v) { self.cfg.order.close_range = v; changed = true; } }
+        if let Some(v) = parse_f64("order_amount_u") { if !approx_equal(self.cfg.order.amount_u, v) { self.cfg.order.amount_u = v; changed = true; } }
+        if let Some(v) = parse_u64("order_max_open_order_keep_s") { if self.cfg.order.max_open_order_keep_s != v { self.cfg.order.max_open_order_keep_s = v; changed = true; } }
+        if let Some(v) = parse_u64("order_max_close_order_keep_s") { if self.cfg.order.max_close_order_keep_s != v { self.cfg.order.max_close_order_keep_s = v; changed = true; } }
 
         let current = ParamsSnapshot::from(&self.cfg.strategy);
         if self.last_params.as_ref() != Some(&current) {

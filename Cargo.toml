@@ -44,9 +44,6 @@ path = "src/bin/funding_rate_strategy_mock.rs"
 name = "viz_server"
 path = "src/bin/viz_server.rs"
 
-[[bin]]
-name = "funding_fetch_demo"
-path = "src/bin/funding_fetch_demo.rs"
 
 [dependencies]
 local-ip-address = "0.6"
