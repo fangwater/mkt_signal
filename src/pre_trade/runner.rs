@@ -3,8 +3,8 @@ use crate::common::account_msg::{
     AccountUpdateBalanceMsg, AccountUpdatePositionMsg, BalanceUpdateMsg, ExecutionReportMsg,
     OrderTradeUpdateMsg,
 };
-use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
 use crate::common::min_qty_table::MinQtyTable;
+use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::binance_pm_spot_manager::{BinancePmSpotAccountManager, BinanceSpotBalance};
 use crate::pre_trade::binance_pm_um_manager::{
@@ -16,9 +16,10 @@ use crate::pre_trade::config::{
 use crate::pre_trade::event::AccountEvent;
 use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
+use crate::pre_trade::store::{RedisStore, StrategyRecord};
 use crate::signal::binance_forward_arb::{
     BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbCloseUmCtx, BinSingleForwardArbOpenCtx,
-    BinSingleForwardArbStrategy, BinSingleForwardArbSnapshot,
+    BinSingleForwardArbSnapshot, BinSingleForwardArbStrategy,
 };
 use crate::signal::strategy::{Strategy, StrategyManager};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
@@ -34,7 +35,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use crate::pre_trade::store::{RedisStore, StrategyRecord};
 
 const ACCOUNT_PAYLOAD: usize = 16_384;
 const TRADE_RESP_PAYLOAD: usize = 16_384;
@@ -80,8 +80,12 @@ impl PreTrade {
                         None
                     }
                 }
-            } else { None }
-        } else { None };
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         let mut runtime = RuntimeContext::new(
             bootstrap,
@@ -351,14 +355,20 @@ impl RuntimeContext {
         let order_ids = self.order_manager.borrow().get_all_ids();
         let mut orders = Vec::with_capacity(order_ids.len());
         for oid in order_ids {
-            if let Some(o) = self.order_manager.borrow().get(oid) { orders.push(o); }
+            if let Some(o) = self.order_manager.borrow().get(oid) {
+                orders.push(o);
+            }
         }
         // 采集策略快照
         let mut strategies: Vec<StrategyRecord> = Vec::new();
         for id in self.strategy_mgr.iter_ids().cloned().collect::<Vec<_>>() {
             if let Some(st) = self.strategy_mgr.get(id) {
                 if let Some(snap) = st.snapshot() {
-                    strategies.push(StrategyRecord { id, type_name: snap.type_name.to_string(), payload: snap.payload });
+                    strategies.push(StrategyRecord {
+                        id,
+                        type_name: snap.type_name.to_string(),
+                        payload: snap.payload,
+                    });
                 }
             }
         }
@@ -375,11 +385,15 @@ impl RuntimeContext {
     }
 
     async fn try_recover(&mut self) -> Result<()> {
-        let Some(store) = self.store.as_mut() else { return Ok(()); };
+        let Some(store) = self.store.as_mut() else {
+            return Ok(());
+        };
 
         let orders = store.load_orders().await?;
         if !orders.is_empty() {
-            self.order_manager.borrow_mut().restore_orders(orders.clone());
+            self.order_manager
+                .borrow_mut()
+                .restore_orders(orders.clone());
             info!("recovered {} orders from store", orders.len());
             if log::log_enabled!(log::Level::Debug) {
                 for o in &orders {
@@ -444,7 +458,10 @@ impl RuntimeContext {
                     }
                 }
             }
-            info!("recovered {} strategies from store", self.strategy_mgr.len());
+            info!(
+                "recovered {} strategies from store",
+                self.strategy_mgr.len()
+            );
         }
         Ok(())
     }
@@ -515,7 +532,9 @@ impl RuntimeContext {
         let Some(um_snapshot) = self.um_manager.snapshot() else {
             return;
         };
-        self.exposure_manager.borrow_mut().recompute(&um_snapshot, &spot_snapshot);
+        self.exposure_manager
+            .borrow_mut()
+            .recompute(&um_snapshot, &spot_snapshot);
 
         // 结合最新标记价格，估值并打印三线表（USDT 计价的敞口），便于核对
         if let Some(table) = self.price_table.try_borrow().ok() {
@@ -550,18 +569,30 @@ impl RuntimeContext {
 
 impl RuntimeContext {
     async fn reload_params(&mut self) -> Result<()> {
-        let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/0".to_string());
+        let url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/0".to_string());
         let cli = redis::Client::open(url.clone())?;
         let mut mgr = redis::aio::ConnectionManager::new(cli).await?;
-        let params: std::collections::HashMap<String, String> = redis::AsyncCommands::hgetall(&mut mgr, "binance_forward_arb_params").await?;
-        let parse_f64 = |k: &str| -> Option<f64> { params.get(k).and_then(|v| v.parse::<f64>().ok()) };
-        let parse_u64 = |k: &str| -> Option<u64> { params.get(k).and_then(|v| v.parse::<u64>().ok()) };
+        let params: std::collections::HashMap<String, String> =
+            redis::AsyncCommands::hgetall(&mut mgr, "binance_forward_arb_params").await?;
+        let parse_f64 =
+            |k: &str| -> Option<f64> { params.get(k).and_then(|v| v.parse::<f64>().ok()) };
+        let parse_u64 =
+            |k: &str| -> Option<u64> { params.get(k).and_then(|v| v.parse::<u64>().ok()) };
         let mut new_refresh = self.params_refresh_secs;
-        if let Some(v) = parse_u64("pre_trade_refresh_secs") { new_refresh = v; }
+        if let Some(v) = parse_u64("pre_trade_refresh_secs") {
+            new_refresh = v;
+        }
         let mut sp = self.strategy_params.clone();
-        if let Some(v) = parse_f64("pre_trade_max_pos_u") { sp.max_pos_u = v; }
-        if let Some(v) = parse_f64("pre_trade_max_symbol_exposure_ratio") { sp.max_symbol_exposure_ratio = v; }
-        if let Some(v) = parse_f64("pre_trade_max_total_exposure_ratio") { sp.max_total_exposure_ratio = v; }
+        if let Some(v) = parse_f64("pre_trade_max_pos_u") {
+            sp.max_pos_u = v;
+        }
+        if let Some(v) = parse_f64("pre_trade_max_symbol_exposure_ratio") {
+            sp.max_symbol_exposure_ratio = v;
+        }
+        if let Some(v) = parse_f64("pre_trade_max_total_exposure_ratio") {
+            sp.max_total_exposure_ratio = v;
+        }
 
         let snapshot = PreTradeParamsSnap {
             max_pos_u: sp.max_pos_u,
@@ -598,7 +629,6 @@ struct PreTradeParamsSnap {
     max_total_exposure_ratio: f64,
     refresh_secs: u64,
 }
-
 
 struct OrderPublisher {
     _node: Node<ipc::Service>,
@@ -842,7 +872,9 @@ fn spawn_signal_listeners(cfg: &SignalSubscriptionsCfg) -> Result<UnboundedRecei
 
                 info!(
                     "signal subscribed: node={} service={} channel={}",
-                    node_name, service.name(), channel_name
+                    node_name,
+                    service.name(),
+                    channel_name
                 );
 
                 loop {
@@ -851,14 +883,23 @@ fn spawn_signal_listeners(cfg: &SignalSubscriptionsCfg) -> Result<UnboundedRecei
                             let payload = trim_payload(sample.payload());
                             if log::log_enabled!(log::Level::Debug) {
                                 let head = &payload[..payload.len().min(24)];
-                                let head_hex: String = head.iter().map(|b| format!("{:02X}", b)).collect();
-                                let st = crate::signal::trade_signal::TradeSignal::get_signal_type(&payload)
-                                    .map(|t| format!("{:?}", t))
-                                    .unwrap_or_else(|| "Unknown".to_string());
-                                let gen_ts = crate::signal::trade_signal::TradeSignal::get_generation_time(&payload)
+                                let head_hex: String =
+                                    head.iter().map(|b| format!("{:02X}", b)).collect();
+                                let st = crate::signal::trade_signal::TradeSignal::get_signal_type(
+                                    &payload,
+                                )
+                                .map(|t| format!("{:?}", t))
+                                .unwrap_or_else(|| "Unknown".to_string());
+                                let gen_ts =
+                                    crate::signal::trade_signal::TradeSignal::get_generation_time(
+                                        &payload,
+                                    )
                                     .map(|v| v.to_string())
                                     .unwrap_or_else(|| "-".to_string());
-                                let ctx_len = crate::signal::trade_signal::TradeSignal::get_context_length(&payload)
+                                let ctx_len =
+                                    crate::signal::trade_signal::TradeSignal::get_context_length(
+                                        &payload,
+                                    )
                                     .map(|v| v.to_string())
                                     .unwrap_or_else(|| "-".to_string());
                                 debug!(
@@ -1004,8 +1045,11 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
                 msg.transaction_time
             );
             if msg.business_unit.eq_ignore_ascii_case("UM") {
-                ctx.spot_manager
-                    .apply_um_wallet_snapshot(&msg.asset, msg.wallet_balance, msg.event_time);
+                ctx.spot_manager.apply_um_wallet_snapshot(
+                    &msg.asset,
+                    msg.wallet_balance,
+                    msg.event_time,
+                );
             } else {
                 ctx.spot_manager.apply_balance_snapshot(
                     &msg.asset,
@@ -1441,55 +1485,46 @@ fn log_exposures(entries: &[ExposureEntry], price_map: &BTreeMap<String, PriceEn
         return;
     }
 
-    let mut sum_spot_usdt = 0.0_f64;
-    let mut sum_um_usdt = 0.0_f64;
-    let mut sum_exposure_qty = 0.0_f64;
     let mut sum_exposure_usdt = 0.0_f64;
 
-    let mut rows: Vec<Vec<String>> = entries
-        .iter()
-        .map(|entry| {
-            let asset = entry.asset.to_uppercase();
-            let sym = if asset == "USDT" { "USDT".to_string() } else { format!("{}USDT", asset) };
-            let mark = if asset == "USDT" { 1.0 } else { price_map.get(&sym).map(|p| p.mark_price).unwrap_or(0.0) };
-            if asset != "USDT" && mark == 0.0 && (entry.spot_total_wallet != 0.0 || entry.um_net_position != 0.0) {
-                debug!("missing mark price for {}, exposure valued as 0", sym);
-            }
-            let spot_usdt = entry.spot_total_wallet * mark;
-            let um_usdt = entry.um_net_position * mark;
-            let exposure_qty = entry.exposure;
-            let exposure_usdt = spot_usdt + um_usdt;
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    for entry in entries {
+        let asset = entry.asset.to_uppercase();
+        if asset == "USDT" {
+            continue;
+        }
+        let sym = format!("{}USDT", asset);
+        let mark = price_map.get(&sym).map(|p| p.mark_price).unwrap_or(0.0);
+        if mark == 0.0 && (entry.spot_total_wallet != 0.0 || entry.um_net_position != 0.0) {
+            debug!("missing mark price for {}, exposure valued as 0", sym);
+        }
+        let spot_usdt = entry.spot_total_wallet * mark;
+        let um_usdt = entry.um_net_position * mark;
+        let exposure_qty = entry.exposure;
+        let exposure_usdt = spot_usdt + um_usdt;
 
-            // TOTAL 汇总排除 USDT 自身，避免把 USDT 当作敞口计入
-            if asset != "USDT" {
-                sum_spot_usdt += spot_usdt;
-                sum_um_usdt += um_usdt;
-                sum_exposure_qty += exposure_qty; // 注意：非绝对值
-                sum_exposure_usdt += exposure_usdt; // 注意：非绝对值
-            }
+        sum_exposure_usdt += exposure_usdt; // 注意：非绝对值
 
-            vec![
-                entry.asset.clone(),
-                fmt_decimal(entry.spot_total_wallet),
-                fmt_decimal(spot_usdt),
-                fmt_decimal(entry.um_net_position),
-                fmt_decimal(um_usdt),
-                fmt_decimal(exposure_qty),
-                fmt_decimal(exposure_usdt),
-            ]
-        })
-        .collect();
+        rows.push(vec![
+            entry.asset.clone(),
+            fmt_decimal(entry.spot_total_wallet),
+            fmt_decimal(spot_usdt),
+            fmt_decimal(entry.um_net_position),
+            fmt_decimal(um_usdt),
+            fmt_decimal(exposure_qty),
+            fmt_decimal(exposure_usdt),
+        ]);
+    }
 
-    // 增加 TOTAL 行：仅汇总 SpotUSDT 与 ExposureUSDT（均为带符号正常加减），
-    // 所有数量（Qty）列使用 "-"，避免单位混淆。
+    // 增加 TOTAL 行：仅展示 ExposureUSDT 的带符号汇总，其余列使用 "-" 占位。
     rows.push(vec![
         "TOTAL".to_string(),
-        "-".to_string(),              // SpotQty
-        fmt_decimal(sum_spot_usdt),    // SpotUSDT (sum)
-        "-".to_string(),              // UMNetQty
-        "-".to_string(),              // UMNetUSDT (不汇总显示)
-        "-".to_string(),              // ExposureQty（不汇总，用户要求用 "-" 替代）
-        fmt_decimal(sum_exposure_usdt),// ExposureUSDT (sum, signed)
+        "-".to_string(),                // SpotQty
+        "-".to_string(),                // SpotUSDT (不汇总显示)
+        "-".to_string(),                // UMNetQty
+        "-".to_string(),                // UMNetUSDT (不汇总显示)
+        "-".to_string(),                // ExposureQty（不汇总，用户要求用 "-" 替代）
+        fmt_decimal(sum_exposure_usdt), // ExposureUSDT (sum, signed)
     ]);
 
     let table = render_three_line_table(

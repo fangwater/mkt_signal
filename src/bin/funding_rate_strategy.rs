@@ -4,8 +4,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use chrono::{Utc, DateTime};
+use chrono::{DateTime, Utc};
 use log::{debug, error, info, warn};
+use reqwest::Client;
 use serde::Deserialize;
 use tokio::signal;
 #[cfg(unix)]
@@ -13,25 +14,24 @@ use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tokio::task::yield_now;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use reqwest::Client;
 
 use mkt_signal::common::iceoryx_publisher::SignalPublisher;
 use mkt_signal::common::iceoryx_subscriber::{
     ChannelType, MultiChannelSubscriber, SubscribeParams,
 };
 use mkt_signal::common::min_qty_table::MinQtyTable;
-use mkt_signal::common::redis_client::{RedisSettings, RedisClient};
+use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::mkt_msg::{self, AskBidSpreadMsg, FundingRateMsg, MktMsgType};
 use mkt_signal::pre_trade::order_manager::{OrderType, Side};
 use mkt_signal::signal::binance_forward_arb::{
     BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbOpenCtx,
 };
-use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
 use mkt_signal::signal::resample::{
-    ResampleItem, ResampleBatch, FR_RESAMPLE_CHANNEL, FR_RESAMPLE_MSG_CHANNEL,
-    compute_askbid_sr, compute_bidask_sr,
+    compute_askbid_sr, compute_bidask_sr, ResampleBatch, ResampleItem, FR_RESAMPLE_CHANNEL,
+    FR_RESAMPLE_MSG_CHANNEL,
 };
+use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
 
 const SIGNAL_CHANNEL_MT_ARBITRAGE: &str = "mt_arbitrage";
 const NODE_FUNDING_STRATEGY_SUB: &str = "funding_rate_strategy";
@@ -127,40 +127,56 @@ impl Default for ReloadConfig {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 struct StrategyParams {
-    #[serde(default = "default_interval")] 
+    #[serde(default = "default_interval")]
     interval: usize,
     #[serde(default)]
     predict_num: usize,
     /// 重算滚动预测频率（秒）
-    #[serde(default = "default_compute_secs")] 
+    #[serde(default = "default_compute_secs")]
     refresh_secs: u64,
     /// 拉取历史频率（秒）
-    #[serde(default = "default_fetch_secs")] 
+    #[serde(default = "default_fetch_secs")]
     fetch_secs: u64,
     /// 拉取对齐偏移（秒）
-    #[serde(default = "default_fetch_offset_secs")] 
+    #[serde(default = "default_fetch_offset_secs")]
     fetch_offset_secs: u64,
     /// 单次拉取的最大记录条数
-    #[serde(default = "default_fetch_limit")] 
+    #[serde(default = "default_fetch_limit")]
     history_limit: usize,
-    #[serde(default = "default_resample_ms")] 
+    #[serde(default = "default_resample_ms")]
     resample_ms: u64,
     /// funding rate 滚动均值窗口大小（条数）
-    #[serde(default = "default_funding_ma_size")] 
+    #[serde(default = "default_funding_ma_size")]
     funding_ma_size: usize,
     /// 结算偏移（秒）：基于 UTC 准点（4h 周期）增加的偏移量
-    #[serde(default = "default_settlement_offset_secs")] 
+    #[serde(default = "default_settlement_offset_secs")]
     settlement_offset_secs: i64,
 }
 
-const fn default_interval() -> usize { 6 }
-const fn default_compute_secs() -> u64 { 30 }
-const fn default_fetch_secs() -> u64 { 7200 }
-const fn default_fetch_offset_secs() -> u64 { 120 }
-const fn default_fetch_limit() -> usize { 100 }
-const fn default_resample_ms() -> u64 { 1000 }
-const fn default_funding_ma_size() -> usize { 60 }
-const fn default_settlement_offset_secs() -> i64 { 0 }
+const fn default_interval() -> usize {
+    6
+}
+const fn default_compute_secs() -> u64 {
+    30
+}
+const fn default_fetch_secs() -> u64 {
+    7200
+}
+const fn default_fetch_offset_secs() -> u64 {
+    120
+}
+const fn default_fetch_limit() -> usize {
+    100
+}
+const fn default_resample_ms() -> u64 {
+    3000
+}
+const fn default_funding_ma_size() -> usize {
+    60
+}
+const fn default_settlement_offset_secs() -> i64 {
+    0
+}
 
 /// 策略总体配置
 #[derive(Debug, Clone, Deserialize)]
@@ -185,12 +201,15 @@ struct StrategyConfig {
 
 impl StrategyConfig {
     fn load() -> Result<Self> {
-        let cfg_path = std::env::var("FUNDING_RATE_CFG").unwrap_or_else(|_| DEFAULT_CFG_PATH.to_string());
+        let cfg_path =
+            std::env::var("FUNDING_RATE_CFG").unwrap_or_else(|_| DEFAULT_CFG_PATH.to_string());
         let cfg: StrategyConfig = match std::fs::read_to_string(&cfg_path) {
             Ok(content) => {
                 let mut cfg: StrategyConfig = toml::from_str(&content)
                     .with_context(|| format!("解析配置文件失败: {}", cfg_path))?;
-                if cfg.redis.is_none() { cfg.redis = Some(RedisSettings::default()); }
+                if cfg.redis.is_none() {
+                    cfg.redis = Some(RedisSettings::default());
+                }
                 cfg
             }
             Err(err) => {
@@ -317,6 +336,18 @@ struct SymbolState {
     loan_rate: f64,
     funding_ts: i64,
     next_funding_time: i64,
+    funding_ma: Option<f64>,
+    predicted_signal: i32,
+    ma_signal: i32,
+    final_signal_value: i32,
+    latest_bidask_sr: Option<f64>,
+    latest_askbid_sr: Option<f64>,
+    price_open_bidask: bool,
+    price_open_askbid: bool,
+    price_close_bidask: bool,
+    price_close_askbid: bool,
+    price_open_ready: bool,
+    price_close_ready: bool,
 }
 
 impl SymbolState {
@@ -340,6 +371,18 @@ impl SymbolState {
             loan_rate: 0.0,
             funding_ts: 0,
             next_funding_time: 0,
+            funding_ma: None,
+            predicted_signal: 0,
+            ma_signal: 0,
+            final_signal_value: 0,
+            latest_bidask_sr: None,
+            latest_askbid_sr: None,
+            price_open_bidask: false,
+            price_open_askbid: false,
+            price_close_bidask: false,
+            price_close_askbid: false,
+            price_open_ready: false,
+            price_close_ready: false,
         }
     }
 
@@ -383,6 +426,21 @@ impl SymbolState {
 struct EngineStats {
     open_signals: u64,
     close_signals: u64,
+}
+
+#[derive(Debug, Clone)]
+struct EvaluateDecision {
+    symbol_key: String,
+    final_signal: i32,
+    price_open_ready: bool,
+    price_close_ready: bool,
+    price_open_bidask: bool,
+    price_open_askbid: bool,
+    price_close_bidask: bool,
+    price_close_askbid: bool,
+    can_emit: bool,
+    position: PositionState,
+    ratio: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -471,13 +529,18 @@ impl StrategyEngine {
                 .cloned()
                 .unwrap_or_else(|| "8h".to_string());
             let end_time = Utc::now().timestamp_millis();
-            let hours = if freq.eq_ignore_ascii_case("4h") { 4 } else { 8 };
+            let hours = if freq.eq_ignore_ascii_case("4h") {
+                4
+            } else {
+                8
+            };
             let window_ms = (hours as i64) * 3600 * 1000 * (limit as i64 + 2);
             let start_time = end_time.saturating_sub(window_ms);
             tasks.push(tokio::spawn(async move {
-                let rates = fetch_binance_funding_history_range(&c, &s, start_time, end_time, limit)
-                    .await
-                    .unwrap_or_default();
+                let rates =
+                    fetch_binance_funding_history_range(&c, &s, start_time, end_time, limit)
+                        .await
+                        .unwrap_or_default();
                 (s, rates)
             }));
         }
@@ -494,7 +557,9 @@ impl StrategyEngine {
         let was = self.warmup_done;
         self.warmup_done = self.is_warmup_complete();
         if self.warmup_done {
-            if !was { debug!("warmup 完成: 所有符号资金费率均值达到窗口"); }
+            if !was {
+                debug!("warmup 完成: 所有符号资金费率均值达到窗口");
+            }
             self.compute_predictions();
             self.print_funding_overview_table();
         } else {
@@ -552,7 +617,11 @@ impl StrategyEngine {
         if !self.predicted_map.is_empty() {
             let mut sample: Vec<(&String, &f64)> = self.predicted_map.iter().take(5).collect();
             sample.sort_by(|a, b| a.0.cmp(b.0));
-            debug!("预测更新完成: {} 项, 示例: {:?}", self.predicted_map.len(), sample);
+            debug!(
+                "预测更新完成: {} 项, 示例: {:?}",
+                self.predicted_map.len(),
+                sample
+            );
         } else {
             debug!("预测更新完成: 空");
         }
@@ -565,7 +634,7 @@ impl StrategyEngine {
             .unwrap_or(0.0)
     }
     async fn new(cfg: StrategyConfig, publisher: SignalPublisher) -> Result<Self> {
-        let resample_ms = cfg.strategy.resample_ms.max(100);
+        let resample_ms = cfg.strategy.resample_ms.max(3000);
         let mut engine = Self {
             next_reload: Instant::now(),
             cfg,
@@ -591,8 +660,8 @@ impl StrategyEngine {
             funding_frequency: HashMap::new(),
             last_params: None,
             last_settlement_marker_ms: None,
-            th_4h: RateThresholds::default(),
-            th_8h: RateThresholds::default(),
+            th_4h: RateThresholds::for_4h(),
+            th_8h: RateThresholds::for_8h(),
             warmup_done: false,
         };
         engine.min_qty.refresh_binance().await?;
@@ -615,17 +684,28 @@ impl StrategyEngine {
     async fn maybe_reload(&mut self) {
         // 按 refresh_secs 刷新：读取参数 -> 刷新符号 -> 重算阈值（并打印三线表）
         if Instant::now() >= self.next_reload {
-            if let Err(err) = self.min_qty.refresh_binance().await { warn!("刷新最小下单量失败: {err:?}"); }
+            if let Err(err) = self.min_qty.refresh_binance().await {
+                warn!("刷新最小下单量失败: {err:?}");
+            }
             let params_changed = self.reload_params_if_changed().await.unwrap_or(false);
             let symbols_changed = match self.reload_thresholds().await {
                 Ok(changed) => changed,
-                Err(err) => { error!("刷新追踪列表失败: {err:?}"); false }
+                Err(err) => {
+                    error!("刷新追踪列表失败: {err:?}");
+                    false
+                }
             };
             let settlement_triggered = self.is_settlement_trigger();
             let mut reasons: Vec<&str> = Vec::new();
-            if symbols_changed { reasons.push("符号增加或移除"); }
-            if params_changed { reasons.push("参数修改"); }
-            if settlement_triggered { reasons.push("结算点触发"); }
+            if symbols_changed {
+                reasons.push("符号增加或移除");
+            }
+            if params_changed {
+                reasons.push("参数修改");
+            }
+            if settlement_triggered {
+                reasons.push("结算点触发");
+            }
             debug!(
                 "refresh 触发: params_changed={} symbols_changed={} settlement_triggered={}",
                 params_changed, symbols_changed, settlement_triggered
@@ -633,14 +713,19 @@ impl StrategyEngine {
             if !reasons.is_empty() {
                 // 结算点触发: 仅更新频率与阈值表，不重算预测（预测仅在 fetch 对齐点或参数变更时重算）
                 if settlement_triggered {
-                    if let Err(err) = self.refresh_frequency_all().await { debug!("刷新频率推断失败: {err:#}"); }
+                    if let Err(err) = self.refresh_frequency_all().await {
+                        debug!("刷新频率推断失败: {err:#}");
+                    }
                 }
-                self.recompute_and_log(&reasons.join("、"), symbols_changed).await;
+                self.recompute_and_log(&reasons.join("、"), symbols_changed)
+                    .await;
             }
         }
         // 到点拉取历史（fetch_secs 边界）并在 warmup 完成后重算预测
         if Instant::now() >= self.next_fetch_refresh {
-            if let Err(err) = self.fetch_histories().await { warn!("拉取资金费率历史失败: {err:?}"); }
+            if let Err(err) = self.fetch_histories().await {
+                warn!("拉取资金费率历史失败: {err:?}");
+            }
             self.next_fetch_refresh = self.next_fetch_instant();
         }
         // 按 refresh_secs 仅检测参数变更，变更时才重算预测
@@ -650,18 +735,23 @@ impl StrategyEngine {
                 self.compute_predictions();
                 self.print_funding_overview_table();
             }
-            self.next_compute_refresh = Instant::now() + Duration::from_secs(self.cfg.strategy.refresh_secs.max(5));
+            self.next_compute_refresh =
+                Instant::now() + Duration::from_secs(self.cfg.strategy.refresh_secs.max(5));
         }
         // 到点刷新借贷利率（Redis）
         if Instant::now() >= self.next_loan_refresh {
-            if let Err(err) = self.reload_loan_rates().await { warn!("刷新借贷利率失败: {err:#}"); }
+            if let Err(err) = self.reload_loan_rates().await {
+                warn!("刷新借贷利率失败: {err:#}");
+            }
             let gap = self.cfg.loan.refresh_secs.max(5);
             self.next_loan_refresh = Instant::now() + Duration::from_secs(gap);
         }
     }
 
     async fn refresh_frequency_all(&mut self) -> Result<()> {
-        if self.symbols.is_empty() { return Ok(()); }
+        if self.symbols.is_empty() {
+            return Ok(());
+        }
         let client = self.http.clone();
         let mut tasks = Vec::new();
         let futs: Vec<String> = self
@@ -672,11 +762,16 @@ impl StrategyEngine {
         for fut in futs {
             let c = client.clone();
             let s = fut.clone();
-            tasks.push(tokio::spawn(async move { (s.clone(), infer_binance_funding_frequency(&c, &s).await) }));
+            tasks.push(tokio::spawn(async move {
+                (s.clone(), infer_binance_funding_frequency(&c, &s).await)
+            }));
         }
         for t in tasks {
             if let Ok((fut, freq)) = t.await {
-                if let Some(f) = freq { debug!("频率刷新: {} -> {}", fut, f); self.funding_frequency.insert(fut, f); }
+                if let Some(f) = freq {
+                    debug!("频率刷新: {} -> {}", fut, f);
+                    self.funding_frequency.insert(fut, f);
+                }
             }
         }
         Ok(())
@@ -718,7 +813,9 @@ impl StrategyEngine {
             info!("移除 {} 个不再跟踪的交易对", removed);
         }
         info!("本次加载追踪交易对数量: {}", self.symbols.len());
-        if !added.is_empty() { debug!("新增交易对: {} 个", added.len()); }
+        if !added.is_empty() {
+            debug!("新增交易对: {} 个", added.len());
+        }
         self.log_min_qty_table();
         // 对新增的符号：推断 freq，并拉取历史，更新预测
         if !added.is_empty() {
@@ -733,20 +830,32 @@ impl StrategyEngine {
                         .await
                         .unwrap_or_else(|| "8h".to_string());
                     let end_time = Utc::now().timestamp_millis();
-                    let hours = if freq.eq_ignore_ascii_case("4h") { 4 } else { 8 };
+                    let hours = if freq.eq_ignore_ascii_case("4h") {
+                        4
+                    } else {
+                        8
+                    };
                     let window_ms = (hours as i64) * 3600 * 1000 * (limit as i64 + 2);
                     let start_time = end_time.saturating_sub(window_ms);
-                    let rates = fetch_binance_funding_history_range(&c, &s, start_time, end_time, limit)
-                        .await
-                        .unwrap_or_default();
+                    let rates =
+                        fetch_binance_funding_history_range(&c, &s, start_time, end_time, limit)
+                            .await
+                            .unwrap_or_default();
                     (s, freq, rates)
                 }));
             }
             for t in tasks {
                 if let Ok((fut, freq, rates)) = t.await {
-                    debug!("新增符号初始化: {} freq={} history={}条", fut, freq, rates.len());
+                    debug!(
+                        "新增符号初始化: {} freq={} history={}条",
+                        fut,
+                        freq,
+                        rates.len()
+                    );
                     self.funding_frequency.insert(fut.to_uppercase(), freq);
-                    if !rates.is_empty() { self.history_map.insert(fut.to_uppercase(), rates); }
+                    if !rates.is_empty() {
+                        self.history_map.insert(fut.to_uppercase(), rates);
+                    }
                 }
             }
             self.compute_predictions();
@@ -798,7 +907,14 @@ impl StrategyEngine {
                     .get("askbid_sr_close_threshold")
                     .and_then(|x| x.as_f64())
                     .unwrap_or(close_threshold);
-                result.push(SymbolThreshold { spot_symbol, futures_symbol, open_threshold, close_threshold, askbid_open_threshold, askbid_close_threshold });
+                result.push(SymbolThreshold {
+                    spot_symbol,
+                    futures_symbol,
+                    open_threshold,
+                    close_threshold,
+                    askbid_open_threshold,
+                    askbid_close_threshold,
+                });
             }
         }
         if result.is_empty() {
@@ -864,10 +980,12 @@ impl StrategyEngine {
                 continue;
             }
             // 两个价差因子
-            let bidask_sr = compute_bidask_sr(Some(state.spot_quote.bid), Some(state.futures_quote.ask))
-                .unwrap_or(0.0);
-            let askbid_sr = compute_askbid_sr(Some(state.spot_quote.ask), Some(state.futures_quote.bid))
-                .unwrap_or(0.0);
+            let bidask_sr =
+                compute_bidask_sr(Some(state.spot_quote.bid), Some(state.futures_quote.ask))
+                    .unwrap_or(0.0);
+            let askbid_sr =
+                compute_askbid_sr(Some(state.spot_quote.ask), Some(state.futures_quote.bid))
+                    .unwrap_or(0.0);
             rows.push(vec![
                 key.clone(),
                 format!("{:.6}", state.spot_quote.bid),
@@ -950,25 +1068,37 @@ impl StrategyEngine {
             .map(|s| s.futures_symbol.clone())
             .unwrap_or_default();
         let predicted = self.get_predicted_for(&fut_symbol);
+        let funding = FundingRateMsg::get_funding_rate(msg);
+        let next_funding_time = FundingRateMsg::get_next_funding_time(msg);
+        let timestamp = FundingRateMsg::get_timestamp(msg);
+
         if let Some(state) = self.symbols.get_mut(&symbol) {
-            let funding = FundingRateMsg::get_funding_rate(msg);
-            let next_funding_time = FundingRateMsg::get_next_funding_time(msg);
-            let timestamp = FundingRateMsg::get_timestamp(msg);
             state.last_ratio = state.calc_ratio();
             state.funding_rate = funding;
             state.predicted_rate = predicted;
             state.loan_rate = 0.0;
             state.funding_ts = timestamp;
             state.next_funding_time = next_funding_time;
-            debug!(
-                "Funding 更新: {} funding={:.6} pred={:.6} next={} ts={}",
-                symbol, funding, predicted, next_funding_time, timestamp
-            );
-            // 维护滚动 funding rate 列表
+        }
+
+        debug!(
+            "Funding 更新: {} funding={:.6} pred={:.6} next={} ts={}",
+            symbol, funding, predicted, next_funding_time, timestamp
+        );
+
+        {
             let entry = self.funding_series.entry(symbol.clone()).or_default();
             entry.push(funding);
             let max_keep = self.cfg.strategy.funding_ma_size.max(1) * 4; // 留存多点以便滑窗
-            if entry.len() > max_keep { let drop_n = entry.len() - max_keep; entry.drain(0..drop_n); }
+            if entry.len() > max_keep {
+                let drop_n = entry.len() - max_keep;
+                entry.drain(0..drop_n);
+            }
+        }
+
+        let ma = self.calc_funding_ma(&symbol);
+        if let Some(state) = self.symbols.get_mut(&symbol) {
+            state.funding_ma = ma;
         }
     }
 
@@ -980,8 +1110,42 @@ impl StrategyEngine {
         let now_us = get_timestamp_us();
         let min_gap_us = self.cfg.min_signal_gap_us();
 
-        let request = {
-            let Some(state) = self.symbols.get(symbol) else {
+        let (open_upper, open_lower, close_lower, close_upper, _freq_value) =
+            if let Some(entry) = self.funding_thresholds.get(symbol) {
+                (
+                    entry.open_upper_threshold,
+                    entry.open_lower_threshold,
+                    entry.close_lower_threshold,
+                    entry.close_upper_threshold,
+                    entry.funding_frequency.clone(),
+                )
+            } else {
+                let fut_symbol_upper = self
+                    .symbols
+                    .get(symbol)
+                    .map(|s| s.futures_symbol.to_uppercase())
+                    .unwrap_or_default();
+                let freq = self
+                    .funding_frequency
+                    .get(&fut_symbol_upper)
+                    .cloned()
+                    .unwrap_or_else(|| "8h".to_string());
+                let thresholds = if freq.eq_ignore_ascii_case("4h") {
+                    self.th_4h
+                } else {
+                    self.th_8h
+                };
+                (
+                    thresholds.open_upper,
+                    thresholds.open_lower,
+                    thresholds.close_lower,
+                    thresholds.close_upper,
+                    freq,
+                )
+            };
+
+        let decision = {
+            let Some(state) = self.symbols.get_mut(symbol) else {
                 return;
             };
             if !state.ready_for_eval() {
@@ -990,22 +1154,146 @@ impl StrategyEngine {
             let Some(ratio) = state.calc_ratio() else {
                 return;
             };
-            match state.position {
-                PositionState::Flat if ratio <= state.open_threshold => {
-                    if !state.can_emit_signal(now_us, min_gap_us) {
-                        return;
-                    }
-                    self.build_open_request(state, ratio, now_us)
-                }
-                PositionState::Opened if ratio >= state.close_threshold => {
-                    if !state.can_emit_signal(now_us, min_gap_us) {
-                        return;
-                    }
-                    self.build_close_request(state, ratio, now_us)
-                }
-                _ => None,
+
+            let askbid_sr =
+                compute_askbid_sr(Some(state.spot_quote.ask), Some(state.futures_quote.bid));
+
+            state.latest_bidask_sr = Some(ratio);
+            state.latest_askbid_sr = askbid_sr;
+
+            let predicted = state.predicted_rate;
+            let funding_ma = state.funding_ma;
+
+            let predicted_signal = if predicted >= open_upper {
+                -1
+            } else if predicted <= open_lower {
+                1
+            } else {
+                0
+            };
+            let ma_signal = match funding_ma {
+                Some(ma) if ma > close_upper => -2,
+                Some(ma) if ma < close_lower => 2,
+                _ => 0,
+            };
+            let final_signal = if ma_signal != 0 {
+                ma_signal
+            } else {
+                predicted_signal
+            };
+
+            let price_open_bidask = ratio <= state.open_threshold;
+            let price_open_askbid = if !state.askbid_open_threshold.is_finite()
+                || state.askbid_open_threshold.abs() <= f64::EPSILON
+            {
+                true
+            } else {
+                askbid_sr.map_or(false, |v| v >= state.askbid_open_threshold)
+            };
+            let price_close_bidask = ratio >= state.close_threshold;
+            let price_close_askbid = if !state.askbid_close_threshold.is_finite()
+                || state.askbid_close_threshold.abs() <= f64::EPSILON
+            {
+                true
+            } else {
+                askbid_sr.map_or(false, |v| v <= state.askbid_close_threshold)
+            };
+            let price_open_ready = price_open_bidask && price_open_askbid;
+            let price_close_ready = price_close_bidask && price_close_askbid;
+
+            state.predicted_signal = predicted_signal;
+            state.ma_signal = ma_signal;
+            state.final_signal_value = final_signal;
+            state.price_open_bidask = price_open_bidask;
+            state.price_open_askbid = price_open_askbid;
+            state.price_close_bidask = price_close_bidask;
+            state.price_close_askbid = price_close_askbid;
+            state.price_open_ready = price_open_ready;
+            state.price_close_ready = price_close_ready;
+            state.last_ratio = Some(ratio);
+
+            EvaluateDecision {
+                symbol_key: symbol.to_string(),
+                final_signal,
+                price_open_ready,
+                price_close_ready,
+                price_open_bidask,
+                price_open_askbid,
+                price_close_bidask,
+                price_close_askbid,
+                can_emit: state.can_emit_signal(now_us, min_gap_us),
+                position: state.position,
+                ratio,
             }
         };
+
+        let mut request: Option<SignalRequest> = None;
+
+        match decision.final_signal {
+            -1 => {
+                if decision.position != PositionState::Flat {
+                    debug!(
+                        "{} funding信号(-1)忽略: 当前持仓 {:?}",
+                        decision.symbol_key, decision.position
+                    );
+                } else if !decision.price_open_ready {
+                    debug!(
+                        "{} funding信号(-1)忽略: 价差信号未满足 (bidask_ok={} askbid_ok={})",
+                        decision.symbol_key, decision.price_open_bidask, decision.price_open_askbid
+                    );
+                } else if !decision.can_emit {
+                    debug!(
+                        "{} funding信号(-1)忽略: 触发节流 min_gap={}us",
+                        decision.symbol_key, min_gap_us
+                    );
+                } else if let Some(state) = self.symbols.get(&decision.symbol_key) {
+                    if let Some(req) = self.build_open_request(state, decision.ratio, now_us) {
+                        request = Some(req);
+                    } else {
+                        debug!(
+                            "{} funding信号(-1)构建开仓请求失败 (ratio={:.6})",
+                            decision.symbol_key, decision.ratio
+                        );
+                    }
+                }
+            }
+            -2 => {
+                if decision.position != PositionState::Opened {
+                    debug!(
+                        "{} funding信号(-2)忽略: 当前持仓 {:?}",
+                        decision.symbol_key, decision.position
+                    );
+                } else if !decision.price_close_ready {
+                    debug!(
+                        "{} funding信号(-2)忽略: 价差信号未满足 (bidask_ok={} askbid_ok={})",
+                        decision.symbol_key,
+                        decision.price_close_bidask,
+                        decision.price_close_askbid
+                    );
+                } else if !decision.can_emit {
+                    debug!(
+                        "{} funding信号(-2)忽略: 触发节流 min_gap={}us",
+                        decision.symbol_key, min_gap_us
+                    );
+                } else if let Some(state) = self.symbols.get(&decision.symbol_key) {
+                    if let Some(req) = self.build_close_request(state, decision.ratio, now_us) {
+                        request = Some(req);
+                    } else {
+                        debug!(
+                            "{} funding信号(-2)构建平仓请求失败 (ratio={:.6})",
+                            decision.symbol_key, decision.ratio
+                        );
+                    }
+                }
+            }
+            1 | 2 => {
+                debug!(
+                    "{} funding信号({}) 仅记录 (未实现反向操作)",
+                    decision.symbol_key, decision.final_signal
+                );
+            }
+            _ => {}
+        }
 
         if let Some(req) = request {
             match req {
@@ -1094,21 +1382,54 @@ impl StrategyEngine {
     fn resample_and_publish(&mut self) {
         let ts_ms = (get_timestamp_us() / 1000) as i64;
         let mut batch_items: Vec<ResampleItem> = Vec::new();
+        let log_debug = log::log_enabled!(log::Level::Debug);
+        let mut price_rows: Vec<Vec<String>> = Vec::new();
+        let mut funding_rows: Vec<Vec<String>> = Vec::new();
+        let mut signal_rows: Vec<Vec<String>> = Vec::new();
         // 组装每个 symbol 的切片
         let mut keys: Vec<String> = self.symbols.keys().cloned().collect();
         keys.sort();
         for key in keys {
-            let state = match self.symbols.get(&key) { Some(s) => s, None => continue };
-            let spot_bid = if state.spot_quote.bid > 0.0 { Some(state.spot_quote.bid) } else { None };
-            let spot_ask = if state.spot_quote.ask > 0.0 { Some(state.spot_quote.ask) } else { None };
-            let fut_bid = if state.futures_quote.bid > 0.0 { Some(state.futures_quote.bid) } else { None };
-            let fut_ask = if state.futures_quote.ask > 0.0 { Some(state.futures_quote.ask) } else { None };
+            let state = match self.symbols.get(&key) {
+                Some(s) => s,
+                None => continue,
+            };
+            let spot_bid = if state.spot_quote.bid > 0.0 {
+                Some(state.spot_quote.bid)
+            } else {
+                None
+            };
+            let spot_ask = if state.spot_quote.ask > 0.0 {
+                Some(state.spot_quote.ask)
+            } else {
+                None
+            };
+            let fut_bid = if state.futures_quote.bid > 0.0 {
+                Some(state.futures_quote.bid)
+            } else {
+                None
+            };
+            let fut_ask = if state.futures_quote.ask > 0.0 {
+                Some(state.futures_quote.ask)
+            } else {
+                None
+            };
             let bidask_sr = compute_bidask_sr(spot_bid, fut_ask);
             let askbid_sr = compute_askbid_sr(spot_ask, fut_bid);
-            let funding_rate = if state.funding_rate != 0.0 { Some(state.funding_rate) } else { None };
+            let funding_rate = if state.funding_rate != 0.0 {
+                Some(state.funding_rate)
+            } else {
+                None
+            };
             let funding_rate_ma = self.calc_funding_ma(&key);
             let predicted_rate = Some(self.get_predicted_for(&state.futures_symbol));
-            let loan_rate_8h = self.loan_map.get(&key).copied().or_else(|| if state.loan_rate != 0.0 { Some(state.loan_rate) } else { None });
+            let loan_rate_8h = self.loan_map.get(&key).copied().or_else(|| {
+                if state.loan_rate != 0.0 {
+                    Some(state.loan_rate)
+                } else {
+                    None
+                }
+            });
 
             let item = ResampleItem {
                 symbol: key.clone(),
@@ -1135,50 +1456,186 @@ impl StrategyEngine {
                 }
             }
             batch_items.push(item);
+
+            if log_debug {
+                let (open_upper, open_lower, close_lower, close_upper, freq) =
+                    if let Some(entry) = self.funding_thresholds.get(&key) {
+                        (
+                            entry.open_upper_threshold,
+                            entry.open_lower_threshold,
+                            entry.close_lower_threshold,
+                            entry.close_upper_threshold,
+                            entry.funding_frequency.clone(),
+                        )
+                    } else {
+                        let fut_key = state.futures_symbol.to_uppercase();
+                        let freq = self
+                            .funding_frequency
+                            .get(&fut_key)
+                            .cloned()
+                            .unwrap_or_else(|| "8h".to_string());
+                        let (ou, ol, cl, cu) = self.thresholds_for_frequency(&freq);
+                        (ou, ol, cl, cu, freq)
+                    };
+
+                price_rows.push(vec![
+                    key.clone(),
+                    fmt_decimal(state.spot_quote.bid),
+                    fmt_decimal(state.spot_quote.ask),
+                    fmt_decimal(state.futures_quote.bid),
+                    fmt_decimal(state.futures_quote.ask),
+                    fmt_decimal(bidask_sr.unwrap_or(0.0)),
+                    fmt_decimal(state.open_threshold),
+                    fmt_decimal(state.close_threshold),
+                    fmt_decimal(askbid_sr.unwrap_or(0.0)),
+                    fmt_decimal(state.askbid_open_threshold),
+                    fmt_decimal(state.askbid_close_threshold),
+                ]);
+
+                funding_rows.push(vec![
+                    key.clone(),
+                    freq,
+                    fmt_decimal(state.funding_rate),
+                    fmt_decimal(predicted_rate.unwrap_or(0.0)),
+                    fmt_decimal(funding_rate_ma.unwrap_or_else(|| state.funding_ma.unwrap_or(0.0))),
+                    fmt_decimal(open_upper),
+                    fmt_decimal(open_lower),
+                    fmt_decimal(close_lower),
+                    fmt_decimal(close_upper),
+                ]);
+
+                let ready_open = if state.price_open_ready { "Y" } else { "N" };
+                let ready_close = if state.price_close_ready { "Y" } else { "N" };
+                let price_open_bidask = if state.price_open_bidask { "Y" } else { "N" };
+                let price_open_askbid = if state.price_open_askbid { "Y" } else { "N" };
+                let price_close_bidask = if state.price_close_bidask { "Y" } else { "N" };
+                let price_close_askbid = if state.price_close_askbid { "Y" } else { "N" };
+                let position = match state.position {
+                    PositionState::Flat => "Flat",
+                    PositionState::Opened => "Opened",
+                };
+
+                signal_rows.push(vec![
+                    key.clone(),
+                    state.predicted_signal.to_string(),
+                    state.ma_signal.to_string(),
+                    state.final_signal_value.to_string(),
+                    price_open_bidask.to_string(),
+                    price_open_askbid.to_string(),
+                    price_close_bidask.to_string(),
+                    price_close_askbid.to_string(),
+                    ready_open.to_string(),
+                    ready_close.to_string(),
+                    position.to_string(),
+                ]);
+            }
         }
 
         // 批量发送（控制最大 1024 字节）
-        let batch = ResampleBatch { ts_ms, items: batch_items };
+        let batch = ResampleBatch {
+            ts_ms,
+            items: batch_items,
+        };
         if let Ok(mut bytes) = batch.to_bytes() {
             // Prepend length header
             let len = bytes.len() as u32;
             let mut buf = Vec::with_capacity(bytes.len() + 4);
             buf.extend_from_slice(&len.to_le_bytes());
             buf.append(&mut bytes);
-            if buf.len() > 1024 { buf.truncate(1024); }
+            if buf.len() > 1024 {
+                buf.truncate(1024);
+            }
             let _ = self.resample_pub.publish(&buf);
+        }
+
+        if log_debug {
+            if !price_rows.is_empty() {
+                debug!(
+                    "Resample盘口价差\n{}",
+                    render_three_line_table(
+                        &[
+                            "Symbol",
+                            "SpotBid",
+                            "SpotAsk",
+                            "FutBid",
+                            "FutAsk",
+                            "BidAskSR",
+                            "BA_OpenTh",
+                            "BA_CloseTh",
+                            "AskBidSR",
+                            "AB_OpenTh",
+                            "AB_CloseTh",
+                        ],
+                        &price_rows,
+                    )
+                );
+            }
+            if !funding_rows.is_empty() {
+                debug!(
+                    "Resample资金费率\n{}",
+                    render_three_line_table(
+                        &[
+                            "Symbol",
+                            "Freq",
+                            "Funding",
+                            "Predict",
+                            "MA60",
+                            "OpenUpper",
+                            "OpenLower",
+                            "CloseLower",
+                            "CloseUpper",
+                        ],
+                        &funding_rows,
+                    )
+                );
+            }
+            if !signal_rows.is_empty() {
+                debug!(
+                    "Resample信号状态\n{}",
+                    render_three_line_table(
+                        &[
+                            "Symbol",
+                            "PredSig",
+                            "MASig",
+                            "Final",
+                            "BA_Open",
+                            "AB_Open",
+                            "BA_Close",
+                            "AB_Close",
+                            "ReadyOpen",
+                            "ReadyClose",
+                            "Position",
+                        ],
+                        &signal_rows,
+                    )
+                );
+            }
         }
     }
 
     fn calc_funding_ma(&self, symbol: &str) -> Option<f64> {
         let win = self.cfg.strategy.funding_ma_size.max(1);
         let values = self.funding_series.get(symbol)?;
-        if values.is_empty() { return None; }
+        if values.is_empty() {
+            return None;
+        }
         let start = values.len().saturating_sub(win);
         let slice = &values[start..];
-        use polars::prelude::*;
-        use polars_time::prelude::SeriesOpsTime;
-        let s = Series::new("rate".into(), slice.to_vec());
-        let opts = RollingOptionsFixedWindow { window_size: win, min_periods: 1, ..Default::default() };
-        match s.rolling_mean(opts) {
-            Ok(out) => {
-                let v = out.f64().ok().and_then(|ca| ca.get(slice.len() - 1));
-                debug!(
-                    "资金费率MA(polars): symbol={} win={} slice_len={} value={:?}",
-                    symbol, win, slice.len(), v
-                );
-                v
-            }
-            Err(err) => {
-                debug!("资金费率MA(polars) 失败: symbol={} err={:?}", symbol, err);
-                None
-            }
+        if slice.is_empty() {
+            return None;
         }
+        let sum: f64 = slice.iter().copied().sum();
+        let mean = sum / (slice.len() as f64);
+        Some(mean)
     }
 
     async fn reload_loan_rates(&mut self) -> Result<()> {
         // 从 Redis HASH 读取借贷利率，字段为 symbol，值可为数字字符串或 JSON { loan_rate_8h, ts }
-        let settings = self.cfg.redis.clone().ok_or_else(|| anyhow::anyhow!("缺少 Redis 配置"))?;
+        let settings = self
+            .cfg
+            .redis
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("缺少 Redis 配置"))?;
         let key = self
             .cfg
             .loan
@@ -1197,7 +1654,9 @@ impl StrategyEngine {
                     v.and_then(|o| o.get("loan_rate_8h").and_then(|x| x.as_f64()))
                 }
             };
-            if let Some(v) = val { out.insert(sym_up, v); }
+            if let Some(v) = val {
+                out.insert(sym_up, v);
+            }
         }
         self.loan_map = out;
         Ok(())
@@ -1378,12 +1837,38 @@ struct FundingThresholdEntry {
     close_upper_threshold: f64,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy)]
 struct RateThresholds {
     open_upper: f64,
     open_lower: f64,
     close_lower: f64,
     close_upper: f64,
+}
+
+impl RateThresholds {
+    const fn for_8h() -> Self {
+        Self {
+            open_upper: 0.00008,
+            open_lower: -0.00008,
+            close_lower: -0.001,
+            close_upper: 0.001,
+        }
+    }
+
+    const fn for_4h() -> Self {
+        Self {
+            open_upper: 0.00004,
+            open_lower: -0.00004,
+            close_lower: -0.0008,
+            close_upper: 0.0008,
+        }
+    }
+}
+
+impl Default for RateThresholds {
+    fn default() -> Self {
+        Self::for_8h()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1431,9 +1916,14 @@ impl StrategyEngine {
     }
     async fn reload_params_if_changed(&mut self) -> Result<bool> {
         // 从 Redis HASH 读取 binance_forward_arb_params
-        let Some(redis_cfg) = self.cfg.redis.clone() else { return Ok(false); };
+        let Some(redis_cfg) = self.cfg.redis.clone() else {
+            return Ok(false);
+        };
         let mut client = mkt_signal::common::redis_client::RedisClient::connect(redis_cfg).await?;
-        let map = client.hgetall_map("binance_forward_arb_params").await.unwrap_or_default();
+        let map = client
+            .hgetall_map("binance_forward_arb_params")
+            .await
+            .unwrap_or_default();
         debug!("参数读取: {:?}", map);
         // 必须包含 4h/8h 四个阈值共8个键
         let required = [
@@ -1461,43 +1951,155 @@ impl StrategyEngine {
         let mut changed = false;
         let parse_u64 = |k: &str| -> Option<u64> { map.get(k).and_then(|v| v.parse::<u64>().ok()) };
         let parse_f64 = |k: &str| -> Option<f64> { map.get(k).and_then(|v| v.parse::<f64>().ok()) };
-        if let Some(v) = parse_u64("interval") { if self.cfg.strategy.interval as u64 != v { self.cfg.strategy.interval = v as usize; changed = true; } }
-        if let Some(v) = parse_u64("predict_num") { if self.cfg.strategy.predict_num as u64 != v { self.cfg.strategy.predict_num = v as usize; changed = true; } }
-        if let Some(v) = parse_u64("refresh_secs") { if self.cfg.strategy.refresh_secs != v { self.cfg.strategy.refresh_secs = v; changed = true; } }
-        if let Some(v) = parse_u64("reload_interval_secs") { if self.cfg.reload.interval_secs != v { self.cfg.reload.interval_secs = v; changed = true; } }
-        if let Some(v) = parse_u64("signal_min_interval_ms") { if self.cfg.signal.min_interval_ms != v { self.cfg.signal.min_interval_ms = v; changed = true; } }
-        if let Some(v) = parse_u64("fetch_secs") { if self.cfg.strategy.fetch_secs != v { self.cfg.strategy.fetch_secs = v; changed = true; } }
-        if let Some(v) = parse_u64("fetch_offset_secs") { if self.cfg.strategy.fetch_offset_secs != v { self.cfg.strategy.fetch_offset_secs = v; changed = true; } }
-        if let Some(v) = parse_u64("history_limit") { if self.cfg.strategy.history_limit as u64 != v { self.cfg.strategy.history_limit = v as usize; changed = true; } }
+        if let Some(v) = parse_u64("interval") {
+            if self.cfg.strategy.interval as u64 != v {
+                self.cfg.strategy.interval = v as usize;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_u64("predict_num") {
+            if self.cfg.strategy.predict_num as u64 != v {
+                self.cfg.strategy.predict_num = v as usize;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_u64("refresh_secs") {
+            if self.cfg.strategy.refresh_secs != v {
+                self.cfg.strategy.refresh_secs = v;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_u64("reload_interval_secs") {
+            if self.cfg.reload.interval_secs != v {
+                self.cfg.reload.interval_secs = v;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_u64("signal_min_interval_ms") {
+            if self.cfg.signal.min_interval_ms != v {
+                self.cfg.signal.min_interval_ms = v;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_u64("fetch_secs") {
+            if self.cfg.strategy.fetch_secs != v {
+                self.cfg.strategy.fetch_secs = v;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_u64("fetch_offset_secs") {
+            if self.cfg.strategy.fetch_offset_secs != v {
+                self.cfg.strategy.fetch_offset_secs = v;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_u64("history_limit") {
+            if self.cfg.strategy.history_limit as u64 != v {
+                self.cfg.strategy.history_limit = v as usize;
+                changed = true;
+            }
+        }
         // 结算偏移与 fetch_offset_secs 对齐
         let new_settle = self.cfg.strategy.fetch_offset_secs as i64;
-        if self.cfg.strategy.settlement_offset_secs != new_settle { self.cfg.strategy.settlement_offset_secs = new_settle; changed = true; }
+        if self.cfg.strategy.settlement_offset_secs != new_settle {
+            self.cfg.strategy.settlement_offset_secs = new_settle;
+            changed = true;
+        }
 
         // 加载阈值（4h/8h）
         let mut th_changed = false;
-        if let Some(v) = parse_f64("fr_4h_open_upper_threshold") { if !approx_equal(self.th_4h.open_upper, v) { self.th_4h.open_upper = v; th_changed = true; } }
-        if let Some(v) = parse_f64("fr_4h_open_lower_threshold") { if !approx_equal(self.th_4h.open_lower, v) { self.th_4h.open_lower = v; th_changed = true; } }
-        if let Some(v) = parse_f64("fr_4h_close_lower_threshold") { if !approx_equal(self.th_4h.close_lower, v) { self.th_4h.close_lower = v; th_changed = true; } }
-        if let Some(v) = parse_f64("fr_4h_close_upper_threshold") { if !approx_equal(self.th_4h.close_upper, v) { self.th_4h.close_upper = v; th_changed = true; } }
-        if let Some(v) = parse_f64("fr_8h_open_upper_threshold") { if !approx_equal(self.th_8h.open_upper, v) { self.th_8h.open_upper = v; th_changed = true; } }
-        if let Some(v) = parse_f64("fr_8h_open_lower_threshold") { if !approx_equal(self.th_8h.open_lower, v) { self.th_8h.open_lower = v; th_changed = true; } }
-        if let Some(v) = parse_f64("fr_8h_close_lower_threshold") { if !approx_equal(self.th_8h.close_lower, v) { self.th_8h.close_lower = v; th_changed = true; } }
-        if let Some(v) = parse_f64("fr_8h_close_upper_threshold") { if !approx_equal(self.th_8h.close_upper, v) { self.th_8h.close_upper = v; th_changed = true; } }
-        if th_changed { changed = true; debug!("阈值参数变更: 4h={:?} 8h={:?}", self.th_4h, self.th_8h); }
+        if let Some(v) = parse_f64("fr_4h_open_upper_threshold") {
+            if !approx_equal(self.th_4h.open_upper, v) {
+                self.th_4h.open_upper = v;
+                th_changed = true;
+            }
+        }
+        if let Some(v) = parse_f64("fr_4h_open_lower_threshold") {
+            if !approx_equal(self.th_4h.open_lower, v) {
+                self.th_4h.open_lower = v;
+                th_changed = true;
+            }
+        }
+        if let Some(v) = parse_f64("fr_4h_close_lower_threshold") {
+            if !approx_equal(self.th_4h.close_lower, v) {
+                self.th_4h.close_lower = v;
+                th_changed = true;
+            }
+        }
+        if let Some(v) = parse_f64("fr_4h_close_upper_threshold") {
+            if !approx_equal(self.th_4h.close_upper, v) {
+                self.th_4h.close_upper = v;
+                th_changed = true;
+            }
+        }
+        if let Some(v) = parse_f64("fr_8h_open_upper_threshold") {
+            if !approx_equal(self.th_8h.open_upper, v) {
+                self.th_8h.open_upper = v;
+                th_changed = true;
+            }
+        }
+        if let Some(v) = parse_f64("fr_8h_open_lower_threshold") {
+            if !approx_equal(self.th_8h.open_lower, v) {
+                self.th_8h.open_lower = v;
+                th_changed = true;
+            }
+        }
+        if let Some(v) = parse_f64("fr_8h_close_lower_threshold") {
+            if !approx_equal(self.th_8h.close_lower, v) {
+                self.th_8h.close_lower = v;
+                th_changed = true;
+            }
+        }
+        if let Some(v) = parse_f64("fr_8h_close_upper_threshold") {
+            if !approx_equal(self.th_8h.close_upper, v) {
+                self.th_8h.close_upper = v;
+                th_changed = true;
+            }
+        }
+        if th_changed {
+            changed = true;
+            debug!("阈值参数变更: 4h={:?} 8h={:?}", self.th_4h, self.th_8h);
+        }
 
         // 订单参数
-        if let Some(v) = parse_f64("order_open_range") { if !approx_equal(self.cfg.order.open_range, v) { self.cfg.order.open_range = v; changed = true; } }
-        if let Some(v) = parse_f64("order_close_range") { if !approx_equal(self.cfg.order.close_range, v) { self.cfg.order.close_range = v; changed = true; } }
-        if let Some(v) = parse_f64("order_amount_u") { if !approx_equal(self.cfg.order.amount_u, v) { self.cfg.order.amount_u = v; changed = true; } }
-        if let Some(v) = parse_u64("order_max_open_order_keep_s") { if self.cfg.order.max_open_order_keep_s != v { self.cfg.order.max_open_order_keep_s = v; changed = true; } }
-        if let Some(v) = parse_u64("order_max_close_order_keep_s") { if self.cfg.order.max_close_order_keep_s != v { self.cfg.order.max_close_order_keep_s = v; changed = true; } }
+        if let Some(v) = parse_f64("order_open_range") {
+            if !approx_equal(self.cfg.order.open_range, v) {
+                self.cfg.order.open_range = v;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_f64("order_close_range") {
+            if !approx_equal(self.cfg.order.close_range, v) {
+                self.cfg.order.close_range = v;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_f64("order_amount_u") {
+            if !approx_equal(self.cfg.order.amount_u, v) {
+                self.cfg.order.amount_u = v;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_u64("order_max_open_order_keep_s") {
+            if self.cfg.order.max_open_order_keep_s != v {
+                self.cfg.order.max_open_order_keep_s = v;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_u64("order_max_close_order_keep_s") {
+            if self.cfg.order.max_close_order_keep_s != v {
+                self.cfg.order.max_close_order_keep_s = v;
+                changed = true;
+            }
+        }
 
         let current = ParamsSnapshot::from(&self.cfg.strategy);
         if self.last_params.as_ref() != Some(&current) {
             changed = true;
             self.last_params = Some(current);
             // 重要参数变更时，重设调度时间点（阈值刷新周期按 reload.interval_secs）
-            self.next_reload = Instant::now() + Duration::from_secs(self.cfg.reload.interval_secs.max(5));
+            self.next_reload =
+                Instant::now() + Duration::from_secs(self.cfg.reload.interval_secs.max(5));
             self.next_fetch_refresh = self.next_fetch_instant();
         }
         debug!("参数变更检测: changed={}", changed);
@@ -1507,11 +2109,17 @@ impl StrategyEngine {
     fn is_settlement_trigger(&mut self) -> bool {
         // 基于 UTC 准点 + 偏移（秒）判断 settlement 周期；周期大小来自 fetch_secs
         let now_ms = Utc::now().timestamp_millis();
-        let offset_ms = self.cfg.strategy.settlement_offset_secs.saturating_mul(1000);
+        let offset_ms = self
+            .cfg
+            .strategy
+            .settlement_offset_secs
+            .saturating_mul(1000);
         let period_s = self.cfg.strategy.fetch_secs.max(60) as i64;
         let period_ms = period_s.saturating_mul(1000);
         let adj = now_ms.saturating_sub(offset_ms);
-        if adj < 0 { return false; }
+        if adj < 0 {
+            return false;
+        }
         let slot = adj / period_ms;
         let slot_ms = slot.saturating_mul(period_ms).saturating_add(offset_ms);
         if self.last_settlement_marker_ms != Some(slot_ms) {
@@ -1527,7 +2135,10 @@ impl StrategyEngine {
 
     async fn recompute_and_log(&mut self, reason: &str, symbols_changed: bool) {
         // 重算每个符号对应的阈值条目
-        debug!("开始重算资金费率阈值: reason='{}' symbols_changed={}", reason, symbols_changed);
+        debug!(
+            "开始重算资金费率阈值: reason='{}' symbols_changed={}",
+            reason, symbols_changed
+        );
         for (key, state) in &self.symbols {
             let fut = state.futures_symbol.to_uppercase();
             let freq = self
@@ -1558,45 +2169,58 @@ impl StrategyEngine {
     }
 
     fn print_funding_overview_table(&self) {
-        if self.symbols.is_empty() { return; }
-        if !self.is_warmup_complete() { return; }
+        if self.symbols.is_empty() {
+            return;
+        }
+        if !self.is_warmup_complete() {
+            return;
+        }
         let mut rows: Vec<Vec<String>> = Vec::new();
         let mut keys: Vec<String> = self.symbols.keys().cloned().collect();
         keys.sort();
         for key in keys {
-            let Some(state) = self.symbols.get(&key) else { continue; };
+            let Some(state) = self.symbols.get(&key) else {
+                continue;
+            };
             let fut = state.futures_symbol.to_uppercase();
             // 优先使用已重算的阈值表条目，避免触发未使用字段警告
-            let (symbol, freq, ou, ol, cl, cu, pred) = if let Some(e) = self.funding_thresholds.get(&key) {
-                (
-                    e.symbol.clone(),
-                    e.funding_frequency.clone(),
-                    e.open_upper_threshold,
-                    e.open_lower_threshold,
-                    e.close_lower_threshold,
-                    e.close_upper_threshold,
-                    e.predict_funding_rate,
-                )
-            } else {
-                let freq = self
-                    .funding_frequency
-                    .get(&fut)
-                    .cloned()
-                    .unwrap_or_else(|| "8h".to_string());
-                let (ou, ol, cl, cu) = self.thresholds_for_frequency(&freq);
-                let pred = self.get_predicted_for(&fut);
-                (key.clone(), freq, ou, ol, cl, cu, pred)
-            };
+            let (symbol, freq, ou, ol, cl, cu, pred) =
+                if let Some(e) = self.funding_thresholds.get(&key) {
+                    (
+                        e.symbol.clone(),
+                        e.funding_frequency.clone(),
+                        e.open_upper_threshold,
+                        e.open_lower_threshold,
+                        e.close_lower_threshold,
+                        e.close_upper_threshold,
+                        e.predict_funding_rate,
+                    )
+                } else {
+                    let freq = self
+                        .funding_frequency
+                        .get(&fut)
+                        .cloned()
+                        .unwrap_or_else(|| "8h".to_string());
+                    let (ou, ol, cl, cu) = self.thresholds_for_frequency(&freq);
+                    let pred = self.get_predicted_for(&fut);
+                    (key.clone(), freq, ou, ol, cl, cu, pred)
+                };
             // 使用 REST 历史的最近 funding_ma_size 条计算均值
             let fr_ma = self
                 .history_map
                 .get(&fut)
                 .and_then(|v| {
                     let win = self.cfg.strategy.funding_ma_size.max(1);
-                    if v.is_empty() { return None; }
+                    if v.is_empty() {
+                        return None;
+                    }
                     let start = v.len().saturating_sub(win);
                     let slice = &v[start..];
-                    if slice.is_empty() { None } else { Some(slice.iter().copied().sum::<f64>() / (slice.len() as f64)) }
+                    if slice.is_empty() {
+                        None
+                    } else {
+                        Some(slice.iter().copied().sum::<f64>() / (slice.len() as f64))
+                    }
                 })
                 .map(|v| format!("{:.6}", v))
                 .unwrap_or_else(|| "-".to_string());
@@ -1615,16 +2239,22 @@ impl StrategyEngine {
                 let _ = e.lorn_rate;
             }
         }
-        if rows.is_empty() { return; }
+        if rows.is_empty() {
+            return;
+        }
         let table = render_three_line_table(
-            &["Symbol", "Freq", "FR_Mean", "Pred", "OpenU", "OpenL", "CloseL", "CloseU"],
+            &[
+                "Symbol", "Freq", "FR_Mean", "Pred", "OpenU", "OpenL", "CloseL", "CloseU",
+            ],
             &rows,
         );
         info!("资金费率总览\n{}", table);
     }
 
     fn print_warmup_progress_table(&self) {
-        if self.symbols.is_empty() { return; }
+        if self.symbols.is_empty() {
+            return;
+        }
         let need = self.cfg.strategy.funding_ma_size.max(1);
         let mut rows: Vec<Vec<String>> = Vec::new();
         let mut keys: Vec<String> = self.symbols.keys().cloned().collect();
@@ -1647,7 +2277,9 @@ impl StrategyEngine {
                 ]);
             }
         }
-        if rows.is_empty() { return; }
+        if rows.is_empty() {
+            return;
+        }
         let table = render_three_line_table(&["Symbol", "Futures", "Count", "Need", "Freq"], &rows);
         info!("Warmup 进度\n{}", table);
     }
@@ -1669,6 +2301,36 @@ enum SignalRequest {
         price: f64,
         emit_ts: i64,
     },
+}
+
+fn fmt_decimal(value: f64) -> String {
+    if value.is_nan() {
+        return "NaN".to_string();
+    }
+    if !value.is_finite() {
+        return if value.is_sign_positive() {
+            "Inf".to_string()
+        } else {
+            "-Inf".to_string()
+        };
+    }
+    if value == 0.0 {
+        return "0".to_string();
+    }
+    let mut s = format!("{value:.6}");
+    if s.contains('.') {
+        while s.ends_with('0') {
+            s.pop();
+        }
+        if s.ends_with('.') {
+            s.pop();
+        }
+    }
+    if s.is_empty() {
+        "0".to_string()
+    } else {
+        s
+    }
 }
 
 fn render_three_line_table(headers: &[&str], rows: &[Vec<String>]) -> String {
@@ -1701,7 +2363,9 @@ fn render_three_line_table(headers: &[&str], rows: &[Vec<String>]) -> String {
 
 impl StrategyEngine {
     fn is_warmup_complete(&self) -> bool {
-        if self.symbols.is_empty() { return false; }
+        if self.symbols.is_empty() {
+            return false;
+        }
         let need = self.cfg.strategy.funding_ma_size.max(1);
         for state in self.symbols.values() {
             let fut = state.futures_symbol.to_uppercase();
@@ -1753,7 +2417,8 @@ fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
 async fn main() -> Result<()> {
     // 更保守的默认日志过滤，避免输出依赖库的 DEBUG 噪声
     let default_filter = "info,funding_rate_strategy=debug,mkt_signal=info,hyper=warn,hyper_util=warn,h2=warn,reqwest=warn";
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter)).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter))
+        .init();
 
     info!("启动 Binance Forward Arb 信号策略");
 
@@ -1765,7 +2430,10 @@ async fn main() -> Result<()> {
         engine.print_funding_overview_table();
         engine.log_symbol_snapshot();
     } else {
-        info!("等待资金费率均值预热: 需要每个符号至少 {} 条历史", cfg.strategy.funding_ma_size.max(1));
+        info!(
+            "等待资金费率均值预热: 需要每个符号至少 {} 条历史",
+            cfg.strategy.funding_ma_size.max(1)
+        );
     }
 
     let mut subscriber = MultiChannelSubscriber::new(NODE_FUNDING_STRATEGY_SUB)?;
@@ -2034,8 +2702,10 @@ fn approx_equal(a: f64, b: f64) -> bool {
 
 #[derive(Debug, Deserialize)]
 struct BinanceFundingHistItem {
-    #[serde(rename = "fundingRate")] funding_rate: String,
-    #[serde(rename = "fundingTime")] funding_time: Option<i64>,
+    #[serde(rename = "fundingRate")]
+    funding_rate: String,
+    #[serde(rename = "fundingTime")]
+    funding_time: Option<i64>,
 }
 
 // removed: fetch_binance_funding_history (superseded by range variant)
@@ -2056,7 +2726,9 @@ async fn fetch_binance_funding_items(
         ("limit", &limit_s),
     ];
     let resp = client.get(url).query(&params).send().await?;
-    if !resp.status().is_success() { return Ok(vec![]); }
+    if !resp.status().is_success() {
+        return Ok(vec![]);
+    }
     let mut items: Vec<BinanceFundingHistItem> = resp.json().await.unwrap_or_default();
     items.sort_by_key(|it| it.funding_time.unwrap_or_default());
     Ok(items)
@@ -2080,12 +2752,16 @@ async fn fetch_binance_funding_history_range(
         ("limit", &limit_s),
     ];
     let resp = client.get(url).query(&params).send().await?;
-    if !resp.status().is_success() { return Ok(vec![]); }
+    if !resp.status().is_success() {
+        return Ok(vec![]);
+    }
     let mut items: Vec<BinanceFundingHistItem> = resp.json().await.unwrap_or_default();
     items.sort_by_key(|it| it.funding_time.unwrap_or_default());
     let mut out = Vec::with_capacity(items.len());
     for it in items {
-        if let Ok(v) = it.funding_rate.parse::<f64>() { out.push(v); }
+        if let Ok(v) = it.funding_rate.parse::<f64>() {
+            out.push(v);
+        }
     }
     if out.len() > limit {
         let drop_n = out.len() - limit;
@@ -2096,17 +2772,22 @@ async fn fetch_binance_funding_history_range(
 
 async fn infer_binance_funding_frequency(client: &Client, symbol: &str) -> Option<String> {
     let items = fetch_binance_funding_items(client, symbol, 40).await.ok()?;
-    let mut times: Vec<i64> = items
-        .iter()
-        .filter_map(|it| it.funding_time)
-        .collect();
-    if times.len() < 3 { return Some("8h".to_string()); }
+    let mut times: Vec<i64> = items.iter().filter_map(|it| it.funding_time).collect();
+    if times.len() < 3 {
+        return Some("8h".to_string());
+    }
     times.sort_unstable();
     let mut diffs: Vec<i64> = Vec::with_capacity(times.len().saturating_sub(1));
-    for w in times.windows(2) { if let [a, b] = w { diffs.push(b - a); } }
-    if diffs.is_empty() { return Some("8h".to_string()); }
+    for w in times.windows(2) {
+        if let [a, b] = w {
+            diffs.push(b - a);
+        }
+    }
+    if diffs.is_empty() {
+        return Some("8h".to_string());
+    }
     diffs.sort_unstable();
-    let median = diffs[diffs.len()/2];
+    let median = diffs[diffs.len() / 2];
     // 阈值 6 小时分界
     let six_hours_ms = 6 * 3600 * 1000;
     let freq = if median <= six_hours_ms { "4h" } else { "8h" };
@@ -2124,7 +2805,14 @@ struct LoanConfig {
 }
 
 impl Default for LoanConfig {
-    fn default() -> Self { Self { redis_key: None, refresh_secs: default_loan_refresh_secs() } }
+    fn default() -> Self {
+        Self {
+            redis_key: None,
+            refresh_secs: default_loan_refresh_secs(),
+        }
+    }
 }
 
-const fn default_loan_refresh_secs() -> u64 { 60 }
+const fn default_loan_refresh_secs() -> u64 {
+    60
+}
