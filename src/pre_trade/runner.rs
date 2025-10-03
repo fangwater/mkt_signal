@@ -526,6 +526,11 @@ impl RuntimeContext {
             }
             let exposures = self.exposure_manager.borrow();
             log_exposures(exposures.exposures(), &price_snap);
+            log_exposure_summary(
+                exposures.total_equity(),
+                exposures.total_abs_exposure(),
+                exposures.total_position(),
+            );
         }
     }
 
@@ -1500,6 +1505,24 @@ fn log_exposures(entries: &[ExposureEntry], price_map: &BTreeMap<String, PriceEn
         &rows,
     );
     info!("现货+UM 敞口汇总\n{}", table);
+}
+
+fn log_exposure_summary(total_equity: f64, total_exposure: f64, total_position: f64) {
+    let leverage = if total_equity.abs() <= f64::EPSILON {
+        0.0
+    } else {
+        total_position / total_equity
+    };
+
+    let table = render_three_line_table(
+        &["TotalEquity", "TotalExposure", "Leverage"],
+        &[vec![
+            fmt_decimal(total_equity),
+            fmt_decimal(total_exposure),
+            fmt_decimal(leverage),
+        ]],
+    );
+    info!("风险指标汇总\n{}", table);
 }
 
 fn log_price_table(entries: &BTreeMap<String, PriceEntry>) {
