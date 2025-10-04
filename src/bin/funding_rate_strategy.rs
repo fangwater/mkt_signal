@@ -304,18 +304,6 @@ impl Quote {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PositionState {
-    Flat,
-    Opened,
-}
-
-impl Default for PositionState {
-    fn default() -> Self {
-        PositionState::Flat
-    }
-}
-
 /// 单个交易对的运行时状态
 #[derive(Debug, Clone)]
 struct SymbolState {
@@ -327,7 +315,6 @@ struct SymbolState {
     askbid_close_threshold: f64,
     spot_quote: Quote,
     futures_quote: Quote,
-    position: PositionState,
     last_ratio: Option<f64>,
     last_open_ts: Option<i64>,
     last_close_ts: Option<i64>,
@@ -362,7 +349,6 @@ impl SymbolState {
             askbid_close_threshold: threshold.askbid_close_threshold,
             spot_quote: Quote::default(),
             futures_quote: Quote::default(),
-            position: PositionState::Flat,
             last_ratio: None,
             last_open_ts: None,
             last_close_ts: None,
@@ -440,7 +426,6 @@ struct EvaluateDecision {
     price_close_bidask: bool,
     price_close_askbid: bool,
     can_emit: bool,
-    position: PositionState,
     ratio: f64,
 }
 
@@ -1251,7 +1236,6 @@ impl StrategyEngine {
                 price_close_bidask,
                 price_close_askbid,
                 can_emit: state.can_emit_signal(now_us, min_gap_us),
-                position: state.position,
                 ratio,
             }
         };
@@ -1260,12 +1244,7 @@ impl StrategyEngine {
 
         match decision.final_signal {
             -1 => {
-                if decision.position != PositionState::Flat {
-                    debug!(
-                        "{} funding信号(-1)忽略: 当前持仓 {:?}",
-                        decision.symbol_key, decision.position
-                    );
-                } else if !decision.price_open_ready {
+                if !decision.price_open_ready {
                     debug!(
                         "{} funding信号(-1)忽略: 价差信号未满足 (bidask_ok={} askbid_ok={})",
                         decision.symbol_key, decision.price_open_bidask, decision.price_open_askbid
@@ -1287,12 +1266,7 @@ impl StrategyEngine {
                 }
             }
             -2 => {
-                if decision.position != PositionState::Opened {
-                    debug!(
-                        "{} funding信号(-2)忽略: 当前持仓 {:?}",
-                        decision.symbol_key, decision.position
-                    );
-                } else if !decision.price_close_ready {
+                if !decision.price_close_ready {
                     debug!(
                         "{} funding信号(-2)忽略: 价差信号未满足 (bidask_ok={} askbid_ok={})",
                         decision.symbol_key,
@@ -1355,7 +1329,6 @@ impl StrategyEngine {
                         return;
                     }
                     if let Some(state) = self.symbols.get_mut(&symbol_key) {
-                        state.position = PositionState::Opened;
                         state.last_ratio = Some(ratio);
                         state.last_open_ts = Some(emit_ts);
                         state.mark_signal(emit_ts);
@@ -1402,7 +1375,6 @@ impl StrategyEngine {
                         return;
                     }
                     if let Some(state) = self.symbols.get_mut(&symbol_key) {
-                        state.position = PositionState::Flat;
                         state.last_ratio = Some(ratio);
                         state.last_close_ts = Some(emit_ts);
                         state.mark_signal(emit_ts);
@@ -1656,10 +1628,6 @@ impl StrategyEngine {
             "next_funding_time": state.next_funding_time,
         });
 
-        let position = match state.position {
-            PositionState::Flat => "flat",
-            PositionState::Opened => "opened",
-        };
         let secs = emit_ts / 1_000_000;
         let micros = emit_ts.rem_euclid(1_000_000_i64) as u32;
         let ts_iso =
@@ -1671,7 +1639,6 @@ impl StrategyEngine {
             "ts_iso": ts_iso,
             "symbol": symbol_key,
             "action": action,
-            "position": position,
             "spread_ratio": ratio,
             "target_price": price,
             "spot": {
