@@ -5,9 +5,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use reqwest::Client;
 use serde::Deserialize;
+use serde_json::json;
 use tokio::signal;
 #[cfg(unix)]
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
@@ -969,6 +970,9 @@ impl StrategyEngine {
     }
 
     fn log_symbol_snapshot(&self) {
+        if !log::log_enabled!(log::Level::Trace) {
+            return;
+        }
         let mut keys: Vec<String> = self.symbols.keys().cloned().collect();
         keys.sort();
         let mut rows: Vec<Vec<String>> = Vec::new();
@@ -999,7 +1003,7 @@ impl StrategyEngine {
         }
 
         if rows.is_empty() {
-            info!("snapshot: 当前无可用盘口/价差信息");
+            trace!("snapshot: 当前无可用盘口/价差信息");
             return;
         }
 
@@ -1019,7 +1023,7 @@ impl StrategyEngine {
             ],
             &rows,
         );
-        info!("盘口/价差快照\n{}", table);
+        trace!("盘口/价差快照\n{}", table);
     }
 
     // 本策略不再从本地 JSON 解析阈值
@@ -1356,11 +1360,20 @@ impl StrategyEngine {
                         state.last_open_ts = Some(emit_ts);
                         state.mark_signal(emit_ts);
                     }
+                    let log_entry = self.symbols.get(&symbol_key).and_then(|state| {
+                        self.build_signal_log(
+                            "open",
+                            symbol_key.as_str(),
+                            state,
+                            ratio,
+                            price,
+                            emit_ts,
+                        )
+                    });
                     self.stats.open_signals += 1;
-                    info!(
-                        "{} 触发开仓信号, spread_ratio={:.6}, 目标价格={:.6}",
-                        symbol_key, ratio, price
-                    );
+                    if let Some(entry) = log_entry {
+                        info!("{}", entry);
+                    }
                 }
                 SignalRequest::Close {
                     symbol_key,
@@ -1394,11 +1407,20 @@ impl StrategyEngine {
                         state.last_close_ts = Some(emit_ts);
                         state.mark_signal(emit_ts);
                     }
+                    let log_entry = self.symbols.get(&symbol_key).and_then(|state| {
+                        self.build_signal_log(
+                            "close",
+                            symbol_key.as_str(),
+                            state,
+                            ratio,
+                            price,
+                            emit_ts,
+                        )
+                    });
                     self.stats.close_signals += 1;
-                    info!(
-                        "{} 触发平仓信号, spread_ratio={:.6}, 目标价格={:.6}",
-                        symbol_key, ratio, price
-                    );
+                    if let Some(entry) = log_entry {
+                        info!("{}", entry);
+                    }
                 }
             }
         }
@@ -1407,9 +1429,7 @@ impl StrategyEngine {
     fn resample_and_publish(&mut self) {
         let ts_ms = (get_timestamp_us() / 1000) as i64;
         let mut batch_items: Vec<ResampleItem> = Vec::new();
-        let mut price_rows: Vec<Vec<String>> = Vec::new();
         let mut funding_pred_rows: Vec<Vec<String>> = Vec::new();
-        let mut funding_ma_rows: Vec<Vec<String>> = Vec::new();
         // 组装每个 symbol 的切片
         let mut keys: Vec<String> = self.symbols.keys().cloned().collect();
         keys.sort();
@@ -1481,7 +1501,7 @@ impl StrategyEngine {
             }
             batch_items.push(item);
 
-            let (open_upper, open_lower, close_lower, close_upper, freq) =
+            let (open_upper, open_lower, _close_lower, _close_upper, freq) =
                 if let Some(entry) = self.funding_thresholds.get(&key) {
                     (
                         entry.open_upper_threshold,
@@ -1500,28 +1520,6 @@ impl StrategyEngine {
                     let (ou, ol, cl, cu) = self.thresholds_for_frequency(&freq);
                     (ou, ol, cl, cu, freq)
                 };
-
-            let bidask_sr_val = bidask_sr.unwrap_or(0.0);
-            let price_open_bidask = if state.price_open_bidask { "Y" } else { "N" };
-            let price_close_bidask = if state.price_close_bidask { "Y" } else { "N" };
-            let open_action = if state.price_open_ready {
-                "现货做多 / 合约做空"
-            } else {
-                "-"
-            };
-            let close_action = if state.price_close_ready {
-                "平仓现货多 / 合约空"
-            } else {
-                "-"
-            };
-            price_rows.push(vec![
-                key.clone(),
-                fmt_decimal(bidask_sr_val),
-                price_open_bidask.to_string(),
-                price_close_bidask.to_string(),
-                open_action.to_string(),
-                close_action.to_string(),
-            ]);
 
             let predicted_value = state.predicted_rate;
             let pred_message = if state.predicted_signal == -1 {
@@ -1548,35 +1546,6 @@ impl StrategyEngine {
                 fmt_decimal(open_lower),
                 pred_message,
             ]);
-
-            let ma_value_opt = funding_rate_ma.or(state.funding_ma);
-            let ma_value_str = ma_value_opt
-                .map(fmt_decimal)
-                .unwrap_or_else(|| "N/A".to_string());
-            let ma_value = ma_value_opt.unwrap_or(0.0);
-            let ma_message = if state.ma_signal == -2 {
-                format!(
-                    "满足 {:.6} > {:.6} → 平仓现货多 / 合约空",
-                    ma_value, close_upper
-                )
-            } else if state.ma_signal == 2 {
-                format!(
-                    "满足 {:.6} < {:.6} → 反向信号 (忽略)",
-                    ma_value, close_lower
-                )
-            } else {
-                format!(
-                    "未触发 {:.6} ∈ [{:.6}, {:.6}]",
-                    ma_value, close_lower, close_upper
-                )
-            };
-            funding_ma_rows.push(vec![
-                key.clone(),
-                ma_value_str,
-                fmt_decimal(close_upper),
-                fmt_decimal(close_lower),
-                ma_message,
-            ]);
         }
 
         // 批量发送（控制最大 1024 字节）
@@ -1596,22 +1565,6 @@ impl StrategyEngine {
             let _ = self.resample_pub.publish(&buf);
         }
 
-        if !price_rows.is_empty() {
-            info!(
-                "Resample价差信号\n{}",
-                render_three_line_table(
-                    &[
-                        "Symbol",
-                        "BidAskSR",
-                        "BidAsk<=Open",
-                        "BidAsk>=Close",
-                        "开仓动作",
-                        "平仓动作",
-                    ],
-                    &price_rows,
-                )
-            );
-        }
         if !funding_pred_rows.is_empty() {
             info!(
                 "Resample资金-预测信号\n{}",
@@ -1628,15 +1581,116 @@ impl StrategyEngine {
                 )
             );
         }
-        if !funding_ma_rows.is_empty() {
-            info!(
-                "Resample资金-MA信号\n{}",
-                render_three_line_table(
-                    &["Symbol", "MA60", "CloseUpper", "CloseLower", "解读",],
-                    &funding_ma_rows,
+    }
+
+    fn build_signal_log(
+        &self,
+        action: &str,
+        symbol_key: &str,
+        state: &SymbolState,
+        ratio: f64,
+        price: f64,
+        emit_ts: i64,
+    ) -> Option<String> {
+        let (open_upper, open_lower, close_lower, close_upper, freq) =
+            if let Some(entry) = self.funding_thresholds.get(symbol_key) {
+                (
+                    entry.open_upper_threshold,
+                    entry.open_lower_threshold,
+                    entry.close_lower_threshold,
+                    entry.close_upper_threshold,
+                    entry.funding_frequency.clone(),
                 )
-            );
-        }
+            } else {
+                let fut_key = state.futures_symbol.to_uppercase();
+                let freq = self
+                    .funding_frequency
+                    .get(&fut_key)
+                    .cloned()
+                    .unwrap_or_else(|| "8h".to_string());
+                let (ou, ol, cl, cu) = self.thresholds_for_frequency(&freq);
+                (ou, ol, cl, cu, freq)
+            };
+
+        let bidask_sr = state.latest_bidask_sr.or_else(|| {
+            compute_bidask_sr(Some(state.spot_quote.bid), Some(state.futures_quote.ask))
+        });
+        let askbid_sr = state.latest_askbid_sr.or_else(|| {
+            compute_askbid_sr(Some(state.spot_quote.ask), Some(state.futures_quote.bid))
+        });
+
+        let price_signal = if action == "open" {
+            json!({
+                "bidask_met": state.price_open_bidask,
+                "askbid_met": state.price_open_askbid,
+                "ready": state.price_open_ready,
+            })
+        } else {
+            json!({
+                "bidask_met": state.price_close_bidask,
+                "askbid_met": state.price_close_askbid,
+                "ready": state.price_close_ready,
+            })
+        };
+
+        let loan_rate = if state.loan_rate.abs() <= f64::EPSILON {
+            None
+        } else {
+            Some(state.loan_rate)
+        };
+
+        let funding_info = json!({
+            "predicted": state.predicted_rate,
+            "predicted_signal": state.predicted_signal,
+            "ma": state.funding_ma,
+            "ma_signal": state.ma_signal,
+            "current": state.funding_rate,
+            "final_signal": state.final_signal_value,
+            "open_upper": open_upper,
+            "open_lower": open_lower,
+            "close_upper": close_upper,
+            "close_lower": close_lower,
+            "frequency": freq,
+            "loan_rate_8h": loan_rate,
+            "funding_ts": state.funding_ts,
+            "next_funding_time": state.next_funding_time,
+        });
+
+        let position = match state.position {
+            PositionState::Flat => "flat",
+            PositionState::Opened => "opened",
+        };
+        let secs = emit_ts / 1_000_000;
+        let micros = emit_ts.rem_euclid(1_000_000_i64) as u32;
+        let ts_iso =
+            DateTime::<Utc>::from_timestamp(secs, micros * 1_000).map(|dt| dt.to_rfc3339());
+
+        let payload = json!({
+            "ts_us": emit_ts,
+            "ts_ms": emit_ts / 1000,
+            "ts_iso": ts_iso,
+            "symbol": symbol_key,
+            "action": action,
+            "position": position,
+            "spread_ratio": ratio,
+            "target_price": price,
+            "spot": {
+                "bid": state.spot_quote.bid,
+                "ask": state.spot_quote.ask,
+                "ts": state.spot_quote.ts,
+            },
+            "futures": {
+                "bid": state.futures_quote.bid,
+                "ask": state.futures_quote.ask,
+                "ts": state.futures_quote.ts,
+            },
+            "bidask_sr": bidask_sr,
+            "askbid_sr": askbid_sr,
+            "price_signal": price_signal,
+            "funding": funding_info,
+        });
+
+        serde_json::to_string(&payload).ok()
     }
 
     fn calc_funding_ma(&self, symbol: &str) -> Option<f64> {
