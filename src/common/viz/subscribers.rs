@@ -113,8 +113,8 @@ pub fn spawn_derivatives_listener(service: String, state: SharedState) -> Result
                             },
                             MktMsgType::FundingRate => match parse_funding_rate(&payload) {
                                 Ok(msg) => {
-                                    debug!(
-                                        "viz derivatives funding msg symbol={} rate={:.6} next={} ts={}",
+                                    info!(
+                                        "viz derivatives 收到 funding: symbol={} rate={:.6} next={} ts={}",
                                         msg.symbol, msg.funding_rate, msg.next_funding_time, msg.timestamp
                                     );
                                     state.set_stream_funding(

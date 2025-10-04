@@ -1062,8 +1062,8 @@ impl StrategyEngine {
     fn handle_funding_rate(&mut self, msg: &[u8]) {
         let fut_symbol = FundingRateMsg::get_symbol(msg).to_uppercase();
         let Some(spot_key) = self.futures_index.get(&fut_symbol).cloned() else {
-            debug!(
-                "Funding 更新: 找不到 futures={} 对应的现货 symbol",
+            warn!(
+                "Funding 更新: 找不到 futures={} 对应的现货 symbol（可能未加载阈值）",
                 fut_symbol
             );
             return;
@@ -1405,7 +1405,8 @@ impl StrategyEngine {
         let ts_ms = (get_timestamp_us() / 1000) as i64;
         let mut batch_items: Vec<ResampleItem> = Vec::new();
         let mut price_rows: Vec<Vec<String>> = Vec::new();
-        let mut funding_rows: Vec<Vec<String>> = Vec::new();
+        let mut funding_pred_rows: Vec<Vec<String>> = Vec::new();
+        let mut funding_ma_rows: Vec<Vec<String>> = Vec::new();
         // 组装每个 symbol 的切片
         let mut keys: Vec<String> = self.symbols.keys().cloned().collect();
         keys.sort();
@@ -1508,45 +1509,86 @@ impl StrategyEngine {
                 PositionState::Opened => "Opened",
             };
 
+            let bidask_sr_val = bidask_sr.unwrap_or(0.0);
+            let askbid_sr_val = askbid_sr.unwrap_or(0.0);
             price_rows.push(vec![
                 key.clone(),
-                fmt_decimal(bidask_sr.unwrap_or(0.0)),
-                fmt_decimal(state.open_threshold),
-                fmt_decimal(state.close_threshold),
-                price_open_bidask.to_string(),
-                price_close_bidask.to_string(),
-                fmt_decimal(askbid_sr.unwrap_or(0.0)),
-                fmt_decimal(state.askbid_open_threshold),
-                fmt_decimal(state.askbid_close_threshold),
-                price_open_askbid.to_string(),
-                price_close_askbid.to_string(),
+                fmt_decimal(bidask_sr_val),
+                format!(
+                    "{} ({:.6} <= {:.6})",
+                    price_open_bidask, bidask_sr_val, state.open_threshold
+                ),
+                format!(
+                    "{} ({:.6} >= {:.6})",
+                    price_close_bidask, bidask_sr_val, state.close_threshold
+                ),
+                fmt_decimal(askbid_sr_val),
+                format!(
+                    "{} ({:.6} >= {:.6})",
+                    price_open_askbid, askbid_sr_val, state.askbid_open_threshold
+                ),
+                format!(
+                    "{} ({:.6} <= {:.6})",
+                    price_close_askbid, askbid_sr_val, state.askbid_close_threshold
+                ),
                 ready_open.to_string(),
                 ready_close.to_string(),
                 position.to_string(),
             ]);
 
-            let pred_label = match state.predicted_signal {
-                -1 => "-1 开仓",
-                1 => "1 反向",
-                _ => "0 无",
+            let predicted_value = state.predicted_rate;
+            let pred_message = if state.predicted_signal == -1 {
+                format!(
+                    "满足 {:.6} >= {:.6} → 期货做空 / 现货做多",
+                    predicted_value, open_upper
+                )
+            } else if state.predicted_signal == 1 {
+                format!(
+                    "满足 {:.6} <= {:.6} → 反向信号 (忽略)",
+                    predicted_value, open_lower
+                )
+            } else {
+                format!(
+                    "未触发 {:.6} ∈ [{:.6}, {:.6}]",
+                    predicted_value, open_lower, open_upper
+                )
             };
-            let ma_label = match state.ma_signal {
-                -2 => "-2 平仓",
-                2 => "2 反向",
-                _ => "0 无",
-            };
-
-            funding_rows.push(vec![
+            funding_pred_rows.push(vec![
                 key.clone(),
-                freq,
-                fmt_decimal(predicted_rate.unwrap_or(0.0)),
+                freq.clone(),
+                fmt_decimal(predicted_value),
                 fmt_decimal(open_upper),
                 fmt_decimal(open_lower),
-                pred_label.to_string(),
-                fmt_decimal(funding_rate_ma.unwrap_or_else(|| state.funding_ma.unwrap_or(0.0))),
+                pred_message,
+            ]);
+
+            let ma_value_opt = funding_rate_ma.or(state.funding_ma);
+            let ma_value_str = ma_value_opt
+                .map(fmt_decimal)
+                .unwrap_or_else(|| "N/A".to_string());
+            let ma_value = ma_value_opt.unwrap_or(0.0);
+            let ma_message = if state.ma_signal == -2 {
+                format!(
+                    "满足 {:.6} > {:.6} → 平仓现货多 / 合约空",
+                    ma_value, close_upper
+                )
+            } else if state.ma_signal == 2 {
+                format!(
+                    "满足 {:.6} < {:.6} → 反向信号 (忽略)",
+                    ma_value, close_lower
+                )
+            } else {
+                format!(
+                    "未触发 {:.6} ∈ [{:.6}, {:.6}]",
+                    ma_value, close_lower, close_upper
+                )
+            };
+            funding_ma_rows.push(vec![
+                key.clone(),
+                ma_value_str,
                 fmt_decimal(close_upper),
                 fmt_decimal(close_lower),
-                ma_label.to_string(),
+                ma_message,
             ]);
         }
 
@@ -1574,15 +1616,11 @@ impl StrategyEngine {
                     &[
                         "Symbol",
                         "BidAskSR",
-                        "BA_OpenTh",
-                        "BA_CloseTh",
-                        "BA_OpenOK",
-                        "BA_CloseOK",
+                        "BA<=Open",
+                        "BA>=Close",
                         "AskBidSR",
-                        "AB_OpenTh",
-                        "AB_CloseTh",
-                        "AB_OpenOK",
-                        "AB_CloseOK",
+                        "AB>=Open",
+                        "AB<=Close",
                         "ReadyOpen",
                         "ReadyClose",
                         "Position",
@@ -1591,9 +1629,9 @@ impl StrategyEngine {
                 )
             );
         }
-        if !funding_rows.is_empty() {
+        if !funding_pred_rows.is_empty() {
             info!(
-                "Resample资费信号\n{}",
+                "Resample资金-预测信号\n{}",
                 render_three_line_table(
                     &[
                         "Symbol",
@@ -1601,13 +1639,18 @@ impl StrategyEngine {
                         "Predict",
                         "OpenUpper",
                         "OpenLower",
-                        "PredSignal",
-                        "MA60",
-                        "CloseUpper",
-                        "CloseLower",
-                        "MASignal",
+                        "解读",
                     ],
-                    &funding_rows,
+                    &funding_pred_rows,
+                )
+            );
+        }
+        if !funding_ma_rows.is_empty() {
+            info!(
+                "Resample资金-MA信号\n{}",
+                render_three_line_table(
+                    &["Symbol", "MA60", "CloseUpper", "CloseLower", "解读",],
+                    &funding_ma_rows,
                 )
             );
         }
