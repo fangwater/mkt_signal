@@ -267,7 +267,18 @@ impl BinanceDerivativesMetricsParser {
                     ) {
                         let mut parsed_count = 0;
 
-                        log::debug!("binance mark price update: symbol={symbol} event_time={event_time} funding_rate={funding_rate_str} next_funding_time={next_funding_time}");
+                        let s_lower = symbol.to_lowercase();
+                        if matches!(s_lower.as_str(), "btcusdt" | "ethusdt" | "bnbusdt") {
+                            log::debug!(
+                                "binance funding msg: symbol={} mark={} index={} funding={} next={} event={}",
+                                symbol,
+                                mark_price,
+                                index_price,
+                                funding_rate,
+                                next_funding_time,
+                                event_time
+                            );
+                        }
 
                         // Create and send MarkPriceMsg
                         let mark_price_msg =
@@ -292,6 +303,15 @@ impl BinanceDerivativesMetricsParser {
                         );
                         if tx.send(funding_rate_msg.to_bytes()).is_ok() {
                             parsed_count += 1;
+                            if matches!(s_lower.as_str(), "btcusdt" | "ethusdt" | "bnbusdt") {
+                                log::debug!(
+                                    "mkt pub funding_rate_msg: symbol={} funding={} next={} event={}",
+                                    symbol,
+                                    funding_rate,
+                                    next_funding_time,
+                                    event_time
+                                );
+                            }
                         }
 
                         return parsed_count;
