@@ -71,18 +71,10 @@ impl SubscriberEnum {
         match subscriber.receive()? {
             Some(sample) => {
                 let payload = sample.payload();
-                // 找到实际消息长度（去掉尾部的0）
-                let actual_len = payload
-                    .iter()
-                    .rposition(|&x| x != 0)
-                    .map(|pos| pos + 1)
-                    .unwrap_or(0);
-
-                if actual_len > 0 {
-                    Ok(Some(Bytes::copy_from_slice(&payload[..actual_len])))
-                } else {
-                    Ok(None)
+                if payload.iter().all(|&b| b == 0) {
+                    return Ok(None);
                 }
+                Ok(Some(Bytes::copy_from_slice(payload)))
             }
             None => Ok(None),
         }
