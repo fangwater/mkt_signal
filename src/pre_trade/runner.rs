@@ -115,8 +115,8 @@ impl PreTrade {
 
         spawn_derivatives_worker(runtime.price_table.clone())?;
 
-        // 降低周期检查频率到 1s，减少日志干扰
-        let mut ticker = tokio::time::interval(Duration::from_millis(1000));
+        // 提升周期检查频率到 100ms，使策略状态响应更及时
+        let mut ticker = tokio::time::interval(Duration::from_millis(100));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {

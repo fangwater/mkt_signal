@@ -255,6 +255,13 @@ impl Default for BinSingleForwardArbStrategyCfg {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct PeriodLogFlags {
+    margin_open_absent_logged: bool,
+    margin_open_missing_logged: bool,
+    margin_close_missing_logged: bool,
+}
+
 /// 币安单所正向套利策略
 pub struct BinSingleForwardArbStrategy {
     pub strategy_id: i32, //策略id
@@ -276,6 +283,7 @@ pub struct BinSingleForwardArbStrategy {
     max_total_exposure_ratio: f64,
     min_qty_table: std::rc::Rc<MinQtyTable>,
     price_table: std::rc::Rc<std::cell::RefCell<PriceTable>>,
+    period_log_flags: PeriodLogFlags,
 }
 
 impl BinSingleForwardArbStrategy {
@@ -311,6 +319,7 @@ impl BinSingleForwardArbStrategy {
             max_total_exposure_ratio,
             min_qty_table,
             price_table,
+            period_log_flags: PeriodLogFlags::default(),
         };
 
         info!(
@@ -2270,13 +2279,17 @@ impl Strategy for BinSingleForwardArbStrategy {
     fn hanle_period_clock(&mut self, current_tp: i64) {
         // 周期性检查：开仓限价/市价单是否长时间未成交，需要撤单
         if self.margin_order_id == 0 {
-            warn!(
-                "{}: strategy_id={} 当前无 margin 开仓单，策略将等待回收",
-                Self::strategy_name(),
-                self.strategy_id
-            );
+            if !self.period_log_flags.margin_open_absent_logged {
+                warn!(
+                    "{}: strategy_id={} 当前无 margin 开仓单，策略将等待回收",
+                    Self::strategy_name(),
+                    self.strategy_id
+                );
+                self.period_log_flags.margin_open_absent_logged = true;
+            }
             self.open_timeout_us = None;
         } else {
+            self.period_log_flags.margin_open_absent_logged = false;
             let open_order = {
                 let manager = self.order_manager.borrow();
                 manager.get(self.margin_order_id)
@@ -2284,6 +2297,7 @@ impl Strategy for BinSingleForwardArbStrategy {
 
             match open_order {
                 Some(order) => {
+                    self.period_log_flags.margin_open_missing_logged = false;
                     if order.status.is_terminal() {
                         self.open_timeout_us = None;
                     } else if let (Some(timeout_us), submit_time) =
@@ -2325,20 +2339,25 @@ impl Strategy for BinSingleForwardArbStrategy {
                     }
                 }
                 None => {
-                    warn!(
-                        "{}: strategy_id={} 未找到 margin 开仓单 id={}，清除本地状态",
-                        Self::strategy_name(),
-                        self.strategy_id,
-                        self.margin_order_id
-                    );
+                    if !self.period_log_flags.margin_open_missing_logged {
+                        warn!(
+                            "{}: strategy_id={} 未找到 margin 开仓单 id={}，清除本地状态",
+                            Self::strategy_name(),
+                            self.strategy_id,
+                            self.margin_order_id
+                        );
+                        self.period_log_flags.margin_open_missing_logged = true;
+                    }
                     self.margin_order_id = 0;
                     self.open_timeout_us = None;
+                    self.period_log_flags.margin_open_absent_logged = false;
                 }
             }
         }
 
         // 周期性检查：限价平仓单是否超时
         if self.close_margin_order_id == 0 {
+            self.period_log_flags.margin_close_missing_logged = false;
             self.close_margin_timeout_us = None;
         } else {
             let close_order = {
@@ -2348,6 +2367,7 @@ impl Strategy for BinSingleForwardArbStrategy {
 
             match close_order {
                 Some(order) => {
+                    self.period_log_flags.margin_close_missing_logged = false;
                     if order.status.is_terminal() {
                         self.close_margin_timeout_us = None;
                     } else if let (Some(timeout_us), submit_time) =
@@ -2389,12 +2409,15 @@ impl Strategy for BinSingleForwardArbStrategy {
                     }
                 }
                 None => {
-                    warn!(
-                        "{}: strategy_id={} 未找到 margin 平仓单 id={}，清除本地状态",
-                        Self::strategy_name(),
-                        self.strategy_id,
-                        self.close_margin_order_id
-                    );
+                    if !self.period_log_flags.margin_close_missing_logged {
+                        warn!(
+                            "{}: strategy_id={} 未找到 margin 平仓单 id={}，清除本地状态",
+                            Self::strategy_name(),
+                            self.strategy_id,
+                            self.close_margin_order_id
+                        );
+                        self.period_log_flags.margin_close_missing_logged = true;
+                    }
                     self.close_margin_order_id = 0;
                     self.close_margin_timeout_us = None;
                 }
