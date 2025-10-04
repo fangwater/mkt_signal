@@ -44,6 +44,8 @@
   - 满足时通过 `BinSingleForwardArbCloseMargin` 发布平仓请求，并记录 `last_close_ts`、`position=Flat`
 - 资金信号 `1` / `2` 仅输出调试日志，不会触发委托。
 
+最大杠杆倍数 设置为2
+
 ## Resample 调试输出
 
 - Resample 频率固定为 3s。

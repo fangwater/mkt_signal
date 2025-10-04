@@ -1033,6 +1033,10 @@ impl StrategyEngine {
         let bid_price = AskBidSpreadMsg::get_bid_price(msg);
         let ask_price = AskBidSpreadMsg::get_ask_price(msg);
         if bid_price <= 0.0 || ask_price <= 0.0 {
+            warn!(
+                "Spot盘口异常: symbol={} bid={} ask={} ts={}",
+                symbol, bid_price, ask_price, timestamp
+            );
             return;
         }
         state.spot_quote.update(bid_price, ask_price, timestamp);
@@ -1049,6 +1053,10 @@ impl StrategyEngine {
             let bid_price = AskBidSpreadMsg::get_bid_price(msg);
             let ask_price = AskBidSpreadMsg::get_ask_price(msg);
             if bid_price <= 0.0 || ask_price <= 0.0 {
+                warn!(
+                    "Futures盘口异常: symbol={} bid={} ask={} ts={}",
+                    fut_symbol, bid_price, ask_price, timestamp
+                );
                 return;
             }
             state.futures_quote.update(bid_price, ask_price, timestamp);
@@ -1494,11 +1502,8 @@ impl StrategyEngine {
                 };
 
             let bidask_sr_val = bidask_sr.unwrap_or(0.0);
-            let askbid_sr_val = askbid_sr.unwrap_or(0.0);
             let price_open_bidask = if state.price_open_bidask { "Y" } else { "N" };
-            let price_open_askbid = if state.price_open_askbid { "Y" } else { "N" };
             let price_close_bidask = if state.price_close_bidask { "Y" } else { "N" };
-            let price_close_askbid = if state.price_close_askbid { "Y" } else { "N" };
             let open_action = if state.price_open_ready {
                 "现货做多 / 合约做空"
             } else {
@@ -1513,11 +1518,8 @@ impl StrategyEngine {
                 key.clone(),
                 fmt_decimal(bidask_sr_val),
                 price_open_bidask.to_string(),
-                price_open_askbid.to_string(),
-                open_action.to_string(),
-                fmt_decimal(askbid_sr_val),
                 price_close_bidask.to_string(),
-                price_close_askbid.to_string(),
+                open_action.to_string(),
                 close_action.to_string(),
             ]);
 
@@ -1602,11 +1604,8 @@ impl StrategyEngine {
                         "Symbol",
                         "BidAskSR",
                         "BidAsk<=Open",
-                        "AskBid>=Open",
-                        "开仓动作",
-                        "AskBidSR",
                         "BidAsk>=Close",
-                        "AskBid<=Close",
+                        "开仓动作",
                         "平仓动作",
                     ],
                     &price_rows,
