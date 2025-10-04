@@ -1062,10 +1062,6 @@ impl StrategyEngine {
     fn handle_funding_rate(&mut self, msg: &[u8]) {
         let fut_symbol = FundingRateMsg::get_symbol(msg).to_uppercase();
         let Some(spot_key) = self.futures_index.get(&fut_symbol).cloned() else {
-            warn!(
-                "Funding 更新: 找不到 futures={} 对应的现货 symbol（可能未加载阈值）",
-                fut_symbol
-            );
             return;
         };
 
