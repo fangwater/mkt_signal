@@ -74,14 +74,14 @@ def main() -> int:
         "signal_min_interval_ms": "5000",
         "reload_interval_secs": "60",
         # Pre-trade 限制
-        "pre_trade_max_pos_u": "25.0",
-        "pre_trade_max_symbol_exposure_ratio": "0.30",
-        "pre_trade_max_total_exposure_ratio": "0.30",
+        "pre_trade_max_pos_u": "4000",
+        "pre_trade_max_symbol_exposure_ratio": "0.03",
+        "pre_trade_max_total_exposure_ratio": "0.03",
         "pre_trade_refresh_secs": "30",
         # 下单参数
         "order_open_range": "0.00",
         "order_close_range": "0.00",
-        "order_amount_u": "12.0",
+        "order_amount_u": "50",
         "order_max_open_order_keep_s": "1",
         "order_max_close_order_keep_s": "1",
     }

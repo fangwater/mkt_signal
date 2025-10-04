@@ -1,6 +1,32 @@
 use anyhow::Result;
-use log::{debug, info};
+use log::info;
 use mkt_signal::{ApiKey, TradeEngine, TradeEngineCfg};
+
+fn credential_edges(value: &str) -> (String, String, usize) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return (String::new(), String::new(), 0);
+    }
+    let chars: Vec<char> = trimmed.chars().collect();
+    let len = chars.len();
+    let prefix_len = len.min(4);
+    let suffix_len = len.min(4);
+    let first: String = chars.iter().take(prefix_len).collect();
+    let last: String = chars.iter().skip(len.saturating_sub(suffix_len)).collect();
+    (first, last, len)
+}
+
+fn log_credential_preview(label: &str, value: &str) {
+    let (first4, last4, len) = credential_edges(value);
+    if len == 0 {
+        info!("{} not set or empty", label);
+    } else {
+        info!(
+            "{} preview len={} first4='{}' last4='{}'",
+            label, len, first4, last4
+        );
+    }
+}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
@@ -26,11 +52,6 @@ async fn main() -> Result<()> {
             secret: secret.clone(),
         }];
         info!("trade_engine accounts overridden by env");
-        debug!(
-            "env api key length={}, secret length={}",
-            key.len(),
-            secret.len()
-        );
     }
 
     // 可选：用环境变量覆盖 iceoryx 服务名，便于测试时快速切换隔离
@@ -39,6 +60,12 @@ async fn main() -> Result<()> {
     }
     if let Ok(resp_svc) = std::env::var("ORDER_RESP_SERVICE") {
         cfg.order_resp_service = resp_svc;
+    }
+
+    for api in &cfg.accounts.keys {
+        let label_prefix = format!("trade_engine account '{}'", api.name);
+        log_credential_preview(&format!("{} BINANCE_API_KEY", label_prefix), &api.key);
+        log_credential_preview(&format!("{} BINANCE_API_SECRET", label_prefix), &api.secret);
     }
 
     info!("trade_engine config loaded");

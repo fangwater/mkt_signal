@@ -23,6 +23,32 @@ fn build_ws_url(ws_base: &str, listen_key: &str) -> String {
     }
 }
 
+fn credential_edges(value: &str) -> (String, String, usize) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return (String::new(), String::new(), 0);
+    }
+    let chars: Vec<char> = trimmed.chars().collect();
+    let len = chars.len();
+    let prefix_len = len.min(4);
+    let suffix_len = len.min(4);
+    let first: String = chars.iter().take(prefix_len).collect();
+    let last: String = chars.iter().skip(len.saturating_sub(suffix_len)).collect();
+    (first, last, len)
+}
+
+fn log_credential_preview(label: &str, value: &str) {
+    let (first4, last4, len) = credential_edges(value);
+    if len == 0 {
+        info!("{} not set or empty", label);
+    } else {
+        info!(
+            "{} preview len={} first4='{}' last4='{}'",
+            label, len, first4, last4
+        );
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     if std::env::var("RUST_LOG").is_err() {
@@ -33,9 +59,19 @@ async fn main() -> Result<()> {
     let cfg = mkt_signal::portfolio_margin::pm_cfg::AccountTomlCfg::load("config/account_cfg.toml")
         .await?;
 
-    let api_key = std::env::var("BINANCE_API_KEY").map_err(|_| {
+    let api_key_raw = std::env::var("BINANCE_API_KEY").map_err(|_| {
         anyhow::anyhow!("BINANCE_API_KEY not set. Export it before running account_monitor")
     })?;
+    let api_key = api_key_raw.trim().to_string();
+    log_credential_preview("BINANCE_API_KEY", &api_key);
+
+    match std::env::var("BINANCE_API_SECRET") {
+        Ok(secret_raw) => {
+            let secret = secret_raw.trim().to_string();
+            log_credential_preview("BINANCE_API_SECRET", &secret);
+        }
+        Err(_) => info!("BINANCE_API_SECRET not set or empty"),
+    }
 
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     setup_signals(shutdown_tx.clone());
