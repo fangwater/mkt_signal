@@ -2550,11 +2550,6 @@ impl Strategy for BinSingleForwardArbStrategy {
                 let mut flags = self.period_log_flags.borrow_mut();
                 flags.last_margin_close_status = None;
             }
-            debug!(
-                "{}: strategy_id={} margin 平仓单未触发，策略仍在执行",
-                Self::strategy_name(),
-                self.strategy_id
-            );
             return true;
         }
 
