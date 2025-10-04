@@ -976,10 +976,7 @@ impl StrategyEngine {
             let Some(state) = self.symbols.get(&key) else {
                 continue;
             };
-            if !(state.spot_quote.is_ready() && state.futures_quote.is_ready()) {
-                continue;
-            }
-            // 两个价差因子
+            // 两个价差因子（若盘口未准备好，则显示为0）
             let bidask_sr =
                 compute_bidask_sr(Some(state.spot_quote.bid), Some(state.futures_quote.ask))
                     .unwrap_or(0.0);
