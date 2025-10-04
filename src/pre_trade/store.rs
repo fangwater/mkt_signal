@@ -1,9 +1,9 @@
 use anyhow::Result;
 use bytes::Bytes;
+use log::debug;
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
-use log::debug;
 
 use crate::pre_trade::order_manager::Order;
 
@@ -21,7 +21,10 @@ impl RedisStore {
     pub async fn connect(url: &str, prefix: &str) -> Result<Self> {
         let client = redis::Client::open(url)?;
         let conn = client.get_connection_manager().await?;
-        Ok(Self { conn, prefix: prefix.to_string() })
+        Ok(Self {
+            conn,
+            prefix: prefix.to_string(),
+        })
     }
 
     fn key(&self, suffix: &str) -> String {
@@ -48,11 +51,23 @@ impl RedisStore {
         );
         let mut pipe = redis::pipe();
         pipe.atomic()
-            .cmd("SET").arg(orders_key).arg(orders_blob).ignore()
-            .cmd("SET").arg(strategies_key).arg(strategies_blob).ignore()
-            .cmd("SET").arg(ts_key).arg(ts).ignore();
+            .cmd("SET")
+            .arg(orders_key)
+            .arg(orders_blob)
+            .ignore()
+            .cmd("SET")
+            .arg(strategies_key)
+            .arg(strategies_blob)
+            .ignore()
+            .cmd("SET")
+            .arg(ts_key)
+            .arg(ts)
+            .ignore();
         pipe.query_async::<_, ()>(&mut self.conn).await?;
-        debug!("redis save_snapshot: done prefix={} ts={} ", self.prefix, ts);
+        debug!(
+            "redis save_snapshot: done prefix={} ts={} ",
+            self.prefix, ts
+        );
         Ok(())
     }
 

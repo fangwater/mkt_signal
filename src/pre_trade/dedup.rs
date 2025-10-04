@@ -1,9 +1,9 @@
-use std::collections::{HashSet, VecDeque};
-use std::hash::{Hash, Hasher};
 use crate::common::account_msg::{
     AccountEventType, AccountPositionMsg, AccountUpdateBalanceMsg, AccountUpdatePositionMsg,
     BalanceUpdateMsg, ExecutionReportMsg, OrderTradeUpdateMsg,
 };
+use std::collections::{HashSet, VecDeque};
+use std::hash::{Hash, Hasher};
 
 /// 简单的去重缓存（固定容量，FIFO 淘汰）
 pub struct DedupCache {

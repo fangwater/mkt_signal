@@ -284,7 +284,9 @@ impl BinancePmSpotAccountManager {
     pub fn apply_um_wallet_snapshot(&self, asset: &str, um_wallet_balance: f64, update_time: i64) {
         let upper = asset.to_uppercase();
         let mut state = self.state.borrow_mut();
-        let Some(snapshot) = state.snapshot.as_mut() else { return; };
+        let Some(snapshot) = state.snapshot.as_mut() else {
+            return;
+        };
         snapshot.fetched_at = Utc::now();
         if let Some(balance) = snapshot
             .balances

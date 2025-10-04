@@ -286,7 +286,9 @@ impl OrderManager {
 
         if let Some(symbol) = symbol {
             self.increment_pending_limit_count(&symbol);
-            if let Some(o) = self.orders.get_mut(&order_id) { o.pending_counted = true; }
+            if let Some(o) = self.orders.get_mut(&order_id) {
+                o.pending_counted = true;
+            }
         }
 
         if let Some(prev_order) = prev {
@@ -346,8 +348,12 @@ impl OrderManager {
 
                 // 计算本次状态迁移后（执行 1/2 后）是否应被计入 pending
                 let mut will_be_counted = order.pending_counted;
-                if dec_prev { will_be_counted = false; }
-                if inc_curr { will_be_counted = true; }
+                if dec_prev {
+                    will_be_counted = false;
+                }
+                if inc_curr {
+                    will_be_counted = true;
+                }
 
                 // 3) 限价单在转为 Filled 时释放计数（仅当当前处于计数状态时）
                 if current_type.is_limit()
@@ -364,12 +370,20 @@ impl OrderManager {
             }
         }
 
-        if !existed { return false; }
+        if !existed {
+            return false;
+        }
 
         // 现在已不再持有对 self.orders 的可变借用，可以安全更新计数器
-        if dec_prev { self.decrement_pending_limit_count(&prev_symbol); }
-        if inc_curr { self.increment_pending_limit_count(&curr_symbol); }
-        if dec_on_fill { self.decrement_pending_limit_count(&curr_symbol); }
+        if dec_prev {
+            self.decrement_pending_limit_count(&prev_symbol);
+        }
+        if inc_curr {
+            self.increment_pending_limit_count(&curr_symbol);
+        }
+        if dec_on_fill {
+            self.decrement_pending_limit_count(&curr_symbol);
+        }
 
         true
     }
@@ -412,9 +426,7 @@ impl OrderManager {
         *entry += 1;
         debug!(
             "OrderManager: symbol={} pending_limit_count {} -> {} (inc)",
-            symbol,
-            before,
-            *entry
+            symbol, before, *entry
         );
     }
 
@@ -425,16 +437,13 @@ impl OrderManager {
                 *entry -= 1;
                 debug!(
                     "OrderManager: symbol={} pending_limit_count {} -> {} (dec)",
-                    symbol,
-                    before,
-                    *entry
+                    symbol, before, *entry
                 );
             } else {
                 self.pending_limit_order_count.remove(symbol);
                 debug!(
                     "OrderManager: symbol={} pending_limit_count {} -> 0 (remove entry)",
-                    symbol,
-                    before
+                    symbol, before
                 );
             }
         } else {
@@ -447,7 +456,9 @@ impl OrderManager {
 }
 
 impl Default for OrderManager {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -462,7 +473,7 @@ pub struct Order {
     pub hedged_quantily: f64,            // 未对冲量
     pub status: OrderExecutionStatus,    // 订单执行状态
     #[serde(default)]
-    pub pending_counted: bool,           // 是否已计入 pending 限价单 count（用于去重防二次递减）
+    pub pending_counted: bool, // 是否已计入 pending 限价单 count（用于去重防二次递减）
     // 时间戳记录
     pub submit_time: i64, // 订单提交时间(本地时间)
     // "O": 1499405658657,            // Order creation time 对应币安杠杆下单

@@ -7,8 +7,8 @@ use crate::{
 };
 use bytes::Bytes;
 use log::info;
-use std::collections::{HashMap, HashSet, VecDeque};
 use std::any::Any;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 pub struct StrategySnapshot<'a> {
     pub type_name: &'a str,
@@ -24,7 +24,9 @@ pub trait Strategy: Any {
     fn handle_binance_futures_order_update(&mut self, update: &OrderTradeUpdateMsg);
     fn hanle_period_clock(&mut self, current_tp: i64);
     fn is_active(&self) -> bool;
-    fn snapshot(&self) -> Option<StrategySnapshot<'_>> { None }
+    fn snapshot(&self) -> Option<StrategySnapshot<'_>> {
+        None
+    }
 }
 
 /// Strategy id -> Strategy 映射的简单管理器

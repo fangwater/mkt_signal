@@ -142,12 +142,20 @@ pub struct StoreCfg {
 
 impl Default for StoreCfg {
     fn default() -> Self {
-        Self { enable: false, redis_url: default_store_redis_url(), prefix: default_store_prefix() }
+        Self {
+            enable: false,
+            redis_url: default_store_redis_url(),
+            prefix: default_store_prefix(),
+        }
     }
 }
 
-fn default_store_redis_url() -> String { "redis://127.0.0.1/0".to_string() }
-fn default_store_prefix() -> String { "pre_trade".to_string() }
+fn default_store_redis_url() -> String {
+    "redis://127.0.0.1/0".to_string()
+}
+fn default_store_prefix() -> String {
+    "pre_trade".to_string()
+}
 
 const fn default_account_payload() -> usize {
     16_384

@@ -7,15 +7,13 @@ use crate::common::account_msg::{
     AccountEventType, AccountPositionMsg, AccountUpdateBalanceMsg, AccountUpdatePositionMsg,
 };
 use crate::common::time_util::get_timestamp_us;
-use crate::pre_trade::binance_pm_spot_manager::{
-    BinanceSpotBalance, BinanceSpotBalanceSnapshot,
-};
+use crate::exchange::Exchange;
+use crate::pre_trade::binance_pm_spot_manager::{BinanceSpotBalance, BinanceSpotBalanceSnapshot};
 use crate::pre_trade::binance_pm_um_manager::{
     BinanceUmAccountSnapshot, BinanceUmPosition, PositionSide,
 };
 use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
-use crate::exchange::Exchange;
 
 #[derive(Clone)]
 pub struct SharedState {
@@ -38,22 +36,37 @@ pub struct SharedStateInner {
 impl SharedState {
     pub fn new() -> Self {
         let price_table = Rc::new(std::cell::RefCell::new(PriceTable::new()));
-        let empty_spot = BinanceSpotBalanceSnapshot { balances: vec![], fetched_at: Utc::now() };
-        let empty_um = BinanceUmAccountSnapshot { positions: vec![], fetched_at: Utc::now() };
-        let exposure_mgr = Rc::new(std::cell::RefCell::new(ExposureManager::new(&empty_um, &empty_spot)));
-        Self { inner: Rc::new(SharedStateInner {
-            price_table,
-            exposure_mgr,
-            spot_balances: std::cell::RefCell::new(empty_spot),
-            um_positions: std::cell::RefCell::new(empty_um),
-            last_account_update: std::cell::Cell::new(0),
-            last_price_update: std::cell::Cell::new(0),
-            funding_stream: std::cell::RefCell::new(HashMap::new()),
-        }) }
+        let empty_spot = BinanceSpotBalanceSnapshot {
+            balances: vec![],
+            fetched_at: Utc::now(),
+        };
+        let empty_um = BinanceUmAccountSnapshot {
+            positions: vec![],
+            fetched_at: Utc::now(),
+        };
+        let exposure_mgr = Rc::new(std::cell::RefCell::new(ExposureManager::new(
+            &empty_um,
+            &empty_spot,
+        )));
+        Self {
+            inner: Rc::new(SharedStateInner {
+                price_table,
+                exposure_mgr,
+                spot_balances: std::cell::RefCell::new(empty_spot),
+                um_positions: std::cell::RefCell::new(empty_um),
+                last_account_update: std::cell::Cell::new(0),
+                last_price_update: std::cell::Cell::new(0),
+                funding_stream: std::cell::RefCell::new(HashMap::new()),
+            }),
+        }
     }
 
-    pub fn price_table(&self) -> Rc<std::cell::RefCell<PriceTable>> { self.inner.price_table.clone() }
-    pub fn exposure_mgr(&self) -> Rc<std::cell::RefCell<ExposureManager>> { self.inner.exposure_mgr.clone() }
+    pub fn price_table(&self) -> Rc<std::cell::RefCell<PriceTable>> {
+        self.inner.price_table.clone()
+    }
+    pub fn exposure_mgr(&self) -> Rc<std::cell::RefCell<ExposureManager>> {
+        self.inner.exposure_mgr.clone()
+    }
 
     pub fn handle_account_event(&self, msg_type: AccountEventType, payload: &[u8]) {
         match msg_type {
@@ -79,7 +92,11 @@ impl SharedState {
     fn apply_balance_snapshot(&self, msg: &AccountUpdateBalanceMsg) {
         let mut spot = self.inner.spot_balances.borrow_mut();
         let upper = msg.asset.to_uppercase();
-        if let Some(bal) = spot.balances.iter_mut().find(|b| b.asset.eq_ignore_ascii_case(&upper)) {
+        if let Some(bal) = spot
+            .balances
+            .iter_mut()
+            .find(|b| b.asset.eq_ignore_ascii_case(&upper))
+        {
             bal.total_wallet_balance = msg.wallet_balance;
             bal.cross_margin_asset = msg.cross_wallet_balance;
             if bal.cross_margin_locked <= msg.cross_wallet_balance {
@@ -116,7 +133,11 @@ impl SharedState {
         let mut spot = self.inner.spot_balances.borrow_mut();
         let upper = msg.asset.to_uppercase();
         let wallet_balance = msg.free_balance + msg.locked_balance;
-        if let Some(bal) = spot.balances.iter_mut().find(|b| b.asset.eq_ignore_ascii_case(&upper)) {
+        if let Some(bal) = spot
+            .balances
+            .iter_mut()
+            .find(|b| b.asset.eq_ignore_ascii_case(&upper))
+        {
             bal.total_wallet_balance = wallet_balance;
             bal.cross_margin_free = msg.free_balance;
             bal.cross_margin_locked = msg.locked_balance;
@@ -203,7 +224,11 @@ impl SharedState {
 
     pub fn snapshot_account(&self) -> (f64, f64, Vec<ExposureEntry>) {
         let mgr = self.inner.exposure_mgr.borrow();
-        (mgr.total_equity(), mgr.total_abs_exposure(), mgr.exposures().to_vec())
+        (
+            mgr.total_equity(),
+            mgr.total_abs_exposure(),
+            mgr.exposures().to_vec(),
+        )
     }
 
     pub fn snapshot_prices(&self, symbols: Option<&[String]>) -> Vec<(String, Option<PriceEntry>)> {
@@ -227,8 +252,12 @@ impl SharedState {
         out
     }
 
-    pub fn last_account_update_us(&self) -> i64 { self.inner.last_account_update.get() }
-    pub fn last_price_update_us(&self) -> i64 { self.inner.last_price_update.get() }
+    pub fn last_account_update_us(&self) -> i64 {
+        self.inner.last_account_update.get()
+    }
+    pub fn last_price_update_us(&self) -> i64 {
+        self.inner.last_price_update.get()
+    }
 
     pub fn compute_unrealized_pnl(&self) -> f64 {
         let um = self.inner.um_positions.borrow();
@@ -236,19 +265,34 @@ impl SharedState {
         let table = pt.snapshot();
         let mut map: HashMap<String, (Option<f64>, Option<f64>)> = HashMap::new();
         for (sym, e) in table {
-            map.insert(sym.to_uppercase(), (Some(e.mark_price), Some(e.index_price)));
+            map.insert(
+                sym.to_uppercase(),
+                (Some(e.mark_price), Some(e.index_price)),
+            );
         }
         let mut pnl = 0.0;
         for pos in &um.positions {
             let key = pos.symbol.to_uppercase();
-            let mark = map.get(&key).and_then(|(m, _)| *m).unwrap_or(pos.entry_price);
-            let signed_amt = match pos.position_side { PositionSide::Long => pos.position_amt, PositionSide::Short => -pos.position_amt, PositionSide::Both => pos.position_amt };
+            let mark = map
+                .get(&key)
+                .and_then(|(m, _)| *m)
+                .unwrap_or(pos.entry_price);
+            let signed_amt = match pos.position_side {
+                PositionSide::Long => pos.position_amt,
+                PositionSide::Short => -pos.position_amt,
+                PositionSide::Both => pos.position_amt,
+            };
             pnl += signed_amt * (mark - pos.entry_price);
         }
         pnl
     }
 
-    pub fn funding_for(&self, symbol: &str, _exchange: Exchange, _ts_ms: i64) -> (Option<f64>, f64, Option<i64>, f64) {
+    pub fn funding_for(
+        &self,
+        symbol: &str,
+        _exchange: Exchange,
+        _ts_ms: i64,
+    ) -> (Option<f64>, f64, Option<i64>, f64) {
         // funding_rate: 首选实时行情缓存，如无则 None
         let fr_cache = self.inner.funding_stream.borrow();
         let key = symbol.to_uppercase();

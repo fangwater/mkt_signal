@@ -6,11 +6,11 @@ use log::{debug, error, info, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::common::account_msg::{ExecutionReportMsg, OrderTradeUpdateMsg};
+use crate::common::min_qty_table::MinQtyTable;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::exposure_manager::ExposureManager;
-use crate::pre_trade::price_table::PriceTable;
-use crate::common::min_qty_table::MinQtyTable;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
+use crate::pre_trade::price_table::PriceTable;
 use crate::signal::strategy::{Strategy, StrategySnapshot};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::trade_engine::trade_request::{
@@ -18,8 +18,8 @@ use crate::trade_engine::trade_request::{
     TradeRequestType,
 };
 use crate::trade_engine::trade_response_handle::TradeExecOutcome;
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use serde::{Serialize, Deserialize};
 
 /// 币安单所正向套利开仓信号上下文
 #[derive(Clone, Debug)]
@@ -399,7 +399,11 @@ impl BinSingleForwardArbStrategy {
             snap.get(&sym).map(|e| e.mark_price).unwrap_or(0.0)
         };
 
-        let exposure_usdt = if mark > 0.0 { entry.exposure * mark } else { 0.0 };
+        let exposure_usdt = if mark > 0.0 {
+            entry.exposure * mark
+        } else {
+            0.0
+        };
 
         // 若缺少价格但敞口非零，回退到数量比例并提示
         if mark == 0.0 && entry.exposure != 0.0 {
@@ -481,11 +485,17 @@ impl BinSingleForwardArbStrategy {
         let mut abs_total_usdt = 0.0_f64;
         for e in exposure_manager.exposures() {
             let asset = e.asset.to_uppercase();
-            if asset == "USDT" { continue; }
+            if asset == "USDT" {
+                continue;
+            }
             let sym = format!("{}USDT", asset);
             let mark = snap.get(&sym).map(|p| p.mark_price).unwrap_or(0.0);
             if mark == 0.0 && (e.spot_total_wallet != 0.0 || e.um_net_position != 0.0) {
-                debug!("{}: 总敞口估值缺少价格 symbol={}，按 0 估值", Self::strategy_name(), sym);
+                debug!(
+                    "{}: 总敞口估值缺少价格 symbol={}，按 0 估值",
+                    Self::strategy_name(),
+                    sym
+                );
             }
             let exposure_usdt = (e.spot_total_wallet + e.um_net_position) * mark;
             abs_total_usdt += exposure_usdt.abs();
@@ -928,7 +938,10 @@ impl BinSingleForwardArbStrategy {
         let min_qty = self
             .min_qty_table
             .margin_min_qty_by_symbol(&margin_order.symbol)
-            .or_else(|| self.min_qty_table.spot_min_qty_by_symbol(&margin_order.symbol))
+            .or_else(|| {
+                self.min_qty_table
+                    .spot_min_qty_by_symbol(&margin_order.symbol)
+            })
             .unwrap_or(0.0);
         let mut close_qty = if step > 0.0 {
             align_price_floor(expected_qty, step)
@@ -942,7 +955,10 @@ impl BinSingleForwardArbStrategy {
         let min_notional = self
             .min_qty_table
             .margin_min_notional_by_symbol(&margin_order.symbol)
-            .or_else(|| self.min_qty_table.spot_min_notional_by_symbol(&margin_order.symbol))
+            .or_else(|| {
+                self.min_qty_table
+                    .spot_min_notional_by_symbol(&margin_order.symbol)
+            })
             .unwrap_or(0.0);
         let price_tick = ctx.price_tick.max(0.0);
         let mut limit_price = ctx.limit_price;
@@ -953,7 +969,11 @@ impl BinSingleForwardArbStrategy {
             let required_qty = min_notional / limit_price;
             if close_qty < required_qty {
                 let before = close_qty;
-                close_qty = if step > 0.0 { align_price_ceil(required_qty, step) } else { required_qty };
+                close_qty = if step > 0.0 {
+                    align_price_ceil(required_qty, step)
+                } else {
+                    required_qty
+                };
                 debug!(
                     "{}: strategy_id={} 平仓名义金额对齐 min_notional={:.8} price={:.8} qty_up: {} -> {}",
                     Self::strategy_name(),
@@ -1316,9 +1336,15 @@ impl Drop for BinSingleForwardArbStrategy {
             ("UMClose", self.close_um_hedge_order_id),
         ];
         for (kind, id) in pairs {
-            if id == 0 { continue; }
+            if id == 0 {
+                continue;
+            }
             if let Some(o) = mgr_ro.get(id) {
-                let age_ms = if o.submit_time > 0 { ((now - o.submit_time)/1000) as i64 } else { 0 };
+                let age_ms = if o.submit_time > 0 {
+                    ((now - o.submit_time) / 1000) as i64
+                } else {
+                    0
+                };
                 rows.push(vec![
                     id.to_string(),
                     kind.to_string(),
@@ -1344,7 +1370,9 @@ impl Drop for BinSingleForwardArbStrategy {
 
         if !rows.is_empty() {
             let table = Self::render_three_line_table(
-                &["OrderId", "Kind", "Side", "Qty", "Price", "Status", "Age(ms)"],
+                &[
+                    "OrderId", "Kind", "Side", "Qty", "Price", "Status", "Age(ms)",
+                ],
                 &rows,
             );
             info!(
@@ -1389,7 +1417,11 @@ impl BinSingleForwardArbStrategy {
                 s.pop();
             }
         }
-        if s.is_empty() { "0".to_string() } else { s }
+        if s.is_empty() {
+            "0".to_string()
+        } else {
+            s
+        }
     }
 
     fn render_three_line_table(headers: &[&str], rows: &[Vec<String>]) -> String {
@@ -1598,10 +1630,7 @@ impl BinSingleForwardArbStrategy {
     fn submit_margin_cancel(&self, symbol: &str, order_id: i64) -> Result<(), String> {
         let now = get_timestamp_us();
         // 使用 origClientOrderId 以客户端订单ID撤单；当前未保存交易所 orderId
-        let params = Bytes::from(format!(
-            "symbol={}&origClientOrderId={}",
-            symbol, order_id
-        ));
+        let params = Bytes::from(format!("symbol={}&origClientOrderId={}", symbol, order_id));
         let request = BinanceCancelMarginOrderRequest::create(now, order_id, params);
 
         self.order_tx
@@ -2035,7 +2064,9 @@ impl Strategy for BinSingleForwardArbStrategy {
                         self.strategy_id
                     );
                     // 触发对冲信号，由策略消费并创建 UM 对冲市价单
-                    let ctx = BinSingleForwardArbHedgeCtx { spot_order_id: order_id };
+                    let ctx = BinSingleForwardArbHedgeCtx {
+                        spot_order_id: order_id,
+                    };
                     if let Some(tx) = &self.signal_tx {
                         let sig = TradeSignal::create(
                             SignalType::BinSingleForwardArbHedge,
@@ -2515,7 +2546,10 @@ impl Strategy for BinSingleForwardArbStrategy {
             Ok(b) => b,
             Err(_) => return None,
         };
-        Some(StrategySnapshot { type_name: "BinSingleForwardArbStrategy", payload: bytes })
+        Some(StrategySnapshot {
+            type_name: "BinSingleForwardArbStrategy",
+            payload: bytes,
+        })
     }
 }
 

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use chrono::{Utc, TimeZone};
+use chrono::{TimeZone, Utc};
 use log::{debug, error, info, warn};
 use serde::Deserialize;
 use tokio::signal;
@@ -28,8 +28,8 @@ use mkt_signal::pre_trade::order_manager::{OrderType, Side};
 use mkt_signal::signal::binance_forward_arb::{
     BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbOpenCtx,
 };
-use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
 use mkt_signal::signal::resample::{compute_askbid_sr, compute_bidask_sr};
+use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
 
 const SIGNAL_CHANNEL_MT_ARBITRAGE: &str = "mt_arbitrage";
 const NODE_FUNDING_STRATEGY_SUB: &str = "funding_rate_strategy";
@@ -122,37 +122,51 @@ impl Default for ReloadConfig {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 struct StrategyParams {
-    #[serde(default = "default_interval")] 
+    #[serde(default = "default_interval")]
     interval: usize,
     #[serde(default)]
     predict_num: usize,
     /// 重算滚动预测频率（秒）
-    #[serde(default = "default_compute_secs")] 
+    #[serde(default = "default_compute_secs")]
     refresh_secs: u64,
     /// 拉取历史频率（秒）
-    #[serde(default = "default_fetch_secs")] 
+    #[serde(default = "default_fetch_secs")]
     fetch_secs: u64,
     /// 拉取对齐偏移（秒）
-    #[serde(default = "default_fetch_offset_secs")] 
+    #[serde(default = "default_fetch_offset_secs")]
     fetch_offset_secs: u64,
     /// 单次拉取的最大记录条数
-    #[serde(default = "default_fetch_limit")] 
+    #[serde(default = "default_fetch_limit")]
     history_limit: usize,
     /// funding rate 滚动均值窗口大小（条数）
-    #[serde(default = "default_funding_ma_size")] 
+    #[serde(default = "default_funding_ma_size")]
     funding_ma_size: usize,
     /// 结算偏移（秒）：基于 UTC 准点（4h 周期）增加的偏移量
-    #[serde(default = "default_settlement_offset_secs")] 
+    #[serde(default = "default_settlement_offset_secs")]
     settlement_offset_secs: i64,
 }
 
-const fn default_interval() -> usize { 6 }
-const fn default_compute_secs() -> u64 { 30 }
-const fn default_fetch_secs() -> u64 { 7200 }
-const fn default_fetch_offset_secs() -> u64 { 120 }
-const fn default_fetch_limit() -> usize { 100 }
-const fn default_funding_ma_size() -> usize { 60 }
-const fn default_settlement_offset_secs() -> i64 { 0 }
+const fn default_interval() -> usize {
+    6
+}
+const fn default_compute_secs() -> u64 {
+    30
+}
+const fn default_fetch_secs() -> u64 {
+    7200
+}
+const fn default_fetch_offset_secs() -> u64 {
+    120
+}
+const fn default_fetch_limit() -> usize {
+    100
+}
+const fn default_funding_ma_size() -> usize {
+    60
+}
+const fn default_settlement_offset_secs() -> i64 {
+    0
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ParamsSnapshot {
@@ -200,12 +214,15 @@ struct StrategyConfig {
 
 impl StrategyConfig {
     fn load() -> Result<Self> {
-        let cfg_path = std::env::var("FUNDING_RATE_CFG").unwrap_or_else(|_| DEFAULT_CFG_PATH.to_string());
+        let cfg_path =
+            std::env::var("FUNDING_RATE_CFG").unwrap_or_else(|_| DEFAULT_CFG_PATH.to_string());
         let cfg: StrategyConfig = match std::fs::read_to_string(&cfg_path) {
             Ok(content) => {
                 let mut cfg: StrategyConfig = toml::from_str(&content)
                     .with_context(|| format!("解析配置文件失败: {cfg_path}"))?;
-                if cfg.redis.is_none() { cfg.redis = Some(mkt_signal::common::redis_client::RedisSettings::default()); }
+                if cfg.redis.is_none() {
+                    cfg.redis = Some(mkt_signal::common::redis_client::RedisSettings::default());
+                }
                 cfg
             }
             Err(err) => {
@@ -368,8 +385,8 @@ struct QtyStepInfo {
     step: f64,
 }
 
-use reqwest::blocking::Client;
 use anyhow::Result as AnyResult;
+use reqwest::blocking::Client;
 
 struct MockController {
     cfg: StrategyConfig,
@@ -463,12 +480,19 @@ impl MockController {
             let gap = std::time::Duration::from_secs(self.cfg.reload.interval_secs.max(5));
             self.next_threshold_reload = now + gap;
             let before = self.symbols.len();
-            if let Err(err) = self.reload_symbols() { warn!("mock 刷新追踪列表失败: {err:?}"); }
+            if let Err(err) = self.reload_symbols() {
+                warn!("mock 刷新追踪列表失败: {err:?}");
+            }
             let after = self.symbols.len();
-            debug!("mock refresh: symbols_before={} symbols_after={}", before, after);
+            debug!(
+                "mock refresh: symbols_before={} symbols_after={}",
+                before, after
+            );
             if after != before {
                 // 新增/移除符号：为新增符号推断频率并拉取历史，随后仅重算（不打印行情快照）
-                if let Err(err) = self.update_added_symbols_history_and_freq() { warn!("mock 新增符号拉取失败: {err:?}"); }
+                if let Err(err) = self.update_added_symbols_history_and_freq() {
+                    warn!("mock 新增符号拉取失败: {err:?}");
+                }
                 self.compute_predictions();
                 self.recompute_and_print("符号增加或移除");
             }
@@ -476,16 +500,21 @@ impl MockController {
         // 结算点触发：仅更新频率与阈值表，不重算预测
         if self.is_settlement_trigger() {
             debug!("mock 结算点触发: 更新频率");
-            if let Err(err) = self.refresh_frequency_all() { debug!("mock 刷新频率失败: {err:?}"); }
+            if let Err(err) = self.refresh_frequency_all() {
+                debug!("mock 刷新频率失败: {err:?}");
+            }
             self.recompute_and_print("结算点触发");
         }
         if now >= self.next_fetch_refresh {
             self.next_fetch_refresh = self.next_fetch_instant();
-            if let Err(err) = self.fetch_histories() { warn!("mock 拉取历史失败: {err:?}"); }
+            if let Err(err) = self.fetch_histories() {
+                warn!("mock 拉取历史失败: {err:?}");
+            }
         }
         // 按 refresh_secs 仅在“参数变更”时重算
         if now >= self.next_params_reload {
-            self.next_params_reload = now + std::time::Duration::from_secs(self.cfg.strategy.refresh_secs.max(5));
+            self.next_params_reload =
+                now + std::time::Duration::from_secs(self.cfg.strategy.refresh_secs.max(5));
             if self.reload_params_if_changed() {
                 self.compute_predictions();
                 self.recompute_and_print("参数修改");
@@ -533,12 +562,22 @@ impl MockController {
                 .funding_frequency
                 .get(&sym.to_uppercase())
                 .cloned()
-                .or_else(|| infer_binance_funding_frequency_blocking(&self.http, &sym).ok().flatten())
+                .or_else(|| {
+                    infer_binance_funding_frequency_blocking(&self.http, &sym)
+                        .ok()
+                        .flatten()
+                })
                 .unwrap_or_else(|| "8h".to_string());
-            let hours = if freq.eq_ignore_ascii_case("4h") { 4 } else { 8 };
+            let hours = if freq.eq_ignore_ascii_case("4h") {
+                4
+            } else {
+                8
+            };
             let window_ms = (hours as i64) * 3600 * 1000 * (limit as i64 + 2);
             let start_time = now.saturating_sub(window_ms);
-            let rates = fetch_binance_funding_history_range_blocking(&self.http, &sym, start_time, now, limit)?;
+            let rates = fetch_binance_funding_history_range_blocking(
+                &self.http, &sym, start_time, now, limit,
+            )?;
             new_history.insert(sym, rates);
         }
         self.history_map = new_history;
@@ -591,10 +630,16 @@ impl MockController {
                     .get(&fut)
                     .cloned()
                     .unwrap_or_else(|| "8h".to_string());
-                let hours = if freq.eq_ignore_ascii_case("4h") { 4 } else { 8 };
+                let hours = if freq.eq_ignore_ascii_case("4h") {
+                    4
+                } else {
+                    8
+                };
                 let window_ms = (hours as i64) * 3600 * 1000 * (limit as i64 + 2);
                 let start_time = now.saturating_sub(window_ms);
-                let rates = fetch_binance_funding_history_range_blocking(&self.http, &fut, start_time, now, limit)?;
+                let rates = fetch_binance_funding_history_range_blocking(
+                    &self.http, &fut, start_time, now, limit,
+                )?;
                 self.history_map.insert(fut, rates);
             }
         }
@@ -645,12 +690,23 @@ impl MockController {
 
     fn reload_params_if_changed(&mut self) -> bool {
         use redis::Commands;
-        let Some(settings) = self.cfg.redis.clone() else { return false; };
+        let Some(settings) = self.cfg.redis.clone() else {
+            return false;
+        };
         let url = settings.connection_url();
-        let Ok(client) = redis::Client::open(url.clone()) else { return false; };
-        let Ok(mut con) = client.get_connection() else { return false; };
-        let key = match &settings.prefix { Some(p) if !p.is_empty() => format!("{}{}", p, "binance_forward_arb_params"), _ => "binance_forward_arb_params".to_string() };
-        let Ok(map) = con.hgetall::<_, std::collections::HashMap<String, String>>(key) else { return false; };
+        let Ok(client) = redis::Client::open(url.clone()) else {
+            return false;
+        };
+        let Ok(mut con) = client.get_connection() else {
+            return false;
+        };
+        let key = match &settings.prefix {
+            Some(p) if !p.is_empty() => format!("{}{}", p, "binance_forward_arb_params"),
+            _ => "binance_forward_arb_params".to_string(),
+        };
+        let Ok(map) = con.hgetall::<_, std::collections::HashMap<String, String>>(key) else {
+            return false;
+        };
         debug!("mock 参数读取: {:?}", map);
         // 必须包含 8 个阈值键
         let required = [
@@ -664,38 +720,150 @@ impl MockController {
             "fr_8h_close_upper_threshold",
         ];
         let mut missing = Vec::new();
-        for k in required.iter() { if !map.contains_key(*k) { missing.push(k.to_string()); } }
-        if !missing.is_empty() { panic!("mock 缺少资金费率阈值参数: {:?}", missing); }
+        for k in required.iter() {
+            if !map.contains_key(*k) {
+                missing.push(k.to_string());
+            }
+        }
+        if !missing.is_empty() {
+            panic!("mock 缺少资金费率阈值参数: {:?}", missing);
+        }
         let parse_u64 = |k: &str| -> Option<u64> { map.get(k).and_then(|v| v.parse::<u64>().ok()) };
         let parse_i64 = |k: &str| -> Option<i64> { map.get(k).and_then(|v| v.parse::<i64>().ok()) };
         let parse_f64 = |k: &str| -> Option<f64> { map.get(k).and_then(|v| v.parse::<f64>().ok()) };
         let mut changed = false;
-        if let Some(v) = parse_u64("interval") { if self.cfg.strategy.interval as u64 != v { self.cfg.strategy.interval = v as usize; changed = true; } }
-        if let Some(v) = parse_u64("predict_num") { if self.cfg.strategy.predict_num as u64 != v { self.cfg.strategy.predict_num = v as usize; changed = true; } }
-        if let Some(v) = parse_u64("refresh_secs") { if self.cfg.strategy.refresh_secs != v { self.cfg.strategy.refresh_secs = v; changed = true; } }
-        if let Some(v) = parse_u64("fetch_secs") { if self.cfg.strategy.fetch_secs != v { self.cfg.strategy.fetch_secs = v; changed = true; } }
-        if let Some(v) = parse_u64("fetch_offset_secs") { if self.cfg.strategy.fetch_offset_secs != v { self.cfg.strategy.fetch_offset_secs = v; changed = true; } }
-        if let Some(v) = parse_u64("history_limit") { if self.cfg.strategy.history_limit as u64 != v { self.cfg.strategy.history_limit = v as usize; changed = true; } }
-        if let Some(v) = parse_i64("settlement_offset_secs") { if self.cfg.strategy.settlement_offset_secs != v { self.cfg.strategy.settlement_offset_secs = v; changed = true; } }
+        if let Some(v) = parse_u64("interval") {
+            if self.cfg.strategy.interval as u64 != v {
+                self.cfg.strategy.interval = v as usize;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_u64("predict_num") {
+            if self.cfg.strategy.predict_num as u64 != v {
+                self.cfg.strategy.predict_num = v as usize;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_u64("refresh_secs") {
+            if self.cfg.strategy.refresh_secs != v {
+                self.cfg.strategy.refresh_secs = v;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_u64("fetch_secs") {
+            if self.cfg.strategy.fetch_secs != v {
+                self.cfg.strategy.fetch_secs = v;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_u64("fetch_offset_secs") {
+            if self.cfg.strategy.fetch_offset_secs != v {
+                self.cfg.strategy.fetch_offset_secs = v;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_u64("history_limit") {
+            if self.cfg.strategy.history_limit as u64 != v {
+                self.cfg.strategy.history_limit = v as usize;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_i64("settlement_offset_secs") {
+            if self.cfg.strategy.settlement_offset_secs != v {
+                self.cfg.strategy.settlement_offset_secs = v;
+                changed = true;
+            }
+        }
         // 订单参数（开/平价距与名义下单金额U）
-        if let Some(v) = parse_f64("order_open_range") { if !approx_equal(self.cfg.order.open_range, v) { self.cfg.order.open_range = v; changed = true; } }
-        if let Some(v) = parse_f64("order_close_range") { if !approx_equal(self.cfg.order.close_range, v) { self.cfg.order.close_range = v; changed = true; } }
-        if let Some(v) = parse_f64("order_amount_u") { if !approx_equal(self.cfg.order.amount_u, v) { self.cfg.order.amount_u = v; changed = true; } }
-        if let Some(v) = parse_u64("signal_min_interval_ms") { if self.cfg.signal.min_interval_ms != v { self.cfg.signal.min_interval_ms = v; changed = true; } }
-        if let Some(v) = parse_u64("reload_interval_secs") { if self.cfg.reload.interval_secs != v { self.cfg.reload.interval_secs = v; changed = true; } }
+        if let Some(v) = parse_f64("order_open_range") {
+            if !approx_equal(self.cfg.order.open_range, v) {
+                self.cfg.order.open_range = v;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_f64("order_close_range") {
+            if !approx_equal(self.cfg.order.close_range, v) {
+                self.cfg.order.close_range = v;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_f64("order_amount_u") {
+            if !approx_equal(self.cfg.order.amount_u, v) {
+                self.cfg.order.amount_u = v;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_u64("signal_min_interval_ms") {
+            if self.cfg.signal.min_interval_ms != v {
+                self.cfg.signal.min_interval_ms = v;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_u64("reload_interval_secs") {
+            if self.cfg.reload.interval_secs != v {
+                self.cfg.reload.interval_secs = v;
+                changed = true;
+            }
+        }
         // 阈值（4h/8h）
         let mut th_changed = false;
-        if let Some(v) = parse_f64("fr_4h_open_upper_threshold") { if !approx_equal(self.th_4h.open_upper, v) { self.th_4h.open_upper = v; th_changed = true; } }
-        if let Some(v) = parse_f64("fr_4h_open_lower_threshold") { if !approx_equal(self.th_4h.open_lower, v) { self.th_4h.open_lower = v; th_changed = true; } }
-        if let Some(v) = parse_f64("fr_4h_close_lower_threshold") { if !approx_equal(self.th_4h.close_lower, v) { self.th_4h.close_lower = v; th_changed = true; } }
-        if let Some(v) = parse_f64("fr_4h_close_upper_threshold") { if !approx_equal(self.th_4h.close_upper, v) { self.th_4h.close_upper = v; th_changed = true; } }
-        if let Some(v) = parse_f64("fr_8h_open_upper_threshold") { if !approx_equal(self.th_8h.open_upper, v) { self.th_8h.open_upper = v; th_changed = true; } }
-        if let Some(v) = parse_f64("fr_8h_open_lower_threshold") { if !approx_equal(self.th_8h.open_lower, v) { self.th_8h.open_lower = v; th_changed = true; } }
-        if let Some(v) = parse_f64("fr_8h_close_lower_threshold") { if !approx_equal(self.th_8h.close_lower, v) { self.th_8h.close_lower = v; th_changed = true; } }
-        if let Some(v) = parse_f64("fr_8h_close_upper_threshold") { if !approx_equal(self.th_8h.close_upper, v) { self.th_8h.close_upper = v; th_changed = true; } }
-        if th_changed { changed = true; debug!("mock 阈值参数变更: 4h={:?} 8h={:?}", self.th_4h, self.th_8h); }
+        if let Some(v) = parse_f64("fr_4h_open_upper_threshold") {
+            if !approx_equal(self.th_4h.open_upper, v) {
+                self.th_4h.open_upper = v;
+                th_changed = true;
+            }
+        }
+        if let Some(v) = parse_f64("fr_4h_open_lower_threshold") {
+            if !approx_equal(self.th_4h.open_lower, v) {
+                self.th_4h.open_lower = v;
+                th_changed = true;
+            }
+        }
+        if let Some(v) = parse_f64("fr_4h_close_lower_threshold") {
+            if !approx_equal(self.th_4h.close_lower, v) {
+                self.th_4h.close_lower = v;
+                th_changed = true;
+            }
+        }
+        if let Some(v) = parse_f64("fr_4h_close_upper_threshold") {
+            if !approx_equal(self.th_4h.close_upper, v) {
+                self.th_4h.close_upper = v;
+                th_changed = true;
+            }
+        }
+        if let Some(v) = parse_f64("fr_8h_open_upper_threshold") {
+            if !approx_equal(self.th_8h.open_upper, v) {
+                self.th_8h.open_upper = v;
+                th_changed = true;
+            }
+        }
+        if let Some(v) = parse_f64("fr_8h_open_lower_threshold") {
+            if !approx_equal(self.th_8h.open_lower, v) {
+                self.th_8h.open_lower = v;
+                th_changed = true;
+            }
+        }
+        if let Some(v) = parse_f64("fr_8h_close_lower_threshold") {
+            if !approx_equal(self.th_8h.close_lower, v) {
+                self.th_8h.close_lower = v;
+                th_changed = true;
+            }
+        }
+        if let Some(v) = parse_f64("fr_8h_close_upper_threshold") {
+            if !approx_equal(self.th_8h.close_upper, v) {
+                self.th_8h.close_upper = v;
+                th_changed = true;
+            }
+        }
+        if th_changed {
+            changed = true;
+            debug!("mock 阈值参数变更: 4h={:?} 8h={:?}", self.th_4h, self.th_8h);
+        }
         let current = ParamsSnapshot::from(&self.cfg.strategy);
-        if self.last_params.as_ref() != Some(&current) { self.last_params = Some(current); changed = true; }
+        if self.last_params.as_ref() != Some(&current) {
+            self.last_params = Some(current);
+            changed = true;
+        }
         debug!("mock 参数变更检测: changed={}", changed);
         changed
     }
@@ -703,11 +871,17 @@ impl MockController {
     fn is_settlement_trigger(&mut self) -> bool {
         // 基于 UTC 准点 + 偏移（秒）判断 settlement 周期；周期大小来自 fetch_secs
         let now_ms = Utc::now().timestamp_millis();
-        let offset_ms = self.cfg.strategy.settlement_offset_secs.saturating_mul(1000);
+        let offset_ms = self
+            .cfg
+            .strategy
+            .settlement_offset_secs
+            .saturating_mul(1000);
         let period_s = self.cfg.strategy.fetch_secs.max(60) as i64;
         let period_ms = period_s.saturating_mul(1000);
         let adj = now_ms.saturating_sub(offset_ms);
-        if adj < 0 { return false; }
+        if adj < 0 {
+            return false;
+        }
         let slot = adj / period_ms;
         let slot_ms = slot.saturating_mul(period_ms).saturating_add(offset_ms);
         if self.last_settlement_marker_ms != Some(slot_ms) {
@@ -772,7 +946,11 @@ impl MockController {
         if !self.predicted_map.is_empty() {
             let mut sample: Vec<(&String, &f64)> = self.predicted_map.iter().take(5).collect();
             sample.sort_by(|a, b| a.0.cmp(b.0));
-            debug!("mock 预测更新完成: {} 项, 示例: {:?}", self.predicted_map.len(), sample);
+            debug!(
+                "mock 预测更新完成: {} 项, 示例: {:?}",
+                self.predicted_map.len(),
+                sample
+            );
         } else {
             debug!("mock 预测更新完成: 空");
         }
@@ -854,13 +1032,19 @@ impl MockController {
     }
 
     fn print_funding_overview_table(&self) {
-        if self.symbols.is_empty() { return; }
-        if !self.is_warmup_complete() { return; }
+        if self.symbols.is_empty() {
+            return;
+        }
+        if !self.is_warmup_complete() {
+            return;
+        }
         let mut rows: Vec<Vec<String>> = Vec::new();
         let mut keys: Vec<String> = self.symbols.keys().cloned().collect();
         keys.sort();
         for key in keys {
-            let Some(state) = self.symbols.get(&key) else { continue; };
+            let Some(state) = self.symbols.get(&key) else {
+                continue;
+            };
             let fut = state.futures_symbol.to_uppercase();
             let freq = self
                 .funding_frequency
@@ -873,8 +1057,20 @@ impl MockController {
             let fr_mean = self
                 .history_map
                 .get(&fut)
-                .and_then(|v| if v.is_empty() { None } else { Some(v.iter().copied().sum::<f64>() / (v.len() as f64)) })
-                .or_else(|| if state.funding_rate != 0.0 { Some(state.funding_rate) } else { None })
+                .and_then(|v| {
+                    if v.is_empty() {
+                        None
+                    } else {
+                        Some(v.iter().copied().sum::<f64>() / (v.len() as f64))
+                    }
+                })
+                .or_else(|| {
+                    if state.funding_rate != 0.0 {
+                        Some(state.funding_rate)
+                    } else {
+                        None
+                    }
+                })
                 .map(|v| format!("{:.6}", v))
                 .unwrap_or_else(|| "-".to_string());
             rows.push(vec![
@@ -888,16 +1084,22 @@ impl MockController {
                 format!("{:.6}", cu),
             ]);
         }
-        if rows.is_empty() { return; }
+        if rows.is_empty() {
+            return;
+        }
         let table = render_three_line_table(
-            &["Symbol", "Freq", "FR_Mean", "Pred", "OpenU", "OpenL", "CloseL", "CloseU"],
+            &[
+                "Symbol", "Freq", "FR_Mean", "Pred", "OpenU", "OpenL", "CloseL", "CloseU",
+            ],
             &rows,
         );
         info!("资金费率总览\n{}", table);
     }
 
     fn print_warmup_progress_table(&self) {
-        if self.symbols.is_empty() { return; }
+        if self.symbols.is_empty() {
+            return;
+        }
         let need = self.cfg.strategy.funding_ma_size.max(1);
         let mut rows: Vec<Vec<String>> = Vec::new();
         let mut keys: Vec<String> = self.sorted_symbol_keys();
@@ -919,7 +1121,9 @@ impl MockController {
                 ]);
             }
         }
-        if rows.is_empty() { return; }
+        if rows.is_empty() {
+            return;
+        }
         let table = render_three_line_table(&["Symbol", "Futures", "Count", "Need", "Freq"], &rows);
         info!("Warmup 进度\n{}", table);
     }
@@ -951,21 +1155,19 @@ impl MockController {
             info!("当前未追踪任何交易对");
             return;
         }
-        if !self.is_warmup_complete() { return; }
+        if !self.is_warmup_complete() {
+            return;
+        }
         let mut rows = Vec::new();
         for (idx, key) in self.sorted_symbol_keys().iter().enumerate() {
             if let Some(state) = self.symbols.get(key) {
                 // 两个价差因子
-                let bidask_sr = compute_bidask_sr(
-                    Some(state.spot_quote.bid),
-                    Some(state.futures_quote.ask),
-                )
-                .unwrap_or(0.0);
-                let askbid_sr = compute_askbid_sr(
-                    Some(state.spot_quote.ask),
-                    Some(state.futures_quote.bid),
-                )
-                .unwrap_or(0.0);
+                let bidask_sr =
+                    compute_bidask_sr(Some(state.spot_quote.bid), Some(state.futures_quote.ask))
+                        .unwrap_or(0.0);
+                let askbid_sr =
+                    compute_askbid_sr(Some(state.spot_quote.ask), Some(state.futures_quote.bid))
+                        .unwrap_or(0.0);
                 rows.push(vec![
                     format!("{:>3}", idx + 1),
                     state.spot_symbol.clone(),
@@ -985,8 +1187,19 @@ impl MockController {
         }
         let table = render_three_line_table(
             &[
-                "Idx", "Spot", "Futures", "SpotBid", "SpotAsk", "FutBid", "FutAsk",
-                "BidAskSR", "AskBidSR", "BA_OpenTh", "BA_CloseTh", "AB_OpenTh", "AB_CloseTh",
+                "Idx",
+                "Spot",
+                "Futures",
+                "SpotBid",
+                "SpotAsk",
+                "FutBid",
+                "FutAsk",
+                "BidAskSR",
+                "AskBidSR",
+                "BA_OpenTh",
+                "BA_CloseTh",
+                "AB_OpenTh",
+                "AB_CloseTh",
             ],
             &rows,
         );
@@ -1000,7 +1213,9 @@ impl MockController {
     }
 
     fn is_warmup_complete(&self) -> bool {
-        if self.symbols.is_empty() { return false; }
+        if self.symbols.is_empty() {
+            return false;
+        }
         let need = self.cfg.strategy.funding_ma_size.max(1);
         for s in self.symbols.values() {
             let fut = s.futures_symbol.to_uppercase();
@@ -1223,10 +1438,14 @@ impl MockController {
             .borrow_mut()
             .retain(|symbol, _| self.symbols.contains_key(symbol));
         info!("已加载追踪交易对数量: {}", self.symbols.len());
-        if !added.is_empty() { debug!("mock 新增交易对: {} 个", added.len()); }
+        if !added.is_empty() {
+            debug!("mock 新增交易对: {} 个", added.len());
+        }
         if !added.is_empty() {
             // 为新增符号推断频率并拉取历史，然后立刻计算预测
-            if let Err(err) = self.update_added_symbols_history_and_freq() { warn!("mock 初次加载新增符号失败: {err:?}"); }
+            if let Err(err) = self.update_added_symbols_history_and_freq() {
+                warn!("mock 初次加载新增符号失败: {err:?}");
+            }
             self.compute_predictions();
         }
         Ok(())
@@ -1281,10 +1500,19 @@ impl MockController {
                     .get("askbid_sr_close_threshold")
                     .and_then(|x| x.as_f64())
                     .unwrap_or(close_threshold);
-                result.push(SymbolThreshold { spot_symbol, futures_symbol, open_threshold, close_threshold, askbid_open_threshold, askbid_close_threshold });
+                result.push(SymbolThreshold {
+                    spot_symbol,
+                    futures_symbol,
+                    open_threshold,
+                    close_threshold,
+                    askbid_open_threshold,
+                    askbid_close_threshold,
+                });
             }
         }
-        if result.is_empty() { anyhow::bail!("Redis Hash 未解析到有效的 binance 交易对阈值"); }
+        if result.is_empty() {
+            anyhow::bail!("Redis Hash 未解析到有效的 binance 交易对阈值");
+        }
         Ok(result)
     }
 
@@ -1389,8 +1617,10 @@ fn format_price(value: f64) -> String {
 
 #[derive(Debug, Deserialize)]
 struct BinanceFundingHistItem {
-    #[serde(rename = "fundingRate")] funding_rate: String,
-    #[serde(rename = "fundingTime")] funding_time: Option<i64>,
+    #[serde(rename = "fundingRate")]
+    funding_rate: String,
+    #[serde(rename = "fundingTime")]
+    funding_time: Option<i64>,
 }
 
 fn fetch_binance_funding_history_range_blocking(
@@ -1413,16 +1643,29 @@ fn fetch_binance_funding_history_range_blocking(
             ("limit", &limit_s),
         ])
         .send()?;
-    if !resp.status().is_success() { return Ok(vec![]); }
+    if !resp.status().is_success() {
+        return Ok(vec![]);
+    }
     let mut items: Vec<BinanceFundingHistItem> = resp.json().unwrap_or_default();
     items.sort_by_key(|it| it.funding_time.unwrap_or_default());
     let mut out = Vec::with_capacity(items.len());
-    for it in items { if let Ok(v) = it.funding_rate.parse::<f64>() { out.push(v); } }
-    if out.len() > limit { let drop_n = out.len() - limit; let _ = out.drain(0..drop_n); }
+    for it in items {
+        if let Ok(v) = it.funding_rate.parse::<f64>() {
+            out.push(v);
+        }
+    }
+    if out.len() > limit {
+        let drop_n = out.len() - limit;
+        let _ = out.drain(0..drop_n);
+    }
     Ok(out)
 }
 
-fn fetch_binance_funding_items_blocking(client: &Client, symbol: &str, limit: usize) -> AnyResult<Vec<BinanceFundingHistItem>> {
+fn fetch_binance_funding_items_blocking(
+    client: &Client,
+    symbol: &str,
+    limit: usize,
+) -> AnyResult<Vec<BinanceFundingHistItem>> {
     let url = "https://fapi.binance.com/fapi/v1/fundingRate";
     let end_time = Utc::now().timestamp_millis();
     let start_time = end_time - 3 * 24 * 3600 * 1000;
@@ -1436,24 +1679,41 @@ fn fetch_binance_funding_items_blocking(client: &Client, symbol: &str, limit: us
             ("limit", &limit_s),
         ])
         .send()?;
-    if !resp.status().is_success() { return Ok(vec![]); }
+    if !resp.status().is_success() {
+        return Ok(vec![]);
+    }
     let mut items: Vec<BinanceFundingHistItem> = resp.json().unwrap_or_default();
     items.sort_by_key(|it| it.funding_time.unwrap_or_default());
     Ok(items)
 }
 
-fn infer_binance_funding_frequency_blocking(client: &Client, symbol: &str) -> AnyResult<Option<String>> {
+fn infer_binance_funding_frequency_blocking(
+    client: &Client,
+    symbol: &str,
+) -> AnyResult<Option<String>> {
     let items = fetch_binance_funding_items_blocking(client, symbol, 40)?;
     let mut times: Vec<i64> = items.into_iter().filter_map(|it| it.funding_time).collect();
-    if times.len() < 3 { return Ok(Some("8h".to_string())); }
+    if times.len() < 3 {
+        return Ok(Some("8h".to_string()));
+    }
     times.sort_unstable();
     let mut diffs: Vec<i64> = Vec::with_capacity(times.len().saturating_sub(1));
-    for w in times.windows(2) { if let [a, b] = w { diffs.push(b - a); } }
-    if diffs.is_empty() { return Ok(Some("8h".to_string())); }
+    for w in times.windows(2) {
+        if let [a, b] = w {
+            diffs.push(b - a);
+        }
+    }
+    if diffs.is_empty() {
+        return Ok(Some("8h".to_string()));
+    }
     diffs.sort_unstable();
-    let median = diffs[diffs.len()/2];
+    let median = diffs[diffs.len() / 2];
     let six_hours_ms = 6 * 3600 * 1000;
-    if median <= six_hours_ms { Ok(Some("4h".to_string())) } else { Ok(Some("8h".to_string())) }
+    if median <= six_hours_ms {
+        Ok(Some("4h".to_string()))
+    } else {
+        Ok(Some("8h".to_string()))
+    }
 }
 
 // note: removed compute_predict_local; compute_predictions now inlines calculation with debug logs
@@ -1673,7 +1933,8 @@ fn spawn_command_reader(tx: mpsc::UnboundedSender<String>) {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let default_filter = "info,funding_rate_strategy_mock=debug,mkt_signal=info,hyper=off,hyper_util=off,h2=off,reqwest=warn";
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter)).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter))
+        .init();
 
     info!("启动 Funding Rate Mock 控制台");
 

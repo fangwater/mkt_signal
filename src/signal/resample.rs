@@ -61,4 +61,3 @@ pub fn compute_askbid_sr(spot_ask: Option<f64>, fut_bid: Option<f64>) -> Option<
         _ => None,
     }
 }
-

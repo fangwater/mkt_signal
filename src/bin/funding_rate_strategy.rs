@@ -1384,7 +1384,6 @@ impl StrategyEngine {
         let mut batch_items: Vec<ResampleItem> = Vec::new();
         let mut price_rows: Vec<Vec<String>> = Vec::new();
         let mut funding_rows: Vec<Vec<String>> = Vec::new();
-        let mut signal_rows: Vec<Vec<String>> = Vec::new();
         // 组装每个 symbol 的切片
         let mut keys: Vec<String> = self.symbols.keys().cloned().collect();
         keys.sort();
@@ -1476,32 +1475,6 @@ impl StrategyEngine {
                     (ou, ol, cl, cu, freq)
                 };
 
-            price_rows.push(vec![
-                key.clone(),
-                fmt_decimal(state.spot_quote.bid),
-                fmt_decimal(state.spot_quote.ask),
-                fmt_decimal(state.futures_quote.bid),
-                fmt_decimal(state.futures_quote.ask),
-                fmt_decimal(bidask_sr.unwrap_or(0.0)),
-                fmt_decimal(state.open_threshold),
-                fmt_decimal(state.close_threshold),
-                fmt_decimal(askbid_sr.unwrap_or(0.0)),
-                fmt_decimal(state.askbid_open_threshold),
-                fmt_decimal(state.askbid_close_threshold),
-            ]);
-
-            funding_rows.push(vec![
-                key.clone(),
-                freq,
-                fmt_decimal(state.funding_rate),
-                fmt_decimal(predicted_rate.unwrap_or(0.0)),
-                fmt_decimal(funding_rate_ma.unwrap_or_else(|| state.funding_ma.unwrap_or(0.0))),
-                fmt_decimal(open_upper),
-                fmt_decimal(open_lower),
-                fmt_decimal(close_lower),
-                fmt_decimal(close_upper),
-            ]);
-
             let ready_open = if state.price_open_ready { "Y" } else { "N" };
             let ready_close = if state.price_close_ready { "Y" } else { "N" };
             let price_open_bidask = if state.price_open_bidask { "Y" } else { "N" };
@@ -1513,18 +1486,45 @@ impl StrategyEngine {
                 PositionState::Opened => "Opened",
             };
 
-            signal_rows.push(vec![
+            price_rows.push(vec![
                 key.clone(),
-                state.predicted_signal.to_string(),
-                state.ma_signal.to_string(),
-                state.final_signal_value.to_string(),
+                fmt_decimal(bidask_sr.unwrap_or(0.0)),
+                fmt_decimal(state.open_threshold),
+                fmt_decimal(state.close_threshold),
                 price_open_bidask.to_string(),
-                price_open_askbid.to_string(),
                 price_close_bidask.to_string(),
+                fmt_decimal(askbid_sr.unwrap_or(0.0)),
+                fmt_decimal(state.askbid_open_threshold),
+                fmt_decimal(state.askbid_close_threshold),
+                price_open_askbid.to_string(),
                 price_close_askbid.to_string(),
                 ready_open.to_string(),
                 ready_close.to_string(),
                 position.to_string(),
+            ]);
+
+            let pred_label = match state.predicted_signal {
+                -1 => "-1 开仓",
+                1 => "1 反向",
+                _ => "0 无",
+            };
+            let ma_label = match state.ma_signal {
+                -2 => "-2 平仓",
+                2 => "2 反向",
+                _ => "0 无",
+            };
+
+            funding_rows.push(vec![
+                key.clone(),
+                freq,
+                fmt_decimal(predicted_rate.unwrap_or(0.0)),
+                fmt_decimal(open_upper),
+                fmt_decimal(open_lower),
+                pred_label.to_string(),
+                fmt_decimal(funding_rate_ma.unwrap_or_else(|| state.funding_ma.unwrap_or(0.0))),
+                fmt_decimal(close_upper),
+                fmt_decimal(close_lower),
+                ma_label.to_string(),
             ]);
         }
 
@@ -1547,20 +1547,23 @@ impl StrategyEngine {
 
         if !price_rows.is_empty() {
             info!(
-                "Resample盘口价差\n{}",
+                "Resample价差信号\n{}",
                 render_three_line_table(
                     &[
                         "Symbol",
-                        "SpotBid",
-                        "SpotAsk",
-                        "FutBid",
-                        "FutAsk",
                         "BidAskSR",
                         "BA_OpenTh",
                         "BA_CloseTh",
+                        "BA_OpenOK",
+                        "BA_CloseOK",
                         "AskBidSR",
                         "AB_OpenTh",
                         "AB_CloseTh",
+                        "AB_OpenOK",
+                        "AB_CloseOK",
+                        "ReadyOpen",
+                        "ReadyClose",
+                        "Position",
                     ],
                     &price_rows,
                 )
@@ -1568,41 +1571,21 @@ impl StrategyEngine {
         }
         if !funding_rows.is_empty() {
             info!(
-                "Resample资金费率\n{}",
+                "Resample资费信号\n{}",
                 render_three_line_table(
                     &[
                         "Symbol",
                         "Freq",
-                        "Funding",
                         "Predict",
-                        "MA60",
                         "OpenUpper",
                         "OpenLower",
-                        "CloseLower",
+                        "PredSignal",
+                        "MA60",
                         "CloseUpper",
+                        "CloseLower",
+                        "MASignal",
                     ],
                     &funding_rows,
-                )
-            );
-        }
-        if !signal_rows.is_empty() {
-            info!(
-                "Resample信号状态\n{}",
-                render_three_line_table(
-                    &[
-                        "Symbol",
-                        "PredSig",
-                        "MASig",
-                        "Final",
-                        "BA_Open",
-                        "AB_Open",
-                        "BA_Close",
-                        "AB_Close",
-                        "ReadyOpen",
-                        "ReadyClose",
-                        "Position",
-                    ],
-                    &signal_rows,
                 )
             );
         }

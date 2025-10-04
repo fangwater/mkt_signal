@@ -2,9 +2,9 @@ use std::net::SocketAddr;
 
 use anyhow::Result;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::Query;
 use axum::extract::State as AxumState;
 use axum::response::{IntoResponse, Response};
-use axum::extract::Query;
 use axum::routing::get;
 use axum::{Json, Router};
 use log::info;
@@ -33,11 +33,13 @@ impl WsHub {
 }
 
 pub async fn serve_http(cfg: HttpCfg, hub: WsHub) -> Result<()> {
-
     let hub_clone = hub.clone();
     let ws_path = cfg.ws_path.clone();
     let app = Router::new()
-        .route("/healthz", get(|| async { Json(serde_json::json!({"ok": true, "ts": get_timestamp_us()/1000})) }))
+        .route(
+            "/healthz",
+            get(|| async { Json(serde_json::json!({"ok": true, "ts": get_timestamp_us()/1000})) }),
+        )
         .route(&ws_path, get(ws_route))
         .with_state(hub_clone);
 

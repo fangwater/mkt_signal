@@ -120,7 +120,6 @@ impl FundingRateMsg {
             data[offset + 7],
         ])
     }
-
 }
 
 pub struct MarkPriceMsg {

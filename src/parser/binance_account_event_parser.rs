@@ -476,8 +476,7 @@ impl BinanceAccountEventParser {
             if client_order_id == 0 {
                 warn!(
                     "parser: skip orderTradeUpdate with non-i64 clientOrderId c={:?} sym={}",
-                    client_order_id_raw,
-                    symbol
+                    client_order_id_raw, symbol
                 );
                 return 0;
             }

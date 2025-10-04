@@ -92,7 +92,10 @@ impl MinQtyTable {
 
     pub fn spot_step_by_symbol(&self, symbol: &str) -> Option<f64> {
         let key = symbol.to_uppercase();
-        self.spot.get(&key).map(|e| e.step_size).filter(|v| *v > 0.0)
+        self.spot
+            .get(&key)
+            .map(|e| e.step_size)
+            .filter(|v| *v > 0.0)
     }
 
     pub fn futures_um_min_qty_by_symbol(&self, symbol: &str) -> Option<f64> {
@@ -131,17 +134,26 @@ impl MinQtyTable {
 
     pub fn margin_step_by_symbol(&self, symbol: &str) -> Option<f64> {
         let key = symbol.to_uppercase();
-        self.margin.get(&key).map(|e| e.step_size).filter(|v| *v > 0.0)
+        self.margin
+            .get(&key)
+            .map(|e| e.step_size)
+            .filter(|v| *v > 0.0)
     }
 
     pub fn spot_min_notional_by_symbol(&self, symbol: &str) -> Option<f64> {
         let key = symbol.to_uppercase();
-        self.spot.get(&key).and_then(|e| e.min_notional).filter(|v| *v > 0.0)
+        self.spot
+            .get(&key)
+            .and_then(|e| e.min_notional)
+            .filter(|v| *v > 0.0)
     }
 
     pub fn margin_min_notional_by_symbol(&self, symbol: &str) -> Option<f64> {
         let key = symbol.to_uppercase();
-        self.margin.get(&key).and_then(|e| e.min_notional).filter(|v| *v > 0.0)
+        self.margin
+            .get(&key)
+            .and_then(|e| e.min_notional)
+            .filter(|v| *v > 0.0)
     }
 
     async fn fetch_exchange_filters(
@@ -182,7 +194,8 @@ impl MinQtyTable {
         if body.trim().is_empty() {
             return Err(anyhow!(
                 "GET {} returned empty body (status={})",
-                url, status
+                url,
+                status
             ));
         }
 
@@ -200,8 +213,7 @@ impl MinQtyTable {
                 min_qty: filters.min_qty.unwrap_or(0.0),
                 step_size: filters.step_size.unwrap_or(0.0),
                 price_tick: filters.price_tick,
-                min_notional: filters
-                    .min_notional,
+                min_notional: filters.min_notional,
             };
             map.insert(symbol, entry);
         }

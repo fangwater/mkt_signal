@@ -66,4 +66,3 @@ pub struct StaleFlags {
     pub prices: bool,
     pub funding: bool,
 }
-
