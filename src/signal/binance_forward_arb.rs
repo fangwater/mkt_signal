@@ -295,6 +295,7 @@ pub struct BinSingleForwardArbStrategy {
     order_tx: UnboundedSender<Bytes>,
     max_symbol_exposure_ratio: f64,
     max_total_exposure_ratio: f64,
+    max_pos_u: f64,
     min_qty_table: std::rc::Rc<MinQtyTable>,
     price_table: std::rc::Rc<std::cell::RefCell<PriceTable>>,
     period_log_flags: RefCell<PeriodLogFlags>,
@@ -310,6 +311,7 @@ impl BinSingleForwardArbStrategy {
         order_tx: UnboundedSender<Bytes>,
         max_symbol_exposure_ratio: f64,
         max_total_exposure_ratio: f64,
+        max_pos_u: f64,
         min_qty_table: Rc<MinQtyTable>,
         price_table: Rc<std::cell::RefCell<PriceTable>>,
     ) -> Self {
@@ -331,18 +333,20 @@ impl BinSingleForwardArbStrategy {
             order_tx,
             max_symbol_exposure_ratio,
             max_total_exposure_ratio,
+            max_pos_u,
             min_qty_table,
             price_table,
             period_log_flags: RefCell::new(PeriodLogFlags::default()),
         };
 
         info!(
-            "{}: strategy_id={} 初始化 symbol={} max_symbol_ratio={:.2}% max_total_ratio={:.2}%",
+            "{}: strategy_id={} 初始化 symbol={} max_symbol_ratio={:.2}% max_total_ratio={:.2}% max_pos_u={:.2}",
             Self::strategy_name(),
             strategy.strategy_id,
             strategy.symbol,
             strategy.max_symbol_exposure_ratio * 100.0,
-            strategy.max_total_exposure_ratio * 100.0
+            strategy.max_total_exposure_ratio * 100.0,
+            strategy.max_pos_u
         );
 
         strategy
@@ -547,6 +551,85 @@ impl BinSingleForwardArbStrategy {
         }
     }
 
+    fn ensure_max_pos_u(
+        &self,
+        spot_symbol: &str,
+        base_asset: &str,
+        current_spot_qty: f64,
+        additional_qty: f64,
+        price_hint: f64,
+    ) -> Result<(), String> {
+        if !(self.max_pos_u > 0.0) {
+            return Ok(());
+        }
+
+        let base_upper = base_asset.to_uppercase();
+        let mark_symbol = format!("{}USDT", base_upper);
+        let price_from_table = {
+            let table = self.price_table.borrow();
+            table.mark_price(&mark_symbol)
+        };
+        let price = price_from_table.or_else(|| {
+            if price_hint > 0.0 {
+                Some(price_hint)
+            } else {
+                None
+            }
+        });
+
+        let Some(price) = price else {
+            warn!(
+                "{}: symbol={} 缺少 USDT 标记价格，无法校验 max_pos_u",
+                Self::strategy_name(),
+                spot_symbol
+            );
+            return Err(format!(
+                "{}: symbol={} 缺少价格信息，无法校验 max_pos_u",
+                Self::strategy_name(),
+                spot_symbol
+            ));
+        };
+
+        let projected_qty = current_spot_qty + additional_qty;
+        let current_usdt = current_spot_qty.abs() * price;
+        let order_usdt = additional_qty.abs() * price;
+        let projected_usdt = projected_qty.abs() * price;
+        let limit_eps = 1e-6_f64;
+
+        if projected_usdt > self.max_pos_u + limit_eps {
+            warn!(
+                "{}: symbol={} 当前现货={:.6}({:.4}USDT) 下单数量={:.6}({:.4}USDT) 预计现货={:.4}USDT 超过阈值 {:.4}USDT",
+                Self::strategy_name(),
+                spot_symbol,
+                current_spot_qty,
+                current_usdt,
+                additional_qty,
+                order_usdt,
+                projected_usdt,
+                self.max_pos_u
+            );
+            return Err(format!(
+                "{}: symbol={} 预计现货持仓 {:.4}USDT 超过阈值 {:.4}USDT",
+                Self::strategy_name(),
+                spot_symbol,
+                projected_usdt,
+                self.max_pos_u
+            ));
+        }
+
+        debug!(
+            "{}: symbol={} 现货持仓限制通过 current={:.4}USDT add={:.4}USDT projected={:.4}USDT limit={:.4}USDT",
+            Self::strategy_name(),
+            spot_symbol,
+            current_usdt,
+            order_usdt,
+            projected_usdt,
+            self.max_pos_u
+        );
+
+        Ok(())
+    }
+
     fn extract_base_asset(symbol_upper: &str) -> Option<String> {
         const QUOTES: [&str; 6] = ["USDT", "BUSD", "USDC", "FDUSD", "BIDR", "TRY"];
         for quote in QUOTES {
@@ -586,7 +669,16 @@ impl BinSingleForwardArbStrategy {
             }
         }
 
-        {
+        let symbol_upper = open_ctx.spot_symbol.to_uppercase();
+        let base_asset = Self::extract_base_asset(&symbol_upper).ok_or_else(|| {
+            format!(
+                "{}: 无法识别 symbol={} 的基础资产，无法校验 max_pos_u",
+                Self::strategy_name(),
+                open_ctx.spot_symbol
+            )
+        })?;
+
+        let current_spot_qty = {
             let exposure_manager = self.exposure_manager.borrow();
             if !self.check_for_symbol_exposure(&open_ctx.spot_symbol, &exposure_manager) {
                 return Err(format!(
@@ -599,7 +691,12 @@ impl BinSingleForwardArbStrategy {
             if !self.check_for_total_exposure(&exposure_manager) {
                 return Err(format!("{}: 总敞口校验未通过", Self::strategy_name()));
             }
-        }
+
+            exposure_manager
+                .exposure_for_asset(&base_asset)
+                .map(|entry| entry.spot_total_wallet)
+                .unwrap_or(0.0)
+        };
 
         if !open_ctx.side.is_buy() {
             return Err(format!(
@@ -727,6 +824,15 @@ impl BinSingleForwardArbStrategy {
             effective_price,
             eff_qty
         );
+
+        self.ensure_max_pos_u(
+            &open_ctx.spot_symbol,
+            &base_asset,
+            current_spot_qty,
+            eff_qty,
+            effective_price,
+        )?;
+
         let qty_str = format_quantity(eff_qty);
         let mut params_parts = vec![
             format!("symbol={}", open_ctx.spot_symbol),
@@ -1329,6 +1435,7 @@ impl BinSingleForwardArbStrategy {
         order_tx: UnboundedSender<Bytes>,
         max_symbol_exposure_ratio: f64,
         max_total_exposure_ratio: f64,
+        max_pos_u: f64,
         min_qty_table: std::rc::Rc<MinQtyTable>,
         price_table: Rc<std::cell::RefCell<PriceTable>>,
     ) -> Self {
@@ -1341,6 +1448,7 @@ impl BinSingleForwardArbStrategy {
             order_tx,
             max_symbol_exposure_ratio,
             max_total_exposure_ratio,
+            max_pos_u,
             min_qty_table,
             price_table,
         );

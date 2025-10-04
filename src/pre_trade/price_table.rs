@@ -137,6 +137,14 @@ impl PriceTable {
         entry.update_time = timestamp;
     }
 
+    pub fn mark_price(&self, symbol: &str) -> Option<f64> {
+        let key = symbol.to_uppercase();
+        self.entries
+            .get(&key)
+            .map(|entry| entry.mark_price)
+            .filter(|price| *price > 0.0)
+    }
+
     pub fn snapshot(&self) -> BTreeMap<String, PriceEntry> {
         self.entries.clone()
     }

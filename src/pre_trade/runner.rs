@@ -419,6 +419,7 @@ impl RuntimeContext {
         if !strategy_records.is_empty() {
             let max_symbol_exposure_ratio = self.strategy_params.max_symbol_exposure_ratio;
             let max_total_exposure_ratio = self.strategy_params.max_total_exposure_ratio;
+            let max_pos_u = self.strategy_params.max_pos_u;
             for rec in strategy_records {
                 match rec.type_name.as_str() {
                     "BinSingleForwardArbStrategy" => {
@@ -443,6 +444,7 @@ impl RuntimeContext {
                                     self.order_tx.clone(),
                                     max_symbol_exposure_ratio,
                                     max_total_exposure_ratio,
+                                    max_pos_u,
                                     self.min_qty_table.clone(),
                                     self.price_table.clone(),
                                 );
@@ -1226,6 +1228,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                         order_tx,
                         ctx.strategy_params.max_symbol_exposure_ratio,
                         ctx.strategy_params.max_total_exposure_ratio,
+                        ctx.strategy_params.max_pos_u,
                         ctx.min_qty_table.clone(),
                         ctx.price_table.clone(),
                     );
