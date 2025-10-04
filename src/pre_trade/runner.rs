@@ -18,8 +18,8 @@ use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
 use crate::pre_trade::store::{RedisStore, StrategyRecord};
 use crate::signal::binance_forward_arb::{
-    BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbCloseUmCtx, BinSingleForwardArbOpenCtx,
-    BinSingleForwardArbSnapshot, BinSingleForwardArbStrategy,
+    BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbCloseUmCtx, BinSingleForwardArbHedgeCtx,
+    BinSingleForwardArbOpenCtx, BinSingleForwardArbSnapshot, BinSingleForwardArbStrategy,
 };
 use crate::signal::strategy::{Strategy, StrategyManager};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
@@ -1270,8 +1270,20 @@ fn dispatch_signal_to_existing_strategy(
     signal: TradeSignal,
     raw_signal: Bytes,
 ) {
+    let mut target_strategy_id: Option<i32> = None;
     let maybe_symbol = match signal.signal_type {
-        SignalType::BinSingleForwardArbHedge => None,
+        SignalType::BinSingleForwardArbHedge => {
+            match BinSingleForwardArbHedgeCtx::from_bytes(signal.context.clone()) {
+                Ok(hedge_ctx) => {
+                    target_strategy_id = Some(hedge_ctx.strategy_id);
+                    None
+                }
+                Err(err) => {
+                    warn!("failed to decode hedge context: {err}");
+                    return;
+                }
+            }
+        }
         SignalType::BinSingleForwardArbCloseMargin => {
             match BinSingleForwardArbCloseMarginCtx::from_bytes(signal.context.clone()) {
                 Ok(close_ctx) => {
@@ -1305,7 +1317,9 @@ fn dispatch_signal_to_existing_strategy(
         _ => None,
     };
 
-    let strategy_ids: Vec<i32> = if let Some(symbol) = maybe_symbol {
+    let strategy_ids: Vec<i32> = if let Some(strategy_id) = target_strategy_id {
+        vec![strategy_id]
+    } else if let Some(symbol) = maybe_symbol {
         ctx.symbol_to_strategy
             .get(&symbol)
             .cloned()

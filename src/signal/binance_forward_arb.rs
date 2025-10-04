@@ -36,6 +36,7 @@ pub struct BinSingleForwardArbOpenCtx {
 /// 币安单所正向套利对冲信号上下文
 #[derive(Clone, Debug)]
 pub struct BinSingleForwardArbHedgeCtx {
+    pub strategy_id: i32,
     pub spot_order_id: i64,
 }
 
@@ -140,18 +141,27 @@ impl BinSingleForwardArbHedgeCtx {
     pub fn to_bytes(&self) -> Bytes {
         let mut buf = BytesMut::new();
 
+        buf.put_i32_le(self.strategy_id);
         buf.put_i64_le(self.spot_order_id);
 
         buf.freeze()
     }
 
     pub fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
+        if bytes.remaining() < 4 {
+            return Err("Not enough bytes for strategy_id".to_string());
+        }
+        let strategy_id = bytes.get_i32_le();
+
         if bytes.remaining() < 8 {
             return Err("Not enough bytes for spot_order_id".to_string());
         }
         let spot_order_id = bytes.get_i64_le();
 
-        Ok(Self { spot_order_id })
+        Ok(Self {
+            strategy_id,
+            spot_order_id,
+        })
     }
 }
 
@@ -808,6 +818,15 @@ impl BinSingleForwardArbStrategy {
                 })?
                 .clone()
         };
+
+        if margin_order.get_strategy_id() != self.strategy_id {
+            return Err(format!(
+                "{}: strategy_id={} hedge 信号携带的订单属于 strategy_id={}",
+                Self::strategy_name(),
+                self.strategy_id,
+                margin_order.get_strategy_id()
+            ));
+        }
 
         if margin_order.quantity <= 0.0 {
             return Err(format!(
@@ -1779,19 +1798,30 @@ impl Strategy for BinSingleForwardArbStrategy {
                 }
                 SignalType::BinSingleForwardArbHedge => {
                     match BinSingleForwardArbHedgeCtx::from_bytes(signal.context.clone()) {
-                        Ok(ctx) => match self.create_hedge_um_order_from_margin_order(&ctx) {
-                            Ok(()) => debug!(
-                                "{}: strategy_id={} 成功触发对冲订单",
-                                Self::strategy_name(),
-                                self.strategy_id
-                            ),
-                            Err(err) => warn!(
-                                "{}: strategy_id={} 创建对冲订单失败: {}",
-                                Self::strategy_name(),
-                                self.strategy_id,
-                                err
-                            ),
-                        },
+                        Ok(ctx) => {
+                            if ctx.strategy_id != self.strategy_id {
+                                debug!(
+                                    "{}: strategy_id={} 忽略他人 hedge 信号 for strategy_id={}",
+                                    Self::strategy_name(),
+                                    self.strategy_id,
+                                    ctx.strategy_id
+                                );
+                            } else {
+                                match self.create_hedge_um_order_from_margin_order(&ctx) {
+                                    Ok(()) => debug!(
+                                        "{}: strategy_id={} 成功触发对冲订单",
+                                        Self::strategy_name(),
+                                        self.strategy_id
+                                    ),
+                                    Err(err) => warn!(
+                                        "{}: strategy_id={} 创建对冲订单失败: {}",
+                                        Self::strategy_name(),
+                                        self.strategy_id,
+                                        err
+                                    ),
+                                }
+                            }
+                        }
                         Err(err) => {
                             warn!(
                                 "{}: strategy_id={} 解析对冲上下文失败: {}",
@@ -2078,6 +2108,7 @@ impl Strategy for BinSingleForwardArbStrategy {
                     );
                     // 触发对冲信号，由策略消费并创建 UM 对冲市价单
                     let ctx = BinSingleForwardArbHedgeCtx {
+                        strategy_id: self.strategy_id,
                         spot_order_id: order_id,
                     };
                     if let Some(tx) = &self.signal_tx {
