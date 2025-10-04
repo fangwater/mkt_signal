@@ -1382,7 +1382,6 @@ impl StrategyEngine {
     fn resample_and_publish(&mut self) {
         let ts_ms = (get_timestamp_us() / 1000) as i64;
         let mut batch_items: Vec<ResampleItem> = Vec::new();
-        let log_debug = log::log_enabled!(log::Level::Debug);
         let mut price_rows: Vec<Vec<String>> = Vec::new();
         let mut funding_rows: Vec<Vec<String>> = Vec::new();
         let mut signal_rows: Vec<Vec<String>> = Vec::new();
@@ -1457,78 +1456,76 @@ impl StrategyEngine {
             }
             batch_items.push(item);
 
-            if log_debug {
-                let (open_upper, open_lower, close_lower, close_upper, freq) =
-                    if let Some(entry) = self.funding_thresholds.get(&key) {
-                        (
-                            entry.open_upper_threshold,
-                            entry.open_lower_threshold,
-                            entry.close_lower_threshold,
-                            entry.close_upper_threshold,
-                            entry.funding_frequency.clone(),
-                        )
-                    } else {
-                        let fut_key = state.futures_symbol.to_uppercase();
-                        let freq = self
-                            .funding_frequency
-                            .get(&fut_key)
-                            .cloned()
-                            .unwrap_or_else(|| "8h".to_string());
-                        let (ou, ol, cl, cu) = self.thresholds_for_frequency(&freq);
-                        (ou, ol, cl, cu, freq)
-                    };
-
-                price_rows.push(vec![
-                    key.clone(),
-                    fmt_decimal(state.spot_quote.bid),
-                    fmt_decimal(state.spot_quote.ask),
-                    fmt_decimal(state.futures_quote.bid),
-                    fmt_decimal(state.futures_quote.ask),
-                    fmt_decimal(bidask_sr.unwrap_or(0.0)),
-                    fmt_decimal(state.open_threshold),
-                    fmt_decimal(state.close_threshold),
-                    fmt_decimal(askbid_sr.unwrap_or(0.0)),
-                    fmt_decimal(state.askbid_open_threshold),
-                    fmt_decimal(state.askbid_close_threshold),
-                ]);
-
-                funding_rows.push(vec![
-                    key.clone(),
-                    freq,
-                    fmt_decimal(state.funding_rate),
-                    fmt_decimal(predicted_rate.unwrap_or(0.0)),
-                    fmt_decimal(funding_rate_ma.unwrap_or_else(|| state.funding_ma.unwrap_or(0.0))),
-                    fmt_decimal(open_upper),
-                    fmt_decimal(open_lower),
-                    fmt_decimal(close_lower),
-                    fmt_decimal(close_upper),
-                ]);
-
-                let ready_open = if state.price_open_ready { "Y" } else { "N" };
-                let ready_close = if state.price_close_ready { "Y" } else { "N" };
-                let price_open_bidask = if state.price_open_bidask { "Y" } else { "N" };
-                let price_open_askbid = if state.price_open_askbid { "Y" } else { "N" };
-                let price_close_bidask = if state.price_close_bidask { "Y" } else { "N" };
-                let price_close_askbid = if state.price_close_askbid { "Y" } else { "N" };
-                let position = match state.position {
-                    PositionState::Flat => "Flat",
-                    PositionState::Opened => "Opened",
+            let (open_upper, open_lower, close_lower, close_upper, freq) =
+                if let Some(entry) = self.funding_thresholds.get(&key) {
+                    (
+                        entry.open_upper_threshold,
+                        entry.open_lower_threshold,
+                        entry.close_lower_threshold,
+                        entry.close_upper_threshold,
+                        entry.funding_frequency.clone(),
+                    )
+                } else {
+                    let fut_key = state.futures_symbol.to_uppercase();
+                    let freq = self
+                        .funding_frequency
+                        .get(&fut_key)
+                        .cloned()
+                        .unwrap_or_else(|| "8h".to_string());
+                    let (ou, ol, cl, cu) = self.thresholds_for_frequency(&freq);
+                    (ou, ol, cl, cu, freq)
                 };
 
-                signal_rows.push(vec![
-                    key.clone(),
-                    state.predicted_signal.to_string(),
-                    state.ma_signal.to_string(),
-                    state.final_signal_value.to_string(),
-                    price_open_bidask.to_string(),
-                    price_open_askbid.to_string(),
-                    price_close_bidask.to_string(),
-                    price_close_askbid.to_string(),
-                    ready_open.to_string(),
-                    ready_close.to_string(),
-                    position.to_string(),
-                ]);
-            }
+            price_rows.push(vec![
+                key.clone(),
+                fmt_decimal(state.spot_quote.bid),
+                fmt_decimal(state.spot_quote.ask),
+                fmt_decimal(state.futures_quote.bid),
+                fmt_decimal(state.futures_quote.ask),
+                fmt_decimal(bidask_sr.unwrap_or(0.0)),
+                fmt_decimal(state.open_threshold),
+                fmt_decimal(state.close_threshold),
+                fmt_decimal(askbid_sr.unwrap_or(0.0)),
+                fmt_decimal(state.askbid_open_threshold),
+                fmt_decimal(state.askbid_close_threshold),
+            ]);
+
+            funding_rows.push(vec![
+                key.clone(),
+                freq,
+                fmt_decimal(state.funding_rate),
+                fmt_decimal(predicted_rate.unwrap_or(0.0)),
+                fmt_decimal(funding_rate_ma.unwrap_or_else(|| state.funding_ma.unwrap_or(0.0))),
+                fmt_decimal(open_upper),
+                fmt_decimal(open_lower),
+                fmt_decimal(close_lower),
+                fmt_decimal(close_upper),
+            ]);
+
+            let ready_open = if state.price_open_ready { "Y" } else { "N" };
+            let ready_close = if state.price_close_ready { "Y" } else { "N" };
+            let price_open_bidask = if state.price_open_bidask { "Y" } else { "N" };
+            let price_open_askbid = if state.price_open_askbid { "Y" } else { "N" };
+            let price_close_bidask = if state.price_close_bidask { "Y" } else { "N" };
+            let price_close_askbid = if state.price_close_askbid { "Y" } else { "N" };
+            let position = match state.position {
+                PositionState::Flat => "Flat",
+                PositionState::Opened => "Opened",
+            };
+
+            signal_rows.push(vec![
+                key.clone(),
+                state.predicted_signal.to_string(),
+                state.ma_signal.to_string(),
+                state.final_signal_value.to_string(),
+                price_open_bidask.to_string(),
+                price_open_askbid.to_string(),
+                price_close_bidask.to_string(),
+                price_close_askbid.to_string(),
+                ready_open.to_string(),
+                ready_close.to_string(),
+                position.to_string(),
+            ]);
         }
 
         // 批量发送（控制最大 1024 字节）
@@ -1548,68 +1545,66 @@ impl StrategyEngine {
             let _ = self.resample_pub.publish(&buf);
         }
 
-        if log_debug {
-            if !price_rows.is_empty() {
-                debug!(
-                    "Resample盘口价差\n{}",
-                    render_three_line_table(
-                        &[
-                            "Symbol",
-                            "SpotBid",
-                            "SpotAsk",
-                            "FutBid",
-                            "FutAsk",
-                            "BidAskSR",
-                            "BA_OpenTh",
-                            "BA_CloseTh",
-                            "AskBidSR",
-                            "AB_OpenTh",
-                            "AB_CloseTh",
-                        ],
-                        &price_rows,
-                    )
-                );
-            }
-            if !funding_rows.is_empty() {
-                debug!(
-                    "Resample资金费率\n{}",
-                    render_three_line_table(
-                        &[
-                            "Symbol",
-                            "Freq",
-                            "Funding",
-                            "Predict",
-                            "MA60",
-                            "OpenUpper",
-                            "OpenLower",
-                            "CloseLower",
-                            "CloseUpper",
-                        ],
-                        &funding_rows,
-                    )
-                );
-            }
-            if !signal_rows.is_empty() {
-                debug!(
-                    "Resample信号状态\n{}",
-                    render_three_line_table(
-                        &[
-                            "Symbol",
-                            "PredSig",
-                            "MASig",
-                            "Final",
-                            "BA_Open",
-                            "AB_Open",
-                            "BA_Close",
-                            "AB_Close",
-                            "ReadyOpen",
-                            "ReadyClose",
-                            "Position",
-                        ],
-                        &signal_rows,
-                    )
-                );
-            }
+        if !price_rows.is_empty() {
+            info!(
+                "Resample盘口价差\n{}",
+                render_three_line_table(
+                    &[
+                        "Symbol",
+                        "SpotBid",
+                        "SpotAsk",
+                        "FutBid",
+                        "FutAsk",
+                        "BidAskSR",
+                        "BA_OpenTh",
+                        "BA_CloseTh",
+                        "AskBidSR",
+                        "AB_OpenTh",
+                        "AB_CloseTh",
+                    ],
+                    &price_rows,
+                )
+            );
+        }
+        if !funding_rows.is_empty() {
+            info!(
+                "Resample资金费率\n{}",
+                render_three_line_table(
+                    &[
+                        "Symbol",
+                        "Freq",
+                        "Funding",
+                        "Predict",
+                        "MA60",
+                        "OpenUpper",
+                        "OpenLower",
+                        "CloseLower",
+                        "CloseUpper",
+                    ],
+                    &funding_rows,
+                )
+            );
+        }
+        if !signal_rows.is_empty() {
+            info!(
+                "Resample信号状态\n{}",
+                render_three_line_table(
+                    &[
+                        "Symbol",
+                        "PredSig",
+                        "MASig",
+                        "Final",
+                        "BA_Open",
+                        "AB_Open",
+                        "BA_Close",
+                        "AB_Close",
+                        "ReadyOpen",
+                        "ReadyClose",
+                        "Position",
+                    ],
+                    &signal_rows,
+                )
+            );
         }
     }
 

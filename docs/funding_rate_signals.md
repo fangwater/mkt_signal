@@ -9,11 +9,11 @@
   - 4h：`open_upper = 0.00004`、`open_lower = -0.00004`、`close_lower = -0.0008`、`close_upper = 0.0008`
   - 启动后会根据 Redis(`binance_forward_arb_params`) 的值热更新。
 - 资金费率信号判定：
-  1. 若 `predict_funding_rate >= open_upper` → 资金信号 `-1`（期货做空 / 现货做多）；
-  2. 若 `predict_funding_rate <= open_lower` → 信号 `1`（反向，仅记录日志）；
-  3. 若 `current_fundingRate_ma > close_upper` → 信号 `-2`（平仓现货多头）；
-  4. 若 `current_fundingRate_ma < close_lower` → 信号 `2`（反向平仓，仅记录日志）；
-  5. 当 3/4 满足时优先生效，否则使用 1/2 的结果；未命中则信号为 0。
+  1. 若 `predict_funding_rate >= open_upper` → 资金信号 `-1`（期货做空 / 现货做多，需配合价差开仓条件）。
+  2. 若 `predict_funding_rate <= open_lower` → 信号 `1`（反向，仅记录日志）。
+  3. 若 `current_fundingRate_ma > close_upper` → 资金信号 `-2`（触发平仓，需配合价差平仓条件）。
+  4. 若 `current_fundingRate_ma < close_lower` → 信号 `2`（反向，仅记录日志）。
+  5. 预测驱动的开仓与 MA 驱动的平仓互不排斥：系统会分别检查对应的价差信号，只要其中一组资金+价差条件同时满足，就执行相应的开/平仓动作。
 
 ## 价差信号
 
@@ -47,7 +47,7 @@
 ## Resample 调试输出
 
 - Resample 频率固定为 3s。
-- 每次 resample 会额外打印三张三线表（`debug` 日志）：
+- 每次 resample 会额外打印三张三线表（通过 `info!` 输出，方便线上直接观察）：
   1. **Resample盘口价差**：展示最新盘口、价差以及价差信号阈值；
   2. **Resample资金费率**：展示实时资金费率、预测值、MA60 与频率阈值；
   3. **Resample信号状态**：展示资金信号、价差信号达成情况以及是否满足开/平仓条件。
@@ -60,4 +60,3 @@
   - `fr_4h_*`、`fr_8h_*` 用于更新资金费率阈值；
   - 价差阈值通过 `binance_arb_price_spread_threshold` HASH 下的每个 symbol 维护。
 - 参数变更或结算点触发时，会重算资金阈值并更新调试输出。
-
