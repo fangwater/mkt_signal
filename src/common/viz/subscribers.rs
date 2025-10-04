@@ -94,6 +94,24 @@ pub fn spawn_derivatives_listener(service: String, state: SharedState) -> Result
                         let Some(msg_type) = get_msg_type(&payload) else {
                             continue;
                         };
+                        let type_name = match msg_type {
+                            MktMsgType::TimeSignal => "TimeSignal",
+                            MktMsgType::TradeInfo => "TradeInfo",
+                            MktMsgType::OrderBookInc => "OrderBookInc",
+                            MktMsgType::TpReset => "TpReset",
+                            MktMsgType::Kline => "Kline",
+                            MktMsgType::MarkPrice => "MarkPrice",
+                            MktMsgType::IndexPrice => "IndexPrice",
+                            MktMsgType::LiquidationOrder => "LiquidationOrder",
+                            MktMsgType::FundingRate => "FundingRate",
+                            MktMsgType::AskBidSpread => "AskBidSpread",
+                            MktMsgType::Error => "Error",
+                        };
+                        info!(
+                            "viz derivatives 收到消息: type={} bytes={}",
+                            type_name,
+                            payload.len()
+                        );
                         match msg_type {
                             MktMsgType::MarkPrice => match parse_mark_price(&payload) {
                                 Ok(msg) => state.update_price_mark(
@@ -113,10 +131,6 @@ pub fn spawn_derivatives_listener(service: String, state: SharedState) -> Result
                             },
                             MktMsgType::FundingRate => match parse_funding_rate(&payload) {
                                 Ok(msg) => {
-                                    info!(
-                                        "viz derivatives 收到 funding: symbol={} rate={:.6} next={} ts={}",
-                                        msg.symbol, msg.funding_rate, msg.next_funding_time, msg.timestamp
-                                    );
                                     state.set_stream_funding(
                                         &msg.symbol,
                                         msg.funding_rate,

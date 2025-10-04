@@ -3,6 +3,7 @@ use bytes::{Buf, Bytes};
 
 /// 消息类型枚举（与mkt_signal保持一致）
 #[repr(u32)]
+#[derive(Copy, Clone)]
 pub enum MktMsgType {
     TimeSignal = 1111,
     TradeInfo = 1001,
