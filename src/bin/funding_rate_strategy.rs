@@ -1060,46 +1060,62 @@ impl StrategyEngine {
     }
 
     fn handle_funding_rate(&mut self, msg: &[u8]) {
-        let symbol = FundingRateMsg::get_symbol(msg).to_uppercase();
-        // 先以不可变方式读取 fut_symbol，避免借用冲突
-        let fut_symbol = self
-            .symbols
-            .get(&symbol)
-            .map(|s| s.futures_symbol.clone())
-            .unwrap_or_default();
+        let fut_symbol = FundingRateMsg::get_symbol(msg).to_uppercase();
+        let Some(spot_key) = self.futures_index.get(&fut_symbol).cloned() else {
+            debug!(
+                "Funding 更新: 找不到 futures={} 对应的现货 symbol",
+                fut_symbol
+            );
+            return;
+        };
+
         let predicted = self.get_predicted_for(&fut_symbol);
         let funding = FundingRateMsg::get_funding_rate(msg);
         let next_funding_time = FundingRateMsg::get_next_funding_time(msg);
         let timestamp = FundingRateMsg::get_timestamp(msg);
 
-        if let Some(state) = self.symbols.get_mut(&symbol) {
+        if let Some(state) = self.symbols.get_mut(&spot_key) {
             state.last_ratio = state.calc_ratio();
             state.funding_rate = funding;
             state.predicted_rate = predicted;
             state.loan_rate = 0.0;
             state.funding_ts = timestamp;
             state.next_funding_time = next_funding_time;
+        } else {
+            debug!(
+                "Funding 更新: 现货 symbol={} 未在 symbols 中注册 (futures={})",
+                spot_key, fut_symbol
+            );
+            return;
         }
 
-        debug!(
-            "Funding 更新: {} funding={:.6} pred={:.6} next={} ts={}",
-            symbol, funding, predicted, next_funding_time, timestamp
-        );
-
-        {
-            let entry = self.funding_series.entry(symbol.clone()).or_default();
+        let entry_len = {
+            let entry = self.funding_series.entry(spot_key.clone()).or_default();
             entry.push(funding);
             let max_keep = self.cfg.strategy.funding_ma_size.max(1) * 4; // 留存多点以便滑窗
             if entry.len() > max_keep {
                 let drop_n = entry.len() - max_keep;
                 entry.drain(0..drop_n);
             }
-        }
+            entry.len()
+        };
 
-        let ma = self.calc_funding_ma(&symbol);
-        if let Some(state) = self.symbols.get_mut(&symbol) {
+        let ma = self.calc_funding_ma(&spot_key);
+        if let Some(state) = self.symbols.get_mut(&spot_key) {
             state.funding_ma = ma;
         }
+
+        debug!(
+            "Funding 更新: spot={} futures={} funding={:.6} pred={:.6} ma={:?} next={} ts={} len={}",
+            spot_key,
+            fut_symbol,
+            funding,
+            predicted,
+            ma,
+            next_funding_time,
+            timestamp,
+            entry_len
+        );
     }
 
     fn evaluate(&mut self, symbol: &str) {
@@ -1144,6 +1160,12 @@ impl StrategyEngine {
                 )
             };
 
+        let predicted_now = if let Some(s) = self.symbols.get(symbol) {
+            self.get_predicted_for(&s.futures_symbol)
+        } else {
+            return;
+        };
+
         let decision = {
             let Some(state) = self.symbols.get_mut(symbol) else {
                 return;
@@ -1155,18 +1177,18 @@ impl StrategyEngine {
                 return;
             };
 
+            state.predicted_rate = predicted_now;
             let askbid_sr =
                 compute_askbid_sr(Some(state.spot_quote.ask), Some(state.futures_quote.bid));
 
             state.latest_bidask_sr = Some(ratio);
             state.latest_askbid_sr = askbid_sr;
 
-            let predicted = state.predicted_rate;
             let funding_ma = state.funding_ma;
 
-            let predicted_signal = if predicted >= open_upper {
+            let predicted_signal = if predicted_now >= open_upper {
                 -1
-            } else if predicted <= open_lower {
+            } else if predicted_now <= open_lower {
                 1
             } else {
                 0
