@@ -1101,17 +1101,19 @@ impl StrategyEngine {
             state.funding_ma = ma;
         }
 
-        info!(
-            "Funding 更新: spot={} futures={} funding={:.6} pred={:.6} ma={:?} next={} ts={} len={}",
-            spot_key,
-            fut_symbol,
-            funding,
-            predicted,
-            ma,
-            next_funding_time,
-            timestamp,
-            entry_len
-        );
+        if log::log_enabled!(log::Level::Debug) {
+            log::debug!(
+                "Funding 更新: spot={} futures={} funding={:.6} pred={:.6} ma={:?} next={} ts={} len={}",
+                spot_key,
+                fut_symbol,
+                funding,
+                predicted,
+                ma,
+                next_funding_time,
+                timestamp,
+                entry_len
+            );
+        }
     }
 
     fn evaluate(&mut self, symbol: &str) {
@@ -1494,42 +1496,32 @@ impl StrategyEngine {
                     (ou, ol, cl, cu, freq)
                 };
 
-            let ready_open = if state.price_open_ready { "Y" } else { "N" };
-            let ready_close = if state.price_close_ready { "Y" } else { "N" };
+            let bidask_sr_val = bidask_sr.unwrap_or(0.0);
+            let askbid_sr_val = askbid_sr.unwrap_or(0.0);
             let price_open_bidask = if state.price_open_bidask { "Y" } else { "N" };
             let price_open_askbid = if state.price_open_askbid { "Y" } else { "N" };
             let price_close_bidask = if state.price_close_bidask { "Y" } else { "N" };
             let price_close_askbid = if state.price_close_askbid { "Y" } else { "N" };
-            let position = match state.position {
-                PositionState::Flat => "Flat",
-                PositionState::Opened => "Opened",
+            let open_action = if state.price_open_ready {
+                "现货做多 / 合约做空"
+            } else {
+                "-"
             };
-
-            let bidask_sr_val = bidask_sr.unwrap_or(0.0);
-            let askbid_sr_val = askbid_sr.unwrap_or(0.0);
+            let close_action = if state.price_close_ready {
+                "平仓现货多 / 合约空"
+            } else {
+                "-"
+            };
             price_rows.push(vec![
                 key.clone(),
                 fmt_decimal(bidask_sr_val),
-                format!(
-                    "{} ({:.6} <= {:.6})",
-                    price_open_bidask, bidask_sr_val, state.open_threshold
-                ),
-                format!(
-                    "{} ({:.6} >= {:.6})",
-                    price_close_bidask, bidask_sr_val, state.close_threshold
-                ),
+                price_open_bidask.to_string(),
+                price_open_askbid.to_string(),
+                open_action.to_string(),
                 fmt_decimal(askbid_sr_val),
-                format!(
-                    "{} ({:.6} >= {:.6})",
-                    price_open_askbid, askbid_sr_val, state.askbid_open_threshold
-                ),
-                format!(
-                    "{} ({:.6} <= {:.6})",
-                    price_close_askbid, askbid_sr_val, state.askbid_close_threshold
-                ),
-                ready_open.to_string(),
-                ready_close.to_string(),
-                position.to_string(),
+                price_close_bidask.to_string(),
+                price_close_askbid.to_string(),
+                close_action.to_string(),
             ]);
 
             let predicted_value = state.predicted_rate;
@@ -1612,14 +1604,13 @@ impl StrategyEngine {
                     &[
                         "Symbol",
                         "BidAskSR",
-                        "BA<=Open",
-                        "BA>=Close",
+                        "BidAsk<=Open",
+                        "AskBid>=Open",
+                        "开仓动作",
                         "AskBidSR",
-                        "AB>=Open",
-                        "AB<=Close",
-                        "ReadyOpen",
-                        "ReadyClose",
-                        "Position",
+                        "BidAsk>=Close",
+                        "AskBid<=Close",
+                        "平仓动作",
                     ],
                     &price_rows,
                 )
