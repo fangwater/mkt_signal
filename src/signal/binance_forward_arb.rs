@@ -255,11 +255,15 @@ impl Default for BinSingleForwardArbStrategyCfg {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Default)]
 struct PeriodLogFlags {
     margin_open_absent_logged: bool,
     margin_open_missing_logged: bool,
     margin_close_missing_logged: bool,
+    last_margin_open_status: Option<OrderExecutionStatus>,
+    last_um_hedge_status: Option<OrderExecutionStatus>,
+    last_margin_close_status: Option<OrderExecutionStatus>,
+    last_um_close_status: Option<OrderExecutionStatus>,
 }
 
 /// 币安单所正向套利策略
@@ -283,7 +287,7 @@ pub struct BinSingleForwardArbStrategy {
     max_total_exposure_ratio: f64,
     min_qty_table: std::rc::Rc<MinQtyTable>,
     price_table: std::rc::Rc<std::cell::RefCell<PriceTable>>,
-    period_log_flags: PeriodLogFlags,
+    period_log_flags: RefCell<PeriodLogFlags>,
 }
 
 impl BinSingleForwardArbStrategy {
@@ -319,7 +323,7 @@ impl BinSingleForwardArbStrategy {
             max_total_exposure_ratio,
             min_qty_table,
             price_table,
-            period_log_flags: PeriodLogFlags::default(),
+            period_log_flags: RefCell::new(PeriodLogFlags::default()),
         };
 
         info!(
@@ -2279,17 +2283,22 @@ impl Strategy for BinSingleForwardArbStrategy {
     fn hanle_period_clock(&mut self, current_tp: i64) {
         // 周期性检查：开仓限价/市价单是否长时间未成交，需要撤单
         if self.margin_order_id == 0 {
-            if !self.period_log_flags.margin_open_absent_logged {
+            let mut flags = self.period_log_flags.borrow_mut();
+            if !flags.margin_open_absent_logged {
                 warn!(
                     "{}: strategy_id={} 当前无 margin 开仓单，策略将等待回收",
                     Self::strategy_name(),
                     self.strategy_id
                 );
-                self.period_log_flags.margin_open_absent_logged = true;
+                flags.margin_open_absent_logged = true;
             }
+            flags.last_margin_open_status = None;
             self.open_timeout_us = None;
         } else {
-            self.period_log_flags.margin_open_absent_logged = false;
+            {
+                let mut flags = self.period_log_flags.borrow_mut();
+                flags.margin_open_absent_logged = false;
+            }
             let open_order = {
                 let manager = self.order_manager.borrow();
                 manager.get(self.margin_order_id)
@@ -2297,7 +2306,10 @@ impl Strategy for BinSingleForwardArbStrategy {
 
             match open_order {
                 Some(order) => {
-                    self.period_log_flags.margin_open_missing_logged = false;
+                    {
+                        let mut flags = self.period_log_flags.borrow_mut();
+                        flags.margin_open_missing_logged = false;
+                    }
                     if order.status.is_terminal() {
                         self.open_timeout_us = None;
                     } else if let (Some(timeout_us), submit_time) =
@@ -2339,25 +2351,29 @@ impl Strategy for BinSingleForwardArbStrategy {
                     }
                 }
                 None => {
-                    if !self.period_log_flags.margin_open_missing_logged {
+                    let mut flags = self.period_log_flags.borrow_mut();
+                    if !flags.margin_open_missing_logged {
                         warn!(
                             "{}: strategy_id={} 未找到 margin 开仓单 id={}，清除本地状态",
                             Self::strategy_name(),
                             self.strategy_id,
                             self.margin_order_id
                         );
-                        self.period_log_flags.margin_open_missing_logged = true;
+                        flags.margin_open_missing_logged = true;
                     }
+                    flags.last_margin_open_status = None;
                     self.margin_order_id = 0;
                     self.open_timeout_us = None;
-                    self.period_log_flags.margin_open_absent_logged = false;
+                    flags.margin_open_absent_logged = false;
                 }
             }
         }
 
         // 周期性检查：限价平仓单是否超时
         if self.close_margin_order_id == 0 {
-            self.period_log_flags.margin_close_missing_logged = false;
+            let mut flags = self.period_log_flags.borrow_mut();
+            flags.margin_close_missing_logged = false;
+            flags.last_margin_close_status = None;
             self.close_margin_timeout_us = None;
         } else {
             let close_order = {
@@ -2367,7 +2383,10 @@ impl Strategy for BinSingleForwardArbStrategy {
 
             match close_order {
                 Some(order) => {
-                    self.period_log_flags.margin_close_missing_logged = false;
+                    {
+                        let mut flags = self.period_log_flags.borrow_mut();
+                        flags.margin_close_missing_logged = false;
+                    }
                     if order.status.is_terminal() {
                         self.close_margin_timeout_us = None;
                     } else if let (Some(timeout_us), submit_time) =
@@ -2409,15 +2428,17 @@ impl Strategy for BinSingleForwardArbStrategy {
                     }
                 }
                 None => {
-                    if !self.period_log_flags.margin_close_missing_logged {
+                    let mut flags = self.period_log_flags.borrow_mut();
+                    if !flags.margin_close_missing_logged {
                         warn!(
                             "{}: strategy_id={} 未找到 margin 平仓单 id={}，清除本地状态",
                             Self::strategy_name(),
                             self.strategy_id,
                             self.close_margin_order_id
                         );
-                        self.period_log_flags.margin_close_missing_logged = true;
+                        flags.margin_close_missing_logged = true;
                     }
+                    flags.last_margin_close_status = None;
                     self.close_margin_order_id = 0;
                     self.close_margin_timeout_us = None;
                 }
@@ -2448,6 +2469,10 @@ impl Strategy for BinSingleForwardArbStrategy {
         };
 
         if margin_order.status == OrderExecutionStatus::Filled {
+            {
+                let mut flags = self.period_log_flags.borrow_mut();
+                flags.last_margin_open_status = Some(OrderExecutionStatus::Filled);
+            }
             // proceed
         } else if margin_order.status.is_terminal() {
             warn!(
@@ -2456,18 +2481,32 @@ impl Strategy for BinSingleForwardArbStrategy {
                 self.strategy_id,
                 margin_order.status.as_str()
             );
+            {
+                let mut flags = self.period_log_flags.borrow_mut();
+                flags.last_margin_open_status = Some(margin_order.status);
+            }
             return false;
         } else {
-            debug!(
-                "{}: strategy_id={} margin 开仓单状态={}，等待成交",
-                Self::strategy_name(),
-                self.strategy_id,
-                margin_order.status.as_str()
-            );
+            {
+                let mut flags = self.period_log_flags.borrow_mut();
+                if flags.last_margin_open_status != Some(margin_order.status) {
+                    debug!(
+                        "{}: strategy_id={} margin 开仓单状态={}，等待成交",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        margin_order.status.as_str()
+                    );
+                    flags.last_margin_open_status = Some(margin_order.status);
+                }
+            }
             return true;
         }
 
         if self.um_hedge_order_id == 0 {
+            {
+                let mut flags = self.period_log_flags.borrow_mut();
+                flags.last_um_hedge_status = None;
+            }
             debug!(
                 "{}: strategy_id={} UM 对冲单未创建，策略仍在执行",
                 Self::strategy_name(),
@@ -2477,6 +2516,10 @@ impl Strategy for BinSingleForwardArbStrategy {
         }
 
         let Some(um_order) = manager.get(self.um_hedge_order_id) else {
+            {
+                let mut flags = self.period_log_flags.borrow_mut();
+                flags.last_um_hedge_status = None;
+            }
             info!(
                 "{}: strategy_id={} 未找到 UM 对冲单 id={}，待平仓，保持激活状态",
                 Self::strategy_name(),
@@ -2487,16 +2530,26 @@ impl Strategy for BinSingleForwardArbStrategy {
         };
 
         if um_order.status != OrderExecutionStatus::Filled {
-            debug!(
-                "{}: strategy_id={} UM 对冲单状态={}，等待成交",
-                Self::strategy_name(),
-                self.strategy_id,
-                um_order.status.as_str()
-            );
+            {
+                let mut flags = self.period_log_flags.borrow_mut();
+                if flags.last_um_hedge_status != Some(um_order.status) {
+                    debug!(
+                        "{}: strategy_id={} UM 对冲单状态={}，等待成交",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        um_order.status.as_str()
+                    );
+                    flags.last_um_hedge_status = Some(um_order.status);
+                }
+            }
             return true;
         }
 
         if self.close_margin_order_id == 0 {
+            {
+                let mut flags = self.period_log_flags.borrow_mut();
+                flags.last_margin_close_status = None;
+            }
             debug!(
                 "{}: strategy_id={} margin 平仓单未触发，策略仍在执行",
                 Self::strategy_name(),
@@ -2506,6 +2559,10 @@ impl Strategy for BinSingleForwardArbStrategy {
         }
 
         let Some(close_margin_order) = manager.get(self.close_margin_order_id) else {
+            {
+                let mut flags = self.period_log_flags.borrow_mut();
+                flags.last_margin_close_status = None;
+            }
             info!(
                 "{}: strategy_id={} 未找到 margin 平仓单 id={}，待平仓，保持激活状态",
                 Self::strategy_name(),
@@ -2516,16 +2573,26 @@ impl Strategy for BinSingleForwardArbStrategy {
         };
 
         if close_margin_order.status != OrderExecutionStatus::Filled {
-            debug!(
-                "{}: strategy_id={} margin 平仓单状态={}，等待成交",
-                Self::strategy_name(),
-                self.strategy_id,
-                close_margin_order.status.as_str()
-            );
+            {
+                let mut flags = self.period_log_flags.borrow_mut();
+                if flags.last_margin_close_status != Some(close_margin_order.status) {
+                    debug!(
+                        "{}: strategy_id={} margin 平仓单状态={}，等待成交",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        close_margin_order.status.as_str()
+                    );
+                    flags.last_margin_close_status = Some(close_margin_order.status);
+                }
+            }
             return true;
         }
 
         if self.close_um_hedge_order_id == 0 {
+            {
+                let mut flags = self.period_log_flags.borrow_mut();
+                flags.last_um_close_status = None;
+            }
             debug!(
                 "{}: strategy_id={} UM 平仓单未触发，策略仍在执行",
                 Self::strategy_name(),
@@ -2535,6 +2602,10 @@ impl Strategy for BinSingleForwardArbStrategy {
         }
 
         let Some(close_um_order) = manager.get(self.close_um_hedge_order_id) else {
+            {
+                let mut flags = self.period_log_flags.borrow_mut();
+                flags.last_um_close_status = None;
+            }
             info!(
                 "{}: strategy_id={} 未找到 UM 平仓单 id={}，待平仓，保持激活状态",
                 Self::strategy_name(),
@@ -2545,12 +2616,18 @@ impl Strategy for BinSingleForwardArbStrategy {
         };
 
         if close_um_order.status != OrderExecutionStatus::Filled {
-            debug!(
-                "{}: strategy_id={} UM 平仓单状态={}，等待成交",
-                Self::strategy_name(),
-                self.strategy_id,
-                close_um_order.status.as_str()
-            );
+            {
+                let mut flags = self.period_log_flags.borrow_mut();
+                if flags.last_um_close_status != Some(close_um_order.status) {
+                    debug!(
+                        "{}: strategy_id={} UM 平仓单状态={}，等待成交",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        close_um_order.status.as_str()
+                    );
+                    flags.last_um_close_status = Some(close_um_order.status);
+                }
+            }
             return true;
         }
 
