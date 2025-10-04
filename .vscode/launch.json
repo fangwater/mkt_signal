@@ -1,0 +1,323 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in library 'mkt_signal'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=mkt_signal"
+                ],
+                "filter": {
+                    "name": "mkt_signal",
+                    "kind": "lib"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'mkt_pub'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=mkt_pub",
+                    "--package=mkt_signal"
+                ],
+                "filter": {
+                    "name": "mkt_pub",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'mkt_pub'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=mkt_pub",
+                    "--package=mkt_signal"
+                ],
+                "filter": {
+                    "name": "mkt_pub",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'funding_rate_signal'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=funding_rate_signal",
+                    "--package=mkt_signal"
+                ],
+                "filter": {
+                    "name": "funding_rate_signal",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'funding_rate_signal'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=funding_rate_signal",
+                    "--package=mkt_signal"
+                ],
+                "filter": {
+                    "name": "funding_rate_signal",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'account_monitor'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=account_monitor",
+                    "--package=mkt_signal"
+                ],
+                "filter": {
+                    "name": "account_monitor",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'account_monitor'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=account_monitor",
+                    "--package=mkt_signal"
+                ],
+                "filter": {
+                    "name": "account_monitor",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'trade_engine'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=trade_engine",
+                    "--package=mkt_signal"
+                ],
+                "filter": {
+                    "name": "trade_engine",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'trade_engine'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=trade_engine",
+                    "--package=mkt_signal"
+                ],
+                "filter": {
+                    "name": "trade_engine",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'demo_subscribe_resps'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=demo_subscribe_resps",
+                    "--package=mkt_signal"
+                ],
+                "filter": {
+                    "name": "demo_subscribe_resps",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'demo_subscribe_resps'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=demo_subscribe_resps",
+                    "--package=mkt_signal"
+                ],
+                "filter": {
+                    "name": "demo_subscribe_resps",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'demo_send_um_market_short'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=demo_send_um_market_short",
+                    "--package=mkt_signal"
+                ],
+                "filter": {
+                    "name": "demo_send_um_market_short",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'demo_send_um_market_short'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=demo_send_um_market_short",
+                    "--package=mkt_signal"
+                ],
+                "filter": {
+                    "name": "demo_send_um_market_short",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'pre_trade'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=pre_trade",
+                    "--package=mkt_signal"
+                ],
+                "filter": {
+                    "name": "pre_trade",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'pre_trade'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=pre_trade",
+                    "--package=mkt_signal"
+                ],
+                "filter": {
+                    "name": "pre_trade",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'funding_rate_strategy_mock'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=funding_rate_strategy_mock",
+                    "--package=mkt_signal"
+                ],
+                "filter": {
+                    "name": "funding_rate_strategy_mock",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'funding_rate_strategy_mock'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=funding_rate_strategy_mock",
+                    "--package=mkt_signal"
+                ],
+                "filter": {
+                    "name": "funding_rate_strategy_mock",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
