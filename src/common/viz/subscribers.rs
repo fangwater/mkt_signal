@@ -112,12 +112,18 @@ pub fn spawn_derivatives_listener(service: String, state: SharedState) -> Result
                                 Err(err) => warn!("viz parse index price failed: {err:?}"),
                             },
                             MktMsgType::FundingRate => match parse_funding_rate(&payload) {
-                                Ok(msg) => state.set_stream_funding(
-                                    &msg.symbol,
-                                    msg.funding_rate,
-                                    msg.next_funding_time,
-                                    msg.timestamp,
-                                ),
+                                Ok(msg) => {
+                                    debug!(
+                                        "viz derivatives funding msg symbol={} rate={:.6} next={} ts={}",
+                                        msg.symbol, msg.funding_rate, msg.next_funding_time, msg.timestamp
+                                    );
+                                    state.set_stream_funding(
+                                        &msg.symbol,
+                                        msg.funding_rate,
+                                        msg.next_funding_time,
+                                        msg.timestamp,
+                                    );
+                                }
                                 Err(err) => warn!("viz parse funding rate failed: {err:?}"),
                             },
                             _ => {}

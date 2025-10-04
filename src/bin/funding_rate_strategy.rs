@@ -1105,7 +1105,7 @@ impl StrategyEngine {
             state.funding_ma = ma;
         }
 
-        debug!(
+        info!(
             "Funding 更新: spot={} futures={} funding={:.6} pred={:.6} ma={:?} next={} ts={} len={}",
             spot_key,
             fut_symbol,
