@@ -266,10 +266,28 @@ impl OrderManager {
     }
 
     pub fn get_symbol_pending_limit_order_count(&self, symbol: &String) -> i32 {
-        self.pending_limit_order_count
-            .get(symbol)
-            .copied()
-            .unwrap_or(0)
+        let actual = self
+            .orders
+            .values()
+            .filter(|order| {
+                order.order_type.is_limit()
+                    && !order.status.is_terminal()
+                    && order.symbol.eq_ignore_ascii_case(symbol)
+            })
+            .count() as i32;
+
+        if let Some(stored) = self.pending_limit_order_count.get(symbol) {
+            if *stored != actual {
+                debug!(
+                    "OrderManager: symbol={} pending_limit_count inconsistent cached={} actual={} (using actual)",
+                    symbol,
+                    stored,
+                    actual
+                );
+            }
+        }
+
+        actual
     }
 
     /// 添加订单
