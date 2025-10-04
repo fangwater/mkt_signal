@@ -165,7 +165,7 @@ def main():
         params = {"dualSidePosition": dual_str}
         status, body, headers = post_papi(
             base_url,
-            "/papi/v1/positionSide/dual",
+            "/fapi/v1/positionSide/dual",
             params,
             api_key,
             api_secret,
@@ -186,4 +186,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
