@@ -164,9 +164,9 @@ impl ExposureManager {
             let um_value = e.um_net_position * mark;
 
             total_spot_value += spot_value;
-            total_position_value += spot_value.abs() + um_value.abs();
 
             if asset != "USDT" {
+                total_position_value += spot_value.abs() + um_value.abs();
                 abs_total_exposure_usdt += (e.spot_total_wallet + e.um_net_position).abs() * mark;
             }
         }
@@ -250,7 +250,7 @@ impl ExposureManager {
         // 等待后续 revalue_with_prices 依据行情重新估值。
         let usdt_spot = usdt.as_ref().map(|u| u.total_wallet_balance).unwrap_or(0.0);
         let total_equity = usdt_spot;
-        let total_position = usdt_spot.abs();
+        let total_position = 0.0;
 
         // 在表格中强制加入 USDT（非敞口），便于对账与肉眼核对
         let usdt_entry = ExposureEntry {

@@ -1027,14 +1027,6 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
         }
         AccountEventType::AccountUpdateBalance => {
             let msg = AccountUpdateBalanceMsg::from_bytes(data)?;
-            let key = crate::pre_trade::dedup::key_account_update_balance(&msg);
-            if !ctx.dedup.insert_check(key) {
-                // debug!(
-                //     "dedup drop AccountUpdateBalance: asset={} event_time={}",
-                //     msg.asset, msg.event_time
-                // );
-                return Ok(());
-            }
             debug!(
                 "accountUpdateBalance: asset={} reason={} bu={} wallet={} cross_wallet={} change={} event_time={} tx_time={}",
                 msg.asset,
@@ -1065,14 +1057,6 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
         }
         AccountEventType::AccountUpdatePosition => {
             let msg = AccountUpdatePositionMsg::from_bytes(data)?;
-            let key = crate::pre_trade::dedup::key_account_update_position(&msg);
-            if !ctx.dedup.insert_check(key) {
-                // debug!(
-                //     "dedup drop AccountUpdatePosition: symbol={} side={} event_time={}",
-                //     msg.symbol, msg.position_side, msg.event_time
-                // );
-                return Ok(());
-            }
             debug!(
                 "accountUpdatePosition: symbol={} side={} pos_amt={} entry_px={} acc_realized={} uPnL={} breakeven={} reason={} bu={} event_time={} tx_time={}",
                 msg.symbol,
