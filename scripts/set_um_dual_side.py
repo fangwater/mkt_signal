@@ -6,7 +6,7 @@ Usage:
 
 The script reuses the symbol list from Redis (default hash:
 ``binance_arb_price_spread_threshold``) simply as the scope definition. For each
-symbol it sends a futures REST request (``/fapi/v1/positionSide/dual``) to enable
+symbol it sends a futures REST request (``/papi/v1/um/positionSide/dual``) to enable
 dual-side position mode (hedge mode).
 The endpoint is account-scoped, but repeating the request per symbol is safe and
 helps with idempotency when running in parallel with other tools.
@@ -59,8 +59,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--base-url",
-        default=os.environ.get("BINANCE_FAPI_URL", "https://fapi.binance.com"),
-        help="Binance UM REST base url (default: https://fapi.binance.com)",
+        default=(
+            os.environ.get("BINANCE_PAPI_URL")
+            or os.environ.get("BINANCE_FAPI_URL")
+            or "https://papi.binance.com"
+        ),
+        help="Binance UM REST base url (default: https://papi.binance.com)",
     )
     parser.add_argument(
         "--sleep",
@@ -166,7 +170,7 @@ def main():
         params = {"dualSidePosition": dual_str}
         status, body, headers = post_papi(
             base_url,
-            "/fapi/v1/positionSide/dual",
+            "/papi/v1/um/positionSide/dual",
             params,
             api_key,
             api_secret,
