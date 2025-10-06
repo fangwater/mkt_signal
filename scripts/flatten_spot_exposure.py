@@ -188,8 +188,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--quantity-precision",
         type=int,
-        default=None,
-        help="数量精度，使用 ROUND_DOWN 处理 (例如 3 表示保留 3 位小数)",
+        default=2,
+        help="数量精度，使用 ROUND_DOWN 处理，默认 2 位小数",
     )
     parser.add_argument(
         "--execute",
@@ -232,7 +232,12 @@ def main() -> None:
 
     print("待平仓订单：")
     for order in orders:
-        print(f"  asset={order.asset} symbol={order.symbol} quantity={order.quantity}")
+        formatted_qty = format_quantity(order.quantity, args.quantity_precision)
+        print(
+            "  asset="
+            f"{order.asset} symbol={order.symbol} quantity={formatted_qty} "
+            f"(原始 {order.quantity})"
+        )
 
     if not args.execute:
         print("dry-run: 未提交任何订单，添加 --execute 执行")
