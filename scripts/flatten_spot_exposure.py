@@ -9,7 +9,7 @@ import sys
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import sell_margin_spot
 
@@ -27,6 +27,23 @@ class SellOrder:
     asset: str
     symbol: str
     quantity: Decimal
+
+
+def parse_symbol_decimal_map(items: Optional[List[str]]) -> Dict[str, Decimal]:
+    mapping: Dict[str, Decimal] = {}
+    if not items:
+        return mapping
+    for raw in items:
+        if "=" not in raw:
+            raise SystemExit(f"无效的参数格式: {raw}，需使用 SYMBOL=value")
+        symbol, value = raw.split("=", 1)
+        symbol = symbol.strip().upper()
+        value = value.strip()
+        try:
+            mapping[symbol] = Decimal(value)
+        except InvalidOperation as exc:
+            raise SystemExit(f"解析 {raw} 失败: {exc}") from exc
+    return mapping
 
 
 def parse_decimal(raw: str) -> Optional[Decimal]:
@@ -98,28 +115,52 @@ def determine_orders(
     return orders
 
 
-def format_quantity(quantity: Decimal, precision: Optional[int]) -> str:
-    if precision is None:
-        # Normalize 会移除多余的 0，但保留必要的小数
-        return format(quantity.normalize(), "f")
-    if precision < 0:
-        raise ValueError("precision 必须是非负整数")
-    step = Decimal(1).scaleb(-precision)
-    adjusted = quantity.quantize(step, rounding=ROUND_DOWN)
-    return format(adjusted, "f")
+def adjust_quantity(
+    symbol: str,
+    quantity: Decimal,
+    precision: Optional[int],
+    lot_steps: Dict[str, Decimal],
+    min_qtys: Dict[str, Decimal],
+) -> Decimal:
+    symbol = symbol.upper()
+    result = quantity
+    step = lot_steps.get(symbol)
+    if step is not None:
+        try:
+            result = result.quantize(step, rounding=ROUND_DOWN)
+        except InvalidOperation:
+            steps = (result / step).to_integral_value(rounding=ROUND_DOWN)
+            result = steps * step
+    elif precision is not None:
+        if precision < 0:
+            raise ValueError("precision 必须是非负整数")
+        quant = Decimal(1).scaleb(-precision)
+        result = result.quantize(quant, rounding=ROUND_DOWN)
+    min_qty = min_qtys.get(symbol)
+    if min_qty is not None and result < min_qty:
+        return Decimal("0")
+    if result < 0:
+        return Decimal("0")
+    return result.normalize()
+
+
+def format_quantity(quantity: Decimal) -> str:
+    q = quantity.normalize()
+    if q == q.to_integral():
+        q = q.quantize(Decimal("1"))
+    return format(q, "f")
 
 
 def submit_order(
     order: SellOrder,
+    quantity_str: str,
     base_url: str,
     api_key: str,
     api_secret: str,
     recv_window: Optional[int],
     isolated: bool,
     side_effect: Optional[str],
-    precision: Optional[int],
 ) -> int:
-    quantity_str = format_quantity(order.quantity, precision)
     params = {
         "symbol": order.symbol,
         "side": "SELL",
@@ -192,6 +233,18 @@ def parse_args() -> argparse.Namespace:
         help="数量精度，使用 ROUND_DOWN 处理，默认 2 位小数",
     )
     parser.add_argument(
+        "--lot-step",
+        action="append",
+        default=[],
+        help="指定每个 symbol 的数量步长，例如 AIUSDT=1 或 TWTUSDT=0.1，可重复使用",
+    )
+    parser.add_argument(
+        "--min-order-qty",
+        action="append",
+        default=[],
+        help="指定最小下单量，例如 AIUSDT=1，可重复使用",
+    )
+    parser.add_argument(
         "--execute",
         action="store_true",
         help="实际提交订单；默认只打印计划",
@@ -230,14 +283,33 @@ def main() -> None:
         print("没有需要卖出的敞口，退出")
         return
 
+    lot_steps = parse_symbol_decimal_map(args.lot_step)
+    min_qtys = parse_symbol_decimal_map(args.min_order_qty)
+
+    prepared: List[Tuple[SellOrder, Decimal, str]] = []
     print("待平仓订单：")
     for order in orders:
-        formatted_qty = format_quantity(order.quantity, args.quantity_precision)
+        adjusted_qty = adjust_quantity(
+            order.symbol,
+            order.quantity,
+            args.quantity_precision,
+            lot_steps,
+            min_qtys,
+        )
+        qty_str = format_quantity(adjusted_qty)
         print(
             "  asset="
-            f"{order.asset} symbol={order.symbol} quantity={formatted_qty} "
+            f"{order.asset} symbol={order.symbol} quantity={qty_str} "
             f"(原始 {order.quantity})"
         )
+        if adjusted_qty > 0:
+            prepared.append((order, adjusted_qty, qty_str))
+        else:
+            print("    -> 调整后数量小于最小下单量，跳过该资产")
+
+    if not prepared:
+        print("没有满足条件的订单，退出")
+        return
 
     if not args.execute:
         print("dry-run: 未提交任何订单，添加 --execute 执行")
@@ -251,16 +323,16 @@ def main() -> None:
 
     base_url = args.base_url.rstrip("/")
     failures = 0
-    for order in orders:
+    for order, _, quantity_str in prepared:
         status = submit_order(
             order,
+            quantity_str=quantity_str,
             base_url=base_url,
             api_key=api_key,
             api_secret=api_secret,
             recv_window=args.recv_window,
             isolated=args.isolated,
             side_effect=args.side_effect,
-            precision=args.quantity_precision,
         )
         if not (200 <= status < 300):
             failures += 1
