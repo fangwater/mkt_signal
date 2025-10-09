@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "@openai/codex": "^0.44.0",
     "axios": "^1.9.0",
     "express": "^5.1.0",
     "tardis-dev": "^13.35.2",

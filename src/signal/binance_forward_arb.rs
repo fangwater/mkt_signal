@@ -745,16 +745,18 @@ impl BinSingleForwardArbStrategy {
 
         let side_str = open_ctx.side.as_str();
         let order_type_str = open_ctx.order_type.as_str();
-        // 数量 LOT_SIZE 对齐（优先 margin，再退化 spot）并确保不低于 minQty
+        // 数量 LOT_SIZE 对齐（优先使用合约 UM 参数，确保对冲数量一致），若缺失再退化 margin/spot
         let raw_qty = f64::from(open_ctx.amount);
         let step = self
             .min_qty_table
-            .margin_step_by_symbol(&self.symbol)
+            .futures_um_step_by_symbol(&self.symbol)
+            .or_else(|| self.min_qty_table.margin_step_by_symbol(&self.symbol))
             .or_else(|| self.min_qty_table.spot_step_by_symbol(&self.symbol))
             .unwrap_or(0.0);
         let min_qty = self
             .min_qty_table
-            .margin_min_qty_by_symbol(&self.symbol)
+            .futures_um_min_qty_by_symbol(&self.symbol)
+            .or_else(|| self.min_qty_table.margin_min_qty_by_symbol(&self.symbol))
             .or_else(|| self.min_qty_table.spot_min_qty_by_symbol(&self.symbol))
             .unwrap_or(0.0);
         let mut eff_qty = if step > 0.0 {
@@ -1070,12 +1072,20 @@ impl BinSingleForwardArbStrategy {
         // 按 LOT_SIZE 对齐平仓数量，并不低于 minQty，最终不超过 expected_qty
         let step = self
             .min_qty_table
-            .margin_step_by_symbol(&margin_order.symbol)
+            .futures_um_step_by_symbol(&margin_order.symbol)
+            .or_else(|| {
+                self.min_qty_table
+                    .margin_step_by_symbol(&margin_order.symbol)
+            })
             .or_else(|| self.min_qty_table.spot_step_by_symbol(&margin_order.symbol))
             .unwrap_or(0.0);
         let min_qty = self
             .min_qty_table
-            .margin_min_qty_by_symbol(&margin_order.symbol)
+            .futures_um_min_qty_by_symbol(&margin_order.symbol)
+            .or_else(|| {
+                self.min_qty_table
+                    .margin_min_qty_by_symbol(&margin_order.symbol)
+            })
             .or_else(|| {
                 self.min_qty_table
                     .spot_min_qty_by_symbol(&margin_order.symbol)

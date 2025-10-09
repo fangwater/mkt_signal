@@ -9,6 +9,7 @@
   - 4h/8h 阈值参数: fr_4h_* 与 fr_8h_*（共 8 个）
   - Pre-Trade 限制: pre_trade_max_pos_u, pre_trade_max_symbol_exposure_ratio, pre_trade_max_total_exposure_ratio
   - 下单参数: order_open_range, order_close_range, order_amount_u, order_max_open_order_keep_s, order_max_close_order_keep_s
+  - Pre-Trade 持久化: pre_trade_store_enable, pre_trade_store_prefix, pre_trade_store_redis_url
 
 示例：
   python scripts/sync_binance_forward_arb_params.py
@@ -30,6 +31,17 @@ def try_import_redis():
         return None
 
 
+def infer_redis_url(args: argparse.Namespace) -> str:
+    if args.store_redis_url:
+        return args.store_redis_url
+    if args.redis_url:
+        return args.redis_url
+    auth = ""
+    if args.password:
+        auth = f":{args.password}@"
+    return f"redis://{auth}{args.host}:{args.port}/{args.db}"
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Sync constants to Redis HASH binance_forward_arb_params")
     p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
@@ -37,6 +49,21 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
     p.add_argument("--db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
     p.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
+    p.add_argument(
+        "--store-redis-url",
+        default=os.environ.get("PRE_TRADE_STORE_REDIS_URL"),
+        help="用于 pre_trade 持久化的 Redis 连接 URL（默认为 --redis-url 或 host/port/db 推断值）",
+    )
+    p.add_argument(
+        "--store-prefix",
+        default=os.environ.get("PRE_TRADE_STORE_PREFIX", "pre_trade"),
+        help="pre_trade 持久化使用的键名前缀",
+    )
+    p.add_argument(
+        "--disable-store",
+        action="store_true",
+        help="写入参数时显式关闭 pre_trade Redis 持久化",
+    )
     p.add_argument("--key", default="binance_forward_arb_params")
     return p.parse_args()
 
@@ -85,6 +112,16 @@ def main() -> int:
         "order_max_open_order_keep_s": "1",
         "order_max_close_order_keep_s": "1",
     }
+
+    store_url = infer_redis_url(args)
+    store_enable = "0" if args.disable_store else "1"
+    params.update(
+        {
+            "pre_trade_store_enable": store_enable,
+            "pre_trade_store_prefix": args.store_prefix,
+            "pre_trade_store_redis_url": store_url,
+        }
+    )
 
     # HMSET (HSET 多字段)
     rds.hset(args.key, mapping=params)

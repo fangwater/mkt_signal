@@ -8,3 +8,6 @@ monitor
 batch_setup_servers.sh
 batch_install_dev_tools.sh
 
+__pycache__/
+.venv/
+.venv

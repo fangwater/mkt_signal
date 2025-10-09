@@ -132,7 +132,7 @@ impl PreTradeCfg {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct StoreCfg {
-    #[serde(default)]
+    #[serde(default = "default_store_enable")]
     pub enable: bool,
     #[serde(default = "default_store_redis_url")]
     pub redis_url: String,
@@ -143,11 +143,15 @@ pub struct StoreCfg {
 impl Default for StoreCfg {
     fn default() -> Self {
         Self {
-            enable: false,
+            enable: default_store_enable(),
             redis_url: default_store_redis_url(),
             prefix: default_store_prefix(),
         }
     }
+}
+
+const fn default_store_enable() -> bool {
+    true
 }
 
 fn default_store_redis_url() -> String {

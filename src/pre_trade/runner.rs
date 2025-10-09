@@ -70,21 +70,26 @@ impl PreTrade {
         // 初始化策略参数从 Redis
         let strategy_params = StrategyParamsCfg::default();
 
-        // 可选打开持久化存储
-        let mut store = if let Some(store_cfg) = self.cfg.store.clone() {
-            if store_cfg.enable {
-                match RedisStore::connect(&store_cfg.redis_url, &store_cfg.prefix).await {
-                    Ok(s) => Some(s),
-                    Err(err) => {
-                        warn!("failed to connect redis store: {err:#}");
-                        None
-                    }
+        let default_store_url = std::env::var("PRE_TRADE_STORE_REDIS_URL")
+            .or_else(|_| std::env::var("REDIS_URL"))
+            .unwrap_or_else(|_| "redis://127.0.0.1:6379/0".to_string());
+        let default_store_prefix =
+            std::env::var("PRE_TRADE_STORE_PREFIX").unwrap_or_else(|_| "pre_trade".to_string());
+        let fallback_store_cfg = match self.cfg.store.clone() {
+            Some(store_cfg) => {
+                if store_cfg.enable {
+                    Some(StoreRuntimeCfg {
+                        redis_url: store_cfg.redis_url,
+                        prefix: store_cfg.prefix,
+                    })
+                } else {
+                    None
                 }
-            } else {
-                None
             }
-        } else {
-            None
+            None => Some(StoreRuntimeCfg {
+                redis_url: default_store_url,
+                prefix: default_store_prefix,
+            }),
         };
 
         let mut runtime = RuntimeContext::new(
@@ -93,7 +98,7 @@ impl PreTrade {
             signal_tx.clone(),
             order_publisher,
             strategy_params,
-            store.take(),
+            fallback_store_cfg,
         );
 
         // 首次从 Redis 拉取 pre-trade 参数
@@ -122,10 +127,15 @@ impl PreTrade {
         loop {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {
-                    if let Err(err) = runtime.persist_snapshot().await {
-                        warn!("persist snapshot failed: {err:#}");
-                    } else {
-                        info!("snapshot persisted to redis; exiting");
+                    match runtime.persist_snapshot().await {
+                        Err(err) => warn!("persist snapshot failed: {err:#}"),
+                        Ok(()) => {
+                            if runtime.has_store() {
+                                info!("snapshot persisted to redis; exiting");
+                            } else {
+                                info!("snapshot skipped; redis store disabled");
+                            }
+                        }
                     }
                     break;
                 }
@@ -284,6 +294,12 @@ impl BootstrapResources {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StoreRuntimeCfg {
+    redis_url: String,
+    prefix: String,
+}
+
 struct RuntimeContext {
     spot_manager: BinancePmSpotAccountManager,
     um_manager: BinancePmUmAccountManager,
@@ -300,19 +316,25 @@ struct RuntimeContext {
     min_qty_table: Rc<MinQtyTable>,
     dedup: crate::pre_trade::dedup::DedupCache,
     store: Option<RedisStore>,
+    store_cfg: Option<StoreRuntimeCfg>,
+    fallback_store_cfg: Option<StoreRuntimeCfg>,
     next_params_refresh: std::time::Instant,
     params_refresh_secs: u64,
     last_params_snapshot: Option<PreTradeParamsSnap>,
 }
 
 impl RuntimeContext {
+    fn has_store(&self) -> bool {
+        self.store.is_some()
+    }
+
     fn new(
         bootstrap: BootstrapResources,
         order_tx: UnboundedSender<Bytes>,
         signal_tx: UnboundedSender<Bytes>,
         order_publisher: OrderPublisher,
         strategy_params: StrategyParamsCfg,
-        store: Option<RedisStore>,
+        fallback_store_cfg: Option<StoreRuntimeCfg>,
     ) -> Self {
         let BootstrapResources {
             um_manager,
@@ -340,7 +362,9 @@ impl RuntimeContext {
             strategy_params,
             min_qty_table,
             dedup: crate::pre_trade::dedup::DedupCache::new(8192),
-            store,
+            store: None,
+            store_cfg: None,
+            fallback_store_cfg,
             next_params_refresh: std::time::Instant::now(),
             params_refresh_secs: 30,
             last_params_snapshot: None,
@@ -581,6 +605,17 @@ impl RuntimeContext {
             |k: &str| -> Option<f64> { params.get(k).and_then(|v| v.parse::<f64>().ok()) };
         let parse_u64 =
             |k: &str| -> Option<u64> { params.get(k).and_then(|v| v.parse::<u64>().ok()) };
+        let parse_bool = |k: &str| -> Option<bool> {
+            params.get(k).and_then(|v| {
+                let lowered = v.trim().to_ascii_lowercase();
+                match lowered.as_str() {
+                    "1" | "true" | "yes" | "on" => Some(true),
+                    "0" | "false" | "no" | "off" => Some(false),
+                    _ => None,
+                }
+            })
+        };
+
         let mut new_refresh = self.params_refresh_secs;
         if let Some(v) = parse_u64("pre_trade_refresh_secs") {
             new_refresh = v;
@@ -594,6 +629,66 @@ impl RuntimeContext {
         }
         if let Some(v) = parse_f64("pre_trade_max_total_exposure_ratio") {
             sp.max_total_exposure_ratio = v;
+        }
+
+        let default_store_enabled = self.fallback_store_cfg.is_some();
+        let store_enable = parse_bool("pre_trade_store_enable").unwrap_or(default_store_enabled);
+        let desired_store_cfg = if store_enable {
+            let redis_url = params
+                .get("pre_trade_store_redis_url")
+                .cloned()
+                .or_else(|| self.store_cfg.as_ref().map(|cfg| cfg.redis_url.clone()))
+                .or_else(|| {
+                    self.fallback_store_cfg
+                        .as_ref()
+                        .map(|cfg| cfg.redis_url.clone())
+                })
+                .unwrap_or_else(|| {
+                    std::env::var("PRE_TRADE_STORE_REDIS_URL")
+                        .or_else(|_| std::env::var("REDIS_URL"))
+                        .unwrap_or_else(|_| "redis://127.0.0.1:6379/0".to_string())
+                });
+            let prefix = params
+                .get("pre_trade_store_prefix")
+                .cloned()
+                .or_else(|| self.store_cfg.as_ref().map(|cfg| cfg.prefix.clone()))
+                .or_else(|| {
+                    self.fallback_store_cfg
+                        .as_ref()
+                        .map(|cfg| cfg.prefix.clone())
+                })
+                .unwrap_or_else(|| {
+                    std::env::var("PRE_TRADE_STORE_PREFIX")
+                        .unwrap_or_else(|_| "pre_trade".to_string())
+                });
+            Some(StoreRuntimeCfg { redis_url, prefix })
+        } else {
+            None
+        };
+
+        match desired_store_cfg {
+            Some(cfg) => {
+                let needs_reconnect = self
+                    .store_cfg
+                    .as_ref()
+                    .map(|current| current != &cfg)
+                    .unwrap_or(true);
+                if needs_reconnect {
+                    let redis_url = cfg.redis_url.clone();
+                    let prefix = cfg.prefix.clone();
+                    let store = RedisStore::connect(&redis_url, &prefix).await?;
+                    info!("redis store enabled (prefix={})", prefix);
+                    self.store = Some(store);
+                    self.store_cfg = Some(StoreRuntimeCfg { redis_url, prefix });
+                }
+            }
+            None => {
+                if self.store_cfg.is_some() || self.store.is_some() {
+                    info!("redis store disabled");
+                }
+                self.store = None;
+                self.store_cfg = None;
+            }
         }
 
         let snapshot = PreTradeParamsSnap {
