@@ -119,6 +119,14 @@ impl MinQtyTable {
             .filter(|v| *v > 0.0)
     }
 
+    pub fn futures_um_min_notional_by_symbol(&self, symbol: &str) -> Option<f64> {
+        let key = symbol.to_uppercase();
+        self.futures_um
+            .get(&key)
+            .and_then(|entry| entry.min_notional)
+            .filter(|v| *v > 0.0)
+    }
+
     pub fn margin_min_qty_by_symbol(&self, symbol: &str) -> Option<f64> {
         let key = symbol.to_uppercase();
         self.margin.get(&key).map(|entry| entry.min_qty)

@@ -450,14 +450,14 @@ impl RuntimeContext {
                         match BinSingleForwardArbSnapshot::from_bytes(&rec.payload) {
                             Ok(snap) => {
                                 debug!(
-                                    "recovered strategy: type={} id={} symbol={} margin_open={} um_hedge={} margin_close={} um_close={} open_to={:?} close_to={:?}",
+                                    "recovered strategy: type={} id={} symbol={} margin_open={} um_hedge={:?} margin_close={} um_close={:?} open_to={:?} close_to={:?}",
                                     rec.type_name,
                                     snap.strategy_id,
                                     snap.symbol,
                                     snap.margin_order_id,
-                                    snap.um_hedge_order_id,
+                                    snap.um_hedge_order_ids,
                                     snap.close_margin_order_id,
-                                    snap.close_um_hedge_order_id,
+                                    snap.close_um_hedge_order_ids,
                                     snap.open_timeout_us,
                                     snap.close_margin_timeout_us
                                 );

@@ -489,6 +489,8 @@ pub struct Order {
     pub quantity: f64,                   // 数量
     pub cumulative_filled_quantity: f64, // 成交量
     pub hedged_quantily: f64,            // 未对冲量
+    #[serde(default)]
+    pub hedged_filled_quantity: f64, // 已对冲到期货端的成交量
     pub status: OrderExecutionStatus,    // 订单执行状态
     #[serde(default)]
     pub pending_counted: bool, // 是否已计入 pending 限价单 count（用于去重防二次递减）
@@ -531,6 +533,7 @@ impl Order {
             end_time: 0,
             cumulative_filled_quantity: 0.0,
             hedged_quantily: 0.0,
+            hedged_filled_quantity: 0.0,
             pending_counted: order_type.is_limit(),
         }
     }
@@ -550,6 +553,11 @@ impl Order {
     pub fn update_cumulative_filled_quantity(&mut self, qty: f64) {
         self.cumulative_filled_quantity = qty;
         self.hedged_quantily = self.quantity - self.cumulative_filled_quantity;
+    }
+
+    /// 更新已对冲成交量（部分对冲使用）
+    pub fn update_hedged_filled_quantity(&mut self, qty: f64) {
+        self.hedged_filled_quantity = qty;
     }
 
     /// 设置提交时间
