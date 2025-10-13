@@ -2,21 +2,21 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
-use bytes::Bytes;
-use chrono::{DateTime, Utc};
-use log::{debug, error, info, trace, warn};
-use reqwest::Client;
-use serde::Deserialize;
-use serde_json::json;
-use tokio::signal;
-#[cfg(unix)]
-use tokio::signal::unix::{signal as unix_signal, SignalKind};
-use tokio::task::yield_now;
-use tokio::time::Instant;
-use tokio_util::sync::CancellationToken;
+use anyhow::{Context, Result}; 
+use bytes::Bytes; 
+use chrono::{DateTime, Utc}; 
+use log::{debug, error, info, trace, warn}; 
+use reqwest::Client; 
+use serde::Deserialize; 
+use serde_json::json; 
+use tokio::signal; 
+#[cfg(unix)] 
+use tokio::signal::unix::{signal as unix_signal, SignalKind}; 
+use tokio::task::yield_now; 
+use tokio::time::Instant; 
+use tokio_util::sync::CancellationToken; 
 
-use mkt_signal::common::iceoryx_publisher::SignalPublisher;
+use mkt_signal::common::iceoryx_publisher::SignalPublisher; 
 use mkt_signal::common::iceoryx_subscriber::{
     ChannelType, MultiChannelSubscriber, SubscribeParams,
 };
@@ -245,15 +245,15 @@ impl StrategyConfig {
                 "Redis 数据源配置: host={} port={} db={} prefix={:?}",
                 redis_cfg.host, redis_cfg.port, redis_cfg.db, redis_cfg.prefix
             );
-        }
-        info!(
+        } 
+        info!( 
             "策略配置加载完成: reload_interval={}s strategy: interval={} predict_num={} refresh_secs={}s fetch_secs={}s fetch_offset={}s history_limit={} settlement_offset_secs={}",
             cfg.reload.interval_secs,
             cfg.strategy.interval, cfg.strategy.predict_num, cfg.strategy.refresh_secs,
             cfg.strategy.fetch_secs, cfg.strategy.fetch_offset_secs, cfg.strategy.history_limit,
             cfg.strategy.settlement_offset_secs
-        );
-        Ok(cfg)
+        ); 
+        Ok(cfg) 
     }
 
     // reload_interval() helper was unused; next_reload scheduling uses cfg.reload.interval_secs directly
@@ -271,18 +271,18 @@ impl StrategyConfig {
     }
 }
 
-/// 价差阈值配置
-#[derive(Debug, Clone)]
+/// 价差阈值配置 
+#[derive(Debug, Clone)] 
 struct SymbolThreshold {
     spot_symbol: String,
     futures_symbol: String,
-    // BidAskSR 阈值（开/关）: (spot_bid - fut_ask) / spot_bid
-    open_threshold: f64,
-    close_threshold: f64,
-    // AskBidSR 阈值（开/关）: (spot_ask - fut_bid) / spot_ask
-    askbid_open_threshold: f64,
-    askbid_close_threshold: f64,
-}
+    // BidAskSR 阈值（开/关）: (spot_bid - fut_ask) / spot_bid 
+    open_threshold: f64, 
+    close_threshold: f64, 
+    // AskBidSR 阈值（开/关）: (spot_ask - fut_bid) / spot_ask 
+    askbid_open_threshold: f64, 
+    askbid_close_threshold: f64, 
+} 
 
 /// 行情报价
 #[derive(Debug, Clone, Copy, Default)]
@@ -290,19 +290,19 @@ struct Quote {
     bid: f64,
     ask: f64,
     ts: i64,
-}
+} 
 
 impl Quote {
     fn update(&mut self, bid: f64, ask: f64, ts: i64) {
         self.bid = bid;
         self.ask = ask;
         self.ts = ts;
-    }
+    } 
 
     fn is_ready(&self) -> bool {
-        self.bid > 0.0 && self.ask > 0.0
-    }
-}
+        self.bid > 0.0 && self.ask > 0.0 
+    } 
+} 
 
 /// 单个交易对的运行时状态
 #[derive(Debug, Clone)]
@@ -379,29 +379,29 @@ impl SymbolState {
         self.futures_symbol = threshold.futures_symbol;
         self.askbid_open_threshold = threshold.askbid_open_threshold;
         self.askbid_close_threshold = threshold.askbid_close_threshold;
-    }
+    } 
 
     fn ready_for_eval(&self) -> bool {
         self.spot_quote.is_ready() && self.futures_quote.is_ready()
-    }
+    } 
 
     /// bidask_sr = (spot_bid - futures_ask) / spot_bid
     fn calc_ratio(&self) -> Option<f64> {
         if self.spot_quote.bid <= 0.0 || self.futures_quote.ask <= 0.0 {
             return None;
-        }
+        } 
         Some((self.spot_quote.bid - self.futures_quote.ask) / self.spot_quote.bid)
-    }
+    } 
 
     fn can_emit_signal(&self, now_us: i64, min_gap_us: i64) -> bool {
         if min_gap_us <= 0 {
             return true;
-        }
+        } 
         match self.last_signal_ts {
             Some(prev) => now_us.saturating_sub(prev) >= min_gap_us,
             None => true,
-        }
-    }
+        } 
+    } 
 
     fn mark_signal(&mut self, now_us: i64) {
         self.last_signal_ts = Some(now_us);
@@ -550,8 +550,8 @@ impl StrategyEngine {
             self.print_funding_overview_table();
         } else {
             self.print_warmup_progress_table();
-        }
-        Ok(())
+        } 
+        Ok(()) 
     }
 
     fn compute_predictions(&mut self) {
@@ -600,6 +600,12 @@ impl StrategyEngine {
             out.insert(sym.clone(), pred);
         }
         self.predicted_map = out;
+        for state in self.symbols.values_mut() {
+            let fut = state.futures_symbol.to_uppercase();
+            if let Some(pred) = self.predicted_map.get(&fut) {
+                state.predicted_rate = *pred;
+            }
+        }
         if !self.predicted_map.is_empty() {
             let mut sample: Vec<(&String, &f64)> = self.predicted_map.iter().take(5).collect();
             sample.sort_by(|a, b| a.0.cmp(b.0));
@@ -1392,16 +1398,17 @@ impl StrategyEngine {
                     self.stats.close_signals += 1;
                     if let Some(entry) = log_entry {
                         info!("{}", entry);
-                    }
-                }
-            }
-        }
+                    } 
+                } 
+            } 
+        } 
     }
 
     fn resample_and_publish(&mut self) {
         let ts_ms = (get_timestamp_us() / 1000) as i64;
         let mut batch_items: Vec<ResampleItem> = Vec::new();
         let mut funding_pred_rows: Vec<Vec<String>> = Vec::new();
+        let mut price_signal_rows: Vec<Vec<String>> = Vec::new();
         // 组装每个 symbol 的切片
         let mut keys: Vec<String> = self.symbols.keys().cloned().collect();
         keys.sort();
@@ -1518,6 +1525,33 @@ impl StrategyEngine {
                 fmt_decimal(open_lower),
                 pred_message,
             ]);
+
+            let bidask_str = state
+                .latest_bidask_sr
+                .or(bidask_sr)
+                .map(|v| fmt_decimal(v))
+                .unwrap_or_else(|| "-".to_string());
+            let askbid_str = state
+                .latest_askbid_sr
+                .or(askbid_sr)
+                .map(|v| fmt_decimal(v))
+                .unwrap_or_else(|| "-".to_string());
+            let ba_open_flag = if state.price_open_bidask { "Y" } else { "N" }.to_string();
+            let ab_open_flag = if state.price_open_askbid { "Y" } else { "N" }.to_string();
+            let open_ready_flag = if state.price_open_ready { "Y" } else { "N" }.to_string();
+            let close_ready_flag = if state.price_close_ready { "Y" } else { "N" }.to_string();
+            price_signal_rows.push(vec![
+                key.clone(),
+                freq,
+                bidask_str,
+                fmt_decimal(state.open_threshold),
+                ba_open_flag,
+                askbid_str,
+                fmt_decimal(state.askbid_open_threshold),
+                ab_open_flag,
+                open_ready_flag,
+                close_ready_flag,
+            ]);
         }
 
         // 批量发送（控制最大 1024 字节）
@@ -1550,6 +1584,26 @@ impl StrategyEngine {
                         "解读",
                     ],
                     &funding_pred_rows,
+                )
+            );
+        }
+        if !price_signal_rows.is_empty() {
+            info!(
+                "Resample价差-信号\n{}",
+                render_three_line_table(
+                    &[
+                        "Symbol",
+                        "Freq",
+                        "BidAskSR",
+                        "BA_OpenTh",
+                        "BA_OpenOK",
+                        "AskBidSR",
+                        "AB_OpenTh",
+                        "AB_OpenOK",
+                        "OpenReady",
+                        "CloseReady",
+                    ],
+                    &price_signal_rows,
                 )
             );
         }
@@ -1882,7 +1936,7 @@ struct FundingThresholdEntry {
     open_lower_threshold: f64,
     close_lower_threshold: f64,
     close_upper_threshold: f64,
-}
+} 
 
 #[derive(Debug, Clone, Copy)]
 struct RateThresholds {
@@ -1987,14 +2041,14 @@ impl StrategyEngine {
         for k in required.iter() {
             if !map.contains_key(*k) {
                 missing.push(k.to_string());
-            }
-        }
+            } 
+        } 
         if !missing.is_empty() {
             panic!(
                 "缺少资金费率阈值参数: {:?}，请写入 Redis HASH binance_forward_arb_params 再启动",
                 missing
-            );
-        }
+            ); 
+        } 
         let mut changed = false;
         let parse_u64 = |k: &str| -> Option<u64> { map.get(k).and_then(|v| v.parse::<u64>().ok()) };
         let parse_f64 = |k: &str| -> Option<f64> { map.get(k).and_then(|v| v.parse::<f64>().ok()) };
@@ -2144,14 +2198,14 @@ impl StrategyEngine {
         if self.last_params.as_ref() != Some(&current) {
             changed = true;
             self.last_params = Some(current);
-            // 重要参数变更时，重设调度时间点（阈值刷新周期按 reload.interval_secs）
-            self.next_reload =
-                Instant::now() + Duration::from_secs(self.cfg.reload.interval_secs.max(5));
-            self.next_fetch_refresh = self.next_fetch_instant();
-        }
-        debug!("参数变更检测: changed={}", changed);
-        Ok(changed)
-    }
+            // 重要参数变更时，重设调度时间点（阈值刷新周期按 reload.interval_secs） 
+            self.next_reload = 
+                Instant::now() + Duration::from_secs(self.cfg.reload.interval_secs.max(5)); 
+            self.next_fetch_refresh = self.next_fetch_instant(); 
+        } 
+        debug!("参数变更检测: changed={}", changed); 
+        Ok(changed) 
+    } 
 
     fn is_settlement_trigger(&mut self) -> bool {
         // 基于 UTC 准点 + 偏移（秒）判断 settlement 周期；周期大小来自 fetch_secs
@@ -2422,8 +2476,8 @@ impl StrategyEngine {
             }
         }
         true
-    }
-}
+    } 
+} 
 
 fn compute_widths(headers: &[&str], rows: &[Vec<String>]) -> Vec<usize> {
     let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
@@ -2460,7 +2514,7 @@ fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
     row
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main(flavor = "current_thread")] 
 async fn main() -> Result<()> {
     // 更保守的默认日志过滤，避免输出依赖库的 DEBUG 噪声
     let default_filter = "info,funding_rate_strategy=debug,mkt_signal=info,hyper=warn,hyper_util=warn,h2=warn,reqwest=warn";
@@ -2481,7 +2535,7 @@ async fn main() -> Result<()> {
             "等待资金费率均值预热: 需要每个符号至少 {} 条历史",
             cfg.strategy.funding_ma_size.max(1)
         );
-    }
+    } 
 
     let mut subscriber = MultiChannelSubscriber::new(NODE_FUNDING_STRATEGY_SUB)?;
     subscriber.subscribe_channels(vec![
@@ -2517,6 +2571,17 @@ async fn main() -> Result<()> {
         for msg in subscriber.poll_channel("binance", &ChannelType::AskBidSpread, Some(32)) {
             let msg_type = mkt_msg::get_msg_type(&msg);
             if msg_type == MktMsgType::AskBidSpread {
+                let symbol = AskBidSpreadMsg::get_symbol(&msg).to_uppercase();
+                let bid = AskBidSpreadMsg::get_bid_price(&msg);
+                let ask = AskBidSpreadMsg::get_ask_price(&msg);
+                let ts = AskBidSpreadMsg::get_timestamp(&msg);
+                log::debug!(
+                    "Iceoryx订阅: spot ask_bid_spread symbol={} bid={:.6} ask={:.6} ts={}",
+                    symbol,
+                    bid,
+                    ask,
+                    ts
+                );
                 engine.handle_spot_quote(&msg);
             }
         }
@@ -2525,6 +2590,17 @@ async fn main() -> Result<()> {
         {
             let msg_type = mkt_msg::get_msg_type(&msg);
             if msg_type == MktMsgType::AskBidSpread {
+                let symbol = AskBidSpreadMsg::get_symbol(&msg).to_uppercase();
+                let bid = AskBidSpreadMsg::get_bid_price(&msg);
+                let ask = AskBidSpreadMsg::get_ask_price(&msg);
+                let ts = AskBidSpreadMsg::get_timestamp(&msg);
+                log::debug!(
+                    "Iceoryx订阅: futures ask_bid_spread symbol={} bid={:.6} ask={:.6} ts={}",
+                    symbol,
+                    bid,
+                    ask,
+                    ts
+                );
                 engine.handle_futures_quote(&msg);
             }
         }
@@ -2534,7 +2610,7 @@ async fn main() -> Result<()> {
                 MktMsgType::FundingRate => engine.handle_funding_rate(&msg),
                 _ => (),
             }
-        }
+        } 
 
         if Instant::now() >= next_stat_time {
             engine.print_stats();
@@ -2549,10 +2625,10 @@ async fn main() -> Result<()> {
         if Instant::now() >= engine.next_resample {
             engine.resample_and_publish();
             engine.next_resample += engine.resample_interval;
-        }
+        } 
 
         yield_now().await;
-    }
+    } 
 
     engine.print_stats();
     info!("策略进程结束");
@@ -2842,7 +2918,7 @@ async fn infer_binance_funding_frequency(client: &Client, symbol: &str) -> Optio
     Some(freq.to_string())
 }
 
-// removed: compute_predict (compute_predictions inlines the logic with debug logs)
+// removed: compute_predict (compute_predictions inlines the logic with debug logs) 
 #[derive(Debug, Clone, Deserialize)]
 struct LoanConfig {
     #[serde(default)]
@@ -2862,4 +2938,4 @@ impl Default for LoanConfig {
 
 const fn default_loan_refresh_secs() -> u64 {
     60
-}
+} 

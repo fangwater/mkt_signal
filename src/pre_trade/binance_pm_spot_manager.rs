@@ -82,9 +82,9 @@ struct RawSpotBalance {
     cm_unrealized_pnl: String,
     #[serde(rename = "updateTime", default)]
     update_time: i64,
-    #[serde(rename = "negativeBalance", default)]
+    #[serde(rename = "negativeBalance", default)] 
     negative_balance: String,
-}
+} 
 
 impl TryFrom<RawSpotBalance> for BinanceSpotBalance {
     type Error = anyhow::Error;

@@ -1549,7 +1549,9 @@ impl MockController {
     }
 
     fn handle_funding_rate(&mut self, msg: &[u8]) {
-        let symbol = FundingRateMsg::get_symbol(msg).to_uppercase();
+        let symbol_raw = FundingRateMsg::get_symbol(msg);
+        let symbol_len = symbol_raw.len();
+        let symbol = symbol_raw.to_uppercase();
         let fut_symbol = self
             .symbols
             .get(&symbol)
@@ -1559,7 +1561,17 @@ impl MockController {
         if let Some(state) = self.symbols.get_mut(&symbol) {
             let funding = FundingRateMsg::get_funding_rate(msg);
             let next_funding_time = FundingRateMsg::get_next_funding_time(msg);
-            let timestamp = FundingRateMsg::get_timestamp(msg);
+            let has_timestamp = msg.len() >= 8 + symbol_len + 24;
+            let timestamp = if has_timestamp {
+                FundingRateMsg::get_timestamp(msg)
+            } else {
+                let fallback = (get_timestamp_us() / 1000) as i64;
+                debug!(
+                    "mock Funding 消息缺少 timestamp 字段，按当前时间补齐: symbol={} len={} fallback_ts={}",
+                    symbol, msg.len(), fallback
+                );
+                fallback
+            };
             state.last_ratio = state.calc_ratio();
             state.funding_rate = funding;
             state.predicted_rate = predicted;

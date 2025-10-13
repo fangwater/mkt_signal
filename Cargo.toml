@@ -44,6 +44,10 @@ path = "src/bin/funding_rate_strategy_mock.rs"
 name = "viz_server"
 path = "src/bin/viz_server.rs"
 
+[[bin]]
+name = "print_pre_trade_snapshot"
+path = "src/bin/print_pre_trade_snapshot.rs"
+
 
 [dependencies]
 local-ip-address = "0.6"

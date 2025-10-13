@@ -266,17 +266,17 @@ def main() -> int:
 
     if not sym_to_obj:
         print("No matching symbols found.")
-        return 0
+        return 0 
 
-    sym_rows = build_symbol_data(sym_to_obj)
-    if not sym_rows:
-        print("No symbols found in hash key.")
-        return 0
+    sym_rows = build_symbol_data(sym_to_obj) 
+    if not sym_rows: 
+        print("No symbols found in hash key.") 
+        return 0 
 
     headers, rows = build_matrix(sym_rows, na=args.na, tsfmt=args.tsfmt)
-    print_three_line_table(headers, rows)
-    return 0
+    print_three_line_table(headers, rows) 
+    return 0 
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+if __name__ == "__main__": 
+    raise SystemExit(main()) 

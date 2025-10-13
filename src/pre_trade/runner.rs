@@ -73,7 +73,7 @@ impl PreTrade {
         let default_store_url = std::env::var("PRE_TRADE_STORE_REDIS_URL")
             .or_else(|_| std::env::var("REDIS_URL"))
             .unwrap_or_else(|_| "redis://127.0.0.1:6379/0".to_string());
-        let default_store_prefix =
+        let default_store_prefix = 
             std::env::var("PRE_TRADE_STORE_PREFIX").unwrap_or_else(|_| "pre_trade".to_string());
         let fallback_store_cfg = match self.cfg.store.clone() {
             Some(store_cfg) => {
@@ -99,12 +99,12 @@ impl PreTrade {
             order_publisher,
             strategy_params,
             fallback_store_cfg,
-        );
+        ); 
 
         // 首次从 Redis 拉取 pre-trade 参数
         if let Err(err) = runtime.reload_params().await {
             warn!("pre_trade initial params load failed: {err:#}");
-        }
+        } 
 
         // 启动时恢复
         if let Err(err) = runtime.try_recover().await {
@@ -186,7 +186,7 @@ struct BootstrapResources {
     min_qty_table: Rc<MinQtyTable>,
     //收取订单请求的服务名称
     order_req_service: String,
-}
+} 
 
 impl BootstrapResources {
     async fn load(cfg: &PreTradeCfg) -> Result<Self> {
@@ -280,8 +280,8 @@ impl BootstrapResources {
         let mut min_qty_table = MinQtyTable::new();
         if let Err(err) = min_qty_table.refresh_binance().await {
             warn!("failed to refresh Binance exchange filters: {err:#}");
-        }
-        let min_qty_table = Rc::new(min_qty_table);
+        } 
+        let min_qty_table = Rc::new(min_qty_table); 
 
         Ok(Self {
             um_manager,
