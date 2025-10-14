@@ -9,7 +9,7 @@ Behavior
   - Filter rows by the hard-coded symbol allowlist `SYMBOL_ALLOWLIST`.
   - Parse JSON payloads to extract:
       update_tp (timestamp in milliseconds), bidask_lower, bidask_upper, askbid_lower, askbid_upper.
-  - Filter rule: if any bound is NaN/None/non-finite OR equals 0 (0/0.0/-0.0), skip that symbol.
+  - Filter rule: if any bound is NaN/None/non-finite skip that symbol. Zero spread rates are allowed.
   - Write results as a Redis HASH at key `binance_arb_price_spread_threshold` (configurable via --write-key),
     field = symbol, value = compact JSON with fields:
       symbol, update_tp,
@@ -118,8 +118,6 @@ def normalize_bound(name: str, value: object) -> Tuple[Optional[float], Optional
         return None, f"{name} 非数值({value})"
     if math.isnan(fx) or not math.isfinite(fx):
         return None, f"{name} 非有限数({fx})"
-    if fx == 0.0:
-        return None, f"{name} 为0"
     return fx, None
 
 

@@ -31,7 +31,7 @@ from typing import Dict
 DEFAULTS = {
     "MAX_LENGTH": 150_000,
     "ROLLING_WINDOW": 100_000,
-    "MIN_PERIODS": 90_000,
+    "MIN_PERIODS": 90_0,
     "RESAMPLE_INTERVAL_MS": 1_000,
     "bidask_lower_quantile": 0.05,
     "bidask_upper_quantile": 0.70,
