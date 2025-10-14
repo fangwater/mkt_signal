@@ -7,7 +7,7 @@
 参数写入到 HASH `binance_forward_arb_params`（可通过 --key 指定）：
   - 资金费率预测参数: interval, predict_num, refresh_secs, fetch_secs, fetch_offset_secs, history_limit
   - 4h/8h 阈值参数: fr_4h_* 与 fr_8h_*（共 8 个）
-  - Pre-Trade 限制: pre_trade_max_pos_u, pre_trade_max_symbol_exposure_ratio, pre_trade_max_total_exposure_ratio
+  - Pre-Trade 限制: pre_trade_max_pos_u, pre_trade_max_symbol_exposure_ratio, pre_trade_max_total_exposure_ratio, pre_trade_max_leverage
   - 下单参数: order_open_range, order_close_range, order_amount_u, order_max_open_order_keep_s, order_max_close_order_keep_s
   - Pre-Trade 持久化: pre_trade_store_enable, pre_trade_store_prefix, pre_trade_store_redis_url
 
@@ -104,6 +104,7 @@ def main() -> int:
         "pre_trade_max_pos_u": "4000",
         "pre_trade_max_symbol_exposure_ratio": "0.03",
         "pre_trade_max_total_exposure_ratio": "0.03",
+        "pre_trade_max_leverage": "2",
         "pre_trade_refresh_secs": "30",
         # 下单参数
         "order_open_range": "0.00",

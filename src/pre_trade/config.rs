@@ -53,6 +53,8 @@ pub struct StrategyParamsCfg {
     pub max_symbol_exposure_ratio: f64,
     #[serde(default = "default_total_exposure_ratio")]
     pub max_total_exposure_ratio: f64,
+    #[serde(default = "default_max_leverage")]
+    pub max_leverage: f64,
 }
 
 impl Default for StrategyParamsCfg {
@@ -61,6 +63,7 @@ impl Default for StrategyParamsCfg {
             max_pos_u: 0.0,
             max_symbol_exposure_ratio: default_symbol_exposure_ratio(),
             max_total_exposure_ratio: default_total_exposure_ratio(),
+            max_leverage: default_max_leverage(),
         }
     }
 }
@@ -177,6 +180,10 @@ const fn default_symbol_exposure_ratio() -> f64 {
 
 const fn default_total_exposure_ratio() -> f64 {
     0.03
+}
+
+const fn default_max_leverage() -> f64 {
+    2.0
 }
 
 fn default_binance_pm_rest_base() -> String {

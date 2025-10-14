@@ -123,7 +123,12 @@ def build_kv(args) -> Dict[str, str]:
         for k, v in params.items():
             kv[f"pre_trade.params.{k}"] = to_string(v)
     else:
-        pick = ["max_pos_u", "max_symbol_exposure_ratio", "max_total_exposure_ratio"]
+        pick = [
+            "max_pos_u",
+            "max_symbol_exposure_ratio",
+            "max_total_exposure_ratio",
+            "max_leverage",
+        ]
         for k in pick:
             if k in params:
                 kv[f"pre_trade.params.{k}"] = to_string(params[k])
@@ -168,4 +173,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

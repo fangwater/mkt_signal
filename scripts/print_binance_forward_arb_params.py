@@ -77,6 +77,7 @@ PARAM_COMMENTS: Dict[str, str] = {
     "pre_trade_max_pos_u": "PreTrade最大持仓(U)",
     "pre_trade_max_symbol_exposure_ratio": "单资产最大敞口占比",
     "pre_trade_max_total_exposure_ratio": "总敞口占权益比",
+    "pre_trade_max_leverage": "最大杠杆倍数",
     "pre_trade_refresh_secs": "PreTrade参数刷新周期(秒)",
     # 下单参数
     "order_open_range": "开仓价偏移",

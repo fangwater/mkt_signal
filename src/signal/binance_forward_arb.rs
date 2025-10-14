@@ -305,6 +305,7 @@ pub struct BinSingleForwardArbStrategy {
     max_symbol_exposure_ratio: f64,
     max_total_exposure_ratio: f64,
     max_pos_u: f64,
+    max_leverage: f64,
     min_qty_table: std::rc::Rc<MinQtyTable>,
     price_table: std::rc::Rc<std::cell::RefCell<PriceTable>>,
     period_log_flags: RefCell<PeriodLogFlags>,
@@ -321,6 +322,7 @@ impl BinSingleForwardArbStrategy {
         max_symbol_exposure_ratio: f64,
         max_total_exposure_ratio: f64,
         max_pos_u: f64,
+        max_leverage: f64,
         min_qty_table: Rc<MinQtyTable>,
         price_table: Rc<std::cell::RefCell<PriceTable>>,
     ) -> Self {
@@ -343,19 +345,21 @@ impl BinSingleForwardArbStrategy {
             max_symbol_exposure_ratio,
             max_total_exposure_ratio,
             max_pos_u,
+            max_leverage,
             min_qty_table,
             price_table,
             period_log_flags: RefCell::new(PeriodLogFlags::default()),
         };
 
         info!(
-            "{}: strategy_id={} 初始化 symbol={} max_symbol_ratio={:.2}% max_total_ratio={:.2}% max_pos_u={:.2}",
+            "{}: strategy_id={} 初始化 symbol={} max_symbol_ratio={:.2}% max_total_ratio={:.2}% max_pos_u={:.2} max_leverage={:.2}",
             Self::strategy_name(),
             strategy.strategy_id,
             strategy.symbol,
             strategy.max_symbol_exposure_ratio * 100.0,
             strategy.max_total_exposure_ratio * 100.0,
-            strategy.max_pos_u
+            strategy.max_pos_u,
+            strategy.max_leverage
         );
 
         strategy
@@ -716,6 +720,45 @@ impl BinSingleForwardArbStrategy {
         }
     }
 
+    fn check_for_leverage(&self, exposure_manager: &ExposureManager) -> bool {
+        let limit = self.max_leverage;
+        if limit <= 0.0 {
+            debug!("{}: 杠杆阈值 <= 0，跳过检查", Self::strategy_name());
+            return true;
+        }
+
+        let total_equity = exposure_manager.total_equity();
+        if total_equity <= f64::EPSILON {
+            warn!(
+                "{}: 账户总权益近似为 0，无法计算杠杆占比",
+                Self::strategy_name()
+            );
+            return false;
+        }
+
+        let total_position = exposure_manager.total_position();
+        let leverage = total_position / total_equity;
+        if leverage > limit {
+            warn!(
+                "{}: 当前杠杆 {:.4} 超过阈值 {:.4} (仓位={:.6}, 权益={:.6})",
+                Self::strategy_name(),
+                leverage,
+                limit,
+                total_position,
+                total_equity
+            );
+            false
+        } else {
+            debug!(
+                "{}: 当前杠杆 {:.4} 合规 (阈值 {:.4})",
+                Self::strategy_name(),
+                leverage,
+                limit
+            );
+            true
+        }
+    }
+
     fn ensure_max_pos_u(
         &self,
         spot_symbol: &str,
@@ -855,6 +898,10 @@ impl BinSingleForwardArbStrategy {
 
             if !self.check_for_total_exposure(&exposure_manager) {
                 return Err(format!("{}: 总敞口校验未通过", Self::strategy_name()));
+            }
+
+            if !self.check_for_leverage(&exposure_manager) {
+                return Err(format!("{}: 杠杆校验未通过", Self::strategy_name()));
             }
 
             exposure_manager
@@ -1706,6 +1753,7 @@ impl BinSingleForwardArbStrategy {
         max_symbol_exposure_ratio: f64,
         max_total_exposure_ratio: f64,
         max_pos_u: f64,
+        max_leverage: f64,
         min_qty_table: std::rc::Rc<MinQtyTable>,
         price_table: Rc<std::cell::RefCell<PriceTable>>,
     ) -> Self {
@@ -1719,6 +1767,7 @@ impl BinSingleForwardArbStrategy {
             max_symbol_exposure_ratio,
             max_total_exposure_ratio,
             max_pos_u,
+            max_leverage,
             min_qty_table,
             price_table,
         );

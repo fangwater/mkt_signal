@@ -18,7 +18,7 @@ pub enum AccountEventType {
     Error = 3333,
 }
 
-#[allow(dead_code)] 
+#[allow(dead_code)]
 pub struct AccountEventMsg {
     pub msg_type: AccountEventType,
     pub msg_length: u32,

@@ -444,6 +444,7 @@ impl RuntimeContext {
             let max_symbol_exposure_ratio = self.strategy_params.max_symbol_exposure_ratio;
             let max_total_exposure_ratio = self.strategy_params.max_total_exposure_ratio;
             let max_pos_u = self.strategy_params.max_pos_u;
+            let max_leverage = self.strategy_params.max_leverage;
             for rec in strategy_records {
                 match rec.type_name.as_str() {
                     "BinSingleForwardArbStrategy" => {
@@ -469,6 +470,7 @@ impl RuntimeContext {
                                     max_symbol_exposure_ratio,
                                     max_total_exposure_ratio,
                                     max_pos_u,
+                                    max_leverage,
                                     self.min_qty_table.clone(),
                                     self.price_table.clone(),
                                 );
@@ -575,6 +577,7 @@ impl RuntimeContext {
                 exposures.total_equity(),
                 exposures.total_abs_exposure(),
                 exposures.total_position(),
+                self.strategy_params.max_leverage,
             );
         }
     }
@@ -629,6 +632,13 @@ impl RuntimeContext {
         }
         if let Some(v) = parse_f64("pre_trade_max_total_exposure_ratio") {
             sp.max_total_exposure_ratio = v;
+        }
+        if let Some(v) = parse_f64("pre_trade_max_leverage") {
+            if v > 0.0 {
+                sp.max_leverage = v;
+            } else {
+                warn!("pre_trade_max_leverage={} 无效，需大于 0，忽略更新", v);
+            }
         }
 
         let default_store_enabled = self.fallback_store_cfg.is_some();
@@ -695,6 +705,7 @@ impl RuntimeContext {
             max_pos_u: sp.max_pos_u,
             max_symbol_exposure_ratio: sp.max_symbol_exposure_ratio,
             max_total_exposure_ratio: sp.max_total_exposure_ratio,
+            max_leverage: sp.max_leverage,
             refresh_secs: new_refresh,
         };
         let changed = self
@@ -708,10 +719,11 @@ impl RuntimeContext {
         self.last_params_snapshot = Some(snapshot);
         if changed {
             debug!(
-                "pre_trade params updated: max_pos_u={:.2} sym_ratio={:.4} total_ratio={:.4} refresh={}s",
+                "pre_trade params updated: max_pos_u={:.2} sym_ratio={:.4} total_ratio={:.4} max_leverage={:.2} refresh={}s",
                 self.strategy_params.max_pos_u,
                 self.strategy_params.max_symbol_exposure_ratio,
                 self.strategy_params.max_total_exposure_ratio,
+                self.strategy_params.max_leverage,
                 self.params_refresh_secs
             );
         }
@@ -724,6 +736,7 @@ struct PreTradeParamsSnap {
     max_pos_u: f64,
     max_symbol_exposure_ratio: f64,
     max_total_exposure_ratio: f64,
+    max_leverage: f64,
     refresh_secs: u64,
 }
 
@@ -1308,6 +1321,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                         ctx.strategy_params.max_symbol_exposure_ratio,
                         ctx.strategy_params.max_total_exposure_ratio,
                         ctx.strategy_params.max_pos_u,
+                        ctx.strategy_params.max_leverage,
                         ctx.min_qty_table.clone(),
                         ctx.price_table.clone(),
                     );
@@ -1638,19 +1652,25 @@ fn log_exposures(entries: &[ExposureEntry], price_map: &BTreeMap<String, PriceEn
     info!("现货+UM 敞口汇总\n{}", table);
 }
 
-fn log_exposure_summary(total_equity: f64, total_exposure: f64, total_position: f64) {
+fn log_exposure_summary(
+    total_equity: f64,
+    total_exposure: f64,
+    total_position: f64,
+    max_leverage: f64,
+) {
     let leverage = if total_equity.abs() <= f64::EPSILON {
         0.0
     } else {
         total_position / total_equity
     };
 
+    let leverage_cell = format!("{} / {}", fmt_decimal(leverage), fmt_decimal(max_leverage));
     let table = render_three_line_table(
         &["TotalEquity", "TotalExposure", "Leverage"],
         &[vec![
             fmt_decimal(total_equity),
             fmt_decimal(total_exposure),
-            fmt_decimal(leverage),
+            leverage_cell,
         ]],
     );
     info!("风险指标汇总\n{}", table);
