@@ -35,7 +35,7 @@ DEFAULTS = {
     "bidask_upper_quantile": 0.70,
     "askbid_lower_quantile": 0.30,
     "askbid_upper_quantile": 0.95,
-    "refresh_sec": 60,
+    "refresh_sec": 30,
     "reload_param_sec": 3,
     "output_hash_key": "rolling_metrics_thresholds",
 }

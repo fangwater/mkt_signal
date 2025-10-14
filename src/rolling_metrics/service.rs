@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -53,6 +54,7 @@ pub struct ComputeStats {
 pub struct ComputeResult {
     pub output_key: String,
     pub payloads: Vec<(String, String)>,
+    pub removals: Vec<String>,
     pub stats: ComputeStats,
 }
 
@@ -79,12 +81,22 @@ pub fn spawn_compute_thread(
     thread::spawn(move || {
         let mut bidask_buf: Vec<f32> = Vec::new();
         let mut askbid_buf: Vec<f32> = Vec::new();
+        let mut last_keys: HashSet<String> = HashSet::new();
+        let mut last_refresh_sec: u64 = 0;
 
         loop {
             let cfg_snapshot = { config.read().clone() };
             let desired_capacity = cfg_snapshot.max_length;
             series_capacity.store(desired_capacity, Ordering::SeqCst);
             ensure_series_capacity(&series_map, desired_capacity);
+
+            if cfg_snapshot.refresh_sec != last_refresh_sec {
+                info!(
+                    "rolling_metrics: compute interval refresh_sec={}s (prev={}s)",
+                    cfg_snapshot.refresh_sec, last_refresh_sec
+                );
+                last_refresh_sec = cfg_snapshot.refresh_sec;
+            }
 
             let start = Instant::now();
             let now_ms = chrono::Utc::now().timestamp_millis();
@@ -96,8 +108,10 @@ pub fn spawn_compute_thread(
             let mut processed = 0usize;
             let mut skipped = 0usize;
             let mut payloads: Vec<(String, String)> = Vec::with_capacity(total);
+            let mut current_keys: HashSet<String> = HashSet::with_capacity(total);
 
             for (symbol_pair, series) in snapshot {
+                current_keys.insert(symbol_pair.clone());
                 let entry = build_entry(
                     &symbol_pair,
                     &cfg_snapshot,
@@ -113,6 +127,12 @@ pub fn spawn_compute_thread(
                     payloads.push((field, json));
                 }
             }
+
+            let removals: Vec<String> = last_keys
+                .difference(&current_keys)
+                .cloned()
+                .collect();
+            last_keys = current_keys;
 
             let duration = start.elapsed();
             let stats = ComputeStats {
@@ -131,6 +151,7 @@ pub fn spawn_compute_thread(
                 .send(ComputeResult {
                     output_key: cfg_snapshot.output_hash_key.clone(),
                     payloads,
+                    removals,
                     stats,
                 })
                 .is_err()

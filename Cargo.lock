@@ -1763,6 +1763,7 @@ dependencies = [
  "hmac",
  "iceoryx2",
  "lazy_static",
+ "libc",
  "local-ip-address",
  "log",
  "native-tls",

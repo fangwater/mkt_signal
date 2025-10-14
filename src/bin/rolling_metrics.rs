@@ -10,14 +10,14 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use crossbeam_channel::unbounded;
 use dashmap::mapref::entry::Entry;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use parking_lot::RwLock;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixStream;
 use tokio::signal;
-use tokio::time::{sleep, Instant};
+use tokio::time::{interval, sleep, Instant};
 use tokio_util::sync::CancellationToken;
 
 use mkt_signal::common::iceoryx_subscriber::{
@@ -32,7 +32,6 @@ use mkt_signal::rolling_metrics::service::{
     ensure_series_capacity, new_series_map, spawn_compute_thread, ComputeResult, SeriesMap,
     SymbolSeries,
 };
-
 #[derive(Parser, Debug)]
 #[command(name = "rolling_metrics", about = "Binance 价差滑窗分位计算服务")]
 struct Args {
@@ -110,6 +109,15 @@ async fn main() -> Result<()> {
         }
     }
     config.finalize();
+    info!(
+        "rolling_metrics: config init (max_length={}, window={}, min_periods={}, refresh={}s, reload={}s, output={})",
+        config.max_length,
+        config.rolling_window,
+        config.min_periods,
+        config.refresh_sec,
+        config.reload_param_sec,
+        config.output_hash_key
+    );
 
     let spot_exchange = args.spot_exchange.clone();
     let swap_exchange = args.swap_exchange.clone();
@@ -129,6 +137,7 @@ async fn main() -> Result<()> {
         tx,
     );
     spawn_writer_thread(redis_url.clone(), rx);
+    spawn_ringbuffer_monitor(Arc::clone(&series_map), Duration::from_secs(300));
 
     if swap_exchange == "binance-futures" {
         match symbol_socket_path {
@@ -287,22 +296,18 @@ async fn config_reload_loop(
                 } else if new_cfg.output_hash_key.is_empty() {
                     new_cfg.output_hash_key = DEFAULT_OUTPUT_HASH_KEY.to_string();
                 }
+                let change_detail: Option<String>;
                 {
                     let mut guard = config_lock.write();
-                    if guard.max_length != new_cfg.max_length {
-                        info!(
-                            "rolling_metrics: MAX_LENGTH 变更 {} -> {}",
-                            guard.max_length, new_cfg.max_length
-                        );
-                    }
+                    let prev = guard.clone();
                     *guard = new_cfg.clone();
+                    change_detail = describe_config_changes(&prev, &new_cfg);
                 }
                 series_capacity.store(new_cfg.max_length, Ordering::SeqCst);
                 ensure_series_capacity(&series_map, new_cfg.max_length);
-                info!(
-                    "rolling_metrics: config reloaded (max_length={}, window={}, min_periods={})",
-                    new_cfg.max_length, new_cfg.rolling_window, new_cfg.min_periods
-                );
+                if let Some(detail) = change_detail {
+                    info!("rolling_metrics: config updated -> {}", detail);
+                }
             }
             Err(err) => {
                 warn!("rolling_metrics: reload config failed: {err:?}");
@@ -330,6 +335,7 @@ async fn run_reader_loop(
 
     let prefix = format!("{}_{}", args.spot_exchange, args.swap_exchange);
     let mut quotes: HashMap<String, SymbolQuotes> = HashMap::new();
+    let mut last_symbol_count: usize = 0;
     let shutdown = CancellationToken::new();
     setup_signal_handlers(&shutdown)?;
 
@@ -358,14 +364,24 @@ async fn run_reader_loop(
             process_swap_msg(&msg, &prefix, &mut quotes, &series_map, &series_capacity);
         }
 
+        let current_total = series_map.len();
         if Instant::now() >= next_log {
             info!(
-                "rolling_metrics: symbols tracked={}, capacity={}",
+                "rolling_metrics: symbols tracked={}, registry={}",
                 quotes.len(),
-                series_capacity.load(Ordering::SeqCst)
+                current_total
             );
             next_log += Duration::from_secs(30);
         }
+        if current_total < last_symbol_count {
+            info!(
+                "rolling_metrics: symbol registry shrink {} -> {} ({} removed)",
+                last_symbol_count,
+                current_total,
+                last_symbol_count - current_total
+            );
+        }
+        last_symbol_count = current_total;
 
         tokio::task::yield_now().await;
     }
@@ -381,6 +397,9 @@ fn process_spot_msg(
     series_capacity: &Arc<AtomicUsize>,
 ) {
     let symbol = AskBidSpreadMsg::get_symbol(msg).to_uppercase();
+    if should_skip_symbol(&symbol) {
+        return;
+    }
     let bid = AskBidSpreadMsg::get_bid_price(msg);
     let ask = AskBidSpreadMsg::get_ask_price(msg);
     let ts = AskBidSpreadMsg::get_timestamp(msg);
@@ -400,6 +419,9 @@ fn process_swap_msg(
     series_capacity: &Arc<AtomicUsize>,
 ) {
     let symbol = AskBidSpreadMsg::get_symbol(msg).to_uppercase();
+    if should_skip_symbol(&symbol) {
+        return;
+    }
     let bid = AskBidSpreadMsg::get_bid_price(msg);
     let ask = AskBidSpreadMsg::get_ask_price(msg);
     let ts = AskBidSpreadMsg::get_timestamp(msg);
@@ -422,6 +444,9 @@ fn maybe_push_sr(
     series_capacity: &Arc<AtomicUsize>,
 ) {
     if !quotes.spot.ready || !quotes.swap.ready {
+        return;
+    }
+    if should_skip_symbol(symbol) {
         return;
     }
     let spot_bid = quotes.spot.bid;
@@ -461,6 +486,101 @@ fn get_or_insert_series(series_map: &SeriesMap, key: &str, capacity: usize) -> A
     }
 }
 
+fn spawn_ringbuffer_monitor(series_map: Arc<SeriesMap>, period: Duration) {
+    let period = if period.is_zero() {
+        Duration::from_secs(300)
+    } else {
+        period
+    };
+
+    tokio::spawn(async move {
+        let mut ticker = interval(period);
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+
+            let mut entries: Vec<(String, usize, usize)> = Vec::new();
+            let mut total_bidask = 0usize;
+            let mut total_askbid = 0usize;
+
+            for entry in series_map.iter() {
+                let key = entry.key().clone();
+                let series = entry.value().clone();
+                let bidask_len = series.bidask.len();
+                let askbid_len = series.askbid.len();
+                total_bidask += bidask_len;
+                total_askbid += askbid_len;
+                entries.push((key, bidask_len, askbid_len));
+            }
+
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            let table = build_three_line_table(&entries);
+            let rss_kb = process_memory_kb().unwrap_or(0);
+
+            info!(
+                "rolling_metrics: ringbuffer_snapshot rss_kb={} symbols={} total_bidask={} total_askbid={}\n{}",
+                rss_kb, entries.len(), total_bidask, total_askbid, table
+            );
+        }
+    });
+}
+
+fn process_memory_kb() -> Option<u64> {
+    let statm = fs::read_to_string("/proc/self/statm").ok()?;
+    let mut parts = statm.split_whitespace();
+    let _ = parts.next()?;
+    let rss_pages = parts.next()?.parse::<u64>().ok()?;
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if page_size <= 0 {
+        return None;
+    }
+    Some(rss_pages.saturating_mul(page_size as u64) / 1024)
+}
+
+fn build_three_line_table(entries: &[(String, usize, usize)]) -> String {
+    let headers = ["symbol", "bidask_len", "askbid_len"];
+    let mut widths = headers
+        .iter()
+        .map(|h| h.len())
+        .collect::<Vec<_>>();
+
+    for (symbol, bidask, askbid) in entries {
+        widths[0] = widths[0].max(symbol.len());
+        widths[1] = widths[1].max(bidask.to_string().len());
+        widths[2] = widths[2].max(askbid.to_string().len());
+    }
+
+    let format_row = |values: [&str; 3]| -> String {
+        let mut parts = Vec::with_capacity(3);
+        for (idx, value) in values.iter().enumerate() {
+            parts.push(format!("{:<width$}", value, width = widths[idx]));
+        }
+        parts.join("  ")
+    };
+
+    let header_line = format_row(headers);
+    let top_rule = "=".repeat(header_line.len());
+    let mid_rule = "-".repeat(header_line.len());
+    let bot_rule = "=".repeat(header_line.len());
+
+    let mut lines = Vec::with_capacity(entries.len() + 4);
+    lines.push(top_rule);
+    lines.push(header_line);
+    lines.push(mid_rule);
+
+    for (symbol, bidask, askbid) in entries {
+        let row = format_row([
+            symbol.as_str(),
+            &bidask.to_string(),
+            &askbid.to_string(),
+        ]);
+        lines.push(row);
+    }
+
+    lines.push(bot_rule);
+    lines.join("\n")
+}
+
 struct SymbolSyncStats {
     total: usize,
     added: usize,
@@ -475,7 +595,7 @@ async fn symbol_refresh_loop(
     series_map: Arc<SeriesMap>,
     series_capacity: Arc<AtomicUsize>,
 ) {
-    info!(
+    debug!(
         "rolling_metrics: symbol refresh loop started (swap={}, socket={}, interval={}s)",
         swap_exchange,
         symbol_socket,
@@ -529,7 +649,20 @@ async fn fetch_binance_futures_symbols(socket_dir: &str) -> Result<Vec<String>> 
         .filter(|entry| entry["type"].as_str() == Some("perpetual"))
         .filter_map(|entry| entry["symbol_id"].as_str())
         .filter(|sym| sym.to_ascii_lowercase().ends_with("usdt"))
-        .map(|sym| sym.to_uppercase())
+        .filter_map(|sym| {
+            let upper = sym.to_uppercase();
+            let base = upper.strip_suffix("USDT").unwrap_or(&upper);
+            let digit_prefix = base
+                .chars()
+                .take_while(|ch| ch.is_ascii_digit())
+                .count();
+            if digit_prefix >= 3 {
+                // 跳过自带乘数的合约（如 1000PEPEUSDT），与现货单位不一致。
+                None
+            } else {
+                Some(upper)
+            }
+        })
         .collect::<Vec<_>>();
     Ok(symbols)
 }
@@ -594,6 +727,74 @@ fn compute_askbid_sr(spot_ask: f64, swap_bid: f64) -> Option<f32> {
     }
 }
 
+fn should_skip_symbol(symbol: &str) -> bool {
+    if !symbol.ends_with("USDT") {
+        return false;
+    }
+    let base = symbol.strip_suffix("USDT").unwrap_or(symbol);
+    base.chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .count()
+        >= 3
+}
+
+fn describe_config_changes(prev: &RollingConfig, new: &RollingConfig) -> Option<String> {
+    let mut parts = Vec::new();
+    if prev.max_length != new.max_length {
+        parts.push(format!("max_length {}->{}", prev.max_length, new.max_length));
+    }
+    if prev.rolling_window != new.rolling_window {
+        parts.push(format!("rolling_window {}->{}", prev.rolling_window, new.rolling_window));
+    }
+    if prev.min_periods != new.min_periods {
+        parts.push(format!("min_periods {}->{}", prev.min_periods, new.min_periods));
+    }
+    if (prev.bidask_lower_quantile - new.bidask_lower_quantile).abs() > f32::EPSILON {
+        parts.push(format!(
+            "bidask_lower_quantile {:.6}-> {:.6}",
+            prev.bidask_lower_quantile, new.bidask_lower_quantile
+        ));
+    }
+    if (prev.bidask_upper_quantile - new.bidask_upper_quantile).abs() > f32::EPSILON {
+        parts.push(format!(
+            "bidask_upper_quantile {:.6}-> {:.6}",
+            prev.bidask_upper_quantile, new.bidask_upper_quantile
+        ));
+    }
+    if (prev.askbid_lower_quantile - new.askbid_lower_quantile).abs() > f32::EPSILON {
+        parts.push(format!(
+            "askbid_lower_quantile {:.6}-> {:.6}",
+            prev.askbid_lower_quantile, new.askbid_lower_quantile
+        ));
+    }
+    if (prev.askbid_upper_quantile - new.askbid_upper_quantile).abs() > f32::EPSILON {
+        parts.push(format!(
+            "askbid_upper_quantile {:.6}-> {:.6}",
+            prev.askbid_upper_quantile, new.askbid_upper_quantile
+        ));
+    }
+    if prev.refresh_sec != new.refresh_sec {
+        parts.push(format!("refresh_sec {}->{}", prev.refresh_sec, new.refresh_sec));
+    }
+    if prev.reload_param_sec != new.reload_param_sec {
+        parts.push(format!(
+            "reload_param_sec {}->{}",
+            prev.reload_param_sec, new.reload_param_sec
+        ));
+    }
+    if prev.output_hash_key != new.output_hash_key {
+        parts.push(format!(
+            "output_hash_key {}->{}",
+            prev.output_hash_key, new.output_hash_key
+        ));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(", "))
+    }
+}
+
 fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<ComputeResult>) {
     thread::spawn(move || {
         let client = loop {
@@ -618,11 +819,73 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
             }
         };
 
+        let mut initial_cleanup_done = false;
         while let Ok(result) = receiver.recv() {
-            if result.payloads.is_empty() {
+            if result.payloads.is_empty() && result.removals.is_empty() {
+                if !initial_cleanup_done {
+                    if let Ok(stale) =
+                        load_stale_fields(&mut conn, &result.output_key, &result.payloads)
+                    {
+                        initial_cleanup_done = true;
+                        if stale.is_empty() {
+                            continue;
+                        }
+                        if let Err(err) =
+                            write_hash_and_cleanup(&mut conn, &result.output_key, &[], &stale)
+                        {
+                            error!(
+                                "rolling_metrics: redis cleanup error: {err:?}, attempting reconnect"
+                            );
+                            loop {
+                                match client.get_connection() {
+                                    Ok(c) => {
+                                        conn = c;
+                                        break;
+                                    }
+                                    Err(err) => {
+                                        error!(
+                                            "rolling_metrics: reconnect redis failed: {err:?}, retrying in 5s"
+                                        );
+                                        thread::sleep(Duration::from_secs(5));
+                                    }
+                                }
+                            }
+                            let _ = write_hash_and_cleanup(
+                                &mut conn,
+                                &result.output_key,
+                                &[],
+                                &stale,
+                            );
+                        } else {
+                            info!(
+                                "rolling_metrics: initial cleanup removed {} fields from {}",
+                                stale.len(),
+                                result.output_key
+                            );
+                        }
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+            }
+            let mut removals = result.removals.clone();
+            if removals.is_empty() && !initial_cleanup_done {
+                if let Ok(stale) =
+                    load_stale_fields(&mut conn, &result.output_key, &result.payloads)
+                {
+                    removals.extend(stale);
+                }
+                initial_cleanup_done = true;
+            }
+
+            if result.payloads.is_empty() && removals.is_empty() {
                 continue;
             }
-            if let Err(err) = write_hash(&mut conn, &result) {
+
+            if let Err(err) =
+                write_hash_and_cleanup(&mut conn, &result.output_key, &result.payloads, &removals)
+            {
                 error!("rolling_metrics: redis write error: {err:?}, attempting reconnect");
                 loop {
                     match client.get_connection() {
@@ -638,11 +901,17 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
                         }
                     }
                 }
-                let _ = write_hash(&mut conn, &result);
+                let _ = write_hash_and_cleanup(
+                    &mut conn,
+                    &result.output_key,
+                    &result.payloads,
+                    &removals,
+                );
             } else {
                 info!(
-                    "rolling_metrics: wrote {} fields to {} (processed={}, skipped={}, duration={}ms)",
+                    "rolling_metrics: wrote {} fields, removed {} from {} (processed={}, skipped={}, duration={}ms)",
                     result.payloads.len(),
+                    removals.len(),
                     result.output_key,
                     result.stats.processed,
                     result.stats.skipped,
@@ -655,14 +924,54 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
     });
 }
 
-fn write_hash(conn: &mut redis::Connection, result: &ComputeResult) -> redis::RedisResult<()> {
-    let mut cmd = redis::cmd("HSET");
-    cmd.arg(&result.output_key);
-    for (field, value) in &result.payloads {
-        cmd.arg(field).arg(value);
+fn write_hash_and_cleanup(
+    conn: &mut redis::Connection,
+    output_key: &str,
+    payloads: &[(String, String)],
+    removals: &[String],
+) -> redis::RedisResult<()> {
+    if !payloads.is_empty() {
+        let mut cmd = redis::cmd("HSET");
+        cmd.arg(output_key);
+        for (field, value) in payloads {
+            cmd.arg(field).arg(value);
+        }
+        cmd.query::<()>(conn)?;
     }
-    cmd.query::<()>(conn)?;
+
+    if !removals.is_empty() {
+        let mut cmd = redis::cmd("HDEL");
+        cmd.arg(output_key);
+        for field in removals {
+            cmd.arg(field);
+        }
+        cmd.query::<()>(conn)?;
+    }
+
     Ok(())
+}
+
+fn load_stale_fields(
+    conn: &mut redis::Connection,
+    output_key: &str,
+    payloads: &[(String, String)],
+) -> redis::RedisResult<Vec<String>> {
+    let existing: Vec<String> = redis::cmd("HKEYS")
+        .arg(output_key)
+        .query(conn)
+        .unwrap_or_default();
+    if existing.is_empty() {
+        return Ok(Vec::new());
+    }
+    let active: std::collections::HashSet<&str> =
+        payloads.iter().map(|(field, _)| field.as_str()).collect();
+    let mut stale = Vec::new();
+    for field in existing {
+        if !active.contains(field.as_str()) {
+            stale.push(field);
+        }
+    }
+    Ok(stale)
 }
 
 fn setup_signal_handlers(token: &CancellationToken) -> Result<()> {

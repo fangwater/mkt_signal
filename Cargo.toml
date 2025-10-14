@@ -96,6 +96,7 @@ polars-time = "0.43.1"
 dashmap = "5.5"
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
+libc = "0.2"
 
 [features]
 default = []

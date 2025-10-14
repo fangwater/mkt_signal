@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use log::{info, warn};
+use log::{debug, info, warn};
 
 use crate::common::redis_client::RedisClient;
 
@@ -186,7 +186,7 @@ pub async fn load_config_from_redis(
             } else {
                 cfg.update_from_map(&map);
                 cfg.finalize();
-                info!(
+                debug!(
                     "加载 RollingConfig: max_length={} rolling_window={} min_periods={} refresh={}s reload={}s",
                     cfg.max_length, cfg.rolling_window, cfg.min_periods, cfg.refresh_sec, cfg.reload_param_sec
                 );
