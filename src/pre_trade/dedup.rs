@@ -97,7 +97,7 @@ pub fn key_execution_report(msg: &ExecutionReportMsg) -> u64 {
         msg.trade_id as u64,
         msg.update_id as u64,
         msg.event_time as u64,
-    ]) 
+    ])
 }
 
 pub fn key_order_trade_update(msg: &OrderTradeUpdateMsg) -> u64 {

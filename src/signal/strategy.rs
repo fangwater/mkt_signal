@@ -130,7 +130,7 @@ impl StrategyManager {
             if let Some(strategy) = self.strategies.get_mut(&strategy_id) {
                 strategy.hanle_period_clock(current_tp);
                 remove = !strategy.is_active();
-            } 
+            }
 
             if remove {
                 if self.strategies.remove(&strategy_id).is_some() {
@@ -153,5 +153,5 @@ impl StrategyManager {
         let lower_bits = (timestamp_us & 0x00FF_FFFF) as u32;
         let composed = ((strategy_type as u32) << 24) | lower_bits;
         composed as i32
-    } 
-} 
+    }
+}

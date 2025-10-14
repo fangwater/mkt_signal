@@ -343,7 +343,7 @@ impl BinancePmUmAccountManager {
                 .count()
         );
         Ok(snapshot)
-    } 
+    }
 
     fn sign_query(&self, query: &str) -> Result<String> {
         let mut mac = HmacSha256::new_from_slice(self.api_secret.as_bytes())

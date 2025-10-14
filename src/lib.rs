@@ -6,6 +6,7 @@ pub mod mkt_pub;
 pub mod parser;
 pub mod portfolio_margin;
 pub mod pre_trade;
+pub mod rolling_metrics;
 pub mod signal;
 pub mod trade_engine;
 

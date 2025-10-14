@@ -6,11 +6,11 @@ use mkt_signal::pre_trade::{
     order_manager::{Order, OrderType, Side},
     store::{RedisStore, StrategyRecord},
 };
-use redis::AsyncCommands; 
-use serde_json::json; 
+use redis::AsyncCommands;
+use serde_json::json;
 
 #[derive(Parser, Debug)]
-#[command(about = "打印 pre_trade Redis 持久化的订单与策略快照", version)] 
+#[command(about = "打印 pre_trade Redis 持久化的订单与策略快照", version)]
 struct Args {
     /// Redis URL，例如 redis://:pwd@127.0.0.1:6379/0
     #[arg(long = "redis-url", default_value = "redis://127.0.0.1:6379/0")]
@@ -24,8 +24,8 @@ struct Args {
     )]
     prefix: String,
 
-    /// 以 JSON 原样输出 orders/strategies 
-    #[arg(long, help = "输出原始 JSON 数据")] 
+    /// 以 JSON 原样输出 orders/strategies
+    #[arg(long, help = "输出原始 JSON 数据")]
     raw: bool,
 }
 
