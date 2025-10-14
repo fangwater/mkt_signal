@@ -8,6 +8,7 @@
   - MAX_LENGTH：环形缓冲容量（条数）
   - ROLLING_WINDOW：每次计算使用的滑窗长度
   - MIN_PERIODS：分位计算的最小样本数量
+  - RESAMPLE_INTERVAL_MS：价差率重采样周期（毫秒）
   - bidask_lower_quantile、bidask_upper_quantile
   - askbid_lower_quantile、askbid_upper_quantile
   - refresh_sec：分位重算周期（秒）
@@ -31,6 +32,7 @@ DEFAULTS = {
     "MAX_LENGTH": 150_000,
     "ROLLING_WINDOW": 100_000,
     "MIN_PERIODS": 90_000,
+    "RESAMPLE_INTERVAL_MS": 1_000,
     "bidask_lower_quantile": 0.05,
     "bidask_upper_quantile": 0.70,
     "askbid_lower_quantile": 0.30,
@@ -61,6 +63,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-length", type=int)
     p.add_argument("--rolling-window", type=int)
     p.add_argument("--min-periods", type=int)
+    p.add_argument("--resample-interval-ms", type=int)
     p.add_argument("--bidask-lower-quantile", type=float)
     p.add_argument("--bidask-upper-quantile", type=float)
     p.add_argument("--askbid-lower-quantile", type=float)
@@ -80,6 +83,8 @@ def build_payload(args: argparse.Namespace) -> Dict[str, str]:
         payload["ROLLING_WINDOW"] = args.rolling_window
     if args.min_periods is not None:
         payload["MIN_PERIODS"] = args.min_periods
+    if args.resample_interval_ms is not None:
+        payload["RESAMPLE_INTERVAL_MS"] = max(1, args.resample_interval_ms)
     if args.bidask_lower_quantile is not None:
         payload["bidask_lower_quantile"] = args.bidask_lower_quantile
     if args.bidask_upper_quantile is not None:
@@ -123,4 +128,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

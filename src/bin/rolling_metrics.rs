@@ -25,6 +25,7 @@ use mkt_signal::common::iceoryx_subscriber::{
 };
 use mkt_signal::common::mkt_msg::AskBidSpreadMsg;
 use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
+use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::rolling_metrics::config::{
     load_config_from_redis, RollingConfig, DEFAULT_CONFIG_HASH_KEY, DEFAULT_OUTPUT_HASH_KEY,
 };
@@ -84,10 +85,165 @@ impl QuoteState {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 struct SymbolQuotes {
     spot: QuoteState,
     swap: QuoteState,
+    resample: ResampleState,
+}
+
+impl Default for SymbolQuotes {
+    fn default() -> Self {
+        Self {
+            spot: QuoteState::default(),
+            swap: QuoteState::default(),
+            resample: ResampleState::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ResampleState {
+    interval_ms: u64,
+    current_bucket_start: Option<i64>,
+    bidask_samples: Vec<f32>,
+    askbid_samples: Vec<f32>,
+    last_avg_bidask: Option<f32>,
+    last_avg_askbid: Option<f32>,
+    last_emitted_bucket: Option<i64>,
+}
+
+impl Default for ResampleState {
+    fn default() -> Self {
+        Self {
+            interval_ms: 0,
+            current_bucket_start: None,
+            bidask_samples: Vec::with_capacity(8),
+            askbid_samples: Vec::with_capacity(8),
+            last_avg_bidask: None,
+            last_avg_askbid: None,
+            last_emitted_bucket: None,
+        }
+    }
+}
+
+impl ResampleState {
+    fn record(
+        &mut self,
+        interval_ms: u64,
+        ts_ms: i64,
+        bidask_sr: f32,
+        askbid_sr: f32,
+        series: &SymbolSeries,
+    ) {
+        let interval_ms = interval_ms.max(1);
+        self.ensure_interval(interval_ms, series);
+
+        let interval_i64 = interval_ms.min(i64::MAX as u64) as i64;
+        let bucket_start = align_timestamp(ts_ms, interval_i64);
+
+        if let Some(current_start) = self.current_bucket_start {
+            if bucket_start < current_start {
+                // 过时消息，直接忽略以避免污染
+                return;
+            }
+            if bucket_start > current_start {
+                self.flush_current(series, current_start);
+                let mut next_start = current_start.saturating_add(interval_i64);
+                while next_start < bucket_start {
+                    self.emit_ffill(series, next_start);
+                    next_start = next_start.saturating_add(interval_i64);
+                }
+                self.current_bucket_start = Some(bucket_start);
+            }
+        } else {
+            self.current_bucket_start = Some(bucket_start);
+        }
+
+        self.bidask_samples.push(bidask_sr);
+        self.askbid_samples.push(askbid_sr);
+    }
+
+    fn flush_due(&mut self, interval_ms: u64, now_ms: i64, series: &SymbolSeries) {
+        if self.current_bucket_start.is_none()
+            || self.last_avg_bidask.is_none() && self.bidask_samples.is_empty()
+        {
+            self.ensure_interval(interval_ms.max(1), series);
+            return;
+        }
+
+        let interval_ms = interval_ms.max(1);
+        self.ensure_interval(interval_ms, series);
+        let interval_i64 = interval_ms.min(i64::MAX as u64) as i64;
+
+        loop {
+            let current_start = match self.current_bucket_start {
+                Some(start) => start,
+                None => break,
+            };
+            if now_ms < current_start.saturating_add(interval_i64) {
+                break;
+            }
+            self.flush_current(series, current_start);
+            let next_start = current_start.saturating_add(interval_i64);
+            self.current_bucket_start = Some(next_start);
+        }
+    }
+
+    fn ensure_interval(&mut self, interval_ms: u64, series: &SymbolSeries) {
+        let interval_ms = interval_ms.max(1);
+        if self.interval_ms == interval_ms {
+            return;
+        }
+        if self.interval_ms != 0 {
+            if let Some(bucket) = self.current_bucket_start {
+                self.flush_current(series, bucket);
+            }
+        }
+        self.interval_ms = interval_ms;
+        self.current_bucket_start = None;
+        self.bidask_samples.clear();
+        self.askbid_samples.clear();
+    }
+
+    fn flush_current(&mut self, series: &SymbolSeries, bucket_start: i64) {
+        if !self.bidask_samples.is_empty() && !self.askbid_samples.is_empty() {
+            let avg_bidask = average(&self.bidask_samples);
+            let avg_askbid = average(&self.askbid_samples);
+            series.bidask.push(avg_bidask);
+            series.askbid.push(avg_askbid);
+            self.last_avg_bidask = Some(avg_bidask);
+            self.last_avg_askbid = Some(avg_askbid);
+            self.last_emitted_bucket = Some(bucket_start);
+        } else {
+            self.emit_ffill(series, bucket_start);
+        }
+        self.bidask_samples.clear();
+        self.askbid_samples.clear();
+    }
+
+    fn emit_ffill(&mut self, series: &SymbolSeries, bucket_start: i64) {
+        if let (Some(bidask), Some(askbid)) = (self.last_avg_bidask, self.last_avg_askbid) {
+            series.bidask.push(bidask);
+            series.askbid.push(askbid);
+            self.last_emitted_bucket = Some(bucket_start);
+        }
+    }
+}
+
+fn align_timestamp(ts_ms: i64, interval: i64) -> i64 {
+    if interval <= 0 {
+        return ts_ms;
+    }
+    (ts_ms / interval) * interval
+}
+
+fn average(values: &[f32]) -> f32 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let sum: f64 = values.iter().map(|v| *v as f64).sum();
+    (sum / values.len() as f64) as f32
 }
 
 #[tokio::main]
@@ -110,10 +266,11 @@ async fn main() -> Result<()> {
     }
     config.finalize();
     info!(
-        "rolling_metrics: config init (max_length={}, window={}, min_periods={}, refresh={}s, reload={}s, output={})",
+        "rolling_metrics: config init (max_length={}, window={}, min_periods={}, resample={}ms, refresh={}s, reload={}s, output={})",
         config.max_length,
         config.rolling_window,
         config.min_periods,
+        config.resample_interval_ms,
         config.refresh_sec,
         config.reload_param_sec,
         config.output_hash_key
@@ -186,7 +343,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    run_reader_loop(args, series_map, series_capacity).await?;
+    run_reader_loop(args, series_map, series_capacity, Arc::clone(&config_lock)).await?;
     Ok(())
 }
 
@@ -320,6 +477,7 @@ async fn run_reader_loop(
     args: Args,
     series_map: Arc<SeriesMap>,
     series_capacity: Arc<AtomicUsize>,
+    config: Arc<RwLock<RollingConfig>>,
 ) -> Result<()> {
     let mut subscriber = MultiChannelSubscriber::new(&args.iceoryx_node)?;
     subscriber.subscribe_channels(vec![
@@ -355,16 +513,43 @@ async fn run_reader_loop(
         for msg in
             subscriber.poll_channel(&args.spot_exchange, &ChannelType::AskBidSpread, Some(64))
         {
-            process_spot_msg(&msg, &prefix, &mut quotes, &series_map, &series_capacity);
+            process_spot_msg(
+                &msg,
+                &prefix,
+                &mut quotes,
+                &series_map,
+                &series_capacity,
+                &config,
+            );
         }
 
         for msg in
             subscriber.poll_channel(&args.swap_exchange, &ChannelType::AskBidSpread, Some(64))
         {
-            process_swap_msg(&msg, &prefix, &mut quotes, &series_map, &series_capacity);
+            process_swap_msg(
+                &msg,
+                &prefix,
+                &mut quotes,
+                &series_map,
+                &series_capacity,
+                &config,
+            );
         }
 
         let current_total = series_map.len();
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let interval_ms = {
+            let guard = config.read();
+            guard.resample_interval_ms.max(1)
+        };
+        let capacity_snapshot = series_capacity.load(Ordering::SeqCst).max(1);
+        for (symbol, state) in quotes.iter_mut() {
+            let key = format!("{}::{}", prefix, symbol);
+            let series = get_or_insert_series(&*series_map, &key, capacity_snapshot);
+            state
+                .resample
+                .flush_due(interval_ms, now_ms, series.as_ref());
+        }
         if Instant::now() >= next_log {
             info!(
                 "rolling_metrics: symbols tracked={}, registry={}",
@@ -395,6 +580,7 @@ fn process_spot_msg(
     quotes: &mut HashMap<String, SymbolQuotes>,
     series_map: &Arc<SeriesMap>,
     series_capacity: &Arc<AtomicUsize>,
+    config: &Arc<RwLock<RollingConfig>>,
 ) {
     let symbol = AskBidSpreadMsg::get_symbol(msg).to_uppercase();
     if should_skip_symbol(&symbol) {
@@ -408,7 +594,7 @@ fn process_spot_msg(
     }
     let entry = quotes.entry(symbol.clone()).or_default();
     entry.spot.update(bid, ask, ts);
-    maybe_push_sr(prefix, &symbol, entry, series_map, series_capacity);
+    maybe_push_sr(prefix, &symbol, entry, series_map, series_capacity, config);
 }
 
 fn process_swap_msg(
@@ -417,6 +603,7 @@ fn process_swap_msg(
     quotes: &mut HashMap<String, SymbolQuotes>,
     series_map: &Arc<SeriesMap>,
     series_capacity: &Arc<AtomicUsize>,
+    config: &Arc<RwLock<RollingConfig>>,
 ) {
     let symbol = AskBidSpreadMsg::get_symbol(msg).to_uppercase();
     if should_skip_symbol(&symbol) {
@@ -433,15 +620,16 @@ fn process_swap_msg(
     let key = format!("{}::{}", prefix, &symbol);
     let capacity = series_capacity.load(Ordering::SeqCst).max(1);
     let _ = get_or_insert_series(&*series_map, &key, capacity);
-    maybe_push_sr(prefix, &symbol, entry, series_map, series_capacity);
+    maybe_push_sr(prefix, &symbol, entry, series_map, series_capacity, config);
 }
 
 fn maybe_push_sr(
     prefix: &str,
     symbol: &str,
-    quotes: &SymbolQuotes,
+    quotes: &mut SymbolQuotes,
     series_map: &Arc<SeriesMap>,
     series_capacity: &Arc<AtomicUsize>,
+    config: &Arc<RwLock<RollingConfig>>,
 ) {
     if !quotes.spot.ready || !quotes.swap.ready {
         return;
@@ -459,11 +647,18 @@ fn maybe_push_sr(
         return;
     };
 
+    let ts_ms = (get_timestamp_us() / 1000) as i64;
+    let interval_ms = {
+        let guard = config.read();
+        guard.resample_interval_ms.max(1)
+    };
+
     let key = format!("{}::{}", prefix, symbol);
     let capacity = series_capacity.load(Ordering::SeqCst).max(1);
     let series = get_or_insert_series(&*series_map, &key, capacity);
-    series.bidask.push(bidask_sr);
-    series.askbid.push(askbid_sr);
+    quotes
+        .resample
+        .record(interval_ms, ts_ms, bidask_sr, askbid_sr, series.as_ref());
 }
 
 fn get_or_insert_series(series_map: &SeriesMap, key: &str, capacity: usize) -> Arc<SymbolSeries> {
@@ -539,10 +734,7 @@ fn process_memory_kb() -> Option<u64> {
 
 fn build_three_line_table(entries: &[(String, usize, usize)]) -> String {
     let headers = ["symbol", "bidask_len", "askbid_len"];
-    let mut widths = headers
-        .iter()
-        .map(|h| h.len())
-        .collect::<Vec<_>>();
+    let mut widths = headers.iter().map(|h| h.len()).collect::<Vec<_>>();
 
     for (symbol, bidask, askbid) in entries {
         widths[0] = widths[0].max(symbol.len());
@@ -569,11 +761,7 @@ fn build_three_line_table(entries: &[(String, usize, usize)]) -> String {
     lines.push(mid_rule);
 
     for (symbol, bidask, askbid) in entries {
-        let row = format_row([
-            symbol.as_str(),
-            &bidask.to_string(),
-            &askbid.to_string(),
-        ]);
+        let row = format_row([symbol.as_str(), &bidask.to_string(), &askbid.to_string()]);
         lines.push(row);
     }
 
@@ -652,10 +840,7 @@ async fn fetch_binance_futures_symbols(socket_dir: &str) -> Result<Vec<String>> 
         .filter_map(|sym| {
             let upper = sym.to_uppercase();
             let base = upper.strip_suffix("USDT").unwrap_or(&upper);
-            let digit_prefix = base
-                .chars()
-                .take_while(|ch| ch.is_ascii_digit())
-                .count();
+            let digit_prefix = base.chars().take_while(|ch| ch.is_ascii_digit()).count();
             if digit_prefix >= 3 {
                 // 跳过自带乘数的合约（如 1000PEPEUSDT），与现货单位不一致。
                 None
@@ -732,22 +917,34 @@ fn should_skip_symbol(symbol: &str) -> bool {
         return false;
     }
     let base = symbol.strip_suffix("USDT").unwrap_or(symbol);
-    base.chars()
-        .take_while(|ch| ch.is_ascii_digit())
-        .count()
-        >= 3
+    base.chars().take_while(|ch| ch.is_ascii_digit()).count() >= 3
 }
 
 fn describe_config_changes(prev: &RollingConfig, new: &RollingConfig) -> Option<String> {
     let mut parts = Vec::new();
     if prev.max_length != new.max_length {
-        parts.push(format!("max_length {}->{}", prev.max_length, new.max_length));
+        parts.push(format!(
+            "max_length {}->{}",
+            prev.max_length, new.max_length
+        ));
     }
     if prev.rolling_window != new.rolling_window {
-        parts.push(format!("rolling_window {}->{}", prev.rolling_window, new.rolling_window));
+        parts.push(format!(
+            "rolling_window {}->{}",
+            prev.rolling_window, new.rolling_window
+        ));
     }
     if prev.min_periods != new.min_periods {
-        parts.push(format!("min_periods {}->{}", prev.min_periods, new.min_periods));
+        parts.push(format!(
+            "min_periods {}->{}",
+            prev.min_periods, new.min_periods
+        ));
+    }
+    if prev.resample_interval_ms != new.resample_interval_ms {
+        parts.push(format!(
+            "resample_interval_ms {}->{}",
+            prev.resample_interval_ms, new.resample_interval_ms
+        ));
     }
     if (prev.bidask_lower_quantile - new.bidask_lower_quantile).abs() > f32::EPSILON {
         parts.push(format!(
@@ -774,7 +971,10 @@ fn describe_config_changes(prev: &RollingConfig, new: &RollingConfig) -> Option<
         ));
     }
     if prev.refresh_sec != new.refresh_sec {
-        parts.push(format!("refresh_sec {}->{}", prev.refresh_sec, new.refresh_sec));
+        parts.push(format!(
+            "refresh_sec {}->{}",
+            prev.refresh_sec, new.refresh_sec
+        ));
     }
     if prev.reload_param_sec != new.reload_param_sec {
         parts.push(format!(
@@ -850,12 +1050,8 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
                                     }
                                 }
                             }
-                            let _ = write_hash_and_cleanup(
-                                &mut conn,
-                                &result.output_key,
-                                &[],
-                                &stale,
-                            );
+                            let _ =
+                                write_hash_and_cleanup(&mut conn, &result.output_key, &[], &stale);
                         } else {
                             info!(
                                 "rolling_metrics: initial cleanup removed {} fields from {}",

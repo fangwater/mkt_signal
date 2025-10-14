@@ -13,8 +13,8 @@ use mkt_signal::exchange::Exchange;
 async fn main() -> Result<()> {
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");
-    } 
-    env_logger::init(); 
+    }
+    env_logger::init();
 
     let cfg_path = std::env::var("VIZ_CFG").unwrap_or_else(|_| "config/viz.toml".to_string());
     let cfg = VizCfg::load(&cfg_path).await?;

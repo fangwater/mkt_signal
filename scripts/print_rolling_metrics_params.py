@@ -6,6 +6,7 @@
 
 字段示例：
   MAX_LENGTH, ROLLING_WINDOW, MIN_PERIODS,
+  RESAMPLE_INTERVAL_MS,
   bidask_lower_quantile, bidask_upper_quantile,
   askbid_lower_quantile, askbid_upper_quantile,
   refresh_sec, reload_param_sec, output_hash_key.
@@ -59,6 +60,7 @@ PARAM_COMMENTS: Dict[str, str] = {
     "MAX_LENGTH": "环形缓冲最大容量",
     "ROLLING_WINDOW": "分位点计算使用的样本数",
     "MIN_PERIODS": "触发计算的最小样本数",
+    "RESAMPLE_INTERVAL_MS": "价差率重采样周期（毫秒）",
     "bidask_lower_quantile": "低于阈值→现货开多 / 合约开空（开仓）",
     "bidask_upper_quantile": "高于阈值→现货开空 / 合约开多（平仓）",
     "askbid_upper_quantile": "高于阈值→现货开空 / 合约开多（开仓）",

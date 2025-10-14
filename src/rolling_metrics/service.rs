@@ -128,10 +128,7 @@ pub fn spawn_compute_thread(
                 }
             }
 
-            let removals: Vec<String> = last_keys
-                .difference(&current_keys)
-                .cloned()
-                .collect();
+            let removals: Vec<String> = last_keys.difference(&current_keys).cloned().collect();
             last_keys = current_keys;
 
             let duration = start.elapsed();
@@ -161,7 +158,7 @@ pub fn spawn_compute_thread(
             }
 
             let interval = cfg_snapshot.interval();
-            sleep_precise(interval, start.elapsed());
+            sleep_until(interval, start);
         }
     });
 }
@@ -211,11 +208,13 @@ fn build_entry(
         *skipped += 1;
     }
 
+    let sample_size = bidask_count.min(askbid_count);
+
     let payload = ThresholdPayload {
         symbol_pair,
         base_symbol,
         update_tp: now_ms,
-        sample_size: bidask_count.min(askbid_count),
+        sample_size,
         bidask_sr: latest_bidask.and_then(to_option_f64),
         askbid_sr: latest_askbid.and_then(to_option_f64),
         bidask_lower: bidask_lower.and_then(to_option_f64),
@@ -244,16 +243,17 @@ fn to_option_f64(value: f32) -> Option<f64> {
     }
 }
 
-fn sleep_precise(period: Duration, elapsed: Duration) {
-    if elapsed >= period {
+fn sleep_until(period: Duration, started: Instant) {
+    if period.is_zero() {
         return;
     }
-    let remaining = period - elapsed;
-    if remaining > Duration::from_millis(5) {
-        thread::sleep(remaining - Duration::from_millis(5));
-    }
-    let start = Instant::now();
-    while start.elapsed() < remaining {
-        std::hint::spin_loop();
+    let deadline = started + period;
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+        let remaining = deadline - now;
+        thread::sleep(remaining.min(Duration::from_secs(1)));
     }
 }

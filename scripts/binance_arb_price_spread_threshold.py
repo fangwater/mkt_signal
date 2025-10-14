@@ -2,13 +2,13 @@
 # -*- coding: utf-8 -*-
 
 """
-Import binance_arb_price_spread_threshold into Redis (HASH) from aggregated keys.
+Import binance_arb_price_spread_threshold into Redis (HASH) using rolling_metrics thresholds.
 
 Behavior
-  - Scan Redis keys like `binance:*`, pick only aggregated entries `binance:SYMBOL` (two segments),
-    excluding suffixes like `:spot_bookticker` / `:swap_bookticker`.
-  - Parse their JSON payloads (tolerate `NaN` by converting to null when possible), and for each symbol keep:
-      ts (milliseconds), bidask_lower, bidask_upper, askbid_lower, askbid_upper (source fields)
+  - Read Redis HASH `rolling_metrics_thresholds` (configurable via --rolling-key).
+  - Filter rows by the hard-coded symbol allowlist `SYMBOL_ALLOWLIST`.
+  - Parse JSON payloads to extract:
+      update_tp (timestamp in milliseconds), bidask_lower, bidask_upper, askbid_lower, askbid_upper.
   - Filter rule: if any bound is NaN/None/non-finite OR equals 0 (0/0.0/-0.0), skip that symbol.
   - Write results as a Redis HASH at key `binance_arb_price_spread_threshold` (configurable via --write-key),
     field = symbol, value = compact JSON with fields:
@@ -18,12 +18,10 @@ Behavior
   - Optionally clean stale fields from the HASH.
 
 CLI Examples
-  - Default:
+  - Typical usage:
       python scripts/binance_arb_price_spread_threshold.py
-  - Custom Redis URL and no-clean:
-      python scripts/binance_arb_price_spread_threshold.py --redis-url redis://:pwd@127.0.0.1:6379/0 --no-clean
-  - Only specific symbols:
-      python scripts/binance_arb_price_spread_threshold.py --symbols ADAUSDT ETHUSDT
+  - Custom rolling HASH with dry-run:
+      python scripts/binance_arb_price_spread_threshold.py --rolling-key rolling_metrics_thresholds_backup --dry-run
   - Dry run (compute but do not write):
       python scripts/binance_arb_price_spread_threshold.py --dry-run
 """
@@ -34,8 +32,59 @@ import argparse
 import json
 import os
 import sys
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Tuple, Optional, Set
 import math
+
+SYMBOL_ALLOWLIST: List[str] = [
+    # 8h symbols
+    "HIGHUSDT",
+    "EGLDUSDT",
+    "SFPUSDT",
+    "IOTXUSDT",
+    "ZENUSDT",
+    "COTIUSDT",
+    "ZILUSDT",
+    "SUSHIUSDT",
+    "MINAUSDT",
+    "ENJUSDT",
+    "KSMUSDT",
+    "VETUSDT",
+    "SXPUSDT",
+    "BICOUSDT",
+    "C98USDT",
+    "CHRUSDT",
+    "UNIUSDT",
+    "NEOUSDT",
+    "CELOUSDT",
+    "KAVAUSDT",
+    "ASTRUSDT",
+    # 4h symbols
+    "HEIUSDT",
+    "NFPUSDT",
+    "TNSRUSDT",
+    "SANTOSUSDT",
+    "FLUXUSDT",
+    "KDAUSDT",
+    "BEAMXUSDT",
+    "AUCTIONUSDT",
+    "AIUSDT",
+    "INITUSDT",
+    "A2ZUSDT",
+    "USTCUSDT",
+    "SAGAUSDT",
+    "SLPUSDT",
+    "VANRYUSDT",
+    "WCTUSDT",
+    "AXLUSDT",
+    "JTOUSDT",
+    "TWTUSDT",
+    "PUMPUSDT",
+    "MANTAUSDT",
+    "MEMEUSDT",
+    "ILVUSDT",
+    "ORCAUSDT",
+    "SUNUSDT",
+]
 
 
 def try_import_redis():
@@ -47,117 +96,153 @@ def try_import_redis():
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Import binance_arb_price_spread_threshold from binance:* aggregated keys")
+    p = argparse.ArgumentParser(description="Import binance_arb_price_spread_threshold from rolling_metrics thresholds")
     p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
     p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
     p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
     p.add_argument("--db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
     p.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
-    p.add_argument("--pattern", default="binance:*", help="Key pattern to scan (default: binance:*)")
-    p.add_argument(
-        "--exclude-suffixes",
-        nargs="*",
-        default=[":spot_bookticker", ":swap_bookticker"],
-        help="Key suffixes to exclude",
-    )
     p.add_argument("--write-key", default="binance_arb_price_spread_threshold")
-    p.add_argument("--symbols", nargs="*", help="Only include these symbols")
+    p.add_argument("--rolling-key", default="rolling_metrics_thresholds", help="Redis HASH key providing rolling metrics thresholds")
     p.add_argument("--dry-run", action="store_true", help="Do not write to Redis")
     p.add_argument("--no-clean", action="store_true", help="Do not remove stale fields from HASH")
     return p.parse_args()
 
 
-def is_invalid_bound(x: object) -> bool:
-    """Return True if value is invalid for import.
-
-    Invalid when:
-      - None / missing
-      - cannot be parsed as float
-      - is NaN / Infinity / -Infinity (non-finite)
-      - equals zero (0.0)
-    """
-    if x is None:
-        return True
+def normalize_bound(name: str, value: object) -> Tuple[Optional[float], Optional[str]]:
+    if value is None:
+        return None, f"{name} 缺失"
     try:
-        fx = float(x)
+        fx = float(value)
     except Exception:
-        return True
-    # NaN or non-finite
+        return None, f"{name} 非数值({value})"
     if math.isnan(fx) or not math.isfinite(fx):
-        return True
-    # zero-like (includes -0.0)
-    return fx == 0.0
+        return None, f"{name} 非有限数({fx})"
+    if fx == 0.0:
+        return None, f"{name} 为0"
+    return fx, None
 
 
-def iter_from_redis(rds, pattern: str, exclude_suffixes: List[str], symbols: Optional[List[str]]) -> Iterable[Tuple[str, Dict]]:
-    for key in rds.scan_iter(match=pattern):
-        if isinstance(key, bytes):
-            key = key.decode("utf-8", "ignore")
-        if any(key.endswith(suf) for suf in exclude_suffixes):
-            continue
-        parts = key.split(":")
-        if len(parts) != 2:
-            continue
-        _prefix, sym = parts
-        if symbols and sym not in symbols:
-            continue
-        raw = rds.get(key)
-        if raw is None:
-            continue
-        if isinstance(raw, bytes):
-            raw = raw.decode("utf-8", "ignore")
-        try:
-            obj = json.loads(raw)
-        except json.JSONDecodeError:
-            safe = raw.replace("NaN", "null")
-            obj = json.loads(safe)
-        yield sym, obj
-
-
-def build_rows(sym_to_obj: Dict[str, Dict]) -> Dict[str, Dict]:
+def collect_rows_from_rolling(
+    rds,
+    rolling_key: str,
+    symbols: List[str],
+) -> Tuple[Dict[str, Dict], List[str], List[str], Dict[str, str]]:
     out: Dict[str, Dict] = {}
-    for sym, obj in sym_to_obj.items():
-        b_lower = obj.get("bidask_lower")
-        b_upper = obj.get("bidask_upper")
-        a_lower = obj.get("askbid_lower")
-        a_upper = obj.get("askbid_upper")
-        # Skip if any bound is invalid (NaN/None/non-finite) or equals zero
-        if (
-            is_invalid_bound(b_lower)
-            or is_invalid_bound(b_upper)
-            or is_invalid_bound(a_lower)
-            or is_invalid_bound(a_upper)
-        ):
-            continue
-        ts = None
+    symbol_set = {s.upper() for s in symbols}
+    success: List[str] = []
+    missing: List[str] = []
+    invalid: Dict[str, str] = {}
+
+    try:
+        data = rds.hgetall(rolling_key)
+    except Exception as exc:
+        print(f"Failed to read rolling HASH {rolling_key}: {exc}", file=sys.stderr)
+        return out, success, symbols.copy(), invalid
+
+    entry_map: Dict[str, Dict] = {}
+    for field, raw in data.items():
+        key = field.decode("utf-8", "ignore") if isinstance(field, bytes) else str(field)
+        payload = raw.decode("utf-8", "ignore") if isinstance(raw, bytes) else str(raw)
         try:
-            ts = int(obj.get("ts")) if obj.get("ts") is not None else None
+            obj = json.loads(payload)
+        except json.JSONDecodeError:
+            safe = payload.replace("NaN", "null")
+            obj = json.loads(safe)
+        if not isinstance(obj, dict):
+            continue
+
+        base_symbol = (
+            obj.get("base_symbol")
+            or obj.get("symbol")
+            or key.split("::")[-1]
+        )
+        if not base_symbol:
+            continue
+        normalized_symbol = base_symbol.upper()
+        if normalized_symbol in symbol_set:
+            entry_map[normalized_symbol] = obj
+
+    for symbol in symbols:
+        sym_upper = symbol.upper()
+        obj = entry_map.get(sym_upper)
+        if obj is None:
+            missing.append(symbol)
+            continue
+
+        b_lower, err = normalize_bound("bidask_lower", obj.get("bidask_lower"))
+        if err:
+            invalid[symbol] = err
+            continue
+        b_upper, err = normalize_bound("bidask_upper", obj.get("bidask_upper"))
+        if err:
+            invalid[symbol] = err
+            continue
+        a_lower, err = normalize_bound("askbid_lower", obj.get("askbid_lower"))
+        if err:
+            invalid[symbol] = err
+            continue
+        a_upper, err = normalize_bound("askbid_upper", obj.get("askbid_upper"))
+        if err:
+            invalid[symbol] = err
+            continue
+
+        ts_val = obj.get("update_tp")
+        if ts_val is None:
+            ts_val = obj.get("ts")
+        try:
+            ts = int(ts_val) if ts_val is not None else None
         except Exception:
             ts = None
-        out[sym] = {
-            "symbol": sym,
+
+        out[sym_upper] = {
+            "symbol": sym_upper,
             "update_tp": ts,
             "bidask_sr_open_threshold": b_lower,
             "bidask_sr_close_threshold": b_upper,
             "askbid_sr_open_threshold": a_lower,
             "askbid_sr_close_threshold": a_upper,
         }
-    return out
+        success.append(symbol)
+
+    return out, success, missing, invalid
 
 
-def write_hash(rds, key: str, rows: Dict[str, Dict], clean: bool) -> None:
+def print_summary(success: List[str], missing: List[str], invalid: Dict[str, str]) -> None:
+    if success:
+        print("成功导入符号: " + ", ".join(success))
+    if missing:
+        print("缺少rolling记录: " + ", ".join(missing))
+    if invalid:
+        print("阈值不合法的符号:")
+        for sym in invalid:
+            print(f"  - {sym}: {invalid[sym]}")
+
+
+def determine_stale_symbols(rds, key: str, new_symbols: Set[str]) -> List[str]:
+    try:
+        existing = rds.hkeys(key)
+    except Exception:
+        return []
+    existing_syms = set(
+        k.decode("utf-8", "ignore") if isinstance(k, bytes) else str(k) for k in existing
+    )
+    return sorted(existing_syms - new_symbols)
+
+
+def write_hash(
+    rds,
+    key: str,
+    rows: Dict[str, Dict],
+    clean: bool,
+    stale_symbols: List[str],
+) -> None:
     pipe = rds.pipeline(transaction=False)
     for sym, payload in rows.items():
         pipe.hset(key, sym, json.dumps(payload, ensure_ascii=False, separators=(',', ':')))
     if clean:
-        try:
-            existing = rds.hkeys(key)
-            existing_syms = set(k.decode('utf-8', 'ignore') if isinstance(k, bytes) else k for k in existing)
-            stale = list(existing_syms - set(rows.keys()))
-            if stale:
-                pipe.hdel(key, *stale)
-        except Exception:
-            pass
+        if stale_symbols:
+            pipe.hdel(key, *stale_symbols)
     pipe.execute()
 
 
@@ -172,18 +257,46 @@ def main() -> int:
         host=args.host, port=args.port, db=args.db, password=args.password
     )
 
-    sym_to_obj: Dict[str, Dict] = {}
-    for sym, obj in iter_from_redis(rds, args.pattern, args.exclude_suffixes, args.symbols):
-        sym_to_obj[sym] = obj
-
-    rows = build_rows(sym_to_obj)
-    if not rows:
-        print("没有可写入的 symbol（全部被零边界过滤）。")
-        return 0
+    rows, success, missing, invalid = collect_rows_from_rolling(
+        rds, args.rolling_key, SYMBOL_ALLOWLIST
+    )
+    print_summary(success, missing, invalid)
+    new_symbol_set = set(rows.keys())
+    stale_symbols = (
+        determine_stale_symbols(rds, args.write_key, new_symbol_set)
+        if not args.no_clean
+        else []
+    )
+    if stale_symbols:
+        print("将清理 Redis 中以下符号: " + ", ".join(stale_symbols))
     if args.dry_run:
-        print(f"将写入 {len(rows)} 条到 HASH {args.write_key}（dry-run）")
+        if rows:
+            print(f"将写入 {len(rows)} 条到 HASH {args.write_key}（dry-run）")
+        if stale_symbols:
+            print(f"dry-run: 将清理 {len(stale_symbols)} 个字段")
+        if not rows:
+            print("没有可写入的 symbol（均未满足允许名单或被阈值过滤）。")
         return 0
-    write_hash(rds, args.write_key, rows, clean=(not args.no_clean))
+    if not rows:
+        if stale_symbols:
+            write_hash(
+                rds,
+                args.write_key,
+                rows,
+                clean=True,
+                stale_symbols=stale_symbols,
+            )
+            print(f"已清理 {len(stale_symbols)} 个字段，当前无有效阈值可写入。")
+        else:
+            print("没有可写入的 symbol（均未满足允许名单或被阈值过滤）。")
+        return 0
+    write_hash(
+        rds,
+        args.write_key,
+        rows,
+        clean=(not args.no_clean),
+        stale_symbols=stale_symbols,
+    )
     print(f"已写入 {len(rows)} 条到 HASH {args.write_key}")
     return 0
 

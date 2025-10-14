@@ -15,6 +15,7 @@ const DEFAULT_ASKBID_LOWER_Q: f32 = 0.30;
 const DEFAULT_ASKBID_UPPER_Q: f32 = 0.95;
 const DEFAULT_REFRESH_SEC: u64 = 60;
 const DEFAULT_RELOAD_PARAM_SEC: u64 = 3;
+const DEFAULT_RESAMPLE_INTERVAL_MS: u64 = 1_000;
 pub const DEFAULT_CONFIG_HASH_KEY: &str = "rolling_metrics_params";
 pub const DEFAULT_OUTPUT_HASH_KEY: &str = "rolling_metrics_thresholds";
 
@@ -27,6 +28,7 @@ pub struct RollingConfig {
     pub bidask_upper_quantile: f32,
     pub askbid_lower_quantile: f32,
     pub askbid_upper_quantile: f32,
+    pub resample_interval_ms: u64,
     pub refresh_sec: u64,
     pub reload_param_sec: u64,
     pub params_hash_key: String,
@@ -43,6 +45,7 @@ impl Default for RollingConfig {
             bidask_upper_quantile: DEFAULT_BIDASK_UPPER_Q,
             askbid_lower_quantile: DEFAULT_ASKBID_LOWER_Q,
             askbid_upper_quantile: DEFAULT_ASKBID_UPPER_Q,
+            resample_interval_ms: DEFAULT_RESAMPLE_INTERVAL_MS,
             refresh_sec: DEFAULT_REFRESH_SEC,
             reload_param_sec: DEFAULT_RELOAD_PARAM_SEC,
             params_hash_key: DEFAULT_CONFIG_HASH_KEY.to_string(),
@@ -114,6 +117,13 @@ impl RollingConfig {
         if let Some(val) = parse_f32(map, "askbid_upper_quantile") {
             self.askbid_upper_quantile = clamp_unit(val, "askbid_upper_quantile");
         }
+        if let Some(val) = parse_u64(map, "RESAMPLE_INTERVAL_MS") {
+            if val > 0 {
+                self.resample_interval_ms = val;
+            } else {
+                warn!("忽略无效 RESAMPLE_INTERVAL_MS={}", val);
+            }
+        }
         if let Some(val) = parse_u64(map, "refresh_sec") {
             if val > 0 {
                 self.refresh_sec = val;
@@ -145,6 +155,13 @@ impl RollingConfig {
                 self.min_periods, self.rolling_window
             );
             self.min_periods = self.rolling_window;
+        }
+        if self.resample_interval_ms == 0 {
+            warn!(
+                "RESAMPLE_INTERVAL_MS 设置为 0，回退到默认值 {}",
+                DEFAULT_RESAMPLE_INTERVAL_MS
+            );
+            self.resample_interval_ms = DEFAULT_RESAMPLE_INTERVAL_MS;
         }
     }
 }
