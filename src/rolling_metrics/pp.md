@@ -88,5 +88,9 @@ quantile/:
 quantiles_linear_select_unstable(values: &mut [f32], qs: &[f32]) -> Vec<f32>
 main.rs: 组装 Tokio 读线程 + 独立计算线程。
 
+最近出现问题的原因是这2个
+1、两个网络还是归属一个服务商，出问题以后还是都出问题。
+2、专线断开的时候，kafka无法同步
+
 
 

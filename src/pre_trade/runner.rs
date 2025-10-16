@@ -1,8 +1,9 @@
 use crate::common::account_msg::{
     get_event_type as get_account_event_type, AccountEventType, AccountPositionMsg,
-    AccountUpdateBalanceMsg, AccountUpdatePositionMsg, BalanceUpdateMsg, ExecutionReportMsg,
-    OrderTradeUpdateMsg,
+    AccountUpdateBalanceMsg, AccountUpdateFlushMsg, AccountUpdatePositionMsg, BalanceUpdateMsg,
+    ExecutionReportMsg, OrderTradeUpdateMsg,
 };
+use crate::common::iceoryx_publisher::SignalPublisher;
 use crate::common::min_qty_table::MinQtyTable;
 use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
 use crate::common::time_util::get_timestamp_us;
@@ -16,10 +17,15 @@ use crate::pre_trade::config::{
 use crate::pre_trade::event::AccountEvent;
 use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
-use crate::pre_trade::store::{RedisStore, StrategyRecord};
+use crate::pre_trade::store::RedisStore;
 use crate::signal::binance_forward_arb::{
     BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbCloseUmCtx, BinSingleForwardArbHedgeCtx,
-    BinSingleForwardArbOpenCtx, BinSingleForwardArbSnapshot, BinSingleForwardArbStrategy,
+    BinSingleForwardArbOpenCtx, BinSingleForwardArbStrategy,
+};
+use crate::signal::resample::{
+    PreTradeExposureResampleEntry, PreTradeExposureRow, PreTradePositionResampleEntry,
+    PreTradeRiskResampleEntry, PreTradeSpotBalanceRow, PreTradeUmPositionRow,
+    PRE_TRADE_EXPOSURE_CHANNEL, PRE_TRADE_POSITIONS_CHANNEL, PRE_TRADE_RISK_CHANNEL,
 };
 use crate::signal::strategy::{Strategy, StrategyManager};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
@@ -92,6 +98,21 @@ impl PreTrade {
             }),
         };
 
+        let make_pub = |channel: &str| match SignalPublisher::new(channel) {
+            Ok(p) => Some(p),
+            Err(err) => {
+                warn!(
+                    "failed to create pre_trade resample publisher on {}: {err:#}",
+                    channel
+                );
+                None
+            }
+        };
+
+        let resample_positions_pub = make_pub(PRE_TRADE_POSITIONS_CHANNEL);
+        let resample_exposure_pub = make_pub(PRE_TRADE_EXPOSURE_CHANNEL);
+        let resample_risk_pub = make_pub(PRE_TRADE_RISK_CHANNEL);
+
         let mut runtime = RuntimeContext::new(
             bootstrap,
             order_tx.clone(),
@@ -99,6 +120,9 @@ impl PreTrade {
             order_publisher,
             strategy_params,
             fallback_store_cfg,
+            resample_positions_pub,
+            resample_exposure_pub,
+            resample_risk_pub,
         );
 
         // 首次从 Redis 拉取 pre-trade 参数
@@ -315,6 +339,11 @@ struct RuntimeContext {
     strategy_params: StrategyParamsCfg,
     min_qty_table: Rc<MinQtyTable>,
     dedup: crate::pre_trade::dedup::DedupCache,
+    resample_positions_pub: Option<SignalPublisher>,
+    resample_exposure_pub: Option<SignalPublisher>,
+    resample_risk_pub: Option<SignalPublisher>,
+    resample_interval: std::time::Duration,
+    next_resample: std::time::Instant,
     store: Option<RedisStore>,
     store_cfg: Option<StoreRuntimeCfg>,
     fallback_store_cfg: Option<StoreRuntimeCfg>,
@@ -335,6 +364,9 @@ impl RuntimeContext {
         order_publisher: OrderPublisher,
         strategy_params: StrategyParamsCfg,
         fallback_store_cfg: Option<StoreRuntimeCfg>,
+        resample_positions_pub: Option<SignalPublisher>,
+        resample_exposure_pub: Option<SignalPublisher>,
+        resample_risk_pub: Option<SignalPublisher>,
     ) -> Self {
         let BootstrapResources {
             um_manager,
@@ -362,6 +394,11 @@ impl RuntimeContext {
             strategy_params,
             min_qty_table,
             dedup: crate::pre_trade::dedup::DedupCache::new(8192),
+            resample_positions_pub,
+            resample_exposure_pub,
+            resample_risk_pub,
+            resample_interval: std::time::Duration::from_secs(3),
+            next_resample: std::time::Instant::now() + std::time::Duration::from_secs(3),
             store: None,
             store_cfg: None,
             fallback_store_cfg,
@@ -383,28 +420,14 @@ impl RuntimeContext {
                 orders.push(o);
             }
         }
-        // 采集策略快照
-        let mut strategies: Vec<StrategyRecord> = Vec::new();
-        for id in self.strategy_mgr.iter_ids().cloned().collect::<Vec<_>>() {
-            if let Some(st) = self.strategy_mgr.get(id) {
-                if let Some(snap) = st.snapshot() {
-                    strategies.push(StrategyRecord {
-                        id,
-                        type_name: snap.type_name.to_string(),
-                        payload: snap.payload,
-                    });
-                }
-            }
-        }
         if log::log_enabled!(log::Level::Debug) {
             use log::debug;
             debug!(
-                "persist_snapshot: orders={} strategies={}",
-                orders.len(),
-                strategies.len()
+                "persist_snapshot: orders={} (strategy persistence disabled)",
+                orders.len()
             );
         }
-        store.save_snapshot(&orders, &strategies).await?;
+        store.save_snapshot(&orders).await?;
         Ok(())
     }
 
@@ -439,58 +462,7 @@ impl RuntimeContext {
             }
         }
 
-        let strategy_records = store.load_strategies().await?;
-        if !strategy_records.is_empty() {
-            let max_symbol_exposure_ratio = self.strategy_params.max_symbol_exposure_ratio;
-            let max_total_exposure_ratio = self.strategy_params.max_total_exposure_ratio;
-            let max_pos_u = self.strategy_params.max_pos_u;
-            let max_leverage = self.strategy_params.max_leverage;
-            for rec in strategy_records {
-                match rec.type_name.as_str() {
-                    "BinSingleForwardArbStrategy" => {
-                        match BinSingleForwardArbSnapshot::from_bytes(&rec.payload) {
-                            Ok(snap) => {
-                                debug!(
-                                    "recovered strategy: type={} id={} symbol={} margin_open={} um_hedge={:?} margin_close={} um_close={:?} open_to={:?} close_to={:?}",
-                                    rec.type_name,
-                                    snap.strategy_id,
-                                    snap.symbol,
-                                    snap.margin_order_id,
-                                    snap.um_hedge_order_ids,
-                                    snap.close_margin_order_id,
-                                    snap.close_um_hedge_order_ids,
-                                    snap.open_timeout_us,
-                                    snap.close_margin_timeout_us
-                                );
-                                let strategy = BinSingleForwardArbStrategy::from_snapshot(
-                                    &snap,
-                                    self.order_manager.clone(),
-                                    self.exposure_manager.clone(),
-                                    self.order_tx.clone(),
-                                    max_symbol_exposure_ratio,
-                                    max_total_exposure_ratio,
-                                    max_pos_u,
-                                    max_leverage,
-                                    self.min_qty_table.clone(),
-                                    self.price_table.clone(),
-                                );
-                                let mut strategy = strategy;
-                                strategy.set_signal_sender(self.signal_tx.clone());
-                                self.insert_strategy(snap.symbol.clone(), Box::new(strategy));
-                            }
-                            Err(err) => warn!("failed to decode arb snapshot: {err:#}"),
-                        }
-                    }
-                    other => {
-                        warn!("unknown strategy snapshot type: {}", other);
-                    }
-                }
-            }
-            info!(
-                "recovered {} strategies from store",
-                self.strategy_mgr.len()
-            );
-        }
+        // strategy 持久化已禁用
         Ok(())
     }
 
@@ -586,12 +558,38 @@ impl RuntimeContext {
         let now = get_timestamp_us();
         self.strategy_mgr.handle_period_clock(now);
         self.cleanup_inactive();
-        if std::time::Instant::now() >= self.next_params_refresh {
+        let instant_now = std::time::Instant::now();
+        if instant_now >= self.next_params_refresh {
             if let Err(err) = self.reload_params().await {
                 warn!("pre_trade params refresh failed: {err:#}");
             }
-            self.next_params_refresh = std::time::Instant::now()
-                + std::time::Duration::from_secs(self.params_refresh_secs.max(5));
+            self.next_params_refresh =
+                instant_now + std::time::Duration::from_secs(self.params_refresh_secs.max(5));
+        }
+
+        if self.resample_positions_pub.is_some()
+            || self.resample_exposure_pub.is_some()
+            || self.resample_risk_pub.is_some()
+        {
+            while instant_now >= self.next_resample {
+                match self.publish_resample_entries() {
+                    Ok(count) => {
+                        if count > 0 && log::log_enabled!(log::Level::Debug) {
+                            debug!(
+                                "pre_trade resample published {} entries at ts_ms={}",
+                                count,
+                                get_timestamp_us() / 1000
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        warn!("pre_trade resample publish failed: {err:#}");
+                        self.next_resample = std::time::Instant::now() + self.resample_interval;
+                        break;
+                    }
+                }
+                self.next_resample += self.resample_interval;
+            }
         }
     }
 }
@@ -728,6 +726,167 @@ impl RuntimeContext {
             );
         }
         Ok(())
+    }
+
+    fn publish_resample_entries(&mut self) -> Result<usize> {
+        if self.resample_positions_pub.is_none()
+            && self.resample_exposure_pub.is_none()
+            && self.resample_risk_pub.is_none()
+        {
+            return Ok(0);
+        }
+
+        let Some(spot_snapshot) = self.spot_manager.snapshot() else {
+            return Ok(0);
+        };
+        let Some(um_snapshot) = self.um_manager.snapshot() else {
+            return Ok(0);
+        };
+
+        let price_snapshot = self.price_table.borrow().snapshot();
+        let ts_ms = (get_timestamp_us() / 1000) as i64;
+
+        let mut exposures_mgr = self.exposure_manager.borrow_mut();
+        exposures_mgr.revalue_with_prices(&price_snapshot);
+        let exposures_vec = exposures_mgr.exposures().to_vec();
+        let total_equity = exposures_mgr.total_equity();
+        let total_abs_exposure = exposures_mgr.total_abs_exposure();
+        let total_position = exposures_mgr.total_position();
+        let max_leverage = self.strategy_params.max_leverage;
+        drop(exposures_mgr);
+
+        let mut published = 0usize;
+
+        if let Some(publisher) = self.resample_positions_pub.as_ref() {
+            let um_rows: Vec<PreTradeUmPositionRow> = um_snapshot
+                .positions
+                .iter()
+                .map(|pos| PreTradeUmPositionRow {
+                    symbol: pos.symbol.clone(),
+                    side: pos.position_side.to_string(),
+                    position_amount: pos.position_amt,
+                    entry_price: pos.entry_price,
+                    leverage: pos.leverage,
+                    position_initial_margin: pos.position_initial_margin,
+                    open_order_initial_margin: pos.open_order_initial_margin,
+                    unrealized_profit: pos.unrealized_profit,
+                })
+                .collect();
+
+            let spot_rows: Vec<PreTradeSpotBalanceRow> = spot_snapshot
+                .balances
+                .iter()
+                .map(|bal| PreTradeSpotBalanceRow {
+                    asset: bal.asset.clone(),
+                    total_wallet: bal.total_wallet_balance,
+                    cross_free: bal.cross_margin_free,
+                    cross_locked: bal.cross_margin_locked,
+                    cross_borrowed: bal.cross_margin_borrowed,
+                    cross_interest: bal.cross_margin_interest,
+                    um_wallet: bal.um_wallet_balance,
+                    um_unrealized_pnl: bal.um_unrealized_pnl,
+                })
+                .collect();
+
+            let entry = PreTradePositionResampleEntry {
+                ts_ms,
+                um_positions: um_rows,
+                spot_balances: spot_rows,
+            };
+            if Self::publish_encoded(entry.to_bytes()?, publisher)? {
+                published += 1;
+            }
+        }
+
+        if let Some(publisher) = self.resample_exposure_pub.as_ref() {
+            let mut rows: Vec<PreTradeExposureRow> = Vec::new();
+            let mut exposure_sum_usdt = 0.0_f64;
+            for entry in &exposures_vec {
+                let asset_upper = entry.asset.to_uppercase();
+                if asset_upper == "USDT" {
+                    continue;
+                }
+                let symbol = format!("{}USDT", asset_upper);
+                let mark = price_snapshot
+                    .get(&symbol)
+                    .map(|p| p.mark_price)
+                    .unwrap_or(0.0);
+                if mark == 0.0 && (entry.spot_total_wallet != 0.0 || entry.um_net_position != 0.0) {
+                    debug!("missing mark price for {} when resampling exposure", symbol);
+                }
+                let spot_usdt = entry.spot_total_wallet * mark;
+                let um_usdt = entry.um_net_position * mark;
+                let exposure_usdt = spot_usdt + um_usdt;
+                exposure_sum_usdt += exposure_usdt;
+                rows.push(PreTradeExposureRow {
+                    asset: entry.asset.clone(),
+                    spot_qty: Some(entry.spot_total_wallet),
+                    spot_usdt: Some(spot_usdt),
+                    um_net_qty: Some(entry.um_net_position),
+                    um_net_usdt: Some(um_usdt),
+                    exposure_qty: Some(entry.exposure),
+                    exposure_usdt: Some(exposure_usdt),
+                    is_total: false,
+                });
+            }
+            if !rows.is_empty() {
+                rows.push(PreTradeExposureRow {
+                    asset: "TOTAL".to_string(),
+                    spot_qty: None,
+                    spot_usdt: None,
+                    um_net_qty: None,
+                    um_net_usdt: None,
+                    exposure_qty: None,
+                    exposure_usdt: Some(exposure_sum_usdt),
+                    is_total: true,
+                });
+            }
+
+            let entry = PreTradeExposureResampleEntry { ts_ms, rows };
+            if Self::publish_encoded(entry.to_bytes()?, publisher)? {
+                published += 1;
+            }
+        }
+
+        if let Some(publisher) = self.resample_risk_pub.as_ref() {
+            let leverage = if total_equity.abs() <= f64::EPSILON {
+                0.0
+            } else {
+                total_position / total_equity
+            };
+            let entry = PreTradeRiskResampleEntry {
+                ts_ms,
+                total_equity,
+                total_exposure: total_abs_exposure,
+                total_position,
+                leverage,
+                max_leverage,
+            };
+            if Self::publish_encoded(entry.to_bytes()?, publisher)? {
+                published += 1;
+            }
+        }
+
+        Ok(published)
+    }
+
+    fn publish_encoded(bytes: Vec<u8>, publisher: &SignalPublisher) -> Result<bool> {
+        if bytes.is_empty() {
+            return Ok(false);
+        }
+        let mut buf = Vec::with_capacity(bytes.len() + 4);
+        let len = bytes.len() as u32;
+        buf.extend_from_slice(&len.to_le_bytes());
+        buf.extend_from_slice(&bytes);
+        if buf.len() > 4096 {
+            warn!(
+                "pre_trade resample payload too large ({} bytes), skipped",
+                buf.len()
+            );
+            return Ok(false);
+        }
+        publisher.publish(&buf)?;
+        Ok(true)
     }
 }
 
@@ -1161,7 +1320,6 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
                     msg.event_time,
                 );
             }
-            ctx.refresh_exposures();
         }
         AccountEventType::AccountUpdatePosition => {
             let msg = AccountUpdatePositionMsg::from_bytes(data)?;
@@ -1187,6 +1345,17 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
                 msg.unrealized_pnl,
                 msg.breakeven_price,
                 msg.event_time,
+            );
+        }
+        AccountEventType::AccountUpdateFlush => {
+            let msg = AccountUpdateFlushMsg::from_bytes(data)?;
+            let key = crate::pre_trade::dedup::key_account_update_flush(&msg);
+            if !ctx.dedup.insert_check(key) {
+                return Ok(());
+            }
+            debug!(
+                "accountUpdateFlush: scope={} event_time={} hash={:#x}",
+                msg.scope, msg.event_time, msg.hash
             );
             ctx.refresh_exposures();
         }

@@ -1,169 +1,43 @@
 use anyhow::Result;
-use bytes::Bytes;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{debug, info, warn};
+use log::{info, warn};
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Duration;
+use tokio::time::Instant;
 
-use crate::common::msg_parser::{
-    get_msg_type, parse_funding_rate, parse_index_price, parse_mark_price, MktMsgType,
-};
-// use crate::common::time_util::get_timestamp_us;
-use crate::common::account_msg::get_event_type as get_account_event_type;
+use serde_json::json;
 
 use super::state::SharedState;
-use crate::signal::resample::{ResampleBatch, FR_RESAMPLE_CHANNEL};
+use crate::common::time_util::get_timestamp_us;
+use crate::common::viz::server::WsHub;
+use crate::signal::resample::{
+    FundingRateArbResampleEntry, PreTradeExposureResampleEntry, PreTradePositionResampleEntry,
+    PreTradeRiskResampleEntry, FR_RESAMPLE_MSG_CHANNEL, PRE_TRADE_EXPOSURE_CHANNEL,
+    PRE_TRADE_POSITIONS_CHANNEL, PRE_TRADE_RISK_CHANNEL,
+};
 
-pub const ACCOUNT_PAYLOAD: usize = 16_384;
-pub const DERIVATIVES_PAYLOAD: usize = 128;
-pub const RESAMPLE_PAYLOAD: usize = 1024;
+pub const RESAMPLE_PAYLOAD: usize = 4096;
 
-pub fn spawn_account_listener(
-    service_name: String,
-    label: Option<String>,
-    state: SharedState,
-) -> Result<()> {
-    let label = label.unwrap_or_else(|| service_name.clone());
+/// 订阅 funding resample 流式切片（用于验证解码；当前不更新 UI 状态）
+pub fn spawn_fr_resample_listener(state: SharedState, hub: WsHub) -> Result<()> {
+    let service_name = format!("signal_pubs/{}", FR_RESAMPLE_MSG_CHANNEL);
+    struct Stats {
+        window_start: Instant,
+        count: usize,
+        last_ts_ms: i64,
+        dropped: usize,
+    }
+    let stats = Rc::new(RefCell::new(Stats {
+        window_start: Instant::now(),
+        count: 0,
+        last_ts_ms: 0,
+        dropped: 0,
+    }));
     tokio::task::spawn_local(async move {
-        let node_name = "viz_account".to_string();
-        let result = async move {
-            let node = NodeBuilder::new()
-                .name(&NodeName::new(&node_name)?)
-                .create::<ipc::Service>()?;
-
-            let service = node
-                .service_builder(&ServiceName::new(&service_name)?)
-                .publish_subscribe::<[u8; ACCOUNT_PAYLOAD]>()
-                .open_or_create()?;
-            let subscriber: Subscriber<ipc::Service, [u8; ACCOUNT_PAYLOAD], ()> =
-                service.subscriber_builder().create()?;
-
-            info!(
-                "viz account subscribed: service={} label={}",
-                service.name(),
-                label
-            );
-            loop {
-                match subscriber.receive() {
-                    Ok(Some(sample)) => {
-                        let payload = trim_payload(sample.payload());
-                        if payload.len() >= 8 {
-                            let tp = get_account_event_type(&payload);
-                            state.handle_account_event(tp, &payload[8..]); // 账户帧格式: [type:4][len:4][data]
-                        }
-                    }
-                    Ok(None) => tokio::task::yield_now().await,
-                    Err(err) => {
-                        warn!("viz account receive error: {err}");
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                    }
-                }
-            }
-            #[allow(unreachable_code)]
-            Ok::<(), anyhow::Error>(())
-        };
-        if let Err(err) = result.await {
-            warn!("viz account listener exited: {err:?}");
-        }
-    });
-    Ok(())
-}
-
-pub fn spawn_derivatives_listener(service: String, state: SharedState) -> Result<()> {
-    tokio::task::spawn_local(async move {
-        let node_name = "viz_derivatives".to_string();
-        let result = async move {
-            let node = NodeBuilder::new()
-                .name(&NodeName::new(&node_name)?)
-                .create::<ipc::Service>()?;
-            let service = node
-                .service_builder(&ServiceName::new(&service)?)
-                .publish_subscribe::<[u8; DERIVATIVES_PAYLOAD]>()
-                .open_or_create()?;
-            let subscriber: Subscriber<ipc::Service, [u8; DERIVATIVES_PAYLOAD], ()> =
-                service.subscriber_builder().create()?;
-            info!("viz derivatives subscribed: service={}", service.name());
-            loop {
-                match subscriber.receive() {
-                    Ok(Some(sample)) => {
-                        let payload = trim_payload(sample.payload());
-                        if payload.is_empty() {
-                            continue;
-                        }
-                        let Some(msg_type) = get_msg_type(&payload) else {
-                            continue;
-                        };
-                        let type_name = match msg_type {
-                            MktMsgType::TimeSignal => "TimeSignal",
-                            MktMsgType::TradeInfo => "TradeInfo",
-                            MktMsgType::OrderBookInc => "OrderBookInc",
-                            MktMsgType::TpReset => "TpReset",
-                            MktMsgType::Kline => "Kline",
-                            MktMsgType::MarkPrice => "MarkPrice",
-                            MktMsgType::IndexPrice => "IndexPrice",
-                            MktMsgType::LiquidationOrder => "LiquidationOrder",
-                            MktMsgType::FundingRate => "FundingRate",
-                            MktMsgType::AskBidSpread => "AskBidSpread",
-                            MktMsgType::Error => "Error",
-                        };
-                        info!(
-                            "viz derivatives 收到消息: type={} bytes={}",
-                            type_name,
-                            payload.len()
-                        );
-                        match msg_type {
-                            MktMsgType::MarkPrice => match parse_mark_price(&payload) {
-                                Ok(msg) => state.update_price_mark(
-                                    &msg.symbol,
-                                    msg.mark_price,
-                                    msg.timestamp,
-                                ),
-                                Err(err) => warn!("viz parse mark price failed: {err:?}"),
-                            },
-                            MktMsgType::IndexPrice => match parse_index_price(&payload) {
-                                Ok(msg) => state.update_price_index(
-                                    &msg.symbol,
-                                    msg.index_price,
-                                    msg.timestamp,
-                                ),
-                                Err(err) => warn!("viz parse index price failed: {err:?}"),
-                            },
-                            MktMsgType::FundingRate => match parse_funding_rate(&payload) {
-                                Ok(msg) => {
-                                    state.set_stream_funding(
-                                        &msg.symbol,
-                                        msg.funding_rate,
-                                        msg.next_funding_time,
-                                        msg.timestamp,
-                                    );
-                                }
-                                Err(err) => warn!("viz parse funding rate failed: {err:?}"),
-                            },
-                            _ => {}
-                        }
-                    }
-                    Ok(None) => tokio::task::yield_now().await,
-                    Err(err) => {
-                        warn!("viz derivatives receive error: {err}");
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                    }
-                }
-            }
-            #[allow(unreachable_code)]
-            Ok::<(), anyhow::Error>(())
-        };
-        if let Err(err) = result.await {
-            warn!("viz derivatives listener exited: {err:?}");
-        }
-    });
-    Ok(())
-}
-
-/// 订阅 funding resample 批量快照（用于验证解码；当前不更新 UI 状态）
-pub fn spawn_fr_resample_listener(state: SharedState) -> Result<()> {
-    let service_name = format!("signal_pubs/{}", FR_RESAMPLE_CHANNEL);
-    tokio::task::spawn_local(async move {
+        let stats = stats;
         let node_name = "viz_fr_resample".to_string();
         let result = async move {
             let node = NodeBuilder::new()
@@ -181,24 +55,44 @@ pub fn spawn_fr_resample_listener(state: SharedState) -> Result<()> {
                     Ok(Some(sample)) => {
                         let payload = sample.payload();
                         if payload.len() < 4 {
+                            stats.borrow_mut().dropped += 1;
                             continue;
                         }
                         let mut len_bytes = [0u8; 4];
                         len_bytes.copy_from_slice(&payload[..4]);
                         let data_len = u32::from_le_bytes(len_bytes) as usize;
                         if data_len == 0 || 4 + data_len > payload.len() {
+                            stats.borrow_mut().dropped += 1;
                             continue;
                         }
                         let data = &payload[4..4 + data_len];
-                        match ResampleBatch::from_bytes(data) {
-                            Ok(batch) => {
-                                debug!(
-                                    "viz fr_resample received items={} ts_ms={}",
-                                    batch.items.len(),
-                                    batch.ts_ms
-                                );
-                                // 当前仅验证解码，后续可加入到共享状态或另行转发
-                                let _ = &state; // keep lint happy
+                        match FundingRateArbResampleEntry::from_bytes(data) {
+                            Ok(entry) => {
+                                let entry_ts = entry.ts_ms;
+                                state.update_resample_entry(entry.clone());
+                                let now_ts_ms = (get_timestamp_us() / 1000) as i64;
+                                if let Ok(msg) = serde_json::to_string(&json!({
+                                    "type": "fr_resample_entry",
+                                    "ts_ms": now_ts_ms,
+                                    "entry": entry,
+                                })) {
+                                    hub.broadcast(msg);
+                                }
+                                {
+                                    let mut st = stats.borrow_mut();
+                                    st.count += 1;
+                                    st.last_ts_ms = entry_ts;
+                                    if st.window_start.elapsed() >= Duration::from_secs(3) {
+                                        info!(
+                                            "viz fr_resample received count={} dropped={} last_ts_ms={}",
+                                            st.count, st.dropped, st.last_ts_ms
+                                        );
+                                        st.window_start = Instant::now();
+                                        st.count = 0;
+                                        st.last_ts_ms = 0;
+                                        st.dropped = 0;
+                                    }
+                                }
                             }
                             Err(err) => warn!("viz fr_resample decode failed: {err:#}"),
                         }
@@ -220,6 +114,174 @@ pub fn spawn_fr_resample_listener(state: SharedState) -> Result<()> {
     Ok(())
 }
 
-fn trim_payload(payload: &[u8]) -> Bytes {
-    Bytes::copy_from_slice(payload)
+pub fn spawn_pre_trade_resample_listeners(state: SharedState, hub: WsHub) -> Result<()> {
+    spawn_pre_trade_positions_listener(state.clone(), hub.clone())?;
+    spawn_pre_trade_exposure_listener(state.clone(), hub.clone())?;
+    spawn_pre_trade_risk_listener(state, hub)?;
+    Ok(())
+}
+
+fn spawn_pre_trade_positions_listener(state: SharedState, hub: WsHub) -> Result<()> {
+    spawn_pre_trade_channel(
+        "viz_pretrade_positions",
+        PRE_TRADE_POSITIONS_CHANNEL,
+        move |entry: PreTradePositionResampleEntry, state: SharedState, hub: WsHub| {
+            state.update_pretrade_positions(entry.clone());
+            let now_ts_ms = (get_timestamp_us() / 1000) as i64;
+            if let Ok(msg) = serde_json::to_string(&json!({
+                "type": "pre_trade_positions",
+                "ts_ms": now_ts_ms,
+                "entry": entry,
+            })) {
+                hub.broadcast(msg);
+            }
+        },
+        state,
+        hub,
+    )
+}
+
+fn spawn_pre_trade_exposure_listener(state: SharedState, hub: WsHub) -> Result<()> {
+    spawn_pre_trade_channel(
+        "viz_pretrade_exposure",
+        PRE_TRADE_EXPOSURE_CHANNEL,
+        move |entry: PreTradeExposureResampleEntry, state: SharedState, hub: WsHub| {
+            state.update_pretrade_exposure(entry.clone());
+            let now_ts_ms = (get_timestamp_us() / 1000) as i64;
+            if let Ok(msg) = serde_json::to_string(&json!({
+                "type": "pre_trade_exposure",
+                "ts_ms": now_ts_ms,
+                "entry": entry,
+            })) {
+                hub.broadcast(msg);
+            }
+        },
+        state,
+        hub,
+    )
+}
+
+fn spawn_pre_trade_risk_listener(state: SharedState, hub: WsHub) -> Result<()> {
+    spawn_pre_trade_channel(
+        "viz_pretrade_risk",
+        PRE_TRADE_RISK_CHANNEL,
+        move |entry: PreTradeRiskResampleEntry, state: SharedState, hub: WsHub| {
+            state.update_pretrade_risk(entry.clone());
+            let now_ts_ms = (get_timestamp_us() / 1000) as i64;
+            if let Ok(msg) = serde_json::to_string(&json!({
+                "type": "pre_trade_risk",
+                "ts_ms": now_ts_ms,
+                "entry": entry,
+            })) {
+                hub.broadcast(msg);
+            }
+        },
+        state,
+        hub,
+    )
+}
+
+fn spawn_pre_trade_channel<T, F>(
+    node_suffix: &str,
+    channel: &str,
+    on_entry: F,
+    state: SharedState,
+    hub: WsHub,
+) -> Result<()>
+where
+    T: serde::de::DeserializeOwned + Clone + 'static,
+    F: Fn(T, SharedState, WsHub) + Copy + 'static,
+{
+    let node_suffix = node_suffix.to_string();
+    let channel_name = channel.to_string();
+    let service_name = format!("signal_pubs/{}", channel_name);
+    struct Stats {
+        window_start: Instant,
+        count: usize,
+        dropped: usize,
+    }
+    let stats = Rc::new(RefCell::new(Stats {
+        window_start: Instant::now(),
+        count: 0,
+        dropped: 0,
+    }));
+    tokio::task::spawn_local(async move {
+        let stats = stats;
+        let channel_label: &'static str = Box::leak(channel_name.clone().into_boxed_str());
+        let node_name = format!("{}_{}", node_suffix, channel_label);
+        let result = async move {
+            let node = NodeBuilder::new()
+                .name(&NodeName::new(&node_name)?)
+                .create::<ipc::Service>()?;
+            let service = node
+                .service_builder(&ServiceName::new(&service_name)?)
+                .publish_subscribe::<[u8; RESAMPLE_PAYLOAD]>()
+                .open_or_create()?;
+            let subscriber: Subscriber<ipc::Service, [u8; RESAMPLE_PAYLOAD], ()> =
+                service.subscriber_builder().create()?;
+            info!(
+                "viz pre_trade resample subscribed: service={} node={}",
+                service.name(),
+                node_name
+            );
+            loop {
+                match subscriber.receive() {
+                    Ok(Some(sample)) => {
+                        let payload = sample.payload();
+                        if payload.len() < 4 {
+                            stats.borrow_mut().dropped += 1;
+                            continue;
+                        }
+                        let mut len_bytes = [0u8; 4];
+                        len_bytes.copy_from_slice(&payload[..4]);
+                        let data_len = u32::from_le_bytes(len_bytes) as usize;
+                        if data_len == 0 || 4 + data_len > payload.len() {
+                            stats.borrow_mut().dropped += 1;
+                            continue;
+                        }
+                        let data = &payload[4..4 + data_len];
+                        match bincode::deserialize::<T>(data) {
+                            Ok(entry) => {
+                                on_entry(entry.clone(), state.clone(), hub.clone());
+                                {
+                                    let mut st = stats.borrow_mut();
+                                    st.count += 1;
+                                    if st.window_start.elapsed() >= Duration::from_secs(3) {
+                                        info!(
+                                            "viz pre_trade {} received count={} dropped={}",
+                                            channel_label, st.count, st.dropped
+                                        );
+                                        st.window_start = Instant::now();
+                                        st.count = 0;
+                                        st.dropped = 0;
+                                    }
+                                }
+                            }
+                            Err(err) => warn!(
+                                "viz pre_trade resample decode failed ({}): {err:#}",
+                                channel_label
+                            ),
+                        }
+                    }
+                    Ok(None) => tokio::task::yield_now().await,
+                    Err(err) => {
+                        warn!(
+                            "viz pre_trade resample receive error ({}): {err}",
+                            channel_label
+                        );
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    }
+                }
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        };
+        if let Err(err) = result.await {
+            warn!(
+                "viz pre_trade resample listener exited (channel={}): {err:?}",
+                channel_label
+            );
+        }
+    });
+    Ok(())
 }

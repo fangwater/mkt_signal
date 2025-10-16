@@ -22,8 +22,4 @@ for script in start_account_monitor.sh stop_account_monitor.sh; do
   fi
 done
 
-if [[ -f "$ROOT_DIR/env.sh" ]]; then
-  cp "$ROOT_DIR/env.sh" "$TARGET_DIR/"
-fi
-
 echo "[INFO] $BIN_NAME 部署完成。"

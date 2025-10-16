@@ -48,17 +48,11 @@ start_single_proxy() {
     local config=$1
     local pm2_name="mkt_pub_${config}"
     local bin_path="${DIR}/mkt_pub"
-    local env_file="${DIR}/env.sh"
 
     echo "启动 ${config} 代理..."
 
     # 停止现有进程
     npx pm2 delete "$pm2_name" 2>/dev/null
-
-    if [[ -f "$env_file" ]]; then
-        # shellcheck disable=SC1090
-        source "$env_file"
-    fi
 
     # 启动新进程
     npx pm2 start "$bin_path" \

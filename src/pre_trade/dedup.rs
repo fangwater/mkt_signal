@@ -1,6 +1,6 @@
 use crate::common::account_msg::{
-    AccountEventType, AccountPositionMsg, AccountUpdateBalanceMsg, AccountUpdatePositionMsg,
-    BalanceUpdateMsg, ExecutionReportMsg, OrderTradeUpdateMsg,
+    AccountEventType, AccountPositionMsg, AccountUpdateBalanceMsg, AccountUpdateFlushMsg,
+    AccountUpdatePositionMsg, BalanceUpdateMsg, ExecutionReportMsg, OrderTradeUpdateMsg,
 };
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -87,6 +87,14 @@ pub fn key_account_update_position(msg: &AccountUpdatePositionMsg) -> u64 {
         msg.transaction_time as u64,
         msg.symbol_length as u64,
         msg.position_side as u8 as u64,
+    ])
+}
+
+pub fn key_account_update_flush(msg: &AccountUpdateFlushMsg) -> u64 {
+    hash64(&[
+        AccountEventType::AccountUpdateFlush as u32 as u64,
+        msg.hash,
+        hash_str64(&msg.scope),
     ])
 }
 

@@ -5,15 +5,6 @@ ws_path = "/ws"
 # cors_origins = ["https://your-frontend.example.com"]
 # auth_token = "optional-token"
 
-[sources.account]
-service = "account_pubs/binance/pm"
-max_payload_bytes = 16384
-label = "account_binance"
-
-[sources.derivatives]
-service = "data_pubs/binance-futures/derivatives"
-max_payload_bytes = 128
-
 [sampling]
 interval_ms = 200
 send_if_changed = false
@@ -22,4 +13,3 @@ send_if_changed = false
 [thresholds]
 open = 0.002
 close = 0.0005
-

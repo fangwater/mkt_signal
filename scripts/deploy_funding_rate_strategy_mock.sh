@@ -14,8 +14,4 @@ mkdir -p "$TARGET_DIR"
 cp "$BIN_PATH" "$TARGET_DIR/"
 chmod +x "$TARGET_DIR/$BIN_NAME"
 
-if [[ -f "$ROOT_DIR/env.sh" ]]; then
-  cp "$ROOT_DIR/env.sh" "$TARGET_DIR/"
-fi
-
 echo "[INFO] $BIN_NAME 部署完成。"

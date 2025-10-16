@@ -29,8 +29,7 @@ use mkt_signal::signal::binance_forward_arb::{
     BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbOpenCtx,
 };
 use mkt_signal::signal::resample::{
-    compute_askbid_sr, compute_bidask_sr, ResampleBatch, ResampleItem, FR_RESAMPLE_CHANNEL,
-    FR_RESAMPLE_MSG_CHANNEL,
+    compute_askbid_sr, compute_bidask_sr, FundingRateArbResampleEntry, FR_RESAMPLE_MSG_CHANNEL,
 };
 use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
 
@@ -85,6 +84,22 @@ impl Default for OrderConfig {
             max_open_order_keep_s: default_max_open_keep(),
             max_close_order_keep_s: default_max_close_keep(),
         }
+    }
+}
+
+fn opt_finite(val: f64) -> Option<f64> {
+    if val.is_finite() {
+        Some(val)
+    } else {
+        None
+    }
+}
+
+fn opt_active_threshold(val: f64) -> Option<f64> {
+    if val.is_finite() && val.abs() > f64::EPSILON {
+        Some(val)
+    } else {
+        None
     }
 }
 
@@ -454,7 +469,6 @@ struct StrategyEngine {
     // resample
     resample_interval: Duration,
     next_resample: Instant,
-    resample_pub: SignalPublisher,
     resample_msg_pub: SignalPublisher,
     funding_series: HashMap<String, Vec<f64>>, // per symbol recent funding rates
     loan_map: HashMap<String, f64>,            // per symbol loan rate 8h
@@ -643,7 +657,6 @@ impl StrategyEngine {
             http: Client::new(),
             resample_interval: Duration::from_millis(resample_ms),
             next_resample: Instant::now(),
-            resample_pub: SignalPublisher::new(FR_RESAMPLE_CHANNEL)?,
             resample_msg_pub: SignalPublisher::new(FR_RESAMPLE_MSG_CHANNEL)?,
             funding_series: HashMap::new(),
             loan_map: HashMap::new(),
@@ -1406,9 +1419,7 @@ impl StrategyEngine {
 
     fn resample_and_publish(&mut self) {
         let ts_ms = (get_timestamp_us() / 1000) as i64;
-        let mut batch_items: Vec<ResampleItem> = Vec::new();
-        let mut funding_pred_rows: Vec<Vec<String>> = Vec::new();
-        let mut price_signal_rows: Vec<Vec<String>> = Vec::new();
+        let mut publish_count = 0usize;
         // 组装每个 symbol 的切片
         let mut keys: Vec<String> = self.symbols.keys().cloned().collect();
         keys.sort();
@@ -1454,33 +1465,7 @@ impl StrategyEngine {
                 }
             });
 
-            let item = ResampleItem {
-                symbol: key.clone(),
-                ts_ms,
-                spot_bid,
-                spot_ask,
-                fut_bid,
-                fut_ask,
-                bidask_sr,
-                askbid_sr,
-                funding_rate,
-                funding_rate_ma,
-                predicted_rate,
-                loan_rate_8h,
-            };
-            // 逐条发送到 msg 通道
-            if let Ok(bytes) = item.to_bytes() {
-                let mut buf = Vec::with_capacity(bytes.len() + 4);
-                let len = bytes.len() as u32;
-                buf.extend_from_slice(&len.to_le_bytes());
-                buf.extend_from_slice(&bytes);
-                if buf.len() <= 1024 {
-                    let _ = self.resample_msg_pub.publish(&buf);
-                }
-            }
-            batch_items.push(item);
-
-            let (open_upper, open_lower, _close_lower, _close_upper, freq) =
+            let (open_upper, open_lower, close_lower, close_upper, freq) =
                 if let Some(entry) = self.funding_thresholds.get(&key) {
                     (
                         entry.open_upper_threshold,
@@ -1500,111 +1485,51 @@ impl StrategyEngine {
                     (ou, ol, cl, cu, freq)
                 };
 
-            let predicted_value = state.predicted_rate;
-            let pred_message = if state.predicted_signal == -1 {
-                format!(
-                    "满足 {:.6} >= {:.6} → 期货做空 / 现货做多",
-                    predicted_value, open_upper
-                )
-            } else if state.predicted_signal == 1 {
-                format!(
-                    "满足 {:.6} <= {:.6} → 反向信号 (忽略)",
-                    predicted_value, open_lower
-                )
-            } else {
-                format!(
-                    "未触发 {:.6} ∈ [{:.6}, {:.6}]",
-                    predicted_value, open_lower, open_upper
-                )
+            let entry = FundingRateArbResampleEntry {
+                symbol: key.clone(),
+                ts_ms,
+                funding_frequency: freq.clone(),
+                spot_bid,
+                spot_ask,
+                fut_bid,
+                fut_ask,
+                bidask_sr,
+                askbid_sr,
+                funding_rate,
+                funding_rate_ma,
+                funding_rate_ma_lower: opt_finite(close_lower),
+                funding_rate_ma_upper: opt_finite(close_upper),
+                predicted_rate,
+                predicted_rate_lower: opt_finite(open_lower),
+                predicted_rate_upper: opt_finite(open_upper),
+                loan_rate_8h,
+                bidask_lower: opt_finite(state.open_threshold),
+                bidask_upper: opt_finite(state.close_threshold),
+                askbid_lower: opt_active_threshold(state.askbid_open_threshold),
+                askbid_upper: opt_active_threshold(state.askbid_close_threshold),
             };
-            funding_pred_rows.push(vec![
-                key.clone(),
-                freq.clone(),
-                fmt_decimal(predicted_value),
-                fmt_decimal(open_upper),
-                fmt_decimal(open_lower),
-                pred_message,
-            ]);
-
-            let bidask_str = state
-                .latest_bidask_sr
-                .or(bidask_sr)
-                .map(|v| fmt_decimal(v))
-                .unwrap_or_else(|| "-".to_string());
-            let askbid_str = state
-                .latest_askbid_sr
-                .or(askbid_sr)
-                .map(|v| fmt_decimal(v))
-                .unwrap_or_else(|| "-".to_string());
-            let ba_open_flag = if state.price_open_bidask { "Y" } else { "N" }.to_string();
-            let ab_open_flag = if state.price_open_askbid { "Y" } else { "N" }.to_string();
-            let open_ready_flag = if state.price_open_ready { "Y" } else { "N" }.to_string();
-            let close_ready_flag = if state.price_close_ready { "Y" } else { "N" }.to_string();
-            price_signal_rows.push(vec![
-                key.clone(),
-                freq,
-                bidask_str,
-                fmt_decimal(state.open_threshold),
-                ba_open_flag,
-                askbid_str,
-                fmt_decimal(state.askbid_open_threshold),
-                ab_open_flag,
-                open_ready_flag,
-                close_ready_flag,
-            ]);
-        }
-
-        // 批量发送（控制最大 1024 字节）
-        let batch = ResampleBatch {
-            ts_ms,
-            items: batch_items,
-        };
-        if let Ok(mut bytes) = batch.to_bytes() {
-            // Prepend length header
-            let len = bytes.len() as u32;
-            let mut buf = Vec::with_capacity(bytes.len() + 4);
-            buf.extend_from_slice(&len.to_le_bytes());
-            buf.append(&mut bytes);
-            if buf.len() > 1024 {
-                buf.truncate(1024);
+            // 逐条发送到 msg 通道
+            if let Ok(bytes) = entry.to_bytes() {
+                let mut buf = Vec::with_capacity(bytes.len() + 4);
+                let len = bytes.len() as u32;
+                buf.extend_from_slice(&len.to_le_bytes());
+                buf.extend_from_slice(&bytes);
+                if buf.len() <= 1024 {
+                    let _ = self.resample_msg_pub.publish(&buf);
+                    publish_count += 1;
+                } else {
+                    warn!(
+                        "resample entry too large: symbol={} bytes={} (skipped)",
+                        key,
+                        buf.len()
+                    );
+                }
             }
-            let _ = self.resample_pub.publish(&buf);
         }
-
-        if !funding_pred_rows.is_empty() {
+        if publish_count > 0 {
             info!(
-                "Resample资金-预测信号\n{}",
-                render_three_line_table(
-                    &[
-                        "Symbol",
-                        "Freq",
-                        "Predict",
-                        "OpenUpper",
-                        "OpenLower",
-                        "解读",
-                    ],
-                    &funding_pred_rows,
-                )
-            );
-        }
-        if !price_signal_rows.is_empty() {
-            info!(
-                "Resample价差-信号\n{}",
-                render_three_line_table(
-                    &[
-                        "Symbol",
-                        "Freq",
-                        "BidAskSR",
-                        "BA_OpenTh",
-                        "BA_OpenOK",
-                        "AskBidSR",
-                        "AB_OpenTh",
-                        "AB_OpenOK",
-                        "OpenReady",
-                        "CloseReady",
-                    ],
-                    &price_signal_rows,
-                )
+                "publish to {} count={} ts_ms={}",
+                FR_RESAMPLE_MSG_CHANNEL, publish_count, ts_ms
             );
         }
     }
@@ -2403,37 +2328,6 @@ enum SignalRequest {
         emit_ts: i64,
     },
 }
-
-fn fmt_decimal(value: f64) -> String {
-    if value.is_nan() {
-        return "NaN".to_string();
-    }
-    if !value.is_finite() {
-        return if value.is_sign_positive() {
-            "Inf".to_string()
-        } else {
-            "-Inf".to_string()
-        };
-    }
-    if value == 0.0 {
-        return "0".to_string();
-    }
-    let mut s = format!("{value:.6}");
-    if s.contains('.') {
-        while s.ends_with('0') {
-            s.pop();
-        }
-        if s.ends_with('.') {
-            s.pop();
-        }
-    }
-    if s.is_empty() {
-        "0".to_string()
-    } else {
-        s
-    }
-}
-
 fn render_three_line_table(headers: &[&str], rows: &[Vec<String>]) -> String {
     let widths = compute_widths(headers, rows);
     let mut out = String::new();

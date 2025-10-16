@@ -4,7 +4,7 @@ use clap::Parser;
 use env_logger;
 use mkt_signal::pre_trade::{
     order_manager::{Order, OrderType, Side},
-    store::{RedisStore, StrategyRecord},
+    store::RedisStore,
 };
 use redis::AsyncCommands;
 use serde_json::json;
@@ -24,7 +24,7 @@ struct Args {
     )]
     prefix: String,
 
-    /// 以 JSON 原样输出 orders/strategies
+    /// 以 JSON 原样输出 orders
     #[arg(long, help = "输出原始 JSON 数据")]
     raw: bool,
 }
@@ -43,11 +43,6 @@ async fn main() -> Result<()> {
         .load_orders()
         .await
         .context("load pre_trade orders from redis")?;
-    let strategies = store
-        .load_strategies()
-        .await
-        .context("load pre_trade strategies from redis")?;
-
     let saved_at_tick = load_saved_at(&args.redis_url, &args.prefix).await?;
     let saved_at_text = saved_at_tick
         .map(format_timestamp)
@@ -55,17 +50,15 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| "-".to_string());
 
     println!(
-        "[info] prefix={} orders={} strategies={} saved_at={}",
+        "[info] prefix={} orders={} saved_at={}",
         args.prefix,
         orders.len(),
-        strategies.len(),
         saved_at_text
     );
 
     if args.raw {
         let raw = json!({
             "orders": orders,
-            "strategies": strategies,
         });
         println!("{}", serde_json::to_string_pretty(&raw)?);
         return Ok(());
@@ -73,8 +66,6 @@ async fn main() -> Result<()> {
 
     print_orders(&orders)?;
     println!();
-    print_strategies(&strategies);
-
     Ok(())
 }
 
@@ -158,22 +149,6 @@ fn print_orders(orders: &[Order]) -> Result<()> {
         );
     }
     Ok(())
-}
-
-fn print_strategies(records: &[StrategyRecord]) {
-    if records.is_empty() {
-        println!("[strategies] 空");
-        return;
-    }
-    println!("[strategies]");
-    for record in records {
-        println!(
-            "  id={} type={} payload_len={} bytes",
-            record.id,
-            record.type_name,
-            record.payload.len()
-        );
-    }
 }
 
 fn format_side(side: Side) -> &'static str {

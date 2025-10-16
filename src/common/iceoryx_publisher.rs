@@ -4,7 +4,7 @@ use iceoryx2::service::ipc;
 use log::info;
 
 pub struct SignalPublisher {
-    publisher: Publisher<ipc::Service, [u8; 1024], ()>,
+    publisher: Publisher<ipc::Service, [u8; 4096], ()>,
 }
 
 impl SignalPublisher {
@@ -22,7 +22,11 @@ impl SignalPublisher {
 
         let service = node
             .service_builder(&service_name)
-            .publish_subscribe::<[u8; 1024]>()
+            .publish_subscribe::<[u8; 4096]>()
+            .max_publishers(1)
+            .max_subscribers(32)
+            .history_size(128)
+            .subscriber_max_buffer_size(256)
             .open_or_create()?;
 
         let publisher = service.publisher_builder().create()?;
@@ -36,12 +40,12 @@ impl SignalPublisher {
     }
 
     pub fn publish(&self, data: &[u8]) -> anyhow::Result<()> {
-        if data.len() > 1024 {
-            anyhow::bail!("Data size exceeds 1024 bytes");
+        if data.len() > 4096 {
+            anyhow::bail!("Data size exceeds 4096 bytes");
         }
 
         // Prepare a fixed-size buffer and copy the data
-        let mut buffer = [0u8; 1024];
+        let mut buffer = [0u8; 4096];
         buffer[..data.len()].copy_from_slice(data);
 
         // Send via loan + write_payload pattern (same as forwarder)

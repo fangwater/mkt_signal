@@ -14,6 +14,10 @@ use crate::pre_trade::binance_pm_um_manager::{
 };
 use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
+use crate::signal::resample::{
+    FundingRateArbResampleEntry, PreTradeExposureResampleEntry, PreTradePositionResampleEntry,
+    PreTradeRiskResampleEntry,
+};
 
 #[derive(Clone)]
 pub struct SharedState {
@@ -31,6 +35,13 @@ pub struct SharedStateInner {
     pub last_price_update: std::cell::Cell<i64>,
     // funding stream cache: symbol -> (funding_rate, next_funding_time, ts)
     funding_stream: std::cell::RefCell<HashMap<String, (f64, i64, i64)>>,
+    // funding resample snapshot
+    resample_entries: std::cell::RefCell<HashMap<String, FundingRateArbResampleEntry>>,
+    last_resample_update: std::cell::Cell<i64>,
+    pretrade_positions: std::cell::RefCell<Option<PreTradePositionResampleEntry>>,
+    pretrade_exposure: std::cell::RefCell<Option<PreTradeExposureResampleEntry>>,
+    pretrade_risk: std::cell::RefCell<Option<PreTradeRiskResampleEntry>>,
+    pretrade_last_update: std::cell::Cell<i64>,
 }
 
 impl SharedState {
@@ -57,6 +68,12 @@ impl SharedState {
                 last_account_update: std::cell::Cell::new(0),
                 last_price_update: std::cell::Cell::new(0),
                 funding_stream: std::cell::RefCell::new(HashMap::new()),
+                resample_entries: std::cell::RefCell::new(HashMap::new()),
+                last_resample_update: std::cell::Cell::new(0),
+                pretrade_positions: std::cell::RefCell::new(None),
+                pretrade_exposure: std::cell::RefCell::new(None),
+                pretrade_risk: std::cell::RefCell::new(None),
+                pretrade_last_update: std::cell::Cell::new(0),
             }),
         }
     }
@@ -66,6 +83,41 @@ impl SharedState {
     }
     pub fn exposure_mgr(&self) -> Rc<std::cell::RefCell<ExposureManager>> {
         self.inner.exposure_mgr.clone()
+    }
+
+    pub fn update_resample_entry(&self, entry: FundingRateArbResampleEntry) {
+        let mut map = self.inner.resample_entries.borrow_mut();
+        map.insert(entry.symbol.clone(), entry);
+        drop(map);
+        self.inner.last_resample_update.set(get_timestamp_us());
+    }
+
+    pub fn update_pretrade_positions(&self, entry: PreTradePositionResampleEntry) {
+        *self.inner.pretrade_positions.borrow_mut() = Some(entry);
+        self.inner.pretrade_last_update.set(get_timestamp_us());
+    }
+
+    pub fn update_pretrade_exposure(&self, entry: PreTradeExposureResampleEntry) {
+        *self.inner.pretrade_exposure.borrow_mut() = Some(entry);
+        self.inner.pretrade_last_update.set(get_timestamp_us());
+    }
+
+    pub fn update_pretrade_risk(&self, entry: PreTradeRiskResampleEntry) {
+        *self.inner.pretrade_risk.borrow_mut() = Some(entry);
+        self.inner.pretrade_last_update.set(get_timestamp_us());
+    }
+
+    pub fn resample_snapshot(&self) -> Vec<FundingRateArbResampleEntry> {
+        self.inner
+            .resample_entries
+            .borrow()
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    pub fn last_resample_update_us(&self) -> i64 {
+        self.inner.last_resample_update.get()
     }
 
     pub fn handle_account_event(&self, msg_type: AccountEventType, payload: &[u8]) {

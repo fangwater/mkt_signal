@@ -1,12 +1,15 @@
 use crate::common::account_msg::{
     AccountConfigUpdateMsg, AccountEventMsg, AccountEventType, AccountPositionMsg,
-    AccountUpdateBalanceMsg, AccountUpdatePositionMsg, BalanceUpdateMsg, ConditionalOrderMsg,
-    ExecutionReportMsg, LiabilityChangeMsg, OpenOrderLossMsg, OrderTradeUpdateMsg,
+    AccountUpdateBalanceMsg, AccountUpdateFlushMsg, AccountUpdatePositionMsg, BalanceUpdateMsg,
+    ConditionalOrderMsg, ExecutionReportMsg, LiabilityChangeMsg, OpenOrderLossMsg,
+    OrderTradeUpdateMsg,
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use log::{debug, warn};
 use serde_json::Value;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use tokio::sync::mpsc;
 
 #[derive(Clone)]
@@ -243,6 +246,20 @@ impl BinanceAccountEventParser {
                 }
                 count += 1;
             }
+
+            let flush_hash =
+                Self::compute_flush_hash(&[event_time, update_time, update_id], None::<&str>);
+            let flush_msg = AccountUpdateFlushMsg::create(
+                event_time,
+                flush_hash,
+                "ACCOUNT_POSITION".to_string(),
+            );
+            let bytes = flush_msg.to_bytes();
+            let event_msg = AccountEventMsg::create(AccountEventType::AccountUpdateFlush, bytes);
+            if let Err(_) = tx.send(event_msg.to_bytes()) {
+                return count;
+            }
+            count += 1;
 
             return count;
         }
@@ -769,7 +786,33 @@ impl BinanceAccountEventParser {
             }
         }
 
+        let flush_hash =
+            Self::compute_flush_hash(&[event_time, transaction_time], Some(&business_unit));
+        let flush_scope = if business_unit.is_empty() {
+            "ACCOUNT_UPDATE".to_string()
+        } else {
+            format!("ACCOUNT_UPDATE:{}", business_unit)
+        };
+        let flush_msg = AccountUpdateFlushMsg::create(event_time, flush_hash, flush_scope);
+        let bytes = flush_msg.to_bytes();
+        let event_msg = AccountEventMsg::create(AccountEventType::AccountUpdateFlush, bytes);
+        if let Err(_) = tx.send(event_msg.to_bytes()) {
+            return count;
+        }
+        count += 1;
+
         count
+    }
+
+    fn compute_flush_hash(nums: &[i64], extra: Option<&str>) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        for n in nums {
+            n.hash(&mut hasher);
+        }
+        if let Some(tag) = extra {
+            tag.hash(&mut hasher);
+        }
+        hasher.finish()
     }
 
     fn parse_account_config_update(

@@ -15,6 +15,7 @@ pub enum AccountEventType {
     AccountUpdatePosition = 2008,
     AccountConfigUpdate = 2009,
     BalanceUpdate = 2010,
+    AccountUpdateFlush = 2011,
     Error = 3333,
 }
 
@@ -1245,6 +1246,75 @@ pub struct AccountUpdatePositionMsg {
     pub breakeven_price: f64,
 }
 
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct AccountUpdateFlushMsg {
+    pub msg_type: AccountEventType,
+    pub event_time: i64,
+    pub hash: u64,
+    pub scope_length: u32,
+    pub padding: [u8; 4],
+    pub scope: String,
+}
+
+impl AccountUpdateFlushMsg {
+    pub fn create(event_time: i64, hash: u64, scope: String) -> Self {
+        Self {
+            msg_type: AccountEventType::AccountUpdateFlush,
+            event_time,
+            hash,
+            scope_length: scope.len() as u32,
+            padding: [0u8; 4],
+            scope,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 8 + 8 + 4 + 4 + self.scope_length as usize;
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_i64_le(self.event_time);
+        buf.put_u64_le(self.hash);
+        buf.put_u32_le(self.scope_length);
+        buf.put(&self.padding[..]);
+        buf.put(self.scope.as_bytes());
+        buf.freeze()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        const MIN_SIZE: usize = 4 + 8 + 8 + 4 + 4;
+        if data.len() < MIN_SIZE {
+            anyhow::bail!("account update flush msg too short: {}", data.len());
+        }
+        let mut cursor = Bytes::copy_from_slice(data);
+        let msg_type = cursor.get_u32_le();
+        if msg_type != AccountEventType::AccountUpdateFlush as u32 {
+            anyhow::bail!("invalid account msg type: {}", msg_type);
+        }
+        let event_time = cursor.get_i64_le();
+        let hash = cursor.get_u64_le();
+        let scope_length = cursor.get_u32_le();
+        let mut padding = [0u8; 4];
+        cursor.copy_to_slice(&mut padding);
+        if cursor.len() < scope_length as usize {
+            anyhow::bail!(
+                "account update flush scope length mismatch: {}",
+                scope_length
+            );
+        }
+        let scope_bytes = cursor.copy_to_bytes(scope_length as usize);
+        let scope = String::from_utf8(scope_bytes.to_vec())?;
+        Ok(Self {
+            msg_type: AccountEventType::AccountUpdateFlush,
+            event_time,
+            hash,
+            scope_length,
+            padding,
+            scope,
+        })
+    }
+}
+
 impl AccountUpdatePositionMsg {
     pub fn create(
         event_time: i64,
@@ -1569,6 +1639,7 @@ pub fn get_event_type(data: &[u8]) -> AccountEventType {
         2008 => AccountEventType::AccountUpdatePosition,
         2009 => AccountEventType::AccountConfigUpdate,
         2010 => AccountEventType::BalanceUpdate,
+        2011 => AccountEventType::AccountUpdateFlush,
         _ => AccountEventType::Error,
     }
 }

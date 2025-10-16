@@ -1,7 +1,6 @@
 // Normal module declarations
 pub mod common;
 pub mod connection;
-pub mod market_state;
 pub mod mkt_pub;
 pub mod parser;
 pub mod portfolio_margin;

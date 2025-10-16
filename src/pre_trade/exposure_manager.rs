@@ -15,6 +15,8 @@ pub struct ExposureEntry {
     pub spot_total_wallet: f64,
     pub spot_cross_free: f64,
     pub spot_cross_locked: f64,
+    pub spot_cross_borrowed: f64,
+    pub spot_cross_interest: f64,
     pub um_net_position: f64,
     pub um_position_initial_margin: f64,
     pub um_open_order_initial_margin: f64,
@@ -45,6 +47,7 @@ pub struct ExposureManager {
     total_equity: f64,
     abs_total_exposure: f64,
     total_position: f64,
+    total_um_unrealized: f64,
 }
 
 struct ExposureState {
@@ -53,6 +56,7 @@ struct ExposureState {
     total_equity: f64,
     abs_total_exposure: f64,
     total_position: f64,
+    total_um_unrealized: f64,
 }
 
 impl ExposureManager {
@@ -68,6 +72,7 @@ impl ExposureManager {
             total_equity,
             abs_total_exposure,
             total_position,
+            total_um_unrealized,
         } = state;
 
         Self {
@@ -76,6 +81,7 @@ impl ExposureManager {
             total_equity,
             abs_total_exposure,
             total_position,
+            total_um_unrealized,
         }
     }
 
@@ -123,6 +129,7 @@ impl ExposureManager {
                 state.total_equity = self.total_equity;
                 state.abs_total_exposure = self.abs_total_exposure;
                 state.total_position = self.total_position;
+                state.total_um_unrealized = self.total_um_unrealized;
             }
         }
 
@@ -134,6 +141,7 @@ impl ExposureManager {
         self.total_equity = state.total_equity;
         self.abs_total_exposure = state.abs_total_exposure;
         self.total_position = state.total_position;
+        self.total_um_unrealized = state.total_um_unrealized;
     }
 
     /// 基于标记价格表将资产敞口估值为 USDT，并更新总权益、总敞口与总头寸。
@@ -162,8 +170,10 @@ impl ExposureManager {
 
             let spot_value = e.spot_total_wallet * mark;
             let um_value = e.um_net_position * mark;
+            let borrowed_value = e.spot_cross_borrowed * mark;
+            let interest_value = e.spot_cross_interest * mark;
 
-            total_spot_value += spot_value;
+            total_spot_value += spot_value - borrowed_value - interest_value;
 
             if asset != "USDT" {
                 total_position_value += spot_value.abs() + um_value.abs();
@@ -171,7 +181,8 @@ impl ExposureManager {
             }
         }
 
-        self.total_equity = total_spot_value;
+        // Equity = spot估值 + UM未实现PnL（UM钱包余额已体现在 USDT 现货余额中）
+        self.total_equity = total_spot_value + self.total_um_unrealized;
         self.abs_total_exposure = abs_total_exposure_usdt;
         self.total_position = total_position_value;
     }
@@ -180,6 +191,11 @@ impl ExposureManager {
         um_snapshot: &BinanceUmAccountSnapshot,
         spot_snapshot: &BinanceSpotBalanceSnapshot,
     ) -> ExposureState {
+        let total_um_unrealized: f64 = um_snapshot
+            .positions
+            .iter()
+            .map(|pos| pos.unrealized_profit)
+            .sum();
         let mut spot_map: HashMap<String, BinanceSpotBalance> = HashMap::new();
         for bal in &spot_snapshot.balances {
             spot_map.insert(bal.asset.to_uppercase(), bal.clone());
@@ -188,13 +204,20 @@ impl ExposureManager {
         let mut known_assets: BTreeSet<String> = spot_map.keys().cloned().collect();
         known_assets.insert("USDT".to_string());
 
-        let usdt = spot_map.get("USDT").cloned().map(|bal| UsdtSummary {
+        let usdt_balance = spot_map.get("USDT");
+        let usdt = usdt_balance.cloned().map(|bal| UsdtSummary {
             total_wallet_balance: bal.total_wallet_balance,
             cross_margin_free: bal.cross_margin_free,
             cross_margin_locked: bal.cross_margin_locked,
             um_wallet_balance: bal.um_wallet_balance,
             cm_wallet_balance: bal.cm_wallet_balance,
         });
+        let usdt_borrowed = usdt_balance
+            .map(|bal| bal.cross_margin_borrowed)
+            .unwrap_or(0.0);
+        let usdt_interest = usdt_balance
+            .map(|bal| bal.cross_margin_interest)
+            .unwrap_or(0.0);
 
         let mut um_map: HashMap<String, UmAggregate> = HashMap::new();
         for position in &um_snapshot.positions {
@@ -227,6 +250,8 @@ impl ExposureManager {
                 let spot_total_wallet = spot.map(|b| b.total_wallet_balance).unwrap_or(0.0);
                 let spot_cross_free = spot.map(|b| b.cross_margin_free).unwrap_or(0.0);
                 let spot_cross_locked = spot.map(|b| b.cross_margin_locked).unwrap_or(0.0);
+                let spot_cross_borrowed = spot.map(|b| b.cross_margin_borrowed).unwrap_or(0.0);
+                let spot_cross_interest = spot.map(|b| b.cross_margin_interest).unwrap_or(0.0);
                 let um_net_position = um.map(|u| u.net_position).unwrap_or(0.0);
                 let um_position_initial_margin =
                     um.map(|u| u.position_initial_margin).unwrap_or(0.0);
@@ -237,6 +262,8 @@ impl ExposureManager {
                     spot_total_wallet,
                     spot_cross_free,
                     spot_cross_locked,
+                    spot_cross_borrowed,
+                    spot_cross_interest,
                     um_net_position,
                     um_position_initial_margin,
                     um_open_order_initial_margin,
@@ -258,6 +285,8 @@ impl ExposureManager {
             spot_total_wallet: usdt_spot,
             spot_cross_free: usdt.as_ref().map(|u| u.cross_margin_free).unwrap_or(0.0),
             spot_cross_locked: usdt.as_ref().map(|u| u.cross_margin_locked).unwrap_or(0.0),
+            spot_cross_borrowed: usdt_borrowed,
+            spot_cross_interest: usdt_interest,
             um_net_position: 0.0,
             um_position_initial_margin: 0.0,
             um_open_order_initial_margin: 0.0,
@@ -273,6 +302,7 @@ impl ExposureManager {
             total_equity,
             abs_total_exposure,
             total_position,
+            total_um_unrealized,
         }
     }
 
@@ -297,8 +327,12 @@ impl ExposureManager {
         // 仅打印汇总信息（注意：总敞口绝对值为数量绝对值之和，非 USDT 估值）；
         // 详细三线表（含 USDT 估值）由 runner 结合 mark price 打印
         debug!(
-            "敞口管理器{}完成: 总权益(暂估)={:.6}, 总敞口绝对值(数量)={:.6}, 总头寸(暂估)={:.6}",
-            stage, state.total_equity, state.abs_total_exposure, state.total_position
+            "敞口管理器{}完成: 总权益(暂估)={:.6}, 总敞口绝对值(数量)={:.6}, 总头寸(暂估)={:.6}, UM未实现PnL={:.6}",
+            stage,
+            state.total_equity,
+            state.abs_total_exposure,
+            state.total_position,
+            state.total_um_unrealized,
         );
     }
 }
