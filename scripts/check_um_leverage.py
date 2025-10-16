@@ -78,7 +78,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="自定义 recvWindow（毫秒）。不指定时使用 Binance 默认 5000。",
     )
-    return parser.parse_args()
+    return parser.parse_args() 
 
 
 def now_ms() -> int:
