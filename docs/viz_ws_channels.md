@@ -143,6 +143,9 @@
 ```
 
 说明：
+- `spot_equity_usd`：所有现货资产折算为 USDT 的估值。
+- `borrowed_usd` / `interest_usd`：交叉借币及利息按最新标记价折算的总额。
+- `um_unrealized_usd`：所有合约未实现盈亏之和。
 - `um_positions[]`：来自合约账户的逐仓/全仓头寸，`side` 取值为 `LONG`/`SHORT`/`BOTH`。
 - `spot_balances[]`：现货资产余额与交叉保证金占用情况，字段直接对应 `PreTradeSpotBalanceRow`，新增 `cross_interest` 表示借贷利息。
 
@@ -201,6 +204,10 @@
     "total_equity": 120000,
     "total_exposure": 50000,
     "total_position": 60000,
+    "spot_equity_usd": 150000,
+    "borrowed_usd": 20000,
+    "interest_usd": 1000,
+    "um_unrealized_usd": -9000,
     "leverage": 0.5,
     "max_leverage": 2.5
   }

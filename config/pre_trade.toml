@@ -18,9 +18,9 @@ max_payload_bytes = 1024
 
 [params]
 max_pos_u = 2500.0     # 最大持仓(U)
-max_symbol_exposure_ratio = 0.25   # 单一资产最大敞口比例 (25%)
-max_total_exposure_ratio = 0.25    # 总敞口占权益比例 (25%)
-max_leverage = 2.0     # 最大杠杆倍数
+max_symbol_exposure_ratio = 0.25   # 单一资产最大敞口比例 (25%) 
+max_total_exposure_ratio = 0.25    # 总敞口占权益比例 (25%) 
+max_leverage = 2.0     # 最大杠杆倍数 
 
 [store]
 # 仅在 Ctrl+C 时落盘，启动时恢复

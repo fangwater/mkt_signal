@@ -7,17 +7,19 @@ import time
 import numpy as np
 import redis
 import logging
-import traceback
+import traceback 
 
 # ==================== 配置区 ====================
-# 测试标的：
+# 测试标的： 
 # SYMBOLS = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT",
 #            "DOGEUSDT","TRXUSDT","DOTUSDT","LTCUSDT","BCHUSDT","LINKUSDT",
-#            "AVAXUSDT","ATOMUSDT","FILUSDT","APTUSDT","OPUSDT","ARBUSDT","NEARUSDT"]
-# 正式实盘标的：20250928
-SYMBOLS = ['HEIUSDT', 'SANTOSUSDT', 'KDAUSDT', 'AIUSDT', 'FLUXUSDT', 'TNSRUSDT', 'NFPUSDT', 'USTCUSDT', 'TWTUSDT', 'INITUSDT', 'VANRYUSDT', 'PUMPUSDT', # 4h
-           'HIGHUSDT', 'KAVAUSDT', 'SFPUSDT', 'DUSKUSDT', 'TLMUSDT', 'COTIUSDT', 'C98USDT', 'STORJUSDT', 'IOTXUSDT', 'CELOUSDT' # 8h
+#            "AVAXUSDT","ATOMUSDT","FILUSDT","APTUSDT","OPUSDT","ARBUSDT","NEARUSDT"] 
+
+# 正式实盘标的：20250928 
+SYMBOLS = ['HEIUSDT', 'SANTOSUSDT', 'KDAUSDT', 'AIUSDT', 'FLUXUSDT', 'TNSRUSDT', 'NFPUSDT', 'USTCUSDT', 'TWTUSDT', 'INITUSDT', 'VANRYUSDT', 'PUMPUSDT', # 4h 
+           'HIGHUSDT', 'KAVAUSDT', 'SFPUSDT', 'DUSKUSDT', 'TLMUSDT', 'COTIUSDT', 'C98USDT', 'STORJUSDT', 'IOTXUSDT', 'CELOUSDT' # 8h 
            ] 
+
 MAX_LEN = 100000 
 ROLLING_WINDOW = 100000 
 MIN_PERIODS = 90000 
@@ -39,7 +41,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(threadName)s: %(message)s",
     handlers=[
         logging.FileHandler("make_threshold_binance.log"),
-        logging.StreamHandler()
+        logging.StreamHandler() 
     ] 
 ) 
 

@@ -48,6 +48,9 @@ pub struct ExposureManager {
     abs_total_exposure: f64,
     total_position: f64,
     total_um_unrealized: f64,
+    total_spot_value_usd: f64,
+    total_borrowed_usd: f64,
+    total_interest_usd: f64,
 }
 
 struct ExposureState {
@@ -57,6 +60,9 @@ struct ExposureState {
     abs_total_exposure: f64,
     total_position: f64,
     total_um_unrealized: f64,
+    total_spot_value_usd: f64,
+    total_borrowed_usd: f64,
+    total_interest_usd: f64,
 }
 
 impl ExposureManager {
@@ -73,6 +79,9 @@ impl ExposureManager {
             abs_total_exposure,
             total_position,
             total_um_unrealized,
+            total_spot_value_usd,
+            total_borrowed_usd,
+            total_interest_usd,
         } = state;
 
         Self {
@@ -82,6 +91,9 @@ impl ExposureManager {
             abs_total_exposure,
             total_position,
             total_um_unrealized,
+            total_spot_value_usd,
+            total_borrowed_usd,
+            total_interest_usd,
         }
     }
 
@@ -114,6 +126,51 @@ impl ExposureManager {
         self.total_position
     }
 
+    pub fn total_um_unrealized(&self) -> f64 {
+        self.total_um_unrealized
+    }
+
+    pub fn total_spot_value_usd(&self) -> f64 {
+        self.total_spot_value_usd
+    }
+
+    pub fn total_borrowed_usd(&self) -> f64 {
+        self.total_borrowed_usd
+    }
+
+    pub fn total_interest_usd(&self) -> f64 {
+        self.total_interest_usd
+    }
+
+    pub fn log_summary(&self, stage: &str) {
+        if self.exposures.is_empty() {
+            debug!(
+                "敞口管理器{}完成: 总权益={:.6}, 总敞口绝对值={:.6}, 非 USDT 敞口为空",
+                stage, self.total_equity, self.abs_total_exposure,
+            );
+            return;
+        }
+        if let Some(u) = &self.usdt {
+            debug!(
+                "USDT 汇总: spot={:.6} um={:.6} cm={:.6}",
+                u.total_wallet_balance, u.um_wallet_balance, u.cm_wallet_balance
+            );
+        } else {
+            debug!("USDT 汇总: 无记录 (spot=0 um=0 cm=0)");
+        }
+        debug!(
+            "敞口管理器{}完成: 总权益(暂估)={:.6}, 总敞口绝对值(数量)={:.6}, 总头寸(暂估)={:.6}, UM未实现PnL={:.6}, Spot估值={:.6}, 借币={:.6}, 利息={:.6}",
+            stage,
+            self.total_equity,
+            self.abs_total_exposure,
+            self.total_position,
+            self.total_um_unrealized,
+            self.total_spot_value_usd,
+            self.total_borrowed_usd,
+            self.total_interest_usd,
+        );
+    }
+
     pub fn recompute(
         &mut self,
         um_snapshot: &BinanceUmAccountSnapshot,
@@ -130,6 +187,9 @@ impl ExposureManager {
                 state.abs_total_exposure = self.abs_total_exposure;
                 state.total_position = self.total_position;
                 state.total_um_unrealized = self.total_um_unrealized;
+                state.total_spot_value_usd = self.total_spot_value_usd;
+                state.total_borrowed_usd = self.total_borrowed_usd;
+                state.total_interest_usd = self.total_interest_usd;
             }
         }
 
@@ -142,11 +202,16 @@ impl ExposureManager {
         self.abs_total_exposure = state.abs_total_exposure;
         self.total_position = state.total_position;
         self.total_um_unrealized = state.total_um_unrealized;
+        self.total_spot_value_usd = state.total_spot_value_usd;
+        self.total_borrowed_usd = state.total_borrowed_usd;
+        self.total_interest_usd = state.total_interest_usd;
     }
 
     /// 基于标记价格表将资产敞口估值为 USDT，并更新总权益、总敞口与总头寸。
     pub fn revalue_with_prices(&mut self, price_map: &BTreeMap<String, PriceEntry>) {
         let mut total_spot_value = 0.0_f64;
+        let mut total_borrowed_value = 0.0_f64;
+        let mut total_interest_value = 0.0_f64;
         let mut total_position_value = 0.0_f64;
         let mut abs_total_exposure_usdt = 0.0_f64;
 
@@ -173,7 +238,9 @@ impl ExposureManager {
             let borrowed_value = e.spot_cross_borrowed * mark;
             let interest_value = e.spot_cross_interest * mark;
 
-            total_spot_value += spot_value - borrowed_value - interest_value;
+            total_spot_value += spot_value;
+            total_borrowed_value += borrowed_value;
+            total_interest_value += interest_value;
 
             if asset != "USDT" {
                 total_position_value += spot_value.abs() + um_value.abs();
@@ -181,8 +248,12 @@ impl ExposureManager {
             }
         }
 
-        // Equity = spot估值 + UM未实现PnL（UM钱包余额已体现在 USDT 现货余额中）
-        self.total_equity = total_spot_value + self.total_um_unrealized;
+        // Equity = spot估值 - 借币 - 利息 + UM未实现PnL（UM钱包余额已体现在 USDT 现货余额中）
+        self.total_spot_value_usd = total_spot_value;
+        self.total_borrowed_usd = total_borrowed_value;
+        self.total_interest_usd = total_interest_value;
+        self.total_equity = (total_spot_value - total_borrowed_value - total_interest_value)
+            + self.total_um_unrealized;
         self.abs_total_exposure = abs_total_exposure_usdt;
         self.total_position = total_position_value;
     }
@@ -303,6 +374,9 @@ impl ExposureManager {
             abs_total_exposure,
             total_position,
             total_um_unrealized,
+            total_spot_value_usd: 0.0,
+            total_borrowed_usd: 0.0,
+            total_interest_usd: 0.0,
         }
     }
 
@@ -327,12 +401,15 @@ impl ExposureManager {
         // 仅打印汇总信息（注意：总敞口绝对值为数量绝对值之和，非 USDT 估值）；
         // 详细三线表（含 USDT 估值）由 runner 结合 mark price 打印
         debug!(
-            "敞口管理器{}完成: 总权益(暂估)={:.6}, 总敞口绝对值(数量)={:.6}, 总头寸(暂估)={:.6}, UM未实现PnL={:.6}",
+            "敞口管理器{}完成: 总权益(暂估)={:.6}, 总敞口绝对值(数量)={:.6}, 总头寸(暂估)={:.6}, UM未实现PnL={:.6}, Spot估值={:.6}, 借币={:.6}, 利息={:.6}",
             stage,
             state.total_equity,
             state.abs_total_exposure,
             state.total_position,
             state.total_um_unrealized,
+            state.total_spot_value_usd,
+            state.total_borrowed_usd,
+            state.total_interest_usd,
         );
     }
 }

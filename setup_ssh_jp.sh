@@ -1,24 +1,24 @@
-#!/bin/bash
+#!/bin/bash 
 
-# SSH配置脚本 - 日本服务器
-# 使用方法: ./setup_ssh_jp.sh
+# SSH配置脚本 - 日本服务器 
+# 使用方法: ./setup_ssh_jp.sh 
 
-set -e
+set -e 
 
-# 配置信息
-PEM_FILE="/Users/fanghaizhou/project/mkt_signal/aws-jp-srv-1.pem"
-SSH_CONFIG_FILE="$HOME/.ssh/config"
-HOST_ALIAS="jp-server"
-HOST_IP="54.64.147.69"
-USER="ubuntu"
+# 配置信息 
+PEM_FILE="/Users/fanghaizhou/project/mkt_signal/aws-jp-srv-1.pem" 
+SSH_CONFIG_FILE="$HOME/.ssh/config" 
+HOST_ALIAS="jp-server" 
+HOST_IP="54.64.147.69" 
+USER="ubuntu" 
 
-echo "开始配置 SSH 免密登录..."
+echo "开始配置 SSH 免密登录..." 
 
-# 1. 检查 PEM 文件是否存在
-if [ ! -f "$PEM_FILE" ]; then
-    echo "❌ PEM 文件不存在: $PEM_FILE"
-    exit 1
-fi
+# 1. 检查 PEM 文件是否存在 
+if [ ! -f "$PEM_FILE" ]; then 
+    echo "❌ PEM 文件不存在: $PEM_FILE" 
+    exit 1  
+fi 
 
 # 2. 设置 PEM 文件权限
 echo "设置 PEM 文件权限..."

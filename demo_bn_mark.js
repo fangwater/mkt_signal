@@ -7,7 +7,7 @@ const wsUrl_futures = 'wss://fstream.binance.com/ws';
 const ws = new WebSocket(wsUrl_futures, {
   headers: {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-  }
+  } 
 });
 
 // 统计变量
@@ -16,7 +16,7 @@ let pushCount = 0;
 let lastPushTime = Date.now();
 let symbolChangeCount = 0;
 let lastSymbolSetSize = 0;
-let previousPushSymbols = new Set(); // 保存上一次推送的symbols用于比较
+let previousPushSymbols = new Set(); // 保存上一次推送的symbols用于比较 
 
 ws.on('open', () => {
   console.log('Binance Futures WebSocket 连接已建立');
@@ -126,4 +126,4 @@ ws.on('close', () => {
   console.log(`- 总symbol数量: ${symbolSet.size}`);
   console.log(`- symbol变化次数: ${symbolChangeCount}`);
   console.log(`- 所有symbols: ${Array.from(symbolSet).sort().join(', ')}`);
-});
+}); 

@@ -33,6 +33,7 @@
 - 若账户存在借贷/负余额，`spot_total_wallet` 为负时会降低总权益。
 - `spot_cross_borrowed` 与 `spot_cross_interest` 都来自统一账户的交叉保证金数据；若资产为非 USDT，它们会在计算中按当天标记价折算为 USDT。
 - UM 未实现盈亏直接来自每个 `BinanceUmPosition::unrealized_profit` 的求和，确保权益中体现合约浮盈/亏。
+- `pre_trade_risk` WS 消息会附带 `spot_equity_usd`、`borrowed_usd`、`interest_usd`、`um_unrealized_usd`，用于前端或排查时直接查看各项贡献。
 
 ## 3. 总头寸 `total_position`
 

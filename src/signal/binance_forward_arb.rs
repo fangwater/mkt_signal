@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -31,6 +31,11 @@ pub struct BinSingleForwardArbOpenCtx {
     pub price: f64,
     pub price_tick: f64,
     pub exp_time: i64,
+    pub spot_sr: Option<f64>,
+    pub futures_sr: Option<f64>,
+    pub funding_ma: Option<f64>,
+    pub predicted_funding_rate: Option<f64>,
+    pub loan_rate: Option<f64>,
 }
 
 /// 币安单所正向套利对冲信号上下文
@@ -54,7 +59,25 @@ pub struct BinSingleForwardArbCloseMarginCtx {
 #[derive(Clone, Debug)]
 pub struct BinSingleForwardArbCloseUmCtx {
     pub um_symbol: String,
+    pub quantity: f64,
     pub exp_time: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OpenSignalMeta {
+    spot_symbol: String,
+    amount: f32,
+    side: Side,
+    order_type: OrderType,
+    price: f64,
+    price_tick: f64,
+    exp_time: i64,
+    trigger_ts_us: i64,
+    spot_sr: Option<f64>,
+    futures_sr: Option<f64>,
+    funding_ma: Option<f64>,
+    predicted_funding_rate: Option<f64>,
+    loan_rate: Option<f64>,
 }
 
 /// 内部统一的 UM 订单更新结果，用于将 REST 推送的状态转换为易于判断的枚举。
@@ -80,6 +103,24 @@ impl BinSingleForwardArbOpenCtx {
         buf.put_f64_le(self.price);
         buf.put_f64_le(self.price_tick);
         buf.put_i64_le(self.exp_time);
+
+        fn put_option_f64(buf: &mut BytesMut, value: Option<f64>) {
+            match value {
+                Some(v) => {
+                    buf.put_u8(1);
+                    buf.put_f64_le(v);
+                }
+                None => {
+                    buf.put_u8(0);
+                }
+            }
+        }
+
+        put_option_f64(&mut buf, self.spot_sr);
+        put_option_f64(&mut buf, self.futures_sr);
+        put_option_f64(&mut buf, self.funding_ma);
+        put_option_f64(&mut buf, self.predicted_funding_rate);
+        put_option_f64(&mut buf, self.loan_rate);
 
         buf.freeze()
     }
@@ -126,6 +167,26 @@ impl BinSingleForwardArbOpenCtx {
         }
         let exp_time = bytes.get_i64_le();
 
+        fn read_option_f64(bytes: &mut Bytes) -> Option<f64> {
+            if bytes.remaining() < 1 {
+                return None;
+            }
+            let flag = bytes.get_u8();
+            if flag == 0 {
+                return None;
+            }
+            if bytes.remaining() < 8 {
+                return None;
+            }
+            Some(bytes.get_f64_le())
+        }
+
+        let spot_sr = read_option_f64(&mut bytes);
+        let futures_sr = read_option_f64(&mut bytes);
+        let funding_ma = read_option_f64(&mut bytes);
+        let predicted_funding_rate = read_option_f64(&mut bytes);
+        let loan_rate = read_option_f64(&mut bytes);
+
         Ok(Self {
             spot_symbol,
             amount,
@@ -134,6 +195,11 @@ impl BinSingleForwardArbOpenCtx {
             price,
             price_tick,
             exp_time,
+            spot_sr,
+            futures_sr,
+            funding_ma,
+            predicted_funding_rate,
+            loan_rate,
         })
     }
 }
@@ -228,6 +294,7 @@ impl BinSingleForwardArbCloseUmCtx {
 
         buf.put_u32_le(self.um_symbol.len() as u32);
         buf.put_slice(self.um_symbol.as_bytes());
+        buf.put_f64_le(self.quantity);
         buf.put_i64_le(self.exp_time);
 
         buf.freeze()
@@ -244,6 +311,12 @@ impl BinSingleForwardArbCloseUmCtx {
         let um_symbol = String::from_utf8(bytes.copy_to_bytes(symbol_len).to_vec())
             .map_err(|e| format!("Invalid UTF-8 for um_symbol: {e}"))?;
 
+        let quantity = if bytes.remaining() >= 8 {
+            bytes.get_f64_le()
+        } else {
+            0.0
+        };
+
         if bytes.remaining() < 8 {
             return Err("Not enough bytes for exp_time".to_string());
         }
@@ -251,8 +324,22 @@ impl BinSingleForwardArbCloseUmCtx {
 
         Ok(Self {
             um_symbol,
+            quantity,
             exp_time,
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StrategyMode {
+    Open,
+    Close,
+}
+
+impl Default for StrategyMode {
+    fn default() -> Self {
+        StrategyMode::Open
     }
 }
 
@@ -290,14 +377,22 @@ pub struct BinSingleForwardArbStrategy {
     pub strategy_id: i32, //策略id
     pub symbol: String,
     pub create_time: i64, //策略构建时间
+    mode: StrategyMode,
     pub margin_order_id: i64,
+    initial_margin_order_id: i64,
     pub um_hedge_order_ids: Vec<i64>,
     pub close_margin_order_id: i64,
+    initial_close_margin_order_id: i64,
     pub close_um_hedge_order_ids: Vec<i64>,
     pub open_timeout_us: Option<i64>,
     pub close_margin_timeout_us: Option<i64>,
     signal_tx: Option<UnboundedSender<Bytes>>,
     um_close_signal_sent: bool,
+    close_target_qty: f64,
+    um_existing_side: Option<Side>,
+    lifecycle_logged: Cell<bool>,
+    open_signal_meta: Option<OpenSignalMeta>,
+    open_signal_logged: Cell<bool>,
     order_seq: u32,
     order_manager: Rc<RefCell<OrderManager>>,
     exposure_manager: Rc<RefCell<ExposureManager>>,
@@ -313,6 +408,7 @@ pub struct BinSingleForwardArbStrategy {
 
 impl BinSingleForwardArbStrategy {
     pub fn new(
+        mode: StrategyMode,
         id: i32,
         now: i64,
         symbol: String,
@@ -330,14 +426,22 @@ impl BinSingleForwardArbStrategy {
             strategy_id: id,
             symbol,
             create_time: now,
+            mode,
             margin_order_id: 0,
+            initial_margin_order_id: 0,
             um_hedge_order_ids: Vec::new(),
             close_margin_order_id: 0,
+            initial_close_margin_order_id: 0,
             close_um_hedge_order_ids: Vec::new(),
             open_timeout_us: None,
             close_margin_timeout_us: None,
             signal_tx: None,
             um_close_signal_sent: false,
+            close_target_qty: 0.0,
+            um_existing_side: None,
+            lifecycle_logged: Cell::new(false),
+            open_signal_meta: None,
+            open_signal_logged: Cell::new(false),
             order_seq: 0,
             order_manager,
             exposure_manager,
@@ -352,9 +456,10 @@ impl BinSingleForwardArbStrategy {
         };
 
         info!(
-            "{}: strategy_id={} 初始化 symbol={} max_symbol_ratio={:.2}% max_total_ratio={:.2}% max_pos_u={:.2} max_leverage={:.2}",
+            "{}: strategy_id={} 初始化 mode={:?} symbol={} max_symbol_ratio={:.2}% max_total_ratio={:.2}% max_pos_u={:.2} max_leverage={:.2}",
             Self::strategy_name(),
             strategy.strategy_id,
+            strategy.mode,
             strategy.symbol,
             strategy.max_symbol_exposure_ratio * 100.0,
             strategy.max_total_exposure_ratio * 100.0,
@@ -363,6 +468,68 @@ impl BinSingleForwardArbStrategy {
         );
 
         strategy
+    }
+
+    pub fn new_open(
+        id: i32,
+        now: i64,
+        symbol: String,
+        order_manager: Rc<RefCell<OrderManager>>,
+        exposure_manager: Rc<RefCell<ExposureManager>>,
+        order_tx: UnboundedSender<Bytes>,
+        max_symbol_exposure_ratio: f64,
+        max_total_exposure_ratio: f64,
+        max_pos_u: f64,
+        max_leverage: f64,
+        min_qty_table: Rc<MinQtyTable>,
+        price_table: Rc<std::cell::RefCell<PriceTable>>,
+    ) -> Self {
+        Self::new(
+            StrategyMode::Open,
+            id,
+            now,
+            symbol,
+            order_manager,
+            exposure_manager,
+            order_tx,
+            max_symbol_exposure_ratio,
+            max_total_exposure_ratio,
+            max_pos_u,
+            max_leverage,
+            min_qty_table,
+            price_table,
+        )
+    }
+
+    pub fn new_close(
+        id: i32,
+        now: i64,
+        symbol: String,
+        order_manager: Rc<RefCell<OrderManager>>,
+        exposure_manager: Rc<RefCell<ExposureManager>>,
+        order_tx: UnboundedSender<Bytes>,
+        max_symbol_exposure_ratio: f64,
+        max_total_exposure_ratio: f64,
+        max_pos_u: f64,
+        max_leverage: f64,
+        min_qty_table: Rc<MinQtyTable>,
+        price_table: Rc<std::cell::RefCell<PriceTable>>,
+    ) -> Self {
+        Self::new(
+            StrategyMode::Close,
+            id,
+            now,
+            symbol,
+            order_manager,
+            exposure_manager,
+            order_tx,
+            max_symbol_exposure_ratio,
+            max_total_exposure_ratio,
+            max_pos_u,
+            max_leverage,
+            min_qty_table,
+            price_table,
+        )
     }
 
     pub fn set_signal_sender(&mut self, signal_tx: UnboundedSender<Bytes>) {
@@ -523,6 +690,316 @@ impl BinSingleForwardArbStrategy {
                 );
             }
         }
+    }
+
+    fn handle_signal_open(&mut self, signal: TradeSignal) {
+        match signal.signal_type {
+            SignalType::BinSingleForwardArbOpen => {
+                match BinSingleForwardArbOpenCtx::from_bytes(signal.context.clone()) {
+                    Ok(ctx) => match self.create_margin_order(&ctx) {
+                        Ok(()) => debug!(
+                            "{}: strategy_id={} 成功创建开仓订单",
+                            Self::strategy_name(),
+                            self.strategy_id
+                        ),
+                        Err(err) => warn!(
+                            "{}: strategy_id={} 开仓下单失败: {}",
+                            Self::strategy_name(),
+                            self.strategy_id,
+                            err
+                        ),
+                    },
+                    Err(err) => warn!(
+                        "{}: strategy_id={} 解析开仓上下文失败: {}",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        err
+                    ),
+                }
+            }
+            SignalType::BinSingleForwardArbHedge => {
+                match BinSingleForwardArbHedgeCtx::from_bytes(signal.context.clone()) {
+                    Ok(ctx) => {
+                        if ctx.strategy_id != self.strategy_id {
+                            debug!(
+                                "{}: strategy_id={} 忽略他人 hedge 信号 for strategy_id={}",
+                                Self::strategy_name(),
+                                self.strategy_id,
+                                ctx.strategy_id
+                            );
+                        } else if let Err(err) = self.create_hedge_um_order_from_margin_order(&ctx)
+                        {
+                            warn!(
+                                "{}: strategy_id={} 创建对冲订单失败: {}",
+                                Self::strategy_name(),
+                                self.strategy_id,
+                                err
+                            );
+                        }
+                    }
+                    Err(err) => warn!(
+                        "{}: strategy_id={} 解析对冲上下文失败: {}",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        err
+                    ),
+                }
+            }
+            other => debug!(
+                "{}: strategy_id={} open-mode 忽略信号 {:?}",
+                Self::strategy_name(),
+                self.strategy_id,
+                other
+            ),
+        }
+    }
+
+    fn handle_signal_close(&mut self, signal: TradeSignal) {
+        match signal.signal_type {
+            SignalType::BinSingleForwardArbCloseMargin => {
+                match BinSingleForwardArbCloseMarginCtx::from_bytes(signal.context.clone()) {
+                    Ok(ctx) => {
+                        self.um_close_signal_sent = false;
+                        if let Err(err) = self.close_margin_with_limit(&ctx) {
+                            warn!(
+                                "{}: strategy_id={} margin 平仓失败: {}",
+                                Self::strategy_name(),
+                                self.strategy_id,
+                                err
+                            );
+                        } else {
+                            debug!(
+                                "{}: strategy_id={} 成功触发 margin 限价平仓",
+                                Self::strategy_name(),
+                                self.strategy_id
+                            );
+                        }
+                    }
+                    Err(err) => warn!(
+                        "{}: strategy_id={} 解析 margin 平仓上下文失败: {}",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        err
+                    ),
+                }
+            }
+            SignalType::BinSingleForwardArbCloseUm => {
+                match BinSingleForwardArbCloseUmCtx::from_bytes(signal.context.clone()) {
+                    Ok(ctx) => {
+                        if let Err(err) = self.close_um_with_market(&ctx) {
+                            warn!(
+                                "{}: strategy_id={} UM 平仓失败: {}",
+                                Self::strategy_name(),
+                                self.strategy_id,
+                                err
+                            );
+                        } else {
+                            debug!(
+                                "{}: strategy_id={} 成功触发 UM 市价平仓",
+                                Self::strategy_name(),
+                                self.strategy_id
+                            );
+                        }
+                    }
+                    Err(err) => warn!(
+                        "{}: strategy_id={} 解析 UM 平仓上下文失败: {}",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        err
+                    ),
+                }
+            }
+            other => debug!(
+                "{}: strategy_id={} close-mode 忽略信号 {:?}",
+                Self::strategy_name(),
+                self.strategy_id,
+                other
+            ),
+        }
+    }
+
+    fn is_active_open(&self) -> bool {
+        let manager_ref = self.order_manager.borrow();
+        if self.margin_order_id == 0 {
+            if !self.um_hedge_order_ids.is_empty() {
+                self.log_lifecycle_summary("开仓提前结束");
+            }
+            warn!(
+                "{}: strategy_id={} 缺少 margin 开仓单，返回非活跃",
+                Self::strategy_name(),
+                self.strategy_id
+            );
+            return false;
+        }
+
+        let Some(margin_order) = manager_ref.get(self.margin_order_id) else {
+            warn!(
+                "{}: strategy_id={} 未找到 margin 开仓单 id={}，返回非活跃",
+                Self::strategy_name(),
+                self.strategy_id,
+                self.margin_order_id
+            );
+            return false;
+        };
+
+        if margin_order.status == OrderExecutionStatus::Filled {
+            self.period_log_flags.borrow_mut().last_margin_open_status =
+                Some(OrderExecutionStatus::Filled);
+        } else if margin_order.status.is_terminal() {
+            warn!(
+                "{}: strategy_id={} margin 开仓单终结 status={}，策略退出",
+                Self::strategy_name(),
+                self.strategy_id,
+                margin_order.status.as_str()
+            );
+            self.period_log_flags.borrow_mut().last_margin_open_status = Some(margin_order.status);
+            return false;
+        } else {
+            let mut flags = self.period_log_flags.borrow_mut();
+            if flags.last_margin_open_status != Some(margin_order.status) {
+                debug!(
+                    "{}: strategy_id={} margin 开仓单状态={}，等待成交",
+                    Self::strategy_name(),
+                    self.strategy_id,
+                    margin_order.status.as_str()
+                );
+                flags.last_margin_open_status = Some(margin_order.status);
+            }
+            return true;
+        }
+
+        if self.um_hedge_order_ids.is_empty() {
+            self.period_log_flags.borrow_mut().last_um_hedge_status = None;
+            info!(
+                "{}: strategy_id={} margin 开仓已完成且无 UM 对冲单，生命周期结束",
+                Self::strategy_name(),
+                self.strategy_id
+            );
+            self.log_lifecycle_summary("开仓完成");
+            return false;
+        }
+
+        if let Some((order_id, status_opt)) =
+            Self::first_unfilled_order(&manager_ref, &self.um_hedge_order_ids)
+        {
+            let mut flags = self.period_log_flags.borrow_mut();
+            if flags.last_um_hedge_status != status_opt {
+                match status_opt {
+                    Some(status) => debug!(
+                        "{}: strategy_id={} UM 对冲单 id={} 状态={}，等待成交",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        order_id,
+                        status.as_str()
+                    ),
+                    None => info!(
+                        "{}: strategy_id={} 未找到 UM 对冲单 id={}，待平仓，保持激活状态",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        order_id
+                    ),
+                }
+                flags.last_um_hedge_status = status_opt;
+            }
+            return true;
+        } else {
+            self.period_log_flags.borrow_mut().last_um_hedge_status =
+                Some(OrderExecutionStatus::Filled);
+        }
+
+        info!(
+            "{}: strategy_id={} margin 开仓及 UM 对冲均已完成，生命周期结束",
+            Self::strategy_name(),
+            self.strategy_id
+        );
+
+        self.log_lifecycle_summary("开仓完成");
+
+        false
+    }
+
+    fn is_active_close(&self) -> bool {
+        let manager_ref = self.order_manager.borrow();
+
+        if self.close_margin_order_id == 0 {
+            warn!(
+                "{}: strategy_id={} 缺少 margin 平仓单，返回非活跃",
+                Self::strategy_name(),
+                self.strategy_id
+            );
+            return false;
+        }
+
+        let Some(close_margin_order) = manager_ref.get(self.close_margin_order_id) else {
+            self.period_log_flags.borrow_mut().last_margin_close_status = None;
+            info!(
+                "{}: strategy_id={} 未找到 margin 平仓单 id={}，待平仓，保持激活状态",
+                Self::strategy_name(),
+                self.strategy_id,
+                self.close_margin_order_id
+            );
+            return true;
+        };
+
+        if close_margin_order.status != OrderExecutionStatus::Filled {
+            let mut flags = self.period_log_flags.borrow_mut();
+            if flags.last_margin_close_status != Some(close_margin_order.status) {
+                debug!(
+                    "{}: strategy_id={} margin 平仓单状态={}，等待成交",
+                    Self::strategy_name(),
+                    self.strategy_id,
+                    close_margin_order.status.as_str()
+                );
+                flags.last_margin_close_status = Some(close_margin_order.status);
+            }
+            return true;
+        }
+
+        if self.close_um_hedge_order_ids.is_empty() {
+            self.period_log_flags.borrow_mut().last_um_close_status = None;
+            debug!(
+                "{}: strategy_id={} UM 平仓单未触发，策略仍在执行",
+                Self::strategy_name(),
+                self.strategy_id
+            );
+            return true;
+        }
+
+        if let Some((order_id, status_opt)) =
+            Self::first_unfilled_order(&manager_ref, &self.close_um_hedge_order_ids)
+        {
+            let mut flags = self.period_log_flags.borrow_mut();
+            if flags.last_um_close_status != status_opt {
+                match status_opt {
+                    Some(status) => debug!(
+                        "{}: strategy_id={} UM 平仓单 id={} 状态={}，等待成交",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        order_id,
+                        status.as_str()
+                    ),
+                    None => info!(
+                        "{}: strategy_id={} 未找到 UM 平仓单 id={}，待平仓，保持激活状态",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        order_id
+                    ),
+                }
+                flags.last_um_close_status = status_opt;
+            }
+            return true;
+        } else {
+            self.period_log_flags.borrow_mut().last_um_close_status =
+                Some(OrderExecutionStatus::Filled);
+        }
+
+        info!(
+            "{}: strategy_id={} 所有订单已全部成交，策略进入完成状态",
+            Self::strategy_name(),
+            self.strategy_id
+        );
+
+        false
     }
     //1、传入order_manager的&ref，检查当前挂单是否小于3
     fn check_current_pending_limit_order(symbol: &String, order_manager: &OrderManager) -> bool {
@@ -866,6 +1343,25 @@ impl BinSingleForwardArbStrategy {
             ));
         }
 
+        if self.mode == StrategyMode::Open {
+            self.open_signal_meta = Some(OpenSignalMeta {
+                spot_symbol: open_ctx.spot_symbol.clone(),
+                amount: open_ctx.amount,
+                side: open_ctx.side,
+                order_type: open_ctx.order_type,
+                price: open_ctx.price,
+                price_tick: open_ctx.price_tick,
+                exp_time: open_ctx.exp_time,
+                trigger_ts_us: get_timestamp_us(),
+                spot_sr: open_ctx.spot_sr,
+                futures_sr: open_ctx.futures_sr,
+                funding_ma: open_ctx.funding_ma,
+                predicted_funding_rate: open_ctx.predicted_funding_rate,
+                loan_rate: open_ctx.loan_rate,
+            });
+            self.open_signal_logged.set(false);
+        }
+
         {
             let order_manager = self.order_manager.borrow();
             if !Self::check_current_pending_limit_order(&open_ctx.spot_symbol, &order_manager) {
@@ -1103,6 +1599,7 @@ impl BinSingleForwardArbStrategy {
 
         order_manager.insert(order);
         self.margin_order_id = order_id;
+        self.initial_margin_order_id = order_id;
         self.open_timeout_us = (open_ctx.exp_time > 0).then_some(open_ctx.exp_time);
         self.um_close_signal_sent = false;
         self.close_margin_timeout_us = None;
@@ -1317,7 +1814,17 @@ impl BinSingleForwardArbStrategy {
         Ok(())
     }
 
-    fn close_margin_with_limit(
+    pub(crate) fn close_margin_with_limit(
+        &mut self,
+        ctx: &BinSingleForwardArbCloseMarginCtx,
+    ) -> Result<(), String> {
+        match self.mode {
+            StrategyMode::Open => self.close_margin_with_limit_open(ctx),
+            StrategyMode::Close => self.close_margin_with_limit_close(ctx),
+        }
+    }
+
+    fn close_margin_with_limit_open(
         &mut self,
         ctx: &BinSingleForwardArbCloseMarginCtx,
     ) -> Result<(), String> {
@@ -1516,6 +2023,7 @@ impl BinSingleForwardArbStrategy {
         }
 
         self.close_margin_order_id = margin_close_id;
+        self.initial_close_margin_order_id = margin_close_id;
         self.um_close_signal_sent = false;
         self.close_margin_timeout_us = (ctx.exp_time > 0).then_some(ctx.exp_time);
 
@@ -1532,7 +2040,293 @@ impl BinSingleForwardArbStrategy {
         Ok(())
     }
 
+    fn close_margin_with_limit_close(
+        &mut self,
+        ctx: &BinSingleForwardArbCloseMarginCtx,
+    ) -> Result<(), String> {
+        if self.close_margin_order_id != 0 {
+            return Err(format!(
+                "{}: strategy_id={} 已存在待执行的 margin 平仓单 id={}",
+                Self::strategy_name(),
+                self.strategy_id,
+                self.close_margin_order_id
+            ));
+        }
+
+        let symbol_upper = ctx.spot_symbol.to_uppercase();
+        if !symbol_upper.eq_ignore_ascii_case(&self.symbol) {
+            return Err(format!(
+                "{}: strategy_id={} 平仓上下文 symbol={} 与策略 symbol={} 不一致",
+                Self::strategy_name(),
+                self.strategy_id,
+                ctx.spot_symbol,
+                self.symbol
+            ));
+        }
+
+        let base_asset = Self::extract_base_asset(&symbol_upper).ok_or_else(|| {
+            format!(
+                "{}: strategy_id={} 无法识别 symbol={} 的基础资产",
+                Self::strategy_name(),
+                self.strategy_id,
+                ctx.spot_symbol
+            )
+        })?;
+
+        let exposure_entry = {
+            let exposure_manager = self.exposure_manager.borrow();
+            exposure_manager.exposure_for_asset(&base_asset).cloned()
+        };
+
+        let Some(exposure) = exposure_entry else {
+            return Err(format!(
+                "{}: strategy_id={} 无法获取基础资产 {} 的敞口信息",
+                Self::strategy_name(),
+                self.strategy_id,
+                base_asset
+            ));
+        };
+
+        let spot_qty = exposure.spot_total_wallet;
+        if spot_qty.abs() <= 1e-8 {
+            return Err(format!(
+                "{}: strategy_id={} 现货持仓近似为 0，无法平仓 symbol={}",
+                Self::strategy_name(),
+                self.strategy_id,
+                ctx.spot_symbol
+            ));
+        }
+
+        self.um_close_signal_sent = false;
+
+        let um_qty = exposure.um_net_position;
+        if um_qty.abs() <= 1e-8 {
+            return Err(format!(
+                "{}: strategy_id={} UM 持仓近似为 0，无法平仓 symbol={}",
+                Self::strategy_name(),
+                self.strategy_id,
+                ctx.spot_symbol
+            ));
+        }
+
+        let spot_available = spot_qty.abs();
+        let um_available = um_qty.abs();
+        if spot_qty.signum() == um_qty.signum() {
+            warn!(
+                "{}: strategy_id={} spot_qty={:.8} 与 um_qty={:.8} 同号，可能未对冲",
+                Self::strategy_name(),
+                self.strategy_id,
+                spot_qty,
+                um_qty
+            );
+        }
+        let mut close_qty = spot_available.min(um_available);
+        if close_qty <= 1e-8 {
+            return Err(format!(
+                "{}: strategy_id={} 可平仓数量过小 spot={:.8} um={:.8}",
+                Self::strategy_name(),
+                self.strategy_id,
+                spot_available,
+                um_available
+            ));
+        }
+
+        let (close_side_enum, close_side_str) = if spot_qty > 0.0 {
+            (Side::Sell, "SELL")
+        } else {
+            (Side::Buy, "BUY")
+        };
+        let existing_um_side = if um_qty > 0.0 { Side::Buy } else { Side::Sell };
+
+        let price_tick = ctx.price_tick.max(0.0);
+        let mut limit_price = ctx.limit_price;
+        if price_tick > 0.0 {
+            limit_price = align_price_ceil(limit_price, price_tick);
+        }
+
+        let step = self
+            .min_qty_table
+            .margin_step_by_symbol(&ctx.spot_symbol)
+            .or_else(|| self.min_qty_table.spot_step_by_symbol(&ctx.spot_symbol))
+            .unwrap_or(0.0);
+
+        if step > 0.0 {
+            close_qty = align_price_floor(close_qty, step);
+        }
+
+        let um_step = self
+            .min_qty_table
+            .futures_um_step_by_symbol(&ctx.spot_symbol)
+            .unwrap_or(0.0);
+        if um_step > 0.0 {
+            close_qty = align_price_floor(close_qty, um_step);
+        }
+
+        if close_qty <= 1e-8 {
+            return Err(format!(
+                "{}: strategy_id={} 对齐步长后数量过小 step={:.8}",
+                Self::strategy_name(),
+                self.strategy_id,
+                step
+            ));
+        }
+
+        let min_qty = self
+            .min_qty_table
+            .margin_min_qty_by_symbol(&ctx.spot_symbol)
+            .or_else(|| self.min_qty_table.spot_min_qty_by_symbol(&ctx.spot_symbol))
+            .unwrap_or(0.0);
+        if min_qty > 0.0 && close_qty + 1e-12 < min_qty {
+            return Err(format!(
+                "{}: strategy_id={} 可平仓数量 {:.8} 低于最小下单量 {:.8}",
+                Self::strategy_name(),
+                self.strategy_id,
+                close_qty,
+                min_qty
+            ));
+        }
+
+        let um_min_qty = self
+            .min_qty_table
+            .futures_um_min_qty_by_symbol(&ctx.spot_symbol)
+            .unwrap_or(0.0);
+        if um_min_qty > 0.0 && close_qty + 1e-12 < um_min_qty {
+            return Err(format!(
+                "{}: strategy_id={} UM 平仓需求的数量 {:.8} 小于最小下单量 {:.8}",
+                Self::strategy_name(),
+                self.strategy_id,
+                close_qty,
+                um_min_qty
+            ));
+        }
+
+        let min_notional = self
+            .min_qty_table
+            .margin_min_notional_by_symbol(&ctx.spot_symbol)
+            .or_else(|| {
+                self.min_qty_table
+                    .spot_min_notional_by_symbol(&ctx.spot_symbol)
+            })
+            .unwrap_or(0.0);
+        if min_notional > 0.0 && limit_price > 0.0 {
+            let notional = close_qty * limit_price;
+            if notional + 1e-8 < min_notional {
+                return Err(format!(
+                    "{}: strategy_id={} 平仓名义金额 {:.8} 小于阈值 {:.8}",
+                    Self::strategy_name(),
+                    self.strategy_id,
+                    notional,
+                    min_notional
+                ));
+            }
+        }
+
+        let um_min_notional = self
+            .min_qty_table
+            .futures_um_min_notional_by_symbol(&ctx.spot_symbol)
+            .unwrap_or(0.0);
+        if um_min_notional > 0.0 {
+            let mark_price = self
+                .price_table
+                .borrow()
+                .mark_price(&ctx.spot_symbol)
+                .unwrap_or(0.0);
+            if mark_price > 0.0 {
+                let notional = mark_price * close_qty;
+                if notional + 1e-8 < um_min_notional {
+                    return Err(format!(
+                        "{}: strategy_id={} UM 平仓名义金额 {:.8} 小于阈值 {:.8}",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        notional,
+                        um_min_notional
+                    ));
+                }
+            } else {
+                warn!(
+                    "{}: strategy_id={} 缺少 {} 的标记价格，无法校验 UM 名义金额",
+                    Self::strategy_name(),
+                    self.strategy_id,
+                    ctx.spot_symbol
+                );
+            }
+        }
+
+        if close_qty > spot_available + 1e-8 || close_qty > um_available + 1e-8 {
+            close_qty = close_qty.min(spot_available).min(um_available);
+        }
+
+        if close_qty <= 1e-8 {
+            return Err(format!(
+                "{}: strategy_id={} 平仓数量无效 close_qty={}",
+                Self::strategy_name(),
+                self.strategy_id,
+                close_qty
+            ));
+        }
+
+        let order_id = self.next_order_id();
+        let now = get_timestamp_us();
+        let params = Bytes::from(format!(
+            "symbol={}&side={}&type=LIMIT&timeInForce=GTC&quantity={}&price={}&newClientOrderId={}",
+            ctx.spot_symbol,
+            close_side_str,
+            format_quantity(close_qty),
+            format_price(limit_price),
+            order_id
+        ));
+
+        let request = BinanceNewMarginOrderRequest::create(now, order_id, params);
+        self.order_tx
+            .send(request.to_bytes())
+            .map_err(|e| format!("{}: 推送 margin 平仓失败: {}", Self::strategy_name(), e))?;
+
+        {
+            let mut manager = self.order_manager.borrow_mut();
+            let mut close_order = Order::new(
+                order_id,
+                OrderType::Limit,
+                ctx.spot_symbol.clone(),
+                close_side_enum,
+                close_qty,
+                limit_price,
+            );
+            close_order.set_submit_time(now);
+            manager.insert(close_order);
+        }
+
+        self.close_margin_order_id = order_id;
+        self.initial_close_margin_order_id = order_id;
+        self.close_target_qty = close_qty;
+        self.um_existing_side = Some(existing_um_side);
+        self.close_margin_timeout_us = (ctx.exp_time > 0).then_some(ctx.exp_time);
+
+        info!(
+            "{}: strategy_id={} 提交 margin 限价平仓 symbol={} qty={:.6} price={:.8} order_id={} spot_pos={:.6} um_pos={:.6}",
+            Self::strategy_name(),
+            self.strategy_id,
+            ctx.spot_symbol,
+            close_qty,
+            limit_price,
+            order_id,
+            spot_qty,
+            um_qty
+        );
+
+        Ok(())
+    }
+
     fn close_um_with_market(&mut self, ctx: &BinSingleForwardArbCloseUmCtx) -> Result<(), String> {
+        match self.mode {
+            StrategyMode::Open => self.close_um_with_market_open(ctx),
+            StrategyMode::Close => self.close_um_with_market_close(ctx),
+        }
+    }
+
+    fn close_um_with_market_open(
+        &mut self,
+        ctx: &BinSingleForwardArbCloseUmCtx,
+    ) -> Result<(), String> {
         if !self.close_um_hedge_order_ids.is_empty() {
             return Err(format!(
                 "{}: strategy_id={} 已存在待执行的 UM 平仓单 id={:?}",
@@ -1626,6 +2420,183 @@ impl BinSingleForwardArbStrategy {
             hedge_symbol,
             close_qty,
             um_close_id
+        );
+
+        Ok(())
+    }
+
+    fn close_um_with_market_close(
+        &mut self,
+        ctx: &BinSingleForwardArbCloseUmCtx,
+    ) -> Result<(), String> {
+        if !self.close_um_hedge_order_ids.is_empty() {
+            return Err(format!(
+                "{}: strategy_id={} 已存在待执行的 UM 平仓单 id={:?}",
+                Self::strategy_name(),
+                self.strategy_id,
+                self.close_um_hedge_order_ids
+            ));
+        }
+
+        if !ctx.um_symbol.eq_ignore_ascii_case(&self.symbol) {
+            return Err(format!(
+                "{}: strategy_id={} UM 平仓上下文 symbol={} 与策略 symbol={} 不匹配",
+                Self::strategy_name(),
+                self.strategy_id,
+                ctx.um_symbol,
+                self.symbol
+            ));
+        }
+
+        let planned_qty = if ctx.quantity > 0.0 {
+            ctx.quantity
+        } else {
+            self.close_target_qty
+        };
+
+        if planned_qty <= 1e-8 {
+            return Err(format!(
+                "{}: strategy_id={} UM 平仓数量无效 planned_qty={}",
+                Self::strategy_name(),
+                self.strategy_id,
+                planned_qty
+            ));
+        }
+
+        let existing_side = self.um_existing_side.ok_or_else(|| {
+            format!(
+                "{}: strategy_id={} 缺少 UM 原始仓位方向，无法生成平仓单",
+                Self::strategy_name(),
+                self.strategy_id
+            )
+        })?;
+
+        let (close_side_enum, close_side_str, position_side_str) = match existing_side {
+            Side::Buy => (Side::Sell, "SELL", "LONG"),
+            Side::Sell => (Side::Buy, "BUY", "SHORT"),
+        };
+
+        let qty_step = self
+            .min_qty_table
+            .futures_um_step_by_symbol(&ctx.um_symbol)
+            .or_else(|| self.min_qty_table.margin_step_by_symbol(&ctx.um_symbol))
+            .or_else(|| self.min_qty_table.spot_step_by_symbol(&ctx.um_symbol))
+            .unwrap_or(0.0);
+        let mut close_qty = if qty_step > 0.0 {
+            align_price_floor(planned_qty, qty_step)
+        } else {
+            planned_qty
+        };
+
+        let base_asset = Self::extract_base_asset(&self.symbol.to_uppercase());
+        if let Some(asset) = base_asset {
+            let um_available = self
+                .exposure_manager
+                .borrow()
+                .exposure_for_asset(&asset)
+                .map(|entry| entry.um_net_position.abs())
+                .unwrap_or(0.0);
+            if um_available > 1e-8 {
+                close_qty = close_qty.min(um_available);
+            }
+        }
+
+        if close_qty <= 1e-8 {
+            return Err(format!(
+                "{}: strategy_id={} UM 平仓数量在对齐后过小 step={:.8}",
+                Self::strategy_name(),
+                self.strategy_id,
+                qty_step
+            ));
+        }
+
+        let min_qty = self
+            .min_qty_table
+            .futures_um_min_qty_by_symbol(&ctx.um_symbol)
+            .unwrap_or(0.0);
+        if min_qty > 0.0 && close_qty + 1e-12 < min_qty {
+            return Err(format!(
+                "{}: strategy_id={} UM 平仓数量 {:.8} 小于最小下单量 {:.8}",
+                Self::strategy_name(),
+                self.strategy_id,
+                close_qty,
+                min_qty
+            ));
+        }
+
+        let min_notional = self
+            .min_qty_table
+            .futures_um_min_notional_by_symbol(&ctx.um_symbol)
+            .unwrap_or(0.0);
+        if min_notional > 0.0 {
+            let mark_price = self
+                .price_table
+                .borrow()
+                .mark_price(&ctx.um_symbol)
+                .unwrap_or(0.0);
+            if mark_price <= 0.0 {
+                return Err(format!(
+                    "{}: strategy_id={} 缺少 {} 的标记价格，无法计算名义金额",
+                    Self::strategy_name(),
+                    self.strategy_id,
+                    ctx.um_symbol
+                ));
+            }
+            let notional = mark_price * close_qty;
+            if notional + 1e-8 < min_notional {
+                return Err(format!(
+                    "{}: strategy_id={} UM 平仓名义金额 {:.8} 低于阈值 {:.8}",
+                    Self::strategy_name(),
+                    self.strategy_id,
+                    notional,
+                    min_notional
+                ));
+            }
+        }
+
+        let um_close_id = self.next_order_id();
+        let now = get_timestamp_us();
+
+        let params = Bytes::from(format!(
+            "symbol={}&side={}&type=MARKET&quantity={}&positionSide={}&newClientOrderId={}",
+            ctx.um_symbol,
+            close_side_str,
+            format_quantity(close_qty),
+            position_side_str,
+            um_close_id
+        ));
+
+        let request = BinanceNewUMOrderRequest::create(now, um_close_id, params);
+        self.order_tx
+            .send(request.to_bytes())
+            .map_err(|e| format!("{}: 推送 UM 平仓失败: {}", Self::strategy_name(), e))?;
+
+        {
+            let mut manager = self.order_manager.borrow_mut();
+            let mut close_order = Order::new(
+                um_close_id,
+                OrderType::Market,
+                ctx.um_symbol.clone(),
+                close_side_enum,
+                close_qty,
+                0.0,
+            );
+            close_order.set_submit_time(now);
+            manager.insert(close_order);
+        }
+
+        self.register_um_close_order(um_close_id);
+        self.um_close_signal_sent = true;
+        self.close_margin_timeout_us = None;
+
+        info!(
+            "{}: strategy_id={} 提交 UM 市价平仓 symbol={} qty={:.6} order_id={} existing_side={:?}",
+            Self::strategy_name(),
+            self.strategy_id,
+            ctx.um_symbol,
+            close_qty,
+            um_close_id,
+            existing_side
         );
 
         Ok(())
@@ -1732,16 +2703,24 @@ impl BinSingleForwardArbStrategy {
             strategy_id: self.strategy_id,
             symbol: self.symbol.clone(),
             create_time: self.create_time,
+            mode: self.mode,
             margin_order_id: self.margin_order_id,
+            initial_margin_order_id: self.initial_margin_order_id,
             um_hedge_order_ids: self.um_hedge_order_ids.clone(),
             legacy_um_hedge_order_id: None,
             close_margin_order_id: self.close_margin_order_id,
+            initial_close_margin_order_id: self.initial_close_margin_order_id,
             close_um_hedge_order_ids: self.close_um_hedge_order_ids.clone(),
             legacy_close_um_hedge_order_id: None,
             open_timeout_us: self.open_timeout_us,
             close_margin_timeout_us: self.close_margin_timeout_us,
             um_close_signal_sent: self.um_close_signal_sent,
             order_seq: self.order_seq,
+            close_target_qty: self.close_target_qty,
+            um_existing_side: self.um_existing_side,
+            lifecycle_logged: self.lifecycle_logged.get(),
+            open_signal_meta: self.open_signal_meta.clone(),
+            open_signal_logged: self.open_signal_logged.get(),
         }
     }
 
@@ -1758,6 +2737,7 @@ impl BinSingleForwardArbStrategy {
         price_table: Rc<std::cell::RefCell<PriceTable>>,
     ) -> Self {
         let mut s = Self::new(
+            snap.mode,
             snap.strategy_id,
             snap.create_time,
             snap.symbol.clone(),
@@ -1772,6 +2752,7 @@ impl BinSingleForwardArbStrategy {
             price_table,
         );
         s.margin_order_id = snap.margin_order_id;
+        s.initial_margin_order_id = snap.initial_margin_order_id;
         s.um_hedge_order_ids = snap.um_hedge_order_ids.clone();
         if s.um_hedge_order_ids.is_empty() {
             if let Some(legacy) = snap.legacy_um_hedge_order_id {
@@ -1781,6 +2762,7 @@ impl BinSingleForwardArbStrategy {
             }
         }
         s.close_margin_order_id = snap.close_margin_order_id;
+        s.initial_close_margin_order_id = snap.initial_close_margin_order_id;
         s.close_um_hedge_order_ids = snap.close_um_hedge_order_ids.clone();
         if s.close_um_hedge_order_ids.is_empty() {
             if let Some(legacy) = snap.legacy_close_um_hedge_order_id {
@@ -1793,6 +2775,11 @@ impl BinSingleForwardArbStrategy {
         s.close_margin_timeout_us = snap.close_margin_timeout_us;
         s.um_close_signal_sent = snap.um_close_signal_sent;
         s.order_seq = snap.order_seq;
+        s.close_target_qty = snap.close_target_qty;
+        s.um_existing_side = snap.um_existing_side;
+        s.lifecycle_logged.set(snap.lifecycle_logged);
+        s.open_signal_meta = snap.open_signal_meta.clone();
+        s.open_signal_logged.set(snap.open_signal_logged);
         debug!(
             "{}: strategy_id={} 从快照恢复 margin_order={} um_orders={:?} close_margin={} um_close={:?}",
             Self::strategy_name(),
@@ -1807,83 +2794,8 @@ impl BinSingleForwardArbStrategy {
 }
 impl Drop for BinSingleForwardArbStrategy {
     fn drop(&mut self) {
-        // 在回收前输出订单生命周期汇总（开仓/对冲/平仓）
-        let now = get_timestamp_us();
-        let mgr_ro = self.order_manager.borrow();
-        let mut rows: Vec<Vec<String>> = Vec::new();
-        let mut record_entries: Vec<(&str, i64)> = Vec::new();
-        if self.margin_order_id != 0 {
-            record_entries.push(("MarginOpen", self.margin_order_id));
-        }
-        for id in &self.um_hedge_order_ids {
-            record_entries.push(("UMHedge", *id));
-        }
-        if self.close_margin_order_id != 0 {
-            record_entries.push(("MarginClose", self.close_margin_order_id));
-        }
-        for id in &self.close_um_hedge_order_ids {
-            record_entries.push(("UMClose", *id));
-        }
-
-        for (kind, id) in record_entries {
-            if let Some(o) = mgr_ro.get(id) {
-                let age_ms = if o.submit_time > 0 {
-                    ((now - o.submit_time) / 1000) as i64
-                } else {
-                    0
-                };
-                rows.push(vec![
-                    id.to_string(),
-                    kind.to_string(),
-                    o.side.as_str().to_string(),
-                    Self::format_decimal(o.quantity),
-                    Self::format_decimal(o.price),
-                    o.status.as_str().to_string(),
-                    age_ms.to_string(),
-                ]);
-            } else {
-                rows.push(vec![
-                    id.to_string(),
-                    kind.to_string(),
-                    "-".to_string(),
-                    "-".to_string(),
-                    "-".to_string(),
-                    "Removed".to_string(),
-                    "0".to_string(),
-                ]);
-            }
-        }
-        drop(mgr_ro);
-
-        if !rows.is_empty() {
-            let table = Self::render_three_line_table(
-                &[
-                    "OrderId", "Kind", "Side", "Qty", "Price", "Status", "Age(ms)",
-                ],
-                &rows,
-            );
-            info!(
-                "{}: strategy_id={} 订单生命周期汇总\n{}",
-                Self::strategy_name(),
-                self.strategy_id,
-                table
-            );
-        }
-
-        // 回收本策略相关订单
-        let mut mgr = self.order_manager.borrow_mut();
-        if self.margin_order_id != 0 {
-            let _ = mgr.remove(self.margin_order_id);
-        }
-        for id in &self.um_hedge_order_ids {
-            let _ = mgr.remove(*id);
-        }
-        if self.close_margin_order_id != 0 {
-            let _ = mgr.remove(self.close_margin_order_id);
-        }
-        for id in &self.close_um_hedge_order_ids {
-            let _ = mgr.remove(*id);
-        }
+        self.log_lifecycle_summary("生命周期结束");
+        self.cleanup_strategy_orders();
         debug!(
             "{}: strategy_id={} 生命周期结束，相关订单已回收",
             Self::strategy_name(),
@@ -2054,25 +2966,48 @@ impl BinSingleForwardArbStrategy {
             return Ok(());
         }
 
-        let (um_symbol, _, qty) = self.aggregate_um_hedge_position().ok_or_else(|| {
-            format!(
-                "{}: strategy_id={} 未找到待平仓的 UM 对冲订单",
-                Self::strategy_name(),
-                self.strategy_id
-            )
-        })?;
+        let (um_symbol, existing_side, qty) = match self.mode {
+            StrategyMode::Open => self.aggregate_um_hedge_position().ok_or_else(|| {
+                format!(
+                    "{}: strategy_id={} 未找到待平仓的 UM 对冲订单",
+                    Self::strategy_name(),
+                    self.strategy_id
+                )
+            })?,
+            StrategyMode::Close => {
+                let qty = self.close_target_qty;
+                if qty <= 1e-8 {
+                    return Err(format!(
+                        "{}: strategy_id={} 平仓数量无效 qty={}",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        qty
+                    ));
+                }
+                let existing_side = self.um_existing_side.ok_or_else(|| {
+                    format!(
+                        "{}: strategy_id={} 缺少 UM 仓位方向，无法触发平仓",
+                        Self::strategy_name(),
+                        self.strategy_id
+                    )
+                })?;
+                (self.symbol.clone(), existing_side, qty)
+            }
+        };
         self.close_margin_timeout_us = None;
 
         debug!(
-            "{}: strategy_id={} 准备触发 UM 平仓 symbol={} total_qty={:.6}",
+            "{}: strategy_id={} 准备触发 UM 平仓 symbol={} total_qty={:.6} existing_side={:?}",
             Self::strategy_name(),
             self.strategy_id,
             um_symbol,
-            qty
+            qty,
+            existing_side
         );
 
         let ctx = BinSingleForwardArbCloseUmCtx {
             um_symbol: um_symbol.clone(),
+            quantity: qty,
             exp_time: get_timestamp_us(),
         };
 
@@ -2134,6 +3069,194 @@ impl BinSingleForwardArbStrategy {
 
     fn compose_order_id(strategy_id: i32, seq: u32) -> i64 {
         ((strategy_id as i64) << 32) | seq as i64
+    }
+
+    fn log_open_signal_summary(&self, order: &Order) {
+        if self.mode != StrategyMode::Open {
+            return;
+        }
+        if self.open_signal_logged.get() {
+            return;
+        }
+        if order.cumulative_filled_quantity <= 1e-8 {
+            return;
+        }
+        let Some(meta) = &self.open_signal_meta else {
+            return;
+        };
+
+        self.open_signal_logged.set(true);
+
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        rows.push(vec![
+            "Signal".to_string(),
+            meta.spot_symbol.clone(),
+            meta.side.as_str().to_string(),
+            Self::format_decimal(meta.amount as f64),
+            Self::format_decimal(meta.price),
+            meta.order_type.as_str().to_string(),
+            format!(
+                "tick={:.8}, exp={}, ts={}",
+                meta.price_tick, meta.exp_time, meta.trigger_ts_us
+            ),
+        ]);
+
+        let filled = Self::format_decimal(order.cumulative_filled_quantity);
+        let qty = Self::format_decimal(order.quantity);
+        let extra = format!("filled={}/{} status={}", filled, qty, order.status.as_str());
+        rows.push(vec![
+            format!("Order {}", order.order_id),
+            order.symbol.clone(),
+            order.side.as_str().to_string(),
+            qty.clone(),
+            Self::format_decimal(order.price),
+            order.order_type.as_str().to_string(),
+            extra,
+        ]);
+
+        if meta.spot_sr.is_some()
+            || meta.futures_sr.is_some()
+            || meta.funding_ma.is_some()
+            || meta.predicted_funding_rate.is_some()
+            || meta.loan_rate.is_some()
+        {
+            let format_opt = |v: Option<f64>| match v {
+                Some(val) => Self::format_decimal(val),
+                None => "-".to_string(),
+            };
+            rows.push(vec![
+                "Metrics".to_string(),
+                format!(
+                    "spot_sr={} fut_sr={}",
+                    format_opt(meta.spot_sr),
+                    format_opt(meta.futures_sr)
+                ),
+                "-".to_string(),
+                format!("fund_ma={}", format_opt(meta.funding_ma)),
+                format!("pred={}", format_opt(meta.predicted_funding_rate)),
+                format!("loan={}", format_opt(meta.loan_rate)),
+                String::new(),
+            ]);
+        }
+
+        let table = Self::render_three_line_table(
+            &["Source", "Symbol", "Side", "Qty", "Price", "Type", "Extra"],
+            &rows,
+        );
+
+        info!(
+            "{}: strategy_id={} 开仓信号摘要\n{}",
+            Self::strategy_name(),
+            self.strategy_id,
+            table
+        );
+    }
+
+    fn log_lifecycle_summary(&self, stage: &str) {
+        if self.lifecycle_logged.get() {
+            return;
+        }
+        self.lifecycle_logged.set(true);
+
+        let now = get_timestamp_us();
+        let mgr_ro = self.order_manager.borrow();
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        let mut record_entries: Vec<(&str, i64)> = Vec::new();
+        if let Some(margin_id) = if self.margin_order_id != 0 {
+            Some(self.margin_order_id)
+        } else if self.initial_margin_order_id != 0 {
+            Some(self.initial_margin_order_id)
+        } else {
+            None
+        } {
+            record_entries.push(("MarginOpen", margin_id));
+        }
+        for id in &self.um_hedge_order_ids {
+            record_entries.push(("UMHedge", *id));
+        }
+        if let Some(close_id) = if self.close_margin_order_id != 0 {
+            Some(self.close_margin_order_id)
+        } else if self.initial_close_margin_order_id != 0 {
+            Some(self.initial_close_margin_order_id)
+        } else {
+            None
+        } {
+            record_entries.push(("MarginClose", close_id));
+        }
+        for id in &self.close_um_hedge_order_ids {
+            record_entries.push(("UMClose", *id));
+        }
+
+        for (kind, id) in record_entries {
+            if let Some(o) = mgr_ro.get(id) {
+                let age_ms = if o.submit_time > 0 {
+                    ((now - o.submit_time) / 1000) as i64
+                } else {
+                    0
+                };
+                rows.push(vec![
+                    id.to_string(),
+                    kind.to_string(),
+                    o.side.as_str().to_string(),
+                    Self::format_decimal(o.quantity),
+                    Self::format_decimal(o.price),
+                    o.status.as_str().to_string(),
+                    age_ms.to_string(),
+                ]);
+            } else {
+                rows.push(vec![
+                    id.to_string(),
+                    kind.to_string(),
+                    "-".to_string(),
+                    "-".to_string(),
+                    "-".to_string(),
+                    "Removed".to_string(),
+                    "0".to_string(),
+                ]);
+            }
+        }
+        drop(mgr_ro);
+
+        if rows.is_empty() {
+            return;
+        }
+
+        let table = Self::render_three_line_table(
+            &[
+                "OrderId", "Kind", "Side", "Qty", "Price", "Status", "Age(ms)",
+            ],
+            &rows,
+        );
+
+        let stage_prefix = if stage.is_empty() {
+            String::new()
+        } else {
+            format!("{} ", stage)
+        };
+
+        info!(
+            "{}: strategy_id={} {}订单生命周期汇总\n{}",
+            Self::strategy_name(),
+            self.strategy_id,
+            stage_prefix,
+            table
+        );
+    }
+
+    fn cleanup_strategy_orders(&mut self) {
+        let mut mgr = self.order_manager.borrow_mut();
+        if self.margin_order_id != 0 {
+            let _ = mgr.remove(self.margin_order_id);
+        }
+        for id in &self.um_hedge_order_ids {
+            let _ = mgr.remove(*id);
+        }
+        if self.close_margin_order_id != 0 {
+            let _ = mgr.remove(self.close_margin_order_id);
+        }
+        for id in &self.close_um_hedge_order_ids {
+            let _ = mgr.remove(*id);
+        }
     }
 }
 
@@ -2226,121 +3349,9 @@ impl Strategy for BinSingleForwardArbStrategy {
 
     fn handle_trade_signal(&mut self, signal_raws: &Bytes) {
         match TradeSignal::from_bytes(signal_raws) {
-            Ok(signal) => match signal.signal_type {
-                SignalType::BinSingleForwardArbOpen => {
-                    match BinSingleForwardArbOpenCtx::from_bytes(signal.context.clone()) {
-                        Ok(ctx) => match self.create_margin_order(&ctx) {
-                            Ok(()) => debug!(
-                                "{}: strategy_id={} 成功创建开仓订单",
-                                Self::strategy_name(),
-                                self.strategy_id
-                            ),
-                            Err(err) => warn!(
-                                "{}: strategy_id={} 开仓下单失败: {}",
-                                Self::strategy_name(),
-                                self.strategy_id,
-                                err
-                            ),
-                        },
-                        Err(err) => {
-                            warn!(
-                                "{}: strategy_id={} 解析开仓上下文失败: {}",
-                                Self::strategy_name(),
-                                self.strategy_id,
-                                err
-                            );
-                        }
-                    }
-                }
-                SignalType::BinSingleForwardArbHedge => {
-                    match BinSingleForwardArbHedgeCtx::from_bytes(signal.context.clone()) {
-                        Ok(ctx) => {
-                            if ctx.strategy_id != self.strategy_id {
-                                debug!(
-                                    "{}: strategy_id={} 忽略他人 hedge 信号 for strategy_id={}",
-                                    Self::strategy_name(),
-                                    self.strategy_id,
-                                    ctx.strategy_id
-                                );
-                            } else {
-                                match self.create_hedge_um_order_from_margin_order(&ctx) {
-                                    Ok(()) => debug!(
-                                        "{}: strategy_id={} 成功触发对冲订单",
-                                        Self::strategy_name(),
-                                        self.strategy_id
-                                    ),
-                                    Err(err) => warn!(
-                                        "{}: strategy_id={} 创建对冲订单失败: {}",
-                                        Self::strategy_name(),
-                                        self.strategy_id,
-                                        err
-                                    ),
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            warn!(
-                                "{}: strategy_id={} 解析对冲上下文失败: {}",
-                                Self::strategy_name(),
-                                self.strategy_id,
-                                err
-                            );
-                        }
-                    }
-                }
-                SignalType::BinSingleForwardArbCloseMargin => {
-                    match BinSingleForwardArbCloseMarginCtx::from_bytes(signal.context.clone()) {
-                        Ok(ctx) => {
-                            self.um_close_signal_sent = false;
-                            match self.close_margin_with_limit(&ctx) {
-                                Ok(()) => debug!(
-                                    "{}: strategy_id={} 成功触发 margin 限价平仓",
-                                    Self::strategy_name(),
-                                    self.strategy_id
-                                ),
-                                Err(err) => warn!(
-                                    "{}: strategy_id={} margin 平仓失败: {}",
-                                    Self::strategy_name(),
-                                    self.strategy_id,
-                                    err
-                                ),
-                            }
-                        }
-                        Err(err) => {
-                            warn!(
-                                "{}: strategy_id={} 解析 margin 平仓上下文失败: {}",
-                                Self::strategy_name(),
-                                self.strategy_id,
-                                err
-                            );
-                        }
-                    }
-                }
-                SignalType::BinSingleForwardArbCloseUm => {
-                    match BinSingleForwardArbCloseUmCtx::from_bytes(signal.context.clone()) {
-                        Ok(ctx) => match self.close_um_with_market(&ctx) {
-                            Ok(()) => debug!(
-                                "{}: strategy_id={} 成功触发 UM 市价平仓",
-                                Self::strategy_name(),
-                                self.strategy_id
-                            ),
-                            Err(err) => warn!(
-                                "{}: strategy_id={} UM 平仓失败: {}",
-                                Self::strategy_name(),
-                                self.strategy_id,
-                                err
-                            ),
-                        },
-                        Err(err) => {
-                            warn!(
-                                "{}: strategy_id={} 解析 UM 平仓上下文失败: {}",
-                                Self::strategy_name(),
-                                self.strategy_id,
-                                err
-                            );
-                        }
-                    }
-                }
+            Ok(signal) => match self.mode {
+                StrategyMode::Open => self.handle_signal_open(signal),
+                StrategyMode::Close => self.handle_signal_close(signal),
             },
             Err(err) => warn!(
                 "failed to parse trade signal for strategy_id={}: {}",
@@ -2546,6 +3557,12 @@ impl Strategy for BinSingleForwardArbStrategy {
         }
 
         if order_id == self.margin_order_id {
+            if let Some(order_snapshot) = {
+                let manager = self.order_manager.borrow();
+                manager.get(order_id)
+            } {
+                self.log_open_signal_summary(&order_snapshot);
+            }
             let hedge_delta = {
                 let manager = self.order_manager.borrow();
                 manager
@@ -2748,91 +3765,101 @@ impl Strategy for BinSingleForwardArbStrategy {
 
     fn hanle_period_clock(&mut self, current_tp: i64) {
         // 周期性检查：开仓限价/市价单是否长时间未成交，需要撤单
-        if self.margin_order_id == 0 {
-            let mut flags = self.period_log_flags.borrow_mut();
-            if !flags.margin_open_absent_logged {
-                warn!(
-                    "{}: strategy_id={} 当前无 margin 开仓单，策略将等待回收",
-                    Self::strategy_name(),
-                    self.strategy_id
-                );
-                flags.margin_open_absent_logged = true;
-            }
-            flags.last_margin_open_status = None;
-            self.open_timeout_us = None;
-        } else {
-            {
+        if self.mode == StrategyMode::Open {
+            if self.margin_order_id == 0 {
                 let mut flags = self.period_log_flags.borrow_mut();
-                flags.margin_open_absent_logged = false;
-            }
-            let open_order = {
-                let manager = self.order_manager.borrow();
-                manager.get(self.margin_order_id)
-            };
+                if !flags.margin_open_absent_logged {
+                    warn!(
+                        "{}: strategy_id={} 当前无 margin 开仓单，策略将等待回收",
+                        Self::strategy_name(),
+                        self.strategy_id
+                    );
+                    flags.margin_open_absent_logged = true;
+                }
+                flags.last_margin_open_status = None;
+                self.open_timeout_us = None;
+            } else {
+                {
+                    let mut flags = self.period_log_flags.borrow_mut();
+                    flags.margin_open_absent_logged = false;
+                }
+                let open_order = {
+                    let manager = self.order_manager.borrow();
+                    manager.get(self.margin_order_id)
+                };
 
-            match open_order {
-                Some(order) => {
-                    {
-                        let mut flags = self.period_log_flags.borrow_mut();
-                        flags.margin_open_missing_logged = false;
-                    }
-                    if order.status.is_terminal() {
-                        self.open_timeout_us = None;
-                    } else if let (Some(timeout_us), submit_time) =
-                        (self.open_timeout_us, order.submit_time)
-                    {
-                        if submit_time > 0 && current_tp.saturating_sub(submit_time) >= timeout_us {
-                            info!(
-                                "{}: strategy_id={} margin 开仓单超时，尝试撤单 order_id={}",
-                                Self::strategy_name(),
-                                self.strategy_id,
-                                order.order_id
-                            );
-
-                            if let Err(err) =
-                                self.submit_margin_cancel(&order.symbol, order.order_id)
+                match open_order {
+                    Some(order) => {
+                        {
+                            let mut flags = self.period_log_flags.borrow_mut();
+                            flags.margin_open_missing_logged = false;
+                        }
+                        if order.status.is_terminal() {
+                            self.open_timeout_us = None;
+                        } else if let (Some(timeout_us), submit_time) =
+                            (self.open_timeout_us, order.submit_time)
+                        {
+                            if submit_time > 0
+                                && current_tp.saturating_sub(submit_time) >= timeout_us
                             {
-                                warn!(
-                                    "{}: strategy_id={} margin 开仓撤单失败: {}",
+                                info!(
+                                    "{}: strategy_id={} margin 开仓单超时，尝试撤单 order_id={}",
                                     Self::strategy_name(),
                                     self.strategy_id,
-                                    err
+                                    order.order_id
                                 );
-                            } else {
-                                let mut manager = self.order_manager.borrow_mut();
-                                if !manager.update(order.order_id, |o| {
-                                    o.update_status(OrderExecutionStatus::Commit);
-                                    o.set_end_time(current_tp);
-                                }) {
+
+                                if let Err(err) =
+                                    self.submit_margin_cancel(&order.symbol, order.order_id)
+                                {
                                     warn!(
-                                        "{}: strategy_id={} 撤单后更新状态失败 id={}",
+                                        "{}: strategy_id={} margin 开仓撤单失败: {}",
                                         Self::strategy_name(),
                                         self.strategy_id,
-                                        order.order_id
+                                        err
                                     );
+                                } else {
+                                    let mut manager = self.order_manager.borrow_mut();
+                                    if !manager.update(order.order_id, |o| {
+                                        o.update_status(OrderExecutionStatus::Commit);
+                                        o.set_end_time(current_tp);
+                                    }) {
+                                        warn!(
+                                            "{}: strategy_id={} 撤单后更新状态失败 id={}",
+                                            Self::strategy_name(),
+                                            self.strategy_id,
+                                            order.order_id
+                                        );
+                                    }
+                                    self.open_timeout_us = None;
                                 }
-                                self.open_timeout_us = None;
                             }
                         }
                     }
-                }
-                None => {
-                    let mut flags = self.period_log_flags.borrow_mut();
-                    if !flags.margin_open_missing_logged {
-                        warn!(
-                            "{}: strategy_id={} 未找到 margin 开仓单 id={}，清除本地状态",
-                            Self::strategy_name(),
-                            self.strategy_id,
-                            self.margin_order_id
-                        );
-                        flags.margin_open_missing_logged = true;
+                    None => {
+                        let mut flags = self.period_log_flags.borrow_mut();
+                        if !flags.margin_open_missing_logged {
+                            warn!(
+                                "{}: strategy_id={} 未找到 margin 开仓单 id={}，清除本地状态",
+                                Self::strategy_name(),
+                                self.strategy_id,
+                                self.margin_order_id
+                            );
+                            flags.margin_open_missing_logged = true;
+                        }
+                        flags.last_margin_open_status = None;
+                        self.margin_order_id = 0;
+                        self.open_timeout_us = None;
+                        flags.margin_open_absent_logged = false;
                     }
-                    flags.last_margin_open_status = None;
-                    self.margin_order_id = 0;
-                    self.open_timeout_us = None;
-                    flags.margin_open_absent_logged = false;
                 }
             }
+        } else {
+            let mut flags = self.period_log_flags.borrow_mut();
+            flags.margin_open_absent_logged = false;
+            flags.margin_open_missing_logged = false;
+            flags.last_margin_open_status = None;
+            self.open_timeout_us = None;
         }
 
         // 周期性检查：限价平仓单是否超时
@@ -2913,165 +3940,10 @@ impl Strategy for BinSingleForwardArbStrategy {
     }
 
     fn is_active(&self) -> bool {
-        let manager_ref = self.order_manager.borrow();
-        if self.margin_order_id == 0 {
-            warn!(
-                "{}: strategy_id={} 缺少 margin 开仓单，返回非活跃",
-                Self::strategy_name(),
-                self.strategy_id
-            );
-            return false;
+        match self.mode {
+            StrategyMode::Open => self.is_active_open(),
+            StrategyMode::Close => self.is_active_close(),
         }
-
-        let Some(margin_order) = manager_ref.get(self.margin_order_id) else {
-            warn!(
-                "{}: strategy_id={} 未找到 margin 开仓单 id={}，返回非活跃",
-                Self::strategy_name(),
-                self.strategy_id,
-                self.margin_order_id
-            );
-            return false;
-        };
-
-        if margin_order.status == OrderExecutionStatus::Filled {
-            self.period_log_flags.borrow_mut().last_margin_open_status =
-                Some(OrderExecutionStatus::Filled);
-        } else if margin_order.status.is_terminal() {
-            warn!(
-                "{}: strategy_id={} margin 开仓单终结 status={}，策略退出",
-                Self::strategy_name(),
-                self.strategy_id,
-                margin_order.status.as_str()
-            );
-            self.period_log_flags.borrow_mut().last_margin_open_status = Some(margin_order.status);
-            return false;
-        } else {
-            let mut flags = self.period_log_flags.borrow_mut();
-            if flags.last_margin_open_status != Some(margin_order.status) {
-                debug!(
-                    "{}: strategy_id={} margin 开仓单状态={}，等待成交",
-                    Self::strategy_name(),
-                    self.strategy_id,
-                    margin_order.status.as_str()
-                );
-                flags.last_margin_open_status = Some(margin_order.status);
-            }
-            return true;
-        }
-
-        if self.um_hedge_order_ids.is_empty() {
-            self.period_log_flags.borrow_mut().last_um_hedge_status = None;
-            debug!(
-                "{}: strategy_id={} UM 对冲单未创建，策略仍在执行",
-                Self::strategy_name(),
-                self.strategy_id
-            );
-            return true;
-        }
-
-        if let Some((order_id, status_opt)) =
-            Self::first_unfilled_order(&manager_ref, &self.um_hedge_order_ids)
-        {
-            let mut flags = self.period_log_flags.borrow_mut();
-            if flags.last_um_hedge_status != status_opt {
-                match status_opt {
-                    Some(status) => debug!(
-                        "{}: strategy_id={} UM 对冲单 id={} 状态={}，等待成交",
-                        Self::strategy_name(),
-                        self.strategy_id,
-                        order_id,
-                        status.as_str()
-                    ),
-                    None => info!(
-                        "{}: strategy_id={} 未找到 UM 对冲单 id={}，待平仓，保持激活状态",
-                        Self::strategy_name(),
-                        self.strategy_id,
-                        order_id
-                    ),
-                }
-                flags.last_um_hedge_status = status_opt;
-            }
-            return true;
-        } else {
-            self.period_log_flags.borrow_mut().last_um_hedge_status =
-                Some(OrderExecutionStatus::Filled);
-        }
-
-        if self.close_margin_order_id == 0 {
-            self.period_log_flags.borrow_mut().last_margin_close_status = None;
-            return true;
-        }
-
-        let Some(close_margin_order) = manager_ref.get(self.close_margin_order_id) else {
-            self.period_log_flags.borrow_mut().last_margin_close_status = None;
-            info!(
-                "{}: strategy_id={} 未找到 margin 平仓单 id={}，待平仓，保持激活状态",
-                Self::strategy_name(),
-                self.strategy_id,
-                self.close_margin_order_id
-            );
-            return true;
-        };
-
-        if close_margin_order.status != OrderExecutionStatus::Filled {
-            let mut flags = self.period_log_flags.borrow_mut();
-            if flags.last_margin_close_status != Some(close_margin_order.status) {
-                debug!(
-                    "{}: strategy_id={} margin 平仓单状态={}，等待成交",
-                    Self::strategy_name(),
-                    self.strategy_id,
-                    close_margin_order.status.as_str()
-                );
-                flags.last_margin_close_status = Some(close_margin_order.status);
-            }
-            return true;
-        }
-
-        if self.close_um_hedge_order_ids.is_empty() {
-            self.period_log_flags.borrow_mut().last_um_close_status = None;
-            debug!(
-                "{}: strategy_id={} UM 平仓单未触发，策略仍在执行",
-                Self::strategy_name(),
-                self.strategy_id
-            );
-            return true;
-        }
-
-        if let Some((order_id, status_opt)) =
-            Self::first_unfilled_order(&manager_ref, &self.close_um_hedge_order_ids)
-        {
-            let mut flags = self.period_log_flags.borrow_mut();
-            if flags.last_um_close_status != status_opt {
-                match status_opt {
-                    Some(status) => debug!(
-                        "{}: strategy_id={} UM 平仓单 id={} 状态={}，等待成交",
-                        Self::strategy_name(),
-                        self.strategy_id,
-                        order_id,
-                        status.as_str()
-                    ),
-                    None => info!(
-                        "{}: strategy_id={} 未找到 UM 平仓单 id={}，待平仓，保持激活状态",
-                        Self::strategy_name(),
-                        self.strategy_id,
-                        order_id
-                    ),
-                }
-                flags.last_um_close_status = status_opt;
-            }
-            return true;
-        } else {
-            self.period_log_flags.borrow_mut().last_um_close_status =
-                Some(OrderExecutionStatus::Filled);
-        }
-
-        info!(
-            "{}: strategy_id={} 所有订单已全部成交，策略进入完成状态",
-            Self::strategy_name(),
-            self.strategy_id
-        );
-
-        false
     }
 
     fn snapshot(&self) -> Option<StrategySnapshot<'_>> {
@@ -3101,11 +3973,17 @@ pub struct BinSingleForwardArbSnapshot {
     pub strategy_id: i32,
     pub symbol: String,
     pub create_time: i64,
+    #[serde(default)]
+    pub mode: StrategyMode,
     pub margin_order_id: i64,
+    #[serde(default)]
+    pub initial_margin_order_id: i64,
     pub um_hedge_order_ids: Vec<i64>,
     #[serde(default, skip_serializing, alias = "um_hedge_order_id")]
     pub legacy_um_hedge_order_id: Option<i64>,
     pub close_margin_order_id: i64,
+    #[serde(default)]
+    pub initial_close_margin_order_id: i64,
     pub close_um_hedge_order_ids: Vec<i64>,
     #[serde(default, skip_serializing, alias = "close_um_hedge_order_id")]
     pub legacy_close_um_hedge_order_id: Option<i64>,
@@ -3113,6 +3991,16 @@ pub struct BinSingleForwardArbSnapshot {
     pub close_margin_timeout_us: Option<i64>,
     pub um_close_signal_sent: bool,
     pub order_seq: u32,
+    #[serde(default)]
+    pub close_target_qty: f64,
+    #[serde(default)]
+    pub um_existing_side: Option<Side>,
+    #[serde(default)]
+    pub lifecycle_logged: bool,
+    #[serde(default)]
+    pub open_signal_meta: Option<OpenSignalMeta>,
+    #[serde(default)]
+    pub open_signal_logged: bool,
 }
 
 impl BinSingleForwardArbSnapshot {

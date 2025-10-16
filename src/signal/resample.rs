@@ -114,6 +114,10 @@ pub struct PreTradeRiskResampleEntry {
     pub total_equity: f64,
     pub total_exposure: f64,
     pub total_position: f64,
+    pub spot_equity_usd: f64,
+    pub borrowed_usd: f64,
+    pub interest_usd: f64,
+    pub um_unrealized_usd: f64,
     pub leverage: f64,
     pub max_leverage: f64,
 }

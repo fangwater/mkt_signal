@@ -44,7 +44,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 const ACCOUNT_PAYLOAD: usize = 16_384;
 const TRADE_RESP_PAYLOAD: usize = 16_384;
-const SIGNAL_PAYLOAD: usize = 1_024;
+const SIGNAL_PAYLOAD: usize = 4_096;
 const ORDER_REQ_PAYLOAD: usize = 4_096;
 
 const NODE_PRE_TRADE_ACCOUNT: &str = "pre_trade_account";
@@ -123,9 +123,9 @@ impl PreTrade {
             resample_positions_pub,
             resample_exposure_pub,
             resample_risk_pub,
-        );
+        ); 
 
-        // 首次从 Redis 拉取 pre-trade 参数
+        // 首次从 Redis 拉取 pre-trade 参数 
         if let Err(err) = runtime.reload_params().await {
             warn!("pre_trade initial params load failed: {err:#}");
         }
@@ -133,7 +133,7 @@ impl PreTrade {
         // 启动时恢复
         if let Err(err) = runtime.try_recover().await {
             warn!("recovery failed: {err:#}");
-        }
+        } 
 
         let mut order_rx = order_rx;
         let mut internal_signal_rx = signal_rx;
@@ -419,13 +419,6 @@ impl RuntimeContext {
             if let Some(o) = self.order_manager.borrow().get(oid) {
                 orders.push(o);
             }
-        }
-        if log::log_enabled!(log::Level::Debug) {
-            use log::debug;
-            debug!(
-                "persist_snapshot: orders={} (strategy persistence disabled)",
-                orders.len()
-            );
         }
         store.save_snapshot(&orders).await?;
         Ok(())
@@ -748,10 +741,15 @@ impl RuntimeContext {
 
         let mut exposures_mgr = self.exposure_manager.borrow_mut();
         exposures_mgr.revalue_with_prices(&price_snapshot);
+        exposures_mgr.log_summary("resample估值");
         let exposures_vec = exposures_mgr.exposures().to_vec();
         let total_equity = exposures_mgr.total_equity();
         let total_abs_exposure = exposures_mgr.total_abs_exposure();
         let total_position = exposures_mgr.total_position();
+        let spot_equity_usd = exposures_mgr.total_spot_value_usd();
+        let borrowed_usd = exposures_mgr.total_borrowed_usd();
+        let interest_usd = exposures_mgr.total_interest_usd();
+        let um_unrealized_usd = exposures_mgr.total_um_unrealized();
         let max_leverage = self.strategy_params.max_leverage;
         drop(exposures_mgr);
 
@@ -859,6 +857,10 @@ impl RuntimeContext {
                 total_equity,
                 total_exposure: total_abs_exposure,
                 total_position,
+                spot_equity_usd,
+                borrowed_usd,
+                interest_usd,
+                um_unrealized_usd,
                 leverage,
                 max_leverage,
             };
@@ -961,12 +963,12 @@ fn collect_price_symbols(
 fn resolve_order_req_service(cfg: &TradeEngineRespCfg) -> String {
     if let Some(req_service) = cfg.req_service.clone() {
         return req_service;
-    }
+    } 
     if cfg.service.contains("order_resps/") {
         return cfg.service.replace("order_resps/", "order_reqs/");
-    }
-    cfg.service.replace("resps", "reqs")
-}
+    } 
+    cfg.service.replace("resps", "reqs") 
+} 
 
 fn spawn_account_listener(cfg: &AccountStreamCfg) -> Result<UnboundedReceiver<AccountEvent>> {
     let (tx, rx) = mpsc::unbounded_channel();
@@ -1480,7 +1482,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                     let signal_tx = ctx.signal_sender();
                     let now = get_timestamp_us();
 
-                    let mut strategy = BinSingleForwardArbStrategy::new(
+                    let mut strategy = BinSingleForwardArbStrategy::new_open(
                         strategy_id,
                         now,
                         symbol.clone(),
@@ -1515,9 +1517,58 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                 Err(err) => warn!("failed to decode open context: {err}"),
             }
         }
-        SignalType::BinSingleForwardArbHedge
-        | SignalType::BinSingleForwardArbCloseMargin
-        | SignalType::BinSingleForwardArbCloseUm => {
+        SignalType::BinSingleForwardArbCloseMargin => {
+            match BinSingleForwardArbCloseMarginCtx::from_bytes(signal.context.clone()) {
+                Ok(close_ctx) => {
+                    let symbol = close_ctx.spot_symbol.to_uppercase();
+                    if ctx.symbol_to_strategy.contains_key(&symbol) {
+                        dispatch_signal_to_existing_strategy(ctx, signal, raw_signal);
+                    } else {
+                        let strategy_id = StrategyManager::generate_strategy_id(2);
+                        let order_tx = ctx.order_sender();
+                        let signal_tx = ctx.signal_sender();
+                        let now = get_timestamp_us();
+
+                        let mut strategy = BinSingleForwardArbStrategy::new_close(
+                            strategy_id,
+                            now,
+                            symbol.clone(),
+                            ctx.order_manager.clone(),
+                            ctx.exposure_manager.clone(),
+                            order_tx,
+                            ctx.strategy_params.max_symbol_exposure_ratio,
+                            ctx.strategy_params.max_total_exposure_ratio,
+                            ctx.strategy_params.max_pos_u,
+                            ctx.strategy_params.max_leverage,
+                            ctx.min_qty_table.clone(),
+                            ctx.price_table.clone(),
+                        );
+                        strategy.set_signal_sender(signal_tx);
+
+                        debug!(
+                            "strategy init for close signal: strategy_id={} symbol={} price={:.8} tick={:.8}",
+                            strategy_id,
+                            close_ctx.spot_symbol,
+                            close_ctx.limit_price,
+                            close_ctx.price_tick
+                        );
+
+                        if let Err(err) = strategy.close_margin_with_limit(&close_ctx) {
+                            warn!(
+                                "failed to create margin close order for strategy_id={}: {}",
+                                strategy_id, err
+                            );
+                        }
+
+                        if strategy.is_active() {
+                            ctx.insert_strategy(symbol, Box::new(strategy));
+                        }
+                    }
+                }
+                Err(err) => warn!("failed to decode margin close context: {err}"),
+            }
+        }
+        SignalType::BinSingleForwardArbHedge | SignalType::BinSingleForwardArbCloseUm => {
             debug!(
                 "dispatch signal to existing strategies: type={:?} ctx_len={}",
                 signal.signal_type,

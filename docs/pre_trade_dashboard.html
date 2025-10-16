@@ -156,6 +156,26 @@
       }
       .table-wrapper {
         overflow: auto;
+      .table-wrapper.compact {
+        max-width: 600px;
+      }
+      .metrics-table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      .metrics-table th,
+      .metrics-table td {
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--border);
+        text-align: left;
+      }
+      .metrics-table td.value {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      .metrics-table tr:last-child td {
+        border-bottom: none;
+      }
         border: 1px solid var(--border);
         border-radius: 10px;
         background: var(--bg);
@@ -287,6 +307,25 @@
             <div class="hint">策略配置的风控阈值</div>
           </div>
         </div>
+
+        <div class="table-wrapper compact" id="equity-table-wrapper">
+          <table class="metrics-table">
+            <thead>
+              <tr>
+                <th>项目</th>
+                <th>数值 (USDT)</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody id="equity-breakdown-body">
+              <tr><td>现货估值</td><td class="value">--</td><td>Σ 现货数量 × 标记价</td></tr>
+              <tr><td>借币折算</td><td class="value">--</td><td>以标记价折算的交叉借币</td></tr>
+              <tr><td>利息折算</td><td class="value">--</td><td>以标记价折算的交叉利息</td></tr>
+              <tr><td>UM 未实现PnL</td><td class="value">--</td><td>Σ 合约未实现盈亏</td></tr>
+              <tr><td>总权益</td><td class="value">--</td><td>现货估值 − 借币 − 利息 + UM 未实现PnL</td></tr>
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section class="section" id="exposure-section">
@@ -369,7 +408,7 @@
       (function () {
         const WS_URL =
           window.PRE_TRADE_WS_URL ||
-          "ws://localhost:12000/ws?stream=pre_trade";
+          "ws://54.64.147.69:4190/ws?stream=pre_trade";
         const RECONNECT_MS = 5000;
         const STALE_MS = 15_000;
 
@@ -421,6 +460,7 @@
         const spotBody = document.getElementById("spot-body");
         const spotEmpty = document.getElementById("spot-empty");
         const spotSubMeta = document.getElementById("spot-sub-meta");
+        const equityBreakdownBody = document.getElementById("equity-breakdown-body");
 
         const formatQty = new Intl.NumberFormat("en-US", {
           minimumFractionDigits: 4,
@@ -463,6 +503,66 @@
           return "";
         }
 
+        function renderEquityBreakdown(entry) {
+          if (!equityBreakdownBody) return;
+          const rows = entry
+            ? [
+                {
+                  label: "现货估值",
+                  value: Number.isFinite(entry.spot_equity_usd) ? entry.spot_equity_usd : null,
+                  hint: "Σ 现货数量 × 标记价",
+                },
+                {
+                  label: "借币折算",
+                  value: Number.isFinite(entry.borrowed_usd) ? -entry.borrowed_usd : null,
+                  hint: "以标记价折算的交叉借币",
+                },
+                {
+                  label: "利息折算",
+                  value: Number.isFinite(entry.interest_usd) ? -entry.interest_usd : null,
+                  hint: "以标记价折算的交叉利息",
+                },
+                {
+                  label: "UM 未实现PnL",
+                  value: Number.isFinite(entry.um_unrealized_usd) ? entry.um_unrealized_usd : null,
+                  hint: "Σ 合约未实现盈亏",
+                },
+                {
+                  label: "总权益",
+                  value: Number.isFinite(entry.total_equity) ? entry.total_equity : null,
+                  hint: "现货估值 − 借币 − 利息 + UM 未实现PnL",
+                  isTotal: true,
+                },
+              ]
+            : [
+                { label: "现货估值", value: null, hint: "Σ 现货数量 × 标记价" },
+                { label: "借币折算", value: null, hint: "以标记价折算的交叉借币" },
+                { label: "利息折算", value: null, hint: "以标记价折算的交叉利息" },
+                { label: "UM 未实现PnL", value: null, hint: "Σ 合约未实现盈亏" },
+                { label: "总权益", value: null, hint: "现货估值 − 借币 − 利息 + UM 未实现PnL", isTotal: true },
+              ];
+
+          equityBreakdownBody.innerHTML = "";
+          for (const row of rows) {
+            const tr = document.createElement("tr");
+            if (row.isTotal) {
+              tr.classList.add("total-row");
+            }
+            const nameTd = document.createElement("td");
+            nameTd.textContent = row.label;
+            const valueTd = document.createElement("td");
+            valueTd.className = "value";
+            valueTd.classList.add(classifySign(row.value));
+            valueTd.textContent = formatNumber(row.value, formatUsd);
+            const hintTd = document.createElement("td");
+            hintTd.textContent = row.hint;
+            tr.appendChild(nameTd);
+            tr.appendChild(valueTd);
+            tr.appendChild(hintTd);
+            equityBreakdownBody.appendChild(tr);
+          }
+        }
+
         function matchesFilter(text, filter) {
           if (!filter) return true;
           if (!text) return false;
@@ -503,6 +603,7 @@
             riskPositionEl.textContent = "--";
             riskLeverageEl.textContent = "--";
             riskMaxLeverageEl.textContent = "--";
+            renderEquityBreakdown(null);
             return;
           }
           riskEquityEl.textContent = formatNumber(
@@ -537,6 +638,7 @@
           } else {
             leverageCard.classList.remove("warn");
           }
+          renderEquityBreakdown(entry);
         }
 
         function renderExposureRows() {
@@ -974,6 +1076,10 @@
               total_equity: 120_000,
               total_exposure: 48_000,
               total_position: 72_000,
+              spot_equity_usd: 150_000,
+              borrowed_usd: 20_000,
+              interest_usd: 1_000,
+              um_unrealized_usd: -9_000,
               leverage: 0.6,
               max_leverage: 2.5,
             },

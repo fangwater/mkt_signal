@@ -27,7 +27,7 @@ use mkt_signal::mkt_msg::{self, AskBidSpreadMsg, FundingRateMsg, MktMsgType};
 use mkt_signal::pre_trade::order_manager::{OrderType, Side};
 use mkt_signal::signal::binance_forward_arb::{
     BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbOpenCtx,
-};
+}; 
 use mkt_signal::signal::resample::{
     compute_askbid_sr, compute_bidask_sr, FundingRateArbResampleEntry, FR_RESAMPLE_MSG_CHANNEL,
 };
@@ -89,26 +89,26 @@ impl Default for OrderConfig {
 
 fn opt_finite(val: f64) -> Option<f64> {
     if val.is_finite() {
-        Some(val)
+        Some(val) 
     } else {
-        None
-    }
-}
+        None 
+    } 
+} 
 
 fn opt_active_threshold(val: f64) -> Option<f64> {
     if val.is_finite() && val.abs() > f64::EPSILON {
         Some(val)
     } else {
         None
-    }
-}
+    } 
+} 
 
 /// 信号节流配置
 #[derive(Debug, Clone, Deserialize)]
 struct SignalConfig {
     #[serde(default = "default_signal_interval_ms")]
     min_interval_ms: u64,
-}
+} 
 
 const fn default_signal_interval_ms() -> u64 {
     1_000
@@ -139,9 +139,9 @@ impl Default for ReloadConfig {
             interval_secs: default_reload_interval(),
         }
     }
-}
+} 
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default)] 
 struct StrategyParams {
     #[serde(default = "default_interval")]
     interval: usize,
@@ -164,7 +164,7 @@ struct StrategyParams {
     /// funding rate 滚动均值窗口大小（条数）
     #[serde(default = "default_funding_ma_size")]
     funding_ma_size: usize,
-    /// 结算偏移（秒）：基于 UTC 准点（4h 周期）增加的偏移量
+    /// 结算偏移（秒）：基于 UTC 准点（4h 周期）增加的偏移量 
     #[serde(default = "default_settlement_offset_secs")]
     settlement_offset_secs: i64,
 }
@@ -580,10 +580,8 @@ impl StrategyEngine {
         for (sym, rates) in &self.history_map {
             let n = rates.len();
             let pred = if n == 0 {
-                debug!("pred calc: {sym} len=0 => 0");
                 0.0
             } else if interval == 0 {
-                debug!("pred calc: {sym} interval=0 => 0");
                 0.0
             } else if n - 1 < predict_num {
                 debug!(
@@ -604,10 +602,6 @@ impl StrategyEngine {
                     let slice = &rates[start..=end];
                     let sum: f64 = slice.iter().copied().sum();
                     let mean = sum / (interval as f64);
-                    debug!(
-                        "pred calc: {sym} len={} interval={} predict_num={} start={} end={} mean={:.6}",
-                        n, interval, predict_num, start, end, mean
-                    );
                     mean
                 }
             };
@@ -1031,7 +1025,6 @@ impl StrategyEngine {
     }
 
     // 本策略不再从本地 JSON 解析阈值
-
     fn handle_spot_quote(&mut self, msg: &[u8]) {
         let symbol = AskBidSpreadMsg::get_symbol(msg).to_uppercase();
         let Some(state) = self.symbols.get_mut(&symbol) else {
@@ -1042,14 +1035,14 @@ impl StrategyEngine {
         let ask_price = AskBidSpreadMsg::get_ask_price(msg);
         if bid_price <= 0.0 || ask_price <= 0.0 {
             warn!(
-                "Spot盘口异常: symbol={} bid={} ask={} ts={}",
-                symbol, bid_price, ask_price, timestamp
-            );
-            return;
-        }
-        state.spot_quote.update(bid_price, ask_price, timestamp);
-        self.evaluate(&symbol);
-    }
+                "Spot盘口异常: symbol={} bid={} ask={} ts={}", 
+                symbol, bid_price, ask_price, timestamp 
+            ); 
+            return; 
+        } 
+        state.spot_quote.update(bid_price, ask_price, timestamp); 
+        self.evaluate(&symbol); 
+    } 
 
     fn handle_futures_quote(&mut self, msg: &[u8]) {
         let fut_symbol = AskBidSpreadMsg::get_symbol(msg).to_uppercase();
@@ -1106,7 +1099,7 @@ impl StrategyEngine {
                 let drop_n = entry.len() - max_keep;
                 entry.drain(0..drop_n);
             }
-            entry.len()
+            entry.len() 
         };
 
         let ma = self.calc_funding_ma(&spot_key);
@@ -1315,7 +1308,7 @@ impl StrategyEngine {
                 );
             }
             _ => {}
-        }
+        } 
 
         if let Some(req) = request {
             match req {
@@ -1581,7 +1574,7 @@ impl StrategyEngine {
                 "bidask_met": state.price_close_bidask,
                 "askbid_met": state.price_close_askbid,
                 "ready": state.price_close_ready,
-            })
+            }) 
         };
 
         let loan_rate = if state.loan_rate.abs() <= f64::EPSILON {
@@ -1767,6 +1760,11 @@ impl StrategyEngine {
             price: limit_price,
             price_tick,
             exp_time: self.cfg.max_open_keep_us(),
+            spot_sr: state.latest_bidask_sr,
+            futures_sr: state.latest_askbid_sr,
+            funding_ma: state.funding_ma,
+            predicted_funding_rate: Some(state.predicted_rate),
+            loan_rate: Some(state.loan_rate),
         }
         .to_bytes();
         Some(SignalRequest::Open {

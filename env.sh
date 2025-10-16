@@ -17,7 +17,7 @@ if [[ -f "$CONFIG_FILE" ]]; then
     export BINANCE_API_SECRET
   else
     echo "[WARN] 未在 $CONFIG_FILE 中找到 BINANCE_API_SECRET"
-  fi
+  fi 
 else
   echo "[WARN] 未找到配置文件 $CONFIG_FILE，无法设置 Binance API 凭据"
 fi

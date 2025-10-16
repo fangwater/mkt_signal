@@ -4,6 +4,16 @@
 
 ## 1. 开仓与增量对冲
 
+### 1.0 流程概览（最新机制）
+
+- **分离生命周期**：`BinSingleForwardArb` 策略在 open/close 两种模式下独立运行；open 仅负责 margin 开仓与 UM 对冲，完成后立即退出；close 则从账户敞口读取现有头寸，完成二次平仓后回收。
+- **开仓阶段**：
+  - Margin 成交累计量与已对冲量比对得到增量，满足步进、最小数量与名义金额后即刻触发 UM 市价对冲。
+  - 如对冲信号总线不可用，策略会在本线程直接创建市价单，确保 hedge 不丢失。
+- **平仓阶段**：平仓信号会直接构造一个“反向建仓”策略（close 模式）。该策略读取 `ExposureManager` 的 spot/UM 净仓，按当前可用持仓推导目标数量，并沿用与开仓阶段相同的步进、最小下单量、名义金额等校验。满足条件后先下 margin 限价平仓单，成交后再参考原先记录的仓位方向触发 UM 市价单，将数量对齐步进并限制在账户剩余持仓范围内完成对冲。
+- **信号派发**：close 模式策略会在成交回报里调用 `trigger_um_close_signal`，把待平数量写入 `BinSingleForwardArbCloseUmCtx`，确保后续的 UM 市价单具备充足信息实现“反向建仓式”平仓。
+
+
 1. `Binance` margin 开仓单（限价或市价）被提交，`OrderManager` 保存原始下单信息。
 2. 当收到 `executionReport`：
    - 订单状态更新为 `PARTIALLY_FILLED`/`FILLED`；
