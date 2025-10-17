@@ -321,9 +321,11 @@ impl BinanceAccountEventParser {
             .unwrap_or("")
             .to_string();
         let client_order_id_raw = json.get("c").and_then(|v| v.as_str());
-        // 策略单使用 i64 自定义 clientOrderId；若解析失败则记为 0（非策略单，不处理）
+        let orig_client_order_id_raw = json.get("C").and_then(|v| v.as_str());
+        // 策略单使用 i64 自定义 clientOrderId；若主字段解析失败，尝试使用 origClientOrderId (C)
         let client_order_id = client_order_id_raw
             .and_then(|s| s.parse::<i64>().ok())
+            .or_else(|| orig_client_order_id_raw.and_then(|s| s.parse::<i64>().ok()))
             .unwrap_or(0);
 
         let side = match json.get("S").and_then(|v| v.as_str()).unwrap_or("") {
@@ -410,9 +412,7 @@ impl BinanceAccountEventParser {
         if client_order_id == 0 {
             warn!(
                 "parser: skip executionReport with non-i64 clientOrderId c={:?} C={:?} sym={}",
-                client_order_id_raw,
-                json.get("C").and_then(|v| v.as_str()),
-                symbol
+                client_order_id_raw, orig_client_order_id_raw, symbol
             );
             return 0;
         }

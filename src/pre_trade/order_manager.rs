@@ -491,6 +491,10 @@ pub struct Order {
     pub hedged_quantily: f64,            // 未对冲量
     #[serde(default)]
     pub hedged_filled_quantity: f64, // 已对冲到期货端的成交量
+    #[serde(default)]
+    pub exchange_order_id: Option<i64>, // 交易所返回的 orderId
+    #[serde(default)]
+    pub update_event_times: Vec<i64>, // 交易所成交/状态更新时间戳列表
     pub status: OrderExecutionStatus,    // 订单执行状态
     #[serde(default)]
     pub pending_counted: bool, // 是否已计入 pending 限价单 count（用于去重防二次递减）
@@ -534,6 +538,8 @@ impl Order {
             cumulative_filled_quantity: 0.0,
             hedged_quantily: 0.0,
             hedged_filled_quantity: 0.0,
+            exchange_order_id: None,
+            update_event_times: Vec::new(),
             pending_counted: order_type.is_limit(),
         }
     }
@@ -567,7 +573,7 @@ impl Order {
 
     /// 设置执行时间
     pub fn set_create_time(&mut self, time: i64) {
-        self.create_time = time;
+        self.record_exchange_create(time);
     }
 
     /// 设置确认时间
@@ -584,18 +590,26 @@ impl Order {
     pub fn set_end_time(&mut self, time: i64) {
         self.end_time = time;
     }
-}
 
-impl OrderManager {
-    /// 使用快照恢复订单集合
-    pub fn restore_orders(&mut self, orders: Vec<Order>) {
-        self.orders.clear();
-        self.pending_limit_order_count.clear();
-        for o in orders {
-            if o.order_type.is_limit() {
-                self.increment_pending_limit_count(&o.symbol);
-            }
-            self.orders.insert(o.order_id, o);
+    pub fn set_exchange_order_id(&mut self, exchange_order_id: i64) {
+        if exchange_order_id > 0 {
+            self.exchange_order_id = Some(exchange_order_id);
         }
+    }
+
+    pub fn record_exchange_create(&mut self, time: i64) {
+        if time > 0 && self.create_time == 0 {
+            self.create_time = time;
+        }
+    }
+
+    pub fn record_exchange_update(&mut self, time: i64) {
+        if time <= 0 {
+            return;
+        }
+        if self.update_event_times.last().copied() == Some(time) {
+            return;
+        }
+        self.update_event_times.push(time);
     }
 }

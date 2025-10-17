@@ -27,7 +27,7 @@ use mkt_signal::mkt_msg::{self, AskBidSpreadMsg, FundingRateMsg, MktMsgType};
 use mkt_signal::pre_trade::order_manager::{OrderType, Side};
 use mkt_signal::signal::binance_forward_arb::{
     BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbOpenCtx,
-}; 
+};
 use mkt_signal::signal::resample::{
     compute_askbid_sr, compute_bidask_sr, FundingRateArbResampleEntry, FR_RESAMPLE_MSG_CHANNEL,
 };
@@ -89,26 +89,26 @@ impl Default for OrderConfig {
 
 fn opt_finite(val: f64) -> Option<f64> {
     if val.is_finite() {
-        Some(val) 
+        Some(val)
     } else {
-        None 
-    } 
-} 
+        None
+    }
+}
 
 fn opt_active_threshold(val: f64) -> Option<f64> {
     if val.is_finite() && val.abs() > f64::EPSILON {
         Some(val)
     } else {
         None
-    } 
-} 
+    }
+}
 
 /// 信号节流配置
 #[derive(Debug, Clone, Deserialize)]
 struct SignalConfig {
     #[serde(default = "default_signal_interval_ms")]
     min_interval_ms: u64,
-} 
+}
 
 const fn default_signal_interval_ms() -> u64 {
     1_000
@@ -139,9 +139,9 @@ impl Default for ReloadConfig {
             interval_secs: default_reload_interval(),
         }
     }
-} 
+}
 
-#[derive(Debug, Clone, Deserialize, Default)] 
+#[derive(Debug, Clone, Deserialize, Default)]
 struct StrategyParams {
     #[serde(default = "default_interval")]
     interval: usize,
@@ -164,7 +164,7 @@ struct StrategyParams {
     /// funding rate 滚动均值窗口大小（条数）
     #[serde(default = "default_funding_ma_size")]
     funding_ma_size: usize,
-    /// 结算偏移（秒）：基于 UTC 准点（4h 周期）增加的偏移量 
+    /// 结算偏移（秒）：基于 UTC 准点（4h 周期）增加的偏移量
     #[serde(default = "default_settlement_offset_secs")]
     settlement_offset_secs: i64,
 }
@@ -1035,14 +1035,14 @@ impl StrategyEngine {
         let ask_price = AskBidSpreadMsg::get_ask_price(msg);
         if bid_price <= 0.0 || ask_price <= 0.0 {
             warn!(
-                "Spot盘口异常: symbol={} bid={} ask={} ts={}", 
-                symbol, bid_price, ask_price, timestamp 
-            ); 
-            return; 
-        } 
-        state.spot_quote.update(bid_price, ask_price, timestamp); 
-        self.evaluate(&symbol); 
-    } 
+                "Spot盘口异常: symbol={} bid={} ask={} ts={}",
+                symbol, bid_price, ask_price, timestamp
+            );
+            return;
+        }
+        state.spot_quote.update(bid_price, ask_price, timestamp);
+        self.evaluate(&symbol);
+    }
 
     fn handle_futures_quote(&mut self, msg: &[u8]) {
         let fut_symbol = AskBidSpreadMsg::get_symbol(msg).to_uppercase();
@@ -1099,7 +1099,7 @@ impl StrategyEngine {
                 let drop_n = entry.len() - max_keep;
                 entry.drain(0..drop_n);
             }
-            entry.len() 
+            entry.len()
         };
 
         let ma = self.calc_funding_ma(&spot_key);
@@ -1308,7 +1308,7 @@ impl StrategyEngine {
                 );
             }
             _ => {}
-        } 
+        }
 
         if let Some(req) = request {
             match req {
@@ -1574,7 +1574,7 @@ impl StrategyEngine {
                 "bidask_met": state.price_close_bidask,
                 "askbid_met": state.price_close_askbid,
                 "ready": state.price_close_ready,
-            }) 
+            })
         };
 
         let loan_rate = if state.loan_rate.abs() <= f64::EPSILON {
@@ -1949,8 +1949,8 @@ impl StrategyEngine {
             .await
             .unwrap_or_default();
         debug!("参数读取: {:?}", map);
-        // 必须包含 4h/8h 四个阈值共8个键
-        let required = [
+        // 必须包含以下必需参数（阈值 + 订单）
+        const REQUIRED_KEYS: [&str; 13] = [
             "fr_4h_open_upper_threshold",
             "fr_4h_open_lower_threshold",
             "fr_4h_close_lower_threshold",
@@ -1959,16 +1959,21 @@ impl StrategyEngine {
             "fr_8h_open_lower_threshold",
             "fr_8h_close_lower_threshold",
             "fr_8h_close_upper_threshold",
+            "order_open_range",
+            "order_close_range",
+            "order_amount_u",
+            "order_max_open_order_keep_s",
+            "order_max_close_order_keep_s",
         ];
         let mut missing = Vec::new();
-        for k in required.iter() {
-            if !map.contains_key(*k) {
+        for k in REQUIRED_KEYS {
+            if !map.contains_key(k) {
                 missing.push(k.to_string());
             }
         }
         if !missing.is_empty() {
             panic!(
-                "缺少资金费率阈值参数: {:?}，请写入 Redis HASH binance_forward_arb_params 再启动",
+                "缺少资金费率运行所需参数: {:?}，请写入 Redis HASH binance_forward_arb_params 再启动",
                 missing
             );
         }
@@ -2326,6 +2331,7 @@ enum SignalRequest {
         emit_ts: i64,
     },
 }
+
 fn render_three_line_table(headers: &[&str], rows: &[Vec<String>]) -> String {
     let widths = compute_widths(headers, rows);
     let mut out = String::new();

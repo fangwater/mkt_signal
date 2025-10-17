@@ -123,17 +123,12 @@ impl PreTrade {
             resample_positions_pub,
             resample_exposure_pub,
             resample_risk_pub,
-        ); 
+        );
 
-        // 首次从 Redis 拉取 pre-trade 参数 
+        // 首次从 Redis 拉取 pre-trade 参数
         if let Err(err) = runtime.reload_params().await {
             warn!("pre_trade initial params load failed: {err:#}");
         }
-
-        // 启动时恢复
-        if let Err(err) = runtime.try_recover().await {
-            warn!("recovery failed: {err:#}");
-        } 
 
         let mut order_rx = order_rx;
         let mut internal_signal_rx = signal_rx;
@@ -377,10 +372,12 @@ impl RuntimeContext {
             order_req_service: _,
         } = bootstrap;
 
+        let exposure_manager_rc = Rc::new(RefCell::new(exposure_manager));
+
         Self {
             spot_manager,
             um_manager,
-            exposure_manager: Rc::new(RefCell::new(exposure_manager)),
+            exposure_manager: exposure_manager_rc,
             price_table,
             order_manager: Rc::new(RefCell::new(
                 crate::pre_trade::order_manager::OrderManager::new(),
@@ -421,41 +418,6 @@ impl RuntimeContext {
             }
         }
         store.save_snapshot(&orders).await?;
-        Ok(())
-    }
-
-    async fn try_recover(&mut self) -> Result<()> {
-        let Some(store) = self.store.as_mut() else {
-            return Ok(());
-        };
-
-        let orders = store.load_orders().await?;
-        if !orders.is_empty() {
-            self.order_manager
-                .borrow_mut()
-                .restore_orders(orders.clone());
-            info!("recovered {} orders from store", orders.len());
-            if log::log_enabled!(log::Level::Debug) {
-                for o in &orders {
-                    debug!(
-                        "recovered order: id={} symbol={} type={} side={} qty={:.6} filled={:.6} status={} submit={} create={} filled={} end={}",
-                        o.order_id,
-                        o.symbol,
-                        o.order_type.as_str(),
-                        o.side.as_str(),
-                        o.quantity,
-                        o.cumulative_filled_quantity,
-                        o.status.as_str(),
-                        o.submit_time,
-                        o.create_time,
-                        o.filled_time,
-                        o.end_time
-                    );
-                }
-            }
-        }
-
-        // strategy 持久化已禁用
         Ok(())
     }
 
@@ -525,25 +487,32 @@ impl RuntimeContext {
         let Some(um_snapshot) = self.um_manager.snapshot() else {
             return;
         };
-        self.exposure_manager
+        let positions_changed = self
+            .exposure_manager
             .borrow_mut()
             .recompute(&um_snapshot, &spot_snapshot);
 
         // 结合最新标记价格，估值并打印三线表（USDT 计价的敞口），便于核对
-        if let Some(table) = self.price_table.try_borrow().ok() {
-            let price_snap = table.snapshot();
+        if let Some(price_snap) = self
+            .price_table
+            .try_borrow()
+            .ok()
+            .map(|table| table.snapshot())
+        {
             {
                 let mut mgr = self.exposure_manager.borrow_mut();
                 mgr.revalue_with_prices(&price_snap);
             }
-            let exposures = self.exposure_manager.borrow();
-            log_exposures(exposures.exposures(), &price_snap);
-            log_exposure_summary(
-                exposures.total_equity(),
-                exposures.total_abs_exposure(),
-                exposures.total_position(),
-                self.strategy_params.max_leverage,
-            );
+            if positions_changed {
+                let exposures = self.exposure_manager.borrow();
+                log_exposures(exposures.exposures(), &price_snap);
+                log_exposure_summary(
+                    exposures.total_equity(),
+                    exposures.total_abs_exposure(),
+                    exposures.total_position(),
+                    self.strategy_params.max_leverage,
+                );
+            }
         }
     }
 
@@ -963,12 +932,12 @@ fn collect_price_symbols(
 fn resolve_order_req_service(cfg: &TradeEngineRespCfg) -> String {
     if let Some(req_service) = cfg.req_service.clone() {
         return req_service;
-    } 
+    }
     if cfg.service.contains("order_resps/") {
         return cfg.service.replace("order_resps/", "order_reqs/");
-    } 
-    cfg.service.replace("resps", "reqs") 
-} 
+    }
+    cfg.service.replace("resps", "reqs")
+}
 
 fn spawn_account_listener(cfg: &AccountStreamCfg) -> Result<UnboundedReceiver<AccountEvent>> {
     let (tx, rx) = mpsc::unbounded_channel();
@@ -1137,6 +1106,10 @@ fn spawn_signal_listeners(cfg: &SignalSubscriptionsCfg) -> Result<UnboundedRecei
                 let service = node
                     .service_builder(&ServiceName::new(&service_path)?)
                     .publish_subscribe::<[u8; SIGNAL_PAYLOAD]>()
+                    .max_publishers(1)
+                    .max_subscribers(32)
+                    .history_size(128)
+                    .subscriber_max_buffer_size(256)
                     .open_or_create()?;
                 let subscriber: Subscriber<ipc::Service, [u8; SIGNAL_PAYLOAD], ()> =
                     service.subscriber_builder().create()?;

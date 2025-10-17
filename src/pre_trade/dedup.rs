@@ -34,8 +34,8 @@ impl DedupCache {
         self.queue.push_back(key);
         self.set.insert(key);
         true
-    } 
-} 
+    }
+}
 
 /// 组合多个 u64 片段生成稳定的 64 位哈希
 pub fn hash64(parts: &[u64]) -> u64 {

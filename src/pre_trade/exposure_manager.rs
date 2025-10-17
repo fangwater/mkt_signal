@@ -175,7 +175,7 @@ impl ExposureManager {
         &mut self,
         um_snapshot: &BinanceUmAccountSnapshot,
         spot_snapshot: &BinanceSpotBalanceSnapshot,
-    ) {
+    ) -> bool {
         // 先按当前快照计算
         let mut state = Self::compute_state(um_snapshot, spot_snapshot);
 
@@ -193,7 +193,10 @@ impl ExposureManager {
             }
         }
 
-        Self::log_state("重算", &state);
+        let positions_changed = Self::positions_changed(&self.exposures, &state.exposures);
+        if positions_changed {
+            Self::log_state("重算", &state);
+        }
 
         // 提交状态
         self.exposures = state.exposures;
@@ -205,6 +208,8 @@ impl ExposureManager {
         self.total_spot_value_usd = state.total_spot_value_usd;
         self.total_borrowed_usd = state.total_borrowed_usd;
         self.total_interest_usd = state.total_interest_usd;
+
+        positions_changed
     }
 
     /// 基于标记价格表将资产敞口估值为 USDT，并更新总权益、总敞口与总头寸。
@@ -411,6 +416,64 @@ impl ExposureManager {
             state.total_borrowed_usd,
             state.total_interest_usd,
         );
+    }
+}
+
+impl ExposureManager {
+    fn positions_changed(prev: &[ExposureEntry], next: &[ExposureEntry]) -> bool {
+        let mut prev_map: HashMap<String, (f64, f64)> = HashMap::new();
+        for entry in prev {
+            if entry.asset.eq_ignore_ascii_case("USDT") {
+                continue;
+            }
+            prev_map.insert(
+                entry.asset.to_uppercase(),
+                (entry.spot_total_wallet, entry.um_net_position),
+            );
+        }
+
+        for entry in next {
+            if entry.asset.eq_ignore_ascii_case("USDT") {
+                continue;
+            }
+            let key = entry.asset.to_uppercase();
+            let current = (entry.spot_total_wallet, entry.um_net_position);
+            match prev_map.remove(&key) {
+                Some(prev_vals) => {
+                    if !Self::amount_approx_eq(current.0, prev_vals.0)
+                        || !Self::amount_approx_eq(current.1, prev_vals.1)
+                    {
+                        return true;
+                    }
+                }
+                None => {
+                    if !Self::amount_approx_eq(current.0, 0.0)
+                        || !Self::amount_approx_eq(current.1, 0.0)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        for (_, (spot, um)) in prev_map.into_iter() {
+            if !Self::amount_approx_eq(spot, 0.0) || !Self::amount_approx_eq(um, 0.0) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn amount_approx_eq(lhs: f64, rhs: f64) -> bool {
+        const EPS_ABS: f64 = 1e-9;
+        const EPS_REL: f64 = 1e-8;
+        let diff = (lhs - rhs).abs();
+        if diff <= EPS_ABS {
+            return true;
+        }
+        let scale = lhs.abs().max(rhs.abs()).max(1.0);
+        diff <= EPS_REL * scale
     }
 }
 

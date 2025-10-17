@@ -15,7 +15,7 @@ pub struct PreTradeCfg {
     pub params: Option<StrategyParamsCfg>,
     #[serde(default)]
     pub store: Option<StoreCfg>,
-}
+} 
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AccountStreamCfg {

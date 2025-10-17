@@ -710,8 +710,8 @@ impl MockController {
         let Ok(map) = con.hgetall::<_, std::collections::HashMap<String, String>>(key) else {
             return false;
         };
-        // 必须包含 8 个阈值键
-        let required = [
+        // 必须包含阈值与订单等关键参数
+        const REQUIRED_KEYS: [&str; 13] = [
             "fr_4h_open_upper_threshold",
             "fr_4h_open_lower_threshold",
             "fr_4h_close_lower_threshold",
@@ -720,15 +720,23 @@ impl MockController {
             "fr_8h_open_lower_threshold",
             "fr_8h_close_lower_threshold",
             "fr_8h_close_upper_threshold",
+            "order_open_range",
+            "order_close_range",
+            "order_amount_u",
+            "order_max_open_order_keep_s",
+            "order_max_close_order_keep_s",
         ];
         let mut missing = Vec::new();
-        for k in required.iter() {
-            if !map.contains_key(*k) {
+        for k in REQUIRED_KEYS {
+            if !map.contains_key(k) {
                 missing.push(k.to_string());
             }
         }
         if !missing.is_empty() {
-            panic!("mock 缺少资金费率阈值参数: {:?}", missing);
+            panic!(
+                "mock 缺少资金费率运行所需参数: {:?}，请写入 Redis HASH binance_forward_arb_params",
+                missing
+            );
         }
         let parse_u64 = |k: &str| -> Option<u64> { map.get(k).and_then(|v| v.parse::<u64>().ok()) };
         let parse_i64 = |k: &str| -> Option<i64> { map.get(k).and_then(|v| v.parse::<i64>().ok()) };
