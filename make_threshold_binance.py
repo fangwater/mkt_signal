@@ -78,7 +78,7 @@ def compute_spread_and_threshold(records):
         } 
         return threshold_dict 
     except Exception as e:
-        logging.error(f"compute_spread_and_threshold error: {e}\n{traceback.format_exc()}")
+        logging.error(f"compute_spread_and_threshold error: {e}\n{traceback.format_exc()}") 
         return {
             'bidask_sr': np.nan, 
             'askbid_sr': np.nan, 

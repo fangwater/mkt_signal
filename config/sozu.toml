@@ -1,0 +1,33 @@
+[general]
+command_socket = "unix:/home/ubuntu/crypto_mkt/run/sozu.sock"
+log_level = "info"
+
+[log]
+target = "/home/ubuntu/crypto_mkt/sozu.log"        # 也可用 "file:/home/ubuntu/crypto_mkt/log/sozu.log"
+
+[workers]
+count = 1                # 资源有限场景下保持单 worker；可视 CPU 调整
+
+[clusters]
+
+[clusters.dashboard]
+protocol = "http"
+
+[[clusters.dashboard.backends]]
+address = "127.0.0.1:9300"
+
+[[clusters.dashboard.frontends]]
+address = "0.0.0.0:4190"
+hostname = "*"
+path = "/dashboard"
+path_type = "PREFIX"
+
+[clusters.viz]
+protocol = "http"
+
+[[clusters.viz.backends]]
+address = "127.0.0.1:4191"
+
+[[clusters.viz.frontends]]
+address = "0.0.0.0:4190"
+hostname = "*"

@@ -1671,7 +1671,7 @@ impl BinSingleForwardArbStrategy {
             format!("newClientOrderId={}", order_id),
         ];
         if open_ctx.order_type.is_limit() {
-            params_parts.push("timeInForce=GTC".to_string());
+            params_parts.push("timeInForce=GTX".to_string());
             params_parts.push(format!("price={}", format_price(effective_price)));
         }
 
@@ -2105,7 +2105,7 @@ impl BinSingleForwardArbStrategy {
         let now = get_timestamp_us();
 
         let params = Bytes::from(format!(
-            "symbol={}&side={}&type=LIMIT&timeInForce=GTC&quantity={}&price={}&newClientOrderId={}",
+            "symbol={}&side={}&type=LIMIT&timeInForce=GTX&quantity={}&price={}&newClientOrderId={}",
             margin_order.symbol,
             close_side_str,
             format_quantity(close_qty),
@@ -2387,7 +2387,7 @@ impl BinSingleForwardArbStrategy {
         let order_id = self.next_order_id();
         let now = get_timestamp_us();
         let params = Bytes::from(format!(
-            "symbol={}&side={}&type=LIMIT&timeInForce=GTC&quantity={}&price={}&newClientOrderId={}",
+            "symbol={}&side={}&type=LIMIT&timeInForce=GTX&quantity={}&price={}&newClientOrderId={}",
             ctx.spot_symbol,
             close_side_str,
             format_quantity(close_qty),

@@ -56,6 +56,7 @@ impl TradeEngine {
         let service = node
             .service_builder(&ServiceName::new(&self.cfg.order_req_service)?)
             .publish_subscribe::<[u8; 4096]>()
+            .subscriber_max_buffer_size(256)
             .open_or_create()?;
         let subscriber: Subscriber<ipc::Service, [u8; 4096], ()> =
             service.subscriber_builder().create()?;

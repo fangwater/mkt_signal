@@ -883,6 +883,7 @@ impl OrderPublisher {
         let service = node
             .service_builder(&ServiceName::new(service)?)
             .publish_subscribe::<[u8; ORDER_REQ_PAYLOAD]>()
+            .subscriber_max_buffer_size(256)
             .open_or_create()?;
         let publisher = service.publisher_builder().create()?;
         info!("order publisher ready: service={}", service.name());
