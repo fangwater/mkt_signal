@@ -87,11 +87,11 @@ impl PreTrade {
                     Some(StoreRuntimeCfg {
                         redis_url: store_cfg.redis_url,
                         prefix: store_cfg.prefix,
-                    })
+                    }) 
                 } else {
-                    None
-                }
-            }
+                    None 
+                } 
+            } 
             None => Some(StoreRuntimeCfg {
                 redis_url: default_store_url,
                 prefix: default_store_prefix,
@@ -104,10 +104,10 @@ impl PreTrade {
                 warn!(
                     "failed to create pre_trade resample publisher on {}: {err:#}",
                     channel
-                );
-                None
-            }
-        };
+                ); 
+                None 
+            } 
+        }; 
 
         let resample_positions_pub = make_pub(PRE_TRADE_POSITIONS_CHANNEL);
         let resample_exposure_pub = make_pub(PRE_TRADE_EXPOSURE_CHANNEL);
@@ -313,7 +313,7 @@ impl BootstrapResources {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)] 
 struct StoreRuntimeCfg {
     redis_url: String,
     prefix: String,
@@ -883,6 +883,7 @@ impl OrderPublisher {
         let service = node
             .service_builder(&ServiceName::new(service)?)
             .publish_subscribe::<[u8; ORDER_REQ_PAYLOAD]>()
+            .subscriber_max_buffer_size(256)
             .open_or_create()?;
         let publisher = service.publisher_builder().create()?;
         info!("order publisher ready: service={}", service.name());
@@ -1039,6 +1040,7 @@ fn spawn_trade_response_listener(
             let service = node
                 .service_builder(&ServiceName::new(&service_name)?)
                 .publish_subscribe::<[u8; TRADE_RESP_PAYLOAD]>()
+                .subscriber_max_buffer_size(256)
                 .open_or_create()?;
             let subscriber: Subscriber<ipc::Service, [u8; TRADE_RESP_PAYLOAD], ()> =
                 service.subscriber_builder().create()?;
@@ -1957,23 +1959,23 @@ fn build_separator(widths: &[usize], fill: char) -> String {
     let mut line = String::new();
     line.push('+');
     for width in widths {
-        line.push_str(&fill.to_string().repeat(width + 2));
-        line.push('+');
+        line.push_str(&fill.to_string().repeat(width + 2)); 
+        line.push('+'); 
     }
-    line
-}
+    line 
+} 
 
 fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
     let mut row = String::new();
     row.push('|');
     for (cell, width) in cells.iter().zip(widths.iter()) {
-        row.push(' ');
-        row.push_str(&format!("{:<width$}", cell, width = *width));
+        row.push(' '); 
+        row.push_str(&format!("{:<width$}", cell, width = *width));  
         row.push(' ');
         row.push('|');
-    }
-    row
-}
+    } 
+    row 
+} 
 
 fn spawn_derivatives_worker(price_table: Rc<RefCell<PriceTable>>) -> Result<()> {
     let service = DERIVATIVES_SERVICE.to_string();
@@ -1983,8 +1985,8 @@ fn spawn_derivatives_worker(price_table: Rc<RefCell<PriceTable>>) -> Result<()> 
             error!("derivatives worker exited: {err:?}");
         }
     });
-    Ok(())
-}
+    Ok(()) 
+} 
 
 async fn derivatives_loop(
     node_name: String,

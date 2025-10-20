@@ -56,6 +56,7 @@ impl TradeEngine {
         let service = node
             .service_builder(&ServiceName::new(&self.cfg.order_req_service)?)
             .publish_subscribe::<[u8; 4096]>()
+            .subscriber_max_buffer_size(256)
             .open_or_create()?;
         let subscriber: Subscriber<ipc::Service, [u8; 4096], ()> =
             service.subscriber_builder().create()?;
@@ -68,6 +69,7 @@ impl TradeEngine {
         let resp_service = node
             .service_builder(&ServiceName::new(&self.cfg.order_resp_service)?)
             .publish_subscribe::<[u8; 16384]>()
+            .subscriber_max_buffer_size(256)
             .open_or_create()?;
         let resp_publisher: Publisher<ipc::Service, [u8; 16384], ()> =
             resp_service.publisher_builder().create()?;

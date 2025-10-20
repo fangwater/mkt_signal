@@ -466,7 +466,7 @@ struct StrategyEngine {
     next_compute_refresh: Instant,
     next_fetch_refresh: Instant,
     http: Client,
-    // resample
+    // resample 
     resample_interval: Duration,
     next_resample: Instant,
     resample_msg_pub: SignalPublisher,
@@ -1843,9 +1843,9 @@ impl StrategyEngine {
             self.symbols.len(),
             self.stats.open_signals,
             self.stats.close_signals
-        );
-    }
-}
+        ); 
+    } 
+} 
 
 // 阈值获取逻辑改为读取 self.th_4h/self.th_8h，参见 StrategyEngine::thresholds_for_frequency
 
@@ -2650,7 +2650,7 @@ fn align_price_ceil(price: f64, tick: f64) -> f64 {
     }
     let scaled = ((price / tick) - 1e-9).ceil();
     scaled * tick
-}
+} 
 
 impl StrategyEngine {
     fn get_qty_step(&self, symbol: &str, spot_min: f64, futures_min: f64) -> f64 {
