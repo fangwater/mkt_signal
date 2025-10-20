@@ -1,7 +1,7 @@
 use anyhow::Result;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-#[repr(u32)]
+#[repr(u32)] 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum AccountEventType {

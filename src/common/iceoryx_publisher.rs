@@ -34,10 +34,10 @@ impl SignalPublisher {
         info!(
             "Successfully created publisher for channel: {}",
             channel_name
-        );
-
-        Ok(Self { publisher })
-    }
+        ); 
+        
+        Ok(Self { publisher }) 
+    } 
 
     pub fn publish(&self, data: &[u8]) -> anyhow::Result<()> {
         if data.len() > 4096 {

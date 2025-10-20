@@ -33,7 +33,7 @@ DEFAULTS = {
     "ROLLING_WINDOW": 100_000,
     "MIN_PERIODS": 90_0,
     "RESAMPLE_INTERVAL_MS": 1_000,
-    "bidask_lower_quantile": 0.05,
+    "bidask_lower_quantile": 0.03,
     "bidask_upper_quantile": 0.70,
     "askbid_lower_quantile": 0.30,
     "askbid_upper_quantile": 0.95,

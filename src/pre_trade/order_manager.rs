@@ -299,12 +299,12 @@ impl OrderManager {
             None
         };
 
-        let order_id = order.order_id;
-        let prev = self.orders.insert(order_id, order);
+        let client_order_id = order.client_order_id;
+        let prev = self.orders.insert(client_order_id, order);
 
         if let Some(symbol) = symbol {
             self.increment_pending_limit_count(&symbol);
-            if let Some(o) = self.orders.get_mut(&order_id) {
+            if let Some(o) = self.orders.get_mut(&client_order_id) {
                 o.pending_counted = true;
             }
         }
@@ -319,12 +319,12 @@ impl OrderManager {
     }
 
     /// 根据订单ID获取订单
-    pub fn get(&self, order_id: i64) -> Option<Order> {
-        self.orders.get(&order_id).cloned()
+    pub fn get(&self, client_order_id: i64) -> Option<Order> {
+        self.orders.get(&client_order_id).cloned()
     }
 
     /// 根据订单ID获取订单的可变引用并执行操作
-    pub fn update<F>(&mut self, order_id: i64, f: F) -> bool
+    pub fn update<F>(&mut self, client_order_id: i64, f: F) -> bool
     where
         F: FnOnce(&mut Order),
     {
@@ -338,7 +338,7 @@ impl OrderManager {
         let mut existed = false;
 
         {
-            if let Some(order) = self.orders.get_mut(&order_id) {
+            if let Some(order) = self.orders.get_mut(&client_order_id) {
                 existed = true;
                 let previous_type = order.order_type;
                 prev_symbol = order.symbol.clone();
@@ -407,8 +407,8 @@ impl OrderManager {
     }
 
     /// 移除订单
-    pub fn remove(&mut self, order_id: i64) -> Option<Order> {
-        let removed = self.orders.remove(&order_id);
+    pub fn remove(&mut self, client_order_id: i64) -> Option<Order> {
+        let removed = self.orders.remove(&client_order_id);
 
         if let Some(ref order) = removed {
             if order.order_type.is_limit() && order.pending_counted {
@@ -481,7 +481,7 @@ impl Default for OrderManager {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Order {
-    pub order_id: i64,                   // 订单ID
+    pub client_order_id: i64,            // 客户端生成的订单ID
     pub order_type: OrderType,           // 订单类型
     pub symbol: String,                  // 交易对
     pub side: Side,                      // 买卖方向
@@ -492,30 +492,36 @@ pub struct Order {
     #[serde(default)]
     pub hedged_filled_quantity: f64, // 已对冲到期货端的成交量
     #[serde(default)]
-    pub exchange_order_id: Option<i64>, // 交易所返回的 orderId
+    pub order_id: Option<i64>, // 交易所返回的 orderId
     #[serde(default)]
     pub update_event_times: Vec<i64>, // 交易所成交/状态更新时间戳列表
     pub status: OrderExecutionStatus,    // 订单执行状态
     #[serde(default)]
     pub pending_counted: bool, // 是否已计入 pending 限价单 count（用于去重防二次递减）
     // 时间戳记录
-    pub submit_time: i64, // 订单提交时间(本地时间)
-    // "O": 1499405658657,            // Order creation time 对应币安杠杆下单
-    pub create_time: i64, // 交易所订单创建时间(交易所时间)
-    pub ack_time: i64,    // 订单收到交易所回报的时间(本地时间)
-    pub filled_time: i64, // 订单执行成功的时间（交易所时间，记录最后一次）
-    pub end_time: i64,    // 收到成交回报的时间（本地时间，记录最后一次）
+    #[serde(default)]
+    pub create_ts_local: i64, // 订单提交时间(本地时间)
+    #[serde(default)]
+    pub create_ts_exchange: i64, // 交易所订单创建时间(交易所时间)
+    #[serde(default)]
+    pub filled_ts: i64, // 订单执行成功的时间（交易所时间，记录最后一次）
+    #[serde(default)]
+    pub cancel_ts: i64, // 订单撤单/过期时间（交易所时间）
+    #[serde(default)]
+    pub reject_ts: i64, // 订单被拒时间（本地或交易所时间）
+    #[serde(default)]
+    pub signal_ctx_bytes: Vec<u8>, // 序列化的信号上下文或关联信息
 }
 
 impl Order {
     /// 获取策略ID - 策略ID是订单ID的前32位
     pub fn get_strategy_id(&self) -> i32 {
-        (self.order_id >> 32) as i32
+        (self.client_order_id >> 32) as i32
     }
 
     /// 创建新订单
     pub fn new(
-        order_id: i64,
+        client_order_id: i64,
         order_type: OrderType,
         symbol: String,
         side: Side,
@@ -523,22 +529,23 @@ impl Order {
         price: f64,
     ) -> Self {
         Order {
-            order_id,
+            client_order_id,
             order_type,
             symbol,
             side,
             price,
             quantity,
             status: OrderExecutionStatus::Commit,
-            submit_time: 0,
-            create_time: 0,
-            ack_time: 0,
-            filled_time: 0,
-            end_time: 0,
+            create_ts_local: 0,
+            create_ts_exchange: 0,
+            filled_ts: 0,
+            cancel_ts: 0,
+            reject_ts: 0,
+            signal_ctx_bytes: Vec::new(),
             cumulative_filled_quantity: 0.0,
             hedged_quantily: 0.0,
             hedged_filled_quantity: 0.0,
-            exchange_order_id: None,
+            order_id: None,
             update_event_times: Vec::new(),
             pending_counted: order_type.is_limit(),
         }
@@ -567,39 +574,39 @@ impl Order {
     }
 
     /// 设置提交时间
-    pub fn set_submit_time(&mut self, time: i64) {
-        self.submit_time = time;
+    pub fn set_create_ts_local(&mut self, time: i64) {
+        self.create_ts_local = time;
     }
 
     /// 设置执行时间
-    pub fn set_create_time(&mut self, time: i64) {
+    pub fn set_create_ts_exchange(&mut self, time: i64) {
         self.record_exchange_create(time);
     }
 
-    /// 设置确认时间
-    pub fn set_ack_time(&mut self, time: i64) {
-        self.ack_time = time;
-    }
-
     /// 设置成交时间
-    pub fn set_filled_time(&mut self, time: i64) {
-        self.filled_time = time;
+    pub fn set_filled_ts(&mut self, time: i64) {
+        self.filled_ts = time;
     }
 
-    /// 设置结束时间
-    pub fn set_end_time(&mut self, time: i64) {
-        self.end_time = time;
+    /// 设置撤单时间
+    pub fn set_cancel_ts(&mut self, time: i64) {
+        self.cancel_ts = time;
     }
 
-    pub fn set_exchange_order_id(&mut self, exchange_order_id: i64) {
-        if exchange_order_id > 0 {
-            self.exchange_order_id = Some(exchange_order_id);
+    /// 设置拒单时间
+    pub fn set_reject_ts(&mut self, time: i64) {
+        self.reject_ts = time;
+    }
+
+    pub fn set_order_id(&mut self, order_id: i64) {
+        if order_id > 0 {
+            self.order_id = Some(order_id);
         }
     }
 
     pub fn record_exchange_create(&mut self, time: i64) {
-        if time > 0 && self.create_time == 0 {
-            self.create_time = time;
+        if time > 0 && self.create_ts_exchange == 0 {
+            self.create_ts_exchange = time;
         }
     }
 
@@ -611,5 +618,10 @@ impl Order {
             return;
         }
         self.update_event_times.push(time);
+    }
+
+    /// 写入信号上下文字节串
+    pub fn set_signal_ctx_bytes(&mut self, bytes: Vec<u8>) {
+        self.signal_ctx_bytes = bytes;
     }
 }

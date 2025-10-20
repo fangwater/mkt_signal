@@ -45,10 +45,6 @@ name = "viz_server"
 path = "src/bin/viz_server.rs"
 
 [[bin]]
-name = "print_pre_trade_snapshot"
-path = "src/bin/print_pre_trade_snapshot.rs"
-
-[[bin]]
 name = "rolling_metrics"
 path = "src/bin/rolling_metrics.rs"
 
