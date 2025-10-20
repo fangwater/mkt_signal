@@ -925,10 +925,10 @@ fn collect_price_symbols(
     for bal in &spot_snapshot.balances {
         if bal.asset.eq_ignore_ascii_case("USDT") {
             continue;
-        }
+        } 
         set.insert(format!("{}USDT", bal.asset.to_uppercase()));
-    }
-}
+    } 
+} 
 
 fn resolve_order_req_service(cfg: &TradeEngineRespCfg) -> String {
     if let Some(req_service) = cfg.req_service.clone() {
