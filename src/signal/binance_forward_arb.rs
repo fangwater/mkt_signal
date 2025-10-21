@@ -63,6 +63,16 @@ pub struct BinSingleForwardArbCloseUmCtx {
     pub exp_time: i64,
 }
 
+/// 阶梯撤单信号上下文
+#[derive(Clone, Debug)]
+pub struct BinSingleForwardArbLadderCancelCtx {
+    pub spot_symbol: String,
+    pub futures_symbol: String,
+    pub bidask_sr: f64,
+    pub cancel_threshold: f64,
+    pub trigger_ts: i64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OpenSignalMeta {
     spot_symbol: String,
@@ -200,6 +210,62 @@ impl BinSingleForwardArbOpenCtx {
             funding_ma,
             predicted_funding_rate,
             loan_rate,
+        })
+    }
+}
+
+impl BinSingleForwardArbLadderCancelCtx {
+    pub fn to_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
+        buf.put_u32_le(self.spot_symbol.len() as u32);
+        buf.put_slice(self.spot_symbol.as_bytes());
+        buf.put_u32_le(self.futures_symbol.len() as u32);
+        buf.put_slice(self.futures_symbol.as_bytes());
+        buf.put_f64_le(self.bidask_sr);
+        buf.put_f64_le(self.cancel_threshold);
+        buf.put_i64_le(self.trigger_ts);
+        buf.freeze()
+    }
+
+    pub fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
+        if bytes.remaining() < 4 {
+            return Err("Not enough bytes for spot_symbol length".to_string());
+        }
+        let spot_len = bytes.get_u32_le() as usize;
+        if bytes.remaining() < spot_len + 4 {
+            return Err("Not enough bytes for spot_symbol portion".to_string());
+        }
+        let spot_symbol = String::from_utf8(bytes.copy_to_bytes(spot_len).to_vec())
+            .map_err(|e| format!("Invalid UTF-8 for spot_symbol: {e}"))?;
+
+        let fut_len = bytes.get_u32_le() as usize;
+        if bytes.remaining() < fut_len + 8 + 8 + 8 {
+            return Err("Not enough bytes for futures_symbol or payload".to_string());
+        }
+        let futures_symbol = String::from_utf8(bytes.copy_to_bytes(fut_len).to_vec())
+            .map_err(|e| format!("Invalid UTF-8 for futures_symbol: {e}"))?;
+
+        if bytes.remaining() < 8 {
+            return Err("Not enough bytes for bidask_sr".to_string());
+        }
+        let bidask_sr = bytes.get_f64_le();
+
+        if bytes.remaining() < 8 {
+            return Err("Not enough bytes for cancel_threshold".to_string());
+        }
+        let cancel_threshold = bytes.get_f64_le();
+
+        if bytes.remaining() < 8 {
+            return Err("Not enough bytes for trigger_ts".to_string());
+        }
+        let trigger_ts = bytes.get_i64_le();
+
+        Ok(Self {
+            spot_symbol,
+            futures_symbol,
+            bidask_sr,
+            cancel_threshold,
+            trigger_ts,
         })
     }
 }
@@ -403,6 +469,7 @@ pub struct BinSingleForwardArbStrategy {
     max_total_exposure_ratio: f64,
     max_pos_u: f64,
     max_leverage: f64,
+    max_pending_limit_orders: Rc<Cell<i32>>,
     min_qty_table: std::rc::Rc<MinQtyTable>,
     price_table: std::rc::Rc<std::cell::RefCell<PriceTable>>,
     period_log_flags: RefCell<PeriodLogFlags>,
@@ -421,6 +488,7 @@ impl BinSingleForwardArbStrategy {
         max_total_exposure_ratio: f64,
         max_pos_u: f64,
         max_leverage: f64,
+        max_pending_limit_orders: Rc<Cell<i32>>,
         min_qty_table: Rc<MinQtyTable>,
         price_table: Rc<std::cell::RefCell<PriceTable>>,
     ) -> Self {
@@ -452,22 +520,11 @@ impl BinSingleForwardArbStrategy {
             max_total_exposure_ratio,
             max_pos_u,
             max_leverage,
+            max_pending_limit_orders,
             min_qty_table,
             price_table,
             period_log_flags: RefCell::new(PeriodLogFlags::default()),
         };
-
-        info!(
-            "{}: strategy_id={} 初始化 mode={:?} symbol={} max_symbol_ratio={:.2}% max_total_ratio={:.2}% max_pos_u={:.2} max_leverage={:.2}",
-            Self::strategy_name(),
-            strategy.strategy_id,
-            strategy.mode,
-            strategy.symbol,
-            strategy.max_symbol_exposure_ratio * 100.0,
-            strategy.max_total_exposure_ratio * 100.0,
-            strategy.max_pos_u,
-            strategy.max_leverage
-        );
 
         strategy
     }
@@ -483,6 +540,7 @@ impl BinSingleForwardArbStrategy {
         max_total_exposure_ratio: f64,
         max_pos_u: f64,
         max_leverage: f64,
+        max_pending_limit_orders: Rc<Cell<i32>>,
         min_qty_table: Rc<MinQtyTable>,
         price_table: Rc<std::cell::RefCell<PriceTable>>,
     ) -> Self {
@@ -498,6 +556,7 @@ impl BinSingleForwardArbStrategy {
             max_total_exposure_ratio,
             max_pos_u,
             max_leverage,
+            max_pending_limit_orders,
             min_qty_table,
             price_table,
         )
@@ -514,6 +573,7 @@ impl BinSingleForwardArbStrategy {
         max_total_exposure_ratio: f64,
         max_pos_u: f64,
         max_leverage: f64,
+        max_pending_limit_orders: Rc<Cell<i32>>,
         min_qty_table: Rc<MinQtyTable>,
         price_table: Rc<std::cell::RefCell<PriceTable>>,
     ) -> Self {
@@ -529,6 +589,7 @@ impl BinSingleForwardArbStrategy {
             max_total_exposure_ratio,
             max_pos_u,
             max_leverage,
+            max_pending_limit_orders,
             min_qty_table,
             price_table,
         )
@@ -786,6 +847,26 @@ impl BinSingleForwardArbStrategy {
                     ),
                 }
             }
+            SignalType::BinSingleForwardArbLadderCancel => {
+                match BinSingleForwardArbLadderCancelCtx::from_bytes(signal.context.clone()) {
+                    Ok(ctx) => {
+                        if let Err(err) = self.handle_ladder_cancel(&ctx) {
+                            warn!(
+                                "{}: strategy_id={} 阶梯撤单处理失败: {}",
+                                Self::strategy_name(),
+                                self.strategy_id,
+                                err
+                            );
+                        }
+                    }
+                    Err(err) => warn!(
+                        "{}: strategy_id={} 解析阶梯撤单上下文失败: {}",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        err
+                    ),
+                }
+            }
             SignalType::BinSingleForwardArbHedge => {
                 match BinSingleForwardArbHedgeCtx::from_bytes(signal.context.clone()) {
                     Ok(ctx) => {
@@ -821,6 +902,94 @@ impl BinSingleForwardArbStrategy {
                 other
             ),
         }
+    }
+
+    fn handle_ladder_cancel(
+        &mut self,
+        ctx: &BinSingleForwardArbLadderCancelCtx,
+    ) -> Result<(), String> {
+        if !ctx.spot_symbol.eq_ignore_ascii_case(&self.symbol) {
+            debug!(
+                "{}: strategy_id={} 阶梯撤单信号 symbol={} 与策略 symbol={} 不匹配",
+                Self::strategy_name(),
+                self.strategy_id,
+                ctx.spot_symbol,
+                self.symbol
+            );
+            return Ok(());
+        }
+        info!(
+            "{}: strategy_id={} 阶梯撤单触发 bidask_sr={:.6} threshold={:.6}",
+            Self::strategy_name(),
+            self.strategy_id,
+            ctx.bidask_sr,
+            ctx.cancel_threshold
+        );
+
+        self.force_cancel_open_margin_order()
+    }
+
+    fn force_cancel_open_margin_order(&mut self) -> Result<(), String> {
+        if self.margin_order_id == 0 {
+            debug!(
+                "{}: strategy_id={} 阶梯撤单触发但无 margin 开仓单",
+                Self::strategy_name(),
+                self.strategy_id
+            );
+            return Ok(());
+        }
+
+        let order_snapshot = {
+            let manager = self.order_manager.borrow();
+            manager.get(self.margin_order_id)
+        };
+
+        let Some(order) = order_snapshot else {
+            warn!(
+                "{}: strategy_id={} 阶梯撤单信号收到但未找到订单 id={}",
+                Self::strategy_name(),
+                self.strategy_id,
+                self.margin_order_id
+            );
+            self.margin_order_id = 0;
+            self.open_timeout_us = None;
+            return Ok(());
+        };
+
+        if order.status.is_terminal() {
+            debug!(
+                "{}: strategy_id={} 阶梯撤单触发但订单已终止 status={:?}",
+                Self::strategy_name(),
+                self.strategy_id,
+                order.status
+            );
+            self.margin_order_id = 0;
+            self.open_timeout_us = None;
+            return Ok(());
+        }
+
+        if let Err(err) = self.submit_margin_cancel(&order.symbol, order.order_id) {
+            warn!(
+                "{}: strategy_id={} 阶梯撤单提交失败: {}",
+                Self::strategy_name(),
+                self.strategy_id,
+                err
+            );
+            return Err(err);
+        }
+
+        let now = get_timestamp_us();
+        {
+            let mut manager = self.order_manager.borrow_mut();
+            let _ = manager.update(order.order_id, |o| {
+                o.update_status(OrderExecutionStatus::Commit);
+                o.set_end_time(now);
+            });
+        }
+        self.margin_order_id = 0;
+        self.open_timeout_us = None;
+
+        Ok(())
     }
 
     fn handle_signal_close(&mut self, signal: TradeSignal) {
@@ -1120,17 +1289,24 @@ impl BinSingleForwardArbStrategy {
 
         false
     }
-    //1、传入order_manager的&ref，检查当前挂单是否小于3
-    fn check_current_pending_limit_order(symbol: &String, order_manager: &OrderManager) -> bool {
-        const MAX_PENDING_LIMIT: i32 = 3;
+    // 检查当前 symbol 的限价挂单是否超过阈值
+    fn check_current_pending_limit_order(
+        &self,
+        symbol: &String,
+        order_manager: &OrderManager,
+    ) -> bool {
+        let max_limit = self.max_pending_limit_orders.get();
+        if max_limit <= 0 {
+            return true;
+        }
         let count = order_manager.get_symbol_pending_limit_order_count(symbol);
-        if count >= MAX_PENDING_LIMIT {
+        if count >= max_limit {
             warn!(
                 "{}: symbol={} 当前限价挂单数={}，达到上限 {}",
                 Self::strategy_name(),
                 symbol,
                 count,
-                MAX_PENDING_LIMIT
+                max_limit
             );
             // 打印该 symbol 下当前挂着的限价单（非终态）
             Self::log_pending_limit_orders(symbol, order_manager);
@@ -1145,36 +1321,21 @@ impl BinSingleForwardArbStrategy {
     fn check_for_symbol_exposure(&self, symbol: &str, exposure_manager: &ExposureManager) -> bool {
         let limit = self.max_symbol_exposure_ratio;
         if limit <= 0.0 {
-            debug!(
-                "{}: symbol={} 敞口阈值 <= 0，跳过敞口检查",
-                Self::strategy_name(),
-                symbol
-            );
             return true;
         }
 
         let symbol_upper = symbol.to_uppercase();
         let Some(base_asset) = Self::extract_base_asset(&symbol_upper) else {
-            warn!(
-                "{}: 无法识别 symbol={} 的基础资产，跳过敞口检查",
-                Self::strategy_name(),
-                symbol
-            );
             return true;
         };
 
         let Some(entry) = exposure_manager.exposure_for_asset(&base_asset) else {
-            warn!(
-                "{}: 未找到资产 {} 的敞口记录，跳过敞口检查",
-                Self::strategy_name(),
-                base_asset
-            );
             return true;
         };
 
         let total_equity = exposure_manager.total_equity();
         if total_equity <= f64::EPSILON {
-            warn!(
+            debug!(
                 "{}: 账户总权益近似为 0，无法计算敞口占比",
                 Self::strategy_name()
             );
@@ -1199,15 +1360,9 @@ impl BinSingleForwardArbStrategy {
 
         // 若缺少价格但敞口非零，回退到数量比例并提示
         if mark == 0.0 && entry.exposure != 0.0 {
-            warn!(
-                "{}: 资产 {} 缺少标记价格，回退用数量比例，symbol={}",
-                Self::strategy_name(),
-                base_asset,
-                format!("{}USDT", base_asset)
-            );
             let ratio = entry.exposure.abs() / total_equity;
             if ratio > limit {
-                warn!(
+                debug!(
                     "{}: 资产 {} 敞口占比(数量) {:.4}% 超过阈值 {:.2}% (敞口qty={:.6}, 权益={:.6})",
                     Self::strategy_name(),
                     base_asset,
@@ -1217,22 +1372,13 @@ impl BinSingleForwardArbStrategy {
                     total_equity
                 );
                 return false;
-            } else {
-                debug!(
-                    "{}: 资产 {} 敞口占比(数量) {:.4}% 合规 (敞口qty={:.6}, 权益={:.6})",
-                    Self::strategy_name(),
-                    base_asset,
-                    ratio * 100.0,
-                    entry.exposure,
-                    total_equity
-                );
-                return true;
             }
+            return true;
         }
 
         let ratio = exposure_usdt.abs() / total_equity;
         if ratio > limit {
-            warn!(
+            debug!(
                 "{}: 资产 {} 敞口占比 {:.4}% 超过阈值 {:.2}% (敞口USDT={:.6}, 权益={:.6})",
                 Self::strategy_name(),
                 base_asset,
@@ -1243,14 +1389,6 @@ impl BinSingleForwardArbStrategy {
             );
             false
         } else {
-            debug!(
-                "{}: 资产 {} 敞口占比 {:.4}% 合规 (敞口USDT={:.6}, 权益={:.6})",
-                Self::strategy_name(),
-                base_asset,
-                ratio * 100.0,
-                exposure_usdt,
-                total_equity
-            );
             true
         }
     }
@@ -1259,13 +1397,12 @@ impl BinSingleForwardArbStrategy {
     fn check_for_total_exposure(&self, exposure_manager: &ExposureManager) -> bool {
         let limit = self.max_total_exposure_ratio;
         if limit <= 0.0 {
-            debug!("{}: 总敞口阈值 <= 0，跳过检查", Self::strategy_name());
             return true;
         }
 
         let total_equity = exposure_manager.total_equity();
         if total_equity <= f64::EPSILON {
-            warn!(
+            debug!(
                 "{}: 账户总权益近似为 0，无法计算总敞口占比",
                 Self::strategy_name()
             );
@@ -1282,20 +1419,13 @@ impl BinSingleForwardArbStrategy {
             }
             let sym = format!("{}USDT", asset);
             let mark = snap.get(&sym).map(|p| p.mark_price).unwrap_or(0.0);
-            if mark == 0.0 && (e.spot_total_wallet != 0.0 || e.um_net_position != 0.0) {
-                debug!(
-                    "{}: 总敞口估值缺少价格 symbol={}，按 0 估值",
-                    Self::strategy_name(),
-                    sym
-                );
-            }
             let exposure_usdt = (e.spot_total_wallet + e.um_net_position) * mark;
             abs_total_usdt += exposure_usdt.abs();
         }
 
         let ratio = abs_total_usdt / total_equity;
         if ratio > limit {
-            warn!(
+            debug!(
                 "{}: 总敞口占比 {:.4}% 超过阈值 {:.2}% (总敞口USDT={:.6}, 权益={:.6})",
                 Self::strategy_name(),
                 ratio * 100.0,
@@ -1305,13 +1435,6 @@ impl BinSingleForwardArbStrategy {
             );
             false
         } else {
-            debug!(
-                "{}: 总敞口占比 {:.4}% 合规 (总敞口USDT={:.6}, 权益={:.6})",
-                Self::strategy_name(),
-                ratio * 100.0,
-                abs_total_usdt,
-                total_equity
-            );
             true
         }
     }
@@ -1319,13 +1442,12 @@ impl BinSingleForwardArbStrategy {
     fn check_for_leverage(&self, exposure_manager: &ExposureManager) -> bool {
         let limit = self.max_leverage;
         if limit <= 0.0 {
-            debug!("{}: 杠杆阈值 <= 0，跳过检查", Self::strategy_name());
             return true;
         }
 
         let total_equity = exposure_manager.total_equity();
         if total_equity <= f64::EPSILON {
-            warn!(
+            debug!(
                 "{}: 账户总权益近似为 0，无法计算杠杆占比",
                 Self::strategy_name()
             );
@@ -1335,7 +1457,7 @@ impl BinSingleForwardArbStrategy {
         let total_position = exposure_manager.total_position();
         let leverage = total_position / total_equity;
         if leverage > limit {
-            warn!(
+            debug!(
                 "{}: 当前杠杆 {:.4} 超过阈值 {:.4} (仓位={:.6}, 权益={:.6})",
                 Self::strategy_name(),
                 leverage,
@@ -1345,12 +1467,6 @@ impl BinSingleForwardArbStrategy {
             );
             false
         } else {
-            debug!(
-                "{}: 当前杠杆 {:.4} 合规 (阈值 {:.4})",
-                Self::strategy_name(),
-                leverage,
-                limit
-            );
             true
         }
     }
@@ -1483,7 +1599,7 @@ impl BinSingleForwardArbStrategy {
 
         {
             let order_manager = self.order_manager.borrow();
-            if !Self::check_current_pending_limit_order(&open_ctx.spot_symbol, &order_manager) {
+            if !self.check_current_pending_limit_order(&open_ctx.spot_symbol, &order_manager) {
                 return Err(format!(
                     "{}: symbol={} 挂单数量超限",
                     Self::strategy_name(),
@@ -1697,14 +1813,6 @@ impl BinSingleForwardArbStrategy {
         self.order_tx
             .send(request.to_bytes())
             .map_err(|e| format!("{}: 推送 margin 开仓失败: {}", Self::strategy_name(), e))?;
-
-        debug!(
-            "{}: strategy_id={} margin 开仓请求已推送 order_id={} payload_len={}",
-            Self::strategy_name(),
-            self.strategy_id,
-            order_id,
-            request.to_bytes().len()
-        );
 
         let mut order = Order::new(
             order_id,
@@ -2856,6 +2964,7 @@ impl BinSingleForwardArbStrategy {
         max_total_exposure_ratio: f64,
         max_pos_u: f64,
         max_leverage: f64,
+        max_pending_limit_orders: Rc<Cell<i32>>,
         min_qty_table: std::rc::Rc<MinQtyTable>,
         price_table: Rc<std::cell::RefCell<PriceTable>>,
     ) -> Self {
@@ -2871,6 +2980,7 @@ impl BinSingleForwardArbStrategy {
             max_total_exposure_ratio,
             max_pos_u,
             max_leverage,
+            max_pending_limit_orders.clone(),
             min_qty_table,
             price_table,
         );
@@ -2915,6 +3025,7 @@ impl BinSingleForwardArbStrategy {
         s
     }
 }
+
 impl Drop for BinSingleForwardArbStrategy {
     fn drop(&mut self) {
         self.log_lifecycle_summary("生命周期结束");
@@ -3768,11 +3879,11 @@ impl Strategy for BinSingleForwardArbStrategy {
                     .map(|order| {
                         (order.cumulative_filled_quantity - order.hedged_filled_quantity).max(0.0)
                     })
-                    .unwrap_or(0.0)
-            };
-            if hedge_delta > 1e-8 {
+                    .unwrap_or(0.0) 
+            }; 
+            if hedge_delta > 1e-8 { 
                 self.emit_hedge_signal(order_id, hedge_delta);
-            }
+            } 
 
             debug!(
                 "{}: strategy_id={} margin execution report status={} execution_type={}",

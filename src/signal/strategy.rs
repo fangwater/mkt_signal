@@ -118,9 +118,10 @@ impl StrategyManager {
         self.strategies.get(&id).map(|b| b.as_ref())
     }
 
-    /// 触发全部策略的周期检查
-    pub fn handle_period_clock(&mut self, current_tp: i64) {
+    /// 触发全部策略的周期检查，返回本次检查到的策略数量
+    pub fn handle_period_clock(&mut self, current_tp: i64) -> usize {
         let iterations = self.order.len();
+        let mut inspected = 0usize;
         for _ in 0..iterations {
             let Some(strategy_id) = self.order.pop_front() else {
                 break;
@@ -128,6 +129,7 @@ impl StrategyManager {
 
             let mut remove = true;
             if let Some(strategy) = self.strategies.get_mut(&strategy_id) {
+                inspected += 1;
                 strategy.hanle_period_clock(current_tp);
                 remove = !strategy.is_active();
             }
@@ -145,6 +147,7 @@ impl StrategyManager {
                 self.order.push_back(strategy_id);
             }
         }
+        inspected
     }
 
     /// 基于策略类型和当前时间戳生成策略 ID

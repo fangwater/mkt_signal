@@ -22,12 +22,6 @@ max_symbol_exposure_ratio = 0.25   # 单一资产最大敞口比例 (25%)
 max_total_exposure_ratio = 0.25    # 总敞口占权益比例 (25%) 
 max_leverage = 2.0     # 最大杠杆倍数 
 
-[store]
-# 仅在 Ctrl+C 时落盘，启动时恢复
-enable = true
-redis_url = "redis://127.0.0.1/0"
-prefix = "pre_trade"
-
 [risk_checks.binance_pm_um]
 # REST 接口基地址，可使用默认生产环境
 rest_base = "https://papi.binance.com"

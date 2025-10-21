@@ -3,7 +3,7 @@ use crate::common::account_msg::{
     AccountUpdateBalanceMsg, AccountUpdateFlushMsg, AccountUpdatePositionMsg, BalanceUpdateMsg,
     ExecutionReportMsg, OrderTradeUpdateMsg,
 };
-use crate::common::iceoryx_publisher::SignalPublisher;
+use crate::common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD, SIGNAL_PAYLOAD};
 use crate::common::min_qty_table::MinQtyTable;
 use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
 use crate::common::time_util::get_timestamp_us;
@@ -17,10 +17,9 @@ use crate::pre_trade::config::{
 use crate::pre_trade::event::AccountEvent;
 use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
-use crate::pre_trade::store::RedisStore;
 use crate::signal::binance_forward_arb::{
     BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbCloseUmCtx, BinSingleForwardArbHedgeCtx,
-    BinSingleForwardArbOpenCtx, BinSingleForwardArbStrategy,
+    BinSingleForwardArbLadderCancelCtx, BinSingleForwardArbOpenCtx, BinSingleForwardArbStrategy,
 };
 use crate::signal::resample::{
     PreTradeExposureResampleEntry, PreTradeExposureRow, PreTradePositionResampleEntry,
@@ -36,7 +35,7 @@ use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, error, info, warn};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
@@ -44,7 +43,6 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 const ACCOUNT_PAYLOAD: usize = 16_384;
 const TRADE_RESP_PAYLOAD: usize = 16_384;
-const SIGNAL_PAYLOAD: usize = 4_096;
 const ORDER_REQ_PAYLOAD: usize = 4_096;
 
 const NODE_PRE_TRADE_ACCOUNT: &str = "pre_trade_account";
@@ -76,38 +74,16 @@ impl PreTrade {
         // 初始化策略参数从 Redis
         let strategy_params = StrategyParamsCfg::default();
 
-        let default_store_url = std::env::var("PRE_TRADE_STORE_REDIS_URL")
-            .or_else(|_| std::env::var("REDIS_URL"))
-            .unwrap_or_else(|_| "redis://127.0.0.1:6379/0".to_string());
-        let default_store_prefix =
-            std::env::var("PRE_TRADE_STORE_PREFIX").unwrap_or_else(|_| "pre_trade".to_string());
-        let fallback_store_cfg = match self.cfg.store.clone() {
-            Some(store_cfg) => {
-                if store_cfg.enable {
-                    Some(StoreRuntimeCfg {
-                        redis_url: store_cfg.redis_url,
-                        prefix: store_cfg.prefix,
-                    }) 
-                } else {
-                    None 
-                } 
-            } 
-            None => Some(StoreRuntimeCfg {
-                redis_url: default_store_url,
-                prefix: default_store_prefix,
-            }),
-        };
-
-        let make_pub = |channel: &str| match SignalPublisher::new(channel) {
+        let make_pub = |channel: &str| match ResamplePublisher::new(channel) {
             Ok(p) => Some(p),
             Err(err) => {
                 warn!(
                     "failed to create pre_trade resample publisher on {}: {err:#}",
                     channel
-                ); 
-                None 
-            } 
-        }; 
+                );
+                None
+            }
+        };
 
         let resample_positions_pub = make_pub(PRE_TRADE_POSITIONS_CHANNEL);
         let resample_exposure_pub = make_pub(PRE_TRADE_EXPOSURE_CHANNEL);
@@ -119,7 +95,6 @@ impl PreTrade {
             signal_tx.clone(),
             order_publisher,
             strategy_params,
-            fallback_store_cfg,
             resample_positions_pub,
             resample_exposure_pub,
             resample_risk_pub,
@@ -146,16 +121,7 @@ impl PreTrade {
         loop {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {
-                    match runtime.persist_snapshot().await {
-                        Err(err) => warn!("persist snapshot failed: {err:#}"),
-                        Ok(()) => {
-                            if runtime.has_store() {
-                                info!("snapshot persisted to redis; exiting");
-                            } else {
-                                info!("snapshot skipped; redis store disabled");
-                            }
-                        }
-                    }
+                    runtime.shutdown_tasks().await;
                     break;
                 }
                 Some(evt) = account_rx.recv() => {
@@ -313,12 +279,6 @@ impl BootstrapResources {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)] 
-struct StoreRuntimeCfg {
-    redis_url: String,
-    prefix: String,
-}
-
 struct RuntimeContext {
     spot_manager: BinancePmSpotAccountManager,
     um_manager: BinancePmUmAccountManager,
@@ -332,36 +292,31 @@ struct RuntimeContext {
     signal_tx: UnboundedSender<Bytes>,
     order_publisher: OrderPublisher,
     strategy_params: StrategyParamsCfg,
+    max_pending_limit_orders: Rc<Cell<i32>>,
     min_qty_table: Rc<MinQtyTable>,
     dedup: crate::pre_trade::dedup::DedupCache,
-    resample_positions_pub: Option<SignalPublisher>,
-    resample_exposure_pub: Option<SignalPublisher>,
-    resample_risk_pub: Option<SignalPublisher>,
+    resample_positions_pub: Option<ResamplePublisher>,
+    resample_exposure_pub: Option<ResamplePublisher>,
+    resample_risk_pub: Option<ResamplePublisher>,
     resample_interval: std::time::Duration,
     next_resample: std::time::Instant,
-    store: Option<RedisStore>,
-    store_cfg: Option<StoreRuntimeCfg>,
-    fallback_store_cfg: Option<StoreRuntimeCfg>,
     next_params_refresh: std::time::Instant,
     params_refresh_secs: u64,
     last_params_snapshot: Option<PreTradeParamsSnap>,
+    strategy_activity: bool,
+    ladder_cancel_activity: bool,
 }
 
 impl RuntimeContext {
-    fn has_store(&self) -> bool {
-        self.store.is_some()
-    }
-
     fn new(
         bootstrap: BootstrapResources,
         order_tx: UnboundedSender<Bytes>,
         signal_tx: UnboundedSender<Bytes>,
         order_publisher: OrderPublisher,
         strategy_params: StrategyParamsCfg,
-        fallback_store_cfg: Option<StoreRuntimeCfg>,
-        resample_positions_pub: Option<SignalPublisher>,
-        resample_exposure_pub: Option<SignalPublisher>,
-        resample_risk_pub: Option<SignalPublisher>,
+        resample_positions_pub: Option<ResamplePublisher>,
+        resample_exposure_pub: Option<ResamplePublisher>,
+        resample_risk_pub: Option<ResamplePublisher>,
     ) -> Self {
         let BootstrapResources {
             um_manager,
@@ -389,6 +344,7 @@ impl RuntimeContext {
             signal_tx,
             order_publisher,
             strategy_params,
+            max_pending_limit_orders: Rc::new(Cell::new(3)),
             min_qty_table,
             dedup: crate::pre_trade::dedup::DedupCache::new(8192),
             resample_positions_pub,
@@ -396,29 +352,16 @@ impl RuntimeContext {
             resample_risk_pub,
             resample_interval: std::time::Duration::from_secs(3),
             next_resample: std::time::Instant::now() + std::time::Duration::from_secs(3),
-            store: None,
-            store_cfg: None,
-            fallback_store_cfg,
             next_params_refresh: std::time::Instant::now(),
             params_refresh_secs: 30,
             last_params_snapshot: None,
+            strategy_activity: false,
+            ladder_cancel_activity: false,
         }
     }
 
-    async fn persist_snapshot(&mut self) -> Result<()> {
-        let Some(store) = self.store.as_mut() else {
-            return Ok(());
-        };
-        // 采集订单
-        let order_ids = self.order_manager.borrow().get_all_ids();
-        let mut orders = Vec::with_capacity(order_ids.len());
-        for oid in order_ids {
-            if let Some(o) = self.order_manager.borrow().get(oid) {
-                orders.push(o);
-            }
-        }
-        store.save_snapshot(&orders).await?;
-        Ok(())
+    async fn shutdown_tasks(&mut self) {
+        // no-op: persistent store removed
     }
 
     fn cleanup_inactive(&mut self) {
@@ -442,6 +385,7 @@ impl RuntimeContext {
         self.symbol_to_strategy
             .insert(upper_symbol.clone(), strategy_id);
         self.strategy_symbols.insert(strategy_id, upper_symbol);
+        self.strategy_activity = true;
         debug!(
             "strategy inserted: strategy_id={} symbol={} active_total={}",
             strategy_id,
@@ -455,6 +399,7 @@ impl RuntimeContext {
             self.symbol_to_strategy.remove(&symbol);
         }
         self.strategy_mgr.remove(strategy_id);
+        self.strategy_activity = true;
     }
 
     fn with_strategy_mut<F>(&mut self, strategy_id: i32, mut f: F)
@@ -517,18 +462,31 @@ impl RuntimeContext {
     }
 
     async fn tick(&mut self) {
+        let tick_start = std::time::Instant::now();
         let now = get_timestamp_us();
-        self.strategy_mgr.handle_period_clock(now);
+        let active_before = self.strategy_mgr.len();
+        let inspected = self.strategy_mgr.handle_period_clock(now);
         self.cleanup_inactive();
+        let active_after = self.strategy_mgr.len();
+        if active_before != active_after {
+            self.strategy_activity = true;
+        }
         let instant_now = std::time::Instant::now();
+        let mut params_refreshed = false;
         if instant_now >= self.next_params_refresh {
-            if let Err(err) = self.reload_params().await {
-                warn!("pre_trade params refresh failed: {err:#}");
+            match self.reload_params().await {
+                Ok(()) => {
+                    params_refreshed = true;
+                }
+                Err(err) => {
+                    warn!("pre_trade params refresh failed: {err:#}");
+                }
             }
             self.next_params_refresh =
                 instant_now + std::time::Duration::from_secs(self.params_refresh_secs.max(5));
         }
 
+        let mut resample_published = 0usize;
         if self.resample_positions_pub.is_some()
             || self.resample_exposure_pub.is_some()
             || self.resample_risk_pub.is_some()
@@ -536,13 +494,7 @@ impl RuntimeContext {
             while instant_now >= self.next_resample {
                 match self.publish_resample_entries() {
                     Ok(count) => {
-                        if count > 0 && log::log_enabled!(log::Level::Debug) {
-                            debug!(
-                                "pre_trade resample published {} entries at ts_ms={}",
-                                count,
-                                get_timestamp_us() / 1000
-                            );
-                        }
+                        resample_published += count;
                     }
                     Err(err) => {
                         warn!("pre_trade resample publish failed: {err:#}");
@@ -552,6 +504,27 @@ impl RuntimeContext {
                 }
                 self.next_resample += self.resample_interval;
             }
+        }
+
+        let elapsed_ms = tick_start.elapsed().as_secs_f64() * 1000.0;
+        let strategy_activity =
+            self.strategy_activity && (inspected > 0 || active_before != active_after);
+        let ladder_activity = self.ladder_cancel_activity;
+        let activity_detected = strategy_activity || ladder_activity;
+        self.strategy_activity = false;
+        self.ladder_cancel_activity = false;
+        if activity_detected {
+            debug!(
+                "pre_trade period tick: inspected={} active_before={} active_after={} params_refreshed={} resample_entries={} elapsed_ms={:.2} strategy_activity={} ladder_cancel_activity={}",
+                inspected,
+                active_before,
+                active_after,
+                params_refreshed,
+                resample_published,
+                elapsed_ms,
+                strategy_activity,
+                ladder_activity
+            );
         }
     }
 }
@@ -568,17 +541,8 @@ impl RuntimeContext {
             |k: &str| -> Option<f64> { params.get(k).and_then(|v| v.parse::<f64>().ok()) };
         let parse_u64 =
             |k: &str| -> Option<u64> { params.get(k).and_then(|v| v.parse::<u64>().ok()) };
-        let parse_bool = |k: &str| -> Option<bool> {
-            params.get(k).and_then(|v| {
-                let lowered = v.trim().to_ascii_lowercase();
-                match lowered.as_str() {
-                    "1" | "true" | "yes" | "on" => Some(true),
-                    "0" | "false" | "no" | "off" => Some(false),
-                    _ => None,
-                }
-            })
-        };
-
+        let parse_i64 =
+            |k: &str| -> Option<i64> { params.get(k).and_then(|v| v.parse::<i64>().ok()) };
         let mut new_refresh = self.params_refresh_secs;
         if let Some(v) = parse_u64("pre_trade_refresh_secs") {
             new_refresh = v;
@@ -601,64 +565,25 @@ impl RuntimeContext {
             }
         }
 
-        let default_store_enabled = self.fallback_store_cfg.is_some();
-        let store_enable = parse_bool("pre_trade_store_enable").unwrap_or(default_store_enabled);
-        let desired_store_cfg = if store_enable {
-            let redis_url = params
-                .get("pre_trade_store_redis_url")
-                .cloned()
-                .or_else(|| self.store_cfg.as_ref().map(|cfg| cfg.redis_url.clone()))
-                .or_else(|| {
-                    self.fallback_store_cfg
-                        .as_ref()
-                        .map(|cfg| cfg.redis_url.clone())
-                })
-                .unwrap_or_else(|| {
-                    std::env::var("PRE_TRADE_STORE_REDIS_URL")
-                        .or_else(|_| std::env::var("REDIS_URL"))
-                        .unwrap_or_else(|_| "redis://127.0.0.1:6379/0".to_string())
-                });
-            let prefix = params
-                .get("pre_trade_store_prefix")
-                .cloned()
-                .or_else(|| self.store_cfg.as_ref().map(|cfg| cfg.prefix.clone()))
-                .or_else(|| {
-                    self.fallback_store_cfg
-                        .as_ref()
-                        .map(|cfg| cfg.prefix.clone())
-                })
-                .unwrap_or_else(|| {
-                    std::env::var("PRE_TRADE_STORE_PREFIX")
-                        .unwrap_or_else(|_| "pre_trade".to_string())
-                });
-            Some(StoreRuntimeCfg { redis_url, prefix })
-        } else {
-            None
-        };
+        let mut new_pending_limit = self.max_pending_limit_orders.get();
+        if let Some(v) = parse_i64("max_pending_limit_orders") {
+            new_pending_limit = v.max(0) as i32;
+        }
 
-        match desired_store_cfg {
-            Some(cfg) => {
-                let needs_reconnect = self
-                    .store_cfg
-                    .as_ref()
-                    .map(|current| current != &cfg)
-                    .unwrap_or(true);
-                if needs_reconnect {
-                    let redis_url = cfg.redis_url.clone();
-                    let prefix = cfg.prefix.clone();
-                    let store = RedisStore::connect(&redis_url, &prefix).await?;
-                    info!("redis store enabled (prefix={})", prefix);
-                    self.store = Some(store);
-                    self.store_cfg = Some(StoreRuntimeCfg { redis_url, prefix });
-                }
-            }
-            None => {
-                if self.store_cfg.is_some() || self.store.is_some() {
-                    info!("redis store disabled");
-                }
-                self.store = None;
-                self.store_cfg = None;
-            }
+        if params.contains_key("pre_trade_store_enable")
+            || params.contains_key("pre_trade_store_prefix")
+            || params.contains_key("pre_trade_store_redis_url")
+        {
+            debug!("pre_trade store parameters detected but ignored (store feature removed)");
+        }
+
+        let pending_limit_changed = new_pending_limit != self.max_pending_limit_orders.get();
+        if pending_limit_changed {
+            self.max_pending_limit_orders.set(new_pending_limit);
+            debug!(
+                "max_pending_limit_orders updated to {}",
+                self.max_pending_limit_orders.get()
+            );
         }
 
         let snapshot = PreTradeParamsSnap {
@@ -841,7 +766,7 @@ impl RuntimeContext {
         Ok(published)
     }
 
-    fn publish_encoded(bytes: Vec<u8>, publisher: &SignalPublisher) -> Result<bool> {
+    fn publish_encoded(bytes: Vec<u8>, publisher: &ResamplePublisher) -> Result<bool> {
         if bytes.is_empty() {
             return Ok(false);
         }
@@ -849,10 +774,11 @@ impl RuntimeContext {
         let len = bytes.len() as u32;
         buf.extend_from_slice(&len.to_le_bytes());
         buf.extend_from_slice(&bytes);
-        if buf.len() > 4096 {
+        if buf.len() > RESAMPLE_PAYLOAD {
             warn!(
-                "pre_trade resample payload too large ({} bytes), skipped",
-                buf.len()
+                "pre_trade重采样载荷过大 ({} 字节，阈值 {} 字节)，已跳过",
+                buf.len(),
+                RESAMPLE_PAYLOAD
             );
             return Ok(false);
         }
@@ -1127,37 +1053,6 @@ fn spawn_signal_listeners(cfg: &SignalSubscriptionsCfg) -> Result<UnboundedRecei
                     match subscriber.receive() {
                         Ok(Some(sample)) => {
                             let payload = trim_payload(sample.payload());
-                            if log::log_enabled!(log::Level::Debug) {
-                                let head = &payload[..payload.len().min(24)];
-                                let head_hex: String =
-                                    head.iter().map(|b| format!("{:02X}", b)).collect();
-                                let st = crate::signal::trade_signal::TradeSignal::get_signal_type(
-                                    &payload,
-                                )
-                                .map(|t| format!("{:?}", t))
-                                .unwrap_or_else(|| "Unknown".to_string());
-                                let gen_ts =
-                                    crate::signal::trade_signal::TradeSignal::get_generation_time(
-                                        &payload,
-                                    )
-                                    .map(|v| v.to_string())
-                                    .unwrap_or_else(|| "-".to_string());
-                                let ctx_len =
-                                    crate::signal::trade_signal::TradeSignal::get_context_length(
-                                        &payload,
-                                    )
-                                    .map(|v| v.to_string())
-                                    .unwrap_or_else(|| "-".to_string());
-                                debug!(
-                                    "signal frame received: channel={} bytes={} head24={} type={} gen_ts={} ctx_len={}",
-                                    channel_name,
-                                    payload.len(),
-                                    head_hex,
-                                    st,
-                                    gen_ts,
-                                    ctx_len
-                                );
-                            }
                             if payload.is_empty() {
                                 continue;
                             }
@@ -1239,10 +1134,6 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
                 // );
                 return Ok(());
             }
-            debug!(
-                "outboundAccountPosition: asset={}, free={}, locked={}, event_time={}",
-                msg.asset, msg.free_balance, msg.locked_balance, msg.event_time
-            );
             ctx.spot_manager.apply_account_position(
                 &msg.asset,
                 msg.free_balance,
@@ -1347,34 +1238,11 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
                 return Ok(());
             }
             debug!(
-                "executionReport: sym={}, cli_id={}, cli_str='{}', ord_id={}, trade_id={}, side={}, maker={}, working={}, otype={}, tif={}, x={}, X={}, px={}, qty={}, last_px={}, last_qty={}, cum_qty={}, fee_amt={}, fee_ccy={}, cum_quote={}, last_quote={}, qoq={}, times(E/T/O/W/I)={}/{}/{}/{}/{}",
+                "executionReport: sym={} cli_id={} ord_id={} status={}",
                 report.symbol,
                 report.client_order_id,
-                report.client_order_id_str,
                 report.order_id,
-                report.trade_id,
-                report.side,
-                report.is_maker,
-                report.is_working,
-                report.order_type,
-                report.time_in_force,
-                report.execution_type,
-                report.order_status,
-                report.price,
-                report.quantity,
-                report.last_executed_price,
-                report.last_executed_quantity,
-                report.cumulative_filled_quantity,
-                report.commission_amount,
-                report.commission_asset,
-                report.cumulative_quote,
-                report.last_quote,
-                report.quote_order_quantity,
-                report.event_time,
-                report.transaction_time,
-                report.order_creation_time,
-                report.working_time,
-                report.update_id,
+                report.order_status
             );
             dispatch_execution_report(ctx, &report);
         }
@@ -1452,6 +1320,23 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
             match BinSingleForwardArbOpenCtx::from_bytes(signal.context.clone()) {
                 Ok(open_ctx) => {
                     let symbol = open_ctx.spot_symbol.to_uppercase();
+                    let max_limit = ctx.max_pending_limit_orders.get();
+                    if max_limit > 0 {
+                        let current_limit = {
+                            let manager = ctx.order_manager.borrow();
+                            manager.get_symbol_pending_limit_order_count(&symbol)
+                        };
+                        if current_limit >= max_limit {
+                            warn!(
+                                "BinSingleForwardArbStrategy: symbol={} 当前限价挂单数={} 已达到上限 {}，忽略开仓信号",
+                                symbol,
+                                current_limit,
+                                max_limit
+                            );
+                            return;
+                        }
+                    }
+
                     let strategy_id = StrategyManager::generate_strategy_id(1);
                     let order_tx = ctx.order_sender();
                     let signal_tx = ctx.signal_sender();
@@ -1468,6 +1353,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                         ctx.strategy_params.max_total_exposure_ratio,
                         ctx.strategy_params.max_pos_u,
                         ctx.strategy_params.max_leverage,
+                        ctx.max_pending_limit_orders.clone(),
                         ctx.min_qty_table.clone(),
                         ctx.price_table.clone(),
                     );
@@ -1515,6 +1401,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                             ctx.strategy_params.max_total_exposure_ratio,
                             ctx.strategy_params.max_pos_u,
                             ctx.strategy_params.max_leverage,
+                            ctx.max_pending_limit_orders.clone(),
                             ctx.min_qty_table.clone(),
                             ctx.price_table.clone(),
                         );
@@ -1551,6 +1438,14 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
             );
             dispatch_signal_to_existing_strategy(ctx, signal, raw_signal);
         }
+        SignalType::BinSingleForwardArbLadderCancel => {
+            debug!(
+                "dispatch ladder cancel signal to existing strategies ctx_len={}",
+                signal.context.len()
+            );
+            ctx.ladder_cancel_activity = true;
+            dispatch_signal_to_existing_strategy(ctx, signal, raw_signal);
+        }
     }
 
     ctx.cleanup_inactive();
@@ -1561,8 +1456,11 @@ fn dispatch_signal_to_existing_strategy(
     signal: TradeSignal,
     raw_signal: Bytes,
 ) {
+    let signal_type = signal.signal_type.clone();
+    let is_ladder_cancel =
+        matches!(signal_type.clone(), SignalType::BinSingleForwardArbLadderCancel);
     let mut target_strategy_id: Option<i32> = None;
-    let maybe_symbol = match signal.signal_type {
+    let maybe_symbol = match signal_type {
         SignalType::BinSingleForwardArbHedge => {
             match BinSingleForwardArbHedgeCtx::from_bytes(signal.context.clone()) {
                 Ok(hedge_ctx) => {
@@ -1605,6 +1503,21 @@ fn dispatch_signal_to_existing_strategy(
                 }
             }
         }
+        SignalType::BinSingleForwardArbLadderCancel => {
+            match BinSingleForwardArbLadderCancelCtx::from_bytes(signal.context.clone()) {
+                Ok(cancel_ctx) => {
+                    debug!(
+                        "decoded ladder cancel ctx: spot_symbol={} bidask_sr={:.6} threshold={:.6}",
+                        cancel_ctx.spot_symbol, cancel_ctx.bidask_sr, cancel_ctx.cancel_threshold
+                    );
+                    Some(cancel_ctx.spot_symbol.to_uppercase())
+                }
+                Err(err) => {
+                    warn!("failed to decode ladder cancel context: {err}");
+                    return;
+                }
+            }
+        }
         _ => None,
     };
 
@@ -1620,7 +1533,7 @@ fn dispatch_signal_to_existing_strategy(
         ctx.strategy_mgr.iter_ids().cloned().collect()
     };
 
-    if strategy_ids.is_empty() {
+    if strategy_ids.is_empty() && !is_ladder_cancel {
         debug!("no active strategy matched for this signal");
     }
 
@@ -1651,10 +1564,14 @@ fn dispatch_execution_report(ctx: &mut RuntimeContext, report: &ExecutionReportM
     }
 
     if !matched {
+        let expected_strategy_id = (order_id >> 32) as i32;
         debug!(
-            "executionReport not matched to any strategy: client_order_id={} client_order_id_str='{}'",
-            order_id,
-            report.client_order_id_str
+            "executionReport unmatched: sym={} cli_id={} ord_id={} status={} expect_strategy={}",
+            report.symbol,
+            report.client_order_id,
+            report.order_id,
+            report.order_status,
+            expected_strategy_id
         );
     }
 
@@ -1959,23 +1876,23 @@ fn build_separator(widths: &[usize], fill: char) -> String {
     let mut line = String::new();
     line.push('+');
     for width in widths {
-        line.push_str(&fill.to_string().repeat(width + 2)); 
-        line.push('+'); 
+        line.push_str(&fill.to_string().repeat(width + 2));
+        line.push('+');
     }
-    line 
-} 
+    line
+}
 
 fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
     let mut row = String::new();
     row.push('|');
     for (cell, width) in cells.iter().zip(widths.iter()) {
-        row.push(' '); 
-        row.push_str(&format!("{:<width$}", cell, width = *width));  
+        row.push(' ');
+        row.push_str(&format!("{:<width$}", cell, width = *width));
         row.push(' ');
         row.push('|');
-    } 
-    row 
-} 
+    }
+    row
+}
 
 fn spawn_derivatives_worker(price_table: Rc<RefCell<PriceTable>>) -> Result<()> {
     let service = DERIVATIVES_SERVICE.to_string();
@@ -1985,8 +1902,8 @@ fn spawn_derivatives_worker(price_table: Rc<RefCell<PriceTable>>) -> Result<()> 
             error!("derivatives worker exited: {err:?}");
         }
     });
-    Ok(()) 
-} 
+    Ok(())
+}
 
 async fn derivatives_loop(
     node_name: String,

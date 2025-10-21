@@ -80,39 +80,70 @@ PARAM_COMMENTS: Dict[str, str] = {
     "pre_trade_max_leverage": "最大杠杆倍数",
     "pre_trade_refresh_secs": "PreTrade参数刷新周期(秒)",
     # 下单参数
-    "order_open_range": "开仓价偏移",
-    "order_close_range": "平仓价偏移",
+    "order_mode": "报单模式(normal|ladder)",
+    "order_open_range": "开仓价偏移列表",
+    "order_close_range": "平仓价偏移列表",
+    "order_ladder_cancel_bidask_threshold": "阶梯模式固定撤单阈值",
+    "order_ladder_open_bidask_threshold": "阶梯模式固定开仓阈值",
+    "max_pending_limit_orders": "每个symbol限价挂单上限",
     "order_amount_u": "下单基础金额(U)",
     "order_max_open_order_keep_s": "开单保留上限(秒)",
     "order_max_close_order_keep_s": "平单保留上限(秒)",
 }
 
 
+def format_number(val: float) -> str:
+    s = f"{val:.8f}"
+    s = s.rstrip("0").rstrip(".")
+    if s == "-0":
+        s = "0"
+    return s
+
+
+def ordered_keys(kv: Dict[str, str], prefix: str | None) -> List[str]:
+    primary = []
+    seen = set()
+
+    def matches(key: str) -> bool:
+        return prefix is None or key.startswith(prefix)
+
+    for key in PARAM_COMMENTS.keys():
+        if matches(key):
+            primary.append(key)
+            seen.add(key)
+
+    extras = [k for k in sorted(kv.keys()) if matches(k) and k not in seen]
+    primary.extend(extras)
+    return primary
+
+
 def build_rows(kv: Dict[str, str], prefix: str | None) -> Tuple[List[str], List[List[str]]]:
     headers = ["param", "value", "comment"]
     rows: List[List[str]] = []
-    for k in sorted(kv.keys()):
-        if prefix and not k.startswith(prefix):
-            continue
-        v = kv[k]
-        # Pretty display JSON-ish values without extra quotes
-        try:
-            parsed = json.loads(v)
-            # For JSON scalars, cast back to string without extra quotes
-            if isinstance(parsed, (int, float)):
-                v = str(parsed)
-            elif isinstance(parsed, bool):
-                v = "true" if parsed else "false"
-            elif parsed is None:
-                v = "null"
-            elif isinstance(parsed, (list, dict)):
-                v = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
-            elif isinstance(parsed, str):
-                v = parsed
-        except Exception:
-            pass
+    keys = ordered_keys(kv, prefix)
+    for k in keys:
+        raw = kv.get(k)
+        if raw is None:
+            value = "-"
+        else:
+            value = raw
+            # Pretty display JSON-ish values without extra quotes
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, (int, float)):
+                    value = format_number(float(parsed))
+                elif isinstance(parsed, bool):
+                    value = "true" if parsed else "false"
+                elif parsed is None:
+                    value = "null"
+                elif isinstance(parsed, (list, dict)):
+                    value = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+                elif isinstance(parsed, str):
+                    value = parsed
+            except Exception:
+                value = raw
         comment = PARAM_COMMENTS.get(k, "-")
-        rows.append([k, v, comment])
+        rows.append([k, value, comment])
     return headers, rows
 
 

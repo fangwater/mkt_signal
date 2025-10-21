@@ -142,33 +142,10 @@ impl ExposureManager {
         self.total_interest_usd
     }
 
-    pub fn log_summary(&self, stage: &str) {
+    pub fn log_summary(&self, _stage: &str) {
         if self.exposures.is_empty() {
-            debug!(
-                "敞口管理器{}完成: 总权益={:.6}, 总敞口绝对值={:.6}, 非 USDT 敞口为空",
-                stage, self.total_equity, self.abs_total_exposure,
-            );
             return;
         }
-        if let Some(u) = &self.usdt {
-            debug!(
-                "USDT 汇总: spot={:.6} um={:.6} cm={:.6}",
-                u.total_wallet_balance, u.um_wallet_balance, u.cm_wallet_balance
-            );
-        } else {
-            debug!("USDT 汇总: 无记录 (spot=0 um=0 cm=0)");
-        }
-        debug!(
-            "敞口管理器{}完成: 总权益(暂估)={:.6}, 总敞口绝对值(数量)={:.6}, 总头寸(暂估)={:.6}, UM未实现PnL={:.6}, Spot估值={:.6}, 借币={:.6}, 利息={:.6}",
-            stage,
-            self.total_equity,
-            self.abs_total_exposure,
-            self.total_position,
-            self.total_um_unrealized,
-            self.total_spot_value_usd,
-            self.total_borrowed_usd,
-            self.total_interest_usd,
-        );
     }
 
     pub fn recompute(

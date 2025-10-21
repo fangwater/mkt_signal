@@ -8,6 +8,7 @@ use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use chrono::{TimeZone, Utc};
 use log::{debug, error, info, warn};
+use serde::de::{self, Deserializer};
 use serde::Deserialize;
 use tokio::signal;
 #[cfg(unix)]
@@ -38,12 +39,72 @@ const DEFAULT_REDIS_HASH_KEY: &str = "binance_arb_price_spread_threshold";
 
 // 已移除本地 JSON 模式，仅支持 Redis
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrderMode {
+    Normal,
+    Ladder,
+}
+
+impl Default for OrderMode {
+    fn default() -> Self {
+        OrderMode::Normal
+    }
+}
+
+impl OrderMode {
+    fn from_raw(raw: &str) -> Option<Self> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let candidate = if let Ok(json_str) = serde_json::from_str::<String>(trimmed) {
+            json_str
+        } else if let Some(stripped) = trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+            stripped.to_string()
+        } else if let Some(stripped) = trimmed
+            .strip_prefix('\'')
+            .and_then(|s| s.strip_suffix('\''))
+        {
+            stripped.to_string()
+        } else {
+            trimmed.to_string()
+        };
+        let lowered = candidate.to_ascii_lowercase();
+        match lowered.as_str() {
+            "normal" | "basic" | "standard" | "plain" => Some(OrderMode::Normal),
+            "ladder" | "step" | "stepped" => Some(OrderMode::Ladder),
+            _ => match candidate.as_str() {
+                "普通报单" | "普通" | "基础" | "基础模式" => Some(OrderMode::Normal),
+                "阶梯报单" | "阶梯" | "阶梯模式" => Some(OrderMode::Ladder),
+                _ => None,
+            },
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for OrderMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        OrderMode::from_raw(&raw)
+            .ok_or_else(|| de::Error::custom(format!("invalid order_mode: {}", raw)))
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct OrderConfig {
-    #[serde(default = "default_open_range")]
-    open_range: f64,
-    #[serde(default = "default_close_range")]
-    close_range: f64,
+    #[serde(default)]
+    mode: OrderMode,
+    #[serde(default = "default_open_ranges")]
+    open_ranges: Vec<f64>,
+    #[serde(default = "default_close_ranges")]
+    close_ranges: Vec<f64>,
+    #[serde(default)]
+    ladder_cancel_bidask_threshold: Option<f64>,
+    #[serde(default)]
+    ladder_open_bidask_threshold: Option<f64>,
     #[serde(default = "default_order_amount")]
     amount_u: f64,
     #[serde(default = "default_max_open_keep")]
@@ -58,6 +119,14 @@ const fn default_open_range() -> f64 {
 
 const fn default_close_range() -> f64 {
     0.0002
+}
+
+fn default_open_ranges() -> Vec<f64> {
+    vec![default_open_range()]
+}
+
+fn default_close_ranges() -> Vec<f64> {
+    vec![default_close_range()]
 }
 
 const fn default_order_amount() -> f64 {
@@ -75,12 +144,104 @@ const fn default_max_close_keep() -> u64 {
 impl Default for OrderConfig {
     fn default() -> Self {
         Self {
-            open_range: default_open_range(),
-            close_range: default_close_range(),
+            mode: OrderMode::default(),
+            open_ranges: default_open_ranges(),
+            close_ranges: default_close_ranges(),
+            ladder_cancel_bidask_threshold: None,
+            ladder_open_bidask_threshold: None,
             amount_u: default_order_amount(),
             max_open_order_keep_s: default_max_open_keep(),
             max_close_order_keep_s: default_max_close_keep(),
         }
+    }
+}
+
+impl OrderConfig {
+    fn sanitize_ranges(values: Vec<f64>, fallback: f64) -> Vec<f64> {
+        let mut sanitized: Vec<f64> = values.into_iter().filter(|v| v.is_finite()).collect();
+        if sanitized.is_empty() {
+            sanitized.push(fallback);
+        }
+        sanitized
+    }
+
+    fn set_open_ranges(&mut self, values: Vec<f64>) -> bool {
+        let sanitized = Self::sanitize_ranges(values, default_open_range());
+        if !approx_equal_slice(&self.open_ranges, &sanitized) {
+            self.open_ranges = sanitized;
+            return true;
+        }
+        false
+    }
+
+    fn set_close_ranges(&mut self, values: Vec<f64>) -> bool {
+        let sanitized = Self::sanitize_ranges(values, default_close_range());
+        if !approx_equal_slice(&self.close_ranges, &sanitized) {
+            self.close_ranges = sanitized;
+            return true;
+        }
+        false
+    }
+
+    fn normal_open_range(&self) -> f64 {
+        self.open_ranges
+            .first()
+            .copied()
+            .unwrap_or_else(|| default_open_range())
+    }
+
+    #[allow(dead_code)]
+    fn ladder_open_ranges(&self) -> &[f64] {
+        if self.open_ranges.len() > 1 {
+            &self.open_ranges[1..]
+        } else {
+            &[]
+        }
+    }
+
+    fn normal_close_range(&self) -> f64 {
+        self.close_ranges
+            .first()
+            .copied()
+            .unwrap_or_else(|| default_close_range())
+    }
+
+    #[allow(dead_code)]
+    fn ladder_close_ranges(&self) -> &[f64] {
+        if self.close_ranges.len() > 1 {
+            &self.close_ranges[1..]
+        } else {
+            &[]
+        }
+    }
+
+    #[allow(dead_code)]
+    fn ladder_cancel_threshold(&self) -> Option<f64> {
+        self.ladder_cancel_bidask_threshold
+            .filter(|v| v.is_finite())
+    }
+
+    fn set_ladder_cancel_threshold(&mut self, value: Option<f64>) -> bool {
+        let sanitized = value.filter(|v| v.is_finite());
+        if self.ladder_cancel_bidask_threshold != sanitized {
+            self.ladder_cancel_bidask_threshold = sanitized;
+            return true;
+        }
+        false
+    }
+
+    #[allow(dead_code)]
+    fn ladder_open_threshold(&self) -> Option<f64> {
+        self.ladder_open_bidask_threshold.filter(|v| v.is_finite())
+    }
+
+    fn set_ladder_open_threshold(&mut self, value: Option<f64>) -> bool {
+        let sanitized = value.filter(|v| v.is_finite());
+        if self.ladder_open_bidask_threshold != sanitized {
+            self.ladder_open_bidask_threshold = sanitized;
+            return true;
+        }
+        false
     }
 }
 
@@ -391,6 +552,19 @@ struct QtyStepInfo {
     step: f64,
 }
 
+struct ManualOpenSignal {
+    ctx: Bytes,
+    price: f64,
+    qty: f64,
+    offset: f64,
+}
+
+struct ManualCloseSignal {
+    ctx: Bytes,
+    price: f64,
+    offset: f64,
+}
+
 use anyhow::Result as AnyResult;
 use reqwest::blocking::Client;
 
@@ -673,6 +847,7 @@ impl MockController {
         }
     }
 
+    #[allow(dead_code)]
     fn thresholds_for_frequency(&self, freq_4h_or_8h: &str) -> (f64, f64, f64, f64) {
         match freq_4h_or_8h {
             "4h" | "4H" => (
@@ -741,6 +916,15 @@ impl MockController {
         let parse_u64 = |k: &str| -> Option<u64> { map.get(k).and_then(|v| v.parse::<u64>().ok()) };
         let parse_i64 = |k: &str| -> Option<i64> { map.get(k).and_then(|v| v.parse::<i64>().ok()) };
         let parse_f64 = |k: &str| -> Option<f64> { map.get(k).and_then(|v| v.parse::<f64>().ok()) };
+        let parse_range_list = |k: &str| -> Option<Vec<f64>> {
+            map.get(k).and_then(|raw| match parse_numeric_list(raw) {
+                Ok(values) => Some(values),
+                Err(err) => {
+                    warn!("{} 参数解析失败: {}; 原始值: {}", k, err, raw);
+                    None
+                }
+            })
+        };
         let mut changed = false;
         if let Some(v) = parse_u64("interval") {
             if self.cfg.strategy.interval as u64 != v {
@@ -785,16 +969,63 @@ impl MockController {
             }
         }
         // 订单参数（开/平价距与名义下单金额U）
-        if let Some(v) = parse_f64("order_open_range") {
-            if !approx_equal(self.cfg.order.open_range, v) {
-                self.cfg.order.open_range = v;
+        if let Some(raw_mode) = map.get("order_mode") {
+            if let Some(mode) = OrderMode::from_raw(raw_mode) {
+                if mode != self.cfg.order.mode {
+                    debug!(
+                        "mock order_mode 变更: {:?} -> {:?}",
+                        self.cfg.order.mode, mode
+                    );
+                    self.cfg.order.mode = mode;
+                    changed = true;
+                }
+            } else {
+                warn!(
+                    "mock order_mode 参数解析失败，将保持当前模式 {:?}: {}",
+                    self.cfg.order.mode, raw_mode
+                );
+            }
+        }
+        if let Some(values) = parse_range_list("order_open_range") {
+            if self.cfg.order.set_open_ranges(values) {
                 changed = true;
             }
         }
-        if let Some(v) = parse_f64("order_close_range") {
-            if !approx_equal(self.cfg.order.close_range, v) {
-                self.cfg.order.close_range = v;
+        if let Some(values) = parse_range_list("order_close_range") {
+            if self.cfg.order.set_close_ranges(values) {
                 changed = true;
+            }
+        }
+        match map.get("order_ladder_cancel_bidask_threshold") {
+            Some(raw) => {
+                if let Ok(v) = raw.parse::<f64>() {
+                    if self.cfg.order.set_ladder_cancel_threshold(Some(v)) {
+                        changed = true;
+                    }
+                }
+            }
+            None => {
+                if self.cfg.order.ladder_cancel_threshold().is_some() {
+                    if self.cfg.order.set_ladder_cancel_threshold(None) {
+                        changed = true;
+                    }
+                }
+            }
+        }
+        match map.get("order_ladder_open_bidask_threshold") {
+            Some(raw) => {
+                if let Ok(v) = raw.parse::<f64>() {
+                    if self.cfg.order.set_ladder_open_threshold(Some(v)) {
+                        changed = true;
+                    }
+                }
+            }
+            None => {
+                if self.cfg.order.ladder_open_threshold().is_some() {
+                    if self.cfg.order.set_ladder_open_threshold(None) {
+                        changed = true;
+                    }
+                }
             }
         }
         if let Some(v) = parse_f64("order_amount_u") {
@@ -1033,62 +1264,26 @@ impl MockController {
         if !self.is_warmup_complete() {
             return;
         }
-        let mut rows: Vec<Vec<String>> = Vec::new();
-        let mut keys: Vec<String> = self.symbols.keys().cloned().collect();
-        keys.sort();
-        for key in keys {
-            let Some(state) = self.symbols.get(&key) else {
-                continue;
-            };
-            let fut = state.futures_symbol.to_uppercase();
-            let freq = self
-                .funding_frequency
-                .get(&fut)
-                .cloned()
-                .unwrap_or_else(|| "8h".to_string());
-            let (ou, ol, cl, cu) = self.thresholds_for_frequency(&freq);
-            let pred = self.get_predicted_for(&fut);
-            // 使用已拉取的历史计算均值；若无历史则退化为当前 funding_rate
-            let fr_mean = self
-                .history_map
-                .get(&fut)
-                .and_then(|v| {
-                    if v.is_empty() {
-                        None
-                    } else {
-                        Some(v.iter().copied().sum::<f64>() / (v.len() as f64))
-                    }
-                })
-                .or_else(|| {
-                    if state.funding_rate != 0.0 {
-                        Some(state.funding_rate)
-                    } else {
-                        None
-                    }
-                })
-                .map(|v| format!("{:.6}", v))
-                .unwrap_or_else(|| "-".to_string());
-            rows.push(vec![
-                key.clone(),
-                freq,
-                fr_mean,
-                format!("{:.6}", pred),
-                format!("{:.6}", ou),
-                format!("{:.6}", ol),
-                format!("{:.6}", cl),
-                format!("{:.6}", cu),
-            ]);
-        }
-        if rows.is_empty() {
+        let keys = self.sorted_symbol_keys();
+        if keys.is_empty() {
             return;
         }
-        let table = render_three_line_table(
-            &[
-                "Symbol", "Freq", "FR_Mean", "Pred", "OpenU", "OpenL", "CloseL", "CloseU",
-            ],
-            &rows,
+        let mut formatted: Vec<String> = Vec::with_capacity(keys.len());
+        for (idx, key) in keys.iter().enumerate() {
+            formatted.push(format!("{:>3}.{}", idx + 1, key));
+        }
+        let mut lines: Vec<String> = Vec::new();
+        for chunk in formatted.chunks(10) {
+            lines.push(chunk.join("  "));
+        }
+        if lines.is_empty() {
+            return;
+        }
+        info!(
+            "资金费率符号列表 ({} symbols)\n{}",
+            formatted.len(),
+            lines.join("\n")
         );
-        info!("资金费率总览\n{}", table);
     }
 
     fn print_warmup_progress_table(&self) {
@@ -1218,9 +1413,215 @@ impl MockController {
             .ok_or_else(|| anyhow!("索引 {} 超出范围", index + 1))
     }
 
+    fn order_open_offsets(&self) -> Vec<f64> {
+        let fallback = self.cfg.order.normal_open_range();
+        let mut offsets = match self.cfg.order.mode {
+            OrderMode::Normal => vec![fallback],
+            OrderMode::Ladder => {
+                let ladder = self.cfg.order.ladder_open_ranges();
+                if ladder.is_empty() {
+                    vec![fallback]
+                } else {
+                    ladder.to_vec()
+                }
+            }
+        };
+        if offsets.is_empty() {
+            offsets.push(fallback);
+        }
+        offsets
+            .into_iter()
+            .filter(|offset| offset.is_finite())
+            .collect()
+    }
+
+    fn order_close_offsets(&self) -> Vec<f64> {
+        let fallback = self.cfg.order.normal_close_range();
+        let mut offsets = match self.cfg.order.mode {
+            OrderMode::Normal => vec![fallback],
+            OrderMode::Ladder => {
+                let ladder = self.cfg.order.ladder_close_ranges();
+                if ladder.is_empty() {
+                    vec![fallback]
+                } else {
+                    ladder.to_vec()
+                }
+            }
+        };
+        if offsets.is_empty() {
+            offsets.push(fallback);
+        }
+        offsets
+            .into_iter()
+            .filter(|offset| offset.is_finite())
+            .collect()
+    }
+
+    fn build_manual_open_signals(&self, state: &SymbolState) -> Vec<ManualOpenSignal> {
+        self.order_open_offsets()
+            .into_iter()
+            .filter_map(|offset| self.build_manual_open_signal(state, offset))
+            .collect()
+    }
+
+    fn build_manual_open_signal(
+        &self,
+        state: &SymbolState,
+        offset: f64,
+    ) -> Option<ManualOpenSignal> {
+        if !offset.is_finite() || offset < 0.0 {
+            warn!(
+                "{} 阶梯开仓 offset 非法: offset={:.6}",
+                state.spot_symbol, offset
+            );
+            return None;
+        }
+        let mut limit_price = state.spot_quote.bid * (1.0 - offset);
+        if !limit_price.is_finite() || limit_price <= 0.0 {
+            warn!(
+                "{} 阶梯开仓价格非法: offset={:.6} price={:.8}",
+                state.spot_symbol, offset, limit_price
+            );
+            return None;
+        }
+        let price_tick = self
+            .min_qty
+            .spot_price_tick_by_symbol(&state.spot_symbol)
+            .unwrap_or(0.0);
+        let raw_limit_price = limit_price;
+        if price_tick > 0.0 {
+            limit_price = align_price_floor(limit_price, price_tick);
+            debug!(
+                "{} mock 开仓价格对齐: offset={:.6} raw={:.8} tick={:.8} aligned={:.8}",
+                state.spot_symbol, offset, raw_limit_price, price_tick, limit_price
+            );
+            if !limit_price.is_finite() || limit_price <= 0.0 {
+                warn!(
+                    "{} 阶梯开仓对齐失败: offset={:.6} raw={:.8} tick={:.8}",
+                    state.spot_symbol, offset, raw_limit_price, price_tick
+                );
+                return None;
+            }
+        }
+        let base_qty = if limit_price > 0.0 {
+            self.cfg.order.amount_u / limit_price
+        } else {
+            0.0
+        };
+        let spot_min = self
+            .min_qty
+            .spot_min_qty_by_symbol(&state.spot_symbol)
+            .unwrap_or(0.0);
+        let futures_min = self
+            .min_qty
+            .futures_um_min_qty_by_symbol(&state.futures_symbol)
+            .unwrap_or(0.0);
+        let mut adjusted_qty = base_qty.max(spot_min).max(futures_min);
+        if adjusted_qty <= 0.0 || !adjusted_qty.is_finite() {
+            warn!(
+                "{} 阶梯开仓数量非法: offset={:.6} base={:.6} spot_min={:.6} futures_min={:.6}",
+                state.spot_symbol, offset, base_qty, spot_min, futures_min
+            );
+            return None;
+        }
+        let qty_step = self.get_qty_step(&state.spot_symbol, spot_min, futures_min);
+        if qty_step > 0.0 && qty_step.is_finite() {
+            adjusted_qty = (adjusted_qty / qty_step).ceil() * qty_step;
+        }
+        let qty = adjusted_qty as f32;
+        if qty <= 0.0 || !qty.is_finite() {
+            warn!(
+                "{} 阶梯开仓数量转换失败: offset={:.6} qty={qty} adj={:.6}",
+                state.spot_symbol, offset, adjusted_qty
+            );
+            return None;
+        }
+        let ctx = BinSingleForwardArbOpenCtx {
+            spot_symbol: state.spot_symbol.clone(),
+            amount: qty,
+            side: Side::Buy,
+            order_type: OrderType::Limit,
+            price: limit_price,
+            price_tick,
+            exp_time: self.cfg.max_open_keep_us(),
+            spot_sr: state.latest_bidask_sr,
+            futures_sr: state.latest_askbid_sr,
+            funding_ma: state.funding_ma,
+            predicted_funding_rate: Some(state.predicted_rate),
+            loan_rate: Some(state.loan_rate),
+        }
+        .to_bytes();
+        Some(ManualOpenSignal {
+            ctx,
+            price: limit_price,
+            qty: adjusted_qty,
+            offset,
+        })
+    }
+
+    fn build_manual_close_signals(&self, state: &SymbolState) -> Vec<ManualCloseSignal> {
+        self.order_close_offsets()
+            .into_iter()
+            .filter_map(|offset| self.build_manual_close_signal(state, offset))
+            .collect()
+    }
+
+    fn build_manual_close_signal(
+        &self,
+        state: &SymbolState,
+        offset: f64,
+    ) -> Option<ManualCloseSignal> {
+        if !offset.is_finite() || offset < 0.0 {
+            warn!(
+                "{} 阶梯平仓 offset 非法: offset={:.6}",
+                state.spot_symbol, offset
+            );
+            return None;
+        }
+        let mut limit_price = state.spot_quote.ask * (1.0 + offset);
+        if !limit_price.is_finite() || limit_price <= 0.0 {
+            warn!(
+                "{} 阶梯平仓价格非法: offset={:.6} price={:.8}",
+                state.spot_symbol, offset, limit_price
+            );
+            return None;
+        }
+        let price_tick = self
+            .min_qty
+            .spot_price_tick_by_symbol(&state.spot_symbol)
+            .unwrap_or(0.0);
+        let raw_limit_price = limit_price;
+        if price_tick > 0.0 {
+            limit_price = align_price_ceil(limit_price, price_tick);
+            debug!(
+                "{} mock 平仓价格对齐: offset={:.6} raw={:.8} tick={:.8} aligned={:.8}",
+                state.spot_symbol, offset, raw_limit_price, price_tick, limit_price
+            );
+            if !limit_price.is_finite() || limit_price <= 0.0 {
+                warn!(
+                    "{} 阶梯平仓对齐失败: offset={:.6} raw={:.8} tick={:.8}",
+                    state.spot_symbol, offset, raw_limit_price, price_tick
+                );
+                return None;
+            }
+        }
+        let ctx = BinSingleForwardArbCloseMarginCtx {
+            spot_symbol: state.spot_symbol.clone(),
+            limit_price,
+            price_tick,
+            exp_time: self.cfg.max_close_keep_us(),
+        }
+        .to_bytes();
+        Some(ManualCloseSignal {
+            ctx,
+            price: limit_price,
+            offset,
+        })
+    }
+
     fn force_open(&mut self, index: usize) -> Result<()> {
         let key = self.symbol_key_by_index(index)?;
-        let (ctx, limit_price, adjusted_qty, spot_symbol) = {
+        let (spot_symbol, signals) = {
             let state = self
                 .symbols
                 .get(&key)
@@ -1228,95 +1629,25 @@ impl MockController {
             if !state.spot_quote.is_ready() || !state.futures_quote.is_ready() {
                 anyhow::bail!("{} 行情尚未就绪，无法开仓", state.spot_symbol);
             }
-            let spot_symbol = state.spot_symbol.clone();
-            let futures_symbol = state.futures_symbol.clone();
-            let mut limit_price = state.spot_quote.bid * (1.0 - self.cfg.order.open_range);
-            if limit_price <= 0.0 {
-                anyhow::bail!("{} 开仓价格非法: {:.6}", spot_symbol, limit_price);
-            }
-            let price_tick = self
-                .min_qty
-                .spot_price_tick_by_symbol(&spot_symbol)
-                .unwrap_or(0.0);
-            let raw_limit_price = limit_price;
-            if price_tick > 0.0 {
-                limit_price = align_price_floor(limit_price, price_tick);
-                debug!(
-                    "{} mock 开仓价格对齐: raw={:.8} tick={:.8} aligned={:.8}",
-                    spot_symbol, raw_limit_price, price_tick, limit_price
-                );
-                if limit_price <= 0.0 {
-                    anyhow::bail!(
-                        "{} 开仓价格对齐失败: raw={:.8} tick={:.8}",
-                        spot_symbol,
-                        raw_limit_price,
-                        price_tick
-                    );
-                }
-            }
-            let base_qty = if limit_price > 0.0 {
-                self.cfg.order.amount_u / limit_price
-            } else {
-                0.0
-            };
-            let spot_min = self
-                .min_qty
-                .spot_min_qty_by_symbol(&spot_symbol)
-                .unwrap_or(0.0);
-            let futures_min = self
-                .min_qty
-                .futures_um_min_qty_by_symbol(&futures_symbol)
-                .unwrap_or(0.0);
-            let mut adjusted_qty = base_qty.max(spot_min).max(futures_min);
-            if adjusted_qty <= 0.0 || !adjusted_qty.is_finite() {
-                anyhow::bail!(
-                    "{} 计算得到的下单数量非法: 基准={:.6} spot_min={:.6} futures_min={:.6}",
-                    spot_symbol,
-                    base_qty,
-                    spot_min,
-                    futures_min
-                );
-            }
-            let qty_step = self.get_qty_step(&spot_symbol, spot_min, futures_min);
-            if qty_step > 0.0 && qty_step.is_finite() {
-                adjusted_qty = (adjusted_qty / qty_step).ceil() * qty_step;
-            }
-            let qty = adjusted_qty as f32;
-            if qty <= 0.0 || !qty.is_finite() {
-                anyhow::bail!(
-                    "{} 下单数量非法: qty={qty} base={:.6}",
-                    spot_symbol,
-                    base_qty
-                );
-            }
-            let ctx = BinSingleForwardArbOpenCtx {
-                spot_symbol: spot_symbol.clone(),
-                amount: qty,
-                side: Side::Buy,
-                order_type: OrderType::Limit,
-                price: limit_price,
-                price_tick,
-                exp_time: self.cfg.max_open_keep_us(),
-                spot_sr: state.latest_bidask_sr,
-                futures_sr: state.latest_askbid_sr,
-                funding_ma: state.funding_ma,
-                predicted_funding_rate: Some(state.predicted_rate),
-                loan_rate: Some(state.loan_rate),
-            }
-            .to_bytes();
-            (ctx, limit_price, adjusted_qty, spot_symbol)
+            let signals = self.build_manual_open_signals(state);
+            (state.spot_symbol.clone(), signals)
         };
-        self.publish_signal(SignalType::BinSingleForwardArbOpen, ctx)?;
+        if signals.is_empty() {
+            anyhow::bail!("{spot_symbol} 未能构建开仓信号，请检查行情或 order_mode 配置");
+        }
+        for signal in &signals {
+            self.publish_signal(SignalType::BinSingleForwardArbOpen, signal.ctx.clone())?;
+            info!(
+                "{} mock 强制开仓: offset={:.6} qty={:.6} price={:.8}",
+                spot_symbol, signal.offset, signal.qty, signal.price
+            );
+        }
         let now = get_timestamp_us();
         if let Some(state) = self.symbols.get_mut(&key) {
             state.position = PositionState::Opened;
             state.last_ratio = state.calc_ratio();
             state.last_open_ts = Some(now);
             state.mark_signal(now);
-            info!(
-                "{} mock 强制开仓: qty={:.6} price={:.8}",
-                spot_symbol, adjusted_qty, limit_price
-            );
         } else {
             anyhow::bail!("未找到交易对 {key}");
         }
@@ -1326,7 +1657,7 @@ impl MockController {
 
     fn force_close(&mut self, index: usize) -> Result<()> {
         let key = self.symbol_key_by_index(index)?;
-        let (ctx, limit_price, spot_symbol) = {
+        let (spot_symbol, signals) = {
             let state = self
                 .symbols
                 .get(&key)
@@ -1334,48 +1665,28 @@ impl MockController {
             if !state.spot_quote.is_ready() {
                 anyhow::bail!("{} 行情尚未就绪，无法平仓", state.spot_symbol);
             }
-            let spot_symbol = state.spot_symbol.clone();
-            let mut limit_price = state.spot_quote.ask * (1.0 + self.cfg.order.close_range);
-            if limit_price <= 0.0 {
-                anyhow::bail!("{} 平仓价格非法: {:.6}", spot_symbol, limit_price);
-            }
-            let price_tick = self
-                .min_qty
-                .spot_price_tick_by_symbol(&spot_symbol)
-                .unwrap_or(0.0);
-            let raw_limit_price = limit_price;
-            if price_tick > 0.0 {
-                limit_price = align_price_ceil(limit_price, price_tick);
-                debug!(
-                    "{} mock 平仓价格对齐: raw={:.8} tick={:.8} aligned={:.8}",
-                    spot_symbol, raw_limit_price, price_tick, limit_price
-                );
-                if limit_price <= 0.0 {
-                    anyhow::bail!(
-                        "{} 平仓价格对齐失败: raw={:.8} tick={:.8}",
-                        spot_symbol,
-                        raw_limit_price,
-                        price_tick
-                    );
-                }
-            }
-            let ctx = BinSingleForwardArbCloseMarginCtx {
-                spot_symbol: spot_symbol.clone(),
-                limit_price,
-                price_tick,
-                exp_time: self.cfg.max_close_keep_us(),
-            }
-            .to_bytes();
-            (ctx, limit_price, spot_symbol)
+            let signals = self.build_manual_close_signals(state);
+            (state.spot_symbol.clone(), signals)
         };
-        self.publish_signal(SignalType::BinSingleForwardArbCloseMargin, ctx)?;
+        if signals.is_empty() {
+            anyhow::bail!("{spot_symbol} 未能构建平仓信号，请检查行情或 order_mode 配置");
+        }
+        for signal in &signals {
+            self.publish_signal(
+                SignalType::BinSingleForwardArbCloseMargin,
+                signal.ctx.clone(),
+            )?;
+            info!(
+                "{} mock 强制平仓: offset={:.6} price={:.8}",
+                spot_symbol, signal.offset, signal.price
+            );
+        }
         let now = get_timestamp_us();
         if let Some(state) = self.symbols.get_mut(&key) {
             state.position = PositionState::Flat;
             state.last_ratio = state.calc_ratio();
             state.last_close_ts = Some(now);
             state.mark_signal(now);
-            info!("{} mock 强制平仓: price={:.8}", spot_symbol, limit_price);
         } else {
             anyhow::bail!("未找到交易对 {key}");
         }
@@ -1868,6 +2179,44 @@ fn approx_zero(x: f64) -> bool {
 
 fn approx_equal(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-12
+}
+
+fn approx_equal_slice(a: &[f64], b: &[f64]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b.iter()).all(|(x, y)| approx_equal(*x, *y))
+}
+
+fn parse_numeric_list(raw: &str) -> Result<Vec<f64>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    if trimmed.starts_with('[') {
+        serde_json::from_str::<Vec<f64>>(trimmed)
+            .map_err(|err| format!("JSON array parse error: {err}"))
+    } else if trimmed.contains(',') {
+        let mut out = Vec::new();
+        for part in trimmed.split(',') {
+            let piece = part.trim();
+            if piece.is_empty() {
+                continue;
+            }
+            match piece.parse::<f64>() {
+                Ok(v) => out.push(v),
+                Err(err) => {
+                    return Err(format!("invalid float '{}': {}", piece, err));
+                }
+            }
+        }
+        Ok(out)
+    } else {
+        trimmed
+            .parse::<f64>()
+            .map(|v| vec![v])
+            .map_err(|err| format!("invalid float: {}", err))
+    }
 }
 
 fn render_three_line_table(headers: &[&str], rows: &[Vec<String>]) -> String {

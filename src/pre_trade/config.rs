@@ -13,9 +13,7 @@ pub struct PreTradeCfg {
     pub risk_checks: RiskCheckCfg,
     #[serde(default)]
     pub params: Option<StrategyParamsCfg>,
-    #[serde(default)]
-    pub store: Option<StoreCfg>,
-} 
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AccountStreamCfg {
@@ -131,37 +129,6 @@ impl PreTradeCfg {
         let cfg: Self = toml::from_str(&data)?;
         Ok(cfg)
     }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct StoreCfg {
-    #[serde(default = "default_store_enable")]
-    pub enable: bool,
-    #[serde(default = "default_store_redis_url")]
-    pub redis_url: String,
-    #[serde(default = "default_store_prefix")]
-    pub prefix: String,
-}
-
-impl Default for StoreCfg {
-    fn default() -> Self {
-        Self {
-            enable: default_store_enable(),
-            redis_url: default_store_redis_url(),
-            prefix: default_store_prefix(),
-        }
-    }
-}
-
-const fn default_store_enable() -> bool {
-    true
-}
-
-fn default_store_redis_url() -> String {
-    "redis://127.0.0.1/0".to_string()
-}
-fn default_store_prefix() -> String {
-    "pre_trade".to_string()
 }
 
 const fn default_account_payload() -> usize {

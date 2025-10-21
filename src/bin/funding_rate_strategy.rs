@@ -7,6 +7,7 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use log::{debug, error, info, trace, warn};
 use reqwest::Client;
+use serde::de::{self, Deserializer};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::signal;
@@ -16,7 +17,7 @@ use tokio::task::yield_now;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use mkt_signal::common::iceoryx_publisher::SignalPublisher;
+use mkt_signal::common::iceoryx_publisher::{ResamplePublisher, SignalPublisher};
 use mkt_signal::common::iceoryx_subscriber::{
     ChannelType, MultiChannelSubscriber, SubscribeParams,
 };
@@ -26,7 +27,8 @@ use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::mkt_msg::{self, AskBidSpreadMsg, FundingRateMsg, MktMsgType};
 use mkt_signal::pre_trade::order_manager::{OrderType, Side};
 use mkt_signal::signal::binance_forward_arb::{
-    BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbOpenCtx,
+    BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbLadderCancelCtx,
+    BinSingleForwardArbOpenCtx,
 };
 use mkt_signal::signal::resample::{
     compute_askbid_sr, compute_bidask_sr, FundingRateArbResampleEntry, FR_RESAMPLE_MSG_CHANNEL,
@@ -40,13 +42,74 @@ const DEFAULT_REDIS_HASH_KEY: &str = "binance_arb_price_spread_threshold";
 
 // 本策略已移除本地 tracking_symbol.json 模式，仅支持 Redis 阈值
 
+/// 下单报单模式
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrderMode {
+    Normal,
+    Ladder,
+}
+
+impl Default for OrderMode {
+    fn default() -> Self {
+        OrderMode::Normal
+    }
+}
+
+impl OrderMode {
+    fn from_raw(raw: &str) -> Option<Self> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let candidate = if let Ok(json_str) = serde_json::from_str::<String>(trimmed) {
+            json_str
+        } else if let Some(stripped) = trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+            stripped.to_string()
+        } else if let Some(stripped) = trimmed
+            .strip_prefix('\'')
+            .and_then(|s| s.strip_suffix('\''))
+        {
+            stripped.to_string()
+        } else {
+            trimmed.to_string()
+        };
+        let lowered = candidate.to_ascii_lowercase();
+        match lowered.as_str() {
+            "normal" | "basic" | "standard" | "plain" => Some(OrderMode::Normal),
+            "ladder" | "step" | "stepped" => Some(OrderMode::Ladder),
+            _ => match candidate.as_str() {
+                "普通报单" | "普通" | "基础" | "基础模式" => Some(OrderMode::Normal),
+                "阶梯报单" | "阶梯" | "阶梯模式" => Some(OrderMode::Ladder),
+                _ => None,
+            },
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for OrderMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        OrderMode::from_raw(&raw)
+            .ok_or_else(|| de::Error::custom(format!("invalid order_mode: {}", raw)))
+    }
+}
+
 /// 下单相关配置
 #[derive(Debug, Clone, Deserialize)]
 struct OrderConfig {
-    #[serde(default = "default_open_range")]
-    open_range: f64,
-    #[serde(default = "default_close_range")]
-    close_range: f64,
+    #[serde(default)]
+    mode: OrderMode,
+    #[serde(default = "default_open_ranges")]
+    open_ranges: Vec<f64>,
+    #[serde(default = "default_close_ranges")]
+    close_ranges: Vec<f64>,
+    #[serde(default)]
+    ladder_cancel_bidask_threshold: Option<f64>,
+    #[serde(default)]
+    ladder_open_bidask_threshold: Option<f64>,
     #[serde(default = "default_order_amount")]
     amount_u: f64,
     #[serde(default = "default_max_open_keep")]
@@ -61,6 +124,14 @@ const fn default_open_range() -> f64 {
 
 const fn default_close_range() -> f64 {
     0.0002
+}
+
+fn default_open_ranges() -> Vec<f64> {
+    vec![default_open_range()]
+}
+
+fn default_close_ranges() -> Vec<f64> {
+    vec![default_close_range()]
 }
 
 const fn default_order_amount() -> f64 {
@@ -78,12 +149,100 @@ const fn default_max_close_keep() -> u64 {
 impl Default for OrderConfig {
     fn default() -> Self {
         Self {
-            open_range: default_open_range(),
-            close_range: default_close_range(),
+            mode: OrderMode::default(),
+            open_ranges: default_open_ranges(),
+            close_ranges: default_close_ranges(),
+            ladder_cancel_bidask_threshold: None,
+            ladder_open_bidask_threshold: None,
             amount_u: default_order_amount(),
             max_open_order_keep_s: default_max_open_keep(),
             max_close_order_keep_s: default_max_close_keep(),
         }
+    }
+}
+
+impl OrderConfig {
+    fn sanitize_ranges(values: Vec<f64>, fallback: f64) -> Vec<f64> {
+        let mut sanitized: Vec<f64> = values.into_iter().filter(|v| v.is_finite()).collect();
+        if sanitized.is_empty() {
+            sanitized.push(fallback);
+        }
+        sanitized
+    }
+
+    fn set_open_ranges(&mut self, values: Vec<f64>) -> bool {
+        let sanitized = Self::sanitize_ranges(values, default_open_range());
+        if !approx_equal_slice(&self.open_ranges, &sanitized) {
+            self.open_ranges = sanitized;
+            return true;
+        }
+        false
+    }
+
+    fn set_close_ranges(&mut self, values: Vec<f64>) -> bool {
+        let sanitized = Self::sanitize_ranges(values, default_close_range());
+        if !approx_equal_slice(&self.close_ranges, &sanitized) {
+            self.close_ranges = sanitized;
+            return true;
+        }
+        false
+    }
+
+    fn normal_open_range(&self) -> f64 {
+        self.open_ranges
+            .first()
+            .copied()
+            .unwrap_or_else(|| default_open_range())
+    }
+
+    fn ladder_open_ranges(&self) -> &[f64] {
+        if self.open_ranges.len() > 1 {
+            &self.open_ranges[1..]
+        } else {
+            &[]
+        }
+    }
+
+    fn normal_close_range(&self) -> f64 {
+        self.close_ranges
+            .first()
+            .copied()
+            .unwrap_or_else(|| default_close_range())
+    }
+
+    fn ladder_close_ranges(&self) -> &[f64] {
+        if self.close_ranges.len() > 1 {
+            &self.close_ranges[1..]
+        } else {
+            &[]
+        }
+    }
+
+    fn ladder_cancel_threshold(&self) -> Option<f64> {
+        self.ladder_cancel_bidask_threshold
+            .filter(|v| v.is_finite())
+    }
+
+    fn set_ladder_cancel_threshold(&mut self, value: Option<f64>) -> bool {
+        let sanitized = value.filter(|v| v.is_finite());
+        if self.ladder_cancel_bidask_threshold != sanitized {
+            self.ladder_cancel_bidask_threshold = sanitized;
+            return true;
+        }
+        false
+    }
+
+    fn ladder_open_threshold(&self) -> Option<f64> {
+        self.ladder_open_bidask_threshold.filter(|v| v.is_finite())
+    }
+
+    fn set_ladder_open_threshold(&mut self, value: Option<f64>) -> bool {
+        let sanitized = value.filter(|v| v.is_finite());
+        if self.ladder_open_bidask_threshold != sanitized {
+            self.ladder_open_bidask_threshold = sanitized;
+            return true;
+        }
+        false
     }
 }
 
@@ -351,6 +510,9 @@ struct SymbolState {
     price_close_askbid: bool,
     price_open_ready: bool,
     price_close_ready: bool,
+    last_ladder_cancel_ts: Option<i64>,
+    open_batch_marker: Option<i64>,
+    close_batch_marker: Option<i64>,
 }
 
 impl SymbolState {
@@ -385,6 +547,9 @@ impl SymbolState {
             price_close_askbid: false,
             price_open_ready: false,
             price_close_ready: false,
+            last_ladder_cancel_ts: None,
+            open_batch_marker: None,
+            close_batch_marker: None,
         }
     }
 
@@ -394,6 +559,9 @@ impl SymbolState {
         self.futures_symbol = threshold.futures_symbol;
         self.askbid_open_threshold = threshold.askbid_open_threshold;
         self.askbid_close_threshold = threshold.askbid_close_threshold;
+        // reset batch markers when thresholds change
+        self.open_batch_marker = None;
+        self.close_batch_marker = None;
     }
 
     fn ready_for_eval(&self) -> bool {
@@ -420,6 +588,38 @@ impl SymbolState {
 
     fn mark_signal(&mut self, now_us: i64) {
         self.last_signal_ts = Some(now_us);
+        let bucket = bucket_ts(now_us);
+        self.open_batch_marker = Some(bucket);
+    }
+
+    fn mark_close_signal(&mut self, now_us: i64) {
+        self.last_signal_ts = Some(now_us);
+        let bucket = bucket_ts(now_us);
+        self.close_batch_marker = Some(bucket);
+    }
+
+    fn in_open_batch(&self, ts: i64) -> bool {
+        let bucket = bucket_ts(ts);
+        self.open_batch_marker == Some(bucket)
+    }
+
+    fn in_close_batch(&self, ts: i64) -> bool {
+        let bucket = bucket_ts(ts);
+        self.close_batch_marker == Some(bucket)
+    }
+
+    fn can_emit_ladder_cancel(&self, now_us: i64, min_gap_us: i64) -> bool {
+        if min_gap_us <= 0 {
+            return true;
+        }
+        match self.last_ladder_cancel_ts {
+            Some(prev) => now_us.saturating_sub(prev) >= min_gap_us,
+            None => true,
+        }
+    }
+
+    fn mark_ladder_cancel(&mut self, now_us: i64) {
+        self.last_ladder_cancel_ts = Some(now_us);
     }
 }
 
@@ -428,6 +628,7 @@ impl SymbolState {
 struct EngineStats {
     open_signals: u64,
     close_signals: u64,
+    ladder_cancel_signals: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -466,10 +667,10 @@ struct StrategyEngine {
     next_compute_refresh: Instant,
     next_fetch_refresh: Instant,
     http: Client,
-    // resample 
+    // resample
     resample_interval: Duration,
     next_resample: Instant,
-    resample_msg_pub: SignalPublisher,
+    resample_msg_pub: ResamplePublisher,
     funding_series: HashMap<String, Vec<f64>>, // per symbol recent funding rates
     loan_map: HashMap<String, f64>,            // per symbol loan rate 8h
     next_loan_refresh: Instant,
@@ -651,7 +852,7 @@ impl StrategyEngine {
             http: Client::new(),
             resample_interval: Duration::from_millis(resample_ms),
             next_resample: Instant::now(),
-            resample_msg_pub: SignalPublisher::new(FR_RESAMPLE_MSG_CHANNEL)?,
+            resample_msg_pub: ResamplePublisher::new(FR_RESAMPLE_MSG_CHANNEL)?,
             funding_series: HashMap::new(),
             loan_map: HashMap::new(),
             next_loan_refresh: Instant::now(),
@@ -1208,7 +1409,15 @@ impl StrategyEngine {
                 predicted_signal
             };
 
-            let price_open_bidask = ratio <= state.open_threshold;
+            let effective_open_threshold = if self.cfg.order.mode == OrderMode::Ladder {
+                self.cfg
+                    .order
+                    .ladder_open_threshold()
+                    .unwrap_or(state.open_threshold)
+            } else {
+                state.open_threshold
+            };
+            let price_open_bidask = ratio <= effective_open_threshold;
             let price_open_askbid = if !state.askbid_open_threshold.is_finite()
                 || state.askbid_open_threshold.abs() <= f64::EPSILON
             {
@@ -1252,7 +1461,7 @@ impl StrategyEngine {
             }
         };
 
-        let mut request: Option<SignalRequest> = None;
+        let mut requests: Vec<SignalRequest> = Vec::new();
 
         match decision.final_signal {
             -1 => {
@@ -1267,13 +1476,14 @@ impl StrategyEngine {
                         decision.symbol_key, min_gap_us
                     );
                 } else if let Some(state) = self.symbols.get(&decision.symbol_key) {
-                    if let Some(req) = self.build_open_request(state, decision.ratio, now_us) {
-                        request = Some(req);
-                    } else {
+                    let built = self.build_open_requests(state, decision.ratio, now_us);
+                    if built.is_empty() {
                         debug!(
                             "{} funding信号(-1)构建开仓请求失败 (ratio={:.6})",
                             decision.symbol_key, decision.ratio
                         );
+                    } else {
+                        requests.extend(built);
                     }
                 }
             }
@@ -1291,13 +1501,14 @@ impl StrategyEngine {
                         decision.symbol_key, min_gap_us
                     );
                 } else if let Some(state) = self.symbols.get(&decision.symbol_key) {
-                    if let Some(req) = self.build_close_request(state, decision.ratio, now_us) {
-                        request = Some(req);
-                    } else {
+                    let built = self.build_close_requests(state, decision.ratio, now_us);
+                    if built.is_empty() {
                         debug!(
                             "{} funding信号(-2)构建平仓请求失败 (ratio={:.6})",
                             decision.symbol_key, decision.ratio
                         );
+                    } else {
+                        requests.extend(built);
                     }
                 }
             }
@@ -1310,7 +1521,30 @@ impl StrategyEngine {
             _ => {}
         }
 
-        if let Some(req) = request {
+        if self.cfg.order.mode == OrderMode::Ladder {
+            if let Some(state) = self.symbols.get(&decision.symbol_key) {
+                if let Some(cancel_th) = self.cfg.order.ladder_cancel_threshold() {
+                    if decision.ratio >= cancel_th
+                        && state.can_emit_ladder_cancel(now_us, min_gap_us)
+                    {
+                        if let Some(req) = self.build_ladder_cancel_request(
+                            state,
+                            decision.ratio,
+                            cancel_th,
+                            now_us,
+                        ) {
+                            requests.push(req);
+                        }
+                    }
+                }
+            }
+        }
+
+        if requests.is_empty() {
+            return;
+        }
+
+        for req in requests {
             match req {
                 SignalRequest::Open {
                     symbol_key,
@@ -1343,7 +1577,9 @@ impl StrategyEngine {
                     if let Some(state) = self.symbols.get_mut(&symbol_key) {
                         state.last_ratio = Some(ratio);
                         state.last_open_ts = Some(emit_ts);
-                        state.mark_signal(emit_ts);
+                        if !state.in_open_batch(emit_ts) {
+                            state.mark_signal(emit_ts);
+                        }
                     }
                     let log_entry = self.symbols.get(&symbol_key).and_then(|state| {
                         self.build_signal_log(
@@ -1389,7 +1625,9 @@ impl StrategyEngine {
                     if let Some(state) = self.symbols.get_mut(&symbol_key) {
                         state.last_ratio = Some(ratio);
                         state.last_close_ts = Some(emit_ts);
-                        state.mark_signal(emit_ts);
+                        if !state.in_close_batch(emit_ts) {
+                            state.mark_close_signal(emit_ts);
+                        }
                     }
                     let log_entry = self.symbols.get(&symbol_key).and_then(|state| {
                         self.build_signal_log(
@@ -1405,6 +1643,41 @@ impl StrategyEngine {
                     if let Some(entry) = log_entry {
                         info!("{}", entry);
                     }
+                }
+                SignalRequest::Cancel {
+                    symbol_key,
+                    ctx,
+                    ratio,
+                    threshold,
+                    emit_ts,
+                } => {
+                    match BinSingleForwardArbLadderCancelCtx::from_bytes(ctx.clone()) {
+                        Ok(cancel_ctx) => debug!(
+                            "发送阶梯撤单信号: symbol={} bidask_sr={:.6} threshold={:.6}",
+                            cancel_ctx.spot_symbol,
+                            cancel_ctx.bidask_sr,
+                            cancel_ctx.cancel_threshold
+                        ),
+                        Err(e) => debug!(
+                            "发送阶梯撤单信号: 解析上下文失败 symbol={} err={}",
+                            symbol_key, e
+                        ),
+                    }
+                    if let Err(err) =
+                        self.publish_signal(SignalType::BinSingleForwardArbLadderCancel, ctx)
+                    {
+                        error!("发送阶梯撤单信号失败 {}: {err:?}", symbol_key);
+                        return;
+                    }
+                    if let Some(state) = self.symbols.get_mut(&symbol_key) {
+                        state.last_ratio = Some(ratio);
+                        state.mark_ladder_cancel(emit_ts);
+                    }
+                    self.stats.ladder_cancel_signals += 1;
+                    info!(
+                        "{} 阶梯撤单触发: bidask_sr={:.6} threshold={:.6}",
+                        symbol_key, ratio, threshold
+                    );
                 }
             }
         }
@@ -1496,7 +1769,14 @@ impl StrategyEngine {
                 predicted_rate_lower: opt_finite(open_lower),
                 predicted_rate_upper: opt_finite(open_upper),
                 loan_rate_8h,
-                bidask_lower: opt_finite(state.open_threshold),
+                bidask_lower: opt_finite(if self.cfg.order.mode == OrderMode::Ladder {
+                    self.cfg
+                        .order
+                        .ladder_open_threshold()
+                        .unwrap_or(state.open_threshold)
+                } else {
+                    state.open_threshold
+                }),
                 bidask_upper: opt_finite(state.close_threshold),
                 askbid_lower: opt_active_threshold(state.askbid_open_threshold),
                 askbid_upper: opt_active_threshold(state.askbid_close_threshold),
@@ -1681,20 +1961,47 @@ impl StrategyEngine {
         Ok(())
     }
 
-    fn build_open_request(
+    fn build_open_requests(
         &self,
         state: &SymbolState,
         ratio: f64,
         emit_ts: i64,
-    ) -> Option<SignalRequest> {
+    ) -> Vec<SignalRequest> {
         if state.spot_quote.bid <= 0.0 {
-            return None;
+            return Vec::new();
         }
-        let mut limit_price = state.spot_quote.bid * (1.0 - self.cfg.order.open_range);
+        let mut offsets: Vec<f64> = match self.cfg.order.mode {
+            OrderMode::Normal => vec![self.cfg.order.normal_open_range()],
+            OrderMode::Ladder => {
+                let ladder = self.cfg.order.ladder_open_ranges();
+                if ladder.is_empty() {
+                    vec![self.cfg.order.normal_open_range()]
+                } else {
+                    ladder.to_vec()
+                }
+            }
+        };
+        if offsets.is_empty() {
+            offsets.push(self.cfg.order.normal_open_range());
+        }
+        offsets
+            .into_iter()
+            .filter_map(|offset| self.build_open_request_with_offset(state, ratio, emit_ts, offset))
+            .collect()
+    }
+
+    fn build_open_request_with_offset(
+        &self,
+        state: &SymbolState,
+        ratio: f64,
+        emit_ts: i64,
+        offset: f64,
+    ) -> Option<SignalRequest> {
+        let mut limit_price = state.spot_quote.bid * (1.0 - offset);
         if limit_price <= 0.0 {
             warn!(
-                "{} 计算得到的开仓价格非法: {:.6}",
-                state.spot_symbol, limit_price
+                "{} 计算得到的开仓价格非法: offset={:.6} price={:.6}",
+                state.spot_symbol, offset, limit_price
             );
             return None;
         }
@@ -1706,13 +2013,13 @@ impl StrategyEngine {
         if price_tick > 0.0 {
             limit_price = align_price_floor(limit_price, price_tick);
             debug!(
-                "{} 开仓价格对齐: raw={:.8} tick={:.8} aligned={:.8}",
-                state.spot_symbol, raw_limit_price, price_tick, limit_price
+                "{} 开仓价格对齐: offset={:.6} raw={:.8} tick={:.8} aligned={:.8}",
+                state.spot_symbol, offset, raw_limit_price, price_tick, limit_price
             );
             if limit_price <= 0.0 {
                 warn!(
-                    "{} price tick 对齐后开仓价格非法: raw={:.8} tick={:.8}",
-                    state.spot_symbol, raw_limit_price, price_tick
+                    "{} price tick 对齐后开仓价格非法: offset={:.6} raw={:.8} tick={:.8}",
+                    state.spot_symbol, offset, raw_limit_price, price_tick
                 );
                 return None;
             }
@@ -1735,8 +2042,8 @@ impl StrategyEngine {
         let mut adjusted_qty = base_qty.max(spot_min).max(futures_min);
         if adjusted_qty <= 0.0 {
             warn!(
-                "{} 计算得到的下单数量非法: 基准={:.6}, spot_min={:.6}, futures_min={:.6}",
-                state.spot_symbol, base_qty, spot_min, futures_min
+                "{} 计算得到的下单数量非法: offset={:.6} 基准={:.6}, spot_min={:.6}, futures_min={:.6}",
+                state.spot_symbol, offset, base_qty, spot_min, futures_min
             );
             return None;
         }
@@ -1747,11 +2054,14 @@ impl StrategyEngine {
         }
 
         info!(
-            "{} 下单量调整: 基准={:.6} spot_min={:.6} fut_min={:.6} 最终={:.6}",
-            state.spot_symbol, base_qty, spot_min, futures_min, adjusted_qty
+            "{} 下单量调整: offset={:.6} 基准={:.6} spot_min={:.6} fut_min={:.6} 最终={:.6}",
+            state.spot_symbol, offset, base_qty, spot_min, futures_min, adjusted_qty
         );
 
         let qty = adjusted_qty as f32;
+        if qty <= 0.0 || !qty.is_finite() {
+            return None;
+        }
         let ctx = BinSingleForwardArbOpenCtx {
             spot_symbol: state.spot_symbol.clone(),
             amount: qty,
@@ -1776,20 +2086,49 @@ impl StrategyEngine {
         })
     }
 
-    fn build_close_request(
+    fn build_close_requests(
         &self,
         state: &SymbolState,
         ratio: f64,
         emit_ts: i64,
-    ) -> Option<SignalRequest> {
+    ) -> Vec<SignalRequest> {
         if state.spot_quote.ask <= 0.0 {
-            return None;
+            return Vec::new();
         }
-        let mut limit_price = state.spot_quote.ask * (1.0 + self.cfg.order.close_range);
+        let mut offsets: Vec<f64> = match self.cfg.order.mode {
+            OrderMode::Normal => vec![self.cfg.order.normal_close_range()],
+            OrderMode::Ladder => {
+                let ladder = self.cfg.order.ladder_close_ranges();
+                if ladder.is_empty() {
+                    vec![self.cfg.order.normal_close_range()]
+                } else {
+                    ladder.to_vec()
+                }
+            }
+        };
+        if offsets.is_empty() {
+            offsets.push(self.cfg.order.normal_close_range());
+        }
+        offsets
+            .into_iter()
+            .filter_map(|offset| {
+                self.build_close_request_with_offset(state, ratio, emit_ts, offset)
+            })
+            .collect()
+    }
+
+    fn build_close_request_with_offset(
+        &self,
+        state: &SymbolState,
+        ratio: f64,
+        emit_ts: i64,
+        offset: f64,
+    ) -> Option<SignalRequest> {
+        let mut limit_price = state.spot_quote.ask * (1.0 + offset);
         if limit_price <= 0.0 {
             warn!(
-                "{} 计算得到的平仓价格非法: {:.6}",
-                state.spot_symbol, limit_price
+                "{} 计算得到的平仓价格非法: offset={:.6} price={:.6}",
+                state.spot_symbol, offset, limit_price
             );
             return None;
         }
@@ -1801,13 +2140,13 @@ impl StrategyEngine {
         if price_tick > 0.0 {
             limit_price = align_price_ceil(limit_price, price_tick);
             debug!(
-                "{} 平仓价格对齐: raw={:.8} tick={:.8} aligned={:.8}",
-                state.spot_symbol, raw_limit_price, price_tick, limit_price
+                "{} 平仓价格对齐: offset={:.6} raw={:.8} tick={:.8} aligned={:.8}",
+                state.spot_symbol, offset, raw_limit_price, price_tick, limit_price
             );
             if limit_price <= 0.0 {
                 warn!(
-                    "{} price tick 对齐后平仓价格非法: raw={:.8} tick={:.8}",
-                    state.spot_symbol, raw_limit_price, price_tick
+                    "{} price tick 对齐后平仓价格非法: offset={:.6} raw={:.8} tick={:.8}",
+                    state.spot_symbol, offset, raw_limit_price, price_tick
                 );
                 return None;
             }
@@ -1828,6 +2167,33 @@ impl StrategyEngine {
         })
     }
 
+    fn build_ladder_cancel_request(
+        &self,
+        state: &SymbolState,
+        bidask_sr: f64,
+        threshold: f64,
+        emit_ts: i64,
+    ) -> Option<SignalRequest> {
+        if !bidask_sr.is_finite() || !threshold.is_finite() {
+            return None;
+        }
+        let ctx = BinSingleForwardArbLadderCancelCtx {
+            spot_symbol: state.spot_symbol.clone(),
+            futures_symbol: state.futures_symbol.clone(),
+            bidask_sr,
+            cancel_threshold: threshold,
+            trigger_ts: emit_ts,
+        }
+        .to_bytes();
+        Some(SignalRequest::Cancel {
+            symbol_key: state.spot_symbol.clone(),
+            ctx,
+            ratio: bidask_sr,
+            threshold,
+            emit_ts,
+        })
+    }
+
     fn publish_signal(&self, signal_type: SignalType, context: Bytes) -> Result<()> {
         let now_us = get_timestamp_us();
         let signal = TradeSignal::create(signal_type.clone(), now_us, 0.0, context);
@@ -1839,13 +2205,14 @@ impl StrategyEngine {
 
     fn print_stats(&self) {
         info!(
-            "当前追踪交易对: {} | 开仓信号累计 {} | 平仓信号累计 {}",
+            "当前追踪交易对: {} | 开仓信号累计 {} | 平仓信号累计 {} | 阶梯撤单信号累计 {}",
             self.symbols.len(),
             self.stats.open_signals,
-            self.stats.close_signals
-        ); 
-    } 
-} 
+            self.stats.close_signals,
+            self.stats.ladder_cancel_signals
+        );
+    }
+}
 
 // 阈值获取逻辑改为读取 self.th_4h/self.th_8h，参见 StrategyEngine::thresholds_for_frequency
 
@@ -1980,6 +2347,15 @@ impl StrategyEngine {
         let mut changed = false;
         let parse_u64 = |k: &str| -> Option<u64> { map.get(k).and_then(|v| v.parse::<u64>().ok()) };
         let parse_f64 = |k: &str| -> Option<f64> { map.get(k).and_then(|v| v.parse::<f64>().ok()) };
+        let parse_range_list = |k: &str| -> Option<Vec<f64>> {
+            map.get(k).and_then(|raw| match parse_numeric_list(raw) {
+                Ok(values) => Some(values),
+                Err(err) => {
+                    warn!("{} 参数解析失败: {}; 原始值: {}", k, err, raw);
+                    None
+                }
+            })
+        };
         if let Some(v) = parse_u64("interval") {
             if self.cfg.strategy.interval as u64 != v {
                 self.cfg.strategy.interval = v as usize;
@@ -2091,16 +2467,60 @@ impl StrategyEngine {
         }
 
         // 订单参数
-        if let Some(v) = parse_f64("order_open_range") {
-            if !approx_equal(self.cfg.order.open_range, v) {
-                self.cfg.order.open_range = v;
+        if let Some(raw_mode) = map.get("order_mode") {
+            if let Some(mode) = OrderMode::from_raw(raw_mode) {
+                if mode != self.cfg.order.mode {
+                    debug!("order_mode 变更: {:?} -> {:?}", self.cfg.order.mode, mode);
+                    self.cfg.order.mode = mode;
+                    changed = true;
+                }
+            } else {
+                warn!(
+                    "order_mode 参数解析失败，将保持当前模式 {:?}: {}",
+                    self.cfg.order.mode, raw_mode
+                );
+            }
+        }
+        if let Some(values) = parse_range_list("order_open_range") {
+            if self.cfg.order.set_open_ranges(values) {
                 changed = true;
             }
         }
-        if let Some(v) = parse_f64("order_close_range") {
-            if !approx_equal(self.cfg.order.close_range, v) {
-                self.cfg.order.close_range = v;
+        if let Some(values) = parse_range_list("order_close_range") {
+            if self.cfg.order.set_close_ranges(values) {
                 changed = true;
+            }
+        }
+        match map.get("order_ladder_cancel_bidask_threshold") {
+            Some(raw) => {
+                if let Ok(v) = raw.parse::<f64>() {
+                    if self.cfg.order.set_ladder_cancel_threshold(Some(v)) {
+                        changed = true;
+                    }
+                }
+            }
+            None => {
+                if self.cfg.order.ladder_cancel_threshold().is_some() {
+                    if self.cfg.order.set_ladder_cancel_threshold(None) {
+                        changed = true;
+                    }
+                }
+            }
+        }
+        match map.get("order_ladder_open_bidask_threshold") {
+            Some(raw) => {
+                if let Ok(v) = raw.parse::<f64>() {
+                    if self.cfg.order.set_ladder_open_threshold(Some(v)) {
+                        changed = true;
+                    }
+                }
+            }
+            None => {
+                if self.cfg.order.ladder_open_threshold().is_some() {
+                    if self.cfg.order.set_ladder_open_threshold(None) {
+                        changed = true;
+                    }
+                }
             }
         }
         if let Some(v) = parse_f64("order_amount_u") {
@@ -2328,6 +2748,13 @@ enum SignalRequest {
         ctx: Bytes,
         ratio: f64,
         price: f64,
+        emit_ts: i64,
+    },
+    Cancel {
+        symbol_key: String,
+        ctx: Bytes,
+        ratio: f64,
+        threshold: f64,
         emit_ts: i64,
     },
 }
@@ -2650,7 +3077,7 @@ fn align_price_ceil(price: f64, tick: f64) -> f64 {
     }
     let scaled = ((price / tick) - 1e-9).ceil();
     scaled * tick
-} 
+}
 
 impl StrategyEngine {
     fn get_qty_step(&self, symbol: &str, spot_min: f64, futures_min: f64) -> f64 {
@@ -2717,6 +3144,49 @@ fn approx_zero(x: f64) -> bool {
 
 fn approx_equal(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-12
+}
+
+fn bucket_ts(ts_us: i64) -> i64 {
+    const WINDOW_US: i64 = 1_000;
+    ts_us / WINDOW_US
+}
+
+fn approx_equal_slice(a: &[f64], b: &[f64]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b.iter()).all(|(x, y)| approx_equal(*x, *y))
+}
+
+fn parse_numeric_list(raw: &str) -> Result<Vec<f64>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    if trimmed.starts_with('[') {
+        serde_json::from_str::<Vec<f64>>(trimmed)
+            .map_err(|err| format!("JSON array parse error: {err}"))
+    } else if trimmed.contains(',') {
+        let mut out = Vec::new();
+        for part in trimmed.split(',') {
+            let piece = part.trim();
+            if piece.is_empty() {
+                continue;
+            }
+            match piece.parse::<f64>() {
+                Ok(v) => out.push(v),
+                Err(err) => {
+                    return Err(format!("invalid float '{}': {}", piece, err));
+                }
+            }
+        }
+        Ok(out)
+    } else {
+        trimmed
+            .parse::<f64>()
+            .map(|v| vec![v])
+            .map_err(|err| format!("invalid float: {}", err))
+    }
 }
 
 // ------- Funding prediction helpers (strategy-side) -------

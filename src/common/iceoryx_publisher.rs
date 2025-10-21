@@ -3,11 +3,14 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::info;
 
-pub struct SignalPublisher {
-    publisher: Publisher<ipc::Service, [u8; 4096], ()>,
+pub const SIGNAL_PAYLOAD: usize = 4_096;
+pub const RESAMPLE_PAYLOAD: usize = 8_192;
+
+pub struct GenericPublisher<const PAYLOAD: usize> {
+    publisher: Publisher<ipc::Service, [u8; PAYLOAD], ()>,
 }
 
-impl SignalPublisher {
+impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
     pub fn new(channel_name: &str) -> anyhow::Result<Self> {
         // Use signal namespace for services
         let full_service = format!("signal_pubs/{}", channel_name);
@@ -22,7 +25,7 @@ impl SignalPublisher {
 
         let service = node
             .service_builder(&service_name)
-            .publish_subscribe::<[u8; 4096]>()
+            .publish_subscribe::<[u8; PAYLOAD]>()
             .max_publishers(1)
             .max_subscribers(32)
             .history_size(128)
@@ -40,12 +43,12 @@ impl SignalPublisher {
     }
 
     pub fn publish(&self, data: &[u8]) -> anyhow::Result<()> {
-        if data.len() > 4096 {
-            anyhow::bail!("Data size exceeds 4096 bytes");
+        if data.len() > PAYLOAD {
+            anyhow::bail!("Data size exceeds {} bytes", PAYLOAD);
         }
 
         // Prepare a fixed-size buffer and copy the data
-        let mut buffer = [0u8; 4096];
+        let mut buffer = [0u8; PAYLOAD];
         buffer[..data.len()].copy_from_slice(data);
 
         // Send via loan + write_payload pattern (same as forwarder)
@@ -58,3 +61,6 @@ impl SignalPublisher {
         Ok(())
     }
 }
+
+pub type SignalPublisher = GenericPublisher<SIGNAL_PAYLOAD>;
+pub type ResamplePublisher = GenericPublisher<RESAMPLE_PAYLOAD>;

@@ -2,30 +2,30 @@
 name = "mkt_signal"
 version = "0.1.0"
 edition = "2021"
-autobins = false
+autobins = false 
 
-[lib]
-name = "mkt_signal"
-path = "src/lib.rs"
+[lib] 
+name = "mkt_signal" 
+path = "src/lib.rs" 
 
-[[bin]]
-name = "mkt_pub"
-path = "src/main.rs"
+[[bin]] 
+name = "mkt_pub" 
+path = "src/main.rs" 
 
-[[bin]]
-name = "funding_rate_signal"
-path = "src/bin/funding_rate_strategy.rs"
+[[bin]] 
+name = "funding_rate_signal" 
+path = "src/bin/funding_rate_strategy.rs" 
 
-[[bin]]
-name = "account_monitor"
-path = "src/bin/account_monitor.rs"
+[[bin]] 
+name = "account_monitor" 
+path = "src/bin/account_monitor.rs" 
 
-[[bin]]
-name = "trade_engine"
-path = "src/bin/trade_engine.rs"
+[[bin]] 
+name = "trade_engine" 
+path = "src/bin/trade_engine.rs" 
 
-[[bin]]
-name = "demo_subscribe_resps"
+[[bin]] 
+name = "demo_subscribe_resps" 
 path = "src/bin/demo_subscribe_resps.rs"
 
 [[bin]]
@@ -42,7 +42,7 @@ path = "src/bin/funding_rate_strategy_mock.rs"
 
 [[bin]]
 name = "viz_server"
-path = "src/bin/viz_server.rs"
+path = "src/bin/viz_server.rs" 
 
 [[bin]]
 name = "print_pre_trade_snapshot"
@@ -106,3 +106,5 @@ version = "0.43.1"
 optional = false
 default-features = false
 features = ["fmt", "lazy", "polars-io", "rolling_window"]
+
+

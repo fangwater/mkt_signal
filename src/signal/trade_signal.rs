@@ -6,6 +6,7 @@ pub enum SignalType {
     BinSingleForwardArbHedge = 2,       // 币安单所正向套利触发对冲
     BinSingleForwardArbCloseMargin = 3, // 币安单所正向套利触发杠杆平仓
     BinSingleForwardArbCloseUm = 4,     // 币安单所正向套利触发合约平仓
+    BinSingleForwardArbLadderCancel = 5, // 币安单所正向套利阶梯撤单
                                         // 未来可以添加更多信号类型:
                                         // BinSingleReverseArb,  // 币安单所反向套利
                                         // CrossExchangeArb,     // 跨交易所套利
@@ -22,6 +23,7 @@ impl SignalType {
             2 => Some(SignalType::BinSingleForwardArbHedge),
             3 => Some(SignalType::BinSingleForwardArbCloseMargin),
             4 => Some(SignalType::BinSingleForwardArbCloseUm),
+            5 => Some(SignalType::BinSingleForwardArbLadderCancel),
             _ => None,
         }
     }

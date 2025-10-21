@@ -11,6 +11,7 @@ use tokio::time::Instant;
 use serde_json::json;
 
 use super::state::SharedState;
+use crate::common::iceoryx_publisher::RESAMPLE_PAYLOAD as ICEORYX_RESAMPLE_PAYLOAD;
 use crate::common::time_util::get_timestamp_us;
 use crate::common::viz::server::WsHub;
 use crate::signal::resample::{
@@ -19,7 +20,7 @@ use crate::signal::resample::{
     PRE_TRADE_POSITIONS_CHANNEL, PRE_TRADE_RISK_CHANNEL,
 };
 
-pub const RESAMPLE_PAYLOAD: usize = 4096;
+pub const RESAMPLE_PAYLOAD: usize = ICEORYX_RESAMPLE_PAYLOAD;
 
 /// 订阅 funding resample 流式切片（用于验证解码；当前不更新 UI 状态）
 pub fn spawn_fr_resample_listener(state: SharedState, hub: WsHub) -> Result<()> {
