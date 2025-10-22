@@ -1004,15 +1004,6 @@ impl BinSingleForwardArbStrategy {
             return Err(err);
         }
 
-        let now = get_timestamp_us();
-        {
-            let mut manager = self.order_manager.borrow_mut();
-            let _ = manager.update(order.order_id, |o| {
-                o.update_status(OrderExecutionStatus::Commit);
-                o.set_end_time(now);
-            });
-        }
-        self.margin_order_id = 0;
         self.open_timeout_us = None;
 
         Ok(())

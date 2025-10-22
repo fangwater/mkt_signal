@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use log::{debug, warn};
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
@@ -444,13 +444,29 @@ impl OrderManager {
     }
 
     fn decrement_pending_limit_count(&mut self, symbol: &str) {
+        let mut should_remove = false;
+        let mut remaining = None;
+
         if let Some(entry) = self.pending_limit_order_count.get_mut(symbol) {
             if *entry > 1 {
                 *entry -= 1;
+                remaining = Some(*entry);
             } else {
-                self.pending_limit_order_count.remove(symbol);
+                should_remove = true;
             }
+        } else {
+            return;
         }
+
+        if should_remove {
+            self.pending_limit_order_count.remove(symbol);
+        }
+
+        info!(
+            "OrderManager: symbol={} pending_limit_count dec -> {}",
+            symbol,
+            remaining.unwrap_or(0)
+        );
     }
 }
 

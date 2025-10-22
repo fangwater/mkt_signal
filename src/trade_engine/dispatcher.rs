@@ -6,19 +6,19 @@ use log::{debug, warn};
 use reqwest::{header::HeaderMap, Client};
 use sha2::Sha256;
 use std::net::IpAddr;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant}; 
 
-type HmacSha256 = Hmac<Sha256>;
+type HmacSha256 = Hmac<Sha256>; 
 
-#[derive(Debug)]
+#[derive(Debug)] 
 struct IpClient {
-    ip: IpAddr,
-    client: Client,
-    /// used weight for 1m window (if header missing we approximate)
-    used_weight_1m: u32,
-    cooldown_until: Option<Instant>,
-    banned_until: Option<Instant>,
-}
+    ip: IpAddr, 
+    client: Client, 
+    /// used weight for 1m window (if header missing we approximate) 
+    used_weight_1m: u32, 
+    cooldown_until: Option<Instant>, 
+    banned_until: Option<Instant>, 
+} 
 
 impl IpClient {
     fn is_available(&self) -> bool {
@@ -31,11 +31,11 @@ impl IpClient {
         if let Some(t) = self.banned_until {
             if now < t {
                 return false;
-            }
-        }
-        true
-    }
-}
+            } 
+        } 
+        true 
+    } 
+} 
 
 #[derive(Debug)]
 struct AccountState {
@@ -105,7 +105,7 @@ impl Dispatcher {
             }
         }
         best.map(|(i, _)| i)
-    }
+    } 
 
     fn select_account(&self, hint: Option<&str>) -> Option<usize> {
         if let Some(h) = hint {
@@ -199,7 +199,7 @@ impl Dispatcher {
             .map_err(|_| anyhow!("invalid secret for account {}", account_name))?;
         mac.update(query.as_bytes());
         let sig = hex::encode(mac.finalize().into_bytes());
-
+        
         let full_url = format!("{}?{}&signature={}", url, query, sig);
         let client = &self.ip_clients[ip_idx].client;
 

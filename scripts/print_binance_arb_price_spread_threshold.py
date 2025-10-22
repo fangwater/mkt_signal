@@ -4,7 +4,7 @@
 """
 Print the first table (binance_arb_price_spread_threshold) from Redis HASH.
 
-Purpose
+Purpose 
   - Read Redis HASH `binance_arb_price_spread_threshold`:
       field = symbol,
       value = JSON { symbol, update_tp, bidask_sr_open_threshold, bidask_sr_close_threshold, askbid_sr_open_threshold, askbid_sr_close_threshold }
@@ -12,20 +12,20 @@ Purpose
   - Print the table in a "three-line table" (三线表) style:
       top rule, header rule, bottom rule; no vertical grid lines.
 
-CLI Examples
+CLI Examples 
   - From Redis (default localhost):
-      python scripts/print_binance_arb_price_spread_threshold.py
+      python scripts/print_binance_arb_price_spread_threshold.py 
 
-  - Specify Redis URL:
-      python scripts/print_binance_arb_price_spread_threshold.py --redis-url redis://:pwd@127.0.0.1:6379/0
+  - Specify Redis URL: 
+      python scripts/print_binance_arb_price_spread_threshold.py --redis-url redis://:pwd@127.0.0.1:6379/0 
 
-  - Limit to specific symbols:
-      python scripts/print_binance_arb_price_spread_threshold.py --symbols ADAUSDT ETHUSDT XRPUSDT
+  - Limit to specific symbols: 
+      python scripts/print_binance_arb_price_spread_threshold.py --symbols ADAUSDT ETHUSDT XRPUSDT 
 
-Notes
-  - Requires `redis` Python package.
-  - `update_tp` prints as UTC time by default.
-"""
+Notes 
+  - Requires `redis` Python package. 
+  - `update_tp` prints as UTC time by default. 
+""" 
 
 from __future__ import annotations
 
@@ -40,11 +40,11 @@ from typing import Dict, List, Optional, Tuple
 
 def try_import_redis():
     try:
-        import redis  # type: ignore
+        import redis  # type: ignore 
 
-        return redis
-    except Exception:
-        return None
+        return redis 
+    except Exception: 
+        return None 
 
 
 def parse_args() -> argparse.Namespace:

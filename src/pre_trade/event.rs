@@ -5,9 +5,9 @@ pub enum PreTradeEvent {
     Account(AccountEvent),
     TradeResponse(TradeEngineResponse),
     Signal(trade_signal::TradeSignal),
-}
+} 
 
-#[derive(Debug)]
+#[derive(Debug)] 
 pub struct AccountEvent {
     pub service: String,
     pub received_at: i64,
@@ -15,9 +15,9 @@ pub struct AccountEvent {
     pub payload_len: usize,
     pub event_type: Option<String>,
     pub event_time_ms: Option<i64>,
-}
+} 
 
-#[derive(Debug)]
+#[derive(Debug)] 
 pub struct TradeEngineResponse {
     pub service: String,
     pub received_at: i64,
@@ -31,4 +31,5 @@ pub struct TradeEngineResponse {
     pub order_count_1m: Option<u32>,
     pub body: Vec<u8>,
     pub body_truncated: bool,
-}
+} 
+
