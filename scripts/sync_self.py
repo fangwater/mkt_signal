@@ -92,12 +92,12 @@ def main() -> int:
         "pre_trade_refresh_secs": "30",
         # 下单参数
         "order_mode": "ladder",
-        "order_open_range": "[0.0,0.01,0.02,0.03,0.05]",
-        "order_close_range": "[0.0,0.01,0.02,0.03,0.05]",
+        "order_open_range": "[0.0,0.01,0.02,0.03]",
+        "order_close_range": "[0.0,0.01,0.02,0.03]",
         "order_ladder_cancel_bidask_threshold": "0.0005",
         "order_ladder_open_bidask_threshold": "-0.0004",
         "order_amount_u": "15",
-        "order_max_open_order_keep_s": "3",
+        "order_max_open_order_keep_s": "30",
         "order_max_close_order_keep_s": "1",
         "max_pending_limit_orders": "5",
     }

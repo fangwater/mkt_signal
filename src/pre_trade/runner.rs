@@ -36,7 +36,7 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, error, info, warn};
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::time::Duration;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -286,8 +286,6 @@ struct RuntimeContext {
     price_table: Rc<RefCell<PriceTable>>,
     order_manager: Rc<RefCell<crate::pre_trade::order_manager::OrderManager>>,
     strategy_mgr: StrategyManager,
-    symbol_to_strategy: HashMap<String, i32>,
-    strategy_symbols: HashMap<i32, String>,
     order_tx: UnboundedSender<Bytes>,
     signal_tx: UnboundedSender<Bytes>,
     order_publisher: OrderPublisher,
@@ -338,8 +336,6 @@ impl RuntimeContext {
                 crate::pre_trade::order_manager::OrderManager::new(),
             )),
             strategy_mgr: StrategyManager::new(),
-            symbol_to_strategy: HashMap::new(),
-            strategy_symbols: HashMap::new(),
             order_tx,
             signal_tx,
             order_publisher,
@@ -364,27 +360,11 @@ impl RuntimeContext {
         // no-op: persistent store removed
     }
 
-    fn cleanup_inactive(&mut self) {
-        let active: HashSet<i32> = self.strategy_mgr.iter_ids().cloned().collect();
-        self.strategy_symbols.retain(|strategy_id, symbol| {
-            if active.contains(strategy_id) {
-                true
-            } else {
-                self.symbol_to_strategy.remove(symbol);
-                false
-            }
-        });
-        self.symbol_to_strategy
-            .retain(|_symbol, strategy_id| self.strategy_symbols.contains_key(strategy_id));
-    }
+    fn cleanup_inactive(&mut self) {}
 
     fn insert_strategy(&mut self, symbol: String, strategy: Box<dyn Strategy>) {
         let strategy_id = strategy.get_id();
-        let upper_symbol = symbol.to_uppercase();
         self.strategy_mgr.insert(strategy);
-        self.symbol_to_strategy
-            .insert(upper_symbol.clone(), strategy_id);
-        self.strategy_symbols.insert(strategy_id, upper_symbol);
         self.strategy_activity = true;
         debug!(
             "strategy inserted: strategy_id={} symbol={} active_total={}",
@@ -395,9 +375,6 @@ impl RuntimeContext {
     }
 
     fn remove_strategy(&mut self, strategy_id: i32) {
-        if let Some(symbol) = self.strategy_symbols.remove(&strategy_id) {
-            self.symbol_to_strategy.remove(&symbol);
-        }
         self.strategy_mgr.remove(strategy_id);
         self.strategy_activity = true;
     }
@@ -1239,10 +1216,7 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
             }
             debug!(
                 "executionReport: sym={} cli_id={} ord_id={} status={}",
-                report.symbol,
-                report.client_order_id,
-                report.order_id,
-                report.order_status
+                report.symbol, report.client_order_id, report.order_id, report.order_status
             );
             dispatch_execution_report(ctx, &report);
         }
@@ -1309,17 +1283,27 @@ fn handle_trade_engine_response(ctx: &mut RuntimeContext, outcome: TradeExecOutc
 
 fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
     let raw_signal = signal.to_bytes();
-    debug!(
-        "trade signal received: type={:?} generation_time={} ctx_len={}",
+    let is_ladder_cancel = matches!(
         signal.signal_type,
-        signal.generation_time,
-        signal.context.len()
+        SignalType::BinSingleForwardArbLadderCancel
     );
+    if !is_ladder_cancel {
+        debug!(
+            "trade signal received: type={:?} generation_time={} ctx_len={}",
+            signal.signal_type,
+            signal.generation_time,
+            signal.context.len()
+        );
+    }
     match signal.signal_type {
         SignalType::BinSingleForwardArbOpen => {
             match BinSingleForwardArbOpenCtx::from_bytes(signal.context.clone()) {
                 Ok(open_ctx) => {
                     let symbol = open_ctx.spot_symbol.to_uppercase();
+                    debug!(
+                        "decoded open ctx: spot_symbol={} amount={} price={:.8} exp_time_us={}",
+                        open_ctx.spot_symbol, open_ctx.amount, open_ctx.price, open_ctx.exp_time
+                    );
                     let max_limit = ctx.max_pending_limit_orders.get();
                     if max_limit > 0 {
                         let current_limit = {
@@ -1382,7 +1366,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
             match BinSingleForwardArbCloseMarginCtx::from_bytes(signal.context.clone()) {
                 Ok(close_ctx) => {
                     let symbol = close_ctx.spot_symbol.to_uppercase();
-                    if ctx.symbol_to_strategy.contains_key(&symbol) {
+                    if ctx.strategy_mgr.has_symbol(&symbol) {
                         dispatch_signal_to_existing_strategy(ctx, signal, raw_signal);
                     } else {
                         let strategy_id = StrategyManager::generate_strategy_id(2);
@@ -1439,10 +1423,6 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
             dispatch_signal_to_existing_strategy(ctx, signal, raw_signal);
         }
         SignalType::BinSingleForwardArbLadderCancel => {
-            debug!(
-                "dispatch ladder cancel signal to existing strategies ctx_len={}",
-                signal.context.len()
-            );
             ctx.ladder_cancel_activity = true;
             dispatch_signal_to_existing_strategy(ctx, signal, raw_signal);
         }
@@ -1457,9 +1437,13 @@ fn dispatch_signal_to_existing_strategy(
     raw_signal: Bytes,
 ) {
     let signal_type = signal.signal_type.clone();
-    let is_ladder_cancel =
-        matches!(signal_type.clone(), SignalType::BinSingleForwardArbLadderCancel);
+    let is_ladder_cancel = matches!(
+        signal_type.clone(),
+        SignalType::BinSingleForwardArbLadderCancel
+    );
     let mut target_strategy_id: Option<i32> = None;
+    let mut ladder_cancel_ctx: Option<BinSingleForwardArbLadderCancelCtx> = None;
+    let mut ladder_symbol: Option<String> = None;
     let maybe_symbol = match signal_type {
         SignalType::BinSingleForwardArbHedge => {
             match BinSingleForwardArbHedgeCtx::from_bytes(signal.context.clone()) {
@@ -1506,11 +1490,10 @@ fn dispatch_signal_to_existing_strategy(
         SignalType::BinSingleForwardArbLadderCancel => {
             match BinSingleForwardArbLadderCancelCtx::from_bytes(signal.context.clone()) {
                 Ok(cancel_ctx) => {
-                    debug!(
-                        "decoded ladder cancel ctx: spot_symbol={} bidask_sr={:.6} threshold={:.6}",
-                        cancel_ctx.spot_symbol, cancel_ctx.bidask_sr, cancel_ctx.cancel_threshold
-                    );
-                    Some(cancel_ctx.spot_symbol.to_uppercase())
+                    let symbol = cancel_ctx.spot_symbol.to_uppercase();
+                    ladder_symbol = Some(symbol.clone());
+                    ladder_cancel_ctx = Some(cancel_ctx);
+                    Some(symbol)
                 }
                 Err(err) => {
                     warn!("failed to decode ladder cancel context: {err}");
@@ -1524,16 +1507,38 @@ fn dispatch_signal_to_existing_strategy(
     let strategy_ids: Vec<i32> = if let Some(strategy_id) = target_strategy_id {
         vec![strategy_id]
     } else if let Some(symbol) = maybe_symbol {
-        ctx.symbol_to_strategy
-            .get(&symbol)
-            .cloned()
-            .into_iter()
-            .collect()
+        ctx.strategy_mgr
+            .ids_for_symbol(&symbol)
+            .map(|set| set.iter().copied().collect())
+            .unwrap_or_default()
     } else {
         ctx.strategy_mgr.iter_ids().cloned().collect()
     };
 
-    if strategy_ids.is_empty() && !is_ladder_cancel {
+    if is_ladder_cancel {
+        let Some(cancel_ctx) = ladder_cancel_ctx else {
+            return;
+        };
+        let symbol = ladder_symbol.unwrap_or_else(|| cancel_ctx.spot_symbol.to_uppercase());
+
+        if strategy_ids.is_empty() {
+            debug!(
+                "ladder cancel signal ignored: symbol={} no active strategies",
+                symbol
+            );
+            return;
+        }
+
+        debug!(
+            "dispatch ladder cancel signal: symbol={} strategies={} bidask_sr={:.6} threshold={:.6} ctx_len={} generation_time={}",
+            symbol,
+            strategy_ids.len(),
+            cancel_ctx.bidask_sr,
+            cancel_ctx.cancel_threshold,
+            signal.context.len(),
+            signal.generation_time,
+        );
+    } else if strategy_ids.is_empty() {
         debug!("no active strategy matched for this signal");
     }
 
@@ -1608,7 +1613,6 @@ fn trim_payload(payload: &[u8]) -> Bytes {
 }
 
 // 删除了基于 JSON 的账户元数据提取逻辑，账户事件采用二进制帧头解析
-
 fn signal_node_name(channel: &str) -> String {
     format!(
         "{}{}",

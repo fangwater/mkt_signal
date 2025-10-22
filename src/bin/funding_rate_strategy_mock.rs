@@ -27,7 +27,8 @@ use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::mkt_msg::{self, AskBidSpreadMsg, FundingRateMsg, MktMsgType};
 use mkt_signal::pre_trade::order_manager::{OrderType, Side};
 use mkt_signal::signal::binance_forward_arb::{
-    BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbOpenCtx,
+    BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbLadderCancelCtx,
+    BinSingleForwardArbOpenCtx,
 };
 use mkt_signal::signal::resample::{compute_askbid_sr, compute_bidask_sr};
 use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
@@ -487,6 +488,7 @@ struct SymbolState {
     last_open_ts: Option<i64>,
     last_close_ts: Option<i64>,
     last_signal_ts: Option<i64>,
+    last_ladder_cancel_ts: Option<i64>,
     funding_rate: f64,
     predicted_rate: f64,
     loan_rate: f64,
@@ -513,6 +515,7 @@ impl SymbolState {
             last_open_ts: None,
             last_close_ts: None,
             last_signal_ts: None,
+            last_ladder_cancel_ts: None,
             funding_rate: 0.0,
             predicted_rate: 0.0,
             loan_rate: 0.0,
@@ -543,6 +546,11 @@ impl SymbolState {
     fn mark_signal(&mut self, now_us: i64) {
         self.last_signal_ts = Some(now_us);
     }
+
+    fn mark_ladder_cancel(&mut self, now_us: i64) {
+        self.last_signal_ts = Some(now_us);
+        self.last_ladder_cancel_ts = Some(now_us);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -563,6 +571,13 @@ struct ManualCloseSignal {
     ctx: Bytes,
     price: f64,
     offset: f64,
+}
+
+struct ManualCancelSignal {
+    ctx: Bytes,
+    bidask_sr: f64,
+    threshold: f64,
+    trigger_ts: i64,
 }
 
 use anyhow::Result as AnyResult;
@@ -1034,6 +1049,18 @@ impl MockController {
                 changed = true;
             }
         }
+        if let Some(v) = parse_u64("order_max_open_order_keep_s") {
+            if self.cfg.order.max_open_order_keep_s != v {
+                self.cfg.order.max_open_order_keep_s = v;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_u64("order_max_close_order_keep_s") {
+            if self.cfg.order.max_close_order_keep_s != v {
+                self.cfg.order.max_close_order_keep_s = v;
+                changed = true;
+            }
+        }
         if let Some(v) = parse_u64("signal_min_interval_ms") {
             if self.cfg.signal.min_interval_ms != v {
                 self.cfg.signal.min_interval_ms = v;
@@ -1227,6 +1254,14 @@ impl MockController {
                 let idx = parse_index(idx_str)?;
                 self.force_close(idx)?;
             }
+            "cancel" | "k" => {
+                let idx_str = parts
+                    .get(1)
+                    .copied()
+                    .ok_or_else(|| anyhow!("缺少索引参数"))?;
+                let idx = parse_index(idx_str)?;
+                self.force_cancel(idx)?;
+            }
             "reload" => {
                 self.reload_symbols()?;
             }
@@ -1253,7 +1288,9 @@ impl MockController {
     }
 
     fn print_help(&self) {
-        info!("命令: list | open <idx> | close <idx> | reload | refresh | help | quit");
+        info!(
+            "命令: list | open <idx> | close <idx> | cancel <idx> | reload | refresh | help | quit"
+        );
         info!("直接输入索引 (例如 `2`) 等同于 open <idx>，索引从 1 开始");
     }
 
@@ -1619,6 +1656,55 @@ impl MockController {
         })
     }
 
+    fn build_manual_cancel_signal(&self, state: &SymbolState) -> Option<ManualCancelSignal> {
+        if self.cfg.order.mode != OrderMode::Ladder {
+            warn!(
+                "{} 阶梯撤单构建失败: order_mode 非阶梯模式",
+                state.spot_symbol
+            );
+            return None;
+        }
+        let threshold = match self.cfg.order.ladder_cancel_threshold() {
+            Some(v) if v.is_finite() => v,
+            _ => {
+                warn!(
+                    "{} 阶梯撤单构建失败: 未配置有效的 order_ladder_cancel_bidask_threshold",
+                    state.spot_symbol
+                );
+                return None;
+            }
+        };
+        if !state.spot_quote.is_ready() || !state.futures_quote.is_ready() {
+            warn!("{} 阶梯撤单构建失败: 行情尚未就绪", state.spot_symbol);
+            return None;
+        }
+        let ratio = match state.calc_ratio() {
+            Some(r) if r.is_finite() => r,
+            _ => {
+                warn!(
+                    "{} 阶梯撤单构建失败: 无法计算有效的价差率",
+                    state.spot_symbol
+                );
+                return None;
+            }
+        };
+        let trigger_ts = get_timestamp_us();
+        let ctx = BinSingleForwardArbLadderCancelCtx {
+            spot_symbol: state.spot_symbol.clone(),
+            futures_symbol: state.futures_symbol.clone(),
+            bidask_sr: ratio,
+            cancel_threshold: threshold,
+            trigger_ts,
+        }
+        .to_bytes();
+        Some(ManualCancelSignal {
+            ctx,
+            bidask_sr: ratio,
+            threshold,
+            trigger_ts,
+        })
+    }
+
     fn force_open(&mut self, index: usize) -> Result<()> {
         let key = self.symbol_key_by_index(index)?;
         let (spot_symbol, signals) = {
@@ -1694,6 +1780,44 @@ impl MockController {
         Ok(())
     }
 
+    fn force_cancel(&mut self, index: usize) -> Result<()> {
+        if self.cfg.order.mode != OrderMode::Ladder {
+            anyhow::bail!("阶梯撤单模式仅在 order_mode=ladder 时可用");
+        }
+        let key = self.symbol_key_by_index(index)?;
+        let (spot_symbol, signal) = {
+            let state = self
+                .symbols
+                .get(&key)
+                .ok_or_else(|| anyhow!("未找到交易对 {key}"))?;
+            if !state.spot_quote.is_ready() || !state.futures_quote.is_ready() {
+                anyhow::bail!("{} 行情尚未就绪，无法撤单", state.spot_symbol);
+            }
+            let spot_symbol = state.spot_symbol.clone();
+            let signal = match self.build_manual_cancel_signal(state) {
+                Some(sig) => sig,
+                None => {
+                    anyhow::bail!("{} 未能构建阶梯撤单信号，请检查行情或阈值配置", spot_symbol);
+                }
+            };
+            (spot_symbol, signal)
+        };
+        self.publish_signal(
+            SignalType::BinSingleForwardArbLadderCancel,
+            signal.ctx.clone(),
+        )?;
+        info!(
+            "{} mock 阶梯撤单: bidask_sr={:.6} threshold={:.6}",
+            spot_symbol, signal.bidask_sr, signal.threshold
+        );
+        if let Some(state) = self.symbols.get_mut(&key) {
+            state.last_ratio = Some(signal.bidask_sr);
+            state.mark_ladder_cancel(signal.trigger_ts);
+        }
+        self.log_signal_snapshot_for(&key);
+        Ok(())
+    }
+
     fn publish_signal(&self, signal_type: SignalType, context: Bytes) -> Result<()> {
         // 预热未完成则忽略任何信号发布
         if !self.is_warmup_complete() {
@@ -1734,6 +1858,20 @@ impl MockController {
                         close_ctx.limit_price,
                         close_ctx.price_tick,
                         close_ctx.exp_time
+                    );
+                }
+            }
+            SignalType::BinSingleForwardArbLadderCancel => {
+                if let Ok(cancel_ctx) =
+                    BinSingleForwardArbLadderCancelCtx::from_bytes(payload.clone())
+                {
+                    info!(
+                        "mock publish ladder cancel signal: spot={} futures={} bidask_sr={:.6} threshold={:.6} trigger_ts={}",
+                        cancel_ctx.spot_symbol,
+                        cancel_ctx.futures_symbol,
+                        cancel_ctx.bidask_sr,
+                        cancel_ctx.cancel_threshold,
+                        cancel_ctx.trigger_ts
                     );
                 }
             }

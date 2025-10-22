@@ -968,6 +968,32 @@ impl BinSingleForwardArbStrategy {
             return Ok(());
         }
 
+        {
+            let remaining = (order.quantity - order.cumulative_filled_quantity).max(0.0);
+            let rows = vec![vec![
+                order.order_id.to_string(),
+                order.symbol.clone(),
+                order.side.as_str().to_string(),
+                Self::format_decimal(order.quantity),
+                Self::format_decimal(order.cumulative_filled_quantity),
+                Self::format_decimal(remaining),
+                Self::format_decimal(order.price),
+                order.status.as_str().to_string(),
+            ]];
+            let table = Self::render_three_line_table(
+                &[
+                    "OrderId", "Symbol", "Side", "Qty", "Filled", "Remain", "Price", "Status",
+                ],
+                &rows,
+            );
+            debug!(
+                "{}: strategy_id={} 阶梯撤单提交 margin 限价单\n{}",
+                Self::strategy_name(),
+                self.strategy_id,
+                table
+            );
+        }
+
         if let Err(err) = self.submit_margin_cancel(&order.symbol, order.order_id) {
             warn!(
                 "{}: strategy_id={} 阶梯撤单提交失败: {}",
@@ -3572,13 +3598,13 @@ fn format_decimal(value: f64) -> String {
         if s.ends_with('.') {
             s.pop();
         }
-    }
+    } 
     if s.is_empty() {
         "0".to_string()
     } else {
-        s
-    }
-}
+        s 
+    } 
+} 
 
 fn format_quantity(quantity: f64) -> String {
     format_decimal(quantity)
@@ -3644,6 +3670,10 @@ fn to_fraction(value: f64) -> Option<(i64, i64)> {
 impl Strategy for BinSingleForwardArbStrategy {
     fn get_id(&self) -> i32 {
         self.strategy_id
+    }
+
+    fn symbol(&self) -> Option<&str> {
+        Some(&self.symbol)
     }
 
     fn is_strategy_order(&self, order_id: i64) -> bool {
@@ -3879,11 +3909,11 @@ impl Strategy for BinSingleForwardArbStrategy {
                     .map(|order| {
                         (order.cumulative_filled_quantity - order.hedged_filled_quantity).max(0.0)
                     })
-                    .unwrap_or(0.0) 
-            }; 
-            if hedge_delta > 1e-8 { 
+                    .unwrap_or(0.0)
+            };
+            if hedge_delta > 1e-8 {
                 self.emit_hedge_signal(order_id, hedge_delta);
-            } 
+            }
 
             debug!(
                 "{}: strategy_id={} margin execution report status={} execution_type={}",
