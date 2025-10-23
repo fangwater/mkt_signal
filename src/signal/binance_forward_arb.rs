@@ -956,6 +956,16 @@ impl BinSingleForwardArbStrategy {
             return Ok(());
         };
 
+        if order.cancel_requested {
+            debug!(
+                "{}: strategy_id={} 阶梯撤单已提交，等待交易所确认 order_id={}",
+                Self::strategy_name(),
+                self.strategy_id,
+                order.order_id
+            );
+            return Ok(());
+        }
+
         if order.status.is_terminal() {
             debug!(
                 "{}: strategy_id={} 阶梯撤单触发但订单已终止 status={:?}",
@@ -1002,6 +1012,20 @@ impl BinSingleForwardArbStrategy {
                 err
             );
             return Err(err);
+        }
+
+        {
+            let mut manager = self.order_manager.borrow_mut();
+            if !manager.update(order.order_id, |o| {
+                o.cancel_requested = true;
+            }) {
+                warn!(
+                    "{}: strategy_id={} 阶梯撤单后更新订单状态失败 id={}",
+                    Self::strategy_name(),
+                    self.strategy_id,
+                    order.order_id
+                );
+            }
         }
 
         self.open_timeout_us = None;
@@ -3589,13 +3613,13 @@ fn format_decimal(value: f64) -> String {
         if s.ends_with('.') {
             s.pop();
         }
-    } 
+    }
     if s.is_empty() {
         "0".to_string()
     } else {
-        s 
-    } 
-} 
+        s
+    }
+}
 
 fn format_quantity(quantity: f64) -> String {
     format_decimal(quantity)
@@ -3774,39 +3798,28 @@ impl Strategy for BinSingleForwardArbStrategy {
                 TradeRequestType::BinanceCancelMarginOrder => {
                     let success = (200..300).contains(&outcome.status);
                     if success {
-                        let now = get_timestamp_us();
-                        let mut manager = self.order_manager.borrow_mut();
-                        let mut existed = false;
-                        if manager.update(outcome.client_order_id, |order| {
-                            order.update_status(OrderExecutionStatus::Cancelled);
-                            order.set_end_time(now);
-                        }) {
-                            existed = true;
-                            info!(
-                                "{}: strategy_id={} margin 撤单成功 client_order_id={} status={}",
-                                Self::strategy_name(),
-                                self.strategy_id,
-                                outcome.client_order_id,
-                                outcome.status
-                            );
-                        } else {
-                            debug!(
-                                "{}: strategy_id={} margin 撤单响应但未找到订单 id={}",
-                                Self::strategy_name(),
-                                self.strategy_id,
-                                outcome.client_order_id
-                            );
-                        }
-                        // 删除订单，释放挂单计数
-                        if existed {
-                            let _ = manager.remove(outcome.client_order_id);
+                        info!(
+                            "{}: strategy_id={} margin 撤单成功 client_order_id={} status={}",
+                            Self::strategy_name(),
+                            self.strategy_id,
+                            outcome.client_order_id,
+                            outcome.status
+                        );
+                    } else {
+                        {
+                            let mut manager = self.order_manager.borrow_mut();
+                            if !manager.update(outcome.client_order_id, |order| {
+                                order.cancel_requested = false;
+                            }) {
+                                debug!(
+                                    "{}: strategy_id={} margin 撤单失败且未找到订单 id={}",
+                                    Self::strategy_name(),
+                                    self.strategy_id,
+                                    outcome.client_order_id
+                                );
+                            }
                         }
 
-                        if self.margin_order_id == outcome.client_order_id {
-                            self.margin_order_id = 0;
-                            self.open_timeout_us = None;
-                        }
-                    } else {
                         warn!(
                             "{}: strategy_id={} margin 撤单失败 status={} body={}",
                             Self::strategy_name(),
@@ -4154,6 +4167,13 @@ impl Strategy for BinSingleForwardArbStrategy {
                         }
                         if order.status.is_terminal() {
                             self.open_timeout_us = None;
+                        } else if order.cancel_requested {
+                            debug!(
+                                "{}: strategy_id={} margin 开仓单撤单已在进行中 order_id={}",
+                                Self::strategy_name(),
+                                self.strategy_id,
+                                order.order_id
+                            );
                         } else if let (Some(timeout_us), submit_time) =
                             (self.open_timeout_us, order.submit_time)
                         {
@@ -4179,11 +4199,10 @@ impl Strategy for BinSingleForwardArbStrategy {
                                 } else {
                                     let mut manager = self.order_manager.borrow_mut();
                                     if !manager.update(order.order_id, |o| {
-                                        o.update_status(OrderExecutionStatus::Commit);
-                                        o.set_end_time(current_tp);
+                                        o.cancel_requested = true;
                                     }) {
                                         warn!(
-                                            "{}: strategy_id={} 撤单后更新状态失败 id={}",
+                                            "{}: strategy_id={} 撤单后更新订单状态失败 id={}",
                                             Self::strategy_name(),
                                             self.strategy_id,
                                             order.order_id
@@ -4240,6 +4259,13 @@ impl Strategy for BinSingleForwardArbStrategy {
                     }
                     if order.status.is_terminal() {
                         self.close_margin_timeout_us = None;
+                    } else if order.cancel_requested {
+                        debug!(
+                            "{}: strategy_id={} margin 平仓单撤单已在进行中 order_id={}",
+                            Self::strategy_name(),
+                            self.strategy_id,
+                            order.order_id
+                        );
                     } else if let (Some(timeout_us), submit_time) =
                         (self.close_margin_timeout_us, order.submit_time)
                     {
@@ -4263,8 +4289,7 @@ impl Strategy for BinSingleForwardArbStrategy {
                             } else {
                                 let mut manager = self.order_manager.borrow_mut();
                                 if !manager.update(order.order_id, |o| {
-                                    o.update_status(OrderExecutionStatus::Commit);
-                                    o.set_end_time(current_tp);
+                                    o.cancel_requested = true;
                                 }) {
                                     warn!(
                                         "{}: strategy_id={} 更新平仓订单状态失败 id={}",

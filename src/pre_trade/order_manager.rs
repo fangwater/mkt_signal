@@ -495,6 +495,8 @@ pub struct Order {
     pub status: OrderExecutionStatus,    // 订单执行状态
     #[serde(default)]
     pub pending_counted: bool, // 是否已计入 pending 限价单 count（用于去重防二次递减）
+    #[serde(default)]
+    pub cancel_requested: bool, // 是否已向交易所提交撤单请求
     // 时间戳记录
     pub submit_time: i64, // 订单提交时间(本地时间)
     // "O": 1499405658657,            // Order creation time 对应币安杠杆下单
@@ -538,6 +540,7 @@ impl Order {
             exchange_order_id: None,
             update_event_times: Vec::new(),
             pending_counted: order_type.is_limit(),
+            cancel_requested: false,
         }
     }
 

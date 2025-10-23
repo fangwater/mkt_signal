@@ -120,9 +120,9 @@ impl TryFrom<RawSpotBalance> for BinanceSpotBalance {
             cm_unrealized_pnl: parse_num(&raw.cm_unrealized_pnl, "cmUnrealizedPNL", &raw.asset)?,
             update_time: raw.update_time,
             negative_balance: parse_negative_flag(&raw.negative_balance, &raw.asset)?,
-        }) 
-    } 
-} 
+        })
+    }
+}
 
 impl BinancePmSpotAccountManager {
     pub fn new(
