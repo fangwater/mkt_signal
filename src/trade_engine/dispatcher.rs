@@ -1,24 +1,24 @@
 use crate::trade_engine::config::{ApiKey, LimitsCfg, RestCfg, TradeEngineCfg};
-use crate::trade_engine::order_event::OrderRequestEvent; 
-use anyhow::{anyhow, Result}; 
-use hmac::{Hmac, Mac}; 
-use log::{debug, warn}; 
-use reqwest::{header::HeaderMap, Client}; 
+use crate::trade_engine::order_event::OrderRequestEvent;
+use anyhow::{anyhow, Result};
+use hmac::{Hmac, Mac};
+use log::{debug, warn};
+use reqwest::{header::HeaderMap, Client};
 use sha2::Sha256;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 type HmacSha256 = Hmac<Sha256>;
 
-#[derive(Debug)] 
-struct IpClient { 
-    ip: IpAddr, 
-    client: Client, 
-    /// used weight for 1m window (if header missing we approximate) 
-    used_weight_1m: u32, 
-    cooldown_until: Option<Instant>, 
-    banned_until: Option<Instant>, 
-} 
+#[derive(Debug)]
+struct IpClient {
+    ip: IpAddr,
+    client: Client,
+    /// used weight for 1m window (if header missing we approximate)
+    used_weight_1m: u32,
+    cooldown_until: Option<Instant>,
+    banned_until: Option<Instant>,
+}
 
 impl IpClient {
     fn is_available(&self) -> bool {
@@ -31,11 +31,11 @@ impl IpClient {
         if let Some(t) = self.banned_until {
             if now < t {
                 return false;
-            } 
-        } 
-        true 
-    } 
-} 
+            }
+        }
+        true
+    }
+}
 
 #[derive(Debug)]
 struct AccountState {
@@ -278,15 +278,15 @@ impl Dispatcher {
         acc_idx: usize,
         headers: &HeaderMap,
     ) -> (Option<u32>, Option<u32>) {
-        // Headers are case-insensitive and stored lowercase in reqwest 
-        // Prefer the "-1m" variants when available 
-        let mut ip_used_generic: Option<u32> = None; 
-        let mut ip_used_1m: Option<u32> = None; 
-        let mut acc_used_generic: Option<u32> = None; 
-        let mut acc_used_1m: Option<u32> = None; 
+        // Headers are case-insensitive and stored lowercase in reqwest
+        // Prefer the "-1m" variants when available
+        let mut ip_used_generic: Option<u32> = None;
+        let mut ip_used_1m: Option<u32> = None;
+        let mut acc_used_generic: Option<u32> = None;
+        let mut acc_used_1m: Option<u32> = None;
 
-        for (k, v) in headers.iter() { 
-            let key = k.as_str(); 
+        for (k, v) in headers.iter() {
+            let key = k.as_str();
             if key.starts_with("x-mbx-used-weight") {
                 if let Ok(s) = v.to_str() {
                     debug!("resp header {}: {}", key, s);
@@ -321,7 +321,7 @@ impl Dispatcher {
         } else {
             self.ip_clients[ip_idx].used_weight_1m =
                 self.ip_clients[ip_idx].used_weight_1m.saturating_add(1);
-        } 
+        }
 
         if let Some(x) = acc_final {
             self.accounts[acc_idx].used_orders_1m = x;

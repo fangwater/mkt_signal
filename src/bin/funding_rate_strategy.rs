@@ -639,10 +639,10 @@ struct EvaluateDecision {
     price_close_ready: bool,
     price_open_bidask: bool,
     price_open_askbid: bool,
-    price_close_bidask: bool,
     price_close_askbid: bool,
     can_emit: bool,
     ratio: f64,
+    askbid_sr: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -1382,6 +1382,7 @@ impl StrategyEngine {
                 return;
             };
 
+            let prev_ma_signal = state.ma_signal;
             state.predicted_rate = predicted_now;
             let askbid_sr =
                 compute_askbid_sr(Some(state.spot_quote.ask), Some(state.futures_quote.bid));
@@ -1399,8 +1400,8 @@ impl StrategyEngine {
                 0
             };
             let ma_signal = match funding_ma {
-                Some(ma) if ma > close_upper => -2,
-                Some(ma) if ma < close_lower => 2,
+                Some(ma) if ma < close_lower => -2,
+                Some(ma) if ma > close_upper => 2,
                 _ => 0,
             };
             let final_signal = if ma_signal != 0 {
@@ -1426,15 +1427,15 @@ impl StrategyEngine {
                 askbid_sr.map_or(false, |v| v >= state.askbid_open_threshold)
             };
             let price_close_bidask = ratio >= state.close_threshold;
-            let price_close_askbid = if !state.askbid_close_threshold.is_finite()
-                || state.askbid_close_threshold.abs() <= f64::EPSILON
+            let price_close_askbid = if !state.askbid_open_threshold.is_finite()
+                || state.askbid_open_threshold.abs() <= f64::EPSILON
             {
-                true
+                false
             } else {
-                askbid_sr.map_or(false, |v| v <= state.askbid_close_threshold)
+                askbid_sr.map_or(false, |v| v >= state.askbid_open_threshold)
             };
             let price_open_ready = price_open_bidask && price_open_askbid;
-            let price_close_ready = price_close_bidask && price_close_askbid;
+            let price_close_ready = price_close_askbid;
 
             state.predicted_signal = predicted_signal;
             state.ma_signal = ma_signal;
@@ -1447,6 +1448,48 @@ impl StrategyEngine {
             state.price_close_ready = price_close_ready;
             state.last_ratio = Some(ratio);
 
+            if ma_signal == -2 {
+                if let Some(ma) = funding_ma {
+                    debug!(
+                        "{} funding MA 信号(-2)满足: ma={:.6} < close_lower={:.6} price_close_ready={} (askbid_ok={} askbid_sr={:.6} threshold={:.6}) ratio={:.6} prev_ma_signal={}",
+                        symbol,
+                        ma,
+                        close_lower,
+                        price_close_ready,
+                        price_close_askbid,
+                        askbid_sr.unwrap_or(f64::NAN),
+                        state.askbid_open_threshold,
+                        ratio,
+                        prev_ma_signal
+                    );
+                }
+            } else if ma_signal == 2 {
+                if let Some(ma) = funding_ma {
+                    debug!(
+                        "{} funding MA 信号(2)满足: ma={:.6} > close_upper={:.6} prev_ma_signal={}",
+                        symbol, ma, close_upper, prev_ma_signal
+                    );
+                }
+            }
+
+            if price_close_askbid && ma_signal != -2 {
+                if let Some(ma) = funding_ma {
+                    debug!(
+                        "{} askbid 满足但资金 MA 未触发: ma={:.6} close_lower={:.6}",
+                        symbol, ma, close_lower
+                    );
+                } else {
+                    debug!("{} askbid 满足但缺少资金 MA 数据用于触发 close", symbol);
+                }
+            } else if ma_signal == -2 && !price_close_askbid {
+                debug!(
+                    "{} 资金 MA 满足但 askbid 未达阈值: askbid_sr={:.6} threshold={:.6}",
+                    symbol,
+                    askbid_sr.unwrap_or(f64::NAN),
+                    state.askbid_open_threshold
+                );
+            }
+
             EvaluateDecision {
                 symbol_key: symbol.to_string(),
                 final_signal,
@@ -1454,10 +1497,10 @@ impl StrategyEngine {
                 price_close_ready,
                 price_open_bidask,
                 price_open_askbid,
-                price_close_bidask,
                 price_close_askbid,
                 can_emit: state.can_emit_signal(now_us, min_gap_us),
                 ratio,
+                askbid_sr,
             }
         };
 
@@ -1490,10 +1533,14 @@ impl StrategyEngine {
             -2 => {
                 if !decision.price_close_ready {
                     debug!(
-                        "{} funding信号(-2)忽略: 价差信号未满足 (bidask_ok={} askbid_ok={})",
+                        "{} funding信号(-2)忽略: askbid 未达阈值 (askbid_ok={} askbid_sr={:.6} threshold={:.6})",
                         decision.symbol_key,
-                        decision.price_close_bidask,
-                        decision.price_close_askbid
+                        decision.price_close_askbid,
+                        decision.askbid_sr.unwrap_or(f64::NAN),
+                        self.symbols
+                            .get(&decision.symbol_key)
+                            .map(|s| s.askbid_open_threshold)
+                            .unwrap_or_default()
                     );
                 } else if !decision.can_emit {
                     debug!(

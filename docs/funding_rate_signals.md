@@ -11,8 +11,8 @@
 - 资金费率信号判定：
   1. 若 `predict_funding_rate >= open_upper` → 资金信号 `-1`（期货做空 / 现货做多，需配合价差开仓条件）。
   2. 若 `predict_funding_rate <= open_lower` → 信号 `1`（反向，仅记录日志）。
-  3. 若 `current_fundingRate_ma > close_upper` → 资金信号 `-2`（触发平仓，需配合价差平仓条件）。
-  4. 若 `current_fundingRate_ma < close_lower` → 信号 `2`（反向，仅记录日志）。
+3. 若 `current_fundingRate_ma < close_lower` → 资金信号 `-2`（触发平仓，需配合价差平仓条件）。
+4. 若 `current_fundingRate_ma > close_upper` → 信号 `2`（反向，仅记录日志）。
   5. 预测驱动的开仓与 MA 驱动的平仓互不排斥：系统会分别检查对应的价差信号，只要其中一组资金+价差条件同时满足，就执行相应的开/平仓动作。
 
 ## 价差信号
@@ -23,10 +23,10 @@
 - 条件：
   - `price_open_bidask = bidask_sr <= open_threshold`
   - `price_open_askbid = askbid_sr >= askbid_open_threshold`（配置为 0/NaN 时视为自动满足）
-  - `price_close_bidask = bidask_sr >= close_threshold`
-  - `price_close_askbid = askbid_sr <= askbid_close_threshold`（配置为 0/NaN 时视为自动满足）
+  - `price_close_bidask = bidask_sr >= close_threshold`（仅用于辅助观察）
+  - `price_close_askbid = askbid_sr >= askbid_open_threshold`
+  - `price_close_ready = price_close_askbid`
   - `price_open_ready = price_open_bidask && price_open_askbid`
-  - `price_close_ready = price_close_bidask && price_close_askbid`
 
 ## 开仓 / 平仓逻辑
 
@@ -38,7 +38,7 @@
   - 满足时通过 `BinSingleForwardArbOpen` 发布开仓请求，并记录 `last_open_ts`、`position=Opened`
 - **平仓（释放现货多头）**
   - 资金信号为 `-2`
-  - `price_close_ready` 为 `true`
+  - `price_close_ready` 为 `true`（即 `askbid_sr >= askbid_open_threshold`）
   - 当前持仓 `Opened`
   - 信号节流满足
   - 满足时通过 `BinSingleForwardArbCloseMargin` 发布平仓请求，并记录 `last_close_ts`、`position=Flat`
