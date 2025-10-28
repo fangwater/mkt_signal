@@ -95,8 +95,7 @@ def main() -> int:
         "order_mode": "ladder",
         "order_open_range": "[0.0,0.00001,0.00003,0.00005]",
         "order_close_range": "[0.0,0.01,0.03,0.05,0.07,0.09]",
-        "order_ladder_cancel_bidask_threshold": "-0.0005",
-        "order_ladder_open_bidask_threshold": "-0.0008",
+        # 阶梯开/撤单阈值改为从 Redis HASH binance_arb_price_spread_threshold 中按 symbol 读取
         "order_amount_u": "50",
         "order_max_open_order_keep_s": "60",
         "order_max_close_order_keep_s": "1",

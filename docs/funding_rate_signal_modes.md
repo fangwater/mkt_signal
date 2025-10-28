@@ -7,8 +7,7 @@
 - `order_mode`：`normal`（普通报单）或 `ladder`（阶梯报单）。
 - `order_open_range`：数组，表示开仓价相对于现价（spot bid）的偏移比例。
 - `order_close_range`：数组，表示平仓价相对于现价（spot ask）的偏移比例。
-- `order_ladder_cancel_bidask_threshold`：阶梯模式下的全局 `bidask_sr` 撤单阈值。
-- `order_ladder_open_bidask_threshold`：阶梯模式下的全局 `bidask_sr` 开仓阈值，配置后开仓不再使用 `binance_arb_price_spread_threshold` 中的 `bidask_sr_open_threshold`。
+- 价差阈值统一从 Redis `binance_arb_price_spread_threshold` 中读取：正套使用 `forward_arb_open_tr` / `forward_arb_cancel_tr`，反套使用 `backward_arb_open_tr` / `backward_arb_cancel_tr`。
 
 ### 普通模式 (`normal`)
 
@@ -26,9 +25,9 @@
   - 同样按照索引 1 开始逐档发单，逻辑与开仓保持一致。
   - 所有档位共用 `order_amount_u`，下单数量会按最小下单量和数量步长自动向上取整。
 - 撤单：
-  - 若实时 `bidask_sr` 超过 `order_ladder_cancel_bidask_threshold`，策略会派发 `BinSingleForwardArbLadderCancel` 信号，交易引擎据此撤销尚未成交的阶梯挂单。
+  - 若实时 `bidask_sr` 超过 Redis 中该 symbol 的 `forward_arb_cancel_tr`，策略会派发 `BinSingleForwardArbLadderCancel` 信号，交易引擎据此撤销尚未成交的阶梯挂单。
 - 开仓阈值：
-  - 阶梯模式可选地通过 `order_ladder_open_bidask_threshold` 指定固定 `bidask_sr` 开仓阈值；如果缺省，将继续使用 Redis 中的 `bidask_sr_open_threshold`。
+  - 阶梯模式始终使用 `forward_arb_open_tr` 判断价差是否满足开仓条件。
 
 ## 价格与数量处理
 
@@ -51,5 +50,5 @@
 
 1. 更新 Redis 参数后，策略会在下一次热更新周期内自动加载，无需重启。
 2. 阶梯模式会一次性发出多条开/平仓信号，策略日志 `open_signals` / `close_signals` 计数会累加每档请求。
-3. 阶梯开仓/撤单阈值由 `order_ladder_*` 配置统一控制。
+3. 阶梯开仓/撤单阈值由 `binance_arb_price_spread_threshold` 中的 per-symbol 阈值控制。
 4. 建议使用 `scripts/print_binance_forward_arb_params.py` 校验参数格式。

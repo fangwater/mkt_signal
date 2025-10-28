@@ -106,10 +106,6 @@ struct OrderConfig {
     open_ranges: Vec<f64>,
     #[serde(default = "default_close_ranges")]
     close_ranges: Vec<f64>,
-    #[serde(default)]
-    ladder_cancel_bidask_threshold: Option<f64>,
-    #[serde(default)]
-    ladder_open_bidask_threshold: Option<f64>,
     #[serde(default = "default_order_amount")]
     amount_u: f64,
     #[serde(default = "default_max_open_keep")]
@@ -152,8 +148,6 @@ impl Default for OrderConfig {
             mode: OrderMode::default(),
             open_ranges: default_open_ranges(),
             close_ranges: default_close_ranges(),
-            ladder_cancel_bidask_threshold: None,
-            ladder_open_bidask_threshold: None,
             amount_u: default_order_amount(),
             max_open_order_keep_s: default_max_open_keep(),
             max_close_order_keep_s: default_max_close_keep(),
@@ -216,33 +210,6 @@ impl OrderConfig {
         } else {
             &[]
         }
-    }
-
-    fn ladder_cancel_threshold(&self) -> Option<f64> {
-        self.ladder_cancel_bidask_threshold
-            .filter(|v| v.is_finite())
-    }
-
-    fn set_ladder_cancel_threshold(&mut self, value: Option<f64>) -> bool {
-        let sanitized = value.filter(|v| v.is_finite());
-        if self.ladder_cancel_bidask_threshold != sanitized {
-            self.ladder_cancel_bidask_threshold = sanitized;
-            return true;
-        }
-        false
-    }
-
-    fn ladder_open_threshold(&self) -> Option<f64> {
-        self.ladder_open_bidask_threshold.filter(|v| v.is_finite())
-    }
-
-    fn set_ladder_open_threshold(&mut self, value: Option<f64>) -> bool {
-        let sanitized = value.filter(|v| v.is_finite());
-        if self.ladder_open_bidask_threshold != sanitized {
-            self.ladder_open_bidask_threshold = sanitized;
-            return true;
-        }
-        false
     }
 }
 
@@ -326,7 +293,7 @@ struct StrategyParams {
     /// 结算偏移（秒）：基于 UTC 准点（4h 周期）增加的偏移量
     #[serde(default = "default_settlement_offset_secs")]
     settlement_offset_secs: i64,
-}
+} 
 
 const fn default_interval() -> usize {
     6
@@ -451,20 +418,20 @@ struct SymbolThreshold {
     spot_symbol: String,
     futures_symbol: String,
     // BidAskSR 阈值（开/关）: (spot_bid - fut_ask) / spot_bid
-    open_threshold: f64,
-    close_threshold: f64,
-    // AskBidSR 阈值（开/关）: (spot_ask - fut_bid) / spot_ask
-    askbid_open_threshold: f64,
-    askbid_close_threshold: f64,
+    forward_open_threshold: f64,
+    forward_cancel_threshold: f64,
+    // AskBidSR 阈值（正向/反向开/撤）: (spot_ask - fut_bid) / spot_ask
+    backward_open_threshold: f64,
+    backward_cancel_threshold: f64,
 }
 
 /// 行情报价
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default)] 
 struct Quote {
     bid: f64,
     ask: f64,
     ts: i64,
-}
+} 
 
 impl Quote {
     fn update(&mut self, bid: f64, ask: f64, ts: i64) {
@@ -483,10 +450,10 @@ impl Quote {
 struct SymbolState {
     spot_symbol: String,
     futures_symbol: String,
-    open_threshold: f64,
-    close_threshold: f64,
-    askbid_open_threshold: f64,
-    askbid_close_threshold: f64,
+    forward_open_threshold: f64,
+    forward_cancel_threshold: f64,
+    backward_open_threshold: f64,
+    backward_cancel_threshold: f64,
     spot_quote: Quote,
     futures_quote: Quote,
     last_ratio: Option<f64>,
@@ -520,10 +487,10 @@ impl SymbolState {
         Self {
             spot_symbol: threshold.spot_symbol,
             futures_symbol: threshold.futures_symbol,
-            open_threshold: threshold.open_threshold,
-            close_threshold: threshold.close_threshold,
-            askbid_open_threshold: threshold.askbid_open_threshold,
-            askbid_close_threshold: threshold.askbid_close_threshold,
+            forward_open_threshold: threshold.forward_open_threshold,
+            forward_cancel_threshold: threshold.forward_cancel_threshold,
+            backward_open_threshold: threshold.backward_open_threshold,
+            backward_cancel_threshold: threshold.backward_cancel_threshold,
             spot_quote: Quote::default(),
             futures_quote: Quote::default(),
             last_ratio: None,
@@ -554,11 +521,11 @@ impl SymbolState {
     }
 
     fn update_threshold(&mut self, threshold: SymbolThreshold) {
-        self.open_threshold = threshold.open_threshold;
-        self.close_threshold = threshold.close_threshold;
+        self.forward_open_threshold = threshold.forward_open_threshold;
+        self.forward_cancel_threshold = threshold.forward_cancel_threshold;
         self.futures_symbol = threshold.futures_symbol;
-        self.askbid_open_threshold = threshold.askbid_open_threshold;
-        self.askbid_close_threshold = threshold.askbid_close_threshold;
+        self.backward_open_threshold = threshold.backward_open_threshold;
+        self.backward_cancel_threshold = threshold.backward_cancel_threshold;
         // reset batch markers when thresholds change
         self.open_batch_marker = None;
         self.close_batch_marker = None;
@@ -645,7 +612,7 @@ struct EvaluateDecision {
     askbid_sr: Option<f64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone)] 
 struct QtyStepInfo {
     spot_min: f64,
     futures_min: f64,
@@ -719,7 +686,7 @@ impl StrategyEngine {
         fut_syms.dedup();
         let client = self.http.clone();
         let limit = self.cfg.strategy.history_limit;
-        let mut tasks = Vec::new();
+        let mut tasks = Vec::new(); 
         for sym in fut_syms {
             let s = sym.clone();
             let c = client.clone();
@@ -834,6 +801,7 @@ impl StrategyEngine {
             .copied()
             .unwrap_or(0.0)
     }
+
     async fn new(cfg: StrategyConfig, publisher: SignalPublisher) -> Result<Self> {
         let resample_ms = cfg.strategy.resample_ms.max(3000);
         let mut engine = Self {
@@ -1083,7 +1051,7 @@ impl StrategyEngine {
         let map = client.hgetall_map(&key).await?;
         let mut result = Vec::new();
         for (sym, raw) in map {
-            // Expect payload like { symbol, update_tp, bidask_sr_open_threshold, bidask_sr_close_threshold, ... }
+            // 预期 payload 包含 forward/backward 阈值，例如 forward_arb_open_tr/forward_arb_cancel_tr
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
                 let spot_symbol = sym.to_uppercase();
                 let futures_symbol = v
@@ -1091,29 +1059,33 @@ impl StrategyEngine {
                     .and_then(|x| x.as_str())
                     .map(|s| s.to_uppercase())
                     .unwrap_or_else(|| spot_symbol.clone());
-                let open_threshold = v
-                    .get("bidask_sr_open_threshold")
+                let forward_open_threshold = v
+                    .get("forward_arb_open_tr")
                     .and_then(|x| x.as_f64())
+                    .or_else(|| v.get("bidask_sr_open_threshold").and_then(|x| x.as_f64()))
                     .unwrap_or(0.0);
-                let close_threshold = v
-                    .get("bidask_sr_close_threshold")
+                let forward_cancel_threshold = v
+                    .get("forward_arb_cancel_tr")
                     .and_then(|x| x.as_f64())
-                    .unwrap_or(open_threshold);
-                let askbid_open_threshold = v
-                    .get("askbid_sr_open_threshold")
+                    .or_else(|| v.get("bidask_sr_close_threshold").and_then(|x| x.as_f64()))
+                    .unwrap_or(forward_open_threshold);
+                let backward_open_threshold = v
+                    .get("backward_arb_open_tr")
                     .and_then(|x| x.as_f64())
-                    .unwrap_or(open_threshold);
-                let askbid_close_threshold = v
-                    .get("askbid_sr_close_threshold")
+                    .or_else(|| v.get("askbid_sr_open_threshold").and_then(|x| x.as_f64()))
+                    .unwrap_or(forward_open_threshold);
+                let backward_cancel_threshold = v
+                    .get("backward_arb_cancel_tr")
                     .and_then(|x| x.as_f64())
-                    .unwrap_or(close_threshold);
+                    .or_else(|| v.get("askbid_sr_close_threshold").and_then(|x| x.as_f64()))
+                    .unwrap_or(backward_open_threshold);
                 result.push(SymbolThreshold {
                     spot_symbol,
                     futures_symbol,
-                    open_threshold,
-                    close_threshold,
-                    askbid_open_threshold,
-                    askbid_close_threshold,
+                    forward_open_threshold,
+                    forward_cancel_threshold,
+                    backward_open_threshold,
+                    backward_cancel_threshold,
                 });
             }
         }
@@ -1194,10 +1166,10 @@ impl StrategyEngine {
                 format!("{:.6}", state.futures_quote.ask),
                 format!("{:.6}", bidask_sr),
                 format!("{:.6}", askbid_sr),
-                format!("{:.6}", state.open_threshold),
-                format!("{:.6}", state.close_threshold),
-                format!("{:.6}", state.askbid_open_threshold),
-                format!("{:.6}", state.askbid_close_threshold),
+                format!("{:.6}", state.forward_open_threshold),
+                format!("{:.6}", state.forward_cancel_threshold),
+                format!("{:.6}", state.backward_open_threshold),
+                format!("{:.6}", state.backward_cancel_threshold),
             ]);
         }
 
@@ -1410,29 +1382,26 @@ impl StrategyEngine {
                 predicted_signal
             };
 
-            let effective_open_threshold = if self.cfg.order.mode == OrderMode::Ladder {
-                self.cfg
-                    .order
-                    .ladder_open_threshold()
-                    .unwrap_or(state.open_threshold)
-            } else {
-                state.open_threshold
-            };
+            let effective_open_threshold = state.forward_open_threshold;
             let price_open_bidask = ratio <= effective_open_threshold;
-            let price_open_askbid = if !state.askbid_open_threshold.is_finite()
-                || state.askbid_open_threshold.abs() <= f64::EPSILON
+            let price_open_askbid = if !state.backward_open_threshold.is_finite()
+                || state.backward_open_threshold.abs() <= f64::EPSILON
             {
                 true
             } else {
-                askbid_sr.map_or(false, |v| v >= state.askbid_open_threshold)
+                askbid_sr.map_or(false, |v| v >= state.backward_open_threshold)
             };
-            let price_close_bidask = ratio >= state.close_threshold;
-            let price_close_askbid = if !state.askbid_open_threshold.is_finite()
-                || state.askbid_open_threshold.abs() <= f64::EPSILON
+            let price_close_bidask = if state.forward_cancel_threshold.is_finite() {
+                ratio >= state.forward_cancel_threshold
+            } else {
+                false
+            };
+            let price_close_askbid = if !state.backward_cancel_threshold.is_finite()
+                || state.backward_cancel_threshold.abs() <= f64::EPSILON
             {
                 false
             } else {
-                askbid_sr.map_or(false, |v| v >= state.askbid_open_threshold)
+                askbid_sr.map_or(false, |v| v >= state.backward_cancel_threshold)
             };
             let price_open_ready = price_open_bidask;
             let price_close_ready = price_close_askbid;
@@ -1458,7 +1427,7 @@ impl StrategyEngine {
                         price_close_ready,
                         price_close_askbid,
                         askbid_sr.unwrap_or(f64::NAN),
-                        state.askbid_open_threshold,
+                        state.backward_cancel_threshold,
                         ratio,
                         prev_ma_signal
                     );
@@ -1486,7 +1455,7 @@ impl StrategyEngine {
                     "{} 资金 MA 满足但 askbid 未达阈值: askbid_sr={:.6} threshold={:.6}",
                     symbol,
                     askbid_sr.unwrap_or(f64::NAN),
-                    state.askbid_open_threshold
+                    state.backward_cancel_threshold
                 );
             }
 
@@ -1539,7 +1508,7 @@ impl StrategyEngine {
                         decision.askbid_sr.unwrap_or(f64::NAN),
                         self.symbols
                             .get(&decision.symbol_key)
-                            .map(|s| s.askbid_open_threshold)
+                            .map(|s| s.backward_cancel_threshold)
                             .unwrap_or_default()
                     );
                 } else if !decision.can_emit {
@@ -1570,18 +1539,15 @@ impl StrategyEngine {
 
         if self.cfg.order.mode == OrderMode::Ladder {
             if let Some(state) = self.symbols.get(&decision.symbol_key) {
-                if let Some(cancel_th) = self.cfg.order.ladder_cancel_threshold() {
-                    if decision.ratio >= cancel_th
-                        && state.can_emit_ladder_cancel(now_us, min_gap_us)
+                let cancel_th = state.forward_cancel_threshold;
+                if cancel_th.is_finite()
+                    && decision.ratio >= cancel_th
+                    && state.can_emit_ladder_cancel(now_us, min_gap_us)
+                {
+                    if let Some(req) =
+                        self.build_ladder_cancel_request(state, decision.ratio, cancel_th, now_us)
                     {
-                        if let Some(req) = self.build_ladder_cancel_request(
-                            state,
-                            decision.ratio,
-                            cancel_th,
-                            now_us,
-                        ) {
-                            requests.push(req);
-                        }
+                        requests.push(req);
                     }
                 }
             }
@@ -1816,17 +1782,10 @@ impl StrategyEngine {
                 predicted_rate_lower: opt_finite(open_lower),
                 predicted_rate_upper: opt_finite(open_upper),
                 loan_rate_8h,
-                bidask_lower: opt_finite(if self.cfg.order.mode == OrderMode::Ladder {
-                    self.cfg
-                        .order
-                        .ladder_open_threshold()
-                        .unwrap_or(state.open_threshold)
-                } else {
-                    state.open_threshold
-                }),
-                bidask_upper: opt_finite(state.close_threshold),
-                askbid_lower: opt_active_threshold(state.askbid_open_threshold),
-                askbid_upper: opt_active_threshold(state.askbid_close_threshold),
+                bidask_lower: opt_finite(state.forward_open_threshold),
+                bidask_upper: opt_finite(state.forward_cancel_threshold),
+                askbid_lower: opt_active_threshold(state.backward_open_threshold),
+                askbid_upper: opt_active_threshold(state.backward_cancel_threshold),
             };
             // 逐条发送到 msg 通道
             if let Ok(bytes) = entry.to_bytes() {
@@ -2538,38 +2497,6 @@ impl StrategyEngine {
                 changed = true;
             }
         }
-        match map.get("order_ladder_cancel_bidask_threshold") {
-            Some(raw) => {
-                if let Ok(v) = raw.parse::<f64>() {
-                    if self.cfg.order.set_ladder_cancel_threshold(Some(v)) {
-                        changed = true;
-                    }
-                }
-            }
-            None => {
-                if self.cfg.order.ladder_cancel_threshold().is_some() {
-                    if self.cfg.order.set_ladder_cancel_threshold(None) {
-                        changed = true;
-                    }
-                }
-            }
-        }
-        match map.get("order_ladder_open_bidask_threshold") {
-            Some(raw) => {
-                if let Ok(v) = raw.parse::<f64>() {
-                    if self.cfg.order.set_ladder_open_threshold(Some(v)) {
-                        changed = true;
-                    }
-                }
-            }
-            None => {
-                if self.cfg.order.ladder_open_threshold().is_some() {
-                    if self.cfg.order.set_ladder_open_threshold(None) {
-                        changed = true;
-                    }
-                }
-            }
-        }
         if let Some(v) = parse_f64("order_amount_u") {
             if !approx_equal(self.cfg.order.amount_u, v) {
                 self.cfg.order.amount_u = v;
@@ -3051,7 +2978,6 @@ fn setup_signal_handlers(token: &CancellationToken) -> Result<()> {
 }
 
 // removed: format_timestamp (no longer used in snapshot output)
-
 fn lcm_nonzero(a: f64, b: f64) -> f64 {
     let a_pos = if a > 0.0 { a } else { 0.0 };
     let b_pos = if b > 0.0 { b } else { 0.0 };

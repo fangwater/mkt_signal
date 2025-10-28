@@ -19,12 +19,12 @@
 
 - `bidask_sr = (spot_bid - fut_ask) / spot_bid`
 - `askbid_sr = (spot_ask - fut_bid) / spot_ask`
-- Redis 提供的价差阈值 (`open_threshold` / `close_threshold` / `askbid_open_threshold` / `askbid_close_threshold`) 会在刷新时加载。
+- Redis 提供的价差阈值在 `binance_arb_price_spread_threshold` HASH 中维护：正套使用 `forward_arb_open_tr` / `forward_arb_cancel_tr`，反套使用 `backward_arb_open_tr` / `backward_arb_cancel_tr`。
 - 条件：
-  - `price_open_bidask = bidask_sr <= open_threshold`
-  - `price_open_askbid = askbid_sr >= askbid_open_threshold`（配置为 0/NaN 时视为自动满足，现仅用于监控）
-  - `price_close_bidask = bidask_sr >= close_threshold`（仅用于辅助观察）
-  - `price_close_askbid = askbid_sr >= askbid_open_threshold`
+  - `price_open_bidask = bidask_sr <= forward_arb_open_tr`
+  - `price_open_askbid = askbid_sr >= backward_arb_open_tr`（配置为 0/NaN 时视为自动满足，现仅用于监控）
+  - `price_close_bidask = bidask_sr >= forward_arb_cancel_tr`（仅用于辅助观察）
+  - `price_close_askbid = askbid_sr >= backward_arb_cancel_tr`
   - `price_close_ready = price_close_askbid`
   - `price_open_ready = price_open_bidask`
 
@@ -38,13 +38,13 @@
   - 满足时通过 `BinSingleForwardArbOpen` 发布开仓请求，并记录 `last_open_ts`、`position=Opened`
 - **平仓（释放现货多头）**
   - 资金信号为 `-2`
-  - `price_close_ready` 为 `true`（即 `askbid_sr >= askbid_open_threshold`）
+  - `price_close_ready` 为 `true`（即 `askbid_sr >= backward_arb_cancel_tr`）
   - 当前持仓 `Opened`
   - 信号节流满足
   - 满足时通过 `BinSingleForwardArbCloseMargin` 发布平仓请求，并记录 `last_close_ts`、`position=Flat`
 - 报单模式与多档价差配置的细节整理在《funding_rate_signal_modes.md》。
-- 阶梯模式专用：当 `order_mode=ladder` 且实时 `bidask_sr` 高于 `order_ladder_cancel_bidask_threshold` 时，会通过 `BinSingleForwardArbLadderCancel` 下发撤单信号，策略收到后会主动撤销未成交的阶梯挂单。
-- 阶梯模式可以指定 `order_ladder_open_bidask_threshold`，若配置则以固定阈值决定价差是否满足开仓（而不再使用 Redis 阈值）。
+- 阶梯模式专用：当 `order_mode=ladder` 且实时 `bidask_sr` 高于该 symbol 的 `forward_arb_cancel_tr` 时，会通过 `BinSingleForwardArbLadderCancel` 下发撤单信号，策略收到后会主动撤销未成交的阶梯挂单。
+- 阶梯模式开仓阈值始终取自 `forward_arb_open_tr`，不再支持全局覆盖。
 - 资金信号 `1` / `2` 仅输出调试日志，不会触发委托。
 
 最大杠杆倍数 设置为2
@@ -62,7 +62,5 @@
 - Redis (`binance_forward_arb_params`) 中的以下键会覆盖默认参数：
   - `interval` / `predict_num` / `refresh_secs` / `fetch_secs` 等运行参数；
   - `fr_4h_*`、`fr_8h_*` 用于更新资金费率阈值；
-  - `order_ladder_cancel_bidask_threshold`：阶梯模式全局撤单阈值；
-  - `order_ladder_open_bidask_threshold`：阶梯模式全局开仓阈值；
   - 价差阈值通过 `binance_arb_price_spread_threshold` HASH 下的每个 symbol 维护。
 - 参数变更或结算点触发时，会重算资金阈值并更新调试输出。

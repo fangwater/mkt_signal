@@ -83,8 +83,6 @@ PARAM_COMMENTS: Dict[str, str] = {
     "order_mode": "报单模式(normal|ladder)",
     "order_open_range": "开仓价偏移列表",
     "order_close_range": "平仓价偏移列表",
-    "order_ladder_cancel_bidask_threshold": "阶梯模式固定撤单阈值",
-    "order_ladder_open_bidask_threshold": "阶梯模式固定开仓阈值",
     "max_pending_limit_orders": "每个symbol限价挂单上限",
     "order_amount_u": "下单基础金额(U)",
     "order_max_open_order_keep_s": "开单保留上限(秒)",
