@@ -38,15 +38,16 @@
 - **来源**：启动时和运行中均从 Redis HASH（默认 `rolling_metrics_params`）加载配置。  
 - **主要字段**：
   - `MAX_LENGTH`：每个符号环形缓冲的容量上限；
-  - `ROLLING_WINDOW`：计算分位点时使用的样本数量；
-  - `MIN_PERIODS`：生效计算所需的最小样本量；
-  - `bidask_lower_quantile` / `bidask_upper_quantile`；
-  - `askbid_lower_quantile` / `askbid_upper_quantile`；
   - `refresh_sec`：计算周期；
   - `reload_param_sec`：配置重新拉取间隔；
-  - `output_hash_key`：结果 HASH 名称（可选）。
+  - `output_hash_key`：结果 HASH 名称（可选）；
+  - `factors`：JSON 对象，键为因子名（如 `bidask`、`askbid` 等），每个因子可独立配置：
+    - `resample_interval_ms`：采样周期；
+    - `rolling_window`：计算分位点时使用的样本数量；
+    - `min_periods`：判定分位有效的最小样本量；
+    - `quantiles`：需要输出的分位数列表（0~1 之间，可为空表示只输出实时值）。
 - **热更新**：后台任务按 `reload_param_sec` 周期读取配置，更新滑窗容量并记录日志，不需要重启服务。配置变化会以 `debug` 日志输出一次即可。
-- 可使用 `mkt_signal/scripts/print_rolling_metrics_params.py` 查看 Redis 中的当前配置值（三线表格式）。
+- 可使用 `mkt_signal/scripts/print_rolling_metrics_params.py` 查看 Redis 中的当前配置值（JSON 格式）。
 
 ## 4. Redis 输出示例
 

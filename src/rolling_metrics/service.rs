@@ -173,6 +173,7 @@ pub fn spawn_compute_thread(
                 .map(|entry| (entry.key().clone(), entry.value().clone()))
                 .collect::<Vec<_>>();
             let total = snapshot.len();
+            let mut all_ready_count = 0usize;
             let mut processed = 0usize;
             let mut skipped = 0usize;
             let mut payloads: Vec<(String, String)> = Vec::with_capacity(total);
@@ -180,6 +181,11 @@ pub fn spawn_compute_thread(
 
             for (symbol_pair, series) in snapshot {
                 current_keys.insert(symbol_pair.clone());
+                let (ready_count, expected_total) = factor_ready_counts(series.as_ref());
+                if expected_total > 0 && ready_count == expected_total {
+                    all_ready_count += 1;
+                }
+
                 let entry = build_entry(
                     &symbol_pair,
                     &cfg_snapshot,
@@ -213,6 +219,14 @@ pub fn spawn_compute_thread(
             info!(
                 "{LOG_PREFIX}: computed {} symbols (processed={}, skipped={}) in {:?}",
                 total, processed, skipped, duration
+            );
+
+            let coverage_rows = build_factor_coverage_rows(total, all_ready_count);
+            let coverage_table =
+                build_three_line_table_str(["metric", "ready/total", "percent"], &coverage_rows);
+            info!(
+                "{LOG_PREFIX}: factor coverage (5 factors)\n{}",
+                coverage_table
             );
 
             if sender
@@ -389,6 +403,101 @@ fn compute_factor_quantiles(
             .collect();
         (count, points, false)
     }
+}
+
+fn factor_ready_counts(series: &SymbolSeries) -> (usize, usize) {
+    let mut ready = 0usize;
+    let mut total = 0usize;
+
+    total += 1;
+    if series.bidask.last().and_then(to_option_f64).is_some() {
+        ready += 1;
+    }
+
+    total += 1;
+    if series.askbid.last().and_then(to_option_f64).is_some() {
+        ready += 1;
+    }
+
+    total += 1;
+    if series.mid_price_spot().is_some() {
+        ready += 1;
+    }
+
+    total += 1;
+    if series.mid_price_swap().is_some() {
+        ready += 1;
+    }
+
+    total += 1;
+    if series.spread_rate().is_some() {
+        ready += 1;
+    }
+
+    (ready, total)
+}
+
+fn build_factor_coverage_rows(total: usize, ready: usize) -> Vec<(String, String, String)> {
+    let ready_ratio = if total > 0 {
+        (ready as f64 / total as f64) * 100.0
+    } else {
+        0.0
+    };
+    let missing = total.saturating_sub(ready);
+    let missing_ratio = if total > 0 {
+        (missing as f64 / total as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    vec![
+        (
+            "all_ready".to_string(),
+            format!("{}/{}", ready, total),
+            format!("{ready_ratio:.2}%"),
+        ),
+        (
+            "not_ready".to_string(),
+            format!("{}/{}", missing, total),
+            format!("{missing_ratio:.2}%"),
+        ),
+    ]
+}
+
+fn build_three_line_table_str(headers: [&str; 3], rows: &[(String, String, String)]) -> String {
+    let mut widths = headers.iter().map(|h| h.len()).collect::<Vec<_>>();
+
+    for row in rows {
+        widths[0] = widths[0].max(row.0.len());
+        widths[1] = widths[1].max(row.1.len());
+        widths[2] = widths[2].max(row.2.len());
+    }
+
+    let format_row = |values: [&str; 3]| -> String {
+        let mut parts = Vec::with_capacity(3);
+        for (idx, value) in values.iter().enumerate() {
+            parts.push(format!("{:<width$}", value, width = widths[idx]));
+        }
+        parts.join("  ")
+    };
+
+    let header_line = format_row(headers);
+    let top_rule = "=".repeat(header_line.len());
+    let mid_rule = "-".repeat(header_line.len());
+    let bot_rule = "=".repeat(header_line.len());
+
+    let mut lines = Vec::with_capacity(rows.len() + 4);
+    lines.push(top_rule);
+    lines.push(header_line);
+    lines.push(mid_rule);
+
+    for row in rows {
+        let formatted = format_row([row.0.as_str(), row.1.as_str(), row.2.as_str()]);
+        lines.push(formatted);
+    }
+
+    lines.push(bot_rule);
+    lines.join("\n")
 }
 
 fn to_option_f64(value: f32) -> Option<f64> {

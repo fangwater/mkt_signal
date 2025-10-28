@@ -3,16 +3,24 @@
 这个进程需要和funding rate signal的一部分功能类似，目前，之需要订阅币安的ask bid期货现货，计算两个sr值.
 但我需加上前缀，即谁和谁 为之后的跨所做准备。
 
-我需要在redis中，增加一个用于配置的选项
-MAX_LENGth = 150000
-ROLLING_WINDOW = 100000 
-MIN_PERIODS = 90000 
-'bidask_lower_quantile': 0.05,  //阈值
-'bidask_upper_quantile': 0.70, 
-'askbid_upper_quantile': 0.95, 
-'askbid_lower_quantile': 0.30, 
+我需要在 redis 中增加可配置的选项：
+MAX_LENGTH = 150000
 refresh_sec = 60 //1min重新计算一次
-reload_param_sec = 3 //3s重新读取一个参数
+reload_param_sec = 3 //3s重新读取一次参数
+factors = {
+  "bidask": {
+    "resample_interval_ms": 1000,
+    "rolling_window": 100000,
+    "min_periods": 90000,
+    "quantiles": [0.05, 0.70]
+  },
+  "askbid": {
+    "resample_interval_ms": 1000,
+    "rolling_window": 100000,
+    "min_periods": 90000,
+    "quantiles": [0.30, 0.95]
+  }
+}
 
 然后有一个类似sync_binance_forward_arb_params.py的脚本，可以修改参数redis中的参数
 
@@ -91,6 +99,5 @@ main.rs: 组装 Tokio 读线程 + 独立计算线程。
 最近出现问题的原因是这2个
 1、两个网络还是归属一个服务商，出问题以后还是都出问题。
 2、专线断开的时候，kafka无法同步
-
 
 

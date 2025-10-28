@@ -196,14 +196,6 @@ impl MultiChannelSubscriber {
                     loop {
                         match subscriber.receive_msg() {
                             Ok(Some(msg)) => {
-                                let head_len = msg.len().min(8);
-                                let head = &msg[..head_len];
-                                debug!(
-                                    "Iceoryx recv channel={} len={} head={:?}",
-                                    key,
-                                    msg.len(),
-                                    head
-                                );
                                 messages.push(msg);
                                 self.stats.messages_received += 1;
                                 *self
@@ -249,14 +241,6 @@ impl MultiChannelSubscriber {
             for _ in 0..max_msgs {
                 match subscriber.receive_msg() {
                     Ok(Some(msg)) => {
-                        let head_len = msg.len().min(8);
-                        let head = &msg[..head_len];
-                        debug!(
-                            "Iceoryx recv channel={} len={} head={:?}",
-                            key,
-                            msg.len(),
-                            head
-                        );
                         messages.push(msg);
 
                         // 更新统计
