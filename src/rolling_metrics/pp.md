@@ -59,7 +59,7 @@ Series.rolling() 不会因为窗口或 min_periods 而减少输出长度，它�
 对每个 symbol：
 若 ring 中数据量 < MIN_PERIODS，则阈值全部为nan
 否则从 ring 快照+拷贝最近 ROLLING_WINDOW 条到本地 Vec<f32>（scratch），在其上计算分位。
-顺序计算完所有 symbol 后，一次性写入 Redis 的一个key，格式参考binance_arb_price_spread_threshold.py。
+顺序计算完所有 symbol 后，一次性写入 Redis 的一个key，格式参考 `scripts/sync_binance_arb_price_spread_threshold.py`。
 
 打印本轮计算总耗时、处理的 symbol 数、被跳过数量等指标。
 
@@ -81,7 +81,7 @@ MAX_LENGTH（环形缓冲容量）、MIN_PERIODS、ROLLING_WINDOW、QUANTILES（
 都可以在运行的时候更新，MAX_LENGTH更新会触发扩容，此时可以接受丢数据
 
 Redis 写入
-参考binance_arb_price_spread_threshold.py的写入格式
+参考 `scripts/sync_binance_arb_price_spread_threshold.py` 的写入格式
 
 指标与日志
 按需增加日志
@@ -99,5 +99,4 @@ main.rs: 组装 Tokio 读线程 + 独立计算线程。
 最近出现问题的原因是这2个
 1、两个网络还是归属一个服务商，出问题以后还是都出问题。
 2、专线断开的时候，kafka无法同步
-
 

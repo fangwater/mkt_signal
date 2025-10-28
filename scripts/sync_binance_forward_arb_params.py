@@ -83,7 +83,7 @@ def main() -> int:
         "fr_8h_close_lower_threshold": "-0.001",
         "fr_8h_close_upper_threshold": "0.001", 
         # Funding strategy reload/signal params 
-        "signal_min_interval_ms": "5000",  ############ 
+        "signal_min_interval_ms": "2000",  ############ 
         "reload_interval_secs": "60",  
         # Pre-trade 限制
         "pre_trade_max_pos_u": "50000",
@@ -93,7 +93,7 @@ def main() -> int:
         "pre_trade_refresh_secs": "30",
         # 下单参数
         "order_mode": "ladder",
-        "order_open_range": "[0.0,0.00001,0.0003,0.00005,0.00007,0.00009]",
+        "order_open_range": "[0.0,0.00001,0.00003,0.00005]",
         "order_close_range": "[0.0,0.01,0.03,0.05,0.07,0.09]",
         "order_ladder_cancel_bidask_threshold": "-0.0005",
         "order_ladder_open_bidask_threshold": "-0.0008",

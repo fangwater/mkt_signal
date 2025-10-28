@@ -100,7 +100,8 @@ factors             因子配置（JSON 对象）
 | `scripts/sync_rolling_metrics_params.py` | 同步配置到 Redis | 现要求 `factors` 对象；会校验间隔/窗口/分位合法性；支持 `--dry-run` |
 | `scripts/print_rolling_metrics_params.py` | 打印配置三线表 | 第一张表显示通用参数，第二张按照因子输出采样与分位 |
 | `scripts/print_rolling_metrics_thresholds.py` | 打印阈值三线表 | 针对 bidask、askbid、midprice_spot、midprice_swap、spread 各生成一张表 |
-| `scripts/binance_arb_price_spread_threshold.py` | Binance 套利阈值巡检 | 输出基础指标 + 因子分位列（列名形如 `binance_midprice_spot_5`） |
+| `scripts/sync_binance_arb_price_spread_threshold.py` | 同步 Binance 套利阈值 | 从 rolling_metrics 分位提取并写入 `binance_arb_price_spread_threshold`，支持自定义映射与 dry-run |
+| `scripts/print_binance_arb_price_spread_threshold.py` | 打印 Binance 阈值三线表 | 读取 `binance_arb_price_spread_threshold` HASH，展示最终写入的开/平仓阈值 |
 
 ## 6. 迁移建议
 1. **更新 Redis 配置**：使用新版 `sync_rolling_metrics_params.py` 写入包含 `factors` 的配置。

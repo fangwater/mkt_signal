@@ -2,12 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-Import binance_arb_price_spread_cancel_threshold into Redis (HASH) using rolling metrics thresholds.
+Import `binance_arb_price_spread_cancel_threshold` into Redis (HASH) using rolling metrics quantiles.
 
 Behavior
   - 读取 Redis HASH `rolling_metrics_thresholds`（可通过 --rolling-key 覆盖）。
-  - 复用 `binance_arb_price_spread_threshold.py` 的 symbol 白名单与数据解析逻辑。
-  - 对每个符号，仅提取 `bidask_sr_open_threshold`，并重命名为 `bidask_sr_cancel`。
+  - 使用 `bidask` 因子的指定分位点（默认 5%）作为撤单阈值。
   - 写入 Redis HASH（默认 key: `binance_arb_price_spread_cancel_threshold`）：
         field = symbol，大写
         value = 紧凑 JSON: { "symbol", "update_tp", "bidask_sr_cancel" }
@@ -16,6 +15,7 @@ Behavior
 用法示例：
     python scripts/binance_arb_price_spread_cancel_threshold.py
     python scripts/binance_arb_price_spread_cancel_threshold.py --dry-run
+    python scripts/binance_arb_price_spread_cancel_threshold.py --bidask-quantile 10
     python scripts/binance_arb_price_spread_cancel_threshold.py --rolling-key rolling_metrics_thresholds_backup
 """
 
@@ -27,11 +27,12 @@ import os
 import sys
 from typing import Dict, List, Set
 
-from binance_arb_price_spread_threshold import (  # type: ignore
+from binance_threshold_utils import (
     SYMBOL_ALLOWLIST,
     collect_rows_from_rolling,
     determine_stale_symbols,
     print_summary,
+    quantile_value,
     try_import_redis,
 )
 
@@ -55,6 +56,11 @@ def parse_args() -> argparse.Namespace:
         default="binance_arb_price_spread_cancel_threshold",
         help="Redis HASH key to write cancel thresholds into",
     )
+    p.add_argument(
+        "--bidask-quantile",
+        default="5",
+        help="bidask 因子使用的分位数，支持百分比（5 表示 5%%）或小数（0.05），也可传 label",
+    )
     p.add_argument("--dry-run", action="store_true", help="Only display summary, do not write to Redis")
     p.add_argument(
         "--no-clean",
@@ -64,10 +70,18 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def build_cancel_rows(rows: Dict[str, Dict]) -> Dict[str, Dict]:
+def parse_quantile(value: str) -> object:
+    value = value.strip()
+    try:
+        return float(value)
+    except ValueError:
+        return value.lower()
+
+
+def build_cancel_rows(rows: Dict[str, Dict], quantile_target: object) -> Dict[str, Dict]:
     cancel_rows: Dict[str, Dict] = {}
     for symbol, payload in rows.items():
-        cancel_val = payload.get("bidask_sr_open_threshold")
+        cancel_val = quantile_value(payload["quantiles"], "bidask", quantile_target)
         if cancel_val is None:
             continue
         cancel_rows[symbol] = {
@@ -111,7 +125,12 @@ def main() -> int:
     )
     print_summary(success, missing, invalid)
 
-    cancel_rows = build_cancel_rows(full_rows)
+    quantile_target = parse_quantile(args.bidask_quantile)
+    cancel_rows = build_cancel_rows(full_rows, quantile_target)
+    missing_symbols = sorted(set(full_rows.keys()) - set(cancel_rows.keys()))
+    if missing_symbols:
+        print("以下 symbol 缺少对应分位值，已跳过: " + ", ".join(missing_symbols))
+
     new_symbols: Set[str] = set(cancel_rows.keys())
     stale_symbols = (
         determine_stale_symbols(rds, args.write_key, new_symbols) if not args.no_clean else []
