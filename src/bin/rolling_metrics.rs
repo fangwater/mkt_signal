@@ -27,14 +27,22 @@ use mkt_signal::common::mkt_msg::AskBidSpreadMsg;
 use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::rolling_metrics::config::{
-    load_config_from_redis, RollingConfig, DEFAULT_CONFIG_HASH_KEY, DEFAULT_OUTPUT_HASH_KEY,
+    load_config_from_redis, FactorConfig, RollingConfig, DEFAULT_CONFIG_HASH_KEY,
+    DEFAULT_OUTPUT_HASH_KEY, FACTOR_ASKBID, FACTOR_BIDASK, FACTOR_MID_SPOT, FACTOR_MID_SWAP,
+    FACTOR_SPREAD,
 };
+use mkt_signal::rolling_metrics::ring::RingBuffer;
 use mkt_signal::rolling_metrics::service::{
     ensure_series_capacity, new_series_map, spawn_compute_thread, ComputeResult, SeriesMap,
     SymbolSeries,
 };
+
+const LOG_PREFIX: &str = "binance-rolling-metrics";
 #[derive(Parser, Debug)]
-#[command(name = "rolling_metrics", about = "Binance 价差滑窗分位计算服务")]
+#[command(
+    name = "binance-rolling-metrics",
+    about = "Binance 价差滑窗分位计算服务"
+)]
 struct Args {
     #[arg(long)]
     redis_url: Option<String>,
@@ -89,7 +97,7 @@ impl QuoteState {
 struct SymbolQuotes {
     spot: QuoteState,
     swap: QuoteState,
-    resample: ResampleState,
+    factor_states: HashMap<String, FactorResampleState>,
 }
 
 impl Default for SymbolQuotes {
@@ -97,47 +105,36 @@ impl Default for SymbolQuotes {
         Self {
             spot: QuoteState::default(),
             swap: QuoteState::default(),
-            resample: ResampleState::default(),
+            factor_states: HashMap::new(),
         }
     }
 }
 
 #[derive(Debug, Clone)]
-struct ResampleState {
+struct FactorResampleState {
     interval_ms: u64,
     current_bucket_start: Option<i64>,
-    bidask_samples: Vec<f32>,
-    askbid_samples: Vec<f32>,
-    last_avg_bidask: Option<f32>,
-    last_avg_askbid: Option<f32>,
+    samples: Vec<f32>,
+    last_value: Option<f32>,
     last_emitted_bucket: Option<i64>,
 }
 
-impl Default for ResampleState {
+impl Default for FactorResampleState {
     fn default() -> Self {
         Self {
             interval_ms: 0,
             current_bucket_start: None,
-            bidask_samples: Vec::with_capacity(8),
-            askbid_samples: Vec::with_capacity(8),
-            last_avg_bidask: None,
-            last_avg_askbid: None,
+            samples: Vec::with_capacity(8),
+            last_value: None,
             last_emitted_bucket: None,
         }
     }
 }
 
-impl ResampleState {
-    fn record(
-        &mut self,
-        interval_ms: u64,
-        ts_ms: i64,
-        bidask_sr: f32,
-        askbid_sr: f32,
-        series: &SymbolSeries,
-    ) {
+impl FactorResampleState {
+    fn record(&mut self, interval_ms: u64, ts_ms: i64, value: f32, ring: &RingBuffer) {
         let interval_ms = interval_ms.max(1);
-        self.ensure_interval(interval_ms, series);
+        self.ensure_interval(interval_ms, ring);
 
         let interval_i64 = interval_ms.min(i64::MAX as u64) as i64;
         let bucket_start = align_timestamp(ts_ms, interval_i64);
@@ -148,10 +145,10 @@ impl ResampleState {
                 return;
             }
             if bucket_start > current_start {
-                self.flush_current(series, current_start);
+                self.flush_current(ring, current_start);
                 let mut next_start = current_start.saturating_add(interval_i64);
                 while next_start < bucket_start {
-                    self.emit_ffill(series, next_start);
+                    self.emit_ffill(ring, next_start);
                     next_start = next_start.saturating_add(interval_i64);
                 }
                 self.current_bucket_start = Some(bucket_start);
@@ -160,20 +157,20 @@ impl ResampleState {
             self.current_bucket_start = Some(bucket_start);
         }
 
-        self.bidask_samples.push(bidask_sr);
-        self.askbid_samples.push(askbid_sr);
+        self.samples.push(value);
     }
 
-    fn flush_due(&mut self, interval_ms: u64, now_ms: i64, series: &SymbolSeries) {
+    fn flush_due(&mut self, interval_ms: u64, now_ms: i64, ring: &RingBuffer) {
         if self.current_bucket_start.is_none()
-            || self.last_avg_bidask.is_none() && self.bidask_samples.is_empty()
+            && self.last_value.is_none()
+            && self.samples.is_empty()
         {
-            self.ensure_interval(interval_ms.max(1), series);
+            self.ensure_interval(interval_ms.max(1), ring);
             return;
         }
 
         let interval_ms = interval_ms.max(1);
-        self.ensure_interval(interval_ms, series);
+        self.ensure_interval(interval_ms, ring);
         let interval_i64 = interval_ms.min(i64::MAX as u64) as i64;
 
         loop {
@@ -184,48 +181,42 @@ impl ResampleState {
             if now_ms < current_start.saturating_add(interval_i64) {
                 break;
             }
-            self.flush_current(series, current_start);
+            self.flush_current(ring, current_start);
             let next_start = current_start.saturating_add(interval_i64);
             self.current_bucket_start = Some(next_start);
         }
     }
 
-    fn ensure_interval(&mut self, interval_ms: u64, series: &SymbolSeries) {
+    fn ensure_interval(&mut self, interval_ms: u64, ring: &RingBuffer) {
         let interval_ms = interval_ms.max(1);
         if self.interval_ms == interval_ms {
             return;
         }
         if self.interval_ms != 0 {
             if let Some(bucket) = self.current_bucket_start {
-                self.flush_current(series, bucket);
+                self.flush_current(ring, bucket);
             }
         }
         self.interval_ms = interval_ms;
         self.current_bucket_start = None;
-        self.bidask_samples.clear();
-        self.askbid_samples.clear();
+        self.samples.clear();
     }
 
-    fn flush_current(&mut self, series: &SymbolSeries, bucket_start: i64) {
-        if !self.bidask_samples.is_empty() && !self.askbid_samples.is_empty() {
-            let avg_bidask = average(&self.bidask_samples);
-            let avg_askbid = average(&self.askbid_samples);
-            series.bidask.push(avg_bidask);
-            series.askbid.push(avg_askbid);
-            self.last_avg_bidask = Some(avg_bidask);
-            self.last_avg_askbid = Some(avg_askbid);
+    fn flush_current(&mut self, ring: &RingBuffer, bucket_start: i64) {
+        if !self.samples.is_empty() {
+            let avg = average(&self.samples);
+            ring.push(avg);
+            self.last_value = Some(avg);
             self.last_emitted_bucket = Some(bucket_start);
         } else {
-            self.emit_ffill(series, bucket_start);
+            self.emit_ffill(ring, bucket_start);
         }
-        self.bidask_samples.clear();
-        self.askbid_samples.clear();
+        self.samples.clear();
     }
 
-    fn emit_ffill(&mut self, series: &SymbolSeries, bucket_start: i64) {
-        if let (Some(bidask), Some(askbid)) = (self.last_avg_bidask, self.last_avg_askbid) {
-            series.bidask.push(bidask);
-            series.askbid.push(askbid);
+    fn emit_ffill(&mut self, ring: &RingBuffer, bucket_start: i64) {
+        if let Some(last) = self.last_value {
+            ring.push(last);
             self.last_emitted_bucket = Some(bucket_start);
         }
     }
@@ -252,7 +243,7 @@ async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(&args.log_filter))
         .init();
 
-    info!("rolling_metrics: starting with args {:?}", args);
+    info!("{LOG_PREFIX}: starting with args {:?}", args);
 
     let redis_settings = build_redis_settings(&args)?;
     let redis_url = redis_settings.connection_url();
@@ -265,15 +256,23 @@ async fn main() -> Result<()> {
         }
     }
     config.finalize();
+    let factor_summary = config
+        .factors_iter()
+        .map(|(name, cfg)| {
+            format!(
+                "{}(win={} min={} res={}ms)",
+                name, cfg.rolling_window, cfg.min_periods, cfg.resample_interval_ms
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
     info!(
-        "rolling_metrics: config init (max_length={}, window={}, min_periods={}, resample={}ms, refresh={}s, reload={}s, output={})",
+        "{LOG_PREFIX}: config init (max_length={} refresh={}s reload={}s output={} factors=[{}])",
         config.max_length,
-        config.rolling_window,
-        config.min_periods,
-        config.resample_interval_ms,
         config.refresh_sec,
         config.reload_param_sec,
-        config.output_hash_key
+        config.output_hash_key,
+        factor_summary
     );
 
     let spot_exchange = args.spot_exchange.clone();
@@ -317,7 +316,7 @@ async fn main() -> Result<()> {
                 });
             }
             None => {
-                warn!("rolling_metrics: symbol_socket 未配置，跳过 binance-futures 定期符号刷新");
+                warn!("{LOG_PREFIX}: symbol_socket 未配置，跳过 binance-futures 定期符号刷新");
             }
         }
     }
@@ -339,7 +338,7 @@ async fn main() -> Result<()> {
         )
         .await
         {
-            error!("rolling_metrics: config reload loop exited with error: {err:?}");
+            error!("{LOG_PREFIX}: config reload loop exited with error: {err:?}");
         }
     });
 
@@ -416,15 +415,13 @@ fn resolve_symbol_socket(cli_value: &Option<String>) -> Option<String> {
             }),
             Err(err) => {
                 warn!(
-                    "rolling_metrics: 解析 config/mkt_cfg.yaml 失败，无法加载 symbol_socket: {err:?}"
+                    "{LOG_PREFIX}: 解析 config/mkt_cfg.yaml 失败，无法加载 symbol_socket: {err:?}"
                 );
                 None
             }
         },
         Err(err) => {
-            warn!(
-                "rolling_metrics: 读取 config/mkt_cfg.yaml 失败，无法加载 symbol_socket: {err:?}"
-            );
+            warn!("{LOG_PREFIX}: 读取 config/mkt_cfg.yaml 失败，无法加载 symbol_socket: {err:?}");
             None
         }
     }
@@ -463,11 +460,11 @@ async fn config_reload_loop(
                 series_capacity.store(new_cfg.max_length, Ordering::SeqCst);
                 ensure_series_capacity(&series_map, new_cfg.max_length);
                 if let Some(detail) = change_detail {
-                    info!("rolling_metrics: config updated -> {}", detail);
+                    info!("{LOG_PREFIX}: config updated -> {}", detail);
                 }
             }
             Err(err) => {
-                warn!("rolling_metrics: reload config failed: {err:?}");
+                warn!("{LOG_PREFIX}: reload config failed: {err:?}");
             }
         }
     }
@@ -498,7 +495,7 @@ async fn run_reader_loop(
     setup_signal_handlers(&shutdown)?;
 
     info!(
-        "rolling_metrics: reader loop started (prefix={}, spot={}, futures={})",
+        "{LOG_PREFIX}: reader loop started (prefix={}, spot={}, futures={})",
         prefix, args.spot_exchange, args.swap_exchange
     );
 
@@ -506,7 +503,7 @@ async fn run_reader_loop(
 
     loop {
         if shutdown.is_cancelled() {
-            info!("rolling_metrics: shutdown requested");
+            info!("{LOG_PREFIX}: shutdown requested");
             break;
         }
 
@@ -536,37 +533,45 @@ async fn run_reader_loop(
             );
         }
 
+        let cfg_snapshot = { config.read().clone() };
         let current_total = series_map.len();
+        let current_symbols = quotes.len();
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let interval_ms = {
-            let guard = config.read();
-            guard.resample_interval_ms.max(1)
-        };
         let capacity_snapshot = series_capacity.load(Ordering::SeqCst).max(1);
         for (symbol, state) in quotes.iter_mut() {
             let key = format!("{}::{}", prefix, symbol);
             let series = get_or_insert_series(&*series_map, &key, capacity_snapshot);
-            state
-                .resample
-                .flush_due(interval_ms, now_ms, series.as_ref());
+            for (factor_name, factor_cfg) in cfg_snapshot.factors_iter() {
+                let Some(ring) = series.ring(factor_name) else {
+                    continue;
+                };
+                let entry = state
+                    .factor_states
+                    .entry(factor_name.to_string())
+                    .or_insert_with(FactorResampleState::default);
+                entry.flush_due(
+                    factor_cfg.resample_interval_ms.max(1),
+                    now_ms,
+                    ring.as_ref(),
+                );
+            }
         }
         if Instant::now() >= next_log {
             info!(
-                "rolling_metrics: symbols tracked={}, registry={}",
-                quotes.len(),
-                current_total
+                "{LOG_PREFIX}: symbols tracked={} (series entries={})",
+                current_symbols, current_total
             );
             next_log += Duration::from_secs(30);
         }
-        if current_total < last_symbol_count {
+        if current_symbols < last_symbol_count {
             info!(
-                "rolling_metrics: symbol registry shrink {} -> {} ({} removed)",
+                "{LOG_PREFIX}: symbol registry shrink {} -> {} ({} removed)",
                 last_symbol_count,
-                current_total,
-                last_symbol_count - current_total
+                current_symbols,
+                last_symbol_count - current_symbols
             );
         }
-        last_symbol_count = current_total;
+        last_symbol_count = current_symbols;
 
         tokio::task::yield_now().await;
     }
@@ -617,9 +622,6 @@ fn process_swap_msg(
     }
     let entry = quotes.entry(symbol.clone()).or_default();
     entry.swap.update(bid, ask, ts);
-    let key = format!("{}::{}", prefix, &symbol);
-    let capacity = series_capacity.load(Ordering::SeqCst).max(1);
-    let _ = get_or_insert_series(&*series_map, &key, capacity);
     maybe_push_sr(prefix, &symbol, entry, series_map, series_capacity, config);
 }
 
@@ -647,18 +649,55 @@ fn maybe_push_sr(
         return;
     };
 
-    let ts_ms = (get_timestamp_us() / 1000) as i64;
-    let interval_ms = {
-        let guard = config.read();
-        guard.resample_interval_ms.max(1)
-    };
-
-    let key = format!("{}::{}", prefix, symbol);
+    let cfg_snapshot = { config.read().clone() };
     let capacity = series_capacity.load(Ordering::SeqCst).max(1);
+    let mid_price_spot = compute_mid_price(spot_bid, spot_ask);
+    let mid_price_swap = compute_mid_price(swap_bid, swap_ask);
+    let spread_rate = match (mid_price_spot, mid_price_swap) {
+        (Some(spot_mid), Some(swap_mid)) if spot_mid > 0.0 => {
+            let rate = (spot_mid - swap_mid) / spot_mid;
+            if rate.is_finite() {
+                Some(rate)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    let ts_ms = (get_timestamp_us() / 1000) as i64;
+    let key = format!("{}::{}", prefix, symbol);
     let series = get_or_insert_series(&*series_map, &key, capacity);
-    quotes
-        .resample
-        .record(interval_ms, ts_ms, bidask_sr, askbid_sr, series.as_ref());
+    series.set_mid_metrics(mid_price_spot, mid_price_swap, spread_rate);
+
+    for (factor_name, factor_cfg) in cfg_snapshot.factors_iter() {
+        let sample_value = match factor_name {
+            FACTOR_BIDASK => Some(bidask_sr),
+            FACTOR_ASKBID => Some(askbid_sr),
+            FACTOR_MID_SPOT => mid_price_spot.and_then(f64_to_f32),
+            FACTOR_MID_SWAP => mid_price_swap.and_then(f64_to_f32),
+            FACTOR_SPREAD => spread_rate.and_then(f64_to_f32),
+            _ => None,
+        };
+
+        let Some(value) = sample_value else {
+            continue;
+        };
+
+        let Some(ring) = series.ring(factor_name) else {
+            continue;
+        };
+
+        let state = quotes
+            .factor_states
+            .entry(factor_name.to_string())
+            .or_insert_with(FactorResampleState::default);
+        state.record(
+            factor_cfg.resample_interval_ms.max(1),
+            ts_ms,
+            value,
+            ring.as_ref(),
+        );
+    }
 }
 
 fn get_or_insert_series(series_map: &SeriesMap, key: &str, capacity: usize) -> Arc<SymbolSeries> {
@@ -713,7 +752,7 @@ fn spawn_ringbuffer_monitor(series_map: Arc<SeriesMap>, period: Duration) {
             let rss_kb = process_memory_kb().unwrap_or(0);
 
             info!(
-                "rolling_metrics: ringbuffer_snapshot rss_kb={} symbols={} total_bidask={} total_askbid={}\n{}",
+                "{LOG_PREFIX}: ringbuffer_snapshot rss_kb={} symbols={} total_bidask={} total_askbid={}\n{}",
                 rss_kb, entries.len(), total_bidask, total_askbid, table
             );
         }
@@ -784,7 +823,7 @@ async fn symbol_refresh_loop(
     series_capacity: Arc<AtomicUsize>,
 ) {
     debug!(
-        "rolling_metrics: symbol refresh loop started (swap={}, socket={}, interval={}s)",
+        "{LOG_PREFIX}: symbol refresh loop started (swap={}, socket={}, interval={}s)",
         swap_exchange,
         symbol_socket,
         interval.as_secs()
@@ -805,12 +844,12 @@ async fn symbol_refresh_loop(
                 let capacity = series_capacity.load(Ordering::SeqCst).max(1);
                 let stats = apply_symbol_snapshot(&prefix, &symbols, capacity, &series_map);
                 info!(
-                    "rolling_metrics: symbol snapshot applied (total={}, added={}, removed={})",
+                    "{LOG_PREFIX}: symbol snapshot applied (symbols={}, added={}, removed={})",
                     stats.total, stats.added, stats.removed
                 );
             }
             Err(err) => {
-                warn!("rolling_metrics: refresh binance-futures symbols failed: {err:?}");
+                warn!("{LOG_PREFIX}: refresh binance-futures symbols failed: {err:?}");
             }
         }
     }
@@ -858,33 +897,40 @@ fn apply_symbol_snapshot(
     capacity: usize,
     series_map: &SeriesMap,
 ) -> SymbolSyncStats {
-    let mut added = 0usize;
+    let mut added_symbols = 0usize;
     let mut keep: HashSet<String> = HashSet::with_capacity(symbols.len());
 
     for sym in symbols {
         let key = format!("{}::{}", prefix, sym);
-        if keep.insert(key.clone()) && !series_map.contains_key(&key) {
-            added += 1;
-        }
+        keep.insert(key.clone());
+        let existed = series_map.contains_key(&key);
         let _ = get_or_insert_series(series_map, &key, capacity);
+        if !existed {
+            added_symbols += 1;
+        }
     }
 
+    let prefix_token = format!("{}::", prefix);
     let mut remove_keys = Vec::new();
+    let mut removed_symbols: HashSet<String> = HashSet::new();
     for entry in series_map.iter() {
         let key = entry.key();
-        if key.starts_with(prefix) && !keep.contains(key.as_str()) {
+        if key.starts_with(&prefix_token) && !keep.contains(key.as_str()) {
             remove_keys.push(key.clone());
         }
     }
     for key in remove_keys.iter() {
+        if let Some(symbol_part) = key.rsplit("::").next() {
+            removed_symbols.insert(symbol_part.to_string());
+        }
         series_map.remove(key);
-        info!("rolling_metrics: removed inactive symbol {}", key);
+        info!("{LOG_PREFIX}: removed inactive series {}", key);
     }
 
     SymbolSyncStats {
-        total: keep.len(),
-        added,
-        removed: remove_keys.len(),
+        total: symbols.len(),
+        added: added_symbols,
+        removed: removed_symbols.len(),
     }
 }
 
@@ -912,6 +958,26 @@ fn compute_askbid_sr(spot_ask: f64, swap_bid: f64) -> Option<f32> {
     }
 }
 
+fn compute_mid_price(bid: f64, ask: f64) -> Option<f64> {
+    if bid <= 0.0 || ask <= 0.0 {
+        return None;
+    }
+    let mid = (bid + ask) * 0.5;
+    if mid.is_finite() {
+        Some(mid)
+    } else {
+        None
+    }
+}
+
+fn f64_to_f32(value: f64) -> Option<f32> {
+    if value.is_finite() {
+        Some(value as f32)
+    } else {
+        None
+    }
+}
+
 fn should_skip_symbol(symbol: &str) -> bool {
     if !symbol.ends_with("USDT") {
         return false;
@@ -928,47 +994,80 @@ fn describe_config_changes(prev: &RollingConfig, new: &RollingConfig) -> Option<
             prev.max_length, new.max_length
         ));
     }
-    if prev.rolling_window != new.rolling_window {
-        parts.push(format!(
-            "rolling_window {}->{}",
-            prev.rolling_window, new.rolling_window
-        ));
-    }
-    if prev.min_periods != new.min_periods {
-        parts.push(format!(
-            "min_periods {}->{}",
-            prev.min_periods, new.min_periods
-        ));
-    }
-    if prev.resample_interval_ms != new.resample_interval_ms {
-        parts.push(format!(
-            "resample_interval_ms {}->{}",
-            prev.resample_interval_ms, new.resample_interval_ms
-        ));
-    }
-    if (prev.bidask_lower_quantile - new.bidask_lower_quantile).abs() > f32::EPSILON {
-        parts.push(format!(
-            "bidask_lower_quantile {:.6}-> {:.6}",
-            prev.bidask_lower_quantile, new.bidask_lower_quantile
-        ));
-    }
-    if (prev.bidask_upper_quantile - new.bidask_upper_quantile).abs() > f32::EPSILON {
-        parts.push(format!(
-            "bidask_upper_quantile {:.6}-> {:.6}",
-            prev.bidask_upper_quantile, new.bidask_upper_quantile
-        ));
-    }
-    if (prev.askbid_lower_quantile - new.askbid_lower_quantile).abs() > f32::EPSILON {
-        parts.push(format!(
-            "askbid_lower_quantile {:.6}-> {:.6}",
-            prev.askbid_lower_quantile, new.askbid_lower_quantile
-        ));
-    }
-    if (prev.askbid_upper_quantile - new.askbid_upper_quantile).abs() > f32::EPSILON {
-        parts.push(format!(
-            "askbid_upper_quantile {:.6}-> {:.6}",
-            prev.askbid_upper_quantile, new.askbid_upper_quantile
-        ));
+    let fmt_quantiles = |vals: &[f32]| -> String {
+        if vals.is_empty() {
+            "[]".to_string()
+        } else {
+            let inner = vals
+                .iter()
+                .map(|v| format!("{:.6}", v))
+                .collect::<Vec<String>>()
+                .join(",");
+            format!("[{}]", inner)
+        }
+    };
+    let fmt_factor = |cfg: &FactorConfig| -> String {
+        format!(
+            "resample={}ms window={} min={} quantiles={}",
+            cfg.resample_interval_ms,
+            cfg.rolling_window,
+            cfg.min_periods,
+            fmt_quantiles(&cfg.quantiles)
+        )
+    };
+    let prev_factors = &prev.factors;
+    let new_factors = &new.factors;
+    let mut factor_names: Vec<&str> = prev_factors
+        .keys()
+        .chain(new_factors.keys())
+        .map(|k| k.as_str())
+        .collect();
+    factor_names.sort();
+    factor_names.dedup();
+    for factor_name in factor_names {
+        let before = prev_factors.get(factor_name);
+        let after = new_factors.get(factor_name);
+        match (before, after) {
+            (Some(bf), Some(af)) => {
+                if bf.resample_interval_ms != af.resample_interval_ms {
+                    parts.push(format!(
+                        "factor {} resample_interval_ms {}->{}",
+                        factor_name, bf.resample_interval_ms, af.resample_interval_ms
+                    ));
+                }
+                if bf.rolling_window != af.rolling_window {
+                    parts.push(format!(
+                        "factor {} rolling_window {}->{}",
+                        factor_name, bf.rolling_window, af.rolling_window
+                    ));
+                }
+                if bf.min_periods != af.min_periods {
+                    parts.push(format!(
+                        "factor {} min_periods {}->{}",
+                        factor_name, bf.min_periods, af.min_periods
+                    ));
+                }
+                if bf.quantiles != af.quantiles {
+                    parts.push(format!(
+                        "factor {} quantiles {}->{}",
+                        factor_name,
+                        fmt_quantiles(&bf.quantiles),
+                        fmt_quantiles(&af.quantiles)
+                    ));
+                }
+            }
+            (None, Some(af)) => {
+                parts.push(format!("factor {} added ({})", factor_name, fmt_factor(af)));
+            }
+            (Some(bf), None) => {
+                parts.push(format!(
+                    "factor {} removed ({})",
+                    factor_name,
+                    fmt_factor(bf)
+                ));
+            }
+            (None, None) => {}
+        }
     }
     if prev.refresh_sec != new.refresh_sec {
         parts.push(format!(
@@ -1001,9 +1100,7 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
             match redis::Client::open(redis_url.as_str()) {
                 Ok(c) => break c,
                 Err(err) => {
-                    error!(
-                        "rolling_metrics: failed to create Redis client: {err:?}, retrying in 5s"
-                    );
+                    error!("{LOG_PREFIX}: failed to create Redis client: {err:?}, retrying in 5s");
                     thread::sleep(Duration::from_secs(5));
                 }
             }
@@ -1013,7 +1110,7 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
             match client.get_connection() {
                 Ok(c) => break c,
                 Err(err) => {
-                    error!("rolling_metrics: failed to connect Redis: {err:?}, retrying in 5s");
+                    error!("{LOG_PREFIX}: failed to connect Redis: {err:?}, retrying in 5s");
                     thread::sleep(Duration::from_secs(5));
                 }
             }
@@ -1034,7 +1131,7 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
                             write_hash_and_cleanup(&mut conn, &result.output_key, &[], &stale)
                         {
                             error!(
-                                "rolling_metrics: redis cleanup error: {err:?}, attempting reconnect"
+                                "{LOG_PREFIX}: redis cleanup error: {err:?}, attempting reconnect"
                             );
                             loop {
                                 match client.get_connection() {
@@ -1044,7 +1141,7 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
                                     }
                                     Err(err) => {
                                         error!(
-                                            "rolling_metrics: reconnect redis failed: {err:?}, retrying in 5s"
+                                            "{LOG_PREFIX}: reconnect redis failed: {err:?}, retrying in 5s"
                                         );
                                         thread::sleep(Duration::from_secs(5));
                                     }
@@ -1054,7 +1151,7 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
                                 write_hash_and_cleanup(&mut conn, &result.output_key, &[], &stale);
                         } else {
                             info!(
-                                "rolling_metrics: initial cleanup removed {} fields from {}",
+                                "{LOG_PREFIX}: initial cleanup removed {} fields from {}",
                                 stale.len(),
                                 result.output_key
                             );
@@ -1082,7 +1179,7 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
             if let Err(err) =
                 write_hash_and_cleanup(&mut conn, &result.output_key, &result.payloads, &removals)
             {
-                error!("rolling_metrics: redis write error: {err:?}, attempting reconnect");
+                error!("{LOG_PREFIX}: redis write error: {err:?}, attempting reconnect");
                 loop {
                     match client.get_connection() {
                         Ok(c) => {
@@ -1090,9 +1187,7 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
                             break;
                         }
                         Err(err) => {
-                            error!(
-                                "rolling_metrics: reconnect redis failed: {err:?}, retrying in 5s"
-                            );
+                            error!("{LOG_PREFIX}: reconnect redis failed: {err:?}, retrying in 5s");
                             thread::sleep(Duration::from_secs(5));
                         }
                     }
@@ -1105,7 +1200,7 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
                 );
             } else {
                 info!(
-                    "rolling_metrics: wrote {} fields, removed {} from {} (processed={}, skipped={}, duration={}ms)",
+                    "{LOG_PREFIX}: wrote {} fields, removed {} from {} (processed={}, skipped={}, duration={}ms)",
                     result.payloads.len(),
                     removals.len(),
                     result.output_key,
@@ -1116,7 +1211,7 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
             }
         }
 
-        info!("rolling_metrics: writer thread exiting (channel closed)");
+        info!("{LOG_PREFIX}: writer thread exiting (channel closed)");
     });
 }
 
@@ -1174,10 +1269,10 @@ fn setup_signal_handlers(token: &CancellationToken) -> Result<()> {
     let ctrl_c = token.clone();
     tokio::spawn(async move {
         if let Err(e) = signal::ctrl_c().await {
-            error!("rolling_metrics: listen ctrl_c failed: {}", e);
+            error!("{LOG_PREFIX}: listen ctrl_c failed: {}", e);
             return;
         }
-        info!("rolling_metrics: received Ctrl+C");
+        info!("{LOG_PREFIX}: received Ctrl+C");
         ctrl_c.cancel();
     });
     #[cfg(unix)]
@@ -1188,11 +1283,11 @@ fn setup_signal_handlers(token: &CancellationToken) -> Result<()> {
             match signal(SignalKind::terminate()) {
                 Ok(mut sig) => {
                     if sig.recv().await.is_some() {
-                        info!("rolling_metrics: received SIGTERM");
+                        info!("{LOG_PREFIX}: received SIGTERM");
                         term_token.cancel();
                     }
                 }
-                Err(e) => error!("rolling_metrics: listen SIGTERM failed: {}", e),
+                Err(e) => error!("{LOG_PREFIX}: listen SIGTERM failed: {}", e),
             }
         });
     }

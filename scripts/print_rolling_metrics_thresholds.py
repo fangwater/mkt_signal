@@ -10,10 +10,8 @@ Reads
     value = JSON payload produced by rolling_metrics service.
 
 Outputs
-  - Three-line table (top/header/bottom rule) with columns:
-      symbol_pair, base_symbol, update_tp, sample_size,
-      bidask_sr, askbid_sr, bidask_lower, bidask_upper,
-      askbid_lower, askbid_upper.
+  - 分别为 mid_price_spot、mid_price_swap、spread_rate、bidask_sr、askbid_sr 打印三线表；
+    每张表包含：symbol、update_tp、sample_size、对应因子实时值，以及以 `binance_*` 命名的分位阈值列。
   - Null / missing values render as '-' by default.
 """
 
@@ -25,7 +23,7 @@ import math
 import os
 import sys
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 def try_import_redis():
@@ -153,43 +151,119 @@ def filter_symbols(rows: Dict[str, Dict], symbols: Optional[List[str]]) -> Dict[
     return filtered
 
 
-def build_matrix(
-    data: Dict[str, Dict], sort_field: str, na: str, tsfmt: str
+def sort_items(data: Dict[str, Dict], sort_field: str):
+    if sort_field == "base_symbol":
+        return sorted(
+            data.items(),
+            key=lambda item: (str(item[1].get("base_symbol", "")), item[0]),
+        )
+    return sorted(data.items(), key=lambda item: item[0])
+
+
+def collect_quantile_columns(
+    data: Dict[str, Dict], quantile_key: str, display_prefix: str
+) -> List[str]:
+    columns: Dict[str, Optional[float]] = {}
+    for obj in data.values():
+        entries = obj.get(quantile_key)
+        if not isinstance(entries, list):
+            continue
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            col_name, order_key = quantile_column_key(item)
+            if col_name is None:
+                continue
+            full_name = f"{display_prefix}_{col_name}"
+            if full_name not in columns:
+                columns[full_name] = order_key
+
+    def sort_key(item: Tuple[str, Optional[float]]):
+        name, order = item
+        if order is not None:
+            return (0, int(round(order * 100)))
+        suffix = name.rpartition("_")[2]
+        try:
+            return (1, int(suffix))
+        except ValueError:
+            return (2, name)
+
+    return [col for col, _ in sorted(columns.items(), key=sort_key)]
+
+
+def quantile_column_key(item: Dict[str, Any]) -> Tuple[Optional[str], Optional[float]]:
+    quantile = item.get("quantile")
+    label = item.get("label")
+    if isinstance(quantile, (int, float)):
+        try:
+            q = float(quantile)
+        except Exception:
+            q = None
+        if q is not None:
+            if q > 1.0:
+                q /= 100.0
+            if 0.0 <= q <= 1.0:
+                return str(int(round(q * 100))), q
+    if isinstance(label, str) and label:
+        return label, None
+    return None, None
+
+
+def build_quantile_map(entries: Any, display_prefix: str) -> Dict[str, Optional[float]]:
+    result: Dict[str, Optional[float]] = {}
+    if not isinstance(entries, list):
+        return result
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        col_name, _ = quantile_column_key(item)
+        if col_name is None:
+            continue
+        full_name = f"{display_prefix}_{col_name}"
+        threshold = item.get("threshold")
+        if threshold is None:
+            result[full_name] = None
+        else:
+            try:
+                result[full_name] = float(threshold)
+            except Exception:
+                result[full_name] = None
+    return result
+
+
+def build_factor_table(
+    data: Dict[str, Dict],
+    sort_field: str,
+    value_field: str,
+    quantile_key: str,
+    value_header: str,
+    quantile_prefix: str,
+    na: str,
+    tsfmt: str,
 ) -> Tuple[List[str], List[List[str]]]:
+    quantile_columns = collect_quantile_columns(data, quantile_key, quantile_prefix)
     headers = [
-        "symbol_pair",
-        "base_symbol",
+        "symbol",
         "update_tp",
         "sample_size",
-        "bidask_sr",
-        "askbid_sr",
-        "bidask_lower",
-        "bidask_upper",
-        "askbid_lower",
-        "askbid_upper",
+        value_header,
     ]
-    if sort_field == "base_symbol":
-        sorted_items = sorted(
-            data.items(), key=lambda item: (str(item[1].get("base_symbol", "")), item[0])
-        )
-    else:
-        sorted_items = sorted(data.items(), key=lambda item: item[0])
-
+    headers.extend(quantile_columns)
     rows: List[List[str]] = []
-    for key, obj in sorted_items:
+    for _field, obj in sort_items(data, sort_field):
         base_symbol = obj.get("base_symbol") or obj.get("symbol") or "-"
+        update_str = format_ts(obj.get("update_tp"), tsfmt, na)
+        sample_str = str(obj.get("sample_size") or 0)
+        value = format_number(obj.get(value_field), na)
         row = [
-            key,
             base_symbol,
-            format_ts(obj.get("update_tp"), tsfmt, na),
-            str(obj.get("sample_size") or 0),
-            format_number(obj.get("bidask_sr"), na),
-            format_number(obj.get("askbid_sr"), na),
-            format_number(obj.get("bidask_lower"), na),
-            format_number(obj.get("bidask_upper"), na),
-            format_number(obj.get("askbid_lower"), na),
-            format_number(obj.get("askbid_upper"), na),
+            update_str,
+            sample_str,
+            value,
         ]
+        quant_map = build_quantile_map(obj.get(quantile_key), quantile_prefix)
+        for col in quantile_columns:
+            row.append(format_number(quant_map.get(col), na))
         rows.append(row)
     return headers, rows
 
@@ -241,8 +315,64 @@ def main() -> int:
         print("未匹配到指定的 symbol。")
         return 0
 
-    headers, rows = build_matrix(filtered, args.sort, args.na, args.tsfmt)
-    print_three_line_table(headers, rows)
+    tables = [
+        {
+            "label": "mid_price_spot",
+            "value_field": "mid_price_spot",
+            "value_header": "binance_midprice_spot",
+            "quantile_key": "mid_spot_quantiles",
+            "quantile_prefix": "binance_midprice_spot",
+        },
+        {
+            "label": "mid_price_swap",
+            "value_field": "mid_price_swap",
+            "value_header": "binance_midprice_swap",
+            "quantile_key": "mid_swap_quantiles",
+            "quantile_prefix": "binance_midprice_swap",
+        },
+        {
+            "label": "spread_rate",
+            "value_field": "spread_rate",
+            "value_header": "binance_spread_rate",
+            "quantile_key": "spread_quantiles",
+            "quantile_prefix": "binance_spread",
+        },
+        {
+            "label": "bidask_sr",
+            "value_field": "bidask_sr",
+            "value_header": "binance_bidask_sr",
+            "quantile_key": "bidask_quantiles",
+            "quantile_prefix": "binance_bidask",
+        },
+        {
+            "label": "askbid_sr",
+            "value_field": "askbid_sr",
+            "value_header": "binance_askbid_sr",
+            "quantile_key": "askbid_quantiles",
+            "quantile_prefix": "binance_askbid",
+        },
+    ]
+
+    first = True
+    for spec in tables:
+        headers, rows = build_factor_table(
+            filtered,
+            args.sort,
+            spec["value_field"],
+            spec["quantile_key"],
+            spec["value_header"],
+            spec["quantile_prefix"],
+            args.na,
+            args.tsfmt,
+        )
+        if not first:
+            print()
+        print(f"## {spec['label']}")
+        if rows:
+            print_three_line_table(headers, rows)
+        else:
+            print("(no data)")
+        first = False
     return 0
 
 
