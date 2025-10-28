@@ -45,31 +45,31 @@ DEFAULTS = {
         "bidask": {
             "resample_interval_ms": 1_000,
             "rolling_window": 100_000,
-            "min_periods": 100,
+            "min_periods": 1,
             "quantiles": [5, 70],
         },
         "askbid": {
             "resample_interval_ms": 1_000,
             "rolling_window": 100_000,
-            "min_periods": 100,
+            "min_periods": 1,
             "quantiles": [30, 95],
         },
         "mid_spot": {
             "resample_interval_ms": 1_000,
             "rolling_window": 100_000,
-            "min_periods": 100,
+            "min_periods": 1,
             "quantiles": [30, 95],
         },
         "mid_swap": {
             "resample_interval_ms": 1_000,
             "rolling_window": 100_000,
-            "min_periods": 100,
+            "min_periods": 1,
             "quantiles": [30, 95],
         },
         "spread": {
             "resample_interval_ms": 1_000,
             "rolling_window": 100_000,
-            "min_periods": 100,
+            "min_periods": 1,
             "quantiles": [30, 95],
         },
     },
@@ -106,6 +106,14 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--dry-run", action="store_true", help="Only print payload without writing")
     return p.parse_args()
+
+
+DEPRECATED_FIELDS = [
+    "bidask_lower_quantile",
+    "bidask_upper_quantile",
+    "askbid_lower_quantile",
+    "askbid_upper_quantile",
+]
 
 
 def clone_defaults() -> Dict[str, Any]:
@@ -209,14 +217,23 @@ def main() -> int:
         rds = redis.Redis(host=args.host, port=args.port, db=args.db, password=args.password)
 
     payload = build_payload(args)
+    deprecated = list(DEPRECATED_FIELDS)
     if args.dry_run:
         print("dry-run: 即将写入的字段：")
         for k, v in payload.items():
             print(f"  {k} = {v}")
+        if deprecated:
+            print("dry-run: 将移除旧字段：", ", ".join(deprecated))
         return 0
 
-    rds.hset(args.key, mapping=payload)
+    pipe = rds.pipeline()
+    if deprecated:
+        pipe.hdel(args.key, *deprecated)
+    pipe.hset(args.key, mapping=payload)
+    pipe.execute()
     print(f"已写入 {len(payload)} 个字段到 HASH {args.key}")
+    if deprecated:
+        print(f"已删除旧字段：{', '.join(deprecated)}")
     return 0
 
 

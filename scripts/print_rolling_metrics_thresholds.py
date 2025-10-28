@@ -49,6 +49,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
     p.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
     p.add_argument(
+        "--symbol",
+        help="仅打印单个 symbol（匹配 base_symbol 或字段名 / 键尾部）",
+    )
+    p.add_argument(
         "--symbols",
         nargs="*",
         help="If set, only include rows where base_symbol matches any provided symbol",
@@ -142,11 +146,14 @@ def format_ts(value: Optional[int], mode: str, na: str) -> str:
 def filter_symbols(rows: Dict[str, Dict], symbols: Optional[List[str]]) -> Dict[str, Dict]:
     if not symbols:
         return rows
-    symbol_set = set(symbols)
+    symbol_set = {s.upper() for s in symbols if s}
     filtered: Dict[str, Dict] = {}
     for key, obj in rows.items():
-        base = obj.get("base_symbol") or obj.get("symbol") or ""
-        if base in symbol_set or key in symbol_set:
+        base_value = obj.get("base_symbol") or obj.get("symbol") or ""
+        base = str(base_value).upper()
+        key_upper = str(key).upper()
+        key_tail = key_upper.split("::")[-1]
+        if base in symbol_set or key_upper in symbol_set or key_tail in symbol_set:
             filtered[key] = obj
     return filtered
 
@@ -310,9 +317,19 @@ def main() -> int:
         print("Redis HASH 为空或 key 不存在。")
         return 0
 
-    filtered = filter_symbols(data, args.symbols)
+    target_symbols: List[str] = []
+    if args.symbol:
+        target_symbols.append(args.symbol)
+    if args.symbols:
+        target_symbols.extend(args.symbols)
+
+    filtered = filter_symbols(data, target_symbols or None)
     if not filtered:
-        print("未匹配到指定的 symbol。")
+        if target_symbols:
+            joined = ", ".join(target_symbols)
+            print(f"未匹配到指定的 symbol：{joined}")
+        else:
+            print("未匹配到任何 symbol。")
         return 0
 
     tables = [
