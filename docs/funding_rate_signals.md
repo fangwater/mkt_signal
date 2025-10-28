@@ -19,26 +19,22 @@
 
 - `bidask_sr = (spot_bid - fut_ask) / spot_bid`
 - `askbid_sr = (spot_ask - fut_bid) / spot_ask`
-- Redis 提供的价差阈值在 `binance_arb_price_spread_threshold` HASH 中维护：正套使用 `forward_arb_open_tr` / `forward_arb_cancel_tr`，反套使用 `backward_arb_open_tr` / `backward_arb_cancel_tr`。
+- Redis 提供的价差阈值在 `binance_arb_price_spread_threshold` HASH 中维护：正套使用 `forward_arb_open_tr` / `forward_arb_cancel_tr`（阶梯撤单）/ `forward_arb_close_tr`（平仓），反套使用 `backward_arb_open_tr` / `backward_arb_cancel_tr`。
 - 条件：
-  - `price_open_bidask = bidask_sr <= forward_arb_open_tr`
-  - `price_open_askbid = askbid_sr >= backward_arb_open_tr`（配置为 0/NaN 时视为自动满足，现仅用于监控）
-  - `price_close_bidask = bidask_sr >= forward_arb_cancel_tr`（仅用于辅助观察）
-  - `price_close_askbid = askbid_sr >= backward_arb_cancel_tr`
-  - `price_close_ready = price_close_askbid`
-  - `price_open_ready = price_open_bidask`
+  - `forward_open_ready = bidask_sr <= forward_arb_open_tr`
+  - `forward_close_ready = askbid_sr >= forward_arb_close_tr`
 
 ## 开仓 / 平仓逻辑
 
 - **开仓（现货做多 / 合约做空）**
   - 资金信号为 `-1`
-  - `price_open_ready` 为 `true`（仅由 `price_open_bidask` 决定）
+  - `forward_open_ready` 为 `true`
   - 当前持仓 `Flat`
   - 信号节流满足（距离上次信号 >= `min_interval_ms`）
   - 满足时通过 `BinSingleForwardArbOpen` 发布开仓请求，并记录 `last_open_ts`、`position=Opened`
 - **平仓（释放现货多头）**
   - 资金信号为 `-2`
-  - `price_close_ready` 为 `true`（即 `askbid_sr >= backward_arb_cancel_tr`）
+  - `forward_close_ready` 为 `true`
   - 当前持仓 `Opened`
   - 信号节流满足
   - 满足时通过 `BinSingleForwardArbCloseMargin` 发布平仓请求，并记录 `last_close_ts`、`position=Flat`

@@ -400,6 +400,8 @@ struct SymbolThreshold {
     // 正套: (spot_bid - fut_ask) / spot_bid
     forward_open_threshold: f64,
     forward_cancel_threshold: f64,
+    forward_close_threshold: f64,
+    forward_cancel_close_threshold: Option<f64>,
     // 反套: (spot_ask - fut_bid) / spot_ask
     backward_open_threshold: f64,
     backward_cancel_threshold: f64,
@@ -444,6 +446,8 @@ struct SymbolState {
     futures_symbol: String,
     forward_open_threshold: f64,
     forward_cancel_threshold: f64,
+    forward_close_threshold: f64,
+    forward_cancel_close_threshold: Option<f64>,
     backward_open_threshold: f64,
     backward_cancel_threshold: f64,
     spot_quote: Quote,
@@ -471,6 +475,8 @@ impl SymbolState {
             futures_symbol: threshold.futures_symbol,
             forward_open_threshold: threshold.forward_open_threshold,
             forward_cancel_threshold: threshold.forward_cancel_threshold,
+            forward_close_threshold: threshold.forward_close_threshold,
+            forward_cancel_close_threshold: threshold.forward_cancel_close_threshold,
             backward_open_threshold: threshold.backward_open_threshold,
             backward_cancel_threshold: threshold.backward_cancel_threshold,
             spot_quote: Quote::default(),
@@ -495,6 +501,8 @@ impl SymbolState {
     fn update_threshold(&mut self, threshold: SymbolThreshold) {
         self.forward_open_threshold = threshold.forward_open_threshold;
         self.forward_cancel_threshold = threshold.forward_cancel_threshold;
+        self.forward_close_threshold = threshold.forward_close_threshold;
+        self.forward_cancel_close_threshold = threshold.forward_cancel_close_threshold;
         self.futures_symbol = threshold.futures_symbol;
         self.backward_open_threshold = threshold.backward_open_threshold;
         self.backward_cancel_threshold = threshold.backward_cancel_threshold;
@@ -1903,6 +1911,13 @@ impl MockController {
                     .and_then(|x| x.as_f64())
                     .or_else(|| v.get("bidask_sr_close_threshold").and_then(|x| x.as_f64()))
                     .unwrap_or(forward_open_threshold);
+                let forward_close_threshold = v
+                    .get("forward_arb_close_tr")
+                    .and_then(|x| x.as_f64())
+                    .unwrap_or(forward_cancel_threshold);
+                let forward_cancel_close_threshold = v
+                    .get("forward_arb_cancel_close_tr")
+                    .and_then(|x| x.as_f64());
                 let backward_open_threshold = v
                     .get("backward_arb_open_tr")
                     .and_then(|x| x.as_f64())
@@ -1918,6 +1933,8 @@ impl MockController {
                     futures_symbol,
                     forward_open_threshold,
                     forward_cancel_threshold,
+                    forward_close_threshold,
+                    forward_cancel_close_threshold,
                     backward_open_threshold,
                     backward_cancel_threshold,
                 });

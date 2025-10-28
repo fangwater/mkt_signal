@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, info, warn};
 use reqwest::Client;
 use serde::de::{self, Deserializer};
 use serde::Deserialize;
@@ -229,6 +229,14 @@ fn opt_active_threshold(val: f64) -> Option<f64> {
     }
 }
 
+fn forward_open_ready(bidask_sr: Option<f64>, threshold: f64) -> bool {
+    bidask_sr.map(|sr| sr <= threshold).unwrap_or(false)
+}
+
+fn forward_close_ready(askbid_sr: Option<f64>, threshold: f64) -> bool {
+    threshold.is_finite() && askbid_sr.map(|sr| sr >= threshold).unwrap_or(false)
+}
+
 /// 信号节流配置
 #[derive(Debug, Clone, Deserialize)]
 struct SignalConfig {
@@ -293,7 +301,7 @@ struct StrategyParams {
     /// 结算偏移（秒）：基于 UTC 准点（4h 周期）增加的偏移量
     #[serde(default = "default_settlement_offset_secs")]
     settlement_offset_secs: i64,
-} 
+}
 
 const fn default_interval() -> usize {
     6
@@ -420,18 +428,19 @@ struct SymbolThreshold {
     // BidAskSR 阈值（开/关）: (spot_bid - fut_ask) / spot_bid
     forward_open_threshold: f64,
     forward_cancel_threshold: f64,
-    // AskBidSR 阈值（正向/反向开/撤）: (spot_ask - fut_bid) / spot_ask
-    backward_open_threshold: f64,
-    backward_cancel_threshold: f64,
+    // AskBidSR 阈值（平仓）: (spot_ask - fut_bid) / spot_ask
+    forward_close_threshold: f64,
+    // AskBidSR 阈值（平仓辅助，用于撤单优化）
+    forward_cancel_close_threshold: Option<f64>,
 }
 
 /// 行情报价
-#[derive(Debug, Clone, Copy, Default)] 
+#[derive(Debug, Clone, Copy, Default)]
 struct Quote {
     bid: f64,
     ask: f64,
     ts: i64,
-} 
+}
 
 impl Quote {
     fn update(&mut self, bid: f64, ask: f64, ts: i64) {
@@ -452,8 +461,8 @@ struct SymbolState {
     futures_symbol: String,
     forward_open_threshold: f64,
     forward_cancel_threshold: f64,
-    backward_open_threshold: f64,
-    backward_cancel_threshold: f64,
+    forward_close_threshold: f64,
+    forward_cancel_close_threshold: Option<f64>,
     spot_quote: Quote,
     futures_quote: Quote,
     last_ratio: Option<f64>,
@@ -469,14 +478,11 @@ struct SymbolState {
     predicted_signal: i32,
     ma_signal: i32,
     final_signal_value: i32,
-    latest_bidask_sr: Option<f64>,
-    latest_askbid_sr: Option<f64>,
-    price_open_bidask: bool,
-    price_open_askbid: bool,
-    price_close_bidask: bool,
-    price_close_askbid: bool,
-    price_open_ready: bool,
-    price_close_ready: bool,
+    current_bidask_sr: Option<f64>,
+    current_askbid_sr: Option<f64>,
+    spot_mid_price: Option<f64>,
+    futures_mid_price: Option<f64>,
+    spread_rate: Option<f64>,
     last_ladder_cancel_ts: Option<i64>,
     open_batch_marker: Option<i64>,
     close_batch_marker: Option<i64>,
@@ -489,8 +495,8 @@ impl SymbolState {
             futures_symbol: threshold.futures_symbol,
             forward_open_threshold: threshold.forward_open_threshold,
             forward_cancel_threshold: threshold.forward_cancel_threshold,
-            backward_open_threshold: threshold.backward_open_threshold,
-            backward_cancel_threshold: threshold.backward_cancel_threshold,
+            forward_close_threshold: threshold.forward_close_threshold,
+            forward_cancel_close_threshold: threshold.forward_cancel_close_threshold,
             spot_quote: Quote::default(),
             futures_quote: Quote::default(),
             last_ratio: None,
@@ -506,14 +512,11 @@ impl SymbolState {
             predicted_signal: 0,
             ma_signal: 0,
             final_signal_value: 0,
-            latest_bidask_sr: None,
-            latest_askbid_sr: None,
-            price_open_bidask: false,
-            price_open_askbid: false,
-            price_close_bidask: false,
-            price_close_askbid: false,
-            price_open_ready: false,
-            price_close_ready: false,
+            current_bidask_sr: None,
+            current_askbid_sr: None,
+            spot_mid_price: None,
+            futures_mid_price: None,
+            spread_rate: None,
             last_ladder_cancel_ts: None,
             open_batch_marker: None,
             close_batch_marker: None,
@@ -523,9 +526,9 @@ impl SymbolState {
     fn update_threshold(&mut self, threshold: SymbolThreshold) {
         self.forward_open_threshold = threshold.forward_open_threshold;
         self.forward_cancel_threshold = threshold.forward_cancel_threshold;
+        self.forward_close_threshold = threshold.forward_close_threshold;
+        self.forward_cancel_close_threshold = threshold.forward_cancel_close_threshold;
         self.futures_symbol = threshold.futures_symbol;
-        self.backward_open_threshold = threshold.backward_open_threshold;
-        self.backward_cancel_threshold = threshold.backward_cancel_threshold;
         // reset batch markers when thresholds change
         self.open_batch_marker = None;
         self.close_batch_marker = None;
@@ -536,11 +539,49 @@ impl SymbolState {
     }
 
     /// bidask_sr = (spot_bid - futures_ask) / spot_bid
-    fn calc_ratio(&self) -> Option<f64> {
-        if self.spot_quote.bid <= 0.0 || self.futures_quote.ask <= 0.0 {
-            return None;
+    fn calc_bidask_sr(&self) -> Option<f64> {
+        compute_bidask_sr(
+            (self.spot_quote.bid > 0.0).then_some(self.spot_quote.bid),
+            (self.futures_quote.ask > 0.0).then_some(self.futures_quote.ask),
+        )
+    }
+
+    /// askbid_sr = (spot_ask - futures_bid) / spot_ask
+    fn calc_askbid_sr(&self) -> Option<f64> {
+        compute_askbid_sr(
+            (self.spot_quote.ask > 0.0).then_some(self.spot_quote.ask),
+            (self.futures_quote.bid > 0.0).then_some(self.futures_quote.bid),
+        )
+    }
+
+    fn calc_mid_prices(&self) -> (Option<f64>, Option<f64>) {
+        let spot_mid = if self.spot_quote.bid > 0.0 && self.spot_quote.ask > 0.0 {
+            Some((self.spot_quote.bid + self.spot_quote.ask) * 0.5)
+        } else {
+            None
+        };
+        let futures_mid = if self.futures_quote.bid > 0.0 && self.futures_quote.ask > 0.0 {
+            Some((self.futures_quote.bid + self.futures_quote.ask) * 0.5)
+        } else {
+            None
+        };
+        (spot_mid, futures_mid)
+    }
+
+    fn calc_spread_rate(&self, spot_mid: Option<f64>, fut_mid: Option<f64>) -> Option<f64> {
+        match (spot_mid, fut_mid) {
+            (Some(s), Some(f)) if s > 0.0 => Some((s - f) / s),
+            _ => None,
         }
-        Some((self.spot_quote.bid - self.futures_quote.ask) / self.spot_quote.bid)
+    }
+
+    fn refresh_factors(&mut self) {
+        self.current_bidask_sr = self.calc_bidask_sr();
+        self.current_askbid_sr = self.calc_askbid_sr();
+        let (spot_mid, futures_mid) = self.calc_mid_prices();
+        self.spot_mid_price = spot_mid;
+        self.futures_mid_price = futures_mid;
+        self.spread_rate = self.calc_spread_rate(spot_mid, futures_mid);
     }
 
     fn can_emit_signal(&self, now_us: i64, min_gap_us: i64) -> bool {
@@ -602,17 +643,12 @@ struct EngineStats {
 struct EvaluateDecision {
     symbol_key: String,
     final_signal: i32,
-    price_open_ready: bool,
-    price_close_ready: bool,
-    price_open_bidask: bool,
-    price_open_askbid: bool,
-    price_close_askbid: bool,
     can_emit: bool,
-    ratio: f64,
+    bidask_sr: Option<f64>,
     askbid_sr: Option<f64>,
 }
 
-#[derive(Debug, Clone)] 
+#[derive(Debug, Clone)]
 struct QtyStepInfo {
     spot_min: f64,
     futures_min: f64,
@@ -686,7 +722,7 @@ impl StrategyEngine {
         fut_syms.dedup();
         let client = self.http.clone();
         let limit = self.cfg.strategy.history_limit;
-        let mut tasks = Vec::new(); 
+        let mut tasks = Vec::new();
         for sym in fut_syms {
             let s = sym.clone();
             let c = client.clone();
@@ -1062,30 +1098,25 @@ impl StrategyEngine {
                 let forward_open_threshold = v
                     .get("forward_arb_open_tr")
                     .and_then(|x| x.as_f64())
-                    .or_else(|| v.get("bidask_sr_open_threshold").and_then(|x| x.as_f64()))
                     .unwrap_or(0.0);
                 let forward_cancel_threshold = v
                     .get("forward_arb_cancel_tr")
                     .and_then(|x| x.as_f64())
-                    .or_else(|| v.get("bidask_sr_close_threshold").and_then(|x| x.as_f64()))
                     .unwrap_or(forward_open_threshold);
-                let backward_open_threshold = v
-                    .get("backward_arb_open_tr")
+                let forward_close_threshold = v
+                    .get("forward_arb_close_tr")
                     .and_then(|x| x.as_f64())
-                    .or_else(|| v.get("askbid_sr_open_threshold").and_then(|x| x.as_f64()))
-                    .unwrap_or(forward_open_threshold);
-                let backward_cancel_threshold = v
-                    .get("backward_arb_cancel_tr")
-                    .and_then(|x| x.as_f64())
-                    .or_else(|| v.get("askbid_sr_close_threshold").and_then(|x| x.as_f64()))
-                    .unwrap_or(backward_open_threshold);
+                    .unwrap_or(forward_cancel_threshold);
+                let forward_cancel_close_threshold = v
+                    .get("forward_arb_cancel_close_tr")
+                    .and_then(|x| x.as_f64());
                 result.push(SymbolThreshold {
                     spot_symbol,
                     futures_symbol,
                     forward_open_threshold,
                     forward_cancel_threshold,
-                    backward_open_threshold,
-                    backward_cancel_threshold,
+                    forward_close_threshold,
+                    forward_cancel_close_threshold,
                 });
             }
         }
@@ -1140,63 +1171,6 @@ impl StrategyEngine {
         info!("最小下单量快照\n{}", table);
     }
 
-    fn log_symbol_snapshot(&self) {
-        if !log::log_enabled!(log::Level::Trace) {
-            return;
-        }
-        let mut keys: Vec<String> = self.symbols.keys().cloned().collect();
-        keys.sort();
-        let mut rows: Vec<Vec<String>> = Vec::new();
-        for key in keys {
-            let Some(state) = self.symbols.get(&key) else {
-                continue;
-            };
-            // 两个价差因子（若盘口未准备好，则显示为0）
-            let bidask_sr =
-                compute_bidask_sr(Some(state.spot_quote.bid), Some(state.futures_quote.ask))
-                    .unwrap_or(0.0);
-            let askbid_sr =
-                compute_askbid_sr(Some(state.spot_quote.ask), Some(state.futures_quote.bid))
-                    .unwrap_or(0.0);
-            rows.push(vec![
-                key.clone(),
-                format!("{:.6}", state.spot_quote.bid),
-                format!("{:.6}", state.spot_quote.ask),
-                format!("{:.6}", state.futures_quote.bid),
-                format!("{:.6}", state.futures_quote.ask),
-                format!("{:.6}", bidask_sr),
-                format!("{:.6}", askbid_sr),
-                format!("{:.6}", state.forward_open_threshold),
-                format!("{:.6}", state.forward_cancel_threshold),
-                format!("{:.6}", state.backward_open_threshold),
-                format!("{:.6}", state.backward_cancel_threshold),
-            ]);
-        }
-
-        if rows.is_empty() {
-            trace!("snapshot: 当前无可用盘口/价差信息");
-            return;
-        }
-
-        let table = render_three_line_table(
-            &[
-                "Symbol",
-                "SpotBid",
-                "SpotAsk",
-                "UMBid",
-                "UMAsk",
-                "BidAskSR",
-                "AskBidSR",
-                "BA_OpenTh",
-                "BA_CloseTh",
-                "AB_OpenTh",
-                "AB_CloseTh",
-            ],
-            &rows,
-        );
-        trace!("盘口/价差快照\n{}", table);
-    }
-
     // 本策略不再从本地 JSON 解析阈值
     fn handle_spot_quote(&mut self, msg: &[u8]) {
         let symbol = AskBidSpreadMsg::get_symbol(msg).to_uppercase();
@@ -1214,6 +1188,7 @@ impl StrategyEngine {
             return;
         }
         state.spot_quote.update(bid_price, ask_price, timestamp);
+        state.refresh_factors();
         self.evaluate(&symbol);
     }
 
@@ -1234,6 +1209,7 @@ impl StrategyEngine {
                 return;
             }
             state.futures_quote.update(bid_price, ask_price, timestamp);
+            state.refresh_factors();
         }
         self.evaluate(&spot_key);
     }
@@ -1250,7 +1226,7 @@ impl StrategyEngine {
         let timestamp = FundingRateMsg::get_timestamp(msg);
 
         if let Some(state) = self.symbols.get_mut(&spot_key) {
-            state.last_ratio = state.calc_ratio();
+            state.last_ratio = state.current_bidask_sr;
             state.funding_rate = funding;
             state.predicted_rate = predicted;
             state.loan_rate = 0.0;
@@ -1350,17 +1326,18 @@ impl StrategyEngine {
             if !state.ready_for_eval() {
                 return;
             }
-            let Some(ratio) = state.calc_ratio() else {
+            // BidAsk SR 是 forward 开仓/撤单的硬条件，缺失时直接忽略本次评估
+            let Some(bidask_sr) = state.current_bidask_sr else {
                 return;
             };
+            // AskBid SR 只在平仓价差判定中使用，可为 None
+            let askbid_sr = state.current_askbid_sr;
 
+            // 60s的rolling mean，作为强平信号的辅助
             let prev_ma_signal = state.ma_signal;
-            state.predicted_rate = predicted_now;
-            let askbid_sr =
-                compute_askbid_sr(Some(state.spot_quote.ask), Some(state.futures_quote.bid));
 
-            state.latest_bidask_sr = Some(ratio);
-            state.latest_askbid_sr = askbid_sr;
+            // 预测资金费率
+            state.predicted_rate = predicted_now;
 
             let funding_ma = state.funding_ma;
 
@@ -1376,156 +1353,158 @@ impl StrategyEngine {
                 Some(ma) if ma > close_upper => 2,
                 _ => 0,
             };
+            // 资金冗余信号优先级：资金 MA -> 预测资金，再结合价差判断
             let final_signal = if ma_signal != 0 {
                 ma_signal
             } else {
                 predicted_signal
             };
 
-            let effective_open_threshold = state.forward_open_threshold;
-            let price_open_bidask = ratio <= effective_open_threshold;
-            let price_open_askbid = if !state.backward_open_threshold.is_finite()
-                || state.backward_open_threshold.abs() <= f64::EPSILON
-            {
-                true
-            } else {
-                askbid_sr.map_or(false, |v| v >= state.backward_open_threshold)
-            };
-            let price_close_bidask = if state.forward_cancel_threshold.is_finite() {
-                ratio >= state.forward_cancel_threshold
-            } else {
-                false
-            };
-            let price_close_askbid = if !state.backward_cancel_threshold.is_finite()
-                || state.backward_cancel_threshold.abs() <= f64::EPSILON
-            {
-                false
-            } else {
-                askbid_sr.map_or(false, |v| v >= state.backward_cancel_threshold)
-            };
-            let price_open_ready = price_open_bidask;
-            let price_close_ready = price_close_askbid;
-
             state.predicted_signal = predicted_signal;
+            // ma_signal 表示资金 MA 对应的离散信号 (-2 触发平仓，2 仅记录，0 表示区间内)
+            if ma_signal != prev_ma_signal {
+                debug!(
+                    "{} funding MA 信号切换: prev={} -> current={} (ma={:?}, close_lower={:.6}, close_upper={:.6})",
+                    symbol, prev_ma_signal, ma_signal, funding_ma, close_lower, close_upper
+                );
+            }
             state.ma_signal = ma_signal;
             state.final_signal_value = final_signal;
-            state.price_open_bidask = price_open_bidask;
-            state.price_open_askbid = price_open_askbid;
-            state.price_close_bidask = price_close_bidask;
-            state.price_close_askbid = price_close_askbid;
-            state.price_open_ready = price_open_ready;
-            state.price_close_ready = price_close_ready;
-            state.last_ratio = Some(ratio);
+            state.last_ratio = Some(bidask_sr);
 
             if ma_signal == -2 {
                 if let Some(ma) = funding_ma {
                     debug!(
-                        "{} funding MA 信号(-2)满足: ma={:.6} < close_lower={:.6} price_close_ready={} (askbid_ok={} askbid_sr={:.6} threshold={:.6}) ratio={:.6} prev_ma_signal={}",
+                        "{} funding MA 信号(-2)满足: ma={:.6} < close_lower={:.6} forward_close_ready={} askbid_sr={:.6} close_threshold={:.6} prev_ma_signal={} (prev=-2 表示连续触发)",
                         symbol,
                         ma,
                         close_lower,
-                        price_close_ready,
-                        price_close_askbid,
+                        forward_close_ready(askbid_sr, state.forward_close_threshold),
                         askbid_sr.unwrap_or(f64::NAN),
-                        state.backward_cancel_threshold,
-                        ratio,
+                        state.forward_close_threshold,
                         prev_ma_signal
                     );
                 }
             } else if ma_signal == 2 {
                 if let Some(ma) = funding_ma {
                     debug!(
-                        "{} funding MA 信号(2)满足: ma={:.6} > close_upper={:.6} prev_ma_signal={}",
+                        "{} funding MA 信号(2)满足: ma={:.6} > close_upper={:.6} prev_ma_signal={} (prev=2 表示连续触发)",
                         symbol, ma, close_upper, prev_ma_signal
                     );
                 }
             }
 
-            if price_close_askbid && ma_signal != -2 {
+            if forward_close_ready(askbid_sr, state.forward_close_threshold) && ma_signal != -2 {
                 if let Some(ma) = funding_ma {
                     debug!(
-                        "{} askbid 满足但资金 MA 未触发: ma={:.6} close_lower={:.6}",
+                        "{} askbid 撤单阈值满足但资金 MA 未触发: ma={:.6} close_lower={:.6}",
                         symbol, ma, close_lower
                     );
                 } else {
-                    debug!("{} askbid 满足但缺少资金 MA 数据用于触发 close", symbol);
+                    debug!(
+                        "{} askbid 撤单阈值满足但缺少资金 MA 数据用于触发 close",
+                        symbol
+                    );
                 }
-            } else if ma_signal == -2 && !price_close_askbid {
+            } else if ma_signal == -2
+                && !forward_close_ready(askbid_sr, state.forward_close_threshold)
+            {
                 debug!(
-                    "{} 资金 MA 满足但 askbid 未达阈值: askbid_sr={:.6} threshold={:.6}",
+                    "{} 资金 MA 满足但价差未达撤单阈值: askbid_sr={:.6} threshold={:.6}",
                     symbol,
                     askbid_sr.unwrap_or(f64::NAN),
-                    state.backward_cancel_threshold
+                    state.forward_close_threshold
                 );
             }
 
+            // 将行情与资金计算结果封装，后续统一执行信号决策
             EvaluateDecision {
                 symbol_key: symbol.to_string(),
                 final_signal,
-                price_open_ready,
-                price_close_ready,
-                price_open_bidask,
-                price_open_askbid,
-                price_close_askbid,
                 can_emit: state.can_emit_signal(now_us, min_gap_us),
-                ratio,
+                bidask_sr: Some(bidask_sr),
                 askbid_sr,
             }
         };
 
         let mut requests: Vec<SignalRequest> = Vec::new();
 
+        // 根据最终资金信号与价差就绪状态，分别构造开/平仓请求, 目前只实现正向套利
         match decision.final_signal {
             -1 => {
-                if !decision.price_open_ready {
-                    debug!(
-                        "{} funding信号(-1)忽略: 价差信号未满足 (bidask_ok={} askbid_ok={})",
-                        decision.symbol_key, decision.price_open_bidask, decision.price_open_askbid
-                    );
-                } else if !decision.can_emit {
-                    debug!(
-                        "{} funding信号(-1)忽略: 触发节流 min_gap={}us",
-                        decision.symbol_key, min_gap_us
-                    );
-                } else if let Some(state) = self.symbols.get(&decision.symbol_key) {
-                    let built = self.build_open_requests(state, decision.ratio, now_us);
-                    if built.is_empty() {
+                // 开仓：资金信号为 -1，且价差满足 forward_open_threshold
+                if let Some(state) = self.symbols.get(&decision.symbol_key) {
+                    let open_ready =
+                        forward_open_ready(decision.bidask_sr, state.forward_open_threshold);
+                    if !open_ready {
                         debug!(
-                            "{} funding信号(-1)构建开仓请求失败 (ratio={:.6})",
-                            decision.symbol_key, decision.ratio
+                            "{} funding信号(-1)忽略: 价差信号未满足 (forward_open_ready={})",
+                            decision.symbol_key, open_ready
                         );
+                    } else if !decision.can_emit {
+                        debug!(
+                            "{} funding信号(-1)忽略: 触发节流 min_gap={}us",
+                            decision.symbol_key, min_gap_us
+                        );
+                    } else if let Some(bidask_sr) = decision.bidask_sr {
+                        let built = self.build_open_requests(state, bidask_sr, now_us);
+                        if built.is_empty() {
+                            debug!(
+                                "{} funding信号(-1)构建开仓请求失败 (ratio={:.6})",
+                                decision.symbol_key, bidask_sr
+                            );
+                        } else {
+                            requests.extend(built);
+                        }
                     } else {
-                        requests.extend(built);
+                        debug!(
+                            "{} funding信号(-1)忽略: bidask_sr 缺失，无法构建开仓请求",
+                            decision.symbol_key
+                        );
                     }
+                } else {
+                    debug!(
+                        "{} funding信号(-1)忽略: 未找到 symbol 对应状态",
+                        decision.symbol_key
+                    );
                 }
             }
             -2 => {
-                if !decision.price_close_ready {
-                    debug!(
-                        "{} funding信号(-2)忽略: askbid 未达阈值 (askbid_ok={} askbid_sr={:.6} threshold={:.6})",
-                        decision.symbol_key,
-                        decision.price_close_askbid,
-                        decision.askbid_sr.unwrap_or(f64::NAN),
-                        self.symbols
-                            .get(&decision.symbol_key)
-                            .map(|s| s.backward_cancel_threshold)
-                            .unwrap_or_default()
-                    );
-                } else if !decision.can_emit {
-                    debug!(
-                        "{} funding信号(-2)忽略: 触发节流 min_gap={}us",
-                        decision.symbol_key, min_gap_us
-                    );
-                } else if let Some(state) = self.symbols.get(&decision.symbol_key) {
-                    let built = self.build_close_requests(state, decision.ratio, now_us);
-                    if built.is_empty() {
+                // 平仓：资金 MA 触发 -2，且askbid_sr超过 forward_close_threshold
+                if let Some(state) = self.symbols.get(&decision.symbol_key) {
+                    if !forward_close_ready(decision.askbid_sr, state.forward_close_threshold) {
                         debug!(
-                            "{} funding信号(-2)构建平仓请求失败 (ratio={:.6})",
-                            decision.symbol_key, decision.ratio
+                            "{} funding信号(-2)忽略: 价差未达撤单阈值 (askbid_sr={:.6} threshold={:.6})",
+                            decision.symbol_key,
+                            decision.askbid_sr.unwrap_or(f64::NAN),
+                            state.forward_close_threshold
                         );
+                    } else if !decision.can_emit {
+                        debug!(
+                            "{} funding信号(-2)忽略: 触发节流 min_gap={}us",
+                            decision.symbol_key, min_gap_us
+                        );
+                    } else if let Some(askbid_sr) = decision.askbid_sr {
+                        let built = self.build_close_requests(state, askbid_sr, now_us);
+                        if built.is_empty() {
+                            debug!(
+                                "{} funding信号(-2)构建平仓请求失败 (ratio={:.6})",
+                                decision.symbol_key, askbid_sr
+                            );
+                        } else {
+                            requests.extend(built);
+                        }
                     } else {
-                        requests.extend(built);
+                        debug!(
+                            "{} funding信号(-2)忽略: askbid_sr 缺失，无法构建平仓请求",
+                            decision.symbol_key
+                        );
                     }
+                } else {
+                    debug!(
+                        "{} funding信号(-2)忽略: 未找到 symbol 对应状态",
+                        decision.symbol_key
+                    );
                 }
             }
             1 | 2 => {
@@ -1539,16 +1518,24 @@ impl StrategyEngine {
 
         if self.cfg.order.mode == OrderMode::Ladder {
             if let Some(state) = self.symbols.get(&decision.symbol_key) {
-                let cancel_th = state.forward_cancel_threshold;
-                if cancel_th.is_finite()
-                    && decision.ratio >= cancel_th
-                    && state.can_emit_ladder_cancel(now_us, min_gap_us)
-                {
-                    if let Some(req) =
-                        self.build_ladder_cancel_request(state, decision.ratio, cancel_th, now_us)
+                if let Some(bidask_sr) = decision.bidask_sr {
+                    let cancel_th = state.forward_cancel_threshold;
+                    // 阶梯撤单：价差超过 forward_cancel_threshold 时触发撤单信号
+                    if cancel_th.is_finite()
+                        && bidask_sr >= cancel_th
+                        && state.can_emit_ladder_cancel(now_us, min_gap_us)
                     {
-                        requests.push(req);
+                        if let Some(req) =
+                            self.build_ladder_cancel_request(state, bidask_sr, cancel_th, now_us)
+                        {
+                            requests.push(req);
+                        }
                     }
+                } else {
+                    debug!(
+                        "{} 阶梯撤单忽略: bidask_sr 缺失，无法构建撤单请求",
+                        decision.symbol_key
+                    );
                 }
             }
         }
@@ -1784,8 +1771,8 @@ impl StrategyEngine {
                 loan_rate_8h,
                 bidask_lower: opt_finite(state.forward_open_threshold),
                 bidask_upper: opt_finite(state.forward_cancel_threshold),
-                askbid_lower: opt_active_threshold(state.backward_open_threshold),
-                askbid_upper: opt_active_threshold(state.backward_cancel_threshold),
+                askbid_lower: None,
+                askbid_upper: opt_active_threshold(state.forward_close_threshold),
             };
             // 逐条发送到 msg 通道
             if let Ok(bytes) = entry.to_bytes() {
@@ -1842,24 +1829,35 @@ impl StrategyEngine {
                 (ou, ol, cl, cu, freq)
             };
 
-        let bidask_sr = state.latest_bidask_sr.or_else(|| {
-            compute_bidask_sr(Some(state.spot_quote.bid), Some(state.futures_quote.ask))
+        let bidask_sr = state.current_bidask_sr.or_else(|| {
+            compute_bidask_sr(
+                Some(state.spot_quote.bid).filter(|v| *v > 0.0),
+                Some(state.futures_quote.ask).filter(|v| *v > 0.0),
+            )
         });
-        let askbid_sr = state.latest_askbid_sr.or_else(|| {
-            compute_askbid_sr(Some(state.spot_quote.ask), Some(state.futures_quote.bid))
+        let askbid_sr = state.current_askbid_sr.or_else(|| {
+            compute_askbid_sr(
+                Some(state.spot_quote.ask).filter(|v| *v > 0.0),
+                Some(state.futures_quote.bid).filter(|v| *v > 0.0),
+            )
         });
 
         let price_signal = if action == "open" {
+            let open_ready = forward_open_ready(bidask_sr, state.forward_open_threshold);
             json!({
-                "bidask_met": state.price_open_bidask,
-                "askbid_met": state.price_open_askbid,
-                "ready": state.price_open_ready,
+                "bidask_met": open_ready,
+                "forward_open_ready": open_ready,
+                "bidask_sr": bidask_sr,
+                "askbid_sr": askbid_sr,
             })
         } else {
+            let close_ready = forward_close_ready(askbid_sr, state.forward_close_threshold);
             json!({
-                "bidask_met": state.price_close_bidask,
-                "askbid_met": state.price_close_askbid,
-                "ready": state.price_close_ready,
+                "bidask_met": close_ready,
+                "askbid_met": close_ready,
+                "forward_close_ready": close_ready,
+                "bidask_sr": bidask_sr,
+                "askbid_sr": askbid_sr,
             })
         };
 
@@ -2068,6 +2066,13 @@ impl StrategyEngine {
         if qty <= 0.0 || !qty.is_finite() {
             return None;
         }
+        let spot_sr = if ratio.is_finite() { Some(ratio) } else { None };
+        let futures_sr = state.current_askbid_sr.or_else(|| {
+            compute_askbid_sr(
+                Some(state.spot_quote.ask).filter(|v| *v > 0.0),
+                Some(state.futures_quote.bid).filter(|v| *v > 0.0),
+            )
+        });
         let ctx = BinSingleForwardArbOpenCtx {
             spot_symbol: state.spot_symbol.clone(),
             amount: qty,
@@ -2076,8 +2081,8 @@ impl StrategyEngine {
             price: limit_price,
             price_tick,
             exp_time: self.cfg.max_open_keep_us(),
-            spot_sr: state.latest_bidask_sr,
-            futures_sr: state.latest_askbid_sr,
+            spot_sr,
+            futures_sr,
             funding_ma: state.funding_ma,
             predicted_funding_rate: Some(state.predicted_rate),
             loan_rate: Some(state.loan_rate),
@@ -2828,7 +2833,6 @@ async fn main() -> Result<()> {
     // 初始化阶段：等待 warmup 完成后再打印任何表格
     if engine.is_warmup_complete() {
         engine.print_funding_overview_table();
-        engine.log_symbol_snapshot();
     } else {
         info!(
             "等待资金费率均值预热: 需要每个符号至少 {} 条历史",
@@ -2856,7 +2860,6 @@ async fn main() -> Result<()> {
     setup_signal_handlers(&shutdown)?;
 
     let mut next_stat_time = Instant::now() + Duration::from_secs(30);
-    let mut next_snapshot = Instant::now() + Duration::from_secs(3);
     engine.next_resample = Instant::now();
 
     loop {
@@ -2914,12 +2917,6 @@ async fn main() -> Result<()> {
         if Instant::now() >= next_stat_time {
             engine.print_stats();
             next_stat_time += Duration::from_secs(30);
-        }
-        if Instant::now() >= next_snapshot {
-            if engine.is_warmup_complete() {
-                engine.log_symbol_snapshot();
-            }
-            next_snapshot += Duration::from_secs(3);
         }
         if Instant::now() >= engine.next_resample {
             engine.resample_and_publish();
