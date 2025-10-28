@@ -1434,7 +1434,7 @@ impl StrategyEngine {
             } else {
                 askbid_sr.map_or(false, |v| v >= state.askbid_open_threshold)
             };
-            let price_open_ready = price_open_bidask && price_open_askbid;
+            let price_open_ready = price_open_bidask;
             let price_close_ready = price_close_askbid;
 
             state.predicted_signal = predicted_signal;

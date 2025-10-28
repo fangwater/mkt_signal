@@ -22,17 +22,17 @@
 - Redis 提供的价差阈值 (`open_threshold` / `close_threshold` / `askbid_open_threshold` / `askbid_close_threshold`) 会在刷新时加载。
 - 条件：
   - `price_open_bidask = bidask_sr <= open_threshold`
-  - `price_open_askbid = askbid_sr >= askbid_open_threshold`（配置为 0/NaN 时视为自动满足）
+  - `price_open_askbid = askbid_sr >= askbid_open_threshold`（配置为 0/NaN 时视为自动满足，现仅用于监控）
   - `price_close_bidask = bidask_sr >= close_threshold`（仅用于辅助观察）
   - `price_close_askbid = askbid_sr >= askbid_open_threshold`
   - `price_close_ready = price_close_askbid`
-  - `price_open_ready = price_open_bidask && price_open_askbid`
+  - `price_open_ready = price_open_bidask`
 
 ## 开仓 / 平仓逻辑
 
 - **开仓（现货做多 / 合约做空）**
   - 资金信号为 `-1`
-  - `price_open_ready` 为 `true`
+  - `price_open_ready` 为 `true`（仅由 `price_open_bidask` 决定）
   - 当前持仓 `Flat`
   - 信号节流满足（距离上次信号 >= `min_interval_ms`）
   - 满足时通过 `BinSingleForwardArbOpen` 发布开仓请求，并记录 `last_open_ts`、`position=Opened`
