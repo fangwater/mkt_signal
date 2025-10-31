@@ -32,10 +32,10 @@ from binance_threshold_utils import (
 
 DEFAULT_MAPPING = {
     # 正套
-    "forward_arb_open_tr": ("quantile", "bidask", 5.0),
-    "forward_arb_cancel_tr": ("quantile", "bidask", 10.0),
-    "forward_arb_close_tr": ("quantile", "askbid", 95.0),
-    "forward_arb_cancel_close_tr": ("quantile", "askbid", 90.0),
+    "forward_arb_open_tr": ("quantile", "bidask", 10.0),
+    "forward_arb_cancel_tr": ("quantile", "bidask", 15.0),
+    "forward_arb_close_tr": ("quantile", "askbid", 90.0),
+    "forward_arb_cancel_close_tr": ("quantile", "askbid", 85.0),
     # 反套
     "backward_arb_open_tr": ("quantile", "askbid", 5.0),
     "backward_arb_cancel_tr": ("quantile", "askbid", 10.0),

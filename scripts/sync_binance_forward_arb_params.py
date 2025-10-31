@@ -75,21 +75,21 @@ def main() -> int:
         # 4h thresholds
         "fr_4h_open_upper_threshold": "0.00004",
         "fr_4h_open_lower_threshold": "-0.00004",
-        "fr_4h_close_lower_threshold": "-0.0008",
-        "fr_4h_close_upper_threshold": "0.0008",
+        "fr_4h_close_lower_threshold": "-0.0005",
+        "fr_4h_close_upper_threshold": "0.0005",
         # 8h thresholds
         "fr_8h_open_upper_threshold": "0.00008",
         "fr_8h_open_lower_threshold": "-0.00008",
-        "fr_8h_close_lower_threshold": "-0.001",
-        "fr_8h_close_upper_threshold": "0.001", 
+        "fr_8h_close_lower_threshold": "-0.0005",
+        "fr_8h_close_upper_threshold": "0.0005", 
         # Funding strategy reload/signal params 
         "signal_min_interval_ms": "2000",  ############ 
-        "reload_interval_secs": "60",  
+        "reload_interval_secs": "60", 
         # Pre-trade 限制
         "pre_trade_max_pos_u": "50000",
         "pre_trade_max_symbol_exposure_ratio": "0.01", # 每个交易对最大敞口占总资金比例
-        "pre_trade_max_total_exposure_ratio": "0.01", # 所有交易对总敞口占总资金比例
-        "pre_trade_max_leverage": "2",
+        "pre_trade_max_total_exposure_ratio": "0.005", # 所有交易对总敞口占总资金比例
+        "pre_trade_max_leverage": "2.2",
         "pre_trade_refresh_secs": "30",
         # 下单参数
         "order_mode": "ladder",

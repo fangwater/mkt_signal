@@ -68,6 +68,8 @@ SYMBOL_ALLOWLIST: List[str] = [
     "ILVUSDT",
     "ORCAUSDT",
     "SUNUSDT",
+    'CUSDT', 
+    'XPLUSDT',
 ]
 
 # Mapping from rolling quantile field name to canonical factor name
@@ -132,7 +134,7 @@ def _normalize_quantile(value: object) -> Optional[float]:
     if q < 0.0 or q > 1.0:
         return None
     # round to mitigate floating errors while keeping precision
-    return round(q, 6)
+    return round(q, 6) 
 
 
 def build_quantile_lookup(payload: Dict[str, object]) -> Dict[str, Dict[object, Optional[float]]]:
@@ -256,11 +258,11 @@ def determine_stale_symbols(rds, dest_key: str, desired_symbols: Iterable[str]) 
 
 def print_summary(success: Sequence[str], missing: Sequence[str], skipped: Sequence[str]) -> None:
     """Print a human-readable summary of collection results."""
-    print(f"成功加载 {len(success)} 个 symbol")
+    print(f"成功加载 {len(success)} 个 symbol") 
     if missing:
-        missing_sorted = ", ".join(sorted(set(missing)))
-        print(f"缺少样本或为空: {missing_sorted}")
+        missing_sorted = ", ".join(sorted(set(missing))) 
+        print(f"缺少样本或为空: {missing_sorted}") 
     if skipped:
-        skipped_sorted = ", ".join(sorted(set(skipped)))
-        print(f"未在允许列表中，已跳过: {skipped_sorted}")
+        skipped_sorted = ", ".join(sorted(set(skipped))) 
+        print(f"未在允许列表中，已跳过: {skipped_sorted}") 
 
