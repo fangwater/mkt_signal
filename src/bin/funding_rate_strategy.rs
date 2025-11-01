@@ -1447,7 +1447,7 @@ impl StrategyEngine {
                             decision.symbol_key, min_gap_us
                         );
                     } else if let Some(bidask_sr) = decision.bidask_sr {
-                        let built = self.build_open_requests(state, bidask_sr, now_us);
+                        let built = self.build_open_requests(state, bidask_sr);
                         if built.is_empty() {
                             debug!(
                                 "{} funding信号(-1)构建开仓请求失败 (ratio={:.6})",
@@ -1485,7 +1485,7 @@ impl StrategyEngine {
                             decision.symbol_key, min_gap_us
                         );
                     } else if let Some(askbid_sr) = decision.askbid_sr {
-                        let built = self.build_close_requests(state, askbid_sr, now_us);
+                        let built = self.build_close_requests(state, askbid_sr);
                         if built.is_empty() {
                             debug!(
                                 "{} funding信号(-2)构建平仓请求失败 (ratio={:.6})",
@@ -1526,7 +1526,7 @@ impl StrategyEngine {
                         && state.can_emit_ladder_cancel(now_us, min_gap_us)
                     {
                         if let Some(req) =
-                            self.build_ladder_cancel_request(state, bidask_sr, cancel_th, now_us)
+                            self.build_ladder_cancel_request(state, bidask_sr, cancel_th)
                         {
                             requests.push(req);
                         }
@@ -1548,29 +1548,40 @@ impl StrategyEngine {
             match req {
                 SignalRequest::Open {
                     symbol_key,
-                    ctx,
+                    ctx: mut ctx_bytes,
                     ratio,
                     price,
-                    emit_ts,
                 } => {
-                    match BinSingleForwardArbOpenCtx::from_bytes(ctx.clone()) {
-                        Ok(open_ctx) => debug!(
-                            "发送开仓信号: symbol={} amount={} side={:?} order_type={:?} price={:.8} tick={:.8} exp_time={}",
-                            open_ctx.spot_symbol,
-                            open_ctx.amount,
-                            open_ctx.side,
-                            open_ctx.order_type,
-                            open_ctx.price,
-                            open_ctx.price_tick,
-                            open_ctx.exp_time
-                        ),
+                    let mut parsed_ctx = None;
+                    match BinSingleForwardArbOpenCtx::from_bytes(ctx_bytes.clone()) {
+                        Ok(open_ctx) => {
+                            debug!(
+                                "发送开仓信号: symbol={} amount={} side={:?} order_type={:?} price={:.8} tick={:.8} exp_time={}",
+                                open_ctx.spot_symbol,
+                                open_ctx.amount,
+                                open_ctx.side,
+                                open_ctx.order_type,
+                                open_ctx.price,
+                                open_ctx.price_tick,
+                                open_ctx.exp_time
+                            );
+                            parsed_ctx = Some(open_ctx);
+                        }
                         Err(e) => debug!(
                             "发送开仓信号: 解析上下文失败 symbol={} err={}",
                             symbol_key, e
                         ),
                     }
-                    if let Err(err) = self.publish_signal(SignalType::BinSingleForwardArbOpen, ctx)
-                    {
+                    let emit_ts = get_timestamp_us();
+                    if let Some(mut open_ctx) = parsed_ctx {
+                        open_ctx.create_ts = emit_ts;
+                        ctx_bytes = open_ctx.to_bytes();
+                    }
+                    if let Err(err) = self.publish_signal(
+                        SignalType::BinSingleForwardArbOpen,
+                        ctx_bytes.clone(),
+                        emit_ts,
+                    ) {
                         error!("发送开仓信号失败 {}: {err:?}", symbol_key);
                         return;
                     }
@@ -1601,8 +1612,8 @@ impl StrategyEngine {
                     ctx,
                     ratio,
                     price,
-                    emit_ts,
                 } => {
+                    let emit_ts = get_timestamp_us();
                     match BinSingleForwardArbCloseMarginCtx::from_bytes(ctx.clone()) {
                         Ok(close_ctx) => debug!(
                             "发送平仓信号: symbol={} limit_price={:.8} tick={:.8} exp_time={}",
@@ -1616,9 +1627,11 @@ impl StrategyEngine {
                             symbol_key, e
                         ),
                     }
-                    if let Err(err) =
-                        self.publish_signal(SignalType::BinSingleForwardArbCloseMargin, ctx)
-                    {
+                    if let Err(err) = self.publish_signal(
+                        SignalType::BinSingleForwardArbCloseMargin,
+                        ctx,
+                        emit_ts,
+                    ) {
                         error!("发送平仓信号失败 {}: {err:?}", symbol_key);
                         return;
                     }
@@ -1646,26 +1659,36 @@ impl StrategyEngine {
                 }
                 SignalRequest::Cancel {
                     symbol_key,
-                    ctx,
+                    ctx: mut ctx_bytes,
                     ratio,
                     threshold,
-                    emit_ts,
                 } => {
-                    match BinSingleForwardArbLadderCancelCtx::from_bytes(ctx.clone()) {
-                        Ok(cancel_ctx) => debug!(
-                            "发送阶梯撤单信号: symbol={} bidask_sr={:.6} threshold={:.6}",
-                            cancel_ctx.spot_symbol,
-                            cancel_ctx.bidask_sr,
-                            cancel_ctx.cancel_threshold
-                        ),
+                    let mut parsed_ctx = None;
+                    match BinSingleForwardArbLadderCancelCtx::from_bytes(ctx_bytes.clone()) {
+                        Ok(cancel_ctx) => {
+                            debug!(
+                                "发送阶梯撤单信号: symbol={} bidask_sr={:.6} threshold={:.6}",
+                                cancel_ctx.spot_symbol,
+                                cancel_ctx.bidask_sr,
+                                cancel_ctx.cancel_threshold
+                            );
+                            parsed_ctx = Some(cancel_ctx);
+                        }
                         Err(e) => debug!(
                             "发送阶梯撤单信号: 解析上下文失败 symbol={} err={}",
                             symbol_key, e
                         ),
                     }
-                    if let Err(err) =
-                        self.publish_signal(SignalType::BinSingleForwardArbLadderCancel, ctx)
-                    {
+                    let emit_ts = get_timestamp_us();
+                    if let Some(mut cancel_ctx) = parsed_ctx {
+                        cancel_ctx.trigger_ts = emit_ts;
+                        ctx_bytes = cancel_ctx.to_bytes();
+                    }
+                    if let Err(err) = self.publish_signal(
+                        SignalType::BinSingleForwardArbLadderCancel,
+                        ctx_bytes.clone(),
+                        emit_ts,
+                    ) {
                         error!("发送阶梯撤单信号失败 {}: {err:?}", symbol_key);
                         return;
                     }
@@ -1965,12 +1988,7 @@ impl StrategyEngine {
         Ok(())
     }
 
-    fn build_open_requests(
-        &self,
-        state: &SymbolState,
-        ratio: f64,
-        emit_ts: i64,
-    ) -> Vec<SignalRequest> {
+    fn build_open_requests(&self, state: &SymbolState, ratio: f64) -> Vec<SignalRequest> {
         if state.spot_quote.bid <= 0.0 {
             return Vec::new();
         }
@@ -1990,7 +2008,7 @@ impl StrategyEngine {
         }
         offsets
             .into_iter()
-            .filter_map(|offset| self.build_open_request_with_offset(state, ratio, emit_ts, offset))
+            .filter_map(|offset| self.build_open_request_with_offset(state, ratio, offset))
             .collect()
     }
 
@@ -1998,7 +2016,6 @@ impl StrategyEngine {
         &self,
         state: &SymbolState,
         ratio: f64,
-        emit_ts: i64,
         offset: f64,
     ) -> Option<SignalRequest> {
         let mut limit_price = state.spot_quote.bid * (1.0 - offset);
@@ -2066,13 +2083,26 @@ impl StrategyEngine {
         if qty <= 0.0 || !qty.is_finite() {
             return None;
         }
-        let spot_sr = if ratio.is_finite() { Some(ratio) } else { None };
-        let futures_sr = state.current_askbid_sr.or_else(|| {
-            compute_askbid_sr(
-                Some(state.spot_quote.ask).filter(|v| *v > 0.0),
-                Some(state.futures_quote.bid).filter(|v| *v > 0.0),
-            )
-        });
+        let spot_bid0 = if state.spot_quote.bid.is_finite() {
+            state.spot_quote.bid.max(0.0)
+        } else {
+            0.0
+        };
+        let spot_ask0 = if state.spot_quote.ask.is_finite() {
+            state.spot_quote.ask.max(0.0)
+        } else {
+            0.0
+        };
+        let swap_bid0 = if state.futures_quote.bid.is_finite() {
+            state.futures_quote.bid.max(0.0)
+        } else {
+            0.0
+        };
+        let swap_ask0 = if state.futures_quote.ask.is_finite() {
+            state.futures_quote.ask.max(0.0)
+        } else {
+            0.0
+        };
         let ctx = BinSingleForwardArbOpenCtx {
             spot_symbol: state.spot_symbol.clone(),
             amount: qty,
@@ -2081,8 +2111,11 @@ impl StrategyEngine {
             price: limit_price,
             price_tick,
             exp_time: self.cfg.max_open_keep_us(),
-            spot_sr,
-            futures_sr,
+            create_ts: 0,
+            spot_bid0,
+            spot_ask0,
+            swap_bid0,
+            swap_ask0,
             funding_ma: state.funding_ma,
             predicted_funding_rate: Some(state.predicted_rate),
             loan_rate: Some(state.loan_rate),
@@ -2093,16 +2126,10 @@ impl StrategyEngine {
             ctx,
             ratio,
             price: limit_price,
-            emit_ts,
         })
     }
 
-    fn build_close_requests(
-        &self,
-        state: &SymbolState,
-        ratio: f64,
-        emit_ts: i64,
-    ) -> Vec<SignalRequest> {
+    fn build_close_requests(&self, state: &SymbolState, ratio: f64) -> Vec<SignalRequest> {
         if state.spot_quote.ask <= 0.0 {
             return Vec::new();
         }
@@ -2122,9 +2149,7 @@ impl StrategyEngine {
         }
         offsets
             .into_iter()
-            .filter_map(|offset| {
-                self.build_close_request_with_offset(state, ratio, emit_ts, offset)
-            })
+            .filter_map(|offset| self.build_close_request_with_offset(state, ratio, offset))
             .collect()
     }
 
@@ -2132,7 +2157,6 @@ impl StrategyEngine {
         &self,
         state: &SymbolState,
         ratio: f64,
-        emit_ts: i64,
         offset: f64,
     ) -> Option<SignalRequest> {
         let mut limit_price = state.spot_quote.ask * (1.0 + offset);
@@ -2174,7 +2198,6 @@ impl StrategyEngine {
             ctx,
             ratio,
             price: limit_price,
-            emit_ts,
         })
     }
 
@@ -2183,7 +2206,6 @@ impl StrategyEngine {
         state: &SymbolState,
         bidask_sr: f64,
         threshold: f64,
-        emit_ts: i64,
     ) -> Option<SignalRequest> {
         if !bidask_sr.is_finite() || !threshold.is_finite() {
             return None;
@@ -2193,7 +2215,7 @@ impl StrategyEngine {
             futures_symbol: state.futures_symbol.clone(),
             bidask_sr,
             cancel_threshold: threshold,
-            trigger_ts: emit_ts,
+            trigger_ts: 0,
         }
         .to_bytes();
         Some(SignalRequest::Cancel {
@@ -2201,13 +2223,11 @@ impl StrategyEngine {
             ctx,
             ratio: bidask_sr,
             threshold,
-            emit_ts,
         })
     }
 
-    fn publish_signal(&self, signal_type: SignalType, context: Bytes) -> Result<()> {
-        let now_us = get_timestamp_us();
-        let signal = TradeSignal::create(signal_type.clone(), now_us, 0.0, context);
+    fn publish_signal(&self, signal_type: SignalType, context: Bytes, emit_ts: i64) -> Result<()> {
+        let signal = TradeSignal::create(signal_type.clone(), emit_ts, 0.0, context);
         let frame = signal.to_bytes();
         self.publisher
             .publish(&frame)
@@ -2720,21 +2740,18 @@ enum SignalRequest {
         ctx: Bytes,
         ratio: f64,
         price: f64,
-        emit_ts: i64,
     },
     Close {
         symbol_key: String,
         ctx: Bytes,
         ratio: f64,
         price: f64,
-        emit_ts: i64,
     },
     Cancel {
         symbol_key: String,
         ctx: Bytes,
         ratio: f64,
         threshold: f64,
-        emit_ts: i64,
     },
 }
 

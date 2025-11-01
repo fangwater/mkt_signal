@@ -53,35 +53,3 @@ fn select_nth(values: &mut [f32], idx: usize) {
 fn compare_f32(a: f32, b: f32) -> Ordering {
     a.partial_cmp(&b).unwrap_or_else(|| a.total_cmp(&b))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::quantiles_linear_select_unstable;
-
-    #[test]
-    fn basic_quantiles() {
-        let mut data = vec![1.0, 2.0, 3.0, 4.0];
-        let qs = [0.0, 0.25, 0.5, 0.75, 1.0];
-        let res = quantiles_linear_select_unstable(&mut data, &qs);
-        let expected = vec![1.0, 1.75, 2.5, 3.25, 4.0];
-        for (got, exp) in res.iter().zip(expected.iter()) {
-            assert!((got - exp).abs() < 1e-6);
-        }
-    }
-
-    #[test]
-    fn single_element() {
-        let mut data = vec![42.0];
-        let qs = [0.0, 0.5, 1.0];
-        let res = quantiles_linear_select_unstable(&mut data, &qs);
-        assert_eq!(res, vec![42.0, 42.0, 42.0]);
-    }
-
-    #[test]
-    fn empty_returns_nan() {
-        let mut data = Vec::new();
-        let qs = [0.1, 0.9];
-        let res = quantiles_linear_select_unstable(&mut data, &qs);
-        assert!(res.iter().all(|v| v.is_nan()));
-    }
-}

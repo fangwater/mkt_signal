@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
 /// 币安单所正向套利开仓信号上下文
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BinSingleForwardArbOpenCtx {
     pub spot_symbol: String,
     pub amount: f32,
@@ -31,8 +31,11 @@ pub struct BinSingleForwardArbOpenCtx {
     pub price: f64,
     pub price_tick: f64,
     pub exp_time: i64,
-    pub spot_sr: Option<f64>,
-    pub futures_sr: Option<f64>,
+    pub create_ts: i64,
+    pub spot_bid0: f64,
+    pub spot_ask0: f64,
+    pub swap_bid0: f64,
+    pub swap_ask0: f64,
     pub funding_ma: Option<f64>,
     pub predicted_funding_rate: Option<f64>,
     pub loan_rate: Option<f64>,
@@ -82,9 +85,12 @@ pub struct OpenSignalMeta {
     price: f64,
     price_tick: f64,
     exp_time: i64,
+    create_ts: i64,
     trigger_ts_us: i64,
-    spot_sr: Option<f64>,
-    futures_sr: Option<f64>,
+    spot_bid0: f64,
+    spot_ask0: f64,
+    swap_bid0: f64,
+    swap_ask0: f64,
     funding_ma: Option<f64>,
     predicted_funding_rate: Option<f64>,
     loan_rate: Option<f64>,
@@ -114,6 +120,11 @@ impl BinSingleForwardArbOpenCtx {
         buf.put_f64_le(self.price_tick);
         buf.put_i64_le(self.exp_time);
 
+        buf.put_f64_le(self.spot_bid0);
+        buf.put_f64_le(self.spot_ask0);
+        buf.put_f64_le(self.swap_bid0);
+        buf.put_f64_le(self.swap_ask0);
+
         fn put_option_f64(buf: &mut BytesMut, value: Option<f64>) {
             match value {
                 Some(v) => {
@@ -126,11 +137,10 @@ impl BinSingleForwardArbOpenCtx {
             }
         }
 
-        put_option_f64(&mut buf, self.spot_sr);
-        put_option_f64(&mut buf, self.futures_sr);
         put_option_f64(&mut buf, self.funding_ma);
         put_option_f64(&mut buf, self.predicted_funding_rate);
         put_option_f64(&mut buf, self.loan_rate);
+        buf.put_i64_le(self.create_ts);
 
         buf.freeze()
     }
@@ -177,6 +187,26 @@ impl BinSingleForwardArbOpenCtx {
         }
         let exp_time = bytes.get_i64_le();
 
+        if bytes.remaining() < 8 {
+            return Err("Not enough bytes for spot_bid0".to_string());
+        }
+        let spot_bid0 = bytes.get_f64_le();
+
+        if bytes.remaining() < 8 {
+            return Err("Not enough bytes for spot_ask0".to_string());
+        }
+        let spot_ask0 = bytes.get_f64_le();
+
+        if bytes.remaining() < 8 {
+            return Err("Not enough bytes for swap_bid0".to_string());
+        }
+        let swap_bid0 = bytes.get_f64_le();
+
+        if bytes.remaining() < 8 {
+            return Err("Not enough bytes for swap_ask0".to_string());
+        }
+        let swap_ask0 = bytes.get_f64_le();
+
         fn read_option_f64(bytes: &mut Bytes) -> Option<f64> {
             if bytes.remaining() < 1 {
                 return None;
@@ -191,11 +221,14 @@ impl BinSingleForwardArbOpenCtx {
             Some(bytes.get_f64_le())
         }
 
-        let spot_sr = read_option_f64(&mut bytes);
-        let futures_sr = read_option_f64(&mut bytes);
         let funding_ma = read_option_f64(&mut bytes);
         let predicted_funding_rate = read_option_f64(&mut bytes);
         let loan_rate = read_option_f64(&mut bytes);
+        let create_ts = if bytes.remaining() >= 8 {
+            bytes.get_i64_le()
+        } else {
+            0
+        };
 
         Ok(Self {
             spot_symbol,
@@ -205,8 +238,11 @@ impl BinSingleForwardArbOpenCtx {
             price,
             price_tick,
             exp_time,
-            spot_sr,
-            futures_sr,
+            create_ts,
+            spot_bid0,
+            spot_ask0,
+            swap_bid0,
+            swap_ask0,
             funding_ma,
             predicted_funding_rate,
             loan_rate,
@@ -1628,9 +1664,12 @@ impl BinSingleForwardArbStrategy {
                 price: open_ctx.price,
                 price_tick: open_ctx.price_tick,
                 exp_time: open_ctx.exp_time,
+                create_ts: open_ctx.create_ts,
                 trigger_ts_us: get_timestamp_us(),
-                spot_sr: open_ctx.spot_sr,
-                futures_sr: open_ctx.futures_sr,
+                spot_bid0: open_ctx.spot_bid0,
+                spot_ask0: open_ctx.spot_ask0,
+                swap_bid0: open_ctx.swap_bid0,
+                swap_ask0: open_ctx.swap_ask0,
                 funding_ma: open_ctx.funding_ma,
                 predicted_funding_rate: open_ctx.predicted_funding_rate,
                 loan_rate: open_ctx.loan_rate,
@@ -3438,9 +3477,18 @@ impl BinSingleForwardArbStrategy {
             extra,
         ]);
 
-        if meta.spot_sr.is_some()
-            || meta.futures_sr.is_some()
-            || meta.funding_ma.is_some()
+        let fmt_decimal = |value: f64| Self::format_decimal(value);
+        rows.push(vec![
+            "Book".to_string(),
+            format!("spot_bid={}", fmt_decimal(meta.spot_bid0)),
+            format!("spot_ask={}", fmt_decimal(meta.spot_ask0)),
+            format!("swap_bid={}", fmt_decimal(meta.swap_bid0)),
+            format!("swap_ask={}", fmt_decimal(meta.swap_ask0)),
+            "-".to_string(),
+            String::new(),
+        ]);
+
+        if meta.funding_ma.is_some()
             || meta.predicted_funding_rate.is_some()
             || meta.loan_rate.is_some()
         {
@@ -3450,11 +3498,7 @@ impl BinSingleForwardArbStrategy {
             };
             rows.push(vec![
                 "Metrics".to_string(),
-                format!(
-                    "bidask_sr={} askbid_sr={}",
-                    format_opt(meta.spot_sr),
-                    format_opt(meta.futures_sr)
-                ),
+                "-".to_string(),
                 "-".to_string(),
                 format!("fund_ma={}", format_opt(meta.funding_ma)),
                 format!("pred={}", format_opt(meta.predicted_funding_rate)),

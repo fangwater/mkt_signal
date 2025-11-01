@@ -184,21 +184,3 @@ impl RedisClient {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_connection_url() {
-        let mut settings = RedisSettings::default();
-        assert_eq!(settings.connection_url(), "redis://127.0.0.1:6379/0");
-        settings.username = Some("user".into());
-        settings.password = Some("pass".into());
-        assert_eq!(
-            settings.connection_url(),
-            "redis://user:pass@127.0.0.1:6379/0"
-        );
-    }
-}

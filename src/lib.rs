@@ -1,8 +1,10 @@
 // Normal module declarations
+pub mod account;
 pub mod common;
 pub mod connection;
 pub mod mkt_pub;
 pub mod parser;
+pub mod persist_manager;
 pub mod portfolio_margin;
 pub mod pre_trade;
 pub mod rolling_metrics;

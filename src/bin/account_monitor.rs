@@ -1,12 +1,28 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use log::{debug, error, info, warn};
+use mkt_signal::account::execution_record::{
+    ExecutionRecordMessage, MARGIN_EXECUTION_RECORD_CHANNEL,
+};
+use mkt_signal::account::order_update_record::{
+    OrderUpdateRecordMessage, UM_ORDER_UPDATE_RECORD_CHANNEL,
+};
+use mkt_signal::common::account_msg::{
+    get_event_type, AccountEventType, ExecutionReportMsg, OrderTradeUpdateMsg,
+};
+use mkt_signal::common::iceoryx_publisher::{
+    BinanceMarginUpdatePublisher, BinanceUmUpdatePublisher,
+};
+use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::binance_account_event_parser::BinanceAccountEventParser;
 use mkt_signal::parser::default_parser::Parser;
 use mkt_signal::portfolio_margin::binance_user_stream::BinanceUserDataConnection;
 use mkt_signal::portfolio_margin::listen_key::BinanceListenKeyService;
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashSet, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::time::Duration;
 use tokio::signal;
 use tokio::sync::{broadcast, watch};
@@ -126,6 +142,10 @@ async fn main() -> Result<()> {
         .map(|c| (c.history_size, c.max_subscribers))
         .unwrap_or((None, None));
     let mut forwarder = PmForwarder::new("binance", pm_hist, pm_subs)?;
+    let execution_publisher = BinanceMarginUpdatePublisher::new(MARGIN_EXECUTION_RECORD_CHANNEL)?;
+    let um_order_publisher = BinanceUmUpdatePublisher::new(UM_ORDER_UPDATE_RECORD_CHANNEL)?;
+    let mut execution_deduper = ExecutionDeduper::new(8192);
+    let mut um_order_deduper = OrderUpdateDeduper::new(8192);
     let mut stats = tokio::time::interval(Duration::from_secs(30));
 
     // Spawn primary and secondary paths
@@ -154,6 +174,20 @@ async fn main() -> Result<()> {
         tokio::select! {
             Some(msg) = evt_rx.recv() => {
                 forwarder.send_raw(&msg);
+                if let Err(err) = maybe_publish_execution_record(
+                    &msg,
+                    &execution_publisher,
+                    &mut execution_deduper,
+                ) {
+                    warn!("failed to publish execution record: {err:#}");
+                }
+                if let Err(err) = maybe_publish_um_order_update(
+                    &msg,
+                    &um_order_publisher,
+                    &mut um_order_deduper,
+                ) {
+                    warn!("failed to publish UM order update: {err:#}");
+                }
             }
             _ = stats.tick() => {
                 forwarder.log_stats();
@@ -255,4 +289,231 @@ fn spawn_user_stream_path(
             }
         }
     })
+}
+
+fn maybe_publish_execution_record(
+    msg: &Bytes,
+    publisher: &BinanceMarginUpdatePublisher,
+    deduper: &mut ExecutionDeduper,
+) -> anyhow::Result<()> {
+    if msg.len() < 8 {
+        return Ok(());
+    }
+    if get_event_type(msg.as_ref()) != AccountEventType::ExecutionReport {
+        return Ok(());
+    }
+    let payload_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
+    if msg.len() < 8 + payload_len {
+        return Err(anyhow!(
+            "execution report payload truncated: expected {} got {}",
+            payload_len,
+            msg.len().saturating_sub(8)
+        ));
+    }
+    let payload = msg.slice(8..8 + payload_len);
+    let report = ExecutionReportMsg::from_bytes(&payload)?;
+    if !deduper.should_publish(&report) {
+        return Ok(());
+    }
+
+    let recv_ts = get_timestamp_us();
+    let strategy_id = (report.client_order_id >> 32) as i32;
+    let client_order_id_str = if report.client_order_id_str.is_empty() {
+        None
+    } else {
+        Some(report.client_order_id_str.clone())
+    };
+
+    let record = ExecutionRecordMessage::new(
+        recv_ts,
+        report.event_time,
+        report.transaction_time,
+        report.order_id,
+        report.trade_id,
+        report.order_creation_time,
+        report.working_time,
+        report.update_id,
+        report.symbol.clone(),
+        report.client_order_id,
+        client_order_id_str,
+        strategy_id,
+        report.side,
+        report.is_maker,
+        report.is_working,
+        report.price,
+        report.quantity,
+        report.last_executed_quantity,
+        report.cumulative_filled_quantity,
+        report.last_executed_price,
+        report.commission_amount,
+        report.commission_asset.clone(),
+        report.cumulative_quote,
+        report.last_quote,
+        report.quote_order_quantity,
+        report.order_type.clone(),
+        report.time_in_force.clone(),
+        report.execution_type.clone(),
+        report.order_status.clone(),
+    );
+    let bytes = record.to_bytes();
+    publisher.publish(&bytes)?;
+    Ok(())
+}
+
+fn maybe_publish_um_order_update(
+    msg: &Bytes,
+    publisher: &BinanceUmUpdatePublisher,
+    deduper: &mut OrderUpdateDeduper,
+) -> anyhow::Result<()> {
+    if msg.len() < 8 {
+        return Ok(());
+    }
+    if get_event_type(msg.as_ref()) != AccountEventType::OrderTradeUpdate {
+        return Ok(());
+    }
+    let payload_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
+    if msg.len() < 8 + payload_len {
+        return Err(anyhow!(
+            "order trade update payload truncated: expected {} got {}",
+            payload_len,
+            msg.len().saturating_sub(8)
+        ));
+    }
+    let payload = msg.slice(8..8 + payload_len);
+    let update = OrderTradeUpdateMsg::from_bytes(&payload)?;
+    if !update.business_unit.eq_ignore_ascii_case("UM") {
+        return Ok(());
+    }
+    if !deduper.should_publish(&update) {
+        return Ok(());
+    }
+
+    let recv_ts = get_timestamp_us();
+    let client_order_id_str = if update.client_order_id_str.is_empty() {
+        None
+    } else {
+        Some(update.client_order_id_str.clone())
+    };
+    let derived_strategy_id = ((update.client_order_id >> 32) as i32) as i64;
+    let account_recv_ts_us = recv_ts;
+
+    let record = OrderUpdateRecordMessage::new(
+        recv_ts,
+        account_recv_ts_us,
+        update.event_time,
+        update.transaction_time,
+        update.order_id,
+        update.trade_id,
+        update.strategy_id,
+        derived_strategy_id,
+        update.symbol.clone(),
+        update.client_order_id,
+        client_order_id_str,
+        update.side,
+        update.position_side,
+        update.is_maker,
+        update.reduce_only,
+        update.price,
+        update.quantity,
+        update.average_price,
+        update.stop_price,
+        update.last_executed_quantity,
+        update.cumulative_filled_quantity,
+        update.last_executed_price,
+        update.commission_amount,
+        update.buy_notional,
+        update.sell_notional,
+        update.realized_profit,
+        update.order_type.clone(),
+        update.time_in_force.clone(),
+        update.execution_type.clone(),
+        update.order_status.clone(),
+        update.commission_asset.clone(),
+        update.strategy_type.clone(),
+        update.business_unit.clone(),
+    );
+
+    let bytes = record.to_bytes();
+    publisher.publish(&bytes)?;
+    Ok(())
+}
+
+struct ExecutionDeduper {
+    seen: HashSet<u64>,
+    order: VecDeque<u64>,
+    capacity: usize,
+}
+
+impl ExecutionDeduper {
+    fn new(capacity: usize) -> Self {
+        Self {
+            seen: HashSet::with_capacity(capacity),
+            order: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    fn should_publish(&mut self, report: &ExecutionReportMsg) -> bool {
+        let key = execution_dedup_key(report);
+        if self.seen.contains(&key) {
+            return false;
+        }
+        self.seen.insert(key);
+        self.order.push_back(key);
+        if self.order.len() > self.capacity {
+            if let Some(old) = self.order.pop_front() {
+                self.seen.remove(&old);
+            }
+        }
+        true
+    }
+}
+
+fn execution_dedup_key(report: &ExecutionReportMsg) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    report.order_id.hash(&mut hasher);
+    report.trade_id.hash(&mut hasher);
+    report.update_id.hash(&mut hasher);
+    report.execution_type.hash(&mut hasher);
+    hasher.finish()
+}
+
+struct OrderUpdateDeduper {
+    seen: HashSet<u64>,
+    order: VecDeque<u64>,
+    capacity: usize,
+}
+
+impl OrderUpdateDeduper {
+    fn new(capacity: usize) -> Self {
+        Self {
+            seen: HashSet::with_capacity(capacity),
+            order: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    fn should_publish(&mut self, update: &OrderTradeUpdateMsg) -> bool {
+        let key = order_update_dedup_key(update);
+        if self.seen.contains(&key) {
+            return false;
+        }
+        self.seen.insert(key);
+        self.order.push_back(key);
+        if self.order.len() > self.capacity {
+            if let Some(old) = self.order.pop_front() {
+                self.seen.remove(&old);
+            }
+        }
+        true
+    }
+}
+
+fn order_update_dedup_key(update: &OrderTradeUpdateMsg) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    update.order_id.hash(&mut hasher);
+    update.trade_id.hash(&mut hasher);
+    update.execution_type.hash(&mut hasher);
+    update.event_time.hash(&mut hasher);
+    hasher.finish()
 }

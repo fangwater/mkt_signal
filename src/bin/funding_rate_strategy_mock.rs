@@ -463,8 +463,6 @@ struct SymbolState {
     loan_rate: f64,
     funding_ts: i64,
     next_funding_time: i64,
-    latest_bidask_sr: Option<f64>,
-    latest_askbid_sr: Option<f64>,
     funding_ma: Option<f64>,
 }
 
@@ -492,8 +490,6 @@ impl SymbolState {
             loan_rate: 0.0,
             funding_ts: 0,
             next_funding_time: 0,
-            latest_bidask_sr: None,
-            latest_askbid_sr: None,
             funding_ma: None,
         }
     }
@@ -1514,6 +1510,26 @@ impl MockController {
             );
             return None;
         }
+        let spot_bid0 = if state.spot_quote.bid.is_finite() {
+            state.spot_quote.bid.max(0.0)
+        } else {
+            0.0
+        };
+        let spot_ask0 = if state.spot_quote.ask.is_finite() {
+            state.spot_quote.ask.max(0.0)
+        } else {
+            0.0
+        };
+        let swap_bid0 = if state.futures_quote.bid.is_finite() {
+            state.futures_quote.bid.max(0.0)
+        } else {
+            0.0
+        };
+        let swap_ask0 = if state.futures_quote.ask.is_finite() {
+            state.futures_quote.ask.max(0.0)
+        } else {
+            0.0
+        };
         let ctx = BinSingleForwardArbOpenCtx {
             spot_symbol: state.spot_symbol.clone(),
             amount: qty,
@@ -1522,8 +1538,11 @@ impl MockController {
             price: limit_price,
             price_tick,
             exp_time: self.cfg.max_open_keep_us(),
-            spot_sr: state.latest_bidask_sr,
-            futures_sr: state.latest_askbid_sr,
+            create_ts: 0,
+            spot_bid0,
+            spot_ask0,
+            swap_bid0,
+            swap_ask0,
             funding_ma: state.funding_ma,
             predicted_funding_rate: Some(state.predicted_rate),
             loan_rate: Some(state.loan_rate),
@@ -1661,7 +1680,12 @@ impl MockController {
             anyhow::bail!("{spot_symbol} 未能构建开仓信号，请检查行情或 order_mode 配置");
         }
         for signal in &signals {
-            self.publish_signal(SignalType::BinSingleForwardArbOpen, signal.ctx.clone())?;
+            let emit_ts = get_timestamp_us();
+            self.publish_signal(
+                SignalType::BinSingleForwardArbOpen,
+                signal.ctx.clone(),
+                emit_ts,
+            )?;
             info!(
                 "{} mock 强制开仓: offset={:.6} qty={:.6} price={:.8}",
                 spot_symbol, signal.offset, signal.qty, signal.price
@@ -1697,9 +1721,11 @@ impl MockController {
             anyhow::bail!("{spot_symbol} 未能构建平仓信号，请检查行情或 order_mode 配置");
         }
         for signal in &signals {
+            let emit_ts = get_timestamp_us();
             self.publish_signal(
                 SignalType::BinSingleForwardArbCloseMargin,
                 signal.ctx.clone(),
+                emit_ts,
             )?;
             info!(
                 "{} mock 强制平仓: offset={:.6} price={:.8}",
@@ -1744,6 +1770,7 @@ impl MockController {
         self.publish_signal(
             SignalType::BinSingleForwardArbLadderCancel,
             signal.ctx.clone(),
+            signal.trigger_ts,
         )?;
         info!(
             "{} mock 阶梯撤单: bidask_sr={:.6} threshold={:.6}",
@@ -1757,33 +1784,34 @@ impl MockController {
         Ok(())
     }
 
-    fn publish_signal(&self, signal_type: SignalType, context: Bytes) -> Result<()> {
+    fn publish_signal(&self, signal_type: SignalType, context: Bytes, emit_ts: i64) -> Result<()> {
         // 预热未完成则忽略任何信号发布
         if !self.is_warmup_complete() {
             warn!("mock 跳过信号发布: warmup 未完成");
             return Ok(());
         }
-        let now = get_timestamp_us();
         let payload = context.clone();
-        let signal = TradeSignal::create(signal_type.clone(), now, 0.0, payload.clone());
+        let signal = TradeSignal::create(signal_type.clone(), emit_ts, 0.0, payload.clone());
 
         match signal_type {
             SignalType::BinSingleForwardArbOpen => {
                 if let Ok(open_ctx) = BinSingleForwardArbOpenCtx::from_bytes(payload.clone()) {
-                    let fmt = |v: Option<f64>| match v {
+                    let fmt_opt = |v: Option<f64>| match v {
                         Some(val) => format!("{:.6}", val),
                         None => "-".to_string(),
                     };
                     info!(
-                        "mock publish open signal: spot={} qty={:.6} price={:.8} spot_sr={} fut_sr={} funding_ma={} pred={} loan={}",
+                        "mock publish open signal: spot={} qty={:.6} price={:.8} spot_bid={:.8} spot_ask={:.8} swap_bid={:.8} swap_ask={:.8} funding_ma={} pred={} loan={}",
                         open_ctx.spot_symbol,
                         open_ctx.amount,
                         open_ctx.price,
-                        fmt(open_ctx.spot_sr),
-                        fmt(open_ctx.futures_sr),
-                        fmt(open_ctx.funding_ma),
-                        fmt(open_ctx.predicted_funding_rate),
-                        fmt(open_ctx.loan_rate)
+                        open_ctx.spot_bid0,
+                        open_ctx.spot_ask0,
+                        open_ctx.swap_bid0,
+                        open_ctx.swap_ask0,
+                        fmt_opt(open_ctx.funding_ma),
+                        fmt_opt(open_ctx.predicted_funding_rate),
+                        fmt_opt(open_ctx.loan_rate)
                     );
                 }
             }

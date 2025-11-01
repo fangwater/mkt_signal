@@ -3,7 +3,9 @@ use crate::common::account_msg::{
     AccountUpdateBalanceMsg, AccountUpdateFlushMsg, AccountUpdatePositionMsg, BalanceUpdateMsg,
     ExecutionReportMsg, OrderTradeUpdateMsg,
 };
-use crate::common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD, SIGNAL_PAYLOAD};
+use crate::common::iceoryx_publisher::{
+    ResamplePublisher, SignalPublisher, RESAMPLE_PAYLOAD, SIGNAL_PAYLOAD,
+};
 use crate::common::min_qty_table::MinQtyTable;
 use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
 use crate::common::time_util::get_timestamp_us;
@@ -21,6 +23,7 @@ use crate::signal::binance_forward_arb::{
     BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbCloseUmCtx, BinSingleForwardArbHedgeCtx,
     BinSingleForwardArbLadderCancelCtx, BinSingleForwardArbOpenCtx, BinSingleForwardArbStrategy,
 };
+use crate::signal::record::{SignalRecordMessage, PRE_TRADE_SIGNAL_RECORD_CHANNEL};
 use crate::signal::resample::{
     PreTradeExposureResampleEntry, PreTradeExposureRow, PreTradePositionResampleEntry,
     PreTradeRiskResampleEntry, PreTradeSpotBalanceRow, PreTradeUmPositionRow,
@@ -88,6 +91,16 @@ impl PreTrade {
         let resample_positions_pub = make_pub(PRE_TRADE_POSITIONS_CHANNEL);
         let resample_exposure_pub = make_pub(PRE_TRADE_EXPOSURE_CHANNEL);
         let resample_risk_pub = make_pub(PRE_TRADE_RISK_CHANNEL);
+        let signal_record_pub = match SignalPublisher::new(PRE_TRADE_SIGNAL_RECORD_CHANNEL) {
+            Ok(p) => Some(p),
+            Err(err) => {
+                warn!(
+                    "failed to create pre_trade signal record publisher on {}: {err:#}",
+                    PRE_TRADE_SIGNAL_RECORD_CHANNEL
+                );
+                None
+            }
+        };
 
         let mut runtime = RuntimeContext::new(
             bootstrap,
@@ -98,6 +111,7 @@ impl PreTrade {
             resample_positions_pub,
             resample_exposure_pub,
             resample_risk_pub,
+            signal_record_pub,
         );
 
         // 首次从 Redis 拉取 pre-trade 参数
@@ -296,6 +310,7 @@ struct RuntimeContext {
     resample_positions_pub: Option<ResamplePublisher>,
     resample_exposure_pub: Option<ResamplePublisher>,
     resample_risk_pub: Option<ResamplePublisher>,
+    signal_record_pub: Option<SignalPublisher>,
     resample_interval: std::time::Duration,
     next_resample: std::time::Instant,
     next_params_refresh: std::time::Instant,
@@ -315,6 +330,7 @@ impl RuntimeContext {
         resample_positions_pub: Option<ResamplePublisher>,
         resample_exposure_pub: Option<ResamplePublisher>,
         resample_risk_pub: Option<ResamplePublisher>,
+        signal_record_pub: Option<SignalPublisher>,
     ) -> Self {
         let BootstrapResources {
             um_manager,
@@ -346,6 +362,7 @@ impl RuntimeContext {
             resample_positions_pub,
             resample_exposure_pub,
             resample_risk_pub,
+            signal_record_pub,
             resample_interval: std::time::Duration::from_secs(3),
             next_resample: std::time::Instant::now() + std::time::Duration::from_secs(3),
             next_params_refresh: std::time::Instant::now(),
@@ -372,6 +389,19 @@ impl RuntimeContext {
             symbol,
             self.strategy_mgr.len()
         );
+    }
+
+    fn publish_signal_record(&self, record: &SignalRecordMessage) {
+        let Some(publisher) = &self.signal_record_pub else {
+            return;
+        };
+        let payload = record.to_bytes();
+        if let Err(err) = publisher.publish(payload.as_ref()) {
+            warn!(
+                "failed to publish signal record strategy_id={}: {err:#}",
+                record.strategy_id
+            );
+        }
     }
 
     fn remove_strategy(&mut self, strategy_id: i32) {
@@ -1304,6 +1334,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                         "decoded open ctx: spot_symbol={} amount={} price={:.8} exp_time_us={}",
                         open_ctx.spot_symbol, open_ctx.amount, open_ctx.price, open_ctx.exp_time
                     );
+                    let open_ctx_payload = open_ctx.to_bytes();
                     let max_limit = ctx.max_pending_limit_orders.get();
                     if max_limit > 0 {
                         let current_limit = {
@@ -1357,6 +1388,12 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
 
                     if strategy.is_active() {
                         ctx.insert_strategy(symbol, Box::new(strategy));
+                        let record = SignalRecordMessage::new(
+                            strategy_id,
+                            SignalType::BinSingleForwardArbOpen,
+                            open_ctx_payload.to_vec(),
+                        );
+                        ctx.publish_signal_record(&record);
                     }
                 }
                 Err(err) => warn!("failed to decode open context: {err}"),

@@ -5,6 +5,8 @@ use log::info;
 
 pub const SIGNAL_PAYLOAD: usize = 4_096;
 pub const RESAMPLE_PAYLOAD: usize = 8_192;
+pub const BINANCE_MARGIN_UPDATE_PAYLOAD: usize = SIGNAL_PAYLOAD;
+pub const BINANCE_UM_UPDATE_PAYLOAD: usize = SIGNAL_PAYLOAD;
 
 pub struct GenericPublisher<const PAYLOAD: usize> {
     publisher: Publisher<ipc::Service, [u8; PAYLOAD], ()>,
@@ -64,3 +66,5 @@ impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
 
 pub type SignalPublisher = GenericPublisher<SIGNAL_PAYLOAD>;
 pub type ResamplePublisher = GenericPublisher<RESAMPLE_PAYLOAD>;
+pub type BinanceMarginUpdatePublisher = GenericPublisher<BINANCE_MARGIN_UPDATE_PAYLOAD>;
+pub type BinanceUmUpdatePublisher = GenericPublisher<BINANCE_UM_UPDATE_PAYLOAD>;

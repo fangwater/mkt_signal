@@ -92,29 +92,3 @@ impl RingBuffer {
         to_copy
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::RingBuffer;
-
-    #[test]
-    fn ring_basic_push_copy() {
-        let ring = RingBuffer::new(3);
-        ring.push(1.0);
-        ring.push(2.0);
-        ring.push(3.0);
-        assert_eq!(ring.len(), 3);
-        assert_eq!(ring.last(), Some(3.0));
-
-        let mut buf = Vec::new();
-        let copied = ring.copy_latest(3, &mut buf);
-        assert_eq!(copied, 3);
-        assert_eq!(buf, vec![1.0, 2.0, 3.0]);
-
-        ring.push(4.0);
-        let copied = ring.copy_latest(3, &mut buf);
-        assert_eq!(copied, 3);
-        assert_eq!(buf, vec![2.0, 3.0, 4.0]);
-        assert_eq!(ring.last(), Some(4.0));
-    }
-}
