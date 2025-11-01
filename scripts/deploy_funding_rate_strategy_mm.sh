@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET_DIR="${1:-/home/ubuntu/crypto_mkt}"
-BIN_NAME="funding_rate_signal"
+BIN_NAME="funding_rate_strategy_mm"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 
 echo "[INFO] 构建 $BIN_NAME (release)"

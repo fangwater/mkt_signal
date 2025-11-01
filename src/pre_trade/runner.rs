@@ -21,7 +21,7 @@ use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
 use crate::signal::binance_forward_arb::{
     BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbCloseUmCtx, BinSingleForwardArbHedgeCtx,
-    BinSingleForwardArbLadderCancelCtx, BinSingleForwardArbOpenCtx, BinSingleForwardArbStrategy,
+    BinSingleForwardArbLadderCancelCtx, BinSingleForwardArbOpenCtx, BinSingleForwardArbStrategyMT,
 };
 use crate::signal::record::{SignalRecordMessage, PRE_TRADE_SIGNAL_RECORD_CHANNEL};
 use crate::signal::resample::{
@@ -1343,7 +1343,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                         };
                         if current_limit >= max_limit {
                             warn!(
-                                "BinSingleForwardArbStrategy: symbol={} 当前限价挂单数={} 已达到上限 {}，忽略开仓信号",
+                                "BinSingleForwardArbStrategyMT: symbol={} 当前限价挂单数={} 已达到上限 {}，忽略开仓信号",
                                 symbol,
                                 current_limit,
                                 max_limit
@@ -1357,7 +1357,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                     let signal_tx = ctx.signal_sender();
                     let now = get_timestamp_us();
 
-                    let mut strategy = BinSingleForwardArbStrategy::new_open(
+                    let mut strategy = BinSingleForwardArbStrategyMT::new_open(
                         strategy_id,
                         now,
                         symbol.clone(),
@@ -1411,7 +1411,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                         let signal_tx = ctx.signal_sender();
                         let now = get_timestamp_us();
 
-                        let mut strategy = BinSingleForwardArbStrategy::new_close(
+                        let mut strategy = BinSingleForwardArbStrategyMT::new_close(
                             strategy_id,
                             now,
                             symbol.clone(),

@@ -477,7 +477,7 @@ struct PeriodLogFlags {
 }
 
 /// 币安单所正向套利策略
-pub struct BinSingleForwardArbStrategy {
+pub struct BinSingleForwardArbStrategyMT {
     pub strategy_id: i32, //策略id
     pub symbol: String,
     pub create_time: i64, //策略构建时间
@@ -511,7 +511,7 @@ pub struct BinSingleForwardArbStrategy {
     period_log_flags: RefCell<PeriodLogFlags>,
 }
 
-impl BinSingleForwardArbStrategy {
+impl BinSingleForwardArbStrategyMT {
     pub fn new(
         mode: StrategyMode,
         id: i32,
@@ -1638,7 +1638,7 @@ impl BinSingleForwardArbStrategy {
     }
 
     fn strategy_name() -> &'static str {
-        "BinSingleForwardArbStrategy"
+        "BinSingleForwardArbStrategyMT"
     }
 
     /// 构造 margin 正向买入限价单，全部风控检查通过后写入 order manager。
@@ -3003,7 +3003,7 @@ impl BinSingleForwardArbStrategy {
         );
         warn!(
             "{}: symbol={} 当前待成交限价单列表\n{}",
-            BinSingleForwardArbStrategy::strategy_name(),
+            BinSingleForwardArbStrategyMT::strategy_name(),
             symbol,
             table
         );
@@ -3106,7 +3106,7 @@ impl BinSingleForwardArbStrategy {
     }
 }
 
-impl Drop for BinSingleForwardArbStrategy {
+impl Drop for BinSingleForwardArbStrategyMT {
     fn drop(&mut self) {
         self.log_lifecycle_summary("生命周期结束");
         self.cleanup_strategy_orders();
@@ -3118,7 +3118,7 @@ impl Drop for BinSingleForwardArbStrategy {
     }
 }
 
-impl BinSingleForwardArbStrategy {
+impl BinSingleForwardArbStrategyMT {
     fn format_decimal(value: f64) -> String {
         if value == 0.0 {
             return "0".to_string();
@@ -3203,7 +3203,7 @@ impl BinSingleForwardArbStrategy {
     }
 }
 
-impl BinSingleForwardArbStrategy {
+impl BinSingleForwardArbStrategyMT {
     fn apply_um_fill_state(order: &mut Order, event: &OrderTradeUpdateMsg) -> UmOrderUpdateOutcome {
         order.set_exchange_order_id(event.order_id);
         match event.order_status.as_str() {
@@ -3726,7 +3726,7 @@ fn to_fraction(value: f64) -> Option<(i64, i64)> {
     None
 }
 
-impl Strategy for BinSingleForwardArbStrategy {
+impl Strategy for BinSingleForwardArbStrategyMT {
     fn get_id(&self) -> i32 {
         self.strategy_id
     }
@@ -4389,7 +4389,7 @@ impl Strategy for BinSingleForwardArbStrategy {
             snap.close_um_hedge_order_ids
         );
         Some(StrategySnapshot {
-            type_name: "BinSingleForwardArbStrategy",
+            type_name: "BinSingleForwardArbStrategyMT",
             payload: bytes,
         })
     }

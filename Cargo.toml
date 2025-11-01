@@ -13,8 +13,12 @@ name = "mkt_pub"
 path = "src/main.rs" 
 
 [[bin]] 
-name = "funding_rate_signal" 
-path = "src/bin/funding_rate_strategy.rs" 
+name = "funding_rate_strategy_mt" 
+path = "src/bin/funding_rate_strategy_mt.rs" 
+
+[[bin]]
+name = "funding_rate_strategy_mm"
+path = "src/bin/funding_rate_strategy_mm.rs"
 
 [[bin]] 
 name = "account_monitor" 

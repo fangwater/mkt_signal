@@ -35,10 +35,12 @@ use mkt_signal::signal::resample::{
 };
 use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
 
-const SIGNAL_CHANNEL_MT_ARBITRAGE: &str = "mt_arbitrage";
-const NODE_FUNDING_STRATEGY_SUB: &str = "funding_rate_strategy";
-const DEFAULT_CFG_PATH: &str = "config/funding_rate_strategy.toml";
-const DEFAULT_REDIS_HASH_KEY: &str = "binance_arb_price_spread_threshold";
+// 以下常量在具体进程入口（如 funding_rate_strategy_mt.rs / _mm.rs）中定义：
+// - PROCESS_DISPLAY_NAME: &str
+// - SIGNAL_CHANNEL_FORWARD: &str
+// - SIGNAL_CHANNEL_BACKWARD: Option<&'static str>
+// - NODE_FUNDING_STRATEGY_SUB: &str
+// - DEFAULT_REDIS_HASH_KEY: &str
 
 // 本策略已移除本地 tracking_symbol.json 模式，仅支持 Redis 阈值
 
@@ -349,46 +351,73 @@ struct StrategyConfig {
     loan: LoanConfig,
 }
 
+impl Default for StrategyConfig {
+    fn default() -> Self {
+        Self {
+            redis: Some(RedisSettings::default()),
+            redis_key: None,
+            order: OrderConfig::default(),
+            signal: SignalConfig::default(),
+            reload: ReloadConfig::default(),
+            strategy: StrategyParams::default(),
+            loan: LoanConfig::default(),
+        }
+    }
+}
+
 impl StrategyConfig {
     fn load() -> Result<Self> {
-        let cfg_path =
-            std::env::var("FUNDING_RATE_CFG").unwrap_or_else(|_| DEFAULT_CFG_PATH.to_string());
-        let cfg: StrategyConfig = match std::fs::read_to_string(&cfg_path) {
-            Ok(content) => {
-                let mut cfg: StrategyConfig = toml::from_str(&content)
-                    .with_context(|| format!("解析配置文件失败: {}", cfg_path))?;
-                if cfg.redis.is_none() {
-                    cfg.redis = Some(RedisSettings::default());
-                }
-                cfg
+        let mut cfg = StrategyConfig::default();
+
+        let redis_cfg = cfg.redis.get_or_insert_with(RedisSettings::default);
+        if let Ok(host) = std::env::var("FUNDING_RATE_REDIS_HOST") {
+            if !host.trim().is_empty() {
+                redis_cfg.host = host;
             }
-            Err(err) => {
-                warn!("未找到配置文件或读取失败({err}); 将使用默认配置并从 Redis 读取参数");
-                StrategyConfig {
-                    redis: Some(RedisSettings::default()),
-                    redis_key: None,
-                    order: OrderConfig::default(),
-                    signal: SignalConfig::default(),
-                    reload: ReloadConfig::default(),
-                    strategy: StrategyParams {
-                        interval: default_interval(),
-                        predict_num: 0,
-                        refresh_secs: default_compute_secs(),
-                        fetch_secs: default_fetch_secs(),
-                        fetch_offset_secs: default_fetch_offset_secs(),
-                        history_limit: default_fetch_limit(),
-                        resample_ms: default_resample_ms(),
-                        funding_ma_size: default_funding_ma_size(),
-                        settlement_offset_secs: default_settlement_offset_secs(),
-                    },
-                    loan: LoanConfig::default(),
-                }
+        }
+        if let Ok(port) = std::env::var("FUNDING_RATE_REDIS_PORT") {
+            match port.parse::<u16>() {
+                Ok(value) => redis_cfg.port = value,
+                Err(err) => warn!("无效的 FUNDING_RATE_REDIS_PORT='{}': {}", port, err),
             }
-        };
-        // funding_ma_size 固定为 60；结算偏移与 fetch_offset_secs 对齐
-        let mut cfg = cfg;
+        }
+        if let Ok(db) = std::env::var("FUNDING_RATE_REDIS_DB") {
+            match db.parse::<i64>() {
+                Ok(value) => redis_cfg.db = value,
+                Err(err) => warn!("无效的 FUNDING_RATE_REDIS_DB='{}': {}", db, err),
+            }
+        }
+        if let Ok(user) = std::env::var("FUNDING_RATE_REDIS_USER") {
+            redis_cfg.username = if user.trim().is_empty() {
+                None
+            } else {
+                Some(user)
+            };
+        }
+        if let Ok(password) = std::env::var("FUNDING_RATE_REDIS_PASS") {
+            redis_cfg.password = if password.trim().is_empty() {
+                None
+            } else {
+                Some(password)
+            };
+        }
+        if let Ok(prefix) = std::env::var("FUNDING_RATE_REDIS_PREFIX") {
+            redis_cfg.prefix = if prefix.trim().is_empty() {
+                None
+            } else {
+                Some(prefix)
+            };
+        }
+
+        if let Ok(redis_key) = std::env::var("FUNDING_RATE_REDIS_KEY") {
+            if !redis_key.trim().is_empty() {
+                cfg.redis_key = Some(redis_key);
+            }
+        }
+
         cfg.strategy.funding_ma_size = 60;
         cfg.strategy.settlement_offset_secs = cfg.strategy.fetch_offset_secs as i64;
+
         if let Some(redis_cfg) = cfg.redis.as_ref() {
             info!(
                 "Redis 数据源配置: host={} port={} db={} prefix={:?}",
@@ -396,7 +425,7 @@ impl StrategyConfig {
             );
         }
         info!(
-            "策略配置加载完成: reload_interval={}s strategy: interval={} predict_num={} refresh_secs={}s fetch_secs={}s fetch_offset={}s history_limit={} settlement_offset_secs={}",
+            "策略配置加载完成(无本地 TOML): reload_interval={}s strategy: interval={} predict_num={} refresh_secs={}s fetch_secs={}s fetch_offset={}s history_limit={} settlement_offset_secs={}",
             cfg.reload.interval_secs,
             cfg.strategy.interval, cfg.strategy.predict_num, cfg.strategy.refresh_secs,
             cfg.strategy.fetch_secs, cfg.strategy.fetch_offset_secs, cfg.strategy.history_limit,
@@ -2842,10 +2871,13 @@ async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter))
         .init();
 
-    info!("启动 Binance Forward Arb 信号策略");
+    info!("启动 {}", PROCESS_DISPLAY_NAME);
+    if let Some(channel) = SIGNAL_CHANNEL_BACKWARD {
+        info!("声明 backward 信号通道 {}", channel);
+    }
 
     let cfg = StrategyConfig::load()?;
-    let publisher = SignalPublisher::new(SIGNAL_CHANNEL_MT_ARBITRAGE)?;
+    let publisher = SignalPublisher::new(SIGNAL_CHANNEL_FORWARD)?;
     let mut engine = StrategyEngine::new(cfg.clone(), publisher).await?;
     // 初始化阶段：等待 warmup 完成后再打印任何表格
     if engine.is_warmup_complete() {
