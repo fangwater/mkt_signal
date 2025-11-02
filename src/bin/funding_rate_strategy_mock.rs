@@ -26,9 +26,8 @@ use mkt_signal::common::redis_client::RedisSettings;
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::mkt_msg::{self, AskBidSpreadMsg, FundingRateMsg, MktMsgType};
 use mkt_signal::pre_trade::order_manager::{OrderType, Side};
-use mkt_signal::signal::binance_forward_arb::{
-    BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbLadderCancelCtx,
-    BinSingleForwardArbOpenCtx,
+use mkt_signal::signal::binance_forward_arb_mt::{
+    BinSingleForwardArbCancelCtx, BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbOpenCtx,
 };
 use mkt_signal::signal::resample::{compute_askbid_sr, compute_bidask_sr};
 use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
@@ -108,6 +107,8 @@ struct OrderConfig {
     max_open_order_keep_s: u64,
     #[serde(default = "default_max_close_keep")]
     max_close_order_keep_s: u64,
+    #[serde(default = "default_max_hedge_keep")]
+    max_hedge_order_keep_s: u64,
 }
 
 const fn default_open_range() -> f64 {
@@ -138,6 +139,10 @@ const fn default_max_close_keep() -> u64 {
     5
 }
 
+const fn default_max_hedge_keep() -> u64 {
+    5
+}
+
 impl Default for OrderConfig {
     fn default() -> Self {
         Self {
@@ -147,6 +152,7 @@ impl Default for OrderConfig {
             amount_u: default_order_amount(),
             max_open_order_keep_s: default_max_open_keep(),
             max_close_order_keep_s: default_max_close_keep(),
+            max_hedge_order_keep_s: default_max_hedge_keep(),
         }
     }
 }
@@ -998,6 +1004,12 @@ impl MockController {
                 changed = true;
             }
         }
+        if let Some(v) = parse_u64("order_max_hedge_order_keep_s") {
+            if self.cfg.order.max_hedge_order_keep_s != v {
+                self.cfg.order.max_hedge_order_keep_s = v;
+                changed = true;
+            }
+        }
         if let Some(v) = parse_u64("signal_min_interval_ms") {
             if self.cfg.signal.min_interval_ms != v {
                 self.cfg.signal.min_interval_ms = v;
@@ -1532,6 +1544,7 @@ impl MockController {
         };
         let ctx = BinSingleForwardArbOpenCtx {
             spot_symbol: state.spot_symbol.clone(),
+            futures_symbol: state.futures_symbol.clone(),
             amount: qty,
             side: Side::Buy,
             order_type: OrderType::Limit,
@@ -1543,6 +1556,7 @@ impl MockController {
             spot_ask0,
             swap_bid0,
             swap_ask0,
+            open_threshold: state.forward_open_threshold,
             funding_ma: state.funding_ma,
             predicted_funding_rate: Some(state.predicted_rate),
             loan_rate: Some(state.loan_rate),
@@ -1647,11 +1661,18 @@ impl MockController {
             }
         };
         let trigger_ts = get_timestamp_us();
-        let ctx = BinSingleForwardArbLadderCancelCtx {
+        let spot_bid0 = state.spot_quote.bid.max(0.0);
+        let spot_ask0 = state.spot_quote.ask.max(0.0);
+        let swap_bid0 = state.futures_quote.bid.max(0.0);
+        let swap_ask0 = state.futures_quote.ask.max(0.0);
+        let ctx = BinSingleForwardArbCancelCtx {
             spot_symbol: state.spot_symbol.clone(),
             futures_symbol: state.futures_symbol.clone(),
-            bidask_sr: ratio,
             cancel_threshold: threshold,
+            spot_bid0,
+            spot_ask0,
+            swap_bid0,
+            swap_ask0,
             trigger_ts,
         }
         .to_bytes();
@@ -1682,7 +1703,7 @@ impl MockController {
         for signal in &signals {
             let emit_ts = get_timestamp_us();
             self.publish_signal(
-                SignalType::BinSingleForwardArbOpen,
+                SignalType::BinSingleForwardArbOpenMT,
                 signal.ctx.clone(),
                 emit_ts,
             )?;
@@ -1768,7 +1789,7 @@ impl MockController {
             (spot_symbol, signal)
         };
         self.publish_signal(
-            SignalType::BinSingleForwardArbLadderCancel,
+            SignalType::BinSingleForwardArbCancelMT,
             signal.ctx.clone(),
             signal.trigger_ts,
         )?;
@@ -1794,7 +1815,7 @@ impl MockController {
         let signal = TradeSignal::create(signal_type.clone(), emit_ts, 0.0, payload.clone());
 
         match signal_type {
-            SignalType::BinSingleForwardArbOpen => {
+            SignalType::BinSingleForwardArbOpenMT => {
                 if let Ok(open_ctx) = BinSingleForwardArbOpenCtx::from_bytes(payload.clone()) {
                     let fmt_opt = |v: Option<f64>| match v {
                         Some(val) => format!("{:.6}", val),
@@ -1828,15 +1849,13 @@ impl MockController {
                     );
                 }
             }
-            SignalType::BinSingleForwardArbLadderCancel => {
-                if let Ok(cancel_ctx) =
-                    BinSingleForwardArbLadderCancelCtx::from_bytes(payload.clone())
-                {
+            SignalType::BinSingleForwardArbCancelMT => {
+                if let Ok(cancel_ctx) = BinSingleForwardArbCancelCtx::from_bytes(payload.clone()) {
                     info!(
                         "mock publish ladder cancel signal: spot={} futures={} bidask_sr={:.6} threshold={:.6} trigger_ts={}",
                         cancel_ctx.spot_symbol,
                         cancel_ctx.futures_symbol,
-                        cancel_ctx.bidask_sr,
+                        cancel_ctx.bidask_sr().unwrap_or(f64::NAN),
                         cancel_ctx.cancel_threshold,
                         cancel_ctx.trigger_ts
                     );

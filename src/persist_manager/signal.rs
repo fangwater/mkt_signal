@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use bytes::Bytes;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::service::ipc;
@@ -11,7 +11,6 @@ use serde::Deserialize;
 use crate::common::time_util::get_timestamp_us;
 use crate::persist_manager::iceoryx::{create_signal_record_subscriber, trim_payload};
 use crate::persist_manager::storage::RocksDbStore;
-use crate::signal::binance_forward_arb::BinSingleForwardArbOpenCtx;
 use crate::signal::record::{SignalRecordMessage, PRE_TRADE_SIGNAL_RECORD_CHANNEL};
 use crate::signal::trade_signal::SignalType;
 
@@ -47,10 +46,18 @@ fn default_retry_backoff_ms() -> u64 {
     200
 }
 
-const CF_BIN_SINGLE_FORWARD_ARB_OPEN: &str = "signals_bin_single_forward_arb_open";
+const CF_BIN_SINGLE_FORWARD_ARB_OPEN_MT: &str = "signals_bin_single_forward_arb_open_mt";
+const CF_BIN_SINGLE_FORWARD_ARB_OPEN_MM: &str = "signals_bin_single_forward_arb_open_mm";
+const CF_BIN_SINGLE_FORWARD_ARB_CANCEL_MT: &str = "signals_bin_single_forward_arb_cancel_mt";
+const CF_BIN_SINGLE_FORWARD_ARB_CANCEL_MM: &str = "signals_bin_single_forward_arb_cancel_mm";
 
 pub fn required_column_families() -> &'static [&'static str] {
-    &[CF_BIN_SINGLE_FORWARD_ARB_OPEN]
+    &[
+        CF_BIN_SINGLE_FORWARD_ARB_OPEN_MT,
+        CF_BIN_SINGLE_FORWARD_ARB_OPEN_MM,
+        CF_BIN_SINGLE_FORWARD_ARB_CANCEL_MT,
+        CF_BIN_SINGLE_FORWARD_ARB_CANCEL_MM,
+    ]
 }
 
 pub struct SignalPersistor {
@@ -103,14 +110,6 @@ impl SignalPersistor {
             return Ok(());
         };
 
-        match record.signal_type {
-            SignalType::BinSingleForwardArbOpen => {
-                BinSingleForwardArbOpenCtx::from_bytes(Bytes::from(record.context.clone()))
-                    .map_err(|err| anyhow!("failed to decode BinSingleForwardArbOpenCtx: {err}"))?;
-            }
-            _ => {}
-        }
-
         let ts = get_timestamp_us();
         let key = format!("{:020}_{:010}", ts, record.strategy_id);
         self.store
@@ -126,7 +125,10 @@ impl SignalPersistor {
 
 fn column_family_for_signal(signal_type: &SignalType) -> Option<&'static str> {
     match signal_type {
-        SignalType::BinSingleForwardArbOpen => Some(CF_BIN_SINGLE_FORWARD_ARB_OPEN),
+        SignalType::BinSingleForwardArbOpenMT => Some(CF_BIN_SINGLE_FORWARD_ARB_OPEN_MT),
+        SignalType::BinSingleForwardArbOpenMM => Some(CF_BIN_SINGLE_FORWARD_ARB_OPEN_MM),
+        SignalType::BinSingleForwardArbCancelMT => Some(CF_BIN_SINGLE_FORWARD_ARB_CANCEL_MT),
+        SignalType::BinSingleForwardArbCancelMM => Some(CF_BIN_SINGLE_FORWARD_ARB_CANCEL_MM),
         _ => None,
     }
 }

@@ -1,11 +1,22 @@
 order_req_service = "order_reqs/binance"
 order_resp_service = "order_resps/binance"
 exchange = "binance"
+transport = "rest" # set to "ws" to enable websocket execution
 
 [rest]
 base_url = "https://papi.binance.com"
 timeout_ms = 10000
 recv_window_ms = 5000
+
+# [ws]
+# urls = [
+#   "wss://example-1.binance.com/ws",
+#   "wss://example-2.binance.com/ws"
+# ]
+# connect_timeout_ms = 5000
+# ping_interval_ms = 15000
+# max_inflight = 128
+# login_payload = "{\"op\":\"login\",\"args\":[]}"
 
 [limits]
 account_per_min = 1200

@@ -19,7 +19,9 @@ use serde_json::Value;
 
 use crate::persist_manager::config::HttpConfig;
 use crate::persist_manager::storage::RocksDbStore;
-use crate::signal::binance_forward_arb::BinSingleForwardArbOpenCtx;
+use crate::signal::binance_forward_arb_mt::{
+    BinSingleForwardArbCancelCtx, BinSingleForwardArbOpenCtx,
+};
 use crate::signal::record::SignalRecordMessage;
 use crate::signal::trade_signal::SignalType;
 
@@ -265,20 +267,29 @@ struct ErrorResp {
 
 #[derive(Debug, Clone, Copy)]
 enum SignalKind {
-    BinSingleForwardArbOpen,
+    BinSingleForwardArbOpenMT,
+    BinSingleForwardArbOpenMM,
+    BinSingleForwardArbCancelMT,
+    BinSingleForwardArbCancelMM,
 }
 
 impl SignalKind {
     fn from_path(value: &str) -> Option<Self> {
         match value {
-            "bin_single_forward_arb_open" => Some(Self::BinSingleForwardArbOpen),
+            "signals_bin_single_forward_arb_open_mt" => Some(Self::BinSingleForwardArbOpenMT),
+            "signals_bin_single_forward_arb_open_mm" => Some(Self::BinSingleForwardArbOpenMM),
+            "signals_bin_single_forward_arb_cancel_mt" => Some(Self::BinSingleForwardArbCancelMT),
+            "signals_bin_single_forward_arb_cancel_mm" => Some(Self::BinSingleForwardArbCancelMM),
             _ => None,
         }
     }
 
     fn cf_name(&self) -> &'static str {
         match self {
-            SignalKind::BinSingleForwardArbOpen => "signals_bin_single_forward_arb_open",
+            SignalKind::BinSingleForwardArbOpenMT => "signals_bin_single_forward_arb_open_mt",
+            SignalKind::BinSingleForwardArbOpenMM => "signals_bin_single_forward_arb_open_mm",
+            SignalKind::BinSingleForwardArbCancelMT => "signals_bin_single_forward_arb_cancel_mt",
+            SignalKind::BinSingleForwardArbCancelMM => "signals_bin_single_forward_arb_cancel_mm",
         }
     }
 }
@@ -320,9 +331,17 @@ fn parse_key(key: &str) -> Result<(u64, i32)> {
 
 fn decode_context(signal_kind: SignalKind, record: &SignalRecordMessage) -> Option<Value> {
     match signal_kind {
-        SignalKind::BinSingleForwardArbOpen => {
+        SignalKind::BinSingleForwardArbOpenMT | SignalKind::BinSingleForwardArbOpenMM => {
             let Ok(ctx) =
                 BinSingleForwardArbOpenCtx::from_bytes(Bytes::from(record.context.clone()))
+            else {
+                return None;
+            };
+            serde_json::to_value(ctx).ok()
+        }
+        SignalKind::BinSingleForwardArbCancelMT | SignalKind::BinSingleForwardArbCancelMM => {
+            let Ok(ctx) =
+                BinSingleForwardArbCancelCtx::from_bytes(Bytes::from(record.context.clone()))
             else {
                 return None;
             };
@@ -333,11 +352,13 @@ fn decode_context(signal_kind: SignalKind, record: &SignalRecordMessage) -> Opti
 
 fn signal_type_name(signal_type: &SignalType) -> &'static str {
     match signal_type {
-        SignalType::BinSingleForwardArbOpen => "BinSingleForwardArbOpen",
+        SignalType::BinSingleForwardArbOpenMT => "BinSingleForwardArbOpenMT",
+        SignalType::BinSingleForwardArbOpenMM => "BinSingleForwardArbOpenMM",
         SignalType::BinSingleForwardArbHedge => "BinSingleForwardArbHedge",
         SignalType::BinSingleForwardArbCloseMargin => "BinSingleForwardArbCloseMargin",
         SignalType::BinSingleForwardArbCloseUm => "BinSingleForwardArbCloseUm",
-        SignalType::BinSingleForwardArbLadderCancel => "BinSingleForwardArbLadderCancel",
+        SignalType::BinSingleForwardArbCancelMT => "BinSingleForwardArbCancelMT",
+        SignalType::BinSingleForwardArbCancelMM => "BinSingleForwardArbCancelMM",
     }
 }
 
@@ -383,7 +404,12 @@ fn build_parquet_bytes(
     range: &RangeFilter,
 ) -> Result<Vec<u8>> {
     match kind {
-        SignalKind::BinSingleForwardArbOpen => build_parquet_open(entries, range),
+        SignalKind::BinSingleForwardArbOpenMT | SignalKind::BinSingleForwardArbOpenMM => {
+            build_parquet_open(entries, range)
+        }
+        SignalKind::BinSingleForwardArbCancelMT | SignalKind::BinSingleForwardArbCancelMM => {
+            build_parquet_cancel(entries, range)
+        }
     }
 }
 
@@ -393,6 +419,7 @@ fn build_parquet_open(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> 
     let mut strategy_id_col: Vec<i32> = Vec::with_capacity(entries.len());
     let mut create_ts_col: Vec<i64> = Vec::with_capacity(entries.len());
     let mut spot_symbol_col: Vec<String> = Vec::with_capacity(entries.len());
+    let mut futures_symbol_col: Vec<String> = Vec::with_capacity(entries.len());
     let mut amount_col: Vec<f64> = Vec::with_capacity(entries.len());
     let mut side_col: Vec<String> = Vec::with_capacity(entries.len());
     let mut order_type_col: Vec<String> = Vec::with_capacity(entries.len());
@@ -403,6 +430,7 @@ fn build_parquet_open(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> 
     let mut spot_ask0_col: Vec<f64> = Vec::with_capacity(entries.len());
     let mut swap_bid0_col: Vec<f64> = Vec::with_capacity(entries.len());
     let mut swap_ask0_col: Vec<f64> = Vec::with_capacity(entries.len());
+    let mut open_threshold_col: Vec<f64> = Vec::with_capacity(entries.len());
     let mut funding_ma_col: Vec<Option<f64>> = Vec::with_capacity(entries.len());
     let mut predicted_funding_rate_col: Vec<Option<f64>> = Vec::with_capacity(entries.len());
     let mut loan_rate_col: Vec<Option<f64>> = Vec::with_capacity(entries.len());
@@ -422,6 +450,7 @@ fn build_parquet_open(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> 
         strategy_id_col.push(strategy_id);
         create_ts_col.push(open_ctx.create_ts);
         spot_symbol_col.push(open_ctx.spot_symbol.clone());
+        futures_symbol_col.push(open_ctx.futures_symbol.clone());
         amount_col.push(open_ctx.amount as f64);
         side_col.push(open_ctx.side.as_str().to_string());
         order_type_col.push(open_ctx.order_type.as_str().to_string());
@@ -432,6 +461,7 @@ fn build_parquet_open(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> 
         spot_ask0_col.push(open_ctx.spot_ask0);
         swap_bid0_col.push(open_ctx.swap_bid0);
         swap_ask0_col.push(open_ctx.swap_ask0);
+        open_threshold_col.push(open_ctx.open_threshold);
         funding_ma_col.push(open_ctx.funding_ma);
         predicted_funding_rate_col.push(open_ctx.predicted_funding_rate);
         loan_rate_col.push(open_ctx.loan_rate);
@@ -443,6 +473,7 @@ fn build_parquet_open(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> 
         Series::new("strategy_id".into(), strategy_id_col),
         Series::new("create_ts".into(), create_ts_col),
         Series::new("spot_symbol".into(), spot_symbol_col),
+        Series::new("futures_symbol".into(), futures_symbol_col),
         Series::new("amount".into(), amount_col),
         Series::new("side".into(), side_col),
         Series::new("order_type".into(), order_type_col),
@@ -453,6 +484,7 @@ fn build_parquet_open(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> 
         Series::new("spot_ask0".into(), spot_ask0_col),
         Series::new("swap_bid0".into(), swap_bid0_col),
         Series::new("swap_ask0".into(), swap_ask0_col),
+        Series::new("open_threshold".into(), open_threshold_col),
         Series::new("funding_ma".into(), funding_ma_col.as_slice()),
         Series::new(
             "predicted_funding_rate".into(),
@@ -464,4 +496,60 @@ fn build_parquet_open(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> 
     let mut buffer = Vec::new();
     ParquetWriter::new(&mut buffer).finish(&mut df)?;
     Ok(buffer)
+}
+
+fn build_parquet_cancel(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> Result<Vec<u8>> {
+    let mut key_col = Vec::with_capacity(entries.len());
+    let mut ts_us_col = Vec::with_capacity(entries.len());
+    let mut strategy_id_col = Vec::with_capacity(entries.len());
+    let mut spot_symbol_col = Vec::with_capacity(entries.len());
+    let mut futures_symbol_col = Vec::with_capacity(entries.len());
+    let mut cancel_threshold_col = Vec::with_capacity(entries.len());
+    let mut spot_bid0_col = Vec::with_capacity(entries.len());
+    let mut spot_ask0_col = Vec::with_capacity(entries.len());
+    let mut swap_bid0_col = Vec::with_capacity(entries.len());
+    let mut swap_ask0_col = Vec::with_capacity(entries.len());
+    let mut trigger_ts_col = Vec::with_capacity(entries.len());
+
+    for (key_bytes, value_bytes) in entries {
+        let key = String::from_utf8(key_bytes)?;
+        let (ts_us, strategy_id) = parse_key(&key)?;
+        if !range.contains(ts_us) {
+            continue;
+        }
+        let record = SignalRecordMessage::from_bytes(Bytes::from(value_bytes))?;
+        let ctx = BinSingleForwardArbCancelCtx::from_bytes(Bytes::from(record.context.clone()))
+            .map_err(|err| anyhow!("failed to decode BinSingleForwardArbCancelCtx: {err}"))?;
+
+        key_col.push(key);
+        ts_us_col.push(ts_us as i64);
+        strategy_id_col.push(strategy_id);
+        spot_symbol_col.push(ctx.spot_symbol.clone());
+        futures_symbol_col.push(ctx.futures_symbol.clone());
+        cancel_threshold_col.push(ctx.cancel_threshold);
+        spot_bid0_col.push(ctx.spot_bid0);
+        spot_ask0_col.push(ctx.spot_ask0);
+        swap_bid0_col.push(ctx.swap_bid0);
+        swap_ask0_col.push(ctx.swap_ask0);
+        trigger_ts_col.push(ctx.trigger_ts);
+    }
+
+    let columns = vec![
+        Series::new("key".into(), key_col),
+        Series::new("ts_us".into(), ts_us_col),
+        Series::new("strategy_id".into(), strategy_id_col),
+        Series::new("spot_symbol".into(), spot_symbol_col),
+        Series::new("futures_symbol".into(), futures_symbol_col),
+        Series::new("cancel_threshold".into(), cancel_threshold_col),
+        Series::new("spot_bid0".into(), spot_bid0_col),
+        Series::new("spot_ask0".into(), spot_ask0_col),
+        Series::new("swap_bid0".into(), swap_bid0_col),
+        Series::new("swap_ask0".into(), swap_ask0_col),
+        Series::new("trigger_ts".into(), trigger_ts_col),
+    ];
+
+    let mut df = DataFrame::new(columns)?;
+    let mut buf = Vec::new();
+    ParquetWriter::new(&mut buf).finish(&mut df)?;
+    Ok(buf)
 }

@@ -26,9 +26,8 @@ use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::mkt_msg::{self, AskBidSpreadMsg, FundingRateMsg, MktMsgType};
 use mkt_signal::pre_trade::order_manager::{OrderType, Side};
-use mkt_signal::signal::binance_forward_arb::{
-    BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbLadderCancelCtx,
-    BinSingleForwardArbOpenCtx,
+use mkt_signal::signal::binance_forward_arb_mt::{
+    BinSingleForwardArbCancelCtx, BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbOpenCtx,
 };
 use mkt_signal::signal::resample::{
     compute_askbid_sr, compute_bidask_sr, FundingRateArbResampleEntry, FR_RESAMPLE_MSG_CHANNEL,
@@ -114,6 +113,8 @@ struct OrderConfig {
     max_open_order_keep_s: u64,
     #[serde(default = "default_max_close_keep")]
     max_close_order_keep_s: u64,
+    #[serde(default = "default_max_hedge_keep")]
+    max_hedge_order_keep_s: u64,
 }
 
 const fn default_open_range() -> f64 {
@@ -144,6 +145,10 @@ const fn default_max_close_keep() -> u64 {
     5
 }
 
+const fn default_max_hedge_keep() -> u64 {
+    5
+}
+
 impl Default for OrderConfig {
     fn default() -> Self {
         Self {
@@ -153,6 +158,7 @@ impl Default for OrderConfig {
             amount_u: default_order_amount(),
             max_open_order_keep_s: default_max_open_keep(),
             max_close_order_keep_s: default_max_close_keep(),
+            max_hedge_order_keep_s: default_max_hedge_keep(),
         }
     }
 }
@@ -1606,11 +1612,9 @@ impl StrategyEngine {
                         open_ctx.create_ts = emit_ts;
                         ctx_bytes = open_ctx.to_bytes();
                     }
-                    if let Err(err) = self.publish_signal(
-                        SignalType::BinSingleForwardArbOpen,
-                        ctx_bytes.clone(),
-                        emit_ts,
-                    ) {
+                    if let Err(err) =
+                        self.publish_signal(OPEN_SIGNAL_TYPE, ctx_bytes.clone(), emit_ts)
+                    {
                         error!("发送开仓信号失败 {}: {err:?}", symbol_key);
                         return;
                     }
@@ -1693,12 +1697,12 @@ impl StrategyEngine {
                     threshold,
                 } => {
                     let mut parsed_ctx = None;
-                    match BinSingleForwardArbLadderCancelCtx::from_bytes(ctx_bytes.clone()) {
+                    match BinSingleForwardArbCancelCtx::from_bytes(ctx_bytes.clone()) {
                         Ok(cancel_ctx) => {
                             debug!(
                                 "发送阶梯撤单信号: symbol={} bidask_sr={:.6} threshold={:.6}",
                                 cancel_ctx.spot_symbol,
-                                cancel_ctx.bidask_sr,
+                                ratio,
                                 cancel_ctx.cancel_threshold
                             );
                             parsed_ctx = Some(cancel_ctx);
@@ -1713,11 +1717,9 @@ impl StrategyEngine {
                         cancel_ctx.trigger_ts = emit_ts;
                         ctx_bytes = cancel_ctx.to_bytes();
                     }
-                    if let Err(err) = self.publish_signal(
-                        SignalType::BinSingleForwardArbLadderCancel,
-                        ctx_bytes.clone(),
-                        emit_ts,
-                    ) {
+                    if let Err(err) =
+                        self.publish_signal(CANCEL_SIGNAL_TYPE, ctx_bytes.clone(), emit_ts)
+                    {
                         error!("发送阶梯撤单信号失败 {}: {err:?}", symbol_key);
                         return;
                     }
@@ -2134,6 +2136,7 @@ impl StrategyEngine {
         };
         let ctx = BinSingleForwardArbOpenCtx {
             spot_symbol: state.spot_symbol.clone(),
+            futures_symbol: state.futures_symbol.clone(),
             amount: qty,
             side: Side::Buy,
             order_type: OrderType::Limit,
@@ -2145,6 +2148,7 @@ impl StrategyEngine {
             spot_ask0,
             swap_bid0,
             swap_ask0,
+            open_threshold: state.forward_open_threshold,
             funding_ma: state.funding_ma,
             predicted_funding_rate: Some(state.predicted_rate),
             loan_rate: Some(state.loan_rate),
@@ -2239,11 +2243,34 @@ impl StrategyEngine {
         if !bidask_sr.is_finite() || !threshold.is_finite() {
             return None;
         }
-        let ctx = BinSingleForwardArbLadderCancelCtx {
+        let spot_bid0 = if state.spot_quote.bid.is_finite() {
+            state.spot_quote.bid.max(0.0)
+        } else {
+            0.0
+        };
+        let spot_ask0 = if state.spot_quote.ask.is_finite() {
+            state.spot_quote.ask.max(0.0)
+        } else {
+            0.0
+        };
+        let swap_bid0 = if state.futures_quote.bid.is_finite() {
+            state.futures_quote.bid.max(0.0)
+        } else {
+            0.0
+        };
+        let swap_ask0 = if state.futures_quote.ask.is_finite() {
+            state.futures_quote.ask.max(0.0)
+        } else {
+            0.0
+        };
+        let ctx = BinSingleForwardArbCancelCtx {
             spot_symbol: state.spot_symbol.clone(),
             futures_symbol: state.futures_symbol.clone(),
-            bidask_sr,
             cancel_threshold: threshold,
+            spot_bid0,
+            spot_ask0,
+            swap_bid0,
+            swap_ask0,
             trigger_ts: 0,
         }
         .to_bytes();
@@ -2566,6 +2593,12 @@ impl StrategyEngine {
         if let Some(v) = parse_u64("order_max_close_order_keep_s") {
             if self.cfg.order.max_close_order_keep_s != v {
                 self.cfg.order.max_close_order_keep_s = v;
+                changed = true;
+            }
+        }
+        if let Some(v) = parse_u64("order_max_hedge_order_keep_s") {
+            if self.cfg.order.max_hedge_order_keep_s != v {
+                self.cfg.order.max_hedge_order_keep_s = v;
                 changed = true;
             }
         }

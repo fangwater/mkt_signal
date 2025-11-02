@@ -25,7 +25,7 @@
   - 同样按照索引 1 开始逐档发单，逻辑与开仓保持一致。
   - 所有档位共用 `order_amount_u`，下单数量会按最小下单量和数量步长自动向上取整。
 - 撤单：
-  - 若实时 `bidask_sr` 超过 Redis 中该 symbol 的 `forward_arb_cancel_tr`，策略会派发 `BinSingleForwardArbLadderCancel` 信号，交易引擎据此撤销尚未成交的阶梯挂单。
+  - 若实时 `bidask_sr` 超过 Redis 中该 symbol 的 `forward_arb_cancel_tr`，策略会派发 `BinSingleForwardArbCancelMT`（`funding_rate_strategy_mt`）或 `BinSingleForwardArbCancelMM`（`funding_rate_strategy_mm`）信号，`pre_trade` 会根据策略类型撤销对应流程下尚未成交的阶梯挂单。
 - 开仓阈值：
   - 阶梯模式始终使用 `forward_arb_open_tr` 判断价差是否满足开仓条件。
 

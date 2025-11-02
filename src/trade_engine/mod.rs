@@ -6,4 +6,5 @@ pub mod trade_request;
 pub mod trade_request_handle;
 pub mod trade_response_handle;
 pub mod trade_type_mapping;
+pub mod ws;
 pub use engine::TradeEngine;

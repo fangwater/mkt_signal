@@ -8,7 +8,7 @@
 | --- | --- | --- | --- | --- |
 | Binance Margin `executionReport` | `account_monitor` | `account_execution/binance_margin` | `ExecutionRecordMessage` | `executions_binance_margin` |
 | Binance UM `ORDER_TRADE_UPDATE` (`fs=UM`) | `account_monitor` | `account_execution/binance_um` | `OrderUpdateRecordMessage` | `executions_binance_um` |
-| 策略信号记录 | `pre_trade` 等策略组件 | `pre_trade_signal_record` | `SignalRecordMessage` | 视 `SignalType` 而定（如 `signals_bin_single_forward_arb_open`） |
+| 策略信号记录 | `pre_trade` 等策略组件 | `pre_trade_signal_record` | `SignalRecordMessage` | 视 `SignalType` 而定（如 `signals_bin_single_forward_arb_open_mt` / `_mm`、`signals_bin_single_forward_arb_cancel_mt` / `_mm`） |
 
 > 配置项位于 `config/persist_manager.toml`，可分别通过 `[execution]`、`[um_execution]`、`[signal]` 节点启停并修改通道名或回退间隔。
 
@@ -46,8 +46,9 @@
 
 - 来源：`pre_trade` 及其他策略组件在生成触发信号时，构造 `SignalRecordMessage`，并根据配置决定是否发布。
 - 通道：默认 `pre_trade_signal_record`，由 `SignalPublisher` 推送。
-- 持久化：`persist_manager` 的 `SignalPersistor` 写入不同列族，目前主要使用 `signals_bin_single_forward_arb_open`。
+- 持久化：`persist_manager` 的 `SignalPersistor` 按 `signal_type` 写入不同列族，目前主要使用 `signals_bin_single_forward_arb_open_mt`、`signals_bin_single_forward_arb_open_mm`、`signals_bin_single_forward_arb_cancel_mt`、`signals_bin_single_forward_arb_cancel_mm`。
 - 内容：`SignalRecordMessage` 内含 `signal_type`、`strategy_id`、`context`（以策略自定义结构序列化），并记录生成时间戳。
+- 栏位说明：开仓上下文包含 `spot_symbol`、`futures_symbol` 以及触发时的 `open_threshold`；阶梯撤单上下文仅保留盘口价格与阈值，消费方会根据 `spot_bid0` 与 `swap_ask0` 即时回算 `bidask_sr`。
 
 ## 配置与快速验证
 

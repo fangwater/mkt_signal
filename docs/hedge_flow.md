@@ -61,10 +61,8 @@
 
 为支持持久化，策略快照结构改为保存 `Vec<i64>`：
 
-- `BinSingleForwardArbSnapshot` 中新增 `um_hedge_order_ids`、`close_um_hedge_order_ids`；
 - 为兼容历史数据，保留了 `legacy_*` 字段，反序列化时若新字段为空会自动回填。
 
-在 `snapshot()` 和 `from_snapshot()` 中增加了 Debug 日志，记录快照的关键 ID 列表，便于排查恢复状态是否正确。
 
 ## 5. 调试建议
 

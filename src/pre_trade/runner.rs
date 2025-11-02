@@ -19,9 +19,10 @@ use crate::pre_trade::config::{
 use crate::pre_trade::event::AccountEvent;
 use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
-use crate::signal::binance_forward_arb::{
-    BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbCloseUmCtx, BinSingleForwardArbHedgeCtx,
-    BinSingleForwardArbLadderCancelCtx, BinSingleForwardArbOpenCtx, BinSingleForwardArbStrategyMT,
+use crate::signal::binance_forward_arb_mm::BinSingleForwardArbStrategyMM;
+use crate::signal::binance_forward_arb_mt::{
+    BinSingleForwardArbCancelCtx, BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbCloseUmCtx,
+    BinSingleForwardArbHedgeCtx, BinSingleForwardArbOpenCtx, BinSingleForwardArbStrategyMT,
 };
 use crate::signal::record::{SignalRecordMessage, PRE_TRADE_SIGNAL_RECORD_CHANNEL};
 use crate::signal::resample::{
@@ -381,10 +382,12 @@ impl RuntimeContext {
 
     fn insert_strategy(&mut self, symbol: String, strategy: Box<dyn Strategy>) {
         let strategy_id = strategy.get_id();
+        let strategy_type = strategy.type_name();
         self.strategy_mgr.insert(strategy);
         self.strategy_activity = true;
         debug!(
-            "strategy inserted: strategy_id={} symbol={} active_total={}",
+            "strategy inserted: type={} strategy_id={} symbol={} active_total={}",
+            strategy_type,
             strategy_id,
             symbol,
             self.strategy_mgr.len()
@@ -1315,7 +1318,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
     let raw_signal = signal.to_bytes();
     let is_ladder_cancel = matches!(
         signal.signal_type,
-        SignalType::BinSingleForwardArbLadderCancel
+        SignalType::BinSingleForwardArbCancelMT | SignalType::BinSingleForwardArbCancelMM
     );
     if !is_ladder_cancel {
         debug!(
@@ -1326,13 +1329,17 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
         );
     }
     match signal.signal_type {
-        SignalType::BinSingleForwardArbOpen => {
+        SignalType::BinSingleForwardArbOpenMT => {
             match BinSingleForwardArbOpenCtx::from_bytes(signal.context.clone()) {
                 Ok(open_ctx) => {
                     let symbol = open_ctx.spot_symbol.to_uppercase();
                     debug!(
-                        "decoded open ctx: spot_symbol={} amount={} price={:.8} exp_time_us={}",
-                        open_ctx.spot_symbol, open_ctx.amount, open_ctx.price, open_ctx.exp_time
+                        "decoded open ctx: spot_symbol={} futures_symbol={} amount={} price={:.8} exp_time_us={}",
+                        open_ctx.spot_symbol,
+                        open_ctx.futures_symbol,
+                        open_ctx.amount,
+                        open_ctx.price,
+                        open_ctx.exp_time
                     );
                     let open_ctx_payload = open_ctx.to_bytes();
                     let max_limit = ctx.max_pending_limit_orders.get();
@@ -1390,13 +1397,91 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                         ctx.insert_strategy(symbol, Box::new(strategy));
                         let record = SignalRecordMessage::new(
                             strategy_id,
-                            SignalType::BinSingleForwardArbOpen,
+                            SignalType::BinSingleForwardArbOpenMT,
                             open_ctx_payload.to_vec(),
                         );
                         ctx.publish_signal_record(&record);
                     }
                 }
                 Err(err) => warn!("failed to decode open context: {err}"),
+            }
+        }
+        SignalType::BinSingleForwardArbOpenMM => {
+            match BinSingleForwardArbOpenCtx::from_bytes(signal.context.clone()) {
+                Ok(open_ctx) => {
+                    let symbol = open_ctx.spot_symbol.to_uppercase();
+                    debug!(
+                        "decoded MM open ctx: spot_symbol={} futures_symbol={} amount={} price={:.8} exp_time_us={}",
+                        open_ctx.spot_symbol,
+                        open_ctx.futures_symbol,
+                        open_ctx.amount,
+                        open_ctx.price,
+                        open_ctx.exp_time
+                    );
+                    let open_ctx_payload = open_ctx.to_bytes();
+                    let max_limit = ctx.max_pending_limit_orders.get();
+                    if max_limit > 0 {
+                        let current_limit = {
+                            let manager = ctx.order_manager.borrow();
+                            manager.get_symbol_pending_limit_order_count(&symbol)
+                        };
+                        if current_limit >= max_limit {
+                            warn!(
+                                "{}: symbol={} 当前限价挂单数={} 已达到上限 {}，忽略开仓信号",
+                                BinSingleForwardArbStrategyMM::strategy_name(),
+                                symbol,
+                                current_limit,
+                                max_limit
+                            );
+                            return;
+                        }
+                    }
+
+                    let strategy_id = StrategyManager::generate_strategy_id(3);
+                    let order_tx = ctx.order_sender();
+                    let signal_tx = ctx.signal_sender();
+                    let now = get_timestamp_us();
+
+                    let mut strategy = BinSingleForwardArbStrategyMM::new_open(
+                        strategy_id,
+                        now,
+                        symbol.clone(),
+                        ctx.order_manager.clone(),
+                        ctx.exposure_manager.clone(),
+                        order_tx,
+                        ctx.strategy_params.max_symbol_exposure_ratio,
+                        ctx.strategy_params.max_total_exposure_ratio,
+                        ctx.strategy_params.max_pos_u,
+                        ctx.strategy_params.max_leverage,
+                        ctx.max_pending_limit_orders.clone(),
+                        ctx.min_qty_table.clone(),
+                        ctx.price_table.clone(),
+                    );
+                    strategy.set_signal_sender(signal_tx);
+
+                    debug!(
+                        "MM strategy init for open signal: strategy_id={} symbol={} qty={:.6} price={:.8} tick={:.8} type={:?}",
+                        strategy_id,
+                        open_ctx.spot_symbol,
+                        open_ctx.amount,
+                        open_ctx.price,
+                        open_ctx.price_tick,
+                        open_ctx.order_type
+                    );
+
+                    strategy.handle_trade_signal(&raw_signal);
+
+                    if strategy.is_active() {
+                        ctx.insert_strategy(symbol, Box::new(strategy));
+                        let record = SignalRecordMessage::new(
+                            strategy_id,
+                            SignalType::BinSingleForwardArbOpenMM,
+                            open_ctx_payload.to_vec(),
+                        );
+                        ctx.publish_signal_record(&record);
+                    }
+                }
+                Err(err) => warn!("failed to decode MM open context: {err}"),
             }
         }
         SignalType::BinSingleForwardArbCloseMargin => {
@@ -1459,7 +1544,11 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
             );
             dispatch_signal_to_existing_strategy(ctx, signal, raw_signal);
         }
-        SignalType::BinSingleForwardArbLadderCancel => {
+        SignalType::BinSingleForwardArbCancelMT => {
+            ctx.ladder_cancel_activity = true;
+            dispatch_signal_to_existing_strategy(ctx, signal, raw_signal);
+        }
+        SignalType::BinSingleForwardArbCancelMM => {
             ctx.ladder_cancel_activity = true;
             dispatch_signal_to_existing_strategy(ctx, signal, raw_signal);
         }
@@ -1476,10 +1565,10 @@ fn dispatch_signal_to_existing_strategy(
     let signal_type = signal.signal_type.clone();
     let is_ladder_cancel = matches!(
         signal_type.clone(),
-        SignalType::BinSingleForwardArbLadderCancel
+        SignalType::BinSingleForwardArbCancelMT | SignalType::BinSingleForwardArbCancelMM
     );
     let mut target_strategy_id: Option<i32> = None;
-    let mut ladder_cancel_ctx: Option<BinSingleForwardArbLadderCancelCtx> = None;
+    let mut ladder_cancel_ctx: Option<BinSingleForwardArbCancelCtx> = None;
     let mut ladder_symbol: Option<String> = None;
     let maybe_symbol = match signal_type {
         SignalType::BinSingleForwardArbHedge => {
@@ -1524,8 +1613,8 @@ fn dispatch_signal_to_existing_strategy(
                 }
             }
         }
-        SignalType::BinSingleForwardArbLadderCancel => {
-            match BinSingleForwardArbLadderCancelCtx::from_bytes(signal.context.clone()) {
+        SignalType::BinSingleForwardArbCancelMT | SignalType::BinSingleForwardArbCancelMM => {
+            match BinSingleForwardArbCancelCtx::from_bytes(signal.context.clone()) {
                 Ok(cancel_ctx) => {
                     let symbol = cancel_ctx.spot_symbol.to_uppercase();
                     ladder_symbol = Some(symbol.clone());
@@ -1538,10 +1627,14 @@ fn dispatch_signal_to_existing_strategy(
                 }
             }
         }
+        SignalType::BinSingleForwardArbOpenMM => {
+            debug!("ignored BinSingleForwardArbOpenMM signal in pre_trade dispatch helper");
+            return;
+        }
         _ => None,
     };
 
-    let strategy_ids: Vec<i32> = if let Some(strategy_id) = target_strategy_id {
+    let mut strategy_ids: Vec<i32> = if let Some(strategy_id) = target_strategy_id {
         vec![strategy_id]
     } else if let Some(symbol) = maybe_symbol {
         ctx.strategy_mgr
@@ -1552,11 +1645,32 @@ fn dispatch_signal_to_existing_strategy(
         ctx.strategy_mgr.iter_ids().cloned().collect()
     };
 
+    if matches!(signal_type, SignalType::BinSingleForwardArbCancelMT) {
+        strategy_ids.retain(|strategy_id| {
+            ctx.strategy_mgr
+                .get(*strategy_id)
+                .map(|strategy| {
+                    strategy.type_name() == BinSingleForwardArbStrategyMT::strategy_name()
+                })
+                .unwrap_or(false)
+        });
+    } else if matches!(signal_type, SignalType::BinSingleForwardArbCancelMM) {
+        strategy_ids.retain(|strategy_id| {
+            ctx.strategy_mgr
+                .get(*strategy_id)
+                .map(|strategy| {
+                    strategy.type_name() == BinSingleForwardArbStrategyMM::strategy_name()
+                })
+                .unwrap_or(false)
+        });
+    }
+
     if is_ladder_cancel {
         let Some(cancel_ctx) = ladder_cancel_ctx else {
             return;
         };
         let symbol = ladder_symbol.unwrap_or_else(|| cancel_ctx.spot_symbol.to_uppercase());
+        let cancel_payload = cancel_ctx.to_bytes();
 
         if strategy_ids.is_empty() {
             debug!(
@@ -1567,14 +1681,29 @@ fn dispatch_signal_to_existing_strategy(
         }
 
         debug!(
-            "dispatch ladder cancel signal: symbol={} strategies={} bidask_sr={:.6} threshold={:.6} ctx_len={} generation_time={}",
+            "dispatch ladder cancel signal: symbol={} strategies={} bidask_sr={:.6} threshold={:.6} ctx_len={} generation_time={} signal_type={:?}",
             symbol,
             strategy_ids.len(),
-            cancel_ctx.bidask_sr,
+            cancel_ctx.bidask_sr().unwrap_or(f64::NAN),
             cancel_ctx.cancel_threshold,
             signal.context.len(),
             signal.generation_time,
+            signal_type
         );
+
+        for strategy_id in &strategy_ids {
+            let record_type = if matches!(signal_type, SignalType::BinSingleForwardArbCancelMM) {
+                SignalType::BinSingleForwardArbCancelMM
+            } else {
+                SignalType::BinSingleForwardArbCancelMT
+            };
+            let record = SignalRecordMessage::new(
+                *strategy_id,
+                record_type,
+                cancel_payload.clone().to_vec(),
+            );
+            ctx.publish_signal_record(&record);
+        }
     } else if strategy_ids.is_empty() {
         debug!("no active strategy matched for this signal");
     }

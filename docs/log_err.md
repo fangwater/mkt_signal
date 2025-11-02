@@ -1,3 +1,5 @@
+> 注：以下日志截取于拆分前版本，现已替换为 `mkt_signal::signal::binance_forward_arb_mt` / `_mm` 模块，并将信号类型标记为 `BinSingleForwardArbOpenMT` / `BinSingleForwardArbOpenMM` 等新枚举值。
+
 [2025-10-22T11:24:59Z DEBUG mkt_signal::pre_trade::runner] max_pending_limit_orders updated to 5
 [2025-10-22T11:24:59Z DEBUG mkt_signal::pre_trade::runner] pre_trade params updated: max_pos_u=100.00 sym_ratio=0.5000 total_ratio=0.5000 max_leverage=2.00 refresh=30s
 [2025-10-22T11:24:59Z INFO  mkt_signal::pre_trade::runner] account stream subscribed: service=account_pubs/binance/pm label=account_binance
@@ -213,3 +215,11 @@
 [2025-10-22T11:25:08Z DEBUG mkt_signal::pre_trade::runner] executionReport unmatched: sym=A2ZUSDT cli_id=101173705618489344 ord_id=124499280 status=CANCELED expect_strategy=23556339
 [2025-10-22T11:25:08Z DEBUG mkt_signal::pre_trade::runner] accountUpdateFlush: scope=ACCOUNT_POSITION event_time=1761132307998 hash=0x138660959b416677
 ^C[2025-10-22T11:25:25Z INFO  mkt_signal::pre_trade::runner] pre_trade exiting
+
+
+先修复定时器问题
+1、先发送open，订单进入commit
+2、价差反转导致立刻发送cancel，但此时cancel还没有产生回报
+3、检查到strategy没有有效订单，strategy被移除
+
+我想知道strategy判断active的条件，commit待确认的不算么？代码的位置给到我

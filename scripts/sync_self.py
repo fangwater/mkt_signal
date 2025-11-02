@@ -98,6 +98,7 @@ def main() -> int:
         "order_amount_u": "15",
         "order_max_open_order_keep_s": "30",
         "order_max_close_order_keep_s": "1",
+        "order_max_hedge_order_keep_s": "5",
         "max_pending_limit_orders": "5",
     }
 

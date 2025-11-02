@@ -1,9 +1,12 @@
 use crate::common::exchange::Exchange;
-use crate::trade_engine::config::TradeEngineCfg;
+use crate::trade_engine::config::{TradeEngineCfg, TradeTransport};
 use crate::trade_engine::dispatcher::Dispatcher;
 use crate::trade_engine::trade_request::TradeRequestMsg;
-use crate::trade_engine::trade_request_handle::spawn_request_executor;
+use crate::trade_engine::trade_request_handle::{
+    spawn_request_executor, spawn_ws_request_executor,
+};
 use crate::trade_engine::trade_response_handle::spawn_response_handle;
+use crate::trade_engine::ws::TradeWsDispatcher;
 use anyhow::Result;
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
@@ -37,9 +40,17 @@ impl TradeEngine {
     pub async fn run(mut self) -> Result<()> {
         // Single-threaded tokio reactor is enforced by binary attribute.
         info!(
-            "trade_engine starting; service='{}', rest='{}'",
-            self.cfg.order_req_service, self.cfg.rest.base_url
+            "trade_engine starting; service='{}', transport={:?}",
+            self.cfg.order_req_service, self.cfg.transport
         );
+        if matches!(self.cfg.transport, TradeTransport::Rest) {
+            info!("rest base_url={}", self.cfg.rest.base_url);
+        }
+        if matches!(self.cfg.transport, TradeTransport::Ws) {
+            if let Some(ws_cfg) = &self.cfg.ws {
+                info!("ws endpoints={:?}", ws_cfg.urls);
+            }
+        }
 
         // Iceoryx subscriber for order requests
         let node_name = format!(
@@ -78,9 +89,6 @@ impl TradeEngine {
             self.cfg.order_resp_service
         );
 
-        // Dispatcher (HTTP + limits)
-        let dispatcher = Dispatcher::new(&self.cfg)?;
-
         // 解析 exchange 枚举
         let exchange = match self.cfg.exchange.as_deref() {
             Some("binance") => Exchange::Binance,
@@ -97,7 +105,25 @@ impl TradeEngine {
         // 暴露内部请求通道（可供外部直接推送请求）
         self.req_tx = Some(req_tx.clone());
         let (resp_tx, resp_rx) = tokio::sync::mpsc::unbounded_channel();
-        let _req_worker = spawn_request_executor(dispatcher, exchange, req_rx, resp_tx);
+        let _req_worker = match self.cfg.transport {
+            TradeTransport::Rest => {
+                let dispatcher = Dispatcher::new(&self.cfg)?;
+                spawn_request_executor(dispatcher, exchange, req_rx, resp_tx.clone())
+            }
+            TradeTransport::Ws => {
+                let ws_cfg =
+                    self.cfg.ws.clone().ok_or_else(|| {
+                        anyhow::anyhow!("ws transport configured but [ws] missing")
+                    })?;
+                let dispatcher = TradeWsDispatcher::new(
+                    ws_cfg,
+                    self.cfg.network.local_ips.clone(),
+                    exchange,
+                    resp_tx.clone(),
+                )?;
+                spawn_ws_request_executor(dispatcher, exchange, req_rx, resp_tx.clone())
+            }
+        };
         let _resp_worker = spawn_response_handle(resp_publisher, resp_rx);
 
         loop {

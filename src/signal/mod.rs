@@ -1,5 +1,5 @@
-pub mod binance_forward_arb;
-pub mod binance_funding_rate_arb_mm;
+pub mod binance_forward_arb_mm;
+pub mod binance_forward_arb_mt;
 pub mod channels;
 pub mod record;
 pub mod resample;

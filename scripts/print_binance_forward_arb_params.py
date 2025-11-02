@@ -87,6 +87,7 @@ PARAM_COMMENTS: Dict[str, str] = {
     "order_amount_u": "下单基础金额(U)",
     "order_max_open_order_keep_s": "开单保留上限(秒)",
     "order_max_close_order_keep_s": "平单保留上限(秒)",
+    "order_max_hedge_order_keep_s": "对冲保留上限(秒)",
 }
 
 

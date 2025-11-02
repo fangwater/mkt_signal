@@ -11,7 +11,7 @@ use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::exposure_manager::ExposureManager;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::price_table::PriceTable;
-use crate::signal::strategy::{Strategy, StrategySnapshot};
+use crate::signal::strategy::Strategy;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::trade_engine::trade_request::{
     BinanceCancelMarginOrderRequest, BinanceNewMarginOrderRequest, BinanceNewUMOrderRequest,
@@ -25,6 +25,7 @@ use std::cmp::Ordering;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BinSingleForwardArbOpenCtx {
     pub spot_symbol: String,
+    pub futures_symbol: String,
     pub amount: f32,
     pub side: Side,
     pub order_type: OrderType,
@@ -36,6 +37,7 @@ pub struct BinSingleForwardArbOpenCtx {
     pub spot_ask0: f64,
     pub swap_bid0: f64,
     pub swap_ask0: f64,
+    pub open_threshold: f64,
     pub funding_ma: Option<f64>,
     pub predicted_funding_rate: Option<f64>,
     pub loan_rate: Option<f64>,
@@ -66,19 +68,23 @@ pub struct BinSingleForwardArbCloseUmCtx {
     pub exp_time: i64,
 }
 
-/// 阶梯撤单信号上下文
-#[derive(Clone, Debug)]
-pub struct BinSingleForwardArbLadderCancelCtx {
+/// 统一撤单信号上下文
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BinSingleForwardArbCancelCtx {
     pub spot_symbol: String,
     pub futures_symbol: String,
-    pub bidask_sr: f64,
     pub cancel_threshold: f64,
+    pub spot_bid0: f64,
+    pub spot_ask0: f64,
+    pub swap_bid0: f64,
+    pub swap_ask0: f64,
     pub trigger_ts: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OpenSignalMeta {
     spot_symbol: String,
+    futures_symbol: String,
     amount: f32,
     side: Side,
     order_type: OrderType,
@@ -91,6 +97,7 @@ pub struct OpenSignalMeta {
     spot_ask0: f64,
     swap_bid0: f64,
     swap_ask0: f64,
+    open_threshold: f64,
     funding_ma: Option<f64>,
     predicted_funding_rate: Option<f64>,
     loan_rate: Option<f64>,
@@ -113,6 +120,8 @@ impl BinSingleForwardArbOpenCtx {
 
         buf.put_u32_le(self.spot_symbol.len() as u32);
         buf.put_slice(self.spot_symbol.as_bytes());
+        buf.put_u32_le(self.futures_symbol.len() as u32);
+        buf.put_slice(self.futures_symbol.as_bytes());
         buf.put_f32_le(self.amount);
         buf.put_u8(self.side as u8);
         buf.put_u8(self.order_type as u8);
@@ -124,6 +133,7 @@ impl BinSingleForwardArbOpenCtx {
         buf.put_f64_le(self.spot_ask0);
         buf.put_f64_le(self.swap_bid0);
         buf.put_f64_le(self.swap_ask0);
+        buf.put_f64_le(self.open_threshold);
 
         fn put_option_f64(buf: &mut BytesMut, value: Option<f64>) {
             match value {
@@ -150,11 +160,21 @@ impl BinSingleForwardArbOpenCtx {
             return Err("Not enough bytes for spot_symbol length".to_string());
         }
         let spot_symbol_len = bytes.get_u32_le() as usize;
-        if bytes.remaining() < spot_symbol_len {
+        if bytes.remaining() < spot_symbol_len + 4 {
             return Err("Not enough bytes for spot_symbol".to_string());
         }
         let spot_symbol = String::from_utf8(bytes.copy_to_bytes(spot_symbol_len).to_vec())
             .map_err(|e| format!("Invalid UTF-8 for spot_symbol: {e}"))?;
+
+        if bytes.remaining() < 4 {
+            return Err("Not enough bytes for futures_symbol length".to_string());
+        }
+        let futures_symbol_len = bytes.get_u32_le() as usize;
+        if bytes.remaining() < futures_symbol_len {
+            return Err("Not enough bytes for futures_symbol".to_string());
+        }
+        let futures_symbol = String::from_utf8(bytes.copy_to_bytes(futures_symbol_len).to_vec())
+            .map_err(|e| format!("Invalid UTF-8 for futures_symbol: {e}"))?;
 
         if bytes.remaining() < 4 {
             return Err("Not enough bytes for amount".to_string());
@@ -207,6 +227,11 @@ impl BinSingleForwardArbOpenCtx {
         }
         let swap_ask0 = bytes.get_f64_le();
 
+        if bytes.remaining() < 8 {
+            return Err("Not enough bytes for open_threshold".to_string());
+        }
+        let open_threshold = bytes.get_f64_le();
+
         fn read_option_f64(bytes: &mut Bytes) -> Option<f64> {
             if bytes.remaining() < 1 {
                 return None;
@@ -232,6 +257,7 @@ impl BinSingleForwardArbOpenCtx {
 
         Ok(Self {
             spot_symbol,
+            futures_symbol,
             amount,
             side,
             order_type,
@@ -243,6 +269,7 @@ impl BinSingleForwardArbOpenCtx {
             spot_ask0,
             swap_bid0,
             swap_ask0,
+            open_threshold,
             funding_ma,
             predicted_funding_rate,
             loan_rate,
@@ -250,15 +277,18 @@ impl BinSingleForwardArbOpenCtx {
     }
 }
 
-impl BinSingleForwardArbLadderCancelCtx {
+impl BinSingleForwardArbCancelCtx {
     pub fn to_bytes(&self) -> Bytes {
         let mut buf = BytesMut::new();
         buf.put_u32_le(self.spot_symbol.len() as u32);
         buf.put_slice(self.spot_symbol.as_bytes());
         buf.put_u32_le(self.futures_symbol.len() as u32);
         buf.put_slice(self.futures_symbol.as_bytes());
-        buf.put_f64_le(self.bidask_sr);
         buf.put_f64_le(self.cancel_threshold);
+        buf.put_f64_le(self.spot_bid0);
+        buf.put_f64_le(self.spot_ask0);
+        buf.put_f64_le(self.swap_bid0);
+        buf.put_f64_le(self.swap_ask0);
         buf.put_i64_le(self.trigger_ts);
         buf.freeze()
     }
@@ -275,21 +305,24 @@ impl BinSingleForwardArbLadderCancelCtx {
             .map_err(|e| format!("Invalid UTF-8 for spot_symbol: {e}"))?;
 
         let fut_len = bytes.get_u32_le() as usize;
-        if bytes.remaining() < fut_len + 8 + 8 + 8 {
+        if bytes.remaining() < fut_len + 8 * 4 + 8 {
             return Err("Not enough bytes for futures_symbol or payload".to_string());
         }
         let futures_symbol = String::from_utf8(bytes.copy_to_bytes(fut_len).to_vec())
             .map_err(|e| format!("Invalid UTF-8 for futures_symbol: {e}"))?;
 
         if bytes.remaining() < 8 {
-            return Err("Not enough bytes for bidask_sr".to_string());
-        }
-        let bidask_sr = bytes.get_f64_le();
-
-        if bytes.remaining() < 8 {
             return Err("Not enough bytes for cancel_threshold".to_string());
         }
         let cancel_threshold = bytes.get_f64_le();
+
+        if bytes.remaining() < 8 * 4 + 8 {
+            return Err("Not enough bytes for depth prices".to_string());
+        }
+        let spot_bid0 = bytes.get_f64_le();
+        let spot_ask0 = bytes.get_f64_le();
+        let swap_bid0 = bytes.get_f64_le();
+        let swap_ask0 = bytes.get_f64_le();
 
         if bytes.remaining() < 8 {
             return Err("Not enough bytes for trigger_ts".to_string());
@@ -299,10 +332,21 @@ impl BinSingleForwardArbLadderCancelCtx {
         Ok(Self {
             spot_symbol,
             futures_symbol,
-            bidask_sr,
             cancel_threshold,
+            spot_bid0,
+            spot_ask0,
+            swap_bid0,
+            swap_ask0,
             trigger_ts,
         })
+    }
+
+    pub fn bidask_sr(&self) -> Option<f64> {
+        if self.spot_bid0 > 0.0 && self.swap_ask0.is_finite() {
+            Some((self.spot_bid0 - self.swap_ask0) / self.spot_bid0)
+        } else {
+            None
+        }
     }
 }
 
@@ -447,13 +491,13 @@ impl Default for StrategyMode {
 
 /// 策略运行参数
 #[derive(Debug, Clone)]
-pub struct BinSingleForwardArbStrategyMMCfg {
+pub struct BinSingleForwardArbStrategyCfg {
     pub open_range: f64,
     pub order_timeout_ms: i64,
     pub max_position: f64,
 }
 
-impl Default for BinSingleForwardArbStrategyMMCfg {
+impl Default for BinSingleForwardArbStrategyCfg {
     fn default() -> Self {
         Self {
             open_range: 0.001,
@@ -474,10 +518,13 @@ struct PeriodLogFlags {
     last_um_close_status: Option<OrderExecutionStatus>,
     pending_um_hedge_logged: bool,
     pending_um_close_logged: bool,
+    cancel_pending_logged: bool,
 }
 
+const CANCEL_PENDING_TIMEOUT_US: i64 = 5_000_000; // 5s
+
 /// 币安单所正向套利策略
-pub struct BinSingleForwardArbStrategyMM {
+pub struct BinSingleForwardArbStrategyMT {
     pub strategy_id: i32, //策略id
     pub symbol: String,
     pub create_time: i64, //策略构建时间
@@ -497,6 +544,8 @@ pub struct BinSingleForwardArbStrategyMM {
     lifecycle_logged: Cell<bool>,
     open_signal_meta: Option<OpenSignalMeta>,
     open_signal_logged: Cell<bool>,
+    cancel_pending: Cell<bool>,
+    cancel_pending_since_us: Cell<Option<i64>>,
     order_seq: u32,
     order_manager: Rc<RefCell<OrderManager>>,
     exposure_manager: Rc<RefCell<ExposureManager>>,
@@ -511,7 +560,7 @@ pub struct BinSingleForwardArbStrategyMM {
     period_log_flags: RefCell<PeriodLogFlags>,
 }
 
-impl BinSingleForwardArbStrategyMM {
+impl BinSingleForwardArbStrategyMT {
     pub fn new(
         mode: StrategyMode,
         id: i32,
@@ -548,6 +597,8 @@ impl BinSingleForwardArbStrategyMM {
             lifecycle_logged: Cell::new(false),
             open_signal_meta: None,
             open_signal_logged: Cell::new(false),
+            cancel_pending: Cell::new(false),
+            cancel_pending_since_us: Cell::new(None),
             order_seq: 0,
             order_manager,
             exposure_manager,
@@ -633,6 +684,22 @@ impl BinSingleForwardArbStrategyMM {
 
     pub fn set_signal_sender(&mut self, signal_tx: UnboundedSender<Bytes>) {
         self.signal_tx = Some(signal_tx);
+    }
+
+    fn begin_cancel_wait(&self) {
+        self.cancel_pending.set(true);
+        self.cancel_pending_since_us.set(Some(get_timestamp_us()));
+        if let Ok(mut flags) = self.period_log_flags.try_borrow_mut() {
+            flags.cancel_pending_logged = false;
+        }
+    }
+
+    fn clear_cancel_wait(&self) {
+        self.cancel_pending.set(false);
+        self.cancel_pending_since_us.set(None);
+        if let Ok(mut flags) = self.period_log_flags.try_borrow_mut() {
+            flags.cancel_pending_logged = false;
+        }
     }
 
     fn register_um_hedge_order(&mut self, order_id: i64) {
@@ -860,7 +927,7 @@ impl BinSingleForwardArbStrategyMM {
 
     fn handle_signal_open(&mut self, signal: TradeSignal) {
         match signal.signal_type {
-            SignalType::BinSingleForwardArbOpen => {
+            SignalType::BinSingleForwardArbOpenMT => {
                 match BinSingleForwardArbOpenCtx::from_bytes(signal.context.clone()) {
                     Ok(ctx) => match self.create_margin_order(&ctx) {
                         Ok(()) => debug!(
@@ -883,8 +950,8 @@ impl BinSingleForwardArbStrategyMM {
                     ),
                 }
             }
-            SignalType::BinSingleForwardArbLadderCancel => {
-                match BinSingleForwardArbLadderCancelCtx::from_bytes(signal.context.clone()) {
+            SignalType::BinSingleForwardArbCancelMT => {
+                match BinSingleForwardArbCancelCtx::from_bytes(signal.context.clone()) {
                     Ok(ctx) => {
                         if let Err(err) = self.handle_ladder_cancel(&ctx) {
                             warn!(
@@ -940,10 +1007,7 @@ impl BinSingleForwardArbStrategyMM {
         }
     }
 
-    fn handle_ladder_cancel(
-        &mut self,
-        ctx: &BinSingleForwardArbLadderCancelCtx,
-    ) -> Result<(), String> {
+    fn handle_ladder_cancel(&mut self, ctx: &BinSingleForwardArbCancelCtx) -> Result<(), String> {
         if !ctx.spot_symbol.eq_ignore_ascii_case(&self.symbol) {
             debug!(
                 "{}: strategy_id={} 阶梯撤单信号 symbol={} 与策略 symbol={} 不匹配",
@@ -958,7 +1022,7 @@ impl BinSingleForwardArbStrategyMM {
             "{}: strategy_id={} 阶梯撤单触发 bidask_sr={:.6} threshold={:.6}",
             Self::strategy_name(),
             self.strategy_id,
-            ctx.bidask_sr,
+            ctx.bidask_sr().unwrap_or(f64::NAN),
             ctx.cancel_threshold
         );
 
@@ -989,6 +1053,7 @@ impl BinSingleForwardArbStrategyMM {
             );
             self.margin_order_id = 0;
             self.open_timeout_us = None;
+            self.clear_cancel_wait();
             return Ok(());
         };
 
@@ -1011,6 +1076,7 @@ impl BinSingleForwardArbStrategyMM {
             );
             self.margin_order_id = 0;
             self.open_timeout_us = None;
+            self.clear_cancel_wait();
             return Ok(());
         }
 
@@ -1065,6 +1131,7 @@ impl BinSingleForwardArbStrategyMM {
         }
 
         self.open_timeout_us = None;
+        self.begin_cancel_wait();
 
         Ok(())
     }
@@ -1134,6 +1201,39 @@ impl BinSingleForwardArbStrategyMM {
     }
 
     fn is_active_open(&self) -> bool {
+        if self.cancel_pending.get() && self.margin_order_id == 0 {
+            let now = get_timestamp_us();
+            let since = self.cancel_pending_since_us.get().unwrap_or(now);
+            let elapsed = now.saturating_sub(since);
+            if elapsed <= CANCEL_PENDING_TIMEOUT_US {
+                if let Ok(mut flags) = self.period_log_flags.try_borrow_mut() {
+                    if !flags.cancel_pending_logged {
+                        debug!(
+                            "{}: strategy_id={} waiting for margin cancel confirmation (elapsed={}ms)",
+                            Self::strategy_name(),
+                            self.strategy_id,
+                            elapsed / 1_000
+                        );
+                        flags.cancel_pending_logged = true;
+                    }
+                }
+                return true;
+            } else {
+                if let Ok(mut flags) = self.period_log_flags.try_borrow_mut() {
+                    flags.cancel_pending_logged = false;
+                }
+                warn!(
+                    "{}: strategy_id={} cancel pending exceeded timeout {}ms, forcing teardown",
+                    Self::strategy_name(),
+                    self.strategy_id,
+                    CANCEL_PENDING_TIMEOUT_US / 1_000
+                );
+                self.clear_cancel_wait();
+            }
+        } else if let Ok(mut flags) = self.period_log_flags.try_borrow_mut() {
+            flags.cancel_pending_logged = false;
+        }
+
         let manager_ref = self.order_manager.borrow();
         if self.margin_order_id == 0 {
             if !self.um_hedge_order_ids.is_empty() {
@@ -1637,8 +1737,8 @@ impl BinSingleForwardArbStrategyMM {
         None
     }
 
-    fn strategy_name() -> &'static str {
-        "BinSingleForwardArbStrategyMM"
+    pub fn strategy_name() -> &'static str {
+        "BinSingleForwardArbStrategyMT"
     }
 
     /// 构造 margin 正向买入限价单，全部风控检查通过后写入 order manager。
@@ -1658,6 +1758,7 @@ impl BinSingleForwardArbStrategyMM {
         if self.mode == StrategyMode::Open {
             self.open_signal_meta = Some(OpenSignalMeta {
                 spot_symbol: open_ctx.spot_symbol.clone(),
+                futures_symbol: open_ctx.futures_symbol.clone(),
                 amount: open_ctx.amount,
                 side: open_ctx.side,
                 order_type: open_ctx.order_type,
@@ -1670,6 +1771,7 @@ impl BinSingleForwardArbStrategyMM {
                 spot_ask0: open_ctx.spot_ask0,
                 swap_bid0: open_ctx.swap_bid0,
                 swap_ask0: open_ctx.swap_ask0,
+                open_threshold: open_ctx.open_threshold,
                 funding_ma: open_ctx.funding_ma,
                 predicted_funding_rate: open_ctx.predicted_funding_rate,
                 loan_rate: open_ctx.loan_rate,
@@ -3003,110 +3105,14 @@ impl BinSingleForwardArbStrategyMM {
         );
         warn!(
             "{}: symbol={} 当前待成交限价单列表\n{}",
-            BinSingleForwardArbStrategyMM::strategy_name(),
+            BinSingleForwardArbStrategyMT::strategy_name(),
             symbol,
             table
         );
     }
-
-    pub fn snapshot_struct(&self) -> BinSingleForwardArbSnapshot {
-        BinSingleForwardArbSnapshot {
-            strategy_id: self.strategy_id,
-            symbol: self.symbol.clone(),
-            create_time: self.create_time,
-            mode: self.mode,
-            margin_order_id: self.margin_order_id,
-            initial_margin_order_id: self.initial_margin_order_id,
-            um_hedge_order_ids: self.um_hedge_order_ids.clone(),
-            legacy_um_hedge_order_id: None,
-            close_margin_order_id: self.close_margin_order_id,
-            initial_close_margin_order_id: self.initial_close_margin_order_id,
-            close_um_hedge_order_ids: self.close_um_hedge_order_ids.clone(),
-            legacy_close_um_hedge_order_id: None,
-            open_timeout_us: self.open_timeout_us,
-            close_margin_timeout_us: self.close_margin_timeout_us,
-            um_close_signal_sent: self.um_close_signal_sent,
-            order_seq: self.order_seq,
-            close_target_qty: self.close_target_qty,
-            um_existing_side: self.um_existing_side,
-            lifecycle_logged: self.lifecycle_logged.get(),
-            open_signal_meta: self.open_signal_meta.clone(),
-            open_signal_logged: self.open_signal_logged.get(),
-        }
-    }
-
-    pub fn from_snapshot(
-        snap: &BinSingleForwardArbSnapshot,
-        order_manager: Rc<RefCell<OrderManager>>,
-        exposure_manager: Rc<RefCell<ExposureManager>>,
-        order_tx: UnboundedSender<Bytes>,
-        max_symbol_exposure_ratio: f64,
-        max_total_exposure_ratio: f64,
-        max_pos_u: f64,
-        max_leverage: f64,
-        max_pending_limit_orders: Rc<Cell<i32>>,
-        min_qty_table: std::rc::Rc<MinQtyTable>,
-        price_table: Rc<std::cell::RefCell<PriceTable>>,
-    ) -> Self {
-        let mut s = Self::new(
-            snap.mode,
-            snap.strategy_id,
-            snap.create_time,
-            snap.symbol.clone(),
-            order_manager,
-            exposure_manager,
-            order_tx,
-            max_symbol_exposure_ratio,
-            max_total_exposure_ratio,
-            max_pos_u,
-            max_leverage,
-            max_pending_limit_orders.clone(),
-            min_qty_table,
-            price_table,
-        );
-        s.margin_order_id = snap.margin_order_id;
-        s.initial_margin_order_id = snap.initial_margin_order_id;
-        s.um_hedge_order_ids = snap.um_hedge_order_ids.clone();
-        if s.um_hedge_order_ids.is_empty() {
-            if let Some(legacy) = snap.legacy_um_hedge_order_id {
-                if legacy != 0 {
-                    s.um_hedge_order_ids.push(legacy);
-                }
-            }
-        }
-        s.close_margin_order_id = snap.close_margin_order_id;
-        s.initial_close_margin_order_id = snap.initial_close_margin_order_id;
-        s.close_um_hedge_order_ids = snap.close_um_hedge_order_ids.clone();
-        if s.close_um_hedge_order_ids.is_empty() {
-            if let Some(legacy) = snap.legacy_close_um_hedge_order_id {
-                if legacy != 0 {
-                    s.close_um_hedge_order_ids.push(legacy);
-                }
-            }
-        }
-        s.open_timeout_us = snap.open_timeout_us;
-        s.close_margin_timeout_us = snap.close_margin_timeout_us;
-        s.um_close_signal_sent = snap.um_close_signal_sent;
-        s.order_seq = snap.order_seq;
-        s.close_target_qty = snap.close_target_qty;
-        s.um_existing_side = snap.um_existing_side;
-        s.lifecycle_logged.set(snap.lifecycle_logged);
-        s.open_signal_meta = snap.open_signal_meta.clone();
-        s.open_signal_logged.set(snap.open_signal_logged);
-        debug!(
-            "{}: strategy_id={} 从快照恢复 margin_order={} um_orders={:?} close_margin={} um_close={:?}",
-            Self::strategy_name(),
-            s.strategy_id,
-            s.margin_order_id,
-            s.um_hedge_order_ids,
-            s.close_margin_order_id,
-            s.close_um_hedge_order_ids
-        );
-        s
-    }
 }
 
-impl Drop for BinSingleForwardArbStrategyMM {
+impl Drop for BinSingleForwardArbStrategyMT {
     fn drop(&mut self) {
         self.log_lifecycle_summary("生命周期结束");
         self.cleanup_strategy_orders();
@@ -3118,7 +3124,7 @@ impl Drop for BinSingleForwardArbStrategyMM {
     }
 }
 
-impl BinSingleForwardArbStrategyMM {
+impl BinSingleForwardArbStrategyMT {
     fn format_decimal(value: f64) -> String {
         if value == 0.0 {
             return "0".to_string();
@@ -3203,7 +3209,7 @@ impl BinSingleForwardArbStrategyMM {
     }
 }
 
-impl BinSingleForwardArbStrategyMM {
+impl BinSingleForwardArbStrategyMT {
     fn apply_um_fill_state(order: &mut Order, event: &OrderTradeUpdateMsg) -> UmOrderUpdateOutcome {
         order.set_exchange_order_id(event.order_id);
         match event.order_status.as_str() {
@@ -3726,13 +3732,17 @@ fn to_fraction(value: f64) -> Option<(i64, i64)> {
     None
 }
 
-impl Strategy for BinSingleForwardArbStrategyMM {
+impl Strategy for BinSingleForwardArbStrategyMT {
     fn get_id(&self) -> i32 {
         self.strategy_id
     }
 
     fn symbol(&self) -> Option<&str> {
         Some(&self.symbol)
+    }
+
+    fn type_name(&self) -> &'static str {
+        Self::strategy_name()
     }
 
     fn is_strategy_order(&self, order_id: i64) -> bool {
@@ -3795,6 +3805,7 @@ impl Strategy for BinSingleForwardArbStrategyMM {
                                 if status.is_terminal() && status != OrderExecutionStatus::Filled {
                                     self.margin_order_id = 0;
                                     self.open_timeout_us = None;
+                                    self.clear_cancel_wait();
                                     warn!(
                                         "{}: strategy_id={} margin 开仓回执终止 status={} body={}",
                                         Self::strategy_name(),
@@ -3950,17 +3961,29 @@ impl Strategy for BinSingleForwardArbStrategyMM {
             } {
                 self.log_open_signal_summary(&order_snapshot);
             }
-            let hedge_delta = {
-                let manager = self.order_manager.borrow();
-                manager
-                    .get(order_id)
-                    .map(|order| {
-                        (order.cumulative_filled_quantity - order.hedged_filled_quantity).max(0.0)
-                    })
-                    .unwrap_or(0.0)
-            };
-            if hedge_delta > 1e-8 {
-                self.emit_hedge_signal(order_id, hedge_delta);
+            if status_str == "FILLED" {
+                let hedge_delta = {
+                    let manager = self.order_manager.borrow();
+                    manager
+                        .get(order_id)
+                        .map(|order| {
+                            (order.cumulative_filled_quantity - order.hedged_filled_quantity)
+                                .max(0.0)
+                        })
+                        .unwrap_or(0.0)
+                };
+                if hedge_delta > 1e-8 {
+                    self.order_manager.borrow_mut().update(order_id, |order| {
+                        order.hedged_filled_quantity += hedge_delta;
+                    });
+                    debug!(
+                        "{}: strategy_id={} margin order filled, emitting hedge delta={:.6}",
+                        Self::strategy_name(),
+                        self.strategy_id,
+                        hedge_delta
+                    );
+                    self.emit_hedge_signal(order_id, hedge_delta);
+                }
             }
 
             debug!(
@@ -3974,6 +3997,7 @@ impl Strategy for BinSingleForwardArbStrategyMM {
             match status_str {
                 "FILLED" => {
                     self.open_timeout_us = None;
+                    self.clear_cancel_wait();
                     debug!(
                         "{}: strategy_id={} margin 开仓单 FILLED，保留订单供生命周期管理",
                         Self::strategy_name(),
@@ -3983,6 +4007,7 @@ impl Strategy for BinSingleForwardArbStrategyMM {
                 "CANCELED" | "EXPIRED" | "REJECTED" | "TRADE_PREVENTION" => {
                     self.open_timeout_us = None;
                     self.margin_order_id = 0;
+                    self.clear_cancel_wait();
                 }
                 _ => {}
             }
@@ -4258,20 +4283,23 @@ impl Strategy for BinSingleForwardArbStrategyMM {
                         }
                     }
                     None => {
-                        let mut flags = self.period_log_flags.borrow_mut();
-                        if !flags.margin_open_missing_logged {
-                            warn!(
-                                "{}: strategy_id={} 未找到 margin 开仓单 id={}，清除本地状态",
-                                Self::strategy_name(),
-                                self.strategy_id,
-                                self.margin_order_id
-                            );
-                            flags.margin_open_missing_logged = true;
+                        {
+                            let mut flags = self.period_log_flags.borrow_mut();
+                            if !flags.margin_open_missing_logged {
+                                warn!(
+                                    "{}: strategy_id={} 未找到 margin 开仓单 id={}，清除本地状态",
+                                    Self::strategy_name(),
+                                    self.strategy_id,
+                                    self.margin_order_id
+                                );
+                                flags.margin_open_missing_logged = true;
+                            }
+                            flags.last_margin_open_status = None;
+                            flags.margin_open_absent_logged = false;
                         }
-                        flags.last_margin_open_status = None;
                         self.margin_order_id = 0;
                         self.open_timeout_us = None;
-                        flags.margin_open_absent_logged = false;
+                        self.clear_cancel_wait();
                     }
                 }
             }
@@ -4371,71 +4399,5 @@ impl Strategy for BinSingleForwardArbStrategyMM {
             StrategyMode::Open => self.is_active_open(),
             StrategyMode::Close => self.is_active_close(),
         }
-    }
-
-    fn snapshot(&self) -> Option<StrategySnapshot<'_>> {
-        let snap = self.snapshot_struct();
-        let bytes = match snap.to_bytes() {
-            Ok(b) => b,
-            Err(_) => return None,
-        };
-        debug!(
-            "{}: strategy_id={} 生成快照 margin_order={} um_orders={:?} close_margin={} um_close={:?}",
-            Self::strategy_name(),
-            self.strategy_id,
-            snap.margin_order_id,
-            snap.um_hedge_order_ids,
-            snap.close_margin_order_id,
-            snap.close_um_hedge_order_ids
-        );
-        Some(StrategySnapshot {
-            type_name: "BinSingleForwardArbStrategyMM",
-            payload: bytes,
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BinSingleForwardArbSnapshot {
-    pub strategy_id: i32,
-    pub symbol: String,
-    pub create_time: i64,
-    #[serde(default)]
-    pub mode: StrategyMode,
-    pub margin_order_id: i64,
-    #[serde(default)]
-    pub initial_margin_order_id: i64,
-    pub um_hedge_order_ids: Vec<i64>,
-    #[serde(default, skip_serializing, alias = "um_hedge_order_id")]
-    pub legacy_um_hedge_order_id: Option<i64>,
-    pub close_margin_order_id: i64,
-    #[serde(default)]
-    pub initial_close_margin_order_id: i64,
-    pub close_um_hedge_order_ids: Vec<i64>,
-    #[serde(default, skip_serializing, alias = "close_um_hedge_order_id")]
-    pub legacy_close_um_hedge_order_id: Option<i64>,
-    pub open_timeout_us: Option<i64>,
-    pub close_margin_timeout_us: Option<i64>,
-    pub um_close_signal_sent: bool,
-    pub order_seq: u32,
-    #[serde(default)]
-    pub close_target_qty: f64,
-    #[serde(default)]
-    pub um_existing_side: Option<Side>,
-    #[serde(default)]
-    pub lifecycle_logged: bool,
-    #[serde(default)]
-    pub open_signal_meta: Option<OpenSignalMeta>,
-    #[serde(default)]
-    pub open_signal_logged: bool,
-}
-
-impl BinSingleForwardArbSnapshot {
-    pub fn to_bytes(&self) -> Result<Bytes, bincode::Error> {
-        let v = bincode::serialize(self)?;
-        Ok(Bytes::from(v))
-    }
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, bincode::Error> {
-        bincode::deserialize(bytes)
     }
 }

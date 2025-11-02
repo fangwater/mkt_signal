@@ -8,9 +8,25 @@ pub struct TradeEngineCfg {
     pub order_resp_service: String,
     pub exchange: Option<String>,
     pub rest: RestCfg,
+    #[serde(default)]
+    pub transport: TradeTransport,
+    pub ws: Option<WsCfg>,
     pub limits: LimitsCfg,
     pub network: NetworkCfg,
     pub accounts: AccountsCfg,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TradeTransport {
+    Rest,
+    Ws,
+}
+
+impl Default for TradeTransport {
+    fn default() -> Self {
+        TradeTransport::Rest
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -18,6 +34,15 @@ pub struct RestCfg {
     pub base_url: String,
     pub timeout_ms: Option<u64>,
     pub recv_window_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WsCfg {
+    pub urls: Vec<String>,
+    pub connect_timeout_ms: Option<u64>,
+    pub ping_interval_ms: Option<u64>,
+    pub max_inflight: Option<usize>,
+    pub login_payload: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

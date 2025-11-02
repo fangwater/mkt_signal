@@ -4,7 +4,8 @@ use crate::trade_engine::order_event::OrderRequestEvent;
 use crate::trade_engine::trade_request::TradeRequestMsg;
 use crate::trade_engine::trade_response_handle::TradeExecOutcome;
 use crate::trade_engine::trade_type_mapping::TradeTypeMapping;
-use log::debug;
+use crate::trade_engine::ws::TradeWsDispatcher;
+use log::{debug, warn};
 use tokio::sync::mpsc;
 
 /// 启动请求执行器：
@@ -97,3 +98,43 @@ pub fn spawn_request_executor(
 }
 
 // Note: JSON响应发布器已不再使用，响应发布统一在 trade_response_handle 中实现为二进制转发
+
+/// WebSocket 请求执行器：
+/// - 将收到的 TradeRequestMsg 交给 TradeWsDispatcher 负责路由
+/// - 如派发失败（例如所有连接不可用），立即下发错误响应
+pub fn spawn_ws_request_executor(
+    dispatcher: TradeWsDispatcher,
+    exchange: Exchange,
+    mut req_rx: mpsc::UnboundedReceiver<TradeRequestMsg>,
+    resp_tx: mpsc::UnboundedSender<TradeExecOutcome>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::task::spawn_local(async move {
+        while let Some(msg) = req_rx.recv().await {
+            let req_type = msg.req_type;
+            let client_order_id = msg.client_order_id;
+            if let Err(err) = dispatcher.submit(msg.clone()) {
+                warn!(
+                    "ws dispatcher rejected order client_order_id={}: {}",
+                    client_order_id, err
+                );
+                let body = serde_json::json!({
+                    "transport": "ws",
+                    "state": "error",
+                    "reason": err.to_string(),
+                    "clientOrderId": client_order_id,
+                })
+                .to_string();
+                let _ = resp_tx.send(TradeExecOutcome {
+                    req_type,
+                    client_order_id,
+                    status: 503,
+                    body,
+                    exchange,
+                    ip_used_weight_1m: None,
+                    order_count_1m: None,
+                });
+            }
+        }
+        dispatcher.broadcast_shutdown();
+    })
+}

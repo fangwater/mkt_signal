@@ -27,6 +27,7 @@ pub trait Strategy: Any {
     fn symbol(&self) -> Option<&str> {
         None
     }
+    fn type_name(&self) -> &'static str;
     fn snapshot(&self) -> Option<StrategySnapshot<'_>> {
         None
     }

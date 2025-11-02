@@ -31,7 +31,7 @@
   - `forward_open_ready` 为 `true`
   - 当前持仓 `Flat`
   - 信号节流满足（距离上次信号 >= `min_interval_ms`）
-  - 满足时通过 `BinSingleForwardArbOpen` 发布开仓请求，并记录 `last_open_ts`、`position=Opened`
+  - 满足时通过 `BinSingleForwardArbOpenMT`（`funding_rate_strategy_mt`）或 `BinSingleForwardArbOpenMM`（`funding_rate_strategy_mm`）发布开仓请求，信号上下文会携带命中时的 `open_threshold`，并记录 `last_open_ts`、`position=Opened`
 - **平仓（释放现货多头）**
   - 资金信号为 `-2`
   - `forward_close_ready` 为 `true`
@@ -39,7 +39,7 @@
   - 信号节流满足
   - 满足时通过 `BinSingleForwardArbCloseMargin` 发布平仓请求，并记录 `last_close_ts`、`position=Flat`
 - 报单模式与多档价差配置的细节整理在《funding_rate_signal_modes.md》。
-- 阶梯模式专用：当 `order_mode=ladder` 且实时 `bidask_sr` 高于该 symbol 的 `forward_arb_cancel_tr` 时，会通过 `BinSingleForwardArbLadderCancel` 下发撤单信号，策略收到后会主动撤销未成交的阶梯挂单。
+- 阶梯模式专用：当 `order_mode=ladder` 且实时 `bidask_sr` 高于该 symbol 的 `forward_arb_cancel_tr` 时，会通过 `BinSingleForwardArbCancelMT`（MT 流程）或 `BinSingleForwardArbCancelMM`（MM 流程）下发撤单信号，策略收到后会主动撤销未成交的阶梯挂单。
 - 阶梯模式开仓阈值始终取自 `forward_arb_open_tr`，不再支持全局覆盖。
 - 资金信号 `1` / `2` 仅输出调试日志，不会触发委托。
 
