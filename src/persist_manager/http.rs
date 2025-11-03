@@ -19,8 +19,9 @@ use serde_json::Value;
 
 use crate::persist_manager::config::HttpConfig;
 use crate::persist_manager::storage::RocksDbStore;
+use crate::signal::binance_forward_arb_mm::BinSingleForwardArbHedgeMMCtx;
 use crate::signal::binance_forward_arb_mt::{
-    BinSingleForwardArbCancelCtx, BinSingleForwardArbOpenCtx,
+    BinSingleForwardArbCancelCtx, BinSingleForwardArbHedgeMTCtx, BinSingleForwardArbOpenCtx,
 };
 use crate::signal::record::SignalRecordMessage;
 use crate::signal::trade_signal::SignalType;
@@ -77,6 +78,7 @@ struct SignalDto {
     signal_type: String,
     context: Option<Value>,
     payload_base64: String,
+    record_ts_us: Option<i64>,
 }
 
 async fn list_signals(
@@ -271,6 +273,8 @@ enum SignalKind {
     BinSingleForwardArbOpenMM,
     BinSingleForwardArbCancelMT,
     BinSingleForwardArbCancelMM,
+    BinSingleForwardArbHedgeMT,
+    BinSingleForwardArbHedgeMM,
 }
 
 impl SignalKind {
@@ -280,6 +284,8 @@ impl SignalKind {
             "signals_bin_single_forward_arb_open_mm" => Some(Self::BinSingleForwardArbOpenMM),
             "signals_bin_single_forward_arb_cancel_mt" => Some(Self::BinSingleForwardArbCancelMT),
             "signals_bin_single_forward_arb_cancel_mm" => Some(Self::BinSingleForwardArbCancelMM),
+            "signals_bin_single_forward_arb_hedge_mt" => Some(Self::BinSingleForwardArbHedgeMT),
+            "signals_bin_single_forward_arb_hedge_mm" => Some(Self::BinSingleForwardArbHedgeMM),
             _ => None,
         }
     }
@@ -290,6 +296,8 @@ impl SignalKind {
             SignalKind::BinSingleForwardArbOpenMM => "signals_bin_single_forward_arb_open_mm",
             SignalKind::BinSingleForwardArbCancelMT => "signals_bin_single_forward_arb_cancel_mt",
             SignalKind::BinSingleForwardArbCancelMM => "signals_bin_single_forward_arb_cancel_mm",
+            SignalKind::BinSingleForwardArbHedgeMT => "signals_bin_single_forward_arb_hedge_mt",
+            SignalKind::BinSingleForwardArbHedgeMM => "signals_bin_single_forward_arb_hedge_mm",
         }
     }
 }
@@ -309,6 +317,7 @@ fn build_dto(signal_kind: SignalKind, key: String, value_bytes: Vec<u8>) -> Resu
         signal_type: signal_type_name(&record.signal_type).to_string(),
         context: context_json,
         payload_base64,
+        record_ts_us: (record.timestamp_us > 0).then_some(record.timestamp_us),
     })
 }
 
@@ -347,6 +356,22 @@ fn decode_context(signal_kind: SignalKind, record: &SignalRecordMessage) -> Opti
             };
             serde_json::to_value(ctx).ok()
         }
+        SignalKind::BinSingleForwardArbHedgeMT => {
+            let Ok(ctx) =
+                BinSingleForwardArbHedgeMTCtx::from_bytes(Bytes::from(record.context.clone()))
+            else {
+                return None;
+            };
+            serde_json::to_value(ctx).ok()
+        }
+        SignalKind::BinSingleForwardArbHedgeMM => {
+            let Ok(ctx) =
+                BinSingleForwardArbHedgeMMCtx::from_bytes(Bytes::from(record.context.clone()))
+            else {
+                return None;
+            };
+            serde_json::to_value(ctx).ok()
+        }
     }
 }
 
@@ -354,9 +379,8 @@ fn signal_type_name(signal_type: &SignalType) -> &'static str {
     match signal_type {
         SignalType::BinSingleForwardArbOpenMT => "BinSingleForwardArbOpenMT",
         SignalType::BinSingleForwardArbOpenMM => "BinSingleForwardArbOpenMM",
-        SignalType::BinSingleForwardArbHedge => "BinSingleForwardArbHedge",
-        SignalType::BinSingleForwardArbCloseMargin => "BinSingleForwardArbCloseMargin",
-        SignalType::BinSingleForwardArbCloseUm => "BinSingleForwardArbCloseUm",
+        SignalType::BinSingleForwardArbHedgeMT => "BinSingleForwardArbHedgeMT",
+        SignalType::BinSingleForwardArbHedgeMM => "BinSingleForwardArbHedgeMM",
         SignalType::BinSingleForwardArbCancelMT => "BinSingleForwardArbCancelMT",
         SignalType::BinSingleForwardArbCancelMM => "BinSingleForwardArbCancelMM",
     }
@@ -410,6 +434,8 @@ fn build_parquet_bytes(
         SignalKind::BinSingleForwardArbCancelMT | SignalKind::BinSingleForwardArbCancelMM => {
             build_parquet_cancel(entries, range)
         }
+        SignalKind::BinSingleForwardArbHedgeMT => build_parquet_hedge_mt(entries, range),
+        SignalKind::BinSingleForwardArbHedgeMM => build_parquet_hedge_mm(entries, range),
     }
 }
 
@@ -546,6 +572,127 @@ fn build_parquet_cancel(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -
         Series::new("swap_bid0".into(), swap_bid0_col),
         Series::new("swap_ask0".into(), swap_ask0_col),
         Series::new("trigger_ts".into(), trigger_ts_col),
+    ];
+
+    let mut df = DataFrame::new(columns)?;
+    let mut buf = Vec::new();
+    ParquetWriter::new(&mut buf).finish(&mut df)?;
+    Ok(buf)
+}
+
+fn build_parquet_hedge_mt(
+    entries: Vec<(Vec<u8>, Vec<u8>)>,
+    range: &RangeFilter,
+) -> Result<Vec<u8>> {
+    let mut key_col = Vec::with_capacity(entries.len());
+    let mut ts_us_col = Vec::with_capacity(entries.len());
+    let mut strategy_id_col = Vec::with_capacity(entries.len());
+    let mut record_ts_col = Vec::with_capacity(entries.len());
+    let mut client_order_id_col = Vec::with_capacity(entries.len());
+    let mut hedge_qty_col = Vec::with_capacity(entries.len());
+
+    for (key_bytes, value_bytes) in entries {
+        let key = String::from_utf8(key_bytes)?;
+        let (ts_us, strategy_id) = parse_key(&key)?;
+        if !range.contains(ts_us) {
+            continue;
+        }
+        let record = SignalRecordMessage::from_bytes(Bytes::from(value_bytes))?;
+        let ctx = BinSingleForwardArbHedgeMTCtx::from_bytes(Bytes::from(record.context.clone()))
+            .map_err(|err| anyhow!("failed to decode BinSingleForwardArbHedgeMTCtx: {err}"))?;
+
+        key_col.push(key);
+        ts_us_col.push(ts_us as i64);
+        strategy_id_col.push(strategy_id);
+        record_ts_col.push(record.timestamp_us);
+        client_order_id_col.push(ctx.client_order_id);
+        hedge_qty_col.push(ctx.hedge_qty);
+    }
+
+    let columns = vec![
+        Series::new("key".into(), key_col),
+        Series::new("ts_us".into(), ts_us_col),
+        Series::new("strategy_id".into(), strategy_id_col),
+        Series::new("record_ts_us".into(), record_ts_col),
+        Series::new("client_order_id".into(), client_order_id_col),
+        Series::new("hedge_qty".into(), hedge_qty_col),
+    ];
+
+    let mut df = DataFrame::new(columns)?;
+    let mut buf = Vec::new();
+    ParquetWriter::new(&mut buf).finish(&mut df)?;
+    Ok(buf)
+}
+
+fn build_parquet_hedge_mm(
+    entries: Vec<(Vec<u8>, Vec<u8>)>,
+    range: &RangeFilter,
+) -> Result<Vec<u8>> {
+    let mut key_col = Vec::with_capacity(entries.len());
+    let mut ts_us_col = Vec::with_capacity(entries.len());
+    let mut strategy_id_col = Vec::with_capacity(entries.len());
+    let mut record_ts_col = Vec::with_capacity(entries.len());
+    let mut client_order_id_col = Vec::with_capacity(entries.len());
+    let mut hedge_qty_col = Vec::with_capacity(entries.len());
+    let mut hedge_side_col = Vec::with_capacity(entries.len());
+    let mut limit_price_col = Vec::with_capacity(entries.len());
+    let mut price_tick_col = Vec::with_capacity(entries.len());
+    let mut maker_only_col = Vec::with_capacity(entries.len());
+    let mut exp_time_col = Vec::with_capacity(entries.len());
+    let mut spot_bid_col = Vec::with_capacity(entries.len());
+    let mut spot_ask_col = Vec::with_capacity(entries.len());
+    let mut spot_ts_col = Vec::with_capacity(entries.len());
+    let mut fut_bid_col = Vec::with_capacity(entries.len());
+    let mut fut_ask_col = Vec::with_capacity(entries.len());
+    let mut fut_ts_col = Vec::with_capacity(entries.len());
+
+    for (key_bytes, value_bytes) in entries {
+        let key = String::from_utf8(key_bytes)?;
+        let (ts_us, strategy_id) = parse_key(&key)?;
+        if !range.contains(ts_us) {
+            continue;
+        }
+        let record = SignalRecordMessage::from_bytes(Bytes::from(value_bytes))?;
+        let ctx = BinSingleForwardArbHedgeMMCtx::from_bytes(Bytes::from(record.context.clone()))
+            .map_err(|err| anyhow!("failed to decode BinSingleForwardArbHedgeMMCtx: {err}"))?;
+
+        key_col.push(key);
+        ts_us_col.push(ts_us as i64);
+        strategy_id_col.push(strategy_id);
+        record_ts_col.push(record.timestamp_us);
+        client_order_id_col.push(ctx.client_order_id);
+        hedge_qty_col.push(ctx.hedge_qty);
+        hedge_side_col.push(ctx.hedge_side.as_str().to_string());
+        limit_price_col.push(ctx.limit_price);
+        price_tick_col.push(ctx.price_tick);
+        maker_only_col.push(ctx.maker_only);
+        exp_time_col.push(ctx.exp_time);
+        spot_bid_col.push(ctx.spot_bid_price);
+        spot_ask_col.push(ctx.spot_ask_price);
+        spot_ts_col.push(ctx.spot_ts);
+        fut_bid_col.push(ctx.fut_bid_price);
+        fut_ask_col.push(ctx.fut_ask_price);
+        fut_ts_col.push(ctx.fut_ts);
+    }
+
+    let columns = vec![
+        Series::new("key".into(), key_col),
+        Series::new("ts_us".into(), ts_us_col),
+        Series::new("strategy_id".into(), strategy_id_col),
+        Series::new("record_ts_us".into(), record_ts_col),
+        Series::new("client_order_id".into(), client_order_id_col),
+        Series::new("hedge_qty".into(), hedge_qty_col),
+        Series::new("hedge_side".into(), hedge_side_col),
+        Series::new("limit_price".into(), limit_price_col),
+        Series::new("price_tick".into(), price_tick_col),
+        Series::new("maker_only".into(), maker_only_col),
+        Series::new("exp_time".into(), exp_time_col),
+        Series::new("spot_bid_price".into(), spot_bid_col),
+        Series::new("spot_ask_price".into(), spot_ask_col),
+        Series::new("spot_ts".into(), spot_ts_col),
+        Series::new("fut_bid_price".into(), fut_bid_col),
+        Series::new("fut_ask_price".into(), fut_ask_col),
+        Series::new("fut_ts".into(), fut_ts_col),
     ];
 
     let mut df = DataFrame::new(columns)?;

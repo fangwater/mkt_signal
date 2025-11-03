@@ -50,6 +50,8 @@ const CF_BIN_SINGLE_FORWARD_ARB_OPEN_MT: &str = "signals_bin_single_forward_arb_
 const CF_BIN_SINGLE_FORWARD_ARB_OPEN_MM: &str = "signals_bin_single_forward_arb_open_mm";
 const CF_BIN_SINGLE_FORWARD_ARB_CANCEL_MT: &str = "signals_bin_single_forward_arb_cancel_mt";
 const CF_BIN_SINGLE_FORWARD_ARB_CANCEL_MM: &str = "signals_bin_single_forward_arb_cancel_mm";
+const CF_BIN_SINGLE_FORWARD_ARB_HEDGE_MT: &str = "signals_bin_single_forward_arb_hedge_mt";
+const CF_BIN_SINGLE_FORWARD_ARB_HEDGE_MM: &str = "signals_bin_single_forward_arb_hedge_mm";
 
 pub fn required_column_families() -> &'static [&'static str] {
     &[
@@ -57,6 +59,8 @@ pub fn required_column_families() -> &'static [&'static str] {
         CF_BIN_SINGLE_FORWARD_ARB_OPEN_MM,
         CF_BIN_SINGLE_FORWARD_ARB_CANCEL_MT,
         CF_BIN_SINGLE_FORWARD_ARB_CANCEL_MM,
+        CF_BIN_SINGLE_FORWARD_ARB_HEDGE_MT,
+        CF_BIN_SINGLE_FORWARD_ARB_HEDGE_MM,
     ]
 }
 
@@ -110,7 +114,11 @@ impl SignalPersistor {
             return Ok(());
         };
 
-        let ts = get_timestamp_us();
+        let ts: u64 = if record.timestamp_us > 0 {
+            record.timestamp_us as u64
+        } else {
+            get_timestamp_us() as u64
+        };
         let key = format!("{:020}_{:010}", ts, record.strategy_id);
         self.store
             .put(cf_name, key.as_bytes(), payload.as_ref())
@@ -129,6 +137,8 @@ fn column_family_for_signal(signal_type: &SignalType) -> Option<&'static str> {
         SignalType::BinSingleForwardArbOpenMM => Some(CF_BIN_SINGLE_FORWARD_ARB_OPEN_MM),
         SignalType::BinSingleForwardArbCancelMT => Some(CF_BIN_SINGLE_FORWARD_ARB_CANCEL_MT),
         SignalType::BinSingleForwardArbCancelMM => Some(CF_BIN_SINGLE_FORWARD_ARB_CANCEL_MM),
+        SignalType::BinSingleForwardArbHedgeMT => Some(CF_BIN_SINGLE_FORWARD_ARB_HEDGE_MT),
+        SignalType::BinSingleForwardArbHedgeMM => Some(CF_BIN_SINGLE_FORWARD_ARB_HEDGE_MM),
         _ => None,
     }
 }

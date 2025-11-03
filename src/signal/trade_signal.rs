@@ -2,19 +2,18 @@ use bytes::{BufMut, Bytes, BytesMut};
 
 #[derive(Debug, Clone)]
 pub enum SignalType {
-    BinSingleForwardArbOpenMT = 1, // 币安单所正向套利触发开仓（MT 流程）
-    BinSingleForwardArbOpenMM = 2, // 币安单所正向套利触发开仓（MM 流程）
-    BinSingleForwardArbHedge = 3,  // 币安单所正向套利触发对冲
-    BinSingleForwardArbCloseMargin = 4, // 币安单所正向套利触发杠杆平仓
-    BinSingleForwardArbCloseUm = 5, // 币安单所正向套利触发合约平仓
-    BinSingleForwardArbCancelMT = 6, // MT 撤单
-    BinSingleForwardArbCancelMM = 7, // MM 撤单
-                                   // 未来可以添加更多信号类型:
-                                   // BinSingleReverseArb,  // 币安单所反向套利
-                                   // CrossExchangeArb,     // 跨交易所套利
-                                   // TriangularArb,        // 三角套利
-                                   // StatisticalArb,       // 统计套利
-                                   // etc...
+    BinSingleForwardArbOpenMT = 1,  // 币安单所正向套利触发开仓（MT 流程）
+    BinSingleForwardArbOpenMM = 2,  // 币安单所正向套利触发开仓（MM 流程）
+    BinSingleForwardArbHedgeMT = 3, // 币安单所正向套利触发对冲（MT 流程）
+    BinSingleForwardArbHedgeMM = 4, // 币安单所正向套利触发对冲（MM 流程）
+    BinSingleForwardArbCancelMT = 5, // MT 撤单
+    BinSingleForwardArbCancelMM = 6, // MM 撤单
+                                    // 未来可以添加更多信号类型:
+                                    // BinSingleReverseArb,  // 币安单所反向套利
+                                    // CrossExchangeArb,     // 跨交易所套利
+                                    // TriangularArb,        // 三角套利
+                                    // StatisticalArb,       // 统计套利
+                                    // etc...
 }
 
 impl SignalType {
@@ -23,11 +22,10 @@ impl SignalType {
         match value {
             1 => Some(SignalType::BinSingleForwardArbOpenMT),
             2 => Some(SignalType::BinSingleForwardArbOpenMM),
-            3 => Some(SignalType::BinSingleForwardArbHedge),
-            4 => Some(SignalType::BinSingleForwardArbCloseMargin),
-            5 => Some(SignalType::BinSingleForwardArbCloseUm),
-            6 => Some(SignalType::BinSingleForwardArbCancelMT),
-            7 => Some(SignalType::BinSingleForwardArbCancelMM),
+            3 => Some(SignalType::BinSingleForwardArbHedgeMT),
+            4 => Some(SignalType::BinSingleForwardArbHedgeMM),
+            5 => Some(SignalType::BinSingleForwardArbCancelMT),
+            6 => Some(SignalType::BinSingleForwardArbCancelMM),
             _ => None,
         }
     }

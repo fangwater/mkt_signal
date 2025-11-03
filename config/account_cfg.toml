@@ -1,4 +1,4 @@
-[general]
+[general] 
 # 连接会话最长持续时间（秒）。建议小于 24 小时，默认 23 小时
 ws_session_max_secs = 82800
 

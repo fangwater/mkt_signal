@@ -11,23 +11,31 @@ pub struct SignalRecordMessage {
     pub strategy_id: i32,
     pub signal_type: SignalType,
     pub context: Vec<u8>,
+    pub timestamp_us: i64,
 }
 
 impl SignalRecordMessage {
-    pub fn new(strategy_id: i32, signal_type: SignalType, context: Vec<u8>) -> Self {
+    pub fn new(
+        strategy_id: i32,
+        signal_type: SignalType,
+        context: Vec<u8>,
+        timestamp_us: i64,
+    ) -> Self {
         Self {
             strategy_id,
             signal_type,
             context,
+            timestamp_us,
         }
     }
 
     pub fn to_bytes(&self) -> Bytes {
-        let mut buf = BytesMut::with_capacity(4 + 4 + 4 + self.context.len());
+        let mut buf = BytesMut::with_capacity(4 + 4 + 4 + self.context.len() + 8);
         buf.put_i32_le(self.strategy_id);
         buf.put_u32_le(self.signal_type.clone() as u32);
         buf.put_u32_le(self.context.len() as u32);
         buf.extend_from_slice(&self.context);
+        buf.put_i64_le(self.timestamp_us);
         buf.freeze()
     }
 
@@ -47,11 +55,18 @@ impl SignalRecordMessage {
                 bytes.remaining()
             ));
         }
-        let context = bytes.copy_to_bytes(ctx_len).to_vec();
+        let context_bytes = bytes.copy_to_bytes(ctx_len);
+        let context = context_bytes.to_vec();
+        let timestamp_us = if bytes.remaining() >= 8 {
+            bytes.get_i64_le()
+        } else {
+            0
+        };
         Ok(Self {
             strategy_id,
             signal_type,
             context,
+            timestamp_us,
         })
     }
 }

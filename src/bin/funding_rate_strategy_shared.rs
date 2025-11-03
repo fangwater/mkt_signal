@@ -5,27 +5,33 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use iceoryx2::port::subscriber::Subscriber;
+use iceoryx2::prelude::{Node, NodeBuilder, NodeName, ServiceName};
+use iceoryx2::service::ipc;
 use log::{debug, error, info, warn};
 use reqwest::Client;
 use serde::de::{self, Deserializer};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::signal;
-#[cfg(unix)]
+#[cfg(unix)] 
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
-use tokio::task::yield_now;
-use tokio::time::Instant;
-use tokio_util::sync::CancellationToken;
+use tokio::task::yield_now; 
+use tokio::time::Instant; 
+use tokio_util::sync::CancellationToken; 
 
-use mkt_signal::common::iceoryx_publisher::{ResamplePublisher, SignalPublisher};
+use mkt_signal::common::iceoryx_publisher::{
+    ResamplePublisher, SignalPublisher, SIGNAL_PAYLOAD,
+};
 use mkt_signal::common::iceoryx_subscriber::{
     ChannelType, MultiChannelSubscriber, SubscribeParams,
-};
+}; 
 use mkt_signal::common::min_qty_table::MinQtyTable;
 use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::mkt_msg::{self, AskBidSpreadMsg, FundingRateMsg, MktMsgType};
 use mkt_signal::pre_trade::order_manager::{OrderType, Side};
+use mkt_signal::signal::binance_forward_arb_mm::BinSingleForwardArbHedgeMMCtx;
 use mkt_signal::signal::binance_forward_arb_mt::{
     BinSingleForwardArbCancelCtx, BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbOpenCtx,
 };
@@ -33,6 +39,7 @@ use mkt_signal::signal::resample::{
     compute_askbid_sr, compute_bidask_sr, FundingRateArbResampleEntry, FR_RESAMPLE_MSG_CHANNEL,
 };
 use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
+use mkt_signal::signal::mm_backward::ReqBinSingleForwardArbHedgeMM;
 
 // 以下常量在具体进程入口（如 funding_rate_strategy_mt.rs / _mm.rs）中定义：
 // - PROCESS_DISPLAY_NAME: &str
@@ -448,6 +455,10 @@ impl StrategyConfig {
 
     fn max_close_keep_us(&self) -> i64 {
         (self.order.max_close_order_keep_s.max(1) * 1_000_000) as i64
+    }
+
+    fn max_hedge_keep_us(&self) -> i64 {
+        (self.order.max_hedge_order_keep_s.max(1) * 1_000_000) as i64
     }
 
     fn min_signal_gap_us(&self) -> i64 {
@@ -2149,6 +2160,7 @@ impl StrategyEngine {
             swap_bid0,
             swap_ask0,
             open_threshold: state.forward_open_threshold,
+            hedge_timeout_us: self.cfg.max_hedge_keep_us(),
             funding_ma: state.funding_ma,
             predicted_funding_rate: Some(state.predicted_rate),
             loan_rate: Some(state.loan_rate),
@@ -2290,6 +2302,120 @@ impl StrategyEngine {
             .with_context(|| format!("发布信号 {:?} 失败", signal_type))
     }
 
+    fn handle_mm_hedge_request(&mut self, req: ReqBinSingleForwardArbHedgeMM) {
+        let symbol_key = req.symbol.to_ascii_uppercase();
+        if symbol_key.is_empty() {
+            warn!(
+                "忽略空 symbol 的 MM hedge 请求: strategy_id={} client_order_id={}",
+                req.strategy_id, req.client_order_id
+            );
+            return;
+        }
+
+        if !self.symbols.contains_key(&symbol_key) {
+            warn!(
+                "未跟踪 symbol={}，忽略 MM hedge 请求 strategy_id={} client_order_id={}",
+                symbol_key, req.strategy_id, req.client_order_id
+            );
+            return;
+        }
+
+        let hedge_qty = req.cumulative_filled_qty.max(0.0);
+        if hedge_qty <= 1e-8 {
+            debug!(
+                "MM hedge 请求数量过小，忽略 strategy_id={} client_order_id={} cumulative={:.6}",
+                req.strategy_id, req.client_order_id, req.cumulative_filled_qty
+            );
+            return;
+        }
+
+        let Some(state) = self.symbols.get(&symbol_key) else {
+            warn!(
+                "未找到 symbol={} 的状态，忽略 MM hedge 请求 strategy_id={} client_order_id={}",
+                symbol_key, req.strategy_id, req.client_order_id
+            );
+            return;
+        };
+
+        let hedge_side = req.hedge_side;
+        let mut limit_price = if hedge_side.is_sell() {
+            state.futures_quote.ask
+        } else {
+            state.futures_quote.bid
+        };
+        if !limit_price.is_finite() || limit_price <= 0.0 {
+            limit_price = state
+                .futures_mid_price
+                .unwrap_or_else(|| state.futures_quote.bid.max(state.futures_quote.ask));
+        }
+        if !limit_price.is_finite() || limit_price <= 0.0 {
+            warn!(
+                "symbol={} 缺少有效期货报价，无法计算 hedge 限价 strategy_id={} client_order_id={}",
+                symbol_key, req.strategy_id, req.client_order_id
+            );
+            return;
+        }
+
+        let price_tick = self
+            .min_qty
+            .futures_um_price_tick_by_symbol(&state.futures_symbol)
+            .unwrap_or(0.0);
+        limit_price = if price_tick > 0.0 {
+            if hedge_side.is_sell() {
+                align_price_ceil(limit_price, price_tick)
+            } else {
+                align_price_floor(limit_price, price_tick)
+            }
+        } else {
+            limit_price
+        };
+
+        if limit_price <= 0.0 {
+            warn!(
+                "symbol={} 对齐后限价无效 price_tick={:.8} price={:.8}",
+                symbol_key, price_tick, limit_price
+            );
+            return;
+        }
+
+        let ctx = BinSingleForwardArbHedgeMMCtx {
+            strategy_id: req.strategy_id,
+            client_order_id: req.client_order_id,
+            hedge_qty,
+            hedge_side,
+            limit_price,
+            price_tick,
+            maker_only: true,
+            exp_time: self.cfg.max_hedge_keep_us(),
+            spot_bid_price: state.spot_quote.bid,
+            spot_ask_price: state.spot_quote.ask,
+            spot_ts: state.spot_quote.ts,
+            fut_bid_price: state.futures_quote.bid,
+            fut_ask_price: state.futures_quote.ask,
+            fut_ts: state.futures_quote.ts,
+        }
+        .to_bytes();
+
+        let emit_ts = get_timestamp_us();
+        match self.publish_signal(SignalType::BinSingleForwardArbHedgeMM, ctx, emit_ts) {
+            Ok(()) => {
+                debug!(
+                    "派发 MM hedge 信号: strategy_id={} symbol={} qty={:.6} price={:.8} last_delta={:.6} event_time={}",
+                    req.strategy_id,
+                    symbol_key,
+                    hedge_qty,
+                    limit_price,
+                    req.last_executed_qty,
+                    req.event_time
+                );
+            }
+            Err(err) => warn!(
+                "派发 MM hedge 信号失败 strategy_id={} symbol={} qty={:.6}: {err:?}",
+                req.strategy_id, symbol_key, hedge_qty
+            ),
+        }
+    }
+
     fn print_stats(&self) {
         info!(
             "当前追踪交易对: {} | 开仓信号累计 {} | 平仓信号累计 {} | 阶梯撤单信号累计 {}",
@@ -2302,7 +2428,6 @@ impl StrategyEngine {
 }
 
 // 阈值获取逻辑改为读取 self.th_4h/self.th_8h，参见 StrategyEngine::thresholds_for_frequency
-
 #[derive(Debug, Clone, Default)]
 struct FundingThresholdEntry {
     symbol: String,
@@ -2817,6 +2942,70 @@ enum SignalRequest {
     },
 }
 
+struct BackwardSignalSubscriber {
+    #[allow(dead_code)]
+    node: Node<ipc::Service>,
+    subscriber: Subscriber<ipc::Service, [u8; SIGNAL_PAYLOAD], ()>,
+    channel: String,
+}
+
+impl BackwardSignalSubscriber {
+    fn new(channel: &str) -> Result<Self> {
+        let node_name = format!("{}_backward_sub", channel);
+        let node = NodeBuilder::new()
+            .name(&NodeName::new(&node_name)?)
+            .create::<ipc::Service>()?;
+
+        let service_path = format!("signal_pubs/{}", channel);
+        let service = node
+            .service_builder(&ServiceName::new(&service_path)?)
+            .publish_subscribe::<[u8; SIGNAL_PAYLOAD]>()
+            .max_publishers(1)
+            .max_subscribers(32)
+            .history_size(128)
+            .subscriber_max_buffer_size(256)
+            .open_or_create()?;
+
+        let subscriber = service.subscriber_builder().create()?;
+
+        info!(
+            "Subscribed to backward signal channel {} as node={}",
+            channel,
+            node.name()
+        );
+
+        Ok(Self {
+            node,
+            subscriber,
+            channel: channel.to_string(),
+        })
+    }
+
+    fn drain(&self) -> Vec<Bytes> {
+        let mut messages = Vec::new();
+        loop {
+            match self.subscriber.receive() {
+                Ok(Some(sample)) => {
+                    let raw = sample.payload();
+                    if raw.iter().all(|&b| b == 0) {
+                        continue;
+                    }
+                    messages.push(Bytes::copy_from_slice(raw));
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    warn!(
+                        "backward channel {} receive error: {err:?}",
+                        self.channel
+                    );
+                    break;
+                }
+            }
+        }
+        messages
+    }
+}
+
 fn render_three_line_table(headers: &[&str], rows: &[Vec<String>]) -> String {
     let widths = compute_widths(headers, rows);
     let mut out = String::new();
@@ -2897,8 +3086,8 @@ fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
     row
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
+#[tokio::main(flavor = "current_thread")] 
+async fn main() -> Result<()> { 
     // 更保守的默认日志过滤，避免输出依赖库的 DEBUG 噪声
     let default_filter = "info,funding_rate_strategy=debug,mkt_signal=info,hyper=warn,hyper_util=warn,h2=warn,reqwest=warn";
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter))
@@ -2937,6 +3126,12 @@ async fn main() -> Result<()> {
             channel: ChannelType::Derivatives,
         },
     ])?;
+
+    let backward_subscriber = if let Some(channel) = SIGNAL_CHANNEL_BACKWARD {
+        Some(BackwardSignalSubscriber::new(channel)?)
+    } else {
+        None
+    };
 
     let shutdown = CancellationToken::new();
     setup_signal_handlers(&shutdown)?;
@@ -2993,6 +3188,16 @@ async fn main() -> Result<()> {
             match mkt_msg::get_msg_type(&msg) {
                 MktMsgType::FundingRate => engine.handle_funding_rate(&msg),
                 _ => (),
+            }
+        }
+
+        if let Some(backward) = backward_subscriber.as_ref() {
+            let messages = backward.drain();
+            for raw in messages {
+                match ReqBinSingleForwardArbHedgeMM::from_bytes(raw) {
+                    Ok(req) => engine.handle_mm_hedge_request(req),
+                    Err(err) => warn!("failed to decode ReqBinSingleForwardArbHedgeMM: {err}"),
+                }
             }
         }
 

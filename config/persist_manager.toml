@@ -8,14 +8,14 @@ channel = "pre_trade_signal_record"
 retry_backoff_ms = 200
 
 [http]
-bind = "0.0.0.0:8088"
+bind = "0.0.0.0:8088" 
 
-[execution]
-enabled = true
-channel = "account_execution/binance_margin"
-retry_backoff_ms = 200
+[execution] 
+enabled = true 
+channel = "account_execution/binance_margin" 
+retry_backoff_ms = 200 
 
-[um_execution]
-enabled = true
-channel = "account_execution/binance_um"
-retry_backoff_ms = 200
+[um_execution] 
+enabled = true 
+channel = "account_execution/binance_um" 
+retry_backoff_ms = 200 

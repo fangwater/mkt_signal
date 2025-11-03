@@ -397,6 +397,10 @@ impl StrategyConfig {
     fn max_close_keep_us(&self) -> i64 {
         (self.order.max_close_order_keep_s.max(1) * 1_000_000) as i64
     }
+
+    fn max_hedge_keep_us(&self) -> i64 {
+        (self.order.max_hedge_order_keep_s.max(1) * 1_000_000) as i64
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1557,6 +1561,7 @@ impl MockController {
             swap_bid0,
             swap_ask0,
             open_threshold: state.forward_open_threshold,
+            hedge_timeout_us: self.cfg.max_hedge_keep_us(),
             funding_ma: state.funding_ma,
             predicted_funding_rate: Some(state.predicted_rate),
             loan_rate: Some(state.loan_rate),
