@@ -46,18 +46,18 @@ impl Side {
         match self {
             Side::Buy => "buy",
             Side::Sell => "sell",
-        }
-    }
+        } 
+    } 
 
-    /// 是否是买入
+    /// 是否是买入 
     pub fn is_buy(&self) -> bool {
         matches!(self, Side::Buy)
-    }
+    } 
 
     /// 是否是卖出
     pub fn is_sell(&self) -> bool {
         matches!(self, Side::Sell)
-    }
+    } 
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -68,7 +68,7 @@ pub enum OrderExecutionStatus {
     Filled = 3,    // 完全成交
     Cancelled = 4, // 已取消
     Rejected = 5,  // 被拒绝
-}
+} 
 
 impl OrderExecutionStatus {
     /// 从 u8 转换为 OrderExecutionStatus

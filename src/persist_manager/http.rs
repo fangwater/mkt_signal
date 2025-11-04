@@ -383,6 +383,7 @@ fn signal_type_name(signal_type: &SignalType) -> &'static str {
         SignalType::BinSingleForwardArbHedgeMM => "BinSingleForwardArbHedgeMM",
         SignalType::BinSingleForwardArbCancelMT => "BinSingleForwardArbCancelMT",
         SignalType::BinSingleForwardArbCancelMM => "BinSingleForwardArbCancelMM",
+        SignalType::BinSingleForwardArbHedgeMMReq => "BinSingleForwardArbHedgeMMReq",
     }
 }
 

@@ -32,9 +32,7 @@ use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::mkt_msg::{self, AskBidSpreadMsg, FundingRateMsg, MktMsgType};
 use mkt_signal::pre_trade::order_manager::{OrderType, Side};
 use mkt_signal::signal::binance_forward_arb_mm::BinSingleForwardArbHedgeMMCtx;
-use mkt_signal::signal::binance_forward_arb_mt::{
-    BinSingleForwardArbCancelCtx, BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbOpenCtx,
-};
+use mkt_signal::signal::binance_forward_arb_mt::{BinSingleForwardArbCancelCtx, BinSingleForwardArbOpenCtx};
 use mkt_signal::signal::resample::{
     compute_askbid_sr, compute_bidask_sr, FundingRateArbResampleEntry, FR_RESAMPLE_MSG_CHANNEL,
 };
@@ -212,20 +210,6 @@ impl OrderConfig {
         }
     }
 
-    fn normal_close_range(&self) -> f64 {
-        self.close_ranges
-            .first()
-            .copied()
-            .unwrap_or_else(|| default_close_range())
-    }
-
-    fn ladder_close_ranges(&self) -> &[f64] {
-        if self.close_ranges.len() > 1 {
-            &self.close_ranges[1..]
-        } else {
-            &[]
-        }
-    }
 }
 
 fn opt_finite(val: f64) -> Option<f64> {
@@ -453,10 +437,6 @@ impl StrategyConfig {
         (self.order.max_open_order_keep_s.max(1) * 1_000_000) as i64
     }
 
-    fn max_close_keep_us(&self) -> i64 {
-        (self.order.max_close_order_keep_s.max(1) * 1_000_000) as i64
-    }
-
     fn max_hedge_keep_us(&self) -> i64 {
         (self.order.max_hedge_order_keep_s.max(1) * 1_000_000) as i64
     }
@@ -513,7 +493,6 @@ struct SymbolState {
     futures_quote: Quote,
     last_ratio: Option<f64>,
     last_open_ts: Option<i64>,
-    last_close_ts: Option<i64>,
     last_signal_ts: Option<i64>,
     funding_rate: f64,
     predicted_rate: f64,
@@ -531,7 +510,6 @@ struct SymbolState {
     spread_rate: Option<f64>,
     last_ladder_cancel_ts: Option<i64>,
     open_batch_marker: Option<i64>,
-    close_batch_marker: Option<i64>,
 }
 
 impl SymbolState {
@@ -547,7 +525,6 @@ impl SymbolState {
             futures_quote: Quote::default(),
             last_ratio: None,
             last_open_ts: None,
-            last_close_ts: None,
             last_signal_ts: None,
             funding_rate: 0.0,
             predicted_rate: 0.0,
@@ -565,7 +542,6 @@ impl SymbolState {
             spread_rate: None,
             last_ladder_cancel_ts: None,
             open_batch_marker: None,
-            close_batch_marker: None,
         }
     }
 
@@ -577,7 +553,6 @@ impl SymbolState {
         self.futures_symbol = threshold.futures_symbol;
         // reset batch markers when thresholds change
         self.open_batch_marker = None;
-        self.close_batch_marker = None;
     }
 
     fn ready_for_eval(&self) -> bool {
@@ -646,20 +621,9 @@ impl SymbolState {
         self.open_batch_marker = Some(bucket);
     }
 
-    fn mark_close_signal(&mut self, now_us: i64) {
-        self.last_signal_ts = Some(now_us);
-        let bucket = bucket_ts(now_us);
-        self.close_batch_marker = Some(bucket);
-    }
-
     fn in_open_batch(&self, ts: i64) -> bool {
         let bucket = bucket_ts(ts);
         self.open_batch_marker == Some(bucket)
-    }
-
-    fn in_close_batch(&self, ts: i64) -> bool {
-        let bucket = bucket_ts(ts);
-        self.close_batch_marker == Some(bucket)
     }
 
     fn can_emit_ladder_cancel(&self, now_us: i64, min_gap_us: i64) -> bool {
@@ -681,7 +645,6 @@ impl SymbolState {
 #[derive(Debug, Default)]
 struct EngineStats {
     open_signals: u64,
-    close_signals: u64,
     ladder_cancel_signals: u64,
 }
 
@@ -1516,42 +1479,11 @@ impl StrategyEngine {
                 }
             }
             -2 => {
-                // 平仓：资金 MA 触发 -2，且askbid_sr超过 forward_close_threshold
-                if let Some(state) = self.symbols.get(&decision.symbol_key) {
-                    if !forward_close_ready(decision.askbid_sr, state.forward_close_threshold) {
-                        debug!(
-                            "{} funding信号(-2)忽略: 价差未达撤单阈值 (askbid_sr={:.6} threshold={:.6})",
-                            decision.symbol_key,
-                            decision.askbid_sr.unwrap_or(f64::NAN),
-                            state.forward_close_threshold
-                        );
-                    } else if !decision.can_emit {
-                        debug!(
-                            "{} funding信号(-2)忽略: 触发节流 min_gap={}us",
-                            decision.symbol_key, min_gap_us
-                        );
-                    } else if let Some(askbid_sr) = decision.askbid_sr {
-                        let built = self.build_close_requests(state, askbid_sr);
-                        if built.is_empty() {
-                            debug!(
-                                "{} funding信号(-2)构建平仓请求失败 (ratio={:.6})",
-                                decision.symbol_key, askbid_sr
-                            );
-                        } else {
-                            requests.extend(built);
-                        }
-                    } else {
-                        debug!(
-                            "{} funding信号(-2)忽略: askbid_sr 缺失，无法构建平仓请求",
-                            decision.symbol_key
-                        );
-                    }
-                } else {
-                    debug!(
-                        "{} funding信号(-2)忽略: 未找到 symbol 对应状态",
-                        decision.symbol_key
-                    );
-                }
+                warn!(
+                    "{} funding信号(-2)忽略: close flow disabled (askbid_sr={:.6})",
+                    decision.symbol_key,
+                    decision.askbid_sr.unwrap_or(f64::NAN)
+                );
             }
             1 | 2 => {
                 debug!(
@@ -1647,56 +1579,6 @@ impl StrategyEngine {
                         )
                     });
                     self.stats.open_signals += 1;
-                    if let Some(entry) = log_entry {
-                        info!("{}", entry);
-                    }
-                }
-                SignalRequest::Close {
-                    symbol_key,
-                    ctx,
-                    ratio,
-                    price,
-                } => {
-                    let emit_ts = get_timestamp_us();
-                    match BinSingleForwardArbCloseMarginCtx::from_bytes(ctx.clone()) {
-                        Ok(close_ctx) => debug!(
-                            "发送平仓信号: symbol={} limit_price={:.8} tick={:.8} exp_time={}",
-                            close_ctx.spot_symbol,
-                            close_ctx.limit_price,
-                            close_ctx.price_tick,
-                            close_ctx.exp_time
-                        ),
-                        Err(e) => debug!(
-                            "发送平仓信号: 解析上下文失败 symbol={} err={}",
-                            symbol_key, e
-                        ),
-                    }
-                    if let Err(err) = self.publish_signal(
-                        SignalType::BinSingleForwardArbCloseMargin,
-                        ctx,
-                        emit_ts,
-                    ) {
-                        error!("发送平仓信号失败 {}: {err:?}", symbol_key);
-                        return;
-                    }
-                    if let Some(state) = self.symbols.get_mut(&symbol_key) {
-                        state.last_ratio = Some(ratio);
-                        state.last_close_ts = Some(emit_ts);
-                        if !state.in_close_batch(emit_ts) {
-                            state.mark_close_signal(emit_ts);
-                        }
-                    }
-                    let log_entry = self.symbols.get(&symbol_key).and_then(|state| {
-                        self.build_signal_log(
-                            "close",
-                            symbol_key.as_str(),
-                            state,
-                            ratio,
-                            price,
-                            emit_ts,
-                        )
-                    });
-                    self.stats.close_signals += 1;
                     if let Some(entry) = log_entry {
                         info!("{}", entry);
                     }
@@ -2174,78 +2056,6 @@ impl StrategyEngine {
         })
     }
 
-    fn build_close_requests(&self, state: &SymbolState, ratio: f64) -> Vec<SignalRequest> {
-        if state.spot_quote.ask <= 0.0 {
-            return Vec::new();
-        }
-        let mut offsets: Vec<f64> = match self.cfg.order.mode {
-            OrderMode::Normal => vec![self.cfg.order.normal_close_range()],
-            OrderMode::Ladder => {
-                let ladder = self.cfg.order.ladder_close_ranges();
-                if ladder.is_empty() {
-                    vec![self.cfg.order.normal_close_range()]
-                } else {
-                    ladder.to_vec()
-                }
-            }
-        };
-        if offsets.is_empty() {
-            offsets.push(self.cfg.order.normal_close_range());
-        }
-        offsets
-            .into_iter()
-            .filter_map(|offset| self.build_close_request_with_offset(state, ratio, offset))
-            .collect()
-    }
-
-    fn build_close_request_with_offset(
-        &self,
-        state: &SymbolState,
-        ratio: f64,
-        offset: f64,
-    ) -> Option<SignalRequest> {
-        let mut limit_price = state.spot_quote.ask * (1.0 + offset);
-        if limit_price <= 0.0 {
-            warn!(
-                "{} 计算得到的平仓价格非法: offset={:.6} price={:.6}",
-                state.spot_symbol, offset, limit_price
-            );
-            return None;
-        }
-        let price_tick = self
-            .min_qty
-            .spot_price_tick_by_symbol(&state.spot_symbol)
-            .unwrap_or(0.0);
-        let raw_limit_price = limit_price;
-        if price_tick > 0.0 {
-            limit_price = align_price_ceil(limit_price, price_tick);
-            debug!(
-                "{} 平仓价格对齐: offset={:.6} raw={:.8} tick={:.8} aligned={:.8}",
-                state.spot_symbol, offset, raw_limit_price, price_tick, limit_price
-            );
-            if limit_price <= 0.0 {
-                warn!(
-                    "{} price tick 对齐后平仓价格非法: offset={:.6} raw={:.8} tick={:.8}",
-                    state.spot_symbol, offset, raw_limit_price, price_tick
-                );
-                return None;
-            }
-        }
-        let ctx = BinSingleForwardArbCloseMarginCtx {
-            spot_symbol: state.spot_symbol.clone(),
-            limit_price,
-            price_tick,
-            exp_time: self.cfg.max_close_keep_us(),
-        }
-        .to_bytes();
-        Some(SignalRequest::Close {
-            symbol_key: state.spot_symbol.clone(),
-            ctx,
-            ratio,
-            price: limit_price,
-        })
-    }
-
     fn build_ladder_cancel_request(
         &self,
         state: &SymbolState,
@@ -2418,10 +2228,9 @@ impl StrategyEngine {
 
     fn print_stats(&self) {
         info!(
-            "当前追踪交易对: {} | 开仓信号累计 {} | 平仓信号累计 {} | 阶梯撤单信号累计 {}",
+            "当前追踪交易对: {} | 开仓信号累计 {} | 阶梯撤单信号累计 {}",
             self.symbols.len(),
             self.stats.open_signals,
-            self.stats.close_signals,
             self.stats.ladder_cancel_signals
         );
     }
@@ -2923,12 +2732,6 @@ impl StrategyEngine {
 #[derive(Debug)]
 enum SignalRequest {
     Open {
-        symbol_key: String,
-        ctx: Bytes,
-        ratio: f64,
-        price: f64,
-    },
-    Close {
         symbol_key: String,
         ctx: Bytes,
         ratio: f64,

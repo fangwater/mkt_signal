@@ -67,7 +67,7 @@ pub struct PreTrade {
 
 impl PreTrade {
     pub fn new(cfg: PreTradeCfg) -> Self {
-        Self { cfg }  
+        Self { cfg }
     }
 
     pub async fn run(self) -> Result<()> {
@@ -1441,6 +1441,9 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                 Err(err) => warn!("failed to decode open context: {err}"),
             }
         }
+        
+
+        //响应请求，进行marker-maker开仓
         SignalType::BinSingleForwardArbOpenMM => {
             match BinSingleForwardArbOpenCtx::from_bytes(signal.context.clone()) {
                 Ok(open_ctx) => {
@@ -1491,7 +1494,6 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                         ctx.max_pending_limit_orders.clone(),
                         ctx.min_qty_table.clone(),
                         ctx.price_table.clone(),
-                        open_ctx.hedge_timeout_us,
                     );
                     strategy.set_signal_sender(signal_tx);
 
@@ -1526,6 +1528,9 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
         }
         SignalType::BinSingleForwardArbHedgeMM => {
             handle_hedge_mm_signal(ctx, signal, raw_signal);
+        }
+        SignalType::BinSingleForwardArbHedgeMMReq => {
+            handle_mm_backward_request(ctx, signal);
         }
         SignalType::BinSingleForwardArbCancelMT => {
             ctx.ladder_cancel_activity = true;
@@ -1580,6 +1585,19 @@ fn handle_hedge_mt_signal(ctx: &mut RuntimeContext, signal: TradeSignal, raw_sig
             }
         }
         Err(err) => warn!("failed to decode MT hedge context: {err}"),
+    }
+}
+
+fn handle_mm_backward_request(ctx: &mut RuntimeContext, signal: TradeSignal) {
+    match ReqBinSingleForwardArbHedgeMM::from_bytes(signal.context.clone()) {
+        Ok(req) => {
+            ctx.publish_mm_backward(signal.context.as_ref());
+            debug!(
+                "forward mm hedge request: strategy_id={} client_order_id={} last_delta={:.6}",
+                req.strategy_id, req.client_order_id, req.last_executed_qty
+            );
+        }
+        Err(err) => warn!("failed to decode MM hedge request: {err}"),
     }
 }
 

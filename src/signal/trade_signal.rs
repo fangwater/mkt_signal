@@ -6,8 +6,9 @@ pub enum SignalType {
     BinSingleForwardArbOpenMM = 2,  // 币安单所正向套利触发开仓（MM 流程）
     BinSingleForwardArbHedgeMT = 3, // 币安单所正向套利触发对冲（MT 流程）
     BinSingleForwardArbHedgeMM = 4, // 币安单所正向套利触发对冲（MM 流程）
-    BinSingleForwardArbCancelMT = 5, // MT 撤单
-    BinSingleForwardArbCancelMM = 6, // MM 撤单
+    BinSingleForwardArbCancelMT = 7, // MT 撤单
+    BinSingleForwardArbCancelMM = 8, // MM 撤单
+    BinSingleForwardArbHedgeMMReq = 9, // MM 对冲重新请求
                                     // 未来可以添加更多信号类型:
                                     // BinSingleReverseArb,  // 币安单所反向套利
                                     // CrossExchangeArb,     // 跨交易所套利
@@ -24,8 +25,9 @@ impl SignalType {
             2 => Some(SignalType::BinSingleForwardArbOpenMM),
             3 => Some(SignalType::BinSingleForwardArbHedgeMT),
             4 => Some(SignalType::BinSingleForwardArbHedgeMM),
-            5 => Some(SignalType::BinSingleForwardArbCancelMT),
-            6 => Some(SignalType::BinSingleForwardArbCancelMM),
+            7 => Some(SignalType::BinSingleForwardArbCancelMT),
+            8 => Some(SignalType::BinSingleForwardArbCancelMM),
+            9 => Some(SignalType::BinSingleForwardArbHedgeMMReq),
             _ => None,
         }
     }
@@ -37,7 +39,7 @@ pub struct TradeSignal {
     pub generation_time: i64,    //信号的产生时间
     pub handle_time: f64,        //信号被pre-process处理的时间
     pub context: Bytes,          //信号的具体内容，信号上下文
-}
+} 
 
 impl TradeSignal {
     /// 创建一个新的交易信号

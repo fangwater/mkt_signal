@@ -14,7 +14,6 @@ use sha2::Sha256;
 type HmacSha256 = Hmac<Sha256>;
 
 /// 币安统一账户（Portfolio Margin）现货余额初始化管理器。
-///
 /// - 通过 `/papi/v1/balance` 拉取统一账户余额；
 /// - 请求成功后缓存快照；
 /// - 若初始化失败，调用方可阻止后续消息处理。

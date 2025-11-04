@@ -27,8 +27,9 @@ use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::mkt_msg::{self, AskBidSpreadMsg, FundingRateMsg, MktMsgType};
 use mkt_signal::pre_trade::order_manager::{OrderType, Side};
 use mkt_signal::signal::binance_forward_arb_mt::{
-    BinSingleForwardArbCancelCtx, BinSingleForwardArbCloseMarginCtx, BinSingleForwardArbOpenCtx,
+    BinSingleForwardArbCancelCtx, BinSingleForwardArbOpenCtx,
 };
+// BinSingleForwardArbCloseMarginCtx has been removed - close functionality is no longer supported
 use mkt_signal::signal::resample::{compute_askbid_sr, compute_bidask_sr};
 use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
 
@@ -195,22 +196,6 @@ impl OrderConfig {
     fn ladder_open_ranges(&self) -> &[f64] {
         if self.open_ranges.len() > 1 {
             &self.open_ranges[1..]
-        } else {
-            &[]
-        }
-    }
-
-    fn normal_close_range(&self) -> f64 {
-        self.close_ranges
-            .first()
-            .copied()
-            .unwrap_or_else(|| default_close_range())
-    }
-
-    #[allow(dead_code)]
-    fn ladder_close_ranges(&self) -> &[f64] {
-        if self.close_ranges.len() > 1 {
-            &self.close_ranges[1..]
         } else {
             &[]
         }
@@ -394,10 +379,6 @@ impl StrategyConfig {
         (self.order.max_open_order_keep_s.max(1) * 1_000_000) as i64
     }
 
-    fn max_close_keep_us(&self) -> i64 {
-        (self.order.max_close_order_keep_s.max(1) * 1_000_000) as i64
-    }
-
     fn max_hedge_keep_us(&self) -> i64 {
         (self.order.max_hedge_order_keep_s.max(1) * 1_000_000) as i64
     }
@@ -465,7 +446,6 @@ struct SymbolState {
     position: PositionState,
     last_ratio: Option<f64>,
     last_open_ts: Option<i64>,
-    last_close_ts: Option<i64>,
     last_signal_ts: Option<i64>,
     last_ladder_cancel_ts: Option<i64>,
     funding_rate: f64,
@@ -492,7 +472,6 @@ impl SymbolState {
             position: PositionState::Flat,
             last_ratio: None,
             last_open_ts: None,
-            last_close_ts: None,
             last_signal_ts: None,
             last_ladder_cancel_ts: None,
             funding_rate: 0.0,
@@ -543,12 +522,6 @@ struct ManualOpenSignal {
     ctx: Bytes,
     price: f64,
     qty: f64,
-    offset: f64,
-}
-
-struct ManualCloseSignal {
-    ctx: Bytes,
-    price: f64,
     offset: f64,
 }
 
@@ -1425,28 +1398,6 @@ impl MockController {
             .collect()
     }
 
-    fn order_close_offsets(&self) -> Vec<f64> {
-        let fallback = self.cfg.order.normal_close_range();
-        let mut offsets = match self.cfg.order.mode {
-            OrderMode::Normal => vec![fallback],
-            OrderMode::Ladder => {
-                let ladder = self.cfg.order.ladder_close_ranges();
-                if ladder.is_empty() {
-                    vec![fallback]
-                } else {
-                    ladder.to_vec()
-                }
-            }
-        };
-        if offsets.is_empty() {
-            offsets.push(fallback);
-        }
-        offsets
-            .into_iter()
-            .filter(|offset| offset.is_finite())
-            .collect()
-    }
-
     fn build_manual_open_signals(&self, state: &SymbolState) -> Vec<ManualOpenSignal> {
         self.order_open_offsets()
             .into_iter()
@@ -1575,66 +1526,6 @@ impl MockController {
         })
     }
 
-    fn build_manual_close_signals(&self, state: &SymbolState) -> Vec<ManualCloseSignal> {
-        self.order_close_offsets()
-            .into_iter()
-            .filter_map(|offset| self.build_manual_close_signal(state, offset))
-            .collect()
-    }
-
-    fn build_manual_close_signal(
-        &self,
-        state: &SymbolState,
-        offset: f64,
-    ) -> Option<ManualCloseSignal> {
-        if !offset.is_finite() || offset < 0.0 {
-            warn!(
-                "{} 阶梯平仓 offset 非法: offset={:.6}",
-                state.spot_symbol, offset
-            );
-            return None;
-        }
-        let mut limit_price = state.spot_quote.ask * (1.0 + offset);
-        if !limit_price.is_finite() || limit_price <= 0.0 {
-            warn!(
-                "{} 阶梯平仓价格非法: offset={:.6} price={:.8}",
-                state.spot_symbol, offset, limit_price
-            );
-            return None;
-        }
-        let price_tick = self
-            .min_qty
-            .spot_price_tick_by_symbol(&state.spot_symbol)
-            .unwrap_or(0.0);
-        let raw_limit_price = limit_price;
-        if price_tick > 0.0 {
-            limit_price = align_price_ceil(limit_price, price_tick);
-            debug!(
-                "{} mock 平仓价格对齐: offset={:.6} raw={:.8} tick={:.8} aligned={:.8}",
-                state.spot_symbol, offset, raw_limit_price, price_tick, limit_price
-            );
-            if !limit_price.is_finite() || limit_price <= 0.0 {
-                warn!(
-                    "{} 阶梯平仓对齐失败: offset={:.6} raw={:.8} tick={:.8}",
-                    state.spot_symbol, offset, raw_limit_price, price_tick
-                );
-                return None;
-            }
-        }
-        let ctx = BinSingleForwardArbCloseMarginCtx {
-            spot_symbol: state.spot_symbol.clone(),
-            limit_price,
-            price_tick,
-            exp_time: self.cfg.max_close_keep_us(),
-        }
-        .to_bytes();
-        Some(ManualCloseSignal {
-            ctx,
-            price: limit_price,
-            offset,
-        })
-    }
-
     fn build_manual_cancel_signal(&self, state: &SymbolState) -> Option<ManualCancelSignal> {
         if self.cfg.order.mode != OrderMode::Ladder {
             warn!(
@@ -1732,7 +1623,7 @@ impl MockController {
 
     fn force_close(&mut self, index: usize) -> Result<()> {
         let key = self.symbol_key_by_index(index)?;
-        let (spot_symbol, signals) = {
+        let spot_symbol = {
             let state = self
                 .symbols
                 .get(&key)
@@ -1740,29 +1631,13 @@ impl MockController {
             if !state.spot_quote.is_ready() {
                 anyhow::bail!("{} 行情尚未就绪，无法平仓", state.spot_symbol);
             }
-            let signals = self.build_manual_close_signals(state);
-            (state.spot_symbol.clone(), signals)
+            state.spot_symbol.clone()
         };
-        if signals.is_empty() {
-            anyhow::bail!("{spot_symbol} 未能构建平仓信号，请检查行情或 order_mode 配置");
-        }
-        for signal in &signals {
-            let emit_ts = get_timestamp_us();
-            self.publish_signal(
-                SignalType::BinSingleForwardArbCloseMargin,
-                signal.ctx.clone(),
-                emit_ts,
-            )?;
-            info!(
-                "{} mock 强制平仓: offset={:.6} price={:.8}",
-                spot_symbol, signal.offset, signal.price
-            );
-        }
+        warn!("{} 顺序平仓被跳过: close flow 已禁用", spot_symbol);
         let now = get_timestamp_us();
         if let Some(state) = self.symbols.get_mut(&key) {
             state.position = PositionState::Flat;
             state.last_ratio = state.calc_ratio();
-            state.last_close_ts = Some(now);
             state.mark_signal(now);
         } else {
             anyhow::bail!("未找到交易对 {key}");
@@ -1841,19 +1716,20 @@ impl MockController {
                     );
                 }
             }
-            SignalType::BinSingleForwardArbCloseMargin => {
-                if let Ok(close_ctx) =
-                    BinSingleForwardArbCloseMarginCtx::from_bytes(payload.clone())
-                {
-                    info!(
-                        "mock publish close signal: spot={} limit_price={:.8} tick={:.8} exp={}",
-                        close_ctx.spot_symbol,
-                        close_ctx.limit_price,
-                        close_ctx.price_tick,
-                        close_ctx.exp_time
-                    );
-                }
-            }
+            // Close functionality has been removed
+            // SignalType::BinSingleForwardArbCloseMargin => {
+            //     if let Ok(close_ctx) =
+            //         BinSingleForwardArbCloseMarginCtx::from_bytes(payload.clone())
+            //     {
+            //         info!(
+            //             "mock publish close signal: spot={} limit_price={:.8} tick={:.8} exp={}",
+            //             close_ctx.spot_symbol,
+            //             close_ctx.limit_price,
+            //             close_ctx.price_tick,
+            //             close_ctx.exp_time
+            //         );
+            //     }
+            // }
             SignalType::BinSingleForwardArbCancelMT => {
                 if let Ok(cancel_ctx) = BinSingleForwardArbCancelCtx::from_bytes(payload.clone()) {
                     info!(
@@ -2261,24 +2137,6 @@ fn align_price_floor(price: f64, tick: f64) -> f64 {
         return aligned_units as f64 / tick_den as f64;
     }
     let scaled = ((price / tick) + 1e-9).floor();
-    scaled * tick
-}
-
-fn align_price_ceil(price: f64, tick: f64) -> f64 {
-    if tick <= 0.0 {
-        return price;
-    }
-    if let Some((tick_num, tick_den)) = to_fraction(tick) {
-        if tick_num == 0 {
-            return price;
-        }
-        let tick_num = tick_num as i128;
-        let tick_den = tick_den as i128;
-        let units = ((price * tick_den as f64) - 1e-9).ceil() as i128;
-        let aligned_units = ((units + tick_num - 1) / tick_num) * tick_num;
-        return aligned_units as f64 / tick_den as f64;
-    }
-    let scaled = ((price / tick) - 1e-9).ceil();
     scaled * tick
 }
 
