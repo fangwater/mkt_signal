@@ -25,7 +25,7 @@ impl DedupCache {
     pub fn insert_check(&mut self, key: u64) -> bool {
         if self.set.contains(&key) {
             return false;
-        }
+        } 
         if self.queue.len() >= self.capacity {
             if let Some(old) = self.queue.pop_front() {
                 self.set.remove(&old);
@@ -50,7 +50,7 @@ fn hash_str64(s: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     s.hash(&mut hasher);
     hasher.finish()
-}
+} 
 
 // ---- Key helpers for account event types ----
 

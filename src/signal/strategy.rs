@@ -10,11 +10,6 @@ use log::info;
 use std::any::Any;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
-pub struct StrategySnapshot<'a> {
-    pub type_name: &'a str,
-    pub payload: Bytes,
-}
-
 pub trait Strategy: Any {
     fn get_id(&self) -> i32;
     fn is_strategy_order(&self, order_id: i64) -> bool;
@@ -25,10 +20,6 @@ pub trait Strategy: Any {
     fn hanle_period_clock(&mut self, current_tp: i64);
     fn is_active(&self) -> bool;
     fn symbol(&self) -> Option<&str> {
-        None
-    }
-    fn type_name(&self) -> &'static str;
-    fn snapshot(&self) -> Option<StrategySnapshot<'_>> {
         None
     }
 }

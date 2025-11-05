@@ -399,12 +399,10 @@ impl RuntimeContext {
 
     fn insert_strategy(&mut self, symbol: String, strategy: Box<dyn Strategy>) {
         let strategy_id = strategy.get_id();
-        let strategy_type = strategy.type_name();
         self.strategy_mgr.insert(strategy);
         self.strategy_activity = true;
         debug!(
-            "strategy inserted: type={} strategy_id={} symbol={} active_total={}",
-            strategy_type,
+            "strategy inserted: strategy_id={} symbol={} active_total={}",
             strategy_id,
             symbol,
             self.strategy_mgr.len()
@@ -1648,31 +1646,13 @@ fn dispatch_cancel_signal(ctx: &mut RuntimeContext, signal: TradeSignal, raw_sig
         return;
     }
 
-    let expected_type = match signal.signal_type {
-        SignalType::BinSingleForwardArbCancelMT => BinSingleForwardArbStrategyMT::strategy_name(),
-        SignalType::BinSingleForwardArbCancelMM => BinSingleForwardArbStrategyMM::strategy_name(),
-        other => {
-            debug!("unexpected cancel signal type: {:?}", other);
-            return;
-        }
-    };
-
-    let filtered_ids: Vec<i32> = {
-        let mgr = &ctx.strategy_mgr;
-        candidate_ids
-            .into_iter()
-            .filter(|id| {
-                mgr.get(*id)
-                    .map(|strategy| strategy.type_name() == expected_type)
-                    .unwrap_or(false)
-            })
-            .collect()
-    };
+    // 直接使用所有候选策略，不再过滤类型
+    let filtered_ids: Vec<i32> = candidate_ids;
 
     if filtered_ids.is_empty() {
         debug!(
-            "ladder cancel signal ignored: symbol={} type={} no matching strategies",
-            symbol, expected_type
+            "ladder cancel signal ignored: symbol={} no matching strategies",
+            symbol
         );
         return;
     }

@@ -125,16 +125,16 @@ pub struct PreTradeRiskResampleEntry {
 macro_rules! impl_codec {
     ($ty:ty) => {
         impl $ty {
-            pub fn to_bytes(&self) -> Result<Vec<u8>> {
-                Ok(bincode::serialize(self)?)
-            }
+            pub fn to_bytes(&self) -> Result<Vec<u8>> { 
+                Ok(bincode::serialize(self)?) 
+            } 
 
-            pub fn from_bytes(data: &[u8]) -> Result<Self> {
-                Ok(bincode::deserialize(data)?)
-            }
-        }
-    };
-}
+            pub fn from_bytes(data: &[u8]) -> Result<Self> { 
+                Ok(bincode::deserialize(data)?) 
+            } 
+        } 
+    }; 
+} 
 
 impl_codec!(PreTradePositionResampleEntry);
 impl_codec!(PreTradeExposureResampleEntry);

@@ -22,86 +22,6 @@ use crate::trade_engine::trade_response_handle::TradeExecOutcome;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
-/// 币安单所正向套利开仓信号上下文
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BinSingleForwardArbOpenCtx {
-    pub spot_symbol: String,
-    pub futures_symbol: String,
-    pub amount: f32,
-    pub side: Side,
-    pub order_type: OrderType,
-    pub price: f64,
-    pub price_tick: f64,
-    pub exp_time: i64,
-    pub create_ts: i64,
-    pub spot_bid0: f64,
-    pub spot_ask0: f64,
-    pub swap_bid0: f64,
-    pub swap_ask0: f64,
-    pub open_threshold: f64,
-    pub hedge_timeout_us: i64,
-    pub funding_ma: Option<f64>,
-    pub predicted_funding_rate: Option<f64>,
-    pub loan_rate: Option<f64>,
-}
-
-/// 币安单所正向套利对冲信号上下文（MM）
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BinSingleForwardArbHedgeMMCtx {
-    pub strategy_id: i32,
-    pub client_order_id: i64,
-    pub hedge_qty: f64,
-    pub hedge_side: Side,
-    pub limit_price: f64,
-    pub price_tick: f64,
-    pub maker_only: bool,
-    pub exp_time: i64,
-    pub spot_bid_price: f64,
-    pub spot_ask_price: f64,
-    pub spot_ts: i64,
-    pub fut_bid_price: f64,
-    pub fut_ask_price: f64,
-    pub fut_ts: i64,
-}
-
-/// 杠杆平仓信号上下文（限价单）
-
-
-/// 统一撤单信号上下文
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BinSingleForwardArbCancelCtx {
-    pub spot_symbol: String,
-    pub futures_symbol: String,
-    pub cancel_threshold: f64,
-    pub spot_bid0: f64,
-    pub spot_ask0: f64,
-    pub swap_bid0: f64,
-    pub swap_ask0: f64,
-    pub trigger_ts: i64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct OpenSignalMeta {
-    spot_symbol: String,
-    futures_symbol: String,
-    amount: f32,
-    side: Side,
-    order_type: OrderType,
-    price: f64,
-    price_tick: f64,
-    exp_time: i64,
-    create_ts: i64,
-    trigger_ts_us: i64,
-    spot_bid0: f64,
-    spot_ask0: f64,
-    swap_bid0: f64,
-    swap_ask0: f64,
-    open_threshold: f64,
-    hedge_timeout_us: i64,
-    funding_ma: Option<f64>,
-    predicted_funding_rate: Option<f64>,
-    loan_rate: Option<f64>,
-}
 
 /// 内部统一的 UM 订单更新结果，用于将 REST 推送的状态转换为易于判断的枚举。
 /// 这样可以避免在核心逻辑中反复解析字符串状态，也便于统一打印日志。
@@ -473,17 +393,6 @@ impl BinSingleForwardArbHedgeMMCtx {
 }
 
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StrategyMode {
-    Open,
-}
-
-impl Default for StrategyMode {
-    fn default() -> Self {
-        StrategyMode::Open
-    }
-}
 
 /// 策略运行参数
 #[derive(Debug, Clone)]
@@ -515,36 +424,7 @@ struct PeriodLogFlags {
 
 const CANCEL_PENDING_TIMEOUT_US: i64 = 5_000_000; // 5s
 
-/// 币安单所正向套利策略
-pub struct BinSingleForwardArbStrategyMM {
-    pub strategy_id: i32, //策略id
-    pub symbol: String,
-    pub create_time: i64, //策略构建时间
-    mode: StrategyMode,
-    pub margin_order_id: i64,
-    initial_margin_order_id: i64,
-    pub um_hedge_order_ids: Vec<i64>,
-    pub open_timeout_us: Option<i64>,
-    signal_tx: Option<UnboundedSender<Bytes>>,
-    lifecycle_logged: Cell<bool>,
-    open_signal_meta: Option<OpenSignalMeta>,
-    open_signal_logged: Cell<bool>,
-    cancel_pending: Cell<bool>,
-    cancel_pending_since_us: Cell<Option<i64>>,
-    last_mm_hedge_ctx: RefCell<Option<BinSingleForwardArbHedgeMMCtx>>,
-    order_seq: u32,
-    order_manager: Rc<RefCell<OrderManager>>,
-    exposure_manager: Rc<RefCell<ExposureManager>>,
-    order_tx: UnboundedSender<Bytes>,
-    max_symbol_exposure_ratio: f64,
-    max_total_exposure_ratio: f64,
-    max_pos_u: f64,
-    max_leverage: f64,
-    max_pending_limit_orders: Rc<Cell<i32>>,
-    min_qty_table: std::rc::Rc<MinQtyTable>,
-    price_table: std::rc::Rc<std::cell::RefCell<PriceTable>>,
-    period_log_flags: RefCell<PeriodLogFlags>,
-}
+
 
 impl BinSingleForwardArbStrategyMM {
     pub fn new(
@@ -1154,32 +1034,6 @@ impl BinSingleForwardArbStrategyMM {
         false
     }
 
-    // 检查当前 symbol 的限价挂单是否超过阈值
-    fn check_current_pending_limit_order(
-        &self,
-        symbol: &String,
-        order_manager: &OrderManager,
-    ) -> bool {
-        let max_limit = self.max_pending_limit_orders.get();
-        if max_limit <= 0 {
-            return true;
-        }
-        let count = order_manager.get_symbol_pending_limit_order_count(symbol);
-        if count >= max_limit {
-            warn!(
-                "{}: symbol={} 当前限价挂单数={}，达到上限 {}",
-                Self::strategy_name(),
-                symbol,
-                count,
-                max_limit
-            );
-            // 打印该 symbol 下当前挂着的限价单（非终态）
-            Self::log_pending_limit_orders(symbol, order_manager);
-            false
-        } else {
-            true
-        }
-    }
 
     //2、传入binance_pm_spot_manager的ref，检测当前symbol的敞口
     //symbol是xxusdt，查看当前symbol的敞口是否大于总资产比例的3%
@@ -2607,10 +2461,6 @@ impl Strategy for BinSingleForwardArbStrategyMM {
 
     fn symbol(&self) -> Option<&str> {
         Some(&self.symbol)
-    }
-
-    fn type_name(&self) -> &'static str {
-        Self::strategy_name()
     }
 
     fn is_strategy_order(&self, order_id: i64) -> bool {

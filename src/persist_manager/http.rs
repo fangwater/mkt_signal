@@ -287,9 +287,9 @@ impl SignalKind {
             "signals_bin_single_forward_arb_hedge_mt" => Some(Self::BinSingleForwardArbHedgeMT),
             "signals_bin_single_forward_arb_hedge_mm" => Some(Self::BinSingleForwardArbHedgeMM),
             _ => None,
-        }
-    }
-
+        } 
+    } 
+    
     fn cf_name(&self) -> &'static str {
         match self {
             SignalKind::BinSingleForwardArbOpenMT => "signals_bin_single_forward_arb_open_mt",
@@ -298,9 +298,9 @@ impl SignalKind {
             SignalKind::BinSingleForwardArbCancelMM => "signals_bin_single_forward_arb_cancel_mm",
             SignalKind::BinSingleForwardArbHedgeMT => "signals_bin_single_forward_arb_hedge_mt",
             SignalKind::BinSingleForwardArbHedgeMM => "signals_bin_single_forward_arb_hedge_mm",
-        }
-    }
-}
+        } 
+    } 
+} 
 
 fn build_dto(signal_kind: SignalKind, key: String, value_bytes: Vec<u8>) -> Result<SignalDto> {
     let (ts_us, strategy_id) = parse_key(&key)?;
@@ -318,8 +318,8 @@ fn build_dto(signal_kind: SignalKind, key: String, value_bytes: Vec<u8>) -> Resu
         context: context_json,
         payload_base64,
         record_ts_us: (record.timestamp_us > 0).then_some(record.timestamp_us),
-    })
-}
+    }) 
+} 
 
 fn parse_key(key: &str) -> Result<(u64, i32)> {
     let mut parts = key.splitn(2, '_');
@@ -674,7 +674,7 @@ fn build_parquet_hedge_mm(
         fut_bid_col.push(ctx.fut_bid_price);
         fut_ask_col.push(ctx.fut_ask_price);
         fut_ts_col.push(ctx.fut_ts);
-    }
+    } 
 
     let columns = vec![
         Series::new("key".into(), key_col),
@@ -699,5 +699,5 @@ fn build_parquet_hedge_mm(
     let mut df = DataFrame::new(columns)?;
     let mut buf = Vec::new();
     ParquetWriter::new(&mut buf).finish(&mut df)?;
-    Ok(buf)
+    Ok(buf) 
 }
