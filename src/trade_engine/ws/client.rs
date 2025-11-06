@@ -25,7 +25,7 @@ use url::Url;
 pub enum WsCommand {
     Send(TradeRequestMsg),
     Shutdown,
-}
+} 
 
 pub struct TradeWsClient {
     id: usize,
@@ -193,14 +193,14 @@ impl TradeWsClient {
                 s.bind((ip, 0).into())
                     .with_context(|| format!("bind local ipv4 {}", ip))?;
                 s
-            }
+            } 
             IpAddr::V6(ip) => {
                 let s = TcpSocket::new_v6()?;
                 s.bind((ip, 0).into())
                     .with_context(|| format!("bind local ipv6 {}", ip))?;
                 s
-            }
-        };
+            } 
+        }; 
 
         let connect_timeout = Duration::from_millis(self.connect_timeout_ms);
         let stream = tokio::time::timeout(connect_timeout, socket.connect(target))

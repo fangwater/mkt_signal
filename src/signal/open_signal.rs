@@ -1,5 +1,8 @@
-use crate::signal::common::{TradingLeg, Side, OrderType, SignalBytes, bytes_helper};
+
+use crate::signal::common::TradingLeg;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use crate::pre_trade::order_manager::{OrderType, Side};
+use crate::signal::common::{SignalBytes, bytes_helper};
 
 /// Generic arbitrage open signal context
 #[derive(Debug, Clone, Copy)]
@@ -121,85 +124,6 @@ impl ArbOpenCtx {
     pub fn set_order_type(&mut self, order_type: OrderType) {
         self.order_type = order_type.to_u8();
     }
-
-
-    /// 构造 margin 正向买入限价单，全部风控检查通过后写入 order manager。
-    pub fn create_margin_order(&mut self) -> Result<(), String> {
-        // todo: 这个检查放到外部去更合适
-        // if self.margin_order_id != 0 {
-        //     return Err(format!(
-        //         "{}: strategy_id={} 已存在 margin 订单 {}",
-        //         Self::strategy_name(),
-        //         self.strategy_id,
-        //         self.margin_order_id
-        //     ));
-        // }
-
-
-        let mut params_parts = vec![
-            format!("symbol={}", open_ctx.spot_symbol),
-            format!("side={}", side_str),
-            format!("type={}", order_type_str),
-            format!("quantity={}", qty_str),
-            format!("newClientOrderId={}", order_id),
-        ];
-        if open_ctx.order_type.is_limit() {
-            params_parts.push("timeInForce=GTC".to_string());
-            params_parts.push(format!("price={}", format_price(effective_price)));
-        }
-
-        debug!(
-            "{}: strategy_id={} margin 开仓价格对齐 raw={:.8} tick={:.8} aligned={:.8}",
-            Self::strategy_name(),
-            self.strategy_id,
-            raw_price,
-            price_tick,
-            effective_price
-        );
-
-        debug!(
-            "{}: strategy_id={} 构造 margin 开仓参数 {:?}",
-            Self::strategy_name(),
-            self.strategy_id,
-            params_parts
-        );
-
-        let params = Bytes::from(params_parts.join("&"));
-        let request = BinanceNewMarginOrderRequest::create(now, order_id, params);
-
-        self.order_tx
-            .send(request.to_bytes())
-            .map_err(|e| format!("{}: 推送 margin 开仓失败: {}", Self::strategy_name(), e))?;
-
-        let mut order = Order::new(
-            order_id,
-            open_ctx.order_type,
-            open_ctx.spot_symbol.clone(),
-            open_ctx.side,
-            eff_qty,
-            effective_price,
-        );
-        order.set_submit_time(now);
-
-        order_manager.insert(order);
-        self.margin_order_id = order_id;
-        self.initial_margin_order_id = order_id;
-        self.open_timeout_us = (open_ctx.exp_time > 0).then_some(open_ctx.exp_time);
-
-        info!(
-            "{}: strategy_id={} 提交 margin 开仓请求 symbol={} qty={:.6} type={} price={:.8} order_id={}",
-            Self::strategy_name(),
-            self.strategy_id,
-            open_ctx.spot_symbol,
-            open_ctx.amount,
-            order_type_str,
-            effective_price,
-            order_id
-        );
-
-        Ok(())
-    }
-
 }
 
 impl SignalBytes for ArbOpenCtx {

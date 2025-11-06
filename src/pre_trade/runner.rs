@@ -542,11 +542,11 @@ impl RuntimeContext {
                         warn!("pre_trade resample publish failed: {err:#}");
                         self.next_resample = std::time::Instant::now() + self.resample_interval;
                         break;
-                    }
-                }
+                    } 
+                } 
                 self.next_resample += self.resample_interval;
-            }
-        }
+            } 
+        } 
 
         let elapsed_ms = tick_start.elapsed().as_secs_f64() * 1000.0;
         let strategy_activity =
@@ -1135,7 +1135,7 @@ fn spawn_signal_listeners(cfg: &SignalSubscriptionsCfg) -> Result<UnboundedRecei
 fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<()> {
     if evt.payload.len() < 8 {
         anyhow::bail!("account payload too short: {} bytes", evt.payload.len());
-    }
+    } 
 
     let msg_type = get_account_event_type(&evt.payload);
     let hdr_len_bytes = u32::from_le_bytes([
@@ -1175,18 +1175,18 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
                 //     msg.asset, msg.update_id, msg.event_time
                 // );
                 return Ok(());
-            }
+            } 
             ctx.spot_manager.apply_account_position(
                 &msg.asset,
                 msg.free_balance,
                 msg.locked_balance,
                 msg.event_time,
             );
-            ctx.refresh_exposures();
+            ctx.refresh_exposures(); 
         }
         AccountEventType::BalanceUpdate => {
-            let msg = BalanceUpdateMsg::from_bytes(data)?;
-            let key = crate::pre_trade::dedup::key_balance_update(&msg);
+            let msg = BalanceUpdateMsg::from_bytes(data)?; 
+            let key = crate::pre_trade::dedup::key_balance_update(&msg); 
             if !ctx.dedup.insert_check(key) {
                 // debug!(
                 //     "dedup drop BalanceUpdate: asset={} update_id={} event_time={}",
@@ -1230,7 +1230,7 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
                     msg.event_time,
                 );
             }
-        }
+        } 
         AccountEventType::AccountUpdatePosition => {
             let msg = AccountUpdatePositionMsg::from_bytes(data)?;
             debug!(
@@ -1256,7 +1256,7 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
                 msg.breakeven_price,
                 msg.event_time,
             );
-        }
+        } 
         AccountEventType::AccountUpdateFlush => {
             let msg = AccountUpdateFlushMsg::from_bytes(data)?;
             let key = crate::pre_trade::dedup::key_account_update_flush(&msg);
@@ -1267,8 +1267,8 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
                 "accountUpdateFlush: scope={} event_time={} hash={:#x}",
                 msg.scope, msg.event_time, msg.hash
             );
-            ctx.refresh_exposures();
-        }
+            ctx.refresh_exposures(); 
+        } 
         AccountEventType::ExecutionReport => {
             let report = ExecutionReportMsg::from_bytes(data)?;
             let key = crate::pre_trade::dedup::key_execution_report(&report);
@@ -1278,7 +1278,7 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
                 //     report.symbol, report.order_id, report.trade_id, report.execution_type, report.order_status
                 // );
                 return Ok(());
-            }
+            } 
             debug!(
                 "executionReport: sym={} cli_id={} ord_id={} status={}",
                 report.symbol, report.client_order_id, report.order_id, report.order_status
@@ -1327,10 +1327,10 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
             );
             dispatch_order_trade_update(ctx, &update);
         }
-        _ => {}
-    }
+        _ => {} 
+    } 
 
-    Ok(())
+    Ok(()) 
 }
 
 fn handle_trade_engine_response(ctx: &mut RuntimeContext, outcome: TradeExecOutcome) {
@@ -1339,12 +1339,12 @@ fn handle_trade_engine_response(ctx: &mut RuntimeContext, outcome: TradeExecOutc
         ctx.with_strategy_mut(strategy_id, |strategy| {
             if strategy.is_strategy_order(outcome.client_order_id) {
                 strategy.handle_trade_response(&outcome);
-            }
-        });
-    }
+            } 
+        }); 
+    } 
 
-    ctx.cleanup_inactive();
-}
+    ctx.cleanup_inactive(); 
+} 
 
 fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
     let raw_signal = signal.to_bytes();
@@ -1358,8 +1358,8 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
             signal.signal_type,
             signal.generation_time,
             signal.context.len()
-        );
-    }
+        ); 
+    } 
     match signal.signal_type {
         SignalType::BinSingleForwardArbOpenMT => {
             match BinSingleForwardArbOpenCtx::from_bytes(signal.context.clone()) {
@@ -1440,8 +1440,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
             }
         }
         
-
-        //响应请求，进行marker-maker开仓
+        //响应请求，进行marker-maker开仓 
         SignalType::BinSingleForwardArbOpenMM => {
             match BinSingleForwardArbOpenCtx::from_bytes(signal.context.clone()) {
                 Ok(open_ctx) => {
@@ -1556,12 +1555,12 @@ fn forward_signal_to_strategy(
         debug!(
             "forward signal to strategy_id={} raw_len={}",
             strategy.get_id(),
-            signal_bytes.len()
-        );
-        strategy.handle_trade_signal(&signal_bytes);
-    });
-    true
-}
+            signal_bytes.len() 
+        ); 
+        strategy.handle_trade_signal(&signal_bytes); 
+    }); 
+    true 
+} 
 
 fn handle_hedge_mt_signal(ctx: &mut RuntimeContext, signal: TradeSignal, raw_signal: Bytes) {
     match BinSingleForwardArbHedgeMTCtx::from_bytes(signal.context.clone()) {
@@ -1584,20 +1583,20 @@ fn handle_hedge_mt_signal(ctx: &mut RuntimeContext, signal: TradeSignal, raw_sig
         }
         Err(err) => warn!("failed to decode MT hedge context: {err}"),
     }
-}
+} 
 
 fn handle_mm_backward_request(ctx: &mut RuntimeContext, signal: TradeSignal) {
     match ReqBinSingleForwardArbHedgeMM::from_bytes(signal.context.clone()) {
-        Ok(req) => {
-            ctx.publish_mm_backward(signal.context.as_ref());
+        Ok(req) => { 
+            ctx.publish_mm_backward(signal.context.as_ref()); 
             debug!(
                 "forward mm hedge request: strategy_id={} client_order_id={} last_delta={:.6}",
                 req.strategy_id, req.client_order_id, req.last_executed_qty
-            );
-        }
+            ); 
+        } 
         Err(err) => warn!("failed to decode MM hedge request: {err}"),
-    }
-}
+    } 
+} 
 
 fn handle_hedge_mm_signal(ctx: &mut RuntimeContext, signal: TradeSignal, raw_signal: Bytes) {
     match BinSingleForwardArbHedgeMMCtx::from_bytes(signal.context.clone()) {
@@ -1706,8 +1705,8 @@ fn dispatch_execution_report(ctx: &mut RuntimeContext, report: &ExecutionReportM
         );
     }
 
-    ctx.cleanup_inactive();
-}
+    ctx.cleanup_inactive(); 
+} 
 
 fn dispatch_order_trade_update(ctx: &mut RuntimeContext, update: &OrderTradeUpdateMsg) {
     let order_id = update.client_order_id;

@@ -1873,11 +1873,11 @@ impl StrategyEngine {
         let slice = &values[start..];
         if slice.is_empty() {
             return None;
-        }
+        } 
         let sum: f64 = slice.iter().copied().sum();
         let mean = sum / (slice.len() as f64);
         Some(mean)
-    }
+    } 
 
     async fn reload_loan_rates(&mut self) -> Result<()> {
         // 从 Redis HASH 读取借贷利率，字段为 symbol，值可为数字字符串或 JSON { loan_rate_8h, ts }

@@ -1190,85 +1190,6 @@ impl BinSingleForwardArbStrategyMM {
         }
     }
 
-    fn ensure_max_pos_u(
-        &self,
-        spot_symbol: &str,
-        base_asset: &str,
-        current_spot_qty: f64,
-        additional_qty: f64,
-        price_hint: f64,
-    ) -> Result<(), String> {
-        if !(self.max_pos_u > 0.0) {
-            return Ok(());
-        }
-
-        let base_upper = base_asset.to_uppercase();
-        let mark_symbol = format!("{}USDT", base_upper);
-        let price_from_table = {
-            let table = self.price_table.borrow();
-            table.mark_price(&mark_symbol)
-        };
-        let price = price_from_table.or_else(|| {
-            if price_hint > 0.0 {
-                Some(price_hint)
-            } else {
-                None
-            }
-        });
-
-        let Some(price) = price else {
-            warn!(
-                "{}: symbol={} 缺少 USDT 标记价格，无法校验 max_pos_u",
-                Self::strategy_name(),
-                spot_symbol
-            );
-            return Err(format!(
-                "{}: symbol={} 缺少价格信息，无法校验 max_pos_u",
-                Self::strategy_name(),
-                spot_symbol
-            ));
-        };
-
-        let projected_qty = current_spot_qty + additional_qty;
-        let current_usdt = current_spot_qty.abs() * price;
-        let order_usdt = additional_qty.abs() * price;
-        let projected_usdt = projected_qty.abs() * price;
-        let limit_eps = 1e-6_f64;
-
-        if projected_usdt > self.max_pos_u + limit_eps {
-            warn!(
-                "{}: symbol={} 当前现货={:.6}({:.4}USDT) 下单数量={:.6}({:.4}USDT) 预计现货={:.4}USDT 超过阈值 {:.4}USDT",
-                Self::strategy_name(),
-                spot_symbol,
-                current_spot_qty,
-                current_usdt,
-                additional_qty,
-                order_usdt,
-                projected_usdt,
-                self.max_pos_u
-            );
-            return Err(format!(
-                "{}: symbol={} 预计现货持仓 {:.4}USDT 超过阈值 {:.4}USDT",
-                Self::strategy_name(),
-                spot_symbol,
-                projected_usdt,
-                self.max_pos_u
-            ));
-        }
-
-        debug!(
-            "{}: symbol={} 现货持仓限制通过 current={:.4}USDT add={:.4}USDT projected={:.4}USDT limit={:.4}USDT",
-            Self::strategy_name(),
-            spot_symbol,
-            current_usdt,
-            order_usdt,
-            projected_usdt,
-            self.max_pos_u
-        );
-
-        Ok(())
-    }
-
     fn extract_base_asset(symbol_upper: &str) -> Option<String> {
         const QUOTES: [&str; 6] = ["USDT", "BUSD", "USDC", "FDUSD", "BIDR", "TRY"];
         for quote in QUOTES {
@@ -1550,9 +1471,6 @@ impl BinSingleForwardArbStrategyMM {
         order.set_submit_time(now);
 
         order_manager.insert(order);
-        self.margin_order_id = order_id;
-        self.initial_margin_order_id = order_id;
-        self.open_timeout_us = (open_ctx.exp_time > 0).then_some(open_ctx.exp_time);
 
         info!(
             "{}: strategy_id={} 提交 margin 开仓请求 symbol={} qty={:.6} type={} price={:.8} order_id={}",
@@ -2137,16 +2055,6 @@ impl BinSingleForwardArbStrategyMM {
     }
 
 
-    fn submit_margin_cancel(&self, symbol: &str, order_id: i64) -> Result<(), String> {
-        let now = get_timestamp_us();
-        // 使用 origClientOrderId 以客户端订单ID撤单；当前未保存交易所 orderId
-        let params = Bytes::from(format!("symbol={}&origClientOrderId={}", symbol, order_id));
-        let request = BinanceCancelMarginOrderRequest::create(now, order_id, params);
-
-        self.order_tx
-            .send(request.to_bytes())
-            .map_err(|e| format!("{}: 发送 margin 撤单失败: {}", Self::strategy_name(), e))
-    }
 
     fn next_order_id(&mut self) -> i64 {
         let seq = self.order_seq;
@@ -2393,13 +2301,6 @@ fn format_decimal(value: f64) -> String {
     }
 }
 
-fn format_quantity(quantity: f64) -> String {
-    format_decimal(quantity)
-}
-
-fn format_price(price: f64) -> String {
-    format_decimal(price)
-}
 
 fn align_price_floor(value: f64, tick: f64) -> f64 {
     if tick <= 0.0 {
@@ -2457,15 +2358,15 @@ fn to_fraction(value: f64) -> Option<(i64, i64)> {
 impl Strategy for BinSingleForwardArbStrategyMM {
     fn get_id(&self) -> i32 {
         self.strategy_id
-    }
+    } 
 
     fn symbol(&self) -> Option<&str> {
         Some(&self.symbol)
-    }
+    } 
 
     fn is_strategy_order(&self, order_id: i64) -> bool {
         ((order_id >> 32) as i32) == self.strategy_id
-    }
+    } 
 
     fn handle_trade_signal(&mut self, signal_raws: &Bytes) {
         match TradeSignal::from_bytes(signal_raws) {
@@ -2539,7 +2440,7 @@ impl Strategy for BinSingleForwardArbStrategyMM {
                                 );
                             }
                         }
-                    }
+                    } 
 
                     if !success {
                         warn!(
@@ -2677,20 +2578,20 @@ impl Strategy for BinSingleForwardArbStrategyMM {
                         remove_after_update = true;
                     }
                     _ => {}
-                }
-            }) {
+                } 
+            }) { 
                 warn!(
                     "{}: strategy_id={} execution_report 未找到订单 id={}",
                     Self::strategy_name(),
                     self.strategy_id,
                     order_id
-                );
-            }
-        }
+                ); 
+            } 
+        } 
 
         if remove_after_update {
             self.order_manager.borrow_mut().remove(order_id);
-        }
+        } 
 
         if order_id == self.margin_order_id {
             let mut margin_side: Option<Side> = None;
@@ -2846,8 +2747,8 @@ impl Strategy for BinSingleForwardArbStrategyMM {
                     self.strategy_id,
                     order_label,
                     event.order_status
-                );
-            }
+                ); 
+            } 
             UmOrderUpdateOutcome::PartiallyFilled(cumulative) => {
                 info!(
                     "{}: strategy_id={} {} 部分成交累计数量={:.6}，UM Order Status={}",
@@ -2855,9 +2756,9 @@ impl Strategy for BinSingleForwardArbStrategyMM {
                     self.strategy_id,
                     order_label,
                     cumulative,
-                    event.order_status
-                );
-            }
+                    event.order_status 
+                ); 
+            } 
             UmOrderUpdateOutcome::Filled => {
                 info!(
                     "{}: strategy_id={} {} 已全部成交，UM Order Status={}",
@@ -2903,25 +2804,25 @@ impl Strategy for BinSingleForwardArbStrategyMM {
                         self.strategy_id
                     );
                     flags.margin_open_absent_logged = true;
-                }
-                flags.last_margin_open_status = None;
-                self.open_timeout_us = None;
+                } 
+                flags.last_margin_open_status = None; 
+                self.open_timeout_us = None; 
             } else {
                 {
                     let mut flags = self.period_log_flags.borrow_mut();
                     flags.margin_open_absent_logged = false;
-                }
+                } 
                 let open_order = {
                     let manager = self.order_manager.borrow();
                     manager.get(self.margin_order_id)
-                };
+                }; 
 
                 match open_order {
-                    Some(order) => {
+                    Some(order) => { 
                         {
                             let mut flags = self.period_log_flags.borrow_mut();
                             flags.margin_open_missing_logged = false;
-                        }
+                        } 
                         if order.status.is_terminal() {
                             self.open_timeout_us = None;
                         } else if order.cancel_requested {
@@ -2968,8 +2869,8 @@ impl Strategy for BinSingleForwardArbStrategyMM {
                                     self.open_timeout_us = None;
                                 }
                             }
-                        }
-                    }
+                        } 
+                    } 
                     None => {
                         {
                             let mut flags = self.period_log_flags.borrow_mut();
@@ -2984,24 +2885,23 @@ impl Strategy for BinSingleForwardArbStrategyMM {
                             }
                             flags.last_margin_open_status = None;
                             flags.margin_open_absent_logged = false;
-                        }
+                        } 
                         self.margin_order_id = 0;
                         self.open_timeout_us = None;
                         self.clear_cancel_wait();
-                    }
-                }
-            }
+                    } 
+                } 
+            } 
         } else {
             let mut flags = self.period_log_flags.borrow_mut();
             flags.margin_open_absent_logged = false;
             flags.margin_open_missing_logged = false;
             flags.last_margin_open_status = None;
             self.open_timeout_us = None;
-        }
-
+        } 
     }
 
     fn is_active(&self) -> bool {
         self.is_active_open()
-    }
+    } 
 }

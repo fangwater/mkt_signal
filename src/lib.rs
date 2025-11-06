@@ -10,6 +10,7 @@ pub mod pre_trade;
 pub mod rolling_metrics;
 pub mod signal;
 pub mod trade_engine;
+pub mod strategy;
 
 // Re-export frequently used modules for backward compatibility
 pub use common::{exchange, mkt_msg};

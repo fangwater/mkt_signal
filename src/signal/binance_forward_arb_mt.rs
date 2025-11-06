@@ -18,7 +18,6 @@ use crate::trade_engine::trade_request::{
     TradeRequestType,
 };
 use crate::trade_engine::trade_response_handle::TradeExecOutcome;
-use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
 /// 内部统一的 UM 订单更新结果，用于将 REST 推送的状态转换为易于判断的枚举。
@@ -418,11 +417,10 @@ impl HedgeArbStrategy {
             return Ok(());
         }
         info!(
-            "{}: strategy_id={} 阶梯撤单触发 bidask_sr={:.6} threshold={:.6}",
+            "{}: strategy_id={} 阶梯撤单触发 bidask_sr={:.6}",
             Self::strategy_name(),
             self.strategy_id,
-            ctx.bidask_sr().unwrap_or(f64::NAN),
-            ctx.cancel_threshold
+            ctx.bidask_sr().unwrap_or(f64::NAN)
         );
 
         self.force_cancel_open_margin_order()
@@ -1725,14 +1723,13 @@ impl Strategy for BinSingleForwardArbStrategyMT {
         self.strategy_id
     }
 
-    fn symbol(&self) -> Option<&str> {
-        Some(&self.symbol)
-    }
-
+    fn symbol(&self) -> Option<&str> { 
+        Some(&self.symbol) 
+    } 
 
     fn is_strategy_order(&self, order_id: i64) -> bool {
         ((order_id >> 32) as i32) == self.strategy_id
-    }
+    } 
 
     fn handle_trade_signal(&mut self, signal_raws: &Bytes) {
         match TradeSignal::from_bytes(signal_raws) {
@@ -1742,7 +1739,7 @@ impl Strategy for BinSingleForwardArbStrategyMT {
                 self.strategy_id, err
             ),
         }
-    }
+    } 
 
     fn handle_trade_response(&mut self, outcome: &TradeExecOutcome) {
         if self.is_strategy_order(outcome.client_order_id) {
@@ -1893,11 +1890,11 @@ impl Strategy for BinSingleForwardArbStrategyMT {
                     "NEW" => {
                         order.update_status(OrderExecutionStatus::Create);
                         order.record_exchange_create(report.event_time);
-                    }
+                    } 
                     "PARTIALLY_FILLED" => {
                         order.update_cumulative_filled_quantity(report.cumulative_filled_quantity);
                         order.record_exchange_update(report.event_time);
-                    }
+                    } 
                     "FILLED" => {
                         order.update_status(OrderExecutionStatus::Filled);
                         order.set_filled_time(report.event_time);
@@ -1910,7 +1907,7 @@ impl Strategy for BinSingleForwardArbStrategyMT {
                         order.set_end_time(report.event_time);
                         order.record_exchange_update(report.event_time);
                         remove_after_update = true;
-                    }
+                    } 
                     "REJECTED" | "TRADE_PREVENTION" => {
                         order.update_status(OrderExecutionStatus::Rejected);
                         order.set_end_time(report.event_time);
@@ -1918,20 +1915,20 @@ impl Strategy for BinSingleForwardArbStrategyMT {
                         remove_after_update = true;
                     }
                     _ => {}
-                }
+                } 
             }) {
                 warn!(
                     "{}: strategy_id={} execution_report 未找到订单 id={}",
                     Self::strategy_name(),
                     self.strategy_id,
                     order_id
-                );
-            }
-        }
+                ); 
+            } 
+        } 
 
         if remove_after_update {
             self.order_manager.borrow_mut().remove(order_id);
-        }
+        } 
 
         if order_id == self.margin_order_id {
             if let Some(order_snapshot) = {

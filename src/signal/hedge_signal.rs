@@ -1,9 +1,12 @@
-use crate::signal::common::{TradingLeg, Side, SignalBytes, bytes_helper};
+use crate::signal::common::{TradingLeg, SignalBytes, bytes_helper};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use crate::pre_trade::order_manager::Side;
 
-/// Maker hedge signal context (for MM strategy - limit order hedging)
+/// Unified arbitrage hedge signal context (supports both maker and taker strategies)
+/// When exp_time > 0, it's treated as a maker order (limit order)
+/// When exp_time == 0, it's treated as a taker order (market order)
 #[derive(Debug, Clone, Copy)]
-pub struct MakerHedgeCtx {
+pub struct ArbHedgeCtx {
     /// Strategy ID that needs hedging
     pub strategy_id: i32,
 
@@ -16,16 +19,18 @@ pub struct MakerHedgeCtx {
     /// Hedge side (Buy/Sell) - stored as u8
     pub hedge_side: u8,
 
-    /// Limit price for maker order
+    /// Limit price for maker order (ignored when exp_time == 0)
     pub limit_price: f64,
 
-    /// Price tick size
+    /// Price tick size (ignored when exp_time == 0)
     pub price_tick: f64,
 
-    /// Whether to use post-only order
+    /// Whether to use post-only order (ignored when exp_time == 0)
     pub maker_only: bool,
 
     /// Order expiration time (microseconds)
+    /// When > 0: Maker order with limit price
+    /// When == 0: Taker order (market order)
     pub exp_time: i64,
 
     /// Hedging leg market data
@@ -38,8 +43,8 @@ pub struct MakerHedgeCtx {
     pub market_ts: i64,
 }
 
-impl MakerHedgeCtx {
-    /// Create new maker hedge context
+impl ArbHedgeCtx {
+    /// Create new hedge context
     pub fn new() -> Self {
         Self {
             strategy_id: 0,
@@ -56,6 +61,55 @@ impl MakerHedgeCtx {
         }
     }
 
+    /// Create a maker hedge context (limit order)
+    pub fn new_maker(
+        strategy_id: i32,
+        client_order_id: i64,
+        hedge_qty: f64,
+        hedge_side: u8,
+        limit_price: f64,
+        price_tick: f64,
+        maker_only: bool,
+        exp_time: i64,
+    ) -> Self {
+        let mut ctx = Self::new();
+        ctx.strategy_id = strategy_id;
+        ctx.client_order_id = client_order_id;
+        ctx.hedge_qty = hedge_qty;
+        ctx.hedge_side = hedge_side;
+        ctx.limit_price = limit_price;
+        ctx.price_tick = price_tick;
+        ctx.maker_only = maker_only;
+        ctx.exp_time = exp_time;
+        ctx
+    }
+
+    /// Create a taker hedge context (market order)
+    pub fn new_taker(
+        strategy_id: i32,
+        client_order_id: i64,
+        hedge_qty: f64,
+        hedge_side: u8,
+    ) -> Self {
+        let mut ctx = Self::new();
+        ctx.strategy_id = strategy_id;
+        ctx.client_order_id = client_order_id;
+        ctx.hedge_qty = hedge_qty;
+        ctx.hedge_side = hedge_side;
+        ctx.exp_time = 0; // 0 indicates taker/market order
+        ctx
+    }
+
+    /// Check if this is a maker order
+    pub fn is_maker(&self) -> bool {
+        self.exp_time > 0
+    }
+
+    /// Check if this is a taker order
+    pub fn is_taker(&self) -> bool {
+        self.exp_time == 0
+    }
+
     /// Set hedging symbol
     pub fn set_hedging_symbol(&mut self, symbol: &str) {
         let bytes = symbol.as_bytes();
@@ -78,71 +132,51 @@ impl MakerHedgeCtx {
     pub fn set_side(&mut self, side: Side) {
         self.hedge_side = side.to_u8();
     }
-}
 
-/// Taker hedge signal context (for MT strategy - market order hedging)
-#[derive(Debug, Clone, Copy)]
-pub struct TakerHedgeCtx {
-    /// Strategy ID that needs hedging
-    pub strategy_id: i32,
+    /// Get appropriate hedge price based on the hedge side
+    /// 根据对冲方向获取合适的价格（选择不会立即成交的盘口最优价格）
+    ///
+    /// # 价格选择逻辑:
+    /// - 如果是 Maker 订单且已设置限价：使用指定的 limit_price
+    /// - 否则使用盘口最优价格（不会立即成交）：
+    ///   - Buy 方向（做多）：使用 bid0（挂在买盘最优价，等待成交）
+    ///   - Sell 方向（做空）：使用 ask0（挂在卖盘最优价，等待成交）
+    ///
+    /// # 原理说明:
+    /// - 当我们要买入（做多）时，挂在 bid0 不会立即成交，而是等待卖方主动成交
+    /// - 当我们要卖出（做空）时，挂在 ask0 不会立即成交，而是等待买方主动成交
+    /// - 这样可以获得更好的成交价格（赚取买卖价差）
+    ///
+    /// # Returns
+    /// 返回适合对冲方向的盘口最优价格
+    pub fn get_hedge_price(&self) -> f64 {
+        // 如果是 Maker 订单且设置了限价，使用限价
+        if self.is_maker() && self.limit_price > 0.0 {
+            return self.limit_price;
+        }
 
-    /// Client order ID for tracking
-    pub client_order_id: i64,
-
-    /// Hedge quantity
-    pub hedge_qty: f64,
-
-    /// Hedge side (Buy/Sell) - stored as u8
-    pub hedge_side: u8,
-
-    /// Hedging leg market data
-    pub hedging_leg: TradingLeg,
-
-    /// Hedging leg symbol
-    pub hedging_symbol: [u8; 32],
-
-    /// Market data timestamp
-    pub market_ts: i64,
-}
-
-impl TakerHedgeCtx {
-    /// Create new taker hedge context
-    pub fn new() -> Self {
-        Self {
-            strategy_id: 0,
-            client_order_id: 0,
-            hedge_qty: 0.0,
-            hedge_side: 0,
-            hedging_leg: TradingLeg { venue: 0, bid0: 0.0, ask0: 0.0 },
-            hedging_symbol: [0u8; 32],
-            market_ts: 0,
+        // 使用盘口最优价格（不会立即成交的价格）
+        match self.get_side() {
+            Some(Side::Buy) => {
+                // 买入（做多）时使用 bid0，挂在买盘最优价
+                // 这样不会立即成交，而是等待卖方来成交我们的订单
+                self.hedging_leg.bid0
+            }
+            Some(Side::Sell) => {
+                // 卖出（做空）时使用 ask0，挂在卖盘最优价
+                // 这样不会立即成交，而是等待买方来成交我们的订单
+                self.hedging_leg.ask0
+            }
+            None => {
+                // 如果无法确定方向，默认返回 bid0
+                // 这种情况通常不应该发生
+                self.hedging_leg.bid0
+            }
         }
     }
-
-    /// Set hedging symbol
-    pub fn set_hedging_symbol(&mut self, symbol: &str) {
-        let bytes = symbol.as_bytes();
-        let len = bytes.len().min(32);
-        self.hedging_symbol[..len].copy_from_slice(&bytes[..len]);
-    }
-
-    /// Get hedging symbol
-    pub fn get_hedging_symbol(&self) -> String {
-        let end = self.hedging_symbol.iter().position(|&b| b == 0).unwrap_or(32);
-        String::from_utf8_lossy(&self.hedging_symbol[..end]).to_string()
-    }
-
-    /// Get Side enum
-    pub fn get_side(&self) -> Option<Side> {
-        Side::from_u8(self.hedge_side)
-    }
-
-    /// Set Side
-    pub fn set_side(&mut self, side: Side) {
-        self.hedge_side = side.to_u8();
-    }
 }
-impl SignalBytes for MakerHedgeCtx {
+
+impl SignalBytes for ArbHedgeCtx {
     fn to_bytes(&self) -> Bytes {
         let mut buf = BytesMut::new();
 
@@ -168,9 +202,9 @@ impl SignalBytes for MakerHedgeCtx {
 
     fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
         if bytes.remaining() < 4 + 8 + 8 + 1 + 8 + 8 + 1 + 8 {
-            return Err("Not enough bytes for maker hedge basic fields".to_string());
-        }
-
+            return Err("Not enough bytes for ArbHedgeCtx basic fields".to_string());
+        } 
+        
         let strategy_id = bytes.get_i32_le();
         let client_order_id = bytes.get_i64_le();
         let hedge_qty = bytes.get_f64_le();
@@ -203,66 +237,6 @@ impl SignalBytes for MakerHedgeCtx {
             price_tick,
             maker_only,
             exp_time,
-            hedging_leg: TradingLeg {
-                venue: hedging_venue,
-                bid0: hedging_bid0,
-                ask0: hedging_ask0,
-            },
-            hedging_symbol,
-            market_ts,
-        })
-    }
-}
-
-impl SignalBytes for TakerHedgeCtx {
-    fn to_bytes(&self) -> Bytes {
-        let mut buf = BytesMut::new();
-
-        buf.put_i32_le(self.strategy_id);
-        buf.put_i64_le(self.client_order_id);
-        buf.put_f64_le(self.hedge_qty);
-        buf.put_u8(self.hedge_side);
-
-        // Hedging leg market data
-        buf.put_u8(self.hedging_leg.venue);
-        buf.put_f64_le(self.hedging_leg.bid0);
-        buf.put_f64_le(self.hedging_leg.ask0);
-        bytes_helper::write_fixed_bytes(&mut buf, &self.hedging_symbol);
-
-        buf.put_i64_le(self.market_ts);
-
-        buf.freeze()
-    }
-
-    fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
-        if bytes.remaining() < 4 + 8 + 8 + 1 {
-            return Err("Not enough bytes for taker hedge basic fields".to_string());
-        }
-
-        let strategy_id = bytes.get_i32_le();
-        let client_order_id = bytes.get_i64_le();
-        let hedge_qty = bytes.get_f64_le();
-        let hedge_side = bytes.get_u8();
-
-        // Hedging leg market data
-        if bytes.remaining() < 1 + 8 + 8 {
-            return Err("Not enough bytes for hedging leg".to_string());
-        }
-        let hedging_venue = bytes.get_u8();
-        let hedging_bid0 = bytes.get_f64_le();
-        let hedging_ask0 = bytes.get_f64_le();
-        let hedging_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
-
-        if bytes.remaining() < 8 {
-            return Err("Not enough bytes for market_ts".to_string());
-        }
-        let market_ts = bytes.get_i64_le();
-
-        Ok(Self {
-            strategy_id,
-            client_order_id,
-            hedge_qty,
-            hedge_side,
             hedging_leg: TradingLeg {
                 venue: hedging_venue,
                 bid0: hedging_bid0,

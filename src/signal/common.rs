@@ -1,6 +1,7 @@
-
 use std::convert::TryFrom;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use crate::common::min_qty_table::MinQtyTable;
+use log::debug;
 
 /// 交易标的枚举，表示不同交易所的不同交易类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -14,9 +15,132 @@ pub enum TradingVenue {
     OkexSpot = 5,
 }
 
+fn to_fraction(value: f64) -> Option<(i64, i64)> {
+    if !value.is_finite() || value <= 0.0 {
+        return None;
+    }
+    let mut denom: i64 = 1;
+    let mut scaled = value;
+    for _ in 0..9 {
+        let rounded = scaled.round();
+        if (scaled - rounded).abs() < 1e-9 {
+            return Some((rounded as i64, denom));
+        }
+        scaled *= 10.0;
+        denom = denom.saturating_mul(10);
+    }
+    None
+}
+
+
+fn align_price_floor(price: f64, tick: f64) -> f64 {
+    if tick <= 0.0 {
+        return price;
+    }
+    if let Some((tick_num, tick_den)) = to_fraction(tick) {
+        if tick_num == 0 {
+            return price;
+        }
+        let tick_num = tick_num as i128;
+        let tick_den = tick_den as i128;
+        let units = ((price * tick_den as f64) + 1e-9).floor() as i128;
+        let aligned_units = (units / tick_num) * tick_num;
+        return aligned_units as f64 / tick_den as f64;
+    }
+    let scaled = ((price / tick) + 1e-9).floor();
+    scaled * tick
+}
+
+fn align_price_ceil(price: f64, tick: f64) -> f64 {
+    if tick <= 0.0 {
+        return price;
+    }
+    if let Some((tick_num, tick_den)) = to_fraction(tick) {
+        if tick_num == 0 {
+            return price;
+        }
+        let tick_num = tick_num as i128;
+        let tick_den = tick_den as i128;
+        let units = ((price * tick_den as f64) - 1e-9).ceil() as i128;
+        let aligned_units = ((units + tick_num - 1) / tick_num) * tick_num;
+        return aligned_units as f64 / tick_den as f64;
+    }
+    let scaled = ((price / tick) - 1e-9).ceil();
+    scaled * tick
+}
+
 impl TradingVenue {
-    /// 根据资产类型，进行量和价格的对齐
-     
+    /// 针对币安 UM 永续限价单，将数量与价格按照交易所过滤器对齐。
+    /// 返回 `(调整后的数量, 调整后的价格)`。
+    pub fn align_um_order(
+        symbol: &str,
+        raw_qty: f64,
+        raw_price: f64,
+        min_qty_table: &MinQtyTable,
+    ) -> Result<(f64, f64), String> {
+        if raw_qty <= 0.0 {
+            return Err(format!("symbol={} 原始下单量无效 raw_qty={}", symbol, raw_qty));
+        }
+        if raw_price <= 0.0 {
+            return Err(format!("symbol={} 原始价格无效 raw_price={}", symbol, raw_price));
+        }
+
+        // 1. 按照 tick 对齐价格，交易所要求价格满足最小价格步进。
+        let price_tick = min_qty_table
+            .futures_um_price_tick_by_symbol(symbol)
+            .unwrap_or(0.0);
+        let price = if price_tick > 0.0 {
+            align_price_floor(raw_price, price_tick)
+        } else {
+            raw_price
+        };
+        if price <= 0.0 {
+            return Err(format!("symbol={} 对齐后价格无效 price={}", symbol, price));
+        }
+
+        // 2. 数量按 step 对齐，保证符合交易所最小数量步长。
+        let step = min_qty_table
+            .futures_um_step_by_symbol(symbol)
+            .unwrap_or(0.0);
+        let mut qty = if step > 0.0 {
+            align_price_floor(raw_qty, step)
+        } else {
+            raw_qty
+        };
+
+        // 3. 补齐最小下单量要求。
+        if let Some(min_qty) = min_qty_table.futures_um_min_qty_by_symbol(symbol) {
+            if min_qty > 0.0 && qty < min_qty {
+                qty = min_qty;
+            }
+        }
+
+        // 4. 补齐最小名义金额要求，必要时抬高下单量。
+        if let Some(min_notional) = min_qty_table.futures_um_min_notional_by_symbol(symbol) {
+            if min_notional > 0.0 {
+                let required_qty = min_notional / price;
+                if qty < required_qty {
+                    let before = qty;
+                    qty = if step > 0.0 {
+                        align_price_ceil(required_qty, step)
+                    } else {
+                        required_qty
+                    };
+                    debug!(
+                        "symbol={} 名义金额要求从 {} 调整到 {} (min_notional={}, price={})",
+                        symbol, before, qty, min_notional, price
+                    );
+                }
+            }
+        }
+
+        if qty <= 0.0 {
+            return Err(format!("symbol={} 对齐后数量无效 qty={}", symbol, qty));
+        }
+
+        Ok((qty, price))
+    }
+
 
     /// 转换为 u8
     pub fn to_u8(self) -> u8 {
@@ -76,11 +200,6 @@ impl TradingVenue {
             TradingVenue::OkexSpot
         )
     }
-
-    /// 是否是杠杆交易
-    pub fn is_margin(&self) -> bool {
-        matches!(self, TradingVenue::BinanceMargin)
-    }
 }
 
 /// 实现 TryFrom trait，用于类型安全的转换
@@ -97,52 +216,6 @@ impl TryFrom<u8> for TradingVenue {
 impl From<TradingVenue> for u8 {
     fn from(venue: TradingVenue) -> Self {
         venue.to_u8()
-    }
-}
-
-/// 订单类型
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub enum OrderType {
-    Limit = 0,
-    Market = 1,
-    PostOnly = 2,
-}
-
-impl OrderType {
-    pub fn to_u8(self) -> u8 {
-        self as u8
-    }
-
-    pub fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            0 => Some(OrderType::Limit),
-            1 => Some(OrderType::Market),
-            2 => Some(OrderType::PostOnly),
-            _ => None,
-        }
-    }
-}
-
-/// 交易方向
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub enum Side {
-    Buy = 0,
-    Sell = 1,
-}
-
-impl Side {
-    pub fn to_u8(self) -> u8 {
-        self as u8
-    }
-
-    pub fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            0 => Some(Side::Buy),
-            1 => Some(Side::Sell),
-            _ => None,
-        }
     }
 }
 
@@ -220,4 +293,14 @@ pub mod bytes_helper {
         }
         Ok(bytes.get_f64_le())
     }
+}
+
+
+#[derive(Debug, Clone, Copy)] 
+enum UmOrderUpdateOutcome {
+    Created,
+    PartiallyFilled(f64),
+    Filled,
+    Expired,
+    Ignored,
 }

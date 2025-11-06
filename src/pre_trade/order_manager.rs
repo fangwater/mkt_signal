@@ -1,6 +1,37 @@
 use std::collections::HashMap;
-
+use crate::trade_engine::trade_request::{BinanceCancelMarginOrderRequest, BinanceCancelUMOrderRequest};
+use crate::{common::time_util::get_timestamp_us, signal::common::TradingVenue};
+use bytes::Bytes;
+use tokio::sync::mpsc::UnboundedSender;
 use log::{debug, info, warn};
+use crate::trade_engine::trade_request::BinanceNewUMOrderRequest;
+use crate::trade_engine::trade_request::BinanceNewMarginOrderRequest;
+fn format_decimal(value: f64) -> String {
+    let mut s = format!("{:.8}", value);
+    if let Some(dot_pos) = s.find('.') {
+        while s.len() > dot_pos + 1 && s.ends_with('0') {
+            s.pop();
+        }
+        if s.ends_with('.') {
+            s.pop();
+        }
+    }
+    if s.is_empty() {
+        "0".to_string()
+    } else {
+        s
+    }
+}
+
+
+fn format_quantity(quantity: f64) -> String {
+    format_decimal(quantity)
+}
+
+fn format_price(price: f64) -> String {
+    format_decimal(price)
+}
+
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
@@ -152,6 +183,19 @@ impl OrderType {
             _ => None,
         }
     }
+    pub fn to_u8(self) -> u8 {
+        match self {
+            OrderType::Limit => 1,
+            OrderType::LimitMaker => 2,
+            OrderType::Market => 3,
+            OrderType::StopLoss => 4,
+            OrderType::StopLossLimit => 5,
+            OrderType::TakeProfit => 6,
+            OrderType::TakeProfitLimit => 7,
+            OrderType::StopMarket => 8,
+            OrderType::TakeProfitMarket => 9
+        }
+    }
 
     /// 从字符串解析（交易所 API 格式）
     pub fn from_str(s: &str) -> Option<Self> {
@@ -212,57 +256,34 @@ impl OrderType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[repr(u8)]
-pub enum PositionSide {
-    BOTH = 1,
-    SHORT = 2,
-    LONG = 3,
-}
-
-impl PositionSide {
-    /// 从 u8 转换为 PositionSide
-    pub fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            1 => Some(PositionSide::BOTH),
-            2 => Some(PositionSide::SHORT),
-            3 => Some(PositionSide::LONG),
-            _ => None,
-        }
-    }
-
-    /// 从字符串解析（交易所 API 格式）
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "BOTH" => Some(PositionSide::BOTH),
-            "SHORT" => Some(PositionSide::SHORT),
-            "LONG" => Some(PositionSide::LONG),
-            _ => None,
-        }
-    }
-
-    /// 转换为字符串（交易所 API 格式）
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            PositionSide::BOTH => "BOTH",
-            PositionSide::SHORT => "SHORT",
-            PositionSide::LONG => "LONG",
-        }
-    }
-}
-
 /// 订单管理器
 pub struct OrderManager {
     orders: HashMap<i64, Order>,                     //映射order id到order
     pending_limit_order_count: HashMap<String, i32>, //单个交易品种当前有多少待成交的maker单
+    pub order_record_tx: UnboundedSender<Bytes>,     //推送订单记录到publish
 }
 
 impl OrderManager {
-    pub fn new() -> Self {
+    pub fn new(order_record_tx: UnboundedSender<Bytes>) -> Self {
         Self {
             orders: HashMap::new(),
             pending_limit_order_count: HashMap::new(),
+            order_record_tx
         }
+    }
+    pub fn create_order(&mut self, venue: TradingVenue, id :i64, order_type: OrderType, symbol: String, side: Side, quantity: f64, price: f64, sumbit_ts_local: i64) -> i64 {
+        let mut order = Order::new(
+            venue,
+            id,
+            order_type,
+            symbol.clone(),
+            side,
+            quantity,
+            price,
+        );
+        order.set_submit_time(sumbit_ts_local);
+        self.insert(order);
+        id
     }
 
     pub fn get_symbol_pending_limit_order_count(&self, symbol: &String) -> i32 {
@@ -299,14 +320,11 @@ impl OrderManager {
             None
         };
 
-        let order_id = order.order_id;
+        let order_id = order.client_order_id;
         let prev = self.orders.insert(order_id, order);
 
         if let Some(symbol) = symbol {
             self.increment_pending_limit_count(&symbol);
-            if let Some(o) = self.orders.get_mut(&order_id) {
-                o.pending_counted = true;
-            }
         }
 
         if let Some(prev_order) = prev {
@@ -328,82 +346,13 @@ impl OrderManager {
     where
         F: FnOnce(&mut Order),
     {
-        // 先在受限作用域内完成对订单本身的修改，并计算需要对计数器执行的动作，
-        // 避免在持有 self.orders 的可变借用时再次可变借用 self（触发 E0499）。
-        let mut dec_prev = false;
-        let mut inc_curr = false;
-        let mut dec_on_fill = false;
-        let mut prev_symbol = String::new();
-        let mut curr_symbol = String::new();
-        let mut existed = false;
-
-        {
-            if let Some(order) = self.orders.get_mut(&order_id) {
-                existed = true;
-                let previous_type = order.order_type;
-                prev_symbol = order.symbol.clone();
-                let previous_status = order.status;
-
-                // 交给调用方修改订单
-                f(order);
-
-                let current_type = order.order_type;
-                curr_symbol = order.symbol.clone();
-
-                // 1) 由限价 -> 非限价 或者 symbol 变更时，减少旧 symbol 的 pending 计数
-                if previous_type.is_limit()
-                    && (!current_type.is_limit() || prev_symbol != curr_symbol)
-                {
-                    dec_prev = true;
-                }
-
-                // 2) 由非限价 -> 限价 或者 symbol 变更时，增加新 symbol 的 pending 计数
-                if current_type.is_limit()
-                    && (!previous_type.is_limit() || prev_symbol != curr_symbol)
-                {
-                    inc_curr = true;
-                }
-
-                // 计算本次状态迁移后（执行 1/2 后）是否应被计入 pending
-                let mut will_be_counted = order.pending_counted;
-                if dec_prev {
-                    will_be_counted = false;
-                }
-                if inc_curr {
-                    will_be_counted = true;
-                }
-
-                // 3) 限价单在转为 Filled 时释放计数（仅当当前处于计数状态时）
-                if current_type.is_limit()
-                    && previous_status != OrderExecutionStatus::Filled
-                    && order.status == OrderExecutionStatus::Filled
-                    && will_be_counted
-                {
-                    dec_on_fill = true;
-                    will_be_counted = false;
-                }
-
-                // 最终同步到订单本身
-                order.pending_counted = will_be_counted;
-            }
+        if let Some(order) = self.orders.get_mut(&order_id) {
+            // 直接修改订单
+            f(order);
+            true
+        } else {
+            false
         }
-
-        if !existed {
-            return false;
-        }
-
-        // 现在已不再持有对 self.orders 的可变借用，可以安全更新计数器
-        if dec_prev {
-            self.decrement_pending_limit_count(&prev_symbol);
-        }
-        if inc_curr {
-            self.increment_pending_limit_count(&curr_symbol);
-        }
-        if dec_on_fill {
-            self.decrement_pending_limit_count(&curr_symbol);
-        }
-
-        true
     }
 
     /// 移除订单
@@ -411,7 +360,8 @@ impl OrderManager {
         let removed = self.orders.remove(&order_id);
 
         if let Some(ref order) = removed {
-            if order.order_type.is_limit() && order.pending_counted {
+            // 如果是限价单，减少计数
+            if order.order_type.is_limit() {
                 self.decrement_pending_limit_count(&order.symbol);
             }
         }
@@ -470,51 +420,51 @@ impl OrderManager {
     }
 }
 
-impl Default for OrderManager {
-    fn default() -> Self {
-        Self::new()
+
+#[derive(Debug, Clone)]
+pub struct OrderTimeStamp {
+    pub submit_t: i64, // 订单提交时间(本地时间)
+    pub create_t: i64, // 交易所订单创建时间(交易所时间)
+    pub filled_t: i64, // 订单执行成功的时间（交易所时间，记录最后一次）
+    pub end_t: i64, // 交易所时间(完全成交或者被撤单的时间)
+}
+
+impl OrderTimeStamp {
+    fn new() -> Self {
+        OrderTimeStamp {
+            submit_t: 0,
+            create_t: 0,
+            filled_t: 0,
+            end_t: 0,
+        }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Order {
-    pub order_id: i64,                   // 订单ID
+    pub venue: TradingVenue,             // 订单对应的交易标的
+    pub client_order_id: i64,                   // 订单ID
     pub order_type: OrderType,           // 订单类型
     pub symbol: String,                  // 交易对
     pub side: Side,                      // 买卖方向
     pub price: f64,                      // 限价单价格, 市价单没有意义
     pub quantity: f64,                   // 数量
     pub cumulative_filled_quantity: f64, // 成交量
-    pub hedged_quantily: f64,            // 未对冲量
-    #[serde(default)]
-    pub hedged_filled_quantity: f64, // 已对冲到期货端的成交量
-    #[serde(default)]
     pub exchange_order_id: Option<i64>, // 交易所返回的 orderId
-    #[serde(default)]
-    pub update_event_times: Vec<i64>, // 交易所成交/状态更新时间戳列表
     pub status: OrderExecutionStatus,    // 订单执行状态
-    #[serde(default)]
-    pub pending_counted: bool, // 是否已计入 pending 限价单 count（用于去重防二次递减）
-    #[serde(default)]
-    pub cancel_requested: bool, // 是否已向交易所提交撤单请求
-    // 时间戳记录
-    pub submit_time: i64, // 订单提交时间(本地时间)
-    // "O": 1499405658657,            // Order creation time 对应币安杠杆下单
-    pub create_time: i64, // 交易所订单创建时间(交易所时间)
-    pub ack_time: i64,    // 订单收到交易所回报的时间(本地时间)
-    pub filled_time: i64, // 订单执行成功的时间（交易所时间，记录最后一次）
-    pub end_time: i64,    // 收到成交回报的时间（本地时间，记录最后一次）
+    pub timestamp: OrderTimeStamp
 }
 
 impl Order {
     /// 获取策略ID - 策略ID是订单ID的前32位
     pub fn get_strategy_id(&self) -> i32 {
-        (self.order_id >> 32) as i32
+        (self.client_order_id >> 32) as i32
     }
 
     /// 创建新订单
     pub fn new(
-        order_id: i64,
+        venue: TradingVenue, 
+        client_order_id: i64,
         order_type: OrderType,
         symbol: String,
         side: Side,
@@ -522,25 +472,17 @@ impl Order {
         price: f64,
     ) -> Self {
         Order {
-            order_id,
+            venue,
+            client_order_id,
             order_type,
             symbol,
             side,
             price,
             quantity,
             status: OrderExecutionStatus::Commit,
-            submit_time: 0,
-            create_time: 0,
-            ack_time: 0,
-            filled_time: 0,
-            end_time: 0,
             cumulative_filled_quantity: 0.0,
-            hedged_quantily: 0.0,
-            hedged_filled_quantity: 0.0,
             exchange_order_id: None,
-            update_event_times: Vec::new(),
-            pending_counted: order_type.is_limit(),
-            cancel_requested: false,
+            timestamp: OrderTimeStamp::new(),
         }
     }
 
@@ -555,40 +497,25 @@ impl Order {
         }
         self.status = status;
     }
-    /// 更新订单累计成交量
-    pub fn update_cumulative_filled_quantity(&mut self, qty: f64) {
-        self.cumulative_filled_quantity = qty;
-        self.hedged_quantily = self.quantity - self.cumulative_filled_quantity;
-    }
-
-    /// 更新已对冲成交量（部分对冲使用）
-    pub fn update_hedged_filled_quantity(&mut self, qty: f64) {
-        self.hedged_filled_quantity = qty;
-    }
 
     /// 设置提交时间
     pub fn set_submit_time(&mut self, time: i64) {
-        self.submit_time = time;
+        self.timestamp.submit_t = time;
     }
 
     /// 设置执行时间
     pub fn set_create_time(&mut self, time: i64) {
-        self.record_exchange_create(time);
-    }
-
-    /// 设置确认时间
-    pub fn set_ack_time(&mut self, time: i64) {
-        self.ack_time = time;
+        self.timestamp.create_t = time;
     }
 
     /// 设置成交时间
     pub fn set_filled_time(&mut self, time: i64) {
-        self.filled_time = time;
+        self.timestamp.filled_t = time;
     }
 
     /// 设置结束时间
     pub fn set_end_time(&mut self, time: i64) {
-        self.end_time = time;
+        self.timestamp.end_t = time;
     }
 
     pub fn set_exchange_order_id(&mut self, exchange_order_id: i64) {
@@ -596,20 +523,67 @@ impl Order {
             self.exchange_order_id = Some(exchange_order_id);
         }
     }
-
-    pub fn record_exchange_create(&mut self, time: i64) {
-        if time > 0 && self.create_time == 0 {
-            self.create_time = time;
+    
+    pub fn get_order_cancel_bytes(&self) -> Result<Bytes, String> {
+        let now = get_timestamp_us();
+        match self.venue {
+            TradingVenue::BinanceMargin => {
+                // 使用 origClientOrderId 以客户端订单ID撤单；当前未保存交易所 orderId
+                let params = Bytes::from(format!("symbol={}&origClientOrderId={}", self.symbol, self.client_order_id));
+                let request: BinanceCancelMarginOrderRequest = BinanceCancelMarginOrderRequest::create(now, self.client_order_id, params);
+                return Ok(request.to_bytes())
+            }
+            TradingVenue::BinanceUm => {
+                let params = Bytes::from(format!("symbol={}&origClientOrderId={}", self.symbol, self.client_order_id));
+                let request: BinanceCancelUMOrderRequest = BinanceCancelUMOrderRequest::create(now, self.client_order_id, params);
+                return Ok(request.to_bytes())
+            }
+            _ => Err(format!("Unsupported trading venue: {:?}", self.venue))
         }
     }
 
-    pub fn record_exchange_update(&mut self, time: i64) {
-        if time <= 0 {
-            return;
+    pub fn get_order_request_bytes(&self) -> Result<Bytes, String>{
+        match self.venue {
+            //币安的杠杆账户下单
+            TradingVenue::BinanceMargin | TradingVenue::BinanceUm => {
+                let mut params_parts = vec![
+                    format!("symbol={}", self.symbol),
+                    format!("side={}", self.side.as_str()), //下单方向确定就可以
+                    format!("type={}", self.order_type.as_str()),
+                    format!("quantity={}", format_quantity(self.quantity)),
+                    format!("newClientOrderId={}", self.client_order_id),
+                ];
+                let local_create_ts = get_timestamp_us();
+                if self.venue == TradingVenue::BinanceMargin {
+                    //margin下单不支持GTX模式，无论是否要作为maker，都是gtc
+                    if self.order_type.is_limit() {
+                        params_parts.push("timeInForce=GTC".to_string());
+                        params_parts.push(format!("price={}", format_price(self.price)));
+                    }
+                    //如果是市价单，不需要价格和tif参数
+                } else {
+                    //UM合约下单
+                    if self.order_type.is_limit(){
+                        params_parts.push("timeInForce=GTX".to_string());
+                        params_parts.push(format!("price={}", format_price(self.price)));
+                    }
+                    //改为双向持仓模式，positionSide不填写，认为是both
+                }
+                let params = Bytes::from(params_parts.join("&"));
+                if self.venue == TradingVenue::BinanceMargin {
+                    let request = BinanceNewMarginOrderRequest::create(local_create_ts, self.client_order_id, params);
+                    Ok(request.to_bytes())
+                } else {
+                    let request = BinanceNewUMOrderRequest::create(local_create_ts, self.client_order_id, params);
+                    Ok(request.to_bytes())
+                }
+            }
+            //之后在这支持别的类型下单，根据资产类型决定下单的request，统一序列化为bytes
+            _ => Err(format!("Unsupported trading venue: {:?}", self.venue))
         }
-        if self.update_event_times.last().copied() == Some(time) {
-            return;
-        }
-        self.update_event_times.push(time);
+
+            // self.order_tx
+            // .send(request.to_bytes())
+            // .map_err(|e| format!("{}: 推送 margin 开仓失败: {}", Self::strategy_name(), e))?;
     }
 }

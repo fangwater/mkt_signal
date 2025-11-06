@@ -12,7 +12,7 @@ pub struct ReqBinSingleForwardArbHedgeMM {
     pub last_executed_qty: f64,
     pub order_quantity: f64,
     pub hedge_side: Side,
-}
+} 
 
 impl ReqBinSingleForwardArbHedgeMM {
     pub fn new(

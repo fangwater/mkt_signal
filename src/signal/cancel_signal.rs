@@ -16,9 +16,6 @@ pub struct ArbCancelCtx {
     /// Hedging leg symbol
     pub hedging_symbol: [u8; 32],
 
-    /// Cancel threshold
-    pub cancel_threshold: f64,
-
     /// Trigger timestamp
     pub trigger_ts: i64,
 }
@@ -31,7 +28,6 @@ impl ArbCancelCtx {
             opening_symbol: [0u8; 32],
             hedging_leg: TradingLeg { venue: 0, bid0: 0.0, ask0: 0.0 },
             hedging_symbol: [0u8; 32],
-            cancel_threshold: 0.0,
             trigger_ts: 0,
         }
     }
@@ -79,8 +75,7 @@ impl SignalBytes for ArbCancelCtx {
         buf.put_f64_le(self.hedging_leg.ask0);
         bytes_helper::write_fixed_bytes(&mut buf, &self.hedging_symbol);
 
-        // Cancel parameters
-        buf.put_f64_le(self.cancel_threshold);
+        // Trigger timestamp
         buf.put_i64_le(self.trigger_ts);
 
         buf.freeze()
@@ -105,11 +100,10 @@ impl SignalBytes for ArbCancelCtx {
         let hedging_ask0 = bytes.get_f64_le();
         let hedging_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
 
-        // Cancel parameters
-        if bytes.remaining() < 8 + 8 {
-            return Err("Not enough bytes for cancel parameters".to_string());
+        // Trigger timestamp
+        if bytes.remaining() < 8 {
+            return Err("Not enough bytes for trigger timestamp".to_string());
         }
-        let cancel_threshold = bytes.get_f64_le();
         let trigger_ts = bytes.get_i64_le();
 
         Ok(Self {
@@ -125,7 +119,6 @@ impl SignalBytes for ArbCancelCtx {
                 ask0: hedging_ask0,
             },
             hedging_symbol,
-            cancel_threshold,
             trigger_ts,
         })
     }
