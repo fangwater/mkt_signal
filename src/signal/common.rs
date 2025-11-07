@@ -15,6 +15,179 @@ pub enum TradingVenue {
     OkexSpot = 5,
 }
 
+/// 订单有效期类型枚举
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TimeInForce {
+    GTC,  // Good Till Cancel - 成交为止
+    IOC,  // Immediate or Cancel - 无法立即成交的部分就撤销
+    FOK,  // Fill or Kill - 无法全部立即成交就撤销
+    GTX,  // Good Till Crossing - 成交为止，但只做 maker
+}
+
+impl TimeInForce {
+    /// 从字符串解析
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_uppercase().as_str() {
+            "GTC" => Some(TimeInForce::GTC),
+            "IOC" => Some(TimeInForce::IOC),
+            "FOK" => Some(TimeInForce::FOK),
+            "GTX" => Some(TimeInForce::GTX),
+            _ => None,
+        }
+    }
+
+    /// 转换为字符串
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TimeInForce::GTC => "GTC",
+            TimeInForce::IOC => "IOC",
+            TimeInForce::FOK => "FOK",
+            TimeInForce::GTX => "GTX",
+        }
+    }
+}
+
+/// 订单执行类型枚举
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExecutionType {
+    /// 新订单已被引擎接受
+    New,
+    /// 订单被用户取消
+    Canceled,
+    /// 保留字段，当前未使用
+    Replaced,
+    /// 新订单被拒绝（这信息只会在撤消挂单再下单中发生，下新订单被拒绝但撤消挂单请求成功）
+    Rejected,
+    /// 订单有新成交
+    Trade,
+    /// 订单已根据 Time In Force 参数的规则取消（如没有成交的 LIMIT FOK 订单或部分成交的 LIMIT IOC 订单）
+    /// 或者被交易所取消（如强平或维护期间取消的订单）
+    Expired,
+    /// 订单因 STP 触发而过期
+    TradePrevention,
+}
+
+impl ExecutionType {
+    /// 从字符串解析
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_uppercase().as_str() {
+            "NEW" => Some(ExecutionType::New),
+            "CANCELED" | "CANCELLED" => Some(ExecutionType::Canceled),
+            "REPLACED" => Some(ExecutionType::Replaced),
+            "REJECTED" => Some(ExecutionType::Rejected),
+            "TRADE" => Some(ExecutionType::Trade),
+            "EXPIRED" => Some(ExecutionType::Expired),
+            "TRADE_PREVENTION" => Some(ExecutionType::TradePrevention),
+            _ => None,
+        }
+    }
+
+    /// 转换为字符串
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ExecutionType::New => "NEW",
+            ExecutionType::Canceled => "CANCELED",
+            ExecutionType::Replaced => "REPLACED",
+            ExecutionType::Rejected => "REJECTED",
+            ExecutionType::Trade => "TRADE",
+            ExecutionType::Expired => "EXPIRED",
+            ExecutionType::TradePrevention => "TRADE_PREVENTION",
+        }
+    }
+
+    /// 检查是否为成交事件
+    pub fn is_trade(&self) -> bool {
+        matches!(self, ExecutionType::Trade)
+    }
+
+    /// 检查订单是否已结束（不会再有更新）
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            ExecutionType::Canceled
+                | ExecutionType::Rejected
+                | ExecutionType::Expired
+                | ExecutionType::TradePrevention
+        )
+    }
+}
+
+/// 订单状态枚举
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OrderStatus {
+    /// 新订单，已被交易引擎接受
+    New,
+    /// 部分成交
+    PartiallyFilled,
+    /// 完全成交
+    Filled,
+    /// 订单被取消
+    Canceled,
+    /// 订单过期（根据 Time In Force 规则）
+    Expired,
+    /// 订单在撮合时过期
+    ExpiredInMatch,
+}
+
+impl OrderStatus {
+    /// 从字符串解析
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_uppercase().as_str() {
+            "NEW" => Some(OrderStatus::New),
+            "PARTIALLY_FILLED" => Some(OrderStatus::PartiallyFilled),
+            "FILLED" => Some(OrderStatus::Filled),
+            "CANCELED" | "CANCELLED" => Some(OrderStatus::Canceled),
+            "EXPIRED" => Some(OrderStatus::Expired),
+            "EXPIRED_IN_MATCH" => Some(OrderStatus::ExpiredInMatch),
+            _ => None,
+        }
+    }
+
+    /// 转换为字符串
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            OrderStatus::New => "NEW",
+            OrderStatus::PartiallyFilled => "PARTIALLY_FILLED",
+            OrderStatus::Filled => "FILLED",
+            OrderStatus::Canceled => "CANCELED",
+            OrderStatus::Expired => "EXPIRED",
+            OrderStatus::ExpiredInMatch => "EXPIRED_IN_MATCH",
+        }
+    }
+
+    /// 检查订单是否已完成（终态）
+    pub fn is_finished(&self) -> bool {
+        matches!(
+            self,
+            OrderStatus::Filled
+                | OrderStatus::Canceled
+                | OrderStatus::Expired
+                | OrderStatus::ExpiredInMatch
+        )
+    }
+
+    /// 检查订单是否部分成交
+    pub fn is_partially_filled(&self) -> bool {
+        matches!(self, OrderStatus::PartiallyFilled)
+    }
+
+    /// 检查订单是否已成交（完全或部分）
+    pub fn has_filled(&self) -> bool {
+        matches!(
+            self,
+            OrderStatus::PartiallyFilled | OrderStatus::Filled
+        )
+    }
+
+    /// 检查订单是否为活跃状态（可能有后续更新）
+    pub fn is_active(&self) -> bool {
+        matches!(
+            self,
+            OrderStatus::New | OrderStatus::PartiallyFilled
+        )
+    }
+}
+
 fn to_fraction(value: f64) -> Option<(i64, i64)> {
     if !value.is_finite() || value <= 0.0 {
         return None;

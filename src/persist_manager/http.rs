@@ -617,7 +617,7 @@ fn build_parquet_hedge_mt(
         Series::new("record_ts_us".into(), record_ts_col),
         Series::new("client_order_id".into(), client_order_id_col),
         Series::new("hedge_qty".into(), hedge_qty_col),
-    ];
+    ]; 
 
     let mut df = DataFrame::new(columns)?;
     let mut buf = Vec::new();
@@ -664,10 +664,10 @@ fn build_parquet_hedge_mm(
         client_order_id_col.push(ctx.client_order_id); 
         hedge_qty_col.push(ctx.hedge_qty); 
         hedge_side_col.push(ctx.hedge_side.as_str().to_string()); 
-        limit_price_col.push(ctx.limit_price);
-        price_tick_col.push(ctx.price_tick);
-        maker_only_col.push(ctx.maker_only);
-        exp_time_col.push(ctx.exp_time);
+        limit_price_col.push(ctx.limit_price); 
+        price_tick_col.push(ctx.price_tick); 
+        maker_only_col.push(ctx.maker_only); 
+        exp_time_col.push(ctx.exp_time); 
         spot_bid_col.push(ctx.spot_bid_price);
         spot_ask_col.push(ctx.spot_ask_price);
         spot_ts_col.push(ctx.spot_ts);
@@ -694,7 +694,7 @@ fn build_parquet_hedge_mm(
         Series::new("fut_bid_price".into(), fut_bid_col),
         Series::new("fut_ask_price".into(), fut_ask_col),
         Series::new("fut_ts".into(), fut_ts_col),
-    ];
+    ]; 
 
     let mut df = DataFrame::new(columns)?;
     let mut buf = Vec::new();

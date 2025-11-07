@@ -31,8 +31,7 @@ pub struct HedgeArbStrategy {
     pub open_order_id: i64, //开仓单唯一，报多单对应多个Strategy
     pub hedge_order_ids: Vec<i64>, //对冲单会产生一个or多个，因为部分成交
     pub open_timeout_us: Option<i64>, //开仓单最长挂单时间，超过撤销
-    pub hedge_timeout_us: Option<i64>, //对冲单最长挂单时间，超过撤销
-    pub hedge_order_type: Option<OrderType>, //对冲单类型
+    pub hedge_timeout_us: Option<i64>, //对冲单最长挂单时间，超过撤销，度过是maker-taker模式，则没有这个timeout，设置为None
     pub order_seq: u32, //订单号计数器
     pub pre_trade_env: Rc<PreTradeEnv>, //预处理global变量封装
     pub cumulative_hedged_qty: f64, //累计对冲数量
@@ -47,7 +46,6 @@ impl HedgeArbStrategy {
         env: Rc<PreTradeEnv>,
         open_timeout_us: Option<i64>,
         hedge_timeout_us: Option<i64>,
-        hedge_order_type: Option<OrderType>       
     ) -> Self {
         let strategy = Self {
             strategy_id: id,
@@ -56,7 +54,6 @@ impl HedgeArbStrategy {
             hedge_order_ids: Vec::new(),
             open_timeout_us,
             hedge_timeout_us,
-            hedge_order_type,
             order_seq: 0,
             pre_trade_env: env.clone(),
             cumulative_hedged_qty: 0.0,
@@ -280,7 +277,6 @@ impl HedgeArbStrategy {
         } else {
             OrderType::Market  // Taker订单使用市价单
         };
-        self.hedge_order_type = Some(order_type);
 
         // 获取对冲方向
         let hedge_side = ctx.get_side().ok_or_else(|| {
@@ -496,7 +492,6 @@ impl HedgeArbStrategy {
     }
 
     // 处理开仓测，超过最长挂单时间
-    // 如果是maker-taker模式，成交后，会立刻下发对冲。
     fn handle_open_leg_timeout(&mut self) {
         // 检查是否设置了超时时间，并且已经超时
         if let Some(timeout_us) = self.open_timeout_us {
@@ -685,15 +680,11 @@ impl HedgeArbStrategy {
     }
 }
 
-impl Drop for BinSingleForwardArbStrategyMT {
+impl Drop for HedgeArbStrategy {
     fn drop(&mut self) {
         self.log_lifecycle_summary("生命周期结束");
         self.cleanup_strategy_orders();
-        debug!(
-            "{}: strategy_id={} 生命周期结束，相关订单已回收",
-            Self::strategy_name(),
-            self.strategy_id
-        );
+        debug!("trategy_id={} 生命周期结束，相关订单已回收", self.strategy_id);
     }
 }
 

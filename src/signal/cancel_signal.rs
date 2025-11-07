@@ -37,7 +37,7 @@ impl ArbCancelCtx {
         let bytes = symbol.as_bytes();
         let len = bytes.len().min(32);
         self.opening_symbol[..len].copy_from_slice(&bytes[..len]);
-    }
+    } 
 
     /// Get opening leg symbol
     pub fn get_opening_symbol(&self) -> String {
