@@ -58,7 +58,7 @@ impl OrderUpdate for ExecutionReportMsg {
         self.last_executed_quantity
     }
 
-    fn cumulative_qty(&self) -> f64 {
+    fn cumulative_filled_quantity(&self) -> f64 {
         self.cumulative_filled_quantity
     }
 
@@ -132,6 +132,10 @@ impl TradeUpdate for ExecutionReportMsg {
     fn realized_pnl(&self) -> f64 {
         // 现货/杠杆没有已实现盈亏
         0.0
+    }
+
+    fn cumulative_filled_quantity(&self) -> f64 {
+        self.cumulative_filled_quantity
     }
 
     fn trading_venue(&self) -> TradingVenue {

@@ -59,7 +59,7 @@ impl ArbCancelCtx {
     }
 }
 
-impl SignalBytes for ArbCancelCtx {
+ impl SignalBytes for ArbCancelCtx {
     fn to_bytes(&self) -> Bytes {
         let mut buf = BytesMut::new();
 

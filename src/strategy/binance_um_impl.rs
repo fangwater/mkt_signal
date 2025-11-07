@@ -54,10 +54,9 @@ impl OrderUpdate for OrderTradeUpdateMsg {
         self.last_executed_quantity
     }
 
-    fn cumulative_qty(&self) -> f64 {
+    fn cumulative_filled_quantity(&self) -> f64 {
         self.cumulative_filled_quantity
     }
-    
 
     fn status(&self) -> OrderStatus {
         OrderStatus::from_str(&self.order_status).unwrap_or(OrderStatus::New)
@@ -130,6 +129,10 @@ impl TradeUpdate for OrderTradeUpdateMsg {
         // 现货/杠杆没有已实现盈亏
         self.realized_profit
     }
+    fn cumulative_filled_quantity(&self) -> f64 {
+        self.cumulative_filled_quantity
+    }
+
     fn trading_venue(&self) -> TradingVenue {
         // OrderTradeUpdate 消息类型对应 BinanceUm
         TradingVenue::BinanceUm

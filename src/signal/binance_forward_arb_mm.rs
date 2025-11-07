@@ -2054,8 +2054,6 @@ impl BinSingleForwardArbStrategyMM {
         }
     }
 
-
-
     fn next_order_id(&mut self) -> i64 {
         let seq = self.order_seq;
         self.order_seq = self.order_seq.wrapping_add(1);
@@ -2429,7 +2427,7 @@ impl Strategy for BinSingleForwardArbStrategyMM {
                                         status.as_str(),
                                         outcome.body
                                     );
-                                }
+                                } 
                             } else {
                                 debug!(
                                     "{}: strategy_id={} 收到未知 margin 订单回执 client_order_id={} status={}",

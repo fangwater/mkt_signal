@@ -33,7 +33,7 @@ pub trait OrderUpdate {
     fn last_time_executed_qty(&self) -> f64;
 
     /// 获取累计成交数量
-    fn cumulative_qty(&self) -> f64;
+    fn cumulative_filled_quantity(&self) -> f64;
 
     /// 获取订单状态
     fn status(&self) -> OrderStatus;
@@ -47,11 +47,6 @@ pub trait OrderUpdate {
     /// 辅助方法：检查订单是否已完成（成交或取消）
     fn is_order_finished(&self) -> bool {
         self.status().is_finished()
-    }
-
-    /// 辅助方法：计算剩余未成交数量
-    fn remaining_qty(&self) -> f64 {
-        self.quantity() - self.cumulative_qty()
     }
 }
 

@@ -83,7 +83,7 @@ struct RawSpotBalance {
     update_time: i64,
     #[serde(rename = "negativeBalance", default)]
     negative_balance: String,
-}
+} 
 
 impl TryFrom<RawSpotBalance> for BinanceSpotBalance {
     type Error = anyhow::Error;

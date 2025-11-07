@@ -74,8 +74,12 @@ pub trait TradeUpdate {
         self.price() * self.quantity()
     }
 
+    fn cumulative_filled_quantity(&self) -> f64;
+
     /// 辅助方法：检查是否为有效成交 (trade_id > 0)
     fn is_valid_trade(&self) -> bool {
         self.trade_id() > 0
     }
+
+    
 }
