@@ -142,4 +142,8 @@ impl TradeUpdate for ExecutionReportMsg {
         // ExecutionReport 消息类型对应 BinanceMargin
         TradingVenue::BinanceMargin
     }
+
+    fn order_status(&self) -> Option<OrderStatus> {
+        OrderStatus::from_str(&self.order_status)
+    }
 }

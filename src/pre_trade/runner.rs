@@ -1689,9 +1689,9 @@ fn dispatch_execution_report(ctx: &mut RuntimeContext, report: &ExecutionReportM
             if strategy.is_strategy_order(order_id) {
                 matched = true;
                 strategy.handle_binance_margin_order_update(report);
-            }
-        });
-    }
+            } 
+        }); 
+    } 
 
     if !matched {
         let expected_strategy_id = (order_id >> 32) as i32;

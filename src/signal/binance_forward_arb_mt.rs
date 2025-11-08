@@ -159,7 +159,7 @@ impl HedgeArbStrategy {
         self.cancel_pending.set(true);
         self.cancel_pending_since_us.set(Some(get_timestamp_us()));
         if let Ok(mut flags) = self.period_log_flags.try_borrow_mut() {
-            flags.cancel_pending_logged = false;
+            flags.cancel_pending_logged = false;-
         }
     }
 

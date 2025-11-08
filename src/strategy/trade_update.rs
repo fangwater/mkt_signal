@@ -1,5 +1,5 @@
 use crate::pre_trade::order_manager::Side;
-use crate::signal::common::TradingVenue;
+use crate::signal::common::{OrderStatus, TradingVenue};
 
 /// 成交更新trait - 提供成交信息的通用接口
 ///
@@ -81,5 +81,7 @@ pub trait TradeUpdate {
         self.trade_id() > 0
     }
 
+    // 成交单状态，即对应的额order_status
+    fn order_status(&self) -> Option<OrderStatus>;
     
 }

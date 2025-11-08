@@ -2355,13 +2355,13 @@ fn to_fraction(value: f64) -> Option<(i64, i64)> {
 
 impl Strategy for BinSingleForwardArbStrategyMM {
     fn get_id(&self) -> i32 {
-        self.strategy_id
+        self.strategy_id 
     } 
 
     fn symbol(&self) -> Option<&str> {
         Some(&self.symbol)
     } 
-
+    
     fn is_strategy_order(&self, order_id: i64) -> bool {
         ((order_id >> 32) as i32) == self.strategy_id
     } 

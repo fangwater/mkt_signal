@@ -166,13 +166,13 @@ impl ArbHedgeCtx {
                 // 卖出（做空）时使用 ask0，挂在卖盘最优价
                 // 这样不会立即成交，而是等待买方来成交我们的订单
                 self.hedging_leg.ask0
-            }
+            } 
             None => {
                 // 如果无法确定方向，默认返回 bid0
                 // 这种情况通常不应该发生
                 self.hedging_leg.bid0
-            }
-        }
+            } 
+        } 
     }
 }
 
@@ -247,3 +247,111 @@ impl SignalBytes for ArbHedgeCtx {
         })
     }
 }
+
+/// Query message for requesting hedge order pricing from upstream model
+/// Used for limit order strategies where upstream decides the limit price
+#[derive(Debug, Clone)]
+pub struct ArbHedgeSignalQueryMsg {
+    /// Strategy ID that needs hedging
+    pub strategy_id: i32,
+
+    /// Client order ID for tracking
+    pub client_order_id: i64,
+
+    /// Query timestamp (microseconds)
+    pub query_time: i64,
+
+    /// Hedge quantity
+    pub hedge_qty: f64,
+
+    /// Hedge side (Buy/Sell) - stored as u8
+    pub hedge_side: u8,
+
+    /// Trading venue (exchange and type) - stored as u8
+    pub venue: u8,
+}
+
+impl ArbHedgeSignalQueryMsg {
+    /// Create new query message
+    pub fn new(
+        strategy_id: i32,
+        client_order_id: i64,
+        query_time: i64,
+        hedge_qty: f64,
+        hedge_side: u8,
+        venue: u8,
+    ) -> Self {
+        Self {
+            strategy_id,
+            client_order_id,
+            query_time,
+            hedge_qty,
+            hedge_side,
+            venue,
+        }
+    }
+
+    /// Get Side enum
+    pub fn get_side(&self) -> Option<Side> {
+        Side::from_u8(self.hedge_side)
+    }
+
+    /// Set Side
+    pub fn set_side(&mut self, side: Side) {
+        self.hedge_side = side.to_u8();
+    }
+
+    /// Serialize to bytes
+    pub fn to_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
+        buf.put_i32_le(self.strategy_id);
+        buf.put_i64_le(self.client_order_id);
+        buf.put_i64_le(self.query_time);
+        buf.put_f64_le(self.hedge_qty);
+        buf.put_u8(self.hedge_side);
+        buf.put_u8(self.venue);
+        buf.freeze()
+    }
+
+    /// Deserialize from bytes
+    pub fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
+        if bytes.remaining() < 4 {
+            return Err("insufficient bytes for strategy_id".into());
+        }
+        let strategy_id = bytes.get_i32_le();
+
+        if bytes.remaining() < 8 {
+            return Err("insufficient bytes for client_order_id".into());
+        }
+        let client_order_id = bytes.get_i64_le();
+
+        if bytes.remaining() < 8 {
+            return Err("insufficient bytes for query_time".into());
+        }
+        let query_time = bytes.get_i64_le();
+
+        if bytes.remaining() < 8 {
+            return Err("insufficient bytes for hedge_qty".into());
+        }
+        let hedge_qty = bytes.get_f64_le();
+
+        if bytes.remaining() < 1 {
+            return Err("insufficient bytes for hedge_side".into());
+        }
+        let hedge_side = bytes.get_u8();
+
+        if bytes.remaining() < 1 {
+            return Err("insufficient bytes for venue".into());
+        }
+        let venue = bytes.get_u8();
+
+        Ok(Self {
+            strategy_id,
+            client_order_id,
+            query_time,
+            hedge_qty,
+            hedge_side,
+            venue,
+        })
+    }
+} 

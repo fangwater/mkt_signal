@@ -137,5 +137,9 @@ impl TradeUpdate for OrderTradeUpdateMsg {
         // OrderTradeUpdate 消息类型对应 BinanceUm
         TradingVenue::BinanceUm
     }
+
+    fn order_status(&self) -> Option<OrderStatus>{
+        OrderStatus::from_str(&self.order_status)
+    }
 }
 

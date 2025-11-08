@@ -1,5 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::collections::HashMap;
 
 use bytes::{Bytes};
 use log::{debug,warn};
@@ -384,8 +385,10 @@ impl RiskChecker {
 pub struct PreTradeEnv {
     pub min_qty_table: std::rc::Rc<MinQtyTable>, //最小下单量维护，用于修证下单
     pub signal_tx: Option<UnboundedSender<Bytes>>, //预处理信号队列，对冲信号有些从策略发送，需要维护一份sender端作为copy
+    pub signal_query_tx: Option<UnboundedSender<Bytes>>, //查询信号队列，用于请求上游模型决策挂单价格
     pub trade_request_tx: UnboundedSender<Bytes>, //交易请求发送器，发送订单到交易引擎
     pub risk_checker: RiskChecker,
+    pub hedge_residual_map: Rc<RefCell<HashMap<(String, TradingVenue), f64>>>, //对冲残余量哈希表，key=(symbol, venue)，value=残余量
 }
 
 impl PreTradeEnv {
@@ -393,14 +396,17 @@ impl PreTradeEnv {
     pub fn new(
         min_qty_table: Rc<MinQtyTable>,
         signal_tx: Option<UnboundedSender<Bytes>>,
+        signal_query_tx: Option<UnboundedSender<Bytes>>,
         trade_request_tx: UnboundedSender<Bytes>,
         risk_checker: RiskChecker,
     ) -> Self {
         Self {
             min_qty_table,
             signal_tx,
+            signal_query_tx,
             trade_request_tx,
             risk_checker,
+            hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
@@ -494,5 +500,98 @@ impl PreTradeEnv {
         }
 
         Ok(())
+    }
+
+    /// 增加对冲残余量
+    ///
+    /// # Arguments
+    /// * `symbol` - 交易对符号
+    /// * `venue` - 交易场所
+    /// * `delta` - 要增加的残余量
+    pub fn inc_hedge_residual(&self, symbol: String, venue: TradingVenue, delta: f64) {
+        if delta <= 1e-12 {
+            return;
+        }
+        let mut map = self.hedge_residual_map.borrow_mut();
+        let key = (symbol.to_uppercase(), venue);
+        let current = map.get(&key).copied().unwrap_or(0.0);
+        let new_value = current + delta;
+        map.insert(key.clone(), new_value);
+        debug!(
+            "对冲残余量增加: symbol={} venue={:?} delta={:.8} 当前值={:.8} -> {:.8}",
+            key.0, venue, delta, current, new_value
+        );
+    }
+
+    /// 减少对冲残余量
+    ///
+    /// # Arguments
+    /// * `symbol` - 交易对符号
+    /// * `venue` - 交易场所
+    /// * `delta` - 要减少的残余量
+    ///
+    /// # Returns
+    /// 实际减少的量（不会超过当前残余量）
+    pub fn dec_hedge_residual(&self, symbol: String, venue: TradingVenue, delta: f64) -> f64 {
+        if delta <= 1e-12 {
+            return 0.0;
+        }
+        let mut map = self.hedge_residual_map.borrow_mut();
+        let key = (symbol.to_uppercase(), venue);
+        let current = map.get(&key).copied().unwrap_or(0.0);
+        let actual_dec = delta.min(current);
+        let new_value = (current - actual_dec).max(0.0);
+
+        if new_value <= 1e-12 {
+            // 残余量归零，从 map 中移除
+            map.remove(&key);
+            debug!(
+                "对冲残余量清零: symbol={} venue={:?} 原值={:.8} 减少={:.8}",
+                key.0, venue, current, actual_dec
+            );
+        } else {
+            map.insert(key.clone(), new_value);
+            debug!(
+                "对冲残余量减少: symbol={} venue={:?} delta={:.8} 当前值={:.8} -> {:.8}",
+                key.0, venue, actual_dec, current, new_value
+            );
+        }
+
+        actual_dec
+    }
+
+    /// 查询对冲残余量
+    ///
+    /// # Arguments
+    /// * `symbol` - 交易对符号
+    /// * `venue` - 交易场所
+    ///
+    /// # Returns
+    /// 当前的残余量，如果不存在则返回 0.0
+    pub fn get_hedge_residual(&self, symbol: &str, venue: TradingVenue) -> f64 {
+        let map = self.hedge_residual_map.borrow();
+        let key = (symbol.to_uppercase(), venue);
+        map.get(&key).copied().unwrap_or(0.0)
+    }
+
+    /// 清除指定 symbol 和 venue 的对冲残余量
+    ///
+    /// # Arguments
+    /// * `symbol` - 交易对符号
+    /// * `venue` - 交易场所
+    ///
+    /// # Returns
+    /// 被清除的残余量
+    pub fn clear_hedge_residual(&self, symbol: &str, venue: TradingVenue) -> f64 {
+        let mut map = self.hedge_residual_map.borrow_mut();
+        let key = (symbol.to_uppercase(), venue);
+        let removed = map.remove(&key).unwrap_or(0.0);
+        if removed > 1e-12 {
+            debug!(
+                "对冲残余量清除: symbol={} venue={:?} 清除量={:.8}",
+                key.0, venue, removed
+            );
+        }
+        removed
     }
 }
