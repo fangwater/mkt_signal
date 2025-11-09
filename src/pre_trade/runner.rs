@@ -20,13 +20,14 @@ use crate::pre_trade::event::AccountEvent;
 use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
 use crate::signal::channels::SIGNAL_CHANNEL_MM_ARBITRAGE_BACKWARD;
-use crate::signal::mm_backward::ReqBinSingleForwardArbHedgeMM;
+use crate::signal::common::ExecutionType;
 use crate::signal::record::{SignalRecordMessage, PRE_TRADE_SIGNAL_RECORD_CHANNEL};
 use crate::signal::resample::{
     PreTradeExposureResampleEntry, PreTradeExposureRow, PreTradePositionResampleEntry,
     PreTradeRiskResampleEntry, PreTradeSpotBalanceRow, PreTradeUmPositionRow,
     PRE_TRADE_EXPOSURE_CHANNEL, PRE_TRADE_POSITIONS_CHANNEL, PRE_TRADE_RISK_CHANNEL,
 };
+use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::{Strategy, StrategyManager};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::trade_engine::trade_response_handle::TradeExecOutcome;
@@ -133,7 +134,6 @@ impl PreTrade {
         loop {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {
-                    runtime.shutdown_tasks().await;
                     break;
                 }
                 Some(evt) = account_rx.recv() => {
@@ -315,8 +315,6 @@ struct RuntimeContext {
     next_params_refresh: std::time::Instant,
     params_refresh_secs: u64,
     last_params_snapshot: Option<PreTradeParamsSnap>,
-    strategy_activity: bool,
-    ladder_cancel_activity: bool,
 }
 
 impl RuntimeContext {
@@ -379,27 +377,14 @@ impl RuntimeContext {
             next_params_refresh: std::time::Instant::now(),
             params_refresh_secs: 30,
             last_params_snapshot: None,
-            strategy_activity: false,
-            ladder_cancel_activity: false,
         }
     }
 
-    async fn shutdown_tasks(&mut self) {
-        // no-op: persistent store removed
-    }
 
     fn cleanup_inactive(&mut self) {}
 
-    fn insert_strategy(&mut self, symbol: String, strategy: Box<dyn Strategy>) {
-        let strategy_id = strategy.get_id();
+    fn insert_strategy(&mut self, strategy: Box<dyn Strategy>) {
         self.strategy_mgr.insert(strategy);
-        self.strategy_activity = true;
-        debug!(
-            "strategy inserted: strategy_id={} symbol={} active_total={}",
-            strategy_id,
-            symbol,
-            self.strategy_mgr.len()
-        );
     }
 
     fn publish_signal_record(&self, record: &SignalRecordMessage) {
@@ -434,7 +419,6 @@ impl RuntimeContext {
 
     fn remove_strategy(&mut self, strategy_id: i32) {
         self.strategy_mgr.remove(strategy_id);
-        self.strategy_activity = true;
     }
 
     fn with_strategy_mut<F>(&mut self, strategy_id: i32, mut f: F)
@@ -458,6 +442,27 @@ impl RuntimeContext {
 
     fn signal_sender(&self) -> UnboundedSender<Bytes> {
         self.signal_tx.clone()
+    }
+
+    fn get_pre_trade_env(&self) -> Rc<crate::strategy::risk_checker::PreTradeEnv> {
+        let risk_checker = crate::strategy::risk_checker::RiskChecker::new(
+            self.exposure_manager.clone(),
+            self.order_manager.clone(),
+            self.price_table.clone(),
+            self.strategy_params.max_symbol_exposure_ratio,
+            self.strategy_params.max_total_exposure_ratio,
+            self.strategy_params.max_pos_u,
+            self.strategy_params.max_leverage,
+            self.max_pending_limit_orders.clone(),
+        );
+
+        Rc::new(crate::strategy::risk_checker::PreTradeEnv::new(
+            self.min_qty_table.clone(),
+            Some(self.signal_tx.clone()),
+            None, // signal_query_tx 暂时不需要
+            self.order_tx.clone(),
+            risk_checker,
+        ))
     }
 
     fn refresh_exposures(&mut self) {
@@ -499,13 +504,8 @@ impl RuntimeContext {
     async fn tick(&mut self) {
         let tick_start = std::time::Instant::now();
         let now = get_timestamp_us();
-        let active_before = self.strategy_mgr.len();
-        let inspected = self.strategy_mgr.handle_period_clock(now);
+        self.strategy_mgr.handle_period_clock(now);
         self.cleanup_inactive();
-        let active_after = self.strategy_mgr.len();
-        if active_before != active_after {
-            self.strategy_activity = true;
-        }
         let instant_now = std::time::Instant::now();
         let mut params_refreshed = false;
         if instant_now >= self.next_params_refresh {
@@ -538,28 +538,7 @@ impl RuntimeContext {
                     } 
                 } 
                 self.next_resample += self.resample_interval;
-            } 
-        } 
-
-        let elapsed_ms = tick_start.elapsed().as_secs_f64() * 1000.0;
-        let strategy_activity =
-            self.strategy_activity && (inspected > 0 || active_before != active_after);
-        let ladder_activity = self.ladder_cancel_activity;
-        let activity_detected = strategy_activity || ladder_activity;
-        self.strategy_activity = false;
-        self.ladder_cancel_activity = false;
-        if activity_detected {
-            debug!(
-                "pre_trade period tick: inspected={} active_before={} active_after={} params_refreshed={} resample_entries={} elapsed_ms={:.2} strategy_activity={} ladder_cancel_activity={}",
-                inspected,
-                active_before,
-                active_after,
-                params_refreshed,
-                resample_published,
-                elapsed_ms,
-                strategy_activity,
-                ladder_activity
-            );
+            }
         }
     }
 }
@@ -1014,7 +993,7 @@ fn spawn_trade_response_listener(
             loop {
                 match subscriber.receive() {
                     Ok(Some(sample)) => {
-                        let raw = trim_payload(sample.payload());
+                        let raw = Bytes::copy_from_slice(sample.payload());
                         if raw.is_empty() {
                             continue;
                         }
@@ -1087,7 +1066,7 @@ fn spawn_signal_listeners(cfg: &SignalSubscriptionsCfg) -> Result<UnboundedRecei
                 loop {
                     match subscriber.receive() {
                         Ok(Some(sample)) => {
-                            let payload = trim_payload(sample.payload());
+                            let payload = Bytes::copy_from_slice(sample.payload());
                             if payload.is_empty() {
                                 continue;
                             }
@@ -1327,39 +1306,91 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
 }
 
 fn handle_trade_engine_response(ctx: &mut RuntimeContext, outcome: TradeExecOutcome) {
-    let strategy_ids: Vec<i32> = ctx.strategy_mgr.iter_ids().cloned().collect();
-    for strategy_id in strategy_ids {
-        ctx.with_strategy_mut(strategy_id, |strategy| {
-            if strategy.is_strategy_order(outcome.client_order_id) {
-                strategy.handle_trade_response(&outcome);
-            } 
-        }); 
-    } 
-
-    ctx.cleanup_inactive(); 
+    //暂时不处理TradeExec 只观察http响应的正确性
+    match outcome.status {
+        200 => {
+            // 成功响应，不打印日志
+        }
+        403 => {
+            warn!(
+                "WAF Limit violated: exchange={:?} req_type={:?} cli_ord_id={} body={}",
+                outcome.exchange,
+                outcome.req_type,
+                outcome.client_order_id,
+                outcome.body
+            );
+        }
+        418 => {
+            warn!(
+                "IP auto-banned for continuing requests after 429: exchange={:?} req_type={:?} cli_ord_id={} body={}",
+                outcome.exchange,
+                outcome.req_type,
+                outcome.client_order_id,
+                outcome.body
+            );
+        }
+        429 => {
+            warn!(
+                "Request rate limit exceeded: exchange={:?} req_type={:?} cli_ord_id={} ip_weight={:?} order_count={:?} body={}",
+                outcome.exchange,
+                outcome.req_type,
+                outcome.client_order_id,
+                outcome.ip_used_weight_1m,
+                outcome.order_count_1m,
+                outcome.body
+            );
+        }
+        503 => {
+            warn!(
+                "Service unavailable (503): exchange={:?} req_type={:?} cli_ord_id={} body={}",
+                outcome.exchange,
+                outcome.req_type,
+                outcome.client_order_id,
+                outcome.body
+            );
+        }
+        400..=499 => {
+            warn!(
+                "Client error (4xx): status={} exchange={:?} req_type={:?} cli_ord_id={} body={}",
+                outcome.status,
+                outcome.exchange,
+                outcome.req_type,
+                outcome.client_order_id,
+                outcome.body
+            );
+        }
+        500..=599 => {
+            warn!(
+                "Server error (5xx): status={} exchange={:?} req_type={:?} cli_ord_id={} body={}",
+                outcome.status,
+                outcome.exchange,
+                outcome.req_type,
+                outcome.client_order_id,
+                outcome.body
+            );
+        }
+        _ => {
+            warn!(
+                "Unexpected HTTP status: status={} exchange={:?} req_type={:?} cli_ord_id={} body={}",
+                outcome.status,
+                outcome.exchange,
+                outcome.req_type,
+                outcome.client_order_id,
+                outcome.body
+            );
+        }
+    }
 } 
 
 fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
-    let raw_signal = signal.to_bytes();
-    let is_ladder_cancel = matches!(
-        signal.signal_type,
-        SignalType::BinSingleForwardArbCancelMT | SignalType::BinSingleForwardArbCancelMM
-    );
-    if !is_ladder_cancel {
-        debug!(
-            "trade signal received: type={:?} generation_time={} ctx_len={}",
-            signal.signal_type,
-            signal.generation_time,
-            signal.context.len()
-        ); 
-    } 
+    let raw_signal: Bytes = signal.to_bytes();
     match signal.signal_type {
-        SignalType::BinSingleForwardArbOpenMT => {
+        SignalType::ArbOpen => {
             match BinSingleForwardArbOpenCtx::from_bytes(signal.context.clone()) {
                 Ok(open_ctx) => {
                     let symbol = open_ctx.spot_symbol.to_uppercase();
                     debug!(
-                        "decoded open ctx: spot_symbol={} futures_symbol={} amount={} price={:.8} exp_time_us={}",
+                        "decoded MM open ctx: spot_symbol={} futures_symbol={} amount={} price={:.8} exp_time_us={}",
                         open_ctx.spot_symbol,
                         open_ctx.futures_symbol,
                         open_ctx.amount,
@@ -1375,7 +1406,8 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                         };
                         if current_limit >= max_limit {
                             warn!(
-                                "BinSingleForwardArbStrategyMT: symbol={} 当前限价挂单数={} 已达到上限 {}，忽略开仓信号",
+                                "{}: symbol={} 当前限价挂单数={} 已达到上限 {}，忽略开仓信号",
+                                BinSingleForwardArbStrategyMM::strategy_name(),
                                 symbol,
                                 current_limit,
                                 max_limit
@@ -1384,12 +1416,12 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                         }
                     }
 
-                    let strategy_id = StrategyManager::generate_strategy_id(1);
+                    let strategy_id = StrategyManager::generate_strategy_id(3);
                     let order_tx = ctx.order_sender();
                     let signal_tx = ctx.signal_sender();
                     let now = get_timestamp_us();
 
-                    let mut strategy = BinSingleForwardArbStrategyMT::new_open(
+                    let mut strategy = BinSingleForwardArbStrategyMM::new_open(
                         strategy_id,
                         now,
                         symbol.clone(),
@@ -1407,7 +1439,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                     strategy.set_signal_sender(signal_tx);
 
                     debug!(
-                        "strategy init for open signal: strategy_id={} symbol={} qty={:.6} price={:.8} tick={:.8} type={:?}",
+                        "MM strategy init for open signal: strategy_id={} symbol={} qty={:.6} price={:.8} tick={:.8} type={:?}",
                         strategy_id,
                         open_ctx.spot_symbol,
                         open_ctx.amount,
@@ -1419,18 +1451,21 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                     strategy.handle_trade_signal(&raw_signal);
 
                     if strategy.is_active() {
-                        ctx.insert_strategy(symbol, Box::new(strategy));
+                        ctx.insert_strategy(Box::new(strategy));
                         let record = SignalRecordMessage::new(
                             strategy_id,
-                            SignalType::BinSingleForwardArbOpenMT,
+                            SignalType::BinSingleForwardArbOpenMM,
                             open_ctx_payload.to_vec(),
                             signal.generation_time,
                         );
                         ctx.publish_signal_record(&record);
                     }
                 }
-                Err(err) => warn!("failed to decode open context: {err}"),
+                Err(err) => warn!("failed to decode MM open context: {err}"),
             }
+        }
+        SignalType::ArbClose => {
+            //
         }
         
         //响应请求，进行marker-maker开仓 
@@ -1500,7 +1535,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                     strategy.handle_trade_signal(&raw_signal);
 
                     if strategy.is_active() {
-                        ctx.insert_strategy(symbol, Box::new(strategy));
+                        ctx.insert_strategy(Box::new(strategy));
                         let record = SignalRecordMessage::new(
                             strategy_id,
                             SignalType::BinSingleForwardArbOpenMM,
@@ -1523,11 +1558,9 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
             handle_mm_backward_request(ctx, signal);
         }
         SignalType::BinSingleForwardArbCancelMT => {
-            ctx.ladder_cancel_activity = true;
             dispatch_cancel_signal(ctx, signal, raw_signal);
         }
         SignalType::BinSingleForwardArbCancelMM => {
-            ctx.ladder_cancel_activity = true;
             dispatch_cancel_signal(ctx, signal, raw_signal);
         }
     }
@@ -1681,8 +1714,34 @@ fn dispatch_execution_report(ctx: &mut RuntimeContext, report: &ExecutionReportM
         ctx.with_strategy_mut(strategy_id, |strategy| {
             if strategy.is_strategy_order(order_id) {
                 matched = true;
-                strategy.handle_binance_margin_order_update(report);
-            } 
+                match report.execution_type() {
+                    ExecutionType::New | ExecutionType::Canceled => {
+                        strategy.apply_order_update(report);
+                    }
+                    ExecutionType::Trade => {
+                        strategy.apply_trade_update(report);
+                    }
+                    ExecutionType::Expired | ExecutionType::Rejected => {
+                        warn!(
+                            "Unexpected execution type: {:?}, sym={} cli_id={} ord_id={}",
+                            report.execution_type(),
+                            report.symbol,
+                            report.client_order_id,
+                            report.order_id
+                        );
+                        strategy.apply_order_update(report);
+                    }
+                    _ => {
+                        error!(
+                            "Unhandled execution type: {:?}, sym={} cli_id={} ord_id={}",
+                            report.execution_type(),
+                            report.symbol,
+                            report.client_order_id,
+                            report.order_id
+                        );
+                    }
+                }
+            }
         }); 
     } 
 
@@ -1697,19 +1756,44 @@ fn dispatch_execution_report(ctx: &mut RuntimeContext, report: &ExecutionReportM
             expected_strategy_id
         );
     }
-
     ctx.cleanup_inactive(); 
 } 
 
 fn dispatch_order_trade_update(ctx: &mut RuntimeContext, update: &OrderTradeUpdateMsg) {
-    let order_id = update.client_order_id;
+    let order_id: i64 = update.client_order_id;
     let strategy_ids: Vec<i32> = ctx.strategy_mgr.iter_ids().cloned().collect();
     let mut matched = false;
     for strategy_id in strategy_ids {
         ctx.with_strategy_mut(strategy_id, |strategy| {
             if strategy.is_strategy_order(order_id) {
                 matched = true;
-                strategy.handle_binance_futures_order_update(update);
+                match update.execution_type() {
+                    ExecutionType::New | ExecutionType::Canceled => {
+                        strategy.apply_order_update(update);
+                    }
+                    ExecutionType::Trade => {
+                        strategy.apply_trade_update(update);
+                    }
+                    ExecutionType::Expired | ExecutionType::Rejected => {
+                        warn!(
+                            "Unexpected execution type: {:?}, sym={} cli_id={} ord_id={}",
+                            update.execution_type(),
+                            update.symbol,
+                            update.client_order_id,
+                            update.order_id
+                        );
+                        strategy.apply_order_update(update);
+                    }
+                    _ => {
+                        error!(
+                            "Unhandled execution type: {:?}, sym={} cli_id={} ord_id={}",
+                            update.execution_type(),
+                            update.symbol,
+                            update.client_order_id,
+                            update.order_id
+                        );
+                    }
+                }
             }
         });
     }
@@ -1725,10 +1809,6 @@ fn dispatch_order_trade_update(ctx: &mut RuntimeContext, update: &OrderTradeUpda
     ctx.cleanup_inactive();
 }
 
-fn trim_payload(payload: &[u8]) -> Bytes {
-    // 直接拷贝整个 payload，避免将结尾合法的 0 截断
-    Bytes::copy_from_slice(payload)
-}
 
 // 删除了基于 JSON 的账户元数据提取逻辑，账户事件采用二进制帧头解析
 fn signal_node_name(channel: &str) -> String {
@@ -2047,7 +2127,7 @@ async fn derivatives_loop(
     loop {
         match subscriber.receive() {
             Ok(Some(sample)) => {
-                let payload = trim_payload(sample.payload());
+                let payload = Bytes::copy_from_slice(sample.payload());
                 if payload.is_empty() {
                     continue;
                 }
