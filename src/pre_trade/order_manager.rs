@@ -341,6 +341,27 @@ impl OrderManager {
         self.orders.get(&order_id).cloned()
     }
 
+    /// 打印订单详细信息的三线表日志
+    pub fn log_order_details(&self, order: &Order, title: &str, strategy_id: i32) {
+        warn!("═══════════════════════════════════════════════════════════════");
+        warn!("{} - Strategy ID: {}", title, strategy_id);
+        warn!("───────────────────────────────────────────────────────────────");
+        warn!("订单ID:       {}", order.client_order_id);
+        warn!("交易场所:     {:?}", order.venue);
+        warn!("交易对:       {}", order.symbol);
+        warn!("订单类型:     {:?}", order.order_type);
+        warn!("方向:         {:?}", order.side);
+        warn!("价格:         {:.8}", order.price);
+        warn!("数量:         {:.8}", order.quantity);
+        warn!("成交量:       {:.8}", order.cumulative_filled_quantity);
+        warn!("订单状态:     {:?}", order.status);
+        warn!("提交时间:     {}", order.timestamp.submit_t);
+        warn!("创建时间:     {}", order.timestamp.create_t);
+        warn!("成交时间:     {}", order.timestamp.filled_t);
+        warn!("结束时间:     {}", order.timestamp.end_t);
+        warn!("═══════════════════════════════════════════════════════════════");
+    }
+
     /// 根据订单ID获取订单的可变引用并执行操作
     pub fn update<F>(&mut self, order_id: i64, f: F) -> bool
     where

@@ -1,30 +1,15 @@
-use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-
-use bytes::{Buf, BufMut, Bytes, BytesMut};
 use log::{debug, error, info, warn};
-use tokio::sync::mpsc::UnboundedSender;
-
-use crate::common::account_msg::{ExecutionReportMsg, OrderTradeUpdateMsg};
-use crate::common::min_qty_table::MinQtyTable;
 use crate::common::time_util::get_timestamp_us;
-use crate::pre_trade::exposure_manager::ExposureManager;
-use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
-use crate::pre_trade::price_table::PriceTable;
+use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderType, Side};
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::hedge_signal::ArbHedgeCtx;
 use crate::signal::open_signal::ArbOpenCtx;
-use crate::signal::strategy::Strategy;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
-use crate::trade_engine::trade_request::BinanceCancelMarginOrderRequest;
-use crate::trade_engine::trade_response_handle::TradeExecOutcome;
-use crate::strategy::risk_checker::{self, RiskChecker};
 use crate::strategy::risk_checker::PreTradeEnv;
-use std::cmp::Ordering;
-
 pub struct HedgeArbStrategy {
     pub strategy_id: i32, //策略id
     pub symbol: String, //交易的统一symbol (开仓侧symbol)
@@ -392,7 +377,7 @@ impl HedgeArbStrategy {
 
 
     // cancel的本质就是构造取消，实际处理的是account monitor的撤销回报
-    fn handle_arb_cancel_signal(&mut self, ctx: ArbCancelCtx) -> Result<(), String> {
+    fn handle_arb_cancel_signal(&mut self, _ctx: ArbCancelCtx) -> Result<(), String> {
         // 从 order manager 获取开仓订单
         let order = self.pre_trade_env.risk_checker.order_manager.borrow().get(self.open_order_id);
         if let Some(order) = order {
@@ -702,8 +687,10 @@ impl HedgeArbStrategy {
     /// * `base_qty` - 基础待对冲量（不含残值）
     ///
     /// # Returns
-    /// 是否成功发起对冲（true=已发起对冲，false=不满足要求已累加到残值）
-    fn try_hedge_with_residual(&mut self, base_qty: f64) -> bool {
+    /// (是否成功发起对冲, 实际对冲量, 从残值表取出的数量)
+    /// - 成功发起对冲时：(true, 对冲数量, 从残值表增加的数量)
+    /// - 不满足要求时：(false, 0.0, 累加到残值表的数量)
+    fn try_hedge_with_residual(&mut self, base_qty: f64) -> (bool, f64, f64) {
         // 1. 计算总待对冲量（基础量 + 残值表中的残余量）
         let mut total_pending_qty = base_qty;
         let residual_qty = self.pre_trade_env.clear_hedge_residual(&self.hedge_symbol, self.hedge_venue);
@@ -715,7 +702,7 @@ impl HedgeArbStrategy {
         );
 
         // 2. 检查是否满足最小交易要求
-        let can_hedge = self.pre_trade_env.check_min_trading_requirements(
+        let can_hedge: bool = self.pre_trade_env.check_min_trading_requirements(
             self.hedge_venue,
             &self.hedge_symbol,
             total_pending_qty,
@@ -734,8 +721,9 @@ impl HedgeArbStrategy {
                     "HedgeArbStrategy: strategy_id={} 待对冲量={:.8} 不满足最小交易要求，累加到残余量表",
                     self.strategy_id, total_pending_qty
                 );
+                return (false, 0.0, total_pending_qty);
             }
-            return false;
+            return (false, 0.0, 0.0);
         }
 
         // 3. 满足要求，发起对冲
@@ -744,7 +732,7 @@ impl HedgeArbStrategy {
             self.strategy_id, total_pending_qty
         );
 
-        let hedge_result = if self.hedge_timeout_us.is_some() {
+        let hedge_result: Result<(), String> = if self.hedge_timeout_us.is_some() {
             // MM 模式：使用限价单对冲
             info!(
                 "HedgeArbStrategy: strategy_id={} MM模式，使用限价单对冲",
@@ -767,14 +755,24 @@ impl HedgeArbStrategy {
                     "HedgeArbStrategy: strategy_id={} 对冲信号已发送，数量={:.8}",
                     self.strategy_id, total_pending_qty
                 );
-                true
+                (true, total_pending_qty, residual_qty)
             }
             Err(e) => {
                 error!(
                     "HedgeArbStrategy: strategy_id={} 对冲失败: {}",
                     self.strategy_id, e
                 );
-                false
+                // 对冲失败，将数量累加回残值表
+                if total_pending_qty > 1e-12 {
+                    self.pre_trade_env.inc_hedge_residual(
+                        self.hedge_symbol.clone(),
+                        self.hedge_venue,
+                        total_pending_qty
+                    );
+                    (false, 0.0, total_pending_qty)
+                } else {
+                    (false, 0.0, 0.0)
+                }
             }
         }
     }
@@ -789,69 +787,35 @@ impl HedgeArbStrategy {
             order.status = OrderExecutionStatus::Cancelled;
             order.timestamp.end_t = event_time;
         });
-
+        drop(order_manager);
         if !updated {
-            warn!(
-                "HedgeArbStrategy: strategy_id={} 未找到开仓订单 order_id={}",
-                self.strategy_id, order_id
-            );
+            warn!("HedgeArbStrategy: strategy_id={} 未找到开仓订单 order_id={}", self.strategy_id, order_id);
             return;
         }
-
-        // 获取订单的累计成交量
-        let order = order_manager.get(order_id);
-        drop(order_manager); // 释放借用
-
-        let cumulative_filled_qty = match order {
-            Some(o) => o.cumulative_filled_quantity,
-            None => {
-                warn!(
-                    "HedgeArbStrategy: strategy_id={} 订单已被删除 order_id={}",
-                    self.strategy_id, order_id
-                );
-                return;
-            }
-        };
-
-        info!(
-            "HedgeArbStrategy: strategy_id={} 开仓订单撤单 order_id={} 累计成交量={:.8} 已对冲量={:.8}",
-            self.strategy_id, order_id, cumulative_filled_qty, self.cumulative_hedged_qty
-        );
-
         // 2. 计算待对冲量 = 已经成交的量 - 已经对冲的量
-        let base_pending_qty = cumulative_filled_qty - self.cumulative_hedged_qty;
-
-        info!(
-            "HedgeArbStrategy: strategy_id={} 开仓撤单: 累计成交={:.8} 已对冲={:.8} 基础待对冲={:.8}",
-            self.strategy_id, cumulative_filled_qty, self.cumulative_hedged_qty, base_pending_qty
-        );
-
+        let base_pending_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
         // 3. 尝试对冲（含残值处理）
-        let can_hedge = self.try_hedge_with_residual(base_pending_qty);
+        let (can_hedge, hedged_qty, residual_qty) = self.try_hedge_with_residual(base_pending_qty);
 
-        // 4. 如果无法对冲，根据模式决定是否关闭策略
+        if can_hedge {
+            info!(
+                "HedgeArbStrategy: strategy_id={} 开仓撤单后对冲成功，对冲量={:.8}",
+                self.strategy_id, hedged_qty
+            );
+        } else if residual_qty > 1e-12 {
+            info!(
+                "HedgeArbStrategy: strategy_id={} 开仓撤单后无法对冲，残值={:.8}",
+                self.strategy_id, residual_qty
+            );
+        }
+        // 4. 剩余量已经无法开单
         if !can_hedge {
             if self.hedge_timeout_us.is_some() {
-                // MM 模式：直接关闭策略
-                info!(
-                    "HedgeArbStrategy: strategy_id={} MM模式，待对冲量不足，关闭策略",
-                    self.strategy_id
-                );
                 self.alive_flag = false;
             } else {
-                // MT 模式：检查是否有待处理的对冲订单
                 let has_pending_hedge = self.has_pending_hedge_order();
                 if !has_pending_hedge {
-                    info!(
-                        "HedgeArbStrategy: strategy_id={} MT模式，无待处理对冲订单，关闭策略",
-                        self.strategy_id
-                    );
                     self.alive_flag = false;
-                } else {
-                    info!(
-                        "HedgeArbStrategy: strategy_id={} MT模式，有待处理对冲订单，保持策略活跃",
-                        self.strategy_id
-                    );
                 }
             }
         }
@@ -863,7 +827,6 @@ impl HedgeArbStrategy {
             error!("HedgeArbStrategy: strategy_id={} MT模式不应该有对冲侧撤单，订单ID={}", self.strategy_id, cancel_update.client_order_id());
             return;
         }
-
         // 1. 更新订单状态为 Cancelled
         let order_id = cancel_update.client_order_id();
         let event_time = cancel_update.event_time();
@@ -874,76 +837,90 @@ impl HedgeArbStrategy {
             order.set_end_time(event_time);
             order.cumulative_filled_quantity = cancel_update.cumulative_filled_quantity();
         });
+        drop(order_manager);
 
         if !updated {
             warn!("HedgeArbStrategy: strategy_id={} 未找到对冲订单 order_id={}", self.strategy_id, order_id);
             return;
         }
 
-        // 3. 计算待对冲量 = 订单量 - 累计成交量（这个订单的未成交部分）
-        let base_pending_qty = quantity - cumulative_filled_qty;
+        // 2. 计算待对冲量 = 已经成交的量 - 已经对冲的量
+        let base_pending_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
 
-        info!(
-            "HedgeArbStrategy: strategy_id={} 对冲撤单: 订单量={:.8} 累计成交={:.8} 基础待对冲={:.8}",
-            self.strategy_id, quantity, cumulative_filled_qty, base_pending_qty
-        );
+        // 3、 尝试对冲（含残值处理）
+        let (can_hedge, hedged_qty, residual_qty) = self.try_hedge_with_residual(base_pending_qty);
 
-        // 4. 尝试对冲（含残值处理）
-        let can_hedge = self.try_hedge_with_residual(base_pending_qty);
-
-        // 5. MM模式下，如果无法对冲且没有待处理的对冲订单，关闭策略
-        if !can_hedge && !self.has_pending_hedge_order() {
+        if can_hedge {
             info!(
-                "HedgeArbStrategy: strategy_id={} MM模式，对冲订单撤单后无法继续对冲，关闭策略",
-                self.strategy_id
+                "HedgeArbStrategy: strategy_id={} 对冲撤单后重新对冲成功，对冲量={:.8}",
+                self.strategy_id, hedged_qty
             );
+        } else if residual_qty > 1e-12 {
+            info!(
+                "HedgeArbStrategy: strategy_id={} 对冲撤单后无法对冲，残值={:.8}",
+                self.strategy_id, residual_qty
+            );
+        }
+
+        // 4. MM模式下，如果无法对冲且没有待处理的对冲订单，关闭策略
+        if !can_hedge && !self.has_pending_hedge_order() {
             self.alive_flag = false;
         }
     }
 
     fn process_open_leg_trade(&mut self, trade: &dyn TradeUpdate) {
         // 开仓成交后，触发对冲逻辑
-
-        // 1. MM 模式：只有完全成交才对冲，部分成交等撤单时再对冲
+        // MM 模式：只有完全成交才对冲, 部分成交只扣除量
         if self.hedge_timeout_us.is_some() {
-            // 检查订单是否完全成交
-            let is_filled = self.pre_trade_env.risk_checker.order_manager.borrow()
-                .get(self.open_order_id)
-                .map(|order| order.status == OrderExecutionStatus::Filled)
-                .unwrap_or_else(|| {
-                    warn!(
-                        "HedgeArbStrategy: strategy_id={} 未找到开仓订单 order_id={}",
-                        self.strategy_id, self.open_order_id
-                    );
-                    false
-                });
+            match trade.order_status() {
+                Some(OrderStatus::Filled) => {
+                    // 计算待对冲量 = 已经成交的量 - 已经对冲的量
+                    let base_pending_qty: f64 = self.cumulative_open_qty - self.cumulative_hedged_qty;
+                    // 尝试对冲（含残值处理）
+                    let (can_hedge, _hedged_qty, residual_qty) = self.try_hedge_with_residual(base_pending_qty);
+                    if can_hedge {
+                        //开仓量修改
+                        self.cumulative_open_qty += residual_qty;
+                        //MM 模式，挂单不一定成交。所以等实际成交再更新对冲量
+                    }
+                    if !can_hedge && !self.has_pending_hedge_order() {
+                        self.alive_flag = false;
+                    }
+                }
+                Some(OrderStatus::PartiallyFilled) => {
+                    //部分成交，只扣量，不对冲
+                    self.cumulative_hedged_qty += trade.quantity();
+                }
+                _=>{
+                    error!("unexpected MM model trade event: {} {}", trade.client_order_id(), trade.trade_id());
+                }
+            } 
+        }
+        // MT 模式：部分成交和完全成交都对冲
+        if self.hedge_timeout_us == None {
+            if trade.order_status() == Some(OrderStatus::Filled) ||  trade.order_status() == Some(OrderStatus::PartiallyFilled){
+                let base_pending_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
+                // 尝试对冲（含残值处理）
+                let (can_hedge, hedged_qty, residual_qty) = self.try_hedge_with_residual(base_pending_qty);
+                if can_hedge {
+                    self.cumulative_open_qty += residual_qty;
+                    self.cumulative_hedged_qty += hedged_qty;
 
-            if !is_filled {
-                debug!(
-                    "HedgeArbStrategy: strategy_id={} MM模式，开仓订单部分成交，等待完全成交或撤单",
-                    self.strategy_id
-                );
-                return;
+                } else if residual_qty > 1e-12 {
+                    info!(
+                        "HedgeArbStrategy: strategy_id={} MT模式开仓成交但无法对冲，残值={:.8}",
+                        self.strategy_id, residual_qty
+                    );
+                }
+                // MT 模式下，如果无法对冲且没有待处理的对冲订单，关闭策略
+                if !can_hedge && !self.has_pending_hedge_order() {
+                    self.alive_flag = false;
+                }
             }
         }
-
-        // 2. 计算待对冲量 = 已成交量 - 已对冲量
-        let base_pending_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
-
-        info!(
-            "HedgeArbStrategy: strategy_id={} 开仓成交: 累计成交={:.8} 已对冲={:.8} 基础待对冲={:.8}",
-            self.strategy_id, self.cumulative_open_qty, self.cumulative_hedged_qty, base_pending_qty
-        );
-
-        // 3. 尝试对冲（含残值处理）
-        let _can_hedge = self.try_hedge_with_residual(base_pending_qty);
-
-        // 注意：MT 模式下成交后立即对冲，不关闭策略
-        // 如果对冲失败，残值会累加，等待后续成交或撤单时再处理
     }
     fn process_hedge_leg_trade(&mut self, _trade: &dyn TradeUpdate) {
         // 对冲侧成交处理
-
         info!(
             "HedgeArbStrategy: strategy_id={} 对冲成交: 开仓量={:.8} 对冲量={:.8}",
             self.strategy_id, self.cumulative_open_qty, self.cumulative_hedged_qty
@@ -988,7 +965,7 @@ impl HedgeArbStrategy {
         // MM 模式：对冲侧成交不需要特殊处理，等待完全成交或撤单
     }
 
-    // 处理交易更新，需要区分是开仓侧成交，还是对冲侧成交
+    // 处理交易更新
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate){
         //1 根据client order id，判断是开仓成交，还是对冲成交, 更新开仓量或对冲量
         let order_id = trade.client_order_id();
@@ -1003,8 +980,8 @@ impl HedgeArbStrategy {
                 self.cumulative_open_qty, self.cumulative_hedged_qty);
             self.process_open_leg_trade(trade);
         } else if self.hedge_order_ids.contains(&order_id) {
-            // 对冲成交，更新累计对冲量
-            self.cumulative_hedged_qty = trade.cumulative_filled_quantity();
+            // 对冲侧成交，增加累计对冲量
+            self.cumulative_hedged_qty = trade.quantity();
             debug!(
                 "HedgeArbStrategy: strategy_id={} 对冲订单成交 order_id={} 成交量={:.8} 开仓量/已对冲量={:.8}/{:.8}",
                 self.strategy_id,
@@ -1015,496 +992,86 @@ impl HedgeArbStrategy {
             self.process_hedge_leg_trade(trade);
         } else {
             // 非法成交，忽略
-            warn!(
-                "HedgeArbStrategy: strategy_id={} 收到未知订单的成交更新 order_id={}",
-                self.strategy_id,
-                order_id);      
-        } 
-        
-    }
-
-
-
-
-
-    fn apply_order_update(&mut self, order: &dyn OrderUpdate){
-        
-        
-    }
-    fn apply_um_order_update(
-        order: &mut Order,
-        event: &OrderTradeUpdateMsg,
-    ) -> UmOrderUpdateOutcome {
-        match event.execution_type.as_str() {
-            "NEW" | "TRADE" => Self::apply_um_fill_state(order, event),
-            "EXPIRED" => {
-                warn!(
-                    "UM Order Execution Type=EXPIRED，保持在 Expired 状态，raw_event={:?}",
-                    event
-                );
-                UmOrderUpdateOutcome::Expired
-            }
-            "CANCELED" => {
-                panic!(
-                    "UM Order Execution Type=CANCELED，不符合预期，raw_event={:?}",
-                    event
-                );
-            }
-            "CALCULATED" => {
-                panic!(
-                    "UM Order Execution Type=CALCULATED(强平)，raw_event={:?}",
-                    event
-                );
-            }
-            other => {
-                warn!(
-                    "UM Order Execution Type={} 未识别，raw_event={:?}，忽略",
-                    other, event
-                );
-                UmOrderUpdateOutcome::Ignored
-            }
+            warn!("HedgeArbStrategy: strategy_id={} 收到未知订单的成交更新 order_id={}",self.strategy_id, order_id);      
         }
     }
 
-    /// 打印该 symbol 下当前挂着的限价单（非终态）为三线表
-    fn log_pending_limit_orders(symbol: &str, order_manager: &OrderManager) {
-        let now_us = get_timestamp_us();
-        let mut rows: Vec<Vec<String>> = Vec::new();
-        for id in order_manager.get_all_ids() {
-            if let Some(ord) = order_manager.get(id) {
-                if !ord.symbol.eq_ignore_ascii_case(symbol) {
-                    continue;
+
+    fn apply_order_update(&mut self, order_update: &dyn OrderUpdate){
+        //状态更新是通用部分，非成交只更新状态，不更新量
+        let client_order_id = order_update.client_order_id();
+        let mut order_manager = self.pre_trade_env.risk_checker.order_manager.borrow_mut();
+        let updated = order_manager.update(client_order_id, |order| {
+            match order_update.status() {
+                OrderStatus::New => {
+                    order.status = OrderExecutionStatus::Create; 
+                    order.set_exchange_order_id(order_update.order_id());
+                    order.set_create_time(order_update.event_time());
                 }
-                if !ord.order_type.is_limit() {
-                    continue;
+                OrderStatus::Canceled => {
+                    order.status = OrderExecutionStatus::Cancelled;
+                    order.set_end_time(order_update.event_time());
                 }
-                if ord.status.is_terminal() {
-                    continue;
+                OrderStatus::Expired => {
+                    order.status = OrderExecutionStatus::Rejected;
+                    order.set_end_time(order_update.event_time());
                 }
-                let age_ms = if ord.submit_time > 0 {
-                    (now_us.saturating_sub(ord.submit_time) / 1000) as i64
-                } else {
-                    0
-                };
-                rows.push(vec![
-                    ord.order_id.to_string(),
-                    ord.side.as_str().to_string(),
-                    Self::format_decimal(ord.quantity),
-                    Self::format_decimal(ord.price),
-                    ord.status.as_str().to_string(),
-                    age_ms.to_string(),
-                ]);
-            }
-        }
-        // 稳定排序：按 age_ms 降序，其次按 order_id 升序
-        rows.sort_by(|a, b| {
-            let age_a: i64 = a[5].parse().unwrap_or(0);
-            let age_b: i64 = b[5].parse().unwrap_or(0);
-            match age_b.cmp(&age_a) {
-                Ordering::Equal => a[0].cmp(&b[0]),
-                other => other,
+                OrderStatus::ExpiredInMatch => {
+                    order.status = OrderExecutionStatus::Rejected;
+                    order.set_end_time(order_update.event_time());
+                }
+                _=> {
+                    panic!("unexpected order status received {} {} {:?}", order_update.client_order_id(), order_update.order_id(), order_update.status());
+                }
             }
         });
-        let table = Self::render_three_line_table(
-            &["OrderId", "Side", "Qty", "Price", "Status", "Age(ms)"],
-            &rows,
-        );
-        warn!(
-            "{}: symbol={} 当前待成交限价单列表\n{}",
-            BinSingleForwardArbStrategyMT::strategy_name(),
-            symbol,
-            table
-        );
+        drop(order_manager);
+
+        if !updated {
+            error!("update failed {} {} {:?}", order_update.client_order_id(), order_update.order_id(), order_update.status());
+            return;
+        }
+        if order_update.status() == OrderStatus::Canceled {
+            if order_update.client_order_id() == self.open_order_id {
+                self.process_open_leg_cancel(order_update);
+            }
+            if self.hedge_timeout_us.is_none() {
+                if self.hedge_order_ids.contains(&order_update.client_order_id()) {
+                    //只有MT模式，才会有hedge的定时器cancel
+                    self.process_hedge_leg_cancel(order_update);
+                }
+            }
+        }        
+        
+    }
+
+    fn cleanup_strategy_orders(&mut self) {
+        let mut mgr = self.pre_trade_env.risk_checker.order_manager.borrow_mut();
+
+        // 检查并清理开仓订单
+        if self.open_order_id != 0 {
+            if let Some(order) = mgr.get(self.open_order_id) {
+                if !order.status.is_terminal() {
+                    mgr.log_order_details(&order, "开仓订单未达到终结状态被清理", self.strategy_id);
+                }
+            }
+            let _ = mgr.remove(self.open_order_id);
+        }
+
+        // 检查并清理对冲订单
+        for id in &self.hedge_order_ids {
+            if let Some(order) = mgr.get(*id) {
+                if !order.status.is_terminal() {
+                    mgr.log_order_details(&order, "对冲订单未达到终结状态被清理", self.strategy_id);
+                }
+            }
+            let _ = mgr.remove(*id);
+        }
     }
 }
 
 impl Drop for HedgeArbStrategy {
     fn drop(&mut self) {
-        self.log_lifecycle_summary("生命周期结束");
         self.cleanup_strategy_orders();
-        debug!("trategy_id={} 生命周期结束，相关订单已回收", self.strategy_id);
-    }
-}
-
-impl BinSingleForwardArbStrategyMT {
-    fn format_decimal(value: f64) -> String {
-        if value == 0.0 {
-            return "0".to_string();
-        }
-        let mut s = format!("{:.6}", value);
-        if s.contains('.') {
-            while s.ends_with('0') {
-                s.pop();
-            }
-            if s.ends_with('.') {
-                s.pop();
-            }
-        }
-        if s.is_empty() {
-            "0".to_string()
-        } else {
-            s
-        }
-    }
-
-    fn render_three_line_table(headers: &[&str], rows: &[Vec<String>]) -> String {
-        let widths = Self::compute_widths(headers, rows);
-        let mut out = String::new();
-        out.push_str(&Self::build_separator(&widths, '-'));
-        out.push('\n');
-        out.push_str(&Self::build_row(
-            headers
-                .iter()
-                .map(|h| h.to_string())
-                .collect::<Vec<String>>(),
-            &widths,
-        ));
-        out.push('\n');
-        out.push_str(&Self::build_separator(&widths, '='));
-        if rows.is_empty() {
-            out.push('\n');
-            out.push_str(&Self::build_separator(&widths, '-'));
-            return out;
-        }
-        for row in rows {
-            out.push('\n');
-            out.push_str(&Self::build_row(row.clone(), &widths));
-        }
-        out.push('\n');
-        out.push_str(&Self::build_separator(&widths, '-'));
-        out
-    }
-
-    fn compute_widths(headers: &[&str], rows: &[Vec<String>]) -> Vec<usize> {
-        let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
-        for row in rows {
-            for (idx, cell) in row.iter().enumerate() {
-                if idx >= widths.len() {
-                    continue;
-                }
-                widths[idx] = widths[idx].max(cell.len());
-            }
-        }
-        widths
-    }
-
-    fn build_separator(widths: &[usize], fill: char) -> String {
-        let mut line = String::new();
-        line.push('+');
-        for width in widths {
-            line.push_str(&fill.to_string().repeat(width + 2));
-            line.push('+');
-        }
-        line
-    }
-
-    fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
-        let mut row = String::new();
-        row.push('|');
-        for (cell, width) in cells.iter().zip(widths.iter()) {
-            row.push(' ');
-            row.push_str(&format!("{:<width$}", cell, width = *width));
-            row.push(' ');
-            row.push('|');
-        }
-        row
-    }
-}
-
-impl BinSingleForwardArbStrategyMT {
-    fn apply_um_fill_state(order: &mut Order, event: &OrderTradeUpdateMsg) -> UmOrderUpdateOutcome {
-        order.set_exchange_order_id(event.order_id);
-        match event.order_status.as_str() {
-            "NEW" => {
-                order.update_status(OrderExecutionStatus::Create);
-                order.record_exchange_create(event.event_time);
-                UmOrderUpdateOutcome::Created
-            }
-            "PARTIALLY_FILLED" => {
-                order.record_exchange_update(event.event_time);
-                order.update_cumulative_filled_quantity(event.cumulative_filled_quantity);
-                // 市价单填充已知的成交均价/最新成交价，便于生命周期汇总展示
-                if order.order_type.is_market() {
-                    let px = if event.average_price > 0.0 {
-                        event.average_price
-                    } else if event.last_executed_price > 0.0 {
-                        event.last_executed_price
-                    } else {
-                        0.0
-                    };
-                    if px > 0.0 {
-                        order.price = px;
-                    }
-                }
-                UmOrderUpdateOutcome::PartiallyFilled(event.cumulative_filled_quantity)
-            }
-            "FILLED" => {
-                order.update_status(OrderExecutionStatus::Filled);
-                order.set_filled_time(event.event_time);
-                order.update_cumulative_filled_quantity(event.cumulative_filled_quantity);
-                order.record_exchange_update(event.event_time);
-                // 市价单在完全成交时写入最终成交均价
-                if order.order_type.is_market() {
-                    let px = if event.average_price > 0.0 {
-                        event.average_price
-                    } else if event.last_executed_price > 0.0 {
-                        event.last_executed_price
-                    } else {
-                        0.0
-                    };
-                    if px > 0.0 {
-                        order.price = px;
-                    }
-                }
-
-                if order.hedged_quantily.abs() > 1e-8 {
-                    panic!(
-                        "UM Order Status=FILLED 但仍有剩余数量，order={:?} remaining={}",
-                        order, order.hedged_quantily
-                    );
-                }
-
-                UmOrderUpdateOutcome::Filled
-            }
-            "EXPIRED_IN_MATCH" => UmOrderUpdateOutcome::Ignored,
-            "CANCELED" => {
-                panic!("UM Order Status=CANCELED，不符合预期，order={:?}", order);
-            }
-            "EXPIRED" => {
-                warn!("UM Order Status=EXPIRED，order={:?}", order);
-                order.record_exchange_update(event.event_time);
-                UmOrderUpdateOutcome::Expired
-            }
-            other => {
-                panic!("UM Order Status={} 未识别，order={:?}", other, order);
-            }
-        }
-    }
-
-    fn next_order_id(&mut self) -> i64 {
-        let seq = self.order_seq;
-        self.order_seq = self.order_seq.wrapping_add(1);
-        Self::compose_order_id(self.strategy_id, seq)
-    }
-
-    fn compose_order_id(strategy_id: i32, seq: u32) -> i64 {
-        ((strategy_id as i64) << 32) | seq as i64
-    }
-
-    fn log_open_signal_summary(&self, order: &Order) {
-        if self.mode != StrategyMode::Open {
-            return;
-        }
-        if self.open_signal_logged.get() {
-            return;
-        }
-        if order.cumulative_filled_quantity <= 1e-8 {
-            return;
-        }
-        let Some(meta) = &self.open_signal_meta else {
-            return;
-        };
-
-        self.open_signal_logged.set(true);
-
-        let mut rows: Vec<Vec<String>> = Vec::new();
-        rows.push(vec![
-            "Signal".to_string(),
-            meta.spot_symbol.clone(),
-            meta.side.as_str().to_string(),
-            Self::format_decimal(meta.amount as f64),
-            Self::format_decimal(meta.price),
-            meta.order_type.as_str().to_string(),
-            format!(
-                "tick={:.8}, exp={}, ts={}",
-                meta.price_tick, meta.exp_time, meta.trigger_ts_us
-            ),
-        ]);
-
-        let filled = Self::format_decimal(order.cumulative_filled_quantity);
-        let qty = Self::format_decimal(order.quantity);
-        let exchange_info = order
-            .exchange_order_id
-            .map(|id| format!(" exchange_id={}", id))
-            .unwrap_or_default();
-        let create_tp = if order.create_time > 0 {
-            order.create_time.to_string()
-        } else {
-            "-".to_string()
-        };
-        let updates_str = if order.update_event_times.is_empty() {
-            "-".to_string()
-        } else {
-            format!("{:?}", order.update_event_times)
-        };
-        let extra = format!(
-            "filled={}/{} status={}{} create_tp={} updates={}",
-            filled,
-            qty,
-            order.status.as_str(),
-            exchange_info,
-            create_tp,
-            updates_str
-        );
-        rows.push(vec![
-            format!("Order {}", order.order_id),
-            order.symbol.clone(),
-            order.side.as_str().to_string(),
-            qty.clone(),
-            Self::format_decimal(order.price),
-            order.order_type.as_str().to_string(),
-            extra,
-        ]);
-
-        let fmt_decimal = |value: f64| Self::format_decimal(value);
-        rows.push(vec![
-            "Book".to_string(),
-            format!("spot_bid={}", fmt_decimal(meta.spot_bid0)),
-            format!("spot_ask={}", fmt_decimal(meta.spot_ask0)),
-            format!("swap_bid={}", fmt_decimal(meta.swap_bid0)),
-            format!("swap_ask={}", fmt_decimal(meta.swap_ask0)),
-            "-".to_string(),
-            String::new(),
-        ]);
-
-        if meta.funding_ma.is_some()
-            || meta.predicted_funding_rate.is_some()
-            || meta.loan_rate.is_some()
-        {
-            let format_opt = |v: Option<f64>| match v {
-                Some(val) => Self::format_decimal(val),
-                None => "-".to_string(),
-            };
-            rows.push(vec![
-                "Metrics".to_string(),
-                "-".to_string(),
-                "-".to_string(),
-                format!("fund_ma={}", format_opt(meta.funding_ma)),
-                format!("pred={}", format_opt(meta.predicted_funding_rate)),
-                format!("loan={}", format_opt(meta.loan_rate)),
-                String::new(),
-            ]);
-        }
-
-        let table = Self::render_three_line_table(
-            &["Source", "Symbol", "Side", "Qty", "Price", "Type", "Extra"],
-            &rows,
-        );
-
-        info!(
-            "{}: strategy_id={} 开仓信号摘要\n{}",
-            Self::strategy_name(),
-            self.strategy_id,
-            table
-        );
-    }
-
-    fn log_lifecycle_summary(&self, stage: &str) {
-        if self.lifecycle_logged.get() {
-            return;
-        }
-        self.lifecycle_logged.set(true);
-
-        let mgr_ro = self.order_manager.borrow();
-        let mut rows: Vec<Vec<String>> = Vec::new();
-        let mut record_entries: Vec<(&str, i64)> = Vec::new();
-        if let Some(margin_id) = if self.margin_order_id != 0 {
-            Some(self.margin_order_id)
-        } else if self.initial_margin_order_id != 0 {
-            Some(self.initial_margin_order_id)
-        } else {
-            None
-        } {
-            record_entries.push(("MarginOpen", margin_id));
-        }
-        for id in &self.um_hedge_order_ids {
-            record_entries.push(("UMHedge", *id));
-        }
-
-        for (kind, id) in record_entries {
-            if let Some(o) = mgr_ro.get(id) {
-                let exchange_id = o
-                    .exchange_order_id
-                    .map(|val| val.to_string())
-                    .unwrap_or_else(|| "-".to_string());
-                let create_ts = if o.create_time > 0 {
-                    o.create_time.to_string()
-                } else {
-                    "-".to_string()
-                };
-                let updates_str = if o.update_event_times.is_empty() {
-                    "-".to_string()
-                } else {
-                    format!("{:?}", o.update_event_times)
-                };
-                rows.push(vec![
-                    id.to_string(),
-                    exchange_id,
-                    kind.to_string(),
-                    o.side.as_str().to_string(),
-                    Self::format_decimal(o.quantity),
-                    Self::format_decimal(o.price),
-                    o.status.as_str().to_string(),
-                    create_ts,
-                    updates_str,
-                ]);
-            } else {
-                rows.push(vec![
-                    id.to_string(),
-                    "-".to_string(),
-                    kind.to_string(),
-                    "-".to_string(),
-                    "-".to_string(),
-                    "-".to_string(),
-                    "Removed".to_string(),
-                    "-".to_string(),
-                    "-".to_string(),
-                ]);
-            }
-        }
-        drop(mgr_ro);
-
-        if rows.is_empty() {
-            return;
-        }
-
-        let table = Self::render_three_line_table(
-            &[
-                "OrderId",
-                "ExchangeId",
-                "Kind",
-                "Side",
-                "Qty",
-                "Price",
-                "Status",
-                "CreateTs",
-                "UpdateTs",
-            ],
-            &rows,
-        );
-
-        let stage_prefix = if stage.is_empty() {
-            String::new()
-        } else {
-            format!("{} ", stage)
-        };
-
-        info!(
-            "{}: strategy_id={} {}订单生命周期汇总\n{}",
-            Self::strategy_name(),
-            self.strategy_id,
-            stage_prefix,
-            table
-        );
-    }
-
-    fn cleanup_strategy_orders(&mut self) {
-        let mut mgr = self.order_manager.borrow_mut();
-        if self.margin_order_id != 0 {
-            let _ = mgr.remove(self.margin_order_id);
-        }
-        for id in &self.um_hedge_order_ids {
-            let _ = mgr.remove(*id);
-        }
     }
 }

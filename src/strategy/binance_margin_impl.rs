@@ -74,6 +74,26 @@ impl OrderUpdate for ExecutionReportMsg {
         // ExecutionReport 消息类型对应 BinanceMargin
         TradingVenue::BinanceMargin
     }
+
+    fn raw_status(&self) -> &str {
+        &self.order_status
+    }
+
+    fn raw_execution_type(&self) -> &str {
+        &self.execution_type
+    }
+
+    fn last_executed_price(&self) -> Option<f64> {
+        Some(self.last_executed_price)
+    }
+
+    fn client_order_id_str(&self) -> Option<&str> {
+        if self.client_order_id_str.is_empty() {
+            None
+        } else {
+            Some(&self.client_order_id_str)
+        }
+    }
 }
 
 impl TradeUpdate for ExecutionReportMsg {

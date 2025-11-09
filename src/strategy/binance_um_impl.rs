@@ -70,6 +70,34 @@ impl OrderUpdate for OrderTradeUpdateMsg {
         // OrderTradeUpdate 消息类型对应 BinanceUm
         TradingVenue::BinanceUm
     }
+
+    fn raw_status(&self) -> &str {
+        &self.order_status
+    }
+
+    fn raw_execution_type(&self) -> &str {
+        &self.execution_type
+    }
+
+    fn average_price(&self) -> Option<f64> {
+        Some(self.average_price)
+    }
+
+    fn last_executed_price(&self) -> Option<f64> {
+        Some(self.last_executed_price)
+    }
+
+    fn business_unit(&self) -> Option<&str> {
+        Some(&self.business_unit)
+    }
+
+    fn client_order_id_str(&self) -> Option<&str> {
+        if self.client_order_id_str.is_empty() {
+            None
+        } else {
+            Some(&self.client_order_id_str)
+        }
+    }
 }
 
 impl TradeUpdate for OrderTradeUpdateMsg {
@@ -142,4 +170,3 @@ impl TradeUpdate for OrderTradeUpdateMsg {
         OrderStatus::from_str(&self.order_status)
     }
 }
-

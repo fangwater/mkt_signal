@@ -5,7 +5,6 @@ pub mod common;
 pub mod mm_backward;
 pub mod record;
 pub mod resample;
-pub mod strategy;
 pub mod trade_signal;
 pub mod cancel_signal;
 pub mod open_signal;
