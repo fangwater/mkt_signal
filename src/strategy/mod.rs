@@ -4,4 +4,5 @@ pub mod manager;
 pub mod order_update;
 pub mod risk_checker;
 pub mod trade_update;
+pub mod hedge_arb_strategy;
 pub use manager::{Strategy, StrategyManager};

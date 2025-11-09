@@ -1,20 +1,18 @@
 use crate::common::time_util::get_timestamp_us;
+use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::{order_update::OrderUpdate, trade_update::TradeUpdate};
-use bytes::Bytes;
 use log::info;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 pub trait Strategy {
     fn get_id(&self) -> i32;
     fn is_strategy_order(&self, order_id: i64) -> bool;
-    fn handle_trade_signal(&mut self, signal_raws: &Bytes);
+    fn handle_signal(&mut self, signal: &TradeSignal);
     fn apply_order_update(&mut self, update: &dyn OrderUpdate);
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate);
-    fn hanle_period_clock(&mut self, current_tp: i64);
+    fn handle_period_clock(&mut self, current_tp: i64);
     fn is_active(&self) -> bool;
-    fn symbol(&self) -> Option<&str> {
-        None
-    }
+    fn symbol(&self) -> Option<&str>;
 }
 
 /// Strategy id -> Strategy 映射的简单管理器
@@ -160,7 +158,7 @@ impl StrategyManager {
     /// 触发全部策略的周期检查，返回本次检查到的策略数量
     pub fn handle_period_clock(&mut self, current_tp: i64) -> usize {
         let iterations = self.order.len();
-        let mut inspected = 0usize;
+        let mut inspected: usize = 0usize;
         for _ in 0..iterations {
             let Some(strategy_id) = self.order.pop_front() else {
                 break;
@@ -169,7 +167,7 @@ impl StrategyManager {
             let mut remove = true;
             if let Some(strategy) = self.strategies.get_mut(&strategy_id) {
                 inspected += 1;
-                strategy.hanle_period_clock(current_tp);
+                strategy.handle_period_clock(current_tp);
                 remove = !strategy.is_active();
             }
 

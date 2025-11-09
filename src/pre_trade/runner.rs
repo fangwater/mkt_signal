@@ -22,7 +22,7 @@ use crate::pre_trade::price_table::{PriceEntry, PriceTable};
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::channels::SIGNAL_CHANNEL_MM_ARBITRAGE_BACKWARD;
 use crate::signal::common::{ExecutionType, SignalBytes};
-use crate::signal::hedge_arb_strategy::HedgeArbStrategy;
+use crate::strategy::hedge_arb_strategy::HedgeArbStrategy;
 use crate::signal::hedge_signal::ArbHedgeCtx;
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::record::{SignalRecordMessage, PRE_TRADE_SIGNAL_RECORD_CHANNEL};
@@ -420,7 +420,7 @@ impl RuntimeContext {
         };
 
         match trading_venue {
-            TradingVenue::BinanceUm | TradingVenue::BinanceUm => {
+            TradingVenue::BinanceUm => {
                 // 查询合约头寸（带符号）
                 if let Some(snapshot) = self.um_manager.snapshot() {
                     snapshot
@@ -552,16 +552,13 @@ impl RuntimeContext {
     }
 
     async fn tick(&mut self) {
-        let tick_start = std::time::Instant::now();
         let now = get_timestamp_us();
         self.strategy_mgr.handle_period_clock(now);
         self.cleanup_inactive();
         let instant_now = std::time::Instant::now();
-        let mut params_refreshed = false;
         if instant_now >= self.next_params_refresh {
             match self.reload_params().await {
                 Ok(()) => {
-                    params_refreshed = true;
                 }
                 Err(err) => {
                     warn!("pre_trade params refresh failed: {err:#}");
@@ -571,21 +568,15 @@ impl RuntimeContext {
                 instant_now + std::time::Duration::from_secs(self.params_refresh_secs.max(5));
         }
 
-        let mut resample_published = 0usize;
         if self.resample_positions_pub.is_some()
             || self.resample_exposure_pub.is_some()
             || self.resample_risk_pub.is_some()
         {
             while instant_now >= self.next_resample {
-                match self.publish_resample_entries() {
-                    Ok(count) => {
-                        resample_published += count;
-                    }
-                    Err(err) => {
-                        warn!("pre_trade resample publish failed: {err:#}");
-                        self.next_resample = std::time::Instant::now() + self.resample_interval;
-                        break;
-                    }
+                if let Err(err) = self.publish_resample_entries() {
+                    warn!("pre_trade resample publish failed: {err:#}");
+                    self.next_resample = std::time::Instant::now() + self.resample_interval;
+                    break;
                 }
                 self.next_resample += self.resample_interval;
             }
@@ -1355,7 +1346,7 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
     Ok(())
 }
 
-fn handle_trade_engine_response(ctx: &mut RuntimeContext, outcome: TradeExecOutcome) {
+fn handle_trade_engine_response(_ctx: &mut RuntimeContext, outcome: TradeExecOutcome) {
     //暂时不处理TradeExec 只观察http响应的正确性
     match outcome.status {
         200 => {
@@ -1427,7 +1418,6 @@ fn handle_trade_engine_response(ctx: &mut RuntimeContext, outcome: TradeExecOutc
 }
 
 fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
-    let raw_signal: Bytes = signal.to_bytes();
     match signal.signal_type {
         SignalType::ArbOpen => match ArbOpenCtx::from_bytes(signal.context.clone()) {
             Ok(open_ctx) => {
@@ -1438,7 +1428,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                 let strategy_id = StrategyManager::generate_strategy_id();
                 let env = ctx.get_pre_trade_env();
                 let mut strategy = HedgeArbStrategy::new(strategy_id, symbol.clone(), env);
-                strategy.handle_trade_signal(&raw_signal);
+                strategy.handle_signal(&signal);
                 if strategy.is_active() {
                     ctx.insert_strategy(Box::new(strategy));
                 }
@@ -1513,7 +1503,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                     let mut strategy =
                         HedgeArbStrategy::new(strategy_id, opening_symbol.clone(), env);
 
-                    strategy.handle_trade_signal(&raw_signal);
+                    strategy.handle_signal(&signal);
 
                     if strategy.is_active() {
                         ctx.insert_strategy(Box::new(strategy));
@@ -1522,61 +1512,37 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                 Err(err) => warn!("failed to decode ArbClose context: {err}"),
             }
         }
-        SignalType::ArbCancel => {
-            match ArbCancelCtx::from_bytes(signal.context.clone()) {
-                Ok(cancel_ctx) => {
-                    let symbol = cancel_ctx.spot_symbol.to_uppercase();
-                    let candidate_ids: Vec<i32> = ctx
-                        .strategy_mgr
-                        .ids_for_symbol(&symbol)
-                        .map(|set| set.iter().copied().collect())
-                        .unwrap_or_default();
+        SignalType::ArbCancel => match ArbCancelCtx::from_bytes(signal.context.clone()) {
+            Ok(cancel_ctx) => {
+                let symbol = cancel_ctx.get_opening_symbol().to_uppercase();
+                let candidate_ids: Vec<i32> = ctx
+                    .strategy_mgr
+                    .ids_for_symbol(&symbol)
+                    .map(|set| set.iter().copied().collect())
+                    .unwrap_or_default();
 
-                    if candidate_ids.is_empty() {
-                        debug!(
-                            "ladder cancel signal ignored: symbol={} no active strategies",
-                            symbol
-                        );
-                        return;
-                    }
-
-                    // 直接使用所有候选策略，不再过滤类型
-                    let filtered_ids: Vec<i32> = candidate_ids;
-
-                    if filtered_ids.is_empty() {
-                        debug!(
-                            "ladder cancel signal ignored: symbol={} no matching strategies",
-                            symbol
-                        );
-                        return;
-                    }
-
-                    let payload = cancel_ctx.to_bytes();
-                    debug!(
-                        "dispatch ladder cancel signal: symbol={} strategies={} bidask_sr={:.6} threshold={:.6} ctx_len={} generation_time={} signal_type={:?}",
-                        symbol,
-                        filtered_ids.len(),
-                        cancel_ctx.bidask_sr().unwrap_or(f64::NAN),
-                        cancel_ctx.cancel_threshold,
-                        signal.context.len(),
-                        signal.generation_time,
-                        signal.signal_type
-                    );
-
-                    for strategy_id in filtered_ids {
-                        let record = SignalRecordMessage::new(
-                            strategy_id,
-                            signal.signal_type.clone(),
-                            payload.clone().to_vec(),
-                            signal.generation_time,
-                        );
-                        ctx.publish_signal_record(&record);
-                        let _ = forward_signal_to_strategy(ctx, strategy_id, &raw_signal);
-                    }
+                if candidate_ids.is_empty() {
+                    return;
                 }
-                Err(err) => warn!("failed to decode ArbCancel context: {err}"),
+                let payload = cancel_ctx.to_bytes();
+                for strategy_id in candidate_ids {
+                    let record = SignalRecordMessage::new(
+                        strategy_id,
+                        signal.signal_type.clone(),
+                        payload.clone().to_vec(),
+                        signal.generation_time,
+                    );
+                    ctx.publish_signal_record(&record);
+                    if !ctx.strategy_mgr.contains(strategy_id) {
+                        return;
+                    }
+                    ctx.with_strategy_mut(strategy_id, |strategy| {
+                        strategy.handle_signal(&signal);
+                    });
+                }
             }
-        }
+            Err(err) => warn!("failed to decode ArbCancel context: {err}"),
+        },
         SignalType::ArbHedge => match ArbHedgeCtx::from_bytes(signal.context.clone()) {
             Ok(hedge_ctx) => {
                 let strategy_id = hedge_ctx.strategy_id;
@@ -1587,40 +1553,20 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                     signal.generation_time,
                 );
                 ctx.publish_signal_record(&record);
-                if !forward_signal_to_strategy(ctx, strategy_id, &raw_signal) {
-                    debug!(
-                        "MT hedge signal ignored: strategy_id={} raw_len={}",
-                        strategy_id,
-                        raw_signal.len()
-                    );
+                if !ctx.strategy_mgr.contains(strategy_id) {
+                    return;
                 }
+                ctx.with_strategy_mut(strategy_id, |strategy| {
+                    strategy.handle_signal(&signal);
+                });
             }
-            Err(err) => warn!("failed to decode MT hedge context: {err}"),
+            Err(err) => warn!("failed to decode hedge context: {err}"),
         },
     }
 
     ctx.cleanup_inactive();
 }
 
-fn forward_signal_to_strategy(
-    ctx: &mut RuntimeContext,
-    strategy_id: i32,
-    raw_signal: &Bytes,
-) -> bool {
-    if !ctx.strategy_mgr.contains(strategy_id) {
-        return false;
-    }
-    let signal_bytes = raw_signal.clone();
-    ctx.with_strategy_mut(strategy_id, |strategy| {
-        debug!(
-            "forward signal to strategy_id={} raw_len={}",
-            strategy.get_id(),
-            signal_bytes.len()
-        );
-        strategy.handle_trade_signal(&signal_bytes);
-    });
-    true
-}
 
 fn dispatch_execution_report(ctx: &mut RuntimeContext, report: &ExecutionReportMsg) {
     let order_id = report.client_order_id;

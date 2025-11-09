@@ -5,11 +5,14 @@ use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::hedge_signal::ArbHedgeCtx;
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
+use crate::strategy::manager::Strategy;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::risk_checker::PreTradeEnv;
 use crate::strategy::trade_update::TradeUpdate;
+use bytes::Bytes;
 use log::{debug, error, info, warn};
 use std::rc::Rc;
+
 pub struct HedgeArbStrategy {
     pub strategy_id: i32,               //策略id
     pub symbol: String,                 //交易的统一symbol (开仓侧symbol)
@@ -435,8 +438,8 @@ impl HedgeArbStrategy {
         Ok(())
     }
 
-    fn handle_signal(&mut self, signal: TradeSignal) {
-        match signal.signal_type {
+    fn handle_signal(&mut self, signal: &TradeSignal) {
+        match &signal.signal_type {
             SignalType::ArbOpen => {
                 // 套利开仓信号
                 match ArbOpenCtx::from_bytes(signal.context.clone()) {
@@ -489,10 +492,10 @@ impl HedgeArbStrategy {
                     }
                 }
             }
-            other => {
+            _ => {
                 debug!(
                     "HedgeArbStrategy: strategy_id={} 忽略信号类型 {:?}",
-                    self.strategy_id, other
+                    self.strategy_id, signal.signal_type
                 );
             }
         }
@@ -596,9 +599,6 @@ impl HedgeArbStrategy {
         }
     }
 
-    fn is_active_open(&self) -> bool {
-        self.alive_flag
-    }
 
     // 检查当前的对冲单的id列表的最后一个。查看是否是terminal状态
     fn has_pending_hedge_order(&self) -> bool {
@@ -1177,5 +1177,144 @@ impl HedgeArbStrategy {
 impl Drop for HedgeArbStrategy {
     fn drop(&mut self) {
         self.cleanup_strategy_orders();
+    }
+}
+
+impl Strategy for HedgeArbStrategy {
+    fn get_id(&self) -> i32 {
+        self.strategy_id
+    }
+
+    fn symbol(&self) -> Option<&str> {
+        Some(&self.symbol)
+    }
+
+    fn is_strategy_order(&self, order_id: i64) -> bool {
+        Self::extract_strategy_id(order_id) == self.strategy_id
+    }
+
+    fn handle_signal(&mut self, signal: &TradeSignal) {
+        HedgeArbStrategy::handle_signal(self, signal)
+    }
+
+    fn apply_order_update(&mut self, update: &dyn OrderUpdate) {
+        HedgeArbStrategy::apply_order_update(self, update);
+    }
+
+    fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
+        HedgeArbStrategy::apply_trade_update(self, trade);
+    }
+
+    fn handle_period_clock(&mut self, _current_tp: i64) {
+        // 周期性检查：开仓、平仓订单，是否存在超时的情况，如果存在调用对应的handle函数
+        if self.mode == StrategyMode::Open {
+            if self.margin_order_id == 0 {
+                let mut flags = self.period_log_flags.borrow_mut();
+                if !flags.margin_open_absent_logged {
+                    warn!(
+                        "{}: strategy_id={} 当前无 margin 开仓单，策略将等待回收",
+                        Self::strategy_name(),
+                        self.strategy_id
+                    );
+                    flags.margin_open_absent_logged = true;
+                }
+                flags.last_margin_open_status = None;
+                self.open_timeout_us = None;
+            } else {
+                {
+                    let mut flags = self.period_log_flags.borrow_mut();
+                    flags.margin_open_absent_logged = false;
+                }
+                let open_order = {
+                    let manager = self.order_manager.borrow();
+                    manager.get(self.margin_order_id)
+                };
+
+                match open_order {
+                    Some(order) => {
+                        {
+                            let mut flags = self.period_log_flags.borrow_mut();
+                            flags.margin_open_missing_logged = false;
+                        }
+                        if order.status.is_terminal() {
+                            self.open_timeout_us = None;
+                        } else if order.cancel_requested {
+                            debug!(
+                                "{}: strategy_id={} margin 开仓单撤单已在进行中 order_id={}",
+                                Self::strategy_name(),
+                                self.strategy_id,
+                                order.order_id
+                            );
+                        } else if let (Some(timeout_us), submit_time) =
+                            (self.open_timeout_us, order.submit_time)
+                        {
+                            if submit_time > 0
+                                && current_tp.saturating_sub(submit_time) >= timeout_us
+                            {
+                                info!(
+                                    "{}: strategy_id={} margin 开仓单超时，尝试撤单 order_id={}",
+                                    Self::strategy_name(),
+                                    self.strategy_id,
+                                    order.order_id
+                                );
+
+                                if let Err(err) =
+                                    self.submit_margin_cancel(&order.symbol, order.order_id)
+                                {
+                                    warn!(
+                                        "{}: strategy_id={} margin 开仓撤单失败: {}",
+                                        Self::strategy_name(),
+                                        self.strategy_id,
+                                        err
+                                    );
+                                } else {
+                                    let mut manager = self.order_manager.borrow_mut();
+                                    if !manager.update(order.order_id, |o| {
+                                        o.cancel_requested = true;
+                                    }) {
+                                        warn!(
+                                            "{}: strategy_id={} 撤单后更新订单状态失败 id={}",
+                                            Self::strategy_name(),
+                                            self.strategy_id,
+                                            order.order_id
+                                        );
+                                    }
+                                    self.open_timeout_us = None;
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        {
+                            let mut flags = self.period_log_flags.borrow_mut();
+                            if !flags.margin_open_missing_logged {
+                                warn!(
+                                    "{}: strategy_id={} 未找到 margin 开仓单 id={}，清除本地状态",
+                                    Self::strategy_name(),
+                                    self.strategy_id,
+                                    self.margin_order_id
+                                );
+                                flags.margin_open_missing_logged = true;
+                            }
+                            flags.last_margin_open_status = None;
+                            flags.margin_open_absent_logged = false;
+                        }
+                        self.margin_order_id = 0;
+                        self.open_timeout_us = None;
+                        self.clear_cancel_wait();
+                    }
+                }
+            }
+        } else {
+            let mut flags = self.period_log_flags.borrow_mut();
+            flags.margin_open_absent_logged = false;
+            flags.margin_open_missing_logged = false;
+            flags.last_margin_open_status = None;
+            self.open_timeout_us = None;
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        self.alive_flag
     }
 }

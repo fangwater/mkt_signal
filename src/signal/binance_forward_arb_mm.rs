@@ -10,17 +10,16 @@ use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::exposure_manager::ExposureManager;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::price_table::PriceTable;
-use crate::signal::mm_backward::ReqBinSingleForwardArbHedgeMM;
 use crate::signal::common::TradingVenue;
+use crate::signal::mm_backward::ReqBinSingleForwardArbHedgeMM;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::strategy::{Strategy, order_update::OrderUpdate, trade_update::TradeUpdate};
+use crate::strategy::{order_update::OrderUpdate, trade_update::TradeUpdate, Strategy};
 use crate::trade_engine::trade_request::{
     BinanceCancelMarginOrderRequest, BinanceNewMarginOrderRequest, BinanceNewUMOrderRequest,
     TradeRequestType,
 };
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-
 
 /// 内部统一的 UM 订单更新结果，用于将 REST 推送的状态转换为易于判断的枚举。
 /// 这样可以避免在核心逻辑中反复解析字符串状态，也便于统一打印日志。
@@ -391,8 +390,6 @@ impl BinSingleForwardArbHedgeMMCtx {
     }
 }
 
-
-
 /// 策略运行参数
 #[derive(Debug, Clone)]
 pub struct BinSingleForwardArbStrategyMMCfg {
@@ -422,8 +419,6 @@ struct PeriodLogFlags {
 }
 
 const CANCEL_PENDING_TIMEOUT_US: i64 = 5_000_000; // 5s
-
-
 
 impl BinSingleForwardArbStrategyMM {
     pub fn new(
@@ -508,7 +503,6 @@ impl BinSingleForwardArbStrategyMM {
         )
     }
 
-
     pub fn set_signal_sender(&mut self, signal_tx: UnboundedSender<Bytes>) {
         self.signal_tx = Some(signal_tx);
     }
@@ -532,7 +526,6 @@ impl BinSingleForwardArbStrategyMM {
     fn register_um_hedge_order(&mut self, order_id: i64) {
         self.um_hedge_order_ids.push(order_id);
     }
-
 
     fn aggregate_um_hedge_position(&self) -> Option<(String, Side, f64)> {
         let manager = self.order_manager.borrow();
@@ -647,7 +640,6 @@ impl BinSingleForwardArbStrategyMM {
         }
         Ok(())
     }
-
 
     fn handle_signal_open(&mut self, signal: TradeSignal) {
         match signal.signal_type {
@@ -870,7 +862,6 @@ impl BinSingleForwardArbStrategyMM {
         Ok(())
     }
 
-
     fn is_active_open(&self) -> bool {
         if self.cancel_pending.get() && self.margin_order_id == 0 {
             let now = get_timestamp_us();
@@ -904,7 +895,6 @@ impl BinSingleForwardArbStrategyMM {
         } else if let Ok(mut flags) = self.period_log_flags.try_borrow_mut() {
             flags.cancel_pending_logged = false;
         }
-
 
         let manager_ref = self.order_manager.borrow();
         if self.margin_order_id == 0 {
@@ -1032,7 +1022,6 @@ impl BinSingleForwardArbStrategyMM {
 
         false
     }
-
 
     //2、传入binance_pm_spot_manager的ref，检测当前symbol的敞口
     //symbol是xxusdt，查看当前symbol的敞口是否大于总资产比例的3%
@@ -1785,12 +1774,6 @@ impl BinSingleForwardArbStrategyMM {
         }
     }
 
-
-
-
-
-
-
     fn um_order_label(&self, client_order_id: i64) -> &'static str {
         if self.um_hedge_order_ids.contains(&client_order_id) {
             "UM 对冲单"
@@ -1915,13 +1898,15 @@ impl BinSingleForwardArbStrategyMM {
                         order.record_exchange_create(update.event_time());
                     }
                     "PARTIALLY_FILLED" => {
-                        order.update_cumulative_filled_quantity(update.cumulative_filled_quantity());
+                        order
+                            .update_cumulative_filled_quantity(update.cumulative_filled_quantity());
                         order.record_exchange_update(update.event_time());
                     }
                     "FILLED" => {
                         order.update_status(OrderExecutionStatus::Filled);
                         order.set_filled_time(update.event_time());
-                        order.update_cumulative_filled_quantity(update.cumulative_filled_quantity());
+                        order
+                            .update_cumulative_filled_quantity(update.cumulative_filled_quantity());
                         order.record_exchange_update(update.event_time());
                     }
                     "CANCELED" | "EXPIRED" => {
@@ -2574,7 +2559,6 @@ fn format_decimal(value: f64) -> String {
     }
 }
 
-
 fn align_price_floor(value: f64, tick: f64) -> f64 {
     if tick <= 0.0 {
         return value;
@@ -2630,18 +2614,18 @@ fn to_fraction(value: f64) -> Option<(i64, i64)> {
 
 impl Strategy for BinSingleForwardArbStrategyMM {
     fn get_id(&self) -> i32 {
-        self.strategy_id 
-    } 
+        self.strategy_id
+    }
 
     fn symbol(&self) -> Option<&str> {
         Some(&self.symbol)
-    } 
-    
+    }
+
     fn is_strategy_order(&self, order_id: i64) -> bool {
         ((order_id >> 32) as i32) == self.strategy_id
-    } 
+    }
 
-    fn handle_trade_signal(&mut self, signal_raws: &Bytes) {
+    fn handle_signal(&mut self, signal_raws: &Bytes) {
         match TradeSignal::from_bytes(signal_raws) {
             Ok(signal) => self.handle_signal_open(signal),
             Err(err) => warn!(
@@ -2673,7 +2657,7 @@ impl Strategy for BinSingleForwardArbStrategyMM {
         }
     }
 
-    fn hanle_period_clock(&mut self, current_tp: i64) {
+    fn handle_period_clock(&mut self, current_tp: i64) {
         // 周期性检查：开仓限价/市价单是否长时间未成交，需要撤单
         if self.mode == StrategyMode::Open {
             if self.margin_order_id == 0 {
@@ -2685,25 +2669,25 @@ impl Strategy for BinSingleForwardArbStrategyMM {
                         self.strategy_id
                     );
                     flags.margin_open_absent_logged = true;
-                } 
-                flags.last_margin_open_status = None; 
-                self.open_timeout_us = None; 
+                }
+                flags.last_margin_open_status = None;
+                self.open_timeout_us = None;
             } else {
                 {
                     let mut flags = self.period_log_flags.borrow_mut();
                     flags.margin_open_absent_logged = false;
-                } 
+                }
                 let open_order = {
                     let manager = self.order_manager.borrow();
                     manager.get(self.margin_order_id)
-                }; 
+                };
 
                 match open_order {
-                    Some(order) => { 
+                    Some(order) => {
                         {
                             let mut flags = self.period_log_flags.borrow_mut();
                             flags.margin_open_missing_logged = false;
-                        } 
+                        }
                         if order.status.is_terminal() {
                             self.open_timeout_us = None;
                         } else if order.cancel_requested {
@@ -2750,8 +2734,8 @@ impl Strategy for BinSingleForwardArbStrategyMM {
                                     self.open_timeout_us = None;
                                 }
                             }
-                        } 
-                    } 
+                        }
+                    }
                     None => {
                         {
                             let mut flags = self.period_log_flags.borrow_mut();
@@ -2766,23 +2750,23 @@ impl Strategy for BinSingleForwardArbStrategyMM {
                             }
                             flags.last_margin_open_status = None;
                             flags.margin_open_absent_logged = false;
-                        } 
+                        }
                         self.margin_order_id = 0;
                         self.open_timeout_us = None;
                         self.clear_cancel_wait();
-                    } 
-                } 
-            } 
+                    }
+                }
+            }
         } else {
             let mut flags = self.period_log_flags.borrow_mut();
             flags.margin_open_absent_logged = false;
             flags.margin_open_missing_logged = false;
             flags.last_margin_open_status = None;
             self.open_timeout_us = None;
-        } 
+        }
     }
 
     fn is_active(&self) -> bool {
         self.is_active_open()
-    } 
+    }
 }
