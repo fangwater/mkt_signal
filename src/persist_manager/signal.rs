@@ -46,21 +46,17 @@ fn default_retry_backoff_ms() -> u64 {
     200
 }
 
-const CF_BIN_SINGLE_FORWARD_ARB_OPEN_MT: &str = "signals_bin_single_forward_arb_open_mt";
-const CF_BIN_SINGLE_FORWARD_ARB_OPEN_MM: &str = "signals_bin_single_forward_arb_open_mm";
-const CF_BIN_SINGLE_FORWARD_ARB_CANCEL_MT: &str = "signals_bin_single_forward_arb_cancel_mt";
-const CF_BIN_SINGLE_FORWARD_ARB_CANCEL_MM: &str = "signals_bin_single_forward_arb_cancel_mm";
-const CF_BIN_SINGLE_FORWARD_ARB_HEDGE_MT: &str = "signals_bin_single_forward_arb_hedge_mt";
-const CF_BIN_SINGLE_FORWARD_ARB_HEDGE_MM: &str = "signals_bin_single_forward_arb_hedge_mm";
+const CF_ARB_OPEN: &str = "signals_arb_open";
+const CF_ARB_HEDGE: &str = "signals_arb_hedge";
+const CF_ARB_CANCEL: &str = "signals_arb_cancel";
+const CF_ARB_CLOSE: &str = "signals_arb_close";
 
 pub fn required_column_families() -> &'static [&'static str] {
     &[
-        CF_BIN_SINGLE_FORWARD_ARB_OPEN_MT,
-        CF_BIN_SINGLE_FORWARD_ARB_OPEN_MM,
-        CF_BIN_SINGLE_FORWARD_ARB_CANCEL_MT,
-        CF_BIN_SINGLE_FORWARD_ARB_CANCEL_MM,
-        CF_BIN_SINGLE_FORWARD_ARB_HEDGE_MT,
-        CF_BIN_SINGLE_FORWARD_ARB_HEDGE_MM,
+        CF_ARB_OPEN,
+        CF_ARB_HEDGE,
+        CF_ARB_CANCEL,
+        CF_ARB_CLOSE,
     ]
 }
 
@@ -133,12 +129,9 @@ impl SignalPersistor {
 
 fn column_family_for_signal(signal_type: &SignalType) -> Option<&'static str> {
     match signal_type {
-        SignalType::BinSingleForwardArbOpenMT => Some(CF_BIN_SINGLE_FORWARD_ARB_OPEN_MT),
-        SignalType::BinSingleForwardArbOpenMM => Some(CF_BIN_SINGLE_FORWARD_ARB_OPEN_MM),
-        SignalType::BinSingleForwardArbCancelMT => Some(CF_BIN_SINGLE_FORWARD_ARB_CANCEL_MT),
-        SignalType::BinSingleForwardArbCancelMM => Some(CF_BIN_SINGLE_FORWARD_ARB_CANCEL_MM),
-        SignalType::BinSingleForwardArbHedgeMT => Some(CF_BIN_SINGLE_FORWARD_ARB_HEDGE_MT),
-        SignalType::BinSingleForwardArbHedgeMM => Some(CF_BIN_SINGLE_FORWARD_ARB_HEDGE_MM),
-        _ => None,
+        SignalType::ArbOpen => Some(CF_ARB_OPEN),
+        SignalType::ArbHedge => Some(CF_ARB_HEDGE),
+        SignalType::ArbCancel => Some(CF_ARB_CANCEL),
+        SignalType::ArbClose => Some(CF_ARB_CLOSE),
     }
 }
