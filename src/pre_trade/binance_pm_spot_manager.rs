@@ -56,6 +56,13 @@ pub struct BinanceSpotBalance {
     pub negative_balance: bool,
 }
 
+impl BinanceSpotBalance {
+    /// 交割合计减去借币与利息，得到可反映净敞口的数量（可能为负）。
+    pub fn net_asset(&self) -> f64 {
+        self.cross_margin_asset - self.cross_margin_borrowed - self.cross_margin_interest
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct RawSpotBalance {
     asset: String,
@@ -83,7 +90,7 @@ struct RawSpotBalance {
     update_time: i64,
     #[serde(rename = "negativeBalance", default)]
     negative_balance: String,
-} 
+}
 
 impl TryFrom<RawSpotBalance> for BinanceSpotBalance {
     type Error = anyhow::Error;

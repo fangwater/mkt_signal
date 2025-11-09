@@ -26,10 +26,10 @@ use crate::signal::binance_forward_arb_mt::{
 use crate::signal::record::SignalRecordMessage;
 use crate::signal::trade_signal::SignalType;
 
-#[derive(Clone)] 
+#[derive(Clone)]
 pub struct AppState {
     store: Arc<RocksDbStore>,
-} 
+}
 
 pub async fn serve(cfg: HttpConfig, store: Arc<RocksDbStore>) -> Result<()> {
     let addr: SocketAddr = cfg
@@ -117,7 +117,7 @@ async fn list_signals(
         result.push(dto);
     }
 
-    Ok(Json(result)) 
+    Ok(Json(result))
 }
 
 async fn get_signal(
@@ -125,8 +125,8 @@ async fn get_signal(
     Path((kind, key)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, HttpError> {
     let signal_kind = SignalKind::from_path(&kind).ok_or(HttpError::not_found("未知的信号类型"))?;
-    let value = state 
-        .store 
+    let value = state
+        .store
         .get(signal_kind.cf_name(), key.as_bytes())
         .map_err(|err| HttpError::internal(err.context("读取 rocksdb 失败")))?;
     let Some(value_bytes) = value else {
@@ -135,13 +135,13 @@ async fn get_signal(
 
     let dto = build_dto(signal_kind, key, value_bytes)
         .map_err(|err| HttpError::internal(err.context("解析信号数据失败")))?;
-    Ok(Json(dto)) 
-} 
+    Ok(Json(dto))
+}
 
 #[derive(Debug, Deserialize)]
 struct DeleteBulkReq {
     keys: Vec<String>,
-} 
+}
 
 async fn delete_signals_bulk(
     State(state): State<AppState>,
@@ -163,7 +163,7 @@ async fn delete_signals_bulk(
     Ok(Json(DeleteResp {
         deleted: payload.keys.len(),
     }))
-} 
+}
 
 async fn export_signals(
     State(state): State<AppState>,
@@ -188,12 +188,12 @@ async fn export_signals(
             reverse,
             limit,
         )
-        .map_err(|err| HttpError::internal(err.context("扫描 rocksdb 失败")))?; 
+        .map_err(|err| HttpError::internal(err.context("扫描 rocksdb 失败")))?;
 
     let parquet_bytes =
-        build_parquet_bytes(signal_kind, entries, &range).map_err(HttpError::internal)?; 
+        build_parquet_bytes(signal_kind, entries, &range).map_err(HttpError::internal)?;
 
-    let filename = format!("{}_{}.parquet", kind, Utc::now().format("%Y%m%d_%H%M%S")); 
+    let filename = format!("{}_{}.parquet", kind, Utc::now().format("%Y%m%d_%H%M%S"));
 
     axum::response::Response::builder()
         .status(StatusCode::OK)
@@ -216,7 +216,7 @@ async fn delete_signal_single(
         .delete(signal_kind.cf_name(), key.as_bytes())
         .map_err(|err| HttpError::internal(err.context("删除记录失败")))?;
     Ok(Json(DeleteResp { deleted: 1 }))
-} 
+}
 
 #[derive(Debug, Serialize)]
 struct DeleteResp {
@@ -287,9 +287,9 @@ impl SignalKind {
             "signals_bin_single_forward_arb_hedge_mt" => Some(Self::BinSingleForwardArbHedgeMT),
             "signals_bin_single_forward_arb_hedge_mm" => Some(Self::BinSingleForwardArbHedgeMM),
             _ => None,
-        } 
-    } 
-    
+        }
+    }
+
     fn cf_name(&self) -> &'static str {
         match self {
             SignalKind::BinSingleForwardArbOpenMT => "signals_bin_single_forward_arb_open_mt",
@@ -298,9 +298,9 @@ impl SignalKind {
             SignalKind::BinSingleForwardArbCancelMM => "signals_bin_single_forward_arb_cancel_mm",
             SignalKind::BinSingleForwardArbHedgeMT => "signals_bin_single_forward_arb_hedge_mt",
             SignalKind::BinSingleForwardArbHedgeMM => "signals_bin_single_forward_arb_hedge_mm",
-        } 
-    } 
-} 
+        }
+    }
+}
 
 fn build_dto(signal_kind: SignalKind, key: String, value_bytes: Vec<u8>) -> Result<SignalDto> {
     let (ts_us, strategy_id) = parse_key(&key)?;
@@ -318,8 +318,8 @@ fn build_dto(signal_kind: SignalKind, key: String, value_bytes: Vec<u8>) -> Resu
         context: context_json,
         payload_base64,
         record_ts_us: (record.timestamp_us > 0).then_some(record.timestamp_us),
-    }) 
-} 
+    })
+}
 
 fn parse_key(key: &str) -> Result<(u64, i32)> {
     let mut parts = key.splitn(2, '_');
@@ -492,7 +492,7 @@ fn build_parquet_open(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> 
         funding_ma_col.push(open_ctx.funding_ma);
         predicted_funding_rate_col.push(open_ctx.predicted_funding_rate);
         loan_rate_col.push(open_ctx.loan_rate);
-    } 
+    }
 
     let mut df = DataFrame::new(vec![
         Series::new("key".into(), key_col),
@@ -595,20 +595,20 @@ fn build_parquet_hedge_mt(
     for (key_bytes, value_bytes) in entries {
         let key = String::from_utf8(key_bytes)?;
         let (ts_us, strategy_id) = parse_key(&key)?;
-        if !range.contains(ts_us) { 
-            continue; 
-        } 
+        if !range.contains(ts_us) {
+            continue;
+        }
         let record = SignalRecordMessage::from_bytes(Bytes::from(value_bytes))?;
         let ctx = BinSingleForwardArbHedgeMTCtx::from_bytes(Bytes::from(record.context.clone()))
             .map_err(|err| anyhow!("failed to decode BinSingleForwardArbHedgeMTCtx: {err}"))?;
 
-        key_col.push(key); 
-        ts_us_col.push(ts_us as i64); 
-        strategy_id_col.push(strategy_id); 
-        record_ts_col.push(record.timestamp_us); 
-        client_order_id_col.push(ctx.client_order_id); 
-        hedge_qty_col.push(ctx.hedge_qty); 
-    } 
+        key_col.push(key);
+        ts_us_col.push(ts_us as i64);
+        strategy_id_col.push(strategy_id);
+        record_ts_col.push(record.timestamp_us);
+        client_order_id_col.push(ctx.client_order_id);
+        hedge_qty_col.push(ctx.hedge_qty);
+    }
 
     let columns = vec![
         Series::new("key".into(), key_col),
@@ -617,12 +617,12 @@ fn build_parquet_hedge_mt(
         Series::new("record_ts_us".into(), record_ts_col),
         Series::new("client_order_id".into(), client_order_id_col),
         Series::new("hedge_qty".into(), hedge_qty_col),
-    ]; 
+    ];
 
     let mut df = DataFrame::new(columns)?;
     let mut buf = Vec::new();
     ParquetWriter::new(&mut buf).finish(&mut df)?;
-    Ok(buf) 
+    Ok(buf)
 }
 
 fn build_parquet_hedge_mm(
@@ -657,24 +657,24 @@ fn build_parquet_hedge_mm(
         let ctx = BinSingleForwardArbHedgeMMCtx::from_bytes(Bytes::from(record.context.clone()))
             .map_err(|err| anyhow!("failed to decode BinSingleForwardArbHedgeMMCtx: {err}"))?;
 
-        key_col.push(key); 
-        ts_us_col.push(ts_us as i64); 
-        strategy_id_col.push(strategy_id); 
-        record_ts_col.push(record.timestamp_us); 
-        client_order_id_col.push(ctx.client_order_id); 
-        hedge_qty_col.push(ctx.hedge_qty); 
-        hedge_side_col.push(ctx.hedge_side.as_str().to_string()); 
-        limit_price_col.push(ctx.limit_price); 
-        price_tick_col.push(ctx.price_tick); 
-        maker_only_col.push(ctx.maker_only); 
-        exp_time_col.push(ctx.exp_time); 
+        key_col.push(key);
+        ts_us_col.push(ts_us as i64);
+        strategy_id_col.push(strategy_id);
+        record_ts_col.push(record.timestamp_us);
+        client_order_id_col.push(ctx.client_order_id);
+        hedge_qty_col.push(ctx.hedge_qty);
+        hedge_side_col.push(ctx.hedge_side.as_str().to_string());
+        limit_price_col.push(ctx.limit_price);
+        price_tick_col.push(ctx.price_tick);
+        maker_only_col.push(ctx.maker_only);
+        exp_time_col.push(ctx.exp_time);
         spot_bid_col.push(ctx.spot_bid_price);
         spot_ask_col.push(ctx.spot_ask_price);
         spot_ts_col.push(ctx.spot_ts);
         fut_bid_col.push(ctx.fut_bid_price);
         fut_ask_col.push(ctx.fut_ask_price);
         fut_ts_col.push(ctx.fut_ts);
-    } 
+    }
 
     let columns = vec![
         Series::new("key".into(), key_col),
@@ -694,10 +694,10 @@ fn build_parquet_hedge_mm(
         Series::new("fut_bid_price".into(), fut_bid_col),
         Series::new("fut_ask_price".into(), fut_ask_col),
         Series::new("fut_ts".into(), fut_ts_col),
-    ]; 
+    ];
 
     let mut df = DataFrame::new(columns)?;
     let mut buf = Vec::new();
     ParquetWriter::new(&mut buf).finish(&mut df)?;
-    Ok(buf) 
+    Ok(buf)
 }

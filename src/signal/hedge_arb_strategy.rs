@@ -1,5 +1,3 @@
-use std::rc::Rc;
-use log::{debug, error, info, warn};
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderType, Side};
 use crate::signal::cancel_signal::ArbCancelCtx;
@@ -8,41 +6,36 @@ use crate::signal::hedge_signal::ArbHedgeCtx;
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::order_update::OrderUpdate;
-use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::risk_checker::PreTradeEnv;
+use crate::strategy::trade_update::TradeUpdate;
+use log::{debug, error, info, warn};
+use std::rc::Rc;
 pub struct HedgeArbStrategy {
-    pub strategy_id: i32, //策略id
-    pub symbol: String, //交易的统一symbol (开仓侧symbol)
-    pub open_order_id: i64, //开仓单唯一，报多单对应多个Strategy
-    pub hedge_order_ids: Vec<i64>, //对冲单会产生一个or多个，因为部分成交
-    pub open_timeout_us: Option<i64>, //开仓单最长挂单时间，超过撤销
+    pub strategy_id: i32,               //策略id
+    pub symbol: String,                 //交易的统一symbol (开仓侧symbol)
+    pub open_order_id: i64,             //开仓单唯一，报多单对应多个Strategy
+    pub hedge_order_ids: Vec<i64>,      //对冲单会产生一个or多个，因为部分成交
+    pub open_timeout_us: Option<i64>,   //开仓单最长挂单时间，超过撤销
     pub hedge_timeout_us: Option<i64>, //对冲单最长挂单时间，超过撤销，度过是maker-taker模式，则没有这个timeout，设置为None
-    pub order_seq: u32, //订单号计数器
+    pub order_seq: u32,                //订单号计数器
     pub pre_trade_env: Rc<PreTradeEnv>, //预处理global变量封装
-    pub cumulative_hedged_qty: f64, //累计对冲数量
-    pub cumulative_open_qty: f64, //累计开仓数量
-    pub alive_flag: bool, //策略是否存活
-    pub hedge_symbol: String, //对冲侧symbol
-    pub hedge_venue: TradingVenue, //对冲侧交易场所
-    pub hedge_side: Side, //对冲侧方向
+    pub cumulative_hedged_qty: f64,    //累计对冲数量
+    pub cumulative_open_qty: f64,      //累计开仓数量
+    pub alive_flag: bool,              //策略是否存活
+    pub hedge_symbol: String,          //对冲侧symbol
+    pub hedge_venue: TradingVenue,     //对冲侧交易场所
+    pub hedge_side: Side,              //对冲侧方向
 }
 
-
 impl HedgeArbStrategy {
-    pub fn new(
-        id: i32,
-        symbol: String,
-        env: Rc<PreTradeEnv>,
-        open_timeout_us: Option<i64>,
-        hedge_timeout_us: Option<i64>,
-    ) -> Self {
+    pub fn new(id: i32, symbol: String, env: Rc<PreTradeEnv>) -> Self {
         let strategy = Self {
             strategy_id: id,
             symbol,
             open_order_id: 0,
             hedge_order_ids: Vec::new(),
-            open_timeout_us,
-            hedge_timeout_us,
+            open_timeout_us: None,
+            hedge_timeout_us: None,
             order_seq: 0,
             pre_trade_env: env.clone(),
             cumulative_hedged_qty: 0.0,
@@ -50,7 +43,7 @@ impl HedgeArbStrategy {
             alive_flag: true,
             hedge_symbol: String::new(),
             hedge_venue: TradingVenue::BinanceMargin, // 默认值，将在开仓时更新
-            hedge_side: Side::Buy, // 默认值，将在开仓时更新
+            hedge_side: Side::Buy,                    // 默认值，将在开仓时更新
         };
         strategy
     }
@@ -74,13 +67,20 @@ impl HedgeArbStrategy {
 
         // 1、检查杠杆, 失败打印error
         if let Err(e) = self.pre_trade_env.risk_checker.check_leverage() {
-            error!("HedgeArbStrategy: strategy_id={} 杠杆风控检查失败: {}，标记策略为不活跃", self.strategy_id, e);
+            error!(
+                "HedgeArbStrategy: strategy_id={} 杠杆风控检查失败: {}，标记策略为不活跃",
+                self.strategy_id, e
+            );
             self.alive_flag = false;
             return;
         }
 
         // 2、检查symbol的敞口，失败打印error
-        if let Err(e) = self.pre_trade_env.risk_checker.check_symbol_exposure(&self.symbol) {
+        if let Err(e) = self
+            .pre_trade_env
+            .risk_checker
+            .check_symbol_exposure(&self.symbol)
+        {
             error!("HedgeArbStrategy: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃", self.strategy_id, self.symbol, e);
             self.alive_flag = false;
             return;
@@ -88,7 +88,10 @@ impl HedgeArbStrategy {
 
         // 3、检查总敞口，失败打印error
         if let Err(e) = self.pre_trade_env.risk_checker.check_total_exposure() {
-            error!("HedgeArbStrategy: strategy_id={} 总敞口风控检查失败: {}，标记策略为不活跃", self.strategy_id, e);
+            error!(
+                "HedgeArbStrategy: strategy_id={} 总敞口风控检查失败: {}，标记策略为不活跃",
+                self.strategy_id, e
+            );
             self.alive_flag = false;
             return;
         }
@@ -96,7 +99,11 @@ impl HedgeArbStrategy {
         // 4、检查限价挂单数量限制（如果是限价单）
         let order_type = OrderType::from_u8(ctx.order_type);
         if order_type == Some(OrderType::Limit) {
-            if let Err(e) = self.pre_trade_env.risk_checker.check_pending_limit_order(&self.symbol) {
+            if let Err(e) = self
+                .pre_trade_env
+                .risk_checker
+                .check_pending_limit_order(&self.symbol)
+            {
                 error!("HedgeArbStrategy: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃", self.strategy_id, self.symbol, e);
                 self.alive_flag = false;
                 return;
@@ -172,15 +179,14 @@ impl HedgeArbStrategy {
         };
 
         // 9、考虑修正量，判断下单后是否会大于max u
-        if let Err(e) = self.pre_trade_env.risk_checker.ensure_max_pos_u(
-            &symbol,
-            aligned_qty,
-            aligned_price,
-        ) {
+        if let Err(e) =
+            self.pre_trade_env
+                .risk_checker
+                .ensure_max_pos_u(&symbol, aligned_qty, aligned_price)
+        {
             error!(
                 "HedgeArbStrategy: strategy_id={} 仓位限制检查失败: {}，标记策略为不活跃",
-                self.strategy_id,
-                e
+                self.strategy_id, e
             );
             self.alive_flag = false;
             return;
@@ -188,17 +194,25 @@ impl HedgeArbStrategy {
 
         // 10、用修正量价，开仓订单记录到order manager
         // todo: 订单持久化直接写死在manager中
-        let client_order_id = self.pre_trade_env.risk_checker.order_manager.borrow_mut().create_order(
-            venue,
-            order_id,
-            OrderType::from_u8(ctx.order_type).unwrap(),
-            symbol.clone(),
-            Side::from_u8(ctx.side).unwrap(),
-            aligned_qty,
-            aligned_price,
-            ts,
+        let client_order_id = self
+            .pre_trade_env
+            .risk_checker
+            .order_manager
+            .borrow_mut()
+            .create_order(
+                venue,
+                order_id,
+                OrderType::from_u8(ctx.order_type).unwrap(),
+                symbol.clone(),
+                Side::from_u8(ctx.side).unwrap(),
+                aligned_qty,
+                aligned_price,
+                ts,
+            );
+        log::info!(
+            "created open order with client_order_id: {}",
+            client_order_id
         );
-        log::info!("created open order with client_order_id: {}", client_order_id);
 
         // 9、推送开仓订单到交易引擎
         if let Err(e) = self.create_and_send_order(client_order_id, "开仓", &symbol) {
@@ -215,8 +229,7 @@ impl HedgeArbStrategy {
         } else {
             warn!(
                 "HedgeArbStrategy: strategy_id={} 对冲信号的数量无效: {}",
-                self.strategy_id,
-                ctx.hedge_qty
+                self.strategy_id, ctx.hedge_qty
             );
             return Err(format!("对冲数量无效: {}", ctx.hedge_qty));
         };
@@ -245,8 +258,7 @@ impl HedgeArbStrategy {
         ) {
             debug!(
                 "HedgeArbStrategy: strategy_id={} 对冲订单不满足最小要求: {}，等待更多成交",
-                self.strategy_id,
-                e
+                self.strategy_id, e
             );
             return Ok(());
         }
@@ -261,27 +273,32 @@ impl HedgeArbStrategy {
 
         // 根据对冲信号确定订单类型，确定是maker对冲，还是taker对冲
         let order_type = if ctx.is_maker() {
-            OrderType::Limit  // Maker订单使用限价单
+            OrderType::Limit // Maker订单使用限价单
         } else {
-            OrderType::Market  // Taker订单使用市价单
+            OrderType::Market // Taker订单使用市价单
         };
 
         // 获取对冲方向
-        let hedge_side = ctx.get_side().ok_or_else(|| {
-            format!("无效的对冲方向: {}", ctx.hedge_side)
-        })?;
+        let hedge_side = ctx
+            .get_side()
+            .ok_or_else(|| format!("无效的对冲方向: {}", ctx.hedge_side))?;
 
         // 6. 创建对冲订单并记录到order manager
-        let hedge_client_order_id = self.pre_trade_env.risk_checker.order_manager.borrow_mut().create_order(
-            hedge_venue,
-            hedge_order_id,
-            order_type,
-            hedge_symbol.clone(),
-            hedge_side,
-            aligned_qty,
-            aligned_price,
-            ts,
-        );
+        let hedge_client_order_id = self
+            .pre_trade_env
+            .risk_checker
+            .order_manager
+            .borrow_mut()
+            .create_order(
+                hedge_venue,
+                hedge_order_id,
+                order_type,
+                hedge_symbol.clone(),
+                hedge_side,
+                aligned_qty,
+                aligned_price,
+                ts,
+            );
 
         log::info!(
             "HedgeArbStrategy: created hedge order with client_order_id: {} for strategy_id: {}",
@@ -333,7 +350,12 @@ impl HedgeArbStrategy {
         order_type_str: &str,
         symbol: &str,
     ) -> Result<(), String> {
-        let mut order = self.pre_trade_env.risk_checker.order_manager.borrow_mut().get(client_order_id);
+        let mut order = self
+            .pre_trade_env
+            .risk_checker
+            .order_manager
+            .borrow_mut()
+            .get(client_order_id);
         if let Some(order) = order.as_mut() {
             match order.get_order_request_bytes() {
                 Ok(req_bin) => {
@@ -365,38 +387,48 @@ impl HedgeArbStrategy {
         } else {
             error!(
                 "HedgeArbStrategy: strategy_id={} symbol={} 未找到创建的{}订单 client_order_id={}",
-                self.strategy_id,
-                symbol,
-                order_type_str,
-                client_order_id
+                self.strategy_id, symbol, order_type_str, client_order_id
             );
             self.alive_flag = false;
             Err(format!("未找到创建的{}订单", order_type_str))
         }
     }
 
-
     // cancel的本质就是构造取消，实际处理的是account monitor的撤销回报
     fn handle_arb_cancel_signal(&mut self, _ctx: ArbCancelCtx) -> Result<(), String> {
         // 从 order manager 获取开仓订单
-        let order = self.pre_trade_env.risk_checker.order_manager.borrow().get(self.open_order_id);
+        let order = self
+            .pre_trade_env
+            .risk_checker
+            .order_manager
+            .borrow()
+            .get(self.open_order_id);
         if let Some(order) = order {
             // 使用 order 的 get_order_cancel_bytes 方法获取撤单请求
             match order.get_order_cancel_bytes() {
                 Ok(cancel_bytes) => {
                     // 发送撤单请求到交易引擎
                     if let Err(e) = self.pre_trade_env.trade_request_tx.send(cancel_bytes) {
-                        error!("HedgeArbStrategy: strategy_id={} 发送撤单请求失败: {}", self.strategy_id, e);
+                        error!(
+                            "HedgeArbStrategy: strategy_id={} 发送撤单请求失败: {}",
+                            self.strategy_id, e
+                        );
                         return Err(format!("发送撤单请求失败: {}", e));
                     }
                 }
                 Err(e) => {
-                    error!("HedgeArbStrategy: strategy_id={} 获取撤单请求字节失败: {}", self.strategy_id, e);
+                    error!(
+                        "HedgeArbStrategy: strategy_id={} 获取撤单请求字节失败: {}",
+                        self.strategy_id, e
+                    );
                     return Err(format!("获取撤单请求字节失败: {}", e));
                 }
             }
         } else {
-            warn!("HedgeArbStrategy: strategy_id={} 未找到要撤销的订单 order_id={}",self.strategy_id, self.open_order_id);
+            warn!(
+                "HedgeArbStrategy: strategy_id={} 未找到要撤销的订单 order_id={}",
+                self.strategy_id, self.open_order_id
+            );
             return Err(format!("未找到要撤销的订单"));
         }
 
@@ -412,7 +444,10 @@ impl HedgeArbStrategy {
                         self.handle_arb_open_signal(ctx);
                     }
                     Err(err) => {
-                        error!("HedgeArbStrategy: strategy_id={} 解析开仓信号上下文失败: {}", self.strategy_id, err);
+                        error!(
+                            "HedgeArbStrategy: strategy_id={} 解析开仓信号上下文失败: {}",
+                            self.strategy_id, err
+                        );
                     }
                 }
             }
@@ -421,11 +456,17 @@ impl HedgeArbStrategy {
                 match ArbCancelCtx::from_bytes(signal.context.clone()) {
                     Ok(ctx) => {
                         if let Err(err) = self.handle_arb_cancel_signal(ctx) {
-                            warn!("HedgeArbStrategy: strategy_id={} 撤单处理失败: {}", self.strategy_id, err); 
+                            warn!(
+                                "HedgeArbStrategy: strategy_id={} 撤单处理失败: {}",
+                                self.strategy_id, err
+                            );
                         }
                     }
                     Err(err) => {
-                        error!("HedgeArbStrategy: strategy_id={} 解析撤单信号上下文失败: {}", self.strategy_id, err);
+                        error!(
+                            "HedgeArbStrategy: strategy_id={} 解析撤单信号上下文失败: {}",
+                            self.strategy_id, err
+                        );
                     }
                 }
             }
@@ -434,16 +475,25 @@ impl HedgeArbStrategy {
                 match ArbHedgeCtx::from_bytes(signal.context.clone()) {
                     Ok(ctx) => {
                         if let Err(err) = self.handle_arb_hedge_signal(ctx) {
-                            warn!("HedgeArbStrategy: strategy_id={} 对冲处理失败: {}", self.strategy_id, err);
+                            warn!(
+                                "HedgeArbStrategy: strategy_id={} 对冲处理失败: {}",
+                                self.strategy_id, err
+                            );
                         }
                     }
                     Err(err) => {
-                        error!("HedgeArbStrategy: strategy_id={} 解析对冲信号上下文失败: {}", self.strategy_id, err);
+                        error!(
+                            "HedgeArbStrategy: strategy_id={} 解析对冲信号上下文失败: {}",
+                            self.strategy_id, err
+                        );
                     }
                 }
             }
             other => {
-                debug!("HedgeArbStrategy: strategy_id={} 忽略信号类型 {:?}", self.strategy_id, other);
+                debug!(
+                    "HedgeArbStrategy: strategy_id={} 忽略信号类型 {:?}",
+                    self.strategy_id, other
+                );
             }
         }
     }
@@ -460,7 +510,12 @@ impl HedgeArbStrategy {
                 );
 
                 // 获取开仓订单并直接发送撤单请求
-                let order = self.pre_trade_env.risk_checker.order_manager.borrow().get(self.open_order_id);
+                let order = self
+                    .pre_trade_env
+                    .risk_checker
+                    .order_manager
+                    .borrow()
+                    .get(self.open_order_id);
                 if let Some(order) = order {
                     match order.get_order_cancel_bytes() {
                         Ok(cancel_bytes) => {
@@ -502,11 +557,18 @@ impl HedgeArbStrategy {
 
                 // 遍历所有对冲订单，直接撤单
                 for &hedge_order_id in &self.hedge_order_ids.clone() {
-                    let order = self.pre_trade_env.risk_checker.order_manager.borrow().get(hedge_order_id);
+                    let order = self
+                        .pre_trade_env
+                        .risk_checker
+                        .order_manager
+                        .borrow()
+                        .get(hedge_order_id);
                     if let Some(order) = order {
                         match order.get_order_cancel_bytes() {
                             Ok(cancel_bytes) => {
-                                if let Err(e) = self.pre_trade_env.trade_request_tx.send(cancel_bytes) {
+                                if let Err(e) =
+                                    self.pre_trade_env.trade_request_tx.send(cancel_bytes)
+                                {
                                     error!(
                                         "HedgeArbStrategy: strategy_id={} 发送对冲撤单请求失败 order_id={}: {}",
                                         self.strategy_id, hedge_order_id, e
@@ -543,7 +605,12 @@ impl HedgeArbStrategy {
         // 获取最后一个对冲订单ID
         if let Some(&last_hedge_id) = self.hedge_order_ids.last() {
             // 从order manager获取订单
-            let order = self.pre_trade_env.risk_checker.order_manager.borrow().get(last_hedge_id);
+            let order = self
+                .pre_trade_env
+                .risk_checker
+                .order_manager
+                .borrow()
+                .get(last_hedge_id);
             if let Some(order) = order {
                 // 检查是否不是终结状态（即是pending状态）
                 return !order.status.is_terminal();
@@ -553,30 +620,29 @@ impl HedgeArbStrategy {
         false
     }
 
-
     /// 以市价单对冲
     ///
     /// # Arguments
     /// * `venue` - 对冲交易场所
     /// * `side` - 对冲方向
     /// * `eff_qty` - 有效对冲量（累计成交量 - 累计对冲量）
-    fn hedge_as_market_order(&mut self, venue: TradingVenue, side: Side, eff_qty: f64) -> Result<(), String> {
+    fn hedge_as_market_order(
+        &mut self,
+        venue: TradingVenue,
+        side: Side,
+        eff_qty: f64,
+    ) -> Result<(), String> {
         if eff_qty <= 1e-8 {
             debug!(
                 "HedgeArbStrategy: strategy_id={} 对冲量过小 eff_qty={:.8}，跳过",
-                self.strategy_id,
-                eff_qty
+                self.strategy_id, eff_qty
             );
             return Ok(());
         }
 
         // 1. 创建对冲上下文（市价单模式，exp_time = 0）
-        let mut hedge_ctx = ArbHedgeCtx::new_taker(
-            self.strategy_id,
-            self.open_order_id,
-            eff_qty,
-            side.to_u8(),
-        );
+        let mut hedge_ctx =
+            ArbHedgeCtx::new_taker(self.strategy_id, self.open_order_id, eff_qty, side.to_u8());
 
         // 2. 设置对冲symbol
         hedge_ctx.set_hedging_symbol(&self.symbol);
@@ -584,8 +650,8 @@ impl HedgeArbStrategy {
         // 3. 设置对冲leg（市价单不需要盘口价格，设置为0）
         hedge_ctx.hedging_leg = crate::signal::common::TradingLeg {
             venue: venue.to_u8(),
-            bid0: 0.0,  // 市价单不需要盘口价格
-            ask0: 0.0,  // 市价单不需要盘口价格
+            bid0: 0.0, // 市价单不需要盘口价格
+            ask0: 0.0, // 市价单不需要盘口价格
         };
 
         // 4. 设置市场数据时间戳
@@ -611,10 +677,7 @@ impl HedgeArbStrategy {
 
             debug!(
                 "HedgeArbStrategy: strategy_id={} 发送对冲信号成功 venue={:?} side={:?} qty={:.8}",
-                self.strategy_id,
-                venue,
-                side,
-                eff_qty
+                self.strategy_id, venue, side, eff_qty
             );
         } else {
             warn!(
@@ -633,12 +696,16 @@ impl HedgeArbStrategy {
     /// * `venue` - 对冲交易场所
     /// * `side` - 对冲方向
     /// * `eff_qty` - 有效对冲量（累计成交量 - 累计对冲量）
-    fn hedge_as_limit_order(&mut self, venue: TradingVenue, side: Side, eff_qty: f64) -> Result<(), String> {
+    fn hedge_as_limit_order(
+        &mut self,
+        venue: TradingVenue,
+        side: Side,
+        eff_qty: f64,
+    ) -> Result<(), String> {
         if eff_qty <= 1e-8 {
             debug!(
                 "HedgeArbStrategy: strategy_id={} 限价单对冲量过小 eff_qty={:.8}，跳过",
-                self.strategy_id,
-                eff_qty
+                self.strategy_id, eff_qty
             );
             return Ok(());
         }
@@ -665,10 +732,7 @@ impl HedgeArbStrategy {
 
             debug!(
                 "HedgeArbStrategy: strategy_id={} 发送对冲查询成功 venue={:?} side={:?} qty={:.8}",
-                self.strategy_id,
-                venue,
-                side,
-                eff_qty
+                self.strategy_id, venue, side, eff_qty
             );
         } else {
             warn!(
@@ -693,7 +757,9 @@ impl HedgeArbStrategy {
     fn try_hedge_with_residual(&mut self, base_qty: f64) -> (bool, f64, f64) {
         // 1. 计算总待对冲量（基础量 + 残值表中的残余量）
         let mut total_pending_qty = base_qty;
-        let residual_qty = self.pre_trade_env.clear_hedge_residual(&self.hedge_symbol, self.hedge_venue);
+        let residual_qty = self
+            .pre_trade_env
+            .clear_hedge_residual(&self.hedge_symbol, self.hedge_venue);
         total_pending_qty += residual_qty;
 
         info!(
@@ -702,12 +768,15 @@ impl HedgeArbStrategy {
         );
 
         // 2. 检查是否满足最小交易要求
-        let can_hedge: bool = self.pre_trade_env.check_min_trading_requirements(
-            self.hedge_venue,
-            &self.hedge_symbol,
-            total_pending_qty,
-            None,
-        ).is_ok();
+        let can_hedge: bool = self
+            .pre_trade_env
+            .check_min_trading_requirements(
+                self.hedge_venue,
+                &self.hedge_symbol,
+                total_pending_qty,
+                None,
+            )
+            .is_ok();
 
         if !can_hedge {
             // 不满足最小交易要求，累加到残值表
@@ -715,7 +784,7 @@ impl HedgeArbStrategy {
                 self.pre_trade_env.inc_hedge_residual(
                     self.hedge_symbol.clone(),
                     self.hedge_venue,
-                    total_pending_qty
+                    total_pending_qty,
                 );
                 info!(
                     "HedgeArbStrategy: strategy_id={} 待对冲量={:.8} 不满足最小交易要求，累加到残余量表",
@@ -767,7 +836,7 @@ impl HedgeArbStrategy {
                     self.pre_trade_env.inc_hedge_residual(
                         self.hedge_symbol.clone(),
                         self.hedge_venue,
-                        total_pending_qty
+                        total_pending_qty,
                     );
                     (false, 0.0, total_pending_qty)
                 } else {
@@ -789,7 +858,10 @@ impl HedgeArbStrategy {
         });
         drop(order_manager);
         if !updated {
-            warn!("HedgeArbStrategy: strategy_id={} 未找到开仓订单 order_id={}", self.strategy_id, order_id);
+            warn!(
+                "HedgeArbStrategy: strategy_id={} 未找到开仓订单 order_id={}",
+                self.strategy_id, order_id
+            );
             return;
         }
         // 2. 计算待对冲量 = 已经成交的量 - 已经对冲的量
@@ -824,7 +896,11 @@ impl HedgeArbStrategy {
     fn process_hedge_leg_cancel(&mut self, cancel_update: &dyn OrderUpdate) {
         // 只有 MM 模式才会出现对冲侧的 cancel（因为 MT 模式是市价单，立即成交）
         if self.hedge_timeout_us.is_none() {
-            error!("HedgeArbStrategy: strategy_id={} MT模式不应该有对冲侧撤单，订单ID={}", self.strategy_id, cancel_update.client_order_id());
+            error!(
+                "HedgeArbStrategy: strategy_id={} MT模式不应该有对冲侧撤单，订单ID={}",
+                self.strategy_id,
+                cancel_update.client_order_id()
+            );
             return;
         }
         // 1. 更新订单状态为 Cancelled
@@ -840,7 +916,10 @@ impl HedgeArbStrategy {
         drop(order_manager);
 
         if !updated {
-            warn!("HedgeArbStrategy: strategy_id={} 未找到对冲订单 order_id={}", self.strategy_id, order_id);
+            warn!(
+                "HedgeArbStrategy: strategy_id={} 未找到对冲订单 order_id={}",
+                self.strategy_id, order_id
+            );
             return;
         }
 
@@ -875,9 +954,11 @@ impl HedgeArbStrategy {
             match trade.order_status() {
                 Some(OrderStatus::Filled) => {
                     // 计算待对冲量 = 已经成交的量 - 已经对冲的量
-                    let base_pending_qty: f64 = self.cumulative_open_qty - self.cumulative_hedged_qty;
+                    let base_pending_qty: f64 =
+                        self.cumulative_open_qty - self.cumulative_hedged_qty;
                     // 尝试对冲（含残值处理）
-                    let (can_hedge, _hedged_qty, residual_qty) = self.try_hedge_with_residual(base_pending_qty);
+                    let (can_hedge, _hedged_qty, residual_qty) =
+                        self.try_hedge_with_residual(base_pending_qty);
                     if can_hedge {
                         //开仓量修改
                         self.cumulative_open_qty += residual_qty;
@@ -891,21 +972,27 @@ impl HedgeArbStrategy {
                     //部分成交，只扣量，不对冲
                     self.cumulative_hedged_qty += trade.quantity();
                 }
-                _=>{
-                    error!("unexpected MM model trade event: {} {}", trade.client_order_id(), trade.trade_id());
+                _ => {
+                    error!(
+                        "unexpected MM model trade event: {} {}",
+                        trade.client_order_id(),
+                        trade.trade_id()
+                    );
                 }
-            } 
+            }
         }
         // MT 模式：部分成交和完全成交都对冲
         if self.hedge_timeout_us == None {
-            if trade.order_status() == Some(OrderStatus::Filled) ||  trade.order_status() == Some(OrderStatus::PartiallyFilled){
+            if trade.order_status() == Some(OrderStatus::Filled)
+                || trade.order_status() == Some(OrderStatus::PartiallyFilled)
+            {
                 let base_pending_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
                 // 尝试对冲（含残值处理）
-                let (can_hedge, hedged_qty, residual_qty) = self.try_hedge_with_residual(base_pending_qty);
+                let (can_hedge, hedged_qty, residual_qty) =
+                    self.try_hedge_with_residual(base_pending_qty);
                 if can_hedge {
                     self.cumulative_open_qty += residual_qty;
                     self.cumulative_hedged_qty += hedged_qty;
-
                 } else if residual_qty > 1e-12 {
                     info!(
                         "HedgeArbStrategy: strategy_id={} MT模式开仓成交但无法对冲，残值={:.8}",
@@ -932,7 +1019,9 @@ impl HedgeArbStrategy {
             let remaining_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
 
             // 获取残值
-            let residual_qty = self.pre_trade_env.get_hedge_residual(&self.hedge_symbol, self.hedge_venue);
+            let residual_qty = self
+                .pre_trade_env
+                .get_hedge_residual(&self.hedge_symbol, self.hedge_venue);
             let total_remaining = remaining_qty + residual_qty;
 
             debug!(
@@ -942,12 +1031,15 @@ impl HedgeArbStrategy {
 
             // 检查剩余量是否满足最小交易要求
             if total_remaining > 1e-12 {
-                let can_hedge = self.pre_trade_env.check_min_trading_requirements(
-                    self.hedge_venue,
-                    &self.hedge_symbol,
-                    total_remaining,
-                    None,
-                ).is_ok();
+                let can_hedge = self
+                    .pre_trade_env
+                    .check_min_trading_requirements(
+                        self.hedge_venue,
+                        &self.hedge_symbol,
+                        total_remaining,
+                        None,
+                    )
+                    .is_ok();
 
                 if !can_hedge {
                     // 剩余量不足以对冲，且没有待处理的对冲订单，关闭策略
@@ -966,7 +1058,7 @@ impl HedgeArbStrategy {
     }
 
     // 处理交易更新
-    fn apply_trade_update(&mut self, trade: &dyn TradeUpdate){
+    fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
         //1 根据client order id，判断是开仓成交，还是对冲成交, 更新开仓量或对冲量
         let order_id = trade.client_order_id();
         if order_id == self.open_order_id {
@@ -992,43 +1084,53 @@ impl HedgeArbStrategy {
             self.process_hedge_leg_trade(trade);
         } else {
             // 非法成交，忽略
-            warn!("HedgeArbStrategy: strategy_id={} 收到未知订单的成交更新 order_id={}",self.strategy_id, order_id);      
+            warn!(
+                "HedgeArbStrategy: strategy_id={} 收到未知订单的成交更新 order_id={}",
+                self.strategy_id, order_id
+            );
         }
     }
 
-
-    fn apply_order_update(&mut self, order_update: &dyn OrderUpdate){
+    fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) {
         //状态更新是通用部分，非成交只更新状态，不更新量
         let client_order_id = order_update.client_order_id();
         let mut order_manager = self.pre_trade_env.risk_checker.order_manager.borrow_mut();
-        let updated = order_manager.update(client_order_id, |order| {
-            match order_update.status() {
-                OrderStatus::New => {
-                    order.status = OrderExecutionStatus::Create; 
-                    order.set_exchange_order_id(order_update.order_id());
-                    order.set_create_time(order_update.event_time());
-                }
-                OrderStatus::Canceled => {
-                    order.status = OrderExecutionStatus::Cancelled;
-                    order.set_end_time(order_update.event_time());
-                }
-                OrderStatus::Expired => {
-                    order.status = OrderExecutionStatus::Rejected;
-                    order.set_end_time(order_update.event_time());
-                }
-                OrderStatus::ExpiredInMatch => {
-                    order.status = OrderExecutionStatus::Rejected;
-                    order.set_end_time(order_update.event_time());
-                }
-                _=> {
-                    panic!("unexpected order status received {} {} {:?}", order_update.client_order_id(), order_update.order_id(), order_update.status());
-                }
+        let updated = order_manager.update(client_order_id, |order| match order_update.status() {
+            OrderStatus::New => {
+                order.status = OrderExecutionStatus::Create;
+                order.set_exchange_order_id(order_update.order_id());
+                order.set_create_time(order_update.event_time());
+            }
+            OrderStatus::Canceled => {
+                order.status = OrderExecutionStatus::Cancelled;
+                order.set_end_time(order_update.event_time());
+            }
+            OrderStatus::Expired => {
+                order.status = OrderExecutionStatus::Rejected;
+                order.set_end_time(order_update.event_time());
+            }
+            OrderStatus::ExpiredInMatch => {
+                order.status = OrderExecutionStatus::Rejected;
+                order.set_end_time(order_update.event_time());
+            }
+            _ => {
+                panic!(
+                    "unexpected order status received {} {} {:?}",
+                    order_update.client_order_id(),
+                    order_update.order_id(),
+                    order_update.status()
+                );
             }
         });
         drop(order_manager);
 
         if !updated {
-            error!("update failed {} {} {:?}", order_update.client_order_id(), order_update.order_id(), order_update.status());
+            error!(
+                "update failed {} {} {:?}",
+                order_update.client_order_id(),
+                order_update.order_id(),
+                order_update.status()
+            );
             return;
         }
         if order_update.status() == OrderStatus::Canceled {
@@ -1036,13 +1138,15 @@ impl HedgeArbStrategy {
                 self.process_open_leg_cancel(order_update);
             }
             if self.hedge_timeout_us.is_none() {
-                if self.hedge_order_ids.contains(&order_update.client_order_id()) {
+                if self
+                    .hedge_order_ids
+                    .contains(&order_update.client_order_id())
+                {
                     //只有MT模式，才会有hedge的定时器cancel
                     self.process_hedge_leg_cancel(order_update);
                 }
             }
-        }        
-        
+        }
     }
 
     fn cleanup_strategy_orders(&mut self) {

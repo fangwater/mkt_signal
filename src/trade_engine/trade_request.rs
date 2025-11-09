@@ -193,7 +193,7 @@ impl BinanceNewUMConditionalOrderRequest {
         buf.put_i64_le(self.header.client_order_id);
         buf.put(self.params.clone());
 
-        buf.freeze() 
+        buf.freeze()
     }
 }
 

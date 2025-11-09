@@ -1,11 +1,9 @@
-pub mod binance_forward_arb_mm;
-pub mod binance_forward_arb_mt;
+pub mod cancel_signal;
 pub mod channels;
 pub mod common;
+pub mod hedge_arb_strategy;
+pub mod hedge_signal;
+pub mod open_signal;
 pub mod record;
 pub mod resample;
 pub mod trade_signal;
-pub mod cancel_signal;
-pub mod open_signal;
-pub mod hedge_signal;
-pub mod hedge_arb_strategy;

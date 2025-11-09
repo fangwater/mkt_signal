@@ -66,8 +66,8 @@ impl MktConnectionRunner for BinanceUserDataConnection {
                     if *self.base_connection.shutdown_rx.borrow() {
                         ws_stream.close(None).await?;
                         return Ok(());
-                    } 
-                } 
+                    }
+                }
                 _ = time::sleep_until(ping_send_timer) => {
                     warn!("Binance user-data: Ping timeout detected; reconnecting...");
                     ws_stream.close(None).await?;

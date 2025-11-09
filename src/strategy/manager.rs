@@ -182,11 +182,9 @@ impl StrategyManager {
         inspected
     }
 
-    /// 基于策略类型和当前时间戳生成策略 ID
-    pub fn generate_strategy_id(strategy_type: u8) -> i32 {
-        let timestamp_us = get_timestamp_us() as u64;
-        let lower_bits = (timestamp_us & 0x00FF_FFFF) as u32;
-        let composed = ((strategy_type as u32) << 24) | lower_bits;
-        composed as i32
+    /// 基于当前时间戳生成策略 ID
+    /// 使用时间戳的低31位，确保为正数，约35分钟循环周期
+    pub fn generate_strategy_id() -> i32 {
+        (get_timestamp_us() & 0x7FFF_FFFF) as i32
     }
 }

@@ -83,5 +83,4 @@ pub trait TradeUpdate {
 
     // 成交单状态，即对应的额order_status
     fn order_status(&self) -> Option<OrderStatus>;
-    
 }

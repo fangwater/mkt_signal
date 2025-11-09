@@ -34,12 +34,12 @@ pub fn create_signal_record_subscriber(
         .create()
         .with_context(|| format!("failed to create subscriber {}", service_name))?;
 
-    Ok(subscriber) 
-} 
+    Ok(subscriber)
+}
 
 pub fn trim_payload(payload: &[u8]) -> Bytes {
     Bytes::copy_from_slice(payload)
-} 
+}
 
 fn sanitize_suffix(raw: &str) -> std::borrow::Cow<'_, str> {
     if raw.chars().all(is_valid_node_char) {

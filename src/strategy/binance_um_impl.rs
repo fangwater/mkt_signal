@@ -4,10 +4,10 @@
 // ============================================================================
 
 use crate::common::account_msg::OrderTradeUpdateMsg;
+use crate::pre_trade::order_manager::{OrderType, Side};
+use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
-use crate::pre_trade::order_manager::{Side, OrderType};
-use crate::signal::common::{TimeInForce, ExecutionType, OrderStatus, TradingVenue};
 
 impl OrderUpdate for OrderTradeUpdateMsg {
     fn event_time(&self) -> i64 {
@@ -152,7 +152,7 @@ impl TradeUpdate for OrderTradeUpdateMsg {
     fn is_maker(&self) -> bool {
         self.is_maker
     }
-    
+
     fn realized_pnl(&self) -> f64 {
         // 现货/杠杆没有已实现盈亏
         self.realized_profit
@@ -166,7 +166,7 @@ impl TradeUpdate for OrderTradeUpdateMsg {
         TradingVenue::BinanceUm
     }
 
-    fn order_status(&self) -> Option<OrderStatus>{
+    fn order_status(&self) -> Option<OrderStatus> {
         OrderStatus::from_str(&self.order_status)
     }
 }

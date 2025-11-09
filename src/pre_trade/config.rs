@@ -13,7 +13,7 @@ pub struct PreTradeCfg {
     pub risk_checks: RiskCheckCfg,
     #[serde(default)]
     pub params: Option<StrategyParamsCfg>,
-} 
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AccountStreamCfg {

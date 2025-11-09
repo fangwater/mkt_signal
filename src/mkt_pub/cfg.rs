@@ -91,7 +91,7 @@ fn print_symbol_comparison(
                 Cell::new("✓").style_spec("Fg"),
             ]));
         }
-    } 
+    }
 
     // 打印表格
     info!("Symbol comparison:");
@@ -132,7 +132,7 @@ impl Config {
         };
 
         Ok(config)
-    } 
+    }
 
     pub fn get_exchange(&self) -> String {
         match self.exchange {

@@ -43,7 +43,7 @@ impl MinQtyTable {
             margin: HashMap::new(),
         }
     }
-    
+
     /// 刷新币安现货/UM永续/保证金的交易对过滤器（minQty/stepSize/tickSize）
     pub async fn refresh_binance(&mut self) -> Result<()> {
         let spot = self

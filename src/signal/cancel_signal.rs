@@ -1,4 +1,4 @@
-use crate::signal::common::{TradingLeg, SignalBytes, bytes_helper};
+use crate::signal::common::{bytes_helper, SignalBytes, TradingLeg};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 /// Generic arbitrage cancel signal context
@@ -24,9 +24,17 @@ impl ArbCancelCtx {
     /// Create new arbitrage cancel context
     pub fn new() -> Self {
         Self {
-            opening_leg: TradingLeg { venue: 0, bid0: 0.0, ask0: 0.0 },
+            opening_leg: TradingLeg {
+                venue: 0,
+                bid0: 0.0,
+                ask0: 0.0,
+            },
             opening_symbol: [0u8; 32],
-            hedging_leg: TradingLeg { venue: 0, bid0: 0.0, ask0: 0.0 },
+            hedging_leg: TradingLeg {
+                venue: 0,
+                bid0: 0.0,
+                ask0: 0.0,
+            },
             hedging_symbol: [0u8; 32],
             trigger_ts: 0,
         }
@@ -37,11 +45,15 @@ impl ArbCancelCtx {
         let bytes = symbol.as_bytes();
         let len = bytes.len().min(32);
         self.opening_symbol[..len].copy_from_slice(&bytes[..len]);
-    } 
+    }
 
     /// Get opening leg symbol
     pub fn get_opening_symbol(&self) -> String {
-        let end = self.opening_symbol.iter().position(|&b| b == 0).unwrap_or(32);
+        let end = self
+            .opening_symbol
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(32);
         String::from_utf8_lossy(&self.opening_symbol[..end]).to_string()
     }
 
@@ -54,12 +66,16 @@ impl ArbCancelCtx {
 
     /// Get hedging leg symbol
     pub fn get_hedging_symbol(&self) -> String {
-        let end = self.hedging_symbol.iter().position(|&b| b == 0).unwrap_or(32);
+        let end = self
+            .hedging_symbol
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(32);
         String::from_utf8_lossy(&self.hedging_symbol[..end]).to_string()
     }
 }
 
- impl SignalBytes for ArbCancelCtx {
+impl SignalBytes for ArbCancelCtx {
     fn to_bytes(&self) -> Bytes {
         let mut buf = BytesMut::new();
 

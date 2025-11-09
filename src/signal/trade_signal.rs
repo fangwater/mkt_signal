@@ -2,10 +2,10 @@ use bytes::{BufMut, Bytes, BytesMut};
 
 #[derive(Debug, Clone)]
 pub enum SignalType {
-    ArbOpen = 1,  // 套利开仓信号
-    ArbHedge = 2, // 套利对冲信号
+    ArbOpen = 1,   // 套利开仓信号
+    ArbHedge = 2,  // 套利对冲信号
     ArbCancel = 3, // 套利撤单信号
-    ArbClose = 4, // 套利平仓信号，和开仓信号类似，区别是如果对应方向头寸为0就不执行
+    ArbClose = 4,  // 套利平仓信号，和开仓信号类似，区别是如果对应方向头寸为0就不执行
 }
 
 impl SignalType {
@@ -27,7 +27,7 @@ pub struct TradeSignal {
     pub generation_time: i64,    //信号的产生时间
     pub handle_time: f64,        //信号被pre-process处理的时间
     pub context: Bytes,          //信号的具体内容，信号上下文
-} 
+}
 
 impl TradeSignal {
     /// 创建一个新的交易信号

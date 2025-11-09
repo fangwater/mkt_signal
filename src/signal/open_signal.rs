@@ -1,8 +1,7 @@
-
-use crate::signal::common::TradingLeg;
-use bytes::{Buf, BufMut, Bytes, BytesMut};
 use crate::pre_trade::order_manager::{OrderType, Side};
-use crate::signal::common::{SignalBytes, bytes_helper};
+use crate::signal::common::TradingLeg;
+use crate::signal::common::{bytes_helper, SignalBytes};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 /// Generic arbitrage open signal context
 #[derive(Debug, Clone, Copy)]
@@ -11,7 +10,7 @@ pub struct ArbOpenCtx {
     pub opening_leg: TradingLeg,
 
     /// Opening leg symbol - using fixed size array to avoid heap allocation
-    pub opening_symbol: [u8; 32],  // 32 bytes should be enough for symbol
+    pub opening_symbol: [u8; 32], // 32 bytes should be enough for symbol
 
     /// Hedging leg (passive leg)
     pub hedging_leg: TradingLeg,
@@ -60,9 +59,17 @@ impl ArbOpenCtx {
     /// Create new arbitrage open context
     pub fn new() -> Self {
         Self {
-            opening_leg: TradingLeg { venue: 0, bid0: 0.0, ask0: 0.0 },
+            opening_leg: TradingLeg {
+                venue: 0,
+                bid0: 0.0,
+                ask0: 0.0,
+            },
             opening_symbol: [0u8; 32],
-            hedging_leg: TradingLeg { venue: 0, bid0: 0.0, ask0: 0.0 },
+            hedging_leg: TradingLeg {
+                venue: 0,
+                bid0: 0.0,
+                ask0: 0.0,
+            },
             hedging_symbol: [0u8; 32],
             amount: 0.0,
             side: 0,
@@ -88,7 +95,11 @@ impl ArbOpenCtx {
 
     /// Get opening leg symbol
     pub fn get_opening_symbol(&self) -> String {
-        let end = self.opening_symbol.iter().position(|&b| b == 0).unwrap_or(32);
+        let end = self
+            .opening_symbol
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(32);
         String::from_utf8_lossy(&self.opening_symbol[..end]).to_string()
     }
 
@@ -101,7 +112,11 @@ impl ArbOpenCtx {
 
     /// Get hedging leg symbol
     pub fn get_hedging_symbol(&self) -> String {
-        let end = self.hedging_symbol.iter().position(|&b| b == 0).unwrap_or(32);
+        let end = self
+            .hedging_symbol
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(32);
         String::from_utf8_lossy(&self.hedging_symbol[..end]).to_string()
     }
 

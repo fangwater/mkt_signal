@@ -1,7 +1,7 @@
-use std::convert::TryFrom;
-use bytes::{Buf, BufMut, Bytes, BytesMut};
 use crate::common::min_qty_table::MinQtyTable;
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use log::debug;
+use std::convert::TryFrom;
 
 /// 交易标的枚举，表示不同交易所的不同交易类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -18,10 +18,10 @@ pub enum TradingVenue {
 /// 订单有效期类型枚举
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TimeInForce {
-    GTC,  // Good Till Cancel - 成交为止
-    IOC,  // Immediate or Cancel - 无法立即成交的部分就撤销
-    FOK,  // Fill or Kill - 无法全部立即成交就撤销
-    GTX,  // Good Till Crossing - 成交为止，但只做 maker
+    GTC, // Good Till Cancel - 成交为止
+    IOC, // Immediate or Cancel - 无法立即成交的部分就撤销
+    FOK, // Fill or Kill - 无法全部立即成交就撤销
+    GTX, // Good Till Crossing - 成交为止，但只做 maker
 }
 
 impl TimeInForce {
@@ -173,18 +173,12 @@ impl OrderStatus {
 
     /// 检查订单是否已成交（完全或部分）
     pub fn has_filled(&self) -> bool {
-        matches!(
-            self,
-            OrderStatus::PartiallyFilled | OrderStatus::Filled
-        )
+        matches!(self, OrderStatus::PartiallyFilled | OrderStatus::Filled)
     }
 
     /// 检查订单是否为活跃状态（可能有后续更新）
     pub fn is_active(&self) -> bool {
-        matches!(
-            self,
-            OrderStatus::New | OrderStatus::PartiallyFilled
-        )
+        matches!(self, OrderStatus::New | OrderStatus::PartiallyFilled)
     }
 }
 
@@ -204,7 +198,6 @@ fn to_fraction(value: f64) -> Option<(i64, i64)> {
     }
     None
 }
-
 
 fn align_price_floor(price: f64, tick: f64) -> f64 {
     if tick <= 0.0 {
@@ -252,10 +245,16 @@ impl TradingVenue {
         min_qty_table: &MinQtyTable,
     ) -> Result<(f64, f64), String> {
         if raw_qty <= 0.0 {
-            return Err(format!("symbol={} 原始下单量无效 raw_qty={}", symbol, raw_qty));
+            return Err(format!(
+                "symbol={} 原始下单量无效 raw_qty={}",
+                symbol, raw_qty
+            ));
         }
         if raw_price <= 0.0 {
-            return Err(format!("symbol={} 原始价格无效 raw_price={}", symbol, raw_price));
+            return Err(format!(
+                "symbol={} 原始价格无效 raw_price={}",
+                symbol, raw_price
+            ));
         }
 
         // 1. 按照 tick 对齐价格，交易所要求价格满足最小价格步进。
@@ -314,7 +313,6 @@ impl TradingVenue {
         Ok((qty, price))
     }
 
-
     /// 转换为 u8
     pub fn to_u8(self) -> u8 {
         self as u8
@@ -336,9 +334,9 @@ impl TradingVenue {
     /// 获取交易所名称
     pub fn exchange_name(&self) -> &'static str {
         match self {
-            TradingVenue::BinanceMargin |
-            TradingVenue::BinanceUm |
-            TradingVenue::BinanceSwap => "binance_futures",
+            TradingVenue::BinanceMargin | TradingVenue::BinanceUm | TradingVenue::BinanceSwap => {
+                "binance_futures"
+            }
             TradingVenue::BinanceSpot => "binance",
             TradingVenue::OkexSwap => "okex_swap",
             TradingVenue::OkexSpot => "okex",
@@ -359,19 +357,15 @@ impl TradingVenue {
 
     /// 是否是期货/合约类型
     pub fn is_futures(&self) -> bool {
-        matches!(self,
-            TradingVenue::BinanceUm |
-            TradingVenue::BinanceSwap |
-            TradingVenue::OkexSwap
+        matches!(
+            self,
+            TradingVenue::BinanceUm | TradingVenue::BinanceSwap | TradingVenue::OkexSwap
         )
     }
 
     /// 是否是现货类型
     pub fn is_spot(&self) -> bool {
-        matches!(self,
-            TradingVenue::BinanceSpot |
-            TradingVenue::OkexSpot
-        )
+        matches!(self, TradingVenue::BinanceSpot | TradingVenue::OkexSpot)
     }
 }
 
@@ -380,8 +374,7 @@ impl TryFrom<u8> for TradingVenue {
     type Error = String;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        Self::from_u8(value)
-            .ok_or_else(|| format!("Invalid TradingVenue value: {}", value))
+        Self::from_u8(value).ok_or_else(|| format!("Invalid TradingVenue value: {}", value))
     }
 }
 
@@ -395,7 +388,7 @@ impl From<TradingVenue> for u8 {
 /// 交易腿信息（不包含序列化）
 #[derive(Debug, Clone, Copy)]
 pub struct TradingLeg {
-    pub venue: u8,  // TradingVenue as u8
+    pub venue: u8, // TradingVenue as u8
     pub bid0: f64,
     pub ask0: f64,
 }
@@ -445,7 +438,11 @@ pub mod bytes_helper {
             return Err(format!("Invalid array length: {}", len));
         }
         if bytes.remaining() < len {
-            return Err(format!("Not enough bytes for array data: need {}, have {}", len, bytes.remaining()));
+            return Err(format!(
+                "Not enough bytes for array data: need {}, have {}",
+                len,
+                bytes.remaining()
+            ));
         }
 
         let mut arr = [0u8; 32];
@@ -468,8 +465,7 @@ pub mod bytes_helper {
     }
 }
 
-
-#[derive(Debug, Clone, Copy)] 
+#[derive(Debug, Clone, Copy)]
 enum UmOrderUpdateOutcome {
     Created,
     PartiallyFilled(f64),

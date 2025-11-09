@@ -1,11 +1,13 @@
-use std::collections::HashMap;
-use crate::trade_engine::trade_request::{BinanceCancelMarginOrderRequest, BinanceCancelUMOrderRequest};
+use crate::trade_engine::trade_request::BinanceNewMarginOrderRequest;
+use crate::trade_engine::trade_request::BinanceNewUMOrderRequest;
+use crate::trade_engine::trade_request::{
+    BinanceCancelMarginOrderRequest, BinanceCancelUMOrderRequest,
+};
 use crate::{common::time_util::get_timestamp_us, signal::common::TradingVenue};
 use bytes::Bytes;
-use tokio::sync::mpsc::UnboundedSender;
 use log::{debug, info, warn};
-use crate::trade_engine::trade_request::BinanceNewUMOrderRequest;
-use crate::trade_engine::trade_request::BinanceNewMarginOrderRequest;
+use std::collections::HashMap;
+use tokio::sync::mpsc::UnboundedSender;
 fn format_decimal(value: f64) -> String {
     let mut s = format!("{:.8}", value);
     if let Some(dot_pos) = s.find('.') {
@@ -22,7 +24,6 @@ fn format_decimal(value: f64) -> String {
         s
     }
 }
-
 
 fn format_quantity(quantity: f64) -> String {
     format_decimal(quantity)
@@ -77,18 +78,18 @@ impl Side {
         match self {
             Side::Buy => "buy",
             Side::Sell => "sell",
-        } 
-    } 
+        }
+    }
 
-    /// 是否是买入 
+    /// 是否是买入
     pub fn is_buy(&self) -> bool {
         matches!(self, Side::Buy)
-    } 
+    }
 
     /// 是否是卖出
     pub fn is_sell(&self) -> bool {
         matches!(self, Side::Sell)
-    } 
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -99,7 +100,7 @@ pub enum OrderExecutionStatus {
     Filled = 3,    // 完全成交
     Cancelled = 4, // 已取消
     Rejected = 5,  // 被拒绝
-} 
+}
 
 impl OrderExecutionStatus {
     /// 从 u8 转换为 OrderExecutionStatus
@@ -193,7 +194,7 @@ impl OrderType {
             OrderType::TakeProfit => 6,
             OrderType::TakeProfitLimit => 7,
             OrderType::StopMarket => 8,
-            OrderType::TakeProfitMarket => 9
+            OrderType::TakeProfitMarket => 9,
         }
     }
 
@@ -268,19 +269,21 @@ impl OrderManager {
         Self {
             orders: HashMap::new(),
             pending_limit_order_count: HashMap::new(),
-            order_record_tx
+            order_record_tx,
         }
     }
-    pub fn create_order(&mut self, venue: TradingVenue, id :i64, order_type: OrderType, symbol: String, side: Side, quantity: f64, price: f64, sumbit_ts_local: i64) -> i64 {
-        let mut order = Order::new(
-            venue,
-            id,
-            order_type,
-            symbol.clone(),
-            side,
-            quantity,
-            price,
-        );
+    pub fn create_order(
+        &mut self,
+        venue: TradingVenue,
+        id: i64,
+        order_type: OrderType,
+        symbol: String,
+        side: Side,
+        quantity: f64,
+        price: f64,
+        sumbit_ts_local: i64,
+    ) -> i64 {
+        let mut order = Order::new(venue, id, order_type, symbol.clone(), side, quantity, price);
         order.set_submit_time(sumbit_ts_local);
         self.insert(order);
         id
@@ -441,13 +444,12 @@ impl OrderManager {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub struct OrderTimeStamp {
     pub submit_t: i64, // 订单提交时间(本地时间)
     pub create_t: i64, // 交易所订单创建时间(交易所时间)
     pub filled_t: i64, // 订单执行成功的时间（交易所时间，记录最后一次）
-    pub end_t: i64, // 交易所时间(完全成交或者被撤单的时间)
+    pub end_t: i64,    // 交易所时间(完全成交或者被撤单的时间)
 }
 
 impl OrderTimeStamp {
@@ -464,16 +466,16 @@ impl OrderTimeStamp {
 #[derive(Debug, Clone)]
 pub struct Order {
     pub venue: TradingVenue,             // 订单对应的交易标的
-    pub client_order_id: i64,                   // 订单ID
+    pub client_order_id: i64,            // 订单ID
     pub order_type: OrderType,           // 订单类型
     pub symbol: String,                  // 交易对
     pub side: Side,                      // 买卖方向
     pub price: f64,                      // 限价单价格, 市价单没有意义
     pub quantity: f64,                   // 数量
     pub cumulative_filled_quantity: f64, // 成交量
-    pub exchange_order_id: Option<i64>, // 交易所返回的 orderId
+    pub exchange_order_id: Option<i64>,  // 交易所返回的 orderId
     pub status: OrderExecutionStatus,    // 订单执行状态
-    pub timestamp: OrderTimeStamp
+    pub timestamp: OrderTimeStamp,
 }
 
 impl Order {
@@ -484,7 +486,7 @@ impl Order {
 
     /// 创建新订单
     pub fn new(
-        venue: TradingVenue, 
+        venue: TradingVenue,
         client_order_id: i64,
         order_type: OrderType,
         symbol: String,
@@ -544,26 +546,34 @@ impl Order {
             self.exchange_order_id = Some(exchange_order_id);
         }
     }
-    
+
     pub fn get_order_cancel_bytes(&self) -> Result<Bytes, String> {
         let now = get_timestamp_us();
         match self.venue {
             TradingVenue::BinanceMargin => {
                 // 使用 origClientOrderId 以客户端订单ID撤单；当前未保存交易所 orderId
-                let params = Bytes::from(format!("symbol={}&origClientOrderId={}", self.symbol, self.client_order_id));
-                let request: BinanceCancelMarginOrderRequest = BinanceCancelMarginOrderRequest::create(now, self.client_order_id, params);
-                return Ok(request.to_bytes())
+                let params = Bytes::from(format!(
+                    "symbol={}&origClientOrderId={}",
+                    self.symbol, self.client_order_id
+                ));
+                let request: BinanceCancelMarginOrderRequest =
+                    BinanceCancelMarginOrderRequest::create(now, self.client_order_id, params);
+                return Ok(request.to_bytes());
             }
             TradingVenue::BinanceUm => {
-                let params = Bytes::from(format!("symbol={}&origClientOrderId={}", self.symbol, self.client_order_id));
-                let request: BinanceCancelUMOrderRequest = BinanceCancelUMOrderRequest::create(now, self.client_order_id, params);
-                return Ok(request.to_bytes())
+                let params = Bytes::from(format!(
+                    "symbol={}&origClientOrderId={}",
+                    self.symbol, self.client_order_id
+                ));
+                let request: BinanceCancelUMOrderRequest =
+                    BinanceCancelUMOrderRequest::create(now, self.client_order_id, params);
+                return Ok(request.to_bytes());
             }
-            _ => Err(format!("Unsupported trading venue: {:?}", self.venue))
+            _ => Err(format!("Unsupported trading venue: {:?}", self.venue)),
         }
     }
 
-    pub fn get_order_request_bytes(&self) -> Result<Bytes, String>{
+    pub fn get_order_request_bytes(&self) -> Result<Bytes, String> {
         match self.venue {
             //币安的杠杆账户下单
             TradingVenue::BinanceMargin | TradingVenue::BinanceUm => {
@@ -584,7 +594,7 @@ impl Order {
                     //如果是市价单，不需要价格和tif参数
                 } else {
                     //UM合约下单
-                    if self.order_type.is_limit(){
+                    if self.order_type.is_limit() {
                         params_parts.push("timeInForce=GTX".to_string());
                         params_parts.push(format!("price={}", format_price(self.price)));
                     }
@@ -592,19 +602,27 @@ impl Order {
                 }
                 let params = Bytes::from(params_parts.join("&"));
                 if self.venue == TradingVenue::BinanceMargin {
-                    let request = BinanceNewMarginOrderRequest::create(local_create_ts, self.client_order_id, params);
+                    let request = BinanceNewMarginOrderRequest::create(
+                        local_create_ts,
+                        self.client_order_id,
+                        params,
+                    );
                     Ok(request.to_bytes())
                 } else {
-                    let request = BinanceNewUMOrderRequest::create(local_create_ts, self.client_order_id, params);
+                    let request = BinanceNewUMOrderRequest::create(
+                        local_create_ts,
+                        self.client_order_id,
+                        params,
+                    );
                     Ok(request.to_bytes())
                 }
             }
             //之后在这支持别的类型下单，根据资产类型决定下单的request，统一序列化为bytes
-            _ => Err(format!("Unsupported trading venue: {:?}", self.venue))
+            _ => Err(format!("Unsupported trading venue: {:?}", self.venue)),
         }
 
-            // self.order_tx
-            // .send(request.to_bytes())
-            // .map_err(|e| format!("{}: 推送 margin 开仓失败: {}", Self::strategy_name(), e))?;
+        // self.order_tx
+        // .send(request.to_bytes())
+        // .map_err(|e| format!("{}: 推送 margin 开仓失败: {}", Self::strategy_name(), e))?;
     }
 }

@@ -6,7 +6,7 @@ use crate::signal::trade_signal::SignalType;
 pub const PRE_TRADE_SIGNAL_RECORD_CHANNEL: &str = "pre_trade_signal_record";
 
 /// 通用的信号记录消息，用于将策略创建成功后的信号上下文推送到 Iceoryx。
-#[derive(Debug, Clone)] 
+#[derive(Debug, Clone)]
 pub struct SignalRecordMessage {
     pub strategy_id: i32,
     pub signal_type: SignalType,

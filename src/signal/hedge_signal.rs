@@ -1,6 +1,6 @@
-use crate::signal::common::{TradingLeg, SignalBytes, bytes_helper};
-use bytes::{Buf, BufMut, Bytes, BytesMut};
 use crate::pre_trade::order_manager::Side;
+use crate::signal::common::{bytes_helper, SignalBytes, TradingLeg};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 /// Unified arbitrage hedge signal context (supports both maker and taker strategies)
 /// When exp_time > 0, it's treated as a maker order (limit order)
@@ -55,7 +55,11 @@ impl ArbHedgeCtx {
             price_tick: 0.0,
             maker_only: false,
             exp_time: 0,
-            hedging_leg: TradingLeg { venue: 0, bid0: 0.0, ask0: 0.0 },
+            hedging_leg: TradingLeg {
+                venue: 0,
+                bid0: 0.0,
+                ask0: 0.0,
+            },
             hedging_symbol: [0u8; 32],
             market_ts: 0,
         }
@@ -119,7 +123,11 @@ impl ArbHedgeCtx {
 
     /// Get hedging symbol
     pub fn get_hedging_symbol(&self) -> String {
-        let end = self.hedging_symbol.iter().position(|&b| b == 0).unwrap_or(32);
+        let end = self
+            .hedging_symbol
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(32);
         String::from_utf8_lossy(&self.hedging_symbol[..end]).to_string()
     }
 
@@ -166,13 +174,13 @@ impl ArbHedgeCtx {
                 // 卖出（做空）时使用 ask0，挂在卖盘最优价
                 // 这样不会立即成交，而是等待买方来成交我们的订单
                 self.hedging_leg.ask0
-            } 
+            }
             None => {
                 // 如果无法确定方向，默认返回 bid0
                 // 这种情况通常不应该发生
                 self.hedging_leg.bid0
-            } 
-        } 
+            }
+        }
     }
 }
 
@@ -203,8 +211,8 @@ impl SignalBytes for ArbHedgeCtx {
     fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
         if bytes.remaining() < 4 + 8 + 8 + 1 + 8 + 8 + 1 + 8 {
             return Err("Not enough bytes for ArbHedgeCtx basic fields".to_string());
-        } 
-        
+        }
+
         let strategy_id = bytes.get_i32_le();
         let client_order_id = bytes.get_i64_le();
         let hedge_qty = bytes.get_f64_le();
@@ -354,4 +362,4 @@ impl ArbHedgeSignalQueryMsg {
             venue,
         })
     }
-} 
+}

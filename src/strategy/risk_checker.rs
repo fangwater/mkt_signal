@@ -1,9 +1,9 @@
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
 use std::collections::HashMap;
+use std::rc::Rc;
 
-use bytes::{Bytes};
-use log::{debug,warn};
+use bytes::Bytes;
+use log::{debug, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::common::min_qty_table::MinQtyTable;
@@ -23,7 +23,7 @@ fn extract_base_asset(symbol_upper: &str) -> Option<String> {
 }
 
 #[derive(Clone)]
-pub struct RiskChecker{
+pub struct RiskChecker {
     pub exposure_manager: Rc<RefCell<ExposureManager>>, // 敞口管理，用于风控决策
     pub order_manager: Rc<RefCell<OrderManager>>, // 订单管理，所有订单维护在其中，完全成交或者撤单会被移除
     pub price_table: std::rc::Rc<std::cell::RefCell<PriceTable>>, //定价计算，维护markprice等
@@ -62,7 +62,7 @@ impl RiskChecker {
     pub fn check_pending_limit_order(&self, symbol: &str) -> Result<(), String> {
         if self.max_pending_limit_orders.get() <= 0 {
             return Ok(());
-        } 
+        }
 
         let symbol_upper = symbol.to_uppercase();
         let count = self
@@ -82,7 +82,7 @@ impl RiskChecker {
         Ok(())
     }
     //symbol是xxusdt，查看当前symbol的敞口是否大于总资产比例的3%
-    pub fn check_symbol_exposure(&self, symbol: &str) -> Result<(), String>  {
+    pub fn check_symbol_exposure(&self, symbol: &str) -> Result<(), String> {
         let limit = self.max_symbol_exposure_ratio;
         if limit <= 0.0 {
             return Ok(());
@@ -129,11 +129,7 @@ impl RiskChecker {
 
         // 计算净敞口 (现货 + 合约)
         let net_exposure = entry.spot_total_wallet + entry.um_net_position;
-        let exposure_usdt = if mark > 0.0 {
-            net_exposure * mark
-        } else {
-            0.0
-        };
+        let exposure_usdt = if mark > 0.0 { net_exposure * mark } else { 0.0 };
 
         // 若缺少价格但敞口非零，回退到数量比例并提示
         if mark == 0.0 && net_exposure != 0.0 {
@@ -168,7 +164,7 @@ impl RiskChecker {
             return Err(format!(
                 "symbol={} 敞口比例超过限制 {}",
                 symbol, self.max_symbol_exposure_ratio
-            ))
+            ));
         } else {
             Ok(())
         }
@@ -228,7 +224,12 @@ impl RiskChecker {
     }
 
     // 检查当前是否可以平仓，返回需要平仓现货、合约数量
-    fn check_closable_position(&self, symbol: &str, side: Side, qty: f64) -> Result<(f64, f64), String> {
+    fn check_closable_position(
+        &self,
+        symbol: &str,
+        side: Side,
+        qty: f64,
+    ) -> Result<(f64, f64), String> {
         let symbol_upper = symbol.to_uppercase();
         let Some(base_asset) = extract_base_asset(&symbol_upper) else {
             return Err(format!(
@@ -284,14 +285,18 @@ impl RiskChecker {
         Ok((spot_close_qty, um_close_qty))
     }
 
-    pub fn ensure_max_pos_u(&self, symbol: &str, additional_qty: f64, price_hint: f64) -> Result<(), String> {
+    pub fn ensure_max_pos_u(
+        &self,
+        symbol: &str,
+        additional_qty: f64,
+        price_hint: f64,
+    ) -> Result<(), String> {
         if !(self.max_pos_u > 0.0) {
             panic!("max_pos_u not set!!");
         }
         let symbol_upper = symbol.to_uppercase();
-        let base_asset = extract_base_asset(&symbol_upper).ok_or_else(|| {
-            format!("无法识别 symbol={} 的基础资产，无法校验 max_pos_u", symbol)
-        })?;
+        let base_asset = extract_base_asset(&symbol_upper)
+            .ok_or_else(|| format!("无法识别 symbol={} 的基础资产，无法校验 max_pos_u", symbol))?;
         let current_spot_qty = {
             let exposure_manager = self.exposure_manager.borrow();
             exposure_manager
@@ -299,7 +304,6 @@ impl RiskChecker {
                 .map(|entry| entry.spot_total_wallet)
                 .unwrap_or(0.0)
         };
-
 
         let base_upper = base_asset.to_uppercase();
         let mark_symbol = format!("{}USDT", base_upper);
@@ -317,7 +321,10 @@ impl RiskChecker {
 
         let Some(price) = price else {
             warn!("symbol={} 缺少 USDT 标记价格，无法校验 max_pos_u", symbol);
-            return Err(format!("symbol={} 缺少价格信息，无法校验 max_pos_u", symbol));
+            return Err(format!(
+                "symbol={} 缺少价格信息，无法校验 max_pos_u",
+                symbol
+            ));
         };
 
         let projected_qty = current_spot_qty + additional_qty;
@@ -337,7 +344,10 @@ impl RiskChecker {
                 projected_usdt,
                 self.max_pos_u
             );
-            return Err(format!("symbol={} 预计现货持仓 {:.4}USDT 超过阈值 {:.4}USDT", symbol, projected_usdt, self.max_pos_u));
+            return Err(format!(
+                "symbol={} 预计现货持仓 {:.4}USDT 超过阈值 {:.4}USDT",
+                symbol, projected_usdt, self.max_pos_u
+            ));
         }
         Ok(())
     }
@@ -365,16 +375,9 @@ impl RiskChecker {
         if leverage > limit {
             debug!(
                 "当前杠杆 {:.4} 超过阈值 {:.4} (仓位={:.6}, 权益={:.6})",
-                leverage,
-                limit,
-                total_position,
-                total_equity
+                leverage, limit, total_position, total_equity
             );
-            return Err(format!(
-                "杠杆率 {:.2} 超过限制 {:.2}",
-                leverage,
-                limit
-            ));
+            return Err(format!("杠杆率 {:.2} 超过限制 {:.2}", leverage, limit));
         }
 
         Ok(())
@@ -386,7 +389,7 @@ pub struct PreTradeEnv {
     pub min_qty_table: std::rc::Rc<MinQtyTable>, //最小下单量维护，用于修证下单
     pub signal_tx: Option<UnboundedSender<Bytes>>, //预处理信号队列，对冲信号有些从策略发送，需要维护一份sender端作为copy
     pub signal_query_tx: Option<UnboundedSender<Bytes>>, //查询信号队列，用于请求上游模型决策挂单价格
-    pub trade_request_tx: UnboundedSender<Bytes>, //交易请求发送器，发送订单到交易引擎
+    pub trade_request_tx: UnboundedSender<Bytes>,        //交易请求发送器，发送订单到交易引擎
     pub risk_checker: RiskChecker,
     pub hedge_residual_map: Rc<RefCell<HashMap<(String, TradingVenue), f64>>>, //对冲残余量哈希表，key=(symbol, venue)，value=残余量
 }
@@ -449,12 +452,8 @@ impl PreTradeEnv {
     ) -> Result<(), String> {
         // 1. 检查最小下单量
         let min_qty = match venue {
-            TradingVenue::BinanceUm => {
-                self.min_qty_table.futures_um_min_qty_by_symbol(symbol)
-            }
-            TradingVenue::BinanceMargin => {
-                self.min_qty_table.margin_min_qty_by_symbol(symbol)
-            }
+            TradingVenue::BinanceUm => self.min_qty_table.futures_um_min_qty_by_symbol(symbol),
+            TradingVenue::BinanceMargin => self.min_qty_table.margin_min_qty_by_symbol(symbol),
             TradingVenue::BinanceSpot | TradingVenue::OkexSpot => {
                 self.min_qty_table.spot_min_qty_by_symbol(symbol)
             }
@@ -462,18 +461,17 @@ impl PreTradeEnv {
                 // TODO: 根据实际情况添加 swap 的最小量获取
                 None
             }
-        }.unwrap_or(0.0);
+        }
+        .unwrap_or(0.0);
 
         if min_qty > 0.0 && qty + 1e-12 < min_qty {
-            return Err(format!(
-                "交易量 {:.8} 小于最小下单量 {:.8}",
-                qty, min_qty
-            ));
+            return Err(format!("交易量 {:.8} 小于最小下单量 {:.8}", qty, min_qty));
         }
 
         // 2. 检查最小名义金额（仅对 UM 合约）
         if venue == TradingVenue::BinanceUm {
-            let min_notional = self.min_qty_table
+            let min_notional = self
+                .min_qty_table
                 .futures_um_min_notional_by_symbol(symbol)
                 .unwrap_or(0.0);
 
@@ -482,7 +480,11 @@ impl PreTradeEnv {
                 let price = if let Some(p) = price_hint {
                     p
                 } else {
-                    self.risk_checker.price_table.borrow().mark_price(symbol).unwrap_or(0.0)
+                    self.risk_checker
+                        .price_table
+                        .borrow()
+                        .mark_price(symbol)
+                        .unwrap_or(0.0)
                 };
 
                 if price <= 0.0 {

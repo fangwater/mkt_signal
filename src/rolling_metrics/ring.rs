@@ -8,7 +8,7 @@ pub struct RingBuffer {
     data: Vec<UnsafeCell<f32>>,
     write_cursor: AtomicU64,
     published: AtomicU64,
-} 
+}
 
 unsafe impl Send for RingBuffer {}
 unsafe impl Sync for RingBuffer {}

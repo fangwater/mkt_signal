@@ -1,5 +1,5 @@
-use crate::pre_trade::order_manager::{Side, OrderType};
-use crate::signal::common::{TimeInForce, ExecutionType, OrderStatus, TradingVenue};
+use crate::pre_trade::order_manager::{OrderType, Side};
+use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 
 pub trait OrderUpdate {
     /// 获取事件时间 (微秒时间戳)

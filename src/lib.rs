@@ -9,8 +9,8 @@ pub mod portfolio_margin;
 pub mod pre_trade;
 pub mod rolling_metrics;
 pub mod signal;
-pub mod trade_engine;
 pub mod strategy;
+pub mod trade_engine;
 
 // Re-export frequently used modules for backward compatibility
 pub use common::{exchange, mkt_msg};

@@ -4,10 +4,10 @@
 // ============================================================================
 
 use crate::common::account_msg::ExecutionReportMsg;
+use crate::pre_trade::order_manager::{OrderType, Side};
+use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
-use crate::pre_trade::order_manager::{Side, OrderType};
-use crate::signal::common::{TimeInForce, ExecutionType, OrderStatus, TradingVenue};
 
 // ============================================================================
 // Trait 实现：为 ExecutionReportMsg 实现 OrderUpdate 和 TradeUpdate
