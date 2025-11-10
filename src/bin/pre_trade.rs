@@ -1,6 +1,6 @@
 use anyhow::Result;
 use log::info;
-use mkt_signal::pre_trade::{config::PreTradeCfg, PreTrade};
+use mkt_signal::pre_trade::PreTrade;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
@@ -9,12 +9,11 @@ async fn main() -> Result<()> {
     }
     env_logger::init();
 
-    let cfg_path =
-        std::env::var("PRE_TRADE_CFG").unwrap_or_else(|_| "config/pre_trade.toml".to_string());
-    let cfg = PreTradeCfg::load(&cfg_path).await?;
-    info!("pre_trade base config loaded from {}", cfg_path);
+    info!("pre_trade starting (configuration via environment variables)");
+    info!("Required env vars: BINANCE_API_KEY, BINANCE_API_SECRET");
+    info!("Optional env vars: SPOT_ASSET_FILTER, REDIS_URL");
 
-    let pre_trade = PreTrade::new(cfg);
+    let pre_trade = PreTrade::new();
     let local = tokio::task::LocalSet::new();
     local.run_until(pre_trade.run()).await
 }

@@ -1,6 +1,5 @@
 pub mod binance_pm_spot_manager;
 pub mod binance_pm_um_manager;
-pub mod config;
 pub mod dedup;
 pub mod event;
 pub mod exposure_manager;
@@ -12,4 +11,5 @@ mod mkt_info_channel;
 mod resample_channel;
 mod signal_channel;
 pub mod monitor_channel;
+pub mod trade_eng_channel;
 pub use runner::PreTrade;

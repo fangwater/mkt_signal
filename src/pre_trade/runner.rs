@@ -13,9 +13,7 @@ use crate::pre_trade::binance_pm_spot_manager::{BinancePmSpotAccountManager, Bin
 use crate::pre_trade::binance_pm_um_manager::{
     BinancePmUmAccountManager, BinanceUmAccountSnapshot, BinanceUmPosition,
 };
-use crate::pre_trade::config::{
-    PreTradeCfg, TradeEngineRespCfg,
-};
+// Configuration removed - using environment variables and hardcoded values
 use crate::pre_trade::event::AccountEvent;
 use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
@@ -49,18 +47,16 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 const NODE_PRE_TRADE_SIGNAL_PREFIX: &str = "signals";
 
-pub struct PreTrade {
-    cfg: PreTradeCfg,
-}
+pub struct PreTrade;
 
 impl PreTrade {
-    pub fn new(cfg: PreTradeCfg) -> Self {
-        Self { cfg }
+    pub fn new() -> Self {
+        Self
     }
 
     pub async fn run(self) -> Result<()> {
         info!("pre_trade starting");
-        let bootstrap = BootstrapResources::load(&self.cfg).await?;
+        let bootstrap = BootstrapResources::load().await?;
         let signal_record_pub = match SignalPublisher::new(PRE_TRADE_SIGNAL_RECORD_CHANNEL) {
             Ok(p) => Some(p),
             Err(err) => {
@@ -151,28 +147,25 @@ struct BootstrapResources {
     price_table: Rc<RefCell<PriceTable>>,
     // 交易对最小下单量/步进信息（spot/futures/margin）
     min_qty_table: Rc<MinQtyTable>,
-    //收取订单请求的服务名称
-    order_req_service: String,
 }
 
 impl BootstrapResources {
-    async fn load(cfg: &PreTradeCfg) -> Result<Self> {
-        let um_cfg = cfg
-            .risk_checks
-            .binance_pm_um
-            .as_ref()
-            .ok_or_else(|| anyhow!("risk_checks.binance_pm_um must be configured"))?;
+    async fn load() -> Result<Self> {
+        // Read API credentials from environment variables
+        let um_api_key = std::env::var("BINANCE_API_KEY")
+            .map_err(|_| anyhow!("BINANCE_API_KEY environment variable not set"))?;
+        let um_api_secret = std::env::var("BINANCE_API_SECRET")
+            .map_err(|_| anyhow!("BINANCE_API_SECRET environment variable not set"))?;
 
-        let um_api_key = std::env::var(&um_cfg.api_key_env)
-            .map_err(|_| anyhow!("environment variable {} not set", um_cfg.api_key_env))?;
-        let um_api_secret = std::env::var(&um_cfg.api_secret_env)
-            .map_err(|_| anyhow!("environment variable {} not set", um_cfg.api_secret_env))?;
+        // Hardcoded REST endpoints
+        let um_rest_base = "https://papi.binance.com";
+        let recv_window_ms = 5000;
 
         let um_manager = BinancePmUmAccountManager::new(
-            &um_cfg.rest_base,
+            um_rest_base,
             um_api_key.clone(),
             um_api_secret.clone(),
-            um_cfg.recv_window_ms,
+            recv_window_ms,
         );
         let um_snapshot = um_manager
             .init()
@@ -180,37 +173,21 @@ impl BootstrapResources {
             .context("failed to load initial Binance UM snapshot")?;
         log_um_positions(&um_snapshot.positions);
 
-        let spot_cfg = cfg
-            .risk_checks
-            .binance_spot
-            .as_ref()
-            .ok_or_else(|| anyhow!("risk_checks.binance_spot must be configured"))?;
+        // Use same API credentials for spot (same PM account)
+        let spot_api_key = um_api_key.clone();
+        let spot_api_secret = um_api_secret.clone();
 
-        let spot_api_key = if spot_cfg.api_key_env == um_cfg.api_key_env {
-            um_api_key.clone()
-        } else {
-            std::env::var(&spot_cfg.api_key_env)
-                .map_err(|_| anyhow!("environment variable {} not set", spot_cfg.api_key_env))?
-        };
-        let spot_api_secret = if spot_cfg.api_secret_env == um_cfg.api_secret_env {
-            um_api_secret.clone()
-        } else {
-            std::env::var(&spot_cfg.api_secret_env)
-                .map_err(|_| anyhow!("environment variable {} not set", spot_cfg.api_secret_env))?
-        };
-
-        let asset_filter = spot_cfg
-            .asset
-            .as_ref()
-            .map(|v| v.trim())
-            .filter(|v| !v.is_empty())
-            .map(|v| v.to_string());
+        // Optional: filter specific asset (e.g., "USDT")
+        let asset_filter = std::env::var("SPOT_ASSET_FILTER")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
 
         let spot_manager = BinancePmSpotAccountManager::new(
-            &spot_cfg.rest_base,
+            um_rest_base,
             spot_api_key,
             spot_api_secret,
-            spot_cfg.recv_window_ms,
+            recv_window_ms,
             asset_filter,
         );
         let spot_snapshot = spot_manager
@@ -241,8 +218,6 @@ impl BootstrapResources {
             log_exposures(exposure_manager.exposures(), &snap);
         }
 
-        let order_req_service = resolve_order_req_service(&cfg.trade_engine);
-
         // 加载交易对 LOT_SIZE/PRICE_FILTER（spot/futures/margin），用于数量/价格对齐
         let mut min_qty_table = MinQtyTable::new();
         if let Err(err) = min_qty_table.refresh_binance().await {
@@ -256,7 +231,6 @@ impl BootstrapResources {
             exposure_manager,
             price_table,
             min_qty_table,
-            order_req_service,
         })
     }
 }
@@ -295,7 +269,6 @@ impl RuntimeContext {
             exposure_manager,
             price_table,
             min_qty_table,
-            order_req_service: _,
         } = bootstrap;
 
         let exposure_manager_rc = Rc::new(RefCell::new(exposure_manager));
@@ -812,16 +785,6 @@ fn collect_price_symbols(
         }
         set.insert(format!("{}USDT", bal.asset.to_uppercase()));
     }
-}
-
-fn resolve_order_req_service(cfg: &TradeEngineRespCfg) -> String {
-    if let Some(req_service) = cfg.req_service.clone() {
-        return req_service;
-    }
-    if cfg.service.contains("order_resps/") {
-        return cfg.service.replace("order_resps/", "order_reqs/");
-    }
-    cfg.service.replace("resps", "reqs")
 }
 
 

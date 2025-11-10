@@ -10,7 +10,7 @@ const TRADE_RESP_PAYLOAD: usize = 16_384;
 const TRADE_REQ_PAYLOAD: usize = 4_096;
 const NODE_PRE_TRADE_ORDER_REQ: &str = "pre_trade_order_req";
 
-struct TradeChannel{
+struct TradeEngChannel{
     //交易请求从pre-trade发送给trade engine，pub
     binance_trade_resquest_node: Node<ipc::Service>,
     binance_trade_resquest: Publisher<ipc::Service, [u8; TRADE_REQ_PAYLOAD], ()>,
