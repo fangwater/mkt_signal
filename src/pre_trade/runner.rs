@@ -294,7 +294,6 @@ impl BootstrapResources {
         })
     }
 }
-
 struct RuntimeContext {
     spot_manager: BinancePmSpotAccountManager,
     um_manager: BinancePmUmAccountManager,
@@ -309,9 +308,6 @@ struct RuntimeContext {
     max_pending_limit_orders: Rc<Cell<i32>>,
     min_qty_table: Rc<MinQtyTable>,
     dedup: crate::pre_trade::dedup::DedupCache,
-    resample_positions_pub: Option<ResamplePublisher>,
-    resample_exposure_pub: Option<ResamplePublisher>,
-    resample_risk_pub: Option<ResamplePublisher>,
     signal_record_pub: Option<SignalPublisher>,
     backward_pub: Option<SignalPublisher>,
     resample_interval: std::time::Duration,
