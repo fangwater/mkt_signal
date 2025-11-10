@@ -13,12 +13,14 @@ use crate::pre_trade::binance_pm_spot_manager::{BinancePmSpotAccountManager, Bin
 use crate::pre_trade::binance_pm_um_manager::{
     BinancePmUmAccountManager, BinanceUmAccountSnapshot, BinanceUmPosition,
 };
-use crate::pre_trade::config::{PreTradeCfg,StrategyParamsCfg, TradeEngineRespCfg,
+use crate::pre_trade::config::{
+    PreTradeCfg, TradeEngineRespCfg,
 };
 use crate::pre_trade::event::AccountEvent;
 use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
 use crate::signal::cancel_signal::ArbCancelCtx;
+use crate::signal::channels::SIGNAL_CHANNEL_MM_ARBITRAGE_BACKWARD;
 use crate::signal::common::{ExecutionType, SignalBytes};
 use crate::strategy::hedge_arb_strategy::HedgeArbStrategy;
 use crate::signal::hedge_signal::ArbHedgeCtx;
@@ -45,6 +47,8 @@ use std::time::Duration;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 
+const NODE_PRE_TRADE_SIGNAL_PREFIX: &str = "signals";
+
 pub struct PreTrade {
     cfg: PreTradeCfg,
 }
@@ -57,8 +61,6 @@ impl PreTrade {
     pub async fn run(self) -> Result<()> {
         info!("pre_trade starting");
         let bootstrap = BootstrapResources::load(&self.cfg).await?;
-        // 初始化策略参数从 Redis
-        let strategy_params = StrategyParamsCfg::default();
         let signal_record_pub = match SignalPublisher::new(PRE_TRADE_SIGNAL_RECORD_CHANNEL) {
             Ok(p) => Some(p),
             Err(err) => {
@@ -74,7 +76,7 @@ impl PreTrade {
             bootstrap,
             signal_tx.clone(),
             order_publisher,
-            strategy_params
+            signal_record_pub,
         );
 
         // 首次从 Redis 拉取 pre-trade 参数
@@ -86,9 +88,7 @@ impl PreTrade {
         let mut internal_signal_rx = signal_rx;
 
         // 创建 MonitorChannel 实例并启动 account_pubs/binance_pm 监听
-        let mut monitor_channel = crate::pre_trade::monitor_channel::MonitorChannel::new(
-            "account_pubs/binance_pm".to_string(),
-        );
+        let mut monitor_channel = crate::pre_trade::monitor_channel::MonitorChannel::new_binance_pm_monitor();
         let mut account_rx = monitor_channel.take_receiver()
             .ok_or_else(|| anyhow::anyhow!("failed to get account receiver"))?;
 
@@ -157,21 +157,22 @@ struct BootstrapResources {
 
 impl BootstrapResources {
     async fn load(cfg: &PreTradeCfg) -> Result<Self> {
-        // 直接从环境变量读取 API 密钥
-        let api_key = std::env::var("BINANCE_API_KEY")
-            .map_err(|_| anyhow!("environment variable BINANCE_API_KEY not set"))?;
-        let api_secret = std::env::var("BINANCE_API_SECRET")
-            .map_err(|_| anyhow!("environment variable BINANCE_API_SECRET not set"))?;
+        let um_cfg = cfg
+            .risk_checks
+            .binance_pm_um
+            .as_ref()
+            .ok_or_else(|| anyhow!("risk_checks.binance_pm_um must be configured"))?;
 
-        // 使用固定的配置
-        const REST_BASE: &str = "https://papi.binance.com";
-        const RECV_WINDOW_MS: u64 = 5000;
+        let um_api_key = std::env::var(&um_cfg.api_key_env)
+            .map_err(|_| anyhow!("environment variable {} not set", um_cfg.api_key_env))?;
+        let um_api_secret = std::env::var(&um_cfg.api_secret_env)
+            .map_err(|_| anyhow!("environment variable {} not set", um_cfg.api_secret_env))?;
 
         let um_manager = BinancePmUmAccountManager::new(
-            REST_BASE,
-            api_key.clone(),
-            api_secret.clone(),
-            RECV_WINDOW_MS,
+            &um_cfg.rest_base,
+            um_api_key.clone(),
+            um_api_secret.clone(),
+            um_cfg.recv_window_ms,
         );
         let um_snapshot = um_manager
             .init()
@@ -179,12 +180,38 @@ impl BootstrapResources {
             .context("failed to load initial Binance UM snapshot")?;
         log_um_positions(&um_snapshot.positions);
 
+        let spot_cfg = cfg
+            .risk_checks
+            .binance_spot
+            .as_ref()
+            .ok_or_else(|| anyhow!("risk_checks.binance_spot must be configured"))?;
+
+        let spot_api_key = if spot_cfg.api_key_env == um_cfg.api_key_env {
+            um_api_key.clone()
+        } else {
+            std::env::var(&spot_cfg.api_key_env)
+                .map_err(|_| anyhow!("environment variable {} not set", spot_cfg.api_key_env))?
+        };
+        let spot_api_secret = if spot_cfg.api_secret_env == um_cfg.api_secret_env {
+            um_api_secret.clone()
+        } else {
+            std::env::var(&spot_cfg.api_secret_env)
+                .map_err(|_| anyhow!("environment variable {} not set", spot_cfg.api_secret_env))?
+        };
+
+        let asset_filter = spot_cfg
+            .asset
+            .as_ref()
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_string());
+
         let spot_manager = BinancePmSpotAccountManager::new(
-            REST_BASE,
-            api_key,
-            api_secret,
-            RECV_WINDOW_MS,
-            None, // 不过滤资产，检查全部现货资产
+            &spot_cfg.rest_base,
+            spot_api_key,
+            spot_api_secret,
+            spot_cfg.recv_window_ms,
+            asset_filter,
         );
         let spot_snapshot = spot_manager
             .init()
@@ -240,7 +267,11 @@ struct RuntimeContext {
     price_table: Rc<RefCell<PriceTable>>,
     order_manager: Rc<RefCell<crate::pre_trade::order_manager::OrderManager>>,
     strategy_mgr: StrategyManager,
-    strategy_params: StrategyParamsCfg,
+    // Risk parameters (loaded from Redis)
+    max_pos_u: f64,
+    max_symbol_exposure_ratio: f64,
+    max_total_exposure_ratio: f64,
+    max_leverage: f64,
     max_pending_limit_orders: Rc<Cell<i32>>,
     min_qty_table: Rc<MinQtyTable>,
     signal_tx: UnboundedSender<Bytes>,
@@ -256,7 +287,6 @@ impl RuntimeContext {
         bootstrap: BootstrapResources,
         order_record_tx: UnboundedSender<Bytes>,
         signal_tx: UnboundedSender<Bytes>,
-        strategy_params: StrategyParamsCfg,
         signal_record_pub: Option<SignalPublisher>,
     ) -> Self {
         let BootstrapResources {
@@ -281,9 +311,18 @@ impl RuntimeContext {
             )),
             strategy_mgr: StrategyManager::new(),
             signal_tx,
-            strategy_params,
+            // Default risk parameters
+            max_pos_u: 0.0,
+            max_symbol_exposure_ratio: 0.25,  // 25%
+            max_total_exposure_ratio: 0.25,   // 25%
+            max_leverage: 2.0,
             max_pending_limit_orders: Rc::new(Cell::new(3)),
             min_qty_table,
+            resample_positions_pub,
+            resample_exposure_pub,
+            resample_risk_pub,
+            signal_record_pub,
+            backward_pub,
             resample_interval: std::time::Duration::from_secs(3),
             next_resample: std::time::Instant::now() + std::time::Duration::from_secs(3),
             next_params_refresh: std::time::Instant::now(),
@@ -407,10 +446,10 @@ impl RuntimeContext {
             self.exposure_manager.clone(),
             self.order_manager.clone(),
             self.price_table.clone(),
-            self.strategy_params.max_symbol_exposure_ratio,
-            self.strategy_params.max_total_exposure_ratio,
-            self.strategy_params.max_pos_u,
-            self.strategy_params.max_leverage,
+            self.max_symbol_exposure_ratio,
+            self.max_total_exposure_ratio,
+            self.max_pos_u,
+            self.max_leverage,
             self.max_pending_limit_orders.clone(),
         );
 
@@ -453,7 +492,7 @@ impl RuntimeContext {
                     exposures.total_equity(),
                     exposures.total_abs_exposure(),
                     exposures.total_position(),
-                    self.strategy_params.max_leverage,
+                    self.max_leverage,
                 );
             }
         }
@@ -510,19 +549,20 @@ impl RuntimeContext {
         if let Some(v) = parse_u64("pre_trade_refresh_secs") {
             new_refresh = v;
         }
-        let mut sp = self.strategy_params.clone();
+
+        // Update risk parameters from Redis (if keys exist)
         if let Some(v) = parse_f64("pre_trade_max_pos_u") {
-            sp.max_pos_u = v;
+            self.max_pos_u = v;
         }
         if let Some(v) = parse_f64("pre_trade_max_symbol_exposure_ratio") {
-            sp.max_symbol_exposure_ratio = v;
+            self.max_symbol_exposure_ratio = v;
         }
         if let Some(v) = parse_f64("pre_trade_max_total_exposure_ratio") {
-            sp.max_total_exposure_ratio = v;
+            self.max_total_exposure_ratio = v;
         }
         if let Some(v) = parse_f64("pre_trade_max_leverage") {
             if v > 0.0 {
-                sp.max_leverage = v;
+                self.max_leverage = v;
             } else {
                 warn!("pre_trade_max_leverage={} 无效，需大于 0，忽略更新", v);
             }
@@ -550,10 +590,10 @@ impl RuntimeContext {
         }
 
         let snapshot = PreTradeParamsSnap {
-            max_pos_u: sp.max_pos_u,
-            max_symbol_exposure_ratio: sp.max_symbol_exposure_ratio,
-            max_total_exposure_ratio: sp.max_total_exposure_ratio,
-            max_leverage: sp.max_leverage,
+            max_pos_u: self.max_pos_u,
+            max_symbol_exposure_ratio: self.max_symbol_exposure_ratio,
+            max_total_exposure_ratio: self.max_total_exposure_ratio,
+            max_leverage: self.max_leverage,
             refresh_secs: new_refresh,
         };
         let changed = self
@@ -562,16 +602,15 @@ impl RuntimeContext {
             .map(|old| old != &snapshot)
             .unwrap_or(true);
 
-        self.strategy_params = sp;
         self.params_refresh_secs = new_refresh;
         self.last_params_snapshot = Some(snapshot);
         if changed {
             debug!(
                 "pre_trade params updated: max_pos_u={:.2} sym_ratio={:.4} total_ratio={:.4} max_leverage={:.2} refresh={}s",
-                self.strategy_params.max_pos_u,
-                self.strategy_params.max_symbol_exposure_ratio,
-                self.strategy_params.max_total_exposure_ratio,
-                self.strategy_params.max_leverage,
+                self.max_pos_u,
+                self.max_symbol_exposure_ratio,
+                self.max_total_exposure_ratio,
+                self.max_leverage,
                 self.params_refresh_secs
             );
         }
@@ -607,7 +646,7 @@ impl RuntimeContext {
         let borrowed_usd = exposures_mgr.total_borrowed_usd();
         let interest_usd = exposures_mgr.total_interest_usd();
         let um_unrealized_usd = exposures_mgr.total_um_unrealized();
-        let max_leverage = self.strategy_params.max_leverage;
+        let max_leverage = self.max_leverage;
         drop(exposures_mgr);
 
         let mut published = 0usize;
@@ -1243,6 +1282,25 @@ fn dispatch_order_trade_update(ctx: &mut RuntimeContext, update: &OrderTradeUpda
     ctx.cleanup_inactive();
 }
 
+// 删除了基于 JSON 的账户元数据提取逻辑，账户事件采用二进制帧头解析
+fn signal_node_name(channel: &str) -> String {
+    format!(
+        "{}{}",
+        NODE_PRE_TRADE_SIGNAL_PREFIX,
+        sanitize_suffix(channel)
+    )
+}
+
+fn sanitize_suffix(raw: &str) -> std::borrow::Cow<'_, str> {
+    if raw.chars().all(is_valid_node_char) {
+        return std::borrow::Cow::Borrowed(raw);
+    }
+    let sanitized: String = raw
+        .chars()
+        .map(|c| if is_valid_node_char(c) { c } else { '_' })
+        .collect();
+    std::borrow::Cow::Owned(sanitized)
+}
 
 fn is_valid_node_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '-'
@@ -1508,4 +1566,71 @@ fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
         row.push('|');
     }
     row
+}
+
+fn spawn_derivatives_worker(price_table: Rc<RefCell<PriceTable>>) -> Result<()> { 
+    let service = DERIVATIVES_SERVICE.to_string(); 
+    let node_name = NODE_PRE_TRADE_DERIVATIVES.to_string(); 
+    tokio::task::spawn_local(async move { 
+        if let Err(err) = derivatives_loop(node_name, service, price_table).await { 
+            error!("derivatives worker exited: {err:?}"); 
+        } 
+    }); 
+    Ok(()) 
+} 
+
+async fn derivatives_loop(
+    node_name: String,
+    service: String,
+    price_table: Rc<RefCell<PriceTable>>,
+) -> Result<()> {
+    let node = NodeBuilder::new()
+        .name(&NodeName::new(&node_name)?)
+        .create::<ipc::Service>()?;
+
+    let service = node
+        .service_builder(&ServiceName::new(&service)?)
+        .publish_subscribe::<[u8; DERIVATIVES_PAYLOAD]>()
+        .open_or_create()?;
+    let subscriber: Subscriber<ipc::Service, [u8; DERIVATIVES_PAYLOAD], ()> =
+        service.subscriber_builder().create()?;
+    info!("derivatives metrics subscribed: service={}", service.name());
+
+    loop {
+        match subscriber.receive() {
+            Ok(Some(sample)) => {
+                let payload = Bytes::copy_from_slice(sample.payload());
+                if payload.is_empty() {
+                    continue;
+                }
+                let Some(msg_type) = get_msg_type(&payload) else {
+                    continue;
+                };
+                match msg_type {
+                    MktMsgType::MarkPrice => match parse_mark_price(&payload) {
+                        Ok(msg) => {
+                            let mut table = price_table.borrow_mut();
+                            table.update_mark_price(&msg.symbol, msg.mark_price, msg.timestamp);
+                        }
+                        Err(err) => warn!("parse mark price failed: {err:?}"),
+                    },
+                    MktMsgType::IndexPrice => match parse_index_price(&payload) {
+                        Ok(msg) => {
+                            let mut table = price_table.borrow_mut();
+                            table.update_index_price(&msg.symbol, msg.index_price, msg.timestamp);
+                        }
+                        Err(err) => warn!("parse index price failed: {err:?}"),
+                    },
+                    _ => {}
+                }
+            }
+            Ok(None) => {
+                tokio::task::yield_now().await;
+            }
+            Err(err) => {
+                warn!("derivatives stream receive error: {err}");
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+    }
 }

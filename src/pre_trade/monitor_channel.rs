@@ -20,14 +20,13 @@ pub struct MonitorChannel {
 }
 
 impl MonitorChannel {
-    /// 创建新的 MonitorChannel 实例并启动监听
-    /// service_name: 如 "account_pubs/binance_pm"
-    pub fn new(service_name: String) -> Self {
+    /// 创建 Binance PM account monitor 实例并启动监听
+    /// 订阅频道: account_pubs/binance_pm
+    pub fn new_binance_pm_monitor() -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
 
-        // 从 service_name 自动生成 node_name
-        // 例如: "account_pubs/binance_pm" -> "pre_trade_account_pubs_binance_pm"
-        let node_name = format!("pre_trade_{}", service_name.replace('/', "_"));
+        let service_name = "account_pubs/binance_pm".to_string();
+        let node_name = "pre_trade_account_pubs_binance_pm".to_string();
 
         // 立即启动监听
         Self::spawn_listener(
