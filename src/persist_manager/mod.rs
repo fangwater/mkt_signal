@@ -24,7 +24,7 @@ pub struct PersistManager {
 impl PersistManager {
     pub fn new(cfg: PersistManagerCfg) -> Self {
         Self { cfg }
-    }
+    } 
 
     pub async fn run(self) -> Result<()> {
         let cfg = self.cfg;
@@ -41,28 +41,28 @@ impl PersistManager {
         }
         if um_execution_enabled {
             cf_names.extend_from_slice(um_order_update::required_column_families());
-        }
+        } 
 
         let store = Arc::new(RocksDbStore::open(
             &cfg.rocksdb.path,
             &cf_names,
             cfg.rocksdb.sync_writes,
-        )?);
+        )?); 
 
-        if signal_enabled {
+        if signal_enabled { 
             info!(
                 "signal persistence enabled on channel {}",
-                cfg.signal.channel
-            );
+                cfg.signal.channel 
+            ); 
             let worker = SignalPersistor::new(cfg.signal.clone(), store.clone())?;
             tokio::task::spawn_local(async move {
                 if let Err(err) = worker.run().await {
                     warn!("signal persistor exited with error: {err:#}");
-                }
-            });
+                } 
+            }); 
         } else {
             info!("signal persistence disabled by configuration");
-        }
+        } 
 
         if execution_enabled {
             info!(
@@ -82,7 +82,7 @@ impl PersistManager {
         if um_execution_enabled {
             info!(
                 "UM order update persistence enabled on channel {}",
-                cfg.um_execution.channel
+                cfg.um_execution.channel 
             );
             let worker = UmOrderUpdatePersistor::new(cfg.um_execution.clone(), store.clone())?;
             tokio::task::spawn_local(async move {
@@ -92,7 +92,7 @@ impl PersistManager {
             });
         } else {
             info!("UM order update persistence disabled by configuration");
-        }
+        } 
 
         let http_store = store.clone();
         tokio::task::spawn_local(async move {

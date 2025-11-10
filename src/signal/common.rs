@@ -331,6 +331,18 @@ impl TradingVenue {
         }
     }
 
+    /// 转换为字符串表示
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TradingVenue::BinanceMargin => "BinanceMargin",
+            TradingVenue::BinanceUm => "BinanceUm",
+            TradingVenue::BinanceSwap => "BinanceSwap",
+            TradingVenue::BinanceSpot => "BinanceSpot",
+            TradingVenue::OkexSwap => "OkexSwap",
+            TradingVenue::OkexSpot => "OkexSpot",
+        }
+    }
+
     /// 获取交易所名称
     pub fn exchange_name(&self) -> &'static str {
         match self {

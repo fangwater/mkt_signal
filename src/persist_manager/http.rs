@@ -19,10 +19,10 @@ use serde_json::Value;
 
 use crate::persist_manager::config::HttpConfig;
 use crate::persist_manager::storage::RocksDbStore;
-use crate::signal::binance_forward_arb_mm::BinSingleForwardArbHedgeMMCtx;
-use crate::signal::binance_forward_arb_mt::{
-    BinSingleForwardArbCancelCtx, BinSingleForwardArbHedgeMTCtx, BinSingleForwardArbOpenCtx,
-};
+use crate::signal::cancel_signal::ArbCancelCtx;
+use crate::signal::common::{SignalBytes, TradingVenue};
+use crate::signal::hedge_signal::ArbHedgeCtx;
+use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::record::SignalRecordMessage;
 use crate::signal::trade_signal::SignalType;
 
@@ -269,35 +269,29 @@ struct ErrorResp {
 
 #[derive(Debug, Clone, Copy)]
 enum SignalKind {
-    BinSingleForwardArbOpenMT,
-    BinSingleForwardArbOpenMM,
-    BinSingleForwardArbCancelMT,
-    BinSingleForwardArbCancelMM,
-    BinSingleForwardArbHedgeMT,
-    BinSingleForwardArbHedgeMM,
+    ArbOpen,
+    ArbHedge,
+    ArbCancel,
+    ArbClose,
 }
 
 impl SignalKind {
     fn from_path(value: &str) -> Option<Self> {
         match value {
-            "signals_bin_single_forward_arb_open_mt" => Some(Self::BinSingleForwardArbOpenMT),
-            "signals_bin_single_forward_arb_open_mm" => Some(Self::BinSingleForwardArbOpenMM),
-            "signals_bin_single_forward_arb_cancel_mt" => Some(Self::BinSingleForwardArbCancelMT),
-            "signals_bin_single_forward_arb_cancel_mm" => Some(Self::BinSingleForwardArbCancelMM),
-            "signals_bin_single_forward_arb_hedge_mt" => Some(Self::BinSingleForwardArbHedgeMT),
-            "signals_bin_single_forward_arb_hedge_mm" => Some(Self::BinSingleForwardArbHedgeMM),
+            "signals_arb_open" => Some(Self::ArbOpen),
+            "signals_arb_hedge" => Some(Self::ArbHedge),
+            "signals_arb_cancel" => Some(Self::ArbCancel),
+            "signals_arb_close" => Some(Self::ArbClose),
             _ => None,
         }
     }
 
     fn cf_name(&self) -> &'static str {
         match self {
-            SignalKind::BinSingleForwardArbOpenMT => "signals_bin_single_forward_arb_open_mt",
-            SignalKind::BinSingleForwardArbOpenMM => "signals_bin_single_forward_arb_open_mm",
-            SignalKind::BinSingleForwardArbCancelMT => "signals_bin_single_forward_arb_cancel_mt",
-            SignalKind::BinSingleForwardArbCancelMM => "signals_bin_single_forward_arb_cancel_mm",
-            SignalKind::BinSingleForwardArbHedgeMT => "signals_bin_single_forward_arb_hedge_mt",
-            SignalKind::BinSingleForwardArbHedgeMM => "signals_bin_single_forward_arb_hedge_mm",
+            SignalKind::ArbOpen => "signals_arb_open",
+            SignalKind::ArbHedge => "signals_arb_hedge",
+            SignalKind::ArbCancel => "signals_arb_cancel",
+            SignalKind::ArbClose => "signals_arb_close",
         }
     }
 }
@@ -340,50 +334,92 @@ fn parse_key(key: &str) -> Result<(u64, i32)> {
 
 fn decode_context(signal_kind: SignalKind, record: &SignalRecordMessage) -> Option<Value> {
     match signal_kind {
-        SignalKind::BinSingleForwardArbOpenMT | SignalKind::BinSingleForwardArbOpenMM => {
-            let Ok(ctx) =
-                BinSingleForwardArbOpenCtx::from_bytes(Bytes::from(record.context.clone()))
-            else {
+        SignalKind::ArbOpen | SignalKind::ArbClose => {
+            let Ok(ctx) = ArbOpenCtx::from_bytes(Bytes::from(record.context.clone())) else {
                 return None;
             };
-            serde_json::to_value(ctx).ok()
+            // Convert to JSON-friendly struct
+            let json_obj = serde_json::json!({
+                "opening_leg": {
+                    "venue": ctx.opening_leg.venue,
+                    "bid0": ctx.opening_leg.bid0,
+                    "ask0": ctx.opening_leg.ask0,
+                },
+                "opening_symbol": ctx.get_opening_symbol(),
+                "hedging_leg": {
+                    "venue": ctx.hedging_leg.venue,
+                    "bid0": ctx.hedging_leg.bid0,
+                    "ask0": ctx.hedging_leg.ask0,
+                },
+                "hedging_symbol": ctx.get_hedging_symbol(),
+                "amount": ctx.amount,
+                "side": ctx.get_side().map(|s| s.as_str()).unwrap_or("Unknown"),
+                "order_type": ctx.get_order_type().map(|t| t.as_str()).unwrap_or("Unknown"),
+                "price": ctx.price,
+                "price_tick": ctx.price_tick,
+                "exp_time": ctx.exp_time,
+                "create_ts": ctx.create_ts,
+                "open_threshold": ctx.open_threshold,
+                "hedge_timeout_us": ctx.hedge_timeout_us,
+                "funding_ma": if ctx.funding_ma != 0.0 { Some(ctx.funding_ma) } else { None },
+                "predicted_funding_rate": if ctx.predicted_funding_rate != 0.0 { Some(ctx.predicted_funding_rate) } else { None },
+                "loan_rate": if ctx.loan_rate != 0.0 { Some(ctx.loan_rate) } else { None },
+            });
+            Some(json_obj)
         }
-        SignalKind::BinSingleForwardArbCancelMT | SignalKind::BinSingleForwardArbCancelMM => {
-            let Ok(ctx) =
-                BinSingleForwardArbCancelCtx::from_bytes(Bytes::from(record.context.clone()))
-            else {
+        SignalKind::ArbHedge => {
+            let Ok(ctx) = ArbHedgeCtx::from_bytes(Bytes::from(record.context.clone())) else {
                 return None;
             };
-            serde_json::to_value(ctx).ok()
+            let json_obj = serde_json::json!({
+                "strategy_id": ctx.strategy_id,
+                "client_order_id": ctx.client_order_id,
+                "hedge_qty": ctx.hedge_qty,
+                "hedge_side": ctx.get_side().map(|s| s.as_str()).unwrap_or("Unknown"),
+                "limit_price": ctx.limit_price,
+                "price_tick": ctx.price_tick,
+                "maker_only": ctx.maker_only,
+                "exp_time": ctx.exp_time,
+                "hedging_leg": {
+                    "venue": ctx.hedging_leg.venue,
+                    "bid0": ctx.hedging_leg.bid0,
+                    "ask0": ctx.hedging_leg.ask0,
+                },
+                "hedging_symbol": ctx.get_hedging_symbol(),
+                "market_ts": ctx.market_ts,
+            });
+            Some(json_obj)
         }
-        SignalKind::BinSingleForwardArbHedgeMT => {
-            let Ok(ctx) =
-                BinSingleForwardArbHedgeMTCtx::from_bytes(Bytes::from(record.context.clone()))
-            else {
+        SignalKind::ArbCancel => {
+            let Ok(ctx) = ArbCancelCtx::from_bytes(Bytes::from(record.context.clone())) else {
                 return None;
             };
-            serde_json::to_value(ctx).ok()
-        }
-        SignalKind::BinSingleForwardArbHedgeMM => {
-            let Ok(ctx) =
-                BinSingleForwardArbHedgeMMCtx::from_bytes(Bytes::from(record.context.clone()))
-            else {
-                return None;
-            };
-            serde_json::to_value(ctx).ok()
+            let json_obj = serde_json::json!({
+                "opening_leg": {
+                    "venue": ctx.opening_leg.venue,
+                    "bid0": ctx.opening_leg.bid0,
+                    "ask0": ctx.opening_leg.ask0,
+                },
+                "opening_symbol": ctx.get_opening_symbol(),
+                "hedging_leg": {
+                    "venue": ctx.hedging_leg.venue,
+                    "bid0": ctx.hedging_leg.bid0,
+                    "ask0": ctx.hedging_leg.ask0,
+                },
+                "hedging_symbol": ctx.get_hedging_symbol(),
+                "trigger_ts": ctx.trigger_ts,
+            });
+            Some(json_obj)
         }
     }
 }
 
 fn signal_type_name(signal_type: &SignalType) -> &'static str {
     match signal_type {
-        SignalType::BinSingleForwardArbOpenMT => "BinSingleForwardArbOpenMT",
-        SignalType::BinSingleForwardArbOpenMM => "BinSingleForwardArbOpenMM",
-        SignalType::BinSingleForwardArbHedgeMT => "BinSingleForwardArbHedgeMT",
-        SignalType::BinSingleForwardArbHedgeMM => "BinSingleForwardArbHedgeMM",
-        SignalType::BinSingleForwardArbCancelMT => "BinSingleForwardArbCancelMT",
-        SignalType::BinSingleForwardArbCancelMM => "BinSingleForwardArbCancelMM",
-        SignalType::BinSingleForwardArbHedgeMMReq => "BinSingleForwardArbHedgeMMReq",
+        SignalType::ArbOpen => "ArbOpen",
+        SignalType::ArbHedge => "ArbHedge",
+        SignalType::ArbCancel => "ArbCancel",
+        SignalType::ArbClose => "ArbClose",
     }
 }
 
@@ -429,14 +465,9 @@ fn build_parquet_bytes(
     range: &RangeFilter,
 ) -> Result<Vec<u8>> {
     match kind {
-        SignalKind::BinSingleForwardArbOpenMT | SignalKind::BinSingleForwardArbOpenMM => {
-            build_parquet_open(entries, range)
-        }
-        SignalKind::BinSingleForwardArbCancelMT | SignalKind::BinSingleForwardArbCancelMM => {
-            build_parquet_cancel(entries, range)
-        }
-        SignalKind::BinSingleForwardArbHedgeMT => build_parquet_hedge_mt(entries, range),
-        SignalKind::BinSingleForwardArbHedgeMM => build_parquet_hedge_mm(entries, range),
+        SignalKind::ArbOpen | SignalKind::ArbClose => build_parquet_open(entries, range),
+        SignalKind::ArbCancel => build_parquet_cancel(entries, range),
+        SignalKind::ArbHedge => build_parquet_hedge(entries, range),
     }
 }
 
@@ -445,19 +476,22 @@ fn build_parquet_open(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> 
     let mut ts_us_col: Vec<i64> = Vec::with_capacity(entries.len());
     let mut strategy_id_col: Vec<i32> = Vec::with_capacity(entries.len());
     let mut create_ts_col: Vec<i64> = Vec::with_capacity(entries.len());
-    let mut spot_symbol_col: Vec<String> = Vec::with_capacity(entries.len());
-    let mut futures_symbol_col: Vec<String> = Vec::with_capacity(entries.len());
-    let mut amount_col: Vec<f64> = Vec::with_capacity(entries.len());
+    let mut opening_venue_col: Vec<String> = Vec::with_capacity(entries.len());
+    let mut opening_symbol_col: Vec<String> = Vec::with_capacity(entries.len());
+    let mut opening_bid0_col: Vec<f64> = Vec::with_capacity(entries.len());
+    let mut opening_ask0_col: Vec<f64> = Vec::with_capacity(entries.len());
+    let mut hedging_venue_col: Vec<String> = Vec::with_capacity(entries.len());
+    let mut hedging_symbol_col: Vec<String> = Vec::with_capacity(entries.len());
+    let mut hedging_bid0_col: Vec<f64> = Vec::with_capacity(entries.len());
+    let mut hedging_ask0_col: Vec<f64> = Vec::with_capacity(entries.len());
+    let mut amount_col: Vec<f32> = Vec::with_capacity(entries.len());
     let mut side_col: Vec<String> = Vec::with_capacity(entries.len());
     let mut order_type_col: Vec<String> = Vec::with_capacity(entries.len());
     let mut price_col: Vec<f64> = Vec::with_capacity(entries.len());
     let mut price_tick_col: Vec<f64> = Vec::with_capacity(entries.len());
     let mut exp_time_col: Vec<i64> = Vec::with_capacity(entries.len());
-    let mut spot_bid0_col: Vec<f64> = Vec::with_capacity(entries.len());
-    let mut spot_ask0_col: Vec<f64> = Vec::with_capacity(entries.len());
-    let mut swap_bid0_col: Vec<f64> = Vec::with_capacity(entries.len());
-    let mut swap_ask0_col: Vec<f64> = Vec::with_capacity(entries.len());
     let mut open_threshold_col: Vec<f64> = Vec::with_capacity(entries.len());
+    let mut hedge_timeout_us_col: Vec<i64> = Vec::with_capacity(entries.len());
     let mut funding_ma_col: Vec<Option<f64>> = Vec::with_capacity(entries.len());
     let mut predicted_funding_rate_col: Vec<Option<f64>> = Vec::with_capacity(entries.len());
     let mut loan_rate_col: Vec<Option<f64>> = Vec::with_capacity(entries.len());
@@ -469,29 +503,60 @@ fn build_parquet_open(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> 
             continue;
         }
         let record = SignalRecordMessage::from_bytes(Bytes::from(value_bytes))?;
-        let open_ctx = BinSingleForwardArbOpenCtx::from_bytes(Bytes::from(record.context.clone()))
-            .map_err(|err| anyhow!("failed to decode BinSingleForwardArbOpenCtx: {err}"))?;
+        let ctx = ArbOpenCtx::from_bytes(Bytes::from(record.context.clone()))
+            .map_err(|err| anyhow!("failed to decode ArbOpenCtx: {err}"))?;
 
         key_col.push(key);
         ts_us_col.push(ts_us as i64);
         strategy_id_col.push(strategy_id);
-        create_ts_col.push(open_ctx.create_ts);
-        spot_symbol_col.push(open_ctx.spot_symbol.clone());
-        futures_symbol_col.push(open_ctx.futures_symbol.clone());
-        amount_col.push(open_ctx.amount as f64);
-        side_col.push(open_ctx.side.as_str().to_string());
-        order_type_col.push(open_ctx.order_type.as_str().to_string());
-        price_col.push(open_ctx.price);
-        price_tick_col.push(open_ctx.price_tick);
-        exp_time_col.push(open_ctx.exp_time);
-        spot_bid0_col.push(open_ctx.spot_bid0);
-        spot_ask0_col.push(open_ctx.spot_ask0);
-        swap_bid0_col.push(open_ctx.swap_bid0);
-        swap_ask0_col.push(open_ctx.swap_ask0);
-        open_threshold_col.push(open_ctx.open_threshold);
-        funding_ma_col.push(open_ctx.funding_ma);
-        predicted_funding_rate_col.push(open_ctx.predicted_funding_rate);
-        loan_rate_col.push(open_ctx.loan_rate);
+        create_ts_col.push(ctx.create_ts);
+        opening_venue_col.push(
+            TradingVenue::from_u8(ctx.opening_leg.venue)
+                .map(|v| v.as_str().to_string())
+                .unwrap_or("Unknown".to_string()),
+        );
+        opening_symbol_col.push(ctx.get_opening_symbol());
+        opening_bid0_col.push(ctx.opening_leg.bid0);
+        opening_ask0_col.push(ctx.opening_leg.ask0);
+        hedging_venue_col.push(
+            TradingVenue::from_u8(ctx.hedging_leg.venue)
+                .map(|v| v.as_str().to_string())
+                .unwrap_or("Unknown".to_string()),
+        );
+        hedging_symbol_col.push(ctx.get_hedging_symbol());
+        hedging_bid0_col.push(ctx.hedging_leg.bid0);
+        hedging_ask0_col.push(ctx.hedging_leg.ask0);
+        amount_col.push(ctx.amount);
+        side_col.push(
+            ctx.get_side()
+                .map(|s| s.as_str().to_string())
+                .unwrap_or("Unknown".to_string()),
+        );
+        order_type_col.push(
+            ctx.get_order_type()
+                .map(|t| t.as_str().to_string())
+                .unwrap_or("Unknown".to_string()),
+        );
+        price_col.push(ctx.price);
+        price_tick_col.push(ctx.price_tick);
+        exp_time_col.push(ctx.exp_time);
+        open_threshold_col.push(ctx.open_threshold);
+        hedge_timeout_us_col.push(ctx.hedge_timeout_us);
+        funding_ma_col.push(if ctx.funding_ma != 0.0 {
+            Some(ctx.funding_ma)
+        } else {
+            None
+        });
+        predicted_funding_rate_col.push(if ctx.predicted_funding_rate != 0.0 {
+            Some(ctx.predicted_funding_rate)
+        } else {
+            None
+        });
+        loan_rate_col.push(if ctx.loan_rate != 0.0 {
+            Some(ctx.loan_rate)
+        } else {
+            None
+        });
     }
 
     let mut df = DataFrame::new(vec![
@@ -499,19 +564,22 @@ fn build_parquet_open(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> 
         Series::new("ts_us".into(), ts_us_col),
         Series::new("strategy_id".into(), strategy_id_col),
         Series::new("create_ts".into(), create_ts_col),
-        Series::new("spot_symbol".into(), spot_symbol_col),
-        Series::new("futures_symbol".into(), futures_symbol_col),
+        Series::new("opening_venue".into(), opening_venue_col),
+        Series::new("opening_symbol".into(), opening_symbol_col),
+        Series::new("opening_bid0".into(), opening_bid0_col),
+        Series::new("opening_ask0".into(), opening_ask0_col),
+        Series::new("hedging_venue".into(), hedging_venue_col),
+        Series::new("hedging_symbol".into(), hedging_symbol_col),
+        Series::new("hedging_bid0".into(), hedging_bid0_col),
+        Series::new("hedging_ask0".into(), hedging_ask0_col),
         Series::new("amount".into(), amount_col),
         Series::new("side".into(), side_col),
         Series::new("order_type".into(), order_type_col),
         Series::new("price".into(), price_col),
         Series::new("price_tick".into(), price_tick_col),
         Series::new("exp_time".into(), exp_time_col),
-        Series::new("spot_bid0".into(), spot_bid0_col),
-        Series::new("spot_ask0".into(), spot_ask0_col),
-        Series::new("swap_bid0".into(), swap_bid0_col),
-        Series::new("swap_ask0".into(), swap_ask0_col),
         Series::new("open_threshold".into(), open_threshold_col),
+        Series::new("hedge_timeout_us".into(), hedge_timeout_us_col),
         Series::new("funding_ma".into(), funding_ma_col.as_slice()),
         Series::new(
             "predicted_funding_rate".into(),
@@ -529,13 +597,14 @@ fn build_parquet_cancel(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -
     let mut key_col = Vec::with_capacity(entries.len());
     let mut ts_us_col = Vec::with_capacity(entries.len());
     let mut strategy_id_col = Vec::with_capacity(entries.len());
-    let mut spot_symbol_col = Vec::with_capacity(entries.len());
-    let mut futures_symbol_col = Vec::with_capacity(entries.len());
-    let mut cancel_threshold_col = Vec::with_capacity(entries.len());
-    let mut spot_bid0_col = Vec::with_capacity(entries.len());
-    let mut spot_ask0_col = Vec::with_capacity(entries.len());
-    let mut swap_bid0_col = Vec::with_capacity(entries.len());
-    let mut swap_ask0_col = Vec::with_capacity(entries.len());
+    let mut opening_venue_col: Vec<String> = Vec::with_capacity(entries.len());
+    let mut opening_symbol_col = Vec::with_capacity(entries.len());
+    let mut opening_bid0_col = Vec::with_capacity(entries.len());
+    let mut opening_ask0_col = Vec::with_capacity(entries.len());
+    let mut hedging_venue_col: Vec<String> = Vec::with_capacity(entries.len());
+    let mut hedging_symbol_col = Vec::with_capacity(entries.len());
+    let mut hedging_bid0_col = Vec::with_capacity(entries.len());
+    let mut hedging_ask0_col = Vec::with_capacity(entries.len());
     let mut trigger_ts_col = Vec::with_capacity(entries.len());
 
     for (key_bytes, value_bytes) in entries {
@@ -545,19 +614,28 @@ fn build_parquet_cancel(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -
             continue;
         }
         let record = SignalRecordMessage::from_bytes(Bytes::from(value_bytes))?;
-        let ctx = BinSingleForwardArbCancelCtx::from_bytes(Bytes::from(record.context.clone()))
-            .map_err(|err| anyhow!("failed to decode BinSingleForwardArbCancelCtx: {err}"))?;
+        let ctx = ArbCancelCtx::from_bytes(Bytes::from(record.context.clone()))
+            .map_err(|err| anyhow!("failed to decode ArbCancelCtx: {err}"))?;
 
         key_col.push(key);
         ts_us_col.push(ts_us as i64);
         strategy_id_col.push(strategy_id);
-        spot_symbol_col.push(ctx.spot_symbol.clone());
-        futures_symbol_col.push(ctx.futures_symbol.clone());
-        cancel_threshold_col.push(ctx.cancel_threshold);
-        spot_bid0_col.push(ctx.spot_bid0);
-        spot_ask0_col.push(ctx.spot_ask0);
-        swap_bid0_col.push(ctx.swap_bid0);
-        swap_ask0_col.push(ctx.swap_ask0);
+        opening_venue_col.push(
+            TradingVenue::from_u8(ctx.opening_leg.venue)
+                .map(|v| v.as_str().to_string())
+                .unwrap_or("Unknown".to_string()),
+        );
+        opening_symbol_col.push(ctx.get_opening_symbol());
+        opening_bid0_col.push(ctx.opening_leg.bid0);
+        opening_ask0_col.push(ctx.opening_leg.ask0);
+        hedging_venue_col.push(
+            TradingVenue::from_u8(ctx.hedging_leg.venue)
+                .map(|v| v.as_str().to_string())
+                .unwrap_or("Unknown".to_string()),
+        );
+        hedging_symbol_col.push(ctx.get_hedging_symbol());
+        hedging_bid0_col.push(ctx.hedging_leg.bid0);
+        hedging_ask0_col.push(ctx.hedging_leg.ask0);
         trigger_ts_col.push(ctx.trigger_ts);
     }
 
@@ -565,13 +643,14 @@ fn build_parquet_cancel(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -
         Series::new("key".into(), key_col),
         Series::new("ts_us".into(), ts_us_col),
         Series::new("strategy_id".into(), strategy_id_col),
-        Series::new("spot_symbol".into(), spot_symbol_col),
-        Series::new("futures_symbol".into(), futures_symbol_col),
-        Series::new("cancel_threshold".into(), cancel_threshold_col),
-        Series::new("spot_bid0".into(), spot_bid0_col),
-        Series::new("spot_ask0".into(), spot_ask0_col),
-        Series::new("swap_bid0".into(), swap_bid0_col),
-        Series::new("swap_ask0".into(), swap_ask0_col),
+        Series::new("opening_venue".into(), opening_venue_col),
+        Series::new("opening_symbol".into(), opening_symbol_col),
+        Series::new("opening_bid0".into(), opening_bid0_col),
+        Series::new("opening_ask0".into(), opening_ask0_col),
+        Series::new("hedging_venue".into(), hedging_venue_col),
+        Series::new("hedging_symbol".into(), hedging_symbol_col),
+        Series::new("hedging_bid0".into(), hedging_bid0_col),
+        Series::new("hedging_ask0".into(), hedging_ask0_col),
         Series::new("trigger_ts".into(), trigger_ts_col),
     ];
 
@@ -581,7 +660,7 @@ fn build_parquet_cancel(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -
     Ok(buf)
 }
 
-fn build_parquet_hedge_mt(
+fn build_parquet_hedge(
     entries: Vec<(Vec<u8>, Vec<u8>)>,
     range: &RangeFilter,
 ) -> Result<Vec<u8>> {
@@ -589,50 +668,7 @@ fn build_parquet_hedge_mt(
     let mut ts_us_col = Vec::with_capacity(entries.len());
     let mut strategy_id_col = Vec::with_capacity(entries.len());
     let mut record_ts_col = Vec::with_capacity(entries.len());
-    let mut client_order_id_col = Vec::with_capacity(entries.len());
-    let mut hedge_qty_col = Vec::with_capacity(entries.len());
-
-    for (key_bytes, value_bytes) in entries {
-        let key = String::from_utf8(key_bytes)?;
-        let (ts_us, strategy_id) = parse_key(&key)?;
-        if !range.contains(ts_us) {
-            continue;
-        }
-        let record = SignalRecordMessage::from_bytes(Bytes::from(value_bytes))?;
-        let ctx = BinSingleForwardArbHedgeMTCtx::from_bytes(Bytes::from(record.context.clone()))
-            .map_err(|err| anyhow!("failed to decode BinSingleForwardArbHedgeMTCtx: {err}"))?;
-
-        key_col.push(key);
-        ts_us_col.push(ts_us as i64);
-        strategy_id_col.push(strategy_id);
-        record_ts_col.push(record.timestamp_us);
-        client_order_id_col.push(ctx.client_order_id);
-        hedge_qty_col.push(ctx.hedge_qty);
-    }
-
-    let columns = vec![
-        Series::new("key".into(), key_col),
-        Series::new("ts_us".into(), ts_us_col),
-        Series::new("strategy_id".into(), strategy_id_col),
-        Series::new("record_ts_us".into(), record_ts_col),
-        Series::new("client_order_id".into(), client_order_id_col),
-        Series::new("hedge_qty".into(), hedge_qty_col),
-    ];
-
-    let mut df = DataFrame::new(columns)?;
-    let mut buf = Vec::new();
-    ParquetWriter::new(&mut buf).finish(&mut df)?;
-    Ok(buf)
-}
-
-fn build_parquet_hedge_mm(
-    entries: Vec<(Vec<u8>, Vec<u8>)>,
-    range: &RangeFilter,
-) -> Result<Vec<u8>> {
-    let mut key_col = Vec::with_capacity(entries.len());
-    let mut ts_us_col = Vec::with_capacity(entries.len());
-    let mut strategy_id_col = Vec::with_capacity(entries.len());
-    let mut record_ts_col = Vec::with_capacity(entries.len());
+    let mut ctx_strategy_id_col = Vec::with_capacity(entries.len());
     let mut client_order_id_col = Vec::with_capacity(entries.len());
     let mut hedge_qty_col = Vec::with_capacity(entries.len());
     let mut hedge_side_col = Vec::with_capacity(entries.len());
@@ -640,12 +676,11 @@ fn build_parquet_hedge_mm(
     let mut price_tick_col = Vec::with_capacity(entries.len());
     let mut maker_only_col = Vec::with_capacity(entries.len());
     let mut exp_time_col = Vec::with_capacity(entries.len());
-    let mut spot_bid_col = Vec::with_capacity(entries.len());
-    let mut spot_ask_col = Vec::with_capacity(entries.len());
-    let mut spot_ts_col = Vec::with_capacity(entries.len());
-    let mut fut_bid_col = Vec::with_capacity(entries.len());
-    let mut fut_ask_col = Vec::with_capacity(entries.len());
-    let mut fut_ts_col = Vec::with_capacity(entries.len());
+    let mut hedging_venue_col: Vec<String> = Vec::with_capacity(entries.len());
+    let mut hedging_symbol_col = Vec::with_capacity(entries.len());
+    let mut hedging_bid0_col = Vec::with_capacity(entries.len());
+    let mut hedging_ask0_col = Vec::with_capacity(entries.len());
+    let mut market_ts_col = Vec::with_capacity(entries.len());
 
     for (key_bytes, value_bytes) in entries {
         let key = String::from_utf8(key_bytes)?;
@@ -654,26 +689,34 @@ fn build_parquet_hedge_mm(
             continue;
         }
         let record = SignalRecordMessage::from_bytes(Bytes::from(value_bytes))?;
-        let ctx = BinSingleForwardArbHedgeMMCtx::from_bytes(Bytes::from(record.context.clone()))
-            .map_err(|err| anyhow!("failed to decode BinSingleForwardArbHedgeMMCtx: {err}"))?;
+        let ctx = ArbHedgeCtx::from_bytes(Bytes::from(record.context.clone()))
+            .map_err(|err| anyhow!("failed to decode ArbHedgeCtx: {err}"))?;
 
         key_col.push(key);
         ts_us_col.push(ts_us as i64);
         strategy_id_col.push(strategy_id);
         record_ts_col.push(record.timestamp_us);
+        ctx_strategy_id_col.push(ctx.strategy_id);
         client_order_id_col.push(ctx.client_order_id);
         hedge_qty_col.push(ctx.hedge_qty);
-        hedge_side_col.push(ctx.hedge_side.as_str().to_string());
+        hedge_side_col.push(
+            ctx.get_side()
+                .map(|s| s.as_str().to_string())
+                .unwrap_or("Unknown".to_string()),
+        );
         limit_price_col.push(ctx.limit_price);
         price_tick_col.push(ctx.price_tick);
         maker_only_col.push(ctx.maker_only);
         exp_time_col.push(ctx.exp_time);
-        spot_bid_col.push(ctx.spot_bid_price);
-        spot_ask_col.push(ctx.spot_ask_price);
-        spot_ts_col.push(ctx.spot_ts);
-        fut_bid_col.push(ctx.fut_bid_price);
-        fut_ask_col.push(ctx.fut_ask_price);
-        fut_ts_col.push(ctx.fut_ts);
+        hedging_venue_col.push(
+            TradingVenue::from_u8(ctx.hedging_leg.venue)
+                .map(|v| v.as_str().to_string())
+                .unwrap_or("Unknown".to_string()),
+        );
+        hedging_symbol_col.push(ctx.get_hedging_symbol());
+        hedging_bid0_col.push(ctx.hedging_leg.bid0);
+        hedging_ask0_col.push(ctx.hedging_leg.ask0);
+        market_ts_col.push(ctx.market_ts);
     }
 
     let columns = vec![
@@ -681,6 +724,7 @@ fn build_parquet_hedge_mm(
         Series::new("ts_us".into(), ts_us_col),
         Series::new("strategy_id".into(), strategy_id_col),
         Series::new("record_ts_us".into(), record_ts_col),
+        Series::new("ctx_strategy_id".into(), ctx_strategy_id_col),
         Series::new("client_order_id".into(), client_order_id_col),
         Series::new("hedge_qty".into(), hedge_qty_col),
         Series::new("hedge_side".into(), hedge_side_col),
@@ -688,12 +732,11 @@ fn build_parquet_hedge_mm(
         Series::new("price_tick".into(), price_tick_col),
         Series::new("maker_only".into(), maker_only_col),
         Series::new("exp_time".into(), exp_time_col),
-        Series::new("spot_bid_price".into(), spot_bid_col),
-        Series::new("spot_ask_price".into(), spot_ask_col),
-        Series::new("spot_ts".into(), spot_ts_col),
-        Series::new("fut_bid_price".into(), fut_bid_col),
-        Series::new("fut_ask_price".into(), fut_ask_col),
-        Series::new("fut_ts".into(), fut_ts_col),
+        Series::new("hedging_venue".into(), hedging_venue_col),
+        Series::new("hedging_symbol".into(), hedging_symbol_col),
+        Series::new("hedging_bid0".into(), hedging_bid0_col),
+        Series::new("hedging_ask0".into(), hedging_ask0_col),
+        Series::new("market_ts".into(), market_ts_col),
     ];
 
     let mut df = DataFrame::new(columns)?;

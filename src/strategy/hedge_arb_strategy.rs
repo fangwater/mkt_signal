@@ -898,7 +898,7 @@ impl HedgeArbStrategy {
             error!(
                 "HedgeArbStrategy: strategy_id={} MT模式不应该有对冲侧撤单，订单ID={}",
                 self.strategy_id,
-                cancel_update.client_order_id()
+                cancel_update.client_order_id() 
             );
             return;
         }

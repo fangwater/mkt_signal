@@ -1957,16 +1957,16 @@ fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
     row
 }
 
-fn spawn_derivatives_worker(price_table: Rc<RefCell<PriceTable>>) -> Result<()> {
-    let service = DERIVATIVES_SERVICE.to_string();
-    let node_name = NODE_PRE_TRADE_DERIVATIVES.to_string();
-    tokio::task::spawn_local(async move {
-        if let Err(err) = derivatives_loop(node_name, service, price_table).await {
-            error!("derivatives worker exited: {err:?}");
-        }
-    });
-    Ok(())
-}
+fn spawn_derivatives_worker(price_table: Rc<RefCell<PriceTable>>) -> Result<()> { 
+    let service = DERIVATIVES_SERVICE.to_string(); 
+    let node_name = NODE_PRE_TRADE_DERIVATIVES.to_string(); 
+    tokio::task::spawn_local(async move { 
+        if let Err(err) = derivatives_loop(node_name, service, price_table).await { 
+            error!("derivatives worker exited: {err:?}"); 
+        } 
+    }); 
+    Ok(()) 
+} 
 
 async fn derivatives_loop(
     node_name: String,

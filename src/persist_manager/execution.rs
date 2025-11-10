@@ -75,7 +75,7 @@ impl ExecutionPersistor {
                 CF_BINANCE_MARGIN_EXECUTION,
                 key.as_bytes(),
                 payload.as_ref(),
-            )
-            .context("failed to append execution record")
+            ) 
+            .context("failed to append execution record") 
     }
 }
