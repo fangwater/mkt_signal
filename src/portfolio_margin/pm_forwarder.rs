@@ -1,6 +1,6 @@
 //! 账户 PM 数据的 Iceoryx 转发器
 //!
-//! - 发布到服务：`account_pubs/<exchange>/pm`
+//! - 发布到服务：`account_pubs/<exchange>_pm`
 //! - 消息为原始 JSON（二进制）直接转发，固定上限 `PM_MAX_BYTES`
 //! - 支持配置历史缓存与订阅者上限（来自 TOML 配置）
 //!
@@ -37,7 +37,7 @@ impl PmForwarder {
             .create::<ipc::Service>()?;
 
         let service = node
-            .service_builder(&ServiceName::new(&format!("account_pubs/{}/pm", exchange))?)
+            .service_builder(&ServiceName::new(&format!("account_pubs/{}_pm", exchange))?)
             .publish_subscribe::<[u8; PM_MAX_BYTES]>()
             .max_publishers(1)
             .max_subscribers(subs.unwrap_or(10))
@@ -46,7 +46,7 @@ impl PmForwarder {
             .open_or_create()?;
 
         let publisher = service.publisher_builder().create()?;
-        info!("PM forwarder created for account_pubs/{}/pm", exchange);
+        info!("PM forwarder created for account_pubs/{}_pm", exchange);
 
         Ok(Self {
             publisher,

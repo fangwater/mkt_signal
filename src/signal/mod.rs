@@ -1,5 +1,4 @@
 pub mod cancel_signal;
-pub mod channels;
 pub mod common;
 pub mod hedge_signal;
 pub mod open_signal;

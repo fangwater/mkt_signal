@@ -10,4 +10,6 @@ mod runner;
 mod channel;
 mod mkt_info_channel;
 mod resample_channel;
+mod signal_channel;
+pub mod monitor_channel;
 pub use runner::PreTrade;

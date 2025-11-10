@@ -13,14 +13,12 @@ use crate::pre_trade::binance_pm_spot_manager::{BinancePmSpotAccountManager, Bin
 use crate::pre_trade::binance_pm_um_manager::{
     BinancePmUmAccountManager, BinanceUmAccountSnapshot, BinanceUmPosition,
 };
-use crate::pre_trade::config::{
-    AccountStreamCfg, PreTradeCfg, SignalSubscriptionsCfg, StrategyParamsCfg, TradeEngineRespCfg,
+use crate::pre_trade::config::{PreTradeCfg,StrategyParamsCfg, TradeEngineRespCfg,
 };
 use crate::pre_trade::event::AccountEvent;
 use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
 use crate::signal::cancel_signal::ArbCancelCtx;
-use crate::signal::channels::SIGNAL_CHANNEL_MM_ARBITRAGE_BACKWARD;
 use crate::signal::common::{ExecutionType, SignalBytes};
 use crate::strategy::hedge_arb_strategy::HedgeArbStrategy;
 use crate::signal::hedge_signal::ArbHedgeCtx;
@@ -46,8 +44,6 @@ use std::rc::Rc;
 use std::time::Duration;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-
-const NODE_PRE_TRADE_SIGNAL_PREFIX: &str = "signals";
 
 pub struct PreTrade {
     cfg: PreTradeCfg,
@@ -89,7 +85,13 @@ impl PreTrade {
         let mut order_rx = order_rx;
         let mut internal_signal_rx = signal_rx;
 
-        let mut account_rx = spawn_account_listener(&self.cfg.account_stream)?;
+        // 创建 MonitorChannel 实例并启动 account_pubs/binance_pm 监听
+        let mut monitor_channel = crate::pre_trade::monitor_channel::MonitorChannel::new(
+            "account_pubs/binance_pm".to_string(),
+        );
+        let mut account_rx = monitor_channel.take_receiver()
+            .ok_or_else(|| anyhow::anyhow!("failed to get account receiver"))?;
+
         let mut trade_resp_rx = spawn_trade_response_listener(&self.cfg.trade_engine)?;
         let mut external_signal_rx = spawn_signal_listeners(&self.cfg.signals)?;
 
@@ -155,22 +157,21 @@ struct BootstrapResources {
 
 impl BootstrapResources {
     async fn load(cfg: &PreTradeCfg) -> Result<Self> {
-        let um_cfg = cfg
-            .risk_checks
-            .binance_pm_um
-            .as_ref()
-            .ok_or_else(|| anyhow!("risk_checks.binance_pm_um must be configured"))?;
+        // 直接从环境变量读取 API 密钥
+        let api_key = std::env::var("BINANCE_API_KEY")
+            .map_err(|_| anyhow!("environment variable BINANCE_API_KEY not set"))?;
+        let api_secret = std::env::var("BINANCE_API_SECRET")
+            .map_err(|_| anyhow!("environment variable BINANCE_API_SECRET not set"))?;
 
-        let um_api_key = std::env::var(&um_cfg.api_key_env)
-            .map_err(|_| anyhow!("environment variable {} not set", um_cfg.api_key_env))?;
-        let um_api_secret = std::env::var(&um_cfg.api_secret_env)
-            .map_err(|_| anyhow!("environment variable {} not set", um_cfg.api_secret_env))?;
+        // 使用固定的配置
+        const REST_BASE: &str = "https://papi.binance.com";
+        const RECV_WINDOW_MS: u64 = 5000;
 
         let um_manager = BinancePmUmAccountManager::new(
-            &um_cfg.rest_base,
-            um_api_key.clone(),
-            um_api_secret.clone(),
-            um_cfg.recv_window_ms,
+            REST_BASE,
+            api_key.clone(),
+            api_secret.clone(),
+            RECV_WINDOW_MS,
         );
         let um_snapshot = um_manager
             .init()
@@ -178,38 +179,12 @@ impl BootstrapResources {
             .context("failed to load initial Binance UM snapshot")?;
         log_um_positions(&um_snapshot.positions);
 
-        let spot_cfg = cfg
-            .risk_checks
-            .binance_spot
-            .as_ref()
-            .ok_or_else(|| anyhow!("risk_checks.binance_spot must be configured"))?;
-
-        let spot_api_key = if spot_cfg.api_key_env == um_cfg.api_key_env {
-            um_api_key.clone()
-        } else {
-            std::env::var(&spot_cfg.api_key_env)
-                .map_err(|_| anyhow!("environment variable {} not set", spot_cfg.api_key_env))?
-        };
-        let spot_api_secret = if spot_cfg.api_secret_env == um_cfg.api_secret_env {
-            um_api_secret.clone()
-        } else {
-            std::env::var(&spot_cfg.api_secret_env)
-                .map_err(|_| anyhow!("environment variable {} not set", spot_cfg.api_secret_env))?
-        };
-
-        let asset_filter = spot_cfg
-            .asset
-            .as_ref()
-            .map(|v| v.trim())
-            .filter(|v| !v.is_empty())
-            .map(|v| v.to_string());
-
         let spot_manager = BinancePmSpotAccountManager::new(
-            &spot_cfg.rest_base,
-            spot_api_key,
-            spot_api_secret,
-            spot_cfg.recv_window_ms,
-            asset_filter,
+            REST_BASE,
+            api_key,
+            api_secret,
+            RECV_WINDOW_MS,
+            None, // 不过滤资产，检查全部现货资产
         );
         let spot_snapshot = spot_manager
             .init()
@@ -309,11 +284,6 @@ impl RuntimeContext {
             strategy_params,
             max_pending_limit_orders: Rc::new(Cell::new(3)),
             min_qty_table,
-            resample_positions_pub,
-            resample_exposure_pub,
-            resample_risk_pub,
-            signal_record_pub,
-            backward_pub,
             resample_interval: std::time::Duration::from_secs(3),
             next_resample: std::time::Instant::now() + std::time::Duration::from_secs(3),
             next_params_refresh: std::time::Instant::now(),
@@ -1273,25 +1243,6 @@ fn dispatch_order_trade_update(ctx: &mut RuntimeContext, update: &OrderTradeUpda
     ctx.cleanup_inactive();
 }
 
-// 删除了基于 JSON 的账户元数据提取逻辑，账户事件采用二进制帧头解析
-fn signal_node_name(channel: &str) -> String {
-    format!(
-        "{}{}",
-        NODE_PRE_TRADE_SIGNAL_PREFIX,
-        sanitize_suffix(channel)
-    )
-}
-
-fn sanitize_suffix(raw: &str) -> std::borrow::Cow<'_, str> {
-    if raw.chars().all(is_valid_node_char) {
-        return std::borrow::Cow::Borrowed(raw);
-    }
-    let sanitized: String = raw
-        .chars()
-        .map(|c| if is_valid_node_char(c) { c } else { '_' })
-        .collect();
-    std::borrow::Cow::Owned(sanitized)
-}
 
 fn is_valid_node_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '-'
