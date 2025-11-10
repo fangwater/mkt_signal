@@ -1,13 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-// Iceoryx channel for streaming funding arbitrage resample entries
-pub const FR_RESAMPLE_MSG_CHANNEL: &str = "binance_fr_signal_resample_msg";
-pub const PRE_TRADE_POSITIONS_CHANNEL: &str = "pre_trade_positions_resample";
-pub const PRE_TRADE_EXPOSURE_CHANNEL: &str = "pre_trade_exposure_resample";
-pub const PRE_TRADE_RISK_CHANNEL: &str = "pre_trade_risk_resample";
-pub const PRE_TRADE_RESAMPLE_MSG_CHANNEL: &str = "pre_trade_resample_msg";
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FundingRateArbResampleEntry {
     pub symbol: String,

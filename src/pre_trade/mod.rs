@@ -7,5 +7,7 @@ pub mod exposure_manager;
 pub mod order_manager;
 pub mod price_table;
 mod runner;
-
+mod channel;
+mod mkt_info_channel;
+mod resample_channel;
 pub use runner::PreTrade;

@@ -71,9 +71,9 @@ impl HedgeArbStrategy {
         if let Err(e) = self.pre_trade_env.risk_checker.check_leverage() {
             error!(
                 "HedgeArbStrategy: strategy_id={} 杠杆风控检查失败: {}，标记策略为不活跃",
-                self.strategy_id, e
-            );
-            self.alive_flag = false;
+                self.strategy_id, e 
+            ); 
+            self.alive_flag = false; 
             return;
         }
 
