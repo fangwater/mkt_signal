@@ -1,10 +1,15 @@
 use bytes::{BufMut, Bytes, BytesMut};
 use log::warn;
+use std::cell::OnceCell;
 
 use crate::common::iceoryx_publisher::{OrderUpdatePublisher, SignalPublisher, TradeUpdatePublisher};
 use crate::signal::record::{SignalRecordMessage, PRE_TRADE_SIGNAL_RECORD_CHANNEL};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
+
+thread_local! {
+    static PERSIST_CHANNEL: OnceCell<PersistChannel> = OnceCell::new();
+}
 
 /// 通用交易更新记录频道（支持所有交易所）
 pub const TRADE_UPDATE_RECORD_CHANNEL: &str = "trade_update_record";
@@ -31,10 +36,39 @@ pub struct PersistChannel {
 }
 
 impl PersistChannel {
+    /// 在当前线程的 PersistChannel 单例上执行操作
+    ///
+    /// 第一次调用时会自动初始化，后续调用直接使用已初始化的实例
+    ///
+    /// # 使用示例
+    /// ```ignore
+    /// use crate::pre_trade::PersistChannel;
+    ///
+    /// // 在任何地方直接使用，无需传递引用
+    /// PersistChannel::with(|ch| ch.publish_signal_record(&record));
+    /// PersistChannel::with(|ch| ch.publish_trade_update(&trade));
+    /// PersistChannel::with(|ch| ch.publish_order_update(&order));
+    /// ```
+    pub fn with<F, R>(f: F) -> R
+    where
+        F: FnOnce(&PersistChannel) -> R,
+    {
+        PERSIST_CHANNEL.with(|cell| {
+            let channel = cell.get_or_init(|| {
+                log::info!("Initializing thread-local PersistChannel singleton");
+                PersistChannel::new()
+            });
+            f(channel)
+        })
+    }
+
     /// 创建持久化通道，初始化三个 IceOryx 发布器
     ///
+    /// 注意：通常应使用 `PersistChannel::with()` 访问线程本地单例，
+    /// 而不是直接调用 `new()` 创建多个实例
+    ///
     /// 如果发布器创建失败，会记录警告并继续运行（降级模式）
-    pub fn new() -> Self {
+    fn new() -> Self {
         let signal_record_pub = match SignalPublisher::new(PRE_TRADE_SIGNAL_RECORD_CHANNEL) {
             Ok(p) => {
                 log::info!(
@@ -179,11 +213,7 @@ impl PersistChannel {
     }
 }
 
-impl Default for PersistChannel {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// 不实现 Default trait，鼓励使用 PersistChannel::global() 单例模式
 
 // ==================== 序列化辅助函数 ====================
 

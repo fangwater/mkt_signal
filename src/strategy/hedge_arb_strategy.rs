@@ -1,9 +1,11 @@
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderType, Side};
+use crate::pre_trade::PersistChannel;
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::hedge_signal::ArbHedgeCtx;
 use crate::signal::open_signal::ArbOpenCtx;
+use crate::signal::record::SignalRecordMessage;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::Strategy;
 use crate::strategy::order_update::OrderUpdate;
@@ -1192,16 +1194,31 @@ impl Strategy for HedgeArbStrategy {
         Self::extract_strategy_id(order_id) == self.strategy_id
     }
 
-    fn handle_signal(&mut self, signal: &TradeSignal) {
-        HedgeArbStrategy::handle_signal(self, signal)
+    fn handle_signal_with_record(&mut self, signal: &TradeSignal){
+        HedgeArbStrategy::handle_signal(self, signal);
+
+        // 持久化信号记录
+        let record = SignalRecordMessage::new(
+            self.strategy_id,
+            signal.signal_type.clone(),
+            signal.context.clone().to_vec(),
+            signal.generation_time,
+        );
+        PersistChannel::with(|ch| ch.publish_signal_record(&record));
     }
 
-    fn apply_order_update(&mut self, update: &dyn OrderUpdate) {
+    fn apply_order_update_with_record(&mut self, update: &dyn OrderUpdate) {
         HedgeArbStrategy::apply_order_update(self, update);
+
+        // 持久化订单更新记录
+        PersistChannel::with(|ch| ch.publish_order_update(update));
     }
 
-    fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
+    fn apply_trade_update_with_record(&mut self, trade: &dyn TradeUpdate){
         HedgeArbStrategy::apply_trade_update(self, trade);
+
+        // 持久化成交记录
+        PersistChannel::with(|ch| ch.publish_trade_update(trade));
     } 
 
     fn handle_period_clock(&mut self, _current_tp: i64) {

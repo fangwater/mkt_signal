@@ -993,10 +993,10 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                 strategy.handle_signal(&signal);
                 if strategy.is_active() {
                     ctx.insert_strategy(Box::new(strategy));
-                }
-            }
+                } 
+            } 
             Err(err) => warn!("failed to decode ArbOpen context: {err}"),
-        },
+        }, 
         SignalType::ArbClose => {
             match ArbOpenCtx::from_bytes(signal.context.clone()) {
                 Ok(close_ctx) => {
@@ -1330,8 +1330,8 @@ fn log_exposures(entries: &[ExposureEntry], price_map: &BTreeMap<String, PriceEn
     if entries.is_empty() {
         info!("非 USDT 资产敞口为空");
         return;
-    }
-
+    } 
+    
     let mut sum_exposure_usdt = 0.0_f64;
 
     let mut rows: Vec<Vec<String>> = Vec::new();

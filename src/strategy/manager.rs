@@ -7,9 +7,9 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 pub trait Strategy {
     fn get_id(&self) -> i32;
     fn is_strategy_order(&self, order_id: i64) -> bool;
-    fn handle_signal(&mut self, signal: &TradeSignal);
-    fn apply_order_update(&mut self, update: &dyn OrderUpdate);
-    fn apply_trade_update(&mut self, trade: &dyn TradeUpdate);
+    fn handle_signal_with_record(&mut self, signal: &TradeSignal);
+    fn apply_order_update_with_record(&mut self, update: &dyn OrderUpdate);
+    fn apply_trade_update_with_record(&mut self, trade: &dyn TradeUpdate);
     fn handle_period_clock(&mut self, current_tp: i64);
     fn is_active(&self) -> bool;
     fn symbol(&self) -> Option<&str>;
