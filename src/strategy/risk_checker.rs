@@ -559,7 +559,7 @@ impl PreTradeEnv {
             );
         }
 
-        actual_dec
+        actual_dec 
     }
 
     /// 查询对冲残余量
@@ -568,13 +568,13 @@ impl PreTradeEnv {
     /// * `symbol` - 交易对符号
     /// * `venue` - 交易场所
     ///
-    /// # Returns
-    /// 当前的残余量，如果不存在则返回 0.0
+    /// # Returns 
+    /// 当前的残余量，如果不存在则返回 0.0 
     pub fn get_hedge_residual(&self, symbol: &str, venue: TradingVenue) -> f64 {
         let map = self.hedge_residual_map.borrow();
         let key = (symbol.to_uppercase(), venue);
         map.get(&key).copied().unwrap_or(0.0)
-    }
+    } 
 
     /// 清除指定 symbol 和 venue 的对冲残余量
     ///
@@ -595,5 +595,5 @@ impl PreTradeEnv {
             );
         }
         removed
-    }
+    } 
 }

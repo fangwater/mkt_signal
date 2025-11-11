@@ -825,7 +825,7 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
     match msg_type {
         AccountEventType::AccountPosition => {
             let msg = AccountPositionMsg::from_bytes(data)?;
-            let key = crate::pre_trade::dedup::key_account_position(&msg);
+            let key = crate::pre_trade::monitor_channel::key_account_position(&msg);
             if !ctx.dedup.insert_check(key) {
                 // debug!(
                 //     "dedup drop AccountPosition: asset={} update_id={} event_time={}",

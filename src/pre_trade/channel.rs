@@ -79,9 +79,6 @@ pub const PRE_TRADE_RESAMPLE_MSG_CHANNEL: &str = "pre_trade_resample_msg";
     }
 }
 
-//持久化记录，包括信号记录和订单记录
-struct PersistChannel{
-    order_record_tx: UnboundedSender<Bytes>,
-    signal_record_pub: Option<SignalPublisher>,
-}
+// PersistChannel 已移至 persist_channel.rs
+// 该模块负责信号记录和订单执行记录的持久化发布
 
