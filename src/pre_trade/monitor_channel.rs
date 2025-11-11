@@ -580,6 +580,46 @@ impl MonitorChannel {
             }
         });
     }
+
+    /// 查询指定 symbol 在指定 venue 的头寸数量（带符号）
+    /// 正数表示多头，负数表示空头
+    fn get_position_qty(&self, symbol: &str, venue: u8) -> f64 {
+        use crate::signal::common::TradingVenue;
+
+        let Some(trading_venue) = TradingVenue::from_u8(venue) else {
+            return 0.0;
+        };
+
+        match trading_venue {
+            TradingVenue::BinanceUm => {
+                // 查询合约头寸（带符号）
+                if let Some(snapshot) = self.um_manager.borrow().snapshot() {
+                    snapshot
+                        .positions
+                        .iter()
+                        .find(|p| p.symbol.eq_ignore_ascii_case(symbol))
+                        .map(|p| p.position_amt)
+                        .unwrap_or(0.0)
+                } else {
+                    0.0
+                }
+            }
+            TradingVenue::BinanceMargin => {
+                // 查询现货全仓杠杆头寸（带符号）
+                if let Some(snapshot) = self.spot_manager.borrow().snapshot() {
+                    snapshot
+                        .balances
+                        .iter()
+                        .find(|b| b.asset.eq_ignore_ascii_case(symbol))
+                        .map(|b| b.net_asset())
+                        .unwrap_or(0.0)
+                } else {
+                    0.0
+                }
+            }
+            _ => 0.0,
+        }
+    }
 }
 
 fn log_um_positions(positions: &[BinanceUmPosition]) {
