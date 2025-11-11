@@ -252,42 +252,6 @@ impl RuntimeContext {
         ))
     }
 
-    fn refresh_exposures(&mut self) {
-        let Some(spot_snapshot) = self.spot_manager.snapshot() else {
-            return;
-        };
-        let Some(um_snapshot) = self.um_manager.snapshot() else {
-            return;
-        };
-        let positions_changed = self
-            .exposure_manager
-            .borrow_mut()
-            .recompute(&um_snapshot, &spot_snapshot);
-
-        // 结合最新标记价格，估值并打印三线表（USDT 计价的敞口），便于核对
-        if let Some(price_snap) = self
-            .price_table
-            .try_borrow()
-            .ok()
-            .map(|table| table.snapshot())
-        {
-            {
-                let mut mgr = self.exposure_manager.borrow_mut();
-                mgr.revalue_with_prices(&price_snap);
-            }
-            if positions_changed {
-                let exposures = self.exposure_manager.borrow();
-                log_exposures(exposures.exposures(), &price_snap);
-                log_exposure_summary(
-                    exposures.total_equity(),
-                    exposures.total_abs_exposure(),
-                    exposures.total_position(),
-                    self.strategy_params.max_leverage,
-                );
-            }
-        }
-    }
-
     async fn tick(&mut self) {
         let now = get_timestamp_us();
         self.strategy_mgr.borrow_mut().handle_period_clock(now);
@@ -360,13 +324,6 @@ impl RuntimeContext {
         let mut new_pending_limit = self.max_pending_limit_orders.get();
         if let Some(v) = parse_i64("max_pending_limit_orders") {
             new_pending_limit = v.max(0) as i32;
-        }
-
-        if params.contains_key("pre_trade_store_enable")
-            || params.contains_key("pre_trade_store_prefix")
-            || params.contains_key("pre_trade_store_redis_url")
-        {
-            debug!("pre_trade store parameters detected but ignored (store feature removed)");
         }
 
         let pending_limit_changed = new_pending_limit != self.max_pending_limit_orders.get();
@@ -755,64 +712,3 @@ fn sanitize_suffix(raw: &str) -> std::borrow::Cow<'_, str> {
         .collect();
     std::borrow::Cow::Owned(sanitized)
 }
-
-fn is_valid_node_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_' || c == '-'
-}
-
-fn fmt_decimal(value: f64) -> String {
-    if value == 0.0 {
-        return "0".to_string();
-    }
-    let mut s = format!("{:.6}", value);
-    if s.contains('.') {
-        while s.ends_with('0') {
-            s.pop();
-        }
-        if s.ends_with('.') {
-            s.pop();
-        }
-    }
-    if s.is_empty() {
-        "0".to_string()
-    } else {
-        s
-    }
-}
-
-
-fn compute_widths(headers: &[&str], rows: &[Vec<String>]) -> Vec<usize> {
-    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
-    for row in rows {
-        for (idx, cell) in row.iter().enumerate() {
-            if idx >= widths.len() {
-                continue;
-            }
-            widths[idx] = widths[idx].max(cell.len());
-        }
-    }
-    widths
-}
-
-fn build_separator(widths: &[usize], fill: char) -> String {
-    let mut line = String::new();
-    line.push('+');
-    for width in widths {
-        line.push_str(&fill.to_string().repeat(width + 2));
-        line.push('+');
-    }
-    line
-}
-
-fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
-    let mut row = String::new();
-    row.push('|');
-    for (cell, width) in cells.iter().zip(widths.iter()) {
-        row.push(' ');
-        row.push_str(&format!("{:<width$}", cell, width = *width));
-        row.push(' ');
-        row.push('|');
-    }
-    row
-}
-

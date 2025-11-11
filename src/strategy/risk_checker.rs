@@ -387,7 +387,6 @@ impl RiskChecker {
 #[derive(Clone)]
 pub struct PreTradeEnv {
     pub min_qty_table: std::rc::Rc<MinQtyTable>, //最小下单量维护，用于修证下单
-    pub trade_request_tx: UnboundedSender<Bytes>,        //交易请求发送器，发送订单到交易引擎
     pub risk_checker: RiskChecker,
     pub hedge_residual_map: Rc<RefCell<HashMap<(String, TradingVenue), f64>>>, //对冲残余量哈希表，key=(symbol, venue)，value=残余量
 } 
@@ -396,12 +395,10 @@ impl PreTradeEnv {
     /// 创建新的预交易环境
     pub fn new(
         min_qty_table: Rc<MinQtyTable>,
-        trade_request_tx: UnboundedSender<Bytes>,
         risk_checker: RiskChecker,
     ) -> Self {
         Self {
             min_qty_table,
-            trade_request_tx,
             risk_checker,
             hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
         }

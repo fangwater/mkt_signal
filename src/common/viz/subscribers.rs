@@ -271,12 +271,12 @@ where
                             channel_label
                         );
                         tokio::time::sleep(Duration::from_millis(200)).await;
-                    }
-                }
-            }
-            #[allow(unreachable_code)]
-            Ok::<(), anyhow::Error>(())
-        };
+                    } 
+                } 
+            } 
+            #[allow(unreachable_code)] 
+            Ok::<(), anyhow::Error>(()) 
+        }; 
         if let Err(err) = result.await {
             warn!(
                 "viz pre_trade resample listener exited (channel={}): {err:?}",
@@ -284,5 +284,5 @@ where
             );
         }
     });
-    Ok(())
+    Ok(()) 
 }
