@@ -392,7 +392,7 @@ pub struct PreTradeEnv {
     pub trade_request_tx: UnboundedSender<Bytes>,        //交易请求发送器，发送订单到交易引擎
     pub risk_checker: RiskChecker,
     pub hedge_residual_map: Rc<RefCell<HashMap<(String, TradingVenue), f64>>>, //对冲残余量哈希表，key=(symbol, venue)，value=残余量
-}
+} 
 
 impl PreTradeEnv {
     /// 创建新的预交易环境

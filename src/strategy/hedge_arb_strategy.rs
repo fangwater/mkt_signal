@@ -27,7 +27,7 @@ pub struct HedgeArbStrategy {
     pub hedge_symbol: String,          //对冲侧symbol
     pub hedge_venue: TradingVenue,     //对冲侧交易场所
     pub hedge_side: Side,              //对冲侧方向
-}
+} 
 
 impl HedgeArbStrategy {
     pub fn new(id: i32, symbol: String, env: Rc<PreTradeEnv>) -> Self {
