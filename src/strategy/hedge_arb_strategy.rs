@@ -658,35 +658,13 @@ impl HedgeArbStrategy {
         // 4. 设置市场数据时间戳
         hedge_ctx.market_ts = get_timestamp_us();
 
-        // 5. 创建交易信号
-        let signal = TradeSignal::create(
-            SignalType::ArbHedge,
-            get_timestamp_us(),
-            0.0,
-            hedge_ctx.to_bytes(),
+        // 5. 直接调用对冲处理逻辑（不再通过队列循环）
+        debug!(
+            "HedgeArbStrategy: strategy_id={} 直接处理对冲 venue={:?} side={:?} qty={:.8}",
+            self.strategy_id, venue, side, eff_qty
         );
 
-        // 6. 发送信号到signal_tx
-        if let Some(ref signal_tx) = self.pre_trade_env.signal_tx {
-            if let Err(e) = signal_tx.send(signal.to_bytes()) {
-                error!(
-                    "HedgeArbStrategy: strategy_id={} 发送对冲信号失败: {}",
-                    self.strategy_id, e
-                );
-                return Err(format!("发送对冲信号失败: {}", e));
-            }
-
-            debug!(
-                "HedgeArbStrategy: strategy_id={} 发送对冲信号成功 venue={:?} side={:?} qty={:.8}",
-                self.strategy_id, venue, side, eff_qty
-            );
-        } else {
-            warn!(
-                "HedgeArbStrategy: strategy_id={} signal_tx 未配置，无法发送对冲信号",
-                self.strategy_id
-            );
-            return Err("signal_tx 未配置".to_string());
-        }
+        self.handle_arb_hedge_signal(hedge_ctx)?;
 
         Ok(())
     }

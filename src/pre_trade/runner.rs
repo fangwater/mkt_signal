@@ -45,12 +45,8 @@ impl PreTrade {
         let mut runtime = RuntimeContext::new(
             bootstrap,
             order_record_tx.clone(),
-            signal_tx.clone(),
             order_publisher,
             strategy_params,
-            resample_positions_pub,
-            resample_exposure_pub,
-            resample_risk_pub,
             signal_record_pub,
         );
 
@@ -60,7 +56,6 @@ impl PreTrade {
         }
 
         let mut order_rx = order_rx;
-        let mut internal_signal_rx = signal_rx;
 
         let mut trade_resp_rx = spawn_trade_response_listener(&self.cfg.trade_engine)?;
         let mut external_signal_rx = spawn_signal_listeners(&self.cfg.signals)?;
@@ -79,12 +74,6 @@ impl PreTrade {
                 }
                 Some(signal) = external_signal_rx.recv() => {
                     handle_trade_signal(&mut runtime, signal);
-                }
-                Some(signal_bytes) = internal_signal_rx.recv() => {
-                    match TradeSignal::from_bytes(&signal_bytes) {
-                        Ok(signal) => handle_trade_signal(&mut runtime, signal),
-                        Err(err) => warn!("failed to decode internal signal: {err}"),
-                    }
                 }
                 Some(bytes) = order_rx.recv() => {
                     if let Err(err) = runtime.order_publisher.publish(&bytes) {
@@ -109,7 +98,6 @@ struct RuntimeContext {
     strategy_params: StrategyParamsCfg,
     max_pending_limit_orders: Rc<Cell<i32>>,
     min_qty_table: Rc<MinQtyTable>,
-    signal_tx: UnboundedSender<Bytes>,
     resample_interval: std::time::Duration,
     next_resample: std::time::Instant,
     next_params_refresh: std::time::Instant,
@@ -121,7 +109,6 @@ impl RuntimeContext {
     fn new(
         bootstrap: BootstrapResources,
         order_record_tx: UnboundedSender<Bytes>,
-        signal_tx: UnboundedSender<Bytes>,
         order_publisher: OrderPublisher,
         strategy_params: StrategyParamsCfg,
         signal_record_pub: Option<SignalPublisher>,
@@ -136,7 +123,6 @@ impl RuntimeContext {
                 crate::pre_trade::order_manager::OrderManager::new(order_record_tx.clone()),
             )),
             strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
-            signal_tx,
             strategy_params,
             max_pending_limit_orders: Rc::new(Cell::new(3)),
             min_qty_table,
@@ -247,10 +233,6 @@ impl RuntimeContext {
         self.order_record_tx.clone()
     }
 
-    fn signal_sender(&self) -> UnboundedSender<Bytes> {
-        self.signal_tx.clone()
-    }
-
     fn get_pre_trade_env(&self) -> Rc<crate::strategy::risk_checker::PreTradeEnv> {
         let risk_checker = crate::strategy::risk_checker::RiskChecker::new(
             self.exposure_manager.clone(),
@@ -265,7 +247,6 @@ impl RuntimeContext {
 
         Rc::new(crate::strategy::risk_checker::PreTradeEnv::new(
             self.min_qty_table.clone(),
-            Some(self.signal_tx.clone()),
             self.order_record_tx.clone(),
             risk_checker,
         ))
