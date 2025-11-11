@@ -1,3 +1,4 @@
+use anyhow::{anyhow, Context, Result};
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
@@ -13,6 +14,8 @@ use crate::common::account_msg::{
     ExecutionReportMsg, OrderTradeUpdateMsg,
 };
 use crate::common::time_util::get_timestamp_us;
+use crate::pre_trade::binance_pm_spot_manager::{BinancePmSpotAccountManager, BinanceSpotBalance};
+use crate::pre_trade::binance_pm_um_manager::{BinancePmUmAccountManager, BinanceUmPosition};
 use crate::pre_trade::event::AccountEvent;
 
 const ACCOUNT_PAYLOAD: usize = 16_384;
@@ -133,35 +136,95 @@ pub fn key_order_trade_update(msg: &OrderTradeUpdateMsg) -> u64 {
 
 // ==================== Monitor Channel ====================
 
-/// MonitorChannel 负责订阅单个 account monitor service
-/// 每个实例有独立的 dedup 和 channel
+/// MonitorChannel 负责订阅 Binance PM account monitor service
+/// 集成账户管理器（UM 合约 + Spot 现货），自动初始化并启动监听
 pub struct MonitorChannel {
     dedup: DedupCache,
     tx: UnboundedSender<AccountEvent>,
     rx: Option<UnboundedReceiver<AccountEvent>>,
+    /// 币安 合约资产管理器，基于统一账户 update 更新
+    pub um_manager: BinancePmUmAccountManager,
+    /// 币安 现货资产管理器，基于统一账户 update 更新
+    pub spot_manager: BinancePmSpotAccountManager,
 }
 
 impl MonitorChannel {
     /// 创建 Binance PM account monitor 实例并启动监听
-    /// 订阅频道: account_pubs/binance_pm
-    pub fn new_binance_pm_monitor() -> Self {
+    ///
+    /// # 功能
+    /// - 从环境变量读取 API 凭证（BINANCE_API_KEY, BINANCE_API_SECRET）
+    /// - 初始化 UM 合约账户管理器
+    /// - 初始化 Spot 现货账户管理器
+    /// - 订阅 IceOryx 频道: account_pubs/binance_pm
+    /// - 启动后台监听任务
+    ///
+    /// # 环境变量
+    /// - `BINANCE_API_KEY`: Binance API Key（必需）
+    /// - `BINANCE_API_SECRET`: Binance API Secret（必需）
+    /// - `SPOT_ASSET_FILTER`: 可选，过滤特定现货资产（如 "USDT"）
+    ///
+    /// # 错误
+    /// - API 凭证未设置
+    /// - 初始账户快照获取失败
+    pub async fn new_binance_pm_monitor() -> Result<Self> {
+        // Read API credentials from environment variables
+        let api_key = std::env::var("BINANCE_API_KEY")
+            .map_err(|_| anyhow!("BINANCE_API_KEY environment variable not set"))?;
+        let api_secret = std::env::var("BINANCE_API_SECRET")
+            .map_err(|_| anyhow!("BINANCE_API_SECRET environment variable not set"))?;
+
+        // Hardcoded REST endpoints
+        let rest_base = "https://papi.binance.com";
+        let recv_window_ms = 5000;
+
+        // 初始化 UM 合约管理器
+        let um_manager = BinancePmUmAccountManager::new(
+            rest_base,
+            api_key.clone(),
+            api_secret.clone(),
+            recv_window_ms,
+        );
+        let um_snapshot = um_manager
+            .init()
+            .await
+            .context("failed to load initial Binance UM snapshot")?;
+        log_um_positions(&um_snapshot.positions);
+
+        // 初始化 Spot 现货管理器（使用相同的 PM 账户凭证）
+        let asset_filter = std::env::var("SPOT_ASSET_FILTER")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+
+        let spot_manager = BinancePmSpotAccountManager::new(
+            rest_base,
+            api_key,
+            api_secret,
+            recv_window_ms,
+            asset_filter,
+        );
+        let spot_snapshot = spot_manager
+            .init()
+            .await
+            .context("failed to load initial Binance spot snapshot")?;
+        log_spot_balances(&spot_snapshot.balances);
+
+        // 创建事件通道
         let (tx, rx) = mpsc::unbounded_channel();
 
         let service_name = "account_pubs/binance_pm".to_string();
         let node_name = "pre_trade_account_pubs_binance_pm".to_string();
 
-        // 立即启动监听
-        Self::spawn_listener(
-            tx.clone(),
-            service_name,
-            node_name,
-        );
+        // 启动后台监听任务
+        Self::spawn_listener(tx.clone(), service_name, node_name);
 
-        Self {
+        Ok(Self {
             dedup: DedupCache::new(8192),
             tx,
             rx: Some(rx),
-        }
+            um_manager,
+            spot_manager,
+        })
     }
 
     /// 获取 sender，用于发送事件
@@ -245,5 +308,41 @@ impl MonitorChannel {
                 warn!("account listener {} exited: {err:?}", service_name_for_error);
             }
         });
+    }
+}
+
+// ==================== Helper Functions ====================
+
+fn log_um_positions(positions: &[BinanceUmPosition]) {
+    if positions.is_empty() {
+        info!("Binance UM account initialized: no open positions");
+        return;
+    }
+    info!("Binance UM account initialized: {} positions", positions.len());
+    for pos in positions {
+        if pos.position_amt.abs() > 1e-8 {
+            info!(
+                "  UM position: {} amt={:.8} entry={:.4} upnl={:.4}",
+                pos.symbol, pos.position_amt, pos.entry_price, pos.unrealized_profit
+            );
+        }
+    }
+}
+
+fn log_spot_balances(balances: &[BinanceSpotBalance]) {
+    if balances.is_empty() {
+        info!("Binance Spot account initialized: no balances");
+        return;
+    }
+    info!("Binance Spot account initialized: {} assets", balances.len());
+    for bal in balances {
+        let total_balance = bal.total_wallet_balance;
+        let net_asset = bal.net_asset();
+        if total_balance.abs() > 1e-8 || net_asset.abs() > 1e-8 {
+            info!(
+                "  Spot balance: {} total={:.8} net={:.8} (margin_free={:.8} margin_locked={:.8})",
+                bal.asset, total_balance, net_asset, bal.cross_margin_free, bal.cross_margin_locked
+            );
+        }
     }
 }

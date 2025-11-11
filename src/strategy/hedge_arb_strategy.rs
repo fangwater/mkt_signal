@@ -1202,7 +1202,7 @@ impl Strategy for HedgeArbStrategy {
 
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
         HedgeArbStrategy::apply_trade_update(self, trade);
-    }
+    } 
 
     fn handle_period_clock(&mut self, _current_tp: i64) {
         // 周期性检查开仓和对冲订单的超时情况

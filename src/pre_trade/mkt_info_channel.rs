@@ -21,7 +21,7 @@ pub struct MktInfoChannel {
 
 impl MktInfoChannel {
     pub fn new(price_table: Rc<RefCell<PriceTable>>) -> Self {
-        Self { price_table }
+        Self { price_table } 
     }
 
     pub fn get_price_table(&self) -> Rc<RefCell<PriceTable>> {

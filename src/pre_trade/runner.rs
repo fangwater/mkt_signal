@@ -4,7 +4,7 @@ use crate::common::account_msg::{
     ExecutionReportMsg, OrderTradeUpdateMsg,
 };
 use crate::common::iceoryx_publisher::{
-    ResamplePublisher, SignalPublisher, RESAMPLE_PAYLOAD, SIGNAL_PAYLOAD,
+    ResamplePublisher, SignalPublisher, RESAMPLE_PAYLOAD
 };
 use crate::common::min_qty_table::MinQtyTable;
 use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
@@ -18,7 +18,6 @@ use crate::pre_trade::event::AccountEvent;
 use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
 use crate::signal::cancel_signal::ArbCancelCtx;
-use crate::signal::channels::SIGNAL_CHANNEL_MM_ARBITRAGE_BACKWARD;
 use crate::signal::common::{ExecutionType, SignalBytes};
 use crate::strategy::hedge_arb_strategy::HedgeArbStrategy;
 use crate::signal::hedge_signal::ArbHedgeCtx;
@@ -31,7 +30,6 @@ use crate::signal::resample::{
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::{Strategy, StrategyManager};
-use crate::trade_engine::trade_response_handle::TradeExecOutcome;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
@@ -75,13 +73,13 @@ impl PreTrade {
             signal_record_pub,
         );
 
-        // 首次从 Redis 拉取 pre-trade 参数
+        // 首次从 Redis 拉取 pre-trade 参数 
         if let Err(err) = runtime.reload_params().await {
             warn!("pre_trade initial params load failed: {err:#}");
-        }
+        } 
 
-        let mut order_rx = order_rx;
-        let mut internal_signal_rx = signal_rx;
+        let mut order_rx = order_rx; 
+        let mut internal_signal_rx = signal_rx; 
 
         // 创建 MonitorChannel 实例并启动 account_pubs/binance_pm 监听
         let mut monitor_channel = crate::pre_trade::monitor_channel::MonitorChannel::new_binance_pm_monitor();
@@ -105,8 +103,8 @@ impl PreTrade {
                 Some(evt) = account_rx.recv() => {
                     if let Err(err) = handle_account_event(&mut runtime, evt) {
                         warn!("handle account event failed: {err:?}");
-                    }
-                }
+                    } 
+                } 
                 Some(resp) = trade_resp_rx.recv() => {
                     handle_trade_engine_response(&mut runtime, resp);
                 }
@@ -117,22 +115,22 @@ impl PreTrade {
                     match TradeSignal::from_bytes(&signal_bytes) {
                         Ok(signal) => handle_trade_signal(&mut runtime, signal),
                         Err(err) => warn!("failed to decode internal signal: {err}"),
-                    }
-                }
-                Some(bytes) = order_rx.recv() => {
+                    } 
+                } 
+                Some(bytes) = order_rx.recv() => { 
                     if let Err(err) = runtime.order_publisher.publish(&bytes) {
-                        warn!("failed to publish order request: {err}");
-                    }
-                }
-                _ = ticker.tick() => {
-                    runtime.tick().await;
-                }
-                else => break,
+                        warn!("failed to publish order request: {err}"); 
+                    } 
+                } 
+                _ = ticker.tick() => { 
+                    runtime.tick().await; 
+                } 
+                else => break, 
             }
-        }
+        } 
 
-        info!("pre_trade exiting");
-        Ok(())
+        info!("pre_trade exiting"); 
+        Ok(()) 
     }
 }
 
@@ -216,7 +214,7 @@ impl BootstrapResources {
             // 基于初始价格对总权益/总敞口进行 USDT 计价
             exposure_manager.revalue_with_prices(&snap);
             log_exposures(exposure_manager.exposures(), &snap);
-        }
+        } 
 
         // 加载交易对 LOT_SIZE/PRICE_FILTER（spot/futures/margin），用于数量/价格对齐
         let mut min_qty_table = MinQtyTable::new();

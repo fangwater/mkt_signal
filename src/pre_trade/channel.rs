@@ -7,77 +7,77 @@ pub const PRE_TRADE_RESAMPLE_MSG_CHANNEL: &str = "pre_trade_resample_msg";
 
 //交易相关常量
  
-    fn handle_trade_engine_response(_ctx: &mut RuntimeContext, outcome: TradeExecOutcome) {
-        //暂时不处理TradeExec 只观察http响应的正确性
-        match outcome.status {
-            200 => {
-                // 成功响应，不打印日志
-            }
-            403 => {
-                warn!(
-                    "WAF Limit violated: exchange={:?} req_type={:?} cli_ord_id={} body={}",
-                    outcome.exchange, outcome.req_type, outcome.client_order_id, outcome.body
-                );
-            }
-            418 => {
-                warn!(
-                    "IP auto-banned for continuing requests after 429: exchange={:?} req_type={:?} cli_ord_id={} body={}",
-                    outcome.exchange,
-                    outcome.req_type,
-                    outcome.client_order_id,
-                    outcome.body
-                );
-            }
-            429 => {
-                warn!(
-                    "Request rate limit exceeded: exchange={:?} req_type={:?} cli_ord_id={} ip_weight={:?} order_count={:?} body={}",
-                    outcome.exchange,
-                    outcome.req_type,
-                    outcome.client_order_id,
-                    outcome.ip_used_weight_1m,
-                    outcome.order_count_1m,
-                    outcome.body
-                );
-            }
-            503 => {
-                warn!(
-                    "Service unavailable (503): exchange={:?} req_type={:?} cli_ord_id={} body={}",
-                    outcome.exchange, outcome.req_type, outcome.client_order_id, outcome.body
-                );
-            }
-            400..=499 => {
-                warn!(
-                    "Client error (4xx): status={} exchange={:?} req_type={:?} cli_ord_id={} body={}",
-                    outcome.status,
-                    outcome.exchange,
-                    outcome.req_type,
-                    outcome.client_order_id,
-                    outcome.body
-                );
-            }
-            500..=599 => {
-                warn!(
-                    "Server error (5xx): status={} exchange={:?} req_type={:?} cli_ord_id={} body={}",
-                    outcome.status,
-                    outcome.exchange,
-                    outcome.req_type,
-                    outcome.client_order_id,
-                    outcome.body
-                );
-            }
-            _ => {
-                warn!(
-                    "Unexpected HTTP status: status={} exchange={:?} req_type={:?} cli_ord_id={} body={}",
-                    outcome.status,
-                    outcome.exchange,
-                    outcome.req_type,
-                    outcome.client_order_id,
-                    outcome.body
-                );
-            }
-        }
-    }
-}
+//     fn handle_trade_engine_response(_ctx: &mut RuntimeContext, outcome: TradeExecOutcome) {
+//         //暂时不处理TradeExec 只观察http响应的正确性
+//         match outcome.status {
+//             200 => {
+//                 // 成功响应，不打印日志
+//             }
+//             403 => {
+//                 warn!(
+//                     "WAF Limit violated: exchange={:?} req_type={:?} cli_ord_id={} body={}",
+//                     outcome.exchange, outcome.req_type, outcome.client_order_id, outcome.body
+//                 );
+//             }
+//             418 => {
+//                 warn!(
+//                     "IP auto-banned for continuing requests after 429: exchange={:?} req_type={:?} cli_ord_id={} body={}",
+//                     outcome.exchange,
+//                     outcome.req_type,
+//                     outcome.client_order_id,
+//                     outcome.body
+//                 );
+//             }
+//             429 => {
+//                 warn!(
+//                     "Request rate limit exceeded: exchange={:?} req_type={:?} cli_ord_id={} ip_weight={:?} order_count={:?} body={}",
+//                     outcome.exchange,
+//                     outcome.req_type,
+//                     outcome.client_order_id,
+//                     outcome.ip_used_weight_1m,
+//                     outcome.order_count_1m,
+//                     outcome.body
+//                 );
+//             }
+//             503 => {
+//                 warn!(
+//                     "Service unavailable (503): exchange={:?} req_type={:?} cli_ord_id={} body={}",
+//                     outcome.exchange, outcome.req_type, outcome.client_order_id, outcome.body
+//                 );
+//             }
+//             400..=499 => {
+//                 warn!(
+//                     "Client error (4xx): status={} exchange={:?} req_type={:?} cli_ord_id={} body={}",
+//                     outcome.status,
+//                     outcome.exchange,
+//                     outcome.req_type,
+//                     outcome.client_order_id,
+//                     outcome.body
+//                 );
+//             }
+//             500..=599 => {
+//                 warn!(
+//                     "Server error (5xx): status={} exchange={:?} req_type={:?} cli_ord_id={} body={}",
+//                     outcome.status,
+//                     outcome.exchange,
+//                     outcome.req_type,
+//                     outcome.client_order_id,
+//                     outcome.body
+//                 );
+//             }
+//             _ => {
+//                 warn!(
+//                     "Unexpected HTTP status: status={} exchange={:?} req_type={:?} cli_ord_id={} body={}",
+//                     outcome.status,
+//                     outcome.exchange,
+//                     outcome.req_type,
+//                     outcome.client_order_id,
+//                     outcome.body
+//                 );
+//             }
+//         }
+//     }
+// }
 
 // PersistChannel 已移至 persist_channel.rs
 // 该模块负责信号记录和订单执行记录的持久化发布

@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 pub const MARGIN_EXECUTION_RECORD_CHANNEL: &str = "account_execution/binance_margin";
+pub const UM_EXECUTION_RECORD_CHANNEL: &str = "account_execution/binance_um";
 
 #[derive(Debug, Clone)]
 pub struct ExecutionRecordMessage {
