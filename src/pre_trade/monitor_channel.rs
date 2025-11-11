@@ -141,6 +141,7 @@ use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
 use crate::pre_trade::binance_pm_um_manager::BinanceUmAccountSnapshot;
 use crate::pre_trade::binance_pm_spot_manager::BinanceSpotBalanceSnapshot;
+use crate::pre_trade::params_load::PreTradeParams;
 use crate::common::min_qty_table::MinQtyTable;
 use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
 use crate::strategy::order_update::OrderUpdate;
@@ -164,8 +165,6 @@ pub struct MonitorChannel {
     pub min_qty_table: Rc<MinQtyTable>,
     /// 策略管理器
     pub strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
-    /// 最大杠杆（用于敞口日志）
-    max_leverage: f64,
 }
 
 impl MonitorChannel {
@@ -184,7 +183,6 @@ impl MonitorChannel {
     ///
     /// # 参数
     /// - `strategy_mgr`: 策略管理器
-    /// - `max_leverage`: 最大杠杆（用于风险指标日志）
     ///
     /// # 环境变量
     /// - `BINANCE_API_KEY`: Binance API Key（必需）
@@ -196,7 +194,6 @@ impl MonitorChannel {
     /// - 初始账户快照获取失败
     pub async fn new_binance_pm_monitor(
         strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
-        max_leverage: f64,
     ) -> Result<Self> {
         // Read API credentials from environment variables
         let api_key = std::env::var("BINANCE_API_KEY")
@@ -289,7 +286,6 @@ impl MonitorChannel {
             exposure_manager.clone(),
             price_table.clone(),
             strategy_mgr.clone(),
-            max_leverage,
         );
 
         // 启动衍生品价格监听任务（mark_price, index_price）
@@ -303,7 +299,6 @@ impl MonitorChannel {
             price_table,
             min_qty_table,
             strategy_mgr,
-            max_leverage,
         })
     }
 
@@ -316,7 +311,6 @@ impl MonitorChannel {
         exposure_manager: Rc<RefCell<ExposureManager>>,
         price_table: Rc<RefCell<PriceTable>>,
         strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
-        max_leverage: f64,
     ) {
         tokio::task::spawn_local(async move {
             let service_name_for_error = service_name.clone();
@@ -368,7 +362,7 @@ impl MonitorChannel {
                                             msg.locked_balance,
                                             msg.event_time,
                                         );
-                                        refresh_exposures(&um_manager, &spot_manager, &exposure_manager, &price_table, max_leverage);
+                                        refresh_exposures(&um_manager, &spot_manager, &exposure_manager, &price_table);
                                     }
                                 }
                                 AccountEventType::BalanceUpdate => {
@@ -378,7 +372,7 @@ impl MonitorChannel {
                                             continue;
                                         }
                                         spot_manager.borrow_mut().apply_balance_delta(&msg.asset, msg.delta, msg.event_time);
-                                        refresh_exposures(&um_manager, &spot_manager, &exposure_manager, &price_table, max_leverage);
+                                        refresh_exposures(&um_manager, &spot_manager, &exposure_manager, &price_table);
                                     }
                                 }
                                 AccountEventType::AccountUpdateBalance => {
@@ -419,7 +413,7 @@ impl MonitorChannel {
                                         if !dedup.insert_check(key) {
                                             continue;
                                         }
-                                        refresh_exposures(&um_manager, &spot_manager, &exposure_manager, &price_table, max_leverage);
+                                        refresh_exposures(&um_manager, &spot_manager, &exposure_manager, &price_table);
                                     }
                                 }
                                 // ExecutionReport 和 OrderTradeUpdate：直接处理
@@ -484,7 +478,6 @@ fn refresh_exposures(
     spot_manager: &Rc<RefCell<BinancePmSpotAccountManager>>,
     exposure_manager: &Rc<RefCell<ExposureManager>>,
     price_table: &Rc<RefCell<PriceTable>>,
-    max_leverage: f64,
 ) {
     let spot_snapshot = spot_manager.borrow().snapshot();
     let um_snapshot = um_manager.borrow().snapshot();
@@ -511,7 +504,6 @@ fn refresh_exposures(
                 exposures.total_equity(),
                 exposures.total_abs_exposure(),
                 exposures.total_position(),
-                max_leverage,
             );
         }
     }
@@ -708,7 +700,6 @@ fn log_exposure_summary(
     total_equity: f64,
     total_exposure: f64,
     total_position: f64,
-    max_leverage: f64,
 ) {
     let leverage = if total_equity.abs() <= f64::EPSILON {
         0.0
@@ -716,6 +707,7 @@ fn log_exposure_summary(
         total_position / total_equity
     };
 
+    let max_leverage = PreTradeParams::instance().max_leverage();
     let leverage_cell = format!("{} / {}", fmt_decimal(leverage), fmt_decimal(max_leverage));
     let table = render_three_line_table(
         &["TotalEquity", "TotalExposure", "Leverage"],
