@@ -6,7 +6,6 @@ use log::{info, warn, debug};
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::common::account_msg::{
     get_event_type as get_account_event_type, AccountEventType, AccountPositionMsg,
@@ -14,10 +13,8 @@ use crate::common::account_msg::{
     ExecutionReportMsg, OrderTradeUpdateMsg,
 };
 use crate::signal::common::ExecutionType;
-use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::binance_pm_spot_manager::{BinancePmSpotAccountManager, BinanceSpotBalance};
 use crate::pre_trade::binance_pm_um_manager::{BinancePmUmAccountManager, BinanceUmPosition};
-use crate::pre_trade::event::AccountEvent;
 
 const ACCOUNT_PAYLOAD: usize = 16_384;
 const DERIVATIVES_PAYLOAD: usize = 128;
@@ -155,8 +152,6 @@ use std::cell::RefCell;
 /// 集成账户管理器（UM 合约 + Spot 现货），自动初始化并启动监听
 pub struct MonitorChannel {
     dedup: DedupCache,
-    tx: UnboundedSender<AccountEvent>,
-    rx: Option<UnboundedReceiver<AccountEvent>>,
     /// 币安 合约资产管理器，基于统一账户 update 更新
     pub um_manager: Rc<RefCell<BinancePmUmAccountManager>>,
     /// 币安 现货资产管理器，基于统一账户 update 更新
@@ -282,15 +277,11 @@ impl MonitorChannel {
         let um_manager_rc = Rc::new(RefCell::new(um_manager));
         let spot_manager_rc = Rc::new(RefCell::new(spot_manager));
 
-        // 创建事件通道（只用于 ExecutionReport 和 OrderTradeUpdate）
-        let (tx, rx) = mpsc::unbounded_channel();
-
         let service_name = "account_pubs/binance_pm".to_string();
         let node_name = "pre_trade_account_pubs_binance_pm".to_string();
 
         // 启动账户事件监听任务
         Self::spawn_listener(
-            tx.clone(),
             service_name,
             node_name,
             um_manager_rc.clone(),
@@ -306,8 +297,6 @@ impl MonitorChannel {
 
         Ok(Self {
             dedup: DedupCache::new(8192),
-            tx,
-            rx: Some(rx),
             um_manager: um_manager_rc,
             spot_manager: spot_manager_rc,
             exposure_manager,
@@ -318,18 +307,8 @@ impl MonitorChannel {
         })
     }
 
-    /// 获取 sender，用于发送事件
-    pub fn get_sender(&self) -> UnboundedSender<AccountEvent> {
-        self.tx.clone()
-    }
-
-    /// 获取 receiver，只能调用一次
-    pub fn take_receiver(&mut self) -> Option<UnboundedReceiver<AccountEvent>> {
-        self.rx.take()
-    }
 
     fn spawn_listener(
-        tx: UnboundedSender<AccountEvent>,
         service_name: String,
         node_name: String,
         um_manager: Rc<RefCell<BinancePmUmAccountManager>>,
@@ -361,8 +340,6 @@ impl MonitorChannel {
                     match subscriber.receive() {
                         Ok(Some(sample)) => {
                             let payload = sample.payload();
-                            let received_at = get_timestamp_us();
-
                             // Account frames format: [type:4][len:4][data:len]
                             if payload.len() < 8 {
                                 continue;
@@ -489,7 +466,6 @@ impl MonitorChannel {
                         }
                     }
                 }
-                Ok::<(), anyhow::Error>(())
             };
 
             if let Err(err) = result.await {
@@ -841,10 +817,10 @@ fn dispatch_execution_report(
                 matched = true;
                 match report.execution_type() {
                     ExecutionType::New | ExecutionType::Canceled => {
-                        strategy.apply_order_update_with_record(report, None);
+                        strategy.apply_order_update_with_record(report);
                     }
                     ExecutionType::Trade => {
-                        strategy.apply_trade_update_with_record(report, None);
+                        strategy.apply_trade_update_with_record(report);
                     }
                     ExecutionType::Expired | ExecutionType::Rejected => {
                         warn!(
@@ -854,7 +830,7 @@ fn dispatch_execution_report(
                             report.client_order_id,
                             report.order_id
                         );
-                        strategy.apply_order_update_with_record(report, None);
+                        strategy.apply_order_update_with_record(report);
                     }
                     _ => {
                         log::error!(
@@ -902,10 +878,10 @@ fn dispatch_order_trade_update(
                 matched = true;
                 match update.execution_type() {
                     ExecutionType::New | ExecutionType::Canceled => {
-                        strategy.apply_order_update_with_record(update, None);
+                        strategy.apply_order_update_with_record(update);
                     }
                     ExecutionType::Trade => {
-                        strategy.apply_trade_update_with_record(update, None);
+                        strategy.apply_trade_update_with_record(update);
                     }
                     ExecutionType::Expired | ExecutionType::Rejected => {
                         warn!(
@@ -915,7 +891,7 @@ fn dispatch_order_trade_update(
                             update.client_order_id,
                             update.order_id
                         );
-                        strategy.apply_order_update_with_record(update, None);
+                        strategy.apply_order_update_with_record(update);
                     }
                     _ => {
                         log::error!(

@@ -29,13 +29,11 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 const NODE_PRE_TRADE_SIGNAL_PREFIX: &str = "signals";
 
-pub struct PreTrade {
-    cfg: PreTradeCfg,
-}
+pub struct PreTrade {}
 
 impl PreTrade {
-    pub fn new(cfg: PreTradeCfg) -> Self {
-        Self { cfg }
+    pub fn new() -> Self {
+        Self {}
     }
 
     pub async fn run(self) -> Result<()> {
@@ -54,10 +52,6 @@ impl PreTrade {
         if let Err(err) = runtime.reload_params().await {
             warn!("pre_trade initial params load failed: {err:#}");
         }
-
-        let mut order_rx = order_rx;
-
-        let mut trade_resp_rx = spawn_trade_response_listener(&self.cfg.trade_engine)?;
         let mut external_signal_rx = spawn_signal_listeners(&self.cfg.signals)?;
 
         // 提升周期检查频率到 100ms，使策略状态响应更及时
@@ -227,10 +221,6 @@ impl RuntimeContext {
                 self.remove_strategy(strategy_id);
             }
         }
-    }
-
-    fn order_sender(&self) -> UnboundedSender<Bytes> {
-        self.order_record_tx.clone()
     }
 
     fn get_pre_trade_env(&self) -> Rc<crate::strategy::risk_checker::PreTradeEnv> {
