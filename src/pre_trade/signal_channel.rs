@@ -1,22 +1,54 @@
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
-use crate::signal::trade_signal::TradeSignal;
+use crate::common::min_qty_table::MinQtyTable;
+use crate::pre_trade::binance_pm_spot_manager::BinancePmSpotAccountManager;
+use crate::pre_trade::binance_pm_um_manager::BinancePmUmAccountManager;
+use crate::pre_trade::config::StrategyParamsCfg;
+use crate::pre_trade::exposure_manager::ExposureManager;
+use crate::pre_trade::order_manager::OrderManager;
+use crate::pre_trade::price_table::PriceTable;
+use crate::signal::cancel_signal::ArbCancelCtx;
+use crate::signal::hedge_signal::ArbHedgeCtx;
+use crate::signal::open_signal::ArbOpenCtx;
+use crate::signal::trade_signal::{SignalType, TradeSignal};
+use crate::strategy::hedge_arb_strategy::HedgeArbStrategy;
+use crate::strategy::{Strategy, StrategyManager};
 use anyhow::Result;
 use bytes::Bytes;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{info, warn};
+use log::{debug, info, warn};
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::time::Duration;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::UnboundedSender;
 
 /// 信号频道 - 负责信号进程和 pre-trade 之间的通讯
 pub struct SignalChannel {
-    /// 接收端：接收来自上游的交易信号
-    rx: UnboundedReceiver<TradeSignal>,
-    /// 发送端的克隆：可用于创建多个消费者
-    tx: UnboundedSender<TradeSignal>,
     /// 反向发布器：用于向上游信号进程发送查询或反馈
     backward_pub: Option<SignalPublisher>,
+    /// 策略管理器
+    strategy_mgr: Rc<RefCell<StrategyManager>>,
+    /// 订单管理器
+    order_manager: Rc<RefCell<OrderManager>>,
+    /// UM账户管理器
+    um_manager: Rc<RefCell<BinancePmUmAccountManager>>,
+    /// 现货账户管理器
+    spot_manager: Rc<RefCell<BinancePmSpotAccountManager>>,
+    /// 敞口管理器
+    exposure_manager: Rc<RefCell<ExposureManager>>,
+    /// 价格表
+    price_table: Rc<RefCell<PriceTable>>,
+    /// 最小数量表
+    min_qty_table: Rc<MinQtyTable>,
+    /// 策略参数
+    strategy_params: Rc<RefCell<StrategyParamsCfg>>,
+    /// 最大挂单限制
+    max_pending_limit_orders: Rc<Cell<i32>>,
+    /// 订单记录发送器
+    order_record_tx: UnboundedSender<Bytes>,
+    /// 信号发送器
+    signal_tx: UnboundedSender<Bytes>,
 }
 
 impl SignalChannel {

@@ -260,18 +260,6 @@ impl RuntimeContext {
         self.strategy_mgr.borrow_mut().insert(strategy);
     }
 
-    fn publish_signal_record(&self, record: &SignalRecordMessage) {
-        let Some(publisher) = &self.signal_record_pub else {
-            return;
-        };
-        let payload = record.to_bytes();
-        if let Err(err) = publisher.publish(payload.as_ref()) {
-            warn!(
-                "failed to publish signal record strategy_id={}: {err:#}",
-                record.strategy_id
-            );
-        }
-    }
 
     fn remove_strategy(&mut self, strategy_id: i32) {
         self.strategy_mgr.borrow_mut().remove(strategy_id);
@@ -776,15 +764,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                 if candidate_ids.is_empty() {
                     return;
                 }
-                let payload = cancel_ctx.to_bytes();
                 for strategy_id in candidate_ids {
-                    let record = SignalRecordMessage::new(
-                        strategy_id,
-                        signal.signal_type.clone(),
-                        payload.clone().to_vec(),
-                        signal.generation_time,
-                    );
-                    ctx.publish_signal_record(&record);
                     if !ctx.strategy_mgr.borrow().contains(strategy_id) {
                         return;
                     }
@@ -798,13 +778,6 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
         SignalType::ArbHedge => match ArbHedgeCtx::from_bytes(signal.context.clone()) {
             Ok(hedge_ctx) => {
                 let strategy_id = hedge_ctx.strategy_id;
-                let record = SignalRecordMessage::new(
-                    strategy_id,
-                    SignalType::ArbHedge,
-                    signal.context.clone().to_vec(),
-                    signal.generation_time,
-                );
-                ctx.publish_signal_record(&record);
                 if !ctx.strategy_mgr.borrow().contains(strategy_id) {
                     return;
                 }

@@ -186,7 +186,7 @@ impl TradeEngChannel {
                         }
                     }
                 }
-                Ok::<(), anyhow::Error>(())
+                Ok::<(), anyhow::Error>(()) 
             };
 
             if let Err(err) = result.await {
