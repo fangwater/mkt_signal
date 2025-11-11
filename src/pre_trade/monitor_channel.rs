@@ -2,8 +2,8 @@ use anyhow::{anyhow, Context, Result};
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{info, warn};
-use std::collections::{HashSet, VecDeque};
+use log::{info, warn, debug};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -19,6 +19,9 @@ use crate::pre_trade::binance_pm_um_manager::{BinancePmUmAccountManager, Binance
 use crate::pre_trade::event::AccountEvent;
 
 const ACCOUNT_PAYLOAD: usize = 16_384;
+const DERIVATIVES_PAYLOAD: usize = 128;
+const DERIVATIVES_SERVICE: &str = "data_pubs/binance-futures/derivatives";
+const NODE_PRE_TRADE_DERIVATIVES: &str = "pre_trade_derivatives";
 
 // ==================== Deduplication Cache ====================
 
@@ -136,6 +139,15 @@ pub fn key_order_trade_update(msg: &OrderTradeUpdateMsg) -> u64 {
 
 // ==================== Monitor Channel ====================
 
+use crate::pre_trade::exposure_manager::ExposureManager;
+use crate::pre_trade::price_table::{PriceEntry, PriceTable};
+use crate::pre_trade::binance_pm_um_manager::BinanceUmAccountSnapshot;
+use crate::pre_trade::binance_pm_spot_manager::BinanceSpotBalanceSnapshot;
+use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
+use bytes::Bytes;
+use std::rc::Rc;
+use std::cell::RefCell;
+
 /// MonitorChannel 负责订阅 Binance PM account monitor service
 /// 集成账户管理器（UM 合约 + Spot 现货），自动初始化并启动监听
 pub struct MonitorChannel {
@@ -143,9 +155,15 @@ pub struct MonitorChannel {
     tx: UnboundedSender<AccountEvent>,
     rx: Option<UnboundedReceiver<AccountEvent>>,
     /// 币安 合约资产管理器，基于统一账户 update 更新
-    pub um_manager: BinancePmUmAccountManager,
+    pub um_manager: Rc<RefCell<BinancePmUmAccountManager>>,
     /// 币安 现货资产管理器，基于统一账户 update 更新
-    pub spot_manager: BinancePmSpotAccountManager,
+    pub spot_manager: Rc<RefCell<BinancePmSpotAccountManager>>,
+    /// 敞口管理器
+    pub exposure_manager: Rc<RefCell<ExposureManager>>,
+    /// 价格表
+    pub price_table: Rc<RefCell<PriceTable>>,
+    /// 最大杠杆（用于敞口日志）
+    max_leverage: f64,
 }
 
 impl MonitorChannel {
@@ -155,8 +173,13 @@ impl MonitorChannel {
     /// - 从环境变量读取 API 凭证（BINANCE_API_KEY, BINANCE_API_SECRET）
     /// - 初始化 UM 合约账户管理器
     /// - 初始化 Spot 现货账户管理器
+    /// - 收集所需的价格符号并初始化价格表
+    /// - 创建 ExposureManager 并基于初始快照和价格估值
     /// - 订阅 IceOryx 频道: account_pubs/binance_pm
-    /// - 启动后台监听任务
+    /// - 启动后台监听任务（账户状态更新在内部直接处理，订单/成交回报发送到 channel）
+    ///
+    /// # 参数
+    /// - `max_leverage`: 最大杠杆（用于风险指标日志）
     ///
     /// # 环境变量
     /// - `BINANCE_API_KEY`: Binance API Key（必需）
@@ -166,7 +189,7 @@ impl MonitorChannel {
     /// # 错误
     /// - API 凭证未设置
     /// - 初始账户快照获取失败
-    pub async fn new_binance_pm_monitor() -> Result<Self> {
+    pub async fn new_binance_pm_monitor(max_leverage: f64) -> Result<Self> {
         // Read API credentials from environment variables
         let api_key = std::env::var("BINANCE_API_KEY")
             .map_err(|_| anyhow!("BINANCE_API_KEY environment variable not set"))?;
@@ -209,21 +232,66 @@ impl MonitorChannel {
             .context("failed to load initial Binance spot snapshot")?;
         log_spot_balances(&spot_snapshot.balances);
 
-        // 创建事件通道
+        // 收集需要的价格符号
+        let mut price_symbols: BTreeSet<String> = BTreeSet::new();
+        collect_price_symbols(&mut price_symbols, &um_snapshot, &spot_snapshot);
+
+        // 创建并初始化价格表
+        let price_table = Rc::new(RefCell::new(PriceTable::new()));
+        {
+            let mut table = price_table.borrow_mut();
+            table
+                .init(&price_symbols)
+                .await
+                .context("failed to load initial price table")?;
+            log_price_table(&table.snapshot());
+        }
+
+        // 创建 ExposureManager（基于初始快照）
+        let mut exposure_manager = ExposureManager::new(&um_snapshot, &spot_snapshot);
+        {
+            let table = price_table.borrow();
+            let snap = table.snapshot();
+            // 基于初始价格对总权益/总敞口进行 USDT 计价
+            exposure_manager.revalue_with_prices(&snap);
+            log_exposures(exposure_manager.exposures(), &snap);
+        }
+        let exposure_manager = Rc::new(RefCell::new(exposure_manager));
+
+        // 包装为 Rc<RefCell<>>
+        let um_manager_rc = Rc::new(RefCell::new(um_manager));
+        let spot_manager_rc = Rc::new(RefCell::new(spot_manager));
+
+        // 创建事件通道（只用于 ExecutionReport 和 OrderTradeUpdate）
         let (tx, rx) = mpsc::unbounded_channel();
 
         let service_name = "account_pubs/binance_pm".to_string();
         let node_name = "pre_trade_account_pubs_binance_pm".to_string();
 
-        // 启动后台监听任务
-        Self::spawn_listener(tx.clone(), service_name, node_name);
+        // 启动账户事件监听任务
+        Self::spawn_listener(
+            tx.clone(),
+            service_name,
+            node_name,
+            um_manager_rc.clone(),
+            spot_manager_rc.clone(),
+            exposure_manager.clone(),
+            price_table.clone(),
+            max_leverage,
+        );
+
+        // 启动衍生品价格监听任务（mark_price, index_price）
+        Self::spawn_derivatives_listener(price_table.clone());
 
         Ok(Self {
             dedup: DedupCache::new(8192),
             tx,
             rx: Some(rx),
-            um_manager,
-            spot_manager,
+            um_manager: um_manager_rc,
+            spot_manager: spot_manager_rc,
+            exposure_manager,
+            price_table,
+            max_leverage,
         })
     }
 
@@ -241,9 +309,16 @@ impl MonitorChannel {
         tx: UnboundedSender<AccountEvent>,
         service_name: String,
         node_name: String,
+        um_manager: Rc<RefCell<BinancePmUmAccountManager>>,
+        spot_manager: Rc<RefCell<BinancePmSpotAccountManager>>,
+        exposure_manager: Rc<RefCell<ExposureManager>>,
+        price_table: Rc<RefCell<PriceTable>>,
+        max_leverage: f64,
     ) {
         tokio::task::spawn_local(async move {
             let service_name_for_error = service_name.clone();
+            let mut dedup = DedupCache::new(8192);
+
             let result = async move {
                 let node = NodeBuilder::new()
                     .name(&NodeName::new(&node_name)?)
@@ -256,10 +331,7 @@ impl MonitorChannel {
                 let subscriber: Subscriber<ipc::Service, [u8; ACCOUNT_PAYLOAD], ()> =
                     service.subscriber_builder().create()?;
 
-                info!(
-                    "account stream subscribed: service={}",
-                    service_name
-                );
+                info!("account stream subscribed: service={}", service_name);
 
                 loop {
                     match subscriber.receive() {
@@ -268,30 +340,102 @@ impl MonitorChannel {
                             let received_at = get_timestamp_us();
 
                             // Account frames format: [type:4][len:4][data:len]
-                            let (frame_len, event_type_str) = if payload.len() >= 8 {
-                                let msg_type = get_account_event_type(payload);
-                                let body_len = u32::from_le_bytes([
-                                    payload[4], payload[5], payload[6], payload[7],
-                                ]) as usize;
-                                let total = 8 + body_len;
-                                let clamped = total.min(payload.len());
-                                (clamped, format!("{:?}", msg_type))
-                            } else {
-                                (payload.len(), "<too_short>".to_string())
-                            };
+                            if payload.len() < 8 {
+                                continue;
+                            }
 
-                            let mut buf = payload[..frame_len].to_vec();
+                            let msg_type = get_account_event_type(payload);
+                            let body_len = u32::from_le_bytes([
+                                payload[4], payload[5], payload[6], payload[7],
+                            ]) as usize;
+                            let total = 8 + body_len;
+                            let frame_len = total.min(payload.len());
+                            let data = &payload[8..frame_len];
 
-                            let evt = AccountEvent {
-                                service: service_name.clone(),
-                                received_at,
-                                payload_len: buf.len(),
-                                payload: std::mem::take(&mut buf),
-                                event_type: Some(event_type_str),
-                                event_time_ms: None,
-                            };
-                            if tx.send(evt).is_err() {
-                                break;
+                            // 根据事件类型处理
+                            match msg_type {
+                                // 账户状态更新：直接处理，不发送到 channel
+                                AccountEventType::AccountPosition => {
+                                    if let Ok(msg) = AccountPositionMsg::from_bytes(bytes::Bytes::copy_from_slice(data)) {
+                                        let key = key_account_position(&msg);
+                                        if !dedup.insert_check(key) {
+                                            continue;
+                                        }
+                                        spot_manager.borrow_mut().apply_account_position(
+                                            &msg.asset,
+                                            msg.free_balance,
+                                            msg.locked_balance,
+                                            msg.event_time,
+                                        );
+                                        refresh_exposures(&um_manager, &spot_manager, &exposure_manager, &price_table, max_leverage);
+                                    }
+                                }
+                                AccountEventType::BalanceUpdate => {
+                                    if let Ok(msg) = BalanceUpdateMsg::from_bytes(bytes::Bytes::copy_from_slice(data)) {
+                                        let key = key_balance_update(&msg);
+                                        if !dedup.insert_check(key) {
+                                            continue;
+                                        }
+                                        spot_manager.borrow_mut().apply_balance_delta(&msg.asset, msg.delta, msg.event_time);
+                                        refresh_exposures(&um_manager, &spot_manager, &exposure_manager, &price_table, max_leverage);
+                                    }
+                                }
+                                AccountEventType::AccountUpdateBalance => {
+                                    if let Ok(msg) = AccountUpdateBalanceMsg::from_bytes(bytes::Bytes::copy_from_slice(data)) {
+                                        if msg.business_unit.eq_ignore_ascii_case("UM") {
+                                            spot_manager.borrow_mut().apply_um_wallet_snapshot(
+                                                &msg.asset,
+                                                msg.wallet_balance,
+                                                msg.event_time,
+                                            );
+                                        } else {
+                                            spot_manager.borrow_mut().apply_balance_snapshot(
+                                                &msg.asset,
+                                                msg.wallet_balance,
+                                                msg.cross_wallet_balance,
+                                                msg.balance_change,
+                                                msg.event_time,
+                                            );
+                                        }
+                                    }
+                                }
+                                AccountEventType::AccountUpdatePosition => {
+                                    if let Ok(msg) = AccountUpdatePositionMsg::from_bytes(bytes::Bytes::copy_from_slice(data)) {
+                                        um_manager.borrow_mut().apply_position_update(
+                                            &msg.symbol,
+                                            msg.position_side,
+                                            msg.position_amount,
+                                            msg.entry_price,
+                                            msg.unrealized_pnl,
+                                            msg.breakeven_price,
+                                            msg.event_time,
+                                        );
+                                    }
+                                }
+                                AccountEventType::AccountUpdateFlush => {
+                                    if let Ok(msg) = AccountUpdateFlushMsg::from_bytes(bytes::Bytes::copy_from_slice(data)) {
+                                        let key = key_account_update_flush(&msg);
+                                        if !dedup.insert_check(key) {
+                                            continue;
+                                        }
+                                        refresh_exposures(&um_manager, &spot_manager, &exposure_manager, &price_table, max_leverage);
+                                    }
+                                }
+                                // ExecutionReport 和 OrderTradeUpdate：发送到 channel
+                                AccountEventType::ExecutionReport | AccountEventType::OrderTradeUpdate => {
+                                    let buf = payload[..frame_len].to_vec();
+                                    let evt = AccountEvent {
+                                        service: service_name.clone(),
+                                        received_at,
+                                        payload_len: buf.len(),
+                                        payload: buf,
+                                        event_type: Some(format!("{:?}", msg_type)),
+                                        event_time_ms: None,
+                                    };
+                                    if tx.send(evt).is_err() {
+                                        break;
+                                    }
+                                }
                             }
                         }
                         Ok(None) => tokio::task::yield_now().await,
@@ -312,6 +456,110 @@ impl MonitorChannel {
 }
 
 // ==================== Helper Functions ====================
+
+/// 刷新敞口：重新计算并打印敞口信息
+fn refresh_exposures(
+    um_manager: &Rc<RefCell<BinancePmUmAccountManager>>,
+    spot_manager: &Rc<RefCell<BinancePmSpotAccountManager>>,
+    exposure_manager: &Rc<RefCell<ExposureManager>>,
+    price_table: &Rc<RefCell<PriceTable>>,
+    max_leverage: f64,
+) {
+    let spot_snapshot = spot_manager.borrow().snapshot();
+    let um_snapshot = um_manager.borrow().snapshot();
+
+    let (Some(spot_snapshot), Some(um_snapshot)) = (spot_snapshot, um_snapshot) else {
+        return;
+    };
+
+    let positions_changed = exposure_manager
+        .borrow_mut()
+        .recompute(&um_snapshot, &spot_snapshot);
+
+    // 结合最新标记价格，估值并打印三线表（USDT 计价的敞口），便于核对
+    if let Ok(table) = price_table.try_borrow() {
+        let price_snap = table.snapshot();
+        {
+            let mut mgr = exposure_manager.borrow_mut();
+            mgr.revalue_with_prices(&price_snap);
+        }
+        if positions_changed {
+            let exposures = exposure_manager.borrow();
+            log_exposures(exposures.exposures(), &price_snap);
+            log_exposure_summary(
+                exposures.total_equity(),
+                exposures.total_abs_exposure(),
+                exposures.total_position(),
+                max_leverage,
+            );
+        }
+    }
+}
+
+impl MonitorChannel {
+    /// 启动衍生品价格监听任务（mark_price, index_price）
+    fn spawn_derivatives_listener(price_table: Rc<RefCell<PriceTable>>) {
+        tokio::task::spawn_local(async move {
+            let result = async move {
+                let node = NodeBuilder::new()
+                    .name(&NodeName::new(NODE_PRE_TRADE_DERIVATIVES)?)
+                    .create::<ipc::Service>()?;
+
+                let service = node
+                    .service_builder(&ServiceName::new(DERIVATIVES_SERVICE)?)
+                    .publish_subscribe::<[u8; DERIVATIVES_PAYLOAD]>()
+                    .open_or_create()?;
+                let subscriber: Subscriber<ipc::Service, [u8; DERIVATIVES_PAYLOAD], ()> =
+                    service.subscriber_builder().create()?;
+
+                info!("derivatives price stream subscribed: service={}", DERIVATIVES_SERVICE);
+
+                loop {
+                    match subscriber.receive() {
+                        Ok(Some(sample)) => {
+                            let payload = Bytes::copy_from_slice(sample.payload());
+                            if payload.is_empty() {
+                                continue;
+                            }
+                            let Some(msg_type) = get_msg_type(&payload) else {
+                                continue;
+                            };
+                            match msg_type {
+                                MktMsgType::MarkPrice => match parse_mark_price(&payload) {
+                                    Ok(msg) => {
+                                        let mut table = price_table.borrow_mut();
+                                        table.update_mark_price(&msg.symbol, msg.mark_price, msg.timestamp);
+                                    }
+                                    Err(err) => warn!("parse mark price failed: {err:?}"),
+                                },
+                                MktMsgType::IndexPrice => match parse_index_price(&payload) {
+                                    Ok(msg) => {
+                                        let mut table = price_table.borrow_mut();
+                                        table.update_index_price(&msg.symbol, msg.index_price, msg.timestamp);
+                                    }
+                                    Err(err) => warn!("parse index price failed: {err:?}"),
+                                },
+                                _ => {}
+                            }
+                        }
+                        Ok(None) => {
+                            tokio::task::yield_now().await;
+                        }
+                        Err(err) => {
+                            warn!("derivatives stream receive error: {err}");
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                        }
+                    }
+                }
+            }
+            .await;
+
+            if let Err(err) = result {
+                log::error!("derivatives listener exited: {err:?}");
+            }
+        });
+    }
+}
 
 fn log_um_positions(positions: &[BinanceUmPosition]) {
     if positions.is_empty() {
@@ -345,4 +593,190 @@ fn log_spot_balances(balances: &[BinanceSpotBalance]) {
             );
         }
     }
+}
+
+fn log_exposures(entries: &[ExposureEntry], price_map: &BTreeMap<String, PriceEntry>) {
+    if entries.is_empty() {
+        info!("非 USDT 资产敞口为空");
+        return;
+    }
+
+    let mut sum_exposure_usdt = 0.0_f64;
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    for entry in entries {
+        let asset = entry.asset.to_uppercase();
+        if asset == "USDT" {
+            continue;
+        }
+        let sym = format!("{}USDT", asset);
+        let mark = price_map.get(&sym).map(|p| p.mark_price).unwrap_or(0.0);
+        let spot_usdt = entry.spot_total_wallet * mark;
+        let um_usdt = entry.um_net_position * mark;
+        let exposure_usdt = spot_usdt + um_usdt;
+        sum_exposure_usdt += exposure_usdt;
+
+        rows.push(vec![
+            entry.asset.clone(),
+            fmt_decimal(entry.spot_total_wallet),
+            fmt_decimal(spot_usdt),
+            fmt_decimal(entry.um_net_position),
+            fmt_decimal(um_usdt),
+            fmt_decimal(entry.exposure),
+            fmt_decimal(exposure_usdt),
+        ]);
+    }
+
+    rows.push(vec![
+        "TOTAL".to_string(),
+        "-".to_string(),
+        "-".to_string(),
+        "-".to_string(),
+        "-".to_string(),
+        "-".to_string(),
+        fmt_decimal(sum_exposure_usdt),
+    ]);
+
+    let table = render_three_line_table(
+        &["Asset", "SpotQty", "SpotUSDT", "UMNetQty", "UMNetUSDT", "ExposureQty", "ExposureUSDT"],
+        &rows,
+    );
+    info!("现货+UM 敞口汇总\n{}", table);
+}
+
+fn log_exposure_summary(
+    total_equity: f64,
+    total_exposure: f64,
+    total_position: f64,
+    max_leverage: f64,
+) {
+    let leverage = if total_equity.abs() <= f64::EPSILON {
+        0.0
+    } else {
+        total_position / total_equity
+    };
+
+    let leverage_cell = format!("{} / {}", fmt_decimal(leverage), fmt_decimal(max_leverage));
+    let table = render_three_line_table(
+        &["TotalEquity", "TotalExposure", "Leverage"],
+        &[vec![fmt_decimal(total_equity), fmt_decimal(total_exposure), leverage_cell]],
+    );
+    info!("风险指标汇总\n{}", table);
+}
+
+fn fmt_decimal(value: f64) -> String {
+    if value == 0.0 {
+        return "0".to_string();
+    }
+    let mut s = format!("{:.6}", value);
+    if s.contains('.') {
+        while s.ends_with('0') {
+            s.pop();
+        }
+        if s.ends_with('.') {
+            s.pop();
+        }
+    }
+    if s.is_empty() {
+        "0".to_string()
+    } else {
+        s
+    }
+}
+
+fn render_three_line_table(headers: &[&str], rows: &[Vec<String>]) -> String {
+    let widths = compute_widths(headers, rows);
+    let mut out = String::new();
+    out.push_str(&build_separator(&widths, '-'));
+    out.push('\n');
+    out.push_str(&build_row(headers.iter().map(|h| h.to_string()).collect::<Vec<String>>(), &widths));
+    out.push('\n');
+    out.push_str(&build_separator(&widths, '='));
+    if rows.is_empty() {
+        out.push('\n');
+        out.push_str(&build_separator(&widths, '-'));
+        return out;
+    }
+    for row in rows {
+        out.push('\n');
+        out.push_str(&build_row(row.clone(), &widths));
+    }
+    out.push('\n');
+    out.push_str(&build_separator(&widths, '-'));
+    out
+}
+
+fn compute_widths(headers: &[&str], rows: &[Vec<String>]) -> Vec<usize> {
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+    for row in rows {
+        for (idx, cell) in row.iter().enumerate() {
+            if idx >= widths.len() {
+                continue;
+            }
+            widths[idx] = widths[idx].max(cell.len());
+        }
+    }
+    widths
+}
+
+fn build_separator(widths: &[usize], fill: char) -> String {
+    let mut line = String::new();
+    line.push('+');
+    for width in widths {
+        line.push_str(&fill.to_string().repeat(width + 2));
+        line.push('+');
+    }
+    line
+}
+
+fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
+    let mut row = String::new();
+    row.push('|');
+    for (cell, width) in cells.iter().zip(widths.iter()) {
+        row.push(' ');
+        row.push_str(&format!("{:<width$}", cell, width = *width));
+        row.push(' ');
+        row.push('|');
+    }
+    row
+}
+
+/// 从账户快照中收集需要的价格符号
+fn collect_price_symbols(
+    set: &mut BTreeSet<String>,
+    um_snapshot: &BinanceUmAccountSnapshot,
+    spot_snapshot: &BinanceSpotBalanceSnapshot,
+) {
+    for pos in &um_snapshot.positions {
+        set.insert(pos.symbol.to_uppercase());
+    }
+    for bal in &spot_snapshot.balances {
+        if bal.asset.eq_ignore_ascii_case("USDT") {
+            continue;
+        }
+        set.insert(format!("{}USDT", bal.asset.to_uppercase()));
+    }
+}
+
+/// 打印价格表日志
+fn log_price_table(entries: &BTreeMap<String, PriceEntry>) {
+    if entries.is_empty() {
+        warn!("未获取到标记价格数据");
+        return;
+    }
+
+    let rows: Vec<Vec<String>> = entries
+        .values()
+        .map(|entry| {
+            vec![
+                entry.symbol.clone(),
+                fmt_decimal(entry.mark_price),
+                fmt_decimal(entry.index_price),
+                entry.update_time.to_string(),
+            ]
+        })
+        .collect();
+
+    let table =
+        render_three_line_table(&["Symbol", "MarkPrice", "IndexPrice", "UpdateTime"], &rows);
+    info!("标记价格表\n{}", table);
 }

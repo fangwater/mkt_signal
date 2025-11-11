@@ -261,15 +261,13 @@ impl OrderType {
 pub struct OrderManager {
     orders: HashMap<i64, Order>,                     //映射order id到order
     pending_limit_order_count: HashMap<String, i32>, //单个交易品种当前有多少待成交的maker单
-    pub order_record_tx: UnboundedSender<Bytes>,     //推送订单记录到publish
 }
 
 impl OrderManager {
-    pub fn new(order_record_tx: UnboundedSender<Bytes>) -> Self {
+    pub fn new() -> Self {
         Self {
             orders: HashMap::new(),
             pending_limit_order_count: HashMap::new(),
-            order_record_tx,
         }
     }
     pub fn create_order(
@@ -620,9 +618,5 @@ impl Order {
             //之后在这支持别的类型下单，根据资产类型决定下单的request，统一序列化为bytes
             _ => Err(format!("Unsupported trading venue: {:?}", self.venue)),
         }
-
-        // self.order_tx
-        // .send(request.to_bytes())
-        // .map_err(|e| format!("{}: 推送 margin 开仓失败: {}", Self::strategy_name(), e))?;
     }
 }

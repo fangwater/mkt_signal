@@ -4,7 +4,7 @@ use crate::common::account_msg::{
     ExecutionReportMsg, OrderTradeUpdateMsg,
 };
 use crate::common::iceoryx_publisher::{
-    ResamplePublisher, SignalPublisher, RESAMPLE_PAYLOAD
+    ResamplePublisher, SignalPublisher, RESAMPLE_PAYLOAD, SIGNAL_PAYLOAD,
 };
 use crate::common::min_qty_table::MinQtyTable;
 use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
@@ -13,11 +13,14 @@ use crate::pre_trade::binance_pm_spot_manager::{BinancePmSpotAccountManager, Bin
 use crate::pre_trade::binance_pm_um_manager::{
     BinancePmUmAccountManager, BinanceUmAccountSnapshot, BinanceUmPosition,
 };
-// Configuration removed - using environment variables and hardcoded values
+use crate::pre_trade::config::{
+    AccountStreamCfg, PreTradeCfg, SignalSubscriptionsCfg, StrategyParamsCfg, TradeEngineRespCfg,
+};
 use crate::pre_trade::event::AccountEvent;
 use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
 use crate::signal::cancel_signal::ArbCancelCtx;
+use crate::signal::channels::SIGNAL_CHANNEL_MM_ARBITRAGE_BACKWARD;
 use crate::signal::common::{ExecutionType, SignalBytes};
 use crate::strategy::hedge_arb_strategy::HedgeArbStrategy;
 use crate::signal::hedge_signal::ArbHedgeCtx;
@@ -25,11 +28,13 @@ use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::record::{SignalRecordMessage, PRE_TRADE_SIGNAL_RECORD_CHANNEL};
 use crate::signal::resample::{
     PreTradeExposureResampleEntry, PreTradeExposureRow, PreTradePositionResampleEntry,
-    PreTradeRiskResampleEntry, PreTradeSpotBalanceRow, PreTradeUmPositionRow
+    PreTradeRiskResampleEntry, PreTradeSpotBalanceRow, PreTradeUmPositionRow,
+
 };
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::{Strategy, StrategyManager};
+use crate::trade_engine::trade_response_handle::TradeExecOutcome;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
@@ -45,37 +50,52 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 const NODE_PRE_TRADE_SIGNAL_PREFIX: &str = "signals";
 
-pub struct PreTrade;
+pub struct PreTrade {
+    cfg: PreTradeCfg,
+}
 
 impl PreTrade {
-    pub fn new() -> Self {
-        Self
+    pub fn new(cfg: PreTradeCfg) -> Self {
+        Self { cfg }
     }
 
     pub async fn run(self) -> Result<()> {
         info!("pre_trade starting");
-        let bootstrap = BootstrapResources::load().await?;
+        let bootstrap = BootstrapResources::load(&self.cfg).await?;
+        // 初始化策略参数从 Redis
+        let strategy_params = StrategyParamsCfg::default();
+        let signal_record_pub = match SignalPublisher::new(PRE_TRADE_SIGNAL_RECORD_CHANNEL) {
+            Ok(p) => Some(p),
+            Err(err) => {
+                warn!(
+                    "failed to create pre_trade signal record publisher on {}: {err:#}",
+                    PRE_TRADE_SIGNAL_RECORD_CHANNEL
+                );
+                None
+            }
+        };
 
         let mut runtime = RuntimeContext::new(
             bootstrap,
+            order_record_tx.clone(),
             signal_tx.clone(),
             order_publisher,
+            strategy_params,
+            resample_positions_pub,
+            resample_exposure_pub,
+            resample_risk_pub,
             signal_record_pub,
         );
 
-        // 首次从 Redis 拉取 pre-trade 参数 
+        // 首次从 Redis 拉取 pre-trade 参数
         if let Err(err) = runtime.reload_params().await {
             warn!("pre_trade initial params load failed: {err:#}");
-        } 
+        }
 
-        let mut order_rx = order_rx; 
-        let mut internal_signal_rx = signal_rx; 
+        let mut order_rx = order_rx;
+        let mut internal_signal_rx = signal_rx;
 
-        // 创建 MonitorChannel 实例并启动 account_pubs/binance_pm 监听
-        let mut monitor_channel = crate::pre_trade::monitor_channel::MonitorChannel::new_binance_pm_monitor();
-        let mut account_rx = monitor_channel.take_receiver()
-            .ok_or_else(|| anyhow::anyhow!("failed to get account receiver"))?;
-
+        let mut account_rx = spawn_account_listener(&self.cfg.account_stream)?;
         let mut trade_resp_rx = spawn_trade_response_listener(&self.cfg.trade_engine)?;
         let mut external_signal_rx = spawn_signal_listeners(&self.cfg.signals)?;
 
@@ -93,8 +113,8 @@ impl PreTrade {
                 Some(evt) = account_rx.recv() => {
                     if let Err(err) = handle_account_event(&mut runtime, evt) {
                         warn!("handle account event failed: {err:?}");
-                    } 
-                } 
+                    }
+                }
                 Some(resp) = trade_resp_rx.recv() => {
                     handle_trade_engine_response(&mut runtime, resp);
                 }
@@ -105,22 +125,22 @@ impl PreTrade {
                     match TradeSignal::from_bytes(&signal_bytes) {
                         Ok(signal) => handle_trade_signal(&mut runtime, signal),
                         Err(err) => warn!("failed to decode internal signal: {err}"),
-                    } 
-                } 
-                Some(bytes) = order_rx.recv() => { 
+                    }
+                }
+                Some(bytes) = order_rx.recv() => {
                     if let Err(err) = runtime.order_publisher.publish(&bytes) {
-                        warn!("failed to publish order request: {err}"); 
-                    } 
-                } 
-                _ = ticker.tick() => { 
-                    runtime.tick().await; 
-                } 
-                else => break, 
+                        warn!("failed to publish order request: {err}");
+                    }
+                }
+                _ = ticker.tick() => {
+                    runtime.tick().await;
+                }
+                else => break,
             }
-        } 
+        }
 
-        info!("pre_trade exiting"); 
-        Ok(()) 
+        info!("pre_trade exiting");
+        Ok(())
     }
 }
 
@@ -135,25 +155,28 @@ struct BootstrapResources {
     price_table: Rc<RefCell<PriceTable>>,
     // 交易对最小下单量/步进信息（spot/futures/margin）
     min_qty_table: Rc<MinQtyTable>,
+    //收取订单请求的服务名称
+    order_req_service: String,
 }
 
 impl BootstrapResources {
-    async fn load() -> Result<Self> {
-        // Read API credentials from environment variables
-        let um_api_key = std::env::var("BINANCE_API_KEY")
-            .map_err(|_| anyhow!("BINANCE_API_KEY environment variable not set"))?;
-        let um_api_secret = std::env::var("BINANCE_API_SECRET")
-            .map_err(|_| anyhow!("BINANCE_API_SECRET environment variable not set"))?;
+    async fn load(cfg: &PreTradeCfg) -> Result<Self> {
+        let um_cfg = cfg
+            .risk_checks
+            .binance_pm_um
+            .as_ref()
+            .ok_or_else(|| anyhow!("risk_checks.binance_pm_um must be configured"))?;
 
-        // Hardcoded REST endpoints
-        let um_rest_base = "https://papi.binance.com";
-        let recv_window_ms = 5000;
+        let um_api_key = std::env::var(&um_cfg.api_key_env)
+            .map_err(|_| anyhow!("environment variable {} not set", um_cfg.api_key_env))?;
+        let um_api_secret = std::env::var(&um_cfg.api_secret_env)
+            .map_err(|_| anyhow!("environment variable {} not set", um_cfg.api_secret_env))?;
 
         let um_manager = BinancePmUmAccountManager::new(
-            um_rest_base,
+            &um_cfg.rest_base,
             um_api_key.clone(),
             um_api_secret.clone(),
-            recv_window_ms,
+            um_cfg.recv_window_ms,
         );
         let um_snapshot = um_manager
             .init()
@@ -161,21 +184,37 @@ impl BootstrapResources {
             .context("failed to load initial Binance UM snapshot")?;
         log_um_positions(&um_snapshot.positions);
 
-        // Use same API credentials for spot (same PM account)
-        let spot_api_key = um_api_key.clone();
-        let spot_api_secret = um_api_secret.clone();
+        let spot_cfg = cfg
+            .risk_checks
+            .binance_spot
+            .as_ref()
+            .ok_or_else(|| anyhow!("risk_checks.binance_spot must be configured"))?;
 
-        // Optional: filter specific asset (e.g., "USDT")
-        let asset_filter = std::env::var("SPOT_ASSET_FILTER")
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty());
+        let spot_api_key = if spot_cfg.api_key_env == um_cfg.api_key_env {
+            um_api_key.clone()
+        } else {
+            std::env::var(&spot_cfg.api_key_env)
+                .map_err(|_| anyhow!("environment variable {} not set", spot_cfg.api_key_env))?
+        };
+        let spot_api_secret = if spot_cfg.api_secret_env == um_cfg.api_secret_env {
+            um_api_secret.clone()
+        } else {
+            std::env::var(&spot_cfg.api_secret_env)
+                .map_err(|_| anyhow!("environment variable {} not set", spot_cfg.api_secret_env))?
+        };
+
+        let asset_filter = spot_cfg
+            .asset
+            .as_ref()
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_string());
 
         let spot_manager = BinancePmSpotAccountManager::new(
-            um_rest_base,
+            &spot_cfg.rest_base,
             spot_api_key,
             spot_api_secret,
-            recv_window_ms,
+            spot_cfg.recv_window_ms,
             asset_filter,
         );
         let spot_snapshot = spot_manager
@@ -204,7 +243,9 @@ impl BootstrapResources {
             // 基于初始价格对总权益/总敞口进行 USDT 计价
             exposure_manager.revalue_with_prices(&snap);
             log_exposures(exposure_manager.exposures(), &snap);
-        } 
+        }
+
+        let order_req_service = resolve_order_req_service(&cfg.trade_engine);
 
         // 加载交易对 LOT_SIZE/PRICE_FILTER（spot/futures/margin），用于数量/价格对齐
         let mut min_qty_table = MinQtyTable::new();
@@ -219,21 +260,14 @@ impl BootstrapResources {
             exposure_manager,
             price_table,
             min_qty_table,
+            order_req_service,
         })
     }
 }
 struct RuntimeContext {
-    spot_manager: BinancePmSpotAccountManager,
-    um_manager: BinancePmUmAccountManager,
-    exposure_manager: Rc<RefCell<ExposureManager>>,
-    price_table: Rc<RefCell<PriceTable>>,
     order_manager: Rc<RefCell<crate::pre_trade::order_manager::OrderManager>>,
     strategy_mgr: StrategyManager,
-    // Risk parameters (loaded from Redis)
-    max_pos_u: f64,
-    max_symbol_exposure_ratio: f64,
-    max_total_exposure_ratio: f64,
-    max_leverage: f64,
+    strategy_params: StrategyParamsCfg,
     max_pending_limit_orders: Rc<Cell<i32>>,
     min_qty_table: Rc<MinQtyTable>,
     signal_tx: UnboundedSender<Bytes>,
@@ -249,6 +283,8 @@ impl RuntimeContext {
         bootstrap: BootstrapResources,
         order_record_tx: UnboundedSender<Bytes>,
         signal_tx: UnboundedSender<Bytes>,
+        order_publisher: OrderPublisher,
+        strategy_params: StrategyParamsCfg,
         signal_record_pub: Option<SignalPublisher>,
     ) -> Self {
         let BootstrapResources {
@@ -257,6 +293,7 @@ impl RuntimeContext {
             exposure_manager,
             price_table,
             min_qty_table,
+            order_req_service: _,
         } = bootstrap;
 
         let exposure_manager_rc = Rc::new(RefCell::new(exposure_manager));
@@ -272,11 +309,7 @@ impl RuntimeContext {
             )),
             strategy_mgr: StrategyManager::new(),
             signal_tx,
-            // Default risk parameters
-            max_pos_u: 0.0,
-            max_symbol_exposure_ratio: 0.25,  // 25%
-            max_total_exposure_ratio: 0.25,   // 25%
-            max_leverage: 2.0,
+            strategy_params,
             max_pending_limit_orders: Rc::new(Cell::new(3)),
             min_qty_table,
             resample_positions_pub,
@@ -407,10 +440,10 @@ impl RuntimeContext {
             self.exposure_manager.clone(),
             self.order_manager.clone(),
             self.price_table.clone(),
-            self.max_symbol_exposure_ratio,
-            self.max_total_exposure_ratio,
-            self.max_pos_u,
-            self.max_leverage,
+            self.strategy_params.max_symbol_exposure_ratio,
+            self.strategy_params.max_total_exposure_ratio,
+            self.strategy_params.max_pos_u,
+            self.strategy_params.max_leverage,
             self.max_pending_limit_orders.clone(),
         );
 
@@ -453,7 +486,7 @@ impl RuntimeContext {
                     exposures.total_equity(),
                     exposures.total_abs_exposure(),
                     exposures.total_position(),
-                    self.max_leverage,
+                    self.strategy_params.max_leverage,
                 );
             }
         }
@@ -510,20 +543,19 @@ impl RuntimeContext {
         if let Some(v) = parse_u64("pre_trade_refresh_secs") {
             new_refresh = v;
         }
-
-        // Update risk parameters from Redis (if keys exist)
+        let mut sp = self.strategy_params.clone();
         if let Some(v) = parse_f64("pre_trade_max_pos_u") {
-            self.max_pos_u = v;
+            sp.max_pos_u = v;
         }
         if let Some(v) = parse_f64("pre_trade_max_symbol_exposure_ratio") {
-            self.max_symbol_exposure_ratio = v;
+            sp.max_symbol_exposure_ratio = v;
         }
         if let Some(v) = parse_f64("pre_trade_max_total_exposure_ratio") {
-            self.max_total_exposure_ratio = v;
+            sp.max_total_exposure_ratio = v;
         }
         if let Some(v) = parse_f64("pre_trade_max_leverage") {
             if v > 0.0 {
-                self.max_leverage = v;
+                sp.max_leverage = v;
             } else {
                 warn!("pre_trade_max_leverage={} 无效，需大于 0，忽略更新", v);
             }
@@ -551,10 +583,10 @@ impl RuntimeContext {
         }
 
         let snapshot = PreTradeParamsSnap {
-            max_pos_u: self.max_pos_u,
-            max_symbol_exposure_ratio: self.max_symbol_exposure_ratio,
-            max_total_exposure_ratio: self.max_total_exposure_ratio,
-            max_leverage: self.max_leverage,
+            max_pos_u: sp.max_pos_u,
+            max_symbol_exposure_ratio: sp.max_symbol_exposure_ratio,
+            max_total_exposure_ratio: sp.max_total_exposure_ratio,
+            max_leverage: sp.max_leverage,
             refresh_secs: new_refresh,
         };
         let changed = self
@@ -563,15 +595,16 @@ impl RuntimeContext {
             .map(|old| old != &snapshot)
             .unwrap_or(true);
 
+        self.strategy_params = sp;
         self.params_refresh_secs = new_refresh;
         self.last_params_snapshot = Some(snapshot);
         if changed {
             debug!(
                 "pre_trade params updated: max_pos_u={:.2} sym_ratio={:.4} total_ratio={:.4} max_leverage={:.2} refresh={}s",
-                self.max_pos_u,
-                self.max_symbol_exposure_ratio,
-                self.max_total_exposure_ratio,
-                self.max_leverage,
+                self.strategy_params.max_pos_u,
+                self.strategy_params.max_symbol_exposure_ratio,
+                self.strategy_params.max_total_exposure_ratio,
+                self.strategy_params.max_leverage,
                 self.params_refresh_secs
             );
         }
@@ -607,7 +640,7 @@ impl RuntimeContext {
         let borrowed_usd = exposures_mgr.total_borrowed_usd();
         let interest_usd = exposures_mgr.total_interest_usd();
         let um_unrealized_usd = exposures_mgr.total_um_unrealized();
-        let max_leverage = self.max_leverage;
+        let max_leverage = self.strategy_params.max_leverage;
         drop(exposures_mgr);
 
         let mut published = 0usize;
@@ -775,6 +808,16 @@ fn collect_price_symbols(
     }
 }
 
+fn resolve_order_req_service(cfg: &TradeEngineRespCfg) -> String {
+    if let Some(req_service) = cfg.req_service.clone() {
+        return req_service;
+    }
+    if cfg.service.contains("order_resps/") {
+        return cfg.service.replace("order_resps/", "order_reqs/");
+    }
+    cfg.service.replace("resps", "reqs")
+}
+
 
 
 fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<()> {
@@ -811,109 +854,6 @@ fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<(
     let data = &evt.payload[8..8 + payload_len];
 
     match msg_type {
-        AccountEventType::AccountPosition => {
-            let msg = AccountPositionMsg::from_bytes(data)?;
-            let key = crate::pre_trade::monitor_channel::key_account_position(&msg);
-            if !ctx.dedup.insert_check(key) {
-                // debug!(
-                //     "dedup drop AccountPosition: asset={} update_id={} event_time={}",
-                //     msg.asset, msg.update_id, msg.event_time
-                // );
-                return Ok(());
-            }
-            ctx.spot_manager.apply_account_position(
-                &msg.asset,
-                msg.free_balance,
-                msg.locked_balance,
-                msg.event_time,
-            );
-            ctx.refresh_exposures();
-        }
-        AccountEventType::BalanceUpdate => {
-            let msg = BalanceUpdateMsg::from_bytes(data)?;
-            let key = crate::pre_trade::dedup::key_balance_update(&msg);
-            if !ctx.dedup.insert_check(key) {
-                // debug!(
-                //     "dedup drop BalanceUpdate: asset={} update_id={} event_time={}",
-                //     msg.asset, msg.update_id, msg.event_time
-                // );
-                return Ok(());
-            }
-            debug!(
-                "balanceUpdate: asset={} delta={} event_time={} tx_time={} update_id={}",
-                msg.asset, msg.delta, msg.event_time, msg.transaction_time, msg.update_id
-            );
-            ctx.spot_manager
-                .apply_balance_delta(&msg.asset, msg.delta, msg.event_time);
-            ctx.refresh_exposures();
-        }
-        AccountEventType::AccountUpdateBalance => {
-            let msg = AccountUpdateBalanceMsg::from_bytes(data)?;
-            debug!(
-                "accountUpdateBalance: asset={} reason={} bu={} wallet={} cross_wallet={} change={} event_time={} tx_time={}",
-                msg.asset,
-                msg.reason,
-                msg.business_unit,
-                msg.wallet_balance,
-                msg.cross_wallet_balance,
-                msg.balance_change,
-                msg.event_time,
-                msg.transaction_time
-            );
-            if msg.business_unit.eq_ignore_ascii_case("UM") {
-                ctx.spot_manager.apply_um_wallet_snapshot(
-                    &msg.asset,
-                    msg.wallet_balance,
-                    msg.event_time,
-                );
-            } else {
-                ctx.spot_manager.apply_balance_snapshot(
-                    &msg.asset,
-                    msg.wallet_balance,
-                    msg.cross_wallet_balance,
-                    msg.balance_change,
-                    msg.event_time,
-                );
-            }
-        }
-        AccountEventType::AccountUpdatePosition => {
-            let msg = AccountUpdatePositionMsg::from_bytes(data)?;
-            debug!(
-                "accountUpdatePosition: symbol={} side={} pos_amt={} entry_px={} acc_realized={} uPnL={} breakeven={} reason={} bu={} event_time={} tx_time={}",
-                msg.symbol,
-                msg.position_side,
-                msg.position_amount,
-                msg.entry_price,
-                msg.accumulated_realized,
-                msg.unrealized_pnl,
-                msg.breakeven_price,
-                msg.reason,
-                msg.business_unit,
-                msg.event_time,
-                msg.transaction_time
-            );
-            ctx.um_manager.apply_position_update(
-                &msg.symbol,
-                msg.position_side,
-                msg.position_amount,
-                msg.entry_price,
-                msg.unrealized_pnl,
-                msg.breakeven_price,
-                msg.event_time,
-            );
-        }
-        AccountEventType::AccountUpdateFlush => {
-            let msg = AccountUpdateFlushMsg::from_bytes(data)?;
-            let key = crate::pre_trade::dedup::key_account_update_flush(&msg);
-            if !ctx.dedup.insert_check(key) {
-                return Ok(());
-            }
-            debug!(
-                "accountUpdateFlush: scope={} event_time={} hash={:#x}",
-                msg.scope, msg.event_time, msg.hash
-            );
-            ctx.refresh_exposures();
-        }
         AccountEventType::ExecutionReport => {
             let report = ExecutionReportMsg::from_bytes(data)?;
             let key = crate::pre_trade::dedup::key_execution_report(&report);
@@ -993,10 +933,10 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                 strategy.handle_signal(&signal);
                 if strategy.is_active() {
                     ctx.insert_strategy(Box::new(strategy));
-                } 
-            } 
+                }
+            }
             Err(err) => warn!("failed to decode ArbOpen context: {err}"),
-        }, 
+        },
         SignalType::ArbClose => {
             match ArbOpenCtx::from_bytes(signal.context.clone()) {
                 Ok(close_ctx) => {
@@ -1257,185 +1197,6 @@ fn is_valid_node_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '-'
 }
 
-fn log_um_positions(positions: &[BinanceUmPosition]) {
-    if positions.is_empty() {
-        info!("UM 持仓为空");
-        return;
-    }
-
-    let mut rows: Vec<Vec<String>> = positions
-        .iter()
-        .map(|pos| {
-            vec![
-                pos.symbol.clone(),
-                pos.position_side.to_string(),
-                fmt_decimal(pos.position_amt),
-                fmt_decimal(pos.entry_price),
-                fmt_decimal(pos.leverage),
-                fmt_decimal(pos.position_initial_margin),
-                fmt_decimal(pos.open_order_initial_margin),
-                fmt_decimal(pos.unrealized_profit),
-            ]
-        })
-        .collect();
-    rows.sort_by(|a, b| a[0].cmp(&b[0]));
-
-    let table = render_three_line_table(
-        &[
-            "Symbol", "Side", "PosAmt", "EntryPx", "Lev", "PosIM", "OpenIM", "uPnL",
-        ],
-        &rows,
-    );
-    info!("UM 持仓概览\n{}", table);
-}
-
-fn log_spot_balances(balances: &[BinanceSpotBalance]) {
-    if balances.is_empty() {
-        warn!("现货资产列表为空");
-        return;
-    }
-
-    let mut rows: Vec<Vec<String>> = balances
-        .iter()
-        .map(|bal| {
-            vec![
-                bal.asset.clone(),
-                fmt_decimal(bal.total_wallet_balance),
-                fmt_decimal(bal.cross_margin_free),
-                fmt_decimal(bal.cross_margin_locked),
-                fmt_decimal(bal.cross_margin_borrowed),
-                fmt_decimal(bal.um_wallet_balance),
-                fmt_decimal(bal.um_unrealized_pnl),
-            ]
-        })
-        .collect();
-    rows.sort_by(|a, b| a[0].cmp(&b[0]));
-
-    let table = render_three_line_table(
-        &[
-            "Asset",
-            "TotalWallet",
-            "CrossFree",
-            "CrossLocked",
-            "CrossBorrowed",
-            "UMWallet",
-            "UMUPNL",
-        ],
-        &rows,
-    );
-    info!("现货资产概览\n{}", table);
-}
-
-fn log_exposures(entries: &[ExposureEntry], price_map: &BTreeMap<String, PriceEntry>) {
-    if entries.is_empty() {
-        info!("非 USDT 资产敞口为空");
-        return;
-    } 
-    
-    let mut sum_exposure_usdt = 0.0_f64;
-
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    for entry in entries {
-        let asset = entry.asset.to_uppercase();
-        if asset == "USDT" {
-            continue;
-        }
-        let sym = format!("{}USDT", asset);
-        let mark = price_map.get(&sym).map(|p| p.mark_price).unwrap_or(0.0);
-        if mark == 0.0 && (entry.spot_total_wallet != 0.0 || entry.um_net_position != 0.0) {
-            debug!("missing mark price for {}, exposure valued as 0", sym);
-        }
-        let spot_usdt = entry.spot_total_wallet * mark;
-        let um_usdt = entry.um_net_position * mark;
-        let exposure_qty = entry.exposure;
-        let exposure_usdt = spot_usdt + um_usdt;
-
-        sum_exposure_usdt += exposure_usdt; // 注意：非绝对值
-
-        rows.push(vec![
-            entry.asset.clone(),
-            fmt_decimal(entry.spot_total_wallet),
-            fmt_decimal(spot_usdt),
-            fmt_decimal(entry.um_net_position),
-            fmt_decimal(um_usdt),
-            fmt_decimal(exposure_qty),
-            fmt_decimal(exposure_usdt),
-        ]);
-    }
-
-    // 增加 TOTAL 行：仅展示 ExposureUSDT 的带符号汇总，其余列使用 "-" 占位。
-    rows.push(vec![
-        "TOTAL".to_string(),
-        "-".to_string(),                // SpotQty
-        "-".to_string(),                // SpotUSDT (不汇总显示)
-        "-".to_string(),                // UMNetQty
-        "-".to_string(),                // UMNetUSDT (不汇总显示)
-        "-".to_string(),                // ExposureQty（不汇总，用户要求用 "-" 替代）
-        fmt_decimal(sum_exposure_usdt), // ExposureUSDT (sum, signed)
-    ]);
-
-    let table = render_three_line_table(
-        &[
-            "Asset",
-            "SpotQty",
-            "SpotUSDT",
-            "UMNetQty",
-            "UMNetUSDT",
-            "ExposureQty",
-            "ExposureUSDT",
-        ],
-        &rows,
-    );
-    info!("现货+UM 敞口汇总\n{}", table);
-}
-
-fn log_exposure_summary(
-    total_equity: f64,
-    total_exposure: f64,
-    total_position: f64,
-    max_leverage: f64,
-) {
-    let leverage = if total_equity.abs() <= f64::EPSILON {
-        0.0
-    } else {
-        total_position / total_equity
-    };
-
-    let leverage_cell = format!("{} / {}", fmt_decimal(leverage), fmt_decimal(max_leverage));
-    let table = render_three_line_table(
-        &["TotalEquity", "TotalExposure", "Leverage"],
-        &[vec![
-            fmt_decimal(total_equity),
-            fmt_decimal(total_exposure),
-            leverage_cell,
-        ]],
-    );
-    info!("风险指标汇总\n{}", table);
-}
-
-fn log_price_table(entries: &BTreeMap<String, PriceEntry>) {
-    if entries.is_empty() {
-        warn!("未获取到标记价格数据");
-        return;
-    }
-
-    let rows: Vec<Vec<String>> = entries
-        .values()
-        .map(|entry| {
-            vec![
-                entry.symbol.clone(),
-                fmt_decimal(entry.mark_price),
-                fmt_decimal(entry.index_price),
-                entry.update_time.to_string(),
-            ]
-        })
-        .collect();
-
-    let table =
-        render_three_line_table(&["Symbol", "MarkPrice", "IndexPrice", "UpdateTime"], &rows);
-    info!("标记价格表\n{}", table);
-}
-
 fn fmt_decimal(value: f64) -> String {
     if value == 0.0 {
         return "0".to_string();
@@ -1456,33 +1217,6 @@ fn fmt_decimal(value: f64) -> String {
     }
 }
 
-fn render_three_line_table(headers: &[&str], rows: &[Vec<String>]) -> String {
-    let widths = compute_widths(headers, rows);
-    let mut out = String::new();
-    out.push_str(&build_separator(&widths, '-'));
-    out.push('\n');
-    out.push_str(&build_row(
-        headers
-            .iter()
-            .map(|h| h.to_string())
-            .collect::<Vec<String>>(),
-        &widths,
-    ));
-    out.push('\n');
-    out.push_str(&build_separator(&widths, '='));
-    if rows.is_empty() {
-        out.push('\n');
-        out.push_str(&build_separator(&widths, '-'));
-        return out;
-    }
-    for row in rows {
-        out.push('\n');
-        out.push_str(&build_row(row.clone(), &widths));
-    }
-    out.push('\n');
-    out.push_str(&build_separator(&widths, '-'));
-    out
-}
 
 fn compute_widths(headers: &[&str], rows: &[Vec<String>]) -> Vec<usize> {
     let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
