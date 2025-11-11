@@ -182,11 +182,6 @@ impl RuntimeContext {
             self.exposure_manager.clone(),
             self.order_manager.clone(),
             self.price_table.clone(),
-            self.strategy_params.max_symbol_exposure_ratio,
-            self.strategy_params.max_total_exposure_ratio,
-            self.strategy_params.max_pos_u,
-            self.strategy_params.max_leverage,
-            self.max_pending_limit_orders.clone(),
         );
 
         Rc::new(crate::strategy::risk_checker::PreTradeEnv::new(

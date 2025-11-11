@@ -12,7 +12,7 @@ use crate::common::account_msg::{
     AccountUpdateBalanceMsg, AccountUpdateFlushMsg, AccountUpdatePositionMsg, BalanceUpdateMsg,
     ExecutionReportMsg, OrderTradeUpdateMsg,
 };
-use crate::signal::common::ExecutionType;
+use crate::signal::common::{ExecutionType, TradingVenue};
 use crate::pre_trade::binance_pm_spot_manager::{BinancePmSpotAccountManager, BinanceSpotBalance};
 use crate::pre_trade::binance_pm_um_manager::{BinancePmUmAccountManager, BinanceUmPosition};
 
@@ -300,6 +300,128 @@ impl MonitorChannel {
             min_qty_table,
             strategy_mgr,
         })
+    }
+
+
+    // 检查杠杆率是否超过配置阈值
+    pub fn check_leverage(&self) -> Result<(), String> {
+        let limit = PreTradeParams::instance().max_leverage();
+        if limit <= 0.0 {
+            return Ok(());
+        }
+
+        // 获取必要的数据
+        let (total_equity, total_position) = {
+            let exposure_manager = self.exposure_manager.borrow();
+            let total_equity = exposure_manager.total_equity();
+            let total_position = exposure_manager.total_position();
+            (total_equity, total_position)
+        };
+
+        if total_equity <= f64::EPSILON {
+            return Err("账户总权益近似为 0，无法计算杠杆率".to_string());
+        }
+
+        let leverage = total_position / total_equity;
+        if leverage > limit {
+            debug!(
+                "当前杠杆 {:.4} 超过阈值 {:.4} (仓位={:.6}, 权益={:.6})",
+                leverage, limit, total_position, total_equity
+            );
+            return Err(format!("杠杆率 {:.2} 超过限制 {:.2}", leverage, limit));
+        }
+
+        Ok(())
+    }
+
+    /// 根据交易场所对齐订单量和价格
+    /// 返回 (对齐后的数量, 对齐后的价格)
+    pub fn align_order_by_venue(
+        &self,
+        venue: TradingVenue,
+        symbol: &str,
+        raw_qty: f64,
+        raw_price: f64,
+    ) -> Result<(f64, f64), String> {
+        match venue {
+            TradingVenue::BinanceUm | TradingVenue::BinanceMargin => {
+                TradingVenue::align_um_order(symbol, raw_qty, raw_price, &self.min_qty_table)
+            }
+            TradingVenue::BinanceSwap => {
+                // TODO: 实现 BinanceSwap 的对齐逻辑
+                Err(format!("尚未实现 BinanceSwap 的订单对齐"))
+            }
+            TradingVenue::BinanceSpot => {
+                // TODO: 实现 BinanceSpot 的对齐逻辑
+                Err(format!("尚未实现 BinanceSpot 的订单对齐"))
+            }
+            TradingVenue::OkexSwap | TradingVenue::OkexSpot => {
+                // TODO: 实现 Okex 的对齐逻辑
+                Err(format!("尚未实现 Okex 的订单对齐"))
+            }
+        }
+    }
+
+    /// 检查交易量是否满足最小要求
+    /// 包括最小下单量和最小名义金额检查
+    pub fn check_min_trading_requirements(
+        &self,
+        venue: TradingVenue,
+        symbol: &str,
+        qty: f64,
+        price_hint: Option<f64>,
+    ) -> Result<(), String> {
+        // 1. 检查最小下单量
+        let min_qty = match venue {
+            TradingVenue::BinanceUm => self.min_qty_table.futures_um_min_qty_by_symbol(symbol),
+            TradingVenue::BinanceMargin => self.min_qty_table.margin_min_qty_by_symbol(symbol),
+            TradingVenue::BinanceSpot | TradingVenue::OkexSpot => {
+                self.min_qty_table.spot_min_qty_by_symbol(symbol)
+            }
+            TradingVenue::BinanceSwap | TradingVenue::OkexSwap => {
+                // TODO: 根据实际情况添加 swap 的最小量获取
+                None
+            }
+        }
+        .unwrap_or(0.0);
+
+        if min_qty > 0.0 && qty + 1e-12 < min_qty {
+            return Err(format!("交易量 {:.8} 小于最小下单量 {:.8}", qty, min_qty));
+        }
+
+        // 2. 检查最小名义金额（仅对 UM 合约）
+        if venue == TradingVenue::BinanceUm {
+            let min_notional = self
+                .min_qty_table
+                .futures_um_min_notional_by_symbol(symbol)
+                .unwrap_or(0.0);
+
+            if min_notional > 0.0 {
+                // 如果没有提供价格提示，尝试从价格表获取
+                let price = if let Some(p) = price_hint {
+                    p
+                } else {
+                    self.price_table
+                        .borrow()
+                        .mark_price(symbol)
+                        .unwrap_or(0.0)
+                };
+
+                if price <= 0.0 {
+                    return Err(format!("缺少 {} 的价格信息，无法验证名义金额", symbol));
+                }
+
+                let notional = price * qty;
+                if notional + 1e-8 < min_notional {
+                    return Err(format!(
+                        "名义金额 {:.8} 低于最小要求 {:.8} (价格={:.8} 数量={:.8})",
+                        notional, min_notional, price, qty
+                    ));
+                }
+            }
+        }
+
+        Ok(())
     }
 
 

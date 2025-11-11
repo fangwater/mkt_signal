@@ -70,7 +70,7 @@ impl HedgeArbStrategy {
         // 开仓open leg，打开头寸，根据信号创建开仓leg, 进行风控判断，失败就直接把策略标记为不活跃，等待定时器清理
 
         // 1、检查杠杆, 失败打印error
-        if let Err(e) = self.pre_trade_env.risk_checker.check_leverage() {
+        if let Err(e) = .check_leverage() {
             error!(
                 "HedgeArbStrategy: strategy_id={} 杠杆风控检查失败: {}，标记策略为不活跃",
                 self.strategy_id, e 
