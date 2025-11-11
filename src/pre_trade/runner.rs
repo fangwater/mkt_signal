@@ -3,8 +3,9 @@ use crate::common::iceoryx_publisher::{
 };
 use crate::common::min_qty_table::MinQtyTable;
 use crate::common::time_util::get_timestamp_us;
+use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::signal::cancel_signal::ArbCancelCtx;
-use crate::signal::common::SignalBytes;
+use crate::signal::common::{SignalBytes, TradingVenue};
 use crate::strategy::hedge_arb_strategy::HedgeArbStrategy;
 use crate::signal::hedge_signal::ArbHedgeCtx;
 use crate::signal::open_signal::ArbOpenCtx;
@@ -38,17 +39,7 @@ impl PreTrade {
 
     pub async fn run(self) -> Result<()> {
         info!("pre_trade starting");
-        // 初始化策略参数从 Redis
-        let strategy_params = StrategyParamsCfg::default();
-        let mut runtime = RuntimeContext::new(
-            strategy_params,
-        );
-
         // 首次从 Redis 拉取 pre-trade 参数
-        if let Err(err) = runtime.reload_params().await {
-            warn!("pre_trade initial params load failed: {err:#}");
-        }
-
         // 提升周期检查频率到 100ms，使策略状态响应更及时
         let mut ticker = tokio::time::interval(Duration::from_millis(100));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -57,17 +48,6 @@ impl PreTrade {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {
                     break;
-                }
-                Some(resp) = trade_resp_rx.recv() => {
-                    handle_trade_engine_response(&mut runtime, resp);
-                }
-                Some(signal) = external_signal_rx.recv() => {
-                    handle_trade_signal(&mut runtime, signal);
-                }
-                Some(bytes) = order_rx.recv() => {
-                    if let Err(err) = runtime.order_publisher.publish(&bytes) {
-                        warn!("failed to publish order request: {err}");
-                    }
                 }
                 _ = ticker.tick() => {
                     runtime.tick().await;
@@ -82,11 +62,7 @@ impl PreTrade {
 }
 
 struct RuntimeContext {
-    order_manager: Rc<RefCell<crate::pre_trade::order_manager::OrderManager>>,
     strategy_mgr: Rc<RefCell<StrategyManager>>,
-    strategy_params: StrategyParamsCfg,
-    max_pending_limit_orders: Rc<Cell<i32>>,
-    min_qty_table: Rc<MinQtyTable>,
     resample_interval: std::time::Duration,
     next_resample: std::time::Instant,
     next_params_refresh: std::time::Instant,
@@ -96,20 +72,9 @@ struct RuntimeContext {
 
 impl RuntimeContext {
     fn new(
-        order_record_tx: UnboundedSender<Bytes>,
-        order_publisher: OrderPublisher,
-        strategy_params: StrategyParamsCfg,
-        signal_record_pub: Option<SignalPublisher>,
     ) -> Self {
 
         Self {
-            spot_manager,
-            um_manager,
-            exposure_manager: exposure_manager_rc,
-            price_table,
-            order_manager: Rc::new(RefCell::new(
-                crate::pre_trade::order_manager::OrderManager::new(order_record_tx.clone()),
-            )),
             strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
             strategy_params,
             max_pending_limit_orders: Rc::new(Cell::new(3)),
@@ -127,60 +92,9 @@ impl RuntimeContext {
         }
     }
 
-    fn cleanup_inactive(&mut self) {}
-
-    /// 检查交易对的限价挂单数是否达到上限
-    /// 返回 true 表示可以继续下单，false 表示已达上限
-    fn check_pending_limit_order_quota(&self, symbol: &str) -> bool {
-        let max_limit = self.max_pending_limit_orders.get();
-        if max_limit <= 0 {
-            return true; // 未设置限制
-        }
-
-        let current_limit = {
-            let manager = self.order_manager.borrow();
-            manager.get_symbol_pending_limit_order_count(&symbol.to_string())
-        };
-
-        if current_limit >= max_limit {
-            warn!(
-                "symbol={} 当前限价挂单数={} 已达到上限 {}，忽略开仓信号",
-                symbol, current_limit, max_limit
-            );
-            false
-        } else {
-            true
-        }
-    }
-
-    fn insert_strategy(&mut self, strategy: Box<dyn Strategy>) {
-        self.strategy_mgr.borrow_mut().insert(strategy);
-    }
-
-
-    fn remove_strategy(&mut self, strategy_id: i32) {
-        self.strategy_mgr.borrow_mut().remove(strategy_id);
-    }
-
-    fn with_strategy_mut<F>(&mut self, strategy_id: i32, mut f: F)
-    where
-        F: FnMut(&mut dyn Strategy),
-    {
-        if let Some(mut strategy) = self.strategy_mgr.borrow_mut().take(strategy_id) {
-            f(strategy.as_mut());
-            if strategy.is_active() {
-                self.strategy_mgr.borrow_mut().insert(strategy);
-            } else {
-                drop(strategy);
-                self.remove_strategy(strategy_id);
-            }
-        }
-    }
-
     async fn tick(&mut self) {
         let now = get_timestamp_us();
         self.strategy_mgr.borrow_mut().handle_period_clock(now);
-        self.cleanup_inactive();
         let instant_now = std::time::Instant::now();
         if instant_now >= self.next_params_refresh {
             match self.reload_params().await {
@@ -212,54 +126,6 @@ impl RuntimeContext {
 
 impl RuntimeContext {
     async fn reload_params(&mut self) -> Result<()> {
-        let url =
-            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/0".to_string());
-        let cli = redis::Client::open(url.clone())?;
-        let mut mgr = redis::aio::ConnectionManager::new(cli).await?;
-        let params: std::collections::HashMap<String, String> =
-            redis::AsyncCommands::hgetall(&mut mgr, "binance_forward_arb_params").await?;
-        let parse_f64 =
-            |k: &str| -> Option<f64> { params.get(k).and_then(|v| v.parse::<f64>().ok()) };
-        let parse_u64 =
-            |k: &str| -> Option<u64> { params.get(k).and_then(|v| v.parse::<u64>().ok()) };
-        let parse_i64 =
-            |k: &str| -> Option<i64> { params.get(k).and_then(|v| v.parse::<i64>().ok()) };
-        let mut new_refresh = self.params_refresh_secs;
-        if let Some(v) = parse_u64("pre_trade_refresh_secs") {
-            new_refresh = v;
-        }
-        let mut sp = self.strategy_params.clone();
-        if let Some(v) = parse_f64("pre_trade_max_pos_u") {
-            sp.max_pos_u = v;
-        }
-        if let Some(v) = parse_f64("pre_trade_max_symbol_exposure_ratio") {
-            sp.max_symbol_exposure_ratio = v;
-        }
-        if let Some(v) = parse_f64("pre_trade_max_total_exposure_ratio") {
-            sp.max_total_exposure_ratio = v;
-        }
-        if let Some(v) = parse_f64("pre_trade_max_leverage") {
-            if v > 0.0 {
-                sp.max_leverage = v;
-            } else {
-                warn!("pre_trade_max_leverage={} 无效，需大于 0，忽略更新", v);
-            }
-        }
-
-        let mut new_pending_limit = self.max_pending_limit_orders.get();
-        if let Some(v) = parse_i64("max_pending_limit_orders") {
-            new_pending_limit = v.max(0) as i32;
-        }
-
-        let pending_limit_changed = new_pending_limit != self.max_pending_limit_orders.get();
-        if pending_limit_changed {
-            self.max_pending_limit_orders.set(new_pending_limit);
-            debug!(
-                "max_pending_limit_orders updated to {}",
-                self.max_pending_limit_orders.get()
-            );
-        }
-
         let snapshot = PreTradeParamsSnap {
             max_pos_u: sp.max_pos_u,
             max_symbol_exposure_ratio: sp.max_symbol_exposure_ratio,
@@ -468,149 +334,6 @@ struct PreTradeParamsSnap {
     max_total_exposure_ratio: f64,
     max_leverage: f64,
     refresh_secs: u64,
-}
-
-fn resolve_order_req_service(cfg: &TradeEngineRespCfg) -> String {
-    if let Some(req_service) = cfg.req_service.clone() {
-        return req_service;
-    }
-    if cfg.service.contains("order_resps/") {
-        return cfg.service.replace("order_resps/", "order_reqs/");
-    }
-    cfg.service.replace("resps", "reqs")
-}
-
-
-
-fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
-    match signal.signal_type {
-        SignalType::ArbOpen => match ArbOpenCtx::from_bytes(signal.context.clone()) {
-            Ok(open_ctx) => {
-                let symbol = open_ctx.get_opening_symbol().to_uppercase();
-                if !ctx.check_pending_limit_order_quota(&symbol) {
-                    return;
-                }
-                let strategy_id = StrategyManager::generate_strategy_id();                let mut strategy = HedgeArbStrategy::new(strategy_id, symbol.clone());
-                strategy.handle_signal(&signal);
-                if strategy.is_active() {
-                    ctx.insert_strategy(Box::new(strategy));
-                }
-            }
-            Err(err) => warn!("failed to decode ArbOpen context: {err}"),
-        },
-        SignalType::ArbClose => {
-            match ArbOpenCtx::from_bytes(signal.context.clone()) {
-                Ok(close_ctx) => {
-                    use crate::pre_trade::order_manager::Side;
-
-                    let opening_symbol = close_ctx.get_opening_symbol();
-                    let hedging_symbol = close_ctx.get_hedging_symbol();
-
-                    // 获取平仓方向
-                    let Some(close_side) = Side::from_u8(close_ctx.side) else {
-                        warn!("ArbClose: invalid side {}", close_ctx.side);
-                        return;
-                    };
-
-                    // 查询两条腿的持仓（带符号）
-                    let opening_pos =
-                        ctx.get_position_qty(&opening_symbol, close_ctx.opening_leg.venue);
-                    let hedging_pos =
-                        ctx.get_position_qty(&hedging_symbol, close_ctx.hedging_leg.venue);
-
-                    // 检查opening leg方向是否匹配
-                    // 如果close是Sell，持仓应该>0（多头）；如果close是Buy，持仓应该<0（空头）
-                    let opening_direction_match = match close_side {
-                        Side::Sell => opening_pos > 0.0,
-                        Side::Buy => opening_pos < 0.0,
-                    };
-
-                    // 检查hedging leg方向是否匹配（方向相反）
-                    // 如果opening close是Sell，hedging close应该是Buy，持仓应该<0（空头）
-                    let hedging_direction_match = match close_side {
-                        Side::Sell => hedging_pos < 0.0,
-                        Side::Buy => hedging_pos > 0.0,
-                    };
-
-                    if !opening_direction_match || !hedging_direction_match {
-                        warn!(
-                            "ArbClose: position direction mismatch, close_side={:?} opening_symbol={} opening_pos={:.6} hedging_symbol={} hedging_pos={:.6}",
-                            close_side, opening_symbol, opening_pos, hedging_symbol, hedging_pos
-                        );
-                        return;
-                    }
-
-                    // 两条腿方向都匹配，取绝对值的最小值
-                    let closeable_qty = opening_pos.abs().min(hedging_pos.abs());
-
-                    // 和信号中的amount对比，取较小值
-                    let final_qty = closeable_qty.min(close_ctx.amount as f64);
-
-                    if final_qty <= 0.0 {
-                        warn!(
-                            "ArbClose: final_qty <= 0, closeable_qty={:.6} signal_amount={:.6}",
-                            closeable_qty, close_ctx.amount
-                        );
-                        return;
-                    }
-
-                    debug!(
-                        "ArbClose: final_qty={:.6} (closeable={:.6} signal_amount={:.6}) opening_symbol={} opening_pos={:.6} hedging_symbol={} hedging_pos={:.6}",
-                        final_qty, closeable_qty, close_ctx.amount, opening_symbol, opening_pos, hedging_symbol, hedging_pos
-                    );
-
-                    // 平仓本质就是反向开仓，复用 HedgeArbStrategy
-                    let strategy_id = StrategyManager::generate_strategy_id();
-                    let mut strategy =
-                        HedgeArbStrategy::new(strategy_id, opening_symbol.clone());
-
-                    strategy.handle_signal(&signal);
-
-                    if strategy.is_active() {
-                        ctx.insert_strategy(Box::new(strategy));
-                    }
-                }
-                Err(err) => warn!("failed to decode ArbClose context: {err}"),
-            }
-        }
-        SignalType::ArbCancel => match ArbCancelCtx::from_bytes(signal.context.clone()) {
-            Ok(cancel_ctx) => {
-                let symbol = cancel_ctx.get_opening_symbol().to_uppercase();
-                let candidate_ids: Vec<i32> = ctx
-                    .strategy_mgr
-                    .ids_for_symbol(&symbol)
-                    .map(|set| set.iter().copied().collect())
-                    .unwrap_or_default();
-
-                if candidate_ids.is_empty() {
-                    return;
-                }
-                for strategy_id in candidate_ids {
-                    if !ctx.strategy_mgr.borrow().contains(strategy_id) {
-                        return;
-                    }
-                    ctx.with_strategy_mut(strategy_id, |strategy| {
-                        strategy.handle_signal(&signal);
-                    });
-                }
-            }
-            Err(err) => warn!("failed to decode ArbCancel context: {err}"),
-        },
-        SignalType::ArbHedge => match ArbHedgeCtx::from_bytes(signal.context.clone()) {
-            Ok(hedge_ctx) => {
-                let strategy_id = hedge_ctx.strategy_id;
-                if !ctx.strategy_mgr.borrow().contains(strategy_id) {
-                    return;
-                }
-                ctx.with_strategy_mut(strategy_id, |strategy| {
-                    strategy.handle_signal(&signal);
-                });
-            }
-            Err(err) => warn!("failed to decode hedge context: {err}"),
-        },
-    }
-
-    ctx.cleanup_inactive();
 }
 
 

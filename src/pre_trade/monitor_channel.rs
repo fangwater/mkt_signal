@@ -989,6 +989,42 @@ impl MonitorChannel {
         })
     }
 
+    /// 获取指定交易对和交易场所的持仓数量（带符号）
+    /// 返回持仓数量，正数表示多头，负数表示空头
+    pub fn get_position_qty(&self, symbol: &str, venue: TradingVenue) -> f64 {
+        Self::with_inner(|inner| {
+            match venue {
+                TradingVenue::BinanceUm | TradingVenue::BinanceMargin => {
+                    // 查询合约头寸（带符号）
+                    if let Some(snapshot) = inner.um_manager.borrow().snapshot() {
+                        snapshot
+                            .positions
+                            .iter()
+                            .find(|p| p.symbol.eq_ignore_ascii_case(symbol))
+                            .map(|p| p.position_amt)
+                            .unwrap_or(0.0)
+                    } else {
+                        0.0
+                    }
+                }
+                TradingVenue::BinanceSpot => {
+                    // 查询现货余额（带符号）
+                    if let Some(snapshot) = inner.spot_manager.borrow().snapshot() {
+                        snapshot
+                            .balances
+                            .iter()
+                            .find(|b| b.asset.eq_ignore_ascii_case(symbol))
+                            .map(|b| b.net_asset())
+                            .unwrap_or(0.0)
+                    } else {
+                        0.0
+                    }
+                }
+                _ => 0.0,
+            }
+        })
+    }
+
     // ==================== 内部辅助方法 ====================
 
     fn spawn_derivatives_listener(price_table: Rc<RefCell<PriceTable>>) {

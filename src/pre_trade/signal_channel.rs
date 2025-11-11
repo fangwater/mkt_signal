@@ -1,11 +1,19 @@
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
-use crate::signal::trade_signal::TradeSignal;
+use crate::pre_trade::monitor_channel::MonitorChannel;
+use crate::pre_trade::order_manager::Side;
+use crate::signal::cancel_signal::ArbCancelCtx;
+use crate::signal::common::{SignalBytes, TradingVenue};
+use crate::signal::hedge_signal::ArbHedgeCtx;
+use crate::signal::open_signal::ArbOpenCtx;
+use crate::signal::trade_signal::{SignalType, TradeSignal};
+use crate::strategy::hedge_arb_strategy::HedgeArbStrategy;
+use crate::strategy::{Strategy, StrategyManager};
 use anyhow::Result;
 use bytes::Bytes;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::cell::{OnceCell, RefCell};
 use std::time::Duration;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -133,9 +141,8 @@ impl SignalChannel {
 
         // 启动监听任务（在这里 clone tx，避免 move 问题）
         let channel_name_owned = channel_name.to_string();
-        let tx_clone = signal_tx.clone();
         tokio::task::spawn_local(async move {
-            if let Err(err) = Self::run_listener(&channel_name_owned, tx_clone).await {
+            if let Err(err) = Self::run_listener(&channel_name_owned).await {
                 warn!(
                     "signal listener exited (channel={}): {err:?}",
                     channel_name_owned
@@ -186,10 +193,7 @@ impl SignalChannel {
     }
 
     /// 监听器的核心逻辑
-    async fn run_listener(
-        channel_name: &str,
-        tx: UnboundedSender<TradeSignal>,
-    ) -> Result<()> {
+    async fn run_listener(channel_name: &str) -> Result<()> {
         let node_name = Self::signal_node_name(channel_name);
         let service_path = format!("signal_pubs/{}", channel_name);
 
@@ -225,9 +229,7 @@ impl SignalChannel {
                     }
                     match TradeSignal::from_bytes(&payload) {
                         Ok(signal) => {
-                            if tx.send(signal).is_err() {
-                                break;
-                            }
+                            handle_trade_signal(signal);
                         }
                         Err(err) => warn!(
                             "failed to decode trade signal from channel {}: {}",
@@ -242,11 +244,159 @@ impl SignalChannel {
                 }
             }
         }
-        Ok(())
     }
 
     /// 生成信号节点名称
     fn signal_node_name(channel: &str) -> String {
         format!("pre_trade_signal_{}", channel)
+    }
+}
+
+
+fn handle_trade_signal(signal: TradeSignal) {
+    match signal.signal_type {
+        SignalType::ArbOpen => match ArbOpenCtx::from_bytes(signal.context.clone()) {
+            Ok(open_ctx) => {
+                let symbol = open_ctx.get_opening_symbol().to_uppercase();
+                // 检查限价挂单数量限制
+                if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol) {
+                    warn!("ArbOpen: {} 限价挂单数量超限: {}", symbol, e);
+                    return;
+                }
+                let strategy_id = StrategyManager::generate_strategy_id();
+                let mut strategy = HedgeArbStrategy::new(strategy_id, symbol.clone());
+                strategy.handle_signal_with_record(&signal);
+                if strategy.is_active() {
+                    MonitorChannel::instance().strategy_mgr().borrow_mut().insert(Box::new(strategy));
+                }
+            }
+            Err(err) => warn!("failed to decode ArbOpen context: {err}"),
+        },
+        SignalType::ArbClose => {
+            match ArbOpenCtx::from_bytes(signal.context.clone()) {
+                Ok(close_ctx) => {
+                    let opening_symbol = close_ctx.get_opening_symbol();
+                    let hedging_symbol = close_ctx.get_hedging_symbol();
+
+                    // 获取平仓方向
+                    let Some(close_side) = Side::from_u8(close_ctx.side) else {
+                        warn!("ArbClose: invalid side {}", close_ctx.side);
+                        return;
+                    };
+
+                    // 查询两条腿的持仓（带符号）
+                    let Some(opening_venue) = TradingVenue::from_u8(close_ctx.opening_leg.venue) else {
+                        warn!("ArbClose: invalid opening_venue {}", close_ctx.opening_leg.venue);
+                        return;
+                    };
+                    let Some(hedging_venue) = TradingVenue::from_u8(close_ctx.hedging_leg.venue) else {
+                        warn!("ArbClose: invalid hedging_venue {}", close_ctx.hedging_leg.venue);
+                        return;
+                    };
+
+                    let opening_pos = MonitorChannel::instance().get_position_qty(&opening_symbol, opening_venue);
+                    let hedging_pos = MonitorChannel::instance().get_position_qty(&hedging_symbol, hedging_venue);
+
+                    // 检查opening leg方向是否匹配
+                    // 如果close是Sell，持仓应该>0（多头）；如果close是Buy，持仓应该<0（空头）
+                    let opening_direction_match = match close_side {
+                        Side::Sell => opening_pos > 0.0,
+                        Side::Buy => opening_pos < 0.0,
+                    };
+
+                    // 检查hedging leg方向是否匹配（方向相反）
+                    // 如果opening close是Sell，hedging close应该是Buy，持仓应该<0（空头）
+                    let hedging_direction_match = match close_side {
+                        Side::Sell => hedging_pos < 0.0,
+                        Side::Buy => hedging_pos > 0.0,
+                    };
+
+                    if !opening_direction_match || !hedging_direction_match {
+                        warn!(
+                            "ArbClose: position direction mismatch, close_side={:?} opening_symbol={} opening_pos={:.6} hedging_symbol={} hedging_pos={:.6}",
+                            close_side, opening_symbol, opening_pos, hedging_symbol, hedging_pos
+                        );
+                        return;
+                    }
+
+                    // 两条腿方向都匹配，取绝对值的最小值
+                    let closeable_qty = opening_pos.abs().min(hedging_pos.abs());
+
+                    // 和信号中的amount对比，取较小值
+                    let final_qty = closeable_qty.min(close_ctx.amount as f64);
+
+                    if final_qty <= 0.0 {
+                        warn!(
+                            "ArbClose: final_qty <= 0, closeable_qty={:.6} signal_amount={:.6}",
+                            closeable_qty, close_ctx.amount
+                        );
+                        return;
+                    }
+
+                    debug!(
+                        "ArbClose: final_qty={:.6} (closeable={:.6} signal_amount={:.6}) opening_symbol={} opening_pos={:.6} hedging_symbol={} hedging_pos={:.6}",
+                        final_qty, closeable_qty, close_ctx.amount, opening_symbol, opening_pos, hedging_symbol, hedging_pos
+                    );
+
+                    // 平仓本质就是反向开仓，复用 HedgeArbStrategy
+                    let strategy_id = StrategyManager::generate_strategy_id();
+                    let mut strategy =
+                        HedgeArbStrategy::new(strategy_id, opening_symbol.clone());
+
+                    strategy.handle_signal_with_record(&signal);
+
+                    if strategy.is_active() {
+                        MonitorChannel::instance().strategy_mgr().borrow_mut().insert(Box::new(strategy));
+                    }
+                }
+                Err(err) => warn!("failed to decode ArbClose context: {err}"),
+            }
+        }
+        SignalType::ArbCancel => match ArbCancelCtx::from_bytes(signal.context.clone()) {
+            Ok(cancel_ctx) => {
+                let symbol = cancel_ctx.get_opening_symbol().to_uppercase();
+                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                let candidate_ids: Vec<i32> = strategy_mgr
+                    .borrow()
+                    .ids_for_symbol(&symbol)
+                    .map(|set| set.iter().copied().collect())
+                    .unwrap_or_default();
+
+                if candidate_ids.is_empty() {
+                    return;
+                }
+                for strategy_id in candidate_ids {
+                    if !strategy_mgr.borrow().contains(strategy_id) {
+                        return;
+                    }
+                    // 取出策略，处理信号，然后放回
+                    if let Some(mut strategy) = strategy_mgr.borrow_mut().take(strategy_id) {
+                        strategy.handle_signal_with_record(&signal);
+                        if strategy.is_active() {
+                            strategy_mgr.borrow_mut().insert(strategy);
+                        }
+                    }
+                }
+            }
+            Err(err) => warn!("failed to decode ArbCancel context: {err}"),
+        },
+        SignalType::ArbHedge => match ArbHedgeCtx::from_bytes(signal.context.clone()) {
+            Ok(hedge_ctx) => {
+                let strategy_id = hedge_ctx.strategy_id;
+                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                if !strategy_mgr.borrow().contains(strategy_id) {
+                    return;
+                }
+                // 取出策略，处理信号，然后放回
+                if let Some(mut strategy) = strategy_mgr.borrow_mut().take(strategy_id) {
+                    strategy.handle_signal_with_record(&signal);
+                    if strategy.is_active() {
+                        strategy_mgr.borrow_mut().insert(strategy);
+                    }
+                }
+                drop(strategy_mgr);
+            }
+            Err(err) => warn!("failed to decode hedge context: {err}"),
+        },
     }
 }
