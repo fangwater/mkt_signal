@@ -4,6 +4,7 @@ pub mod event;
 pub mod exposure_manager;
 pub mod order_manager;
 pub mod price_table;
+pub mod params_load;
 mod runner;
 mod channel;
 mod persist_channel;
