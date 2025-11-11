@@ -55,16 +55,6 @@ impl PreTrade {
     pub async fn run(self) -> Result<()> {
         info!("pre_trade starting");
         let bootstrap = BootstrapResources::load().await?;
-        let signal_record_pub = match SignalPublisher::new(PRE_TRADE_SIGNAL_RECORD_CHANNEL) {
-            Ok(p) => Some(p),
-            Err(err) => {
-                warn!(
-                    "failed to create pre_trade signal record publisher on {}: {err:#}",
-                    PRE_TRADE_SIGNAL_RECORD_CHANNEL
-                );
-                None
-            }
-        };
 
         let mut runtime = RuntimeContext::new(
             bootstrap,

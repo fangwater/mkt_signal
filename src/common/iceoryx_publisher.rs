@@ -68,3 +68,7 @@ pub type SignalPublisher = GenericPublisher<SIGNAL_PAYLOAD>;
 pub type ResamplePublisher = GenericPublisher<RESAMPLE_PAYLOAD>;
 pub type BinanceMarginUpdatePublisher = GenericPublisher<BINANCE_MARGIN_UPDATE_PAYLOAD>;
 pub type BinanceUmUpdatePublisher = GenericPublisher<BINANCE_UM_UPDATE_PAYLOAD>;
+
+// 通用持久化发布器（支持所有交易所）
+pub type TradeUpdatePublisher = GenericPublisher<SIGNAL_PAYLOAD>;
+pub type OrderUpdatePublisher = GenericPublisher<SIGNAL_PAYLOAD>;
