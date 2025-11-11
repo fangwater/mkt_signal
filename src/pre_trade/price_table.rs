@@ -54,7 +54,7 @@ impl PriceTable {
             info!("no symbols provided for mark price table");
             self.entries.clear();
             return Ok(());
-        }
+        } 
 
         let resp = self
             .client

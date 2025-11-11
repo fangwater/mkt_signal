@@ -1,42 +1,33 @@
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
-use crate::common::min_qty_table::MinQtyTable;
-use crate::pre_trade::price_table::PriceTable;
-use crate::signal::cancel_signal::ArbCancelCtx;
-use crate::signal::hedge_signal::ArbHedgeCtx;
-use crate::signal::open_signal::ArbOpenCtx;
-use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::strategy::hedge_arb_strategy::HedgeArbStrategy;
-use crate::strategy::{Strategy, StrategyManager};
+use crate::signal::trade_signal::TradeSignal;
 use anyhow::Result;
 use bytes::Bytes;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{debug, info, warn};
-use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use log::{info, warn};
 use std::time::Duration;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-/// 信号频道 - 负责信号进程和 pre-trade 之间的通讯
+/// 信号频道 - 负责信号进程和 pre-trade 之间的双向通讯
 pub struct SignalChannel {
+    /// 信号接收器（可以 take 走）
+    signal_rx: Option<UnboundedReceiver<TradeSignal>>,
+    /// 信号发送器（用于内部克隆）
+    signal_tx: UnboundedSender<TradeSignal>,
     /// 反向发布器：用于向上游信号进程发送查询或反馈
     backward_pub: Option<SignalPublisher>,
-    /// 订单记录发送器
-    order_record_tx: UnboundedSender<Bytes>,
-    /// 信号发送器
-    signal_tx: UnboundedSender<Bytes>,
 }
 
 impl SignalChannel {
     /// 创建信号频道并自动启动监听器
-    /// 
+    ///
     /// # 参数
     /// * `channel_name` - 要订阅的信号频道名称
     /// * `backward_channel` - 反向通道名称，用于向上游发送信号（可选）
-    pub fn new(channel_name: &str, backward_channel: Option<&str>) -> Self {
+    pub fn new(channel_name: &str, backward_channel: Option<&str>) -> Result<Self> {
         // 创建消息队列
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (signal_tx, signal_rx) = mpsc::unbounded_channel();
 
         // 创建反向发布器
         let backward_pub = if let Some(backward_ch) = backward_channel {
@@ -54,9 +45,9 @@ impl SignalChannel {
             None
         };
 
-        // 启动监听任务
+        // 启动监听任务（在这里 clone tx，避免 move 问题）
         let channel_name_owned = channel_name.to_string();
-        let tx_clone = tx.clone();
+        let tx_clone = signal_tx.clone();
         tokio::task::spawn_local(async move {
             if let Err(err) = Self::run_listener(&channel_name_owned, tx_clone).await {
                 warn!(
@@ -66,21 +57,16 @@ impl SignalChannel {
             }
         });
 
-        Self {
-            rx,
-            tx,
+        Ok(Self {
+            signal_rx: Some(signal_rx),
+            signal_tx,
             backward_pub,
-        }
+        })
     }
 
-    /// 获取接收端的可变引用，用于接收交易信号
-    pub fn get_queue_rx(&mut self) -> &mut UnboundedReceiver<TradeSignal> {
-        &mut self.rx
-    }
-
-    /// 获取发送端的克隆，可用于创建多个消费者
-    pub fn get_queue_tx(&self) -> UnboundedSender<TradeSignal> {
-        self.tx.clone()
+    /// 获取信号接收器，只能调用一次
+    pub fn take_receiver(&mut self) -> Option<UnboundedReceiver<TradeSignal>> {
+        self.signal_rx.take()
     }
 
     /// 向上游发送反馈数据
