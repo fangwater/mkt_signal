@@ -13,6 +13,7 @@ use crate::common::account_msg::{
     AccountUpdateBalanceMsg, AccountUpdateFlushMsg, AccountUpdatePositionMsg, BalanceUpdateMsg,
     ExecutionReportMsg, OrderTradeUpdateMsg,
 };
+use crate::signal::common::ExecutionType;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::binance_pm_spot_manager::{BinancePmSpotAccountManager, BinanceSpotBalance};
 use crate::pre_trade::binance_pm_um_manager::{BinancePmUmAccountManager, BinanceUmPosition};
@@ -143,6 +144,7 @@ use crate::pre_trade::exposure_manager::ExposureManager;
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
 use crate::pre_trade::binance_pm_um_manager::BinanceUmAccountSnapshot;
 use crate::pre_trade::binance_pm_spot_manager::BinanceSpotBalanceSnapshot;
+use crate::common::min_qty_table::MinQtyTable;
 use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
 use bytes::Bytes;
 use std::rc::Rc;
@@ -162,6 +164,10 @@ pub struct MonitorChannel {
     pub exposure_manager: Rc<RefCell<ExposureManager>>,
     /// 价格表
     pub price_table: Rc<RefCell<PriceTable>>,
+    /// 交易对最小下单量/步进信息（spot/futures/margin）
+    pub min_qty_table: Rc<MinQtyTable>,
+    /// 策略管理器
+    pub strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
     /// 最大杠杆（用于敞口日志）
     max_leverage: f64,
 }
@@ -174,11 +180,14 @@ impl MonitorChannel {
     /// - 初始化 UM 合约账户管理器
     /// - 初始化 Spot 现货账户管理器
     /// - 收集所需的价格符号并初始化价格表
+    /// - 加载交易对 LOT_SIZE/PRICE_FILTER（spot/futures/margin）
     /// - 创建 ExposureManager 并基于初始快照和价格估值
     /// - 订阅 IceOryx 频道: account_pubs/binance_pm
     /// - 启动后台监听任务（账户状态更新在内部直接处理，订单/成交回报发送到 channel）
+    /// - 启动衍生品价格监听任务（mark_price, index_price）
     ///
     /// # 参数
+    /// - `strategy_mgr`: 策略管理器
     /// - `max_leverage`: 最大杠杆（用于风险指标日志）
     ///
     /// # 环境变量
@@ -189,7 +198,10 @@ impl MonitorChannel {
     /// # 错误
     /// - API 凭证未设置
     /// - 初始账户快照获取失败
-    pub async fn new_binance_pm_monitor(max_leverage: f64) -> Result<Self> {
+    pub async fn new_binance_pm_monitor(
+        strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
+        max_leverage: f64,
+    ) -> Result<Self> {
         // Read API credentials from environment variables
         let api_key = std::env::var("BINANCE_API_KEY")
             .map_err(|_| anyhow!("BINANCE_API_KEY environment variable not set"))?;
@@ -258,6 +270,13 @@ impl MonitorChannel {
         }
         let exposure_manager = Rc::new(RefCell::new(exposure_manager));
 
+        // 加载交易对 LOT_SIZE/PRICE_FILTER（spot/futures/margin），用于数量/价格对齐
+        let mut min_qty_table = MinQtyTable::new();
+        if let Err(err) = min_qty_table.refresh_binance().await {
+            warn!("failed to refresh Binance exchange filters: {err:#}");
+        }
+        let min_qty_table = Rc::new(min_qty_table);
+
         // 包装为 Rc<RefCell<>>
         let um_manager_rc = Rc::new(RefCell::new(um_manager));
         let spot_manager_rc = Rc::new(RefCell::new(spot_manager));
@@ -277,6 +296,7 @@ impl MonitorChannel {
             spot_manager_rc.clone(),
             exposure_manager.clone(),
             price_table.clone(),
+            strategy_mgr.clone(),
             max_leverage,
         );
 
@@ -291,6 +311,8 @@ impl MonitorChannel {
             spot_manager: spot_manager_rc,
             exposure_manager,
             price_table,
+            min_qty_table,
+            strategy_mgr,
             max_leverage,
         })
     }
@@ -313,6 +335,7 @@ impl MonitorChannel {
         spot_manager: Rc<RefCell<BinancePmSpotAccountManager>>,
         exposure_manager: Rc<RefCell<ExposureManager>>,
         price_table: Rc<RefCell<PriceTable>>,
+        strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
         max_leverage: f64,
     ) {
         tokio::task::spawn_local(async move {
@@ -421,19 +444,36 @@ impl MonitorChannel {
                                         refresh_exposures(&um_manager, &spot_manager, &exposure_manager, &price_table, max_leverage);
                                     }
                                 }
-                                // ExecutionReport 和 OrderTradeUpdate：发送到 channel
-                                AccountEventType::ExecutionReport | AccountEventType::OrderTradeUpdate => {
-                                    let buf = payload[..frame_len].to_vec();
-                                    let evt = AccountEvent {
-                                        service: service_name.clone(),
-                                        received_at,
-                                        payload_len: buf.len(),
-                                        payload: buf,
-                                        event_type: Some(format!("{:?}", msg_type)),
-                                        event_time_ms: None,
-                                    };
-                                    if tx.send(evt).is_err() {
-                                        break;
+                                // ExecutionReport 和 OrderTradeUpdate：直接处理
+                                AccountEventType::ExecutionReport => {
+                                    if let Ok(report) = ExecutionReportMsg::from_bytes(bytes::Bytes::copy_from_slice(data)) {
+                                        let key = key_execution_report(&report);
+                                        if !dedup.insert_check(key) {
+                                            continue;
+                                        }
+                                        debug!(
+                                            "executionReport: sym={} cli_id={} ord_id={} status={}",
+                                            report.symbol, report.client_order_id, report.order_id, report.order_status
+                                        );
+                                        dispatch_execution_report(&strategy_mgr, &report);
+                                    }
+                                }
+                                AccountEventType::OrderTradeUpdate => {
+                                    if let Ok(update) = OrderTradeUpdateMsg::from_bytes(bytes::Bytes::copy_from_slice(data)) {
+                                        let key = key_order_trade_update(&update);
+                                        if !dedup.insert_check(key) {
+                                            continue;
+                                        }
+                                        debug!(
+                                            "orderTradeUpdate: sym={}, cli_id={}, ord_id={}, trade_id={}, x={}, X={}",
+                                            update.symbol,
+                                            update.client_order_id,
+                                            update.order_id,
+                                            update.trade_id,
+                                            update.execution_type,
+                                            update.order_status,
+                                        );
+                                        dispatch_order_trade_update(&strategy_mgr, &update);
                                     }
                                 }
                             }
@@ -779,4 +819,122 @@ fn log_price_table(entries: &BTreeMap<String, PriceEntry>) {
     let table =
         render_three_line_table(&["Symbol", "MarkPrice", "IndexPrice", "UpdateTime"], &rows);
     info!("标记价格表\n{}", table);
+}
+
+/// 分发 ExecutionReport 到相应的策略
+fn dispatch_execution_report(
+    strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
+    report: &ExecutionReportMsg,
+) {
+    let order_id = report.client_order_id;
+    let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
+    let mut matched = false;
+
+    for strategy_id in strategy_ids {
+        let mut mgr = strategy_mgr.borrow_mut();
+        if let Some(mut strategy) = mgr.take(strategy_id) {
+            if strategy.is_strategy_order(order_id) {
+                matched = true;
+                match report.execution_type() {
+                    ExecutionType::New | ExecutionType::Canceled => {
+                        strategy.apply_order_update(report);
+                    }
+                    ExecutionType::Trade => {
+                        strategy.apply_trade_update(report);
+                    }
+                    ExecutionType::Expired | ExecutionType::Rejected => {
+                        warn!(
+                            "Unexpected execution type: {:?}, sym={} cli_id={} ord_id={}",
+                            report.execution_type(),
+                            report.symbol,
+                            report.client_order_id,
+                            report.order_id
+                        );
+                        strategy.apply_order_update(report);
+                    }
+                    _ => {
+                        log::error!(
+                            "Unhandled execution type: {:?}, sym={} cli_id={} ord_id={}",
+                            report.execution_type(),
+                            report.symbol,
+                            report.client_order_id,
+                            report.order_id
+                        );
+                    }
+                }
+            }
+            if strategy.is_active() {
+                mgr.insert(strategy);
+            }
+        }
+    }
+
+    if !matched {
+        let expected_strategy_id = (order_id >> 32) as i32;
+        debug!(
+            "executionReport unmatched: sym={} cli_id={} ord_id={} status={} expect_strategy={}",
+            report.symbol,
+            report.client_order_id,
+            report.order_id,
+            report.order_status,
+            expected_strategy_id
+        );
+    }
+}
+
+/// 分发 OrderTradeUpdate 到相应的策略
+fn dispatch_order_trade_update(
+    strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
+    update: &OrderTradeUpdateMsg,
+) {
+    let order_id: i64 = update.client_order_id;
+    let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
+    let mut matched = false;
+
+    for strategy_id in strategy_ids {
+        let mut mgr = strategy_mgr.borrow_mut();
+        if let Some(mut strategy) = mgr.take(strategy_id) {
+            if strategy.is_strategy_order(order_id) {
+                matched = true;
+                match update.execution_type() {
+                    ExecutionType::New | ExecutionType::Canceled => {
+                        strategy.apply_order_update(update);
+                    }
+                    ExecutionType::Trade => {
+                        strategy.apply_trade_update(update);
+                    }
+                    ExecutionType::Expired | ExecutionType::Rejected => {
+                        warn!(
+                            "Unexpected execution type: {:?}, sym={} cli_id={} ord_id={}",
+                            update.execution_type(),
+                            update.symbol,
+                            update.client_order_id,
+                            update.order_id
+                        );
+                        strategy.apply_order_update(update);
+                    }
+                    _ => {
+                        log::error!(
+                            "Unhandled execution type: {:?}, sym={} cli_id={} ord_id={}",
+                            update.execution_type(),
+                            update.symbol,
+                            update.client_order_id,
+                            update.order_id
+                        );
+                    }
+                }
+            }
+            if strategy.is_active() {
+                mgr.insert(strategy);
+            }
+        }
+    }
+
+    if !matched {
+        debug!(
+            "orderTradeUpdate not matched to any strategy: client_order_id={} client_order_id_str='{}'",
+            order_id,
+            update.client_order_id_str
+        );
+    }
 }

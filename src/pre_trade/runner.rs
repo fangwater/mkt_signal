@@ -1,13 +1,7 @@
-use crate::common::account_msg::{
-    get_event_type as get_account_event_type, AccountEventType, AccountPositionMsg,
-    AccountUpdateBalanceMsg, AccountUpdateFlushMsg, AccountUpdatePositionMsg, BalanceUpdateMsg,
-    ExecutionReportMsg, OrderTradeUpdateMsg,
-};
 use crate::common::iceoryx_publisher::{
     ResamplePublisher, SignalPublisher, RESAMPLE_PAYLOAD, SIGNAL_PAYLOAD,
 };
 use crate::common::min_qty_table::MinQtyTable;
-use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::binance_pm_spot_manager::{BinancePmSpotAccountManager, BinanceSpotBalance};
 use crate::pre_trade::binance_pm_um_manager::{
@@ -16,12 +10,11 @@ use crate::pre_trade::binance_pm_um_manager::{
 use crate::pre_trade::config::{
     AccountStreamCfg, PreTradeCfg, SignalSubscriptionsCfg, StrategyParamsCfg, TradeEngineRespCfg,
 };
-use crate::pre_trade::event::AccountEvent;
 use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::channels::SIGNAL_CHANNEL_MM_ARBITRAGE_BACKWARD;
-use crate::signal::common::{ExecutionType, SignalBytes};
+use crate::signal::common::SignalBytes;
 use crate::strategy::hedge_arb_strategy::HedgeArbStrategy;
 use crate::signal::hedge_signal::ArbHedgeCtx;
 use crate::signal::open_signal::ArbOpenCtx;
@@ -95,11 +88,8 @@ impl PreTrade {
         let mut order_rx = order_rx;
         let mut internal_signal_rx = signal_rx;
 
-        let mut account_rx = spawn_account_listener(&self.cfg.account_stream)?;
         let mut trade_resp_rx = spawn_trade_response_listener(&self.cfg.trade_engine)?;
         let mut external_signal_rx = spawn_signal_listeners(&self.cfg.signals)?;
-
-        spawn_derivatives_worker(runtime.price_table.clone())?;
 
         // 提升周期检查频率到 100ms，使策略状态响应更及时
         let mut ticker = tokio::time::interval(Duration::from_millis(100));
@@ -109,11 +99,6 @@ impl PreTrade {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {
                     break;
-                }
-                Some(evt) = account_rx.recv() => {
-                    if let Err(err) = handle_account_event(&mut runtime, evt) {
-                        warn!("handle account event failed: {err:?}");
-                    }
                 }
                 Some(resp) = trade_resp_rx.recv() => {
                     handle_trade_engine_response(&mut runtime, resp);
@@ -144,129 +129,9 @@ impl PreTrade {
     }
 }
 
-struct BootstrapResources {
-    //币安 合约资产管理器，基于统一账户update更新
-    um_manager: BinancePmUmAccountManager,
-    //币安 现货资产管理器, 基于统一账户update更新
-    spot_manager: BinancePmSpotAccountManager,
-    //币安 现货+合约敞口管理器
-    exposure_manager: ExposureManager,
-    //币安 标记价格表，辅助计算以usdt计价的资产敞口
-    price_table: Rc<RefCell<PriceTable>>,
-    // 交易对最小下单量/步进信息（spot/futures/margin）
-    min_qty_table: Rc<MinQtyTable>,
-    //收取订单请求的服务名称
-    order_req_service: String,
-}
-
-impl BootstrapResources {
-    async fn load(cfg: &PreTradeCfg) -> Result<Self> {
-        let um_cfg = cfg
-            .risk_checks
-            .binance_pm_um
-            .as_ref()
-            .ok_or_else(|| anyhow!("risk_checks.binance_pm_um must be configured"))?;
-
-        let um_api_key = std::env::var(&um_cfg.api_key_env)
-            .map_err(|_| anyhow!("environment variable {} not set", um_cfg.api_key_env))?;
-        let um_api_secret = std::env::var(&um_cfg.api_secret_env)
-            .map_err(|_| anyhow!("environment variable {} not set", um_cfg.api_secret_env))?;
-
-        let um_manager = BinancePmUmAccountManager::new(
-            &um_cfg.rest_base,
-            um_api_key.clone(),
-            um_api_secret.clone(),
-            um_cfg.recv_window_ms,
-        );
-        let um_snapshot = um_manager
-            .init()
-            .await
-            .context("failed to load initial Binance UM snapshot")?;
-        log_um_positions(&um_snapshot.positions);
-
-        let spot_cfg = cfg
-            .risk_checks
-            .binance_spot
-            .as_ref()
-            .ok_or_else(|| anyhow!("risk_checks.binance_spot must be configured"))?;
-
-        let spot_api_key = if spot_cfg.api_key_env == um_cfg.api_key_env {
-            um_api_key.clone()
-        } else {
-            std::env::var(&spot_cfg.api_key_env)
-                .map_err(|_| anyhow!("environment variable {} not set", spot_cfg.api_key_env))?
-        };
-        let spot_api_secret = if spot_cfg.api_secret_env == um_cfg.api_secret_env {
-            um_api_secret.clone()
-        } else {
-            std::env::var(&spot_cfg.api_secret_env)
-                .map_err(|_| anyhow!("environment variable {} not set", spot_cfg.api_secret_env))?
-        };
-
-        let asset_filter = spot_cfg
-            .asset
-            .as_ref()
-            .map(|v| v.trim())
-            .filter(|v| !v.is_empty())
-            .map(|v| v.to_string());
-
-        let spot_manager = BinancePmSpotAccountManager::new(
-            &spot_cfg.rest_base,
-            spot_api_key,
-            spot_api_secret,
-            spot_cfg.recv_window_ms,
-            asset_filter,
-        );
-        let spot_snapshot = spot_manager
-            .init()
-            .await
-            .context("failed to load initial Binance spot snapshot")?;
-        log_spot_balances(&spot_snapshot.balances);
-
-        let mut price_symbols: BTreeSet<String> = BTreeSet::new();
-        collect_price_symbols(&mut price_symbols, &um_snapshot, &spot_snapshot);
-
-        let price_table = Rc::new(RefCell::new(PriceTable::new()));
-        {
-            let mut table = price_table.borrow_mut();
-            table
-                .init(&price_symbols)
-                .await
-                .context("failed to load initial price table")?;
-            log_price_table(&table.snapshot());
-        }
-
-        let mut exposure_manager = ExposureManager::new(&um_snapshot, &spot_snapshot);
-        {
-            let table = price_table.borrow();
-            let snap = table.snapshot();
-            // 基于初始价格对总权益/总敞口进行 USDT 计价
-            exposure_manager.revalue_with_prices(&snap);
-            log_exposures(exposure_manager.exposures(), &snap);
-        }
-
-        let order_req_service = resolve_order_req_service(&cfg.trade_engine);
-
-        // 加载交易对 LOT_SIZE/PRICE_FILTER（spot/futures/margin），用于数量/价格对齐
-        let mut min_qty_table = MinQtyTable::new();
-        if let Err(err) = min_qty_table.refresh_binance().await {
-            warn!("failed to refresh Binance exchange filters: {err:#}");
-        }
-        let min_qty_table = Rc::new(min_qty_table);
-
-        Ok(Self {
-            um_manager,
-            spot_manager,
-            exposure_manager,
-            price_table,
-            min_qty_table,
-            order_req_service,
-        })
-    }
-}
 struct RuntimeContext {
     order_manager: Rc<RefCell<crate::pre_trade::order_manager::OrderManager>>,
-    strategy_mgr: StrategyManager,
+    strategy_mgr: Rc<RefCell<StrategyManager>>,
     strategy_params: StrategyParamsCfg,
     max_pending_limit_orders: Rc<Cell<i32>>,
     min_qty_table: Rc<MinQtyTable>,
@@ -307,7 +172,7 @@ impl RuntimeContext {
             order_manager: Rc::new(RefCell::new(
                 crate::pre_trade::order_manager::OrderManager::new(order_record_tx.clone()),
             )),
-            strategy_mgr: StrategyManager::new(),
+            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
             signal_tx,
             strategy_params,
             max_pending_limit_orders: Rc::new(Cell::new(3)),
@@ -392,7 +257,7 @@ impl RuntimeContext {
     }
 
     fn insert_strategy(&mut self, strategy: Box<dyn Strategy>) {
-        self.strategy_mgr.insert(strategy);
+        self.strategy_mgr.borrow_mut().insert(strategy);
     }
 
     fn publish_signal_record(&self, record: &SignalRecordMessage) {
@@ -409,17 +274,17 @@ impl RuntimeContext {
     }
 
     fn remove_strategy(&mut self, strategy_id: i32) {
-        self.strategy_mgr.remove(strategy_id);
+        self.strategy_mgr.borrow_mut().remove(strategy_id);
     }
 
     fn with_strategy_mut<F>(&mut self, strategy_id: i32, mut f: F)
     where
         F: FnMut(&mut dyn Strategy),
     {
-        if let Some(mut strategy) = self.strategy_mgr.take(strategy_id) {
+        if let Some(mut strategy) = self.strategy_mgr.borrow_mut().take(strategy_id) {
             f(strategy.as_mut());
             if strategy.is_active() {
-                self.strategy_mgr.insert(strategy);
+                self.strategy_mgr.borrow_mut().insert(strategy);
             } else {
                 drop(strategy);
                 self.remove_strategy(strategy_id);
@@ -494,7 +359,7 @@ impl RuntimeContext {
 
     async fn tick(&mut self) {
         let now = get_timestamp_us();
-        self.strategy_mgr.handle_period_clock(now);
+        self.strategy_mgr.borrow_mut().handle_period_clock(now);
         self.cleanup_inactive();
         let instant_now = std::time::Instant::now();
         if instant_now >= self.next_params_refresh {
@@ -792,22 +657,6 @@ struct PreTradeParamsSnap {
     refresh_secs: u64,
 }
 
-fn collect_price_symbols(
-    set: &mut BTreeSet<String>,
-    um_snapshot: &BinanceUmAccountSnapshot,
-    spot_snapshot: &crate::pre_trade::binance_pm_spot_manager::BinanceSpotBalanceSnapshot,
-) {
-    for pos in &um_snapshot.positions {
-        set.insert(pos.symbol.to_uppercase());
-    }
-    for bal in &spot_snapshot.balances {
-        if bal.asset.eq_ignore_ascii_case("USDT") {
-            continue;
-        }
-        set.insert(format!("{}USDT", bal.asset.to_uppercase()));
-    }
-}
-
 fn resolve_order_req_service(cfg: &TradeEngineRespCfg) -> String {
     if let Some(req_service) = cfg.req_service.clone() {
         return req_service;
@@ -818,105 +667,6 @@ fn resolve_order_req_service(cfg: &TradeEngineRespCfg) -> String {
     cfg.service.replace("resps", "reqs")
 }
 
-
-
-fn handle_account_event(ctx: &mut RuntimeContext, evt: AccountEvent) -> Result<()> {
-    if evt.payload.len() < 8 {
-        anyhow::bail!("account payload too short: {} bytes", evt.payload.len());
-    }
-
-    let msg_type = get_account_event_type(&evt.payload);
-    let hdr_len_bytes = u32::from_le_bytes([
-        evt.payload[4],
-        evt.payload[5],
-        evt.payload[6],
-        evt.payload[7],
-    ]) as usize;
-    // debug!(
-    //     "account msg header: service={}, decoded_type={:?}, declared_len={}, evt_meta=({:?},{:?}), first8={:02X?}",
-    //     evt.service,
-    //     msg_type,
-    //     hdr_len_bytes,
-    //     evt.event_type,
-    //     evt.event_time_ms,
-    //     &evt.payload[..8]
-    // );
-    let payload_len = hdr_len_bytes;
-
-    if evt.payload.len() < 8 + payload_len {
-        anyhow::bail!(
-            "account payload truncated: have {} expect {}",
-            evt.payload.len(),
-            8 + payload_len
-        );
-    }
-
-    let data = &evt.payload[8..8 + payload_len];
-
-    match msg_type {
-        AccountEventType::ExecutionReport => {
-            let report = ExecutionReportMsg::from_bytes(data)?;
-            let key = crate::pre_trade::dedup::key_execution_report(&report);
-            if !ctx.dedup.insert_check(key) {
-                // debug!(
-                //     "dedup drop ExecutionReport: symbol={} ord={} trade={} x={} X={}",
-                //     report.symbol, report.order_id, report.trade_id, report.execution_type, report.order_status
-                // );
-                return Ok(());
-            }
-            debug!(
-                "executionReport: sym={} cli_id={} ord_id={} status={}",
-                report.symbol, report.client_order_id, report.order_id, report.order_status
-            );
-            dispatch_execution_report(ctx, &report);
-        }
-        AccountEventType::OrderTradeUpdate => {
-            let update = OrderTradeUpdateMsg::from_bytes(data)?;
-            let key = crate::pre_trade::dedup::key_order_trade_update(&update);
-            if !ctx.dedup.insert_check(key) {
-                // debug!(
-                //     "dedup drop OrderTradeUpdate: symbol={} ord={} trade={} x={} X={}",
-                //     update.symbol, update.order_id, update.trade_id, update.execution_type, update.order_status
-                // );
-                return Ok(());
-            }
-            debug!(
-                "orderTradeUpdate: sym={}, cli_id={}, cli_str='{}', ord_id={}, trade_id={}, side={}, pos_side={}, maker={}, reduce={}, otype={}, tif={}, x={}, X={}, px={}, qty={}, avg_px={}, stop_px={}, last_px={}, last_qty={}, cum_qty={}, fee_amt={}, fee_ccy={}, buy_notional={}, sell_notional={}, realized_pnl={}, times(E/T)={}/{}",
-                update.symbol,
-                update.client_order_id,
-                update.client_order_id_str,
-                update.order_id,
-                update.trade_id,
-                update.side,
-                update.position_side,
-                update.is_maker,
-                update.reduce_only,
-                update.order_type,
-                update.time_in_force,
-                update.execution_type,
-                update.order_status,
-                update.price,
-                update.quantity,
-                update.average_price,
-                update.stop_price,
-                update.last_executed_price,
-                update.last_executed_quantity,
-                update.cumulative_filled_quantity,
-                update.commission_amount,
-                update.commission_asset,
-                update.buy_notional,
-                update.sell_notional,
-                update.realized_profit,
-                update.event_time,
-                update.transaction_time,
-            );
-            dispatch_order_trade_update(ctx, &update);
-        }
-        _ => {}
-    }
-
-    Ok(())
-}
 
 
 fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
@@ -1035,7 +785,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                         signal.generation_time,
                     );
                     ctx.publish_signal_record(&record);
-                    if !ctx.strategy_mgr.contains(strategy_id) {
+                    if !ctx.strategy_mgr.borrow().contains(strategy_id) {
                         return;
                     }
                     ctx.with_strategy_mut(strategy_id, |strategy| {
@@ -1055,7 +805,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                     signal.generation_time,
                 );
                 ctx.publish_signal_record(&record);
-                if !ctx.strategy_mgr.contains(strategy_id) {
+                if !ctx.strategy_mgr.borrow().contains(strategy_id) {
                     return;
                 }
                 ctx.with_strategy_mut(strategy_id, |strategy| {
@@ -1069,109 +819,6 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
     ctx.cleanup_inactive();
 }
 
-
-fn dispatch_execution_report(ctx: &mut RuntimeContext, report: &ExecutionReportMsg) {
-    let order_id = report.client_order_id;
-    let strategy_ids: Vec<i32> = ctx.strategy_mgr.iter_ids().cloned().collect();
-    let mut matched = false;
-    for strategy_id in strategy_ids {
-        ctx.with_strategy_mut(strategy_id, |strategy| {
-            if strategy.is_strategy_order(order_id) {
-                matched = true;
-                match report.execution_type() {
-                    ExecutionType::New | ExecutionType::Canceled => {
-                        strategy.apply_order_update(report);
-                    }
-                    ExecutionType::Trade => {
-                        strategy.apply_trade_update(report);
-                    }
-                    ExecutionType::Expired | ExecutionType::Rejected => {
-                        warn!(
-                            "Unexpected execution type: {:?}, sym={} cli_id={} ord_id={}",
-                            report.execution_type(),
-                            report.symbol,
-                            report.client_order_id,
-                            report.order_id
-                        );
-                        strategy.apply_order_update(report);
-                    }
-                    _ => {
-                        error!(
-                            "Unhandled execution type: {:?}, sym={} cli_id={} ord_id={}",
-                            report.execution_type(),
-                            report.symbol,
-                            report.client_order_id,
-                            report.order_id
-                        );
-                    }
-                }
-            }
-        });
-    }
-
-    if !matched {
-        let expected_strategy_id = (order_id >> 32) as i32;
-        debug!(
-            "executionReport unmatched: sym={} cli_id={} ord_id={} status={} expect_strategy={}",
-            report.symbol,
-            report.client_order_id,
-            report.order_id,
-            report.order_status,
-            expected_strategy_id
-        );
-    }
-    ctx.cleanup_inactive();
-}
-
-fn dispatch_order_trade_update(ctx: &mut RuntimeContext, update: &OrderTradeUpdateMsg) {
-    let order_id: i64 = update.client_order_id;
-    let strategy_ids: Vec<i32> = ctx.strategy_mgr.iter_ids().cloned().collect();
-    let mut matched = false;
-    for strategy_id in strategy_ids {
-        ctx.with_strategy_mut(strategy_id, |strategy| {
-            if strategy.is_strategy_order(order_id) {
-                matched = true;
-                match update.execution_type() {
-                    ExecutionType::New | ExecutionType::Canceled => {
-                        strategy.apply_order_update(update);
-                    }
-                    ExecutionType::Trade => {
-                        strategy.apply_trade_update(update);
-                    }
-                    ExecutionType::Expired | ExecutionType::Rejected => {
-                        warn!(
-                            "Unexpected execution type: {:?}, sym={} cli_id={} ord_id={}",
-                            update.execution_type(),
-                            update.symbol,
-                            update.client_order_id,
-                            update.order_id
-                        );
-                        strategy.apply_order_update(update);
-                    }
-                    _ => {
-                        error!(
-                            "Unhandled execution type: {:?}, sym={} cli_id={} ord_id={}",
-                            update.execution_type(),
-                            update.symbol,
-                            update.client_order_id,
-                            update.order_id
-                        );
-                    }
-                }
-            }
-        });
-    }
-
-    if !matched {
-        debug!(
-            "orderTradeUpdate not matched to any strategy: client_order_id={} client_order_id_str='{}'",
-            order_id,
-            update.client_order_id_str
-        );
-    }
-
-    ctx.cleanup_inactive();
-}
 
 // 删除了基于 JSON 的账户元数据提取逻辑，账户事件采用二进制帧头解析
 fn signal_node_name(channel: &str) -> String {
@@ -1253,69 +900,3 @@ fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
     row
 }
 
-fn spawn_derivatives_worker(price_table: Rc<RefCell<PriceTable>>) -> Result<()> { 
-    let service = DERIVATIVES_SERVICE.to_string(); 
-    let node_name = NODE_PRE_TRADE_DERIVATIVES.to_string(); 
-    tokio::task::spawn_local(async move { 
-        if let Err(err) = derivatives_loop(node_name, service, price_table).await { 
-            error!("derivatives worker exited: {err:?}"); 
-        } 
-    }); 
-    Ok(()) 
-} 
-
-async fn derivatives_loop(
-    node_name: String,
-    service: String,
-    price_table: Rc<RefCell<PriceTable>>,
-) -> Result<()> {
-    let node = NodeBuilder::new()
-        .name(&NodeName::new(&node_name)?)
-        .create::<ipc::Service>()?;
-
-    let service = node
-        .service_builder(&ServiceName::new(&service)?)
-        .publish_subscribe::<[u8; DERIVATIVES_PAYLOAD]>()
-        .open_or_create()?;
-    let subscriber: Subscriber<ipc::Service, [u8; DERIVATIVES_PAYLOAD], ()> =
-        service.subscriber_builder().create()?;
-    info!("derivatives metrics subscribed: service={}", service.name());
-
-    loop {
-        match subscriber.receive() {
-            Ok(Some(sample)) => {
-                let payload = Bytes::copy_from_slice(sample.payload());
-                if payload.is_empty() {
-                    continue;
-                }
-                let Some(msg_type) = get_msg_type(&payload) else {
-                    continue;
-                };
-                match msg_type {
-                    MktMsgType::MarkPrice => match parse_mark_price(&payload) {
-                        Ok(msg) => {
-                            let mut table = price_table.borrow_mut();
-                            table.update_mark_price(&msg.symbol, msg.mark_price, msg.timestamp);
-                        }
-                        Err(err) => warn!("parse mark price failed: {err:?}"),
-                    },
-                    MktMsgType::IndexPrice => match parse_index_price(&payload) {
-                        Ok(msg) => {
-                            let mut table = price_table.borrow_mut();
-                            table.update_index_price(&msg.symbol, msg.index_price, msg.timestamp);
-                        }
-                        Err(err) => warn!("parse index price failed: {err:?}"),
-                    },
-                    _ => {}
-                }
-            }
-            Ok(None) => {
-                tokio::task::yield_now().await;
-            }
-            Err(err) => {
-                warn!("derivatives stream receive error: {err}");
-                tokio::time::sleep(Duration::from_millis(200)).await;
-            }
-        }
-    }
-}

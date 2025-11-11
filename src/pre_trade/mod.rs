@@ -6,7 +6,6 @@ pub mod order_manager;
 pub mod price_table;
 mod runner;
 mod channel;
-mod mkt_info_channel;
 mod persist_channel;
 mod resample_channel;
 mod signal_channel;
