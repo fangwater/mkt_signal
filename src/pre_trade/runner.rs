@@ -114,7 +114,7 @@ impl RuntimeContext {
             strategy_params,
             max_pending_limit_orders: Rc::new(Cell::new(3)),
             min_qty_table,
-            resample_positions_pub,
+            resample_positions_pub·,
             resample_exposure_pub,
             resample_risk_pub,
             signal_record_pub,
@@ -177,20 +177,6 @@ impl RuntimeContext {
         }
     }
 
-    fn get_pre_trade_env(&self) -> Rc<crate::strategy::risk_checker::PreTradeEnv> {
-        let risk_checker = crate::strategy::risk_checker::RiskChecker::new(
-            self.exposure_manager.clone(),
-            self.order_manager.clone(),
-            self.price_table.clone(),
-        );
-
-        Rc::new(crate::strategy::risk_checker::PreTradeEnv::new(
-            self.min_qty_table.clone(),
-            self.order_record_tx.clone(),
-            risk_checker,
-        ))
-    }
-
     async fn tick(&mut self) {
         let now = get_timestamp_us();
         self.strategy_mgr.borrow_mut().handle_period_clock(now);
@@ -202,8 +188,8 @@ impl RuntimeContext {
                 }
                 Err(err) => {
                     warn!("pre_trade params refresh failed: {err:#}");
-                }
-            }
+                } 
+            } 
             self.next_params_refresh =
                 instant_now + std::time::Duration::from_secs(self.params_refresh_secs.max(5));
         }
@@ -504,9 +490,7 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
                 if !ctx.check_pending_limit_order_quota(&symbol) {
                     return;
                 }
-                let strategy_id = StrategyManager::generate_strategy_id();
-                let env = ctx.get_pre_trade_env();
-                let mut strategy = HedgeArbStrategy::new(strategy_id, symbol.clone(), env);
+                let strategy_id = StrategyManager::generate_strategy_id();                let mut strategy = HedgeArbStrategy::new(strategy_id, symbol.clone());
                 strategy.handle_signal(&signal);
                 if strategy.is_active() {
                     ctx.insert_strategy(Box::new(strategy));
@@ -577,10 +561,8 @@ fn handle_trade_signal(ctx: &mut RuntimeContext, signal: TradeSignal) {
 
                     // 平仓本质就是反向开仓，复用 HedgeArbStrategy
                     let strategy_id = StrategyManager::generate_strategy_id();
-                    let env = ctx.get_pre_trade_env();
-
                     let mut strategy =
-                        HedgeArbStrategy::new(strategy_id, opening_symbol.clone(), env);
+                        HedgeArbStrategy::new(strategy_id, opening_symbol.clone());
 
                     strategy.handle_signal(&signal);
 

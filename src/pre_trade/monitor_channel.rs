@@ -21,6 +21,19 @@ const DERIVATIVES_PAYLOAD: usize = 128;
 const DERIVATIVES_SERVICE: &str = "data_pubs/binance-futures/derivatives";
 const NODE_PRE_TRADE_DERIVATIVES: &str = "pre_trade_derivatives";
 
+// ==================== Helper Functions ====================
+
+/// 从交易对中提取基础资产（如 BTCUSDT -> BTC）
+fn extract_base_asset(symbol_upper: &str) -> Option<String> {
+    const QUOTES: [&str; 6] = ["USDT", "BUSD", "USDC", "FDUSD", "BIDR", "TRY"];
+    for quote in QUOTES {
+        if symbol_upper.ends_with(quote) && symbol_upper.len() > quote.len() {
+            return Some(symbol_upper[..symbol_upper.len() - quote.len()].to_string());
+        }
+    }
+    None
+}
+
 // ==================== Deduplication Cache ====================
 
 /// 简单的去重缓存（固定容量，FIFO 淘汰）
@@ -148,27 +161,79 @@ use crate::strategy::order_update::OrderUpdate;
 use bytes::Bytes;
 use std::rc::Rc;
 use std::cell::RefCell;
+use crate::pre_trade::order_manager::OrderManager;
+use std::collections::HashMap;
 
-/// MonitorChannel 负责订阅 Binance PM account monitor service
-/// 集成账户管理器（UM 合约 + Spot 现货），自动初始化并启动监听
-pub struct MonitorChannel {
+
+// Thread-local 单例存储
+thread_local! {
+    static MONITOR_CHANNEL: RefCell<Option<MonitorChannelInner>> = RefCell::new(None);
+}
+
+/// MonitorChannel 单例访问器（零大小类型）
+pub struct MonitorChannel;
+
+/// MonitorChannel 内部实现，包含所有状态
+struct MonitorChannelInner {
     dedup: DedupCache,
     /// 币安 合约资产管理器，基于统一账户 update 更新
-    pub um_manager: Rc<RefCell<BinancePmUmAccountManager>>,
+    um_manager: Rc<RefCell<BinancePmUmAccountManager>>,
     /// 币安 现货资产管理器，基于统一账户 update 更新
-    pub spot_manager: Rc<RefCell<BinancePmSpotAccountManager>>,
+    spot_manager: Rc<RefCell<BinancePmSpotAccountManager>>,
     /// 敞口管理器
-    pub exposure_manager: Rc<RefCell<ExposureManager>>,
+    exposure_manager: Rc<RefCell<ExposureManager>>,
     /// 价格表
-    pub price_table: Rc<RefCell<PriceTable>>,
+    price_table: Rc<RefCell<PriceTable>>,
     /// 交易对最小下单量/步进信息（spot/futures/margin）
-    pub min_qty_table: Rc<MinQtyTable>,
+    min_qty_table: Rc<MinQtyTable>,
     /// 策略管理器
-    pub strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
+    strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
+    /// 订单管理器，所有订单维护在其中，完全成交或者撤单会被移除
+    order_manager: Rc<RefCell<OrderManager>>,
+    /// 对冲残余量哈希表，key=(symbol, venue)，value=残余量
+    hedge_residual_map: Rc<RefCell<HashMap<(String, TradingVenue), f64>>>,
 }
 
 impl MonitorChannel {
-    /// 创建 Binance PM account monitor 实例并启动监听
+    /// 获取全局单例实例
+    pub fn instance() -> Self {
+        MonitorChannel
+    }
+
+    /// 访问内部状态的辅助方法（内部使用）
+    fn with_inner<F, R>(f: F) -> R
+    where
+        F: FnOnce(&MonitorChannelInner) -> R,
+    {
+        MONITOR_CHANNEL.with(|mc| {
+            let mc_ref = mc.borrow();
+            let inner = mc_ref.as_ref().expect("MonitorChannel not initialized");
+            f(inner)
+        })
+    }
+
+    /// 获取 min_qty_table 的引用
+    pub fn min_qty_table(&self) -> Rc<MinQtyTable> {
+        Self::with_inner(|inner| inner.min_qty_table.clone())
+    }
+
+    /// 获取 order_manager 的引用
+    pub fn order_manager(&self) -> Rc<RefCell<OrderManager>> {
+        Self::with_inner(|inner| inner.order_manager.clone())
+    }
+
+    /// 获取 price_table 的引用
+    pub fn price_table(&self) -> Rc<RefCell<PriceTable>> {
+        Self::with_inner(|inner| inner.price_table.clone())
+    }
+
+    /// 获取 strategy_mgr 的引用
+    pub fn strategy_mgr(&self) -> Rc<RefCell<crate::strategy::StrategyManager>> {
+        Self::with_inner(|inner| inner.strategy_mgr.clone())
+    }
+
+
+    /// 创建 Binance PM account monitor 实例并初始化 thread-local 单例
     ///
     /// # 功能
     /// - 从环境变量读取 API 凭证（BINANCE_API_KEY, BINANCE_API_SECRET）
@@ -180,6 +245,7 @@ impl MonitorChannel {
     /// - 订阅 IceOryx 频道: account_pubs/binance_pm
     /// - 启动后台监听任务（账户状态更新在内部直接处理，订单/成交回报发送到 channel）
     /// - 启动衍生品价格监听任务（mark_price, index_price）
+    /// - 将实例保存到 thread-local 单例
     ///
     /// # 参数
     /// - `strategy_mgr`: 策略管理器
@@ -192,9 +258,9 @@ impl MonitorChannel {
     /// # 错误
     /// - API 凭证未设置
     /// - 初始账户快照获取失败
-    pub async fn new_binance_pm_monitor(
+    pub async fn init_singleton(
         strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
-    ) -> Result<Self> {
+    ) -> Result<()> {
         // Read API credentials from environment variables
         let api_key = std::env::var("BINANCE_API_KEY")
             .map_err(|_| anyhow!("BINANCE_API_KEY environment variable not set"))?;
@@ -291,7 +357,8 @@ impl MonitorChannel {
         // 启动衍生品价格监听任务（mark_price, index_price）
         Self::spawn_derivatives_listener(price_table.clone());
 
-        Ok(Self {
+        // 创建内部实例并保存到 thread-local
+        let inner = MonitorChannelInner {
             dedup: DedupCache::new(8192),
             um_manager: um_manager_rc,
             spot_manager: spot_manager_rc,
@@ -299,39 +366,49 @@ impl MonitorChannel {
             price_table,
             min_qty_table,
             strategy_mgr,
-        })
+            order_manager: Rc::new(RefCell::new(OrderManager::new())),
+            hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
+        };
+
+        MONITOR_CHANNEL.with(|mc| {
+            *mc.borrow_mut() = Some(inner);
+        });
+
+        Ok(())
     }
 
 
     // 检查杠杆率是否超过配置阈值
     pub fn check_leverage(&self) -> Result<(), String> {
-        let limit = PreTradeParams::instance().max_leverage();
-        if limit <= 0.0 {
-            return Ok(());
-        }
+        Self::with_inner(|inner| {
+            let limit = PreTradeParams::instance().max_leverage();
+            if limit <= 0.0 {
+                return Ok(());
+            }
 
-        // 获取必要的数据
-        let (total_equity, total_position) = {
-            let exposure_manager = self.exposure_manager.borrow();
-            let total_equity = exposure_manager.total_equity();
-            let total_position = exposure_manager.total_position();
-            (total_equity, total_position)
-        };
+            // 获取必要的数据
+            let (total_equity, total_position) = {
+                let exposure_manager = inner.exposure_manager.borrow();
+                let total_equity = exposure_manager.total_equity();
+                let total_position = exposure_manager.total_position();
+                (total_equity, total_position)
+            };
 
-        if total_equity <= f64::EPSILON {
-            return Err("账户总权益近似为 0，无法计算杠杆率".to_string());
-        }
+            if total_equity <= f64::EPSILON {
+                return Err("账户总权益近似为 0，无法计算杠杆率".to_string());
+            }
 
-        let leverage = total_position / total_equity;
-        if leverage > limit {
-            debug!(
-                "当前杠杆 {:.4} 超过阈值 {:.4} (仓位={:.6}, 权益={:.6})",
-                leverage, limit, total_position, total_equity
-            );
-            return Err(format!("杠杆率 {:.2} 超过限制 {:.2}", leverage, limit));
-        }
+            let leverage = total_position / total_equity;
+            if leverage > limit {
+                debug!(
+                    "当前杠杆 {:.4} 超过阈值 {:.4} (仓位={:.6}, 权益={:.6})",
+                    leverage, limit, total_position, total_equity
+                );
+                return Err(format!("杠杆率 {:.2} 超过限制 {:.2}", leverage, limit));
+            }
 
-        Ok(())
+            Ok(())
+        })
     }
 
     /// 根据交易场所对齐订单量和价格
@@ -343,23 +420,25 @@ impl MonitorChannel {
         raw_qty: f64,
         raw_price: f64,
     ) -> Result<(f64, f64), String> {
-        match venue {
-            TradingVenue::BinanceUm | TradingVenue::BinanceMargin => {
-                TradingVenue::align_um_order(symbol, raw_qty, raw_price, &self.min_qty_table)
+        Self::with_inner(|inner| {
+            match venue {
+                TradingVenue::BinanceUm | TradingVenue::BinanceMargin => {
+                    TradingVenue::align_um_order(symbol, raw_qty, raw_price, &inner.min_qty_table)
+                }
+                TradingVenue::BinanceSwap => {
+                    // TODO: 实现 BinanceSwap 的对齐逻辑
+                    Err(format!("尚未实现 BinanceSwap 的订单对齐"))
+                }
+                TradingVenue::BinanceSpot => {
+                    // TODO: 实现 BinanceSpot 的对齐逻辑
+                    Err(format!("尚未实现 BinanceSpot 的订单对齐"))
+                }
+                TradingVenue::OkexSwap | TradingVenue::OkexSpot => {
+                    // TODO: 实现 Okex 的对齐逻辑
+                    Err(format!("尚未实现 Okex 的订单对齐"))
+                }
             }
-            TradingVenue::BinanceSwap => {
-                // TODO: 实现 BinanceSwap 的对齐逻辑
-                Err(format!("尚未实现 BinanceSwap 的订单对齐"))
-            }
-            TradingVenue::BinanceSpot => {
-                // TODO: 实现 BinanceSpot 的对齐逻辑
-                Err(format!("尚未实现 BinanceSpot 的订单对齐"))
-            }
-            TradingVenue::OkexSwap | TradingVenue::OkexSpot => {
-                // TODO: 实现 Okex 的对齐逻辑
-                Err(format!("尚未实现 Okex 的订单对齐"))
-            }
-        }
+        })
     }
 
     /// 检查交易量是否满足最小要求
@@ -371,57 +450,59 @@ impl MonitorChannel {
         qty: f64,
         price_hint: Option<f64>,
     ) -> Result<(), String> {
-        // 1. 检查最小下单量
-        let min_qty = match venue {
-            TradingVenue::BinanceUm => self.min_qty_table.futures_um_min_qty_by_symbol(symbol),
-            TradingVenue::BinanceMargin => self.min_qty_table.margin_min_qty_by_symbol(symbol),
-            TradingVenue::BinanceSpot | TradingVenue::OkexSpot => {
-                self.min_qty_table.spot_min_qty_by_symbol(symbol)
-            }
-            TradingVenue::BinanceSwap | TradingVenue::OkexSwap => {
-                // TODO: 根据实际情况添加 swap 的最小量获取
-                None
-            }
-        }
-        .unwrap_or(0.0);
-
-        if min_qty > 0.0 && qty + 1e-12 < min_qty {
-            return Err(format!("交易量 {:.8} 小于最小下单量 {:.8}", qty, min_qty));
-        }
-
-        // 2. 检查最小名义金额（仅对 UM 合约）
-        if venue == TradingVenue::BinanceUm {
-            let min_notional = self
-                .min_qty_table
-                .futures_um_min_notional_by_symbol(symbol)
-                .unwrap_or(0.0);
-
-            if min_notional > 0.0 {
-                // 如果没有提供价格提示，尝试从价格表获取
-                let price = if let Some(p) = price_hint {
-                    p
-                } else {
-                    self.price_table
-                        .borrow()
-                        .mark_price(symbol)
-                        .unwrap_or(0.0)
-                };
-
-                if price <= 0.0 {
-                    return Err(format!("缺少 {} 的价格信息，无法验证名义金额", symbol));
+        Self::with_inner(|inner| {
+            // 1. 检查最小下单量
+            let min_qty = match venue {
+                TradingVenue::BinanceUm => inner.min_qty_table.futures_um_min_qty_by_symbol(symbol),
+                TradingVenue::BinanceMargin => inner.min_qty_table.margin_min_qty_by_symbol(symbol),
+                TradingVenue::BinanceSpot | TradingVenue::OkexSpot => {
+                    inner.min_qty_table.spot_min_qty_by_symbol(symbol)
                 }
-
-                let notional = price * qty;
-                if notional + 1e-8 < min_notional {
-                    return Err(format!(
-                        "名义金额 {:.8} 低于最小要求 {:.8} (价格={:.8} 数量={:.8})",
-                        notional, min_notional, price, qty
-                    ));
+                TradingVenue::BinanceSwap | TradingVenue::OkexSwap => {
+                    // TODO: 根据实际情况添加 swap 的最小量获取
+                    None
                 }
             }
-        }
+            .unwrap_or(0.0);
 
-        Ok(())
+            if min_qty > 0.0 && qty + 1e-12 < min_qty {
+                return Err(format!("交易量 {:.8} 小于最小下单量 {:.8}", qty, min_qty));
+            }
+
+            // 2. 检查最小名义金额（仅对 UM 合约）
+            if venue == TradingVenue::BinanceUm {
+                let min_notional = inner
+                    .min_qty_table
+                    .futures_um_min_notional_by_symbol(symbol)
+                    .unwrap_or(0.0);
+
+                if min_notional > 0.0 {
+                    // 如果没有提供价格提示，尝试从价格表获取
+                    let price = if let Some(p) = price_hint {
+                        p
+                    } else {
+                        inner.price_table
+                            .borrow()
+                            .mark_price(symbol)
+                            .unwrap_or(0.0)
+                    };
+
+                    if price <= 0.0 {
+                        return Err(format!("缺少 {} 的价格信息，无法验证名义金额", symbol));
+                    }
+
+                    let notional = price * qty;
+                    if notional + 1e-8 < min_notional {
+                        return Err(format!(
+                            "名义金额 {:.8} 低于最小要求 {:.8} (价格={:.8} 数量={:.8})",
+                            notional, min_notional, price, qty
+                        ));
+                    }
+                }
+            }
+
+            Ok(())
+        })
     }
 
 
@@ -590,49 +671,326 @@ impl MonitorChannel {
             }
         });
     }
-}
+    // ==================== 风控方法（从 RiskChecker 迁移） ====================
 
-// ==================== Helper Functions ====================
+    /// 检查当前 symbol 的限价挂单数量
+    pub fn check_pending_limit_order(&self, symbol: &str) -> Result<(), String> {
+        Self::with_inner(|inner| {
+            let max_pending_limit_orders = PreTradeParams::instance().max_pending_limit_orders();
+            if max_pending_limit_orders <= 0 {
+                return Ok(());
+            }
 
-/// 刷新敞口：重新计算并打印敞口信息
-fn refresh_exposures(
-    um_manager: &Rc<RefCell<BinancePmUmAccountManager>>,
-    spot_manager: &Rc<RefCell<BinancePmSpotAccountManager>>,
-    exposure_manager: &Rc<RefCell<ExposureManager>>,
-    price_table: &Rc<RefCell<PriceTable>>,
-) {
-    let spot_snapshot = spot_manager.borrow().snapshot();
-    let um_snapshot = um_manager.borrow().snapshot();
+            let symbol_upper = symbol.to_uppercase();
+            let count = inner
+                .order_manager
+                .borrow()
+                .get_symbol_pending_limit_order_count(&symbol_upper);
 
-    let (Some(spot_snapshot), Some(um_snapshot)) = (spot_snapshot, um_snapshot) else {
-        return;
-    };
+            if count >= max_pending_limit_orders {
+                return Err(format!(
+                    "symbol={} 当前限价挂单数={}，达到上限 {}",
+                    symbol,
+                    count,
+                    max_pending_limit_orders
+                ));
+            }
 
-    let positions_changed = exposure_manager
-        .borrow_mut()
-        .recompute(&um_snapshot, &spot_snapshot);
-
-    // 结合最新标记价格，估值并打印三线表（USDT 计价的敞口），便于核对
-    if let Ok(table) = price_table.try_borrow() {
-        let price_snap = table.snapshot();
-        {
-            let mut mgr = exposure_manager.borrow_mut();
-            mgr.revalue_with_prices(&price_snap);
-        }
-        if positions_changed {
-            let exposures = exposure_manager.borrow();
-            log_exposures(exposures.exposures(), &price_snap);
-            log_exposure_summary(
-                exposures.total_equity(),
-                exposures.total_abs_exposure(),
-                exposures.total_position(),
-            );
-        }
+            Ok(())
+        })
     }
-}
 
-impl MonitorChannel {
-    /// 启动衍生品价格监听任务（mark_price, index_price）
+    /// 检查当前symbol的敞口是否超过总资产比例限制
+    pub fn check_symbol_exposure(&self, symbol: &str) -> Result<(), String> {
+        Self::with_inner(|inner| {
+            let limit = PreTradeParams::instance().max_symbol_exposure_ratio();
+            if limit <= 0.0 {
+                return Ok(());
+            }
+
+            let symbol_upper = symbol.to_uppercase();
+            let Some(base_asset) = extract_base_asset(&symbol_upper) else {
+                return Err(format!(
+                    "无法识别 symbol={} 的基础资产，无法校验敞口比例",
+                    symbol
+                ));
+            };
+
+            let (entry, total_equity) = {
+                let exposure_manager = inner.exposure_manager.borrow();
+                let entry = exposure_manager.exposure_for_asset(&base_asset).cloned();
+                let total_equity = exposure_manager.total_equity();
+                (entry, total_equity)
+            };
+
+            let Some(entry) = entry else {
+                return Err(format!(
+                    "无法获取资产 {} 的敞口信息，无法校验敞口比例",
+                    base_asset
+                ));
+            };
+            
+            if total_equity <= f64::EPSILON {
+                return Err(format!(
+                    "symbol={} 敞口比例超过限制 {}",
+                    symbol, limit
+                ));
+            }
+
+            let mark = if base_asset.eq_ignore_ascii_case("USDT") {
+                1.0
+            } else {
+                let sym = format!("{}USDT", base_asset);
+                let snap = inner.price_table.borrow().snapshot();
+                snap.get(&sym).map(|e| e.mark_price).unwrap_or(0.0)
+            };
+
+            let net_exposure = entry.spot_total_wallet + entry.um_net_position;
+            let exposure_usdt = if mark > 0.0 { net_exposure * mark } else { 0.0 };
+
+            if mark == 0.0 && net_exposure != 0.0 {
+                let ratio = net_exposure.abs() / total_equity;
+                if ratio > limit {
+                    debug!(
+                        "资产 {} 敞口占比(数量) {:.4}% 超过阈值 {:.2}% (敞口qty={:.6}, 权益={:.6})",
+                        base_asset,
+                        ratio * 100.0,
+                        limit * 100.0,
+                        net_exposure,
+                        total_equity
+                    );
+                    return Err(format!(
+                        "symbol={} 敞口比例超过限制 {}",
+                        symbol, limit
+                    ));
+                }
+                return Ok(());
+            }
+
+            let ratio = exposure_usdt.abs() / total_equity;
+            if ratio > limit {
+                debug!(
+                    "资产 {} 敞口占比 {:.4}% 超过阈值 {:.2}% (敞口USDT={:.6}, 权益={:.6})",
+                    base_asset,
+                    ratio * 100.0,
+                    limit * 100.0,
+                    exposure_usdt,
+                    total_equity
+                );
+                return Err(format!(
+                    "symbol={} 敞口比例超过限制 {}",
+                    symbol, limit
+                ));
+            }
+            
+            Ok(())
+        })
+    }
+
+    /// 检查总敞口是否超过配置阈值
+    pub fn check_total_exposure(&self) -> Result<(), String> {
+        Self::with_inner(|inner| {
+            let limit = PreTradeParams::instance().max_total_exposure_ratio();
+            if limit <= 0.0 {
+                return Ok(());
+            }
+
+            let (total_equity, exposures) = {
+                let exposure_manager = inner.exposure_manager.borrow();
+                let total_equity = exposure_manager.total_equity();
+                let exposures = exposure_manager.exposures().to_vec();
+                (total_equity, exposures)
+            };
+
+            if total_equity <= f64::EPSILON {
+                return Err("账户总权益近似为 0，无法计算总敞口占比".to_string());
+            }
+
+            let snap = inner.price_table.borrow().snapshot();
+            let mut abs_total_usdt = 0.0_f64;
+
+            for e in exposures.iter() {
+                let asset = e.asset.to_uppercase();
+                if asset == "USDT" {
+                    continue;
+                }
+                let sym = format!("{}USDT", asset);
+                let mark = snap.get(&sym).map(|p| p.mark_price).unwrap_or(0.0);
+                let exposure_usdt = (e.spot_total_wallet + e.um_net_position) * mark;
+                abs_total_usdt += exposure_usdt.abs();
+            }
+
+            let ratio = abs_total_usdt / total_equity;
+            if ratio > limit {
+                debug!(
+                    "总敞口占比 {:.4}% 超过阈值 {:.2}% (总敞口USDT={:.6}, 权益={:.6})",
+                    ratio * 100.0,
+                    limit * 100.0,
+                    abs_total_usdt,
+                    total_equity
+                );
+                return Err(format!(
+                    "总敞口比例 {:.2}% 超过限制 {:.2}%",
+                    ratio * 100.0,
+                    limit * 100.0
+                ));
+            }
+
+            Ok(())
+        })
+    }
+
+    /// 检查最大持仓限制
+    pub fn ensure_max_pos_u(
+        &self,
+        symbol: &str,
+        additional_qty: f64,
+        price_hint: f64,
+    ) -> Result<(), String> {
+        Self::with_inner(|inner| {
+            let max_pos_u = PreTradeParams::instance().max_pos_u();
+            if !(max_pos_u > 0.0) {
+                panic!("max_pos_u not set!!");
+            }
+            
+            let symbol_upper = symbol.to_uppercase();
+            let base_asset = extract_base_asset(&symbol_upper)
+                .ok_or_else(|| format!("无法识别 symbol={} 的基础资产，无法校验 max_pos_u", symbol))?;
+            
+            let current_spot_qty = {
+                let exposure_manager = inner.exposure_manager.borrow();
+                exposure_manager
+                    .exposure_for_asset(&base_asset)
+                    .map(|entry| entry.spot_total_wallet)
+                    .unwrap_or(0.0)
+            };
+
+            let base_upper = base_asset.to_uppercase();
+            let mark_symbol = format!("{}USDT", base_upper);
+            let price_from_table = {
+                let table = inner.price_table.borrow();
+                table.mark_price(&mark_symbol)
+            };
+            let price = price_from_table.or_else(|| {
+                if price_hint > 0.0 {
+                    Some(price_hint)
+                } else {
+                    None
+                }
+            });
+
+            let Some(price) = price else {
+                warn!("symbol={} 缺少 USDT 标记价格，无法校验 max_pos_u", symbol);
+                return Err(format!(
+                    "symbol={} 缺少价格信息，无法校验 max_pos_u",
+                    symbol
+                ));
+            };
+
+            let projected_qty = current_spot_qty + additional_qty;
+            let current_usdt = current_spot_qty.abs() * price;
+            let order_usdt = additional_qty.abs() * price;
+            let projected_usdt = projected_qty.abs() * price;
+            let limit_eps = 1e-6_f64;
+
+            if projected_usdt > max_pos_u + limit_eps {
+                warn!(
+                    "symbol={} 当前现货={:.6}({:.4}USDT) 下单数量={:.6}({:.4}USDT) 预计现货={:.4}USDT 超过阈值 {:.4}USDT",
+                    symbol,
+                    current_spot_qty,
+                    current_usdt,
+                    additional_qty,
+                    order_usdt,
+                    projected_usdt,
+                    max_pos_u
+                );
+                return Err(format!(
+                    "symbol={} 预计现货持仓 {:.4}USDT 超过阈值 {:.4}USDT",
+                    symbol, projected_usdt, max_pos_u
+                ));
+            }
+            
+            Ok(())
+        })
+    }
+
+    // ==================== 对冲残余量管理方法 ====================
+
+    /// 增加对冲残余量
+    pub fn inc_hedge_residual(&self, symbol: String, venue: TradingVenue, delta: f64) {
+        Self::with_inner(|inner| {
+            if delta <= 1e-12 {
+                return;
+            }
+            let mut map = inner.hedge_residual_map.borrow_mut();
+            let key = (symbol.to_uppercase(), venue);
+            let current = map.get(&key).copied().unwrap_or(0.0);
+            let new_value = current + delta;
+            map.insert(key.clone(), new_value);
+            debug!(
+                "对冲残余量增加: symbol={} venue={:?} delta={:.8} 当前值={:.8} -> {:.8}",
+                key.0, venue, delta, current, new_value
+            );
+        })
+    }
+
+    /// 减少对冲残余量
+    pub fn dec_hedge_residual(&self, symbol: String, venue: TradingVenue, delta: f64) -> f64 {
+        Self::with_inner(|inner| {
+            if delta <= 1e-12 {
+                return 0.0;
+            }
+            let mut map = inner.hedge_residual_map.borrow_mut();
+            let key = (symbol.to_uppercase(), venue);
+            let current = map.get(&key).copied().unwrap_or(0.0);
+            let actual_dec = delta.min(current);
+            let new_value = (current - actual_dec).max(0.0);
+
+            if new_value <= 1e-12 {
+                map.remove(&key);
+                debug!(
+                    "对冲残余量清零: symbol={} venue={:?} 原值={:.8} 减少={:.8}",
+                    key.0, venue, current, actual_dec
+                );
+            } else {
+                map.insert(key.clone(), new_value);
+                debug!(
+                    "对冲残余量减少: symbol={} venue={:?} delta={:.8} 当前值={:.8} -> {:.8}",
+                    key.0, venue, actual_dec, current, new_value
+                );
+            }
+
+            actual_dec
+        })
+    }
+
+    /// 查询对冲残余量
+    pub fn get_hedge_residual(&self, symbol: &str, venue: TradingVenue) -> f64 {
+        Self::with_inner(|inner| {
+            let map = inner.hedge_residual_map.borrow();
+            let key = (symbol.to_uppercase(), venue);
+            map.get(&key).copied().unwrap_or(0.0)
+        })
+    }
+
+    /// 清除指定 symbol 和 venue 的对冲残余量
+    pub fn clear_hedge_residual(&self, symbol: &str, venue: TradingVenue) -> f64 {
+        Self::with_inner(|inner| {
+            let mut map = inner.hedge_residual_map.borrow_mut();
+            let key = (symbol.to_uppercase(), venue);
+            let removed = map.remove(&key).unwrap_or(0.0);
+            if removed > 1e-12 {
+                debug!(
+                    "对冲残余量清除: symbol={} venue={:?} 清除量={:.8}",
+                    key.0, venue, removed
+                );
+            }
+            removed
+        })
+    }
+
+    // ==================== 内部辅助方法 ====================
+
     fn spawn_derivatives_listener(price_table: Rc<RefCell<PriceTable>>) {
         tokio::task::spawn_local(async move {
             let result: Result<()> = async move {
@@ -694,47 +1052,47 @@ impl MonitorChannel {
             }
         });
     }
+}
 
-    /// 查询指定 symbol 在指定 venue 的头寸数量（带符号）
-    /// 正数表示多头，负数表示空头
-    fn get_position_qty(&self, symbol: &str, venue: u8) -> f64 {
-        use crate::signal::common::TradingVenue;
+// ==================== Helper Functions ====================
 
-        let Some(trading_venue) = TradingVenue::from_u8(venue) else {
-            return 0.0;
-        };
+/// 刷新敞口：重新计算并打印敞口信息
+fn refresh_exposures(
+    um_manager: &Rc<RefCell<BinancePmUmAccountManager>>,
+    spot_manager: &Rc<RefCell<BinancePmSpotAccountManager>>,
+    exposure_manager: &Rc<RefCell<ExposureManager>>,
+    price_table: &Rc<RefCell<PriceTable>>,
+) {
+    let spot_snapshot = spot_manager.borrow().snapshot();
+    let um_snapshot = um_manager.borrow().snapshot();
 
-        match trading_venue {
-            TradingVenue::BinanceUm => {
-                // 查询合约头寸（带符号）
-                if let Some(snapshot) = self.um_manager.borrow().snapshot() {
-                    snapshot
-                        .positions
-                        .iter()
-                        .find(|p| p.symbol.eq_ignore_ascii_case(symbol))
-                        .map(|p| p.position_amt)
-                        .unwrap_or(0.0)
-                } else {
-                    0.0
-                }
-            }
-            TradingVenue::BinanceMargin => {
-                // 查询现货全仓杠杆头寸（带符号）
-                if let Some(snapshot) = self.spot_manager.borrow().snapshot() {
-                    snapshot
-                        .balances
-                        .iter()
-                        .find(|b| b.asset.eq_ignore_ascii_case(symbol))
-                        .map(|b| b.net_asset())
-                        .unwrap_or(0.0)
-                } else {
-                    0.0
-                }
-            }
-            _ => 0.0,
+    let (Some(spot_snapshot), Some(um_snapshot)) = (spot_snapshot, um_snapshot) else {
+        return;
+    };
+
+    let positions_changed = exposure_manager
+        .borrow_mut()
+        .recompute(&um_snapshot, &spot_snapshot);
+
+    // 结合最新标记价格，估值并打印三线表（USDT 计价的敞口），便于核对
+    if let Ok(table) = price_table.try_borrow() {
+        let price_snap = table.snapshot();
+        {
+            let mut mgr = exposure_manager.borrow_mut();
+            mgr.revalue_with_prices(&price_snap);
+        }
+        if positions_changed {
+            let exposures = exposure_manager.borrow();
+            log_exposures(exposures.exposures(), &price_snap);
+            log_exposure_summary(
+                exposures.total_equity(),
+                exposures.total_abs_exposure(),
+                exposures.total_position(),
+            );
         }
     }
 }
+
 
 fn log_um_positions(positions: &[BinanceUmPosition]) {
     if positions.is_empty() {
@@ -1073,3 +1431,4 @@ fn dispatch_order_trade_update(
         );
     }
 }
+
