@@ -266,7 +266,6 @@ impl RuntimeContext {
         Rc::new(crate::strategy::risk_checker::PreTradeEnv::new(
             self.min_qty_table.clone(),
             Some(self.signal_tx.clone()),
-            None, // signal_query_tx 暂时不需要
             self.order_record_tx.clone(),
             risk_checker,
         ))

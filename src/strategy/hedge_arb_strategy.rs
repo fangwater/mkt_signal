@@ -1,6 +1,6 @@
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderType, Side};
-use crate::pre_trade::PersistChannel;
+use crate::pre_trade::{PersistChannel, SignalChannel};
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::hedge_signal::ArbHedgeCtx;
@@ -721,26 +721,32 @@ impl HedgeArbStrategy {
             venue.to_u8(),
         );
 
-        // 2. 发送查询到 signal_query_tx
-        if let Some(ref signal_query_tx) = self.pre_trade_env.signal_query_tx {
-            if let Err(e) = signal_query_tx.send(query_msg.to_bytes()) {
+        // 2. 通过 SignalChannel 直接发送到上游
+        let send_result = SignalChannel::with(|ch| {
+            ch.publish_backward(&query_msg.to_bytes())
+        });
+
+        match send_result {
+            Ok(true) => {
+                debug!(
+                    "HedgeArbStrategy: strategy_id={} 发送对冲查询成功 venue={:?} side={:?} qty={:.8}",
+                    self.strategy_id, venue, side, eff_qty
+                );
+            }
+            Ok(false) => {
+                warn!(
+                    "HedgeArbStrategy: strategy_id={} backward publisher 未配置，无法发送对冲查询",
+                    self.strategy_id
+                );
+                return Err("backward publisher 未配置".to_string());
+            }
+            Err(e) => {
                 error!(
                     "HedgeArbStrategy: strategy_id={} 发送对冲查询失败: {}",
                     self.strategy_id, e
                 );
                 return Err(format!("发送对冲查询失败: {}", e));
             }
-
-            debug!(
-                "HedgeArbStrategy: strategy_id={} 发送对冲查询成功 venue={:?} side={:?} qty={:.8}",
-                self.strategy_id, venue, side, eff_qty
-            );
-        } else {
-            warn!(
-                "HedgeArbStrategy: strategy_id={} signal_query_tx 未配置，无法发送对冲查询",
-                self.strategy_id
-            );
-            return Err("signal_query_tx 未配置".to_string());
         }
 
         Ok(())
