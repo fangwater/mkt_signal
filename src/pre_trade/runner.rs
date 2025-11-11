@@ -3,17 +3,7 @@ use crate::common::iceoryx_publisher::{
 };
 use crate::common::min_qty_table::MinQtyTable;
 use crate::common::time_util::get_timestamp_us;
-use crate::pre_trade::binance_pm_spot_manager::{BinancePmSpotAccountManager, BinanceSpotBalance};
-use crate::pre_trade::binance_pm_um_manager::{
-    BinancePmUmAccountManager, BinanceUmAccountSnapshot, BinanceUmPosition,
-};
-use crate::pre_trade::config::{
-    AccountStreamCfg, PreTradeCfg, SignalSubscriptionsCfg, StrategyParamsCfg, TradeEngineRespCfg,
-};
-use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
-use crate::pre_trade::price_table::{PriceEntry, PriceTable};
 use crate::signal::cancel_signal::ArbCancelCtx;
-use crate::signal::channels::SIGNAL_CHANNEL_MM_ARBITRAGE_BACKWARD;
 use crate::signal::common::SignalBytes;
 use crate::strategy::hedge_arb_strategy::HedgeArbStrategy;
 use crate::signal::hedge_signal::ArbHedgeCtx;
@@ -25,14 +15,10 @@ use crate::signal::resample::{
 
 };
 use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::{Strategy, StrategyManager};
-use crate::trade_engine::trade_response_handle::TradeExecOutcome;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
-use iceoryx2::prelude::*;
-use iceoryx2::service::ipc;
 use log::{debug, error, info, warn};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
@@ -54,20 +40,8 @@ impl PreTrade {
 
     pub async fn run(self) -> Result<()> {
         info!("pre_trade starting");
-        let bootstrap = BootstrapResources::load(&self.cfg).await?;
         // 初始化策略参数从 Redis
         let strategy_params = StrategyParamsCfg::default();
-        let signal_record_pub = match SignalPublisher::new(PRE_TRADE_SIGNAL_RECORD_CHANNEL) {
-            Ok(p) => Some(p),
-            Err(err) => {
-                warn!(
-                    "failed to create pre_trade signal record publisher on {}: {err:#}",
-                    PRE_TRADE_SIGNAL_RECORD_CHANNEL
-                );
-                None
-            }
-        };
-
         let mut runtime = RuntimeContext::new(
             bootstrap,
             order_record_tx.clone(),
@@ -152,17 +126,6 @@ impl RuntimeContext {
         strategy_params: StrategyParamsCfg,
         signal_record_pub: Option<SignalPublisher>,
     ) -> Self {
-        let BootstrapResources {
-            um_manager,
-            spot_manager,
-            exposure_manager,
-            price_table,
-            min_qty_table,
-            order_req_service: _,
-        } = bootstrap;
-
-        let exposure_manager_rc = Rc::new(RefCell::new(exposure_manager));
-
 
         Self {
             spot_manager,

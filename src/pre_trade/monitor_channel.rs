@@ -140,12 +140,13 @@ pub fn key_order_trade_update(msg: &OrderTradeUpdateMsg) -> u64 {
 
 // ==================== Monitor Channel ====================
 
-use crate::pre_trade::exposure_manager::ExposureManager;
+use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
 use crate::pre_trade::binance_pm_um_manager::BinanceUmAccountSnapshot;
 use crate::pre_trade::binance_pm_spot_manager::BinanceSpotBalanceSnapshot;
 use crate::common::min_qty_table::MinQtyTable;
 use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
+use crate::strategy::order_update::OrderUpdate;
 use bytes::Bytes;
 use std::rc::Rc;
 use std::cell::RefCell;
@@ -379,7 +380,7 @@ impl MonitorChannel {
                             match msg_type {
                                 // 账户状态更新：直接处理，不发送到 channel
                                 AccountEventType::AccountPosition => {
-                                    if let Ok(msg) = AccountPositionMsg::from_bytes(bytes::Bytes::copy_from_slice(data)) {
+                                    if let Ok(msg) = AccountPositionMsg::from_bytes(data) {
                                         let key = key_account_position(&msg);
                                         if !dedup.insert_check(key) {
                                             continue;
@@ -394,7 +395,7 @@ impl MonitorChannel {
                                     }
                                 }
                                 AccountEventType::BalanceUpdate => {
-                                    if let Ok(msg) = BalanceUpdateMsg::from_bytes(bytes::Bytes::copy_from_slice(data)) {
+                                    if let Ok(msg) = BalanceUpdateMsg::from_bytes(data) {
                                         let key = key_balance_update(&msg);
                                         if !dedup.insert_check(key) {
                                             continue;
@@ -404,7 +405,7 @@ impl MonitorChannel {
                                     }
                                 }
                                 AccountEventType::AccountUpdateBalance => {
-                                    if let Ok(msg) = AccountUpdateBalanceMsg::from_bytes(bytes::Bytes::copy_from_slice(data)) {
+                                    if let Ok(msg) = AccountUpdateBalanceMsg::from_bytes(data) {
                                         if msg.business_unit.eq_ignore_ascii_case("UM") {
                                             spot_manager.borrow_mut().apply_um_wallet_snapshot(
                                                 &msg.asset,
@@ -423,7 +424,7 @@ impl MonitorChannel {
                                     }
                                 }
                                 AccountEventType::AccountUpdatePosition => {
-                                    if let Ok(msg) = AccountUpdatePositionMsg::from_bytes(bytes::Bytes::copy_from_slice(data)) {
+                                    if let Ok(msg) = AccountUpdatePositionMsg::from_bytes(data) {
                                         um_manager.borrow_mut().apply_position_update(
                                             &msg.symbol,
                                             msg.position_side,
@@ -436,7 +437,7 @@ impl MonitorChannel {
                                     }
                                 }
                                 AccountEventType::AccountUpdateFlush => {
-                                    if let Ok(msg) = AccountUpdateFlushMsg::from_bytes(bytes::Bytes::copy_from_slice(data)) {
+                                    if let Ok(msg) = AccountUpdateFlushMsg::from_bytes(data) {
                                         let key = key_account_update_flush(&msg);
                                         if !dedup.insert_check(key) {
                                             continue;
@@ -446,7 +447,7 @@ impl MonitorChannel {
                                 }
                                 // ExecutionReport 和 OrderTradeUpdate：直接处理
                                 AccountEventType::ExecutionReport => {
-                                    if let Ok(report) = ExecutionReportMsg::from_bytes(bytes::Bytes::copy_from_slice(data)) {
+                                    if let Ok(report) = ExecutionReportMsg::from_bytes(data) {
                                         let key = key_execution_report(&report);
                                         if !dedup.insert_check(key) {
                                             continue;
@@ -459,7 +460,7 @@ impl MonitorChannel {
                                     }
                                 }
                                 AccountEventType::OrderTradeUpdate => {
-                                    if let Ok(update) = OrderTradeUpdateMsg::from_bytes(bytes::Bytes::copy_from_slice(data)) {
+                                    if let Ok(update) = OrderTradeUpdateMsg::from_bytes(data) {
                                         let key = key_order_trade_update(&update);
                                         if !dedup.insert_check(key) {
                                             continue;
@@ -475,6 +476,9 @@ impl MonitorChannel {
                                         );
                                         dispatch_order_trade_update(&strategy_mgr, &update);
                                     }
+                                }
+                                _=>{
+                                    
                                 }
                             }
                         }
@@ -540,7 +544,7 @@ impl MonitorChannel {
     /// 启动衍生品价格监听任务（mark_price, index_price）
     fn spawn_derivatives_listener(price_table: Rc<RefCell<PriceTable>>) {
         tokio::task::spawn_local(async move {
-            let result = async move {
+            let result: Result<()> = async move {
                 let node = NodeBuilder::new()
                     .name(&NodeName::new(NODE_PRE_TRADE_DERIVATIVES)?)
                     .create::<ipc::Service>()?;
@@ -837,10 +841,10 @@ fn dispatch_execution_report(
                 matched = true;
                 match report.execution_type() {
                     ExecutionType::New | ExecutionType::Canceled => {
-                        strategy.apply_order_update(report);
+                        strategy.apply_order_update_with_record(report, None);
                     }
                     ExecutionType::Trade => {
-                        strategy.apply_trade_update(report);
+                        strategy.apply_trade_update_with_record(report, None);
                     }
                     ExecutionType::Expired | ExecutionType::Rejected => {
                         warn!(
@@ -850,7 +854,7 @@ fn dispatch_execution_report(
                             report.client_order_id,
                             report.order_id
                         );
-                        strategy.apply_order_update(report);
+                        strategy.apply_order_update_with_record(report, None);
                     }
                     _ => {
                         log::error!(
@@ -898,10 +902,10 @@ fn dispatch_order_trade_update(
                 matched = true;
                 match update.execution_type() {
                     ExecutionType::New | ExecutionType::Canceled => {
-                        strategy.apply_order_update(update);
+                        strategy.apply_order_update_with_record(update, None);
                     }
                     ExecutionType::Trade => {
-                        strategy.apply_trade_update(update);
+                        strategy.apply_trade_update_with_record(update, None);
                     }
                     ExecutionType::Expired | ExecutionType::Rejected => {
                         warn!(
@@ -911,7 +915,7 @@ fn dispatch_order_trade_update(
                             update.client_order_id,
                             update.order_id
                         );
-                        strategy.apply_order_update(update);
+                        strategy.apply_order_update_with_record(update, None);
                     }
                     _ => {
                         log::error!(

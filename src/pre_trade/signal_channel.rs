@@ -1,10 +1,5 @@
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::min_qty_table::MinQtyTable;
-use crate::pre_trade::binance_pm_spot_manager::BinancePmSpotAccountManager;
-use crate::pre_trade::binance_pm_um_manager::BinancePmUmAccountManager;
-use crate::pre_trade::config::StrategyParamsCfg;
-use crate::pre_trade::exposure_manager::ExposureManager;
-use crate::pre_trade::order_manager::OrderManager;
 use crate::pre_trade::price_table::PriceTable;
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::hedge_signal::ArbHedgeCtx;
@@ -21,30 +16,12 @@ use log::{debug, info, warn};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 /// 信号频道 - 负责信号进程和 pre-trade 之间的通讯
 pub struct SignalChannel {
     /// 反向发布器：用于向上游信号进程发送查询或反馈
     backward_pub: Option<SignalPublisher>,
-    /// 策略管理器
-    strategy_mgr: Rc<RefCell<StrategyManager>>,
-    /// 订单管理器
-    order_manager: Rc<RefCell<OrderManager>>,
-    /// UM账户管理器
-    um_manager: Rc<RefCell<BinancePmUmAccountManager>>,
-    /// 现货账户管理器
-    spot_manager: Rc<RefCell<BinancePmSpotAccountManager>>,
-    /// 敞口管理器
-    exposure_manager: Rc<RefCell<ExposureManager>>,
-    /// 价格表
-    price_table: Rc<RefCell<PriceTable>>,
-    /// 最小数量表
-    min_qty_table: Rc<MinQtyTable>,
-    /// 策略参数
-    strategy_params: Rc<RefCell<StrategyParamsCfg>>,
-    /// 最大挂单限制
-    max_pending_limit_orders: Rc<Cell<i32>>,
     /// 订单记录发送器
     order_record_tx: UnboundedSender<Bytes>,
     /// 信号发送器
@@ -53,7 +30,7 @@ pub struct SignalChannel {
 
 impl SignalChannel {
     /// 创建信号频道并自动启动监听器
-    ///
+    /// 
     /// # 参数
     /// * `channel_name` - 要订阅的信号频道名称
     /// * `backward_channel` - 反向通道名称，用于向上游发送信号（可选）
