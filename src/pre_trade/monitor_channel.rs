@@ -322,7 +322,7 @@ impl MonitorChannel {
             let service_name_for_error = service_name.clone();
             let mut dedup = DedupCache::new(8192);
 
-            let result = async move {
+            let result: Result<()> = async move {
                 let node = NodeBuilder::new()
                     .name(&NodeName::new(&node_name)?)
                     .create::<ipc::Service>()?;
@@ -466,9 +466,10 @@ impl MonitorChannel {
                         }
                     }
                 }
-            };
+            }
+            .await;
 
-            if let Err(err) = result.await {
+            if let Err(err) = result {
                 warn!("account listener {} exited: {err:?}", service_name_for_error);
             }
         });
