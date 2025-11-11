@@ -232,6 +232,21 @@ impl MonitorChannel {
         Self::with_inner(|inner| inner.strategy_mgr.clone())
     }
 
+    /// 获取 um_manager 的引用
+    pub fn um_manager(&self) -> Rc<RefCell<BinancePmUmAccountManager>> {
+        Self::with_inner(|inner| inner.um_manager.clone())
+    }
+
+    /// 获取 spot_manager 的引用
+    pub fn spot_manager(&self) -> Rc<RefCell<BinancePmSpotAccountManager>> {
+        Self::with_inner(|inner| inner.spot_manager.clone())
+    }
+
+    /// 获取 exposure_manager 的引用
+    pub fn exposure_manager(&self) -> Rc<RefCell<ExposureManager>> {
+        Self::with_inner(|inner| inner.exposure_manager.clone())
+    }
+
 
     /// 创建 Binance PM account monitor 实例并初始化 thread-local 单例
     ///

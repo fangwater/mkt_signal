@@ -1,6 +1,13 @@
-use crate::common::iceoryx_publisher::ResamplePublisher;
+use crate::common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
+use crate::common::time_util::get_timestamp_us;
+use crate::pre_trade::monitor_channel::MonitorChannel;
+use crate::pre_trade::params_load::PreTradeParams;
+use crate::signal::resample::{
+    PreTradeExposureResampleEntry, PreTradeExposureRow, PreTradePositionResampleEntry,
+    PreTradeRiskResampleEntry, PreTradeSpotBalanceRow, PreTradeUmPositionRow,
+};
 use anyhow::Result;
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::cell::OnceCell;
 
 thread_local! {
@@ -166,5 +173,189 @@ impl ResampleChannel {
     /// 检查风险 publisher 是否可用
     pub fn is_risk_publisher_available(&self) -> bool {
         self.risk_pub.is_some()
+    }
+
+    /// 发布重采样条目（持仓、敞口、风险）
+    ///
+    /// 通过 MonitorChannel::instance() 访问所需的管理器数据
+    /// 返回成功发布的条目数量
+    pub fn publish_resample_entries(&self) -> Result<usize> {
+        if self.positions_pub.is_none() && self.exposure_pub.is_none() && self.risk_pub.is_none()
+        {
+            return Ok(0);
+        }
+
+        // 通过 MonitorChannel 获取快照
+        let mon_ch = MonitorChannel::instance();
+
+        let Some(spot_snapshot) = mon_ch.spot_manager().borrow().snapshot() else {
+            return Ok(0);
+        };
+        let Some(um_snapshot) = mon_ch.um_manager().borrow().snapshot() else {
+            return Ok(0);
+        };
+
+        let price_snapshot = mon_ch.price_table().borrow().snapshot();
+        let ts_ms = (get_timestamp_us() / 1000) as i64;
+
+        // 重估敞口
+        let binding = mon_ch.exposure_manager();
+        let mut exposures_mgr = binding.borrow_mut();
+        exposures_mgr.revalue_with_prices(&price_snapshot);
+        exposures_mgr.log_summary("resample估值");
+        let exposures_vec = exposures_mgr.exposures().to_vec();
+        let total_equity = exposures_mgr.total_equity();
+        let total_abs_exposure = exposures_mgr.total_abs_exposure();
+        let total_position = exposures_mgr.total_position();
+        let spot_equity_usd = exposures_mgr.total_spot_value_usd();
+        let borrowed_usd = exposures_mgr.total_borrowed_usd();
+        let interest_usd = exposures_mgr.total_interest_usd();
+        let um_unrealized_usd = exposures_mgr.total_um_unrealized();
+        drop(exposures_mgr);
+
+        let max_leverage = PreTradeParams::instance().max_leverage();
+
+        let mut published = 0usize;
+
+        // 发布持仓数据
+        if let Some(publisher) = self.positions_pub.as_ref() {
+            let um_rows: Vec<PreTradeUmPositionRow> = um_snapshot
+                .positions
+                .iter()
+                .map(|pos| PreTradeUmPositionRow {
+                    symbol: pos.symbol.clone(),
+                    side: pos.position_side.to_string(),
+                    position_amount: pos.position_amt,
+                    entry_price: pos.entry_price,
+                    leverage: pos.leverage,
+                    position_initial_margin: pos.position_initial_margin,
+                    open_order_initial_margin: pos.open_order_initial_margin,
+                    unrealized_profit: pos.unrealized_profit,
+                })
+                .collect();
+
+            let spot_rows: Vec<PreTradeSpotBalanceRow> = spot_snapshot
+                .balances
+                .iter()
+                .map(|bal| PreTradeSpotBalanceRow {
+                    asset: bal.asset.clone(),
+                    total_wallet: bal.total_wallet_balance,
+                    cross_free: bal.cross_margin_free,
+                    cross_locked: bal.cross_margin_locked,
+                    cross_borrowed: bal.cross_margin_borrowed,
+                    cross_interest: bal.cross_margin_interest,
+                    um_wallet: bal.um_wallet_balance,
+                    um_unrealized_pnl: bal.um_unrealized_pnl,
+                })
+                .collect();
+
+            let entry = PreTradePositionResampleEntry {
+                ts_ms,
+                um_positions: um_rows,
+                spot_balances: spot_rows,
+            };
+            if Self::publish_encoded(entry.to_bytes()?, publisher)? {
+                published += 1;
+            }
+        }
+
+        // 发布敞口数据
+        if let Some(publisher) = self.exposure_pub.as_ref() {
+            let mut rows: Vec<PreTradeExposureRow> = Vec::new();
+            let mut exposure_sum_usdt = 0.0_f64;
+            for entry in &exposures_vec {
+                let asset_upper = entry.asset.to_uppercase();
+                if asset_upper == "USDT" {
+                    continue;
+                }
+                let symbol = format!("{}USDT", asset_upper);
+                let mark = price_snapshot
+                    .get(&symbol)
+                    .map(|p| p.mark_price)
+                    .unwrap_or(0.0);
+                if mark == 0.0 && (entry.spot_total_wallet != 0.0 || entry.um_net_position != 0.0)
+                {
+                    debug!("missing mark price for {} when resampling exposure", symbol);
+                }
+                let spot_usdt = entry.spot_total_wallet * mark;
+                let um_usdt = entry.um_net_position * mark;
+                let exposure_usdt = spot_usdt + um_usdt;
+                exposure_sum_usdt += exposure_usdt;
+                rows.push(PreTradeExposureRow {
+                    asset: entry.asset.clone(),
+                    spot_qty: Some(entry.spot_total_wallet),
+                    spot_usdt: Some(spot_usdt),
+                    um_net_qty: Some(entry.um_net_position),
+                    um_net_usdt: Some(um_usdt),
+                    exposure_qty: Some(entry.exposure),
+                    exposure_usdt: Some(exposure_usdt),
+                    is_total: false,
+                });
+            }
+            if !rows.is_empty() {
+                rows.push(PreTradeExposureRow {
+                    asset: "TOTAL".to_string(),
+                    spot_qty: None,
+                    spot_usdt: None,
+                    um_net_qty: None,
+                    um_net_usdt: None,
+                    exposure_qty: None,
+                    exposure_usdt: Some(exposure_sum_usdt),
+                    is_total: true,
+                });
+            }
+
+            let entry = PreTradeExposureResampleEntry { ts_ms, rows };
+            if Self::publish_encoded(entry.to_bytes()?, publisher)? {
+                published += 1;
+            }
+        }
+
+        // 发布风险数据
+        if let Some(publisher) = self.risk_pub.as_ref() {
+            let leverage = if total_equity.abs() <= f64::EPSILON {
+                0.0
+            } else {
+                total_position / total_equity
+            };
+            let entry = PreTradeRiskResampleEntry {
+                ts_ms,
+                total_equity,
+                total_exposure: total_abs_exposure,
+                total_position,
+                spot_equity_usd,
+                borrowed_usd,
+                interest_usd,
+                um_unrealized_usd,
+                leverage,
+                max_leverage,
+            };
+            if Self::publish_encoded(entry.to_bytes()?, publisher)? {
+                published += 1;
+            }
+        }
+
+        Ok(published)
+    }
+
+    /// 发布编码后的数据
+    fn publish_encoded(bytes: Vec<u8>, publisher: &ResamplePublisher) -> Result<bool> {
+        if bytes.is_empty() {
+            return Ok(false);
+        }
+        let mut buf = Vec::with_capacity(bytes.len() + 4);
+        let len = bytes.len() as u32;
+        buf.extend_from_slice(&len.to_le_bytes());
+        buf.extend_from_slice(&bytes);
+        if buf.len() > RESAMPLE_PAYLOAD {
+            warn!(
+                "pre_trade重采样载荷过大 ({} 字节，阈值 {} 字节)，已跳过",
+                buf.len(),
+                RESAMPLE_PAYLOAD
+            );
+            return Ok(false);
+        }
+        publisher.publish(&buf)?;
+        Ok(true)
     }
 }
