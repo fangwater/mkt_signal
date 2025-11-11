@@ -1,111 +1,69 @@
-pub mod config;
-mod execution;
 mod http;
 mod iceoryx;
+mod order_update;
 mod signal;
 mod storage;
-mod um_order_update;
+mod trade_update;
 
 use std::sync::Arc;
 
 use anyhow::Result;
-use log::{info, warn};
+use log::info;
 
-use config::PersistManagerCfg;
-use execution::ExecutionPersistor;
+use order_update::OrderUpdatePersistor;
 use signal::SignalPersistor;
 use storage::RocksDbStore;
-use um_order_update::UmOrderUpdatePersistor;
+use trade_update::TradeUpdatePersistor;
+
+// 硬编码配置
+const ROCKSDB_PATH: &str = "data/persist_manager";
+const ROCKSDB_SYNC_WRITES: bool = false; // 异步写入，性能更好
 
 pub struct PersistManager {
-    cfg: PersistManagerCfg,
+    port: u16,
 }
 
 impl PersistManager {
-    pub fn new(cfg: PersistManagerCfg) -> Self {
-        Self { cfg }
-    } 
+    pub fn new(port: u16) -> Self {
+        Self { port }
+    }
 
     pub async fn run(self) -> Result<()> {
-        let cfg = self.cfg;
-        let signal_enabled = cfg.signal.enabled;
-        let http_cfg = cfg.http.clone();
+        // 收集所有列族
         let mut cf_names: Vec<&'static str> = Vec::new();
-        let execution_enabled = cfg.execution.enabled;
-        let um_execution_enabled = cfg.um_execution.enabled;
-        if signal_enabled {
-            cf_names.extend_from_slice(signal::required_column_families());
-        }
-        if execution_enabled {
-            cf_names.extend_from_slice(execution::required_column_families());
-        }
-        if um_execution_enabled {
-            cf_names.extend_from_slice(um_order_update::required_column_families());
-        } 
+        cf_names.extend_from_slice(signal::required_column_families());
+        cf_names.extend_from_slice(trade_update::required_column_families());
+        cf_names.extend_from_slice(order_update::required_column_families());
 
+        // 打开 RocksDB
         let store = Arc::new(RocksDbStore::open(
-            &cfg.rocksdb.path,
+            ROCKSDB_PATH,
             &cf_names,
-            cfg.rocksdb.sync_writes,
-        )?); 
+            ROCKSDB_SYNC_WRITES,
+        )?);
 
-        if signal_enabled { 
-            info!(
-                "signal persistence enabled on channel {}",
-                cfg.signal.channel 
-            ); 
-            let worker = SignalPersistor::new(cfg.signal.clone(), store.clone())?;
-            tokio::task::spawn_local(async move {
-                if let Err(err) = worker.run().await {
-                    warn!("signal persistor exited with error: {err:#}");
-                } 
-            }); 
-        } else {
-            info!("signal persistence disabled by configuration");
-        } 
+        // 启动所有持久化器
+        info!("starting signal persistor");
+        let s1 = SignalPersistor::new(store.clone())?;
+        tokio::task::spawn_local(async move { let _ = s1.run().await; });
 
-        if execution_enabled {
-            info!(
-                "execution persistence enabled on channel {}",
-                cfg.execution.channel
-            );
-            let worker = ExecutionPersistor::new(cfg.execution.clone(), store.clone())?;
-            tokio::task::spawn_local(async move {
-                if let Err(err) = worker.run().await {
-                    warn!("execution persistor exited with error: {err:#}");
-                }
-            });
-        } else {
-            info!("execution persistence disabled by configuration");
-        }
+        info!("starting trade update persistor");
+        let s2 = TradeUpdatePersistor::new(store.clone())?;
+        tokio::task::spawn_local(async move { let _ = s2.run().await; });
 
-        if um_execution_enabled {
-            info!(
-                "UM order update persistence enabled on channel {}",
-                cfg.um_execution.channel 
-            );
-            let worker = UmOrderUpdatePersistor::new(cfg.um_execution.clone(), store.clone())?;
-            tokio::task::spawn_local(async move {
-                if let Err(err) = worker.run().await {
-                    warn!("UM order update persistor exited with error: {err:#}");
-                }
-            });
-        } else {
-            info!("UM order update persistence disabled by configuration");
-        } 
+        info!("starting order update persistor");
+        let s3 = OrderUpdatePersistor::new(store.clone())?;
+        tokio::task::spawn_local(async move { let _ = s3.run().await; });
 
-        let http_store = store.clone();
+        // 启动 HTTP 服务器（使用命令行指定的端口）
+        let bind_addr = format!("0.0.0.0:{}", self.port);
+        info!("starting http server on {}", bind_addr);
         tokio::task::spawn_local(async move {
-            if let Err(err) = http::serve(http_cfg, http_store).await {
-                warn!("persist_manager http server exited: {err:#}");
-            }
+            let _ = http::serve(&bind_addr, store).await;
         });
 
         tokio::signal::ctrl_c().await?;
-        info!("persist_manager received shutdown signal, exiting");
+        info!("persist_manager shutdown");
         Ok(())
     }
 }
-
-pub use signal::required_column_families as signal_required_column_families;
-pub use storage::RocksDbConfig;

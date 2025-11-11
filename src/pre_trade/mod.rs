@@ -13,4 +13,4 @@ mod signal_channel;
 pub mod monitor_channel;
 pub mod trade_eng_channel;
 pub use runner::PreTrade;
-pub use persist_channel::PersistChannel;
+pub use persist_channel::{PersistChannel, TRADE_UPDATE_RECORD_CHANNEL, ORDER_UPDATE_RECORD_CHANNEL};

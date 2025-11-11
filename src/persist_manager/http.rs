@@ -17,7 +17,6 @@ use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::persist_manager::config::HttpConfig;
 use crate::persist_manager::storage::RocksDbStore;
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{SignalBytes, TradingVenue};
@@ -31,11 +30,10 @@ pub struct AppState {
     store: Arc<RocksDbStore>,
 }
 
-pub async fn serve(cfg: HttpConfig, store: Arc<RocksDbStore>) -> Result<()> {
-    let addr: SocketAddr = cfg
-        .bind
+pub async fn serve(bind_addr: &str, store: Arc<RocksDbStore>) -> Result<()> {
+    let addr: SocketAddr = bind_addr
         .parse()
-        .with_context(|| format!("invalid persist_manager.http.bind {}", cfg.bind))?;
+        .with_context(|| format!("invalid bind address {}", bind_addr))?;
 
     let state = AppState { store };
     let app = Router::new()

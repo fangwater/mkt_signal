@@ -17,7 +17,7 @@ pub struct AccountEvent {
     pub event_time_ms: Option<i64>,
 }
 
-#[derive(Debug)]
+#[derive(Debug)] 
 pub struct TradeEngineResponse {
     pub service: String,
     pub received_at: i64,

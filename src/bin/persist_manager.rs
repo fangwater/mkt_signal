@@ -1,6 +1,5 @@
 use anyhow::Result;
-use log::info;
-use mkt_signal::persist_manager::{config::PersistManagerCfg, PersistManager};
+use mkt_signal::persist_manager::PersistManager;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
@@ -9,12 +8,20 @@ async fn main() -> Result<()> {
     }
     env_logger::init();
 
-    let cfg_path = std::env::var("PERSIST_MANAGER_CFG")
-        .unwrap_or_else(|_| "config/persist_manager.toml".to_string());
-    let cfg = PersistManagerCfg::load(&cfg_path).await?;
-    info!("persist_manager config loaded from {}", cfg_path);
+    // 解析命令行参数：--port <端口号>
+    let port = parse_port_arg().unwrap_or(8088);
 
-    let manager = PersistManager::new(cfg);
+    let manager = PersistManager::new(port);
     let local = tokio::task::LocalSet::new();
     local.run_until(manager.run()).await
+}
+
+fn parse_port_arg() -> Option<u16> {
+    let args: Vec<String> = std::env::args().collect();
+    for i in 0..args.len() {
+        if args[i] == "--port" && i + 1 < args.len() {
+            return args[i + 1].parse().ok();
+        }
+    }
+    None
 }
