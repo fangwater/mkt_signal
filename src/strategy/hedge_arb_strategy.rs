@@ -59,10 +59,6 @@ impl HedgeArbStrategy {
         (order_id >> 32) as i32
     }
 
-    /// 从订单ID中提取序列号
-    fn extract_order_seq(order_id: i64) -> u32 {
-        (order_id & 0xFFFFFFFF) as u32
-    }
     fn handle_arb_open_signal(&mut self, ctx: ArbOpenCtx) {
         // 开仓open leg，打开头寸，根据信号创建开仓leg, 进行风控判断，失败就直接把策略标记为不活跃，等待定时器清理
 

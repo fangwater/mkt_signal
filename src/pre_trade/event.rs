@@ -1,12 +1,3 @@
-use crate::signal::trade_signal;
-
-#[derive(Debug)]
-pub enum PreTradeEvent {
-    Account(AccountEvent),
-    TradeResponse(TradeEngineResponse),
-    Signal(trade_signal::TradeSignal),
-}
-
 #[derive(Debug)]
 pub struct AccountEvent {
     pub service: String,

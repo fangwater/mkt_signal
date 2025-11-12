@@ -175,7 +175,6 @@ pub struct MonitorChannel;
 
 /// MonitorChannel 内部实现，包含所有状态
 struct MonitorChannelInner {
-    dedup: DedupCache,
     /// 币安 合约资产管理器，基于统一账户 update 更新
     um_manager: Rc<RefCell<BinancePmUmAccountManager>>,
     /// 币安 现货资产管理器，基于统一账户 update 更新
@@ -374,7 +373,6 @@ impl MonitorChannel {
 
         // 创建内部实例并保存到 thread-local
         let inner = MonitorChannelInner {
-            dedup: DedupCache::new(8192),
             um_manager: um_manager_rc,
             spot_manager: spot_manager_rc,
             exposure_manager,

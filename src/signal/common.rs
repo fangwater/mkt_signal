@@ -476,12 +476,3 @@ pub mod bytes_helper {
         Ok(bytes.get_f64_le())
     }
 }
-
-#[derive(Debug, Clone, Copy)]
-enum UmOrderUpdateOutcome {
-    Created,
-    PartiallyFilled(f64),
-    Filled,
-    Expired,
-    Ignored,
-}

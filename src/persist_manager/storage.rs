@@ -6,27 +6,6 @@ use anyhow::{anyhow, Context, Result};
 use rocksdb::{
     ColumnFamilyDescriptor, DBCompressionType, Direction, IteratorMode, Options, WriteOptions, DB,
 };
-use serde::Deserialize;
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct RocksDbConfig {
-    pub path: String,
-    #[serde(default = "default_sync_writes")]
-    pub sync_writes: bool,
-}
-
-impl Default for RocksDbConfig {
-    fn default() -> Self {
-        Self {
-            path: "data/persist_manager".to_string(),
-            sync_writes: true,
-        }
-    }
-}
-
-fn default_sync_writes() -> bool {
-    true
-}
 
 pub struct RocksDbStore {
     db: Arc<DB>,

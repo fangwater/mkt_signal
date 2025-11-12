@@ -16,9 +16,17 @@ use crate::common::time_util::get_timestamp_us;
 use crate::common::viz::server::WsHub;
 use crate::signal::resample::{
     FundingRateArbResampleEntry, PreTradeExposureResampleEntry, PreTradePositionResampleEntry,
-    PreTradeRiskResampleEntry, FR_RESAMPLE_MSG_CHANNEL, PRE_TRADE_EXPOSURE_CHANNEL,
-    PRE_TRADE_POSITIONS_CHANNEL, PRE_TRADE_RISK_CHANNEL,
+    PreTradeRiskResampleEntry,
 };
+use crate::pre_trade::resample_channel::{
+    DEFAULT_EXPOSURE_CHANNEL, DEFAULT_POSITIONS_CHANNEL, DEFAULT_RISK_CHANNEL,
+};
+
+// FR resample channel name (kept for backward compatibility)
+const FR_RESAMPLE_MSG_CHANNEL: &str = "fr_resample_msg";
+const PRE_TRADE_EXPOSURE_CHANNEL: &str = DEFAULT_EXPOSURE_CHANNEL;
+const PRE_TRADE_POSITIONS_CHANNEL: &str = DEFAULT_POSITIONS_CHANNEL;
+const PRE_TRADE_RISK_CHANNEL: &str = DEFAULT_RISK_CHANNEL;
 
 pub const RESAMPLE_PAYLOAD: usize = ICEORYX_RESAMPLE_PAYLOAD;
 

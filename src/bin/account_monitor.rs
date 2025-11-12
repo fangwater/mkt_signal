@@ -10,9 +10,6 @@ use mkt_signal::account::order_update_record::{
 use mkt_signal::common::account_msg::{
     get_event_type, AccountEventType, ExecutionReportMsg, OrderTradeUpdateMsg,
 };
-use mkt_signal::common::iceoryx_publisher::{
-    BinanceMarginUpdatePublisher, BinanceUmUpdatePublisher,
-};
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::binance_account_event_parser::BinanceAccountEventParser;

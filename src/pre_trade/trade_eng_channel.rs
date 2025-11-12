@@ -4,12 +4,8 @@ use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
-use std::cell::{OnceCell, RefCell};
+use std::cell::OnceCell;
 use std::time::Duration;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-
-use crate::common::time_util::get_timestamp_us;
-use crate::pre_trade::event::TradeEngineResponse;
 
 thread_local! {
     static TRADE_ENG_CHANNEL: OnceCell<TradeEngChannel> = OnceCell::new();
@@ -34,19 +30,10 @@ pub const DEFAULT_ORDER_RESP_SERVICE: &str = "order_resps/binance";
 ///
 /// // 发送订单请求
 /// TradeEngChannel::with(|ch| ch.publish_order_request(&order_bytes))?;
-///
-/// // 获取响应接收器（只能调用一次）
-/// let rx = TradeEngChannel::with(|ch| ch.take_receiver());
 /// ```
 pub struct TradeEngChannel {
     /// Publisher for sending order requests
     order_req_publisher: Publisher<ipc::Service, [u8; TRADE_REQ_PAYLOAD], ()>,
-
-    /// Receiver for trade responses（可以 take 走）
-    trade_resp_rx: RefCell<Option<UnboundedReceiver<TradeEngineResponse>>>,
-
-    /// Sender for trade responses（用于内部克隆）
-    trade_resp_tx: UnboundedSender<TradeEngineResponse>,
 }
 
 impl TradeEngChannel {
@@ -58,9 +45,6 @@ impl TradeEngChannel {
     /// ```ignore
     /// // 发送订单请求
     /// TradeEngChannel::with(|ch| ch.publish_order_request(&order_bytes))?;
-    ///
-    /// // 获取响应接收器
-    /// let rx = TradeEngChannel::with(|ch| ch.take_receiver());
     /// ```
     pub fn with<F, R>(f: F) -> R
     where
@@ -122,14 +106,10 @@ impl TradeEngChannel {
             order_req_service
         );
 
-        // 创建 channel 用于接收交易响应
-        let (trade_resp_tx, trade_resp_rx) = mpsc::unbounded_channel();
-
-        // 启动 subscriber 监听交易响应
-        let tx_clone = trade_resp_tx.clone();
+        // 启动交易响应监听器
         let resp_service = order_resp_service.to_string();
         tokio::task::spawn_local(async move {
-            if let Err(err) = Self::run_trade_resp_listener(&resp_service, tx_clone).await {
+            if let Err(err) = Self::run_trade_resp_listener(&resp_service).await {
                 warn!(
                     "Trade response listener exited (service={}): {err:?}",
                     resp_service
@@ -139,8 +119,6 @@ impl TradeEngChannel {
 
         Ok(Self {
             order_req_publisher,
-            trade_resp_rx: RefCell::new(Some(trade_resp_rx)),
-            trade_resp_tx,
         })
     }
 
@@ -169,19 +147,8 @@ impl TradeEngChannel {
         Ok(())
     }
 
-    /// 获取 trade response receiver，只能调用一次
-    ///
-    /// # 返回
-    /// 如果 receiver 已经被 take 走，返回 None
-    pub fn take_receiver(&self) -> Option<UnboundedReceiver<TradeEngineResponse>> {
-        self.trade_resp_rx.borrow_mut().take()
-    }
-
-    /// 运行交易响应监听器
-    async fn run_trade_resp_listener(
-        service_name: &str,
-        tx: UnboundedSender<TradeEngineResponse>,
-    ) -> Result<()> {
+    /// 运行交易响应监听器，直接处理响应
+    async fn run_trade_resp_listener(service_name: &str) -> Result<()> {
         let node = NodeBuilder::new()
             .name(&NodeName::new("pre_trade_order_resp")?)
             .create::<ipc::Service>()?;
@@ -203,7 +170,6 @@ impl TradeEngChannel {
             match subscriber.receive() {
                 Ok(Some(sample)) => {
                     let payload = sample.payload();
-                    let received_at = get_timestamp_us();
 
                     // Trade response frames format: [header][body]
                     if payload.len() < 34 {
@@ -215,14 +181,6 @@ impl TradeEngChannel {
                     let req_type = u32::from_le_bytes([
                         payload[0], payload[1], payload[2], payload[3],
                     ]);
-                    let local_recv_time = i64::from_le_bytes([
-                        payload[4], payload[5], payload[6], payload[7],
-                        payload[8], payload[9], payload[10], payload[11],
-                    ]);
-                    let client_order_id = i64::from_le_bytes([
-                        payload[12], payload[13], payload[14], payload[15],
-                        payload[16], payload[17], payload[18], payload[19],
-                    ]);
                     let exchange = u32::from_le_bytes([
                         payload[20], payload[21], payload[22], payload[23],
                     ]);
@@ -233,34 +191,28 @@ impl TradeEngChannel {
                     let order_count = u32::from_le_bytes([
                         payload[30], payload[31], payload[32], payload[33],
                     ]);
+                    let client_order_id = i64::from_le_bytes([
+                        payload[12], payload[13], payload[14], payload[15],
+                        payload[16], payload[17], payload[18], payload[19],
+                    ]);
 
                     // Body starts at offset 34
                     let body = if payload.len() > 34 {
-                        payload[34..].to_vec()
+                        String::from_utf8_lossy(&payload[34..]).to_string()
                     } else {
-                        Vec::new()
+                        String::new()
                     };
 
-                    let body_truncated = payload.len() >= TRADE_RESP_PAYLOAD;
-
-                    let resp = TradeEngineResponse {
-                        service: service_name.to_string(),
-                        received_at,
-                        payload_len: payload.len(),
-                        req_type,
-                        local_recv_time,
-                        client_order_id,
-                        exchange,
+                    // 处理响应
+                    Self::handle_trade_engine_response(
                         status,
-                        ip_used_weight_1m: if ip_weight > 0 { Some(ip_weight) } else { None },
-                        order_count_1m: if order_count > 0 { Some(order_count) } else { None },
-                        body,
-                        body_truncated,
-                    };
-
-                    if tx.send(resp).is_err() {
-                        break;
-                    }
+                        req_type,
+                        exchange,
+                        client_order_id,
+                        &body,
+                        ip_weight,
+                        order_count,
+                    );
                 }
                 Ok(None) => tokio::task::yield_now().await,
                 Err(err) => {
@@ -269,6 +221,64 @@ impl TradeEngChannel {
                 }
             }
         }
-        Ok(())
+    }
+
+    /// 处理交易引擎响应
+    fn handle_trade_engine_response(
+        status: u16,
+        req_type: u32,
+        exchange: u32,
+        client_order_id: i64,
+        body: &str,
+        ip_weight: u32,
+        order_count: u32,
+    ) {
+        match status {
+            200 => {
+                // 成功响应，不打印日志
+            }
+            403 => {
+                warn!(
+                    "WAF Limit violated: exchange={} req_type={} cli_ord_id={} body={}",
+                    exchange, req_type, client_order_id, body
+                );
+            }
+            418 => {
+                warn!(
+                    "IP auto-banned for continuing requests after 429: exchange={} req_type={} cli_ord_id={} body={}",
+                    exchange, req_type, client_order_id, body
+                );
+            }
+            429 => {
+                warn!(
+                    "Request rate limit exceeded: exchange={} req_type={} cli_ord_id={} ip_weight={} order_count={} body={}",
+                    exchange, req_type, client_order_id, ip_weight, order_count, body
+                );
+            }
+            503 => {
+                warn!(
+                    "Service unavailable (503): exchange={} req_type={} cli_ord_id={} body={}",
+                    exchange, req_type, client_order_id, body
+                );
+            }
+            400..=499 => {
+                warn!(
+                    "Client error (4xx): status={} exchange={} req_type={} cli_ord_id={} body={}",
+                    status, exchange, req_type, client_order_id, body
+                );
+            }
+            500..=599 => {
+                warn!(
+                    "Server error (5xx): status={} exchange={} req_type={} cli_ord_id={} body={}",
+                    status, exchange, req_type, client_order_id, body
+                );
+            }
+            _ => {
+                warn!(
+                    "Unexpected HTTP status: status={} exchange={} req_type={} cli_ord_id={} body={}",
+                    status, exchange, req_type, client_order_id, body
+                );
+            }
+        }
     }
 }
