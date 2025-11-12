@@ -15,7 +15,7 @@ pub enum TradingVenue {
     OkexSpot = 5,
 }
 
-/// 订单有效期类型枚举
+/// 订单有效期类型枚举 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TimeInForce {
     GTC, // Good Till Cancel - 成交为止

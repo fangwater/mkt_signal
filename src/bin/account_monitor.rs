@@ -1,16 +1,11 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use bytes::Bytes;
 use log::{debug, error, info, warn};
-use mkt_signal::account::execution_record::{
-    ExecutionRecordMessage, MARGIN_EXECUTION_RECORD_CHANNEL,
-};
-use mkt_signal::account::order_update_record::{
-    OrderUpdateRecordMessage, UM_ORDER_UPDATE_RECORD_CHANNEL,
-};
 use mkt_signal::common::account_msg::{
-    get_event_type, AccountEventType, ExecutionReportMsg, OrderTradeUpdateMsg,
+    get_event_type, AccountEventType, AccountPositionMsg, AccountUpdateBalanceMsg,
+    AccountUpdateFlushMsg, AccountUpdatePositionMsg, BalanceUpdateMsg, ExecutionReportMsg,
+    OrderTradeUpdateMsg,
 };
-use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::binance_account_event_parser::BinanceAccountEventParser;
 use mkt_signal::parser::default_parser::Parser;
@@ -139,10 +134,7 @@ async fn main() -> Result<()> {
         .map(|c| (c.history_size, c.max_subscribers))
         .unwrap_or((None, None));
     let mut forwarder = PmForwarder::new("binance", pm_hist, pm_subs)?;
-    let execution_publisher = BinanceMarginUpdatePublisher::new(MARGIN_EXECUTION_RECORD_CHANNEL)?;
-    let um_order_publisher = BinanceUmUpdatePublisher::new(UM_ORDER_UPDATE_RECORD_CHANNEL)?;
-    let mut execution_deduper = ExecutionDeduper::new(8192);
-    let mut um_order_deduper = OrderUpdateDeduper::new(8192);
+    let mut deduper = AccountEventDeduper::new(8192);
     let mut stats = tokio::time::interval(Duration::from_secs(30));
 
     // Spawn primary and secondary paths
@@ -170,20 +162,9 @@ async fn main() -> Result<()> {
     loop {
         tokio::select! {
             Some(msg) = evt_rx.recv() => {
-                forwarder.send_raw(&msg);
-                if let Err(err) = maybe_publish_execution_record(
-                    &msg,
-                    &execution_publisher,
-                    &mut execution_deduper,
-                ) {
-                    warn!("failed to publish execution record: {err:#}");
-                }
-                if let Err(err) = maybe_publish_um_order_update(
-                    &msg,
-                    &um_order_publisher,
-                    &mut um_order_deduper,
-                ) {
-                    warn!("failed to publish UM order update: {err:#}");
+                // 统一去重后再发送
+                if deduper.should_forward(&msg) {
+                    forwarder.send_raw(&msg);
                 }
             }
             _ = stats.tick() => {
@@ -288,160 +269,14 @@ fn spawn_user_stream_path(
     })
 }
 
-fn maybe_publish_execution_record(
-    msg: &Bytes,
-    publisher: &BinanceMarginUpdatePublisher,
-    deduper: &mut ExecutionDeduper,
-) -> anyhow::Result<()> {
-    if msg.len() < 8 {
-        return Ok(());
-    }
-    if get_event_type(msg.as_ref()) != AccountEventType::ExecutionReport {
-        return Ok(());
-    }
-    let payload_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
-    if msg.len() < 8 + payload_len {
-        return Err(anyhow!(
-            "execution report payload truncated: expected {} got {}",
-            payload_len,
-            msg.len().saturating_sub(8)
-        ));
-    }
-    let payload = msg.slice(8..8 + payload_len);
-    let report = ExecutionReportMsg::from_bytes(&payload)?;
-    if !deduper.should_publish(&report) {
-        return Ok(());
-    }
-
-    let recv_ts = get_timestamp_us();
-    let strategy_id = (report.client_order_id >> 32) as i32;
-    let client_order_id_str = if report.client_order_id_str.is_empty() {
-        None
-    } else {
-        Some(report.client_order_id_str.clone())
-    };
-
-    let record = ExecutionRecordMessage::new(
-        recv_ts,
-        report.event_time,
-        report.transaction_time,
-        report.order_id,
-        report.trade_id,
-        report.order_creation_time,
-        report.working_time,
-        report.update_id,
-        report.symbol.clone(),
-        report.client_order_id,
-        client_order_id_str,
-        strategy_id,
-        report.side,
-        report.is_maker,
-        report.is_working,
-        report.price,
-        report.quantity,
-        report.last_executed_quantity,
-        report.cumulative_filled_quantity,
-        report.last_executed_price,
-        report.commission_amount,
-        report.commission_asset.clone(),
-        report.cumulative_quote,
-        report.last_quote,
-        report.quote_order_quantity,
-        report.order_type.clone(),
-        report.time_in_force.clone(),
-        report.execution_type.clone(),
-        report.order_status.clone(),
-    );
-    let bytes = record.to_bytes();
-    publisher.publish(&bytes)?;
-    Ok(())
-}
-
-fn maybe_publish_um_order_update(
-    msg: &Bytes,
-    publisher: &BinanceUmUpdatePublisher,
-    deduper: &mut OrderUpdateDeduper,
-) -> anyhow::Result<()> {
-    if msg.len() < 8 {
-        return Ok(());
-    }
-    if get_event_type(msg.as_ref()) != AccountEventType::OrderTradeUpdate {
-        return Ok(());
-    }
-    let payload_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
-    if msg.len() < 8 + payload_len {
-        return Err(anyhow!(
-            "order trade update payload truncated: expected {} got {}",
-            payload_len,
-            msg.len().saturating_sub(8)
-        ));
-    }
-    let payload = msg.slice(8..8 + payload_len);
-    let update = OrderTradeUpdateMsg::from_bytes(&payload)?;
-    if !update.business_unit.eq_ignore_ascii_case("UM") {
-        return Ok(());
-    }
-    if !deduper.should_publish(&update) {
-        return Ok(());
-    }
-
-    let recv_ts = get_timestamp_us();
-    let client_order_id_str = if update.client_order_id_str.is_empty() {
-        None
-    } else {
-        Some(update.client_order_id_str.clone())
-    };
-    let derived_strategy_id = ((update.client_order_id >> 32) as i32) as i64;
-    let account_recv_ts_us = recv_ts;
-
-    let record = OrderUpdateRecordMessage::new(
-        recv_ts,
-        account_recv_ts_us,
-        update.event_time,
-        update.transaction_time,
-        update.order_id,
-        update.trade_id,
-        update.strategy_id,
-        derived_strategy_id,
-        update.symbol.clone(),
-        update.client_order_id,
-        client_order_id_str,
-        update.side,
-        update.position_side,
-        update.is_maker,
-        update.reduce_only,
-        update.price,
-        update.quantity,
-        update.average_price,
-        update.stop_price,
-        update.last_executed_quantity,
-        update.cumulative_filled_quantity,
-        update.last_executed_price,
-        update.commission_amount,
-        update.buy_notional,
-        update.sell_notional,
-        update.realized_profit,
-        update.order_type.clone(),
-        update.time_in_force.clone(),
-        update.execution_type.clone(),
-        update.order_status.clone(),
-        update.commission_asset.clone(),
-        update.strategy_type.clone(),
-        update.business_unit.clone(),
-    );
-
-    let bytes = record.to_bytes();
-    publisher.publish(&bytes)?;
-    Ok(())
-}
-
-struct ExecutionDeduper {
+/// 统一的账户事件去重器
+struct AccountEventDeduper {
     seen: HashSet<u64>,
     order: VecDeque<u64>,
     capacity: usize,
 }
 
-impl ExecutionDeduper {
+impl AccountEventDeduper {
     fn new(capacity: usize) -> Self {
         Self {
             seen: HashSet::with_capacity(capacity),
@@ -450,67 +285,159 @@ impl ExecutionDeduper {
         }
     }
 
-    fn should_publish(&mut self, report: &ExecutionReportMsg) -> bool {
-        let key = execution_dedup_key(report);
-        if self.seen.contains(&key) {
-            return false;
+    /// 检查是否应该转发此消息（返回 true 表示应该转发，false 表示重复消息）
+    fn should_forward(&mut self, msg: &Bytes) -> bool {
+        if msg.len() < 8 {
+            return true; // 格式不对的消息直接转发
         }
+
+        let event_type = get_event_type(msg.as_ref());
+        let payload_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
+        if msg.len() < 8 + payload_len {
+            return true; // 格式不对的消息直接转发
+        }
+
+        let payload = msg.slice(8..8 + payload_len);
+
+        // 根据事件类型计算去重 key
+        let key_opt = match event_type {
+            AccountEventType::AccountPosition => {
+                AccountPositionMsg::from_bytes(&payload)
+                    .ok()
+                    .map(|msg| self.key_account_position(&msg))
+            }
+            AccountEventType::BalanceUpdate => {
+                BalanceUpdateMsg::from_bytes(&payload)
+                    .ok()
+                    .map(|msg| self.key_balance_update(&msg))
+            }
+            AccountEventType::AccountUpdateBalance => {
+                AccountUpdateBalanceMsg::from_bytes(&payload)
+                    .ok()
+                    .map(|msg| self.key_account_update_balance(&msg))
+            }
+            AccountEventType::AccountUpdatePosition => {
+                AccountUpdatePositionMsg::from_bytes(&payload)
+                    .ok()
+                    .map(|msg| self.key_account_update_position(&msg))
+            }
+            AccountEventType::AccountUpdateFlush => {
+                AccountUpdateFlushMsg::from_bytes(&payload)
+                    .ok()
+                    .map(|msg| self.key_account_update_flush(&msg))
+            }
+            AccountEventType::ExecutionReport => {
+                ExecutionReportMsg::from_bytes(&payload)
+                    .ok()
+                    .map(|msg| self.key_execution_report(&msg))
+            }
+            AccountEventType::OrderTradeUpdate => {
+                OrderTradeUpdateMsg::from_bytes(&payload)
+                    .ok()
+                    .map(|msg| self.key_order_trade_update(&msg))
+            }
+            _ => {
+                return true; // 其他事件类型不去重，直接转发
+            }
+        };
+
+        let Some(key) = key_opt else {
+            return true; // 解析失败，直接转发
+        };
+
+        // 检查是否重复
+        if self.seen.contains(&key) {
+            return false; // 重复消息，不转发
+        }
+
+        // 记录新消息
         self.seen.insert(key);
         self.order.push_back(key);
+
+        // 容量控制
         if self.order.len() > self.capacity {
             if let Some(old) = self.order.pop_front() {
                 self.seen.remove(&old);
             }
         }
-        true
-    }
-}
 
-fn execution_dedup_key(report: &ExecutionReportMsg) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    report.order_id.hash(&mut hasher);
-    report.trade_id.hash(&mut hasher);
-    report.update_id.hash(&mut hasher);
-    report.execution_type.hash(&mut hasher);
-    hasher.finish()
-}
-
-struct OrderUpdateDeduper {
-    seen: HashSet<u64>,
-    order: VecDeque<u64>,
-    capacity: usize,
-}
-
-impl OrderUpdateDeduper {
-    fn new(capacity: usize) -> Self {
-        Self {
-            seen: HashSet::with_capacity(capacity),
-            order: VecDeque::with_capacity(capacity),
-            capacity,
-        }
+        true // 新消息，转发
     }
 
-    fn should_publish(&mut self, update: &OrderTradeUpdateMsg) -> bool {
-        let key = order_update_dedup_key(update);
-        if self.seen.contains(&key) {
-            return false;
+    fn hash64(&self, parts: &[u64]) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        for p in parts {
+            p.hash(&mut hasher);
         }
-        self.seen.insert(key);
-        self.order.push_back(key);
-        if self.order.len() > self.capacity {
-            if let Some(old) = self.order.pop_front() {
-                self.seen.remove(&old);
-            }
-        }
-        true
+        hasher.finish()
     }
-}
 
-fn order_update_dedup_key(update: &OrderTradeUpdateMsg) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    update.order_id.hash(&mut hasher);
-    update.trade_id.hash(&mut hasher);
-    update.execution_type.hash(&mut hasher);
-    update.event_time.hash(&mut hasher);
-    hasher.finish()
+    fn hash_str64(&self, s: &str) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        s.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn key_account_position(&self, msg: &AccountPositionMsg) -> u64 {
+        self.hash64(&[
+            AccountEventType::AccountPosition as u32 as u64,
+            msg.update_id as u64,
+            msg.event_time as u64,
+            self.hash_str64(&msg.asset),
+        ])
+    }
+
+    fn key_balance_update(&self, msg: &BalanceUpdateMsg) -> u64 {
+        self.hash64(&[
+            AccountEventType::BalanceUpdate as u32 as u64,
+            msg.update_id as u64,
+            msg.event_time as u64,
+        ])
+    }
+
+    fn key_account_update_balance(&self, msg: &AccountUpdateBalanceMsg) -> u64 {
+        self.hash64(&[
+            AccountEventType::AccountUpdateBalance as u32 as u64,
+            msg.event_time as u64,
+            msg.transaction_time as u64,
+            self.hash_str64(&msg.asset),
+        ])
+    }
+
+    fn key_account_update_position(&self, msg: &AccountUpdatePositionMsg) -> u64 {
+        self.hash64(&[
+            AccountEventType::AccountUpdatePosition as u32 as u64,
+            msg.event_time as u64,
+            msg.transaction_time as u64,
+            msg.symbol_length as u64,
+            msg.position_side as u8 as u64,
+        ])
+    }
+
+    fn key_account_update_flush(&self, msg: &AccountUpdateFlushMsg) -> u64 {
+        self.hash64(&[
+            AccountEventType::AccountUpdateFlush as u32 as u64,
+            msg.hash,
+            self.hash_str64(&msg.scope),
+        ])
+    }
+
+    fn key_execution_report(&self, msg: &ExecutionReportMsg) -> u64 {
+        self.hash64(&[
+            AccountEventType::ExecutionReport as u32 as u64,
+            msg.order_id as u64,
+            msg.trade_id as u64,
+            msg.update_id as u64,
+            msg.event_time as u64,
+        ])
+    }
+
+    fn key_order_trade_update(&self, msg: &OrderTradeUpdateMsg) -> u64 {
+        self.hash64(&[
+            AccountEventType::OrderTradeUpdate as u32 as u64,
+            msg.order_id as u64,
+            msg.trade_id as u64,
+            msg.event_time as u64,
+        ])
+    }
 }

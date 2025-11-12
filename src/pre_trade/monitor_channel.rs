@@ -530,7 +530,6 @@ impl MonitorChannel {
     ) {
         tokio::task::spawn_local(async move {
             let service_name_for_error = service_name.clone();
-            let mut dedup = DedupCache::new(8192);
 
             let result: Result<()> = async move {
                 let node = NodeBuilder::new()
@@ -568,10 +567,6 @@ impl MonitorChannel {
                                 // 账户状态更新：直接处理，不发送到 channel
                                 AccountEventType::AccountPosition => {
                                     if let Ok(msg) = AccountPositionMsg::from_bytes(data) {
-                                        let key = key_account_position(&msg);
-                                        if !dedup.insert_check(key) {
-                                            continue;
-                                        }
                                         spot_manager.borrow_mut().apply_account_position(
                                             &msg.asset,
                                             msg.free_balance,
@@ -583,10 +578,6 @@ impl MonitorChannel {
                                 }
                                 AccountEventType::BalanceUpdate => {
                                     if let Ok(msg) = BalanceUpdateMsg::from_bytes(data) {
-                                        let key = key_balance_update(&msg);
-                                        if !dedup.insert_check(key) {
-                                            continue;
-                                        }
                                         spot_manager.borrow_mut().apply_balance_delta(&msg.asset, msg.delta, msg.event_time);
                                         refresh_exposures(&um_manager, &spot_manager, &exposure_manager, &price_table);
                                     }
@@ -624,21 +615,13 @@ impl MonitorChannel {
                                     }
                                 }
                                 AccountEventType::AccountUpdateFlush => {
-                                    if let Ok(msg) = AccountUpdateFlushMsg::from_bytes(data) {
-                                        let key = key_account_update_flush(&msg);
-                                        if !dedup.insert_check(key) {
-                                            continue;
-                                        }
+                                    if let Ok(_msg) = AccountUpdateFlushMsg::from_bytes(data) {
                                         refresh_exposures(&um_manager, &spot_manager, &exposure_manager, &price_table);
                                     }
                                 }
                                 // ExecutionReport 和 OrderTradeUpdate：直接处理
                                 AccountEventType::ExecutionReport => {
                                     if let Ok(report) = ExecutionReportMsg::from_bytes(data) {
-                                        let key = key_execution_report(&report);
-                                        if !dedup.insert_check(key) {
-                                            continue;
-                                        }
                                         debug!(
                                             "executionReport: sym={} cli_id={} ord_id={} status={}",
                                             report.symbol, report.client_order_id, report.order_id, report.order_status
@@ -648,10 +631,6 @@ impl MonitorChannel {
                                 }
                                 AccountEventType::OrderTradeUpdate => {
                                     if let Ok(update) = OrderTradeUpdateMsg::from_bytes(data) {
-                                        let key = key_order_trade_update(&update);
-                                        if !dedup.insert_check(key) {
-                                            continue;
-                                        }
                                         debug!(
                                             "orderTradeUpdate: sym={}, cli_id={}, ord_id={}, trade_id={}, x={}, X={}",
                                             update.symbol,
