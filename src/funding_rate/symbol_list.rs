@@ -193,6 +193,65 @@ impl SymbolList {
         })
     }
 
+    /// 获取 online symbols（平仓列表 ∪ 建仓列表）
+    ///
+    /// # 参数
+    /// - `venue`: 交易场所
+    ///
+    /// # 返回
+    /// 返回 dup_symbols 和 trade_symbols 的并集
+    pub fn get_online_symbols(&self, venue: TradingVenue) -> Vec<String> {
+        Self::with_inner(|inner| {
+            let mut online_set = HashSet::new();
+
+            // 添加平仓列表
+            if let Some(dup_set) = inner.dup_symbols.get(&venue) {
+                online_set.extend(dup_set.iter().cloned());
+            }
+
+            // 添加建仓列表
+            if let Some(trade_set) = inner.trade_symbols.get(&venue) {
+                online_set.extend(trade_set.iter().cloned());
+            }
+
+            online_set.into_iter().collect()
+        })
+    }
+
+    /// 获取所有交易场所的 online symbols
+    ///
+    /// # 返回
+    /// HashMap<TradingVenue, Vec<String>>
+    pub fn get_all_online_symbols(&self) -> HashMap<TradingVenue, Vec<String>> {
+        Self::with_inner(|inner| {
+            let mut result = HashMap::new();
+
+            // 收集所有出现过的 venue
+            let mut venues = HashSet::new();
+            venues.extend(inner.dup_symbols.keys());
+            venues.extend(inner.trade_symbols.keys());
+
+            // 为每个 venue 计算 online list
+            for venue in venues {
+                let mut online_set = HashSet::new();
+
+                if let Some(dup_set) = inner.dup_symbols.get(venue) {
+                    online_set.extend(dup_set.iter().cloned());
+                }
+
+                if let Some(trade_set) = inner.trade_symbols.get(venue) {
+                    online_set.extend(trade_set.iter().cloned());
+                }
+
+                if !online_set.is_empty() {
+                    result.insert(*venue, online_set.into_iter().collect());
+                }
+            }
+
+            result
+        })
+    }
+
     // ==================== 内部辅助方法 ====================
 
     /// 生成平仓列表的 Redis key

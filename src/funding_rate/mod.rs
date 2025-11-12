@@ -11,6 +11,7 @@ pub mod state;
 pub mod signal_generator;
 pub mod mkt_channel;
 pub mod symbol_list;
+pub mod rate_fetcher;
 
 // 公共导出
 pub use param_loader::{
@@ -41,3 +42,4 @@ pub use signal_generator::{
 
 pub use mkt_channel::MktChannel;
 pub use symbol_list::SymbolList;
+pub use rate_fetcher::RateFetcher;

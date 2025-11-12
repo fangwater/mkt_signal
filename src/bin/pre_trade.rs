@@ -25,25 +25,25 @@ async fn main() -> Result<()> {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            // 1. 初始化 PreTradeParams（从 Redis 加载参数）
-            info!("Initializing PreTradeParams singleton...");
+            // 1. 初始化 PreTradeParams（从 Redis 加载参数） 
+            info!("Initializing PreTradeParams singleton..."); 
             if let Err(err) = PreTradeParams::instance().load_from_redis(None).await {
                 warn!("Failed to load pre-trade params from Redis: {err:#}");
                 warn!("Using default parameters");
             } else {
-                info!("PreTradeParams loaded successfully");
-            }
+                info!("PreTradeParams loaded successfully"); 
+            } 
 
             // 2. 初始化 StrategyManager
             info!("Initializing StrategyManager...");
-            let strategy_mgr = Rc::new(RefCell::new(StrategyManager::new()));
+            let strategy_mgr = Rc::new(RefCell::new(StrategyManager::new())); 
 
-            // 3. 初始化 MonitorChannel（包含所有账户管理器）
-            info!("Initializing MonitorChannel singleton...");
-            if let Err(err) = MonitorChannel::init_singleton(strategy_mgr.clone()).await {
-                return Err(err);
-            }
-            info!("MonitorChannel initialized successfully");
+            // 3. 初始化 MonitorChannel（包含所有账户管理器） 
+            info!("Initializing MonitorChannel singleton..."); 
+            if let Err(err) = MonitorChannel::init_singleton(strategy_mgr.clone()).await { 
+                return Err(err); 
+            } 
+            info!("MonitorChannel initialized successfully"); 
 
             // 4. 初始化 SignalChannel
             info!("Initializing SignalChannel singleton...");
@@ -51,7 +51,7 @@ async fn main() -> Result<()> {
                 warn!("Failed to initialize SignalChannel: {err:#}");
             } else {
                 info!("SignalChannel initialized on channel: pre_trade");
-            }
+            } 
 
             // 5. 初始化 ResampleChannel
             info!("Initializing ResampleChannel singleton...");

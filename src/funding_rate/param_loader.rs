@@ -310,11 +310,11 @@ pub struct FundingThresholdEntry {
 
 /// Binance 资金费率历史数据项
 #[derive(Debug, Deserialize)]
-struct BinanceFundingHistItem {
+pub struct BinanceFundingHistItem {
     #[serde(rename = "fundingRate")]
-    funding_rate: String,
+    pub funding_rate: String,
     #[serde(rename = "fundingTime")]
-    funding_time: Option<i64>,
+    pub funding_time: Option<i64>,
 }
 
 /// 从 Binance API 获取资金费率数据（近期）
