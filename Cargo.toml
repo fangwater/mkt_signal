@@ -20,8 +20,12 @@ path = "src/bin/funding_rate_strategy_mt.rs"
 name = "funding_rate_strategy_mm"
 path = "src/bin/funding_rate_strategy_mm.rs"
 
-[[bin]] 
-name = "account_monitor" 
+[[bin]]
+name = "fr_signal"
+path = "src/bin/fr_signal.rs"
+
+[[bin]]
+name = "account_monitor"
 path = "src/bin/account_monitor.rs" 
 
 [[bin]] 

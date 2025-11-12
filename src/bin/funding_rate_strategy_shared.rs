@@ -10,34 +10,35 @@ use iceoryx2::prelude::{Node, NodeBuilder, NodeName, ServiceName};
 use iceoryx2::service::ipc;
 use log::{debug, error, info, warn};
 use reqwest::Client;
-use serde::de::{self, Deserializer};
-use serde::Deserialize;
 use serde_json::json;
 use tokio::signal;
-#[cfg(unix)] 
+#[cfg(unix)]
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
-use tokio::task::yield_now; 
-use tokio::time::Instant; 
-use tokio_util::sync::CancellationToken; 
+use tokio::task::yield_now;
+use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
-use mkt_signal::common::iceoryx_publisher::{
-    ResamplePublisher, SignalPublisher, SIGNAL_PAYLOAD,
-};
-use mkt_signal::common::iceoryx_subscriber::{
-    ChannelType, MultiChannelSubscriber, SubscribeParams,
-}; 
+use mkt_signal::common::iceoryx_publisher::{ResamplePublisher, SignalPublisher, SIGNAL_PAYLOAD};
+use mkt_signal::common::iceoryx_subscriber::{ChannelType, MultiChannelSubscriber, SubscribeParams};
 use mkt_signal::common::min_qty_table::MinQtyTable;
-use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
+use mkt_signal::common::redis_client::RedisClient;
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::mkt_msg::{self, AskBidSpreadMsg, FundingRateMsg, MktMsgType};
 use mkt_signal::pre_trade::order_manager::{OrderType, Side};
 use mkt_signal::signal::binance_forward_arb_mm::BinSingleForwardArbHedgeMMCtx;
 use mkt_signal::signal::binance_forward_arb_mt::{BinSingleForwardArbCancelCtx, BinSingleForwardArbOpenCtx};
-use mkt_signal::signal::resample::{
-    compute_askbid_sr, compute_bidask_sr, FundingRateArbResampleEntry, FR_RESAMPLE_MSG_CHANNEL,
-};
+use mkt_signal::signal::resample::{compute_askbid_sr, compute_bidask_sr, FundingRateArbResampleEntry, FR_RESAMPLE_MSG_CHANNEL};
 use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
 use mkt_signal::signal::mm_backward::ReqBinSingleForwardArbHedgeMM;
+
+// 使用 funding_rate 模块
+use mkt_signal::funding_rate::{
+    SymbolThreshold, RateThresholds, ParamsSnapshot, FundingThresholdEntry,
+    StrategyConfig, OrderConfig, OrderMode,
+    Quote, SymbolState, EvaluateDecision, QtyStepInfo, EngineStats,
+    fetch_binance_funding_history_range, fetch_binance_funding_items,
+    infer_binance_funding_frequency, approx_equal, approx_equal_slice, parse_numeric_list,
+};
 
 // 以下常量在具体进程入口（如 funding_rate_strategy_mt.rs / _mm.rs）中定义：
 // - PROCESS_DISPLAY_NAME: &str
@@ -46,186 +47,13 @@ use mkt_signal::signal::mm_backward::ReqBinSingleForwardArbHedgeMM;
 // - NODE_FUNDING_STRATEGY_SUB: &str
 // - DEFAULT_REDIS_HASH_KEY: &str
 
-// 本策略已移除本地 tracking_symbol.json 模式，仅支持 Redis 阈值
-
-/// 下单报单模式
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OrderMode {
-    Normal,
-    Ladder,
-}
-
-impl Default for OrderMode {
-    fn default() -> Self {
-        OrderMode::Normal
-    }
-}
-
-impl OrderMode {
-    fn from_raw(raw: &str) -> Option<Self> {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        let candidate = if let Ok(json_str) = serde_json::from_str::<String>(trimmed) {
-            json_str
-        } else if let Some(stripped) = trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
-            stripped.to_string()
-        } else if let Some(stripped) = trimmed
-            .strip_prefix('\'')
-            .and_then(|s| s.strip_suffix('\''))
-        {
-            stripped.to_string()
-        } else {
-            trimmed.to_string()
-        };
-        let lowered = candidate.to_ascii_lowercase();
-        match lowered.as_str() {
-            "normal" | "basic" | "standard" | "plain" => Some(OrderMode::Normal),
-            "ladder" | "step" | "stepped" => Some(OrderMode::Ladder),
-            _ => match candidate.as_str() {
-                "普通报单" | "普通" | "基础" | "基础模式" => Some(OrderMode::Normal),
-                "阶梯报单" | "阶梯" | "阶梯模式" => Some(OrderMode::Ladder),
-                _ => None,
-            },
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for OrderMode {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = String::deserialize(deserializer)?;
-        OrderMode::from_raw(&raw)
-            .ok_or_else(|| de::Error::custom(format!("invalid order_mode: {}", raw)))
-    }
-}
-
-/// 下单相关配置
-#[derive(Debug, Clone, Deserialize)]
-struct OrderConfig {
-    #[serde(default)]
-    mode: OrderMode,
-    #[serde(default = "default_open_ranges")]
-    open_ranges: Vec<f64>,
-    #[serde(default = "default_close_ranges")]
-    close_ranges: Vec<f64>,
-    #[serde(default = "default_order_amount")]
-    amount_u: f64,
-    #[serde(default = "default_max_open_keep")]
-    max_open_order_keep_s: u64,
-    #[serde(default = "default_max_close_keep")]
-    max_close_order_keep_s: u64,
-    #[serde(default = "default_max_hedge_keep")]
-    max_hedge_order_keep_s: u64,
-}
-
-const fn default_open_range() -> f64 {
-    0.0002
-}
-
-const fn default_close_range() -> f64 {
-    0.0002
-}
-
-fn default_open_ranges() -> Vec<f64> {
-    vec![default_open_range()]
-}
-
-fn default_close_ranges() -> Vec<f64> {
-    vec![default_close_range()]
-}
-
-const fn default_order_amount() -> f64 {
-    50.0
-}
-
-const fn default_max_open_keep() -> u64 {
-    5
-}
-
-const fn default_max_close_keep() -> u64 {
-    5
-}
-
-const fn default_max_hedge_keep() -> u64 {
-    5
-}
-
-impl Default for OrderConfig {
-    fn default() -> Self {
-        Self {
-            mode: OrderMode::default(),
-            open_ranges: default_open_ranges(),
-            close_ranges: default_close_ranges(),
-            amount_u: default_order_amount(),
-            max_open_order_keep_s: default_max_open_keep(),
-            max_close_order_keep_s: default_max_close_keep(),
-            max_hedge_order_keep_s: default_max_hedge_keep(),
-        }
-    }
-}
-
-impl OrderConfig {
-    fn sanitize_ranges(values: Vec<f64>, fallback: f64) -> Vec<f64> {
-        let mut sanitized: Vec<f64> = values.into_iter().filter(|v| v.is_finite()).collect();
-        if sanitized.is_empty() {
-            sanitized.push(fallback);
-        }
-        sanitized
-    }
-
-    fn set_open_ranges(&mut self, values: Vec<f64>) -> bool {
-        let sanitized = Self::sanitize_ranges(values, default_open_range());
-        if !approx_equal_slice(&self.open_ranges, &sanitized) {
-            self.open_ranges = sanitized;
-            return true;
-        }
-        false
-    }
-
-    fn set_close_ranges(&mut self, values: Vec<f64>) -> bool {
-        let sanitized = Self::sanitize_ranges(values, default_close_range());
-        if !approx_equal_slice(&self.close_ranges, &sanitized) {
-            self.close_ranges = sanitized;
-            return true;
-        }
-        false
-    }
-
-    fn normal_open_range(&self) -> f64 {
-        self.open_ranges
-            .first()
-            .copied()
-            .unwrap_or_else(|| default_open_range())
-    }
-
-    fn ladder_open_ranges(&self) -> &[f64] {
-        if self.open_ranges.len() > 1 {
-            &self.open_ranges[1..]
-        } else {
-            &[]
-        }
-    }
-
-}
-
+// 辅助函数（简化版）
 fn opt_finite(val: f64) -> Option<f64> {
-    if val.is_finite() {
-        Some(val)
-    } else {
-        None
-    }
+    if val.is_finite() { Some(val) } else { None }
 }
 
 fn opt_active_threshold(val: f64) -> Option<f64> {
-    if val.is_finite() && val.abs() > f64::EPSILON {
-        Some(val)
-    } else {
-        None
-    }
+    if val.is_finite() && val.abs() > f64::EPSILON { Some(val) } else { None }
 }
 
 fn forward_open_ready(bidask_sr: Option<f64>, threshold: f64) -> bool {
@@ -236,432 +64,8 @@ fn forward_close_ready(askbid_sr: Option<f64>, threshold: f64) -> bool {
     threshold.is_finite() && askbid_sr.map(|sr| sr >= threshold).unwrap_or(false)
 }
 
-/// 信号节流配置
-#[derive(Debug, Clone, Deserialize)]
-struct SignalConfig {
-    #[serde(default = "default_signal_interval_ms")]
-    min_interval_ms: u64,
-}
-
-const fn default_signal_interval_ms() -> u64 {
-    1_000
-}
-
-impl Default for SignalConfig {
-    fn default() -> Self {
-        Self {
-            min_interval_ms: default_signal_interval_ms(),
-        }
-    }
-}
-
-/// 阈值热更新配置
-#[derive(Debug, Clone, Deserialize)]
-struct ReloadConfig {
-    #[serde(default = "default_reload_interval")]
-    interval_secs: u64,
-}
-
-const fn default_reload_interval() -> u64 {
-    60
-}
-
-impl Default for ReloadConfig {
-    fn default() -> Self {
-        Self {
-            interval_secs: default_reload_interval(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-struct StrategyParams {
-    #[serde(default = "default_interval")]
-    interval: usize,
-    #[serde(default)]
-    predict_num: usize,
-    /// 重算滚动预测频率（秒）
-    #[serde(default = "default_compute_secs")]
-    refresh_secs: u64,
-    /// 拉取历史频率（秒）
-    #[serde(default = "default_fetch_secs")]
-    fetch_secs: u64,
-    /// 拉取对齐偏移（秒）
-    #[serde(default = "default_fetch_offset_secs")]
-    fetch_offset_secs: u64,
-    /// 单次拉取的最大记录条数
-    #[serde(default = "default_fetch_limit")]
-    history_limit: usize,
-    #[serde(default = "default_resample_ms")]
-    resample_ms: u64,
-    /// funding rate 滚动均值窗口大小（条数）
-    #[serde(default = "default_funding_ma_size")]
-    funding_ma_size: usize,
-    /// 结算偏移（秒）：基于 UTC 准点（4h 周期）增加的偏移量
-    #[serde(default = "default_settlement_offset_secs")]
-    settlement_offset_secs: i64,
-}
-
-const fn default_interval() -> usize {
-    6
-}
-const fn default_compute_secs() -> u64 {
-    30
-}
-const fn default_fetch_secs() -> u64 {
-    7200
-}
-const fn default_fetch_offset_secs() -> u64 {
-    120
-}
-const fn default_fetch_limit() -> usize {
-    100
-}
-const fn default_resample_ms() -> u64 {
-    3000
-}
-const fn default_funding_ma_size() -> usize {
-    60
-}
-const fn default_settlement_offset_secs() -> i64 {
-    0
-}
-
-/// 策略总体配置
-#[derive(Debug, Clone, Deserialize)]
-struct StrategyConfig {
-    #[allow(dead_code)]
-    #[serde(default)]
-    redis: Option<RedisSettings>,
-    /// Redis key 存储追踪的价差阈值（无需本地 tracking JSON）
-    #[serde(default)]
-    redis_key: Option<String>,
-    #[serde(default)]
-    order: OrderConfig,
-    #[serde(default)]
-    signal: SignalConfig,
-    #[serde(default)]
-    reload: ReloadConfig,
-    #[serde(default)]
-    strategy: StrategyParams,
-    #[serde(default)]
-    loan: LoanConfig,
-}
-
-impl Default for StrategyConfig {
-    fn default() -> Self {
-        Self {
-            redis: Some(RedisSettings::default()),
-            redis_key: None,
-            order: OrderConfig::default(),
-            signal: SignalConfig::default(),
-            reload: ReloadConfig::default(),
-            strategy: StrategyParams::default(),
-            loan: LoanConfig::default(),
-        }
-    }
-}
-
-impl StrategyConfig {
-    fn load() -> Result<Self> {
-        let mut cfg = StrategyConfig::default();
-
-        let redis_cfg = cfg.redis.get_or_insert_with(RedisSettings::default);
-        if let Ok(host) = std::env::var("FUNDING_RATE_REDIS_HOST") {
-            if !host.trim().is_empty() {
-                redis_cfg.host = host;
-            }
-        }
-        if let Ok(port) = std::env::var("FUNDING_RATE_REDIS_PORT") {
-            match port.parse::<u16>() {
-                Ok(value) => redis_cfg.port = value,
-                Err(err) => warn!("无效的 FUNDING_RATE_REDIS_PORT='{}': {}", port, err),
-            }
-        }
-        if let Ok(db) = std::env::var("FUNDING_RATE_REDIS_DB") {
-            match db.parse::<i64>() {
-                Ok(value) => redis_cfg.db = value,
-                Err(err) => warn!("无效的 FUNDING_RATE_REDIS_DB='{}': {}", db, err),
-            }
-        }
-        if let Ok(user) = std::env::var("FUNDING_RATE_REDIS_USER") {
-            redis_cfg.username = if user.trim().is_empty() {
-                None
-            } else {
-                Some(user)
-            };
-        }
-        if let Ok(password) = std::env::var("FUNDING_RATE_REDIS_PASS") {
-            redis_cfg.password = if password.trim().is_empty() {
-                None
-            } else {
-                Some(password)
-            };
-        }
-        if let Ok(prefix) = std::env::var("FUNDING_RATE_REDIS_PREFIX") {
-            redis_cfg.prefix = if prefix.trim().is_empty() {
-                None
-            } else {
-                Some(prefix)
-            };
-        }
-
-        if let Ok(redis_key) = std::env::var("FUNDING_RATE_REDIS_KEY") {
-            if !redis_key.trim().is_empty() {
-                cfg.redis_key = Some(redis_key);
-            }
-        }
-
-        cfg.strategy.funding_ma_size = 60;
-        cfg.strategy.settlement_offset_secs = cfg.strategy.fetch_offset_secs as i64;
-
-        if let Some(redis_cfg) = cfg.redis.as_ref() {
-            info!(
-                "Redis 数据源配置: host={} port={} db={} prefix={:?}",
-                redis_cfg.host, redis_cfg.port, redis_cfg.db, redis_cfg.prefix
-            );
-        }
-        info!(
-            "策略配置加载完成(无本地 TOML): reload_interval={}s strategy: interval={} predict_num={} refresh_secs={}s fetch_secs={}s fetch_offset={}s history_limit={} settlement_offset_secs={}",
-            cfg.reload.interval_secs,
-            cfg.strategy.interval, cfg.strategy.predict_num, cfg.strategy.refresh_secs,
-            cfg.strategy.fetch_secs, cfg.strategy.fetch_offset_secs, cfg.strategy.history_limit,
-            cfg.strategy.settlement_offset_secs
-        );
-        Ok(cfg)
-    }
-
-    // reload_interval() helper was unused; next_reload scheduling uses cfg.reload.interval_secs directly
-
-    fn max_open_keep_us(&self) -> i64 {
-        (self.order.max_open_order_keep_s.max(1) * 1_000_000) as i64
-    }
-
-    fn max_hedge_keep_us(&self) -> i64 {
-        (self.order.max_hedge_order_keep_s.max(1) * 1_000_000) as i64
-    }
-
-    fn min_signal_gap_us(&self) -> i64 {
-        (self.signal.min_interval_ms * 1_000) as i64
-    }
-}
-
-/// 价差阈值配置
-#[derive(Debug, Clone)]
-struct SymbolThreshold {
-    spot_symbol: String,
-    futures_symbol: String,
-    // BidAskSR 阈值（开/关）: (spot_bid - fut_ask) / spot_bid
-    forward_open_threshold: f64,
-    forward_cancel_threshold: f64,
-    // AskBidSR 阈值（平仓）: (spot_ask - fut_bid) / spot_ask
-    forward_close_threshold: f64,
-    // AskBidSR 阈值（平仓辅助，用于撤单优化）
-    forward_cancel_close_threshold: Option<f64>,
-}
-
-/// 行情报价
-#[derive(Debug, Clone, Copy, Default)]
-struct Quote {
-    bid: f64,
-    ask: f64,
-    ts: i64,
-}
-
-impl Quote {
-    fn update(&mut self, bid: f64, ask: f64, ts: i64) {
-        self.bid = bid;
-        self.ask = ask;
-        self.ts = ts;
-    }
-
-    fn is_ready(&self) -> bool {
-        self.bid > 0.0 && self.ask > 0.0
-    }
-}
-
-/// 单个交易对的运行时状态
-#[derive(Debug, Clone)]
-struct SymbolState {
-    spot_symbol: String,
-    futures_symbol: String,
-    forward_open_threshold: f64,
-    forward_cancel_threshold: f64,
-    forward_close_threshold: f64,
-    forward_cancel_close_threshold: Option<f64>,
-    spot_quote: Quote,
-    futures_quote: Quote,
-    last_ratio: Option<f64>,
-    last_open_ts: Option<i64>,
-    last_signal_ts: Option<i64>,
-    funding_rate: f64,
-    predicted_rate: f64,
-    loan_rate: f64,
-    funding_ts: i64,
-    next_funding_time: i64,
-    funding_ma: Option<f64>,
-    predicted_signal: i32,
-    ma_signal: i32,
-    final_signal_value: i32,
-    current_bidask_sr: Option<f64>,
-    current_askbid_sr: Option<f64>,
-    spot_mid_price: Option<f64>,
-    futures_mid_price: Option<f64>,
-    spread_rate: Option<f64>,
-    last_ladder_cancel_ts: Option<i64>,
-    open_batch_marker: Option<i64>,
-}
-
-impl SymbolState {
-    fn new(threshold: SymbolThreshold) -> Self {
-        Self {
-            spot_symbol: threshold.spot_symbol,
-            futures_symbol: threshold.futures_symbol,
-            forward_open_threshold: threshold.forward_open_threshold,
-            forward_cancel_threshold: threshold.forward_cancel_threshold,
-            forward_close_threshold: threshold.forward_close_threshold,
-            forward_cancel_close_threshold: threshold.forward_cancel_close_threshold,
-            spot_quote: Quote::default(),
-            futures_quote: Quote::default(),
-            last_ratio: None,
-            last_open_ts: None,
-            last_signal_ts: None,
-            funding_rate: 0.0,
-            predicted_rate: 0.0,
-            loan_rate: 0.0,
-            funding_ts: 0,
-            next_funding_time: 0,
-            funding_ma: None,
-            predicted_signal: 0,
-            ma_signal: 0,
-            final_signal_value: 0,
-            current_bidask_sr: None,
-            current_askbid_sr: None,
-            spot_mid_price: None,
-            futures_mid_price: None,
-            spread_rate: None,
-            last_ladder_cancel_ts: None,
-            open_batch_marker: None,
-        }
-    }
-
-    fn update_threshold(&mut self, threshold: SymbolThreshold) {
-        self.forward_open_threshold = threshold.forward_open_threshold;
-        self.forward_cancel_threshold = threshold.forward_cancel_threshold;
-        self.forward_close_threshold = threshold.forward_close_threshold;
-        self.forward_cancel_close_threshold = threshold.forward_cancel_close_threshold;
-        self.futures_symbol = threshold.futures_symbol;
-        // reset batch markers when thresholds change
-        self.open_batch_marker = None;
-    }
-
-    fn ready_for_eval(&self) -> bool {
-        self.spot_quote.is_ready() && self.futures_quote.is_ready()
-    }
-
-    /// bidask_sr = (spot_bid - futures_ask) / spot_bid
-    fn calc_bidask_sr(&self) -> Option<f64> {
-        compute_bidask_sr(
-            (self.spot_quote.bid > 0.0).then_some(self.spot_quote.bid),
-            (self.futures_quote.ask > 0.0).then_some(self.futures_quote.ask),
-        )
-    }
-
-    /// askbid_sr = (spot_ask - futures_bid) / spot_ask
-    fn calc_askbid_sr(&self) -> Option<f64> {
-        compute_askbid_sr(
-            (self.spot_quote.ask > 0.0).then_some(self.spot_quote.ask),
-            (self.futures_quote.bid > 0.0).then_some(self.futures_quote.bid),
-        )
-    }
-
-    fn calc_mid_prices(&self) -> (Option<f64>, Option<f64>) {
-        let spot_mid = if self.spot_quote.bid > 0.0 && self.spot_quote.ask > 0.0 {
-            Some((self.spot_quote.bid + self.spot_quote.ask) * 0.5)
-        } else {
-            None
-        };
-        let futures_mid = if self.futures_quote.bid > 0.0 && self.futures_quote.ask > 0.0 {
-            Some((self.futures_quote.bid + self.futures_quote.ask) * 0.5)
-        } else {
-            None
-        };
-        (spot_mid, futures_mid)
-    }
-
-    fn calc_spread_rate(&self, spot_mid: Option<f64>, fut_mid: Option<f64>) -> Option<f64> {
-        match (spot_mid, fut_mid) {
-            (Some(s), Some(f)) if s > 0.0 => Some((s - f) / s),
-            _ => None,
-        }
-    }
-
-    fn refresh_factors(&mut self) {
-        self.current_bidask_sr = self.calc_bidask_sr();
-        self.current_askbid_sr = self.calc_askbid_sr();
-        let (spot_mid, futures_mid) = self.calc_mid_prices();
-        self.spot_mid_price = spot_mid;
-        self.futures_mid_price = futures_mid;
-        self.spread_rate = self.calc_spread_rate(spot_mid, futures_mid);
-    }
-
-    fn can_emit_signal(&self, now_us: i64, min_gap_us: i64) -> bool {
-        if min_gap_us <= 0 {
-            return true;
-        }
-        match self.last_signal_ts {
-            Some(prev) => now_us.saturating_sub(prev) >= min_gap_us,
-            None => true,
-        }
-    }
-
-    fn mark_signal(&mut self, now_us: i64) {
-        self.last_signal_ts = Some(now_us);
-        let bucket = bucket_ts(now_us);
-        self.open_batch_marker = Some(bucket);
-    }
-
-    fn in_open_batch(&self, ts: i64) -> bool {
-        let bucket = bucket_ts(ts);
-        self.open_batch_marker == Some(bucket)
-    }
-
-    fn can_emit_ladder_cancel(&self, now_us: i64, min_gap_us: i64) -> bool {
-        if min_gap_us <= 0 {
-            return true;
-        }
-        match self.last_ladder_cancel_ts {
-            Some(prev) => now_us.saturating_sub(prev) >= min_gap_us,
-            None => true,
-        }
-    }
-
-    fn mark_ladder_cancel(&mut self, now_us: i64) {
-        self.last_ladder_cancel_ts = Some(now_us);
-    }
-}
-
-/// 统计信息
-#[derive(Debug, Default)]
-struct EngineStats {
-    open_signals: u64,
-    ladder_cancel_signals: u64,
-}
-
-#[derive(Debug, Clone)]
-struct EvaluateDecision {
-    symbol_key: String,
-    final_signal: i32,
-    can_emit: bool,
-    bidask_sr: Option<f64>,
-    askbid_sr: Option<f64>,
-}
-
-#[derive(Debug, Clone)]
-struct QtyStepInfo {
-    spot_min: f64,
-    futures_min: f64,
-    step: f64,
+fn bucket_ts(ts_us: i64) -> i64 {
+    ts_us / 1_000_000
 }
 
 /// 主策略执行引擎
@@ -2875,7 +2279,7 @@ fn build_separator(widths: &[usize], fill: char) -> String {
         line.push('+');
     }
     line
-}
+} 
 
 fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
     let mut row = String::new();
@@ -2886,8 +2290,8 @@ fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
         row.push(' ');
         row.push('|');
     }
-    row
-}
+    row 
+} 
 
 #[tokio::main(flavor = "current_thread")] 
 async fn main() -> Result<()> { 
@@ -2984,15 +2388,15 @@ async fn main() -> Result<()> {
                     ts
                 );
                 engine.handle_futures_quote(&msg);
-            }
-        }
+            } 
+        } 
 
         for msg in subscriber.poll_channel("binance-futures", &ChannelType::Derivatives, Some(32)) {
             match mkt_msg::get_msg_type(&msg) {
                 MktMsgType::FundingRate => engine.handle_funding_rate(&msg),
                 _ => (),
-            }
-        }
+            } 
+        } 
 
         if let Some(backward) = backward_subscriber.as_ref() {
             let messages = backward.drain();
@@ -3303,9 +2707,9 @@ async fn fetch_binance_funding_history_range(
         ("limit", &limit_s),
     ];
     let resp = client.get(url).query(&params).send().await?;
-    if !resp.status().is_success() {
-        return Ok(vec![]);
-    }
+    if !resp.status().is_success() { 
+        return Ok(vec![]); 
+    } 
     let mut items: Vec<BinanceFundingHistItem> = resp.json().await.unwrap_or_default();
     items.sort_by_key(|it| it.funding_time.unwrap_or_default());
     let mut out = Vec::with_capacity(items.len());

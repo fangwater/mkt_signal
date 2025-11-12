@@ -59,27 +59,27 @@ async fn main() -> Result<()> {
                 warn!("Failed to initialize ResampleChannel: {err:#}");
             } else {
                 info!("ResampleChannel initialized successfully");
-            }
+            } 
 
-            // 6. 初始化 TradeEngChannel
-            info!("Initializing TradeEngChannel singleton...");
+            // 6. 初始化 TradeEngChannel 
+            info!("Initializing TradeEngChannel singleton..."); 
             if let Err(err) = TradeEngChannel::initialize("order_reqs/binance", "order_resps/binance") {
-                warn!("Failed to initialize TradeEngChannel: {err:#}");
+                warn!("Failed to initialize TradeEngChannel: {err:#}"); 
             } else {
                 info!("TradeEngChannel initialized on services: req=order_reqs/binance, resp=order_resps/binance");
-            }
+            } 
 
             // 7. 预热 PersistChannel（自动初始化，调用一次即可）
             info!("Initializing PersistChannel singleton...");
             PersistChannel::with(|_ch| {
-                info!("PersistChannel initialized successfully");
-            });
+                info!("PersistChannel initialized successfully"); 
+            }); 
 
-            info!("All singletons initialized, starting pre_trade main loop...");
+            info!("All singletons initialized, starting pre_trade main loop..."); 
 
-            // 8. 运行主循环
-            let pre_trade = PreTrade::new();
-            pre_trade.run().await
+            // 8. 运行主循环 
+            let pre_trade = PreTrade::new(); 
+            pre_trade.run().await 
         })
         .await
 }

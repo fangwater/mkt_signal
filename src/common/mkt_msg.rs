@@ -724,6 +724,49 @@ impl MarkPriceMsg {
 
         buf.freeze()
     }
+
+    /// 从字节数组获取symbol的引用（零拷贝）
+    #[inline]
+    pub fn get_symbol(data: &[u8]) -> &str {
+        let symbol_length = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        std::str::from_utf8(&data[8..8 + symbol_length]).unwrap()
+    }
+
+    /// 获取mark_price（零拷贝）
+    #[inline]
+    pub fn get_mark_price(data: &[u8]) -> f64 {
+        let symbol_length = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let offset = 8 + symbol_length; // header + symbol
+
+        f64::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+            data[offset + 4],
+            data[offset + 5],
+            data[offset + 6],
+            data[offset + 7],
+        ])
+    }
+
+    /// 获取timestamp（零拷贝）
+    #[inline]
+    pub fn get_timestamp(data: &[u8]) -> i64 {
+        let symbol_length = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let offset = 8 + symbol_length + 8; // header + symbol + mark_price
+
+        i64::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+            data[offset + 4],
+            data[offset + 5],
+            data[offset + 6],
+            data[offset + 7],
+        ])
+    }
 }
 
 impl IndexPriceMsg {
