@@ -11,8 +11,8 @@ use anyhow::Result;
 
 // ===== 占位结构（实际实现在 fr_signal.rs 中）=====
 
-pub enum SignalRequest {}
-pub struct BackwardSignalSubscriber {}
+pub enum SignalRequest {} 
+pub struct BackwardSignalSubscriber {} 
 
 // ===== 主信号生成器 =====
 
@@ -31,11 +31,11 @@ pub fn forward_open_ready(bidask_sr: Option<f64>, threshold: f64) -> bool {
 
 pub fn forward_close_ready(askbid_sr: Option<f64>, threshold: f64) -> bool {
     threshold.is_finite() && askbid_sr.map(|sr| sr >= threshold).unwrap_or(false)
-}
+} 
 
 pub fn opt_finite(val: f64) -> Option<f64> {
     if val.is_finite() { Some(val) } else { None }
-}
+} 
 
 pub fn opt_active_threshold(val: f64) -> Option<f64> {
     if val.is_finite() && val.abs() > f64::EPSILON { Some(val) } else { None }
