@@ -3,23 +3,10 @@
 //! 提供价差因子计算、存储和阈值判断功能。
 //! 维护 askbid 和 bidask 两种价差因子，支持正套/反套开仓/撤单/平仓判断。
 
-use super::common::{ArbDirection, CompareOp, OperationType, ThresholdKey, VenuePair, SymbolPair};
+use super::common::{ArbDirection, CompareOp, FactorMode, OperationType, ThresholdKey, VenuePair, SymbolPair};
 use crate::signal::common::TradingVenue;
 use std::cell::RefCell;
 use std::collections::HashMap;
-
-/// 价差因子模式
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SpreadFactorMode {
-    MM,
-    MT,
-}
-
-impl Default for SpreadFactorMode {
-    fn default() -> Self {
-        SpreadFactorMode::MM
-    }
-}
 
 /// 价差类型 (bidask 或 askbid)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -73,7 +60,7 @@ pub struct SpreadFactor {
     thresholds: RefCell<HashMap<ThresholdKey, SpreadThresholdConfig>>,
 
     /// 模式: MM 或 MT
-    mode: RefCell<SpreadFactorMode>,
+    mode: RefCell<FactorMode>,
 }
 
 impl SpreadFactor {
@@ -84,7 +71,7 @@ impl SpreadFactor {
             bidask: RefCell::new(HashMap::new()),
             spread_rate: RefCell::new(HashMap::new()),
             thresholds: RefCell::new(HashMap::new()),
-            mode: RefCell::new(SpreadFactorMode::default()),
+            mode: RefCell::new(FactorMode::default()),
         }
     }
 
@@ -235,12 +222,12 @@ impl SpreadFactor {
     // ===== 模式管理 =====
 
     /// 设置价差因子模式
-    pub fn set_mode(&self, mode: SpreadFactorMode) {
+    pub fn set_mode(&self, mode: FactorMode) {
         *self.mode.borrow_mut() = mode;
     }
 
     /// 获取当前价差因子模式
-    pub fn get_mode(&self) -> SpreadFactorMode {
+    pub fn get_mode(&self) -> FactorMode {
         *self.mode.borrow()
     }
 
@@ -417,8 +404,8 @@ impl SpreadFactor {
                 if let Some(v) = value {
                     // 根据当前模式选择对应的阈值
                     let threshold = match current_mode {
-                        SpreadFactorMode::MM => config.mm_threshold,
-                        SpreadFactorMode::MT => config.mt_threshold,
+                        FactorMode::MM => config.mm_threshold,
+                        FactorMode::MT => config.mt_threshold,
                     };
                     return config.compare_op.check(v, threshold);
                 }
@@ -453,8 +440,8 @@ impl SpreadFactor {
                 if let Some(v) = value {
                     // 根据当前模式选择对应的阈值
                     let threshold = match current_mode {
-                        SpreadFactorMode::MM => config.mm_threshold,
-                        SpreadFactorMode::MT => config.mt_threshold,
+                        FactorMode::MM => config.mm_threshold,
+                        FactorMode::MT => config.mt_threshold,
                     };
                     return config.compare_op.check(v, threshold);
                 }
@@ -489,8 +476,8 @@ impl SpreadFactor {
                 if let Some(v) = value {
                     // 根据当前模式选择对应的阈值
                     let threshold = match current_mode {
-                        SpreadFactorMode::MM => config.mm_threshold,
-                        SpreadFactorMode::MT => config.mt_threshold,
+                        FactorMode::MM => config.mm_threshold,
+                        FactorMode::MT => config.mt_threshold,
                     };
                     return config.compare_op.check(v, threshold);
                 }
@@ -525,8 +512,8 @@ impl SpreadFactor {
                 if let Some(v) = value {
                     // 根据当前模式选择对应的阈值
                     let threshold = match current_mode {
-                        SpreadFactorMode::MM => config.mm_threshold,
-                        SpreadFactorMode::MT => config.mt_threshold,
+                        FactorMode::MM => config.mm_threshold,
+                        FactorMode::MT => config.mt_threshold,
                     };
                     return config.compare_op.check(v, threshold);
                 }
@@ -561,8 +548,8 @@ impl SpreadFactor {
                 if let Some(v) = value {
                     // 根据当前模式选择对应的阈值
                     let threshold = match current_mode {
-                        SpreadFactorMode::MM => config.mm_threshold,
-                        SpreadFactorMode::MT => config.mt_threshold,
+                        FactorMode::MM => config.mm_threshold,
+                        FactorMode::MT => config.mt_threshold,
                     };
                     return config.compare_op.check(v, threshold);
                 }
@@ -597,8 +584,8 @@ impl SpreadFactor {
                 if let Some(v) = value {
                     // 根据当前模式选择对应的阈值
                     let threshold = match current_mode {
-                        SpreadFactorMode::MM => config.mm_threshold,
-                        SpreadFactorMode::MT => config.mt_threshold,
+                        FactorMode::MM => config.mm_threshold,
+                        FactorMode::MT => config.mt_threshold,
                     };
                     return config.compare_op.check(v, threshold);
                 }
@@ -677,7 +664,7 @@ mod tests {
         sf.set_forward_open_threshold(venue1, symbol1, venue2, symbol2, 0.005, 0.006);
 
         // 测试 MM 模式
-        sf.set_mode(SpreadFactorMode::MM);
+        sf.set_mode(FactorMode::MM);
 
         // 更新 bidask = 0.003 (满足MM条件: < 0.005)
         // venue1_bid=100.0, venue2_ask=99.7 => bidask = (100 - 99.7) / 100 = 0.003
@@ -690,7 +677,7 @@ mod tests {
         assert!(!sf.satisfy_forward_open(venue1, symbol1, venue2, symbol2));
 
         // 测试 MT 模式
-        sf.set_mode(SpreadFactorMode::MT);
+        sf.set_mode(FactorMode::MT);
 
         // bidask = 0.0055 (满足MT条件: < 0.006)
         assert!(sf.satisfy_forward_open(venue1, symbol1, venue2, symbol2));
@@ -714,7 +701,7 @@ mod tests {
         sf.set_forward_close_threshold(venue1, symbol1, venue2, symbol2, 0.01, 0.009);
 
         // 测试 MM 模式
-        sf.set_mode(SpreadFactorMode::MM);
+        sf.set_mode(FactorMode::MM);
 
         // 更新 askbid = 0.015 (满足MM条件: > 0.01)
         // venue1_ask=1.0, venue2_bid=0.985 => askbid = (1.0 - 0.985) / 1.0 = 0.015
@@ -727,7 +714,7 @@ mod tests {
         assert!(!sf.satisfy_forward_close(venue1, symbol1, venue2, symbol2));
 
         // 测试 MT 模式
-        sf.set_mode(SpreadFactorMode::MT);
+        sf.set_mode(FactorMode::MT);
 
         // askbid = 0.0095 (满足MT条件: > 0.009)
         assert!(sf.satisfy_forward_close(venue1, symbol1, venue2, symbol2));
@@ -751,7 +738,7 @@ mod tests {
         sf.set_backward_open_threshold(venue1, symbol1, venue2, symbol2, 0.003, 0.004);
 
         // 测试 MM 模式
-        sf.set_mode(SpreadFactorMode::MM);
+        sf.set_mode(FactorMode::MM);
 
         // 更新 askbid = 0.002 (满足MM条件: < 0.003)
         // venue1_ask=0.1, venue2_bid=0.0998 => askbid = (0.1 - 0.0998) / 0.1 = 0.002
@@ -764,7 +751,7 @@ mod tests {
         assert!(!sf.satisfy_backward_open(venue1, symbol1, venue2, symbol2));
 
         // 测试 MT 模式
-        sf.set_mode(SpreadFactorMode::MT);
+        sf.set_mode(FactorMode::MT);
 
         // askbid = 0.0035 (满足MT条件: < 0.004)
         assert!(sf.satisfy_backward_open(venue1, symbol1, venue2, symbol2));
@@ -780,14 +767,14 @@ mod tests {
         let sf = SpreadFactor::instance();
 
         // 验证默认模式为 MM
-        assert_eq!(sf.get_mode(), SpreadFactorMode::MM);
+        assert_eq!(sf.get_mode(), FactorMode::MM);
 
         // 设置为 MT 模式
-        sf.set_mode(SpreadFactorMode::MT);
-        assert_eq!(sf.get_mode(), SpreadFactorMode::MT);
+        sf.set_mode(FactorMode::MT);
+        assert_eq!(sf.get_mode(), FactorMode::MT);
 
         // 切换回 MM 模式
-        sf.set_mode(SpreadFactorMode::MM);
-        assert_eq!(sf.get_mode(), SpreadFactorMode::MM);
+        sf.set_mode(FactorMode::MM);
+        assert_eq!(sf.get_mode(), FactorMode::MM);
     }
 }

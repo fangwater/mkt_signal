@@ -14,6 +14,7 @@ pub mod mkt_channel;
 pub mod symbol_list;
 pub mod rate_fetcher;
 pub mod spread_factor;
+pub mod funding_rate_factor;
 
 // 公共导出
 pub use param_loader::{
@@ -48,7 +49,10 @@ pub use symbol_list::SymbolList;
 pub use rate_fetcher::RateFetcher;
 
 // 导出通用定义
-pub use common::{ArbDirection, CompareOp, OperationType, ThresholdKey, VenuePair, SymbolPair};
+pub use common::{ArbDirection, CompareOp, FactorMode, OperationType, ThresholdKey, VenuePair, SymbolPair};
 
 // 导出价差因子相关
-pub use spread_factor::{SpreadFactor, SpreadFactorMode, SpreadThresholdConfig, SpreadType};
+pub use spread_factor::{SpreadFactor, SpreadThresholdConfig, SpreadType};
+
+// 导出资金费率因子相关
+pub use funding_rate_factor::{FundingRateFactor, FrThresholdConfig};

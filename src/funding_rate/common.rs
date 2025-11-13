@@ -51,3 +51,18 @@ pub type SymbolPair = (String, String);
 
 /// 完整的阈值 key: (venue1, symbol1, venue2, symbol2)
 pub type ThresholdKey = (TradingVenue, String, TradingVenue, String);
+
+/// 因子模式（MM/MT 模式通用定义）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FactorMode {
+    /// Maker-Maker 模式
+    MM,
+    /// Maker-Taker 模式（对冲是 taker 方）
+    MT,
+}
+
+impl Default for FactorMode {
+    fn default() -> Self {
+        FactorMode::MM
+    }
+}

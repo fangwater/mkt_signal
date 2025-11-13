@@ -41,6 +41,10 @@ name = "demo_send_um_market_short"
 path = "src/bin/demo_send_um_market_short.rs"
 
 [[bin]]
+name = "demo_rate_fetcher"
+path = "src/bin/demo_rate_fetcher.rs"
+
+[[bin]]
 name = "pre_trade"
 path = "src/bin/pre_trade.rs"
 
