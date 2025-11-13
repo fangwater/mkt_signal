@@ -96,3 +96,116 @@ pub struct QtyStepInfo {
     pub futures_min: f64,
     pub step: f64,
 }
+
+/// 交易对状态
+#[derive(Debug, Clone)]
+pub struct SymbolState {
+    // 基础信息
+    pub spot_symbol: String,
+    pub futures_symbol: String,
+
+    // 盘口数据
+    pub spot_quote: Quote,
+    pub futures_quote: Quote,
+
+    // 资金费率数据
+    pub funding_rate: f64,
+    pub funding_ts: i64,
+    pub next_funding_time: i64,
+    pub funding_rate_data: FundingRateData,
+    pub predicted_rate: f64,  // 预测资金费率
+
+    // 阈值配置（从Redis加载）
+    pub forward_open_threshold: f64,
+    pub forward_cancel_threshold: f64,
+    pub forward_close_threshold: f64,
+    pub forward_cancel_close_threshold: Option<f64>,
+
+    // 资金费率阈值
+    pub fr_open_upper: f64,   // 0.00008 for 8h
+    pub fr_open_lower: f64,   // -0.00008 for 8h
+    pub fr_close_upper: f64,  // 0.0005
+    pub fr_close_lower: f64,  // -0.0005
+
+    // 借贷利率
+    pub loan_rate: f64,
+
+    // 信号状态
+    pub last_signal: i32,      // -1撤单/0无/1开仓
+    pub last_signal_ts: i64,
+
+    // 价差因子缓存
+    pub bidask_sr: Option<f64>,  // (spot_bid - fut_ask) / spot_bid
+    pub askbid_sr: Option<f64>,  // (spot_ask - fut_bid) / spot_ask
+    pub spread_rate: Option<f64>, // mid_price spread
+}
+
+impl SymbolState {
+    pub fn new(th: super::param_loader::SymbolThreshold) -> Self {
+        Self {
+            spot_symbol: th.spot_symbol,
+            futures_symbol: th.futures_symbol,
+            spot_quote: Quote::default(),
+            futures_quote: Quote::default(),
+            funding_rate: 0.0,
+            funding_ts: 0,
+            next_funding_time: 0,
+            funding_rate_data: FundingRateData::new(),
+            predicted_rate: 0.0,
+            forward_open_threshold: th.forward_open_threshold,
+            forward_cancel_threshold: th.forward_cancel_threshold,
+            forward_close_threshold: th.forward_close_threshold,
+            forward_cancel_close_threshold: th.forward_cancel_close_threshold,
+            fr_open_upper: 0.00008,
+            fr_open_lower: -0.00008,
+            fr_close_upper: 0.0005,
+            fr_close_lower: -0.0005,
+            loan_rate: 0.0,
+            last_signal: 0,
+            last_signal_ts: 0,
+            bidask_sr: None,
+            askbid_sr: None,
+            spread_rate: None,
+        }
+    }
+
+    pub fn update_threshold(&mut self, th: super::param_loader::SymbolThreshold) {
+        self.forward_open_threshold = th.forward_open_threshold;
+        self.forward_cancel_threshold = th.forward_cancel_threshold;
+        self.forward_close_threshold = th.forward_close_threshold;
+        self.forward_cancel_close_threshold = th.forward_cancel_close_threshold;
+    }
+
+    /// 刷新价差因子
+    pub fn refresh_factors(&mut self) {
+        let spot_bid = self.spot_quote.bid;
+        let spot_ask = self.spot_quote.ask;
+        let fut_bid = self.futures_quote.bid;
+        let fut_ask = self.futures_quote.ask;
+
+        // bidask_sr = (spot_bid - fut_ask) / spot_bid (正套开仓指标)
+        if spot_bid > 0.0 && fut_ask > 0.0 {
+            self.bidask_sr = Some((spot_bid - fut_ask) / spot_bid);
+        } else {
+            self.bidask_sr = None;
+        }
+
+        // askbid_sr = (spot_ask - fut_bid) / spot_ask (正套平仓指标)
+        if spot_ask > 0.0 && fut_bid > 0.0 {
+            self.askbid_sr = Some((spot_ask - fut_bid) / spot_ask);
+        } else {
+            self.askbid_sr = None;
+        }
+
+        // spread_rate = (mid_spot - mid_fut) / mid_spot
+        if spot_bid > 0.0 && spot_ask > 0.0 && fut_bid > 0.0 && fut_ask > 0.0 {
+            let mid_spot = (spot_bid + spot_ask) / 2.0;
+            let mid_fut = (fut_bid + fut_ask) / 2.0;
+            if mid_spot > 0.0 {
+                self.spread_rate = Some((mid_spot - mid_fut) / mid_spot);
+            }
+        } else {
+            self.spread_rate = None;
+        }
+    }
+}

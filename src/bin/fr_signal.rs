@@ -1,44 +1,42 @@
-//! Funding Rate 资金费率套利信号生成器（精简版）
+//! Funding Rate 资金费率套利信号生成器（极简版）
 //!
-//! 这是基于模块化设计的新实现，只依赖 src/funding_rate/ 模块
+//! 基于资金费率和价差计算交易信号，发送给 pre_trade
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::Result;
 use log::info;
-use reqwest::Client;
 #[cfg(unix)]
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use mkt_signal::common::iceoryx_publisher::{ResamplePublisher, SignalPublisher};
-use mkt_signal::common::min_qty_table::MinQtyTable;
+use mkt_signal::common::iceoryx_publisher::SignalPublisher;
 use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
-use mkt_signal::mkt_msg::{AskBidSpreadMsg, FundingRateMsg};
+use mkt_signal::common::time_util::get_timestamp_us;
+use mkt_signal::signal::common::TradingVenue;
+use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
 
 // 使用模块化的 funding_rate
 use mkt_signal::funding_rate::{
-    EngineStats, FundingThresholdEntry, ParamsSnapshot, QtyStepInfo, RateThresholds,
-    SymbolState, SymbolThreshold, approx_equal,
+    EngineStats, SymbolState, SymbolThreshold, approx_equal,
+    mkt_channel::MktChannel, rate_fetcher::RateFetcher,
 };
 
 const PROCESS_NAME: &str = "fr_signal";
 const SIGNAL_CHANNEL: &str = "funding_rate_signal";
-const FR_RESAMPLE_MSG_CHANNEL: &str = "fr_resample_msg";
-const NODE_SUB: &str = "fr_signal_sub";
 const DEFAULT_REDIS_KEY: &str = "binance_forward_spread_thresholds";
 
-// 写死的配置常量
+// 配置常量
 const RELOAD_INTERVAL_SECS: u64 = 60;
+const TICK_INTERVAL_MS: u64 = 100;
+const MIN_SIGNAL_INTERVAL_US: i64 = 1_000_000; // 1秒
 
-/// 简化配置结构（写死所有值，只有 Redis 连接信息从环境变量读取）
+/// 简化配置结构
 struct Config {
     redis: RedisSettings,
     redis_key: String,
-    reload_interval_secs: u64,
 }
 
 impl Config {
@@ -58,7 +56,6 @@ impl Config {
                 prefix: None,
             },
             redis_key,
-            reload_interval_secs: RELOAD_INTERVAL_SECS,
         })
     }
 }
@@ -70,58 +67,22 @@ struct Engine {
     symbols: HashMap<String, SymbolState>,
     futures_index: HashMap<String, String>,
     stats: EngineStats,
-    min_qty: MinQtyTable,
-    qty_step_cache: RefCell<HashMap<String, QtyStepInfo>>,
-    history_map: HashMap<String, Vec<f64>>,
-    predicted_map: HashMap<String, f64>,
-    http: Client,
-    resample_msg_pub: ResamplePublisher,
-    funding_series: HashMap<String, Vec<f64>>,
-    loan_map: HashMap<String, f64>,
-    funding_thresholds: HashMap<String, FundingThresholdEntry>,
-    funding_frequency: HashMap<String, String>,
-    last_params: Option<ParamsSnapshot>,
-    th_4h: RateThresholds,
-    th_8h: RateThresholds,
-    warmup_done: bool,
     next_reload: Instant,
-    next_compute_refresh: Instant,
-    next_fetch_refresh: Instant,
-    next_resample: Instant,
-    next_loan_refresh: Instant,
 }
 
 impl Engine {
     async fn new(cfg: Config, publisher: SignalPublisher) -> Result<Self> {
-        let resample_msg_pub = ResamplePublisher::new(FR_RESAMPLE_MSG_CHANNEL)?;
         Ok(Self {
             cfg,
             publisher,
             symbols: HashMap::new(),
             futures_index: HashMap::new(),
             stats: EngineStats::default(),
-            min_qty: MinQtyTable::new(),
-            qty_step_cache: RefCell::new(HashMap::new()),
-            history_map: HashMap::new(),
-            predicted_map: HashMap::new(),
-            http: Client::new(),
-            resample_msg_pub,
-            funding_series: HashMap::new(),
-            loan_map: HashMap::new(),
-            funding_thresholds: HashMap::new(),
-            funding_frequency: HashMap::new(),
-            last_params: None,
-            th_4h: RateThresholds::for_4h(),
-            th_8h: RateThresholds::for_8h(),
-            warmup_done: false,
             next_reload: Instant::now(),
-            next_compute_refresh: Instant::now() + Duration::from_secs(30),
-            next_fetch_refresh: Instant::now() + Duration::from_secs(60),
-            next_resample: Instant::now() + Duration::from_secs(3),
-            next_loan_refresh: Instant::now() + Duration::from_secs(60),
         })
     }
 
+    /// 从 Redis 加载阈值配置
     async fn load_thresholds_from_redis(&self) -> Result<Vec<SymbolThreshold>> {
         let mut client = RedisClient::connect(self.cfg.redis.clone()).await?;
         let map = client.hgetall_map(&self.cfg.redis_key).await.unwrap_or_default();
@@ -152,6 +113,7 @@ impl Engine {
         Ok(thresholds)
     }
 
+    /// 重新加载阈值（热更新）
     async fn reload_thresholds(&mut self) -> Result<bool> {
         let thresholds = self.load_thresholds_from_redis().await?;
         if thresholds.is_empty() {
@@ -176,61 +138,166 @@ impl Engine {
                 changed = true;
             }
         }
-        Ok(changed) 
+        Ok(changed)
     }
 
-    fn handle_spread_msg(&mut self, msg: &AskBidSpreadMsg, is_spot: bool) {
-        let symbol = msg.symbol.to_uppercase();
+    /// 处理市场数据并计算信号
+    fn process_market_data(&mut self) {
+        let mkt = MktChannel::instance();
+        let rate_fetcher = RateFetcher::instance();
 
-        if is_spot {
-            if let Some(state) = self.symbols.get_mut(&symbol) {
-                state.spot_quote.update(msg.bid_price, msg.ask_price, msg.timestamp);
-                state.refresh_factors();
+        // 收集需要发送的信号
+        let mut signals_to_emit = Vec::new();
+
+        for (symbol_key, state) in &mut self.symbols {
+            // 1️⃣ 更新盘口数据
+            if let Some(spot_quote) = mkt.get_quote(&state.spot_symbol, TradingVenue::BinanceSpot) {
+                state.spot_quote = spot_quote;
             }
-        } else {
-            if let Some(spot_key) = self.futures_index.get(&symbol) {
-                if let Some(state) = self.symbols.get_mut(spot_key) {
-                    state.futures_quote.update(msg.bid_price, msg.ask_price, msg.timestamp);
-                    state.refresh_factors();
-                }
+            if let Some(fut_quote) = mkt.get_quote(&state.futures_symbol, TradingVenue::BinanceUm) {
+                state.futures_quote = fut_quote;
             }
+
+            // 2️⃣ 获取资金费率均值（从 MktChannel 获取）
+            let current_fr_ma = mkt.get_funding_rate_mean(&state.futures_symbol, TradingVenue::BinanceUm)
+                .unwrap_or(0.0);
+
+            // 3️⃣ 更新预测资金费率
+            if let Some(predicted) = rate_fetcher.get_predicted_funding_rate(&state.futures_symbol, TradingVenue::BinanceUm) {
+                state.predicted_rate = predicted;
+            }
+
+            // 4️⃣ 更新借贷利率
+            if let Some(loan) = rate_fetcher.get_current_lending_rate(&state.futures_symbol, TradingVenue::BinanceUm) {
+                state.loan_rate = loan;
+            }
+
+            // 5️⃣ 刷新价差因子
+            state.refresh_factors();
+
+            // 6️⃣ 评估信号（传入 current_fr_ma）
+            let decision = state.evaluate_signal(current_fr_ma);
+
+            // 7️⃣ 收集需要发送的信号
+            if decision.can_emit {
+                signals_to_emit.push((symbol_key.clone(), decision));
+            }
+        }
+
+        // 8️⃣ 发送收集的信号
+        for (symbol_key, decision) in signals_to_emit {
+            self.emit_signal(&symbol_key, &decision);
         }
     }
 
-    fn handle_funding_msg(&mut self, msg: &FundingRateMsg) {
-        let fut_symbol = msg.symbol.to_uppercase();
-        if let Some(spot_key) = self.futures_index.get(&fut_symbol) {
-            if let Some(state) = self.symbols.get_mut(spot_key) {
-                state.funding_rate = msg.funding_rate;
-                state.funding_ts = msg.timestamp;
-                state.next_funding_time = msg.next_funding_time;
-            }
-        }
-    } 
+    /// 发送信号给下游
+    fn emit_signal(&mut self, symbol_key: &str, decision: &mkt_signal::funding_rate::EvaluateDecision) {
+        let now = get_timestamp_us();
 
+        // 获取 state 信息
+        let state = match self.symbols.get_mut(symbol_key) {
+            Some(s) => s,
+            None => return,
+        };
+
+        // 检查信号间隔限制
+        if now - state.last_signal_ts < MIN_SIGNAL_INTERVAL_US {
+            return;
+        }
+
+        let signal_type = match decision.final_signal {
+            1 => SignalType::ArbOpen,      // 正套开仓
+            -1 => SignalType::ArbCancel,   // 撤单
+            -2 => SignalType::ArbOpen,     // 反套开仓
+            2 => SignalType::ArbClose,     // 平仓
+            _ => return,
+        };
+
+        // 提取需要的数据（避免借用冲突）
+        let spot_symbol = state.spot_symbol.clone();
+        let futures_symbol = state.futures_symbol.clone();
+        let spread_rate = state.spread_rate.unwrap_or(0.0);
+        let predicted_rate = state.predicted_rate;
+
+        // 构造简单的信号上下文（包含symbol信息）
+        let context_str = format!("{}|{}|{:.6}|{:.8}",
+            spot_symbol,
+            futures_symbol,
+            spread_rate,
+            predicted_rate
+        );
+        let context = bytes::Bytes::from(context_str);
+
+        // 构造信号消息
+        let signal = TradeSignal::create(
+            signal_type.clone(),
+            now,
+            0.0,
+            context,
+        );
+
+        // 发布信号
+        let signal_bytes = signal.to_bytes();
+        if let Err(e) = self.publisher.publish(&signal_bytes) {
+            info!("发送信号失败: {} {:?}", spot_symbol, e);
+            return;
+        }
+
+        // 更新状态
+        state.last_signal = decision.final_signal;
+        state.last_signal_ts = now;
+
+        // 更新统计
+        match signal_type {
+            SignalType::ArbOpen => self.stats.open_signals += 1,
+            SignalType::ArbCancel => self.stats.ladder_cancel_signals += 1,
+            _ => {}
+        }
+
+        info!(
+            "✅ 信号: {} type={:?} signal={} spread={:.6} predict_fr={:.8}",
+            spot_symbol,
+            signal_type,
+            decision.final_signal,
+            spread_rate,
+            predicted_rate,
+        );
+    }
+
+    /// 主运行循环
     async fn run(&mut self, token: CancellationToken) -> Result<()> {
         info!("{} 启动", PROCESS_NAME);
 
-        // 初始加载 
-        self.reload_thresholds().await?; 
-        info!("已加载 {} 个交易对", self.symbols.len()); 
+        // 1️⃣ 初始化市场数据订阅
+        MktChannel::init_singleton()?;
+        RateFetcher::init_singleton()?;
+        info!("市场数据订阅已启动");
 
+        // 2️⃣ 初始加载阈值
+        self.reload_thresholds().await?;
+        info!("已加载 {} 个交易对", self.symbols.len());
+
+        // 3️⃣ 主循环
         loop {
             if token.is_cancelled() {
                 break;
-            } 
+            }
 
-            // 定时任务 
-            if self.next_reload.elapsed().is_zero() {
+            // 定时重载阈值（60秒）
+            if self.next_reload.elapsed().as_secs() > 0 {
                 if let Ok(changed) = self.reload_thresholds().await {
                     if changed {
                         info!("阈值已更新");
                     }
-                } 
-                self.next_reload = Instant::now() + Duration::from_secs(self.cfg.reload_interval_secs);
-            } 
+                }
+                self.next_reload = Instant::now() + Duration::from_secs(RELOAD_INTERVAL_SECS);
+            }
 
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            // 处理市场数据并计算信号
+            self.process_market_data();
+
+            // 每100ms tick一次
+            tokio::time::sleep(Duration::from_millis(TICK_INTERVAL_MS)).await;
         }
 
         info!("{} 退出", PROCESS_NAME);
@@ -249,20 +316,25 @@ fn setup_signal_handlers(token: &CancellationToken) -> Result<()> {
         }
         token_clone.cancel();
     });
-    Ok(()) 
-} 
+    Ok(())
+}
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")] 
 async fn main() -> Result<()> {
-    env_logger::init();
-    info!("{} 初始化", PROCESS_NAME);
+    if std::env::var("RUST_LOG").is_err() {
+        std::env::set_var("RUST_LOG", "info");
+    }
+    env_logger::init(); 
+    info!("{} 初始化", PROCESS_NAME); 
 
-    let cfg = Config::load()?;
+    let cfg = Config::load()?; 
     let publisher = SignalPublisher::new(SIGNAL_CHANNEL)?;
     let mut engine = Engine::new(cfg, publisher).await?;
 
     let token = CancellationToken::new(); 
     setup_signal_handlers(&token)?; 
 
-    engine.run(token).await 
+    // 使用 LocalSet 运行，因为 MktChannel 和 RateFetcher 需要 thread-local
+    let local = tokio::task::LocalSet::new();
+    local.run_until(engine.run(token)).await 
 } 

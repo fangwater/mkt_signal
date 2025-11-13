@@ -8,7 +8,7 @@
 
 use anyhow::Result;
 use chrono::Utc;
-use log::{debug, info, warn};
+use log::{debug, info};
 use reqwest::Client;
 use serde::de::{self, Deserializer};
 use serde::Deserialize;

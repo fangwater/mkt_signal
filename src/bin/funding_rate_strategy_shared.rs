@@ -2726,7 +2726,7 @@ async fn fetch_binance_funding_history_range(
 }
 
 async fn infer_binance_funding_frequency(client: &Client, symbol: &str) -> Option<String> {
-    let items = fetch_binance_funding_items(client, symbol, 40).await.ok()?;
+    let items: Vec<BinanceFundingHistItem> = fetch_binance_funding_items(client, symbol, 40).await.ok()?;
     let mut times: Vec<i64> = items.iter().filter_map(|it| it.funding_time).collect();
     if times.len() < 3 {
         return Some("8h".to_string());

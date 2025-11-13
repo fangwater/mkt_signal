@@ -6,12 +6,14 @@
 //! - 信号生成和评估（signal_generator）
 //! - 行情频道订阅（mkt_channel）
 
+pub mod common;
 pub mod param_loader;
 pub mod state;
 pub mod signal_generator;
 pub mod mkt_channel;
 pub mod symbol_list;
 pub mod rate_fetcher;
+pub mod spread_factor;
 
 // 公共导出
 pub use param_loader::{
@@ -32,6 +34,7 @@ pub use state::{
     EvaluateDecision,
     QtyStepInfo,
     EngineStats,
+    SymbolState,
 };
 
 pub use signal_generator::{
@@ -43,3 +46,9 @@ pub use signal_generator::{
 pub use mkt_channel::MktChannel;
 pub use symbol_list::SymbolList;
 pub use rate_fetcher::RateFetcher;
+
+// 导出通用定义
+pub use common::{ArbDirection, CompareOp, OperationType, ThresholdKey, VenuePair, SymbolPair};
+
+// 导出价差因子相关
+pub use spread_factor::{SpreadFactor, SpreadFactorMode, SpreadThresholdConfig, SpreadType};
