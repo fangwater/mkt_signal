@@ -18,7 +18,7 @@ use tokio::time::{sleep, Duration};
 type HmacSha256 = Hmac<Sha256>;
 
 use crate::signal::common::TradingVenue;
-use super::param_loader::fetch_binance_funding_items;
+use super::param_loader::{fetch_binance_funding_items, infer_binance_funding_frequency};
 use super::symbol_list::SymbolList;
 
 // 预测资费参数（硬编码）
@@ -111,6 +111,9 @@ struct RateFetcherInner {
     /// 借贷利率数据：TradingVenue -> BaseAsset -> f64 (修正后的周期利率)
     lending_rates: HashMap<TradingVenue, HashMap<String, f64>>,
 
+    /// 资金费率周期：TradingVenue -> Symbol -> FundingRatePeriod (推算得到)
+    funding_periods: HashMap<TradingVenue, HashMap<String, FundingRatePeriod>>,
+
     /// Symbol 缓存：已拉取过的交易对
     symbol_cache: HashSet<String>,
 
@@ -131,6 +134,25 @@ impl RateFetcher {
     /// 获取全局单例实例
     pub fn instance() -> Self {
         RateFetcher
+    }
+
+    /// 获取指定 symbol 的资金费率周期
+    ///
+    /// # 参数
+    /// - `symbol`: 交易对符号
+    /// - `venue`: 交易所
+    ///
+    /// # 返回
+    /// 对应 symbol 的资金费率周期（如果未找到，返回默认 8h）
+    pub fn get_period(&self, symbol: &str, venue: TradingVenue) -> FundingRatePeriod {
+        let symbol_upper = symbol.to_uppercase();
+        Self::with_inner(|inner| {
+            inner.funding_periods
+                .get(&venue)
+                .and_then(|map| map.get(&symbol_upper))
+                .copied()
+                .unwrap_or(FundingRatePeriod::Hours8) // 默认 8h
+        })
     }
 
     /// 访问内部状态的辅助方法（内部使用）
@@ -172,6 +194,7 @@ impl RateFetcher {
         let inner = RateFetcherInner {
             funding_rates: HashMap::new(),
             lending_rates: HashMap::new(),
+            funding_periods: HashMap::new(),
             symbol_cache: HashSet::new(),
             http_client: Client::builder()
                 .timeout(Duration::from_secs(10))
@@ -349,12 +372,26 @@ impl RateFetcher {
                         .collect();
 
                     if !rates.is_empty() {
+                        // 推断资金费率周期（4h or 8h）
+                        let period = match infer_binance_funding_frequency(&client, symbol).await {
+                            Some(freq) if freq == "4h" => FundingRatePeriod::Hours4,
+                            _ => FundingRatePeriod::Hours8, // 默认 8h
+                        };
+
                         Self::with_inner_mut(|inner| {
+                            // 存储资金费率数据
                             let venue_rates = inner
                                 .funding_rates
                                 .entry(BINANCE_CONFIG.venue)
                                 .or_insert_with(HashMap::new);
                             venue_rates.insert(symbol.clone(), rates);
+
+                            // 存储周期信息
+                            let venue_periods = inner
+                                .funding_periods
+                                .entry(BINANCE_CONFIG.venue)
+                                .or_insert_with(HashMap::new);
+                            venue_periods.insert(symbol.clone(), period);
                         });
                         success_count += 1;
                     }
@@ -470,7 +507,7 @@ impl RateFetcher {
         let mut table_data: Vec<_> = symbols
             .iter()
             .map(|s| {
-                let fr = Self::instance().get_binance_predicted_funding_rate(s, period);
+                let fr = Self::instance().get_binance_predicted_funding_rate(s);
                 let loan = Self::instance().get_binance_loan_rate(s, period);
                 (s.clone(), fr, loan)
             })
@@ -496,11 +533,13 @@ impl RateFetcher {
     ///
     /// # 参数
     /// - `symbol`: 交易对符号（例如 "BTCUSDT"）
-    /// - `period`: 资金费率周期（4h 或 8h）
     ///
     /// # 返回
     /// 预测的资金费率，如果数据不足则返回 None
-    pub fn get_binance_predicted_funding_rate(&self, symbol: &str, period: FundingRatePeriod) -> Option<f64> {
+    pub fn get_binance_predicted_funding_rate(&self, symbol: &str) -> Option<f64> {
+        // 根据 symbol 获取周期
+        let period = self.get_period(symbol, BINANCE_CONFIG.venue);
+
         // 目前只支持配置的周期，未来可扩展多周期支持
         if period != BINANCE_CONFIG.period {
             return None;

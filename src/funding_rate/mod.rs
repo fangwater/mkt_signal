@@ -15,6 +15,7 @@ pub mod symbol_list;
 pub mod rate_fetcher;
 pub mod spread_factor;
 pub mod funding_rate_factor;
+pub mod decision;
 
 // 公共导出
 pub use param_loader::{
@@ -56,3 +57,6 @@ pub use spread_factor::{SpreadFactor, SpreadThresholdConfig, SpreadType};
 
 // 导出资金费率因子相关
 pub use funding_rate_factor::{FundingRateFactor, FrThresholdConfig};
+
+// 导出决策模块
+pub use decision::FrDecision;

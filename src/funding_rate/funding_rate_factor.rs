@@ -154,8 +154,9 @@ impl FundingRateFactor {
     // ===== 辅助方法：获取因子数据 =====
 
     /// 获取预测资金费率 (predict_fr)
-    fn get_predict_fr(&self, symbol: &str, period: FundingRatePeriod) -> Option<f64> {
-        RateFetcher::instance().get_binance_predicted_funding_rate(symbol, period)
+    fn get_predict_fr(&self, symbol: &str, _period: FundingRatePeriod) -> Option<f64> {
+        // period 参数保留是为了接口一致性，但内部 get_binance_predicted_funding_rate 会根据 symbol 自动获取 period
+        RateFetcher::instance().get_binance_predicted_funding_rate(symbol)
     }
 
     /// 获取预测借贷利率 (predict_loan_rate)

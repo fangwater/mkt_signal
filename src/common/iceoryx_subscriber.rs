@@ -292,3 +292,37 @@ pub fn create_subscriber(
 
     Ok(subscriber)
 }
+
+// ========== 通用信号订阅器 ==========
+
+use crate::common::iceoryx_publisher::SIGNAL_PAYLOAD;
+
+/// 通用信号订阅器（支持不同大小的 payload）
+pub enum GenericSignalSubscriber {
+    Size4K(Subscriber<ipc::Service, [u8; SIGNAL_PAYLOAD], ()>),
+}
+
+impl GenericSignalSubscriber {
+    /// 接收消息
+    pub fn receive_msg(&self) -> Result<Option<Bytes>> {
+        match self {
+            GenericSignalSubscriber::Size4K(sub) => Self::receive_from_subscriber(sub),
+        }
+    }
+
+    fn receive_from_subscriber<const SIZE: usize>(
+        subscriber: &Subscriber<ipc::Service, [u8; SIZE], ()>,
+    ) -> Result<Option<Bytes>> {
+        match subscriber.receive()? {
+            Some(sample) => {
+                let payload = sample.payload();
+                // 跳过全 0 填充
+                if payload.iter().all(|&b| b == 0) {
+                    return Ok(None);
+                }
+                Ok(Some(Bytes::copy_from_slice(payload)))
+            }
+            None => Ok(None),
+        }
+    }
+}
