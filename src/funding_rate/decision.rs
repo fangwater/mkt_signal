@@ -8,7 +8,7 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use std::cell::{OnceCell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use tokio::runtime::Builder;
 use tokio::time::{interval, Duration};
@@ -24,6 +24,7 @@ use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 
+use super::common::ThresholdKey;
 use super::funding_rate_factor::FundingRateFactor;
 use super::mkt_channel::MktChannel;
 use super::rate_fetcher::RateFetcher;
@@ -114,6 +115,16 @@ pub struct FrDecision {
     /// 需要检查的 symbol 列表（币安现货和期货共同的 symbol）
     /// 使用 Rc<RefCell<>> 以便在 spawn_local 任务中共享
     check_symbols: Rc<RefCell<HashSet<String>>>,
+
+    /// 信号冷却时间（微秒），默认 5 秒
+    /// 在触发 ArbOpen/ArbClose 后，该交易对在冷却期内不能再次发出 ArbOpen/ArbClose 信号
+    /// 但仍然可以发出 ArbCancel 信号
+    signal_cooldown_us: i64,
+
+    /// 最后触发 ArbOpen/ArbClose 的时间戳（微秒）
+    /// key: (spot_venue, spot_symbol, futures_venue, futures_symbol)
+    /// 使用 Rc<RefCell<>> 以便在 spawn_local 任务中共享
+    last_signal_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
 }
 
 impl FrDecision {
@@ -226,6 +237,8 @@ impl FrDecision {
             hedge_timeout_mm_us: 30_000_000,
             hedge_price_offset: 0.0003,
             check_symbols: Rc::new(RefCell::new(HashSet::new())),
+            signal_cooldown_us: 5_000_000, // 默认 5 秒
+            last_signal_ts: Rc::new(RefCell::new(HashMap::new())),
         })
     }
 
@@ -255,10 +268,12 @@ impl FrDecision {
     ///
     /// # 决策流程
     /// 1. 优先检查 cancel 信号（只和价差有关）
-    /// 2. 获取资费信号
-    /// 3. 如果资费没有信号，返回 None
-    /// 4. 如果资费有信号，验证对应的价差 satisfy
-    /// 5. 只有资费和价差同时满足时才发出信号
+    /// 2. 检查信号冷却（如果在冷却期内，阻止 open/close 信号）
+    /// 3. 获取资费信号
+    /// 4. 如果资费没有信号，返回 None
+    /// 5. 如果资费有信号，验证对应的价差 satisfy
+    /// 6. 只有资费和价差同时满足时才发出信号
+    /// 7. 发送信号后更新冷却时间戳
     ///
     /// # 参数
     /// - `spot_symbol`: 现货交易对
@@ -276,8 +291,10 @@ impl FrDecision {
         futures_venue: TradingVenue,
     ) -> Result<Option<SignalType>> {
         let spread_factor = SpreadFactor::instance();
+        let now = get_timestamp_us();
 
         // 步骤1: 优先检查 cancel 信号（只和价差有关，不需要资费）
+        // Cancel 信号不受冷却时间限制
         if spread_factor.satisfy_forward_cancel(
             spot_venue,
             spot_symbol,
@@ -311,7 +328,13 @@ impl FrDecision {
             return Ok(Some(SignalType::ArbCancel));
         }
 
-        // 步骤2: 获取资费信号
+        // 步骤2: 检查信号冷却（ArbOpen/ArbClose 受冷却限制）
+        if self.check_signal_cooldown(spot_symbol, futures_symbol, spot_venue, futures_venue, now)
+        {
+            return Ok(None);
+        }
+
+        // 步骤3: 获取资费信号
         let fr_signal = self.get_funding_rate_signal(spot_symbol, futures_symbol, futures_venue)?;
 
         // 步骤3: 如果资费没有信号，返回 None
@@ -390,8 +413,11 @@ impl FrDecision {
             Some(signal_side),
         )?;
 
+        // 步骤7: 更新冷却时间戳（只有 ArbOpen/ArbClose 触发冷却）
+        self.update_last_signal_ts(spot_symbol, futures_symbol, spot_venue, futures_venue, now);
+
         info!(
-            "Combined signal: fr={:?} final={:?} spot={} futures={}",
+            "Combined signal: fr={:?} final={:?} spot={} futures={} (cooldown started)",
             fr_signal, final_signal, spot_symbol, futures_symbol
         );
 
@@ -925,6 +951,94 @@ impl FrDecision {
         if check_symbols.remove(&symbol_upper) {
             info!("FrDecision: 从检查列表移除 symbol: {}", symbol_upper);
         }
+    }
+
+    /// 更新信号冷却时间（秒）
+    ///
+    /// # 参数
+    /// - `cooldown_secs`: 冷却时间（秒），默认 5 秒
+    pub fn update_signal_cooldown(&mut self, cooldown_secs: u64) {
+        if cooldown_secs == 0 {
+            warn!("FrDecision: cooldown_secs=0 无效，忽略更新");
+            return;
+        }
+        let cooldown_us = cooldown_secs
+            .saturating_mul(1_000_000)
+            .min(i64::MAX as u64);
+        self.signal_cooldown_us = cooldown_us as i64;
+        info!(
+            "FrDecision: signal_cooldown 更新为 {}s ({}us)",
+            cooldown_secs, self.signal_cooldown_us
+        );
+    }
+
+    /// 检查交易对是否在冷却期内
+    ///
+    /// # 参数
+    /// - `spot_symbol`: 现货交易对
+    /// - `futures_symbol`: 合约交易对
+    /// - `spot_venue`: 现货交易所
+    /// - `futures_venue`: 合约交易所
+    /// - `now`: 当前时间戳（微秒）
+    ///
+    /// # 返回
+    /// - true: 在冷却期内，不应发出 ArbOpen/ArbClose 信号
+    /// - false: 不在冷却期内，可以发出信号
+    fn check_signal_cooldown(
+        &self,
+        spot_symbol: &str,
+        futures_symbol: &str,
+        spot_venue: TradingVenue,
+        futures_venue: TradingVenue,
+        now: i64,
+    ) -> bool {
+        let key = (
+            spot_venue,
+            spot_symbol.to_uppercase(),
+            futures_venue,
+            futures_symbol.to_uppercase(),
+        );
+
+        let last_signal_ts = self.last_signal_ts.borrow();
+        if let Some(&last_ts) = last_signal_ts.get(&key) {
+            let elapsed = now - last_ts;
+            if elapsed < self.signal_cooldown_us {
+                let remaining_ms = (self.signal_cooldown_us - elapsed) / 1000;
+                debug!(
+                    "FrDecision: 交易对 {} 在冷却期内，剩余 {}ms",
+                    spot_symbol, remaining_ms
+                );
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 更新交易对的最后信号时间戳
+    ///
+    /// # 参数
+    /// - `spot_symbol`: 现货交易对
+    /// - `futures_symbol`: 合约交易对
+    /// - `spot_venue`: 现货交易所
+    /// - `futures_venue`: 合约交易所
+    /// - `now`: 当前时间戳（微秒）
+    fn update_last_signal_ts(
+        &self,
+        spot_symbol: &str,
+        futures_symbol: &str,
+        spot_venue: TradingVenue,
+        futures_venue: TradingVenue,
+        now: i64,
+    ) {
+        let key = (
+            spot_venue,
+            spot_symbol.to_uppercase(),
+            futures_venue,
+            futures_symbol.to_uppercase(),
+        );
+
+        let mut last_signal_ts = self.last_signal_ts.borrow_mut();
+        last_signal_ts.insert(key, now);
     }
 
     /// 构造 ArbCancel 信号上下文
