@@ -11,7 +11,6 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use tokio::runtime::Builder;
-use tokio::time::{interval, Duration};
 
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
@@ -112,9 +111,10 @@ pub struct FrDecision {
     /// 对冲限价偏移（例如 0.0003 表示万分之 3）
     hedge_price_offset: f64,
 
-    /// 需要检查的 symbol 列表（币安现货和期货共同的 symbol）
+    /// 需要检查的交易对白名单（完整的 4 元组）
+    /// key: (spot_venue, spot_symbol, futures_venue, futures_symbol)
     /// 使用 Rc<RefCell<>> 以便在 spawn_local 任务中共享
-    check_symbols: Rc<RefCell<HashSet<String>>>,
+    check_symbols: Rc<RefCell<HashSet<ThresholdKey>>>,
 
     /// 信号冷却时间（微秒），默认 5 秒
     /// 在触发 ArbOpen/ArbClose 后，该交易对在冷却期内不能再次发出 ArbOpen/ArbClose 信号
@@ -171,8 +171,11 @@ impl FrDecision {
     /// 初始化单例（必须在 LocalSet 中调用）
     ///
     /// 自动启动：
-    /// - spawn_decision_loop: 10ms 决策循环
-    /// - spawn_backward_listener: 100ms backward 监听
+    /// - spawn_backward_listener: 事件驱动的 backward 监听
+    ///
+    /// # 事件驱动架构
+    /// 决策逻辑采用事件驱动模式，不使用定时轮询。
+    /// 调用方应在市场数据更新时主动调用 `make_combined_decision()`。
     pub fn init_singleton() -> Result<()> {
         let result: Result<()> = FR_DECISION.with(|cell| {
             if cell.get().is_some() {
@@ -186,10 +189,9 @@ impl FrDecision {
         });
         result?;
 
-        // 启动决策循环和 backward 监听任务
-        Self::spawn_decision_loop();
+        // 启动 backward 监听任务（处理来自 pre_trade 的查询）
         Self::spawn_backward_listener();
-        info!("FrDecision spawn tasks started");
+        info!("FrDecision backward listener started");
 
         Ok(())
     }
@@ -267,6 +269,7 @@ impl FrDecision {
     /// 联合信号决策：同时检查资费和价差因子
     ///
     /// # 决策流程
+    /// 0. 检查 symbol 是否在 check_symbols 白名单中
     /// 1. 优先检查 cancel 信号（只和价差有关）
     /// 2. 检查信号冷却（如果在冷却期内，阻止 open/close 信号）
     /// 3. 获取资费信号
@@ -283,6 +286,10 @@ impl FrDecision {
     ///
     /// # 返回
     /// 如果需要发送信号，返回 Ok(Some(signal_type))；否则返回 Ok(None)
+    ///
+    /// # 事件驱动架构
+    /// 该方法应在市场数据更新时被主动调用（事件驱动），而非定时轮询。
+    /// 触发时机：MktChannel 收到盘口更新、RateFetcher 更新资费率等
     pub fn make_combined_decision(
         &mut self,
         spot_symbol: &str,
@@ -290,6 +297,21 @@ impl FrDecision {
         spot_venue: TradingVenue,
         futures_venue: TradingVenue,
     ) -> Result<Option<SignalType>> {
+        // 步骤0: 检查交易对 4 元组是否在白名单中
+        // 早期返回优化：不在白名单中的交易对直接跳过，提升效率
+        let key = (
+            spot_venue,
+            spot_symbol.to_uppercase(),
+            futures_venue,
+            futures_symbol.to_uppercase(),
+        );
+
+        let check_symbols = self.check_symbols.borrow();
+        if !check_symbols.contains(&key) {
+            return Ok(None);
+        }
+        drop(check_symbols); // 释放借用
+
         let spread_factor = SpreadFactor::instance();
         let now = get_timestamp_us();
 
@@ -919,15 +941,20 @@ impl FrDecision {
         info!("FrDecision: hedge_price_offset 更新为 {:.6}", offset);
     }
 
-    /// 更新需要检查的 symbol 列表
+    /// 更新需要检查的交易对白名单（批量）
     ///
     /// # 参数
-    /// - `symbols`: symbol 列表
-    pub fn update_check_symbols(&mut self, symbols: Vec<String>) {
+    /// - `pairs`: 交易对列表，每个元素是 (spot_venue, spot_symbol, futures_venue, futures_symbol)
+    pub fn update_check_symbols(&mut self, pairs: Vec<ThresholdKey>) {
         let mut check_symbols = self.check_symbols.borrow_mut();
         check_symbols.clear();
-        for symbol in symbols {
-            check_symbols.insert(symbol.to_uppercase());
+        for (spot_venue, spot_symbol, futures_venue, futures_symbol) in pairs {
+            check_symbols.insert((
+                spot_venue,
+                spot_symbol.to_uppercase(),
+                futures_venue,
+                futures_symbol.to_uppercase(),
+            ));
         }
         info!(
             "FrDecision: check_symbols 已更新，总数 {}",
@@ -935,21 +962,61 @@ impl FrDecision {
         );
     }
 
-    /// 添加单个 symbol 到检查列表
-    pub fn add_check_symbol(&mut self, symbol: &str) {
+    /// 添加单个交易对到检查列表
+    ///
+    /// # 参数
+    /// - `spot_symbol`: 现货交易对
+    /// - `futures_symbol`: 合约交易对
+    /// - `spot_venue`: 现货交易所
+    /// - `futures_venue`: 合约交易所
+    pub fn add_check_symbol(
+        &mut self,
+        spot_symbol: &str,
+        futures_symbol: &str,
+        spot_venue: TradingVenue,
+        futures_venue: TradingVenue,
+    ) {
         let mut check_symbols = self.check_symbols.borrow_mut();
-        let symbol_upper = symbol.to_uppercase();
-        if check_symbols.insert(symbol_upper.clone()) {
-            info!("FrDecision: 添加 symbol 到检查列表: {}", symbol_upper);
+        let key = (
+            spot_venue,
+            spot_symbol.to_uppercase(),
+            futures_venue,
+            futures_symbol.to_uppercase(),
+        );
+        if check_symbols.insert(key.clone()) {
+            info!(
+                "FrDecision: 添加交易对到检查列表: {:?}/{} <-> {:?}/{}",
+                spot_venue, spot_symbol, futures_venue, futures_symbol
+            );
         }
     }
 
-    /// 移除单个 symbol 从检查列表
-    pub fn remove_check_symbol(&mut self, symbol: &str) {
+    /// 移除单个交易对从检查列表
+    ///
+    /// # 参数
+    /// - `spot_symbol`: 现货交易对
+    /// - `futures_symbol`: 合约交易对
+    /// - `spot_venue`: 现货交易所
+    /// - `futures_venue`: 合约交易所
+    pub fn remove_check_symbol(
+        &mut self,
+        spot_symbol: &str,
+        futures_symbol: &str,
+        spot_venue: TradingVenue,
+        futures_venue: TradingVenue,
+    ) {
         let mut check_symbols = self.check_symbols.borrow_mut();
-        let symbol_upper = symbol.to_uppercase();
-        if check_symbols.remove(&symbol_upper) {
-            info!("FrDecision: 从检查列表移除 symbol: {}", symbol_upper);
+        let key = (
+            spot_venue,
+            spot_symbol.to_uppercase(),
+            futures_venue,
+            futures_symbol.to_uppercase(),
+        );
+        if check_symbols.remove(&key) {
+            info!(
+                "FrDecision: 从检查列表移除交易对: {:?}/{} <-> {:?}/{}",
+                spot_venue, spot_symbol, futures_venue, futures_symbol
+            );
         }
     }
 
@@ -1081,64 +1148,6 @@ impl FrDecision {
     }
 
     // ========== 事件循环 ==========
-
-    /// 启动决策循环任务（使用 tokio::spawn_local）
-    ///
-    /// 每 10ms 遍历一次 check_symbols，对每个 symbol 执行 make_combined_decision
-    /// 资产类型：BinanceMargin（现货）+ BinanceUm（期货）
-    pub fn spawn_decision_loop() {
-        tokio::task::spawn_local(async move {
-            info!("FrDecision 决策循环任务启动");
-
-            let mut tick_interval = interval(Duration::from_millis(10));
-
-            loop {
-                tick_interval.tick().await;
-
-                // 获取需要检查的 symbol 列表
-                let symbols = FR_DECISION.with(|cell| {
-                    let decision_ref = cell.get();
-                    if decision_ref.is_none() {
-                        return Vec::new();
-                    }
-                    let decision = decision_ref.unwrap().borrow();
-                    let check_symbols = decision.check_symbols.borrow();
-                    check_symbols.iter().cloned().collect::<Vec<String>>()
-                });
-
-                if symbols.is_empty() {
-                    continue;
-                }
-
-                // 遍历所有 symbol，执行决策
-                for symbol in symbols {
-                    let result = FR_DECISION.with(|cell| {
-                        let decision_ref = cell.get();
-                        if decision_ref.is_none() {
-                            return Ok(None);
-                        }
-                        let mut decision = decision_ref.unwrap().borrow_mut();
-                        decision.make_combined_decision(
-                            &symbol,                         // spot_symbol (BinanceMargin)
-                            &symbol,                         // futures_symbol (BinanceUm)
-                            TradingVenue::BinanceMargin,     // spot_venue
-                            TradingVenue::BinanceUm,         // futures_venue
-                        )
-                    });
-
-                    if let Err(err) = result {
-                        warn!(
-                            "FrDecision: 决策失败 symbol={} err={:?}",
-                            symbol, err
-                        );
-                    }
-                }
-
-                // 让出控制权
-                tokio::task::yield_now().await;
-            }
-        });
-    }
 
     /// 启动 backward 订阅监听任务（使用 tokio::spawn_local）
     ///
