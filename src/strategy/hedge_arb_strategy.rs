@@ -27,6 +27,7 @@ pub struct HedgeArbStrategy {
     pub hedge_symbol: String,          //对冲侧symbol
     pub hedge_venue: TradingVenue,     //对冲侧交易场所
     pub hedge_side: Side,              //对冲侧方向
+    pub hedge_request_seq: u32,        //累计对冲请求次数
 }
 
 impl HedgeArbStrategy {
@@ -45,6 +46,7 @@ impl HedgeArbStrategy {
             hedge_symbol: String::new(),
             hedge_venue: TradingVenue::BinanceMargin, // 默认值，将在开仓时更新
             hedge_side: Side::Buy,                    // 默认值，将在开仓时更新
+            hedge_request_seq: 0,
         };
         strategy
     }
@@ -670,7 +672,11 @@ impl HedgeArbStrategy {
             eff_qty,
             side.to_u8(),
             venue.to_u8(),
+            &self.hedge_symbol,
+            self.hedge_request_seq,
         );
+
+        self.hedge_request_seq = self.hedge_request_seq.wrapping_add(1);
 
         // 2. 通过 SignalChannel 直接发送到上游
         let send_result = SignalChannel::with(|ch| ch.publish_backward(&query_msg.to_bytes()));
@@ -962,7 +968,7 @@ impl HedgeArbStrategy {
             }
         }
     }
-    
+
     fn process_hedge_leg_trade(&mut self, _trade: &dyn TradeUpdate) {
         // 对冲侧成交处理
         info!(

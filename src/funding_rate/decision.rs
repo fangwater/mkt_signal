@@ -19,6 +19,7 @@ use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
+use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 
@@ -96,6 +97,18 @@ pub struct FrDecision {
 
     /// Binance 交易对过滤器，用于 price_tick / min_qty 查询
     min_qty_table: MinQtyTable,
+
+    /// 单笔下单数量（单位：base asset）
+    order_amount: f32,
+
+    /// 开仓挂单最长挂单时间（微秒）
+    open_order_ttl_us: i64,
+
+    /// 对冲挂单（MM 模式）最长挂单时间（微秒）
+    hedge_timeout_mm_us: i64,
+
+    /// 对冲限价偏移（例如 0.0003 表示万分之 3）
+    hedge_price_offset: f64,
 }
 
 impl FrDecision {
@@ -191,6 +204,10 @@ impl FrDecision {
             _node: node,
             price_offsets,
             min_qty_table,
+            order_amount: 100.0,
+            open_order_ttl_us: 120_000_000,
+            hedge_timeout_mm_us: 30_000_000,
+            hedge_price_offset: 0.0003,
         })
     }
 
@@ -400,18 +417,138 @@ impl FrDecision {
     }
 
     /// 处理反向查询（来自 pre_trade 的 backward channel）
-    ///
-    /// # TODO
-    /// 需要根据实际业务逻辑实现
     fn handle_backward_query(&mut self, data: Bytes) {
-        debug!("Received backward query, size={}", data.len());
-        // TODO: 解析查询请求，返回当前决策状态
-        // 例如：查询某个 symbol 的最新信号、持仓状态等
-        let _ = data; // 避免未使用警告
+        let query = match ArbHedgeSignalQueryMsg::from_bytes(data) {
+            Ok(q) => q,
+            Err(err) => {
+                warn!("FrDecision: 解析 hedge query 失败: {err}");
+                return;
+            }
+        };
+
+        let Some(side) = query.get_side() else {
+            warn!("FrDecision: hedge query side 无效: {}", query.hedge_side);
+            return;
+        };
+
+        let Some(venue) = TradingVenue::from_u8(query.venue) else {
+            warn!("FrDecision: hedge query venue 无效: {}", query.venue);
+            return;
+        };
+
+        let hedge_symbol = query.get_hedging_symbol();
+        if hedge_symbol.is_empty() {
+            warn!("FrDecision: hedge query 未携带对冲 symbol");
+            return;
+        }
+
+        let qty = query.hedge_qty;
+        if qty <= 0.0 {
+            warn!(
+                "FrDecision: hedge query quantity <= 0 strategy_id={} qty={:.8}",
+                query.strategy_id, qty
+            );
+            return;
+        }
+
+        let mkt_channel = MktChannel::instance();
+        let Some(fut_quote) = mkt_channel.get_quote(&hedge_symbol, venue) else {
+            warn!(
+                "FrDecision: hedge query 无行情 strategy_id={} symbol={} venue={:?}",
+                query.strategy_id, hedge_symbol, venue
+            );
+            return;
+        };
+
+        let price_tick = self
+            .min_qty_table
+            .futures_um_price_tick_by_symbol(&hedge_symbol)
+            .unwrap_or(0.0);
+
+        let offset = if query.request_seq < 6 {
+            self.hedge_price_offset.abs()
+        } else {
+            0.0
+        };
+
+        let now = get_timestamp_us();
+        let aggressive = query.request_seq >= 6;
+
+        let ctx = if aggressive {
+            let price = match side {
+                Side::Buy => fut_quote.ask,
+                Side::Sell => fut_quote.bid,
+            };
+            if price <= 0.0 {
+                warn!(
+                    "FrDecision: hedge query aggressive price 无效 strategy_id={} price={:.8}",
+                    query.strategy_id, price
+                );
+                return;
+            }
+            let mut ctx =
+                ArbHedgeCtx::new_taker(query.strategy_id, query.client_order_id, qty, side.to_u8());
+            ctx.hedging_leg = TradingLeg::new(venue, fut_quote.bid, fut_quote.ask);
+            ctx.set_hedging_symbol(&hedge_symbol);
+            ctx.market_ts = now;
+            ctx
+        } else {
+            let base_price = match side {
+                Side::Buy => fut_quote.bid,
+                Side::Sell => fut_quote.ask,
+            };
+            // 对对冲单定价
+            // ask是卖价，用于sell挂单
+            // bid是买价，用于buy挂单
+            let limit_price = if base_price > 0.0 {
+                match side {
+                    Side::Buy => base_price * (1.0 - offset),
+                    Side::Sell => base_price * (1.0 + offset),
+                }
+            } else {
+                0.0
+            };
+
+            if limit_price <= 0.0 {
+                warn!(
+                    "FrDecision: hedge query limit_price 无效 strategy_id={} price={:.8}",
+                    query.strategy_id, limit_price
+                );
+                return;
+            }
+
+            let mut ctx = ArbHedgeCtx::new_maker(
+                query.strategy_id,
+                query.client_order_id,
+                qty,
+                side.to_u8(),
+                limit_price,
+                price_tick,
+                false,
+                now + self.hedge_timeout_mm_us,
+            );
+            ctx.hedging_leg = TradingLeg::new(venue, fut_quote.bid, fut_quote.ask);
+            ctx.set_hedging_symbol(&hedge_symbol);
+            ctx.market_ts = now;
+            ctx
+        };
+
+        let signal = TradeSignal::create(SignalType::ArbHedge, now, 0.0, ctx.to_bytes());
+
+        if let Err(err) = self.signal_pub.publish(&signal.to_bytes()) {
+            warn!(
+                "FrDecision: 发送 hedge 信号失败 strategy_id={} err={:?}",
+                query.strategy_id, err
+            );
+            return;
+        }
+
+        debug!(
+            "FrDecision: 回复 hedge query strategy_id={} symbol={} qty={:.6} seq={}",
+            query.strategy_id, hedge_symbol, qty, query.request_seq
+        );
     }
 
-    // ========== 决策逻辑 ==========
-    // 决策逻辑已委托给 SymbolState::evaluate_signal，不需要在这里重复实现
 
     // ========== 信号发布 ==========
 
@@ -613,7 +750,7 @@ impl FrDecision {
         ctx.set_hedging_symbol(futures_symbol);
 
         // 交易参数
-        ctx.amount = 0.0; // TODO: 从配置或参数获取
+        ctx.amount = self.order_amount;
         ctx.set_side(side);
         ctx.set_order_type(OrderType::Limit);
 
@@ -639,7 +776,7 @@ impl FrDecision {
             .or_else(|| self.min_qty_table.spot_price_tick_by_symbol(spot_symbol))
             .unwrap_or(0.0);
 
-        ctx.exp_time = now + 120_000_000; // 120 秒过期
+        ctx.exp_time = now + self.open_order_ttl_us;
         ctx.create_ts = now;
         ctx.open_threshold = 0.0; // TODO: 从 SpreadFactor 获取
 
@@ -647,8 +784,8 @@ impl FrDecision {
         let spread_factor = SpreadFactor::instance();
         let mode = spread_factor.get_mode();
         ctx.hedge_timeout_us = match mode {
-            super::common::FactorMode::MT => 0,          // MT 模式：立即对冲
-            super::common::FactorMode::MM => 30_000_000, // MM 模式：30 秒对冲超时
+            super::common::FactorMode::MT => 0,
+            super::common::FactorMode::MM => self.hedge_timeout_mm_us,
         };
 
         // 资费相关字段
@@ -681,6 +818,61 @@ impl FrDecision {
             FrSignal::ForwardClose => Side::Sell,
             FrSignal::BackwardClose => Side::Buy,
         }
+    }
+
+    /// 更新挂单档位
+    pub fn update_price_offsets(&mut self, offsets: Vec<f64>) {
+        if offsets.is_empty() {
+            warn!("FrDecision: 忽略空的 price_offsets 更新请求");
+            return;
+        }
+        self.price_offsets = offsets;
+        info!(
+            "FrDecision: price_offsets 已更新，总档位 {}",
+            self.price_offsets.len()
+        );
+    }
+
+    /// 更新开仓挂单超时时间（秒）
+    pub fn update_open_order_timeout(&mut self, open_secs: u64) {
+        if open_secs == 0 {
+            warn!("FrDecision: open_secs=0 无效，忽略更新");
+            return;
+        }
+        let ttl = open_secs.saturating_mul(1_000_000).min(i64::MAX as u64);
+        self.open_order_ttl_us = ttl as i64;
+        info!("FrDecision: open_order_ttl 更新为 {}s", open_secs);
+    }
+
+    /// 更新对冲挂单超时时间（秒）
+    pub fn update_hedge_timeout(&mut self, hedge_secs: u64) {
+        if hedge_secs == 0 {
+            warn!("FrDecision: hedge_secs=0 无效，忽略更新");
+            return;
+        }
+        let ttl = hedge_secs.saturating_mul(1_000_000).min(i64::MAX as u64);
+        self.hedge_timeout_mm_us = ttl as i64;
+        info!("FrDecision: hedge_timeout_mm 更新为 {}s", hedge_secs);
+    }
+
+    /// 更新单笔下单数量
+    pub fn update_order_amount(&mut self, amount: f32) {
+        if amount <= 0.0 {
+            warn!("FrDecision: amount <= 0 无效，忽略更新");
+            return;
+        }
+        self.order_amount = amount;
+        info!("FrDecision: order_amount 更新为 {:.4}", self.order_amount);
+    }
+
+    /// 更新对冲价格偏移（例：0.0003 表示万分之3）
+    pub fn update_hedge_price_offset(&mut self, offset: f64) {
+        if offset <= 0.0 {
+            warn!("FrDecision: hedge offset <= 0 无效，忽略更新");
+            return;
+        }
+        self.hedge_price_offset = offset;
+        info!("FrDecision: hedge_price_offset 更新为 {:.6}", offset);
     }
 
     /// 构造 ArbCancel 信号上下文

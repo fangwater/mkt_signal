@@ -332,7 +332,7 @@ impl OrderManager {
                 self.decrement_pending_limit_count(&prev_order.symbol);
             }
         }
-
+        
         // 持久化
     }
 

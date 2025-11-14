@@ -277,6 +277,12 @@ pub struct ArbHedgeSignalQueryMsg {
 
     /// Trading venue (exchange and type) - stored as u8
     pub venue: u8,
+
+    /// Hedging symbol (e.g., BTCUSDT)
+    pub hedging_symbol: [u8; 32],
+
+    /// Number of hedge requests issued for this strategy (monotonic)
+    pub request_seq: u32,
 }
 
 impl ArbHedgeSignalQueryMsg {
@@ -288,7 +294,13 @@ impl ArbHedgeSignalQueryMsg {
         hedge_qty: f64,
         hedge_side: u8,
         venue: u8,
+        hedging_symbol: &str,
+        request_seq: u32,
     ) -> Self {
+        let mut symbol_bytes = [0u8; 32];
+        let bytes = hedging_symbol.as_bytes();
+        let len = bytes.len().min(32);
+        symbol_bytes[..len].copy_from_slice(&bytes[..len]);
         Self {
             strategy_id,
             client_order_id,
@@ -296,6 +308,8 @@ impl ArbHedgeSignalQueryMsg {
             hedge_qty,
             hedge_side,
             venue,
+            hedging_symbol: symbol_bytes,
+            request_seq,
         }
     }
 
@@ -318,6 +332,8 @@ impl ArbHedgeSignalQueryMsg {
         buf.put_f64_le(self.hedge_qty);
         buf.put_u8(self.hedge_side);
         buf.put_u8(self.venue);
+        bytes_helper::write_fixed_bytes(&mut buf, &self.hedging_symbol);
+        buf.put_u32_le(self.request_seq);
         buf.freeze()
     }
 
@@ -353,6 +369,12 @@ impl ArbHedgeSignalQueryMsg {
         }
         let venue = bytes.get_u8();
 
+        let hedging_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
+        if bytes.remaining() < 4 {
+            return Err("insufficient bytes for request_seq".into());
+        }
+        let request_seq = bytes.get_u32_le();
+
         Ok(Self {
             strategy_id,
             client_order_id,
@@ -360,6 +382,18 @@ impl ArbHedgeSignalQueryMsg {
             hedge_qty,
             hedge_side,
             venue,
+            hedging_symbol,
+            request_seq,
         })
+    }
+
+    /// 获取对冲symbol
+    pub fn get_hedging_symbol(&self) -> String {
+        let end = self
+            .hedging_symbol
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(32);
+        String::from_utf8_lossy(&self.hedging_symbol[..end]).to_string()
     }
 }
