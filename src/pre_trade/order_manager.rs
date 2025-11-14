@@ -269,6 +269,7 @@ impl OrderManager {
             pending_limit_order_count: HashMap::new(),
         }
     }
+    
     pub fn create_order(
         &mut self,
         venue: TradingVenue,

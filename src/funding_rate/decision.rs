@@ -8,9 +8,10 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use std::cell::{OnceCell, RefCell};
+use std::collections::HashSet;
+use std::rc::Rc;
 use tokio::runtime::Builder;
 use tokio::time::{interval, Duration};
-use tokio_util::sync::CancellationToken;
 
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
@@ -109,6 +110,10 @@ pub struct FrDecision {
 
     /// 对冲限价偏移（例如 0.0003 表示万分之 3）
     hedge_price_offset: f64,
+
+    /// 需要检查的 symbol 列表（币安现货和期货共同的 symbol）
+    /// 使用 Rc<RefCell<>> 以便在 spawn_local 任务中共享
+    check_symbols: Rc<RefCell<HashSet<String>>>,
 }
 
 impl FrDecision {
@@ -153,8 +158,12 @@ impl FrDecision {
     }
 
     /// 初始化单例（必须在 LocalSet 中调用）
+    ///
+    /// 自动启动：
+    /// - spawn_decision_loop: 10ms 决策循环
+    /// - spawn_backward_listener: 100ms backward 监听
     pub fn init_singleton() -> Result<()> {
-        FR_DECISION.with(|cell| {
+        let result: Result<()> = FR_DECISION.with(|cell| {
             if cell.get().is_some() {
                 return Ok(());
             }
@@ -163,7 +172,15 @@ impl FrDecision {
                 .map_err(|_| anyhow::anyhow!("Failed to initialize FrDecision singleton"))?;
             info!("FrDecision singleton initialized");
             Ok(())
-        })
+        });
+        result?;
+
+        // 启动决策循环和 backward 监听任务
+        Self::spawn_decision_loop();
+        Self::spawn_backward_listener();
+        info!("FrDecision spawn tasks started");
+
+        Ok(())
     }
 
     /// 创建新实例（私有）
@@ -208,6 +225,7 @@ impl FrDecision {
             open_order_ttl_us: 120_000_000,
             hedge_timeout_mm_us: 30_000_000,
             hedge_price_offset: 0.0003,
+            check_symbols: Rc::new(RefCell::new(HashSet::new())),
         })
     }
 
@@ -875,6 +893,40 @@ impl FrDecision {
         info!("FrDecision: hedge_price_offset 更新为 {:.6}", offset);
     }
 
+    /// 更新需要检查的 symbol 列表
+    ///
+    /// # 参数
+    /// - `symbols`: symbol 列表
+    pub fn update_check_symbols(&mut self, symbols: Vec<String>) {
+        let mut check_symbols = self.check_symbols.borrow_mut();
+        check_symbols.clear();
+        for symbol in symbols {
+            check_symbols.insert(symbol.to_uppercase());
+        }
+        info!(
+            "FrDecision: check_symbols 已更新，总数 {}",
+            check_symbols.len()
+        );
+    }
+
+    /// 添加单个 symbol 到检查列表
+    pub fn add_check_symbol(&mut self, symbol: &str) {
+        let mut check_symbols = self.check_symbols.borrow_mut();
+        let symbol_upper = symbol.to_uppercase();
+        if check_symbols.insert(symbol_upper.clone()) {
+            info!("FrDecision: 添加 symbol 到检查列表: {}", symbol_upper);
+        }
+    }
+
+    /// 移除单个 symbol 从检查列表
+    pub fn remove_check_symbol(&mut self, symbol: &str) {
+        let mut check_symbols = self.check_symbols.borrow_mut();
+        let symbol_upper = symbol.to_uppercase();
+        if check_symbols.remove(&symbol_upper) {
+            info!("FrDecision: 从检查列表移除 symbol: {}", symbol_upper);
+        }
+    }
+
     /// 构造 ArbCancel 信号上下文
     ///
     /// # 资费套利策略设计
@@ -916,38 +968,102 @@ impl FrDecision {
 
     // ========== 事件循环 ==========
 
-    /// 主事件循环（tokio select）
+    /// 启动决策循环任务（使用 tokio::spawn_local）
     ///
-    /// # 参数
-    /// - `token`: 取消令牌，用于优雅退出
-    pub async fn run_event_loop(&mut self, token: CancellationToken) -> Result<()> {
-        info!("FrDecision event loop starting");
+    /// 每 10ms 遍历一次 check_symbols，对每个 symbol 执行 make_combined_decision
+    /// 资产类型：BinanceMargin（现货）+ BinanceUm（期货）
+    pub fn spawn_decision_loop() {
+        tokio::task::spawn_local(async move {
+            info!("FrDecision 决策循环任务启动");
 
-        let mut tick_interval = interval(Duration::from_millis(100));
+            let mut tick_interval = interval(Duration::from_millis(10));
 
-        loop {
-            tokio::select! {
-                _ = token.cancelled() => {
-                    info!("FrDecision event loop cancelled");
-                    break;
+            loop {
+                tick_interval.tick().await;
+
+                // 获取需要检查的 symbol 列表
+                let symbols = FR_DECISION.with(|cell| {
+                    let decision_ref = cell.get();
+                    if decision_ref.is_none() {
+                        return Vec::new();
+                    }
+                    let decision = decision_ref.unwrap().borrow();
+                    let check_symbols = decision.check_symbols.borrow();
+                    check_symbols.iter().cloned().collect::<Vec<String>>()
+                });
+
+                if symbols.is_empty() {
+                    continue;
                 }
 
-                _ = tick_interval.tick() => {
-                    // 每个 tick 轮询订阅器
-                    self.poll_subscriptions();
+                // 遍历所有 symbol，执行决策
+                for symbol in symbols {
+                    let result = FR_DECISION.with(|cell| {
+                        let decision_ref = cell.get();
+                        if decision_ref.is_none() {
+                            return Ok(None);
+                        }
+                        let mut decision = decision_ref.unwrap().borrow_mut();
+                        decision.make_combined_decision(
+                            &symbol,                         // spot_symbol (BinanceMargin)
+                            &symbol,                         // futures_symbol (BinanceUm)
+                            TradingVenue::BinanceMargin,     // spot_venue
+                            TradingVenue::BinanceUm,         // futures_venue
+                        )
+                    });
+
+                    if let Err(err) = result {
+                        warn!(
+                            "FrDecision: 决策失败 symbol={} err={:?}",
+                            symbol, err
+                        );
+                    }
+                }
+
+                // 让出控制权
+                tokio::task::yield_now().await;
+            }
+        });
+    }
+
+    /// 启动 backward 订阅监听任务（使用 tokio::spawn_local）
+    ///
+    /// 持续轮询 backward_sub，处理来自 pre_trade 的查询反馈
+    /// 策略：有消息时立即处理，无消息时 yield_now() 让出 CPU
+    pub fn spawn_backward_listener() {
+        tokio::task::spawn_local(async move {
+            info!("FrDecision backward 监听任务启动");
+
+            loop {
+                let has_message = FR_DECISION.with(|cell| {
+                    let decision_ref = cell.get();
+                    if decision_ref.is_none() {
+                        return false;
+                    }
+                    let mut decision = decision_ref.unwrap().borrow_mut();
+
+                    // 尝试接收一条消息
+                    match decision.backward_sub.receive_msg() {
+                        Ok(Some(data)) => {
+                            decision.handle_backward_query(data);
+                            true  // 有消息，继续轮询
+                        }
+                        Ok(None) => {
+                            false  // 无消息，让出 CPU
+                        }
+                        Err(err) => {
+                            warn!("FrDecision: backward_sub 接收错误: {}", err);
+                            false
+                        }
+                    }
+                });
+
+                // 如果没有消息，让出控制权（但可以快速恢复）
+                if !has_message {
+                    tokio::task::yield_now().await;
                 }
             }
-        }
-
-        info!("FrDecision event loop exited");
-        Ok(())
+        });
     }
 
-    /// 轮询订阅器（只处理 backward channel）
-    fn poll_subscriptions(&mut self) {
-        // 轮询反向频道（来自 pre_trade 的查询反馈）
-        while let Ok(Some(data)) = self.backward_sub.receive_msg() {
-            self.handle_backward_query(data);
-        }
-    }
 }
