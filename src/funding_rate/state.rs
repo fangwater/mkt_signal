@@ -19,7 +19,7 @@ impl Quote {
         self.bid = bid;
         self.ask = ask;
         self.ts = ts;
-    } 
+    }
 
     pub fn is_valid(&self) -> bool {
         self.bid > 0.0 && self.ask > 0.0
@@ -113,7 +113,7 @@ pub struct SymbolState {
     pub funding_ts: i64,
     pub next_funding_time: i64,
     pub funding_rate_data: FundingRateData,
-    pub predicted_rate: f64,  // 预测资金费率
+    pub predicted_rate: f64, // 预测资金费率
 
     // 阈值配置（从Redis加载）
     pub forward_open_threshold: f64,
@@ -122,21 +122,21 @@ pub struct SymbolState {
     pub forward_cancel_close_threshold: Option<f64>,
 
     // 资金费率阈值
-    pub fr_open_upper: f64,   // 0.00008 for 8h
-    pub fr_open_lower: f64,   // -0.00008 for 8h
-    pub fr_close_upper: f64,  // 0.0005
-    pub fr_close_lower: f64,  // -0.0005
+    pub fr_open_upper: f64,  // 0.00008 for 8h
+    pub fr_open_lower: f64,  // -0.00008 for 8h
+    pub fr_close_upper: f64, // 0.0005
+    pub fr_close_lower: f64, // -0.0005
 
     // 借贷利率
     pub loan_rate: f64,
 
     // 信号状态
-    pub last_signal: i32,      // -1撤单/0无/1开仓
+    pub last_signal: i32, // -1撤单/0无/1开仓
     pub last_signal_ts: i64,
 
     // 价差因子缓存
-    pub bidask_sr: Option<f64>,  // (spot_bid - fut_ask) / spot_bid
-    pub askbid_sr: Option<f64>,  // (spot_ask - fut_bid) / spot_ask
+    pub bidask_sr: Option<f64>,   // (spot_bid - fut_ask) / spot_bid
+    pub askbid_sr: Option<f64>,   // (spot_ask - fut_bid) / spot_ask
     pub spread_rate: Option<f64>, // mid_price spread
 }
 

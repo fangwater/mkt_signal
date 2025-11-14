@@ -224,7 +224,6 @@ impl SignalChannel {
     }
 }
 
-
 fn handle_trade_signal(signal: TradeSignal) {
     match signal.signal_type {
         SignalType::ArbOpen => match ArbOpenCtx::from_bytes(signal.context.clone()) {
@@ -239,7 +238,10 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let mut strategy = HedgeArbStrategy::new(strategy_id, symbol.clone());
                 strategy.handle_signal_with_record(&signal);
                 if strategy.is_active() {
-                    MonitorChannel::instance().strategy_mgr().borrow_mut().insert(Box::new(strategy));
+                    MonitorChannel::instance()
+                        .strategy_mgr()
+                        .borrow_mut()
+                        .insert(Box::new(strategy));
                 }
             }
             Err(err) => warn!("failed to decode ArbOpen context: {err}"),
@@ -257,17 +259,27 @@ fn handle_trade_signal(signal: TradeSignal) {
                     };
 
                     // 查询两条腿的持仓（带符号）
-                    let Some(opening_venue) = TradingVenue::from_u8(close_ctx.opening_leg.venue) else {
-                        warn!("ArbClose: invalid opening_venue {}", close_ctx.opening_leg.venue);
+                    let Some(opening_venue) = TradingVenue::from_u8(close_ctx.opening_leg.venue)
+                    else {
+                        warn!(
+                            "ArbClose: invalid opening_venue {}",
+                            close_ctx.opening_leg.venue
+                        );
                         return;
                     };
-                    let Some(hedging_venue) = TradingVenue::from_u8(close_ctx.hedging_leg.venue) else {
-                        warn!("ArbClose: invalid hedging_venue {}", close_ctx.hedging_leg.venue);
+                    let Some(hedging_venue) = TradingVenue::from_u8(close_ctx.hedging_leg.venue)
+                    else {
+                        warn!(
+                            "ArbClose: invalid hedging_venue {}",
+                            close_ctx.hedging_leg.venue
+                        );
                         return;
                     };
 
-                    let opening_pos = MonitorChannel::instance().get_position_qty(&opening_symbol, opening_venue);
-                    let hedging_pos = MonitorChannel::instance().get_position_qty(&hedging_symbol, hedging_venue);
+                    let opening_pos =
+                        MonitorChannel::instance().get_position_qty(&opening_symbol, opening_venue);
+                    let hedging_pos =
+                        MonitorChannel::instance().get_position_qty(&hedging_symbol, hedging_venue);
 
                     // 检查opening leg方向是否匹配
                     // 如果close是Sell，持仓应该>0（多头）；如果close是Buy，持仓应该<0（空头）
@@ -312,13 +324,15 @@ fn handle_trade_signal(signal: TradeSignal) {
 
                     // 平仓本质就是反向开仓，复用 HedgeArbStrategy
                     let strategy_id = StrategyManager::generate_strategy_id();
-                    let mut strategy =
-                        HedgeArbStrategy::new(strategy_id, opening_symbol.clone());
+                    let mut strategy = HedgeArbStrategy::new(strategy_id, opening_symbol.clone());
 
                     strategy.handle_signal_with_record(&signal);
 
                     if strategy.is_active() {
-                        MonitorChannel::instance().strategy_mgr().borrow_mut().insert(Box::new(strategy));
+                        MonitorChannel::instance()
+                            .strategy_mgr()
+                            .borrow_mut()
+                            .insert(Box::new(strategy));
                     }
                 }
                 Err(err) => warn!("failed to decode ArbClose context: {err}"),

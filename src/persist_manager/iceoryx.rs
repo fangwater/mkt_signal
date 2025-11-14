@@ -54,4 +54,4 @@ fn sanitize_suffix(raw: &str) -> std::borrow::Cow<'_, str> {
 
 fn is_valid_node_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '-'
-} 
+}

@@ -19,16 +19,12 @@ const CF_ARB_CANCEL: &str = "signals_arb_cancel";
 const CF_ARB_CLOSE: &str = "signals_arb_close";
 
 pub fn required_column_families() -> &'static [&'static str] {
-    &[
-        CF_ARB_OPEN,
-        CF_ARB_HEDGE,
-        CF_ARB_CANCEL,
-        CF_ARB_CLOSE,
-    ]
+    &[CF_ARB_OPEN, CF_ARB_HEDGE, CF_ARB_CANCEL, CF_ARB_CLOSE]
 }
 
 pub struct SignalPersistor {
-    subscriber: Subscriber<ipc::Service, [u8; crate::common::iceoryx_publisher::SIGNAL_PAYLOAD], ()>,
+    subscriber:
+        Subscriber<ipc::Service, [u8; crate::common::iceoryx_publisher::SIGNAL_PAYLOAD], ()>,
     store: Arc<RocksDbStore>,
 }
 
@@ -39,7 +35,10 @@ impl SignalPersistor {
     }
 
     pub async fn run(self) -> Result<()> {
-        info!("signal persistor started on channel {}", PRE_TRADE_SIGNAL_RECORD_CHANNEL);
+        info!(
+            "signal persistor started on channel {}",
+            PRE_TRADE_SIGNAL_RECORD_CHANNEL
+        );
         loop {
             match self.subscriber.receive() {
                 Ok(Some(sample)) => {

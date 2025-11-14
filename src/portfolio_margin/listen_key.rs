@@ -38,7 +38,7 @@ impl BinanceListenKeyService {
             rest_base: rest_base.into(),
             api_key: api_key.into(),
         }
-    } 
+    }
 
     /// 通过 REST 创建 listenKey
     async fn create_listen_key(&self) -> Result<String> {

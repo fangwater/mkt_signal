@@ -14,9 +14,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
-use crate::common::mkt_msg::{AskBidSpreadMsg, FundingRateMsg, MarkPriceMsg, MktMsgType, get_msg_type};
+use super::state::{FundingRateData, Quote};
+use crate::common::mkt_msg::{
+    get_msg_type, AskBidSpreadMsg, FundingRateMsg, MarkPriceMsg, MktMsgType,
+};
 use crate::signal::common::TradingVenue;
-use super::state::{Quote, FundingRateData};
 
 // 常量定义
 const ASKBID_PAYLOAD: usize = 64;
@@ -78,11 +80,19 @@ impl MktChannel {
 
         // 初始化 HashMap（为每个 TradingVenue 创建子 HashMap）
         {
-            quotes.borrow_mut().insert(TradingVenue::BinanceSpot, HashMap::new());
-            quotes.borrow_mut().insert(TradingVenue::BinanceUm, HashMap::new());
+            quotes
+                .borrow_mut()
+                .insert(TradingVenue::BinanceSpot, HashMap::new());
+            quotes
+                .borrow_mut()
+                .insert(TradingVenue::BinanceUm, HashMap::new());
 
-            funding_rates.borrow_mut().insert(TradingVenue::BinanceUm, HashMap::new());
-            mark_prices.borrow_mut().insert(TradingVenue::BinanceUm, HashMap::new());
+            funding_rates
+                .borrow_mut()
+                .insert(TradingVenue::BinanceUm, HashMap::new());
+            mark_prices
+                .borrow_mut()
+                .insert(TradingVenue::BinanceUm, HashMap::new());
         }
 
         info!("MktChannel 初始化完成");
@@ -219,8 +229,12 @@ impl MktChannel {
                                 let timestamp = AskBidSpreadMsg::get_timestamp(payload);
 
                                 let mut quotes_map = quotes.borrow_mut();
-                                if let Some(venue_quotes) = quotes_map.get_mut(&TradingVenue::BinanceSpot) {
-                                    let quote = venue_quotes.entry(symbol.clone()).or_insert(Quote::default());
+                                if let Some(venue_quotes) =
+                                    quotes_map.get_mut(&TradingVenue::BinanceSpot)
+                                {
+                                    let quote = venue_quotes
+                                        .entry(symbol.clone())
+                                        .or_insert(Quote::default());
                                     quote.update(bid_price, ask_price, timestamp);
 
                                     debug!(
@@ -283,8 +297,12 @@ impl MktChannel {
                                 let timestamp = AskBidSpreadMsg::get_timestamp(payload);
 
                                 let mut quotes_map = quotes.borrow_mut();
-                                if let Some(venue_quotes) = quotes_map.get_mut(&TradingVenue::BinanceUm) {
-                                    let quote = venue_quotes.entry(symbol.clone()).or_insert(Quote::default());
+                                if let Some(venue_quotes) =
+                                    quotes_map.get_mut(&TradingVenue::BinanceUm)
+                                {
+                                    let quote = venue_quotes
+                                        .entry(symbol.clone())
+                                        .or_insert(Quote::default());
                                     quote.update(bid_price, ask_price, timestamp);
 
                                     debug!(
@@ -347,7 +365,9 @@ impl MktChannel {
                                     let funding_rate = FundingRateMsg::get_funding_rate(payload);
 
                                     let mut funding_rates_map = funding_rates.borrow_mut();
-                                    if let Some(venue_rates) = funding_rates_map.get_mut(&TradingVenue::BinanceUm) {
+                                    if let Some(venue_rates) =
+                                        funding_rates_map.get_mut(&TradingVenue::BinanceUm)
+                                    {
                                         let rate_data = venue_rates
                                             .entry(symbol.clone())
                                             .or_insert_with(FundingRateData::new);
@@ -369,7 +389,9 @@ impl MktChannel {
                                     let mark_price = MarkPriceMsg::get_mark_price(payload);
 
                                     let mut mark_prices_map = mark_prices.borrow_mut();
-                                    if let Some(venue_prices) = mark_prices_map.get_mut(&TradingVenue::BinanceUm) {
+                                    if let Some(venue_prices) =
+                                        mark_prices_map.get_mut(&TradingVenue::BinanceUm)
+                                    {
                                         // 只存最新值
                                         venue_prices.insert(symbol.clone(), mark_price);
 

@@ -2,7 +2,9 @@ use bytes::{BufMut, Bytes, BytesMut};
 use log::warn;
 use std::cell::OnceCell;
 
-use crate::common::iceoryx_publisher::{OrderUpdatePublisher, SignalPublisher, TradeUpdatePublisher};
+use crate::common::iceoryx_publisher::{
+    OrderUpdatePublisher, SignalPublisher, TradeUpdatePublisher,
+};
 use crate::signal::record::{SignalRecordMessage, PRE_TRADE_SIGNAL_RECORD_CHANNEL};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;

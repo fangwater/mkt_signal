@@ -18,7 +18,8 @@ pub fn required_column_families() -> &'static [&'static str] {
 }
 
 pub struct OrderUpdatePersistor {
-    subscriber: Subscriber<ipc::Service, [u8; crate::common::iceoryx_publisher::SIGNAL_PAYLOAD], ()>,
+    subscriber:
+        Subscriber<ipc::Service, [u8; crate::common::iceoryx_publisher::SIGNAL_PAYLOAD], ()>,
     store: Arc<RocksDbStore>,
 }
 
@@ -29,7 +30,10 @@ impl OrderUpdatePersistor {
     }
 
     pub async fn run(self) -> Result<()> {
-        info!("order update persistor started on channel {}", ORDER_UPDATE_RECORD_CHANNEL);
+        info!(
+            "order update persistor started on channel {}",
+            ORDER_UPDATE_RECORD_CHANNEL
+        );
         loop {
             match self.subscriber.receive() {
                 Ok(Some(sample)) => {
@@ -37,7 +41,9 @@ impl OrderUpdatePersistor {
                     if !payload.is_empty() {
                         let ts = get_timestamp_us() as u64;
                         let key = format!("{:020}", ts);
-                        let _ = self.store.put(CF_ORDER_UPDATE, key.as_bytes(), payload.as_ref());
+                        let _ = self
+                            .store
+                            .put(CF_ORDER_UPDATE, key.as_bytes(), payload.as_ref());
                     }
                 }
                 Ok(None) => tokio::task::yield_now().await,

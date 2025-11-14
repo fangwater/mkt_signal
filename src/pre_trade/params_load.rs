@@ -47,15 +47,12 @@ impl PreTradeParams {
         let params: std::collections::HashMap<String, String> =
             redis::AsyncCommands::hgetall(&mut mgr, "binance_forward_arb_params").await?;
 
-        let parse_f64 = |k: &str| -> Option<f64> {
-            params.get(k).and_then(|v| v.parse::<f64>().ok())
-        };
-        let parse_u64 = |k: &str| -> Option<u64> {
-            params.get(k).and_then(|v| v.parse::<u64>().ok())
-        };
-        let parse_i64 = |k: &str| -> Option<i64> {
-            params.get(k).and_then(|v| v.parse::<i64>().ok())
-        };
+        let parse_f64 =
+            |k: &str| -> Option<f64> { params.get(k).and_then(|v| v.parse::<f64>().ok()) };
+        let parse_u64 =
+            |k: &str| -> Option<u64> { params.get(k).and_then(|v| v.parse::<u64>().ok()) };
+        let parse_i64 =
+            |k: &str| -> Option<i64> { params.get(k).and_then(|v| v.parse::<i64>().ok()) };
 
         PARAMS_DATA.with(|data| {
             let mut data = data.borrow_mut();

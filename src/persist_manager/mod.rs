@@ -45,15 +45,21 @@ impl PersistManager {
         // 启动所有持久化器
         info!("starting signal persistor");
         let s1 = SignalPersistor::new(store.clone())?;
-        tokio::task::spawn_local(async move { let _ = s1.run().await; });
+        tokio::task::spawn_local(async move {
+            let _ = s1.run().await;
+        });
 
         info!("starting trade update persistor");
         let s2 = TradeUpdatePersistor::new(store.clone())?;
-        tokio::task::spawn_local(async move { let _ = s2.run().await; });
+        tokio::task::spawn_local(async move {
+            let _ = s2.run().await;
+        });
 
         info!("starting order update persistor");
         let s3 = OrderUpdatePersistor::new(store.clone())?;
-        tokio::task::spawn_local(async move { let _ = s3.run().await; });
+        tokio::task::spawn_local(async move {
+            let _ = s3.run().await;
+        });
 
         // 启动 HTTP 服务器（使用命令行指定的端口）
         let bind_addr = format!("0.0.0.0:{}", self.port);

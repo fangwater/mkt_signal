@@ -178,22 +178,24 @@ impl TradeEngChannel {
                     }
 
                     // Parse header (34 bytes)
-                    let req_type = u32::from_le_bytes([
-                        payload[0], payload[1], payload[2], payload[3],
-                    ]);
-                    let exchange = u32::from_le_bytes([
-                        payload[20], payload[21], payload[22], payload[23],
-                    ]);
+                    let req_type =
+                        u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                    let exchange =
+                        u32::from_le_bytes([payload[20], payload[21], payload[22], payload[23]]);
                     let status = u16::from_le_bytes([payload[24], payload[25]]);
-                    let ip_weight = u32::from_le_bytes([
-                        payload[26], payload[27], payload[28], payload[29],
-                    ]);
-                    let order_count = u32::from_le_bytes([
-                        payload[30], payload[31], payload[32], payload[33],
-                    ]);
+                    let ip_weight =
+                        u32::from_le_bytes([payload[26], payload[27], payload[28], payload[29]]);
+                    let order_count =
+                        u32::from_le_bytes([payload[30], payload[31], payload[32], payload[33]]);
                     let client_order_id = i64::from_le_bytes([
-                        payload[12], payload[13], payload[14], payload[15],
-                        payload[16], payload[17], payload[18], payload[19],
+                        payload[12],
+                        payload[13],
+                        payload[14],
+                        payload[15],
+                        payload[16],
+                        payload[17],
+                        payload[18],
+                        payload[19],
                     ]);
 
                     // Body starts at offset 34

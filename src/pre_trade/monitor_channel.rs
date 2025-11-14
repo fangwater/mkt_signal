@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{info, warn, debug};
+use log::{debug, info, warn};
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
@@ -12,9 +12,9 @@ use crate::common::account_msg::{
     AccountUpdateBalanceMsg, AccountUpdateFlushMsg, AccountUpdatePositionMsg, BalanceUpdateMsg,
     ExecutionReportMsg, OrderTradeUpdateMsg,
 };
-use crate::signal::common::{ExecutionType, TradingVenue};
 use crate::pre_trade::binance_pm_spot_manager::{BinancePmSpotAccountManager, BinanceSpotBalance};
 use crate::pre_trade::binance_pm_um_manager::{BinancePmUmAccountManager, BinanceUmPosition};
+use crate::signal::common::{ExecutionType, TradingVenue};
 
 const ACCOUNT_PAYLOAD: usize = 16_384;
 const DERIVATIVES_PAYLOAD: usize = 128;
@@ -150,20 +150,19 @@ pub fn key_order_trade_update(msg: &OrderTradeUpdateMsg) -> u64 {
 
 // ==================== Monitor Channel ====================
 
-use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
-use crate::pre_trade::price_table::{PriceEntry, PriceTable};
-use crate::pre_trade::binance_pm_um_manager::BinanceUmAccountSnapshot;
-use crate::pre_trade::binance_pm_spot_manager::BinanceSpotBalanceSnapshot;
-use crate::pre_trade::params_load::PreTradeParams;
 use crate::common::min_qty_table::MinQtyTable;
 use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
+use crate::pre_trade::binance_pm_spot_manager::BinanceSpotBalanceSnapshot;
+use crate::pre_trade::binance_pm_um_manager::BinanceUmAccountSnapshot;
+use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
+use crate::pre_trade::order_manager::OrderManager;
+use crate::pre_trade::params_load::PreTradeParams;
+use crate::pre_trade::price_table::{PriceEntry, PriceTable};
 use crate::strategy::order_update::OrderUpdate;
 use bytes::Bytes;
-use std::rc::Rc;
 use std::cell::RefCell;
-use crate::pre_trade::order_manager::OrderManager;
 use std::collections::HashMap;
-
+use std::rc::Rc;
 
 // Thread-local 单例存储
 thread_local! {
@@ -245,7 +244,6 @@ impl MonitorChannel {
     pub fn exposure_manager(&self) -> Rc<RefCell<ExposureManager>> {
         Self::with_inner(|inner| inner.exposure_manager.clone())
     }
-
 
     /// 创建 Binance PM account monitor 实例并初始化 thread-local 单例
     ///
@@ -390,7 +388,6 @@ impl MonitorChannel {
         Ok(())
     }
 
-
     // 检查杠杆率是否超过配置阈值
     pub fn check_leverage(&self) -> Result<(), String> {
         Self::with_inner(|inner| {
@@ -494,10 +491,7 @@ impl MonitorChannel {
                     let price = if let Some(p) = price_hint {
                         p
                     } else {
-                        inner.price_table
-                            .borrow()
-                            .mark_price(symbol)
-                            .unwrap_or(0.0)
+                        inner.price_table.borrow().mark_price(symbol).unwrap_or(0.0)
                     };
 
                     if price <= 0.0 {
@@ -517,7 +511,6 @@ impl MonitorChannel {
             Ok(())
         })
     }
-
 
     fn spawn_listener(
         service_name: String,
@@ -659,7 +652,10 @@ impl MonitorChannel {
             .await;
 
             if let Err(err) = result {
-                warn!("account listener {} exited: {err:?}", service_name_for_error);
+                warn!(
+                    "account listener {} exited: {err:?}",
+                    service_name_for_error
+                );
             }
         });
     }
@@ -682,9 +678,7 @@ impl MonitorChannel {
             if count >= max_pending_limit_orders {
                 return Err(format!(
                     "symbol={} 当前限价挂单数={}，达到上限 {}",
-                    symbol,
-                    count,
-                    max_pending_limit_orders
+                    symbol, count, max_pending_limit_orders
                 ));
             }
 
@@ -721,12 +715,9 @@ impl MonitorChannel {
                     base_asset
                 ));
             };
-            
+
             if total_equity <= f64::EPSILON {
-                return Err(format!(
-                    "symbol={} 敞口比例超过限制 {}",
-                    symbol, limit
-                ));
+                return Err(format!("symbol={} 敞口比例超过限制 {}", symbol, limit));
             }
 
             let mark = if base_asset.eq_ignore_ascii_case("USDT") {
@@ -751,10 +742,7 @@ impl MonitorChannel {
                         net_exposure,
                         total_equity
                     );
-                    return Err(format!(
-                        "symbol={} 敞口比例超过限制 {}",
-                        symbol, limit
-                    ));
+                    return Err(format!("symbol={} 敞口比例超过限制 {}", symbol, limit));
                 }
                 return Ok(());
             }
@@ -769,12 +757,9 @@ impl MonitorChannel {
                     exposure_usdt,
                     total_equity
                 );
-                return Err(format!(
-                    "symbol={} 敞口比例超过限制 {}",
-                    symbol, limit
-                ));
+                return Err(format!("symbol={} 敞口比例超过限制 {}", symbol, limit));
             }
-            
+
             Ok(())
         })
     }
@@ -844,11 +829,12 @@ impl MonitorChannel {
             if !(max_pos_u > 0.0) {
                 panic!("max_pos_u not set!!");
             }
-            
+
             let symbol_upper = symbol.to_uppercase();
-            let base_asset = extract_base_asset(&symbol_upper)
-                .ok_or_else(|| format!("无法识别 symbol={} 的基础资产，无法校验 max_pos_u", symbol))?;
-            
+            let base_asset = extract_base_asset(&symbol_upper).ok_or_else(|| {
+                format!("无法识别 symbol={} 的基础资产，无法校验 max_pos_u", symbol)
+            })?;
+
             let current_spot_qty = {
                 let exposure_manager = inner.exposure_manager.borrow();
                 exposure_manager
@@ -901,7 +887,7 @@ impl MonitorChannel {
                     symbol, projected_usdt, max_pos_u
                 ));
             }
-            
+
             Ok(())
         })
     }
@@ -1033,7 +1019,10 @@ impl MonitorChannel {
                 let subscriber: Subscriber<ipc::Service, [u8; DERIVATIVES_PAYLOAD], ()> =
                     service.subscriber_builder().create()?;
 
-                info!("derivatives price stream subscribed: service={}", DERIVATIVES_SERVICE);
+                info!(
+                    "derivatives price stream subscribed: service={}",
+                    DERIVATIVES_SERVICE
+                );
 
                 loop {
                     match subscriber.receive() {
@@ -1049,14 +1038,22 @@ impl MonitorChannel {
                                 MktMsgType::MarkPrice => match parse_mark_price(&payload) {
                                     Ok(msg) => {
                                         let mut table = price_table.borrow_mut();
-                                        table.update_mark_price(&msg.symbol, msg.mark_price, msg.timestamp);
+                                        table.update_mark_price(
+                                            &msg.symbol,
+                                            msg.mark_price,
+                                            msg.timestamp,
+                                        );
                                     }
                                     Err(err) => warn!("parse mark price failed: {err:?}"),
                                 },
                                 MktMsgType::IndexPrice => match parse_index_price(&payload) {
                                     Ok(msg) => {
                                         let mut table = price_table.borrow_mut();
-                                        table.update_index_price(&msg.symbol, msg.index_price, msg.timestamp);
+                                        table.update_index_price(
+                                            &msg.symbol,
+                                            msg.index_price,
+                                            msg.timestamp,
+                                        );
                                     }
                                     Err(err) => warn!("parse index price failed: {err:?}"),
                                 },
@@ -1121,13 +1118,15 @@ fn refresh_exposures(
     }
 }
 
-
 fn log_um_positions(positions: &[BinanceUmPosition]) {
     if positions.is_empty() {
         info!("Binance UM account initialized: no open positions");
         return;
     }
-    info!("Binance UM account initialized: {} positions", positions.len());
+    info!(
+        "Binance UM account initialized: {} positions",
+        positions.len()
+    );
     for pos in positions {
         if pos.position_amt.abs() > 1e-8 {
             info!(
@@ -1143,7 +1142,10 @@ fn log_spot_balances(balances: &[BinanceSpotBalance]) {
         info!("Binance Spot account initialized: no balances");
         return;
     }
-    info!("Binance Spot account initialized: {} assets", balances.len());
+    info!(
+        "Binance Spot account initialized: {} assets",
+        balances.len()
+    );
     for bal in balances {
         let total_balance = bal.total_wallet_balance;
         let net_asset = bal.net_asset();
@@ -1198,17 +1200,21 @@ fn log_exposures(entries: &[ExposureEntry], price_map: &BTreeMap<String, PriceEn
     ]);
 
     let table = render_three_line_table(
-        &["Asset", "SpotQty", "SpotUSDT", "UMNetQty", "UMNetUSDT", "ExposureQty", "ExposureUSDT"],
+        &[
+            "Asset",
+            "SpotQty",
+            "SpotUSDT",
+            "UMNetQty",
+            "UMNetUSDT",
+            "ExposureQty",
+            "ExposureUSDT",
+        ],
         &rows,
     );
     info!("现货+UM 敞口汇总\n{}", table);
 }
 
-fn log_exposure_summary(
-    total_equity: f64,
-    total_exposure: f64,
-    total_position: f64,
-) {
+fn log_exposure_summary(total_equity: f64, total_exposure: f64, total_position: f64) {
     let leverage = if total_equity.abs() <= f64::EPSILON {
         0.0
     } else {
@@ -1219,7 +1225,11 @@ fn log_exposure_summary(
     let leverage_cell = format!("{} / {}", fmt_decimal(leverage), fmt_decimal(max_leverage));
     let table = render_three_line_table(
         &["TotalEquity", "TotalExposure", "Leverage"],
-        &[vec![fmt_decimal(total_equity), fmt_decimal(total_exposure), leverage_cell]],
+        &[vec![
+            fmt_decimal(total_equity),
+            fmt_decimal(total_exposure),
+            leverage_cell,
+        ]],
     );
     info!("风险指标汇总\n{}", table);
 }
@@ -1249,7 +1259,13 @@ fn render_three_line_table(headers: &[&str], rows: &[Vec<String>]) -> String {
     let mut out = String::new();
     out.push_str(&build_separator(&widths, '-'));
     out.push('\n');
-    out.push_str(&build_row(headers.iter().map(|h| h.to_string()).collect::<Vec<String>>(), &widths));
+    out.push_str(&build_row(
+        headers
+            .iter()
+            .map(|h| h.to_string())
+            .collect::<Vec<String>>(),
+        &widths,
+    ));
     out.push('\n');
     out.push_str(&build_separator(&widths, '='));
     if rows.is_empty() {
@@ -1459,4 +1475,3 @@ fn dispatch_order_trade_update(
         );
     }
 }
-

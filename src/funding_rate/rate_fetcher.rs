@@ -17,13 +17,13 @@ use tokio::time::{sleep, Duration};
 
 type HmacSha256 = Hmac<Sha256>;
 
-use crate::signal::common::TradingVenue;
 use super::param_loader::{fetch_binance_funding_items, infer_binance_funding_frequency};
 use super::symbol_list::SymbolList;
+use crate::signal::common::TradingVenue;
 
 // 预测资费参数（硬编码）
-const PREDICT_INTERVAL: usize = 6;   // 用于预测的均值窗口
-const PREDICT_NUM: usize = 1;         // 预测回溯偏移
+const PREDICT_INTERVAL: usize = 6; // 用于预测的均值窗口
+const PREDICT_NUM: usize = 1; // 预测回溯偏移
 
 // 拉取频率：5秒
 const FETCH_INTERVAL_SECS: u64 = 5;
@@ -41,8 +41,8 @@ impl FundingRatePeriod {
     /// 计算指定天数需要拉取的条数
     pub fn calculate_limit(&self, days: u32) -> usize {
         match self {
-            FundingRatePeriod::Hours4 => (days * 6) as usize,  // 每天6次
-            FundingRatePeriod::Hours8 => (days * 3) as usize,  // 每天3次
+            FundingRatePeriod::Hours4 => (days * 6) as usize, // 每天6次
+            FundingRatePeriod::Hours8 => (days * 3) as usize, // 每天3次
         }
     }
 
@@ -55,8 +55,8 @@ impl FundingRatePeriod {
     /// 对应周期的借贷利率
     pub fn convert_daily_rate(&self, daily_rate: f64) -> f64 {
         match self {
-            FundingRatePeriod::Hours4 => daily_rate / 6.0,  // 一天6次
-            FundingRatePeriod::Hours8 => daily_rate / 3.0,  // 一天3次
+            FundingRatePeriod::Hours4 => daily_rate / 6.0, // 一天6次
+            FundingRatePeriod::Hours8 => daily_rate / 3.0, // 一天3次
         }
     }
 
@@ -93,7 +93,8 @@ const BINANCE_CONFIG: ExchangeConfig = ExchangeConfig {
 const DEFAULT_TEST_SYMBOLS: &[&str] = &["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "SUIUSDT"];
 
 // Binance API 端点
-const BINANCE_LENDING_RATE_HISTORY_API: &str = "https://api.binance.com/sapi/v1/margin/interestRateHistory";
+const BINANCE_LENDING_RATE_HISTORY_API: &str =
+    "https://api.binance.com/sapi/v1/margin/interestRateHistory";
 
 // Thread-local 单例存储
 thread_local! {
@@ -147,7 +148,8 @@ impl RateFetcher {
     pub fn get_period(&self, symbol: &str, venue: TradingVenue) -> FundingRatePeriod {
         let symbol_upper = symbol.to_uppercase();
         Self::with_inner(|inner| {
-            inner.funding_periods
+            inner
+                .funding_periods
                 .get(&venue)
                 .and_then(|map| map.get(&symbol_upper))
                 .copied()
@@ -186,19 +188,16 @@ impl RateFetcher {
     /// - `BINANCE_API_SECRET`
     pub fn init_singleton() -> Result<()> {
         // 从环境变量获取 API Key 和 Secret
-        let api_key = std::env::var("BINANCE_API_KEY")
-            .expect("环境变量 BINANCE_API_KEY 未设置");
-        let api_secret = std::env::var("BINANCE_API_SECRET")
-            .expect("环境变量 BINANCE_API_SECRET 未设置");
+        let api_key = std::env::var("BINANCE_API_KEY").expect("环境变量 BINANCE_API_KEY 未设置");
+        let api_secret =
+            std::env::var("BINANCE_API_SECRET").expect("环境变量 BINANCE_API_SECRET 未设置");
 
         let inner = RateFetcherInner {
             funding_rates: HashMap::new(),
             lending_rates: HashMap::new(),
             funding_periods: HashMap::new(),
             symbol_cache: HashSet::new(),
-            http_client: Client::builder()
-                .timeout(Duration::from_secs(10))
-                .build()?,
+            http_client: Client::builder().timeout(Duration::from_secs(10)).build()?,
             last_full_fetch_hour: None,
             api_key,
             api_secret,
@@ -222,7 +221,10 @@ impl RateFetcher {
     /// 启动 Binance 费率拉取任务（5秒间隔）
     fn spawn_binance_fetch_task() {
         tokio::task::spawn_local(async move {
-            info!("Binance 费率拉取任务启动（{}秒间隔，整点全量拉取）", FETCH_INTERVAL_SECS);
+            info!(
+                "Binance 费率拉取任务启动（{}秒间隔，整点全量拉取）",
+                FETCH_INTERVAL_SECS
+            );
 
             // 先立即拉取一次（全量）
             if let Err(e) = Self::fetch_binance_rates(true).await {
@@ -358,7 +360,9 @@ impl RateFetcher {
         }
 
         let client = Self::with_inner(|inner| inner.http_client.clone());
-        let limit = BINANCE_CONFIG.period.calculate_limit(BINANCE_CONFIG.fetch_days);
+        let limit = BINANCE_CONFIG
+            .period
+            .calculate_limit(BINANCE_CONFIG.fetch_days);
 
         let mut success_count = 0;
         let mut fail_count = 0;
@@ -413,7 +417,10 @@ impl RateFetcher {
     }
 
     /// 拉取 Binance 借贷利率历史（逐个查询，取最近24条均值）
-    async fn fetch_binance_lending_rates(online_symbols: &[String], save_result: bool) -> Result<()> {
+    async fn fetch_binance_lending_rates(
+        online_symbols: &[String],
+        save_result: bool,
+    ) -> Result<()> {
         // 提取去重的基础资产
         let mut base_assets: Vec<String> = online_symbols
             .iter()
@@ -434,7 +441,8 @@ impl RateFetcher {
                 Ok(Some(daily_rate)) if save_result => {
                     let period_rate = BINANCE_CONFIG.period.convert_daily_rate(daily_rate);
                     Self::with_inner_mut(|inner| {
-                        inner.lending_rates
+                        inner
+                            .lending_rates
                             .entry(BINANCE_CONFIG.venue)
                             .or_insert_with(HashMap::new)
                             .insert(asset.to_uppercase(), period_rate);
@@ -461,22 +469,42 @@ impl RateFetcher {
     /// 拉取单个 asset 的借贷利率（取最近24条均值）
     async fn fetch_lending_rate_for_asset(asset: &str) -> Result<Option<f64>> {
         let (client, api_key, api_secret) = Self::with_inner(|inner| {
-            (inner.http_client.clone(), inner.api_key.clone(), inner.api_secret.clone())
+            (
+                inner.http_client.clone(),
+                inner.api_key.clone(),
+                inner.api_secret.clone(),
+            )
         });
 
-        let query = format!("asset={}&isIsolated=FALSE&timestamp={}", asset, Utc::now().timestamp_millis());
+        let query = format!(
+            "asset={}&isIsolated=FALSE&timestamp={}",
+            asset,
+            Utc::now().timestamp_millis()
+        );
         let signature = Self::sign_query(&api_secret, &query)?;
-        let url = format!("{}?{}&signature={}", BINANCE_LENDING_RATE_HISTORY_API, query, signature);
+        let url = format!(
+            "{}?{}&signature={}",
+            BINANCE_LENDING_RATE_HISTORY_API, query, signature
+        );
 
-        let response = client.get(&url).header("X-MBX-APIKEY", &api_key).send().await?;
+        let response = client
+            .get(&url)
+            .header("X-MBX-APIKEY", &api_key)
+            .send()
+            .await?;
 
         if !response.status().is_success() {
-            warn!("借贷利率 API 失败 [{}]: {}", response.status(), response.text().await.unwrap_or_default());
+            warn!(
+                "借贷利率 API 失败 [{}]: {}",
+                response.status(),
+                response.text().await.unwrap_or_default()
+            );
             return Ok(None);
         }
 
         let items: Vec<BinanceLendingRateHistoryItem> = response.json().await?;
-        let rates: Vec<f64> = items.iter()
+        let rates: Vec<f64> = items
+            .iter()
             .take(24)
             .filter_map(|item| item.daily_interest_rate.parse().ok())
             .collect();
@@ -490,8 +518,8 @@ impl RateFetcher {
 
     /// 签名查询字符串
     fn sign_query(api_secret: &str, query: &str) -> Result<String> {
-        let mut mac = HmacSha256::new_from_slice(api_secret.as_bytes())
-            .expect("invalid API secret");
+        let mut mac =
+            HmacSha256::new_from_slice(api_secret.as_bytes()).expect("invalid API secret");
         mac.update(query.as_bytes());
         Ok(hex::encode(mac.finalize().into_bytes()))
     }
@@ -507,20 +535,31 @@ impl RateFetcher {
         let mut table_data: Vec<_> = symbols
             .iter()
             .map(|s| {
-                let fr = Self::instance().get_binance_predicted_funding_rate(s);
-                let loan = Self::instance().get_binance_loan_rate(s, period);
+                let fr = Self::instance()
+                    .get_predicted_funding_rate(s, BINANCE_CONFIG.venue)
+                    .map(|(_, v)| v);
+                let loan = Self::instance()
+                    .get_predict_loan_rate(s, BINANCE_CONFIG.venue)
+                    .map(|(_, v)| v);
                 (s.clone(), fr, loan)
             })
             .collect();
         table_data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
 
         info!("┌───────────────────────────────────────────────────────────┐");
-        info!("│ Symbol         │ Predict FR ({})   │ Predict Loan ({}) │", period_str, period_str);
+        info!(
+            "│ Symbol         │ Predict FR ({})   │ Predict Loan ({}) │",
+            period_str, period_str
+        );
         info!("├───────────────────────────────────────────────────────────┤");
 
         for (symbol, fr, loan) in table_data {
-            let fr_str = fr.map_or("             N/A".to_string(), |v| format!("{:>15.6}%", v * 100.0));
-            let loan_str = loan.map_or("             N/A".to_string(), |v| format!("{:>15.6}%", v * 100.0));
+            let fr_str = fr.map_or("             N/A".to_string(), |v| {
+                format!("{:>15.6}%", v * 100.0)
+            });
+            let loan_str = loan.map_or("             N/A".to_string(), |v| {
+                format!("{:>15.6}%", v * 100.0)
+            });
             info!("│ {:<14} │ {} │ {} │", symbol, fr_str, loan_str);
         }
 
@@ -529,44 +568,55 @@ impl RateFetcher {
 
     // ==================== 公开接口（仅2个）====================
 
-    /// 获取币安预测资金费率
-    ///
-    /// # 参数
-    /// - `symbol`: 交易对符号（例如 "BTCUSDT"）
-    ///
-    /// # 返回
-    /// 预测的资金费率，如果数据不足则返回 None
-    pub fn get_binance_predicted_funding_rate(&self, symbol: &str) -> Option<f64> {
-        // 根据 symbol 获取周期
-        let period = self.get_period(symbol, BINANCE_CONFIG.venue);
-
-        // 目前只支持配置的周期，未来可扩展多周期支持
-        if period != BINANCE_CONFIG.period {
-            return None;
+    /// 获取预测资金费率（返回 symbol 对应周期和值）
+    pub fn get_predicted_funding_rate(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+    ) -> Option<(FundingRatePeriod, f64)> {
+        if venue != BINANCE_CONFIG.venue {
+            panic!(
+                "RateFetcher::get_predicted_funding_rate currently only supports {:?}",
+                BINANCE_CONFIG.venue
+            );
         }
+        let period = self.get_period(symbol, venue);
+        let value = self.get_binance_predicted_funding_rate(symbol)?;
+        Some((period, value))
+    }
 
-        let rates = Self::get_funding_rates_internal(symbol)?;
+    /// 获取预测借贷利率（返回 symbol 对应周期和值）
+    pub fn get_predict_loan_rate(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+    ) -> Option<(FundingRatePeriod, f64)> {
+        if venue != BINANCE_CONFIG.venue {
+            panic!(
+                "RateFetcher::get_predict_loan_rate currently only supports {:?}",
+                BINANCE_CONFIG.venue
+            );
+        }
+        let period = self.get_period(symbol, venue);
+        let value = self.get_binance_loan_rate(symbol, period)?;
+        Some((period, value))
+    }
+
+    fn get_binance_predicted_funding_rate(&self, symbol: &str) -> Option<f64> {
+        let rates = Self::get_funding_rates_internal(symbol, BINANCE_CONFIG.venue)?;
         Self::calculate_predicted_rate(&rates)
     }
 
-    /// 获取币安借贷利率
-    ///
-    /// # 参数
-    /// - `symbol`: 交易对符号（例如 "BTCUSDT"）
-    /// - `period`: 资金费率周期（4h 或 8h），返回对应周期修正后的利率
-    ///
-    /// # 返回
-    /// 修正后的周期借贷利率，如果未找到数据则返回 None
-    pub fn get_binance_loan_rate(&self, symbol: &str, period: FundingRatePeriod) -> Option<f64> {
+    fn get_binance_loan_rate(&self, symbol: &str, period: FundingRatePeriod) -> Option<f64> {
         let base_asset = symbol.to_uppercase().strip_suffix("USDT")?.to_string();
         let daily_rate = Self::with_inner(|inner| {
-            inner.lending_rates
+            inner
+                .lending_rates
                 .get(&BINANCE_CONFIG.venue)?
                 .get(&base_asset)
                 .copied()
         })?;
 
-        // 将存储的周期利率转换回日利率，再转换为目标周期
         let stored_daily = match BINANCE_CONFIG.period {
             FundingRatePeriod::Hours4 => daily_rate * 6.0,
             FundingRatePeriod::Hours8 => daily_rate * 3.0,
@@ -578,14 +628,9 @@ impl RateFetcher {
     // ==================== 内部方法 ====================
 
     /// 获取资金费率历史（内部方法）
-    fn get_funding_rates_internal(symbol: &str) -> Option<Vec<f64>> {
+    fn get_funding_rates_internal(symbol: &str, venue: TradingVenue) -> Option<Vec<f64>> {
         let symbol_upper = symbol.to_uppercase();
-        Self::with_inner(|inner| {
-            inner.funding_rates
-                .get(&BINANCE_CONFIG.venue)?
-                .get(&symbol_upper)
-                .cloned()
-        })
+        Self::with_inner(|inner| inner.funding_rates.get(&venue)?.get(&symbol_upper).cloned())
     }
 
     /// 计算预测资金费率（内部方法）
@@ -603,5 +648,4 @@ impl RateFetcher {
         let start = end + 1 - PREDICT_INTERVAL;
         Some(rates[start..=end].iter().sum::<f64>() / PREDICT_INTERVAL as f64)
     }
-
 }

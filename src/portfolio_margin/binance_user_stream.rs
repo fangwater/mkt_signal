@@ -34,8 +34,8 @@ impl BinanceUserDataConnection {
             delay_interval: Duration::from_secs(5),
             ping_interval: Duration::from_secs(180),
             session_max,
-        } 
-    } 
+        }
+    }
 }
 
 #[async_trait]

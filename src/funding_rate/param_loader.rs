@@ -1,4 +1,4 @@
-//! 参数加载模块 
+//! 参数加载模块
 //!
 //! 从 Redis 动态加载所有配置参数，包括：
 //! - 资金费率阈值（4h/8h）
@@ -38,7 +38,11 @@ impl OrderMode {
         }
         let lowered = trimmed.to_ascii_lowercase();
         match lowered.as_str() {
-            "normal" | "ladder" => Some(if lowered == "normal" { Self::Normal } else { Self::Ladder }),
+            "normal" | "ladder" => Some(if lowered == "normal" {
+                Self::Normal
+            } else {
+                Self::Ladder
+            }),
             _ => None,
         }
     }
@@ -70,10 +74,18 @@ pub struct OrderConfig {
     pub max_hedge_order_keep_s: u64,
 }
 
-const fn default_order_amount() -> f64 { 50.0 }
-const fn default_max_open_keep() -> u64 { 5 }
-const fn default_max_hedge_keep() -> u64 { 5 }
-fn default_open_ranges() -> Vec<f64> { vec![0.0002] }
+const fn default_order_amount() -> f64 {
+    50.0
+}
+const fn default_max_open_keep() -> u64 {
+    5
+}
+const fn default_max_hedge_keep() -> u64 {
+    5
+}
+fn default_open_ranges() -> Vec<f64> {
+    vec![0.0002]
+}
 
 impl Default for OrderConfig {
     fn default() -> Self {
@@ -93,7 +105,11 @@ impl OrderConfig {
     }
 
     pub fn ladder_open_ranges(&self) -> &[f64] {
-        if self.open_ranges.len() > 1 { &self.open_ranges[1..] } else { &[] }
+        if self.open_ranges.len() > 1 {
+            &self.open_ranges[1..]
+        } else {
+            &[]
+        }
     }
 }
 
@@ -120,13 +136,27 @@ pub struct StrategyParams {
     pub settlement_offset_secs: i64,
 }
 
-const fn default_interval() -> usize { 6 }
-const fn default_refresh_secs() -> u64 { 30 }
-const fn default_fetch_secs() -> u64 { 7200 }
-const fn default_fetch_offset_secs() -> u64 { 120 }
-const fn default_history_limit() -> usize { 100 }
-const fn default_resample_ms() -> u64 { 3000 }
-const fn default_funding_ma_size() -> usize { 60 }
+const fn default_interval() -> usize {
+    6
+}
+const fn default_refresh_secs() -> u64 {
+    30
+}
+const fn default_fetch_secs() -> u64 {
+    7200
+}
+const fn default_fetch_offset_secs() -> u64 {
+    120
+}
+const fn default_history_limit() -> usize {
+    100
+}
+const fn default_resample_ms() -> u64 {
+    3000
+}
+const fn default_funding_ma_size() -> usize {
+    60
+}
 
 impl Default for StrategyParams {
     fn default() -> Self {
@@ -165,9 +195,15 @@ pub struct StrategyConfig {
     pub loan_refresh_secs: u64,
 }
 
-const fn default_reload_interval_secs() -> u64 { 60 }
-const fn default_signal_interval_ms() -> u64 { 1_000 }
-const fn default_loan_refresh_secs() -> u64 { 60 }
+const fn default_reload_interval_secs() -> u64 {
+    60
+}
+const fn default_signal_interval_ms() -> u64 {
+    1_000
+}
+const fn default_loan_refresh_secs() -> u64 {
+    60
+}
 
 impl Default for StrategyConfig {
     fn default() -> Self {
@@ -214,7 +250,10 @@ impl StrategyConfig {
         cfg.strategy.settlement_offset_secs = cfg.strategy.fetch_offset_secs as i64;
 
         if let Some(redis_cfg) = cfg.redis.as_ref() {
-            info!("Redis配置: {}:{} db={}", redis_cfg.host, redis_cfg.port, redis_cfg.db);
+            info!(
+                "Redis配置: {}:{} db={}",
+                redis_cfg.host, redis_cfg.port, redis_cfg.db
+            );
         }
         Ok(cfg)
     }
@@ -296,7 +335,7 @@ pub struct ParamsSnapshot {
 }
 
 /// 资金费率阈值条目
-#[derive(Debug, Clone, Default)] 
+#[derive(Debug, Clone, Default)]
 pub struct FundingThresholdEntry {
     pub symbol: String,
     pub predict_funding_rate: f64,
@@ -306,7 +345,7 @@ pub struct FundingThresholdEntry {
     pub open_lower_threshold: f64,
     pub close_lower_threshold: f64,
     pub close_upper_threshold: f64,
-} 
+}
 
 /// Binance 资金费率历史数据项
 #[derive(Debug, Deserialize)]

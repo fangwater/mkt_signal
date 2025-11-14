@@ -1,6 +1,6 @@
 use crate::common::time_util::get_timestamp_us;
-use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderType, Side};
 use crate::pre_trade::monitor_channel::MonitorChannel;
+use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderType, Side};
 use crate::pre_trade::{PersistChannel, SignalChannel, TradeEngChannel};
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
@@ -14,11 +14,11 @@ use crate::strategy::trade_update::TradeUpdate;
 use log::{debug, error, info, warn};
 
 pub struct HedgeArbStrategy {
-    pub strategy_id: i32,               //策略id
-    pub symbol: String,                 //交易的统一symbol (开仓侧symbol)
-    pub open_order_id: i64,             //开仓单唯一，报多单对应多个Strategy
-    pub hedge_order_ids: Vec<i64>,      //对冲单会产生一个or多个，因为部分成交
-    pub open_timeout_us: Option<i64>,   //开仓单最长挂单时间，超过撤销
+    pub strategy_id: i32,              //策略id
+    pub symbol: String,                //交易的统一symbol (开仓侧symbol)
+    pub open_order_id: i64,            //开仓单唯一，报多单对应多个Strategy
+    pub hedge_order_ids: Vec<i64>,     //对冲单会产生一个or多个，因为部分成交
+    pub open_timeout_us: Option<i64>,  //开仓单最长挂单时间，超过撤销
     pub hedge_timeout_us: Option<i64>, //对冲单最长挂单时间，超过撤销，度过是maker-taker模式，则没有这个timeout，设置为None
     pub order_seq: u32,                //订单号计数器
     pub cumulative_hedged_qty: f64,    //累计对冲数量
@@ -73,8 +73,7 @@ impl HedgeArbStrategy {
         }
 
         // 2、检查symbol的敞口，失败打印error
-        if let Err(e) = MonitorChannel::instance().check_symbol_exposure(&self.symbol)
-        {
+        if let Err(e) = MonitorChannel::instance().check_symbol_exposure(&self.symbol) {
             error!("HedgeArbStrategy: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃", self.strategy_id, self.symbol, e);
             self.alive_flag = false;
             return;
@@ -93,8 +92,7 @@ impl HedgeArbStrategy {
         // 4、检查限价挂单数量限制（如果是限价单）
         let order_type = OrderType::from_u8(ctx.order_type);
         if order_type == Some(OrderType::Limit) {
-            if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&self.symbol)
-            {
+            if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&self.symbol) {
                 error!("HedgeArbStrategy: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃", self.strategy_id, self.symbol, e);
                 self.alive_flag = false;
                 return;
@@ -183,7 +181,8 @@ impl HedgeArbStrategy {
 
         // 10、用修正量价，开仓订单记录到order manager
         // todo: 订单持久化直接写死在manager中
-        let client_order_id = MonitorChannel::instance().order_manager()
+        let client_order_id = MonitorChannel::instance()
+            .order_manager()
             .borrow_mut()
             .create_order(
                 venue,
@@ -270,7 +269,8 @@ impl HedgeArbStrategy {
             .ok_or_else(|| format!("无效的对冲方向: {}", ctx.hedge_side))?;
 
         // 6. 创建对冲订单并记录到order manager
-        let hedge_client_order_id = MonitorChannel::instance().order_manager()
+        let hedge_client_order_id = MonitorChannel::instance()
+            .order_manager()
             .borrow_mut()
             .create_order(
                 hedge_venue,
@@ -333,7 +333,8 @@ impl HedgeArbStrategy {
         order_type_str: &str,
         symbol: &str,
     ) -> Result<(), String> {
-        let mut order = MonitorChannel::instance().order_manager()
+        let mut order = MonitorChannel::instance()
+            .order_manager()
             .borrow_mut()
             .get(client_order_id);
         if let Some(order) = order.as_mut() {
@@ -378,7 +379,8 @@ impl HedgeArbStrategy {
     // cancel的本质就是构造取消，实际处理的是account monitor的撤销回报
     fn handle_arb_cancel_signal(&mut self, _ctx: ArbCancelCtx) -> Result<(), String> {
         // 从 order manager 获取开仓订单
-        let order = MonitorChannel::instance().order_manager()
+        let order = MonitorChannel::instance()
+            .order_manager()
             .borrow()
             .get(self.open_order_id);
         if let Some(order) = order {
@@ -386,7 +388,9 @@ impl HedgeArbStrategy {
             match order.get_order_cancel_bytes() {
                 Ok(cancel_bytes) => {
                     // 通过 TradeEngChannel 单例发送撤单请求
-                    if let Err(e) = TradeEngChannel::with(|ch| ch.publish_order_request(&cancel_bytes)) {
+                    if let Err(e) =
+                        TradeEngChannel::with(|ch| ch.publish_order_request(&cancel_bytes))
+                    {
                         error!(
                             "HedgeArbStrategy: strategy_id={} 发送撤单请求失败: {}",
                             self.strategy_id, e
@@ -488,13 +492,16 @@ impl HedgeArbStrategy {
                 );
 
                 // 获取开仓订单并直接发送撤单请求
-                let order = MonitorChannel::instance().order_manager()
+                let order = MonitorChannel::instance()
+                    .order_manager()
                     .borrow()
                     .get(self.open_order_id);
                 if let Some(order) = order {
                     match order.get_order_cancel_bytes() {
                         Ok(cancel_bytes) => {
-                            if let Err(e) = TradeEngChannel::with(|ch| ch.publish_order_request(&cancel_bytes)) {
+                            if let Err(e) =
+                                TradeEngChannel::with(|ch| ch.publish_order_request(&cancel_bytes))
+                            {
                                 error!(
                                     "HedgeArbStrategy: strategy_id={} 发送开仓撤单请求失败: {}",
                                     self.strategy_id, e
@@ -532,15 +539,16 @@ impl HedgeArbStrategy {
 
                 // 遍历所有对冲订单，直接撤单
                 for &hedge_order_id in &self.hedge_order_ids.clone() {
-                    let order = MonitorChannel::instance().order_manager()
+                    let order = MonitorChannel::instance()
+                        .order_manager()
                         .borrow()
                         .get(hedge_order_id);
                     if let Some(order) = order {
                         match order.get_order_cancel_bytes() {
                             Ok(cancel_bytes) => {
-                                if let Err(e) =
-                                    TradeEngChannel::with(|ch| ch.publish_order_request(&cancel_bytes))
-                                {
+                                if let Err(e) = TradeEngChannel::with(|ch| {
+                                    ch.publish_order_request(&cancel_bytes)
+                                }) {
                                     error!(
                                         "HedgeArbStrategy: strategy_id={} 发送对冲撤单请求失败 order_id={}: {}",
                                         self.strategy_id, hedge_order_id, e
@@ -568,13 +576,13 @@ impl HedgeArbStrategy {
         }
     }
 
-
     // 检查当前的对冲单的id列表的最后一个。查看是否是terminal状态
     fn has_pending_hedge_order(&self) -> bool {
         // 获取最后一个对冲订单ID
         if let Some(&last_hedge_id) = self.hedge_order_ids.last() {
             // 从order manager获取订单
-            let order = MonitorChannel::instance().order_manager()
+            let order = MonitorChannel::instance()
+                .order_manager()
                 .borrow()
                 .get(last_hedge_id);
             if let Some(order) = order {
@@ -665,9 +673,7 @@ impl HedgeArbStrategy {
         );
 
         // 2. 通过 SignalChannel 直接发送到上游
-        let send_result = SignalChannel::with(|ch| {
-            ch.publish_backward(&query_msg.to_bytes())
-        });
+        let send_result = SignalChannel::with(|ch| ch.publish_backward(&query_msg.to_bytes()));
 
         match send_result {
             Ok(true) => {
@@ -707,8 +713,8 @@ impl HedgeArbStrategy {
     fn try_hedge_with_residual(&mut self, base_qty: f64) -> (bool, f64, f64) {
         // 1. 计算总待对冲量（基础量 + 残值表中的残余量）
         let mut total_pending_qty = base_qty;
-        let residual_qty = MonitorChannel::instance()
-            .clear_hedge_residual(&self.hedge_symbol, self.hedge_venue);
+        let residual_qty =
+            MonitorChannel::instance().clear_hedge_residual(&self.hedge_symbol, self.hedge_venue);
         total_pending_qty += residual_qty;
 
         info!(
@@ -848,7 +854,7 @@ impl HedgeArbStrategy {
             error!(
                 "HedgeArbStrategy: strategy_id={} MT模式不应该有对冲侧撤单，订单ID={}",
                 self.strategy_id,
-                cancel_update.client_order_id() 
+                cancel_update.client_order_id()
             );
             return;
         }
@@ -956,6 +962,7 @@ impl HedgeArbStrategy {
             }
         }
     }
+    
     fn process_hedge_leg_trade(&mut self, _trade: &dyn TradeUpdate) {
         // 对冲侧成交处理
         info!(
@@ -969,8 +976,8 @@ impl HedgeArbStrategy {
             let remaining_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
 
             // 获取残值
-            let residual_qty = MonitorChannel::instance()
-                .get_hedge_residual(&self.hedge_symbol, self.hedge_venue);
+            let residual_qty =
+                MonitorChannel::instance().get_hedge_residual(&self.hedge_symbol, self.hedge_venue);
             let total_remaining = remaining_qty + residual_qty;
 
             debug!(
@@ -1143,7 +1150,7 @@ impl Strategy for HedgeArbStrategy {
         Self::extract_strategy_id(order_id) == self.strategy_id
     }
 
-    fn handle_signal_with_record(&mut self, signal: &TradeSignal){
+    fn handle_signal_with_record(&mut self, signal: &TradeSignal) {
         HedgeArbStrategy::handle_signal(self, signal);
 
         // 持久化信号记录
@@ -1163,12 +1170,12 @@ impl Strategy for HedgeArbStrategy {
         PersistChannel::with(|ch| ch.publish_order_update(update));
     }
 
-    fn apply_trade_update_with_record(&mut self, trade: &dyn TradeUpdate){
+    fn apply_trade_update_with_record(&mut self, trade: &dyn TradeUpdate) {
         HedgeArbStrategy::apply_trade_update(self, trade);
 
         // 持久化成交记录
         PersistChannel::with(|ch| ch.publish_trade_update(trade));
-    } 
+    }
 
     fn handle_period_clock(&mut self, _current_tp: i64) {
         // 周期性检查开仓和对冲订单的超时情况

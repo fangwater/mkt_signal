@@ -415,7 +415,7 @@ impl Quote {
     fn is_ready(&self) -> bool {
         self.bid > 0.0 && self.ask > 0.0
     }
-} 
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PositionState {
@@ -2220,11 +2220,11 @@ fn compute_widths(headers: &[&str], rows: &[Vec<String>]) -> Vec<usize> {
         for (i, cell) in row.iter().enumerate() {
             if i < widths.len() {
                 widths[i] = widths[i].max(cell.len());
-            } 
-        } 
-    } 
-    widths 
-} 
+            }
+        }
+    }
+    widths
+}
 
 fn build_separator(widths: &[usize], sep: char) -> String {
     let mut line = String::new();
@@ -2234,7 +2234,7 @@ fn build_separator(widths: &[usize], sep: char) -> String {
         line.push('+');
     }
     line
-} 
+}
 
 fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
     let mut row = String::new();

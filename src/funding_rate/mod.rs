@@ -7,56 +7,40 @@
 //! - 行情频道订阅（mkt_channel）
 
 pub mod common;
-pub mod param_loader;
-pub mod state;
-pub mod signal_generator;
-pub mod mkt_channel;
-pub mod symbol_list;
-pub mod rate_fetcher;
-pub mod spread_factor;
-pub mod funding_rate_factor;
 pub mod decision;
+pub mod funding_rate_factor;
+pub mod mkt_channel;
+pub mod param_loader;
+pub mod rate_fetcher;
+pub mod signal_generator;
+pub mod spread_factor;
+pub mod state;
+pub mod symbol_list;
 
 // 公共导出
 pub use param_loader::{
-    SymbolThreshold,
-    RateThresholds,
-    ParamsSnapshot,
-    FundingThresholdEntry,
-    StrategyConfig,
-    OrderConfig,
-    OrderMode,
-    approx_equal,
-    approx_equal_slice,
+    approx_equal, approx_equal_slice, FundingThresholdEntry, OrderConfig, OrderMode,
+    ParamsSnapshot, RateThresholds, StrategyConfig, SymbolThreshold,
 };
 
-pub use state::{
-    Quote,
-    FundingRateData,
-    EvaluateDecision,
-    QtyStepInfo,
-    EngineStats,
-    SymbolState,
-};
+pub use state::{EngineStats, EvaluateDecision, FundingRateData, QtyStepInfo, Quote, SymbolState};
 
-pub use signal_generator::{
-    FundingRateSignalGenerator,
-    SignalRequest,
-    BackwardSignalSubscriber,
-};
+pub use signal_generator::{BackwardSignalSubscriber, FundingRateSignalGenerator, SignalRequest};
 
 pub use mkt_channel::MktChannel;
-pub use symbol_list::SymbolList;
 pub use rate_fetcher::RateFetcher;
+pub use symbol_list::SymbolList;
 
 // 导出通用定义
-pub use common::{ArbDirection, CompareOp, FactorMode, OperationType, ThresholdKey, VenuePair, SymbolPair};
+pub use common::{
+    ArbDirection, CompareOp, FactorMode, OperationType, SymbolPair, ThresholdKey, VenuePair,
+};
 
 // 导出价差因子相关
 pub use spread_factor::{SpreadFactor, SpreadThresholdConfig, SpreadType};
 
 // 导出资金费率因子相关
-pub use funding_rate_factor::{FundingRateFactor, FrThresholdConfig};
+pub use funding_rate_factor::{FrThresholdConfig, FundingRateFactor};
 
 // 导出决策模块
 pub use decision::FrDecision;

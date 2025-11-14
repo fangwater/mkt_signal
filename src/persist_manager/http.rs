@@ -658,10 +658,7 @@ fn build_parquet_cancel(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -
     Ok(buf)
 }
 
-fn build_parquet_hedge(
-    entries: Vec<(Vec<u8>, Vec<u8>)>,
-    range: &RangeFilter,
-) -> Result<Vec<u8>> {
+fn build_parquet_hedge(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> Result<Vec<u8>> {
     let mut key_col = Vec::with_capacity(entries.len());
     let mut ts_us_col = Vec::with_capacity(entries.len());
     let mut strategy_id_col = Vec::with_capacity(entries.len());

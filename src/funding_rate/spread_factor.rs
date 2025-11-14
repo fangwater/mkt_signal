@@ -3,7 +3,9 @@
 //! 提供价差因子计算、存储和阈值判断功能。
 //! 维护 askbid 和 bidask 两种价差因子，支持正套/反套开仓/撤单/平仓判断。
 
-use super::common::{ArbDirection, CompareOp, FactorMode, OperationType, ThresholdKey, VenuePair, SymbolPair};
+use super::common::{
+    ArbDirection, CompareOp, FactorMode, OperationType, SymbolPair, ThresholdKey, VenuePair,
+};
 use crate::signal::common::TradingVenue;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -87,7 +89,8 @@ impl SpreadFactor {
             // SAFETY: 我们确保只在单线程中使用,并且实例一旦创建就不会被销毁
             // 通过 thread_local 保证每个线程有自己的实例
             unsafe {
-                let ptr = cell as *const std::cell::OnceCell<SpreadFactor> as *mut std::cell::OnceCell<SpreadFactor>;
+                let ptr = cell as *const std::cell::OnceCell<SpreadFactor>
+                    as *mut std::cell::OnceCell<SpreadFactor>;
                 (*ptr).get_or_init(|| SpreadFactor::new())
             }
         })
@@ -143,24 +146,25 @@ impl SpreadFactor {
         };
 
         // 计算 spread_rate = (mid_price_venue1 - mid_price_venue2) / mid_price_venue1
-        let spread_rate = if venue1_bid > 0.0 && venue1_ask > 0.0 && venue2_bid > 0.0 && venue2_ask > 0.0 {
-            let mid_price_venue1 = (venue1_ask + venue1_bid) / 2.0;
-            let mid_price_venue2 = (venue2_ask + venue2_bid) / 2.0;
+        let spread_rate =
+            if venue1_bid > 0.0 && venue1_ask > 0.0 && venue2_bid > 0.0 && venue2_ask > 0.0 {
+                let mid_price_venue1 = (venue1_ask + venue1_bid) / 2.0;
+                let mid_price_venue2 = (venue2_ask + venue2_bid) / 2.0;
 
-            if mid_price_venue1 > 0.0 {
-                let value = (mid_price_venue1 - mid_price_venue2) / mid_price_venue1;
-                self.spread_rate
-                    .borrow_mut()
-                    .entry(venue_pair)
-                    .or_insert_with(HashMap::new)
-                    .insert(symbol_pair, value);
-                Some(value)
+                if mid_price_venue1 > 0.0 {
+                    let value = (mid_price_venue1 - mid_price_venue2) / mid_price_venue1;
+                    self.spread_rate
+                        .borrow_mut()
+                        .entry(venue_pair)
+                        .or_insert_with(HashMap::new)
+                        .insert(symbol_pair, value);
+                    Some(value)
+                } else {
+                    None
+                }
             } else {
                 None
-            }
-        } else {
-            None
-        };
+            };
 
         (askbid, bidask, spread_rate)
     }
@@ -626,9 +630,8 @@ mod tests {
         // mid_price_swap = (49900 + 50000) / 2 = 49950
         // spread_rate = (50050 - 49950) / 50050 = 0.001998...
         let (askbid, bidask, spread_rate) = sf.update(
-            venue1, symbol1, venue2, symbol2,
-            50000.0, 50100.0,  // venue1 bid, ask
-            49900.0, 50000.0,  // venue2 bid, ask
+            venue1, symbol1, venue2, symbol2, 50000.0, 50100.0, // venue1 bid, ask
+            49900.0, 50000.0, // venue2 bid, ask
         );
 
         assert!(bidask.is_some());
@@ -747,7 +750,9 @@ mod tests {
 
         // 更新 askbid = 0.0035 (不满足MM条件: > 0.003)
         // venue1_ask=0.1, venue2_bid=0.09965 => askbid = (0.1 - 0.09965) / 0.1 = 0.0035
-        sf.update(venue1, symbol1, venue2, symbol2, 0.099, 0.1, 0.09965, 0.0998);
+        sf.update(
+            venue1, symbol1, venue2, symbol2, 0.099, 0.1, 0.09965, 0.0998,
+        );
         assert!(!sf.satisfy_backward_open(venue1, symbol1, venue2, symbol2));
 
         // 测试 MT 模式

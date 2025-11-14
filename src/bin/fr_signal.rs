@@ -20,8 +20,8 @@ use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
 
 // 使用模块化的 funding_rate
 use mkt_signal::funding_rate::{
-    EngineStats, SymbolState, SymbolThreshold, approx_equal,
-    mkt_channel::MktChannel, rate_fetcher::RateFetcher,
+    approx_equal, mkt_channel::MktChannel, rate_fetcher::RateFetcher, EngineStats, SymbolState,
+    SymbolThreshold,
 };
 
 const PROCESS_NAME: &str = "fr_signal";
@@ -41,8 +41,8 @@ struct Config {
 
 impl Config {
     fn load() -> Result<Self> {
-        let redis_host = std::env::var("FUNDING_RATE_REDIS_HOST")
-            .unwrap_or_else(|_| "127.0.0.1".to_string());
+        let redis_host =
+            std::env::var("FUNDING_RATE_REDIS_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
         let redis_key = std::env::var("FUNDING_RATE_REDIS_KEY")
             .unwrap_or_else(|_| DEFAULT_REDIS_KEY.to_string());
 
@@ -85,21 +85,39 @@ impl Engine {
     /// 从 Redis 加载阈值配置
     async fn load_thresholds_from_redis(&self) -> Result<Vec<SymbolThreshold>> {
         let mut client = RedisClient::connect(self.cfg.redis.clone()).await?;
-        let map = client.hgetall_map(&self.cfg.redis_key).await.unwrap_or_default();
+        let map = client
+            .hgetall_map(&self.cfg.redis_key)
+            .await
+            .unwrap_or_default();
 
         let mut thresholds = Vec::new();
         for (key, _) in &map {
             if !key.ends_with("_forward_open_threshold") {
                 continue;
             }
-            let spot_symbol = key.strip_suffix("_forward_open_threshold").unwrap().to_uppercase();
-            let futures_symbol = format!("{}USDT", spot_symbol.strip_suffix("USDT").unwrap_or(&spot_symbol));
+            let spot_symbol = key
+                .strip_suffix("_forward_open_threshold")
+                .unwrap()
+                .to_uppercase();
+            let futures_symbol = format!(
+                "{}USDT",
+                spot_symbol.strip_suffix("USDT").unwrap_or(&spot_symbol)
+            );
 
-            let open_th = map.get(key).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+            let open_th = map
+                .get(key)
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(0.0);
             let cancel_key = format!("{}_forward_cancel_threshold", spot_symbol);
-            let cancel_th = map.get(&cancel_key).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+            let cancel_th = map
+                .get(&cancel_key)
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(0.0);
             let close_key = format!("{}_forward_close_threshold", spot_symbol);
-            let close_th = map.get(&close_key).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+            let close_th = map
+                .get(&close_key)
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(0.0);
 
             thresholds.push(SymbolThreshold {
                 spot_symbol,
@@ -159,17 +177,22 @@ impl Engine {
             }
 
             // 2️⃣ 获取资金费率均值（从 MktChannel 获取）
-            let current_fr_ma = mkt.get_funding_rate_mean(&state.futures_symbol, TradingVenue::BinanceUm)
+            let current_fr_ma = mkt
+                .get_funding_rate_mean(&state.futures_symbol, TradingVenue::BinanceUm)
                 .unwrap_or(0.0);
 
             // 3️⃣ 更新预测资金费率
-            if let Some(predicted) = rate_fetcher.get_predicted_funding_rate(&state.futures_symbol, TradingVenue::BinanceUm) {
+            if let Some((_, predicted)) = rate_fetcher
+                .get_predicted_funding_rate(&state.futures_symbol, TradingVenue::BinanceUm)
+            {
                 state.predicted_rate = predicted;
             }
 
             // 4️⃣ 更新借贷利率
-            if let Some(loan) = rate_fetcher.get_current_lending_rate(&state.futures_symbol, TradingVenue::BinanceUm) {
-                state.loan_rate = loan;
+            if let Some((_, loan_rate)) =
+                rate_fetcher.get_predict_loan_rate(&state.futures_symbol, TradingVenue::BinanceUm)
+            {
+                state.loan_rate = loan_rate;
             }
 
             // 5️⃣ 刷新价差因子
@@ -184,14 +207,18 @@ impl Engine {
             }
         }
 
-        // 8️⃣ 发送收集的信号 
+        // 8️⃣ 发送收集的信号
         for (symbol_key, decision) in signals_to_emit {
             self.emit_signal(&symbol_key, &decision);
         }
     }
 
     /// 发送信号给下游
-    fn emit_signal(&mut self, symbol_key: &str, decision: &mkt_signal::funding_rate::EvaluateDecision) {
+    fn emit_signal(
+        &mut self,
+        symbol_key: &str,
+        decision: &mkt_signal::funding_rate::EvaluateDecision,
+    ) {
         let now = get_timestamp_us();
 
         // 获取 state 信息
@@ -206,10 +233,10 @@ impl Engine {
         }
 
         let signal_type = match decision.final_signal {
-            1 => SignalType::ArbOpen,      // 正套开仓
-            -1 => SignalType::ArbCancel,   // 撤单
-            -2 => SignalType::ArbOpen,     // 反套开仓
-            2 => SignalType::ArbClose,     // 平仓
+            1 => SignalType::ArbOpen,    // 正套开仓
+            -1 => SignalType::ArbCancel, // 撤单
+            -2 => SignalType::ArbOpen,   // 反套开仓
+            2 => SignalType::ArbClose,   // 平仓
             _ => return,
         };
 
@@ -220,21 +247,14 @@ impl Engine {
         let predicted_rate = state.predicted_rate;
 
         // 构造简单的信号上下文（包含symbol信息）
-        let context_str = format!("{}|{}|{:.6}|{:.8}",
-            spot_symbol,
-            futures_symbol,
-            spread_rate,
-            predicted_rate
+        let context_str = format!(
+            "{}|{}|{:.6}|{:.8}",
+            spot_symbol, futures_symbol, spread_rate, predicted_rate
         );
         let context = bytes::Bytes::from(context_str);
 
         // 构造信号消息
-        let signal = TradeSignal::create(
-            signal_type.clone(),
-            now,
-            0.0,
-            context,
-        );
+        let signal = TradeSignal::create(signal_type.clone(), now, 0.0, context);
 
         // 发布信号
         let signal_bytes = signal.to_bytes();
@@ -256,11 +276,7 @@ impl Engine {
 
         info!(
             "✅ 信号: {} type={:?} signal={} spread={:.6} predict_fr={:.8}",
-            spot_symbol,
-            signal_type,
-            decision.final_signal,
-            spread_rate,
-            predicted_rate,
+            spot_symbol, signal_type, decision.final_signal, spread_rate, predicted_rate,
         );
     }
 
@@ -319,22 +335,22 @@ fn setup_signal_handlers(token: &CancellationToken) -> Result<()> {
     Ok(())
 }
 
-#[tokio::main(flavor = "current_thread")] 
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");
     }
-    env_logger::init(); 
-    info!("{} 初始化", PROCESS_NAME); 
+    env_logger::init();
+    info!("{} 初始化", PROCESS_NAME);
 
-    let cfg = Config::load()?; 
+    let cfg = Config::load()?;
     let publisher = SignalPublisher::new(SIGNAL_CHANNEL)?;
     let mut engine = Engine::new(cfg, publisher).await?;
 
-    let token = CancellationToken::new(); 
-    setup_signal_handlers(&token)?; 
+    let token = CancellationToken::new();
+    setup_signal_handlers(&token)?;
 
     // 使用 LocalSet 运行，因为 MktChannel 和 RateFetcher 需要 thread-local
     let local = tokio::task::LocalSet::new();
-    local.run_until(engine.run(token)).await 
-} 
+    local.run_until(engine.run(token)).await
+}

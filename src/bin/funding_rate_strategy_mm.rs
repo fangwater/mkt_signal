@@ -12,4 +12,4 @@ const OPEN_SIGNAL_TYPE: mkt_signal::signal::trade_signal::SignalType =
 const CANCEL_SIGNAL_TYPE: mkt_signal::signal::trade_signal::SignalType =
     mkt_signal::signal::trade_signal::SignalType::BinSingleForwardArbCancelMM;
 
-include!("funding_rate_strategy_shared.rs"); 
+include!("funding_rate_strategy_shared.rs");

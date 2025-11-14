@@ -12,7 +12,9 @@
 
 use anyhow::Result;
 use log::info;
+use mkt_signal::funding_rate::rate_fetcher::FundingRatePeriod;
 use mkt_signal::funding_rate::{RateFetcher, SymbolList};
+use mkt_signal::signal::common::TradingVenue;
 use tokio::time::{sleep, Duration};
 
 #[tokio::main(flavor = "current_thread")]
@@ -25,9 +27,7 @@ async fn main() -> Result<()> {
 
     // 使用 LocalSet 来支持 spawn_local
     let local = tokio::task::LocalSet::new();
-    local.run_until(async move {
-        run_demo().await
-    }).await
+    local.run_until(async move { run_demo().await }).await
 }
 
 async fn run_demo() -> Result<()> {
@@ -49,22 +49,30 @@ async fn run_demo() -> Result<()> {
     info!("========================================");
 
     let test_symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "SUIUSDT"];
-    let period = mkt_signal::funding_rate::rate_fetcher::FundingRatePeriod::Hours8;
-
     for symbol in &test_symbols {
         info!("\n查询 {}:", symbol);
 
         // 查询预测资金费率
-        let predicted_fr = RateFetcher::instance().get_binance_predicted_funding_rate(symbol, period);
+        let predicted_fr =
+            RateFetcher::instance().get_predicted_funding_rate(symbol, TradingVenue::BinanceUm);
         match predicted_fr {
-            Some(rate) => info!("  预测资金费率 (8h): {:.6}%", rate * 100.0),
+            Some((period, rate)) => info!(
+                "  预测资金费率 ({}): {:.6}%",
+                format_period(period),
+                rate * 100.0
+            ),
             None => info!("  预测资金费率: N/A"),
         }
 
         // 查询借贷利率
-        let loan_rate = RateFetcher::instance().get_binance_loan_rate(symbol, period);
+        let loan_rate =
+            RateFetcher::instance().get_predict_loan_rate(symbol, TradingVenue::BinanceUm);
         match loan_rate {
-            Some(rate) => info!("  借贷利率 (8h): {:.6}%", rate * 100.0),
+            Some((period, rate)) => info!(
+                "  借贷利率 ({}): {:.6}%",
+                format_period(period),
+                rate * 100.0
+            ),
             None => info!("  借贷利率: N/A"),
         }
     }
@@ -80,4 +88,11 @@ async fn run_demo() -> Result<()> {
     info!("\nDemo 结束");
 
     Ok(())
+}
+
+fn format_period(period: FundingRatePeriod) -> &'static str {
+    match period {
+        FundingRatePeriod::Hours4 => "4h",
+        FundingRatePeriod::Hours8 => "8h",
+    }
 }

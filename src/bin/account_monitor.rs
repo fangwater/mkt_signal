@@ -301,41 +301,29 @@ impl AccountEventDeduper {
 
         // 根据事件类型计算去重 key
         let key_opt = match event_type {
-            AccountEventType::AccountPosition => {
-                AccountPositionMsg::from_bytes(&payload)
-                    .ok()
-                    .map(|msg| self.key_account_position(&msg))
-            }
-            AccountEventType::BalanceUpdate => {
-                BalanceUpdateMsg::from_bytes(&payload)
-                    .ok()
-                    .map(|msg| self.key_balance_update(&msg))
-            }
-            AccountEventType::AccountUpdateBalance => {
-                AccountUpdateBalanceMsg::from_bytes(&payload)
-                    .ok()
-                    .map(|msg| self.key_account_update_balance(&msg))
-            }
+            AccountEventType::AccountPosition => AccountPositionMsg::from_bytes(&payload)
+                .ok()
+                .map(|msg| self.key_account_position(&msg)),
+            AccountEventType::BalanceUpdate => BalanceUpdateMsg::from_bytes(&payload)
+                .ok()
+                .map(|msg| self.key_balance_update(&msg)),
+            AccountEventType::AccountUpdateBalance => AccountUpdateBalanceMsg::from_bytes(&payload)
+                .ok()
+                .map(|msg| self.key_account_update_balance(&msg)),
             AccountEventType::AccountUpdatePosition => {
                 AccountUpdatePositionMsg::from_bytes(&payload)
                     .ok()
                     .map(|msg| self.key_account_update_position(&msg))
             }
-            AccountEventType::AccountUpdateFlush => {
-                AccountUpdateFlushMsg::from_bytes(&payload)
-                    .ok()
-                    .map(|msg| self.key_account_update_flush(&msg))
-            }
-            AccountEventType::ExecutionReport => {
-                ExecutionReportMsg::from_bytes(&payload)
-                    .ok()
-                    .map(|msg| self.key_execution_report(&msg))
-            }
-            AccountEventType::OrderTradeUpdate => {
-                OrderTradeUpdateMsg::from_bytes(&payload)
-                    .ok()
-                    .map(|msg| self.key_order_trade_update(&msg))
-            }
+            AccountEventType::AccountUpdateFlush => AccountUpdateFlushMsg::from_bytes(&payload)
+                .ok()
+                .map(|msg| self.key_account_update_flush(&msg)),
+            AccountEventType::ExecutionReport => ExecutionReportMsg::from_bytes(&payload)
+                .ok()
+                .map(|msg| self.key_execution_report(&msg)),
+            AccountEventType::OrderTradeUpdate => OrderTradeUpdateMsg::from_bytes(&payload)
+                .ok()
+                .map(|msg| self.key_order_trade_update(&msg)),
             _ => {
                 return true; // 其他事件类型不去重，直接转发
             }

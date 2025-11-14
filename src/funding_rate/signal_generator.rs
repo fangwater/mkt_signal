@@ -27,10 +27,10 @@ impl SymbolState {
         let loan_rate = self.loan_rate;
 
         // 使用阈值代替 percentile (从 forward_open_threshold/forward_close_threshold)
-        let p05 = self.forward_open_threshold;   // 低阈值 (用于正套开仓)
+        let p05 = self.forward_open_threshold; // 低阈值 (用于正套开仓)
         let p10 = self.forward_cancel_threshold; // 撤单阈值
         let p90 = self.forward_cancel_close_threshold.unwrap_or(-0.0001); // 反套撤单
-        let p95 = self.forward_close_threshold;  // 高阈值 (用于反套开仓)
+        let p95 = self.forward_close_threshold; // 高阈值 (用于反套开仓)
 
         // ========== 优先级1: 平仓条件（最高优先级）==========
         // 条件3: 平仓 (current_fr_ma < -0.0005 & spread_rate > p95)
@@ -122,11 +122,19 @@ pub fn forward_close_ready(askbid_sr: Option<f64>, threshold: f64) -> bool {
 }
 
 pub fn opt_finite(val: f64) -> Option<f64> {
-    if val.is_finite() { Some(val) } else { None }
+    if val.is_finite() {
+        Some(val)
+    } else {
+        None
+    }
 }
 
 pub fn opt_active_threshold(val: f64) -> Option<f64> {
-    if val.is_finite() && val.abs() > f64::EPSILON { Some(val) } else { None }
+    if val.is_finite() && val.abs() > f64::EPSILON {
+        Some(val)
+    } else {
+        None
+    }
 }
 
 pub fn approx_zero(x: f64) -> bool {

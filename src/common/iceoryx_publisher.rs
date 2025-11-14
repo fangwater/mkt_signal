@@ -20,7 +20,7 @@ impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
 
         info!("Creating IceOryx publisher for channel: {}", channel_name);
 
-        // Use channel name directly as node name, per request 
+        // Use channel name directly as node name, per request
         let node = NodeBuilder::new()
             .name(&NodeName::new(channel_name)?)
             .create::<ipc::Service>()?;

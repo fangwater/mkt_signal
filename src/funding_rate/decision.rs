@@ -8,22 +8,24 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use std::cell::{OnceCell, RefCell};
-use tokio::time::{Duration, interval};
+use tokio::runtime::Builder;
+use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
+use crate::common::min_qty_table::MinQtyTable;
 use crate::common::time_util::get_timestamp_us;
-use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
-use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::signal::open_signal::ArbOpenCtx;
-use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::pre_trade::order_manager::{OrderType, Side};
+use crate::signal::cancel_signal::ArbCancelCtx;
+use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
+use crate::signal::open_signal::ArbOpenCtx;
+use crate::signal::trade_signal::{SignalType, TradeSignal};
 
-use super::spread_factor::SpreadFactor;
 use super::funding_rate_factor::FundingRateFactor;
-use super::rate_fetcher::RateFetcher;
 use super::mkt_channel::MktChannel;
+use super::rate_fetcher::RateFetcher;
+use super::spread_factor::SpreadFactor;
 use super::state::Quote;
 
 // ========== 线程本地单例 ==========
@@ -91,6 +93,9 @@ pub struct FrDecision {
     /// 挂单价格偏移列表（用于 open 信号的多档位挂单）
     /// 默认：[0.0002, 0.0004, 0.0006, 0.0008, 0.001]
     price_offsets: Vec<f64>,
+
+    /// Binance 交易对过滤器，用于 price_tick / min_qty 查询
+    min_qty_table: MinQtyTable,
 }
 
 impl FrDecision {
@@ -157,14 +162,27 @@ impl FrDecision {
 
         // 1. 创建信号发布器（发往 pre_trade）
         let signal_pub = SignalPublisher::new(DEFAULT_SIGNAL_CHANNEL)?;
-        info!("FrDecision: signal publisher created on '{}'", DEFAULT_SIGNAL_CHANNEL);
+        info!(
+            "FrDecision: signal publisher created on '{}'",
+            DEFAULT_SIGNAL_CHANNEL
+        );
 
         // 2. 订阅反向频道（来自 pre_trade 的查询反馈）
         let backward_sub = Self::create_subscriber(&node, DEFAULT_BACKWARD_CHANNEL)?;
-        info!("FrDecision: backward subscriber created on '{}'", DEFAULT_BACKWARD_CHANNEL);
+        info!(
+            "FrDecision: backward subscriber created on '{}'",
+            DEFAULT_BACKWARD_CHANNEL
+        );
 
         // 默认挂单偏移：万2 到 千1，共5档
         let price_offsets = vec![0.0002, 0.0004, 0.0006, 0.0008, 0.001];
+
+        let mut min_qty_table = MinQtyTable::new();
+        if let Err(err) = Self::refresh_min_qty_blocking(&mut min_qty_table) {
+            warn!(
+                "FrDecision: failed to refresh Binance exchange filters, price_tick may be zero: {err:#}"
+            );
+        }
 
         Ok(Self {
             signal_pub,
@@ -172,11 +190,20 @@ impl FrDecision {
             channel_name: DEFAULT_SIGNAL_CHANNEL.to_string(),
             _node: node,
             price_offsets,
+            min_qty_table,
         })
     }
 
+    fn refresh_min_qty_blocking(table: &mut MinQtyTable) -> Result<()> {
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        runtime.block_on(table.refresh_binance())
+    }
+
     /// 创建订阅器（helper）
-    fn create_subscriber(node: &Node<ipc::Service>, channel_name: &str) -> Result<GenericSignalSubscriber> {
+    fn create_subscriber(
+        node: &Node<ipc::Service>,
+        channel_name: &str,
+    ) -> Result<GenericSignalSubscriber> {
         let service_name = format!("signal_pubs/{}", channel_name);
         let service = node
             .service_builder(&ServiceName::new(&service_name)?)
@@ -216,12 +243,36 @@ impl FrDecision {
         let spread_factor = SpreadFactor::instance();
 
         // 步骤1: 优先检查 cancel 信号（只和价差有关，不需要资费）
-        if spread_factor.satisfy_forward_cancel(spot_venue, spot_symbol, futures_venue, futures_symbol) {
-            self.emit_signals(spot_symbol, futures_symbol, spot_venue, futures_venue, SignalType::ArbCancel)?;
+        if spread_factor.satisfy_forward_cancel(
+            spot_venue,
+            spot_symbol,
+            futures_venue,
+            futures_symbol,
+        ) {
+            self.emit_signals(
+                spot_symbol,
+                futures_symbol,
+                spot_venue,
+                futures_venue,
+                SignalType::ArbCancel,
+                None,
+            )?;
             return Ok(Some(SignalType::ArbCancel));
         }
-        if spread_factor.satisfy_backward_cancel(spot_venue, spot_symbol, futures_venue, futures_symbol) {
-            self.emit_signals(spot_symbol, futures_symbol, spot_venue, futures_venue, SignalType::ArbCancel)?;
+        if spread_factor.satisfy_backward_cancel(
+            spot_venue,
+            spot_symbol,
+            futures_venue,
+            futures_symbol,
+        ) {
+            self.emit_signals(
+                spot_symbol,
+                futures_symbol,
+                spot_venue,
+                futures_venue,
+                SignalType::ArbCancel,
+                None,
+            )?;
             return Ok(Some(SignalType::ArbCancel));
         }
 
@@ -237,28 +288,48 @@ impl FrDecision {
         // 步骤4: 根据资费信号验证对应的价差 satisfy
         let final_signal = match fr_signal {
             FrSignal::ForwardOpen => {
-                if spread_factor.satisfy_forward_open(spot_venue, spot_symbol, futures_venue, futures_symbol) {
+                if spread_factor.satisfy_forward_open(
+                    spot_venue,
+                    spot_symbol,
+                    futures_venue,
+                    futures_symbol,
+                ) {
                     Some(SignalType::ArbOpen)
                 } else {
                     None
                 }
             }
             FrSignal::ForwardClose => {
-                if spread_factor.satisfy_forward_close(spot_venue, spot_symbol, futures_venue, futures_symbol) {
+                if spread_factor.satisfy_forward_close(
+                    spot_venue,
+                    spot_symbol,
+                    futures_venue,
+                    futures_symbol,
+                ) {
                     Some(SignalType::ArbClose)
                 } else {
                     None
                 }
             }
             FrSignal::BackwardOpen => {
-                if spread_factor.satisfy_backward_open(spot_venue, spot_symbol, futures_venue, futures_symbol) {
+                if spread_factor.satisfy_backward_open(
+                    spot_venue,
+                    spot_symbol,
+                    futures_venue,
+                    futures_symbol,
+                ) {
                     Some(SignalType::ArbOpen)
                 } else {
                     None
                 }
             }
             FrSignal::BackwardClose => {
-                if spread_factor.satisfy_backward_close(spot_venue, spot_symbol, futures_venue, futures_symbol) {
+                if spread_factor.satisfy_backward_close(
+                    spot_venue,
+                    spot_symbol,
+                    futures_venue,
+                    futures_symbol,
+                ) {
                     Some(SignalType::ArbClose)
                 } else {
                     None
@@ -272,8 +343,17 @@ impl FrDecision {
             None => return Ok(None),
         };
 
+        let signal_side = Self::side_from_fr_signal(fr_signal);
+
         // 步骤6: 发送信号
-        self.emit_signals(spot_symbol, futures_symbol, spot_venue, futures_venue, final_signal.clone())?;
+        self.emit_signals(
+            spot_symbol,
+            futures_symbol,
+            spot_venue,
+            futures_venue,
+            final_signal.clone(),
+            Some(signal_side),
+        )?;
 
         info!(
             "Combined signal: fr={:?} final={:?} spot={} futures={}",
@@ -357,6 +437,7 @@ impl FrDecision {
         spot_venue: TradingVenue,
         futures_venue: TradingVenue,
         signal_type: SignalType,
+        side: Option<Side>,
     ) -> Result<()> {
         let now = get_timestamp_us();
         let mkt_channel = MktChannel::instance();
@@ -369,7 +450,10 @@ impl FrDecision {
         if spot_quote.is_none() || futures_quote.is_none() {
             warn!(
                 "FrDecision: quote unavailable spot={} ({:?}) futures={} ({:?})",
-                spot_symbol, spot_quote.is_some(), futures_symbol, futures_quote.is_some()
+                spot_symbol,
+                spot_quote.is_some(),
+                futures_symbol,
+                futures_quote.is_some()
             );
             return Ok(());
         }
@@ -396,6 +480,13 @@ impl FrDecision {
         // 根据信号类型决定发送策略
         match signal_type {
             SignalType::ArbOpen | SignalType::ArbClose => {
+                let side = match side {
+                    Some(sig) => sig,
+                    None => {
+                        warn!("FrDecision: {:?} signal missing side info", signal_type);
+                        return Ok(());
+                    }
+                };
                 // Open / Close 信号：使用 ArbOpenCtx
                 // 注意：ArbClose 和 ArbOpen 使用相同的 context 结构
 
@@ -411,6 +502,7 @@ impl FrDecision {
                             &futures_quote,
                             *offset,
                             now,
+                            side,
                         );
 
                         let context = ctx.to_bytes();
@@ -435,6 +527,7 @@ impl FrDecision {
                         &futures_quote,
                         0.0,
                         now,
+                        side,
                     );
 
                     let context = ctx.to_bytes();
@@ -484,8 +577,8 @@ impl FrDecision {
     /// 构造 ArbOpen / ArbClose 信号上下文
     ///
     /// # 资费套利策略设计
-    /// - opening_leg: 期货（主动腿，关注资费）
-    /// - hedging_leg: 现货（对冲腿）
+    /// - opening_leg: 现货（主动腿，使用 margin 开仓）
+    /// - hedging_leg: 合约（对冲腿，UM 永续）
     ///
     /// # 参数
     /// - `spot_symbol`: 现货交易对
@@ -506,27 +599,45 @@ impl FrDecision {
         futures_quote: &Quote,
         price_offset: f64,
         now: i64,
+        side: Side,
     ) -> ArbOpenCtx {
         let mut ctx = ArbOpenCtx::new();
         let mkt_channel = MktChannel::instance();
 
-        // opening_leg: 期货（主动腿）
-        ctx.opening_leg = TradingLeg::new(futures_venue, futures_quote.bid, futures_quote.ask);
-        ctx.set_opening_symbol(futures_symbol);
+        // opening_leg: 现货（主动腿，使用 margin 开仓）
+        ctx.opening_leg = TradingLeg::new(spot_venue, spot_quote.bid, spot_quote.ask);
+        ctx.set_opening_symbol(spot_symbol);
 
-        // hedging_leg: 现货（对冲腿）
-        ctx.hedging_leg = TradingLeg::new(spot_venue, spot_quote.bid, spot_quote.ask);
-        ctx.set_hedging_symbol(spot_symbol);
+        // hedging_leg: 合约（对冲腿，UM 永续）
+        ctx.hedging_leg = TradingLeg::new(futures_venue, futures_quote.bid, futures_quote.ask);
+        ctx.set_hedging_symbol(futures_symbol);
 
         // 交易参数
         ctx.amount = 0.0; // TODO: 从配置或参数获取
-        ctx.set_side(Side::Buy); // TODO: 根据正套/反套确定方向
+        ctx.set_side(side);
         ctx.set_order_type(OrderType::Limit);
 
-        // 价格 = 最优盘口 + 偏移
-        // TODO: 根据 side 确定是用 bid 还是 ask
-        ctx.price = futures_quote.bid * (1.0 + price_offset);
-        ctx.price_tick = 0.01; // TODO: 从配置获取
+        // 价格 = 最优盘口 + 偏移，根据信号方向调整挂单基准
+        // ask 卖价用于 sell 挂单
+        // bid 买价用于 buy 挂单
+        let base_price = match side {
+            Side::Buy => spot_quote.bid,
+            Side::Sell => spot_quote.ask,
+        };
+        ctx.price = if base_price > 0.0 {
+            match side {
+                // 逐渐原理盘口，买价减小，卖价升高
+                Side::Buy => base_price * (1.0 - price_offset),
+                Side::Sell => base_price * (1.0 + price_offset),
+            }
+        } else {
+            0.0
+        };
+        ctx.price_tick = self
+            .min_qty_table
+            .margin_price_tick_by_symbol(spot_symbol)
+            .or_else(|| self.min_qty_table.spot_price_tick_by_symbol(spot_symbol))
+            .unwrap_or(0.0);
 
         ctx.exp_time = now + 120_000_000; // 120 秒过期
         ctx.create_ts = now;
@@ -536,8 +647,8 @@ impl FrDecision {
         let spread_factor = SpreadFactor::instance();
         let mode = spread_factor.get_mode();
         ctx.hedge_timeout_us = match mode {
-            super::common::FactorMode::MT => 0,              // MT 模式：立即对冲
-            super::common::FactorMode::MM => 30_000_000,     // MM 模式：30 秒对冲超时
+            super::common::FactorMode::MT => 0,          // MT 模式：立即对冲
+            super::common::FactorMode::MM => 30_000_000, // MM 模式：30 秒对冲超时
         };
 
         // 资费相关字段
@@ -550,19 +661,33 @@ impl FrDecision {
 
         // predicted_funding_rate 从 RateFetcher 获取（内部根据 symbol 获取 period）
         ctx.predicted_funding_rate = rate_fetcher
-            .get_binance_predicted_funding_rate(futures_symbol)
+            .get_predicted_funding_rate(futures_symbol, futures_venue)
+            .map(|(_, v)| v)
             .unwrap_or(0.0);
 
-        ctx.loan_rate = 0.0; // 现货套利不涉及借贷
+        // loan_rate 使用 RateFetcher 的预测借贷利率
+        ctx.loan_rate = rate_fetcher
+            .get_predict_loan_rate(futures_symbol, futures_venue)
+            .map(|(_, v)| v)
+            .unwrap_or(0.0);
 
         ctx
+    }
+
+    fn side_from_fr_signal(fr_signal: FrSignal) -> Side {
+        match fr_signal {
+            FrSignal::ForwardOpen => Side::Buy,
+            FrSignal::BackwardOpen => Side::Sell,
+            FrSignal::ForwardClose => Side::Sell,
+            FrSignal::BackwardClose => Side::Buy,
+        }
     }
 
     /// 构造 ArbCancel 信号上下文
     ///
     /// # 资费套利策略设计
-    /// - opening_leg: 期货（主动腿）
-    /// - hedging_leg: 现货（对冲腿）
+    /// - opening_leg: 现货（主动腿）
+    /// - hedging_leg: 合约（对冲腿）
     ///
     /// # 参数
     /// - `spot_symbol`: 现货交易对
@@ -584,13 +709,13 @@ impl FrDecision {
     ) -> ArbCancelCtx {
         let mut ctx = ArbCancelCtx::new();
 
-        // opening_leg: 期货（主动腿）
-        ctx.opening_leg = TradingLeg::new(futures_venue, futures_quote.bid, futures_quote.ask);
-        ctx.set_opening_symbol(futures_symbol);
+        // opening_leg: 现货（主动腿）
+        ctx.opening_leg = TradingLeg::new(spot_venue, spot_quote.bid, spot_quote.ask);
+        ctx.set_opening_symbol(spot_symbol);
 
-        // hedging_leg: 现货（对冲腿）
-        ctx.hedging_leg = TradingLeg::new(spot_venue, spot_quote.bid, spot_quote.ask);
-        ctx.set_hedging_symbol(spot_symbol);
+        // hedging_leg: 合约（对冲腿）
+        ctx.hedging_leg = TradingLeg::new(futures_venue, futures_quote.bid, futures_quote.ask);
+        ctx.set_hedging_symbol(futures_symbol);
 
         ctx.trigger_ts = now;
 
@@ -633,5 +758,4 @@ impl FrDecision {
             self.handle_backward_query(data);
         }
     }
-
 }

@@ -386,7 +386,7 @@ impl OrderManager {
                 self.decrement_pending_limit_count(&order.symbol);
             }
         }
-        
+
         removed
     }
 

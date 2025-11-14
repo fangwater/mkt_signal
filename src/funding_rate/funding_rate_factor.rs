@@ -86,7 +86,12 @@ impl FundingRateFactor {
     /// 更新正套开仓阈值
     ///
     /// 判断条件：predict_fr > threshold
-    pub fn update_forward_open_threshold(&self, period: FundingRatePeriod, mode: FactorMode, threshold: f64) {
+    pub fn update_forward_open_threshold(
+        &self,
+        period: FundingRatePeriod,
+        mode: FactorMode,
+        threshold: f64,
+    ) {
         let key = (period, mode, OperationType::Open, ArbDirection::Forward);
         let config = FrThresholdConfig {
             compare_op: CompareOp::GreaterThan,
@@ -103,7 +108,12 @@ impl FundingRateFactor {
     /// 更新反套开仓阈值
     ///
     /// 判断条件：(predict_fr + predict_loan_rate) < threshold
-    pub fn update_backward_open_threshold(&self, period: FundingRatePeriod, mode: FactorMode, threshold: f64) {
+    pub fn update_backward_open_threshold(
+        &self,
+        period: FundingRatePeriod,
+        mode: FactorMode,
+        threshold: f64,
+    ) {
         let key = (period, mode, OperationType::Open, ArbDirection::Backward);
         let config = FrThresholdConfig {
             compare_op: CompareOp::LessThan,
@@ -120,7 +130,12 @@ impl FundingRateFactor {
     /// 更新正套平仓阈值
     ///
     /// 判断条件：current_fr_ma < threshold
-    pub fn update_forward_close_threshold(&self, period: FundingRatePeriod, mode: FactorMode, threshold: f64) {
+    pub fn update_forward_close_threshold(
+        &self,
+        period: FundingRatePeriod,
+        mode: FactorMode,
+        threshold: f64,
+    ) {
         let key = (period, mode, OperationType::Close, ArbDirection::Forward);
         let config = FrThresholdConfig {
             compare_op: CompareOp::LessThan,
@@ -137,7 +152,12 @@ impl FundingRateFactor {
     /// 更新反套平仓阈值
     ///
     /// 判断条件：current_fr_ma > threshold
-    pub fn update_backward_close_threshold(&self, period: FundingRatePeriod, mode: FactorMode, threshold: f64) {
+    pub fn update_backward_close_threshold(
+        &self,
+        period: FundingRatePeriod,
+        mode: FactorMode,
+        threshold: f64,
+    ) {
         let key = (period, mode, OperationType::Close, ArbDirection::Backward);
         let config = FrThresholdConfig {
             compare_op: CompareOp::GreaterThan,
@@ -154,14 +174,31 @@ impl FundingRateFactor {
     // ===== 辅助方法：获取因子数据 =====
 
     /// 获取预测资金费率 (predict_fr)
-    fn get_predict_fr(&self, symbol: &str, _period: FundingRatePeriod) -> Option<f64> {
-        // period 参数保留是为了接口一致性，但内部 get_binance_predicted_funding_rate 会根据 symbol 自动获取 period
-        RateFetcher::instance().get_binance_predicted_funding_rate(symbol)
+    ///
+    /// RateFetcher 会返回 (symbol 周期, 预测值)，周期不匹配时忽略
+    fn get_predict_fr(&self, symbol: &str, period: FundingRatePeriod) -> Option<f64> {
+        RateFetcher::instance()
+            .get_predicted_funding_rate(symbol, TradingVenue::BinanceUm)
+            .and_then(|(sym_period, value)| {
+                if sym_period == period {
+                    Some(value)
+                } else {
+                    None
+                }
+            })
     }
 
     /// 获取预测借贷利率 (predict_loan_rate)
     fn get_predict_loan_rate(&self, symbol: &str, period: FundingRatePeriod) -> Option<f64> {
-        RateFetcher::instance().get_binance_loan_rate(symbol, period)
+        RateFetcher::instance()
+            .get_predict_loan_rate(symbol, TradingVenue::BinanceUm)
+            .and_then(|(sym_period, value)| {
+                if sym_period == period {
+                    Some(value)
+                } else {
+                    None
+                }
+            })
     }
 
     /// 获取当前资金费率移动平均 (current_fr_ma)
@@ -178,7 +215,12 @@ impl FundingRateFactor {
     /// 判断：predict_fr > threshold（根据 symbol 的周期和当前模式）
     pub fn satisfy_forward_open(&self, symbol: &str, period: FundingRatePeriod) -> bool {
         let current_mode = self.get_mode();
-        let key = (period, current_mode, OperationType::Open, ArbDirection::Forward);
+        let key = (
+            period,
+            current_mode,
+            OperationType::Open,
+            ArbDirection::Forward,
+        );
 
         let thresholds = self.thresholds.borrow();
         if let Some(config) = thresholds.get(&key) {
@@ -195,7 +237,12 @@ impl FundingRateFactor {
     /// 判断：(predict_fr + predict_loan_rate) < threshold（根据 symbol 的周期和当前模式）
     pub fn satisfy_backward_open(&self, symbol: &str, period: FundingRatePeriod) -> bool {
         let current_mode = self.get_mode();
-        let key = (period, current_mode, OperationType::Open, ArbDirection::Backward);
+        let key = (
+            period,
+            current_mode,
+            OperationType::Open,
+            ArbDirection::Backward,
+        );
 
         let thresholds = self.thresholds.borrow();
         if let Some(config) = thresholds.get(&key) {
@@ -214,9 +261,19 @@ impl FundingRateFactor {
     /// 检查是否满足正套平仓条件
     ///
     /// 判断：current_fr_ma < threshold（根据 symbol 的周期和当前模式）
-    pub fn satisfy_forward_close(&self, symbol: &str, period: FundingRatePeriod, venue: TradingVenue) -> bool {
+    pub fn satisfy_forward_close(
+        &self,
+        symbol: &str,
+        period: FundingRatePeriod,
+        venue: TradingVenue,
+    ) -> bool {
         let current_mode = self.get_mode();
-        let key = (period, current_mode, OperationType::Close, ArbDirection::Forward);
+        let key = (
+            period,
+            current_mode,
+            OperationType::Close,
+            ArbDirection::Forward,
+        );
 
         let thresholds = self.thresholds.borrow();
         if let Some(config) = thresholds.get(&key) {
@@ -231,9 +288,19 @@ impl FundingRateFactor {
     /// 检查是否满足反套平仓条件
     ///
     /// 判断：current_fr_ma > threshold（根据 symbol 的周期和当前模式）
-    pub fn satisfy_backward_close(&self, symbol: &str, period: FundingRatePeriod, venue: TradingVenue) -> bool {
+    pub fn satisfy_backward_close(
+        &self,
+        symbol: &str,
+        period: FundingRatePeriod,
+        venue: TradingVenue,
+    ) -> bool {
         let current_mode = self.get_mode();
-        let key = (period, current_mode, OperationType::Close, ArbDirection::Backward);
+        let key = (
+            period,
+            current_mode,
+            OperationType::Close,
+            ArbDirection::Backward,
+        );
 
         let thresholds = self.thresholds.borrow();
         if let Some(config) = thresholds.get(&key) {

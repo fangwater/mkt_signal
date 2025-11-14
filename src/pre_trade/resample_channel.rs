@@ -180,8 +180,7 @@ impl ResampleChannel {
     /// 通过 MonitorChannel::instance() 访问所需的管理器数据
     /// 返回成功发布的条目数量
     pub fn publish_resample_entries(&self) -> Result<usize> {
-        if self.positions_pub.is_none() && self.exposure_pub.is_none() && self.risk_pub.is_none()
-        {
+        if self.positions_pub.is_none() && self.exposure_pub.is_none() && self.risk_pub.is_none() {
             return Ok(0);
         }
 
@@ -273,8 +272,7 @@ impl ResampleChannel {
                     .get(&symbol)
                     .map(|p| p.mark_price)
                     .unwrap_or(0.0);
-                if mark == 0.0 && (entry.spot_total_wallet != 0.0 || entry.um_net_position != 0.0)
-                {
+                if mark == 0.0 && (entry.spot_total_wallet != 0.0 || entry.um_net_position != 0.0) {
                     debug!("missing mark price for {} when resampling exposure", symbol);
                 }
                 let spot_usdt = entry.spot_total_wallet * mark;

@@ -101,11 +101,7 @@ impl SymbolList {
                         let symbol_set: HashSet<String> =
                             symbols.iter().map(|s| s.to_uppercase()).collect();
                         inner.dup_symbols.insert(*venue, symbol_set.clone());
-                        info!(
-                            "更新平仓列表 {:?}: {} 个交易对",
-                            venue,
-                            symbol_set.len()
-                        );
+                        info!("更新平仓列表 {:?}: {} 个交易对", venue, symbol_set.len());
                     });
                 }
             }
@@ -118,11 +114,7 @@ impl SymbolList {
                         let symbol_set: HashSet<String> =
                             symbols.iter().map(|s| s.to_uppercase()).collect();
                         inner.trade_symbols.insert(*venue, symbol_set.clone());
-                        info!(
-                            "更新建仓列表 {:?}: {} 个交易对",
-                            venue,
-                            symbol_set.len()
-                        );
+                        info!("更新建仓列表 {:?}: {} 个交易对", venue, symbol_set.len());
                     });
                 }
             }
@@ -259,7 +251,11 @@ impl SymbolList {
     /// 格式: fr_dup_symbols:{venue}
     /// 例如: fr_dup_symbols:binance_um
     fn redis_key_for_dup(venue: TradingVenue) -> String {
-        format!("{}:{}", DUP_SYMBOL_KEY_PREFIX, Self::venue_to_redis_suffix(venue))
+        format!(
+            "{}:{}",
+            DUP_SYMBOL_KEY_PREFIX,
+            Self::venue_to_redis_suffix(venue)
+        )
     }
 
     /// 生成建仓列表的 Redis key
@@ -267,7 +263,11 @@ impl SymbolList {
     /// 格式: fr_trade_symbols:{venue}
     /// 例如: fr_trade_symbols:binance_um
     fn redis_key_for_trade(venue: TradingVenue) -> String {
-        format!("{}:{}", TRADE_SYMBOL_KEY_PREFIX, Self::venue_to_redis_suffix(venue))
+        format!(
+            "{}:{}",
+            TRADE_SYMBOL_KEY_PREFIX,
+            Self::venue_to_redis_suffix(venue)
+        )
     }
 
     /// 将 TradingVenue 转换为 Redis key 后缀
