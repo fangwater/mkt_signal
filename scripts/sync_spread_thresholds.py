@@ -5,19 +5,21 @@
 从 rolling_metrics_thresholds 读取百分位数据，生成价差阈值并同步到 Redis。
 
 工作流程：
-  1. 读取脚本中配置的 SYMBOLS 列表（默认: BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT）
-  2. 从 rolling_metrics_thresholds 读取这些 symbols 的百分位数据
-  3. 根据 SPREAD_THRESHOLD_MAPPING 配置，提取对应的百分位值
-  4. 生成价差阈值并写入 binance_forward_spread_thresholds
+  1. 从 Redis 读取 fr_dump_symbols:binance_margin 和 fr_trade_symbols:binance_margin
+  2. 合并两个列表得到要同步的 symbols（去重）
+  3. 从 rolling_metrics_thresholds 读取这些 symbols 的百分位数据
+  4. 根据 SPREAD_THRESHOLD_MAPPING 配置，提取对应的百分位值
+  5. 生成价差阈值并写入 binance_spread_thresholds
 
-读取 Redis Hash:
-  `rolling_metrics_thresholds` - rolling metrics 百分位数据
+读取 Redis:
+  - String `fr_dump_symbols:binance_margin` - 平仓列表（JSON 数组）
+  - String `fr_trade_symbols:binance_margin` - 建仓列表（JSON 数组）
+  - Hash `rolling_metrics_thresholds` - rolling metrics 百分位数据
 
 写入 Redis Hash:
   `binance_spread_thresholds` - 价差阈值（每个 symbol 12个字段）
 
 配置说明：
-  - SYMBOLS: 要同步的交易对列表
   - SPREAD_THRESHOLD_MAPPING: 百分位映射配置
     格式: "binance_{factor}_{percentile}"
     示例: "binance_bidask_10" = bidask_sr 的第 10 百分位
@@ -28,7 +30,7 @@
   - mode: mm, mt
 
 示例：
-  python scripts/sync_spread_thresholds.py                     # 同步所有配置的 symbols
+  python scripts/sync_spread_thresholds.py                     # 从 Redis 读取 symbols 并同步
   python scripts/sync_spread_thresholds.py --symbol BTCUSDT    # 只同步 BTCUSDT
   python scripts/sync_spread_thresholds.py --redis-url redis://:pwd@127.0.0.1:6379/0
 """
@@ -69,21 +71,18 @@ def parse_args() -> argparse.Namespace:
         default="binance_spread_thresholds",
         help="写入的 Redis Hash key (default: binance_spread_thresholds)"
     )
+    p.add_argument(
+        "--dump-key",
+        default="fr_dump_symbols:binance_margin",
+        help="平仓列表 Redis key (default: fr_dump_symbols:binance_margin)"
+    )
+    p.add_argument(
+        "--trade-key",
+        default="fr_trade_symbols:binance_margin",
+        help="建仓列表 Redis key (default: fr_trade_symbols:binance_margin)"
+    )
     return p.parse_args()
 
-
-# ========== 交易对配置 ==========
-#
-# 要同步阈值的 symbol 列表
-# 只有这些 symbol 会从 rolling_metrics 读取数据并生成阈值
-
-SYMBOLS = [
-    "BTCUSDT",
-    "ETHUSDT",
-    "SOLUSDT",
-    "BNBUSDT",
-    # 可以添加更多 symbols
-]
 
 # ========== 价差阈值映射配置 ==========
 #
@@ -111,6 +110,48 @@ SPREAD_THRESHOLD_MAPPING = {
 }
 
 THRESHOLD_ORDER = list(SPREAD_THRESHOLD_MAPPING.keys())
+
+
+def load_symbol_lists(rds, dump_key: str, trade_key: str) -> List[str]:
+    """
+    从 Redis 读取 dump 和 trade 列表，返回并集（去重且排序）
+
+    参数：
+      - dump_key: 平仓列表 Redis key
+      - trade_key: 建仓列表 Redis key
+
+    返回：
+      合并后的 symbol 列表（大写、去重、排序）
+    """
+    symbols_set: Set[str] = set()
+
+    # 读取平仓列表
+    dump_data = rds.get(dump_key)
+    if dump_data:
+        dump_str = dump_data.decode('utf-8', 'ignore') if isinstance(dump_data, bytes) else str(dump_data)
+        try:
+            dump_list = json.loads(dump_str)
+            if isinstance(dump_list, list):
+                symbols_set.update(s.upper() for s in dump_list if s)
+                print(f"📖 从 '{dump_key}' 读取 {len(dump_list)} 个 symbols")
+        except Exception as e:
+            print(f"⚠️  解析 '{dump_key}' 失败: {e}")
+
+    # 读取建仓列表
+    trade_data = rds.get(trade_key)
+    if trade_data:
+        trade_str = trade_data.decode('utf-8', 'ignore') if isinstance(trade_data, bytes) else str(trade_data)
+        try:
+            trade_list = json.loads(trade_str)
+            if isinstance(trade_list, list):
+                symbols_set.update(s.upper() for s in trade_list if s)
+                print(f"📖 从 '{trade_key}' 读取 {len(trade_list)} 个 symbols")
+        except Exception as e:
+            print(f"⚠️  解析 '{trade_key}' 失败: {e}")
+
+    result = sorted(symbols_set)
+    print(f"✅ 合并后共 {len(result)} 个唯一 symbols")
+    return result
 
 
 def read_rolling_metrics(rds, key: str) -> Dict[str, Dict]:
@@ -185,15 +226,30 @@ def extract_quantile_value(obj: Dict, field_ref: str) -> Optional[float]:
     return None
 
 
-def sync_thresholds(rds, rolling_key: str, write_key: str, filter_symbol: Optional[str] = None) -> int:
+def sync_thresholds(
+    rds,
+    rolling_key: str,
+    write_key: str,
+    dump_key: str,
+    trade_key: str,
+    filter_symbol: Optional[str] = None
+) -> int:
     """
     从 rolling metrics 生成价差阈值并同步到 Redis
 
     返回: 写入的字段数量
     """
     # 确定要处理的 symbols
-    target_symbols = [filter_symbol.upper()] if filter_symbol else SYMBOLS
-    print(f"🎯 目标 symbols: {', '.join(target_symbols)}")
+    if filter_symbol:
+        target_symbols = [filter_symbol.upper()]
+        print(f"🎯 目标 symbols: {filter_symbol.upper()} (单独指定)")
+    else:
+        # 从 Redis 读取 symbol 列表
+        target_symbols = load_symbol_lists(rds, dump_key, trade_key)
+        if not target_symbols:
+            print("❌ 未找到任何 symbols，请检查 Redis 中的 dump/trade 列表")
+            return 0
+        print(f"🎯 目标 symbols: {', '.join(target_symbols)} (共 {len(target_symbols)} 个)")
 
     # 读取 rolling metrics
     rolling_data = read_rolling_metrics(rds, rolling_key)
@@ -357,12 +413,21 @@ def main() -> int:
 
     print("🔄 开始从 rolling metrics 同步价差阈值...")
     print(f"📍 Redis: {args.host}:{args.port}/{args.db}")
-    print(f"📖 读取: {args.rolling_key}")
+    print(f"📖 Rolling Metrics: {args.rolling_key}")
+    print(f"📖 Dump List: {args.dump_key}")
+    print(f"📖 Trade List: {args.trade_key}")
     print(f"📝 写入: {args.write_key}")
     print()
 
     # 同步阈值
-    count = sync_thresholds(rds, args.rolling_key, args.write_key, args.symbol)
+    count = sync_thresholds(
+        rds,
+        args.rolling_key,
+        args.write_key,
+        args.dump_key,
+        args.trade_key,
+        args.symbol
+    )
     if count == 0:
         return 1
 
