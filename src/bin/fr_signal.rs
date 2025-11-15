@@ -3,7 +3,7 @@
 //! 极简启动器：初始化所有单例 + 监听退出信号
 
 use anyhow::Result;
-use log::info;
+use log::{info, warn};
 #[cfg(unix)]
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tokio::time::Duration;
@@ -14,8 +14,8 @@ use mkt_signal::signal::common::TradingVenue;
 
 // 使用模块化的 funding_rate
 use mkt_signal::funding_rate::{
-    load_params_once, spawn_params_loader, FrDecision, FundingRateFactor, MktChannel, RateFetcher,
-    SpreadFactor, SymbolList,
+    load_fr_thresholds, load_params_once, load_spread_thresholds, spawn_params_loader, FrDecision,
+    FundingRateFactor, MktChannel, RateFetcher, SpreadFactor, SymbolList,
 };
 
 const PROCESS_NAME: &str = "fr_signal";
@@ -64,18 +64,16 @@ async fn reload_config(cfg: &Config) -> Result<()> {
 
     // 1. 加载价差阈值 -> SpreadFactor
     if let Ok(spread_map) = client.hgetall_map(&cfg.redis_key_spread).await {
-        let _spread_factor = SpreadFactor::instance();
-        // TODO: 解析并更新 SpreadFactor
-        // _spread_factor.update_from_redis(spread_map);
-        info!("价差阈值已加载: {} 条", spread_map.len());
+        if let Err(err) = load_spread_thresholds(spread_map) {
+            warn!("加载价差阈值失败: {:?}", err);
+        }
     }
 
     // 2. 加载资金费率阈值 -> FundingRateFactor
     if let Ok(funding_map) = client.hgetall_map(&cfg.redis_key_funding).await {
-        let _funding_factor = FundingRateFactor::instance();
-        // TODO: 解析并更新 FundingRateFactor
-        // _funding_factor.update_from_redis(funding_map);
-        info!("资金费率阈值已加载: {} 条", funding_map.len());
+        if let Err(err) = load_fr_thresholds(funding_map) {
+            warn!("加载资金费率阈值失败: {:?}", err);
+        }
     }
 
     // 3. 加载交易对白名单 -> FrDecision

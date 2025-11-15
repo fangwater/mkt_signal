@@ -2,17 +2,20 @@
 //!
 //! 该模块实现了基于资金费率的套利信号生成逻辑，包括：
 //! - 通用定义（common）：枚举类型、数据结构、辅助函数
-//! - 配置管理（config）：配置数据结构定义
-//! - 策略加载器（strategy_loader）：Redis 参数动态加载
+//! - 策略加载器（strategy_loader）：Redis 策略参数动态加载
+//! - 阈值加载器：
+//!   - fr_threshold_loader：资金费率阈值加载
+//!   - spread_threshold_loader：价差阈值加载
 //! - 行情频道（mkt_channel）：市场数据订阅
 
 pub mod common;
-pub mod config;
 pub mod decision;
+pub mod fr_threshold_loader;
 pub mod funding_rate_factor;
 pub mod mkt_channel;
 pub mod rate_fetcher;
 pub mod spread_factor;
+pub mod spread_threshold_loader;
 pub mod strategy_loader;
 pub mod symbol_list;
 
@@ -22,11 +25,12 @@ pub use common::{
     FundingRateData, OperationType, Quote, SymbolPair, ThresholdKey, VenuePair,
 };
 
-// 公共导出 - 配置相关
-pub use config::{FundingThresholdEntry, ParamsSnapshot, RateThresholds, SymbolThreshold};
-
 // 公共导出 - 策略加载器
 pub use strategy_loader::{load_params_once, spawn_params_loader};
+
+// 公共导出 - 阈值加载器
+pub use fr_threshold_loader::load_from_redis as load_fr_thresholds;
+pub use spread_threshold_loader::load_from_redis as load_spread_thresholds;
 
 // 公共导出 - 单例访问器
 pub use decision::FrDecision;
