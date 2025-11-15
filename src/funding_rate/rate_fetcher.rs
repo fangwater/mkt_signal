@@ -7,7 +7,7 @@
 use anyhow::Result;
 use chrono::{Timelike, Utc};
 use hmac::{Hmac, Mac};
-use log::{info, warn};
+use log::{debug, info, warn};
 use reqwest::Client;
 use serde::Deserialize;
 use sha2::Sha256;
@@ -17,9 +17,17 @@ use tokio::time::{sleep, Duration};
 
 type HmacSha256 = Hmac<Sha256>;
 
-use super::param_loader::{fetch_binance_funding_items, infer_binance_funding_frequency};
 use super::symbol_list::SymbolList;
 use crate::signal::common::TradingVenue;
+
+/// Binance 资金费率历史数据项
+#[derive(Debug, Deserialize)]
+struct BinanceFundingHistItem {
+    #[serde(rename = "fundingRate")]
+    funding_rate: String,
+    #[serde(rename = "fundingTime")]
+    funding_time: Option<i64>,
+}
 
 // 预测资费参数（硬编码）
 const PREDICT_INTERVAL: usize = 6; // 用于预测的均值窗口
@@ -368,7 +376,7 @@ impl RateFetcher {
         let mut fail_count = 0;
 
         for symbol in symbols {
-            match fetch_binance_funding_items(&client, symbol, limit).await {
+            match Self::fetch_binance_funding_items(&client, symbol, limit).await {
                 Ok(items) => {
                     let rates: Vec<f64> = items
                         .iter()
@@ -377,7 +385,7 @@ impl RateFetcher {
 
                     if !rates.is_empty() {
                         // 推断资金费率周期（4h or 8h）
-                        let period = match infer_binance_funding_frequency(&client, symbol).await {
+                        let period = match Self::infer_binance_funding_frequency(&client, symbol).await {
                             Some(freq) if freq == "4h" => FundingRatePeriod::Hours4,
                             _ => FundingRatePeriod::Hours8, // 默认 8h
                         };
@@ -647,5 +655,96 @@ impl RateFetcher {
 
         let start = end + 1 - PREDICT_INTERVAL;
         Some(rates[start..=end].iter().sum::<f64>() / PREDICT_INTERVAL as f64)
+    }
+
+    /// 从 Binance API 获取资金费率数据（近期）
+    async fn fetch_binance_funding_items(
+        client: &Client,
+        symbol: &str,
+        limit: usize,
+    ) -> Result<Vec<BinanceFundingHistItem>> {
+        let url = "https://fapi.binance.com/fapi/v1/fundingRate";
+        let end_time = Utc::now().timestamp_millis();
+        let start_time = end_time - 3 * 24 * 3600 * 1000; // 3d window
+        let limit_s = limit.max(1).min(1000).to_string();
+        let params = [
+            ("symbol", symbol),
+            ("startTime", &start_time.to_string()),
+            ("endTime", &end_time.to_string()),
+            ("limit", &limit_s),
+        ];
+        let resp = client.get(url).query(&params).send().await?;
+        if !resp.status().is_success() {
+            return Ok(vec![]);
+        }
+        let mut items: Vec<BinanceFundingHistItem> = resp.json().await.unwrap_or_default();
+        items.sort_by_key(|it| it.funding_time.unwrap_or_default());
+        Ok(items)
+    }
+
+    /// 从 Binance API 获取指定时间范围的资金费率历史
+    #[allow(dead_code)]
+    async fn fetch_binance_funding_history_range(
+        client: &Client,
+        symbol: &str,
+        start_time: i64,
+        end_time: i64,
+        limit: usize,
+    ) -> Result<Vec<f64>> {
+        let url = "https://fapi.binance.com/fapi/v1/fundingRate";
+        let end = end_time.max(0);
+        let start = start_time.min(end).max(0);
+        let limit_s = limit.max(1).min(1000).to_string();
+        let params = [
+            ("symbol", symbol),
+            ("startTime", &start.to_string()),
+            ("endTime", &end.to_string()),
+            ("limit", &limit_s),
+        ];
+        let resp = client.get(url).query(&params).send().await?;
+        if !resp.status().is_success() {
+            return Ok(vec![]);
+        }
+        let mut items: Vec<BinanceFundingHistItem> = resp.json().await.unwrap_or_default();
+        items.sort_by_key(|it| it.funding_time.unwrap_or_default());
+        let mut out = Vec::with_capacity(items.len());
+        for it in items {
+            if let Ok(v) = it.funding_rate.parse::<f64>() {
+                out.push(v);
+            }
+        }
+        if out.len() > limit {
+            let drop_n = out.len() - limit;
+            out.drain(0..drop_n);
+        }
+        Ok(out)
+    }
+
+    /// 推断 Binance 合约的资金费率频率（4h 或 8h）
+    async fn infer_binance_funding_frequency(client: &Client, symbol: &str) -> Option<String> {
+        let items = Self::fetch_binance_funding_items(client, symbol, 40)
+            .await
+            .ok()?;
+        let mut times: Vec<i64> = items.iter().filter_map(|it| it.funding_time).collect();
+        if times.len() < 3 {
+            return Some("8h".to_string());
+        }
+        times.sort_unstable();
+        let mut diffs: Vec<i64> = Vec::with_capacity(times.len().saturating_sub(1));
+        for w in times.windows(2) {
+            if let [a, b] = w {
+                diffs.push(b - a);
+            }
+        }
+        if diffs.is_empty() {
+            return Some("8h".to_string());
+        }
+        diffs.sort_unstable();
+        let median = diffs[diffs.len() / 2];
+        // 阈值 6 小时分界
+        let six_hours_ms = 6 * 3600 * 1000;
+        let freq = if median <= six_hours_ms { "4h" } else { "8h" };
+        debug!("频率推断: {} median={}ms => {}", symbol, median, freq);
+        Some(freq.to_string())
     }
 }

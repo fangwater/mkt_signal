@@ -1,21 +1,22 @@
-//! 参数加载模块
+//! 配置数据结构定义
 //!
-//! 从 Redis 动态加载所有配置参数，包括：
-//! - 资金费率阈值（4h/8h）
-//! - 订单参数
-//! - 策略参数
-//! - 从 Binance API 获取历史资金费率数据
+//! 包含所有策略配置、阈值和参数的数据结构定义：
+//! - StrategyConfig: 顶层策略配置
+//! - OrderConfig: 下单配置
+//! - StrategyParams: 策略参数
+//! - SymbolThreshold: 价差阈值
+//! - RateThresholds: 资金费率阈值
+//! - FundingThresholdEntry: 阈值条目
+//! - ParamsSnapshot: 参数快照
 
 use anyhow::Result;
-use chrono::Utc;
-use log::{debug, info};
-use reqwest::Client;
+use log::info;
 use serde::de::{self, Deserializer};
 use serde::Deserialize;
 
 use crate::common::redis_client::RedisSettings;
 
-// ===== 配置结构体 =====
+// ===== 下单模式和配置 =====
 
 /// 下单模式
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +114,8 @@ impl OrderConfig {
     }
 }
 
+// ===== 策略参数 =====
+
 /// 策略参数
 #[derive(Debug, Clone, Deserialize)]
 pub struct StrategyParams {
@@ -173,6 +176,8 @@ impl Default for StrategyParams {
         }
     }
 }
+
+// ===== 顶层配置 =====
 
 /// 策略配置（顶层）
 #[derive(Debug, Clone, Deserialize)]
@@ -345,148 +350,4 @@ pub struct FundingThresholdEntry {
     pub open_lower_threshold: f64,
     pub close_lower_threshold: f64,
     pub close_upper_threshold: f64,
-}
-
-/// Binance 资金费率历史数据项
-#[derive(Debug, Deserialize)]
-pub struct BinanceFundingHistItem {
-    #[serde(rename = "fundingRate")]
-    pub funding_rate: String,
-    #[serde(rename = "fundingTime")]
-    pub funding_time: Option<i64>,
-}
-
-/// 从 Binance API 获取资金费率数据（近期）
-pub async fn fetch_binance_funding_items(
-    client: &Client,
-    symbol: &str,
-    limit: usize,
-) -> Result<Vec<BinanceFundingHistItem>> {
-    let url = "https://fapi.binance.com/fapi/v1/fundingRate";
-    let end_time = Utc::now().timestamp_millis();
-    let start_time = end_time - 3 * 24 * 3600 * 1000; // 3d window
-    let limit_s = limit.max(1).min(1000).to_string();
-    let params = [
-        ("symbol", symbol),
-        ("startTime", &start_time.to_string()),
-        ("endTime", &end_time.to_string()),
-        ("limit", &limit_s),
-    ];
-    let resp = client.get(url).query(&params).send().await?;
-    if !resp.status().is_success() {
-        return Ok(vec![]);
-    }
-    let mut items: Vec<BinanceFundingHistItem> = resp.json().await.unwrap_or_default();
-    items.sort_by_key(|it| it.funding_time.unwrap_or_default());
-    Ok(items)
-}
-
-/// 从 Binance API 获取指定时间范围的资金费率历史
-pub async fn fetch_binance_funding_history_range(
-    client: &Client,
-    symbol: &str,
-    start_time: i64,
-    end_time: i64,
-    limit: usize,
-) -> Result<Vec<f64>> {
-    let url = "https://fapi.binance.com/fapi/v1/fundingRate";
-    let end = end_time.max(0);
-    let start = start_time.min(end).max(0);
-    let limit_s = limit.max(1).min(1000).to_string();
-    let params = [
-        ("symbol", symbol),
-        ("startTime", &start.to_string()),
-        ("endTime", &end.to_string()),
-        ("limit", &limit_s),
-    ];
-    let resp = client.get(url).query(&params).send().await?;
-    if !resp.status().is_success() {
-        return Ok(vec![]);
-    }
-    let mut items: Vec<BinanceFundingHistItem> = resp.json().await.unwrap_or_default();
-    items.sort_by_key(|it| it.funding_time.unwrap_or_default());
-    let mut out = Vec::with_capacity(items.len());
-    for it in items {
-        if let Ok(v) = it.funding_rate.parse::<f64>() {
-            out.push(v);
-        }
-    }
-    if out.len() > limit {
-        let drop_n = out.len() - limit;
-        out.drain(0..drop_n);
-    }
-    Ok(out)
-}
-
-/// 推断 Binance 合约的资金费率频率（4h 或 8h）
-pub async fn infer_binance_funding_frequency(client: &Client, symbol: &str) -> Option<String> {
-    let items = fetch_binance_funding_items(client, symbol, 40).await.ok()?;
-    let mut times: Vec<i64> = items.iter().filter_map(|it| it.funding_time).collect();
-    if times.len() < 3 {
-        return Some("8h".to_string());
-    }
-    times.sort_unstable();
-    let mut diffs: Vec<i64> = Vec::with_capacity(times.len().saturating_sub(1));
-    for w in times.windows(2) {
-        if let [a, b] = w {
-            diffs.push(b - a);
-        }
-    }
-    if diffs.is_empty() {
-        return Some("8h".to_string());
-    }
-    diffs.sort_unstable();
-    let median = diffs[diffs.len() / 2];
-    // 阈值 6 小时分界
-    let six_hours_ms = 6 * 3600 * 1000;
-    let freq = if median <= six_hours_ms { "4h" } else { "8h" };
-    debug!("频率推断: {} median={}ms => {}", symbol, median, freq);
-    Some(freq.to_string())
-}
-
-// ===== 辅助函数 =====
-
-/// 浮点数近似相等比较
-pub fn approx_equal(a: f64, b: f64) -> bool {
-    (a - b).abs() < 1e-12
-}
-
-/// 浮点数数组近似相等比较
-pub fn approx_equal_slice(a: &[f64], b: &[f64]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b.iter()).all(|(x, y)| approx_equal(*x, *y))
-}
-
-/// 解析数字列表（支持 JSON 数组、逗号分隔、单个数字）
-pub fn parse_numeric_list(raw: &str) -> Result<Vec<f64>, String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Ok(Vec::new());
-    }
-    if trimmed.starts_with('[') {
-        serde_json::from_str::<Vec<f64>>(trimmed)
-            .map_err(|err| format!("JSON array parse error: {err}"))
-    } else if trimmed.contains(',') {
-        let mut out = Vec::new();
-        for part in trimmed.split(',') {
-            let piece = part.trim();
-            if piece.is_empty() {
-                continue;
-            }
-            match piece.parse::<f64>() {
-                Ok(v) => out.push(v),
-                Err(err) => {
-                    return Err(format!("invalid float '{}': {}", piece, err));
-                }
-            }
-        }
-        Ok(out)
-    } else {
-        trimmed
-            .parse::<f64>()
-            .map(|v| vec![v])
-            .map_err(|err| format!("invalid float: {}", err))
-    }
 }

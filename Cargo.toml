@@ -8,17 +8,9 @@ autobins = false
 name = "mkt_signal" 
 path = "src/lib.rs" 
 
-[[bin]] 
-name = "mkt_pub" 
-path = "src/main.rs" 
-
-[[bin]] 
-name = "funding_rate_strategy_mt" 
-path = "src/bin/funding_rate_strategy_mt.rs" 
-
 [[bin]]
-name = "funding_rate_strategy_mm"
-path = "src/bin/funding_rate_strategy_mm.rs"
+name = "mkt_pub"
+path = "src/main.rs"
 
 [[bin]]
 name = "fr_signal"
@@ -26,19 +18,11 @@ path = "src/bin/fr_signal.rs"
 
 [[bin]]
 name = "account_monitor"
-path = "src/bin/account_monitor.rs" 
-
-[[bin]] 
-name = "trade_engine" 
-path = "src/bin/trade_engine.rs" 
-
-[[bin]] 
-name = "demo_subscribe_resps" 
-path = "src/bin/demo_subscribe_resps.rs"
+path = "src/bin/account_monitor.rs"
 
 [[bin]]
-name = "demo_send_um_market_short"
-path = "src/bin/demo_send_um_market_short.rs"
+name = "trade_engine"
+path = "src/bin/trade_engine.rs"
 
 [[bin]]
 name = "demo_rate_fetcher"
@@ -49,16 +33,8 @@ name = "pre_trade"
 path = "src/bin/pre_trade.rs"
 
 [[bin]]
-name = "funding_rate_strategy_mock"
-path = "src/bin/funding_rate_strategy_mock.rs"
-
-[[bin]]
 name = "viz_server"
-path = "src/bin/viz_server.rs" 
-
-[[bin]]
-name = "print_pre_trade_snapshot"
-path = "src/bin/print_pre_trade_snapshot.rs"
+path = "src/bin/viz_server.rs"
 
 [[bin]]
 name = "rolling_metrics"
