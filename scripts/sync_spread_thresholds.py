@@ -14,7 +14,7 @@
   `rolling_metrics_thresholds` - rolling metrics 百分位数据
 
 写入 Redis Hash:
-  `binance_forward_spread_thresholds` - 价差阈值（每个 symbol 12个字段）
+  `binance_spread_thresholds` - 价差阈值（每个 symbol 12个字段）
 
 配置说明：
   - SYMBOLS: 要同步的交易对列表
@@ -66,8 +66,8 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--write-key",
-        default="binance_forward_spread_thresholds",
-        help="写入的 Redis Hash key (default: binance_forward_spread_thresholds)"
+        default="binance_spread_thresholds",
+        help="写入的 Redis Hash key (default: binance_spread_thresholds)"
     )
     return p.parse_args()
 

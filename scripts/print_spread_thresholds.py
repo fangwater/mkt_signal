@@ -9,7 +9,7 @@
   2. 已同步的 symbols 统计信息
 
 读取 Redis Hash:
-  `binance_forward_spread_thresholds` - 价差阈值（每个 symbol 12个字段）
+  `binance_spread_thresholds` - 价差阈值（每个 symbol 12个字段）
 
 配置格式: operation -> percentile_reference
   - operation: {direction}_{operation}_{mode}
@@ -118,7 +118,7 @@ def print_thresholds(rds) -> None:
     print_three_line_table(headers, rows)
 
     # 读取 Redis 数据并统计
-    key = "binance_forward_spread_thresholds"
+    key = "binance_spread_thresholds"
     data = rds.hgetall(key)
 
     if not data:

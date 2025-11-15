@@ -2,7 +2,7 @@
 //!
 //! 从 Redis 加载价差阈值并更新到 SpreadFactor 单例。
 //! Redis Hash 格式：
-//! - Key: `binance_forward_spread_thresholds`
+//! - Key: `binance_spread_thresholds`
 //! - Fields (每个 symbol 有 12 个字段):
 //!   - `{symbol}_forward_open_mm`: 正套开仓MM阈值
 //!   - `{symbol}_forward_open_mt`: 正套开仓MT阈值
