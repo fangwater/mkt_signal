@@ -1,23 +1,18 @@
-//! 策略参数加载器（事件驱动版）
+//! 策略参数定义
 //!
-//! 从 Redis 定时加载策略参数并更新到各个单例：
+//! 定义策略参数结构及其 Redis 加载逻辑：
 //! - FrDecision: 下单量、超时、偏移、冷却时间
 //! - SpreadFactor: MM/MT 模式
-//!
-//! 使用 tokio::spawn_local 单线程异步
 
 use anyhow::Result;
 use log::{info, warn};
 use serde::Deserialize;
-use std::time::Duration;
 
 use crate::common::redis_client::{RedisClient, RedisSettings};
 
 use super::common::FactorMode;
 use super::decision::FrDecision;
 use super::spread_factor::SpreadFactor;
-use super::symbol_list::SymbolList;
-use crate::signal::common::TradingVenue;
 
 /// Redis Key 配置
 const REDIS_KEY_STRATEGY_PARAMS: &str = "fr_strategy_params";
@@ -94,7 +89,7 @@ impl Default for StrategyParams {
 
 impl StrategyParams {
     /// 从 Redis Hash 加载
-    async fn load_from_redis(redis: &RedisSettings) -> Result<Self> {
+    pub(crate) async fn load_from_redis(redis: &RedisSettings) -> Result<Self> {
         let mut client = RedisClient::connect(redis.clone()).await?;
         let hash_map = client.hgetall_map(REDIS_KEY_STRATEGY_PARAMS).await?;
 
@@ -169,7 +164,7 @@ impl StrategyParams {
     }
 
     /// 应用参数到所有单例
-    fn apply(&self) {
+    pub(crate) fn apply(&self) {
         // 1. 更新 FrDecision
         FrDecision::with_mut(|decision| {
             decision.update_order_amount(self.order_amount);
@@ -187,74 +182,6 @@ impl StrategyParams {
         info!("✅ 策略参数已更新: mode={}, amount={:.2}, cooldown={}s",
             self.mode, self.order_amount, self.signal_cooldown);
     }
-}
-
-/// 启动参数加载器（spawn_local）
-///
-/// 每 60 秒从 Redis 重新加载参数并更新
-///
-/// # 参数
-/// - `redis`: Redis 配置
-pub fn spawn_params_loader(redis: RedisSettings) {
-    tokio::task::spawn_local(async move {
-        info!("ParamsLoader 启动，60秒定时重载");
-
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
-
-        loop {
-            interval.tick().await;
-
-            // 1. 加载策略参数
-            match StrategyParams::load_from_redis(&redis).await {
-                Ok(params) => {
-                    info!("从 Redis 加载策略参数成功");
-                    params.apply();
-                }
-                Err(err) => {
-                    warn!("从 Redis 加载策略参数失败: {:?}", err);
-                }
-            }
-
-            // 2. 更新 SymbolList（dup_symbols + trade_symbols）
-            match RedisClient::connect(redis.clone()).await {
-                Ok(mut client) => {
-                    let symbol_list = SymbolList::instance();
-                    if let Err(err) = symbol_list.reload_from_redis(
-                        &mut client,
-                        &[TradingVenue::BinanceUm, TradingVenue::BinanceMargin]
-                    ).await {
-                        warn!("从 Redis 更新 SymbolList 失败: {:?}", err);
-                    }
-                }
-                Err(err) => {
-                    warn!("连接 Redis 更新 SymbolList 失败: {:?}", err);
-                }
-            }
-        }
-    });
-}
-
-/// 立即加载一次参数（同步调用）
-///
-/// 用于初始化时立即加载，不等待 60 秒
-pub async fn load_params_once(redis: &RedisSettings) -> Result<()> {
-    info!("立即加载策略参数...");
-
-    // 1. 加载策略参数
-    let params = StrategyParams::load_from_redis(redis).await?;
-    params.apply();
-    info!("策略参数初始加载完成");
-
-    // 2. 更新 SymbolList（dup_symbols + trade_symbols）
-    let mut client = RedisClient::connect(redis.clone()).await?;
-    let symbol_list = SymbolList::instance();
-    symbol_list.reload_from_redis(
-        &mut client,
-        &[TradingVenue::BinanceUm, TradingVenue::BinanceMargin]
-    ).await?;
-    info!("SymbolList 初始加载完成");
-
-    Ok(())
 }
 
 #[cfg(test)]

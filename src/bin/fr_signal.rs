@@ -3,35 +3,24 @@
 //! 极简启动器：初始化所有单例 + 监听退出信号
 
 use anyhow::Result;
-use log::{info, warn};
+use log::info;
 #[cfg(unix)]
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
-use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
-use mkt_signal::signal::common::TradingVenue;
+use mkt_signal::common::redis_client::RedisSettings;
 
 // 使用模块化的 funding_rate
 use mkt_signal::funding_rate::{
-    load_fr_thresholds, load_params_once, load_spread_thresholds, spawn_params_loader, FrDecision,
-    FundingRateFactor, MktChannel, RateFetcher, SpreadFactor, SymbolList,
+    load_all_once, spawn_config_loader, FrDecision, FundingRateFactor, MktChannel, RateFetcher,
+    SpreadFactor, SymbolList,
 };
 
 const PROCESS_NAME: &str = "fr_signal";
-const RELOAD_INTERVAL_SECS: u64 = 60;
-
-// Redis 配置
-const DEFAULT_REDIS_KEY_SPREAD: &str = "binance_forward_spread_thresholds";
-const DEFAULT_REDIS_KEY_FUNDING: &str = "funding_rate_thresholds";
-const DEFAULT_REDIS_KEY_SYMBOLS: &str = "fr_trade_symbols:binance_um";
 
 /// 配置结构
 struct Config {
     redis: RedisSettings,
-    redis_key_spread: String,
-    redis_key_funding: String,
-    redis_key_symbols: String,
 }
 
 impl Config {
@@ -48,61 +37,8 @@ impl Config {
                 password: None,
                 prefix: None,
             },
-            redis_key_spread: std::env::var("SPREAD_THRESHOLD_REDIS_KEY")
-                .unwrap_or_else(|_| DEFAULT_REDIS_KEY_SPREAD.to_string()),
-            redis_key_funding: std::env::var("FUNDING_THRESHOLD_REDIS_KEY")
-                .unwrap_or_else(|_| DEFAULT_REDIS_KEY_FUNDING.to_string()),
-            redis_key_symbols: std::env::var("SYMBOLS_REDIS_KEY")
-                .unwrap_or_else(|_| DEFAULT_REDIS_KEY_SYMBOLS.to_string()),
         })
     }
-}
-
-/// 从 Redis 加载配置并更新所有因子
-async fn reload_config(cfg: &Config) -> Result<()> {
-    let mut client = RedisClient::connect(cfg.redis.clone()).await?;
-
-    // 1. 加载价差阈值 -> SpreadFactor
-    if let Ok(spread_map) = client.hgetall_map(&cfg.redis_key_spread).await {
-        if let Err(err) = load_spread_thresholds(spread_map) {
-            warn!("加载价差阈值失败: {:?}", err);
-        }
-    }
-
-    // 2. 加载资金费率阈值 -> FundingRateFactor
-    if let Ok(funding_map) = client.hgetall_map(&cfg.redis_key_funding).await {
-        if let Err(err) = load_fr_thresholds(funding_map) {
-            warn!("加载资金费率阈值失败: {:?}", err);
-        }
-    }
-
-    // 3. 加载交易对白名单 -> FrDecision
-    if let Ok(Some(symbols_json)) = client.get_string(&cfg.redis_key_symbols).await {
-        if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&symbols_json) {
-            let pairs: Vec<_> = symbols
-                .iter()
-                .map(|s| {
-                    (
-                        TradingVenue::BinanceMargin,
-                        s.to_uppercase(),
-                        TradingVenue::BinanceUm,
-                        s.to_uppercase(),
-                    )
-                })
-                .collect();
-
-            FrDecision::with_mut(|decision| {
-                decision.update_check_symbols(pairs);
-            });
-
-            info!("交易对白名单已加载: {} 个", symbols.len());
-        }
-    }
-
-    // 4. 更新 SymbolList（用于 RateFetcher）
-    SymbolList::instance().reload_from_redis(&mut client, &[TradingVenue::BinanceUm]).await?;
-
-    Ok(())
 }
 
 /// 主运行循环
@@ -121,43 +57,21 @@ async fn run(cfg: Config, token: CancellationToken) -> Result<()> {
     let _ = SpreadFactor::instance();
     let _ = FundingRateFactor::instance();
 
-    // 2️⃣ 初始加载配置
-    info!("加载配置...");
-    if let Err(err) = reload_config(&cfg).await {
-        log::warn!("初始配置加载失败: {:?}，将稍后重试", err);
+    // 2️⃣ 立即加载所有配置（策略参数、符号列表、阈值等）
+    info!("加载所有配置...");
+    if let Err(err) = load_all_once(&cfg.redis).await {
+        log::warn!("配置加载失败: {:?}，将使用默认值", err);
     }
 
-    // 3️⃣ 加载策略参数（从 Redis fr_strategy_params）
-    info!("加载策略参数...");
-    if let Err(err) = load_params_once(&cfg.redis).await {
-        log::warn!("策略参数加载失败: {:?}，将使用默认值", err);
-    }
-
-    // 4️⃣ 启动参数定时重载器（60秒）
-    spawn_params_loader(cfg.redis.clone());
-    info!("策略参数加载器已启动（60秒定时重载）");
+    // 3️⃣ 启动统一配置定时重载器（60秒）
+    spawn_config_loader(cfg.redis.clone());
+    info!("配置加载器已启动（60秒定时重载）");
 
     info!("✅ {} 启动完成，等待市场数据触发决策...", PROCESS_NAME);
 
-    // 5️⃣ 主循环：定期重载配置 + 等待退出信号
-    let mut reload_interval = tokio::time::interval(Duration::from_secs(RELOAD_INTERVAL_SECS));
-    reload_interval.tick().await; // 跳过第一次立即触发
-
-    loop {
-        tokio::select! {
-            _ = token.cancelled() => {
-                info!("收到退出信号");
-                break;
-            }
-
-            _ = reload_interval.tick() => {
-                info!("定时重载配置...");
-                if let Err(err) = reload_config(&cfg).await {
-                    log::warn!("配置重载失败: {:?}", err);
-                }
-            }
-        }
-    }
+    // 4️⃣ 主循环：等待退出信号
+    token.cancelled().await;
+    info!("收到退出信号");
 
     info!("{} 退出", PROCESS_NAME);
     Ok(())
