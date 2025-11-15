@@ -23,12 +23,11 @@ use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 
-use super::common::ThresholdKey;
+use super::common::{Quote, ThresholdKey};
 use super::funding_rate_factor::FundingRateFactor;
 use super::mkt_channel::MktChannel;
 use super::rate_fetcher::RateFetcher;
 use super::spread_factor::SpreadFactor;
-use super::state::Quote;
 
 // ========== 线程本地单例 ==========
 

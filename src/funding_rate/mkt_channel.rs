@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
-use super::state::{FundingRateData, Quote};
+use super::common::{FundingRateData, Quote};
 use crate::common::mkt_msg::{
     get_msg_type, AskBidSpreadMsg, FundingRateMsg, MarkPriceMsg, MktMsgType,
 };
