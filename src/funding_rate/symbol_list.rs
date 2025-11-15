@@ -1,7 +1,7 @@
 //! 交易对列表管理模块 - 单例访问模式
 //!
 //! 管理两个热更新列表：
-//! - dup_symbol_list: 平仓列表（算法会平仓）
+//! - dump_symbol_list: 平仓列表（算法会平仓）
 //! - trade_symbol_list: 建仓列表（算法会根据信号建仓）
 //!
 //! 数据结构：TradingVenue -> Vec<String>
@@ -17,7 +17,7 @@ use crate::common::redis_client::RedisClient;
 use crate::signal::common::TradingVenue;
 
 // Redis key 前缀
-const DUP_SYMBOL_KEY_PREFIX: &str = "fr_dup_symbols";
+const DUMP_SYMBOL_KEY_PREFIX: &str = "fr_dump_symbols";
 const TRADE_SYMBOL_KEY_PREFIX: &str = "fr_trade_symbols";
 
 // Thread-local 单例存储
@@ -31,7 +31,7 @@ pub struct SymbolList;
 /// SymbolList 内部实现
 struct SymbolListInner {
     /// 平仓列表：TradingVenue -> HashSet<Symbol>
-    dup_symbols: HashMap<TradingVenue, HashSet<String>>,
+    dump_symbols: HashMap<TradingVenue, HashSet<String>>,
 
     /// 建仓列表：TradingVenue -> HashSet<Symbol>
     trade_symbols: HashMap<TradingVenue, HashSet<String>>,
@@ -70,7 +70,7 @@ impl SymbolList {
     /// 初始化单例
     pub fn init_singleton() -> Result<()> {
         let inner = SymbolListInner {
-            dup_symbols: HashMap::new(),
+            dump_symbols: HashMap::new(),
             trade_symbols: HashMap::new(),
         };
 
@@ -94,13 +94,13 @@ impl SymbolList {
     ) -> Result<()> {
         for venue in venues {
             // 读取平仓列表
-            let dup_key = Self::redis_key_for_dup(*venue);
-            if let Ok(Some(value)) = client.get_string(&dup_key).await {
+            let dump_key = Self::redis_key_for_dump(*venue);
+            if let Ok(Some(value)) = client.get_string(&dump_key).await {
                 if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
                     Self::with_inner_mut(|inner| {
                         let symbol_set: HashSet<String> =
                             symbols.iter().map(|s| s.to_uppercase()).collect();
-                        inner.dup_symbols.insert(*venue, symbol_set.clone());
+                        inner.dump_symbols.insert(*venue, symbol_set.clone());
                         info!("更新平仓列表 {:?}: {} 个交易对", venue, symbol_set.len());
                     });
                 }
@@ -130,11 +130,11 @@ impl SymbolList {
     /// # 参数
     /// - `symbol`: 交易对符号
     /// - `venue`: 交易场所
-    pub fn is_in_dup_list(&self, symbol: &str, venue: TradingVenue) -> bool {
+    pub fn is_in_dump_list(&self, symbol: &str, venue: TradingVenue) -> bool {
         let symbol_upper = symbol.to_uppercase();
         Self::with_inner(|inner| {
             inner
-                .dup_symbols
+                .dump_symbols
                 .get(&venue)
                 .map(|set| set.contains(&symbol_upper))
                 .unwrap_or(false)
@@ -161,10 +161,10 @@ impl SymbolList {
     ///
     /// # 参数
     /// - `venue`: 交易场所
-    pub fn get_dup_symbols(&self, venue: TradingVenue) -> Vec<String> {
+    pub fn get_dump_symbols(&self, venue: TradingVenue) -> Vec<String> {
         Self::with_inner(|inner| {
             inner
-                .dup_symbols
+                .dump_symbols
                 .get(&venue)
                 .map(|set| set.iter().cloned().collect())
                 .unwrap_or_default()
@@ -191,14 +191,14 @@ impl SymbolList {
     /// - `venue`: 交易场所
     ///
     /// # 返回
-    /// 返回 dup_symbols 和 trade_symbols 的并集
+    /// 返回 dump_symbols 和 trade_symbols 的并集
     pub fn get_online_symbols(&self, venue: TradingVenue) -> Vec<String> {
         Self::with_inner(|inner| {
             let mut online_set = HashSet::new();
 
             // 添加平仓列表
-            if let Some(dup_set) = inner.dup_symbols.get(&venue) {
-                online_set.extend(dup_set.iter().cloned());
+            if let Some(dump_set) = inner.dump_symbols.get(&venue) {
+                online_set.extend(dump_set.iter().cloned());
             }
 
             // 添加建仓列表
@@ -220,15 +220,15 @@ impl SymbolList {
 
             // 收集所有出现过的 venue
             let mut venues = HashSet::new();
-            venues.extend(inner.dup_symbols.keys());
+            venues.extend(inner.dump_symbols.keys());
             venues.extend(inner.trade_symbols.keys());
 
             // 为每个 venue 计算 online list
             for venue in venues {
                 let mut online_set = HashSet::new();
 
-                if let Some(dup_set) = inner.dup_symbols.get(venue) {
-                    online_set.extend(dup_set.iter().cloned());
+                if let Some(dump_set) = inner.dump_symbols.get(venue) {
+                    online_set.extend(dump_set.iter().cloned());
                 }
 
                 if let Some(trade_set) = inner.trade_symbols.get(venue) {
@@ -248,12 +248,12 @@ impl SymbolList {
 
     /// 生成平仓列表的 Redis key
     ///
-    /// 格式: fr_dup_symbols:{venue}
-    /// 例如: fr_dup_symbols:binance_um
-    fn redis_key_for_dup(venue: TradingVenue) -> String {
+    /// 格式: fr_dump_symbols:{venue}
+    /// 例如: fr_dump_symbols:binance_um
+    fn redis_key_for_dump(venue: TradingVenue) -> String {
         format!(
             "{}:{}",
-            DUP_SYMBOL_KEY_PREFIX,
+            DUMP_SYMBOL_KEY_PREFIX,
             Self::venue_to_redis_suffix(venue)
         )
     }

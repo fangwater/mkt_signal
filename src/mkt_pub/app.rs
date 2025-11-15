@@ -177,7 +177,7 @@ impl MktSignalApp {
     async fn initialize_and_start(&mut self) -> Result<()> {
         info!("Initializing and starting all services...");
 
-        // 创建主市场数据管理器
+        // 创建主市场数据管理器 
         let primary_mkt_manager = MktManager::new(
             self.config,
             &self.global_shutdown_tx,

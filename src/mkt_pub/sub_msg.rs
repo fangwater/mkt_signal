@@ -274,6 +274,7 @@ impl SubscribeMsgs {
             _ => panic!("Unsupported exchange: {}", exchange),
         }
     }
+
     fn get_kline_channel(exchange: &str) -> String {
         match exchange {
             "binance-futures" | "binance" => "kline_1m".to_string(),
@@ -383,6 +384,7 @@ impl SubscribeMsgs {
             _ => panic!("Unsupported exchange: {}", exchange),
         }
     }
+    
     pub async fn new(cfg: &Config) -> Self {
         let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
         let batch_size = cfg.get_batch_size();

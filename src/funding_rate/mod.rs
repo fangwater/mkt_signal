@@ -11,6 +11,7 @@ pub mod decision;
 pub mod funding_rate_factor;
 pub mod mkt_channel;
 pub mod param_loader;
+pub mod params_loader; // 新的策略参数加载器
 pub mod rate_fetcher;
 pub mod signal_generator;
 pub mod spread_factor;
@@ -44,3 +45,6 @@ pub use funding_rate_factor::{FrThresholdConfig, FundingRateFactor};
 
 // 导出决策模块
 pub use decision::FrDecision;
+
+// 导出策略参数加载器
+pub use params_loader::{load_params_once, spawn_params_loader};

@@ -228,19 +228,37 @@ impl MktChannel {
                                 let ask_price = AskBidSpreadMsg::get_ask_price(payload);
                                 let timestamp = AskBidSpreadMsg::get_timestamp(payload);
 
-                                let mut quotes_map = quotes.borrow_mut();
-                                if let Some(venue_quotes) =
-                                    quotes_map.get_mut(&TradingVenue::BinanceSpot)
-                                {
-                                    let quote = venue_quotes
-                                        .entry(symbol.clone())
-                                        .or_insert(Quote::default());
-                                    quote.update(bid_price, ask_price, timestamp);
+                                let symbol_for_decision = {
+                                    let mut quotes_map = quotes.borrow_mut();
+                                    if let Some(venue_quotes) =
+                                        quotes_map.get_mut(&TradingVenue::BinanceSpot)
+                                    {
+                                        let quote = venue_quotes
+                                            .entry(symbol.clone())
+                                            .or_insert(Quote::default());
+                                        quote.update(bid_price, ask_price, timestamp);
 
-                                    debug!(
-                                        "现货盘口更新: {} bid={:.6} ask={:.6}",
-                                        symbol, bid_price, ask_price
-                                    );
+                                        debug!(
+                                            "现货盘口更新: {} bid={:.6} ask={:.6}",
+                                            symbol, bid_price, ask_price
+                                        );
+                                        Some(symbol.clone())
+                                    } else {
+                                        None
+                                    }
+                                };
+
+                                // 盘口更新后触发决策（事件驱动）
+                                if let Some(sym) = symbol_for_decision {
+                                    use super::decision::FrDecision;
+                                    FrDecision::with_mut(|decision| {
+                                        let _ = decision.make_combined_decision(
+                                            &sym,                            // spot_symbol
+                                            &sym,                            // futures_symbol
+                                            TradingVenue::BinanceMargin,     // spot_venue
+                                            TradingVenue::BinanceUm,         // futures_venue
+                                        );
+                                    });
                                 }
                             }
                         }
@@ -296,19 +314,37 @@ impl MktChannel {
                                 let ask_price = AskBidSpreadMsg::get_ask_price(payload);
                                 let timestamp = AskBidSpreadMsg::get_timestamp(payload);
 
-                                let mut quotes_map = quotes.borrow_mut();
-                                if let Some(venue_quotes) =
-                                    quotes_map.get_mut(&TradingVenue::BinanceUm)
-                                {
-                                    let quote = venue_quotes
-                                        .entry(symbol.clone())
-                                        .or_insert(Quote::default());
-                                    quote.update(bid_price, ask_price, timestamp);
+                                let symbol_for_decision = {
+                                    let mut quotes_map = quotes.borrow_mut();
+                                    if let Some(venue_quotes) =
+                                        quotes_map.get_mut(&TradingVenue::BinanceUm)
+                                    {
+                                        let quote = venue_quotes
+                                            .entry(symbol.clone())
+                                            .or_insert(Quote::default());
+                                        quote.update(bid_price, ask_price, timestamp);
 
-                                    debug!(
-                                        "期货盘口更新: {} bid={:.6} ask={:.6}",
-                                        symbol, bid_price, ask_price
-                                    );
+                                        debug!(
+                                            "期货盘口更新: {} bid={:.6} ask={:.6}",
+                                            symbol, bid_price, ask_price
+                                        );
+                                        Some(symbol.clone())
+                                    } else {
+                                        None
+                                    }
+                                };
+
+                                // 盘口更新后触发决策（事件驱动）
+                                if let Some(sym) = symbol_for_decision {
+                                    use super::decision::FrDecision;
+                                    FrDecision::with_mut(|decision| {
+                                        let _ = decision.make_combined_decision(
+                                            &sym,                            // spot_symbol
+                                            &sym,                            // futures_symbol
+                                            TradingVenue::BinanceMargin,     // spot_venue
+                                            TradingVenue::BinanceUm,         // futures_venue
+                                        );
+                                    });
                                 }
                             }
                         }
@@ -364,23 +400,41 @@ impl MktChannel {
                                     let symbol = FundingRateMsg::get_symbol(payload).to_uppercase();
                                     let funding_rate = FundingRateMsg::get_funding_rate(payload);
 
-                                    let mut funding_rates_map = funding_rates.borrow_mut();
-                                    if let Some(venue_rates) =
-                                        funding_rates_map.get_mut(&TradingVenue::BinanceUm)
-                                    {
-                                        let rate_data = venue_rates
-                                            .entry(symbol.clone())
-                                            .or_insert_with(FundingRateData::new);
+                                    let symbol_for_decision = {
+                                        let mut funding_rates_map = funding_rates.borrow_mut();
+                                        if let Some(venue_rates) =
+                                            funding_rates_map.get_mut(&TradingVenue::BinanceUm)
+                                        {
+                                            let rate_data = venue_rates
+                                                .entry(symbol.clone())
+                                                .or_insert_with(FundingRateData::new);
 
-                                        // 立刻更新均值
-                                        rate_data.push(funding_rate);
+                                            // 立刻更新均值
+                                            rate_data.push(funding_rate);
 
-                                        debug!(
-                                            "Funding Rate 更新: {} rate={:.8} mean={:.8}",
-                                            symbol,
-                                            funding_rate,
-                                            rate_data.get_mean().unwrap_or(0.0)
-                                        );
+                                            debug!(
+                                                "Funding Rate 更新: {} rate={:.8} mean={:.8}",
+                                                symbol,
+                                                funding_rate,
+                                                rate_data.get_mean().unwrap_or(0.0)
+                                            );
+                                            Some(symbol.clone())
+                                        } else {
+                                            None
+                                        }
+                                    };
+
+                                    // Funding Rate MA 重算后触发决策（事件驱动）
+                                    if let Some(sym) = symbol_for_decision {
+                                        use super::decision::FrDecision;
+                                        FrDecision::with_mut(|decision| {
+                                            let _ = decision.make_combined_decision(
+                                                &sym,                            // spot_symbol
+                                                &sym,                            // futures_symbol
+                                                TradingVenue::BinanceMargin,     // spot_venue
+                                                TradingVenue::BinanceUm,         // futures_venue
+                                            );
+                                        });
                                     }
                                 }
                                 MktMsgType::MarkPrice => {
