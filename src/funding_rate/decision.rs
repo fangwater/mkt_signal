@@ -115,14 +115,21 @@ pub struct FrDecision {
     check_symbols: Rc<RefCell<HashSet<ThresholdKey>>>,
 
     /// 信号冷却时间（微秒），默认 5 秒
-    /// 在触发 ArbOpen/ArbClose 后，该交易对在冷却期内不能再次发出 ArbOpen/ArbClose 信号
-    /// 但仍然可以发出 ArbCancel 信号
+    /// 每种信号类型（ArbOpen/ArbClose/ArbCancel）有独立的冷却时间
+    /// 防止因多个事件同时触发（现货/期货盘口同时更新）导致重复发送相同类型的信号
     signal_cooldown_us: i64,
 
-    /// 最后触发 ArbOpen/ArbClose 的时间戳（微秒）
+    /// 最后触发 ArbOpen 的时间戳（微秒）
     /// key: (spot_venue, spot_symbol, futures_venue, futures_symbol)
-    /// 使用 Rc<RefCell<>> 以便在 spawn_local 任务中共享
-    last_signal_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
+    last_open_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
+
+    /// 最后触发 ArbClose 的时间戳（微秒）
+    /// key: (spot_venue, spot_symbol, futures_venue, futures_symbol)
+    last_close_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
+
+    /// 最后触发 ArbCancel 的时间戳（微秒）
+    /// key: (spot_venue, spot_symbol, futures_venue, futures_symbol)
+    last_cancel_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
 }
 
 impl FrDecision {
@@ -237,7 +244,9 @@ impl FrDecision {
             hedge_price_offset: 0.0003,
             check_symbols: Rc::new(RefCell::new(HashSet::new())),
             signal_cooldown_us: 5_000_000, // 默认 5 秒
-            last_signal_ts: Rc::new(RefCell::new(HashMap::new())),
+            last_open_ts: Rc::new(RefCell::new(HashMap::new())),
+            last_close_ts: Rc::new(RefCell::new(HashMap::new())),
+            last_cancel_ts: Rc::new(RefCell::new(HashMap::new())),
         })
     }
 
@@ -281,12 +290,20 @@ impl FrDecision {
     /// # 决策流程
     /// 0. 检查 symbol 是否在 check_symbols 白名单中
     /// 1. 优先检查 cancel 信号（只和价差有关）
-    /// 2. 检查信号冷却（如果在冷却期内，阻止 open/close 信号）
-    /// 3. 获取资费信号
-    /// 4. 如果资费没有信号，返回 None
-    /// 5. 如果资费有信号，验证对应的价差 satisfy
-    /// 6. 只有资费和价差同时满足时才发出信号
-    /// 7. 发送信号后更新冷却时间戳
+    ///    - 如果满足 cancel 条件，检查 cancel 信号冷却
+    ///    - 如果在冷却期内，跳过 cancel 信号
+    ///    - 否则发送 cancel 信号并更新 cancel 冷却时间戳
+    /// 2. 获取资费信号
+    /// 3. 如果资费没有信号，返回 None
+    /// 4. 如果资费有信号，验证对应的价差 satisfy
+    /// 5. 只有资费和价差同时满足时才确定最终信号（Open/Close）
+    /// 6. 检查对应信号类型的冷却
+    /// 7. 发送信号并更新对应类型的冷却时间戳
+    ///
+    /// # 冷却机制
+    /// - ArbOpen、ArbClose、ArbCancel 三种信号有**独立的**冷却时间
+    /// - 每种信号发送后 5 秒内不能再发送同类型信号
+    /// - 但不同类型信号之间互不影响
     ///
     /// # 参数
     /// - `spot_symbol`: 现货交易对
@@ -331,46 +348,55 @@ impl FrDecision {
         let now = get_timestamp_us();
 
         // 步骤1: 优先检查 cancel 信号（只和价差有关，不需要资费）
-        // Cancel 信号不受冷却时间限制
         if spread_factor.satisfy_forward_cancel(
             spot_venue,
             spot_symbol,
             futures_venue,
             futures_symbol,
-        ) {
-            self.emit_signals(
-                spot_symbol,
-                futures_symbol,
-                spot_venue,
-                futures_venue,
-                SignalType::ArbCancel,
-                None,
-            )?;
-            return Ok(Some(SignalType::ArbCancel));
-        }
-        if spread_factor.satisfy_backward_cancel(
+        ) || spread_factor.satisfy_backward_cancel(
             spot_venue,
             spot_symbol,
             futures_venue,
             futures_symbol,
         ) {
-            self.emit_signals(
+            // 检查 cancel 信号冷却
+            if self.check_signal_cooldown(
                 spot_symbol,
                 futures_symbol,
                 spot_venue,
                 futures_venue,
-                SignalType::ArbCancel,
-                None,
-            )?;
-            return Ok(Some(SignalType::ArbCancel));
+                now,
+                &SignalType::ArbCancel,
+            ) {
+                debug!(
+                    "FrDecision: ArbCancel 信号在冷却期内，跳过 {}",
+                    spot_symbol
+                );
+                // 不返回，继续检查 open/close 信号
+            } else {
+                // 发送 cancel 信号
+                self.emit_signals(
+                    spot_symbol,
+                    futures_symbol,
+                    spot_venue,
+                    futures_venue,
+                    SignalType::ArbCancel,
+                    None,
+                )?;
+                // 更新 cancel 冷却时间戳
+                self.update_last_signal_ts(
+                    spot_symbol,
+                    futures_symbol,
+                    spot_venue,
+                    futures_venue,
+                    now,
+                    &SignalType::ArbCancel,
+                );
+                return Ok(Some(SignalType::ArbCancel));
+            }
         }
 
-        // 步骤2: 检查信号冷却（ArbOpen/ArbClose 受冷却限制）
-        if self.check_signal_cooldown(spot_symbol, futures_symbol, spot_venue, futures_venue, now) {
-            return Ok(None);
-        }
-
-        // 步骤3: 获取资费信号
+        // 步骤2: 获取资费信号
         let fr_signal = self.get_funding_rate_signal(spot_symbol, futures_symbol, futures_venue)?;
 
         // 步骤3: 如果资费没有信号，返回 None
@@ -636,7 +662,23 @@ impl FrDecision {
 
         let signal_side = Self::side_from_fr_signal(fr_signal);
 
-        // 步骤6: 发送信号
+        // 步骤6: 检查对应信号类型的冷却
+        if self.check_signal_cooldown(
+            spot_symbol,
+            futures_symbol,
+            spot_venue,
+            futures_venue,
+            now,
+            &final_signal,
+        ) {
+            debug!(
+                "FrDecision: {:?} 信号在冷却期内，跳过 {}",
+                final_signal, spot_symbol
+            );
+            return Ok(None);
+        }
+
+        // 步骤7: 发送信号
         self.emit_signals(
             spot_symbol,
             futures_symbol,
@@ -646,8 +688,15 @@ impl FrDecision {
             Some(signal_side),
         )?;
 
-        // 步骤7: 更新冷却时间戳（只有 ArbOpen/ArbClose 触发冷却）
-        self.update_last_signal_ts(spot_symbol, futures_symbol, spot_venue, futures_venue, now);
+        // 步骤8: 更新冷却时间戳
+        self.update_last_signal_ts(
+            spot_symbol,
+            futures_symbol,
+            spot_venue,
+            futures_venue,
+            now,
+            &final_signal,
+        );
 
         info!(
             "  🎯 最终信号: {:?} | FR={:?} | {} <-> {} (冷却已启动)",
@@ -1267,10 +1316,11 @@ impl FrDecision {
     /// - `spot_venue`: 现货交易所
     /// - `futures_venue`: 合约交易所
     /// - `now`: 当前时间戳（微秒）
+    /// - `signal_type`: 信号类型（ArbOpen/ArbClose/ArbCancel）
     ///
     /// # 返回
-    /// - true: 在冷却期内，不应发出 ArbOpen/ArbClose 信号
-    /// - false: 不在冷却期内，可以发出信号
+    /// - true: 该类型信号在冷却期内，不应发出
+    /// - false: 该类型信号不在冷却期内，可以发出
     fn check_signal_cooldown(
         &self,
         spot_symbol: &str,
@@ -1278,6 +1328,7 @@ impl FrDecision {
         spot_venue: TradingVenue,
         futures_venue: TradingVenue,
         now: i64,
+        signal_type: &SignalType,
     ) -> bool {
         let key = (
             spot_venue,
@@ -1286,14 +1337,24 @@ impl FrDecision {
             futures_symbol.to_uppercase(),
         );
 
-        let last_signal_ts = self.last_signal_ts.borrow();
-        if let Some(&last_ts) = last_signal_ts.get(&key) {
+        // 根据信号类型选择对应的 last_ts HashMap
+        let last_ts_map = match signal_type {
+            SignalType::ArbOpen => self.last_open_ts.borrow(),
+            SignalType::ArbClose => self.last_close_ts.borrow(),
+            SignalType::ArbCancel => self.last_cancel_ts.borrow(),
+            _ => {
+                warn!("FrDecision: 不支持的信号类型 {:?}", signal_type);
+                return false;
+            }
+        };
+
+        if let Some(&last_ts) = last_ts_map.get(&key) {
             let elapsed = now - last_ts;
             if elapsed < self.signal_cooldown_us {
                 let remaining_ms = (self.signal_cooldown_us - elapsed) / 1000;
                 debug!(
-                    "FrDecision: 交易对 {} 在冷却期内，剩余 {}ms",
-                    spot_symbol, remaining_ms
+                    "FrDecision: 交易对 {} 的 {:?} 信号在冷却期内，剩余 {}ms",
+                    spot_symbol, signal_type, remaining_ms
                 );
                 return true;
             }
@@ -1309,6 +1370,7 @@ impl FrDecision {
     /// - `spot_venue`: 现货交易所
     /// - `futures_venue`: 合约交易所
     /// - `now`: 当前时间戳（微秒）
+    /// - `signal_type`: 信号类型（ArbOpen/ArbClose/ArbCancel）
     fn update_last_signal_ts(
         &self,
         spot_symbol: &str,
@@ -1316,6 +1378,7 @@ impl FrDecision {
         spot_venue: TradingVenue,
         futures_venue: TradingVenue,
         now: i64,
+        signal_type: &SignalType,
     ) {
         let key = (
             spot_venue,
@@ -1324,8 +1387,24 @@ impl FrDecision {
             futures_symbol.to_uppercase(),
         );
 
-        let mut last_signal_ts = self.last_signal_ts.borrow_mut();
-        last_signal_ts.insert(key, now);
+        // 根据信号类型选择对应的 last_ts HashMap
+        match signal_type {
+            SignalType::ArbOpen => {
+                let mut last_ts = self.last_open_ts.borrow_mut();
+                last_ts.insert(key, now);
+            }
+            SignalType::ArbClose => {
+                let mut last_ts = self.last_close_ts.borrow_mut();
+                last_ts.insert(key, now);
+            }
+            SignalType::ArbCancel => {
+                let mut last_ts = self.last_cancel_ts.borrow_mut();
+                last_ts.insert(key, now);
+            }
+            _ => {
+                warn!("FrDecision: 不支持的信号类型 {:?}", signal_type);
+            }
+        }
     }
 
     /// 构造 ArbCancel 信号上下文

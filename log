@@ -1,0 +1,965 @@
+📍 Redis: 127.0.0.1:6379/0
+
+📊 价差阈值配置 (对所有 symbol 通用):
+--------------------------------------------------------------------------------
+========================================
+operation           percentile_reference
+----------------------------------------
+forward_open_mm     binance_spread_10   
+forward_open_mt     binance_spread_15   
+forward_cancel_mm   binance_spread_85   
+forward_cancel_mt   binance_spread_90   
+forward_close_mm    binance_spread_85   
+forward_close_mt    binance_spread_90   
+backward_open_mm    binance_spread_10   
+backward_open_mt    binance_spread_15   
+backward_cancel_mm  binance_spread_85   
+backward_cancel_mt  binance_spread_90   
+backward_close_mm   binance_spread_85   
+backward_close_mt   binance_spread_90   
+========================================
+
+📈 统计:
+   - 已同步 symbols: 52 个
+   - 阈值字段总数: 624 个
+   - Symbols 列表: A2ZUSDT, AIUSDT, ASTRUSDT, AUCTIONUSDT, AXLUSDT, BEAMXUSDT, BICOUSDT, BNBUSDT, BTCUSDT, C98USDT, CELOUSDT, CHRUSDT, COTIUSDT, CUSDT, EGLDUSDT, ENJUSDT, ETHUSDT, FLUXUSDT, HEIUSDT, HIGHUSDT, ILVUSDT, INITUSDT, IOTXUSDT, JTOUSDT, KAVAUSDT, KDAUSDT, KSMUSDT, MANTAUSDT, MEMEUSDT, MINAUSDT, NEOUSDT, NFPUSDT, ORCAUSDT, PUMPUSDT, SAGAUSDT, SANTOSUSDT, SFPUSDT, SLPUSDT, SOLUSDT, SUNUSDT, SUSHIUSDT, SXPUSDT, TNSRUSDT, TWTUSDT, UNIUSDT, USTCUSDT, VANRYUSDT, VETUSDT, WCTUSDT, XPLUSDT, ZENUSDT, ZILUSDT
+
+📊 各 Symbol 具体阈值:
+--------------------------------------------------------------------------------
+
+🔹 A2ZUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     -0.00038238    
+forward_open_mt     -0.00130993    
+forward_cancel_mm   -0.0002595     
+forward_cancel_mt   -0.00125476    
+forward_close_mm    0.00106228     
+forward_close_mt    0.00210526     
+backward_open_mm    0.00106228     
+backward_open_mt    0.00047045     
+backward_cancel_mm  -0.00038238    
+backward_cancel_mt  0.00053376     
+backward_close_mm   -0.00038238    
+backward_close_mt   0              
+===================================
+
+🔹 AIUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0              
+forward_open_mt     -0.00127505    
+forward_cancel_mm   0.0002476      
+forward_cancel_mt   -0.00110294    
+forward_close_mm    0.00186393     
+forward_close_mt    0.00324675     
+backward_open_mm    0.00186393     
+backward_open_mt    0.00126812     
+backward_cancel_mm  0              
+backward_cancel_mt  0.00146252     
+backward_close_mm   0              
+backward_close_mt   0.00046619     
+===================================
+
+🔹 ASTRUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00092913     
+forward_open_mt     0.00029455     
+forward_cancel_mm   0.00105263     
+forward_cancel_mt   0.00040352     
+forward_close_mm    0.00200691     
+forward_close_mt    0.0027276      
+backward_open_mm    0.00200691     
+backward_open_mt    0.00152666     
+backward_cancel_mm  0.00092913     
+backward_cancel_mt  0.00167414     
+backward_close_mm   0.00092913     
+backward_close_mt   0.00119852     
+===================================
+
+🔹 AUCTIONUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00055866     
+forward_open_mt     -0.00031847    
+forward_cancel_mm   0.00072058     
+forward_cancel_mt   -0.00016077    
+forward_close_mm    0.00246227     
+forward_close_mt    0.0031746      
+backward_open_mm    0.00246227     
+backward_open_mt    0.00144695     
+backward_cancel_mm  0.00055866     
+backward_cancel_mt  0.0016129      
+backward_close_mm   0.00055866     
+backward_close_mt   0.00128411     
+===================================
+
+🔹 AXLUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00034746     
+forward_open_mt     -0.00058729    
+forward_cancel_mm   0.00067454     
+forward_cancel_mt   -0.00009321    
+forward_close_mm    0.00175685     
+forward_close_mt    0.00275103     
+backward_open_mm    0.00175685     
+backward_open_mt    0.00135227     
+backward_cancel_mm  0.00034746     
+backward_cancel_mt  0.00135962     
+backward_close_mm   0.00034746     
+backward_close_mt   0.00069686     
+===================================
+
+🔹 BEAMXUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00031378     
+forward_open_mt     -0.00026484    
+forward_cancel_mm   0.0003883      
+forward_cancel_mt   -0.00025654    
+forward_close_mm    0.00110796     
+forward_close_mt    0.00159363     
+backward_open_mm    0.00110796     
+backward_open_mt    0.0007722      
+backward_cancel_mm  0.00031378     
+backward_cancel_mt  0.0008272      
+backward_close_mm   0.00031378     
+backward_close_mt   0.00052729     
+===================================
+
+🔹 BICOUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     -0.00009083    
+forward_open_mt     -0.00170251    
+forward_cancel_mm   0.00008842     
+forward_cancel_mt   -0.00159011    
+forward_close_mm    0.00149747     
+forward_close_mt    0.00314136     
+backward_open_mm    0.00149747     
+backward_open_mt    0.00122807     
+backward_cancel_mm  -0.00009083    
+backward_cancel_mt  0.00141593     
+backward_close_mm   -0.00009083    
+backward_close_mt   0              
+===================================
+
+🔹 BNBUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     -0.00074809    
+forward_open_mt     -0.00072681    
+forward_cancel_mm   -0.00071538    
+forward_cancel_mt   -0.00070328    
+forward_close_mm    -0.00026763    
+forward_close_mt    -0.00029971    
+backward_open_mm    -0.00026763    
+backward_open_mt    -0.00073635    
+backward_cancel_mm  -0.00074809    
+backward_cancel_mt  -0.00070367    
+backward_close_mm   -0.00074809    
+backward_close_mt   -0.00032148    
+===================================
+
+🔹 BTCUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00027125     
+forward_open_mt     0.00029127     
+forward_cancel_mm   0.0002922      
+forward_cancel_mt   0.0003057      
+forward_close_mm    0.00052038     
+forward_close_mt    0.00048956     
+backward_open_mm    0.00052038     
+backward_open_mt    0.0002722      
+backward_cancel_mm  0.00027125     
+backward_cancel_mt  0.00029315     
+backward_close_mm   0.00027125     
+backward_close_mt   0.00048734     
+===================================
+
+🔹 C98USDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0              
+forward_open_mt     -0.00319489    
+forward_cancel_mm   0              
+forward_cancel_mt   -0.00318471    
+forward_close_mm    0.0032         
+forward_close_mt    0.00638978     
+backward_open_mm    0.0032         
+backward_open_mt    0.0031348      
+backward_cancel_mm  0              
+backward_cancel_mt  0.00315457     
+backward_close_mm   0              
+backward_close_mt   0              
+===================================
+
+🔹 CELOUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     -0.00074497    
+forward_open_mt     -0.00342633    
+forward_cancel_mm   -0.00048924    
+forward_cancel_mt   -0.00336054    
+forward_close_mm    0.00347137     
+forward_close_mt    0.006241       
+backward_open_mm    0.00347137     
+backward_open_mt    0.00196657     
+backward_cancel_mm  -0.00074497    
+backward_cancel_mt  0.00243309     
+backward_close_mm   -0.00074497    
+backward_close_mt   0              
+===================================
+
+🔹 CHRUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0              
+forward_open_mt     -0.00158479    
+forward_cancel_mm   0              
+forward_cancel_mt   -0.0015748     
+forward_close_mm    0.00157109     
+forward_close_mt    0.00314465     
+backward_open_mm    0.00157109     
+backward_open_mt    0.00152207     
+backward_cancel_mm  0              
+backward_cancel_mt  0.00153374     
+backward_close_mm   0              
+backward_close_mt   0              
+===================================
+
+🔹 COTIUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00179014     
+forward_open_mt     0.00161199     
+forward_cancel_mm   0.00195231     
+forward_cancel_mt   0.00168776     
+forward_close_mm    0.00376001     
+forward_close_mt    0.00395369     
+backward_open_mm    0.00376001     
+backward_open_mt    0.00218341     
+backward_cancel_mm  0.00179014     
+backward_cancel_mt  0.00231874     
+backward_close_mm   0.00179014     
+backward_close_mt   0.00315846     
+===================================
+
+🔹 CUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00041327     
+forward_open_mt     -0.00034496    
+forward_cancel_mm   0.00054377     
+forward_cancel_mt   -0.00032328    
+forward_close_mm    0.00152888     
+forward_close_mt    0.00231533     
+backward_open_mm    0.00152888     
+backward_open_mt    0.00108932     
+backward_cancel_mm  0.00041327     
+backward_cancel_mt  0.00121142     
+backward_close_mm   0.00041327     
+backward_close_mt   0.0006772      
+===================================
+
+🔹 EGLDUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00061763     
+forward_open_mt     -0.00007588    
+forward_cancel_mm   0.00073157     
+forward_cancel_mt   0              
+forward_close_mm    0.00182962     
+forward_close_mt    0.00250284     
+backward_open_mm    0.00182962     
+backward_open_mt    0.00125238     
+backward_cancel_mm  0.00061763     
+backward_cancel_mt  0.00138996     
+backward_close_mm   0.00061763     
+backward_close_mt   0.00101351     
+===================================
+
+🔹 ENJUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00098463     
+forward_open_mt     0.00051322     
+forward_cancel_mm   0.00109381     
+forward_cancel_mt   0.00062921     
+forward_close_mm    0.00178692     
+forward_close_mt    0.00218977     
+backward_open_mm    0.00178692     
+backward_open_mt    0.00152001     
+backward_cancel_mm  0.00098463     
+backward_cancel_mt  0.00153925     
+backward_close_mm   0.00098463     
+backward_close_mt   0.00129433     
+===================================
+
+🔹 ETHUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00030752     
+forward_open_mt     0.0003312      
+forward_cancel_mm   0.00033519     
+forward_cancel_mt   0.00035006     
+forward_close_mm    0.00056209     
+forward_close_mt    0.00053813     
+backward_open_mm    0.00056209     
+backward_open_mt    0.0003116      
+backward_cancel_mm  0.00030752     
+backward_cancel_mt  0.00033911     
+backward_close_mm   0.00030752     
+backward_close_mt   0.00053066     
+===================================
+
+🔹 FLUXUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00077416     
+forward_open_mt     0              
+forward_cancel_mm   0.00094518     
+forward_cancel_mt   0              
+forward_close_mm    0.00225515     
+forward_close_mt    0.00315657     
+backward_open_mm    0.00225515     
+backward_open_mt    0.00181598     
+backward_cancel_mm  0.00077416     
+backward_cancel_mt  0.0018797      
+backward_close_mm   0.00077416     
+backward_close_mt   0.00127714     
+===================================
+
+🔹 HEIUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0              
+forward_open_mt     -0.00093941    
+forward_cancel_mm   0.00022883     
+forward_cancel_mt   -0.0008845     
+forward_close_mm    0.00116469     
+forward_close_mt    0.00203792     
+backward_open_mm    0.00116469     
+backward_open_mt    0.00092593     
+backward_cancel_mm  0              
+backward_cancel_mt  0.00093677     
+backward_close_mm   0              
+backward_close_mt   0              
+===================================
+
+🔹 HIGHUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     -0.0007984     
+forward_open_mt     -0.00303505    
+forward_cancel_mm   -0.00058252    
+forward_cancel_mt   -0.00273437    
+forward_close_mm    0.00255403     
+forward_close_mt    0.0046875      
+backward_open_mm    0.00255403     
+backward_open_mt    0.00152091     
+backward_cancel_mm  -0.0007984     
+backward_cancel_mt  0.0015748      
+backward_close_mm   -0.0007984     
+backward_close_mt   0              
+===================================
+
+🔹 ILVUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00069128     
+forward_open_mt     0              
+forward_cancel_mm   0.00085314     
+forward_cancel_mt   0.00007974     
+forward_close_mm    0.00239091     
+forward_close_mt    0.00308183     
+backward_open_mm    0.00239091     
+backward_open_mt    0.00142401     
+backward_cancel_mm  0.00069128     
+backward_cancel_mt  0.00156815     
+backward_close_mm   0.00069128     
+backward_close_mt   0.00133172     
+===================================
+
+🔹 INITUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00079586     
+forward_open_mt     0              
+forward_cancel_mm   0.00089523     
+forward_cancel_mt   0.00000628     
+forward_close_mm    0.00319107     
+forward_close_mt    0.00394322     
+backward_open_mm    0.00319107     
+backward_open_mt    0.00160643     
+backward_cancel_mm  0.00079586     
+backward_cancel_mt  0.00187397     
+backward_close_mm   0.00079586     
+backward_close_mt   0.00221037     
+===================================
+
+🔹 IOTXUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0              
+forward_open_mt     -0.00099206    
+forward_cancel_mm   0.00021631     
+forward_cancel_mt   -0.00098814    
+forward_close_mm    0.00194837     
+forward_close_mt    0.00295567     
+backward_open_mm    0.00194837     
+backward_open_mt    0.00098912     
+backward_cancel_mm  0              
+backward_cancel_mt  0.00144637     
+backward_close_mm   0              
+backward_close_mt   0              
+===================================
+
+🔹 JTOUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     -0.00025189    
+forward_open_mt     -0.0010118     
+forward_cancel_mm   -0.00008396    
+forward_cancel_mt   -0.00094488    
+forward_close_mm    0.00141313     
+forward_close_mt    0.00219816     
+backward_open_mm    0.00141313     
+backward_open_mt    0.00065466     
+backward_cancel_mm  -0.00025189    
+backward_cancel_mt  0.00081699     
+backward_close_mm   -0.00025189    
+backward_close_mt   0.00033278     
+===================================
+
+🔹 KAVAUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00237858     
+forward_open_mt     0.00215363     
+forward_cancel_mm   0.00287253     
+forward_cancel_mt   0.00217391     
+forward_close_mm    0.00952057     
+forward_close_mt    0.00931077     
+backward_open_mm    0.00952057     
+backward_open_mt    0.00326187     
+backward_cancel_mm  0.00237858     
+backward_cancel_mt  0.00360231     
+backward_close_mm   0.00237858     
+backward_close_mt   0.00736659     
+===================================
+
+🔹 KDAUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.13207547     
+forward_open_mt     -0.07255521    
+forward_cancel_mm   0.13207547     
+forward_cancel_mt   -0.07255521    
+forward_close_mm    0.13207547     
+forward_close_mt    0.3354232      
+backward_open_mm    0.13207547     
+backward_open_mt    0.3354232      
+backward_cancel_mm  0.13207547     
+backward_cancel_mt  0.3354232      
+backward_close_mm   0.13207547     
+backward_close_mt   -0.07255521    
+===================================
+
+🔹 KSMUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00060016     
+forward_open_mt     -0.00009671    
+forward_cancel_mm   0.00069884     
+forward_cancel_mt   0              
+forward_close_mm    0.00155337     
+forward_close_mt    0.00215686     
+backward_open_mm    0.00155337     
+backward_open_mt    0.00116732     
+backward_cancel_mm  0.00060016     
+backward_cancel_mt  0.0012691      
+backward_close_mm   0.00060016     
+backward_close_mt   0.00087549     
+===================================
+
+🔹 MANTAUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00052083     
+forward_open_mt     0              
+forward_cancel_mm   0.00081202     
+forward_cancel_mt   0              
+forward_close_mm    0.00405328     
+forward_close_mt    0.00468384     
+backward_open_mm    0.00405328     
+backward_open_mt    0.00162338     
+backward_cancel_mm  0.00052083     
+backward_cancel_mt  0.00164339     
+backward_close_mm   0.00052083     
+backward_close_mt   0.0023511      
+===================================
+
+🔹 MEMEUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00067866     
+forward_open_mt     0              
+forward_cancel_mm   0.00068236     
+forward_cancel_mt   0              
+forward_close_mm    0.00202088     
+forward_close_mt    0.00267738     
+backward_open_mm    0.00202088     
+backward_open_mt    0.00135777     
+backward_cancel_mm  0.00067866     
+backward_cancel_mt  0.00136426     
+backward_close_mm   0.00067866     
+backward_close_mt   0.00070822     
+===================================
+
+🔹 MINAUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00033259     
+forward_open_mt     -0.00022894    
+forward_cancel_mm   0.0006846      
+forward_cancel_mt   0              
+forward_close_mm    0.00179986     
+forward_close_mt    0.00230592     
+backward_open_mm    0.00179986     
+backward_open_mt    0.00120128     
+backward_cancel_mm  0.00033259     
+backward_cancel_mt  0.00143472     
+backward_close_mm   0.00033259     
+backward_close_mt   0.00074627     
+===================================
+
+🔹 NEOUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00075501     
+forward_open_mt     0.00061224     
+forward_cancel_mm   0.00082585     
+forward_cancel_mt   0.0006215      
+forward_close_mm    0.00138114     
+forward_close_mt    0.00156765     
+backward_open_mm    0.00138114     
+backward_open_mt    0.0010223      
+backward_cancel_mm  0.00075501     
+backward_cancel_mt  0.00104058     
+backward_close_mm   0.00075501     
+backward_close_mt   0.00104734     
+===================================
+
+🔹 NFPUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     -0.00090656    
+forward_open_mt     -0.00225989    
+forward_cancel_mm   -0.00063114    
+forward_cancel_mt   -0.00208914    
+forward_close_mm    0.00206327     
+forward_close_mt    0.0034384      
+backward_open_mm    0.00206327     
+backward_open_mt    0.0007563      
+backward_cancel_mm  -0.00090656    
+backward_cancel_mt  0.00101795     
+backward_close_mm   -0.00090656    
+backward_close_mt   0.00027473     
+===================================
+
+🔹 ORCAUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00090529     
+forward_open_mt     0              
+forward_cancel_mm   0.00113982     
+forward_cancel_mt   0              
+forward_close_mm    0.00342205     
+forward_close_mt    0.00456274     
+backward_open_mm    0.00342205     
+backward_open_mt    0.00212102     
+backward_cancel_mm  0.00090529     
+backward_cancel_mt  0.00227618     
+backward_close_mm   0.00090529     
+backward_close_mt   0.00194857     
+===================================
+
+🔹 PUMPUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00037024     
+forward_open_mt     0.00019796     
+forward_cancel_mm   0.00049542     
+forward_cancel_mt   0.00027473     
+forward_close_mm    0.00111488     
+forward_close_mt    0.00133553     
+backward_open_mm    0.00111488     
+backward_open_mt    0.00066765     
+backward_cancel_mm  0.00037024     
+backward_cancel_mt  0.00079251     
+backward_close_mm   0.00037024     
+backward_close_mt   0.00075095     
+===================================
+
+🔹 SAGAUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00056915     
+forward_open_mt     -0.00024936    
+forward_cancel_mm   0.00106804     
+forward_cancel_mt   0              
+forward_close_mm    0.00130719     
+forward_close_mt    0.00234742     
+backward_open_mm    0.00130719     
+backward_open_mt    0.00185597     
+backward_cancel_mm  0.00056915     
+backward_cancel_mt  0.00222717     
+backward_close_mm   0.00056915     
+backward_close_mt   0              
+===================================
+
+🔹 SANTOSUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00031776     
+forward_open_mt     -0.00063573    
+forward_cancel_mm   0.00060055     
+forward_cancel_mt   -0.00062972    
+forward_close_mm    0.00194112     
+forward_close_mt    0.0026442      
+backward_open_mm    0.00194112     
+backward_open_mt    0.00126103     
+backward_cancel_mm  0.00031776     
+backward_cancel_mt  0.00130039     
+backward_close_mm   0.00031776     
+backward_close_mt   0.00065147     
+===================================
+
+🔹 SFPUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00044643     
+forward_open_mt     0              
+forward_cancel_mm   0.00044951     
+forward_cancel_mt   0              
+forward_close_mm    0.00135706     
+forward_close_mt    0.00181324     
+backward_open_mm    0.00135706     
+backward_open_mt    0.00089445     
+backward_cancel_mm  0.00044643     
+backward_cancel_mt  0.00090063     
+backward_close_mm   0.00044643     
+backward_close_mt   0.00075347     
+===================================
+
+🔹 SLPUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     -0.00049285    
+forward_open_mt     -0.00194553    
+forward_cancel_mm   -0.00005172    
+forward_cancel_mt   -0.00191205    
+forward_close_mm    0.00291971     
+forward_close_mt    0.00389864     
+backward_open_mm    0.00291971     
+backward_open_mt    0.00095238     
+backward_cancel_mm  -0.00049285    
+backward_cancel_mt  0.00098522     
+backward_close_mm   -0.00049285    
+backward_close_mt   0.00097466     
+===================================
+
+🔹 SOLUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00034971     
+forward_open_mt     0.00030222     
+forward_cancel_mm   0.00037389     
+forward_cancel_mt   0.00033093     
+forward_close_mm    0.00067603     
+forward_close_mt    0.00070998     
+backward_open_mm    0.00067603     
+backward_open_mt    0.00042023     
+backward_cancel_mm  0.00034971     
+backward_cancel_mt  0.0004454      
+backward_close_mm   0.00034971     
+backward_close_mt   0.00056802     
+===================================
+
+🔹 SUNUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00038057     
+forward_open_mt     0.00013465     
+forward_cancel_mm   0.00047096     
+forward_cancel_mt   0.00022391     
+forward_close_mm    0.00136232     
+forward_close_mt    0.00157374     
+backward_open_mm    0.00136232     
+backward_open_mt    0.0006278      
+backward_cancel_mm  0.00038057     
+backward_cancel_mt  0.00076097     
+backward_close_mm   0.00038057     
+backward_close_mt   0.0009901      
+===================================
+
+🔹 SUSHIUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00064068     
+forward_open_mt     0.00042382     
+forward_cancel_mm   0.00073302     
+forward_cancel_mt   0.00042735     
+forward_close_mm    0.00133008     
+forward_close_mt    0.00151873     
+backward_open_mm    0.00133008     
+backward_open_mt    0.00088118     
+backward_cancel_mm  0.00064068     
+backward_cancel_mt  0.00103594     
+backward_close_mm   0.00064068     
+backward_close_mt   0.00093763     
+===================================
+
+🔹 SXPUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.0004771      
+forward_open_mt     -0.00094429    
+forward_cancel_mm   0.00048685     
+forward_cancel_mt   -0.00002932    
+forward_close_mm    0.00191663     
+forward_close_mt    0.00289296     
+backward_open_mm    0.00191663     
+backward_open_mt    0.00188501     
+backward_cancel_mm  0.0004771      
+backward_cancel_mt  0.00189036     
+backward_close_mm   0.0004771      
+backward_close_mt   0.00065853     
+===================================
+
+🔹 TNSRUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     -0.00011587    
+forward_open_mt     -0.00136364    
+forward_cancel_mm   0.00011148     
+forward_cancel_mt   -0.00116279    
+forward_close_mm    0.00201117     
+forward_close_mt    0.00328889     
+backward_open_mm    0.00201117     
+backward_open_mt    0.00113636     
+backward_cancel_mm  -0.00011587    
+backward_cancel_mt  0.00135747     
+backward_close_mm   -0.00011587    
+backward_close_mt   0.00046083     
+===================================
+
+🔹 TWTUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00040039     
+forward_open_mt     0.00034388     
+forward_cancel_mm   0.00047025     
+forward_cancel_mt   0.00042405     
+forward_close_mm    0.00116691     
+forward_close_mt    0.00119956     
+backward_open_mm    0.00116691     
+backward_open_mt    0.00051308     
+backward_cancel_mm  0.00040039     
+backward_cancel_mt  0.00059666     
+backward_close_mm   0.00040039     
+backward_close_mt   0.00094469     
+===================================
+
+🔹 UNIUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.0002891      
+forward_open_mt     0.00023062     
+forward_cancel_mm   0.00037592     
+forward_cancel_mt   0.00027086     
+forward_close_mm    0.00080467     
+forward_close_mt    0.0008785      
+backward_open_mm    0.00080467     
+backward_open_mt    0.00043274     
+backward_cancel_mm  0.0002891      
+backward_cancel_mt  0.00052084     
+backward_close_mm   0.0002891      
+backward_close_mt   0.00059301     
+===================================
+
+🔹 USTCUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00059568     
+forward_open_mt     -0.00044776    
+forward_cancel_mm   0.00080586     
+forward_cancel_mt   -0.00029895    
+forward_close_mm    0.00246453     
+forward_close_mt    0.00359821     
+backward_open_mm    0.00246453     
+backward_open_mt    0.00162963     
+backward_cancel_mm  0.00059568     
+backward_cancel_mt  0.00180079     
+backward_close_mm   0.00059568     
+backward_close_mt   0.00118519     
+===================================
+
+🔹 VANRYUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     -0.00297872    
+forward_open_mt     -0.00743802    
+forward_cancel_mm   -0.00285714    
+forward_cancel_mt   -0.00672269    
+forward_close_mm    0.0044898      
+forward_close_mt    0.00826446     
+backward_open_mm    0.0044898      
+backward_open_mt    0.00162602     
+backward_cancel_mm  -0.00297872    
+backward_cancel_mt  0.00172414     
+backward_close_mm   -0.00297872    
+backward_close_mt   -0.00083333    
+===================================
+
+🔹 VETUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00049336     
+forward_open_mt     0.00012928     
+forward_cancel_mm   0.00059506     
+forward_cancel_mt   0.00021507     
+forward_close_mm    0.00142602     
+forward_close_mt    0.00173077     
+backward_open_mm    0.00142602     
+backward_open_mt    0.00087719     
+backward_cancel_mm  0.00049336     
+backward_cancel_mt  0.00098922     
+backward_close_mm   0.00049336     
+backward_close_mt   0.0009697      
+===================================
+
+🔹 WCTUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00175979     
+forward_open_mt     0.00088261     
+forward_cancel_mm   0.001766       
+forward_cancel_mt   0.00088496     
+forward_close_mm    0.00356983     
+forward_close_mt    0.00444444     
+backward_open_mm    0.00356983     
+backward_open_mt    0.00263852     
+backward_cancel_mm  0.00175979     
+backward_cancel_mt  0.00264784     
+backward_close_mm   0.00175979     
+backward_close_mt   0.00264784     
+===================================
+
+🔹 XPLUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00042726     
+forward_open_mt     0              
+forward_cancel_mm   0.00043243     
+forward_cancel_mt   0.00007472     
+forward_close_mm    0.00128673     
+forward_close_mt    0.00169851     
+backward_open_mm    0.00128673     
+backward_open_mt    0.0008547      
+backward_cancel_mm  0.00042726     
+backward_cancel_mt  0.00086505     
+backward_close_mm   0.00042726     
+backward_close_mt   0.00084854     
+===================================
+
+🔹 ZENUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0.00069345     
+forward_open_mt     0.00056276     
+forward_cancel_mm   0.00081589     
+forward_cancel_mt   0.00065553     
+forward_close_mm    0.00207534     
+forward_close_mt    0.00224341     
+backward_open_mm    0.00207534     
+backward_open_mt    0.00090646     
+backward_cancel_mm  0.00069345     
+backward_cancel_mt  0.00104        
+backward_close_mm   0.00069345     
+backward_close_mt   0.00162093     
+===================================
+
+🔹 ZILUSDT:
+===================================
+operation           threshold_value
+-----------------------------------
+forward_open_mm     0              
+forward_open_mt     -0.00143062    
+forward_cancel_mm   0.00070621     
+forward_cancel_mt   -0.00142248    
+forward_close_mm    0.0016225      
+forward_close_mt    0.00289855     
+backward_open_mm    0.0016225      
+backward_open_mt    0.00144092     
+backward_cancel_mm  0              
+backward_cancel_mt  0.00276789     
+backward_close_mm   0              
+backward_close_mt   0              
+===================================
+
