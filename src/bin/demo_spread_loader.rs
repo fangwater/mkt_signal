@@ -85,15 +85,18 @@ async fn main() -> Result<()> {
     let venue2 = TradingVenue::BinanceUm;
     let symbol = args.test_symbol.as_str();
 
-    info!("  测试参数: venue1={:?}, symbol1={}, venue2={:?}, symbol2={}",
-        venue1, symbol, venue2, symbol);
+    info!(
+        "  测试参数: venue1={:?}, symbol1={}, venue2={:?}, symbol2={}",
+        venue1, symbol, venue2, symbol
+    );
     info!("");
 
     // 测试正套开仓条件 (应该返回 false，因为我们没有设置实际的价差值)
     let satisfy_forward_open = spread_factor.satisfy_forward_open(venue1, symbol, venue2, symbol);
     info!("  正套开仓 (forward_open): {}", satisfy_forward_open);
 
-    let satisfy_forward_cancel = spread_factor.satisfy_forward_cancel(venue1, symbol, venue2, symbol);
+    let satisfy_forward_cancel =
+        spread_factor.satisfy_forward_cancel(venue1, symbol, venue2, symbol);
     info!("  正套撤单 (forward_cancel): {}", satisfy_forward_cancel);
 
     let satisfy_forward_close = spread_factor.satisfy_forward_close(venue1, symbol, venue2, symbol);
@@ -102,10 +105,12 @@ async fn main() -> Result<()> {
     let satisfy_backward_open = spread_factor.satisfy_backward_open(venue1, symbol, venue2, symbol);
     info!("  反套开仓 (backward_open): {}", satisfy_backward_open);
 
-    let satisfy_backward_cancel = spread_factor.satisfy_backward_cancel(venue1, symbol, venue2, symbol);
+    let satisfy_backward_cancel =
+        spread_factor.satisfy_backward_cancel(venue1, symbol, venue2, symbol);
     info!("  反套撤单 (backward_cancel): {}", satisfy_backward_cancel);
 
-    let satisfy_backward_close = spread_factor.satisfy_backward_close(venue1, symbol, venue2, symbol);
+    let satisfy_backward_close =
+        spread_factor.satisfy_backward_close(venue1, symbol, venue2, symbol);
     info!("  反套平仓 (backward_close): {}", satisfy_backward_close);
 
     info!("");

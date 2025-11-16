@@ -73,7 +73,10 @@ pub fn load_from_redis(hash_map: HashMap<String, String>) -> Result<()> {
         // 需要找到最后3个下划线分隔的部分
         let parts: Vec<&str> = key.split('_').collect();
         if parts.len() < 4 {
-            warn!("跳过无效的价差阈值 key: {} (格式应为 symbol_direction_operation_mode)", key);
+            warn!(
+                "跳过无效的价差阈值 key: {} (格式应为 symbol_direction_operation_mode)",
+                key
+            );
             continue;
         }
 
@@ -207,10 +210,7 @@ pub fn load_from_redis(hash_map: HashMap<String, String>) -> Result<()> {
                     loaded_count += 1;
                 }
                 _ => {
-                    warn!(
-                        "未知的方向/操作组合: {} (symbol: {})",
-                        op_key, symbol
-                    );
+                    warn!("未知的方向/操作组合: {} (symbol: {})", op_key, symbol);
                 }
             }
         }
@@ -255,10 +255,7 @@ mod tests {
     #[test]
     fn test_load_invalid_value() {
         let mut hash_map = HashMap::new();
-        hash_map.insert(
-            "BTCUSDT_forward_open_mm".to_string(),
-            "invalid".to_string(),
-        );
+        hash_map.insert("BTCUSDT_forward_open_mm".to_string(), "invalid".to_string());
 
         let result = load_from_redis(hash_map);
         assert!(result.is_ok()); // 应该跳过无效的值但不报错

@@ -385,10 +385,11 @@ impl RateFetcher {
 
                     if !rates.is_empty() {
                         // 推断资金费率周期（4h or 8h）
-                        let period = match Self::infer_binance_funding_frequency(&client, symbol).await {
-                            Some(freq) if freq == "4h" => FundingRatePeriod::Hours4,
-                            _ => FundingRatePeriod::Hours8, // 默认 8h
-                        };
+                        let period =
+                            match Self::infer_binance_funding_frequency(&client, symbol).await {
+                                Some(freq) if freq == "4h" => FundingRatePeriod::Hours4,
+                                _ => FundingRatePeriod::Hours8, // 默认 8h
+                            };
 
                         Self::with_inner_mut(|inner| {
                             // 存储资金费率数据

@@ -269,7 +269,7 @@ impl OrderManager {
             pending_limit_order_count: HashMap::new(),
         }
     }
-    
+
     pub fn create_order(
         &mut self,
         venue: TradingVenue,
@@ -333,7 +333,7 @@ impl OrderManager {
                 self.decrement_pending_limit_count(&prev_order.symbol);
             }
         }
-        
+
         // 持久化
     }
 

@@ -384,7 +384,7 @@ impl SubscribeMsgs {
             _ => panic!("Unsupported exchange: {}", exchange),
         }
     }
-    
+
     pub async fn new(cfg: &Config) -> Self {
         let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
         let batch_size = cfg.get_batch_size();

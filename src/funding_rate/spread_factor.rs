@@ -177,7 +177,13 @@ impl SpreadFactor {
         venue2: TradingVenue,
         symbol2: &str,
     ) -> Option<f64> {
-        let venue_pair = (venue1, venue2);
+        // 映射：BinanceMargin 使用 BinanceSpot 的价差数据（现货杠杆和现货共享盘口）
+        let query_venue1 = match venue1 {
+            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            _ => venue1,
+        };
+
+        let venue_pair = (query_venue1, venue2);
         let symbol_pair = (symbol1.to_string(), symbol2.to_string());
 
         self.askbid
@@ -195,7 +201,13 @@ impl SpreadFactor {
         venue2: TradingVenue,
         symbol2: &str,
     ) -> Option<f64> {
-        let venue_pair = (venue1, venue2);
+        // 映射：BinanceMargin 使用 BinanceSpot 的价差数据（现货杠杆和现货共享盘口）
+        let query_venue1 = match venue1 {
+            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            _ => venue1,
+        };
+
+        let venue_pair = (query_venue1, venue2);
         let symbol_pair = (symbol1.to_string(), symbol2.to_string());
 
         self.bidask
@@ -213,7 +225,13 @@ impl SpreadFactor {
         venue2: TradingVenue,
         symbol2: &str,
     ) -> Option<f64> {
-        let venue_pair = (venue1, venue2);
+        // 映射：BinanceMargin 使用 BinanceSpot 的价差数据（现货杠杆和现货共享盘口）
+        let query_venue1 = match venue1 {
+            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            _ => venue1,
+        };
+
+        let venue_pair = (query_venue1, venue2);
         let symbol_pair = (symbol1.to_string(), symbol2.to_string());
 
         self.spread_rate
@@ -235,6 +253,17 @@ impl SpreadFactor {
         *self.mode.borrow()
     }
 
+    // ===== 内部辅助方法 =====
+
+    /// Venue 映射：BinanceMargin -> BinanceSpot（现货杠杆和现货共享盘口）
+    #[inline]
+    fn map_venue(venue: TradingVenue) -> TradingVenue {
+        match venue {
+            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            _ => venue,
+        }
+    }
+
     // ===== 6个 set 函数 =====
 
     /// 设置正套开仓阈值
@@ -248,7 +277,18 @@ impl SpreadFactor {
         mm_threshold: f64,
         mt_threshold: f64,
     ) {
-        let key = (venue1, symbol1.to_string(), venue2, symbol2.to_string());
+        // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
+        let store_venue1 = match venue1 {
+            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            _ => venue1,
+        };
+
+        let key = (
+            store_venue1,
+            symbol1.to_string(),
+            venue2,
+            symbol2.to_string(),
+        );
         let config = SpreadThresholdConfig {
             compare_op: CompareOp::LessThan,
             arb_direction: ArbDirection::Forward,
@@ -272,7 +312,18 @@ impl SpreadFactor {
         mm_threshold: f64,
         mt_threshold: f64,
     ) {
-        let key = (venue1, symbol1.to_string(), venue2, symbol2.to_string());
+        // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
+        let store_venue1 = match venue1 {
+            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            _ => venue1,
+        };
+
+        let key = (
+            store_venue1,
+            symbol1.to_string(),
+            venue2,
+            symbol2.to_string(),
+        );
         let config = SpreadThresholdConfig {
             compare_op: CompareOp::LessThan,
             arb_direction: ArbDirection::Forward,
@@ -296,7 +347,18 @@ impl SpreadFactor {
         mm_threshold: f64,
         mt_threshold: f64,
     ) {
-        let key = (venue1, symbol1.to_string(), venue2, symbol2.to_string());
+        // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
+        let store_venue1 = match venue1 {
+            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            _ => venue1,
+        };
+
+        let key = (
+            store_venue1,
+            symbol1.to_string(),
+            venue2,
+            symbol2.to_string(),
+        );
         let config = SpreadThresholdConfig {
             compare_op: CompareOp::GreaterThan,
             arb_direction: ArbDirection::Forward,
@@ -320,7 +382,18 @@ impl SpreadFactor {
         mm_threshold: f64,
         mt_threshold: f64,
     ) {
-        let key = (venue1, symbol1.to_string(), venue2, symbol2.to_string());
+        // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
+        let store_venue1 = match venue1 {
+            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            _ => venue1,
+        };
+
+        let key = (
+            store_venue1,
+            symbol1.to_string(),
+            venue2,
+            symbol2.to_string(),
+        );
         let config = SpreadThresholdConfig {
             compare_op: CompareOp::LessThan,
             arb_direction: ArbDirection::Backward,
@@ -344,7 +417,18 @@ impl SpreadFactor {
         mm_threshold: f64,
         mt_threshold: f64,
     ) {
-        let key = (venue1, symbol1.to_string(), venue2, symbol2.to_string());
+        // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
+        let store_venue1 = match venue1 {
+            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            _ => venue1,
+        };
+
+        let key = (
+            store_venue1,
+            symbol1.to_string(),
+            venue2,
+            symbol2.to_string(),
+        );
         let config = SpreadThresholdConfig {
             compare_op: CompareOp::LessThan,
             arb_direction: ArbDirection::Backward,
@@ -368,7 +452,18 @@ impl SpreadFactor {
         mm_threshold: f64,
         mt_threshold: f64,
     ) {
-        let key = (venue1, symbol1.to_string(), venue2, symbol2.to_string());
+        // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
+        let store_venue1 = match venue1 {
+            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            _ => venue1,
+        };
+
+        let key = (
+            store_venue1,
+            symbol1.to_string(),
+            venue2,
+            symbol2.to_string(),
+        );
         let config = SpreadThresholdConfig {
             compare_op: CompareOp::GreaterThan,
             arb_direction: ArbDirection::Backward,
@@ -392,7 +487,18 @@ impl SpreadFactor {
         venue2: TradingVenue,
         symbol2: &str,
     ) -> bool {
-        let key = (venue1, symbol1.to_string(), venue2, symbol2.to_string());
+        // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
+        let query_venue1 = match venue1 {
+            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            _ => venue1,
+        };
+
+        let key = (
+            query_venue1,
+            symbol1.to_string(),
+            venue2,
+            symbol2.to_string(),
+        );
         let thresholds = self.thresholds.borrow();
         let current_mode = self.get_mode();
 
@@ -428,7 +534,13 @@ impl SpreadFactor {
         venue2: TradingVenue,
         symbol2: &str,
     ) -> bool {
-        let key = (venue1, symbol1.to_string(), venue2, symbol2.to_string());
+        let query_venue1 = Self::map_venue(venue1);
+        let key = (
+            query_venue1,
+            symbol1.to_string(),
+            venue2,
+            symbol2.to_string(),
+        );
         let thresholds = self.thresholds.borrow();
         let current_mode = self.get_mode();
 
@@ -464,7 +576,13 @@ impl SpreadFactor {
         venue2: TradingVenue,
         symbol2: &str,
     ) -> bool {
-        let key = (venue1, symbol1.to_string(), venue2, symbol2.to_string());
+        let query_venue1 = Self::map_venue(venue1);
+        let key = (
+            query_venue1,
+            symbol1.to_string(),
+            venue2,
+            symbol2.to_string(),
+        );
         let thresholds = self.thresholds.borrow();
         let current_mode = self.get_mode();
 
@@ -500,7 +618,13 @@ impl SpreadFactor {
         venue2: TradingVenue,
         symbol2: &str,
     ) -> bool {
-        let key = (venue1, symbol1.to_string(), venue2, symbol2.to_string());
+        let query_venue1 = Self::map_venue(venue1);
+        let key = (
+            query_venue1,
+            symbol1.to_string(),
+            venue2,
+            symbol2.to_string(),
+        );
         let thresholds = self.thresholds.borrow();
         let current_mode = self.get_mode();
 
@@ -536,7 +660,13 @@ impl SpreadFactor {
         venue2: TradingVenue,
         symbol2: &str,
     ) -> bool {
-        let key = (venue1, symbol1.to_string(), venue2, symbol2.to_string());
+        let query_venue1 = Self::map_venue(venue1);
+        let key = (
+            query_venue1,
+            symbol1.to_string(),
+            venue2,
+            symbol2.to_string(),
+        );
         let thresholds = self.thresholds.borrow();
         let current_mode = self.get_mode();
 
@@ -572,7 +702,13 @@ impl SpreadFactor {
         venue2: TradingVenue,
         symbol2: &str,
     ) -> bool {
-        let key = (venue1, symbol1.to_string(), venue2, symbol2.to_string());
+        let query_venue1 = Self::map_venue(venue1);
+        let key = (
+            query_venue1,
+            symbol1.to_string(),
+            venue2,
+            symbol2.to_string(),
+        );
         let thresholds = self.thresholds.borrow();
         let current_mode = self.get_mode();
 
@@ -597,6 +733,167 @@ impl SpreadFactor {
         }
 
         false
+    }
+
+    /// 获取价差检查详情（用于调试日志）
+    /// 返回 (实际价差值, 阈值, 比较操作, 价差类型)
+    pub fn get_spread_check_detail(
+        &self,
+        venue1: TradingVenue,
+        symbol1: &str,
+        venue2: TradingVenue,
+        symbol2: &str,
+        arb_direction: ArbDirection,
+        operation: OperationType,
+    ) -> Option<(f64, f64, CompareOp, SpreadType)> {
+        // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
+        let query_venue1 = match venue1 {
+            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            _ => venue1,
+        };
+
+        let key = (
+            query_venue1,
+            symbol1.to_string(),
+            venue2,
+            symbol2.to_string(),
+        );
+        let thresholds = self.thresholds.borrow();
+        let current_mode = self.get_mode();
+
+        if let Some(config) = thresholds.get(&key) {
+            if config.arb_direction == arb_direction && config.operation == operation {
+                let value = match config.spread_type {
+                    SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
+                    SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
+                };
+
+                if let Some(v) = value {
+                    let threshold = match current_mode {
+                        FactorMode::MM => config.mm_threshold,
+                        FactorMode::MT => config.mt_threshold,
+                    };
+                    return Some((v, threshold, config.compare_op, config.spread_type));
+                } else {
+                    log::debug!(
+                        "SpreadFactor: 缺少 {:?} 价差数据 ({} {:?} -> {} {:?}), 方向={:?} 操作={:?}",
+                        config.spread_type,
+                        symbol1,
+                        venue1,
+                        symbol2,
+                        venue2,
+                        arb_direction,
+                        operation
+                    );
+                }
+            }
+        } else {
+            log::debug!(
+                "SpreadFactor: 未找到阈值 ({} {:?} -> {} {:?}), 方向={:?} 操作={:?}",
+                symbol1,
+                venue1,
+                symbol2,
+                venue2,
+                arb_direction,
+                operation
+            );
+        }
+
+        None
+    }
+
+    /// 调试：打印所有存储的价差数据
+    pub fn debug_print_stored_spreads(&self, venue1: TradingVenue, venue2: TradingVenue) {
+        // 映射：BinanceMargin -> BinanceSpot，保持与 get_* 查询一致
+        let query_venue1 = Self::map_venue(venue1);
+        let venue_pair = (query_venue1, venue2);
+
+        if query_venue1 != venue1 {
+            log::info!(
+                "=== SpreadFactor 存储数据 ({:?} -> {:?} <-> {:?}) ===",
+                venue1,
+                query_venue1,
+                venue2
+            );
+        } else {
+            log::info!(
+                "=== SpreadFactor 存储数据 ({:?} <-> {:?}) ===",
+                venue1,
+                venue2
+            );
+        }
+
+        let askbid = self.askbid.borrow();
+        if let Some(inner) = askbid.get(&venue_pair) {
+            log::info!("  AskBid spreads: {} 个", inner.len());
+            for (symbol_pair, value) in inner.iter().take(5) {
+                log::info!("    {:?} = {:.6}", symbol_pair, value);
+            }
+
+            // 打印完整的 symbol 列表（用于排查）
+            let mut symbols: Vec<String> = inner
+                .keys()
+                .map(|(s1, s2)| {
+                    if s1 == s2 {
+                        s1.clone()
+                    } else {
+                        format!("{}<->{}", s1, s2)
+                    }
+                })
+                .collect();
+            symbols.sort();
+            log::info!("  完整 Symbol 列表: {}", symbols.join(", "));
+        } else {
+            log::info!("  AskBid spreads: 无数据");
+        }
+
+        let bidask = self.bidask.borrow();
+        if let Some(inner) = bidask.get(&venue_pair) {
+            log::info!("  BidAsk spreads: {} 个", inner.len());
+            for (symbol_pair, value) in inner.iter().take(5) {
+                log::info!("    {:?} = {:.6}", symbol_pair, value);
+            }
+
+            // 打印完整的 symbol 列表（用于排查）
+            let mut symbols: Vec<String> = inner
+                .keys()
+                .map(|(s1, s2)| {
+                    if s1 == s2 {
+                        s1.clone()
+                    } else {
+                        format!("{}<->{}", s1, s2)
+                    }
+                })
+                .collect();
+            symbols.sort();
+            log::info!("  完整 Symbol 列表: {}", symbols.join(", "));
+        } else {
+            log::info!("  BidAsk spreads: 无数据");
+        }
+
+        let spread_rate = self.spread_rate.borrow();
+        if let Some(inner) = spread_rate.get(&venue_pair) {
+            log::info!("  SpreadRate (mid price): {} 个", inner.len());
+            for (symbol_pair, value) in inner.iter().take(5) {
+                log::info!("    {:?} = {:.6}", symbol_pair, value);
+            }
+
+            // 打印完整的 symbol 列表（用于排查）
+            let mut symbols: Vec<String> = inner
+                .keys()
+                .map(|(s1, s2)| {
+                    if s1 == s2 {
+                        s1.clone()
+                    } else {
+                        format!("{}<->{}", s1, s2)
+                    }
+                })
+                .collect();
+            symbols.sort();
+            log::info!("  完整 Symbol 列表: {}", symbols.join(", "));
+        } else {
+            log::info!("  SpreadRate (mid price): 无数据");
+        }
     }
 }
 

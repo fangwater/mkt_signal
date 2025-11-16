@@ -10,7 +10,6 @@ use log::{debug, info, warn};
 use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use tokio::runtime::Builder;
 
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
@@ -23,7 +22,7 @@ use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 
-use super::common::{Quote, ThresholdKey};
+use super::common::{ArbDirection, OperationType, Quote, ThresholdKey};
 use super::funding_rate_factor::FundingRateFactor;
 use super::mkt_channel::MktChannel;
 use super::rate_fetcher::RateFetcher;
@@ -175,18 +174,21 @@ impl FrDecision {
     /// # 事件驱动架构
     /// 决策逻辑采用事件驱动模式，不使用定时轮询。
     /// 调用方应在市场数据更新时主动调用 `make_combined_decision()`。
-    pub fn init_singleton() -> Result<()> {
+    pub async fn init_singleton() -> Result<()> {
         let result: Result<()> = FR_DECISION.with(|cell| {
             if cell.get().is_some() {
                 return Ok(());
             }
-            let decision = Self::new()?;
+            let decision = Self::new_sync()?;
             cell.set(RefCell::new(decision))
                 .map_err(|_| anyhow::anyhow!("Failed to initialize FrDecision singleton"))?;
             info!("FrDecision singleton initialized");
             Ok(())
         });
         result?;
+
+        // 异步加载 min_qty_table
+        Self::refresh_min_qty_async().await;
 
         // 启动 backward 监听任务（处理来自 pre_trade 的查询）
         Self::spawn_backward_listener();
@@ -195,8 +197,8 @@ impl FrDecision {
         Ok(())
     }
 
-    /// 创建新实例（私有）
-    fn new() -> Result<Self> {
+    /// 创建新实例（私有，同步版本）
+    fn new_sync() -> Result<Self> {
         let node_name = NodeName::new("fr_decision")?;
         let node = NodeBuilder::new()
             .name(&node_name)
@@ -219,12 +221,8 @@ impl FrDecision {
         // 默认挂单偏移：万2 到 千1，共5档
         let price_offsets = vec![0.0002, 0.0004, 0.0006, 0.0008, 0.001];
 
-        let mut min_qty_table = MinQtyTable::new();
-        if let Err(err) = Self::refresh_min_qty_blocking(&mut min_qty_table) {
-            warn!(
-                "FrDecision: failed to refresh Binance exchange filters, price_tick may be zero: {err:#}"
-            );
-        }
+        // min_qty_table 将在 init_singleton 中异步加载
+        let min_qty_table = MinQtyTable::new();
 
         Ok(Self {
             signal_pub,
@@ -243,9 +241,22 @@ impl FrDecision {
         })
     }
 
-    fn refresh_min_qty_blocking(table: &mut MinQtyTable) -> Result<()> {
-        let runtime = Builder::new_current_thread().enable_all().build()?;
-        runtime.block_on(table.refresh_binance())
+    /// 异步刷新 min_qty_table
+    async fn refresh_min_qty_async() {
+        let mut table = MinQtyTable::new();
+        match table.refresh_binance().await {
+            Ok(_) => {
+                Self::with_mut(|decision| {
+                    decision.min_qty_table = table;
+                });
+                info!("FrDecision: min_qty_table loaded successfully");
+            }
+            Err(err) => {
+                warn!(
+                    "FrDecision: failed to refresh Binance exchange filters, price_tick may be zero: {err:#}"
+                );
+            }
+        }
     }
 
     /// 创建订阅器（helper）
@@ -311,6 +322,11 @@ impl FrDecision {
         }
         drop(check_symbols); // 释放借用
 
+        info!(
+            "🔍 决策触发: {} ({:?}) <-> {} ({:?})",
+            spot_symbol, spot_venue, futures_symbol, futures_venue
+        );
+
         let spread_factor = SpreadFactor::instance();
         let now = get_timestamp_us();
 
@@ -350,8 +366,7 @@ impl FrDecision {
         }
 
         // 步骤2: 检查信号冷却（ArbOpen/ArbClose 受冷却限制）
-        if self.check_signal_cooldown(spot_symbol, futures_symbol, spot_venue, futures_venue, now)
-        {
+        if self.check_signal_cooldown(spot_symbol, futures_symbol, spot_venue, futures_venue, now) {
             return Ok(None);
         }
 
@@ -360,58 +375,252 @@ impl FrDecision {
 
         // 步骤3: 如果资费没有信号，返回 None
         let fr_signal = match fr_signal {
-            Some(s) => s,
-            None => return Ok(None),
+            Some(s) => {
+                info!("  ✅ FR信号: {:?} ({})", s, futures_symbol);
+                s
+            }
+            None => {
+                info!("  ❌ FR信号: 无满足条件 ({})", futures_symbol);
+                return Ok(None);
+            }
         };
 
         // 步骤4: 根据资费信号验证对应的价差 satisfy
         let final_signal = match fr_signal {
             FrSignal::ForwardOpen => {
-                if spread_factor.satisfy_forward_open(
+                let satisfied = spread_factor.satisfy_forward_open(
                     spot_venue,
                     spot_symbol,
                     futures_venue,
                     futures_symbol,
-                ) {
-                    Some(SignalType::ArbOpen)
+                );
+
+                if let Some((value, threshold, compare_op, spread_type)) = spread_factor
+                    .get_spread_check_detail(
+                        spot_venue,
+                        spot_symbol,
+                        futures_venue,
+                        futures_symbol,
+                        ArbDirection::Forward,
+                        OperationType::Open,
+                    )
+                {
+                    if satisfied {
+                        info!(
+                            "  ✅ 价差检查: ForwardOpen 满足 | {:.6} {:?} {:.6} ({})",
+                            value,
+                            compare_op,
+                            threshold,
+                            spread_type.as_str()
+                        );
+                        Some(SignalType::ArbOpen)
+                    } else {
+                        info!(
+                            "  ❌ 价差检查: ForwardOpen 不满足 | {:.6} {:?} {:.6} ({})",
+                            value,
+                            compare_op,
+                            threshold,
+                            spread_type.as_str()
+                        );
+                        None
+                    }
                 } else {
-                    None
+                    if satisfied {
+                        info!("  ✅ 价差检查: ForwardOpen 满足");
+                        Some(SignalType::ArbOpen)
+                    } else {
+                        info!("  ❌ 价差检查: ForwardOpen 不满足 (无价差数据)");
+                        // 打印盘口数据用于调试
+                        let mkt_channel = MktChannel::instance();
+                        let spot_quote = mkt_channel.get_quote(spot_symbol, spot_venue);
+                        let futures_quote = mkt_channel.get_quote(futures_symbol, futures_venue);
+                        info!(
+                            "    现货盘口({} {:?}): {:?}",
+                            spot_symbol, spot_venue, spot_quote
+                        );
+                        info!(
+                            "    期货盘口({} {:?}): {:?}",
+                            futures_symbol, futures_venue, futures_quote
+                        );
+                        None
+                    }
                 }
             }
             FrSignal::ForwardClose => {
-                if spread_factor.satisfy_forward_close(
+                let satisfied = spread_factor.satisfy_forward_close(
                     spot_venue,
                     spot_symbol,
                     futures_venue,
                     futures_symbol,
-                ) {
-                    Some(SignalType::ArbClose)
+                );
+
+                if let Some((value, threshold, compare_op, spread_type)) = spread_factor
+                    .get_spread_check_detail(
+                        spot_venue,
+                        spot_symbol,
+                        futures_venue,
+                        futures_symbol,
+                        ArbDirection::Forward,
+                        OperationType::Close,
+                    )
+                {
+                    if satisfied {
+                        info!(
+                            "  ✅ 价差检查: ForwardClose 满足 | {:.6} {:?} {:.6} ({})",
+                            value,
+                            compare_op,
+                            threshold,
+                            spread_type.as_str()
+                        );
+                        Some(SignalType::ArbClose)
+                    } else {
+                        info!(
+                            "  ❌ 价差检查: ForwardClose 不满足 | {:.6} {:?} {:.6} ({})",
+                            value,
+                            compare_op,
+                            threshold,
+                            spread_type.as_str()
+                        );
+                        None
+                    }
                 } else {
-                    None
+                    if satisfied {
+                        info!("  ✅ 价差检查: ForwardClose 满足");
+                        Some(SignalType::ArbClose)
+                    } else {
+                        info!("  ❌ 价差检查: ForwardClose 不满足 (无价差数据)");
+                        // 打印盘口数据用于调试
+                        let mkt_channel = MktChannel::instance();
+                        let spot_quote = mkt_channel.get_quote(spot_symbol, spot_venue);
+                        let futures_quote = mkt_channel.get_quote(futures_symbol, futures_venue);
+                        info!(
+                            "    现货盘口({} {:?}): {:?}",
+                            spot_symbol, spot_venue, spot_quote
+                        );
+                        info!(
+                            "    期货盘口({} {:?}): {:?}",
+                            futures_symbol, futures_venue, futures_quote
+                        );
+                        None
+                    }
                 }
             }
             FrSignal::BackwardOpen => {
-                if spread_factor.satisfy_backward_open(
+                let satisfied = spread_factor.satisfy_backward_open(
                     spot_venue,
                     spot_symbol,
                     futures_venue,
                     futures_symbol,
-                ) {
-                    Some(SignalType::ArbOpen)
+                );
+
+                if let Some((value, threshold, compare_op, spread_type)) = spread_factor
+                    .get_spread_check_detail(
+                        spot_venue,
+                        spot_symbol,
+                        futures_venue,
+                        futures_symbol,
+                        ArbDirection::Backward,
+                        OperationType::Open,
+                    )
+                {
+                    if satisfied {
+                        info!(
+                            "  ✅ 价差检查: BackwardOpen 满足 | {:.6} {:?} {:.6} ({})",
+                            value,
+                            compare_op,
+                            threshold,
+                            spread_type.as_str()
+                        );
+                        Some(SignalType::ArbOpen)
+                    } else {
+                        info!(
+                            "  ❌ 价差检查: BackwardOpen 不满足 | {:.6} {:?} {:.6} ({})",
+                            value,
+                            compare_op,
+                            threshold,
+                            spread_type.as_str()
+                        );
+                        None
+                    }
                 } else {
-                    None
+                    if satisfied {
+                        info!("  ✅ 价差检查: BackwardOpen 满足");
+                        Some(SignalType::ArbOpen)
+                    } else {
+                        info!("  ❌ 价差检查: BackwardOpen 不满足 (无价差数据)");
+                        // 打印盘口数据用于调试
+                        let mkt_channel = MktChannel::instance();
+                        let spot_quote = mkt_channel.get_quote(spot_symbol, spot_venue);
+                        let futures_quote = mkt_channel.get_quote(futures_symbol, futures_venue);
+                        info!(
+                            "    现货盘口({} {:?}): {:?}",
+                            spot_symbol, spot_venue, spot_quote
+                        );
+                        info!(
+                            "    期货盘口({} {:?}): {:?}",
+                            futures_symbol, futures_venue, futures_quote
+                        );
+                        None
+                    }
                 }
             }
             FrSignal::BackwardClose => {
-                if spread_factor.satisfy_backward_close(
+                let satisfied = spread_factor.satisfy_backward_close(
                     spot_venue,
                     spot_symbol,
                     futures_venue,
                     futures_symbol,
-                ) {
-                    Some(SignalType::ArbClose)
+                );
+
+                if let Some((value, threshold, compare_op, spread_type)) = spread_factor
+                    .get_spread_check_detail(
+                        spot_venue,
+                        spot_symbol,
+                        futures_venue,
+                        futures_symbol,
+                        ArbDirection::Backward,
+                        OperationType::Close,
+                    )
+                {
+                    if satisfied {
+                        info!(
+                            "  ✅ 价差检查: BackwardClose 满足 | {:.6} {:?} {:.6} ({})",
+                            value,
+                            compare_op,
+                            threshold,
+                            spread_type.as_str()
+                        );
+                        Some(SignalType::ArbClose)
+                    } else {
+                        info!(
+                            "  ❌ 价差检查: BackwardClose 不满足 | {:.6} {:?} {:.6} ({})",
+                            value,
+                            compare_op,
+                            threshold,
+                            spread_type.as_str()
+                        );
+                        None
+                    }
                 } else {
-                    None
+                    if satisfied {
+                        info!("  ✅ 价差检查: BackwardClose 满足");
+                        Some(SignalType::ArbClose)
+                    } else {
+                        info!("  ❌ 价差检查: BackwardClose 不满足 (无价差数据)");
+                        // 打印盘口数据用于调试
+                        let mkt_channel = MktChannel::instance();
+                        let spot_quote = mkt_channel.get_quote(spot_symbol, spot_venue);
+                        let futures_quote = mkt_channel.get_quote(futures_symbol, futures_venue);
+                        info!(
+                            "    现货盘口({} {:?}): {:?}",
+                            spot_symbol, spot_venue, spot_quote
+                        );
+                        info!(
+                            "    期货盘口({} {:?}): {:?}",
+                            futures_symbol, futures_venue, futures_quote
+                        );
+                        None
+                    }
                 }
             }
         };
@@ -419,7 +628,10 @@ impl FrDecision {
         // 步骤5: 如果价差不满足，返回 None
         let final_signal = match final_signal {
             Some(s) => s,
-            None => return Ok(None),
+            None => {
+                info!("  ⛔ 最终决策: 价差不满足，无信号");
+                return Ok(None);
+            }
         };
 
         let signal_side = Self::side_from_fr_signal(fr_signal);
@@ -438,8 +650,8 @@ impl FrDecision {
         self.update_last_signal_ts(spot_symbol, futures_symbol, spot_venue, futures_venue, now);
 
         info!(
-            "Combined signal: fr={:?} final={:?} spot={} futures={} (cooldown started)",
-            fr_signal, final_signal, spot_symbol, futures_symbol
+            "  🎯 最终信号: {:?} | FR={:?} | {} <-> {} (冷却已启动)",
+            final_signal, fr_signal, spot_symbol, futures_symbol
         );
 
         Ok(Some(final_signal))
@@ -459,6 +671,18 @@ impl FrDecision {
 
         // 从 RateFetcher 获取该 symbol 的周期
         let period = rate_fetcher.get_period(futures_symbol, futures_venue);
+
+        // 获取实际的费率值用于调试
+        let predicted_fr = rate_fetcher.get_predicted_funding_rate(futures_symbol, futures_venue);
+        let predicted_loan = rate_fetcher.get_predict_loan_rate(futures_symbol, futures_venue);
+
+        info!(
+            "  FR检查: {} period={:?} predicted_fr={:.6}% predicted_loan={:.6}%",
+            futures_symbol,
+            period,
+            predicted_fr.map(|(_, v)| v).unwrap_or(0.0) * 100.0,
+            predicted_loan.map(|(_, v)| v).unwrap_or(0.0) * 100.0
+        );
 
         // 按优先级检查资费信号：close > open
         // 优先级1: 平仓
@@ -613,7 +837,6 @@ impl FrDecision {
             query.strategy_id, hedge_symbol, qty, query.request_seq
         );
     }
-
 
     // ========== 信号发布 ==========
 
@@ -1028,9 +1251,7 @@ impl FrDecision {
             warn!("FrDecision: cooldown_secs=0 无效，忽略更新");
             return;
         }
-        let cooldown_us = cooldown_secs
-            .saturating_mul(1_000_000)
-            .min(i64::MAX as u64);
+        let cooldown_us = cooldown_secs.saturating_mul(1_000_000).min(i64::MAX as u64);
         self.signal_cooldown_us = cooldown_us as i64;
         info!(
             "FrDecision: signal_cooldown 更新为 {}s ({}us)",
@@ -1168,10 +1389,10 @@ impl FrDecision {
                     match decision.backward_sub.receive_msg() {
                         Ok(Some(data)) => {
                             decision.handle_backward_query(data);
-                            true  // 有消息，继续轮询
+                            true // 有消息，继续轮询
                         }
                         Ok(None) => {
-                            false  // 无消息，让出 CPU
+                            false // 无消息，让出 CPU
                         }
                         Err(err) => {
                             warn!("FrDecision: backward_sub 接收错误: {}", err);
@@ -1187,5 +1408,4 @@ impl FrDecision {
             }
         });
     }
-
 }

@@ -179,8 +179,10 @@ impl StrategyParams {
         let spread_factor = SpreadFactor::instance();
         spread_factor.set_mode(self.parse_mode());
 
-        info!("✅ 策略参数已更新: mode={}, amount={:.2}, cooldown={}s",
-            self.mode, self.order_amount, self.signal_cooldown);
+        info!(
+            "✅ 策略参数已更新: mode={}, amount={:.2}, cooldown={}s",
+            self.mode, self.order_amount, self.signal_cooldown
+        );
     }
 }
 

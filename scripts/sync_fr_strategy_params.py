@@ -4,9 +4,10 @@
 """
 将 Funding Rate 策略参数同步到 Redis 并打印。
 
-写入两个 Redis key：
-  1. HASH `fr_strategy_params` - 策略参数（mode, order_amount等）
-  2. String `fr_trade_symbols:binance_um` - 交易对白名单（JSON数组）
+写入 Redis Hash:
+  `fr_strategy_params` - 策略参数（mode, order_amount等）
+
+注意：交易对列表请使用 sync_fr_symbol_lists.py 脚本单独同步。
 
 同步完成后自动打印所有参数。
 
@@ -68,36 +69,6 @@ STRATEGY_PARAMS = {
     "signal_cooldown": "5",
 }
 
-# ========== Symbol Lists ==========
-
-# Binance UM (合约) - 平仓列表
-DUMP_SYMBOLS_UM = [
-    "BTCUSDT",
-    "ETHUSDT",
-]
-
-# Binance UM (合约) - 建仓列表
-TRADE_SYMBOLS_UM = [
-    "BTCUSDT",
-    "ETHUSDT",
-    "SOLUSDT",
-    "BNBUSDT",
-]
-
-# Binance Margin (现货杠杆) - 平仓列表
-DUMP_SYMBOLS_MARGIN = [
-    "BTCUSDT",
-    "ETHUSDT",
-]
-
-# Binance Margin (现货杠杆) - 建仓列表
-TRADE_SYMBOLS_MARGIN = [
-    "BTCUSDT",
-    "ETHUSDT",
-    "SOLUSDT",
-    "BNBUSDT",
-]
-
 # ========== 参数注释（用于打印） ==========
 
 PARAM_COMMENTS: Dict[str, str] = {
@@ -117,41 +88,6 @@ def sync_strategy_params(rds) -> int:
     rds.hset(key, mapping=STRATEGY_PARAMS)
     print(f"✅ 已写入 {len(STRATEGY_PARAMS)} 个参数到 HASH '{key}'")
     return len(STRATEGY_PARAMS)
-
-
-def sync_symbol_lists(rds) -> int:
-    """同步交易对列表到 Redis"""
-    total = 0
-
-    # 1. Binance UM - 平仓列表
-    key = "fr_dump_symbols:binance_um"
-    symbols_json = json.dumps(DUMP_SYMBOLS_UM, ensure_ascii=False)
-    rds.set(key, symbols_json)
-    print(f"✅ 已写入 {len(DUMP_SYMBOLS_UM)} 个交易对到 '{key}'")
-    total += len(DUMP_SYMBOLS_UM)
-
-    # 2. Binance UM - 建仓列表
-    key = "fr_trade_symbols:binance_um"
-    symbols_json = json.dumps(TRADE_SYMBOLS_UM, ensure_ascii=False)
-    rds.set(key, symbols_json)
-    print(f"✅ 已写入 {len(TRADE_SYMBOLS_UM)} 个交易对到 '{key}'")
-    total += len(TRADE_SYMBOLS_UM)
-
-    # 3. Binance Margin - 平仓列表
-    key = "fr_dump_symbols:binance_margin"
-    symbols_json = json.dumps(DUMP_SYMBOLS_MARGIN, ensure_ascii=False)
-    rds.set(key, symbols_json)
-    print(f"✅ 已写入 {len(DUMP_SYMBOLS_MARGIN)} 个交易对到 '{key}'")
-    total += len(DUMP_SYMBOLS_MARGIN)
-
-    # 4. Binance Margin - 建仓列表
-    key = "fr_trade_symbols:binance_margin"
-    symbols_json = json.dumps(TRADE_SYMBOLS_MARGIN, ensure_ascii=False)
-    rds.set(key, symbols_json)
-    print(f"✅ 已写入 {len(TRADE_SYMBOLS_MARGIN)} 个交易对到 '{key}'")
-    total += len(TRADE_SYMBOLS_MARGIN)
-
-    return total
 
 
 def format_number(val: float) -> str:
@@ -231,43 +167,6 @@ def print_strategy_params(rds) -> None:
     print_three_line_table(headers, rows)
 
 
-def print_symbol_list(rds, key: str, title: str) -> None:
-    """打印单个交易对列表"""
-    print(f"\n{title} ({key}):")
-    symbols_json = rds.get(key)
-
-    if not symbols_json:
-        print("  ⚠️  未找到数据")
-        return
-
-    symbols_str = symbols_json.decode('utf-8', 'ignore') if isinstance(symbols_json, bytes) else str(symbols_json)
-
-    try:
-        symbols = json.loads(symbols_str)
-        if isinstance(symbols, list):
-            print(f"  总数: {len(symbols)}")
-            # 分列打印，每行5个
-            for i in range(0, len(symbols), 5):
-                chunk = symbols[i:i+5]
-                print("  " + "  ".join(f"{s:15}" for s in chunk))
-        else:
-            print(f"  格式异常: {symbols_str}")
-    except Exception as e:
-        print(f"  解析失败: {e}")
-        print(f"  原始值: {symbols_str}")
-
-
-def print_all_symbol_lists(rds) -> None:
-    """打印所有交易对列表"""
-    print("\n📊 交易对列表配置:")
-    print("=" * 80)
-
-    print_symbol_list(rds, "fr_dump_symbols:binance_um", "🔴 Binance UM - 平仓列表")
-    print_symbol_list(rds, "fr_trade_symbols:binance_um", "🟢 Binance UM - 建仓列表")
-    print_symbol_list(rds, "fr_dump_symbols:binance_margin", "🔴 Binance Margin - 平仓列表")
-    print_symbol_list(rds, "fr_trade_symbols:binance_margin", "🟢 Binance Margin - 建仓列表")
-
-
 def main() -> int:
     args = parse_args()
     redis = try_import_redis()
@@ -285,13 +184,12 @@ def main() -> int:
 
     # 同步参数
     sync_strategy_params(rds)
-    sync_symbol_lists(rds)
 
     # 打印结果
     print_strategy_params(rds)
-    print_all_symbol_lists(rds)
 
     print("\n✅ 同步完成！")
+    print("\n💡 提示：如需同步交易对列表，请运行: python scripts/sync_fr_symbol_lists.py")
     return 0
 
 

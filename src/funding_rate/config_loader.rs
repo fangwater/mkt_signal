@@ -118,7 +118,7 @@ async fn reload_symbol_list(redis: &RedisSettings) -> Result<()> {
 /// 重载价差阈值
 async fn reload_spread_thresholds(redis: &RedisSettings) -> Result<()> {
     let redis_key = std::env::var("SPREAD_THRESHOLD_REDIS_KEY")
-        .unwrap_or_else(|_| "binance_forward_spread_thresholds".to_string());
+        .unwrap_or_else(|_| "binance_spread_thresholds".to_string());
 
     match RedisClient::connect(redis.clone()).await {
         Ok(mut client) => {

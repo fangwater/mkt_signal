@@ -38,7 +38,10 @@ pub fn load_from_redis(hash_map: HashMap<String, String>) -> Result<()> {
         // 解析 key: "{period}_{direction}_{operation}"
         let parts: Vec<&str> = key.split('_').collect();
         if parts.len() != 3 {
-            warn!("跳过无效的资金费率阈值 key: {} (格式应为 period_direction_operation)", key);
+            warn!(
+                "跳过无效的资金费率阈值 key: {} (格式应为 period_direction_operation)",
+                key
+            );
             continue;
         }
 

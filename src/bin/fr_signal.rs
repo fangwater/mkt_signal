@@ -50,12 +50,19 @@ async fn run(cfg: Config, token: CancellationToken) -> Result<()> {
     SymbolList::init_singleton()?;
     MktChannel::init_singleton()?;
     RateFetcher::init_singleton()?;
-    FrDecision::init_singleton()?;
+    FrDecision::init_singleton().await?;
     info!("所有单例初始化完成");
 
     // SpreadFactor 和 FundingRateFactor 会在首次访问时自动初始化
-    let _ = SpreadFactor::instance();
+    let spread_factor = SpreadFactor::instance();
     let _ = FundingRateFactor::instance();
+
+    // 调试：延迟2秒后打印价差数据（等待盘口数据）
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    spread_factor.debug_print_stored_spreads(
+        mkt_signal::signal::common::TradingVenue::BinanceMargin,
+        mkt_signal::signal::common::TradingVenue::BinanceUm,
+    );
 
     // 2️⃣ 立即加载所有配置（策略参数、符号列表、阈值等）
     info!("加载所有配置...");
