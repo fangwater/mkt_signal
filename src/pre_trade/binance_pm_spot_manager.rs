@@ -24,7 +24,6 @@ pub struct BinancePmSpotAccountManager {
     api_key: String,
     api_secret: String,
     recv_window_ms: u64,
-    asset_filter: Option<String>,
     state: Rc<RefCell<SpotAccountState>>, // 单线程内共享
 }
 
@@ -136,7 +135,6 @@ impl BinancePmSpotAccountManager {
         api_key: impl Into<String>,
         api_secret: impl Into<String>,
         recv_window_ms: u64,
-        asset_filter: Option<String>,
     ) -> Self {
         let client = Client::new();
         let rest_base = rest_base.into();
@@ -147,7 +145,6 @@ impl BinancePmSpotAccountManager {
             api_key: api_key.into(),
             api_secret: api_secret.into(),
             recv_window_ms,
-            asset_filter: asset_filter.map(|x| x.to_uppercase()),
             state: Rc::new(RefCell::new(SpotAccountState::default())),
         }
     }
@@ -395,9 +392,6 @@ impl BinancePmSpotAccountManager {
         if self.recv_window_ms > 0 {
             params.insert("recvWindow".to_string(), self.recv_window_ms.to_string());
         }
-        if let Some(asset) = &self.asset_filter {
-            params.insert("asset".to_string(), asset.clone());
-        }
 
         let query = build_query(&params);
         let signature = self.sign_query(&query)?;
@@ -448,6 +442,7 @@ impl BinancePmSpotAccountManager {
                     None
                 }
             })
+            .filter(|balance: &BinanceSpotBalance| balance.asset.to_uppercase() != "USDT")
             .collect();
 
         if balances.is_empty() {
@@ -458,16 +453,6 @@ impl BinancePmSpotAccountManager {
             balances,
             fetched_at: Utc::now(),
         };
-
-        if let Some(asset) = &self.asset_filter {
-            if snapshot
-                .balances
-                .iter()
-                .all(|b| b.asset.to_uppercase() != *asset)
-            {
-                warn!("balance snapshot missing requested asset {}", asset);
-            }
-        }
 
         debug!(
             "fetched Binance PM balance snapshot: assets={}",

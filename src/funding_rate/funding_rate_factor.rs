@@ -81,6 +81,18 @@ impl FundingRateFactor {
         *self.current_mode.borrow()
     }
 
+    /// 获取指定方向和操作的阈值配置
+    pub fn get_threshold_config(
+        &self,
+        period: FundingRatePeriod,
+        direction: ArbDirection,
+        operation: OperationType,
+    ) -> Option<FrThresholdConfig> {
+        let mode = self.get_mode();
+        let key = (period, mode, operation, direction);
+        self.thresholds.borrow().get(&key).cloned()
+    }
+
     // ===== 4个 update 函数 =====
 
     /// 更新正套开仓阈值

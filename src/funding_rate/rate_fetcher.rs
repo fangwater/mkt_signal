@@ -17,6 +17,10 @@ use tokio::time::{sleep, Duration};
 
 type HmacSha256 = Hmac<Sha256>;
 
+use super::common::{ArbDirection, OperationType};
+use super::funding_rate_factor::FundingRateFactor;
+use super::mkt_channel::MktChannel;
+use super::spread_factor::SpreadFactor;
 use super::symbol_list::SymbolList;
 use crate::signal::common::TradingVenue;
 
@@ -327,6 +331,8 @@ impl RateFetcher {
                 now.format("%H:%M:%S"),
                 online_symbols.len()
             );
+            // 打印信号状态表
+            Self::print_signal_table(&online_symbols);
         }
 
         // 决定要拉取的 symbol 列表
@@ -573,6 +579,111 @@ impl RateFetcher {
         }
 
         info!("└───────────────────────────────────────────────────────────┘");
+    }
+
+    /// 打印信号状态表（带阈值对比）
+    fn print_signal_table(symbols: &[String]) {
+        let fr_factor = FundingRateFactor::instance();
+        let spread_factor = SpreadFactor::instance();
+        let rate_fetcher = Self::instance();
+        let mkt_channel = MktChannel::instance();
+
+        // 先打印 FR 阈值配置
+        let period = BINANCE_CONFIG.period;
+        let fwd_open_config = fr_factor.get_threshold_config(period, ArbDirection::Forward, OperationType::Open);
+        let fwd_close_config = fr_factor.get_threshold_config(period, ArbDirection::Forward, OperationType::Close);
+        let bwd_open_config = fr_factor.get_threshold_config(period, ArbDirection::Backward, OperationType::Open);
+        let bwd_close_config = fr_factor.get_threshold_config(period, ArbDirection::Backward, OperationType::Close);
+
+        info!("FR 阈值配置:");
+        if let Some(cfg) = &fwd_open_config {
+            info!("  ForwardOpen:   预测FR {:?} {:.4}%", cfg.compare_op, cfg.threshold * 100.0);
+        }
+        if let Some(cfg) = &fwd_close_config {
+            info!("  ForwardClose:  当前FR_MA {:?} {:.4}%", cfg.compare_op, cfg.threshold * 100.0);
+        }
+        if let Some(cfg) = &bwd_open_config {
+            info!("  BackwardOpen:  预测FR+Loan {:?} {:.4}%", cfg.compare_op, cfg.threshold * 100.0);
+        }
+        if let Some(cfg) = &bwd_close_config {
+            info!("  BackwardClose: 当前FR_MA+Loan {:?} {:.4}%", cfg.compare_op, cfg.threshold * 100.0);
+        }
+        info!("");
+
+        let mut table_data: Vec<_> = symbols
+            .iter()
+            .map(|symbol| {
+                let period = rate_fetcher.get_period(symbol, BINANCE_CONFIG.venue);
+
+                // 获取 FR、Loan、FR_MA 值
+                let fr = rate_fetcher.get_predicted_funding_rate(symbol, BINANCE_CONFIG.venue)
+                    .map(|(_, v)| v).unwrap_or(0.0);
+                let loan = rate_fetcher.get_predict_loan_rate(symbol, BINANCE_CONFIG.venue)
+                    .map(|(_, v)| v).unwrap_or(0.0);
+                let fr_ma = mkt_channel.get_funding_rate_mean(symbol, BINANCE_CONFIG.venue)
+                    .unwrap_or(0.0);
+                let fr_loan = fr + loan;
+                let fr_ma_loan = fr_ma + loan;
+
+                // 检查 FR 信号
+                let fr_signal = if fr_factor.satisfy_forward_close(symbol, period, BINANCE_CONFIG.venue) {
+                    "FwdClose"
+                } else if fr_factor.satisfy_backward_close(symbol, period, BINANCE_CONFIG.venue) {
+                    "BwdClose"
+                } else if fr_factor.satisfy_forward_open(symbol, period) {
+                    "FwdOpen"
+                } else if fr_factor.satisfy_backward_open(symbol, period) {
+                    "BwdOpen"
+                } else {
+                    "-"
+                };
+
+                // 检查 Spread 信号
+                let spread_signal = if spread_factor.satisfy_forward_cancel(
+                    TradingVenue::BinanceMargin, symbol, BINANCE_CONFIG.venue, symbol,
+                ) {
+                    "FwdCancel"
+                } else if spread_factor.satisfy_backward_cancel(
+                    TradingVenue::BinanceMargin, symbol, BINANCE_CONFIG.venue, symbol,
+                ) {
+                    "BwdCancel"
+                } else if spread_factor.satisfy_forward_close(
+                    TradingVenue::BinanceMargin, symbol, BINANCE_CONFIG.venue, symbol,
+                ) {
+                    "FwdClose"
+                } else if spread_factor.satisfy_backward_close(
+                    TradingVenue::BinanceMargin, symbol, BINANCE_CONFIG.venue, symbol,
+                ) {
+                    "BwdClose"
+                } else if spread_factor.satisfy_forward_open(
+                    TradingVenue::BinanceMargin, symbol, BINANCE_CONFIG.venue, symbol,
+                ) {
+                    "FwdOpen"
+                } else if spread_factor.satisfy_backward_open(
+                    TradingVenue::BinanceMargin, symbol, BINANCE_CONFIG.venue, symbol,
+                ) {
+                    "BwdOpen"
+                } else {
+                    "-"
+                };
+
+                (symbol.clone(), fr, fr_ma, loan, fr_loan, fr_ma_loan, fr_signal, spread_signal)
+            })
+            .collect();
+        table_data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
+        info!("┌──────────────────────────────────────────────────────────────────────────────────────────────┐");
+        info!("│ Symbol         │ 预测FR% │ FR_MA% │ Loan% │ FR+Loan% │ MA+Loan% │ FR Sig     │ Spread Sig │");
+        info!("├──────────────────────────────────────────────────────────────────────────────────────────────┤");
+
+        for (symbol, fr, fr_ma, loan, fr_loan, fr_ma_loan, fr_sig, spread_sig) in table_data {
+            info!(
+                "│ {:<14} │ {:>7.3} │ {:>6.3} │ {:>5.3} │ {:>8.3} │ {:>8.3} │ {:<10} │ {:<10} │",
+                symbol, fr * 100.0, fr_ma * 100.0, loan * 100.0, fr_loan * 100.0, fr_ma_loan * 100.0, fr_sig, spread_sig
+            );
+        }
+
+        info!("└──────────────────────────────────────────────────────────────────────────────────────────────┘");
     }
 
     // ==================== 公开接口（仅2个）====================

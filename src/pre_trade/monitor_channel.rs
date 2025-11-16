@@ -265,7 +265,6 @@ impl MonitorChannel {
     /// # 环境变量
     /// - `BINANCE_API_KEY`: Binance API Key（必需）
     /// - `BINANCE_API_SECRET`: Binance API Secret（必需）
-    /// - `SPOT_ASSET_FILTER`: 可选，过滤特定现货资产（如 "USDT"）
     ///
     /// # 错误
     /// - API 凭证未设置
@@ -297,17 +296,11 @@ impl MonitorChannel {
         log_um_positions(&um_snapshot.positions);
 
         // 初始化 Spot 现货管理器（使用相同的 PM 账户凭证）
-        let asset_filter = std::env::var("SPOT_ASSET_FILTER")
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty());
-
         let spot_manager = BinancePmSpotAccountManager::new(
             rest_base,
             api_key,
             api_secret,
             recv_window_ms,
-            asset_filter,
         );
         let spot_snapshot = spot_manager
             .init()
@@ -327,7 +320,6 @@ impl MonitorChannel {
                 .init(&price_symbols)
                 .await
                 .context("failed to load initial price table")?;
-            log_price_table(&table.snapshot());
         }
 
         // 创建 ExposureManager（基于初始快照）
@@ -1120,16 +1112,16 @@ fn refresh_exposures(
 
 fn log_um_positions(positions: &[BinanceUmPosition]) {
     if positions.is_empty() {
-        info!("Binance UM account initialized: no open positions");
+        debug!("Binance UM account initialized: no open positions");
         return;
     }
-    info!(
+    debug!(
         "Binance UM account initialized: {} positions",
         positions.len()
     );
     for pos in positions {
         if pos.position_amt.abs() > 1e-8 {
-            info!(
+            debug!(
                 "  UM position: {} amt={:.8} entry={:.4} upnl={:.4}",
                 pos.symbol, pos.position_amt, pos.entry_price, pos.unrealized_profit
             );
@@ -1139,10 +1131,10 @@ fn log_um_positions(positions: &[BinanceUmPosition]) {
 
 fn log_spot_balances(balances: &[BinanceSpotBalance]) {
     if balances.is_empty() {
-        info!("Binance Spot account initialized: no balances");
+        debug!("Binance Spot account initialized: no balances");
         return;
     }
-    info!(
+    debug!(
         "Binance Spot account initialized: {} assets",
         balances.len()
     );
@@ -1150,7 +1142,7 @@ fn log_spot_balances(balances: &[BinanceSpotBalance]) {
         let total_balance = bal.total_wallet_balance;
         let net_asset = bal.net_asset();
         if total_balance.abs() > 1e-8 || net_asset.abs() > 1e-8 {
-            info!(
+            debug!(
                 "  Spot balance: {} total={:.8} net={:.8} (margin_free={:.8} margin_locked={:.8})",
                 bal.asset, total_balance, net_asset, bal.cross_margin_free, bal.cross_margin_locked
             );
@@ -1334,29 +1326,6 @@ fn collect_price_symbols(
     }
 }
 
-/// 打印价格表日志
-fn log_price_table(entries: &BTreeMap<String, PriceEntry>) {
-    if entries.is_empty() {
-        warn!("未获取到标记价格数据");
-        return;
-    }
-
-    let rows: Vec<Vec<String>> = entries
-        .values()
-        .map(|entry| {
-            vec![
-                entry.symbol.clone(),
-                fmt_decimal(entry.mark_price),
-                fmt_decimal(entry.index_price),
-                entry.update_time.to_string(),
-            ]
-        })
-        .collect();
-
-    let table =
-        render_three_line_table(&["Symbol", "MarkPrice", "IndexPrice", "UpdateTime"], &rows);
-    info!("标记价格表\n{}", table);
-}
 
 /// 分发 ExecutionReport 到相应的策略
 fn dispatch_execution_report(

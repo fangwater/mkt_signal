@@ -20,7 +20,7 @@ async fn main() -> Result<()> {
 
     info!("pre_trade starting");
     info!("Required env vars: BINANCE_API_KEY, BINANCE_API_SECRET");
-    info!("Optional env vars: SPOT_ASSET_FILTER, REDIS_URL");
+    info!("Optional env vars: REDIS_URL");
 
     let local = tokio::task::LocalSet::new();
     local
