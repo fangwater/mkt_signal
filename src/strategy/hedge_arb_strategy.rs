@@ -196,16 +196,18 @@ impl HedgeArbStrategy {
                 aligned_price,
                 ts,
             );
-        log::info!(
-            "created open order with client_order_id: {}",
-            client_order_id
+        info!(
+            "📤 开仓订单已创建: strategy_id={} order_id={} client_order_id={} symbol={} {:?} side={:?} qty={:.4} price={:.6}",
+            self.strategy_id, order_id, client_order_id, symbol, venue,
+            Side::from_u8(ctx.side).unwrap(), aligned_qty, aligned_price
         );
 
         // 9、推送开仓订单到交易引擎
         if let Err(e) = self.create_and_send_order(client_order_id, "开仓", &symbol) {
-            error!("HedgeArbStrategy: strategy_id={} {}", self.strategy_id, e);
+            error!("❌ 开仓订单发送失败: strategy_id={} {}", self.strategy_id, e);
             return;
         }
+        info!("✅ 开仓订单已发送: strategy_id={} client_order_id={}", self.strategy_id, client_order_id);
     }
 
     // 收到对冲信号，按照需求进行maker对冲，或者直接taker对冲
@@ -1025,28 +1027,25 @@ impl HedgeArbStrategy {
         if order_id == self.open_order_id {
             // 开仓成交，更新累计开仓量, 打印成交量
             self.cumulative_open_qty = trade.cumulative_filled_quantity();
-            debug!(
-                "HedgeArbStrategy: strategy_id={} 开仓订单成交 order_id={} 成交量={:.8} 开仓量/已对冲量={:.8}/{:.8}",
-                self.strategy_id,
-                order_id,
-                trade.quantity(),
-                self.cumulative_open_qty, self.cumulative_hedged_qty);
+            info!(
+                "💰 开仓成交: strategy_id={} order_id={} symbol={} price={:.6} qty={:.4} cumulative={:.4} | 已对冲={:.4}",
+                self.strategy_id, order_id, self.symbol,
+                trade.price(), trade.quantity(), self.cumulative_open_qty, self.cumulative_hedged_qty
+            );
             self.process_open_leg_trade(trade);
         } else if self.hedge_order_ids.contains(&order_id) {
             // 对冲侧成交，增加累计对冲量
             self.cumulative_hedged_qty = trade.quantity();
-            debug!(
-                "HedgeArbStrategy: strategy_id={} 对冲订单成交 order_id={} 成交量={:.8} 开仓量/已对冲量={:.8}/{:.8}",
-                self.strategy_id,
-                order_id,
-                trade.quantity(),
-                self.cumulative_open_qty,
-                self.cumulative_hedged_qty);
+            info!(
+                "🛡️ 对冲成交: strategy_id={} order_id={} symbol={} price={:.6} qty={:.4} | 开仓量={:.4} 已对冲={:.4}",
+                self.strategy_id, order_id, self.hedge_symbol,
+                trade.price(), trade.quantity(), self.cumulative_open_qty, self.cumulative_hedged_qty
+            );
             self.process_hedge_leg_trade(trade);
         } else {
             // 非法成交，忽略
             warn!(
-                "HedgeArbStrategy: strategy_id={} 收到未知订单的成交更新 order_id={}",
+                "⚠️ 收到未知订单成交: strategy_id={} order_id={}",
                 self.strategy_id, order_id
             );
         }
@@ -1062,18 +1061,36 @@ impl HedgeArbStrategy {
                 order.status = OrderExecutionStatus::Create;
                 order.set_exchange_order_id(order_update.order_id());
                 order.set_create_time(order_update.event_time());
+                info!(
+                    "✅ 订单已挂单: strategy_id={} client_order_id={} exchange_order_id={} symbol={} side={:?} price={:.6} qty={:.4}",
+                    self.strategy_id, client_order_id, order_update.order_id(),
+                    order.symbol, order.side, order.price, order.quantity
+                );
             }
             OrderStatus::Canceled => {
                 order.status = OrderExecutionStatus::Cancelled;
                 order.set_end_time(order_update.event_time());
+                info!(
+                    "🚫 订单已撤销: strategy_id={} client_order_id={} exchange_order_id={} symbol={} filled={:.4}/{:.4}",
+                    self.strategy_id, client_order_id, order_update.order_id(),
+                    order.symbol, order.cumulative_filled_quantity, order.quantity
+                );
             }
             OrderStatus::Expired => {
                 order.status = OrderExecutionStatus::Rejected;
                 order.set_end_time(order_update.event_time());
+                warn!(
+                    "⏰ 订单已过期: strategy_id={} client_order_id={} exchange_order_id={} symbol={}",
+                    self.strategy_id, client_order_id, order_update.order_id(), order.symbol
+                );
             }
             OrderStatus::ExpiredInMatch => {
                 order.status = OrderExecutionStatus::Rejected;
                 order.set_end_time(order_update.event_time());
+                warn!(
+                    "⏰ 订单匹配中过期: strategy_id={} client_order_id={} exchange_order_id={} symbol={}",
+                    self.strategy_id, client_order_id, order_update.order_id(), order.symbol
+                );
             }
             _ => {
                 panic!(

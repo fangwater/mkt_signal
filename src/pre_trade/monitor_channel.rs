@@ -964,8 +964,8 @@ impl MonitorChannel {
     pub fn get_position_qty(&self, symbol: &str, venue: TradingVenue) -> f64 {
         Self::with_inner(|inner| {
             match venue {
-                TradingVenue::BinanceUm | TradingVenue::BinanceMargin => {
-                    // 查询合约头寸（带符号）
+                TradingVenue::BinanceUm => {
+                    // 查询 UM 合约头寸（带符号）
                     if let Some(snapshot) = inner.um_manager.borrow().snapshot() {
                         snapshot
                             .positions
@@ -977,13 +977,20 @@ impl MonitorChannel {
                         0.0
                     }
                 }
-                TradingVenue::BinanceSpot => {
-                    // 查询现货余额（带符号）
+                TradingVenue::BinanceMargin | TradingVenue::BinanceSpot => {
+                    // 查询 Margin/Spot 余额（带符号）
+                    // 需要从 symbol（如 "ILVUSDT"）中提取 base asset（如 "ILV"）
+                    let base_asset = symbol
+                        .trim_end_matches("USDT")
+                        .trim_end_matches("USDC")
+                        .trim_end_matches("BUSD")
+                        .trim_end_matches("FDUSD");
+
                     if let Some(snapshot) = inner.spot_manager.borrow().snapshot() {
                         snapshot
                             .balances
                             .iter()
-                            .find(|b| b.asset.eq_ignore_ascii_case(symbol))
+                            .find(|b| b.asset.eq_ignore_ascii_case(base_asset))
                             .map(|b| b.net_asset())
                             .unwrap_or(0.0)
                     } else {

@@ -229,6 +229,18 @@ fn handle_trade_signal(signal: TradeSignal) {
         SignalType::ArbOpen => match ArbOpenCtx::from_bytes(signal.context.clone()) {
             Ok(open_ctx) => {
                 let symbol = open_ctx.get_opening_symbol().to_uppercase();
+                let hedging_symbol = open_ctx.get_hedging_symbol();
+                let side = open_ctx.get_side();
+                let opening_venue = TradingVenue::from_u8(open_ctx.opening_leg.venue).unwrap_or(TradingVenue::BinanceMargin);
+                let hedging_venue = TradingVenue::from_u8(open_ctx.hedging_leg.venue).unwrap_or(TradingVenue::BinanceUm);
+
+                info!(
+                    "🔔 收到 ArbOpen 信号: opening={} {:?} side={:?} price={:.6} hedging={} {:?} | amount={:.4} fr_ma={:.6} pred_fr={:.6} loan={:.6}",
+                    symbol, opening_venue, side, open_ctx.price,
+                    hedging_symbol, hedging_venue,
+                    open_ctx.amount, open_ctx.funding_ma, open_ctx.predicted_funding_rate, open_ctx.loan_rate
+                );
+
                 // 检查限价挂单数量限制
                 if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol) {
                     warn!("ArbOpen: {} 限价挂单数量超限: {}", symbol, e);
@@ -238,10 +250,13 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let mut strategy = HedgeArbStrategy::new(strategy_id, symbol.clone());
                 strategy.handle_signal_with_record(&signal);
                 if strategy.is_active() {
+                    info!("✅ ArbOpen: strategy_id={} {} 已创建并激活", strategy_id, symbol);
                     MonitorChannel::instance()
                         .strategy_mgr()
                         .borrow_mut()
                         .insert(Box::new(strategy));
+                } else {
+                    warn!("⚠️ ArbOpen: strategy_id={} {} 未激活", strategy_id, symbol);
                 }
             }
             Err(err) => warn!("failed to decode ArbOpen context: {err}"),
@@ -342,11 +357,15 @@ fn handle_trade_signal(signal: TradeSignal) {
             Ok(cancel_ctx) => {
                 let symbol = cancel_ctx.get_opening_symbol().to_uppercase();
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-                let candidate_ids: Vec<i32> = strategy_mgr
-                    .borrow()
-                    .ids_for_symbol(&symbol)
-                    .map(|set| set.iter().copied().collect())
-                    .unwrap_or_default();
+
+                // 使用代码块限制借用作用域，确保在进入循环前释放
+                let candidate_ids: Vec<i32> = {
+                    strategy_mgr
+                        .borrow()
+                        .ids_for_symbol(&symbol)
+                        .map(|set| set.iter().copied().collect())
+                        .unwrap_or_default()
+                };
 
                 if candidate_ids.is_empty() {
                     return;
@@ -363,6 +382,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                         }
                     }
                 }
+                drop(strategy_mgr);
             }
             Err(err) => warn!("failed to decode ArbCancel context: {err}"),
         },
