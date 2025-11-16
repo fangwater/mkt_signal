@@ -277,6 +277,10 @@ impl FrDecision {
         let service = node
             .service_builder(&ServiceName::new(&service_name)?)
             .publish_subscribe::<[u8; SIGNAL_PAYLOAD]>()
+            .max_publishers(1)
+            .max_subscribers(32)
+            .history_size(128)
+            .subscriber_max_buffer_size(256)
             .open_or_create()?;
 
         let subscriber = service.subscriber_builder().create()?;

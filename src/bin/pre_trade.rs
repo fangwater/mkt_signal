@@ -14,7 +14,7 @@ use std::rc::Rc;
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     if std::env::var("RUST_LOG").is_err() {
-        std::env::set_var("RUST_LOG", "debug");
+        std::env::set_var("RUST_LOG", "info");
     }
     env_logger::init();
 
@@ -47,10 +47,10 @@ async fn main() -> Result<()> {
 
             // 4. 初始化 SignalChannel
             info!("Initializing SignalChannel singleton...");
-            if let Err(err) = SignalChannel::initialize("pre_trade", Some("signal_query")) {
+            if let Err(err) = SignalChannel::initialize("funding_rate_signal", Some("signal_query")) {
                 warn!("Failed to initialize SignalChannel: {err:#}");
             } else {
-                info!("SignalChannel initialized on channel: pre_trade");
+                info!("SignalChannel initialized on channel: funding_rate_signal");
             } 
 
             // 5. 初始化 ResampleChannel
