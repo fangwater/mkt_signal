@@ -13,7 +13,7 @@ use bytes::Bytes;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{debug, info, warn};
+use log::{info, warn};
 use std::cell::OnceCell;
 use std::time::Duration;
 
@@ -291,6 +291,12 @@ fn handle_trade_signal(signal: TradeSignal) {
                         return;
                     };
 
+                    info!(
+                        "🔔 收到 ArbClose 信号: opening={} {:?} hedging={} {:?} | side={:?} amount={:.4} price={:.6}",
+                        opening_symbol, opening_venue, hedging_symbol, hedging_venue,
+                        close_side, close_ctx.amount, close_ctx.price
+                    );
+
                     let opening_pos =
                         MonitorChannel::instance().get_position_qty(&opening_symbol, opening_venue);
                     let hedging_pos =
@@ -332,7 +338,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                         return;
                     }
 
-                    debug!(
+                    info!(
                         "ArbClose: final_qty={:.6} (closeable={:.6} signal_amount={:.6}) opening_symbol={} opening_pos={:.6} hedging_symbol={} hedging_pos={:.6}",
                         final_qty, closeable_qty, close_ctx.amount, opening_symbol, opening_pos, hedging_symbol, hedging_pos
                     );
@@ -356,6 +362,15 @@ fn handle_trade_signal(signal: TradeSignal) {
         SignalType::ArbCancel => match ArbCancelCtx::from_bytes(signal.context.clone()) {
             Ok(cancel_ctx) => {
                 let symbol = cancel_ctx.get_opening_symbol().to_uppercase();
+                let hedging_symbol = cancel_ctx.get_hedging_symbol();
+                let opening_venue = TradingVenue::from_u8(cancel_ctx.opening_leg.venue).unwrap_or(TradingVenue::BinanceMargin);
+                let hedging_venue = TradingVenue::from_u8(cancel_ctx.hedging_leg.venue).unwrap_or(TradingVenue::BinanceUm);
+
+                info!(
+                    "🔔 收到 ArbCancel 信号: opening={} {:?} hedging={} {:?}",
+                    symbol, opening_venue, hedging_symbol, hedging_venue
+                );
+
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
 
                 // 使用代码块限制借用作用域，确保在进入循环前释放
@@ -368,17 +383,22 @@ fn handle_trade_signal(signal: TradeSignal) {
                 };
 
                 if candidate_ids.is_empty() {
+                    info!("ArbCancel: 未找到 {} 的活跃策略", symbol);
                     return;
                 }
+                info!("ArbCancel: 找到 {} 个活跃策略: {:?}", candidate_ids.len(), candidate_ids);
                 for strategy_id in candidate_ids {
                     if !strategy_mgr.borrow().contains(strategy_id) {
                         return;
                     }
                     // 取出策略，处理信号，然后放回
                     if let Some(mut strategy) = strategy_mgr.borrow_mut().take(strategy_id) {
+                        info!("ArbCancel: 处理策略 id={}", strategy_id);
                         strategy.handle_signal_with_record(&signal);
                         if strategy.is_active() {
                             strategy_mgr.borrow_mut().insert(strategy);
+                        } else {
+                            info!("ArbCancel: 策略 id={} 已不活跃，不再放回", strategy_id);
                         }
                     }
                 }
@@ -389,15 +409,29 @@ fn handle_trade_signal(signal: TradeSignal) {
         SignalType::ArbHedge => match ArbHedgeCtx::from_bytes(signal.context.clone()) {
             Ok(hedge_ctx) => {
                 let strategy_id = hedge_ctx.strategy_id;
+                let hedging_symbol = hedge_ctx.get_hedging_symbol();
+                let hedging_venue = TradingVenue::from_u8(hedge_ctx.hedging_leg.venue).unwrap_or(TradingVenue::BinanceUm);
+                let hedge_side = hedge_ctx.get_side();
+                let hedge_price = hedge_ctx.get_hedge_price();
+
+                info!(
+                    "🔔 收到 ArbHedge 信号: strategy_id={} hedging={} {:?} | side={:?} qty={:.4} price={:.6} is_maker={}",
+                    strategy_id, hedging_symbol, hedging_venue, hedge_side, hedge_ctx.hedge_qty, hedge_price, hedge_ctx.is_maker()
+                );
+
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
                 if !strategy_mgr.borrow().contains(strategy_id) {
+                    warn!("ArbHedge: 策略 id={} 不存在", strategy_id);
                     return;
                 }
                 // 取出策略，处理信号，然后放回
                 if let Some(mut strategy) = strategy_mgr.borrow_mut().take(strategy_id) {
+                    info!("ArbHedge: 处理策略 id={}", strategy_id);
                     strategy.handle_signal_with_record(&signal);
                     if strategy.is_active() {
                         strategy_mgr.borrow_mut().insert(strategy);
+                    } else {
+                        info!("ArbHedge: 策略 id={} 已不活跃，不再放回", strategy_id);
                     }
                 }
                 drop(strategy_mgr);
