@@ -72,8 +72,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--side-effect",
         dest="side_effect",
-        choices=["AUTO_REPAY", "MARGIN_BUY", "NO_SIDE_EFFECT"],
-        help="Optional sideEffectType",
+        choices=["AUTO_REPAY", "MARGIN_BUY", "NO_SIDE_EFFECT", "AUTO_BORROW_REPAY"],
+        default="AUTO_BORROW_REPAY",
+        help="Optional sideEffectType，默认 AUTO_BORROW_REPAY（自动借币+归还）",
     )
     parser.add_argument(
         "--recv-window",

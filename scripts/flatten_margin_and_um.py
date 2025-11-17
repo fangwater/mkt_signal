@@ -120,9 +120,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--side-effect",
         dest="side_effect",
-        choices=["AUTO_REPAY", "MARGIN_BUY", "NO_SIDE_EFFECT"],
-        default="AUTO_REPAY",
-        help="margin spot 下单 sideEffectType，默认 AUTO_REPAY",
+        choices=["AUTO_REPAY", "MARGIN_BUY", "NO_SIDE_EFFECT", "AUTO_BORROW_REPAY"],
+        default="AUTO_BORROW_REPAY",
+        help="margin spot 下单 sideEffectType，默认 AUTO_BORROW_REPAY（自动借币+归还）",
     )
     parser.add_argument(
         "--um-qty-precision",

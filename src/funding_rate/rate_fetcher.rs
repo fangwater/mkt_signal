@@ -623,16 +623,24 @@ impl RateFetcher {
                 let fr_ma = mkt_channel.get_funding_rate_mean(symbol, BINANCE_CONFIG.venue)
                     .unwrap_or(0.0);
                 let fr_loan = fr + loan;
-                let fr_ma_loan = fr_ma + loan;
 
-                // 检查 FR 信号
-                let fr_signal = if fr_factor.satisfy_forward_close(symbol, period, BINANCE_CONFIG.venue) {
-                    "FwdClose"
-                } else if fr_factor.satisfy_backward_close(symbol, period, BINANCE_CONFIG.venue) {
-                    "BwdClose"
-                } else if fr_factor.satisfy_forward_open(symbol, period) {
+                // 检查 FR 信号（优先级与 decision.rs::get_funding_rate_signal 保持一致）
+                let forward_open = fr_factor.satisfy_forward_open(symbol, period);
+                let forward_close = fr_factor.satisfy_forward_close(symbol, period, BINANCE_CONFIG.venue);
+                let backward_open = fr_factor.satisfy_backward_open(symbol, period);
+                let backward_close = fr_factor.satisfy_backward_close(symbol, period, BINANCE_CONFIG.venue);
+
+                let fr_signal = if forward_close && backward_open {
+                    "BwdOpen"
+                } else if backward_close && forward_open {
                     "FwdOpen"
-                } else if fr_factor.satisfy_backward_open(symbol, period) {
+                } else if forward_close {
+                    "FwdClose"
+                } else if backward_close {
+                    "BwdClose"
+                } else if forward_open {
+                    "FwdOpen"
+                } else if backward_open {
                     "BwdOpen"
                 } else {
                     "-"
@@ -667,19 +675,19 @@ impl RateFetcher {
                     "-"
                 };
 
-                (symbol.clone(), fr, fr_ma, loan, fr_loan, fr_ma_loan, fr_signal, spread_signal)
+                (symbol.clone(), fr, fr_ma, loan, fr_loan, fr_signal, spread_signal)
             })
             .collect();
         table_data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
 
         info!("┌──────────────────────────────────────────────────────────────────────────────────────────────┐");
-        info!("│ Symbol         │ 预测FR% │ FR_MA% │ Loan% │ FR+Loan% │ MA+Loan% │ FR Sig     │ Spread Sig │");
+        info!("│ Symbol         │ 预测FR% │ FR_MA% │ Loan% │ FR+Loan% │ FR Sig     │ Spread Sig │");
         info!("├──────────────────────────────────────────────────────────────────────────────────────────────┤");
 
-        for (symbol, fr, fr_ma, loan, fr_loan, fr_ma_loan, fr_sig, spread_sig) in table_data {
+        for (symbol, fr, fr_ma, loan, fr_loan, fr_sig, spread_sig) in table_data {
             info!(
-                "│ {:<14} │ {:>7.3} │ {:>6.3} │ {:>5.3} │ {:>8.3} │ {:>8.3} │ {:<10} │ {:<10} │",
-                symbol, fr * 100.0, fr_ma * 100.0, loan * 100.0, fr_loan * 100.0, fr_ma_loan * 100.0, fr_sig, spread_sig
+                "│ {:<14} │ {:>7.3} │ {:>6.3} │ {:>5.3} │ {:>8.3} │ {:<10} │ {:<10} │",
+                symbol, fr * 100.0, fr_ma * 100.0, loan * 100.0, fr_loan * 100.0, fr_sig, spread_sig
             );
         }
 

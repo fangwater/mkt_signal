@@ -584,6 +584,8 @@ impl Order {
                 ];
                 let local_create_ts = get_timestamp_us();
                 if self.venue == TradingVenue::BinanceMargin {
+                    //margin order增加参数，sideEffectType设置为AUTO_BORROW_REPAY
+                    params_parts.push("sideEffectType=AUTO_BORROW_REPAY".to_string());
                     //margin下单不支持GTX模式，无论是否要作为maker，都是gtc
                     if self.order_type.is_limit() {
                         params_parts.push("timeInForce=GTC".to_string());
