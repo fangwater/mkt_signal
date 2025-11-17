@@ -1,7 +1,8 @@
 use anyhow::Result;
 use log::{info, warn};
+use mkt_signal::common::redis_client::RedisSettings;
 use mkt_signal::pre_trade::monitor_channel::MonitorChannel;
-use mkt_signal::pre_trade::params_load::PreTradeParams;
+use mkt_signal::pre_trade::params_load::PreTradeParamsLoader;
 use mkt_signal::pre_trade::persist_channel::PersistChannel;
 use mkt_signal::pre_trade::resample_channel::ResampleChannel;
 use mkt_signal::pre_trade::signal_channel::SignalChannel;
@@ -25,14 +26,26 @@ async fn main() -> Result<()> {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            // 1. 初始化 PreTradeParams（从 Redis 加载参数） 
-            info!("Initializing PreTradeParams singleton..."); 
-            if let Err(err) = PreTradeParams::instance().load_from_redis(None).await {
-                warn!("Failed to load pre-trade params from Redis: {err:#}");
+            // 1. 初始化 PreTradeParamsLoader（从 Redis 加载风控参数）
+            info!("Initializing PreTradeParamsLoader singleton...");
+
+            // 使用默认 Redis 设置（127.0.0.1:6379/0）
+            let redis_settings = RedisSettings::default();
+
+            let loader = PreTradeParamsLoader::instance();
+            if let Err(err) = loader.load_from_redis(&redis_settings).await {
+                warn!("Failed to load risk params from Redis: {:#}", err);
                 warn!("Using default parameters");
             } else {
-                info!("PreTradeParams loaded successfully"); 
-            } 
+                info!("Risk parameters loaded successfully");
+            }
+
+            // 打印风控参数三线表
+            loader.print_params_table();
+
+            // 启动后台刷新任务（60s 间隔）
+            PreTradeParamsLoader::start_background_refresh(redis_settings);
+            info!("Background refresh task started (interval: 60s)"); 
 
             // 2. 初始化 StrategyManager
             info!("Initializing StrategyManager...");

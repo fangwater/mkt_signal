@@ -156,7 +156,7 @@ use crate::pre_trade::binance_pm_spot_manager::BinanceSpotBalanceSnapshot;
 use crate::pre_trade::binance_pm_um_manager::BinanceUmAccountSnapshot;
 use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::order_manager::OrderManager;
-use crate::pre_trade::params_load::PreTradeParams;
+use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
 use crate::strategy::order_update::OrderUpdate;
 use bytes::Bytes;
@@ -383,7 +383,7 @@ impl MonitorChannel {
     // 检查杠杆率是否超过配置阈值
     pub fn check_leverage(&self) -> Result<(), String> {
         Self::with_inner(|inner| {
-            let limit = PreTradeParams::instance().max_leverage();
+            let limit = PreTradeParamsLoader::instance().max_leverage();
             if limit <= 0.0 {
                 return Ok(());
             }
@@ -656,7 +656,7 @@ impl MonitorChannel {
     /// 检查当前 symbol 的限价挂单数量
     pub fn check_pending_limit_order(&self, symbol: &str) -> Result<(), String> {
         Self::with_inner(|inner| {
-            let max_pending_limit_orders = PreTradeParams::instance().max_pending_limit_orders();
+            let max_pending_limit_orders = PreTradeParamsLoader::instance().max_pending_limit_orders();
             if max_pending_limit_orders <= 0 {
                 return Ok(());
             }
@@ -681,7 +681,7 @@ impl MonitorChannel {
     /// 检查当前symbol的敞口是否超过总资产比例限制
     pub fn check_symbol_exposure(&self, symbol: &str) -> Result<(), String> {
         Self::with_inner(|inner| {
-            let limit = PreTradeParams::instance().max_symbol_exposure_ratio();
+            let limit = PreTradeParamsLoader::instance().max_symbol_exposure_ratio();
             if limit <= 0.0 {
                 return Ok(());
             }
@@ -759,7 +759,7 @@ impl MonitorChannel {
     /// 检查总敞口是否超过配置阈值
     pub fn check_total_exposure(&self) -> Result<(), String> {
         Self::with_inner(|inner| {
-            let limit = PreTradeParams::instance().max_total_exposure_ratio();
+            let limit = PreTradeParamsLoader::instance().max_total_exposure_ratio();
             if limit <= 0.0 {
                 return Ok(());
             }
@@ -817,7 +817,7 @@ impl MonitorChannel {
         price_hint: f64,
     ) -> Result<(), String> {
         Self::with_inner(|inner| {
-            let max_pos_u = PreTradeParams::instance().max_pos_u();
+            let max_pos_u = PreTradeParamsLoader::instance().max_pos_u();
             if !(max_pos_u > 0.0) {
                 panic!("max_pos_u not set!!");
             }
@@ -1220,7 +1220,7 @@ fn log_exposure_summary(total_equity: f64, total_exposure: f64, total_position: 
         total_position / total_equity
     };
 
-    let max_leverage = PreTradeParams::instance().max_leverage();
+    let max_leverage = PreTradeParamsLoader::instance().max_leverage();
     let leverage_cell = format!("{} / {}", fmt_decimal(leverage), fmt_decimal(max_leverage));
     let table = render_three_line_table(
         &["TotalEquity", "TotalExposure", "Leverage"],

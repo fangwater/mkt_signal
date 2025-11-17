@@ -1,7 +1,7 @@
 use crate::common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::pre_trade::params_load::PreTradeParams;
+use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::signal::resample::{
     PreTradeExposureResampleEntry, PreTradeExposureRow, PreTradePositionResampleEntry,
     PreTradeRiskResampleEntry, PreTradeSpotBalanceRow, PreTradeUmPositionRow,
@@ -212,7 +212,7 @@ impl ResampleChannel {
         let um_unrealized_usd = exposures_mgr.total_um_unrealized();
         drop(exposures_mgr);
 
-        let max_leverage = PreTradeParams::instance().max_leverage();
+        let max_leverage = PreTradeParamsLoader::instance().max_leverage();
 
         let mut published = 0usize;
 
