@@ -498,6 +498,11 @@ impl FrDecision {
     /// 获取资费因子信号
     ///
     /// 通过查询 FundingRateFactor 的 satisfy 方法判断资费信号
+    ///
+    /// # 优先级规则
+    /// 1. 如果同时满足 forward_close 和 backward_open，选择 backward_open
+    /// 2. 如果同时满足 backward_close 和 forward_open，选择 forward_open
+    /// 3. 否则按优先级：close > open
     fn get_funding_rate_signal(
         &self,
         _spot_symbol: &str,
@@ -510,20 +515,35 @@ impl FrDecision {
         // 从 RateFetcher 获取该 symbol 的周期
         let period = rate_fetcher.get_period(futures_symbol, futures_venue);
 
-        // 按优先级检查资费信号：close > open
-        // 优先级1: 平仓
-        if fr_factor.satisfy_forward_close(futures_symbol, period, futures_venue) {
+        // 检查所有条件
+        let forward_open = fr_factor.satisfy_forward_open(futures_symbol, period);
+        let forward_close = fr_factor.satisfy_forward_close(futures_symbol, period, futures_venue);
+        let backward_open = fr_factor.satisfy_backward_open(futures_symbol, period);
+        let backward_close = fr_factor.satisfy_backward_close(futures_symbol, period, futures_venue);
+
+        // 优先级规则1: forward_close 和 backward_open 冲突时，选择 backward_open
+        if forward_close && backward_open {
+            return Ok(Some(FrSignal::BackwardOpen));
+        }
+
+        // 优先级规则2: backward_close 和 forward_open 冲突时，选择 forward_open
+        if backward_close && forward_open {
+            return Ok(Some(FrSignal::ForwardOpen));
+        }
+
+        // 默认优先级: close > open
+        if forward_close {
             return Ok(Some(FrSignal::ForwardClose));
         }
-        if fr_factor.satisfy_backward_close(futures_symbol, period, futures_venue) {
+        if backward_close {
             return Ok(Some(FrSignal::BackwardClose));
         }
 
-        // 优先级2: 开仓
-        if fr_factor.satisfy_forward_open(futures_symbol, period) {
+        // 开仓信号
+        if forward_open {
             return Ok(Some(FrSignal::ForwardOpen));
         }
-        if fr_factor.satisfy_backward_open(futures_symbol, period) {
+        if backward_open {
             return Ok(Some(FrSignal::BackwardOpen));
         }
 
