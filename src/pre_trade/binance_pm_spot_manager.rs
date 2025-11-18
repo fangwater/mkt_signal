@@ -442,11 +442,10 @@ impl BinancePmSpotAccountManager {
                     None
                 }
             })
-            .filter(|balance: &BinanceSpotBalance| balance.asset.to_uppercase() != "USDT")
             .collect();
 
         if balances.is_empty() {
-            return Err(anyhow!("balance snapshot empty after parsing"));
+            warn!("balance snapshot empty after parsing (no positions found)");
         }
 
         let snapshot = BinanceSpotBalanceSnapshot {

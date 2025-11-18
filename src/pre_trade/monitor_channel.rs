@@ -289,11 +289,20 @@ impl MonitorChannel {
             api_secret.clone(),
             recv_window_ms,
         );
-        let um_snapshot = um_manager
-            .init()
-            .await
-            .context("failed to load initial Binance UM snapshot")?;
-        log_um_positions(&um_snapshot.positions);
+        let um_snapshot = match um_manager.init().await {
+            Ok(snapshot) => {
+                log_um_positions(&snapshot.positions);
+                snapshot
+            }
+            Err(err) => {
+                warn!("Failed to load initial Binance UM snapshot: {:#}", err);
+                warn!("Starting with empty UM positions");
+                BinanceUmAccountSnapshot {
+                    positions: vec![],
+                    fetched_at: chrono::Utc::now(),
+                }
+            }
+        };
 
         // 初始化 Spot 现货管理器（使用相同的 PM 账户凭证）
         let spot_manager = BinancePmSpotAccountManager::new(
@@ -302,11 +311,20 @@ impl MonitorChannel {
             api_secret,
             recv_window_ms,
         );
-        let spot_snapshot = spot_manager
-            .init()
-            .await
-            .context("failed to load initial Binance spot snapshot")?;
-        log_spot_balances(&spot_snapshot.balances);
+        let spot_snapshot = match spot_manager.init().await {
+            Ok(snapshot) => {
+                log_spot_balances(&snapshot.balances);
+                snapshot
+            }
+            Err(err) => {
+                warn!("Failed to load initial Binance spot snapshot: {:#}", err);
+                warn!("Starting with empty spot balances");
+                BinanceSpotBalanceSnapshot {
+                    balances: vec![],
+                    fetched_at: chrono::Utc::now(),
+                }
+            }
+        };
 
         // 收集需要的价格符号
         let mut price_symbols: BTreeSet<String> = BTreeSet::new();
