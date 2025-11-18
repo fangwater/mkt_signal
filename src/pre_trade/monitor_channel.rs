@@ -305,12 +305,8 @@ impl MonitorChannel {
         };
 
         // 初始化 Spot 现货管理器（使用相同的 PM 账户凭证）
-        let spot_manager = BinancePmSpotAccountManager::new(
-            rest_base,
-            api_key,
-            api_secret,
-            recv_window_ms,
-        );
+        let spot_manager =
+            BinancePmSpotAccountManager::new(rest_base, api_key, api_secret, recv_window_ms);
         let spot_snapshot = match spot_manager.init().await {
             Ok(snapshot) => {
                 log_spot_balances(&snapshot.balances);
@@ -687,7 +683,8 @@ impl MonitorChannel {
     /// 检查当前 symbol 的限价挂单数量
     pub fn check_pending_limit_order(&self, symbol: &str) -> Result<(), String> {
         Self::with_inner(|inner| {
-            let max_pending_limit_orders = PreTradeParamsLoader::instance().max_pending_limit_orders();
+            let max_pending_limit_orders =
+                PreTradeParamsLoader::instance().max_pending_limit_orders();
             if max_pending_limit_orders <= 0 {
                 return Ok(());
             }
@@ -1289,7 +1286,14 @@ fn log_leverage_detail(
     let leverage_cell = format!("{} / {}", fmt_decimal(leverage), fmt_decimal(max_leverage));
 
     let table = render_three_line_table(
-        &["TotalAsset", "Borrowed", "Interest", "UMUnrealized", "TotalEquity", "Leverage"],
+        &[
+            "TotalAsset",
+            "Borrowed",
+            "Interest",
+            "UMUnrealized",
+            "TotalEquity",
+            "Leverage",
+        ],
         &[vec![
             fmt_decimal(total_spot_value),
             fmt_decimal(total_borrowed),
@@ -1401,7 +1405,6 @@ fn collect_price_symbols(
         set.insert(format!("{}USDT", bal.asset.to_uppercase()));
     }
 }
-
 
 /// 分发 ExecutionReport 到相应的策略
 fn dispatch_execution_report(

@@ -204,10 +204,16 @@ impl HedgeArbStrategy {
 
         // 9、推送开仓订单到交易引擎
         if let Err(e) = self.create_and_send_order(client_order_id, "开仓", &symbol) {
-            error!("❌ 开仓订单发送失败: strategy_id={} {}", self.strategy_id, e);
+            error!(
+                "❌ 开仓订单发送失败: strategy_id={} {}",
+                self.strategy_id, e
+            );
             return;
         }
-        info!("✅ 开仓订单已发送: strategy_id={} client_order_id={}", self.strategy_id, client_order_id);
+        info!(
+            "✅ 开仓订单已发送: strategy_id={} client_order_id={}",
+            self.strategy_id, client_order_id
+        );
     }
 
     // 收到对冲信号，按照需求进行maker对冲，或者直接taker对冲

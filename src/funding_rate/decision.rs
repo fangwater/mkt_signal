@@ -97,7 +97,7 @@ pub struct FrDecision {
     /// Binance 交易对过滤器，用于 price_tick / min_qty 查询
     min_qty_table: MinQtyTable,
 
-    /// 单笔下单数量（单位：base asset）
+    /// 单笔下单名义金额（单位：USDT）
     order_amount: f32,
 
     /// 开仓挂单最长挂单时间（微秒）
@@ -519,7 +519,8 @@ impl FrDecision {
         let forward_open = fr_factor.satisfy_forward_open(futures_symbol, period);
         let forward_close = fr_factor.satisfy_forward_close(futures_symbol, period, futures_venue);
         let backward_open = fr_factor.satisfy_backward_open(futures_symbol, period);
-        let backward_close = fr_factor.satisfy_backward_close(futures_symbol, period, futures_venue);
+        let backward_close =
+            fr_factor.satisfy_backward_close(futures_symbol, period, futures_venue);
 
         // 优先级规则1: forward_close 和 backward_open 冲突时，选择 backward_open
         if forward_close && backward_open {
@@ -884,7 +885,6 @@ impl FrDecision {
         ctx.set_hedging_symbol(futures_symbol);
 
         // 交易参数
-        ctx.amount = self.order_amount;
         ctx.set_side(side);
         ctx.set_order_type(OrderType::Limit);
 
@@ -909,6 +909,8 @@ impl FrDecision {
             .margin_price_tick_by_symbol(spot_symbol)
             .or_else(|| self.min_qty_table.spot_price_tick_by_symbol(spot_symbol))
             .unwrap_or(0.0);
+        let qty = self.convert_order_amount_to_qty(spot_symbol, ctx.price);
+        ctx.amount = qty as f32;
 
         ctx.exp_time = now + self.open_order_ttl_us;
         ctx.create_ts = now;
@@ -943,6 +945,35 @@ impl FrDecision {
             .unwrap_or(0.0);
 
         ctx
+    }
+
+    /// 将 USDT 名义金额转换为下单数量，并对齐最小下单量/步长
+    fn convert_order_amount_to_qty(&self, symbol: &str, price: f64) -> f64 {
+        if !(self.order_amount > 0.0) {
+            warn!(
+                "FrDecision: order_amount <= 0 when building signal for {}, skip",
+                symbol
+            );
+            return 0.0;
+        }
+        if price <= 0.0 {
+            warn!(
+                "FrDecision: price for {} <= 0 when converting order amount, fallback to 0",
+                symbol
+            );
+            return 0.0;
+        }
+
+        let min_qty = self
+            .min_qty_table
+            .margin_min_qty_by_symbol(symbol)
+            .or_else(|| self.min_qty_table.spot_min_qty_by_symbol(symbol));
+        let step = self
+            .min_qty_table
+            .margin_step_by_symbol(symbol)
+            .or_else(|| self.min_qty_table.spot_step_by_symbol(symbol));
+
+        convert_usdt_amount_to_qty(self.order_amount as f64, price, min_qty, step)
     }
 
     fn side_from_fr_signal(fr_signal: FrSignal) -> Side {
@@ -1278,5 +1309,69 @@ impl FrDecision {
                 }
             }
         });
+    }
+}
+
+fn convert_usdt_amount_to_qty(
+    order_amount_u: f64,
+    price: f64,
+    min_qty: Option<f64>,
+    step: Option<f64>,
+) -> f64 {
+    if order_amount_u <= 0.0 || price <= 0.0 {
+        return 0.0;
+    }
+    let mut qty = order_amount_u / price;
+    if let Some(step) = step {
+        qty = align_step_ceil(qty, step);
+    }
+
+    if let Some(min_qty) = min_qty {
+        if min_qty > 0.0 && qty < min_qty {
+            qty = if let Some(step) = step {
+                align_step_ceil(min_qty, step)
+            } else {
+                min_qty
+            };
+        }
+    }
+
+    qty
+}
+
+fn align_step_ceil(value: f64, step: f64) -> f64 {
+    if value <= 0.0 || step <= 0.0 {
+        return value;
+    }
+    let units = (value / step).ceil();
+    units * step
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{align_step_ceil, convert_usdt_amount_to_qty};
+
+    #[test]
+    fn test_convert_usdt_amount_basic() {
+        let qty = convert_usdt_amount_to_qty(100.0, 20.0, None, None);
+        assert!((qty - 5.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_convert_usdt_amount_aligns_step() {
+        let qty = convert_usdt_amount_to_qty(100.0, 3.0, None, Some(0.05));
+        assert!((qty - 33.35).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_convert_usdt_amount_hits_min_qty() {
+        let qty = convert_usdt_amount_to_qty(10.0, 100.0, Some(0.5), Some(0.1));
+        assert!((qty - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_align_step_handles_invalid() {
+        assert_eq!(align_step_ceil(0.0, 0.1), 0.0);
+        assert!((align_step_ceil(1.01, 0.1) - 1.1).abs() < 1e-12);
     }
 }

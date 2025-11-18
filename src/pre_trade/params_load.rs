@@ -116,10 +116,7 @@ impl PreTradeParamsLoader {
             }
         });
 
-        info!(
-            "后台参数刷新任务已启动 (间隔: {}s)",
-            REFRESH_INTERVAL_SECS
-        );
+        info!("后台参数刷新任务已启动 (间隔: {}s)", REFRESH_INTERVAL_SECS);
     }
 
     /// 打印参数三线表

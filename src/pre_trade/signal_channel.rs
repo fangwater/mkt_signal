@@ -231,8 +231,10 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let symbol = open_ctx.get_opening_symbol().to_uppercase();
                 let hedging_symbol = open_ctx.get_hedging_symbol();
                 let side = open_ctx.get_side();
-                let opening_venue = TradingVenue::from_u8(open_ctx.opening_leg.venue).unwrap_or(TradingVenue::BinanceMargin);
-                let hedging_venue = TradingVenue::from_u8(open_ctx.hedging_leg.venue).unwrap_or(TradingVenue::BinanceUm);
+                let opening_venue = TradingVenue::from_u8(open_ctx.opening_leg.venue)
+                    .unwrap_or(TradingVenue::BinanceMargin);
+                let hedging_venue = TradingVenue::from_u8(open_ctx.hedging_leg.venue)
+                    .unwrap_or(TradingVenue::BinanceUm);
 
                 info!(
                     "🔔 收到 ArbOpen 信号: opening={} {:?} side={:?} price={:.6} hedging={} {:?} | amount={:.4} fr_ma={:.6} pred_fr={:.6} loan={:.6}",
@@ -250,7 +252,10 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let mut strategy = HedgeArbStrategy::new(strategy_id, symbol.clone());
                 strategy.handle_signal_with_record(&signal);
                 if strategy.is_active() {
-                    info!("✅ ArbOpen: strategy_id={} {} 已创建并激活", strategy_id, symbol);
+                    info!(
+                        "✅ ArbOpen: strategy_id={} {} 已创建并激活",
+                        strategy_id, symbol
+                    );
                     MonitorChannel::instance()
                         .strategy_mgr()
                         .borrow_mut()
@@ -363,8 +368,10 @@ fn handle_trade_signal(signal: TradeSignal) {
             Ok(cancel_ctx) => {
                 let symbol = cancel_ctx.get_opening_symbol().to_uppercase();
                 let hedging_symbol = cancel_ctx.get_hedging_symbol();
-                let opening_venue = TradingVenue::from_u8(cancel_ctx.opening_leg.venue).unwrap_or(TradingVenue::BinanceMargin);
-                let hedging_venue = TradingVenue::from_u8(cancel_ctx.hedging_leg.venue).unwrap_or(TradingVenue::BinanceUm);
+                let opening_venue = TradingVenue::from_u8(cancel_ctx.opening_leg.venue)
+                    .unwrap_or(TradingVenue::BinanceMargin);
+                let hedging_venue = TradingVenue::from_u8(cancel_ctx.hedging_leg.venue)
+                    .unwrap_or(TradingVenue::BinanceUm);
 
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
 
@@ -382,7 +389,12 @@ fn handle_trade_signal(signal: TradeSignal) {
                 }
                 info!(
                     "ArbCancel: 找到 {} 个活跃策略 {:?}, opening={} {:?} hedging={} {:?}",
-                    candidate_ids.len(), candidate_ids, symbol, opening_venue, hedging_symbol, hedging_venue
+                    candidate_ids.len(),
+                    candidate_ids,
+                    symbol,
+                    opening_venue,
+                    hedging_symbol,
+                    hedging_venue
                 );
                 for strategy_id in candidate_ids {
                     if !strategy_mgr.borrow().contains(strategy_id) {
@@ -407,7 +419,8 @@ fn handle_trade_signal(signal: TradeSignal) {
             Ok(hedge_ctx) => {
                 let strategy_id = hedge_ctx.strategy_id;
                 let hedging_symbol = hedge_ctx.get_hedging_symbol();
-                let hedging_venue = TradingVenue::from_u8(hedge_ctx.hedging_leg.venue).unwrap_or(TradingVenue::BinanceUm);
+                let hedging_venue = TradingVenue::from_u8(hedge_ctx.hedging_leg.venue)
+                    .unwrap_or(TradingVenue::BinanceUm);
                 let hedge_side = hedge_ctx.get_side();
                 let hedge_price = hedge_ctx.get_hedge_price();
 
