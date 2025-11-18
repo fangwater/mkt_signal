@@ -732,11 +732,11 @@ impl MonitorChannel {
                 (entry, total_equity)
             };
 
-            let Some(entry) = entry else {
-                return Err(format!(
-                    "无法获取资产 {} 的敞口信息，无法校验敞口比例",
-                    base_asset
-                ));
+            // 如果没有找到敞口信息，认为是首次开仓，当前敞口为0
+            let net_exposure = if let Some(ref entry) = entry {
+                entry.spot_total_wallet + entry.um_net_position
+            } else {
+                0.0
             };
 
             if total_equity <= f64::EPSILON {
@@ -751,7 +751,6 @@ impl MonitorChannel {
                 snap.get(&sym).map(|e| e.mark_price).unwrap_or(0.0)
             };
 
-            let net_exposure = entry.spot_total_wallet + entry.um_net_position;
             let exposure_usdt = if mark > 0.0 { net_exposure * mark } else { 0.0 };
 
             if mark == 0.0 && net_exposure != 0.0 {
