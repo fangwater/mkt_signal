@@ -366,11 +366,6 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let opening_venue = TradingVenue::from_u8(cancel_ctx.opening_leg.venue).unwrap_or(TradingVenue::BinanceMargin);
                 let hedging_venue = TradingVenue::from_u8(cancel_ctx.hedging_leg.venue).unwrap_or(TradingVenue::BinanceUm);
 
-                info!(
-                    "🔔 收到 ArbCancel 信号: opening={} {:?} hedging={} {:?}",
-                    symbol, opening_venue, hedging_symbol, hedging_venue
-                );
-
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
 
                 // 使用代码块限制借用作用域，确保在进入循环前释放
@@ -383,10 +378,12 @@ fn handle_trade_signal(signal: TradeSignal) {
                 };
 
                 if candidate_ids.is_empty() {
-                    info!("ArbCancel: 未找到 {} 的活跃策略", symbol);
                     return;
                 }
-                info!("ArbCancel: 找到 {} 个活跃策略: {:?}", candidate_ids.len(), candidate_ids);
+                info!(
+                    "ArbCancel: 找到 {} 个活跃策略 {:?}, opening={} {:?} hedging={} {:?}",
+                    candidate_ids.len(), candidate_ids, symbol, opening_venue, hedging_symbol, hedging_venue
+                );
                 for strategy_id in candidate_ids {
                     if !strategy_mgr.borrow().contains(strategy_id) {
                         return;

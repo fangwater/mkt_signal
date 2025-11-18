@@ -348,6 +348,19 @@ impl MonitorChannel {
             // 基于初始价格对总权益/总敞口进行 USDT 计价
             exposure_manager.revalue_with_prices(&snap);
             log_exposures(exposure_manager.exposures(), &snap);
+            log_exposure_summary(
+                exposure_manager.total_equity(),
+                exposure_manager.total_abs_exposure(),
+                exposure_manager.total_position(),
+            );
+            log_leverage_detail(
+                exposure_manager.total_spot_value_usd(),
+                exposure_manager.total_borrowed_usd(),
+                exposure_manager.total_interest_usd(),
+                exposure_manager.total_um_unrealized(),
+                exposure_manager.total_equity(),
+                exposure_manager.total_position(),
+            );
         }
         let exposure_manager = Rc::new(RefCell::new(exposure_manager));
 
@@ -1131,6 +1144,14 @@ fn refresh_exposures(
                 exposures.total_abs_exposure(),
                 exposures.total_position(),
             );
+            log_leverage_detail(
+                exposures.total_spot_value_usd(),
+                exposures.total_borrowed_usd(),
+                exposures.total_interest_usd(),
+                exposures.total_um_unrealized(),
+                exposures.total_equity(),
+                exposures.total_position(),
+            );
         }
     }
 }
@@ -1249,6 +1270,37 @@ fn log_exposure_summary(total_equity: f64, total_exposure: f64, total_position: 
         ]],
     );
     info!("风险指标汇总\n{}", table);
+}
+
+fn log_leverage_detail(
+    total_spot_value: f64,
+    total_borrowed: f64,
+    total_interest: f64,
+    total_um_unrealized: f64,
+    total_equity: f64,
+    total_position: f64,
+) {
+    let leverage = if total_equity.abs() <= f64::EPSILON {
+        0.0
+    } else {
+        total_position / total_equity
+    };
+
+    let max_leverage = PreTradeParamsLoader::instance().max_leverage();
+    let leverage_cell = format!("{} / {}", fmt_decimal(leverage), fmt_decimal(max_leverage));
+
+    let table = render_three_line_table(
+        &["TotalAsset", "Borrowed", "Interest", "UMUnrealized", "TotalEquity", "Leverage"],
+        &[vec![
+            fmt_decimal(total_spot_value),
+            fmt_decimal(total_borrowed),
+            fmt_decimal(total_interest),
+            fmt_decimal(total_um_unrealized),
+            fmt_decimal(total_equity),
+            leverage_cell,
+        ]],
+    );
+    info!("杠杆率详细信息\n{}", table);
 }
 
 fn fmt_decimal(value: f64) -> String {
