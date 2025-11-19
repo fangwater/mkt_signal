@@ -322,7 +322,8 @@ fn handle_trade_signal(signal: TradeSignal) {
                     };
 
                     if !opening_direction_match || !hedging_direction_match {
-                        warn!(
+                        // ArbClose 可能在仓位已经被其他流程平掉后触发，这属于正常情况，只记录信息方便追踪
+                        info!(
                             "ArbClose: position direction mismatch, close_side={:?} opening_symbol={} opening_pos={:.6} hedging_symbol={} hedging_pos={:.6}",
                             close_side, opening_symbol, opening_pos, hedging_symbol, hedging_pos
                         );

@@ -51,7 +51,7 @@ STRATEGY_PARAMS = {
     "mode": "MM",
 
     # 单笔下单量（USDT）
-    "order_amount": "100.0",
+    "order_amount": "30.0",
 
     # 开仓挂单档位（JSON 数组）
     "price_offsets": "[0.0002, 0.0004, 0.0006, 0.0008, 0.001]",
