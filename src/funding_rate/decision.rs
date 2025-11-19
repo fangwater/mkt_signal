@@ -44,6 +44,9 @@ pub const DEFAULT_SIGNAL_CHANNEL: &str = "funding_rate_signal";
 /// 对应 pre_trade/signal_channel.rs 中的 DEFAULT_BACKWARD_CHANNEL
 pub const DEFAULT_BACKWARD_CHANNEL: &str = "signal_query";
 
+/// 临时测试开关：true 表示仅允许正套（Forward），所有反套信号直接禁止
+const FORWARD_ONLY: bool = true;
+
 // ========== 无状态设计 ==========
 // FrDecision 不维护任何状态，所有状态由外部（如 Engine）维护
 
@@ -518,9 +521,14 @@ impl FrDecision {
         // 检查所有条件
         let forward_open = fr_factor.satisfy_forward_open(futures_symbol, period);
         let forward_close = fr_factor.satisfy_forward_close(futures_symbol, period, futures_venue);
-        let backward_open = fr_factor.satisfy_backward_open(futures_symbol, period);
-        let backward_close =
+        let mut backward_open = fr_factor.satisfy_backward_open(futures_symbol, period);
+        let mut backward_close =
             fr_factor.satisfy_backward_close(futures_symbol, period, futures_venue);
+
+        if FORWARD_ONLY {
+            backward_open = false;
+            backward_close = false;
+        }
 
         // 优先级规则1: forward_close 和 backward_open 冲突时，选择 backward_open
         if forward_close && backward_open {
