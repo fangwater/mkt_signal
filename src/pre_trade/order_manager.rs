@@ -600,7 +600,12 @@ impl Order {
                     }
                     //改为双向持仓模式，positionSide不填写，认为是both
                 }
-                let params = Bytes::from(params_parts.join("&"));
+                let params_plain = params_parts.join("&");
+                info!(
+                    "OrderManager: venue={:?} client_order_id={} params={}",
+                    self.venue, self.client_order_id, params_plain
+                );
+                let params = Bytes::from(params_plain);
                 if self.venue == TradingVenue::BinanceMargin {
                     let request = BinanceNewMarginOrderRequest::create(
                         local_create_ts,
