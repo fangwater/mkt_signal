@@ -451,16 +451,20 @@ impl MonitorChannel {
     ) -> Result<(f64, f64), String> {
         Self::with_inner(|inner| {
             match venue {
-                TradingVenue::BinanceUm | TradingVenue::BinanceMargin => {
+                TradingVenue::BinanceUm => {
                     TradingVenue::align_um_order(symbol, raw_qty, raw_price, &inner.min_qty_table)
+                }
+                TradingVenue::BinanceMargin | TradingVenue::BinanceSpot => {
+                    TradingVenue::align_margin_order(
+                        symbol,
+                        raw_qty,
+                        raw_price,
+                        &inner.min_qty_table,
+                    )
                 }
                 TradingVenue::BinanceSwap => {
                     // TODO: 实现 BinanceSwap 的对齐逻辑
                     Err(format!("尚未实现 BinanceSwap 的订单对齐"))
-                }
-                TradingVenue::BinanceSpot => {
-                    // TODO: 实现 BinanceSpot 的对齐逻辑
-                    Err(format!("尚未实现 BinanceSpot 的订单对齐"))
                 }
                 TradingVenue::OkexSwap | TradingVenue::OkexSpot => {
                     // TODO: 实现 Okex 的对齐逻辑

@@ -313,6 +313,81 @@ impl TradingVenue {
         Ok((qty, price))
     }
 
+    /// 针对币安现货/保证金限价单，将数量与价格按照过滤器对齐。
+    /// 现货与逐仓保证金共用一套过滤器，因此统一复用 margin_* 表。
+    pub fn align_margin_order(
+        symbol: &str,
+        raw_qty: f64,
+        raw_price: f64,
+        min_qty_table: &MinQtyTable,
+    ) -> Result<(f64, f64), String> {
+        if raw_qty <= 0.0 {
+            return Err(format!(
+                "symbol={} 原始下单量无效 raw_qty={}",
+                symbol, raw_qty
+            ));
+        }
+        if raw_price <= 0.0 {
+            return Err(format!(
+                "symbol={} 原始价格无效 raw_price={}",
+                symbol, raw_price
+            ));
+        }
+
+        // 1. 价格对齐：币安现货/保证金沿用 spot tick。
+        let price_tick = min_qty_table
+            .margin_price_tick_by_symbol(symbol)
+            .unwrap_or(0.0);
+        let price = if price_tick > 0.0 {
+            align_price_floor(raw_price, price_tick)
+        } else {
+            raw_price
+        };
+        if price <= 0.0 {
+            return Err(format!("symbol={} 对齐后价格无效 price={}", symbol, price));
+        }
+
+        // 2. 数量按 step 对齐。
+        let step = min_qty_table.margin_step_by_symbol(symbol).unwrap_or(0.0);
+        let mut qty = if step > 0.0 {
+            align_price_floor(raw_qty, step)
+        } else {
+            raw_qty
+        };
+
+        // 3. 补齐最小下单量。
+        if let Some(min_qty) = min_qty_table.margin_min_qty_by_symbol(symbol) {
+            if min_qty > 0.0 && qty < min_qty {
+                qty = min_qty;
+            }
+        }
+
+        // 4. 补齐名义金额（部分币对会要求最小 notional）。
+        if let Some(min_notional) = min_qty_table.margin_min_notional_by_symbol(symbol) {
+            if min_notional > 0.0 {
+                let required_qty = min_notional / price;
+                if qty < required_qty {
+                    let before = qty;
+                    qty = if step > 0.0 {
+                        align_price_ceil(required_qty, step)
+                    } else {
+                        required_qty
+                    };
+                    debug!(
+                        "symbol={} 名义金额要求从 {} 调整到 {} (min_notional={}, price={})",
+                        symbol, before, qty, min_notional, price
+                    );
+                }
+            }
+        }
+
+        if qty <= 0.0 {
+            return Err(format!("symbol={} 对齐后数量无效 qty={}", symbol, qty));
+        }
+
+        Ok((qty, price))
+    }
+
     /// 转换为 u8
     pub fn to_u8(self) -> u8 {
         self as u8

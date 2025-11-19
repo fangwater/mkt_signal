@@ -54,8 +54,8 @@ STRATEGY_PARAMS = {
     "order_amount": "30.0",
 
     # 开仓挂单档位（JSON 数组）
-    "price_offsets": "[0.0002, 0.0004, 0.0006, 0.0008, 0.001]",
-
+    # "price_offsets": "[0.0002, 0.0004, 0.0006, 0.0008, 0.001]",
+    "price_offsets": "[0.0002]",
     # 开仓订单超时（秒）
     "open_order_timeout": "120",
 

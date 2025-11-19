@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
 
             // 启动后台刷新任务（60s 间隔）
             PreTradeParamsLoader::start_background_refresh(redis_settings);
-            info!("Background refresh task started (interval: 60s)"); 
+            info!("Background refresh task started (interval: 60s)");
 
             // 2. 初始化 StrategyManager
             info!("Initializing StrategyManager...");
