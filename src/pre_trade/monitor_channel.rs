@@ -163,6 +163,7 @@ use bytes::Bytes;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::thread::AccessError;
 
 // Thread-local 单例存储
 thread_local! {
@@ -210,6 +211,17 @@ impl MonitorChannel {
         })
     }
 
+    fn try_with_inner<F, R>(f: F) -> Result<R, AccessError>
+    where
+        F: FnOnce(&MonitorChannelInner) -> R,
+    {
+        MONITOR_CHANNEL.try_with(|mc| {
+            let mc_ref = mc.borrow();
+            let inner = mc_ref.as_ref().expect("MonitorChannel not initialized");
+            f(inner)
+        })
+    }
+
     /// 获取 min_qty_table 的引用
     pub fn min_qty_table(&self) -> Rc<MinQtyTable> {
         Self::with_inner(|inner| inner.min_qty_table.clone())
@@ -218,6 +230,10 @@ impl MonitorChannel {
     /// 获取 order_manager 的引用
     pub fn order_manager(&self) -> Rc<RefCell<OrderManager>> {
         Self::with_inner(|inner| inner.order_manager.clone())
+    }
+
+    pub fn try_order_manager() -> Option<Rc<RefCell<OrderManager>>> {
+        Self::try_with_inner(|inner| inner.order_manager.clone()).ok()
     }
 
     /// 获取 price_table 的引用
@@ -1207,6 +1223,10 @@ fn log_exposures(entries: &[ExposureEntry], price_map: &BTreeMap<String, PriceEn
     for entry in entries {
         let asset = entry.asset.to_uppercase();
         if asset == "USDT" {
+            continue;
+        }
+        if entry.spot_total_wallet.abs() < 1.0 {
+            // 现货头寸小于 1 时无需打印，避免无意义的零仓位刷屏
             continue;
         }
         let sym = format!("{}USDT", asset);

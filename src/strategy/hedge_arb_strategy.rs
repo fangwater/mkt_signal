@@ -28,6 +28,8 @@ pub struct HedgeArbStrategy {
     pub hedge_venue: TradingVenue,     //对冲侧交易场所
     pub hedge_side: Side,              //对冲侧方向
     pub hedge_request_seq: u32,        //累计对冲请求次数
+    pub hedge_bid0: f64,               //最新对冲侧bid
+    pub hedge_ask0: f64,               //最新对冲侧ask
 }
 
 impl HedgeArbStrategy {
@@ -47,6 +49,8 @@ impl HedgeArbStrategy {
             hedge_venue: TradingVenue::BinanceMargin, // 默认值，将在开仓时更新
             hedge_side: Side::Buy,                    // 默认值，将在开仓时更新
             hedge_request_seq: 0,
+            hedge_bid0: 0.0,
+            hedge_ask0: 0.0,
         };
         strategy
     }
@@ -112,6 +116,12 @@ impl HedgeArbStrategy {
         self.alive_flag = true;
         let ts = get_timestamp_us();
         self.open_timeout_us = Some(ctx.exp_time + ts);
+        // Hedge timeout 为 0 表示 MT 模式，否则为 MM 模式，需转换为绝对时间戳
+        self.hedge_timeout_us = if ctx.hedge_timeout_us > 0 {
+            Some(ts + ctx.hedge_timeout_us)
+        } else {
+            None
+        };
 
         // 保存对冲侧信息
         self.hedge_symbol = ctx.get_hedging_symbol();
@@ -125,6 +135,8 @@ impl HedgeArbStrategy {
         } else {
             Side::Buy
         };
+        self.hedge_bid0 = ctx.hedging_leg.bid0;
+        self.hedge_ask0 = ctx.hedging_leg.ask0;
 
         // 7、根据交易标的物，修正量、价格
         let symbol = ctx.get_opening_symbol();
@@ -216,6 +228,22 @@ impl HedgeArbStrategy {
         );
     }
 
+    fn latest_hedge_quotes(&self) -> Option<(f64, f64)> {
+        if self.hedge_bid0 > 0.0 && self.hedge_ask0 > 0.0 {
+            return Some((self.hedge_bid0, self.hedge_ask0));
+        }
+        let price_table = MonitorChannel::instance().price_table();
+        let price = price_table
+            .borrow()
+            .mark_price(&self.hedge_symbol)
+            .unwrap_or(0.0);
+        if price > 0.0 {
+            Some((price, price))
+        } else {
+            None
+        }
+    }
+
     // 收到对冲信号，按照需求进行maker对冲，或者直接taker对冲
     fn handle_arb_hedge_signal(&mut self, ctx: ArbHedgeCtx) -> Result<(), String> {
         // 1. 确定对冲数量
@@ -233,6 +261,8 @@ impl HedgeArbStrategy {
         let hedge_symbol = ctx.get_hedging_symbol();
         let hedge_venue = TradingVenue::from_u8(ctx.hedging_leg.venue)
             .ok_or_else(|| format!("无效的对冲交易场所: {}", ctx.hedging_leg.venue))?;
+        self.hedge_bid0 = ctx.hedging_leg.bid0;
+        self.hedge_ask0 = ctx.hedging_leg.ask0;
 
         // 3. 使用预交易环境对齐订单量和价格
         // 使用get_hedge_price 函数获取合适的对冲价格
@@ -629,14 +659,27 @@ impl HedgeArbStrategy {
             ArbHedgeCtx::new_taker(self.strategy_id, self.open_order_id, eff_qty, side.to_u8());
 
         // 2. 设置对冲symbol
-        hedge_ctx.set_hedging_symbol(&self.symbol);
+        hedge_ctx.set_hedging_symbol(&self.hedge_symbol);
 
-        // 3. 设置对冲leg（市价单不需要盘口价格，设置为0）
+        // 3. 设置对冲leg，市价单也需要有效价格供风控/名义金额对齐
+        let (bid0, ask0) = match self.latest_hedge_quotes() {
+            Some((bid, ask)) => (bid, ask),
+            None => {
+                let msg = format!(
+                    "strategy_id={} 对冲行情缺失 symbol={} venue={:?}",
+                    self.strategy_id, self.hedge_symbol, venue
+                );
+                error!("HedgeArbStrategy: {}", msg);
+                return Err(msg);
+            }
+        };
         hedge_ctx.hedging_leg = crate::signal::common::TradingLeg {
             venue: venue.to_u8(),
-            bid0: 0.0, // 市价单不需要盘口价格
-            ask0: 0.0, // 市价单不需要盘口价格
+            bid0,
+            ask0,
         };
+        self.hedge_bid0 = bid0;
+        self.hedge_ask0 = ask0;
 
         // 4. 设置市场数据时间戳
         hedge_ctx.market_ts = get_timestamp_us();
@@ -1135,7 +1178,9 @@ impl HedgeArbStrategy {
     }
 
     fn cleanup_strategy_orders(&mut self) {
-        let order_mgr = MonitorChannel::instance().order_manager();
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return;
+        };
         let mut mgr = order_mgr.borrow_mut();
 
         // 检查并清理开仓订单

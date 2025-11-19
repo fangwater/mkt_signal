@@ -192,6 +192,28 @@ impl SignalChannel {
             channel_name
         );
 
+        // pre_trade 刚启动时可能存在大量历史信号，先主动清空队列
+        let mut flushed = 0usize;
+        loop {
+            match subscriber.receive() {
+                Ok(Some(_)) => flushed += 1,
+                Ok(None) => break,
+                Err(err) => {
+                    warn!(
+                        "signal flush failed (channel={}) err={:?}",
+                        channel_name, err
+                    );
+                    break;
+                }
+            }
+        }
+        if flushed > 0 {
+            info!(
+                "signal channel {} flushed {} cached signals before processing new data",
+                channel_name, flushed
+            );
+        }
+
         loop {
             match subscriber.receive() {
                 Ok(Some(sample)) => {

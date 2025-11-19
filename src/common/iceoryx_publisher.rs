@@ -4,7 +4,7 @@ use iceoryx2::service::ipc;
 use log::info;
 
 pub const SIGNAL_PAYLOAD: usize = 4_096;
-pub const RESAMPLE_PAYLOAD: usize = 8_192;
+pub const RESAMPLE_PAYLOAD: usize = 32 * 1024;
 pub const BINANCE_MARGIN_UPDATE_PAYLOAD: usize = SIGNAL_PAYLOAD;
 pub const BINANCE_UM_UPDATE_PAYLOAD: usize = SIGNAL_PAYLOAD;
 
