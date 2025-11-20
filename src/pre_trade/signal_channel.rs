@@ -472,7 +472,8 @@ fn handle_trade_signal(signal: TradeSignal) {
                     return;
                 }
                 // 取出策略，处理信号，然后放回
-                if let Some(mut strategy) = strategy_mgr.borrow_mut().take(strategy_id) {
+                let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
+                if let Some(mut strategy) = strategy_opt {
                     info!("ArbHedge: 处理策略 id={}", strategy_id);
                     strategy.handle_signal_with_record(&signal);
                     if strategy.is_active() {
