@@ -18,8 +18,9 @@ pub struct HedgeArbStrategy {
     pub symbol: String,                //交易的统一symbol (开仓侧symbol)
     pub open_order_id: i64,            //开仓单唯一，报多单对应多个Strategy
     pub hedge_order_ids: Vec<i64>,     //对冲单会产生一个or多个，因为部分成交
-    pub open_timeout_us: Option<i64>,  //开仓单最长挂单时间，超过撤销
-    pub hedge_timeout_us: Option<i64>, //对冲单最长挂单时间，超过撤销，度过是maker-taker模式，则没有这个timeout，设置为None
+    pub open_expire_ts: Option<i64>,   //开仓单挂单截止时间（绝对时间戳）
+    pub hedge_timeout_us: Option<i64>, //对冲单允许的存活时间（微秒），>0 表示 MM，None 表示 MT
+    pub hedge_expire_ts: Option<i64>,  //当前对冲挂单的截止时间（绝对时间戳）
     pub order_seq: u32,                //订单号计数器
     pub cumulative_hedged_qty: f64,    //累计对冲数量
     pub cumulative_open_qty: f64,      //累计开仓数量
@@ -39,8 +40,9 @@ impl HedgeArbStrategy {
             symbol,
             open_order_id: 0,
             hedge_order_ids: Vec::new(),
-            open_timeout_us: None,
+            open_expire_ts: None,
             hedge_timeout_us: None,
+            hedge_expire_ts: None,
             order_seq: 0,
             cumulative_hedged_qty: 0.0,
             cumulative_open_qty: 0.0,
@@ -115,13 +117,18 @@ impl HedgeArbStrategy {
         self.cumulative_open_qty = 0.0;
         self.alive_flag = true;
         let ts = get_timestamp_us();
-        self.open_timeout_us = Some(ctx.exp_time + ts);
-        // Hedge timeout 为 0 表示 MT 模式，否则为 MM 模式，需转换为绝对时间戳
-        self.hedge_timeout_us = if ctx.hedge_timeout_us > 0 {
-            Some(ts + ctx.hedge_timeout_us)
+        self.open_expire_ts = if ctx.exp_time > 0 {
+            Some(ctx.exp_time)
         } else {
             None
         };
+        // Hedge timeout 为 0 表示 MT 模式，>0 为 MM 模式，保存原始 TTL，实际挂单后再换算绝对时间
+        self.hedge_timeout_us = if ctx.hedge_timeout_us > 0 {
+            Some(ctx.hedge_timeout_us)
+        } else {
+            None
+        };
+        self.hedge_expire_ts = None;
 
         // 保存对冲侧信息
         self.hedge_symbol = ctx.get_hedging_symbol();
@@ -343,9 +350,22 @@ impl HedgeArbStrategy {
             return Err(e);
         }
 
-        // 9. 设置对冲超时时间(决定了maker的生效方式)
+        // 9. 设置对冲挂单的截止时间（仅 maker 单需要）
         if ctx.exp_time > 0 {
-            self.hedge_timeout_us = Some(ctx.exp_time + ts);
+            // 设置对冲挂单截止时间，对冲单的截止时间直接在上下文中传入，时间具体来自signal生成时的计算
+            // let mut ctx = ArbHedgeCtx::new_maker(
+            //     query.strategy_id,
+            //     query.client_order_id,
+            //     qty,
+            //     side.to_u8(),
+            //     limit_price,
+            //     price_tick,
+            //     false,
+            //     now + self.hedge_timeout_mm_us,
+            // );
+            self.hedge_expire_ts = Some(ctx.exp_time);
+        } else {
+            self.hedge_expire_ts = None;
         }
 
         debug!(
@@ -528,9 +548,9 @@ impl HedgeArbStrategy {
     // 处理开仓测，超过最长挂单时间
     fn handle_open_leg_timeout(&mut self) {
         // 检查是否设置了超时时间，并且已经超时
-        if let Some(timeout_us) = self.open_timeout_us {
+        if let Some(expire_ts) = self.open_expire_ts {
             let now = get_timestamp_us();
-            if now >= timeout_us && self.alive_flag && self.open_order_id != 0 {
+            if now >= expire_ts && self.alive_flag && self.open_order_id != 0 {
                 info!(
                     "HedgeArbStrategy: strategy_id={} 开仓订单超时，直接撤单 order_id={}",
                     self.strategy_id, self.open_order_id
@@ -557,7 +577,7 @@ impl HedgeArbStrategy {
                                     self.strategy_id, self.open_order_id
                                 );
                                 // 清除超时时间，避免重复发送撤单
-                                self.open_timeout_us = None;
+                                self.open_expire_ts = None;
                             }
                         }
                         Err(e) => {
@@ -574,9 +594,10 @@ impl HedgeArbStrategy {
 
     fn handle_hedge_leg_timeout(&mut self) {
         // 检查是否设置了对冲超时时间
-        if let Some(timeout_us) = self.hedge_timeout_us {
+        // 因此没有处理hedge信号之前，不会检查，会跳过
+        if let Some(expire_ts) = self.hedge_expire_ts {
             let now = get_timestamp_us();
-            if now >= timeout_us {
+            if now >= expire_ts {
                 info!(
                     "HedgeArbStrategy: strategy_id={} 对冲订单超时，直接撤单",
                     self.strategy_id
@@ -616,7 +637,7 @@ impl HedgeArbStrategy {
                 }
 
                 // 清除对冲超时时间，避免重复发送撤单
-                self.hedge_timeout_us = None;
+                self.hedge_expire_ts = None;
             }
         }
     }
@@ -863,6 +884,7 @@ impl HedgeArbStrategy {
     }
 
     fn process_open_leg_cancel(&mut self, cancel_update: &dyn OrderUpdate) {
+        self.open_expire_ts = None;
         // 1. 确认 open-order 的订单状态，修改为 cancel。更新交易所 end 时间和本地 end 时间等数据
         let order_id = cancel_update.client_order_id();
         let event_time = cancel_update.event_time();
@@ -911,6 +933,7 @@ impl HedgeArbStrategy {
     }
 
     fn process_hedge_leg_cancel(&mut self, cancel_update: &dyn OrderUpdate) {
+        self.hedge_expire_ts = None;
         // 只有 MM 模式才会出现对冲侧的 cancel（因为 MT 模式是市价单，立即成交）
         if self.hedge_timeout_us.is_none() {
             error!(
@@ -966,6 +989,9 @@ impl HedgeArbStrategy {
     }
 
     fn process_open_leg_trade(&mut self, trade: &dyn TradeUpdate) {
+        if trade.order_status() == Some(OrderStatus::Filled) {
+            self.open_expire_ts = None;
+        }
         // 开仓成交后，触发对冲逻辑
         // MM 模式：只有完全成交才对冲, 部分成交只扣除量
         if self.hedge_timeout_us.is_some() {
@@ -1072,6 +1098,10 @@ impl HedgeArbStrategy {
         }
 
         // MM 模式：对冲侧成交不需要特殊处理，等待完全成交或撤单
+
+        if !self.has_pending_hedge_order() {
+            self.hedge_expire_ts = None;
+        }
     }
 
     // 处理交易更新
@@ -1170,14 +1200,12 @@ impl HedgeArbStrategy {
             if order_update.client_order_id() == self.open_order_id {
                 self.process_open_leg_cancel(order_update);
             }
-            if self.hedge_timeout_us.is_none() {
-                if self
+            if self.hedge_timeout_us.is_some()
+                && self
                     .hedge_order_ids
                     .contains(&order_update.client_order_id())
-                {
-                    //只有MT模式，才会有hedge的定时器cancel
-                    self.process_hedge_leg_cancel(order_update);
-                }
+            {
+                self.process_hedge_leg_cancel(order_update);
             }
         }
     }

@@ -258,11 +258,17 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let hedging_venue = TradingVenue::from_u8(open_ctx.hedging_leg.venue)
                     .unwrap_or(TradingVenue::BinanceUm);
 
+                let hedge_mode = if open_ctx.hedge_timeout_us > 0 {
+                    "MM"
+                } else {
+                    "MT"
+                };
                 info!(
-                    "🔔 收到 ArbOpen 信号: opening={} {:?} side={:?} price={:.6} hedging={} {:?} | amount={:.4} fr_ma={:.6} pred_fr={:.6} loan={:.6}",
+                    "🔔 收到 ArbOpen 信号({}): opening={} {:?} side={:?} price={:.6} hedging={} {:?} | amount={:.4} fr_ma={:.6} pred_fr={:.6} loan={:.6} hedge_timeout_us={}",
+                    hedge_mode,
                     symbol, opening_venue, side, open_ctx.price,
                     hedging_symbol, hedging_venue,
-                    open_ctx.amount, open_ctx.funding_ma, open_ctx.predicted_funding_rate, open_ctx.loan_rate
+                    open_ctx.amount, open_ctx.funding_ma, open_ctx.predicted_funding_rate, open_ctx.loan_rate, open_ctx.hedge_timeout_us
                 );
 
                 // 检查限价挂单数量限制
@@ -318,10 +324,16 @@ fn handle_trade_signal(signal: TradeSignal) {
                         return;
                     };
 
+                    let hedge_mode = if close_ctx.hedge_timeout_us > 0 {
+                        "MM"
+                    } else {
+                        "MT"
+                    };
                     info!(
-                        "🔔 收到 ArbClose 信号: opening={} {:?} hedging={} {:?} | side={:?} amount={:.4} price={:.6}",
+                        "🔔 收到 ArbClose 信号({}): opening={} {:?} hedging={} {:?} | side={:?} amount={:.4} price={:.6} hedge_timeout_us={}",
+                        hedge_mode,
                         opening_symbol, opening_venue, hedging_symbol, hedging_venue,
-                        close_side, close_ctx.amount, close_ctx.price
+                        close_side, close_ctx.amount, close_ctx.price, close_ctx.hedge_timeout_us
                     );
 
                     let opening_pos =
@@ -387,6 +399,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                 Err(err) => warn!("failed to decode ArbClose context: {err}"),
             }
         }
+        
         SignalType::ArbCancel => match ArbCancelCtx::from_bytes(signal.context.clone()) {
             Ok(cancel_ctx) => {
                 let symbol = cancel_ctx.get_opening_symbol().to_uppercase();
