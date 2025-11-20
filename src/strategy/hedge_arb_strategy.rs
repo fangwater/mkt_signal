@@ -10,6 +10,7 @@ use crate::signal::record::SignalRecordMessage;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::Strategy;
 use crate::strategy::order_update::OrderUpdate;
+use crate::strategy::trade_engine_response::TradeEngineResponse;
 use crate::strategy::trade_update::TradeUpdate;
 use log::{debug, error, info, warn};
 
@@ -1313,6 +1314,21 @@ impl Strategy for HedgeArbStrategy {
 
         // 持久化成交记录
         PersistChannel::with(|ch| ch.publish_trade_update(trade));
+    }
+
+    fn apply_trade_engine_response(&mut self, response: &dyn TradeEngineResponse) {
+        if response.is_success() {
+            return;
+        }
+        if response.client_order_id() == self.open_order_id {
+            warn!(
+                "HedgeArbStrategy: strategy_id={} 开仓下单失败: status={} reason={}",
+                self.strategy_id,
+                response.status(),
+                response.body()
+            );
+            self.alive_flag = false;
+        }
     }
 
     fn handle_period_clock(&mut self, _current_tp: i64) {

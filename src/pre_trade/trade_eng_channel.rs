@@ -3,9 +3,12 @@ use bytes::Bytes;
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::cell::OnceCell;
 use std::time::Duration;
+
+use crate::pre_trade::monitor_channel::MonitorChannel;
+use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeEngineResponseMessage};
 
 thread_local! {
     static TRADE_ENG_CHANNEL: OnceCell<TradeEngChannel> = OnceCell::new();
@@ -205,16 +208,17 @@ impl TradeEngChannel {
                         String::new()
                     };
 
-                    // 处理响应
-                    Self::handle_trade_engine_response(
+                    let response = TradeEngineResponseMessage::new(
                         status,
                         req_type,
                         exchange,
                         client_order_id,
-                        &body,
+                        body,
                         ip_weight,
                         order_count,
                     );
+                    // 处理响应
+                    Self::handle_trade_engine_response(&response);
                 }
                 Ok(None) => tokio::task::yield_now().await,
                 Err(err) => {
@@ -226,61 +230,40 @@ impl TradeEngChannel {
     }
 
     /// 处理交易引擎响应
-    fn handle_trade_engine_response(
-        status: u16,
-        req_type: u32,
-        exchange: u32,
-        client_order_id: i64,
-        body: &str,
-        ip_weight: u32,
-        order_count: u32,
-    ) {
-        match status {
-            200 => {
-                // 成功响应，不打印日志
+    fn handle_trade_engine_response(response: &TradeEngineResponseMessage) {
+        dispatch_trade_engine_response(response);
+    }
+}
+
+fn dispatch_trade_engine_response(response: &TradeEngineResponseMessage) {
+    let Some(strategy_mgr) = MonitorChannel::try_strategy_mgr() else {
+        return;
+    };
+
+    let order_id = response.client_order_id();
+    let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
+    let mut matched = false;
+
+    for strategy_id in strategy_ids {
+        let mut mgr = strategy_mgr.borrow_mut();
+        if let Some(mut strategy) = mgr.take(strategy_id) {
+            if strategy.is_strategy_order(order_id) {
+                matched = true;
+                strategy.apply_trade_engine_response(response);
             }
-            403 => {
-                warn!(
-                    "WAF Limit violated: exchange={} req_type={} cli_ord_id={} body={}",
-                    exchange, req_type, client_order_id, body
-                );
-            }
-            418 => {
-                warn!(
-                    "IP auto-banned for continuing requests after 429: exchange={} req_type={} cli_ord_id={} body={}",
-                    exchange, req_type, client_order_id, body
-                );
-            }
-            429 => {
-                warn!(
-                    "Request rate limit exceeded: exchange={} req_type={} cli_ord_id={} ip_weight={} order_count={} body={}",
-                    exchange, req_type, client_order_id, ip_weight, order_count, body
-                );
-            }
-            503 => {
-                warn!(
-                    "Service unavailable (503): exchange={} req_type={} cli_ord_id={} body={}",
-                    exchange, req_type, client_order_id, body
-                );
-            }
-            400..=499 => {
-                warn!(
-                    "Client error (4xx): status={} exchange={} req_type={} cli_ord_id={} body={}",
-                    status, exchange, req_type, client_order_id, body
-                );
-            }
-            500..=599 => {
-                warn!(
-                    "Server error (5xx): status={} exchange={} req_type={} cli_ord_id={} body={}",
-                    status, exchange, req_type, client_order_id, body
-                );
-            }
-            _ => {
-                warn!(
-                    "Unexpected HTTP status: status={} exchange={} req_type={} cli_ord_id={} body={}",
-                    status, exchange, req_type, client_order_id, body
-                );
+            if strategy.is_active() {
+                mgr.insert(strategy);
             }
         }
+    }
+
+    if !matched {
+        let expected_strategy_id = (order_id >> 32) as i32;
+        debug!(
+            "tradeEngineResponse unmatched: cli_ord_id={} status={} expect_strategy={}",
+            order_id,
+            response.status(),
+            expected_strategy_id
+        );
     }
 }

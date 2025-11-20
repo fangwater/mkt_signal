@@ -246,6 +246,10 @@ impl MonitorChannel {
         Self::with_inner(|inner| inner.strategy_mgr.clone())
     }
 
+    pub fn try_strategy_mgr() -> Option<Rc<RefCell<crate::strategy::StrategyManager>>> {
+        Self::try_with_inner(|inner| inner.strategy_mgr.clone()).ok()
+    }
+
     /// 获取 um_manager 的引用
     pub fn um_manager(&self) -> Rc<RefCell<BinancePmUmAccountManager>> {
         Self::with_inner(|inner| inner.um_manager.clone())

@@ -1,6 +1,9 @@
 use crate::common::time_util::get_timestamp_us;
 use crate::signal::trade_signal::TradeSignal;
-use crate::strategy::{order_update::OrderUpdate, trade_update::TradeUpdate};
+use crate::strategy::{
+    order_update::OrderUpdate, trade_engine_response::TradeEngineResponse,
+    trade_update::TradeUpdate,
+};
 use log::info;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
@@ -10,6 +13,7 @@ pub trait Strategy {
     fn handle_signal_with_record(&mut self, signal: &TradeSignal);
     fn apply_order_update_with_record(&mut self, update: &dyn OrderUpdate);
     fn apply_trade_update_with_record(&mut self, trade: &dyn TradeUpdate);
+    fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
     fn handle_period_clock(&mut self, current_tp: i64);
     fn is_active(&self) -> bool;
     fn symbol(&self) -> Option<&str>;
