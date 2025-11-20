@@ -399,7 +399,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                 Err(err) => warn!("failed to decode ArbClose context: {err}"),
             }
         }
-        
+
         SignalType::ArbCancel => match ArbCancelCtx::from_bytes(signal.context.clone()) {
             Ok(cancel_ctx) => {
                 let symbol = cancel_ctx.get_opening_symbol().to_uppercase();

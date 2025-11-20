@@ -1051,7 +1051,7 @@ impl HedgeArbStrategy {
         }
     }
 
-    fn process_hedge_leg_trade(&mut self, _trade: &dyn TradeUpdate) {
+    fn process_hedge_leg_trade(&mut self, trade: &dyn TradeUpdate) {
         // 对冲侧成交处理
         info!(
             "HedgeArbStrategy: strategy_id={} 对冲成交: 开仓量={:.8} 对冲量={:.8}",
@@ -1095,34 +1095,65 @@ impl HedgeArbStrategy {
                     }
                 }
             }
-        }
-
-        // MM 模式：对冲侧成交不需要特殊处理，等待完全成交或撤单
-
-        if !self.has_pending_hedge_order() {
-            self.hedge_expire_ts = None;
+        } else {
+            // MM 模式：对冲侧成交需要区分成交状态
+            if trade.order_status() == Some(OrderStatus::Filled) {
+                // 完全成交即表示本次对冲已完成，直接关闭策略
+                info!(
+                    "HedgeArbStrategy: strategy_id={} MM模式对冲已全部成交，结束策略",
+                    self.strategy_id
+                );
+                self.hedge_expire_ts = None;
+                self.alive_flag = false;
+            } else {
+                // 非完全成交的数量已在上游累计，这里保持策略存活，等待定时器重新挂单
+                debug!(
+                    "HedgeArbStrategy: strategy_id={} MM模式对冲部分成交，等待后续重报",
+                    self.strategy_id
+                );
+            }
         }
     }
 
     // 处理交易更新
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
+        let client_order_id = trade.client_order_id();
+        let cumulative_qty = trade.cumulative_filled_quantity();
+        let trade_time = trade.trade_time();
+        let event_time = trade.event_time();
+        if let Some(OrderStatus::Filled) = trade.order_status() {
+            let order_mgr = MonitorChannel::instance().order_manager();
+            let mut order_manager = order_mgr.borrow_mut();
+            let updated = order_manager.update(client_order_id, |order| {
+                order.cumulative_filled_quantity = cumulative_qty;
+                order.set_filled_time(trade_time);
+                order.status = OrderExecutionStatus::Filled;
+                order.set_end_time(event_time);
+            });
+            if !updated {
+                warn!(
+                    "HedgeArbStrategy: strategy_id={} 未找到成交对应的订单 client_order_id={}",
+                    self.strategy_id, client_order_id
+                );
+            }
+        }
+
         //1 根据client order id，判断是开仓成交，还是对冲成交, 更新开仓量或对冲量
-        let order_id = trade.client_order_id();
-        if order_id == self.open_order_id {
+        if client_order_id == self.open_order_id {
             // 开仓成交，更新累计开仓量, 打印成交量
-            self.cumulative_open_qty = trade.cumulative_filled_quantity();
+            self.cumulative_open_qty = cumulative_qty;
             info!(
                 "💰 开仓成交: strategy_id={} order_id={} symbol={} price={:.6} qty={:.4} cumulative={:.4} | 已对冲={:.4}",
-                self.strategy_id, order_id, self.symbol,
+                self.strategy_id, client_order_id, self.symbol,
                 trade.price(), trade.quantity(), self.cumulative_open_qty, self.cumulative_hedged_qty
             );
             self.process_open_leg_trade(trade);
-        } else if self.hedge_order_ids.contains(&order_id) {
+        } else if self.hedge_order_ids.contains(&client_order_id) {
             // 对冲侧成交，增加累计对冲量
             self.cumulative_hedged_qty = trade.quantity();
             info!(
                 "🛡️ 对冲成交: strategy_id={} order_id={} symbol={} price={:.6} qty={:.4} | 开仓量={:.4} 已对冲={:.4}",
-                self.strategy_id, order_id, self.hedge_symbol,
+                self.strategy_id, client_order_id, self.hedge_symbol,
                 trade.price(), trade.quantity(), self.cumulative_open_qty, self.cumulative_hedged_qty
             );
             self.process_hedge_leg_trade(trade);
@@ -1130,7 +1161,7 @@ impl HedgeArbStrategy {
             // 非法成交，忽略
             warn!(
                 "⚠️ 收到未知订单成交: strategy_id={} order_id={}",
-                self.strategy_id, order_id
+                self.strategy_id, client_order_id
             );
         }
     }
@@ -1286,8 +1317,10 @@ impl Strategy for HedgeArbStrategy {
 
     fn handle_period_clock(&mut self, _current_tp: i64) {
         // 周期性检查开仓和对冲订单的超时情况
-        self.handle_open_leg_timeout();
-        self.handle_hedge_leg_timeout();
+        if self.is_active() {
+            self.handle_open_leg_timeout();
+            self.handle_hedge_leg_timeout();
+        }
     }
 
     fn is_active(&self) -> bool {
