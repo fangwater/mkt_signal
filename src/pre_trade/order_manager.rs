@@ -599,7 +599,8 @@ impl Order {
                         params_parts.push("timeInForce=GTX".to_string());
                         params_parts.push(format!("price={}", format_price(self.price)));
                     }
-                    //改为双向持仓模式，positionSide不填写，认为是both
+                    // 暂时支持双向持仓模式，强制设置 positionSide=LONG
+                    params_parts.push("positionSide=LONG".to_string());
                 }
                 let params_plain = params_parts.join("&");
                 info!(
