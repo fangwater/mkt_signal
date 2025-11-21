@@ -1,0 +1,12 @@
+1、fwd fr 剩余内容
+[1]资金费率本周截止, MM算法机制
+[2]正套+借贷
+[3]symbol需要支持多个交易列表
+long_symbol_list 正套
+short_symbol_list 反套
+dump_symbol_list 
+
+2、订单存储
+
+
+3、跨所架构
