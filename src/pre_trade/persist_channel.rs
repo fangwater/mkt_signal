@@ -5,6 +5,7 @@ use std::cell::OnceCell;
 use crate::common::iceoryx_publisher::{
     OrderUpdatePublisher, SignalPublisher, TradeUpdatePublisher,
 };
+use crate::common::time_util::get_timestamp_us;
 use crate::signal::record::{SignalRecordMessage, PRE_TRADE_SIGNAL_RECORD_CHANNEL};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
@@ -222,6 +223,7 @@ impl PersistChannel {
 /// 将 TradeUpdate trait object 序列化为字节流
 ///
 /// 格式：
+/// - receive_ts_us: i64 (8 bytes) - 接收时间戳（微秒）
 /// - event_time: i64 (8 bytes)
 /// - trade_time: i64 (8 bytes)
 /// - symbol: String (4 bytes len + data)
@@ -240,6 +242,9 @@ impl PersistChannel {
 /// - order_status: u8 (1 byte) + Option flag
 fn serialize_trade_update(trade: &dyn TradeUpdate) -> Bytes {
     let mut buf = BytesMut::with_capacity(512);
+
+    // 接收时间戳（在发布时记录）
+    buf.put_i64_le(get_timestamp_us());
 
     // 基础时间戳
     buf.put_i64_le(trade.event_time());
@@ -290,6 +295,7 @@ fn serialize_trade_update(trade: &dyn TradeUpdate) -> Bytes {
 /// 将 OrderUpdate trait object 序列化为字节流
 ///
 /// 格式：
+/// - receive_ts_us: i64 (8 bytes) - 接收时间戳（微秒）
 /// - event_time: i64 (8 bytes)
 /// - symbol: String (4 bytes len + data)
 /// - order_id: i64 (8 bytes)
@@ -312,6 +318,9 @@ fn serialize_trade_update(trade: &dyn TradeUpdate) -> Bytes {
 /// - business_unit: Option<String> (1 byte flag + 4 bytes len + data)
 fn serialize_order_update(order: &dyn OrderUpdate) -> Bytes {
     let mut buf = BytesMut::with_capacity(512);
+
+    // 接收时间戳（在发布时记录）
+    buf.put_i64_le(get_timestamp_us());
 
     // 基础时间戳
     buf.put_i64_le(order.event_time());

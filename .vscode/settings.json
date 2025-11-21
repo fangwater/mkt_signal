@@ -1,5 +1,9 @@
 {
     "python-envs.defaultEnvManager": "ms-python.python:system",
     "python-envs.pythonProjects": [],
-    "chatgpt.openOnStartup": true
+    "chatgpt.openOnStartup": true,
+    "rust-analyzer.server.extraEnv": {
+        "RA_LOG": "error"
+    },
+    "rust-analyzer.cargo.buildScripts.enable": false
 }

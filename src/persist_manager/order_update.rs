@@ -2,11 +2,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use bytes::Buf;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 
-use crate::common::time_util::get_timestamp_us;
 use crate::persist_manager::iceoryx::{create_signal_record_subscriber, trim_payload};
 use crate::persist_manager::storage::RocksDbStore;
 use crate::pre_trade::ORDER_UPDATE_RECORD_CHANNEL;
@@ -39,7 +39,13 @@ impl OrderUpdatePersistor {
                 Ok(Some(sample)) => {
                     let payload = trim_payload(sample.payload());
                     if !payload.is_empty() {
-                        let ts = get_timestamp_us() as u64;
+                        // 从消息头部读取接收时间戳（前8字节）
+                        if payload.len() < 8 {
+                            warn!("order update payload too short: {} bytes", payload.len());
+                            continue;
+                        }
+                        let mut cursor = &payload[..];
+                        let ts = cursor.get_i64_le() as u64;
                         let key = format!("{:020}", ts);
                         debug!(
                             "persist order update: key={} payload_len={}",
