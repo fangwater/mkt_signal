@@ -1,74 +1,62 @@
 # 持久化数据总览
 
-本文汇总当前 `persist_manager` 负责落库的账号与策略类数据，方便排查对账与通道配置。
+`persist_manager` 现在只负责接收 `pre_trade` 的持久化通道，并把原始字节写入 RocksDB，同时通过 HTTP 暴露查询与 Parquet 导出功能。下表汇总三类数据源：
 
-## 通道速览
-
-| 场景 | 发布方 | Iceoryx 渠道 | 数据结构 | 默认 RocksDB 列族 |
+| 数据类型 | Iceoryx 渠道 | RocksDB 列族 | HTTP 列表 | HTTP 导出 |
 | --- | --- | --- | --- | --- |
-| Binance Margin `executionReport` | `account_monitor` | `account_execution/binance_margin` | `ExecutionRecordMessage` | `executions_binance_margin` |
-| Binance UM `ORDER_TRADE_UPDATE` (`fs=UM`) | `account_monitor` | `account_execution/binance_um` | `OrderUpdateRecordMessage` | `executions_binance_um` |
-| 策略信号记录 | `pre_trade` 等策略组件 | `pre_trade_signal_record` | `SignalRecordMessage` | 视 `SignalType` 而定（如 `signals_bin_single_forward_arb_open_mt` / `_mm`、`signals_bin_single_forward_arb_cancel_mt` / `_mm`） |
+| 策略信号 `SignalRecordMessage` | `pre_trade_signal_record` | `signals_arb_open` / `signals_arb_close` / `signals_arb_cancel` / `signals_arb_hedge` | `GET /signals/:kind` | `GET /signals/:kind/export` |
+| 成交更新（`TradeUpdate` 序列化） | `trade_update_record` | `trade_updates` | `GET /trade_updates` | `GET /trade_updates/export` |
+| 订单更新（`OrderUpdate` 序列化） | `order_update_record` | `order_updates` | `GET /order_updates` | `GET /order_updates/export` |
 
-> 配置项位于 `config/persist_manager.toml`，可分别通过 `[execution]`、`[um_execution]`、`[signal]` 节点启停并修改通道名或回退间隔。
+> `persist_manager` 启动参数：`cargo run --bin persist_manager -- --port 8088`。列族路径固定为 `data/persist_manager`。
 
-## 保证金 executionReport
+## 策略信号
 
-- 来源：`account_monitor` 解析 Binance 账户事件后，将 `executionReport` 转换为 `ExecutionRecordMessage`，并在发布前按 `(order_id, trade_id, update_id, execution_type)` 做去重。
-- 发布：Iceoryx 通道 `account_execution/binance_margin`，消息体为 `ExecutionRecordMessage::to_bytes()`。
-- 持久化：`persist_manager` 的 `ExecutionPersistor` 订阅通道后写入 RocksDB 列族 `executions_binance_margin`，键格式 `recv_ts_us_order_id_update_id`。
-- 主要字段：
-  - `recv_ts_us`：`account_monitor` 收到并发布消息时的时间戳（µs）。
-  - `event_time` / `transaction_time` / `order_creation_time` / `working_time`。
-  - `order_id`、`trade_id`、`update_id`、`symbol`、`client_order_id` + 原始字符串。
-  - `strategy_id = client_order_id >> 32`、`side`、`is_maker`、`is_working`。
-  - 价格与数量：`price`、`quantity`、`last_executed_quantity`、`cumulative_filled_quantity`、`last_executed_price`。
-  - 费用与额：`commission_amount`、`commission_asset`、`cumulative_quote`、`last_quote`、`quote_order_quantity`。
-  - 订单元数据：`order_type`、`time_in_force`、`execution_type`、`order_status`。
+- 发布：`PreTrade` 在生成 ArbOpen/ArbClose/ArbHedge/ArbCancel 信号后，通过 `PersistChannel::publish_signal_record` 写入 `pre_trade_signal_record`。
+- 落库：`SignalPersistor` 根据 `SignalType` 写入不同列族（`signals_arb_open`、`signals_arb_close`、`signals_arb_cancel`、`signals_arb_hedge`）。
+- HTTP：
+  - `GET /signals/:kind?limit=100&direction=desc&start=<key>&start_ts=<us>&end_ts=<us>`
+  - `GET /signals/:kind/:key`
+  - `DELETE /signals/:kind` （body: `{"keys":["..."]}`） / `DELETE /signals/:kind/:key`
+  - `GET /signals/:kind/export` 导出 Parquet，列包含上下文解析后的 JSON 字段。
+- `kind` 取值：`signals_arb_open` / `signals_arb_close` / `signals_arb_cancel` / `signals_arb_hedge`。
 
-## 统一账户 ORDER_TRADE_UPDATE
+## 成交更新（trade_updates）
 
-- 触发条件：账户事件的 `fs` 字段为 `"UM"`（USDS-M Futures）。
-- 来源：`account_monitor` 将 `ORDER_TRADE_UPDATE` 解析为 `OrderTradeUpdateMsg` 后，基于 `(order_id, trade_id, execution_type, event_time)` 去重并构造 `OrderUpdateRecordMessage`。
-- 发布：Iceoryx 通道 `account_execution/binance_um`，消息体为 `OrderUpdateRecordMessage::to_bytes()`。
-- 持久化：`persist_manager` 的 `UmOrderUpdatePersistor` 监听通道并将原始字节写入 RocksDB 列族 `executions_binance_um`，键格式 `recv_ts_us_order_id_trade_id`。
-- 关键字段：
-  - `recv_ts_us`：写入前的本地时间戳；`account_recv_ts_us`：`account_monitor` 收到消息时的时间戳。
-  - `event_time` / `transaction_time`、`business_unit`、`strategy_type`。
-  - `order_id`、`trade_id`、`client_order_id`、`client_order_id_str`。
-  - `strategy_id`（消息内原始值）、`derived_strategy_id`（通过 `client_order_id >> 32` 还原）。
-  - 持仓与成交：`side`、`position_side`、`reduce_only`、`is_maker`。
-  - 价格数量：`price`、`quantity`、`average_price`、`stop_price`、`last_executed_quantity`、`cumulative_filled_quantity`、`last_executed_price`。
-  - 成交额与盈亏：`buy_notional`、`sell_notional`、`commission_amount`、`commission_asset`、`realized_profit`。
-  - 订单元数据：`order_type`、`time_in_force`、`execution_type`、`order_status`。
+- 发布：`HedgeArbStrategy` 在处理成交时调用 `PersistChannel::publish_trade_update`，内部以固定顺序序列化 `TradeUpdate` trait 的字段（事件时间、成交价量、手续费、`order_status` 等）。
+- 落库：`TradeUpdatePersistor` 订阅 `trade_update_record`，以处理时间戳（20 位整数）作为键写入 `trade_updates` 列族。
+- HTTP：
+  - `GET /trade_updates?limit=200&direction=desc&start=<key>&start_ts=<us>&end_ts=<us>`
+  - `GET /trade_updates/:key`
+  - `DELETE /trade_updates`（批量） / `DELETE /trade_updates/:key`
+  - `GET /trade_updates/export` 返回 Parquet，字段覆盖 price/qty/commission/maker/venue/order_status 等。
 
-## 策略信号记录
+## 订单更新（order_updates）
 
-- 来源：`pre_trade` 及其他策略组件在生成触发信号时，构造 `SignalRecordMessage`，并根据配置决定是否发布。
-- 通道：默认 `pre_trade_signal_record`，由 `SignalPublisher` 推送。
-- 持久化：`persist_manager` 的 `SignalPersistor` 按 `signal_type` 写入不同列族，目前主要使用 `signals_bin_single_forward_arb_open_mt`、`signals_bin_single_forward_arb_open_mm`、`signals_bin_single_forward_arb_cancel_mt`、`signals_bin_single_forward_arb_cancel_mm`。
-- 内容：`SignalRecordMessage` 内含 `signal_type`、`strategy_id`、`context`（以策略自定义结构序列化），并记录生成时间戳。
-- 栏位说明：开仓上下文包含 `spot_symbol`、`futures_symbol` 以及触发时的 `open_threshold`；阶梯撤单上下文仅保留盘口价格与阈值，消费方会根据 `spot_bid0` 与 `swap_ask0` 即时回算 `bidask_sr`。
+- 发布：策略侧收到订单状态变化后调用 `PersistChannel::publish_order_update`，序列化 `OrderUpdate` trait（包含 `OrderType`、`TimeInForce`、累计成交量、执行类型、业务单元等）。
+- 落库：`OrderUpdatePersistor` 订阅 `order_update_record`，按时间戳写入 `order_updates` 列族。
+- HTTP：
+  - `GET /order_updates?limit=200&direction=desc&start=<key>&start_ts=<us>&end_ts=<us>`
+  - `GET /order_updates/:key`
+  - `DELETE /order_updates` / `DELETE /order_updates/:key`
+  - `GET /order_updates/export`，Parquet 中包含价量、`order_type`、`time_in_force`、`execution_type`、`average_price`、`business_unit` 等字段。
 
-## 配置与快速验证
+## 快速操作
 
-- 配置文件：`config/persist_manager.toml` 中可独立启停三类持久化任务，示例：
+1. **启动**：`cargo run --bin persist_manager -- --port 8088`（默认 8088）。
+2. **连通性**：`curl http://127.0.0.1:8088/health`。
+3. **按时间分页**：
+   - `limit`：每页 1~1000（导出时上限 10,000）。
+   - `direction=desc` 默认从最新数据倒序。
+   - `start`：直接传 RocksDB key（20 位时间戳；信号类形如 `ts_strategyId`）。
+   - `start_ts` / `end_ts`：微秒级过滤窗口。
+4. **Parquet 导出**：所有接口返回 `Content-Type: application/vnd.apache.parquet`，文件名以数据类型 + 时间戳命名，可直接用 `polars` / `pandas` 打开，例如：
+   ```bash
+   curl "http://127.0.0.1:8088/trade_updates/export?limit=1000" -o trade_updates.parquet
+   ```
+5. **数据清理**：三个数据集均支持单条与批量删除，便于回收异常记录或做重处理。
 
-```toml
-[execution]
-enabled = true
-channel = "account_execution/binance_margin"
+## 配置提示
 
-[um_execution]
-enabled = true
-channel = "account_execution/binance_um"
-
-[signal]
-enabled = true
-channel = "pre_trade_signal_record"
-```
-
-- 快速验证：
-  1. 启动 `persist_manager` 后检查日志，确认各通道订阅成功。
-  2. 使用 `rocksdb` 工具或内部 HTTP 服务（如 `/signals/:kind`）读取列族，核对键格式与字段。
-  3. 如需变更通道名称或禁用持久化，只需保持 `account_monitor` 与 `persist_manager` 的配置一致即可。
+- Iceoryx 通道名称来自 `PersistChannel` 常量，如需自定义，可同时修改 `pre_trade` 与 `persist_manager` 的常量（`TRADE_UPDATE_RECORD_CHANNEL`、`ORDER_UPDATE_RECORD_CHANNEL`、`PRE_TRADE_SIGNAL_RECORD_CHANNEL`）。
+- RocksDB 目录默认 `data/persist_manager`。线上可在启动脚本中通过符号链接将 `target/release/crypto_proxy` 指向最新二进制，再配合 `persist_manager --port <port>` 启动。

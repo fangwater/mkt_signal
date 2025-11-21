@@ -296,7 +296,7 @@ fn handle_trade_signal(signal: TradeSignal) {
         },
         SignalType::ArbClose => {
             match ArbOpenCtx::from_bytes(signal.context.clone()) {
-                Ok(close_ctx) => {
+                Ok(mut close_ctx) => {
                     let opening_symbol = close_ctx.get_opening_symbol();
                     let hedging_symbol = close_ctx.get_hedging_symbol();
 
@@ -341,6 +341,16 @@ fn handle_trade_signal(signal: TradeSignal) {
                     let hedging_pos =
                         MonitorChannel::instance().get_position_qty(&hedging_symbol, hedging_venue);
 
+                    const SPOT_FLAT_THRESHOLD: f64 = 1e-5;
+                    let is_spot_opening = matches!(
+                        opening_venue,
+                        TradingVenue::BinanceMargin | TradingVenue::BinanceSpot
+                    );
+                    if is_spot_opening && opening_pos.abs() <= SPOT_FLAT_THRESHOLD {
+                        // 现货腿已经为 0，说明信号已失效，直接跳过不噪声打日志
+                        return;
+                    }
+
                     // 检查opening leg方向是否匹配
                     // 如果close是Sell，持仓应该>0（多头）；如果close是Buy，持仓应该<0（空头）
                     let opening_direction_match = match close_side {
@@ -383,11 +393,25 @@ fn handle_trade_signal(signal: TradeSignal) {
                         final_qty, closeable_qty, close_ctx.amount, opening_symbol, opening_pos, hedging_symbol, hedging_pos
                     );
 
+                    // 使用最终可平仓数量覆盖原始 amount，并转换为 ArbOpen 信号
+                    close_ctx.amount = final_qty as f32;
+                    let converted_signal = TradeSignal::create(
+                        SignalType::ArbOpen,
+                        signal.generation_time,
+                        signal.handle_time,
+                        close_ctx.to_bytes(),
+                    );
+
+                    info!(
+                        "ArbClose: converted to ArbOpen signal side={:?} qty={:.6} opening={} hedging={}",
+                        close_side, final_qty, opening_symbol, hedging_symbol
+                    );
+
                     // 平仓本质就是反向开仓，复用 HedgeArbStrategy
                     let strategy_id = StrategyManager::generate_strategy_id();
                     let mut strategy = HedgeArbStrategy::new(strategy_id, opening_symbol.clone());
 
-                    strategy.handle_signal_with_record(&signal);
+                    strategy.handle_signal_with_record(&converted_signal);
 
                     if strategy.is_active() {
                         MonitorChannel::instance()

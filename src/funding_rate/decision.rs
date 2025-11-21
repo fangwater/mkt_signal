@@ -519,7 +519,7 @@ impl FrDecision {
         let period = rate_fetcher.get_period(futures_symbol, futures_venue);
 
         // 检查所有条件
-        let forward_open = fr_factor.satisfy_forward_open(futures_symbol, period);
+        let mut forward_open = fr_factor.satisfy_forward_open(futures_symbol, period);
         let forward_close = fr_factor.satisfy_forward_close(futures_symbol, period, futures_venue);
         let mut backward_open = fr_factor.satisfy_backward_open(futures_symbol, period);
         let mut backward_close =

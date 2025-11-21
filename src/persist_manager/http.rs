@@ -9,7 +9,7 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 use base64::{engine::general_purpose, Engine as _};
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use chrono::Utc;
 use log::{info, warn};
 use polars::prelude::ParquetWriter;
@@ -17,9 +17,12 @@ use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::order_update::CF_ORDER_UPDATE;
+use super::trade_update::CF_TRADE_UPDATE;
 use crate::persist_manager::storage::RocksDbStore;
+use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::signal::cancel_signal::ArbCancelCtx;
-use crate::signal::common::{SignalBytes, TradingVenue};
+use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue};
 use crate::signal::hedge_signal::ArbHedgeCtx;
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::record::SignalRecordMessage;
@@ -46,6 +49,24 @@ pub async fn serve(bind_addr: &str, store: Arc<RocksDbStore>) -> Result<()> {
         .route(
             "/signals/:kind/:key",
             get(get_signal).delete(delete_signal_single),
+        )
+        .route(
+            "/trade_updates",
+            get(list_trade_updates).delete(delete_trade_updates_bulk),
+        )
+        .route("/trade_updates/export", get(export_trade_updates))
+        .route(
+            "/trade_updates/:key",
+            get(get_trade_update).delete(delete_trade_update_single),
+        )
+        .route(
+            "/order_updates",
+            get(list_order_updates).delete(delete_order_updates_bulk),
+        )
+        .route("/order_updates/export", get(export_order_updates))
+        .route(
+            "/order_updates/:key",
+            get(get_order_update).delete(delete_order_update_single),
         )
         .with_state(state);
 
@@ -92,7 +113,7 @@ async fn list_signals(
         start_ts: query.start_ts,
         end_ts: query.end_ts,
     };
-    let start_bytes = resolve_start_key(&query.start, range.start_ts, reverse);
+    let start_bytes = resolve_simple_start_key(&query.start, range.start_ts);
 
     let entries = state
         .store
@@ -163,6 +184,56 @@ async fn delete_signals_bulk(
     }))
 }
 
+#[derive(Debug, Serialize)]
+struct TradeUpdateDto {
+    key: String,
+    ts_us: u64,
+    event_time: i64,
+    trade_time: i64,
+    symbol: String,
+    trade_id: i64,
+    order_id: i64,
+    client_order_id: i64,
+    side: String,
+    price: f64,
+    quantity: f64,
+    commission: f64,
+    commission_asset: String,
+    is_maker: bool,
+    realized_pnl: f64,
+    trading_venue: String,
+    cumulative_filled_quantity: f64,
+    order_status: Option<String>,
+    payload_base64: String,
+}
+
+#[derive(Debug, Serialize)]
+struct OrderUpdateDto {
+    key: String,
+    ts_us: u64,
+    event_time: i64,
+    symbol: String,
+    order_id: i64,
+    client_order_id: i64,
+    client_order_id_str: Option<String>,
+    side: String,
+    order_type: String,
+    time_in_force: String,
+    price: f64,
+    quantity: f64,
+    last_executed_qty: f64,
+    cumulative_filled_quantity: f64,
+    status: String,
+    raw_status: String,
+    execution_type: String,
+    raw_execution_type: String,
+    trading_venue: String,
+    average_price: Option<f64>,
+    last_executed_price: Option<f64>,
+    business_unit: Option<String>,
+    payload_base64: String,
+}
+
 async fn export_signals(
     State(state): State<AppState>,
     Path(kind): Path<String>,
@@ -176,7 +247,7 @@ async fn export_signals(
     let limit = query.limit.unwrap_or(1000).min(10_000).max(1);
     let direction = query.direction.unwrap_or_else(|| "desc".to_string());
     let reverse = !matches!(direction.as_str(), "asc" | "ASC");
-    let start_bytes = resolve_start_key(&query.start, range.start_ts, reverse);
+    let start_bytes = resolve_simple_start_key(&query.start, range.start_ts);
 
     let entries = state
         .store
@@ -214,6 +285,242 @@ async fn delete_signal_single(
         .delete(signal_kind.cf_name(), key.as_bytes())
         .map_err(|err| HttpError::internal(err.context("删除记录失败")))?;
     Ok(Json(DeleteResp { deleted: 1 }))
+}
+
+async fn list_trade_updates(
+    State(state): State<AppState>,
+    Query(query): Query<ListQuery>,
+) -> Result<impl IntoResponse, HttpError> {
+    let limit = query.limit.unwrap_or(100).min(1000).max(1);
+    let direction = query.direction.unwrap_or_else(|| "desc".to_string());
+    let reverse = !matches!(direction.as_str(), "asc" | "ASC");
+    let range = RangeFilter {
+        start_ts: query.start_ts,
+        end_ts: query.end_ts,
+    };
+    let start_bytes = resolve_simple_start_key(&query.start, range.start_ts);
+
+    let entries = state
+        .store
+        .scan(CF_TRADE_UPDATE, start_bytes.as_deref(), reverse, limit)
+        .map_err(|err| HttpError::internal(err.context("扫描 trade_updates 失败")))?;
+
+    let mut result = Vec::with_capacity(entries.len());
+    for (key_bytes, value_bytes) in entries {
+        let key = String::from_utf8(key_bytes).map_err(|err| HttpError::internal(anyhow!(err)))?;
+        let ts_us = parse_simple_key(&key)
+            .map_err(|err| HttpError::internal(err.context("解析 trade update key 失败")))?;
+        if !range.contains(ts_us) {
+            continue;
+        }
+        let dto = build_trade_dto(key, ts_us, value_bytes)
+            .map_err(|err| HttpError::internal(err.context("解析 trade update 数据失败")))?;
+        result.push(dto);
+    }
+
+    Ok(Json(result))
+}
+
+async fn get_trade_update(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+) -> Result<impl IntoResponse, HttpError> {
+    let value = state
+        .store
+        .get(CF_TRADE_UPDATE, key.as_bytes())
+        .map_err(|err| HttpError::internal(err.context("读取 trade update 失败")))?;
+    let Some(value_bytes) = value else {
+        return Err(HttpError::not_found("未找到指定 trade update"));
+    };
+    let ts_us = parse_simple_key(&key)
+        .map_err(|err| HttpError::internal(err.context("解析 trade update key 失败")))?;
+    let dto = build_trade_dto(key, ts_us, value_bytes)
+        .map_err(|err| HttpError::internal(err.context("解析 trade update 数据失败")))?;
+    Ok(Json(dto))
+}
+
+async fn delete_trade_updates_bulk(
+    State(state): State<AppState>,
+    Json(payload): Json<DeleteBulkReq>,
+) -> Result<impl IntoResponse, HttpError> {
+    if payload.keys.is_empty() {
+        return Err(HttpError::bad_request("需要至少一个 key"));
+    }
+    for key in &payload.keys {
+        state
+            .store
+            .delete(CF_TRADE_UPDATE, key.as_bytes())
+            .map_err(|err| HttpError::internal(err.context("删除 trade update 失败")))?;
+    }
+    Ok(Json(DeleteResp {
+        deleted: payload.keys.len(),
+    }))
+}
+
+async fn delete_trade_update_single(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+) -> Result<impl IntoResponse, HttpError> {
+    state
+        .store
+        .delete(CF_TRADE_UPDATE, key.as_bytes())
+        .map_err(|err| HttpError::internal(err.context("删除 trade update 失败")))?;
+    Ok(Json(DeleteResp { deleted: 1 }))
+}
+
+async fn export_trade_updates(
+    State(state): State<AppState>,
+    Query(query): Query<ListQuery>,
+) -> Result<axum::response::Response, HttpError> {
+    let range = RangeFilter {
+        start_ts: query.start_ts,
+        end_ts: query.end_ts,
+    };
+    let limit = query.limit.unwrap_or(1000).min(10_000).max(1);
+    let direction = query.direction.unwrap_or_else(|| "desc".to_string());
+    let reverse = !matches!(direction.as_str(), "asc" | "ASC");
+    let start_bytes = resolve_simple_start_key(&query.start, range.start_ts);
+
+    let entries = state
+        .store
+        .scan(CF_TRADE_UPDATE, start_bytes.as_deref(), reverse, limit)
+        .map_err(|err| HttpError::internal(err.context("扫描 trade_updates 失败")))?;
+
+    let parquet_bytes =
+        build_parquet_trade_updates(entries, &range).map_err(HttpError::internal)?;
+
+    let filename = format!(
+        "trade_updates_{}.parquet",
+        Utc::now().format("%Y%m%d_%H%M%S")
+    );
+
+    axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/vnd.apache.parquet")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", filename),
+        )
+        .body(Body::from(parquet_bytes))
+        .map_err(|err| HttpError::internal(anyhow!(err)))
+}
+
+async fn list_order_updates(
+    State(state): State<AppState>,
+    Query(query): Query<ListQuery>,
+) -> Result<impl IntoResponse, HttpError> {
+    let limit = query.limit.unwrap_or(100).min(1000).max(1);
+    let direction = query.direction.unwrap_or_else(|| "desc".to_string());
+    let reverse = !matches!(direction.as_str(), "asc" | "ASC");
+    let range = RangeFilter {
+        start_ts: query.start_ts,
+        end_ts: query.end_ts,
+    };
+    let start_bytes = resolve_start_key(&query.start, range.start_ts, reverse);
+
+    let entries = state
+        .store
+        .scan(CF_ORDER_UPDATE, start_bytes.as_deref(), reverse, limit)
+        .map_err(|err| HttpError::internal(err.context("扫描 order_updates 失败")))?;
+
+    let mut result = Vec::with_capacity(entries.len());
+    for (key_bytes, value_bytes) in entries {
+        let key = String::from_utf8(key_bytes).map_err(|err| HttpError::internal(anyhow!(err)))?;
+        let ts_us = parse_simple_key(&key)
+            .map_err(|err| HttpError::internal(err.context("解析 order update key 失败")))?;
+        if !range.contains(ts_us) {
+            continue;
+        }
+        let dto = build_order_dto(key, ts_us, value_bytes)
+            .map_err(|err| HttpError::internal(err.context("解析 order update 数据失败")))?;
+        result.push(dto);
+    }
+
+    Ok(Json(result))
+}
+
+async fn get_order_update(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+) -> Result<impl IntoResponse, HttpError> {
+    let value = state
+        .store
+        .get(CF_ORDER_UPDATE, key.as_bytes())
+        .map_err(|err| HttpError::internal(err.context("读取 order update 失败")))?;
+    let Some(value_bytes) = value else {
+        return Err(HttpError::not_found("未找到指定 order update"));
+    };
+    let ts_us = parse_simple_key(&key)
+        .map_err(|err| HttpError::internal(err.context("解析 order update key 失败")))?;
+    let dto = build_order_dto(key, ts_us, value_bytes)
+        .map_err(|err| HttpError::internal(err.context("解析 order update 数据失败")))?;
+    Ok(Json(dto))
+}
+
+async fn delete_order_updates_bulk(
+    State(state): State<AppState>,
+    Json(payload): Json<DeleteBulkReq>,
+) -> Result<impl IntoResponse, HttpError> {
+    if payload.keys.is_empty() {
+        return Err(HttpError::bad_request("需要至少一个 key"));
+    }
+    for key in &payload.keys {
+        state
+            .store
+            .delete(CF_ORDER_UPDATE, key.as_bytes())
+            .map_err(|err| HttpError::internal(err.context("删除 order update 失败")))?;
+    }
+    Ok(Json(DeleteResp {
+        deleted: payload.keys.len(),
+    }))
+}
+
+async fn delete_order_update_single(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+) -> Result<impl IntoResponse, HttpError> {
+    state
+        .store
+        .delete(CF_ORDER_UPDATE, key.as_bytes())
+        .map_err(|err| HttpError::internal(err.context("删除 order update 失败")))?;
+    Ok(Json(DeleteResp { deleted: 1 }))
+}
+
+async fn export_order_updates(
+    State(state): State<AppState>,
+    Query(query): Query<ListQuery>,
+) -> Result<axum::response::Response, HttpError> {
+    let range = RangeFilter {
+        start_ts: query.start_ts,
+        end_ts: query.end_ts,
+    };
+    let limit = query.limit.unwrap_or(1000).min(10_000).max(1);
+    let direction = query.direction.unwrap_or_else(|| "desc".to_string());
+    let reverse = !matches!(direction.as_str(), "asc" | "ASC");
+    let start_bytes = resolve_start_key(&query.start, range.start_ts, reverse);
+
+    let entries = state
+        .store
+        .scan(CF_ORDER_UPDATE, start_bytes.as_deref(), reverse, limit)
+        .map_err(|err| HttpError::internal(err.context("扫描 order_updates 失败")))?;
+
+    let parquet_bytes =
+        build_parquet_order_updates(entries, &range).map_err(HttpError::internal)?;
+
+    let filename = format!(
+        "order_updates_{}.parquet",
+        Utc::now().format("%Y%m%d_%H%M%S")
+    );
+
+    axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/vnd.apache.parquet")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", filename),
+        )
+        .body(Body::from(parquet_bytes))
+        .map_err(|err| HttpError::internal(anyhow!(err)))
 }
 
 #[derive(Debug, Serialize)]
@@ -455,6 +762,13 @@ fn resolve_start_key(
         let suffix = if reverse { "9999999999" } else { "0000000000" };
         format!("{:020}_{}", ts, suffix).into_bytes()
     })
+}
+
+fn resolve_simple_start_key(explicit: &Option<String>, start_ts: Option<u64>) -> Option<Vec<u8>> {
+    if let Some(s) = explicit {
+        return Some(s.as_bytes().to_vec());
+    }
+    start_ts.map(|ts| format!("{:020}", ts).into_bytes())
 }
 
 fn build_parquet_bytes(
@@ -738,4 +1052,530 @@ fn build_parquet_hedge(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) ->
     let mut buf = Vec::new();
     ParquetWriter::new(&mut buf).finish(&mut df)?;
     Ok(buf)
+}
+
+fn build_trade_dto(key: String, ts_us: u64, value_bytes: Vec<u8>) -> Result<TradeUpdateDto> {
+    let record = decode_trade_record(&value_bytes)?;
+    let payload_base64 = general_purpose::STANDARD.encode(&value_bytes);
+    Ok(TradeUpdateDto {
+        key,
+        ts_us,
+        event_time: record.event_time,
+        trade_time: record.trade_time,
+        symbol: record.symbol,
+        trade_id: record.trade_id,
+        order_id: record.order_id,
+        client_order_id: record.client_order_id,
+        side: record.side,
+        price: record.price,
+        quantity: record.quantity,
+        commission: record.commission,
+        commission_asset: record.commission_asset,
+        is_maker: record.is_maker,
+        realized_pnl: record.realized_pnl,
+        trading_venue: record.trading_venue,
+        cumulative_filled_quantity: record.cumulative_filled_quantity,
+        order_status: record.order_status,
+        payload_base64,
+    })
+}
+
+fn build_order_dto(key: String, ts_us: u64, value_bytes: Vec<u8>) -> Result<OrderUpdateDto> {
+    let record = decode_order_record(&value_bytes)?;
+    let payload_base64 = general_purpose::STANDARD.encode(&value_bytes);
+    Ok(OrderUpdateDto {
+        key,
+        ts_us,
+        event_time: record.event_time,
+        symbol: record.symbol,
+        order_id: record.order_id,
+        client_order_id: record.client_order_id,
+        client_order_id_str: record.client_order_id_str,
+        side: record.side,
+        order_type: record.order_type,
+        time_in_force: record.time_in_force,
+        price: record.price,
+        quantity: record.quantity,
+        last_executed_qty: record.last_executed_qty,
+        cumulative_filled_quantity: record.cumulative_filled_quantity,
+        status: record.status,
+        raw_status: record.raw_status,
+        execution_type: record.execution_type,
+        raw_execution_type: record.raw_execution_type,
+        trading_venue: record.trading_venue,
+        average_price: record.average_price,
+        last_executed_price: record.last_executed_price,
+        business_unit: record.business_unit,
+        payload_base64,
+    })
+}
+
+fn build_parquet_trade_updates(
+    entries: Vec<(Vec<u8>, Vec<u8>)>,
+    range: &RangeFilter,
+) -> Result<Vec<u8>> {
+    let mut key_col = Vec::with_capacity(entries.len());
+    let mut ts_col = Vec::with_capacity(entries.len());
+    let mut event_time_col = Vec::with_capacity(entries.len());
+    let mut trade_time_col = Vec::with_capacity(entries.len());
+    let mut symbol_col = Vec::with_capacity(entries.len());
+    let mut trade_id_col = Vec::with_capacity(entries.len());
+    let mut order_id_col = Vec::with_capacity(entries.len());
+    let mut client_order_id_col = Vec::with_capacity(entries.len());
+    let mut side_col = Vec::with_capacity(entries.len());
+    let mut price_col = Vec::with_capacity(entries.len());
+    let mut qty_col = Vec::with_capacity(entries.len());
+    let mut commission_col = Vec::with_capacity(entries.len());
+    let mut commission_asset_col = Vec::with_capacity(entries.len());
+    let mut is_maker_col = Vec::with_capacity(entries.len());
+    let mut realized_col = Vec::with_capacity(entries.len());
+    let mut venue_col = Vec::with_capacity(entries.len());
+    let mut cumulative_col = Vec::with_capacity(entries.len());
+    let mut status_col: Vec<Option<String>> = Vec::with_capacity(entries.len());
+
+    for (key_bytes, value_bytes) in entries {
+        let key = String::from_utf8(key_bytes)?;
+        let ts_us = parse_simple_key(&key)?;
+        if !range.contains(ts_us) {
+            continue;
+        }
+        let record = decode_trade_record(&value_bytes)?;
+        let DecodedTradeRecord {
+            event_time,
+            trade_time,
+            symbol,
+            trade_id,
+            order_id,
+            client_order_id,
+            side,
+            price,
+            quantity,
+            commission,
+            commission_asset,
+            is_maker,
+            realized_pnl,
+            trading_venue,
+            cumulative_filled_quantity,
+            order_status,
+        } = record;
+        key_col.push(key);
+        ts_col.push(ts_us as i64);
+        event_time_col.push(event_time);
+        trade_time_col.push(trade_time);
+        symbol_col.push(symbol);
+        trade_id_col.push(trade_id);
+        order_id_col.push(order_id);
+        client_order_id_col.push(client_order_id);
+        side_col.push(side);
+        price_col.push(price);
+        qty_col.push(quantity);
+        commission_col.push(commission);
+        commission_asset_col.push(commission_asset);
+        is_maker_col.push(is_maker);
+        realized_col.push(realized_pnl);
+        venue_col.push(trading_venue);
+        cumulative_col.push(cumulative_filled_quantity);
+        status_col.push(order_status.clone());
+    }
+
+    let mut df = DataFrame::new(vec![
+        Series::new("key".into(), key_col),
+        Series::new("ts_us".into(), ts_col),
+        Series::new("event_time".into(), event_time_col),
+        Series::new("trade_time".into(), trade_time_col),
+        Series::new("symbol".into(), symbol_col),
+        Series::new("trade_id".into(), trade_id_col),
+        Series::new("order_id".into(), order_id_col),
+        Series::new("client_order_id".into(), client_order_id_col),
+        Series::new("side".into(), side_col),
+        Series::new("price".into(), price_col),
+        Series::new("quantity".into(), qty_col),
+        Series::new("commission".into(), commission_col),
+        Series::new("commission_asset".into(), commission_asset_col),
+        Series::new("is_maker".into(), is_maker_col),
+        Series::new("realized_pnl".into(), realized_col),
+        Series::new("trading_venue".into(), venue_col),
+        Series::new("cumulative_filled_quantity".into(), cumulative_col),
+        Series::new("order_status".into(), status_col.as_slice()),
+    ])?;
+
+    let mut buf = Vec::new();
+    ParquetWriter::new(&mut buf).finish(&mut df)?;
+    Ok(buf)
+}
+
+fn build_parquet_order_updates(
+    entries: Vec<(Vec<u8>, Vec<u8>)>,
+    range: &RangeFilter,
+) -> Result<Vec<u8>> {
+    let mut key_col = Vec::with_capacity(entries.len());
+    let mut ts_col = Vec::with_capacity(entries.len());
+    let mut event_time_col = Vec::with_capacity(entries.len());
+    let mut symbol_col = Vec::with_capacity(entries.len());
+    let mut order_id_col = Vec::with_capacity(entries.len());
+    let mut client_order_id_col = Vec::with_capacity(entries.len());
+    let mut client_order_id_str_col = Vec::with_capacity(entries.len());
+    let mut side_col = Vec::with_capacity(entries.len());
+    let mut order_type_col = Vec::with_capacity(entries.len());
+    let mut tif_col = Vec::with_capacity(entries.len());
+    let mut price_col = Vec::with_capacity(entries.len());
+    let mut qty_col = Vec::with_capacity(entries.len());
+    let mut last_exec_qty_col = Vec::with_capacity(entries.len());
+    let mut cumulative_col = Vec::with_capacity(entries.len());
+    let mut status_col = Vec::with_capacity(entries.len());
+    let mut raw_status_col = Vec::with_capacity(entries.len());
+    let mut exec_type_col = Vec::with_capacity(entries.len());
+    let mut raw_exec_type_col = Vec::with_capacity(entries.len());
+    let mut venue_col = Vec::with_capacity(entries.len());
+    let mut avg_price_col = Vec::with_capacity(entries.len());
+    let mut last_price_col = Vec::with_capacity(entries.len());
+    let mut business_unit_col = Vec::with_capacity(entries.len());
+
+    for (key_bytes, value_bytes) in entries {
+        let key = String::from_utf8(key_bytes)?;
+        let ts_us = parse_simple_key(&key)?;
+        if !range.contains(ts_us) {
+            continue;
+        }
+        let record = decode_order_record(&value_bytes)?;
+        let DecodedOrderRecord {
+            event_time,
+            symbol,
+            order_id,
+            client_order_id,
+            client_order_id_str,
+            side,
+            order_type,
+            time_in_force,
+            price,
+            quantity,
+            last_executed_qty,
+            cumulative_filled_quantity,
+            status,
+            raw_status,
+            execution_type,
+            raw_execution_type,
+            trading_venue,
+            average_price,
+            last_executed_price,
+            business_unit,
+        } = record;
+        key_col.push(key);
+        ts_col.push(ts_us as i64);
+        event_time_col.push(event_time);
+        symbol_col.push(symbol);
+        order_id_col.push(order_id);
+        client_order_id_col.push(client_order_id);
+        client_order_id_str_col.push(client_order_id_str);
+        side_col.push(side);
+        order_type_col.push(order_type);
+        tif_col.push(time_in_force);
+        price_col.push(price);
+        qty_col.push(quantity);
+        last_exec_qty_col.push(last_executed_qty);
+        cumulative_col.push(cumulative_filled_quantity);
+        status_col.push(status);
+        raw_status_col.push(raw_status);
+        exec_type_col.push(execution_type);
+        raw_exec_type_col.push(raw_execution_type);
+        venue_col.push(trading_venue);
+        avg_price_col.push(average_price);
+        last_price_col.push(last_executed_price);
+        business_unit_col.push(business_unit);
+    }
+
+    let mut df = DataFrame::new(vec![
+        Series::new("key".into(), key_col),
+        Series::new("ts_us".into(), ts_col),
+        Series::new("event_time".into(), event_time_col),
+        Series::new("symbol".into(), symbol_col),
+        Series::new("order_id".into(), order_id_col),
+        Series::new("client_order_id".into(), client_order_id_col),
+        Series::new(
+            "client_order_id_str".into(),
+            client_order_id_str_col.as_slice(),
+        ),
+        Series::new("side".into(), side_col),
+        Series::new("order_type".into(), order_type_col),
+        Series::new("time_in_force".into(), tif_col),
+        Series::new("price".into(), price_col),
+        Series::new("quantity".into(), qty_col),
+        Series::new("last_executed_qty".into(), last_exec_qty_col),
+        Series::new("cumulative_filled_quantity".into(), cumulative_col),
+        Series::new("status".into(), status_col),
+        Series::new("raw_status".into(), raw_status_col),
+        Series::new("execution_type".into(), exec_type_col),
+        Series::new("raw_execution_type".into(), raw_exec_type_col),
+        Series::new("trading_venue".into(), venue_col),
+        Series::new("average_price".into(), avg_price_col.as_slice()),
+        Series::new("last_executed_price".into(), last_price_col.as_slice()),
+        Series::new("business_unit".into(), business_unit_col.as_slice()),
+    ])?;
+
+    let mut buf = Vec::new();
+    ParquetWriter::new(&mut buf).finish(&mut df)?;
+    Ok(buf)
+}
+
+#[derive(Debug)]
+struct DecodedTradeRecord {
+    event_time: i64,
+    trade_time: i64,
+    symbol: String,
+    trade_id: i64,
+    order_id: i64,
+    client_order_id: i64,
+    side: String,
+    price: f64,
+    quantity: f64,
+    commission: f64,
+    commission_asset: String,
+    is_maker: bool,
+    realized_pnl: f64,
+    trading_venue: String,
+    cumulative_filled_quantity: f64,
+    order_status: Option<String>,
+}
+
+#[derive(Debug)]
+struct DecodedOrderRecord {
+    event_time: i64,
+    symbol: String,
+    order_id: i64,
+    client_order_id: i64,
+    client_order_id_str: Option<String>,
+    side: String,
+    order_type: String,
+    time_in_force: String,
+    price: f64,
+    quantity: f64,
+    last_executed_qty: f64,
+    cumulative_filled_quantity: f64,
+    status: String,
+    raw_status: String,
+    execution_type: String,
+    raw_execution_type: String,
+    trading_venue: String,
+    average_price: Option<f64>,
+    last_executed_price: Option<f64>,
+    business_unit: Option<String>,
+}
+
+fn decode_trade_record(bytes: &[u8]) -> Result<DecodedTradeRecord> {
+    let mut cursor = Bytes::copy_from_slice(bytes);
+    let event_time = read_i64(&mut cursor, "trade update event_time")?;
+    let trade_time = read_i64(&mut cursor, "trade update trade_time")?;
+    let symbol = read_string(&mut cursor)?;
+    let trade_id = read_i64(&mut cursor, "trade update trade_id")?;
+    let order_id = read_i64(&mut cursor, "trade update order_id")?;
+    let client_order_id = read_i64(&mut cursor, "trade update client_order_id")?;
+    let side_raw = read_u8(&mut cursor, "trade update side")?;
+    let price = read_f64(&mut cursor, "trade update price")?;
+    let quantity = read_f64(&mut cursor, "trade update quantity")?;
+    let commission = read_f64(&mut cursor, "trade update commission")?;
+    let commission_asset = read_string(&mut cursor)?;
+    let is_maker = read_u8(&mut cursor, "trade update is_maker")? != 0;
+    let realized_pnl = read_f64(&mut cursor, "trade update realized_pnl")?;
+    let trading_venue = read_u8(&mut cursor, "trade update trading_venue")?;
+    let cumulative_filled_quantity = read_f64(&mut cursor, "trade update cumulative_qty")?;
+    let has_status = read_u8(&mut cursor, "trade update status flag")?;
+    let order_status = if has_status != 0 {
+        let status_code = read_u8(&mut cursor, "trade update status value")?;
+        order_status_from_u8(status_code).map(|s| s.as_str().to_string())
+    } else {
+        None
+    };
+
+    let side_str = Side::from_u8(side_raw)
+        .map(|s| s.as_str().to_string())
+        .unwrap_or_else(|| format!("Side({side_raw})"));
+    let venue_str = TradingVenue::from_u8(trading_venue)
+        .map(|v| v.as_str().to_string())
+        .unwrap_or_else(|| format!("Venue({trading_venue})"));
+
+    Ok(DecodedTradeRecord {
+        event_time,
+        trade_time,
+        symbol,
+        trade_id,
+        order_id,
+        client_order_id,
+        side: side_str,
+        price,
+        quantity,
+        commission,
+        commission_asset,
+        is_maker,
+        realized_pnl,
+        trading_venue: venue_str,
+        cumulative_filled_quantity,
+        order_status,
+    })
+}
+
+fn decode_order_record(bytes: &[u8]) -> Result<DecodedOrderRecord> {
+    let mut cursor = Bytes::copy_from_slice(bytes);
+    let event_time = read_i64(&mut cursor, "order update event_time")?;
+    let symbol = read_string(&mut cursor)?;
+    let order_id = read_i64(&mut cursor, "order update order_id")?;
+    let client_order_id = read_i64(&mut cursor, "order update client_order_id")?;
+    let client_order_id_str = read_opt_string(&mut cursor)?;
+    let side_raw = read_u8(&mut cursor, "order update side")?;
+    let order_type_raw = read_u8(&mut cursor, "order update order_type")?;
+    let tif_raw = read_u8(&mut cursor, "order update time_in_force")?;
+    let price = read_f64(&mut cursor, "order update price")?;
+    let quantity = read_f64(&mut cursor, "order update quantity")?;
+    let last_executed_qty = read_f64(&mut cursor, "order update last_exec_qty")?;
+    let cumulative_filled_quantity = read_f64(&mut cursor, "order update cumulative_qty")?;
+    let status_raw = read_u8(&mut cursor, "order update status")?;
+    let raw_status = read_string(&mut cursor)?;
+    let execution_type_raw = read_u8(&mut cursor, "order update execution_type")?;
+    let raw_execution_type = read_string(&mut cursor)?;
+    let trading_venue_raw = read_u8(&mut cursor, "order update trading_venue")?;
+    let average_price = read_opt_f64(&mut cursor)?;
+    let last_executed_price = read_opt_f64(&mut cursor)?;
+    let business_unit = read_opt_string(&mut cursor)?;
+
+    let side = Side::from_u8(side_raw)
+        .map(|s| s.as_str().to_string())
+        .unwrap_or_else(|| format!("Side({side_raw})"));
+    let order_type = OrderType::from_u8(order_type_raw)
+        .map(|t| t.as_str().to_string())
+        .unwrap_or_else(|| format!("Type({order_type_raw})"));
+    let time_in_force = time_in_force_from_u8(tif_raw)
+        .map(|t| t.as_str().to_string())
+        .unwrap_or_else(|| format!("TIF({tif_raw})"));
+    let status = order_status_from_u8(status_raw)
+        .map(|s| s.as_str().to_string())
+        .unwrap_or_else(|| format!("Status({status_raw})"));
+    let execution_type = execution_type_from_u8(execution_type_raw)
+        .map(|e| e.as_str().to_string())
+        .unwrap_or_else(|| format!("ExecType({execution_type_raw})"));
+    let trading_venue = TradingVenue::from_u8(trading_venue_raw)
+        .map(|v| v.as_str().to_string())
+        .unwrap_or_else(|| format!("Venue({trading_venue_raw})"));
+
+    Ok(DecodedOrderRecord {
+        event_time,
+        symbol,
+        order_id,
+        client_order_id,
+        client_order_id_str,
+        side,
+        order_type,
+        time_in_force,
+        price,
+        quantity,
+        last_executed_qty,
+        cumulative_filled_quantity,
+        status,
+        raw_status,
+        execution_type,
+        raw_execution_type,
+        trading_venue,
+        average_price,
+        last_executed_price,
+        business_unit,
+    })
+}
+
+fn read_string(cursor: &mut Bytes) -> Result<String> {
+    if cursor.remaining() < 4 {
+        return Err(anyhow!("payload too short to read string length"));
+    }
+    let len = cursor.get_u32_le() as usize;
+    if cursor.remaining() < len {
+        return Err(anyhow!(
+            "payload too short to read string data (need {len}, have {})",
+            cursor.remaining()
+        ));
+    }
+    let bytes = cursor.copy_to_bytes(len);
+    Ok(String::from_utf8(bytes.to_vec())?)
+}
+
+fn read_opt_string(cursor: &mut Bytes) -> Result<Option<String>> {
+    if !cursor.has_remaining() {
+        return Err(anyhow!("payload too short to read string flag"));
+    }
+    let flag = cursor.get_u8();
+    if flag == 0 {
+        return Ok(None);
+    }
+    read_string(cursor).map(Some)
+}
+
+fn read_opt_f64(cursor: &mut Bytes) -> Result<Option<f64>> {
+    if !cursor.has_remaining() {
+        return Err(anyhow!("payload too short to read f64 flag"));
+    }
+    let flag = cursor.get_u8();
+    if flag == 0 {
+        return Ok(None);
+    }
+    if cursor.remaining() < 8 {
+        return Err(anyhow!("payload too short to read f64 value"));
+    }
+    Ok(Some(cursor.get_f64_le()))
+}
+
+fn read_i64(cursor: &mut Bytes, field: &str) -> Result<i64> {
+    if cursor.remaining() < 8 {
+        return Err(anyhow!("payload too short to read {field}"));
+    }
+    Ok(cursor.get_i64_le())
+}
+
+fn read_f64(cursor: &mut Bytes, field: &str) -> Result<f64> {
+    if cursor.remaining() < 8 {
+        return Err(anyhow!("payload too short to read {field}"));
+    }
+    Ok(cursor.get_f64_le())
+}
+
+fn read_u8(cursor: &mut Bytes, field: &str) -> Result<u8> {
+    if !cursor.has_remaining() {
+        return Err(anyhow!("payload too short to read {field}"));
+    }
+    Ok(cursor.get_u8())
+}
+
+fn parse_simple_key(key: &str) -> Result<u64> {
+    key.parse::<u64>()
+        .with_context(|| format!("invalid key format: {}", key))
+}
+
+fn time_in_force_from_u8(value: u8) -> Option<TimeInForce> {
+    match value {
+        0 => Some(TimeInForce::GTC),
+        1 => Some(TimeInForce::IOC),
+        2 => Some(TimeInForce::FOK),
+        3 => Some(TimeInForce::GTX),
+        _ => None,
+    }
+}
+
+fn execution_type_from_u8(value: u8) -> Option<ExecutionType> {
+    match value {
+        0 => Some(ExecutionType::New),
+        1 => Some(ExecutionType::Canceled),
+        2 => Some(ExecutionType::Replaced),
+        3 => Some(ExecutionType::Rejected),
+        4 => Some(ExecutionType::Trade),
+        5 => Some(ExecutionType::Expired),
+        6 => Some(ExecutionType::TradePrevention),
+        _ => None,
+    }
+}
+
+fn order_status_from_u8(value: u8) -> Option<OrderStatus> {
+    match value {
+        0 => Some(OrderStatus::New),
+        1 => Some(OrderStatus::PartiallyFilled),
+        2 => Some(OrderStatus::Filled),
+        3 => Some(OrderStatus::Canceled),
+        4 => Some(OrderStatus::Expired),
+        5 => Some(OrderStatus::ExpiredInMatch),
+        _ => None,
+    }
 }

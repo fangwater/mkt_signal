@@ -1014,8 +1014,7 @@ impl HedgeArbStrategy {
                     }
                 }
                 Some(OrderStatus::PartiallyFilled) => {
-                    //部分成交，只扣量，不对冲
-                    self.cumulative_hedged_qty += trade.quantity();
+                    // 开仓侧部分成交，只是更新cumulative_open_qty。这一部分在外部已经做过了
                 }
                 _ => {
                     error!(

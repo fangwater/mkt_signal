@@ -600,7 +600,7 @@ impl Order {
                         params_parts.push(format!("price={}", format_price(self.price)));
                     }
                     // 暂时支持双向持仓模式，强制设置 positionSide=LONG
-                    params_parts.push("positionSide=LONG".to_string());
+                    params_parts.push("positionSide=SHORT".to_string());
                 }
                 let params_plain = params_parts.join("&");
                 info!(
