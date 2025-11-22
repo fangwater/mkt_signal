@@ -3,21 +3,19 @@
 //! 从 Redis 加载价差阈值并更新到 SpreadFactor 单例。
 //! Redis Hash 格式：
 //! - Key: `binance_spread_thresholds`
-//! - Fields (每个 symbol 有 12 个字段):
+//! - Fields (每个 symbol 有 8 个字段):
 //!   - `{symbol}_forward_open_mm`: 正套开仓MM阈值
 //!   - `{symbol}_forward_open_mt`: 正套开仓MT阈值
 //!   - `{symbol}_forward_cancel_mm`: 正套撤单MM阈值
 //!   - `{symbol}_forward_cancel_mt`: 正套撤单MT阈值
-//!   - `{symbol}_forward_close_mm`: 正套平仓MM阈值
-//!   - `{symbol}_forward_close_mt`: 正套平仓MT阈值
 //!   - `{symbol}_backward_open_mm`: 反套开仓MM阈值
 //!   - `{symbol}_backward_open_mt`: 反套开仓MT阈值
 //!   - `{symbol}_backward_cancel_mm`: 反套撤单MM阈值
 //!   - `{symbol}_backward_cancel_mt`: 反套撤单MT阈值
-//!   - `{symbol}_backward_close_mm`: 反套平仓MM阈值
-//!   - `{symbol}_backward_close_mt`: 反套平仓MT阈值
 //!
-//! 注意：默认使用币安现货和合约，venue 固定为 BinanceMargin 和 BinanceUm
+//! 注意：
+//! - 默认使用币安现货和合约，venue 固定为 BinanceMargin 和 BinanceUm
+//! - forward_close 和 backward_close 在代码中通过调用对应的 open 方法实现，无需单独加载
 
 use anyhow::Result;
 use log::{info, warn};
@@ -155,18 +153,7 @@ pub fn load_from_redis(hash_map: HashMap<String, String>) -> Result<()> {
                     loaded_count += 1;
                 }
                 ("forward", "cancel") => {
-                    spread_factor.set_forward_cancel_threshold(
-                        venue1,
-                        symbol,
-                        venue2,
-                        symbol,
-                        mm_threshold,
-                        mt_threshold,
-                    );
-                    loaded_count += 1;
-                }
-                ("forward", "close") => {
-                    spread_factor.set_forward_close_threshold(
+                    spread_factor.set_forward_open_cancel_threshold(
                         venue1,
                         symbol,
                         venue2,
@@ -189,17 +176,6 @@ pub fn load_from_redis(hash_map: HashMap<String, String>) -> Result<()> {
                 }
                 ("backward", "cancel") => {
                     spread_factor.set_backward_cancel_threshold(
-                        venue1,
-                        symbol,
-                        venue2,
-                        symbol,
-                        mm_threshold,
-                        mt_threshold,
-                    );
-                    loaded_count += 1;
-                }
-                ("backward", "close") => {
-                    spread_factor.set_backward_close_threshold(
                         venue1,
                         symbol,
                         venue2,

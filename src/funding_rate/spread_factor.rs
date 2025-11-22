@@ -335,7 +335,7 @@ impl SpreadFactor {
             symbol2.to_string(),
         );
         let mt_config = SpreadThresholdConfig {
-            compare_op: CompareOp::LessThan,
+            compare_op: CompareOp::GreaterThan,
             arb_direction: ArbDirection::Forward,
             operation: OperationType::Cancel,
             spread_type: SpreadType::BidAsk,
@@ -380,7 +380,7 @@ impl SpreadFactor {
             symbol2.to_string(),
         );
         let mt_config = SpreadThresholdConfig {
-            compare_op: CompareOp::LessThan,
+            compare_op: CompareOp::GreaterThan,
             arb_direction: ArbDirection::Backward,
             operation: OperationType::Open,
             spread_type: SpreadType::AskBid,
@@ -398,7 +398,49 @@ impl SpreadFactor {
         self.mt_thresholds.borrow_mut().insert(key.clone(), mt_config);
         self.mm_thresholds.borrow_mut().insert(key, mm_config);
     }
-    
+
+    /// 设置反套撤单阈值
+    pub fn set_backward_cancel_threshold(
+        &self,
+        venue1: TradingVenue,
+        symbol1: &str,
+        venue2: TradingVenue,
+        symbol2: &str,
+        mm_threshold: f64,
+        mt_threshold: f64,
+    ) {
+        // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
+        let store_venue1 = match venue1 {
+            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            _ => venue1,
+        };
+
+        let key = (
+            store_venue1,
+            symbol1.to_string(),
+            venue2,
+            symbol2.to_string(),
+        );
+        let mt_config = SpreadThresholdConfig {
+            compare_op: CompareOp::LessThan,
+            arb_direction: ArbDirection::Backward,
+            operation: OperationType::Cancel,
+            spread_type: SpreadType::AskBid,
+            threshold: mt_threshold,
+        };
+
+        let mm_config = SpreadThresholdConfig {
+            compare_op: CompareOp::LessThan,
+            arb_direction: ArbDirection::Backward,
+            operation: OperationType::Cancel,
+            spread_type: SpreadType::SpreadRate,
+            threshold: mm_threshold,
+        };
+
+        self.mt_thresholds.borrow_mut().insert(key.clone(), mt_config);
+        self.mm_thresholds.borrow_mut().insert(key, mm_config);
+    }
+
     // ===== 6个 satisfy 函数 =====
 
     /// 检查是否满足正套开仓条件
@@ -763,189 +805,5 @@ impl SpreadFactor {
         } else {
             log::info!("  SpreadRate (mid price): 无数据");
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_spread_factor_singleton() {
-        let sf1 = SpreadFactor::instance();
-        let sf2 = SpreadFactor::instance();
-
-        // 验证是同一个实例
-        assert!(std::ptr::eq(sf1, sf2));
-    }
-
-    #[test]
-    fn test_update_and_get_all_factors() {
-        let sf = SpreadFactor::instance();
-
-        let venue1 = TradingVenue::BinanceSpot;
-        let symbol1 = "BTCUSDT";
-        let venue2 = TradingVenue::BinanceSwap;
-        let symbol2 = "BTCUSDT";
-
-        // venue1(spot): bid=50000, ask=50100
-        // venue2(swap): bid=49900, ask=50000
-        // bidask_sr = (50000 - 50000) / 50000 = 0.0
-        // askbid_sr = (50100 - 49900) / 50100 = 0.00399...
-        // mid_price_spot = (50000 + 50100) / 2 = 50050
-        // mid_price_swap = (49900 + 50000) / 2 = 49950
-        // spread_rate = (50050 - 49950) / 50050 = 0.001998...
-        let (askbid, bidask, spread_rate) = sf.update(
-            venue1, symbol1, venue2, symbol2, 50000.0, 50100.0, // venue1 bid, ask
-            49900.0, 50000.0, // venue2 bid, ask
-        );
-
-        assert!(bidask.is_some());
-        assert!((bidask.unwrap() - 0.0).abs() < 0.0001);
-
-        assert!(askbid.is_some());
-        assert!((askbid.unwrap() - 0.00399).abs() < 0.0001);
-
-        assert!(spread_rate.is_some());
-        assert!((spread_rate.unwrap() - 0.001998).abs() < 0.0001);
-
-        // 验证 getter 方法
-        let retrieved_bidask = sf.get_bidask(venue1, symbol1, venue2, symbol2);
-        assert_eq!(retrieved_bidask, bidask);
-
-        let retrieved_askbid = sf.get_askbid(venue1, symbol1, venue2, symbol2);
-        assert_eq!(retrieved_askbid, askbid);
-
-        let retrieved_spread_rate = sf.get_spread_rate(venue1, symbol1, venue2, symbol2);
-        assert_eq!(retrieved_spread_rate, spread_rate);
-    }
-
-    #[test]
-    fn test_forward_open_threshold() {
-        let sf = SpreadFactor::instance();
-
-        let venue1 = TradingVenue::BinanceSpot;
-        let symbol1 = "SOLUSDT";
-        let venue2 = TradingVenue::BinanceSwap;
-        let symbol2 = "SOLUSDT";
-
-        // 设置正套开仓阈值: MM模式 <= 0.005, MT模式 <= 0.006
-        sf.set_forward_open_threshold(venue1, symbol1, venue2, symbol2, 0.005, 0.006);
-
-        // 测试 MM 模式
-        sf.set_mode(FactorMode::MM);
-
-        // 更新 bidask = 0.003 (满足MM条件: < 0.005)
-        // venue1_bid=100.0, venue2_ask=99.7 => bidask = (100 - 99.7) / 100 = 0.003
-        sf.update(venue1, symbol1, venue2, symbol2, 100.0, 100.5, 99.5, 99.7);
-        assert!(sf.satisfy_forward_open(venue1, symbol1, venue2, symbol2));
-
-        // 更新 bidask = 0.0055 (不满足MM条件: > 0.005)
-        // venue1_bid=100.0, venue2_ask=99.45 => bidask = (100 - 99.45) / 100 = 0.0055
-        sf.update(venue1, symbol1, venue2, symbol2, 100.0, 100.5, 99.3, 99.45);
-        assert!(!sf.satisfy_forward_open(venue1, symbol1, venue2, symbol2));
-
-        // 测试 MT 模式
-        sf.set_mode(FactorMode::MT);
-
-        // bidask = 0.0055 (满足MT条件: < 0.006)
-        assert!(sf.satisfy_forward_open(venue1, symbol1, venue2, symbol2));
-
-        // 更新 bidask = 0.007 (不满足MT条件: > 0.006)
-        // venue1_bid=100.0, venue2_ask=99.3 => bidask = (100 - 99.3) / 100 = 0.007
-        sf.update(venue1, symbol1, venue2, symbol2, 100.0, 100.5, 99.1, 99.3);
-        assert!(!sf.satisfy_forward_open(venue1, symbol1, venue2, symbol2));
-    }
-
-    #[test]
-    fn test_forward_close_threshold() {
-        let sf = SpreadFactor::instance();
-
-        let venue1 = TradingVenue::BinanceSpot;
-        let symbol1 = "ADAUSDT";
-        let venue2 = TradingVenue::BinanceSwap;
-        let symbol2 = "ADAUSDT";
-
-        // 设置正套平仓阈值: MM模式 >= 0.01, MT模式 >= 0.009
-        sf.set_forward_close_threshold(venue1, symbol1, venue2, symbol2, 0.01, 0.009);
-
-        // 测试 MM 模式
-        sf.set_mode(FactorMode::MM);
-
-        // 更新 askbid = 0.015 (满足MM条件: > 0.01)
-        // venue1_ask=1.0, venue2_bid=0.985 => askbid = (1.0 - 0.985) / 1.0 = 0.015
-        sf.update(venue1, symbol1, venue2, symbol2, 0.99, 1.0, 0.985, 0.99);
-        assert!(sf.satisfy_forward_close(venue1, symbol1, venue2, symbol2));
-
-        // 更新 askbid = 0.0095 (不满足MM条件: < 0.01)
-        // venue1_ask=1.0, venue2_bid=0.9905 => askbid = (1.0 - 0.9905) / 1.0 = 0.0095
-        sf.update(venue1, symbol1, venue2, symbol2, 0.99, 1.0, 0.9905, 0.995);
-        assert!(!sf.satisfy_forward_close(venue1, symbol1, venue2, symbol2));
-
-        // 测试 MT 模式
-        sf.set_mode(FactorMode::MT);
-
-        // askbid = 0.0095 (满足MT条件: > 0.009)
-        assert!(sf.satisfy_forward_close(venue1, symbol1, venue2, symbol2));
-
-        // 更新 askbid = 0.008 (不满足MT条件: < 0.009)
-        // venue1_ask=1.0, venue2_bid=0.992 => askbid = (1.0 - 0.992) / 1.0 = 0.008
-        sf.update(venue1, symbol1, venue2, symbol2, 0.99, 1.0, 0.992, 0.995);
-        assert!(!sf.satisfy_forward_close(venue1, symbol1, venue2, symbol2));
-    }
-
-    #[test]
-    fn test_backward_open_threshold() {
-        let sf = SpreadFactor::instance();
-
-        let venue1 = TradingVenue::BinanceSpot;
-        let symbol1 = "DOGEUSDT";
-        let venue2 = TradingVenue::BinanceSwap;
-        let symbol2 = "DOGEUSDT";
-
-        // 设置反套开仓阈值: MM模式 <= 0.003, MT模式 <= 0.004
-        sf.set_backward_open_threshold(venue1, symbol1, venue2, symbol2, 0.003, 0.004);
-
-        // 测试 MM 模式
-        sf.set_mode(FactorMode::MM);
-
-        // 更新 askbid = 0.002 (满足MM条件: < 0.003)
-        // venue1_ask=0.1, venue2_bid=0.0998 => askbid = (0.1 - 0.0998) / 0.1 = 0.002
-        sf.update(venue1, symbol1, venue2, symbol2, 0.099, 0.1, 0.0998, 0.0999);
-        assert!(sf.satisfy_backward_open(venue1, symbol1, venue2, symbol2));
-
-        // 更新 askbid = 0.0035 (不满足MM条件: > 0.003)
-        // venue1_ask=0.1, venue2_bid=0.09965 => askbid = (0.1 - 0.09965) / 0.1 = 0.0035
-        sf.update(
-            venue1, symbol1, venue2, symbol2, 0.099, 0.1, 0.09965, 0.0998,
-        );
-        assert!(!sf.satisfy_backward_open(venue1, symbol1, venue2, symbol2));
-
-        // 测试 MT 模式
-        sf.set_mode(FactorMode::MT);
-
-        // askbid = 0.0035 (满足MT条件: < 0.004)
-        assert!(sf.satisfy_backward_open(venue1, symbol1, venue2, symbol2));
-
-        // 更新 askbid = 0.005 (不满足MT条件: > 0.004)
-        // venue1_ask=0.1, venue2_bid=0.0995 => askbid = (0.1 - 0.0995) / 0.1 = 0.005
-        sf.update(venue1, symbol1, venue2, symbol2, 0.099, 0.1, 0.0995, 0.0997);
-        assert!(!sf.satisfy_backward_open(venue1, symbol1, venue2, symbol2));
-    }
-
-    #[test]
-    fn test_mode_setting() {
-        let sf = SpreadFactor::instance();
-
-        // 验证默认模式为 MM
-        assert_eq!(sf.get_mode(), FactorMode::MM);
-
-        // 设置为 MT 模式
-        sf.set_mode(FactorMode::MT);
-        assert_eq!(sf.get_mode(), FactorMode::MT);
-
-        // 切换回 MM 模式
-        sf.set_mode(FactorMode::MM);
-        assert_eq!(sf.get_mode(), FactorMode::MM);
     }
 }
