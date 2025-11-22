@@ -664,7 +664,7 @@ fn decode_context(signal_kind: SignalKind, record: &SignalRecordMessage) -> Opti
                 "price_tick": ctx.price_tick,
                 "exp_time": ctx.exp_time,
                 "create_ts": ctx.create_ts,
-                "open_threshold": ctx.open_threshold,
+                "price_offset": ctx.price_offset,
                 "hedge_timeout_us": ctx.hedge_timeout_us,
                 "funding_ma": if ctx.funding_ma != 0.0 { Some(ctx.funding_ma) } else { None },
                 "predicted_funding_rate": if ctx.predicted_funding_rate != 0.0 { Some(ctx.predicted_funding_rate) } else { None },
@@ -802,7 +802,7 @@ fn build_parquet_open(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> 
     let mut price_col: Vec<f64> = Vec::with_capacity(entries.len());
     let mut price_tick_col: Vec<f64> = Vec::with_capacity(entries.len());
     let mut exp_time_col: Vec<i64> = Vec::with_capacity(entries.len());
-    let mut open_threshold_col: Vec<f64> = Vec::with_capacity(entries.len());
+    let mut price_offset_col: Vec<f64> = Vec::with_capacity(entries.len());
     let mut hedge_timeout_us_col: Vec<i64> = Vec::with_capacity(entries.len());
     let mut funding_ma_col: Vec<Option<f64>> = Vec::with_capacity(entries.len());
     let mut predicted_funding_rate_col: Vec<Option<f64>> = Vec::with_capacity(entries.len());
@@ -852,7 +852,7 @@ fn build_parquet_open(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> 
         price_col.push(ctx.price);
         price_tick_col.push(ctx.price_tick);
         exp_time_col.push(ctx.exp_time);
-        open_threshold_col.push(ctx.open_threshold);
+        price_offset_col.push(ctx.price_offset);
         hedge_timeout_us_col.push(ctx.hedge_timeout_us);
         funding_ma_col.push(if ctx.funding_ma != 0.0 {
             Some(ctx.funding_ma)
@@ -890,7 +890,7 @@ fn build_parquet_open(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> 
         Series::new("price".into(), price_col),
         Series::new("price_tick".into(), price_tick_col),
         Series::new("exp_time".into(), exp_time_col),
-        Series::new("open_threshold".into(), open_threshold_col),
+        Series::new("price_offset".into(), price_offset_col),
         Series::new("hedge_timeout_us".into(), hedge_timeout_us_col),
         Series::new("funding_ma".into(), funding_ma_col.as_slice()),
         Series::new(

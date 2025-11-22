@@ -923,7 +923,7 @@ impl FrDecision {
 
         ctx.exp_time = now + self.open_order_ttl_us;
         ctx.create_ts = now;
-        ctx.open_threshold = 0.0; // TODO: 从 SpreadFactor 获取
+        ctx.price_offset = price_offset;
 
         // hedge_timeout_us 根据 SpreadFactor 的 mode 决定
         let spread_factor = SpreadFactor::instance();

@@ -39,8 +39,8 @@ pub struct ArbOpenCtx {
     /// Creation timestamp (microseconds)
     pub create_ts: i64,
 
-    /// Opening threshold (trigger condition)
-    pub open_threshold: f64,
+    /// Price offset from best bid/ask for limit order placement
+    pub price_offset: f64,
 
     /// Hedge timeout (microseconds)
     pub hedge_timeout_us: i64,
@@ -78,7 +78,7 @@ impl ArbOpenCtx {
             price_tick: 0.0,
             exp_time: 0,
             create_ts: 0,
-            open_threshold: 0.0,
+            price_offset: 0.0,
             hedge_timeout_us: 0,
             funding_ma: 0.0,
             predicted_funding_rate: 0.0,
@@ -165,7 +165,7 @@ impl SignalBytes for ArbOpenCtx {
         buf.put_f64_le(self.price_tick);
         buf.put_i64_le(self.exp_time);
         buf.put_i64_le(self.create_ts);
-        buf.put_f64_le(self.open_threshold);
+        buf.put_f64_le(self.price_offset);
         buf.put_i64_le(self.hedge_timeout_us);
 
         // Optional fields (using 0.0 for None)
@@ -206,7 +206,7 @@ impl SignalBytes for ArbOpenCtx {
         let price_tick = bytes.get_f64_le();
         let exp_time = bytes.get_i64_le();
         let create_ts = bytes.get_i64_le();
-        let open_threshold = bytes.get_f64_le();
+        let price_offset = bytes.get_f64_le();
         let hedge_timeout_us = bytes.get_i64_le();
 
         // Optional fields
@@ -234,7 +234,7 @@ impl SignalBytes for ArbOpenCtx {
             price_tick,
             exp_time,
             create_ts,
-            open_threshold,
+            price_offset,
             hedge_timeout_us,
             funding_ma,
             predicted_funding_rate,
