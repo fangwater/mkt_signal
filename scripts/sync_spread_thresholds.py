@@ -94,25 +94,15 @@ def parse_args() -> argparse.Namespace:
 # 此配置对所有 symbol 通用，只是每个 symbol 计算出的具体值不同
 
 SPREAD_THRESHOLD_MAPPING = {
-    "forward_open_mm": "binance_spread_5",
+    "forward_open_mm": "binance_spread_10", # spread < binance_spread_10
     "forward_open_mt": "binance_bidask_10",
-    "forward_open_cancel_mm": "binance_spread_10",
-    "forward_open_cancel_mt": "binance_bidask_15",
-    "forward_close_mm": "binance_spread_85",
-    "forward_close_mt": "binance_askbid_90",
-    "forward_close_cancel_mm": "binance_spread_80",
-    "forward_close_cancel_mt": "binance_bidask_15",
+    "forward_cancel_mm": "binance_spread_15", # spread > q15
+    "forward_cancel_mt": "binance_bidask_15", 
     
-    "backward_open_mm": "binance_spread_95",
-    "backward_open_mt": "binance_askbid_5",
-    "backward_open_cancel_mm": "binance_spread_95",
-    "backward_open_cancel_mt": "binance_askbid_5",
-    "backward_cancel_mm": "binance_spread_5",
-    "backward_cancel_mt": "binance_askbid_10",
-    "backward_close_mm": "binance_spread_5",
-    "backward_close_mt": "binance_bidask_90",
-    "backward_cancel_close_mm": "binance_spread_5",
-    "backward_cancel_close_mt": "binance_bidask_90",
+    "backward_open_mm": "binance_spread_90", # spread > q90
+    "backward_open_mt": "binance_askbid_5",  
+    "backward_cancel_mm": "binance_spread_85", #spread < q85
+    "backward_cancel_mt": "binance_askbid_5",
 }
 
 THRESHOLD_ORDER = list(SPREAD_THRESHOLD_MAPPING.keys())

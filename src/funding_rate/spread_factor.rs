@@ -10,11 +10,12 @@ use crate::signal::common::TradingVenue;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-/// 价差类型 (bidask 或 askbid)
+/// 价差类型 (bidask、askbid或者基于mid price 计算的spread rate)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SpreadType {
     BidAsk,
     AskBid,
+    SpreadRate
 }
 
 impl SpreadType {
@@ -22,6 +23,7 @@ impl SpreadType {
         match self {
             SpreadType::BidAsk => "bidask",
             SpreadType::AskBid => "askbid",
+            SpreadType::SpreadRate => "spread_rate"
         }
     }
 }
@@ -35,12 +37,10 @@ pub struct SpreadThresholdConfig {
     pub arb_direction: ArbDirection,
     /// 操作类型 (开仓/撤单/平仓)
     pub operation: OperationType,
-    /// 价差类型 ("bidask" 或 "askbid")
+    /// 价差类型 ("bidask" 或 "askbid" 或者 “spread_rate”, 之后可以是更多的因子)
     pub spread_type: SpreadType,
-    /// MM模式阈值
-    pub mm_threshold: f64,
-    /// MT模式阈值
-    pub mt_threshold: f64,
+    /// 阈值
+    pub threshold: f64,
 }
 
 /// 价差因子单例
@@ -59,9 +59,10 @@ pub struct SpreadFactor {
     spread_rate: RefCell<HashMap<VenuePair, HashMap<SymbolPair, f64>>>,
 
     /// 阈值表: (venue1, symbol1, venue2, symbol2) -> SpreadThresholdConfig
-    thresholds: RefCell<HashMap<ThresholdKey, SpreadThresholdConfig>>,
-
-    /// 模式: MM 或 MT
+    mm_thresholds: RefCell<HashMap<ThresholdKey, SpreadThresholdConfig>>,
+    
+    mt_thresholds: RefCell<HashMap<ThresholdKey, SpreadThresholdConfig>>,
+    /// 模式: MM 或 MT， mm采用mm的阈值，mt模式就用mt的阈值配置
     mode: RefCell<FactorMode>,
 }
 
@@ -72,7 +73,8 @@ impl SpreadFactor {
             askbid: RefCell::new(HashMap::new()),
             bidask: RefCell::new(HashMap::new()),
             spread_rate: RefCell::new(HashMap::new()),
-            thresholds: RefCell::new(HashMap::new()),
+            mm_thresholds: RefCell::new(HashMap::new()),
+            mt_thresholds: RefCell::new(HashMap::new()),
             mode: RefCell::new(FactorMode::default()),
         }
     }
@@ -264,7 +266,8 @@ impl SpreadFactor {
         }
     }
 
-    // ===== 6个 set 函数 =====
+    // ===== 4 个 set 函数，简化，因为对价差而言只有正开、反开 =====
+    // ===== 因此只需要正反开的开仓阈值和撤单阈值
 
     /// 设置正套开仓阈值
     /// forward_arb_open_tr: ("mm", "bidask", 10.0)
@@ -289,21 +292,28 @@ impl SpreadFactor {
             venue2,
             symbol2.to_string(),
         );
-        let config = SpreadThresholdConfig {
+        let mt_config = SpreadThresholdConfig {
             compare_op: CompareOp::LessThan,
             arb_direction: ArbDirection::Forward,
             operation: OperationType::Open,
             spread_type: SpreadType::BidAsk,
-            mm_threshold,
-            mt_threshold,
+            threshold: mt_threshold
         };
 
-        self.thresholds.borrow_mut().insert(key, config);
+        let mm_config = SpreadThresholdConfig {
+            compare_op: CompareOp::LessThan,
+            arb_direction: ArbDirection::Forward,
+            operation: OperationType::Open,
+            spread_type: SpreadType::SpreadRate,
+            threshold: mm_threshold
+        };
+
+        self.mt_thresholds.borrow_mut().insert(key.clone(), mt_config);
+        self.mm_thresholds.borrow_mut().insert(key, mm_config);
     }
 
-    /// 设置正套撤单阈值
-    /// forward_arb_cancel_tr: ("mm", "bidask", 15.0)
-    pub fn set_forward_cancel_threshold(
+    /// 设置正套open撤单阈值
+    pub fn set_forward_open_cancel_threshold(
         &self,
         venue1: TradingVenue,
         symbol1: &str,
@@ -324,52 +334,27 @@ impl SpreadFactor {
             venue2,
             symbol2.to_string(),
         );
-        let config = SpreadThresholdConfig {
+        let mt_config = SpreadThresholdConfig {
             compare_op: CompareOp::LessThan,
             arb_direction: ArbDirection::Forward,
             operation: OperationType::Cancel,
             spread_type: SpreadType::BidAsk,
-            mm_threshold,
-            mt_threshold,
+            threshold: mt_threshold,
         };
 
-        self.thresholds.borrow_mut().insert(key, config);
-    }
-
-    /// 设置正套平仓阈值
-    /// forward_arb_close_tr: ("mm", "askbid", 90.0)
-    pub fn set_forward_close_threshold(
-        &self,
-        venue1: TradingVenue,
-        symbol1: &str,
-        venue2: TradingVenue,
-        symbol2: &str,
-        mm_threshold: f64,
-        mt_threshold: f64,
-    ) {
-        // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
-        let store_venue1 = match venue1 {
-            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
-            _ => venue1,
-        };
-
-        let key = (
-            store_venue1,
-            symbol1.to_string(),
-            venue2,
-            symbol2.to_string(),
-        );
-        let config = SpreadThresholdConfig {
+        let mm_config = SpreadThresholdConfig {
             compare_op: CompareOp::GreaterThan,
             arb_direction: ArbDirection::Forward,
-            operation: OperationType::Close,
-            spread_type: SpreadType::AskBid,
-            mm_threshold,
-            mt_threshold,
+            operation: OperationType::Cancel,
+            spread_type: SpreadType::SpreadRate,
+            threshold: mm_threshold
         };
 
-        self.thresholds.borrow_mut().insert(key, config);
+        self.mt_thresholds.borrow_mut().insert(key.clone(), mt_config);
+        self.mm_thresholds.borrow_mut().insert(key, mm_config);
     }
+
+
 
     /// 设置反套开仓阈值
     /// backward_arb_open_tr: ("mm", "askbid", 5.0)
@@ -394,88 +379,26 @@ impl SpreadFactor {
             venue2,
             symbol2.to_string(),
         );
-        let config = SpreadThresholdConfig {
+        let mt_config = SpreadThresholdConfig {
             compare_op: CompareOp::LessThan,
             arb_direction: ArbDirection::Backward,
             operation: OperationType::Open,
             spread_type: SpreadType::AskBid,
-            mm_threshold,
-            mt_threshold,
+            threshold: mt_threshold,
         };
 
-        self.thresholds.borrow_mut().insert(key, config);
-    }
-
-    /// 设置反套撤单阈值
-    /// backward_arb_cancel_tr: ("mm", "askbid", 10.0)
-    pub fn set_backward_cancel_threshold(
-        &self,
-        venue1: TradingVenue,
-        symbol1: &str,
-        venue2: TradingVenue,
-        symbol2: &str,
-        mm_threshold: f64,
-        mt_threshold: f64,
-    ) {
-        // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
-        let store_venue1 = match venue1 {
-            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
-            _ => venue1,
-        };
-
-        let key = (
-            store_venue1,
-            symbol1.to_string(),
-            venue2,
-            symbol2.to_string(),
-        );
-        let config = SpreadThresholdConfig {
-            compare_op: CompareOp::LessThan,
-            arb_direction: ArbDirection::Backward,
-            operation: OperationType::Cancel,
-            spread_type: SpreadType::AskBid,
-            mm_threshold,
-            mt_threshold,
-        };
-
-        self.thresholds.borrow_mut().insert(key, config);
-    }
-
-    /// 设置反套平仓阈值
-    /// backward_arb_close_tr: ("mm", "bidask", 95.0)
-    pub fn set_backward_close_threshold(
-        &self,
-        venue1: TradingVenue,
-        symbol1: &str,
-        venue2: TradingVenue,
-        symbol2: &str,
-        mm_threshold: f64,
-        mt_threshold: f64,
-    ) {
-        // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
-        let store_venue1 = match venue1 {
-            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
-            _ => venue1,
-        };
-
-        let key = (
-            store_venue1,
-            symbol1.to_string(),
-            venue2,
-            symbol2.to_string(),
-        );
-        let config = SpreadThresholdConfig {
+        let mm_config = SpreadThresholdConfig {
             compare_op: CompareOp::GreaterThan,
             arb_direction: ArbDirection::Backward,
-            operation: OperationType::Close,
-            spread_type: SpreadType::BidAsk,
-            mm_threshold,
-            mt_threshold,
+            operation: OperationType::Open,
+            spread_type: SpreadType::SpreadRate,
+            threshold: mm_threshold,
         };
 
-        self.thresholds.borrow_mut().insert(key, config);
+        self.mt_thresholds.borrow_mut().insert(key.clone(), mt_config);
+        self.mm_thresholds.borrow_mut().insert(key, mm_config);
     }
-
+    
     // ===== 6个 satisfy 函数 =====
 
     /// 检查是否满足正套开仓条件
@@ -499,8 +422,13 @@ impl SpreadFactor {
             venue2,
             symbol2.to_string(),
         );
-        let thresholds = self.thresholds.borrow();
+
+        // 根据当前模式选择对应的 config
         let current_mode = self.get_mode();
+        let thresholds = match current_mode {
+            FactorMode::MM => self.mm_thresholds.borrow(),
+            FactorMode::MT => self.mt_thresholds.borrow(),
+        };
 
         if let Some(config) = thresholds.get(&key) {
             if config.arb_direction == ArbDirection::Forward
@@ -509,15 +437,11 @@ impl SpreadFactor {
                 let value = match config.spread_type {
                     SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
                     SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
+                    SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
                 };
 
                 if let Some(v) = value {
-                    // 根据当前模式选择对应的阈值
-                    let threshold = match current_mode {
-                        FactorMode::MM => config.mm_threshold,
-                        FactorMode::MT => config.mt_threshold,
-                    };
-                    return config.compare_op.check(v, threshold);
+                    return config.compare_op.check(v, config.threshold);
                 }
             }
         }
@@ -541,8 +465,13 @@ impl SpreadFactor {
             venue2,
             symbol2.to_string(),
         );
-        let thresholds = self.thresholds.borrow();
+
+        // 根据当前模式选择对应的 config
         let current_mode = self.get_mode();
+        let thresholds = match current_mode {
+            FactorMode::MM => self.mm_thresholds.borrow(),
+            FactorMode::MT => self.mt_thresholds.borrow(),
+        };
 
         if let Some(config) = thresholds.get(&key) {
             if config.arb_direction == ArbDirection::Forward
@@ -551,15 +480,11 @@ impl SpreadFactor {
                 let value = match config.spread_type {
                     SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
                     SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
+                    SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
                 };
 
                 if let Some(v) = value {
-                    // 根据当前模式选择对应的阈值
-                    let threshold = match current_mode {
-                        FactorMode::MM => config.mm_threshold,
-                        FactorMode::MT => config.mt_threshold,
-                    };
-                    return config.compare_op.check(v, threshold);
+                    return config.compare_op.check(v, config.threshold);
                 }
             }
         }
@@ -568,7 +493,7 @@ impl SpreadFactor {
     }
 
     /// 检查是否满足正套平仓条件
-    /// 根据当前模式,只需满足对应模式的阈值
+    /// 正套平仓的操作方向和反套开仓一样，直接调用反套开仓逻辑
     pub fn satisfy_forward_close(
         &self,
         venue1: TradingVenue,
@@ -576,37 +501,7 @@ impl SpreadFactor {
         venue2: TradingVenue,
         symbol2: &str,
     ) -> bool {
-        let query_venue1 = Self::map_venue(venue1);
-        let key = (
-            query_venue1,
-            symbol1.to_string(),
-            venue2,
-            symbol2.to_string(),
-        );
-        let thresholds = self.thresholds.borrow();
-        let current_mode = self.get_mode();
-
-        if let Some(config) = thresholds.get(&key) {
-            if config.arb_direction == ArbDirection::Forward
-                && config.operation == OperationType::Close
-            {
-                let value = match config.spread_type {
-                    SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
-                    SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
-                };
-
-                if let Some(v) = value {
-                    // 根据当前模式选择对应的阈值
-                    let threshold = match current_mode {
-                        FactorMode::MM => config.mm_threshold,
-                        FactorMode::MT => config.mt_threshold,
-                    };
-                    return config.compare_op.check(v, threshold);
-                }
-            }
-        }
-
-        false
+        self.satisfy_backward_open(venue1, symbol1, venue2, symbol2)
     }
 
     /// 检查是否满足反套开仓条件
@@ -625,8 +520,13 @@ impl SpreadFactor {
             venue2,
             symbol2.to_string(),
         );
-        let thresholds = self.thresholds.borrow();
+
+        // 根据当前模式选择对应的 config
         let current_mode = self.get_mode();
+        let thresholds = match current_mode {
+            FactorMode::MM => self.mm_thresholds.borrow(),
+            FactorMode::MT => self.mt_thresholds.borrow(),
+        };
 
         if let Some(config) = thresholds.get(&key) {
             if config.arb_direction == ArbDirection::Backward
@@ -635,15 +535,11 @@ impl SpreadFactor {
                 let value = match config.spread_type {
                     SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
                     SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
+                    SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
                 };
 
                 if let Some(v) = value {
-                    // 根据当前模式选择对应的阈值
-                    let threshold = match current_mode {
-                        FactorMode::MM => config.mm_threshold,
-                        FactorMode::MT => config.mt_threshold,
-                    };
-                    return config.compare_op.check(v, threshold);
+                    return config.compare_op.check(v, config.threshold);
                 }
             }
         }
@@ -667,8 +563,13 @@ impl SpreadFactor {
             venue2,
             symbol2.to_string(),
         );
-        let thresholds = self.thresholds.borrow();
+
+        // 根据当前模式选择对应的 config
         let current_mode = self.get_mode();
+        let thresholds = match current_mode {
+            FactorMode::MM => self.mm_thresholds.borrow(),
+            FactorMode::MT => self.mt_thresholds.borrow(),
+        };
 
         if let Some(config) = thresholds.get(&key) {
             if config.arb_direction == ArbDirection::Backward
@@ -677,15 +578,11 @@ impl SpreadFactor {
                 let value = match config.spread_type {
                     SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
                     SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
+                    SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
                 };
 
                 if let Some(v) = value {
-                    // 根据当前模式选择对应的阈值
-                    let threshold = match current_mode {
-                        FactorMode::MM => config.mm_threshold,
-                        FactorMode::MT => config.mt_threshold,
-                    };
-                    return config.compare_op.check(v, threshold);
+                    return config.compare_op.check(v, config.threshold);
                 }
             }
         }
@@ -694,7 +591,7 @@ impl SpreadFactor {
     }
 
     /// 检查是否满足反套平仓条件
-    /// 根据当前模式,只需满足对应模式的阈值
+    /// 反套平仓的操作方向和正套开仓一样，直接调用正套开仓逻辑
     pub fn satisfy_backward_close(
         &self,
         venue1: TradingVenue,
@@ -702,37 +599,7 @@ impl SpreadFactor {
         venue2: TradingVenue,
         symbol2: &str,
     ) -> bool {
-        let query_venue1 = Self::map_venue(venue1);
-        let key = (
-            query_venue1,
-            symbol1.to_string(),
-            venue2,
-            symbol2.to_string(),
-        );
-        let thresholds = self.thresholds.borrow();
-        let current_mode = self.get_mode();
-
-        if let Some(config) = thresholds.get(&key) {
-            if config.arb_direction == ArbDirection::Backward
-                && config.operation == OperationType::Close
-            {
-                let value = match config.spread_type {
-                    SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
-                    SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
-                };
-
-                if let Some(v) = value {
-                    // 根据当前模式选择对应的阈值
-                    let threshold = match current_mode {
-                        FactorMode::MM => config.mm_threshold,
-                        FactorMode::MT => config.mt_threshold,
-                    };
-                    return config.compare_op.check(v, threshold);
-                }
-            }
-        }
-
-        false
+        self.satisfy_forward_open(venue1, symbol1, venue2, symbol2)
     }
 
     /// 获取价差检查详情（用于调试日志）
@@ -758,22 +625,24 @@ impl SpreadFactor {
             venue2,
             symbol2.to_string(),
         );
-        let thresholds = self.thresholds.borrow();
+
+        // 根据当前模式选择对应的 config
         let current_mode = self.get_mode();
+        let thresholds = match current_mode {
+            FactorMode::MM => self.mm_thresholds.borrow(),
+            FactorMode::MT => self.mt_thresholds.borrow(),
+        };
 
         if let Some(config) = thresholds.get(&key) {
             if config.arb_direction == arb_direction && config.operation == operation {
                 let value = match config.spread_type {
                     SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
                     SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
+                    SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
                 };
 
                 if let Some(v) = value {
-                    let threshold = match current_mode {
-                        FactorMode::MM => config.mm_threshold,
-                        FactorMode::MT => config.mt_threshold,
-                    };
-                    return Some((v, threshold, config.compare_op, config.spread_type));
+                    return Some((v, config.threshold, config.compare_op, config.spread_type));
                 } else {
                     log::debug!(
                         "SpreadFactor: 缺少 {:?} 价差数据 ({} {:?} -> {} {:?}), 方向={:?} 操作={:?}",
