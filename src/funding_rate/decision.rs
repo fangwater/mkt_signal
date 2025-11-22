@@ -636,6 +636,7 @@ impl FrDecision {
             ctx.hedging_leg = TradingLeg::new(venue, fut_quote.bid, fut_quote.ask);
             ctx.set_hedging_symbol(&hedge_symbol);
             ctx.market_ts = now;
+            ctx.price_offset = 0.0; // aggressive taker order, no offset
             ctx
         } else {
             let base_price = match side {
@@ -675,6 +676,7 @@ impl FrDecision {
             ctx.hedging_leg = TradingLeg::new(venue, fut_quote.bid, fut_quote.ask);
             ctx.set_hedging_symbol(&hedge_symbol);
             ctx.market_ts = now;
+            ctx.price_offset = offset; // maker order with price offset
             ctx
         };
 

@@ -711,7 +711,10 @@ impl HedgeArbStrategy {
         // 4. 设置市场数据时间戳
         hedge_ctx.market_ts = get_timestamp_us();
 
-        // 5. 直接调用对冲处理逻辑（不再通过队列循环）
+        // 5. MT 对冲是市价单，price_offset 设置为 0
+        hedge_ctx.price_offset = 0.0;
+
+        // 6. 直接调用对冲处理逻辑（不再通过队列循环）
         debug!(
             "HedgeArbStrategy: strategy_id={} 直接处理对冲 venue={:?} side={:?} qty={:.8}",
             self.strategy_id, venue, side, eff_qty

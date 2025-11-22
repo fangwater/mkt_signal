@@ -41,6 +41,11 @@ pub struct ArbHedgeCtx {
 
     /// Market data timestamp
     pub market_ts: i64,
+
+    /// Price offset from best bid/ask for limit order placement
+    /// 0.0 for MT taker orders (market orders)
+    /// Actual offset value for query-derived maker orders
+    pub price_offset: f64,
 }
 
 impl ArbHedgeCtx {
@@ -62,6 +67,7 @@ impl ArbHedgeCtx {
             },
             hedging_symbol: [0u8; 32],
             market_ts: 0,
+            price_offset: 0.0,
         }
     }
 
@@ -204,6 +210,7 @@ impl SignalBytes for ArbHedgeCtx {
         bytes_helper::write_fixed_bytes(&mut buf, &self.hedging_symbol);
 
         buf.put_i64_le(self.market_ts);
+        buf.put_f64_le(self.price_offset);
 
         buf.freeze()
     }
@@ -236,6 +243,11 @@ impl SignalBytes for ArbHedgeCtx {
         }
         let market_ts = bytes.get_i64_le();
 
+        if bytes.remaining() < 8 {
+            return Err("Not enough bytes for price_offset".to_string());
+        }
+        let price_offset = bytes.get_f64_le();
+
         Ok(Self {
             strategy_id,
             client_order_id,
@@ -252,6 +264,7 @@ impl SignalBytes for ArbHedgeCtx {
             },
             hedging_symbol,
             market_ts,
+            price_offset,
         })
     }
 }

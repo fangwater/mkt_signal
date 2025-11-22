@@ -692,6 +692,7 @@ fn decode_context(signal_kind: SignalKind, record: &SignalRecordMessage) -> Opti
                 },
                 "hedging_symbol": ctx.get_hedging_symbol(),
                 "market_ts": ctx.market_ts,
+                "price_offset": ctx.price_offset,
             });
             Some(json_obj)
         }
@@ -990,6 +991,7 @@ fn build_parquet_hedge(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) ->
     let mut hedging_bid0_col = Vec::with_capacity(entries.len());
     let mut hedging_ask0_col = Vec::with_capacity(entries.len());
     let mut market_ts_col = Vec::with_capacity(entries.len());
+    let mut price_offset_col = Vec::with_capacity(entries.len());
 
     for (key_bytes, value_bytes) in entries {
         let key = String::from_utf8(key_bytes)?;
@@ -1026,6 +1028,7 @@ fn build_parquet_hedge(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) ->
         hedging_bid0_col.push(ctx.hedging_leg.bid0);
         hedging_ask0_col.push(ctx.hedging_leg.ask0);
         market_ts_col.push(ctx.market_ts);
+        price_offset_col.push(ctx.price_offset);
     }
 
     let columns = vec![
@@ -1046,6 +1049,7 @@ fn build_parquet_hedge(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) ->
         Series::new("hedging_bid0".into(), hedging_bid0_col),
         Series::new("hedging_ask0".into(), hedging_ask0_col),
         Series::new("market_ts".into(), market_ts_col),
+        Series::new("price_offset".into(), price_offset_col),
     ];
 
     let mut df = DataFrame::new(columns)?;
