@@ -443,6 +443,14 @@ impl HedgeArbStrategy {
     }
 
     // cancel的本质就是构造取消，实际处理的是account monitor的撤销回报
+    // 修复bug cancel撤销开仓订单，但此时开仓单已经完全成交，所以不能强行cancel，需要先判断开仓单的状态
+    // 如果直接cancel，等于发送一个不存在client order id，然后报错
+    // 此时trade engine返回挂单错误，导致强行关闭了strategy，等价于报单失败的路径处理，强制关闭了整个对冲配对 strategy
+    // 但和报单失败不同，此时对冲单已经挂上。但整个策略已经完全关闭，后续定时器相当于无法监控到这个对冲单，导致没有继续重新挂单
+    // 细改
+    // cancel时，不能直接对开仓单cancel。要先区分开仓单当前是否处于terminal状态
+    // 如果已经完全成交，则不需要cancel，跳过cancel流程即可。
+    // 只有非中止状态，挂单中或者部分成交，才需要发送cancel。
     fn handle_arb_cancel_signal(&mut self, _ctx: ArbCancelCtx) -> Result<(), String> {
         // 从 order manager 获取开仓订单
         let order = MonitorChannel::instance()
@@ -450,6 +458,21 @@ impl HedgeArbStrategy {
             .borrow()
             .get(self.open_order_id);
         if let Some(order) = order {
+            // 先检查订单状态，如果已经是终结状态，则跳过cancel流程
+            if order.status.is_terminal() {
+                info!(
+                    "HedgeArbStrategy: strategy_id={} 开仓订单已处于终结状态 {:?}，跳过cancel流程 order_id={}",
+                    self.strategy_id, order.status, self.open_order_id
+                );
+                return Ok(());
+            }
+
+            // 只有非终结状态（挂单中、部分成交等），才发送cancel请求
+            debug!(
+                "HedgeArbStrategy: strategy_id={} 开仓订单状态 {:?}，准备发送cancel请求 order_id={}",
+                self.strategy_id, order.status, self.open_order_id
+            );
+
             // 使用 order 的 get_order_cancel_bytes 方法获取撤单请求
             match order.get_order_cancel_bytes() {
                 Ok(cancel_bytes) => {

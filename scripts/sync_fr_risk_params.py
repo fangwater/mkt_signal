@@ -48,10 +48,10 @@ RISK_PARAMS = {
     "max_pos_u": "50000.0",
 
     # 单币种最大敞口比例（0.0-1.0）
-    "max_symbol_exposure_ratio": "0.01",
+    "max_symbol_exposure_ratio": "0.015",
 
     # 总敞口比例（0.0-1.0）
-    "max_total_exposure_ratio": "0.01",
+    "max_total_exposure_ratio": "0.015",
 
     # 最大杠杆倍数（>0）
     "max_leverage": "2",

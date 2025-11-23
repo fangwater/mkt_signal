@@ -395,13 +395,14 @@ impl FrDecision {
         }
 
         // 步骤2: 获取资费信号
-        let fr_signal = self.get_funding_rate_signal(spot_symbol, futures_symbol, futures_venue)?;
+        // let fr_signal = self.get_funding_rate_signal(spot_symbol, futures_symbol, futures_venue)?;
 
         // 步骤3: 如果资费没有信号，返回 None
-        let fr_signal = match fr_signal {
-            Some(s) => s,
-            None => return Ok(None),
-        };
+        // let fr_signal = match fr_signal {
+        //     Some(s) => s,
+        //     None => return Ok(None),
+        // };
+        let fr_signal = FrSignal::ForwardClose;
 
         // 步骤4: 根据资费信号验证对应的价差 satisfy
         let final_signal = match fr_signal {
