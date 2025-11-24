@@ -41,10 +41,20 @@ impl PmForwarder {
 
         // Node 名称使用简单标识符（NodeName 可能不支持斜杠）
         let node_name = format!("account_monitor_{}_pm", exchange.replace("-", "_"));
-        let node = NodeBuilder::new()
+        info!("准备创建 IceOryx node，node 名称: '{}'", node_name);
+
+        let node = match NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
-            .create::<ipc::Service>()?;
-        info!("IceOryx node 创建成功，node 名称: '{}'", node_name);
+            .create::<ipc::Service>()
+        {
+            Ok(n) => {
+                info!("IceOryx node 创建成功");
+                n
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!("创建 IceOryx node 失败: {:?}", e));
+            }
+        };
 
         let service = node
             .service_builder(&ServiceName::new(&service_name)?)
