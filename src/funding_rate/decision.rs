@@ -28,6 +28,7 @@ use super::funding_rate_factor::FundingRateFactor;
 use super::mkt_channel::MktChannel;
 use super::rate_fetcher::RateFetcher;
 use super::spread_factor::SpreadFactor;
+use super::symbol_list::SymbolList;
 
 // ========== 线程本地单例 ==========
 
@@ -408,12 +409,14 @@ impl FrDecision {
         // 步骤4: 根据资费信号验证对应的价差 satisfy
         let final_signal = match fr_signal {
             FrSignal::ForwardOpen => {
+                let symbol_list = SymbolList::instance();
                 if spread_factor.satisfy_forward_open(
                     spot_venue,
                     spot_symbol,
                     futures_venue,
                     futures_symbol,
-                ) {
+                ) && symbol_list.is_in_fwd_trade_list(futures_symbol, futures_venue)
+                {
                     Some(SignalType::ArbOpen)
                 } else {
                     None
@@ -432,12 +435,14 @@ impl FrDecision {
                 }
             }
             FrSignal::BackwardOpen => {
+                let symbol_list = SymbolList::instance();
                 if spread_factor.satisfy_backward_open(
                     spot_venue,
                     spot_symbol,
                     futures_venue,
                     futures_symbol,
-                ) {
+                ) && symbol_list.is_in_bwd_trade_list(futures_symbol, futures_venue)
+                {
                     Some(SignalType::ArbOpen)
                 } else {
                     None

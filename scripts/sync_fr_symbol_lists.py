@@ -102,20 +102,28 @@ SYMBOL_ALLOWLIST: List[str] = [
 # ========== Symbol Lists 配置 ==========
 
 # Binance UM (合约) - 平仓列表
-# 包含所有白名单交易对
 DUMP_SYMBOLS_UM = SYMBOL_ALLOWLIST.copy()
 
-# Binance UM (合约) - 建仓列表
-# 包含所有白名单交易对
+# Binance UM (合约) - 建仓列表（保留兼容性）
 TRADE_SYMBOLS_UM = SYMBOL_ALLOWLIST.copy()
 
+# Binance UM (合约) - 正套建仓列表
+FWD_TRADE_SYMBOLS_UM = SYMBOL_ALLOWLIST.copy()
+
+# Binance UM (合约) - 反套建仓列表
+BWD_TRADE_SYMBOLS_UM = SYMBOL_ALLOWLIST.copy()
+
 # Binance Margin (现货杠杆) - 平仓列表
-# 包含所有白名单交易对
 DUMP_SYMBOLS_MARGIN = SYMBOL_ALLOWLIST.copy()
 
-# Binance Margin (现货杠杆) - 建仓列表
-# 包含所有白名单交易对
+# Binance Margin (现货杠杆) - 建仓列表（保留兼容性）
 TRADE_SYMBOLS_MARGIN = SYMBOL_ALLOWLIST.copy()
+
+# Binance Margin (现货杠杆) - 正套建仓列表
+FWD_TRADE_SYMBOLS_MARGIN = SYMBOL_ALLOWLIST.copy()
+
+# Binance Margin (现货杠杆) - 反套建仓列表
+BWD_TRADE_SYMBOLS_MARGIN = SYMBOL_ALLOWLIST.copy()
 
 
 def sync_symbol_lists(rds) -> int:
@@ -124,31 +132,51 @@ def sync_symbol_lists(rds) -> int:
 
     # 1. Binance UM - 平仓列表
     key = "fr_dump_symbols:binance_um"
-    symbols_json = json.dumps(DUMP_SYMBOLS_UM, ensure_ascii=False)
-    rds.set(key, symbols_json)
+    rds.set(key, json.dumps(DUMP_SYMBOLS_UM, ensure_ascii=False))
     print(f"✅ 已写入 {len(DUMP_SYMBOLS_UM)} 个交易对到 '{key}'")
     total += len(DUMP_SYMBOLS_UM)
 
-    # 2. Binance UM - 建仓列表
+    # 2. Binance UM - 建仓列表（兼容）
     key = "fr_trade_symbols:binance_um"
-    symbols_json = json.dumps(TRADE_SYMBOLS_UM, ensure_ascii=False)
-    rds.set(key, symbols_json)
+    rds.set(key, json.dumps(TRADE_SYMBOLS_UM, ensure_ascii=False))
     print(f"✅ 已写入 {len(TRADE_SYMBOLS_UM)} 个交易对到 '{key}'")
     total += len(TRADE_SYMBOLS_UM)
 
-    # 3. Binance Margin - 平仓列表
+    # 3. Binance UM - 正套建仓列表
+    key = "fr_fwd_trade_symbols:binance_um"
+    rds.set(key, json.dumps(FWD_TRADE_SYMBOLS_UM, ensure_ascii=False))
+    print(f"✅ 已写入 {len(FWD_TRADE_SYMBOLS_UM)} 个交易对到 '{key}'")
+    total += len(FWD_TRADE_SYMBOLS_UM)
+
+    # 4. Binance UM - 反套建仓列表
+    key = "fr_bwd_trade_symbols:binance_um"
+    rds.set(key, json.dumps(BWD_TRADE_SYMBOLS_UM, ensure_ascii=False))
+    print(f"✅ 已写入 {len(BWD_TRADE_SYMBOLS_UM)} 个交易对到 '{key}'")
+    total += len(BWD_TRADE_SYMBOLS_UM)
+
+    # 5. Binance Margin - 平仓列表
     key = "fr_dump_symbols:binance_margin"
-    symbols_json = json.dumps(DUMP_SYMBOLS_MARGIN, ensure_ascii=False)
-    rds.set(key, symbols_json)
+    rds.set(key, json.dumps(DUMP_SYMBOLS_MARGIN, ensure_ascii=False))
     print(f"✅ 已写入 {len(DUMP_SYMBOLS_MARGIN)} 个交易对到 '{key}'")
     total += len(DUMP_SYMBOLS_MARGIN)
 
-    # 4. Binance Margin - 建仓列表
+    # 6. Binance Margin - 建仓列表（兼容）
     key = "fr_trade_symbols:binance_margin"
-    symbols_json = json.dumps(TRADE_SYMBOLS_MARGIN, ensure_ascii=False)
-    rds.set(key, symbols_json)
+    rds.set(key, json.dumps(TRADE_SYMBOLS_MARGIN, ensure_ascii=False))
     print(f"✅ 已写入 {len(TRADE_SYMBOLS_MARGIN)} 个交易对到 '{key}'")
     total += len(TRADE_SYMBOLS_MARGIN)
+
+    # 7. Binance Margin - 正套建仓列表
+    key = "fr_fwd_trade_symbols:binance_margin"
+    rds.set(key, json.dumps(FWD_TRADE_SYMBOLS_MARGIN, ensure_ascii=False))
+    print(f"✅ 已写入 {len(FWD_TRADE_SYMBOLS_MARGIN)} 个交易对到 '{key}'")
+    total += len(FWD_TRADE_SYMBOLS_MARGIN)
+
+    # 8. Binance Margin - 反套建仓列表
+    key = "fr_bwd_trade_symbols:binance_margin"
+    rds.set(key, json.dumps(BWD_TRADE_SYMBOLS_MARGIN, ensure_ascii=False))
+    print(f"✅ 已写入 {len(BWD_TRADE_SYMBOLS_MARGIN)} 个交易对到 '{key}'")
+    total += len(BWD_TRADE_SYMBOLS_MARGIN)
 
     return total
 
