@@ -33,14 +33,19 @@ impl PmForwarder {
     /// - `hist` 历史缓存大小
     /// - `subs` 最大订阅者数
     pub fn new(exchange: &str, hist: Option<usize>, subs: Option<usize>) -> Result<Self> {
+        info!("开始创建 PM forwarder，exchange: {}", exchange);
+
         let node_name = format!("account_monitor_{}_pm", exchange.replace("-", "_"));
+        info!("IceOryx node 名称: '{}'", node_name);
+
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
+        info!("IceOryx node 创建成功");
 
         let service_name = build_service_name(&format!("account_pubs/{}_pm", exchange));
         info!(
-            "创建 PM forwarder，IceOryx service 名称: '{}'",
+            "IceOryx service 名称: '{}'",
             service_name
         );
 
