@@ -771,37 +771,9 @@ impl FrDecision {
                         return Ok(());
                     }
                 };
-                // Open / Close 信号：使用 ArbOpenCtx
-                // 注意：ArbClose 和 ArbOpen 使用相同的 context 结构
 
-                let count = if matches!(signal_type, SignalType::ArbOpen) {
-                    // Open 信号：根据 price_offsets 发送多个信号
-                    for offset in &self.price_offsets {
-                        let ctx = self.build_open_context(
-                            spot_symbol,
-                            futures_symbol,
-                            spot_venue,
-                            futures_venue,
-                            &spot_quote,
-                            &futures_quote,
-                            *offset,
-                            now,
-                            side,
-                        );
-
-                        let context = ctx.to_bytes();
-                        let signal = TradeSignal::create(signal_type.clone(), now, 0.0, context);
-                        let signal_bytes = signal.to_bytes();
-                        self.signal_pub.publish(&signal_bytes)?;
-
-                        debug!(
-                            "FrDecision: emitted ArbOpen signal offset={:.4} spot={} futures={}",
-                            offset, spot_symbol, futures_symbol
-                        );
-                    }
-                    self.price_offsets.len()
-                } else {
-                    // Close 信号：发送单个信号，offset = 0.0
+                // Open/Close 信号：都使用多档位发送
+                for offset in &self.price_offsets {
                     let ctx = self.build_open_context(
                         spot_symbol,
                         futures_symbol,
@@ -809,21 +781,18 @@ impl FrDecision {
                         futures_venue,
                         &spot_quote,
                         &futures_quote,
-                        0.0,
+                        *offset,
                         now,
                         side,
                     );
 
-                    let context = ctx.to_bytes();
-                    let signal = TradeSignal::create(signal_type.clone(), now, 0.0, context);
-                    let signal_bytes = signal.to_bytes();
-                    self.signal_pub.publish(&signal_bytes)?;
-                    1
-                };
+                    let signal = TradeSignal::create(signal_type.clone(), now, 0.0, ctx.to_bytes());
+                    self.signal_pub.publish(&signal.to_bytes())?;
+                }
 
                 info!(
                     "FrDecision: emitted {} {:?} signal(s) to '{}' spot={} futures={}",
-                    count, signal_type, self.channel_name, spot_symbol, futures_symbol
+                    self.price_offsets.len(), signal_type, self.channel_name, spot_symbol, futures_symbol
                 );
             }
 
@@ -858,21 +827,10 @@ impl FrDecision {
         Ok(())
     }
 
-    /// 构造 ArbOpen / ArbClose 信号上下文
+    /// 构造 ArbOpen/ArbClose 信号上下文
     ///
-    /// # 资费套利策略设计
-    /// - opening_leg: 现货（主动腿，使用 margin 开仓）
-    /// - hedging_leg: 合约（对冲腿，UM 永续）
-    ///
-    /// # 参数
-    /// - `spot_symbol`: 现货交易对
-    /// - `futures_symbol`: 合约交易对
-    /// - `spot_venue`: 现货交易所
-    /// - `futures_venue`: 合约交易所
-    /// - `spot_quote`: 现货盘口
-    /// - `futures_quote`: 合约盘口
-    /// - `price_offset`: 价格偏移（用于挂单）
-    /// - `now`: 当前时间戳（微秒）
+    /// opening_leg: 现货（主动腿），hedging_leg: 合约（对冲腿）
+    /// 定价逻辑：Buy用bid降价，Sell用ask加价
     fn build_open_context(
         &self,
         spot_symbol: &str,
@@ -888,11 +846,11 @@ impl FrDecision {
         let mut ctx = ArbOpenCtx::new();
         let mkt_channel = MktChannel::instance();
 
-        // opening_leg: 现货（主动腿，使用 margin 开仓）
+        // opening_leg: 现货（主动腿）
         ctx.opening_leg = TradingLeg::new(spot_venue, spot_quote.bid, spot_quote.ask);
         ctx.set_opening_symbol(spot_symbol);
 
-        // hedging_leg: 合约（对冲腿，UM 永续）
+        // hedging_leg: 合约（对冲腿）
         ctx.hedging_leg = TradingLeg::new(futures_venue, futures_quote.bid, futures_quote.ask);
         ctx.set_hedging_symbol(futures_symbol);
 
@@ -900,16 +858,13 @@ impl FrDecision {
         ctx.set_side(side);
         ctx.set_order_type(OrderType::Limit);
 
-        // 价格 = 最优盘口 + 偏移，根据信号方向调整挂单基准
-        // ask 卖价用于 sell 挂单
-        // bid 买价用于 buy 挂单
+        // 定价：Buy基于bid降价，Sell基于ask加价
         let base_price = match side {
             Side::Buy => spot_quote.bid,
             Side::Sell => spot_quote.ask,
         };
         ctx.price = if base_price > 0.0 {
             match side {
-                // 逐渐原理盘口，买价减小，卖价升高
                 Side::Buy => base_price * (1.0 - price_offset),
                 Side::Sell => base_price * (1.0 + price_offset),
             }
@@ -1243,19 +1198,6 @@ impl FrDecision {
     }
 
     /// 构造 ArbCancel 信号上下文
-    ///
-    /// # 资费套利策略设计
-    /// - opening_leg: 现货（主动腿）
-    /// - hedging_leg: 合约（对冲腿）
-    ///
-    /// # 参数
-    /// - `spot_symbol`: 现货交易对
-    /// - `futures_symbol`: 合约交易对
-    /// - `spot_venue`: 现货交易所
-    /// - `futures_venue`: 合约交易所
-    /// - `spot_quote`: 现货盘口
-    /// - `futures_quote`: 合约盘口
-    /// - `now`: 当前时间戳（微秒）
     fn build_cancel_context(
         &self,
         spot_symbol: &str,
@@ -1268,11 +1210,9 @@ impl FrDecision {
     ) -> ArbCancelCtx {
         let mut ctx = ArbCancelCtx::new();
 
-        // opening_leg: 现货（主动腿）
         ctx.opening_leg = TradingLeg::new(spot_venue, spot_quote.bid, spot_quote.ask);
         ctx.set_opening_symbol(spot_symbol);
 
-        // hedging_leg: 合约（对冲腿）
         ctx.hedging_leg = TradingLeg::new(futures_venue, futures_quote.bid, futures_quote.ask);
         ctx.set_hedging_symbol(futures_symbol);
 
