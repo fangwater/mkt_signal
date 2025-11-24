@@ -635,7 +635,7 @@ impl Order {
                         }
                     };
 
-                    // 记录余额情况（用于监控和调试）
+                    // 余额判断：决定是否需要借币
                     if available_balance < required_amount {
                         let borrow_amount = required_amount - available_balance;
                         warn!(
@@ -643,17 +643,16 @@ impl Order {
                             check_asset, required_amount, available_balance, borrow_amount,
                             self.symbol, self.side, self.quantity, self.price
                         );
+                        // 余额不足，启用自动借币还款
+                        params_parts.push("sideEffectType=AUTO_BORROW_REPAY".to_string());
                     } else {
                         info!(
                             "✅ 余额充足: 资产={} 需要={:.8} 可用={:.8} symbol={} side={:?}",
                             check_asset, required_amount, available_balance, self.symbol, self.side
                         );
+                        // 余额充足，不添加 sideEffectType（默认 NO_SIDE_EFFECT）
                     }
-                    // ===== 余额检查结束 =====
-
-                    // 默认启用自动借币还款（余额不足时自动借币，撤单时自动归还未使用部分）
-                    params_parts.push("sideEffectType=AUTO_BORROW_REPAY".to_string());
-                    params_parts.push("autoRepayAtCancel=true".to_string());
+                    // ===== 余额检查结束 =====/
 
                     //margin下单不支持GTX模式，无论是否要作为maker，都是gtc
                     if self.order_type.is_limit() {

@@ -326,7 +326,7 @@ impl MonitorChannel {
 
         // 初始化 Spot 现货管理器（使用相同的 PM 账户凭证）
         let spot_manager =
-            BinancePmSpotAccountManager::new(rest_base, api_key, api_secret, recv_window_ms);
+            BinancePmSpotAccountManager::new(rest_base, &api_key, &api_secret, recv_window_ms);
         let spot_snapshot = match spot_manager.init().await {
             Ok(snapshot) => {
                 log_spot_balances(&snapshot.balances);
@@ -407,6 +407,16 @@ impl MonitorChannel {
 
         // 启动衍生品价格监听任务（mark_price, index_price）
         Self::spawn_derivatives_listener(price_table.clone());
+
+        // 启动自动还款服务（每小时 55 分执行）
+        use crate::pre_trade::auto_repay_service::AutoRepayService;
+        let auto_repay = AutoRepayService::new(
+            rest_base,
+            api_key.clone(),
+            api_secret.clone(),
+            recv_window_ms,
+        );
+        auto_repay.start_auto_repay_task();
 
         // 创建内部实例并保存到 thread-local
         let inner = MonitorChannelInner {
