@@ -39,11 +39,12 @@ impl PmForwarder {
         let service_name = build_service_name(&format!("account_pubs/{}_pm", exchange));
         info!("IceOryx service 名称: '{}'", service_name);
 
-        // Node 名称和 service 名称一致
+        // Node 名称使用简单标识符（NodeName 可能不支持斜杠）
+        let node_name = format!("account_monitor_{}_pm", exchange.replace("-", "_"));
         let node = NodeBuilder::new()
-            .name(&NodeName::new(&service_name)?)
+            .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
-        info!("IceOryx node 创建成功");
+        info!("IceOryx node 创建成功，node 名称: '{}'", node_name);
 
         let service = node
             .service_builder(&ServiceName::new(&service_name)?)
