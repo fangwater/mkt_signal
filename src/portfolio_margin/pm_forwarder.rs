@@ -38,11 +38,14 @@ impl PmForwarder {
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
 
+        let service_name = build_service_name(&format!("account_pubs/{}_pm", exchange));
+        info!(
+            "创建 PM forwarder，IceOryx service 名称: '{}'",
+            service_name
+        );
+
         let service = node
-            .service_builder(&ServiceName::new(&build_service_name(&format!(
-                "account_pubs/{}_pm",
-                exchange
-            )))?)
+            .service_builder(&ServiceName::new(&service_name)?)
             .publish_subscribe::<[u8; PM_MAX_BYTES]>()
             .max_publishers(1)
             .max_subscribers(subs.unwrap_or(10))
@@ -51,7 +54,7 @@ impl PmForwarder {
             .open_or_create()?;
 
         let publisher = service.publisher_builder().create()?;
-        info!("PM forwarder created for account_pubs/{}_pm", exchange);
+        info!("PM forwarder publisher 创建成功");
 
         Ok(Self {
             publisher,
