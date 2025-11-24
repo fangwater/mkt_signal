@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TARGET_DIR="${1:-/home/ubuntu/crypto_mkt}"
+TARGET_DIR="${1:-$HOME/crypto_mkt}"
 BIN_NAME="pre_trade"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 
