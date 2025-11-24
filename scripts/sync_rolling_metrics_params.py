@@ -70,8 +70,9 @@ DEFAULTS = {
             "resample_interval_ms": 1_000,
             "rolling_window": 100_000,
             "min_periods": 1,
-            "quantiles": [5, 10, 15, 85, 90, 95],
+            "quantiles": [5, 10, 15, 25, 30, 70, 75, 85, 90, 95],
         },
+        
     },
 }
 

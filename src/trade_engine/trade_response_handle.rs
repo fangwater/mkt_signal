@@ -104,6 +104,25 @@ pub fn spawn_response_handle(
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_local(async move {
         while let Some(out) = resp_rx.recv().await {
+            // 检查是否是 cancel 请求的错误响应
+            // 如果是 cancel 操作且状态码不是 200，则跳过 dispatch
+            let is_cancel_request = matches!(
+                out.req_type,
+                TradeRequestType::BinanceCancelUMOrder
+                    | TradeRequestType::BinanceCancelAllUMOrders
+                    | TradeRequestType::BinanceCancelUMConditionalOrder
+                    | TradeRequestType::BinanceCancelAllUMConditionalOrders
+                    | TradeRequestType::BinanceCancelMarginOrder
+            );
+
+            if is_cancel_request && out.status != 200 {
+                debug!(
+                    "skip dispatch for cancel error: type={:?}, status={}, client_order_id={}",
+                    out.req_type, out.status, out.client_order_id
+                );
+                continue;
+            }
+
             let body = out.body.as_bytes();
             let now = chrono::Utc::now().timestamp_millis();
             let hdr = GenericResponseHeader {
