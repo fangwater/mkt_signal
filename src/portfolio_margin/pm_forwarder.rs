@@ -35,19 +35,15 @@ impl PmForwarder {
     pub fn new(exchange: &str, hist: Option<usize>, subs: Option<usize>) -> Result<Self> {
         info!("开始创建 PM forwarder，exchange: {}", exchange);
 
-        let node_name = format!("account_monitor_{}_pm", exchange.replace("-", "_"));
-        info!("IceOryx node 名称: '{}'", node_name);
+        // 构造 service 名称（会检查 ipc_namespace 环境变量，未设置会 panic）
+        let service_name = build_service_name(&format!("account_pubs/{}_pm", exchange));
+        info!("IceOryx service 名称: '{}'", service_name);
 
+        // Node 名称和 service 名称一致
         let node = NodeBuilder::new()
-            .name(&NodeName::new(&node_name)?)
+            .name(&NodeName::new(&service_name)?)
             .create::<ipc::Service>()?;
         info!("IceOryx node 创建成功");
-
-        let service_name = build_service_name(&format!("account_pubs/{}_pm", exchange));
-        info!(
-            "IceOryx service 名称: '{}'",
-            service_name
-        );
 
         let service = node
             .service_builder(&ServiceName::new(&service_name)?)
