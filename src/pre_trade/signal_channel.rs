@@ -1,4 +1,5 @@
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
+use crate::common::ipc_service_name::build_service_name;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::Side;
 use crate::signal::cancel_signal::ArbCancelCtx;
@@ -167,7 +168,7 @@ impl SignalChannel {
     /// 监听器的核心逻辑
     async fn run_listener(channel_name: &str) -> Result<()> {
         let node_name = Self::signal_node_name(channel_name);
-        let service_path = format!("signal_pubs/{}", channel_name);
+        let service_path = build_service_name(&format!("signal_pubs/{}", channel_name));
 
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)

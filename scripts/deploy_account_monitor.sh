@@ -14,12 +14,4 @@ mkdir -p "$TARGET_DIR"
 cp "$BIN_PATH" "$TARGET_DIR/"
 chmod +x "$TARGET_DIR/$BIN_NAME"
 
-for script in start_account_monitor.sh stop_account_monitor.sh; do
-  SRC_PATH="$ROOT_DIR/scripts/$script"
-  if [[ -f "$SRC_PATH" ]]; then
-    cp "$SRC_PATH" "$TARGET_DIR/"
-    chmod +x "$TARGET_DIR/$script"
-  fi
-done
-
 echo "[INFO] $BIN_NAME 部署完成。"

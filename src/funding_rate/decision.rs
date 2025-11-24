@@ -13,6 +13,7 @@ use std::rc::Rc;
 
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
+use crate::common::ipc_service_name::build_service_name;
 use crate::common::min_qty_table::MinQtyTable;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::order_manager::{OrderType, Side};
@@ -276,7 +277,7 @@ impl FrDecision {
         node: &Node<ipc::Service>,
         channel_name: &str,
     ) -> Result<GenericSignalSubscriber> {
-        let service_name = format!("signal_pubs/{}", channel_name);
+        let service_name = build_service_name(&format!("signal_pubs/{}", channel_name));
         let service = node
             .service_builder(&ServiceName::new(&service_name)?)
             .publish_subscribe::<[u8; SIGNAL_PAYLOAD]>()

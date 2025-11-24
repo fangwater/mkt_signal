@@ -12,6 +12,7 @@ use serde_json::json;
 
 use super::state::SharedState;
 use crate::common::iceoryx_publisher::RESAMPLE_PAYLOAD as ICEORYX_RESAMPLE_PAYLOAD;
+use crate::common::ipc_service_name::build_service_name;
 use crate::common::time_util::get_timestamp_us;
 use crate::common::viz::server::WsHub;
 use crate::pre_trade::resample_channel::{
@@ -32,7 +33,7 @@ pub const RESAMPLE_PAYLOAD: usize = ICEORYX_RESAMPLE_PAYLOAD;
 
 /// 订阅 funding resample 流式切片（用于验证解码；当前不更新 UI 状态）
 pub fn spawn_fr_resample_listener(state: SharedState, hub: WsHub) -> Result<()> {
-    let service_name = format!("signal_pubs/{}", FR_RESAMPLE_MSG_CHANNEL);
+    let service_name = build_service_name(&format!("signal_pubs/{}", FR_RESAMPLE_MSG_CHANNEL));
     struct Stats {
         window_start: Instant,
         count: usize,
@@ -203,7 +204,7 @@ where
 {
     let node_suffix = node_suffix.to_string();
     let channel_name = channel.to_string();
-    let service_name = format!("signal_pubs/{}", channel_name);
+    let service_name = build_service_name(&format!("signal_pubs/{}", channel_name));
     struct Stats {
         window_start: Instant,
         count: usize,

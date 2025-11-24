@@ -26,7 +26,7 @@ struct RepayResponse {
     amount: String,
     asset: String,
     #[serde(default)]
-    specify_repay_assets: Vec<String>,
+    _specify_repay_assets: Vec<String>,
     update_time: i64,
     success: bool,
 }
@@ -111,7 +111,14 @@ impl AutoRepayService {
         // 调用还款 API
         match self.repay_all_debts().await {
             Ok(response) => {
-                info!("✅ 自动还款成功: asset={} amount={}", response.asset, response.amount);
+                if response.success {
+                    info!(
+                        "✅ 自动还款成功: asset={} amount={} time={}",
+                        response.asset, response.amount, response.update_time
+                    );
+                } else {
+                    warn!("❌ 还款 API 返回失败状态");
+                }
             }
             Err(e) => {
                 warn!("❌ 自动还款失败: {}", e);

@@ -3,6 +3,8 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::info;
 
+use crate::common::ipc_service_name::build_service_name;
+
 pub const SIGNAL_PAYLOAD: usize = 4_096;
 pub const RESAMPLE_PAYLOAD: usize = 32 * 1024;
 pub const BINANCE_MARGIN_UPDATE_PAYLOAD: usize = SIGNAL_PAYLOAD;
@@ -14,8 +16,8 @@ pub struct GenericPublisher<const PAYLOAD: usize> {
 
 impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
     pub fn new(channel_name: &str) -> anyhow::Result<Self> {
-        // Use signal namespace for services
-        let full_service = format!("signal_pubs/{}", channel_name);
+        // Use signal namespace for services (with directory prefix for isolation)
+        let full_service = build_service_name(&format!("signal_pubs/{}", channel_name));
         let service_name = ServiceName::new(&full_service)?;
 
         info!("Creating IceOryx publisher for channel: {}", channel_name);
