@@ -258,19 +258,6 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let hedging_venue = TradingVenue::from_u8(open_ctx.hedging_leg.venue)
                     .unwrap_or(TradingVenue::BinanceUm);
 
-                let hedge_mode = if open_ctx.hedge_timeout_us > 0 {
-                    "MM"
-                } else {
-                    "MT"
-                };
-                info!(
-                    "🔔 收到 ArbOpen 信号({}): opening={} {:?} side={:?} price={:.6} hedging={} {:?} | amount={:.4} fr_ma={:.6} pred_fr={:.6} loan={:.6} hedge_timeout_us={}",
-                    hedge_mode,
-                    symbol, opening_venue, side, open_ctx.price,
-                    hedging_symbol, hedging_venue,
-                    open_ctx.amount, open_ctx.funding_ma, open_ctx.predicted_funding_rate, open_ctx.loan_rate, open_ctx.hedge_timeout_us
-                );
-
                 // 检查限价挂单数量限制
                 if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol) {
                     warn!("ArbOpen: {} 限价挂单数量超限: {}", symbol, e);
@@ -280,6 +267,18 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let mut strategy = HedgeArbStrategy::new(strategy_id, symbol.clone());
                 strategy.handle_signal_with_record(&signal);
                 if strategy.is_active() {
+                    let hedge_mode = if open_ctx.hedge_timeout_us > 0 {
+                        "MM"
+                    } else {
+                        "MT"
+                    };
+                    info!(
+                        "🔔 收到 ArbOpen 信号({}): opening={} {:?} side={:?} price={:.6} hedging={} {:?} | amount={:.4} fr_ma={:.6} pred_fr={:.6} loan={:.6} hedge_timeout_us={}",
+                        hedge_mode,
+                        symbol, opening_venue, side, open_ctx.price,
+                        hedging_symbol, hedging_venue,
+                        open_ctx.amount, open_ctx.funding_ma, open_ctx.predicted_funding_rate, open_ctx.loan_rate, open_ctx.hedge_timeout_us
+                    );
                     info!(
                         "✅ ArbOpen: strategy_id={} {} 已创建并激活",
                         strategy_id, symbol
@@ -323,18 +322,6 @@ fn handle_trade_signal(signal: TradeSignal) {
                         );
                         return;
                     };
-
-                    let hedge_mode = if close_ctx.hedge_timeout_us > 0 {
-                        "MM"
-                    } else {
-                        "MT"
-                    };
-                    info!(
-                        "🔔 收到 ArbClose 信号({}): opening={} {:?} hedging={} {:?} | side={:?} amount={:.4} price={:.6} hedge_timeout_us={}",
-                        hedge_mode,
-                        opening_symbol, opening_venue, hedging_symbol, hedging_venue,
-                        close_side, close_ctx.amount, close_ctx.price, close_ctx.hedge_timeout_us
-                    );
 
                     let opening_pos =
                         MonitorChannel::instance().get_position_qty(&opening_symbol, opening_venue);
@@ -414,6 +401,18 @@ fn handle_trade_signal(signal: TradeSignal) {
                     strategy.handle_signal_with_record(&converted_signal);
 
                     if strategy.is_active() {
+                        let hedge_mode = if close_ctx.hedge_timeout_us > 0 {
+                            "MM"
+                        } else {
+                            "MT"
+                        };
+                        info!(
+                            "🔔 收到 ArbClose 信号({}): opening={} {:?} hedging={} {:?} | side={:?} amount={:.4} price={:.6} hedge_timeout_us={}",
+                            hedge_mode,
+                            opening_symbol, opening_venue, hedging_symbol, hedging_venue,
+                            close_side, close_ctx.amount, close_ctx.price, close_ctx.hedge_timeout_us
+                        );
+
                         MonitorChannel::instance()
                             .strategy_mgr()
                             .borrow_mut()

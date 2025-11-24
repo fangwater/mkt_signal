@@ -10,7 +10,7 @@ use std::time::Duration;
 use crate::common::account_msg::{
     get_event_type as get_account_event_type, AccountEventType, AccountPositionMsg,
     AccountUpdateBalanceMsg, AccountUpdateFlushMsg, AccountUpdatePositionMsg, BalanceUpdateMsg,
-    ExecutionReportMsg, OrderTradeUpdateMsg,
+    ExecutionReportMsg, LiabilityChangeMsg, OrderTradeUpdateMsg,
 };
 use crate::pre_trade::binance_pm_spot_manager::{BinancePmSpotAccountManager, BinanceSpotBalance};
 use crate::pre_trade::binance_pm_um_manager::{BinancePmUmAccountManager, BinanceUmPosition};
@@ -652,6 +652,19 @@ impl MonitorChannel {
                                 }
                                 AccountEventType::AccountUpdateFlush => {
                                     if let Ok(_msg) = AccountUpdateFlushMsg::from_bytes(data) {
+                                        refresh_exposures(&um_manager, &spot_manager, &exposure_manager, &price_table);
+                                    }
+                                }
+                                AccountEventType::LiabilityChange => {
+                                    if let Ok(msg) = LiabilityChangeMsg::from_bytes(data) {
+                                        spot_manager.borrow_mut().apply_liability_change(
+                                            &msg.asset,
+                                            &msg.liability_type,
+                                            msg.principal,
+                                            msg.interest,
+                                            msg.total_liability,
+                                            msg.event_time,
+                                        );
                                         refresh_exposures(&um_manager, &spot_manager, &exposure_manager, &price_table);
                                     }
                                 }

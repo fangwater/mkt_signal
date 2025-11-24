@@ -383,6 +383,67 @@ impl BinancePmSpotAccountManager {
         snapshot.balances.push(balance);
     }
 
+    /// 处理 liabilityChange 推送，更新借入（borrowed）和利息（interest）
+    /// liability_type 可能为 "BORROW", "REPAY" 等
+    pub fn apply_liability_change(
+        &self,
+        asset: &str,
+        liability_type: &str,
+        principal: f64,
+        interest: f64,
+        _total_liability: f64,
+        update_time: i64,
+    ) {
+        let upper = asset.to_uppercase();
+        let mut state = self.state.borrow_mut();
+        let Some(snapshot) = state.snapshot.as_mut() else {
+            return;
+        };
+
+        snapshot.fetched_at = Utc::now();
+
+        if let Some(balance) = snapshot
+            .balances
+            .iter_mut()
+            .find(|bal| bal.asset.eq_ignore_ascii_case(&upper))
+        {
+            balance.cross_margin_borrowed = principal;
+            balance.cross_margin_interest = interest;
+            balance.update_time = update_time;
+            info!(
+                "负债更新 asset={} type={} borrowed={:.8} interest={:.8} 更新时间={}",
+                balance.asset.as_str(),
+                liability_type,
+                balance.cross_margin_borrowed,
+                balance.cross_margin_interest,
+                update_time
+            );
+            return;
+        }
+
+        // 如果资产不存在，创建新条目
+        let new_balance = BinanceSpotBalance {
+            asset: upper.clone(),
+            total_wallet_balance: 0.0,
+            cross_margin_asset: 0.0,
+            cross_margin_borrowed: principal,
+            cross_margin_free: 0.0,
+            cross_margin_interest: interest,
+            cross_margin_locked: 0.0,
+            um_wallet_balance: 0.0,
+            um_unrealized_pnl: 0.0,
+            cm_wallet_balance: 0.0,
+            cm_unrealized_pnl: 0.0,
+            update_time,
+            negative_balance: false,
+        };
+        info!(
+            "新增负债记录 asset={} type={} borrowed={:.8} interest={:.8} 更新时间={}",
+            upper, liability_type, principal, interest, update_time
+        );
+        snapshot.balances.push(new_balance);
+    }
+
     async fn fetch_snapshot(&self) -> Result<BinanceSpotBalanceSnapshot> {
         let mut params = BTreeMap::new();
         params.insert(

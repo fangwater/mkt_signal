@@ -366,6 +366,47 @@ impl LiabilityChangeMsg {
 
         buf.freeze()
     }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        const MIN_SIZE: usize = 4 + 8 + 8 + 4 + 4 + 8 + 8 + 8;
+        if data.len() < MIN_SIZE {
+            anyhow::bail!("liability change msg too short: {}", data.len());
+        }
+
+        let mut cursor = Bytes::copy_from_slice(data);
+        let msg_type = cursor.get_u32_le();
+        if msg_type != AccountEventType::LiabilityChange as u32 {
+            anyhow::bail!("invalid liability change msg type: {}", msg_type);
+        }
+
+        let event_time = cursor.get_i64_le();
+        let transaction_id = cursor.get_i64_le();
+        let asset_length = cursor.get_u32_le();
+        let type_length = cursor.get_u32_le();
+
+        if cursor.remaining() < asset_length as usize + type_length as usize + 8 + 8 + 8 {
+            anyhow::bail!("liability change msg truncated");
+        }
+
+        let asset = String::from_utf8(cursor.copy_to_bytes(asset_length as usize).to_vec())?;
+        let liability_type = String::from_utf8(cursor.copy_to_bytes(type_length as usize).to_vec())?;
+        let principal = cursor.get_f64_le();
+        let interest = cursor.get_f64_le();
+        let total_liability = cursor.get_f64_le();
+
+        Ok(Self {
+            msg_type: AccountEventType::LiabilityChange,
+            event_time,
+            transaction_id,
+            asset_length,
+            type_length,
+            asset,
+            liability_type,
+            principal,
+            interest,
+            total_liability,
+        })
+    }
 }
 
 #[repr(C, align(8))]

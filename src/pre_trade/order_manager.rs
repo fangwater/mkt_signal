@@ -32,6 +32,23 @@ fn format_price(price: f64) -> String {
     format_decimal(price)
 }
 
+/// 从交易对符号中提取 base asset 和 quote asset
+/// 例如: "BTCUSDT" -> ("BTC", "USDT")
+fn extract_assets_from_symbol(symbol: &str) -> (String, String) {
+    let symbol_upper = symbol.to_uppercase();
+    const QUOTE_ASSETS: [&str; 6] = ["USDT", "USDC", "BUSD", "FDUSD", "BIDR", "TRY"];
+
+    for quote in QUOTE_ASSETS {
+        if symbol_upper.ends_with(quote) && symbol_upper.len() > quote.len() {
+            let base = &symbol_upper[..symbol_upper.len() - quote.len()];
+            return (base.to_string(), quote.to_string());
+        }
+    }
+
+    // 如果没有匹配到已知的 quote asset，默认返回整个符号作为 base，USDT 作为 quote
+    (symbol_upper, "USDT".to_string())
+}
+
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
@@ -584,9 +601,60 @@ impl Order {
                 ];
                 let local_create_ts = get_timestamp_us();
                 if self.venue == TradingVenue::BinanceMargin {
-                    //margin order 增加自动借币/撤单自动还款参数
-                    // params_parts.push("sideEffectType=AUTO_BORROW_REPAY".to_string());
-                    // params_parts.push("autoRepayAtCancel=true".to_string());
+                    // ===== 余额检查和日志记录 =====
+                    // 提取 base asset 和 quote asset
+                    let (base_asset, quote_asset) = extract_assets_from_symbol(&self.symbol);
+
+                    // 根据 side 确定需要检查的资产和所需金额
+                    let (check_asset, required_amount) = match self.side {
+                        Side::Buy => {
+                            // BUY: 需要 quote asset (USDT) 的余额
+                            let required = self.quantity * self.price;
+                            (quote_asset, required)
+                        }
+                        Side::Sell => {
+                            // SELL: 需要 base asset 的余额
+                            (base_asset, self.quantity)
+                        }
+                    };
+
+                    // 从 MonitorChannel 获取 spot_manager 并检查余额
+                    use crate::pre_trade::monitor_channel::MonitorChannel;
+                    let spot_mgr = MonitorChannel::instance().spot_manager();
+                    let available_balance = {
+                        let mgr = spot_mgr.borrow();
+                        if let Some(snapshot) = mgr.snapshot() {
+                            snapshot
+                                .balances
+                                .iter()
+                                .find(|b| b.asset.eq_ignore_ascii_case(&check_asset))
+                                .map(|b| b.cross_margin_free)
+                                .unwrap_or(0.0)
+                        } else {
+                            0.0
+                        }
+                    };
+
+                    // 记录余额情况（用于监控和调试）
+                    if available_balance < required_amount {
+                        let borrow_amount = required_amount - available_balance;
+                        warn!(
+                            "💰 余额不足将借币: 资产={} 需要={:.8} 可用={:.8} 需借={:.8} symbol={} side={:?} qty={:.4} price={:.6}",
+                            check_asset, required_amount, available_balance, borrow_amount,
+                            self.symbol, self.side, self.quantity, self.price
+                        );
+                    } else {
+                        info!(
+                            "✅ 余额充足: 资产={} 需要={:.8} 可用={:.8} symbol={} side={:?}",
+                            check_asset, required_amount, available_balance, self.symbol, self.side
+                        );
+                    }
+                    // ===== 余额检查结束 =====
+
+                    // 默认启用自动借币还款（余额不足时自动借币，撤单时自动归还未使用部分）
+                    params_parts.push("sideEffectType=AUTO_BORROW_REPAY".to_string());
+                    params_parts.push("autoRepayAtCancel=true".to_string());
+
                     //margin下单不支持GTX模式，无论是否要作为maker，都是gtc
                     if self.order_type.is_limit() {
                         params_parts.push("timeInForce=GTC".to_string());
