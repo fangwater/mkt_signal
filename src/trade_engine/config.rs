@@ -4,8 +4,6 @@ use std::{net::IpAddr, path::Path};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TradeEngineCfg {
-    pub order_req_service: String,
-    pub order_resp_service: String,
     pub exchange: Option<String>,
     pub rest: RestCfg,
     #[serde(default)]
@@ -13,6 +11,7 @@ pub struct TradeEngineCfg {
     pub ws: Option<WsCfg>,
     pub limits: LimitsCfg,
     pub network: NetworkCfg,
+    #[serde(default)]
     pub accounts: AccountsCfg,
 }
 
@@ -62,6 +61,12 @@ pub struct NetworkCfg {
 #[derive(Debug, Clone, Deserialize)]
 pub struct AccountsCfg {
     pub keys: Vec<ApiKey>,
+}
+
+impl Default for AccountsCfg {
+    fn default() -> Self {
+        Self { keys: Vec::new() }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

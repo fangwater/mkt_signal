@@ -7,6 +7,7 @@ use log::{debug, info, warn};
 use std::cell::OnceCell;
 use std::time::Duration;
 
+use crate::common::ipc_service_name::build_service_name;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeEngineResponseMessage};
 
@@ -16,12 +17,6 @@ thread_local! {
 
 const TRADE_REQ_PAYLOAD: usize = 4_096;
 const TRADE_RESP_PAYLOAD: usize = 16_384;
-
-/// 默认订单请求服务名称
-pub const DEFAULT_ORDER_REQ_SERVICE: &str = "order_reqs/binance";
-
-/// 默认订单响应服务名称
-pub const DEFAULT_ORDER_RESP_SERVICE: &str = "order_resps/binance";
 
 /// TradeEngChannel 负责与 trade engine 的双向通信
 ///
@@ -42,7 +37,7 @@ pub struct TradeEngChannel {
 impl TradeEngChannel {
     /// 在当前线程的 TradeEngChannel 单例上执行操作
     ///
-    /// 第一次调用时会自动初始化默认配置，后续调用直接使用已初始化的实例
+    /// 第一次调用时会自动初始化默认配置（使用 binance 交易所），后续调用直接使用已初始化的实例
     ///
     /// # 使用示例
     /// ```ignore
@@ -55,8 +50,8 @@ impl TradeEngChannel {
     {
         TRADE_ENG_CHANNEL.with(|cell| {
             let channel = cell.get_or_init(|| {
-                info!("Initializing thread-local TradeEngChannel singleton with default config");
-                TradeEngChannel::new(DEFAULT_ORDER_REQ_SERVICE, DEFAULT_ORDER_RESP_SERVICE)
+                info!("Initializing thread-local TradeEngChannel singleton with default config (exchange=binance)");
+                TradeEngChannel::new("binance")
                     .expect("Failed to initialize default TradeEngChannel")
             });
             f(channel)
@@ -65,21 +60,20 @@ impl TradeEngChannel {
 
     /// 显式初始化交易引擎频道（可选）
     ///
-    /// 如果在首次调用 `with()` 之前调用此方法，可以自定义服务名称
+    /// 如果在首次调用 `with()` 之前调用此方法，可以自定义交易所
     ///
     /// # 参数
-    /// * `order_req_service` - 订单请求服务名称
-    /// * `order_resp_service` - 订单响应服务名称
+    /// * `exchange` - 交易所名称 (例如: "binance", "okex")
     ///
     /// # 错误
     /// - 如果已经初始化，返回错误
     /// - 如果 IceOryx 初始化失败，返回错误
-    pub fn initialize(order_req_service: &str, order_resp_service: &str) -> Result<()> {
+    pub fn initialize(exchange: &str) -> Result<()> {
         TRADE_ENG_CHANNEL.with(|cell| {
             if cell.get().is_some() {
                 return Err(anyhow::anyhow!("TradeEngChannel already initialized"));
             }
-            cell.set(TradeEngChannel::new(order_req_service, order_resp_service)?)
+            cell.set(TradeEngChannel::new(exchange)?)
                 .map_err(|_| anyhow::anyhow!("Failed to set TradeEngChannel (race condition)"))
         })
     }
@@ -87,19 +81,21 @@ impl TradeEngChannel {
     /// 创建 TradeEngChannel 实例
     ///
     /// # 参数
-    /// * `order_req_service` - 订单请求服务名称 (例如: "order_reqs/binance")
-    /// * `order_resp_service` - 订单响应服务名称 (例如: "order_resps/binance")
+    /// * `exchange` - 交易所名称 (例如: "binance", "okex")
     ///
     /// 注意：通常应使用 `TradeEngChannel::with()` 访问线程本地单例，
     /// 而不是直接调用 `new()` 创建多个实例
-    fn new(order_req_service: &str, order_resp_service: &str) -> Result<Self> {
+    fn new(exchange: &str) -> Result<Self> {
+        // 构建带命名空间的服务名
+        let order_req_service = build_service_name(&format!("order_reqs/{}", exchange));
+        let order_resp_service = build_service_name(&format!("order_resps/{}", exchange));
         // 创建 publisher 用于发送订单请求
         let req_node = NodeBuilder::new()
             .name(&NodeName::new("pre_trade_order_req")?)
             .create::<ipc::Service>()?;
 
         let req_service = req_node
-            .service_builder(&ServiceName::new(order_req_service)?)
+            .service_builder(&ServiceName::new(&order_req_service)?)
             .publish_subscribe::<[u8; TRADE_REQ_PAYLOAD]>()
             .open_or_create()?;
 
@@ -110,12 +106,11 @@ impl TradeEngChannel {
         );
 
         // 启动交易响应监听器
-        let resp_service = order_resp_service.to_string();
         tokio::task::spawn_local(async move {
-            if let Err(err) = Self::run_trade_resp_listener(&resp_service).await {
+            if let Err(err) = Self::run_trade_resp_listener(&order_resp_service).await {
                 warn!(
                     "Trade response listener exited (service={}): {err:?}",
-                    resp_service
+                    order_resp_service
                 );
             }
         });

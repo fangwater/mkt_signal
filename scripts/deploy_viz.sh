@@ -2,10 +2,25 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TARGET_DIR="${1:-$HOME/crypto_mkt}"
 BIN_NAME="viz_server"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 CONFIG_SRC="$ROOT_DIR/config/viz.toml"
+
+# 解析参数
+ENV_TYPE="${1:-trade}"
+case "$ENV_TYPE" in
+    trade)
+        TARGET_DIR="$HOME/fr_trade"
+        ;;
+    test)
+        TARGET_DIR="$HOME/fr_test"
+        ;;
+    *)
+        echo "[ERROR] 未知环境类型: $ENV_TYPE"
+        echo "用法: $0 [trade|test]"
+        exit 1
+        ;;
+esac
 
 echo "[INFO] 构建 $BIN_NAME (release)"
 cargo build --release --bin "$BIN_NAME"
@@ -20,4 +35,4 @@ if [[ -f "$CONFIG_SRC" ]]; then
   cp "$CONFIG_SRC" "$TARGET_DIR/config/"
 fi
 
-echo "[INFO] $BIN_NAME 部署完成。"
+echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"

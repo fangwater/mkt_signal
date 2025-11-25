@@ -1,4 +1,5 @@
 use crate::common::exchange::Exchange;
+use crate::common::ipc_service_name::build_service_name;
 use crate::trade_engine::config::{TradeEngineCfg, TradeTransport};
 use crate::trade_engine::dispatcher::Dispatcher;
 use crate::trade_engine::trade_request::TradeRequestMsg;
@@ -39,9 +40,19 @@ impl TradeEngine {
 
     pub async fn run(mut self) -> Result<()> {
         // Single-threaded tokio reactor is enforced by binary attribute.
+        let exchange_name = self
+            .cfg
+            .exchange
+            .clone()
+            .unwrap_or_else(|| "binance".to_string());
+
+        // 构建带命名空间的服务名
+        let order_req_service = build_service_name(&format!("order_reqs/{}", exchange_name));
+        let order_resp_service = build_service_name(&format!("order_resps/{}", exchange_name));
+
         info!(
-            "trade_engine starting; service='{}', transport={:?}",
-            self.cfg.order_req_service, self.cfg.transport
+            "trade_engine starting; req_service='{}', resp_service='{}', transport={:?}",
+            order_req_service, order_resp_service, self.cfg.transport
         );
         if matches!(self.cfg.transport, TradeTransport::Rest) {
             info!("rest base_url={}", self.cfg.rest.base_url);
@@ -53,41 +64,29 @@ impl TradeEngine {
         }
 
         // Iceoryx subscriber for order requests
-        let node_name = format!(
-            "trade_engine_{}",
-            self.cfg
-                .exchange
-                .clone()
-                .unwrap_or_else(|| "default".to_string())
-        );
+        let node_name = format!("trade_engine_{}", exchange_name);
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
 
         let service = node
-            .service_builder(&ServiceName::new(&self.cfg.order_req_service)?)
+            .service_builder(&ServiceName::new(&order_req_service)?)
             .publish_subscribe::<[u8; 4096]>()
             .subscriber_max_buffer_size(256)
             .open_or_create()?;
         let subscriber: Subscriber<ipc::Service, [u8; 4096], ()> =
             service.subscriber_builder().create()?;
-        debug!(
-            "subscriber created for service: {}",
-            self.cfg.order_req_service
-        );
+        debug!("subscriber created for service: {}", order_req_service);
 
         // Result publisher
         let resp_service = node
-            .service_builder(&ServiceName::new(&self.cfg.order_resp_service)?)
+            .service_builder(&ServiceName::new(&order_resp_service)?)
             .publish_subscribe::<[u8; 16384]>()
             .subscriber_max_buffer_size(256)
             .open_or_create()?;
         let resp_publisher: Publisher<ipc::Service, [u8; 16384], ()> =
             resp_service.publisher_builder().create()?;
-        debug!(
-            "publisher created for service: {}",
-            self.cfg.order_resp_service
-        );
+        debug!("publisher created for service: {}", order_resp_service);
 
         // 解析 exchange 枚举
         let exchange = match self.cfg.exchange.as_deref() {

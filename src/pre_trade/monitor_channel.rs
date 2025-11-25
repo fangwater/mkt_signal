@@ -12,6 +12,7 @@ use crate::common::account_msg::{
     AccountUpdateBalanceMsg, AccountUpdateFlushMsg, AccountUpdatePositionMsg, BalanceUpdateMsg,
     ExecutionReportMsg, LiabilityChangeMsg, OrderTradeUpdateMsg,
 };
+use crate::common::ipc_service_name::build_service_name;
 use crate::pre_trade::binance_pm_spot_manager::{BinancePmSpotAccountManager, BinanceSpotBalance};
 use crate::pre_trade::binance_pm_um_manager::{BinancePmUmAccountManager, BinanceUmPosition};
 use crate::signal::common::{ExecutionType, TradingVenue};
@@ -391,7 +392,8 @@ impl MonitorChannel {
         let um_manager_rc = Rc::new(RefCell::new(um_manager));
         let spot_manager_rc = Rc::new(RefCell::new(spot_manager));
 
-        let service_name = "account_pubs/binance_pm".to_string();
+        // 构建带命名空间的服务名
+        let service_name = build_service_name("account_pubs/binance_pm");
         let node_name = "pre_trade_account_pubs_binance_pm".to_string();
 
         // 启动账户事件监听任务

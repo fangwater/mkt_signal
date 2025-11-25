@@ -21,6 +21,4 @@ pub use resample_channel::{
 };
 pub use runner::PreTrade;
 pub use signal_channel::{SignalChannel, DEFAULT_BACKWARD_CHANNEL, DEFAULT_SIGNAL_CHANNEL};
-pub use trade_eng_channel::{
-    TradeEngChannel, DEFAULT_ORDER_REQ_SERVICE, DEFAULT_ORDER_RESP_SERVICE,
-};
+pub use trade_eng_channel::TradeEngChannel;

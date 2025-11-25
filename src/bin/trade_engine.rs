@@ -34,39 +34,39 @@ async fn main() -> Result<()> {
         std::env::set_var("RUST_LOG", "debug");
     }
     env_logger::init();
+
+    info!("trade_engine starting");
+    info!("Required env vars: BINANCE_API_KEY, BINANCE_API_SECRET");
+    info!("Optional env vars: TRADE_ENGINE_CFG, BINANCE_API_NAME");
+
     // 默认读取 config/trade_engine.toml
     let cfg_path = std::env::var("TRADE_ENGINE_CFG")
         .unwrap_or_else(|_| "config/trade_engine.toml".to_string());
     let mut cfg = TradeEngineCfg::load(cfg_path).await?;
 
-    // 可选：用环境变量覆盖账户（适合临时实盘测试）
-    if let (Ok(key_raw), Ok(secret_raw)) = (
-        std::env::var("BINANCE_API_KEY"),
-        std::env::var("BINANCE_API_SECRET"),
-    ) {
-        let key = key_raw.trim().to_string();
-        let secret = secret_raw.trim().to_string();
-        cfg.accounts.keys = vec![ApiKey {
-            name: std::env::var("BINANCE_API_NAME").unwrap_or_else(|_| "env".into()),
-            key: key.clone(),
-            secret: secret.clone(),
-        }];
-        info!("trade_engine accounts overridden by env");
-    }
+    // 从环境变量读取账户配置（必须）
+    let api_key_raw = std::env::var("BINANCE_API_KEY").map_err(|_| {
+        anyhow::anyhow!("BINANCE_API_KEY not set. Export it before running trade_engine")
+    })?;
+    let api_key = api_key_raw.trim().to_string();
 
-    // 可选：用环境变量覆盖 iceoryx 服务名，便于测试时快速切换隔离
-    if let Ok(req_svc) = std::env::var("ORDER_REQ_SERVICE") {
-        cfg.order_req_service = req_svc;
-    }
-    if let Ok(resp_svc) = std::env::var("ORDER_RESP_SERVICE") {
-        cfg.order_resp_service = resp_svc;
-    }
+    let api_secret_raw = std::env::var("BINANCE_API_SECRET").map_err(|_| {
+        anyhow::anyhow!("BINANCE_API_SECRET not set. Export it before running trade_engine")
+    })?;
+    let api_secret = api_secret_raw.trim().to_string();
 
-    for api in &cfg.accounts.keys {
-        let label_prefix = format!("trade_engine account '{}'", api.name);
-        log_credential_preview(&format!("{} BINANCE_API_KEY", label_prefix), &api.key);
-        log_credential_preview(&format!("{} BINANCE_API_SECRET", label_prefix), &api.secret);
-    }
+    let api_name = std::env::var("BINANCE_API_NAME").unwrap_or_else(|_| "default".to_string());
+
+    // 设置账户配置
+    cfg.accounts.keys = vec![ApiKey {
+        name: api_name.clone(),
+        key: api_key.clone(),
+        secret: api_secret.clone(),
+    }];
+
+    info!("trade_engine account name: {}", api_name);
+    log_credential_preview("BINANCE_API_KEY", &api_key);
+    log_credential_preview("BINANCE_API_SECRET", &api_secret);
 
     info!("trade_engine config loaded");
     let engine = TradeEngine::new(cfg);

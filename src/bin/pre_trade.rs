@@ -74,12 +74,12 @@ async fn main() -> Result<()> {
                 info!("ResampleChannel initialized successfully");
             } 
 
-            // 6. 初始化 TradeEngChannel 
-            info!("Initializing TradeEngChannel singleton..."); 
-            if let Err(err) = TradeEngChannel::initialize("order_reqs/binance", "order_resps/binance") {
-                warn!("Failed to initialize TradeEngChannel: {err:#}"); 
+            // 6. 初始化 TradeEngChannel (使用 binance 交易所)
+            info!("Initializing TradeEngChannel singleton...");
+            if let Err(err) = TradeEngChannel::initialize("binance") {
+                warn!("Failed to initialize TradeEngChannel: {err:#}");
             } else {
-                info!("TradeEngChannel initialized on services: req=order_reqs/binance, resp=order_resps/binance");
+                info!("TradeEngChannel initialized for exchange: binance");
             } 
 
             // 7. 预热 PersistChannel（自动初始化，调用一次即可）
