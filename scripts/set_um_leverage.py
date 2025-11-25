@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""Batch-set Binance UM leverage to a fixed value for all symbols in Redis hash.
+"""Batch-set Binance UM leverage to a fixed value for all symbols.
 
 Usage:
-  python scripts/set_um_leverage.py [--redis-url ...] [--key HASH_KEY]
+  python scripts/set_um_leverage.py [--redis-url ...] [--leverage 4]
 
-The script reads the Redis HASH (default: ``binance_arb_price_spread_threshold``),
-collects every field as a symbol (uppercase enforced), and issues PAPI requests to
-set the same leverage (default: ``4``) on Binance UM. API credentials come from
+The script reads symbols from two Redis String keys (JSON arrays):
+  - fr_dump_symbols:binance_margin (平仓列表)
+  - fr_trade_symbols:binance_margin (建仓列表)
+
+Merges them (union, deduplicated), and issues PAPI requests to set the same
+leverage (default: 4) on Binance UM. API credentials come from
 ``BINANCE_API_KEY`` and ``BINANCE_API_SECRET`` environment variables.
 """
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -19,7 +23,7 @@ import hashlib
 import urllib.parse
 import urllib.request
 import urllib.error
-from typing import Iterable, List
+from typing import List, Set
 
 
 def try_import_redis():
@@ -32,7 +36,7 @@ def try_import_redis():
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Set Binance UM leverage for symbols listed in a Redis hash")
+    parser = argparse.ArgumentParser(description="Set Binance UM leverage for symbols from Redis")
     parser.add_argument(
         "--redis-url",
         default=os.environ.get("REDIS_URL"),
@@ -43,9 +47,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
     parser.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
     parser.add_argument(
-        "--key",
-        default="binance_arb_price_spread_threshold",
-        help="Redis HASH key containing symbol entries (default: binance_arb_price_spread_threshold)",
+        "--dump-key",
+        default="fr_dump_symbols:binance_margin",
+        help="平仓列表 Redis key (default: fr_dump_symbols:binance_margin)",
+    )
+    parser.add_argument(
+        "--trade-key",
+        default="fr_trade_symbols:binance_margin",
+        help="建仓列表 Redis key (default: fr_trade_symbols:binance_margin)",
     )
     parser.add_argument(
         "--base-url",
@@ -108,26 +117,39 @@ def connect_redis(args: argparse.Namespace):
     return redis.Redis(host=args.host, port=args.port, db=args.db, password=args.password)
 
 
-def fetch_symbols(rds, key: str) -> List[str]:
-    try:
-        raw_keys: Iterable[bytes] = rds.hkeys(key)
-    except Exception as exc:
-        print(f"ERROR: failed to read Redis hash '{key}': {exc}")
-        sys.exit(1)
+def load_symbol_lists(rds, dump_key: str, trade_key: str) -> List[str]:
+    """
+    从 Redis 读取 dump 和 trade 列表，返回并集（去重且排序）
+    """
+    symbols_set: Set[str] = set()
 
-    symbols: List[str] = []
-    for field in raw_keys:
-        if isinstance(field, bytes):
-            sym = field.decode("utf-8", "ignore")
-        else:
-            sym = str(field)
-        sym = sym.strip().upper()
-        if sym:
-            symbols.append(sym)
+    # 读取平仓列表
+    dump_data = rds.get(dump_key)
+    if dump_data:
+        dump_str = dump_data.decode('utf-8', 'ignore') if isinstance(dump_data, bytes) else str(dump_data)
+        try:
+            dump_list = json.loads(dump_str)
+            if isinstance(dump_list, list):
+                symbols_set.update(s.upper() for s in dump_list if s)
+                print(f"📖 从 '{dump_key}' 读取 {len(dump_list)} 个 symbols")
+        except Exception as e:
+            print(f"⚠️  解析 '{dump_key}' 失败: {e}")
 
-    # remove duplicates while keeping order (hash order arbitrary, so sort for determinism)
-    unique = sorted(set(symbols))
-    return unique
+    # 读取建仓列表
+    trade_data = rds.get(trade_key)
+    if trade_data:
+        trade_str = trade_data.decode('utf-8', 'ignore') if isinstance(trade_data, bytes) else str(trade_data)
+        try:
+            trade_list = json.loads(trade_str)
+            if isinstance(trade_list, list):
+                symbols_set.update(s.upper() for s in trade_list if s)
+                print(f"📖 从 '{trade_key}' 读取 {len(trade_list)} 个 symbols")
+        except Exception as e:
+            print(f"⚠️  解析 '{trade_key}' 失败: {e}")
+
+    result = sorted(symbols_set)
+    print(f"✅ 合并后共 {len(result)} 个唯一 symbols")
+    return result
 
 
 def main():
@@ -145,15 +167,15 @@ def main():
         sys.exit(1)
 
     rds = connect_redis(args)
-    symbols = fetch_symbols(rds, args.key)
+    symbols = load_symbol_lists(rds, args.dump_key, args.trade_key)
     if not symbols:
-        print(f"No symbols found in Redis hash '{args.key}'.")
+        print("No symbols found in Redis.")
         return
 
     base_url = args.base_url.rstrip("/")
 
     print(
-        f"Setting UM leverage={leverage} on {len(symbols)} symbols from Redis key '{args.key}' via {base_url} ..."
+        f"\nSetting UM leverage={leverage} on {len(symbols)} symbols via {base_url} ..."
     )
 
     ok = 0

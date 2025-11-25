@@ -46,9 +46,6 @@ pub const DEFAULT_SIGNAL_CHANNEL: &str = "funding_rate_signal";
 /// 对应 pre_trade/signal_channel.rs 中的 DEFAULT_BACKWARD_CHANNEL
 pub const DEFAULT_BACKWARD_CHANNEL: &str = "signal_query";
 
-/// 临时测试开关：true 表示只允许发送正套平仓（ForwardClose）
-const FORWARD_CLOSE_ONLY: bool = true;
-
 // ========== 无状态设计 ==========
 // FrDecision 不维护任何状态，所有状态由外部（如 Engine）维护
 
@@ -397,14 +394,13 @@ impl FrDecision {
         }
 
         // 步骤2: 获取资费信号
-        // let fr_signal = self.get_funding_rate_signal(spot_symbol, futures_symbol, futures_venue)?;
+        let fr_signal = self.get_funding_rate_signal(spot_symbol, futures_symbol, futures_venue)?;
 
         // 步骤3: 如果资费没有信号，返回 None
-        // let fr_signal = match fr_signal {
-        //     Some(s) => s,
-        //     None => return Ok(None),
-        // };
-        let fr_signal = FrSignal::ForwardClose;
+        let fr_signal = match fr_signal {
+            Some(s) => s,
+            None => return Ok(None),
+        };
 
         // 步骤4: 根据资费信号验证对应的价差 satisfy
         let final_signal = match fr_signal {
@@ -526,17 +522,11 @@ impl FrDecision {
         let period = rate_fetcher.get_period(futures_symbol, futures_venue);
 
         // 检查所有条件
-        let mut forward_open = fr_factor.satisfy_forward_open(futures_symbol, period);
+        let forward_open = fr_factor.satisfy_forward_open(futures_symbol, period);
         let forward_close = fr_factor.satisfy_forward_close(futures_symbol, period, futures_venue);
-        let mut backward_open = fr_factor.satisfy_backward_open(futures_symbol, period);
-        let mut backward_close =
+        let backward_open = fr_factor.satisfy_backward_open(futures_symbol, period);
+        let backward_close =
             fr_factor.satisfy_backward_close(futures_symbol, period, futures_venue);
-
-        if FORWARD_CLOSE_ONLY {
-            backward_open = false;
-            backward_close = false;
-            forward_open = false;
-        }
 
         // 优先级规则1: forward_close 和 backward_open 冲突时，选择 backward_open
         if forward_close && backward_open {

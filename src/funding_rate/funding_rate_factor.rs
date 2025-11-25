@@ -163,7 +163,7 @@ impl FundingRateFactor {
 
     /// 更新反套平仓阈值
     ///
-    /// 判断条件：current_fr_ma > threshold
+    /// 判断条件：(current_fr_ma + current_loan_rate) > threshold
     pub fn update_backward_close_threshold(
         &self,
         period: FundingRatePeriod,
@@ -218,6 +218,21 @@ impl FundingRateFactor {
     /// 从 MktChannel 获取
     fn get_current_fr_ma(&self, symbol: &str, venue: TradingVenue) -> Option<f64> {
         MktChannel::instance().get_funding_rate_mean(symbol, venue)
+    }
+
+    /// 获取当前借贷利率 (current_loan_rate)
+    ///
+    /// 使用最近 3 条历史数据的均值
+    fn get_current_loan_rate(&self, symbol: &str, period: FundingRatePeriod) -> Option<f64> {
+        RateFetcher::instance()
+            .get_current_loan_rate(symbol, TradingVenue::BinanceUm)
+            .and_then(|(sym_period, value)| {
+                if sym_period == period {
+                    Some(value)
+                } else {
+                    None
+                }
+            })
     }
 
     // ===== 4个 satisfy 函数 =====
@@ -299,7 +314,7 @@ impl FundingRateFactor {
 
     /// 检查是否满足反套平仓条件
     ///
-    /// 判断：current_fr_ma > threshold（根据 symbol 的周期和当前模式）
+    /// 判断：(current_fr_ma + current_loan_rate) > threshold（根据 symbol 的周期和当前模式）
     pub fn satisfy_backward_close(
         &self,
         symbol: &str,
@@ -316,8 +331,12 @@ impl FundingRateFactor {
 
         let thresholds = self.thresholds.borrow();
         if let Some(config) = thresholds.get(&key) {
-            if let Some(current_fr_ma) = self.get_current_fr_ma(symbol, venue) {
-                return config.compare_op.check(current_fr_ma, config.threshold);
+            if let (Some(current_fr_ma), Some(current_loan)) = (
+                self.get_current_fr_ma(symbol, venue),
+                self.get_current_loan_rate(symbol, period),
+            ) {
+                let factor = current_fr_ma + current_loan;
+                return config.compare_op.check(factor, config.threshold);
             }
         }
 

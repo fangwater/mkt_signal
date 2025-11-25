@@ -46,58 +46,36 @@ def parse_args() -> argparse.Namespace:
 
 # ========== 交易对白名单配置 ==========
 
-SYMBOL_ALLOWLIST: List[str] = [
-    # 8h symbols
-    "CUSDT",
-    "XPLUSDT",
-    "HIGHUSDT",
-    "EGLDUSDT",
-    "SFPUSDT",
-    "IOTXUSDT",
-    "ZENUSDT",
-    "COTIUSDT",
-    "ZILUSDT",
-    "SUSHIUSDT",
-    "MINAUSDT",
-    "ENJUSDT",
-    "KSMUSDT",
-    "VETUSDT",
-    "SXPUSDT",
-    "BICOUSDT",
-    "C98USDT",
-    "CHRUSDT",
-    "UNIUSDT",
-    "NEOUSDT",
-    "CELOUSDT",
-    "KAVAUSDT",
-    "ASTRUSDT",
-    # 4h symbols
-    "HEIUSDT",
-    "NFPUSDT",
-    "TNSRUSDT",
-    "SANTOSUSDT",
-    "FLUXUSDT",
-    "KDAUSDT",
-    "BEAMXUSDT",
-    "AUCTIONUSDT",
-    "AIUSDT",
-    "INITUSDT",
-    "A2ZUSDT",
-    "USTCUSDT",
-    "SAGAUSDT",
-    "SLPUSDT",
-    "VANRYUSDT",
-    "WCTUSDT",
-    "AXLUSDT",
-    "JTOUSDT",
-    "TWTUSDT",
-    "PUMPUSDT",
-    "MANTAUSDT",
-    "MEMEUSDT",
-    "ILVUSDT",
-    "ORCAUSDT",
-    "SUNUSDT",
+# 正套币对列表
+FWD_SYMBOLS_8H: List[str] = [
+    "ONEUSDT", "ICXUSDT", "SFPUSDT", "ZILUSDT", "DENTUSDT",
+    "HOTUSDT", "ANKRUSDT", "HIGHUSDT", "RDNTUSDT", "CHRUSDT",
 ]
+
+FWD_SYMBOLS_4H: List[str] = [
+    "A2ZUSDT", "SAHARAUSDT", "NFPUSDT", "CUSDT", "SANTOSUSDT",
+    "PUMPUSDT", "JTOUSDT", "NEWTUSDT", "AIXBTUSDT", "AUCTIONUSDT",
+]
+
+FWD_SYMBOLS: List[str] = FWD_SYMBOLS_8H + FWD_SYMBOLS_4H
+
+# 反套币对列表
+BWD_SYMBOLS_8H: List[str] = [
+    "HFTUSDT", "STGUSDT", "APTUSDT", "ALICEUSDT", "ZENUSDT",
+    "DASHUSDT", "ASTRUSDT", "KSMUSDT", "ZECUSDT", "MINAUSDT",
+]
+
+BWD_SYMBOLS_4H: List[str] = [
+    "USUALUSDT", "DYMUSDT", "XAIUSDT", "TREEUSDT", "RAREUSDT",
+    "RVNUSDT", "NEWTUSDT", "WLFIUSDT", "STRKUSDT", "WCTUSDT",
+    "AUCTIONUSDT", "ZKUSDT", "ILVUSDT", "BABYUSDT", "ORCAUSDT",
+    "BANANAUSDT", "FLUXUSDT",
+]
+
+BWD_SYMBOLS: List[str] = BWD_SYMBOLS_8H + BWD_SYMBOLS_4H
+
+# 合并所有交易对（用于平仓列表）
+SYMBOL_ALLOWLIST: List[str] = list(set(FWD_SYMBOLS + BWD_SYMBOLS))
 
 # ========== Symbol Lists 配置 ==========
 
@@ -108,10 +86,10 @@ DUMP_SYMBOLS_UM = SYMBOL_ALLOWLIST.copy()
 TRADE_SYMBOLS_UM = SYMBOL_ALLOWLIST.copy()
 
 # Binance UM (合约) - 正套建仓列表
-FWD_TRADE_SYMBOLS_UM = SYMBOL_ALLOWLIST.copy()
+FWD_TRADE_SYMBOLS_UM = FWD_SYMBOLS.copy()
 
 # Binance UM (合约) - 反套建仓列表
-BWD_TRADE_SYMBOLS_UM = SYMBOL_ALLOWLIST.copy()
+BWD_TRADE_SYMBOLS_UM = BWD_SYMBOLS.copy()
 
 # Binance Margin (现货杠杆) - 平仓列表
 DUMP_SYMBOLS_MARGIN = SYMBOL_ALLOWLIST.copy()
@@ -120,10 +98,10 @@ DUMP_SYMBOLS_MARGIN = SYMBOL_ALLOWLIST.copy()
 TRADE_SYMBOLS_MARGIN = SYMBOL_ALLOWLIST.copy()
 
 # Binance Margin (现货杠杆) - 正套建仓列表
-FWD_TRADE_SYMBOLS_MARGIN = SYMBOL_ALLOWLIST.copy()
+FWD_TRADE_SYMBOLS_MARGIN = FWD_SYMBOLS.copy()
 
 # Binance Margin (现货杠杆) - 反套建仓列表
-BWD_TRADE_SYMBOLS_MARGIN = SYMBOL_ALLOWLIST.copy()
+BWD_TRADE_SYMBOLS_MARGIN = BWD_SYMBOLS.copy()
 
 
 def sync_symbol_lists(rds) -> int:

@@ -300,7 +300,8 @@ impl ExposureManager {
             .map(|asset| {
                 let spot = spot_map.get(&asset);
                 let um = um_map.get(&asset);
-                let spot_total_wallet = spot.map(|b| b.total_wallet_balance).unwrap_or(0.0);
+                // 使用 net_asset 计算真实敞口（考虑借款）
+                let spot_total_wallet = spot.map(|b| b.net_asset()).unwrap_or(0.0);
                 let spot_cross_free = spot.map(|b| b.cross_margin_free).unwrap_or(0.0);
                 let spot_cross_locked = spot.map(|b| b.cross_margin_locked).unwrap_or(0.0);
                 let spot_cross_borrowed = spot.map(|b| b.cross_margin_borrowed).unwrap_or(0.0);

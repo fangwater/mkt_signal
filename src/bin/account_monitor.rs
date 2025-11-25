@@ -4,7 +4,7 @@ use log::{debug, error, info, warn};
 use mkt_signal::common::account_msg::{
     get_event_type, AccountEventType, AccountPositionMsg, AccountUpdateBalanceMsg,
     AccountUpdateFlushMsg, AccountUpdatePositionMsg, BalanceUpdateMsg, ExecutionReportMsg,
-    OrderTradeUpdateMsg,
+    LiabilityChangeMsg, OrderTradeUpdateMsg,
 };
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::binance_account_event_parser::BinanceAccountEventParser;
@@ -164,6 +164,8 @@ async fn main() -> Result<()> {
             Some(msg) = evt_rx.recv() => {
                 // 统一去重后再发送
                 if deduper.should_forward(&msg) {
+                    // 打印解析后的消息
+                    log_parsed_event(&msg);
                     forwarder.send_raw(&msg);
                 }
             }
@@ -267,6 +269,62 @@ fn spawn_user_stream_path(
             }
         }
     })
+}
+
+/// 打印解析后的账户事件
+fn log_parsed_event(msg: &Bytes) {
+    if msg.len() < 8 {
+        return;
+    }
+    let event_type = get_event_type(msg.as_ref());
+    let payload_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
+    if msg.len() < 8 + payload_len {
+        return;
+    }
+    let payload = msg.slice(8..8 + payload_len);
+
+    match event_type {
+        AccountEventType::ExecutionReport => {
+            if let Ok(m) = ExecutionReportMsg::from_bytes(&payload) {
+                info!(
+                    "ExecutionReport: sym={} side={} status={} cli_id={} ord_id={} price={} qty={} filled={}",
+                    m.symbol, m.side, m.order_status, m.client_order_id, m.order_id, m.price, m.quantity, m.cumulative_filled_quantity
+                );
+            }
+        }
+        AccountEventType::OrderTradeUpdate => {
+            if let Ok(m) = OrderTradeUpdateMsg::from_bytes(&payload) {
+                info!(
+                    "OrderTradeUpdate: sym={} side={} status={} cli_id={} ord_id={} price={} qty={} filled={}",
+                    m.symbol, m.side, m.order_status, m.client_order_id, m.order_id, m.price, m.quantity, m.cumulative_filled_quantity
+                );
+            }
+        }
+        AccountEventType::BalanceUpdate => {
+            if let Ok(m) = BalanceUpdateMsg::from_bytes(&payload) {
+                info!("BalanceUpdate: asset={} delta={}", m.asset, m.delta);
+            }
+        }
+        AccountEventType::AccountUpdateBalance => {
+            if let Ok(m) = AccountUpdateBalanceMsg::from_bytes(&payload) {
+                info!(
+                    "AccountUpdateBalance: asset={} wallet={} cross_wallet={}",
+                    m.asset, m.wallet_balance, m.cross_wallet_balance
+                );
+            }
+        }
+        AccountEventType::LiabilityChange => {
+            if let Ok(m) = LiabilityChangeMsg::from_bytes(&payload) {
+                info!(
+                    "LiabilityChange: asset={} type={} principal={} interest={} total={}",
+                    m.asset, m.liability_type, m.principal, m.interest, m.total_liability
+                );
+            }
+        }
+        _ => {
+            debug!("PM event: type={:?} len={}", event_type, payload_len);
+        }
+    }
 }
 
 /// 统一的账户事件去重器

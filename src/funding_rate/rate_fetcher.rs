@@ -116,13 +116,22 @@ thread_local! {
 /// RateFetcher 单例访问器（零大小类型）
 pub struct RateFetcher;
 
+/// 借贷利率缓存（预计算的均值）
+#[derive(Debug, Clone)]
+struct LendingRateCache {
+    /// 预测利率：最近 24 条日利率均值
+    predict_daily_rate: f64,
+    /// 当前利率：最近 3 条日利率均值
+    current_daily_rate: f64,
+}
+
 /// RateFetcher 内部实现
 struct RateFetcherInner {
     /// 资金费率数据：TradingVenue -> Symbol -> Vec<f64>
     funding_rates: HashMap<TradingVenue, HashMap<String, Vec<f64>>>,
 
-    /// 借贷利率数据：TradingVenue -> BaseAsset -> f64 (修正后的周期利率)
-    lending_rates: HashMap<TradingVenue, HashMap<String, f64>>,
+    /// 借贷利率数据：TradingVenue -> BaseAsset -> LendingRateCache (预计算的均值)
+    lending_rates: HashMap<TradingVenue, HashMap<String, LendingRateCache>>,
 
     /// 资金费率周期：TradingVenue -> Symbol -> FundingRatePeriod (推算得到)
     funding_periods: HashMap<TradingVenue, HashMap<String, FundingRatePeriod>>,
@@ -453,14 +462,31 @@ impl RateFetcher {
 
         for asset in &base_assets {
             match Self::fetch_lending_rate_for_asset(asset).await {
-                Ok(Some(daily_rate)) if save_result => {
-                    let period_rate = BINANCE_CONFIG.period.convert_daily_rate(daily_rate);
+                Ok(Some(rates)) if save_result => {
+                    // 预计算两个均值
+                    let predict_daily_rate = if rates.is_empty() {
+                        0.0
+                    } else {
+                        rates.iter().sum::<f64>() / rates.len() as f64
+                    };
+                    let current_daily_rate = if rates.is_empty() {
+                        0.0
+                    } else {
+                        let take_count = 3.min(rates.len());
+                        rates.iter().take(take_count).sum::<f64>() / take_count as f64
+                    };
+
+                    let cache = LendingRateCache {
+                        predict_daily_rate,
+                        current_daily_rate,
+                    };
+
                     Self::with_inner_mut(|inner| {
                         inner
                             .lending_rates
                             .entry(BINANCE_CONFIG.venue)
                             .or_insert_with(HashMap::new)
-                            .insert(asset.to_uppercase(), period_rate);
+                            .insert(asset.to_uppercase(), cache);
                     });
                     success += 1;
                 }
@@ -481,8 +507,8 @@ impl RateFetcher {
         Ok(())
     }
 
-    /// 拉取单个 asset 的借贷利率（取最近24条均值）
-    async fn fetch_lending_rate_for_asset(asset: &str) -> Result<Option<f64>> {
+    /// 拉取单个 asset 的借贷利率历史（返回最近24条原始日利率）
+    async fn fetch_lending_rate_for_asset(asset: &str) -> Result<Option<Vec<f64>>> {
         let (client, api_key, api_secret) = Self::with_inner(|inner| {
             (
                 inner.http_client.clone(),
@@ -527,7 +553,7 @@ impl RateFetcher {
         if rates.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(rates.iter().sum::<f64>() / rates.len() as f64))
+            Ok(Some(rates))
         }
     }
 
@@ -623,7 +649,7 @@ impl RateFetcher {
         }
         if let Some(cfg) = &bwd_close_config {
             info!(
-                "  BackwardClose: 当前FR_MA+Loan {:?} {:.4}%",
+                "  BackwardClose: 当前FR_MA+CurLoan {:?} {:.4}%",
                 cfg.compare_op,
                 cfg.threshold * 100.0
             );
@@ -640,14 +666,19 @@ impl RateFetcher {
                     .get_predicted_funding_rate(symbol, BINANCE_CONFIG.venue)
                     .map(|(_, v)| v)
                     .unwrap_or(0.0);
-                let loan = rate_fetcher
+                let predict_loan = rate_fetcher
                     .get_predict_loan_rate(symbol, BINANCE_CONFIG.venue)
+                    .map(|(_, v)| v)
+                    .unwrap_or(0.0);
+                let current_loan = rate_fetcher
+                    .get_current_loan_rate(symbol, BINANCE_CONFIG.venue)
                     .map(|(_, v)| v)
                     .unwrap_or(0.0);
                 let fr_ma = mkt_channel
                     .get_funding_rate_mean(symbol, BINANCE_CONFIG.venue)
                     .unwrap_or(0.0);
-                let fr_loan = fr + loan;
+                let fr_predict_loan = fr + predict_loan;
+                let fr_ma_cur_loan = fr_ma + current_loan;
 
                 // 检查 FR 信号（优先级与 decision.rs::get_funding_rate_signal 保持一致）
                 let forward_open = fr_factor.satisfy_forward_open(symbol, period);
@@ -724,8 +755,10 @@ impl RateFetcher {
                     symbol.clone(),
                     fr,
                     fr_ma,
-                    loan,
-                    fr_loan,
+                    predict_loan,
+                    current_loan,
+                    fr_predict_loan,
+                    fr_ma_cur_loan,
                     fr_signal,
                     spread_signal,
                 )
@@ -733,27 +766,29 @@ impl RateFetcher {
             .collect();
         table_data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
 
-        info!("┌──────────────────────────────────────────────────────────────────────────────────────────────┐");
-        info!("│ Symbol         │ 预测FR% │ FR_MA% │ Loan% │ FR+Loan% │ FR Sig     │ Spread Sig │");
-        info!("├──────────────────────────────────────────────────────────────────────────────────────────────┤");
+        info!("┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐");
+        info!("│ Symbol         │ 预测FR% │ FR_MA% │ PredLoan% │ CurLoan% │ FR+PLoan% │ MA+CLoan% │ FR Sig     │ Spread Sig │");
+        info!("├─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤");
 
-        for (symbol, fr, fr_ma, loan, fr_loan, fr_sig, spread_sig) in table_data {
+        for (symbol, fr, fr_ma, pred_loan, cur_loan, fr_ploan, ma_cloan, fr_sig, spread_sig) in table_data {
             info!(
-                "│ {:<14} │ {:>7.3} │ {:>6.3} │ {:>5.3} │ {:>8.3} │ {:<10} │ {:<10} │",
+                "│ {:<14} │ {:>7.3} │ {:>6.3} │ {:>9.3} │ {:>8.3} │ {:>9.3} │ {:>9.3} │ {:<10} │ {:<10} │",
                 symbol,
                 fr * 100.0,
                 fr_ma * 100.0,
-                loan * 100.0,
-                fr_loan * 100.0,
+                pred_loan * 100.0,
+                cur_loan * 100.0,
+                fr_ploan * 100.0,
+                ma_cloan * 100.0,
                 fr_sig,
                 spread_sig
             );
         }
 
-        info!("└──────────────────────────────────────────────────────────────────────────────────────────────┘");
+        info!("└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘");
     }
 
-    // ==================== 公开接口（仅2个）====================
+    // ==================== 公开接口 ====================
 
     /// 获取预测资金费率（返回 symbol 对应周期和值）
     pub fn get_predicted_funding_rate(
@@ -773,6 +808,7 @@ impl RateFetcher {
     }
 
     /// 获取预测借贷利率（返回 symbol 对应周期和值）
+    /// 使用最近 24 条历史数据的均值
     pub fn get_predict_loan_rate(
         &self,
         symbol: &str,
@@ -785,7 +821,25 @@ impl RateFetcher {
             );
         }
         let period = self.get_period(symbol, venue);
-        let value = self.get_binance_loan_rate(symbol, period)?;
+        let value = self.get_binance_predict_loan_rate(symbol, period)?;
+        Some((period, value))
+    }
+
+    /// 获取当前借贷利率（返回 symbol 对应周期和值）
+    /// 使用最近 3 条历史数据的均值，不跳过最后一条
+    pub fn get_current_loan_rate(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+    ) -> Option<(FundingRatePeriod, f64)> {
+        if venue != BINANCE_CONFIG.venue {
+            panic!(
+                "RateFetcher::get_current_loan_rate currently only supports {:?}",
+                BINANCE_CONFIG.venue
+            );
+        }
+        let period = self.get_period(symbol, venue);
+        let value = self.get_binance_current_loan_rate(symbol, period)?;
         Some((period, value))
     }
 
@@ -794,22 +848,26 @@ impl RateFetcher {
         Self::calculate_predicted_rate(&rates)
     }
 
-    fn get_binance_loan_rate(&self, symbol: &str, period: FundingRatePeriod) -> Option<f64> {
+    fn get_binance_predict_loan_rate(&self, symbol: &str, period: FundingRatePeriod) -> Option<f64> {
         let base_asset = symbol.to_uppercase().strip_suffix("USDT")?.to_string();
         let daily_rate = Self::with_inner(|inner| {
-            inner
-                .lending_rates
-                .get(&BINANCE_CONFIG.venue)?
-                .get(&base_asset)
-                .copied()
+            let venue_rates = inner.lending_rates.get(&BINANCE_CONFIG.venue)?;
+            let cache = venue_rates.get(&base_asset)?;
+            Some(cache.predict_daily_rate)
         })?;
 
-        let stored_daily = match BINANCE_CONFIG.period {
-            FundingRatePeriod::Hours4 => daily_rate * 6.0,
-            FundingRatePeriod::Hours8 => daily_rate * 3.0,
-        };
+        Some(period.convert_daily_rate(daily_rate))
+    }
 
-        Some(period.convert_daily_rate(stored_daily))
+    fn get_binance_current_loan_rate(&self, symbol: &str, period: FundingRatePeriod) -> Option<f64> {
+        let base_asset = symbol.to_uppercase().strip_suffix("USDT")?.to_string();
+        let daily_rate = Self::with_inner(|inner| {
+            let venue_rates = inner.lending_rates.get(&BINANCE_CONFIG.venue)?;
+            let cache = venue_rates.get(&base_asset)?;
+            Some(cache.current_daily_rate)
+        })?;
+
+        Some(period.convert_daily_rate(daily_rate))
     }
 
     // ==================== 内部方法 ====================

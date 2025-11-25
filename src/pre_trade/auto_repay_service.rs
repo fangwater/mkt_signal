@@ -10,6 +10,18 @@ use std::time::Duration;
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// 负债检查结果
+enum LiabilityCheckResult {
+    /// 无数据（snapshot 为 None）
+    NoData,
+    /// 无负债
+    NoLiability,
+    /// 有负债但无可用余额
+    HasLiabilityNoBalance(Vec<(String, f64, f64)>), // (asset, borrowed, interest)
+    /// 有负债且有可用余额可以还款
+    CanRepay(Vec<(String, f64, f64, f64)>), // (asset, borrowed, interest, available)
+}
+
 /// 自动还款服务
 /// 定时检查负债并自动还款，减少利息支出
 pub struct AutoRepayService {
@@ -63,6 +75,19 @@ impl AutoRepayService {
         });
     }
 
+    /// 启动测试用高频还款任务
+    /// 每 30 秒检查一次，能还就还
+    pub fn start_test_repay_task(self) {
+        tokio::spawn(async move {
+            info!("⚠️ 测试还款服务已启动，每 30 秒检查一次");
+
+            loop {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                self.check_and_repay().await;
+            }
+        });
+    }
+
     /// 计算到下一个 XX:55 的等待时间
     fn time_until_next_55min() -> Duration {
         let now = Utc::now();
@@ -88,11 +113,25 @@ impl AutoRepayService {
 
         // 从 MonitorChannel 获取负债信息
         let liabilities = match Self::get_liabilities_to_repay() {
-            Some(liabs) if !liabs.is_empty() => liabs,
-            _ => {
-                info!("✅ 无负债或无可用余额，跳过还款");
+            LiabilityCheckResult::NoData => {
+                info!("✅ 无账户数据，跳过还款");
                 return;
             }
+            LiabilityCheckResult::NoLiability => {
+                info!("✅ 无负债，跳过还款");
+                return;
+            }
+            LiabilityCheckResult::HasLiabilityNoBalance(debts) => {
+                info!("⚠️ 有 {} 项负债但无可用余额还款:", debts.len());
+                for (asset, borrowed, interest) in &debts {
+                    info!(
+                        "  {} - 借入:{:.8} 利息:{:.8} 可用:0",
+                        asset, borrowed, interest
+                    );
+                }
+                return;
+            }
+            LiabilityCheckResult::CanRepay(liabs) => liabs,
         };
 
         info!("检测到 {} 项负债需要还款:", liabilities.len());
@@ -127,36 +166,41 @@ impl AutoRepayService {
     }
 
     /// 从 MonitorChannel 获取需要还款的负债信息
-    /// 返回: Vec<(asset, borrowed, interest, available_balance)>
-    fn get_liabilities_to_repay() -> Option<Vec<(String, f64, f64, f64)>> {
+    fn get_liabilities_to_repay() -> LiabilityCheckResult {
         use crate::pre_trade::monitor_channel::MonitorChannel;
 
         let spot_mgr = MonitorChannel::instance().spot_manager();
         let mgr = spot_mgr.borrow();
-        let snapshot = mgr.snapshot()?;
+        let snapshot = match mgr.snapshot() {
+            Some(s) => s,
+            None => return LiabilityCheckResult::NoData,
+        };
 
-        let mut liabilities = Vec::new();
+        let mut can_repay = Vec::new();
+        let mut no_balance = Vec::new();
 
         for balance in &snapshot.balances {
             let borrowed = balance.cross_margin_borrowed;
             let interest = balance.cross_margin_interest;
             let available = balance.cross_margin_free;
 
-            // 有负债且有可用余额可以还款
-            if borrowed > 0.0 && available > 0.0 {
-                liabilities.push((
-                    balance.asset.clone(),
-                    borrowed,
-                    interest,
-                    available,
-                ));
+            if borrowed > 0.0 {
+                if available > 0.0 {
+                    // 有负债且有可用余额可以还款
+                    can_repay.push((balance.asset.clone(), borrowed, interest, available));
+                } else {
+                    // 有负债但无可用余额
+                    no_balance.push((balance.asset.clone(), borrowed, interest));
+                }
             }
         }
 
-        if liabilities.is_empty() {
-            None
+        if !can_repay.is_empty() {
+            LiabilityCheckResult::CanRepay(can_repay)
+        } else if !no_balance.is_empty() {
+            LiabilityCheckResult::HasLiabilityNoBalance(no_balance)
         } else {
-            Some(liabilities)
+            LiabilityCheckResult::NoLiability
         }
     }
 
