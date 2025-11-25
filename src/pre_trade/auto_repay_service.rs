@@ -63,10 +63,7 @@ impl AutoRepayService {
             loop {
                 // 计算到下一个 XX:55 的等待时间
                 let wait_duration = Self::time_until_next_55min();
-                info!(
-                    "下次自动还款时间: {} 秒后",
-                    wait_duration.as_secs()
-                );
+                info!("下次自动还款时间: {} 秒后", wait_duration.as_secs());
                 tokio::time::sleep(wait_duration).await;
 
                 // 执行还款检查
@@ -226,7 +223,10 @@ impl AutoRepayService {
             self.rest_base, query, signature
         );
 
-        debug!("调用还款 API: POST {} asset={} amount={:.8}", url, asset, amount);
+        debug!(
+            "调用还款 API: POST {} asset={} amount={:.8}",
+            url, asset, amount
+        );
 
         let resp = self
             .client

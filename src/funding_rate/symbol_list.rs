@@ -137,7 +137,11 @@ impl SymbolList {
                         let symbol_set: HashSet<String> =
                             symbols.iter().map(|s| s.to_uppercase()).collect();
                         inner.fwd_trade_symbols.insert(*venue, symbol_set.clone());
-                        info!("更新正套建仓列表 {:?}: {} 个交易对", venue, symbol_set.len());
+                        info!(
+                            "更新正套建仓列表 {:?}: {} 个交易对",
+                            venue,
+                            symbol_set.len()
+                        );
                     });
                 }
             }
@@ -150,7 +154,11 @@ impl SymbolList {
                         let symbol_set: HashSet<String> =
                             symbols.iter().map(|s| s.to_uppercase()).collect();
                         inner.bwd_trade_symbols.insert(*venue, symbol_set.clone());
-                        info!("更新反套建仓列表 {:?}: {} 个交易对", venue, symbol_set.len());
+                        info!(
+                            "更新反套建仓列表 {:?}: {} 个交易对",
+                            venue,
+                            symbol_set.len()
+                        );
                     });
                 }
             }

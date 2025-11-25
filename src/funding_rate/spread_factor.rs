@@ -15,7 +15,7 @@ use std::collections::HashMap;
 pub enum SpreadType {
     BidAsk,
     AskBid,
-    SpreadRate
+    SpreadRate,
 }
 
 impl SpreadType {
@@ -23,7 +23,7 @@ impl SpreadType {
         match self {
             SpreadType::BidAsk => "bidask",
             SpreadType::AskBid => "askbid",
-            SpreadType::SpreadRate => "spread_rate"
+            SpreadType::SpreadRate => "spread_rate",
         }
     }
 }
@@ -60,7 +60,7 @@ pub struct SpreadFactor {
 
     /// 阈值表: (venue1, symbol1, venue2, symbol2) -> SpreadThresholdConfig
     mm_thresholds: RefCell<HashMap<ThresholdKey, SpreadThresholdConfig>>,
-    
+
     mt_thresholds: RefCell<HashMap<ThresholdKey, SpreadThresholdConfig>>,
     /// 模式: MM 或 MT， mm采用mm的阈值，mt模式就用mt的阈值配置
     mode: RefCell<FactorMode>,
@@ -297,7 +297,7 @@ impl SpreadFactor {
             arb_direction: ArbDirection::Forward,
             operation: OperationType::Open,
             spread_type: SpreadType::BidAsk,
-            threshold: mt_threshold
+            threshold: mt_threshold,
         };
 
         let mm_config = SpreadThresholdConfig {
@@ -305,10 +305,12 @@ impl SpreadFactor {
             arb_direction: ArbDirection::Forward,
             operation: OperationType::Open,
             spread_type: SpreadType::SpreadRate,
-            threshold: mm_threshold
+            threshold: mm_threshold,
         };
 
-        self.mt_thresholds.borrow_mut().insert(key.clone(), mt_config);
+        self.mt_thresholds
+            .borrow_mut()
+            .insert(key.clone(), mt_config);
         self.mm_thresholds.borrow_mut().insert(key, mm_config);
     }
 
@@ -347,14 +349,14 @@ impl SpreadFactor {
             arb_direction: ArbDirection::Forward,
             operation: OperationType::Cancel,
             spread_type: SpreadType::SpreadRate,
-            threshold: mm_threshold
+            threshold: mm_threshold,
         };
 
-        self.mt_thresholds.borrow_mut().insert(key.clone(), mt_config);
+        self.mt_thresholds
+            .borrow_mut()
+            .insert(key.clone(), mt_config);
         self.mm_thresholds.borrow_mut().insert(key, mm_config);
     }
-
-
 
     /// 设置反套开仓阈值
     /// backward_arb_open_tr: ("mm", "askbid", 5.0)
@@ -395,7 +397,9 @@ impl SpreadFactor {
             threshold: mm_threshold,
         };
 
-        self.mt_thresholds.borrow_mut().insert(key.clone(), mt_config);
+        self.mt_thresholds
+            .borrow_mut()
+            .insert(key.clone(), mt_config);
         self.mm_thresholds.borrow_mut().insert(key, mm_config);
     }
 
@@ -437,7 +441,9 @@ impl SpreadFactor {
             threshold: mm_threshold,
         };
 
-        self.mt_thresholds.borrow_mut().insert(key.clone(), mt_config);
+        self.mt_thresholds
+            .borrow_mut()
+            .insert(key.clone(), mt_config);
         self.mm_thresholds.borrow_mut().insert(key, mm_config);
     }
 
@@ -479,7 +485,9 @@ impl SpreadFactor {
                 let value = match config.spread_type {
                     SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
                     SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
-                    SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
+                    SpreadType::SpreadRate => {
+                        self.get_spread_rate(venue1, symbol1, venue2, symbol2)
+                    }
                 };
 
                 if let Some(v) = value {
@@ -522,7 +530,9 @@ impl SpreadFactor {
                 let value = match config.spread_type {
                     SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
                     SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
-                    SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
+                    SpreadType::SpreadRate => {
+                        self.get_spread_rate(venue1, symbol1, venue2, symbol2)
+                    }
                 };
 
                 if let Some(v) = value {
@@ -577,7 +587,9 @@ impl SpreadFactor {
                 let value = match config.spread_type {
                     SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
                     SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
-                    SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
+                    SpreadType::SpreadRate => {
+                        self.get_spread_rate(venue1, symbol1, venue2, symbol2)
+                    }
                 };
 
                 if let Some(v) = value {
@@ -620,7 +632,9 @@ impl SpreadFactor {
                 let value = match config.spread_type {
                     SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
                     SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
-                    SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
+                    SpreadType::SpreadRate => {
+                        self.get_spread_rate(venue1, symbol1, venue2, symbol2)
+                    }
                 };
 
                 if let Some(v) = value {
@@ -680,7 +694,9 @@ impl SpreadFactor {
                 let value = match config.spread_type {
                     SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
                     SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
-                    SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
+                    SpreadType::SpreadRate => {
+                        self.get_spread_rate(venue1, symbol1, venue2, symbol2)
+                    }
                 };
 
                 if let Some(v) = value {

@@ -49,30 +49,35 @@ async fn main() -> Result<()> {
 
             // 2. 初始化 StrategyManager
             info!("Initializing StrategyManager...");
-            let strategy_mgr = Rc::new(RefCell::new(StrategyManager::new())); 
+            let strategy_mgr = Rc::new(RefCell::new(StrategyManager::new()));
 
-            // 3. 初始化 MonitorChannel（包含所有账户管理器） 
-            info!("Initializing MonitorChannel singleton..."); 
-            if let Err(err) = MonitorChannel::init_singleton(strategy_mgr.clone()).await { 
-                return Err(err); 
-            } 
-            info!("MonitorChannel initialized successfully"); 
+            // 3. 初始化 MonitorChannel（包含所有账户管理器）
+            info!("Initializing MonitorChannel singleton...");
+            if let Err(err) = MonitorChannel::init_singleton(strategy_mgr.clone()).await {
+                return Err(err);
+            }
+            info!("MonitorChannel initialized successfully");
 
             // 4. 初始化 SignalChannel
             info!("Initializing SignalChannel singleton...");
-            if let Err(err) = SignalChannel::initialize("funding_rate_signal", Some("signal_query")) {
+            if let Err(err) = SignalChannel::initialize("funding_rate_signal", Some("signal_query"))
+            {
                 warn!("Failed to initialize SignalChannel: {err:#}");
             } else {
                 info!("SignalChannel initialized on channel: funding_rate_signal");
-            } 
+            }
 
             // 5. 初始化 ResampleChannel
             info!("Initializing ResampleChannel singleton...");
-            if let Err(err) = ResampleChannel::initialize("pre_trade_positions", "pre_trade_exposure", "pre_trade_risk") {
+            if let Err(err) = ResampleChannel::initialize(
+                "pre_trade_positions",
+                "pre_trade_exposure",
+                "pre_trade_risk",
+            ) {
                 warn!("Failed to initialize ResampleChannel: {err:#}");
             } else {
                 info!("ResampleChannel initialized successfully");
-            } 
+            }
 
             // 6. 初始化 TradeEngChannel (使用 binance 交易所)
             info!("Initializing TradeEngChannel singleton...");
@@ -80,19 +85,19 @@ async fn main() -> Result<()> {
                 warn!("Failed to initialize TradeEngChannel: {err:#}");
             } else {
                 info!("TradeEngChannel initialized for exchange: binance");
-            } 
+            }
 
             // 7. 预热 PersistChannel（自动初始化，调用一次即可）
             info!("Initializing PersistChannel singleton...");
             PersistChannel::with(|_ch| {
-                info!("PersistChannel initialized successfully"); 
-            }); 
+                info!("PersistChannel initialized successfully");
+            });
 
-            info!("All singletons initialized, starting pre_trade main loop..."); 
+            info!("All singletons initialized, starting pre_trade main loop...");
 
-            // 8. 运行主循环 
-            let pre_trade = PreTrade::new(); 
-            pre_trade.run().await 
+            // 8. 运行主循环
+            let pre_trade = PreTrade::new();
+            pre_trade.run().await
         })
         .await
 }

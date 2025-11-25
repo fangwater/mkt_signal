@@ -17,10 +17,6 @@ use tokio::time::{sleep, Duration};
 
 type HmacSha256 = Hmac<Sha256>;
 
-use super::common::{ArbDirection, OperationType};
-use super::funding_rate_factor::FundingRateFactor;
-use super::mkt_channel::MktChannel;
-use super::spread_factor::SpreadFactor;
 use super::symbol_list::SymbolList;
 use crate::signal::common::TradingVenue;
 
@@ -88,14 +84,14 @@ struct BinanceLendingRateHistoryItem {
 
 /// 交易所配置
 #[derive(Debug, Clone)]
-struct ExchangeConfig {
-    venue: TradingVenue,
-    period: FundingRatePeriod,
-    fetch_days: u32,
+pub struct ExchangeConfig {
+    pub venue: TradingVenue,
+    pub period: FundingRatePeriod,
+    pub fetch_days: u32,
 }
 
 // Binance 配置（8h 周期，拉取 3 天数据）
-const BINANCE_CONFIG: ExchangeConfig = ExchangeConfig {
+pub const BINANCE_CONFIG: ExchangeConfig = ExchangeConfig {
     venue: TradingVenue::BinanceUm,
     period: FundingRatePeriod::Hours8,
     fetch_days: 3,
@@ -607,185 +603,9 @@ impl RateFetcher {
         info!("└───────────────────────────────────────────────────────────┘");
     }
 
-    /// 打印信号状态表（带阈值对比）
+    /// 打印信号状态表（委托给 FrDecision）
     fn print_signal_table(symbols: &[String]) {
-        let fr_factor = FundingRateFactor::instance();
-        let spread_factor = SpreadFactor::instance();
-        let rate_fetcher = Self::instance();
-        let mkt_channel = MktChannel::instance();
-
-        // 先打印 FR 阈值配置
-        let period = BINANCE_CONFIG.period;
-        let fwd_open_config =
-            fr_factor.get_threshold_config(period, ArbDirection::Forward, OperationType::Open);
-        let fwd_close_config =
-            fr_factor.get_threshold_config(period, ArbDirection::Forward, OperationType::Close);
-        let bwd_open_config =
-            fr_factor.get_threshold_config(period, ArbDirection::Backward, OperationType::Open);
-        let bwd_close_config =
-            fr_factor.get_threshold_config(period, ArbDirection::Backward, OperationType::Close);
-
-        info!("FR 阈值配置:");
-        if let Some(cfg) = &fwd_open_config {
-            info!(
-                "  ForwardOpen:   预测FR {:?} {:.4}%",
-                cfg.compare_op,
-                cfg.threshold * 100.0
-            );
-        }
-        if let Some(cfg) = &fwd_close_config {
-            info!(
-                "  ForwardClose:  当前FR_MA {:?} {:.4}%",
-                cfg.compare_op,
-                cfg.threshold * 100.0
-            );
-        }
-        if let Some(cfg) = &bwd_open_config {
-            info!(
-                "  BackwardOpen:  预测FR+Loan {:?} {:.4}%",
-                cfg.compare_op,
-                cfg.threshold * 100.0
-            );
-        }
-        if let Some(cfg) = &bwd_close_config {
-            info!(
-                "  BackwardClose: 当前FR_MA+CurLoan {:?} {:.4}%",
-                cfg.compare_op,
-                cfg.threshold * 100.0
-            );
-        }
-        info!("");
-
-        let mut table_data: Vec<_> = symbols
-            .iter()
-            .map(|symbol| {
-                let period = rate_fetcher.get_period(symbol, BINANCE_CONFIG.venue);
-
-                // 获取 FR、Loan、FR_MA 值
-                let fr = rate_fetcher
-                    .get_predicted_funding_rate(symbol, BINANCE_CONFIG.venue)
-                    .map(|(_, v)| v)
-                    .unwrap_or(0.0);
-                let predict_loan = rate_fetcher
-                    .get_predict_loan_rate(symbol, BINANCE_CONFIG.venue)
-                    .map(|(_, v)| v)
-                    .unwrap_or(0.0);
-                let current_loan = rate_fetcher
-                    .get_current_loan_rate(symbol, BINANCE_CONFIG.venue)
-                    .map(|(_, v)| v)
-                    .unwrap_or(0.0);
-                let fr_ma = mkt_channel
-                    .get_funding_rate_mean(symbol, BINANCE_CONFIG.venue)
-                    .unwrap_or(0.0);
-                let fr_predict_loan = fr + predict_loan;
-                let fr_ma_cur_loan = fr_ma + current_loan;
-
-                // 检查 FR 信号（优先级与 decision.rs::get_funding_rate_signal 保持一致）
-                let forward_open = fr_factor.satisfy_forward_open(symbol, period);
-                let forward_close =
-                    fr_factor.satisfy_forward_close(symbol, period, BINANCE_CONFIG.venue);
-                let backward_open = fr_factor.satisfy_backward_open(symbol, period);
-                let backward_close =
-                    fr_factor.satisfy_backward_close(symbol, period, BINANCE_CONFIG.venue);
-
-                let fr_signal = if forward_close && backward_open {
-                    "BwdOpen"
-                } else if backward_close && forward_open {
-                    "FwdOpen"
-                } else if forward_close {
-                    "FwdClose"
-                } else if backward_close {
-                    "BwdClose"
-                } else if forward_open {
-                    "FwdOpen"
-                } else if backward_open {
-                    "BwdOpen"
-                } else {
-                    "-"
-                };
-
-                // 检查 Spread 信号
-                let spread_signal = if spread_factor.satisfy_forward_cancel(
-                    TradingVenue::BinanceMargin,
-                    symbol,
-                    BINANCE_CONFIG.venue,
-                    symbol,
-                ) {
-                    "FwdCancel"
-                } else if spread_factor.satisfy_backward_cancel(
-                    TradingVenue::BinanceMargin,
-                    symbol,
-                    BINANCE_CONFIG.venue,
-                    symbol,
-                ) {
-                    "BwdCancel"
-                } else if spread_factor.satisfy_forward_close(
-                    TradingVenue::BinanceMargin,
-                    symbol,
-                    BINANCE_CONFIG.venue,
-                    symbol,
-                ) {
-                    "FwdClose"
-                } else if spread_factor.satisfy_backward_close(
-                    TradingVenue::BinanceMargin,
-                    symbol,
-                    BINANCE_CONFIG.venue,
-                    symbol,
-                ) {
-                    "BwdClose"
-                } else if spread_factor.satisfy_forward_open(
-                    TradingVenue::BinanceMargin,
-                    symbol,
-                    BINANCE_CONFIG.venue,
-                    symbol,
-                ) {
-                    "FwdOpen"
-                } else if spread_factor.satisfy_backward_open(
-                    TradingVenue::BinanceMargin,
-                    symbol,
-                    BINANCE_CONFIG.venue,
-                    symbol,
-                ) {
-                    "BwdOpen"
-                } else {
-                    "-"
-                };
-
-                (
-                    symbol.clone(),
-                    fr,
-                    fr_ma,
-                    predict_loan,
-                    current_loan,
-                    fr_predict_loan,
-                    fr_ma_cur_loan,
-                    fr_signal,
-                    spread_signal,
-                )
-            })
-            .collect();
-        table_data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-
-        info!("┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐");
-        info!("│ Symbol         │ 预测FR% │ FR_MA% │ PredLoan% │ CurLoan% │ FR+PLoan% │ MA+CLoan% │ FR Sig     │ Spread Sig │");
-        info!("├─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤");
-
-        for (symbol, fr, fr_ma, pred_loan, cur_loan, fr_ploan, ma_cloan, fr_sig, spread_sig) in table_data {
-            info!(
-                "│ {:<14} │ {:>7.3} │ {:>6.3} │ {:>9.3} │ {:>8.3} │ {:>9.3} │ {:>9.3} │ {:<10} │ {:<10} │",
-                symbol,
-                fr * 100.0,
-                fr_ma * 100.0,
-                pred_loan * 100.0,
-                cur_loan * 100.0,
-                fr_ploan * 100.0,
-                ma_cloan * 100.0,
-                fr_sig,
-                spread_sig
-            );
-        }
-
-        info!("└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘");
+        super::decision::FrDecision::print_signal_table(symbols);
     }
 
     // ==================== 公开接口 ====================
@@ -848,7 +668,11 @@ impl RateFetcher {
         Self::calculate_predicted_rate(&rates)
     }
 
-    fn get_binance_predict_loan_rate(&self, symbol: &str, period: FundingRatePeriod) -> Option<f64> {
+    fn get_binance_predict_loan_rate(
+        &self,
+        symbol: &str,
+        period: FundingRatePeriod,
+    ) -> Option<f64> {
         let base_asset = symbol.to_uppercase().strip_suffix("USDT")?.to_string();
         let daily_rate = Self::with_inner(|inner| {
             let venue_rates = inner.lending_rates.get(&BINANCE_CONFIG.venue)?;
@@ -859,7 +683,11 @@ impl RateFetcher {
         Some(period.convert_daily_rate(daily_rate))
     }
 
-    fn get_binance_current_loan_rate(&self, symbol: &str, period: FundingRatePeriod) -> Option<f64> {
+    fn get_binance_current_loan_rate(
+        &self,
+        symbol: &str,
+        period: FundingRatePeriod,
+    ) -> Option<f64> {
         let base_asset = symbol.to_uppercase().strip_suffix("USDT")?.to_string();
         let daily_rate = Self::with_inner(|inner| {
             let venue_rates = inner.lending_rates.get(&BINANCE_CONFIG.venue)?;

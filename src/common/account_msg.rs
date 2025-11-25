@@ -389,7 +389,8 @@ impl LiabilityChangeMsg {
         }
 
         let asset = String::from_utf8(cursor.copy_to_bytes(asset_length as usize).to_vec())?;
-        let liability_type = String::from_utf8(cursor.copy_to_bytes(type_length as usize).to_vec())?;
+        let liability_type =
+            String::from_utf8(cursor.copy_to_bytes(type_length as usize).to_vec())?;
         let principal = cursor.get_f64_le();
         let interest = cursor.get_f64_le();
         let total_liability = cursor.get_f64_le();

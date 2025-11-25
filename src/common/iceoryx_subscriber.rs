@@ -136,12 +136,15 @@ impl MultiChannelSubscriber {
         }
 
         // 根据频道类型创建对应大小的订阅器
+        // 注意：max_publishers/max_subscribers 必须与 publisher 端一致，否则 open_or_create 会失败
         let subscriber_enum = match param.channel {
             ChannelType::Incremental => {
                 let service = self
                     .node
                     .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; 16384]>()
+                    .max_publishers(1)
+                    .max_subscribers(10)
                     .open_or_create()?;
                 let subscriber = service.subscriber_builder().create()?;
                 SubscriberEnum::Size16384(subscriber)
@@ -151,6 +154,8 @@ impl MultiChannelSubscriber {
                     .node
                     .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; 64]>()
+                    .max_publishers(1)
+                    .max_subscribers(10)
                     .open_or_create()?;
                 let subscriber = service.subscriber_builder().create()?;
                 SubscriberEnum::Size64(subscriber)
@@ -160,6 +165,8 @@ impl MultiChannelSubscriber {
                     .node
                     .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; 128]>()
+                    .max_publishers(1)
+                    .max_subscribers(10)
                     .open_or_create()?;
                 let subscriber = service.subscriber_builder().create()?;
                 SubscriberEnum::Size128(subscriber)
