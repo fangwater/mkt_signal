@@ -72,56 +72,17 @@ impl PersistChannel {
     ///
     /// 如果发布器创建失败，会记录警告并继续运行（降级模式）
     fn new() -> Self {
-        let signal_record_pub = match SignalPublisher::new(PRE_TRADE_SIGNAL_RECORD_CHANNEL) {
-            Ok(p) => {
-                log::info!(
-                    "PersistChannel: signal record publisher created on '{}'",
-                    PRE_TRADE_SIGNAL_RECORD_CHANNEL
-                );
-                Some(p)
-            }
-            Err(err) => {
-                warn!(
-                    "PersistChannel: failed to create signal record publisher on '{}': {err:#}",
-                    PRE_TRADE_SIGNAL_RECORD_CHANNEL
-                );
-                None
-            }
-        };
+        let signal_record_pub = SignalPublisher::new(PRE_TRADE_SIGNAL_RECORD_CHANNEL)
+            .map_err(|e| warn!("PersistChannel signal_record_pub failed: {e:#}"))
+            .ok();
 
-        let trade_update_record_pub = match TradeUpdatePublisher::new(TRADE_UPDATE_RECORD_CHANNEL) {
-            Ok(p) => {
-                log::info!(
-                    "PersistChannel: trade update record publisher created on '{}'",
-                    TRADE_UPDATE_RECORD_CHANNEL
-                );
-                Some(p)
-            }
-            Err(err) => {
-                warn!(
-                    "PersistChannel: failed to create trade update record publisher on '{}': {err:#}",
-                    TRADE_UPDATE_RECORD_CHANNEL
-                );
-                None
-            }
-        };
+        let trade_update_record_pub = TradeUpdatePublisher::new(TRADE_UPDATE_RECORD_CHANNEL)
+            .map_err(|e| warn!("PersistChannel trade_update_record_pub failed: {e:#}"))
+            .ok();
 
-        let order_update_record_pub = match OrderUpdatePublisher::new(ORDER_UPDATE_RECORD_CHANNEL) {
-            Ok(p) => {
-                log::info!(
-                    "PersistChannel: order update record publisher created on '{}'",
-                    ORDER_UPDATE_RECORD_CHANNEL
-                );
-                Some(p)
-            }
-            Err(err) => {
-                warn!(
-                    "PersistChannel: failed to create order update record publisher on '{}': {err:#}",
-                    ORDER_UPDATE_RECORD_CHANNEL
-                );
-                None
-            }
-        };
+        let order_update_record_pub = OrderUpdatePublisher::new(ORDER_UPDATE_RECORD_CHANNEL)
+            .map_err(|e| warn!("PersistChannel order_update_record_pub failed: {e:#}"))
+            .ok();
 
         Self {
             signal_record_pub,

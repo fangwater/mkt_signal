@@ -121,21 +121,10 @@ impl ResampleChannel {
     /// 注意：通常应使用 `ResampleChannel::with()` 访问线程本地单例，
     /// 而不是直接调用 `new()` 创建多个实例
     fn new(positions_channel: &str, exposure_channel: &str, risk_channel: &str) -> Self {
-        let make_pub = |channel: &str, desc: &str| match ResamplePublisher::new(channel) {
-            Ok(p) => {
-                info!(
-                    "ResampleChannel: {} publisher created on '{}'",
-                    desc, channel
-                );
-                Some(p)
-            }
-            Err(err) => {
-                warn!(
-                    "ResampleChannel: failed to create {} publisher on '{}': {err:#}",
-                    desc, channel
-                );
-                None
-            }
+        let make_pub = |channel: &str, desc: &str| {
+            ResamplePublisher::new(channel)
+                .map_err(|e| warn!("ResampleChannel {} failed: {e:#}", desc))
+                .ok()
         };
 
         Self {

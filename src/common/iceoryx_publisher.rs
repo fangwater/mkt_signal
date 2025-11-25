@@ -16,13 +16,9 @@ pub struct GenericPublisher<const PAYLOAD: usize> {
 
 impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
     pub fn new(channel_name: &str) -> anyhow::Result<Self> {
-        // Use signal namespace for services (with directory prefix for isolation)
         let full_service = build_service_name(&format!("signal_pubs/{}", channel_name));
         let service_name = ServiceName::new(&full_service)?;
 
-        info!("Creating IceOryx publisher for channel: {}", channel_name);
-
-        // Use channel name directly as node name, per request
         let node = NodeBuilder::new()
             .name(&NodeName::new(channel_name)?)
             .create::<ipc::Service>()?;
@@ -38,10 +34,7 @@ impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
 
         let publisher = service.publisher_builder().create()?;
 
-        info!(
-            "Successfully created publisher for channel: {}",
-            channel_name
-        );
+        info!("IceOryx publisher created: {}", full_service);
 
         Ok(Self { publisher })
     }

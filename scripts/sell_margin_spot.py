@@ -62,7 +62,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--client-order-id",
         dest="client_order_id",
-        help="Optional newClientOrderId",
+        type=int,
+        help="Optional newClientOrderId (int64)",
     )
     parser.add_argument(
         "--isolated",
@@ -147,8 +148,8 @@ def ensure_params(args: argparse.Namespace) -> dict:
         params["price"] = str(args.price).strip()
     if args.time_in_force:
         params["timeInForce"] = args.time_in_force.strip().upper()
-    if args.client_order_id:
-        params["newClientOrderId"] = args.client_order_id.strip()
+    if args.client_order_id is not None:
+        params["newClientOrderId"] = str(args.client_order_id)
     if args.isolated:
         params["isIsolated"] = "TRUE"
     if args.side_effect:

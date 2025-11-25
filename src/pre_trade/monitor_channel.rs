@@ -1254,15 +1254,16 @@ fn log_exposures(entries: &[ExposureEntry], price_map: &BTreeMap<String, PriceEn
         if asset == "USDT" {
             continue;
         }
-        if entry.spot_total_wallet.abs() < 1.0 {
-            // 现货头寸小于 1 时无需打印，避免无意义的零仓位刷屏
-            continue;
-        }
         let sym = format!("{}USDT", asset);
         let mark = price_map.get(&sym).map(|p| p.mark_price).unwrap_or(0.0);
         let spot_usdt = entry.spot_total_wallet * mark;
         let um_usdt = entry.um_net_position * mark;
         let exposure_usdt = spot_usdt + um_usdt;
+
+        // 按 USDT 价值过滤，< 1 USDT 的不显示
+        if exposure_usdt.abs() < 1.0 {
+            continue;
+        }
         sum_exposure_usdt += exposure_usdt;
 
         rows.push(vec![

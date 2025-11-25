@@ -23,12 +23,7 @@ pub struct AutoRepayService {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RepayResponse {
-    amount: String,
-    asset: String,
-    #[serde(default)]
-    _specify_repay_assets: Vec<String>,
-    update_time: i64,
-    success: bool,
+    tran_id: i64,
 }
 
 impl AutoRepayService {
@@ -108,20 +103,25 @@ impl AutoRepayService {
             );
         }
 
-        // 调用还款 API
-        match self.repay_all_debts().await {
-            Ok(response) => {
-                if response.success {
-                    info!(
-                        "✅ 自动还款成功: asset={} amount={} time={}",
-                        response.asset, response.amount, response.update_time
-                    );
-                } else {
-                    warn!("❌ 还款 API 返回失败状态");
-                }
+        // 逐个资产调用还款 API
+        for (asset, borrowed, interest, available) in &liabilities {
+            // 计算还款金额：min(借款 + 利息, 可用余额)
+            let total_debt = borrowed + interest;
+            let repay_amount = total_debt.min(*available);
+            if repay_amount <= 0.0 {
+                continue;
             }
-            Err(e) => {
-                warn!("❌ 自动还款失败: {}", e);
+
+            match self.repay_loan(asset, repay_amount).await {
+                Ok(response) => {
+                    info!(
+                        "✅ 自动还款成功: asset={} amount={:.8} tranId={}",
+                        asset, repay_amount, response.tran_id
+                    );
+                }
+                Err(e) => {
+                    warn!("❌ {} 自动还款失败: {}", asset, e);
+                }
             }
         }
     }
@@ -160,10 +160,12 @@ impl AutoRepayService {
         }
     }
 
-    /// 调用币安还款 API
-    /// 自动还清所有可还的负债
-    async fn repay_all_debts(&self) -> Result<RepayResponse> {
+    /// 调用币安还款 API (POST /papi/v1/repayLoan)
+    /// 权重: 100
+    async fn repay_loan(&self, asset: &str, amount: f64) -> Result<RepayResponse> {
         let mut params = BTreeMap::new();
+        params.insert("asset".to_string(), asset.to_string());
+        params.insert("amount".to_string(), format!("{:.8}", amount));
         params.insert(
             "timestamp".to_string(),
             Utc::now().timestamp_millis().to_string(),
@@ -172,16 +174,15 @@ impl AutoRepayService {
             params.insert("recvWindow".to_string(), self.recv_window_ms.to_string());
         }
 
-        // 不指定 asset 和 amount，自动还清所有有余额的负债
         let query = build_query(&params);
         let signature = self.sign_query(&query)?;
 
         let url = format!(
-            "{}/papi/v1/margin/repay-debt?{}&signature={}",
+            "{}/papi/v1/repayLoan?{}&signature={}",
             self.rest_base, query, signature
         );
 
-        debug!("调用还款 API: POST {}", url);
+        debug!("调用还款 API: POST {} asset={} amount={:.8}", url, asset, amount);
 
         let resp = self
             .client

@@ -102,22 +102,9 @@ impl SignalChannel {
     fn new(channel_name: &str, backward_channel: Option<&str>) -> Result<Self> {
         // 创建反向发布器
         let backward_pub = if let Some(backward_ch) = backward_channel {
-            match SignalPublisher::new(backward_ch) {
-                Ok(p) => {
-                    info!(
-                        "SignalChannel: backward publisher created on '{}'",
-                        backward_ch
-                    );
-                    Some(p)
-                }
-                Err(err) => {
-                    warn!(
-                        "SignalChannel: failed to create backward publisher on '{}': {err:#}",
-                        backward_ch
-                    );
-                    None
-                }
-            }
+            SignalPublisher::new(backward_ch)
+                .map_err(|e| warn!("SignalChannel backward_pub failed: {e:#}"))
+                .ok()
         } else {
             None
         };
