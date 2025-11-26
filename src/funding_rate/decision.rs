@@ -1305,7 +1305,8 @@ impl FrDecision {
                 let fr_ma = mkt_channel
                     .get_funding_rate_mean(symbol, BINANCE_CONFIG.venue)
                     .unwrap_or(0.0);
-                let fr_predict_loan = fr + predict_loan;
+                // bwd open 使用 1.2 系数
+                let fr_predict_loan = fr + predict_loan * 1.2;
                 let fr_ma_cur_loan = fr_ma + current_loan;
 
                 // 检查 FR 信号（优先级与 get_funding_rate_signal 保持一致）

@@ -31,6 +31,9 @@ pub struct FrThresholdConfig {
     pub threshold: f64,
 }
 
+/// 反套开仓借贷利率系数（默认 1.2）
+const BWD_OPEN_LOAN_RATE_MULTIPLIER: f64 = 1.2;
+
 /// 资金费率因子单例
 pub struct FundingRateFactor {
     /// 阈值表：(周期, 模式, 操作, 方向) -> FrThresholdConfig
@@ -261,7 +264,8 @@ impl FundingRateFactor {
 
     /// 检查是否满足反套开仓条件
     ///
-    /// 判断：(predict_fr + predict_loan_rate) < threshold（根据 symbol 的周期和当前模式）
+    /// 判断：(predict_fr + predict_loan_rate * 1.2) < threshold（根据 symbol 的周期和当前模式）
+    /// 借贷利率乘以系数 BWD_OPEN_LOAN_RATE_MULTIPLIER (1.2) 以留出安全边际
     pub fn satisfy_backward_open(&self, symbol: &str, period: FundingRatePeriod) -> bool {
         let current_mode = self.get_mode();
         let key = (
@@ -277,7 +281,7 @@ impl FundingRateFactor {
                 self.get_predict_fr(symbol, period),
                 self.get_predict_loan_rate(symbol, period),
             ) {
-                let factor = predict_fr + loan_rate;
+                let factor = predict_fr + loan_rate * BWD_OPEN_LOAN_RATE_MULTIPLIER;
                 return config.compare_op.check(factor, config.threshold);
             }
         }
