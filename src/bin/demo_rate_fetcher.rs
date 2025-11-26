@@ -4,7 +4,7 @@
 //! - 初始化并启动后台拉取任务
 //! - 查询预测资金费率
 //! - 查询借贷利率
-//! - 打印三线表
+//! - 打印详细计算逻辑
 //!
 //! 环境变量：
 //! - BINANCE_API_KEY: Binance API Key
@@ -13,7 +13,7 @@
 use anyhow::Result;
 use log::info;
 use mkt_signal::funding_rate::rate_fetcher::FundingRatePeriod;
-use mkt_signal::funding_rate::{RateFetcher, SymbolList};
+use mkt_signal::funding_rate::{MktChannel, RateFetcher, SymbolList};
 use mkt_signal::signal::common::TradingVenue;
 use tokio::time::{sleep, Duration};
 
@@ -31,24 +31,26 @@ async fn main() -> Result<()> {
 }
 
 async fn run_demo() -> Result<()> {
-    // 初始化 SymbolList（空的也可以，会使用默认 symbols）
+    // 初始化单例（参考 fr_signal）
     SymbolList::init_singleton()?;
     info!("SymbolList 初始化完成");
 
-    // 初始化 RateFetcher（从环境变量获取 API Key）
+    MktChannel::init_singleton()?;
+    info!("MktChannel 初始化完成");
+
     RateFetcher::init_singleton()?;
     info!("RateFetcher 初始化完成");
 
     // 等待一段时间让后台任务拉取数据
-    info!("等待 30 秒拉取费率数据...");
-    sleep(Duration::from_secs(30)).await;
+    info!("等待 15 秒拉取费率数据...");
+    sleep(Duration::from_secs(15)).await;
 
     // 测试查询接口
     info!("\n========================================");
     info!("测试查询接口");
     info!("========================================");
 
-    let test_symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "SUIUSDT"];
+    let test_symbols = ["STRKUSDT", "XAIUSDT"];
     for symbol in &test_symbols {
         info!("\n查询 {}:", symbol);
 
@@ -69,23 +71,31 @@ async fn run_demo() -> Result<()> {
             RateFetcher::instance().get_predict_loan_rate(symbol, TradingVenue::BinanceUm);
         match loan_rate {
             Some((period, rate)) => info!(
-                "  借贷利率 ({}): {:.6}%",
+                "  预测借贷利率 ({}): {:.6}%",
                 format_period(period),
                 rate * 100.0
             ),
-            None => info!("  借贷利率: N/A"),
+            None => info!("  预测借贷利率: N/A"),
+        }
+
+        // 查询当前借贷利率
+        let cur_loan =
+            RateFetcher::instance().get_current_loan_rate(symbol, TradingVenue::BinanceUm);
+        match cur_loan {
+            Some((period, rate)) => info!(
+                "  当前借贷利率 ({}): {:.6}%",
+                format_period(period),
+                rate * 100.0
+            ),
+            None => info!("  当前借贷利率: N/A"),
         }
     }
 
-    info!("\n========================================");
-    info!("三线表将在整点时自动打印");
-    info!("继续运行 60 秒观察...");
-    info!("========================================");
+    // 详细打印 XAIUSDT 的计算逻辑
+    info!("\n");
+    RateFetcher::instance().print_detailed_calculation("XAIUSDT", TradingVenue::BinanceUm);
 
-    // 继续运行一段时间，观察整点打印的三线表
-    sleep(Duration::from_secs(60)).await;
-
-    info!("\nDemo 结束");
+    info!("Demo 结束");
 
     Ok(())
 }

@@ -30,8 +30,8 @@ struct BinanceFundingHistItem {
 }
 
 // 预测资费参数（硬编码）
-const PREDICT_INTERVAL: usize = 6; // 用于预测的均值窗口
-const PREDICT_NUM: usize = 1; // 预测回溯偏移
+const PREDICT_INTERVAL: usize = 6; // 用于预测的均值窗口（最新6条）
+const PREDICT_NUM: usize = 0; // 预测回溯偏移（0表示使用最新数据）
 
 // 拉取频率：5秒
 const FETCH_INTERVAL_SECS: u64 = 5;
@@ -98,7 +98,7 @@ pub const BINANCE_CONFIG: ExchangeConfig = ExchangeConfig {
 };
 
 // 默认测试 symbols
-const DEFAULT_TEST_SYMBOLS: &[&str] = &["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "SUIUSDT"];
+const DEFAULT_TEST_SYMBOLS: &[&str] = &["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "SUIUSDT", "XAIUSDT"];
 
 // Binance API 端点
 const BINANCE_LENDING_RATE_HISTORY_API: &str =
@@ -112,13 +112,15 @@ thread_local! {
 /// RateFetcher 单例访问器（零大小类型）
 pub struct RateFetcher;
 
-/// 借贷利率缓存（预计算的均值）
+/// 借贷利率缓存（预计算的均值 + 原始数据）
 #[derive(Debug, Clone)]
 struct LendingRateCache {
     /// 预测利率：最近 24 条日利率均值
     predict_daily_rate: f64,
     /// 当前利率：最近 3 条日利率均值
     current_daily_rate: f64,
+    /// 原始日利率数据（API返回顺序，最新在前）
+    raw_daily_rates: Vec<f64>,
 }
 
 /// RateFetcher 内部实现
@@ -475,6 +477,7 @@ impl RateFetcher {
                     let cache = LendingRateCache {
                         predict_daily_rate,
                         current_daily_rate,
+                        raw_daily_rates: rates,
                     };
 
                     Self::with_inner_mut(|inner| {
@@ -663,6 +666,150 @@ impl RateFetcher {
         Some((period, value))
     }
 
+    /// 打印指定 symbol 的详细计算过程（用于调试）
+    pub fn print_detailed_calculation(&self, symbol: &str, venue: TradingVenue) {
+        let symbol_upper = symbol.to_uppercase();
+        let period = self.get_period(&symbol_upper, venue);
+
+        info!("========== {} 详细计算 ==========", symbol_upper);
+
+        // 1. 资金费率计算
+        info!("\n【资金费率】");
+        let rates = Self::get_funding_rates_internal(&symbol_upper, venue);
+        match rates {
+            Some(rates) => {
+                let n = rates.len();
+                info!("历史记录数: {}", n);
+
+                // 打印最近 10 条
+                info!("最近 10 条 (从旧到新):");
+                let start = if n > 10 { n - 10 } else { 0 };
+                for (i, rate) in rates[start..].iter().enumerate() {
+                    info!("  [{}] {:.6}%", start + i, rate * 100.0);
+                }
+
+                // 预测计算逻辑
+                if n > PREDICT_NUM && n - 1 - PREDICT_NUM + 1 >= PREDICT_INTERVAL {
+                    let end = n - 1 - PREDICT_NUM;
+                    let begin = end + 1 - PREDICT_INTERVAL;
+                    info!("\n预测计算:");
+                    info!("  PREDICT_INTERVAL = {} (均值窗口)", PREDICT_INTERVAL);
+                    info!("  PREDICT_NUM = {} (跳过最新条数)", PREDICT_NUM);
+                    info!("  索引范围: [{}..={}]", begin, end);
+                    let mut sum = 0.0;
+                    for i in begin..=end {
+                        info!("    rates[{}] = {:.6}%", i, rates[i] * 100.0);
+                        sum += rates[i];
+                    }
+                    let predicted = sum / PREDICT_INTERVAL as f64;
+                    info!("  sum = {:.6}%", sum * 100.0);
+                    info!("  预测值 = sum / {} = {:.6}%", PREDICT_INTERVAL, predicted * 100.0);
+                } else {
+                    info!("数据不足，无法计算预测值 (需要至少 {} 条)", PREDICT_NUM + PREDICT_INTERVAL);
+                }
+            }
+            None => {
+                info!("未找到资金费率数据");
+            }
+        }
+
+        // 2. 借贷利率计算
+        info!("\n【借贷利率】");
+        let base_asset = symbol_upper.strip_suffix("USDT").unwrap_or(&symbol_upper);
+        let lending_cache = Self::with_inner(|inner| {
+            let venue_rates = inner.lending_rates.get(&venue)?;
+            venue_rates.get(base_asset).cloned()
+        });
+
+        match lending_cache {
+            Some(cache) => {
+                info!("资产: {}", base_asset);
+
+                // 打印原始日利率数据（API返回顺序，最新在前）
+                let raw = &cache.raw_daily_rates;
+                let n = raw.len();
+                info!("原始日利率数据: {} 条 (API返回顺序，最新在前)", n);
+                for (i, rate) in raw.iter().enumerate() {
+                    info!("  [{}] {:.6}%", i, rate * 100.0);
+                }
+
+                // 预测计算逻辑
+                info!("\n预测计算:");
+                info!("  使用全部 {} 条日利率均值", n);
+                if !raw.is_empty() {
+                    let mut sum = 0.0;
+                    for (i, rate) in raw.iter().enumerate() {
+                        info!("    raw[{}] = {:.6}%", i, rate * 100.0);
+                        sum += rate;
+                    }
+                    info!("  sum = {:.6}%", sum * 100.0);
+                    info!("  预测日利率 = sum / {} = {:.6}%", n, sum / n as f64 * 100.0);
+                }
+
+                // 当前计算逻辑
+                info!("\n当前计算:");
+                let take_count = 3.min(n);
+                info!("  使用最新 {} 条日利率均值", take_count);
+                if take_count > 0 {
+                    let mut sum = 0.0;
+                    for i in 0..take_count {
+                        info!("    raw[{}] = {:.6}%", i, raw[i] * 100.0);
+                        sum += raw[i];
+                    }
+                    info!("  sum = {:.6}%", sum * 100.0);
+                    info!("  当前日利率 = sum / {} = {:.6}%", take_count, sum / take_count as f64 * 100.0);
+                }
+
+                // 周期转换
+                info!("\n周期转换 ({:?}):", period);
+                let divisor = match period {
+                    FundingRatePeriod::Hours4 => 6.0,
+                    FundingRatePeriod::Hours8 => 3.0,
+                };
+                info!("  预测 {} 利率 = {:.6}% / {} = {:.6}%",
+                    match period { FundingRatePeriod::Hours4 => "4h", FundingRatePeriod::Hours8 => "8h" },
+                    cache.predict_daily_rate * 100.0,
+                    divisor,
+                    cache.predict_daily_rate / divisor * 100.0);
+                info!("  当前 {} 利率 = {:.6}% / {} = {:.6}%",
+                    match period { FundingRatePeriod::Hours4 => "4h", FundingRatePeriod::Hours8 => "8h" },
+                    cache.current_daily_rate * 100.0,
+                    divisor,
+                    cache.current_daily_rate / divisor * 100.0);
+            }
+            None => {
+                info!("未找到借贷利率数据 (资产: {})", base_asset);
+            }
+        }
+
+        // 3. 最终结果
+        info!("\n【最终结果】");
+        let predicted_fr = self.get_predicted_funding_rate(&symbol_upper, venue);
+        let predict_loan = self.get_predict_loan_rate(&symbol_upper, venue);
+        let current_loan = self.get_current_loan_rate(&symbol_upper, venue);
+
+        match predicted_fr {
+            Some((p, v)) => info!("预测资金费率 ({:?}): {:.6}%", p, v * 100.0),
+            None => info!("预测资金费率: N/A"),
+        }
+        match predict_loan {
+            Some((p, v)) => info!("预测借贷利率 ({:?}): {:.6}%", p, v * 100.0),
+            None => info!("预测借贷利率: N/A"),
+        }
+        match current_loan {
+            Some((p, v)) => info!("当前借贷利率 ({:?}): {:.6}%", p, v * 100.0),
+            None => info!("当前借贷利率: N/A"),
+        }
+
+        // FR + Loan 组合
+        if let (Some((_, fr)), Some((_, pl))) = (predicted_fr, predict_loan) {
+            info!("\n预测FR + 预测Loan = {:.6}% + {:.6}% = {:.6}%",
+                fr * 100.0, pl * 100.0, (fr + pl) * 100.0);
+        }
+
+        info!("========================================\n");
+    }
+
     fn get_binance_predicted_funding_rate(&self, symbol: &str) -> Option<f64> {
         let rates = Self::get_funding_rates_internal(symbol, BINANCE_CONFIG.venue)?;
         Self::calculate_predicted_rate(&rates)
@@ -729,15 +876,9 @@ impl RateFetcher {
         limit: usize,
     ) -> Result<Vec<BinanceFundingHistItem>> {
         let url = "https://fapi.binance.com/fapi/v1/fundingRate";
-        let end_time = Utc::now().timestamp_millis();
-        let start_time = end_time - 3 * 24 * 3600 * 1000; // 3d window
+        // 不指定 startTime/endTime，API 会返回最新的 limit 条
         let limit_s = limit.max(1).min(1000).to_string();
-        let params = [
-            ("symbol", symbol),
-            ("startTime", &start_time.to_string()),
-            ("endTime", &end_time.to_string()),
-            ("limit", &limit_s),
-        ];
+        let params = [("symbol", symbol), ("limit", &limit_s)];
         let resp = client.get(url).query(&params).send().await?;
         if !resp.status().is_success() {
             return Ok(vec![]);

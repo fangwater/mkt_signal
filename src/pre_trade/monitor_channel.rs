@@ -1256,12 +1256,19 @@ fn log_exposures(entries: &[ExposureEntry], price_map: &BTreeMap<String, PriceEn
         }
         let sym = format!("{}USDT", asset);
         let mark = price_map.get(&sym).map(|p| p.mark_price).unwrap_or(0.0);
+
+        // 如果有持仓但缺少价格，仍然显示（价格显示为 0）
+        let has_position = entry.spot_total_wallet.abs() > 1e-8 || entry.um_net_position.abs() > 1e-8;
+        if mark == 0.0 && !has_position {
+            continue;
+        }
+
         let spot_usdt = entry.spot_total_wallet * mark;
         let um_usdt = entry.um_net_position * mark;
         let exposure_usdt = spot_usdt + um_usdt;
 
-        // 按 USDT 价值过滤，< 1 USDT 的不显示
-        if exposure_usdt.abs() < 1.0 {
+        // 按 USDT 价值过滤，< 1 USDT 的不显示（但有持仓且缺价格的仍显示）
+        if spot_usdt.abs() < 1.0 && um_usdt.abs() < 1.0 {
             continue;
         }
         sum_exposure_usdt += exposure_usdt;

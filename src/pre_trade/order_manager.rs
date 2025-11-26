@@ -643,8 +643,8 @@ impl Order {
                             check_asset, required_amount, available_balance, borrow_amount,
                             self.symbol, self.side, self.quantity, self.price
                         );
-                        // 余额不足，启用自动借币还款
-                        params_parts.push("sideEffectType=AUTO_BORROW_REPAY".to_string());
+                        // 余额不足，使用 MARGIN_BUY（有额度就买）
+                        params_parts.push("sideEffectType=MARGIN_BUY".to_string());
                     } else {
                         info!(
                             "✅ 余额充足: 资产={} 需要={:.8} 可用={:.8} symbol={} side={:?}",
