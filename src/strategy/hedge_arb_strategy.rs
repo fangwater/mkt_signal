@@ -1345,7 +1345,14 @@ impl Strategy for HedgeArbStrategy {
         if response.is_success() {
             return;
         }
-        if response.client_order_id() == self.open_order_id {
+
+        let client_order_id = response.client_order_id();
+
+        // 检查是否是 Post Only 订单被拒绝的错误 (-5022)
+        // 这种情况下需要重新发送 hedge query signal 而不是关闭策略
+        let is_post_only_rejected = response.body().contains("-5022");
+
+        if client_order_id == self.open_order_id {
             warn!(
                 "HedgeArbStrategy: strategy_id={} 开仓下单失败: status={} reason={}",
                 self.strategy_id,
@@ -1353,6 +1360,56 @@ impl Strategy for HedgeArbStrategy {
                 response.body()
             );
             self.alive_flag = false;
+        } else if self.hedge_order_ids.contains(&client_order_id) {
+            // 对冲订单失败
+            if is_post_only_rejected {
+                // Post Only 订单被拒绝，需要重新发送 hedge query signal
+                warn!(
+                    "HedgeArbStrategy: strategy_id={} 对冲订单 Post Only 被拒绝 (code=-5022)，重新发送 hedge query signal: client_order_id={}",
+                    self.strategy_id, client_order_id
+                );
+
+                // 从 order manager 移除失败的订单
+                let order_mgr = MonitorChannel::instance().order_manager();
+                let _ = order_mgr.borrow_mut().remove(client_order_id);
+
+                // 从 hedge_order_ids 移除失败的订单
+                self.hedge_order_ids.retain(|&id| id != client_order_id);
+
+                // 清除对冲挂单截止时间，让定时器可以重新发起对冲
+                self.hedge_expire_ts = None;
+
+                // 计算待对冲量并重新发送 hedge query
+                let base_pending_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
+                if base_pending_qty > 1e-8 {
+                    let (can_hedge, hedged_qty, _) = self.try_hedge_with_residual(base_pending_qty);
+                    if can_hedge {
+                        info!(
+                            "HedgeArbStrategy: strategy_id={} Post Only 被拒后重新发送对冲请求，数量={:.8}",
+                            self.strategy_id, hedged_qty
+                        );
+                    } else {
+                        warn!(
+                            "HedgeArbStrategy: strategy_id={} Post Only 被拒后无法重新对冲，待对冲量={:.8}",
+                            self.strategy_id, base_pending_qty
+                        );
+                        // 如果无法重新对冲且没有其他挂单，则关闭策略
+                        if !self.has_pending_hedge_order() {
+                            self.alive_flag = false;
+                        }
+                    }
+                }
+            } else {
+                // 其他对冲订单错误，直接关闭策略
+                warn!(
+                    "HedgeArbStrategy: strategy_id={} 对冲下单失败: status={} reason={} client_order_id={}",
+                    self.strategy_id,
+                    response.status(),
+                    response.body(),
+                    client_order_id
+                );
+                self.alive_flag = false;
+            }
         }
     }
 
