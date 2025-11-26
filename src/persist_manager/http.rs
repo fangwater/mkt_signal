@@ -1366,22 +1366,48 @@ struct DecodedOrderRecord {
 }
 
 fn decode_trade_record(bytes: &[u8]) -> Result<DecodedTradeRecord> {
+    // 格式与 persist_channel.rs 中的 serialize_trade_update 一致
     let mut cursor = Bytes::copy_from_slice(bytes);
+
+    // 接收时间戳（在发布时记录）
+    let _recv_ts_us = read_i64(&mut cursor, "trade update recv_ts_us")?;
+
+    // 基础时间戳
     let event_time = read_i64(&mut cursor, "trade update event_time")?;
     let trade_time = read_i64(&mut cursor, "trade update trade_time")?;
+
+    // 交易对符号
     let symbol = read_string(&mut cursor)?;
+
+    // ID 字段
     let trade_id = read_i64(&mut cursor, "trade update trade_id")?;
     let order_id = read_i64(&mut cursor, "trade update order_id")?;
     let client_order_id = read_i64(&mut cursor, "trade update client_order_id")?;
+
+    // 方向
     let side_raw = read_u8(&mut cursor, "trade update side")?;
+
+    // 价格数量
     let price = read_f64(&mut cursor, "trade update price")?;
     let quantity = read_f64(&mut cursor, "trade update quantity")?;
+
+    // 手续费
     let commission = read_f64(&mut cursor, "trade update commission")?;
     let commission_asset = read_string(&mut cursor)?;
+
+    // Maker/Taker
     let is_maker = read_u8(&mut cursor, "trade update is_maker")? != 0;
+
+    // 已实现盈亏
     let realized_pnl = read_f64(&mut cursor, "trade update realized_pnl")?;
+
+    // 交易所类型
     let trading_venue = read_u8(&mut cursor, "trade update trading_venue")?;
+
+    // 累计成交量
     let cumulative_filled_quantity = read_f64(&mut cursor, "trade update cumulative_qty")?;
+
+    // 订单状态（可选）
     let has_status = read_u8(&mut cursor, "trade update status flag")?;
     let order_status = if has_status != 0 {
         let status_code = read_u8(&mut cursor, "trade update status value")?;
@@ -1418,24 +1444,46 @@ fn decode_trade_record(bytes: &[u8]) -> Result<DecodedTradeRecord> {
 }
 
 fn decode_order_record(bytes: &[u8]) -> Result<DecodedOrderRecord> {
+    // 格式与 persist_channel.rs 中的 serialize_order_update 一致
     let mut cursor = Bytes::copy_from_slice(bytes);
+
+    // 接收时间戳（在发布时记录）
+    let _recv_ts_us = read_i64(&mut cursor, "order update recv_ts_us")?;
+
+    // 基础时间戳
     let event_time = read_i64(&mut cursor, "order update event_time")?;
+
+    // 交易对符号
     let symbol = read_string(&mut cursor)?;
+
+    // ID 字段
     let order_id = read_i64(&mut cursor, "order update order_id")?;
     let client_order_id = read_i64(&mut cursor, "order update client_order_id")?;
     let client_order_id_str = read_opt_string(&mut cursor)?;
+
+    // 基础属性
     let side_raw = read_u8(&mut cursor, "order update side")?;
     let order_type_raw = read_u8(&mut cursor, "order update order_type")?;
     let tif_raw = read_u8(&mut cursor, "order update time_in_force")?;
+
+    // 价格数量
     let price = read_f64(&mut cursor, "order update price")?;
     let quantity = read_f64(&mut cursor, "order update quantity")?;
     let last_executed_qty = read_f64(&mut cursor, "order update last_exec_qty")?;
     let cumulative_filled_quantity = read_f64(&mut cursor, "order update cumulative_qty")?;
+
+    // 状态
     let status_raw = read_u8(&mut cursor, "order update status")?;
     let raw_status = read_string(&mut cursor)?;
+
+    // 执行类型
     let execution_type_raw = read_u8(&mut cursor, "order update execution_type")?;
     let raw_execution_type = read_string(&mut cursor)?;
+
+    // 交易所类型
     let trading_venue_raw = read_u8(&mut cursor, "order update trading_venue")?;
+
+    // 可选字段
     let average_price = read_opt_f64(&mut cursor)?;
     let last_executed_price = read_opt_f64(&mut cursor)?;
     let business_unit = read_opt_string(&mut cursor)?;

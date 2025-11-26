@@ -322,7 +322,7 @@
               <tr><td>借币折算</td><td class="value">--</td><td>以标记价折算的交叉借币</td></tr>
               <tr><td>利息折算</td><td class="value">--</td><td>以标记价折算的交叉利息</td></tr>
               <tr><td>UM 未实现PnL</td><td class="value">--</td><td>Σ 合约未实现盈亏</td></tr>
-              <tr><td>总权益</td><td class="value">--</td><td>现货估值 − 借币 − 利息 + UM 未实现PnL</td></tr>
+              <tr><td>总权益</td><td class="value">--</td><td>现货估值 − 利息 + UM 未实现PnL</td></tr>
             </tbody>
           </table>
         </div>
@@ -530,7 +530,7 @@
                 {
                   label: "总权益",
                   value: Number.isFinite(entry.total_equity) ? entry.total_equity : null,
-                  hint: "现货估值 − 借币 − 利息 + UM 未实现PnL",
+                  hint: "现货估值 − 利息 + UM 未实现PnL",
                   isTotal: true,
                 },
               ]
@@ -539,7 +539,7 @@
                 { label: "借币折算", value: null, hint: "以标记价折算的交叉借币" },
                 { label: "利息折算", value: null, hint: "以标记价折算的交叉利息" },
                 { label: "UM 未实现PnL", value: null, hint: "Σ 合约未实现盈亏" },
-                { label: "总权益", value: null, hint: "现货估值 − 借币 − 利息 + UM 未实现PnL", isTotal: true },
+                { label: "总权益", value: null, hint: "现货估值 − 利息 + UM 未实现PnL", isTotal: true },
               ];
 
           equityBreakdownBody.innerHTML = "";

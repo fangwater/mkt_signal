@@ -230,11 +230,11 @@ impl ExposureManager {
             }
         }
 
-        // Equity = spot估值 - 借币 - 利息 + UM未实现PnL（UM钱包余额已体现在 USDT 现货余额中）
+        // Equity = spot估值 - 利息 + UM未实现PnL（UM钱包余额已体现在 USDT 现货余额中，借币不扣除）
         self.total_spot_value_usd = total_spot_value;
         self.total_borrowed_usd = total_borrowed_value;
         self.total_interest_usd = total_interest_value;
-        self.total_equity = (total_spot_value - total_borrowed_value - total_interest_value)
+        self.total_equity = (total_spot_value - total_interest_value)
             + self.total_um_unrealized;
         self.abs_total_exposure = abs_total_exposure_usdt;
         self.total_position = total_position_value;
