@@ -87,11 +87,8 @@ impl RocksDbStore {
         cf_name: &str,
         start_key: Option<&[u8]>,
         reverse: bool,
-        limit: usize,
+        limit: Option<usize>,
     ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
         let cf = self
             .db
             .cf_handle(cf_name)
@@ -107,8 +104,10 @@ impl RocksDbStore {
         let iter = self.db.iterator_cf(cf, mode);
         let mut entries = Vec::new();
         for (idx, item) in iter.enumerate() {
-            if idx >= limit {
-                break;
+            if let Some(max) = limit {
+                if idx >= max {
+                    break;
+                }
             }
             let (key, value) = item?;
             entries.push((key.as_ref().to_vec(), value.as_ref().to_vec()));

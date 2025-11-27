@@ -4,10 +4,15 @@
 
 set -e
 
-OUTPUT_DIR="${1:-./export_$(date +%Y%m%d_%H%M%S)}"
+OUTPUT_DIR="${1:-./export_data}"
 API_BASE="${2:-http://localhost:8088}"
-# LIMIT="${3:-10000}"  # 默认导出最大 10000 条
-LIMIT="${:1000000}"
+LIMIT="${3:-100000}"  # 默认导出最大 10万 条
+
+# 如果目录已存在则删除旧的
+if [ -d "$OUTPUT_DIR" ]; then
+    echo "删除旧目录: $OUTPUT_DIR"
+    rm -rf "$OUTPUT_DIR"
+fi
 
 mkdir -p "$OUTPUT_DIR"
 

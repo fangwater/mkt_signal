@@ -106,7 +106,7 @@ async fn list_signals(
     Query(query): Query<ListQuery>,
 ) -> Result<impl IntoResponse, HttpError> {
     let signal_kind = SignalKind::from_path(&kind).ok_or(HttpError::not_found("未知的信号类型"))?;
-    let limit = query.limit.unwrap_or(100).min(1000).max(1);
+    let limit = query.limit;
     let direction = query.direction.unwrap_or_else(|| "desc".to_string());
     let reverse = !matches!(direction.as_str(), "asc" | "ASC");
     let range = RangeFilter {
@@ -244,7 +244,7 @@ async fn export_signals(
         start_ts: query.start_ts,
         end_ts: query.end_ts,
     };
-    let limit = query.limit.unwrap_or(1000).min(10_000).max(1);
+    let limit = query.limit;
     let direction = query.direction.unwrap_or_else(|| "desc".to_string());
     let reverse = !matches!(direction.as_str(), "asc" | "ASC");
     let start_bytes = resolve_simple_start_key(&query.start, range.start_ts);
@@ -291,7 +291,7 @@ async fn list_trade_updates(
     State(state): State<AppState>,
     Query(query): Query<ListQuery>,
 ) -> Result<impl IntoResponse, HttpError> {
-    let limit = query.limit.unwrap_or(100).min(1000).max(1);
+    let limit = query.limit;
     let direction = query.direction.unwrap_or_else(|| "desc".to_string());
     let reverse = !matches!(direction.as_str(), "asc" | "ASC");
     let range = RangeFilter {
@@ -376,7 +376,7 @@ async fn export_trade_updates(
         start_ts: query.start_ts,
         end_ts: query.end_ts,
     };
-    let limit = query.limit.unwrap_or(1000).min(10_000).max(1);
+    let limit = query.limit;
     let direction = query.direction.unwrap_or_else(|| "desc".to_string());
     let reverse = !matches!(direction.as_str(), "asc" | "ASC");
     let start_bytes = resolve_simple_start_key(&query.start, range.start_ts);
@@ -409,7 +409,7 @@ async fn list_order_updates(
     State(state): State<AppState>,
     Query(query): Query<ListQuery>,
 ) -> Result<impl IntoResponse, HttpError> {
-    let limit = query.limit.unwrap_or(100).min(1000).max(1);
+    let limit = query.limit;
     let direction = query.direction.unwrap_or_else(|| "desc".to_string());
     let reverse = !matches!(direction.as_str(), "asc" | "ASC");
     let range = RangeFilter {
@@ -494,7 +494,7 @@ async fn export_order_updates(
         start_ts: query.start_ts,
         end_ts: query.end_ts,
     };
-    let limit = query.limit.unwrap_or(1000).min(10_000).max(1);
+    let limit = query.limit;
     let direction = query.direction.unwrap_or_else(|| "desc".to_string());
     let reverse = !matches!(direction.as_str(), "asc" | "ASC");
     let start_bytes = resolve_start_key(&query.start, range.start_ts, reverse);
