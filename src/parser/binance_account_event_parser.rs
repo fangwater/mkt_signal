@@ -9,6 +9,7 @@ use bytes::Bytes;
 use log::{debug, warn};
 use serde_json::Value;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use tokio::sync::mpsc;
 
@@ -718,8 +719,12 @@ impl BinanceAccountEventParser {
                 }
             }
 
-            // Parse positions
+            // Parse positions - 用 HashMap 合并相同 (symbol, position_side) 的记录，后面覆盖前面
             if let Some(positions) = a.get("P").and_then(|v| v.as_array()) {
+                // key: (symbol, position_side), value: (position_amount, entry_price, accumulated_realized, unrealized_pnl, breakeven_price)
+                let mut position_map: HashMap<(String, char), (f64, f64, f64, f64, f64)> =
+                    HashMap::new();
+
                 for position in positions {
                     let symbol = position
                         .get("s")
@@ -761,6 +766,21 @@ impl BinanceAccountEventParser {
                         .and_then(|s| s.parse::<f64>().ok())
                         .unwrap_or(0.0);
 
+                    // 后面的覆盖前面的
+                    position_map.insert(
+                        (symbol, position_side),
+                        (
+                            position_amount,
+                            entry_price,
+                            accumulated_realized,
+                            unrealized_pnl,
+                            breakeven_price,
+                        ),
+                    );
+                }
+
+                // 发送合并后的 position 消息
+                for ((symbol, position_side), (position_amount, entry_price, accumulated_realized, unrealized_pnl, breakeven_price)) in position_map {
                     let msg = AccountUpdatePositionMsg::create(
                         event_time,
                         transaction_time,

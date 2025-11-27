@@ -57,7 +57,7 @@ RISK_PARAMS = {
     "max_leverage": "2.5",
 
     # 最大挂单数（>=0）
-    "max_pending_limit_orders": "20",
+    "max_pending_limit_orders": "10",
 }
 
 # ========== 参数注释（用于打印） ==========

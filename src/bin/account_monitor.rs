@@ -321,6 +321,14 @@ fn log_parsed_event(msg: &Bytes) {
                 );
             }
         }
+        AccountEventType::AccountUpdatePosition => {
+            if let Ok(m) = AccountUpdatePositionMsg::from_bytes(&payload) {
+                info!(
+                    "AccountUpdatePosition: sym={} side={} amt={} entry={} upnl={} reason={} bu={}",
+                    m.symbol, m.position_side, m.position_amount, m.entry_price, m.unrealized_pnl, m.reason, m.business_unit
+                );
+            }
+        }
         _ => {
             debug!("PM event: type={:?} len={}", event_type, payload_len);
         }
@@ -455,7 +463,7 @@ impl AccountEventDeduper {
             AccountEventType::AccountUpdatePosition as u32 as u64,
             msg.event_time as u64,
             msg.transaction_time as u64,
-            msg.symbol_length as u64,
+            self.hash_str64(&msg.symbol),
             msg.position_side as u8 as u64,
         ])
     }
