@@ -16,7 +16,8 @@ use log::{debug, error, info, warn};
 
 pub struct HedgeArbStrategy {
     pub strategy_id: i32,              //策略id
-    pub symbol: String,                //交易的统一symbol (开仓侧symbol)
+    pub open_symbol: String,           //开仓侧symbol
+    pub open_venue: TradingVenue,      //开仓侧交易场所
     pub open_order_id: i64,            //开仓单唯一，报多单对应多个Strategy
     pub hedge_order_ids: Vec<i64>,     //对冲单会产生一个or多个，因为部分成交
     pub open_expire_ts: Option<i64>,   //开仓单挂单截止时间（绝对时间戳）
@@ -38,7 +39,8 @@ impl HedgeArbStrategy {
     pub fn new(id: i32, symbol: String) -> Self {
         let strategy = Self {
             strategy_id: id,
-            symbol,
+            open_symbol: symbol,
+            open_venue: TradingVenue::BinanceMargin, // 默认值，将在开仓时更新
             open_order_id: 0,
             hedge_order_ids: Vec::new(),
             open_expire_ts: None,
@@ -82,8 +84,8 @@ impl HedgeArbStrategy {
         }
 
         // 2、检查symbol的敞口，失败打印error
-        if let Err(e) = MonitorChannel::instance().check_symbol_exposure(&self.symbol) {
-            error!("HedgeArbStrategy: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃", self.strategy_id, self.symbol, e);
+        if let Err(e) = MonitorChannel::instance().check_symbol_exposure(&self.open_symbol) {
+            error!("HedgeArbStrategy: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃", self.strategy_id, self.open_symbol, e);
             self.alive_flag = false;
             return;
         }
@@ -101,8 +103,8 @@ impl HedgeArbStrategy {
         // 4、检查限价挂单数量限制（如果是限价单）
         let order_type = OrderType::from_u8(ctx.order_type);
         if order_type == Some(OrderType::Limit) {
-            if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&self.symbol) {
-                error!("HedgeArbStrategy: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃", self.strategy_id, self.symbol, e);
+            if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&self.open_symbol) {
+                error!("HedgeArbStrategy: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃", self.strategy_id, self.open_symbol, e);
                 self.alive_flag = false;
                 return;
             }
@@ -154,6 +156,9 @@ impl HedgeArbStrategy {
         let venue = TradingVenue::from_u8(ctx.opening_leg.venue)
             .ok_or_else(|| format!("无效的交易场所: {}", ctx.opening_leg.venue))
             .unwrap();
+
+        // 保存开仓侧交易场所
+        self.open_venue = venue;
 
         // 检查 venue 必须是 BinanceUm 或 BinanceMargin
         match venue {
@@ -708,10 +713,18 @@ impl HedgeArbStrategy {
         let mut hedge_ctx =
             ArbHedgeCtx::new_taker(self.strategy_id, self.open_order_id, eff_qty, side.to_u8());
 
-        // 2. 设置对冲symbol
+        // 2. 设置开仓侧信息（as market对冲，盘口写0）
+        hedge_ctx.opening_leg = crate::signal::common::TradingLeg {
+            venue: self.open_venue.to_u8(),
+            bid0: 0.0,
+            ask0: 0.0,
+        };
+        hedge_ctx.set_opening_symbol(&self.open_symbol);
+
+        // 3. 设置对冲symbol
         hedge_ctx.set_hedging_symbol(&self.hedge_symbol);
 
-        // 3. 设置对冲leg，市价单也需要有效价格供风控/名义金额对齐
+        // 4. 设置对冲leg，市价单也需要有效价格供风控/名义金额对齐
         let (bid0, ask0) = match self.latest_hedge_quotes() {
             Some((bid, ask)) => (bid, ask),
             None => {
@@ -731,13 +744,13 @@ impl HedgeArbStrategy {
         self.hedge_bid0 = bid0;
         self.hedge_ask0 = ask0;
 
-        // 4. 设置市场数据时间戳
+        // 5. 设置市场数据时间戳
         hedge_ctx.market_ts = get_timestamp_us();
 
-        // 5. MT 对冲是市价单，price_offset 设置为 0
+        // 6. MT 对冲是市价单，price_offset 设置为 0
         hedge_ctx.price_offset = 0.0;
 
-        // 6. 直接调用对冲处理逻辑（不再通过队列循环）
+        // 7. 直接调用对冲处理逻辑（不再通过队列循环）
         debug!(
             "HedgeArbStrategy: strategy_id={} 直接处理对冲 venue={:?} side={:?} qty={:.8}",
             self.strategy_id, venue, side, eff_qty
@@ -768,13 +781,20 @@ impl HedgeArbStrategy {
             return Ok(());
         }
 
-        // 1. 创建对冲查询消息
+        // 1. 创建对冲查询消息（包含开仓侧信息，盘口写0由decision获取）
+        let opening_leg = crate::signal::common::TradingLeg {
+            venue: self.open_venue.to_u8(),
+            bid0: 0.0,
+            ask0: 0.0,
+        };
         let query_msg = crate::signal::hedge_signal::ArbHedgeSignalQueryMsg::new(
             self.strategy_id,
             self.open_order_id,
             get_timestamp_us(),
             eff_qty,
             side.to_u8(),
+            opening_leg,
+            &self.open_symbol,
             venue.to_u8(),
             &self.hedge_symbol,
             self.hedge_request_seq,
@@ -1170,7 +1190,7 @@ impl HedgeArbStrategy {
             self.cumulative_open_qty = cumulative_qty;
             info!(
                 "💰 开仓成交: strategy_id={} order_id={} symbol={} price={:.6} qty={:.4} cumulative={:.4} | 已对冲={:.4}",
-                self.strategy_id, client_order_id, self.symbol,
+                self.strategy_id, client_order_id, self.open_symbol,
                 trade.price(), trade.quantity(), self.cumulative_open_qty, self.cumulative_hedged_qty
             );
             self.process_open_leg_trade(trade);
@@ -1307,7 +1327,7 @@ impl Strategy for HedgeArbStrategy {
     }
 
     fn symbol(&self) -> Option<&str> {
-        Some(&self.symbol)
+        Some(&self.open_symbol)
     }
 
     fn is_strategy_order(&self, order_id: i64) -> bool {

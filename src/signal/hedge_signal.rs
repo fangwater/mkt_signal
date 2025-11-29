@@ -33,6 +33,14 @@ pub struct ArbHedgeCtx {
     /// When == 0: Taker order (market order)
     pub exp_time: i64,
 
+    /// Opening leg market data (the leg that triggered this hedge)
+    /// For as-market hedge: all values are 0
+    /// For query-derived hedge: contains actual market data
+    pub opening_leg: TradingLeg,
+
+    /// Opening leg symbol
+    pub opening_symbol: [u8; 32],
+
     /// Hedging leg market data
     pub hedging_leg: TradingLeg,
 
@@ -60,6 +68,12 @@ impl ArbHedgeCtx {
             price_tick: 0.0,
             maker_only: false,
             exp_time: 0,
+            opening_leg: TradingLeg {
+                venue: 0,
+                bid0: 0.0,
+                ask0: 0.0,
+            },
+            opening_symbol: [0u8; 32],
             hedging_leg: TradingLeg {
                 venue: 0,
                 bid0: 0.0,
@@ -118,6 +132,23 @@ impl ArbHedgeCtx {
     /// Check if this is a taker order
     pub fn is_taker(&self) -> bool {
         self.exp_time == 0
+    }
+
+    /// Set opening symbol
+    pub fn set_opening_symbol(&mut self, symbol: &str) {
+        let bytes = symbol.as_bytes();
+        let len = bytes.len().min(32);
+        self.opening_symbol[..len].copy_from_slice(&bytes[..len]);
+    }
+
+    /// Get opening symbol
+    pub fn get_opening_symbol(&self) -> String {
+        let end = self
+            .opening_symbol
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(32);
+        String::from_utf8_lossy(&self.opening_symbol[..end]).to_string()
     }
 
     /// Set hedging symbol
@@ -203,6 +234,12 @@ impl SignalBytes for ArbHedgeCtx {
         buf.put_u8(if self.maker_only { 1 } else { 0 });
         buf.put_i64_le(self.exp_time);
 
+        // Opening leg market data (0 for as-market hedge)
+        buf.put_u8(self.opening_leg.venue);
+        buf.put_f64_le(self.opening_leg.bid0);
+        buf.put_f64_le(self.opening_leg.ask0);
+        bytes_helper::write_fixed_bytes(&mut buf, &self.opening_symbol);
+
         // Hedging leg market data
         buf.put_u8(self.hedging_leg.venue);
         buf.put_f64_le(self.hedging_leg.bid0);
@@ -216,7 +253,25 @@ impl SignalBytes for ArbHedgeCtx {
     }
 
     fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
-        if bytes.remaining() < 4 + 8 + 8 + 1 + 8 + 8 + 1 + 8 {
+        // 基本字段长度: 4 + 8 + 8 + 1 + 8 + 8 + 1 + 8 = 46
+        const BASIC_FIELDS_LEN: usize = 4 + 8 + 8 + 1 + 8 + 8 + 1 + 8;
+        // 旧格式总长度: 46 + hedging_leg(17) + hedging_symbol(32) + market_ts(8) + price_offset(8) = 111
+        const OLD_FORMAT_LEN: usize = 111;
+        // 新格式总长度: 111 + opening_leg(17) + opening_symbol(32) = 160
+        const NEW_FORMAT_LEN: usize = 160;
+
+        let total_len = bytes.remaining();
+        if total_len < OLD_FORMAT_LEN {
+            return Err(format!(
+                "Not enough bytes for ArbHedgeCtx: got {}, need at least {}",
+                total_len, OLD_FORMAT_LEN
+            ));
+        }
+
+        // 判断是否为新格式（包含 opening_leg）
+        let has_opening_leg = total_len >= NEW_FORMAT_LEN;
+
+        if bytes.remaining() < BASIC_FIELDS_LEN {
             return Err("Not enough bytes for ArbHedgeCtx basic fields".to_string());
         }
 
@@ -228,6 +283,21 @@ impl SignalBytes for ArbHedgeCtx {
         let price_tick = bytes.get_f64_le();
         let maker_only = bytes.get_u8() != 0;
         let exp_time = bytes.get_i64_le();
+
+        // Opening leg market data (新格式才有，旧格式默认为空)
+        let (opening_venue, opening_bid0, opening_ask0, opening_symbol) = if has_opening_leg {
+            if bytes.remaining() < 1 + 8 + 8 {
+                return Err("Not enough bytes for opening leg".to_string());
+            }
+            let venue = bytes.get_u8();
+            let bid0 = bytes.get_f64_le();
+            let ask0 = bytes.get_f64_le();
+            let symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
+            (venue, bid0, ask0, symbol)
+        } else {
+            // 旧格式：opening_leg 默认为空
+            (0u8, 0.0, 0.0, [0u8; 32])
+        };
 
         // Hedging leg market data
         if bytes.remaining() < 1 + 8 + 8 {
@@ -257,6 +327,12 @@ impl SignalBytes for ArbHedgeCtx {
             price_tick,
             maker_only,
             exp_time,
+            opening_leg: TradingLeg {
+                venue: opening_venue,
+                bid0: opening_bid0,
+                ask0: opening_ask0,
+            },
+            opening_symbol,
             hedging_leg: TradingLeg {
                 venue: hedging_venue,
                 bid0: hedging_bid0,
@@ -288,7 +364,13 @@ pub struct ArbHedgeSignalQueryMsg {
     /// Hedge side (Buy/Sell) - stored as u8
     pub hedge_side: u8,
 
-    /// Trading venue (exchange and type) - stored as u8
+    /// Opening leg market data (the leg that triggered this hedge)
+    pub opening_leg: TradingLeg,
+
+    /// Opening leg symbol
+    pub opening_symbol: [u8; 32],
+
+    /// Trading venue (exchange and type) - stored as u8 (hedging venue)
     pub venue: u8,
 
     /// Hedging symbol (e.g., BTCUSDT)
@@ -306,22 +388,32 @@ impl ArbHedgeSignalQueryMsg {
         query_time: i64,
         hedge_qty: f64,
         hedge_side: u8,
+        opening_leg: TradingLeg,
+        opening_symbol: &str,
         venue: u8,
         hedging_symbol: &str,
         request_seq: u32,
     ) -> Self {
-        let mut symbol_bytes = [0u8; 32];
+        let mut opening_symbol_bytes = [0u8; 32];
+        let bytes = opening_symbol.as_bytes();
+        let len = bytes.len().min(32);
+        opening_symbol_bytes[..len].copy_from_slice(&bytes[..len]);
+
+        let mut hedging_symbol_bytes = [0u8; 32];
         let bytes = hedging_symbol.as_bytes();
         let len = bytes.len().min(32);
-        symbol_bytes[..len].copy_from_slice(&bytes[..len]);
+        hedging_symbol_bytes[..len].copy_from_slice(&bytes[..len]);
+
         Self {
             strategy_id,
             client_order_id,
             query_time,
             hedge_qty,
             hedge_side,
+            opening_leg,
+            opening_symbol: opening_symbol_bytes,
             venue,
-            hedging_symbol: symbol_bytes,
+            hedging_symbol: hedging_symbol_bytes,
             request_seq,
         }
     }
@@ -344,6 +436,14 @@ impl ArbHedgeSignalQueryMsg {
         buf.put_i64_le(self.query_time);
         buf.put_f64_le(self.hedge_qty);
         buf.put_u8(self.hedge_side);
+
+        // Opening leg market data
+        buf.put_u8(self.opening_leg.venue);
+        buf.put_f64_le(self.opening_leg.bid0);
+        buf.put_f64_le(self.opening_leg.ask0);
+        bytes_helper::write_fixed_bytes(&mut buf, &self.opening_symbol);
+
+        // Hedging leg info
         buf.put_u8(self.venue);
         bytes_helper::write_fixed_bytes(&mut buf, &self.hedging_symbol);
         buf.put_u32_le(self.request_seq);
@@ -377,6 +477,16 @@ impl ArbHedgeSignalQueryMsg {
         }
         let hedge_side = bytes.get_u8();
 
+        // Opening leg market data
+        if bytes.remaining() < 1 + 8 + 8 {
+            return Err("insufficient bytes for opening leg".into());
+        }
+        let opening_venue = bytes.get_u8();
+        let opening_bid0 = bytes.get_f64_le();
+        let opening_ask0 = bytes.get_f64_le();
+        let opening_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
+
+        // Hedging leg info
         if bytes.remaining() < 1 {
             return Err("insufficient bytes for venue".into());
         }
@@ -394,10 +504,26 @@ impl ArbHedgeSignalQueryMsg {
             query_time,
             hedge_qty,
             hedge_side,
+            opening_leg: TradingLeg {
+                venue: opening_venue,
+                bid0: opening_bid0,
+                ask0: opening_ask0,
+            },
+            opening_symbol,
             venue,
             hedging_symbol,
             request_seq,
         })
+    }
+
+    /// 获取开仓symbol
+    pub fn get_opening_symbol(&self) -> String {
+        let end = self
+            .opening_symbol
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(32);
+        String::from_utf8_lossy(&self.opening_symbol[..end]).to_string()
     }
 
     /// 获取对冲symbol

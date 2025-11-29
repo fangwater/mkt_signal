@@ -685,6 +685,12 @@ fn decode_context(signal_kind: SignalKind, record: &SignalRecordMessage) -> Opti
                 "price_tick": ctx.price_tick,
                 "maker_only": ctx.maker_only,
                 "exp_time": ctx.exp_time,
+                "opening_leg": {
+                    "venue": ctx.opening_leg.venue,
+                    "bid0": ctx.opening_leg.bid0,
+                    "ask0": ctx.opening_leg.ask0,
+                },
+                "opening_symbol": ctx.get_opening_symbol(),
                 "hedging_leg": {
                     "venue": ctx.hedging_leg.venue,
                     "bid0": ctx.hedging_leg.bid0,
@@ -986,6 +992,10 @@ fn build_parquet_hedge(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) ->
     let mut price_tick_col = Vec::with_capacity(entries.len());
     let mut maker_only_col = Vec::with_capacity(entries.len());
     let mut exp_time_col = Vec::with_capacity(entries.len());
+    let mut opening_venue_col: Vec<String> = Vec::with_capacity(entries.len());
+    let mut opening_symbol_col = Vec::with_capacity(entries.len());
+    let mut opening_bid0_col = Vec::with_capacity(entries.len());
+    let mut opening_ask0_col = Vec::with_capacity(entries.len());
     let mut hedging_venue_col: Vec<String> = Vec::with_capacity(entries.len());
     let mut hedging_symbol_col = Vec::with_capacity(entries.len());
     let mut hedging_bid0_col = Vec::with_capacity(entries.len());
@@ -1019,6 +1029,14 @@ fn build_parquet_hedge(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) ->
         price_tick_col.push(ctx.price_tick);
         maker_only_col.push(ctx.maker_only);
         exp_time_col.push(ctx.exp_time);
+        opening_venue_col.push(
+            TradingVenue::from_u8(ctx.opening_leg.venue)
+                .map(|v| v.as_str().to_string())
+                .unwrap_or("Unknown".to_string()),
+        );
+        opening_symbol_col.push(ctx.get_opening_symbol());
+        opening_bid0_col.push(ctx.opening_leg.bid0);
+        opening_ask0_col.push(ctx.opening_leg.ask0);
         hedging_venue_col.push(
             TradingVenue::from_u8(ctx.hedging_leg.venue)
                 .map(|v| v.as_str().to_string())
@@ -1044,6 +1062,10 @@ fn build_parquet_hedge(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) ->
         Series::new("price_tick".into(), price_tick_col),
         Series::new("maker_only".into(), maker_only_col),
         Series::new("exp_time".into(), exp_time_col),
+        Series::new("opening_venue".into(), opening_venue_col),
+        Series::new("opening_symbol".into(), opening_symbol_col),
+        Series::new("opening_bid0".into(), opening_bid0_col),
+        Series::new("opening_ask0".into(), opening_ask0_col),
         Series::new("hedging_venue".into(), hedging_venue_col),
         Series::new("hedging_symbol".into(), hedging_symbol_col),
         Series::new("hedging_bid0".into(), hedging_bid0_col),

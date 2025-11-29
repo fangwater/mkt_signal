@@ -584,6 +584,20 @@ impl FrDecision {
             return;
         }
 
+        let open_symbol = query.get_opening_symbol();
+        if open_symbol.is_empty() {
+            warn!("FrDecision: hedge query 未携带开仓 symbol");
+            return;
+        }
+
+        let Some(open_venue) = TradingVenue::from_u8(query.opening_leg.venue) else {
+            warn!(
+                "FrDecision: hedge query opening venue 无效: {}",
+                query.opening_leg.venue
+            );
+            return;
+        };
+
         let qty = query.hedge_qty;
         if qty <= 0.0 {
             warn!(
@@ -594,6 +608,17 @@ impl FrDecision {
         }
 
         let mkt_channel = MktChannel::instance();
+
+        // 获取开仓侧行情
+        let Some(open_quote) = mkt_channel.get_quote(&open_symbol, open_venue) else {
+            warn!(
+                "FrDecision: hedge query 开仓侧无行情 strategy_id={} symbol={} venue={:?}",
+                query.strategy_id, open_symbol, open_venue
+            );
+            return;
+        };
+
+        // 获取对冲侧行情
         let Some(fut_quote) = mkt_channel.get_quote(&hedge_symbol, venue) else {
             warn!(
                 "FrDecision: hedge query 无行情 strategy_id={} symbol={} venue={:?}",
@@ -630,6 +655,10 @@ impl FrDecision {
             }
             let mut ctx =
                 ArbHedgeCtx::new_taker(query.strategy_id, query.client_order_id, qty, side.to_u8());
+            // 设置开仓侧信息（从query获取venue/symbol，盘口从MktChannel获取）
+            ctx.opening_leg = TradingLeg::new(open_venue, open_quote.bid, open_quote.ask);
+            ctx.set_opening_symbol(&open_symbol);
+            // 设置对冲侧信息
             ctx.hedging_leg = TradingLeg::new(venue, fut_quote.bid, fut_quote.ask);
             ctx.set_hedging_symbol(&hedge_symbol);
             ctx.market_ts = now;
@@ -670,6 +699,10 @@ impl FrDecision {
                 false,
                 now + self.hedge_timeout_mm_us,
             );
+            // 设置开仓侧信息（从query获取venue/symbol，盘口从MktChannel获取）
+            ctx.opening_leg = TradingLeg::new(open_venue, open_quote.bid, open_quote.ask);
+            ctx.set_opening_symbol(&open_symbol);
+            // 设置对冲侧信息
             ctx.hedging_leg = TradingLeg::new(venue, fut_quote.bid, fut_quote.ask);
             ctx.set_hedging_symbol(&hedge_symbol);
             ctx.market_ts = now;
