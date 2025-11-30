@@ -505,6 +505,14 @@ impl MonitorChannel {
                     // TODO: 实现 BitgetFutures 的对齐逻辑
                     Err(format!("尚未实现 BitgetFutures 的订单对齐"))
                 }
+                TradingVenue::BybitFutures => {
+                    // TODO: 实现 BybitFutures 的对齐逻辑
+                    Err(format!("尚未实现 BybitFutures 的订单对齐"))
+                }
+                TradingVenue::GateFutures => {
+                    // TODO: 实现 GateFutures 的对齐逻辑
+                    Err(format!("尚未实现 GateFutures 的订单对齐"))
+                }
             }
         })
     }
@@ -526,7 +534,7 @@ impl MonitorChannel {
                 TradingVenue::BinanceSpot | TradingVenue::OkexSpot => {
                     inner.min_qty_table.min_qty(MarketType::Spot, symbol)
                 }
-                TradingVenue::OkexSwap | TradingVenue::BitgetFutures => None,
+                TradingVenue::OkexSwap | TradingVenue::BitgetFutures | TradingVenue::BybitFutures | TradingVenue::GateFutures => None,
             }
             .unwrap_or(0.0);
 

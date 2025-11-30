@@ -13,6 +13,8 @@ pub enum TradingVenue {
     OkexSwap = 4,
     OkexSpot = 5,
     BitgetFutures = 6,
+    BybitFutures = 7,
+    GateFutures = 8,
 }
 
 /// 订单有效期类型枚举
@@ -396,6 +398,8 @@ impl TradingVenue {
             4 => Some(TradingVenue::OkexSwap),
             5 => Some(TradingVenue::OkexSpot),
             6 => Some(TradingVenue::BitgetFutures),
+            7 => Some(TradingVenue::BybitFutures),
+            8 => Some(TradingVenue::GateFutures),
             _ => None,
         }
     }
@@ -409,6 +413,8 @@ impl TradingVenue {
             TradingVenue::OkexSwap => "OkexSwap",
             TradingVenue::OkexSpot => "OkexSpot",
             TradingVenue::BitgetFutures => "BitgetFutures",
+            TradingVenue::BybitFutures => "BybitFutures",
+            TradingVenue::GateFutures => "GateFutures",
         }
     }
 
@@ -420,6 +426,8 @@ impl TradingVenue {
             TradingVenue::OkexSwap => "okex_swap",
             TradingVenue::OkexSpot => "okex",
             TradingVenue::BitgetFutures => "bitget_futures",
+            TradingVenue::BybitFutures => "bybit_futures",
+            TradingVenue::GateFutures => "gate_futures",
         }
     }
 
@@ -432,6 +440,8 @@ impl TradingVenue {
             TradingVenue::OkexSwap => "swap",
             TradingVenue::OkexSpot => "spot",
             TradingVenue::BitgetFutures => "futures",
+            TradingVenue::BybitFutures => "futures",
+            TradingVenue::GateFutures => "futures",
         }
     }
 
@@ -439,7 +449,7 @@ impl TradingVenue {
     pub fn is_futures(&self) -> bool {
         matches!(
             self,
-            TradingVenue::BinanceUm | TradingVenue::OkexSwap | TradingVenue::BitgetFutures
+            TradingVenue::BinanceUm | TradingVenue::OkexSwap | TradingVenue::BitgetFutures | TradingVenue::BybitFutures | TradingVenue::GateFutures
         )
     }
 

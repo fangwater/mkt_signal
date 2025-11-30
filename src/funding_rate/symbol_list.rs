@@ -383,6 +383,8 @@ impl SymbolList {
             TradingVenue::OkexSwap => "okex_swap",
             TradingVenue::OkexSpot => "okex_spot",
             TradingVenue::BitgetFutures => "bitget_futures",
+            TradingVenue::BybitFutures => "bybit_futures",
+            TradingVenue::GateFutures => "gate_futures",
         }
     }
 }

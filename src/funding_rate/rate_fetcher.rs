@@ -93,6 +93,40 @@ struct BitgetFundingRateItem {
     funding_rate_timestamp: String,
 }
 
+/// Bybit v5 资金费率历史响应
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BybitFundingRateResponse {
+    ret_code: i32,
+    result: BybitFundingRateResult,
+}
+
+/// Bybit v5 资金费率结果
+#[derive(Debug, Deserialize)]
+struct BybitFundingRateResult {
+    list: Vec<BybitFundingRateItem>,
+}
+
+/// Bybit v5 资金费率历史项
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BybitFundingRateItem {
+    #[allow(dead_code)]
+    symbol: String,
+    funding_rate: String,
+    funding_rate_timestamp: String,
+}
+
+/// Gate.io 资金费率历史项
+/// 响应格式: [{"t": 1543968000, "r": "0.000157"}, ...]
+#[derive(Debug, Deserialize)]
+struct GateFundingRateItem {
+    /// 时间戳（秒）
+    t: i64,
+    /// 资金费率
+    r: String,
+}
+
 // ==================== 常量配置 ====================
 
 // 预测资费参数
@@ -140,10 +174,26 @@ pub const BITGET_CONFIG: ExchangeConfig = ExchangeConfig {
     fetch_days: DEFAULT_FETCH_DAYS,
 };
 
+// Bybit 配置
+pub const BYBIT_CONFIG: ExchangeConfig = ExchangeConfig {
+    venue: TradingVenue::BybitFutures,
+    period: FundingRatePeriod::Hours8,
+    fetch_days: DEFAULT_FETCH_DAYS,
+};
+
+// Gate 配置
+pub const GATE_CONFIG: ExchangeConfig = ExchangeConfig {
+    venue: TradingVenue::GateFutures,
+    period: FundingRatePeriod::Hours8,
+    fetch_days: DEFAULT_FETCH_DAYS,
+};
+
 // 默认测试 symbols
 const BINANCE_TEST_SYMBOLS: &[&str] = &["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"];
 const OKEX_TEST_SYMBOLS: &[&str] = &["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP"];
 const BITGET_TEST_SYMBOLS: &[&str] = &["BTCUSDT", "ETHUSDT", "SOLUSDT"];
+const BYBIT_TEST_SYMBOLS: &[&str] = &["BTCUSDT", "ETHUSDT", "SOLUSDT"];
+const GATE_TEST_SYMBOLS: &[&str] = &["BTC_USDT", "ETH_USDT", "SOL_USDT"];
 
 // API 端点
 const BINANCE_FUNDING_RATE_API: &str = "https://fapi.binance.com/fapi/v1/fundingRate";
@@ -151,6 +201,8 @@ const BINANCE_LENDING_RATE_API: &str = "https://api.binance.com/sapi/v1/margin/i
 const OKEX_FUNDING_RATE_HISTORY_API: &str = "https://www.okx.com/api/v5/public/funding-rate-history";
 const OKEX_FUNDING_RATE_API: &str = "https://www.okx.com/api/v5/public/funding-rate";
 const BITGET_FUNDING_RATE_HISTORY_API: &str = "https://api.bitget.com/api/v3/market/history-fund-rate";
+const BYBIT_FUNDING_RATE_HISTORY_API: &str = "https://api.bybit.com/v5/market/funding/history";
+const GATE_FUNDING_RATE_HISTORY_API: &str = "https://api.gateio.ws/api/v4/futures/usdt/funding_rate";
 
 // ==================== Thread-local 单例 ====================
 
@@ -274,6 +326,20 @@ impl RateFetcher {
                 });
                 info!("RateFetcher: Bitget 初始化完成");
                 Self::spawn_bitget_fetch_task();
+            }
+            Exchange::Bybit => {
+                Self::with_inner_mut(|inner| {
+                    inner.venue_states.entry(BYBIT_CONFIG.venue).or_default();
+                });
+                info!("RateFetcher: Bybit 初始化完成");
+                Self::spawn_bybit_fetch_task();
+            }
+            Exchange::Gate | Exchange::GateFutures => {
+                Self::with_inner_mut(|inner| {
+                    inner.venue_states.entry(GATE_CONFIG.venue).or_default();
+                });
+                info!("RateFetcher: Gate 初始化完成");
+                Self::spawn_gate_fetch_task();
             }
             _ => {
                 warn!("RateFetcher: {} 暂不支持", exchange);
@@ -728,6 +794,272 @@ impl RateFetcher {
 
         info!("┌────────────────────────────────────────────────┐");
         info!("│ Bitget              │ Period │ Predict FR      │");
+        info!("├────────────────────────────────────────────────┤");
+        for (sym, period, fr) in data {
+            let fr_s = fr.map_or("          N/A".into(), |v| format!("{:>12.6}%", v * 100.0));
+            info!("│ {:<19} │ {:>6} │ {} │", sym, period.as_str(), fr_s);
+        }
+        info!("└────────────────────────────────────────────────┘");
+    }
+
+    // ==================== Bybit 拉取任务 ====================
+
+    fn spawn_bybit_fetch_task() {
+        tokio::task::spawn_local(async move {
+            info!("Bybit 费率拉取任务启动（{}秒间隔）", FETCH_INTERVAL_SECS);
+            if let Err(e) = Self::fetch_bybit_rates(true).await {
+                warn!("初始拉取 Bybit 费率失败: {:?}", e);
+            }
+            loop {
+                sleep(Duration::from_secs(FETCH_INTERVAL_SECS)).await;
+                let is_full = Self::should_do_full_fetch(BYBIT_CONFIG.venue);
+                if let Err(e) = Self::fetch_bybit_rates(is_full).await {
+                    warn!("拉取 Bybit 费率失败: {:?}", e);
+                }
+            }
+        });
+    }
+
+    async fn fetch_bybit_rates(is_full_fetch: bool) -> Result<()> {
+        let symbol_list = SymbolList::instance();
+        let mut online_symbols = symbol_list.get_online_symbols(BYBIT_CONFIG.venue);
+        if online_symbols.is_empty() {
+            online_symbols = BYBIT_TEST_SYMBOLS.iter().map(|s| s.to_string()).collect();
+        }
+
+        let (new_symbols, all_changed) = Self::update_symbol_cache(BYBIT_CONFIG.venue, &online_symbols, is_full_fetch);
+        Self::log_fetch_status("Bybit", is_full_fetch, &new_symbols, online_symbols.len());
+
+        let symbols_to_fetch = if is_full_fetch {
+            &online_symbols
+        } else if !new_symbols.is_empty() {
+            &new_symbols
+        } else {
+            return Ok(());
+        };
+
+        Self::fetch_bybit_funding_rates(symbols_to_fetch).await?;
+
+        if all_changed || is_full_fetch {
+            Self::print_bybit_rate_table(&online_symbols);
+        }
+        Ok(())
+    }
+
+    async fn fetch_bybit_funding_rates(symbols: &[String]) -> Result<()> {
+        if symbols.is_empty() { return Ok(()); }
+
+        let client = Self::with_inner(|inner| inner.http_client.clone());
+        let mut success = 0;
+        let mut fail = 0;
+
+        for symbol in symbols {
+            match Self::fetch_bybit_funding_history(&client, symbol, 30).await {
+                Ok((rates, period)) if !rates.is_empty() => {
+                    Self::with_inner_mut(|inner| {
+                        inner.funding_rates.entry(BYBIT_CONFIG.venue).or_default().insert(symbol.clone(), rates);
+                        inner.funding_periods.entry(BYBIT_CONFIG.venue).or_default().insert(symbol.clone(), period);
+                    });
+                    success += 1;
+                }
+                Ok(_) => {}
+                Err(e) => { warn!("Bybit {} 资金费率失败: {:?}", symbol, e); fail += 1; }
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        if success + fail > 0 { info!("Bybit 资金费率: 成功 {}, 失败 {}", success, fail); }
+        Ok(())
+    }
+
+    /// 从 Bybit v5 API 获取资金费率历史，同时推断周期
+    async fn fetch_bybit_funding_history(client: &Client, symbol: &str, limit: usize) -> Result<(Vec<f64>, FundingRatePeriod)> {
+        let limit_s = limit.max(1).min(200).to_string();
+        let resp = client.get(BYBIT_FUNDING_RATE_HISTORY_API)
+            .query(&[("category", "linear"), ("symbol", symbol), ("limit", &limit_s)])
+            .send().await?;
+
+        if !resp.status().is_success() { return Ok((vec![], FundingRatePeriod::Hours8)); }
+
+        let data: BybitFundingRateResponse = resp.json().await?;
+        if data.ret_code != 0 || data.result.list.is_empty() {
+            return Ok((vec![], FundingRatePeriod::Hours8));
+        }
+
+        let items = &data.result.list;
+
+        // 推断周期：计算前两条记录的时间差
+        let period = if items.len() >= 2 {
+            let t1: i64 = items[0].funding_rate_timestamp.parse().unwrap_or(0);
+            let t2: i64 = items[1].funding_rate_timestamp.parse().unwrap_or(0);
+            if t1 > 0 && t2 > 0 {
+                let hours = (t1 - t2).abs() / 1000 / 3600;
+                match hours {
+                    1 => FundingRatePeriod::Hours1,
+                    2 => FundingRatePeriod::Hours2,
+                    4 => FundingRatePeriod::Hours4,
+                    6 => FundingRatePeriod::Hours6,
+                    _ => FundingRatePeriod::Hours8,
+                }
+            } else {
+                FundingRatePeriod::Hours8
+            }
+        } else {
+            FundingRatePeriod::Hours8
+        };
+
+        // Bybit 返回最新在前，反转为时间顺序
+        let mut rates: Vec<f64> = items.iter().filter_map(|it| it.funding_rate.parse().ok()).collect();
+        rates.reverse();
+
+        debug!("Bybit {} 周期: {}", symbol, period.as_str());
+        Ok((rates, period))
+    }
+
+    fn print_bybit_rate_table(symbols: &[String]) {
+        let mut data: Vec<_> = symbols.iter().map(|s| {
+            let period = Self::with_inner(|inner| {
+                inner.funding_periods.get(&BYBIT_CONFIG.venue).and_then(|m| m.get(s)).copied().unwrap_or(FundingRatePeriod::Hours8)
+            });
+            let fr = RateFetcher::instance().get_predicted_funding_rate(s, BYBIT_CONFIG.venue).map(|(_, v)| v);
+            (s.clone(), period, fr)
+        }).collect();
+        data.sort_by(|a, b| a.0.cmp(&b.0));
+
+        info!("┌────────────────────────────────────────────────┐");
+        info!("│ Bybit               │ Period │ Predict FR      │");
+        info!("├────────────────────────────────────────────────┤");
+        for (sym, period, fr) in data {
+            let fr_s = fr.map_or("          N/A".into(), |v| format!("{:>12.6}%", v * 100.0));
+            info!("│ {:<19} │ {:>6} │ {} │", sym, period.as_str(), fr_s);
+        }
+        info!("└────────────────────────────────────────────────┘");
+    }
+
+    // ==================== Gate 拉取任务 ====================
+
+    fn spawn_gate_fetch_task() {
+        tokio::task::spawn_local(async move {
+            info!("Gate 费率拉取任务启动（{}秒间隔）", FETCH_INTERVAL_SECS);
+            if let Err(e) = Self::fetch_gate_rates(true).await {
+                warn!("初始拉取 Gate 费率失败: {:?}", e);
+            }
+            loop {
+                sleep(Duration::from_secs(FETCH_INTERVAL_SECS)).await;
+                let is_full = Self::should_do_full_fetch(GATE_CONFIG.venue);
+                if let Err(e) = Self::fetch_gate_rates(is_full).await {
+                    warn!("拉取 Gate 费率失败: {:?}", e);
+                }
+            }
+        });
+    }
+
+    async fn fetch_gate_rates(is_full_fetch: bool) -> Result<()> {
+        let symbol_list = SymbolList::instance();
+        let mut online_symbols = symbol_list.get_online_symbols(GATE_CONFIG.venue);
+        if online_symbols.is_empty() {
+            online_symbols = GATE_TEST_SYMBOLS.iter().map(|s| s.to_string()).collect();
+        }
+
+        let (new_symbols, all_changed) = Self::update_symbol_cache(GATE_CONFIG.venue, &online_symbols, is_full_fetch);
+        Self::log_fetch_status("Gate", is_full_fetch, &new_symbols, online_symbols.len());
+
+        let symbols_to_fetch = if is_full_fetch {
+            &online_symbols
+        } else if !new_symbols.is_empty() {
+            &new_symbols
+        } else {
+            return Ok(());
+        };
+
+        Self::fetch_gate_funding_rates(symbols_to_fetch).await?;
+
+        if all_changed || is_full_fetch {
+            Self::print_gate_rate_table(&online_symbols);
+        }
+        Ok(())
+    }
+
+    async fn fetch_gate_funding_rates(symbols: &[String]) -> Result<()> {
+        if symbols.is_empty() { return Ok(()); }
+
+        let client = Self::with_inner(|inner| inner.http_client.clone());
+        let limit = GATE_CONFIG.period.calculate_limit(GATE_CONFIG.fetch_days);
+        let mut success = 0;
+        let mut fail = 0;
+
+        for symbol in symbols {
+            match Self::fetch_gate_funding_history(&client, symbol, limit).await {
+                Ok((rates, period)) if !rates.is_empty() => {
+                    Self::with_inner_mut(|inner| {
+                        inner.funding_rates.entry(GATE_CONFIG.venue).or_default().insert(symbol.clone(), rates);
+                        inner.funding_periods.entry(GATE_CONFIG.venue).or_default().insert(symbol.clone(), period);
+                    });
+                    success += 1;
+                }
+                Ok(_) => {}
+                Err(e) => { warn!("Gate {} 资金费率失败: {:?}", symbol, e); fail += 1; }
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        if success + fail > 0 { info!("Gate 资金费率: 成功 {}, 失败 {}", success, fail); }
+        Ok(())
+    }
+
+    /// 从 Gate.io API 获取资金费率历史，同时推断周期
+    /// Gate 响应格式: [{"t": 1543968000, "r": "0.000157"}, ...]
+    async fn fetch_gate_funding_history(client: &Client, symbol: &str, limit: usize) -> Result<(Vec<f64>, FundingRatePeriod)> {
+        let limit_s = limit.max(1).min(1000).to_string();
+        let resp = client.get(GATE_FUNDING_RATE_HISTORY_API)
+            .query(&[("contract", symbol), ("limit", &limit_s)])
+            .send().await?;
+
+        if !resp.status().is_success() { return Ok((vec![], FundingRatePeriod::Hours8)); }
+
+        let items: Vec<GateFundingRateItem> = resp.json().await?;
+        if items.is_empty() {
+            return Ok((vec![], FundingRatePeriod::Hours8));
+        }
+
+        // 推断周期：计算前两条记录的时间差（Gate时间戳为秒）
+        let period = if items.len() >= 2 {
+            let t1 = items[0].t;
+            let t2 = items[1].t;
+            if t1 > 0 && t2 > 0 {
+                let hours = (t1 - t2).abs() / 3600;
+                match hours {
+                    1 => FundingRatePeriod::Hours1,
+                    2 => FundingRatePeriod::Hours2,
+                    4 => FundingRatePeriod::Hours4,
+                    6 => FundingRatePeriod::Hours6,
+                    _ => FundingRatePeriod::Hours8,
+                }
+            } else {
+                FundingRatePeriod::Hours8
+            }
+        } else {
+            FundingRatePeriod::Hours8
+        };
+
+        // Gate 返回最新在前，反转为时间顺序
+        let mut rates: Vec<f64> = items.iter().filter_map(|it| it.r.parse().ok()).collect();
+        rates.reverse();
+
+        debug!("Gate {} 周期: {}", symbol, period.as_str());
+        Ok((rates, period))
+    }
+
+    fn print_gate_rate_table(symbols: &[String]) {
+        let mut data: Vec<_> = symbols.iter().map(|s| {
+            let period = Self::with_inner(|inner| {
+                inner.funding_periods.get(&GATE_CONFIG.venue).and_then(|m| m.get(s)).copied().unwrap_or(FundingRatePeriod::Hours8)
+            });
+            let fr = RateFetcher::instance().get_predicted_funding_rate(s, GATE_CONFIG.venue).map(|(_, v)| v);
+            (s.clone(), period, fr)
+        }).collect();
+        data.sort_by(|a, b| a.0.cmp(&b.0));
+
+        info!("┌────────────────────────────────────────────────┐");
+        info!("│ Gate                │ Period │ Predict FR      │");
         info!("├────────────────────────────────────────────────┤");
         for (sym, period, fr) in data {
             let fr_s = fr.map_or("          N/A".into(), |v| format!("{:>12.6}%", v * 100.0));
