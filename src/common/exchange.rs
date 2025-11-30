@@ -23,6 +23,10 @@ pub enum Exchange {
     #[value(name = "bitget-futures")]
     #[serde(rename = "bitget-futures")]
     BitgetFutures = 8,
+    Gate = 9,
+    #[value(name = "gate-futures")]
+    #[serde(rename = "gate-futures")]
+    GateFutures = 10,
 }
 
 impl Exchange {
@@ -36,6 +40,8 @@ impl Exchange {
             Exchange::Bybit => "bybit",
             Exchange::BitgetMargin => "bitget-margin",
             Exchange::BitgetFutures => "bitget-futures",
+            Exchange::Gate => "gate",
+            Exchange::GateFutures => "gate-futures",
         }
     }
 
@@ -50,6 +56,8 @@ impl Exchange {
             6 => Some(Exchange::Bybit),
             7 => Some(Exchange::BitgetMargin),
             8 => Some(Exchange::BitgetFutures),
+            9 => Some(Exchange::Gate),
+            10 => Some(Exchange::GateFutures),
             _ => None,
         }
     }

@@ -135,28 +135,21 @@ impl Config {
     }
 
     pub fn get_exchange(&self) -> String {
-        match self.exchange {
-            Exchange::Binance => "binance".to_string(),
-            Exchange::BinanceFutures => "binance-futures".to_string(),
-            Exchange::Okex => "okex".to_string(),
-            Exchange::OkexSwap => "okex-swap".to_string(),
-            Exchange::Bybit => "bybit".to_string(),
-            Exchange::BybitSpot => "bybit-spot".to_string(),
-            Exchange::BitgetMargin => "bitget-margin".to_string(),
-            Exchange::BitgetFutures => "bitget-futures".to_string(),
-        }
+        self.exchange.as_str().to_string()
     }
 
     pub fn get_batch_size(&self) -> usize {
         match self.exchange {
             Exchange::BinanceFutures => 50,
             Exchange::Binance => 100,
-            Exchange::OkexSwap => 50, // 减少批次大小避免订阅过多被拒绝
+            Exchange::OkexSwap => 50,
             Exchange::Okex => 50,
             Exchange::Bybit => 300,
             Exchange::BybitSpot => 10,
             Exchange::BitgetMargin => 50,
             Exchange::BitgetFutures => 50,
+            Exchange::Gate => 50,
+            Exchange::GateFutures => 50,
         }
     }
 
@@ -460,6 +453,10 @@ impl Config {
             Exchange::BitgetFutures => Self::get_symbol_for_bitget_futures().await,
             //Bitget杠杆交易（与Futures关联的）
             Exchange::BitgetMargin => Self::get_margin_symbols_related_to_bitget_futures().await,
+            // Gate (TODO: implement)
+            Exchange::Gate | Exchange::GateFutures => {
+                Err(anyhow::anyhow!("Gate exchange not yet implemented in get_symbols"))
+            }
         }
     }
 

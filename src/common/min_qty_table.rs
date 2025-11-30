@@ -186,6 +186,129 @@ fn parse_decimal(value: &str, field: &str, symbol: &str) -> Result<f64> {
 }
 
 // ============================================================================
+// Gate Provider
+// ============================================================================
+
+pub struct GateProvider;
+
+impl GateProvider {
+    pub fn new() -> Self { Self }
+
+    fn get_api_url(&self, market_type: MarketType) -> &'static str {
+        match market_type {
+            MarketType::Spot | MarketType::Margin => "https://api.gateio.ws/api/v4/spot/currency_pairs",
+            MarketType::Futures => "https://api.gateio.ws/api/v4/futures/usdt/contracts",
+        }
+    }
+
+    pub async fn fetch_filters(&self, client: &Client, market_type: MarketType) -> Result<HashMap<String, MinQtyEntry>> {
+        let url = self.get_api_url(market_type);
+        let label = match market_type {
+            MarketType::Spot => "gate_spot",
+            MarketType::Futures => "gate_futures",
+            MarketType::Margin => "gate_margin",
+        };
+        let resp = client.get(url).send().await?;
+        let status = resp.status();
+        let body = resp.text().await?;
+        debug!("GET {} ({}) -> status={} bytes={}", url, label, status.as_u16(), body.len());
+        if !status.is_success() {
+            return Err(anyhow!("GET {} failed: {} - {}", url, status, body));
+        }
+        if body.trim().is_empty() {
+            return Err(anyhow!("GET {} returned empty body (status={})", url, status));
+        }
+        match market_type {
+            MarketType::Spot | MarketType::Margin => self.parse_spot_response(&body, label),
+            MarketType::Futures => self.parse_futures_response(&body, label),
+        }
+    }
+
+    fn parse_spot_response(&self, body: &str, label: &str) -> Result<HashMap<String, MinQtyEntry>> {
+        let pairs: Vec<GateSpotCurrencyPair> = serde_json::from_str(body)
+            .with_context(|| format!("failed to parse {} exchange info", label))?;
+        let mut map = HashMap::new();
+        for pair in pairs {
+            let symbol = pair.id.to_uppercase().replace('_', ""); // ETH_USDT -> ETHUSDT
+            let step_size = precision_to_step(pair.amount_precision);
+            let price_tick = precision_to_step(pair.precision);
+            let entry = MinQtyEntry {
+                symbol: symbol.clone(),
+                base_asset: pair.base.to_uppercase(),
+                quote_asset: pair.quote.to_uppercase(),
+                min_qty: pair.min_base_amount.parse().unwrap_or(0.0),
+                step_size,
+                price_tick: if price_tick > 0.0 { Some(price_tick) } else { None },
+                min_notional: pair.min_quote_amount.and_then(|v| v.parse().ok()).filter(|v| *v > 0.0),
+            };
+            map.insert(symbol, entry);
+        }
+        Ok(map)
+    }
+
+    fn parse_futures_response(&self, body: &str, label: &str) -> Result<HashMap<String, MinQtyEntry>> {
+        let contracts: Vec<GateFuturesContract> = serde_json::from_str(body)
+            .with_context(|| format!("failed to parse {} exchange info", label))?;
+        let mut map = HashMap::new();
+        for contract in contracts {
+            let symbol = contract.name.to_uppercase().replace('_', ""); // ZEC_USDT -> ZECUSDT
+            let (base, quote) = contract.name.split_once('_').unwrap_or((&contract.name, "USDT"));
+            let price_tick: f64 = contract.order_price_round.parse().unwrap_or(0.0);
+            let quanto: f64 = contract.quanto_multiplier.parse().unwrap_or(1.0);
+            let entry = MinQtyEntry {
+                symbol: symbol.clone(),
+                base_asset: base.to_uppercase(),
+                quote_asset: quote.to_uppercase(),
+                min_qty: contract.order_size_min as f64 * quanto,
+                step_size: quanto,
+                price_tick: if price_tick > 0.0 { Some(price_tick) } else { None },
+                min_notional: None,
+            };
+            map.insert(symbol, entry);
+        }
+        Ok(map)
+    }
+}
+
+impl Default for GateProvider {
+    fn default() -> Self { Self::new() }
+}
+
+impl ExchangeInfoProvider for GateProvider {
+    fn exchange(&self) -> Exchange { Exchange::Gate }
+    fn supported_market_types(&self) -> Vec<MarketType> {
+        vec![MarketType::Spot, MarketType::Futures, MarketType::Margin]
+    }
+    fn margin_reuses_spot(&self) -> bool { true }
+}
+
+#[derive(Debug, Deserialize)]
+struct GateSpotCurrencyPair {
+    id: String,                           // e.g. "ETH_USDT"
+    base: String,                         // e.g. "ETH"
+    quote: String,                        // e.g. "USDT"
+    #[serde(default)]
+    min_base_amount: String,              // e.g. "0.001"
+    min_quote_amount: Option<String>,     // e.g. "1.0"
+    #[serde(default)]
+    amount_precision: i32,                // e.g. 3
+    #[serde(default)]
+    precision: i32,                       // e.g. 6
+}
+
+#[derive(Debug, Deserialize)]
+struct GateFuturesContract {
+    name: String,                         // e.g. "ZEC_USDT"
+    order_size_min: i64,                  // e.g. 1
+    order_price_round: String,            // e.g. "0.01"
+    quanto_multiplier: String,            // e.g. "0.01"
+}
+
+fn precision_to_step(precision: i32) -> f64 {
+    if precision >= 0 { 10_f64.powi(-precision) } else { 0.0 }
+}
+
+// ============================================================================
 // MinQtyTable - Single Exchange Instance
 // ============================================================================
 
@@ -208,25 +331,44 @@ impl MinQtyTable {
     /// Refresh exchange filters
     pub async fn refresh(&mut self) -> Result<()> {
         match self.exchange {
-            Exchange::Binance | Exchange::BinanceFutures => {
-                let provider = BinanceProvider::new();
-                for market_type in provider.supported_market_types() {
-                    if market_type == MarketType::Margin && provider.margin_reuses_spot() {
-                        if let Some(spot_data) = self.filters.get(&MarketType::Spot).cloned() {
-                            debug!("reuse spot exchange filters for {}_margin", self.exchange);
-                            self.filters.insert(MarketType::Margin, spot_data);
-                            continue;
-                        }
-                    }
-                    let data = provider.fetch_filters(&self.client, market_type).await?;
-                    info!("刷新交易对过滤器: exchange={} market_type={:?} count={}", self.exchange, market_type, data.len());
-                    self.filters.insert(market_type, data);
-                }
-                Ok(())
-            }
-            // TODO: Add other exchanges
+            Exchange::Binance | Exchange::BinanceFutures => self.refresh_binance().await,
+            Exchange::Gate | Exchange::GateFutures => self.refresh_gate().await,
             _ => Err(anyhow!("exchange {} not supported yet", self.exchange)),
         }
+    }
+
+    async fn refresh_binance(&mut self) -> Result<()> {
+        let provider = BinanceProvider::new();
+        for market_type in provider.supported_market_types() {
+            if market_type == MarketType::Margin && provider.margin_reuses_spot() {
+                if let Some(spot_data) = self.filters.get(&MarketType::Spot).cloned() {
+                    debug!("reuse spot filters for {}_margin", self.exchange);
+                    self.filters.insert(MarketType::Margin, spot_data);
+                    continue;
+                }
+            }
+            let data = provider.fetch_filters(&self.client, market_type).await?;
+            info!("刷新交易对过滤器: exchange={} market_type={:?} count={}", self.exchange, market_type, data.len());
+            self.filters.insert(market_type, data);
+        }
+        Ok(())
+    }
+
+    async fn refresh_gate(&mut self) -> Result<()> {
+        let provider = GateProvider::new();
+        for market_type in provider.supported_market_types() {
+            if market_type == MarketType::Margin && provider.margin_reuses_spot() {
+                if let Some(spot_data) = self.filters.get(&MarketType::Spot).cloned() {
+                    debug!("reuse spot filters for {}_margin", self.exchange);
+                    self.filters.insert(MarketType::Margin, spot_data);
+                    continue;
+                }
+            }
+            let data = provider.fetch_filters(&self.client, market_type).await?;
+            info!("刷新交易对过滤器: exchange={} market_type={:?} count={}", self.exchange, market_type, data.len());
+            self.filters.insert(market_type, data);
+        }
+        Ok(())
     }
 
     // Query Methods
