@@ -427,6 +427,59 @@ impl Config {
         Ok(margin_symbols_related_to_futures)
     }
 
+    /// 从 Gate HTTP API 获取 USDT 永续合约列表
+    async fn get_symbol_for_gate_futures() -> Result<Vec<String>> {
+        let url = "https://api.gateio.ws/api/v4/futures/usdt/contracts";
+        info!("Fetching Gate futures symbols from: {}", url);
+        let client = reqwest::Client::new();
+        let response = client.get(url).send().await.context("Failed to fetch Gate contracts")?;
+        let body = response.text().await.context("Failed to read Gate response body")?;
+        let contracts: Vec<serde_json::Value> = serde_json::from_str(&body).context("Failed to parse Gate response JSON")?;
+        let symbols: Vec<String> = contracts
+            .iter()
+            .filter(|c| c["status"].as_str() == Some("trading"))
+            .filter_map(|c| c["name"].as_str())
+            .filter(|s| s.to_uppercase().ends_with("_USDT"))
+            .map(|s| s.to_uppercase())
+            .collect();
+        info!("Gate futures USDT symbol count: {}", symbols.len());
+        Ok(symbols)
+    }
+
+    /// 从 Gate HTTP API 获取现货交易对列表
+    async fn get_spot_symbols_from_gate_api() -> Result<Vec<String>> {
+        let url = "https://api.gateio.ws/api/v4/spot/currency_pairs";
+        info!("Fetching Gate spot symbols from: {}", url);
+        let client = reqwest::Client::new();
+        let response = client.get(url).send().await.context("Failed to fetch Gate currency_pairs")?;
+        let body = response.text().await.context("Failed to read Gate response body")?;
+        let pairs: Vec<serde_json::Value> = serde_json::from_str(&body).context("Failed to parse Gate response JSON")?;
+        let symbols: Vec<String> = pairs
+            .iter()
+            .filter(|p| p["trade_status"].as_str() == Some("tradable"))
+            .filter_map(|p| p["id"].as_str())
+            .filter(|s| s.to_uppercase().ends_with("_USDT"))
+            .map(|s| s.to_uppercase())
+            .collect();
+        info!("Gate spot USDT symbol count: {}", symbols.len());
+        Ok(symbols)
+    }
+
+    /// 获取 Gate 现货交易对（只返回与 Futures 有关联的）
+    async fn get_spot_symbols_related_to_gate_futures() -> Result<Vec<String>> {
+        let spot_symbols = Self::get_spot_symbols_from_gate_api().await?;
+        let futures_symbols = Self::get_symbol_for_gate_futures().await?;
+        // Gate 的 spot 和 futures symbol 格式相同，都是 XXX_USDT
+        let spot_symbols_related_to_futures: Vec<String> = spot_symbols
+            .iter()
+            .filter(|spot| futures_symbols.contains(spot))
+            .cloned()
+            .collect();
+        info!("Gate spot symbols related to futures: {}", spot_symbols_related_to_futures.len());
+        print_symbol_comparison(&futures_symbols, &spot_symbols, &spot_symbols_related_to_futures);
+        Ok(spot_symbols_related_to_futures)
+    }
+
     pub async fn get_symbols(&self) -> Result<Vec<String>> {
         match self.exchange {
             //币安u本位期货合约
@@ -453,10 +506,10 @@ impl Config {
             Exchange::BitgetFutures => Self::get_symbol_for_bitget_futures().await,
             //Bitget杠杆交易（与Futures关联的）
             Exchange::BitgetMargin => Self::get_margin_symbols_related_to_bitget_futures().await,
-            // Gate (TODO: implement)
-            Exchange::Gate | Exchange::GateFutures => {
-                Err(anyhow::anyhow!("Gate exchange not yet implemented in get_symbols"))
-            }
+            //Gate USDT永续合约
+            Exchange::GateFutures => Self::get_symbol_for_gate_futures().await,
+            //Gate现货（与Futures关联的）
+            Exchange::Gate => Self::get_spot_symbols_related_to_gate_futures().await,
         }
     }
 

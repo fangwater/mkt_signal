@@ -202,6 +202,11 @@ impl GateProvider {
     }
 
     pub async fn fetch_filters(&self, client: &Client, market_type: MarketType) -> Result<HashMap<String, MinQtyEntry>> {
+        let (entries, _) = self.fetch_filters_with_multipliers(client, market_type).await?;
+        Ok(entries)
+    }
+
+    pub async fn fetch_filters_with_multipliers(&self, client: &Client, market_type: MarketType) -> Result<(HashMap<String, MinQtyEntry>, HashMap<String, f64>)> {
         let url = self.get_api_url(market_type);
         let label = match market_type {
             MarketType::Spot => "gate_spot",
@@ -219,7 +224,10 @@ impl GateProvider {
             return Err(anyhow!("GET {} returned empty body (status={})", url, status));
         }
         match market_type {
-            MarketType::Spot | MarketType::Margin => self.parse_spot_response(&body, label),
+            MarketType::Spot | MarketType::Margin => {
+                let entries = self.parse_spot_response(&body, label)?;
+                Ok((entries, HashMap::new()))
+            }
             MarketType::Futures => self.parse_futures_response(&body, label),
         }
     }
@@ -246,10 +254,11 @@ impl GateProvider {
         Ok(map)
     }
 
-    fn parse_futures_response(&self, body: &str, label: &str) -> Result<HashMap<String, MinQtyEntry>> {
+    fn parse_futures_response(&self, body: &str, label: &str) -> Result<(HashMap<String, MinQtyEntry>, HashMap<String, f64>)> {
         let contracts: Vec<GateFuturesContract> = serde_json::from_str(body)
             .with_context(|| format!("failed to parse {} exchange info", label))?;
-        let mut map = HashMap::new();
+        let mut entries = HashMap::new();
+        let mut multipliers = HashMap::new();
         for contract in contracts {
             let symbol = contract.name.to_uppercase().replace('_', ""); // ZEC_USDT -> ZECUSDT
             let (base, quote) = contract.name.split_once('_').unwrap_or((&contract.name, "USDT"));
@@ -264,9 +273,10 @@ impl GateProvider {
                 price_tick: if price_tick > 0.0 { Some(price_tick) } else { None },
                 min_notional: None,
             };
-            map.insert(symbol, entry);
+            entries.insert(symbol.clone(), entry);
+            multipliers.insert(symbol, quanto);
         }
-        Ok(map)
+        Ok((entries, multipliers))
     }
 }
 
@@ -347,8 +357,8 @@ impl BitgetProvider {
         let mut map = HashMap::new();
         for inst in response.data {
             let symbol = inst.symbol.to_uppercase();
-            let step_size = precision_to_step(inst.quantity_precision.parse().unwrap_or(0));
-            let price_tick = precision_to_step(inst.price_precision.parse().unwrap_or(0));
+            let step_size: f64 = inst.quantity_multiplier.as_deref().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+            let price_tick: f64 = inst.price_multiplier.as_deref().and_then(|v| v.parse().ok()).unwrap_or(0.0);
             let entry = MinQtyEntry {
                 symbol: symbol.clone(),
                 base_asset: inst.base_coin.to_uppercase(),
@@ -392,10 +402,10 @@ struct BitgetInstrument {
     quote_coin: String,
     #[serde(rename = "minOrderQty")]
     min_order_qty: String,
-    #[serde(rename = "pricePrecision")]
-    price_precision: String,
-    #[serde(rename = "quantityPrecision")]
-    quantity_precision: String,
+    #[serde(rename = "priceMultiplier", default)]
+    price_multiplier: Option<String>,
+    #[serde(rename = "quantityMultiplier", default)]
+    quantity_multiplier: Option<String>,
     #[serde(rename = "minOrderAmount", default)]
     min_order_amount: Option<String>,
 }
@@ -405,17 +415,19 @@ struct BitgetInstrument {
 // ============================================================================
 
 type FilterStorage = HashMap<MarketType, HashMap<String, MinQtyEntry>>;
+type ContractMultiplierStorage = HashMap<String, f64>; // symbol -> multiplier
 
 #[derive(Debug)]
 pub struct MinQtyTable {
     client: Client,
     exchange: Exchange,
     filters: FilterStorage,
+    contract_multipliers: ContractMultiplierStorage,
 }
 
 impl MinQtyTable {
     pub fn new(exchange: Exchange) -> Self {
-        Self { client: Client::new(), exchange, filters: HashMap::new() }
+        Self { client: Client::new(), exchange, filters: HashMap::new(), contract_multipliers: HashMap::new() }
     }
 
     pub fn exchange(&self) -> Exchange { self.exchange }
@@ -457,9 +469,12 @@ impl MinQtyTable {
                     continue;
                 }
             }
-            let data = provider.fetch_filters(&self.client, market_type).await?;
+            let (data, multipliers) = provider.fetch_filters_with_multipliers(&self.client, market_type).await?;
             info!("刷新交易对过滤器: exchange={} market_type={:?} count={}", self.exchange, market_type, data.len());
             self.filters.insert(market_type, data);
+            if !multipliers.is_empty() {
+                self.contract_multipliers.extend(multipliers);
+            }
         }
         Ok(())
     }
@@ -492,4 +507,13 @@ impl MinQtyTable {
         self.get_entry(market_type, symbol).and_then(|e| e.min_notional).filter(|v| *v > 0.0)
     }
 
+    pub fn contract_multiplier(&self, symbol: &str) -> f64 {
+        match self.exchange {
+            Exchange::Gate | Exchange::GateFutures => {
+                let key = symbol.to_uppercase();
+                *self.contract_multipliers.get(&key).unwrap_or(&1.0)
+            }
+            _ => panic!("contract_multiplier not implemented for {}", self.exchange),
+        }
+    }
 }
