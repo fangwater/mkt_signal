@@ -17,9 +17,8 @@ use anyhow::Result;
 use log::{info, warn};
 use std::collections::HashMap;
 
-use super::common::FactorMode;
+use super::common::{FactorMode, FundingRatePeriod};
 use super::funding_rate_factor::FundingRateFactor;
-use super::rate_fetcher::FundingRatePeriod;
 
 /// 从 Redis Hash 加载资金费率阈值
 ///

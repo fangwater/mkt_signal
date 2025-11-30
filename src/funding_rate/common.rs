@@ -1,13 +1,84 @@
 //! 资金费率模块通用定义
 //!
 //! 包含：
-//! - 枚举类型：套利方向、操作类型、因子模式等
+//! - 枚举类型：套利方向、操作类型、因子模式、资金费率周期等
 //! - 数据结构：行情报价、资金费率数据
 //! - 辅助函数：浮点数比较、数字列表解析
 
 use std::collections::VecDeque;
 
 use crate::signal::common::TradingVenue;
+
+// ========== 资金费率周期 ==========
+
+/// 资金费率周期类型
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FundingRatePeriod {
+    /// 1小时周期（一天24次）
+    Hours1,
+    /// 2小时周期（一天12次）
+    Hours2,
+    /// 4小时周期（一天6次）
+    Hours4,
+    /// 6小时周期（一天4次）
+    Hours6,
+    /// 8小时周期（一天3次）
+    Hours8,
+}
+
+impl FundingRatePeriod {
+    /// 返回每天收取次数
+    pub fn times_per_day(&self) -> u32 {
+        match self {
+            FundingRatePeriod::Hours1 => 24,
+            FundingRatePeriod::Hours2 => 12,
+            FundingRatePeriod::Hours4 => 6,
+            FundingRatePeriod::Hours6 => 4,
+            FundingRatePeriod::Hours8 => 3,
+        }
+    }
+
+    /// 计算指定天数需要拉取的条数
+    pub fn calculate_limit(&self, days: u32) -> usize {
+        (days * self.times_per_day()) as usize
+    }
+
+    /// 将 24h 借贷利率转换为当前周期利率
+    pub fn convert_daily_rate(&self, daily_rate: f64) -> f64 {
+        daily_rate / self.times_per_day() as f64
+    }
+
+    /// 返回周期字符串表示
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FundingRatePeriod::Hours1 => "1h",
+            FundingRatePeriod::Hours2 => "2h",
+            FundingRatePeriod::Hours4 => "4h",
+            FundingRatePeriod::Hours6 => "6h",
+            FundingRatePeriod::Hours8 => "8h",
+        }
+    }
+}
+
+impl Default for FundingRatePeriod {
+    fn default() -> Self {
+        FundingRatePeriod::Hours8
+    }
+}
+
+// ========== RateFetcher Trait ==========
+
+/// 资金费率拉取器 trait
+pub trait RateFetcherTrait {
+    /// 获取指定 symbol 的资金费率周期
+    fn get_period(&self, symbol: &str, venue: TradingVenue) -> FundingRatePeriod;
+    /// 获取预测资金费率（返回周期和值）
+    fn get_predicted_funding_rate(&self, symbol: &str, venue: TradingVenue) -> Option<(FundingRatePeriod, f64)>;
+    /// 获取预测借贷利率（返回周期和值）
+    fn get_predict_loan_rate(&self, symbol: &str, venue: TradingVenue) -> Option<(FundingRatePeriod, f64)>;
+    /// 获取当前借贷利率（返回周期和值）
+    fn get_current_loan_rate(&self, symbol: &str, venue: TradingVenue) -> Option<(FundingRatePeriod, f64)>;
+}
 
 // ========== 枚举类型定义 ==========
 

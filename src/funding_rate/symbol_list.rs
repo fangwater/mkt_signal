@@ -379,10 +379,10 @@ impl SymbolList {
         match venue {
             TradingVenue::BinanceMargin => "binance_margin",
             TradingVenue::BinanceUm => "binance_um",
-            TradingVenue::BinanceSwap => "binance_swap",
             TradingVenue::BinanceSpot => "binance_spot",
             TradingVenue::OkexSwap => "okex_swap",
             TradingVenue::OkexSpot => "okex_spot",
+            TradingVenue::BitgetFutures => "bitget_futures",
         }
     }
 }

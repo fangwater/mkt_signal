@@ -4,9 +4,9 @@
 //! 支持 4h 和 8h 两种周期，MM 和 MT 两种模式。
 //! 阈值为公共阈值，所有 symbol 共享同一套阈值配置。
 
-use super::common::{ArbDirection, CompareOp, FactorMode, OperationType};
+use super::common::{ArbDirection, CompareOp, FactorMode, FundingRatePeriod, OperationType};
 use super::mkt_channel::MktChannel;
-use super::rate_fetcher::{FundingRatePeriod, RateFetcher};
+use super::rate_fetcher::RateFetcher;
 use crate::signal::common::TradingVenue;
 use std::cell::RefCell;
 use std::collections::HashMap;

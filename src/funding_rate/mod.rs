@@ -24,7 +24,8 @@ pub mod symbol_list;
 // 公共导出 - 通用定义（枚举、数据结构、辅助函数）
 pub use common::{
     approx_equal, approx_equal_slice, parse_numeric_list, ArbDirection, CompareOp, FactorMode,
-    FundingRateData, OperationType, Quote, SymbolPair, ThresholdKey, VenuePair,
+    FundingRateData, FundingRatePeriod, OperationType, Quote, RateFetcherTrait, SymbolPair,
+    ThresholdKey, VenuePair,
 };
 
 // 公共导出 - 统一配置加载器
@@ -37,7 +38,7 @@ pub use spread_threshold_loader::load_from_redis as load_spread_thresholds;
 // 公共导出 - 单例访问器
 pub use decision::FrDecision;
 pub use mkt_channel::MktChannel;
-pub use rate_fetcher::RateFetcher;
+pub use rate_fetcher::{RateFetcher, ExchangeConfig, BINANCE_CONFIG, OKEX_CONFIG};
 pub use symbol_list::SymbolList;
 
 // 公共导出 - 价差因子

@@ -50,7 +50,7 @@ async fn run(exchange: Exchange, token: CancellationToken) -> Result<()> {
     info!("初始化单例...");
     SymbolList::init_singleton()?;
     MktChannel::init_singleton()?;
-    RateFetcher::init_singleton()?;
+    RateFetcher::init(exchange)?;
     FrDecision::init_singleton(exchange).await?;
     info!("所有单例初始化完成");
 

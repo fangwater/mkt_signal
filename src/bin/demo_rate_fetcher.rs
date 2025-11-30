@@ -12,7 +12,8 @@
 
 use anyhow::Result;
 use log::info;
-use mkt_signal::funding_rate::rate_fetcher::FundingRatePeriod;
+use mkt_signal::common::exchange::Exchange;
+use mkt_signal::funding_rate::common::FundingRatePeriod;
 use mkt_signal::funding_rate::{MktChannel, RateFetcher, SymbolList};
 use mkt_signal::signal::common::TradingVenue;
 use tokio::time::{sleep, Duration};
@@ -31,14 +32,14 @@ async fn main() -> Result<()> {
 }
 
 async fn run_demo() -> Result<()> {
-    // 初始化单例（参考 fr_signal）
+    // 初始化单例
     SymbolList::init_singleton()?;
     info!("SymbolList 初始化完成");
 
     MktChannel::init_singleton()?;
     info!("MktChannel 初始化完成");
 
-    RateFetcher::init_singleton()?;
+    RateFetcher::init(Exchange::BinanceFutures)?;
     info!("RateFetcher 初始化完成");
 
     // 等待一段时间让后台任务拉取数据
@@ -91,9 +92,8 @@ async fn run_demo() -> Result<()> {
         }
     }
 
-    // 详细打印 XAIUSDT 的计算逻辑
-    info!("\n");
-    RateFetcher::instance().print_detailed_calculation("XAIUSDT", TradingVenue::BinanceUm);
+    // TODO: print_detailed_calculation 暂未实现
+    // RateFetcher::instance().print_detailed_calculation("XAIUSDT", TradingVenue::BinanceUm);
 
     info!("Demo 结束");
 
@@ -101,8 +101,5 @@ async fn run_demo() -> Result<()> {
 }
 
 fn format_period(period: FundingRatePeriod) -> &'static str {
-    match period {
-        FundingRatePeriod::Hours4 => "4h",
-        FundingRatePeriod::Hours8 => "8h",
-    }
+    period.as_str()
 }

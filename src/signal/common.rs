@@ -9,10 +9,10 @@ use std::convert::TryFrom;
 pub enum TradingVenue {
     BinanceMargin = 0,
     BinanceUm = 1,
-    BinanceSwap = 2,
     BinanceSpot = 3,
     OkexSwap = 4,
     OkexSpot = 5,
+    BitgetFutures = 6,
 }
 
 /// 订单有效期类型枚举
@@ -392,10 +392,10 @@ impl TradingVenue {
         match value {
             0 => Some(TradingVenue::BinanceMargin),
             1 => Some(TradingVenue::BinanceUm),
-            2 => Some(TradingVenue::BinanceSwap),
             3 => Some(TradingVenue::BinanceSpot),
             4 => Some(TradingVenue::OkexSwap),
             5 => Some(TradingVenue::OkexSpot),
+            6 => Some(TradingVenue::BitgetFutures),
             _ => None,
         }
     }
@@ -405,22 +405,21 @@ impl TradingVenue {
         match self {
             TradingVenue::BinanceMargin => "BinanceMargin",
             TradingVenue::BinanceUm => "BinanceUm",
-            TradingVenue::BinanceSwap => "BinanceSwap",
             TradingVenue::BinanceSpot => "BinanceSpot",
             TradingVenue::OkexSwap => "OkexSwap",
             TradingVenue::OkexSpot => "OkexSpot",
+            TradingVenue::BitgetFutures => "BitgetFutures",
         }
     }
 
     /// 获取交易所名称
     pub fn exchange_name(&self) -> &'static str {
         match self {
-            TradingVenue::BinanceMargin | TradingVenue::BinanceUm | TradingVenue::BinanceSwap => {
-                "binance_futures"
-            }
+            TradingVenue::BinanceMargin | TradingVenue::BinanceUm => "binance_futures",
             TradingVenue::BinanceSpot => "binance",
             TradingVenue::OkexSwap => "okex_swap",
             TradingVenue::OkexSpot => "okex",
+            TradingVenue::BitgetFutures => "bitget_futures",
         }
     }
 
@@ -429,10 +428,10 @@ impl TradingVenue {
         match self {
             TradingVenue::BinanceMargin => "margin",
             TradingVenue::BinanceUm => "um",
-            TradingVenue::BinanceSwap => "swap",
             TradingVenue::BinanceSpot => "spot",
             TradingVenue::OkexSwap => "swap",
             TradingVenue::OkexSpot => "spot",
+            TradingVenue::BitgetFutures => "futures",
         }
     }
 
@@ -440,7 +439,7 @@ impl TradingVenue {
     pub fn is_futures(&self) -> bool {
         matches!(
             self,
-            TradingVenue::BinanceUm | TradingVenue::BinanceSwap | TradingVenue::OkexSwap
+            TradingVenue::BinanceUm | TradingVenue::OkexSwap | TradingVenue::BitgetFutures
         )
     }
 
