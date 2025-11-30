@@ -233,62 +233,70 @@ impl Config {
         Ok(symbols)
     }
 
-    async fn get_symbol_for_okex_swap(symbol_socket: &str) -> Result<Vec<String>> {
-        let value = Self::get_symbol_from_unix_socket(symbol_socket, "okex-swap").await?;
-        let symbols: Vec<String> = value["symbols"]
+    /// 从 OKEx HTTP API 获取 USDT 永续合约列表
+    async fn get_symbol_for_okex_swap() -> Result<Vec<String>> {
+        let url = "https://www.okx.com/api/v5/public/instruments?instType=SWAP";
+        info!("Fetching OKEx swap symbols from: {}", url);
+        let client = reqwest::Client::new();
+        let response = client.get(url).send().await.context("Failed to fetch OKEx instruments")?;
+        let body = response.text().await.context("Failed to read OKEx response body")?;
+        let json: serde_json::Value = serde_json::from_str(&body).context("Failed to parse OKEx response JSON")?;
+        if json["code"].as_str() != Some("0") {
+            return Err(anyhow::anyhow!("OKEx API error: code={}, msg={}", json["code"], json["msg"]));
+        }
+        let symbols: Vec<String> = json["data"]
             .as_array()
             .context("data field not found or not an array")?
             .iter()
-            .map(|s| s["symbol_id"].as_str().unwrap().to_string())
-            .filter(|s| {
-                let symbol_lower = s.to_lowercase();
-                if symbol_lower.ends_with("swap") {
-                    // 检查中间是否包含USDT（而不是USD）
-                    let parts: Vec<&str> = symbol_lower.split('-').collect();
-                    //"TRX-USDT-SWAP" - 保留这样的
-                    if parts.len() >= 2 && parts[1] == "usdt" {
-                        return true;
-                    }
-                    return false;
-                }
-                return false;
-            })
+            .filter(|item| item["ctType"].as_str() == Some("linear"))
+            .filter(|item| item["settleCcy"].as_str() == Some("USDT"))
+            .filter(|item| item["state"].as_str() == Some("live"))
+            .filter_map(|item| item["instId"].as_str())
+            .map(|s| s.to_string())
             .collect();
+        info!("OKEx swap USDT symbol count: {}", symbols.len());
         Ok(symbols)
     }
 
-    async fn get_spot_symbols_related_to_okex_swap(symbol_socket: &str) -> Result<Vec<String>> {
-        let value = Self::get_symbol_from_unix_socket(symbol_socket, "okex").await?;
-        let symbols: Vec<String> = value["symbols"]
+    /// 从 OKEx HTTP API 获取现货交易对列表
+    async fn get_spot_symbols_from_okex_api() -> Result<Vec<String>> {
+        let url = "https://www.okx.com/api/v5/public/instruments?instType=SPOT";
+        info!("Fetching OKEx spot symbols from: {}", url);
+        let client = reqwest::Client::new();
+        let response = client.get(url).send().await.context("Failed to fetch OKEx instruments")?;
+        let body = response.text().await.context("Failed to read OKEx response body")?;
+        let json: serde_json::Value = serde_json::from_str(&body).context("Failed to parse OKEx response JSON")?;
+        if json["code"].as_str() != Some("0") {
+            return Err(anyhow::anyhow!("OKEx API error: code={}, msg={}", json["code"], json["msg"]));
+        }
+        let symbols: Vec<String> = json["data"]
             .as_array()
             .context("data field not found or not an array")?
             .iter()
-            .map(|s| s["symbol_id"].as_str().unwrap().to_string())
-            .filter(|s| s.to_lowercase().ends_with("usdt"))
+            .filter(|item| item["state"].as_str() == Some("live"))
+            .filter_map(|item| item["instId"].as_str())
+            .filter(|s| s.ends_with("-USDT"))
+            .map(|s| s.to_string())
             .collect();
-        info!(
-            "OKEx spot USDT-denominated symbol count {:?}",
-            symbols.len()
-        );
-        let swap_symbols = Self::get_symbol_for_okex_swap(symbol_socket).await?;
-        info!(
-            "OKEx swap USDT-denominated symbol count {:?}",
-            swap_symbols.len()
-        );
-        let spot_symbols_related_to_swap: Vec<String> = symbols
+        info!("OKEx spot USDT symbol count: {}", symbols.len());
+        Ok(symbols)
+    }
+
+    /// 获取 OKEx 现货交易对（只返回与 SWAP 有关联的）
+    async fn get_spot_symbols_related_to_okex_swap() -> Result<Vec<String>> {
+        let spot_symbols = Self::get_spot_symbols_from_okex_api().await?;
+        let swap_symbols = Self::get_symbol_for_okex_swap().await?;
+        // OKEx: spot=BTC-USDT, swap=BTC-USDT-SWAP
+        let spot_symbols_related_to_swap: Vec<String> = spot_symbols
             .iter()
-            .filter(|spot_symbol| {
-                swap_symbols.iter().any(|swap_symbol| {
-                    Self::is_spot_symbol_related_to_okex_swap(spot_symbol, swap_symbol)
-                })
+            .filter(|spot| {
+                let swap_id = format!("{}-SWAP", spot);
+                swap_symbols.contains(&swap_id)
             })
             .cloned()
             .collect();
-        info!(
-            "OKEx spot symbols related to swap {:?}",
-            spot_symbols_related_to_swap.len()
-        );
-        print_symbol_comparison(&swap_symbols, &symbols, &spot_symbols_related_to_swap);
+        info!("OKEx spot symbols related to swap: {}", spot_symbols_related_to_swap.len());
+        print_symbol_comparison(&swap_symbols, &spot_symbols, &spot_symbols_related_to_swap);
         Ok(spot_symbols_related_to_swap)
     }
 
@@ -491,11 +499,9 @@ impl Config {
                 Self::get_spot_symbols_related_to_binance_futures(&self.symbol_socket).await
             }
             //OKEXu本位期货合约
-            Exchange::OkexSwap => Self::get_symbol_for_okex_swap(&self.symbol_socket).await,
+            Exchange::OkexSwap => Self::get_symbol_for_okex_swap().await,
             //OKEXu本位期货合约对应的现货
-            Exchange::Okex => {
-                Self::get_spot_symbols_related_to_okex_swap(&self.symbol_socket).await
-            }
+            Exchange::Okex => Self::get_spot_symbols_related_to_okex_swap().await,
             //Bybitu本位期货合约
             Exchange::Bybit => Self::get_symbol_for_bybit_linear(&self.symbol_socket).await,
             //Bybitu本位期货合约对应的现货
@@ -527,20 +533,6 @@ impl Config {
                 return true;
             }
         }
-        false
-    }
-    // okex-swap 和 okex 的符号特殊，需要特殊处理
-    fn is_spot_symbol_related_to_okex_swap(spot_symbol: &str, swap_symbol: &str) -> bool {
-        // swap_symbol 是 "TRX-USDT-SWAP"
-        // spot_symbol 是 "TRX-USDT"
-        // 需要判断 swap_symbol 是否是 spot_symbol 的衍生符号
-        // 衍生符号的规则是：swap_symbol 的 "SWAP" 部分去掉，然后加上 "USDT"
-        // 匹配规则是，去掉swap_symbol的"SWAP"部分，然后加上"USDT"，如果和spot_symbol匹配，则返回true
-        let swap_symbol_without_swap = swap_symbol.replace("-SWAP", "");
-        if spot_symbol == swap_symbol_without_swap {
-            return true;
-        }
-        // okex没有杠杆合约的情况，所以不需要处理
         false
     }
 }

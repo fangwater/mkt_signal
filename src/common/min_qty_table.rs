@@ -319,6 +319,139 @@ fn precision_to_step(precision: i32) -> f64 {
 }
 
 // ============================================================================
+// OKEx Provider
+// ============================================================================
+
+pub struct OkexProvider;
+
+impl OkexProvider {
+    pub fn new() -> Self { Self }
+
+    fn get_api_url(&self, market_type: MarketType) -> &'static str {
+        match market_type {
+            MarketType::Spot => "https://www.okx.com/api/v5/public/instruments?instType=SPOT",
+            MarketType::Margin => "https://www.okx.com/api/v5/public/instruments?instType=MARGIN",
+            MarketType::Futures => "https://www.okx.com/api/v5/public/instruments?instType=SWAP",
+        }
+    }
+
+    pub async fn fetch_filters(&self, client: &Client, market_type: MarketType) -> Result<HashMap<String, MinQtyEntry>> {
+        let (entries, _) = self.fetch_filters_with_multipliers(client, market_type).await?;
+        Ok(entries)
+    }
+
+    pub async fn fetch_filters_with_multipliers(&self, client: &Client, market_type: MarketType) -> Result<(HashMap<String, MinQtyEntry>, HashMap<String, f64>)> {
+        let url = self.get_api_url(market_type);
+        let label = match market_type {
+            MarketType::Spot => "okex_spot",
+            MarketType::Futures => "okex_swap",
+            MarketType::Margin => "okex_margin",
+        };
+        let resp = client.get(url).send().await?;
+        let status = resp.status();
+        let body = resp.text().await?;
+        debug!("GET {} ({}) -> status={} bytes={}", url, label, status.as_u16(), body.len());
+        if !status.is_success() {
+            return Err(anyhow!("GET {} failed: {} - {}", url, status, body));
+        }
+        let response: OkexResponse = serde_json::from_str(&body)
+            .with_context(|| format!("failed to parse {} response", label))?;
+        if response.code != "0" {
+            return Err(anyhow!("OKEx API error: {} - {}", response.code, response.msg));
+        }
+        match market_type {
+            MarketType::Spot | MarketType::Margin => self.parse_spot_response(&response.data),
+            MarketType::Futures => self.parse_swap_response(&response.data),
+        }
+    }
+
+    fn parse_spot_response(&self, data: &[OkexInstrument]) -> Result<(HashMap<String, MinQtyEntry>, HashMap<String, f64>)> {
+        let mut entries = HashMap::new();
+        for inst in data {
+            if !inst.inst_id.ends_with("-USDT") { continue; }
+            let symbol = inst.inst_id.replace('-', ""); // BTC-USDT -> BTCUSDT
+            let entry = MinQtyEntry {
+                symbol: symbol.clone(),
+                base_asset: inst.base_ccy.clone().unwrap_or_default().to_uppercase(),
+                quote_asset: inst.quote_ccy.clone().unwrap_or_default().to_uppercase(),
+                min_qty: inst.min_sz.parse().unwrap_or(0.0),
+                step_size: inst.lot_sz.parse().unwrap_or(0.0),
+                price_tick: inst.tick_sz.parse().ok().filter(|v| *v > 0.0),
+                min_notional: None,
+            };
+            entries.insert(symbol, entry);
+        }
+        Ok((entries, HashMap::new()))
+    }
+
+    fn parse_swap_response(&self, data: &[OkexInstrument]) -> Result<(HashMap<String, MinQtyEntry>, HashMap<String, f64>)> {
+        let mut entries = HashMap::new();
+        let mut multipliers = HashMap::new();
+        for inst in data {
+            // 只要 USDT 本位正向合约
+            if inst.ct_type.as_deref() != Some("linear") { continue; }
+            if inst.settle_ccy.as_deref() != Some("USDT") { continue; }
+            // BTC-USDT-SWAP -> BTCUSDT
+            let symbol = inst.inst_id.replace("-SWAP", "").replace('-', "");
+            let ct_mult: f64 = inst.ct_mult.as_deref().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+            let entry = MinQtyEntry {
+                symbol: symbol.clone(),
+                base_asset: inst.inst_id.split('-').next().unwrap_or("").to_uppercase(),
+                quote_asset: "USDT".to_string(),
+                min_qty: inst.min_sz.parse().unwrap_or(0.0),
+                step_size: inst.lot_sz.parse().unwrap_or(0.0),
+                price_tick: inst.tick_sz.parse().ok().filter(|v| *v > 0.0),
+                min_notional: None,
+            };
+            entries.insert(symbol.clone(), entry);
+            multipliers.insert(symbol, ct_mult);
+        }
+        Ok((entries, multipliers))
+    }
+}
+
+impl Default for OkexProvider {
+    fn default() -> Self { Self::new() }
+}
+
+impl ExchangeInfoProvider for OkexProvider {
+    fn exchange(&self) -> Exchange { Exchange::Okex }
+    fn supported_market_types(&self) -> Vec<MarketType> {
+        vec![MarketType::Spot, MarketType::Futures, MarketType::Margin]
+    }
+    fn margin_reuses_spot(&self) -> bool { false }
+}
+
+#[derive(Debug, Deserialize)]
+struct OkexResponse {
+    code: String,
+    msg: String,
+    data: Vec<OkexInstrument>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OkexInstrument {
+    #[serde(rename = "instId")]
+    inst_id: String,
+    #[serde(rename = "baseCcy")]
+    base_ccy: Option<String>,
+    #[serde(rename = "quoteCcy")]
+    quote_ccy: Option<String>,
+    #[serde(rename = "settleCcy")]
+    settle_ccy: Option<String>,
+    #[serde(rename = "ctType")]
+    ct_type: Option<String>,
+    #[serde(rename = "ctMult")]
+    ct_mult: Option<String>,
+    #[serde(rename = "lotSz")]
+    lot_sz: String,
+    #[serde(rename = "tickSz")]
+    tick_sz: String,
+    #[serde(rename = "minSz")]
+    min_sz: String,
+}
+
+// ============================================================================
 // Bitget Provider
 // ============================================================================
 
@@ -438,6 +571,7 @@ impl MinQtyTable {
             Exchange::Binance | Exchange::BinanceFutures => self.refresh_binance().await,
             Exchange::Gate | Exchange::GateFutures => self.refresh_gate().await,
             Exchange::BitgetMargin | Exchange::BitgetFutures => self.refresh_bitget().await,
+            Exchange::Okex | Exchange::OkexSwap => self.refresh_okex().await,
             _ => Err(anyhow!("exchange {} not supported yet", self.exchange)),
         }
     }
@@ -489,6 +623,19 @@ impl MinQtyTable {
         Ok(())
     }
 
+    async fn refresh_okex(&mut self) -> Result<()> {
+        let provider = OkexProvider::new();
+        for market_type in provider.supported_market_types() {
+            let (data, multipliers) = provider.fetch_filters_with_multipliers(&self.client, market_type).await?;
+            info!("刷新交易对过滤器: exchange={} market_type={:?} count={}", self.exchange, market_type, data.len());
+            self.filters.insert(market_type, data);
+            if !multipliers.is_empty() {
+                self.contract_multipliers.extend(multipliers);
+            }
+        }
+        Ok(())
+    }
+
     // Query Methods
     pub fn get_entry(&self, market_type: MarketType, symbol: &str) -> Option<&MinQtyEntry> {
         let key = symbol.to_uppercase();
@@ -509,7 +656,7 @@ impl MinQtyTable {
 
     pub fn contract_multiplier(&self, symbol: &str) -> f64 {
         match self.exchange {
-            Exchange::Gate | Exchange::GateFutures => {
+            Exchange::Gate | Exchange::GateFutures | Exchange::Okex | Exchange::OkexSwap => {
                 let key = symbol.to_uppercase();
                 *self.contract_multipliers.get(&key).unwrap_or(&1.0)
             }
