@@ -11,3 +11,6 @@ batch_install_dev_tools.sh
 __pycache__/
 .venv/
 .venv
+
+*.parquet
+export_data

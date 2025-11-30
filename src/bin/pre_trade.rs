@@ -1,5 +1,7 @@
 use anyhow::Result;
+use clap::Parser;
 use log::{info, warn};
+use mkt_signal::common::exchange::Exchange;
 use mkt_signal::common::redis_client::RedisSettings;
 use mkt_signal::pre_trade::monitor_channel::MonitorChannel;
 use mkt_signal::pre_trade::params_load::PreTradeParamsLoader;
@@ -12,6 +14,15 @@ use mkt_signal::strategy::StrategyManager;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+#[derive(Parser, Debug)]
+#[command(name = "pre_trade")]
+#[command(about = "Pre-trade risk management and order execution")]
+struct Args {
+    /// Exchange to use
+    #[arg(short, long)]
+    exchange: Exchange,
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     if std::env::var("RUST_LOG").is_err() {
@@ -19,7 +30,10 @@ async fn main() -> Result<()> {
     }
     env_logger::init();
 
-    info!("pre_trade starting");
+    // 解析命令行参数
+    let args = Args::parse();
+
+    info!("pre_trade starting, exchange={}", args.exchange);
     info!("Required env vars: BINANCE_API_KEY, BINANCE_API_SECRET");
     info!("Optional env vars: REDIS_URL");
 
@@ -53,7 +67,7 @@ async fn main() -> Result<()> {
 
             // 3. 初始化 MonitorChannel（包含所有账户管理器）
             info!("Initializing MonitorChannel singleton...");
-            if let Err(err) = MonitorChannel::init_singleton(strategy_mgr.clone()).await {
+            if let Err(err) = MonitorChannel::init_singleton(strategy_mgr.clone(), args.exchange).await {
                 return Err(err);
             }
             info!("MonitorChannel initialized successfully");
@@ -79,12 +93,12 @@ async fn main() -> Result<()> {
                 info!("ResampleChannel initialized successfully");
             }
 
-            // 6. 初始化 TradeEngChannel (使用 binance 交易所)
+            // 6. 初始化 TradeEngChannel (使用指定交易所)
             info!("Initializing TradeEngChannel singleton...");
-            if let Err(err) = TradeEngChannel::initialize("binance") {
+            if let Err(err) = TradeEngChannel::initialize(args.exchange.as_str()) {
                 warn!("Failed to initialize TradeEngChannel: {err:#}");
             } else {
-                info!("TradeEngChannel initialized for exchange: binance");
+                info!("TradeEngChannel initialized for exchange: {}", args.exchange);
             }
 
             // 7. 预热 PersistChannel（自动初始化，调用一次即可）

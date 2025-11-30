@@ -1,4 +1,4 @@
-use crate::common::min_qty_table::MinQtyTable;
+use crate::common::min_qty_table::{MarketType, MinQtyTable};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use log::debug;
 use std::convert::TryFrom;
@@ -258,9 +258,7 @@ impl TradingVenue {
         }
 
         // 1. 按照 tick 对齐价格，交易所要求价格满足最小价格步进。
-        let price_tick = min_qty_table
-            .futures_um_price_tick_by_symbol(symbol)
-            .unwrap_or(0.0);
+        let price_tick = min_qty_table.price_tick(MarketType::Futures, symbol).unwrap_or(0.0);
         let price = if price_tick > 0.0 {
             align_price_floor(raw_price, price_tick)
         } else {
@@ -271,9 +269,7 @@ impl TradingVenue {
         }
 
         // 2. 数量按 step 对齐，保证符合交易所最小数量步长。
-        let step = min_qty_table
-            .futures_um_step_by_symbol(symbol)
-            .unwrap_or(0.0);
+        let step = min_qty_table.step_size(MarketType::Futures, symbol).unwrap_or(0.0);
         let mut qty = if step > 0.0 {
             align_price_floor(raw_qty, step)
         } else {
@@ -281,14 +277,14 @@ impl TradingVenue {
         };
 
         // 3. 补齐最小下单量要求。
-        if let Some(min_qty) = min_qty_table.futures_um_min_qty_by_symbol(symbol) {
+        if let Some(min_qty) = min_qty_table.min_qty(MarketType::Futures, symbol) {
             if min_qty > 0.0 && qty < min_qty {
                 qty = min_qty;
             }
         }
 
         // 4. 补齐最小名义金额要求，必要时抬高下单量。
-        if let Some(min_notional) = min_qty_table.futures_um_min_notional_by_symbol(symbol) {
+        if let Some(min_notional) = min_qty_table.min_notional(MarketType::Futures, symbol) {
             if min_notional > 0.0 {
                 let required_qty = min_notional / price;
                 if qty < required_qty {
@@ -335,9 +331,7 @@ impl TradingVenue {
         }
 
         // 1. 价格对齐：币安现货/保证金沿用 spot tick。
-        let price_tick = min_qty_table
-            .margin_price_tick_by_symbol(symbol)
-            .unwrap_or(0.0);
+        let price_tick = min_qty_table.price_tick(MarketType::Margin, symbol).unwrap_or(0.0);
         let price = if price_tick > 0.0 {
             align_price_floor(raw_price, price_tick)
         } else {
@@ -348,7 +342,7 @@ impl TradingVenue {
         }
 
         // 2. 数量按 step 对齐。
-        let step = min_qty_table.margin_step_by_symbol(symbol).unwrap_or(0.0);
+        let step = min_qty_table.step_size(MarketType::Margin, symbol).unwrap_or(0.0);
         let mut qty = if step > 0.0 {
             align_price_floor(raw_qty, step)
         } else {
@@ -356,14 +350,14 @@ impl TradingVenue {
         };
 
         // 3. 补齐最小下单量。
-        if let Some(min_qty) = min_qty_table.margin_min_qty_by_symbol(symbol) {
+        if let Some(min_qty) = min_qty_table.min_qty(MarketType::Margin, symbol) {
             if min_qty > 0.0 && qty < min_qty {
                 qty = min_qty;
             }
         }
 
         // 4. 补齐名义金额（部分币对会要求最小 notional）。
-        if let Some(min_notional) = min_qty_table.margin_min_notional_by_symbol(symbol) {
+        if let Some(min_notional) = min_qty_table.min_notional(MarketType::Margin, symbol) {
             if min_notional > 0.0 {
                 let required_qty = min_notional / price;
                 if qty < required_qty {

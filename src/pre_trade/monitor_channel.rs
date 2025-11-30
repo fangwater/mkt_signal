@@ -151,7 +151,8 @@ pub fn key_order_trade_update(msg: &OrderTradeUpdateMsg) -> u64 {
 
 // ==================== Monitor Channel ====================
 
-use crate::common::min_qty_table::MinQtyTable;
+use crate::common::exchange::Exchange;
+use crate::common::min_qty_table::{MarketType, MinQtyTable};
 use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
 use crate::pre_trade::binance_pm_spot_manager::BinanceSpotBalanceSnapshot;
 use crate::pre_trade::binance_pm_um_manager::BinanceUmAccountSnapshot;
@@ -282,6 +283,7 @@ impl MonitorChannel {
     ///
     /// # 参数
     /// - `strategy_mgr`: 策略管理器
+    /// - `exchange`: 交易所
     ///
     /// # 环境变量
     /// - `BINANCE_API_KEY`: Binance API Key（必需）
@@ -292,6 +294,7 @@ impl MonitorChannel {
     /// - 初始账户快照获取失败
     pub async fn init_singleton(
         strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
+        exchange: Exchange,
     ) -> Result<()> {
         // Read API credentials from environment variables
         let api_key = std::env::var("BINANCE_API_KEY")
@@ -382,9 +385,9 @@ impl MonitorChannel {
         let exposure_manager = Rc::new(RefCell::new(exposure_manager));
 
         // 加载交易对 LOT_SIZE/PRICE_FILTER（spot/futures/margin），用于数量/价格对齐
-        let mut min_qty_table = MinQtyTable::new();
-        if let Err(err) = min_qty_table.refresh_binance().await {
-            warn!("failed to refresh Binance exchange filters: {err:#}");
+        let mut min_qty_table = MinQtyTable::new(exchange);
+        if let Err(err) = min_qty_table.refresh().await {
+            warn!("failed to refresh exchange filters for {}: {err:#}", exchange);
         }
         let min_qty_table = Rc::new(min_qty_table);
 
@@ -518,15 +521,12 @@ impl MonitorChannel {
         Self::with_inner(|inner| {
             // 1. 检查最小下单量
             let min_qty = match venue {
-                TradingVenue::BinanceUm => inner.min_qty_table.futures_um_min_qty_by_symbol(symbol),
-                TradingVenue::BinanceMargin => inner.min_qty_table.margin_min_qty_by_symbol(symbol),
+                TradingVenue::BinanceUm => inner.min_qty_table.min_qty(MarketType::Futures, symbol),
+                TradingVenue::BinanceMargin => inner.min_qty_table.min_qty(MarketType::Margin, symbol),
                 TradingVenue::BinanceSpot | TradingVenue::OkexSpot => {
-                    inner.min_qty_table.spot_min_qty_by_symbol(symbol)
+                    inner.min_qty_table.min_qty(MarketType::Spot, symbol)
                 }
-                TradingVenue::BinanceSwap | TradingVenue::OkexSwap => {
-                    // TODO: 根据实际情况添加 swap 的最小量获取
-                    None
-                }
+                TradingVenue::BinanceSwap | TradingVenue::OkexSwap => None,
             }
             .unwrap_or(0.0);
 
@@ -536,9 +536,8 @@ impl MonitorChannel {
 
             // 2. 检查最小名义金额（仅对 UM 合约）
             if venue == TradingVenue::BinanceUm {
-                let min_notional = inner
-                    .min_qty_table
-                    .futures_um_min_notional_by_symbol(symbol)
+                let min_notional = inner.min_qty_table
+                    .min_notional(MarketType::Futures, symbol)
                     .unwrap_or(0.0);
 
                 if min_notional > 0.0 {

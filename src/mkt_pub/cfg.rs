@@ -142,6 +142,8 @@ impl Config {
             Exchange::OkexSwap => "okex-swap".to_string(),
             Exchange::Bybit => "bybit".to_string(),
             Exchange::BybitSpot => "bybit-spot".to_string(),
+            Exchange::BitgetMargin => "bitget-margin".to_string(),
+            Exchange::BitgetFutures => "bitget-futures".to_string(),
         }
     }
 
@@ -153,6 +155,8 @@ impl Config {
             Exchange::Okex => 50,
             Exchange::Bybit => 300,
             Exchange::BybitSpot => 10,
+            Exchange::BitgetMargin => 50,
+            Exchange::BitgetFutures => 50,
         }
     }
 
@@ -348,6 +352,88 @@ impl Config {
         Ok(spot_symbols_related_to_linear)
     }
 
+    /// 从 Bitget HTTP API 获取交易对列表
+    /// category: "MARGIN" 或 "USDT-FUTURES"
+    async fn get_symbols_from_bitget_api(category: &str) -> Result<Vec<String>> {
+        let url = format!(
+            "https://api.bitget.com/api/v3/market/instruments?category={}",
+            category
+        );
+        info!("Fetching Bitget symbols from: {}", url);
+
+        let client = reqwest::Client::new();
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .context("Failed to fetch Bitget instruments")?;
+
+        let body = response
+            .text()
+            .await
+            .context("Failed to read Bitget response body")?;
+
+        let json: serde_json::Value =
+            serde_json::from_str(&body).context("Failed to parse Bitget response JSON")?;
+
+        if json["code"].as_str() != Some("00000") {
+            return Err(anyhow::anyhow!(
+                "Bitget API error: code={}, msg={}",
+                json["code"],
+                json["msg"]
+            ));
+        }
+
+        let symbols: Vec<String> = json["data"]
+            .as_array()
+            .context("data field not found or not an array")?
+            .iter()
+            .filter(|item| item["status"].as_str() == Some("online"))
+            .map(|item| item["symbol"].as_str().unwrap_or("").to_string())
+            .filter(|s| !s.is_empty() && s.to_lowercase().ends_with("usdt"))
+            .collect();
+
+        info!(
+            "Bitget {} USDT-denominated symbol count: {}",
+            category,
+            symbols.len()
+        );
+        Ok(symbols)
+    }
+
+    /// 获取 Bitget Futures (USDT-FUTURES) 交易对
+    async fn get_symbol_for_bitget_futures() -> Result<Vec<String>> {
+        Self::get_symbols_from_bitget_api("USDT-FUTURES").await
+    }
+
+    /// 获取 Bitget Margin 交易对（只返回与 Futures 有关联的）
+    async fn get_margin_symbols_related_to_bitget_futures() -> Result<Vec<String>> {
+        let margin_symbols = Self::get_symbols_from_bitget_api("MARGIN").await?;
+        let futures_symbols = Self::get_symbol_for_bitget_futures().await?;
+
+        // Bitget 的 margin 和 futures symbol 格式相同，都是 XXXUSDT
+        let margin_symbols_related_to_futures: Vec<String> = margin_symbols
+            .iter()
+            .filter(|margin_symbol| {
+                futures_symbols.iter().any(|futures_symbol| {
+                    Self::is_spot_symbol_related_to_futures(margin_symbol, futures_symbol)
+                })
+            })
+            .cloned()
+            .collect();
+
+        info!(
+            "Bitget margin symbols related to futures: {}",
+            margin_symbols_related_to_futures.len()
+        );
+        print_symbol_comparison(
+            &futures_symbols,
+            &margin_symbols,
+            &margin_symbols_related_to_futures,
+        );
+        Ok(margin_symbols_related_to_futures)
+    }
+
     pub async fn get_symbols(&self) -> Result<Vec<String>> {
         match self.exchange {
             //币安u本位期货合约
@@ -370,6 +456,10 @@ impl Config {
             Exchange::BybitSpot => {
                 Self::get_spot_symbols_related_to_bybit(&self.symbol_socket).await
             }
+            //Bitget USDT永续合约
+            Exchange::BitgetFutures => Self::get_symbol_for_bitget_futures().await,
+            //Bitget杠杆交易（与Futures关联的）
+            Exchange::BitgetMargin => Self::get_margin_symbols_related_to_bitget_futures().await,
         }
     }
 

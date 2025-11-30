@@ -1,3 +1,6 @@
-python sell_margin_spot.py --symbol A2ZUSDT --quantity 2446 --side SELL --type MARKET --side-effect AUTO_REPAY
-python sell_margin_spot.py --symbol C98USDT --quantity 183 --side SELL --type MARKET --side-effect AUTO_REPAY
-python sell_margin_spot.py --symbol FLUXUSDT --quantity 635 --side SELL --type MARKET --side-effect AUTO_REPAY
+# 导出数据
+bash scripts/export_all.sh 
+默认导出到当前目录export_data文件夹
+
+# 获取数据
+python scripts/export_symbol_data.py  --symbol SAHARAUSDT --dir export_data --output saharasudt.parquet

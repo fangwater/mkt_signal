@@ -3,11 +3,13 @@
 //! 极简启动器：初始化所有单例 + 监听退出信号
 
 use anyhow::Result;
+use clap::Parser;
 use log::info;
 #[cfg(unix)]
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tokio_util::sync::CancellationToken;
 
+use mkt_signal::common::exchange::Exchange;
 use mkt_signal::common::redis_client::RedisSettings;
 
 // 使用模块化的 funding_rate
@@ -18,39 +20,38 @@ use mkt_signal::funding_rate::{
 
 const PROCESS_NAME: &str = "fr_signal";
 
-/// 配置结构
-struct Config {
-    redis: RedisSettings,
+#[derive(Parser, Debug)]
+#[command(name = "fr_signal")]
+#[command(about = "Funding Rate 资金费率套利信号生成器")]
+struct Args {
+    /// Exchange to use
+    #[arg(short, long)]
+    exchange: Exchange,
 }
 
-impl Config {
-    fn load() -> Result<Self> {
-        let redis_host =
-            std::env::var("FUNDING_RATE_REDIS_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-
-        Ok(Self {
-            redis: RedisSettings {
-                host: redis_host,
-                port: 6379,
-                db: 0,
-                username: None,
-                password: None,
-                prefix: None,
-            },
-        })
+fn get_redis_settings() -> RedisSettings {
+    let redis_host =
+        std::env::var("FUNDING_RATE_REDIS_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    RedisSettings {
+        host: redis_host,
+        port: 6379,
+        db: 0,
+        username: None,
+        password: None,
+        prefix: None,
     }
 }
 
 /// 主运行循环
-async fn run(cfg: Config, token: CancellationToken) -> Result<()> {
-    info!("{} 启动（事件驱动模式）", PROCESS_NAME);
+async fn run(exchange: Exchange, token: CancellationToken) -> Result<()> {
+    info!("{} 启动（事件驱动模式） exchange={}", PROCESS_NAME, exchange);
 
     // 1️⃣ 初始化所有单例
     info!("初始化单例...");
     SymbolList::init_singleton()?;
     MktChannel::init_singleton()?;
     RateFetcher::init_singleton()?;
-    FrDecision::init_singleton().await?;
+    FrDecision::init_singleton(exchange).await?;
     info!("所有单例初始化完成");
 
     // SpreadFactor 和 FundingRateFactor 会在首次访问时自动初始化
@@ -65,13 +66,14 @@ async fn run(cfg: Config, token: CancellationToken) -> Result<()> {
     );
 
     // 2️⃣ 立即加载所有配置（策略参数、符号列表、阈值等）
+    let redis = get_redis_settings();
     info!("加载所有配置...");
-    if let Err(err) = load_all_once(&cfg.redis).await {
+    if let Err(err) = load_all_once(&redis).await {
         log::warn!("配置加载失败: {:?}，将使用默认值", err);
     }
 
     // 3️⃣ 启动统一配置定时重载器（60秒）
-    spawn_config_loader(cfg.redis.clone());
+    spawn_config_loader(redis);
     info!("配置加载器已启动（60秒定时重载）");
 
     info!("✅ {} 启动完成，等待市场数据触发决策...", PROCESS_NAME);
@@ -106,11 +108,10 @@ async fn main() -> Result<()> {
         std::env::set_var("RUST_LOG", "info");
     }
     env_logger::init();
-    info!("========== {} 初始化 ==========", PROCESS_NAME);
 
-    // 加载配置
-    let cfg = Config::load()?;
-    info!("Redis 配置: {}:6379", cfg.redis.host);
+    // 解析命令行参数
+    let args = Args::parse();
+    info!("========== {} 初始化 ========== exchange={}", PROCESS_NAME, args.exchange);
 
     // 设置信号处理器
     let token = CancellationToken::new();
@@ -118,5 +119,5 @@ async fn main() -> Result<()> {
 
     // 使用 LocalSet 运行（thread-local 单例需要）
     let local = tokio::task::LocalSet::new();
-    local.run_until(run(cfg, token)).await
+    local.run_until(run(args.exchange, token)).await
 }

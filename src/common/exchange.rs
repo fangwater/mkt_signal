@@ -17,6 +17,12 @@ pub enum Exchange {
     #[serde(rename = "bybit-spot")]
     BybitSpot = 5,
     Bybit = 6,
+    #[value(name = "bitget-margin")]
+    #[serde(rename = "bitget-margin")]
+    BitgetMargin = 7,
+    #[value(name = "bitget-futures")]
+    #[serde(rename = "bitget-futures")]
+    BitgetFutures = 8,
 }
 
 impl Exchange {
@@ -28,6 +34,8 @@ impl Exchange {
             Exchange::OkexSwap => "okex-swap",
             Exchange::BybitSpot => "bybit-spot",
             Exchange::Bybit => "bybit",
+            Exchange::BitgetMargin => "bitget-margin",
+            Exchange::BitgetFutures => "bitget-futures",
         }
     }
 
@@ -40,6 +48,8 @@ impl Exchange {
             4 => Some(Exchange::OkexSwap),
             5 => Some(Exchange::BybitSpot),
             6 => Some(Exchange::Bybit),
+            7 => Some(Exchange::BitgetMargin),
+            8 => Some(Exchange::BitgetFutures),
             _ => None,
         }
     }
