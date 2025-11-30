@@ -309,6 +309,98 @@ fn precision_to_step(precision: i32) -> f64 {
 }
 
 // ============================================================================
+// Bitget Provider
+// ============================================================================
+
+pub struct BitgetProvider;
+
+impl BitgetProvider {
+    pub fn new() -> Self { Self }
+
+    fn get_api_url(&self, market_type: MarketType) -> &'static str {
+        match market_type {
+            MarketType::Spot => "https://api.bitget.com/api/v3/market/instruments?category=SPOT",
+            MarketType::Margin => "https://api.bitget.com/api/v3/market/instruments?category=MARGIN",
+            MarketType::Futures => "https://api.bitget.com/api/v3/market/instruments?category=USDT-FUTURES",
+        }
+    }
+
+    pub async fn fetch_filters(&self, client: &Client, market_type: MarketType) -> Result<HashMap<String, MinQtyEntry>> {
+        let url = self.get_api_url(market_type);
+        let label = match market_type {
+            MarketType::Spot => "bitget_spot",
+            MarketType::Futures => "bitget_futures",
+            MarketType::Margin => "bitget_margin",
+        };
+        let resp = client.get(url).send().await?;
+        let status = resp.status();
+        let body = resp.text().await?;
+        debug!("GET {} ({}) -> status={} bytes={}", url, label, status.as_u16(), body.len());
+        if !status.is_success() {
+            return Err(anyhow!("GET {} failed: {} - {}", url, status, body));
+        }
+        let response: BitgetResponse = serde_json::from_str(&body)
+            .with_context(|| format!("failed to parse {} response", label))?;
+        if response.code != "00000" {
+            return Err(anyhow!("Bitget API error: {} - {}", response.code, response.msg));
+        }
+        let mut map = HashMap::new();
+        for inst in response.data {
+            let symbol = inst.symbol.to_uppercase();
+            let step_size = precision_to_step(inst.quantity_precision.parse().unwrap_or(0));
+            let price_tick = precision_to_step(inst.price_precision.parse().unwrap_or(0));
+            let entry = MinQtyEntry {
+                symbol: symbol.clone(),
+                base_asset: inst.base_coin.to_uppercase(),
+                quote_asset: inst.quote_coin.to_uppercase(),
+                min_qty: inst.min_order_qty.parse().unwrap_or(0.0),
+                step_size,
+                price_tick: if price_tick > 0.0 { Some(price_tick) } else { None },
+                min_notional: inst.min_order_amount.and_then(|v| v.parse().ok()).filter(|v| *v > 0.0),
+            };
+            map.insert(symbol, entry);
+        }
+        Ok(map)
+    }
+}
+
+impl Default for BitgetProvider {
+    fn default() -> Self { Self::new() }
+}
+
+impl ExchangeInfoProvider for BitgetProvider {
+    fn exchange(&self) -> Exchange { Exchange::BitgetMargin }
+    fn supported_market_types(&self) -> Vec<MarketType> {
+        vec![MarketType::Spot, MarketType::Futures, MarketType::Margin]
+    }
+    fn margin_reuses_spot(&self) -> bool { false }
+}
+
+#[derive(Debug, Deserialize)]
+struct BitgetResponse {
+    code: String,
+    msg: String,
+    data: Vec<BitgetInstrument>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BitgetInstrument {
+    symbol: String,
+    #[serde(rename = "baseCoin")]
+    base_coin: String,
+    #[serde(rename = "quoteCoin")]
+    quote_coin: String,
+    #[serde(rename = "minOrderQty")]
+    min_order_qty: String,
+    #[serde(rename = "pricePrecision")]
+    price_precision: String,
+    #[serde(rename = "quantityPrecision")]
+    quantity_precision: String,
+    #[serde(rename = "minOrderAmount", default)]
+    min_order_amount: Option<String>,
+}
+
+// ============================================================================
 // MinQtyTable - Single Exchange Instance
 // ============================================================================
 
@@ -333,6 +425,7 @@ impl MinQtyTable {
         match self.exchange {
             Exchange::Binance | Exchange::BinanceFutures => self.refresh_binance().await,
             Exchange::Gate | Exchange::GateFutures => self.refresh_gate().await,
+            Exchange::BitgetMargin | Exchange::BitgetFutures => self.refresh_bitget().await,
             _ => Err(anyhow!("exchange {} not supported yet", self.exchange)),
         }
     }
@@ -364,6 +457,16 @@ impl MinQtyTable {
                     continue;
                 }
             }
+            let data = provider.fetch_filters(&self.client, market_type).await?;
+            info!("刷新交易对过滤器: exchange={} market_type={:?} count={}", self.exchange, market_type, data.len());
+            self.filters.insert(market_type, data);
+        }
+        Ok(())
+    }
+
+    async fn refresh_bitget(&mut self) -> Result<()> {
+        let provider = BitgetProvider::new();
+        for market_type in provider.supported_market_types() {
             let data = provider.fetch_filters(&self.client, market_type).await?;
             info!("刷新交易对过滤器: exchange={} market_type={:?} count={}", self.exchange, market_type, data.len());
             self.filters.insert(market_type, data);
