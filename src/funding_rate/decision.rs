@@ -97,9 +97,6 @@ pub struct FrDecision {
     /// 默认：[0.0002, 0.0004, 0.0006, 0.0008, 0.001]
     price_offsets: Vec<f64>,
 
-    /// 交易所
-    exchange: Exchange,
-
     /// 交易对过滤器，用于 price_tick / min_qty 查询
     min_qty_table: MinQtyTable,
 
@@ -242,7 +239,6 @@ impl FrDecision {
             channel_name: DEFAULT_SIGNAL_CHANNEL.to_string(),
             _node: node,
             price_offsets,
-            exchange,
             min_qty_table,
             order_amount: 100.0,
             open_order_ttl_us: 120_000_000,

@@ -16,3 +16,7 @@ pm = "wss://fstream.binance.com/pm"
 
 [exchanges.binance.rest]
 pm = "https://papi.binance.com"
+
+[exchanges.okex.ws]
+pm = "wss://ws.okx.com:8443/ws/v5/private"
+

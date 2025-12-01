@@ -113,13 +113,11 @@ impl Parser for BitgetAskBidSpreadParser {
 
 /// Bitget Signal Parser - 用于深度行情信号
 #[derive(Clone)]
-pub struct BitgetSignalParser {
-    is_spot: bool,
-}
+pub struct BitgetSignalParser;
 
 impl BitgetSignalParser {
-    pub fn new(is_spot: bool) -> Self {
-        Self { is_spot }
+    pub fn new() -> Self {
+        Self
     }
 }
 

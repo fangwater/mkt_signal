@@ -17,8 +17,12 @@ name = "fr_signal"
 path = "src/bin/fr_signal.rs"
 
 [[bin]]
-name = "account_monitor"
-path = "src/bin/account_monitor.rs"
+name = "binance_account_monitor"
+path = "src/bin/binance_account_monitor.rs"
+
+[[bin]]
+name = "okex_account_monitor"
+path = "src/bin/okex_account_monitor.rs"
 
 [[bin]]
 name = "trade_engine"

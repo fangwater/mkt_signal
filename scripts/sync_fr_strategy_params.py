@@ -60,10 +60,10 @@ STRATEGY_PARAMS = {
     "open_order_timeout": "150",
 
     # 对冲订单超时（秒）
-    "hedge_timeout": "150",
+    "hedge_timeout": "30",
 
     # 对冲价格偏移（万分之几）
-    "hedge_price_offset": "0.002",
+    "hedge_price_offset": "0.0003",
 
     # 信号冷却时间（秒）
     "signal_cooldown": "5",
