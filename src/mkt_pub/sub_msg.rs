@@ -40,6 +40,44 @@ fn construct_subscribe_message(exchange: &str, symbols: &[String], channel: &str
                 "args": args
             })
         }
+        "bitget-futures" | "bitget" => {
+            // Bitget v2 API 格式
+            // channel 映射: "ticker" -> "ticker"
+            let args: Vec<Value> = symbols
+                .iter()
+                .map(|symbol| {
+                    serde_json::json!({
+                        "instType": "USDT-FUTURES",
+                        "channel": channel,
+                        "instId": symbol
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "op": "subscribe",
+                "args": args
+            })
+        }
+        "gate" | "gate-futures" => {
+            // Gate.io API 格式
+            // 现货: spot.xxx, 合约: futures.xxx
+            let channel_prefix = if exchange == "gate-futures" {
+                "futures"
+            } else {
+                "spot"
+            };
+            let payload: Vec<String> = symbols.iter().map(|s| s.to_string()).collect();
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            serde_json::json!({
+                "time": timestamp,
+                "channel": format!("{}.{}", channel_prefix, channel),
+                "event": "subscribe",
+                "payload": payload
+            })
+        }
         _ => panic!("Unsupported exchange: {}", exchange),
     }
 }
@@ -175,10 +213,39 @@ impl BybitPerpsSubscribeMsgs {
 }
 
 #[derive(Debug, Clone)]
+pub struct BitgetPerpsSubscribeMsgs {
+    pub ticker_stream_msgs: Vec<serde_json::Value>, // Bitget ticker 包含买卖价、资金费率等
+}
+
+impl BitgetPerpsSubscribeMsgs {
+    pub const WS_URL: &'static str = "wss://ws.bitget.com/v2/ws/public";
+    // Bitget 建议单连接不超过50个频道
+    pub const MAX_CHANNELS_PER_CONNECTION: usize = 50;
+
+    pub async fn new(cfg: &Config) -> Self {
+        let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
+        // 使用 Bitget 特定的 batch size，不超过50
+        let batch_size = cfg.get_batch_size().min(Self::MAX_CHANNELS_PER_CONNECTION);
+        let mut ticker_stream_msgs = Vec::new();
+
+        for chunk in symbols.chunks(batch_size) {
+            ticker_stream_msgs.push(construct_subscribe_message(
+                "bitget-futures",
+                chunk,
+                "ticker",
+            ));
+        }
+
+        Self { ticker_stream_msgs }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum ExchangePerpsSubscribeMsgs {
     Binance(BinancePerpsSubscribeMsgs),
     Okex(OkexPerpsSubscribeMsgs),
     Bybit(BybitPerpsSubscribeMsgs),
+    Bitget(BitgetPerpsSubscribeMsgs),
 }
 
 //衍生品(永续合约)的额外消息
@@ -271,6 +338,7 @@ impl SubscribeMsgs {
             "okex" => "books".to_string(),
             "bybit" => "orderbook.500".to_string(),
             "bybit-spot" => "orderbook.200".to_string(),
+            // Gate.io: order_book 频道，这里暂不支持增量
             _ => panic!("Unsupported exchange: {}", exchange),
         }
     }
@@ -280,6 +348,8 @@ impl SubscribeMsgs {
             "binance-futures" | "binance" => "kline_1m".to_string(),
             "okex-swap" | "okex" => "candle1m".to_string(),
             "bybit" | "bybit-spot" => "kline.1".to_string(),
+            // Gate.io: candlesticks 频道，格式为 "1m" 表示1分钟K线
+            "gate" | "gate-futures" => "candlesticks".to_string(),
             _ => panic!("Unsupported exchange: {}", exchange),
         }
     }
@@ -289,6 +359,8 @@ impl SubscribeMsgs {
             "binance-futures" | "binance" => "trade".to_string(),
             "okex-swap" | "okex" => "trades".to_string(),
             "bybit" | "bybit-spot" => "publicTrade".to_string(),
+            // Gate.io: trades 频道
+            "gate" | "gate-futures" => "trades".to_string(),
             _ => panic!("Unsupported exchange: {}", exchange),
         }
     }
@@ -298,6 +370,8 @@ impl SubscribeMsgs {
             "binance-futures" | "binance" => "bookTicker".to_string(),
             "okex-swap" | "okex" => "bbo-tbt".to_string(),
             "bybit" | "bybit-spot" => "orderbook.1".to_string(),
+            // Gate.io: tickers 频道提供最优买卖价
+            "gate" | "gate-futures" => "tickers".to_string(),
             _ => panic!("Unsupported exchange: {}", exchange),
         }
     }
@@ -318,6 +392,10 @@ impl SubscribeMsgs {
             "bybit" => "wss://stream.bybit.com/v5/public/linear",
             //Bybitu本位期货合约对应的现货
             "bybit-spot" => "wss://stream.bybit.com/v5/public/spot",
+            //Gate.io 现货
+            "gate" => "wss://api.gateio.ws/ws/v4/",
+            //Gate.io USDT合约
+            "gate-futures" => "wss://fx-ws.gateio.ws/v4/ws/usdt",
             _ => panic!("Unsupported exchange: {}", exchange),
         }
     }
@@ -336,6 +414,10 @@ impl SubscribeMsgs {
             "bybit" => "wss://stream.bybit.com/v5/public/linear",
             //Bybitu本位期货合约对应的现货
             "bybit-spot" => "wss://stream.bybit.com/v5/public/spot",
+            //Gate.io 现货 (K线也使用同一URL)
+            "gate" => "wss://api.gateio.ws/ws/v4/",
+            //Gate.io USDT合约
+            "gate-futures" => "wss://fx-ws.gateio.ws/v4/ws/usdt",
             _ => panic!("Unsupported exchange: {}", exchange),
         }
     }
@@ -379,6 +461,32 @@ impl SubscribeMsgs {
                 serde_json::json!({
                     "op": "subscribe",
                     "args": ["orderbook.rpi.BTCUSDT"]
+                })
+            }
+            "gate" => {
+                // Gate.io 现货 ticker 作为信号源
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                serde_json::json!({
+                    "time": timestamp,
+                    "channel": "spot.tickers",
+                    "event": "subscribe",
+                    "payload": ["BTC_USDT"]
+                })
+            }
+            "gate-futures" => {
+                // Gate.io 合约 ticker 作为信号源
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                serde_json::json!({
+                    "time": timestamp,
+                    "channel": "futures.tickers",
+                    "event": "subscribe",
+                    "payload": ["BTC_USDT"]
                 })
             }
             _ => panic!("Unsupported exchange: {}", exchange),
@@ -436,6 +544,9 @@ impl DerivativesMetricsSubscribeMsgs {
             }
             "okex-swap" => ExchangePerpsSubscribeMsgs::Okex(OkexPerpsSubscribeMsgs::new(cfg).await),
             "bybit" => ExchangePerpsSubscribeMsgs::Bybit(BybitPerpsSubscribeMsgs::new(cfg).await),
+            "bitget-futures" => {
+                ExchangePerpsSubscribeMsgs::Bitget(BitgetPerpsSubscribeMsgs::new(cfg).await)
+            }
             _ => panic!("Unsupported exchange: {}", exchange),
         };
 

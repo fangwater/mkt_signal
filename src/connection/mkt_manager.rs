@@ -5,11 +5,13 @@ use crate::parser::binance_parser::{
     BinanceAskBidSpreadParser, BinanceDerivativesMetricsParser, BinanceIncParser,
     BinanceKlineParser, BinanceSignalParser, BinanceSnapshotParser, BinanceTradeParser,
 };
+use crate::parser::bitget_parser::BitgetAskBidSpreadParser;
 use crate::parser::bybit_parser::{
     BybitAskBidSpreadParser, BybitDerivativesMetricsParser, BybitIncParser, BybitKlineParser,
     BybitSignalParser, BybitTradeParser,
 };
 use crate::parser::default_parser::Parser;
+use crate::parser::gate_parser::{GateKlineParser, GateSignalParser, GateTickerParser};
 use crate::parser::okex_parser::{
     OkexAskBidSpreadParser, OkexDerivativesMetricsParser, OkexIncParser, OkexKlineParser,
     OkexSignalParser, OkexTradeParser,
@@ -332,6 +334,19 @@ impl MktManager {
                     )
                     .await;
                 }
+                "gate" | "gate-futures" => {
+                    // Gate K线：使用 only_closed=true 只处理已完结K线
+                    let parser = GateKlineParser::new(true);
+                    self.spawn_connection_with_mpsc(
+                        exchange.clone(),
+                        url.clone(),
+                        subscribe_msg,
+                        format!("kline batch {}", i),
+                        parser,
+                        tx,
+                    )
+                    .await;
+                }
                 _ => {
                     error!("Unsupported exchange for kline parser: {}", exchange);
                 }
@@ -387,6 +402,19 @@ impl MktManager {
                     )
                     .await;
                 }
+                "gate" | "gate-futures" => {
+                    // Gate ticker 包含最优买卖价
+                    let parser = GateTickerParser::new();
+                    self.spawn_connection_with_mpsc(
+                        exchange.clone(),
+                        url.clone(),
+                        subscribe_msg,
+                        format!("ask_bid_spread batch {}", i),
+                        parser,
+                        tx,
+                    )
+                    .await;
+                }
                 _ => {
                     error!(
                         "Unsupported exchange for ask_bid_spread parser: {}",
@@ -410,6 +438,9 @@ impl MktManager {
                 }
                 crate::sub_msg::ExchangePerpsSubscribeMsgs::Bybit(bybit_msgs) => {
                     self.start_bybit_derivatives_connections(&bybit_msgs).await;
+                }
+                crate::sub_msg::ExchangePerpsSubscribeMsgs::Bitget(bitget_msgs) => {
+                    self.start_bitget_derivatives_connections(&bitget_msgs).await;
                 }
             }
         }
@@ -520,6 +551,31 @@ impl MktManager {
         }
     }
 
+    async fn start_bitget_derivatives_connections(
+        &mut self,
+        msgs: &crate::sub_msg::BitgetPerpsSubscribeMsgs,
+    ) {
+        let exchange = self.cfg.get_exchange().clone();
+        let url = crate::sub_msg::BitgetPerpsSubscribeMsgs::WS_URL.to_string();
+        let tx = self.derivatives_tx.clone();
+
+        info!("Starting Bitget derivatives connections");
+
+        // 处理 ticker 消息（包含买卖价、资金费率等）
+        for (i, ticker_msg) in msgs.ticker_stream_msgs.iter().enumerate() {
+            let parser = BitgetAskBidSpreadParser::new();
+            self.spawn_connection_with_mpsc(
+                exchange.clone(),
+                url.clone(),
+                ticker_msg.clone(),
+                format!("bitget ticker batch {}", i),
+                parser,
+                tx.clone(),
+            )
+            .await;
+        }
+    }
+
     async fn start_signal_connection(&mut self) {
         let exchange = self.cfg.get_exchange().clone();
         let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
@@ -530,6 +586,7 @@ impl MktManager {
             "binance-futures" | "binance" => Box::new(BinanceSignalParser::new(false)),
             "okex-swap" | "okex" => Box::new(OkexSignalParser::new(false)),
             "bybit" | "bybit-spot" => Box::new(BybitSignalParser::new(false)),
+            "gate" | "gate-futures" => Box::new(GateSignalParser::new(false)),
             _ => {
                 error!("Unsupported exchange for signal parser: {}", exchange);
                 return;

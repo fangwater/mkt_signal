@@ -361,7 +361,9 @@ pub fn construct_connection_with_ip(
     local_ip: String,
 ) -> anyhow::Result<Box<dyn MktConnectionHandler>> {
     use crate::connection::binance_conn::BinanceConnection;
+    use crate::connection::bitget_conn::BitgetConnection;
     use crate::connection::bybit_conn::BybitConnection;
+    use crate::connection::gate_conn::GateConnection;
     use crate::connection::okex_conn::OkexConnection;
 
     let mut base_connection = MktConnection::new(url, subscribe_msg, tx, global_shutdown_rx);
@@ -371,6 +373,9 @@ pub fn construct_connection_with_ip(
         "binance-futures" | "binance" => Ok(Box::new(BinanceConnection::new(base_connection))),
         "okex-swap" | "okex" => Ok(Box::new(OkexConnection::new(base_connection))),
         "bybit" | "bybit-spot" => Ok(Box::new(BybitConnection::new(base_connection))),
+        "bitget-futures" | "bitget" => Ok(Box::new(BitgetConnection::new(base_connection))),
+        "gate" => Ok(Box::new(GateConnection::new(base_connection, false))),
+        "gate-futures" => Ok(Box::new(GateConnection::new(base_connection, true))),
         _ => Err(anyhow::anyhow!("Unsupported exchange: {}", exchange)),
     }
 }
@@ -385,7 +390,9 @@ pub fn construct_connection(
     global_shutdown_rx: watch::Receiver<bool>,
 ) -> anyhow::Result<Box<dyn MktConnectionHandler>> {
     use crate::connection::binance_conn::BinanceConnection;
+    use crate::connection::bitget_conn::BitgetConnection;
     use crate::connection::bybit_conn::BybitConnection;
+    use crate::connection::gate_conn::GateConnection;
     use crate::connection::okex_conn::OkexConnection;
 
     let base_connection = MktConnection::new(url, subscribe_msg, tx, global_shutdown_rx);
@@ -394,6 +401,9 @@ pub fn construct_connection(
         "binance-futures" | "binance" => Ok(Box::new(BinanceConnection::new(base_connection))),
         "okex-swap" | "okex" => Ok(Box::new(OkexConnection::new(base_connection))),
         "bybit" | "bybit-spot" => Ok(Box::new(BybitConnection::new(base_connection))),
+        "bitget-futures" | "bitget" => Ok(Box::new(BitgetConnection::new(base_connection))),
+        "gate" => Ok(Box::new(GateConnection::new(base_connection, false))),
+        "gate-futures" => Ok(Box::new(GateConnection::new(base_connection, true))),
         _ => Err(anyhow::anyhow!("Unsupported exchange: {}", exchange)),
     }
 }
