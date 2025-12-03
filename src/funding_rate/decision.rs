@@ -6,7 +6,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{debug, info, warn};
+use log::{info, warn};
 use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
