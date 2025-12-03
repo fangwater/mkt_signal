@@ -54,16 +54,16 @@ STRATEGY_PARAMS = {
     "order_amount": "100.0",
 
     # 开仓挂单档位（JSON 数组）
-    "price_offsets": "[0.0002, 0.0004, 0.0006, 0.0008, 0.001, 0.0012, 0.0014, 0.0016, 0.0018, 0.002]",
+    "price_offsets": "[0.0001, 0.0002, 0.0004, 0.0006, 0.0008, 0.001, 0.0012, 0.0014, 0.0016, 0.0018, 0.002]",
     
     # 开仓订单超时（秒）
     "open_order_timeout": "150",
 
     # 对冲订单超时（秒）
-    "hedge_timeout": "30",
+    "hedge_timeout": "60",
 
     # 对冲价格偏移（万分之几）
-    "hedge_price_offset": "0.0003",
+    "hedge_price_offset": "0.001",
 
     # 信号冷却时间（秒）
     "signal_cooldown": "5",

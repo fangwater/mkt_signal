@@ -94,9 +94,9 @@ def parse_args() -> argparse.Namespace:
 # 此配置对所有 symbol 通用，只是每个 symbol 计算出的具体值不同
 
 SPREAD_THRESHOLD_MAPPING = {
-    "forward_open_mm": "binance_spread_5", # spread < q10
+    "forward_open_mm": "binance_spread_15", # spread < q10
     "forward_open_mt": "binance_bidask_10", # bidask < q10
-    "forward_cancel_mm": "binance_spread_10", # spread > q15
+    "forward_cancel_mm": "binance_spread_20", # spread > q15
     "forward_cancel_mt": "binance_bidask_15", # bidask > q15
     
     "backward_open_mm": "binance_spread_30", # spread > q90

@@ -45,19 +45,19 @@ def parse_args() -> argparse.Namespace:
 # Hash key: fr_pre_trade_params
 RISK_PARAMS = {
     # 最大单币种持仓 (USDT)
-    "max_pos_u": "75000.0",
+    "max_pos_u": "100000.0",
 
     # 单币种最大敞口比例（0.0-1.0）
-    "max_symbol_exposure_ratio": "0.05",
+    "max_symbol_exposure_ratio": "0.015",
 
     # 总敞口比例（0.0-1.0）
-    "max_total_exposure_ratio": "0.05",
+    "max_total_exposure_ratio": "0.01",
 
     # 最大杠杆倍数（>0）
     "max_leverage": "2.0",
 
     # 最大挂单数（>=0）
-    "max_pending_limit_orders": "100",
+    "max_pending_limit_orders": "15",
 }
 
 # ========== 参数注释（用于打印） ==========
