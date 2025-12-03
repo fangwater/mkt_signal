@@ -44,7 +44,10 @@ fn get_redis_settings() -> RedisSettings {
 
 /// 主运行循环
 async fn run(exchange: Exchange, token: CancellationToken) -> Result<()> {
-    info!("{} 启动（事件驱动模式） exchange={}", PROCESS_NAME, exchange);
+    info!(
+        "{} 启动（事件驱动模式） exchange={}",
+        PROCESS_NAME, exchange
+    );
 
     // 1️⃣ 初始化所有单例
     info!("初始化单例...");
@@ -111,7 +114,10 @@ async fn main() -> Result<()> {
 
     // 解析命令行参数
     let args = Args::parse();
-    info!("========== {} 初始化 ========== exchange={}", PROCESS_NAME, args.exchange);
+    info!(
+        "========== {} 初始化 ========== exchange={}",
+        PROCESS_NAME, args.exchange
+    );
 
     // 设置信号处理器
     let token = CancellationToken::new();

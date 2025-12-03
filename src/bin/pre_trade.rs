@@ -67,7 +67,9 @@ async fn main() -> Result<()> {
 
             // 3. 初始化 MonitorChannel（包含所有账户管理器）
             info!("Initializing MonitorChannel singleton...");
-            if let Err(err) = MonitorChannel::init_singleton(strategy_mgr.clone(), args.exchange).await {
+            if let Err(err) =
+                MonitorChannel::init_singleton(strategy_mgr.clone(), args.exchange).await
+            {
                 return Err(err);
             }
             info!("MonitorChannel initialized successfully");
@@ -98,7 +100,10 @@ async fn main() -> Result<()> {
             if let Err(err) = TradeEngChannel::initialize(args.exchange.as_str()) {
                 warn!("Failed to initialize TradeEngChannel: {err:#}");
             } else {
-                info!("TradeEngChannel initialized for exchange: {}", args.exchange);
+                info!(
+                    "TradeEngChannel initialized for exchange: {}",
+                    args.exchange
+                );
             }
 
             // 7. 预热 PersistChannel（自动初始化，调用一次即可）

@@ -88,8 +88,14 @@ impl Parser for GateTickerParser {
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
                 // 检查是否是 ticker 频道的 update 事件
-                let channel = json_value.get("channel").and_then(|v| v.as_str()).unwrap_or("");
-                let event = json_value.get("event").and_then(|v| v.as_str()).unwrap_or("");
+                let channel = json_value
+                    .get("channel")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let event = json_value
+                    .get("event")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
 
                 if !channel.ends_with(".tickers") || event != "update" {
                     return 0;
@@ -185,8 +191,14 @@ impl Parser for GateKlineParser {
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
                 // 检查是否是 candlesticks 频道的 update 事件
-                let channel = json_value.get("channel").and_then(|v| v.as_str()).unwrap_or("");
-                let event = json_value.get("event").and_then(|v| v.as_str()).unwrap_or("");
+                let channel = json_value
+                    .get("channel")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let event = json_value
+                    .get("event")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
 
                 if !channel.ends_with(".candlesticks") || event != "update" {
                     return 0;
@@ -232,7 +244,14 @@ impl Parser for GateKlineParser {
                         result.get("a").and_then(|v| v.as_str()), // base volume
                     ) {
                         // 解析所有值
-                        if let (Ok(timestamp_sec), Ok(open), Ok(high), Ok(low), Ok(close), Ok(volume)) = (
+                        if let (
+                            Ok(timestamp_sec),
+                            Ok(open),
+                            Ok(high),
+                            Ok(low),
+                            Ok(close),
+                            Ok(volume),
+                        ) = (
                             t_str.parse::<i64>(),
                             o_str.parse::<f64>(),
                             h_str.parse::<f64>(),

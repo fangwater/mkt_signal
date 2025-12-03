@@ -238,11 +238,23 @@ impl Config {
         let url = "https://www.okx.com/api/v5/public/instruments?instType=SWAP";
         info!("Fetching OKEx swap symbols from: {}", url);
         let client = reqwest::Client::new();
-        let response = client.get(url).send().await.context("Failed to fetch OKEx instruments")?;
-        let body = response.text().await.context("Failed to read OKEx response body")?;
-        let json: serde_json::Value = serde_json::from_str(&body).context("Failed to parse OKEx response JSON")?;
+        let response = client
+            .get(url)
+            .send()
+            .await
+            .context("Failed to fetch OKEx instruments")?;
+        let body = response
+            .text()
+            .await
+            .context("Failed to read OKEx response body")?;
+        let json: serde_json::Value =
+            serde_json::from_str(&body).context("Failed to parse OKEx response JSON")?;
         if json["code"].as_str() != Some("0") {
-            return Err(anyhow::anyhow!("OKEx API error: code={}, msg={}", json["code"], json["msg"]));
+            return Err(anyhow::anyhow!(
+                "OKEx API error: code={}, msg={}",
+                json["code"],
+                json["msg"]
+            ));
         }
         let symbols: Vec<String> = json["data"]
             .as_array()
@@ -263,11 +275,23 @@ impl Config {
         let url = "https://www.okx.com/api/v5/public/instruments?instType=SPOT";
         info!("Fetching OKEx spot symbols from: {}", url);
         let client = reqwest::Client::new();
-        let response = client.get(url).send().await.context("Failed to fetch OKEx instruments")?;
-        let body = response.text().await.context("Failed to read OKEx response body")?;
-        let json: serde_json::Value = serde_json::from_str(&body).context("Failed to parse OKEx response JSON")?;
+        let response = client
+            .get(url)
+            .send()
+            .await
+            .context("Failed to fetch OKEx instruments")?;
+        let body = response
+            .text()
+            .await
+            .context("Failed to read OKEx response body")?;
+        let json: serde_json::Value =
+            serde_json::from_str(&body).context("Failed to parse OKEx response JSON")?;
         if json["code"].as_str() != Some("0") {
-            return Err(anyhow::anyhow!("OKEx API error: code={}, msg={}", json["code"], json["msg"]));
+            return Err(anyhow::anyhow!(
+                "OKEx API error: code={}, msg={}",
+                json["code"],
+                json["msg"]
+            ));
         }
         let symbols: Vec<String> = json["data"]
             .as_array()
@@ -295,7 +319,10 @@ impl Config {
             })
             .cloned()
             .collect();
-        info!("OKEx spot symbols related to swap: {}", spot_symbols_related_to_swap.len());
+        info!(
+            "OKEx spot symbols related to swap: {}",
+            spot_symbols_related_to_swap.len()
+        );
         print_symbol_comparison(&swap_symbols, &spot_symbols, &spot_symbols_related_to_swap);
         Ok(spot_symbols_related_to_swap)
     }
@@ -440,9 +467,17 @@ impl Config {
         let url = "https://api.gateio.ws/api/v4/futures/usdt/contracts";
         info!("Fetching Gate futures symbols from: {}", url);
         let client = reqwest::Client::new();
-        let response = client.get(url).send().await.context("Failed to fetch Gate contracts")?;
-        let body = response.text().await.context("Failed to read Gate response body")?;
-        let contracts: Vec<serde_json::Value> = serde_json::from_str(&body).context("Failed to parse Gate response JSON")?;
+        let response = client
+            .get(url)
+            .send()
+            .await
+            .context("Failed to fetch Gate contracts")?;
+        let body = response
+            .text()
+            .await
+            .context("Failed to read Gate response body")?;
+        let contracts: Vec<serde_json::Value> =
+            serde_json::from_str(&body).context("Failed to parse Gate response JSON")?;
         let symbols: Vec<String> = contracts
             .iter()
             .filter(|c| c["status"].as_str() == Some("trading"))
@@ -459,9 +494,17 @@ impl Config {
         let url = "https://api.gateio.ws/api/v4/spot/currency_pairs";
         info!("Fetching Gate spot symbols from: {}", url);
         let client = reqwest::Client::new();
-        let response = client.get(url).send().await.context("Failed to fetch Gate currency_pairs")?;
-        let body = response.text().await.context("Failed to read Gate response body")?;
-        let pairs: Vec<serde_json::Value> = serde_json::from_str(&body).context("Failed to parse Gate response JSON")?;
+        let response = client
+            .get(url)
+            .send()
+            .await
+            .context("Failed to fetch Gate currency_pairs")?;
+        let body = response
+            .text()
+            .await
+            .context("Failed to read Gate response body")?;
+        let pairs: Vec<serde_json::Value> =
+            serde_json::from_str(&body).context("Failed to parse Gate response JSON")?;
         let symbols: Vec<String> = pairs
             .iter()
             .filter(|p| p["trade_status"].as_str() == Some("tradable"))
@@ -483,8 +526,15 @@ impl Config {
             .filter(|spot| futures_symbols.contains(spot))
             .cloned()
             .collect();
-        info!("Gate spot symbols related to futures: {}", spot_symbols_related_to_futures.len());
-        print_symbol_comparison(&futures_symbols, &spot_symbols, &spot_symbols_related_to_futures);
+        info!(
+            "Gate spot symbols related to futures: {}",
+            spot_symbols_related_to_futures.len()
+        );
+        print_symbol_comparison(
+            &futures_symbols,
+            &spot_symbols,
+            &spot_symbols_related_to_futures,
+        );
         Ok(spot_symbols_related_to_futures)
     }
 

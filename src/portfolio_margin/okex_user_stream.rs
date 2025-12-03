@@ -5,7 +5,9 @@
 //! 2. 登录成功后订阅所需频道
 //! 3. 通过应用层 ping 保持连接 (每 25 秒)
 
-use crate::connection::connection::{MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector};
+use crate::connection::connection::{
+    MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
+};
 use crate::portfolio_margin::okex_auth::OkexCredentials;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -81,8 +83,14 @@ impl OkexUserDataConnection {
     fn is_error_message(text: &str) -> Option<String> {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
             if json.get("event").and_then(|v| v.as_str()) == Some("error") {
-                let code = json.get("code").and_then(|v| v.as_str()).unwrap_or("unknown");
-                let msg = json.get("msg").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let code = json
+                    .get("code")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let msg = json
+                    .get("msg")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
                 return Some(format!("code={}, msg={}", code, msg));
             }
         }

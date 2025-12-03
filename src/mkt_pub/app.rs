@@ -85,7 +85,9 @@ impl MktSignalApp {
 
         // 只为期货交易所初始化衍生品订阅消息
         let derivatives_subscribe_msgs = match config.get_exchange().as_str() {
-            "binance-futures" | "okex-swap" | "bybit" | "bitget-futures" if config.data_types.enable_derivatives => {
+            "binance-futures" | "okex-swap" | "bybit" | "bitget-futures"
+                if config.data_types.enable_derivatives =>
+            {
                 info!(
                     "Initializing derivatives metrics subscriptions for {}",
                     config.get_exchange()

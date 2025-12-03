@@ -780,7 +780,17 @@ impl BinanceAccountEventParser {
                 }
 
                 // 发送合并后的 position 消息
-                for ((symbol, position_side), (position_amount, entry_price, accumulated_realized, unrealized_pnl, breakeven_price)) in position_map {
+                for (
+                    (symbol, position_side),
+                    (
+                        position_amount,
+                        entry_price,
+                        accumulated_realized,
+                        unrealized_pnl,
+                        breakeven_price,
+                    ),
+                ) in position_map
+                {
                     let msg = AccountUpdatePositionMsg::create(
                         event_time,
                         transaction_time,

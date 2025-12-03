@@ -260,7 +260,10 @@ impl FrDecision {
                 Self::with_mut(|decision| {
                     decision.min_qty_table = table;
                 });
-                info!("FrDecision: min_qty_table loaded successfully, exchange={}", exchange);
+                info!(
+                    "FrDecision: min_qty_table loaded successfully, exchange={}",
+                    exchange
+                );
             }
             Err(err) => {
                 warn!("FrDecision: failed to refresh exchange filters for {}, price_tick may be zero: {err:#}", exchange);
@@ -625,7 +628,10 @@ impl FrDecision {
             return;
         };
 
-        let price_tick = self.min_qty_table.price_tick(MarketType::Futures, &hedge_symbol).unwrap_or(0.0);
+        let price_tick = self
+            .min_qty_table
+            .price_tick(MarketType::Futures, &hedge_symbol)
+            .unwrap_or(0.0);
 
         let offset = if query.request_seq < 6 {
             self.hedge_price_offset.abs()
@@ -899,7 +905,9 @@ impl FrDecision {
         } else {
             0.0
         };
-        ctx.price_tick = self.min_qty_table.price_tick(MarketType::Margin, spot_symbol)
+        ctx.price_tick = self
+            .min_qty_table
+            .price_tick(MarketType::Margin, spot_symbol)
             .or_else(|| self.min_qty_table.price_tick(MarketType::Spot, spot_symbol))
             .unwrap_or(0.0);
         let qty = self.convert_order_amount_to_qty(spot_symbol, ctx.price);
@@ -957,9 +965,13 @@ impl FrDecision {
             return 0.0;
         }
 
-        let min_qty = self.min_qty_table.min_qty(MarketType::Margin, symbol)
+        let min_qty = self
+            .min_qty_table
+            .min_qty(MarketType::Margin, symbol)
             .or_else(|| self.min_qty_table.min_qty(MarketType::Spot, symbol));
-        let step = self.min_qty_table.step_size(MarketType::Margin, symbol)
+        let step = self
+            .min_qty_table
+            .step_size(MarketType::Margin, symbol)
             .or_else(|| self.min_qty_table.step_size(MarketType::Spot, symbol));
 
         convert_usdt_amount_to_qty(self.order_amount as f64, price, min_qty, step)

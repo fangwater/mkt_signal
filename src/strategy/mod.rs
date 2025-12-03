@@ -5,4 +5,4 @@ pub mod manager;
 pub mod order_update;
 pub mod trade_engine_response;
 pub mod trade_update;
-pub use manager::{Strategy, StrategyManager};
+pub use manager::{ForceCloseControl, Strategy, StrategyManager};

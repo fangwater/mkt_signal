@@ -260,7 +260,9 @@ impl TradingVenue {
         }
 
         // 1. 按照 tick 对齐价格，交易所要求价格满足最小价格步进。
-        let price_tick = min_qty_table.price_tick(MarketType::Futures, symbol).unwrap_or(0.0);
+        let price_tick = min_qty_table
+            .price_tick(MarketType::Futures, symbol)
+            .unwrap_or(0.0);
         let price = if price_tick > 0.0 {
             align_price_floor(raw_price, price_tick)
         } else {
@@ -271,7 +273,9 @@ impl TradingVenue {
         }
 
         // 2. 数量按 step 对齐，保证符合交易所最小数量步长。
-        let step = min_qty_table.step_size(MarketType::Futures, symbol).unwrap_or(0.0);
+        let step = min_qty_table
+            .step_size(MarketType::Futures, symbol)
+            .unwrap_or(0.0);
         let mut qty = if step > 0.0 {
             align_price_floor(raw_qty, step)
         } else {
@@ -333,7 +337,9 @@ impl TradingVenue {
         }
 
         // 1. 价格对齐：币安现货/保证金沿用 spot tick。
-        let price_tick = min_qty_table.price_tick(MarketType::Margin, symbol).unwrap_or(0.0);
+        let price_tick = min_qty_table
+            .price_tick(MarketType::Margin, symbol)
+            .unwrap_or(0.0);
         let price = if price_tick > 0.0 {
             align_price_floor(raw_price, price_tick)
         } else {
@@ -344,7 +350,9 @@ impl TradingVenue {
         }
 
         // 2. 数量按 step 对齐。
-        let step = min_qty_table.step_size(MarketType::Margin, symbol).unwrap_or(0.0);
+        let step = min_qty_table
+            .step_size(MarketType::Margin, symbol)
+            .unwrap_or(0.0);
         let mut qty = if step > 0.0 {
             align_price_floor(raw_qty, step)
         } else {
@@ -449,7 +457,11 @@ impl TradingVenue {
     pub fn is_futures(&self) -> bool {
         matches!(
             self,
-            TradingVenue::BinanceUm | TradingVenue::OkexSwap | TradingVenue::BitgetFutures | TradingVenue::BybitFutures | TradingVenue::GateFutures
+            TradingVenue::BinanceUm
+                | TradingVenue::OkexSwap
+                | TradingVenue::BitgetFutures
+                | TradingVenue::BybitFutures
+                | TradingVenue::GateFutures
         )
     }
 

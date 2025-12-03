@@ -8,7 +8,7 @@ use crate::signal::hedge_signal::ArbHedgeCtx;
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::hedge_arb_strategy::HedgeArbStrategy;
-use crate::strategy::{Strategy, StrategyManager};
+use crate::strategy::{ForceCloseControl, Strategy, StrategyManager};
 use anyhow::Result;
 use bytes::Bytes;
 use iceoryx2::port::subscriber::Subscriber;
@@ -385,6 +385,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     // 平仓本质就是反向开仓，复用 HedgeArbStrategy
                     let strategy_id = StrategyManager::generate_strategy_id();
                     let mut strategy = HedgeArbStrategy::new(strategy_id, opening_symbol.clone());
+                    strategy.set_force_close_mode(true);
 
                     strategy.handle_signal_with_record(&converted_signal);
 

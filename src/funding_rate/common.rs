@@ -73,11 +73,23 @@ pub trait RateFetcherTrait {
     /// 获取指定 symbol 的资金费率周期
     fn get_period(&self, symbol: &str, venue: TradingVenue) -> FundingRatePeriod;
     /// 获取预测资金费率（返回周期和值）
-    fn get_predicted_funding_rate(&self, symbol: &str, venue: TradingVenue) -> Option<(FundingRatePeriod, f64)>;
+    fn get_predicted_funding_rate(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+    ) -> Option<(FundingRatePeriod, f64)>;
     /// 获取预测借贷利率（返回周期和值）
-    fn get_predict_loan_rate(&self, symbol: &str, venue: TradingVenue) -> Option<(FundingRatePeriod, f64)>;
+    fn get_predict_loan_rate(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+    ) -> Option<(FundingRatePeriod, f64)>;
     /// 获取当前借贷利率（返回周期和值）
-    fn get_current_loan_rate(&self, symbol: &str, venue: TradingVenue) -> Option<(FundingRatePeriod, f64)>;
+    fn get_current_loan_rate(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+    ) -> Option<(FundingRatePeriod, f64)>;
 }
 
 // ========== 枚举类型定义 ==========

@@ -95,8 +95,7 @@ impl OkexPrivateWsUrls {
     pub const BUSINESS: &'static str = "wss://ws.okx.com:8443/ws/v5/business";
 
     /// 业务频道 WebSocket URL (模拟盘)
-    pub const BUSINESS_DEMO: &'static str =
-        "wss://wspap.okx.com:8443/ws/v5/business?brokerId=9999";
+    pub const BUSINESS_DEMO: &'static str = "wss://wspap.okx.com:8443/ws/v5/business?brokerId=9999";
 }
 
 /// 构建订单频道订阅消息

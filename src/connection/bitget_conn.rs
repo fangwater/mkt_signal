@@ -156,7 +156,10 @@ impl MktConnectionRunner for BitgetConnection {
 impl MktConnectionHandler for BitgetConnection {
     async fn start_ws(&mut self) -> anyhow::Result<()> {
         loop {
-            info!("Bitget: Connecting to WebSocket URL: {}", &self.base_connection.url);
+            info!(
+                "Bitget: Connecting to WebSocket URL: {}",
+                &self.base_connection.url
+            );
 
             let connect_result = if let Some(ref local_ip) = self.base_connection.local_ip {
                 WsConnector::connect_with_local_ip(

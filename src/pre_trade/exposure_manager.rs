@@ -234,8 +234,7 @@ impl ExposureManager {
         self.total_spot_value_usd = total_spot_value;
         self.total_borrowed_usd = total_borrowed_value;
         self.total_interest_usd = total_interest_value;
-        self.total_equity = (total_spot_value - total_interest_value)
-            + self.total_um_unrealized;
+        self.total_equity = (total_spot_value - total_interest_value) + self.total_um_unrealized;
         self.abs_total_exposure = abs_total_exposure_usdt;
         self.total_position = total_position_value;
     }

@@ -21,6 +21,59 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Deque, Dict, List, Optional
 
+from json.encoder import INFINITY, encode_basestring, encode_basestring_ascii, _make_iterencode
+
+
+class PlainFloatJSONEncoder(json.JSONEncoder):
+    """JSON encoder that keeps float output in plain decimal form."""
+
+    def __init__(self, *args, float_precision: int = 12, **kwargs) -> None:
+        self.float_precision = float_precision
+        super().__init__(*args, **kwargs)
+
+    def iterencode(self, o, _one_shot=False):  # noqa: D401 (doc inherited)
+        if self.check_circular:
+            markers = {}
+        else:
+            markers = None
+        if self.ensure_ascii:
+            _encoder = encode_basestring_ascii
+        else:
+            _encoder = encode_basestring
+
+        def floatstr(value, allow_nan=self.allow_nan):
+            if value != value:
+                text = "NaN"
+            elif value == INFINITY:
+                text = "Infinity"
+            elif value == -INFINITY:
+                text = "-Infinity"
+            else:
+                text = format(value, f".{self.float_precision}f")
+                text = text.rstrip("0").rstrip(".")
+                if text in {"", "-0"}:
+                    text = "0"
+                return text
+
+            if not allow_nan:
+                raise ValueError(f"Out of range float values are not JSON compliant: {value!r}")
+
+            return text
+
+        _iterencode = _make_iterencode(
+            markers,
+            self.default,
+            _encoder,
+            self.indent,
+            floatstr,
+            self.key_separator,
+            self.item_separator,
+            self.sort_keys,
+            self.skipkeys,
+            _one_shot,
+        )
+        return _iterencode(o, 0)
+
 API = "https://www.okx.com/api/v5/public/interest-rate-loan-quota"
 
 
@@ -93,7 +146,7 @@ class RateRequestHandler(BaseHTTPRequestHandler):
         pass
 
     def _write_json(self, payload: dict, status: int = 200) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        body = json.dumps(payload, ensure_ascii=False, cls=PlainFloatJSONEncoder).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))

@@ -94,10 +94,7 @@ impl OkexAccountEventParser {
         let order_id = ord_id.parse::<i64>().unwrap_or(0);
 
         // 客户订单 ID (尝试解析为数字，失败则用 hash)
-        let cl_ord_id_str = order
-            .get("clOrdId")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let cl_ord_id_str = order.get("clOrdId").and_then(|v| v.as_str()).unwrap_or("");
         let client_order_id = cl_ord_id_str.parse::<i64>().unwrap_or_else(|_| {
             // 如果无法解析为数字，使用字符串 hash
             use std::collections::hash_map::DefaultHasher;
@@ -207,35 +204,35 @@ impl OkexAccountEventParser {
             .unwrap_or(false);
 
         Some(OrderTradeUpdateMsg::create(
-            u_time,              // event_time
-            u_time,              // transaction_time
-            order_id,            // order_id
-            trade_id,            // trade_id
-            0,                   // strategy_id (OKX 无此字段)
-            inst_id.to_string(), // symbol
-            client_order_id,     // client_order_id
-            side,                // side
-            position_side,       // position_side
-            is_maker,            // is_maker
-            reduce_only,         // reduce_only
-            px,                  // price
-            sz,                  // quantity
-            avg_px,              // average_price
-            0.0,                 // stop_price (订单频道无此字段)
-            fill_sz,             // last_executed_quantity
-            acc_fill_sz,         // cumulative_filled_quantity
-            fill_px,             // last_executed_price
-            fee.abs(),           // commission_amount (OKX 负数表示扣费)
-            0.0,                 // buy_notional
-            0.0,                 // sell_notional
-            pnl,                 // realized_profit
-            ord_type,            // order_type
-            "GTC".to_string(),   // time_in_force (默认 GTC)
-            execution_type,      // execution_type
-            order_status,        // order_status
-            fee_ccy,             // commission_asset
-            String::new(),       // strategy_type
-            String::new(),       // business_unit
+            u_time,                          // event_time
+            u_time,                          // transaction_time
+            order_id,                        // order_id
+            trade_id,                        // trade_id
+            0,                               // strategy_id (OKX 无此字段)
+            inst_id.to_string(),             // symbol
+            client_order_id,                 // client_order_id
+            side,                            // side
+            position_side,                   // position_side
+            is_maker,                        // is_maker
+            reduce_only,                     // reduce_only
+            px,                              // price
+            sz,                              // quantity
+            avg_px,                          // average_price
+            0.0,                             // stop_price (订单频道无此字段)
+            fill_sz,                         // last_executed_quantity
+            acc_fill_sz,                     // cumulative_filled_quantity
+            fill_px,                         // last_executed_price
+            fee.abs(),                       // commission_amount (OKX 负数表示扣费)
+            0.0,                             // buy_notional
+            0.0,                             // sell_notional
+            pnl,                             // realized_profit
+            ord_type,                        // order_type
+            "GTC".to_string(),               // time_in_force (默认 GTC)
+            execution_type,                  // execution_type
+            order_status,                    // order_status
+            fee_ccy,                         // commission_asset
+            String::new(),                   // strategy_type
+            String::new(),                   // business_unit
             Some(cl_ord_id_str.to_string()), // client_order_id_str
         ))
     }

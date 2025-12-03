@@ -387,7 +387,10 @@ impl MonitorChannel {
         // 加载交易对 LOT_SIZE/PRICE_FILTER（spot/futures/margin），用于数量/价格对齐
         let mut min_qty_table = MinQtyTable::new(exchange);
         if let Err(err) = min_qty_table.refresh().await {
-            warn!("failed to refresh exchange filters for {}: {err:#}", exchange);
+            warn!(
+                "failed to refresh exchange filters for {}: {err:#}",
+                exchange
+            );
         }
         let min_qty_table = Rc::new(min_qty_table);
 
@@ -530,11 +533,16 @@ impl MonitorChannel {
             // 1. 检查最小下单量
             let min_qty = match venue {
                 TradingVenue::BinanceUm => inner.min_qty_table.min_qty(MarketType::Futures, symbol),
-                TradingVenue::BinanceMargin => inner.min_qty_table.min_qty(MarketType::Margin, symbol),
+                TradingVenue::BinanceMargin => {
+                    inner.min_qty_table.min_qty(MarketType::Margin, symbol)
+                }
                 TradingVenue::BinanceSpot | TradingVenue::OkexSpot => {
                     inner.min_qty_table.min_qty(MarketType::Spot, symbol)
                 }
-                TradingVenue::OkexSwap | TradingVenue::BitgetFutures | TradingVenue::BybitFutures | TradingVenue::GateFutures => None,
+                TradingVenue::OkexSwap
+                | TradingVenue::BitgetFutures
+                | TradingVenue::BybitFutures
+                | TradingVenue::GateFutures => None,
             }
             .unwrap_or(0.0);
 
@@ -544,7 +552,8 @@ impl MonitorChannel {
 
             // 2. 检查最小名义金额（仅对 UM 合约）
             if venue == TradingVenue::BinanceUm {
-                let min_notional = inner.min_qty_table
+                let min_notional = inner
+                    .min_qty_table
                     .min_notional(MarketType::Futures, symbol)
                     .unwrap_or(0.0);
 
@@ -1265,7 +1274,8 @@ fn log_exposures(entries: &[ExposureEntry], price_map: &BTreeMap<String, PriceEn
         let mark = price_map.get(&sym).map(|p| p.mark_price).unwrap_or(0.0);
 
         // 如果有持仓但缺少价格，仍然显示（价格显示为 0）
-        let has_position = entry.spot_total_wallet.abs() > 1e-8 || entry.um_net_position.abs() > 1e-8;
+        let has_position =
+            entry.spot_total_wallet.abs() > 1e-8 || entry.um_net_position.abs() > 1e-8;
         if mark == 0.0 && !has_position {
             continue;
         }

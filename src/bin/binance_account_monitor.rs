@@ -325,7 +325,13 @@ fn log_parsed_event(msg: &Bytes) {
             if let Ok(m) = AccountUpdatePositionMsg::from_bytes(&payload) {
                 info!(
                     "AccountUpdatePosition: sym={} side={} amt={} entry={} upnl={} reason={} bu={}",
-                    m.symbol, m.position_side, m.position_amount, m.entry_price, m.unrealized_pnl, m.reason, m.business_unit
+                    m.symbol,
+                    m.position_side,
+                    m.position_amount,
+                    m.entry_price,
+                    m.unrealized_pnl,
+                    m.reason,
+                    m.business_unit
                 );
             }
         }

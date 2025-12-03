@@ -198,11 +198,14 @@ const GATE_TEST_SYMBOLS: &[&str] = &["BTC_USDT", "ETH_USDT", "SOL_USDT"];
 // API 端点
 const BINANCE_FUNDING_RATE_API: &str = "https://fapi.binance.com/fapi/v1/fundingRate";
 const BINANCE_LENDING_RATE_API: &str = "https://api.binance.com/sapi/v1/margin/interestRateHistory";
-const OKEX_FUNDING_RATE_HISTORY_API: &str = "https://www.okx.com/api/v5/public/funding-rate-history";
+const OKEX_FUNDING_RATE_HISTORY_API: &str =
+    "https://www.okx.com/api/v5/public/funding-rate-history";
 const OKEX_FUNDING_RATE_API: &str = "https://www.okx.com/api/v5/public/funding-rate";
-const BITGET_FUNDING_RATE_HISTORY_API: &str = "https://api.bitget.com/api/v3/market/history-fund-rate";
+const BITGET_FUNDING_RATE_HISTORY_API: &str =
+    "https://api.bitget.com/api/v3/market/history-fund-rate";
 const BYBIT_FUNDING_RATE_HISTORY_API: &str = "https://api.bybit.com/v5/market/funding/history";
-const GATE_FUNDING_RATE_HISTORY_API: &str = "https://api.gateio.ws/api/v4/futures/usdt/funding_rate";
+const GATE_FUNDING_RATE_HISTORY_API: &str =
+    "https://api.gateio.ws/api/v4/futures/usdt/funding_rate";
 
 // ==================== Thread-local 单例 ====================
 
@@ -255,7 +258,9 @@ impl RateFetcher {
 
     /// 访问内部状态
     fn with_inner<F, R>(f: F) -> R
-    where F: FnOnce(&RateFetcherInner) -> R {
+    where
+        F: FnOnce(&RateFetcherInner) -> R,
+    {
         RATE_FETCHER.with(|frf| {
             let frf_ref = frf.borrow();
             let inner = frf_ref.as_ref().expect("RateFetcher not initialized");
@@ -265,7 +270,9 @@ impl RateFetcher {
 
     /// 访问内部状态（可变）
     fn with_inner_mut<F, R>(f: F) -> R
-    where F: FnOnce(&mut RateFetcherInner) -> R {
+    where
+        F: FnOnce(&mut RateFetcherInner) -> R,
+    {
         RATE_FETCHER.with(|frf| {
             let mut frf_ref = frf.borrow_mut();
             let inner = frf_ref.as_mut().expect("RateFetcher not initialized");
@@ -310,7 +317,10 @@ impl RateFetcher {
                 });
 
                 let has_lending = api_key.is_some() && api_secret.is_some();
-                info!("RateFetcher: Binance 初始化完成 (lending_rate={})", has_lending);
+                info!(
+                    "RateFetcher: Binance 初始化完成 (lending_rate={})",
+                    has_lending
+                );
                 Self::spawn_binance_fetch_task();
             }
             Exchange::Okex | Exchange::OkexSwap => {
@@ -374,7 +384,8 @@ impl RateFetcher {
             online_symbols = BINANCE_TEST_SYMBOLS.iter().map(|s| s.to_string()).collect();
         }
 
-        let (new_symbols, all_changed) = Self::update_symbol_cache(BINANCE_CONFIG.venue, &online_symbols, is_full_fetch);
+        let (new_symbols, all_changed) =
+            Self::update_symbol_cache(BINANCE_CONFIG.venue, &online_symbols, is_full_fetch);
         Self::log_fetch_status("Binance", is_full_fetch, &new_symbols, online_symbols.len());
 
         let symbols_to_fetch = if is_full_fetch {
@@ -389,8 +400,12 @@ impl RateFetcher {
             Self::fetch_binance_funding_rates(symbols_to_fetch),
             Self::fetch_binance_lending_rates(&online_symbols, true)
         );
-        if let Err(e) = fr_result { warn!("Binance 资金费率拉取失败: {:?}", e); }
-        if let Err(e) = lr_result { warn!("Binance 借贷利率拉取失败: {:?}", e); }
+        if let Err(e) = fr_result {
+            warn!("Binance 资金费率拉取失败: {:?}", e);
+        }
+        if let Err(e) = lr_result {
+            warn!("Binance 借贷利率拉取失败: {:?}", e);
+        }
 
         if all_changed || is_full_fetch {
             Self::print_binance_rate_table(&online_symbols);
@@ -399,113 +414,204 @@ impl RateFetcher {
     }
 
     async fn fetch_binance_funding_rates(symbols: &[String]) -> Result<()> {
-        if symbols.is_empty() { return Ok(()); }
+        if symbols.is_empty() {
+            return Ok(());
+        }
 
         let client = Self::with_inner(|inner| inner.http_client.clone());
-        let limit = BINANCE_CONFIG.period.calculate_limit(BINANCE_CONFIG.fetch_days);
+        let limit = BINANCE_CONFIG
+            .period
+            .calculate_limit(BINANCE_CONFIG.fetch_days);
         let mut success = 0;
         let mut fail = 0;
 
         for symbol in symbols {
             match Self::fetch_binance_funding_items(&client, symbol, limit).await {
                 Ok(items) => {
-                    let rates: Vec<f64> = items.iter().filter_map(|it| it.funding_rate.parse().ok()).collect();
+                    let rates: Vec<f64> = items
+                        .iter()
+                        .filter_map(|it| it.funding_rate.parse().ok())
+                        .collect();
                     if !rates.is_empty() {
                         let period = match Self::infer_binance_period(&client, symbol).await {
                             Some(p) if p == "4h" => FundingRatePeriod::Hours4,
                             _ => FundingRatePeriod::Hours8,
                         };
                         Self::with_inner_mut(|inner| {
-                            inner.funding_rates.entry(BINANCE_CONFIG.venue).or_default().insert(symbol.clone(), rates);
-                            inner.funding_periods.entry(BINANCE_CONFIG.venue).or_default().insert(symbol.clone(), period);
+                            inner
+                                .funding_rates
+                                .entry(BINANCE_CONFIG.venue)
+                                .or_default()
+                                .insert(symbol.clone(), rates);
+                            inner
+                                .funding_periods
+                                .entry(BINANCE_CONFIG.venue)
+                                .or_default()
+                                .insert(symbol.clone(), period);
                         });
                         success += 1;
                     }
                 }
-                Err(e) => { warn!("Binance {} 资金费率失败: {:?}", symbol, e); fail += 1; }
+                Err(e) => {
+                    warn!("Binance {} 资金费率失败: {:?}", symbol, e);
+                    fail += 1;
+                }
             }
             sleep(Duration::from_millis(100)).await;
         }
-        if success + fail > 0 { info!("Binance 资金费率: 成功 {}, 失败 {}", success, fail); }
+        if success + fail > 0 {
+            info!("Binance 资金费率: 成功 {}, 失败 {}", success, fail);
+        }
         Ok(())
     }
 
-    async fn fetch_binance_funding_items(client: &Client, symbol: &str, limit: usize) -> Result<Vec<BinanceFundingHistItem>> {
+    async fn fetch_binance_funding_items(
+        client: &Client,
+        symbol: &str,
+        limit: usize,
+    ) -> Result<Vec<BinanceFundingHistItem>> {
         let limit_s = limit.max(1).min(1000).to_string();
-        let resp = client.get(BINANCE_FUNDING_RATE_API).query(&[("symbol", symbol), ("limit", &limit_s)]).send().await?;
-        if !resp.status().is_success() { return Ok(vec![]); }
+        let resp = client
+            .get(BINANCE_FUNDING_RATE_API)
+            .query(&[("symbol", symbol), ("limit", &limit_s)])
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Ok(vec![]);
+        }
         let mut items: Vec<BinanceFundingHistItem> = resp.json().await.unwrap_or_default();
         items.sort_by_key(|it| it.funding_time.unwrap_or_default());
         Ok(items)
     }
 
     async fn infer_binance_period(client: &Client, symbol: &str) -> Option<String> {
-        let items = Self::fetch_binance_funding_items(client, symbol, 40).await.ok()?;
+        let items = Self::fetch_binance_funding_items(client, symbol, 40)
+            .await
+            .ok()?;
         let mut times: Vec<i64> = items.iter().filter_map(|it| it.funding_time).collect();
-        if times.len() < 3 { return Some("8h".to_string()); }
+        if times.len() < 3 {
+            return Some("8h".to_string());
+        }
         times.sort_unstable();
         let mut diffs: Vec<i64> = times.windows(2).map(|w| w[1] - w[0]).collect();
-        if diffs.is_empty() { return Some("8h".to_string()); }
+        if diffs.is_empty() {
+            return Some("8h".to_string());
+        }
         diffs.sort_unstable();
         let median = diffs[diffs.len() / 2];
-        let freq = if median <= 6 * 3600 * 1000 { "4h" } else { "8h" };
+        let freq = if median <= 6 * 3600 * 1000 {
+            "4h"
+        } else {
+            "8h"
+        };
         debug!("Binance {} 周期推断: {}ms => {}", symbol, median, freq);
         Some(freq.to_string())
     }
 
     async fn fetch_binance_lending_rates(symbols: &[String], save: bool) -> Result<()> {
-        let has_keys = Self::with_inner(|inner| inner.binance_api_key.is_some() && inner.binance_api_secret.is_some());
-        if !has_keys { return Ok(()); }
+        let has_keys = Self::with_inner(|inner| {
+            inner.binance_api_key.is_some() && inner.binance_api_secret.is_some()
+        });
+        if !has_keys {
+            return Ok(());
+        }
 
-        let mut assets: Vec<String> = symbols.iter().filter_map(|s| s.strip_suffix("USDT").map(String::from)).collect();
+        let mut assets: Vec<String> = symbols
+            .iter()
+            .filter_map(|s| s.strip_suffix("USDT").map(String::from))
+            .collect();
         assets.sort_unstable();
         assets.dedup();
-        if assets.is_empty() { return Ok(()); }
+        if assets.is_empty() {
+            return Ok(());
+        }
 
         let mut success = 0;
         let mut fail = 0;
         for asset in &assets {
             match Self::fetch_binance_lending_rate_for_asset(asset).await {
                 Ok(Some(rates)) if save => {
-                    let predict = if rates.is_empty() { 0.0 } else { rates.iter().sum::<f64>() / rates.len() as f64 };
-                    let current = if rates.is_empty() { 0.0 } else {
+                    let predict = if rates.is_empty() {
+                        0.0
+                    } else {
+                        rates.iter().sum::<f64>() / rates.len() as f64
+                    };
+                    let current = if rates.is_empty() {
+                        0.0
+                    } else {
                         let n = 3.min(rates.len());
                         rates.iter().take(n).sum::<f64>() / n as f64
                     };
                     Self::with_inner_mut(|inner| {
-                        inner.lending_rates.entry(BINANCE_CONFIG.venue).or_default()
-                            .insert(asset.to_uppercase(), LendingRateCache { predict_daily_rate: predict, current_daily_rate: current, raw_daily_rates: rates });
+                        inner
+                            .lending_rates
+                            .entry(BINANCE_CONFIG.venue)
+                            .or_default()
+                            .insert(
+                                asset.to_uppercase(),
+                                LendingRateCache {
+                                    predict_daily_rate: predict,
+                                    current_daily_rate: current,
+                                    raw_daily_rates: rates,
+                                },
+                            );
                     });
                     success += 1;
                 }
                 Ok(Some(_)) => success += 1,
                 Ok(None) => {}
-                Err(e) => { warn!("Binance {} 借贷利率失败: {:?}", asset, e); fail += 1; }
+                Err(e) => {
+                    warn!("Binance {} 借贷利率失败: {:?}", asset, e);
+                    fail += 1;
+                }
             }
             sleep(Duration::from_millis(100)).await;
         }
-        if save && success > 0 { info!("Binance 借贷利率: 成功 {}, 失败 {}", success, fail); }
+        if save && success > 0 {
+            info!("Binance 借贷利率: 成功 {}, 失败 {}", success, fail);
+        }
         Ok(())
     }
 
     async fn fetch_binance_lending_rate_for_asset(asset: &str) -> Result<Option<Vec<f64>>> {
         let (client, api_key, api_secret) = Self::with_inner(|inner| {
-            (inner.http_client.clone(), inner.binance_api_key.clone(), inner.binance_api_secret.clone())
+            (
+                inner.http_client.clone(),
+                inner.binance_api_key.clone(),
+                inner.binance_api_secret.clone(),
+            )
         });
         let (api_key, api_secret) = match (api_key, api_secret) {
             (Some(k), Some(s)) => (k, s),
             _ => return Ok(None),
         };
 
-        let query = format!("asset={}&isIsolated=FALSE&timestamp={}", asset, Utc::now().timestamp_millis());
+        let query = format!(
+            "asset={}&isIsolated=FALSE&timestamp={}",
+            asset,
+            Utc::now().timestamp_millis()
+        );
         let signature = Self::sign_binance_query(&api_secret, &query)?;
-        let url = format!("{}?{}&signature={}", BINANCE_LENDING_RATE_API, query, signature);
+        let url = format!(
+            "{}?{}&signature={}",
+            BINANCE_LENDING_RATE_API, query, signature
+        );
 
-        let resp = client.get(&url).header("X-MBX-APIKEY", &api_key).send().await?;
-        if !resp.status().is_success() { return Ok(None); }
+        let resp = client
+            .get(&url)
+            .header("X-MBX-APIKEY", &api_key)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
 
         let items: Vec<BinanceLendingRateHistoryItem> = resp.json().await?;
-        let rates: Vec<f64> = items.iter().take(24).filter_map(|it| it.daily_interest_rate.parse().ok()).collect();
+        let rates: Vec<f64> = items
+            .iter()
+            .take(24)
+            .filter_map(|it| it.daily_interest_rate.parse().ok())
+            .collect();
         Ok(if rates.is_empty() { None } else { Some(rates) })
     }
 
@@ -516,11 +622,18 @@ impl RateFetcher {
     }
 
     fn print_binance_rate_table(symbols: &[String]) {
-        let mut data: Vec<_> = symbols.iter().map(|s| {
-            let fr = RateFetcher::instance().get_predicted_funding_rate(s, BINANCE_CONFIG.venue).map(|(_, v)| v);
-            let loan = RateFetcher::instance().get_predict_loan_rate(s, BINANCE_CONFIG.venue).map(|(_, v)| v);
-            (s.clone(), fr, loan)
-        }).collect();
+        let mut data: Vec<_> = symbols
+            .iter()
+            .map(|s| {
+                let fr = RateFetcher::instance()
+                    .get_predicted_funding_rate(s, BINANCE_CONFIG.venue)
+                    .map(|(_, v)| v);
+                let loan = RateFetcher::instance()
+                    .get_predict_loan_rate(s, BINANCE_CONFIG.venue)
+                    .map(|(_, v)| v);
+                (s.clone(), fr, loan)
+            })
+            .collect();
         data.sort_by(|a, b| a.0.cmp(&b.0));
 
         info!("┌─────────────────────────────────────────────────────────┐");
@@ -559,7 +672,8 @@ impl RateFetcher {
             online_symbols = OKEX_TEST_SYMBOLS.iter().map(|s| s.to_string()).collect();
         }
 
-        let (new_symbols, all_changed) = Self::update_symbol_cache(OKEX_CONFIG.venue, &online_symbols, is_full_fetch);
+        let (new_symbols, all_changed) =
+            Self::update_symbol_cache(OKEX_CONFIG.venue, &online_symbols, is_full_fetch);
         Self::log_fetch_status("OKEx", is_full_fetch, &new_symbols, online_symbols.len());
 
         let symbols_to_fetch = if is_full_fetch {
@@ -579,7 +693,9 @@ impl RateFetcher {
     }
 
     async fn fetch_okex_funding_rates(symbols: &[String]) -> Result<()> {
-        if symbols.is_empty() { return Ok(()); }
+        if symbols.is_empty() {
+            return Ok(());
+        }
 
         let client = Self::with_inner(|inner| inner.http_client.clone());
         let mut success = 0;
@@ -589,38 +705,64 @@ impl RateFetcher {
             // 先获取周期
             let period = match Self::fetch_okex_period(&client, symbol).await {
                 Ok(p) => p,
-                Err(e) => { warn!("OKEx {} 周期获取失败: {:?}", symbol, e); FundingRatePeriod::Hours8 }
+                Err(e) => {
+                    warn!("OKEx {} 周期获取失败: {:?}", symbol, e);
+                    FundingRatePeriod::Hours8
+                }
             };
             let limit = period.calculate_limit(OKEX_CONFIG.fetch_days);
 
             match Self::fetch_okex_funding_history(&client, symbol, limit).await {
                 Ok(rates) if !rates.is_empty() => {
                     Self::with_inner_mut(|inner| {
-                        inner.funding_rates.entry(OKEX_CONFIG.venue).or_default().insert(symbol.clone(), rates);
-                        inner.funding_periods.entry(OKEX_CONFIG.venue).or_default().insert(symbol.clone(), period);
+                        inner
+                            .funding_rates
+                            .entry(OKEX_CONFIG.venue)
+                            .or_default()
+                            .insert(symbol.clone(), rates);
+                        inner
+                            .funding_periods
+                            .entry(OKEX_CONFIG.venue)
+                            .or_default()
+                            .insert(symbol.clone(), period);
                     });
                     success += 1;
                 }
                 Ok(_) => {}
-                Err(e) => { warn!("OKEx {} 资金费率失败: {:?}", symbol, e); fail += 1; }
+                Err(e) => {
+                    warn!("OKEx {} 资金费率失败: {:?}", symbol, e);
+                    fail += 1;
+                }
             }
             sleep(Duration::from_millis(100)).await;
         }
-        if success + fail > 0 { info!("OKEx 资金费率: 成功 {}, 失败 {}", success, fail); }
+        if success + fail > 0 {
+            info!("OKEx 资金费率: 成功 {}, 失败 {}", success, fail);
+        }
         Ok(())
     }
 
     async fn fetch_okex_period(client: &Client, symbol: &str) -> Result<FundingRatePeriod> {
-        let resp = client.get(OKEX_FUNDING_RATE_API).query(&[("instId", symbol)]).send().await?;
-        if !resp.status().is_success() { return Ok(FundingRatePeriod::Hours8); }
+        let resp = client
+            .get(OKEX_FUNDING_RATE_API)
+            .query(&[("instId", symbol)])
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Ok(FundingRatePeriod::Hours8);
+        }
 
         let data: OkexCurrentFundingRateResponse = resp.json().await?;
-        if data.code != "0" || data.data.is_empty() { return Ok(FundingRatePeriod::Hours8); }
+        if data.code != "0" || data.data.is_empty() {
+            return Ok(FundingRatePeriod::Hours8);
+        }
 
         let item = &data.data[0];
         let ft: i64 = item.funding_time.parse().unwrap_or(0);
         let nft: i64 = item.next_funding_time.parse().unwrap_or(0);
-        if ft == 0 || nft == 0 { return Ok(FundingRatePeriod::Hours8); }
+        if ft == 0 || nft == 0 {
+            return Ok(FundingRatePeriod::Hours8);
+        }
 
         let hours = (nft - ft) / 1000 / 3600;
         let period = match hours {
@@ -634,28 +776,54 @@ impl RateFetcher {
         Ok(period)
     }
 
-    async fn fetch_okex_funding_history(client: &Client, symbol: &str, limit: usize) -> Result<Vec<f64>> {
+    async fn fetch_okex_funding_history(
+        client: &Client,
+        symbol: &str,
+        limit: usize,
+    ) -> Result<Vec<f64>> {
         let limit_s = limit.max(1).min(100).to_string();
-        let resp = client.get(OKEX_FUNDING_RATE_HISTORY_API).query(&[("instId", symbol), ("limit", &limit_s)]).send().await?;
-        if !resp.status().is_success() { return Ok(vec![]); }
+        let resp = client
+            .get(OKEX_FUNDING_RATE_HISTORY_API)
+            .query(&[("instId", symbol), ("limit", &limit_s)])
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Ok(vec![]);
+        }
 
         let data: OkexFundingRateHistoryResponse = resp.json().await?;
-        if data.code != "0" { return Ok(vec![]); }
+        if data.code != "0" {
+            return Ok(vec![]);
+        }
 
         // OKEx 返回最新在前，反转为时间顺序
-        let mut rates: Vec<f64> = data.data.iter().filter_map(|it| it.funding_rate.parse().ok()).collect();
+        let mut rates: Vec<f64> = data
+            .data
+            .iter()
+            .filter_map(|it| it.funding_rate.parse().ok())
+            .collect();
         rates.reverse();
         Ok(rates)
     }
 
     fn print_okex_rate_table(symbols: &[String]) {
-        let mut data: Vec<_> = symbols.iter().map(|s| {
-            let period = Self::with_inner(|inner| {
-                inner.funding_periods.get(&OKEX_CONFIG.venue).and_then(|m| m.get(s)).copied().unwrap_or(FundingRatePeriod::Hours8)
-            });
-            let fr = RateFetcher::instance().get_predicted_funding_rate(s, OKEX_CONFIG.venue).map(|(_, v)| v);
-            (s.clone(), period, fr)
-        }).collect();
+        let mut data: Vec<_> = symbols
+            .iter()
+            .map(|s| {
+                let period = Self::with_inner(|inner| {
+                    inner
+                        .funding_periods
+                        .get(&OKEX_CONFIG.venue)
+                        .and_then(|m| m.get(s))
+                        .copied()
+                        .unwrap_or(FundingRatePeriod::Hours8)
+                });
+                let fr = RateFetcher::instance()
+                    .get_predicted_funding_rate(s, OKEX_CONFIG.venue)
+                    .map(|(_, v)| v);
+                (s.clone(), period, fr)
+            })
+            .collect();
         data.sort_by(|a, b| a.0.cmp(&b.0));
 
         info!("┌────────────────────────────────────────────────┐");
@@ -693,7 +861,8 @@ impl RateFetcher {
             online_symbols = BITGET_TEST_SYMBOLS.iter().map(|s| s.to_string()).collect();
         }
 
-        let (new_symbols, all_changed) = Self::update_symbol_cache(BITGET_CONFIG.venue, &online_symbols, is_full_fetch);
+        let (new_symbols, all_changed) =
+            Self::update_symbol_cache(BITGET_CONFIG.venue, &online_symbols, is_full_fetch);
         Self::log_fetch_status("Bitget", is_full_fetch, &new_symbols, online_symbols.len());
 
         let symbols_to_fetch = if is_full_fetch {
@@ -713,7 +882,9 @@ impl RateFetcher {
     }
 
     async fn fetch_bitget_funding_rates(symbols: &[String]) -> Result<()> {
-        if symbols.is_empty() { return Ok(()); }
+        if symbols.is_empty() {
+            return Ok(());
+        }
 
         let client = Self::with_inner(|inner| inner.http_client.clone());
         let mut success = 0;
@@ -724,28 +895,53 @@ impl RateFetcher {
             match Self::fetch_bitget_funding_history(&client, symbol, 30).await {
                 Ok((rates, period)) if !rates.is_empty() => {
                     Self::with_inner_mut(|inner| {
-                        inner.funding_rates.entry(BITGET_CONFIG.venue).or_default().insert(symbol.clone(), rates);
-                        inner.funding_periods.entry(BITGET_CONFIG.venue).or_default().insert(symbol.clone(), period);
+                        inner
+                            .funding_rates
+                            .entry(BITGET_CONFIG.venue)
+                            .or_default()
+                            .insert(symbol.clone(), rates);
+                        inner
+                            .funding_periods
+                            .entry(BITGET_CONFIG.venue)
+                            .or_default()
+                            .insert(symbol.clone(), period);
                     });
                     success += 1;
                 }
                 Ok(_) => {}
-                Err(e) => { warn!("Bitget {} 资金费率失败: {:?}", symbol, e); fail += 1; }
+                Err(e) => {
+                    warn!("Bitget {} 资金费率失败: {:?}", symbol, e);
+                    fail += 1;
+                }
             }
             sleep(Duration::from_millis(100)).await;
         }
-        if success + fail > 0 { info!("Bitget 资金费率: 成功 {}, 失败 {}", success, fail); }
+        if success + fail > 0 {
+            info!("Bitget 资金费率: 成功 {}, 失败 {}", success, fail);
+        }
         Ok(())
     }
 
     /// 从 Bitget API 获取资金费率历史，同时推断周期
-    async fn fetch_bitget_funding_history(client: &Client, symbol: &str, limit: usize) -> Result<(Vec<f64>, FundingRatePeriod)> {
+    async fn fetch_bitget_funding_history(
+        client: &Client,
+        symbol: &str,
+        limit: usize,
+    ) -> Result<(Vec<f64>, FundingRatePeriod)> {
         let limit_s = limit.max(1).min(100).to_string();
-        let resp = client.get(BITGET_FUNDING_RATE_HISTORY_API)
-            .query(&[("category", "USDT-FUTURES"), ("symbol", symbol), ("limit", &limit_s)])
-            .send().await?;
+        let resp = client
+            .get(BITGET_FUNDING_RATE_HISTORY_API)
+            .query(&[
+                ("category", "USDT-FUTURES"),
+                ("symbol", symbol),
+                ("limit", &limit_s),
+            ])
+            .send()
+            .await?;
 
-        if !resp.status().is_success() { return Ok((vec![], FundingRatePeriod::Hours8)); }
+        if !resp.status().is_success() {
+            return Ok((vec![], FundingRatePeriod::Hours8));
+        }
 
         let data: BitgetFundingRateResponse = resp.json().await?;
         if data.code != "00000" || data.data.result_list.is_empty() {
@@ -775,7 +971,10 @@ impl RateFetcher {
         };
 
         // Bitget 返回最新在前，反转为时间顺序
-        let mut rates: Vec<f64> = items.iter().filter_map(|it| it.funding_rate.parse().ok()).collect();
+        let mut rates: Vec<f64> = items
+            .iter()
+            .filter_map(|it| it.funding_rate.parse().ok())
+            .collect();
         rates.reverse();
 
         debug!("Bitget {} 周期: {}", symbol, period.as_str());
@@ -783,13 +982,23 @@ impl RateFetcher {
     }
 
     fn print_bitget_rate_table(symbols: &[String]) {
-        let mut data: Vec<_> = symbols.iter().map(|s| {
-            let period = Self::with_inner(|inner| {
-                inner.funding_periods.get(&BITGET_CONFIG.venue).and_then(|m| m.get(s)).copied().unwrap_or(FundingRatePeriod::Hours8)
-            });
-            let fr = RateFetcher::instance().get_predicted_funding_rate(s, BITGET_CONFIG.venue).map(|(_, v)| v);
-            (s.clone(), period, fr)
-        }).collect();
+        let mut data: Vec<_> = symbols
+            .iter()
+            .map(|s| {
+                let period = Self::with_inner(|inner| {
+                    inner
+                        .funding_periods
+                        .get(&BITGET_CONFIG.venue)
+                        .and_then(|m| m.get(s))
+                        .copied()
+                        .unwrap_or(FundingRatePeriod::Hours8)
+                });
+                let fr = RateFetcher::instance()
+                    .get_predicted_funding_rate(s, BITGET_CONFIG.venue)
+                    .map(|(_, v)| v);
+                (s.clone(), period, fr)
+            })
+            .collect();
         data.sort_by(|a, b| a.0.cmp(&b.0));
 
         info!("┌────────────────────────────────────────────────┐");
@@ -827,7 +1036,8 @@ impl RateFetcher {
             online_symbols = BYBIT_TEST_SYMBOLS.iter().map(|s| s.to_string()).collect();
         }
 
-        let (new_symbols, all_changed) = Self::update_symbol_cache(BYBIT_CONFIG.venue, &online_symbols, is_full_fetch);
+        let (new_symbols, all_changed) =
+            Self::update_symbol_cache(BYBIT_CONFIG.venue, &online_symbols, is_full_fetch);
         Self::log_fetch_status("Bybit", is_full_fetch, &new_symbols, online_symbols.len());
 
         let symbols_to_fetch = if is_full_fetch {
@@ -847,7 +1057,9 @@ impl RateFetcher {
     }
 
     async fn fetch_bybit_funding_rates(symbols: &[String]) -> Result<()> {
-        if symbols.is_empty() { return Ok(()); }
+        if symbols.is_empty() {
+            return Ok(());
+        }
 
         let client = Self::with_inner(|inner| inner.http_client.clone());
         let mut success = 0;
@@ -857,28 +1069,53 @@ impl RateFetcher {
             match Self::fetch_bybit_funding_history(&client, symbol, 30).await {
                 Ok((rates, period)) if !rates.is_empty() => {
                     Self::with_inner_mut(|inner| {
-                        inner.funding_rates.entry(BYBIT_CONFIG.venue).or_default().insert(symbol.clone(), rates);
-                        inner.funding_periods.entry(BYBIT_CONFIG.venue).or_default().insert(symbol.clone(), period);
+                        inner
+                            .funding_rates
+                            .entry(BYBIT_CONFIG.venue)
+                            .or_default()
+                            .insert(symbol.clone(), rates);
+                        inner
+                            .funding_periods
+                            .entry(BYBIT_CONFIG.venue)
+                            .or_default()
+                            .insert(symbol.clone(), period);
                     });
                     success += 1;
                 }
                 Ok(_) => {}
-                Err(e) => { warn!("Bybit {} 资金费率失败: {:?}", symbol, e); fail += 1; }
+                Err(e) => {
+                    warn!("Bybit {} 资金费率失败: {:?}", symbol, e);
+                    fail += 1;
+                }
             }
             sleep(Duration::from_millis(100)).await;
         }
-        if success + fail > 0 { info!("Bybit 资金费率: 成功 {}, 失败 {}", success, fail); }
+        if success + fail > 0 {
+            info!("Bybit 资金费率: 成功 {}, 失败 {}", success, fail);
+        }
         Ok(())
     }
 
     /// 从 Bybit v5 API 获取资金费率历史，同时推断周期
-    async fn fetch_bybit_funding_history(client: &Client, symbol: &str, limit: usize) -> Result<(Vec<f64>, FundingRatePeriod)> {
+    async fn fetch_bybit_funding_history(
+        client: &Client,
+        symbol: &str,
+        limit: usize,
+    ) -> Result<(Vec<f64>, FundingRatePeriod)> {
         let limit_s = limit.max(1).min(200).to_string();
-        let resp = client.get(BYBIT_FUNDING_RATE_HISTORY_API)
-            .query(&[("category", "linear"), ("symbol", symbol), ("limit", &limit_s)])
-            .send().await?;
+        let resp = client
+            .get(BYBIT_FUNDING_RATE_HISTORY_API)
+            .query(&[
+                ("category", "linear"),
+                ("symbol", symbol),
+                ("limit", &limit_s),
+            ])
+            .send()
+            .await?;
 
-        if !resp.status().is_success() { return Ok((vec![], FundingRatePeriod::Hours8)); }
+        if !resp.status().is_success() {
+            return Ok((vec![], FundingRatePeriod::Hours8));
+        }
 
         let data: BybitFundingRateResponse = resp.json().await?;
         if data.ret_code != 0 || data.result.list.is_empty() {
@@ -908,7 +1145,10 @@ impl RateFetcher {
         };
 
         // Bybit 返回最新在前，反转为时间顺序
-        let mut rates: Vec<f64> = items.iter().filter_map(|it| it.funding_rate.parse().ok()).collect();
+        let mut rates: Vec<f64> = items
+            .iter()
+            .filter_map(|it| it.funding_rate.parse().ok())
+            .collect();
         rates.reverse();
 
         debug!("Bybit {} 周期: {}", symbol, period.as_str());
@@ -916,13 +1156,23 @@ impl RateFetcher {
     }
 
     fn print_bybit_rate_table(symbols: &[String]) {
-        let mut data: Vec<_> = symbols.iter().map(|s| {
-            let period = Self::with_inner(|inner| {
-                inner.funding_periods.get(&BYBIT_CONFIG.venue).and_then(|m| m.get(s)).copied().unwrap_or(FundingRatePeriod::Hours8)
-            });
-            let fr = RateFetcher::instance().get_predicted_funding_rate(s, BYBIT_CONFIG.venue).map(|(_, v)| v);
-            (s.clone(), period, fr)
-        }).collect();
+        let mut data: Vec<_> = symbols
+            .iter()
+            .map(|s| {
+                let period = Self::with_inner(|inner| {
+                    inner
+                        .funding_periods
+                        .get(&BYBIT_CONFIG.venue)
+                        .and_then(|m| m.get(s))
+                        .copied()
+                        .unwrap_or(FundingRatePeriod::Hours8)
+                });
+                let fr = RateFetcher::instance()
+                    .get_predicted_funding_rate(s, BYBIT_CONFIG.venue)
+                    .map(|(_, v)| v);
+                (s.clone(), period, fr)
+            })
+            .collect();
         data.sort_by(|a, b| a.0.cmp(&b.0));
 
         info!("┌────────────────────────────────────────────────┐");
@@ -960,7 +1210,8 @@ impl RateFetcher {
             online_symbols = GATE_TEST_SYMBOLS.iter().map(|s| s.to_string()).collect();
         }
 
-        let (new_symbols, all_changed) = Self::update_symbol_cache(GATE_CONFIG.venue, &online_symbols, is_full_fetch);
+        let (new_symbols, all_changed) =
+            Self::update_symbol_cache(GATE_CONFIG.venue, &online_symbols, is_full_fetch);
         Self::log_fetch_status("Gate", is_full_fetch, &new_symbols, online_symbols.len());
 
         let symbols_to_fetch = if is_full_fetch {
@@ -980,7 +1231,9 @@ impl RateFetcher {
     }
 
     async fn fetch_gate_funding_rates(symbols: &[String]) -> Result<()> {
-        if symbols.is_empty() { return Ok(()); }
+        if symbols.is_empty() {
+            return Ok(());
+        }
 
         let client = Self::with_inner(|inner| inner.http_client.clone());
         let limit = GATE_CONFIG.period.calculate_limit(GATE_CONFIG.fetch_days);
@@ -991,29 +1244,50 @@ impl RateFetcher {
             match Self::fetch_gate_funding_history(&client, symbol, limit).await {
                 Ok((rates, period)) if !rates.is_empty() => {
                     Self::with_inner_mut(|inner| {
-                        inner.funding_rates.entry(GATE_CONFIG.venue).or_default().insert(symbol.clone(), rates);
-                        inner.funding_periods.entry(GATE_CONFIG.venue).or_default().insert(symbol.clone(), period);
+                        inner
+                            .funding_rates
+                            .entry(GATE_CONFIG.venue)
+                            .or_default()
+                            .insert(symbol.clone(), rates);
+                        inner
+                            .funding_periods
+                            .entry(GATE_CONFIG.venue)
+                            .or_default()
+                            .insert(symbol.clone(), period);
                     });
                     success += 1;
                 }
                 Ok(_) => {}
-                Err(e) => { warn!("Gate {} 资金费率失败: {:?}", symbol, e); fail += 1; }
+                Err(e) => {
+                    warn!("Gate {} 资金费率失败: {:?}", symbol, e);
+                    fail += 1;
+                }
             }
             sleep(Duration::from_millis(100)).await;
         }
-        if success + fail > 0 { info!("Gate 资金费率: 成功 {}, 失败 {}", success, fail); }
+        if success + fail > 0 {
+            info!("Gate 资金费率: 成功 {}, 失败 {}", success, fail);
+        }
         Ok(())
     }
 
     /// 从 Gate.io API 获取资金费率历史，同时推断周期
     /// Gate 响应格式: [{"t": 1543968000, "r": "0.000157"}, ...]
-    async fn fetch_gate_funding_history(client: &Client, symbol: &str, limit: usize) -> Result<(Vec<f64>, FundingRatePeriod)> {
+    async fn fetch_gate_funding_history(
+        client: &Client,
+        symbol: &str,
+        limit: usize,
+    ) -> Result<(Vec<f64>, FundingRatePeriod)> {
         let limit_s = limit.max(1).min(1000).to_string();
-        let resp = client.get(GATE_FUNDING_RATE_HISTORY_API)
+        let resp = client
+            .get(GATE_FUNDING_RATE_HISTORY_API)
             .query(&[("contract", symbol), ("limit", &limit_s)])
-            .send().await?;
+            .send()
+            .await?;
 
-        if !resp.status().is_success() { return Ok((vec![], FundingRatePeriod::Hours8)); }
+        if !resp.status().is_success() {
+            return Ok((vec![], FundingRatePeriod::Hours8));
+        }
 
         let items: Vec<GateFundingRateItem> = resp.json().await?;
         if items.is_empty() {
@@ -1049,13 +1323,23 @@ impl RateFetcher {
     }
 
     fn print_gate_rate_table(symbols: &[String]) {
-        let mut data: Vec<_> = symbols.iter().map(|s| {
-            let period = Self::with_inner(|inner| {
-                inner.funding_periods.get(&GATE_CONFIG.venue).and_then(|m| m.get(s)).copied().unwrap_or(FundingRatePeriod::Hours8)
-            });
-            let fr = RateFetcher::instance().get_predicted_funding_rate(s, GATE_CONFIG.venue).map(|(_, v)| v);
-            (s.clone(), period, fr)
-        }).collect();
+        let mut data: Vec<_> = symbols
+            .iter()
+            .map(|s| {
+                let period = Self::with_inner(|inner| {
+                    inner
+                        .funding_periods
+                        .get(&GATE_CONFIG.venue)
+                        .and_then(|m| m.get(s))
+                        .copied()
+                        .unwrap_or(FundingRatePeriod::Hours8)
+                });
+                let fr = RateFetcher::instance()
+                    .get_predicted_funding_rate(s, GATE_CONFIG.venue)
+                    .map(|(_, v)| v);
+                (s.clone(), period, fr)
+            })
+            .collect();
         data.sort_by(|a, b| a.0.cmp(&b.0));
 
         info!("┌────────────────────────────────────────────────┐");
@@ -1083,7 +1367,11 @@ impl RateFetcher {
         })
     }
 
-    fn update_symbol_cache(venue: TradingVenue, symbols: &[String], is_full: bool) -> (Vec<String>, bool) {
+    fn update_symbol_cache(
+        venue: TradingVenue,
+        symbols: &[String],
+        is_full: bool,
+    ) -> (Vec<String>, bool) {
         Self::with_inner_mut(|inner| {
             let state = inner.venue_states.entry(venue).or_default();
             let current: HashSet<String> = symbols.iter().cloned().collect();
@@ -1103,9 +1391,19 @@ impl RateFetcher {
     fn log_fetch_status(exchange: &str, is_full: bool, new_symbols: &[String], total: usize) {
         let now = Utc::now();
         if is_full {
-            info!("[{}] {} 整点全量拉取: {} 个 symbol", now.format("%H:%M:%S"), exchange, total);
+            info!(
+                "[{}] {} 整点全量拉取: {} 个 symbol",
+                now.format("%H:%M:%S"),
+                exchange,
+                total
+            );
         } else if !new_symbols.is_empty() {
-            info!("[{}] {} 增量拉取: 新增 {} 个", now.format("%H:%M:%S"), exchange, new_symbols.len());
+            info!(
+                "[{}] {} 增量拉取: 新增 {} 个",
+                now.format("%H:%M:%S"),
+                exchange,
+                new_symbols.len()
+            );
         }
     }
 
@@ -1115,12 +1413,21 @@ impl RateFetcher {
     pub fn get_period(&self, symbol: &str, venue: TradingVenue) -> FundingRatePeriod {
         let key = symbol.to_uppercase();
         Self::with_inner(|inner| {
-            inner.funding_periods.get(&venue).and_then(|m| m.get(&key)).copied().unwrap_or(FundingRatePeriod::Hours8)
+            inner
+                .funding_periods
+                .get(&venue)
+                .and_then(|m| m.get(&key))
+                .copied()
+                .unwrap_or(FundingRatePeriod::Hours8)
         })
     }
 
     /// 获取预测资金费率
-    pub fn get_predicted_funding_rate(&self, symbol: &str, venue: TradingVenue) -> Option<(FundingRatePeriod, f64)> {
+    pub fn get_predicted_funding_rate(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+    ) -> Option<(FundingRatePeriod, f64)> {
         let key = symbol.to_uppercase();
         let period = self.get_period(&key, venue);
         let rates = Self::with_inner(|inner| inner.funding_rates.get(&venue)?.get(&key).cloned())?;
@@ -1129,30 +1436,50 @@ impl RateFetcher {
     }
 
     /// 获取预测借贷利率（仅 Binance）
-    pub fn get_predict_loan_rate(&self, symbol: &str, venue: TradingVenue) -> Option<(FundingRatePeriod, f64)> {
+    pub fn get_predict_loan_rate(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+    ) -> Option<(FundingRatePeriod, f64)> {
         let period = self.get_period(symbol, venue);
         let base = symbol.to_uppercase().strip_suffix("USDT")?.to_string();
         let daily = Self::with_inner(|inner| {
-            inner.lending_rates.get(&venue)?.get(&base).map(|c| c.predict_daily_rate)
+            inner
+                .lending_rates
+                .get(&venue)?
+                .get(&base)
+                .map(|c| c.predict_daily_rate)
         })?;
         Some((period, period.convert_daily_rate(daily)))
     }
 
     /// 获取当前借贷利率（仅 Binance）
-    pub fn get_current_loan_rate(&self, symbol: &str, venue: TradingVenue) -> Option<(FundingRatePeriod, f64)> {
+    pub fn get_current_loan_rate(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+    ) -> Option<(FundingRatePeriod, f64)> {
         let period = self.get_period(symbol, venue);
         let base = symbol.to_uppercase().strip_suffix("USDT")?.to_string();
         let daily = Self::with_inner(|inner| {
-            inner.lending_rates.get(&venue)?.get(&base).map(|c| c.current_daily_rate)
+            inner
+                .lending_rates
+                .get(&venue)?
+                .get(&base)
+                .map(|c| c.current_daily_rate)
         })?;
         Some((period, period.convert_daily_rate(daily)))
     }
 
     fn calculate_predicted_rate(rates: &[f64]) -> Option<f64> {
         let n = rates.len();
-        if n == 0 || n - 1 < PREDICT_NUM { return None; }
+        if n == 0 || n - 1 < PREDICT_NUM {
+            return None;
+        }
         let end = n - 1 - PREDICT_NUM;
-        if end + 1 < PREDICT_INTERVAL { return None; }
+        if end + 1 < PREDICT_INTERVAL {
+            return None;
+        }
         let start = end + 1 - PREDICT_INTERVAL;
         Some(rates[start..=end].iter().sum::<f64>() / PREDICT_INTERVAL as f64)
     }
@@ -1170,15 +1497,27 @@ impl RateFetcherTrait for RateFetcher {
         RateFetcher::get_period(self, symbol, venue)
     }
 
-    fn get_predicted_funding_rate(&self, symbol: &str, venue: TradingVenue) -> Option<(FundingRatePeriod, f64)> {
+    fn get_predicted_funding_rate(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+    ) -> Option<(FundingRatePeriod, f64)> {
         RateFetcher::get_predicted_funding_rate(self, symbol, venue)
     }
 
-    fn get_predict_loan_rate(&self, symbol: &str, venue: TradingVenue) -> Option<(FundingRatePeriod, f64)> {
+    fn get_predict_loan_rate(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+    ) -> Option<(FundingRatePeriod, f64)> {
         RateFetcher::get_predict_loan_rate(self, symbol, venue)
     }
 
-    fn get_current_loan_rate(&self, symbol: &str, venue: TradingVenue) -> Option<(FundingRatePeriod, f64)> {
+    fn get_current_loan_rate(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+    ) -> Option<(FundingRatePeriod, f64)> {
         RateFetcher::get_current_loan_rate(self, symbol, venue)
     }
 }

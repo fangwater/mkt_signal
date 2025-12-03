@@ -7,7 +7,13 @@ use crate::strategy::{
 use log::info;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
-pub trait Strategy {
+/// 控制策略是否处于强平模式的 Trait
+pub trait ForceCloseControl {
+    fn set_force_close_mode(&mut self, enabled: bool);
+    fn is_force_close_mode(&self) -> bool;
+}
+
+pub trait Strategy: ForceCloseControl {
     fn get_id(&self) -> i32;
     fn is_strategy_order(&self, order_id: i64) -> bool;
     fn handle_signal_with_record(&mut self, signal: &TradeSignal);

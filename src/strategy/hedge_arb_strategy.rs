@@ -8,7 +8,7 @@ use crate::signal::hedge_signal::ArbHedgeCtx;
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::record::SignalRecordMessage;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
-use crate::strategy::manager::Strategy;
+use crate::strategy::manager::{ForceCloseControl, Strategy};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_engine_response::TradeEngineResponse;
 use crate::strategy::trade_update::TradeUpdate;
@@ -33,6 +33,7 @@ pub struct HedgeArbStrategy {
     pub hedge_request_seq: u32,        //累计对冲请求次数
     pub hedge_bid0: f64,               //最新对冲侧bid
     pub hedge_ask0: f64,               //最新对冲侧ask
+    pub force_close_mode: bool,        //是否强平模式
 }
 
 impl HedgeArbStrategy {
@@ -56,8 +57,35 @@ impl HedgeArbStrategy {
             hedge_request_seq: 0,
             hedge_bid0: 0.0,
             hedge_ask0: 0.0,
+            force_close_mode: false,
         };
         strategy
+    }
+
+    fn describe_venue(venue: u8) -> String {
+        TradingVenue::from_u8(venue)
+            .map(|v| format!("{:?}", v))
+            .unwrap_or_else(|| format!("Unknown({})", venue))
+    }
+
+    fn log_force_close_skip(&self, check_name: &str, ctx: &ArbOpenCtx) {
+        let opening_symbol = ctx.get_opening_symbol();
+        let hedging_symbol = ctx.get_hedging_symbol();
+        let opening_venue = Self::describe_venue(ctx.opening_leg.venue);
+        let hedging_venue = Self::describe_venue(ctx.hedging_leg.venue);
+        let side = Side::from_u8(ctx.side).unwrap_or(Side::Buy);
+        info!(
+            "HedgeArbStrategy: strategy_id={} force_close_mode=true, skip {} 风控 | opening={} {} hedging={} {} side={:?} amount={:.4} price={:.6}",
+            self.strategy_id,
+            check_name,
+            opening_symbol,
+            opening_venue,
+            hedging_symbol,
+            hedging_venue,
+            side,
+            ctx.amount,
+            ctx.price
+        );
     }
 
     /// 组合订单ID：高32位为策略ID，低32位为序列号
@@ -73,8 +101,12 @@ impl HedgeArbStrategy {
     fn handle_arb_open_signal(&mut self, ctx: ArbOpenCtx) {
         // 开仓open leg，打开头寸，根据信号创建开仓leg, 进行风控判断，失败就直接把策略标记为不活跃，等待定时器清理
 
+        let force_close = self.is_force_close_mode();
+
         // 1、检查杠杆, 失败打印error
-        if let Err(e) = MonitorChannel::instance().check_leverage() {
+        if force_close {
+            self.log_force_close_skip("杠杆", &ctx);
+        } else if let Err(e) = MonitorChannel::instance().check_leverage() {
             error!(
                 "HedgeArbStrategy: strategy_id={} 杠杆风控检查失败: {}，标记策略为不活跃",
                 self.strategy_id, e
@@ -84,14 +116,18 @@ impl HedgeArbStrategy {
         }
 
         // 2、检查symbol的敞口，失败打印error
-        if let Err(e) = MonitorChannel::instance().check_symbol_exposure(&self.open_symbol) {
+        if force_close {
+            self.log_force_close_skip("单品种敞口", &ctx);
+        } else if let Err(e) = MonitorChannel::instance().check_symbol_exposure(&self.open_symbol) {
             error!("HedgeArbStrategy: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃", self.strategy_id, self.open_symbol, e);
             self.alive_flag = false;
             return;
         }
 
         // 3、检查总敞口，失败打印error
-        if let Err(e) = MonitorChannel::instance().check_total_exposure() {
+        if force_close {
+            self.log_force_close_skip("总体敞口", &ctx);
+        } else if let Err(e) = MonitorChannel::instance().check_total_exposure() {
             error!(
                 "HedgeArbStrategy: strategy_id={} 总敞口风控检查失败: {}，标记策略为不活跃",
                 self.strategy_id, e
@@ -103,7 +139,11 @@ impl HedgeArbStrategy {
         // 4、检查限价挂单数量限制（如果是限价单）
         let order_type = OrderType::from_u8(ctx.order_type);
         if order_type == Some(OrderType::Limit) {
-            if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&self.open_symbol) {
+            if force_close {
+                self.log_force_close_skip("限价挂单数量", &ctx);
+            } else if let Err(e) =
+                MonitorChannel::instance().check_pending_limit_order(&self.open_symbol)
+            {
                 error!("HedgeArbStrategy: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃", self.strategy_id, self.open_symbol, e);
                 self.alive_flag = false;
                 return;
@@ -200,7 +240,9 @@ impl HedgeArbStrategy {
         };
 
         // 9、考虑修正量，判断下单后是否会大于max u
-        if let Err(e) =
+        if force_close {
+            self.log_force_close_skip("持仓上限 (max_pos_u)", &ctx);
+        } else if let Err(e) =
             MonitorChannel::instance().ensure_max_pos_u(&symbol, aligned_qty, aligned_price)
         {
             error!(
@@ -1318,6 +1360,16 @@ impl HedgeArbStrategy {
 impl Drop for HedgeArbStrategy {
     fn drop(&mut self) {
         self.cleanup_strategy_orders();
+    }
+}
+
+impl ForceCloseControl for HedgeArbStrategy {
+    fn set_force_close_mode(&mut self, enabled: bool) {
+        self.force_close_mode = enabled;
+    }
+
+    fn is_force_close_mode(&self) -> bool {
+        self.force_close_mode
     }
 }
 
