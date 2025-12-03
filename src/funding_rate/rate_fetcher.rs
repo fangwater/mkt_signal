@@ -162,7 +162,7 @@ pub const BINANCE_CONFIG: ExchangeConfig = ExchangeConfig {
 
 // OKEx 配置
 pub const OKEX_CONFIG: ExchangeConfig = ExchangeConfig {
-    venue: TradingVenue::OkexSwap,
+    venue: TradingVenue::OkexFutures,
     period: FundingRatePeriod::Hours8,
     fetch_days: DEFAULT_FETCH_DAYS,
 };

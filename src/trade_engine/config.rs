@@ -11,8 +11,6 @@ pub struct TradeEngineCfg {
     pub ws: Option<WsCfg>,
     pub limits: LimitsCfg,
     pub network: NetworkCfg,
-    #[serde(default)]
-    pub accounts: AccountsCfg,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -56,17 +54,6 @@ pub struct LimitsCfg {
 #[derive(Debug, Clone, Deserialize)]
 pub struct NetworkCfg {
     pub local_ips: Vec<IpAddr>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct AccountsCfg {
-    pub keys: Vec<ApiKey>,
-}
-
-impl Default for AccountsCfg {
-    fn default() -> Self {
-        Self { keys: Vec::new() }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

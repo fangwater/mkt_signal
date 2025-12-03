@@ -1,20 +1,10 @@
-exchange = "binance"
+# Exchange 通过运行参数 --exchange 指定（binance | okex | bybit | bitget | gate）
 transport = "rest" # set to "ws" to enable websocket execution
 
 [rest]
 base_url = "https://papi.binance.com"
 timeout_ms = 10000
 recv_window_ms = 5000
-
-# [ws]
-# urls = [
-#   "wss://example-1.binance.com/ws",
-#   "wss://example-2.binance.com/ws"
-# ]
-# connect_timeout_ms = 5000
-# ping_interval_ms = 15000
-# max_inflight = 128
-# login_payload = "{\"op\":\"login\",\"args\":[]}"
 
 [limits]
 account_per_min = 1200
@@ -30,7 +20,10 @@ local_ips = [
   "172.31.46.90"
 ]
 
-# 账户配置从环境变量读取：
-# - BINANCE_API_KEY (必须)
-# - BINANCE_API_SECRET (必须)
-# - BINANCE_API_NAME (可选，默认: "default")
+# exchange 仅支持: binance, okex, bybit, bitget, gate
+# 账户配置从环境变量读取，前缀为大写的 exchange 名：
+#   exchange = "binance" -> BINANCE_API_KEY / BINANCE_API_SECRET / BINANCE_API_NAME
+#   exchange = "okex"    -> OKEX_API_KEY / OKEX_API_SECRET / OKEX_API_NAME
+#   exchange = "bybit"   -> BYBIT_API_KEY / BYBIT_API_SECRET / BYBIT_API_NAME
+#   exchange = "bitget"  -> BITGET_API_KEY / BITGET_API_SECRET / BITGET_API_NAME
+#   exchange = "gate"    -> GATE_API_KEY / GATE_API_SECRET / GATE_API_NAME

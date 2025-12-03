@@ -1,10 +1,11 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
+use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::common::ipc_service_name::build_service_name;
@@ -12,86 +13,118 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeEngineResponseMessage};
 
 thread_local! {
-    static TRADE_ENG_CHANNEL: OnceCell<TradeEngChannel> = OnceCell::new();
+    static TRADE_ENG_HUB: OnceCell<TradeEngHub> = OnceCell::new();
 }
 
 const TRADE_REQ_PAYLOAD: usize = 4_096;
 const TRADE_RESP_PAYLOAD: usize = 16_384;
 
-/// TradeEngChannel 负责与 trade engine 的双向通信
+/// TradeEngHub 负责与多个 trade engine 进程进行双向通信
 ///
-/// 采用线程本地单例模式，通过 `TradeEngChannel::with()` 访问
-///
-/// # 使用示例
-/// ```ignore
-/// use crate::pre_trade::TradeEngChannel;
-///
-/// // 发送订单请求
-/// TradeEngChannel::with(|ch| ch.publish_order_request(&order_bytes))?;
-/// ```
-pub struct TradeEngChannel {
-    /// Publisher for sending order requests
+/// * 采用线程本地单例，通过 [`TradeEngHub::with`] 访问
+/// * 每个交易所对应独立的 `TradeEngChannel`（Iceoryx publisher + subscriber）
+/// * 可以在启动时显式注册多个交易所，也可以按需懒加载
+pub struct TradeEngHub {
+    channels: RefCell<HashMap<String, TradeEngChannel>>,
+}
+
+impl TradeEngHub {
+    /// 在当前线程获取 TradeEngHub 单例，并执行闭包
+    pub fn with<F, R>(f: F) -> R
+    where
+        F: FnOnce(&TradeEngHub) -> R,
+    {
+        TRADE_ENG_HUB.with(|cell| {
+            let hub = cell.get_or_init(|| {
+                info!("Initializing TradeEngHub singleton with default exchange (binance)");
+                let hub = TradeEngHub::new();
+                hub.ensure_exchange("binance")
+                    .expect("Failed to initialize default TradeEngHub");
+                hub
+            });
+            f(hub)
+        })
+    }
+
+    /// 显式初始化 TradeEngHub（优先在程序启动阶段调用）
+    pub fn initialize<S>(exchanges: S) -> Result<()>
+    where
+        S: IntoIterator,
+        S::Item: AsRef<str>,
+    {
+        TRADE_ENG_HUB.with(|cell| {
+            if cell.get().is_some() {
+                return Err(anyhow!("TradeEngHub already initialized"));
+            }
+            let hub = TradeEngHub::new();
+            for exchange in exchanges {
+                hub.ensure_exchange(exchange.as_ref())?;
+            }
+            cell.set(hub)
+                .map_err(|_| anyhow!("Failed to set TradeEngHub (race condition)"))
+        })
+    }
+
+    /// 确保指定交易所已注册（可重复调用）
+    pub fn ensure_registered(exchange: &str) -> Result<()> {
+        Self::with(|hub| hub.ensure_exchange(exchange))
+    }
+
+    /// 发布订单请求到指定交易所
+    pub fn publish_order_request(exchange: &str, bytes: &Bytes) -> Result<()> {
+        Self::with(|hub| hub.publish_to_exchange(exchange, bytes))
+    }
+
+    fn new() -> Self {
+        Self {
+            channels: RefCell::new(HashMap::new()),
+        }
+    }
+
+    fn publish_to_exchange(&self, exchange: &str, bytes: &Bytes) -> Result<()> {
+        self.ensure_exchange(exchange)?;
+        let key = Self::normalize_exchange(exchange);
+        let channels = self.channels.borrow();
+        let Some(channel) = channels.get(&key) else {
+            return Err(anyhow!("TradeEngHub: exchange '{}' not registered", key));
+        };
+        channel.publish_order_request(bytes)
+    }
+
+    fn ensure_exchange(&self, exchange: &str) -> Result<()> {
+        let key = Self::normalize_exchange(exchange);
+        if self.channels.borrow().contains_key(&key) {
+            return Ok(());
+        }
+
+        info!(
+            "TradeEngHub: registering trade engine channel for exchange '{}'",
+            key
+        );
+        let channel = TradeEngChannel::new(&key)?;
+        self.channels.borrow_mut().insert(key, channel);
+        Ok(())
+    }
+
+    fn normalize_exchange(exchange: &str) -> String {
+        exchange.trim().to_ascii_lowercase()
+    }
+}
+
+struct TradeEngChannel {
     order_req_publisher: Publisher<ipc::Service, [u8; TRADE_REQ_PAYLOAD], ()>,
 }
 
 impl TradeEngChannel {
-    /// 在当前线程的 TradeEngChannel 单例上执行操作
-    ///
-    /// 第一次调用时会自动初始化默认配置（使用 binance 交易所），后续调用直接使用已初始化的实例
-    ///
-    /// # 使用示例
-    /// ```ignore
-    /// // 发送订单请求
-    /// TradeEngChannel::with(|ch| ch.publish_order_request(&order_bytes))?;
-    /// ```
-    pub fn with<F, R>(f: F) -> R
-    where
-        F: FnOnce(&TradeEngChannel) -> R,
-    {
-        TRADE_ENG_CHANNEL.with(|cell| {
-            let channel = cell.get_or_init(|| {
-                info!("Initializing thread-local TradeEngChannel singleton with default config (exchange=binance)");
-                TradeEngChannel::new("binance")
-                    .expect("Failed to initialize default TradeEngChannel")
-            });
-            f(channel)
-        })
-    }
-
-    /// 显式初始化交易引擎频道（可选）
-    ///
-    /// 如果在首次调用 `with()` 之前调用此方法，可以自定义交易所
-    ///
-    /// # 参数
-    /// * `exchange` - 交易所名称 (例如: "binance", "okex")
-    ///
-    /// # 错误
-    /// - 如果已经初始化，返回错误
-    /// - 如果 IceOryx 初始化失败，返回错误
-    pub fn initialize(exchange: &str) -> Result<()> {
-        TRADE_ENG_CHANNEL.with(|cell| {
-            if cell.get().is_some() {
-                return Err(anyhow::anyhow!("TradeEngChannel already initialized"));
-            }
-            cell.set(TradeEngChannel::new(exchange)?)
-                .map_err(|_| anyhow::anyhow!("Failed to set TradeEngChannel (race condition)"))
-        })
-    }
-
-    /// 创建 TradeEngChannel 实例
-    ///
-    /// # 参数
-    /// * `exchange` - 交易所名称 (例如: "binance", "okex")
-    ///
-    /// 注意：通常应使用 `TradeEngChannel::with()` 访问线程本地单例，
-    /// 而不是直接调用 `new()` 创建多个实例
     fn new(exchange: &str) -> Result<Self> {
-        // 构建带命名空间的服务名
         let order_req_service = build_service_name(&format!("order_reqs/{}", exchange));
         let order_resp_service = build_service_name(&format!("order_resps/{}", exchange));
-        // 创建 publisher 用于发送订单请求
+
         let req_node = NodeBuilder::new()
-            .name(&NodeName::new("pre_trade_order_req")?)
+            .name(&NodeName::new(&format!(
+                "pre_trade_order_req_{}",
+                sanitize_node_suffix(exchange)
+            ))?)
             .create::<ipc::Service>()?;
 
         let req_service = req_node
@@ -101,16 +134,20 @@ impl TradeEngChannel {
 
         let order_req_publisher = req_service.publisher_builder().create()?;
         info!(
-            "TradeEngChannel: order request publisher created on '{}'",
-            order_req_service
+            "TradeEngHub: order request publisher created on '{}' (exchange={})",
+            order_req_service, exchange
         );
 
-        // 启动交易响应监听器
+        // 启动该交易所的 trade response 监听任务
+        let resp_service_name = order_resp_service.clone();
+        let exchange_name = exchange.to_string();
         tokio::task::spawn_local(async move {
-            if let Err(err) = Self::run_trade_resp_listener(&order_resp_service).await {
+            if let Err(err) =
+                Self::run_trade_resp_listener(&exchange_name, &resp_service_name).await
+            {
                 warn!(
-                    "Trade response listener exited (service={}): {err:?}",
-                    order_resp_service
+                    "Trade response listener exited (exchange={} service={}): {err:?}",
+                    exchange_name, resp_service_name
                 );
             }
         });
@@ -120,8 +157,7 @@ impl TradeEngChannel {
         })
     }
 
-    /// 发布订单请求
-    pub fn publish_order_request(&self, bytes: &Bytes) -> Result<()> {
+    fn publish_order_request(&self, bytes: &Bytes) -> Result<()> {
         if bytes.is_empty() {
             return Ok(());
         }
@@ -145,10 +181,12 @@ impl TradeEngChannel {
         Ok(())
     }
 
-    /// 运行交易响应监听器，直接处理响应
-    async fn run_trade_resp_listener(service_name: &str) -> Result<()> {
+    async fn run_trade_resp_listener(exchange: &str, service_name: &str) -> Result<()> {
         let node = NodeBuilder::new()
-            .name(&NodeName::new("pre_trade_order_resp")?)
+            .name(&NodeName::new(&format!(
+                "pre_trade_order_resp_{}",
+                sanitize_node_suffix(exchange)
+            ))?)
             .create::<ipc::Service>()?;
 
         let service = node
@@ -160,8 +198,8 @@ impl TradeEngChannel {
             service.subscriber_builder().create()?;
 
         info!(
-            "TradeEngChannel: trade response subscribed on '{}'",
-            service_name
+            "TradeEngHub: trade response subscribed on '{}' (exchange={})",
+            service_name, exchange
         );
 
         loop {
@@ -169,13 +207,15 @@ impl TradeEngChannel {
                 Ok(Some(sample)) => {
                     let payload = sample.payload();
 
-                    // Trade response frames format: [header][body]
                     if payload.len() < 34 {
-                        warn!("Trade response too short: {} bytes", payload.len());
+                        warn!(
+                            "Trade response too short: {} bytes (exchange={})",
+                            payload.len(),
+                            exchange
+                        );
                         continue;
                     }
 
-                    // Parse header (34 bytes)
                     let req_type =
                         u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
                     let exchange =
@@ -196,7 +236,6 @@ impl TradeEngChannel {
                         payload[19],
                     ]);
 
-                    // Body starts at offset 34
                     let body = if payload.len() > 34 {
                         String::from_utf8_lossy(&payload[34..]).to_string()
                     } else {
@@ -212,7 +251,7 @@ impl TradeEngChannel {
                         ip_weight,
                         order_count,
                     );
-                    // 处理响应
+
                     Self::handle_trade_engine_response(&response);
                 }
                 Ok(None) => tokio::task::yield_now().await,
@@ -224,10 +263,20 @@ impl TradeEngChannel {
         }
     }
 
-    /// 处理交易引擎响应
     fn handle_trade_engine_response(response: &TradeEngineResponseMessage) {
         dispatch_trade_engine_response(response);
     }
+}
+
+fn sanitize_node_suffix(exchange: &str) -> String {
+    let normalized = exchange.trim();
+    if normalized.is_empty() {
+        return "default".to_string();
+    }
+    normalized
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect()
 }
 
 fn dispatch_trade_engine_response(response: &TradeEngineResponseMessage) {

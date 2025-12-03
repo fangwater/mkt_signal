@@ -1,6 +1,6 @@
 use crate::common::exchange::Exchange;
 use crate::common::ipc_service_name::build_service_name;
-use crate::trade_engine::config::{TradeEngineCfg, TradeTransport};
+use crate::trade_engine::config::{ApiKey, TradeEngineCfg, TradeTransport};
 use crate::trade_engine::dispatcher::Dispatcher;
 use crate::trade_engine::trade_request::TradeRequestMsg;
 use crate::trade_engine::trade_request_handle::{
@@ -8,7 +8,7 @@ use crate::trade_engine::trade_request_handle::{
 };
 use crate::trade_engine::trade_response_handle::spawn_response_handle;
 use crate::trade_engine::ws::TradeWsDispatcher;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
@@ -16,12 +16,17 @@ use log::{debug, info, warn};
 
 pub struct TradeEngine {
     cfg: TradeEngineCfg,
+    accounts: Vec<ApiKey>,
     req_tx: Option<tokio::sync::mpsc::UnboundedSender<TradeRequestMsg>>,
 }
 
 impl TradeEngine {
-    pub fn new(cfg: TradeEngineCfg) -> Self {
-        Self { cfg, req_tx: None }
+    pub fn new(cfg: TradeEngineCfg, accounts: Vec<ApiKey>) -> Self {
+        Self {
+            cfg,
+            accounts,
+            req_tx: None,
+        }
     }
 
     /// 返回内部请求通道的一个克隆（在 run() 初始化后可用）
@@ -40,15 +45,25 @@ impl TradeEngine {
 
     pub async fn run(mut self) -> Result<()> {
         // Single-threaded tokio reactor is enforced by binary attribute.
-        let exchange_name = self
+        let raw_exchange = self
             .cfg
             .exchange
             .clone()
             .unwrap_or_else(|| "binance".to_string());
+        let exchange_name = raw_exchange.to_ascii_lowercase();
+        let canonical_exchange = match exchange_name.as_str() {
+            "binance" | "okex" | "bybit" | "bitget" | "gate" => exchange_name.clone(),
+            other => {
+                return Err(anyhow!(
+                    "unsupported exchange '{}'. Allowed: binance, okex, bybit, bitget, gate",
+                    other
+                ))
+            }
+        };
 
         // 构建带命名空间的服务名
-        let order_req_service = build_service_name(&format!("order_reqs/{}", exchange_name));
-        let order_resp_service = build_service_name(&format!("order_resps/{}", exchange_name));
+        let order_req_service = build_service_name(&format!("order_reqs/{}", canonical_exchange));
+        let order_resp_service = build_service_name(&format!("order_resps/{}", canonical_exchange));
 
         info!(
             "trade_engine starting; req_service='{}', resp_service='{}', transport={:?}",
@@ -64,7 +79,7 @@ impl TradeEngine {
         }
 
         // Iceoryx subscriber for order requests
-        let node_name = format!("trade_engine_{}", exchange_name);
+        let node_name = format!("trade_engine_{}", canonical_exchange);
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
@@ -89,14 +104,18 @@ impl TradeEngine {
         debug!("publisher created for service: {}", order_resp_service);
 
         // 解析 exchange 枚举
-        let exchange = match self.cfg.exchange.as_deref() {
-            Some("binance") => Exchange::Binance,
-            Some("binance-futures") => Exchange::BinanceFutures,
-            Some("okex") => Exchange::Okex,
-            Some("okex-swap") => Exchange::OkexSwap,
-            Some("bybit") => Exchange::Bybit,
-            Some("bybit-spot") => Exchange::BybitSpot,
-            _ => Exchange::BinanceFutures,
+        let exchange = match canonical_exchange.as_str() {
+            "binance" => Exchange::Binance,
+            "okex" => Exchange::Okex,
+            "bybit" => Exchange::Bybit,
+            "bitget" => Exchange::BitgetFutures,
+            "gate" => Exchange::Gate,
+            other => {
+                return Err(anyhow!(
+                    "unsupported exchange '{}'. Allowed: binance, okex, bybit, bitget, gate",
+                    other
+                ))
+            }
         };
 
         // Internal mpsc pipeline between request executor and response publisher
@@ -104,9 +123,13 @@ impl TradeEngine {
         // 暴露内部请求通道（可供外部直接推送请求）
         self.req_tx = Some(req_tx.clone());
         let (resp_tx, resp_rx) = tokio::sync::mpsc::unbounded_channel();
+        if self.accounts.is_empty() {
+            return Err(anyhow!("no API keys provided for trade engine"));
+        }
+
         let _req_worker = match self.cfg.transport {
             TradeTransport::Rest => {
-                let dispatcher = Dispatcher::new(&self.cfg)?;
+                let dispatcher = Dispatcher::new(&self.cfg, &self.accounts)?;
                 spawn_request_executor(dispatcher, exchange, req_rx, resp_tx.clone())
             }
             TradeTransport::Ws => {

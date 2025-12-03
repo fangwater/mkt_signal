@@ -487,35 +487,24 @@ impl MonitorChannel {
         raw_qty: f64,
         raw_price: f64,
     ) -> Result<(f64, f64), String> {
-        Self::with_inner(|inner| {
-            match venue {
-                TradingVenue::BinanceUm => {
-                    TradingVenue::align_um_order(symbol, raw_qty, raw_price, &inner.min_qty_table)
-                }
-                TradingVenue::BinanceMargin | TradingVenue::BinanceSpot => {
-                    TradingVenue::align_margin_order(
-                        symbol,
-                        raw_qty,
-                        raw_price,
-                        &inner.min_qty_table,
-                    )
-                }
-                TradingVenue::OkexSwap | TradingVenue::OkexSpot => {
-                    // TODO: 实现 Okex 的对齐逻辑
-                    Err(format!("尚未实现 Okex 的订单对齐"))
-                }
-                TradingVenue::BitgetFutures => {
-                    // TODO: 实现 BitgetFutures 的对齐逻辑
-                    Err(format!("尚未实现 BitgetFutures 的订单对齐"))
-                }
-                TradingVenue::BybitFutures => {
-                    // TODO: 实现 BybitFutures 的对齐逻辑
-                    Err(format!("尚未实现 BybitFutures 的订单对齐"))
-                }
-                TradingVenue::GateFutures => {
-                    // TODO: 实现 GateFutures 的对齐逻辑
-                    Err(format!("尚未实现 GateFutures 的订单对齐"))
-                }
+        Self::with_inner(|inner| match venue {
+            TradingVenue::BinanceUm => {
+                TradingVenue::align_um_order(symbol, raw_qty, raw_price, &inner.min_qty_table)
+            }
+            TradingVenue::BinanceMargin | TradingVenue::BinanceSpot => {
+                TradingVenue::align_margin_order(symbol, raw_qty, raw_price, &inner.min_qty_table)
+            }
+            TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
+                Err("尚未实现 Okex 的订单对齐".to_string())
+            }
+            TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
+                Err("尚未实现 Bitget 的订单对齐".to_string())
+            }
+            TradingVenue::BybitMargin | TradingVenue::BybitFutures => {
+                Err("尚未实现 Bybit 的订单对齐".to_string())
+            }
+            TradingVenue::GateMargin | TradingVenue::GateFutures => {
+                Err("尚未实现 Gate 的订单对齐".to_string())
             }
         })
     }
@@ -532,17 +521,21 @@ impl MonitorChannel {
         Self::with_inner(|inner| {
             // 1. 检查最小下单量
             let min_qty = match venue {
-                TradingVenue::BinanceUm => inner.min_qty_table.min_qty(MarketType::Futures, symbol),
-                TradingVenue::BinanceMargin => {
-                    inner.min_qty_table.min_qty(MarketType::Margin, symbol)
-                }
-                TradingVenue::BinanceSpot | TradingVenue::OkexSpot => {
-                    inner.min_qty_table.min_qty(MarketType::Spot, symbol)
-                }
-                TradingVenue::OkexSwap
+                TradingVenue::BinanceUm
+                | TradingVenue::OkexFutures
                 | TradingVenue::BitgetFutures
                 | TradingVenue::BybitFutures
-                | TradingVenue::GateFutures => None,
+                | TradingVenue::GateFutures => {
+                    inner.min_qty_table.min_qty(MarketType::Futures, symbol)
+                }
+                TradingVenue::BinanceMargin
+                | TradingVenue::OkexMargin
+                | TradingVenue::BitgetMargin
+                | TradingVenue::BybitMargin
+                | TradingVenue::GateMargin => {
+                    inner.min_qty_table.min_qty(MarketType::Margin, symbol)
+                }
+                TradingVenue::BinanceSpot => inner.min_qty_table.min_qty(MarketType::Spot, symbol),
             }
             .unwrap_or(0.0);
 
@@ -720,9 +713,7 @@ impl MonitorChannel {
                                         dispatch_order_trade_update(&strategy_mgr, &update);
                                     }
                                 }
-                                _=>{
-                                    
-                                }
+                                _ => {}
                             }
                         }
                         Ok(None) => tokio::task::yield_now().await,

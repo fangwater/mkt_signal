@@ -51,7 +51,7 @@ pub struct Dispatcher {
 }
 
 impl Dispatcher {
-    pub fn new(cfg: &TradeEngineCfg) -> Result<Self> {
+    pub fn new(cfg: &TradeEngineCfg, account_keys: &[ApiKey]) -> Result<Self> {
         // Build clients per IP
         let mut ip_clients = Vec::new();
         for ip in &cfg.network.local_ips {
@@ -71,9 +71,10 @@ impl Dispatcher {
             });
         }
 
-        let accounts = cfg
-            .accounts
-            .keys
+        if account_keys.is_empty() {
+            return Err(anyhow!("no API keys configured for dispatcher"));
+        }
+        let accounts = account_keys
             .iter()
             .cloned()
             .map(|key| AccountState {

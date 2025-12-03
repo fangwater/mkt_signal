@@ -10,11 +10,29 @@ pub enum TradingVenue {
     BinanceMargin = 0,
     BinanceUm = 1,
     BinanceSpot = 3,
-    OkexSwap = 4,
-    OkexSpot = 5,
-    BitgetFutures = 6,
-    BybitFutures = 7,
-    GateFutures = 8,
+    OkexFutures = 4,
+    OkexMargin = 5,
+    BitgetMargin = 6,
+    BybitMargin = 7,
+    GateMargin = 8,
+    BitgetFutures = 9,
+    BybitFutures = 10,
+    GateFutures = 11,
+}
+
+impl TradingVenue {
+    /// 返回与该交易场所对应的 trade engine exchange 标识（Iceoryx 服务名的一部分）
+    pub fn trade_engine_exchange(&self) -> &'static str {
+        match self {
+            TradingVenue::BinanceMargin | TradingVenue::BinanceUm | TradingVenue::BinanceSpot => {
+                "binance"
+            }
+            TradingVenue::OkexMargin | TradingVenue::OkexFutures => "okex",
+            TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => "bitget",
+            TradingVenue::BybitMargin | TradingVenue::BybitFutures => "bybit",
+            TradingVenue::GateMargin | TradingVenue::GateFutures => "gate",
+        }
+    }
 }
 
 /// 订单有效期类型枚举
@@ -45,6 +63,27 @@ impl TimeInForce {
             TimeInForce::IOC => "IOC",
             TimeInForce::FOK => "FOK",
             TimeInForce::GTX => "GTX",
+        }
+    }
+
+    /// 从 u8 转换
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(TimeInForce::GTC),
+            1 => Some(TimeInForce::IOC),
+            2 => Some(TimeInForce::FOK),
+            3 => Some(TimeInForce::GTX),
+            _ => None,
+        }
+    }
+
+    /// 转换为 u8
+    pub fn to_u8(self) -> u8 {
+        match self {
+            TimeInForce::GTC => 0,
+            TimeInForce::IOC => 1,
+            TimeInForce::FOK => 2,
+            TimeInForce::GTX => 3,
         }
     }
 }
@@ -403,11 +442,14 @@ impl TradingVenue {
             0 => Some(TradingVenue::BinanceMargin),
             1 => Some(TradingVenue::BinanceUm),
             3 => Some(TradingVenue::BinanceSpot),
-            4 => Some(TradingVenue::OkexSwap),
-            5 => Some(TradingVenue::OkexSpot),
-            6 => Some(TradingVenue::BitgetFutures),
-            7 => Some(TradingVenue::BybitFutures),
-            8 => Some(TradingVenue::GateFutures),
+            4 => Some(TradingVenue::OkexFutures),
+            5 => Some(TradingVenue::OkexMargin),
+            6 => Some(TradingVenue::BitgetMargin),
+            7 => Some(TradingVenue::BybitMargin),
+            8 => Some(TradingVenue::GateMargin),
+            9 => Some(TradingVenue::BitgetFutures),
+            10 => Some(TradingVenue::BybitFutures),
+            11 => Some(TradingVenue::GateFutures),
             _ => None,
         }
     }
@@ -418,8 +460,11 @@ impl TradingVenue {
             TradingVenue::BinanceMargin => "BinanceMargin",
             TradingVenue::BinanceUm => "BinanceUm",
             TradingVenue::BinanceSpot => "BinanceSpot",
-            TradingVenue::OkexSwap => "OkexSwap",
-            TradingVenue::OkexSpot => "OkexSpot",
+            TradingVenue::OkexFutures => "OkexFutures",
+            TradingVenue::OkexMargin => "OkexMargin",
+            TradingVenue::BitgetMargin => "BitgetMargin",
+            TradingVenue::BybitMargin => "BybitMargin",
+            TradingVenue::GateMargin => "GateMargin",
             TradingVenue::BitgetFutures => "BitgetFutures",
             TradingVenue::BybitFutures => "BybitFutures",
             TradingVenue::GateFutures => "GateFutures",
@@ -431,8 +476,11 @@ impl TradingVenue {
         match self {
             TradingVenue::BinanceMargin | TradingVenue::BinanceUm => "binance_futures",
             TradingVenue::BinanceSpot => "binance",
-            TradingVenue::OkexSwap => "okex_swap",
-            TradingVenue::OkexSpot => "okex",
+            TradingVenue::OkexFutures => "okex_futures",
+            TradingVenue::OkexMargin => "okex_margin",
+            TradingVenue::BitgetMargin => "bitget_margin",
+            TradingVenue::BybitMargin => "bybit_margin",
+            TradingVenue::GateMargin => "gate_margin",
             TradingVenue::BitgetFutures => "bitget_futures",
             TradingVenue::BybitFutures => "bybit_futures",
             TradingVenue::GateFutures => "gate_futures",
@@ -445,8 +493,11 @@ impl TradingVenue {
             TradingVenue::BinanceMargin => "margin",
             TradingVenue::BinanceUm => "um",
             TradingVenue::BinanceSpot => "spot",
-            TradingVenue::OkexSwap => "swap",
-            TradingVenue::OkexSpot => "spot",
+            TradingVenue::OkexFutures => "futures",
+            TradingVenue::OkexMargin => "margin",
+            TradingVenue::BitgetMargin => "margin",
+            TradingVenue::BybitMargin => "margin",
+            TradingVenue::GateMargin => "margin",
             TradingVenue::BitgetFutures => "futures",
             TradingVenue::BybitFutures => "futures",
             TradingVenue::GateFutures => "futures",
@@ -458,7 +509,7 @@ impl TradingVenue {
         matches!(
             self,
             TradingVenue::BinanceUm
-                | TradingVenue::OkexSwap
+                | TradingVenue::OkexFutures
                 | TradingVenue::BitgetFutures
                 | TradingVenue::BybitFutures
                 | TradingVenue::GateFutures
@@ -467,7 +518,15 @@ impl TradingVenue {
 
     /// 是否是现货类型
     pub fn is_spot(&self) -> bool {
-        matches!(self, TradingVenue::BinanceSpot | TradingVenue::OkexSpot)
+        matches!(
+            self,
+            TradingVenue::BinanceMargin
+                | TradingVenue::BinanceSpot
+                | TradingVenue::OkexMargin
+                | TradingVenue::BitgetMargin
+                | TradingVenue::BybitMargin
+                | TradingVenue::GateMargin
+        )
     }
 }
 

@@ -1,7 +1,7 @@
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderType, Side};
-use crate::pre_trade::{PersistChannel, SignalChannel, TradeEngChannel};
+use crate::pre_trade::{PersistChannel, SignalChannel, TradeEngHub};
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{OrderStatus, SignalBytes, TradingVenue};
 use crate::signal::hedge_signal::ArbHedgeCtx;
@@ -446,19 +446,20 @@ impl HedgeArbStrategy {
         order_type_str: &str,
         symbol: &str,
     ) -> Result<(), String> {
-        let mut order = MonitorChannel::instance()
+        let order = MonitorChannel::instance()
             .order_manager()
             .borrow_mut()
             .get(client_order_id);
-        if let Some(order) = order.as_mut() {
+        if let Some(order) = order.as_ref() {
+            let exchange = order.venue.trade_engine_exchange();
             match order.get_order_request_bytes() {
                 Ok(req_bin) => {
-                    // 通过 TradeEngChannel 单例发送订单请求
-                    if let Err(e) = TradeEngChannel::with(|ch| ch.publish_order_request(&req_bin)) {
+                    if let Err(e) = TradeEngHub::publish_order_request(exchange, &req_bin) {
                         error!(
-                            "HedgeArbStrategy: strategy_id={} symbol={} 推送{}订单失败: {}，标记策略为不活跃",
+                            "HedgeArbStrategy: strategy_id={} symbol={} exchange={} 推送{}订单失败: {}，标记策略为不活跃",
                             self.strategy_id,
                             symbol,
+                            exchange,
                             order_type_str,
                             e
                         );
@@ -523,13 +524,11 @@ impl HedgeArbStrategy {
             // 使用 order 的 get_order_cancel_bytes 方法获取撤单请求
             match order.get_order_cancel_bytes() {
                 Ok(cancel_bytes) => {
-                    // 通过 TradeEngChannel 单例发送撤单请求
-                    if let Err(e) =
-                        TradeEngChannel::with(|ch| ch.publish_order_request(&cancel_bytes))
-                    {
+                    let exchange = order.venue.trade_engine_exchange();
+                    if let Err(e) = TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
                         error!(
-                            "HedgeArbStrategy: strategy_id={} 发送撤单请求失败: {}",
-                            self.strategy_id, e
+                            "HedgeArbStrategy: strategy_id={} exchange={} 发送撤单请求失败: {}",
+                            self.strategy_id, exchange, e
                         );
                         return Err(format!("发送撤单请求失败: {}", e));
                     }
@@ -635,12 +634,13 @@ impl HedgeArbStrategy {
                 if let Some(order) = order {
                     match order.get_order_cancel_bytes() {
                         Ok(cancel_bytes) => {
+                            let exchange = order.venue.trade_engine_exchange();
                             if let Err(e) =
-                                TradeEngChannel::with(|ch| ch.publish_order_request(&cancel_bytes))
+                                TradeEngHub::publish_order_request(exchange, &cancel_bytes)
                             {
                                 error!(
-                                    "HedgeArbStrategy: strategy_id={} 发送开仓撤单请求失败: {}",
-                                    self.strategy_id, e
+                                    "HedgeArbStrategy: strategy_id={} exchange={} 发送开仓撤单请求失败: {}",
+                                    self.strategy_id, exchange, e
                                 );
                             } else {
                                 debug!(
@@ -683,12 +683,13 @@ impl HedgeArbStrategy {
                     if let Some(order) = order {
                         match order.get_order_cancel_bytes() {
                             Ok(cancel_bytes) => {
-                                if let Err(e) = TradeEngChannel::with(|ch| {
-                                    ch.publish_order_request(&cancel_bytes)
-                                }) {
+                                let exchange = order.venue.trade_engine_exchange();
+                                if let Err(e) =
+                                    TradeEngHub::publish_order_request(exchange, &cancel_bytes)
+                                {
                                     error!(
-                                        "HedgeArbStrategy: strategy_id={} 发送对冲撤单请求失败 order_id={}: {}",
-                                        self.strategy_id, hedge_order_id, e
+                                        "HedgeArbStrategy: strategy_id={} exchange={} 发送对冲撤单请求失败 order_id={}: {}",
+                                        self.strategy_id, exchange, hedge_order_id, e
                                     );
                                 } else {
                                     debug!(

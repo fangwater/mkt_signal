@@ -8,8 +8,8 @@ use mkt_signal::pre_trade::params_load::PreTradeParamsLoader;
 use mkt_signal::pre_trade::persist_channel::PersistChannel;
 use mkt_signal::pre_trade::resample_channel::ResampleChannel;
 use mkt_signal::pre_trade::signal_channel::SignalChannel;
-use mkt_signal::pre_trade::trade_eng_channel::TradeEngChannel;
 use mkt_signal::pre_trade::PreTrade;
+use mkt_signal::pre_trade::TradeEngHub;
 use mkt_signal::strategy::StrategyManager;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -18,17 +18,15 @@ use std::rc::Rc;
 #[command(name = "pre_trade")]
 #[command(about = "Pre-trade risk management and order execution")]
 struct Args {
-    /// Exchange to use
+    /// Exchange to use for monitor/accounting components
     #[arg(short, long)]
     exchange: Exchange,
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    if std::env::var("RUST_LOG").is_err() {
-        std::env::set_var("RUST_LOG", "info");
-    }
-    env_logger::init();
+    let log_env = env_logger::Env::default().default_filter_or("info");
+    env_logger::Builder::from_env(log_env).init();
 
     // 解析命令行参数
     let args = Args::parse();
@@ -95,14 +93,18 @@ async fn main() -> Result<()> {
                 info!("ResampleChannel initialized successfully");
             }
 
-            // 6. 初始化 TradeEngChannel (使用指定交易所)
-            info!("Initializing TradeEngChannel singleton...");
-            if let Err(err) = TradeEngChannel::initialize(args.exchange.as_str()) {
-                warn!("Failed to initialize TradeEngChannel: {err:#}");
+            // 6. 初始化 TradeEngHub（显式连接 binance 与 okex）
+            let trade_eng_list = ["binance", "okex"];
+            info!(
+                "Initializing TradeEngHub singleton (trade_eng_exchanges={})",
+                trade_eng_list.join(", ")
+            );
+            if let Err(err) = TradeEngHub::initialize(trade_eng_list) {
+                warn!("Failed to initialize TradeEngHub: {err:#}");
             } else {
                 info!(
-                    "TradeEngChannel initialized for exchange: {}",
-                    args.exchange
+                    "TradeEngHub initialized for exchanges: {}",
+                    ["binance", "okex"].join(", ")
                 );
             }
 

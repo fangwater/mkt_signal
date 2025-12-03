@@ -380,10 +380,13 @@ impl SymbolList {
             TradingVenue::BinanceMargin => "binance_margin",
             TradingVenue::BinanceUm => "binance_um",
             TradingVenue::BinanceSpot => "binance_spot",
-            TradingVenue::OkexSwap => "okex_swap",
-            TradingVenue::OkexSpot => "okex_spot",
+            TradingVenue::OkexFutures => "okex_futures",
+            TradingVenue::OkexMargin => "okex_margin",
+            TradingVenue::BitgetMargin => "bitget_margin",
             TradingVenue::BitgetFutures => "bitget_futures",
+            TradingVenue::BybitMargin => "bybit_margin",
             TradingVenue::BybitFutures => "bybit_futures",
+            TradingVenue::GateMargin => "gate_margin",
             TradingVenue::GateFutures => "gate_futures",
         }
     }
