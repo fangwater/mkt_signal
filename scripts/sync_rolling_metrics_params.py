@@ -54,18 +54,6 @@ DEFAULTS = {
             "min_periods": 1,
             "quantiles": [5, 10, 15, 85, 90, 95],
         },
-        "mid_spot": {
-            "resample_interval_ms": 1_000,
-            "rolling_window": 100_000,
-            "min_periods": 1,
-            "quantiles": [30, 95],
-        },
-        "mid_swap": {
-            "resample_interval_ms": 1_000,
-            "rolling_window": 100_000,
-            "min_periods": 1,
-            "quantiles": [30, 95],
-        },
         "spread": {
             "resample_interval_ms": 1_000,
             "rolling_window": 100_000,
@@ -118,13 +106,10 @@ DEPRECATED_FIELDS = [
 
 
 def clone_defaults() -> Dict[str, Any]:
-    payload: Dict[str, Any] = {}
-    for k, v in DEFAULTS.items():
-        if isinstance(v, (list, dict)):
-            payload[k] = clone_value(v)
-        else:
-            payload[k] = v
-    return payload
+    return {
+        k: clone_value(v) if isinstance(v, (list, dict)) else v
+        for k, v in DEFAULTS.items()
+    }
 
 
 def clone_value(value: Any) -> Any:
@@ -196,10 +181,7 @@ def validate_factors(factors: Dict[str, Any]) -> Dict[str, Any]:
                     ) from exc
                 if not math.isfinite(num):
                     raise SystemExit(f"factors.{factor_name}.quantiles 存在无效值")
-                if abs(num - round(num)) < 1e-6:
-                    quantiles.append(int(round(num)))
-                else:
-                    quantiles.append(num)
+                quantiles.append(int(round(num)) if abs(num - round(num)) < 1e-6 else num)
         cleaned_cfg["quantiles"] = quantiles
         cleaned[factor_name] = cleaned_cfg
     return cleaned

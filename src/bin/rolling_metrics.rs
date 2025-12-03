@@ -28,8 +28,7 @@ use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::rolling_metrics::config::{
     load_config_from_redis, FactorConfig, RollingConfig, DEFAULT_CONFIG_HASH_KEY,
-    DEFAULT_OUTPUT_HASH_KEY, FACTOR_ASKBID, FACTOR_BIDASK, FACTOR_MID_SPOT, FACTOR_MID_SWAP,
-    FACTOR_SPREAD,
+    DEFAULT_OUTPUT_HASH_KEY, FACTOR_ASKBID, FACTOR_BIDASK, FACTOR_SPREAD,
 };
 use mkt_signal::rolling_metrics::ring::RingBuffer;
 use mkt_signal::rolling_metrics::service::{
@@ -651,9 +650,10 @@ fn maybe_push_sr(
 
     let cfg_snapshot = { config.read().clone() };
     let capacity = series_capacity.load(Ordering::SeqCst).max(1);
-    let mid_price_spot = compute_mid_price(spot_bid, spot_ask);
-    let mid_price_swap = compute_mid_price(swap_bid, swap_ask);
-    let spread_rate = match (mid_price_spot, mid_price_swap) {
+    let spread_rate = match (
+        compute_mid_price(spot_bid, spot_ask),
+        compute_mid_price(swap_bid, swap_ask),
+    ) {
         (Some(spot_mid), Some(swap_mid)) if spot_mid > 0.0 => {
             let rate = (spot_mid - swap_mid) / spot_mid;
             if rate.is_finite() {
@@ -667,14 +667,12 @@ fn maybe_push_sr(
     let ts_ms = (get_timestamp_us() / 1000) as i64;
     let key = format!("{}::{}", prefix, symbol);
     let series = get_or_insert_series(&*series_map, &key, capacity);
-    series.set_mid_metrics(mid_price_spot, mid_price_swap, spread_rate);
+    series.set_spread_rate(spread_rate);
 
     for (factor_name, factor_cfg) in cfg_snapshot.factors_iter() {
         let sample_value = match factor_name {
             FACTOR_BIDASK => Some(bidask_sr),
             FACTOR_ASKBID => Some(askbid_sr),
-            FACTOR_MID_SPOT => mid_price_spot.and_then(f64_to_f32),
-            FACTOR_MID_SWAP => mid_price_swap.and_then(f64_to_f32),
             FACTOR_SPREAD => spread_rate.and_then(f64_to_f32),
             _ => None,
         };

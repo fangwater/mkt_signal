@@ -11,8 +11,7 @@ use parking_lot::RwLock;
 use serde::Serialize;
 
 use crate::rolling_metrics::config::{
-    FactorConfig, RollingConfig, FACTOR_ASKBID, FACTOR_BIDASK, FACTOR_MID_SPOT, FACTOR_MID_SWAP,
-    FACTOR_SPREAD,
+    FactorConfig, RollingConfig, FACTOR_ASKBID, FACTOR_BIDASK, FACTOR_SPREAD,
 };
 use crate::rolling_metrics::quantile::quantiles_linear_select_unstable;
 use crate::rolling_metrics::ring::RingBuffer;
@@ -24,11 +23,7 @@ pub type SeriesMap = DashMap<String, Arc<SymbolSeries>>;
 pub struct SymbolSeries {
     pub bidask: Arc<RingBuffer>,
     pub askbid: Arc<RingBuffer>,
-    pub mid_spot: Arc<RingBuffer>,
-    pub mid_swap: Arc<RingBuffer>,
     pub spread: Arc<RingBuffer>,
-    mid_price_spot: AtomicU64,
-    mid_price_swap: AtomicU64,
     spread_rate: AtomicU64,
 }
 
@@ -37,32 +32,13 @@ impl SymbolSeries {
         Self {
             bidask: Arc::new(RingBuffer::new(capacity)),
             askbid: Arc::new(RingBuffer::new(capacity)),
-            mid_spot: Arc::new(RingBuffer::new(capacity)),
-            mid_swap: Arc::new(RingBuffer::new(capacity)),
             spread: Arc::new(RingBuffer::new(capacity)),
-            mid_price_spot: AtomicU64::new(f64::NAN.to_bits()),
-            mid_price_swap: AtomicU64::new(f64::NAN.to_bits()),
             spread_rate: AtomicU64::new(f64::NAN.to_bits()),
         }
     }
 
-    pub fn set_mid_metrics(
-        &self,
-        mid_spot: Option<f64>,
-        mid_swap: Option<f64>,
-        spread_rate: Option<f64>,
-    ) {
-        store_option_f64(&self.mid_price_spot, mid_spot);
-        store_option_f64(&self.mid_price_swap, mid_swap);
+    pub fn set_spread_rate(&self, spread_rate: Option<f64>) {
         store_option_f64(&self.spread_rate, spread_rate);
-    }
-
-    pub fn mid_price_spot(&self) -> Option<f64> {
-        load_option_f64(&self.mid_price_spot)
-    }
-
-    pub fn mid_price_swap(&self) -> Option<f64> {
-        load_option_f64(&self.mid_price_swap)
     }
 
     pub fn spread_rate(&self) -> Option<f64> {
@@ -73,8 +49,6 @@ impl SymbolSeries {
         match factor {
             crate::rolling_metrics::config::FACTOR_BIDASK => Some(&self.bidask),
             crate::rolling_metrics::config::FACTOR_ASKBID => Some(&self.askbid),
-            crate::rolling_metrics::config::FACTOR_MID_SPOT => Some(&self.mid_spot),
-            crate::rolling_metrics::config::FACTOR_MID_SWAP => Some(&self.mid_swap),
             crate::rolling_metrics::config::FACTOR_SPREAD => Some(&self.spread),
             _ => None,
         }
@@ -122,17 +96,11 @@ struct ThresholdPayload<'a> {
     sample_size: usize,
     bidask_sr: Option<f64>,
     askbid_sr: Option<f64>,
-    mid_price_spot: Option<f64>,
-    mid_price_swap: Option<f64>,
     spread_rate: Option<f64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     bidask_quantiles: Vec<QuantilePoint>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     askbid_quantiles: Vec<QuantilePoint>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    mid_spot_quantiles: Vec<QuantilePoint>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    mid_swap_quantiles: Vec<QuantilePoint>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     spread_quantiles: Vec<QuantilePoint>,
 }
@@ -146,8 +114,6 @@ pub fn spawn_compute_thread(
     thread::spawn(move || {
         let mut bidask_buf: Vec<f32> = Vec::new();
         let mut askbid_buf: Vec<f32> = Vec::new();
-        let mut mid_spot_buf: Vec<f32> = Vec::new();
-        let mut mid_swap_buf: Vec<f32> = Vec::new();
         let mut spread_buf: Vec<f32> = Vec::new();
         let mut last_keys: HashSet<String> = HashSet::new();
         let mut last_refresh_sec: u64 = 0;
@@ -192,8 +158,6 @@ pub fn spawn_compute_thread(
                     &series,
                     &mut bidask_buf,
                     &mut askbid_buf,
-                    &mut mid_spot_buf,
-                    &mut mid_swap_buf,
                     &mut spread_buf,
                     now_ms,
                     &mut processed,
@@ -225,7 +189,7 @@ pub fn spawn_compute_thread(
             let coverage_table =
                 build_three_line_table_str(["metric", "ready/total", "percent"], &coverage_rows);
             info!(
-                "{LOG_PREFIX}: factor coverage (5 factors)\n{}",
+                "{LOG_PREFIX}: factor coverage (3 factors)\n{}",
                 coverage_table
             );
 
@@ -254,8 +218,6 @@ fn build_entry(
     series: &Arc<SymbolSeries>,
     bidask_buf: &mut Vec<f32>,
     askbid_buf: &mut Vec<f32>,
-    mid_spot_buf: &mut Vec<f32>,
-    mid_swap_buf: &mut Vec<f32>,
     spread_buf: &mut Vec<f32>,
     now_ms: i64,
     processed: &mut usize,
@@ -267,15 +229,11 @@ fn build_entry(
     let latest_bidask = series.bidask.last();
     let latest_askbid = series.askbid.last();
 
-    let mid_price_spot = series.mid_price_spot();
-    let mid_price_swap = series.mid_price_swap();
     let spread_rate = series.spread_rate();
 
     let mut bidask_quantiles: Vec<QuantilePoint> = Vec::new();
 
     let mut askbid_quantiles: Vec<QuantilePoint> = Vec::new();
-    let mut mid_spot_quantiles: Vec<QuantilePoint> = Vec::new();
-    let mut mid_swap_quantiles: Vec<QuantilePoint> = Vec::new();
     let mut spread_quantiles: Vec<QuantilePoint> = Vec::new();
     let mut sample_counts: Vec<usize> = Vec::new();
     let mut factors_with_quantiles = 0usize;
@@ -290,8 +248,6 @@ fn build_entry(
         let (count, points, ready) = match factor_name {
             FACTOR_BIDASK => compute_factor_quantiles(ring.as_ref(), bidask_buf, factor_cfg),
             FACTOR_ASKBID => compute_factor_quantiles(ring.as_ref(), askbid_buf, factor_cfg),
-            FACTOR_MID_SPOT => compute_factor_quantiles(ring.as_ref(), mid_spot_buf, factor_cfg),
-            FACTOR_MID_SWAP => compute_factor_quantiles(ring.as_ref(), mid_swap_buf, factor_cfg),
             FACTOR_SPREAD => compute_factor_quantiles(ring.as_ref(), spread_buf, factor_cfg),
             _ => continue,
         };
@@ -310,8 +266,6 @@ fn build_entry(
         match factor_name {
             FACTOR_BIDASK => bidask_quantiles = points,
             FACTOR_ASKBID => askbid_quantiles = points,
-            FACTOR_MID_SPOT => mid_spot_quantiles = points,
-            FACTOR_MID_SWAP => mid_swap_quantiles = points,
             FACTOR_SPREAD => spread_quantiles = points,
             _ => {}
         }
@@ -348,13 +302,9 @@ fn build_entry(
         sample_size,
         bidask_sr: latest_bidask.and_then(to_option_f64),
         askbid_sr: latest_askbid.and_then(to_option_f64),
-        mid_price_spot,
-        mid_price_swap,
         spread_rate,
         bidask_quantiles,
         askbid_quantiles,
-        mid_spot_quantiles,
-        mid_swap_quantiles,
         spread_quantiles,
     };
 
@@ -416,16 +366,6 @@ fn factor_ready_counts(series: &SymbolSeries) -> (usize, usize) {
 
     total += 1;
     if series.askbid.last().and_then(to_option_f64).is_some() {
-        ready += 1;
-    }
-
-    total += 1;
-    if series.mid_price_spot().is_some() {
-        ready += 1;
-    }
-
-    total += 1;
-    if series.mid_price_swap().is_some() {
         ready += 1;
     }
 

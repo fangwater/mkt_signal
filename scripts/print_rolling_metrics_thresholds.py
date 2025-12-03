@@ -10,7 +10,7 @@ Reads
     value = JSON payload produced by rolling_metrics service.
 
 Outputs
-  - 分别为 mid_price_spot、mid_price_swap、spread_rate、bidask_sr、askbid_sr 打印三线表；
+  - 分别为 spread_rate、bidask_sr、askbid_sr 打印三线表；
     每张表包含：symbol、update_tp、sample_size、对应因子实时值，以及以 `binance_*` 命名的分位阈值列。
   - Null / missing values render as '-' by default.
 """
@@ -333,20 +333,6 @@ def main() -> int:
         return 0
 
     tables = [
-        {
-            "label": "mid_price_spot",
-            "value_field": "mid_price_spot",
-            "value_header": "binance_midprice_spot",
-            "quantile_key": "mid_spot_quantiles",
-            "quantile_prefix": "binance_midprice_spot",
-        },
-        {
-            "label": "mid_price_swap",
-            "value_field": "mid_price_swap",
-            "value_header": "binance_midprice_swap",
-            "quantile_key": "mid_swap_quantiles",
-            "quantile_prefix": "binance_midprice_swap",
-        },
         {
             "label": "spread_rate",
             "value_field": "spread_rate",

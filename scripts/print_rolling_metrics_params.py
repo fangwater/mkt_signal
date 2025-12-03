@@ -41,12 +41,11 @@ def parse_args() -> argparse.Namespace:
 
 def read_hash(rds, key: str) -> Dict[str, str]:
     data = rds.hgetall(key)
-    out: Dict[str, str] = {}
-    for k, v in data.items():
-        kk = k.decode("utf-8", "ignore") if isinstance(k, bytes) else str(k)
-        vv = v.decode("utf-8", "ignore") if isinstance(v, bytes) else str(v)
-        out[kk] = vv
-    return out
+
+    def decode(obj: object) -> str:
+        return obj.decode("utf-8", "ignore") if isinstance(obj, bytes) else str(obj)
+
+    return {decode(k): decode(v) for k, v in data.items()}
 
 
 def decode_value(raw: str) -> Any:
@@ -59,11 +58,13 @@ def decode_value(raw: str) -> Any:
 def build_json_output(kv: Dict[str, str], prefix: str | None) -> Dict[str, Any]:
     result: Dict[str, Any] = {}
 
-    general: Dict[str, Any] = {}
-    for key, value in sorted(kv.items()):
-        if key == "factors" or key.endswith("_lower_quantile") or key.endswith("_upper_quantile"):
-            continue
-        general[key] = decode_value(value)
+    general: Dict[str, Any] = {
+        key: decode_value(value)
+        for key, value in sorted(kv.items())
+        if key != "factors"
+        and not key.endswith("_lower_quantile")
+        and not key.endswith("_upper_quantile")
+    }
     factors_raw = kv.get("factors")
     if not factors_raw:
         result["general"] = general
@@ -73,18 +74,14 @@ def build_json_output(kv: Dict[str, str], prefix: str | None) -> Dict[str, Any]:
         factors = json.loads(factors_raw)
     except json.JSONDecodeError as exc:
         general["factors_error"] = f"factors 解析失败: {exc}"
-        result["general"] = general
-        return result
+    else:
+        if not isinstance(factors, dict):
+            general["factors_error"] = "factors 需为对象"
+        else:
+            if prefix:
+                factors = {name: cfg for name, cfg in factors.items() if name.startswith(prefix)}
+            general["factors"] = factors
 
-    if not isinstance(factors, dict):
-        general["factors_error"] = "factors 需为对象"
-        result["general"] = general
-        return result
-
-    if prefix:
-        factors = {name: cfg for name, cfg in factors.items() if name.startswith(prefix)}
-
-    general["factors"] = factors
     result["general"] = general
     return result
 

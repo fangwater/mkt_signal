@@ -19,8 +19,6 @@ pub const DEFAULT_OUTPUT_HASH_KEY: &str = "rolling_metrics_thresholds";
 
 pub const FACTOR_BIDASK: &str = "bidask";
 pub const FACTOR_ASKBID: &str = "askbid";
-pub const FACTOR_MID_SPOT: &str = "mid_spot";
-pub const FACTOR_MID_SWAP: &str = "mid_swap";
 pub const FACTOR_SPREAD: &str = "spread";
 
 #[derive(Debug, Clone)]
@@ -67,24 +65,6 @@ fn default_factors() -> BTreeMap<String, FactorConfig> {
     );
     factors.insert(
         FACTOR_ASKBID.to_string(),
-        FactorConfig::new(
-            DEFAULT_RESAMPLE_INTERVAL_MS,
-            DEFAULT_ROLLING_WINDOW,
-            DEFAULT_MIN_PERIODS,
-            Vec::new(),
-        ),
-    );
-    factors.insert(
-        FACTOR_MID_SPOT.to_string(),
-        FactorConfig::new(
-            DEFAULT_RESAMPLE_INTERVAL_MS,
-            DEFAULT_ROLLING_WINDOW,
-            DEFAULT_MIN_PERIODS,
-            Vec::new(),
-        ),
-    );
-    factors.insert(
-        FACTOR_MID_SWAP.to_string(),
         FactorConfig::new(
             DEFAULT_RESAMPLE_INTERVAL_MS,
             DEFAULT_ROLLING_WINDOW,
