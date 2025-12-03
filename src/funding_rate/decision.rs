@@ -574,8 +574,11 @@ impl FrDecision {
             return;
         };
 
-        let Some(venue) = TradingVenue::from_u8(query.venue) else {
-            warn!("FrDecision: hedge query venue 无效: {}", query.venue);
+        let Some(hedge_venue) = TradingVenue::from_u8(query.hedging_venue) else {
+            warn!(
+                "FrDecision: hedge query venue 无效: {}",
+                query.hedging_venue
+            );
             return;
         };
 
@@ -591,10 +594,10 @@ impl FrDecision {
             return;
         }
 
-        let Some(open_venue) = TradingVenue::from_u8(query.opening_leg.venue) else {
+        let Some(open_venue) = TradingVenue::from_u8(query.opening_venue) else {
             warn!(
                 "FrDecision: hedge query opening venue 无效: {}",
-                query.opening_leg.venue
+                query.opening_venue
             );
             return;
         };
@@ -620,10 +623,10 @@ impl FrDecision {
         };
 
         // 获取对冲侧行情
-        let Some(fut_quote) = mkt_channel.get_quote(&hedge_symbol, venue) else {
+        let Some(fut_quote) = mkt_channel.get_quote(&hedge_symbol, hedge_venue) else {
             warn!(
                 "FrDecision: hedge query 无行情 strategy_id={} symbol={} venue={:?}",
-                query.strategy_id, hedge_symbol, venue
+                query.strategy_id, hedge_symbol, hedge_venue
             );
             return;
         };
@@ -660,7 +663,7 @@ impl FrDecision {
             ctx.opening_leg = TradingLeg::new(open_venue, open_quote.bid, open_quote.ask);
             ctx.set_opening_symbol(&open_symbol);
             // 设置对冲侧信息
-            ctx.hedging_leg = TradingLeg::new(venue, fut_quote.bid, fut_quote.ask);
+            ctx.hedging_leg = TradingLeg::new(hedge_venue, fut_quote.bid, fut_quote.ask);
             ctx.set_hedging_symbol(&hedge_symbol);
             ctx.market_ts = now;
             ctx.price_offset = 0.0; // aggressive taker order, no offset
@@ -704,7 +707,7 @@ impl FrDecision {
             ctx.opening_leg = TradingLeg::new(open_venue, open_quote.bid, open_quote.ask);
             ctx.set_opening_symbol(&open_symbol);
             // 设置对冲侧信息
-            ctx.hedging_leg = TradingLeg::new(venue, fut_quote.bid, fut_quote.ask);
+            ctx.hedging_leg = TradingLeg::new(hedge_venue, fut_quote.bid, fut_quote.ask);
             ctx.set_hedging_symbol(&hedge_symbol);
             ctx.market_ts = now;
             ctx.price_offset = offset; // maker order with price offset
@@ -721,7 +724,7 @@ impl FrDecision {
             return;
         }
 
-        debug!(
+        info!(
             "FrDecision: 回复 hedge query strategy_id={} symbol={} qty={:.6} seq={}",
             query.strategy_id, hedge_symbol, qty, query.request_seq
         );

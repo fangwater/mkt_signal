@@ -364,14 +364,14 @@ pub struct ArbHedgeSignalQueryMsg {
     /// Hedge side (Buy/Sell) - stored as u8
     pub hedge_side: u8,
 
-    /// Opening leg market data (the leg that triggered this hedge)
-    pub opening_leg: TradingLeg,
+    /// Opening leg venue (e.g., BinanceMargin)
+    pub opening_venue: u8,
 
     /// Opening leg symbol
     pub opening_symbol: [u8; 32],
 
-    /// Trading venue (exchange and type) - stored as u8 (hedging venue)
-    pub venue: u8,
+    /// Hedging venue (futures leg)
+    pub hedging_venue: u8,
 
     /// Hedging symbol (e.g., BTCUSDT)
     pub hedging_symbol: [u8; 32],
@@ -388,9 +388,9 @@ impl ArbHedgeSignalQueryMsg {
         query_time: i64,
         hedge_qty: f64,
         hedge_side: u8,
-        opening_leg: TradingLeg,
+        opening_venue: u8,
         opening_symbol: &str,
-        venue: u8,
+        hedging_venue: u8,
         hedging_symbol: &str,
         request_seq: u32,
     ) -> Self {
@@ -410,9 +410,9 @@ impl ArbHedgeSignalQueryMsg {
             query_time,
             hedge_qty,
             hedge_side,
-            opening_leg,
+            opening_venue,
             opening_symbol: opening_symbol_bytes,
-            venue,
+            hedging_venue,
             hedging_symbol: hedging_symbol_bytes,
             request_seq,
         }
@@ -437,14 +437,12 @@ impl ArbHedgeSignalQueryMsg {
         buf.put_f64_le(self.hedge_qty);
         buf.put_u8(self.hedge_side);
 
-        // Opening leg market data
-        buf.put_u8(self.opening_leg.venue);
-        buf.put_f64_le(self.opening_leg.bid0);
-        buf.put_f64_le(self.opening_leg.ask0);
+        // Opening leg info
+        buf.put_u8(self.opening_venue);
         bytes_helper::write_fixed_bytes(&mut buf, &self.opening_symbol);
 
         // Hedging leg info
-        buf.put_u8(self.venue);
+        buf.put_u8(self.hedging_venue);
         bytes_helper::write_fixed_bytes(&mut buf, &self.hedging_symbol);
         buf.put_u32_le(self.request_seq);
         buf.freeze()
@@ -477,20 +475,18 @@ impl ArbHedgeSignalQueryMsg {
         }
         let hedge_side = bytes.get_u8();
 
-        // Opening leg market data
-        if bytes.remaining() < 1 + 8 + 8 {
-            return Err("insufficient bytes for opening leg".into());
+        // Opening leg info
+        if bytes.remaining() < 1 {
+            return Err("insufficient bytes for opening venue".into());
         }
         let opening_venue = bytes.get_u8();
-        let opening_bid0 = bytes.get_f64_le();
-        let opening_ask0 = bytes.get_f64_le();
         let opening_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
 
         // Hedging leg info
         if bytes.remaining() < 1 {
-            return Err("insufficient bytes for venue".into());
+            return Err("insufficient bytes for hedging venue".into());
         }
-        let venue = bytes.get_u8();
+        let hedging_venue = bytes.get_u8();
 
         let hedging_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
         if bytes.remaining() < 4 {
@@ -504,13 +500,9 @@ impl ArbHedgeSignalQueryMsg {
             query_time,
             hedge_qty,
             hedge_side,
-            opening_leg: TradingLeg {
-                venue: opening_venue,
-                bid0: opening_bid0,
-                ask0: opening_ask0,
-            },
+            opening_venue,
             opening_symbol,
-            venue,
+            hedging_venue,
             hedging_symbol,
             request_seq,
         })

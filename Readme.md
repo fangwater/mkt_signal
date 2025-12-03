@@ -1,6 +1,3 @@
-# 导出数据
-bash scripts/export_all.sh 
-默认导出到当前目录export_data文件夹
-
-# 获取数据
-python scripts/export_symbol_data.py  --symbol SAHARAUSDT --dir export_data --output saharasudt.parquet
+pm2 start ./fr_signal --name fr_signal_binance -- --exchange binance
+pm2 start ./pre_trade --name pre_trade_binance -- --exchange binance
+pm2 start ./trade_engine --name trade_engine_binance -- --exchange binance

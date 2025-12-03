@@ -824,19 +824,14 @@ impl HedgeArbStrategy {
             return Ok(());
         }
 
-        // 1. 创建对冲查询消息（包含开仓侧信息，盘口写0由decision获取）
-        let opening_leg = crate::signal::common::TradingLeg {
-            venue: self.open_venue.to_u8(),
-            bid0: 0.0,
-            ask0: 0.0,
-        };
+        // 1. 创建对冲查询消息（只携带符号+场所，盘口由 decision 获取）
         let query_msg = crate::signal::hedge_signal::ArbHedgeSignalQueryMsg::new(
             self.strategy_id,
             self.open_order_id,
             get_timestamp_us(),
             eff_qty,
             side.to_u8(),
-            opening_leg,
+            self.open_venue.to_u8(),
             &self.open_symbol,
             venue.to_u8(),
             &self.hedge_symbol,
@@ -850,7 +845,7 @@ impl HedgeArbStrategy {
 
         match send_result {
             Ok(true) => {
-                debug!(
+                info!(
                     "HedgeArbStrategy: strategy_id={} 发送对冲查询成功 venue={:?} side={:?} qty={:.8}",
                     self.strategy_id, venue, side, eff_qty
                 );
