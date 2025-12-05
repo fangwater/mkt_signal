@@ -215,7 +215,9 @@ impl ExposureManager {
                 continue;
             }
 
-            let spot_value = e.spot_total_wallet * mark;
+            // spot_total_wallet 已经扣除了借币与利息，这里先加回利息用于单独扣减，避免重复计算负债。
+            let spot_value = (e.spot_total_wallet + e.spot_cross_interest) * mark;
+            let spot_value_net = e.spot_total_wallet * mark;
             let um_value = e.um_net_position * mark;
             let borrowed_value = e.spot_cross_borrowed * mark;
             let interest_value = e.spot_cross_interest * mark;
@@ -225,12 +227,12 @@ impl ExposureManager {
             total_interest_value += interest_value;
 
             if asset != "USDT" {
-                total_position_value += spot_value.abs() + um_value.abs();
+                total_position_value += spot_value_net.abs() + um_value.abs();
                 abs_total_exposure_usdt += (e.spot_total_wallet + e.um_net_position).abs() * mark;
             }
         }
 
-        // Equity = spot估值 - 利息 + UM未实现PnL（UM钱包余额已体现在 USDT 现货余额中，借币不扣除）
+        // Equity = (spot估值 - 利息) + UM未实现PnL，其中利息只扣减一次。
         self.total_spot_value_usd = total_spot_value;
         self.total_borrowed_usd = total_borrowed_value;
         self.total_interest_usd = total_interest_value;
