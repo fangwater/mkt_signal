@@ -2,9 +2,8 @@
 //!
 //! 主要字段：
 //! - `[general]`：ws_session_max_secs（会话最长时长），primary/secondary_local_ip（本地绑定IP）
-//! - `[iceoryx.pm]`：history_size、max_subscribers（PM发布通道配置）
-//! - `[exchanges.binance.ws]`：pm（用户数据WS base，如 `wss://.../pm` 或 `.../pm/ws`）
-//! - `[exchanges.binance.rest]`：pm（用户数据REST base，如 `https://papi.binance.com`）
+//! - `[iceoryx.pm]`：max_subscribers（PM发布通道配置，现已固定为 4，仅保留字段兼容旧配置；历史缓存固定 1024）
+//! - `[exchanges.binance.ws/rest]`、`[exchanges.okex.ws]`：现已硬编码为官方 PM 地址，字段仅为兼容旧配置
 //!
 //! 注意：如果 ws.pm 以 `/ws` 结尾，程序将直接在其后追加 listenKey；
 //! 否则程序会默认追加 `/ws/{listenKey}`。

@@ -2,11 +2,11 @@
 //!
 //! - 发布到服务：`account_pubs/<exchange>_pm`
 //! - 消息为原始 JSON（二进制）直接转发，固定上限 `PM_MAX_BYTES`
-//! - 支持配置历史缓存与订阅者上限（来自 TOML 配置）
+//! - 订阅者上限固定 4，历史缓存固定 1024 条
 //!
 //! 用法：
 //! ```ignore
-//! let mut fwd = PmForwarder::new("binance", Some(50), Some(10))?;
+//! let mut fwd = PmForwarder::new("binance")?;
 //! fwd.send_raw(&bytes);
 //! ```
 use anyhow::Result;
@@ -17,7 +17,9 @@ use log::{info, warn};
 
 use crate::common::ipc_service_name::build_service_name;
 
-const PM_MAX_BYTES: usize = 16384;
+pub const PM_MAX_BYTES: usize = 16384;
+pub const PM_HISTORY_SIZE: usize = 2048;
+pub const PM_MAX_SUBSCRIBERS: usize = 4;
 
 /// PM 转发器，内部持有 Iceoryx publisher
 pub struct PmForwarder {
@@ -30,10 +32,12 @@ pub struct PmForwarder {
 impl PmForwarder {
     /// 创建 PM 转发器
     /// - `exchange` 交易所名（用于拼接服务名）
-    /// - `hist` 历史缓存大小
-    /// - `subs` 最大订阅者数
-    pub fn new(exchange: &str, hist: Option<usize>, subs: Option<usize>) -> Result<Self> {
+    pub fn new(exchange: &str) -> Result<Self> {
         info!("开始创建 PM forwarder，exchange: {}", exchange);
+        info!(
+            "PM forwarder 历史缓存固定为 {} 条，最大订阅者固定为 {}（不再读取配置）",
+            PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS
+        );
 
         // 构造 service 名称（会检查 IPC_NAMESPACE 环境变量，未设置会 panic）
         let service_name = build_service_name(&format!("account_pubs/{}_pm", exchange));
@@ -60,8 +64,8 @@ impl PmForwarder {
             .service_builder(&ServiceName::new(&service_name)?)
             .publish_subscribe::<[u8; PM_MAX_BYTES]>()
             .max_publishers(1)
-            .max_subscribers(subs.unwrap_or(10))
-            .history_size(hist.unwrap_or(50))
+            .max_subscribers(PM_MAX_SUBSCRIBERS)
+            .history_size(PM_HISTORY_SIZE)
             .subscriber_max_buffer_size(1024)
             .open_or_create()?;
 

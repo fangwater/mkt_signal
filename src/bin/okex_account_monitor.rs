@@ -85,16 +85,9 @@ async fn main() -> Result<()> {
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     setup_signals(shutdown_tx.clone());
 
-    // 从配置读取 WebSocket URL，如果没有则使用默认值
-    let ws_url = cfg
-        .exchanges
-        .okex
-        .as_ref()
-        .and_then(|e| e.ws.as_ref())
-        .and_then(|w| w.pm.clone())
-        .unwrap_or_else(|| OkexPrivateWsUrls::PRIVATE.to_string());
-
-    info!("Config loaded. ws_url={}", ws_url);
+    // WebSocket URL 固定，跳过配置
+    const OKEX_PM_WS: &str = OkexPrivateWsUrls::PRIVATE;
+    let ws_url = OKEX_PM_WS.to_string();
 
     // IP 和会话设置
     let primary_ip = cfg
@@ -123,13 +116,7 @@ async fn main() -> Result<()> {
     let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
 
     // 创建 PM 转发器 (account_pubs/okex/pm)
-    let (pm_hist, pm_subs) = cfg
-        .iceoryx
-        .as_ref()
-        .and_then(|i| i.pm.as_ref())
-        .map(|c| (c.history_size, c.max_subscribers))
-        .unwrap_or((None, None));
-    let mut forwarder = PmForwarder::new("okex", pm_hist, pm_subs)?;
+    let mut forwarder = PmForwarder::new("okex")?;
     let mut deduper = AccountEventDeduper::new(8192);
     let mut stats = tokio::time::interval(Duration::from_secs(30));
 

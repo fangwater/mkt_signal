@@ -5,18 +5,3 @@ ws_session_max_secs = 82800
 # 主/备 路由绑定的本地 IP（可留空表示不绑定）
 primary_local_ip = "172.31.33.133"
 secondary_local_ip = "172.31.46.90"
-
-[iceoryx.pm] 
-# PM 账户流发布的历史缓存与订阅者限制 
-history_size = 50 
-max_subscribers = 10 
-
-[exchanges.binance.ws]
-pm = "wss://fstream.binance.com/pm"
-
-[exchanges.binance.rest]
-pm = "https://papi.binance.com"
-
-[exchanges.okex.ws]
-pm = "wss://ws.okx.com:8443/ws/v5/private"
-

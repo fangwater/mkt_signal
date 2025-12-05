@@ -13,6 +13,7 @@ use crate::common::account_msg::{
     ExecutionReportMsg, LiabilityChangeMsg, OrderTradeUpdateMsg,
 };
 use crate::common::ipc_service_name::build_service_name;
+use crate::portfolio_margin::pm_forwarder::{PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS};
 use crate::pre_trade::binance_pm_spot_manager::{BinancePmSpotAccountManager, BinanceSpotBalance};
 use crate::pre_trade::binance_pm_um_manager::{BinancePmUmAccountManager, BinanceUmPosition};
 use crate::signal::common::{ExecutionType, TradingVenue};
@@ -596,6 +597,9 @@ impl MonitorChannel {
                 let service = node
                     .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; ACCOUNT_PAYLOAD]>()
+                    .max_publishers(1)
+                    .max_subscribers(PM_MAX_SUBSCRIBERS)
+                    .history_size(PM_HISTORY_SIZE)
                     .open_or_create()?;
                 let subscriber: Subscriber<ipc::Service, [u8; ACCOUNT_PAYLOAD], ()> =
                     service.subscriber_builder().create()?;

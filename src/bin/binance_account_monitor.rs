@@ -85,21 +85,10 @@ async fn main() -> Result<()> {
     setup_signals(shutdown_tx.clone());
 
     // Resolve endpoints from config
-    let ws_pm = cfg
-        .exchanges
-        .binance
-        .as_ref()
-        .and_then(|e| e.ws.as_ref())
-        .and_then(|w| w.pm.clone())
-        .unwrap_or_else(|| "wss://fstream.binance.com/pm".to_string());
-    let rest_pm = cfg
-        .exchanges
-        .binance
-        .as_ref()
-        .and_then(|e| e.rest.as_ref())
-        .and_then(|r| r.pm.clone())
-        .unwrap_or_else(|| "https://papi.binance.com".to_string());
-    info!("Config loaded. ws_pm={}, rest_pm={}", ws_pm, rest_pm);
+    const BINANCE_PM_WS: &str = "wss://fstream.binance.com/pm";
+    const BINANCE_PM_REST: &str = "https://papi.binance.com";
+    let ws_pm = BINANCE_PM_WS.to_string();
+    let rest_pm = BINANCE_PM_REST.to_string();
 
     // IP and session settings
     let primary_ip = cfg
@@ -127,13 +116,7 @@ async fn main() -> Result<()> {
     let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
 
     // Create PM forwarder (account_pubs/binance/pm)
-    let (pm_hist, pm_subs) = cfg
-        .iceoryx
-        .as_ref()
-        .and_then(|i| i.pm.as_ref())
-        .map(|c| (c.history_size, c.max_subscribers))
-        .unwrap_or((None, None));
-    let mut forwarder = PmForwarder::new("binance", pm_hist, pm_subs)?;
+    let mut forwarder = PmForwarder::new("binance")?;
     let mut deduper = AccountEventDeduper::new(8192);
     let mut stats = tokio::time::interval(Duration::from_secs(30));
 
