@@ -765,9 +765,14 @@ impl MonitorChannel {
     /// 检查当前symbol的敞口是否超过总资产比例限制
     pub fn check_symbol_exposure(&self, symbol: &str) -> Result<(), String> {
         Self::with_inner(|inner| {
-            let limit = PreTradeParamsLoader::instance().max_symbol_exposure_ratio();
+            let loader = PreTradeParamsLoader::instance();
+            let limit = loader.max_symbol_exposure_ratio();
             if limit <= 0.0 {
                 return Ok(());
+            }
+            let max_pos_u = loader.max_pos_u();
+            if max_pos_u <= f64::EPSILON {
+                return Err("max_pos_u 配置无效，无法校验敞口比例".to_string());
             }
 
             let symbol_upper = symbol.to_uppercase();
@@ -778,11 +783,9 @@ impl MonitorChannel {
                 ));
             };
 
-            let (entry, total_equity) = {
+            let entry = {
                 let exposure_manager = inner.exposure_manager.borrow();
-                let entry = exposure_manager.exposure_for_asset(&base_asset).cloned();
-                let total_equity = exposure_manager.total_equity();
-                (entry, total_equity)
+                exposure_manager.exposure_for_asset(&base_asset).cloned()
             };
 
             // 如果没有找到敞口信息，认为是首次开仓，当前敞口为0
@@ -791,10 +794,6 @@ impl MonitorChannel {
             } else {
                 0.0
             };
-
-            if total_equity <= f64::EPSILON {
-                return Err(format!("symbol={} 敞口比例超过限制 {}", symbol, limit));
-            }
 
             let mark = if base_asset.eq_ignore_ascii_case("USDT") {
                 1.0
@@ -807,30 +806,30 @@ impl MonitorChannel {
             let exposure_usdt = if mark > 0.0 { net_exposure * mark } else { 0.0 };
 
             if mark == 0.0 && net_exposure != 0.0 {
-                let ratio = net_exposure.abs() / total_equity;
+                let ratio = net_exposure.abs() / max_pos_u;
                 if ratio > limit {
                     debug!(
-                        "资产 {} 敞口占比(数量) {:.4}% 超过阈值 {:.2}% (敞口qty={:.6}, 权益={:.6})",
+                        "资产 {} 敞口占比(数量) {:.4}% 超过阈值 {:.2}% (敞口qty={:.6}, max_pos_u={:.6})",
                         base_asset,
                         ratio * 100.0,
                         limit * 100.0,
                         net_exposure,
-                        total_equity
+                        max_pos_u
                     );
                     return Err(format!("symbol={} 敞口比例超过限制 {}", symbol, limit));
                 }
                 return Ok(());
             }
 
-            let ratio = exposure_usdt.abs() / total_equity;
+            let ratio = exposure_usdt.abs() / max_pos_u;
             if ratio > limit {
                 debug!(
-                    "资产 {} 敞口占比 {:.4}% 超过阈值 {:.2}% (敞口USDT={:.6}, 权益={:.6})",
+                    "资产 {} 敞口占比 {:.4}% 超过阈值 {:.2}% (敞口USDT={:.6}, max_pos_u={:.6})",
                     base_asset,
                     ratio * 100.0,
                     limit * 100.0,
                     exposure_usdt,
-                    total_equity
+                    max_pos_u
                 );
                 return Err(format!("symbol={} 敞口比例超过限制 {}", symbol, limit));
             }

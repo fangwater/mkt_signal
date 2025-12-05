@@ -255,21 +255,6 @@ impl SignalBytes for ArbHedgeCtx {
     fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
         // 基本字段长度: 4 + 8 + 8 + 1 + 8 + 8 + 1 + 8 = 46
         const BASIC_FIELDS_LEN: usize = 4 + 8 + 8 + 1 + 8 + 8 + 1 + 8;
-        // 旧格式总长度: 46 + hedging_leg(17) + hedging_symbol(32) + market_ts(8) + price_offset(8) = 111
-        const OLD_FORMAT_LEN: usize = 111;
-        // 新格式总长度: 111 + opening_leg(17) + opening_symbol(32) = 160
-        const NEW_FORMAT_LEN: usize = 160;
-
-        let total_len = bytes.remaining();
-        if total_len < OLD_FORMAT_LEN {
-            return Err(format!(
-                "Not enough bytes for ArbHedgeCtx: got {}, need at least {}",
-                total_len, OLD_FORMAT_LEN
-            ));
-        }
-
-        // 判断是否为新格式（包含 opening_leg）
-        let has_opening_leg = total_len >= NEW_FORMAT_LEN;
 
         if bytes.remaining() < BASIC_FIELDS_LEN {
             return Err("Not enough bytes for ArbHedgeCtx basic fields".to_string());
@@ -284,20 +269,14 @@ impl SignalBytes for ArbHedgeCtx {
         let maker_only = bytes.get_u8() != 0;
         let exp_time = bytes.get_i64_le();
 
-        // Opening leg market data (新格式才有，旧格式默认为空)
-        let (opening_venue, opening_bid0, opening_ask0, opening_symbol) = if has_opening_leg {
-            if bytes.remaining() < 1 + 8 + 8 {
-                return Err("Not enough bytes for opening leg".to_string());
-            }
-            let venue = bytes.get_u8();
-            let bid0 = bytes.get_f64_le();
-            let ask0 = bytes.get_f64_le();
-            let symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
-            (venue, bid0, ask0, symbol)
-        } else {
-            // 旧格式：opening_leg 默认为空
-            (0u8, 0.0, 0.0, [0u8; 32])
-        };
+        // Opening leg market data（统一按新格式解析）
+        if bytes.remaining() < 1 + 8 + 8 {
+            return Err("Not enough bytes for opening leg".to_string());
+        }
+        let opening_venue = bytes.get_u8();
+        let opening_bid0 = bytes.get_f64_le();
+        let opening_ask0 = bytes.get_f64_le();
+        let opening_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
 
         // Hedging leg market data
         if bytes.remaining() < 1 + 8 + 8 {

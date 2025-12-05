@@ -738,12 +738,7 @@ impl HedgeArbStrategy {
     /// * `venue` - 对冲交易场所
     /// * `side` - 对冲方向
     /// * `eff_qty` - 有效对冲量（累计成交量 - 累计对冲量）
-    fn hedge_as_market_order(
-        &mut self,
-        venue: TradingVenue,
-        side: Side,
-        eff_qty: f64,
-    ) -> Result<(), String> {
+    fn hedge_as_market_order(&mut self, side: Side, eff_qty: f64) -> Result<(), String> {
         if eff_qty <= 1e-8 {
             debug!(
                 "HedgeArbStrategy: strategy_id={} 对冲量过小 eff_qty={:.8}，跳过",
@@ -772,15 +767,15 @@ impl HedgeArbStrategy {
             Some((bid, ask)) => (bid, ask),
             None => {
                 let msg = format!(
-                    "strategy_id={} 对冲行情缺失 symbol={} venue={:?}",
-                    self.strategy_id, self.hedge_symbol, venue
+                    "strategy_id={} 对冲行情缺失 symbol={} hedge venue={:?}",
+                    self.strategy_id, self.hedge_symbol, self.hedge_venue
                 );
                 error!("HedgeArbStrategy: {}", msg);
                 return Err(msg);
             }
         };
         hedge_ctx.hedging_leg = crate::signal::common::TradingLeg {
-            venue: venue.to_u8(),
+            venue: self.hedge_venue.to_u8(),
             bid0,
             ask0,
         };
@@ -795,8 +790,8 @@ impl HedgeArbStrategy {
 
         // 7. 直接调用对冲处理逻辑（不再通过队列循环）
         debug!(
-            "HedgeArbStrategy: strategy_id={} 直接处理对冲 venue={:?} side={:?} qty={:.8}",
-            self.strategy_id, venue, side, eff_qty
+            "HedgeArbStrategy: strategy_id={} 直接处理对冲 hedge venue={:?} side={:?} qty={:.8}",
+            self.strategy_id, self.hedge_venue, side, eff_qty
         );
 
         self.handle_arb_hedge_signal(hedge_ctx)?;
@@ -810,12 +805,7 @@ impl HedgeArbStrategy {
     /// * `venue` - 对冲交易场所
     /// * `side` - 对冲方向
     /// * `eff_qty` - 有效对冲量（累计成交量 - 累计对冲量）
-    fn hedge_as_limit_order(
-        &mut self,
-        venue: TradingVenue,
-        side: Side,
-        eff_qty: f64,
-    ) -> Result<(), String> {
+    fn hedge_as_limit_order(&mut self, side: Side, eff_qty: f64) -> Result<(), String> {
         if eff_qty <= 1e-8 {
             debug!(
                 "HedgeArbStrategy: strategy_id={} 限价单对冲量过小 eff_qty={:.8}，跳过",
@@ -833,7 +823,7 @@ impl HedgeArbStrategy {
             side.to_u8(),
             self.open_venue.to_u8(),
             &self.open_symbol,
-            venue.to_u8(),
+            self.hedge_venue.to_u8(),
             &self.hedge_symbol,
             self.hedge_request_seq,
         );
@@ -846,8 +836,8 @@ impl HedgeArbStrategy {
         match send_result {
             Ok(true) => {
                 info!(
-                    "HedgeArbStrategy: strategy_id={} 发送对冲查询成功 venue={:?} side={:?} qty={:.8}",
-                    self.strategy_id, venue, side, eff_qty
+                    "HedgeArbStrategy: strategy_id={} 发送对冲查询成功 hedge_venue={:?} side={:?} qty={:.8}",
+                    self.strategy_id, self.hedge_venue, side, eff_qty
                 );
             }
             Ok(false) => {
@@ -929,14 +919,14 @@ impl HedgeArbStrategy {
                 "HedgeArbStrategy: strategy_id={} MM模式，使用限价单对冲",
                 self.strategy_id
             );
-            self.hedge_as_limit_order(self.hedge_venue, self.hedge_side, total_pending_qty)
+            self.hedge_as_limit_order(self.hedge_side, total_pending_qty)
         } else {
             // MT 模式：使用市价单对冲
             info!(
                 "HedgeArbStrategy: strategy_id={} MT模式，使用市价单对冲",
                 self.strategy_id
             );
-            self.hedge_as_market_order(self.hedge_venue, self.hedge_side, total_pending_qty)
+            self.hedge_as_market_order(self.hedge_side, total_pending_qty)
         };
 
         match hedge_result {
