@@ -1,7 +1,0 @@
-[general] 
-# 连接会话最长持续时间（秒）。建议小于 24 小时，默认 23 小时
-ws_session_max_secs = 82800
-
-# 主/备 路由绑定的本地 IP（可留空表示不绑定）
-primary_local_ip = "172.31.33.133"
-secondary_local_ip = "172.31.46.90"

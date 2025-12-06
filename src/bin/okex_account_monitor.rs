@@ -72,10 +72,6 @@ async fn main() -> Result<()> {
     }
     env_logger::init();
 
-    // 加载配置
-    let cfg = mkt_signal::portfolio_margin::pm_cfg::AccountTomlCfg::load("config/account_cfg.toml")
-        .await?;
-
     // 从环境变量加载 OKEx 凭证
     let credentials = OkexCredentials::from_env()?;
     log_credential_preview("OKX_API_KEY", &credentials.api_key);
@@ -87,20 +83,14 @@ async fn main() -> Result<()> {
 
     // WebSocket URL 固定，跳过配置
     const OKEX_PM_WS: &str = OkexPrivateWsUrls::PRIVATE;
+    const OKEX_PRIMARY_IP: &str = "172.31.33.133";
+    const OKEX_SECONDARY_IP: &str = "172.31.46.90";
     let ws_url = OKEX_PM_WS.to_string();
 
     // IP 和会话设置
-    let primary_ip = cfg
-        .general
-        .primary_local_ip
-        .clone()
-        .unwrap_or_else(|| "".to_string());
-    let secondary_ip = cfg
-        .general
-        .secondary_local_ip
-        .clone()
-        .unwrap_or_else(|| "".to_string());
-    let session_max = cfg.general.ws_session_max_secs.map(Duration::from_secs);
+    let primary_ip = OKEX_PRIMARY_IP.to_string();
+    let secondary_ip = OKEX_SECONDARY_IP.to_string();
+    let session_max = None;
     info!(
         "Primary IP='{}', Secondary IP='{}', session_max={:?}",
         primary_ip, secondary_ip, session_max

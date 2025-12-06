@@ -18,6 +18,7 @@ thread_local! {
 
 const TRADE_REQ_PAYLOAD: usize = 4_096;
 const TRADE_RESP_PAYLOAD: usize = 16_384;
+const TRADE_RESP_HEADER_LEN: usize = 40;
 
 /// TradeEngHub 负责与多个 trade engine 进程进行双向通信
 ///
@@ -207,7 +208,7 @@ impl TradeEngChannel {
                 Ok(Some(sample)) => {
                     let payload = sample.payload();
 
-                    if payload.len() < 34 {
+                    if payload.len() < TRADE_RESP_HEADER_LEN {
                         warn!(
                             "Trade response too short: {} bytes (exchange={})",
                             payload.len(),
@@ -221,10 +222,14 @@ impl TradeEngChannel {
                     let exchange =
                         u32::from_le_bytes([payload[20], payload[21], payload[22], payload[23]]);
                     let status = u16::from_le_bytes([payload[24], payload[25]]);
+                    // 跳过 2 字节 reserved，再读取 ip_weight 和 order_count
                     let ip_weight =
-                        u32::from_le_bytes([payload[26], payload[27], payload[28], payload[29]]);
+                        u32::from_le_bytes([payload[28], payload[29], payload[30], payload[31]]);
                     let order_count =
-                        u32::from_le_bytes([payload[30], payload[31], payload[32], payload[33]]);
+                        u32::from_le_bytes([payload[32], payload[33], payload[34], payload[35]]);
+                    let body_len =
+                        u32::from_le_bytes([payload[36], payload[37], payload[38], payload[39]])
+                            as usize;
                     let client_order_id = i64::from_le_bytes([
                         payload[12],
                         payload[13],
@@ -236,8 +241,15 @@ impl TradeEngChannel {
                         payload[19],
                     ]);
 
-                    let body = if payload.len() > 34 {
-                        String::from_utf8_lossy(&payload[34..]).to_string()
+                    // body 长度写在 header 中，避免把填充的 0 也当成正文
+                    let available_body = payload.len().saturating_sub(TRADE_RESP_HEADER_LEN);
+                    let actual_body_len = body_len.min(available_body);
+                    let body = if actual_body_len > 0 {
+                        String::from_utf8_lossy(
+                            &payload
+                                [TRADE_RESP_HEADER_LEN..TRADE_RESP_HEADER_LEN + actual_body_len],
+                        )
+                        .to_string()
                     } else {
                         String::new()
                     };

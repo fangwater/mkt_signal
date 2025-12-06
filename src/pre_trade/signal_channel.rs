@@ -384,7 +384,8 @@ fn handle_trade_signal(signal: TradeSignal) {
 
                     // 平仓本质就是反向开仓，复用 HedgeArbStrategy
                     let strategy_id = StrategyManager::generate_strategy_id();
-                    let mut strategy = HedgeArbStrategy::new(strategy_id, opening_symbol.clone());
+                    let mut strategy: HedgeArbStrategy =
+                        HedgeArbStrategy::new(strategy_id, opening_symbol.clone());
                     strategy.set_force_close_mode(true);
 
                     strategy.handle_signal_with_record(&converted_signal);

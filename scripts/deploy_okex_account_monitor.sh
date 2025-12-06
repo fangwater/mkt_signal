@@ -2,10 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN_NAME="account_monitor"
+BIN_NAME="okex_account_monitor"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 
-# 解析参数
+# 解析参数：trade 或 test
 ENV_TYPE="${1:-trade}"
 case "$ENV_TYPE" in
     trade)
@@ -26,12 +26,7 @@ cargo build --release --bin "$BIN_NAME"
 
 echo "[INFO] 部署 $BIN_NAME 到 $TARGET_DIR"
 mkdir -p "$TARGET_DIR"
-mkdir -p "$TARGET_DIR/config"
 cp "$BIN_PATH" "$TARGET_DIR/"
 chmod +x "$TARGET_DIR/$BIN_NAME"
-
-# 部署配置文件
-echo "[INFO] 部署配置文件到 $TARGET_DIR/config"
-cp "$ROOT_DIR/config/account_cfg.toml" "$TARGET_DIR/config/"
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"

@@ -102,6 +102,24 @@ impl HedgeArbStrategy {
         // 开仓open leg，打开头寸，根据信号创建开仓leg, 进行风控判断，失败就直接把策略标记为不活跃，等待定时器清理
 
         let force_close = self.is_force_close_mode();
+        if force_close {
+            let opening_symbol = ctx.get_opening_symbol();
+            let hedging_symbol = ctx.get_hedging_symbol();
+            let opening_venue = Self::describe_venue(ctx.opening_leg.venue);
+            let hedging_venue = Self::describe_venue(ctx.hedging_leg.venue);
+            let side = Side::from_u8(ctx.side).unwrap_or(Side::Buy);
+            info!(
+                "HedgeArbStrategy: strategy_id={} force_close_mode=true, 将跳过所有风控 | opening={} {} hedging={} {} side={:?} amount={:.4} price={:.6}",
+                self.strategy_id,
+                opening_symbol,
+                opening_venue,
+                hedging_symbol,
+                hedging_venue,
+                side,
+                ctx.amount,
+                ctx.price
+            );
+        }
 
         // 1、检查杠杆, 失败打印error
         if force_close {
@@ -254,7 +272,6 @@ impl HedgeArbStrategy {
         }
 
         // 10、用修正量价，开仓订单记录到order manager
-        // todo: 订单持久化直接写死在manager中
         let client_order_id = MonitorChannel::instance()
             .order_manager()
             .borrow_mut()
@@ -638,12 +655,12 @@ impl HedgeArbStrategy {
                             if let Err(e) =
                                 TradeEngHub::publish_order_request(exchange, &cancel_bytes)
                             {
-                                error!(
+                                info!(
                                     "HedgeArbStrategy: strategy_id={} exchange={} 发送开仓撤单请求失败: {}",
                                     self.strategy_id, exchange, e
                                 );
                             } else {
-                                debug!(
+                                info!(
                                     "HedgeArbStrategy: strategy_id={} 已发送开仓撤单请求 order_id={}",
                                     self.strategy_id, self.open_order_id
                                 );

@@ -63,10 +63,6 @@ async fn main() -> Result<()> {
         std::env::set_var("RUST_LOG", "debug");
     }
     env_logger::init();
-    // Load TOML config (fixed path)
-    let cfg = mkt_signal::portfolio_margin::pm_cfg::AccountTomlCfg::load("config/account_cfg.toml")
-        .await?;
-
     let api_key_raw = std::env::var("BINANCE_API_KEY").map_err(|_| {
         anyhow::anyhow!("BINANCE_API_KEY not set. Export it before running account_monitor")
     })?;
@@ -87,23 +83,18 @@ async fn main() -> Result<()> {
     // Resolve endpoints from config
     const BINANCE_PM_WS: &str = "wss://fstream.binance.com/pm";
     const BINANCE_PM_REST: &str = "https://papi.binance.com";
+    const BINANCE_PRIMARY_IP: &str = "172.31.33.133";
+    const BINANCE_SECONDARY_IP: &str = "172.31.46.90";
     let ws_pm = BINANCE_PM_WS.to_string();
     let rest_pm = BINANCE_PM_REST.to_string();
 
     // IP and session settings
-    let primary_ip = cfg
-        .general
-        .primary_local_ip
-        .clone()
-        .unwrap_or_else(|| "".to_string());
-    let secondary_ip = cfg
-        .general
-        .secondary_local_ip
-        .clone()
-        .unwrap_or_else(|| "".to_string());
-    let session_max = cfg.general.ws_session_max_secs.map(Duration::from_secs);
+    const BINANCE_SESSION_MAX_SECS: u64 = 2 * 3600;
+    let primary_ip = BINANCE_PRIMARY_IP.to_string();
+    let secondary_ip = BINANCE_SECONDARY_IP.to_string();
+    let session_max = Some(Duration::from_secs(BINANCE_SESSION_MAX_SECS));
     info!(
-        "Primary IP='{}', Secondary IP='{}', session_max={:?}",
+        "Primary IP='{}', Secondary IP='{}', session_max={:?} (hardcoded for Binance PM)",
         primary_ip, secondary_ip, session_max
     );
 
