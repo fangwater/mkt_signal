@@ -157,10 +157,7 @@ impl HedgeArbStrategy {
         // 4、检查限价挂单数量限制（如果是限价单）
         let order_type = OrderType::from_u8(ctx.order_type);
         if order_type == Some(OrderType::Limit) {
-            if force_close {
-                self.log_force_close_skip("限价挂单数量", &ctx);
-            } else if let Err(e) =
-                MonitorChannel::instance().check_pending_limit_order(&self.open_symbol)
+            if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&self.open_symbol)
             {
                 error!("HedgeArbStrategy: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃", self.strategy_id, self.open_symbol, e);
                 self.alive_flag = false;

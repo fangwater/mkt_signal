@@ -99,9 +99,9 @@ SPREAD_THRESHOLD_MAPPING = {
     "forward_cancel_mm": "binance_spread_20", # spread > q15
     "forward_cancel_mt": "binance_bidask_15", # bidask > q15
     
-    "backward_open_mm": "binance_spread_10", # spread > q90
+    "backward_open_mm": "binance_spread_30", # spread > q90
     "backward_open_mt": "binance_askbid_90", # askbid > q90
-    "backward_cancel_mm": "binance_spread_5", #spread < q85
+    "backward_cancel_mm": "binance_spread_25", #spread < q85
     "backward_cancel_mt": "binance_askbid_85", #askbid < q85
 }
 
