@@ -849,11 +849,6 @@ impl FrDecision {
                 let signal = TradeSignal::create(signal_type.clone(), now, 0.0, context);
                 let signal_bytes = signal.to_bytes();
                 self.signal_pub.publish(&signal_bytes)?;
-
-                info!(
-                    "FrDecision: emitted ArbCancel signal to '{}' spot={} futures={}",
-                    self.channel_name, spot_symbol, futures_symbol
-                );
             }
 
             _ => {
