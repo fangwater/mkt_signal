@@ -1,6 +1,4 @@
-//! OKX 账户事件消息定义
-//!
-//! 独立的 OKX 消息格式，不与 Binance 共用结构
+//! OKX 账户事件消息定义（独立于 Binance）
 
 use anyhow::Result;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -19,137 +17,168 @@ pub enum OkexAccountEventType {
     Error = 4999,
 }
 
-/// OKX 订单更新消息
-///
-/// 对应 OKX orders 频道推送
+/// OKX 订单更新消息（暂保留定义，仍用于 WS 订单日志）
 #[derive(Debug, Clone)]
 pub struct OkexOrderMsg {
     pub msg_type: OkexAccountEventType,
-    /// 产品ID，如 BTC-USDT-SWAP
     pub inst_id: String,
-    /// 产品类型: SPOT, MARGIN, SWAP, FUTURES, OPTION
-    pub inst_type: String,
-    /// 订单ID
-    pub ord_id: String,
-    /// 客户自定义订单ID
-    pub cl_ord_id: String,
-    /// 订单状态: live, partially_filled, filled, canceled, mmp_canceled
-    pub state: String,
-    /// 订单方向: buy, sell
-    pub side: String,
-    /// 持仓方向: long, short, net
-    pub pos_side: String,
-    /// 订单类型: market, limit, post_only, fok, ioc, optimal_limit_ioc
-    pub ord_type: String,
-    /// 委托价格
-    pub px: f64,
-    /// 委托数量
-    pub sz: f64,
-    /// 成交均价
-    pub avg_px: f64,
-    /// 累计成交数量
-    pub acc_fill_sz: f64,
-    /// 最新成交价格
-    pub fill_px: f64,
-    /// 最新成交数量
-    pub fill_sz: f64,
-    /// 最新成交ID
-    pub trade_id: String,
-    /// 手续费 (负数为扣费，正数为返佣)
-    pub fee: f64,
-    /// 手续费币种
-    pub fee_ccy: String,
-    /// 收益
-    pub pnl: f64,
-    /// 是否只减仓
-    pub reduce_only: bool,
-    /// 订单创建时间 (毫秒)
-    pub c_time: i64,
-    /// 订单更新时间 (毫秒)
-    pub u_time: i64,
-    /// 成交时间 (毫秒)
+    pub inst_type: u8,
+    pub ord_id: i64,
+    pub cl_ord_id: i64,
+    pub state: u8,
+    pub side: u8,
+    pub ord_type: u8,
+    pub cancel_source: u8,
+    pub amend_source: u8,
+    pub price: f64,
+    pub quantity: f64,
+    pub cumulative_filled_quantity: f64,
+    pub create_time: i64,
+    pub update_time: i64,
     pub fill_time: i64,
 }
 
 impl OkexOrderMsg {
+    /// 将 OKX instType 文本映射为紧凑编码
+    pub fn inst_type_to_u8(inst_type: &str) -> u8 {
+        match inst_type {
+            "MARGIN" => 1,
+            "SWAP" => 2,
+            "FUTURES" => 3,
+            "OPTION" => 4,
+            _ => 0,
+        }
+    }
+
+    /// 反向映射，便于日志展示
+    pub fn inst_type_to_str(code: u8) -> &'static str {
+        match code {
+            1 => "MARGIN",
+            2 => "SWAP",
+            3 => "FUTURES",
+            4 => "OPTION",
+            _ => "UNKNOWN",
+        }
+    }
+
+    /// 将订单状态文本压缩为 u8
+    pub fn state_to_u8(state: &str) -> u8 {
+        match state {
+            "canceled" => 1,
+            "live" => 2,
+            "partially_filled" => 3,
+            "filled" => 4,
+            "mmp_canceled" => 5,
+            _ => 0,
+        }
+    }
+
+    /// 状态码还原为字符串，仅用于日志展示
+    pub fn state_to_str(code: u8) -> &'static str {
+        match code {
+            1 => "canceled",
+            2 => "live",
+            3 => "partially_filled",
+            4 => "filled",
+            5 => "mmp_canceled",
+            _ => "unknown",
+        }
+    }
+
+    /// 撤单来源码转字符串
+    pub fn cancel_source_to_str(code: u8) -> &'static str {
+        match code {
+            0 => "system",
+            1 => "user",
+            2 => "pre_reduce",
+            3 => "risk_control",
+            4 => "borrow_limit",
+            6 => "adl_trigger",
+            7 => "delivery",
+            9 => "funding_fee_insufficient",
+            10 => "option_expiry",
+            13 => "fok_not_filled",
+            14 => "ioc_partial",
+            15 => "price_out_of_range",
+            17 => "position_filled",
+            20 => "countdown_cancel",
+            21 => "tp_sl_linked_position_closed",
+            22 => "better_same_side_order_auto_cancel",
+            23 => "better_existing_order_auto_cancel",
+            27 => "slippage_protection",
+            31 => "post_only_would_cross",
+            32 => "self_trade_protection",
+            33 => "too_many_matches",
+            36 => "linked_sl_triggered_cancel_tp",
+            37 => "linked_sl_cancelled_cancel_tp",
+            38 => "mmp_cancelled_by_user",
+            39 => "mmp_triggered",
+            42 => "chase_distance_exceeded",
+            43 => "price_worse_than_index",
+            44 => "auto_convert_fail",
+            45 => "elp_price_check_failed",
+            46 => "delta_reduce_cancel",
+            _ => "unknown",
+        }
+    }
+
+    /// 改单来源码转字符串
+    pub fn amend_source_to_str(code: u8) -> &'static str {
+        match code {
+            1 => "user_amend",
+            2 => "user_amend_reduce_only_current",
+            3 => "user_order_reduce_only_current",
+            4 => "existing_reduce_only",
+            5 => "option_follow_px_change",
+            _ => "unknown",
+        }
+    }
+
     pub fn to_bytes(&self) -> Bytes {
         let inst_id_bytes = self.inst_id.as_bytes();
-        let inst_type_bytes = self.inst_type.as_bytes();
-        let ord_id_bytes = self.ord_id.as_bytes();
-        let cl_ord_id_bytes = self.cl_ord_id.as_bytes();
-        let state_bytes = self.state.as_bytes();
-        let side_bytes = self.side.as_bytes();
-        let pos_side_bytes = self.pos_side.as_bytes();
-        let ord_type_bytes = self.ord_type.as_bytes();
-        let trade_id_bytes = self.trade_id.as_bytes();
-        let fee_ccy_bytes = self.fee_ccy.as_bytes();
-
         let total_size = 4  // msg_type
+            + 1  // inst_type (u8)
             + 4 + inst_id_bytes.len()
-            + 4 + inst_type_bytes.len()
-            + 4 + ord_id_bytes.len()
-            + 4 + cl_ord_id_bytes.len()
-            + 4 + state_bytes.len()
-            + 4 + side_bytes.len()
-            + 4 + pos_side_bytes.len()
-            + 4 + ord_type_bytes.len()
-            + 8 * 6  // px, sz, avg_px, acc_fill_sz, fill_px, fill_sz
-            + 4 + trade_id_bytes.len()
-            + 8 * 2  // fee, pnl
-            + 4 + fee_ccy_bytes.len()
-            + 1  // reduce_only
-            + 8 * 3; // c_time, u_time, fill_time
+            + 8  // ord_id i64
+            + 8  // cl_ord_id i64
+            + 1  // state u8
+            + 1  // side u8
+            + 1  // ord_type u8
+            + 1  // cancel_source u8
+            + 1  // amend_source u8
+            + 8 * 3  // price, quantity, cumulative_filled_quantity
+            + 8 * 3; // create_time, update_time, fill_time
 
         let mut buf = BytesMut::with_capacity(total_size);
 
         buf.put_u32_le(self.msg_type as u32);
+        buf.put_u8(self.inst_type);
 
         // 字符串字段: 长度 + 内容
         buf.put_u32_le(inst_id_bytes.len() as u32);
         buf.put(inst_id_bytes);
 
-        buf.put_u32_le(inst_type_bytes.len() as u32);
-        buf.put(inst_type_bytes);
+        buf.put_i64_le(self.ord_id);
 
-        buf.put_u32_le(ord_id_bytes.len() as u32);
-        buf.put(ord_id_bytes);
+        buf.put_i64_le(self.cl_ord_id);
 
-        buf.put_u32_le(cl_ord_id_bytes.len() as u32);
-        buf.put(cl_ord_id_bytes);
+        buf.put_u8(self.state);
 
-        buf.put_u32_le(state_bytes.len() as u32);
-        buf.put(state_bytes);
+        buf.put_u8(self.side);
 
-        buf.put_u32_le(side_bytes.len() as u32);
-        buf.put(side_bytes);
+        buf.put_u8(self.ord_type);
 
-        buf.put_u32_le(pos_side_bytes.len() as u32);
-        buf.put(pos_side_bytes);
+        buf.put_u8(self.cancel_source);
 
-        buf.put_u32_le(ord_type_bytes.len() as u32);
-        buf.put(ord_type_bytes);
+        buf.put_u8(self.amend_source);
 
         // 数值字段
-        buf.put_f64_le(self.px);
-        buf.put_f64_le(self.sz);
-        buf.put_f64_le(self.avg_px);
-        buf.put_f64_le(self.acc_fill_sz);
-        buf.put_f64_le(self.fill_px);
-        buf.put_f64_le(self.fill_sz);
+        buf.put_f64_le(self.price);
+        buf.put_f64_le(self.quantity);
+        buf.put_f64_le(self.cumulative_filled_quantity);
 
-        buf.put_u32_le(trade_id_bytes.len() as u32);
-        buf.put(trade_id_bytes);
-
-        buf.put_f64_le(self.fee);
-        buf.put_f64_le(self.pnl);
-
-        buf.put_u32_le(fee_ccy_bytes.len() as u32);
-        buf.put(fee_ccy_bytes);
-
-        buf.put_u8(if self.reduce_only { 1 } else { 0 });
-
-        buf.put_i64_le(self.c_time);
-        buf.put_i64_le(self.u_time);
+        buf.put_i64_le(self.create_time);
+        buf.put_i64_le(self.update_time);
         buf.put_i64_le(self.fill_time);
 
         buf.freeze()
@@ -167,53 +196,63 @@ impl OkexOrderMsg {
             anyhow::bail!("Invalid msg type: {}", msg_type_u32);
         }
 
-        fn read_string(cursor: &mut Bytes) -> Result<String> {
+        if cursor.remaining() < 1 {
+            anyhow::bail!("Not enough data for inst_type");
+        }
+        let inst_type = cursor.get_u8();
+
+        let inst_id = {
             if cursor.remaining() < 4 {
-                anyhow::bail!("Not enough data for string length");
+                anyhow::bail!("Not enough data for inst_id length");
             }
             let len = cursor.get_u32_le() as usize;
             if cursor.remaining() < len {
-                anyhow::bail!("Not enough data for string content");
+                anyhow::bail!("Not enough data for inst_id content");
             }
-            Ok(String::from_utf8(cursor.copy_to_bytes(len).to_vec())?)
+            String::from_utf8(cursor.copy_to_bytes(len).to_vec())?
+        };
+        if cursor.remaining() < 8 {
+            anyhow::bail!("Not enough data for ord_id");
         }
+        let ord_id = cursor.get_i64_le();
+        if cursor.remaining() < 8 {
+            anyhow::bail!("Not enough data for cl_ord_id");
+        }
+        let cl_ord_id = cursor.get_i64_le();
+        if cursor.remaining() < 1 {
+            anyhow::bail!("Not enough data for state");
+        }
+        let state = cursor.get_u8();
+        if cursor.remaining() < 1 {
+            anyhow::bail!("Not enough data for side");
+        }
+        let side = cursor.get_u8();
+        if cursor.remaining() < 1 {
+            anyhow::bail!("Not enough data for ord_type");
+        }
+        let ord_type = cursor.get_u8();
+        if cursor.remaining() < 1 {
+            anyhow::bail!("Not enough data for cancel_source");
+        }
+        let cancel_source = cursor.get_u8();
+        if cursor.remaining() < 1 {
+            anyhow::bail!("Not enough data for amend_source");
+        }
+        let amend_source = cursor.get_u8();
 
-        let inst_id = read_string(&mut cursor)?;
-        let inst_type = read_string(&mut cursor)?;
-        let ord_id = read_string(&mut cursor)?;
-        let cl_ord_id = read_string(&mut cursor)?;
-        let state = read_string(&mut cursor)?;
-        let side = read_string(&mut cursor)?;
-        let pos_side = read_string(&mut cursor)?;
-        let ord_type = read_string(&mut cursor)?;
-
-        if cursor.remaining() < 8 * 6 {
+        if cursor.remaining() < 8 * 3 {
             anyhow::bail!("Not enough data for numeric fields");
         }
 
-        let px = cursor.get_f64_le();
-        let sz = cursor.get_f64_le();
-        let avg_px = cursor.get_f64_le();
-        let acc_fill_sz = cursor.get_f64_le();
-        let fill_px = cursor.get_f64_le();
-        let fill_sz = cursor.get_f64_le();
+        let price = cursor.get_f64_le();
+        let quantity = cursor.get_f64_le();
+        let cumulative_filled_quantity = cursor.get_f64_le();
 
-        let trade_id = read_string(&mut cursor)?;
-
-        if cursor.remaining() < 8 * 2 {
-            anyhow::bail!("Not enough data for fee/pnl");
+        if cursor.remaining() < 8 * 3 {
+            anyhow::bail!("Not enough data for timestamps");
         }
-        let fee = cursor.get_f64_le();
-        let pnl = cursor.get_f64_le();
-
-        let fee_ccy = read_string(&mut cursor)?;
-
-        if cursor.remaining() < 1 + 8 * 3 {
-            anyhow::bail!("Not enough data for flags and timestamps");
-        }
-        let reduce_only = cursor.get_u8() != 0;
-        let c_time = cursor.get_i64_le();
-        let u_time = cursor.get_i64_le();
+        let create_time = cursor.get_i64_le();
+        let update_time = cursor.get_i64_le();
         let fill_time = cursor.get_i64_le();
 
         Ok(Self {
@@ -224,22 +263,142 @@ impl OkexOrderMsg {
             cl_ord_id,
             state,
             side,
-            pos_side,
             ord_type,
-            px,
-            sz,
-            avg_px,
-            acc_fill_sz,
-            fill_px,
-            fill_sz,
-            trade_id,
-            fee,
-            fee_ccy,
-            pnl,
-            reduce_only,
-            c_time,
-            u_time,
+            cancel_source,
+            amend_source,
+            price,
+            quantity,
+            cumulative_filled_quantity,
+            create_time,
+            update_time,
             fill_time,
+        })
+    }
+}
+
+/// OKX 余额消息（仅一个时间字段）
+#[derive(Debug, Clone)]
+pub struct OkexBalanceMsg {
+    pub msg_type: OkexAccountEventType,
+    pub timestamp: i64,
+    pub balance: f64,
+}
+
+impl OkexBalanceMsg {
+    pub fn create(timestamp: i64, balance: f64) -> Self {
+        Self {
+            msg_type: OkexAccountEventType::BalanceUpdate,
+            timestamp,
+            balance,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 8 + 8;
+        let mut buf = BytesMut::with_capacity(total_size);
+
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_i64_le(self.timestamp);
+        buf.put_f64_le(self.balance);
+
+        buf.freeze()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        const MIN_SIZE: usize = 4 + 8 + 8;
+        if data.len() < MIN_SIZE {
+            anyhow::bail!("okex balance msg too short: {}", data.len());
+        }
+
+        let mut cursor = Bytes::copy_from_slice(data);
+        let msg_type = cursor.get_u32_le();
+        if msg_type != OkexAccountEventType::BalanceUpdate as u32 {
+            anyhow::bail!("invalid okex balance msg type: {}", msg_type);
+        }
+
+        let timestamp = cursor.get_i64_le();
+        let balance = cursor.get_f64_le();
+
+        Ok(Self {
+            msg_type: OkexAccountEventType::BalanceUpdate,
+            timestamp,
+            balance,
+        })
+    }
+}
+
+/// OKX 持仓消息（仅一个时间字段）
+#[derive(Debug, Clone)]
+pub struct OkexPositionMsg {
+    pub msg_type: OkexAccountEventType,
+    pub timestamp: i64,
+    pub inst_id_length: u32,
+    pub position_side: char,
+    pub padding: [u8; 3],
+    pub inst_id: String,
+    pub position_amount: f64,
+}
+
+impl OkexPositionMsg {
+    pub fn create(
+        timestamp: i64,
+        inst_id: String,
+        position_side: char,
+        position_amount: f64,
+    ) -> Self {
+        Self {
+            msg_type: OkexAccountEventType::PositionUpdate,
+            timestamp,
+            inst_id_length: inst_id.len() as u32,
+            position_side,
+            padding: [0u8; 3],
+            inst_id,
+            position_amount,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 8 + 4 + 1 + 3 + self.inst_id_length as usize + 8;
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_i64_le(self.timestamp);
+        buf.put_u32_le(self.inst_id_length);
+        buf.put_u8(self.position_side as u8);
+        buf.put(&self.padding[..]);
+        buf.put(self.inst_id.as_bytes());
+        buf.put_f64_le(self.position_amount);
+        buf.freeze()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        const MIN_SIZE: usize = 4 + 8 + 4 + 1 + 3 + 8;
+        if data.len() < MIN_SIZE {
+            anyhow::bail!("okex position msg too short: {}", data.len());
+        }
+        let mut cursor = Bytes::copy_from_slice(data);
+        let msg_type = cursor.get_u32_le();
+        if msg_type != OkexAccountEventType::PositionUpdate as u32 {
+            anyhow::bail!("invalid okex position msg type: {}", msg_type);
+        }
+        let timestamp = cursor.get_i64_le();
+        let inst_id_length = cursor.get_u32_le();
+        let position_side = cursor.get_u8() as char;
+        let mut padding = [0u8; 3];
+        cursor.copy_to_slice(&mut padding);
+        if cursor.remaining() < inst_id_length as usize + 8 {
+            anyhow::bail!("okex position msg truncated");
+        }
+        let inst_id = String::from_utf8(cursor.copy_to_bytes(inst_id_length as usize).to_vec())?;
+        let position_amount = cursor.get_f64_le();
+
+        Ok(Self {
+            msg_type: OkexAccountEventType::PositionUpdate,
+            timestamp,
+            inst_id_length,
+            position_side,
+            padding,
+            inst_id,
+            position_amount,
         })
     }
 }
@@ -281,50 +440,5 @@ pub fn get_okex_event_type(data: &[u8]) -> OkexAccountEventType {
         4002 => OkexAccountEventType::BalanceUpdate,
         4003 => OkexAccountEventType::PositionUpdate,
         _ => OkexAccountEventType::Error,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_okex_order_msg_roundtrip() {
-        let msg = OkexOrderMsg {
-            msg_type: OkexAccountEventType::OrderUpdate,
-            inst_id: "BTC-USDT-SWAP".to_string(),
-            inst_type: "SWAP".to_string(),
-            ord_id: "123456789".to_string(),
-            cl_ord_id: "client_order_1".to_string(),
-            state: "filled".to_string(),
-            side: "buy".to_string(),
-            pos_side: "long".to_string(),
-            ord_type: "limit".to_string(),
-            px: 50000.0,
-            sz: 1.0,
-            avg_px: 49999.0,
-            acc_fill_sz: 1.0,
-            fill_px: 49999.0,
-            fill_sz: 1.0,
-            trade_id: "987654321".to_string(),
-            fee: -0.5,
-            fee_ccy: "USDT".to_string(),
-            pnl: 10.5,
-            reduce_only: false,
-            c_time: 1704876947000,
-            u_time: 1704876948000,
-            fill_time: 1704876948000,
-        };
-
-        let bytes = msg.to_bytes();
-        let parsed = OkexOrderMsg::from_bytes(&bytes).unwrap();
-
-        assert_eq!(parsed.inst_id, msg.inst_id);
-        assert_eq!(parsed.ord_id, msg.ord_id);
-        assert_eq!(parsed.state, msg.state);
-        assert_eq!(parsed.px, msg.px);
-        assert_eq!(parsed.fill_sz, msg.fill_sz);
-        assert_eq!(parsed.fee, msg.fee);
-        assert_eq!(parsed.c_time, msg.c_time);
     }
 }

@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use crate::common::account_msg::{
     get_event_type as get_account_event_type, AccountEventType, AccountPositionMsg,
-    AccountUpdateBalanceMsg, AccountUpdateFlushMsg, AccountUpdatePositionMsg, BalanceUpdateMsg,
-    ExecutionReportMsg, LiabilityChangeMsg, OrderTradeUpdateMsg,
+    AccountUpdateBalanceMsg, AccountUpdateFlushMsg, BalanceUpdateMsg, ExecutionReportMsg,
+    LiabilityChangeMsg, OrderTradeUpdateMsg, PositionMsg,
 };
 use crate::common::ipc_service_name::build_service_name;
 use crate::portfolio_margin::pm_forwarder::{PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS};
@@ -113,7 +113,7 @@ pub fn key_account_position(msg: &AccountPositionMsg) -> u64 {
     ])
 }
 
-pub fn key_account_update_position(msg: &AccountUpdatePositionMsg) -> u64 {
+pub fn key_account_update_position(msg: &PositionMsg) -> u64 {
     hash64(&[
         AccountEventType::AccountUpdatePosition as u32 as u64,
         msg.event_time as u64,
@@ -663,7 +663,7 @@ impl MonitorChannel {
                                     }
                                 }
                                 AccountEventType::AccountUpdatePosition => {
-                                    if let Ok(msg) = AccountUpdatePositionMsg::from_bytes(data) {
+                                    if let Ok(msg) = PositionMsg::from_bytes(data) {
                                         um_manager.borrow_mut().apply_position_update(
                                             &msg.symbol,
                                             msg.position_side,

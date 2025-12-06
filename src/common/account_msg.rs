@@ -16,6 +16,7 @@ pub enum AccountEventType {
     AccountConfigUpdate = 2009,
     BalanceUpdate = 2010,
     AccountUpdateFlush = 2011,
+    OkexBalanceSnapshot = 2012,
     Error = 3333,
 }
 
@@ -1269,7 +1270,7 @@ impl AccountUpdateBalanceMsg {
 
 #[repr(C, align(8))]
 #[derive(Debug, Clone)]
-pub struct AccountUpdatePositionMsg {
+pub struct PositionMsg {
     pub msg_type: AccountEventType,
     pub event_time: i64,
     pub transaction_time: i64,
@@ -1357,7 +1358,7 @@ impl AccountUpdateFlushMsg {
     }
 }
 
-impl AccountUpdatePositionMsg {
+impl PositionMsg {
     pub fn create(
         event_time: i64,
         transaction_time: i64,
@@ -1647,6 +1648,92 @@ impl BalanceUpdateMsg {
     }
 }
 
+/// OKEx balance snapshot（精简格式）
+///
+/// - msg_type: OkexBalanceSnapshot
+/// - event_time: 来自 pTime
+/// - update_time: 来自 balData.uTime
+/// - symbol: balData.ccy
+/// - balance: balData.cashBal
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct OkexBalanceMsg {
+    pub msg_type: AccountEventType,
+    pub event_time: i64,
+    pub update_time: i64,
+    pub symbol_length: u32,
+    pub padding: [u8; 4],
+    pub symbol: String,
+    pub balance: f64,
+}
+
+impl OkexBalanceMsg {
+    pub fn create(event_time: i64, update_time: i64, symbol: String, balance: f64) -> Self {
+        Self {
+            msg_type: AccountEventType::OkexBalanceSnapshot,
+            event_time,
+            update_time,
+            symbol_length: symbol.len() as u32,
+            padding: [0u8; 4],
+            symbol,
+            balance,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 8 + 8 + 4 + 4 + self.symbol_length as usize + 8;
+        let mut buf = BytesMut::with_capacity(total_size);
+
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_i64_le(self.event_time);
+        buf.put_i64_le(self.update_time);
+        buf.put_u32_le(self.symbol_length);
+        buf.put(&self.padding[..]);
+        buf.put(self.symbol.as_bytes());
+        buf.put_f64_le(self.balance);
+
+        buf.freeze()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        const MIN_SIZE: usize = 4 + 8 + 8 + 4 + 4 + 8;
+        if data.len() < MIN_SIZE {
+            anyhow::bail!("okex balance msg too short: {}", data.len());
+        }
+
+        let msg_type = get_event_type(data);
+        if msg_type != AccountEventType::OkexBalanceSnapshot {
+            anyhow::bail!("unexpected account msg type: {:?}", msg_type);
+        }
+
+        let mut cursor = Bytes::copy_from_slice(data);
+        cursor.advance(4); // msg_type
+        let event_time = cursor.get_i64_le();
+        let update_time = cursor.get_i64_le();
+        let symbol_length = cursor.get_u32_le();
+        let mut padding = [0u8; 4];
+        cursor.copy_to_slice(&mut padding);
+
+        if cursor.len() < symbol_length as usize + 8 {
+            anyhow::bail!("okex balance symbol length mismatch: {}", symbol_length);
+        }
+
+        let symbol_bytes = cursor.copy_to_bytes(symbol_length as usize);
+        let symbol = String::from_utf8(symbol_bytes.to_vec())?;
+        let balance = cursor.get_f64_le();
+
+        Ok(Self {
+            msg_type,
+            event_time,
+            update_time,
+            symbol_length,
+            padding,
+            symbol,
+            balance,
+        })
+    }
+}
+
 impl AccountEventMsg {
     pub fn create(msg_type: AccountEventType, data: Bytes) -> Self {
         Self {
@@ -1682,6 +1769,7 @@ pub fn get_event_type(data: &[u8]) -> AccountEventType {
         2009 => AccountEventType::AccountConfigUpdate,
         2010 => AccountEventType::BalanceUpdate,
         2011 => AccountEventType::AccountUpdateFlush,
+        2012 => AccountEventType::OkexBalanceSnapshot,
         _ => AccountEventType::Error,
     }
 }

@@ -3,8 +3,8 @@ use bytes::Bytes;
 use log::{debug, error, info, warn};
 use mkt_signal::common::account_msg::{
     get_event_type, AccountEventType, AccountPositionMsg, AccountUpdateBalanceMsg,
-    AccountUpdateFlushMsg, AccountUpdatePositionMsg, BalanceUpdateMsg, ExecutionReportMsg,
-    LiabilityChangeMsg, OrderTradeUpdateMsg,
+    AccountUpdateFlushMsg, BalanceUpdateMsg, ExecutionReportMsg, LiabilityChangeMsg,
+    OrderTradeUpdateMsg, PositionMsg,
 };
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::binance_account_event_parser::BinanceAccountEventParser;
@@ -296,7 +296,7 @@ fn log_parsed_event(msg: &Bytes) {
             }
         }
         AccountEventType::AccountUpdatePosition => {
-            if let Ok(m) = AccountUpdatePositionMsg::from_bytes(&payload) {
+            if let Ok(m) = PositionMsg::from_bytes(&payload) {
                 info!(
                     "AccountUpdatePosition: sym={} side={} amt={} entry={} upnl={} reason={} bu={}",
                     m.symbol,
@@ -356,11 +356,9 @@ impl AccountEventDeduper {
             AccountEventType::AccountUpdateBalance => AccountUpdateBalanceMsg::from_bytes(&payload)
                 .ok()
                 .map(|msg| self.key_account_update_balance(&msg)),
-            AccountEventType::AccountUpdatePosition => {
-                AccountUpdatePositionMsg::from_bytes(&payload)
-                    .ok()
-                    .map(|msg| self.key_account_update_position(&msg))
-            }
+            AccountEventType::AccountUpdatePosition => PositionMsg::from_bytes(&payload)
+                .ok()
+                .map(|msg| self.key_account_update_position(&msg)),
             AccountEventType::AccountUpdateFlush => AccountUpdateFlushMsg::from_bytes(&payload)
                 .ok()
                 .map(|msg| self.key_account_update_flush(&msg)),
@@ -438,7 +436,7 @@ impl AccountEventDeduper {
         ])
     }
 
-    fn key_account_update_position(&self, msg: &AccountUpdatePositionMsg) -> u64 {
+    fn key_account_update_position(&self, msg: &PositionMsg) -> u64 {
         self.hash64(&[
             AccountEventType::AccountUpdatePosition as u32 as u64,
             msg.event_time as u64,

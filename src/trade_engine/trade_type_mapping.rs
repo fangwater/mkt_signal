@@ -20,6 +20,8 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceQueryUMOrder => "/papi/v1/um/order",
             TradeRequestType::BinanceQueryUMOpenOrder => "/papi/v1/um/openOrder",
             TradeRequestType::BinanceUMSetLeverage => "/papi/v1/um/leverage",
+            TradeRequestType::OkexNewMarginOrder => "/api/v5/trade/order",
+            TradeRequestType::OkexNewUMOrder => "/api/v5/trade/order",
         }
     }
 
@@ -38,6 +40,8 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceQueryUMOrder => "GET",
             TradeRequestType::BinanceQueryUMOpenOrder => "GET",
             TradeRequestType::BinanceUMSetLeverage => "POST",
+            TradeRequestType::OkexNewMarginOrder => "POST",
+            TradeRequestType::OkexNewUMOrder => "POST",
         }
     }
 
@@ -56,6 +60,8 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceQueryUMOrder => 1,
             TradeRequestType::BinanceQueryUMOpenOrder => 1,
             TradeRequestType::BinanceUMSetLeverage => 1,
+            TradeRequestType::OkexNewMarginOrder => 1,
+            TradeRequestType::OkexNewUMOrder => 1,
         }
     }
 
@@ -76,6 +82,8 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceQueryUMOrder => true,
             TradeRequestType::BinanceQueryUMOpenOrder => true,
             TradeRequestType::BinanceUMSetLeverage => true,
+            TradeRequestType::OkexNewMarginOrder => true,
+            TradeRequestType::OkexNewUMOrder => true,
         }
     }
 
@@ -94,6 +102,8 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceQueryUMOrder => true,
             TradeRequestType::BinanceQueryUMOpenOrder => true,
             TradeRequestType::BinanceUMSetLeverage => true,
+            TradeRequestType::OkexNewMarginOrder => true,
+            TradeRequestType::OkexNewUMOrder => true,
         }
     }
 }

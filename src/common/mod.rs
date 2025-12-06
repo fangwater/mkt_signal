@@ -6,6 +6,7 @@ pub mod ipc_service_name;
 pub mod min_qty_table;
 pub mod mkt_msg;
 pub mod msg_parser;
+pub mod okex_account_msg;
 pub mod redis_client;
 pub mod time_util;
 pub mod viz;

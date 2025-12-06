@@ -1,8 +1,7 @@
 use crate::common::account_msg::{
     AccountConfigUpdateMsg, AccountEventMsg, AccountEventType, AccountPositionMsg,
-    AccountUpdateBalanceMsg, AccountUpdateFlushMsg, AccountUpdatePositionMsg, BalanceUpdateMsg,
-    ConditionalOrderMsg, ExecutionReportMsg, LiabilityChangeMsg, OpenOrderLossMsg,
-    OrderTradeUpdateMsg,
+    AccountUpdateBalanceMsg, AccountUpdateFlushMsg, BalanceUpdateMsg, ConditionalOrderMsg,
+    ExecutionReportMsg, LiabilityChangeMsg, OpenOrderLossMsg, OrderTradeUpdateMsg, PositionMsg,
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
@@ -791,7 +790,7 @@ impl BinanceAccountEventParser {
                     ),
                 ) in position_map
                 {
-                    let msg = AccountUpdatePositionMsg::create(
+                    let msg = PositionMsg::create(
                         event_time,
                         transaction_time,
                         symbol,

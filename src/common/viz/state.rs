@@ -4,7 +4,7 @@ use std::rc::Rc;
 use chrono::Utc;
 
 use crate::common::account_msg::{
-    AccountEventType, AccountPositionMsg, AccountUpdateBalanceMsg, AccountUpdatePositionMsg,
+    AccountEventType, AccountPositionMsg, AccountUpdateBalanceMsg, PositionMsg,
 };
 use crate::common::time_util::get_timestamp_us;
 use crate::exchange::Exchange;
@@ -133,7 +133,7 @@ impl SharedState {
                 }
             }
             AccountEventType::AccountUpdatePosition => {
-                if let Ok(m) = AccountUpdatePositionMsg::from_bytes(payload) {
+                if let Ok(m) = PositionMsg::from_bytes(payload) {
                     self.apply_um_position(&m);
                 }
             }
@@ -218,7 +218,7 @@ impl SharedState {
         self.inner.last_account_update.set(get_timestamp_us());
     }
 
-    fn apply_um_position(&self, msg: &AccountUpdatePositionMsg) {
+    fn apply_um_position(&self, msg: &PositionMsg) {
         let mut um = self.inner.um_positions.borrow_mut();
         let side = match msg.position_side {
             'B' | 'b' => PositionSide::Both,

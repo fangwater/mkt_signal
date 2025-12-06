@@ -18,10 +18,8 @@
 use anyhow::Result;
 use bytes::Bytes;
 use log::{debug, error, info, warn};
-use mkt_signal::common::account_msg::{
-    get_event_type, AccountEventType, AccountPositionMsg, AccountUpdateBalanceMsg,
-    AccountUpdateFlushMsg, AccountUpdatePositionMsg, BalanceUpdateMsg, ExecutionReportMsg,
-    LiabilityChangeMsg, OrderTradeUpdateMsg,
+use mkt_signal::common::okex_account_msg::{
+    get_okex_event_type, OkexAccountEventType, OkexBalanceMsg, OkexOrderMsg, OkexPositionMsg,
 };
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::default_parser::Parser;
@@ -260,61 +258,64 @@ fn log_parsed_event(msg: &Bytes) {
     if msg.len() < 8 {
         return;
     }
-    let event_type = get_event_type(msg.as_ref());
+    let okex_event_type = get_okex_event_type(msg.as_ref());
     let payload_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
     if msg.len() < 8 + payload_len {
         return;
     }
     let payload = msg.slice(8..8 + payload_len);
 
-    match event_type {
-        AccountEventType::ExecutionReport => {
-            if let Ok(m) = ExecutionReportMsg::from_bytes(&payload) {
+    if matches!(okex_event_type, OkexAccountEventType::Error) {
+        debug!(
+            "OKEx account event unknown type={} len={}",
+            u32::from_le_bytes([msg[0], msg[1], msg[2], msg[3]]),
+            payload_len
+        );
+        return;
+    }
+
+    match okex_event_type {
+        OkexAccountEventType::OrderUpdate => {
+            if let Ok(m) = OkexOrderMsg::from_bytes(&payload) {
                 info!(
-                    "ExecutionReport: sym={} side={} status={} cli_id={} ord_id={} price={} qty={} filled={}",
-                    m.symbol, m.side, m.order_status, m.client_order_id, m.order_id, m.price, m.quantity, m.cumulative_filled_quantity
+                    "OKEx OrderUpdate: inst={} side={} state={} cancel_src={} amend_src={} cli_id={} ord_id={} price={} qty={} cumulative_filled={} create_time={} update_time={} fill_time={}",
+                    m.inst_id,
+                    m.side,
+                    OkexOrderMsg::state_to_str(m.state),
+                    OkexOrderMsg::cancel_source_to_str(m.cancel_source),
+                    OkexOrderMsg::amend_source_to_str(m.amend_source),
+                    m.cl_ord_id,
+                    m.ord_id,
+                    m.price,
+                    m.quantity,
+                    m.cumulative_filled_quantity,
+                    m.create_time,
+                    m.update_time,
+                    m.fill_time
                 );
             }
         }
-        AccountEventType::OrderTradeUpdate => {
-            if let Ok(m) = OrderTradeUpdateMsg::from_bytes(&payload) {
+        OkexAccountEventType::BalanceUpdate => {
+            if let Ok(m) = OkexBalanceMsg::from_bytes(&payload) {
                 info!(
-                    "OKEx OrderTradeUpdate: sym={} side={} status={} cli_id={} ord_id={} price={} qty={} filled={}",
-                    m.symbol, m.side, m.order_status, m.client_order_id, m.order_id, m.price, m.quantity, m.cumulative_filled_quantity
+                    "OKEx BalanceUpdate: ts={} balance={}",
+                    m.timestamp, m.balance
                 );
             }
         }
-        AccountEventType::BalanceUpdate => {
-            if let Ok(m) = BalanceUpdateMsg::from_bytes(&payload) {
-                info!("OKEx BalanceUpdate: asset={} delta={}", m.asset, m.delta);
-            }
-        }
-        AccountEventType::AccountUpdateBalance => {
-            if let Ok(m) = AccountUpdateBalanceMsg::from_bytes(&payload) {
+        OkexAccountEventType::PositionUpdate => {
+            if let Ok(m) = OkexPositionMsg::from_bytes(&payload) {
                 info!(
-                    "OKEx AccountUpdateBalance: asset={} wallet={} cross_wallet={}",
-                    m.asset, m.wallet_balance, m.cross_wallet_balance
-                );
-            }
-        }
-        AccountEventType::LiabilityChange => {
-            if let Ok(m) = LiabilityChangeMsg::from_bytes(&payload) {
-                info!(
-                    "OKEx LiabilityChange: asset={} type={} principal={} interest={} total={}",
-                    m.asset, m.liability_type, m.principal, m.interest, m.total_liability
-                );
-            }
-        }
-        AccountEventType::AccountUpdatePosition => {
-            if let Ok(m) = AccountUpdatePositionMsg::from_bytes(&payload) {
-                info!(
-                    "OKEx AccountUpdatePosition: sym={} side={} amt={} entry={} upnl={} reason={} bu={}",
-                    m.symbol, m.position_side, m.position_amount, m.entry_price, m.unrealized_pnl, m.reason, m.business_unit
+                    "OKEx PositionUpdate: ts={} inst={} side={} amt={}",
+                    m.timestamp, m.inst_id, m.position_side, m.position_amount
                 );
             }
         }
         _ => {
-            debug!("OKEx PM event: type={:?} len={}", event_type, payload_len);
+            debug!(
+                "OKEx account event (okex type={:?}) len={}",
+                okex_event_type, payload_len
+            );
         }
     }
 }
@@ -341,7 +342,7 @@ impl AccountEventDeduper {
             return true; // 格式不对的消息直接转发
         }
 
-        let event_type = get_event_type(msg.as_ref());
+        let okex_event_type = get_okex_event_type(msg.as_ref());
         let payload_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
         if msg.len() < 8 + payload_len {
             return true; // 格式不对的消息直接转发
@@ -350,33 +351,17 @@ impl AccountEventDeduper {
         let payload = msg.slice(8..8 + payload_len);
 
         // 根据事件类型计算去重 key
-        let key_opt = match event_type {
-            AccountEventType::AccountPosition => AccountPositionMsg::from_bytes(&payload)
+        let key_opt = match okex_event_type {
+            OkexAccountEventType::OrderUpdate => OkexOrderMsg::from_bytes(&payload)
                 .ok()
-                .map(|msg| self.key_account_position(&msg)),
-            AccountEventType::BalanceUpdate => BalanceUpdateMsg::from_bytes(&payload)
+                .map(|msg| self.key_okex_order(&msg)),
+            OkexAccountEventType::BalanceUpdate => OkexBalanceMsg::from_bytes(&payload)
                 .ok()
-                .map(|msg| self.key_balance_update(&msg)),
-            AccountEventType::AccountUpdateBalance => AccountUpdateBalanceMsg::from_bytes(&payload)
+                .map(|msg| self.key_okex_balance(&msg)),
+            OkexAccountEventType::PositionUpdate => OkexPositionMsg::from_bytes(&payload)
                 .ok()
-                .map(|msg| self.key_account_update_balance(&msg)),
-            AccountEventType::AccountUpdatePosition => {
-                AccountUpdatePositionMsg::from_bytes(&payload)
-                    .ok()
-                    .map(|msg| self.key_account_update_position(&msg))
-            }
-            AccountEventType::AccountUpdateFlush => AccountUpdateFlushMsg::from_bytes(&payload)
-                .ok()
-                .map(|msg| self.key_account_update_flush(&msg)),
-            AccountEventType::ExecutionReport => ExecutionReportMsg::from_bytes(&payload)
-                .ok()
-                .map(|msg| self.key_execution_report(&msg)),
-            AccountEventType::OrderTradeUpdate => OrderTradeUpdateMsg::from_bytes(&payload)
-                .ok()
-                .map(|msg| self.key_order_trade_update(&msg)),
-            _ => {
-                return true; // 其他事件类型不去重，直接转发
-            }
+                .map(|msg| self.key_okex_position(&msg)),
+            OkexAccountEventType::Error => return true,
         };
 
         let Some(key) = key_opt else {
@@ -416,66 +401,30 @@ impl AccountEventDeduper {
         hasher.finish()
     }
 
-    fn key_account_position(&self, msg: &AccountPositionMsg) -> u64 {
+    fn key_okex_balance(&self, msg: &OkexBalanceMsg) -> u64 {
         self.hash64(&[
-            AccountEventType::AccountPosition as u32 as u64,
-            msg.update_id as u64,
-            msg.event_time as u64,
-            self.hash_str64(&msg.asset),
+            OkexAccountEventType::BalanceUpdate as u32 as u64,
+            msg.timestamp as u64,
+            msg.balance.to_bits(),
         ])
     }
 
-    fn key_balance_update(&self, msg: &BalanceUpdateMsg) -> u64 {
+    fn key_okex_position(&self, msg: &OkexPositionMsg) -> u64 {
         self.hash64(&[
-            AccountEventType::BalanceUpdate as u32 as u64,
-            msg.update_id as u64,
-            msg.event_time as u64,
-        ])
-    }
-
-    fn key_account_update_balance(&self, msg: &AccountUpdateBalanceMsg) -> u64 {
-        self.hash64(&[
-            AccountEventType::AccountUpdateBalance as u32 as u64,
-            msg.event_time as u64,
-            msg.transaction_time as u64,
-            self.hash_str64(&msg.asset),
-        ])
-    }
-
-    fn key_account_update_position(&self, msg: &AccountUpdatePositionMsg) -> u64 {
-        self.hash64(&[
-            AccountEventType::AccountUpdatePosition as u32 as u64,
-            msg.event_time as u64,
-            msg.transaction_time as u64,
-            self.hash_str64(&msg.symbol),
+            OkexAccountEventType::PositionUpdate as u32 as u64,
+            msg.timestamp as u64,
+            self.hash_str64(&msg.inst_id),
             msg.position_side as u8 as u64,
         ])
     }
 
-    fn key_account_update_flush(&self, msg: &AccountUpdateFlushMsg) -> u64 {
+    fn key_okex_order(&self, msg: &OkexOrderMsg) -> u64 {
         self.hash64(&[
-            AccountEventType::AccountUpdateFlush as u32 as u64,
-            msg.hash,
-            self.hash_str64(&msg.scope),
-        ])
-    }
-
-    fn key_execution_report(&self, msg: &ExecutionReportMsg) -> u64 {
-        self.hash64(&[
-            AccountEventType::ExecutionReport as u32 as u64,
-            msg.order_id as u64,
-            msg.trade_id as u64,
-            msg.update_id as u64,
-            msg.event_time as u64,
-        ])
-    }
-
-    fn key_order_trade_update(&self, msg: &OrderTradeUpdateMsg) -> u64 {
-        self.hash64(&[
-            AccountEventType::OrderTradeUpdate as u32 as u64,
-            msg.order_id as u64,
-            msg.trade_id as u64,
-            msg.event_time as u64,
+            OkexAccountEventType::OrderUpdate as u32 as u64,
+            msg.ord_id as u64,
+            msg.cl_ord_id as u64,
+            msg.ord_type as u64,
+            msg.update_time as u64,
         ])
     }
 }
