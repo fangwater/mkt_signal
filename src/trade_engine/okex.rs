@@ -283,3 +283,215 @@ fn format_decimal(value: f64) -> String {
         s
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct OkexWsOrderRespItem {
+    pub cl_ord_id: i64,
+    pub ord_id: i64,
+    pub ts_ms: i64,
+    pub status_code: i32,
+    pub tag: String,
+    pub status_msg: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct OkexWsOrderResponse {
+    pub id: i64,
+    pub code: i32,
+    pub msg: String,
+    pub in_time_us: i64,
+    pub out_time_us: i64,
+    pub op: String,
+    pub data: Option<OkexWsOrderRespItem>, // OKX 返回 data 要么空数组，要么单元素
+}
+
+impl OkexWsOrderResponse {
+    pub fn from_json_str(payload: &str) -> Option<Self> {
+        let val: Value = serde_json::from_str(payload).ok()?;
+        Self::from_json_value(&val)
+    }
+
+    fn from_json_value(val: &Value) -> Option<Self> {
+        let obj = val.as_object()?;
+        let op = obj
+            .get("op")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        if !op.eq_ignore_ascii_case("order") {
+            return None;
+        }
+
+        let id = parse_i64_field(obj.get("id"));
+        let code = parse_i32_field(obj.get("code"));
+        let msg = obj
+            .get("msg")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let in_time_us = parse_i64_field(obj.get("inTime"));
+        let out_time_us = parse_i64_field(obj.get("outTime"));
+
+        let data = obj
+            .get("data")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.get(0))
+            .map(|item| {
+                let cl_ord_id = parse_i64_field(item.get("clOrdId"));
+                let ord_id = parse_i64_field(item.get("ordId"));
+                let ts_ms = parse_i64_field(item.get("ts"));
+                let status_code = parse_i32_field(item.get("sCode"));
+                let tag = item
+                    .get("tag")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let status_msg = item
+                    .get("sMsg")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                OkexWsOrderRespItem {
+                    cl_ord_id,
+                    ord_id,
+                    ts_ms,
+                    status_code,
+                    tag,
+                    status_msg,
+                }
+            });
+
+        Some(Self {
+            id,
+            code,
+            msg,
+            in_time_us,
+            out_time_us,
+            op,
+            data,
+        })
+    }
+
+    /// 优先从 data.clOrdId 获取 client_order_id，否则回退到顶层 id
+    pub fn client_order_id(&self) -> Option<i64> {
+        self.data
+            .as_ref()
+            .and_then(|d| {
+                if d.cl_ord_id != 0 {
+                    Some(d.cl_ord_id)
+                } else {
+                    None
+                }
+            })
+            .or_else(|| if self.id != 0 { Some(self.id) } else { None })
+    }
+
+    /// 将 OKX WS 返回压缩为紧凑的二进制形式，字符串长度使用 u16 储存
+    pub fn to_bytes(&self) -> Bytes {
+        fn put_str(buf: &mut BytesMut, s: &str) {
+            let truncated_len = s.len().min(u16::MAX as usize) as u16;
+            buf.put_u16_le(truncated_len);
+            buf.put_slice(&s.as_bytes()[..truncated_len as usize]);
+        }
+
+        let mut buf = BytesMut::new();
+        buf.put_i64_le(self.id);
+        buf.put_i32_le(self.code);
+        buf.put_i64_le(self.in_time_us);
+        buf.put_i64_le(self.out_time_us);
+        put_str(&mut buf, &self.op);
+        put_str(&mut buf, &self.msg);
+
+        let has_data = self.data.is_some();
+        buf.put_u8(has_data as u8);
+        if let Some(item) = &self.data {
+            buf.put_i64_le(item.cl_ord_id);
+            buf.put_i64_le(item.ord_id);
+            buf.put_i64_le(item.ts_ms);
+            buf.put_i32_le(item.status_code);
+            put_str(&mut buf, &item.tag);
+            put_str(&mut buf, &item.status_msg);
+        }
+
+        buf.freeze()
+    }
+}
+
+fn parse_i64_field(v: Option<&Value>) -> i64 {
+    v.and_then(|val| {
+        if let Some(n) = val.as_i64() {
+            Some(n)
+        } else if let Some(n) = val.as_u64() {
+            Some(n as i64)
+        } else if let Some(s) = val.as_str() {
+            s.parse::<i64>().ok()
+        } else {
+            None
+        }
+    })
+    .unwrap_or(0)
+}
+
+fn parse_i32_field(v: Option<&Value>) -> i32 {
+    v.and_then(|val| {
+        if let Some(n) = val.as_i64() {
+            i32::try_from(n).ok()
+        } else if let Some(n) = val.as_u64() {
+            i32::try_from(n).ok()
+        } else if let Some(s) = val.as_str() {
+            s.parse::<i32>().ok()
+        } else {
+            None
+        }
+    })
+    .unwrap_or(-1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn okex_ws_response_parses_and_serializes() {
+        let raw = r#"{
+            "id": "1512",
+            "op": "order",
+            "data": [{
+                "clOrdId": "1512",
+                "ordId": "12345689",
+                "tag": "",
+                "ts": "1695190491421",
+                "sCode": "0",
+                "sMsg": ""
+            }],
+            "code": "0",
+            "msg": "",
+            "inTime": "1695190491421339",
+            "outTime": "1695190491423240"
+        }"#;
+
+        let parsed = OkexWsOrderResponse::from_json_str(raw).expect("should parse okex ws resp");
+        assert_eq!(parsed.code, 0);
+        assert_eq!(parsed.client_order_id(), Some(1512));
+        let bin = parsed.to_bytes();
+        assert!(!bin.is_empty());
+    }
+
+    #[test]
+    fn okex_ws_error_without_data_still_produces_bytes() {
+        let raw = r#"{
+            "id": "1512",
+            "op": "order",
+            "data": [],
+            "code": "60013",
+            "msg": "Invalid args",
+            "inTime": "1695190491421339",
+            "outTime": "1695190491423240"
+        }"#;
+
+        let parsed = OkexWsOrderResponse::from_json_str(raw).expect("should parse okex ws error");
+        assert_eq!(parsed.client_order_id(), Some(1512));
+        let bin = parsed.to_bytes();
+        assert!(!bin.is_empty());
+    }
+}

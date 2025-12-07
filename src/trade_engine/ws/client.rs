@@ -1,9 +1,11 @@
 use crate::common::exchange::Exchange;
+use crate::trade_engine::okex::OkexWsOrderResponse;
 use crate::trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
 use crate::trade_engine::trade_response_handle::TradeExecOutcome;
 use anyhow::{anyhow, Context, Result};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use log::{debug, info, warn};
 use native_tls::TlsConnector;
@@ -383,6 +385,14 @@ impl TradeWsClient {
 
     fn process_incoming_payload(&mut self, payload: &str) {
         let (req_type, client_order_id) = self.extract_correlated(payload);
+        if self.exchange == Exchange::Okex {
+            if let Some(resp) = OkexWsOrderResponse::from_json_str(payload) {
+                let bin = resp.to_bytes();
+                let coid = resp.client_order_id().unwrap_or(client_order_id);
+                self.publish_okex_ws_response(coid, req_type, bin, payload);
+                return;
+            }
+        }
         self.publish_generic_response(client_order_id, req_type, payload.to_string(), false);
     }
 
@@ -399,23 +409,35 @@ impl TradeWsClient {
     }
 
     fn extract_client_order_id(val: &Value) -> Option<i64> {
-        if let Some(id) = val.get("clientOrderId") {
-            if let Some(as_i64) = id.as_i64() {
-                return Some(as_i64);
+        fn parse_i64_value(v: &Value) -> Option<i64> {
+            if let Some(n) = v.as_i64() {
+                return Some(n);
             }
-            if let Some(s) = id.as_str() {
+            if let Some(n) = v.as_u64() {
+                return Some(n as i64);
+            }
+            if let Some(s) = v.as_str() {
                 if let Ok(parsed) = s.parse::<i64>() {
                     return Some(parsed);
                 }
             }
+            None
         }
-        if let Some(id) = val.get("origClientOrderId") {
-            if let Some(as_i64) = id.as_i64() {
-                return Some(as_i64);
-            }
-            if let Some(s) = id.as_str() {
-                if let Ok(parsed) = s.parse::<i64>() {
+
+        for key in ["clientOrderId", "origClientOrderId", "id", "clOrdId"] {
+            if let Some(id) = val.get(key) {
+                if let Some(parsed) = parse_i64_value(id) {
                     return Some(parsed);
+                }
+            }
+        }
+
+        if let Some(arr) = val.get("data").and_then(|v| v.as_array()) {
+            for item in arr {
+                if let Some(id) = item.get("clOrdId").or_else(|| item.get("id")) {
+                    if let Some(parsed) = parse_i64_value(id) {
+                        return Some(parsed);
+                    }
                 }
             }
         }
@@ -448,6 +470,34 @@ impl TradeWsClient {
             })
             .to_string()
         };
+        let _ = self.resp_tx.send(TradeExecOutcome {
+            req_type,
+            client_order_id,
+            status: 206,
+            body: body_payload,
+            exchange: self.exchange,
+            ip_used_weight_1m: None,
+            order_count_1m: None,
+        });
+    }
+
+    fn publish_okex_ws_response(
+        &self,
+        client_order_id: i64,
+        req_type: TradeRequestType,
+        compact_payload: Bytes,
+        raw_text: &str,
+    ) {
+        let body_payload = json!({
+            "transport": "ws",
+            "encoding": "okex_bin",
+            "payload": BASE64_STANDARD.encode(&compact_payload),
+            "raw": raw_text,
+            "endpointId": self.id,
+            "localIp": self.local_ip.to_string(),
+        })
+        .to_string();
+
         let _ = self.resp_tx.send(TradeExecOutcome {
             req_type,
             client_order_id,
