@@ -17,6 +17,6 @@ pub mod trade_engine;
 pub use common::{exchange, mkt_msg};
 pub use mkt_pub::{app, cfg, iceoryx_forwarder, proxy, sub_msg};
 pub use trade_engine::{
-    config::{ApiKey, TradeEngineCfg},
+    config::{ApiKey, DEFAULT_LOCAL_IPS},
     TradeEngine,
 };

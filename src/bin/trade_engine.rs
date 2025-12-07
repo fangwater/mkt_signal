@@ -1,7 +1,8 @@
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use log::info;
-use mkt_signal::{ApiKey, TradeEngine, TradeEngineCfg};
+use mkt_signal::{ApiKey, TradeEngine};
+use std::net::IpAddr;
 
 fn credential_edges(value: &str) -> (String, String, usize) {
     let trimmed = value.trim();
@@ -35,6 +36,11 @@ struct Args {
     /// Target exchange (binance, okex, bybit, bitget, gate)
     #[arg(long, value_enum)]
     exchange: TradeEngineTarget,
+
+    /// Local IP addresses for outbound connections (comma-separated)
+    /// Default: "172.31.33.133,172.31.46.90"
+    #[arg(long, value_delimiter = ',')]
+    local_ips: Option<Vec<IpAddr>>,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -69,54 +75,85 @@ async fn main() -> Result<()> {
     let exchange_name = args.exchange.as_str();
     info!("trade_engine starting (exchange={})", exchange_name);
 
-    // 默认读取 config/trade_engine.toml
-    let cfg_path = std::env::var("TRADE_ENGINE_CFG")
-        .unwrap_or_else(|_| "config/trade_engine.toml".to_string());
-    let mut cfg = TradeEngineCfg::load(cfg_path).await?;
-    cfg.exchange = Some(exchange_name.to_string());
-    let env_prefix = exchange_name.to_ascii_uppercase();
-    let api_key_var = format!("{}_API_KEY", env_prefix);
-    let api_secret_var = format!("{}_API_SECRET", env_prefix);
-    let api_name_var = format!("{}_API_NAME", env_prefix);
+    // 使用命令行参数或默认 IP 列表
+    let local_ips = args.local_ips.unwrap_or_else(|| {
+        use mkt_signal::DEFAULT_LOCAL_IPS;
+        let ips: Vec<IpAddr> = DEFAULT_LOCAL_IPS
+            .iter()
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        info!(
+            "using default local IPs: {}",
+            ips.iter()
+                .map(|ip| ip.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        ips
+    });
 
-    info!("Required env vars: {}, {}", api_key_var, api_secret_var);
-    info!(
-        "Optional env vars: TRADE_ENGINE_CFG, {} (default=\"default\")",
-        api_name_var
-    );
+    if !local_ips.is_empty() {
+        info!(
+            "configured local IPs: {}",
+            local_ips
+                .iter()
+                .map(|ip| ip.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
 
-    // 从环境变量读取账户配置（必须）
-    let api_key_raw = std::env::var(&api_key_var).map_err(|_| {
-        anyhow::anyhow!(
-            "{} not set. Export it before running trade_engine",
-            api_key_var
-        )
-    })?;
-    let api_key = api_key_raw.trim().to_string();
+    // OKEx 不需要从环境变量读取 API key，因为在 WebSocket 客户端中会自动处理
+    let accounts = if exchange_name == "okex" {
+        info!("OKEx mode: API credentials will be loaded from OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE environment variables");
+        vec![] // OKEx 不需要在这里配置
+    } else {
+        // Binance 等其他交易所需要从环境变量读取
+        let env_prefix = exchange_name.to_ascii_uppercase();
+        let api_key_var = format!("{}_API_KEY", env_prefix);
+        let api_secret_var = format!("{}_API_SECRET", env_prefix);
+        let api_name_var = format!("{}_API_NAME", env_prefix);
 
-    let api_secret_raw = std::env::var(&api_secret_var).map_err(|_| {
-        anyhow::anyhow!(
-            "{} not set. Export it before running trade_engine",
-            api_secret_var
-        )
-    })?;
-    let api_secret = api_secret_raw.trim().to_string();
+        info!("Required env vars: {}, {}", api_key_var, api_secret_var);
+        info!(
+            "Optional env vars: TRADE_ENGINE_CFG, {} (default=\"default\")",
+            api_name_var
+        );
 
-    let api_name = std::env::var(&api_name_var).unwrap_or_else(|_| "default".to_string());
+        // 从环境变量读取账户配置（必须）
+        let api_key_raw = std::env::var(&api_key_var).map_err(|_| {
+            anyhow::anyhow!(
+                "{} not set. Export it before running trade_engine",
+                api_key_var
+            )
+        })?;
+        let api_key = api_key_raw.trim().to_string();
 
-    // 设置账户配置
-    let accounts = vec![ApiKey {
-        name: api_name.clone(),
-        key: api_key.clone(),
-        secret: api_secret.clone(),
-    }];
+        let api_secret_raw = std::env::var(&api_secret_var).map_err(|_| {
+            anyhow::anyhow!(
+                "{} not set. Export it before running trade_engine",
+                api_secret_var
+            )
+        })?;
+        let api_secret = api_secret_raw.trim().to_string();
 
-    info!("trade_engine account name: {}", api_name);
-    log_credential_preview(&api_key_var, &api_key);
-    log_credential_preview(&api_secret_var, &api_secret);
+        let api_name = std::env::var(&api_name_var).unwrap_or_else(|_| "default".to_string());
 
-    info!("trade_engine config loaded");
-    let engine = TradeEngine::new(cfg, accounts);
+        info!("trade_engine account name: {}", api_name);
+        log_credential_preview(&api_key_var, &api_key);
+        log_credential_preview(&api_secret_var, &api_secret);
+
+        vec![ApiKey {
+            name: api_name,
+            key: api_key,
+            secret: api_secret,
+        }]
+    };
+
+    info!("trade_engine initialized");
+    let engine = TradeEngine::new(local_ips, accounts);
     let local = tokio::task::LocalSet::new();
-    local.run_until(engine.run()).await
+    local
+        .run_until(engine.run(exchange_name.to_string()))
+        .await
 }

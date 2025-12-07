@@ -1,39 +1,37 @@
 use crate::common::exchange::Exchange;
 use crate::common::ipc_service_name::build_service_name;
-use crate::trade_engine::config::{ApiKey, TradeEngineCfg, TradeTransport};
+use crate::trade_engine::config::{ApiKey, WsConstants};
 use crate::trade_engine::dispatcher::Dispatcher;
 use crate::trade_engine::trade_request::TradeRequestMsg;
-use crate::trade_engine::trade_request_handle::{
-    spawn_request_executor, spawn_ws_request_executor,
-};
-use crate::trade_engine::trade_response_handle::spawn_response_handle;
-use crate::trade_engine::ws::TradeWsDispatcher;
+use crate::trade_engine::trade_response_handle::{spawn_response_handle, TradeExecOutcome};
+use crate::trade_engine::trade_type_mapping::TradeTypeMapping;
+use crate::trade_engine::ws_client::{TradeWsClient, WsCommand};
 use anyhow::{anyhow, Result};
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
+use std::net::IpAddr;
 
 pub struct TradeEngine {
-    cfg: TradeEngineCfg,
+    local_ips: Vec<IpAddr>,
     accounts: Vec<ApiKey>,
     req_tx: Option<tokio::sync::mpsc::UnboundedSender<TradeRequestMsg>>,
 }
 
 impl TradeEngine {
-    pub fn new(cfg: TradeEngineCfg, accounts: Vec<ApiKey>) -> Self {
+    pub fn new(local_ips: Vec<IpAddr>, accounts: Vec<ApiKey>) -> Self {
         Self {
-            cfg,
+            local_ips,
             accounts,
             req_tx: None,
         }
     }
 
-    /// 返回内部请求通道的一个克隆（在 run() 初始化后可用）
     pub fn sender(&self) -> Option<tokio::sync::mpsc::UnboundedSender<TradeRequestMsg>> {
         self.req_tx.clone()
     }
-    /// 便捷发送接口
+
     pub fn send(&self, req: TradeRequestMsg) -> anyhow::Result<()> {
         if let Some(tx) = &self.req_tx {
             tx.send(req)
@@ -43,40 +41,26 @@ impl TradeEngine {
         }
     }
 
-    pub async fn run(mut self) -> Result<()> {
-        // Single-threaded tokio reactor is enforced by binary attribute.
-        let raw_exchange = self
-            .cfg
-            .exchange
-            .clone()
-            .unwrap_or_else(|| "binance".to_string());
-        let exchange_name = raw_exchange.to_ascii_lowercase();
-        let canonical_exchange = match exchange_name.as_str() {
-            "binance" | "okex" | "bybit" | "bitget" | "gate" => exchange_name.clone(),
-            other => {
-                return Err(anyhow!(
-                    "unsupported exchange '{}'. Allowed: binance, okex, bybit, bitget, gate",
-                    other
-                ))
-            }
-        };
+    pub async fn run(mut self, exchange_name: String) -> Result<()> {
+        let canonical_exchange = exchange_name.to_ascii_lowercase();
+        if !matches!(
+            canonical_exchange.as_str(),
+            "binance" | "okex" | "bybit" | "bitget" | "gate"
+        ) {
+            return Err(anyhow!(
+                "unsupported exchange '{}'. Allowed: binance, okex, bybit, bitget, gate",
+                canonical_exchange
+            ));
+        }
 
         // 构建带命名空间的服务名
         let order_req_service = build_service_name(&format!("order_reqs/{}", canonical_exchange));
         let order_resp_service = build_service_name(&format!("order_resps/{}", canonical_exchange));
 
         info!(
-            "trade_engine starting; req_service='{}', resp_service='{}', transport={:?}",
-            order_req_service, order_resp_service, self.cfg.transport
+            "trade_engine starting; exchange={}, req_service='{}', resp_service='{}'",
+            canonical_exchange, order_req_service, order_resp_service
         );
-        if matches!(self.cfg.transport, TradeTransport::Rest) {
-            info!("rest base_url={}", self.cfg.rest.base_url);
-        }
-        if matches!(self.cfg.transport, TradeTransport::Ws) {
-            if let Some(ws_cfg) = &self.cfg.ws {
-                info!("ws endpoints={:?}", ws_cfg.urls);
-            }
-        }
 
         // Iceoryx subscriber for order requests
         let node_name = format!("trade_engine_{}", canonical_exchange);
@@ -118,40 +102,232 @@ impl TradeEngine {
             }
         };
 
-        // Internal mpsc pipeline between request executor and response publisher
-        let (req_tx, req_rx) = tokio::sync::mpsc::unbounded_channel::<TradeRequestMsg>();
-        // 暴露内部请求通道（可供外部直接推送请求）
+        // Internal mpsc pipeline
+        let (req_tx, mut req_rx) = tokio::sync::mpsc::unbounded_channel::<TradeRequestMsg>();
         self.req_tx = Some(req_tx.clone());
         let (resp_tx, resp_rx) = tokio::sync::mpsc::unbounded_channel();
-        if self.accounts.is_empty() {
-            return Err(anyhow!("no API keys provided for trade engine"));
+
+        if exchange == Exchange::Binance && self.accounts.is_empty() {
+            return Err(anyhow!("Binance requires API keys in config"));
         }
 
-        let _req_worker = match self.cfg.transport {
-            TradeTransport::Rest => {
-                let dispatcher = Dispatcher::new(&self.cfg, &self.accounts)?;
-                spawn_request_executor(dispatcher, exchange, req_rx, resp_tx.clone())
-            }
-            TradeTransport::Ws => {
-                let ws_cfg =
-                    self.cfg.ws.clone().ok_or_else(|| {
-                        anyhow::anyhow!("ws transport configured but [ws] missing")
-                    })?;
-                let dispatcher = TradeWsDispatcher::new(
-                    ws_cfg,
-                    self.cfg.network.local_ips.clone(),
-                    exchange,
-                    resp_tx.clone(),
-                )?;
-                spawn_ws_request_executor(dispatcher, exchange, req_rx, resp_tx.clone())
-            }
+        // 初始化 REST dispatcher（用于 Binance）
+        let rest_dispatcher = if exchange == Exchange::Binance {
+            Some(Dispatcher::new(&self.local_ips, &self.accounts)?)
+        } else {
+            None
         };
+
+        // 初始化 WebSocket 客户端（用于 OKEx）
+        let ws_endpoints = if exchange == Exchange::Okex {
+            let mut local_ips = self.local_ips.clone();
+            if local_ips.is_empty() {
+                warn!("okex ws local_ips empty; using default binding 0.0.0.0");
+                local_ips.push("0.0.0.0".parse()?);
+                local_ips.push("0.0.0.0".parse()?);
+            } else if local_ips.len() == 1 {
+                local_ips.push(local_ips[0]);
+                warn!(
+                    "okex ws local_ips only 1 provided; duplicating {} for dual connection",
+                    local_ips[0]
+                );
+            } else if local_ips.len() > 2 {
+                local_ips.truncate(2);
+                warn!(
+                    "okex ws local_ips >2; truncating to first two ({}, {})",
+                    local_ips[0], local_ips[1]
+                );
+            }
+
+            let urls = vec![
+                WsConstants::OKEX_BUSINESS_WS_URL.to_string(),
+                WsConstants::OKEX_BUSINESS_WS_URL.to_string(),
+            ];
+
+            let connect_timeout_ms = WsConstants::CONNECT_TIMEOUT_MS;
+            let ping_interval_ms = WsConstants::PING_INTERVAL_MS;
+            let max_inflight = WsConstants::MAX_INFLIGHT;
+
+            let mut endpoints = Vec::with_capacity(urls.len());
+            for (idx, (ip, url)) in local_ips.into_iter().zip(urls.into_iter()).enumerate() {
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                let client = TradeWsClient::new(
+                    idx,
+                    exchange,
+                    ip,
+                    url,
+                    connect_timeout_ms,
+                    ping_interval_ms,
+                    max_inflight,
+                    None, // OKEx 认证会自动从环境变量读取
+                    rx,
+                    resp_tx.clone(),
+                );
+                info!(
+                    "spawning ws client id={} ip={} max_inflight={}",
+                    idx,
+                    client.local_ip(),
+                    max_inflight
+                );
+                tokio::task::spawn_local(async move {
+                    client.run().await;
+                });
+                endpoints.push(tx);
+            }
+            Some(endpoints)
+        } else {
+            None
+        };
+
+        // Spawn unified request router
+        let _req_worker = tokio::task::spawn_local(async move {
+            let mut rest_dispatcher = rest_dispatcher;
+            let mut ws_endpoints = ws_endpoints;
+            let mut ws_rr_cursor = 0usize; // 轮询计数器
+
+            while let Some(msg) = req_rx.recv().await {
+                debug!(
+                    "routing request: type={:?}, client_order_id={}",
+                    msg.req_type, msg.client_order_id
+                );
+
+                // 根据 mapping 判断是否走 WebSocket
+                if TradeTypeMapping::is_websocket(msg.req_type) {
+                    // 走 WebSocket - 直接轮询分配
+                    if let Some(ref mut endpoints) = ws_endpoints {
+                        let len = endpoints.len();
+                        if len == 0 {
+                            warn!("no websocket endpoints available");
+                            continue;
+                        }
+
+                        let start = ws_rr_cursor;
+                        ws_rr_cursor = (ws_rr_cursor + 1) % len;
+
+                        let mut sent = false;
+                        for offset in 0..len {
+                            let idx = (start + offset) % len;
+                            debug!(
+                                "routing order client_order_id={} to ws endpoint {}",
+                                msg.client_order_id, idx
+                            );
+                            if endpoints[idx].send(WsCommand::Send(msg.clone())).is_ok() {
+                                sent = true;
+                                break;
+                            } else {
+                                warn!("ws endpoint {} not accepting messages, trying next", idx);
+                            }
+                        }
+
+                        if !sent {
+                            warn!(
+                                "all ws endpoints unavailable for client_order_id={}",
+                                msg.client_order_id
+                            );
+                            let body = serde_json::json!({
+                                "transport": "ws",
+                                "state": "error",
+                                "reason": "all websocket endpoints unavailable",
+                                "clientOrderId": msg.client_order_id,
+                            })
+                            .to_string();
+                            let _ = resp_tx.send(TradeExecOutcome {
+                                req_type: msg.req_type,
+                                client_order_id: msg.client_order_id,
+                                status: 503,
+                                body,
+                                exchange,
+                                ip_used_weight_1m: None,
+                                order_count_1m: None,
+                            });
+                        }
+                    } else {
+                        warn!(
+                            "request type {:?} requires WebSocket but no WS endpoints available",
+                            msg.req_type
+                        );
+                    }
+                } else {
+                    // 走 REST
+                    if let Some(ref mut dispatcher) = rest_dispatcher {
+                        let endpoint = TradeTypeMapping::get_endpoint(msg.req_type).to_string();
+                        let method = TradeTypeMapping::get_method(msg.req_type).to_string();
+                        let weight = TradeTypeMapping::get_weight(msg.req_type);
+                        debug!(
+                            "dispatch mapping: type={:?} -> {} {} (weight={})",
+                            msg.req_type, method, endpoint, weight
+                        );
+
+                        let params: std::collections::BTreeMap<String, String> =
+                            match std::str::from_utf8(&msg.params) {
+                                Ok(s) => url::form_urlencoded::parse(s.as_bytes())
+                                    .into_owned()
+                                    .collect(),
+                                Err(_) => std::collections::BTreeMap::new(),
+                            };
+
+                        let evt = crate::trade_engine::order_event::OrderRequestEvent {
+                            endpoint,
+                            method,
+                            params,
+                            weight: Some(weight),
+                            account: None,
+                            req_id: Some(msg.client_order_id.to_string()),
+                        };
+
+                        match dispatcher.dispatch(evt).await {
+                            Ok(outcome) => {
+                                debug!(
+                                    "http outcome: status={}, ip={}, body_len={}",
+                                    outcome.status,
+                                    outcome.ip,
+                                    outcome.body.len()
+                                );
+                                let _ = resp_tx.send(TradeExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_order_id: msg.client_order_id,
+                                    status: outcome.status,
+                                    body: outcome.body,
+                                    exchange,
+                                    ip_used_weight_1m: outcome.ip_used_weight_1m,
+                                    order_count_1m: outcome.order_count_1m,
+                                });
+                            }
+                            Err(e) => {
+                                debug!("http error: {}", e);
+                                let _ = resp_tx.send(TradeExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_order_id: msg.client_order_id,
+                                    status: 0,
+                                    body: e.to_string(),
+                                    exchange,
+                                    ip_used_weight_1m: None,
+                                    order_count_1m: None,
+                                });
+                            }
+                        }
+                    } else {
+                        warn!(
+                            "request type {:?} requires REST but no REST dispatcher available",
+                            msg.req_type
+                        );
+                    }
+                }
+            }
+
+            // Shutdown ws clients
+            if let Some(ref endpoints) = ws_endpoints {
+                for tx in endpoints {
+                    let _ = tx.send(WsCommand::Shutdown);
+                }
+            }
+        });
+
         let _resp_worker = spawn_response_handle(resp_publisher, resp_rx);
 
         loop {
             match subscriber.receive()? {
                 Some(sample) => {
-                    // 复制有效负载后尽快释放 sample，避免底层回收异常
                     let actual_len = {
                         let payload = sample.payload();
                         payload
@@ -172,7 +348,6 @@ impl TradeEngine {
 
                     debug!("received payload bytes: {}", actual_len);
 
-                    // Expect binary TradeRequest
                     match crate::trade_engine::trade_request::TradeRequestMsg::parse(&owned) {
                         Some(msg) => {
                             debug!(
@@ -189,7 +364,6 @@ impl TradeEngine {
                     }
                 }
                 None => {
-                    // 低延迟优先但仍需让出执行权，避免饿死其他本地任务
                     tokio::task::yield_now().await;
                 }
             }

@@ -1,4 +1,5 @@
 use crate::common::exchange::Exchange;
+use crate::portfolio_margin::okex_auth::OkexCredentials;
 use crate::trade_engine::okex::OkexWsOrderResponse;
 use crate::trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
 use crate::trade_engine::trade_response_handle::TradeExecOutcome;
@@ -44,6 +45,7 @@ pub struct TradeWsClient {
     inflight: HashMap<i64, TradeRequestType>,
     last_dispatched_type: TradeRequestType,
     shutdown: bool,
+    should_reconnect: bool, // 标记是否需要重连（用于 notice 触发的重连）
 }
 
 impl TradeWsClient {
@@ -60,6 +62,22 @@ impl TradeWsClient {
         cmd_rx: mpsc::UnboundedReceiver<WsCommand>,
         resp_tx: mpsc::UnboundedSender<TradeExecOutcome>,
     ) -> Self {
+        // 对于 OKEx，自动从环境变量生成登录 payload
+        let final_login_payload = if exchange == Exchange::Okex {
+            match OkexCredentials::from_env() {
+                Ok(creds) => {
+                    let login_msg = creds.build_login_message();
+                    info!("OKEx credentials loaded from environment for ws client id={}", id);
+                    Some(login_msg.to_string())
+                }
+                Err(e) => {
+                    panic!("OKEx requires environment variables OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE: {}", e);
+                }
+            }
+        } else {
+            login_payload
+        };
+
         Self {
             id,
             exchange,
@@ -68,13 +86,14 @@ impl TradeWsClient {
             connect_timeout_ms,
             ping_interval_ms,
             max_inflight,
-            login_payload,
+            login_payload: final_login_payload,
             cmd_rx,
             resp_tx,
             pending: VecDeque::new(),
             inflight: HashMap::new(),
             last_dispatched_type: TradeRequestType::BinanceNewUMOrder,
             shutdown: false,
+            should_reconnect: false,
         }
     }
 
@@ -161,6 +180,14 @@ impl TradeWsClient {
                 _ = ping_interval.tick() => {
                     self.send_ping(ws).await?;
                 }
+            }
+
+            // 检查是否需要重连（由 notice 触发）
+            if self.should_reconnect {
+                warn!("trade ws client id={} reconnecting due to notice", self.id);
+                self.should_reconnect = false;
+                let _ = ws.close(None).await;
+                return Err(anyhow!("reconnecting due to notice"));
             }
 
             if self.shutdown {
@@ -384,6 +411,60 @@ impl TradeWsClient {
     }
 
     fn process_incoming_payload(&mut self, payload: &str) {
+        // 处理 OKEx 的 notice 消息（服务升级通知等）
+        if self.exchange == Exchange::Okex {
+            if let Ok(json_val) = serde_json::from_str::<Value>(payload) {
+                if let Some(event) = json_val.get("event").and_then(|v| v.as_str()) {
+                    if event.eq_ignore_ascii_case("notice") {
+                        let code = json_val
+                            .get("code")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
+                        let msg = json_val
+                            .get("msg")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
+                        warn!(
+                            "trade ws client id={} received OKEx notice: code={}, msg={}",
+                            self.id, code, msg
+                        );
+                        // code=64008 表示服务升级，需要重连
+                        if code == "64008" {
+                            warn!(
+                                "trade ws client id={} service upgrade notice, will reconnect",
+                                self.id
+                            );
+                            self.should_reconnect = true; // 标记需要重连
+                        }
+                        return;
+                    }
+                    // 处理登录响应
+                    if event.eq_ignore_ascii_case("login") {
+                        let code = json_val
+                            .get("code")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
+                        if code == "0" {
+                            info!(
+                                "trade ws client id={} OKEx login successful",
+                                self.id
+                            );
+                        } else {
+                            let msg = json_val
+                                .get("msg")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default();
+                            warn!(
+                                "trade ws client id={} OKEx login failed: code={}, msg={}",
+                                self.id, code, msg
+                            );
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+
         let (req_type, client_order_id) = self.extract_correlated(payload);
         if self.exchange == Exchange::Okex {
             if let Some(resp) = OkexWsOrderResponse::from_json_str(payload) {

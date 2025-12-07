@@ -3,7 +3,32 @@ use super::trade_request::TradeRequestType;
 pub struct TradeTypeMapping;
 
 impl TradeTypeMapping {
-    /// 根据请求类型获取endpoint
+    /// 判断请求类型是否走 WebSocket
+    pub fn is_websocket(request_type: TradeRequestType) -> bool {
+        match request_type {
+            // Binance 所有请求走 REST
+            TradeRequestType::BinanceNewUMOrder
+            | TradeRequestType::BinanceNewUMConditionalOrder
+            | TradeRequestType::BinanceNewMarginOrder
+            | TradeRequestType::BinanceCancelUMOrder
+            | TradeRequestType::BinanceCancelAllUMOrders
+            | TradeRequestType::BinanceCancelUMConditionalOrder
+            | TradeRequestType::BinanceCancelAllUMConditionalOrders
+            | TradeRequestType::BinanceCancelMarginOrder
+            | TradeRequestType::BinanceModifyUMOrder
+            | TradeRequestType::BinanceQueryUMOrder
+            | TradeRequestType::BinanceQueryUMOpenOrder
+            | TradeRequestType::BinanceUMSetLeverage => false,
+
+            // OKEx 所有请求走 WebSocket
+            TradeRequestType::OkexNewMarginOrder
+            | TradeRequestType::OkexNewUMOrder
+            | TradeRequestType::OkexCancelMarginOrder
+            | TradeRequestType::OkexCancelUMOrder => true,
+        }
+    }
+
+    /// 根据请求类型获取endpoint（仅用于 REST）
     pub fn get_endpoint(request_type: TradeRequestType) -> &'static str {
         match request_type {
             TradeRequestType::BinanceNewUMOrder => "/papi/v1/um/order",
@@ -20,14 +45,16 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceQueryUMOrder => "/papi/v1/um/order",
             TradeRequestType::BinanceQueryUMOpenOrder => "/papi/v1/um/openOrder",
             TradeRequestType::BinanceUMSetLeverage => "/papi/v1/um/leverage",
-            TradeRequestType::OkexNewMarginOrder => "/api/v5/trade/order",
-            TradeRequestType::OkexNewUMOrder => "/api/v5/trade/order",
-            TradeRequestType::OkexCancelMarginOrder => "/api/v5/trade/cancel-order",
-            TradeRequestType::OkexCancelUMOrder => "/api/v5/trade/cancel-order",
+            TradeRequestType::OkexNewMarginOrder
+            | TradeRequestType::OkexNewUMOrder
+            | TradeRequestType::OkexCancelMarginOrder
+            | TradeRequestType::OkexCancelUMOrder => {
+                unreachable!("Okex requests run via websocket; REST mapping not used")
+            }
         }
     }
 
-    /// 根据请求类型获取HTTP方法
+    /// 根据请求类型获取HTTP方法（仅用于 REST）
     pub fn get_method(request_type: TradeRequestType) -> &'static str {
         match request_type {
             TradeRequestType::BinanceNewUMOrder => "POST",
@@ -42,14 +69,16 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceQueryUMOrder => "GET",
             TradeRequestType::BinanceQueryUMOpenOrder => "GET",
             TradeRequestType::BinanceUMSetLeverage => "POST",
-            TradeRequestType::OkexNewMarginOrder => "POST",
-            TradeRequestType::OkexNewUMOrder => "POST",
-            TradeRequestType::OkexCancelMarginOrder => "POST",
-            TradeRequestType::OkexCancelUMOrder => "POST",
+            TradeRequestType::OkexNewMarginOrder
+            | TradeRequestType::OkexNewUMOrder
+            | TradeRequestType::OkexCancelMarginOrder
+            | TradeRequestType::OkexCancelUMOrder => {
+                unreachable!("Okex requests run via websocket; REST mapping not used")
+            }
         }
     }
 
-    /// 根据请求类型获取API权重
+    /// 根据请求类型获取API权重（仅用于 REST）
     pub fn get_weight(request_type: TradeRequestType) -> u32 {
         match request_type {
             TradeRequestType::BinanceNewUMOrder => 1,
@@ -64,16 +93,16 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceQueryUMOrder => 1,
             TradeRequestType::BinanceQueryUMOpenOrder => 1,
             TradeRequestType::BinanceUMSetLeverage => 1,
-            TradeRequestType::OkexNewMarginOrder => 1,
-            TradeRequestType::OkexNewUMOrder => 1,
-            TradeRequestType::OkexCancelMarginOrder => 1,
-            TradeRequestType::OkexCancelUMOrder => 1,
+            TradeRequestType::OkexNewMarginOrder
+            | TradeRequestType::OkexNewUMOrder
+            | TradeRequestType::OkexCancelMarginOrder
+            | TradeRequestType::OkexCancelUMOrder => {
+                unreachable!("Okex requests run via websocket; REST mapping not used")
+            }
         }
     }
 
-    // 已不再需要响应类型映射（发布原始 JSON 即可）
-
-    /// 检查请求类型是否需要签名
+    /// 检查请求类型是否需要签名（仅用于 REST）
     pub fn requires_signature(request_type: TradeRequestType) -> bool {
         match request_type {
             TradeRequestType::BinanceNewUMOrder => true,
@@ -88,14 +117,16 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceQueryUMOrder => true,
             TradeRequestType::BinanceQueryUMOpenOrder => true,
             TradeRequestType::BinanceUMSetLeverage => true,
-            TradeRequestType::OkexNewMarginOrder => true,
-            TradeRequestType::OkexNewUMOrder => true,
-            TradeRequestType::OkexCancelMarginOrder => true,
-            TradeRequestType::OkexCancelUMOrder => true,
+            TradeRequestType::OkexNewMarginOrder
+            | TradeRequestType::OkexNewUMOrder
+            | TradeRequestType::OkexCancelMarginOrder
+            | TradeRequestType::OkexCancelUMOrder => {
+                unreachable!("Okex requests run via websocket; REST mapping not used")
+            }
         }
     }
 
-    /// 检查请求类型是否需要API Key
+    /// 检查请求类型是否需要API Key（仅用于 REST）
     pub fn requires_api_key(request_type: TradeRequestType) -> bool {
         match request_type {
             TradeRequestType::BinanceNewUMOrder => true,
@@ -110,10 +141,12 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceQueryUMOrder => true,
             TradeRequestType::BinanceQueryUMOpenOrder => true,
             TradeRequestType::BinanceUMSetLeverage => true,
-            TradeRequestType::OkexNewMarginOrder => true,
-            TradeRequestType::OkexNewUMOrder => true,
-            TradeRequestType::OkexCancelMarginOrder => true,
-            TradeRequestType::OkexCancelUMOrder => true,
+            TradeRequestType::OkexNewMarginOrder
+            | TradeRequestType::OkexNewUMOrder
+            | TradeRequestType::OkexCancelMarginOrder
+            | TradeRequestType::OkexCancelUMOrder => {
+                unreachable!("Okex requests run via websocket; REST mapping not used")
+            }
         }
     }
 }

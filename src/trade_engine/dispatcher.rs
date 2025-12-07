@@ -1,4 +1,4 @@
-use crate::trade_engine::config::{ApiKey, LimitsCfg, RestCfg, TradeEngineCfg};
+use crate::trade_engine::config::{ApiKey, LimitConstants, RestConstants};
 use crate::trade_engine::order_event::OrderRequestEvent;
 use anyhow::{anyhow, Result};
 use hmac::{Hmac, Mac};
@@ -44,23 +44,20 @@ struct AccountState {
 }
 
 pub struct Dispatcher {
-    rest: RestCfg,
-    limits: LimitsCfg,
+    base_url: String,
     ip_clients: Vec<IpClient>,
     accounts: Vec<AccountState>,
 }
 
 impl Dispatcher {
-    pub fn new(cfg: &TradeEngineCfg, account_keys: &[ApiKey]) -> Result<Self> {
+    pub fn new(local_ips: &[IpAddr], account_keys: &[ApiKey]) -> Result<Self> {
         // Build clients per IP
         let mut ip_clients = Vec::new();
-        for ip in &cfg.network.local_ips {
-            let mut builder = reqwest::Client::builder()
+        for ip in local_ips {
+            let builder = reqwest::Client::builder()
                 .local_address(*ip)
-                .tcp_keepalive(Some(Duration::from_secs(30)));
-            if let Some(ms) = cfg.rest.timeout_ms {
-                builder = builder.timeout(Duration::from_millis(ms));
-            }
+                .tcp_keepalive(Some(Duration::from_secs(30)))
+                .timeout(Duration::from_millis(RestConstants::TIMEOUT_MS));
             let client = builder.build()?;
             ip_clients.push(IpClient {
                 ip: *ip,
@@ -84,15 +81,14 @@ impl Dispatcher {
             .collect();
 
         Ok(Self {
-            rest: cfg.rest.clone(),
-            limits: cfg.limits.clone(),
+            base_url: RestConstants::BINANCE_BASE_URL.to_string(),
             ip_clients,
             accounts,
         })
     }
 
     fn select_ip(&self, req_weight: u32) -> Option<usize> {
-        let limit = self.limits.ip_weight_limit();
+        let limit = LimitConstants::IP_WEIGHT_PER_MIN;
         let mut best: Option<(usize, f32)> = None; // index, score (remaining ratio)
         for (i, c) in self.ip_clients.iter().enumerate() {
             if !c.is_available() {
@@ -112,7 +108,7 @@ impl Dispatcher {
         if let Some(h) = hint {
             return self.accounts.iter().position(|a| a.key.name == h);
         }
-        let limit = self.limits.account_limit();
+        let limit = LimitConstants::ACCOUNT_PER_MIN;
         let mut best: Option<(usize, f32)> = None; // index, score
         for (i, a) in self.accounts.iter().enumerate() {
             let used = a.used_orders_1m as f32;
@@ -147,9 +143,9 @@ impl Dispatcher {
         debug!("dispatch select: ip={}, account={}", ip, account_name);
 
         // Warn when approaching limits
-        let warn_ratio = self.limits.warn_ratio();
+        let warn_ratio = LimitConstants::WARN_RATIO;
         let ip_used = self.ip_clients[ip_idx].used_weight_1m;
-        let ip_limit = self.limits.ip_weight_limit();
+        let ip_limit = LimitConstants::IP_WEIGHT_PER_MIN;
         if (ip_used as f32) / (ip_limit as f32) > warn_ratio {
             warn!(
                 "IP {} used_weight ~{}/{} > {}%",
@@ -160,7 +156,7 @@ impl Dispatcher {
             );
         }
         let acc_used = self.accounts[acc_idx].used_orders_1m;
-        let acc_limit = self.limits.account_limit();
+        let acc_limit = LimitConstants::ACCOUNT_PER_MIN;
         if (acc_used as f32) / (acc_limit as f32) > warn_ratio {
             warn!(
                 "Account {} order_count ~{}/{} > {}%",
@@ -171,8 +167,8 @@ impl Dispatcher {
             );
         }
 
-        let url = format!("{}{}", self.rest.base_url, evt.endpoint);
-        let recv_window = self.rest.recv_window_ms.unwrap_or(5000);
+        let url = format!("{}{}", self.base_url, evt.endpoint);
+        let recv_window = RestConstants::RECV_WINDOW_MS;
         let ts = chrono::Utc::now().timestamp_millis();
 
         // Merge params + timestamp + recvWindow
@@ -239,15 +235,13 @@ impl Dispatcher {
 
                 if status.as_u16() == 429 {
                     warn!("429 Too Many Requests from IP {}. Cooling down.", ip);
-                    let ms = self.limits.cooldown_429();
                     self.ip_clients[ip_idx].cooldown_until =
-                        Some(Instant::now() + Duration::from_millis(ms));
+                        Some(Instant::now() + Duration::from_millis(LimitConstants::COOLDOWN_MS_429));
                 }
                 if status.as_u16() == 418 {
                     warn!("418 Banned for IP {}. Backing off.", ip);
-                    let ms = self.limits.ban_backoff_418();
                     self.ip_clients[ip_idx].banned_until =
-                        Some(Instant::now() + Duration::from_millis(ms));
+                        Some(Instant::now() + Duration::from_millis(LimitConstants::BAN_BACKOFF_MS_418));
                 }
                 // Build uniform response regardless of success or error
                 Ok(DispatchResponse {
