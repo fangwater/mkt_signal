@@ -6,6 +6,8 @@ use iceoryx2::service::ipc;
 use log::{debug, info};
 use std::collections::HashMap;
 
+use crate::common::exchange::Exchange;
+
 /// 支持的频道类型
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub enum ChannelType {
@@ -45,7 +47,7 @@ impl ChannelType {
 /// 订阅参数
 #[derive(Debug, Clone)]
 pub struct SubscribeParams {
-    pub exchange: String,
+    pub exchange: Exchange,
     pub channel: ChannelType,
 }
 
@@ -286,7 +288,7 @@ impl MultiChannelSubscriber {
 /// 便捷函数：创建一个订阅器并订阅指定频道
 pub fn create_subscriber(
     node_name: &str,
-    subscriptions: Vec<(String, ChannelType)>,
+    subscriptions: Vec<(Exchange, ChannelType)>,
 ) -> Result<MultiChannelSubscriber> {
     let mut subscriber = MultiChannelSubscriber::new(node_name)?;
 

@@ -1,10 +1,11 @@
 use crate::cfg::Config;
+use crate::common::exchange::Exchange;
 use serde_json::Value;
 use std::collections::HashSet;
 
-fn construct_subscribe_message(exchange: &str, symbols: &[String], channel: &str) -> Value {
+fn construct_subscribe_message(exchange: &Exchange, symbols: &[String], channel: &str) -> Value {
     match exchange {
-        "binance-futures" | "binance" => {
+        Exchange::Binance => {
             let params: Vec<String> = symbols
                 .iter()
                 .map(|symbol| format!("{}@{}", symbol.to_lowercase(), channel))
@@ -15,7 +16,7 @@ fn construct_subscribe_message(exchange: &str, symbols: &[String], channel: &str
                 "id": 1,
             })
         }
-        "okex-swap" | "okex" => {
+        Exchange::Okex => {
             let args: Vec<Value> = symbols
                 .iter()
                 .map(|symbol| {
@@ -30,7 +31,7 @@ fn construct_subscribe_message(exchange: &str, symbols: &[String], channel: &str
                 "args": args
             })
         }
-        "bybit" | "bybit-spot" => {
+        Exchange::Bybit => {
             let args: Vec<String> = symbols
                 .iter()
                 .map(|symbol| format!("{}.{}", channel, symbol))
@@ -40,7 +41,7 @@ fn construct_subscribe_message(exchange: &str, symbols: &[String], channel: &str
                 "args": args
             })
         }
-        "bitget-futures" | "bitget" => {
+        Exchange::Bitget => {
             // Bitget v2 API 格式
             // channel 映射: "ticker" -> "ticker"
             let args: Vec<Value> = symbols
@@ -58,14 +59,10 @@ fn construct_subscribe_message(exchange: &str, symbols: &[String], channel: &str
                 "args": args
             })
         }
-        "gate" | "gate-futures" => {
+        Exchange::Gate => {
             // Gate.io API 格式
             // 现货: spot.xxx, 合约: futures.xxx
-            let channel_prefix = if exchange == "gate-futures" {
-                "futures"
-            } else {
-                "spot"
-            };
+            let channel_prefix = "futures"; // Default to futures for now
             let payload: Vec<String> = symbols.iter().map(|s| s.to_string()).collect();
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -78,7 +75,6 @@ fn construct_subscribe_message(exchange: &str, symbols: &[String], channel: &str
                 "payload": payload
             })
         }
-        _ => panic!("Unsupported exchange: {}", exchange),
     }
 }
 
@@ -193,14 +189,15 @@ impl BybitPerpsSubscribeMsgs {
         let batch_size = cfg.get_batch_size();
         let mut ticker_stream_msgs = Vec::new();
         let mut liquidation_orders_msgs = Vec::new();
+        let exchange = cfg.get_exchange();
         for chunk in symbols.chunks(batch_size) {
             ticker_stream_msgs.push(construct_subscribe_message(
-                cfg.get_exchange().as_str(),
+                &exchange,
                 chunk,
                 "tickers",
             ));
             liquidation_orders_msgs.push(construct_subscribe_message(
-                cfg.get_exchange().as_str(),
+                &exchange,
                 chunk,
                 "allLiquidation",
             ));
@@ -227,10 +224,11 @@ impl BitgetPerpsSubscribeMsgs {
         // 使用 Bitget 特定的 batch size，不超过50
         let batch_size = cfg.get_batch_size().min(Self::MAX_CHANNELS_PER_CONNECTION);
         let mut ticker_stream_msgs = Vec::new();
+        let exchange = cfg.get_exchange();
 
         for chunk in symbols.chunks(batch_size) {
             ticker_stream_msgs.push(construct_subscribe_message(
-                "bitget-futures",
+                &exchange,
                 chunk,
                 "ticker",
             ));
@@ -330,115 +328,88 @@ impl SubscribeMsgs {
         }
     }
 
-    fn get_inc_channel(exchange: &str) -> String {
+    fn get_inc_channel(exchange: &Exchange) -> String {
         match exchange {
-            "binance-futures" => "depth@0ms".to_string(),
-            "binance" => "depth@100ms".to_string(),
-            "okex-swap" => "books".to_string(),
-            "okex" => "books".to_string(),
-            "bybit" => "orderbook.500".to_string(),
-            "bybit-spot" => "orderbook.200".to_string(),
-            // Gate.io: order_book 频道，这里暂不支持增量
-            _ => panic!("Unsupported exchange: {}", exchange),
+            Exchange::Binance => "depth@100ms".to_string(),
+            Exchange::Okex => "books".to_string(),
+            Exchange::Bybit => "orderbook.500".to_string(),
+            Exchange::Bitget => panic!("Bitget does not support incremental orderbook"),
+            Exchange::Gate => panic!("Gate.io does not support incremental orderbook"),
         }
     }
 
-    fn get_kline_channel(exchange: &str) -> String {
+    fn get_kline_channel(exchange: &Exchange) -> String {
         match exchange {
-            "binance-futures" | "binance" => "kline_1m".to_string(),
-            "okex-swap" | "okex" => "candle1m".to_string(),
-            "bybit" | "bybit-spot" => "kline.1".to_string(),
-            // Gate.io: candlesticks 频道，格式为 "1m" 表示1分钟K线
-            "gate" | "gate-futures" => "candlesticks".to_string(),
-            _ => panic!("Unsupported exchange: {}", exchange),
+            Exchange::Binance => "kline_1m".to_string(),
+            Exchange::Okex => "candle1m".to_string(),
+            Exchange::Bybit => "kline.1".to_string(),
+            Exchange::Bitget => "kline_1m".to_string(),
+            Exchange::Gate => "candlesticks".to_string(),
         }
     }
 
-    fn get_trade_channel(exchange: &str) -> String {
+    fn get_trade_channel(exchange: &Exchange) -> String {
         match exchange {
-            "binance-futures" | "binance" => "trade".to_string(),
-            "okex-swap" | "okex" => "trades".to_string(),
-            "bybit" | "bybit-spot" => "publicTrade".to_string(),
-            // Gate.io: trades 频道
-            "gate" | "gate-futures" => "trades".to_string(),
-            _ => panic!("Unsupported exchange: {}", exchange),
+            Exchange::Binance => "trade".to_string(),
+            Exchange::Okex => "trades".to_string(),
+            Exchange::Bybit => "publicTrade".to_string(),
+            Exchange::Bitget => "trade".to_string(),
+            Exchange::Gate => "trades".to_string(),
         }
     }
 
-    fn get_ask_bid_spread_channel(exchange: &str) -> String {
+    fn get_ask_bid_spread_channel(exchange: &Exchange) -> String {
         match exchange {
-            "binance-futures" | "binance" => "bookTicker".to_string(),
-            "okex-swap" | "okex" => "bbo-tbt".to_string(),
-            "bybit" | "bybit-spot" => "orderbook.1".to_string(),
-            // Gate.io: tickers 频道提供最优买卖价
-            "gate" | "gate-futures" => "tickers".to_string(),
-            _ => panic!("Unsupported exchange: {}", exchange),
+            Exchange::Binance => "bookTicker".to_string(),
+            Exchange::Okex => "bbo-tbt".to_string(),
+            Exchange::Bybit => "orderbook.1".to_string(),
+            Exchange::Bitget => "ticker".to_string(),
+            Exchange::Gate => "tickers".to_string(),
         }
     }
 }
 
 impl SubscribeMsgs {
-    pub fn get_exchange_mkt_data_url(exchange: &str) -> &'static str {
+    pub fn get_exchange_mkt_data_url(exchange: &Exchange) -> &'static str {
         match exchange {
-            //币安u本位期货合约
-            "binance-futures" => "wss://fstream.binance.com/ws",
-            //币安u本位期货合约对应的现货
-            "binance" => "wss://data-stream.binance.vision/ws",
-            //OKEXu本位期货合约
-            "okex-swap" => "wss://ws.okx.com:8443/ws/v5/public",
-            //OKEXu本位期货合约对应的现货
-            "okex" => "wss://ws.okx.com:8443/ws/v5/public",
-            //Bybitu本位期货合约
-            "bybit" => "wss://stream.bybit.com/v5/public/linear",
-            //Bybitu本位期货合约对应的现货
-            "bybit-spot" => "wss://stream.bybit.com/v5/public/spot",
-            //Gate.io 现货
-            "gate" => "wss://api.gateio.ws/ws/v4/",
-            //Gate.io USDT合约
-            "gate-futures" => "wss://fx-ws.gateio.ws/v4/ws/usdt",
-            _ => panic!("Unsupported exchange: {}", exchange),
+            //币安u本位期货合约和现货
+            Exchange::Binance => "wss://fstream.binance.com/ws",
+            //OKEXu本位期货合约和现货
+            Exchange::Okex => "wss://ws.okx.com:8443/ws/v5/public",
+            //Bybitu本位期货合约和现货
+            Exchange::Bybit => "wss://stream.bybit.com/v5/public/linear",
+            //Gate.io 现货和USDT合约
+            Exchange::Gate => "wss://api.gateio.ws/ws/v4/",
+            //Bitget
+            Exchange::Bitget => "wss://ws.bitget.com/mix/v1/stream",
         }
     }
 
-    pub fn get_exchange_kline_data_url(exchange: &str) -> &'static str {
+    pub fn get_exchange_kline_data_url(exchange: &Exchange) -> &'static str {
         match exchange {
-            //币安u本位期货合约
-            "binance-futures" => "wss://fstream.binance.com/ws",
-            //币安u本位期货合约对应的现货
-            "binance" => "wss://data-stream.binance.vision/ws",
-            //OKEXu本位期货合约
-            "okex-swap" => "wss://ws.okx.com:8443/ws/v5/business",
-            //OKEXu本位期货合约对应的现货
-            "okex" => "wss://ws.okx.com:8443/ws/v5/business",
-            //Bybitu本位期货合约
-            "bybit" => "wss://stream.bybit.com/v5/public/linear",
-            //Bybitu本位期货合约对应的现货
-            "bybit-spot" => "wss://stream.bybit.com/v5/public/spot",
-            //Gate.io 现货 (K线也使用同一URL)
-            "gate" => "wss://api.gateio.ws/ws/v4/",
-            //Gate.io USDT合约
-            "gate-futures" => "wss://fx-ws.gateio.ws/v4/ws/usdt",
-            _ => panic!("Unsupported exchange: {}", exchange),
+            //币安u本位期货合约和现货
+            Exchange::Binance => "wss://fstream.binance.com/ws",
+            //OKEXu本位期货合约和现货
+            Exchange::Okex => "wss://ws.okx.com:8443/ws/v5/business",
+            //Bybitu本位期货合约和现货
+            Exchange::Bybit => "wss://stream.bybit.com/v5/public/linear",
+            //Gate.io 现货和USDT合约 (K线也使用同一URL)
+            Exchange::Gate => "wss://api.gateio.ws/ws/v4/",
+            //Bitget
+            Exchange::Bitget => "wss://ws.bitget.com/mix/v1/stream",
         }
     }
 
-    fn get_signal_subscribe_message(exchange: &str) -> serde_json::Value {
+    fn get_signal_subscribe_message(exchange: &Exchange) -> serde_json::Value {
         match exchange {
-            "binance-futures" => {
+            Exchange::Binance => {
                 serde_json::json!({
                     "method": "SUBSCRIBE",
                     "params": ["btcusdt@depth5@100ms"],
                     "id": 1,
                 })
             }
-            "binance" => {
-                serde_json::json!({
-                    "method": "SUBSCRIBE",
-                    "params": ["btcusdt@depth@100ms"],
-                    "id": 1,
-                })
-            }
-            "okex-swap" => {
+            Exchange::Okex => {
                 serde_json::json!({
                     "op": "subscribe",
                     "args": [serde_json::json!({
@@ -447,36 +418,23 @@ impl SubscribeMsgs {
                     })]
                 })
             }
-            "okex" => {
-                serde_json::json!({
-                    "op": "subscribe",
-                    "args": [serde_json::json!({
-                        "channel": "books5",
-                        "instId": "BTC-USDT"
-                    })]
-                })
-            }
-
-            "bybit" | "bybit-spot" => {
+            Exchange::Bybit => {
                 serde_json::json!({
                     "op": "subscribe",
                     "args": ["orderbook.rpi.BTCUSDT"]
                 })
             }
-            "gate" => {
-                // Gate.io 现货 ticker 作为信号源
-                let timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
+            Exchange::Bitget => {
                 serde_json::json!({
-                    "time": timestamp,
-                    "channel": "spot.tickers",
-                    "event": "subscribe",
-                    "payload": ["BTC_USDT"]
+                    "op": "subscribe",
+                    "args": [serde_json::json!({
+                        "instType": "USDT-FUTURES",
+                        "channel": "books5",
+                        "instId": "BTCUSDT"
+                    })]
                 })
             }
-            "gate-futures" => {
+            Exchange::Gate => {
                 // Gate.io 合约 ticker 作为信号源
                 let timestamp = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -489,7 +447,6 @@ impl SubscribeMsgs {
                     "payload": ["BTC_USDT"]
                 })
             }
-            _ => panic!("Unsupported exchange: {}", exchange),
         }
     }
 
@@ -538,16 +495,16 @@ impl DerivativesMetricsSubscribeMsgs {
     pub async fn new(cfg: &Config) -> Self {
         let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
         let exchange = cfg.get_exchange();
-        let exchange_msgs = match exchange.as_str() {
-            "binance-futures" => {
+        let exchange_msgs = match exchange {
+            Exchange::Binance => {
                 ExchangePerpsSubscribeMsgs::Binance(BinancePerpsSubscribeMsgs::new().await)
             }
-            "okex-swap" => ExchangePerpsSubscribeMsgs::Okex(OkexPerpsSubscribeMsgs::new(cfg).await),
-            "bybit" => ExchangePerpsSubscribeMsgs::Bybit(BybitPerpsSubscribeMsgs::new(cfg).await),
-            "bitget-futures" => {
+            Exchange::Okex => ExchangePerpsSubscribeMsgs::Okex(OkexPerpsSubscribeMsgs::new(cfg).await),
+            Exchange::Bybit => ExchangePerpsSubscribeMsgs::Bybit(BybitPerpsSubscribeMsgs::new(cfg).await),
+            Exchange::Bitget => {
                 ExchangePerpsSubscribeMsgs::Bitget(BitgetPerpsSubscribeMsgs::new(cfg).await)
             }
-            _ => panic!("Unsupported exchange: {}", exchange),
+            Exchange::Gate => panic!("Gate exchange does not support derivatives metrics yet"),
         };
 
         Self {

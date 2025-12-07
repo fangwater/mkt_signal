@@ -531,11 +531,11 @@ async fn run_reader_loop(
     let mut subscriber = MultiChannelSubscriber::new(iceoryx_node)?;
     subscriber.subscribe_channels(vec![
         SubscribeParams {
-            exchange: spot_exchange.to_string(),
+            exchange: Exchange::from_str(spot_exchange).unwrap(),
             channel: ChannelType::AskBidSpread,
         },
         SubscribeParams {
-            exchange: swap_exchange.to_string(),
+            exchange: Exchange::from_str(swap_exchange).unwrap(),
             channel: ChannelType::AskBidSpread,
         },
     ])?;

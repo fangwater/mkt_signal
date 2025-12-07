@@ -12,6 +12,8 @@ use tokio::{
     time::{self, Duration, Instant},
 };
 use tokio_native_tls::TlsConnector as TokioTlsConnector;
+
+use crate::common::exchange::Exchange;
 use tokio_tungstenite::{
     client_async, connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream,
 };
@@ -353,7 +355,7 @@ pub trait MktConnectionHandler: MktConnectionRunner + Send {
 
 /// 根据交易所类型构造相应的连接处理器（带IP绑定）
 pub fn construct_connection_with_ip(
-    exchange: String,
+    exchange: Exchange,
     url: String,
     subscribe_msg: serde_json::Value,
     tx: broadcast::Sender<Bytes>,
@@ -369,21 +371,19 @@ pub fn construct_connection_with_ip(
     let mut base_connection = MktConnection::new(url, subscribe_msg, tx, global_shutdown_rx);
     base_connection.local_ip = Some(local_ip);
 
-    match exchange.as_str() {
-        "binance-futures" | "binance" => Ok(Box::new(BinanceConnection::new(base_connection))),
-        "okex-swap" | "okex" => Ok(Box::new(OkexConnection::new(base_connection))),
-        "bybit" | "bybit-spot" => Ok(Box::new(BybitConnection::new(base_connection))),
-        "bitget-futures" | "bitget" => Ok(Box::new(BitgetConnection::new(base_connection))),
-        "gate" => Ok(Box::new(GateConnection::new(base_connection, false))),
-        "gate-futures" => Ok(Box::new(GateConnection::new(base_connection, true))),
-        _ => Err(anyhow::anyhow!("Unsupported exchange: {}", exchange)),
+    match exchange {
+        Exchange::Binance => Ok(Box::new(BinanceConnection::new(base_connection))),
+        Exchange::Okex => Ok(Box::new(OkexConnection::new(base_connection))),
+        Exchange::Bybit => Ok(Box::new(BybitConnection::new(base_connection))),
+        Exchange::Bitget => Ok(Box::new(BitgetConnection::new(base_connection))),
+        Exchange::Gate => Ok(Box::new(GateConnection::new(base_connection, false))),
     }
 }
 
 /// 根据交易所类型构造相应的连接处理器
 #[allow(unused)]
 pub fn construct_connection(
-    exchange: String,
+    exchange: Exchange,
     url: String,
     subscribe_msg: serde_json::Value,
     tx: broadcast::Sender<Bytes>,
@@ -397,13 +397,11 @@ pub fn construct_connection(
 
     let base_connection = MktConnection::new(url, subscribe_msg, tx, global_shutdown_rx);
 
-    match exchange.as_str() {
-        "binance-futures" | "binance" => Ok(Box::new(BinanceConnection::new(base_connection))),
-        "okex-swap" | "okex" => Ok(Box::new(OkexConnection::new(base_connection))),
-        "bybit" | "bybit-spot" => Ok(Box::new(BybitConnection::new(base_connection))),
-        "bitget-futures" | "bitget" => Ok(Box::new(BitgetConnection::new(base_connection))),
-        "gate" => Ok(Box::new(GateConnection::new(base_connection, false))),
-        "gate-futures" => Ok(Box::new(GateConnection::new(base_connection, true))),
-        _ => Err(anyhow::anyhow!("Unsupported exchange: {}", exchange)),
+    match exchange {
+        Exchange::Binance => Ok(Box::new(BinanceConnection::new(base_connection))),
+        Exchange::Okex => Ok(Box::new(OkexConnection::new(base_connection))),
+        Exchange::Bybit => Ok(Box::new(BybitConnection::new(base_connection))),
+        Exchange::Bitget => Ok(Box::new(BitgetConnection::new(base_connection))),
+        Exchange::Gate => Ok(Box::new(GateConnection::new(base_connection, false))),
     }
 }

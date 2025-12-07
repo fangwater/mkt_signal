@@ -135,8 +135,9 @@ impl Config {
         Ok(config)
     }
 
-    pub fn get_exchange(&self) -> String {
-        self.venue.trade_engine_exchange().to_string()
+    pub fn get_exchange(&self) -> Exchange {
+        Exchange::from_str(self.venue.trade_engine_exchange())
+            .expect("Invalid exchange name in venue configuration")
     }
 
     pub fn get_batch_size(&self) -> usize {

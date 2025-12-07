@@ -49,7 +49,7 @@ impl IceOryxForwarder {
         info!("Creating IceOryx forwarder for exchange: {}", exchange);
 
         // 创建Node
-        let node_name = format!("mkt_signal_{}", exchange.replace("-", "_"));
+        let node_name = format!("mkt_signal_{}", exchange.as_str().replace("-", "_"));
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;

@@ -100,14 +100,13 @@ async fn reload_strategy_params(redis: &RedisSettings) -> Result<()> {
 
 /// 重载符号列表
 async fn reload_symbol_list(redis: &RedisSettings, exchange: Exchange) -> Result<()> {
-    let exchange_str = exchange.as_str();
     match RedisClient::connect(redis.clone()).await {
         Ok(mut client) => {
             let symbol_list = SymbolList::instance();
             symbol_list
-                .reload_from_redis(&mut client, &[exchange_str])
+                .reload_from_redis(&mut client, &[exchange])
                 .await?;
-            info!("SymbolList 重载成功 (exchange: {})", exchange_str);
+            info!("SymbolList 重载成功 (exchange: {})", exchange);
         }
         Err(err) => {
             warn!("SymbolList 重载失败: {:?}", err);

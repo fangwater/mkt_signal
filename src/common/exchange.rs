@@ -23,6 +23,20 @@ impl Exchange {
         }
     }
 
+    /// 从字符串解析 Exchange（支持带后缀的字符串如 "binance-futures"）
+    pub fn from_str(s: &str) -> Option<Self> {
+        // 移除可能的后缀，只保留基础交易所名称
+        let base_name = s.split('-').next().unwrap_or(s);
+        match base_name {
+            "binance" => Some(Exchange::Binance),
+            "okex" => Some(Exchange::Okex),
+            "bybit" => Some(Exchange::Bybit),
+            "bitget" => Some(Exchange::Bitget),
+            "gate" => Some(Exchange::Gate),
+            _ => None,
+        }
+    }
+
     /// 从 u8 转换为 Exchange
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {

@@ -41,17 +41,18 @@ impl TradeEngine {
         }
     }
 
-    pub async fn run(mut self, exchange_name: String) -> Result<()> {
-        let canonical_exchange = exchange_name.to_ascii_lowercase();
+    pub async fn run(mut self, exchange: Exchange) -> Result<()> {
         if !matches!(
-            canonical_exchange.as_str(),
-            "binance" | "okex" | "bybit" | "bitget" | "gate"
+            exchange,
+            Exchange::Binance | Exchange::Okex | Exchange::Bybit | Exchange::Bitget | Exchange::Gate
         ) {
             return Err(anyhow!(
                 "unsupported exchange '{}'. Allowed: binance, okex, bybit, bitget, gate",
-                canonical_exchange
+                exchange
             ));
         }
+
+        let canonical_exchange = exchange.as_str();
 
         // 构建带命名空间的服务名
         let order_req_service = build_service_name(&format!("order_reqs/{}", canonical_exchange));
@@ -87,20 +88,7 @@ impl TradeEngine {
             resp_service.publisher_builder().create()?;
         debug!("publisher created for service: {}", order_resp_service);
 
-        // 解析 exchange 枚举
-        let exchange = match canonical_exchange.as_str() {
-            "binance" => Exchange::Binance,
-            "okex" => Exchange::Okex,
-            "bybit" => Exchange::Bybit,
-            "bitget" => Exchange::Bitget,
-            "gate" => Exchange::Gate,
-            other => {
-                return Err(anyhow!(
-                    "unsupported exchange '{}'. Allowed: binance, okex, bybit, bitget, gate",
-                    other
-                ))
-            }
-        };
+        // 直接使用传入的 exchange 枚举
 
         // Internal mpsc pipeline
         let (req_tx, mut req_rx) = tokio::sync::mpsc::unbounded_channel::<TradeRequestMsg>();

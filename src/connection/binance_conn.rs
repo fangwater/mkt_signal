@@ -1,3 +1,4 @@
+use crate::common::exchange::Exchange;
 use crate::connection::connection::{
     MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
 };
@@ -177,7 +178,7 @@ impl BinanceFuturesSnapshotQuery {
     const COOLDOWN: Duration = Duration::from_secs(60); // 请求间隔时间(币安服务端限制请求频率)
 
     async fn fetch_symbol_depth(
-        exchange: &str,
+        exchange: Exchange,
         client: &Client,
         symbol: &str,
         invalid_symbols: &mut HashSet<String>,
@@ -192,14 +193,12 @@ impl BinanceFuturesSnapshotQuery {
         }
 
         let base_url = match exchange {
-            "binance" => Self::BASE_URL_SPOT,
-            "binance-futures" => Self::BASE_URL_FUTURES,
-            _ => return Err(anyhow::anyhow!("Invalid exchange: {}", exchange)),
+            Exchange::Binance => Self::BASE_URL_SPOT,
+            _ => Self::BASE_URL_FUTURES,
         };
         let endpoint = match exchange {
-            "binance" => Self::ENDPOINT_SPOT,
-            "binance-futures" => Self::ENDPOINT_FUTURES,
-            _ => return Err(anyhow::anyhow!("Invalid exchange: {}", exchange)),
+            Exchange::Binance => Self::ENDPOINT_SPOT,
+            _ => Self::ENDPOINT_FUTURES,
         };
 
         loop {
@@ -286,7 +285,7 @@ impl BinanceFuturesSnapshotQuery {
         }
     }
     pub async fn start_fetching_depth(
-        exchange: &str,
+        exchange: Exchange,
         symbols: Vec<String>,
         tx: tokio::sync::broadcast::Sender<Bytes>,
     ) {
