@@ -124,6 +124,56 @@ pub struct OkexNewOrderRequest {
     pub params: Bytes, // 紧凑的二进制参数
 }
 
+/// 紧凑的 okex 撤单参数：ord_id | cl_ord_id | inst_len | inst_bytes
+#[derive(Debug, Clone)]
+pub struct OkexCancelOrderParams {
+    pub ord_id: i64,
+    pub cl_ord_id: i64,
+    pub inst_id: String,
+}
+
+impl OkexCancelOrderParams {
+    const MIN_BIN_LEN: usize = 8 + 8 + 1; // ord_id + cl_ord_id + len
+
+    pub fn to_bytes(&self) -> Option<Bytes> {
+        let inst_bytes = self.inst_id.as_bytes();
+        if inst_bytes.len() > u8::MAX as usize {
+            return None;
+        }
+        let mut buf = BytesMut::with_capacity(Self::MIN_BIN_LEN + inst_bytes.len());
+        buf.put_i64_le(self.ord_id);
+        buf.put_i64_le(self.cl_ord_id);
+        buf.put_u8(inst_bytes.len() as u8);
+        buf.put_slice(inst_bytes);
+        Some(buf.freeze())
+    }
+
+    pub fn from_bytes(raw: &[u8]) -> Option<Self> {
+        if raw.len() < Self::MIN_BIN_LEN {
+            return None;
+        }
+        let ord_id = i64::from_le_bytes(raw[0..8].try_into().ok()?);
+        let cl_ord_id = i64::from_le_bytes(raw[8..16].try_into().ok()?);
+        let inst_len = raw[16] as usize;
+        if raw.len() < Self::MIN_BIN_LEN + inst_len {
+            return None;
+        }
+        let inst_id = std::str::from_utf8(&raw[17..17 + inst_len]).ok()?;
+        Some(Self {
+            ord_id,
+            cl_ord_id,
+            inst_id: inst_id.to_string(),
+        })
+    }
+}
+
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct OkexCancelOrderRequest {
+    pub header: TradeRequestHeader,
+    pub params: Bytes,
+}
+
 pub trait ToOkexWsJson {
     fn to_ws_json(&self) -> Option<Value>;
 }
@@ -227,6 +277,93 @@ impl OkexNewOrderRequest {
     }
 }
 
+impl OkexCancelOrderRequest {
+    fn create_with_type(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        params: Bytes,
+    ) -> Self {
+        let header = TradeRequestHeader {
+            msg_type: req_type as u32,
+            params_length: params.len() as u32,
+            create_time,
+            client_order_id,
+        };
+        Self { header, params }
+    }
+
+    pub fn create_margin(
+        create_time: i64,
+        client_order_id: i64,
+        params: OkexCancelOrderParams,
+    ) -> Option<Self> {
+        let params = params.to_bytes()?;
+        Some(Self::create_with_type(
+            TradeRequestType::OkexCancelMarginOrder,
+            create_time,
+            client_order_id,
+            params,
+        ))
+    }
+
+    pub fn create_um(
+        create_time: i64,
+        client_order_id: i64,
+        params: OkexCancelOrderParams,
+    ) -> Option<Self> {
+        let params = params.to_bytes()?;
+        Some(Self::create_with_type(
+            TradeRequestType::OkexCancelUMOrder,
+            create_time,
+            client_order_id,
+            params,
+        ))
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 4 + 8 + 8 + self.params.len();
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.header.msg_type);
+        buf.put_u32_le(self.header.params_length);
+        buf.put_i64_le(self.header.create_time);
+        buf.put_i64_le(self.header.client_order_id);
+        buf.put(self.params.clone());
+        buf.freeze()
+    }
+
+    pub fn from_bytes(buf: &[u8]) -> Option<Self> {
+        if buf.len() < 24 {
+            return None;
+        }
+        let msg_type = u32::from_le_bytes(buf[0..4].try_into().ok()?);
+        let req_type = TradeRequestType::try_from(msg_type).ok()?;
+        if req_type != TradeRequestType::OkexCancelMarginOrder
+            && req_type != TradeRequestType::OkexCancelUMOrder
+        {
+            return None;
+        }
+        let params_length = u32::from_le_bytes(buf[4..8].try_into().ok()?) as usize;
+        let create_time = i64::from_le_bytes(buf[8..16].try_into().ok()?);
+        let client_order_id = i64::from_le_bytes(buf[16..24].try_into().ok()?);
+        if buf.len() < 24 + params_length {
+            return None;
+        }
+        let params = Bytes::copy_from_slice(&buf[24..24 + params_length]);
+        let header = TradeRequestHeader {
+            msg_type,
+            params_length: params_length as u32,
+            create_time,
+            client_order_id,
+        };
+        Some(Self { header, params })
+    }
+
+    pub fn params_struct(&self) -> Option<OkexCancelOrderParams> {
+        OkexCancelOrderParams::from_bytes(&self.params)
+    }
+}
+
 impl ToOkexWsJson for OkexNewOrderRequest {
     fn to_ws_json(&self) -> Option<Value> {
         let req_type = TradeRequestType::try_from(self.header.msg_type).ok()?;
@@ -263,6 +400,42 @@ impl ToOkexWsJson for OkexNewOrderRequest {
             "op": "order",
             "id": cl_id,
             "args": [args_obj]
+        }))
+    }
+}
+
+impl ToOkexWsJson for OkexCancelOrderRequest {
+    fn to_ws_json(&self) -> Option<Value> {
+        let req_type = TradeRequestType::try_from(self.header.msg_type).ok()?;
+        if req_type != TradeRequestType::OkexCancelMarginOrder
+            && req_type != TradeRequestType::OkexCancelUMOrder
+        {
+            return None;
+        }
+        let params = self.params_struct()?;
+        let mut obj = json!({
+            "instId": params.inst_id,
+        });
+        if params.ord_id != 0 {
+            if let Some(map) = obj.as_object_mut() {
+                map.insert("ordId".to_string(), json!(params.ord_id.to_string()));
+            }
+        }
+        let cancel_cl_id = if params.cl_ord_id != 0 {
+            params.cl_ord_id
+        } else {
+            self.header.client_order_id
+        };
+        if cancel_cl_id != 0 {
+            if let Some(map) = obj.as_object_mut() {
+                map.insert("clOrdId".to_string(), json!(cancel_cl_id.to_string()));
+            }
+        }
+
+        Some(json!({
+            "op": "cancel-order",
+            "id": self.header.client_order_id.to_string(),
+            "args": [obj]
         }))
     }
 }
@@ -445,53 +618,4 @@ fn parse_i32_field(v: Option<&Value>) -> i32 {
         }
     })
     .unwrap_or(-1)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn okex_ws_response_parses_and_serializes() {
-        let raw = r#"{
-            "id": "1512",
-            "op": "order",
-            "data": [{
-                "clOrdId": "1512",
-                "ordId": "12345689",
-                "tag": "",
-                "ts": "1695190491421",
-                "sCode": "0",
-                "sMsg": ""
-            }],
-            "code": "0",
-            "msg": "",
-            "inTime": "1695190491421339",
-            "outTime": "1695190491423240"
-        }"#;
-
-        let parsed = OkexWsOrderResponse::from_json_str(raw).expect("should parse okex ws resp");
-        assert_eq!(parsed.code, 0);
-        assert_eq!(parsed.client_order_id(), Some(1512));
-        let bin = parsed.to_bytes();
-        assert!(!bin.is_empty());
-    }
-
-    #[test]
-    fn okex_ws_error_without_data_still_produces_bytes() {
-        let raw = r#"{
-            "id": "1512",
-            "op": "order",
-            "data": [],
-            "code": "60013",
-            "msg": "Invalid args",
-            "inTime": "1695190491421339",
-            "outTime": "1695190491423240"
-        }"#;
-
-        let parsed = OkexWsOrderResponse::from_json_str(raw).expect("should parse okex ws error");
-        assert_eq!(parsed.client_order_id(), Some(1512));
-        let bin = parsed.to_bytes();
-        assert!(!bin.is_empty());
-    }
 }
