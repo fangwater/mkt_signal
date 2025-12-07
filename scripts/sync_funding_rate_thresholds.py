@@ -5,7 +5,7 @@
 将资金费率阈值同步到 Redis 并打印。
 
 写入 Redis Hash:
-  `funding_rate_thresholds` - 资金费率阈值（8个字段，不区分 MM/MT）
+  `funding_rate_thresholds_{exchange}` - 资金费率阈值（8个字段，不区分 MM/MT）
 
 格式: {period}_{direction}_{operation}
   - period: 8h, 4h
@@ -15,8 +15,8 @@
 同步完成后自动打印所有阈值。
 
 示例：
-  python scripts/sync_funding_rate_thresholds.py
-  python scripts/sync_funding_rate_thresholds.py --redis-url redis://:pwd@127.0.0.1:6379/0
+  python scripts/sync_funding_rate_thresholds.py --exchange binance
+  python scripts/sync_funding_rate_thresholds.py --exchange okex --redis-url redis://:pwd@127.0.0.1:6379/0
 """
 
 from __future__ import annotations
@@ -25,6 +25,9 @@ import argparse
 import os
 import sys
 from typing import Dict, List
+
+# 支持的交易所
+SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
 
 
 def try_import_redis():
@@ -37,6 +40,8 @@ def try_import_redis():
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Sync Funding Rate thresholds to Redis")
+    p.add_argument("--exchange", required=True, choices=SUPPORTED_EXCHANGES,
+                   help="交易所名称（必填）")
     p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
     p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
     p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
@@ -67,7 +72,7 @@ FUNDING_RATE_THRESHOLDS = {
     "4h_forward_close": "-0.0006",    # 正套平仓：预测费率 < -0.004% 时平仓
     "4h_backward_open": "-0.00004",    # 反套开仓：预测费率 < -0.005% 时开仓
     "4h_backward_close": "0.0006",    # 反套平仓：预测费率 > 0.005% 时平仓
-}
+} 
 
 # ========== 阈值注释（用于打印） ==========
 
@@ -95,9 +100,9 @@ THRESHOLD_ORDER = [
 ]
 
 
-def sync_thresholds(rds) -> int:
+def sync_thresholds(rds, exchange: str) -> int:
     """同步资金费率阈值到 Redis Hash"""
-    key = "funding_rate_thresholds"
+    key = f"funding_rate_thresholds_{exchange}"
     rds.hset(key, mapping=FUNDING_RATE_THRESHOLDS)
     print(f"✅ 已写入 {len(FUNDING_RATE_THRESHOLDS)} 个资金费率阈值到 HASH '{key}'")
     return len(FUNDING_RATE_THRESHOLDS)
@@ -134,12 +139,12 @@ def print_three_line_table(headers: List[str], rows: List[List[str]]) -> None:
     print(bot_rule)
 
 
-def print_thresholds(rds) -> None:
+def print_thresholds(rds, exchange: str) -> None:
     """打印资金费率阈值"""
-    print("\n📊 资金费率阈值 (funding_rate_thresholds):")
+    key = f"funding_rate_thresholds_{exchange}"
+    print(f"\n📊 资金费率阈值 ({key}):")
     print("-" * 80)
 
-    key = "funding_rate_thresholds"
     data = rds.hgetall(key)
 
     if not data:
@@ -183,15 +188,15 @@ def main() -> int:
         host=args.host, port=args.port, db=args.db, password=args.password
     )
 
-    print("🔄 开始同步资金费率阈值...")
+    print(f"🔄 开始同步资金费率阈值 (exchange={args.exchange})...")
     print(f"📍 Redis: {args.host}:{args.port}/{args.db}")
     print()
 
     # 同步阈值
-    sync_thresholds(rds)
+    sync_thresholds(rds, args.exchange)
 
     # 打印结果
-    print_thresholds(rds)
+    print_thresholds(rds, args.exchange)
 
     print("\n✅ 同步完成！")
     return 0

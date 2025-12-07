@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
                 state.clone(),
                 cfg.sampling.clone(),
                 cfg.thresholds.clone(),
-                Exchange::BinanceFutures,
+                Exchange::Binance,
             );
             let interval_ms = cfg.sampling.interval_ms;
             let hub_clone = hub.clone();

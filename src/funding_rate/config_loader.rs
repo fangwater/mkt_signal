@@ -12,6 +12,7 @@ use anyhow::Result;
 use log::{info, warn};
 use std::time::Duration;
 
+use crate::common::exchange::Exchange;
 use crate::common::redis_client::{RedisClient, RedisSettings};
 use crate::signal::common::TradingVenue;
 
@@ -30,7 +31,8 @@ const RELOAD_INTERVAL_SECS: u64 = 60;
 ///
 /// # 参数
 /// - `redis`: Redis 配置
-pub fn spawn_config_loader(redis: RedisSettings) {
+/// - `exchange`: 交易所
+pub fn spawn_config_loader(redis: RedisSettings, exchange: Exchange) {
     tokio::task::spawn_local(async move {
         info!("ConfigLoader 启动，{}秒定时重载", RELOAD_INTERVAL_SECS);
 
@@ -40,7 +42,7 @@ pub fn spawn_config_loader(redis: RedisSettings) {
             interval.tick().await;
 
             // 重载所有配置
-            if let Err(err) = reload_all_configs(&redis).await {
+            if let Err(err) = reload_all_configs(&redis, exchange).await {
                 warn!("配置重载失败: {:?}", err);
             }
         }
@@ -53,20 +55,21 @@ pub fn spawn_config_loader(redis: RedisSettings) {
 ///
 /// # 参数
 /// - `redis`: Redis 配置
-pub async fn load_all_once(redis: &RedisSettings) -> Result<()> {
+/// - `exchange`: 交易所
+pub async fn load_all_once(redis: &RedisSettings, exchange: Exchange) -> Result<()> {
     info!("立即加载所有配置...");
-    reload_all_configs(redis).await?;
+    reload_all_configs(redis, exchange).await?;
     info!("所有配置初始加载完成");
     Ok(())
 }
 
 /// 重载所有配置的内部函数
-async fn reload_all_configs(redis: &RedisSettings) -> Result<()> {
+async fn reload_all_configs(redis: &RedisSettings, exchange: Exchange) -> Result<()> {
     // 1. 加载策略参数 -> FrDecision + SpreadFactor
     reload_strategy_params(redis).await?;
 
     // 2. 更新 SymbolList（建仓/平仓列表）
-    reload_symbol_list(redis).await?;
+    reload_symbol_list(redis, exchange).await?;
 
     // 3. 加载价差阈值 -> SpreadFactor
     reload_spread_thresholds(redis).await?;
@@ -96,17 +99,15 @@ async fn reload_strategy_params(redis: &RedisSettings) -> Result<()> {
 }
 
 /// 重载符号列表
-async fn reload_symbol_list(redis: &RedisSettings) -> Result<()> {
+async fn reload_symbol_list(redis: &RedisSettings, exchange: Exchange) -> Result<()> {
+    let exchange_str = exchange.as_str();
     match RedisClient::connect(redis.clone()).await {
         Ok(mut client) => {
             let symbol_list = SymbolList::instance();
             symbol_list
-                .reload_from_redis(
-                    &mut client,
-                    &[TradingVenue::BinanceUm, TradingVenue::BinanceMargin],
-                )
+                .reload_from_redis(&mut client, &[exchange_str])
                 .await?;
-            info!("SymbolList 重载成功");
+            info!("SymbolList 重载成功 (exchange: {})", exchange_str);
         }
         Err(err) => {
             warn!("SymbolList 重载失败: {:?}", err);
@@ -162,7 +163,7 @@ async fn reload_fr_thresholds(redis: &RedisSettings) -> Result<()> {
 /// 重载交易对白名单
 async fn reload_check_symbols(redis: &RedisSettings) -> Result<()> {
     let redis_key = std::env::var("SYMBOLS_REDIS_KEY")
-        .unwrap_or_else(|_| "fr_trade_symbols:binance_um".to_string());
+        .unwrap_or_else(|_| "fr_trade_symbols:binance".to_string());
 
     match RedisClient::connect(redis.clone()).await {
         Ok(mut client) => {

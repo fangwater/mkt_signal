@@ -71,12 +71,12 @@ async fn run(exchange: Exchange, token: CancellationToken) -> Result<()> {
     // 2️⃣ 立即加载所有配置（策略参数、符号列表、阈值等）
     let redis = get_redis_settings();
     info!("加载所有配置...");
-    if let Err(err) = load_all_once(&redis).await {
+    if let Err(err) = load_all_once(&redis, exchange).await {
         log::warn!("配置加载失败: {:?}，将使用默认值", err);
     }
 
     // 3️⃣ 启动统一配置定时重载器（60秒）
-    spawn_config_loader(redis);
+    spawn_config_loader(redis, exchange);
     info!("配置加载器已启动（60秒定时重载）");
 
     info!("✅ {} 启动完成，等待市场数据触发决策...", PROCESS_NAME);

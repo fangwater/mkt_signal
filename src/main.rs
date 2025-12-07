@@ -1,16 +1,16 @@
 use clap::Parser;
 use mkt_signal::app::MktSignalApp;
 use mkt_signal::cfg::Config;
-use mkt_signal::exchange::Exchange;
+use mkt_signal::signal::common::TradingVenue;
 use tokio::sync::OnceCell;
 
 #[derive(Parser)]
 #[command(name = "mkt_signal")]
 #[command(about = "using market data generate signal")]
 struct Args {
-    /// Exchange to connect to
+    /// Trading venue to connect to (e.g., binance_um, binance_spot, okex_futures)
     #[arg(short, long)]
-    exchange: Exchange,
+    venue: TradingVenue,
 }
 
 #[tokio::main(worker_threads = 4)]
@@ -23,19 +23,19 @@ async fn main() -> anyhow::Result<()> {
 
     // 解析命令行参数
     let args = Args::parse();
-    let exchange = args.exchange;
+    let venue = args.venue;
 
     // 固定配置文件路径
     let config_path = "config/mkt_cfg.yaml";
 
     static CFG: OnceCell<Config> = OnceCell::const_new();
 
-    async fn get_config(config_path: &str, exchange: Exchange) -> &'static Config {
-        CFG.get_or_init(|| async { Config::load_config(config_path, exchange).await.unwrap() })
+    async fn get_config(config_path: &str, venue: TradingVenue) -> &'static Config {
+        CFG.get_or_init(|| async { Config::load_config(config_path, venue).await.unwrap() })
             .await
     }
 
-    let config = get_config(config_path, exchange).await;
+    let config = get_config(config_path, venue).await;
 
     // 资金费率管理器已移除：预测/借贷逻辑在策略进程内处理
 

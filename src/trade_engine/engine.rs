@@ -92,7 +92,7 @@ impl TradeEngine {
             "binance" => Exchange::Binance,
             "okex" => Exchange::Okex,
             "bybit" => Exchange::Bybit,
-            "bitget" => Exchange::BitgetFutures,
+            "bitget" => Exchange::Bitget,
             "gate" => Exchange::Gate,
             other => {
                 return Err(anyhow!(

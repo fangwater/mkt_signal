@@ -1,11 +1,14 @@
 use crate::common::min_qty_table::{MarketType, MinQtyTable};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use clap::ValueEnum;
 use log::debug;
+use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 
 /// 交易标的枚举，表示不同交易所的不同交易类型
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ValueEnum)]
 #[repr(u8)]
+#[serde(rename_all = "snake_case")]
 pub enum TradingVenue {
     BinanceMargin = 0,
     BinanceUm = 1,

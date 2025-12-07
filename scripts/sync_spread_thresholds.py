@@ -2,37 +2,27 @@
 # -*- coding: utf-8 -*-
 
 """
-从 rolling_metrics_thresholds 读取百分位数据，生成价差阈值并同步到 Redis。
+从 rolling_metrics_thresholds_{exchange} 读取百分位数据，生成价差阈值并同步到 Redis。
 
 工作流程：
-  1. 从 Redis 读取 fr_dump_symbols:binance_margin 和 fr_trade_symbols:binance_margin
+  1. 从 Redis 读取 fr_dump_symbols:{venue} 和 fr_trade_symbols:{venue}
   2. 合并两个列表得到要同步的 symbols（去重）
-  3. 从 rolling_metrics_thresholds 读取这些 symbols 的百分位数据
+  3. 从 rolling_metrics_thresholds_{exchange} 读取这些 symbols 的百分位数据
   4. 根据 SPREAD_THRESHOLD_MAPPING 配置，提取对应的百分位值
-  5. 生成价差阈值并写入 binance_spread_thresholds
+  5. 生成价差阈值并写入 {exchange}_spread_thresholds
 
 读取 Redis:
-  - String `fr_dump_symbols:binance_margin` - 平仓列表（JSON 数组）
-  - String `fr_trade_symbols:binance_margin` - 建仓列表（JSON 数组）
-  - Hash `rolling_metrics_thresholds` - rolling metrics 百分位数据
+  - String `fr_dump_symbols:{venue}` - 平仓列表（JSON 数组）
+  - String `fr_trade_symbols:{venue}` - 建仓列表（JSON 数组）
+  - Hash `rolling_metrics_thresholds_{exchange}` - rolling metrics 百分位数据
 
 写入 Redis Hash:
-  `binance_spread_thresholds` - 价差阈值（每个 symbol 12个字段）
-
-配置说明：
-  - SPREAD_THRESHOLD_MAPPING: 百分位映射配置
-    格式: "binance_{factor}_{percentile}"
-    示例: "binance_bidask_10" = bidask_sr 的第 10 百分位
-
-输出格式: {symbol}_{direction}_{operation}_{mode}
-  - direction: forward, backward
-  - operation: open, cancel, close
-  - mode: mm, mt
+  `{exchange}_spread_thresholds` - 价差阈值（每个 symbol 8个字段）
 
 示例：
-  python scripts/sync_spread_thresholds.py                     # 从 Redis 读取 symbols 并同步
-  python scripts/sync_spread_thresholds.py --symbol BTCUSDT    # 只同步 BTCUSDT
-  python scripts/sync_spread_thresholds.py --redis-url redis://:pwd@127.0.0.1:6379/0
+  python scripts/sync_spread_thresholds.py --exchange binance
+  python scripts/sync_spread_thresholds.py --exchange okex --symbol BTC-USDT
+  python scripts/sync_spread_thresholds.py --exchange binance --redis-url redis://:pwd@127.0.0.1:6379/0
 """
 
 from __future__ import annotations
@@ -43,6 +33,9 @@ import math
 import os
 import sys
 from typing import Dict, List, Optional, Set
+
+# 支持的交易所
+SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
 
 
 def try_import_redis():
@@ -55,54 +48,52 @@ def try_import_redis():
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Sync spread thresholds from rolling metrics to Redis")
+    p.add_argument("--exchange", required=True, choices=SUPPORTED_EXCHANGES,
+                   help="交易所名称（必填）")
     p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
     p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
     p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
     p.add_argument("--db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
     p.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
-    p.add_argument("--symbol", help="只同步指定 symbol（如 BTCUSDT）")
+    p.add_argument("--symbol", help="只同步指定 symbol（如 BTCUSDT 或 BTC-USDT）")
     p.add_argument(
-        "--rolling-key",
-        default="rolling_metrics_thresholds",
-        help="Rolling metrics Redis Hash key (default: rolling_metrics_thresholds)"
-    )
-    p.add_argument(
-        "--write-key",
-        default="binance_spread_thresholds",
-        help="写入的 Redis Hash key (default: binance_spread_thresholds)"
-    )
-    p.add_argument(
-        "--dump-key",
-        default="fr_dump_symbols:binance_margin",
-        help="平仓列表 Redis key (default: fr_dump_symbols:binance_margin)"
-    )
-    p.add_argument(
-        "--trade-key",
-        default="fr_trade_symbols:binance_margin",
-        help="建仓列表 Redis key (default: fr_trade_symbols:binance_margin)"
+        "--venue",
+        help="自定义交易场所后缀（如 binance_margin, okex_swap），默认根据 exchange 推断"
     )
     return p.parse_args()
+
+
+def get_default_venue(exchange: str) -> str:
+    """根据交易所返回默认的 venue"""
+    venue_map = {
+        "binance": "binance_margin",
+        "okex": "okex_swap",
+        "bybit": "bybit",
+        "bitget": "bitget",
+        "gate": "gate"
+    }
+    return venue_map.get(exchange, f"{exchange}_margin")
 
 
 # ========== 价差阈值映射配置 ==========
 #
 # 将每个阈值字段映射到 rolling metrics 的百分位字段
-# 格式: "binance_{factor}_{percentile}"
+# 格式: "{factor}_{percentile}"
 #   - factor: bidask, askbid, spread
-#   - percentile: 5, 10, 15, 85, 90, 95
+#   - percentile: 5, 10, 15, 20, 25, 30, 85, 90, 95
 #
 # 此配置对所有 symbol 通用，只是每个 symbol 计算出的具体值不同
 
 SPREAD_THRESHOLD_MAPPING = {
-    "forward_open_mm": "binance_spread_15", # spread < q10
-    "forward_open_mt": "binance_bidask_10", # bidask < q10
-    "forward_cancel_mm": "binance_spread_20", # spread > q15
-    "forward_cancel_mt": "binance_bidask_15", # bidask > q15
-    
-    "backward_open_mm": "binance_spread_30", # spread > q90
-    "backward_open_mt": "binance_askbid_90", # askbid > q90
-    "backward_cancel_mm": "binance_spread_25", #spread < q85
-    "backward_cancel_mt": "binance_askbid_85", #askbid < q85
+    "forward_open_mm": "spread_15",     # spread < q15
+    "forward_open_mt": "bidask_10",     # bidask < q10
+    "forward_cancel_mm": "spread_20",   # spread > q20
+    "forward_cancel_mt": "bidask_15",   # bidask > q15
+
+    "backward_open_mm": "spread_30",    # spread > q30
+    "backward_open_mt": "askbid_90",    # askbid > q90
+    "backward_cancel_mm": "spread_25",  # spread < q25
+    "backward_cancel_mt": "askbid_85",  # askbid < q85
 }
 
 THRESHOLD_ORDER = list(SPREAD_THRESHOLD_MAPPING.keys())
@@ -122,8 +113,7 @@ def load_symbol_lists(rds, dump_key: str, trade_key: str) -> List[str]:
     symbols_set: Set[str] = set()
 
     # 读取平仓列表
-    dump_data = rds.get(dump_key)
-    if dump_data:
+    if dump_data := rds.get(dump_key):
         dump_str = dump_data.decode('utf-8', 'ignore') if isinstance(dump_data, bytes) else str(dump_data)
         try:
             dump_list = json.loads(dump_str)
@@ -134,8 +124,7 @@ def load_symbol_lists(rds, dump_key: str, trade_key: str) -> List[str]:
             print(f"⚠️  解析 '{dump_key}' 失败: {e}")
 
     # 读取建仓列表
-    trade_data = rds.get(trade_key)
-    if trade_data:
+    if trade_data := rds.get(trade_key):
         trade_str = trade_data.decode('utf-8', 'ignore') if isinstance(trade_data, bytes) else str(trade_data)
         try:
             trade_list = json.loads(trade_str)
@@ -170,17 +159,17 @@ def extract_quantile_value(obj: Dict, field_ref: str) -> Optional[float]:
     """
     从 rolling metrics 对象中提取百分位值
 
-    field_ref 格式: "binance_{factor}_{percentile}"
+    field_ref 格式: "{factor}_{percentile}"
     - factor: bidask, askbid, spread
-    - percentile: 5, 10, 15, 85, 90, 95
+    - percentile: 5, 10, 15, 20, 25, 30, 85, 90, 95
     """
     # 解析字段引用
     parts = field_ref.split("_")
-    if len(parts) < 3 or parts[0] != "binance":
+    if len(parts) < 2:
         return None
 
-    factor = parts[1]  # bidask, askbid, 或 spread
-    percentile_str = parts[2]  # 5, 10, 15, 85, 90, 95
+    factor = parts[0]  # bidask, askbid, 或 spread
+    percentile_str = parts[1]  # 5, 10, 15, 20, 25, 30, 85, 90, 95
 
     try:
         percentile = float(percentile_str) / 100.0  # 转换为 0.05, 0.10 等
@@ -222,6 +211,75 @@ def extract_quantile_value(obj: Dict, field_ref: str) -> Optional[float]:
     return None
 
 
+def _get_target_symbols(rds, dump_key: str, trade_key: str, filter_symbol: Optional[str]) -> List[str]:
+    """获取要处理的目标 symbols"""
+    if filter_symbol:
+        print(f"🎯 目标 symbols: {filter_symbol.upper()} (单独指定)")
+        return [filter_symbol.upper()]
+
+    target_symbols = load_symbol_lists(rds, dump_key, trade_key)
+    if not target_symbols:
+        print("❌ 未找到任何 symbols，请检查 Redis 中的 dump/trade 列表")
+        return []
+
+    print(f"🎯 目标 symbols: {', '.join(target_symbols)} (共 {len(target_symbols)} 个)")
+    return target_symbols
+
+
+def _find_symbol_data(rolling_data: Dict[str, Dict], target_symbols: List[str]) -> tuple[Dict[str, Dict], Set[str]]:
+    """在 rolling_data 中查找目标 symbols 的数据
+
+    返回: (找到的 symbol_data, 缺失的 symbols)
+    """
+    symbol_data: Dict[str, Dict] = {}
+    missing_symbols: Set[str] = set()
+
+    for symbol in target_symbols:
+        symbol_upper = symbol.upper()
+
+        # 在 rolling_data 中查找匹配的数据
+        for obj in rolling_data.values():
+            base_symbol = obj.get("base_symbol") or obj.get("symbol")
+            if base_symbol and str(base_symbol).upper() == symbol_upper:
+                symbol_data[symbol_upper] = obj
+                break
+        else:
+            missing_symbols.add(symbol_upper)
+
+    if missing_symbols:
+        print(f"⚠️  以下 symbols 未在 rolling_metrics 中找到: {', '.join(sorted(missing_symbols))}")
+
+    return symbol_data, missing_symbols
+
+
+def _generate_threshold_fields(symbol_data: Dict[str, Dict]) -> tuple[Dict[str, str], Set[str]]:
+    """为每个 symbol 生成阈值字段
+
+    返回: (生成的字段, 跳过的 symbols)
+    """
+    all_fields = {}
+    skipped_symbols: Set[str] = set()
+
+    for symbol, obj in symbol_data.items():
+        symbol_fields = {}
+
+        # 尝试提取所有阈值
+        for suffix, field_ref in SPREAD_THRESHOLD_MAPPING.items():
+            value = extract_quantile_value(obj, field_ref)
+            if value is None:
+                print(f"⚠️  {symbol}: 无法提取 {suffix} (来源: {field_ref})，跳过该 symbol")
+                skipped_symbols.add(symbol)
+                break
+
+            field_key = f"{symbol}_{suffix}"
+            symbol_fields[field_key] = f"{value:.8f}".rstrip("0").rstrip(".")
+        else:
+            # 所有阈值提取成功，添加到结果中
+            all_fields |= symbol_fields
+
+    return all_fields, skipped_symbols
+
+
 def sync_thresholds(
     rds,
     rolling_key: str,
@@ -235,86 +293,35 @@ def sync_thresholds(
 
     返回: 写入的字段数量
     """
-    # 确定要处理的 symbols
-    if filter_symbol:
-        target_symbols = [filter_symbol.upper()]
-        print(f"🎯 目标 symbols: {filter_symbol.upper()} (单独指定)")
-    else:
-        # 从 Redis 读取 symbol 列表
-        target_symbols = load_symbol_lists(rds, dump_key, trade_key)
-        if not target_symbols:
-            print("❌ 未找到任何 symbols，请检查 Redis 中的 dump/trade 列表")
-            return 0
-        print(f"🎯 目标 symbols: {', '.join(target_symbols)} (共 {len(target_symbols)} 个)")
+    # 1. 获取目标 symbols
+    target_symbols = _get_target_symbols(rds, dump_key, trade_key, filter_symbol)
+    if not target_symbols:
+        return 0
 
-    # 读取 rolling metrics
+    # 2. 读取 rolling metrics
     rolling_data = read_rolling_metrics(rds, rolling_key)
     if not rolling_data:
         print(f"⚠️  未找到 rolling metrics 数据 (key: {rolling_key})")
         return 0
 
-    # 提取目标 symbol 的数据
-    symbol_data: Dict[str, Dict] = {}
-    missing_symbols: Set[str] = set()
-
-    for symbol in target_symbols:
-        symbol_upper = symbol.upper()
-        found = False
-
-        # 在 rolling_data 中查找匹配的数据
-        for field_key, obj in rolling_data.items():
-            base_symbol = obj.get("base_symbol") or obj.get("symbol")
-            if not base_symbol:
-                continue
-
-            if str(base_symbol).upper() == symbol_upper:
-                symbol_data[symbol_upper] = obj
-                found = True
-                break
-
-        if not found:
-            missing_symbols.add(symbol_upper)
-
-    if missing_symbols:
-        print(f"⚠️  以下 symbols 未在 rolling_metrics 中找到: {', '.join(sorted(missing_symbols))}")
-
+    # 3. 查找目标 symbol 的数据
+    symbol_data, _ = _find_symbol_data(rolling_data, target_symbols)
     if not symbol_data:
         print("❌ 没有任何 symbol 有可用的 rolling metrics 数据")
         return 0
 
     print(f"✅ 找到 {len(symbol_data)} 个 symbols 的 rolling metrics 数据")
 
-    # 生成阈值字段
-    all_fields = {}
-    skipped_symbols: Set[str] = set()
-
-    for symbol, obj in symbol_data.items():
-        symbol_ok = True
-        for suffix, field_ref in SPREAD_THRESHOLD_MAPPING.items():
-            value = extract_quantile_value(obj, field_ref)
-            if value is None:
-                print(f"⚠️  {symbol}: 无法提取 {suffix} (来源: {field_ref})，跳过该 symbol")
-                symbol_ok = False
-                skipped_symbols.add(symbol)
-                break
-
-            field_key = f"{symbol}_{suffix}"
-            # 格式化为字符串，保留足够精度
-            all_fields[field_key] = f"{value:.8f}".rstrip("0").rstrip(".")
-
-        if not symbol_ok:
-            # 清理已添加的字段
-            for suffix in SPREAD_THRESHOLD_MAPPING.keys():
-                field_key = f"{symbol}_{suffix}"
-                all_fields.pop(field_key, None)
-
+    # 4. 生成阈值字段
+    all_fields, skipped_symbols = _generate_threshold_fields(symbol_data)
     if not all_fields:
         print("❌ 所有 symbols 都无法提取完整的阈值数据")
         return 0
 
-    # 写入 Redis
+    # 5. 写入 Redis
     rds.hset(write_key, mapping=all_fields)
 
+    # 6. 报告结果
     successful_symbols = len(symbol_data) - len(skipped_symbols)
     print(f"✅ 已写入 {len(all_fields)} 个价差阈值到 HASH '{write_key}'")
     print(f"   成功: {successful_symbols} 个 symbols")
@@ -383,7 +390,7 @@ def print_thresholds(rds, write_key: str, filter_symbol: Optional[str] = None) -
 
     # 统计 symbol
     all_symbols = set()
-    for field_key in kv.keys():
+    for field_key in kv:
         parts = field_key.split("_")
         if len(parts) >= 4:
             symbol = "_".join(parts[:-3])
@@ -407,28 +414,36 @@ def main() -> int:
         host=args.host, port=args.port, db=args.db, password=args.password
     )
 
-    print("🔄 开始从 rolling metrics 同步价差阈值...")
+    # 根据 exchange 生成 key
+    exchange = args.exchange
+    venue = args.venue or get_default_venue(exchange)
+    rolling_key = f"rolling_metrics_thresholds_{exchange}"
+    write_key = f"{exchange}_spread_thresholds"
+    dump_key = f"fr_dump_symbols:{venue}"
+    trade_key = f"fr_trade_symbols:{venue}"
+
+    print(f"🔄 开始从 rolling metrics 同步价差阈值 (exchange={exchange})...")
     print(f"📍 Redis: {args.host}:{args.port}/{args.db}")
-    print(f"📖 Rolling Metrics: {args.rolling_key}")
-    print(f"📖 Dump List: {args.dump_key}")
-    print(f"📖 Trade List: {args.trade_key}")
-    print(f"📝 写入: {args.write_key}")
+    print(f"📖 Rolling Metrics: {rolling_key}")
+    print(f"📖 Dump List: {dump_key}")
+    print(f"📖 Trade List: {trade_key}")
+    print(f"📝 写入: {write_key}")
     print()
 
     # 同步阈值
     count = sync_thresholds(
         rds,
-        args.rolling_key,
-        args.write_key,
-        args.dump_key,
-        args.trade_key,
+        rolling_key,
+        write_key,
+        dump_key,
+        trade_key,
         args.symbol
     )
     if count == 0:
         return 1
 
     # 打印结果
-    print_thresholds(rds, args.write_key, args.symbol)
+    print_thresholds(rds, write_key, args.symbol)
 
     print("\n✅ 同步完成！")
     return 0

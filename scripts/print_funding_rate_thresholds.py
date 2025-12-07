@@ -5,7 +5,7 @@
 打印资金费率阈值（从 Redis 读取）。
 
 读取 Redis Hash:
-  `funding_rate_thresholds` - 资金费率阈值（8个字段，不区分 MM/MT）
+  `funding_rate_thresholds_{exchange}` - 资金费率阈值（8个字段，不区分 MM/MT）
 
 格式: {period}_{direction}_{operation}
   - period: 8h, 4h
@@ -13,8 +13,8 @@
   - operation: open, close
 
 示例：
-  python scripts/print_funding_rate_thresholds.py
-  python scripts/print_funding_rate_thresholds.py --redis-url redis://:pwd@127.0.0.1:6379/0
+  python scripts/print_funding_rate_thresholds.py --exchange binance
+  python scripts/print_funding_rate_thresholds.py --exchange okex --redis-url redis://:pwd@127.0.0.1:6379/0
 """
 
 from __future__ import annotations
@@ -23,6 +23,9 @@ import argparse
 import os
 import sys
 from typing import Dict, List
+
+# 支持的交易所
+SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
 
 
 def try_import_redis():
@@ -35,6 +38,8 @@ def try_import_redis():
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Print Funding Rate thresholds from Redis")
+    p.add_argument("--exchange", required=True, choices=SUPPORTED_EXCHANGES,
+                   help="交易所名称（必填）")
     p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
     p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
     p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
@@ -100,12 +105,12 @@ def print_three_line_table(headers: List[str], rows: List[List[str]]) -> None:
     print(bot_rule)
 
 
-def print_thresholds(rds) -> None:
+def print_thresholds(rds, exchange: str) -> None:
     """打印资金费率阈值"""
-    print("📊 资金费率阈值 (funding_rate_thresholds):")
+    key = f"funding_rate_thresholds_{exchange}"
+    print(f"📊 资金费率阈值 ({key}):")
     print("-" * 80)
 
-    key = "funding_rate_thresholds"
     data = rds.hgetall(key)
 
     if not data:
@@ -152,7 +157,7 @@ def main() -> int:
     print(f"📍 Redis: {args.host}:{args.port}/{args.db}\n")
 
     # 打印阈值
-    print_thresholds(rds)
+    print_thresholds(rds, args.exchange)
 
     print()
     return 0

@@ -4,7 +4,7 @@
 """
 同步 rolling_metrics 服务所需的参数到 Redis HASH。
 
-默认写入 HASH `rolling_metrics_params`（可用 --key 修改），字段包括：
+写入 HASH `rolling_metrics_params_{exchange}`，字段包括：
   - MAX_LENGTH：环形缓冲容量（条数）
   - refresh_sec：分位重算周期（秒）
   - reload_param_sec：配置热更新周期（秒）
@@ -19,10 +19,10 @@
     }
 
 示例：
-  python scripts/sync_rolling_metrics_params.py
-  python scripts/sync_rolling_metrics_params.py --redis-url redis://:pwd@127.0.0.1:6379/0
-  python scripts/sync_rolling_metrics_params.py --max-length 200000
-  python scripts/sync_rolling_metrics_params.py --factors-json '
+  python scripts/sync_rolling_metrics_params.py --exchange binance
+  python scripts/sync_rolling_metrics_params.py --exchange okex --redis-url redis://:pwd@127.0.0.1:6379/0
+  python scripts/sync_rolling_metrics_params.py --exchange binance --max-length 200000
+  python scripts/sync_rolling_metrics_params.py --exchange okex --factors-json '
     {"bidask":{"resample_interval_ms":1000,"rolling_window":100000,
     "min_periods":90000,"quantiles":[5,70]}}'
 """
@@ -36,11 +36,14 @@ import os
 import sys
 from typing import Any, Dict
 
+# 支持的交易所
+SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
+
 DEFAULTS = {
     "MAX_LENGTH": 150_000,
     "refresh_sec": 30,
     "reload_param_sec": 3,
-    "output_hash_key": "rolling_metrics_thresholds",
+    # output_hash_key 将在运行时根据 exchange 设置
     "factors": {
         "bidask": {
             "resample_interval_ms": 1_000,
@@ -75,16 +78,17 @@ def try_import_redis():
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Sync rolling_metrics parameters to Redis HASH")
+    p.add_argument("--exchange", required=True, choices=SUPPORTED_EXCHANGES,
+                   help="交易所名称（必填）")
     p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
     p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
     p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
     p.add_argument("--db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
     p.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
-    p.add_argument("--key", default="rolling_metrics_params", help="Redis HASH key to write")
     p.add_argument("--max-length", type=int)
     p.add_argument("--refresh-sec", type=int)
     p.add_argument("--reload-param-sec", type=int)
-    p.add_argument("--output-hash-key")
+    p.add_argument("--output-hash-key", help="自定义输出 hash key（可选，默认为 rolling_metrics_thresholds_{exchange}）")
     p.add_argument(
         "--factors-json",
         help=(
@@ -133,8 +137,13 @@ def build_payload(args: argparse.Namespace) -> Dict[str, str]:
         payload["refresh_sec"] = args.refresh_sec
     if args.reload_param_sec is not None:
         payload["reload_param_sec"] = args.reload_param_sec
+
+    # 设置 output_hash_key，默认值带上 exchange 后缀
     if args.output_hash_key:
         payload["output_hash_key"] = args.output_hash_key
+    else:
+        payload["output_hash_key"] = f"rolling_metrics_thresholds_{args.exchange}"
+
     if args.factors_json:
         try:
             raw_factors = json.loads(args.factors_json)
@@ -198,9 +207,14 @@ def main() -> int:
     else:
         rds = redis.Redis(host=args.host, port=args.port, db=args.db, password=args.password)
 
+    # 根据 exchange 生成 hash key
+    hash_key = f"rolling_metrics_params_{args.exchange}"
+
     payload = build_payload(args)
     deprecated = list(DEPRECATED_FIELDS)
+
     if args.dry_run:
+        print(f"dry-run: 目标 HASH key: {hash_key}")
         print("dry-run: 即将写入的字段：")
         for k, v in payload.items():
             print(f"  {k} = {v}")
@@ -210,12 +224,16 @@ def main() -> int:
 
     pipe = rds.pipeline()
     if deprecated:
-        pipe.hdel(args.key, *deprecated)
-    pipe.hset(args.key, mapping=payload)
+        pipe.hdel(hash_key, *deprecated)
+    pipe.hset(hash_key, mapping=payload)
     pipe.execute()
-    print(f"已写入 {len(payload)} 个字段到 HASH {args.key}")
+
+    print(f"✅ 已写入 {len(payload)} 个字段到 HASH '{hash_key}'")
     if deprecated:
         print(f"已删除旧字段：{', '.join(deprecated)}")
+    print(f"\n💡 下一步：")
+    print(f"  - 查看配置: python scripts/print_rolling_metrics_params.py --exchange {args.exchange}")
+    print(f"  - 启动服务: cargo run --bin rolling_metrics -- --exchange {args.exchange}")
     return 0
 
 

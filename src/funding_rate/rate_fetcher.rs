@@ -306,7 +306,7 @@ impl RateFetcher {
         Self::ensure_initialized()?;
 
         match exchange {
-            Exchange::Binance | Exchange::BinanceFutures => {
+            Exchange::Binance => {
                 let api_key = std::env::var("BINANCE_API_KEY").ok();
                 let api_secret = std::env::var("BINANCE_API_SECRET").ok();
 
@@ -323,14 +323,14 @@ impl RateFetcher {
                 );
                 Self::spawn_binance_fetch_task();
             }
-            Exchange::Okex | Exchange::OkexSwap => {
+            Exchange::Okex => {
                 Self::with_inner_mut(|inner| {
                     inner.venue_states.entry(OKEX_CONFIG.venue).or_default();
                 });
                 info!("RateFetcher: OKEx 初始化完成");
                 Self::spawn_okex_fetch_task();
             }
-            Exchange::BitgetFutures => {
+            Exchange::Bitget => {
                 Self::with_inner_mut(|inner| {
                     inner.venue_states.entry(BITGET_CONFIG.venue).or_default();
                 });
@@ -344,15 +344,12 @@ impl RateFetcher {
                 info!("RateFetcher: Bybit 初始化完成");
                 Self::spawn_bybit_fetch_task();
             }
-            Exchange::Gate | Exchange::GateFutures => {
+            Exchange::Gate => {
                 Self::with_inner_mut(|inner| {
                     inner.venue_states.entry(GATE_CONFIG.venue).or_default();
                 });
                 info!("RateFetcher: Gate 初始化完成");
                 Self::spawn_gate_fetch_task();
-            }
-            _ => {
-                warn!("RateFetcher: {} 暂不支持", exchange);
             }
         }
 

@@ -20,6 +20,7 @@ use tokio::signal;
 use tokio::time::{interval, sleep, Instant};
 use tokio_util::sync::CancellationToken;
 
+use mkt_signal::common::exchange::Exchange;
 use mkt_signal::common::iceoryx_subscriber::{
     ChannelType, MultiChannelSubscriber, SubscribeParams,
 };
@@ -36,13 +37,27 @@ use mkt_signal::rolling_metrics::service::{
     SymbolSeries,
 };
 
-const LOG_PREFIX: &str = "binance-rolling-metrics";
+const LOG_PREFIX: &str = "rolling-metrics";
+
+/// 获取交易所的 spot 和 swap 资产名称
+fn get_spot_swap_names(exchange: Exchange) -> (&'static str, &'static str) {
+    match exchange {
+        Exchange::Binance => ("binance", "binance-futures"),
+        Exchange::Okex => ("okex", "okex-swap"),
+        Exchange::Bybit => ("bybit-spot", "bybit"),
+        Exchange::Bitget => ("bitget", "bitget-futures"),
+        Exchange::Gate => ("gate", "gate-futures"),
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(
-    name = "binance-rolling-metrics",
-    about = "Binance 价差滑窗分位计算服务"
+    name = "rolling-metrics",
+    about = "滑窗分位计算服务 - 支持多个交易所"
 )]
 struct Args {
+    #[arg(long, value_enum)]
+    exchange: Exchange,
     #[arg(long)]
     redis_url: Option<String>,
     #[arg(long, default_value = "127.0.0.1")]
@@ -57,16 +72,12 @@ struct Args {
     redis_password: Option<String>,
     #[arg(long)]
     redis_prefix: Option<String>,
-    #[arg(long, default_value = DEFAULT_CONFIG_HASH_KEY)]
-    params_hash_key: String,
+    #[arg(long)]
+    params_hash_key: Option<String>,
     #[arg(long)]
     output_hash_key: Option<String>,
-    #[arg(long, default_value = "rolling_metrics_node")]
-    iceoryx_node: String,
-    #[arg(long, default_value = "binance")]
-    spot_exchange: String,
-    #[arg(long, default_value = "binance-futures")]
-    swap_exchange: String,
+    #[arg(long)]
+    iceoryx_node: Option<String>,
     #[arg(long, default_value = "info,rolling_metrics=info,mkt_signal=info")]
     log_filter: String,
     #[arg(long)]
@@ -242,18 +253,42 @@ async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(&args.log_filter))
         .init();
 
-    info!("{LOG_PREFIX}: starting with args {:?}", args);
+    let exchange = args.exchange;
+    let (spot_exchange, swap_exchange) = get_spot_swap_names(exchange);
+    let iceoryx_node = args
+        .iceoryx_node
+        .clone()
+        .unwrap_or_else(|| format!("rolling_metrics_{}", exchange.as_str()));
+
+    info!(
+        "{LOG_PREFIX}: starting (exchange={}, spot={}, swap={}, node={})",
+        exchange.as_str(),
+        spot_exchange,
+        swap_exchange,
+        iceoryx_node
+    );
 
     let redis_settings = build_redis_settings(&args)?;
     let redis_url = redis_settings.connection_url();
 
+    // 根据交易所生成独立的 hash key
+    let params_hash_key = args
+        .params_hash_key
+        .clone()
+        .unwrap_or_else(|| format!("{}_{}", DEFAULT_CONFIG_HASH_KEY, exchange.as_str()));
+    let default_output_hash_key = format!("{}_{}", DEFAULT_OUTPUT_HASH_KEY, exchange.as_str());
+
     let mut cfg_client = RedisClient::connect(redis_settings.clone()).await?;
-    let (mut config, _) = load_config_from_redis(&mut cfg_client, &args.params_hash_key).await?;
-    if let Some(ref custom) = args.output_hash_key {
-        if !custom.trim().is_empty() {
-            config.output_hash_key = custom.trim().to_string();
-        }
-    }
+    let (mut config, _) = load_config_from_redis(&mut cfg_client, &params_hash_key).await?;
+
+    // 设置输出 hash key
+    config.output_hash_key = args
+        .output_hash_key
+        .as_ref()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or(default_output_hash_key);
+
     config.finalize();
     let factor_summary = config
         .factors_iter()
@@ -266,16 +301,15 @@ async fn main() -> Result<()> {
         .collect::<Vec<_>>()
         .join(" ");
     info!(
-        "{LOG_PREFIX}: config init (max_length={} refresh={}s reload={}s output={} factors=[{}])",
+        "{LOG_PREFIX}: config init (max_length={} refresh={}s reload={}s params={} output={} factors=[{}])",
         config.max_length,
         config.refresh_sec,
         config.reload_param_sec,
+        params_hash_key,
         config.output_hash_key,
         factor_summary
     );
 
-    let spot_exchange = args.spot_exchange.clone();
-    let swap_exchange = args.swap_exchange.clone();
     let prefix = format!("{}_{}", spot_exchange, swap_exchange);
     let symbol_refresh_secs = args.symbol_refresh_sec;
     let symbol_socket_path = resolve_symbol_socket(&args.symbol_socket);
@@ -299,7 +333,7 @@ async fn main() -> Result<()> {
             Some(socket_dir) => {
                 let series_map_task = Arc::clone(&series_map);
                 let capacity_task = Arc::clone(&series_capacity);
-                let swap_task = swap_exchange.clone();
+                let swap_task = swap_exchange.to_string();
                 let prefix_task = prefix.clone();
                 let interval = Duration::from_secs(symbol_refresh_secs.max(60));
                 tokio::spawn(async move {
@@ -320,16 +354,16 @@ async fn main() -> Result<()> {
         }
     }
 
-    let params_key = args.params_hash_key.clone();
     let config_clone = Arc::clone(&config_lock);
     let series_map_clone = Arc::clone(&series_map);
     let capacity_clone = Arc::clone(&series_capacity);
     let settings_clone = redis_settings.clone();
     let output_override = args.output_hash_key.clone();
+    let params_key_clone = params_hash_key.clone();
     tokio::spawn(async move {
         if let Err(err) = config_reload_loop(
             settings_clone,
-            params_key,
+            params_key_clone,
             config_clone,
             series_map_clone,
             capacity_clone,
@@ -341,7 +375,15 @@ async fn main() -> Result<()> {
         }
     });
 
-    run_reader_loop(args, series_map, series_capacity, Arc::clone(&config_lock)).await?;
+    run_reader_loop(
+        &iceoryx_node,
+        spot_exchange,
+        swap_exchange,
+        series_map,
+        series_capacity,
+        Arc::clone(&config_lock),
+    )
+    .await?;
     Ok(())
 }
 
@@ -445,9 +487,18 @@ async fn config_reload_loop(
         match load_config_from_redis(&mut client, &params_key).await {
             Ok((mut new_cfg, _map)) => {
                 if let Some(ref override_key) = output_override {
-                    new_cfg.output_hash_key = override_key.clone();
-                } else if new_cfg.output_hash_key.is_empty() {
-                    new_cfg.output_hash_key = DEFAULT_OUTPUT_HASH_KEY.to_string();
+                    if !override_key.trim().is_empty() {
+                        new_cfg.output_hash_key = override_key.trim().to_string();
+                    }
+                }
+                // 如果 output_hash_key 为空，使用从 params_key 推断的默认值
+                if new_cfg.output_hash_key.is_empty() {
+                    // 从 params_key 中提取 exchange 后缀（如果有）
+                    if let Some(suffix) = params_key.strip_prefix(DEFAULT_CONFIG_HASH_KEY) {
+                        new_cfg.output_hash_key = format!("{}{}", DEFAULT_OUTPUT_HASH_KEY, suffix);
+                    } else {
+                        new_cfg.output_hash_key = DEFAULT_OUTPUT_HASH_KEY.to_string();
+                    }
                 }
                 let change_detail: Option<String>;
                 {
@@ -470,32 +521,34 @@ async fn config_reload_loop(
 }
 
 async fn run_reader_loop(
-    args: Args,
+    iceoryx_node: &str,
+    spot_exchange: &str,
+    swap_exchange: &str,
     series_map: Arc<SeriesMap>,
     series_capacity: Arc<AtomicUsize>,
     config: Arc<RwLock<RollingConfig>>,
 ) -> Result<()> {
-    let mut subscriber = MultiChannelSubscriber::new(&args.iceoryx_node)?;
+    let mut subscriber = MultiChannelSubscriber::new(iceoryx_node)?;
     subscriber.subscribe_channels(vec![
         SubscribeParams {
-            exchange: args.spot_exchange.clone(),
+            exchange: spot_exchange.to_string(),
             channel: ChannelType::AskBidSpread,
         },
         SubscribeParams {
-            exchange: args.swap_exchange.clone(),
+            exchange: swap_exchange.to_string(),
             channel: ChannelType::AskBidSpread,
         },
     ])?;
 
-    let prefix = format!("{}_{}", args.spot_exchange, args.swap_exchange);
+    let prefix = format!("{}_{}", spot_exchange, swap_exchange);
     let mut quotes: HashMap<String, SymbolQuotes> = HashMap::new();
     let mut last_symbol_count: usize = 0;
     let shutdown = CancellationToken::new();
     setup_signal_handlers(&shutdown)?;
 
     info!(
-        "{LOG_PREFIX}: reader loop started (prefix={}, spot={}, futures={})",
-        prefix, args.spot_exchange, args.swap_exchange
+        "{LOG_PREFIX}: reader loop started (prefix={}, spot={}, swap={})",
+        prefix, spot_exchange, swap_exchange
     );
 
     let mut next_log = Instant::now() + Duration::from_secs(30);
@@ -506,9 +559,7 @@ async fn run_reader_loop(
             break;
         }
 
-        for msg in
-            subscriber.poll_channel(&args.spot_exchange, &ChannelType::AskBidSpread, Some(64))
-        {
+        for msg in subscriber.poll_channel(spot_exchange, &ChannelType::AskBidSpread, Some(64)) {
             process_spot_msg(
                 &msg,
                 &prefix,
@@ -519,9 +570,7 @@ async fn run_reader_loop(
             );
         }
 
-        for msg in
-            subscriber.poll_channel(&args.swap_exchange, &ChannelType::AskBidSpread, Some(64))
-        {
+        for msg in subscriber.poll_channel(swap_exchange, &ChannelType::AskBidSpread, Some(64)) {
             process_swap_msg(
                 &msg,
                 &prefix,

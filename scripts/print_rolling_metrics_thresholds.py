@@ -5,14 +5,18 @@
 Print rolling_metrics thresholds from Redis HASH as a three-line table.
 
 Reads
-  - Redis HASH (default `rolling_metrics_thresholds`) where
+  - Redis HASH `rolling_metrics_thresholds_{exchange}` where
     field = symbol_pair (e.g. "binance_binance-futures::BTCUSDT")
     value = JSON payload produced by rolling_metrics service.
 
 Outputs
   - 分别为 spread_rate、bidask_sr、askbid_sr 打印三线表；
-    每张表包含：symbol、update_tp、sample_size、对应因子实时值，以及以 `binance_*` 命名的分位阈值列。
+    每张表包含：symbol、update_tp、sample_size、对应因子实时值，以及分位阈值列。
   - Null / missing values render as '-' by default.
+
+示例：
+  python scripts/print_rolling_metrics_thresholds.py --exchange binance
+  python scripts/print_rolling_metrics_thresholds.py --exchange okex --symbol BTCUSDT
 """
 
 from __future__ import annotations
@@ -24,6 +28,9 @@ import os
 import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+
+# 支持的交易所
+SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
 
 
 def try_import_redis():
@@ -37,8 +44,10 @@ def try_import_redis():
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Print Redis hash rolling_metrics_thresholds as a three-line table"
+        description="Print Redis hash rolling_metrics_thresholds_{exchange} as a three-line table"
     )
+    p.add_argument("--exchange", required=True, choices=SUPPORTED_EXCHANGES,
+                   help="交易所名称（必填）")
     p.add_argument(
         "--redis-url",
         default=os.environ.get("REDIS_URL"),
@@ -67,11 +76,6 @@ def parse_args() -> argparse.Namespace:
         "--na",
         default="-",
         help="Placeholder for missing/NaN values (default: '-')",
-    )
-    p.add_argument(
-        "--key",
-        default="rolling_metrics_thresholds",
-        help="Redis HASH key to read (default: rolling_metrics_thresholds)",
     )
     p.add_argument(
         "--sort",
@@ -312,9 +316,14 @@ def main() -> int:
         print("redis 包未安装，请 `pip install redis` 后重试。", file=sys.stderr)
         return 2
 
-    data = read_hash(rds, args.key)
+    # 根据 exchange 生成 hash key
+    hash_key = f"rolling_metrics_thresholds_{args.exchange}"
+    print(f"📍 Reading from Redis hash: {hash_key}")
+    print(f"📍 Redis: {args.host}:{args.port}/{args.db}\n")
+
+    data = read_hash(rds, hash_key)
     if not data:
-        print("Redis HASH 为空或 key 不存在。")
+        print(f"⚠️  Redis HASH '{hash_key}' 为空或不存在。")
         return 0
 
     target_symbols: List[str] = []

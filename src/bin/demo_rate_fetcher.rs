@@ -39,7 +39,7 @@ async fn run_demo() -> Result<()> {
     MktChannel::init_singleton()?;
     info!("MktChannel 初始化完成");
 
-    RateFetcher::init(Exchange::BinanceFutures)?;
+    RateFetcher::init(Exchange::Binance)?;
     info!("RateFetcher 初始化完成");
 
     // 等待一段时间让后台任务拉取数据

@@ -4,17 +4,18 @@
 """
 将 Funding Rate 交易对列表同步到 Redis 并打印。
 
-写入 4 个 Redis key（String 类型，JSON 数组）：
-  1. fr_dump_symbols:binance_um      - U本位合约平仓列表
-  2. fr_trade_symbols:binance_um     - U本位合约建仓列表
-  3. fr_dump_symbols:binance_margin  - 现货杠杆平仓列表
-  4. fr_trade_symbols:binance_margin - 现货杠杆建仓列表
+Symbol 列表是 exchange 维度的。
 
-同步完成后自动打印所有列表。
+根据交易所写入 Redis key（String 类型，JSON 数组）：
+  - fr_dump_symbols:{exchange}          - 平仓列表
+  - fr_trade_symbols:{exchange}         - 建仓列表
+  - fr_fwd_trade_symbols:{exchange}     - 正套建仓列表
+  - fr_bwd_trade_symbols:{exchange}     - 反套建仓列表
 
 示例：
-  python scripts/sync_fr_symbol_lists.py
-  python scripts/sync_fr_symbol_lists.py --redis-url redis://:pwd@127.0.0.1:6379/0
+  python scripts/sync_fr_symbol_lists.py --exchange binance
+  python scripts/sync_fr_symbol_lists.py --exchange okex
+  python scripts/sync_fr_symbol_lists.py --exchange binance --redis-url redis://:pwd@127.0.0.1:6379/0
 """
 
 from __future__ import annotations
@@ -23,7 +24,10 @@ import argparse
 import json
 import os
 import sys
-from typing import List
+from typing import Dict, List
+
+# 支持的交易所
+SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
 
 
 def try_import_redis():
@@ -36,6 +40,8 @@ def try_import_redis():
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Sync Funding Rate symbol lists to Redis")
+    p.add_argument("--exchange", required=True, choices=SUPPORTED_EXCHANGES,
+                   help="交易所名称（必填）")
     p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
     p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
     p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
@@ -104,84 +110,34 @@ BWD_SYMBOLS: List[str] = BWD_SYMBOLS_8H + BWD_SYMBOLS_4H
 # 合并所有交易对（用于平仓列表）
 SYMBOL_ALLOWLIST: List[str] = list(set(FWD_SYMBOLS + BWD_SYMBOLS))
 
-# ========== Symbol Lists 配置 ==========
 
-# Binance UM (合约) - 平仓列表
-DUMP_SYMBOLS_UM = SYMBOL_ALLOWLIST.copy()
-
-# Binance UM (合约) - 建仓列表（保留兼容性）
-TRADE_SYMBOLS_UM = SYMBOL_ALLOWLIST.copy()
-
-# Binance UM (合约) - 正套建仓列表
-FWD_TRADE_SYMBOLS_UM = FWD_SYMBOLS.copy()
-
-# Binance UM (合约) - 反套建仓列表
-BWD_TRADE_SYMBOLS_UM = BWD_SYMBOLS.copy()
-
-# Binance Margin (现货杠杆) - 平仓列表
-DUMP_SYMBOLS_MARGIN = SYMBOL_ALLOWLIST.copy()
-
-# Binance Margin (现货杠杆) - 建仓列表（保留兼容性）
-TRADE_SYMBOLS_MARGIN = SYMBOL_ALLOWLIST.copy()
-
-# Binance Margin (现货杠杆) - 正套建仓列表
-FWD_TRADE_SYMBOLS_MARGIN = FWD_SYMBOLS.copy()
-
-# Binance Margin (现货杠杆) - 反套建仓列表
-BWD_TRADE_SYMBOLS_MARGIN = BWD_SYMBOLS.copy()
-
-
-def sync_symbol_lists(rds) -> int:
+def sync_symbol_lists(rds, exchange: str) -> int:
     """同步交易对列表到 Redis"""
     total = 0
 
-    # 1. Binance UM - 平仓列表
-    key = "fr_dump_symbols:binance_um"
-    rds.set(key, json.dumps(DUMP_SYMBOLS_UM, ensure_ascii=False))
-    print(f"✅ 已写入 {len(DUMP_SYMBOLS_UM)} 个交易对到 '{key}'")
-    total += len(DUMP_SYMBOLS_UM)
+    # 1. 平仓列表
+    key = f"fr_dump_symbols:{exchange}"
+    rds.set(key, json.dumps(SYMBOL_ALLOWLIST, ensure_ascii=False))
+    print(f"✅ 已写入 {len(SYMBOL_ALLOWLIST)} 个交易对到 '{key}'")
+    total += len(SYMBOL_ALLOWLIST)
 
-    # 2. Binance UM - 建仓列表（兼容）
-    key = "fr_trade_symbols:binance_um"
-    rds.set(key, json.dumps(TRADE_SYMBOLS_UM, ensure_ascii=False))
-    print(f"✅ 已写入 {len(TRADE_SYMBOLS_UM)} 个交易对到 '{key}'")
-    total += len(TRADE_SYMBOLS_UM)
+    # 2. 建仓列表
+    key = f"fr_trade_symbols:{exchange}"
+    rds.set(key, json.dumps(SYMBOL_ALLOWLIST, ensure_ascii=False))
+    print(f"✅ 已写入 {len(SYMBOL_ALLOWLIST)} 个交易对到 '{key}'")
+    total += len(SYMBOL_ALLOWLIST)
 
-    # 3. Binance UM - 正套建仓列表
-    key = "fr_fwd_trade_symbols:binance_um"
-    rds.set(key, json.dumps(FWD_TRADE_SYMBOLS_UM, ensure_ascii=False))
-    print(f"✅ 已写入 {len(FWD_TRADE_SYMBOLS_UM)} 个交易对到 '{key}'")
-    total += len(FWD_TRADE_SYMBOLS_UM)
+    # 3. 正套建仓列表
+    key = f"fr_fwd_trade_symbols:{exchange}"
+    rds.set(key, json.dumps(FWD_SYMBOLS, ensure_ascii=False))
+    print(f"✅ 已写入 {len(FWD_SYMBOLS)} 个交易对到 '{key}'")
+    total += len(FWD_SYMBOLS)
 
-    # 4. Binance UM - 反套建仓列表
-    key = "fr_bwd_trade_symbols:binance_um"
-    rds.set(key, json.dumps(BWD_TRADE_SYMBOLS_UM, ensure_ascii=False))
-    print(f"✅ 已写入 {len(BWD_TRADE_SYMBOLS_UM)} 个交易对到 '{key}'")
-    total += len(BWD_TRADE_SYMBOLS_UM)
-
-    # 5. Binance Margin - 平仓列表
-    key = "fr_dump_symbols:binance_margin"
-    rds.set(key, json.dumps(DUMP_SYMBOLS_MARGIN, ensure_ascii=False))
-    print(f"✅ 已写入 {len(DUMP_SYMBOLS_MARGIN)} 个交易对到 '{key}'")
-    total += len(DUMP_SYMBOLS_MARGIN)
-
-    # 6. Binance Margin - 建仓列表（兼容）
-    key = "fr_trade_symbols:binance_margin"
-    rds.set(key, json.dumps(TRADE_SYMBOLS_MARGIN, ensure_ascii=False))
-    print(f"✅ 已写入 {len(TRADE_SYMBOLS_MARGIN)} 个交易对到 '{key}'")
-    total += len(TRADE_SYMBOLS_MARGIN)
-
-    # 7. Binance Margin - 正套建仓列表
-    key = "fr_fwd_trade_symbols:binance_margin"
-    rds.set(key, json.dumps(FWD_TRADE_SYMBOLS_MARGIN, ensure_ascii=False))
-    print(f"✅ 已写入 {len(FWD_TRADE_SYMBOLS_MARGIN)} 个交易对到 '{key}'")
-    total += len(FWD_TRADE_SYMBOLS_MARGIN)
-
-    # 8. Binance Margin - 反套建仓列表
-    key = "fr_bwd_trade_symbols:binance_margin"
-    rds.set(key, json.dumps(BWD_TRADE_SYMBOLS_MARGIN, ensure_ascii=False))
-    print(f"✅ 已写入 {len(BWD_TRADE_SYMBOLS_MARGIN)} 个交易对到 '{key}'")
-    total += len(BWD_TRADE_SYMBOLS_MARGIN)
+    # 4. 反套建仓列表
+    key = f"fr_bwd_trade_symbols:{exchange}"
+    rds.set(key, json.dumps(BWD_SYMBOLS, ensure_ascii=False))
+    print(f"✅ 已写入 {len(BWD_SYMBOLS)} 个交易对到 '{key}'")
+    total += len(BWD_SYMBOLS)
 
     return total
 
@@ -243,15 +199,15 @@ def print_symbol_list(rds, key: str, title: str) -> None:
         print(f"  原始值: {symbols_str}")
 
 
-def print_all_symbol_lists(rds) -> None:
+def print_all_symbol_lists(rds, exchange: str) -> None:
     """打印所有交易对列表"""
     print("\n📊 交易对列表配置:")
     print("=" * 80)
 
-    print_symbol_list(rds, "fr_dump_symbols:binance_um", "🔴 Binance UM - 平仓列表")
-    print_symbol_list(rds, "fr_trade_symbols:binance_um", "🟢 Binance UM - 建仓列表")
-    print_symbol_list(rds, "fr_dump_symbols:binance_margin", "🔴 Binance Margin - 平仓列表")
-    print_symbol_list(rds, "fr_trade_symbols:binance_margin", "🟢 Binance Margin - 建仓列表")
+    print_symbol_list(rds, f"fr_dump_symbols:{exchange}", f"🔴 {exchange.upper()} - 平仓列表")
+    print_symbol_list(rds, f"fr_trade_symbols:{exchange}", f"🟢 {exchange.upper()} - 建仓列表")
+    print_symbol_list(rds, f"fr_fwd_trade_symbols:{exchange}", f"🟢 {exchange.upper()} - 正套建仓列表")
+    print_symbol_list(rds, f"fr_bwd_trade_symbols:{exchange}", f"🔴 {exchange.upper()} - 反套建仓列表")
 
 
 def main() -> int:
@@ -265,16 +221,16 @@ def main() -> int:
         host=args.host, port=args.port, db=args.db, password=args.password
     )
 
-    print("🔄 开始同步 Funding Rate 交易对列表...")
+    print(f"🔄 开始同步 Funding Rate 交易对列表 (exchange={args.exchange})...")
     print(f"📍 Redis: {args.host}:{args.port}/{args.db}")
     print()
 
     # 同步列表
-    total = sync_symbol_lists(rds)
-    print(f"\n✅ 共写入 {total} 个交易对（跨4个列表）")
+    total = sync_symbol_lists(rds, args.exchange)
+    print(f"\n✅ 共写入 {total} 个交易对条目")
 
     # 打印结果
-    print_all_symbol_lists(rds)
+    print_all_symbol_lists(rds, args.exchange)
 
     print("\n✅ 同步完成！")
     return 0

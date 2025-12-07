@@ -134,7 +134,7 @@ def print_thresholds(rds) -> None:
 
     # 统计 symbol
     all_symbols = set()
-    for field_key in kv.keys():
+    for field_key in kv:
         parts = field_key.split("_")
         if len(parts) >= 4:
             symbol = "_".join(parts[:-3])

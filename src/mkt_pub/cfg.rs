@@ -1,4 +1,5 @@
 use crate::exchange::Exchange;
+use crate::signal::common::TradingVenue;
 use anyhow::{Context, Result};
 use log::info;
 use prettytable::{format, Cell, Row, Table};
@@ -107,14 +108,14 @@ pub struct Config {
     pub snapshot_requery_time: Option<String>,
     pub symbol_socket: String,
     pub data_types: DataTypesConfig, // 数据类型开关
-    pub exchange: Exchange,          // 在运行时设置，不从配置文件读取
+    pub venue: TradingVenue,          // 在运行时设置，不从配置文件读取（区分资产类型）
     pub iceoryx: Option<IceoryxCfg>, // Iceoryx 配置（可选）
 }
 
 impl Config {
     pub async fn load_config(
         path: &str,
-        exchange: Exchange,
+        venue: TradingVenue,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let content = fs::read_to_string(path).await?;
         let config_file: ConfigFile = serde_yaml::from_str(&content)?;
@@ -128,28 +129,25 @@ impl Config {
             symbol_socket: config_file.symbol_socket,
             data_types: config_file.data_types, // 数据类型开关
             iceoryx: config_file.iceoryx,
-            exchange, // 从命令行参数设置
+            venue, // 从命令行参数设置
         };
 
         Ok(config)
     }
 
     pub fn get_exchange(&self) -> String {
-        self.exchange.as_str().to_string()
+        self.venue.trade_engine_exchange().to_string()
     }
 
     pub fn get_batch_size(&self) -> usize {
-        match self.exchange {
-            Exchange::BinanceFutures => 50,
-            Exchange::Binance => 100,
-            Exchange::OkexSwap => 50,
-            Exchange::Okex => 50,
-            Exchange::Bybit => 300,
-            Exchange::BybitSpot => 10,
-            Exchange::BitgetMargin => 50,
-            Exchange::BitgetFutures => 50,
-            Exchange::Gate => 50,
-            Exchange::GateFutures => 50,
+        match self.venue {
+            TradingVenue::BinanceUm => 50,
+            TradingVenue::BinanceSpot | TradingVenue::BinanceMargin => 100,
+            TradingVenue::OkexFutures | TradingVenue::OkexMargin => 50,
+            TradingVenue::BybitFutures => 300,
+            TradingVenue::BybitMargin => 10,
+            TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => 50,
+            TradingVenue::GateMargin | TradingVenue::GateFutures => 50,
         }
     }
 
@@ -539,33 +537,37 @@ impl Config {
     }
 
     pub async fn get_symbols(&self) -> Result<Vec<String>> {
-        match self.exchange {
+        match self.venue {
             //币安u本位期货合约
-            Exchange::BinanceFutures => {
+            TradingVenue::BinanceUm => {
                 Self::get_symbol_for_binance_futures(&self.symbol_socket).await
             }
             //币安u本位期货合约对应的现货
-            Exchange::Binance => {
+            TradingVenue::BinanceSpot => {
+                Self::get_spot_symbols_related_to_binance_futures(&self.symbol_socket).await
+            }
+            //币安杠杆
+            TradingVenue::BinanceMargin => {
                 Self::get_spot_symbols_related_to_binance_futures(&self.symbol_socket).await
             }
             //OKEXu本位期货合约
-            Exchange::OkexSwap => Self::get_symbol_for_okex_swap().await,
+            TradingVenue::OkexFutures => Self::get_symbol_for_okex_swap().await,
             //OKEXu本位期货合约对应的现货
-            Exchange::Okex => Self::get_spot_symbols_related_to_okex_swap().await,
+            TradingVenue::OkexMargin => Self::get_spot_symbols_related_to_okex_swap().await,
             //Bybitu本位期货合约
-            Exchange::Bybit => Self::get_symbol_for_bybit_linear(&self.symbol_socket).await,
+            TradingVenue::BybitFutures => Self::get_symbol_for_bybit_linear(&self.symbol_socket).await,
             //Bybitu本位期货合约对应的现货
-            Exchange::BybitSpot => {
+            TradingVenue::BybitMargin => {
                 Self::get_spot_symbols_related_to_bybit(&self.symbol_socket).await
             }
             //Bitget USDT永续合约
-            Exchange::BitgetFutures => Self::get_symbol_for_bitget_futures().await,
+            TradingVenue::BitgetFutures => Self::get_symbol_for_bitget_futures().await,
             //Bitget杠杆交易（与Futures关联的）
-            Exchange::BitgetMargin => Self::get_margin_symbols_related_to_bitget_futures().await,
+            TradingVenue::BitgetMargin => Self::get_margin_symbols_related_to_bitget_futures().await,
             //Gate USDT永续合约
-            Exchange::GateFutures => Self::get_symbol_for_gate_futures().await,
+            TradingVenue::GateFutures => Self::get_symbol_for_gate_futures().await,
             //Gate现货（与Futures关联的）
-            Exchange::Gate => Self::get_spot_symbols_related_to_gate_futures().await,
+            TradingVenue::GateMargin => Self::get_spot_symbols_related_to_gate_futures().await,
         }
     }
 

@@ -684,7 +684,7 @@ impl Default for BitgetProvider {
 
 impl ExchangeInfoProvider for BitgetProvider {
     fn exchange(&self) -> Exchange {
-        Exchange::BitgetMargin
+        Exchange::Bitget
     }
     fn supported_market_types(&self) -> Vec<MarketType> {
         vec![MarketType::Spot, MarketType::Futures, MarketType::Margin]
@@ -750,11 +750,11 @@ impl MinQtyTable {
     /// Refresh exchange filters
     pub async fn refresh(&mut self) -> Result<()> {
         match self.exchange {
-            Exchange::Binance | Exchange::BinanceFutures => self.refresh_binance().await,
-            Exchange::Gate | Exchange::GateFutures => self.refresh_gate().await,
-            Exchange::BitgetMargin | Exchange::BitgetFutures => self.refresh_bitget().await,
-            Exchange::Okex | Exchange::OkexSwap => self.refresh_okex().await,
-            _ => Err(anyhow!("exchange {} not supported yet", self.exchange)),
+            Exchange::Binance => self.refresh_binance().await,
+            Exchange::Gate => self.refresh_gate().await,
+            Exchange::Bitget => self.refresh_bitget().await,
+            Exchange::Okex => self.refresh_okex().await,
+            Exchange::Bybit => Err(anyhow!("exchange {} not supported yet", self.exchange)),
         }
     }
 
@@ -868,7 +868,7 @@ impl MinQtyTable {
 
     pub fn contract_multiplier(&self, symbol: &str) -> f64 {
         match self.exchange {
-            Exchange::Gate | Exchange::GateFutures | Exchange::Okex | Exchange::OkexSwap => {
+            Exchange::Gate | Exchange::Okex => {
                 let key = symbol.to_uppercase();
                 *self.contract_multipliers.get(&key).unwrap_or(&1.0)
             }
