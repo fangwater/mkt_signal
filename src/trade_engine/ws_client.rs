@@ -67,7 +67,10 @@ impl TradeWsClient {
             match OkexCredentials::from_env() {
                 Ok(creds) => {
                     let login_msg = creds.build_login_message();
-                    info!("OKEx credentials loaded from environment for ws client id={}", id);
+                    info!(
+                        "OKEx credentials loaded from environment for ws client id={}",
+                        id
+                    );
                     Some(login_msg.to_string())
                 }
                 Err(e) => {
@@ -445,10 +448,7 @@ impl TradeWsClient {
                             .and_then(|v| v.as_str())
                             .unwrap_or_default();
                         if code == "0" {
-                            info!(
-                                "trade ws client id={} OKEx login successful",
-                                self.id
-                            );
+                            info!("trade ws client id={} OKEx login successful", self.id);
                         } else {
                             let msg = json_val
                                 .get("msg")

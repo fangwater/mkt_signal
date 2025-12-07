@@ -1,8 +1,8 @@
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use log::info;
-use mkt_signal::{ApiKey, TradeEngine};
 use mkt_signal::common::exchange::Exchange;
+use mkt_signal::{ApiKey, TradeEngine};
 use std::net::IpAddr;
 
 fn credential_edges(value: &str) -> (String, String, usize) {
@@ -159,7 +159,5 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Invalid exchange name: {}", exchange_name))?;
 
     let local = tokio::task::LocalSet::new();
-    local
-        .run_until(engine.run(exchange))
-        .await
+    local.run_until(engine.run(exchange)).await
 }

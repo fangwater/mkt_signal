@@ -238,12 +238,12 @@ impl MultiChannelSubscriber {
     /// 轮询单个频道的消息，最多返回max_msgs条消息
     pub fn poll_channel(
         &mut self,
-        exchange: &str,
+        exchange: Exchange,
         channel: &ChannelType,
         max_msgs: Option<usize>,
     ) -> Vec<Bytes> {
         let max_msgs = max_msgs.unwrap_or(16);
-        let key = format!("{}_{}", exchange, channel.as_str());
+        let key = format!("{}_{}", exchange.as_str(), channel.as_str());
         let mut messages = Vec::new();
 
         if let Some(subscriber) = self.subscribers.get(&key) {

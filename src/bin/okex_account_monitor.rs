@@ -305,10 +305,27 @@ fn log_parsed_event(msg: &Bytes) {
         }
         OkexAccountEventType::PositionUpdate => {
             if let Ok(m) = OkexPositionMsg::from_bytes(&payload) {
-                info!(
-                    "OKEx PositionUpdate: ts={} inst={} side={} amt={}",
-                    m.timestamp, m.inst_id, m.position_side, m.position_amount
-                );
+                match m {
+                    OkexPositionMsg::Swap(p) => {
+                        info!(
+                            "OKEx PositionUpdate: ts={} inst={} side={} amt={} upl={}",
+                            p.timestamp, p.inst_id, p.position_side, p.position_amount, p.upl
+                        );
+                    }
+                    OkexPositionMsg::Margin(p) => {
+                        info!(
+                            "OKEx PositionUpdate: ts={} inst={} side={} amt={} upl={} liab={} is_usdt={} interest={}",
+                            p.timestamp,
+                            p.inst_id,
+                            p.position_side,
+                            p.position_amount,
+                            p.upl,
+                            p.liab,
+                            p.liab_is_usdt,
+                            p.interest
+                        );
+                    }
+                }
             }
         }
         _ => {
@@ -410,12 +427,27 @@ impl AccountEventDeduper {
     }
 
     fn key_okex_position(&self, msg: &OkexPositionMsg) -> u64 {
-        self.hash64(&[
-            OkexAccountEventType::PositionUpdate as u32 as u64,
-            msg.timestamp as u64,
-            self.hash_str64(&msg.inst_id),
-            msg.position_side as u8 as u64,
-        ])
+        match msg {
+            OkexPositionMsg::Swap(p) => self.hash64(&[
+                OkexAccountEventType::PositionUpdate as u32 as u64,
+                p.timestamp as u64,
+                self.hash_str64(&p.inst_id),
+                p.position_side as u8 as u64,
+                1, // swap marker
+                p.upl.to_bits(),
+            ]),
+            OkexPositionMsg::Margin(p) => self.hash64(&[
+                OkexAccountEventType::PositionUpdate as u32 as u64,
+                p.timestamp as u64,
+                self.hash_str64(&p.inst_id),
+                p.position_side as u8 as u64,
+                2, // margin marker
+                p.upl.to_bits(),
+                p.liab.to_bits() as u64,
+                p.liab_is_usdt as u64,
+                p.interest.to_bits() as u64,
+            ]),
+        }
     }
 
     fn key_okex_order(&self, msg: &OkexOrderMsg) -> u64 {

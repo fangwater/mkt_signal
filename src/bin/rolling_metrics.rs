@@ -40,21 +40,20 @@ use mkt_signal::rolling_metrics::service::{
 const LOG_PREFIX: &str = "rolling-metrics";
 
 /// 获取交易所的 spot 和 swap 资产名称
-fn get_spot_swap_names(exchange: Exchange) -> (&'static str, &'static str) {
+fn get_spot_swap_exchanges(exchange: Exchange) -> (Exchange, Exchange) {
+    // 对于大多数交易所，现货和期货都使用同一个 Exchange
+    // 这个函数主要用于需要区分的场景
     match exchange {
-        Exchange::Binance => ("binance", "binance-futures"),
-        Exchange::Okex => ("okex", "okex-swap"),
-        Exchange::Bybit => ("bybit-spot", "bybit"),
-        Exchange::Bitget => ("bitget", "bitget-futures"),
-        Exchange::Gate => ("gate", "gate-futures"),
+        Exchange::Binance => (Exchange::Binance, Exchange::Binance),
+        Exchange::Okex => (Exchange::Okex, Exchange::Okex),
+        Exchange::Bybit => (Exchange::Bybit, Exchange::Bybit),
+        Exchange::Bitget => (Exchange::Bitget, Exchange::Bitget),
+        Exchange::Gate => (Exchange::Gate, Exchange::Gate),
     }
 }
 
 #[derive(Parser, Debug)]
-#[command(
-    name = "rolling-metrics",
-    about = "滑窗分位计算服务 - 支持多个交易所"
-)]
+#[command(name = "rolling-metrics", about = "滑窗分位计算服务 - 支持多个交易所")]
 struct Args {
     #[arg(long, value_enum)]
     exchange: Exchange,
@@ -254,7 +253,7 @@ async fn main() -> Result<()> {
         .init();
 
     let exchange = args.exchange;
-    let (spot_exchange, swap_exchange) = get_spot_swap_names(exchange);
+    let (spot_exchange, swap_exchange) = get_spot_swap_exchanges(exchange);
     let iceoryx_node = args
         .iceoryx_node
         .clone()
@@ -263,8 +262,8 @@ async fn main() -> Result<()> {
     info!(
         "{LOG_PREFIX}: starting (exchange={}, spot={}, swap={}, node={})",
         exchange.as_str(),
-        spot_exchange,
-        swap_exchange,
+        spot_exchange.as_str(),
+        swap_exchange.as_str(),
         iceoryx_node
     );
 
@@ -310,7 +309,7 @@ async fn main() -> Result<()> {
         factor_summary
     );
 
-    let prefix = format!("{}_{}", spot_exchange, swap_exchange);
+    let prefix = format!("{}_{}", spot_exchange.as_str(), swap_exchange.as_str());
     let symbol_refresh_secs = args.symbol_refresh_sec;
     let symbol_socket_path = resolve_symbol_socket(&args.symbol_socket);
 
@@ -328,12 +327,12 @@ async fn main() -> Result<()> {
     spawn_writer_thread(redis_url.clone(), rx);
     spawn_ringbuffer_monitor(Arc::clone(&series_map), Duration::from_secs(300));
 
-    if swap_exchange == "binance-futures" {
+    if swap_exchange == Exchange::Binance {
         match symbol_socket_path {
             Some(socket_dir) => {
                 let series_map_task = Arc::clone(&series_map);
                 let capacity_task = Arc::clone(&series_capacity);
-                let swap_task = swap_exchange.to_string();
+                let swap_task = swap_exchange.as_str().to_string();
                 let prefix_task = prefix.clone();
                 let interval = Duration::from_secs(symbol_refresh_secs.max(60));
                 tokio::spawn(async move {
@@ -522,8 +521,8 @@ async fn config_reload_loop(
 
 async fn run_reader_loop(
     iceoryx_node: &str,
-    spot_exchange: &str,
-    swap_exchange: &str,
+    spot_exchange: Exchange,
+    swap_exchange: Exchange,
     series_map: Arc<SeriesMap>,
     series_capacity: Arc<AtomicUsize>,
     config: Arc<RwLock<RollingConfig>>,
@@ -531,16 +530,16 @@ async fn run_reader_loop(
     let mut subscriber = MultiChannelSubscriber::new(iceoryx_node)?;
     subscriber.subscribe_channels(vec![
         SubscribeParams {
-            exchange: Exchange::from_str(spot_exchange).unwrap(),
+            exchange: spot_exchange,
             channel: ChannelType::AskBidSpread,
         },
         SubscribeParams {
-            exchange: Exchange::from_str(swap_exchange).unwrap(),
+            exchange: swap_exchange,
             channel: ChannelType::AskBidSpread,
         },
     ])?;
 
-    let prefix = format!("{}_{}", spot_exchange, swap_exchange);
+    let prefix = format!("{}_{}", spot_exchange.as_str(), swap_exchange.as_str());
     let mut quotes: HashMap<String, SymbolQuotes> = HashMap::new();
     let mut last_symbol_count: usize = 0;
     let shutdown = CancellationToken::new();
@@ -548,7 +547,9 @@ async fn run_reader_loop(
 
     info!(
         "{LOG_PREFIX}: reader loop started (prefix={}, spot={}, swap={})",
-        prefix, spot_exchange, swap_exchange
+        prefix,
+        spot_exchange.as_str(),
+        swap_exchange.as_str()
     );
 
     let mut next_log = Instant::now() + Duration::from_secs(30);

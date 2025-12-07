@@ -235,13 +235,15 @@ impl Dispatcher {
 
                 if status.as_u16() == 429 {
                     warn!("429 Too Many Requests from IP {}. Cooling down.", ip);
-                    self.ip_clients[ip_idx].cooldown_until =
-                        Some(Instant::now() + Duration::from_millis(LimitConstants::COOLDOWN_MS_429));
+                    self.ip_clients[ip_idx].cooldown_until = Some(
+                        Instant::now() + Duration::from_millis(LimitConstants::COOLDOWN_MS_429),
+                    );
                 }
                 if status.as_u16() == 418 {
                     warn!("418 Banned for IP {}. Backing off.", ip);
-                    self.ip_clients[ip_idx].banned_until =
-                        Some(Instant::now() + Duration::from_millis(LimitConstants::BAN_BACKOFF_MS_418));
+                    self.ip_clients[ip_idx].banned_until = Some(
+                        Instant::now() + Duration::from_millis(LimitConstants::BAN_BACKOFF_MS_418),
+                    );
                 }
                 // Build uniform response regardless of success or error
                 Ok(DispatchResponse {

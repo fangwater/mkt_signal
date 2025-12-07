@@ -327,24 +327,49 @@ impl OkexBalanceMsg {
     }
 }
 
-/// OKX 持仓消息（仅一个时间字段）
+/// OKX 永续/合约持仓消息
 #[derive(Debug, Clone)]
-pub struct OkexPositionMsg {
+pub struct OkexSwapPositionMsg {
     pub msg_type: OkexAccountEventType,
     pub timestamp: i64,
     pub inst_id_length: u32,
     pub position_side: char,
     pub padding: [u8; 3],
     pub inst_id: String,
-    pub position_amount: f64,
+    pub position_amount: f32,
+    pub upl: f64,
 }
 
-impl OkexPositionMsg {
+/// OKX 币币杠杆持仓消息（包含负债与利息）
+#[derive(Debug, Clone)]
+pub struct OkexMarginPositionMsg {
+    pub msg_type: OkexAccountEventType,
+    pub timestamp: i64,
+    pub inst_id_length: u32,
+    pub position_side: char,
+    pub padding: [u8; 3],
+    pub inst_id: String,
+    pub position_amount: f32,
+    pub upl: f64,
+    pub liab: f32,
+    pub liab_is_usdt: bool,
+    pub interest: f32,
+}
+
+/// OKX 持仓消息（分为永续/合约与币币杠杆两类）
+#[derive(Debug, Clone)]
+pub enum OkexPositionMsg {
+    Swap(OkexSwapPositionMsg),
+    Margin(OkexMarginPositionMsg),
+}
+
+impl OkexSwapPositionMsg {
     pub fn create(
         timestamp: i64,
         inst_id: String,
         position_side: char,
-        position_amount: f64,
+        position_amount: f32,
+        upl: f64,
     ) -> Self {
         Self {
             msg_type: OkexAccountEventType::PositionUpdate,
@@ -354,11 +379,12 @@ impl OkexPositionMsg {
             padding: [0u8; 3],
             inst_id,
             position_amount,
+            upl,
         }
     }
 
     pub fn to_bytes(&self) -> Bytes {
-        let total_size = 4 + 8 + 4 + 1 + 3 + self.inst_id_length as usize + 8;
+        let total_size = 4 + 8 + 4 + 1 + 3 + self.inst_id_length as usize + 4 + 8;
         let mut buf = BytesMut::with_capacity(total_size);
         buf.put_u32_le(self.msg_type as u32);
         buf.put_i64_le(self.timestamp);
@@ -366,12 +392,152 @@ impl OkexPositionMsg {
         buf.put_u8(self.position_side as u8);
         buf.put(&self.padding[..]);
         buf.put(self.inst_id.as_bytes());
-        buf.put_f64_le(self.position_amount);
+        buf.put_f32_le(self.position_amount);
+        buf.put_f64_le(self.upl);
         buf.freeze()
+    }
+}
+
+impl OkexMarginPositionMsg {
+    pub fn create(
+        timestamp: i64,
+        inst_id: String,
+        position_side: char,
+        position_amount: f32,
+        upl: f64,
+        liab: f32,
+        liab_is_usdt: bool,
+        interest: f32,
+    ) -> Self {
+        Self {
+            msg_type: OkexAccountEventType::PositionUpdate,
+            timestamp,
+            inst_id_length: inst_id.len() as u32,
+            position_side,
+            padding: [0u8; 3],
+            inst_id,
+            position_amount,
+            upl,
+            liab,
+            liab_is_usdt,
+            interest,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let inst_id_bytes = self.inst_id.as_bytes();
+
+        let total_size = 4 // msg_type
+            + 8 // timestamp
+            + 4 // inst_id_length
+            + 1 // position_side
+            + 3 // padding
+            + inst_id_bytes.len()
+            + 4 // position_amount
+            + 8 // upl
+            + 4 // liab
+            + 1 // liab_is_usdt
+            + 4; // interest
+
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_i64_le(self.timestamp);
+        buf.put_u32_le(self.inst_id_length);
+        buf.put_u8(self.position_side as u8);
+        buf.put(&self.padding[..]);
+        buf.put(inst_id_bytes);
+        buf.put_f32_le(self.position_amount);
+        buf.put_f64_le(self.upl);
+
+        buf.put_f32_le(self.liab);
+        buf.put_u8(self.liab_is_usdt as u8);
+        buf.put_f32_le(self.interest);
+
+        buf.freeze()
+    }
+}
+
+impl OkexPositionMsg {
+    pub fn create_swap(
+        timestamp: i64,
+        inst_id: String,
+        position_side: char,
+        position_amount: f32,
+        upl: f64,
+    ) -> Self {
+        Self::Swap(OkexSwapPositionMsg::create(
+            timestamp,
+            inst_id,
+            position_side,
+            position_amount,
+            upl,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_margin(
+        timestamp: i64,
+        inst_id: String,
+        position_side: char,
+        position_amount: f32,
+        upl: f64,
+        liab: f32,
+        liab_is_usdt: bool,
+        interest: f32,
+    ) -> Self {
+        Self::Margin(OkexMarginPositionMsg::create(
+            timestamp,
+            inst_id,
+            position_side,
+            position_amount,
+            upl,
+            liab,
+            liab_is_usdt,
+            interest,
+        ))
+    }
+
+    pub fn msg_type(&self) -> OkexAccountEventType {
+        OkexAccountEventType::PositionUpdate
+    }
+
+    pub fn timestamp(&self) -> i64 {
+        match self {
+            Self::Swap(s) => s.timestamp,
+            Self::Margin(m) => m.timestamp,
+        }
+    }
+
+    pub fn inst_id(&self) -> &str {
+        match self {
+            Self::Swap(s) => s.inst_id.as_str(),
+            Self::Margin(m) => m.inst_id.as_str(),
+        }
+    }
+
+    pub fn position_side(&self) -> char {
+        match self {
+            Self::Swap(s) => s.position_side,
+            Self::Margin(m) => m.position_side,
+        }
+    }
+
+    pub fn upl(&self) -> f64 {
+        match self {
+            Self::Swap(s) => s.upl,
+            Self::Margin(m) => m.upl,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        match self {
+            Self::Swap(s) => s.to_bytes(),
+            Self::Margin(m) => m.to_bytes(),
+        }
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        const MIN_SIZE: usize = 4 + 8 + 4 + 1 + 3 + 8;
+        const MIN_SIZE: usize = 4 + 8 + 4 + 1 + 3 + 4 + 8 + 4 + 1 + 4;
         if data.len() < MIN_SIZE {
             anyhow::bail!("okex position msg too short: {}", data.len());
         }
@@ -385,13 +551,34 @@ impl OkexPositionMsg {
         let position_side = cursor.get_u8() as char;
         let mut padding = [0u8; 3];
         cursor.copy_to_slice(&mut padding);
-        if cursor.remaining() < inst_id_length as usize + 8 {
+        if cursor.remaining() < inst_id_length as usize + 4 + 8 + 4 + 1 + 4 {
             anyhow::bail!("okex position msg truncated");
         }
         let inst_id = String::from_utf8(cursor.copy_to_bytes(inst_id_length as usize).to_vec())?;
-        let position_amount = cursor.get_f64_le();
+        let position_amount = cursor.get_f32_le();
+        if cursor.remaining() < 8 {
+            anyhow::bail!("okex position msg missing upl");
+        }
+        let upl = cursor.get_f64_le();
 
-        Ok(Self {
+        if cursor.remaining() == 0 {
+            return Ok(Self::Swap(OkexSwapPositionMsg {
+                msg_type: OkexAccountEventType::PositionUpdate,
+                timestamp,
+                inst_id_length,
+                position_side,
+                padding,
+                inst_id,
+                position_amount,
+                upl,
+            }));
+        }
+
+        if cursor.remaining() < 4 + 1 + 4 {
+            anyhow::bail!("okex margin position msg truncated");
+        }
+
+        Ok(Self::Margin(OkexMarginPositionMsg {
             msg_type: OkexAccountEventType::PositionUpdate,
             timestamp,
             inst_id_length,
@@ -399,7 +586,11 @@ impl OkexPositionMsg {
             padding,
             inst_id,
             position_amount,
-        })
+            upl,
+            liab: cursor.get_f32_le(),
+            liab_is_usdt: cursor.get_u8() != 0,
+            interest: cursor.get_f32_le(),
+        }))
     }
 }
 

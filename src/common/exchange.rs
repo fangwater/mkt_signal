@@ -23,11 +23,9 @@ impl Exchange {
         }
     }
 
-    /// 从字符串解析 Exchange（支持带后缀的字符串如 "binance-futures"）
+    /// 从字符串解析 Exchange
     pub fn from_str(s: &str) -> Option<Self> {
-        // 移除可能的后缀，只保留基础交易所名称
-        let base_name = s.split('-').next().unwrap_or(s);
-        match base_name {
+        match s {
             "binance" => Some(Exchange::Binance),
             "okex" => Some(Exchange::Okex),
             "bybit" => Some(Exchange::Bybit),

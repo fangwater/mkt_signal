@@ -44,7 +44,11 @@ impl TradeEngine {
     pub async fn run(mut self, exchange: Exchange) -> Result<()> {
         if !matches!(
             exchange,
-            Exchange::Binance | Exchange::Okex | Exchange::Bybit | Exchange::Bitget | Exchange::Gate
+            Exchange::Binance
+                | Exchange::Okex
+                | Exchange::Bybit
+                | Exchange::Bitget
+                | Exchange::Gate
         ) {
             return Err(anyhow!(
                 "unsupported exchange '{}'. Allowed: binance, okex, bybit, bitget, gate",

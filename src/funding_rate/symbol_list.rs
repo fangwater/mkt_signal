@@ -115,7 +115,11 @@ impl SymbolList {
                         let symbol_set: HashSet<String> =
                             symbols.iter().map(|s| s.to_uppercase()).collect();
                         inner.dump_symbols.insert(exchange, symbol_set.clone());
-                        info!("更新平仓列表 {}: {} 个交易对", exchange_str, symbol_set.len());
+                        info!(
+                            "更新平仓列表 {}: {} 个交易对",
+                            exchange_str,
+                            symbol_set.len()
+                        );
                     });
                 }
             }
@@ -128,7 +132,11 @@ impl SymbolList {
                         let symbol_set: HashSet<String> =
                             symbols.iter().map(|s| s.to_uppercase()).collect();
                         inner.trade_symbols.insert(exchange, symbol_set.clone());
-                        info!("更新建仓列表 {}: {} 个交易对", exchange_str, symbol_set.len());
+                        info!(
+                            "更新建仓列表 {}: {} 个交易对",
+                            exchange_str,
+                            symbol_set.len()
+                        );
                     });
                 }
             }
@@ -333,7 +341,10 @@ impl SymbolList {
     // ==================== 内部辅助方法 ====================
 
     /// 获取指定 exchange 的 online symbols
-    fn get_online_symbols_for_exchange(inner: &SymbolListInner, exchange: &Exchange) -> Vec<String> {
+    fn get_online_symbols_for_exchange(
+        inner: &SymbolListInner,
+        exchange: &Exchange,
+    ) -> Vec<String> {
         let mut online_set = HashSet::new();
 
         if let Some(dump_set) = inner.dump_symbols.get(exchange) {

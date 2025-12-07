@@ -108,7 +108,7 @@ pub struct Config {
     pub snapshot_requery_time: Option<String>,
     pub symbol_socket: String,
     pub data_types: DataTypesConfig, // 数据类型开关
-    pub venue: TradingVenue,          // 在运行时设置，不从配置文件读取（区分资产类型）
+    pub venue: TradingVenue,         // 在运行时设置，不从配置文件读取（区分资产类型）
     pub iceoryx: Option<IceoryxCfg>, // Iceoryx 配置（可选）
 }
 
@@ -556,7 +556,9 @@ impl Config {
             //OKEXu本位期货合约对应的现货
             TradingVenue::OkexMargin => Self::get_spot_symbols_related_to_okex_swap().await,
             //Bybitu本位期货合约
-            TradingVenue::BybitFutures => Self::get_symbol_for_bybit_linear(&self.symbol_socket).await,
+            TradingVenue::BybitFutures => {
+                Self::get_symbol_for_bybit_linear(&self.symbol_socket).await
+            }
             //Bybitu本位期货合约对应的现货
             TradingVenue::BybitMargin => {
                 Self::get_spot_symbols_related_to_bybit(&self.symbol_socket).await
@@ -564,7 +566,9 @@ impl Config {
             //Bitget USDT永续合约
             TradingVenue::BitgetFutures => Self::get_symbol_for_bitget_futures().await,
             //Bitget杠杆交易（与Futures关联的）
-            TradingVenue::BitgetMargin => Self::get_margin_symbols_related_to_bitget_futures().await,
+            TradingVenue::BitgetMargin => {
+                Self::get_margin_symbols_related_to_bitget_futures().await
+            }
             //Gate USDT永续合约
             TradingVenue::GateFutures => Self::get_symbol_for_gate_futures().await,
             //Gate现货（与Futures关联的）

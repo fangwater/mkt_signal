@@ -191,11 +191,7 @@ impl BybitPerpsSubscribeMsgs {
         let mut liquidation_orders_msgs = Vec::new();
         let exchange = cfg.get_exchange();
         for chunk in symbols.chunks(batch_size) {
-            ticker_stream_msgs.push(construct_subscribe_message(
-                &exchange,
-                chunk,
-                "tickers",
-            ));
+            ticker_stream_msgs.push(construct_subscribe_message(&exchange, chunk, "tickers"));
             liquidation_orders_msgs.push(construct_subscribe_message(
                 &exchange,
                 chunk,
@@ -227,11 +223,7 @@ impl BitgetPerpsSubscribeMsgs {
         let exchange = cfg.get_exchange();
 
         for chunk in symbols.chunks(batch_size) {
-            ticker_stream_msgs.push(construct_subscribe_message(
-                &exchange,
-                chunk,
-                "ticker",
-            ));
+            ticker_stream_msgs.push(construct_subscribe_message(&exchange, chunk, "ticker"));
         }
 
         Self { ticker_stream_msgs }
@@ -499,8 +491,12 @@ impl DerivativesMetricsSubscribeMsgs {
             Exchange::Binance => {
                 ExchangePerpsSubscribeMsgs::Binance(BinancePerpsSubscribeMsgs::new().await)
             }
-            Exchange::Okex => ExchangePerpsSubscribeMsgs::Okex(OkexPerpsSubscribeMsgs::new(cfg).await),
-            Exchange::Bybit => ExchangePerpsSubscribeMsgs::Bybit(BybitPerpsSubscribeMsgs::new(cfg).await),
+            Exchange::Okex => {
+                ExchangePerpsSubscribeMsgs::Okex(OkexPerpsSubscribeMsgs::new(cfg).await)
+            }
+            Exchange::Bybit => {
+                ExchangePerpsSubscribeMsgs::Bybit(BybitPerpsSubscribeMsgs::new(cfg).await)
+            }
             Exchange::Bitget => {
                 ExchangePerpsSubscribeMsgs::Bitget(BitgetPerpsSubscribeMsgs::new(cfg).await)
             }
