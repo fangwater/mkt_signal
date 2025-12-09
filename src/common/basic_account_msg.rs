@@ -1,26 +1,28 @@
-//! OKX 账户事件消息定义（独立于 Binance）
+//! Basic 账户事件消息定义（独立于交易所）
 
 use anyhow::Result;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-/// OKX 账户事件类型
+/// Basic 账户事件类型
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OkexAccountEventType {
+pub enum BasicAccountEventType {
     /// 订单更新
     OrderUpdate = 4001,
     /// 账户余额更新
     BalanceUpdate = 4002,
     /// 持仓更新
     PositionUpdate = 4003,
+    /// 借贷利息更新
+    BorrowInterest = 4004,
     /// 错误
     Error = 4999,
 }
 
-/// OKX 订单更新消息（暂保留定义，仍用于 WS 订单日志）
+/// Basic 订单更新消息（仍用于 OKX WS 订单日志）
 #[derive(Debug, Clone)]
 pub struct OkexOrderMsg {
-    pub msg_type: OkexAccountEventType,
+    pub msg_type: BasicAccountEventType,
     pub inst_id: String,
     pub inst_type: u8,
     pub ord_id: i64,
@@ -39,7 +41,7 @@ pub struct OkexOrderMsg {
 }
 
 impl OkexOrderMsg {
-    /// 将 OKX instType 文本映射为紧凑编码
+    /// 将 instType 文本映射为紧凑编码
     pub fn inst_type_to_u8(inst_type: &str) -> u8 {
         match inst_type {
             "MARGIN" => 1,
@@ -192,7 +194,7 @@ impl OkexOrderMsg {
         }
 
         let msg_type_u32 = cursor.get_u32_le();
-        if msg_type_u32 != OkexAccountEventType::OrderUpdate as u32 {
+        if msg_type_u32 != BasicAccountEventType::OrderUpdate as u32 {
             anyhow::bail!("Invalid msg type: {}", msg_type_u32);
         }
 
@@ -256,7 +258,7 @@ impl OkexOrderMsg {
         let fill_time = cursor.get_i64_le();
 
         Ok(Self {
-            msg_type: OkexAccountEventType::OrderUpdate,
+            msg_type: BasicAccountEventType::OrderUpdate,
             inst_id,
             inst_type,
             ord_id,
@@ -276,115 +278,114 @@ impl OkexOrderMsg {
     }
 }
 
-/// OKX 余额消息（仅一个时间字段）
+/// Basic 余额消息（仅一个时间字段）
 #[derive(Debug, Clone)]
-pub struct OkexBalanceMsg {
-    pub msg_type: OkexAccountEventType,
+pub struct BasicBalanceMsg {
+    pub msg_type: BasicAccountEventType,
     pub timestamp: i64,
+    pub symbol_length: u32,
+    pub symbol: String,
     pub balance: f64,
 }
 
-impl OkexBalanceMsg {
-    pub fn create(timestamp: i64, balance: f64) -> Self {
+impl BasicBalanceMsg {
+    pub fn create(timestamp: i64, symbol: String, balance: f64) -> Self {
         Self {
-            msg_type: OkexAccountEventType::BalanceUpdate,
+            msg_type: BasicAccountEventType::BalanceUpdate,
             timestamp,
+            symbol_length: symbol.len() as u32,
+            symbol,
             balance,
         }
     }
 
     pub fn to_bytes(&self) -> Bytes {
-        let total_size = 4 + 8 + 8;
+        let total_size = 4 + 8 + 4 + self.symbol_length as usize + 8;
         let mut buf = BytesMut::with_capacity(total_size);
 
         buf.put_u32_le(self.msg_type as u32);
         buf.put_i64_le(self.timestamp);
+        buf.put_u32_le(self.symbol_length);
+        buf.put(self.symbol.as_bytes());
         buf.put_f64_le(self.balance);
 
         buf.freeze()
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        const MIN_SIZE: usize = 4 + 8 + 8;
+        const MIN_SIZE: usize = 4 + 8 + 4 + 8;
         if data.len() < MIN_SIZE {
             anyhow::bail!("okex balance msg too short: {}", data.len());
         }
 
         let mut cursor = Bytes::copy_from_slice(data);
         let msg_type = cursor.get_u32_le();
-        if msg_type != OkexAccountEventType::BalanceUpdate as u32 {
+        if msg_type != BasicAccountEventType::BalanceUpdate as u32 {
             anyhow::bail!("invalid okex balance msg type: {}", msg_type);
         }
 
         let timestamp = cursor.get_i64_le();
+        let symbol_length = cursor.get_u32_le();
+        if cursor.remaining() < symbol_length as usize + 8 {
+            anyhow::bail!("invalid okex balance msg length");
+        }
+        let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_length as usize).to_vec())?;
         let balance = cursor.get_f64_le();
 
         Ok(Self {
-            msg_type: OkexAccountEventType::BalanceUpdate,
+            msg_type: BasicAccountEventType::BalanceUpdate,
             timestamp,
+            symbol_length,
+            symbol,
             balance,
         })
     }
 }
 
-/// OKX 永续/合约持仓消息
+/// Basic 持仓消息（统一结构）
 #[derive(Debug, Clone)]
-pub struct OkexSwapPositionMsg {
-    pub msg_type: OkexAccountEventType,
+pub struct BasicPositionMsg {
+    pub msg_type: BasicAccountEventType,
     pub timestamp: i64,
     pub inst_id_length: u32,
     pub position_side: char,
     pub padding: [u8; 3],
     pub inst_id: String,
     pub position_amount: f32,
-    pub upl: f64,
 }
 
-/// OKX 币币杠杆持仓消息（包含负债与利息）
+/// Basic 借贷利息消息（REST 拉取 OKX GET /api/v5/account/interest-accrued）
 #[derive(Debug, Clone)]
-pub struct OkexMarginPositionMsg {
-    pub msg_type: OkexAccountEventType,
+pub struct BasicBorrowInterestMsg {
+    pub msg_type: BasicAccountEventType,
     pub timestamp: i64,
-    pub inst_id_length: u32,
-    pub position_side: char,
-    pub padding: [u8; 3],
-    pub inst_id: String,
-    pub position_amount: f32,
-    pub upl: f64,
-    pub liab: f32,
-    pub liab_is_usdt: bool,
-    pub interest: f32,
+    pub symbol_length: u32,
+    pub padding: [u8; 4],
+    pub symbol: String,
+    pub borrowed: f64,
+    pub interest: f64,
 }
 
-/// OKX 持仓消息（分为永续/合约与币币杠杆两类）
-#[derive(Debug, Clone)]
-pub enum OkexPositionMsg {
-    Swap(OkexSwapPositionMsg),
-    Margin(OkexMarginPositionMsg),
-}
-
-impl OkexSwapPositionMsg {
+impl BasicPositionMsg {
     pub fn create(
         timestamp: i64,
         inst_id: String,
         position_side: char,
         position_amount: f32,
-        upl: f64,
     ) -> Self {
         Self {
-            msg_type: OkexAccountEventType::PositionUpdate,
+            msg_type: BasicAccountEventType::PositionUpdate,
             timestamp,
             inst_id_length: inst_id.len() as u32,
             position_side,
             padding: [0u8; 3],
             inst_id,
             position_amount,
-            upl,
         }
     }
 
     pub fn to_bytes(&self) -> Bytes {
-        let total_size = 4 + 8 + 4 + 1 + 3 + self.inst_id_length as usize + 4 + 8;
+        let total_size = 4 + 8 + 4 + 1 + 3 + self.inst_id_length as usize + 4;
         let mut buf = BytesMut::with_capacity(total_size);
         buf.put_u32_le(self.msg_type as u32);
         buf.put_i64_le(self.timestamp);
@@ -393,157 +394,33 @@ impl OkexSwapPositionMsg {
         buf.put(&self.padding[..]);
         buf.put(self.inst_id.as_bytes());
         buf.put_f32_le(self.position_amount);
-        buf.put_f64_le(self.upl);
         buf.freeze()
     }
-}
 
-impl OkexMarginPositionMsg {
-    pub fn create(
-        timestamp: i64,
-        inst_id: String,
-        position_side: char,
-        position_amount: f32,
-        upl: f64,
-        liab: f32,
-        liab_is_usdt: bool,
-        interest: f32,
-    ) -> Self {
-        Self {
-            msg_type: OkexAccountEventType::PositionUpdate,
-            timestamp,
-            inst_id_length: inst_id.len() as u32,
-            position_side,
-            padding: [0u8; 3],
-            inst_id,
-            position_amount,
-            upl,
-            liab,
-            liab_is_usdt,
-            interest,
-        }
-    }
-
-    pub fn to_bytes(&self) -> Bytes {
-        let inst_id_bytes = self.inst_id.as_bytes();
-
-        let total_size = 4 // msg_type
-            + 8 // timestamp
-            + 4 // inst_id_length
-            + 1 // position_side
-            + 3 // padding
-            + inst_id_bytes.len()
-            + 4 // position_amount
-            + 8 // upl
-            + 4 // liab
-            + 1 // liab_is_usdt
-            + 4; // interest
-
-        let mut buf = BytesMut::with_capacity(total_size);
-        buf.put_u32_le(self.msg_type as u32);
-        buf.put_i64_le(self.timestamp);
-        buf.put_u32_le(self.inst_id_length);
-        buf.put_u8(self.position_side as u8);
-        buf.put(&self.padding[..]);
-        buf.put(inst_id_bytes);
-        buf.put_f32_le(self.position_amount);
-        buf.put_f64_le(self.upl);
-
-        buf.put_f32_le(self.liab);
-        buf.put_u8(self.liab_is_usdt as u8);
-        buf.put_f32_le(self.interest);
-
-        buf.freeze()
-    }
-}
-
-impl OkexPositionMsg {
-    pub fn create_swap(
-        timestamp: i64,
-        inst_id: String,
-        position_side: char,
-        position_amount: f32,
-        upl: f64,
-    ) -> Self {
-        Self::Swap(OkexSwapPositionMsg::create(
-            timestamp,
-            inst_id,
-            position_side,
-            position_amount,
-            upl,
-        ))
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn create_margin(
-        timestamp: i64,
-        inst_id: String,
-        position_side: char,
-        position_amount: f32,
-        upl: f64,
-        liab: f32,
-        liab_is_usdt: bool,
-        interest: f32,
-    ) -> Self {
-        Self::Margin(OkexMarginPositionMsg::create(
-            timestamp,
-            inst_id,
-            position_side,
-            position_amount,
-            upl,
-            liab,
-            liab_is_usdt,
-            interest,
-        ))
-    }
-
-    pub fn msg_type(&self) -> OkexAccountEventType {
-        OkexAccountEventType::PositionUpdate
+    pub fn msg_type(&self) -> BasicAccountEventType {
+        BasicAccountEventType::PositionUpdate
     }
 
     pub fn timestamp(&self) -> i64 {
-        match self {
-            Self::Swap(s) => s.timestamp,
-            Self::Margin(m) => m.timestamp,
-        }
+        self.timestamp
     }
 
     pub fn inst_id(&self) -> &str {
-        match self {
-            Self::Swap(s) => s.inst_id.as_str(),
-            Self::Margin(m) => m.inst_id.as_str(),
-        }
+        self.inst_id.as_str()
     }
 
     pub fn position_side(&self) -> char {
-        match self {
-            Self::Swap(s) => s.position_side,
-            Self::Margin(m) => m.position_side,
-        }
-    }
-
-    pub fn upl(&self) -> f64 {
-        match self {
-            Self::Swap(s) => s.upl,
-            Self::Margin(m) => m.upl,
-        }
-    }
-
-    pub fn to_bytes(&self) -> Bytes {
-        match self {
-            Self::Swap(s) => s.to_bytes(),
-            Self::Margin(m) => m.to_bytes(),
-        }
+        self.position_side
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        const MIN_SIZE: usize = 4 + 8 + 4 + 1 + 3 + 4 + 8 + 4 + 1 + 4;
+        const MIN_SIZE: usize = 4 + 8 + 4 + 1 + 3 + 4;
         if data.len() < MIN_SIZE {
             anyhow::bail!("okex position msg too short: {}", data.len());
         }
         let mut cursor = Bytes::copy_from_slice(data);
         let msg_type = cursor.get_u32_le();
-        if msg_type != OkexAccountEventType::PositionUpdate as u32 {
+        if msg_type != BasicAccountEventType::PositionUpdate as u32 {
             anyhow::bail!("invalid okex position msg type: {}", msg_type);
         }
         let timestamp = cursor.get_i64_le();
@@ -551,58 +428,91 @@ impl OkexPositionMsg {
         let position_side = cursor.get_u8() as char;
         let mut padding = [0u8; 3];
         cursor.copy_to_slice(&mut padding);
-        if cursor.remaining() < inst_id_length as usize + 4 + 8 + 4 + 1 + 4 {
+        if cursor.remaining() < inst_id_length as usize + 4 {
             anyhow::bail!("okex position msg truncated");
         }
         let inst_id = String::from_utf8(cursor.copy_to_bytes(inst_id_length as usize).to_vec())?;
         let position_amount = cursor.get_f32_le();
-        if cursor.remaining() < 8 {
-            anyhow::bail!("okex position msg missing upl");
-        }
-        let upl = cursor.get_f64_le();
-
-        if cursor.remaining() == 0 {
-            return Ok(Self::Swap(OkexSwapPositionMsg {
-                msg_type: OkexAccountEventType::PositionUpdate,
-                timestamp,
-                inst_id_length,
-                position_side,
-                padding,
-                inst_id,
-                position_amount,
-                upl,
-            }));
-        }
-
-        if cursor.remaining() < 4 + 1 + 4 {
-            anyhow::bail!("okex margin position msg truncated");
-        }
-
-        Ok(Self::Margin(OkexMarginPositionMsg {
-            msg_type: OkexAccountEventType::PositionUpdate,
+        Ok(Self {
+            msg_type: BasicAccountEventType::PositionUpdate,
             timestamp,
             inst_id_length,
             position_side,
             padding,
             inst_id,
             position_amount,
-            upl,
-            liab: cursor.get_f32_le(),
-            liab_is_usdt: cursor.get_u8() != 0,
-            interest: cursor.get_f32_le(),
-        }))
+        })
     }
 }
 
-/// OKX 账户事件消息包装
-pub struct OkexAccountEventMsg {
-    pub msg_type: OkexAccountEventType,
+impl BasicBorrowInterestMsg {
+    pub fn create(timestamp: i64, symbol: String, borrowed: f64, interest: f64) -> Self {
+        Self {
+            msg_type: BasicAccountEventType::BorrowInterest,
+            timestamp,
+            symbol_length: symbol.len() as u32,
+            padding: [0u8; 4],
+            symbol,
+            borrowed,
+            interest,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 8 + 4 + 4 + self.symbol_length as usize + 8 + 8;
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_i64_le(self.timestamp);
+        buf.put_u32_le(self.symbol_length);
+        buf.put(&self.padding[..]);
+        buf.put(self.symbol.as_bytes());
+        buf.put_f64_le(self.borrowed);
+        buf.put_f64_le(self.interest);
+        buf.freeze()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        const MIN_SIZE: usize = 4 + 8 + 4 + 4 + 8 + 8;
+        if data.len() < MIN_SIZE {
+            anyhow::bail!("borrow interest msg too short: {}", data.len());
+        }
+        let mut cursor = Bytes::copy_from_slice(data);
+        let msg_type = cursor.get_u32_le();
+        if msg_type != BasicAccountEventType::BorrowInterest as u32 {
+            anyhow::bail!("invalid borrow interest msg type: {}", msg_type);
+        }
+        let timestamp = cursor.get_i64_le();
+        let symbol_length = cursor.get_u32_le();
+        let mut padding = [0u8; 4];
+        cursor.copy_to_slice(&mut padding);
+        if cursor.remaining() < symbol_length as usize + 8 + 8 {
+            anyhow::bail!("borrow interest msg truncated");
+        }
+        let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_length as usize).to_vec())?;
+        let borrowed = cursor.get_f64_le();
+        let interest = cursor.get_f64_le();
+
+        Ok(Self {
+            msg_type: BasicAccountEventType::BorrowInterest,
+            timestamp,
+            symbol_length,
+            padding,
+            symbol,
+            borrowed,
+            interest,
+        })
+    }
+}
+
+/// Basic 账户事件消息包装
+pub struct BasicAccountEventMsg {
+    pub msg_type: BasicAccountEventType,
     pub msg_length: u32,
     pub data: Bytes,
 }
 
-impl OkexAccountEventMsg {
-    pub fn create(msg_type: OkexAccountEventType, data: Bytes) -> Self {
+impl BasicAccountEventMsg {
+    pub fn create(msg_type: BasicAccountEventType, data: Bytes) -> Self {
         Self {
             msg_type,
             msg_length: data.len() as u32,
@@ -619,17 +529,18 @@ impl OkexAccountEventMsg {
     }
 }
 
-/// 获取事件类型
+/// 获取基础事件类型
 #[inline]
-pub fn get_okex_event_type(data: &[u8]) -> OkexAccountEventType {
+pub fn get_basic_event_type(data: &[u8]) -> BasicAccountEventType {
     if data.len() < 4 {
-        return OkexAccountEventType::Error;
+        return BasicAccountEventType::Error;
     }
     let event_type_u32 = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
     match event_type_u32 {
-        4001 => OkexAccountEventType::OrderUpdate,
-        4002 => OkexAccountEventType::BalanceUpdate,
-        4003 => OkexAccountEventType::PositionUpdate,
-        _ => OkexAccountEventType::Error,
+        4001 => BasicAccountEventType::OrderUpdate,
+        4002 => BasicAccountEventType::BalanceUpdate,
+        4003 => BasicAccountEventType::PositionUpdate,
+        4004 => BasicAccountEventType::BorrowInterest,
+        _ => BasicAccountEventType::Error,
     }
 }

@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""Submit an OKX cross-margin order (default sell, can set buy) and query positions.
+"""下 OKX U 本位合约（SWAP/FUTURES）买单的快捷脚本。
 
-Examples:
+示例：
   OKX_API_KEY=... OKX_API_SECRET=... OKX_PASSPHRASE=... \\
-    python scripts/okx_margin_sell.py --inst-id BTC-USDT --sz 0.01 --ord-type market --execute
-  # buy shortcut
-  OKX_API_KEY=... OKX_API_SECRET=... OKX_PASSPHRASE=... \\
-    python scripts/okx_margin_sell.py --inst-id BTC-USDT --sz 0.01 --ord-type market --buy --execute
+    python scripts/okx_swap_buy.py --inst-id BTC-USDT-SWAP --sz 0.001 --ord-type market --execute
 """
 
 from __future__ import annotations
@@ -18,19 +15,19 @@ import hmac
 import json
 import os
 import sys
+
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
 from typing import Any, Dict, Tuple
 
 DEFAULT_BASE_URL = os.environ.get("OKX_BASE_URL", "https://www.okx.com")
 
 
 def utc_timestamp() -> str:
-    """OKX expects ISO8601 with milliseconds, suffixed by Z."""
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    """OKX 期望的 ISO8601 毫秒时间戳。"""
+    return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
 
 
 def json_body(data: Dict[str, Any] | None) -> str:
@@ -95,114 +92,58 @@ def request_okx(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Place an OKX margin order with tdMode=cross and then query /account/positions",
+        description="下 OKX U 本位合约买单（SWAP/FUTURES），tdMode 默认 cross",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--inst-id", required=True, help="Instrument ID, e.g. BTC-USDT")
-    parser.add_argument("--sz", required=True, help="Order size (base currency)")
+    parser.add_argument("--inst-id", required=True, help="合约 ID，例如 BTC-USDT-SWAP")
+    parser.add_argument("--sz", required=True, help="下单张数/币数，按 OKX 规格填写")
     parser.add_argument(
         "--side",
         choices=["buy", "sell"],
-        default="sell",
-        help="Order side, default sell",
+        default="buy",
+        help="下单方向，默认 buy",
     )
     parser.add_argument(
-        "--buy",
-        action="store_true",
-        help="Shortcut for --side buy",
+        "--pos-side",
+        dest="pos_side",
+        choices=["long", "short", "net"],
+        help="双向持仓需指定 long/short；单向模式可不填或填 net",
     )
     parser.add_argument(
         "--ord-type",
         dest="ord_type",
         choices=["market", "limit", "post_only", "fok", "ioc"],
         default="market",
-        help="OKX ordType, default market",
+        help="OKX ordType",
     )
-    parser.add_argument("--px", help="Price, required for limit/post-only/fok/ioc")
+    parser.add_argument("--px", help="价格（限价单必填）")
     parser.add_argument(
         "--td-mode",
         dest="td_mode",
-        choices=["cross", "isolated", "cash", "spot_isolated"],
+        choices=["cross", "isolated"],
         default="cross",
-        help="Trade mode; cross = cross margin",
+        help="cross/isolated",
     )
-    parser.add_argument(
-        "--tgt-ccy",
-        dest="tgt_ccy",
-        choices=["base_ccy", "quote_ccy"],
-        help="Target currency for market buys; not needed for sells",
-    )
-    parser.add_argument(
-        "--ccy",
-        help="Margin currency (multi-currency margin only, optional)",
-    )
-    parser.add_argument("--cl-ord-id", dest="cl_ord_id", help="Optional client order ID (<= 32 chars)")
-    parser.add_argument("--tag", help="Optional tag, e.g. strategy name")
-    parser.add_argument(
-        "--base-url",
-        default=DEFAULT_BASE_URL,
-        help="OKX REST base URL",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=int,
-        default=10,
-        help="HTTP timeout in seconds",
-    )
-    parser.add_argument(
-        "--sleep-sec",
-        type=float,
-        default=0.5,
-        help="Sleep before querying positions (gives API time to settle)",
-    )
-    parser.add_argument(
-        "--simulate",
-        action="store_true",
-        help="Add x-simulated-trading: 1 header for paper trading",
-    )
-    parser.add_argument(
-        "--execute",
-        action="store_true",
-        help="Actually send the order; default is dry-run",
-    )
-    parser.add_argument(
-        "--skip-positions",
-        action="store_true",
-        help="Skip GET /account/positions after the order",
-    )
-    parser.add_argument(
-        "--skip-balance",
-        action="store_true",
-        help="Skip GET /account/balance after the order",
-    )
-    parser.add_argument(
-        "--positions-inst-type",
-        dest="positions_inst_type",
-        help="Optional instType filter for /account/positions (e.g. MARGIN)",
-    )
+    parser.add_argument("--cl-ord-id", dest="cl_ord_id", help="自定义订单号（<=32 字符）")
+    parser.add_argument("--tag", help="标签/策略名")
+    parser.add_argument("--reduce-only", dest="reduce_only", action="store_true", help="只减仓")
+    parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="OKX REST 基础 URL")
+    parser.add_argument("--timeout", type=int, default=10, help="HTTP 超时秒数")
+    parser.add_argument("--simulate", action="store_true", help="x-simulated-trading: 1 纸上交易")
+    parser.add_argument("--execute", action="store_true", help="实际下单；未加该参数为 dry-run")
+    parser.add_argument("--sleep-sec", type=float, default=0.5, help="下单后查询持仓前的等待秒数")
     return parser.parse_args()
 
 
-def load_credentials() -> Tuple[str, str, str]:
+def load_credentials() -> tuple[str, str, str]:
     api_key = os.environ.get("OKX_API_KEY", "").strip()
     api_secret = os.environ.get("OKX_API_SECRET", "").strip()
     passphrase = os.environ.get("OKX_PASSPHRASE", "").strip()
     missing = [name for name, value in [("OKX_API_KEY", api_key), ("OKX_API_SECRET", api_secret), ("OKX_PASSPHRASE", passphrase)] if not value]
     if missing:
-        print(f"Please set environment variables: {', '.join(missing)}", file=sys.stderr)
+        print(f"请设置环境变量: {', '.join(missing)}", file=sys.stderr)
         sys.exit(1)
     return api_key, api_secret, passphrase
-
-
-def preview_env(api_key: str, api_secret: str) -> None:
-    ipc_namespace = os.environ.get("IPC_NAMESPACE", "")
-    secret_preview = f"{api_secret[:4]}...{api_secret[-4:]}" if len(api_secret) >= 8 else "***"
-    print("OKX env set:")
-    print(f"  OKX_API_KEY={api_key}")
-    print(f"  OKX_API_SECRET={secret_preview}")
-    print("  OKX_PASSPHRASE=***")
-    if ipc_namespace:
-        print(f"  IPC_NAMESPACE={ipc_namespace}")
 
 
 def build_order_payload(args: argparse.Namespace) -> Dict[str, Any]:
@@ -215,14 +156,14 @@ def build_order_payload(args: argparse.Namespace) -> Dict[str, Any]:
     }
     if args.px:
         payload["px"] = str(args.px).strip()
-    if args.tgt_ccy:
-        payload["tgtCcy"] = args.tgt_ccy
-    if args.ccy:
-        payload["ccy"] = args.ccy.strip()
+    if args.pos_side:
+        payload["posSide"] = args.pos_side
     if args.cl_ord_id:
         payload["clOrdId"] = args.cl_ord_id.strip()
     if args.tag:
         payload["tag"] = args.tag.strip()
+    if args.reduce_only:
+        payload["reduceOnly"] = True
     return payload
 
 
@@ -235,33 +176,21 @@ def pretty_print_json(label: str, body: str) -> None:
         print(body)
 
 
-def split_inst(inst_id: str) -> Tuple[str | None, str | None]:
-    if "-" not in inst_id:
-        return None, None
-    base, quote = inst_id.split("-", 1)
-    return base.upper(), quote.upper()
-
-
 def main() -> None:
     args = parse_args()
-    if args.buy:
-        args.side = "buy"
     api_key, api_secret, passphrase = load_credentials()
     base_url = args.base_url.rstrip("/")
-
-    preview_env(api_key, api_secret)
-    print(f"Base URL: {base_url}")
 
     order_payload = build_order_payload(args)
     print("Order payload:")
     print(json.dumps(order_payload, ensure_ascii=False, indent=2, sort_keys=True))
 
     if args.ord_type != "market" and not args.px:
-        print("Limit/post-only/fok/ioc orders require --px.", file=sys.stderr)
+        print("限价/冰山/IOC/FOK/只做Maker需提供 --px", file=sys.stderr)
         sys.exit(1)
 
     if not args.execute:
-        print("Dry-run only. Re-run with --execute to submit the order.")
+        print("Dry-run：未发送下单请求，添加 --execute 才会真正下单。")
     else:
         status, body, headers = request_okx(
             base_url,
@@ -283,10 +212,9 @@ def main() -> None:
     if args.execute and args.sleep_sec > 0:
         time.sleep(args.sleep_sec)
 
-    if not args.skip_positions:
+    if args.execute:
+        # 查询持仓
         pos_params: Dict[str, Any] = {"instId": args.inst_id}
-        if args.positions_inst_type:
-            pos_params["instType"] = args.positions_inst_type
         status, body, _ = request_okx(
             base_url,
             "GET",
@@ -303,27 +231,6 @@ def main() -> None:
         pretty_print_json("Positions response:", body)
         if status != 200:
             sys.exit(1)
-
-    if not args.skip_balance:
-        base_ccy, quote_ccy = split_inst(args.inst_id)
-        ccys = [ccy for ccy in (base_ccy, quote_ccy) if ccy]
-        if ccys:
-            status, body, _ = request_okx(
-                base_url,
-                "GET",
-                "/api/v5/account/balance",
-                api_key,
-                api_secret,
-                passphrase,
-                params={"ccy": ",".join(ccys)},
-                timeout=args.timeout,
-                simulated=args.simulate,
-            )
-            tag = "OK" if status == 200 else "ERR"
-            print(f"Balance result: {tag} {status} (ccy={','.join(ccys)})")
-            pretty_print_json("Balance response:", body)
-            if status != 200:
-                sys.exit(1)
 
 
 if __name__ == "__main__":

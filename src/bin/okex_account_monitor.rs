@@ -18,8 +18,9 @@
 use anyhow::Result;
 use bytes::Bytes;
 use log::{debug, error, info, warn};
-use mkt_signal::common::okex_account_msg::{
-    get_okex_event_type, OkexAccountEventType, OkexBalanceMsg, OkexOrderMsg, OkexPositionMsg,
+use mkt_signal::common::basic_account_msg::{
+    get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
+    BasicPositionMsg, OkexOrderMsg,
 };
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::default_parser::Parser;
@@ -28,8 +29,10 @@ use mkt_signal::portfolio_margin::okex_auth::{
     build_balance_and_position_subscribe_message, build_orders_subscribe_message, OkexCredentials,
     OkexPrivateWsUrls,
 };
+use mkt_signal::portfolio_margin::okex_rest::fetch_borrow_interest;
 use mkt_signal::portfolio_margin::okex_user_stream::OkexUserDataConnection;
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
+use reqwest::Client;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -65,11 +68,7 @@ fn log_credential_preview(label: &str, value: &str) {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    if std::env::var("RUST_LOG").is_err() {
-        std::env::set_var("RUST_LOG", "debug");
-    }
     env_logger::init();
-
     // 从环境变量加载 OKEx 凭证
     let credentials = OkexCredentials::from_env()?;
     log_credential_preview("OKX_API_KEY", &credentials.api_key);
@@ -107,6 +106,8 @@ async fn main() -> Result<()> {
     let mut forwarder = PmForwarder::new("okex")?;
     let mut deduper = AccountEventDeduper::new(8192);
     let mut stats = tokio::time::interval(Duration::from_secs(30));
+    let mut interest_poll =
+        spawn_borrow_interest_poll(credentials.clone(), evt_tx.clone(), shutdown_rx.clone());
 
     // 启动主备双路连接
     let mut primary = spawn_okex_stream_path(
@@ -144,6 +145,7 @@ async fn main() -> Result<()> {
             _ = stats.tick() => {
                 forwarder.log_stats();
             }
+            _ = &mut interest_poll => { warn!("interest poll task exited; continuing"); }
             _ = &mut primary => { warn!("primary okex stream task exited; continuing"); }
             _ = &mut secondary => { warn!("secondary okex stream task exited; continuing"); }
             _ = shutdown_rx.changed() => { break; }
@@ -161,6 +163,42 @@ fn setup_signals(shutdown_tx: watch::Sender<bool>) {
             let _ = shutdown_tx.send(true);
         }
     });
+}
+
+fn spawn_borrow_interest_poll(
+    credentials: OkexCredentials,
+    evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let client = Client::new();
+        let mut ticker = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.changed() => break,
+                _ = ticker.tick() => {
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+                    match fetch_borrow_interest(&client, &credentials).await {
+                        Ok(items) => {
+                            for msg in items {
+                                let payload = msg.to_bytes();
+                                let event = mkt_signal::common::basic_account_msg::BasicAccountEventMsg::create(msg.msg_type, payload);
+                                if let Err(e) = evt_tx.send(event.to_bytes()) {
+                                    warn!("failed to send borrow interest msg: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("fetch borrow interest failed: {:?}", e);
+                        }
+                    }
+                }
+            }
+        }
+        info!("borrow interest poller exiting");
+    })
 }
 
 fn spawn_okex_stream_path(
@@ -258,14 +296,14 @@ fn log_parsed_event(msg: &Bytes) {
     if msg.len() < 8 {
         return;
     }
-    let okex_event_type = get_okex_event_type(msg.as_ref());
+    let okex_event_type = get_basic_event_type(msg.as_ref());
     let payload_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
     if msg.len() < 8 + payload_len {
         return;
     }
     let payload = msg.slice(8..8 + payload_len);
 
-    if matches!(okex_event_type, OkexAccountEventType::Error) {
+    if matches!(okex_event_type, BasicAccountEventType::Error) {
         debug!(
             "OKEx account event unknown type={} len={}",
             u32::from_le_bytes([msg[0], msg[1], msg[2], msg[3]]),
@@ -275,7 +313,7 @@ fn log_parsed_event(msg: &Bytes) {
     }
 
     match okex_event_type {
-        OkexAccountEventType::OrderUpdate => {
+        BasicAccountEventType::OrderUpdate => {
             if let Ok(m) = OkexOrderMsg::from_bytes(&payload) {
                 info!(
                     "OKEx OrderUpdate: inst={} side={} state={} cancel_src={} amend_src={} cli_id={} ord_id={} price={} qty={} cumulative_filled={} create_time={} update_time={} fill_time={}",
@@ -295,37 +333,28 @@ fn log_parsed_event(msg: &Bytes) {
                 );
             }
         }
-        OkexAccountEventType::BalanceUpdate => {
-            if let Ok(m) = OkexBalanceMsg::from_bytes(&payload) {
+        BasicAccountEventType::BalanceUpdate => {
+            if let Ok(m) = BasicBalanceMsg::from_bytes(&payload) {
                 info!(
-                    "OKEx BalanceUpdate: ts={} balance={}",
-                    m.timestamp, m.balance
+                    "OKEx BalanceUpdate: ts={} symbol={} balance={}",
+                    m.timestamp, m.symbol, m.balance
                 );
             }
         }
-        OkexAccountEventType::PositionUpdate => {
-            if let Ok(m) = OkexPositionMsg::from_bytes(&payload) {
-                match m {
-                    OkexPositionMsg::Swap(p) => {
-                        info!(
-                            "OKEx PositionUpdate: ts={} inst={} side={} amt={} upl={}",
-                            p.timestamp, p.inst_id, p.position_side, p.position_amount, p.upl
-                        );
-                    }
-                    OkexPositionMsg::Margin(p) => {
-                        info!(
-                            "OKEx PositionUpdate: ts={} inst={} side={} amt={} upl={} liab={} is_usdt={} interest={}",
-                            p.timestamp,
-                            p.inst_id,
-                            p.position_side,
-                            p.position_amount,
-                            p.upl,
-                            p.liab,
-                            p.liab_is_usdt,
-                            p.interest
-                        );
-                    }
-                }
+        BasicAccountEventType::PositionUpdate => {
+            if let Ok(m) = BasicPositionMsg::from_bytes(&payload) {
+                info!(
+                    "OKEx PositionUpdate: ts={} inst={} side={} amt={}",
+                    m.timestamp, m.inst_id, m.position_side, m.position_amount
+                );
+            }
+        }
+        BasicAccountEventType::BorrowInterest => {
+            if let Ok(m) = BasicBorrowInterestMsg::from_bytes(&payload) {
+                info!(
+                    "OKEx BorrowInterest: ts={} symbol={} borrowed={} interest={}",
+                    m.timestamp, m.symbol, m.borrowed, m.interest
+                );
             }
         }
         _ => {
@@ -359,7 +388,7 @@ impl AccountEventDeduper {
             return true; // 格式不对的消息直接转发
         }
 
-        let okex_event_type = get_okex_event_type(msg.as_ref());
+        let okex_event_type = get_basic_event_type(msg.as_ref());
         let payload_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
         if msg.len() < 8 + payload_len {
             return true; // 格式不对的消息直接转发
@@ -369,16 +398,19 @@ impl AccountEventDeduper {
 
         // 根据事件类型计算去重 key
         let key_opt = match okex_event_type {
-            OkexAccountEventType::OrderUpdate => OkexOrderMsg::from_bytes(&payload)
+            BasicAccountEventType::OrderUpdate => OkexOrderMsg::from_bytes(&payload)
                 .ok()
                 .map(|msg| self.key_okex_order(&msg)),
-            OkexAccountEventType::BalanceUpdate => OkexBalanceMsg::from_bytes(&payload)
+            BasicAccountEventType::BalanceUpdate => BasicBalanceMsg::from_bytes(&payload)
                 .ok()
                 .map(|msg| self.key_okex_balance(&msg)),
-            OkexAccountEventType::PositionUpdate => OkexPositionMsg::from_bytes(&payload)
+            BasicAccountEventType::PositionUpdate => BasicPositionMsg::from_bytes(&payload)
                 .ok()
                 .map(|msg| self.key_okex_position(&msg)),
-            OkexAccountEventType::Error => return true,
+            BasicAccountEventType::BorrowInterest => BasicBorrowInterestMsg::from_bytes(&payload)
+                .ok()
+                .map(|msg| self.key_okex_borrow_interest(&msg)),
+            BasicAccountEventType::Error => return true,
         };
 
         let Some(key) = key_opt else {
@@ -418,41 +450,38 @@ impl AccountEventDeduper {
         hasher.finish()
     }
 
-    fn key_okex_balance(&self, msg: &OkexBalanceMsg) -> u64 {
+    fn key_okex_balance(&self, msg: &BasicBalanceMsg) -> u64 {
         self.hash64(&[
-            OkexAccountEventType::BalanceUpdate as u32 as u64,
+            BasicAccountEventType::BalanceUpdate as u32 as u64,
             msg.timestamp as u64,
+            self.hash_str64(&msg.symbol),
             msg.balance.to_bits(),
         ])
     }
 
-    fn key_okex_position(&self, msg: &OkexPositionMsg) -> u64 {
-        match msg {
-            OkexPositionMsg::Swap(p) => self.hash64(&[
-                OkexAccountEventType::PositionUpdate as u32 as u64,
-                p.timestamp as u64,
-                self.hash_str64(&p.inst_id),
-                p.position_side as u8 as u64,
-                1, // swap marker
-                p.upl.to_bits(),
-            ]),
-            OkexPositionMsg::Margin(p) => self.hash64(&[
-                OkexAccountEventType::PositionUpdate as u32 as u64,
-                p.timestamp as u64,
-                self.hash_str64(&p.inst_id),
-                p.position_side as u8 as u64,
-                2, // margin marker
-                p.upl.to_bits(),
-                p.liab.to_bits() as u64,
-                p.liab_is_usdt as u64,
-                p.interest.to_bits() as u64,
-            ]),
-        }
+    fn key_okex_borrow_interest(&self, msg: &BasicBorrowInterestMsg) -> u64 {
+        self.hash64(&[
+            BasicAccountEventType::BorrowInterest as u32 as u64,
+            msg.timestamp as u64,
+            self.hash_str64(&msg.symbol),
+            msg.borrowed.to_bits(),
+            msg.interest.to_bits(),
+        ])
+    }
+
+    fn key_okex_position(&self, msg: &BasicPositionMsg) -> u64 {
+        self.hash64(&[
+            BasicAccountEventType::PositionUpdate as u32 as u64,
+            msg.timestamp as u64,
+            self.hash_str64(&msg.inst_id),
+            msg.position_side as u8 as u64,
+            msg.position_amount.to_bits() as u64,
+        ])
     }
 
     fn key_okex_order(&self, msg: &OkexOrderMsg) -> u64 {
         self.hash64(&[
-            OkexAccountEventType::OrderUpdate as u32 as u64,
+            BasicAccountEventType::OrderUpdate as u32 as u64,
             msg.ord_id as u64,
             msg.cl_ord_id as u64,
             msg.ord_type as u64,

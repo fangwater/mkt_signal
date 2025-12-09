@@ -1,4 +1,7 @@
 pub mod auto_repay_service;
+pub mod basic_balance_manager;
+pub mod basic_um_manager;
+pub mod net_position;
 pub mod binance_pm_spot_manager;
 pub mod binance_pm_um_manager;
 mod channel;
