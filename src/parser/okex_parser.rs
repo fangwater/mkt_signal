@@ -535,9 +535,13 @@ impl Parser for OkexAskBidSpreadParser {
                                                             }
 
                                                             // Create spread message
+                                                            let spread_symbol = symbol
+                                                                .strip_suffix("-SWAP")
+                                                                .unwrap_or(symbol)
+                                                                .to_string();
                                                             let spread_msg =
                                                                 AskBidSpreadMsg::create(
-                                                                    symbol.to_string(),
+                                                                    spread_symbol,
                                                                     timestamp,
                                                                     bid_price,
                                                                     bid_amount,

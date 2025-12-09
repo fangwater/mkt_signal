@@ -5,9 +5,8 @@ use log::info;
 use prettytable::{format, Cell, Row, Table};
 use serde::Deserialize;
 use serde_yaml;
+use std::time::Duration;
 use tokio::fs;
-use tokio::io::AsyncReadExt;
-use tokio::net::UnixStream;
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct ChannelCfg {
@@ -31,7 +30,6 @@ struct ConfigFile {
     primary_local_ip: String,
     secondary_local_ip: String,
     snapshot_requery_time: Option<String>,
-    symbol_socket: String,
     // 数据类型开关
     data_types: DataTypesConfig,
     // Iceoryx 配置
@@ -45,6 +43,49 @@ pub struct DataTypesConfig {
     pub enable_kline: bool,          // K线数据
     pub enable_derivatives: bool,    // 衍生品指标
     pub enable_ask_bid_spread: bool, // 买卖价差（最优买卖价）
+}
+
+#[derive(Debug, Deserialize)]
+struct BinanceExchangeInfoResponse {
+    symbols: Vec<BinanceSymbolInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BinanceSymbolInfo {
+    symbol: String,
+    status: String,
+    quote_asset: String,
+    #[serde(default)]
+    contract_type: Option<String>,
+    #[serde(default)]
+    is_spot_trading_allowed: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BybitInstrumentsResponse {
+    ret_code: i32,
+    ret_msg: String,
+    result: Option<BybitInstrumentsResult>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BybitInstrumentsResult {
+    #[serde(default)]
+    list: Vec<BybitInstrument>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BybitInstrument {
+    symbol: String,
+    status: String,
+    #[serde(default)]
+    quote_coin: Option<String>,
+    #[serde(default)]
+    contract_type: Option<String>,
 }
 
 // 添加表格打印函数
@@ -106,7 +147,6 @@ pub struct Config {
     pub primary_local_ip: String,
     pub secondary_local_ip: String,
     pub snapshot_requery_time: Option<String>,
-    pub symbol_socket: String,
     pub data_types: DataTypesConfig, // 数据类型开关
     pub venue: TradingVenue,         // 在运行时设置，不从配置文件读取（区分资产类型）
     pub iceoryx: Option<IceoryxCfg>, // Iceoryx 配置（可选）
@@ -126,7 +166,6 @@ impl Config {
             primary_local_ip: config_file.primary_local_ip,
             secondary_local_ip: config_file.secondary_local_ip,
             snapshot_requery_time: config_file.snapshot_requery_time,
-            symbol_socket: config_file.symbol_socket,
             data_types: config_file.data_types, // 数据类型开关
             iceoryx: config_file.iceoryx,
             venue, // 从命令行参数设置
@@ -152,55 +191,117 @@ impl Config {
         }
     }
 
-    async fn get_symbol_from_unix_socket(
-        symbol_socket: &str,
-        exchange: &str,
-    ) -> Result<serde_json::Value> {
-        // 连接到symbol socket
-        log::info!("Connecting to symbol socket: {}......", symbol_socket);
-        let symbol_socket_path = format!("{}/{}.sock", symbol_socket, exchange);
-        let mut stream = UnixStream::connect(&symbol_socket_path)
-            .await
-            .context(format!(
-                "Failed to connect to symbol socket {}",
-                symbol_socket_path
-            ))?;
-        info!("Connected to symbol socket: {}", symbol_socket_path);
+    async fn fetch_binance_exchange_info(url: &str) -> Result<BinanceExchangeInfoResponse> {
+        info!("Fetching Binance exchangeInfo from: {}", url);
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .context("Failed to build Binance HTTP client")?;
 
-        // 读取symbol socket
-        let mut buffer = Vec::with_capacity(16384);
-        stream
-            .read_to_end(&mut buffer)
+        let response = client
+            .get(url)
+            .send()
             .await
-            .context("Failed to read from symbol socket")?;
+            .context("Failed to request Binance exchangeInfo")?;
 
-        // 解析symbol socket
-        let buffer_str = String::from_utf8(buffer)?;
-        let value: serde_json::Value = serde_json::from_str(&buffer_str)?;
-        Ok(value)
+        let status = response.status();
+        if !status.is_success() {
+            anyhow::bail!(
+                "Binance exchangeInfo request failed: status={} url={}",
+                status,
+                url
+            );
+        }
+
+        let body = response
+            .text()
+            .await
+            .context("Failed to read Binance exchangeInfo response body")?;
+        let parsed: BinanceExchangeInfoResponse =
+            serde_json::from_str(&body).context("Failed to parse Binance exchangeInfo JSON")?;
+        Ok(parsed)
     }
 
-    async fn get_spot_symbols_related_to_binance_futures(
-        symbol_socket: &str,
-    ) -> Result<Vec<String>> {
-        let value = Self::get_symbol_from_unix_socket(symbol_socket, "binance").await?;
-        let symbols: Vec<String> = value["symbols"]
-            .as_array()
-            .context("symbols field not found or not an array")?
-            .iter()
-            .filter(|s| s["type"].as_str() == Some("spot"))
-            .map(|s| s["symbol_id"].as_str().unwrap().to_string())
-            .filter(|s| s.to_lowercase().ends_with("usdt"))
+    async fn get_symbol_for_binance_futures() -> Result<Vec<String>> {
+        const URL: &str = "https://fapi.binance.com/fapi/v1/exchangeInfo";
+        let info = Self::fetch_binance_exchange_info(URL).await?;
+        let symbols: Vec<String> = info
+            .symbols
+            .into_iter()
+            .filter(|s| s.quote_asset == "USDT")
+            .filter(|s| s.status == "TRADING")
+            .filter(|s| s.contract_type.as_deref() == Some("PERPETUAL"))
+            .map(|s| s.symbol)
+            .collect();
+        info!(
+            "Binance futures USDT-denominated symbol count {:?}",
+            symbols.len()
+        );
+        Ok(symbols)
+    }
+
+    async fn get_spot_symbols_from_binance_api() -> Result<Vec<String>> {
+        const URL: &str = "https://api.binance.com/api/v3/exchangeInfo";
+        let info = Self::fetch_binance_exchange_info(URL).await?;
+        let symbols: Vec<String> = info
+            .symbols
+            .into_iter()
+            .filter(|s| s.quote_asset == "USDT")
+            .filter(|s| s.status == "TRADING")
+            .filter(|s| s.is_spot_trading_allowed.unwrap_or(false))
+            .map(|s| s.symbol)
             .collect();
         info!(
             "Binance spot USDT-denominated symbol count {:?}",
             symbols.len()
         );
-        let futures_symbols = Self::get_symbol_for_binance_futures(symbol_socket).await?;
-        info!(
-            "Binance futures USDT-denominated symbol count {:?}",
-            futures_symbols.len()
+        Ok(symbols)
+    }
+
+    async fn fetch_bybit_instruments(category: &str) -> Result<Vec<BybitInstrument>> {
+        let url = format!(
+            "https://api.bybit.com/v5/market/instruments-info?category={}",
+            category
         );
+        info!("Fetching Bybit instruments from: {}", url);
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .context("Failed to build Bybit HTTP client")?;
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .context("Failed to request Bybit instruments")?;
+        let status = response.status();
+        if !status.is_success() {
+            anyhow::bail!(
+                "Bybit instruments request failed: status={} url={}",
+                status,
+                url
+            );
+        }
+
+        let body = response
+            .text()
+            .await
+            .context("Failed to read Bybit response body")?;
+        let parsed: BybitInstrumentsResponse =
+            serde_json::from_str(&body).context("Failed to parse Bybit response JSON")?;
+        if parsed.ret_code != 0 {
+            anyhow::bail!(
+                "Bybit API error: code={} msg={}",
+                parsed.ret_code,
+                parsed.ret_msg
+            );
+        }
+        let instruments = parsed.result.map(|r| r.list).unwrap_or_default();
+        Ok(instruments)
+    }
+
+    async fn get_spot_symbols_related_to_binance_futures() -> Result<Vec<String>> {
+        let symbols = Self::get_spot_symbols_from_binance_api().await?;
+        let futures_symbols = Self::get_symbol_for_binance_futures().await?;
         let spot_symbols_related_to_futures: Vec<String> = symbols
             .iter()
             .filter(|spot_symbol| {
@@ -217,19 +318,6 @@ impl Config {
         //用三线表打印，哪些符号在futures中存在，但是在spot中不存在
         print_symbol_comparison(&futures_symbols, &symbols, &spot_symbols_related_to_futures);
         Ok(spot_symbols_related_to_futures)
-    }
-
-    async fn get_symbol_for_binance_futures(symbol_socket: &str) -> Result<Vec<String>> {
-        let value = Self::get_symbol_from_unix_socket(symbol_socket, "binance-futures").await?;
-        let symbols: Vec<String> = value["symbols"]
-            .as_array()
-            .context("symbols field not found or not an array")?
-            .iter()
-            .filter(|s| s["type"].as_str() == Some("perpetual"))
-            .map(|s| s["symbol_id"].as_str().unwrap().to_string())
-            .filter(|s| s.to_lowercase().ends_with("usdt"))
-            .collect();
-        Ok(symbols)
     }
 
     /// 从 OKEx HTTP API 获取 USDT 永续合约列表
@@ -326,39 +414,36 @@ impl Config {
         Ok(spot_symbols_related_to_swap)
     }
 
-    async fn get_symbol_for_bybit_linear(symbol_socket: &str) -> Result<Vec<String>> {
-        let value = Self::get_symbol_from_unix_socket(symbol_socket, "bybit").await?;
-        let symbols: Vec<String> = value["symbols"]
-            .as_array()
-            .context("symbols field not found or not an array")?
-            .iter()
-            .filter(|s| s["type"].as_str() == Some("perpetual"))
-            .map(|s| s["symbol_id"].as_str().unwrap().to_string())
-            .filter(|s| s.to_lowercase().ends_with("usdt"))
+    async fn get_symbol_for_bybit_linear() -> Result<Vec<String>> {
+        let instruments = Self::fetch_bybit_instruments("linear").await?;
+        let symbols: Vec<String> = instruments
+            .into_iter()
+            .filter(|item| item.status == "Trading")
+            .filter(|item| item.quote_coin.as_deref() == Some("USDT"))
+            .filter(|item| item.contract_type.as_deref() == Some("LinearPerpetual"))
+            .map(|item| item.symbol)
             .collect();
+        info!(
+            "Bybit linear USDT-denominated symbol count {:?}",
+            symbols.len()
+        );
         Ok(symbols)
     }
 
-    async fn get_spot_symbols_related_to_bybit(symbol_socket: &str) -> Result<Vec<String>> {
-        let value = Self::get_symbol_from_unix_socket(symbol_socket, "bybit-spot").await?;
-        let symbols: Vec<String> = value["symbols"]
-            .as_array()
-            .context("symbols field not found or not an array")?
-            .iter()
-            .filter(|s| s["type"].as_str() == Some("spot"))
-            .map(|s| s["symbol_id"].as_str().unwrap().to_string())
-            .filter(|s| s.to_lowercase().ends_with("usdt"))
+    async fn get_spot_symbols_related_to_bybit() -> Result<Vec<String>> {
+        let spot_instruments = Self::fetch_bybit_instruments("spot").await?;
+        let spot_symbols: Vec<String> = spot_instruments
+            .into_iter()
+            .filter(|item| item.status == "Trading")
+            .filter(|item| item.quote_coin.as_deref() == Some("USDT"))
+            .map(|item| item.symbol)
             .collect();
         info!(
             "Bybit spot USDT-denominated symbol count {:?}",
-            symbols.len()
+            spot_symbols.len()
         );
-        let linear_contract_symbols = Self::get_symbol_for_bybit_linear(symbol_socket).await?;
-        info!(
-            "Bybit linear USDT-denominated symbol count {:?}",
-            linear_contract_symbols.len()
-        );
-        let spot_symbols_related_to_linear: Vec<String> = symbols
+        let linear_contract_symbols = Self::get_symbol_for_bybit_linear().await?;
+        let spot_symbols_related_to_linear: Vec<String> = spot_symbols
             .iter()
             .filter(|spot_symbol| {
                 linear_contract_symbols.iter().any(|linear_symbol| {
@@ -373,7 +458,7 @@ impl Config {
         );
         print_symbol_comparison(
             &linear_contract_symbols,
-            &symbols,
+            &spot_symbols,
             &spot_symbols_related_to_linear,
         );
         Ok(spot_symbols_related_to_linear)
@@ -540,29 +625,21 @@ impl Config {
     pub async fn get_symbols(&self) -> Result<Vec<String>> {
         match self.venue {
             //币安u本位期货合约
-            TradingVenue::BinanceUm => {
-                Self::get_symbol_for_binance_futures(&self.symbol_socket).await
-            }
+            TradingVenue::BinanceUm => Self::get_symbol_for_binance_futures().await,
             //币安u本位期货合约对应的现货
-            TradingVenue::BinanceSpot => {
-                Self::get_spot_symbols_related_to_binance_futures(&self.symbol_socket).await
-            }
+            TradingVenue::BinanceSpot => Self::get_spot_symbols_related_to_binance_futures().await,
             //币安杠杆
             TradingVenue::BinanceMargin => {
-                Self::get_spot_symbols_related_to_binance_futures(&self.symbol_socket).await
+                Self::get_spot_symbols_related_to_binance_futures().await
             }
             //OKEXu本位期货合约
             TradingVenue::OkexFutures => Self::get_symbol_for_okex_swap().await,
             //OKEXu本位期货合约对应的现货
             TradingVenue::OkexMargin => Self::get_spot_symbols_related_to_okex_swap().await,
             //Bybitu本位期货合约
-            TradingVenue::BybitFutures => {
-                Self::get_symbol_for_bybit_linear(&self.symbol_socket).await
-            }
+            TradingVenue::BybitFutures => Self::get_symbol_for_bybit_linear().await,
             //Bybitu本位期货合约对应的现货
-            TradingVenue::BybitMargin => {
-                Self::get_spot_symbols_related_to_bybit(&self.symbol_socket).await
-            }
+            TradingVenue::BybitMargin => Self::get_spot_symbols_related_to_bybit().await,
             //Bitget USDT永续合约
             TradingVenue::BitgetFutures => Self::get_symbol_for_bitget_futures().await,
             //Bitget杠杆交易（与Futures关联的）

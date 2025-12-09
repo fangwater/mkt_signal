@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -12,10 +11,8 @@ use crossbeam_channel::unbounded;
 use dashmap::mapref::entry::Entry;
 use log::{debug, error, info, warn};
 use parking_lot::RwLock;
+use reqwest::Client;
 use serde::Deserialize;
-use serde_json::Value;
-use tokio::io::AsyncReadExt;
-use tokio::net::UnixStream;
 use tokio::signal;
 use tokio::time::{interval, sleep, Instant};
 use tokio_util::sync::CancellationToken;
@@ -79,10 +76,23 @@ struct Args {
     iceoryx_node: Option<String>,
     #[arg(long, default_value = "info,rolling_metrics=info,mkt_signal=info")]
     log_filter: String,
-    #[arg(long)]
-    symbol_socket: Option<String>,
     #[arg(long, default_value_t = 1800)]
     symbol_refresh_sec: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct BinanceExchangeInfo {
+    symbols: Vec<BinanceSymbolInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BinanceSymbolInfo {
+    symbol: String,
+    status: String,
+    quote_asset: String,
+    #[serde(default)]
+    contract_type: Option<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -311,7 +321,6 @@ async fn main() -> Result<()> {
 
     let prefix = format!("{}_{}", spot_exchange.as_str(), swap_exchange.as_str());
     let symbol_refresh_secs = args.symbol_refresh_sec;
-    let symbol_socket_path = resolve_symbol_socket(&args.symbol_socket);
 
     let series_map = Arc::new(new_series_map());
     let series_capacity = Arc::new(AtomicUsize::new(config.max_length));
@@ -328,29 +337,21 @@ async fn main() -> Result<()> {
     spawn_ringbuffer_monitor(Arc::clone(&series_map), Duration::from_secs(300));
 
     if swap_exchange == Exchange::Binance {
-        match symbol_socket_path {
-            Some(socket_dir) => {
-                let series_map_task = Arc::clone(&series_map);
-                let capacity_task = Arc::clone(&series_capacity);
-                let swap_task = swap_exchange.as_str().to_string();
-                let prefix_task = prefix.clone();
-                let interval = Duration::from_secs(symbol_refresh_secs.max(60));
-                tokio::spawn(async move {
-                    symbol_refresh_loop(
-                        socket_dir,
-                        swap_task,
-                        prefix_task,
-                        interval,
-                        series_map_task,
-                        capacity_task,
-                    )
-                    .await;
-                });
-            }
-            None => {
-                warn!("{LOG_PREFIX}: symbol_socket 未配置，跳过 binance-futures 定期符号刷新");
-            }
-        }
+        let series_map_task = Arc::clone(&series_map);
+        let capacity_task = Arc::clone(&series_capacity);
+        let swap_task = swap_exchange.as_str().to_string();
+        let prefix_task = prefix.clone();
+        let interval = Duration::from_secs(symbol_refresh_secs.max(60));
+        tokio::spawn(async move {
+            symbol_refresh_loop(
+                swap_task,
+                prefix_task,
+                interval,
+                series_map_task,
+                capacity_task,
+            )
+            .await;
+        });
     }
 
     let config_clone = Arc::clone(&config_lock);
@@ -423,48 +424,6 @@ fn build_redis_settings(args: &Args) -> Result<RedisSettings> {
     }
     settings.prefix = args.redis_prefix.clone();
     Ok(settings)
-}
-
-#[derive(Deserialize)]
-struct SymbolSocketConfig {
-    symbol_socket: Option<String>,
-}
-
-fn resolve_symbol_socket(cli_value: &Option<String>) -> Option<String> {
-    if let Some(path) = cli_value.as_ref() {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-        }
-    }
-
-    let config_path = Path::new("config/mkt_cfg.yaml");
-    if !config_path.exists() {
-        return None;
-    }
-
-    match fs::read_to_string(config_path) {
-        Ok(content) => match serde_yaml::from_str::<SymbolSocketConfig>(&content) {
-            Ok(cfg) => cfg.symbol_socket.and_then(|s| {
-                let trimmed = s.trim().to_string();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed)
-                }
-            }),
-            Err(err) => {
-                warn!(
-                    "{LOG_PREFIX}: 解析 config/mkt_cfg.yaml 失败，无法加载 symbol_socket: {err:?}"
-                );
-                None
-            }
-        },
-        Err(err) => {
-            warn!("{LOG_PREFIX}: 读取 config/mkt_cfg.yaml 失败，无法加载 symbol_socket: {err:?}");
-            None
-        }
-    }
 }
 
 async fn config_reload_loop(
@@ -863,7 +822,6 @@ struct SymbolSyncStats {
 }
 
 async fn symbol_refresh_loop(
-    symbol_socket: String,
     swap_exchange: String,
     prefix: String,
     interval: Duration,
@@ -871,9 +829,8 @@ async fn symbol_refresh_loop(
     series_capacity: Arc<AtomicUsize>,
 ) {
     debug!(
-        "{LOG_PREFIX}: symbol refresh loop started (swap={}, socket={}, interval={}s)",
+        "{LOG_PREFIX}: symbol refresh loop started (swap={}, interval={}s)",
         swap_exchange,
-        symbol_socket,
         interval.as_secs()
     );
 
@@ -885,7 +842,7 @@ async fn symbol_refresh_loop(
             first = false;
         }
 
-        match fetch_binance_futures_symbols(&symbol_socket).await {
+        match fetch_binance_futures_symbols().await {
             Ok(mut symbols) => {
                 symbols.sort();
                 symbols.dedup();
@@ -903,30 +860,41 @@ async fn symbol_refresh_loop(
     }
 }
 
-async fn fetch_binance_futures_symbols(socket_dir: &str) -> Result<Vec<String>> {
-    let base = socket_dir.trim_end_matches('/');
-    let socket_path = format!("{}/binance-futures.sock", base);
-    let mut stream = UnixStream::connect(&socket_path)
+async fn fetch_binance_futures_symbols() -> Result<Vec<String>> {
+    const URL: &str = "https://fapi.binance.com/fapi/v1/exchangeInfo";
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .context("构建 Binance HTTP 客户端失败")?;
+    let response = client
+        .get(URL)
+        .send()
         .await
-        .with_context(|| format!("连接 symbol socket 失败: {}", socket_path))?;
+        .context("请求 Binance exchangeInfo 失败")?;
+    let status = response.status();
+    if !status.is_success() {
+        anyhow::bail!("Binance exchangeInfo 请求失败: status={}", status);
+    }
 
-    let mut buffer = Vec::with_capacity(16 * 1024);
-    stream
-        .read_to_end(&mut buffer)
+    let body = response
+        .text()
         .await
-        .context("读取 symbol socket 失败")?;
+        .context("读取 Binance exchangeInfo 响应失败")?;
+    let info: BinanceExchangeInfo =
+        serde_json::from_str(&body).context("解析 Binance exchangeInfo JSON 失败")?;
 
-    let value: Value = serde_json::from_slice(&buffer)?;
-    let symbols = value["symbols"]
-        .as_array()
-        .context("symbol socket 响应缺少 symbols 数组")?
-        .iter()
-        .filter(|entry| entry["type"].as_str() == Some("perpetual"))
-        .filter_map(|entry| entry["symbol_id"].as_str())
-        .filter(|sym| sym.to_ascii_lowercase().ends_with("usdt"))
-        .filter_map(|sym| {
-            let upper = sym.to_uppercase();
-            let base = upper.strip_suffix("USDT").unwrap_or(&upper);
+    let symbols = info
+        .symbols
+        .into_iter()
+        .filter(|entry| entry.quote_asset == "USDT")
+        .filter(|entry| entry.status == "TRADING")
+        .filter(|entry| entry.contract_type.as_deref() == Some("PERPETUAL"))
+        .filter_map(|entry| {
+            let upper = entry.symbol.to_uppercase();
+            if !upper.ends_with("USDT") {
+                return None;
+            }
+            let base = &upper[..upper.len().saturating_sub(4)];
             let digit_prefix = base.chars().take_while(|ch| ch.is_ascii_digit()).count();
             if digit_prefix >= 3 {
                 // 跳过自带乘数的合约（如 1000PEPEUSDT），与现货单位不一致。
@@ -935,7 +903,7 @@ async fn fetch_binance_futures_symbols(socket_dir: &str) -> Result<Vec<String>> 
                 Some(upper)
             }
         })
-        .collect::<Vec<_>>();
+        .collect();
     Ok(symbols)
 }
 

@@ -5,7 +5,7 @@ use bytes::Bytes;
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{info, warn};
+use log::{debug, info, warn, Level};
 
 const TRADE_MAX_BYTES: usize = 64;
 const KLINE_MAX_BYTES: usize = 128;
@@ -14,6 +14,7 @@ const SPREAD_MAX_BYTES: usize = 64;
 const SIGNAL_MAX_BYTES: usize = 64;
 
 pub struct IceOryxForwarder {
+    exchange: String,
     // Publishers for different message types
     incremental_publisher: Option<Publisher<ipc::Service, [u8; 16384], ()>>,
     trade_publisher: Option<Publisher<ipc::Service, [u8; TRADE_MAX_BYTES], ()>>,
@@ -47,6 +48,7 @@ impl IceOryxForwarder {
         let exchange = config.get_exchange();
 
         info!("Creating IceOryx forwarder for exchange: {}", exchange);
+        let exchange_name = exchange.as_str().to_string();
 
         // 创建Node
         let node_name = format!("mkt_signal_{}", exchange.as_str().replace("-", "_"));
@@ -188,6 +190,7 @@ impl IceOryxForwarder {
               signal_publisher.is_some());
 
         Ok(Self {
+            exchange: exchange_name,
             incremental_publisher,
             trade_publisher,
             kline_publisher,
@@ -330,10 +333,11 @@ impl IceOryxForwarder {
                     || t == crate::mkt_msg::MktMsgType::IndexPrice as u32
                     || t == crate::mkt_msg::MktMsgType::FundingRate as u32 =>
                 {
-                    self.derivatives_count += 1
+                    self.derivatives_count += 1;
+                    self.log_derivatives_debug(msg_type, msg.as_ref());
                 }
                 t if t == crate::mkt_msg::MktMsgType::AskBidSpread as u32 => {
-                    self.ask_bid_spread_count += 1
+                    self.ask_bid_spread_count += 1;
                 }
                 t if t == crate::mkt_msg::MktMsgType::TimeSignal as u32 => self.signal_count += 1,
                 _ => {}
@@ -433,6 +437,39 @@ impl IceOryxForwarder {
         self.der_max_seen = 0;
         self.spread_max_seen = 0;
         self.signal_max_seen = 0;
+    }
+
+    fn log_derivatives_debug(&self, msg_type: u32, payload: &[u8]) {
+        if !log::log_enabled!(Level::Debug) {
+            return;
+        }
+        let symbol = Self::extract_symbol(payload).unwrap_or("UNKNOWN");
+        let label = match msg_type {
+            t if t == crate::mkt_msg::MktMsgType::LiquidationOrder as u32 => "liquidation",
+            t if t == crate::mkt_msg::MktMsgType::MarkPrice as u32 => "mark_price",
+            t if t == crate::mkt_msg::MktMsgType::IndexPrice as u32 => "index_price",
+            t if t == crate::mkt_msg::MktMsgType::FundingRate as u32 => "funding_rate",
+            _ => "derivatives",
+        };
+        debug!(
+            "[IceOryx][{}] forwarded {} message: symbol={} bytes={}",
+            self.exchange,
+            label,
+            symbol,
+            payload.len()
+        );
+    }
+
+    fn extract_symbol(payload: &[u8]) -> Option<&str> {
+        if payload.len() < 8 {
+            return None;
+        }
+        let len = u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]) as usize;
+        let end = 8 + len;
+        if payload.len() < end {
+            return None;
+        }
+        std::str::from_utf8(&payload[8..end]).ok()
     }
 }
 
