@@ -5,5 +5,5 @@
     "rust-analyzer.server.extraEnv": {
         "RA_LOG": "error"
     },
-    "rust-analyzer.cargo.buildScripts.enable": false
+    "rust-analyzer.cargo.buildScripts.enable": false,
 }

@@ -517,11 +517,21 @@ impl OkexProvider {
             }
             // BTC-USDT-SWAP -> BTCUSDT
             let symbol = inst.inst_id.replace("-SWAP", "").replace('-', "");
+
+            // 计算合约面值 = ctVal × ctMult
+            // 对于 USDT 永续合约，通常 ctVal 是实际面值（如 0.01 BTC），ctMult = 1
+            let ct_val: f64 = inst
+                .ct_val
+                .as_deref()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1.0);
             let ct_mult: f64 = inst
                 .ct_mult
                 .as_deref()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1.0);
+            let contract_size = ct_val * ct_mult;
+
             let entry = MinQtyEntry {
                 symbol: symbol.clone(),
                 base_asset: inst.inst_id.split('-').next().unwrap_or("").to_uppercase(),
@@ -532,7 +542,7 @@ impl OkexProvider {
                 min_notional: None,
             };
             entries.insert(symbol.clone(), entry);
-            multipliers.insert(symbol, ct_mult);
+            multipliers.insert(symbol, contract_size);
         }
         Ok((entries, multipliers))
     }
@@ -575,6 +585,8 @@ struct OkexInstrument {
     settle_ccy: Option<String>,
     #[serde(rename = "ctType")]
     ct_type: Option<String>,
+    #[serde(rename = "ctVal")]
+    ct_val: Option<String>,
     #[serde(rename = "ctMult")]
     ct_mult: Option<String>,
     #[serde(rename = "lotSz")]
