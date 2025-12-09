@@ -377,14 +377,21 @@ impl ToOkexWsJson for OkexNewOrderRequest {
         let cl_id = params.client_order_id.to_string();
         let ord_type_str = params.order_type.as_str();
         let args_obj = if params.order_type == OkexOrderType::Market {
-            json!({
+            // 市价买单默认用 quote 计价，这里强制 tgtCcy=base_ccy 让 sz 表示基础币数量
+            let mut obj = json!({
                 "instId": params.symbol,
                 "side": params.side.as_str_lower(),
                 "ordType": ord_type_str,
                 "sz": qty,
                 "tdMode": td_mode,
                 "clOrdId": cl_id,
-            })
+            });
+            if params.side.is_buy() {
+                if let Some(map) = obj.as_object_mut() {
+                    map.insert("tgtCcy".to_string(), json!("base_ccy"));
+                }
+            }
+            obj
         } else {
             json!({
                 "instId": params.symbol,

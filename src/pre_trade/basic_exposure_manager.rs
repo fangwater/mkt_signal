@@ -11,12 +11,12 @@ use crate::pre_trade::{
 /// 单个资产维度的敞口信息（简化版）
 #[derive(Debug, Clone)]
 pub struct BasicExposureEntry {
-    pub asset: String,      // 基础资产（如 "BTC"）
-    pub balance: f64,       // 现货余额（净值 = 余额 - 借币 - 利息）
-    pub borrowed: f64,      // 借币数量
-    pub interest: f64,      // 累计利息
-    pub um_position: f64,   // UM 持仓（标的资产数量，已考虑合约乘数）
-    pub exposure: f64,      // 净敞口 = balance + um_position
+    pub asset: String,    // 基础资产（如 "BTC"）
+    pub balance: f64,     // 现货余额（净值 = 余额 - 借币 - 利息）
+    pub borrowed: f64,    // 借币数量
+    pub interest: f64,    // 累计利息
+    pub um_position: f64, // UM 持仓（标的资产数量，已考虑合约乘数）
+    pub exposure: f64,    // 净敞口 = balance + um_position
 }
 
 /// 敞口管理器（简化版），负责汇总 balance 与 UM 持仓的资产敞口
@@ -45,12 +45,8 @@ impl BasicExposureManager {
         min_qty_table: &MinQtyTable,
     ) -> Self {
         let symbol_mapper = crate::pre_trade::symbol_mapper::create_symbol_mapper(exchange);
-        let exposures = Self::compute_exposures(
-            balance_mgr,
-            um_mgr,
-            min_qty_table,
-            symbol_mapper.as_ref(),
-        );
+        let exposures =
+            Self::compute_exposures(balance_mgr, um_mgr, min_qty_table, symbol_mapper.as_ref());
         let total_exposure = exposures.iter().map(|e| e.exposure.abs()).sum();
 
         debug!(

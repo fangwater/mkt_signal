@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use log::info;
 
-use crate::common::{basic_account_msg::BasicPositionMsg, exchange::Exchange, min_qty_table::MinQtyTable};
+use crate::common::{
+    basic_account_msg::BasicPositionMsg, exchange::Exchange, min_qty_table::MinQtyTable,
+};
 use crate::pre_trade::net_position::NetPosition;
 
 /// 最小化的 U 本位持仓管理器：仅维护 inst_id、side、持仓量、时间戳。
@@ -75,9 +77,21 @@ impl BasicUmManager {
         let short_key = format!("{}|S", inst_id);
         let net_key = format!("{}|N", inst_id);
 
-        let long_amount = self.positions.get(&long_key).map(|p| p.amount).unwrap_or(0.0);
-        let short_amount = self.positions.get(&short_key).map(|p| p.amount).unwrap_or(0.0);
-        let net_amount = self.positions.get(&net_key).map(|p| p.amount).unwrap_or(0.0);
+        let long_amount = self
+            .positions
+            .get(&long_key)
+            .map(|p| p.amount)
+            .unwrap_or(0.0);
+        let short_amount = self
+            .positions
+            .get(&short_key)
+            .map(|p| p.amount)
+            .unwrap_or(0.0);
+        let net_amount = self
+            .positions
+            .get(&net_key)
+            .map(|p| p.amount)
+            .unwrap_or(0.0);
 
         // 对于 hedge 模式：long - short；对于 net 模式：直接取 net_amount
         if long_amount != 0.0 || short_amount != 0.0 {

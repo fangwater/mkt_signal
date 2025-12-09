@@ -1,6 +1,9 @@
 /// 测试 MinQtyTable，展示主流币的合约信息（重点：合约乘数）
 use anyhow::Result;
-use mkt_signal::common::{exchange::Exchange, min_qty_table::{MarketType, MinQtyTable}};
+use mkt_signal::common::{
+    exchange::Exchange,
+    min_qty_table::{MarketType, MinQtyTable},
+};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -78,14 +81,20 @@ async fn main() -> Result<()> {
 
     // 主流币列表
     let mainstream_coins = vec![
-        "BTC", "ETH", "SOL", "XRP", "BNB", "ADA", "DOGE", "AVAX", "DOT", "MATIC",
-        "LINK", "UNI", "ATOM", "LTC", "ARB", "OP", "SUI", "APT", "TRX", "TON",
+        "BTC", "ETH", "SOL", "XRP", "BNB", "ADA", "DOGE", "AVAX", "DOT", "MATIC", "LINK", "UNI",
+        "ATOM", "LTC", "ARB", "OP", "SUI", "APT", "TRX", "TON",
     ];
 
     // 打印三线表头
-    println!("┌──────────┬──────────────┬──────────────┬──────────────┬──────────────┬──────────────┐");
-    println!("│  Symbol  │  MinQty      │  StepSize    │  PriceTick   │  ContractSz  │  说明        │");
-    println!("├──────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤");
+    println!(
+        "┌──────────┬──────────────┬──────────────┬──────────────┬──────────────┬──────────────┐"
+    );
+    println!(
+        "│  Symbol  │  MinQty      │  StepSize    │  PriceTick   │  ContractSz  │  说明        │"
+    );
+    println!(
+        "├──────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤"
+    );
 
     let mut found_count = 0;
     for coin in &mainstream_coins {
@@ -94,7 +103,9 @@ async fn main() -> Result<()> {
         // 查询合约信息
         let min_qty = table.min_qty(MarketType::Futures, &symbol).unwrap_or(0.0);
         let step_size = table.step_size(MarketType::Futures, &symbol).unwrap_or(0.0);
-        let price_tick = table.price_tick(MarketType::Futures, &symbol).unwrap_or(0.0);
+        let price_tick = table
+            .price_tick(MarketType::Futures, &symbol)
+            .unwrap_or(0.0);
         let contract_size = table.contract_multiplier(&symbol);
 
         // 只打印存在的合约
@@ -102,19 +113,15 @@ async fn main() -> Result<()> {
             found_count += 1;
             println!(
                 "│ {:8} │ {:12.6} │ {:12.6} │ {:12.6} │ {:12.6} │ 1张={:.2} {} │",
-                symbol,
-                min_qty,
-                step_size,
-                price_tick,
-                contract_size,
-                contract_size,
-                coin
+                symbol, min_qty, step_size, price_tick, contract_size, contract_size, coin
             );
         }
     }
 
     // 打印三线表底
-    println!("└──────────┴──────────────┴──────────────┴──────────────┴──────────────┴──────────────┘");
+    println!(
+        "└──────────┴──────────────┴──────────────┴──────────────┴──────────────┴──────────────┘"
+    );
     println!("\n找到 {} 个主流币合约信息", found_count);
 
     println!("\n【字段说明】");
