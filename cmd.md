@@ -7,8 +7,12 @@
 1、需要测试合约头寸是否准确
 2、下单对冲等所有涉及到um的地方需要判断合约张数
 
-• - OKX 跨/逐仓默认会自动借还（有借币额度且开了自动借还时），你看到的 SOL 负债变化就是自动借入补足、成交后再自动还。
-  - tgtCcy 只影响市价买单的含义：
-      - tgtCcy=quote_ccy（默认）：sz 表示花多少报价货币（USDT）；成交数量由盘口换算。
-      - tgtCcy=base_ccy：sz 表示买多少基础币（SOL），用多少 USDT 由系统算。
-  - 对卖单/限价单：tgtCcy 不起作用，卖单 sz 始终是卖出的基础币数量；限价单需要你同时给 px 和 sz（基础币数量）。
+
+【字段说明】
+  - ctVal:       合约面值（Contract Value）
+  - ctMult:      合约乘数（Contract Multiplier）
+  - ContractSz:  实际合约大小 = ctVal × ctMult
+  - MinQty:      最小下单量（张数）
+  - StepSize:    下单步进（张数）
+  - PriceTick:   价格最小变动单位
+

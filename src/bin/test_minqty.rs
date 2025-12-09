@@ -1,5 +1,5 @@
 /// 测试 MinQtyTable，展示主流币的合约信息（重点：合约乘数）
-use anyhow::Result;
+use anyhow::{bail, Result};
 use mkt_signal::common::{
     exchange::Exchange,
     min_qty_table::{MarketType, MinQtyTable},
@@ -41,6 +41,9 @@ async fn fetch_okx_raw_data() -> Result<Vec<OkexInstrument>> {
     let response = client.get(url).send().await?;
     let body = response.text().await?;
     let resp: OkexResponse = serde_json::from_str(&body)?;
+    if resp.code != "0" {
+        bail!("OKX API error: {} - {}", resp.code, resp.msg);
+    }
     Ok(resp.data)
 }
 

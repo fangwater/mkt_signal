@@ -880,6 +880,7 @@ impl MinQtyTable {
 
     pub fn contract_multiplier(&self, symbol: &str) -> f64 {
         match self.exchange {
+            Exchange::Binance => 1.0, // Binance UM 合约面值默认为 1
             Exchange::Gate | Exchange::Okex => {
                 let key = symbol.to_uppercase();
                 *self.contract_multipliers.get(&key).unwrap_or(&1.0)
