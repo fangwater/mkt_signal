@@ -6,4 +6,5 @@
         "RA_LOG": "error"
     },
     "rust-analyzer.cargo.buildScripts.enable": false,
+    "terminal.integrated.suggest.enabled": false,
 }
