@@ -54,11 +54,6 @@ pub trait OrderUpdate {
     /// 获取交易标的类型（交易所和市场类型）
     fn trading_venue(&self) -> TradingVenue;
 
-    /// 辅助方法：检查订单是否已完成（成交或取消）
-    fn is_order_finished(&self) -> bool {
-        self.status().is_finished()
-    }
-
     /// 获取平均成交价（若适用）
     fn average_price(&self) -> Option<f64> {
         None

@@ -93,8 +93,9 @@ async fn main() -> Result<()> {
         primary_ip, secondary_ip, session_max
     );
 
-    // 构建订阅消息 - 订阅 SWAP 合约的订单和持仓
+    // 构建订阅消息 - 同时订阅 SPOT/SWAP 订单和持仓
     let subscribe_messages = vec![
+        build_orders_subscribe_message("SPOT"),
         build_orders_subscribe_message("SWAP"),
         build_balance_and_position_subscribe_message(),
     ];

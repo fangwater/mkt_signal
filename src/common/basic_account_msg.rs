@@ -27,6 +27,7 @@ pub struct OkexOrderMsg {
     pub inst_type: u8,
     pub ord_id: i64,
     pub cl_ord_id: i64,
+    pub trade_id: i64,
     pub state: u8,
     pub side: u8,
     pub ord_type: u8,
@@ -44,17 +45,19 @@ impl OkexOrderMsg {
     /// 将 instType 文本映射为紧凑编码
     pub fn inst_type_to_u8(inst_type: &str) -> u8 {
         match inst_type {
+            "SPOT" => 0,
             "MARGIN" => 1,
             "SWAP" => 2,
             "FUTURES" => 3,
             "OPTION" => 4,
-            _ => 0,
+            _ => u8::MAX,
         }
     }
 
     /// 反向映射，便于日志展示
     pub fn inst_type_to_str(code: u8) -> &'static str {
         match code {
+            0 => "SPOT",
             1 => "MARGIN",
             2 => "SWAP",
             3 => "FUTURES",
@@ -143,6 +146,7 @@ impl OkexOrderMsg {
             + 4 + inst_id_bytes.len()
             + 8  // ord_id i64
             + 8  // cl_ord_id i64
+            + 8  // trade_id i64
             + 1  // state u8
             + 1  // side u8
             + 1  // ord_type u8
@@ -163,6 +167,8 @@ impl OkexOrderMsg {
         buf.put_i64_le(self.ord_id);
 
         buf.put_i64_le(self.cl_ord_id);
+
+        buf.put_i64_le(self.trade_id);
 
         buf.put_u8(self.state);
 
@@ -221,6 +227,10 @@ impl OkexOrderMsg {
             anyhow::bail!("Not enough data for cl_ord_id");
         }
         let cl_ord_id = cursor.get_i64_le();
+        if cursor.remaining() < 8 {
+            anyhow::bail!("Not enough data for trade_id");
+        }
+        let trade_id = cursor.get_i64_le();
         if cursor.remaining() < 1 {
             anyhow::bail!("Not enough data for state");
         }
@@ -263,6 +273,7 @@ impl OkexOrderMsg {
             inst_type,
             ord_id,
             cl_ord_id,
+            trade_id,
             state,
             side,
             ord_type,

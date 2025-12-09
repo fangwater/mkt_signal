@@ -2,6 +2,7 @@ pub mod binance_margin_impl;
 pub mod binance_um_impl;
 pub mod hedge_arb_strategy;
 pub mod manager;
+pub mod okex_impl;
 pub mod order_update;
 pub mod trade_engine_response;
 pub mod trade_update;
