@@ -12,7 +12,9 @@ use crate::parser::bybit_parser::{
     BybitSignalParser, BybitTradeParser,
 };
 use crate::parser::default_parser::Parser;
-use crate::parser::gate_parser::{GateKlineParser, GateSignalParser, GateTickerParser};
+use crate::parser::gate_parser::{
+    GateDerivativesMetricsParser, GateKlineParser, GateSignalParser, GateTickerParser,
+};
 use crate::parser::okex_parser::{
     OkexAskBidSpreadParser, OkexDerivativesMetricsParser, OkexIncParser, OkexKlineParser,
     OkexSignalParser, OkexTradeParser,
@@ -412,6 +414,11 @@ impl MktManager {
                 Exchange::Gate => {
                     // Gate ticker 包含最优买卖价
                     let parser = GateTickerParser::new();
+                    log::info!(
+                        "Gate ask_bid_spread subscribe batch {} payload={}",
+                        i,
+                        subscribe_msg
+                    );
                     self.spawn_connection_with_mpsc(
                         exchange,
                         url.clone(),
@@ -449,6 +456,9 @@ impl MktManager {
                 crate::sub_msg::ExchangePerpsSubscribeMsgs::Bitget(bitget_msgs) => {
                     self.start_bitget_derivatives_connections(&bitget_msgs)
                         .await;
+                }
+                crate::sub_msg::ExchangePerpsSubscribeMsgs::Gate(gate_msgs) => {
+                    self.start_gate_derivatives_connections(&gate_msgs).await;
                 }
             }
         }
@@ -581,6 +591,35 @@ impl MktManager {
                 url.clone(),
                 ticker_msg.clone(),
                 format!("bitget ticker batch {}", i),
+                parser,
+                tx.clone(),
+            )
+            .await;
+        }
+    }
+
+    async fn start_gate_derivatives_connections(
+        &mut self,
+        msgs: &crate::sub_msg::GatePerpsSubscribeMsgs,
+    ) {
+        let exchange = self.cfg.get_exchange();
+        let url = crate::sub_msg::GatePerpsSubscribeMsgs::WS_URL.to_string();
+        let tx = self.derivatives_tx.clone();
+
+        info!("Starting Gate derivatives connections (tickers)");
+
+        for (i, ticker_msg) in msgs.ticker_stream_msgs.iter().enumerate() {
+            let parser = GateDerivativesMetricsParser::new();
+            log::info!(
+                "Gate derivatives subscribe batch {} payload={}",
+                i,
+                ticker_msg
+            );
+            self.spawn_connection_with_mpsc(
+                exchange,
+                url.clone(),
+                ticker_msg.clone(),
+                format!("gate futures ticker batch {}", i),
                 parser,
                 tx.clone(),
             )

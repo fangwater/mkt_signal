@@ -1,6 +1,5 @@
 use crate::cfg::Config;
 use crate::connection::mkt_manager::{MessageQueues, MktManager};
-use crate::exchange::Exchange;
 use crate::iceoryx_forwarder::IceOryxForwarder;
 use crate::proxy::MpscProxy;
 use crate::sub_msg::{DerivativesMetricsSubscribeMsgs, SubscribeMsgs};
@@ -88,21 +87,16 @@ impl MktSignalApp {
         let derivatives_subscribe_msgs = if !config.data_types.enable_derivatives {
             None
         } else {
-            match config.get_exchange() {
-                Exchange::Binance | Exchange::Bybit | Exchange::Bitget | Exchange::Okex => {
-                    info!(
-                        "Initializing derivatives metrics subscriptions for {}",
-                        config.get_exchange()
-                    );
-                    let msgs = DerivativesMetricsSubscribeMsgs::new(&config).await;
-                    info!(
-                        "Derivatives symbols loaded: {}",
-                        msgs.get_active_symbols().len()
-                    );
-                    Some(msgs)
-                }
-                Exchange::Gate => None,
-            }
+            info!(
+                "Initializing derivatives metrics subscriptions for {}",
+                config.get_exchange()
+            );
+            let msgs = DerivativesMetricsSubscribeMsgs::new(&config).await;
+            info!(
+                "Derivatives symbols loaded: {}",
+                msgs.get_active_symbols().len()
+            );
+            Some(msgs)
         };
 
         Ok(Self {

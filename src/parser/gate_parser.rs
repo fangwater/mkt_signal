@@ -1,4 +1,6 @@
-use crate::common::mkt_msg::{AskBidSpreadMsg, KlineMsg, SignalMsg, SignalSource};
+use crate::common::mkt_msg::{
+    AskBidSpreadMsg, FundingRateMsg, IndexPriceMsg, KlineMsg, MarkPriceMsg, SignalMsg, SignalSource,
+};
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use tokio::sync::mpsc;
@@ -52,7 +54,7 @@ impl Parser for GateSignalParser {
     }
 }
 
-/// Gate.io Ticker Parser - 解析 ticker 数据提取最优买卖价
+/// Gate.io Book Ticker Parser - 解析 futures.book_ticker 提取最优买卖价
 ///
 /// Gate.io ticker 消息格式:
 /// ```json
@@ -97,53 +99,51 @@ impl Parser for GateTickerParser {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
-                if !channel.ends_with(".tickers") || event != "update" {
+                if event != "update" || !channel.ends_with(".book_ticker") {
                     return 0;
                 }
 
-                // 解析 result 对象
-                if let Some(result) = json_value.get("result").and_then(|v| v.as_object()) {
-                    // 获取 symbol
-                    let symbol = match result.get("currency_pair").and_then(|v| v.as_str()) {
+                let result = json_value.get("result");
+
+                // futures.book_ticker：字段 s/b/B/a/A，时间戳在 result.t
+                if let Some(res) = result.and_then(|v| v.as_object()) {
+                    let symbol = match res.get("s").and_then(|v| v.as_str()) {
                         Some(s) => s,
                         None => return 0,
                     };
-
-                    // 获取时间戳 (使用 time_ms)
-                    let timestamp = json_value
-                        .get("time_ms")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0);
-
-                    // 提取 bid/ask 价格
-                    // Gate.io ticker 没有提供买卖量，使用 0.0 作为占位
-                    let bid_price = result
-                        .get("highest_bid")
+                    let ts = res.get("t").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let bid_price = res
+                        .get("b")
                         .and_then(|v| v.as_str())
                         .and_then(|s| s.parse::<f64>().ok());
-                    let ask_price = result
-                        .get("lowest_ask")
+                    let ask_price = res
+                        .get("a")
                         .and_then(|v| v.as_str())
                         .and_then(|s| s.parse::<f64>().ok());
+                    let bid_amount = res
+                        .get("B")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0);
+                    let ask_amount = res
+                        .get("A")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0);
 
                     if let (Some(bp), Some(ap)) = (bid_price, ask_price) {
-                        // 过滤无效值
-                        if bp <= 0.0 || ap <= 0.0 {
-                            return 0;
-                        }
-
-                        // 创建并发送消息 (bid_amount 和 ask_amount 设为 0.0)
-                        let spread_msg = AskBidSpreadMsg::create(
-                            symbol.to_string(),
-                            timestamp,
-                            bp,
-                            0.0, // Gate ticker 不提供买量
-                            ap,
-                            0.0, // Gate ticker 不提供卖量
-                        );
-
-                        if tx.send(spread_msg.to_bytes()).is_ok() {
-                            return 1;
+                        if bp > 0.0 && ap > 0.0 {
+                            let spread_msg = AskBidSpreadMsg::create(
+                                symbol.to_string(),
+                                ts,
+                                bp,
+                                bid_amount,
+                                ap,
+                                ask_amount,
+                            );
+                            if tx.send(spread_msg.to_bytes()).is_ok() {
+                                return 1;
+                            }
                         }
                     }
                 }
@@ -280,6 +280,95 @@ impl Parser for GateKlineParser {
                         }
                     }
                 }
+            }
+        }
+        0
+    }
+}
+
+/// Gate.io 衍生品指标解析（基于 futures.tickers）
+#[derive(Clone)]
+pub struct GateDerivativesMetricsParser;
+
+impl GateDerivativesMetricsParser {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Parser for GateDerivativesMetricsParser {
+    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Ok(json_str) = std::str::from_utf8(&msg) {
+            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
+                let channel = json_value
+                    .get("channel")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let event = json_value
+                    .get("event")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                if !channel.ends_with(".tickers") || event != "update" {
+                    return 0;
+                }
+
+                let timestamp = json_value
+                    .get("time_ms")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+
+                let mut parsed = 0;
+                let results = json_value.get("result");
+
+                // result 可能是数组或单个对象
+                let items: Vec<&serde_json::Value> = match results {
+                    Some(serde_json::Value::Array(arr)) => arr.iter().collect(),
+                    Some(obj @ serde_json::Value::Object(_)) => vec![obj],
+                    _ => Vec::new(),
+                };
+
+                for item in items {
+                    let Some(symbol) = item.get("contract").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+
+                    if let Some(mark_px) = item
+                        .get("mark_price")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                    {
+                        let msg = MarkPriceMsg::create(symbol.to_string(), mark_px, timestamp);
+                        if tx.send(msg.to_bytes()).is_ok() {
+                            parsed += 1;
+                        }
+                    }
+
+                    if let Some(index_px) = item
+                        .get("index_price")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                    {
+                        let msg = IndexPriceMsg::create(symbol.to_string(), index_px, timestamp);
+                        if tx.send(msg.to_bytes()).is_ok() {
+                            parsed += 1;
+                        }
+                    }
+
+                    if let Some(fr) = item
+                        .get("funding_rate")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                    {
+                        // Gate futures.tickers 未提供 next funding time，填 0 作为占位
+                        let msg = FundingRateMsg::create(symbol.to_string(), fr, 0, timestamp);
+                        if tx.send(msg.to_bytes()).is_ok() {
+                            parsed += 1;
+                        }
+                    }
+                }
+
+                return parsed;
             }
         }
         0

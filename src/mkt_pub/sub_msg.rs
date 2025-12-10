@@ -231,11 +231,35 @@ impl BitgetPerpsSubscribeMsgs {
 }
 
 #[derive(Debug, Clone)]
+pub struct GatePerpsSubscribeMsgs {
+    pub ticker_stream_msgs: Vec<serde_json::Value>, // Gate futures.tickers 含 mark/index/funding
+}
+
+impl GatePerpsSubscribeMsgs {
+    pub const WS_URL: &'static str = "wss://fx-ws.gateio.ws/v4/ws/usdt";
+    pub const MAX_CHANNELS_PER_CONNECTION: usize = 100;
+
+    pub async fn new(cfg: &Config) -> Self {
+        let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
+        let batch_size = cfg.get_batch_size().min(Self::MAX_CHANNELS_PER_CONNECTION);
+        let mut ticker_stream_msgs = Vec::new();
+        let exchange = cfg.get_exchange();
+
+        for chunk in symbols.chunks(batch_size) {
+            ticker_stream_msgs.push(construct_subscribe_message(&exchange, chunk, "tickers"));
+        }
+
+        Self { ticker_stream_msgs }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum ExchangePerpsSubscribeMsgs {
     Binance(BinancePerpsSubscribeMsgs),
     Okex(OkexPerpsSubscribeMsgs),
     Bybit(BybitPerpsSubscribeMsgs),
     Bitget(BitgetPerpsSubscribeMsgs),
+    Gate(GatePerpsSubscribeMsgs),
 }
 
 //衍生品(永续合约)的额外消息
@@ -356,7 +380,7 @@ impl SubscribeMsgs {
             Exchange::Okex => "bbo-tbt".to_string(),
             Exchange::Bybit => "orderbook.1".to_string(),
             Exchange::Bitget => "ticker".to_string(),
-            Exchange::Gate => "tickers".to_string(),
+            Exchange::Gate => "book_ticker".to_string(),
         }
     }
 }
@@ -370,8 +394,8 @@ impl SubscribeMsgs {
             Exchange::Okex => "wss://ws.okx.com:8443/ws/v5/public",
             //Bybitu本位期货合约和现货
             Exchange::Bybit => "wss://stream.bybit.com/v5/public/linear",
-            //Gate.io 现货和USDT合约
-            Exchange::Gate => "wss://api.gateio.ws/ws/v4/",
+            //Gate.io USDT 永续（futures 专用 endpoint）
+            Exchange::Gate => "wss://fx-ws.gateio.ws/v4/ws/usdt",
             //Bitget
             Exchange::Bitget => "wss://ws.bitget.com/mix/v1/stream",
         }
@@ -386,7 +410,7 @@ impl SubscribeMsgs {
             //Bybitu本位期货合约和现货
             Exchange::Bybit => "wss://stream.bybit.com/v5/public/linear",
             //Gate.io 现货和USDT合约 (K线也使用同一URL)
-            Exchange::Gate => "wss://api.gateio.ws/ws/v4/",
+            Exchange::Gate => "wss://fx-ws.gateio.ws/v4/ws/usdt",
             //Bitget
             Exchange::Bitget => "wss://ws.bitget.com/mix/v1/stream",
         }
@@ -450,12 +474,18 @@ impl SubscribeMsgs {
         let mut kline_subscribe_msgs = Vec::new();
         let mut ask_bid_spread_msgs = Vec::new();
         let exchange = cfg.get_exchange();
-        let inc_channel = SubscribeMsgs::get_inc_channel(&exchange);
+        let inc_channel = if cfg.data_types.enable_incremental {
+            Some(SubscribeMsgs::get_inc_channel(&exchange))
+        } else {
+            None
+        };
         let trade_channel = SubscribeMsgs::get_trade_channel(&exchange);
         let kline_channel = SubscribeMsgs::get_kline_channel(&exchange);
         let best_price_spread_channel = SubscribeMsgs::get_ask_bid_spread_channel(&exchange);
         for chunk in symbols.chunks(batch_size) {
-            inc_subscribe_msgs.push(construct_subscribe_message(&exchange, chunk, &inc_channel));
+            if let Some(ref ch) = inc_channel {
+                inc_subscribe_msgs.push(construct_subscribe_message(&exchange, chunk, ch));
+            }
             trade_subscribe_msgs.push(construct_subscribe_message(
                 &exchange,
                 chunk,
@@ -500,7 +530,9 @@ impl DerivativesMetricsSubscribeMsgs {
             Exchange::Bitget => {
                 ExchangePerpsSubscribeMsgs::Bitget(BitgetPerpsSubscribeMsgs::new(cfg).await)
             }
-            Exchange::Gate => panic!("Gate exchange does not support derivatives metrics yet"),
+            Exchange::Gate => {
+                ExchangePerpsSubscribeMsgs::Gate(GatePerpsSubscribeMsgs::new(cfg).await)
+            }
         };
 
         Self {
