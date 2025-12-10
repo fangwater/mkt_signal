@@ -169,13 +169,14 @@ impl WsConnector {
         };
 
         // 发送订阅消息
+        let sub_text = sub_msg.to_string();
         ws_stream
-            .send(Message::Text(sub_msg.to_string()))
+            .send(Message::Text(sub_text.clone()))
             .await
             .with_context(|| "Failed to send subscription message")?;
         debug!(
-            "Successfully sent subscription message via local IP {}",
-            local_ip
+            "Successfully sent subscription message via local IP {} payload={}",
+            local_ip, sub_text
         );
 
         Ok(WsConnectionResult {
@@ -192,9 +193,10 @@ impl WsConnector {
         for retry in 0..Self::MAX_RETRIES {
             match connect_async(url.clone()).await {
                 Ok((mut ws_stream, _)) => {
-                    match ws_stream.send(Message::Text(sub_msg.to_string())).await {
+                    let sub_text = sub_msg.to_string();
+                    match ws_stream.send(Message::Text(sub_text.clone())).await {
                         Ok(_) => {
-                            info!("Successful send subscription message");
+                            info!("Successful send subscription message payload={}", sub_text);
                             return Ok(WsConnectionResult {
                                 ws_stream: Arc::new(Mutex::new(ws_stream)),
                                 connected_at: Instant::now(),

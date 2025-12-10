@@ -165,6 +165,12 @@ impl MktManager {
 
         // 4. 启动衍生品连接（如果启用且为期货交易所）
         if self.cfg.data_types.enable_derivatives && self.derivatives_subscribe_msgs.is_some() {
+            let count = self
+                .derivatives_subscribe_msgs
+                .as_ref()
+                .map(|d| d.get_active_symbols().len())
+                .unwrap_or(0);
+            info!("Derivatives enabled; active symbols={}", count);
             self.start_derivatives_connections().await;
         }
 
@@ -499,7 +505,11 @@ impl MktManager {
             .get_active_symbols()
             .clone();
 
-        info!("Starting OKEx derivatives connections");
+        info!(
+            "Starting OKEx derivatives connections ({} batches, symbols={})",
+            msgs.unified_perps_msgs.len(),
+            symbols.len()
+        );
         for (i, unified_msg) in msgs.unified_perps_msgs.iter().enumerate() {
             let parser = OkexDerivativesMetricsParser::new(symbols.clone());
             self.spawn_connection_with_mpsc(

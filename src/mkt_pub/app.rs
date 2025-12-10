@@ -1,5 +1,6 @@
 use crate::cfg::Config;
 use crate::connection::mkt_manager::{MessageQueues, MktManager};
+use crate::exchange::Exchange;
 use crate::iceoryx_forwarder::IceOryxForwarder;
 use crate::proxy::MpscProxy;
 use crate::sub_msg::{DerivativesMetricsSubscribeMsgs, SubscribeMsgs};
@@ -84,17 +85,24 @@ impl MktSignalApp {
         let subscribe_msgs = SubscribeMsgs::new(&config).await;
 
         // 只为期货交易所初始化衍生品订阅消息
-        let derivatives_subscribe_msgs = match config.get_exchange().as_str() {
-            "binance-futures" | "okex-swap" | "bybit" | "bitget-futures"
-                if config.data_types.enable_derivatives =>
-            {
-                info!(
-                    "Initializing derivatives metrics subscriptions for {}",
-                    config.get_exchange()
-                );
-                Some(DerivativesMetricsSubscribeMsgs::new(&config).await)
+        let derivatives_subscribe_msgs = if !config.data_types.enable_derivatives {
+            None
+        } else {
+            match config.get_exchange() {
+                Exchange::Binance | Exchange::Bybit | Exchange::Bitget | Exchange::Okex => {
+                    info!(
+                        "Initializing derivatives metrics subscriptions for {}",
+                        config.get_exchange()
+                    );
+                    let msgs = DerivativesMetricsSubscribeMsgs::new(&config).await;
+                    info!(
+                        "Derivatives symbols loaded: {}",
+                        msgs.get_active_symbols().len()
+                    );
+                    Some(msgs)
+                }
+                Exchange::Gate => None,
             }
-            _ => None,
         };
 
         Ok(Self {

@@ -1,17 +1,21 @@
 use crate::cfg::Config;
+use crate::mkt_msg::FundingRateMsg;
 use crate::mkt_msg::MktMsg;
+use crate::mkt_msg::MktMsgType;
 use anyhow::Result;
 use bytes::Bytes;
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn, Level};
+use std::time::{Duration, Instant};
 
 const TRADE_MAX_BYTES: usize = 64;
 const KLINE_MAX_BYTES: usize = 128;
 const DERIVATIVES_MAX_BYTES: usize = 128;
 const SPREAD_MAX_BYTES: usize = 64;
 const SIGNAL_MAX_BYTES: usize = 64;
+const DERIVATIVES_DEBUG_INTERVAL: Duration = Duration::from_secs(5);
 
 pub struct IceOryxForwarder {
     exchange: String,
@@ -41,6 +45,7 @@ pub struct IceOryxForwarder {
     der_max_seen: usize,
     spread_max_seen: usize,
     signal_max_seen: usize,
+    last_derivatives_debug: Instant,
 }
 
 impl IceOryxForwarder {
@@ -212,6 +217,7 @@ impl IceOryxForwarder {
             der_max_seen: 0,
             spread_max_seen: 0,
             signal_max_seen: 0,
+            last_derivatives_debug: Instant::now(),
         })
     }
 
@@ -439,20 +445,55 @@ impl IceOryxForwarder {
         self.signal_max_seen = 0;
     }
 
-    fn log_derivatives_debug(&self, msg_type: u32, payload: &[u8]) {
+    fn log_derivatives_debug(&mut self, msg_type: u32, payload: &[u8]) {
         if !log::log_enabled!(Level::Debug) {
             return;
         }
-        let symbol = Self::extract_symbol(payload).unwrap_or("UNKNOWN");
+        let symbol_raw = Self::extract_symbol(payload).unwrap_or("UNKNOWN");
+        let symbol = self.normalize_symbol(symbol_raw);
         let label = match msg_type {
-            t if t == crate::mkt_msg::MktMsgType::LiquidationOrder as u32 => "liquidation",
-            t if t == crate::mkt_msg::MktMsgType::MarkPrice as u32 => "mark_price",
-            t if t == crate::mkt_msg::MktMsgType::IndexPrice as u32 => "index_price",
-            t if t == crate::mkt_msg::MktMsgType::FundingRate as u32 => "funding_rate",
+            t if t == MktMsgType::LiquidationOrder as u32 => "liquidation",
+            t if t == MktMsgType::MarkPrice as u32 => "mark_price",
+            t if t == MktMsgType::IndexPrice as u32 => "index_price",
+            t if t == MktMsgType::FundingRate as u32 => "funding_rate",
             _ => "derivatives",
         };
+
+        // BTC* 的衍生品消息打印具体内容，不计数
+        if symbol.to_ascii_lowercase().starts_with("btc") {
+            let detail = match msg_type {
+                t if t == MktMsgType::LiquidationOrder as u32 => Self::decode_liquidation(payload)
+                    .map(|(side, qty, price, ts)| {
+                        format!("side={} qty={} price={} ts={}", side, qty, price, ts)
+                    }),
+                t if t == MktMsgType::MarkPrice as u32 => Self::decode_mark_price(payload)
+                    .map(|(price, ts)| format!("mark_price={} ts={}", price, ts)),
+                t if t == MktMsgType::IndexPrice as u32 => Self::decode_index_price(payload)
+                    .map(|(price, ts)| format!("index_price={} ts={}", price, ts)),
+                t if t == MktMsgType::FundingRate as u32 => {
+                    Self::decode_funding(payload).map(|(rate, next_time, ts)| {
+                        format!("funding_rate={} next_time={} ts={}", rate, next_time, ts)
+                    })
+                }
+                _ => None,
+            }
+            .unwrap_or_else(|| "decode_failed".to_string());
+
+            debug!(
+                "[IceOryx][{}] BTC derivatives: type={} symbol={} {}",
+                self.exchange, label, symbol, detail
+            );
+            return;
+        }
+
+        // 其他符号维持节流打印
+        let now = Instant::now();
+        if now.duration_since(self.last_derivatives_debug) < DERIVATIVES_DEBUG_INTERVAL {
+            return;
+        }
+        self.last_derivatives_debug = now;
         debug!(
-            "[IceOryx][{}] forwarded {} message: symbol={} bytes={}",
+            "[IceOryx][{}] derivatives live: type={} symbol={} bytes={}",
             self.exchange,
             label,
             symbol,
@@ -470,6 +511,73 @@ impl IceOryxForwarder {
             return None;
         }
         std::str::from_utf8(&payload[8..end]).ok()
+    }
+
+    fn normalize_symbol(&self, symbol: &str) -> String {
+        // OKEx 衍生品去掉 -SWAP 后缀，方便匹配
+        if self.exchange.to_ascii_lowercase().contains("okex") {
+            let upper = symbol.to_ascii_uppercase();
+            if upper.ends_with("-SWAP") && symbol.len() > 5 {
+                return symbol[..symbol.len() - 5].to_string();
+            }
+        }
+        symbol.to_string()
+    }
+
+    fn read_f64(payload: &[u8], offset: usize) -> Option<f64> {
+        let slice = payload.get(offset..offset + 8)?;
+        let arr: [u8; 8] = slice.try_into().ok()?;
+        Some(f64::from_le_bytes(arr))
+    }
+
+    fn read_i64(payload: &[u8], offset: usize) -> Option<i64> {
+        let slice = payload.get(offset..offset + 8)?;
+        let arr: [u8; 8] = slice.try_into().ok()?;
+        Some(i64::from_le_bytes(arr))
+    }
+
+    fn decode_mark_price(payload: &[u8]) -> Option<(f64, i64)> {
+        let symbol_len = u32::from_le_bytes([
+            payload.get(4)?.to_owned(),
+            payload.get(5)?.to_owned(),
+            payload.get(6)?.to_owned(),
+            payload.get(7)?.to_owned(),
+        ]) as usize;
+        let offset = 8 + symbol_len;
+        let price = Self::read_f64(payload, offset)?;
+        let ts = Self::read_i64(payload, offset + 8)?;
+        Some((price, ts))
+    }
+
+    fn decode_index_price(payload: &[u8]) -> Option<(f64, i64)> {
+        // 同 mark price 结构
+        Self::decode_mark_price(payload)
+    }
+
+    fn decode_funding(payload: &[u8]) -> Option<(f64, i64, i64)> {
+        if payload.len() < 8 {
+            return None;
+        }
+        let rate = FundingRateMsg::get_funding_rate(payload);
+        let next_time = FundingRateMsg::get_next_funding_time(payload);
+        let ts = FundingRateMsg::get_timestamp(payload);
+        Some((rate, next_time, ts))
+    }
+
+    fn decode_liquidation(payload: &[u8]) -> Option<(char, f64, f64, i64)> {
+        let symbol_len = u32::from_le_bytes([
+            payload.get(4)?.to_owned(),
+            payload.get(5)?.to_owned(),
+            payload.get(6)?.to_owned(),
+            payload.get(7)?.to_owned(),
+        ]) as usize;
+        let base = 8 + symbol_len;
+        let side = *payload.get(base)?;
+        let side_char = side as char;
+        let qty = Self::read_f64(payload, base + 1)?;
+        let price = Self::read_f64(payload, base + 9)?;
+        let ts = Self::read_i64(payload, base + 17)?;
+        Some((side_char, qty, price, ts))
     }
 }
 

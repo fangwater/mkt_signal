@@ -104,6 +104,7 @@ impl MktConnectionRunner for OkexConnection {
                                         reset_timer = Instant::now() + Duration::from_secs(25);
                                         log::info!("Received pong message: {:?}, reset timer to {:?}", text, reset_timer);
                                     }else{
+                                        debug!("[OKEX][ws] recv text len={} head={}", text.len(), &text.chars().take(80).collect::<String>());
                                         // 收到消息后，如果不是waiting for pong的状态，则重置倒计时
                                         if !waiting_pong {
                                             reset_timer = Instant::now() + Duration::from_secs(25);
@@ -119,6 +120,7 @@ impl MktConnectionRunner for OkexConnection {
                                     }
                                 }
                                 Message::Binary(data) => {
+                                    debug!("[OKEX][ws] recv binary len={}", data.len());
                                     let bytes = Bytes::from(data);
                                     if let Err(e) = self.base_connection.tx.send(bytes.clone()) {
                                         error!("failed to broadcast message: {}", e);
