@@ -1,97 +1,60 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# 候选的exchange list 
-exchange_list=(
-    "binance"
-    "okex"
-    "bybit"
+# Supported venues (use --venue in binary)
+ALL_VENUES=(
+  "binance-um"
+  "okex-futures"
+  "bybit-futures"
+  "bitget-futures"
+  "gate-futures"
 )
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-exchange=$1
-
-if [ -z "$exchange" ]; then
-    echo "请提供一个交易所名称作为参数"
-    echo "支持的交易所: ${exchange_list[*]}"
-    exit 1
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN_PATH="${ROOT_DIR}/mkt_pub"
+if [[ ! -x "$BIN_PATH" ]]; then
+  BIN_PATH="${ROOT_DIR}/target/release/mkt_pub"
 fi
 
-if ! echo "${exchange_list[@]}" | grep -wq "$exchange"; then
-    echo "无效的交易所名称: $exchange"
-    echo "支持的交易所: ${exchange_list[*]}"
-    exit 1
+if [[ ! -x "$BIN_PATH" ]]; then
+  echo "[ERROR] mkt_pub binary not found. Build first with: cargo build --release"
+  exit 1
 fi
 
-# 根据交易所获取对应的合约和现货配置
-get_exchange_configs() {
-    local exchange=$1
-    case $exchange in
-        "binance")
-            echo "binance binance-futures"
-            ;;
-        "okex")
-            echo "okex okex-swap"
-            ;;
-        "bybit")
-            echo "bybit bybit-spot"
-            ;;
-        *)
-            echo "未知交易所: $exchange"
-            exit 1
-            ;;
-    esac
+if [[ $# -eq 0 ]]; then
+  VENUES=("${ALL_VENUES[@]}")
+else
+  VENUES=("$@")
+fi
+
+# Validate venues
+for v in "${VENUES[@]}"; do
+  if ! printf '%s\0' "${ALL_VENUES[@]}" | grep -Fxqz "$v"; then
+    echo "[ERROR] Unknown venue: $v"
+    echo "Supported venues: ${ALL_VENUES[*]}"
+    exit 1
+  fi
+done
+
+start_one() {
+  local venue="$1"
+  local name="mkt_pub_${venue}"
+
+  echo "[INFO] Restarting ${name}"
+  npx pm2 delete "$name" >/dev/null 2>&1 || true
+
+  npx pm2 start "$BIN_PATH" \
+    --name "$name" \
+    -- \
+    --venue "$venue"
 }
 
-# 启动单个代理的函数
-start_single_proxy() {
-    local config=$1
-    local pm2_name="mkt_pub_${config}"
-    local bin_path="${DIR}/mkt_pub"
+for venue in "${VENUES[@]}"; do
+  start_one "$venue"
+  sleep 1
+done
 
-    echo "启动 ${config} 代理..."
-
-    # 停止现有进程
-    npx pm2 delete "$pm2_name" 2>/dev/null
-
-    # 启动新进程
-    npx pm2 start "$bin_path" \
-        --name "$pm2_name" \
-        -- \
-        --exchange "$config"
-        
-    if [ $? -eq 0 ]; then
-        echo "✓ ${config} 代理启动成功"
-    else
-        echo "✗ ${config} 代理启动失败"
-        return 1
-    fi
-}
-
-# 主启动函数
-start_exchange_proxies() {
-    local exchange=$1
-    local configs=$(get_exchange_configs "$exchange")
-    
-    echo "开始启动 ${exchange} 交易所的代理服务..."
-    echo "将启动以下配置: $configs"
-    echo ""
-    
-    for config in $configs; do
-        start_single_proxy "$config"
-        sleep 2
-    done
-    
-    echo ""
-    echo "${exchange} 交易所所有代理启动完成！"
-    echo ""
-    echo "查看日志命令:"
-    for config in $configs; do
-        echo "  npx pm2 logs mkt_pub_${config}"
-    done
-    
-    echo ""
-    echo "查看状态: npx pm2 status"
-}
-
-start_exchange_proxies "$exchange"
+echo ""
+echo "[INFO] Started venues: ${VENUES[*]}"
+echo "Logs: npx pm2 logs mkt_pub_<venue>"
+echo "Status: npx pm2 status"
