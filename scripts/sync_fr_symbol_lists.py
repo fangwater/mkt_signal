@@ -88,6 +88,8 @@ BWD_SYMBOLS_4H: List[str] = [
     'RONINUSDT', 'ZKUSDT', 'WCTUSDT', 'BANANAUSDT', 'ORCAUSDT', 
     'BABYUSDT', 'FLUXUSDT',
     "DYMUSDT",
+    'AXLUSDT',
+    
 ]
 
 # # 正套币对列表
