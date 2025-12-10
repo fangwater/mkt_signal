@@ -6,7 +6,8 @@ use crate::parser::binance_parser::{
     BinanceAskBidSpreadParser, BinanceDerivativesMetricsParser, BinanceIncParser,
     BinanceKlineParser, BinanceSignalParser, BinanceSnapshotParser, BinanceTradeParser,
 };
-use crate::parser::bitget_parser::BitgetAskBidSpreadParser;
+use crate::parser::bitget_parser::BitgetDerivativesMetricsParser;
+use crate::parser::bitget_parser::BitgetSignalParser;
 use crate::parser::bybit_parser::{
     BybitAskBidSpreadParser, BybitDerivativesMetricsParser, BybitIncParser, BybitKlineParser,
     BybitSignalParser, BybitTradeParser,
@@ -585,7 +586,7 @@ impl MktManager {
 
         // 处理 ticker 消息（包含买卖价、资金费率等）
         for (i, ticker_msg) in msgs.ticker_stream_msgs.iter().enumerate() {
-            let parser = BitgetAskBidSpreadParser::new();
+            let parser = BitgetDerivativesMetricsParser::new();
             self.spawn_connection_with_mpsc(
                 exchange,
                 url.clone(),
@@ -637,11 +638,8 @@ impl MktManager {
             Exchange::Binance => Box::new(BinanceSignalParser::new(false)),
             Exchange::Okex => Box::new(OkexSignalParser::new(false)),
             Exchange::Bybit => Box::new(BybitSignalParser::new(false)),
+            Exchange::Bitget => Box::new(BitgetSignalParser::new()),
             Exchange::Gate => Box::new(GateSignalParser::new(false)),
-            _ => {
-                error!("Unsupported exchange for signal parser: {}", exchange);
-                return;
-            }
         };
 
         self.spawn_connection_with_mpsc_dyn(

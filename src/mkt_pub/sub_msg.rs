@@ -379,7 +379,7 @@ impl SubscribeMsgs {
             Exchange::Binance => "bookTicker".to_string(),
             Exchange::Okex => "bbo-tbt".to_string(),
             Exchange::Bybit => "orderbook.1".to_string(),
-            Exchange::Bitget => "ticker".to_string(),
+            Exchange::Bitget => "books1".to_string(),
             Exchange::Gate => "book_ticker".to_string(),
         }
     }
@@ -397,7 +397,7 @@ impl SubscribeMsgs {
             //Gate.io USDT 永续（futures 专用 endpoint）
             Exchange::Gate => "wss://fx-ws.gateio.ws/v4/ws/usdt",
             //Bitget
-            Exchange::Bitget => "wss://ws.bitget.com/mix/v1/stream",
+            Exchange::Bitget => "wss://ws.bitget.com/v2/ws/public",
         }
     }
 
@@ -412,7 +412,7 @@ impl SubscribeMsgs {
             //Gate.io 现货和USDT合约 (K线也使用同一URL)
             Exchange::Gate => "wss://fx-ws.gateio.ws/v4/ws/usdt",
             //Bitget
-            Exchange::Bitget => "wss://ws.bitget.com/mix/v1/stream",
+            Exchange::Bitget => "wss://ws.bitget.com/v2/ws/public",
         }
     }
 
@@ -445,7 +445,7 @@ impl SubscribeMsgs {
                     "op": "subscribe",
                     "args": [serde_json::json!({
                         "instType": "USDT-FUTURES",
-                        "channel": "books5",
+                        "channel": "ticker",
                         "instId": "BTCUSDT"
                     })]
                 })

@@ -6,24 +6,7 @@ use bytes::Bytes;
 use log::debug;
 use tokio::sync::mpsc;
 
-/// Bitget Ticker Parser - 解析 ticker 数据提取最优买卖价
-///
-/// Bitget ticker 消息格式:
-/// ```json
-/// {
-///     "action": "snapshot",
-///     "arg": {"instType": "USDT-FUTURES", "channel": "ticker", "instId": "BTCUSDT"},
-///     "data": [{
-///         "instId": "BTCUSDT",
-///         "bidPr": "91380.3",
-///         "askPr": "91380.4",
-///         "bidSz": "6.1168",
-///         "askSz": "23.7021",
-///         "ts": "1764518504340"
-///     }],
-///     "ts": 1764518504341
-/// }
-/// ```
+/// Bitget 价差解析器：支持 ticker 和 books1
 #[derive(Clone)]
 pub struct BitgetAskBidSpreadParser;
 
@@ -35,12 +18,13 @@ impl BitgetAskBidSpreadParser {
 
 impl Parser for BitgetAskBidSpreadParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
-        // 解析 Bitget ticker 消息
+        // 解析 Bitget books1 消息（最优买卖价）
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
-                // 检查是否是 ticker 频道的消息
+                // 检查是否是 books1 频道的消息
                 if let Some(arg) = json_value.get("arg").and_then(|v| v.as_object()) {
-                    if arg.get("channel").and_then(|v| v.as_str()) != Some("ticker") {
+                    let channel = arg.get("channel").and_then(|v| v.as_str()).unwrap_or("");
+                    if channel != "books1" {
                         return 0;
                     }
 
@@ -55,21 +39,28 @@ impl Parser for BitgetAskBidSpreadParser {
                         let mut count = 0;
                         for item in data_array {
                             if let Some(obj) = item.as_object() {
-                                // 提取 bid/ask 价格和数量
-                                let bid_price = obj
-                                    .get("bidPr")
+                                // 深度频道，取第一档
+                                let bids = obj.get("bids").and_then(|v| v.as_array());
+                                let asks = obj.get("asks").and_then(|v| v.as_array());
+                                let bid =
+                                    bids.and_then(|arr| arr.first()).and_then(|v| v.as_array());
+                                let ask =
+                                    asks.and_then(|arr| arr.first()).and_then(|v| v.as_array());
+
+                                let bid_price = bid
+                                    .and_then(|entry| entry.get(0))
                                     .and_then(|v| v.as_str())
                                     .and_then(|s| s.parse::<f64>().ok());
-                                let ask_price = obj
-                                    .get("askPr")
+                                let bid_amount = bid
+                                    .and_then(|entry| entry.get(1))
                                     .and_then(|v| v.as_str())
                                     .and_then(|s| s.parse::<f64>().ok());
-                                let bid_amount = obj
-                                    .get("bidSz")
+                                let ask_price = ask
+                                    .and_then(|entry| entry.get(0))
                                     .and_then(|v| v.as_str())
                                     .and_then(|s| s.parse::<f64>().ok());
-                                let ask_amount = obj
-                                    .get("askSz")
+                                let ask_amount = ask
+                                    .and_then(|entry| entry.get(1))
                                     .and_then(|v| v.as_str())
                                     .and_then(|s| s.parse::<f64>().ok());
                                 let timestamp = obj
@@ -81,23 +72,19 @@ impl Parser for BitgetAskBidSpreadParser {
                                 if let (Some(bp), Some(ap), Some(ba), Some(aa)) =
                                     (bid_price, ask_price, bid_amount, ask_amount)
                                 {
-                                    // 过滤无效值
-                                    if bp <= 0.0 || ap <= 0.0 || ba <= 0.0 || aa <= 0.0 {
-                                        continue;
-                                    }
+                                    if bp > 0.0 && ap > 0.0 && ba > 0.0 && aa > 0.0 {
+                                        let spread_msg = AskBidSpreadMsg::create(
+                                            symbol.to_string(),
+                                            timestamp,
+                                            bp,
+                                            ba,
+                                            ap,
+                                            aa,
+                                        );
 
-                                    // 创建并发送消息
-                                    let spread_msg = AskBidSpreadMsg::create(
-                                        symbol.to_string(),
-                                        timestamp,
-                                        bp,
-                                        ba,
-                                        ap,
-                                        aa,
-                                    );
-
-                                    if tx.send(spread_msg.to_bytes()).is_ok() {
-                                        count += 1;
+                                        if tx.send(spread_msg.to_bytes()).is_ok() {
+                                            count += 1;
+                                        }
                                     }
                                 }
                             }
@@ -123,16 +110,33 @@ impl BitgetSignalParser {
 
 impl Parser for BitgetSignalParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
-        // Bitget signal parser - 简单转发原始消息
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
-                // 检查是否有时间戳（用于信号）
-                if json_value.get("ts").is_some() || json_value.get("data").is_some() {
-                    debug!("Bitget signal: {}", json_str);
-                    if tx.send(msg).is_ok() {
+                // 使用顶层 ts 或 data[0].ts 作为时间戳
+                let ts = json_value
+                    .get("ts")
+                    .and_then(|v| v.as_i64())
+                    .or_else(|| {
+                        json_value
+                            .get("data")
+                            .and_then(|v| v.as_array())
+                            .and_then(|arr| arr.first())
+                            .and_then(|item| item.get("ts"))
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse::<i64>().ok())
+                    })
+                    .unwrap_or(0);
+
+                if ts > 0 {
+                    let signal_msg = crate::common::mkt_msg::SignalMsg::create(
+                        crate::common::mkt_msg::SignalSource::Tcp,
+                        ts,
+                    );
+                    if tx.send(signal_msg.to_bytes()).is_ok() {
                         return 1;
                     }
                 }
+                debug!("Bitget signal skipped: {}", json_str);
             }
         }
         0
@@ -286,7 +290,8 @@ impl Parser for BitgetDerivativesMetricsParser {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
                 // 检查是否是 ticker 频道的消息
                 if let Some(arg) = json_value.get("arg").and_then(|v| v.as_object()) {
-                    if arg.get("channel").and_then(|v| v.as_str()) != Some("ticker") {
+                    let channel = arg.get("channel").and_then(|v| v.as_str()).unwrap_or("");
+                    if channel != "ticker" {
                         return 0;
                     }
 
