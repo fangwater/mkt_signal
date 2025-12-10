@@ -349,7 +349,7 @@ impl SubscribeMsgs {
             Exchange::Binance => "depth@100ms".to_string(),
             Exchange::Okex => "books".to_string(),
             Exchange::Bybit => "orderbook.500".to_string(),
-            Exchange::Bitget => panic!("Bitget does not support incremental orderbook"),
+            Exchange::Bitget => "books".to_string(),
             Exchange::Gate => panic!("Gate.io does not support incremental orderbook"),
         }
     }

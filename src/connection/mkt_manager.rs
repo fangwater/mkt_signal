@@ -6,8 +6,9 @@ use crate::parser::binance_parser::{
     BinanceAskBidSpreadParser, BinanceDerivativesMetricsParser, BinanceIncParser,
     BinanceKlineParser, BinanceSignalParser, BinanceSnapshotParser, BinanceTradeParser,
 };
-use crate::parser::bitget_parser::BitgetDerivativesMetricsParser;
-use crate::parser::bitget_parser::BitgetSignalParser;
+use crate::parser::bitget_parser::{
+    BitgetDerivativesMetricsParser, BitgetIncParser, BitgetSignalParser, BitgetTradeParser,
+};
 use crate::parser::bybit_parser::{
     BybitAskBidSpreadParser, BybitDerivativesMetricsParser, BybitIncParser, BybitKlineParser,
     BybitSignalParser, BybitTradeParser,
@@ -240,6 +241,18 @@ impl MktManager {
                     )
                     .await;
                 }
+                Exchange::Bitget => {
+                    let parser = BitgetIncParser::new();
+                    self.spawn_connection_with_mpsc(
+                        exchange,
+                        url.clone(),
+                        subscribe_msg,
+                        format!("inc msg batch {}", i),
+                        parser,
+                        tx,
+                    )
+                    .await;
+                }
                 _ => {
                     panic!("Unsupported exchange for inc parser: {}", exchange);
                 }
@@ -282,6 +295,18 @@ impl MktManager {
                 }
                 Exchange::Okex => {
                     let parser = OkexTradeParser::new();
+                    self.spawn_connection_with_mpsc(
+                        exchange,
+                        url.clone(),
+                        subscribe_msg,
+                        format!("trade msg batch {}", i),
+                        parser,
+                        tx,
+                    )
+                    .await;
+                }
+                Exchange::Bitget => {
+                    let parser = BitgetTradeParser::new();
                     self.spawn_connection_with_mpsc(
                         exchange,
                         url.clone(),

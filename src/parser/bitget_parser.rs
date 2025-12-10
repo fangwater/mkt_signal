@@ -1,5 +1,5 @@
 use crate::common::mkt_msg::{
-    AskBidSpreadMsg, FundingRateMsg, IndexPriceMsg, KlineMsg, MarkPriceMsg,
+    AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, MarkPriceMsg, TradeMsg,
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
@@ -379,6 +379,201 @@ impl Parser for BitgetDerivativesMetricsParser {
                         return count;
                     }
                 }
+            }
+        }
+        0
+    }
+}
+
+/// Bitget 增量深度解析（books snapshot/update）
+#[derive(Clone)]
+pub struct BitgetIncParser;
+
+impl BitgetIncParser {
+    pub fn new() -> Self {
+        Self
+    }
+
+    fn parse_levels(levels: &Vec<serde_json::Value>, inc_msg: &mut IncMsg, is_bid: bool) {
+        for (i, entry) in levels.iter().enumerate() {
+            if let Some(arr) = entry.as_array() {
+                if arr.len() >= 2 {
+                    if let (Some(price), Some(amount)) = (arr[0].as_str(), arr[1].as_str()) {
+                        let level = Level::new(price, amount);
+                        if is_bid {
+                            inc_msg.set_bid_level(i, level);
+                        } else {
+                            inc_msg.set_ask_level(i, level);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Parser for BitgetIncParser {
+    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Ok(json_str) = std::str::from_utf8(&msg) {
+            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
+                let action = json_value
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if action != "snapshot" && action != "update" {
+                    return 0;
+                }
+
+                let arg = match json_value.get("arg").and_then(|v| v.as_object()) {
+                    Some(a) => a,
+                    None => return 0,
+                };
+                let symbol = match arg.get("instId").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => return 0,
+                };
+
+                let data_array = match json_value.get("data").and_then(|v| v.as_array()) {
+                    Some(arr) => arr,
+                    None => return 0,
+                };
+
+                let mut sent = 0;
+                for item in data_array {
+                    if let Some(obj) = item.as_object() {
+                        let bids = obj
+                            .get("bids")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let asks = obj
+                            .get("asks")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let seq = obj.get("seq").and_then(|v| v.as_i64()).unwrap_or(0);
+                        let timestamp = obj
+                            .get("ts")
+                            .and_then(|v| v.as_i64())
+                            .or_else(|| {
+                                obj.get("ts")
+                                    .and_then(|v| v.as_str())
+                                    .and_then(|s| s.parse::<i64>().ok())
+                            })
+                            .or_else(|| json_value.get("ts").and_then(|v| v.as_i64()))
+                            .or_else(|| {
+                                json_value
+                                    .get("ts")
+                                    .and_then(|v| v.as_str())
+                                    .and_then(|s| s.parse::<i64>().ok())
+                            })
+                            .unwrap_or(0);
+
+                        let mut inc_msg = IncMsg::create(
+                            symbol.to_string(),
+                            seq,
+                            seq,
+                            timestamp,
+                            action == "snapshot",
+                            bids.len() as u32,
+                            asks.len() as u32,
+                        );
+                        Self::parse_levels(&bids, &mut inc_msg, true);
+                        Self::parse_levels(&asks, &mut inc_msg, false);
+
+                        if tx.send(inc_msg.to_bytes()).is_ok() {
+                            sent += 1;
+                        }
+                    }
+                }
+                return sent;
+            }
+        }
+        0
+    }
+}
+
+/// Bitget Trade Parser (spot & futures)
+#[derive(Clone)]
+pub struct BitgetTradeParser;
+
+impl BitgetTradeParser {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Parser for BitgetTradeParser {
+    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Ok(json_str) = std::str::from_utf8(&msg) {
+            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
+                let action = json_value
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if action != "snapshot" && action != "update" {
+                    return 0;
+                }
+                let arg = match json_value.get("arg").and_then(|v| v.as_object()) {
+                    Some(a) => a,
+                    None => return 0,
+                };
+                if arg.get("channel").and_then(|v| v.as_str()).unwrap_or("") != "trade" {
+                    return 0;
+                }
+                let symbol = match arg.get("instId").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => return 0,
+                };
+
+                let data_array = match json_value.get("data").and_then(|v| v.as_array()) {
+                    Some(arr) => arr,
+                    None => return 0,
+                };
+
+                let mut count = 0;
+                for item in data_array {
+                    if let Some(obj) = item.as_object() {
+                        let price = obj
+                            .get("price")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse::<f64>().ok());
+                        let amount = obj
+                            .get("size")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse::<f64>().ok());
+                        let ts = obj
+                            .get("ts")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse::<i64>().ok())
+                            .unwrap_or(0);
+                        let side = obj
+                            .get("side")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_ascii_lowercase();
+                        let trade_id = obj
+                            .get("tradeId")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse::<i64>().ok())
+                            .unwrap_or(0);
+
+                        let side_char = match side.as_str() {
+                            "buy" => 'B',
+                            "sell" => 'S',
+                            _ => continue,
+                        };
+
+                        if let (Some(p), Some(a)) = (price, amount) {
+                            let trade_msg =
+                                TradeMsg::create(symbol.to_string(), trade_id, ts, side_char, p, a);
+                            if tx.send(trade_msg.to_bytes()).is_ok() {
+                                count += 1;
+                            }
+                        }
+                    }
+                }
+                return count;
             }
         }
         0
