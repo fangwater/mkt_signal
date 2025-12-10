@@ -282,6 +282,15 @@ impl BybitDerivativesMetricsParser {
 
                         if tx.send(funding_rate_msg.to_bytes()).is_ok() {
                             parsed_count += 1;
+                            if symbol.to_ascii_uppercase().starts_with("BTC") {
+                                log::debug!(
+                                    "[Bybit][derivatives] funding_rate symbol={} rate={} next_time={} ts={}",
+                                    symbol,
+                                    funding_rate,
+                                    next_funding_time,
+                                    timestamp
+                                );
+                            }
                         }
                     }
                 }
