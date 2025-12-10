@@ -65,7 +65,7 @@ async fn run(exchange: Exchange, token: CancellationToken) -> Result<()> {
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     spread_factor.debug_print_stored_spreads(
         mkt_signal::signal::common::TradingVenue::BinanceMargin,
-        mkt_signal::signal::common::TradingVenue::BinanceUm,
+        mkt_signal::signal::common::TradingVenue::BinanceFutures,
     );
 
     // 2️⃣ 立即加载所有配置（策略参数、符号列表、阈值等）

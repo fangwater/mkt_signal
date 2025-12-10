@@ -215,14 +215,14 @@ impl HedgeArbStrategy {
         // 保存开仓侧交易场所
         self.open_venue = venue;
 
-        // 检查 venue 必须是 BinanceUm 或 BinanceMargin
+        // 检查 venue 必须是 BinanceFutures 或 BinanceMargin
         match venue {
-            TradingVenue::BinanceUm | TradingVenue::BinanceMargin => {
+            TradingVenue::BinanceFutures | TradingVenue::BinanceMargin => {
                 // 允许的交易场所，继续执行
             }
             _ => {
                 panic!(
-                    "HedgeArbStrategy: strategy_id={} 不支持的交易场所 {:?}，仅支持 BinanceUm 或 BinanceMargin",
+                    "HedgeArbStrategy: strategy_id={} 不支持的交易场所 {:?}，仅支持 BinanceFutures 或 BinanceMargin",
                     self.strategy_id,
                     venue
                 );
@@ -234,7 +234,7 @@ impl HedgeArbStrategy {
             TradingVenue::BinanceMargin => {
                 TradingVenue::align_margin_order(&symbol, raw_qty, raw_price, &*min_qty_table)
             }
-            TradingVenue::BinanceUm => {
+            TradingVenue::BinanceFutures => {
                 TradingVenue::align_um_order(&symbol, raw_qty, raw_price, &*min_qty_table)
             }
             _ => unreachable!(),

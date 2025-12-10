@@ -51,12 +51,16 @@ pub struct IceOryxForwarder {
 impl IceOryxForwarder {
     pub fn new(config: &Config) -> Result<Self> {
         let exchange = config.get_exchange();
+        let venue_slug = config.venue.data_pub_slug();
 
-        info!("Creating IceOryx forwarder for exchange: {}", exchange);
-        let exchange_name = exchange.as_str().to_string();
+        info!(
+            "Creating IceOryx forwarder for exchange: {} (venue={})",
+            exchange, venue_slug
+        );
+        let exchange_name = venue_slug.to_string();
 
         // 创建Node
-        let node_name = format!("mkt_signal_{}", exchange.as_str().replace("-", "_"));
+        let node_name = format!("mkt_signal_{}", venue_slug.replace('-', "_"));
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
@@ -87,7 +91,7 @@ impl IceOryxForwarder {
             let service = node
                 .service_builder(&ServiceName::new(&format!(
                     "data_pubs/{}/incremental",
-                    exchange
+                    venue_slug
                 ))?)
                 .publish_subscribe::<[u8; 16384]>()
                 .max_publishers(1)
@@ -103,7 +107,10 @@ impl IceOryxForwarder {
 
         let trade_publisher = if config.data_types.enable_trade {
             let service = node
-                .service_builder(&ServiceName::new(&format!("data_pubs/{}/trade", exchange))?)
+                .service_builder(&ServiceName::new(&format!(
+                    "data_pubs/{}/trade",
+                    venue_slug
+                ))?)
                 .publish_subscribe::<[u8; TRADE_MAX_BYTES]>()
                 .max_publishers(1)
                 .max_subscribers(trade_subs)
@@ -118,7 +125,10 @@ impl IceOryxForwarder {
 
         let kline_publisher = if config.data_types.enable_kline {
             let service = node
-                .service_builder(&ServiceName::new(&format!("data_pubs/{}/kline", exchange))?)
+                .service_builder(&ServiceName::new(&format!(
+                    "data_pubs/{}/kline",
+                    venue_slug
+                ))?)
                 .publish_subscribe::<[u8; KLINE_MAX_BYTES]>()
                 .max_publishers(1)
                 .max_subscribers(kline_subs)
@@ -136,7 +146,7 @@ impl IceOryxForwarder {
             let service = node
                 .service_builder(&ServiceName::new(&format!(
                     "data_pubs/{}/derivatives",
-                    exchange
+                    venue_slug
                 ))?)
                 .publish_subscribe::<[u8; DERIVATIVES_MAX_BYTES]>()
                 .max_publishers(1)
@@ -154,7 +164,7 @@ impl IceOryxForwarder {
             let service = node
                 .service_builder(&ServiceName::new(&format!(
                     "data_pubs/{}/ask_bid_spread",
-                    exchange
+                    venue_slug
                 ))?)
                 .publish_subscribe::<[u8; SPREAD_MAX_BYTES]>()
                 .max_publishers(1)
@@ -173,7 +183,7 @@ impl IceOryxForwarder {
             let service = node
                 .service_builder(&ServiceName::new(&format!(
                     "data_pubs/{}/signal",
-                    exchange
+                    venue_slug
                 ))?)
                 .publish_subscribe::<[u8; SIGNAL_MAX_BYTES]>()
                 .max_publishers(1)

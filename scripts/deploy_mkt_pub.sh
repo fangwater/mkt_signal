@@ -47,9 +47,10 @@ if [[ -f "$SCRIPT_SRC" ]]; then
   chmod +x "$TARGET_DIR/start_mkt_pub.sh"
 fi
 
-# 同步配置目录（默认 mkt_cfg.yaml）
-if [[ -d "$ROOT_DIR/config" ]]; then
-  rsync -a "$ROOT_DIR/config/" "$TARGET_DIR/config/"
+# 仅同步 mkt_cfg.yaml
+mkdir -p "$TARGET_DIR/config"
+if [[ -f "$ROOT_DIR/config/mkt_cfg.yaml" ]]; then
+  rsync -a "$ROOT_DIR/config/mkt_cfg.yaml" "$TARGET_DIR/config/"
 fi
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"

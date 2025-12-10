@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
-use log::{debug, info, warn};
+use anyhow::{bail, Context, Result};
+use log::{debug, warn};
 use serde_json::Value;
 
 use crate::common::redis_client::RedisClient;
@@ -398,26 +398,18 @@ pub async fn load_config_from_redis(
     match client.hgetall_map(key).await {
         Ok(map) => {
             if map.is_empty() {
-                info!(
-                    "Redis HASH {} 为空，使用默认配置: max_length={} factors=[{}]",
-                    key,
-                    cfg.max_length,
-                    factor_summary(&cfg.factors)
-                );
-                cfg.finalize();
-                Ok((cfg, map))
-            } else {
-                cfg.update_from_map(&map);
-                cfg.finalize();
-                debug!(
-                    "加载 RollingConfig: max_length={} refresh={}s reload={}s factors=[{}]",
-                    cfg.max_length,
-                    cfg.refresh_sec,
-                    cfg.reload_param_sec,
-                    factor_summary(&cfg.factors)
-                );
-                Ok((cfg, map))
+                bail!("Redis HASH {} 为空，无法加载 rolling_metrics 配置", key);
             }
+            cfg.update_from_map(&map);
+            cfg.finalize();
+            debug!(
+                "加载 RollingConfig: max_length={} refresh={}s reload={}s factors=[{}]",
+                cfg.max_length,
+                cfg.refresh_sec,
+                cfg.reload_param_sec,
+                factor_summary(&cfg.factors)
+            );
+            Ok((cfg, map))
         }
         Err(err) => Err(err).with_context(|| format!("读取 Redis HASH {} 失败", key)),
     }

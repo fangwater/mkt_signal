@@ -575,7 +575,7 @@ impl Order {
                     BinanceCancelMarginOrderRequest::create(now, self.client_order_id, params);
                 return Ok(request.to_bytes());
             }
-            TradingVenue::BinanceUm => {
+            TradingVenue::BinanceFutures => {
                 let params = Bytes::from(format!(
                     "symbol={}&origClientOrderId={}",
                     self.symbol, self.client_order_id
@@ -591,7 +591,7 @@ impl Order {
     pub fn get_order_request_bytes(&self) -> Result<Bytes, String> {
         match self.venue {
             //币安的杠杆账户下单
-            TradingVenue::BinanceMargin | TradingVenue::BinanceUm => {
+            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => {
                 let mut params_parts = vec![
                     format!("symbol={}", self.symbol),
                     format!("side={}", self.side.as_str()), //下单方向确定就可以

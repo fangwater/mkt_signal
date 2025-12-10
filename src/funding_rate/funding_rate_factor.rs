@@ -193,7 +193,7 @@ impl FundingRateFactor {
     /// RateFetcher 会返回 (symbol 周期, 预测值)，周期不匹配时忽略
     fn get_predict_fr(&self, symbol: &str, period: FundingRatePeriod) -> Option<f64> {
         RateFetcher::instance()
-            .get_predicted_funding_rate(symbol, TradingVenue::BinanceUm)
+            .get_predicted_funding_rate(symbol, TradingVenue::BinanceFutures)
             .and_then(|(sym_period, value)| {
                 if sym_period == period {
                     Some(value)
@@ -206,7 +206,7 @@ impl FundingRateFactor {
     /// 获取预测借贷利率 (predict_loan_rate)
     fn get_predict_loan_rate(&self, symbol: &str, period: FundingRatePeriod) -> Option<f64> {
         RateFetcher::instance()
-            .get_predict_loan_rate(symbol, TradingVenue::BinanceUm)
+            .get_predict_loan_rate(symbol, TradingVenue::BinanceFutures)
             .and_then(|(sym_period, value)| {
                 if sym_period == period {
                     Some(value)
@@ -228,7 +228,7 @@ impl FundingRateFactor {
     /// 使用最近 3 条历史数据的均值
     fn get_current_loan_rate(&self, symbol: &str, period: FundingRatePeriod) -> Option<f64> {
         RateFetcher::instance()
-            .get_current_loan_rate(symbol, TradingVenue::BinanceUm)
+            .get_current_loan_rate(symbol, TradingVenue::BinanceFutures)
             .and_then(|(sym_period, value)| {
                 if sym_period == period {
                     Some(value)

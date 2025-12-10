@@ -5,8 +5,8 @@
 Print rolling_metrics thresholds from Redis HASH as a three-line table.
 
 Reads
-  - Redis HASH `rolling_metrics_thresholds_{exchange}` where
-    field = symbol_pair (e.g. "binance_binance-futures::BTCUSDT")
+  - Redis HASH `rolling_metrics_thresholds_{open_venue}_{hedge_venue}` where
+    field = symbol_pair (e.g. "binance-spot_binance-futures::BTCUSDT")
     value = JSON payload produced by rolling_metrics service.
 
 Outputs
@@ -15,8 +15,8 @@ Outputs
   - Null / missing values render as '-' by default.
 
 示例：
-  python scripts/print_rolling_metrics_thresholds.py --exchange binance
-  python scripts/print_rolling_metrics_thresholds.py --exchange okex --symbol BTCUSDT
+  python scripts/print_rolling_metrics_thresholds.py --open-venue binance-spot --hedge-venue binance-futures
+  python scripts/print_rolling_metrics_thresholds.py --open-venue okex-spot --hedge-venue okex-futures --symbol BTCUSDT
 """
 
 from __future__ import annotations
@@ -28,9 +28,6 @@ import os
 import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
-
-# 支持的交易所
-SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
 
 
 def try_import_redis():
@@ -44,10 +41,12 @@ def try_import_redis():
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Print Redis hash rolling_metrics_thresholds_{exchange} as a three-line table"
+        description=(
+            "Print Redis hash rolling_metrics_thresholds_{open_venue}_{hedge_venue} as a three-line table"
+        )
     )
-    p.add_argument("--exchange", required=True, choices=SUPPORTED_EXCHANGES,
-                   help="交易所名称（必填）")
+    p.add_argument("--open-venue", required=True, help="open 侧 venue（如 binance-spot）")
+    p.add_argument("--hedge-venue", required=True, help="hedge 侧 venue（如 binance-futures）")
     p.add_argument(
         "--redis-url",
         default=os.environ.get("REDIS_URL"),
@@ -316,8 +315,12 @@ def main() -> int:
         print("redis 包未安装，请 `pip install redis` 后重试。", file=sys.stderr)
         return 2
 
-    # 根据 exchange 生成 hash key
-    hash_key = f"rolling_metrics_thresholds_{args.exchange}"
+    open_venue = args.open_venue.strip()
+    hedge_venue = args.hedge_venue.strip()
+    if not open_venue or not hedge_venue:
+        print("open-venue 和 hedge-venue 均不能为空。", file=sys.stderr)
+        return 1
+    hash_key = f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
     print(f"📍 Reading from Redis hash: {hash_key}")
     print(f"📍 Redis: {args.host}:{args.port}/{args.db}\n")
 

@@ -489,10 +489,10 @@ impl MonitorChannel {
         raw_price: f64,
     ) -> Result<(f64, f64), String> {
         Self::with_inner(|inner| match venue {
-            TradingVenue::BinanceUm => {
+            TradingVenue::BinanceFutures => {
                 TradingVenue::align_um_order(symbol, raw_qty, raw_price, &inner.min_qty_table)
             }
-            TradingVenue::BinanceMargin | TradingVenue::BinanceSpot => {
+            TradingVenue::BinanceMargin => {
                 TradingVenue::align_margin_order(symbol, raw_qty, raw_price, &inner.min_qty_table)
             }
             TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
@@ -522,7 +522,7 @@ impl MonitorChannel {
         Self::with_inner(|inner| {
             // 1. 检查最小下单量
             let min_qty = match venue {
-                TradingVenue::BinanceUm
+                TradingVenue::BinanceFutures
                 | TradingVenue::OkexFutures
                 | TradingVenue::BitgetFutures
                 | TradingVenue::BybitFutures
@@ -536,7 +536,6 @@ impl MonitorChannel {
                 | TradingVenue::GateMargin => {
                     inner.min_qty_table.min_qty(MarketType::Margin, symbol)
                 }
-                TradingVenue::BinanceSpot => inner.min_qty_table.min_qty(MarketType::Spot, symbol),
             }
             .unwrap_or(0.0);
 
@@ -545,7 +544,7 @@ impl MonitorChannel {
             }
 
             // 2. 检查最小名义金额（仅对 UM 合约）
-            if venue == TradingVenue::BinanceUm {
+            if venue == TradingVenue::BinanceFutures {
                 let min_notional = inner
                     .min_qty_table
                     .min_notional(MarketType::Futures, symbol)
@@ -1050,7 +1049,7 @@ impl MonitorChannel {
     pub fn get_position_qty(&self, symbol: &str, venue: TradingVenue) -> f64 {
         Self::with_inner(|inner| {
             match venue {
-                TradingVenue::BinanceUm => {
+                TradingVenue::BinanceFutures => {
                     // 查询 UM 合约头寸（带符号）
                     if let Some(snapshot) = inner.um_manager.borrow().snapshot() {
                         snapshot
@@ -1063,7 +1062,7 @@ impl MonitorChannel {
                         0.0
                     }
                 }
-                TradingVenue::BinanceMargin | TradingVenue::BinanceSpot => {
+                TradingVenue::BinanceMargin => {
                     // 查询 Margin/Spot 余额（带符号）
                     // 需要从 symbol（如 "ILVUSDT"）中提取 base asset（如 "ILV"）
                     let base_asset = symbol

@@ -2,14 +2,14 @@
 # -*- coding: utf-8 -*-
 
 """
-打印 Redis HASH `rolling_metrics_params_{exchange}`。
+打印 Redis HASH `rolling_metrics_params_{open_venue}_{hedge_venue}`。
 
 支持两种输出：
   - JSON：结构化输出 general / factors，便于进一步处理。
 
 示例：
-  python scripts/print_rolling_metrics_params.py --exchange binance
-  python scripts/print_rolling_metrics_params.py --exchange okex --prefix bidask_
+  python scripts/print_rolling_metrics_params.py --open-venue binance-spot --hedge-venue binance-futures
+  python scripts/print_rolling_metrics_params.py --open-venue okex-spot --hedge-venue okex-futures --prefix bidask_
 """
 
 from __future__ import annotations
@@ -19,9 +19,6 @@ import json
 import os
 import sys
 from typing import Any, Dict
-
-# 支持的交易所
-SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
 
 
 def try_import_redis():
@@ -34,10 +31,10 @@ def try_import_redis():
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Print Redis hash rolling_metrics_params_{exchange} as JSON"
+        description="Print Redis hash rolling_metrics_params_{open_venue}_{hedge_venue} as JSON"
     )
-    p.add_argument("--exchange", required=True, choices=SUPPORTED_EXCHANGES,
-                   help="交易所名称（必填）")
+    p.add_argument("--open-venue", required=True, help="open 侧 venue（如 binance-spot）")
+    p.add_argument("--hedge-venue", required=True, help="hedge 侧 venue（如 binance-futures）")
     p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
     p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
     p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
@@ -104,7 +101,12 @@ def main() -> int:
         host=args.host, port=args.port, db=args.db, password=args.password
     )
 
-    key = f"rolling_metrics_params_{args.exchange}"
+    open_venue = args.open_venue.strip()
+    hedge_venue = args.hedge_venue.strip()
+    if not open_venue or not hedge_venue:
+        print("open-venue 和 hedge-venue 均不能为空。", file=sys.stderr)
+        return 1
+    key = f"rolling_metrics_params_{open_venue}_{hedge_venue}"
     print(f"📍 Reading from Redis hash: {key}", file=sys.stderr)
     print(f"📍 Redis: {args.host}:{args.port}/{args.db}", file=sys.stderr)
     if args.prefix:

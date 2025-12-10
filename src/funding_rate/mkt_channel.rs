@@ -25,7 +25,7 @@ const ASKBID_PAYLOAD: usize = 64;
 const DERIVATIVES_PAYLOAD: usize = 128;
 
 // 服务名称
-const SERVICE_BINANCE_SPOT_ASKBID: &str = "data_pubs/binance/ask_bid_spread";
+const SERVICE_BINANCE_SPOT_ASKBID: &str = "data_pubs/binance-spot/ask_bid_spread";
 const SERVICE_BINANCE_FUTURES_ASKBID: &str = "data_pubs/binance-futures/ask_bid_spread";
 const SERVICE_BINANCE_FUTURES_DERIVATIVES: &str = "data_pubs/binance-futures/derivatives";
 
@@ -82,17 +82,17 @@ impl MktChannel {
         {
             quotes
                 .borrow_mut()
-                .insert(TradingVenue::BinanceSpot, HashMap::new());
+                .insert(TradingVenue::BinanceMargin, HashMap::new());
             quotes
                 .borrow_mut()
-                .insert(TradingVenue::BinanceUm, HashMap::new());
+                .insert(TradingVenue::BinanceFutures, HashMap::new());
 
             funding_rates
                 .borrow_mut()
-                .insert(TradingVenue::BinanceUm, HashMap::new());
+                .insert(TradingVenue::BinanceFutures, HashMap::new());
             mark_prices
                 .borrow_mut()
-                .insert(TradingVenue::BinanceUm, HashMap::new());
+                .insert(TradingVenue::BinanceFutures, HashMap::new());
         }
 
         info!("MktChannel 初始化完成");
@@ -132,7 +132,7 @@ impl MktChannel {
 
         // 映射：BinanceMargin 使用 BinanceSpot 的盘口数据（现货杠杆和现货共享盘口）
         let query_venue = match venue {
-            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            TradingVenue::BinanceMargin => TradingVenue::BinanceMargin,
             _ => venue,
         };
 
@@ -237,7 +237,7 @@ impl MktChannel {
                                 let symbol_for_decision = {
                                     let mut quotes_map = quotes.borrow_mut();
                                     if let Some(venue_quotes) =
-                                        quotes_map.get_mut(&TradingVenue::BinanceSpot)
+                                        quotes_map.get_mut(&TradingVenue::BinanceMargin)
                                     {
                                         let quote = venue_quotes
                                             .entry(symbol.clone())
@@ -261,15 +261,15 @@ impl MktChannel {
                                     // 获取期货盘口
                                     let quotes_map = quotes.borrow();
                                     if let Some(futures_quotes) =
-                                        quotes_map.get(&TradingVenue::BinanceUm)
+                                        quotes_map.get(&TradingVenue::BinanceFutures)
                                     {
                                         if let Some(futures_quote) = futures_quotes.get(sym) {
                                             if futures_quote.is_valid() {
                                                 let spread_factor = SpreadFactor::instance();
                                                 spread_factor.update(
-                                                    TradingVenue::BinanceSpot, // venue1 (现货，查询时会自动映射 Margin->Spot)
+                                                    TradingVenue::BinanceMargin, // venue1 (现货，查询时会自动映射 Margin->Spot)
                                                     sym,
-                                                    TradingVenue::BinanceUm, // venue2 (期货)
+                                                    TradingVenue::BinanceFutures, // venue2 (期货)
                                                     sym,
                                                     bid_price,         // venue1_bid
                                                     ask_price,         // venue1_ask
@@ -286,10 +286,10 @@ impl MktChannel {
                                     use super::decision::FrDecision;
                                     FrDecision::with_mut(|decision| {
                                         let _ = decision.make_combined_decision(
-                                            &sym,                        // spot_symbol
-                                            &sym,                        // futures_symbol
-                                            TradingVenue::BinanceMargin, // spot_venue
-                                            TradingVenue::BinanceUm,     // futures_venue
+                                            &sym,                         // spot_symbol
+                                            &sym,                         // futures_symbol
+                                            TradingVenue::BinanceMargin,  // spot_venue
+                                            TradingVenue::BinanceFutures, // futures_venue
                                         );
                                     });
                                 }
@@ -350,7 +350,7 @@ impl MktChannel {
                                 let symbol_for_decision = {
                                     let mut quotes_map = quotes.borrow_mut();
                                     if let Some(venue_quotes) =
-                                        quotes_map.get_mut(&TradingVenue::BinanceUm)
+                                        quotes_map.get_mut(&TradingVenue::BinanceFutures)
                                     {
                                         let quote = venue_quotes
                                             .entry(symbol.clone())
@@ -374,15 +374,15 @@ impl MktChannel {
                                     // 获取现货盘口
                                     let quotes_map = quotes.borrow();
                                     if let Some(spot_quotes) =
-                                        quotes_map.get(&TradingVenue::BinanceSpot)
+                                        quotes_map.get(&TradingVenue::BinanceMargin)
                                     {
                                         if let Some(spot_quote) = spot_quotes.get(sym) {
                                             if spot_quote.is_valid() {
                                                 let spread_factor = SpreadFactor::instance();
                                                 spread_factor.update(
-                                                    TradingVenue::BinanceSpot, // venue1 (现货，查询时会自动映射 Margin->Spot)
+                                                    TradingVenue::BinanceMargin, // venue1 (现货，查询时会自动映射 Margin->Spot)
                                                     sym,
-                                                    TradingVenue::BinanceUm, // venue2 (期货)
+                                                    TradingVenue::BinanceFutures, // venue2 (期货)
                                                     sym,
                                                     spot_quote.bid, // venue1_bid
                                                     spot_quote.ask, // venue1_ask
@@ -399,10 +399,10 @@ impl MktChannel {
                                     use super::decision::FrDecision;
                                     FrDecision::with_mut(|decision| {
                                         let _ = decision.make_combined_decision(
-                                            &sym,                        // spot_symbol
-                                            &sym,                        // futures_symbol
-                                            TradingVenue::BinanceMargin, // spot_venue
-                                            TradingVenue::BinanceUm,     // futures_venue
+                                            &sym,                         // spot_symbol
+                                            &sym,                         // futures_symbol
+                                            TradingVenue::BinanceMargin,  // spot_venue
+                                            TradingVenue::BinanceFutures, // futures_venue
                                         );
                                     });
                                 }
@@ -463,7 +463,7 @@ impl MktChannel {
                                     let symbol_for_decision = {
                                         let mut funding_rates_map = funding_rates.borrow_mut();
                                         if let Some(venue_rates) =
-                                            funding_rates_map.get_mut(&TradingVenue::BinanceUm)
+                                            funding_rates_map.get_mut(&TradingVenue::BinanceFutures)
                                         {
                                             let rate_data = venue_rates
                                                 .entry(symbol.clone())
@@ -489,10 +489,10 @@ impl MktChannel {
                                         use super::decision::FrDecision;
                                         FrDecision::with_mut(|decision| {
                                             let _ = decision.make_combined_decision(
-                                                &sym,                        // spot_symbol
-                                                &sym,                        // futures_symbol
-                                                TradingVenue::BinanceMargin, // spot_venue
-                                                TradingVenue::BinanceUm,     // futures_venue
+                                                &sym,                         // spot_symbol
+                                                &sym,                         // futures_symbol
+                                                TradingVenue::BinanceMargin,  // spot_venue
+                                                TradingVenue::BinanceFutures, // futures_venue
                                             );
                                         });
                                     }
@@ -504,7 +504,7 @@ impl MktChannel {
 
                                     let mut mark_prices_map = mark_prices.borrow_mut();
                                     if let Some(venue_prices) =
-                                        mark_prices_map.get_mut(&TradingVenue::BinanceUm)
+                                        mark_prices_map.get_mut(&TradingVenue::BinanceFutures)
                                     {
                                         // 只存最新值
                                         venue_prices.insert(symbol.clone(), mark_price);

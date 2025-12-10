@@ -4,7 +4,7 @@
 """
 同步 rolling_metrics 服务所需的参数到 Redis HASH。
 
-写入 HASH `rolling_metrics_params_{exchange}`，字段包括：
+写入 HASH `rolling_metrics_params_{open_venue}_{hedge_venue}`，字段包括：
   - MAX_LENGTH：环形缓冲容量（条数）
   - refresh_sec：分位重算周期（秒）
   - reload_param_sec：配置热更新周期（秒）
@@ -19,10 +19,10 @@
     }
 
 示例：
-  python scripts/sync_rolling_metrics_params.py --exchange binance
-  python scripts/sync_rolling_metrics_params.py --exchange okex --redis-url redis://:pwd@127.0.0.1:6379/0
-  python scripts/sync_rolling_metrics_params.py --exchange binance --max-length 200000
-  python scripts/sync_rolling_metrics_params.py --exchange okex --factors-json '
+  python scripts/sync_rolling_metrics_params.py --open-venue binance-spot --hedge-venue binance-futures
+  python scripts/sync_rolling_metrics_params.py --open-venue okex-spot --hedge-venue okex-futures --redis-url redis://:pwd@127.0.0.1:6379/0
+  python scripts/sync_rolling_metrics_params.py --open-venue binance-spot --hedge-venue binance-futures --max-length 200000
+  python scripts/sync_rolling_metrics_params.py --open-venue okex-spot --hedge-venue okex-futures --factors-json '
     {"bidask":{"resample_interval_ms":1000,"rolling_window":100000,
     "min_periods":90000,"quantiles":[5,70]}}'
 """
@@ -36,14 +36,11 @@ import os
 import sys
 from typing import Any, Dict
 
-# 支持的交易所
-SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
-
 DEFAULTS = {
     "MAX_LENGTH": 150_000,
     "refresh_sec": 30,
     "reload_param_sec": 3,
-    # output_hash_key 将在运行时根据 exchange 设置
+    # output_hash_key 将在运行时根据 open/hedge 设置
     "factors": {
         "bidask": {
             "resample_interval_ms": 1_000,
@@ -78,8 +75,8 @@ def try_import_redis():
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Sync rolling_metrics parameters to Redis HASH")
-    p.add_argument("--exchange", required=True, choices=SUPPORTED_EXCHANGES,
-                   help="交易所名称（必填）")
+    p.add_argument("--open-venue", required=True, help="open 侧 venue（如 binance-spot）")
+    p.add_argument("--hedge-venue", required=True, help="hedge 侧 venue（如 binance-futures）")
     p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
     p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
     p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
@@ -88,7 +85,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-length", type=int)
     p.add_argument("--refresh-sec", type=int)
     p.add_argument("--reload-param-sec", type=int)
-    p.add_argument("--output-hash-key", help="自定义输出 hash key（可选，默认为 rolling_metrics_thresholds_{exchange}）")
+    p.add_argument(
+        "--output-hash-key",
+        help="自定义输出 hash key（可选，默认为 rolling_metrics_thresholds_{open}_{hedge}）",
+    )
     p.add_argument(
         "--factors-json",
         help=(
@@ -138,11 +138,13 @@ def build_payload(args: argparse.Namespace) -> Dict[str, str]:
     if args.reload_param_sec is not None:
         payload["reload_param_sec"] = args.reload_param_sec
 
-    # 设置 output_hash_key，默认值带上 exchange 后缀
+    # 设置 output_hash_key，默认值带上 open/hedge 后缀
     if args.output_hash_key:
         payload["output_hash_key"] = args.output_hash_key
     else:
-        payload["output_hash_key"] = f"rolling_metrics_thresholds_{args.exchange}"
+        payload["output_hash_key"] = (
+            f"rolling_metrics_thresholds_{args.open_venue}_{args.hedge_venue}"
+        )
 
     if args.factors_json:
         try:
@@ -207,8 +209,16 @@ def main() -> int:
     else:
         rds = redis.Redis(host=args.host, port=args.port, db=args.db, password=args.password)
 
-    # 根据 exchange 生成 hash key
-    hash_key = f"rolling_metrics_params_{args.exchange}"
+    open_venue = args.open_venue.strip()
+    hedge_venue = args.hedge_venue.strip()
+    if not open_venue or not hedge_venue:
+        print("open-venue 和 hedge-venue 均不能为空", file=sys.stderr)
+        return 1
+    args.open_venue = open_venue  # normalize for downstream use
+    args.hedge_venue = hedge_venue
+
+    # 根据 open/hedge 生成 hash key
+    hash_key = f"rolling_metrics_params_{open_venue}_{hedge_venue}"
 
     payload = build_payload(args)
     deprecated = list(DEPRECATED_FIELDS)
@@ -232,8 +242,14 @@ def main() -> int:
     if deprecated:
         print(f"已删除旧字段：{', '.join(deprecated)}")
     print(f"\n💡 下一步：")
-    print(f"  - 查看配置: python scripts/print_rolling_metrics_params.py --exchange {args.exchange}")
-    print(f"  - 启动服务: cargo run --bin rolling_metrics -- --exchange {args.exchange}")
+    print(
+        "  - 查看配置: python scripts/print_rolling_metrics_params.py "
+        f"--open-venue {open_venue} --hedge-venue {hedge_venue}"
+    )
+    print(
+        "  - 启动服务: cargo run --bin rolling_metrics "
+        f"-- --open-venue {open_venue} --hedge-venue {hedge_venue}"
+    )
     return 0
 
 

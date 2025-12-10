@@ -6,8 +6,6 @@ use iceoryx2::service::ipc;
 use log::{debug, info};
 use std::collections::HashMap;
 
-use crate::common::exchange::Exchange;
-
 /// 支持的频道类型
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub enum ChannelType {
@@ -47,7 +45,8 @@ impl ChannelType {
 /// 订阅参数
 #[derive(Debug, Clone)]
 pub struct SubscribeParams {
-    pub exchange: Exchange,
+    /// data_pubs 下的前缀（通常为 venue slug，例如 binance-futures）
+    pub topic_prefix: String,
     pub channel: ChannelType,
 }
 
@@ -126,10 +125,13 @@ impl MultiChannelSubscriber {
 
     /// 订阅单个频道
     pub fn subscribe_single(&mut self, param: SubscribeParams) -> Result<()> {
-        let service_name: String =
-            format!("data_pubs/{}/{}", param.exchange, param.channel.as_str());
+        let service_name: String = format!(
+            "data_pubs/{}/{}",
+            param.topic_prefix,
+            param.channel.as_str()
+        );
 
-        let key = format!("{}_{}", param.exchange, param.channel.as_str());
+        let key = format!("{}_{}", param.topic_prefix, param.channel.as_str());
 
         // 如果已经订阅，跳过
         if self.subscribers.contains_key(&key) {
@@ -238,12 +240,12 @@ impl MultiChannelSubscriber {
     /// 轮询单个频道的消息，最多返回max_msgs条消息
     pub fn poll_channel(
         &mut self,
-        exchange: Exchange,
+        topic_prefix: &str,
         channel: &ChannelType,
         max_msgs: Option<usize>,
     ) -> Vec<Bytes> {
         let max_msgs = max_msgs.unwrap_or(16);
-        let key = format!("{}_{}", exchange.as_str(), channel.as_str());
+        let key = format!("{}_{}", topic_prefix, channel.as_str());
         let mut messages = Vec::new();
 
         if let Some(subscriber) = self.subscribers.get(&key) {
@@ -288,13 +290,16 @@ impl MultiChannelSubscriber {
 /// 便捷函数：创建一个订阅器并订阅指定频道
 pub fn create_subscriber(
     node_name: &str,
-    subscriptions: Vec<(Exchange, ChannelType)>,
+    subscriptions: Vec<(String, ChannelType)>,
 ) -> Result<MultiChannelSubscriber> {
     let mut subscriber = MultiChannelSubscriber::new(node_name)?;
 
     let params: Vec<SubscribeParams> = subscriptions
         .into_iter()
-        .map(|(exchange, channel)| SubscribeParams { exchange, channel })
+        .map(|(topic_prefix, channel)| SubscribeParams {
+            topic_prefix,
+            channel,
+        })
         .collect();
 
     subscriber.subscribe_channels(params)?;

@@ -174,7 +174,7 @@ async fn reload_check_symbols(redis: &RedisSettings) -> Result<()> {
                             (
                                 TradingVenue::BinanceMargin,
                                 s.to_uppercase(),
-                                TradingVenue::BinanceUm,
+                                TradingVenue::BinanceFutures,
                                 s.to_uppercase(),
                             )
                         })

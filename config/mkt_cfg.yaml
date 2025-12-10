@@ -16,9 +16,9 @@ data_types:
 
 # IceOryx配置
 iceoryx:
-  # IceOryx会自动根据交易所名称创建频道
-  # 频道格式: data_pubs/{exchange}/{data_type}
-  # 例如: data_pubs/binance/incremental, data_pubs/binance-futures/derivatives
+  # IceOryx 会根据 venue slug 创建频道（kebab case，无下划线）
+  # 频道格式: data_pubs/{venue}/{data_type}
+  # 例如: data_pubs/binance-spot/incremental, data_pubs/binance-futures/derivatives
   
   # 历史记录和订阅者配置
   incremental:

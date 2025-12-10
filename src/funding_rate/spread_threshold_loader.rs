@@ -14,7 +14,7 @@
 //!   - `{symbol}_backward_cancel_mt`: 反套撤单MT阈值
 //!
 //! 注意：
-//! - 默认使用币安现货和合约，venue 固定为 BinanceMargin 和 BinanceUm
+//! - 默认使用币安现货和合约，venue 固定为 BinanceMargin 和 BinanceFutures
 //! - forward_close 和 backward_close 在代码中通过调用对应的 open 方法实现，无需单独加载
 
 use anyhow::Result;
@@ -118,7 +118,7 @@ pub fn load_from_redis(hash_map: HashMap<String, String>) -> Result<()> {
 
     for (symbol, operations) in symbols_thresholds.iter() {
         let venue1 = TradingVenue::BinanceMargin;
-        let venue2 = TradingVenue::BinanceUm;
+        let venue2 = TradingVenue::BinanceFutures;
 
         for (op_key, cache) in operations.iter() {
             if !cache.is_complete() {

@@ -82,7 +82,7 @@ async fn main() -> Result<()> {
     let spread_factor = SpreadFactor::instance();
 
     let venue1 = TradingVenue::BinanceMargin;
-    let venue2 = TradingVenue::BinanceUm;
+    let venue2 = TradingVenue::BinanceFutures;
     let symbol = args.test_symbol.as_str();
 
     info!(

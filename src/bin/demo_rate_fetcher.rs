@@ -56,8 +56,8 @@ async fn run_demo() -> Result<()> {
         info!("\n查询 {}:", symbol);
 
         // 查询预测资金费率
-        let predicted_fr =
-            RateFetcher::instance().get_predicted_funding_rate(symbol, TradingVenue::BinanceUm);
+        let predicted_fr = RateFetcher::instance()
+            .get_predicted_funding_rate(symbol, TradingVenue::BinanceFutures);
         match predicted_fr {
             Some((period, rate)) => info!(
                 "  预测资金费率 ({}): {:.6}%",
@@ -69,7 +69,7 @@ async fn run_demo() -> Result<()> {
 
         // 查询借贷利率
         let loan_rate =
-            RateFetcher::instance().get_predict_loan_rate(symbol, TradingVenue::BinanceUm);
+            RateFetcher::instance().get_predict_loan_rate(symbol, TradingVenue::BinanceFutures);
         match loan_rate {
             Some((period, rate)) => info!(
                 "  预测借贷利率 ({}): {:.6}%",
@@ -81,7 +81,7 @@ async fn run_demo() -> Result<()> {
 
         // 查询当前借贷利率
         let cur_loan =
-            RateFetcher::instance().get_current_loan_rate(symbol, TradingVenue::BinanceUm);
+            RateFetcher::instance().get_current_loan_rate(symbol, TradingVenue::BinanceFutures);
         match cur_loan {
             Some((period, rate)) => info!(
                 "  当前借贷利率 ({}): {:.6}%",
@@ -93,7 +93,7 @@ async fn run_demo() -> Result<()> {
     }
 
     // TODO: print_detailed_calculation 暂未实现
-    // RateFetcher::instance().print_detailed_calculation("XAIUSDT", TradingVenue::BinanceUm);
+    // RateFetcher::instance().print_detailed_calculation("XAIUSDT", TradingVenue::BinanceFutures);
 
     info!("Demo 结束");
 

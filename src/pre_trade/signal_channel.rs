@@ -244,7 +244,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let opening_venue = TradingVenue::from_u8(open_ctx.opening_leg.venue)
                     .unwrap_or(TradingVenue::BinanceMargin);
                 let hedging_venue = TradingVenue::from_u8(open_ctx.hedging_leg.venue)
-                    .unwrap_or(TradingVenue::BinanceUm);
+                    .unwrap_or(TradingVenue::BinanceFutures);
 
                 // 检查限价挂单数量限制
                 if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol) {
@@ -317,10 +317,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                         MonitorChannel::instance().get_position_qty(&hedging_symbol, hedging_venue);
 
                     const SPOT_FLAT_THRESHOLD: f64 = 1e-5;
-                    let is_spot_opening = matches!(
-                        opening_venue,
-                        TradingVenue::BinanceMargin | TradingVenue::BinanceSpot
-                    );
+                    let is_spot_opening = matches!(opening_venue, TradingVenue::BinanceMargin);
                     if is_spot_opening && opening_pos.abs() <= SPOT_FLAT_THRESHOLD {
                         // 现货腿已经为 0，说明信号已失效，直接跳过不噪声打日志
                         return;
@@ -420,7 +417,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let opening_venue = TradingVenue::from_u8(cancel_ctx.opening_leg.venue)
                     .unwrap_or(TradingVenue::BinanceMargin);
                 let hedging_venue = TradingVenue::from_u8(cancel_ctx.hedging_leg.venue)
-                    .unwrap_or(TradingVenue::BinanceUm);
+                    .unwrap_or(TradingVenue::BinanceFutures);
 
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
 
@@ -470,7 +467,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let strategy_id = hedge_ctx.strategy_id;
                 let hedging_symbol = hedge_ctx.get_hedging_symbol();
                 let hedging_venue = TradingVenue::from_u8(hedge_ctx.hedging_leg.venue)
-                    .unwrap_or(TradingVenue::BinanceUm);
+                    .unwrap_or(TradingVenue::BinanceFutures);
                 let hedge_side = hedge_ctx.get_side();
                 let hedge_price = hedge_ctx.get_hedge_price();
 

@@ -181,8 +181,8 @@ impl Config {
 
     pub fn get_batch_size(&self) -> usize {
         match self.venue {
-            TradingVenue::BinanceUm => 50,
-            TradingVenue::BinanceSpot | TradingVenue::BinanceMargin => 100,
+            TradingVenue::BinanceFutures => 50,
+            TradingVenue::BinanceMargin => 100,
             TradingVenue::OkexFutures | TradingVenue::OkexMargin => 50,
             TradingVenue::BybitFutures => 300,
             TradingVenue::BybitMargin => 10,
@@ -625,10 +625,7 @@ impl Config {
     pub async fn get_symbols(&self) -> Result<Vec<String>> {
         match self.venue {
             //币安u本位期货合约
-            TradingVenue::BinanceUm => Self::get_symbol_for_binance_futures().await,
-            //币安u本位期货合约对应的现货
-            TradingVenue::BinanceSpot => Self::get_spot_symbols_related_to_binance_futures().await,
-            //币安杠杆
+            TradingVenue::BinanceFutures => Self::get_symbol_for_binance_futures().await,
             TradingVenue::BinanceMargin => {
                 Self::get_spot_symbols_related_to_binance_futures().await
             }

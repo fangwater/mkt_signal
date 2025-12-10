@@ -68,7 +68,7 @@ impl OrderUpdate for OrderTradeUpdateMsg {
 
     fn trading_venue(&self) -> TradingVenue {
         // OrderTradeUpdate 消息类型对应 BinanceUm
-        TradingVenue::BinanceUm
+        TradingVenue::BinanceFutures
     }
 
     fn raw_status(&self) -> &str {
@@ -163,7 +163,7 @@ impl TradeUpdate for OrderTradeUpdateMsg {
 
     fn trading_venue(&self) -> TradingVenue {
         // OrderTradeUpdate 消息类型对应 BinanceUm
-        TradingVenue::BinanceUm
+        TradingVenue::BinanceFutures
     }
 
     fn order_status(&self) -> Option<OrderStatus> {

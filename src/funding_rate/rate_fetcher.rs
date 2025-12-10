@@ -155,7 +155,7 @@ pub struct ExchangeConfig {
 
 // Binance 配置
 pub const BINANCE_CONFIG: ExchangeConfig = ExchangeConfig {
-    venue: TradingVenue::BinanceUm,
+    venue: TradingVenue::BinanceFutures,
     period: FundingRatePeriod::Hours8,
     fetch_days: DEFAULT_FETCH_DAYS,
 };

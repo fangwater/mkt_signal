@@ -181,7 +181,7 @@ impl SpreadFactor {
     ) -> Option<f64> {
         // 映射：BinanceMargin 使用 BinanceSpot 的价差数据（现货杠杆和现货共享盘口）
         let query_venue1 = match venue1 {
-            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            TradingVenue::BinanceMargin => TradingVenue::BinanceMargin,
             _ => venue1,
         };
 
@@ -205,7 +205,7 @@ impl SpreadFactor {
     ) -> Option<f64> {
         // 映射：BinanceMargin 使用 BinanceSpot 的价差数据（现货杠杆和现货共享盘口）
         let query_venue1 = match venue1 {
-            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            TradingVenue::BinanceMargin => TradingVenue::BinanceMargin,
             _ => venue1,
         };
 
@@ -229,7 +229,7 @@ impl SpreadFactor {
     ) -> Option<f64> {
         // 映射：BinanceMargin 使用 BinanceSpot 的价差数据（现货杠杆和现货共享盘口）
         let query_venue1 = match venue1 {
-            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            TradingVenue::BinanceMargin => TradingVenue::BinanceMargin,
             _ => venue1,
         };
 
@@ -261,7 +261,7 @@ impl SpreadFactor {
     #[inline]
     fn map_venue(venue: TradingVenue) -> TradingVenue {
         match venue {
-            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            TradingVenue::BinanceMargin => TradingVenue::BinanceMargin,
             _ => venue,
         }
     }
@@ -282,7 +282,7 @@ impl SpreadFactor {
     ) {
         // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
         let store_venue1 = match venue1 {
-            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            TradingVenue::BinanceMargin => TradingVenue::BinanceMargin,
             _ => venue1,
         };
 
@@ -326,7 +326,7 @@ impl SpreadFactor {
     ) {
         // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
         let store_venue1 = match venue1 {
-            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            TradingVenue::BinanceMargin => TradingVenue::BinanceMargin,
             _ => venue1,
         };
 
@@ -371,7 +371,7 @@ impl SpreadFactor {
     ) {
         // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
         let store_venue1 = match venue1 {
-            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            TradingVenue::BinanceMargin => TradingVenue::BinanceMargin,
             _ => venue1,
         };
 
@@ -415,7 +415,7 @@ impl SpreadFactor {
     ) {
         // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
         let store_venue1 = match venue1 {
-            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            TradingVenue::BinanceMargin => TradingVenue::BinanceMargin,
             _ => venue1,
         };
 
@@ -460,7 +460,7 @@ impl SpreadFactor {
     ) -> bool {
         // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
         let query_venue1 = match venue1 {
-            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            TradingVenue::BinanceMargin => TradingVenue::BinanceMargin,
             _ => venue1,
         };
 
@@ -671,7 +671,7 @@ impl SpreadFactor {
     ) -> Option<(f64, f64, CompareOp, SpreadType)> {
         // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
         let query_venue1 = match venue1 {
-            TradingVenue::BinanceMargin => TradingVenue::BinanceSpot,
+            TradingVenue::BinanceMargin => TradingVenue::BinanceMargin,
             _ => venue1,
         };
 
