@@ -127,6 +127,20 @@ struct GateFundingRateItem {
     r: String,
 }
 
+/// Okex 借贷利率缓存服务响应
+#[derive(Debug, Deserialize)]
+struct OkexLoanRateResponse {
+    #[serde(default)]
+    entries: Vec<OkexLoanRateEntry>,
+}
+
+/// Okex 借贷利率条目
+#[derive(Debug, Deserialize)]
+struct OkexLoanRateEntry {
+    #[serde(default)]
+    rate: Option<f64>,
+}
+
 // ==================== 常量配置 ====================
 
 // 预测资费参数
@@ -206,6 +220,7 @@ const BITGET_FUNDING_RATE_HISTORY_API: &str =
 const BYBIT_FUNDING_RATE_HISTORY_API: &str = "https://api.bybit.com/v5/market/funding/history";
 const GATE_FUNDING_RATE_HISTORY_API: &str =
     "https://api.gateio.ws/api/v4/futures/usdt/funding_rate";
+const DEFAULT_OKEX_LOAN_RATE_URL: &str = "http://127.0.0.1:28901/rates";
 
 // ==================== Thread-local 单例 ====================
 
@@ -248,6 +263,8 @@ struct RateFetcherInner {
     binance_api_key: Option<String>,
     /// Binance API Secret (可选)
     binance_api_secret: Option<String>,
+    /// Okex 借贷利率缓存服务地址
+    okex_loan_rate_url: Option<String>,
 }
 
 impl RateFetcher {
@@ -292,6 +309,7 @@ impl RateFetcher {
                     http_client: Client::builder().timeout(Duration::from_secs(10)).build()?,
                     binance_api_key: None,
                     binance_api_secret: None,
+                    okex_loan_rate_url: None,
                 };
                 *frf.borrow_mut() = Some(inner);
             }
@@ -324,10 +342,13 @@ impl RateFetcher {
                 Self::spawn_binance_fetch_task();
             }
             Exchange::Okex => {
+                let loan_url = std::env::var("OKEX_LOAN_RATE_URL")
+                    .unwrap_or_else(|_| DEFAULT_OKEX_LOAN_RATE_URL.to_string());
                 Self::with_inner_mut(|inner| {
                     inner.venue_states.entry(OKEX_CONFIG.venue).or_default();
+                    inner.okex_loan_rate_url = Some(loan_url.clone());
                 });
-                info!("RateFetcher: OKEx 初始化完成");
+                info!("RateFetcher: OKEx 初始化完成 (loan_rate_url={})", loan_url);
                 Self::spawn_okex_fetch_task();
             }
             Exchange::Bitget => {
@@ -513,12 +534,7 @@ impl RateFetcher {
             return Ok(());
         }
 
-        let mut assets: Vec<String> = symbols
-            .iter()
-            .filter_map(|s| s.strip_suffix("USDT").map(String::from))
-            .collect();
-        assets.sort_unstable();
-        assets.dedup();
+        let assets = Self::collect_base_assets(symbols);
         if assets.is_empty() {
             return Ok(());
         }
@@ -678,10 +694,11 @@ impl RateFetcher {
         } else if !new_symbols.is_empty() {
             &new_symbols
         } else {
-            return Ok(());
+            return Self::fetch_okex_lending_rates(&online_symbols).await;
         };
 
         Self::fetch_okex_funding_rates(symbols_to_fetch).await?;
+        Self::fetch_okex_lending_rates(&online_symbols).await?;
 
         if all_changed || is_full_fetch {
             Self::print_okex_rate_table(&online_symbols);
@@ -818,19 +835,99 @@ impl RateFetcher {
                 let fr = RateFetcher::instance()
                     .get_predicted_funding_rate(s, OKEX_CONFIG.venue)
                     .map(|(_, v)| v);
-                (s.clone(), period, fr)
+                let loan = RateFetcher::instance()
+                    .get_predict_loan_rate(s, OKEX_CONFIG.venue)
+                    .map(|(_, v)| v);
+                (s.clone(), period, fr, loan)
             })
             .collect();
         data.sort_by(|a, b| a.0.cmp(&b.0));
 
-        info!("┌────────────────────────────────────────────────┐");
-        info!("│ OKEx                │ Period │ Predict FR      │");
-        info!("├────────────────────────────────────────────────┤");
-        for (sym, period, fr) in data {
+        info!("┌──────────────────────────────────────────────────────────────┐");
+        info!("│ OKEx                │ Period │ Predict FR      │ Predict Loan │");
+        info!("├──────────────────────────────────────────────────────────────┤");
+        for (sym, period, fr, loan) in data {
             let fr_s = fr.map_or("          N/A".into(), |v| format!("{:>12.6}%", v * 100.0));
-            info!("│ {:<19} │ {:>6} │ {} │", sym, period.as_str(), fr_s);
+            let loan_s = loan.map_or("          N/A".into(), |v| format!("{:>12.6}%", v * 100.0));
+            info!(
+                "│ {:<19} │ {:>6} │ {} │ {} │",
+                sym,
+                period.as_str(),
+                fr_s,
+                loan_s
+            );
         }
-        info!("└────────────────────────────────────────────────┘");
+        info!("└──────────────────────────────────────────────────────────────┘");
+    }
+
+    async fn fetch_okex_lending_rates(symbols: &[String]) -> Result<()> {
+        let assets = Self::collect_base_assets(symbols);
+        if assets.is_empty() {
+            return Ok(());
+        }
+
+        let mut success = 0;
+        let mut fail = 0;
+
+        for asset in assets {
+            match Self::fetch_okex_lending_rate_for_asset(&asset).await {
+                Ok(Some(rates)) => {
+                    let predict = if rates.is_empty() {
+                        0.0
+                    } else {
+                        rates.iter().sum::<f64>() / rates.len() as f64
+                    };
+                    let current = if rates.is_empty() {
+                        0.0
+                    } else {
+                        let n = 3.min(rates.len());
+                        rates.iter().rev().take(n).copied().sum::<f64>() / n as f64
+                    };
+                    Self::with_inner_mut(|inner| {
+                        inner
+                            .lending_rates
+                            .entry(OKEX_CONFIG.venue)
+                            .or_default()
+                            .insert(
+                                asset.to_uppercase(),
+                                LendingRateCache {
+                                    predict_daily_rate: predict,
+                                    current_daily_rate: current,
+                                    raw_daily_rates: rates,
+                                },
+                            );
+                    });
+                    success += 1;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!("OKEx {} 借贷利率失败: {:?}", asset, e);
+                    fail += 1;
+                }
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+
+        if success + fail > 0 {
+            info!("OKEx 借贷利率: 成功 {}, 失败 {}", success, fail);
+        }
+        Ok(())
+    }
+
+    async fn fetch_okex_lending_rate_for_asset(asset: &str) -> Result<Option<Vec<f64>>> {
+        let client = Self::with_inner(|inner| inner.http_client.clone());
+        let url = Self::okex_loan_rate_url();
+
+        let resp = client.get(&url).query(&[("symbol", asset)]).send().await?;
+
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+
+        let data: OkexLoanRateResponse = resp.json().await?;
+        let rates: Vec<f64> = data.entries.iter().filter_map(|entry| entry.rate).collect();
+
+        Ok(if rates.is_empty() { None } else { Some(rates) })
     }
 
     // ==================== Bitget 拉取任务 ====================
@@ -1404,6 +1501,56 @@ impl RateFetcher {
         }
     }
 
+    fn okex_loan_rate_url() -> String {
+        Self::with_inner(|inner| {
+            inner
+                .okex_loan_rate_url
+                .clone()
+                .unwrap_or_else(|| DEFAULT_OKEX_LOAN_RATE_URL.to_string())
+        })
+    }
+
+    fn base_asset_from_symbol(symbol: &str) -> Option<String> {
+        let mut s = symbol.to_uppercase().replace('_', "-");
+        if let Some(stripped) = s.strip_suffix("-SWAP") {
+            s = stripped.to_string();
+        } else if let Some(stripped) = s.strip_suffix("SWAP") {
+            s = stripped.to_string();
+        }
+
+        for suffix in ["-USDT", "-USDC", "-USD", "USDT", "USDC", "USD"] {
+            if let Some(stripped) = s.strip_suffix(suffix) {
+                let base = stripped.trim_end_matches('-');
+                if !base.is_empty() {
+                    return Some(base.to_string());
+                }
+            }
+        }
+
+        if let Some(idx) = s.find('-') {
+            let base = &s[..idx];
+            if !base.is_empty() {
+                return Some(base.to_string());
+            }
+        }
+
+        if !s.is_empty() {
+            Some(s)
+        } else {
+            None
+        }
+    }
+
+    fn collect_base_assets(symbols: &[String]) -> Vec<String> {
+        let mut assets: Vec<String> = symbols
+            .iter()
+            .filter_map(|s| Self::base_asset_from_symbol(s))
+            .collect();
+        assets.sort_unstable();
+        assets.dedup();
+        assets
+    }
+
     // ==================== 公开查询接口 ====================
 
     /// 获取指定 symbol 的资金费率周期
@@ -1432,14 +1579,14 @@ impl RateFetcher {
         Some((period, value))
     }
 
-    /// 获取预测借贷利率（仅 Binance）
+    /// 获取预测借贷利率
     pub fn get_predict_loan_rate(
         &self,
         symbol: &str,
         venue: TradingVenue,
     ) -> Option<(FundingRatePeriod, f64)> {
         let period = self.get_period(symbol, venue);
-        let base = symbol.to_uppercase().strip_suffix("USDT")?.to_string();
+        let base = Self::base_asset_from_symbol(symbol)?;
         let daily = Self::with_inner(|inner| {
             inner
                 .lending_rates
@@ -1450,14 +1597,14 @@ impl RateFetcher {
         Some((period, period.convert_daily_rate(daily)))
     }
 
-    /// 获取当前借贷利率（仅 Binance）
+    /// 获取当前借贷利率
     pub fn get_current_loan_rate(
         &self,
         symbol: &str,
         venue: TradingVenue,
     ) -> Option<(FundingRatePeriod, f64)> {
         let period = self.get_period(symbol, venue);
-        let base = symbol.to_uppercase().strip_suffix("USDT")?.to_string();
+        let base = Self::base_asset_from_symbol(symbol)?;
         let daily = Self::with_inner(|inner| {
             inner
                 .lending_rates

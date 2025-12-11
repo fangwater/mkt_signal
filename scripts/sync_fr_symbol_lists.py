@@ -6,7 +6,6 @@
 
 根据交易所写入 Redis key（String 类型，JSON 数组）：
   - fr_dump_symbols:{exchange}          - 平仓列表
-  - fr_trade_symbols:{exchange}         - 建仓列表
   - fr_fwd_trade_symbols:{exchange}     - 正套建仓列表
   - fr_bwd_trade_symbols:{exchange}     - 反套建仓列表
 
@@ -132,30 +131,21 @@ SYMBOL_ALLOWLIST: List[str] = list(set(FWD_SYMBOLS + BWD_SYMBOLS))
 
 def sync_symbol_lists(rds, exchange: str) -> int:
     """同步交易对列表到 Redis"""
-    total = 0
+    # 1. 平仓列表（默认空）
+    dump_key = f"fr_dump_symbols:{exchange}"
+    empty_list: List[str] = []
+    rds.set(dump_key, json.dumps(empty_list, ensure_ascii=False))
+    print(f"✅ 已写入 {len(empty_list)} 个交易对到 '{dump_key}'（平仓列表）")
 
-    # 1. 平仓列表
-    key = f"fr_dump_symbols:{exchange}"
-    rds.set(key, json.dumps(SYMBOL_ALLOWLIST, ensure_ascii=False))
-    print(f"✅ 已写入 {len(SYMBOL_ALLOWLIST)} 个交易对到 '{key}'")
-    total += len(SYMBOL_ALLOWLIST)
-
-    # 2. 建仓列表
-    key = f"fr_trade_symbols:{exchange}"
-    rds.set(key, json.dumps(SYMBOL_ALLOWLIST, ensure_ascii=False))
-    print(f"✅ 已写入 {len(SYMBOL_ALLOWLIST)} 个交易对到 '{key}'")
-    total += len(SYMBOL_ALLOWLIST)
-
-    # 3. 正套建仓列表
-    key = f"fr_fwd_trade_symbols:{exchange}"
-    rds.set(key, json.dumps(FWD_SYMBOLS, ensure_ascii=False))
-    print(f"✅ 已写入 {len(FWD_SYMBOLS)} 个交易对到 '{key}'")
-    total += len(FWD_SYMBOLS)
-
-    # 4. 反套建仓列表
-    key = f"fr_bwd_trade_symbols:{exchange}"
-    rds.set(key, json.dumps(BWD_SYMBOLS, ensure_ascii=False))
-    print(f"✅ 已写入 {len(BWD_SYMBOLS)} 个交易对到 '{key}'")
+    # 2. 正套建仓列表
+    fwd_key = f"fr_fwd_trade_symbols:{exchange}"
+    rds.set(fwd_key, json.dumps(FWD_SYMBOLS, ensure_ascii=False))
+    print(f"✅ 已写入 {len(FWD_SYMBOLS)} 个交易对到 '{fwd_key}'（正套）")
+    total = 0 + len(FWD_SYMBOLS)
+    # 3. 反套建仓列表
+    bwd_key = f"fr_bwd_trade_symbols:{exchange}"
+    rds.set(bwd_key, json.dumps(BWD_SYMBOLS, ensure_ascii=False))
+    print(f"✅ 已写入 {len(BWD_SYMBOLS)} 个交易对到 '{bwd_key}'（反套）")
     total += len(BWD_SYMBOLS)
 
     return total
@@ -224,7 +214,6 @@ def print_all_symbol_lists(rds, exchange: str) -> None:
     print("=" * 80)
 
     print_symbol_list(rds, f"fr_dump_symbols:{exchange}", f"🔴 {exchange.upper()} - 平仓列表")
-    print_symbol_list(rds, f"fr_trade_symbols:{exchange}", f"🟢 {exchange.upper()} - 建仓列表")
     print_symbol_list(rds, f"fr_fwd_trade_symbols:{exchange}", f"🟢 {exchange.upper()} - 正套建仓列表")
     print_symbol_list(rds, f"fr_bwd_trade_symbols:{exchange}", f"🔴 {exchange.upper()} - 反套建仓列表")
 

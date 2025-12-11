@@ -552,9 +552,9 @@ impl FrDecision {
         let period = rate_fetcher.get_period(hedge_symbol, hedge_venue);
 
         // 检查所有条件
-        let forward_open = fr_factor.satisfy_forward_open(hedge_symbol, period);
+        let forward_open = fr_factor.satisfy_forward_open(hedge_symbol, period, hedge_venue);
         let forward_close = fr_factor.satisfy_forward_close(hedge_symbol, period, hedge_venue);
-        let backward_open = fr_factor.satisfy_backward_open(hedge_symbol, period);
+        let backward_open = fr_factor.satisfy_backward_open(hedge_symbol, period, hedge_venue);
         let backward_close = fr_factor.satisfy_backward_close(hedge_symbol, period, hedge_venue);
 
         // 优先级规则1: forward_close 和 backward_open 冲突时，选择 backward_open
@@ -1294,10 +1294,12 @@ impl FrDecision {
                 let fr_ma_cur_loan = fr_ma + current_loan;
 
                 // 检查 FR 信号（优先级与 get_funding_rate_signal 保持一致）
-                let forward_open = fr_factor.satisfy_forward_open(symbol, period);
+                let forward_open =
+                    fr_factor.satisfy_forward_open(symbol, period, BINANCE_CONFIG.venue);
                 let forward_close =
                     fr_factor.satisfy_forward_close(symbol, period, BINANCE_CONFIG.venue);
-                let backward_open = fr_factor.satisfy_backward_open(symbol, period);
+                let backward_open =
+                    fr_factor.satisfy_backward_open(symbol, period, BINANCE_CONFIG.venue);
                 let backward_close =
                     fr_factor.satisfy_backward_close(symbol, period, BINANCE_CONFIG.venue);
 

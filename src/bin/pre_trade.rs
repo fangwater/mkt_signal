@@ -1,7 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
 use log::{info, warn};
-use mkt_signal::common::exchange::Exchange;
 use mkt_signal::common::redis_client::RedisSettings;
 use mkt_signal::pre_trade::monitor_channel::MonitorChannel;
 use mkt_signal::pre_trade::params_load::PreTradeParamsLoader;
@@ -10,6 +9,7 @@ use mkt_signal::pre_trade::resample_channel::ResampleChannel;
 use mkt_signal::pre_trade::signal_channel::SignalChannel;
 use mkt_signal::pre_trade::PreTrade;
 use mkt_signal::pre_trade::TradeEngHub;
+use mkt_signal::signal::common::TradingVenue;
 use mkt_signal::strategy::StrategyManager;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -18,9 +18,13 @@ use std::rc::Rc;
 #[command(name = "pre_trade")]
 #[command(about = "Pre-trade risk management and order execution")]
 struct Args {
-    /// Exchange to use for monitor/accounting components
-    #[arg(short, long)]
-    exchange: Exchange,
+    /// Venue for opening leg (e.g., binance-margin)
+    #[arg(long, value_enum)]
+    open_venue: TradingVenue,
+
+    /// Venue for hedging leg (e.g., binance-futures)
+    #[arg(long, value_enum)]
+    hedge_venue: TradingVenue,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -30,8 +34,13 @@ async fn main() -> Result<()> {
 
     // 解析命令行参数
     let args = Args::parse();
+    let open_venue = args.open_venue;
+    let hedge_venue = args.hedge_venue;
 
-    info!("pre_trade starting, exchange={}", args.exchange);
+    info!(
+        "pre_trade starting, open_venue={:?}, hedge_venue={:?}",
+        open_venue, hedge_venue
+    );
     info!("Required env vars: BINANCE_API_KEY, BINANCE_API_SECRET");
     info!("Optional env vars: REDIS_URL");
 
@@ -66,7 +75,7 @@ async fn main() -> Result<()> {
             // 3. 初始化 MonitorChannel（包含所有账户管理器）
             info!("Initializing MonitorChannel singleton...");
             if let Err(err) =
-                MonitorChannel::init_singleton(strategy_mgr.clone(), args.exchange).await
+                MonitorChannel::init_singleton(strategy_mgr.clone(), open_venue, hedge_venue).await
             {
                 return Err(err);
             }
@@ -93,18 +102,22 @@ async fn main() -> Result<()> {
                 info!("ResampleChannel initialized successfully");
             }
 
-            // 6. 初始化 TradeEngHub（显式连接 binance 与 okex）
-            let trade_eng_list = ["binance", "okex"];
+            // 6. 初始化 TradeEngHub（按 open/hedge 需求注册交易所）
+            use std::collections::BTreeSet;
+            let mut trade_eng_set = BTreeSet::new();
+            trade_eng_set.insert(open_venue.trade_engine_exchange().to_string());
+            trade_eng_set.insert(hedge_venue.trade_engine_exchange().to_string());
+            let trade_eng_list: Vec<String> = trade_eng_set.into_iter().collect();
             info!(
                 "Initializing TradeEngHub singleton (trade_eng_exchanges={})",
                 trade_eng_list.join(", ")
             );
-            if let Err(err) = TradeEngHub::initialize(trade_eng_list) {
+            if let Err(err) = TradeEngHub::initialize(trade_eng_list.iter().map(|s| s.as_str())) {
                 warn!("Failed to initialize TradeEngHub: {err:#}");
             } else {
                 info!(
                     "TradeEngHub initialized for exchanges: {}",
-                    ["binance", "okex"].join(", ")
+                    trade_eng_list.join(", ")
                 );
             }
 

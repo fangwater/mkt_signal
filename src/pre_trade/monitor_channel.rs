@@ -152,8 +152,6 @@ pub fn key_order_trade_update(msg: &OrderTradeUpdateMsg) -> u64 {
 
 // ==================== Monitor Channel ====================
 
-use crate::common::exchange::Exchange;
-use crate::common::min_qty_table::{MarketType, MinQtyTable};
 use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
 use crate::pre_trade::binance_pm_spot_manager::BinanceSpotBalanceSnapshot;
 use crate::pre_trade::binance_pm_um_manager::BinanceUmAccountSnapshot;
@@ -161,6 +159,8 @@ use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::order_manager::OrderManager;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
+use crate::signal::common::{align_price_ceil, align_price_floor};
+use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 use crate::strategy::order_update::OrderUpdate;
 use bytes::Bytes;
 use std::cell::RefCell;
@@ -186,8 +186,8 @@ struct MonitorChannelInner {
     exposure_manager: Rc<RefCell<ExposureManager>>,
     /// 价格表
     price_table: Rc<RefCell<PriceTable>>,
-    /// 交易对最小下单量/步进信息（spot/futures/margin）
-    min_qty_table: Rc<MinQtyTable>,
+    /// 各交易场所的最小下单量/步进信息
+    venue_min_qty_tables: HashMap<TradingVenue, Rc<VenueMinQtyTable>>,
     /// 策略管理器
     strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
     /// 订单管理器，所有订单维护在其中，完全成交或者撤单会被移除
@@ -225,9 +225,9 @@ impl MonitorChannel {
         })
     }
 
-    /// 获取 min_qty_table 的引用
-    pub fn min_qty_table(&self) -> Rc<MinQtyTable> {
-        Self::with_inner(|inner| inner.min_qty_table.clone())
+    /// 获取指定交易场所的最小下单量表
+    pub fn venue_min_qty_table(&self, venue: TradingVenue) -> Option<Rc<VenueMinQtyTable>> {
+        Self::with_inner(|inner| inner.venue_min_qty_tables.get(&venue).cloned())
     }
 
     /// 获取 order_manager 的引用
@@ -284,7 +284,8 @@ impl MonitorChannel {
     ///
     /// # 参数
     /// - `strategy_mgr`: 策略管理器
-    /// - `exchange`: 交易所
+    /// - `open_venue`: 开仓腿交易场所（用于拉取 min_qty/price_tick）
+    /// - `hedge_venue`: 对冲腿交易场所（用于拉取 min_qty/price_tick）
     ///
     /// # 环境变量
     /// - `BINANCE_API_KEY`: Binance API Key（必需）
@@ -295,7 +296,8 @@ impl MonitorChannel {
     /// - 初始账户快照获取失败
     pub async fn init_singleton(
         strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
-        exchange: Exchange,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
     ) -> Result<()> {
         // Read API credentials from environment variables
         let api_key = std::env::var("BINANCE_API_KEY")
@@ -385,15 +387,18 @@ impl MonitorChannel {
         }
         let exposure_manager = Rc::new(RefCell::new(exposure_manager));
 
-        // 加载交易对 LOT_SIZE/PRICE_FILTER（spot/futures/margin），用于数量/价格对齐
-        let mut min_qty_table = MinQtyTable::new(exchange);
-        if let Err(err) = min_qty_table.refresh().await {
-            warn!(
-                "failed to refresh exchange filters for {}: {err:#}",
-                exchange
-            );
+        // 加载交易对 LOT_SIZE/PRICE_FILTER（按 venue 区分），用于数量/价格对齐
+        let mut venue_min_qty_tables: HashMap<TradingVenue, Rc<VenueMinQtyTable>> = HashMap::new();
+        for venue in [open_venue, hedge_venue] {
+            if venue_min_qty_tables.contains_key(&venue) {
+                continue;
+            }
+            let mut table = VenueMinQtyTable::new(venue);
+            if let Err(err) = table.refresh().await {
+                warn!("failed to refresh filters for venue {:?}: {err:#}", venue);
+            }
+            venue_min_qty_tables.insert(venue, Rc::new(table));
         }
-        let min_qty_table = Rc::new(min_qty_table);
 
         // 包装为 Rc<RefCell<>>
         let um_manager_rc = Rc::new(RefCell::new(um_manager));
@@ -433,7 +438,7 @@ impl MonitorChannel {
             spot_manager: spot_manager_rc,
             exposure_manager,
             price_table,
-            min_qty_table,
+            venue_min_qty_tables,
             strategy_mgr,
             order_manager: Rc::new(RefCell::new(OrderManager::new())),
             hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
@@ -479,6 +484,80 @@ impl MonitorChannel {
         })
     }
 
+    fn align_order_with_table(
+        symbol: &str,
+        raw_qty: f64,
+        raw_price: f64,
+        table: &VenueMinQtyTable,
+        enforce_min_notional: bool,
+    ) -> Result<(f64, f64), String> {
+        if raw_qty <= 0.0 {
+            return Err(format!(
+                "symbol={} 原始下单量无效 raw_qty={}",
+                symbol, raw_qty
+            ));
+        }
+        if raw_price <= 0.0 {
+            return Err(format!(
+                "symbol={} 原始价格无效 raw_price={}",
+                symbol, raw_price
+            ));
+        }
+
+        // 1. 价格按 tick 对齐
+        let price_tick = table.price_tick(symbol).unwrap_or(0.0);
+        let price = if price_tick > 0.0 {
+            align_price_floor(raw_price, price_tick)
+        } else {
+            raw_price
+        };
+        if price <= 0.0 {
+            return Err(format!("symbol={} 对齐后价格无效 price={}", symbol, price));
+        }
+
+        // 2. 数量按 step 对齐
+        let step = table.step_size(symbol).unwrap_or(0.0);
+        let mut qty = if step > 0.0 {
+            align_price_floor(raw_qty, step)
+        } else {
+            raw_qty
+        };
+
+        // 3. 补齐最小下单量
+        if let Some(min_qty) = table.min_qty(symbol) {
+            if min_qty > 0.0 && qty < min_qty {
+                qty = min_qty;
+            }
+        }
+
+        // 4. 补齐最小名义金额（仅限 futures 场景）
+        if enforce_min_notional {
+            if let Some(min_notional) = table.min_notional(symbol) {
+                if min_notional > 0.0 {
+                    let required_qty = min_notional / price;
+                    if qty < required_qty {
+                        let before = qty;
+                        qty = if step > 0.0 {
+                            align_price_ceil(required_qty, step)
+                        } else {
+                            required_qty
+                        };
+                        debug!(
+                            "symbol={} 名义金额要求从 {} 调整到 {} (min_notional={}, price={})",
+                            symbol, before, qty, min_notional, price
+                        );
+                    }
+                }
+            }
+        }
+
+        if qty <= 0.0 {
+            return Err(format!("symbol={} 对齐后数量无效 qty={}", symbol, qty));
+        }
+
+        Ok((qty, price))
+    }
+
     /// 根据交易场所对齐订单量和价格
     /// 返回 (对齐后的数量, 对齐后的价格)
     pub fn align_order_by_venue(
@@ -488,24 +567,33 @@ impl MonitorChannel {
         raw_qty: f64,
         raw_price: f64,
     ) -> Result<(f64, f64), String> {
-        Self::with_inner(|inner| match venue {
-            TradingVenue::BinanceFutures => {
-                TradingVenue::align_um_order(symbol, raw_qty, raw_price, &inner.min_qty_table)
-            }
-            TradingVenue::BinanceMargin => {
-                TradingVenue::align_margin_order(symbol, raw_qty, raw_price, &inner.min_qty_table)
-            }
-            TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
-                Err("尚未实现 Okex 的订单对齐".to_string())
-            }
-            TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
-                Err("尚未实现 Bitget 的订单对齐".to_string())
-            }
-            TradingVenue::BybitMargin | TradingVenue::BybitFutures => {
-                Err("尚未实现 Bybit 的订单对齐".to_string())
-            }
-            TradingVenue::GateMargin | TradingVenue::GateFutures => {
-                Err("尚未实现 Gate 的订单对齐".to_string())
+        Self::with_inner(|inner| {
+            let Some(table) = inner.venue_min_qty_tables.get(&venue) else {
+                return Err(format!(
+                    "未初始化 {:?} 的最小下单量表，请检查启动参数",
+                    venue
+                ));
+            };
+
+            match venue {
+                TradingVenue::BinanceFutures => {
+                    Self::align_order_with_table(symbol, raw_qty, raw_price, table.as_ref(), true)
+                }
+                TradingVenue::BinanceMargin => {
+                    Self::align_order_with_table(symbol, raw_qty, raw_price, table.as_ref(), false)
+                }
+                TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
+                    Err("尚未实现 Okex 的订单对齐".to_string())
+                }
+                TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
+                    Err("尚未实现 Bitget 的订单对齐".to_string())
+                }
+                TradingVenue::BybitMargin | TradingVenue::BybitFutures => {
+                    Err("尚未实现 Bybit 的订单对齐".to_string())
+                }
+                TradingVenue::GateMargin | TradingVenue::GateFutures => {
+                    Err("尚未实现 Gate 的订单对齐".to_string())
+                }
             }
         })
     }
@@ -520,35 +608,30 @@ impl MonitorChannel {
         price_hint: Option<f64>,
     ) -> Result<(), String> {
         Self::with_inner(|inner| {
+            let Some(table) = inner.venue_min_qty_tables.get(&venue) else {
+                return Err(format!(
+                    "未初始化 {:?} 的最小下单量表，请检查启动参数",
+                    venue
+                ));
+            };
+
             // 1. 检查最小下单量
-            let min_qty = match venue {
-                TradingVenue::BinanceFutures
-                | TradingVenue::OkexFutures
-                | TradingVenue::BitgetFutures
-                | TradingVenue::BybitFutures
-                | TradingVenue::GateFutures => {
-                    inner.min_qty_table.min_qty(MarketType::Futures, symbol)
-                }
-                TradingVenue::BinanceMargin
-                | TradingVenue::OkexMargin
-                | TradingVenue::BitgetMargin
-                | TradingVenue::BybitMargin
-                | TradingVenue::GateMargin => {
-                    inner.min_qty_table.min_qty(MarketType::Margin, symbol)
-                }
-            }
-            .unwrap_or(0.0);
+            let min_qty = table.min_qty(symbol).unwrap_or(0.0);
 
             if min_qty > 0.0 && qty + 1e-12 < min_qty {
                 return Err(format!("交易量 {:.8} 小于最小下单量 {:.8}", qty, min_qty));
             }
 
             // 2. 检查最小名义金额（仅对 UM 合约）
-            if venue == TradingVenue::BinanceFutures {
-                let min_notional = inner
-                    .min_qty_table
-                    .min_notional(MarketType::Futures, symbol)
-                    .unwrap_or(0.0);
+            if matches!(
+                venue,
+                TradingVenue::BinanceFutures
+                    | TradingVenue::OkexFutures
+                    | TradingVenue::BitgetFutures
+                    | TradingVenue::BybitFutures
+                    | TradingVenue::GateFutures
+            ) {
+                let min_notional = table.min_notional(symbol).unwrap_or(0.0);
 
                 if min_notional > 0.0 {
                     // 如果没有提供价格提示，尝试从价格表获取

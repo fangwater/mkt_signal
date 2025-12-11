@@ -229,16 +229,8 @@ impl HedgeArbStrategy {
             }
         }
 
-        let min_qty_table = MonitorChannel::instance().min_qty_table();
-        let align_result = match venue {
-            TradingVenue::BinanceMargin => {
-                TradingVenue::align_margin_order(&symbol, raw_qty, raw_price, &*min_qty_table)
-            }
-            TradingVenue::BinanceFutures => {
-                TradingVenue::align_um_order(&symbol, raw_qty, raw_price, &*min_qty_table)
-            }
-            _ => unreachable!(),
-        };
+        let align_result =
+            MonitorChannel::instance().align_order_by_venue(venue, &symbol, raw_qty, raw_price);
         let (aligned_qty, aligned_price) = match align_result {
             Ok((qty, price)) => (qty, price),
             Err(e) => {

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Install nginx (Debian/Ubuntu) and configure a reverse proxy on port 4190.
+# Install nginx (Debian/Ubuntu) and configure a reverse proxy on port 4911.
 # Supports multiple path→upstream mappings for HTTP/WebSocket。
 
 set -euo pipefail
 
-PORT="${PORT:-4190}"
+PORT="${PORT:-4911}"
 DEFAULT_UPSTREAM="${UPSTREAM:-http://127.0.0.1:3000}"
 SERVER_NAME="${SERVER_NAME:-_}"
 MAPPING_FILE="${MAPPING_FILE:-config/nginx_locations.txt}"

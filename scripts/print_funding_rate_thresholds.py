@@ -5,7 +5,7 @@
 打印资金费率阈值（从 Redis 读取）。
 
 读取 Redis Hash:
-  `funding_rate_thresholds_{exchange}` - 资金费率阈值（8个字段，不区分 MM/MT）
+  `funding_rate_thresholds_{open_venue}_{hedge_venue}` - 资金费率阈值（8个字段，不区分 MM/MT）
 
 格式: {period}_{direction}_{operation}
   - period: 8h, 4h
@@ -15,6 +15,7 @@
 示例：
   python scripts/print_funding_rate_thresholds.py --exchange binance
   python scripts/print_funding_rate_thresholds.py --exchange okex --redis-url redis://:pwd@127.0.0.1:6379/0
+  # 也可省略 --exchange，脚本会基于当前目录名推断 (binance/okex/bybit/bitget/gate 前缀)
 """
 
 from __future__ import annotations
@@ -22,7 +23,8 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from typing import Dict, List
+from pathlib import Path
+from typing import Dict, List, Optional
 
 # 支持的交易所
 SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
@@ -38,8 +40,11 @@ def try_import_redis():
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Print Funding Rate thresholds from Redis")
-    p.add_argument("--exchange", required=True, choices=SUPPORTED_EXCHANGES,
-                   help="交易所名称（必填）")
+    p.add_argument(
+        "--exchange",
+        choices=SUPPORTED_EXCHANGES,
+        help="交易所名称（可选，未提供则尝试根据当前目录名推断）",
+    )
     p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
     p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
     p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
@@ -72,6 +77,34 @@ THRESHOLD_ORDER = [
     "4h_backward_open",
     "4h_backward_close",
 ]
+
+
+def funding_thresholds_key(exchange: str) -> str:
+    """生成与 Rust 端一致的资金费率阈值 Redis Key"""
+    venue_pairs = {
+        "binance": ("binance-margin", "binance-futures"),
+        "okex": ("okex-margin", "okex-futures"),
+        "bybit": ("bybit-margin", "bybit-futures"),
+        "bitget": ("bitget-margin", "bitget-futures"),
+        "gate": ("gate-margin", "gate-futures"),
+    }
+    if exchange not in venue_pairs:
+        raise ValueError(f"Unsupported exchange: {exchange}")
+    open_slug, hedge_slug = venue_pairs[exchange]
+    return f"funding_rate_thresholds_{open_slug}_{hedge_slug}"
+
+
+def infer_exchange_from_cwd() -> Optional[str]:
+    """从当前目录名推断 exchange（如 binance_fr_trade -> binance）"""
+    name = Path.cwd().name.lower()
+    candidates = [name]
+    if "_" in name:
+        candidates.append(name.split("_", 1)[0])
+    for cand in candidates:
+        for ex in SUPPORTED_EXCHANGES:
+            if cand.startswith(ex):
+                return ex
+    return None
 
 
 def print_three_line_table(headers: List[str], rows: List[List[str]]) -> None:
@@ -107,7 +140,7 @@ def print_three_line_table(headers: List[str], rows: List[List[str]]) -> None:
 
 def print_thresholds(rds, exchange: str) -> None:
     """打印资金费率阈值"""
-    key = f"funding_rate_thresholds_{exchange}"
+    key = funding_thresholds_key(exchange)
     print(f"📊 资金费率阈值 ({key}):")
     print("-" * 80)
 
@@ -136,10 +169,9 @@ def print_thresholds(rds, exchange: str) -> None:
             rows.append([threshold_key, value, comment])
 
     # 输出额外的阈值（如果有）
-    for k in sorted(kv.keys()):
-        if k not in THRESHOLD_ORDER:
-            rows.append([k, kv[k], "-"])
-
+    rows.extend(
+        [k, kv[k], "-"] for k in sorted(kv.keys()) if k not in THRESHOLD_ORDER
+    )
     print_three_line_table(headers, rows)
 
 
@@ -150,6 +182,16 @@ def main() -> int:
         print("❌ redis 包未安装，请使用 pip install redis", file=sys.stderr)
         return 2
 
+    exchange = args.exchange or infer_exchange_from_cwd()
+    if not exchange:
+        print(
+            "❌ 需要 --exchange，或在目录名包含 binance/okex/bybit/bitget/gate 前缀以自动推断",
+            file=sys.stderr,
+        )
+        return 2
+    if not args.exchange:
+        print(f"[INFO] 未提供 exchange，基于目录推断: {exchange}", file=sys.stderr)
+
     rds = redis.from_url(args.redis_url) if args.redis_url else redis.Redis(
         host=args.host, port=args.port, db=args.db, password=args.password
     )
@@ -157,7 +199,7 @@ def main() -> int:
     print(f"📍 Redis: {args.host}:{args.port}/{args.db}\n")
 
     # 打印阈值
-    print_thresholds(rds, args.exchange)
+    print_thresholds(rds, exchange)
 
     print()
     return 0

@@ -1,5 +1,6 @@
 /// 测试 VenueMinQtyTable，展示主流币的合约信息（重点：合约乘数）
 use anyhow::{bail, Result};
+use clap::Parser;
 use mkt_signal::signal::{common::TradingVenue, venue_min_qty_table::VenueMinQtyTable};
 use serde::Deserialize;
 
@@ -44,38 +45,55 @@ async fn fetch_okx_raw_data() -> Result<Vec<OkexInstrument>> {
     Ok(resp.data)
 }
 
+/// 命令行参数
+#[derive(Debug, Parser)]
+#[command(name = "test_minqty", about = "打印各交易场所的最小下单量/合约面值")]
+struct Args {
+    /// 交易场所（默认 okex-futures），只支持各交易所 USDT 本位场景
+    #[arg(long, value_enum, default_value = "okex-futures")]
+    venue: TradingVenue,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    let venue = TradingVenue::OkexFutures;
+    let args = Args::parse();
+    let venue = args.venue;
     println!("\n=== 测试 {:?} 合约信息（验证 ctMult API）===\n", venue);
 
-    // 1. 先拉取原始 API 数据
-    println!("【步骤 1】拉取 OKX API 原始数据...");
-    let raw_instruments = fetch_okx_raw_data().await?;
-    println!("拉取完成，共 {} 个合约\n", raw_instruments.len());
+    // 原始 API 数据仅对 OKX 展示，其它 venue 直接跳过
+    if matches!(venue, TradingVenue::OkexFutures | TradingVenue::OkexMargin) {
+        println!("【步骤 1】拉取 OKX API 原始数据...");
+        let raw_instruments = fetch_okx_raw_data().await?;
+        println!("拉取完成，共 {} 个合约\n", raw_instruments.len());
 
-    // 2. 打印几个主流币的原始数据
-    let sample_coins = vec!["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP"];
-    println!("【步骤 2】查看主流币的 API 原始返回数据：\n");
+        // 打印几个主流币的原始数据
+        let sample_coins = vec!["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP"];
+        println!("【步骤 2】查看主流币的 API 原始返回数据：\n");
 
-    for inst_id in &sample_coins {
-        if let Some(inst) = raw_instruments.iter().find(|i| &i.inst_id == inst_id) {
-            println!("合约: {}", inst.inst_id);
-            println!("  instType:  {:?}", inst.inst_type);
-            println!("  ctType:    {:?}", inst.ct_type);
-            println!("  ctVal:     {:?}", inst.ct_val);
-            println!("  ctMult:    {:?} ⬅️ 重点", inst.ct_mult);
-            println!("  settleCcy: {:?}", inst.settle_ccy);
-            println!("  minSz:     {}", inst.min_sz);
-            println!("  lotSz:     {}", inst.lot_sz);
-            println!();
+        for inst_id in &sample_coins {
+            if let Some(inst) = raw_instruments.iter().find(|i| &i.inst_id == inst_id) {
+                println!("合约: {}", inst.inst_id);
+                println!("  instType:  {:?}", inst.inst_type);
+                println!("  ctType:    {:?}", inst.ct_type);
+                println!("  ctVal:     {:?}", inst.ct_val);
+                println!("  ctMult:    {:?} ⬅️ 重点", inst.ct_mult);
+                println!("  settleCcy: {:?}", inst.settle_ccy);
+                println!("  minSz:     {}", inst.min_sz);
+                println!("  lotSz:     {}", inst.lot_sz);
+                println!();
+            }
         }
+    } else {
+        println!(
+            "【步骤 1】当前仅 OKX 提供原始 API 展示，{:?} 直接使用 min_qty_table。\n",
+            venue
+        );
     }
 
-    // 3. 使用 VenueMinQtyTable 解析
-    println!("【步骤 3】使用 VenueMinQtyTable 解析并展示合约信息：\n");
+    // 使用 VenueMinQtyTable 解析
+    println!("【步骤 2】使用 VenueMinQtyTable 解析并展示合约信息：\n");
     let mut table = VenueMinQtyTable::new(venue);
     table.refresh().await?;
 

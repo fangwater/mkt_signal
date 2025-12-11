@@ -191,9 +191,14 @@ impl FundingRateFactor {
     /// 获取预测资金费率 (predict_fr)
     ///
     /// RateFetcher 会返回 (symbol 周期, 预测值)，周期不匹配时忽略
-    fn get_predict_fr(&self, symbol: &str, period: FundingRatePeriod) -> Option<f64> {
+    fn get_predict_fr(
+        &self,
+        symbol: &str,
+        period: FundingRatePeriod,
+        venue: TradingVenue,
+    ) -> Option<f64> {
         RateFetcher::instance()
-            .get_predicted_funding_rate(symbol, TradingVenue::BinanceFutures)
+            .get_predicted_funding_rate(symbol, venue)
             .and_then(|(sym_period, value)| {
                 if sym_period == period {
                     Some(value)
@@ -204,9 +209,14 @@ impl FundingRateFactor {
     }
 
     /// 获取预测借贷利率 (predict_loan_rate)
-    fn get_predict_loan_rate(&self, symbol: &str, period: FundingRatePeriod) -> Option<f64> {
+    fn get_predict_loan_rate(
+        &self,
+        symbol: &str,
+        period: FundingRatePeriod,
+        venue: TradingVenue,
+    ) -> Option<f64> {
         RateFetcher::instance()
-            .get_predict_loan_rate(symbol, TradingVenue::BinanceFutures)
+            .get_predict_loan_rate(symbol, venue)
             .and_then(|(sym_period, value)| {
                 if sym_period == period {
                     Some(value)
@@ -226,9 +236,14 @@ impl FundingRateFactor {
     /// 获取当前借贷利率 (current_loan_rate)
     ///
     /// 使用最近 3 条历史数据的均值
-    fn get_current_loan_rate(&self, symbol: &str, period: FundingRatePeriod) -> Option<f64> {
+    fn get_current_loan_rate(
+        &self,
+        symbol: &str,
+        period: FundingRatePeriod,
+        venue: TradingVenue,
+    ) -> Option<f64> {
         RateFetcher::instance()
-            .get_current_loan_rate(symbol, TradingVenue::BinanceFutures)
+            .get_current_loan_rate(symbol, venue)
             .and_then(|(sym_period, value)| {
                 if sym_period == period {
                     Some(value)
@@ -243,7 +258,12 @@ impl FundingRateFactor {
     /// 检查是否满足正套开仓条件
     ///
     /// 判断：predict_fr > threshold（根据 symbol 的周期和当前模式）
-    pub fn satisfy_forward_open(&self, symbol: &str, period: FundingRatePeriod) -> bool {
+    pub fn satisfy_forward_open(
+        &self,
+        symbol: &str,
+        period: FundingRatePeriod,
+        venue: TradingVenue,
+    ) -> bool {
         let current_mode = self.get_mode();
         let key = (
             period,
@@ -254,7 +274,7 @@ impl FundingRateFactor {
 
         let thresholds = self.thresholds.borrow();
         if let Some(config) = thresholds.get(&key) {
-            if let Some(predict_fr) = self.get_predict_fr(symbol, period) {
+            if let Some(predict_fr) = self.get_predict_fr(symbol, period, venue) {
                 return config.compare_op.check(predict_fr, config.threshold);
             }
         }
@@ -266,7 +286,12 @@ impl FundingRateFactor {
     ///
     /// 判断：(predict_fr + predict_loan_rate * 1.2) < threshold（根据 symbol 的周期和当前模式）
     /// 借贷利率乘以系数 BWD_OPEN_LOAN_RATE_MULTIPLIER (1.2) 以留出安全边际
-    pub fn satisfy_backward_open(&self, symbol: &str, period: FundingRatePeriod) -> bool {
+    pub fn satisfy_backward_open(
+        &self,
+        symbol: &str,
+        period: FundingRatePeriod,
+        venue: TradingVenue,
+    ) -> bool {
         let current_mode = self.get_mode();
         let key = (
             period,
@@ -278,8 +303,8 @@ impl FundingRateFactor {
         let thresholds = self.thresholds.borrow();
         if let Some(config) = thresholds.get(&key) {
             if let (Some(predict_fr), Some(loan_rate)) = (
-                self.get_predict_fr(symbol, period),
-                self.get_predict_loan_rate(symbol, period),
+                self.get_predict_fr(symbol, period, venue),
+                self.get_predict_loan_rate(symbol, period, venue),
             ) {
                 let factor = predict_fr + loan_rate * BWD_OPEN_LOAN_RATE_MULTIPLIER;
                 return config.compare_op.check(factor, config.threshold);
@@ -337,7 +362,7 @@ impl FundingRateFactor {
         if let Some(config) = thresholds.get(&key) {
             if let (Some(current_fr_ma), Some(current_loan)) = (
                 self.get_current_fr_ma(symbol, venue),
-                self.get_current_loan_rate(symbol, period),
+                self.get_current_loan_rate(symbol, period, venue),
             ) {
                 let factor = current_fr_ma + current_loan;
                 return config.compare_op.check(factor, config.threshold);
