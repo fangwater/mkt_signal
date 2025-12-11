@@ -14,10 +14,8 @@ use std::time::Duration;
 
 use crate::common::exchange::Exchange;
 use crate::common::redis_client::{RedisClient, RedisSettings};
-use crate::signal::common::TradingVenue;
 
 use super::common::venue_pair_for_exchange;
-use super::decision::FrDecision;
 use super::fr_threshold_loader::load_from_redis as load_fr_thresholds;
 use super::spread_threshold_loader::load_from_redis as load_spread_thresholds;
 use super::strategy_loader::StrategyParams;
@@ -78,9 +76,6 @@ async fn reload_all_configs(redis: &RedisSettings, exchange: Exchange) -> Result
     // 4. 加载资金费率阈值 -> FundingRateFactor
     reload_fr_thresholds(redis, exchange).await?;
 
-    // 5. 加载交易对白名单 -> FrDecision
-    reload_check_symbols(redis).await?;
-
     info!("✅ 配置重载完成");
     Ok(())
 }
@@ -104,9 +99,7 @@ async fn reload_symbol_list(redis: &RedisSettings, exchange: Exchange) -> Result
     match RedisClient::connect(redis.clone()).await {
         Ok(mut client) => {
             let symbol_list = SymbolList::instance();
-            symbol_list
-                .reload_from_redis(&mut client, &[exchange])
-                .await?;
+            symbol_list.reload_from_redis(&mut client, exchange).await?;
             info!("SymbolList 重载成功 (exchange: {})", exchange);
         }
         Err(err) => {
@@ -162,42 +155,6 @@ async fn reload_fr_thresholds(redis: &RedisSettings, exchange: Exchange) -> Resu
         }
         Err(err) => {
             warn!("连接 Redis 加载资金费率阈值失败: {:?}", err);
-        }
-    }
-    Ok(())
-}
-
-/// 重载交易对白名单
-async fn reload_check_symbols(redis: &RedisSettings) -> Result<()> {
-    let redis_key = std::env::var("SYMBOLS_REDIS_KEY")
-        .unwrap_or_else(|_| "fr_trade_symbols:binance".to_string());
-
-    match RedisClient::connect(redis.clone()).await {
-        Ok(mut client) => {
-            if let Ok(Some(symbols_json)) = client.get_string(&redis_key).await {
-                if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&symbols_json) {
-                    let pairs: Vec<_> = symbols
-                        .iter()
-                        .map(|s| {
-                            (
-                                TradingVenue::BinanceMargin,
-                                s.to_uppercase(),
-                                TradingVenue::BinanceFutures,
-                                s.to_uppercase(),
-                            )
-                        })
-                        .collect();
-
-                    FrDecision::with_mut(|decision| {
-                        decision.update_check_symbols(pairs);
-                    });
-
-                    info!("交易对白名单重载成功: {} 个", symbols.len());
-                }
-            }
-        }
-        Err(err) => {
-            warn!("连接 Redis 加载交易对白名单失败: {:?}", err);
         }
     }
     Ok(())

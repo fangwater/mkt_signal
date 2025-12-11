@@ -376,7 +376,7 @@ impl RateFetcher {
 
     async fn fetch_binance_rates(is_full_fetch: bool) -> Result<()> {
         let symbol_list = SymbolList::instance();
-        let mut online_symbols = symbol_list.get_online_symbols(BINANCE_CONFIG.venue);
+        let mut online_symbols = symbol_list.get_online_symbols();
         if online_symbols.is_empty() {
             online_symbols = BINANCE_TEST_SYMBOLS.iter().map(|s| s.to_string()).collect();
         }
@@ -664,7 +664,7 @@ impl RateFetcher {
 
     async fn fetch_okex_rates(is_full_fetch: bool) -> Result<()> {
         let symbol_list = SymbolList::instance();
-        let mut online_symbols = symbol_list.get_online_symbols(OKEX_CONFIG.venue);
+        let mut online_symbols = symbol_list.get_online_symbols();
         if online_symbols.is_empty() {
             online_symbols = OKEX_TEST_SYMBOLS.iter().map(|s| s.to_string()).collect();
         }
@@ -853,7 +853,7 @@ impl RateFetcher {
 
     async fn fetch_bitget_rates(is_full_fetch: bool) -> Result<()> {
         let symbol_list = SymbolList::instance();
-        let mut online_symbols = symbol_list.get_online_symbols(BITGET_CONFIG.venue);
+        let mut online_symbols = symbol_list.get_online_symbols();
         if online_symbols.is_empty() {
             online_symbols = BITGET_TEST_SYMBOLS.iter().map(|s| s.to_string()).collect();
         }
@@ -1028,7 +1028,7 @@ impl RateFetcher {
 
     async fn fetch_bybit_rates(is_full_fetch: bool) -> Result<()> {
         let symbol_list = SymbolList::instance();
-        let mut online_symbols = symbol_list.get_online_symbols(BYBIT_CONFIG.venue);
+        let mut online_symbols = symbol_list.get_online_symbols();
         if online_symbols.is_empty() {
             online_symbols = BYBIT_TEST_SYMBOLS.iter().map(|s| s.to_string()).collect();
         }
@@ -1202,7 +1202,7 @@ impl RateFetcher {
 
     async fn fetch_gate_rates(is_full_fetch: bool) -> Result<()> {
         let symbol_list = SymbolList::instance();
-        let mut online_symbols = symbol_list.get_online_symbols(GATE_CONFIG.venue);
+        let mut online_symbols = symbol_list.get_online_symbols();
         if online_symbols.is_empty() {
             online_symbols = GATE_TEST_SYMBOLS.iter().map(|s| s.to_string()).collect();
         }

@@ -125,7 +125,6 @@ FUNDING_THRESHOLD_REDIS_KEY="funding_rate_thresholds_okex" \
 支持的环境变量：
 - `FUNDING_THRESHOLD_REDIS_KEY` - 资金费率阈值 key（默认 `funding_rate_thresholds`）
 - `SPREAD_THRESHOLD_REDIS_KEY` - 价差阈值 key（默认 `binance_spread_thresholds`）
-- `SYMBOLS_REDIS_KEY` - 交易对白名单 key（默认 `fr_trade_symbols:binance_um`）
 
 ## Redis Key 命名规范
 

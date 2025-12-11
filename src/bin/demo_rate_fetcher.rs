@@ -13,7 +13,7 @@
 use anyhow::Result;
 use log::info;
 use mkt_signal::common::exchange::Exchange;
-use mkt_signal::funding_rate::common::FundingRatePeriod;
+use mkt_signal::funding_rate::common::{venue_pair_for_exchange, FundingRatePeriod};
 use mkt_signal::funding_rate::{MktChannel, RateFetcher, SymbolList};
 use mkt_signal::signal::common::TradingVenue;
 use tokio::time::{sleep, Duration};
@@ -36,7 +36,8 @@ async fn run_demo() -> Result<()> {
     SymbolList::init_singleton()?;
     info!("SymbolList 初始化完成");
 
-    MktChannel::init_singleton()?;
+    let (open_venue, hedge_venue) = venue_pair_for_exchange(Exchange::Binance);
+    MktChannel::init_singleton(open_venue, hedge_venue)?;
     info!("MktChannel 初始化完成");
 
     RateFetcher::init(Exchange::Binance)?;

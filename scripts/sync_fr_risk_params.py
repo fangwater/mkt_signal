@@ -54,7 +54,7 @@ RISK_PARAMS = {
     "max_total_exposure_ratio": "0.01",
 
     # 最大杠杆倍数（>0）
-    "max_leverage": "1.90",
+    "max_leverage": "1.85",
 
     # 最大挂单数（>=0）
     "max_pending_limit_orders": "10",

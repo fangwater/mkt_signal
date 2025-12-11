@@ -8,9 +8,15 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
 use std::cell::{OnceCell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
+use super::common::{Quote, ThresholdKey};
+use super::funding_rate_factor::FundingRateFactor;
+use super::mkt_channel::MktChannel;
+use super::rate_fetcher::RateFetcher;
+use super::spread_factor::SpreadFactor;
+use super::symbol_list::SymbolList;
 use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
@@ -23,13 +29,6 @@ use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
 use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
-
-use super::common::{Quote, ThresholdKey};
-use super::funding_rate_factor::FundingRateFactor;
-use super::mkt_channel::MktChannel;
-use super::rate_fetcher::RateFetcher;
-use super::spread_factor::SpreadFactor;
-use super::symbol_list::SymbolList;
 
 // ========== 线程本地单例 ==========
 
@@ -112,26 +111,21 @@ pub struct FrDecision {
     /// 对冲限价偏移（例如 0.0003 表示万分之 3）
     hedge_price_offset: f64,
 
-    /// 需要检查的交易对白名单（完整的 4 元组）
-    /// key: (spot_venue, spot_symbol, futures_venue, futures_symbol)
-    /// 使用 Rc<RefCell<>> 以便在 spawn_local 任务中共享
-    check_symbols: Rc<RefCell<HashSet<ThresholdKey>>>,
-
     /// 信号冷却时间（微秒），默认 5 秒
     /// 每种信号类型（ArbOpen/ArbClose/ArbCancel）有独立的冷却时间
     /// 防止因多个事件同时触发（现货/期货盘口同时更新）导致重复发送相同类型的信号
     signal_cooldown_us: i64,
 
     /// 最后触发 ArbOpen 的时间戳（微秒）
-    /// key: (spot_venue, spot_symbol, futures_venue, futures_symbol)
+    /// key: (open_venue, open_symbol, hedge_venue, hedge_symbol)
     last_open_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
 
     /// 最后触发 ArbClose 的时间戳（微秒）
-    /// key: (spot_venue, spot_symbol, futures_venue, futures_symbol)
+    /// key: (open_venue, open_symbol, hedge_venue, hedge_symbol)
     last_close_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
 
     /// 最后触发 ArbCancel 的时间戳（微秒）
-    /// key: (spot_venue, spot_symbol, futures_venue, futures_symbol)
+    /// key: (open_venue, open_symbol, hedge_venue, hedge_symbol)
     last_cancel_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
 }
 
@@ -244,7 +238,6 @@ impl FrDecision {
             open_order_ttl_us: 120_000_000,
             hedge_timeout_mm_us: 30_000_000,
             hedge_price_offset: 0.0003,
-            check_symbols: Rc::new(RefCell::new(HashSet::new())),
             signal_cooldown_us: 5_000_000, // 默认 5 秒
             last_open_ts: Rc::new(RefCell::new(HashMap::new())),
             last_close_ts: Rc::new(RefCell::new(HashMap::new())),
@@ -295,7 +288,6 @@ impl FrDecision {
     /// 联合信号决策：同时检查资费和价差因子
     ///
     /// # 决策流程
-    /// 0. 检查 symbol 是否在 check_symbols 白名单中
     /// 1. 优先检查 cancel 信号（只和价差有关）
     ///    - 如果满足 cancel 条件，检查 cancel 信号冷却
     ///    - 如果在冷却期内，跳过 cancel 信号
@@ -313,10 +305,10 @@ impl FrDecision {
     /// - 但不同类型信号之间互不影响
     ///
     /// # 参数
-    /// - `spot_symbol`: 现货交易对
-    /// - `futures_symbol`: 合约交易对
-    /// - `spot_venue`: 现货交易所
-    /// - `futures_venue`: 合约交易所
+    /// - `open_symbol`: 开仓侧交易对
+    /// - `hedge_symbol`: 对冲侧交易对
+    /// - `open_venue`: 开仓侧交易所
+    /// - `hedge_venue`: 对冲侧交易所
     ///
     /// # 返回
     /// 如果需要发送信号，返回 Ok(Some(signal_type))；否则返回 Ok(None)
@@ -326,47 +318,29 @@ impl FrDecision {
     /// 触发时机：MktChannel 收到盘口更新、RateFetcher 更新资费率等
     pub fn make_combined_decision(
         &mut self,
-        spot_symbol: &str,
-        futures_symbol: &str,
-        spot_venue: TradingVenue,
-        futures_venue: TradingVenue,
+        open_symbol: &str,
+        hedge_symbol: &str,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
     ) -> Result<Option<SignalType>> {
-        // 步骤0: 检查交易对 4 元组是否在白名单中
-        // 早期返回优化：不在白名单中的交易对直接跳过，提升效率
-        let key = (
-            spot_venue,
-            spot_symbol.to_uppercase(),
-            futures_venue,
-            futures_symbol.to_uppercase(),
-        );
-
-        let check_symbols = self.check_symbols.borrow();
-        if !check_symbols.contains(&key) {
-            return Ok(None);
-        }
-        drop(check_symbols); // 释放借用
-
         let spread_factor = SpreadFactor::instance();
         let now = get_timestamp_us();
 
         // 步骤1: 优先检查 cancel 信号（只和价差有关，不需要资费）
-        if spread_factor.satisfy_forward_cancel(
-            spot_venue,
-            spot_symbol,
-            futures_venue,
-            futures_symbol,
-        ) || spread_factor.satisfy_backward_cancel(
-            spot_venue,
-            spot_symbol,
-            futures_venue,
-            futures_symbol,
-        ) {
+        if spread_factor.satisfy_forward_cancel(open_venue, open_symbol, hedge_venue, hedge_symbol)
+            || spread_factor.satisfy_backward_cancel(
+                open_venue,
+                open_symbol,
+                hedge_venue,
+                hedge_symbol,
+            )
+        {
             // 检查 cancel 信号冷却
             if self.check_signal_cooldown(
-                spot_symbol,
-                futures_symbol,
-                spot_venue,
-                futures_venue,
+                open_symbol,
+                hedge_symbol,
+                open_venue,
+                hedge_venue,
                 now,
                 &SignalType::ArbCancel,
             ) {
@@ -374,19 +348,19 @@ impl FrDecision {
             } else {
                 // 发送 cancel 信号
                 self.emit_signals(
-                    spot_symbol,
-                    futures_symbol,
-                    spot_venue,
-                    futures_venue,
+                    open_symbol,
+                    hedge_symbol,
+                    open_venue,
+                    hedge_venue,
                     SignalType::ArbCancel,
                     None,
                 )?;
                 // 更新 cancel 冷却时间戳
                 self.update_last_signal_ts(
-                    spot_symbol,
-                    futures_symbol,
-                    spot_venue,
-                    futures_venue,
+                    open_symbol,
+                    hedge_symbol,
+                    open_venue,
+                    hedge_venue,
                     now,
                     &SignalType::ArbCancel,
                 );
@@ -395,7 +369,7 @@ impl FrDecision {
         }
 
         // 步骤2: 获取资费信号
-        let fr_signal = self.get_funding_rate_signal(spot_symbol, futures_symbol, futures_venue)?;
+        let fr_signal = self.get_funding_rate_signal(open_symbol, hedge_symbol, hedge_venue)?;
 
         // 步骤3: 如果资费没有信号，返回 None
         let fr_signal = match fr_signal {
@@ -408,11 +382,11 @@ impl FrDecision {
             FrSignal::ForwardOpen => {
                 let symbol_list = SymbolList::instance();
                 if spread_factor.satisfy_forward_open(
-                    spot_venue,
-                    spot_symbol,
-                    futures_venue,
-                    futures_symbol,
-                ) && symbol_list.is_in_fwd_trade_list(futures_symbol, futures_venue)
+                    open_venue,
+                    open_symbol,
+                    hedge_venue,
+                    hedge_symbol,
+                ) && symbol_list.is_in_fwd_trade_list(open_symbol)
                 {
                     Some(SignalType::ArbOpen)
                 } else {
@@ -421,10 +395,10 @@ impl FrDecision {
             }
             FrSignal::ForwardClose => {
                 if spread_factor.satisfy_forward_close(
-                    spot_venue,
-                    spot_symbol,
-                    futures_venue,
-                    futures_symbol,
+                    open_venue,
+                    open_symbol,
+                    hedge_venue,
+                    hedge_symbol,
                 ) {
                     Some(SignalType::ArbClose)
                 } else {
@@ -434,11 +408,11 @@ impl FrDecision {
             FrSignal::BackwardOpen => {
                 let symbol_list = SymbolList::instance();
                 if spread_factor.satisfy_backward_open(
-                    spot_venue,
-                    spot_symbol,
-                    futures_venue,
-                    futures_symbol,
-                ) && symbol_list.is_in_bwd_trade_list(futures_symbol, futures_venue)
+                    open_venue,
+                    open_symbol,
+                    hedge_venue,
+                    hedge_symbol,
+                ) && symbol_list.is_in_bwd_trade_list(open_symbol)
                 {
                     Some(SignalType::ArbOpen)
                 } else {
@@ -447,10 +421,10 @@ impl FrDecision {
             }
             FrSignal::BackwardClose => {
                 if spread_factor.satisfy_backward_close(
-                    spot_venue,
-                    spot_symbol,
-                    futures_venue,
-                    futures_symbol,
+                    open_venue,
+                    open_symbol,
+                    hedge_venue,
+                    hedge_symbol,
                 ) {
                     Some(SignalType::ArbClose)
                 } else {
@@ -469,10 +443,10 @@ impl FrDecision {
 
         // 步骤6: 检查对应信号类型的冷却
         if self.check_signal_cooldown(
-            spot_symbol,
-            futures_symbol,
-            spot_venue,
-            futures_venue,
+            open_symbol,
+            hedge_symbol,
+            open_venue,
+            hedge_venue,
             now,
             &final_signal,
         ) {
@@ -481,20 +455,20 @@ impl FrDecision {
 
         // 步骤7: 发送信号
         self.emit_signals(
-            spot_symbol,
-            futures_symbol,
-            spot_venue,
-            futures_venue,
+            open_symbol,
+            hedge_symbol,
+            open_venue,
+            hedge_venue,
             final_signal.clone(),
             Some(signal_side),
         )?;
 
         // 步骤8: 更新冷却时间戳
         self.update_last_signal_ts(
-            spot_symbol,
-            futures_symbol,
-            spot_venue,
-            futures_venue,
+            open_symbol,
+            hedge_symbol,
+            open_venue,
+            hedge_venue,
             now,
             &final_signal,
         );
@@ -512,22 +486,21 @@ impl FrDecision {
     /// 3. 否则按优先级：close > open
     fn get_funding_rate_signal(
         &self,
-        _spot_symbol: &str,
-        futures_symbol: &str,
-        futures_venue: TradingVenue,
+        _open_symbol: &str,
+        hedge_symbol: &str,
+        hedge_venue: TradingVenue,
     ) -> Result<Option<FrSignal>> {
         let fr_factor = FundingRateFactor::instance();
         let rate_fetcher = RateFetcher::instance();
 
         // 从 RateFetcher 获取该 symbol 的周期
-        let period = rate_fetcher.get_period(futures_symbol, futures_venue);
+        let period = rate_fetcher.get_period(hedge_symbol, hedge_venue);
 
         // 检查所有条件
-        let forward_open = fr_factor.satisfy_forward_open(futures_symbol, period);
-        let forward_close = fr_factor.satisfy_forward_close(futures_symbol, period, futures_venue);
-        let backward_open = fr_factor.satisfy_backward_open(futures_symbol, period);
-        let backward_close =
-            fr_factor.satisfy_backward_close(futures_symbol, period, futures_venue);
+        let forward_open = fr_factor.satisfy_forward_open(hedge_symbol, period);
+        let forward_close = fr_factor.satisfy_forward_close(hedge_symbol, period, hedge_venue);
+        let backward_open = fr_factor.satisfy_backward_open(hedge_symbol, period);
+        let backward_close = fr_factor.satisfy_backward_close(hedge_symbol, period, hedge_venue);
 
         // 优先级规则1: forward_close 和 backward_open 冲突时，选择 backward_open
         if forward_close && backward_open {
@@ -735,10 +708,10 @@ impl FrDecision {
     /// 发布交易信号到 pre_trade（支持多信号发送）
     ///
     /// # 参数
-    /// - `spot_symbol`: 现货交易对
-    /// - `futures_symbol`: 合约交易对
-    /// - `spot_venue`: 现货交易所
-    /// - `futures_venue`: 合约交易所
+    /// - `open_symbol`: 开仓侧交易对
+    /// - `hedge_symbol`: 对冲侧交易对
+    /// - `open_venue`: 开仓侧交易所
+    /// - `hedge_venue`: 对冲侧交易所
     /// - `signal_type`: 信号类型
     ///
     /// # 行为
@@ -766,7 +739,7 @@ impl FrDecision {
         // 如果盘口无效，记录警告并返回
         if spot_quote.is_none() || futures_quote.is_none() {
             warn!(
-                "FrDecision: quote unavailable spot={} ({:?}) futures={} ({:?})",
+                "FrDecision: quote unavailable open={} ({:?}) hedge={} ({:?})",
                 spot_symbol,
                 spot_quote.is_some(),
                 futures_symbol,
@@ -781,14 +754,14 @@ impl FrDecision {
         // 检查盘口数据的有效性：bid（买价）必须小于 ask（卖价）
         if spot_quote.bid >= spot_quote.ask {
             warn!(
-                "FrDecision: invalid spot quote bid={:.8} >= ask={:.8} for {}",
+                "FrDecision: invalid open quote bid={:.8} >= ask={:.8} for {}",
                 spot_quote.bid, spot_quote.ask, spot_symbol
             );
             return Ok(());
         }
         if futures_quote.bid >= futures_quote.ask {
             warn!(
-                "FrDecision: invalid futures quote bid={:.8} >= ask={:.8} for {}",
+                "FrDecision: invalid hedge quote bid={:.8} >= ask={:.8} for {}",
                 futures_quote.bid, futures_quote.ask, futures_symbol
             );
             return Ok(());
@@ -1037,85 +1010,6 @@ impl FrDecision {
         }
         self.hedge_price_offset = offset;
         info!("FrDecision: hedge_price_offset 更新为 {:.6}", offset);
-    }
-
-    /// 更新需要检查的交易对白名单（批量）
-    ///
-    /// # 参数
-    /// - `pairs`: 交易对列表，每个元素是 (spot_venue, spot_symbol, futures_venue, futures_symbol)
-    pub fn update_check_symbols(&mut self, pairs: Vec<ThresholdKey>) {
-        let mut check_symbols = self.check_symbols.borrow_mut();
-        check_symbols.clear();
-        for (spot_venue, spot_symbol, futures_venue, futures_symbol) in pairs {
-            check_symbols.insert((
-                spot_venue,
-                spot_symbol.to_uppercase(),
-                futures_venue,
-                futures_symbol.to_uppercase(),
-            ));
-        }
-        info!(
-            "FrDecision: check_symbols 已更新，总数 {}",
-            check_symbols.len()
-        );
-    }
-
-    /// 添加单个交易对到检查列表
-    ///
-    /// # 参数
-    /// - `spot_symbol`: 现货交易对
-    /// - `futures_symbol`: 合约交易对
-    /// - `spot_venue`: 现货交易所
-    /// - `futures_venue`: 合约交易所
-    pub fn add_check_symbol(
-        &mut self,
-        spot_symbol: &str,
-        futures_symbol: &str,
-        spot_venue: TradingVenue,
-        futures_venue: TradingVenue,
-    ) {
-        let mut check_symbols = self.check_symbols.borrow_mut();
-        let key = (
-            spot_venue,
-            spot_symbol.to_uppercase(),
-            futures_venue,
-            futures_symbol.to_uppercase(),
-        );
-        if check_symbols.insert(key.clone()) {
-            info!(
-                "FrDecision: 添加交易对到检查列表: {:?}/{} <-> {:?}/{}",
-                spot_venue, spot_symbol, futures_venue, futures_symbol
-            );
-        }
-    }
-
-    /// 移除单个交易对从检查列表
-    ///
-    /// # 参数
-    /// - `spot_symbol`: 现货交易对
-    /// - `futures_symbol`: 合约交易对
-    /// - `spot_venue`: 现货交易所
-    /// - `futures_venue`: 合约交易所
-    pub fn remove_check_symbol(
-        &mut self,
-        spot_symbol: &str,
-        futures_symbol: &str,
-        spot_venue: TradingVenue,
-        futures_venue: TradingVenue,
-    ) {
-        let mut check_symbols = self.check_symbols.borrow_mut();
-        let key = (
-            spot_venue,
-            spot_symbol.to_uppercase(),
-            futures_venue,
-            futures_symbol.to_uppercase(),
-        );
-        if check_symbols.remove(&key) {
-            info!(
-                "FrDecision: 从检查列表移除交易对: {:?}/{} <-> {:?}/{}",
-                spot_venue, spot_symbol, futures_venue, futures_symbol
-            );
-        }
     }
 
     /// 更新信号冷却时间（秒）

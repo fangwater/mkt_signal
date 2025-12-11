@@ -57,11 +57,6 @@ struct MktChannelInner {
 
     /// Mark Price 数据：TradingVenue -> HashMap<Symbol, f64> (只存最新值)
     mark_prices: Rc<RefCell<HashMap<TradingVenue, HashMap<String, f64>>>>,
-
-    /// open 侧交易场所
-    open_venue: TradingVenue,
-    /// hedge 侧交易场所
-    hedge_venue: TradingVenue,
 }
 
 impl MktChannel {
@@ -170,8 +165,6 @@ impl MktChannel {
             quotes,
             funding_rates,
             mark_prices,
-            open_venue,
-            hedge_venue,
         };
 
         MKT_CHANNEL.with(|mc| {

@@ -17,6 +17,7 @@ use std::collections::{HashMap, HashSet};
 use crate::common::exchange::Exchange;
 use crate::common::redis_client::RedisClient;
 use crate::signal::common::TradingVenue;
+use crate::symbol_match::normalize_symbol_for_whitelist;
 
 // Redis key 前缀
 const DUMP_SYMBOL_KEY_PREFIX: &str = "fr_dump_symbols";
@@ -34,17 +35,20 @@ pub struct SymbolList;
 
 /// SymbolList 内部实现
 struct SymbolListInner {
-    /// 平仓列表：Exchange -> HashSet<Symbol>
-    dump_symbols: HashMap<Exchange, HashSet<String>>,
+    /// 当前运行 exchange（加载列表时记录）
+    current_exchange: Option<Exchange>,
 
-    /// 建仓列表：Exchange -> HashSet<Symbol>
-    trade_symbols: HashMap<Exchange, HashSet<String>>,
+    /// 平仓列表
+    dump_symbols: HashSet<String>,
 
-    /// 正套建仓列表：Exchange -> HashSet<Symbol>
-    fwd_trade_symbols: HashMap<Exchange, HashSet<String>>,
+    /// 建仓列表
+    trade_symbols: HashSet<String>,
 
-    /// 反套建仓列表：Exchange -> HashSet<Symbol>
-    bwd_trade_symbols: HashMap<Exchange, HashSet<String>>,
+    /// 正套建仓列表
+    fwd_trade_symbols: HashSet<String>,
+
+    /// 反套建仓列表
+    bwd_trade_symbols: HashSet<String>,
 }
 
 impl SymbolList {
@@ -80,10 +84,11 @@ impl SymbolList {
     /// 初始化单例
     pub fn init_singleton() -> Result<()> {
         let inner = SymbolListInner {
-            dump_symbols: HashMap::new(),
-            trade_symbols: HashMap::new(),
-            fwd_trade_symbols: HashMap::new(),
-            bwd_trade_symbols: HashMap::new(),
+            current_exchange: None,
+            dump_symbols: HashSet::new(),
+            trade_symbols: HashSet::new(),
+            fwd_trade_symbols: HashSet::new(),
+            bwd_trade_symbols: HashSet::new(),
         };
 
         SYMBOL_LIST.with(|sl| {
@@ -94,87 +99,82 @@ impl SymbolList {
         Ok(())
     }
 
-    /// 从 Redis 热更新列表
+    /// 从 Redis 热更新列表（单 exchange）
     ///
     /// # 参数
     /// - `client`: Redis 客户端
-    /// - `exchanges`: 需要更新的 exchange 列表
+    /// - `exchange`: 当前运行的 exchange
     pub async fn reload_from_redis(
         &self,
         client: &mut RedisClient,
-        exchanges: &[Exchange],
+        exchange: Exchange,
     ) -> Result<()> {
-        for &exchange in exchanges {
-            let exchange_str = exchange.as_str();
+        let exchange_str = exchange.as_str();
 
-            // 读取平仓列表
-            let dump_key = format!("{}:{}", DUMP_SYMBOL_KEY_PREFIX, exchange_str);
-            if let Ok(Some(value)) = client.get_string(&dump_key).await {
-                if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
-                    Self::with_inner_mut(|inner| {
-                        let symbol_set: HashSet<String> =
-                            symbols.iter().map(|s| s.to_uppercase()).collect();
-                        inner.dump_symbols.insert(exchange, symbol_set.clone());
-                        info!(
-                            "更新平仓列表 {}: {} 个交易对",
-                            exchange_str,
-                            symbol_set.len()
-                        );
-                    });
-                }
-            }
-
-            // 读取建仓列表
-            let trade_key = format!("{}:{}", TRADE_SYMBOL_KEY_PREFIX, exchange_str);
-            if let Ok(Some(value)) = client.get_string(&trade_key).await {
-                if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
-                    Self::with_inner_mut(|inner| {
-                        let symbol_set: HashSet<String> =
-                            symbols.iter().map(|s| s.to_uppercase()).collect();
-                        inner.trade_symbols.insert(exchange, symbol_set.clone());
-                        info!(
-                            "更新建仓列表 {}: {} 个交易对",
-                            exchange_str,
-                            symbol_set.len()
-                        );
-                    });
-                }
-            }
-
-            // 读取正套建仓列表
-            let fwd_trade_key = format!("{}:{}", FWD_TRADE_SYMBOL_KEY_PREFIX, exchange_str);
-            if let Ok(Some(value)) = client.get_string(&fwd_trade_key).await {
-                if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
-                    Self::with_inner_mut(|inner| {
-                        let symbol_set: HashSet<String> =
-                            symbols.iter().map(|s| s.to_uppercase()).collect();
-                        inner.fwd_trade_symbols.insert(exchange, symbol_set.clone());
-                        info!(
-                            "更新正套建仓列表 {}: {} 个交易对",
-                            exchange_str,
-                            symbol_set.len()
-                        );
-                    });
-                }
-            }
-
-            // 读取反套建仓列表
-            let bwd_trade_key = format!("{}:{}", BWD_TRADE_SYMBOL_KEY_PREFIX, exchange_str);
-            if let Ok(Some(value)) = client.get_string(&bwd_trade_key).await {
-                if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
-                    Self::with_inner_mut(|inner| {
-                        let symbol_set: HashSet<String> =
-                            symbols.iter().map(|s| s.to_uppercase()).collect();
-                        inner.bwd_trade_symbols.insert(exchange, symbol_set.clone());
-                        info!(
-                            "更新反套建仓列表 {}: {} 个交易对",
-                            exchange_str,
-                            symbol_set.len()
-                        );
-                    });
-                }
+        // 读取平仓列表
+        let dump_key = format!("{}:{}", DUMP_SYMBOL_KEY_PREFIX, exchange_str);
+        if let Ok(Some(value)) = client.get_string(&dump_key).await {
+            if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
+                Self::with_inner_mut(|inner| {
+                    inner.dump_symbols = symbols.iter().map(|s| s.to_uppercase()).collect();
+                    info!(
+                        "更新平仓列表 {}: {} 个交易对",
+                        exchange_str,
+                        inner.dump_symbols.len()
+                    );
+                });
             }
         }
+
+        // 读取建仓列表
+        let trade_key = format!("{}:{}", TRADE_SYMBOL_KEY_PREFIX, exchange_str);
+        if let Ok(Some(value)) = client.get_string(&trade_key).await {
+            if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
+                Self::with_inner_mut(|inner| {
+                    inner.trade_symbols = symbols.iter().map(|s| s.to_uppercase()).collect();
+                    info!(
+                        "更新建仓列表 {}: {} 个交易对",
+                        exchange_str,
+                        inner.trade_symbols.len()
+                    );
+                });
+            }
+        }
+
+        // 读取正套建仓列表
+        let fwd_trade_key = format!("{}:{}", FWD_TRADE_SYMBOL_KEY_PREFIX, exchange_str);
+        if let Ok(Some(value)) = client.get_string(&fwd_trade_key).await {
+            if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
+                Self::with_inner_mut(|inner| {
+                    inner.fwd_trade_symbols = symbols.iter().map(|s| s.to_uppercase()).collect();
+                    info!(
+                        "更新正套建仓列表 {}: {} 个交易对",
+                        exchange_str,
+                        inner.fwd_trade_symbols.len()
+                    );
+                });
+            }
+        }
+
+        // 读取反套建仓列表
+        let bwd_trade_key = format!("{}:{}", BWD_TRADE_SYMBOL_KEY_PREFIX, exchange_str);
+        if let Ok(Some(value)) = client.get_string(&bwd_trade_key).await {
+            if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
+                Self::with_inner_mut(|inner| {
+                    inner.bwd_trade_symbols = symbols.iter().map(|s| s.to_uppercase()).collect();
+                    info!(
+                        "更新反套建仓列表 {}: {} 个交易对",
+                        exchange_str,
+                        inner.bwd_trade_symbols.len()
+                    );
+                });
+            }
+        }
+
+        // 记录当前 exchange
+        Self::with_inner_mut(|inner| {
+            inner.current_exchange = Some(exchange);
+        });
 
         Ok(())
     }
@@ -182,204 +182,77 @@ impl SymbolList {
     // ==================== 查询接口 ====================
 
     /// 判断交易对是否在平仓列表中
-    ///
-    /// # 参数
-    /// - `symbol`: 交易对符号
-    /// - `venue`: 交易场所
-    pub fn is_in_dump_list(&self, symbol: &str, venue: TradingVenue) -> bool {
-        let symbol_upper = symbol.to_uppercase();
-        let exchange = Self::venue_to_exchange(venue);
-        Self::with_inner(|inner| {
-            inner
-                .dump_symbols
-                .get(&exchange)
-                .map(|set| set.contains(&symbol_upper))
-                .unwrap_or(false)
-        })
+    pub fn is_in_dump_list(&self, symbol: &str) -> bool {
+        Self::with_inner(|inner| Self::contains_normalized(&inner.dump_symbols, symbol))
     }
 
     /// 判断交易对是否在建仓列表中
-    ///
-    /// # 参数
-    /// - `symbol`: 交易对符号
-    /// - `venue`: 交易场所
-    pub fn is_in_trade_list(&self, symbol: &str, venue: TradingVenue) -> bool {
-        let symbol_upper = symbol.to_uppercase();
-        let exchange = Self::venue_to_exchange(venue);
-        Self::with_inner(|inner| {
-            inner
-                .trade_symbols
-                .get(&exchange)
-                .map(|set| set.contains(&symbol_upper))
-                .unwrap_or(false)
-        })
+    pub fn is_in_trade_list(&self, symbol: &str) -> bool {
+        Self::with_inner(|inner| Self::contains_normalized(&inner.trade_symbols, symbol))
     }
 
     /// 判断交易对是否在正套建仓列表中
-    ///
-    /// # 参数
-    /// - `symbol`: 交易对符号
-    /// - `venue`: 交易场所
-    pub fn is_in_fwd_trade_list(&self, symbol: &str, venue: TradingVenue) -> bool {
-        let symbol_upper = symbol.to_uppercase();
-        let exchange = Self::venue_to_exchange(venue);
-        Self::with_inner(|inner| {
-            inner
-                .fwd_trade_symbols
-                .get(&exchange)
-                .map(|set| set.contains(&symbol_upper))
-                .unwrap_or(false)
-        })
+    pub fn is_in_fwd_trade_list(&self, symbol: &str) -> bool {
+        Self::with_inner(|inner| Self::contains_normalized(&inner.fwd_trade_symbols, symbol))
     }
 
     /// 判断交易对是否在反套建仓列表中
-    ///
-    /// # 参数
-    /// - `symbol`: 交易对符号
-    /// - `venue`: 交易场所
-    pub fn is_in_bwd_trade_list(&self, symbol: &str, venue: TradingVenue) -> bool {
-        let symbol_upper = symbol.to_uppercase();
-        let exchange = Self::venue_to_exchange(venue);
-        Self::with_inner(|inner| {
-            inner
-                .bwd_trade_symbols
-                .get(&exchange)
-                .map(|set| set.contains(&symbol_upper))
-                .unwrap_or(false)
-        })
+    pub fn is_in_bwd_trade_list(&self, symbol: &str) -> bool {
+        Self::with_inner(|inner| Self::contains_normalized(&inner.bwd_trade_symbols, symbol))
     }
 
-    /// 获取指定交易场所的平仓列表
-    ///
-    /// # 参数
-    /// - `venue`: 交易场所
-    pub fn get_dump_symbols(&self, venue: TradingVenue) -> Vec<String> {
-        let exchange = Self::venue_to_exchange(venue);
-        Self::with_inner(|inner| {
-            inner
-                .dump_symbols
-                .get(&exchange)
-                .map(|set| set.iter().cloned().collect())
-                .unwrap_or_default()
-        })
+    /// 获取平仓列表
+    pub fn get_dump_symbols(&self) -> Vec<String> {
+        Self::with_inner(|inner| inner.dump_symbols.iter().cloned().collect())
     }
 
-    /// 获取指定交易场所的建仓列表
-    ///
-    /// # 参数
-    /// - `venue`: 交易场所
-    pub fn get_trade_symbols(&self, venue: TradingVenue) -> Vec<String> {
-        let exchange = Self::venue_to_exchange(venue);
-        Self::with_inner(|inner| {
-            inner
-                .trade_symbols
-                .get(&exchange)
-                .map(|set| set.iter().cloned().collect())
-                .unwrap_or_default()
-        })
+    /// 获取建仓列表
+    pub fn get_trade_symbols(&self) -> Vec<String> {
+        Self::with_inner(|inner| inner.trade_symbols.iter().cloned().collect())
     }
 
-    /// 获取 online symbols（平仓列表 ∪ 建仓列表）
-    ///
-    /// # 参数
-    /// - `venue`: 交易场所
-    ///
-    /// # 返回
-    /// 返回 dump_symbols 和 trade_symbols 的并集
-    pub fn get_online_symbols(&self, venue: TradingVenue) -> Vec<String> {
-        let exchange = Self::venue_to_exchange(venue);
-        Self::with_inner(|inner| {
-            let mut online_set = HashSet::new();
-
-            // 添加平仓列表
-            if let Some(dump_set) = inner.dump_symbols.get(&exchange) {
-                online_set.extend(dump_set.iter().cloned());
-            }
-
-            // 添加建仓列表
-            if let Some(trade_set) = inner.trade_symbols.get(&exchange) {
-                online_set.extend(trade_set.iter().cloned());
-            }
-
-            // 添加正套建仓列表
-            if let Some(fwd_set) = inner.fwd_trade_symbols.get(&exchange) {
-                online_set.extend(fwd_set.iter().cloned());
-            }
-
-            // 添加反套建仓列表
-            if let Some(bwd_set) = inner.bwd_trade_symbols.get(&exchange) {
-                online_set.extend(bwd_set.iter().cloned());
-            }
-
-            online_set.into_iter().collect()
-        })
+    /// 获取 online symbols（平仓 ∪ 建仓 ∪ 正套/反套建仓列表）
+    pub fn get_online_symbols(&self) -> Vec<String> {
+        Self::with_inner(|inner| Self::collect_online(inner))
     }
 
-    /// 获取所有交易场所的 online symbols
-    ///
-    /// # 返回
-    /// HashMap<TradingVenue, Vec<String>>
+    /// 获取所有交易场所的 online symbols（基于当前 exchange）
     pub fn get_all_online_symbols(&self) -> HashMap<TradingVenue, Vec<String>> {
         Self::with_inner(|inner| {
             let mut result = HashMap::new();
-
-            // 遍历所有 exchange
-            for (exchange, _) in &inner.dump_symbols {
-                // 为每个 exchange 对应的 venues 设置相同的 symbol 列表
-                let online_set = Self::get_online_symbols_for_exchange(inner, exchange);
-
-                // 将 exchange 映射到所有对应的 venues
-                for venue in Self::exchange_to_venues(exchange) {
+            if let Some(exchange) = inner.current_exchange {
+                let online_set = Self::collect_online(inner);
+                for venue in Self::exchange_to_venues(&exchange) {
                     result.insert(venue, online_set.clone());
                 }
             }
-
             result
         })
     }
 
     // ==================== 内部辅助方法 ====================
 
-    /// 获取指定 exchange 的 online symbols
-    fn get_online_symbols_for_exchange(
-        inner: &SymbolListInner,
-        exchange: &Exchange,
-    ) -> Vec<String> {
+    /// 汇总 online symbols（平仓 ∪ 建仓 ∪ 正套/反套建仓）
+    fn collect_online(inner: &SymbolListInner) -> Vec<String> {
         let mut online_set = HashSet::new();
-
-        if let Some(dump_set) = inner.dump_symbols.get(exchange) {
-            online_set.extend(dump_set.iter().cloned());
-        }
-
-        if let Some(trade_set) = inner.trade_symbols.get(exchange) {
-            online_set.extend(trade_set.iter().cloned());
-        }
-
-        if let Some(fwd_set) = inner.fwd_trade_symbols.get(exchange) {
-            online_set.extend(fwd_set.iter().cloned());
-        }
-
-        if let Some(bwd_set) = inner.bwd_trade_symbols.get(exchange) {
-            online_set.extend(bwd_set.iter().cloned());
-        }
-
+        online_set.extend(inner.dump_symbols.iter().cloned());
+        online_set.extend(inner.trade_symbols.iter().cloned());
+        online_set.extend(inner.fwd_trade_symbols.iter().cloned());
+        online_set.extend(inner.bwd_trade_symbols.iter().cloned());
         online_set.into_iter().collect()
     }
 
-    /// 将 TradingVenue 转换为交易所枚举
-    fn venue_to_exchange(venue: TradingVenue) -> Exchange {
-        match venue {
-            TradingVenue::BinanceMargin => Exchange::Binance,
-            TradingVenue::BinanceFutures => Exchange::Binance,
-            TradingVenue::OkexFutures => Exchange::Okex,
-            TradingVenue::OkexMargin => Exchange::Okex,
-            TradingVenue::BitgetMargin => Exchange::Bitget,
-            TradingVenue::BitgetFutures => Exchange::Bitget,
-            TradingVenue::BybitMargin => Exchange::Bybit,
-            TradingVenue::BybitFutures => Exchange::Bybit,
-            TradingVenue::GateMargin => Exchange::Gate,
-            TradingVenue::GateFutures => Exchange::Gate,
-        }
+    /// 判断集合中是否包含归一化后的 symbol（忽略分隔符和 OKEx SWAP 后缀）
+    fn contains_normalized(set: &HashSet<String>, symbol: &str) -> bool {
+        let target = Self::normalize_for_filtering(symbol);
+        set.iter()
+            .any(|s| Self::normalize_for_filtering(s) == target)
+    }
+
+    /// 归一化符号用于白名单过滤：大写，移除 '-'/'_'，并去掉 "-SWAP"/"SWAP" 后缀
+    /// 不区分 open/hedge，统一用 OkexFutures 触发去 SWAP 逻辑
+    fn normalize_for_filtering(symbol: &str) -> String {
+        normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
     }
 
     /// 将交易所枚举转换为所有对应的 TradingVenue
