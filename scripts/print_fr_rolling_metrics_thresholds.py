@@ -6,7 +6,7 @@ Print rolling_metrics thresholds from Redis HASH as a three-line table.
 
 Reads
   - Redis HASH `rolling_metrics_thresholds_{open_venue}_{hedge_venue}` where
-    field = symbol_pair (e.g. "binance-spot_binance-futures::BTCUSDT")
+    field = symbol_pair (e.g. "binance-margin_binance-futures::BTCUSDT")
     value = JSON payload produced by rolling_metrics service.
 
 Outputs
@@ -15,8 +15,9 @@ Outputs
   - Null / missing values render as '-' by default.
 
 示例：
-  python scripts/print_rolling_metrics_thresholds.py --open-venue binance-spot --hedge-venue binance-futures
-  python scripts/print_rolling_metrics_thresholds.py --open-venue okex-spot --hedge-venue okex-futures --symbol BTCUSDT
+  python scripts/print_fr_rolling_metrics_thresholds.py --open-venue binance-margin --hedge-venue binance-futures
+  python scripts/print_fr_rolling_metrics_thresholds.py --open-venue okex-margin --hedge-venue okex-futures --symbol BTCUSDT
+  # 也可不带参数，脚本会基于当前目录名推断 exchange（形如 okex_fr_trade -> okex-margin/okex-futures）
 """
 
 from __future__ import annotations
@@ -27,7 +28,16 @@ import math
 import os
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+EXCHANGE_DEFAULTS = {
+    "binance": ("binance-margin", "binance-futures"),
+    "okex": ("okex-margin", "okex-futures"),
+    "bybit": ("bybit-margin", "bybit-futures"),
+    "bitget": ("bitget-margin", "bitget-futures"),
+    "gate": ("gate-margin", "gate-futures"),
+}
 
 
 def try_import_redis():
@@ -39,14 +49,26 @@ def try_import_redis():
         return None
 
 
+def infer_venues_from_cwd() -> Optional[Tuple[str, str]]:
+    name = Path.cwd().name.lower()
+    candidates = [name]
+    if "_" in name:
+        candidates.append(name.split("_", 1)[0])
+    for cand in candidates:
+        for ex, pair in EXCHANGE_DEFAULTS.items():
+            if cand.startswith(ex):
+                return pair
+    return None
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
-            "Print Redis hash rolling_metrics_thresholds_{open_venue}_{hedge_venue} as a three-line table"
+            "Print Redis hash rolling_metrics_thresholds_{open_venue}_{hedge_venue} as a three-line table（可省略 open/hedge，默认按目录推断 margin/futures）"
         )
     )
-    p.add_argument("--open-venue", required=True, help="open 侧 venue（如 binance-spot）")
-    p.add_argument("--hedge-venue", required=True, help="hedge 侧 venue（如 binance-futures）")
+    p.add_argument("--open-venue", help="open 侧 venue（如 binance-margin）")
+    p.add_argument("--hedge-venue", help="hedge 侧 venue（如 binance-futures）")
     p.add_argument(
         "--redis-url",
         default=os.environ.get("REDIS_URL"),
@@ -82,7 +104,24 @@ def parse_args() -> argparse.Namespace:
         default="base_symbol",
         help="Sort rows by this field (default: base_symbol)",
     )
-    return p.parse_args()
+    args = p.parse_args()
+
+    open_venue = args.open_venue
+    hedge_venue = args.hedge_venue
+    if not open_venue and not hedge_venue:
+        inferred = infer_venues_from_cwd()
+        if inferred:
+            open_venue, hedge_venue = inferred
+            print(
+                f"[INFO] 未提供 open/hedge，基于目录推断: open={open_venue}, hedge={hedge_venue}",
+                file=sys.stderr,
+            )
+    if not open_venue or not hedge_venue:
+        p.error("需要 --open-venue 与 --hedge-venue，或在目录名包含 <exchange> 前缀（如 okex_fr_trade）以自动推断")
+
+    args.open_venue = open_venue
+    args.hedge_venue = hedge_venue
+    return args
 
 
 def connect_redis(args: argparse.Namespace):
@@ -348,23 +387,23 @@ def main() -> int:
         {
             "label": "spread_rate",
             "value_field": "spread_rate",
-            "value_header": "binance_spread_rate",
+            "value_header": "spread_rate",
             "quantile_key": "spread_quantiles",
-            "quantile_prefix": "binance_spread",
+            "quantile_prefix": "spread",
         },
         {
             "label": "bidask_sr",
             "value_field": "bidask_sr",
-            "value_header": "binance_bidask_sr",
+            "value_header": "bidask_sr",
             "quantile_key": "bidask_quantiles",
-            "quantile_prefix": "binance_bidask",
+            "quantile_prefix": "bidask",
         },
         {
             "label": "askbid_sr",
             "value_field": "askbid_sr",
-            "value_header": "binance_askbid_sr",
+            "value_header": "askbid_sr",
             "quantile_key": "askbid_quantiles",
-            "quantile_prefix": "binance_askbid",
+            "quantile_prefix": "askbid",
         },
     ]
 

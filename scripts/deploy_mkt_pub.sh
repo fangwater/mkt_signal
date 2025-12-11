@@ -40,12 +40,16 @@ mkdir -p "$TARGET_DIR"
 cp "$BIN_PATH" "$TARGET_DIR/"
 chmod +x "$TARGET_DIR/$BIN_NAME"
 
-# 仅同步启动脚本（stop 已废弃）
-SCRIPT_SRC="$ROOT_DIR/scripts/start_mkt_pub.sh"
-if [[ -f "$SCRIPT_SRC" ]]; then
-  rsync -a "$SCRIPT_SRC" "$TARGET_DIR/"
-  chmod +x "$TARGET_DIR/start_mkt_pub.sh"
-fi
+# 同步启动/停止脚本到 scripts/
+SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
+SCRIPTS_TO_SYNC=("start_mkt_pub.sh" "stop_mkt_pub.sh")
+mkdir -p "$TARGET_DIR/scripts"
+for script in "${SCRIPTS_TO_SYNC[@]}"; do
+  if [[ -f "$SCRIPT_DIR_SRC/$script" ]]; then
+    rsync -a "$SCRIPT_DIR_SRC/$script" "$TARGET_DIR/scripts/"
+    chmod +x "$TARGET_DIR/scripts/$script"
+  fi
+done
 
 # 仅同步 mkt_cfg.yaml
 mkdir -p "$TARGET_DIR/config"
@@ -54,3 +58,4 @@ if [[ -f "$ROOT_DIR/config/mkt_cfg.yaml" ]]; then
 fi
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"
+echo "[INFO] 手动启动: cd $TARGET_DIR && ./scripts/start_mkt_pub.sh"

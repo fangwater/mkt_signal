@@ -12,7 +12,7 @@ data_types:
   enable_trade: false          # 逐笔成交数据
   enable_kline: false          # K线数据
   enable_derivatives: true    # 衍生品指标数据（仅期货交易所） 
-  enable_ask_bid_spread: false # 买卖价差（最优买卖价）数据 
+  enable_ask_bid_spread: true # 买卖价差（最优买卖价）数据 
 
 # IceOryx配置
 iceoryx:

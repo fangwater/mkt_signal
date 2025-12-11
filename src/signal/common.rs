@@ -37,15 +37,15 @@ impl TradingVenue {
     /// 返回用于 data_pubs 频道前缀的 slug（kebab case，无下划线）
     pub fn data_pub_slug(&self) -> &'static str {
         match self {
-            TradingVenue::BinanceMargin => "binance-spot",
+            TradingVenue::BinanceMargin => "binance-margin",
             TradingVenue::BinanceFutures => "binance-futures",
-            TradingVenue::OkexMargin => "okex-spot",
+            TradingVenue::OkexMargin => "okex-margin",
             TradingVenue::OkexFutures => "okex-futures",
-            TradingVenue::BybitMargin => "bybit-spot",
+            TradingVenue::BybitMargin => "bybit-margin",
             TradingVenue::BybitFutures => "bybit-futures",
-            TradingVenue::BitgetMargin => "bitget-spot",
+            TradingVenue::BitgetMargin => "bitget-margin",
             TradingVenue::BitgetFutures => "bitget-futures",
-            TradingVenue::GateMargin => "gate-spot",
+            TradingVenue::GateMargin => "gate-margin",
             TradingVenue::GateFutures => "gate-futures",
         }
     }

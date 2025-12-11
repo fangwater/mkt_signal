@@ -11,6 +11,7 @@ pub mod pre_trade;
 pub mod rolling_metrics;
 pub mod signal;
 pub mod strategy;
+pub mod symbol_match;
 pub mod trade_engine;
 
 // Re-export frequently used modules for backward compatibility

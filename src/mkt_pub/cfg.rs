@@ -140,6 +140,28 @@ fn print_symbol_comparison(
     table.printstd();
 }
 
+/// 仅打印匹配到的成对交易对（左：衍生品；右：现货/杠杆）
+fn print_matched_pairs(title_left: &str, title_right: &str, pairs: &[(String, String)]) {
+    let mut table = Table::new();
+    table.set_format(*format::consts::FORMAT_NO_BORDER_LINE_SEPARATOR);
+    table.set_titles(Row::from(vec![
+        Cell::new(title_left).style_spec("c"),
+        Cell::new(title_right).style_spec("c"),
+    ]));
+
+    for (left, right) in pairs {
+        table.add_row(Row::from(vec![Cell::new(left), Cell::new(right)]));
+    }
+
+    info!(
+        "Matched symbols ({} <-> {}): {}",
+        title_left,
+        title_right,
+        pairs.len()
+    );
+    table.printstd();
+}
+
 #[derive(Debug, Deserialize, Clone)]
 #[allow(dead_code)]
 pub struct Config {
@@ -393,24 +415,36 @@ impl Config {
         Ok(symbols)
     }
 
-    /// 获取 OKEx 现货交易对（只返回与 SWAP 有关联的）
+    /// 获取 OKEx 现货交易对（只返回与 SWAP 有关联的；兼容无 -SWAP 后缀）
     async fn get_spot_symbols_related_to_okex_swap() -> Result<Vec<String>> {
+        use crate::symbol_match::normalize_symbol_for_pairing;
+        use std::collections::HashMap;
+
         let spot_symbols = Self::get_spot_symbols_from_okex_api().await?;
         let swap_symbols = Self::get_symbol_for_okex_swap().await?;
-        // OKEx: spot=BTC-USDT, swap=BTC-USDT-SWAP
-        let spot_symbols_related_to_swap: Vec<String> = spot_symbols
-            .iter()
-            .filter(|spot| {
-                let swap_id = format!("{}-SWAP", spot);
-                swap_symbols.contains(&swap_id)
-            })
-            .cloned()
-            .collect();
+
+        // 先按标准化符号建立现货映射，便于配对
+        let mut spot_by_norm: HashMap<String, String> = HashMap::new();
+        for spot in &spot_symbols {
+            let norm = normalize_symbol_for_pairing(spot, "okex-spot");
+            spot_by_norm.entry(norm).or_insert_with(|| spot.clone());
+        }
+
+        let mut spot_symbols_related_to_swap = Vec::new();
+        let mut matched_pairs = Vec::new();
+        for swap in &swap_symbols {
+            let norm = normalize_symbol_for_pairing(swap, "okex-futures");
+            if let Some(spot) = spot_by_norm.get(&norm) {
+                spot_symbols_related_to_swap.push(spot.clone());
+                matched_pairs.push((swap.clone(), spot.clone()));
+            }
+        }
+
         info!(
             "OKEx spot symbols related to swap: {}",
             spot_symbols_related_to_swap.len()
         );
-        print_symbol_comparison(&swap_symbols, &spot_symbols, &spot_symbols_related_to_swap);
+        print_matched_pairs("Futures", "Spot", &matched_pairs);
         Ok(spot_symbols_related_to_swap)
     }
 

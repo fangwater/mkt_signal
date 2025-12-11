@@ -29,11 +29,10 @@ use mkt_signal::rolling_metrics::config::{
 };
 use mkt_signal::rolling_metrics::ring::RingBuffer;
 use mkt_signal::rolling_metrics::service::{
-    ensure_series_capacity, new_series_map, spawn_compute_thread, ComputeResult, SeriesMap,
-    SymbolSeries,
+    ensure_series_capacity, init_log_prefix, log_prefix, new_series_map, spawn_compute_thread,
+    ComputeResult, SeriesMap, SymbolSeries,
 };
-
-const LOG_PREFIX: &str = "rolling-metrics";
+use mkt_signal::symbol_match::normalize_symbol_for_pairing;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -111,6 +110,7 @@ struct SymbolQuotes {
     spot: QuoteState,
     swap: QuoteState,
     factor_states: HashMap<String, FactorResampleState>,
+    started: bool,
 }
 
 impl Default for SymbolQuotes {
@@ -119,6 +119,7 @@ impl Default for SymbolQuotes {
             spot: QuoteState::default(),
             swap: QuoteState::default(),
             factor_states: HashMap::new(),
+            started: false,
         }
     }
 }
@@ -256,22 +257,25 @@ async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(&args.log_filter))
         .init();
 
-    let spot_topic = args.open_venue.trim().to_string();
-    let swap_topic = args.hedge_venue.trim().to_string();
-    if spot_topic.is_empty() || swap_topic.is_empty() {
+    let open_topic = args.open_venue.trim().to_string();
+    let hedge_topic = args.hedge_venue.trim().to_string();
+    if open_topic.is_empty() || hedge_topic.is_empty() {
         anyhow::bail!("--open-venue 与 --hedge-venue 不能为空");
     }
     let iceoryx_node = args.iceoryx_node.clone().unwrap_or_else(|| {
         format!(
             "rolling_metrics_{}_{}",
-            spot_topic.replace('-', "_"),
-            swap_topic.replace('-', "_")
+            open_topic.replace('-', "_"),
+            hedge_topic.replace('-', "_")
         )
     });
 
+    let log_prefix_str = format!("rolling-metrics:{}_{}", open_topic, hedge_topic);
+    init_log_prefix(log_prefix_str.clone());
+
     info!(
-        "{LOG_PREFIX}: starting (spot_topic={}, swap_topic={}, node={})",
-        spot_topic, swap_topic, iceoryx_node
+        "{}: starting (open_topic={}, hedge_topic={}, node={})",
+        log_prefix_str, open_topic, hedge_topic, iceoryx_node
     );
 
     let redis_settings = build_redis_settings(&args)?;
@@ -281,9 +285,9 @@ async fn main() -> Result<()> {
     let params_hash_key = args
         .params_hash_key
         .clone()
-        .unwrap_or_else(|| format!("{}_{}_{}", DEFAULT_CONFIG_HASH_KEY, spot_topic, swap_topic));
+        .unwrap_or_else(|| format!("{}_{}_{}", DEFAULT_CONFIG_HASH_KEY, open_topic, hedge_topic));
     let default_output_hash_key =
-        format!("{}_{}_{}", DEFAULT_OUTPUT_HASH_KEY, spot_topic, swap_topic);
+        format!("{}_{}_{}", DEFAULT_OUTPUT_HASH_KEY, open_topic, hedge_topic);
 
     let mut cfg_client = RedisClient::connect(redis_settings.clone()).await?;
     let (mut config, _) = load_config_from_redis(&mut cfg_client, &params_hash_key).await?;
@@ -307,8 +311,10 @@ async fn main() -> Result<()> {
         })
         .collect::<Vec<_>>()
         .join(" ");
+
     info!(
-        "{LOG_PREFIX}: config init (max_length={} refresh={}s reload={}s params={} output={} factors=[{}])",
+        "{}: config init (max_length={} refresh={}s reload={}s params={} output={} factors=[{}])",
+        log_prefix_str,
         config.max_length,
         config.refresh_sec,
         config.reload_param_sec,
@@ -317,7 +323,7 @@ async fn main() -> Result<()> {
         factor_summary
     );
 
-    let prefix = format!("{}_{}", spot_topic, swap_topic);
+    let prefix = format!("{}_{}", open_topic, hedge_topic);
     let symbol_refresh_secs = args.symbol_refresh_sec;
 
     let series_map = Arc::new(new_series_map());
@@ -334,10 +340,10 @@ async fn main() -> Result<()> {
     spawn_writer_thread(redis_url.clone(), rx);
     spawn_ringbuffer_monitor(Arc::clone(&series_map), Duration::from_secs(300));
 
-    if swap_topic.eq_ignore_ascii_case("binance-futures") {
+    if hedge_topic.eq_ignore_ascii_case("binance-futures") {
         let series_map_task = Arc::clone(&series_map);
         let capacity_task = Arc::clone(&series_capacity);
-        let swap_task = swap_topic.clone();
+        let swap_task = hedge_topic.clone();
         let prefix_task = prefix.clone();
         let interval = Duration::from_secs(symbol_refresh_secs.max(60));
         tokio::spawn(async move {
@@ -358,6 +364,7 @@ async fn main() -> Result<()> {
     let settings_clone = redis_settings.clone();
     let output_override = args.output_hash_key.clone();
     let params_key_clone = params_hash_key.clone();
+    let log_prefix_clone = log_prefix_str.clone();
     tokio::spawn(async move {
         if let Err(err) = config_reload_loop(
             settings_clone,
@@ -369,14 +376,17 @@ async fn main() -> Result<()> {
         )
         .await
         {
-            error!("{LOG_PREFIX}: config reload loop exited with error: {err:?}");
+            error!(
+                "{}: config reload loop exited with error: {err:?}",
+                log_prefix_clone
+            );
         }
     });
 
     run_reader_loop(
         &iceoryx_node,
-        &spot_topic,
-        &swap_topic,
+        &open_topic,
+        &hedge_topic,
         series_map,
         series_capacity,
         Arc::clone(&config_lock),
@@ -471,11 +481,11 @@ async fn config_reload_loop(
                 series_capacity.store(new_cfg.max_length, Ordering::SeqCst);
                 ensure_series_capacity(&series_map, new_cfg.max_length);
                 if let Some(detail) = change_detail {
-                    info!("{LOG_PREFIX}: config updated -> {}", detail);
+                    info!("{}: config updated -> {}", log_prefix(), detail);
                 }
             }
             Err(err) => {
-                warn!("{LOG_PREFIX}: reload config failed: {err:?}");
+                warn!("{}: reload config failed: {err:?}", log_prefix());
             }
         }
     }
@@ -483,8 +493,8 @@ async fn config_reload_loop(
 
 async fn run_reader_loop(
     iceoryx_node: &str,
-    spot_topic: &str,
-    swap_topic: &str,
+    open_topic: &str,
+    hedge_topic: &str,
     series_map: Arc<SeriesMap>,
     series_capacity: Arc<AtomicUsize>,
     config: Arc<RwLock<RollingConfig>>,
@@ -492,38 +502,42 @@ async fn run_reader_loop(
     let mut subscriber = MultiChannelSubscriber::new(iceoryx_node)?;
     subscriber.subscribe_channels(vec![
         SubscribeParams {
-            topic_prefix: spot_topic.to_string(),
+            topic_prefix: open_topic.to_string(),
             channel: ChannelType::AskBidSpread,
         },
         SubscribeParams {
-            topic_prefix: swap_topic.to_string(),
+            topic_prefix: hedge_topic.to_string(),
             channel: ChannelType::AskBidSpread,
         },
     ])?;
 
-    let prefix = format!("{}_{}", spot_topic, swap_topic);
+    let prefix = format!("{}_{}", open_topic, hedge_topic);
     let mut quotes: HashMap<String, SymbolQuotes> = HashMap::new();
     let mut last_symbol_count: usize = 0;
     let shutdown = CancellationToken::new();
     setup_signal_handlers(&shutdown)?;
 
     info!(
-        "{LOG_PREFIX}: reader loop started (prefix={}, spot={}, swap={})",
-        prefix, spot_topic, swap_topic
+        "{}: reader loop started (prefix={}, open={}, hedge={})",
+        log_prefix(),
+        prefix,
+        open_topic,
+        hedge_topic
     );
 
     let mut next_log = Instant::now() + Duration::from_secs(30);
 
     loop {
         if shutdown.is_cancelled() {
-            info!("{LOG_PREFIX}: shutdown requested");
+            info!("{}: shutdown requested", log_prefix());
             break;
         }
 
-        for msg in subscriber.poll_channel(spot_topic, &ChannelType::AskBidSpread, Some(64)) {
+        for msg in subscriber.poll_channel(open_topic, &ChannelType::AskBidSpread, Some(64)) {
             process_spot_msg(
                 &msg,
                 &prefix,
+                open_topic,
                 &mut quotes,
                 &series_map,
                 &series_capacity,
@@ -531,10 +545,11 @@ async fn run_reader_loop(
             );
         }
 
-        for msg in subscriber.poll_channel(swap_topic, &ChannelType::AskBidSpread, Some(64)) {
+        for msg in subscriber.poll_channel(hedge_topic, &ChannelType::AskBidSpread, Some(64)) {
             process_swap_msg(
                 &msg,
                 &prefix,
+                hedge_topic,
                 &mut quotes,
                 &series_map,
                 &series_capacity,
@@ -567,14 +582,17 @@ async fn run_reader_loop(
         }
         if Instant::now() >= next_log {
             info!(
-                "{LOG_PREFIX}: symbols tracked={} (series entries={})",
-                current_symbols, current_total
+                "{}: symbols tracked={} (series entries={})",
+                log_prefix(),
+                current_symbols,
+                current_total
             );
             next_log += Duration::from_secs(30);
         }
         if current_symbols < last_symbol_count {
             info!(
-                "{LOG_PREFIX}: symbol registry shrink {} -> {} ({} removed)",
+                "{}: symbol registry shrink {} -> {} ({} removed)",
+                log_prefix(),
                 last_symbol_count,
                 current_symbols,
                 last_symbol_count - current_symbols
@@ -591,13 +609,15 @@ async fn run_reader_loop(
 fn process_spot_msg(
     msg: &[u8],
     prefix: &str,
+    open_topic: &str,
     quotes: &mut HashMap<String, SymbolQuotes>,
     series_map: &Arc<SeriesMap>,
     series_capacity: &Arc<AtomicUsize>,
     config: &Arc<RwLock<RollingConfig>>,
 ) {
-    let symbol = AskBidSpreadMsg::get_symbol(msg).to_uppercase();
-    if should_skip_symbol(&symbol) {
+    let raw_symbol = AskBidSpreadMsg::get_symbol(msg).to_uppercase();
+    let symbol = normalize_symbol_for_pairing(&raw_symbol, open_topic);
+    if should_skip_symbol(&raw_symbol) {
         return;
     }
     let bid = AskBidSpreadMsg::get_bid_price(msg);
@@ -614,13 +634,15 @@ fn process_spot_msg(
 fn process_swap_msg(
     msg: &[u8],
     prefix: &str,
+    hedge_topic: &str,
     quotes: &mut HashMap<String, SymbolQuotes>,
     series_map: &Arc<SeriesMap>,
     series_capacity: &Arc<AtomicUsize>,
     config: &Arc<RwLock<RollingConfig>>,
 ) {
-    let symbol = AskBidSpreadMsg::get_symbol(msg).to_uppercase();
-    if should_skip_symbol(&symbol) {
+    let raw_symbol = AskBidSpreadMsg::get_symbol(msg).to_uppercase();
+    let symbol = normalize_symbol_for_pairing(&raw_symbol, hedge_topic);
+    if should_skip_symbol(&raw_symbol) {
         return;
     }
     let bid = AskBidSpreadMsg::get_bid_price(msg);
@@ -678,6 +700,10 @@ fn maybe_push_sr(
     let key = format!("{}::{}", prefix, symbol);
     let series = get_or_insert_series(&*series_map, &key, capacity);
     series.set_spread_rate(spread_rate);
+    if !quotes.started {
+        quotes.started = true;
+        info!("{}: start collecting symbol {}", log_prefix(), key);
+    }
 
     for (factor_name, factor_cfg) in cfg_snapshot.factors_iter() {
         let sample_value = match factor_name {
@@ -760,8 +786,13 @@ fn spawn_ringbuffer_monitor(series_map: Arc<SeriesMap>, period: Duration) {
             let rss_kb = process_memory_kb().unwrap_or(0);
 
             info!(
-                "{LOG_PREFIX}: ringbuffer_snapshot rss_kb={} symbols={} total_bidask={} total_askbid={}\n{}",
-                rss_kb, entries.len(), total_bidask, total_askbid, table
+                "{}: ringbuffer_snapshot rss_kb={} symbols={} total_bidask={} total_askbid={}\n{}",
+                log_prefix(),
+                rss_kb,
+                entries.len(),
+                total_bidask,
+                total_askbid,
+                table
             );
         }
     });
@@ -830,7 +861,8 @@ async fn symbol_refresh_loop(
     series_capacity: Arc<AtomicUsize>,
 ) {
     debug!(
-        "{LOG_PREFIX}: symbol refresh loop started (swap_topic={}, interval={}s)",
+        "{}: symbol refresh loop started (swap_topic={}, interval={}s)",
+        log_prefix(),
         swap_topic,
         interval.as_secs()
     );
@@ -850,12 +882,18 @@ async fn symbol_refresh_loop(
                 let capacity = series_capacity.load(Ordering::SeqCst).max(1);
                 let stats = apply_symbol_snapshot(&prefix, &symbols, capacity, &series_map);
                 info!(
-                    "{LOG_PREFIX}: symbol snapshot applied (symbols={}, added={}, removed={})",
-                    stats.total, stats.added, stats.removed
+                    "{}: symbol snapshot applied (symbols={}, added={}, removed={})",
+                    log_prefix(),
+                    stats.total,
+                    stats.added,
+                    stats.removed
                 );
             }
             Err(err) => {
-                warn!("{LOG_PREFIX}: refresh binance-futures symbols failed: {err:?}");
+                warn!(
+                    "{}: refresh binance-futures symbols failed: {err:?}",
+                    log_prefix()
+                );
             }
         }
     }
@@ -941,7 +979,7 @@ fn apply_symbol_snapshot(
             removed_symbols.insert(symbol_part.to_string());
         }
         series_map.remove(key);
-        info!("{LOG_PREFIX}: removed inactive series {}", key);
+        info!("{}: removed inactive series {}", log_prefix(), key);
     }
 
     SymbolSyncStats {
@@ -1117,7 +1155,10 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
             match redis::Client::open(redis_url.as_str()) {
                 Ok(c) => break c,
                 Err(err) => {
-                    error!("{LOG_PREFIX}: failed to create Redis client: {err:?}, retrying in 5s");
+                    error!(
+                        "{}: failed to create Redis client: {err:?}, retrying in 5s",
+                        log_prefix()
+                    );
                     thread::sleep(Duration::from_secs(5));
                 }
             }
@@ -1127,7 +1168,10 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
             match client.get_connection() {
                 Ok(c) => break c,
                 Err(err) => {
-                    error!("{LOG_PREFIX}: failed to connect Redis: {err:?}, retrying in 5s");
+                    error!(
+                        "{}: failed to connect Redis: {err:?}, retrying in 5s",
+                        log_prefix()
+                    );
                     thread::sleep(Duration::from_secs(5));
                 }
             }
@@ -1148,7 +1192,8 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
                             write_hash_and_cleanup(&mut conn, &result.output_key, &[], &stale)
                         {
                             error!(
-                                "{LOG_PREFIX}: redis cleanup error: {err:?}, attempting reconnect"
+                                "{}: redis cleanup error: {err:?}, attempting reconnect",
+                                log_prefix()
                             );
                             loop {
                                 match client.get_connection() {
@@ -1158,7 +1203,8 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
                                     }
                                     Err(err) => {
                                         error!(
-                                            "{LOG_PREFIX}: reconnect redis failed: {err:?}, retrying in 5s"
+                                            "{}: reconnect redis failed: {err:?}, retrying in 5s",
+                                            log_prefix()
                                         );
                                         thread::sleep(Duration::from_secs(5));
                                     }
@@ -1168,7 +1214,8 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
                                 write_hash_and_cleanup(&mut conn, &result.output_key, &[], &stale);
                         } else {
                             info!(
-                                "{LOG_PREFIX}: initial cleanup removed {} fields from {}",
+                                "{}: initial cleanup removed {} fields from {}",
+                                log_prefix(),
                                 stale.len(),
                                 result.output_key
                             );
@@ -1196,7 +1243,10 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
             if let Err(err) =
                 write_hash_and_cleanup(&mut conn, &result.output_key, &result.payloads, &removals)
             {
-                error!("{LOG_PREFIX}: redis write error: {err:?}, attempting reconnect");
+                error!(
+                    "{}: redis write error: {err:?}, attempting reconnect",
+                    log_prefix()
+                );
                 loop {
                     match client.get_connection() {
                         Ok(c) => {
@@ -1204,7 +1254,10 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
                             break;
                         }
                         Err(err) => {
-                            error!("{LOG_PREFIX}: reconnect redis failed: {err:?}, retrying in 5s");
+                            error!(
+                                "{}: reconnect redis failed: {err:?}, retrying in 5s",
+                                log_prefix()
+                            );
                             thread::sleep(Duration::from_secs(5));
                         }
                     }
@@ -1217,7 +1270,8 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
                 );
             } else {
                 info!(
-                    "{LOG_PREFIX}: wrote {} fields, removed {} from {} (processed={}, skipped={}, duration={}ms)",
+                    "{}: wrote {} fields, removed {} from {} (processed={}, skipped={}, duration={}ms)",
+                    log_prefix(),
                     result.payloads.len(),
                     removals.len(),
                     result.output_key,
@@ -1228,7 +1282,7 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
             }
         }
 
-        info!("{LOG_PREFIX}: writer thread exiting (channel closed)");
+        info!("{}: writer thread exiting (channel closed)", log_prefix());
     });
 }
 
@@ -1286,10 +1340,10 @@ fn setup_signal_handlers(token: &CancellationToken) -> Result<()> {
     let ctrl_c = token.clone();
     tokio::spawn(async move {
         if let Err(e) = signal::ctrl_c().await {
-            error!("{LOG_PREFIX}: listen ctrl_c failed: {}", e);
+            error!("rolling-metrics: listen ctrl_c failed: {}", e);
             return;
         }
-        info!("{LOG_PREFIX}: received Ctrl+C");
+        info!("rolling-metrics: received Ctrl+C");
         ctrl_c.cancel();
     });
     #[cfg(unix)]
@@ -1300,11 +1354,11 @@ fn setup_signal_handlers(token: &CancellationToken) -> Result<()> {
             match signal(SignalKind::terminate()) {
                 Ok(mut sig) => {
                     if sig.recv().await.is_some() {
-                        info!("{LOG_PREFIX}: received SIGTERM");
+                        info!("rolling-metrics: received SIGTERM");
                         term_token.cancel();
                     }
                 }
-                Err(e) => error!("{LOG_PREFIX}: listen SIGTERM failed: {}", e),
+                Err(e) => error!("rolling-metrics: listen SIGTERM failed: {}", e),
             }
         });
     }

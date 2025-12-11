@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -16,7 +17,18 @@ use crate::rolling_metrics::config::{
 use crate::rolling_metrics::quantile::quantiles_linear_select_unstable;
 use crate::rolling_metrics::ring::RingBuffer;
 
-const LOG_PREFIX: &str = "binance-rolling-metrics";
+static LOG_PREFIX: OnceLock<String> = OnceLock::new();
+
+pub fn init_log_prefix(prefix: String) {
+    let _ = LOG_PREFIX.set(prefix);
+}
+
+pub fn log_prefix() -> &'static str {
+    LOG_PREFIX
+        .get()
+        .map(|s| s.as_str())
+        .unwrap_or("rolling-metrics")
+}
 
 pub type SeriesMap = DashMap<String, Arc<SymbolSeries>>;
 
@@ -126,8 +138,10 @@ pub fn spawn_compute_thread(
 
             if cfg_snapshot.refresh_sec != last_refresh_sec {
                 info!(
-                    "{LOG_PREFIX}: compute interval refresh_sec={}s (prev={}s)",
-                    cfg_snapshot.refresh_sec, last_refresh_sec
+                    "{}: compute interval refresh_sec={}s (prev={}s)",
+                    log_prefix(),
+                    cfg_snapshot.refresh_sec,
+                    last_refresh_sec
                 );
                 last_refresh_sec = cfg_snapshot.refresh_sec;
             }
@@ -181,15 +195,20 @@ pub fn spawn_compute_thread(
             };
 
             info!(
-                "{LOG_PREFIX}: computed {} symbols (processed={}, skipped={}) in {:?}",
-                total, processed, skipped, duration
+                "{}: computed {} symbols (processed={}, skipped={}) in {:?}",
+                log_prefix(),
+                total,
+                processed,
+                skipped,
+                duration
             );
 
             let coverage_rows = build_factor_coverage_rows(total, all_ready_count);
             let coverage_table =
                 build_three_line_table_str(["metric", "ready/total", "percent"], &coverage_rows);
             info!(
-                "{LOG_PREFIX}: factor coverage (3 factors)\n{}",
+                "{}: factor coverage (3 factors)\n{}",
+                log_prefix(),
                 coverage_table
             );
 
@@ -202,7 +221,10 @@ pub fn spawn_compute_thread(
                 })
                 .is_err()
             {
-                warn!("{LOG_PREFIX}: compute thread exiting because receiver dropped");
+                warn!(
+                    "{}: compute thread exiting because receiver dropped",
+                    log_prefix()
+                );
                 break;
             }
 
@@ -275,14 +297,18 @@ fn build_entry(
         if factors_ready == factors_with_quantiles {
             *processed += 1;
             debug!(
-                "{LOG_PREFIX}: symbol {} factors refreshed {:?}",
-                base_symbol, ready_factors
+                "{}: symbol {} factors refreshed {:?}",
+                log_prefix(),
+                base_symbol,
+                ready_factors
             );
         } else {
             *skipped += 1;
             debug!(
-                "{LOG_PREFIX}: symbol {} insufficient samples for factors {:?}",
-                base_symbol, missing_ready
+                "{}: symbol {} insufficient samples for factors {:?}",
+                log_prefix(),
+                base_symbol,
+                missing_ready
             );
         }
     } else {
@@ -312,8 +338,10 @@ fn build_entry(
         Ok(json) => Some((symbol_pair.to_string(), json)),
         Err(err) => {
             debug!(
-                "{LOG_PREFIX}: serialize payload for {} failed: {}",
-                symbol_pair, err
+                "{}: serialize payload for {} failed: {}",
+                log_prefix(),
+                symbol_pair,
+                err
             );
             None
         }

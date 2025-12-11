@@ -1,5 +1,7 @@
 # Rolling Metrics 配置独立化迁移指南
 
+> 注意：本文基于早期按 exchange 维度的接口，相关脚本已重命名为 `print_fr_rolling_metrics_*` / `sync_fr_rolling_metrics_*`，并改为 `--open-venue/--hedge-venue` 参数。下文示例请据此调整后再使用。
+
 ## 变更概述
 
 现在每个交易所都有**独立的** rolling_metrics 配置，不再共享配置。
@@ -31,19 +33,19 @@
 为每个交易所初始化配置（使用 sync 脚本）：
 
 ```bash
-# 初始化 binance 配置
-python scripts/sync_rolling_metrics_params.py --exchange binance
+# 初始化 binance 现货/合约配置
+python scripts/sync_fr_rolling_metrics_params.py --open-venue binance-margin --hedge-venue binance-futures
 
-# 初始化 okex 配置
-python scripts/sync_rolling_metrics_params.py --exchange okex
+# 初始化 okex 现货/合约配置
+python scripts/sync_fr_rolling_metrics_params.py --open-venue okex-margin --hedge-venue okex-futures
 
 # 自定义参数
-python scripts/sync_rolling_metrics_params.py --exchange binance \
+python scripts/sync_fr_rolling_metrics_params.py --open-venue binance-margin --hedge-venue binance-futures \
     --max-length 200000 \
     --refresh-sec 60
 
 # 预览而不写入（dry-run）
-python scripts/sync_rolling_metrics_params.py --exchange binance --dry-run
+python scripts/sync_fr_rolling_metrics_params.py --open-venue binance-margin --hedge-venue binance-futures --dry-run
 ```
 
 ### 2. 查看配置
@@ -51,14 +53,14 @@ python scripts/sync_rolling_metrics_params.py --exchange binance --dry-run
 查看特定交易所的配置：
 
 ```bash
-# 查看 binance 配置
-python scripts/print_rolling_metrics_params.py --exchange binance
+# 查看 binance margin/futures 配置
+python scripts/print_fr_rolling_metrics_params.py --open-venue binance-margin --hedge-venue binance-futures
 
 # 查看 okex 配置
-python scripts/print_rolling_metrics_params.py --exchange okex
+python scripts/print_fr_rolling_metrics_params.py --open-venue okex-margin --hedge-venue okex-futures
 
 # 只查看特定 factor
-python scripts/print_rolling_metrics_params.py --exchange binance --prefix bidask_
+python scripts/print_fr_rolling_metrics_params.py --open-venue binance-margin --hedge-venue binance-futures --prefix bidask_
 ```
 
 ### 3. 同步资金费率阈值
@@ -77,10 +79,10 @@ python scripts/sync_funding_rate_thresholds.py --exchange okex
 
 ```bash
 # 查看 rolling_metrics 配置
-python scripts/print_rolling_metrics_params.py --exchange binance
+python scripts/print_fr_rolling_metrics_params.py --open-venue binance-margin --hedge-venue binance-futures
 
 # 查看 rolling_metrics 输出结果
-python scripts/print_rolling_metrics_thresholds.py --exchange binance
+python scripts/print_fr_rolling_metrics_thresholds.py --open-venue binance-margin --hedge-venue binance-futures
 
 # 查看资金费率阈值
 python scripts/print_funding_rate_thresholds.py --exchange binance
@@ -184,26 +186,26 @@ redis-cli --raw HGETALL rolling_metrics_thresholds > backup_thresholds.txt
 redis-cli --raw HGETALL funding_rate_thresholds > backup_funding.txt
 ```
 
-### 2. 为每个交易所创建新配置
+### 2. 为每个交易所创建新配置（open/hedge 组合）
 
 ```bash
 # 为每个交易所初始化配置
 for exchange in binance okex bybit bitget gate; do
-    python scripts/sync_rolling_metrics_params.py --exchange $exchange
-    python scripts/sync_funding_rate_thresholds.py --exchange $exchange
+    python scripts/sync_fr_rolling_metrics_params.py --open-venue ${exchange}-margin --hedge-venue ${exchange}-futures
+    python scripts/sync_funding_rate_thresholds.py --exchange ${exchange}
 done
 ```
 
 ### 3. 更新启动脚本
 
-确保所有启动脚本都添加了 `--exchange` 参数：
+确保 rolling_metrics 启动脚本都添加了 `--open-venue/--hedge-venue` 参数：
 
 ```bash
-# 旧版本（会失败）
-cargo run --bin rolling_metrics
+# 旧版本（会失败或取默认）
+cargo run --bin rolling_metrics   # 缺少 open/hedge
 
 # 新版本（正确）
-cargo run --bin rolling_metrics -- --exchange binance
+cargo run --bin rolling_metrics -- --open-venue binance-margin --hedge-venue binance-futures
 ```
 
 ### 4. 清理旧数据（可选）
@@ -222,26 +224,27 @@ redis-cli DEL funding_rate_thresholds
 
 **错误信息：**
 ```
-未找到参数或 HASH 'rolling_metrics_params_binance' 为空
+未找到参数或 HASH 'rolling_metrics_params_binance-margin_binance-futures' 为空
 ```
 
 **解决方案：**
 ```bash
-python scripts/sync_rolling_metrics_params.py --exchange binance
+python scripts/sync_fr_rolling_metrics_params.py --open-venue binance-margin --hedge-venue binance-futures
 ```
 
-### 问题：脚本提示缺少 --exchange 参数
+### 问题：脚本提示缺少 --open-venue/--hedge-venue 参数
 
 **错误信息：**
 ```
 error: the following required arguments were not provided:
-  --exchange <EXCHANGE>
+  --open-venue <...>
+  --hedge-venue <...>
 ```
 
 **解决方案：**
-所有脚本现在都需要指定交易所，例如：
+所有脚本现在都需要指定 open/hedge，例如：
 ```bash
-python scripts/print_rolling_metrics_params.py --exchange binance
+python scripts/print_fr_rolling_metrics_params.py --open-venue binance-margin --hedge-venue binance-futures
 ```
 
 ### 问题：多个交易所的数据混在一起
@@ -254,10 +257,10 @@ redis-cli KEYS "rolling_metrics*"
 
 **预期输出：**
 ```
-rolling_metrics_params_binance
-rolling_metrics_params_okex
-rolling_metrics_thresholds_binance
-rolling_metrics_thresholds_okex
+rolling_metrics_params_binance-margin_binance-futures
+rolling_metrics_params_okex-margin_okex-futures
+rolling_metrics_thresholds_binance-margin_binance-futures
+rolling_metrics_thresholds_okex-margin_okex-futures
 ```
 
 ## 配置参数说明
@@ -277,11 +280,11 @@ rolling_metrics_thresholds_okex
 ## 相关文件
 
 ### Python 脚本
-- `scripts/sync_rolling_metrics_params.py` - 同步 rolling_metrics 配置
-- `scripts/print_rolling_metrics_params.py` - 查看 rolling_metrics 配置
+- `scripts/sync_fr_rolling_metrics_params.py` - 同步 rolling_metrics 配置
+- `scripts/print_fr_rolling_metrics_params.py` - 查看 rolling_metrics 配置
 - `scripts/sync_funding_rate_thresholds.py` - 同步资金费率阈值
 - `scripts/print_funding_rate_thresholds.py` - 查看资金费率阈值
-- `scripts/print_rolling_metrics_thresholds.py` - 查看 rolling_metrics 输出结果
+- `scripts/print_fr_rolling_metrics_thresholds.py` - 查看 rolling_metrics 输出结果
 
 ### Rust 代码
 - `src/bin/rolling_metrics.rs` - rolling_metrics 主程序
@@ -291,8 +294,8 @@ rolling_metrics_thresholds_okex
 
 ## 总结：两个脚本的职责
 
-### `sync_rolling_metrics_params.py` - 统计计算配置
-- **写入**: `rolling_metrics_params_{exchange}`
+### `sync_fr_rolling_metrics_params.py` - 统计计算配置
+- **写入**: `rolling_metrics_params_{open}_{hedge}`
 - **用途**: 配置如何计算滑窗统计量
 - **内容**: MAX_LENGTH, refresh_sec, factors (bidask, askbid, spread)
 - **使用者**: rolling_metrics 进程

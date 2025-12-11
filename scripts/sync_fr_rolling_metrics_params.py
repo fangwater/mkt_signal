@@ -19,12 +19,13 @@
     }
 
 示例：
-  python scripts/sync_rolling_metrics_params.py --open-venue binance-spot --hedge-venue binance-futures
-  python scripts/sync_rolling_metrics_params.py --open-venue okex-spot --hedge-venue okex-futures --redis-url redis://:pwd@127.0.0.1:6379/0
-  python scripts/sync_rolling_metrics_params.py --open-venue binance-spot --hedge-venue binance-futures --max-length 200000
-  python scripts/sync_rolling_metrics_params.py --open-venue okex-spot --hedge-venue okex-futures --factors-json '
+  python scripts/sync_fr_rolling_metrics_params.py --open-venue binance-margin --hedge-venue binance-futures
+  python scripts/sync_fr_rolling_metrics_params.py --open-venue okex-margin --hedge-venue okex-futures --redis-url redis://:pwd@127.0.0.1:6379/0
+  python scripts/sync_fr_rolling_metrics_params.py --open-venue binance-margin --hedge-venue binance-futures --max-length 200000
+  python scripts/sync_fr_rolling_metrics_params.py --open-venue okex-margin --hedge-venue okex-futures --factors-json '
     {"bidask":{"resample_interval_ms":1000,"rolling_window":100000,
     "min_periods":90000,"quantiles":[5,70]}}'
+  # 也可不带参数，脚本会基于当前目录名推断 exchange（形如 okex_fr_trade -> okex-margin/okex-futures）
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ import json
 import math
 import os
 import sys
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
 DEFAULTS = {
     "MAX_LENGTH": 150_000,
@@ -73,10 +74,36 @@ def try_import_redis():
         return None
 
 
+EXCHANGE_DEFAULTS = {
+    "binance": ("binance-margin", "binance-futures"),
+    "okex": ("okex-margin", "okex-futures"),
+    "bybit": ("bybit-margin", "bybit-futures"),
+    "bitget": ("bitget-margin", "bitget-futures"),
+    "gate": ("gate-margin", "gate-futures"),
+}
+
+
+def infer_venues_from_cwd() -> Optional[Tuple[str, str]]:
+    """从当前目录名推断 open/hedge（如 okex_fr_trade -> okex-margin/okex-futures）"""
+    from pathlib import Path
+
+    name = Path.cwd().name.lower()
+    candidates = [name]
+    if "_" in name:
+        candidates.append(name.split("_", 1)[0])
+    for cand in candidates:
+        for ex, pair in EXCHANGE_DEFAULTS.items():
+            if cand.startswith(ex):
+                return pair
+    return None
+
+
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Sync rolling_metrics parameters to Redis HASH")
-    p.add_argument("--open-venue", required=True, help="open 侧 venue（如 binance-spot）")
-    p.add_argument("--hedge-venue", required=True, help="hedge 侧 venue（如 binance-futures）")
+    p = argparse.ArgumentParser(
+        description="Sync rolling_metrics parameters to Redis HASH（可省略 open/hedge，默认按目录名推断 margin/futures）"
+    )
+    p.add_argument("--open-venue", help="open 侧 venue（如 binance-margin）")
+    p.add_argument("--hedge-venue", help="hedge 侧 venue（如 binance-futures）")
     p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
     p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
     p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
@@ -97,7 +124,24 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument("--dry-run", action="store_true", help="Only print payload without writing")
-    return p.parse_args()
+    args = p.parse_args()
+
+    open_venue = args.open_venue
+    hedge_venue = args.hedge_venue
+
+    if not open_venue and not hedge_venue:
+        inferred = infer_venues_from_cwd()
+        if inferred:
+            open_venue, hedge_venue = inferred
+            print(
+                f"[INFO] 未提供 open/hedge，基于目录推断: open={open_venue}, hedge={hedge_venue}"
+            )
+    if not open_venue or not hedge_venue:
+        p.error("需要 --open-venue 与 --hedge-venue，或在目录名包含 <exchange> 前缀（如 okex_fr_trade）以自动推断")
+
+    args.open_venue = open_venue
+    args.hedge_venue = hedge_venue
+    return args
 
 
 DEPRECATED_FIELDS = [
@@ -243,7 +287,7 @@ def main() -> int:
         print(f"已删除旧字段：{', '.join(deprecated)}")
     print(f"\n💡 下一步：")
     print(
-        "  - 查看配置: python scripts/print_rolling_metrics_params.py "
+        "  - 查看配置: python scripts/print_fr_rolling_metrics_params.py "
         f"--open-venue {open_venue} --hedge-venue {hedge_venue}"
     )
     print(
