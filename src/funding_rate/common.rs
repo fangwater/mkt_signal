@@ -7,6 +7,7 @@
 
 use std::collections::VecDeque;
 
+use crate::common::exchange::Exchange;
 use crate::signal::common::TradingVenue;
 
 // ========== 资金费率周期 ==========
@@ -154,6 +155,17 @@ pub enum FactorMode {
 impl Default for FactorMode {
     fn default() -> Self {
         FactorMode::MM
+    }
+}
+
+/// 根据命令行 exchange 映射现货/期货交易场所
+pub fn venue_pair_for_exchange(exchange: Exchange) -> (TradingVenue, TradingVenue) {
+    match exchange {
+        Exchange::Binance => (TradingVenue::BinanceMargin, TradingVenue::BinanceFutures),
+        Exchange::Okex => (TradingVenue::OkexMargin, TradingVenue::OkexFutures),
+        Exchange::Bybit => (TradingVenue::BybitMargin, TradingVenue::BybitFutures),
+        Exchange::Bitget => (TradingVenue::BitgetMargin, TradingVenue::BitgetFutures),
+        Exchange::Gate => (TradingVenue::GateMargin, TradingVenue::GateFutures),
     }
 }
 

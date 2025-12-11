@@ -1,6 +1,6 @@
 //! 行情频道模块 - 单例访问模式
 //!
-//! 订阅 Binance 现货和期货行情，维护行情数据
+//! 订阅 open/hedge 两端的行情，维护价差与资金费率数据
 //!
 //! 数据结构：TradingVenue -> HashMap<Symbol, Value>
 
@@ -24,19 +24,24 @@ use crate::signal::common::TradingVenue;
 const ASKBID_PAYLOAD: usize = 64;
 const DERIVATIVES_PAYLOAD: usize = 128;
 
-// 服务名称
-const SERVICE_BINANCE_SPOT_ASKBID: &str = "data_pubs/binance-spot/ask_bid_spread";
-const SERVICE_BINANCE_FUTURES_ASKBID: &str = "data_pubs/binance-futures/ask_bid_spread";
-const SERVICE_BINANCE_FUTURES_DERIVATIVES: &str = "data_pubs/binance-futures/derivatives";
-
-// 节点名称
-const NODE_FR_BINANCE_SPOT_ASKBID: &str = "fr_signal_binance_spot_askbid";
-const NODE_FR_BINANCE_FUTURES_ASKBID: &str = "fr_signal_binance_futures_askbid";
-const NODE_FR_BINANCE_DERIVATIVES: &str = "fr_signal_binance_derivatives";
-
 // Thread-local 单例存储
 thread_local! {
     static MKT_CHANNEL: RefCell<Option<MktChannelInner>> = RefCell::new(None);
+}
+
+fn build_node_name(slug: &str, suffix: &str) -> String {
+    format!("fr_signal_{}_{}", slug.replace('-', "_"), suffix)
+}
+
+fn is_futures(venue: TradingVenue) -> bool {
+    matches!(
+        venue,
+        TradingVenue::BinanceFutures
+            | TradingVenue::OkexFutures
+            | TradingVenue::BybitFutures
+            | TradingVenue::BitgetFutures
+            | TradingVenue::GateFutures
+    )
 }
 
 /// MktChannel 单例访问器（零大小类型）
@@ -52,6 +57,11 @@ struct MktChannelInner {
 
     /// Mark Price 数据：TradingVenue -> HashMap<Symbol, f64> (只存最新值)
     mark_prices: Rc<RefCell<HashMap<TradingVenue, HashMap<String, f64>>>>,
+
+    /// open 侧交易场所
+    open_venue: TradingVenue,
+    /// hedge 侧交易场所
+    hedge_venue: TradingVenue,
 }
 
 impl MktChannel {
@@ -73,40 +83,95 @@ impl MktChannel {
     }
 
     /// 初始化单例并启动订阅任务
-    pub fn init_singleton() -> Result<()> {
+    ///
+    /// open/hedge 由调用方传入；每个 venue 都订阅 ask_bid_spread。
+    /// 若某个 venue 是 futures，则额外订阅 funding/mark price 衍生品频道。
+    pub fn init_singleton(open_venue: TradingVenue, hedge_venue: TradingVenue) -> Result<()> {
+        let open_slug = open_venue.data_pub_slug();
+        let hedge_slug = hedge_venue.data_pub_slug();
+
+        let open_service = format!("data_pubs/{}/ask_bid_spread", open_slug);
+        let hedge_service = format!("data_pubs/{}/ask_bid_spread", hedge_slug);
+
+        let open_node = build_node_name(open_slug, "askbid");
+        let hedge_node = build_node_name(hedge_slug, "askbid");
+
         let quotes = Rc::new(RefCell::new(HashMap::new()));
         let funding_rates = Rc::new(RefCell::new(HashMap::new()));
         let mark_prices = Rc::new(RefCell::new(HashMap::new()));
 
         // 初始化 HashMap（为每个 TradingVenue 创建子 HashMap）
         {
-            quotes
-                .borrow_mut()
-                .insert(TradingVenue::BinanceMargin, HashMap::new());
-            quotes
-                .borrow_mut()
-                .insert(TradingVenue::BinanceFutures, HashMap::new());
+            quotes.borrow_mut().insert(open_venue, HashMap::new());
+            quotes.borrow_mut().insert(hedge_venue, HashMap::new());
 
-            funding_rates
-                .borrow_mut()
-                .insert(TradingVenue::BinanceFutures, HashMap::new());
-            mark_prices
-                .borrow_mut()
-                .insert(TradingVenue::BinanceFutures, HashMap::new());
+            if is_futures(open_venue) {
+                funding_rates
+                    .borrow_mut()
+                    .insert(open_venue, HashMap::new());
+                mark_prices.borrow_mut().insert(open_venue, HashMap::new());
+            }
+            if is_futures(hedge_venue) {
+                funding_rates
+                    .borrow_mut()
+                    .insert(hedge_venue, HashMap::new());
+                mark_prices.borrow_mut().insert(hedge_venue, HashMap::new());
+            }
         }
 
         info!("MktChannel 初始化完成");
 
         // 启动订阅任务
-        Self::spawn_spot_askbid_listener(quotes.clone());
-        Self::spawn_futures_askbid_listener(quotes.clone());
-        Self::spawn_derivatives_listener(funding_rates.clone(), mark_prices.clone());
+        Self::spawn_askbid_listener(
+            open_node,
+            open_service,
+            open_venue,
+            open_venue,
+            hedge_venue,
+            quotes.clone(),
+        );
+        Self::spawn_askbid_listener(
+            hedge_node,
+            hedge_service,
+            hedge_venue,
+            open_venue,
+            hedge_venue,
+            quotes.clone(),
+        );
+        if is_futures(open_venue) {
+            let derivatives_service = format!("data_pubs/{}/derivatives", open_slug);
+            let derivatives_node = build_node_name(open_slug, "derivatives");
+            Self::spawn_derivatives_listener(
+                derivatives_node,
+                derivatives_service,
+                open_venue,
+                open_venue,
+                hedge_venue,
+                funding_rates.clone(),
+                mark_prices.clone(),
+            );
+        }
+        if is_futures(hedge_venue) {
+            let derivatives_service = format!("data_pubs/{}/derivatives", hedge_slug);
+            let derivatives_node = build_node_name(hedge_slug, "derivatives");
+            Self::spawn_derivatives_listener(
+                derivatives_node,
+                derivatives_service,
+                hedge_venue,
+                open_venue,
+                hedge_venue,
+                funding_rates.clone(),
+                mark_prices.clone(),
+            );
+        }
 
         // 保存到 thread-local
         let inner = MktChannelInner {
             quotes,
             funding_rates,
             mark_prices,
+            open_venue,
+            hedge_venue,
         };
 
         MKT_CHANNEL.with(|mc| {
@@ -130,15 +195,9 @@ impl MktChannel {
     pub fn get_quote(&self, symbol: &str, venue: TradingVenue) -> Option<Quote> {
         let symbol_upper = symbol.to_uppercase();
 
-        // 映射：BinanceMargin 使用 BinanceSpot 的盘口数据（现货杠杆和现货共享盘口）
-        let query_venue = match venue {
-            TradingVenue::BinanceMargin => TradingVenue::BinanceMargin,
-            _ => venue,
-        };
-
         Self::with_inner(|inner| {
             let quotes_map = inner.quotes.borrow();
-            let venue_quotes = quotes_map.get(&query_venue)?;
+            let venue_quotes = quotes_map.get(&venue)?;
             let quote = venue_quotes.get(&symbol_upper)?;
 
             if quote.is_valid() {
@@ -198,25 +257,30 @@ impl MktChannel {
 
     // ==================== 内部辅助方法 ====================
 
-    /// 启动现货 ask_bid_spread 监听任务
-    fn spawn_spot_askbid_listener(
+    /// 启动 ask_bid_spread 监听任务
+    fn spawn_askbid_listener(
+        node_name: String,
+        service_name: String,
+        this_venue: TradingVenue,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
         quotes: Rc<RefCell<HashMap<TradingVenue, HashMap<String, Quote>>>>,
     ) {
         tokio::task::spawn_local(async move {
             let result: Result<()> = async move {
                 let node = NodeBuilder::new()
-                    .name(&NodeName::new(NODE_FR_BINANCE_SPOT_ASKBID)?)
+                    .name(&NodeName::new(&node_name)?)
                     .create::<ipc::Service>()?;
 
                 let service = node
-                    .service_builder(&ServiceName::new(SERVICE_BINANCE_SPOT_ASKBID)?)
+                    .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; ASKBID_PAYLOAD]>()
                     .open_or_create()?;
 
                 let subscriber: Subscriber<ipc::Service, [u8; ASKBID_PAYLOAD], ()> =
                     service.subscriber_builder().create()?;
 
-                info!("订阅现货盘口: {}", SERVICE_BINANCE_SPOT_ASKBID);
+                info!("订阅盘口: {} ({:?})", service_name, this_venue);
 
                 loop {
                     match subscriber.receive() {
@@ -236,9 +300,7 @@ impl MktChannel {
 
                                 let symbol_for_decision = {
                                     let mut quotes_map = quotes.borrow_mut();
-                                    if let Some(venue_quotes) =
-                                        quotes_map.get_mut(&TradingVenue::BinanceMargin)
-                                    {
+                                    if let Some(venue_quotes) = quotes_map.get_mut(&this_venue) {
                                         let quote = venue_quotes
                                             .entry(symbol.clone())
                                             .or_insert(Quote::default());
@@ -258,25 +320,30 @@ impl MktChannel {
                                 if let Some(sym) = &symbol_for_decision {
                                     use super::spread_factor::SpreadFactor;
 
-                                    // 获取期货盘口
+                                    // 获取 open/hedge 盘口并更新价差因子（保持 open->hedge 方向）
                                     let quotes_map = quotes.borrow();
-                                    if let Some(futures_quotes) =
-                                        quotes_map.get(&TradingVenue::BinanceFutures)
+                                    let open_quote = quotes_map
+                                        .get(&open_venue)
+                                        .and_then(|m| m.get(sym))
+                                        .copied();
+                                    let hedge_quote = quotes_map
+                                        .get(&hedge_venue)
+                                        .and_then(|m| m.get(sym))
+                                        .copied();
+                                    if let (Some(open_q), Some(hedge_q)) = (open_quote, hedge_quote)
                                     {
-                                        if let Some(futures_quote) = futures_quotes.get(sym) {
-                                            if futures_quote.is_valid() {
-                                                let spread_factor = SpreadFactor::instance();
-                                                spread_factor.update(
-                                                    TradingVenue::BinanceMargin, // venue1 (现货，查询时会自动映射 Margin->Spot)
-                                                    sym,
-                                                    TradingVenue::BinanceFutures, // venue2 (期货)
-                                                    sym,
-                                                    bid_price,         // venue1_bid
-                                                    ask_price,         // venue1_ask
-                                                    futures_quote.bid, // venue2_bid
-                                                    futures_quote.ask, // venue2_ask
-                                                );
-                                            }
+                                        if open_q.is_valid() && hedge_q.is_valid() {
+                                            let spread_factor = SpreadFactor::instance();
+                                            spread_factor.update(
+                                                open_venue,
+                                                sym,
+                                                hedge_venue,
+                                                sym,
+                                                open_q.bid,
+                                                open_q.ask,
+                                                hedge_q.bid,
+                                                hedge_q.ask,
+                                            );
                                         }
                                     }
                                 }
@@ -286,10 +353,10 @@ impl MktChannel {
                                     use super::decision::FrDecision;
                                     FrDecision::with_mut(|decision| {
                                         let _ = decision.make_combined_decision(
-                                            &sym,                         // spot_symbol
-                                            &sym,                         // futures_symbol
-                                            TradingVenue::BinanceMargin,  // spot_venue
-                                            TradingVenue::BinanceFutures, // futures_venue
+                                            &sym,
+                                            &sym,
+                                            open_venue,
+                                            hedge_venue,
                                         );
                                     });
                                 }
@@ -311,139 +378,31 @@ impl MktChannel {
         });
     }
 
-    /// 启动期货 ask_bid_spread 监听任务
-    fn spawn_futures_askbid_listener(
-        quotes: Rc<RefCell<HashMap<TradingVenue, HashMap<String, Quote>>>>,
-    ) {
-        tokio::task::spawn_local(async move {
-            let result: Result<()> = async move {
-                let node = NodeBuilder::new()
-                    .name(&NodeName::new(NODE_FR_BINANCE_FUTURES_ASKBID)?)
-                    .create::<ipc::Service>()?;
-
-                let service = node
-                    .service_builder(&ServiceName::new(SERVICE_BINANCE_FUTURES_ASKBID)?)
-                    .publish_subscribe::<[u8; ASKBID_PAYLOAD]>()
-                    .open_or_create()?;
-
-                let subscriber: Subscriber<ipc::Service, [u8; ASKBID_PAYLOAD], ()> =
-                    service.subscriber_builder().create()?;
-
-                info!("订阅期货盘口: {}", SERVICE_BINANCE_FUTURES_ASKBID);
-
-                loop {
-                    match subscriber.receive() {
-                        Ok(Some(sample)) => {
-                            let payload = sample.payload();
-                            if payload.is_empty() {
-                                continue;
-                            }
-
-                            let msg_type = get_msg_type(payload);
-                            if msg_type == MktMsgType::AskBidSpread {
-                                // 零拷贝解析
-                                let symbol = AskBidSpreadMsg::get_symbol(payload).to_uppercase();
-                                let bid_price = AskBidSpreadMsg::get_bid_price(payload);
-                                let ask_price = AskBidSpreadMsg::get_ask_price(payload);
-                                let timestamp = AskBidSpreadMsg::get_timestamp(payload);
-
-                                let symbol_for_decision = {
-                                    let mut quotes_map = quotes.borrow_mut();
-                                    if let Some(venue_quotes) =
-                                        quotes_map.get_mut(&TradingVenue::BinanceFutures)
-                                    {
-                                        let quote = venue_quotes
-                                            .entry(symbol.clone())
-                                            .or_insert(Quote::default());
-                                        quote.update(bid_price, ask_price, timestamp);
-
-                                        // debug!(
-                                        //     "期货盘口更新: {} bid={:.6} ask={:.6}",
-                                        //     symbol, bid_price, ask_price
-                                        // );
-                                        Some(symbol.clone())
-                                    } else {
-                                        None
-                                    }
-                                };
-
-                                // 更新价差因子
-                                if let Some(sym) = &symbol_for_decision {
-                                    use super::spread_factor::SpreadFactor;
-
-                                    // 获取现货盘口
-                                    let quotes_map = quotes.borrow();
-                                    if let Some(spot_quotes) =
-                                        quotes_map.get(&TradingVenue::BinanceMargin)
-                                    {
-                                        if let Some(spot_quote) = spot_quotes.get(sym) {
-                                            if spot_quote.is_valid() {
-                                                let spread_factor = SpreadFactor::instance();
-                                                spread_factor.update(
-                                                    TradingVenue::BinanceMargin, // venue1 (现货，查询时会自动映射 Margin->Spot)
-                                                    sym,
-                                                    TradingVenue::BinanceFutures, // venue2 (期货)
-                                                    sym,
-                                                    spot_quote.bid, // venue1_bid
-                                                    spot_quote.ask, // venue1_ask
-                                                    bid_price,      // venue2_bid
-                                                    ask_price,      // venue2_ask
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // 盘口更新后触发决策（事件驱动）
-                                if let Some(sym) = symbol_for_decision {
-                                    use super::decision::FrDecision;
-                                    FrDecision::with_mut(|decision| {
-                                        let _ = decision.make_combined_decision(
-                                            &sym,                         // spot_symbol
-                                            &sym,                         // futures_symbol
-                                            TradingVenue::BinanceMargin,  // spot_venue
-                                            TradingVenue::BinanceFutures, // futures_venue
-                                        );
-                                    });
-                                }
-                            }
-                        }
-                        Ok(None) => tokio::task::yield_now().await,
-                        Err(err) => {
-                            warn!("期货盘口接收错误: {}", err);
-                            tokio::time::sleep(Duration::from_millis(200)).await;
-                        }
-                    }
-                }
-            }
-            .await;
-
-            if let Err(err) = result {
-                warn!("期货盘口监听退出: {:?}", err);
-            }
-        });
-    }
-
     /// 启动衍生品（资金费率 + mark price）监听任务
     fn spawn_derivatives_listener(
+        node_name: String,
+        service_name: String,
+        feed_venue: TradingVenue,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
         funding_rates: Rc<RefCell<HashMap<TradingVenue, HashMap<String, FundingRateData>>>>,
         mark_prices: Rc<RefCell<HashMap<TradingVenue, HashMap<String, f64>>>>,
     ) {
         tokio::task::spawn_local(async move {
             let result: Result<()> = async move {
                 let node = NodeBuilder::new()
-                    .name(&NodeName::new(NODE_FR_BINANCE_DERIVATIVES)?)
+                    .name(&NodeName::new(&node_name)?)
                     .create::<ipc::Service>()?;
 
                 let service = node
-                    .service_builder(&ServiceName::new(SERVICE_BINANCE_FUTURES_DERIVATIVES)?)
+                    .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; DERIVATIVES_PAYLOAD]>()
                     .open_or_create()?;
 
                 let subscriber: Subscriber<ipc::Service, [u8; DERIVATIVES_PAYLOAD], ()> =
                     service.subscriber_builder().create()?;
 
-                info!("订阅衍生品数据: {}", SERVICE_BINANCE_FUTURES_DERIVATIVES);
+                info!("订阅衍生品数据: {}", service_name);
 
                 loop {
                     match subscriber.receive() {
@@ -463,7 +422,7 @@ impl MktChannel {
                                     let symbol_for_decision = {
                                         let mut funding_rates_map = funding_rates.borrow_mut();
                                         if let Some(venue_rates) =
-                                            funding_rates_map.get_mut(&TradingVenue::BinanceFutures)
+                                            funding_rates_map.get_mut(&feed_venue)
                                         {
                                             let rate_data = venue_rates
                                                 .entry(symbol.clone())
@@ -489,10 +448,10 @@ impl MktChannel {
                                         use super::decision::FrDecision;
                                         FrDecision::with_mut(|decision| {
                                             let _ = decision.make_combined_decision(
-                                                &sym,                         // spot_symbol
-                                                &sym,                         // futures_symbol
-                                                TradingVenue::BinanceMargin,  // spot_venue
-                                                TradingVenue::BinanceFutures, // futures_venue
+                                                &sym,
+                                                &sym,
+                                                open_venue,
+                                                hedge_venue,
                                             );
                                         });
                                     }
@@ -503,8 +462,7 @@ impl MktChannel {
                                     let mark_price = MarkPriceMsg::get_mark_price(payload);
 
                                     let mut mark_prices_map = mark_prices.borrow_mut();
-                                    if let Some(venue_prices) =
-                                        mark_prices_map.get_mut(&TradingVenue::BinanceFutures)
+                                    if let Some(venue_prices) = mark_prices_map.get_mut(&feed_venue)
                                     {
                                         // 只存最新值
                                         venue_prices.insert(symbol.clone(), mark_price);

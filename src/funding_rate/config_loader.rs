@@ -16,6 +16,7 @@ use crate::common::exchange::Exchange;
 use crate::common::redis_client::{RedisClient, RedisSettings};
 use crate::signal::common::TradingVenue;
 
+use super::common::venue_pair_for_exchange;
 use super::decision::FrDecision;
 use super::fr_threshold_loader::load_from_redis as load_fr_thresholds;
 use super::spread_threshold_loader::load_from_redis as load_spread_thresholds;
@@ -218,14 +219,4 @@ fn spread_thresholds_key(exchange: Exchange) -> String {
         open_venue.data_pub_slug(),
         hedge_venue.data_pub_slug()
     )
-}
-
-fn venue_pair_for_exchange(exchange: Exchange) -> (TradingVenue, TradingVenue) {
-    match exchange {
-        Exchange::Binance => (TradingVenue::BinanceMargin, TradingVenue::BinanceFutures),
-        Exchange::Okex => (TradingVenue::OkexMargin, TradingVenue::OkexFutures),
-        Exchange::Bybit => (TradingVenue::BybitMargin, TradingVenue::BybitFutures),
-        Exchange::Bitget => (TradingVenue::BitgetMargin, TradingVenue::BitgetFutures),
-        Exchange::Gate => (TradingVenue::GateMargin, TradingVenue::GateFutures),
-    }
 }

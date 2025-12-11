@@ -52,7 +52,9 @@ async fn run(exchange: Exchange, token: CancellationToken) -> Result<()> {
     // 1️⃣ 初始化所有单例
     info!("初始化单例...");
     SymbolList::init_singleton()?;
-    MktChannel::init_singleton()?;
+    let (open_venue, hedge_venue) =
+        mkt_signal::funding_rate::common::venue_pair_for_exchange(exchange);
+    MktChannel::init_singleton(open_venue, hedge_venue)?;
     RateFetcher::init(exchange)?;
     FrDecision::init_singleton(exchange).await?;
     info!("所有单例初始化完成");
@@ -63,10 +65,7 @@ async fn run(exchange: Exchange, token: CancellationToken) -> Result<()> {
 
     // 调试：延迟2秒后打印价差数据（等待盘口数据）
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-    spread_factor.debug_print_stored_spreads(
-        mkt_signal::signal::common::TradingVenue::BinanceMargin,
-        mkt_signal::signal::common::TradingVenue::BinanceFutures,
-    );
+    spread_factor.debug_print_stored_spreads(open_venue, hedge_venue);
 
     // 2️⃣ 立即加载所有配置（策略参数、符号列表、阈值等）
     let redis = get_redis_settings();

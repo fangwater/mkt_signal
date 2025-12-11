@@ -23,9 +23,9 @@ pub mod symbol_list;
 
 // 公共导出 - 通用定义（枚举、数据结构、辅助函数）
 pub use common::{
-    approx_equal, approx_equal_slice, parse_numeric_list, ArbDirection, CompareOp, FactorMode,
-    FundingRateData, FundingRatePeriod, OperationType, Quote, RateFetcherTrait, SymbolPair,
-    ThresholdKey, VenuePair,
+    approx_equal, approx_equal_slice, parse_numeric_list, venue_pair_for_exchange, ArbDirection,
+    CompareOp, FactorMode, FundingRateData, FundingRatePeriod, OperationType, Quote,
+    RateFetcherTrait, SymbolPair, ThresholdKey, VenuePair,
 };
 
 // 公共导出 - 统一配置加载器
