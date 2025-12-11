@@ -1,9 +1,6 @@
-/// 测试 MinQtyTable，展示主流币的合约信息（重点：合约乘数）
+/// 测试 VenueMinQtyTable，展示主流币的合约信息（重点：合约乘数）
 use anyhow::{bail, Result};
-use mkt_signal::common::{
-    exchange::Exchange,
-    min_qty_table::{MarketType, MinQtyTable},
-};
+use mkt_signal::signal::{common::TradingVenue, venue_min_qty_table::VenueMinQtyTable};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -51,8 +48,8 @@ async fn fetch_okx_raw_data() -> Result<Vec<OkexInstrument>> {
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    let exchange = Exchange::Okex;
-    println!("\n=== 测试 {} 合约信息（验证 ctMult API）===\n", exchange);
+    let venue = TradingVenue::OkexFutures;
+    println!("\n=== 测试 {:?} 合约信息（验证 ctMult API）===\n", venue);
 
     // 1. 先拉取原始 API 数据
     println!("【步骤 1】拉取 OKX API 原始数据...");
@@ -77,9 +74,9 @@ async fn main() -> Result<()> {
         }
     }
 
-    // 3. 使用 MinQtyTable 解析
-    println!("【步骤 3】使用 MinQtyTable 解析并展示合约信息：\n");
-    let mut table = MinQtyTable::new(exchange);
+    // 3. 使用 VenueMinQtyTable 解析
+    println!("【步骤 3】使用 VenueMinQtyTable 解析并展示合约信息：\n");
+    let mut table = VenueMinQtyTable::new(venue);
     table.refresh().await?;
 
     // 主流币列表
@@ -104,11 +101,9 @@ async fn main() -> Result<()> {
         let symbol = format!("{}USDT", coin);
 
         // 查询合约信息
-        let min_qty = table.min_qty(MarketType::Futures, &symbol).unwrap_or(0.0);
-        let step_size = table.step_size(MarketType::Futures, &symbol).unwrap_or(0.0);
-        let price_tick = table
-            .price_tick(MarketType::Futures, &symbol)
-            .unwrap_or(0.0);
+        let min_qty = table.min_qty(&symbol).unwrap_or(0.0);
+        let step_size = table.step_size(&symbol).unwrap_or(0.0);
+        let price_tick = table.price_tick(&symbol).unwrap_or(0.0);
         let contract_size = table.contract_multiplier(&symbol);
 
         // 只打印存在的合约

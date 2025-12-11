@@ -11,7 +11,7 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::common::{Quote, ThresholdKey};
+use super::common::{Quote, ThresholdKey, VenuePair};
 use super::funding_rate_factor::FundingRateFactor;
 use super::mkt_channel::MktChannel;
 use super::rate_fetcher::RateFetcher;
@@ -21,7 +21,6 @@ use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
-use crate::common::min_qty_table::{MarketType, MinQtyTable};
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::signal::cancel_signal::ArbCancelCtx;
@@ -29,6 +28,7 @@ use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
 use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
+use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 
 // ========== 线程本地单例 ==========
 
@@ -96,8 +96,14 @@ pub struct FrDecision {
     /// 默认：[0.0002, 0.0004, 0.0006, 0.0008, 0.001]
     price_offsets: Vec<f64>,
 
-    /// 交易对过滤器，用于 price_tick / min_qty 查询
-    min_qty_table: MinQtyTable,
+    /// 开仓侧交易对过滤器（固定 venue）
+    open_min_qty_table: VenueMinQtyTable,
+
+    /// 对冲侧交易对过滤器（固定 venue）
+    hedge_min_qty_table: VenueMinQtyTable,
+
+    /// 当前运行的交易场所（开仓 / 对冲）
+    venues: VenuePair,
 
     /// 单笔下单名义金额（单位：USDT）
     order_amount: f32,
@@ -179,11 +185,12 @@ impl FrDecision {
     /// 决策逻辑采用事件驱动模式，不使用定时轮询。
     /// 调用方应在市场数据更新时主动调用 `make_combined_decision()`。
     pub async fn init_singleton(exchange: Exchange) -> Result<()> {
+        let venues = super::common::venue_pair_for_exchange(exchange);
         let result: Result<()> = FR_DECISION.with(|cell| {
             if cell.get().is_some() {
                 return Ok(());
             }
-            let decision = Self::new_sync(exchange)?;
+            let decision = Self::new_sync(venues)?;
             cell.set(RefCell::new(decision))
                 .map_err(|_| anyhow::anyhow!("Failed to initialize FrDecision singleton"))?;
             info!("FrDecision singleton initialized, exchange={}", exchange);
@@ -192,7 +199,7 @@ impl FrDecision {
         result?;
 
         // 异步加载 min_qty_table
-        Self::refresh_min_qty_async(exchange).await;
+        Self::refresh_min_qty_async(venues).await;
 
         // 启动 backward 监听任务（处理来自 pre_trade 的查询）
         Self::spawn_backward_listener();
@@ -202,7 +209,7 @@ impl FrDecision {
     }
 
     /// 创建新实例（私有，同步版本）
-    fn new_sync(exchange: Exchange) -> Result<Self> {
+    fn new_sync(venues: VenuePair) -> Result<Self> {
         let node_name = NodeName::new("fr_decision")?;
         let node = NodeBuilder::new()
             .name(&node_name)
@@ -225,7 +232,8 @@ impl FrDecision {
         // 默认挂单偏移：万2 到 千1，共5档
         let price_offsets = vec![0.0002, 0.0004, 0.0006, 0.0008, 0.001];
         // min_qty_table 将在 init_singleton 中异步加载
-        let min_qty_table = MinQtyTable::new(exchange);
+        let open_min_qty_table = VenueMinQtyTable::new(venues.0);
+        let hedge_min_qty_table = VenueMinQtyTable::new(venues.1);
 
         Ok(Self {
             signal_pub,
@@ -233,7 +241,9 @@ impl FrDecision {
             channel_name: DEFAULT_SIGNAL_CHANNEL.to_string(),
             _node: node,
             price_offsets,
-            min_qty_table,
+            open_min_qty_table,
+            hedge_min_qty_table,
+            venues,
             order_amount: 100.0,
             open_order_ttl_us: 120_000_000,
             hedge_timeout_mm_us: 30_000_000,
@@ -246,21 +256,38 @@ impl FrDecision {
     }
 
     /// 异步刷新 min_qty_table
-    async fn refresh_min_qty_async(exchange: Exchange) {
-        let mut table = MinQtyTable::new(exchange);
-        match table.refresh().await {
-            Ok(_) => {
-                Self::with_mut(|decision| {
-                    decision.min_qty_table = table;
-                });
-                info!(
-                    "FrDecision: min_qty_table loaded successfully, exchange={}",
-                    exchange
-                );
+    async fn refresh_min_qty_async(venues: VenuePair) {
+        let mut open_table = VenueMinQtyTable::new(venues.0);
+        let mut hedge_table = VenueMinQtyTable::new(venues.1);
+
+        let open_res = open_table.refresh().await;
+        let hedge_res = hedge_table.refresh().await;
+
+        Self::with_mut(|decision| {
+            if open_res.is_ok() {
+                decision.open_min_qty_table = open_table;
             }
-            Err(err) => {
-                warn!("FrDecision: failed to refresh exchange filters for {}, price_tick may be zero: {err:#}", exchange);
+            if hedge_res.is_ok() {
+                decision.hedge_min_qty_table = hedge_table;
             }
+        });
+
+        match open_res {
+            Ok(_) => info!("FrDecision: open venue min_qty_table loaded, venue={:?}", venues.0),
+            Err(err) => warn!(
+                "FrDecision: failed to refresh open venue filters for {:?}, price_tick may be zero: {err:#}",
+                venues.0
+            ),
+        }
+        match hedge_res {
+            Ok(_) => info!(
+                "FrDecision: hedge venue min_qty_table loaded, venue={:?}",
+                venues.1
+            ),
+            Err(err) => warn!(
+                "FrDecision: failed to refresh hedge venue filters for {:?}, price_tick may be zero: {err:#}",
+                venues.1
+            ),
         }
     }
 
@@ -633,8 +660,8 @@ impl FrDecision {
         };
 
         let price_tick = self
-            .min_qty_table
-            .price_tick(MarketType::Futures, &hedge_symbol)
+            .table_for(hedge_venue)
+            .price_tick(&hedge_symbol)
             .unwrap_or(0.0);
 
         let offset = if query.request_seq < 6 {
@@ -905,11 +932,10 @@ impl FrDecision {
             0.0
         };
         ctx.price_tick = self
-            .min_qty_table
-            .price_tick(MarketType::Margin, spot_symbol)
-            .or_else(|| self.min_qty_table.price_tick(MarketType::Spot, spot_symbol))
+            .table_for(spot_venue)
+            .price_tick(spot_symbol)
             .unwrap_or(0.0);
-        let qty = self.convert_order_amount_to_qty(spot_symbol, ctx.price);
+        let qty = self.convert_order_amount_to_qty(spot_venue, spot_symbol, ctx.price);
         ctx.amount = qty as f32;
 
         ctx.exp_time = now + self.open_order_ttl_us;
@@ -947,8 +973,16 @@ impl FrDecision {
         ctx
     }
 
+    fn table_for(&self, venue: TradingVenue) -> &VenueMinQtyTable {
+        if venue == self.venues.0 {
+            &self.open_min_qty_table
+        } else {
+            &self.hedge_min_qty_table
+        }
+    }
+
     /// 将 USDT 名义金额转换为下单数量，并对齐最小下单量/步长
-    fn convert_order_amount_to_qty(&self, symbol: &str, price: f64) -> f64 {
+    fn convert_order_amount_to_qty(&self, venue: TradingVenue, symbol: &str, price: f64) -> f64 {
         if !(self.order_amount > 0.0) {
             warn!(
                 "FrDecision: order_amount <= 0 when building signal for {}, skip",
@@ -964,14 +998,10 @@ impl FrDecision {
             return 0.0;
         }
 
-        let min_qty = self
-            .min_qty_table
-            .min_qty(MarketType::Margin, symbol)
-            .or_else(|| self.min_qty_table.min_qty(MarketType::Spot, symbol));
-        let step = self
-            .min_qty_table
-            .step_size(MarketType::Margin, symbol)
-            .or_else(|| self.min_qty_table.step_size(MarketType::Spot, symbol));
+        let table = self.table_for(venue);
+
+        let min_qty = table.min_qty(symbol);
+        let step = table.step_size(symbol);
 
         convert_usdt_amount_to_qty(self.order_amount as f64, price, min_qty, step)
     }
