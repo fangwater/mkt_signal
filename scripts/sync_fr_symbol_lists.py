@@ -2,9 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-将 Funding Rate 交易对列表同步到 Redis 并打印。
-
-Symbol 列表是 exchange 维度的。
+将 Funding Rate 交易对列表同步到 Redis 并打印（按交易所维度）。
 
 根据交易所写入 Redis key（String 类型，JSON 数组）：
   - fr_dump_symbols:{exchange}          - 平仓列表
@@ -14,8 +12,8 @@ Symbol 列表是 exchange 维度的。
 
 示例：
   python scripts/sync_fr_symbol_lists.py --exchange binance
-  python scripts/sync_fr_symbol_lists.py --exchange okex
-  python scripts/sync_fr_symbol_lists.py --exchange binance --redis-url redis://:pwd@127.0.0.1:6379/0
+  python scripts/sync_fr_symbol_lists.py       # 在目录名包含 binance/okex/bybit/... 前缀时自动推断
+  python scripts/sync_fr_symbol_lists.py --exchange okex --redis-url redis://:pwd@127.0.0.1:6379/0
 """
 
 from __future__ import annotations
@@ -24,7 +22,7 @@ import argparse
 import json
 import os
 import sys
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 # 支持的交易所
 SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
@@ -38,10 +36,28 @@ def try_import_redis():
         return None
 
 
+def infer_exchange_from_cwd() -> Optional[str]:
+    """从当前目录名推断 exchange（如 binance_fr_trade -> binance）"""
+    from pathlib import Path
+
+    name = Path.cwd().name.lower()
+    candidates = [name]
+    if "_" in name:
+        candidates.append(name.split("_", 1)[0])
+    for cand in candidates:
+        for ex in SUPPORTED_EXCHANGES:
+            if cand.startswith(ex):
+                return ex
+    return None
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Sync Funding Rate symbol lists to Redis")
-    p.add_argument("--exchange", required=True, choices=SUPPORTED_EXCHANGES,
-                   help="交易所名称（必填）")
+    p.add_argument(
+        "--exchange",
+        choices=SUPPORTED_EXCHANGES,
+        help="交易所名称（可选，若未提供则尝试从目录名推断）",
+    )
     p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
     p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
     p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
@@ -220,20 +236,25 @@ def main() -> int:
         print("❌ redis 包未安装，请使用 pip install redis", file=sys.stderr)
         return 2
 
+    exchange = args.exchange or infer_exchange_from_cwd()
+    if not exchange:
+        print("❌ 需要 --exchange，或在目录名包含 binance/okex/bybit/bitget/gate 前缀以自动推断", file=sys.stderr)
+        return 2
+
     rds = redis.from_url(args.redis_url) if args.redis_url else redis.Redis(
         host=args.host, port=args.port, db=args.db, password=args.password
     )
 
-    print(f"🔄 开始同步 Funding Rate 交易对列表 (exchange={args.exchange})...")
+    print(f"🔄 开始同步 Funding Rate 交易对列表 (exchange={exchange})...")
     print(f"📍 Redis: {args.host}:{args.port}/{args.db}")
     print()
 
     # 同步列表
-    total = sync_symbol_lists(rds, args.exchange)
+    total = sync_symbol_lists(rds, exchange)
     print(f"\n✅ 共写入 {total} 个交易对条目")
 
     # 打印结果
-    print_all_symbol_lists(rds, args.exchange)
+    print_all_symbol_lists(rds, exchange)
 
     print("\n✅ 同步完成！")
     return 0

@@ -17,6 +17,7 @@ use std::collections::{HashMap, HashSet};
 use crate::common::exchange::Exchange;
 use crate::common::redis_client::RedisClient;
 use crate::signal::common::TradingVenue;
+use crate::symbol_match::normalize_symbol_binance_style;
 
 // Redis key 前缀
 const DUMP_SYMBOL_KEY_PREFIX: &str = "fr_dump_symbols";
@@ -112,8 +113,10 @@ impl SymbolList {
             if let Ok(Some(value)) = client.get_string(&dump_key).await {
                 if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
                     Self::with_inner_mut(|inner| {
-                        let symbol_set: HashSet<String> =
-                            symbols.iter().map(|s| s.to_uppercase()).collect();
+                        let symbol_set: HashSet<String> = symbols
+                            .iter()
+                            .map(|s| normalize_symbol_binance_style(s))
+                            .collect();
                         inner.dump_symbols.insert(exchange, symbol_set.clone());
                         info!(
                             "更新平仓列表 {}: {} 个交易对",
@@ -129,8 +132,10 @@ impl SymbolList {
             if let Ok(Some(value)) = client.get_string(&trade_key).await {
                 if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
                     Self::with_inner_mut(|inner| {
-                        let symbol_set: HashSet<String> =
-                            symbols.iter().map(|s| s.to_uppercase()).collect();
+                        let symbol_set: HashSet<String> = symbols
+                            .iter()
+                            .map(|s| normalize_symbol_binance_style(s))
+                            .collect();
                         inner.trade_symbols.insert(exchange, symbol_set.clone());
                         info!(
                             "更新建仓列表 {}: {} 个交易对",
@@ -146,8 +151,10 @@ impl SymbolList {
             if let Ok(Some(value)) = client.get_string(&fwd_trade_key).await {
                 if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
                     Self::with_inner_mut(|inner| {
-                        let symbol_set: HashSet<String> =
-                            symbols.iter().map(|s| s.to_uppercase()).collect();
+                        let symbol_set: HashSet<String> = symbols
+                            .iter()
+                            .map(|s| normalize_symbol_binance_style(s))
+                            .collect();
                         inner.fwd_trade_symbols.insert(exchange, symbol_set.clone());
                         info!(
                             "更新正套建仓列表 {}: {} 个交易对",
@@ -163,8 +170,10 @@ impl SymbolList {
             if let Ok(Some(value)) = client.get_string(&bwd_trade_key).await {
                 if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
                     Self::with_inner_mut(|inner| {
-                        let symbol_set: HashSet<String> =
-                            symbols.iter().map(|s| s.to_uppercase()).collect();
+                        let symbol_set: HashSet<String> = symbols
+                            .iter()
+                            .map(|s| normalize_symbol_binance_style(s))
+                            .collect();
                         inner.bwd_trade_symbols.insert(exchange, symbol_set.clone());
                         info!(
                             "更新反套建仓列表 {}: {} 个交易对",

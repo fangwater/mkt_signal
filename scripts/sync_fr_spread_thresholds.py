@@ -2,27 +2,27 @@
 # -*- coding: utf-8 -*-
 
 """
-从 rolling_metrics_thresholds_{exchange} 读取百分位数据，生成价差阈值并同步到 Redis。
+从 rolling_metrics_thresholds_{open_venue}_{hedge_venue} 读取百分位数据，生成价差阈值并同步到 Redis。
 
 工作流程：
   1. 从 Redis 读取 fr_dump_symbols:{venue} 和 fr_trade_symbols:{venue}
   2. 合并两个列表得到要同步的 symbols（去重）
-  3. 从 rolling_metrics_thresholds_{exchange} 读取这些 symbols 的百分位数据
+  3. 从 rolling_metrics_thresholds_{open_venue}_{hedge_venue} 读取这些 symbols 的百分位数据
   4. 根据 SPREAD_THRESHOLD_MAPPING 配置，提取对应的百分位值
-  5. 生成价差阈值并写入 {exchange}_spread_thresholds
+  5. 生成价差阈值并写入 fr_spread_thresholds_{open_venue}_{hedge_venue}
 
 读取 Redis:
   - String `fr_dump_symbols:{venue}` - 平仓列表（JSON 数组）
   - String `fr_trade_symbols:{venue}` - 建仓列表（JSON 数组）
-  - Hash `rolling_metrics_thresholds_{exchange}` - rolling metrics 百分位数据
+  - Hash `rolling_metrics_thresholds_{open_venue}_{hedge_venue}` - rolling metrics 百分位数据
 
 写入 Redis Hash:
-  `{exchange}_spread_thresholds` - 价差阈值（每个 symbol 8个字段）
+  `fr_spread_thresholds_{open_venue}_{hedge_venue}` - 价差阈值（每个 symbol 8个字段）
 
 示例：
-  python scripts/sync_spread_thresholds.py --exchange binance
-  python scripts/sync_spread_thresholds.py --exchange okex --symbol BTC-USDT
-  python scripts/sync_spread_thresholds.py --exchange binance --redis-url redis://:pwd@127.0.0.1:6379/0
+  python scripts/sync_fr_spread_thresholds.py --open-venue binance-margin --hedge-venue binance-futures
+  python scripts/sync_fr_spread_thresholds.py --open-venue okex-margin --hedge-venue okex-futures --symbol BTC-USDT
+  python scripts/sync_fr_spread_thresholds.py --redis-url redis://:pwd@127.0.0.1:6379/0
 """
 
 from __future__ import annotations
@@ -32,24 +32,48 @@ import json
 import math
 import os
 import sys
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
-# 支持的交易所
-SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
+# 目录推断用的默认 open/hedge 组合
+EXCHANGE_DEFAULTS = {
+    "binance": ("binance-margin", "binance-futures"),
+    "okex": ("okex-margin", "okex-futures"),
+    "bybit": ("bybit-margin", "bybit-futures"),
+    "bitget": ("bitget-margin", "bitget-futures"),
+    "gate": ("gate-margin", "gate-futures"),
+}
 
 
 def try_import_redis():
     try:
         import redis  # type: ignore
+
         return redis
     except Exception:
         return None
 
 
+def infer_venues_from_cwd() -> Optional[Tuple[str, str]]:
+    """从当前目录名推断 open/hedge（如 okex_fr_trade -> okex-margin/okex-futures）"""
+    from pathlib import Path
+
+    name = Path.cwd().name.lower()
+    candidates = [name]
+    if "_" in name:
+        candidates.append(name.split("_", 1)[0])
+    for cand in candidates:
+        for ex, pair in EXCHANGE_DEFAULTS.items():
+            if cand.startswith(ex):
+                return pair
+    return None
+
+
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Sync spread thresholds from rolling metrics to Redis")
-    p.add_argument("--exchange", required=True, choices=SUPPORTED_EXCHANGES,
-                   help="交易所名称（必填）")
+    p = argparse.ArgumentParser(
+        description="Sync spread thresholds from rolling metrics to Redis（open/hedge 必填，可从目录推断）"
+    )
+    p.add_argument("--open-venue", help="open 侧 venue（如 binance-margin）")
+    p.add_argument("--hedge-venue", help="hedge 侧 venue（如 binance-futures）")
     p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
     p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
     p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
@@ -58,21 +82,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--symbol", help="只同步指定 symbol（如 BTCUSDT 或 BTC-USDT）")
     p.add_argument(
         "--venue",
-        help="自定义交易场所后缀（如 binance_margin, okex_swap），默认根据 exchange 推断"
+        help="自定义 dump/trade 列表用的 venue 后缀（如 binance_margin, okex_swap），默认使用 open_venue 转换",
     )
     return p.parse_args()
-
-
-def get_default_venue(exchange: str) -> str:
-    """根据交易所返回默认的 venue"""
-    venue_map = {
-        "binance": "binance_margin",
-        "okex": "okex_swap",
-        "bybit": "bybit",
-        "bitget": "bitget",
-        "gate": "gate"
-    }
-    return venue_map.get(exchange, f"{exchange}_margin")
 
 
 # ========== 价差阈值映射配置 ==========
@@ -85,13 +97,12 @@ def get_default_venue(exchange: str) -> str:
 # 此配置对所有 symbol 通用，只是每个 symbol 计算出的具体值不同
 
 SPREAD_THRESHOLD_MAPPING = {
-    "forward_open_mm": "spread_15",     # spread < q15
-    "forward_open_mt": "bidask_10",     # bidask < q10
-    "forward_cancel_mm": "spread_20",   # spread > q20
-    "forward_cancel_mt": "bidask_15",   # bidask > q15
-
-    "backward_open_mm": "spread_30",    # spread > q30
-    "backward_open_mt": "askbid_90",    # askbid > q90
+    "forward_open_mm": "spread_15",  # spread < q15
+    "forward_open_mt": "bidask_10",  # bidask < q10
+    "forward_cancel_mm": "spread_20",  # spread > q20
+    "forward_cancel_mt": "bidask_15",  # bidask > q15
+    "backward_open_mm": "spread_30",  # spread > q30
+    "backward_open_mt": "askbid_90",  # askbid > q90
     "backward_cancel_mm": "spread_25",  # spread < q25
     "backward_cancel_mt": "askbid_85",  # askbid < q85
 }
@@ -114,7 +125,7 @@ def load_symbol_lists(rds, dump_key: str, trade_key: str) -> List[str]:
 
     # 读取平仓列表
     if dump_data := rds.get(dump_key):
-        dump_str = dump_data.decode('utf-8', 'ignore') if isinstance(dump_data, bytes) else str(dump_data)
+        dump_str = dump_data.decode("utf-8", "ignore") if isinstance(dump_data, bytes) else str(dump_data)
         try:
             dump_list = json.loads(dump_str)
             if isinstance(dump_list, list):
@@ -125,7 +136,7 @@ def load_symbol_lists(rds, dump_key: str, trade_key: str) -> List[str]:
 
     # 读取建仓列表
     if trade_data := rds.get(trade_key):
-        trade_str = trade_data.decode('utf-8', 'ignore') if isinstance(trade_data, bytes) else str(trade_data)
+        trade_str = trade_data.decode("utf-8", "ignore") if isinstance(trade_data, bytes) else str(trade_data)
         try:
             trade_list = json.loads(trade_str)
             if isinstance(trade_list, list):
@@ -286,7 +297,7 @@ def sync_thresholds(
     write_key: str,
     dump_key: str,
     trade_key: str,
-    filter_symbol: Optional[str] = None
+    filter_symbol: Optional[str] = None,
 ) -> int:
     """
     从 rolling metrics 生成价差阈值并同步到 Redis
@@ -384,8 +395,8 @@ def print_thresholds(rds, write_key: str, filter_symbol: Optional[str] = None) -
     # 解码数据
     kv: Dict[str, str] = {}
     for k, v in data.items():
-        kk = k.decode('utf-8', 'ignore') if isinstance(k, bytes) else str(k)
-        vv = v.decode('utf-8', 'ignore') if isinstance(v, bytes) else str(v)
+        kk = k.decode("utf-8", "ignore") if isinstance(k, bytes) else str(k)
+        vv = v.decode("utf-8", "ignore") if isinstance(v, bytes) else str(v)
         kv[kk] = vv
 
     # 统计 symbol
@@ -403,6 +414,25 @@ def print_thresholds(rds, write_key: str, filter_symbol: Optional[str] = None) -
         print(f"   - Symbols 列表: {', '.join(sorted(all_symbols))}")
 
 
+def resolve_venues(args: argparse.Namespace) -> Tuple[str, str]:
+    """
+    返回 (open_venue, hedge_venue)
+    优先级：显式参数 > 目录推断
+    """
+    open_venue = args.open_venue
+    hedge_venue = args.hedge_venue
+
+    if open_venue and hedge_venue:
+        return open_venue.strip(), hedge_venue.strip()
+
+    inferred = infer_venues_from_cwd()
+    if inferred:
+        print(f"[INFO] 未提供 open/hedge，基于目录推断: open={inferred[0]}, hedge={inferred[1]}")
+        return inferred
+
+    raise SystemExit("需要 --open-venue 与 --hedge-venue，或在目录名包含可推断的前缀（如 okex_fr_trade）")
+
+
 def main() -> int:
     args = parse_args()
     redis = try_import_redis()
@@ -414,15 +444,17 @@ def main() -> int:
         host=args.host, port=args.port, db=args.db, password=args.password
     )
 
-    # 根据 exchange 生成 key
-    exchange = args.exchange
-    venue = args.venue or get_default_venue(exchange)
-    rolling_key = f"rolling_metrics_thresholds_{exchange}"
-    write_key = f"{exchange}_spread_thresholds"
-    dump_key = f"fr_dump_symbols:{venue}"
-    trade_key = f"fr_trade_symbols:{venue}"
+    # 解析 open/hedge
+    open_venue, hedge_venue = resolve_venues(args)
 
-    print(f"🔄 开始从 rolling metrics 同步价差阈值 (exchange={exchange})...")
+    # 根据 open/hedge 生成 key
+    rolling_key = f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
+    write_key = f"fr_spread_thresholds_{open_venue}_{hedge_venue}"
+    venue_for_lists = args.venue or open_venue.replace("-", "_")
+    dump_key = f"fr_dump_symbols:{venue_for_lists}"
+    trade_key = f"fr_trade_symbols:{venue_for_lists}"
+
+    print(f"🔄 开始从 rolling metrics 同步价差阈值 ...")
     print(f"📍 Redis: {args.host}:{args.port}/{args.db}")
     print(f"📖 Rolling Metrics: {rolling_key}")
     print(f"📖 Dump List: {dump_key}")
@@ -437,7 +469,7 @@ def main() -> int:
         write_key,
         dump_key,
         trade_key,
-        args.symbol
+        args.symbol,
     )
     if count == 0:
         return 1

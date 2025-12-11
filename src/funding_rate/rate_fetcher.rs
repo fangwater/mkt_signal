@@ -23,6 +23,7 @@ use super::common::{FundingRatePeriod, RateFetcherTrait};
 use super::symbol_list::SymbolList;
 use crate::common::exchange::Exchange;
 use crate::signal::common::TradingVenue;
+use crate::symbol_match::format_symbol_for_venue;
 
 // ==================== API 响应结构 ====================
 
@@ -699,17 +700,18 @@ impl RateFetcher {
         let mut fail = 0;
 
         for symbol in symbols {
+            let venue_symbol = format_symbol_for_venue(symbol, OKEX_CONFIG.venue);
             // 先获取周期
-            let period = match Self::fetch_okex_period(&client, symbol).await {
+            let period = match Self::fetch_okex_period(&client, &venue_symbol).await {
                 Ok(p) => p,
                 Err(e) => {
-                    warn!("OKEx {} 周期获取失败: {:?}", symbol, e);
+                    warn!("OKEx {} 周期获取失败: {:?}", venue_symbol, e);
                     FundingRatePeriod::Hours8
                 }
             };
             let limit = period.calculate_limit(OKEX_CONFIG.fetch_days);
 
-            match Self::fetch_okex_funding_history(&client, symbol, limit).await {
+            match Self::fetch_okex_funding_history(&client, &venue_symbol, limit).await {
                 Ok(rates) if !rates.is_empty() => {
                     Self::with_inner_mut(|inner| {
                         inner
@@ -727,7 +729,7 @@ impl RateFetcher {
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    warn!("OKEx {} 资金费率失败: {:?}", symbol, e);
+                    warn!("OKEx {} 资金费率失败: {:?}", venue_symbol, e);
                     fail += 1;
                 }
             }
@@ -1238,7 +1240,8 @@ impl RateFetcher {
         let mut fail = 0;
 
         for symbol in symbols {
-            match Self::fetch_gate_funding_history(&client, symbol, limit).await {
+            let venue_symbol = format_symbol_for_venue(symbol, GATE_CONFIG.venue);
+            match Self::fetch_gate_funding_history(&client, &venue_symbol, limit).await {
                 Ok((rates, period)) if !rates.is_empty() => {
                     Self::with_inner_mut(|inner| {
                         inner
@@ -1256,7 +1259,7 @@ impl RateFetcher {
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    warn!("Gate {} 资金费率失败: {:?}", symbol, e);
+                    warn!("Gate {} 资金费率失败: {:?}", venue_symbol, e);
                     fail += 1;
                 }
             }

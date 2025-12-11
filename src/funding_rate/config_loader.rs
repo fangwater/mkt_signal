@@ -8,7 +8,7 @@
 //!
 //! 使用 tokio::spawn_local 单线程异步
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use log::{info, warn};
 use std::time::Duration;
 
@@ -72,10 +72,10 @@ async fn reload_all_configs(redis: &RedisSettings, exchange: Exchange) -> Result
     reload_symbol_list(redis, exchange).await?;
 
     // 3. 加载价差阈值 -> SpreadFactor
-    reload_spread_thresholds(redis).await?;
+    reload_spread_thresholds(redis, exchange).await?;
 
     // 4. 加载资金费率阈值 -> FundingRateFactor
-    reload_fr_thresholds(redis).await?;
+    reload_fr_thresholds(redis, exchange).await?;
 
     // 5. 加载交易对白名单 -> FrDecision
     reload_check_symbols(redis).await?;
@@ -116,19 +116,21 @@ async fn reload_symbol_list(redis: &RedisSettings, exchange: Exchange) -> Result
 }
 
 /// 重载价差阈值
-async fn reload_spread_thresholds(redis: &RedisSettings) -> Result<()> {
-    let redis_key = std::env::var("SPREAD_THRESHOLD_REDIS_KEY")
-        .unwrap_or_else(|_| "binance_spread_thresholds".to_string());
+async fn reload_spread_thresholds(redis: &RedisSettings, exchange: Exchange) -> Result<()> {
+    let redis_key = spread_thresholds_key(exchange);
 
     match RedisClient::connect(redis.clone()).await {
         Ok(mut client) => {
-            if let Ok(spread_map) = client.hgetall_map(&redis_key).await {
-                if let Err(err) = load_spread_thresholds(spread_map) {
-                    warn!("价差阈值加载失败: {:?}", err);
-                } else {
-                    info!("价差阈值重载成功");
-                }
+            let spread_map = client
+                .hgetall_map(&redis_key)
+                .await
+                .with_context(|| format!("读取 Redis Hash 失败: {}", redis_key))?;
+            if spread_map.is_empty() {
+                panic!("Redis hash '{}' 为空或不存在，无法加载价差阈值", redis_key);
             }
+            load_spread_thresholds(spread_map)
+                .with_context(|| format!("解析价差阈值失败 (key: {})", redis_key))?;
+            info!("价差阈值重载成功 (key: {})", redis_key);
         }
         Err(err) => {
             warn!("连接 Redis 加载价差阈值失败: {:?}", err);
@@ -138,19 +140,24 @@ async fn reload_spread_thresholds(redis: &RedisSettings) -> Result<()> {
 }
 
 /// 重载资金费率阈值
-async fn reload_fr_thresholds(redis: &RedisSettings) -> Result<()> {
-    let redis_key = std::env::var("FUNDING_THRESHOLD_REDIS_KEY")
-        .unwrap_or_else(|_| "funding_rate_thresholds".to_string());
+async fn reload_fr_thresholds(redis: &RedisSettings, exchange: Exchange) -> Result<()> {
+    let redis_key = funding_thresholds_key(exchange);
 
     match RedisClient::connect(redis.clone()).await {
         Ok(mut client) => {
-            if let Ok(funding_map) = client.hgetall_map(&redis_key).await {
-                if let Err(err) = load_fr_thresholds(funding_map) {
-                    warn!("资金费率阈值加载失败: {:?}", err);
-                } else {
-                    info!("资金费率阈值重载成功");
-                }
+            let funding_map = client
+                .hgetall_map(&redis_key)
+                .await
+                .with_context(|| format!("读取 Redis Hash 失败: {}", redis_key))?;
+            if funding_map.is_empty() {
+                panic!(
+                    "Redis hash '{}' 为空或不存在，无法加载资金费率阈值",
+                    redis_key
+                );
             }
+            load_fr_thresholds(funding_map)
+                .with_context(|| format!("解析资金费率阈值失败 (key: {})", redis_key))?;
+            info!("资金费率阈值重载成功 (key: {})", redis_key);
         }
         Err(err) => {
             warn!("连接 Redis 加载资金费率阈值失败: {:?}", err);
@@ -193,4 +200,32 @@ async fn reload_check_symbols(redis: &RedisSettings) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn funding_thresholds_key(exchange: Exchange) -> String {
+    let (open_venue, hedge_venue) = venue_pair_for_exchange(exchange);
+    format!(
+        "funding_rate_thresholds_{}_{}",
+        open_venue.data_pub_slug(),
+        hedge_venue.data_pub_slug()
+    )
+}
+
+fn spread_thresholds_key(exchange: Exchange) -> String {
+    let (open_venue, hedge_venue) = venue_pair_for_exchange(exchange);
+    format!(
+        "fr_spread_thresholds_{}_{}",
+        open_venue.data_pub_slug(),
+        hedge_venue.data_pub_slug()
+    )
+}
+
+fn venue_pair_for_exchange(exchange: Exchange) -> (TradingVenue, TradingVenue) {
+    match exchange {
+        Exchange::Binance => (TradingVenue::BinanceMargin, TradingVenue::BinanceFutures),
+        Exchange::Okex => (TradingVenue::OkexMargin, TradingVenue::OkexFutures),
+        Exchange::Bybit => (TradingVenue::BybitMargin, TradingVenue::BybitFutures),
+        Exchange::Bitget => (TradingVenue::BitgetMargin, TradingVenue::BitgetFutures),
+        Exchange::Gate => (TradingVenue::GateMargin, TradingVenue::GateFutures),
+    }
 }
