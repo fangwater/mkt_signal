@@ -325,6 +325,7 @@ impl FrDecision {
     ) -> Result<Option<SignalType>> {
         let spread_factor = SpreadFactor::instance();
         let now = get_timestamp_us();
+        let symbol_list = SymbolList::instance();
 
         // 步骤1: 优先检查 cancel 信号（只和价差有关，不需要资费）
         if spread_factor.satisfy_forward_cancel(open_venue, open_symbol, hedge_venue, hedge_symbol)
@@ -368,8 +369,31 @@ impl FrDecision {
             }
         }
 
+        let in_dump = symbol_list.is_in_dump_list(open_symbol);
+
         // 步骤2: 获取资费信号
-        let fr_signal = self.get_funding_rate_signal(open_symbol, hedge_symbol, hedge_venue)?;
+        let fr_signal = if in_dump {
+            // dump 列表：强制视为 close 信号，只要价差满足 close 条件即可
+            if spread_factor.satisfy_forward_close(
+                open_venue,
+                open_symbol,
+                hedge_venue,
+                hedge_symbol,
+            ) {
+                Some(FrSignal::ForwardClose)
+            } else if spread_factor.satisfy_backward_close(
+                open_venue,
+                open_symbol,
+                hedge_venue,
+                hedge_symbol,
+            ) {
+                Some(FrSignal::BackwardClose)
+            } else {
+                None
+            }
+        } else {
+            self.get_funding_rate_signal(open_symbol, hedge_symbol, hedge_venue)?
+        };
 
         // 步骤3: 如果资费没有信号，返回 None
         let fr_signal = match fr_signal {
@@ -380,7 +404,9 @@ impl FrDecision {
         // 步骤4: 根据资费信号验证对应的价差 satisfy
         let final_signal = match fr_signal {
             FrSignal::ForwardOpen => {
-                let symbol_list = SymbolList::instance();
+                if in_dump {
+                    return Ok(None);
+                }
                 if spread_factor.satisfy_forward_open(
                     open_venue,
                     open_symbol,
@@ -406,7 +432,9 @@ impl FrDecision {
                 }
             }
             FrSignal::BackwardOpen => {
-                let symbol_list = SymbolList::instance();
+                if in_dump {
+                    return Ok(None);
+                }
                 if spread_factor.satisfy_backward_open(
                     open_venue,
                     open_symbol,

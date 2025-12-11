@@ -21,7 +21,6 @@ use crate::symbol_match::normalize_symbol_for_whitelist;
 
 // Redis key 前缀
 const DUMP_SYMBOL_KEY_PREFIX: &str = "fr_dump_symbols";
-const TRADE_SYMBOL_KEY_PREFIX: &str = "fr_trade_symbols";
 const FWD_TRADE_SYMBOL_KEY_PREFIX: &str = "fr_fwd_trade_symbols";
 const BWD_TRADE_SYMBOL_KEY_PREFIX: &str = "fr_bwd_trade_symbols";
 
@@ -40,9 +39,6 @@ struct SymbolListInner {
 
     /// 平仓列表
     dump_symbols: HashSet<String>,
-
-    /// 建仓列表
-    trade_symbols: HashSet<String>,
 
     /// 正套建仓列表
     fwd_trade_symbols: HashSet<String>,
@@ -86,7 +82,6 @@ impl SymbolList {
         let inner = SymbolListInner {
             current_exchange: None,
             dump_symbols: HashSet::new(),
-            trade_symbols: HashSet::new(),
             fwd_trade_symbols: HashSet::new(),
             bwd_trade_symbols: HashSet::new(),
         };
@@ -127,20 +122,7 @@ impl SymbolList {
         }
 
         // 读取建仓列表
-        let trade_key = format!("{}:{}", TRADE_SYMBOL_KEY_PREFIX, exchange_str);
-        if let Ok(Some(value)) = client.get_string(&trade_key).await {
-            if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
-                Self::with_inner_mut(|inner| {
-                    inner.trade_symbols = symbols.iter().map(|s| s.to_uppercase()).collect();
-                    info!(
-                        "更新建仓列表 {}: {} 个交易对",
-                        exchange_str,
-                        inner.trade_symbols.len()
-                    );
-                });
-            }
-        }
-
+        // （废弃）建仓列表现阶段未使用，留空
         // 读取正套建仓列表
         let fwd_trade_key = format!("{}:{}", FWD_TRADE_SYMBOL_KEY_PREFIX, exchange_str);
         if let Ok(Some(value)) = client.get_string(&fwd_trade_key).await {
@@ -186,11 +168,6 @@ impl SymbolList {
         Self::with_inner(|inner| Self::contains_normalized(&inner.dump_symbols, symbol))
     }
 
-    /// 判断交易对是否在建仓列表中
-    pub fn is_in_trade_list(&self, symbol: &str) -> bool {
-        Self::with_inner(|inner| Self::contains_normalized(&inner.trade_symbols, symbol))
-    }
-
     /// 判断交易对是否在正套建仓列表中
     pub fn is_in_fwd_trade_list(&self, symbol: &str) -> bool {
         Self::with_inner(|inner| Self::contains_normalized(&inner.fwd_trade_symbols, symbol))
@@ -206,12 +183,7 @@ impl SymbolList {
         Self::with_inner(|inner| inner.dump_symbols.iter().cloned().collect())
     }
 
-    /// 获取建仓列表
-    pub fn get_trade_symbols(&self) -> Vec<String> {
-        Self::with_inner(|inner| inner.trade_symbols.iter().cloned().collect())
-    }
-
-    /// 获取 online symbols（平仓 ∪ 建仓 ∪ 正套/反套建仓列表）
+    /// 获取 online symbols（平仓 ∪ 正套/反套建仓列表）
     pub fn get_online_symbols(&self) -> Vec<String> {
         Self::with_inner(|inner| Self::collect_online(inner))
     }
@@ -236,7 +208,6 @@ impl SymbolList {
     fn collect_online(inner: &SymbolListInner) -> Vec<String> {
         let mut online_set = HashSet::new();
         online_set.extend(inner.dump_symbols.iter().cloned());
-        online_set.extend(inner.trade_symbols.iter().cloned());
         online_set.extend(inner.fwd_trade_symbols.iter().cloned());
         online_set.extend(inner.bwd_trade_symbols.iter().cloned());
         online_set.into_iter().collect()
