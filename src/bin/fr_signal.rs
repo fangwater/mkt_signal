@@ -13,9 +13,11 @@ use mkt_signal::common::exchange::Exchange;
 use mkt_signal::common::redis_client::RedisSettings;
 
 // 使用模块化的 funding_rate
+use mkt_signal::common::iceoryx_publisher::SignalPublisher;
+use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::funding_rate::{
-    load_all_once, spawn_config_loader, FrDecision, FundingRateFactor, MktChannel, RateFetcher,
-    SpreadFactor, SymbolList,
+    load_all_once, spawn_config_loader, FrDecision, FrSignalStateBatch, FundingRateFactor,
+    MktChannel, RateFetcher, SpreadFactor, SymbolList, DEFAULT_STATE_CHANNEL,
 };
 
 const PROCESS_NAME: &str = "fr_signal";
@@ -78,10 +80,13 @@ async fn run(exchange: Exchange, token: CancellationToken) -> Result<()> {
     spawn_config_loader(redis, exchange);
     info!("配置加载器已启动（60秒定时重载）");
 
-    // 4️⃣ 启动信号表定时打印（10 秒一次）
+    // 4️⃣ 定时发布信号状态快照（10 秒一次），按 exchange 独立通道供 fr_visualization 消费
     {
         let cancel = token.clone();
+        let channel_name = format!("{}_{}", DEFAULT_STATE_CHANNEL, exchange.as_str());
         tokio::task::spawn_local(async move {
+            let state_pub = SignalPublisher::new(&channel_name)
+                .expect("failed to create fr_signal_state publisher");
             let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(10));
             loop {
                 tokio::select! {
@@ -91,7 +96,11 @@ async fn run(exchange: Exchange, token: CancellationToken) -> Result<()> {
                         if symbols.is_empty() {
                             continue;
                         }
-                        RateFetcher::print_signal_table(&symbols);
+                        let entries = FrDecision::collect_signal_state_entries(&symbols);
+                        let batch = FrSignalStateBatch::new(get_timestamp_us(), entries);
+                        if let Err(err) = state_pub.publish(&batch.to_bytes()) {
+                            log::warn!("发布 fr_signal_state 失败: {:?}", err);
+                        }
                     }
                 }
             }

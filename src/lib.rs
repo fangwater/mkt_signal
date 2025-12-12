@@ -1,5 +1,6 @@
 // Normal module declarations
 pub mod account;
+pub mod bridge;
 pub mod common;
 pub mod connection;
 pub mod funding_rate;

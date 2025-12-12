@@ -1215,15 +1215,8 @@ impl FrDecision {
     pub fn print_signal_table(symbols: &[String]) {
         use super::common::{ArbDirection, OperationType};
         use super::funding_rate_factor::FundingRateFactor;
-        use super::mkt_channel::MktChannel;
-        use super::rate_fetcher::RateFetcher;
-        use super::spread_factor::SpreadFactor;
 
         let fr_factor = FundingRateFactor::instance();
-        let spread_factor = SpreadFactor::instance();
-        let rate_fetcher = RateFetcher::instance();
-        let mkt_channel = MktChannel::instance();
-        let (open_venue, hedge_venue) = FrDecision::with(|d| d.venues);
 
         // 先打印 FR 阈值配置
         let default_period = FundingRatePeriod::Hours8;
@@ -1279,12 +1272,60 @@ impl FrDecision {
         }
         info!("");
 
-        let mut table_data: Vec<_> = symbols
+        let mut entries = Self::collect_signal_state_entries(symbols);
+        entries.sort_unstable_by(|a, b| a.symbol.cmp(&b.symbol));
+
+        info!("┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐");
+        info!("│ Symbol         │ 预测FR% │ FR_MA% │ PredLoan% │ CurLoan% │ FR+PLoan% │ MA+CLoan% │ FR Sig     │ Spread Sig │ Final Sig  │");
+        info!("├───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤");
+
+        for e in entries {
+            let symbol = String::from_utf8_lossy(&e.symbol)
+                .trim_end_matches('\0')
+                .to_string();
+            let fr_sig = e.fr_sig;
+            let spread_sig = e.spread_sig;
+            let final_sig = e.final_sig;
+            info!(
+                "│ {:<14} │ {:>7.3} │ {:>6.3} │ {:>9.3} │ {:>8.3} │ {:>9.3} │ {:>9.3} │ {:<10} │ {:<10} │ {:<10} │",
+                symbol,
+                e.pred_fr_pct,
+                e.fr_ma_pct,
+                e.pred_loan_pct,
+                e.cur_loan_pct,
+                e.fr_plus_pred_loan_pct,
+                e.ma_plus_cur_loan_pct,
+                format!("{:?}", fr_sig),
+                format!("{:?}", spread_sig),
+                format!("{:?}", final_sig)
+            );
+        }
+
+        info!("└───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘");
+    }
+
+    /// 生成信号状态快照（不打印），供 fr_visualization 使用。
+    pub fn collect_signal_state_entries(
+        symbols: &[String],
+    ) -> Vec<super::fr_signal_state::FrSignalStateEntry> {
+        use super::common::{ArbDirection, OperationType};
+        use super::fr_signal_state::{CompareOpTag, FrSignalStateEntry, SignalTag, SpreadTypeTag};
+        use super::funding_rate_factor::FundingRateFactor;
+        use super::mkt_channel::MktChannel;
+        use super::rate_fetcher::RateFetcher;
+        use super::spread_factor::SpreadFactor;
+
+        let fr_factor = FundingRateFactor::instance();
+        let spread_factor = SpreadFactor::instance();
+        let rate_fetcher = RateFetcher::instance();
+        let mkt_channel = MktChannel::instance();
+        let (open_venue, hedge_venue) = FrDecision::with(|d| d.venues);
+
+        symbols
             .iter()
             .map(|symbol| {
                 let period = rate_fetcher.get_period(symbol, hedge_venue);
 
-                // 获取 FR、Loan、FR_MA 值
                 let fr = rate_fetcher
                     .get_predicted_funding_rate(symbol, hedge_venue)
                     .map(|(_, v)| v)
@@ -1292,46 +1333,24 @@ impl FrDecision {
                 let predict_loan = rate_fetcher
                     .get_predict_loan_rate(symbol, hedge_venue)
                     .map(|(_, v)| v)
-                    .unwrap_or_else(|| {
-                        log::debug!(
-                            "PredLoan 缺失: symbol={} venue={:?}, 借贷利率可能未返回",
-                            symbol,
-                            hedge_venue
-                        );
-                        0.0
-                    });
+                    .unwrap_or(0.0);
                 let current_loan = rate_fetcher
                     .get_current_loan_rate(symbol, hedge_venue)
                     .map(|(_, v)| v)
-                    .unwrap_or_else(|| {
-                        log::debug!(
-                            "CurLoan 缺失: symbol={} venue={:?}, 借贷利率可能未返回",
-                            symbol,
-                            hedge_venue
-                        );
-                        0.0
-                    });
+                    .unwrap_or(0.0);
                 let fr_ma = mkt_channel
                     .get_funding_rate_mean(symbol, hedge_venue)
-                    .unwrap_or_else(|| {
-                        log::debug!(
-                            "FR_MA 缺失: symbol={} venue={:?}, funding流可能未收到",
-                            symbol,
-                            hedge_venue
-                        );
-                        0.0
-                    });
-                // bwd open 使用 1.2 系数
+                    .unwrap_or(0.0);
+
                 let fr_predict_loan = fr + predict_loan * 1.2;
                 let fr_ma_cur_loan = fr_ma + current_loan;
 
-                // 检查 FR 信号（优先级与 get_funding_rate_signal 保持一致）
                 let forward_open = fr_factor.satisfy_forward_open(symbol, period, hedge_venue);
                 let forward_close = fr_factor.satisfy_forward_close(symbol, period, hedge_venue);
                 let backward_open = fr_factor.satisfy_backward_open(symbol, period, hedge_venue);
                 let backward_close = fr_factor.satisfy_backward_close(symbol, period, hedge_venue);
 
-                let fr_signal = if forward_close && backward_open {
+                let fr_signal_label = if forward_close && backward_open {
                     "BwdOpen"
                 } else if backward_close && forward_open {
                     "FwdOpen"
@@ -1346,8 +1365,8 @@ impl FrDecision {
                 } else {
                     "-"
                 };
+                let fr_sig = SignalTag::from_label(fr_signal_label);
 
-                // 检查 Spread 信号（价差只有 open 和 cancel，没有 close）
                 let spread_fwd_open =
                     spread_factor.satisfy_forward_open(open_venue, symbol, hedge_venue, symbol);
                 let spread_bwd_open =
@@ -1357,7 +1376,7 @@ impl FrDecision {
                 let spread_bwd_cancel =
                     spread_factor.satisfy_backward_cancel(open_venue, symbol, hedge_venue, symbol);
 
-                let spread_signal = if spread_fwd_cancel {
+                let spread_signal_label = if spread_fwd_cancel {
                     "FwdCancel"
                 } else if spread_bwd_cancel {
                     "BwdCancel"
@@ -1368,17 +1387,110 @@ impl FrDecision {
                 } else {
                     "-"
                 };
+                let spread_sig = SignalTag::from_label(spread_signal_label);
 
-                // 计算最终信号（FR + Spread 联合）
-                // Cancel: 只需要价差满足即可（优先级最高）
-                // Open: FR Open + Spread Open
-                // Close: FR Close + Spread Close（= 反向 Open）
-                let final_signal = if spread_fwd_cancel {
+                let (used_value, threshold, compare_op_tag, spread_type_tag) = if spread_fwd_cancel
+                {
+                    spread_factor
+                        .get_spread_check_detail(
+                            open_venue,
+                            symbol,
+                            hedge_venue,
+                            symbol,
+                            ArbDirection::Forward,
+                            OperationType::Cancel,
+                        )
+                        .map(|(v, t, op, st)| {
+                            (v, t, CompareOpTag::from(op), SpreadTypeTag::from(st))
+                        })
+                        .unwrap_or((
+                            f64::NAN,
+                            f64::NAN,
+                            CompareOpTag::Unknown,
+                            SpreadTypeTag::Unknown,
+                        ))
+                } else if spread_bwd_cancel {
+                    spread_factor
+                        .get_spread_check_detail(
+                            open_venue,
+                            symbol,
+                            hedge_venue,
+                            symbol,
+                            ArbDirection::Backward,
+                            OperationType::Cancel,
+                        )
+                        .map(|(v, t, op, st)| {
+                            (v, t, CompareOpTag::from(op), SpreadTypeTag::from(st))
+                        })
+                        .unwrap_or((
+                            f64::NAN,
+                            f64::NAN,
+                            CompareOpTag::Unknown,
+                            SpreadTypeTag::Unknown,
+                        ))
+                } else if spread_fwd_open {
+                    spread_factor
+                        .get_spread_check_detail(
+                            open_venue,
+                            symbol,
+                            hedge_venue,
+                            symbol,
+                            ArbDirection::Forward,
+                            OperationType::Open,
+                        )
+                        .map(|(v, t, op, st)| {
+                            (v, t, CompareOpTag::from(op), SpreadTypeTag::from(st))
+                        })
+                        .unwrap_or((
+                            f64::NAN,
+                            f64::NAN,
+                            CompareOpTag::Unknown,
+                            SpreadTypeTag::Unknown,
+                        ))
+                } else if spread_bwd_open {
+                    spread_factor
+                        .get_spread_check_detail(
+                            open_venue,
+                            symbol,
+                            hedge_venue,
+                            symbol,
+                            ArbDirection::Backward,
+                            OperationType::Open,
+                        )
+                        .map(|(v, t, op, st)| {
+                            (v, t, CompareOpTag::from(op), SpreadTypeTag::from(st))
+                        })
+                        .unwrap_or((
+                            f64::NAN,
+                            f64::NAN,
+                            CompareOpTag::Unknown,
+                            SpreadTypeTag::Unknown,
+                        ))
+                } else {
+                    (
+                        f64::NAN,
+                        f64::NAN,
+                        CompareOpTag::Unknown,
+                        SpreadTypeTag::Unknown,
+                    )
+                };
+
+                let spread_bidask = spread_factor
+                    .get_bidask(open_venue, symbol, hedge_venue, symbol)
+                    .unwrap_or(f64::NAN);
+                let spread_askbid = spread_factor
+                    .get_askbid(open_venue, symbol, hedge_venue, symbol)
+                    .unwrap_or(f64::NAN);
+                let spread_rate = spread_factor
+                    .get_spread_rate(open_venue, symbol, hedge_venue, symbol)
+                    .unwrap_or(f64::NAN);
+
+                let final_signal_label = if spread_fwd_cancel {
                     "FwdCancel"
                 } else if spread_bwd_cancel {
                     "BwdCancel"
                 } else {
-                    match fr_signal {
+                    match fr_signal_label {
                         "FwdOpen" if spread_fwd_open => "FwdOpen",
                         "FwdClose" if spread_bwd_open => "FwdClose",
                         "BwdOpen" if spread_bwd_open => "BwdOpen",
@@ -1386,56 +1498,29 @@ impl FrDecision {
                         _ => "-",
                     }
                 };
+                let final_sig = SignalTag::from_label(final_signal_label);
 
-                (
-                    symbol.clone(),
-                    fr,
-                    fr_ma,
-                    predict_loan,
-                    current_loan,
-                    fr_predict_loan,
-                    fr_ma_cur_loan,
-                    fr_signal,
-                    spread_signal,
-                    final_signal,
+                FrSignalStateEntry::new(
+                    symbol,
+                    fr * 100.0,
+                    fr_ma * 100.0,
+                    predict_loan * 100.0,
+                    current_loan * 100.0,
+                    fr_predict_loan * 100.0,
+                    fr_ma_cur_loan * 100.0,
+                    fr_sig,
+                    spread_sig,
+                    spread_bidask,
+                    spread_askbid,
+                    spread_rate,
+                    used_value,
+                    threshold,
+                    compare_op_tag,
+                    spread_type_tag,
+                    final_sig,
                 )
             })
-            .collect();
-        table_data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-
-        info!("┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐");
-        info!("│ Symbol         │ 预测FR% │ FR_MA% │ PredLoan% │ CurLoan% │ FR+PLoan% │ MA+CLoan% │ FR Sig     │ Spread Sig │ Final Sig  │");
-        info!("├───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤");
-
-        for (
-            symbol,
-            fr,
-            fr_ma,
-            pred_loan,
-            cur_loan,
-            fr_ploan,
-            ma_cloan,
-            fr_sig,
-            spread_sig,
-            final_sig,
-        ) in table_data
-        {
-            info!(
-                "│ {:<14} │ {:>7.3} │ {:>6.3} │ {:>9.3} │ {:>8.3} │ {:>9.3} │ {:>9.3} │ {:<10} │ {:<10} │ {:<10} │",
-                symbol,
-                fr * 100.0,
-                fr_ma * 100.0,
-                pred_loan * 100.0,
-                cur_loan * 100.0,
-                fr_ploan * 100.0,
-                ma_cloan * 100.0,
-                fr_sig,
-                spread_sig,
-                final_sig
-            );
-        }
-
-        info!("└───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘");
+            .collect()
     }
 
     // ========== 事件循环 ==========

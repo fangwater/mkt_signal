@@ -1,13 +1,19 @@
 use crate::common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
+#[cfg(any())]
 use crate::common::time_util::get_timestamp_us;
+#[cfg(any())]
 use crate::pre_trade::monitor_channel::MonitorChannel;
+#[cfg(any())]
 use crate::pre_trade::params_load::PreTradeParamsLoader;
+#[cfg(any())]
 use crate::signal::resample::{
     PreTradeExposureResampleEntry, PreTradeExposureRow, PreTradePositionResampleEntry,
     PreTradeRiskResampleEntry, PreTradeSpotBalanceRow, PreTradeUmPositionRow,
 };
 use anyhow::Result;
-use log::{debug, info, warn};
+#[cfg(any())]
+use log::debug;
+use log::{info, warn};
 use std::cell::OnceCell;
 
 thread_local! {
@@ -168,7 +174,8 @@ impl ResampleChannel {
     ///
     /// 通过 MonitorChannel::instance() 访问所需的管理器数据
     /// 返回成功发布的条目数量
-    pub fn publish_resample_entries(&self) -> Result<usize> {
+    #[cfg(any())]
+    pub fn publish_resample_entries_pm(&self) -> Result<usize> {
         if self.positions_pub.is_none() && self.exposure_pub.is_none() && self.risk_pub.is_none() {
             return Ok(0);
         }
@@ -325,7 +332,16 @@ impl ResampleChannel {
         Ok(published)
     }
 
+    /// basic 模式下的重采样（暂为空实现）
+    pub fn publish_resample_entries(&self) -> Result<usize> {
+        if self.positions_pub.is_none() && self.exposure_pub.is_none() && self.risk_pub.is_none() {
+            return Ok(0);
+        }
+        Ok(0)
+    }
+
     /// 发布编码后的数据
+    #[allow(dead_code)]
     fn publish_encoded(bytes: Vec<u8>, publisher: &ResamplePublisher) -> Result<bool> {
         if bytes.is_empty() {
             return Ok(false);

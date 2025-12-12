@@ -17,6 +17,10 @@ name = "fr_signal"
 path = "src/bin/fr_signal.rs"
 
 [[bin]]
+name = "fr_visualization"
+path = "src/bin/fr_visualization.rs"
+
+[[bin]]
 name = "binance_account_monitor"
 path = "src/bin/binance_account_monitor.rs"
 
@@ -56,6 +60,9 @@ path = "src/bin/demo_spread_loader.rs"
 name = "test_minqty"
 path = "src/bin/test_minqty.rs"
 
+[[bin]]
+name = "ipc_bridge"
+path = "src/bin/ipc_bridge.rs"
 
 [dependencies]
 local-ip-address = "0.6"
@@ -102,6 +109,7 @@ dashmap = "5.5"
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
 libc = "0.2"
+zmq = "0.10"
 
 [features]
 default = []

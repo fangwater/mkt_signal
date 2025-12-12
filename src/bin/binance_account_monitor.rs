@@ -1,13 +1,13 @@
 use anyhow::Result;
 use bytes::Bytes;
 use log::{debug, error, info, warn};
-use mkt_signal::common::account_msg::{
-    get_event_type, AccountEventType, AccountPositionMsg, AccountUpdateBalanceMsg,
-    AccountUpdateFlushMsg, BalanceUpdateMsg, ExecutionReportMsg, LiabilityChangeMsg,
-    OrderTradeUpdateMsg, PositionMsg,
+use mkt_signal::common::account_msg::{AccountEventType, ExecutionReportMsg, OrderTradeUpdateMsg};
+use mkt_signal::common::basic_account_msg::{
+    get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
+    BasicPositionMsg,
 };
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
-use mkt_signal::parser::binance_account_event_parser::BinanceAccountEventParser;
+use mkt_signal::parser::binance_basic_account_event_parser::BinanceBasicAccountEventParser;
 use mkt_signal::parser::default_parser::Parser;
 use mkt_signal::portfolio_margin::binance_user_stream::BinanceUserDataConnection;
 use mkt_signal::portfolio_margin::listen_key::BinanceListenKeyService;
@@ -201,7 +201,7 @@ fn spawn_user_stream_path(
             let mut consumer_shutdown = shutdown_rx.clone();
             let evt_tx_clone = evt_tx.clone();
             let local_ip_log = local_ip.clone();
-            let parser = BinanceAccountEventParser::new();
+            let parser = BinanceBasicAccountEventParser::new();
             tokio::spawn(async move {
                 loop {
                     tokio::select! {
@@ -245,12 +245,12 @@ fn spawn_user_stream_path(
     })
 }
 
-/// 打印解析后的账户事件
+/// 打印解析后的账户事件（basic）
 fn log_parsed_event(msg: &Bytes) {
     if msg.len() < 8 {
         return;
     }
-    let event_type = get_event_type(msg.as_ref());
+    let event_type = get_basic_event_type(msg.as_ref());
     let payload_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
     if msg.len() < 8 + payload_len {
         return;
@@ -258,64 +258,72 @@ fn log_parsed_event(msg: &Bytes) {
     let payload = msg.slice(8..8 + payload_len);
 
     match event_type {
-        AccountEventType::ExecutionReport => {
-            if let Ok(m) = ExecutionReportMsg::from_bytes(&payload) {
+        BasicAccountEventType::OrderUpdate => {
+            if payload.len() < 4 {
+                return;
+            }
+            let inner_type = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+            if inner_type == AccountEventType::ExecutionReport as u32 {
+                if let Ok(m) = ExecutionReportMsg::from_bytes(&payload) {
+                    info!(
+                        "Binance ExecutionReport: sym={} side={} status={} cli_id={} ord_id={} price={} qty={} filled={}",
+                        m.symbol,
+                        m.side,
+                        m.order_status,
+                        m.client_order_id,
+                        m.order_id,
+                        m.price,
+                        m.quantity,
+                        m.cumulative_filled_quantity
+                    );
+                }
+            } else if inner_type == AccountEventType::OrderTradeUpdate as u32 {
+                if let Ok(m) = OrderTradeUpdateMsg::from_bytes(&payload) {
+                    info!(
+                        "Binance OrderTradeUpdate: sym={} side={} status={} cli_id={} ord_id={} price={} qty={} filled={}",
+                        m.symbol,
+                        m.side,
+                        m.order_status,
+                        m.client_order_id,
+                        m.order_id,
+                        m.price,
+                        m.quantity,
+                        m.cumulative_filled_quantity
+                    );
+                }
+            } else {
+                debug!("Binance OrderUpdate unknown inner type={}", inner_type);
+            }
+        }
+        BasicAccountEventType::BalanceUpdate => {
+            if let Ok(m) = BasicBalanceMsg::from_bytes(&payload) {
                 info!(
-                    "ExecutionReport: sym={} side={} status={} cli_id={} ord_id={} price={} qty={} filled={}",
-                    m.symbol, m.side, m.order_status, m.client_order_id, m.order_id, m.price, m.quantity, m.cumulative_filled_quantity
+                    "Binance BalanceUpdate: ts={} symbol={} balance={}",
+                    m.timestamp, m.symbol, m.balance
                 );
             }
         }
-        AccountEventType::OrderTradeUpdate => {
-            if let Ok(m) = OrderTradeUpdateMsg::from_bytes(&payload) {
+        BasicAccountEventType::PositionUpdate => {
+            if let Ok(m) = BasicPositionMsg::from_bytes(&payload) {
                 info!(
-                    "OrderTradeUpdate: sym={} side={} status={} cli_id={} ord_id={} price={} qty={} filled={}",
-                    m.symbol, m.side, m.order_status, m.client_order_id, m.order_id, m.price, m.quantity, m.cumulative_filled_quantity
+                    "Binance PositionUpdate: ts={} inst={} side={} amt={}",
+                    m.timestamp, m.inst_id, m.position_side, m.position_amount
                 );
             }
         }
-        AccountEventType::BalanceUpdate => {
-            if let Ok(m) = BalanceUpdateMsg::from_bytes(&payload) {
-                info!("BalanceUpdate: asset={} delta={}", m.asset, m.delta);
-            }
-        }
-        AccountEventType::AccountUpdateBalance => {
-            if let Ok(m) = AccountUpdateBalanceMsg::from_bytes(&payload) {
+        BasicAccountEventType::BorrowInterest => {
+            if let Ok(m) = BasicBorrowInterestMsg::from_bytes(&payload) {
                 info!(
-                    "AccountUpdateBalance: asset={} wallet={} cross_wallet={}",
-                    m.asset, m.wallet_balance, m.cross_wallet_balance
+                    "Binance BorrowInterest: ts={} symbol={} borrowed={} interest={}",
+                    m.timestamp, m.symbol, m.borrowed, m.interest
                 );
             }
         }
-        AccountEventType::LiabilityChange => {
-            if let Ok(m) = LiabilityChangeMsg::from_bytes(&payload) {
-                info!(
-                    "LiabilityChange: asset={} type={} principal={} interest={} total={}",
-                    m.asset, m.liability_type, m.principal, m.interest, m.total_liability
-                );
-            }
-        }
-        AccountEventType::AccountUpdatePosition => {
-            if let Ok(m) = PositionMsg::from_bytes(&payload) {
-                info!(
-                    "AccountUpdatePosition: sym={} side={} amt={} entry={} upnl={} reason={} bu={}",
-                    m.symbol,
-                    m.position_side,
-                    m.position_amount,
-                    m.entry_price,
-                    m.unrealized_pnl,
-                    m.reason,
-                    m.business_unit
-                );
-            }
-        }
-        _ => {
-            debug!("PM event: type={:?} len={}", event_type, payload_len);
-        }
+        BasicAccountEventType::Error => {}
     }
 }
 
-/// 统一的账户事件去重器
+/// 统一的账户事件去重器（basic）
 struct AccountEventDeduper {
     seen: HashSet<u64>,
     order: VecDeque<u64>,
@@ -334,66 +342,67 @@ impl AccountEventDeduper {
     /// 检查是否应该转发此消息（返回 true 表示应该转发，false 表示重复消息）
     fn should_forward(&mut self, msg: &Bytes) -> bool {
         if msg.len() < 8 {
-            return true; // 格式不对的消息直接转发
+            return true;
         }
 
-        let event_type = get_event_type(msg.as_ref());
+        let event_type = get_basic_event_type(msg.as_ref());
         let payload_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
         if msg.len() < 8 + payload_len {
-            return true; // 格式不对的消息直接转发
+            return true;
         }
 
         let payload = msg.slice(8..8 + payload_len);
 
-        // 根据事件类型计算去重 key
         let key_opt = match event_type {
-            AccountEventType::AccountPosition => AccountPositionMsg::from_bytes(&payload)
+            BasicAccountEventType::BalanceUpdate => BasicBalanceMsg::from_bytes(&payload)
                 .ok()
-                .map(|msg| self.key_account_position(&msg)),
-            AccountEventType::BalanceUpdate => BalanceUpdateMsg::from_bytes(&payload)
+                .map(|m| self.key_balance(&m)),
+            BasicAccountEventType::PositionUpdate => BasicPositionMsg::from_bytes(&payload)
                 .ok()
-                .map(|msg| self.key_balance_update(&msg)),
-            AccountEventType::AccountUpdateBalance => AccountUpdateBalanceMsg::from_bytes(&payload)
+                .map(|m| self.key_position(&m)),
+            BasicAccountEventType::BorrowInterest => BasicBorrowInterestMsg::from_bytes(&payload)
                 .ok()
-                .map(|msg| self.key_account_update_balance(&msg)),
-            AccountEventType::AccountUpdatePosition => PositionMsg::from_bytes(&payload)
-                .ok()
-                .map(|msg| self.key_account_update_position(&msg)),
-            AccountEventType::AccountUpdateFlush => AccountUpdateFlushMsg::from_bytes(&payload)
-                .ok()
-                .map(|msg| self.key_account_update_flush(&msg)),
-            AccountEventType::ExecutionReport => ExecutionReportMsg::from_bytes(&payload)
-                .ok()
-                .map(|msg| self.key_execution_report(&msg)),
-            AccountEventType::OrderTradeUpdate => OrderTradeUpdateMsg::from_bytes(&payload)
-                .ok()
-                .map(|msg| self.key_order_trade_update(&msg)),
-            _ => {
-                return true; // 其他事件类型不去重，直接转发
+                .map(|m| self.key_borrow_interest(&m)),
+            BasicAccountEventType::OrderUpdate => {
+                if payload.len() < 4 {
+                    None
+                } else {
+                    let inner_type =
+                        u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                    if inner_type == AccountEventType::ExecutionReport as u32 {
+                        ExecutionReportMsg::from_bytes(&payload)
+                            .ok()
+                            .map(|m| self.key_execution_report(&m))
+                    } else if inner_type == AccountEventType::OrderTradeUpdate as u32 {
+                        OrderTradeUpdateMsg::from_bytes(&payload)
+                            .ok()
+                            .map(|m| self.key_order_trade_update(&m))
+                    } else {
+                        None
+                    }
+                }
             }
+            BasicAccountEventType::Error => return true,
         };
 
         let Some(key) = key_opt else {
-            return true; // 解析失败，直接转发
+            return true;
         };
 
-        // 检查是否重复
         if self.seen.contains(&key) {
-            return false; // 重复消息，不转发
+            return false;
         }
 
-        // 记录新消息
         self.seen.insert(key);
         self.order.push_back(key);
 
-        // 容量控制
         if self.order.len() > self.capacity {
             if let Some(old) = self.order.pop_front() {
                 self.seen.remove(&old);
             }
         }
 
-        true // 新消息，转发
+        true
     }
 
     fn hash64(&self, parts: &[u64]) -> u64 {
@@ -410,53 +419,38 @@ impl AccountEventDeduper {
         hasher.finish()
     }
 
-    fn key_account_position(&self, msg: &AccountPositionMsg) -> u64 {
+    fn key_balance(&self, msg: &BasicBalanceMsg) -> u64 {
         self.hash64(&[
-            AccountEventType::AccountPosition as u32 as u64,
-            msg.update_id as u64,
-            msg.event_time as u64,
-            self.hash_str64(&msg.asset),
-        ])
-    }
-
-    fn key_balance_update(&self, msg: &BalanceUpdateMsg) -> u64 {
-        self.hash64(&[
-            AccountEventType::BalanceUpdate as u32 as u64,
-            msg.update_id as u64,
-            msg.event_time as u64,
-        ])
-    }
-
-    fn key_account_update_balance(&self, msg: &AccountUpdateBalanceMsg) -> u64 {
-        self.hash64(&[
-            AccountEventType::AccountUpdateBalance as u32 as u64,
-            msg.event_time as u64,
-            msg.transaction_time as u64,
-            self.hash_str64(&msg.asset),
-        ])
-    }
-
-    fn key_account_update_position(&self, msg: &PositionMsg) -> u64 {
-        self.hash64(&[
-            AccountEventType::AccountUpdatePosition as u32 as u64,
-            msg.event_time as u64,
-            msg.transaction_time as u64,
+            BasicAccountEventType::BalanceUpdate as u32 as u64,
+            msg.timestamp as u64,
             self.hash_str64(&msg.symbol),
-            msg.position_side as u8 as u64,
+            msg.balance.to_bits(),
         ])
     }
 
-    fn key_account_update_flush(&self, msg: &AccountUpdateFlushMsg) -> u64 {
+    fn key_borrow_interest(&self, msg: &BasicBorrowInterestMsg) -> u64 {
         self.hash64(&[
-            AccountEventType::AccountUpdateFlush as u32 as u64,
-            msg.hash,
-            self.hash_str64(&msg.scope),
+            BasicAccountEventType::BorrowInterest as u32 as u64,
+            msg.timestamp as u64,
+            self.hash_str64(&msg.symbol),
+            msg.borrowed.to_bits(),
+            msg.interest.to_bits(),
+        ])
+    }
+
+    fn key_position(&self, msg: &BasicPositionMsg) -> u64 {
+        self.hash64(&[
+            BasicAccountEventType::PositionUpdate as u32 as u64,
+            msg.timestamp as u64,
+            self.hash_str64(&msg.inst_id),
+            msg.position_side as u8 as u64,
+            msg.position_amount.to_bits() as u64,
         ])
     }
 
     fn key_execution_report(&self, msg: &ExecutionReportMsg) -> u64 {
         self.hash64(&[
-            AccountEventType::ExecutionReport as u32 as u64,
+            BasicAccountEventType::OrderUpdate as u32 as u64,
             msg.order_id as u64,
             msg.trade_id as u64,
             msg.update_id as u64,
@@ -466,7 +460,7 @@ impl AccountEventDeduper {
 
     fn key_order_trade_update(&self, msg: &OrderTradeUpdateMsg) -> u64 {
         self.hash64(&[
-            AccountEventType::OrderTradeUpdate as u32 as u64,
+            BasicAccountEventType::OrderUpdate as u32 as u64,
             msg.order_id as u64,
             msg.trade_id as u64,
             msg.event_time as u64,

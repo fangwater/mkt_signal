@@ -618,22 +618,10 @@ impl Order {
                         }
                     };
 
-                    // 从 MonitorChannel 获取 spot_manager 并检查余额
+                    // 从 MonitorChannel 获取 basic margin 余额（当前实现以净余额作为可用余额近似）
                     use crate::pre_trade::monitor_channel::MonitorChannel;
-                    let spot_mgr = MonitorChannel::instance().spot_manager();
-                    let available_balance = {
-                        let mgr = spot_mgr.borrow();
-                        if let Some(snapshot) = mgr.snapshot() {
-                            snapshot
-                                .balances
-                                .iter()
-                                .find(|b| b.asset.eq_ignore_ascii_case(&check_asset))
-                                .map(|b| b.cross_margin_free)
-                                .unwrap_or(0.0)
-                        } else {
-                            0.0
-                        }
-                    };
+                    let available_balance = MonitorChannel::instance()
+                        .balance_position_for_venue(self.venue, &check_asset);
 
                     // 余额判断：决定是否需要借币
                     if available_balance < required_amount {

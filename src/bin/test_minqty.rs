@@ -29,8 +29,6 @@ struct OkexInstrument {
     min_sz: String,
     #[serde(rename = "lotSz")]
     lot_sz: String,
-    #[serde(rename = "tickSz")]
-    tick_sz: String,
 }
 
 async fn fetch_okx_raw_data() -> Result<Vec<OkexInstrument>> {

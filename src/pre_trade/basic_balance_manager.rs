@@ -73,7 +73,11 @@ impl BasicBalanceManager {
                 last_timestamp: msg.timestamp,
             });
         entry.borrowed = msg.borrowed;
-        entry.cumulative_interest += msg.interest;
+        // interest 字段为“当前应计利息总额”，按最新值覆盖即可。
+        match self.exchange {
+            Exchange::Okex | Exchange::Binance => entry.cumulative_interest = msg.interest,
+            _ => {}
+        }
         entry.last_timestamp = entry.last_timestamp.max(msg.timestamp);
 
         info!(
@@ -94,16 +98,34 @@ impl BasicBalanceManager {
         self.balances.values().cloned().collect()
     }
 
-    /// 获取指定币种的余额头寸。仅支持 OKX（balance 已含借贷影响），其他交易所会 panic。
+    /// 获取指定币种的净余额头寸（base qty）。
+    ///
+    /// - Binance margin: balance 为总余额，需要扣除 borrowed 与累计 interest 才是净头寸
+    /// - OKX margin/spot: balance 已经与负债轧差，直接使用 balance
+    ///
+    /// 其他交易所暂不支持，会 panic。
     pub fn balance_position_of(&self, symbol: &str) -> f64 {
         let mapped = match self.exchange {
-            Exchange::Okex => symbol.to_ascii_uppercase(),
+            Exchange::Okex | Exchange::Binance => symbol.to_ascii_uppercase(),
             _ => panic!(
                 "balance_position_of not implemented for {:?}",
                 self.exchange
             ),
         };
-        self.balances.get(&mapped).map(|b| b.balance).unwrap_or(0.0)
+        let entry = self
+            .balances
+            .get(&mapped)
+            .or_else(|| self.balances.get(symbol));
+
+        let Some(b) = entry else {
+            return 0.0;
+        };
+
+        match self.exchange {
+            Exchange::Okex => b.balance,
+            Exchange::Binance => b.balance - b.borrowed - b.cumulative_interest,
+            _ => unreachable!(),
+        }
     }
 }
 

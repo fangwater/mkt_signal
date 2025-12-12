@@ -1,0 +1,43 @@
+# Example configuration for ipc_bridge.
+#
+# Run one ipc_bridge per machine/namespace.
+# Each bridge knows all nodes (`nodes`) and decides direction using `self_id`.
+#
+# Iceoryx service names should be base names. They will be namespaced via
+# IPC_NAMESPACE (see src/common/ipc_service_name.rs) unless starting with
+# "data_pubs/".
+#
+# Supported sizes: 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384.
+
+self_id: pretrade_dc1
+
+nodes:
+  - id: pretrade_dc1
+    # Local bridge binds a PULL socket here
+    addr: "tcp://0.0.0.0:5555"
+  - id: tradeeng_dc2
+    # Remote bridge PULL bind address. Local PUSH will connect to it.
+    addr: "tcp://10.0.2.10:5555"
+
+routes:
+  # Pre-trade -> trade_engine order requests
+  - id: order_req_binance
+    from:
+      node: pretrade_dc1
+      service: "order_reqs/binance"
+      size: 4096
+    to:
+      node: tradeeng_dc2
+      service: "order_reqs/binance"
+      size: 4096
+
+  # trade_engine -> pre-trade order responses
+  - id: order_resp_binance
+    from:
+      node: tradeeng_dc2
+      service: "order_resps/binance"
+      size: 16384
+    to:
+      node: pretrade_dc1
+      service: "order_resps/binance"
+      size: 16384

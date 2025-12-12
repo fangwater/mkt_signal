@@ -215,14 +215,17 @@ impl HedgeArbStrategy {
         // 保存开仓侧交易场所
         self.open_venue = venue;
 
-        // 检查 venue 必须是 BinanceFutures 或 BinanceMargin
+        // 目前只支持 Binance / OKX 的 margin + futures，其它 venue 直接 panic
         match venue {
-            TradingVenue::BinanceFutures | TradingVenue::BinanceMargin => {
+            TradingVenue::BinanceFutures
+            | TradingVenue::BinanceMargin
+            | TradingVenue::OkexFutures
+            | TradingVenue::OkexMargin => {
                 // 允许的交易场所，继续执行
             }
             _ => {
                 panic!(
-                    "HedgeArbStrategy: strategy_id={} 不支持的交易场所 {:?}，仅支持 BinanceFutures 或 BinanceMargin",
+                    "HedgeArbStrategy: strategy_id={} 不支持的交易场所 {:?}，仅支持 Binance/OKX 的 futures 或 margin",
                     self.strategy_id,
                     venue
                 );

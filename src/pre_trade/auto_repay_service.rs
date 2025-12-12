@@ -11,6 +11,7 @@ use std::time::Duration;
 type HmacSha256 = Hmac<Sha256>;
 
 /// 负债检查结果
+#[allow(dead_code)]
 enum LiabilityCheckResult {
     /// 无数据（snapshot 为 None）
     NoData,
@@ -164,41 +165,9 @@ impl AutoRepayService {
 
     /// 从 MonitorChannel 获取需要还款的负债信息
     fn get_liabilities_to_repay() -> LiabilityCheckResult {
-        use crate::pre_trade::monitor_channel::MonitorChannel;
-
-        let spot_mgr = MonitorChannel::instance().spot_manager();
-        let mgr = spot_mgr.borrow();
-        let snapshot = match mgr.snapshot() {
-            Some(s) => s,
-            None => return LiabilityCheckResult::NoData,
-        };
-
-        let mut can_repay = Vec::new();
-        let mut no_balance = Vec::new();
-
-        for balance in &snapshot.balances {
-            let borrowed = balance.cross_margin_borrowed;
-            let interest = balance.cross_margin_interest;
-            let available = balance.cross_margin_free;
-
-            if borrowed > 0.0 {
-                if available > 0.0 {
-                    // 有负债且有可用余额可以还款
-                    can_repay.push((balance.asset.clone(), borrowed, interest, available));
-                } else {
-                    // 有负债但无可用余额
-                    no_balance.push((balance.asset.clone(), borrowed, interest));
-                }
-            }
-        }
-
-        if !can_repay.is_empty() {
-            LiabilityCheckResult::CanRepay(can_repay)
-        } else if !no_balance.is_empty() {
-            LiabilityCheckResult::HasLiabilityNoBalance(no_balance)
-        } else {
-            LiabilityCheckResult::NoLiability
-        }
+        // pre_trade 已切换为 basic 管理器，不再维护 Binance PM liabilities。
+        // 后续如需自动还款，需要在 basic 事件中补充借贷/可用余额语义。
+        LiabilityCheckResult::NoData
     }
 
     /// 调用币安还款 API (POST /papi/v1/repayLoan)

@@ -1,21 +1,27 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::Result;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
 use crate::common::account_msg::{
-    get_event_type as get_account_event_type, AccountEventType, AccountPositionMsg,
-    AccountUpdateBalanceMsg, AccountUpdateFlushMsg, BalanceUpdateMsg, ExecutionReportMsg,
-    LiabilityChangeMsg, OrderTradeUpdateMsg, PositionMsg,
+    AccountEventType, AccountPositionMsg, AccountUpdateBalanceMsg, AccountUpdateFlushMsg,
+    BalanceUpdateMsg, ExecutionReportMsg, OrderTradeUpdateMsg, PositionMsg,
 };
+use crate::common::basic_account_msg::{
+    get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
+    BasicPositionMsg, OkexOrderMsg,
+};
+use crate::common::exchange::Exchange;
 use crate::common::ipc_service_name::build_service_name;
+use crate::common::min_qty_table::MinQtyTable;
 use crate::portfolio_margin::pm_forwarder::{PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS};
-use crate::pre_trade::binance_pm_spot_manager::{BinancePmSpotAccountManager, BinanceSpotBalance};
-use crate::pre_trade::binance_pm_um_manager::{BinancePmUmAccountManager, BinanceUmPosition};
+use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
+use crate::pre_trade::basic_um_manager::BasicUmManager;
+use crate::pre_trade::net_position::NetPosition;
 use crate::signal::common::{ExecutionType, TradingVenue};
 
 const ACCOUNT_PAYLOAD: usize = 16_384;
@@ -34,6 +40,28 @@ fn extract_base_asset(symbol_upper: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn is_margin_venue(venue: TradingVenue) -> bool {
+    matches!(
+        venue,
+        TradingVenue::BinanceMargin | TradingVenue::OkexMargin
+    )
+}
+
+fn is_futures_venue(venue: TradingVenue) -> bool {
+    matches!(
+        venue,
+        TradingVenue::BinanceFutures | TradingVenue::OkexFutures
+    )
+}
+
+fn exchange_from_venue(venue: TradingVenue) -> Exchange {
+    match venue {
+        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => Exchange::Binance,
+        TradingVenue::OkexMargin | TradingVenue::OkexFutures => Exchange::Okex,
+        _ => panic!("unsupported venue for pre_trade: {:?}", venue),
+    }
 }
 
 // ==================== Deduplication Cache ====================
@@ -153,15 +181,13 @@ pub fn key_order_trade_update(msg: &OrderTradeUpdateMsg) -> u64 {
 // ==================== Monitor Channel ====================
 
 use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
-use crate::pre_trade::binance_pm_spot_manager::BinanceSpotBalanceSnapshot;
-use crate::pre_trade::binance_pm_um_manager::BinanceUmAccountSnapshot;
-use crate::pre_trade::exposure_manager::{ExposureEntry, ExposureManager};
 use crate::pre_trade::order_manager::OrderManager;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
-use crate::pre_trade::price_table::{PriceEntry, PriceTable};
+use crate::pre_trade::price_table::PriceTable;
 use crate::signal::common::{align_price_ceil, align_price_floor};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 use crate::strategy::order_update::OrderUpdate;
+use crate::strategy::trade_update::TradeUpdate;
 use bytes::Bytes;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -176,15 +202,53 @@ thread_local! {
 /// MonitorChannel 单例访问器（零大小类型）
 pub struct MonitorChannel;
 
+/// 每条腿的基础管理器（类似 C++ variant）
+#[derive(Clone)]
+enum LegMgr {
+    /// 现货/保证金腿，sz=标的资产数量
+    Margin {
+        exchange: Exchange,
+        bal: Rc<RefCell<BasicBalanceManager>>,
+    },
+    /// U 本位合约腿，sz=张数（OKX）或标的数量（Binance）
+    Futures {
+        exchange: Exchange,
+        um: Rc<RefCell<BasicUmManager>>,
+        min_qty_table: Rc<RefCell<MinQtyTable>>,
+    },
+}
+
+impl LegMgr {
+    fn exchange(&self) -> Exchange {
+        match self {
+            LegMgr::Margin { exchange, .. } | LegMgr::Futures { exchange, .. } => *exchange,
+        }
+    }
+
+    fn as_balance_mgr(&self) -> Option<Rc<RefCell<BasicBalanceManager>>> {
+        match self {
+            LegMgr::Margin { bal, .. } => Some(bal.clone()),
+            _ => None,
+        }
+    }
+
+    fn as_um_mgr(&self) -> Option<(Rc<RefCell<BasicUmManager>>, Rc<RefCell<MinQtyTable>>)> {
+        match self {
+            LegMgr::Futures {
+                um, min_qty_table, ..
+            } => Some((um.clone(), min_qty_table.clone())),
+            _ => None,
+        }
+    }
+}
+
 /// MonitorChannel 内部实现，包含所有状态
 struct MonitorChannelInner {
-    /// 币安 合约资产管理器，基于统一账户 update 更新
-    um_manager: Rc<RefCell<BinancePmUmAccountManager>>,
-    /// 币安 现货资产管理器，基于统一账户 update 更新
-    spot_manager: Rc<RefCell<BinancePmSpotAccountManager>>,
-    /// 敞口管理器
-    exposure_manager: Rc<RefCell<ExposureManager>>,
-    /// 价格表
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+    open_leg: LegMgr,
+    hedge_leg: LegMgr,
+    /// 价格表（仍使用 Binance mark/index 价格作为统一估值源）
     price_table: Rc<RefCell<PriceTable>>,
     /// 各交易场所的最小下单量/步进信息
     venue_min_qty_tables: HashMap<TradingVenue, Rc<VenueMinQtyTable>>,
@@ -194,6 +258,14 @@ struct MonitorChannelInner {
     order_manager: Rc<RefCell<OrderManager>>,
     /// 对冲残余量哈希表，key=(symbol, venue)，value=残余量
     hedge_residual_map: Rc<RefCell<HashMap<(String, TradingVenue), f64>>>,
+}
+
+struct BasicState {
+    // asset -> (spot_qty, um_qty), both in base units
+    exposures: HashMap<String, (f64, f64)>,
+    total_equity_usdt: f64,
+    abs_total_exposure_usdt: f64,
+    total_position_usdt: f64,
 }
 
 impl MonitorChannel {
@@ -253,139 +325,117 @@ impl MonitorChannel {
         Self::try_with_inner(|inner| inner.strategy_mgr.clone()).ok()
     }
 
-    /// 获取 um_manager 的引用
-    pub fn um_manager(&self) -> Rc<RefCell<BinancePmUmAccountManager>> {
-        Self::with_inner(|inner| inner.um_manager.clone())
+    /// 获取开仓腿的基础余额管理器（margin/spot）
+    pub fn open_balance_mgr(&self) -> Option<Rc<RefCell<BasicBalanceManager>>> {
+        Self::with_inner(|inner| inner.open_leg.as_balance_mgr())
     }
 
-    /// 获取 spot_manager 的引用
-    pub fn spot_manager(&self) -> Rc<RefCell<BinancePmSpotAccountManager>> {
-        Self::with_inner(|inner| inner.spot_manager.clone())
+    /// 获取对冲腿的基础余额管理器（margin/spot）
+    pub fn hedge_balance_mgr(&self) -> Option<Rc<RefCell<BasicBalanceManager>>> {
+        Self::with_inner(|inner| inner.hedge_leg.as_balance_mgr())
     }
 
-    /// 获取 exposure_manager 的引用
-    pub fn exposure_manager(&self) -> Rc<RefCell<ExposureManager>> {
-        Self::with_inner(|inner| inner.exposure_manager.clone())
+    /// 获取开仓腿的基础合约管理器（futures）
+    pub fn open_um_mgr(&self) -> Option<(Rc<RefCell<BasicUmManager>>, Rc<RefCell<MinQtyTable>>)> {
+        Self::with_inner(|inner| inner.open_leg.as_um_mgr())
     }
 
-    /// 创建 Binance PM account monitor 实例并初始化 thread-local 单例
+    /// 获取对冲腿的基础合约管理器（futures）
+    pub fn hedge_um_mgr(&self) -> Option<(Rc<RefCell<BasicUmManager>>, Rc<RefCell<MinQtyTable>>)> {
+        Self::with_inner(|inner| inner.hedge_leg.as_um_mgr())
+    }
+
+    /// 查询指定 venue+asset 的现货/保证金净头寸（base qty），非 margin venue 返回 0
+    pub fn balance_position_for_venue(&self, venue: TradingVenue, asset: &str) -> f64 {
+        Self::with_inner(|inner| {
+            let leg = if venue == inner.open_venue {
+                &inner.open_leg
+            } else if venue == inner.hedge_venue {
+                &inner.hedge_leg
+            } else {
+                return 0.0;
+            };
+            match leg {
+                LegMgr::Margin { bal, .. } => bal.borrow().net_position(asset, None),
+                _ => 0.0,
+            }
+        })
+    }
+
+    /// 初始化 pre-trade 的账户与风控管理器（仅 open/hedge 两条腿）
     ///
-    /// # 功能
-    /// - 从环境变量读取 API 凭证（BINANCE_API_KEY, BINANCE_API_SECRET）
-    /// - 初始化 UM 合约账户管理器
-    /// - 初始化 Spot 现货账户管理器
-    /// - 收集所需的价格符号并初始化价格表
-    /// - 加载交易对 LOT_SIZE/PRICE_FILTER（spot/futures/margin）
-    /// - 创建 ExposureManager 并基于初始快照和价格估值
-    /// - 订阅 IceOryx 频道: account_pubs/binance_pm
-    /// - 启动后台监听任务（账户状态更新在内部直接处理，订单/成交回报发送到 channel）
-    /// - 启动衍生品价格监听任务（mark_price, index_price）
-    /// - 将实例保存到 thread-local 单例
-    ///
-    /// # 参数
-    /// - `strategy_mgr`: 策略管理器
-    /// - `open_venue`: 开仓腿交易场所（用于拉取 min_qty/price_tick）
-    /// - `hedge_venue`: 对冲腿交易场所（用于拉取 min_qty/price_tick）
-    ///
-    /// # 环境变量
-    /// - `BINANCE_API_KEY`: Binance API Key（必需）
-    /// - `BINANCE_API_SECRET`: Binance API Secret（必需）
-    ///
-    /// # 错误
-    /// - API 凭证未设置
-    /// - 初始账户快照获取失败
+    /// - 按 venue 的 market type 映射到 BasicBalanceManager / BasicUmManager
+    /// - 订阅 account_pubs/<exchange>_pm（期望收到 BasicAccountEventMsg）
+    /// - 初始化各 venue 的 min_qty/price_tick 表用于对齐
     pub async fn init_singleton(
         strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
     ) -> Result<()> {
-        // Read API credentials from environment variables
-        let api_key = std::env::var("BINANCE_API_KEY")
-            .map_err(|_| anyhow!("BINANCE_API_KEY environment variable not set"))?;
-        let api_secret = std::env::var("BINANCE_API_SECRET")
-            .map_err(|_| anyhow!("BINANCE_API_SECRET environment variable not set"))?;
-
-        // Hardcoded REST endpoints
-        let rest_base = "https://papi.binance.com";
-        let recv_window_ms = 5000;
-
-        // 初始化 UM 合约管理器
-        let um_manager = BinancePmUmAccountManager::new(
-            rest_base,
-            api_key.clone(),
-            api_secret.clone(),
-            recv_window_ms,
-        );
-        let um_snapshot = match um_manager.init().await {
-            Ok(snapshot) => {
-                log_um_positions(&snapshot.positions);
-                snapshot
+        // 仅支持 Binance / OKX
+        for v in [open_venue, hedge_venue] {
+            if !matches!(
+                v,
+                TradingVenue::BinanceMargin
+                    | TradingVenue::BinanceFutures
+                    | TradingVenue::OkexMargin
+                    | TradingVenue::OkexFutures
+            ) {
+                panic!("pre_trade does not support venue {:?}", v);
             }
-            Err(err) => {
-                warn!("Failed to load initial Binance UM snapshot: {:#}", err);
-                warn!("Starting with empty UM positions");
-                BinanceUmAccountSnapshot {
-                    positions: vec![],
-                    fetched_at: chrono::Utc::now(),
-                }
+        }
+
+        let open_exchange = exchange_from_venue(open_venue);
+        let hedge_exchange = exchange_from_venue(hedge_venue);
+
+        // 初始化开仓腿基础管理器
+        let open_leg = if is_margin_venue(open_venue) {
+            LegMgr::Margin {
+                exchange: open_exchange,
+                bal: Rc::new(RefCell::new(BasicBalanceManager::new(open_exchange))),
             }
+        } else if is_futures_venue(open_venue) {
+            let mut min_qty_table = MinQtyTable::new(open_exchange);
+            if let Err(err) = min_qty_table.refresh().await {
+                warn!(
+                    "failed to refresh min_qty_table for {:?}: {err:#}",
+                    open_exchange
+                );
+            }
+            LegMgr::Futures {
+                exchange: open_exchange,
+                um: Rc::new(RefCell::new(BasicUmManager::new(open_exchange))),
+                min_qty_table: Rc::new(RefCell::new(min_qty_table)),
+            }
+        } else {
+            unreachable!()
         };
 
-        // 初始化 Spot 现货管理器（使用相同的 PM 账户凭证）
-        let spot_manager =
-            BinancePmSpotAccountManager::new(rest_base, &api_key, &api_secret, recv_window_ms);
-        let spot_snapshot = match spot_manager.init().await {
-            Ok(snapshot) => {
-                log_spot_balances(&snapshot.balances);
-                snapshot
+        // 初始化对冲腿基础管理器
+        let hedge_leg = if is_margin_venue(hedge_venue) {
+            LegMgr::Margin {
+                exchange: hedge_exchange,
+                bal: Rc::new(RefCell::new(BasicBalanceManager::new(hedge_exchange))),
             }
-            Err(err) => {
-                warn!("Failed to load initial Binance spot snapshot: {:#}", err);
-                warn!("Starting with empty spot balances");
-                BinanceSpotBalanceSnapshot {
-                    balances: vec![],
-                    fetched_at: chrono::Utc::now(),
-                }
+        } else if is_futures_venue(hedge_venue) {
+            let mut min_qty_table = MinQtyTable::new(hedge_exchange);
+            if let Err(err) = min_qty_table.refresh().await {
+                warn!(
+                    "failed to refresh min_qty_table for {:?}: {err:#}",
+                    hedge_exchange
+                );
             }
+            LegMgr::Futures {
+                exchange: hedge_exchange,
+                um: Rc::new(RefCell::new(BasicUmManager::new(hedge_exchange))),
+                min_qty_table: Rc::new(RefCell::new(min_qty_table)),
+            }
+        } else {
+            unreachable!()
         };
 
-        // 收集需要的价格符号
-        let mut price_symbols: BTreeSet<String> = BTreeSet::new();
-        collect_price_symbols(&mut price_symbols, &um_snapshot, &spot_snapshot);
-
-        // 创建并初始化价格表
+        // 创建价格表（使用 Binance premiumIndex 初始化为空即可）
         let price_table = Rc::new(RefCell::new(PriceTable::new()));
-        {
-            let mut table = price_table.borrow_mut();
-            table
-                .init(&price_symbols)
-                .await
-                .context("failed to load initial price table")?;
-        }
-
-        // 创建 ExposureManager（基于初始快照）
-        let mut exposure_manager = ExposureManager::new(&um_snapshot, &spot_snapshot);
-        {
-            let table = price_table.borrow();
-            let snap = table.snapshot();
-            // 基于初始价格对总权益/总敞口进行 USDT 计价
-            exposure_manager.revalue_with_prices(&snap);
-            log_exposures(exposure_manager.exposures(), &snap);
-            log_exposure_summary(
-                exposure_manager.total_equity(),
-                exposure_manager.total_abs_exposure(),
-                exposure_manager.total_position(),
-            );
-            log_leverage_detail(
-                exposure_manager.total_spot_value_usd(),
-                exposure_manager.total_borrowed_usd(),
-                exposure_manager.total_interest_usd(),
-                exposure_manager.total_um_unrealized(),
-                exposure_manager.total_equity(),
-                exposure_manager.total_position(),
-            );
-        }
-        let exposure_manager = Rc::new(RefCell::new(exposure_manager));
 
         // 加载交易对 LOT_SIZE/PRICE_FILTER（按 venue 区分），用于数量/价格对齐
         let mut venue_min_qty_tables: HashMap<TradingVenue, Rc<VenueMinQtyTable>> = HashMap::new();
@@ -400,43 +450,32 @@ impl MonitorChannel {
             venue_min_qty_tables.insert(venue, Rc::new(table));
         }
 
-        // 包装为 Rc<RefCell<>>
-        let um_manager_rc = Rc::new(RefCell::new(um_manager));
-        let spot_manager_rc = Rc::new(RefCell::new(spot_manager));
-
-        // 构建带命名空间的服务名
-        let service_name = build_service_name("account_pubs/binance_pm");
-        let node_name = "pre_trade_account_pubs_binance_pm".to_string();
-
-        // 启动账户事件监听任务
-        Self::spawn_listener(
-            service_name,
-            node_name,
-            um_manager_rc.clone(),
-            spot_manager_rc.clone(),
-            exposure_manager.clone(),
-            price_table.clone(),
-            strategy_mgr.clone(),
-        );
+        // 为涉及的交易所启动 basic 账户监听（可能是一个或两个）
+        let mut exchanges: HashSet<Exchange> = HashSet::new();
+        exchanges.insert(open_exchange);
+        exchanges.insert(hedge_exchange);
+        for ex in exchanges {
+            let service_name = build_service_name(&format!("account_pubs/{}_pm", ex.as_str()));
+            let node_name = format!("pre_trade_account_pubs_{}_pm", ex.as_str());
+            Self::spawn_basic_listener(
+                service_name,
+                node_name,
+                ex,
+                open_leg.clone(),
+                hedge_leg.clone(),
+                strategy_mgr.clone(),
+            );
+        }
 
         // 启动衍生品价格监听任务（mark_price, index_price）
         Self::spawn_derivatives_listener(price_table.clone());
 
-        // 启动自动还款服务（每小时 55 分执行）
-        use crate::pre_trade::auto_repay_service::AutoRepayService;
-        let auto_repay = AutoRepayService::new(
-            rest_base,
-            api_key.clone(),
-            api_secret.clone(),
-            recv_window_ms,
-        );
-        auto_repay.start_auto_repay_task();
-
         // 创建内部实例并保存到 thread-local
         let inner = MonitorChannelInner {
-            um_manager: um_manager_rc,
-            spot_manager: spot_manager_rc,
-            exposure_manager,
+            open_venue,
+            hedge_venue,
+            open_leg,
+            hedge_leg,
             price_table,
             venue_min_qty_tables,
             strategy_mgr,
@@ -451,6 +490,147 @@ impl MonitorChannel {
         Ok(())
     }
 
+    /// 将订单数量（按 venue 语义）转换为 base qty（标的数量）
+    fn order_qty_to_base(
+        inner: &MonitorChannelInner,
+        venue: TradingVenue,
+        symbol: &str,
+        qty: f64,
+    ) -> f64 {
+        match venue {
+            TradingVenue::OkexFutures => {
+                let mult = inner
+                    .venue_min_qty_tables
+                    .get(&venue)
+                    .map(|t| t.contract_multiplier(symbol))
+                    .unwrap_or(1.0);
+                qty * mult
+            }
+            _ => qty,
+        }
+    }
+
+    /// 基于 open/hedge 两腿的基础管理器计算敞口与总量指标
+    fn compute_basic_state(inner: &MonitorChannelInner) -> BasicState {
+        let mut exposures: HashMap<String, (f64, f64)> = HashMap::new();
+        let price_snap = inner.price_table.borrow().snapshot();
+
+        let mut total_equity_usdt = 0.0;
+        let mut total_position_usdt = 0.0;
+        let mut abs_total_exposure_usdt = 0.0;
+
+        {
+            let mut apply_margin_leg = |bal_mgr: &BasicBalanceManager| {
+                for bal in bal_mgr.snapshot() {
+                    let asset = bal.symbol.to_uppercase();
+                    let entry = exposures.entry(asset.clone()).or_insert((0.0, 0.0));
+                    // 净现货头寸由 manager 内部按交易所语义计算
+                    let net_qty = bal_mgr.net_position(&asset, None);
+                    entry.0 += net_qty;
+
+                    let mark = if asset == "USDT" {
+                        1.0
+                    } else {
+                        price_snap
+                            .get(&format!("{}USDT", asset))
+                            .map(|p| p.mark_price)
+                            .unwrap_or(0.0)
+                    };
+                    if mark > 0.0 {
+                        total_equity_usdt += net_qty * mark;
+                        if asset != "USDT" {
+                            total_position_usdt += net_qty.abs() * mark;
+                        }
+                    }
+                }
+            };
+
+            if let LegMgr::Margin { bal, .. } = &inner.open_leg {
+                apply_margin_leg(&bal.borrow());
+            }
+            if let LegMgr::Margin { bal, .. } = &inner.hedge_leg {
+                apply_margin_leg(&bal.borrow());
+            }
+        }
+
+        {
+            let mut apply_futures_leg =
+                |um_mgr: &BasicUmManager, min_qty: &MinQtyTable, exchange: Exchange| {
+                    let mut symbols: BTreeSet<String> = BTreeSet::new();
+                    for pos in um_mgr.snapshot() {
+                        let symbol = match exchange {
+                            Exchange::Okex => pos.inst_id.replace("-SWAP", "").replace('-', ""),
+                            _ => pos.inst_id.clone(),
+                        };
+                        symbols.insert(symbol.to_uppercase());
+                    }
+
+                    for symbol in symbols {
+                        let net_qty = um_mgr.net_position(&symbol, Some(min_qty));
+                        if net_qty.abs() <= 1e-12 {
+                            continue;
+                        }
+                        let Some(base_asset) = extract_base_asset(&symbol) else {
+                            continue;
+                        };
+                        let entry = exposures
+                            .entry(base_asset.to_uppercase())
+                            .or_insert((0.0, 0.0));
+                        entry.1 += net_qty;
+
+                        let mark = price_snap
+                            .get(&format!("{}USDT", base_asset.to_uppercase()))
+                            .map(|p| p.mark_price)
+                            .unwrap_or(0.0);
+                        if mark > 0.0 {
+                            total_position_usdt += net_qty.abs() * mark;
+                        }
+                    }
+                };
+
+            if let LegMgr::Futures {
+                um,
+                min_qty_table,
+                exchange,
+            } = &inner.open_leg
+            {
+                apply_futures_leg(&um.borrow(), &min_qty_table.borrow(), *exchange);
+            }
+
+            if let LegMgr::Futures {
+                um,
+                min_qty_table,
+                exchange,
+            } = &inner.hedge_leg
+            {
+                apply_futures_leg(&um.borrow(), &min_qty_table.borrow(), *exchange);
+            }
+        }
+
+        // 计算总敞口（net exposure）USDT
+        for (asset, (spot_qty, um_qty)) in exposures.iter() {
+            if asset == "USDT" {
+                continue;
+            }
+            let mark = price_snap
+                .get(&format!("{}USDT", asset))
+                .map(|p| p.mark_price)
+                .unwrap_or(0.0);
+            if mark <= 0.0 {
+                continue;
+            }
+            let exposure_usdt = (spot_qty + um_qty) * mark;
+            abs_total_exposure_usdt += exposure_usdt.abs();
+        }
+
+        BasicState {
+            exposures,
+            total_equity_usdt,
+            abs_total_exposure_usdt,
+            total_position_usdt,
+        }
+    }
+
     // 检查杠杆率是否超过配置阈值
     pub fn check_leverage(&self) -> Result<(), String> {
         Self::with_inner(|inner| {
@@ -459,13 +639,9 @@ impl MonitorChannel {
                 return Ok(());
             }
 
-            // 获取必要的数据
-            let (total_equity, total_position) = {
-                let exposure_manager = inner.exposure_manager.borrow();
-                let total_equity = exposure_manager.total_equity();
-                let total_position = exposure_manager.total_position();
-                (total_equity, total_position)
-            };
+            let state = Self::compute_basic_state(inner);
+            let total_equity = state.total_equity_usdt;
+            let total_position = state.total_position_usdt;
 
             if total_equity <= f64::EPSILON {
                 return Err("账户总权益近似为 0，无法计算杠杆率".to_string());
@@ -582,8 +758,31 @@ impl MonitorChannel {
                 TradingVenue::BinanceMargin => {
                     Self::align_order_with_table(symbol, raw_qty, raw_price, table.as_ref(), false)
                 }
-                TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
-                    Err("尚未实现 Okex 的订单对齐".to_string())
+                TradingVenue::OkexMargin => {
+                    // OKX 现货/保证金 sz 使用标的资产数量，与 BinanceMargin 语义一致
+                    Self::align_order_with_table(symbol, raw_qty, raw_price, table.as_ref(), false)
+                }
+                TradingVenue::OkexFutures => {
+                    // OKX 永续/交割合约 sz 使用“张数”，需要用 ctVal×ctMult 将 base qty 转成合约张数
+                    let contract_size = table.contract_multiplier(symbol);
+                    if contract_size <= 0.0 {
+                        return Err(format!(
+                            "symbol={} OKX contract multiplier invalid: {}",
+                            symbol, contract_size
+                        ));
+                    }
+                    let raw_contracts = raw_qty / contract_size;
+                    debug!(
+                        "OKX futures qty convert: symbol={} raw_base_qty={:.8} contract_size={:.8} -> raw_contracts={:.8}",
+                        symbol, raw_qty, contract_size, raw_contracts
+                    );
+                    Self::align_order_with_table(
+                        symbol,
+                        raw_contracts,
+                        raw_price,
+                        table.as_ref(),
+                        true,
+                    )
                 }
                 TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
                     Err("尚未实现 Bitget 的订单对齐".to_string())
@@ -659,13 +858,12 @@ impl MonitorChannel {
         })
     }
 
-    fn spawn_listener(
+    fn spawn_basic_listener(
         service_name: String,
         node_name: String,
-        um_manager: Rc<RefCell<BinancePmUmAccountManager>>,
-        spot_manager: Rc<RefCell<BinancePmSpotAccountManager>>,
-        exposure_manager: Rc<RefCell<ExposureManager>>,
-        price_table: Rc<RefCell<PriceTable>>,
+        exchange: Exchange,
+        open_leg: LegMgr,
+        hedge_leg: LegMgr,
         strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
     ) {
         tokio::task::spawn_local(async move {
@@ -686,120 +884,113 @@ impl MonitorChannel {
                 let subscriber: Subscriber<ipc::Service, [u8; ACCOUNT_PAYLOAD], ()> =
                     service.subscriber_builder().create()?;
 
-                info!("account stream subscribed: service={}", service_name);
+                info!(
+                    "basic account stream subscribed: service={} exchange={:?}",
+                    service_name, exchange
+                );
+
+                let mut dedup = DedupCache::new(8192);
 
                 loop {
                     match subscriber.receive() {
                         Ok(Some(sample)) => {
                             let payload = sample.payload();
-                            // Account frames format: [type:4][len:4][data:len]
                             if payload.len() < 8 {
                                 continue;
                             }
 
-                            let msg_type = get_account_event_type(payload);
+                            let msg_type = get_basic_event_type(payload);
+                            if msg_type == BasicAccountEventType::Error {
+                                continue;
+                            }
+
                             let body_len = u32::from_le_bytes([
                                 payload[4], payload[5], payload[6], payload[7],
                             ]) as usize;
                             let total = 8 + body_len;
-                            let frame_len = total.min(payload.len());
-                            let data = &payload[8..frame_len];
+                            if total > payload.len() {
+                                continue;
+                            }
+                            let data = &payload[8..total];
 
-                            // 根据事件类型处理
+                            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                            payload[..total].hash(&mut hasher);
+                            let key = hasher.finish();
+                            if !dedup.insert_check(key) {
+                                continue;
+                            }
+
                             match msg_type {
-                                // 账户状态更新：直接处理，不发送到 channel
-                                AccountEventType::AccountPosition => {
-                                    if let Ok(msg) = AccountPositionMsg::from_bytes(data) {
-                                        spot_manager.borrow_mut().apply_account_position(
-                                            &msg.asset,
-                                            msg.free_balance,
-                                            msg.locked_balance,
-                                            msg.event_time,
-                                        );
-                                        refresh_exposures(&um_manager, &spot_manager, &exposure_manager, &price_table);
-                                    }
-                                }
-                                AccountEventType::BalanceUpdate => {
-                                    if let Ok(msg) = BalanceUpdateMsg::from_bytes(data) {
-                                        spot_manager.borrow_mut().apply_balance_delta(&msg.asset, msg.delta, msg.event_time);
-                                        refresh_exposures(&um_manager, &spot_manager, &exposure_manager, &price_table);
-                                    }
-                                }
-                                AccountEventType::AccountUpdateBalance => {
-                                    if let Ok(msg) = AccountUpdateBalanceMsg::from_bytes(data) {
-                                        if msg.business_unit.eq_ignore_ascii_case("UM") {
-                                            spot_manager.borrow_mut().apply_um_wallet_snapshot(
-                                                &msg.asset,
-                                                msg.wallet_balance,
-                                                msg.event_time,
-                                            );
-                                        } else {
-                                            spot_manager.borrow_mut().apply_balance_snapshot(
-                                                &msg.asset,
-                                                msg.wallet_balance,
-                                                msg.cross_wallet_balance,
-                                                msg.balance_change,
-                                                msg.event_time,
-                                            );
+                                BasicAccountEventType::BalanceUpdate => {
+                                    if let Ok(msg) = BasicBalanceMsg::from_bytes(data) {
+                                        if exchange == open_leg.exchange() {
+                                            if let LegMgr::Margin { bal, .. } = &open_leg {
+                                                bal.borrow_mut().apply_balance(&msg);
+                                            }
+                                        }
+                                        if exchange == hedge_leg.exchange() {
+                                            if let LegMgr::Margin { bal, .. } = &hedge_leg {
+                                                bal.borrow_mut().apply_balance(&msg);
+                                            }
                                         }
                                     }
                                 }
-                                AccountEventType::AccountUpdatePosition => {
-                                    if let Ok(msg) = PositionMsg::from_bytes(data) {
-                                        um_manager.borrow_mut().apply_position_update(
-                                            &msg.symbol,
-                                            msg.position_side,
-                                            msg.position_amount,
-                                            msg.entry_price,
-                                            msg.unrealized_pnl,
-                                            msg.breakeven_price,
-                                            msg.event_time,
-                                        );
+                                BasicAccountEventType::PositionUpdate => {
+                                    if let Ok(msg) = BasicPositionMsg::from_bytes(data) {
+                                        if exchange == open_leg.exchange() {
+                                            if let LegMgr::Futures { um, .. } = &open_leg {
+                                                um.borrow_mut().apply_position(&msg);
+                                            }
+                                        }
+                                        if exchange == hedge_leg.exchange() {
+                                            if let LegMgr::Futures { um, .. } = &hedge_leg {
+                                                um.borrow_mut().apply_position(&msg);
+                                            }
+                                        }
                                     }
                                 }
-                                AccountEventType::AccountUpdateFlush => {
-                                    if let Ok(_msg) = AccountUpdateFlushMsg::from_bytes(data) {
-                                        refresh_exposures(&um_manager, &spot_manager, &exposure_manager, &price_table);
+                                BasicAccountEventType::BorrowInterest => {
+                                    if let Ok(msg) = BasicBorrowInterestMsg::from_bytes(data) {
+                                        if exchange == open_leg.exchange() {
+                                            if let LegMgr::Margin { bal, .. } = &open_leg {
+                                                bal.borrow_mut().apply_borrow_interest(&msg);
+                                            }
+                                        }
+                                        if exchange == hedge_leg.exchange() {
+                                            if let LegMgr::Margin { bal, .. } = &hedge_leg {
+                                                bal.borrow_mut().apply_borrow_interest(&msg);
+                                            }
+                                        }
                                     }
                                 }
-                                AccountEventType::LiabilityChange => {
-                                    if let Ok(msg) = LiabilityChangeMsg::from_bytes(data) {
-                                        spot_manager.borrow_mut().apply_liability_change(
-                                            &msg.asset,
-                                            &msg.liability_type,
-                                            msg.principal,
-                                            msg.interest,
-                                            msg.total_liability,
-                                            msg.event_time,
-                                        );
-                                        refresh_exposures(&um_manager, &spot_manager, &exposure_manager, &price_table);
+                                BasicAccountEventType::OrderUpdate => match exchange {
+                                    Exchange::Okex => {
+                                        if let Ok(msg) = OkexOrderMsg::from_bytes(data) {
+                                            dispatch_order_update_generic(&strategy_mgr, &msg);
+                                        }
                                     }
-                                }
-                                // ExecutionReport 和 OrderTradeUpdate：直接处理
-                                AccountEventType::ExecutionReport => {
-                                    if let Ok(report) = ExecutionReportMsg::from_bytes(data) {
-                                        debug!(
-                                            "executionReport: sym={} cli_id={} ord_id={} status={}",
-                                            report.symbol, report.client_order_id, report.order_id, report.order_status
-                                        );
-                                        dispatch_execution_report(&strategy_mgr, &report);
+                                    Exchange::Binance => {
+                                        if data.len() < 4 {
+                                            continue;
+                                        }
+                                        let inner_type = u32::from_le_bytes([
+                                            data[0], data[1], data[2], data[3],
+                                        ]);
+                                        if inner_type == AccountEventType::ExecutionReport as u32 {
+                                            if let Ok(msg) = ExecutionReportMsg::from_bytes(data) {
+                                                dispatch_order_update_generic(&strategy_mgr, &msg);
+                                            }
+                                        } else if inner_type
+                                            == AccountEventType::OrderTradeUpdate as u32
+                                        {
+                                            if let Ok(msg) = OrderTradeUpdateMsg::from_bytes(data) {
+                                                dispatch_order_update_generic(&strategy_mgr, &msg);
+                                            }
+                                        }
                                     }
-                                }
-                                AccountEventType::OrderTradeUpdate => {
-                                    if let Ok(update) = OrderTradeUpdateMsg::from_bytes(data) {
-                                        debug!(
-                                            "orderTradeUpdate: sym={}, cli_id={}, ord_id={}, trade_id={}, x={}, X={}",
-                                            update.symbol,
-                                            update.client_order_id,
-                                            update.order_id,
-                                            update.trade_id,
-                                            update.execution_type,
-                                            update.order_status,
-                                        );
-                                        dispatch_order_trade_update(&strategy_mgr, &update);
-                                    }
-                                }
-                                _ => {}
+                                    _ => {}
+                                },
+                                BasicAccountEventType::Error => {}
                             }
                         }
                         Ok(None) => tokio::task::yield_now().await,
@@ -869,17 +1060,12 @@ impl MonitorChannel {
                 ));
             };
 
-            let entry = {
-                let exposure_manager = inner.exposure_manager.borrow();
-                exposure_manager.exposure_for_asset(&base_asset).cloned()
-            };
-
-            // 如果没有找到敞口信息，认为是首次开仓，当前敞口为0
-            let net_exposure = if let Some(ref entry) = entry {
-                entry.spot_total_wallet + entry.um_net_position
-            } else {
-                0.0
-            };
+            let state = Self::compute_basic_state(inner);
+            let net_exposure = state
+                .exposures
+                .get(&base_asset.to_uppercase())
+                .map(|(spot, um)| spot + um)
+                .unwrap_or(0.0);
 
             let mark = if base_asset.eq_ignore_ascii_case("USDT") {
                 1.0
@@ -932,29 +1118,12 @@ impl MonitorChannel {
                 return Ok(());
             }
 
-            let (total_equity, exposures) = {
-                let exposure_manager = inner.exposure_manager.borrow();
-                let total_equity = exposure_manager.total_equity();
-                let exposures = exposure_manager.exposures().to_vec();
-                (total_equity, exposures)
-            };
+            let state = Self::compute_basic_state(inner);
+            let total_equity = state.total_equity_usdt;
+            let abs_total_usdt = state.abs_total_exposure_usdt;
 
             if total_equity <= f64::EPSILON {
                 return Err("账户总权益近似为 0，无法计算总敞口占比".to_string());
-            }
-
-            let snap = inner.price_table.borrow().snapshot();
-            let mut abs_total_usdt = 0.0_f64;
-
-            for e in exposures.iter() {
-                let asset = e.asset.to_uppercase();
-                if asset == "USDT" {
-                    continue;
-                }
-                let sym = format!("{}USDT", asset);
-                let mark = snap.get(&sym).map(|p| p.mark_price).unwrap_or(0.0);
-                let exposure_usdt = (e.spot_total_wallet + e.um_net_position) * mark;
-                abs_total_usdt += exposure_usdt.abs();
             }
 
             let ratio = abs_total_usdt / total_equity;
@@ -995,13 +1164,12 @@ impl MonitorChannel {
                 format!("无法识别 symbol={} 的基础资产，无法校验 max_pos_u", symbol)
             })?;
 
-            let current_spot_qty = {
-                let exposure_manager = inner.exposure_manager.borrow();
-                exposure_manager
-                    .exposure_for_asset(&base_asset)
-                    .map(|entry| entry.spot_total_wallet)
-                    .unwrap_or(0.0)
-            };
+            let state = Self::compute_basic_state(inner);
+            let current_exposure_qty = state
+                .exposures
+                .get(&base_asset.to_uppercase())
+                .map(|(spot, um)| spot + um)
+                .unwrap_or(0.0);
 
             let base_upper = base_asset.to_uppercase();
             let mark_symbol = format!("{}USDT", base_upper);
@@ -1025,25 +1193,27 @@ impl MonitorChannel {
                 ));
             };
 
-            let projected_qty = current_spot_qty + additional_qty;
-            let current_usdt = current_spot_qty.abs() * price;
-            let order_usdt = additional_qty.abs() * price;
+            let add_base_qty =
+                Self::order_qty_to_base(inner, inner.open_venue, symbol, additional_qty);
+            let projected_qty = current_exposure_qty + add_base_qty;
+            let current_usdt = current_exposure_qty.abs() * price;
+            let order_usdt = add_base_qty.abs() * price;
             let projected_usdt = projected_qty.abs() * price;
             let limit_eps = 1e-6_f64;
 
             if projected_usdt > max_pos_u + limit_eps {
                 warn!(
-                    "symbol={} 当前现货={:.6}({:.4}USDT) 下单数量={:.6}({:.4}USDT) 预计现货={:.4}USDT 超过阈值 {:.4}USDT",
+                    "symbol={} 当前敞口={:.6}({:.4}USDT) 下单数量={:.6}({:.4}USDT) 预计敞口={:.4}USDT 超过阈值 {:.4}USDT",
                     symbol,
-                    current_spot_qty,
+                    current_exposure_qty,
                     current_usdt,
-                    additional_qty,
+                    add_base_qty,
                     order_usdt,
                     projected_usdt,
                     max_pos_u
                 );
                 return Err(format!(
-                    "symbol={} 预计现货持仓 {:.4}USDT 超过阈值 {:.4}USDT",
+                    "symbol={} 预计敞口 {:.4}USDT 超过阈值 {:.4}USDT",
                     symbol, projected_usdt, max_pos_u
                 ));
             }
@@ -1131,41 +1301,28 @@ impl MonitorChannel {
     /// 返回持仓数量，正数表示多头，负数表示空头
     pub fn get_position_qty(&self, symbol: &str, venue: TradingVenue) -> f64 {
         Self::with_inner(|inner| {
-            match venue {
-                TradingVenue::BinanceFutures => {
-                    // 查询 UM 合约头寸（带符号）
-                    if let Some(snapshot) = inner.um_manager.borrow().snapshot() {
-                        snapshot
-                            .positions
-                            .iter()
-                            .find(|p| p.symbol.eq_ignore_ascii_case(symbol))
-                            .map(|p| p.position_amt)
-                            .unwrap_or(0.0)
-                    } else {
-                        0.0
-                    }
-                }
-                TradingVenue::BinanceMargin => {
-                    // 查询 Margin/Spot 余额（带符号）
-                    // 需要从 symbol（如 "ILVUSDT"）中提取 base asset（如 "ILV"）
-                    let base_asset = symbol
-                        .trim_end_matches("USDT")
-                        .trim_end_matches("USDC")
-                        .trim_end_matches("BUSD")
-                        .trim_end_matches("FDUSD");
+            let leg = if venue == inner.open_venue {
+                &inner.open_leg
+            } else if venue == inner.hedge_venue {
+                &inner.hedge_leg
+            } else {
+                return 0.0;
+            };
 
-                    if let Some(snapshot) = inner.spot_manager.borrow().snapshot() {
-                        snapshot
-                            .balances
-                            .iter()
-                            .find(|b| b.asset.eq_ignore_ascii_case(base_asset))
-                            .map(|b| b.net_asset())
-                            .unwrap_or(0.0)
-                    } else {
-                        0.0
-                    }
+            match leg {
+                LegMgr::Margin { bal, .. } => {
+                    let symbol_upper = symbol.to_uppercase();
+                    let Some(base_asset) = extract_base_asset(&symbol_upper) else {
+                        return 0.0;
+                    };
+                    bal.borrow().net_position(&base_asset, None)
                 }
-                _ => 0.0,
+                LegMgr::Futures {
+                    um, min_qty_table, ..
+                } => {
+                    let table_ref = min_qty_table.borrow();
+                    um.borrow().net_position(symbol, Some(&table_ref))
+                }
             }
         })
     }
@@ -1248,385 +1405,14 @@ impl MonitorChannel {
 
 // ==================== Helper Functions ====================
 
-/// 刷新敞口：重新计算并打印敞口信息
-fn refresh_exposures(
-    um_manager: &Rc<RefCell<BinancePmUmAccountManager>>,
-    spot_manager: &Rc<RefCell<BinancePmSpotAccountManager>>,
-    exposure_manager: &Rc<RefCell<ExposureManager>>,
-    price_table: &Rc<RefCell<PriceTable>>,
-) {
-    let spot_snapshot = spot_manager.borrow().snapshot();
-    let um_snapshot = um_manager.borrow().snapshot();
-
-    let (Some(spot_snapshot), Some(um_snapshot)) = (spot_snapshot, um_snapshot) else {
-        return;
-    };
-
-    let positions_changed = exposure_manager
-        .borrow_mut()
-        .recompute(&um_snapshot, &spot_snapshot);
-
-    // 结合最新标记价格，估值并打印三线表（USDT 计价的敞口），便于核对
-    if let Ok(table) = price_table.try_borrow() {
-        let price_snap = table.snapshot();
-        {
-            let mut mgr = exposure_manager.borrow_mut();
-            mgr.revalue_with_prices(&price_snap);
-        }
-        if positions_changed {
-            let exposures = exposure_manager.borrow();
-            log_exposures(exposures.exposures(), &price_snap);
-            log_exposure_summary(
-                exposures.total_equity(),
-                exposures.total_abs_exposure(),
-                exposures.total_position(),
-            );
-            log_leverage_detail(
-                exposures.total_spot_value_usd(),
-                exposures.total_borrowed_usd(),
-                exposures.total_interest_usd(),
-                exposures.total_um_unrealized(),
-                exposures.total_equity(),
-                exposures.total_position(),
-            );
-        }
-    }
-}
-
-fn log_um_positions(positions: &[BinanceUmPosition]) {
-    if positions.is_empty() {
-        debug!("Binance UM account initialized: no open positions");
-        return;
-    }
-    debug!(
-        "Binance UM account initialized: {} positions",
-        positions.len()
-    );
-    for pos in positions {
-        if pos.position_amt.abs() > 1e-8 {
-            debug!(
-                "  UM position: {} amt={:.8} entry={:.4} upnl={:.4}",
-                pos.symbol, pos.position_amt, pos.entry_price, pos.unrealized_profit
-            );
-        }
-    }
-}
-
-fn log_spot_balances(balances: &[BinanceSpotBalance]) {
-    if balances.is_empty() {
-        debug!("Binance Spot account initialized: no balances");
-        return;
-    }
-    debug!(
-        "Binance Spot account initialized: {} assets",
-        balances.len()
-    );
-    for bal in balances {
-        let total_balance = bal.total_wallet_balance;
-        let net_asset = bal.net_asset();
-        if total_balance.abs() > 1e-8 || net_asset.abs() > 1e-8 {
-            debug!(
-                "  Spot balance: {} total={:.8} net={:.8} (margin_free={:.8} margin_locked={:.8})",
-                bal.asset, total_balance, net_asset, bal.cross_margin_free, bal.cross_margin_locked
-            );
-        }
-    }
-}
-
-fn log_exposures(entries: &[ExposureEntry], price_map: &BTreeMap<String, PriceEntry>) {
-    if entries.is_empty() {
-        info!("非 USDT 资产敞口为空");
-        return;
-    }
-
-    let mut sum_exposure_usdt = 0.0_f64;
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    for entry in entries {
-        let asset = entry.asset.to_uppercase();
-        if asset == "USDT" {
-            continue;
-        }
-        let sym = format!("{}USDT", asset);
-        let mark = price_map.get(&sym).map(|p| p.mark_price).unwrap_or(0.0);
-
-        // 如果有持仓但缺少价格，仍然显示（价格显示为 0）
-        let has_position =
-            entry.spot_total_wallet.abs() > 1e-8 || entry.um_net_position.abs() > 1e-8;
-        if mark == 0.0 && !has_position {
-            continue;
-        }
-
-        let spot_usdt = entry.spot_total_wallet * mark;
-        let um_usdt = entry.um_net_position * mark;
-        let exposure_usdt = spot_usdt + um_usdt;
-
-        // 按 USDT 价值过滤，< 1 USDT 的不显示（但有持仓且缺价格的仍显示）
-        if spot_usdt.abs() < 1.0 && um_usdt.abs() < 1.0 {
-            continue;
-        }
-        sum_exposure_usdt += exposure_usdt;
-
-        rows.push(vec![
-            entry.asset.clone(),
-            fmt_decimal(entry.spot_total_wallet),
-            fmt_decimal(spot_usdt),
-            fmt_decimal(entry.um_net_position),
-            fmt_decimal(um_usdt),
-            fmt_decimal(entry.exposure),
-            fmt_decimal(exposure_usdt),
-        ]);
-    }
-
-    rows.push(vec![
-        "TOTAL".to_string(),
-        "-".to_string(),
-        "-".to_string(),
-        "-".to_string(),
-        "-".to_string(),
-        "-".to_string(),
-        fmt_decimal(sum_exposure_usdt),
-    ]);
-
-    let table = render_three_line_table(
-        &[
-            "Asset",
-            "SpotQty",
-            "SpotUSDT",
-            "UMNetQty",
-            "UMNetUSDT",
-            "ExposureQty",
-            "ExposureUSDT",
-        ],
-        &rows,
-    );
-    info!("现货+UM 敞口汇总\n{}", table);
-}
-
-fn log_exposure_summary(total_equity: f64, total_exposure: f64, total_position: f64) {
-    let leverage = if total_equity.abs() <= f64::EPSILON {
-        0.0
-    } else {
-        total_position / total_equity
-    };
-
-    let max_leverage = PreTradeParamsLoader::instance().max_leverage();
-    let leverage_cell = format!("{} / {}", fmt_decimal(leverage), fmt_decimal(max_leverage));
-    let table = render_three_line_table(
-        &["TotalEquity", "TotalExposure", "Leverage"],
-        &[vec![
-            fmt_decimal(total_equity),
-            fmt_decimal(total_exposure),
-            leverage_cell,
-        ]],
-    );
-    info!("风险指标汇总\n{}", table);
-}
-
-fn log_leverage_detail(
-    total_spot_value: f64,
-    total_borrowed: f64,
-    total_interest: f64,
-    total_um_unrealized: f64,
-    total_equity: f64,
-    total_position: f64,
-) {
-    let leverage = if total_equity.abs() <= f64::EPSILON {
-        0.0
-    } else {
-        total_position / total_equity
-    };
-
-    let max_leverage = PreTradeParamsLoader::instance().max_leverage();
-    let leverage_cell = format!("{} / {}", fmt_decimal(leverage), fmt_decimal(max_leverage));
-
-    let table = render_three_line_table(
-        &[
-            "TotalAsset",
-            "Borrowed",
-            "Interest",
-            "UMUnrealized",
-            "TotalEquity",
-            "Leverage",
-        ],
-        &[vec![
-            fmt_decimal(total_spot_value),
-            fmt_decimal(total_borrowed),
-            fmt_decimal(total_interest),
-            fmt_decimal(total_um_unrealized),
-            fmt_decimal(total_equity),
-            leverage_cell,
-        ]],
-    );
-    info!("杠杆率详细信息\n{}", table);
-}
-
-fn fmt_decimal(value: f64) -> String {
-    if value == 0.0 {
-        return "0".to_string();
-    }
-    let mut s = format!("{:.6}", value);
-    if s.contains('.') {
-        while s.ends_with('0') {
-            s.pop();
-        }
-        if s.ends_with('.') {
-            s.pop();
-        }
-    }
-    if s.is_empty() {
-        "0".to_string()
-    } else {
-        s
-    }
-}
-
-fn render_three_line_table(headers: &[&str], rows: &[Vec<String>]) -> String {
-    let widths = compute_widths(headers, rows);
-    let mut out = String::new();
-    out.push_str(&build_separator(&widths, '-'));
-    out.push('\n');
-    out.push_str(&build_row(
-        headers
-            .iter()
-            .map(|h| h.to_string())
-            .collect::<Vec<String>>(),
-        &widths,
-    ));
-    out.push('\n');
-    out.push_str(&build_separator(&widths, '='));
-    if rows.is_empty() {
-        out.push('\n');
-        out.push_str(&build_separator(&widths, '-'));
-        return out;
-    }
-    for row in rows {
-        out.push('\n');
-        out.push_str(&build_row(row.clone(), &widths));
-    }
-    out.push('\n');
-    out.push_str(&build_separator(&widths, '-'));
-    out
-}
-
-fn compute_widths(headers: &[&str], rows: &[Vec<String>]) -> Vec<usize> {
-    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
-    for row in rows {
-        for (idx, cell) in row.iter().enumerate() {
-            if idx >= widths.len() {
-                continue;
-            }
-            widths[idx] = widths[idx].max(cell.len());
-        }
-    }
-    widths
-}
-
-fn build_separator(widths: &[usize], fill: char) -> String {
-    let mut line = String::new();
-    line.push('+');
-    for width in widths {
-        line.push_str(&fill.to_string().repeat(width + 2));
-        line.push('+');
-    }
-    line
-}
-
-fn build_row(cells: Vec<String>, widths: &[usize]) -> String {
-    let mut row = String::new();
-    row.push('|');
-    for (cell, width) in cells.iter().zip(widths.iter()) {
-        row.push(' ');
-        row.push_str(&format!("{:<width$}", cell, width = *width));
-        row.push(' ');
-        row.push('|');
-    }
-    row
-}
-
-/// 从账户快照中收集需要的价格符号
-fn collect_price_symbols(
-    set: &mut BTreeSet<String>,
-    um_snapshot: &BinanceUmAccountSnapshot,
-    spot_snapshot: &BinanceSpotBalanceSnapshot,
-) {
-    for pos in &um_snapshot.positions {
-        set.insert(pos.symbol.to_uppercase());
-    }
-    for bal in &spot_snapshot.balances {
-        if bal.asset.eq_ignore_ascii_case("USDT") {
-            continue;
-        }
-        set.insert(format!("{}USDT", bal.asset.to_uppercase()));
-    }
-}
-
-/// 分发 ExecutionReport 到相应的策略
-fn dispatch_execution_report(
+/// 通用订单/成交回报分发：适用于实现了 OrderUpdate + TradeUpdate 的消息
+fn dispatch_order_update_generic<T>(
     strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
-    report: &ExecutionReportMsg,
-) {
-    let order_id = report.client_order_id;
-    let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
-    let mut matched = false;
-
-    for strategy_id in strategy_ids {
-        let mut mgr = strategy_mgr.borrow_mut();
-        if let Some(mut strategy) = mgr.take(strategy_id) {
-            if strategy.is_strategy_order(order_id) {
-                matched = true;
-                match report.execution_type() {
-                    ExecutionType::New | ExecutionType::Canceled => {
-                        strategy.apply_order_update_with_record(report);
-                    }
-                    ExecutionType::Trade => {
-                        strategy.apply_trade_update_with_record(report);
-                    }
-                    ExecutionType::Expired | ExecutionType::Rejected => {
-                        warn!(
-                            "Unexpected execution type: {:?}, sym={} cli_id={} ord_id={}",
-                            report.execution_type(),
-                            report.symbol,
-                            report.client_order_id,
-                            report.order_id
-                        );
-                        strategy.apply_order_update_with_record(report);
-                    }
-                    _ => {
-                        log::error!(
-                            "Unhandled execution type: {:?}, sym={} cli_id={} ord_id={}",
-                            report.execution_type(),
-                            report.symbol,
-                            report.client_order_id,
-                            report.order_id
-                        );
-                    }
-                }
-            }
-            if strategy.is_active() {
-                mgr.insert(strategy);
-            }
-        }
-    }
-
-    if !matched {
-        let expected_strategy_id = (order_id >> 32) as i32;
-        debug!(
-            "executionReport unmatched: sym={} cli_id={} ord_id={} status={} expect_strategy={}",
-            report.symbol,
-            report.client_order_id,
-            report.order_id,
-            report.order_status,
-            expected_strategy_id
-        );
-    }
-}
-
-/// 分发 OrderTradeUpdate 到相应的策略
-fn dispatch_order_trade_update(
-    strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
-    update: &OrderTradeUpdateMsg,
-) {
-    let order_id: i64 = update.client_order_id;
+    update: &T,
+) where
+    T: OrderUpdate + TradeUpdate,
+{
+    let order_id = OrderUpdate::client_order_id(update);
     let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
     let mut matched = false;
 
@@ -1646,9 +1432,9 @@ fn dispatch_order_trade_update(
                         warn!(
                             "Unexpected execution type: {:?}, sym={} cli_id={} ord_id={}",
                             update.execution_type(),
-                            update.symbol,
-                            update.client_order_id,
-                            update.order_id
+                            OrderUpdate::symbol(update),
+                            OrderUpdate::client_order_id(update),
+                            OrderUpdate::order_id(update)
                         );
                         strategy.apply_order_update_with_record(update);
                     }
@@ -1656,9 +1442,9 @@ fn dispatch_order_trade_update(
                         log::error!(
                             "Unhandled execution type: {:?}, sym={} cli_id={} ord_id={}",
                             update.execution_type(),
-                            update.symbol,
-                            update.client_order_id,
-                            update.order_id
+                            OrderUpdate::symbol(update),
+                            OrderUpdate::client_order_id(update),
+                            OrderUpdate::order_id(update)
                         );
                     }
                 }
@@ -1671,9 +1457,12 @@ fn dispatch_order_trade_update(
 
     if !matched {
         debug!(
-            "orderTradeUpdate not matched to any strategy: client_order_id={} client_order_id_str='{}'",
-            order_id,
-            update.client_order_id_str
+            "order update unmatched: sym={} cli_id={} ord_id={} x={:?} X={:?}",
+            OrderUpdate::symbol(update),
+            OrderUpdate::client_order_id(update),
+            OrderUpdate::order_id(update),
+            update.execution_type(),
+            update.status()
         );
     }
 }

@@ -12,6 +12,7 @@
 pub mod common;
 pub mod config_loader;
 pub mod decision;
+pub mod fr_signal_state;
 pub mod fr_threshold_loader;
 pub mod funding_rate_factor;
 pub mod mkt_channel;
@@ -37,6 +38,10 @@ pub use spread_threshold_loader::load_from_redis as load_spread_thresholds;
 
 // 公共导出 - 单例访问器
 pub use decision::FrDecision;
+pub use fr_signal_state::{
+    CompareOpTag, FrSignalStateBatch, FrSignalStateEntry, SignalTag, SpreadTypeTag,
+    DEFAULT_STATE_CHANNEL,
+};
 pub use mkt_channel::MktChannel;
 pub use rate_fetcher::{ExchangeConfig, RateFetcher, BINANCE_CONFIG, OKEX_CONFIG};
 pub use symbol_list::SymbolList;
