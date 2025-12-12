@@ -5,6 +5,7 @@
 //! 支持：
 //! - Binance: 4h/8h 资金费率 + 借贷利率
 //! - OKEx: 1h/2h/4h/6h/8h 资金费率
+//! - Bybit/Bitget/Gate: 8h 资金费率（Gate 同时支持签名拉取借贷利率）
 
 use anyhow::Result;
 use chrono::{Timelike, Utc};
@@ -12,12 +13,14 @@ use hmac::{Hmac, Mac};
 use log::{debug, info, warn};
 use reqwest::Client;
 use serde::Deserialize;
-use sha2::Sha256;
+use serde_json::Value;
+use sha2::{Digest, Sha256, Sha512};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tokio::time::{sleep, Duration};
 
 type HmacSha256 = Hmac<Sha256>;
+type HmacSha512 = Hmac<Sha512>;
 
 use super::common::{FundingRatePeriod, RateFetcherTrait};
 use super::symbol_list::SymbolList;
@@ -131,6 +134,25 @@ struct GateFundingRateItem {
     r: String,
 }
 
+/// Gate.io 历史借贷利率响应
+#[derive(Debug, Deserialize)]
+struct GateLoanRateResponse {
+    #[allow(dead_code)]
+    currency: String,
+    #[serde(default)]
+    rates: Vec<GateLoanRateItem>,
+}
+
+/// Gate.io 历史借贷利率项（每小时一个点）
+#[derive(Debug, Deserialize)]
+struct GateLoanRateItem {
+    /// 时间戳（毫秒）
+    #[allow(dead_code)]
+    time: i64,
+    /// 利率字符串
+    rate: String,
+}
+
 /// Okex 借贷利率缓存服务响应
 #[derive(Debug, Deserialize)]
 struct OkexLoanRateResponse {
@@ -222,8 +244,11 @@ const OKEX_FUNDING_RATE_API: &str = "https://www.okx.com/api/v5/public/funding-r
 const BITGET_FUNDING_RATE_HISTORY_API: &str =
     "https://api.bitget.com/api/v3/market/history-fund-rate";
 const BYBIT_FUNDING_RATE_HISTORY_API: &str = "https://api.bybit.com/v5/market/funding/history";
-const GATE_FUNDING_RATE_HISTORY_API: &str =
-    "https://api.gateio.ws/api/v4/futures/usdt/funding_rate";
+// Gate 仅支持实盘，Base URL 固定写死，不做配置化
+const GATE_API_BASE_URL: &str = "https://api.gateio.ws/api/v4";
+const GATE_FUNDING_RATE_HISTORY_PATH: &str = "/futures/usdt/funding_rate";
+const GATE_LOAN_RATE_HISTORY_PATH: &str = "/unified/history_loan_rate";
+const GATE_LOAN_RATE_ESTIMATE_PATH: &str = "/unified/estimate_rate";
 const DEFAULT_OKEX_LOAN_RATE_URL: &str = "http://127.0.0.1:28901/rates";
 
 // ==================== Thread-local 单例 ====================
@@ -269,6 +294,10 @@ struct RateFetcherInner {
     binance_api_secret: Option<String>,
     /// Okex 借贷利率缓存服务地址
     okex_loan_rate_url: Option<String>,
+    /// Gate API Key（必填，仅 Gate 使用）
+    gate_api_key: Option<String>,
+    /// Gate API Secret（必填，仅 Gate 使用）
+    gate_api_secret: Option<String>,
 }
 
 impl RateFetcher {
@@ -314,6 +343,8 @@ impl RateFetcher {
                     binance_api_key: None,
                     binance_api_secret: None,
                     okex_loan_rate_url: None,
+                    gate_api_key: None,
+                    gate_api_secret: None,
                 };
                 *frf.borrow_mut() = Some(inner);
             }
@@ -370,8 +401,14 @@ impl RateFetcher {
                 Self::spawn_bybit_fetch_task();
             }
             Exchange::Gate => {
+                let api_key = std::env::var("GATE_API_KEY")
+                    .expect("Gate 需要环境变量 GATE_API_KEY（Access Key），未设置将无法启动");
+                let api_secret = std::env::var("GATE_API_SECRET")
+                    .expect("Gate 需要环境变量 GATE_API_SECRET（Secret Key），未设置将无法启动");
                 Self::with_inner_mut(|inner| {
                     inner.venue_states.entry(GATE_CONFIG.venue).or_default();
+                    inner.gate_api_key = Some(api_key.clone());
+                    inner.gate_api_secret = Some(api_secret.clone());
                 });
                 info!("RateFetcher: Gate 初始化完成");
                 Self::spawn_gate_fetch_task();
@@ -1369,6 +1406,60 @@ impl RateFetcher {
 
     // ==================== Gate 拉取任务 ====================
 
+    /// Gate 存储/查询 key 规范化（移除分隔符）
+    fn normalize_gate_symbol(symbol: &str) -> String {
+        normalize_symbol_for_whitelist(symbol, TradingVenue::GateFutures)
+    }
+
+    /// 将本地 symbol 转换为 Gate futures API 需要的 contract（如 BTCUSDT -> BTC_USDT）
+    fn format_gate_contract(symbol: &str) -> String {
+        let mut upper = symbol.to_uppercase().replace('-', "_");
+        if let Some(stripped) = upper.strip_suffix("_SWAP") {
+            upper = stripped.to_string();
+        } else if let Some(stripped) = upper.strip_suffix("-SWAP") {
+            upper = stripped.to_string();
+        } else if let Some(stripped) = upper.strip_suffix("SWAP") {
+            upper = stripped.to_string();
+        }
+
+        if upper.contains('_') {
+            return upper;
+        }
+
+        for quote in ["USDT", "USDC", "USD"] {
+            if let Some(base) = upper.strip_suffix(quote) {
+                let base = base.trim_end_matches('_').trim_end_matches('-');
+                if !base.is_empty() {
+                    return format!("{}_{}", base, quote);
+                }
+            }
+        }
+
+        upper
+    }
+
+    fn sign_gate_request(
+        secret: &str,
+        method: &str,
+        path: &str,
+        query: &str,
+        body: &str,
+        timestamp: i64,
+    ) -> Result<String> {
+        let body_hash = hex::encode(Sha512::digest(body.as_bytes()));
+        let to_sign = format!(
+            "{}\n{}\n{}\n{}\n{}",
+            method.to_uppercase(),
+            path,
+            query,
+            body_hash,
+            timestamp
+        );
+        let mut mac = HmacSha512::new_from_slice(secret.as_bytes()).expect("invalid secret");
+        mac.update(to_sign.as_bytes());
+        Ok(hex::encode(mac.finalize().into_bytes()))
+    }
+
     fn spawn_gate_fetch_task() {
         tokio::task::spawn_local(async move {
             info!("Gate 费率拉取任务启动（{}秒间隔）", FETCH_INTERVAL_SECS);
@@ -1401,10 +1492,16 @@ impl RateFetcher {
         } else if !new_symbols.is_empty() {
             &new_symbols
         } else {
+            // 无增量时不拉资金费率；借贷利率也沿用上次结果
             return Ok(());
         };
 
         Self::fetch_gate_funding_rates(symbols_to_fetch).await?;
+        if is_full_fetch || all_changed || !new_symbols.is_empty() {
+            if let Err(e) = Self::fetch_gate_lending_rates(&online_symbols).await {
+                warn!("Gate 借贷利率拉取失败: {:?}", e);
+            }
+        }
 
         if all_changed || is_full_fetch {
             Self::print_gate_rate_table(&online_symbols);
@@ -1423,25 +1520,27 @@ impl RateFetcher {
         let mut fail = 0;
 
         for symbol in symbols {
-            match Self::fetch_gate_funding_history(&client, symbol, limit).await {
+            let contract = Self::format_gate_contract(symbol);
+            let store_key = Self::normalize_gate_symbol(symbol);
+            match Self::fetch_gate_funding_history(&client, &contract, limit).await {
                 Ok((rates, period)) if !rates.is_empty() => {
                     Self::with_inner_mut(|inner| {
                         inner
                             .funding_rates
                             .entry(GATE_CONFIG.venue)
                             .or_default()
-                            .insert(symbol.clone(), rates);
+                            .insert(store_key.clone(), rates);
                         inner
                             .funding_periods
                             .entry(GATE_CONFIG.venue)
                             .or_default()
-                            .insert(symbol.clone(), period);
+                            .insert(store_key.clone(), period);
                     });
                     success += 1;
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    warn!("Gate {} 资金费率失败: {:?}", symbol, e);
+                    warn!("Gate {} 资金费率失败: {:?}", contract, e);
                     fail += 1;
                 }
             }
@@ -1453,6 +1552,194 @@ impl RateFetcher {
         Ok(())
     }
 
+    async fn fetch_gate_lending_rates(symbols: &[String]) -> Result<()> {
+        let assets = Self::collect_base_assets(symbols);
+        if assets.is_empty() {
+            return Ok(());
+        }
+
+        // 1) 先拉历史借贷利率，用于预测（predict_daily_rate）
+        let mut predict_map: HashMap<String, LendingRateCache> = HashMap::new();
+        let mut success = 0;
+        let mut fail = 0;
+        for asset in &assets {
+            match Self::fetch_gate_lending_rate_for_asset(asset).await {
+                Ok(Some(rates)) => {
+                    let predict = if rates.is_empty() {
+                        0.0
+                    } else {
+                        rates.iter().sum::<f64>() / rates.len() as f64
+                    };
+                    predict_map.insert(
+                        asset.to_uppercase(),
+                        LendingRateCache {
+                            predict_daily_rate: predict,
+                            current_daily_rate: 0.0, // 先占位，后面用 estimate 覆盖
+                            raw_daily_rates: rates,
+                        },
+                    );
+                    success += 1;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!("Gate {} 历史借贷利率失败: {:?}", asset, e);
+                    fail += 1;
+                }
+            }
+            sleep(Duration::from_millis(80)).await;
+        }
+
+        // 2) 再拉实时 estimate_rate，用于 current_daily_rate（和 Binance 逻辑类似）
+        let current_map = Self::fetch_gate_estimate_rates(&assets)
+            .await
+            .unwrap_or_default();
+        for (asset, current_daily) in current_map {
+            if let Some(cache) = predict_map.get_mut(&asset) {
+                cache.current_daily_rate = current_daily;
+            }
+        }
+
+        // 3) 写入缓存
+        if !predict_map.is_empty() {
+            Self::with_inner_mut(|inner| {
+                inner
+                    .lending_rates
+                    .insert(GATE_CONFIG.venue, predict_map.clone());
+            });
+        }
+
+        if success + fail > 0 {
+            info!(
+                "Gate 借贷利率: 历史成功 {}, 失败 {}, 实时更新 {} 个",
+                success,
+                fail,
+                predict_map
+                    .iter()
+                    .filter(|(_, v)| v.current_daily_rate > 0.0)
+                    .count()
+            );
+        }
+        Ok(())
+    }
+
+    /// 批量从 Gate estimate_rate 获取实时借贷利率（最多10个币种一批）
+    async fn fetch_gate_estimate_rates(assets: &[String]) -> Result<HashMap<String, f64>> {
+        if assets.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let (client, api_key, api_secret) = Self::with_inner(|inner| {
+            (
+                inner.http_client.clone(),
+                inner.gate_api_key.clone(),
+                inner.gate_api_secret.clone(),
+            )
+        });
+        let (api_key, api_secret) = match (api_key, api_secret) {
+            (Some(k), Some(s)) => (k, s),
+            _ => return Ok(HashMap::new()),
+        };
+
+        let mut result: HashMap<String, f64> = HashMap::new();
+        let mut i = 0;
+        while i < assets.len() {
+            let chunk = &assets[i..assets.len().min(i + 10)];
+            let currencies = chunk
+                .iter()
+                .map(|a| a.to_uppercase())
+                .collect::<Vec<_>>()
+                .join(",");
+            let query = format!("currencies={}", currencies);
+            let url = format!(
+                "{}{}?{}",
+                GATE_API_BASE_URL, GATE_LOAN_RATE_ESTIMATE_PATH, query
+            );
+            let ts = Utc::now().timestamp();
+            let sign_path = format!("/api/v4{}", GATE_LOAN_RATE_ESTIMATE_PATH);
+            let sign = Self::sign_gate_request(&api_secret, "GET", &sign_path, &query, "", ts)?;
+
+            let resp = client
+                .get(&url)
+                .header("Accept", "application/json")
+                .header("Content-Type", "application/json")
+                .header("KEY", &api_key)
+                .header("Timestamp", ts.to_string())
+                .header("SIGN", sign)
+                .send()
+                .await?;
+
+            if resp.status().is_success() {
+                let v: Value = resp.json().await.unwrap_or(Value::Null);
+                if let Value::Object(map) = v {
+                    for (k, val) in map {
+                        let rate_str = val.as_str().unwrap_or_default();
+                        if let Ok(hourly) = rate_str.parse::<f64>() {
+                            if hourly > 0.0 {
+                                // estimate_rate 返回小时利率，转为日利率存入缓存
+                                result.insert(k.to_uppercase(), hourly * 24.0);
+                            }
+                        }
+                    }
+                }
+            }
+
+            i += 10;
+            sleep(Duration::from_millis(60)).await;
+        }
+
+        Ok(result)
+    }
+
+    async fn fetch_gate_lending_rate_for_asset(asset: &str) -> Result<Option<Vec<f64>>> {
+        let (client, api_key, api_secret) = Self::with_inner(|inner| {
+            (
+                inner.http_client.clone(),
+                inner.gate_api_key.clone(),
+                inner.gate_api_secret.clone(),
+            )
+        });
+        let (api_key, api_secret) = match (api_key, api_secret) {
+            (Some(k), Some(s)) => (k, s),
+            _ => return Ok(None),
+        };
+
+        let currency = asset.to_uppercase();
+        let query = format!("currency={}&limit=100", currency);
+        let url = format!(
+            "{}{}?{}",
+            GATE_API_BASE_URL, GATE_LOAN_RATE_HISTORY_PATH, query
+        );
+        let ts = Utc::now().timestamp(); // Gate 使用秒级时间戳
+        let sign_path = format!("/api/v4{}", GATE_LOAN_RATE_HISTORY_PATH);
+        let sign = Self::sign_gate_request(&api_secret, "GET", &sign_path, &query, "", ts)?;
+
+        let resp = client
+            .get(&url)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .header("KEY", api_key)
+            .header("Timestamp", ts.to_string())
+            .header("SIGN", sign)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+
+        let data: GateLoanRateResponse = resp.json().await?;
+        // Gate 每小时一个 rate；这里按“小时利率 * 24 => 日利率”存入缓存
+        let rates: Vec<f64> = data
+            .rates
+            .iter()
+            .take(24)
+            .filter_map(|it| it.rate.parse::<f64>().ok())
+            .map(|hourly| hourly * 24.0)
+            .collect();
+
+        Ok(if rates.is_empty() { None } else { Some(rates) })
+    }
+
     /// 从 Gate.io API 获取资金费率历史，同时推断周期
     /// Gate 响应格式: [{"t": 1543968000, "r": "0.000157"}, ...]
     async fn fetch_gate_funding_history(
@@ -1461,8 +1748,9 @@ impl RateFetcher {
         limit: usize,
     ) -> Result<(Vec<f64>, FundingRatePeriod)> {
         let limit_s = limit.max(1).min(1000).to_string();
+        let url = format!("{}{}", GATE_API_BASE_URL, GATE_FUNDING_RATE_HISTORY_PATH);
         let resp = client
-            .get(GATE_FUNDING_RATE_HISTORY_API)
+            .get(&url)
             .query(&[("contract", symbol), ("limit", &limit_s)])
             .send()
             .await?;
@@ -1508,30 +1796,41 @@ impl RateFetcher {
         let mut data: Vec<_> = symbols
             .iter()
             .map(|s| {
+                let key = Self::normalize_symbol_for_lookup(s, GATE_CONFIG.venue);
                 let period = Self::with_inner(|inner| {
                     inner
                         .funding_periods
                         .get(&GATE_CONFIG.venue)
-                        .and_then(|m| m.get(s))
+                        .and_then(|m| m.get(&key))
                         .copied()
                         .unwrap_or(FundingRatePeriod::Hours8)
                 });
                 let fr = RateFetcher::instance()
                     .get_predicted_funding_rate(s, GATE_CONFIG.venue)
                     .map(|(_, v)| v);
-                (s.clone(), period, fr)
+                let loan = RateFetcher::instance()
+                    .get_predict_loan_rate(s, GATE_CONFIG.venue)
+                    .map(|(_, v)| v);
+                (s.clone(), period, fr, loan)
             })
             .collect();
         data.sort_by(|a, b| a.0.cmp(&b.0));
 
-        info!("┌────────────────────────────────────────────────┐");
-        info!("│ Gate                │ Period │ Predict FR      │");
-        info!("├────────────────────────────────────────────────┤");
-        for (sym, period, fr) in data {
+        info!("┌──────────────────────────────────────────────────────────────┐");
+        info!("│ Gate                │ Period │ Predict FR      │ Predict Loan │");
+        info!("├──────────────────────────────────────────────────────────────┤");
+        for (sym, period, fr, loan) in data {
             let fr_s = fr.map_or("          N/A".into(), |v| format!("{:>12.6}%", v * 100.0));
-            info!("│ {:<19} │ {:>6} │ {} │", sym, period.as_str(), fr_s);
+            let loan_s = loan.map_or("          N/A".into(), |v| format!("{:>12.6}%", v * 100.0));
+            info!(
+                "│ {:<19} │ {:>6} │ {} │ {} │",
+                sym,
+                period.as_str(),
+                fr_s,
+                loan_s
+            );
         }
-        info!("└────────────────────────────────────────────────┘");
+        info!("└──────────────────────────────────────────────────────────────┘");
     }
 
     // ==================== 公共工具方法 ====================
@@ -1631,10 +1930,12 @@ impl RateFetcher {
 
     fn normalize_symbol_for_lookup(symbol: &str, venue: TradingVenue) -> String {
         if matches!(venue, TradingVenue::OkexFutures | TradingVenue::OkexMargin) {
-            Self::normalize_okex_symbol(symbol)
-        } else {
-            symbol.to_uppercase()
+            return Self::normalize_okex_symbol(symbol);
         }
+        if matches!(venue, TradingVenue::GateFutures | TradingVenue::GateMargin) {
+            return Self::normalize_gate_symbol(symbol);
+        }
+        symbol.to_uppercase()
     }
 
     fn collect_base_assets(symbols: &[String]) -> Vec<String> {

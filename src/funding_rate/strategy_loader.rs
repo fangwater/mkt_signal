@@ -113,10 +113,7 @@ impl StrategyParams {
         let redis_key = strategy_params_key(exchange);
         let hash_map = client.hgetall_map(&redis_key).await?;
         if hash_map.is_empty() {
-            panic!(
-                "Redis hash '{}' 为空或不存在，无法加载策略参数",
-                redis_key
-            );
+            panic!("Redis hash '{}' 为空或不存在，无法加载策略参数", redis_key);
         }
 
         // 手动解析 Hash 字段
