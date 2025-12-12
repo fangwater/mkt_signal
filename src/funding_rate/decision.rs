@@ -22,6 +22,7 @@ use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::time_util::get_timestamp_us;
+use crate::funding_rate::FundingRatePeriod;
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
@@ -116,6 +117,9 @@ pub struct FrDecision {
 
     /// 对冲限价偏移（例如 0.0003 表示万分之 3）
     hedge_price_offset: f64,
+
+    /// 对冲 request_seq 激进阈值（>=该值视为 aggressive，对冲不偏移但仍为 maker）
+    hedge_aggressive_seq_threshold: u32,
 
     /// 信号冷却时间（微秒），默认 5 秒
     /// 每种信号类型（ArbOpen/ArbClose/ArbCancel）有独立的冷却时间
@@ -248,6 +252,7 @@ impl FrDecision {
             open_order_ttl_us: 120_000_000,
             hedge_timeout_mm_us: 30_000_000,
             hedge_price_offset: 0.0003,
+            hedge_aggressive_seq_threshold: 6,
             signal_cooldown_us: 5_000_000, // 默认 5 秒
             last_open_ts: Rc::new(RefCell::new(HashMap::new())),
             last_close_ts: Rc::new(RefCell::new(HashMap::new())),
@@ -664,83 +669,56 @@ impl FrDecision {
             .price_tick(&hedge_symbol)
             .unwrap_or(0.0);
 
-        let offset = if query.request_seq < 6 {
+        let now = get_timestamp_us();
+        let seq_threshold = self.hedge_aggressive_seq_threshold;
+        let aggressive = query.request_seq >= seq_threshold;
+        let offset = if aggressive {
+            0.0
+        } else {
             self.hedge_price_offset.abs()
+        };
+
+        // 统一按 maker 限价对冲：aggressive 仅代表不使用偏移（直接挂在 bid/ask）
+        let base_price = match side {
+            Side::Buy => fut_quote.bid,
+            Side::Sell => fut_quote.ask,
+        };
+        // ask 是卖价，用于 sell 挂单；bid 是买价，用于 buy 挂单
+        let limit_price = if base_price > 0.0 {
+            match side {
+                Side::Buy => base_price * (1.0 - offset),
+                Side::Sell => base_price * (1.0 + offset),
+            }
         } else {
             0.0
         };
 
-        let now = get_timestamp_us();
-        let aggressive = query.request_seq >= 6;
-
-        let ctx = if aggressive {
-            let price = match side {
-                Side::Buy => fut_quote.ask,
-                Side::Sell => fut_quote.bid,
-            };
-            if price <= 0.0 {
-                warn!(
-                    "FrDecision: hedge query aggressive price 无效 strategy_id={} price={:.8}",
-                    query.strategy_id, price
-                );
-                return;
-            }
-            let mut ctx =
-                ArbHedgeCtx::new_taker(query.strategy_id, query.client_order_id, qty, side.to_u8());
-            // 设置开仓侧信息（从query获取venue/symbol，盘口从MktChannel获取）
-            ctx.opening_leg = TradingLeg::new(open_venue, open_quote.bid, open_quote.ask);
-            ctx.set_opening_symbol(&open_symbol);
-            // 设置对冲侧信息
-            ctx.hedging_leg = TradingLeg::new(hedge_venue, fut_quote.bid, fut_quote.ask);
-            ctx.set_hedging_symbol(&hedge_symbol);
-            ctx.market_ts = now;
-            ctx.price_offset = 0.0; // aggressive taker order, no offset
-            ctx
-        } else {
-            let base_price = match side {
-                Side::Buy => fut_quote.bid,
-                Side::Sell => fut_quote.ask,
-            };
-            // 对对冲单定价
-            // ask是卖价，用于sell挂单
-            // bid是买价，用于buy挂单
-            let limit_price = if base_price > 0.0 {
-                match side {
-                    Side::Buy => base_price * (1.0 - offset),
-                    Side::Sell => base_price * (1.0 + offset),
-                }
-            } else {
-                0.0
-            };
-
-            if limit_price <= 0.0 {
-                warn!(
-                    "FrDecision: hedge query limit_price 无效 strategy_id={} price={:.8}",
-                    query.strategy_id, limit_price
-                );
-                return;
-            }
-
-            let mut ctx = ArbHedgeCtx::new_maker(
-                query.strategy_id,
-                query.client_order_id,
-                qty,
-                side.to_u8(),
-                limit_price,
-                price_tick,
-                false,
-                now + self.hedge_timeout_mm_us,
+        if limit_price <= 0.0 {
+            warn!(
+                "FrDecision: hedge query limit_price 无效 strategy_id={} price={:.8}",
+                query.strategy_id, limit_price
             );
-            // 设置开仓侧信息（从query获取venue/symbol，盘口从MktChannel获取）
-            ctx.opening_leg = TradingLeg::new(open_venue, open_quote.bid, open_quote.ask);
-            ctx.set_opening_symbol(&open_symbol);
-            // 设置对冲侧信息
-            ctx.hedging_leg = TradingLeg::new(hedge_venue, fut_quote.bid, fut_quote.ask);
-            ctx.set_hedging_symbol(&hedge_symbol);
-            ctx.market_ts = now;
-            ctx.price_offset = offset; // maker order with price offset
-            ctx
-        };
+            return;
+        }
+
+        let mut ctx = ArbHedgeCtx::new_maker(
+            query.strategy_id,
+            query.client_order_id,
+            qty,
+            side.to_u8(),
+            limit_price,
+            price_tick,
+            false,
+            now + self.hedge_timeout_mm_us,
+        );
+        // 设置开仓侧信息（从 query 获取 venue/symbol，盘口从 MktChannel 获取）
+        ctx.opening_leg = TradingLeg::new(open_venue, open_quote.bid, open_quote.ask);
+        ctx.set_opening_symbol(&open_symbol);
+        // 设置对冲侧信息
+        ctx.hedging_leg = TradingLeg::new(hedge_venue, fut_quote.bid, fut_quote.ask);
+        ctx.set_hedging_symbol(&hedge_symbol);
+        ctx.market_ts = now;
+        ctx.price_offset = offset; // aggressive 时 offset=0.0
 
         let signal = TradeSignal::create(SignalType::ArbHedge, now, 0.0, ctx.to_bytes());
 
@@ -753,8 +731,15 @@ impl FrDecision {
         }
 
         info!(
-            "FrDecision: 回复 hedge query strategy_id={} symbol={} qty={:.6} seq={}",
-            query.strategy_id, hedge_symbol, qty, query.request_seq
+            "FrDecision: 回复 hedge query strategy_id={} hedge_symbol={} qty={:.6} side={:?} seq={} aggressive={} limit_price={:.8} offset={:.6} (maker)",
+            query.strategy_id,
+            hedge_symbol,
+            qty,
+            side,
+            query.request_seq,
+            aggressive,
+            limit_price,
+            offset
         );
     }
 
@@ -1070,6 +1055,19 @@ impl FrDecision {
         info!("FrDecision: hedge_price_offset 更新为 {:.6}", offset);
     }
 
+    /// 更新对冲 request_seq 激进阈值（>=该值视为 aggressive，不偏移但仍挂 maker）
+    pub fn update_hedge_aggressive_seq_threshold(&mut self, threshold: u32) {
+        if threshold == 0 {
+            warn!("FrDecision: hedge_aggressive_seq_threshold=0 无效，忽略更新");
+            return;
+        }
+        self.hedge_aggressive_seq_threshold = threshold;
+        info!(
+            "FrDecision: hedge_aggressive_seq_threshold 更新为 {}",
+            threshold
+        );
+    }
+
     /// 更新信号冷却时间（秒）
     ///
     /// # 参数
@@ -1218,24 +1216,37 @@ impl FrDecision {
         use super::common::{ArbDirection, OperationType};
         use super::funding_rate_factor::FundingRateFactor;
         use super::mkt_channel::MktChannel;
-        use super::rate_fetcher::{RateFetcher, BINANCE_CONFIG};
+        use super::rate_fetcher::RateFetcher;
         use super::spread_factor::SpreadFactor;
 
         let fr_factor = FundingRateFactor::instance();
         let spread_factor = SpreadFactor::instance();
         let rate_fetcher = RateFetcher::instance();
         let mkt_channel = MktChannel::instance();
+        let (open_venue, hedge_venue) = FrDecision::with(|d| d.venues);
 
         // 先打印 FR 阈值配置
-        let period = BINANCE_CONFIG.period;
-        let fwd_open_config =
-            fr_factor.get_threshold_config(period, ArbDirection::Forward, OperationType::Open);
-        let fwd_close_config =
-            fr_factor.get_threshold_config(period, ArbDirection::Forward, OperationType::Close);
-        let bwd_open_config =
-            fr_factor.get_threshold_config(period, ArbDirection::Backward, OperationType::Open);
-        let bwd_close_config =
-            fr_factor.get_threshold_config(period, ArbDirection::Backward, OperationType::Close);
+        let default_period = FundingRatePeriod::Hours8;
+        let fwd_open_config = fr_factor.get_threshold_config(
+            default_period,
+            ArbDirection::Forward,
+            OperationType::Open,
+        );
+        let fwd_close_config = fr_factor.get_threshold_config(
+            default_period,
+            ArbDirection::Forward,
+            OperationType::Close,
+        );
+        let bwd_open_config = fr_factor.get_threshold_config(
+            default_period,
+            ArbDirection::Backward,
+            OperationType::Open,
+        );
+        let bwd_close_config = fr_factor.get_threshold_config(
+            default_period,
+            ArbDirection::Backward,
+            OperationType::Close,
+        );
 
         info!("FR 阈值配置:");
         if let Some(cfg) = &fwd_open_config {
@@ -1271,37 +1282,54 @@ impl FrDecision {
         let mut table_data: Vec<_> = symbols
             .iter()
             .map(|symbol| {
-                let period = rate_fetcher.get_period(symbol, BINANCE_CONFIG.venue);
+                let period = rate_fetcher.get_period(symbol, hedge_venue);
 
                 // 获取 FR、Loan、FR_MA 值
                 let fr = rate_fetcher
-                    .get_predicted_funding_rate(symbol, BINANCE_CONFIG.venue)
+                    .get_predicted_funding_rate(symbol, hedge_venue)
                     .map(|(_, v)| v)
                     .unwrap_or(0.0);
                 let predict_loan = rate_fetcher
-                    .get_predict_loan_rate(symbol, BINANCE_CONFIG.venue)
+                    .get_predict_loan_rate(symbol, hedge_venue)
                     .map(|(_, v)| v)
-                    .unwrap_or(0.0);
+                    .unwrap_or_else(|| {
+                        log::debug!(
+                            "PredLoan 缺失: symbol={} venue={:?}, 借贷利率可能未返回",
+                            symbol,
+                            hedge_venue
+                        );
+                        0.0
+                    });
                 let current_loan = rate_fetcher
-                    .get_current_loan_rate(symbol, BINANCE_CONFIG.venue)
+                    .get_current_loan_rate(symbol, hedge_venue)
                     .map(|(_, v)| v)
-                    .unwrap_or(0.0);
+                    .unwrap_or_else(|| {
+                        log::debug!(
+                            "CurLoan 缺失: symbol={} venue={:?}, 借贷利率可能未返回",
+                            symbol,
+                            hedge_venue
+                        );
+                        0.0
+                    });
                 let fr_ma = mkt_channel
-                    .get_funding_rate_mean(symbol, BINANCE_CONFIG.venue)
-                    .unwrap_or(0.0);
+                    .get_funding_rate_mean(symbol, hedge_venue)
+                    .unwrap_or_else(|| {
+                        log::debug!(
+                            "FR_MA 缺失: symbol={} venue={:?}, funding流可能未收到",
+                            symbol,
+                            hedge_venue
+                        );
+                        0.0
+                    });
                 // bwd open 使用 1.2 系数
                 let fr_predict_loan = fr + predict_loan * 1.2;
                 let fr_ma_cur_loan = fr_ma + current_loan;
 
                 // 检查 FR 信号（优先级与 get_funding_rate_signal 保持一致）
-                let forward_open =
-                    fr_factor.satisfy_forward_open(symbol, period, BINANCE_CONFIG.venue);
-                let forward_close =
-                    fr_factor.satisfy_forward_close(symbol, period, BINANCE_CONFIG.venue);
-                let backward_open =
-                    fr_factor.satisfy_backward_open(symbol, period, BINANCE_CONFIG.venue);
-                let backward_close =
-                    fr_factor.satisfy_backward_close(symbol, period, BINANCE_CONFIG.venue);
+                let forward_open = fr_factor.satisfy_forward_open(symbol, period, hedge_venue);
+                let forward_close = fr_factor.satisfy_forward_close(symbol, period, hedge_venue);
+                let backward_open = fr_factor.satisfy_backward_open(symbol, period, hedge_venue);
+                let backward_close = fr_factor.satisfy_backward_close(symbol, period, hedge_venue);
 
                 let fr_signal = if forward_close && backward_open {
                     "BwdOpen"
@@ -1320,30 +1348,14 @@ impl FrDecision {
                 };
 
                 // 检查 Spread 信号（价差只有 open 和 cancel，没有 close）
-                let spread_fwd_open = spread_factor.satisfy_forward_open(
-                    TradingVenue::BinanceMargin,
-                    symbol,
-                    BINANCE_CONFIG.venue,
-                    symbol,
-                );
-                let spread_bwd_open = spread_factor.satisfy_backward_open(
-                    TradingVenue::BinanceMargin,
-                    symbol,
-                    BINANCE_CONFIG.venue,
-                    symbol,
-                );
-                let spread_fwd_cancel = spread_factor.satisfy_forward_cancel(
-                    TradingVenue::BinanceMargin,
-                    symbol,
-                    BINANCE_CONFIG.venue,
-                    symbol,
-                );
-                let spread_bwd_cancel = spread_factor.satisfy_backward_cancel(
-                    TradingVenue::BinanceMargin,
-                    symbol,
-                    BINANCE_CONFIG.venue,
-                    symbol,
-                );
+                let spread_fwd_open =
+                    spread_factor.satisfy_forward_open(open_venue, symbol, hedge_venue, symbol);
+                let spread_bwd_open =
+                    spread_factor.satisfy_backward_open(open_venue, symbol, hedge_venue, symbol);
+                let spread_fwd_cancel =
+                    spread_factor.satisfy_forward_cancel(open_venue, symbol, hedge_venue, symbol);
+                let spread_bwd_cancel =
+                    spread_factor.satisfy_backward_cancel(open_venue, symbol, hedge_venue, symbol);
 
                 let spread_signal = if spread_fwd_cancel {
                     "FwdCancel"

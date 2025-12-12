@@ -411,6 +411,12 @@ impl MktChannel {
                                     // 零拷贝解析
                                     let symbol = FundingRateMsg::get_symbol(payload).to_uppercase();
                                     let funding_rate = FundingRateMsg::get_funding_rate(payload);
+                                    let mapped_for_open = crate::symbol_match::map_symbol_between_venues(
+                                        &symbol,
+                                        feed_venue,
+                                        open_venue,
+                                        MktMsgType::FundingRate,
+                                    );
 
                                     let symbol_for_decision = {
                                         let mut funding_rates_map = funding_rates.borrow_mut();
@@ -424,12 +430,10 @@ impl MktChannel {
                                             // 立刻更新均值
                                             rate_data.push(funding_rate);
 
-                                            // debug!(
-                                            //     "Funding Rate 更新: {} rate={:.8} mean={:.8}",
-                                            //     symbol,
-                                            //     funding_rate,
-                                            //     rate_data.get_mean().unwrap_or(0.0)
-                                            // );
+                                            info!(
+                                                "Funding 收到: feed={:?} raw_symbol={} mapped_for_open={} rate={:.8}",
+                                                feed_venue, symbol, mapped_for_open, funding_rate
+                                            );
                                             Some(symbol.clone())
                                         } else {
                                             None

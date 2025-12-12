@@ -47,19 +47,19 @@ DEFAULTS = {
             "resample_interval_ms": 1_000,
             "rolling_window": 100_000,
             "min_periods": 1,
-            "quantiles": [5, 10, 15, 85, 90, 95],
+            "quantiles": [10, 15],
         },
         "askbid": {
             "resample_interval_ms": 1_000,
             "rolling_window": 100_000,
             "min_periods": 1,
-            "quantiles": [5, 10, 15, 85, 90, 95],
+            "quantiles": [85, 90],
         },
         "spread": {
             "resample_interval_ms": 1_000,
             "rolling_window": 100_000,
             "min_periods": 1,
-            "quantiles": [5, 10, 15, 20, 25, 30, 70, 75, 80, 85, 90],
+            "quantiles": [15, 20, 25, 30],
         },
     },
 }
@@ -130,8 +130,7 @@ def parse_args() -> argparse.Namespace:
     hedge_venue = args.hedge_venue
 
     if not open_venue and not hedge_venue:
-        inferred = infer_venues_from_cwd()
-        if inferred:
+        if inferred := infer_venues_from_cwd():
             open_venue, hedge_venue = inferred
             print(
                 f"[INFO] 未提供 open/hedge，基于目录推断: open={open_venue}, hedge={hedge_venue}"
@@ -220,12 +219,10 @@ def validate_factors(factors: Dict[str, Any]) -> Dict[str, Any]:
                 raise SystemExit(f"factors.{factor_name}.{key} 需为正数")
             cleaned_cfg[key] = value
         quantiles_raw = cfg.get("quantiles", [])
-        if quantiles_raw is None:
-            quantiles = []
-        else:
+        quantiles = []
+        if quantiles_raw is not None:
             if not isinstance(quantiles_raw, list):
                 raise SystemExit(f"factors.{factor_name}.quantiles 需为数组")
-            quantiles = []
             for q in quantiles_raw:
                 try:
                     num = float(q)

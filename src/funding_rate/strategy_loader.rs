@@ -8,14 +8,25 @@ use anyhow::Result;
 use log::{info, warn};
 use serde::Deserialize;
 
+use crate::common::exchange::Exchange;
 use crate::common::redis_client::{RedisClient, RedisSettings};
 
-use super::common::FactorMode;
+use super::common::{venue_pair_for_exchange, FactorMode};
 use super::decision::FrDecision;
 use super::spread_factor::SpreadFactor;
 
 /// Redis Key 配置
-const REDIS_KEY_STRATEGY_PARAMS: &str = "fr_strategy_params";
+const REDIS_KEY_STRATEGY_PARAMS_PREFIX: &str = "fr_strategy_params";
+
+fn strategy_params_key(exchange: Exchange) -> String {
+    let (open_venue, hedge_venue) = venue_pair_for_exchange(exchange);
+    format!(
+        "{}_{}_{}",
+        REDIS_KEY_STRATEGY_PARAMS_PREFIX,
+        open_venue.data_pub_slug(),
+        hedge_venue.data_pub_slug()
+    )
+}
 
 /// 策略参数结构（从 Redis Hash 反序列化）
 #[derive(Debug, Clone, Deserialize)]
@@ -45,6 +56,10 @@ pub struct StrategyParams {
     #[serde(default = "default_hedge_price_offset")]
     pub hedge_price_offset: f64,
 
+    /// 对冲 request_seq 激进阈值（>=该值不偏移但仍挂 maker）
+    #[serde(default = "default_hedge_aggressive_seq_threshold")]
+    pub hedge_aggressive_seq_threshold: u32,
+
     /// 信号冷却时间（秒）
     #[serde(default = "default_signal_cooldown")]
     pub signal_cooldown: u64,
@@ -69,6 +84,9 @@ fn default_hedge_timeout() -> u64 {
 fn default_hedge_price_offset() -> f64 {
     0.0003
 }
+fn default_hedge_aggressive_seq_threshold() -> u32 {
+    6
+}
 fn default_signal_cooldown() -> u64 {
     5
 }
@@ -82,6 +100,7 @@ impl Default for StrategyParams {
             open_order_timeout: default_open_order_timeout(),
             hedge_timeout: default_hedge_timeout(),
             hedge_price_offset: default_hedge_price_offset(),
+            hedge_aggressive_seq_threshold: default_hedge_aggressive_seq_threshold(),
             signal_cooldown: default_signal_cooldown(),
         }
     }
@@ -89,9 +108,16 @@ impl Default for StrategyParams {
 
 impl StrategyParams {
     /// 从 Redis Hash 加载
-    pub(crate) async fn load_from_redis(redis: &RedisSettings) -> Result<Self> {
+    pub(crate) async fn load_from_redis(redis: &RedisSettings, exchange: Exchange) -> Result<Self> {
         let mut client = RedisClient::connect(redis.clone()).await?;
-        let hash_map = client.hgetall_map(REDIS_KEY_STRATEGY_PARAMS).await?;
+        let redis_key = strategy_params_key(exchange);
+        let hash_map = client.hgetall_map(&redis_key).await?;
+        if hash_map.is_empty() {
+            panic!(
+                "Redis hash '{}' 为空或不存在，无法加载策略参数",
+                redis_key
+            );
+        }
 
         // 手动解析 Hash 字段
         let mode = hash_map
@@ -124,6 +150,11 @@ impl StrategyParams {
             .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or_else(default_hedge_price_offset);
 
+        let hedge_aggressive_seq_threshold = hash_map
+            .get("hedge_aggressive_seq_threshold")
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or_else(default_hedge_aggressive_seq_threshold);
+
         let signal_cooldown = hash_map
             .get("signal_cooldown")
             .and_then(|s| s.parse::<u64>().ok())
@@ -136,6 +167,7 @@ impl StrategyParams {
             open_order_timeout,
             hedge_timeout,
             hedge_price_offset,
+            hedge_aggressive_seq_threshold,
             signal_cooldown,
         })
     }
@@ -172,6 +204,7 @@ impl StrategyParams {
             decision.update_open_order_timeout(self.open_order_timeout);
             decision.update_hedge_timeout(self.hedge_timeout);
             decision.update_hedge_price_offset(self.hedge_price_offset);
+            decision.update_hedge_aggressive_seq_threshold(self.hedge_aggressive_seq_threshold);
             decision.update_signal_cooldown(self.signal_cooldown);
         });
 

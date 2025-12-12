@@ -67,61 +67,51 @@ def parse_args() -> argparse.Namespace:
 
 # ========== 交易对白名单配置 ==========
 
-# 正套币对列表
+# 正套币对列表（替换为提供的 OKX 列表）
 FWD_SYMBOLS_8H: List[str] = [
-    "ONEUSDT", "ICXUSDT", "SFPUSDT", "ZILUSDT", "DENTUSDT",
-    "HOTUSDT", "ANKRUSDT", "HIGHUSDT", "RDNTUSDT", "CHRUSDT",
+    "ONE-USDT-SWAP",
+    "BICO-USDT-SWAP",
 ]
 
 FWD_SYMBOLS_4H: List[str] = [
-    # "A2ZUSDT", "SAHARAUSDT", "NFPUSDT", "CUSDT", "SANTOSUSDT",
-    # "PUMPUSDT", "JTOUSDT", "NEWTUSDT", "AIXBTUSDT", "AUCTIONUSDT",
-
-    'A2ZUSDT', 'SAHARAUSDT', 'NFPUSDT', 'CUSDT', 'ACEUSDT', 'BEAMXUSDT', 
-    'SANTOSUSDT', 'AIUSDT', 'USTCUSDT', 'SLPUSDT', 'AXLUSDT', 'VANRYUSDT', 
-    'XPLUSDT', 'SAGAUSDT', 'PUMPUSDT', 'INITUSDT', 'LINEAUSDT', 'CATIUSDT',
-    "JTOUSDT", "NEWTUSDT", "AIXBTUSDT", "AUCTIONUSDT",
+    "DEGEN-USDT-SWAP",
+    "ACT-USDT-SWAP",
+    "S-USDT-SWAP",
+    "TRB-USDT-SWAP",
+    "HYPE-USDT-SWAP",
 ]
 
 FWD_SYMBOLS: List[str] = FWD_SYMBOLS_8H + FWD_SYMBOLS_4H
 
-# 反套币对列表
+# 反套币对列表（替换为提供的 OKX 列表）
 BWD_SYMBOLS_8H: List[str] = [
-    "HFTUSDT", "STGUSDT", "ALICEUSDT", "ZENUSDT", "APTUSDT", 
-    "DASHUSDT", "ASTRUSDT", "KSMUSDT", "ZECUSDT", "MINAUSDT", 
-    
+    "APT-USDT-SWAP",
+    "ATOM-USDT-SWAP",
+    "XTZ-USDT-SWAP",
+    "ZRX-USDT-SWAP",
+    "ATH-USDT-SWAP",
+    "CELO-USDT-SWAP",
+    "CORE-USDT-SWAP",
+    "COMP-USDT-SWAP",
+    "ICP-USDT-SWAP",
+    "IOST-USDT-SWAP",
+    "KSM-USDT-SWAP",
 ]
 
 BWD_SYMBOLS_4H: List[str] = [
-    # "USUALUSDT", "DYMUSDT", "XAIUSDT", "TREEUSDT", "RAREUSDT",
-    # "RVNUSDT", "NEWTUSDT", "WLFIUSDT", "STRKUSDT", "WCTUSDT",
-    # "AUCTIONUSDT", "ZKUSDT", "ILVUSDT", "BABYUSDT", "ORCAUSDT",
-    # "BANANAUSDT", "FLUXUSDT",
-
-    'USUALUSDT', 'XAIUSDT', 'RVNUSDT', 'TREEUSDT', 'RAREUSDT',
-    'NEWTUSDT', 'WLFIUSDT', 'STRKUSDT', 'AUCTIONUSDT', 'ILVUSDT', 
-    'RONINUSDT', 'ZKUSDT', 'WCTUSDT', 'BANANAUSDT', 'ORCAUSDT', 
-    'BABYUSDT', 'FLUXUSDT',
-    "DYMUSDT",
-    'AXLUSDT',
-    
+    "BERA-USDT-SWAP",
+    "MORPHO-USDT-SWAP",
+    "ENA-USDT-SWAP",
+    "ZETA-USDT-SWAP",
+    "KMNO-USDT-SWAP",
+    "IMX-USDT-SWAP",
+    "WLFI-USDT-SWAP",
+    "ZK-USDT-SWAP",
+    "UMA-USDT-SWAP",
+    "JUP-USDT-SWAP",
+    "2Z-USDT-SWAP",
+    "HUMA-USDT-SWAP",
 ]
-
-# # 正套币对列表
-# FWD_SYMBOLS_8H: List[str] = [
-# ]
-
-# FWD_SYMBOLS_4H: List[str] = [
-# ]
-
-# FWD_SYMBOLS: List[str] = FWD_SYMBOLS_8H + FWD_SYMBOLS_4H
-
-# # 反套币对列表
-# BWD_SYMBOLS_8H: List[str] = [
-# ]
-
-# BWD_SYMBOLS_4H: List[str] = [
-# ]
 
 BWD_SYMBOLS: List[str] = BWD_SYMBOLS_8H + BWD_SYMBOLS_4H
 

@@ -74,9 +74,9 @@ PARAM_COMMENTS: Dict[str, str] = {
 def sync_risk_params(rds) -> int:
     """同步风控参数到 Redis Hash"""
     key = "fr_pre_trade_params"
-    rds.hset(key, mapping=RISK_PARAMS)
+    rds.hset(key, mapping=RISK_PARAMS) 
     print(f"✅ 已写入 {len(RISK_PARAMS)} 个参数到 HASH '{key}'")
-    return len(RISK_PARAMS)
+    return len(RISK_PARAMS) 
 
 
 def print_three_line_table(headers: List[str], rows: List[List[str]]) -> None:
@@ -140,10 +140,7 @@ def print_risk_params(rds) -> None:
         rows.append([param_key, value, comment])
 
     # 输出额外的参数（如果有）
-    for k in sorted(kv.keys()):
-        if k not in RISK_PARAMS:
-            rows.append([k, kv[k], "-"])
-
+    rows.extend([k, kv[k], "-"] for k in sorted(kv.keys()) if k not in RISK_PARAMS)
     print_three_line_table(headers, rows)
 
 

@@ -23,6 +23,7 @@ use super::common::{FundingRatePeriod, RateFetcherTrait};
 use super::symbol_list::SymbolList;
 use crate::common::exchange::Exchange;
 use crate::signal::common::TradingVenue;
+use crate::symbol_match::normalize_symbol_for_whitelist;
 
 // ==================== API 响应结构 ====================
 
@@ -54,6 +55,9 @@ struct OkexFundingRateHistoryResponse {
 #[serde(rename_all = "camelCase")]
 struct OkexFundingRateHistoryItem {
     funding_rate: String,
+    /// 资金费率时间（毫秒时间戳）
+    #[serde(default)]
+    funding_time: Option<String>,
 }
 
 /// OKEx 当前资金费率响应
@@ -678,6 +682,38 @@ impl RateFetcher {
         });
     }
 
+    /// 将本地 symbol 规范化为用于存储/查询的 key（去除分隔符和 SWAP 后缀）
+    fn normalize_okex_symbol(symbol: &str) -> String {
+        normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
+    }
+
+    /// 将本地 symbol 转换为 OKEx API 需要的 instId（如 BTCUSDT -> BTC-USDT-SWAP）
+    fn format_okex_inst_id(symbol: &str) -> String {
+        let mut upper = symbol.to_uppercase().replace('_', "-");
+        if let Some(stripped) = upper.strip_suffix("-SWAP") {
+            upper = stripped.to_string();
+        } else if let Some(stripped) = upper.strip_suffix("SWAP") {
+            upper = stripped.to_string();
+        }
+
+        if upper.contains('-') {
+            let cleaned = upper.trim_end_matches('-');
+            if cleaned.ends_with("-SWAP") {
+                cleaned.to_string()
+            } else {
+                format!("{cleaned}-SWAP")
+            }
+        } else if let Some(base) = upper.strip_suffix("USDT") {
+            format!("{}-USDT-SWAP", base.trim_end_matches('-'))
+        } else if let Some(base) = upper.strip_suffix("USDC") {
+            format!("{}-USDC-SWAP", base.trim_end_matches('-'))
+        } else if let Some(base) = upper.strip_suffix("USD") {
+            format!("{}-USD-SWAP", base.trim_end_matches('-'))
+        } else {
+            format!("{upper}-SWAP")
+        }
+    }
+
     async fn fetch_okex_rates(is_full_fetch: bool) -> Result<()> {
         let symbol_list = SymbolList::instance();
         let mut online_symbols = symbol_list.get_online_symbols();
@@ -716,35 +752,38 @@ impl RateFetcher {
         let mut fail = 0;
 
         for symbol in symbols {
+            let inst_id = Self::format_okex_inst_id(symbol);
+            let store_key = Self::normalize_okex_symbol(symbol);
+
             // 先获取周期
-            let period = match Self::fetch_okex_period(&client, symbol).await {
+            let period = match Self::fetch_okex_period(&client, &inst_id).await {
                 Ok(p) => p,
                 Err(e) => {
-                    warn!("OKEx {} 周期获取失败: {:?}", symbol, e);
+                    warn!("OKEx {} 周期获取失败: {:?}", inst_id, e);
                     FundingRatePeriod::Hours8
                 }
             };
             let limit = period.calculate_limit(OKEX_CONFIG.fetch_days);
 
-            match Self::fetch_okex_funding_history(&client, symbol, limit).await {
+            match Self::fetch_okex_funding_history(&client, &inst_id, limit).await {
                 Ok(rates) if !rates.is_empty() => {
                     Self::with_inner_mut(|inner| {
                         inner
                             .funding_rates
                             .entry(OKEX_CONFIG.venue)
                             .or_default()
-                            .insert(symbol.clone(), rates);
+                            .insert(store_key.clone(), rates);
                         inner
                             .funding_periods
                             .entry(OKEX_CONFIG.venue)
                             .or_default()
-                            .insert(symbol.clone(), period);
+                            .insert(store_key.clone(), period);
                     });
                     success += 1;
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    warn!("OKEx {} 资金费率失败: {:?}", symbol, e);
+                    warn!("OKEx {} 资金费率失败: {:?}", inst_id, e);
                     fail += 1;
                 }
             }
@@ -762,32 +801,80 @@ impl RateFetcher {
             .query(&[("instId", symbol)])
             .send()
             .await?;
+        if resp.status().is_success() {
+            let data: OkexCurrentFundingRateResponse = resp.json().await?;
+            if data.code == "0" && !data.data.is_empty() {
+                let item = &data.data[0];
+                let ft: i64 = item.funding_time.parse().unwrap_or(0);
+                let nft: i64 = item.next_funding_time.parse().unwrap_or(0);
+                let hours = (nft - ft) / 1000 / 3600;
+                if let Some(period) = Self::map_hours_to_period(hours) {
+                    debug!("OKEx {} 周期: {}h (current)", symbol, hours);
+                    return Ok(period);
+                }
+            }
+        }
+
+        // 当前接口失败或返回异常时，使用历史数据推断周期
+        if let Some(period) = Self::fetch_okex_period_from_history(client, symbol).await? {
+            debug!(
+                "OKEx {} 周期: {} (history fallback)",
+                symbol,
+                period.as_str()
+            );
+            return Ok(period);
+        }
+
+        Ok(FundingRatePeriod::Hours8)
+    }
+
+    async fn fetch_okex_period_from_history(
+        client: &Client,
+        symbol: &str,
+    ) -> Result<Option<FundingRatePeriod>> {
+        let resp = client
+            .get(OKEX_FUNDING_RATE_HISTORY_API)
+            .query(&[("instId", symbol), ("limit", "2")])
+            .send()
+            .await?;
+
         if !resp.status().is_success() {
-            return Ok(FundingRatePeriod::Hours8);
+            return Ok(None);
         }
 
-        let data: OkexCurrentFundingRateResponse = resp.json().await?;
-        if data.code != "0" || data.data.is_empty() {
-            return Ok(FundingRatePeriod::Hours8);
+        let data: OkexFundingRateHistoryResponse = resp.json().await?;
+        if data.code != "0" || data.data.len() < 2 {
+            return Ok(None);
         }
 
-        let item = &data.data[0];
-        let ft: i64 = item.funding_time.parse().unwrap_or(0);
-        let nft: i64 = item.next_funding_time.parse().unwrap_or(0);
-        if ft == 0 || nft == 0 {
-            return Ok(FundingRatePeriod::Hours8);
+        let ts1 = data.data[0]
+            .funding_time
+            .as_deref()
+            .and_then(|s| s.parse::<i64>().ok());
+        let ts2 = data.data[1]
+            .funding_time
+            .as_deref()
+            .and_then(|s| s.parse::<i64>().ok());
+
+        if let (Some(t1), Some(t2)) = (ts1, ts2) {
+            let hours = (t1 - t2).abs() / 1000 / 3600;
+            if let Some(period) = Self::map_hours_to_period(hours) {
+                return Ok(Some(period));
+            }
         }
 
-        let hours = (nft - ft) / 1000 / 3600;
-        let period = match hours {
-            1 => FundingRatePeriod::Hours1,
-            2 => FundingRatePeriod::Hours2,
-            4 => FundingRatePeriod::Hours4,
-            6 => FundingRatePeriod::Hours6,
-            _ => FundingRatePeriod::Hours8,
-        };
-        debug!("OKEx {} 周期: {}h", symbol, hours);
-        Ok(period)
+        Ok(None)
+    }
+
+    fn map_hours_to_period(hours: i64) -> Option<FundingRatePeriod> {
+        match hours {
+            1 => Some(FundingRatePeriod::Hours1),
+            2 => Some(FundingRatePeriod::Hours2),
+            4 => Some(FundingRatePeriod::Hours4),
+            6 => Some(FundingRatePeriod::Hours6),
+            8 => Some(FundingRatePeriod::Hours8),
+            _ => None,
+        }
     }
 
     async fn fetch_okex_funding_history(
@@ -824,11 +911,12 @@ impl RateFetcher {
         let mut data: Vec<_> = symbols
             .iter()
             .map(|s| {
+                let key = Self::normalize_symbol_for_lookup(s, OKEX_CONFIG.venue);
                 let period = Self::with_inner(|inner| {
                     inner
                         .funding_periods
                         .get(&OKEX_CONFIG.venue)
-                        .and_then(|m| m.get(s))
+                        .and_then(|m| m.get(&key))
                         .copied()
                         .unwrap_or(FundingRatePeriod::Hours8)
                 });
@@ -1541,6 +1629,14 @@ impl RateFetcher {
         }
     }
 
+    fn normalize_symbol_for_lookup(symbol: &str, venue: TradingVenue) -> String {
+        if matches!(venue, TradingVenue::OkexFutures | TradingVenue::OkexMargin) {
+            Self::normalize_okex_symbol(symbol)
+        } else {
+            symbol.to_uppercase()
+        }
+    }
+
     fn collect_base_assets(symbols: &[String]) -> Vec<String> {
         let mut assets: Vec<String> = symbols
             .iter()
@@ -1555,7 +1651,7 @@ impl RateFetcher {
 
     /// 获取指定 symbol 的资金费率周期
     pub fn get_period(&self, symbol: &str, venue: TradingVenue) -> FundingRatePeriod {
-        let key = symbol.to_uppercase();
+        let key = Self::normalize_symbol_for_lookup(symbol, venue);
         Self::with_inner(|inner| {
             inner
                 .funding_periods
@@ -1572,7 +1668,7 @@ impl RateFetcher {
         symbol: &str,
         venue: TradingVenue,
     ) -> Option<(FundingRatePeriod, f64)> {
-        let key = symbol.to_uppercase();
+        let key = Self::normalize_symbol_for_lookup(symbol, venue);
         let period = self.get_period(&key, venue);
         let rates = Self::with_inner(|inner| inner.funding_rates.get(&venue)?.get(&key).cloned())?;
         let value = Self::calculate_predicted_rate(&rates)?;

@@ -5,12 +5,13 @@
 打印 Funding Rate 策略参数（从 Redis 读取）。
 
 读取两个 Redis key：
-  1. HASH `fr_strategy_params` - 策略参数
+  1. HASH `fr_strategy_params_{open_venue}_{hedge_venue}` - 策略参数（按 open/hedge 组合区分）
   2. String `fr_trade_symbols:binance_um` - 交易对白名单
 
 示例：
-  python scripts/print_fr_strategy_params.py
+  python scripts/print_fr_strategy_params.py --open-venue binance-margin --hedge-venue binance-futures
   python scripts/print_fr_strategy_params.py --redis-url redis://:pwd@127.0.0.1:6379/0
+  # 也可不带 open/hedge，脚本会基于当前目录名推断 exchange（形如 okex_fr_trade -> okex-margin/okex-futures）
 """
 
 from __future__ import annotations
@@ -19,7 +20,17 @@ import argparse
 import json
 import os
 import sys
-from typing import Dict, List
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+
+EXCHANGE_DEFAULTS = {
+    "binance": ("binance-margin", "binance-futures"),
+    "okex": ("okex-margin", "okex-futures"),
+    "bybit": ("bybit-margin", "bybit-futures"),
+    "bitget": ("bitget-margin", "bitget-futures"),
+    "gate": ("gate-margin", "gate-futures"),
+}
 
 
 def try_import_redis():
@@ -30,14 +41,50 @@ def try_import_redis():
         return None
 
 
+def infer_venues_from_cwd() -> Optional[Tuple[str, str]]:
+    """从当前目录名推断 open/hedge（如 okex_fr_trade -> okex-margin/okex-futures）"""
+    name = Path.cwd().name.lower()
+    candidates = [name]
+    if "_" in name:
+        candidates.append(name.split("_", 1)[0])
+    for cand in candidates:
+        for ex, pair in EXCHANGE_DEFAULTS.items():
+            if cand.startswith(ex):
+                return pair
+    return None
+
+
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Print Funding Rate strategy params from Redis")
+    p = argparse.ArgumentParser(
+        description="Print Funding Rate strategy params from Redis（可省略 open/hedge，默认按目录推断 margin/futures）"
+    )
+    p.add_argument("--open-venue", help="open 侧 venue（如 binance-margin）")
+    p.add_argument("--hedge-venue", help="hedge 侧 venue（如 binance-futures）")
     p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
     p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
     p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
     p.add_argument("--db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
     p.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
-    return p.parse_args()
+    args = p.parse_args()
+
+    open_venue = args.open_venue
+    hedge_venue = args.hedge_venue
+    if not open_venue and not hedge_venue:
+        inferred = infer_venues_from_cwd()
+        if inferred:
+            open_venue, hedge_venue = inferred
+            print(
+                f"[INFO] 未提供 open/hedge，基于目录推断: open={open_venue}, hedge={hedge_venue}",
+                file=sys.stderr,
+            )
+    if not open_venue or not hedge_venue:
+        p.error(
+            "需要 --open-venue 与 --hedge-venue，或在目录名包含 <exchange> 前缀（如 okex_fr_trade）以自动推断"
+        )
+
+    args.open_venue = open_venue
+    args.hedge_venue = hedge_venue
+    return args
 
 
 # ========== 参数注释 ==========
@@ -49,6 +96,7 @@ PARAM_COMMENTS: Dict[str, str] = {
     "open_order_timeout": "开仓订单超时(秒)",
     "hedge_timeout": "对冲订单超时(秒)",
     "hedge_price_offset": "对冲价格偏移(万分之几)",
+    "hedge_aggressive_seq_threshold": "对冲激进阈值(request_seq>=该值时不偏移，但仍为maker限价单)",
     "signal_cooldown": "信号冷却时间(秒)",
 }
 
@@ -60,6 +108,7 @@ PARAM_ORDER = [
     "open_order_timeout",
     "hedge_timeout",
     "hedge_price_offset",
+    "hedge_aggressive_seq_threshold",
     "signal_cooldown",
 ]
 
@@ -95,12 +144,11 @@ def print_three_line_table(headers: List[str], rows: List[List[str]]) -> None:
     print(bot_rule)
 
 
-def print_strategy_params(rds) -> None:
+def print_strategy_params(rds, key: str) -> None:
     """打印策略参数"""
-    print("📊 策略参数 (fr_strategy_params):")
+    print(f"📊 策略参数 ({key}):")
     print("-" * 80)
 
-    key = "fr_strategy_params"
     data = rds.hgetall(key)
 
     if not data:
@@ -184,7 +232,10 @@ def main() -> int:
     print(f"📍 Redis: {args.host}:{args.port}/{args.db}\n")
 
     # 打印参数
-    print_strategy_params(rds)
+    open_venue = args.open_venue.strip()
+    hedge_venue = args.hedge_venue.strip()
+    key = f"fr_strategy_params_{open_venue}_{hedge_venue}"
+    print_strategy_params(rds, key)
     print_all_symbol_lists(rds)
 
     print()

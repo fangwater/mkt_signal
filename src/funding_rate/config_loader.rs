@@ -65,7 +65,7 @@ pub async fn load_all_once(redis: &RedisSettings, exchange: Exchange) -> Result<
 /// 重载所有配置的内部函数
 async fn reload_all_configs(redis: &RedisSettings, exchange: Exchange) -> Result<()> {
     // 1. 加载策略参数 -> FrDecision + SpreadFactor
-    reload_strategy_params(redis).await?;
+    reload_strategy_params(redis, exchange).await?;
 
     // 2. 更新 SymbolList（建仓/平仓列表）
     reload_symbol_list(redis, exchange).await?;
@@ -81,8 +81,8 @@ async fn reload_all_configs(redis: &RedisSettings, exchange: Exchange) -> Result
 }
 
 /// 重载策略参数
-async fn reload_strategy_params(redis: &RedisSettings) -> Result<()> {
-    match StrategyParams::load_from_redis(redis).await {
+async fn reload_strategy_params(redis: &RedisSettings, exchange: Exchange) -> Result<()> {
+    match StrategyParams::load_from_redis(redis, exchange).await {
         Ok(params) => {
             params.apply();
             info!("策略参数重载成功");

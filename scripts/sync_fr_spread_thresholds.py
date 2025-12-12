@@ -5,15 +5,15 @@
 从 rolling_metrics_thresholds_{open_venue}_{hedge_venue} 读取百分位数据，生成价差阈值并同步到 Redis。
 
 工作流程：
-  1. 从 Redis 读取 fr_dump_symbols:{venue} 和 fr_trade_symbols:{venue}
-  2. 合并两个列表得到要同步的 symbols（去重）
+  1. 从 Redis 读取 fr_dump_symbols:{venue}、fr_fwd_trade_symbols:{venue}、fr_bwd_trade_symbols:{venue}
+  2. 合并列表得到要同步的 symbols（去重）
   3. 从 rolling_metrics_thresholds_{open_venue}_{hedge_venue} 读取这些 symbols 的百分位数据
   4. 根据 SPREAD_THRESHOLD_MAPPING 配置，提取对应的百分位值
   5. 生成价差阈值并写入 fr_spread_thresholds_{open_venue}_{hedge_venue}
 
 读取 Redis:
   - String `fr_dump_symbols:{venue}` - 平仓列表（JSON 数组）
-  - String `fr_trade_symbols:{venue}` - 建仓列表（JSON 数组）
+  - String `fr_fwd_trade_symbols:{venue}` / `fr_bwd_trade_symbols:{venue}` - 建仓列表（JSON 数组）
   - Hash `rolling_metrics_thresholds_{open_venue}_{hedge_venue}` - rolling metrics 百分位数据
 
 写入 Redis Hash:
@@ -82,7 +82,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--symbol", help="只同步指定 symbol（如 BTCUSDT 或 BTC-USDT）")
     p.add_argument(
         "--venue",
-        help="自定义 dump/trade 列表用的 venue 后缀（如 binance_margin, okex_swap），默认使用 open_venue 转换",
+        help="自定义 dump/fwd_trade/bwd_trade 列表用的 venue 后缀（如 binance_margin, okex_swap），默认使用 open_venue 转换",
     )
     return p.parse_args()
 
@@ -110,44 +110,61 @@ SPREAD_THRESHOLD_MAPPING = {
 THRESHOLD_ORDER = list(SPREAD_THRESHOLD_MAPPING.keys())
 
 
-def load_symbol_lists(rds, dump_key: str, trade_key: str) -> List[str]:
+def _read_symbol_list(rds, key: str, label: str, symbols_set: Set[str]) -> None:
+    data = rds.get(key)
+    if not data:
+        return
+    text = data.decode("utf-8", "ignore") if isinstance(data, bytes) else str(data)
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            symbols_set.update(s.upper() for s in parsed if s)
+            print(f"📖 从 '{key}' ({label}) 读取 {len(parsed)} 个 symbols")
+    except Exception as e:
+        print(f"⚠️  解析 '{key}' 失败: {e}")
+
+
+def load_symbol_lists(
+    rds,
+    dump_keys: List[str],
+    fwd_trade_keys: List[str],
+    bwd_trade_keys: List[str],
+) -> List[str]:
     """
-    从 Redis 读取 dump 和 trade 列表，返回并集（去重且排序）
+    从 Redis 读取 dump / fwd_trade / bwd_trade 列表，返回并集（去重且排序）
 
     参数：
-      - dump_key: 平仓列表 Redis key
-      - trade_key: 建仓列表 Redis key
+      - dump_keys: 平仓列表 Redis key 列表
+      - fwd_trade_keys / bwd_trade_keys: 正套 / 反套建仓列表 Redis key
 
     返回：
       合并后的 symbol 列表（大写、去重、排序）
     """
     symbols_set: Set[str] = set()
 
-    # 读取平仓列表
-    if dump_data := rds.get(dump_key):
-        dump_str = dump_data.decode("utf-8", "ignore") if isinstance(dump_data, bytes) else str(dump_data)
-        try:
-            dump_list = json.loads(dump_str)
-            if isinstance(dump_list, list):
-                symbols_set.update(s.upper() for s in dump_list if s)
-                print(f"📖 从 '{dump_key}' 读取 {len(dump_list)} 个 symbols")
-        except Exception as e:
-            print(f"⚠️  解析 '{dump_key}' 失败: {e}")
-
-    # 读取建仓列表
-    if trade_data := rds.get(trade_key):
-        trade_str = trade_data.decode("utf-8", "ignore") if isinstance(trade_data, bytes) else str(trade_data)
-        try:
-            trade_list = json.loads(trade_str)
-            if isinstance(trade_list, list):
-                symbols_set.update(s.upper() for s in trade_list if s)
-                print(f"📖 从 '{trade_key}' 读取 {len(trade_list)} 个 symbols")
-        except Exception as e:
-            print(f"⚠️  解析 '{trade_key}' 失败: {e}")
+    for key in dump_keys:
+        _read_symbol_list(rds, key, "dump", symbols_set)
+    for key in fwd_trade_keys:
+        _read_symbol_list(rds, key, "fwd_trade", symbols_set)
+    for key in bwd_trade_keys:
+        _read_symbol_list(rds, key, "bwd_trade", symbols_set)
 
     result = sorted(symbols_set)
     print(f"✅ 合并后共 {len(result)} 个唯一 symbols")
     return result
+
+
+def normalize_for_rolling(symbol: str) -> str:
+    """
+    统一符号格式用于 rolling_metrics/阈值写入：
+      - 大写
+      - 去掉 '-'/'_'
+      - 去掉末尾 'SWAP'（OKX 永续）
+    """
+    cleaned = symbol.upper().replace("-", "").replace("_", "")
+    if cleaned.endswith("SWAP"):
+        cleaned = cleaned[:-4]
+    return cleaned
 
 
 def read_rolling_metrics(rds, key: str) -> Dict[str, Dict]:
@@ -222,19 +239,34 @@ def extract_quantile_value(obj: Dict, field_ref: str) -> Optional[float]:
     return None
 
 
-def _get_target_symbols(rds, dump_key: str, trade_key: str, filter_symbol: Optional[str]) -> List[str]:
+def _get_target_symbols(
+    rds,
+    dump_keys: List[str],
+    fwd_trade_keys: List[str],
+    bwd_trade_keys: List[str],
+    filter_symbol: Optional[str],
+) -> List[str]:
     """获取要处理的目标 symbols"""
     if filter_symbol:
         print(f"🎯 目标 symbols: {filter_symbol.upper()} (单独指定)")
-        return [filter_symbol.upper()]
+        return [normalize_for_rolling(filter_symbol)]
 
-    target_symbols = load_symbol_lists(rds, dump_key, trade_key)
+    target_symbols = load_symbol_lists(rds, dump_keys, fwd_trade_keys, bwd_trade_keys)
     if not target_symbols:
-        print("❌ 未找到任何 symbols，请检查 Redis 中的 dump/trade 列表")
+        print("❌ 未找到任何 symbols，请检查 Redis 中的 dump/fwd_trade/bwd_trade 列表")
         return []
 
-    print(f"🎯 目标 symbols: {', '.join(target_symbols)} (共 {len(target_symbols)} 个)")
-    return target_symbols
+    normalized: List[str] = []
+    seen: Set[str] = set()
+    for sym in target_symbols:
+        norm = normalize_for_rolling(sym)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        normalized.append(norm)
+
+    print(f"🎯 目标 symbols: {', '.join(normalized)} (共 {len(normalized)} 个)")
+    return normalized
 
 
 def _find_symbol_data(rolling_data: Dict[str, Dict], target_symbols: List[str]) -> tuple[Dict[str, Dict], Set[str]]:
@@ -247,15 +279,19 @@ def _find_symbol_data(rolling_data: Dict[str, Dict], target_symbols: List[str]) 
 
     for symbol in target_symbols:
         symbol_upper = symbol.upper()
+        target_norm = normalize_for_rolling(symbol_upper)
 
         # 在 rolling_data 中查找匹配的数据
-        for obj in rolling_data.values():
+        for field_key, obj in rolling_data.items():
             base_symbol = obj.get("base_symbol") or obj.get("symbol")
-            if base_symbol and str(base_symbol).upper() == symbol_upper:
-                symbol_data[symbol_upper] = obj
+            base_norm = normalize_for_rolling(str(base_symbol)) if base_symbol else None
+            key_tail = field_key.split("::")[-1] if field_key else ""
+            key_norm = normalize_for_rolling(key_tail)
+            if base_norm == target_norm or key_norm == target_norm:
+                symbol_data[target_norm] = obj
                 break
         else:
-            missing_symbols.add(symbol_upper)
+            missing_symbols.add(target_norm)
 
     if missing_symbols:
         print(f"⚠️  以下 symbols 未在 rolling_metrics 中找到: {', '.join(sorted(missing_symbols))}")
@@ -295,8 +331,9 @@ def sync_thresholds(
     rds,
     rolling_key: str,
     write_key: str,
-    dump_key: str,
-    trade_key: str,
+    dump_keys: List[str],
+    fwd_trade_keys: List[str],
+    bwd_trade_keys: List[str],
     filter_symbol: Optional[str] = None,
 ) -> int:
     """
@@ -305,7 +342,9 @@ def sync_thresholds(
     返回: 写入的字段数量
     """
     # 1. 获取目标 symbols
-    target_symbols = _get_target_symbols(rds, dump_key, trade_key, filter_symbol)
+    target_symbols = _get_target_symbols(
+        rds, dump_keys, fwd_trade_keys, bwd_trade_keys, filter_symbol
+    )
     if not target_symbols:
         return 0
 
@@ -451,14 +490,24 @@ def main() -> int:
     rolling_key = f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
     write_key = f"fr_spread_thresholds_{open_venue}_{hedge_venue}"
     venue_for_lists = args.venue or open_venue.replace("-", "_")
-    dump_key = f"fr_dump_symbols:{venue_for_lists}"
-    trade_key = f"fr_trade_symbols:{venue_for_lists}"
+    venue_candidates = [venue_for_lists]
+    if "_" in venue_for_lists:
+        venue_candidates.append(venue_for_lists.split("_", 1)[0])  # 兼容无后缀的 key，如 okex
+    venue_candidates = list(dict.fromkeys(venue_candidates))  # 去重且保留顺序
+
+    dump_keys = [f"fr_dump_symbols:{v}" for v in venue_candidates]
+    fwd_trade_keys = [f"fr_fwd_trade_symbols:{v}" for v in venue_candidates]
+    bwd_trade_keys = [f"fr_bwd_trade_symbols:{v}" for v in venue_candidates]
+
+    def fmt_keys(keys: List[str]) -> str:
+        return ", ".join(keys) if keys else "-"
 
     print(f"🔄 开始从 rolling metrics 同步价差阈值 ...")
     print(f"📍 Redis: {args.host}:{args.port}/{args.db}")
     print(f"📖 Rolling Metrics: {rolling_key}")
-    print(f"📖 Dump List: {dump_key}")
-    print(f"📖 Trade List: {trade_key}")
+    print(f"📖 Dump List: {fmt_keys(dump_keys)}")
+    print(f"📖 Fwd Trade List: {fmt_keys(fwd_trade_keys)}")
+    print(f"📖 Bwd Trade List: {fmt_keys(bwd_trade_keys)}")
     print(f"📝 写入: {write_key}")
     print()
 
@@ -467,8 +516,9 @@ def main() -> int:
         rds,
         rolling_key,
         write_key,
-        dump_key,
-        trade_key,
+        dump_keys,
+        fwd_trade_keys,
+        bwd_trade_keys,
         args.symbol,
     )
     if count == 0:

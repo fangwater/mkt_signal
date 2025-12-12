@@ -76,8 +76,6 @@ cargo build --release --bin "$BIN_NAME"
 
 echo "[INFO] 部署 $BIN_NAME 到 $TARGET_DIR"
 mkdir -p "$TARGET_DIR"
-cp "$BIN_PATH" "$TARGET_DIR/"
-chmod +x "$TARGET_DIR/$BIN_NAME"
 
 EXTRA_FILES=(
   "scripts/print_fr_rolling_metrics_thresholds.py"
@@ -97,6 +95,12 @@ for file in "${EXTRA_FILES[@]}"; do
     [[ -x "$SRC_PATH" ]] && chmod +x "$DEST_DIR/$(basename "$file")"
   fi
 done
+
+# 最后再覆盖二进制，避免 Text file busy
+BIN_TMP="$TARGET_DIR/${BIN_NAME}.new"
+cp "$BIN_PATH" "$BIN_TMP"
+chmod +x "$BIN_TMP"
+mv -f "$BIN_TMP" "$TARGET_DIR/$BIN_NAME"
 
 echo "[INFO] 部署完成: $TARGET_DIR"
 echo "[INFO] 手动启动: cd $TARGET_DIR && ./scripts/start_fr_rolling_metrics.sh"

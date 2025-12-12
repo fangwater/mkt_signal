@@ -78,9 +78,29 @@ async fn run(exchange: Exchange, token: CancellationToken) -> Result<()> {
     spawn_config_loader(redis, exchange);
     info!("配置加载器已启动（60秒定时重载）");
 
+    // 4️⃣ 启动信号表定时打印（10 秒一次）
+    {
+        let cancel = token.clone();
+        tokio::task::spawn_local(async move {
+            let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(10));
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    _ = ticker.tick() => {
+                        let symbols = SymbolList::instance().get_online_symbols();
+                        if symbols.is_empty() {
+                            continue;
+                        }
+                        RateFetcher::print_signal_table(&symbols);
+                    }
+                }
+            }
+        });
+    }
+
     info!("✅ {} 启动完成，等待市场数据触发决策...", PROCESS_NAME);
 
-    // 4️⃣ 主循环：等待退出信号
+    // 5️⃣ 主循环：等待退出信号
     token.cancelled().await;
     info!("收到退出信号");
 
