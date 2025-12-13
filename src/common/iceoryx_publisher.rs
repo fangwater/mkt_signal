@@ -16,11 +16,16 @@ pub struct GenericPublisher<const PAYLOAD: usize> {
 
 impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
     pub fn new(channel_name: &str) -> anyhow::Result<Self> {
-        let full_service = build_service_name(&format!("signal_pubs/{}", channel_name));
+        Self::new_with_prefix("signal_pubs", channel_name)
+    }
+
+    pub fn new_with_prefix(prefix: &str, channel_name: &str) -> anyhow::Result<Self> {
+        let full_service = build_service_name(&format!("{}/{}", prefix, channel_name));
         let service_name = ServiceName::new(&full_service)?;
 
+        let node_id = format!("{}_{}", prefix, channel_name);
         let node = NodeBuilder::new()
-            .name(&NodeName::new(channel_name)?)
+            .name(&NodeName::new(&node_id)?)
             .create::<ipc::Service>()?;
 
         let service = node

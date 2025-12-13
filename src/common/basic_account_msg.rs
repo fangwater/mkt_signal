@@ -289,6 +289,240 @@ impl OkexOrderMsg {
     }
 }
 
+/// Binance basic 订单更新消息（统一 margin / UM 的 schema）
+///
+/// - 外层仍为 `BasicAccountEventMsg(msg_type=OrderUpdate, payload=...)`
+/// - payload 自身也以 `BasicAccountEventType::OrderUpdate` 开头（与 OkexOrderMsg / BasicBalanceMsg 一致）
+/// - `venue` 用于区分 margin / UM（下游通过 trait 使用，不再依赖 payload 内层 AccountEventType）
+#[derive(Debug, Clone)]
+pub struct BinanceBasicOrderMsg {
+    pub msg_type: BasicAccountEventType,
+    /// 1=margin, 2=um
+    pub venue: u8,
+    pub event_time: i64,
+    pub trade_time: i64,
+    pub symbol_length: u32,
+    pub symbol: String,
+    pub order_id: i64,
+    pub client_order_id: i64,
+    pub trade_id: i64,
+    /// Side::to_u8()
+    pub side: u8,
+    /// OrderType::to_u8()
+    pub order_type: u8,
+    /// TimeInForce::to_u8()
+    pub time_in_force: u8,
+    /// 1..=7: ExecutionType
+    pub execution_type: u8,
+    /// 1..=6: OrderStatus
+    pub order_status: u8,
+    pub is_maker: u8,
+    pub price: f64,
+    pub quantity: f64,
+    pub last_executed_quantity: f64,
+    pub cumulative_filled_quantity: f64,
+    pub last_executed_price: f64,
+    pub average_price: f64,
+    pub commission: f64,
+    pub realized_pnl: f64,
+    pub commission_asset_length: u32,
+    pub commission_asset: String,
+}
+
+impl BinanceBasicOrderMsg {
+    pub const VENUE_MARGIN: u8 = 1;
+    pub const VENUE_UM: u8 = 2;
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        venue: u8,
+        event_time: i64,
+        trade_time: i64,
+        symbol: String,
+        order_id: i64,
+        client_order_id: i64,
+        trade_id: i64,
+        side: u8,
+        order_type: u8,
+        time_in_force: u8,
+        execution_type: u8,
+        order_status: u8,
+        is_maker: bool,
+        price: f64,
+        quantity: f64,
+        last_executed_quantity: f64,
+        cumulative_filled_quantity: f64,
+        last_executed_price: f64,
+        average_price: f64,
+        commission: f64,
+        realized_pnl: f64,
+        commission_asset: String,
+    ) -> Self {
+        Self {
+            msg_type: BasicAccountEventType::OrderUpdate,
+            venue,
+            event_time,
+            trade_time,
+            symbol_length: symbol.len() as u32,
+            symbol,
+            order_id,
+            client_order_id,
+            trade_id,
+            side,
+            order_type,
+            time_in_force,
+            execution_type,
+            order_status,
+            is_maker: if is_maker { 1 } else { 0 },
+            price,
+            quantity,
+            last_executed_quantity,
+            cumulative_filled_quantity,
+            last_executed_price,
+            average_price,
+            commission,
+            realized_pnl,
+            commission_asset_length: commission_asset.len() as u32,
+            commission_asset,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4
+            + 1
+            + 8
+            + 8
+            + 4
+            + self.symbol_length as usize
+            + 8 * 3
+            + 1 * 6
+            + 8 * 8
+            + 4
+            + self.commission_asset_length as usize;
+
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_u8(self.venue);
+        buf.put_i64_le(self.event_time);
+        buf.put_i64_le(self.trade_time);
+
+        buf.put_u32_le(self.symbol_length);
+        buf.put(self.symbol.as_bytes());
+
+        buf.put_i64_le(self.order_id);
+        buf.put_i64_le(self.client_order_id);
+        buf.put_i64_le(self.trade_id);
+
+        buf.put_u8(self.side);
+        buf.put_u8(self.order_type);
+        buf.put_u8(self.time_in_force);
+        buf.put_u8(self.execution_type);
+        buf.put_u8(self.order_status);
+        buf.put_u8(self.is_maker);
+
+        buf.put_f64_le(self.price);
+        buf.put_f64_le(self.quantity);
+        buf.put_f64_le(self.last_executed_quantity);
+        buf.put_f64_le(self.cumulative_filled_quantity);
+        buf.put_f64_le(self.last_executed_price);
+        buf.put_f64_le(self.average_price);
+        buf.put_f64_le(self.commission);
+        buf.put_f64_le(self.realized_pnl);
+
+        buf.put_u32_le(self.commission_asset_length);
+        buf.put(self.commission_asset.as_bytes());
+
+        buf.freeze()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        // u32 msg_type + u8 venue + i64 + i64 + u32 symbol_len + (symbol bytes) + 3*i64
+        // + 6*u8 + 8*f64 + u32 comm_asset_len + (comm_asset bytes)
+        const MIN_FIXED_SIZE: usize = 4 + 1 + 8 + 8 + 4 + 8 * 3 + 1 * 6 + 8 * 8 + 4;
+        if data.len() < MIN_FIXED_SIZE {
+            anyhow::bail!("BinanceBasicOrderMsg too short: {}", data.len());
+        }
+
+        let mut cursor = Bytes::copy_from_slice(data);
+        let msg_type = cursor.get_u32_le();
+        if msg_type != BasicAccountEventType::OrderUpdate as u32 {
+            anyhow::bail!("invalid BinanceBasicOrderMsg type: {}", msg_type);
+        }
+
+        let venue = cursor.get_u8();
+        let event_time = cursor.get_i64_le();
+        let trade_time = cursor.get_i64_le();
+
+        let symbol_length = cursor.get_u32_le();
+        if cursor.remaining() < symbol_length as usize {
+            anyhow::bail!("BinanceBasicOrderMsg truncated before symbol");
+        }
+        let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_length as usize).to_vec())?;
+
+        if cursor.remaining() < 8 * 3 + 1 * 6 + 8 * 8 + 4 {
+            anyhow::bail!("BinanceBasicOrderMsg truncated after symbol");
+        }
+
+        let order_id = cursor.get_i64_le();
+        let client_order_id = cursor.get_i64_le();
+        let trade_id = cursor.get_i64_le();
+
+        let side = cursor.get_u8();
+        let order_type = cursor.get_u8();
+        let time_in_force = cursor.get_u8();
+        let execution_type = cursor.get_u8();
+        let order_status = cursor.get_u8();
+        let is_maker = cursor.get_u8();
+
+        let price = cursor.get_f64_le();
+        let quantity = cursor.get_f64_le();
+        let last_executed_quantity = cursor.get_f64_le();
+        let cumulative_filled_quantity = cursor.get_f64_le();
+        let last_executed_price = cursor.get_f64_le();
+        let average_price = cursor.get_f64_le();
+        let commission = cursor.get_f64_le();
+        let realized_pnl = cursor.get_f64_le();
+
+        let commission_asset_length = cursor.get_u32_le();
+        if cursor.remaining() < commission_asset_length as usize {
+            anyhow::bail!("BinanceBasicOrderMsg truncated before commission_asset");
+        }
+        let commission_asset = String::from_utf8(
+            cursor
+                .copy_to_bytes(commission_asset_length as usize)
+                .to_vec(),
+        )?;
+
+        Ok(Self {
+            msg_type: BasicAccountEventType::OrderUpdate,
+            venue,
+            event_time,
+            trade_time,
+            symbol_length,
+            symbol,
+            order_id,
+            client_order_id,
+            trade_id,
+            side,
+            order_type,
+            time_in_force,
+            execution_type,
+            order_status,
+            is_maker,
+            price,
+            quantity,
+            last_executed_quantity,
+            cumulative_filled_quantity,
+            last_executed_price,
+            average_price,
+            commission,
+            realized_pnl,
+            commission_asset_length,
+            commission_asset,
+        })
+    }
+}
+
 /// Basic 余额消息（仅一个时间字段）
 #[derive(Debug, Clone)]
 pub struct BasicBalanceMsg {

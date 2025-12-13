@@ -53,45 +53,29 @@ pub fn compute_askbid_sr(spot_ask: Option<f64>, fut_bid: Option<f64>) -> Option<
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PreTradeUmPositionRow {
-    pub symbol: String,
-    pub side: String,
-    pub position_amount: f64,
-    pub entry_price: f64,
-    pub leverage: f64,
-    pub position_initial_margin: f64,
-    pub open_order_initial_margin: f64,
-    pub unrealized_profit: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PreTradeSpotBalanceRow {
+pub struct PreTradePositionRow {
     pub asset: String,
-    pub total_wallet: f64,
-    pub cross_free: f64,
-    pub cross_locked: f64,
-    pub cross_borrowed: f64,
-    pub cross_interest: f64,
-    pub um_wallet: f64,
-    pub um_unrealized_pnl: f64,
+    pub open_qty: f64,
+    pub hedge_qty: f64,
+    pub net_qty: f64,
+    pub net_usdt: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreTradePositionResampleEntry {
     pub ts_ms: i64,
-    pub um_positions: Vec<PreTradeUmPositionRow>,
-    pub spot_balances: Vec<PreTradeSpotBalanceRow>,
+    pub rows: Vec<PreTradePositionRow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreTradeExposureRow {
     pub asset: String,
-    pub spot_qty: Option<f64>,
-    pub spot_usdt: Option<f64>,
-    pub um_net_qty: Option<f64>,
-    pub um_net_usdt: Option<f64>,
-    pub exposure_qty: Option<f64>,
-    pub exposure_usdt: Option<f64>,
+    pub open_qty: Option<f64>,
+    pub open_usdt: Option<f64>,
+    pub hedge_qty: Option<f64>,
+    pub hedge_usdt: Option<f64>,
+    pub net_qty: Option<f64>,
+    pub net_usdt: Option<f64>,
     pub is_total: bool,
 }
 

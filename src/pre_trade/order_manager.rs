@@ -1,3 +1,7 @@
+use crate::trade_engine::okex::{
+    OkexCancelOrderParams, OkexCancelOrderRequest, OkexNewOrderParams, OkexNewOrderRequest,
+    OkexOrderType,
+};
 use crate::trade_engine::trade_request::BinanceNewMarginOrderRequest;
 use crate::trade_engine::trade_request::BinanceNewUMOrderRequest;
 use crate::trade_engine::trade_request::{
@@ -36,7 +40,7 @@ fn format_price(price: f64) -> String {
 /// 例如: "BTCUSDT" -> ("BTC", "USDT")
 fn extract_assets_from_symbol(symbol: &str) -> (String, String) {
     let symbol_upper = symbol.to_uppercase();
-    const QUOTE_ASSETS: [&str; 6] = ["USDT", "USDC", "BUSD", "FDUSD", "BIDR", "TRY"];
+    const QUOTE_ASSETS: [&str; 7] = ["USDT", "USDC", "BUSD", "FDUSD", "BIDR", "TRY", "USD"];
 
     for quote in QUOTE_ASSETS {
         if symbol_upper.ends_with(quote) && symbol_upper.len() > quote.len() {
@@ -47,6 +51,40 @@ fn extract_assets_from_symbol(symbol: &str) -> (String, String) {
 
     // 如果没有匹配到已知的 quote asset，默认返回整个符号作为 base，USDT 作为 quote
     (symbol_upper, "USDT".to_string())
+}
+
+fn okex_inst_id_from_symbol(symbol: &str, venue: TradingVenue) -> Result<String, String> {
+    let symbol_upper = symbol.to_uppercase();
+
+    if symbol_upper.contains('-') {
+        return match venue {
+            TradingVenue::OkexMargin => Ok(symbol_upper.replace("-SWAP", "")),
+            TradingVenue::OkexFutures => {
+                if symbol_upper.ends_with("-SWAP") {
+                    Ok(symbol_upper)
+                } else {
+                    Ok(format!("{symbol_upper}-SWAP"))
+                }
+            }
+            _ => Err(format!("venue {:?} not okex", venue)),
+        };
+    }
+
+    let (base, quote) = extract_assets_from_symbol(&symbol_upper);
+    match venue {
+        TradingVenue::OkexMargin => Ok(format!("{base}-{quote}")),
+        TradingVenue::OkexFutures => Ok(format!("{base}-{quote}-SWAP")),
+        _ => Err(format!("venue {:?} not okex", venue)),
+    }
+}
+
+fn okex_order_type_from_order_type(order_type: OrderType) -> Result<OkexOrderType, String> {
+    match order_type {
+        OrderType::Market => Ok(OkexOrderType::Market),
+        OrderType::Limit => Ok(OkexOrderType::Limit),
+        OrderType::LimitMaker => Ok(OkexOrderType::PostOnly),
+        _ => Err(format!("unsupported okex order type: {:?}", order_type)),
+    }
 }
 
 use serde::{Deserialize, Serialize};
@@ -584,6 +622,25 @@ impl Order {
                     BinanceCancelUMOrderRequest::create(now, self.client_order_id, params);
                 return Ok(request.to_bytes());
             }
+            TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
+                let inst_id = okex_inst_id_from_symbol(&self.symbol, self.venue)?;
+                let params = OkexCancelOrderParams {
+                    ord_id: self.exchange_order_id.unwrap_or(0),
+                    cl_ord_id: self.client_order_id,
+                    inst_id,
+                };
+                let request = match self.venue {
+                    TradingVenue::OkexMargin => {
+                        OkexCancelOrderRequest::create_margin(now, self.client_order_id, params)
+                    }
+                    TradingVenue::OkexFutures => {
+                        OkexCancelOrderRequest::create_um(now, self.client_order_id, params)
+                    }
+                    _ => None,
+                }
+                .ok_or_else(|| "failed to build okex cancel request".to_string())?;
+                Ok(request.to_bytes())
+            }
             _ => Err(format!("Unsupported trading venue: {:?}", self.venue)),
         }
     }
@@ -676,6 +733,32 @@ impl Order {
                     );
                     Ok(request.to_bytes())
                 }
+            }
+            TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
+                let create_ts = get_timestamp_us();
+                let inst_id = okex_inst_id_from_symbol(&self.symbol, self.venue)?;
+                let okex_order_type = okex_order_type_from_order_type(self.order_type)?;
+
+                let params = OkexNewOrderParams {
+                    side: self.side,
+                    order_type: okex_order_type,
+                    quantity: self.quantity,
+                    price: self.price,
+                    symbol: inst_id,
+                    client_order_id: self.client_order_id,
+                };
+
+                let request = match self.venue {
+                    TradingVenue::OkexMargin => {
+                        OkexNewOrderRequest::create_margin(create_ts, self.client_order_id, params)
+                    }
+                    TradingVenue::OkexFutures => {
+                        OkexNewOrderRequest::create_um(create_ts, self.client_order_id, params)
+                    }
+                    _ => None,
+                }
+                .ok_or_else(|| "failed to build okex new order request".to_string())?;
+                Ok(request.to_bytes())
             }
             //之后在这支持别的类型下单，根据资产类型决定下单的request，统一序列化为bytes
             _ => Err(format!("Unsupported trading venue: {:?}", self.venue)),

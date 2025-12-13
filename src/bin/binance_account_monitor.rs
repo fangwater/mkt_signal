@@ -1,10 +1,9 @@
 use anyhow::Result;
 use bytes::Bytes;
 use log::{debug, error, info, warn};
-use mkt_signal::common::account_msg::{AccountEventType, ExecutionReportMsg, OrderTradeUpdateMsg};
 use mkt_signal::common::basic_account_msg::{
     get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
-    BasicPositionMsg,
+    BasicPositionMsg, BinanceBasicOrderMsg,
 };
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::binance_basic_account_event_parser::BinanceBasicAccountEventParser;
@@ -12,6 +11,8 @@ use mkt_signal::parser::default_parser::Parser;
 use mkt_signal::portfolio_margin::binance_user_stream::BinanceUserDataConnection;
 use mkt_signal::portfolio_margin::listen_key::BinanceListenKeyService;
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
+use mkt_signal::pre_trade::order_manager::Side;
+use mkt_signal::signal::common::{ExecutionType, OrderStatus};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -259,40 +260,30 @@ fn log_parsed_event(msg: &Bytes) {
 
     match event_type {
         BasicAccountEventType::OrderUpdate => {
-            if payload.len() < 4 {
-                return;
-            }
-            let inner_type = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-            if inner_type == AccountEventType::ExecutionReport as u32 {
-                if let Ok(m) = ExecutionReportMsg::from_bytes(&payload) {
-                    info!(
-                        "Binance ExecutionReport: sym={} side={} status={} cli_id={} ord_id={} price={} qty={} filled={}",
-                        m.symbol,
-                        m.side,
-                        m.order_status,
-                        m.client_order_id,
-                        m.order_id,
-                        m.price,
-                        m.quantity,
-                        m.cumulative_filled_quantity
-                    );
-                }
-            } else if inner_type == AccountEventType::OrderTradeUpdate as u32 {
-                if let Ok(m) = OrderTradeUpdateMsg::from_bytes(&payload) {
-                    info!(
-                        "Binance OrderTradeUpdate: sym={} side={} status={} cli_id={} ord_id={} price={} qty={} filled={}",
-                        m.symbol,
-                        m.side,
-                        m.order_status,
-                        m.client_order_id,
-                        m.order_id,
-                        m.price,
-                        m.quantity,
-                        m.cumulative_filled_quantity
-                    );
-                }
-            } else {
-                debug!("Binance OrderUpdate unknown inner type={}", inner_type);
+            if let Ok(m) = BinanceBasicOrderMsg::from_bytes(&payload) {
+                let venue = match m.venue {
+                    BinanceBasicOrderMsg::VENUE_MARGIN => "margin",
+                    BinanceBasicOrderMsg::VENUE_UM => "um",
+                    _ => "unknown",
+                };
+                info!(
+                    "Binance OrderUpdate: venue={} sym={} side={:?} x={} X={} cli_id={} ord_id={} price={} qty={} last_qty={} filled={}",
+                    venue,
+                    m.symbol,
+                    Side::from_u8(m.side).unwrap_or(Side::Buy),
+                    ExecutionType::from_u8(m.execution_type)
+                        .unwrap_or(ExecutionType::New)
+                        .as_str(),
+                    OrderStatus::from_u8(m.order_status)
+                        .unwrap_or(OrderStatus::New)
+                        .as_str(),
+                    m.client_order_id,
+                    m.order_id,
+                    m.price,
+                    m.quantity,
+                    m.last_executed_quantity,
+                    m.cumulative_filled_quantity
+                );
             }
         }
         BasicAccountEventType::BalanceUpdate => {
@@ -363,25 +354,9 @@ impl AccountEventDeduper {
             BasicAccountEventType::BorrowInterest => BasicBorrowInterestMsg::from_bytes(&payload)
                 .ok()
                 .map(|m| self.key_borrow_interest(&m)),
-            BasicAccountEventType::OrderUpdate => {
-                if payload.len() < 4 {
-                    None
-                } else {
-                    let inner_type =
-                        u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-                    if inner_type == AccountEventType::ExecutionReport as u32 {
-                        ExecutionReportMsg::from_bytes(&payload)
-                            .ok()
-                            .map(|m| self.key_execution_report(&m))
-                    } else if inner_type == AccountEventType::OrderTradeUpdate as u32 {
-                        OrderTradeUpdateMsg::from_bytes(&payload)
-                            .ok()
-                            .map(|m| self.key_order_trade_update(&m))
-                    } else {
-                        None
-                    }
-                }
-            }
+            BasicAccountEventType::OrderUpdate => BinanceBasicOrderMsg::from_bytes(&payload)
+                .ok()
+                .map(|m| self.key_binance_basic_order(&m)),
             BasicAccountEventType::Error => return true,
         };
 
@@ -448,22 +423,15 @@ impl AccountEventDeduper {
         ])
     }
 
-    fn key_execution_report(&self, msg: &ExecutionReportMsg) -> u64 {
+    fn key_binance_basic_order(&self, msg: &BinanceBasicOrderMsg) -> u64 {
         self.hash64(&[
             BasicAccountEventType::OrderUpdate as u32 as u64,
-            msg.order_id as u64,
-            msg.trade_id as u64,
-            msg.update_id as u64,
-            msg.event_time as u64,
-        ])
-    }
-
-    fn key_order_trade_update(&self, msg: &OrderTradeUpdateMsg) -> u64 {
-        self.hash64(&[
-            BasicAccountEventType::OrderUpdate as u32 as u64,
+            msg.venue as u64,
             msg.order_id as u64,
             msg.trade_id as u64,
             msg.event_time as u64,
+            msg.execution_type as u64,
+            msg.order_status as u64,
         ])
     }
 }

@@ -13,7 +13,7 @@ pub fn create_signal_record_subscriber(
     channel: &str,
 ) -> Result<Subscriber<ipc::Service, [u8; SIGNAL_PAYLOAD], ()>> {
     let node_name = format!("{}{}", NODE_PREFIX, sanitize_suffix(channel));
-    let service_name = build_service_name(&format!("signal_pubs/{}", channel));
+    let service_name = build_service_name(&format!("persist_pubs/{}", channel));
 
     let node = NodeBuilder::new()
         .name(&NodeName::new(&node_name)?)

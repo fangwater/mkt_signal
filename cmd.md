@@ -16,3 +16,5 @@
   - StepSize:    下单步进（张数）
   - PriceTick:   价格最小变动单位
 
+  extract_base_asset(s 这些函数都有了，避免反复定义
+

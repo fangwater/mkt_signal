@@ -14,6 +14,7 @@ pub mod signal;
 pub mod strategy;
 pub mod symbol_match;
 pub mod trade_engine;
+pub mod viz;
 
 // Re-export frequently used modules for backward compatibility
 pub use common::{exchange, mkt_msg};

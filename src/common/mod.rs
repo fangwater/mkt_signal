@@ -1,4 +1,3 @@
-pub mod account_msg;
 pub mod basic_account_msg;
 pub mod exchange;
 pub mod iceoryx_publisher;
@@ -9,4 +8,3 @@ pub mod mkt_msg;
 pub mod msg_parser;
 pub mod redis_client;
 pub mod time_util;
-pub mod viz;

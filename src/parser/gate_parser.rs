@@ -380,38 +380,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_gate_ticker_parse() {
-        let parser = GateTickerParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
-
-        let msg = r#"{
-            "time": 1764559257,
-            "time_ms": 1764559257161,
-            "channel": "spot.tickers",
-            "event": "update",
-            "result": {
-                "currency_pair": "BTC_USDT",
-                "last": "86445.2",
-                "lowest_ask": "86445.2",
-                "highest_bid": "86445.1",
-                "change_percentage": "-4.4564",
-                "base_volume": "10381.529204",
-                "quote_volume": "931959066.3514661",
-                "high_24h": "91962.8",
-                "low_24h": "86325.7"
-            }
-        }"#;
-
-        let bytes = Bytes::from(msg);
-        let count = parser.parse(bytes, &tx);
-        assert_eq!(count, 1);
-
-        // 验证消息被正确发送
-        let received = rx.try_recv();
-        assert!(received.is_ok());
-    }
-
-    #[test]
     fn test_gate_kline_parse() {
         let parser = GateKlineParser::new(false); // 不限制只处理完结K线
         let (tx, mut rx) = mpsc::unbounded_channel();

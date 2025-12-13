@@ -83,9 +83,8 @@ async fn run(exchange: Exchange, token: CancellationToken) -> Result<()> {
     // 4️⃣ 定时发布信号状态快照（10 秒一次），按 exchange 独立通道供 fr_visualization 消费
     {
         let cancel = token.clone();
-        let channel_name = format!("{}_{}", DEFAULT_STATE_CHANNEL, exchange.as_str());
         tokio::task::spawn_local(async move {
-            let state_pub = SignalPublisher::new(&channel_name)
+            let state_pub = SignalPublisher::new_with_prefix("viz_pubs", DEFAULT_STATE_CHANNEL)
                 .expect("failed to create fr_signal_state publisher");
             let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(10));
             loop {

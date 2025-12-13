@@ -60,7 +60,8 @@ impl BasicBalanceManager {
 
     /// 应用借贷利息消息：累加利息，保留余额不变。
     pub fn apply_borrow_interest(&mut self, msg: &BasicBorrowInterestMsg) {
-        let symbol = msg.symbol.clone();
+        // 与 balance 更新保持一致：内部统一用大写 key，避免大小写不一致导致 borrowed/interest 丢失。
+        let symbol = msg.symbol.to_ascii_uppercase();
         let entry = self
             .balances
             .entry(symbol.clone())

@@ -25,6 +25,11 @@ struct Args {
     /// Venue for hedging leg (e.g., binance-futures)
     #[arg(long, value_enum)]
     hedge_venue: TradingVenue,
+
+    /// Optional suffix for resample channels, to run multiple pre_trade instances.
+    /// Example: --resample_suffix okex_m_okex_f
+    #[arg(long)]
+    resample_suffix: Option<String>,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -36,12 +41,25 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let open_venue = args.open_venue;
     let hedge_venue = args.hedge_venue;
+    let resample_suffix = args.resample_suffix.clone();
 
     info!(
         "pre_trade starting, open_venue={:?}, hedge_venue={:?}",
         open_venue, hedge_venue
     );
-    info!("Required env vars: BINANCE_API_KEY, BINANCE_API_SECRET");
+    let mut required_env: Vec<&str> = Vec::new();
+    if open_venue.trade_engine_exchange() == "binance"
+        || hedge_venue.trade_engine_exchange() == "binance"
+    {
+        required_env.extend(["BINANCE_API_KEY", "BINANCE_API_SECRET"]);
+    }
+    if open_venue.trade_engine_exchange() == "okex" || hedge_venue.trade_engine_exchange() == "okex"
+    {
+        required_env.extend(["OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE"]);
+    }
+    if !required_env.is_empty() {
+        info!("Required env vars: {}", required_env.join(", "));
+    }
     info!("Optional env vars: REDIS_URL");
 
     let local = tokio::task::LocalSet::new();
@@ -92,14 +110,26 @@ async fn main() -> Result<()> {
 
             // 5. 初始化 ResampleChannel
             info!("Initializing ResampleChannel singleton...");
-            if let Err(err) = ResampleChannel::initialize(
-                "pre_trade_positions",
-                "pre_trade_exposure",
-                "pre_trade_risk",
-            ) {
+            let (pos_ch, exposure_ch, risk_ch) = if let Some(suffix) = resample_suffix.as_deref() {
+                (
+                    format!("pre_trade_positions_{}", suffix),
+                    format!("pre_trade_exposure_{}", suffix),
+                    format!("pre_trade_risk_{}", suffix),
+                )
+            } else {
+                (
+                    "pre_trade_positions".to_string(),
+                    "pre_trade_exposure".to_string(),
+                    "pre_trade_risk".to_string(),
+                )
+            };
+            if let Err(err) = ResampleChannel::initialize(&pos_ch, &exposure_ch, &risk_ch) {
                 warn!("Failed to initialize ResampleChannel: {err:#}");
             } else {
-                info!("ResampleChannel initialized successfully");
+                info!(
+                    "ResampleChannel initialized successfully (positions={} exposure={} risk={})",
+                    pos_ch, exposure_ch, risk_ch
+                );
             }
 
             // 6. 初始化 TradeEngHub（按 open/hedge 需求注册交易所）

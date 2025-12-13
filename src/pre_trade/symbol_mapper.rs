@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 
 use crate::common::exchange::Exchange;
+use crate::pre_trade::symbol_util::extract_base_asset;
 
 /// Symbol 映射 trait，处理不同交易所的 symbol 格式转换
 ///
@@ -46,9 +47,37 @@ impl SymbolMapper for OkexSymbolMapper {
     }
 
     fn inst_id_to_base_asset(&self, inst_id: &str) -> Option<String> {
-        // BTC-USDT-SWAP -> BTC
-        // BTC-USD-SWAP -> BTC
-        inst_id.split('-').next().map(|s| s.to_uppercase())
+        // OKX: BTC-USDT-SWAP -> BTC
+        // 兼容: BTCUSDT -> BTC（某些流程会提前归一化 inst_id）
+        extract_base_asset(inst_id)
+    }
+
+    fn asset_to_price_symbol(&self, asset: &str) -> String {
+        let upper = asset.to_uppercase();
+        if upper == "USDT" {
+            "USDT".to_string()
+        } else {
+            format!("{}USDT", upper)
+        }
+    }
+}
+
+/// Binance 的 symbol 映射实现
+#[derive(Debug)]
+pub struct BinanceSymbolMapper;
+
+impl SymbolMapper for BinanceSymbolMapper {
+    fn balance_asset_to_um_symbol(&self, asset: &str) -> String {
+        let upper = asset.to_uppercase();
+        if upper == "USDT" {
+            "USDT".to_string()
+        } else {
+            format!("{}USDT", upper)
+        }
+    }
+
+    fn inst_id_to_base_asset(&self, inst_id: &str) -> Option<String> {
+        extract_base_asset(inst_id)
     }
 
     fn asset_to_price_symbol(&self, asset: &str) -> String {
@@ -65,6 +94,7 @@ impl SymbolMapper for OkexSymbolMapper {
 pub fn create_symbol_mapper(exchange: Exchange) -> Box<dyn SymbolMapper> {
     match exchange {
         Exchange::Okex => Box::new(OkexSymbolMapper),
+        Exchange::Binance => Box::new(BinanceSymbolMapper),
         _ => panic!("SymbolMapper not implemented for {:?}", exchange),
     }
 }

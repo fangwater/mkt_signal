@@ -1,13 +1,11 @@
 //! Binance PM 账户事件解析器（basic 模式）
 //!
 //! - 余额 / 持仓 / 订单 / 负债 统一封装为 `BasicAccountEventMsg`
-//! - OrderUpdate 的 payload 仍使用旧的 `ExecutionReportMsg` / `OrderTradeUpdateMsg`
-//!   （它们已实现 OrderUpdate + TradeUpdate trait，便于策略复用）
+//! - OrderUpdate 的 payload 使用 basic 层统一 schema：`BinanceBasicOrderMsg`
 
-use crate::common::account_msg::{ExecutionReportMsg, OrderTradeUpdateMsg};
 use crate::common::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
-    BasicPositionMsg,
+    BasicPositionMsg, BinanceBasicOrderMsg,
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
@@ -15,6 +13,9 @@ use log::{debug, warn};
 use serde_json::Value;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
+
+use crate::pre_trade::order_manager::{OrderType, Side};
+use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce};
 
 #[derive(Clone)]
 pub struct BinanceBasicAccountEventParser;
@@ -24,14 +25,23 @@ impl BinanceBasicAccountEventParser {
         Self
     }
 
+    fn encode_order_type(order_type: &str) -> u8 {
+        OrderType::from_str(order_type)
+            .unwrap_or(OrderType::Limit)
+            .to_u8()
+    }
+
+    fn encode_time_in_force(tif: &str) -> u8 {
+        TimeInForce::from_str(tif)
+            .unwrap_or(TimeInForce::GTC)
+            .to_u8()
+    }
+
     fn parse_execution_report(&self, json: &Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
         let transaction_time = json.get("T").and_then(|v| v.as_i64()).unwrap_or(0);
         let order_id = json.get("i").and_then(|v| v.as_i64()).unwrap_or(0);
-        let trade_id = json.get("t").and_then(|v| v.as_i64()).unwrap_or(-1);
-        let order_creation_time = json.get("O").and_then(|v| v.as_i64()).unwrap_or(0);
-        let working_time = json.get("W").and_then(|v| v.as_i64()).unwrap_or(0);
-        let update_id = json.get("I").and_then(|v| v.as_i64()).unwrap_or(0);
+        let trade_id = json.get("t").and_then(|v| v.as_i64()).unwrap_or(0).max(0);
 
         let symbol = json
             .get("s")
@@ -40,20 +50,23 @@ impl BinanceBasicAccountEventParser {
             .to_string();
         let client_order_id_raw = json.get("c").and_then(|v| v.as_str());
         let orig_client_order_id_raw = json.get("C").and_then(|v| v.as_str());
-        // 策略单使用 i64 自定义 clientOrderId；若主字段解析失败，尝试使用 origClientOrderId (C)
         let client_order_id = client_order_id_raw
             .and_then(|s| s.parse::<i64>().ok())
             .or_else(|| orig_client_order_id_raw.and_then(|s| s.parse::<i64>().ok()))
             .unwrap_or(0);
 
-        let side = match json.get("S").and_then(|v| v.as_str()).unwrap_or("") {
-            "BUY" => 'B',
-            "SELL" => 'S',
-            _ => 'U',
-        };
+        if client_order_id == 0 {
+            warn!(
+                "parser: skip executionReport with non-i64 clientOrderId c={:?} C={:?} sym={}",
+                client_order_id_raw, orig_client_order_id_raw, symbol
+            );
+            return 0;
+        }
 
+        let side = Side::from_str(json.get("S").and_then(|v| v.as_str()).unwrap_or(""))
+            .unwrap_or(Side::Buy)
+            .to_u8();
         let is_maker = json.get("m").and_then(|v| v.as_bool()).unwrap_or(false);
-        let is_working = json.get("w").and_then(|v| v.as_bool()).unwrap_or(false);
 
         let price = json
             .get("p")
@@ -90,81 +103,55 @@ impl BinanceBasicAccountEventParser {
             .and_then(|v| v.as_str())
             .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(0.0);
-        let last_quote = json
-            .get("Y")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let quote_order_quantity = json
-            .get("Q")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
 
-        let order_type = json
-            .get("o")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let time_in_force = json
-            .get("f")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let execution_type = json
-            .get("x")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let order_status = json
-            .get("X")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let order_type_str = json.get("o").and_then(|v| v.as_str()).unwrap_or("");
+        let tif_str = json.get("f").and_then(|v| v.as_str()).unwrap_or("");
+        let exe_code =
+            ExecutionType::from_str(json.get("x").and_then(|v| v.as_str()).unwrap_or(""))
+                .unwrap_or(ExecutionType::New)
+                .to_u8();
+        let status_code =
+            OrderStatus::from_str(json.get("X").and_then(|v| v.as_str()).unwrap_or(""))
+                .unwrap_or(OrderStatus::New)
+                .to_u8();
         let commission_asset = json
             .get("N")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
 
-        if client_order_id == 0 {
-            warn!(
-                "parser: skip executionReport with non-i64 clientOrderId c={:?} C={:?} sym={}",
-                client_order_id_raw, orig_client_order_id_raw, symbol
-            );
-            return 0;
-        }
+        let average_price = if cumulative_filled_quantity > 0.0 {
+            cumulative_quote / cumulative_filled_quantity
+        } else {
+            0.0
+        };
 
-        let msg = ExecutionReportMsg::create(
+        let bytes = BinanceBasicOrderMsg::create(
+            BinanceBasicOrderMsg::VENUE_MARGIN,
             event_time,
             transaction_time,
-            order_id,
-            trade_id,
-            order_creation_time,
-            working_time,
-            update_id,
             symbol,
+            order_id,
             client_order_id,
+            trade_id,
             side,
+            Self::encode_order_type(order_type_str),
+            Self::encode_time_in_force(tif_str),
+            exe_code,
+            status_code,
             is_maker,
-            is_working,
             price,
             quantity,
             last_executed_quantity,
             cumulative_filled_quantity,
             last_executed_price,
+            average_price,
             commission_amount,
-            cumulative_quote,
-            last_quote,
-            quote_order_quantity,
-            order_type,
-            time_in_force,
-            execution_type,
-            order_status,
+            0.0,
             commission_asset,
-            client_order_id_raw.map(|s| s.to_string()),
-        );
-        let bytes = msg.to_bytes();
+        )
+        .to_bytes();
+
         debug!(
             "parser: executionReport parsed sym={} c_raw={:?} cli_id_i64={} x={} X={} qty={} last_qty={} last_px={}",
             json.get("s").and_then(|v| v.as_str()).unwrap_or(""),
@@ -187,19 +174,13 @@ impl BinanceBasicAccountEventParser {
     fn parse_order_trade_update(&self, json: &Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
         let transaction_time = json.get("T").and_then(|v| v.as_i64()).unwrap_or(0);
-        let business_unit = json
-            .get("fs")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
 
         let Some(o) = json.get("o") else {
             return 0;
         };
 
         let order_id = o.get("i").and_then(|v| v.as_i64()).unwrap_or(0);
-        let trade_id = o.get("t").and_then(|v| v.as_i64()).unwrap_or(0);
-        let strategy_id = o.get("si").and_then(|v| v.as_i64()).unwrap_or(0);
+        let trade_id = o.get("t").and_then(|v| v.as_i64()).unwrap_or(0).max(0);
 
         let symbol = o
             .get("s")
@@ -219,20 +200,10 @@ impl BinanceBasicAccountEventParser {
             return 0;
         }
 
-        let side = match o.get("S").and_then(|v| v.as_str()).unwrap_or("") {
-            "BUY" => 'B',
-            "SELL" => 'S',
-            _ => 'U',
-        };
-
-        let position_side = match o.get("ps").and_then(|v| v.as_str()).unwrap_or("") {
-            "LONG" => 'L',
-            "SHORT" => 'S',
-            _ => 'N',
-        };
-
+        let side = Side::from_str(o.get("S").and_then(|v| v.as_str()).unwrap_or(""))
+            .unwrap_or(Side::Buy)
+            .to_u8();
         let is_maker = o.get("m").and_then(|v| v.as_bool()).unwrap_or(false);
-        let reduce_only = o.get("R").and_then(|v| v.as_bool()).unwrap_or(false);
 
         let price = o
             .get("p")
@@ -246,11 +217,6 @@ impl BinanceBasicAccountEventParser {
             .unwrap_or(0.0);
         let average_price = o
             .get("ap")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let stop_price = o
-            .get("sp")
             .and_then(|v| v.as_str())
             .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(0.0);
@@ -274,86 +240,52 @@ impl BinanceBasicAccountEventParser {
             .and_then(|v| v.as_str())
             .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(0.0);
-        let buy_notional = o
-            .get("b")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let sell_notional = o
-            .get("a")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
         let realized_profit = o
             .get("rp")
             .and_then(|v| v.as_str())
             .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(0.0);
 
-        let order_type = o
-            .get("o")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let time_in_force = o
-            .get("f")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let execution_type = o
-            .get("x")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let order_status = o
-            .get("X")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let order_type_str = o.get("o").and_then(|v| v.as_str()).unwrap_or("");
+        let tif_str = o.get("f").and_then(|v| v.as_str()).unwrap_or("");
+        let exe_code = ExecutionType::from_str(o.get("x").and_then(|v| v.as_str()).unwrap_or(""))
+            .unwrap_or(ExecutionType::New)
+            .to_u8();
+        let status_code = OrderStatus::from_str(o.get("X").and_then(|v| v.as_str()).unwrap_or(""))
+            .unwrap_or(OrderStatus::New)
+            .to_u8();
         let commission_asset = o
             .get("N")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let strategy_type = o
-            .get("st")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
 
-        let msg = OrderTradeUpdateMsg::create(
+        let bytes = BinanceBasicOrderMsg::create(
+            BinanceBasicOrderMsg::VENUE_UM,
             event_time,
             transaction_time,
-            order_id,
-            trade_id,
-            strategy_id,
             symbol,
+            order_id,
             client_order_id,
+            trade_id,
             side,
-            position_side,
+            Self::encode_order_type(order_type_str),
+            Self::encode_time_in_force(tif_str),
+            exe_code,
+            status_code,
             is_maker,
-            reduce_only,
             price,
             quantity,
-            average_price,
-            stop_price,
             last_executed_quantity,
             cumulative_filled_quantity,
             last_executed_price,
+            average_price,
             commission_amount,
-            buy_notional,
-            sell_notional,
             realized_profit,
-            order_type,
-            time_in_force,
-            execution_type,
-            order_status,
             commission_asset,
-            strategy_type,
-            business_unit,
-            client_order_id_raw.map(|s| s.to_string()),
-        );
-        let bytes = msg.to_bytes();
+        )
+        .to_bytes();
+
         debug!(
             "parser: orderTradeUpdate parsed sym={} c_raw={:?} cli_id_i64={} x={} X={} qty={} last_qty={} last_px={}",
             o.get("s").and_then(|v| v.as_str()).unwrap_or(""),

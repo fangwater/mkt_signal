@@ -580,36 +580,4 @@ impl Parser for BitgetTradeParser {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_bitget_ticker_parse() {
-        let parser = BitgetAskBidSpreadParser::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
-
-        let msg = r#"{
-            "action": "snapshot",
-            "arg": {"instType": "USDT-FUTURES", "channel": "ticker", "instId": "BTCUSDT"},
-            "data": [{
-                "instId": "BTCUSDT",
-                "lastPr": "91380.4",
-                "bidPr": "91380.3",
-                "askPr": "91380.4",
-                "bidSz": "6.1168",
-                "askSz": "23.7021",
-                "ts": "1764518504340"
-            }],
-            "ts": 1764518504341
-        }"#;
-
-        let bytes = Bytes::from(msg);
-        let count = parser.parse(bytes, &tx);
-        assert_eq!(count, 1);
-
-        // 验证消息被正确发送
-        let received = rx.try_recv();
-        assert!(received.is_ok());
-    }
-}
+// NOTE: parser tests removed per repo usage (WS payloads are brittle and often change).

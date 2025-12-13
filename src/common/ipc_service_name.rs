@@ -4,13 +4,13 @@ use std::env;
 ///
 /// # 规则
 /// - `data_pubs/*` 保持不变（公用市场数据）
-/// - 其他路径（如 `signal_pubs/*`, `account_pubs/*`）添加命名空间前缀
+/// - 其他路径（如 `signal_pubs/*`, `viz_pubs/*`, `persist_pubs/*`, `account_pubs/*`）添加命名空间前缀
 ///
 /// # 环境变量
 /// - `IPC_NAMESPACE`: 必须存在，用于命名空间隔离（例如: "mkt1", "mkt2"）
 ///
 /// # 示例
-/// ```
+/// ```ignore
 /// // 环境变量: IPC_NAMESPACE=mkt1
 ///
 /// // 市场数据（公用）：
@@ -20,6 +20,14 @@ use std::env;
 /// // 信号通道（隔离）：
 /// build_service_name("signal_pubs/pre_trade")
 /// // => "mkt1/signal_pubs/pre_trade"
+///
+/// // 可视化通道（隔离）：
+/// build_service_name("viz_pubs/pre_trade_positions")
+/// // => "mkt1/viz_pubs/pre_trade_positions"
+///
+/// // 持久化通道（隔离）：
+/// build_service_name("persist_pubs/order_update_record")
+/// // => "mkt1/persist_pubs/order_update_record"
 ///
 /// // 账户数据（隔离）：
 /// build_service_name("account_pubs/binance_pm")

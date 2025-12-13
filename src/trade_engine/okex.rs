@@ -386,7 +386,7 @@ impl ToOkexWsJson for OkexNewOrderRequest {
                 "tdMode": td_mode,
                 "clOrdId": cl_id,
             });
-            if params.side.is_buy() {
+            if req_type == TradeRequestType::OkexNewMarginOrder && params.side.is_buy() {
                 if let Some(map) = obj.as_object_mut() {
                     map.insert("tgtCcy".to_string(), json!("base_ccy"));
                 }

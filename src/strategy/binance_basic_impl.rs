@@ -1,15 +1,27 @@
-// ============================================================================
-// Trait 实现：为 OrderTradeUpdateMsg 实现 OrderUpdate 和 TradeUpdate
-// 币安的杠杆下单， margin order的账号消息流推送
-// ============================================================================
+//! 为 Binance basic 订单消息实现统一的 OrderUpdate / TradeUpdate 接口
 
-use crate::common::account_msg::OrderTradeUpdateMsg;
+use crate::common::basic_account_msg::BinanceBasicOrderMsg;
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
 
-impl OrderUpdate for OrderTradeUpdateMsg {
+fn map_execution_type(code: u8) -> ExecutionType {
+    ExecutionType::from_u8(code).unwrap_or(ExecutionType::New)
+}
+
+fn map_order_status(code: u8) -> OrderStatus {
+    OrderStatus::from_u8(code).unwrap_or(OrderStatus::New)
+}
+
+fn map_trading_venue(code: u8) -> TradingVenue {
+    match code {
+        BinanceBasicOrderMsg::VENUE_UM => TradingVenue::BinanceFutures,
+        _ => TradingVenue::BinanceMargin,
+    }
+}
+
+impl OrderUpdate for BinanceBasicOrderMsg {
     fn event_time(&self) -> i64 {
         self.event_time
     }
@@ -27,19 +39,15 @@ impl OrderUpdate for OrderTradeUpdateMsg {
     }
 
     fn side(&self) -> Side {
-        match self.side {
-            'B' | 'b' => Side::Buy,
-            'S' | 's' => Side::Sell,
-            _ => Side::Buy,
-        }
+        Side::from_u8(self.side).unwrap_or(Side::Buy)
     }
 
     fn order_type(&self) -> OrderType {
-        OrderType::from_str(&self.order_type).unwrap_or(OrderType::Limit)
+        OrderType::from_u8(self.order_type).unwrap_or(OrderType::Limit)
     }
 
     fn time_in_force(&self) -> TimeInForce {
-        TimeInForce::from_str(&self.time_in_force).unwrap_or(TimeInForce::GTC)
+        TimeInForce::from_u8(self.time_in_force).unwrap_or(TimeInForce::GTC)
     }
 
     fn price(&self) -> f64 {
@@ -59,54 +67,41 @@ impl OrderUpdate for OrderTradeUpdateMsg {
     }
 
     fn status(&self) -> OrderStatus {
-        OrderStatus::from_str(&self.order_status).unwrap_or(OrderStatus::New)
+        map_order_status(self.order_status)
     }
 
     fn execution_type(&self) -> ExecutionType {
-        ExecutionType::from_str(&self.execution_type).unwrap_or(ExecutionType::New)
+        map_execution_type(self.execution_type)
     }
 
     fn trading_venue(&self) -> TradingVenue {
-        // OrderTradeUpdate 消息类型对应 BinanceUm
-        TradingVenue::BinanceFutures
-    }
-
-    fn raw_status(&self) -> &str {
-        &self.order_status
-    }
-
-    fn raw_execution_type(&self) -> &str {
-        &self.execution_type
+        map_trading_venue(self.venue)
     }
 
     fn average_price(&self) -> Option<f64> {
-        Some(self.average_price)
+        if self.average_price > 0.0 {
+            Some(self.average_price)
+        } else {
+            None
+        }
     }
 
     fn last_executed_price(&self) -> Option<f64> {
-        Some(self.last_executed_price)
-    }
-
-    fn business_unit(&self) -> Option<&str> {
-        Some(&self.business_unit)
-    }
-
-    fn client_order_id_str(&self) -> Option<&str> {
-        if self.client_order_id_str.is_empty() {
-            None
+        if self.last_executed_price > 0.0 {
+            Some(self.last_executed_price)
         } else {
-            Some(&self.client_order_id_str)
+            None
         }
     }
 }
 
-impl TradeUpdate for OrderTradeUpdateMsg {
+impl TradeUpdate for BinanceBasicOrderMsg {
     fn event_time(&self) -> i64 {
         self.event_time
     }
 
     fn trade_time(&self) -> i64 {
-        self.transaction_time
+        self.trade_time
     }
 
     fn symbol(&self) -> &str {
@@ -126,11 +121,7 @@ impl TradeUpdate for OrderTradeUpdateMsg {
     }
 
     fn side(&self) -> Side {
-        match self.side {
-            'B' | 'b' => Side::Buy,
-            'S' | 's' => Side::Sell,
-            _ => Side::Buy,
-        }
+        Side::from_u8(self.side).unwrap_or(Side::Buy)
     }
 
     fn price(&self) -> f64 {
@@ -142,7 +133,7 @@ impl TradeUpdate for OrderTradeUpdateMsg {
     }
 
     fn commission(&self) -> f64 {
-        self.commission_amount
+        self.commission
     }
 
     fn commission_asset(&self) -> &str {
@@ -150,23 +141,22 @@ impl TradeUpdate for OrderTradeUpdateMsg {
     }
 
     fn is_maker(&self) -> bool {
-        self.is_maker
+        self.is_maker != 0
     }
 
     fn realized_pnl(&self) -> f64 {
-        // 现货/杠杆没有已实现盈亏
-        self.realized_profit
+        self.realized_pnl
     }
+
+    fn trading_venue(&self) -> TradingVenue {
+        map_trading_venue(self.venue)
+    }
+
     fn cumulative_filled_quantity(&self) -> f64 {
         self.cumulative_filled_quantity
     }
 
-    fn trading_venue(&self) -> TradingVenue {
-        // OrderTradeUpdate 消息类型对应 BinanceUm
-        TradingVenue::BinanceFutures
-    }
-
     fn order_status(&self) -> Option<OrderStatus> {
-        OrderStatus::from_str(&self.order_status)
+        Some(map_order_status(self.order_status))
     }
 }

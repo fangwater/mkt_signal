@@ -22,6 +22,7 @@ pub struct BasicExposureEntry {
 /// 敞口管理器（简化版），负责汇总 balance 与 UM 持仓的资产敞口
 #[derive(Debug)]
 pub struct BasicExposureManager {
+    exchange: Exchange,
     symbol_mapper: Box<dyn SymbolMapper>,
     exposures: Vec<BasicExposureEntry>,
     total_equity: f64,
@@ -31,6 +32,71 @@ pub struct BasicExposureManager {
 }
 
 impl BasicExposureManager {
+    /// 计算某个交易所（exchange）的敞口快照。
+    ///
+    /// - `balance_mgrs`: 现货/保证金的基础余额管理器列表（可以为空）
+    /// - `um_mgrs`: U 本位合约持仓管理器与对应的 min_qty_table 列表（可以为空）
+    pub fn compute_exposures_for_exchange(
+        exchange: Exchange,
+        balance_mgrs: &[&BasicBalanceManager],
+        um_mgrs: &[(&BasicUmManager, &MinQtyTable)],
+    ) -> Vec<BasicExposureEntry> {
+        let symbol_mapper = crate::pre_trade::symbol_mapper::create_symbol_mapper(exchange);
+
+        // 收集所有资产（balance 和 um）
+        let mut assets: BTreeSet<String> = BTreeSet::new();
+
+        for mgr in balance_mgrs {
+            for bal in mgr.snapshot() {
+                assets.insert(bal.symbol.to_uppercase());
+            }
+        }
+
+        for (mgr, _) in um_mgrs {
+            for pos in mgr.snapshot() {
+                if let Some(base_asset) = symbol_mapper.inst_id_to_base_asset(&pos.inst_id) {
+                    assets.insert(base_asset);
+                }
+            }
+        }
+
+        let mut exposures: Vec<BasicExposureEntry> = assets
+            .into_iter()
+            .map(|asset| {
+                // 现货：净头寸（base qty）+ 借币/利息
+                let mut balance_pos = 0.0_f64;
+                let mut borrowed = 0.0_f64;
+                let mut interest = 0.0_f64;
+                for mgr in balance_mgrs {
+                    balance_pos += mgr.net_position(&asset, None);
+                    if let Some(b) = mgr.get(&asset) {
+                        borrowed += b.borrowed;
+                        interest += b.cumulative_interest;
+                    }
+                }
+
+                // 合约：折算成标的数量（base qty）
+                let um_symbol = symbol_mapper.balance_asset_to_um_symbol(&asset);
+                let mut um_position = 0.0_f64;
+                for (mgr, min_qty) in um_mgrs {
+                    um_position += mgr.net_position(&um_symbol, Some(min_qty));
+                }
+
+                BasicExposureEntry {
+                    asset,
+                    balance: balance_pos,
+                    borrowed,
+                    interest,
+                    um_position,
+                    exposure: balance_pos + um_position,
+                }
+            })
+            .collect();
+
+        exposures.sort_by(|a, b| a.asset.cmp(&b.asset));
+        exposures
+    }
+
     /// 创建新的敞口管理器
     ///
     /// # 参数
@@ -45,8 +111,11 @@ impl BasicExposureManager {
         min_qty_table: &MinQtyTable,
     ) -> Self {
         let symbol_mapper = crate::pre_trade::symbol_mapper::create_symbol_mapper(exchange);
-        let exposures =
-            Self::compute_exposures(balance_mgr, um_mgr, min_qty_table, symbol_mapper.as_ref());
+        let exposures = Self::compute_exposures_for_exchange(
+            exchange,
+            std::slice::from_ref(&balance_mgr),
+            std::slice::from_ref(&(um_mgr, min_qty_table)),
+        );
         let total_exposure = exposures.iter().map(|e| e.exposure.abs()).sum();
 
         debug!(
@@ -56,6 +125,7 @@ impl BasicExposureManager {
         );
 
         Self {
+            exchange,
             symbol_mapper,
             exposures,
             total_equity: 0.0,
@@ -72,11 +142,11 @@ impl BasicExposureManager {
         um_mgr: &BasicUmManager,
         min_qty_table: &MinQtyTable,
     ) -> bool {
-        let new_exposures = Self::compute_exposures(
-            balance_mgr,
-            um_mgr,
-            min_qty_table,
-            self.symbol_mapper.as_ref(),
+        // manager 本身是按 exchange 初始化的，recompute 直接沿用 exchange 口径即可
+        let new_exposures = Self::compute_exposures_for_exchange(
+            self.exchange,
+            std::slice::from_ref(&balance_mgr),
+            std::slice::from_ref(&(um_mgr, min_qty_table)),
         );
         let changed = Self::positions_changed(&self.exposures, &new_exposures);
 
@@ -171,60 +241,8 @@ impl BasicExposureManager {
     }
 
     /// 计算敞口列表
-    fn compute_exposures(
-        balance_mgr: &BasicBalanceManager,
-        um_mgr: &BasicUmManager,
-        min_qty_table: &MinQtyTable,
-        symbol_mapper: &dyn SymbolMapper,
-    ) -> Vec<BasicExposureEntry> {
-        // 收集所有资产（balance 和 um）
-        let mut assets: BTreeSet<String> = BTreeSet::new();
-
-        // 从 balance 收集
-        for bal in balance_mgr.snapshot() {
-            assets.insert(bal.symbol.to_uppercase());
-        }
-
-        // 从 UM 持仓收集（提取基础资产）
-        for pos in um_mgr.snapshot() {
-            if let Some(base_asset) = symbol_mapper.inst_id_to_base_asset(&pos.inst_id) {
-                assets.insert(base_asset);
-            }
-        }
-
-        // 为每个资产创建 ExposureEntry
-        let mut exposures: Vec<BasicExposureEntry> = assets
-            .into_iter()
-            .map(|asset| {
-                // 查询 balance（直接用资产名）
-                let balance_pos = balance_mgr.net_position(&asset, None);
-                let balance_data = balance_mgr.get(&asset);
-                let borrowed = balance_data.map(|b| b.borrowed).unwrap_or(0.0);
-                let interest = balance_data.map(|b| b.cumulative_interest).unwrap_or(0.0);
-
-                // 查询 UM 持仓（使用 symbol_mapper 转换）
-                let um_symbol = symbol_mapper.balance_asset_to_um_symbol(&asset);
-                let um_position = um_mgr.net_position(&um_symbol, Some(min_qty_table));
-
-                // 计算净敞口
-                let exposure = balance_pos + um_position;
-
-                BasicExposureEntry {
-                    asset,
-                    balance: balance_pos,
-                    borrowed,
-                    interest,
-                    um_position,
-                    exposure,
-                }
-            })
-            .collect();
-
-        // 按资产名称排序
-        exposures.sort_by(|a, b| a.asset.cmp(&b.asset));
-
-        exposures
-    }
+    // NOTE: compute_exposures() 已被 compute_exposures_for_exchange() 取代，
+    // 新逻辑支持合并多个 balance/um 输入源，便于跨腿/跨交易所汇总。
 
     /// 判断持仓是否发生变更
     fn positions_changed(prev: &[BasicExposureEntry], next: &[BasicExposureEntry]) -> bool {

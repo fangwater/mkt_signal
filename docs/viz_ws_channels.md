@@ -16,55 +16,9 @@
 
 ## 报文类型
 
-### 1. 账户快照 `Snapshot`
-- **触发来源**：采样器 `Sampler::build_snapshot()` 每 `sampling.interval_ms` 毫秒生成一次。
-- **判别方式**：报文顶层没有 `type` 字段，直接包含以下键值。
+当前 `viz_server` 为 relay 模式：仅转发带 `type` 字段的消息，不再生成周期性 Snapshot。
 
-示例：
-```json
-{
-  "ts": 1717496400123,
-  "account": {
-    "total_equity": 123456.78,
-    "abs_total_exposure": 3456.7,
-    "exposures": [
-      {
-        "asset": "USDT",
-        "spot_total_wallet": 100000,
-        "spot_cross_free": 80000,
-        "spot_cross_locked": 20000,
-        "um_net_position": 0,
-        "um_position_initial_margin": 0,
-        "um_open_order_initial_margin": 0,
-        "exposure": 0
-      }
-    ]
-  },
-  "prices": [
-    {"symbol": "BTCUSDT", "mark": 70000.5, "index": 69995.1, "ts": 1717496399000}
-  ],
-  "funding": [
-    {"symbol": "BTCUSDT", "funding_rate": 0.0001, "predicted_funding_rate": 0, "next_funding_time": null, "loan_rate_8h": 0}
-  ],
-  "factors": [
-    {"symbol": "BTCUSDT", "basis": 7.7e-5, "open_threshold": 0.0015, "close_threshold": 0.0005}
-  ],
-  "pnl": {"unrealized": 123.4},
-  "stale": {"account": false, "prices": false, "funding": false}
-}
-```
-
-字段说明：
-- `account.total_equity`：账户权益估算。
-- `account.abs_total_exposure`：所有资产敞口绝对值之和。
-- `account.exposures[]`：`ExposureItem` 结构，逐项列出资产维度的仓位与保证金信息。
-- `prices[]`：`PriceItem` 结构，包含标记价/指数价及其时间戳。
-- `funding[]`：`FundingItem` 结构，当前实时资金费率及预测值（未接入的值会返回 `0` 或 `null`）。
-- `factors[]`：`FactorItem` 结构，利用价格计算得到的基差与阈值。
-- `pnl.unrealized`：根据当前标记价估算的未实现盈亏。
-- `stale`：简单的过期标记，若某类数据超过 5 秒未更新则为 `true`。
-
-### 2. 资金费率切片 `fr_resample_entry`
+### 1. 资金费率切片 `fr_resample_entry`
 - **触发来源**：`signal_pubs/binance_fr_signal_resample_msg` 新数据。
 - **判别方式**：`type` 为 `fr_resample_entry`。
 
@@ -103,7 +57,7 @@
 - `ts_ms`：服务器写入广播的时刻，可用于检测延迟。
 - `entry` 字段与 `FundingRateArbResampleEntry` 结构一致；`predicted_*`、`loan_rate_8h` 等字段可能为 `null`。
 
-### 3. 预交易持仓 `pre_trade_positions`
+### 2. 预交易持仓 `pre_trade_positions`
 - **触发来源**：`pre_trade_positions_resample`。
 - **判别方式**：`type` 为 `pre_trade_positions`。
 
@@ -114,28 +68,20 @@
   "ts_ms": 1717496400789,
   "entry": {
     "ts_ms": 1717496400000,
-    "um_positions": [
+    "rows": [
       {
-        "symbol": "BTCUSDT",
-        "side": "LONG",
-        "position_amount": 0.5,
-        "entry_price": 65000,
-        "leverage": 10,
-        "position_initial_margin": 3250,
-        "open_order_initial_margin": 0,
-        "unrealized_profit": 2500
-      }
-    ],
-    "spot_balances": [
+        "asset": "BTC",
+        "open_qty": 1.2,
+        "hedge_qty": -1.0,
+        "net_qty": 0.2,
+        "net_usdt": 13000
+      },
       {
-        "asset": "USDT",
-        "total_wallet": 80000,
-        "cross_free": 60000,
-        "cross_locked": 20000,
-        "cross_borrowed": 0,
-        "cross_interest": 0,
-        "um_wallet": 1000,
-        "um_unrealized_pnl": 0
+        "asset": "ETH",
+        "open_qty": 0.0,
+        "hedge_qty": 10.5,
+        "net_qty": 10.5,
+        "net_usdt": 36750
       }
     ]
   }
@@ -143,13 +89,14 @@
 ```
 
 说明：
-- `spot_equity_usd`：所有现货资产折算为 USDT 的估值。
-- `borrowed_usd` / `interest_usd`：交叉借币及利息按最新标记价折算的总额。
-- `um_unrealized_usd`：所有合约未实现盈亏之和。
-- `um_positions[]`：来自合约账户的逐仓/全仓头寸，`side` 取值为 `LONG`/`SHORT`/`BOTH`。
-- `spot_balances[]`：现货资产余额与交叉保证金占用情况，字段直接对应 `PreTradeSpotBalanceRow`，新增 `cross_interest` 表示借贷利息。
+- `rows[]`：每个资产一行，统一展示 open 和 hedge 两侧的持仓情况
+  - `asset`：基础资产名称（如 "BTC", "ETH"）
+  - `open_qty`：open 侧净持仓数量（spot 或 um 其中一个）
+  - `hedge_qty`：hedge 侧净持仓数量（spot 或 um 其中一个）
+  - `net_qty`：净敞口（币计）= open_qty + hedge_qty
+  - `net_usdt`：净敞口（U 计）
 
-### 4. 预交易敞口 `pre_trade_exposure`
+### 3. 预交易敞口 `pre_trade_exposure`
 - **触发来源**：`pre_trade_exposure_resample`。
 - **判别方式**：`type` 为 `pre_trade_exposure`。
 
@@ -190,7 +137,7 @@
 - 每行对应 `PreTradeExposureRow`，将现货与合约资产折算为 USDT。
 - 总计行（`is_total = true`）仅提供敞口合计，数量字段为空。
 
-### 5. 预交易风险指标 `pre_trade_risk`
+### 4. 预交易风险指标 `pre_trade_risk`
 - **触发来源**：`pre_trade_risk_resample`。
 - **判别方式**：`type` 为 `pre_trade_risk`。
 
@@ -220,5 +167,5 @@
 
 ## 客户端接入建议
 - 连接建立后即可开始接收上述多种报文，需按 `type` 判断具体处理逻辑；对没有 `type` 的报文，可通过是否包含 `account` 字段识别为账户快照。
-- 若需要初始全量数据，前端应缓存最近一次 `Snapshot` 或自行轮询 REST 备份接口；当前实现不提供额外的历史补偿。
+- 若需要初始全量数据，前端应等待下一次重采样推送（当前实现不提供额外的历史补偿）。
 - 建议在客户端记录 `ts_ms` 与本地时间的差值，用于绘制延迟或掉线提示。

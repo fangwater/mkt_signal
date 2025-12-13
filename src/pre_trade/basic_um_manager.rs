@@ -104,6 +104,8 @@ impl BasicUmManager {
 
 impl NetPosition for BasicUmManager {
     fn net_position(&self, symbol: &str, min_qty_table: Option<&MinQtyTable>) -> f64 {
+        let symbol_normalized = symbol.to_uppercase().replace("-SWAP", "").replace('-', "");
+
         // 对于 OKX，需要将 symbol 映射回 inst_id 进行查找
         // 这里我们遍历所有持仓，找到匹配的 inst_id
         let mut net_contracts = 0.0f32;
@@ -124,7 +126,7 @@ impl NetPosition for BasicUmManager {
                 _ => inst_id.clone(),
             };
 
-            if pos_symbol.to_uppercase() == symbol.to_uppercase() {
+            if pos_symbol.to_uppercase() == symbol_normalized {
                 net_contracts += self.net_contracts(&inst_id);
             }
         }

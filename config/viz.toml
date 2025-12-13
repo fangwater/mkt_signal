@@ -1,15 +1,65 @@
-[http]
+[[servers]]
+namespaces = ["okex_fr_trade"]
+[servers.http]
 bind = "0.0.0.0"
-port = 4190 
-ws_path = "/ws" 
-# cors_origins = ["https://your-frontend.example.com"] 
-# auth_token = "optional-token" 
+port = 10010
+ws_path = "/ws"
+[servers.fr_state]
+enabled = true
+[servers.pre_trade]
+enabled = false
 
-[sampling] 
-interval_ms = 200 
-send_if_changed = false 
-# symbols = ["BTCUSDT","ETHUSDT"] # 可选，输出过滤 
+[[servers]]
+namespaces = ["okex_fr_trade"]
+[servers.http]
+bind = "0.0.0.0"
+port = 10011
+ws_path = "/ws"
+[servers.pre_trade]
+enabled = true
+[servers.fr_state]
+enabled = false
 
-[thresholds] 
-open = 0.002 
-close = 0.0005 
+[[servers]]
+namespaces = ["gate_fr_trade"]
+[servers.http]
+bind = "0.0.0.0"
+port = 10020
+ws_path = "/ws"
+[servers.fr_state]
+enabled = true
+[servers.pre_trade]
+enabled = false
+
+[[servers]]
+namespaces = ["gate_fr_trade"]
+[servers.http]
+bind = "0.0.0.0"
+port = 10021
+ws_path = "/ws"
+[servers.pre_trade]
+enabled = true
+[servers.fr_state]
+enabled = false
+
+[[servers]]
+namespaces = ["binance_fr_trade"]
+[servers.http]
+bind = "0.0.0.0"
+port = 10030
+ws_path = "/ws"
+[servers.fr_state]
+enabled = true
+[servers.pre_trade]
+enabled = false
+
+[[servers]]
+namespaces = ["binance_fr_trade"]
+[servers.http]
+bind = "0.0.0.0"
+port = 10031
+ws_path = "/ws"
+[servers.pre_trade]
+enabled = true
+[servers.fr_state]
+enabled = false

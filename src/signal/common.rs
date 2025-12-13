@@ -152,6 +152,33 @@ impl ExecutionType {
         }
     }
 
+    /// 转换为紧凑 u8 编码（用于二进制协议）
+    pub fn to_u8(self) -> u8 {
+        match self {
+            ExecutionType::New => 1,
+            ExecutionType::Canceled => 2,
+            ExecutionType::Replaced => 3,
+            ExecutionType::Rejected => 4,
+            ExecutionType::Trade => 5,
+            ExecutionType::Expired => 6,
+            ExecutionType::TradePrevention => 7,
+        }
+    }
+
+    /// 从紧凑 u8 编码还原
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(ExecutionType::New),
+            2 => Some(ExecutionType::Canceled),
+            3 => Some(ExecutionType::Replaced),
+            4 => Some(ExecutionType::Rejected),
+            5 => Some(ExecutionType::Trade),
+            6 => Some(ExecutionType::Expired),
+            7 => Some(ExecutionType::TradePrevention),
+            _ => None,
+        }
+    }
+
     /// 检查是否为成交事件
     pub fn is_trade(&self) -> bool {
         matches!(self, ExecutionType::Trade)
@@ -209,6 +236,31 @@ impl OrderStatus {
             OrderStatus::Canceled => "CANCELED",
             OrderStatus::Expired => "EXPIRED",
             OrderStatus::ExpiredInMatch => "EXPIRED_IN_MATCH",
+        }
+    }
+
+    /// 转换为紧凑 u8 编码（用于二进制协议）
+    pub fn to_u8(self) -> u8 {
+        match self {
+            OrderStatus::New => 1,
+            OrderStatus::PartiallyFilled => 2,
+            OrderStatus::Filled => 3,
+            OrderStatus::Canceled => 4,
+            OrderStatus::Expired => 5,
+            OrderStatus::ExpiredInMatch => 6,
+        }
+    }
+
+    /// 从紧凑 u8 编码还原
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(OrderStatus::New),
+            2 => Some(OrderStatus::PartiallyFilled),
+            3 => Some(OrderStatus::Filled),
+            4 => Some(OrderStatus::Canceled),
+            5 => Some(OrderStatus::Expired),
+            6 => Some(OrderStatus::ExpiredInMatch),
+            _ => None,
         }
     }
 

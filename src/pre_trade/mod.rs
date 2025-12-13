@@ -2,11 +2,8 @@ pub mod auto_repay_service;
 pub mod basic_balance_manager;
 pub mod basic_exposure_manager;
 pub mod basic_um_manager;
-pub mod binance_pm_spot_manager;
-pub mod binance_pm_um_manager;
 mod channel;
 pub mod event;
-pub mod exposure_manager;
 pub mod monitor_channel;
 pub mod net_position;
 pub mod order_manager;
@@ -17,6 +14,7 @@ pub mod resample_channel;
 mod runner;
 pub mod signal_channel;
 pub mod symbol_mapper;
+pub mod symbol_util;
 pub mod trade_eng_channel;
 pub use persist_channel::{
     PersistChannel, ORDER_UPDATE_RECORD_CHANNEL, TRADE_UPDATE_RECORD_CHANNEL,

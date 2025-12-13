@@ -246,6 +246,20 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let hedging_venue = TradingVenue::from_u8(open_ctx.hedging_leg.venue)
                     .unwrap_or(TradingVenue::BinanceFutures);
 
+                let configured_open_venue = MonitorChannel::instance().open_venue();
+                let configured_hedge_venue = MonitorChannel::instance().hedge_venue();
+                if opening_venue != configured_open_venue || hedging_venue != configured_hedge_venue
+                {
+                    warn!(
+                        "ArbOpen: signal venue mismatch, configured_open={:?} configured_hedge={:?} but got open={:?} hedge={:?}, ignore",
+                        configured_open_venue,
+                        configured_hedge_venue,
+                        opening_venue,
+                        hedging_venue
+                    );
+                    return;
+                }
+
                 // 检查限价挂单数量限制
                 if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol) {
                     warn!("ArbOpen: {} 限价挂单数量超限: {}", symbol, e);
@@ -311,15 +325,33 @@ fn handle_trade_signal(signal: TradeSignal) {
                         return;
                     };
 
+                    let configured_open_venue = MonitorChannel::instance().open_venue();
+                    let configured_hedge_venue = MonitorChannel::instance().hedge_venue();
+                    if opening_venue != configured_open_venue
+                        || hedging_venue != configured_hedge_venue
+                    {
+                        warn!(
+                            "ArbClose: signal venue mismatch, configured_open={:?} configured_hedge={:?} but got open={:?} hedge={:?}, ignore",
+                            configured_open_venue,
+                            configured_hedge_venue,
+                            opening_venue,
+                            hedging_venue
+                        );
+                        return;
+                    }
+
                     let opening_pos =
                         MonitorChannel::instance().get_position_qty(&opening_symbol, opening_venue);
                     let hedging_pos =
                         MonitorChannel::instance().get_position_qty(&hedging_symbol, hedging_venue);
 
-                    const SPOT_FLAT_THRESHOLD: f64 = 1e-5;
-                    let is_spot_opening = matches!(opening_venue, TradingVenue::BinanceMargin);
-                    if is_spot_opening && opening_pos.abs() <= SPOT_FLAT_THRESHOLD {
-                        // 现货腿已经为 0，说明信号已失效，直接跳过不噪声打日志
+                    // opening leg 已经接近 0，说明信号很可能过期/重复（静默跳过，避免刷屏）
+                    const OPENING_FLAT_THRESHOLD: f64 = 1e-5;
+                    let is_opening_balance_venue = matches!(
+                        opening_venue,
+                        TradingVenue::BinanceMargin | TradingVenue::OkexMargin
+                    );
+                    if is_opening_balance_venue && opening_pos.abs() <= OPENING_FLAT_THRESHOLD {
                         return;
                     }
 
@@ -419,6 +451,20 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let hedging_venue = TradingVenue::from_u8(cancel_ctx.hedging_leg.venue)
                     .unwrap_or(TradingVenue::BinanceFutures);
 
+                let configured_open_venue = MonitorChannel::instance().open_venue();
+                let configured_hedge_venue = MonitorChannel::instance().hedge_venue();
+                if opening_venue != configured_open_venue || hedging_venue != configured_hedge_venue
+                {
+                    warn!(
+                        "ArbCancel: signal venue mismatch, configured_open={:?} configured_hedge={:?} but got open={:?} hedge={:?}, ignore",
+                        configured_open_venue,
+                        configured_hedge_venue,
+                        opening_venue,
+                        hedging_venue
+                    );
+                    return;
+                }
+
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
 
                 // 使用代码块限制借用作用域，确保在进入循环前释放
@@ -470,6 +516,15 @@ fn handle_trade_signal(signal: TradeSignal) {
                     .unwrap_or(TradingVenue::BinanceFutures);
                 let hedge_side = hedge_ctx.get_side();
                 let hedge_price = hedge_ctx.get_hedge_price();
+
+                let configured_hedge_venue = MonitorChannel::instance().hedge_venue();
+                if hedging_venue != configured_hedge_venue {
+                    warn!(
+                        "ArbHedge: signal venue mismatch, configured_hedge={:?} but got {:?}, ignore",
+                        configured_hedge_venue, hedging_venue
+                    );
+                    return;
+                }
 
                 info!(
                     "🔔 收到 ArbHedge 信号: strategy_id={} hedging={} {:?} | side={:?} qty={:.4} price={:.6} is_maker={}",

@@ -1,13 +1,9 @@
 use anyhow::Result;
 use log::{info, warn};
-use mkt_signal::common::viz::config::VizCfg;
-use mkt_signal::common::viz::sampler::Sampler;
-use mkt_signal::common::viz::server::{serve_http, WsHub};
-use mkt_signal::common::viz::state::SharedState;
-use mkt_signal::common::viz::subscribers::{
-    spawn_fr_resample_listener, spawn_pre_trade_resample_listeners,
-};
-use mkt_signal::exchange::Exchange;
+use mkt_signal::viz::config::VizCfg;
+use mkt_signal::viz::fr_state::spawn_fr_state_listeners;
+use mkt_signal::viz::server::{serve_http, WsHub};
+use mkt_signal::viz::subscribers::spawn_pre_trade_resample_listeners_with_cfg;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
@@ -20,47 +16,38 @@ async fn main() -> Result<()> {
     let cfg = VizCfg::load(&cfg_path).await?;
     info!("viz_server config loaded from {}", cfg_path);
 
-    let state = SharedState::new();
-
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async move {
-            let hub = WsHub::new(128, cfg.http.auth_token.clone());
-            let http_cfg = cfg.http.clone();
+            for server in cfg.servers {
+                let hub = WsHub::new(128);
+                let http_cfg = server.http.clone();
 
-            // 订阅 funding 与 pre_trade resample 流
-            if let Err(err) = spawn_fr_resample_listener(state.clone(), hub.clone()) {
-                warn!("spawn fr_resample listener failed: {err:#}");
-            }
-            if let Err(err) = spawn_pre_trade_resample_listeners(state.clone(), hub.clone()) {
-                warn!("spawn pre_trade resample listener failed: {err:#}");
-            }
-
-            // 采样任务
-            let mut sampler = Sampler::new(
-                state.clone(),
-                cfg.sampling.clone(),
-                cfg.thresholds.clone(),
-                Exchange::Binance,
-            );
-            let interval_ms = cfg.sampling.interval_ms;
-            let hub_clone = hub.clone();
-            tokio::task::spawn_local(async move {
-                let mut ticker =
-                    tokio::time::interval(std::time::Duration::from_millis(interval_ms));
-                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                loop {
-                    ticker.tick().await;
-                    let snap = sampler.build_snapshot();
-                    match sampler.encode_json(&snap) {
-                        Ok(Some(json)) => hub_clone.broadcast(json),
-                        Ok(None) => {}
-                        Err(err) => warn!("encode snapshot failed: {err:#}"),
-                    }
+                if let Err(err) = spawn_pre_trade_resample_listeners_with_cfg(hub.clone(), &server)
+                {
+                    warn!(
+                        "spawn pre_trade resample listener failed (port={}): {err:#}",
+                        http_cfg.port
+                    );
                 }
-            });
 
-            serve_http(http_cfg, hub).await
+                if let Err(err) = spawn_fr_state_listeners(hub.clone(), &server) {
+                    warn!(
+                        "spawn fr_state listener failed (port={}): {err:#}",
+                        http_cfg.port
+                    );
+                }
+
+                tokio::task::spawn_local(async move {
+                    if let Err(err) = serve_http(http_cfg, hub).await {
+                        warn!("viz http server exited: {err:#}");
+                    }
+                });
+            }
+
+            std::future::pending::<()>().await;
+            #[allow(unreachable_code)]
+            Ok(())
         })
         .await
 }

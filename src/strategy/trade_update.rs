@@ -10,7 +10,7 @@ use crate::signal::common::{OrderStatus, TradingVenue};
 /// use crate::strategy::binance_adapter::BinanceOrderUpdateAdapter;
 ///
 /// // 当订单有成交时
-/// fn handle_trade(msg: &OrderTradeUpdateMsg) {
+/// fn handle_trade(msg: &BinanceBasicOrderMsg) {
 ///     let adapter = BinanceOrderUpdateAdapter::new(msg);
 ///
 ///     // 检查是否有成交

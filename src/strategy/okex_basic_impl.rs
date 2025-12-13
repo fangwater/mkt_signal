@@ -1,4 +1,4 @@
-//! 为 OKX 订单消息实现统一的 OrderUpdate / TradeUpdate 接口，便于与 Binance 对齐
+//! 为 OKX basic 订单消息实现统一的 OrderUpdate / TradeUpdate 接口
 
 use crate::common::basic_account_msg::OkexOrderMsg;
 use crate::pre_trade::order_manager::OrderType;

@@ -2,14 +2,12 @@ use std::net::SocketAddr;
 
 use anyhow::Result;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::Query;
 use axum::extract::State as AxumState;
-use axum::response::{IntoResponse, Response};
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 use log::info;
 use tokio::sync::broadcast;
-// 移除 CORS 以简化构建（可按需恢复）
 
 use crate::common::time_util::get_timestamp_us;
 
@@ -18,13 +16,12 @@ use super::config::HttpCfg;
 #[derive(Clone)]
 pub struct WsHub {
     pub tx: broadcast::Sender<String>,
-    pub auth_token: Option<String>,
 }
 
 impl WsHub {
-    pub fn new(capacity: usize, auth_token: Option<String>) -> Self {
+    pub fn new(capacity: usize) -> Self {
         let (tx, _rx) = broadcast::channel(capacity);
-        Self { tx, auth_token }
+        Self { tx }
     }
 
     pub fn broadcast(&self, msg: String) {
@@ -60,16 +57,6 @@ async fn ws_handler(mut socket: WebSocket, hub: WsHub) {
     }
 }
 
-async fn ws_route(
-    ws: WebSocketUpgrade,
-    AxumState(h): AxumState<WsHub>,
-    Query(q): Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    if let Some(expected) = &h.auth_token {
-        match q.get("token") {
-            Some(t) if t == expected => {}
-            _ => return axum::http::StatusCode::UNAUTHORIZED.into_response(),
-        }
-    }
+async fn ws_route(ws: WebSocketUpgrade, AxumState(h): AxumState<WsHub>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| ws_handler(socket, h))
 }

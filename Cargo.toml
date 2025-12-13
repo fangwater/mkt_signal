@@ -17,10 +17,6 @@ name = "fr_signal"
 path = "src/bin/fr_signal.rs"
 
 [[bin]]
-name = "fr_visualization"
-path = "src/bin/fr_visualization.rs"
-
-[[bin]]
 name = "binance_account_monitor"
 path = "src/bin/binance_account_monitor.rs"
 
