@@ -3,7 +3,7 @@ use crate::trade_engine::query_request::QueryRequestType;
 use bytes::{BufMut, Bytes, BytesMut};
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::service::ipc;
-use log::debug;
+use log::{debug, warn};
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]
@@ -40,16 +40,26 @@ pub fn spawn_query_response_handle(
             }
 
             let remain = buf.len().saturating_sub(written);
+            let mut dropped_body = false;
             let bcopy = body.len().min(remain);
-            if bcopy > 0 {
+            if body.len() > remain {
+                dropped_body = true;
+                warn!(
+                    "query resp body too large, dropped: type={} client_query_id={} body_len={} max_body_len={}",
+                    out.req_type as u32,
+                    out.client_query_id,
+                    body.len(),
+                    remain
+                );
+            } else if bcopy > 0 {
                 buf[written..written + bcopy].copy_from_slice(&body[..bcopy]);
             }
             debug!(
-                "publish query resp: type={} client_query_id={} body_len={} truncated={}",
+                "publish query resp: type={} client_query_id={} body_len={} dropped_body={}",
                 out.req_type as u32,
                 out.client_query_id,
                 body.len(),
-                body.len() > bcopy
+                dropped_body
             );
             if let Ok(sample) = publisher.loan_uninit() {
                 let sample = sample.write_payload(buf);

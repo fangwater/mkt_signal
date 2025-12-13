@@ -9,6 +9,14 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::common::ipc_service_name::build_service_name;
+use crate::common::{
+    basic_account_msg::{
+        get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
+        BasicPositionMsg,
+    },
+};
+use crate::pre_trade::monitor_channel::MonitorChannel;
+use crate::signal::common::TradingVenue;
 use crate::strategy::query_engine_response::{QueryEngineResponse, QueryEngineResponseMessage};
 
 thread_local! {
@@ -188,6 +196,62 @@ impl QueryEngChannel {
                     let payload = sample.payload();
                     match QueryEngineResponseMessage::from_payload(payload) {
                         Ok(resp) => {
+                            // Snapshot queries return basic account messages (no huge JSON body).
+                            if matches!(resp.req_type(), 6101 | 6102) {
+                                let body = resp.body_bytes().as_ref();
+                                let event_type = get_basic_event_type(body);
+
+                                // Apply into MonitorChannel managers (same semantics as account_pubs basic stream).
+                                let mc = MonitorChannel::instance();
+                                let open_venue = mc.open_venue();
+                                let hedge_venue = mc.hedge_venue();
+
+                                match event_type {
+                                    BasicAccountEventType::BalanceUpdate => {
+                                        if let Ok(m) = BasicBalanceMsg::from_bytes(body) {
+                                            if open_venue == TradingVenue::BinanceMargin {
+                                                if let Some(bal) = mc.open_balance_mgr() {
+                                                    bal.borrow_mut().apply_balance(&m);
+                                                }
+                                            }
+                                            if hedge_venue == TradingVenue::BinanceMargin {
+                                                if let Some(bal) = mc.hedge_balance_mgr() {
+                                                    bal.borrow_mut().apply_balance(&m);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    BasicAccountEventType::BorrowInterest => {
+                                        if let Ok(m) = BasicBorrowInterestMsg::from_bytes(body) {
+                                            if open_venue == TradingVenue::BinanceMargin {
+                                                if let Some(bal) = mc.open_balance_mgr() {
+                                                    bal.borrow_mut().apply_borrow_interest(&m);
+                                                }
+                                            }
+                                            if hedge_venue == TradingVenue::BinanceMargin {
+                                                if let Some(bal) = mc.hedge_balance_mgr() {
+                                                    bal.borrow_mut().apply_borrow_interest(&m);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    BasicAccountEventType::PositionUpdate => {
+                                        if let Ok(m) = BasicPositionMsg::from_bytes(body) {
+                                            if open_venue == TradingVenue::BinanceFutures {
+                                                if let Some((um, _)) = mc.open_um_mgr() {
+                                                    um.borrow_mut().apply_position(&m);
+                                                }
+                                            }
+                                            if hedge_venue == TradingVenue::BinanceFutures {
+                                                if let Some((um, _)) = mc.hedge_um_mgr() {
+                                                    um.borrow_mut().apply_position(&m);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
                             debug!(
                                 "queryResponse: exchange={} type={} cli_qid={} body_len={}",
                                 exchange,

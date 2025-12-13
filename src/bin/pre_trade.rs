@@ -1,7 +1,9 @@
+use bytes::Bytes;
 use anyhow::Result;
 use clap::Parser;
 use log::{info, warn};
 use mkt_signal::common::redis_client::RedisSettings;
+use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::pre_trade::monitor_channel::MonitorChannel;
 use mkt_signal::pre_trade::params_load::PreTradeParamsLoader;
 use mkt_signal::pre_trade::persist_channel::PersistChannel;
@@ -12,8 +14,10 @@ use mkt_signal::pre_trade::QueryEngHub;
 use mkt_signal::pre_trade::TradeEngHub;
 use mkt_signal::signal::common::TradingVenue;
 use mkt_signal::strategy::StrategyManager;
+use mkt_signal::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
 #[derive(Parser, Debug)]
 #[command(name = "pre_trade")]
@@ -164,6 +168,59 @@ async fn main() -> Result<()> {
                     "QueryEngHub initialized for exchanges: {}",
                     trade_eng_list.join(", ")
                 );
+            }
+
+            // 6.2 启动时执行一次账户快照查询（用于补齐/初始化本地风控状态）
+            {
+                let open_venue = open_venue;
+                let hedge_venue = hedge_venue;
+                tokio::task::spawn_local(async move {
+                    let mut need_binance_balance = false;
+                    let mut need_binance_um = false;
+                    for v in [open_venue, hedge_venue] {
+                        match v {
+                            TradingVenue::BinanceMargin => need_binance_balance = true,
+                            TradingVenue::BinanceFutures => need_binance_um = true,
+                            _ => {}
+                        }
+                    }
+
+                    let mut interval = tokio::time::interval(Duration::from_secs(60));
+
+                    let send_snapshot_queries = || {
+                        if need_binance_balance {
+                            let now = get_timestamp_us();
+                            let req = GenericQueryRequest::create(
+                                QueryRequestType::BinancePmBalanceSnapshot,
+                                now,
+                                now,
+                                Bytes::new(),
+                            );
+                            let _ = QueryEngHub::publish_query_request("binance", &req.to_bytes());
+                            info!("snapshot query sent: binance PM balance snapshot");
+                        }
+                        if need_binance_um {
+                            let now = get_timestamp_us();
+                            let req = GenericQueryRequest::create(
+                                QueryRequestType::BinanceUmAccountSnapshot,
+                                now,
+                                now,
+                                Bytes::new(),
+                            );
+                            let _ = QueryEngHub::publish_query_request("binance", &req.to_bytes());
+                            info!("snapshot query sent: binance UM account snapshot");
+                        }
+                    };
+
+                    // Run once at startup.
+                    send_snapshot_queries();
+
+                    // Re-run every 1 minute.
+                    loop {
+                        interval.tick().await;
+                        send_snapshot_queries();
+                    }
+                });
             }
 
             // 7. 预热 PersistChannel（自动初始化，调用一次即可）

@@ -3,7 +3,9 @@ use crate::common::ipc_service_name::build_service_name;
 use crate::trade_engine::config::{ApiKey, WsConstants};
 use crate::trade_engine::dispatcher::Dispatcher;
 use crate::trade_engine::query_parsers::binance_margin_order::parse_binance_margin_order_query_json;
+use crate::trade_engine::query_parsers::binance_pm_balance_snapshot::parse_binance_pm_balance_snapshot;
 use crate::trade_engine::query_parsers::binance_um_order::parse_binance_um_order_query_json;
+use crate::trade_engine::query_parsers::binance_um_account_snapshot::parse_binance_um_account_snapshot;
 use crate::trade_engine::query_parsers::okex_order::parse_okex_order_query_json;
 use crate::trade_engine::query_request::QueryRequestMsg;
 use crate::trade_engine::query_response_handle::{spawn_query_response_handle, QueryExecOutcome};
@@ -424,32 +426,85 @@ impl TradeEngine {
                             };
                             match outcome {
                                 Ok(outcome) => {
-                                    let body_bytes = match msg.req_type {
+                                    match msg.req_type {
                                         crate::trade_engine::query_request::QueryRequestType::BinanceUMQuery
                                             if outcome.status == 200 =>
                                         {
-                                            parse_binance_um_order_query_json(&outcome.body)
+                                            let body_bytes = parse_binance_um_order_query_json(&outcome.body)
                                                 .map(|v| v.to_bytes())
-                                                .unwrap_or_else(|| bytes::Bytes::from(outcome.body))
+                                                .unwrap_or_else(|| bytes::Bytes::from(outcome.body));
+                                            let _ = query_resp_tx.send(QueryExecOutcome {
+                                                req_type: msg.req_type,
+                                                client_query_id: msg.client_query_id,
+                                                status: outcome.status,
+                                                body: body_bytes,
+                                                exchange: exchange_copy,
+                                                ip_used_weight_1m: outcome.ip_used_weight_1m,
+                                                query_count_1m: outcome.order_count_1m,
+                                            });
                                         }
                                         crate::trade_engine::query_request::QueryRequestType::BinanceMarginQuery
                                             if outcome.status == 200 =>
                                         {
-                                            parse_binance_margin_order_query_json(&outcome.body)
+                                            let body_bytes = parse_binance_margin_order_query_json(&outcome.body)
                                                 .map(|v| v.to_bytes())
-                                                .unwrap_or_else(|| bytes::Bytes::from(outcome.body))
+                                                .unwrap_or_else(|| bytes::Bytes::from(outcome.body));
+                                            let _ = query_resp_tx.send(QueryExecOutcome {
+                                                req_type: msg.req_type,
+                                                client_query_id: msg.client_query_id,
+                                                status: outcome.status,
+                                                body: body_bytes,
+                                                exchange: exchange_copy,
+                                                ip_used_weight_1m: outcome.ip_used_weight_1m,
+                                                query_count_1m: outcome.order_count_1m,
+                                            });
                                         }
-                                        _ => bytes::Bytes::from(outcome.body),
-                                    };
-                                    let _ = query_resp_tx.send(QueryExecOutcome {
-                                        req_type: msg.req_type,
-                                        client_query_id: msg.client_query_id,
-                                        status: outcome.status,
-                                        body: body_bytes,
-                                        exchange: exchange_copy,
-                                        ip_used_weight_1m: outcome.ip_used_weight_1m,
-                                        query_count_1m: outcome.order_count_1m,
-                                    });
+                                        crate::trade_engine::query_request::QueryRequestType::BinancePmBalanceSnapshot
+                                            if outcome.status == 200 =>
+                                        {
+                                            if let Some(msgs) = parse_binance_pm_balance_snapshot(&outcome.body) {
+                                                for payload in msgs {
+                                                    let _ = query_resp_tx.send(QueryExecOutcome {
+                                                        req_type: msg.req_type,
+                                                        client_query_id: msg.client_query_id,
+                                                        status: outcome.status,
+                                                        body: payload,
+                                                        exchange: exchange_copy,
+                                                        ip_used_weight_1m: outcome.ip_used_weight_1m,
+                                                        query_count_1m: outcome.order_count_1m,
+                                                    });
+                                                }
+                                            }
+                                        }
+                                        crate::trade_engine::query_request::QueryRequestType::BinanceUmAccountSnapshot
+                                            if outcome.status == 200 =>
+                                        {
+                                            if let Some(msgs) = parse_binance_um_account_snapshot(&outcome.body) {
+                                                for payload in msgs {
+                                                    let _ = query_resp_tx.send(QueryExecOutcome {
+                                                        req_type: msg.req_type,
+                                                        client_query_id: msg.client_query_id,
+                                                        status: outcome.status,
+                                                        body: payload,
+                                                        exchange: exchange_copy,
+                                                        ip_used_weight_1m: outcome.ip_used_weight_1m,
+                                                        query_count_1m: outcome.order_count_1m,
+                                                    });
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            let _ = query_resp_tx.send(QueryExecOutcome {
+                                                req_type: msg.req_type,
+                                                client_query_id: msg.client_query_id,
+                                                status: outcome.status,
+                                                body: bytes::Bytes::from(outcome.body),
+                                                exchange: exchange_copy,
+                                                ip_used_weight_1m: outcome.ip_used_weight_1m,
+                                                query_count_1m: outcome.order_count_1m,
+                                            });
+                                        }
+                                    }
                                 }
                                 Err(e) => {
                                     let _ = query_resp_tx.send(QueryExecOutcome {
