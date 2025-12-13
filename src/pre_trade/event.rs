@@ -20,6 +20,5 @@ pub struct TradeEngineResponse {
     pub status: u16,
     pub ip_used_weight_1m: Option<u32>,
     pub order_count_1m: Option<u32>,
-    pub body: Vec<u8>,
-    pub body_truncated: bool,
+    pub error_code: i32,
 }

@@ -4,7 +4,7 @@ pub trait TradeEngineResponse {
     fn req_type(&self) -> u32;
     fn exchange(&self) -> u32;
     fn client_order_id(&self) -> i64;
-    fn body(&self) -> &str;
+    fn error_code(&self) -> i32;
     fn ip_weight(&self) -> u32;
     fn order_count(&self) -> u32;
 
@@ -20,7 +20,7 @@ pub struct TradeEngineResponseMessage {
     req_type: u32,
     exchange: u32,
     client_order_id: i64,
-    body: String,
+    error_code: i32,
     ip_weight: u32,
     order_count: u32,
 }
@@ -31,7 +31,7 @@ impl TradeEngineResponseMessage {
         req_type: u32,
         exchange: u32,
         client_order_id: i64,
-        body: String,
+        error_code: i32,
         ip_weight: u32,
         order_count: u32,
     ) -> Self {
@@ -40,7 +40,7 @@ impl TradeEngineResponseMessage {
             req_type,
             exchange,
             client_order_id,
-            body,
+            error_code,
             ip_weight,
             order_count,
         }
@@ -64,8 +64,8 @@ impl TradeEngineResponse for TradeEngineResponseMessage {
         self.client_order_id
     }
 
-    fn body(&self) -> &str {
-        &self.body
+    fn error_code(&self) -> i32 {
+        self.error_code
     }
 
     fn ip_weight(&self) -> u32 {

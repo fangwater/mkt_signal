@@ -3,7 +3,8 @@ use crate::trade_engine::trade_request::TradeRequestType;
 use bytes::{BufMut, BytesMut};
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::service::ipc;
-use log::debug;
+use log::{debug, warn};
+use serde_json::Value;
 use tokio::sync::mpsc;
 
 // REST 请求执行后的输出（内部使用）
@@ -18,56 +19,7 @@ pub struct TradeExecOutcome {
     pub order_count_1m: Option<u32>,
 }
 
-impl TradeExecOutcome {
-    pub fn parse(raw: &[u8]) -> Option<Self> {
-        if raw.len() < 40 {
-            return None;
-        }
-
-        let req_type_val = u32::from_le_bytes(raw[0..4].try_into().ok()?);
-        let client_order_id = i64::from_le_bytes(raw[12..20].try_into().ok()?);
-        let exchange_val = u32::from_le_bytes(raw[20..24].try_into().ok()?);
-        let status = u16::from_le_bytes(raw[24..26].try_into().ok()?);
-        let ip_used = u32::from_le_bytes(raw[28..32].try_into().ok()?);
-        let order_count = u32::from_le_bytes(raw[32..36].try_into().ok()?);
-        let body_len = u32::from_le_bytes(raw[36..40].try_into().ok()?) as usize;
-
-        if raw.len() < 40 + body_len {
-            return None;
-        }
-
-        let body_slice = &raw[40..40 + body_len];
-        let body = match String::from_utf8(body_slice.to_vec()) {
-            Ok(s) => s,
-            Err(_) => String::from_utf8_lossy(body_slice).to_string(),
-        };
-
-        let req_type = TradeRequestType::try_from(req_type_val).ok()?;
-        let exchange = Exchange::from_u8((exchange_val & 0xFF) as u8)?;
-        let ip_used_weight_1m = if ip_used == u32::MAX {
-            None
-        } else {
-            Some(ip_used)
-        };
-        let order_count_1m = if order_count == u32::MAX {
-            None
-        } else {
-            Some(order_count)
-        };
-
-        Some(Self {
-            req_type,
-            client_order_id,
-            status,
-            body,
-            exchange,
-            ip_used_weight_1m,
-            order_count_1m,
-        })
-    }
-}
-
-// 将原始 HTTP body（JSON 文本）直接发布到响应通道（16384 字节）
+// 固定长度 trade response header（40 bytes），不再携带 raw JSON body。
 #[repr(C, align(8))]
 #[derive(Debug, Clone)]
 struct GenericResponseHeader {
@@ -79,7 +31,7 @@ struct GenericResponseHeader {
     reserved: u16,
     ip_used_weight_1m: u32,
     order_count_1m: u32,
-    body_length: u32,
+    error_code: i32,
 }
 
 impl GenericResponseHeader {
@@ -93,37 +45,90 @@ impl GenericResponseHeader {
         buf.put_u16_le(self.reserved);
         buf.put_u32_le(self.ip_used_weight_1m);
         buf.put_u32_le(self.order_count_1m);
-        buf.put_u32_le(self.body_length);
+        buf.put_i32_le(self.error_code);
         buf.freeze()
     }
 }
 
+fn extract_code(v: &Value) -> Option<i32> {
+    let code = v.get("code")?;
+    if let Some(n) = code.as_i64() {
+        return i32::try_from(n).ok();
+    }
+    if let Some(s) = code.as_str() {
+        return s.parse::<i32>().ok();
+    }
+    None
+}
+
+fn extract_msg(v: &Value) -> Option<String> {
+    if let Some(s) = v.get("msg").and_then(|m| m.as_str()) {
+        if !s.is_empty() {
+            return Some(s.to_string());
+        }
+    }
+    if let Some(s) = v.get("message").and_then(|m| m.as_str()) {
+        if !s.is_empty() {
+            return Some(s.to_string());
+        }
+    }
+    if let Some(s) = v
+        .get("data")
+        .and_then(|d| d.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|first| first.get("sMsg"))
+        .and_then(|m| m.as_str())
+    {
+        if !s.is_empty() {
+            return Some(s.to_string());
+        }
+    }
+    None
+}
+
+fn parse_error_code_and_msg(body: &str) -> (i32, Option<String>) {
+    // Default: unknown/no code.
+    let mut candidate = body.to_string();
+
+    // Some WS wrappers include nested raw/payload text.
+    if let Ok(v) = serde_json::from_str::<Value>(body) {
+        if let Some(raw) = v.get("raw").and_then(|r| r.as_str()) {
+            candidate = raw.to_string();
+        } else if let Some(payload) = v.get("payload").and_then(|p| p.as_str()) {
+            candidate = payload.to_string();
+        }
+    }
+
+    if let Ok(v) = serde_json::from_str::<Value>(&candidate) {
+        let code = extract_code(&v).unwrap_or(0);
+        let msg = extract_msg(&v);
+        return (code, msg);
+    }
+
+    (0, None)
+}
+
 pub fn spawn_response_handle(
-    publisher: Publisher<ipc::Service, [u8; 16384], ()>,
+    publisher: Publisher<ipc::Service, [u8; 64], ()>,
     mut resp_rx: mpsc::UnboundedReceiver<TradeExecOutcome>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_local(async move {
         while let Some(out) = resp_rx.recv().await {
-            // 检查是否是 cancel 请求的错误响应
-            // 如果是 cancel 操作且状态码不是 200，则跳过 dispatch
-            let is_cancel_request = matches!(
-                out.req_type,
-                TradeRequestType::BinanceCancelUMOrder
-                    | TradeRequestType::BinanceCancelAllUMOrders
-                    | TradeRequestType::BinanceCancelUMConditionalOrder
-                    | TradeRequestType::BinanceCancelAllUMConditionalOrders
-                    | TradeRequestType::BinanceCancelMarginOrder
-            );
-
-            if is_cancel_request && out.status != 200 {
-                debug!(
-                    "skip dispatch for cancel error: type={:?}, status={}, client_order_id={}",
-                    out.req_type, out.status, out.client_order_id
-                );
-                continue;
+            let (error_code, msg) = parse_error_code_and_msg(&out.body);
+            if out.status != 200 {
+                if let Some(m) = msg.as_deref() {
+                    warn!(
+                        "trade resp error: ex={:?} type={:?} cli_ord_id={} status={} code={} msg={}",
+                        out.exchange, out.req_type, out.client_order_id, out.status, error_code, m
+                    );
+                } else {
+                    warn!(
+                        "trade resp error: ex={:?} type={:?} cli_ord_id={} status={} code={}",
+                        out.exchange, out.req_type, out.client_order_id, out.status, error_code
+                    );
+                }
             }
 
-            let body = out.body.as_bytes();
             let now = chrono::Utc::now().timestamp_millis();
             let hdr = GenericResponseHeader {
                 req_type: out.req_type as u32,
@@ -134,32 +139,18 @@ pub fn spawn_response_handle(
                 reserved: 0,
                 ip_used_weight_1m: out.ip_used_weight_1m.unwrap_or(u32::MAX),
                 order_count_1m: out.order_count_1m.unwrap_or(u32::MAX),
-                body_length: body.len() as u32,
+                error_code,
             };
             let hdr_bytes = hdr.to_bytes();
-            let mut buf = [0u8; 16384];
-            let mut written = 0usize;
+            let mut buf = [0u8; 64];
             let h = hdr_bytes.len().min(buf.len());
             buf[..h].copy_from_slice(&hdr_bytes[..h]);
-            written += h;
-            let remain = buf.len().saturating_sub(written);
-            let bcopy = body.len().min(remain);
-            if bcopy > 0 {
-                buf[written..written + bcopy].copy_from_slice(&body[..bcopy]);
-            }
             debug!(
-                "publish header+json: type={}, status={}, body_len={}, truncated={}",
+                "publish trade resp header: type={}, status={}, code={}",
                 hdr.req_type,
                 hdr.status,
-                body.len(),
-                body.len() > bcopy
+                hdr.error_code
             );
-            // 打印完整 JSON（debug 日志）
-            if let Ok(full) = std::str::from_utf8(body) {
-                debug!("resp json: {}", full);
-            } else {
-                debug!("resp body ({} bytes, non-utf8)", body.len());
-            }
             if let Ok(sample) = publisher.loan_uninit() {
                 let sample = sample.write_payload(buf);
                 let _ = sample.send();

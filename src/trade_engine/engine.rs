@@ -96,10 +96,10 @@ impl TradeEngine {
         // Result publisher
         let resp_service = node
             .service_builder(&ServiceName::new(&order_resp_service)?)
-            .publish_subscribe::<[u8; 16384]>()
+            .publish_subscribe::<[u8; 64]>()
             .subscriber_max_buffer_size(256)
             .open_or_create()?;
-        let resp_publisher: Publisher<ipc::Service, [u8; 16384], ()> =
+        let resp_publisher: Publisher<ipc::Service, [u8; 64], ()> =
             resp_service.publisher_builder().create()?;
         debug!("publisher created for service: {}", order_resp_service);
 

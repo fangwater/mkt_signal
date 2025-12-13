@@ -36,11 +36,11 @@ routes:
     from:
       node: tradeeng_dc2
       service: "order_resps/binance"
-      size: 16384
+      size: 64
     to:
       node: pretrade_dc1
       service: "order_resps/binance"
-      size: 16384
+      size: 64
 
   # Pre-trade -> trade_engine query requests
   - id: query_req_binance

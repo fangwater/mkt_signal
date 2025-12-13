@@ -1,4 +1,5 @@
 use crate::common::time_util::get_timestamp_us;
+use crate::common::{exchange::Exchange, trade_error_code::describe_trade_error_code};
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderType, Side};
 use crate::pre_trade::{PersistChannel, SignalChannel, TradeEngHub};
@@ -1417,14 +1418,19 @@ impl Strategy for HedgeArbStrategy {
 
         // 检查是否是 Post Only 订单被拒绝的错误 (-5022)
         // 这种情况下需要重新发送 hedge query signal 而不是关闭策略
-        let is_post_only_rejected = response.body().contains("-5022");
+        let is_post_only_rejected = response.error_code() == -5022;
+        let exchange = Exchange::from_u8((response.exchange() & 0xFF) as u8);
+        let code_desc = exchange
+            .and_then(|ex| describe_trade_error_code(ex, response.error_code()))
+            .unwrap_or("unknown");
 
         if client_order_id == self.open_order_id {
             warn!(
-                "HedgeArbStrategy: strategy_id={} 开仓下单失败: status={} reason={}",
+                "HedgeArbStrategy: strategy_id={} 开仓下单失败: status={} code={}({})",
                 self.strategy_id,
                 response.status(),
-                response.body()
+                response.error_code(),
+                code_desc
             );
             self.alive_flag = false;
         } else if self.hedge_order_ids.contains(&client_order_id) {
@@ -1469,10 +1475,11 @@ impl Strategy for HedgeArbStrategy {
             } else {
                 // 其他对冲订单错误，直接关闭策略
                 warn!(
-                    "HedgeArbStrategy: strategy_id={} 对冲下单失败: status={} reason={} client_order_id={}",
+                    "HedgeArbStrategy: strategy_id={} 对冲下单失败: status={} code={}({}) client_order_id={}",
                     self.strategy_id,
                     response.status(),
-                    response.body(),
+                    response.error_code(),
+                    code_desc,
                     client_order_id
                 );
                 self.alive_flag = false;

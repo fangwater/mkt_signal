@@ -17,7 +17,7 @@ thread_local! {
 }
 
 const TRADE_REQ_PAYLOAD: usize = 4_096;
-const TRADE_RESP_PAYLOAD: usize = 16_384;
+const TRADE_RESP_PAYLOAD: usize = 64;
 const TRADE_RESP_HEADER_LEN: usize = 40;
 
 /// TradeEngHub 负责与多个 trade engine 进程进行双向通信
@@ -227,9 +227,8 @@ impl TradeEngChannel {
                         u32::from_le_bytes([payload[28], payload[29], payload[30], payload[31]]);
                     let order_count =
                         u32::from_le_bytes([payload[32], payload[33], payload[34], payload[35]]);
-                    let body_len =
-                        u32::from_le_bytes([payload[36], payload[37], payload[38], payload[39]])
-                            as usize;
+                    let error_code =
+                        i32::from_le_bytes([payload[36], payload[37], payload[38], payload[39]]);
                     let client_order_id = i64::from_le_bytes([
                         payload[12],
                         payload[13],
@@ -241,25 +240,12 @@ impl TradeEngChannel {
                         payload[19],
                     ]);
 
-                    // body 长度写在 header 中，避免把填充的 0 也当成正文
-                    let available_body = payload.len().saturating_sub(TRADE_RESP_HEADER_LEN);
-                    let actual_body_len = body_len.min(available_body);
-                    let body = if actual_body_len > 0 {
-                        String::from_utf8_lossy(
-                            &payload
-                                [TRADE_RESP_HEADER_LEN..TRADE_RESP_HEADER_LEN + actual_body_len],
-                        )
-                        .to_string()
-                    } else {
-                        String::new()
-                    };
-
                     let response = TradeEngineResponseMessage::new(
                         status,
                         req_type,
                         exchange,
                         client_order_id,
-                        body,
+                        error_code,
                         ip_weight,
                         order_count,
                     );
