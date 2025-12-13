@@ -16,7 +16,7 @@ thread_local! {
 }
 
 const QUERY_REQ_PAYLOAD: usize = 4_096;
-const QUERY_RESP_PAYLOAD: usize = 16_384;
+const QUERY_RESP_PAYLOAD: usize = 64;
 
 pub struct QueryEngHub {
     channels: RefCell<HashMap<String, QueryEngChannel>>,
@@ -189,12 +189,11 @@ impl QueryEngChannel {
                     match QueryEngineResponseMessage::from_payload(payload) {
                         Ok(resp) => {
                             debug!(
-                                "queryResponse: exchange={} type={} status={} cli_qid={} body_len={}",
+                                "queryResponse: exchange={} type={} cli_qid={} body_len={}",
                                 exchange,
                                 resp.req_type(),
-                                resp.status(),
                                 resp.client_query_id(),
-                                resp.body().len()
+                                resp.body_bytes().len()
                             );
                         }
                         Err(err) => {

@@ -58,8 +58,8 @@ routes:
     from:
       node: tradeeng_dc2
       service: "query_resps/binance"
-      size: 16384
+      size: 64
     to:
       node: pretrade_dc1
       service: "query_resps/binance"
-      size: 16384
+      size: 64

@@ -4,6 +4,7 @@ pub mod engine;
 pub mod okex_query;
 pub mod okex;
 pub mod order_event;
+pub mod query_parsers;
 pub mod query_request;
 pub mod query_response_handle;
 pub mod query_type_mapping;

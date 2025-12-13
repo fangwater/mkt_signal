@@ -2,6 +2,9 @@ use crate::common::exchange::Exchange;
 use crate::common::ipc_service_name::build_service_name;
 use crate::trade_engine::config::{ApiKey, WsConstants};
 use crate::trade_engine::dispatcher::Dispatcher;
+use crate::trade_engine::query_parsers::binance_margin_order::parse_binance_margin_order_query_json;
+use crate::trade_engine::query_parsers::binance_um_order::parse_binance_um_order_query_json;
+use crate::trade_engine::query_parsers::okex_order::parse_okex_order_query_json;
 use crate::trade_engine::query_request::QueryRequestMsg;
 use crate::trade_engine::query_response_handle::{spawn_query_response_handle, QueryExecOutcome};
 use crate::trade_engine::query_type_mapping::QueryTypeMapping;
@@ -110,10 +113,10 @@ impl TradeEngine {
 
         let query_resp_service_obj = node
             .service_builder(&ServiceName::new(&query_resp_service)?)
-            .publish_subscribe::<[u8; 16384]>()
+            .publish_subscribe::<[u8; 64]>()
             .subscriber_max_buffer_size(256)
             .open_or_create()?;
-        let query_resp_publisher: Publisher<ipc::Service, [u8; 16384], ()> =
+        let query_resp_publisher: Publisher<ipc::Service, [u8; 64], ()> =
             query_resp_service_obj.publisher_builder().create()?;
         debug!("publisher created for service: {}", query_resp_service);
 
@@ -373,7 +376,9 @@ impl TradeEngine {
                                     req_type: msg.req_type,
                                     client_query_id: msg.client_query_id,
                                     status: 400,
-                                    body: "unsupported query type for binance engine".to_string(),
+                                    body: bytes::Bytes::from_static(
+                                        b"unsupported query type for binance engine",
+                                    ),
                                     exchange: exchange_copy,
                                     ip_used_weight_1m: None,
                                     query_count_1m: None,
@@ -385,7 +390,7 @@ impl TradeEngine {
                                     req_type: msg.req_type,
                                     client_query_id: msg.client_query_id,
                                     status: 503,
-                                    body: "no rest dispatcher available".to_string(),
+                                    body: bytes::Bytes::from_static(b"no rest dispatcher available"),
                                     exchange: exchange_copy,
                                     ip_used_weight_1m: None,
                                     query_count_1m: None,
@@ -419,11 +424,28 @@ impl TradeEngine {
                             };
                             match outcome {
                                 Ok(outcome) => {
+                                    let body_bytes = match msg.req_type {
+                                        crate::trade_engine::query_request::QueryRequestType::BinanceUMQuery
+                                            if outcome.status == 200 =>
+                                        {
+                                            parse_binance_um_order_query_json(&outcome.body)
+                                                .map(|v| v.to_bytes())
+                                                .unwrap_or_else(|| bytes::Bytes::from(outcome.body))
+                                        }
+                                        crate::trade_engine::query_request::QueryRequestType::BinanceMarginQuery
+                                            if outcome.status == 200 =>
+                                        {
+                                            parse_binance_margin_order_query_json(&outcome.body)
+                                                .map(|v| v.to_bytes())
+                                                .unwrap_or_else(|| bytes::Bytes::from(outcome.body))
+                                        }
+                                        _ => bytes::Bytes::from(outcome.body),
+                                    };
                                     let _ = query_resp_tx.send(QueryExecOutcome {
                                         req_type: msg.req_type,
                                         client_query_id: msg.client_query_id,
                                         status: outcome.status,
-                                        body: outcome.body,
+                                        body: body_bytes,
                                         exchange: exchange_copy,
                                         ip_used_weight_1m: outcome.ip_used_weight_1m,
                                         query_count_1m: outcome.order_count_1m,
@@ -434,7 +456,7 @@ impl TradeEngine {
                                         req_type: msg.req_type,
                                         client_query_id: msg.client_query_id,
                                         status: 0,
-                                        body: e.to_string(),
+                                        body: bytes::Bytes::from(e.to_string()),
                                         exchange: exchange_copy,
                                         ip_used_weight_1m: None,
                                         query_count_1m: None,
@@ -448,7 +470,9 @@ impl TradeEngine {
                                     req_type: msg.req_type,
                                     client_query_id: msg.client_query_id,
                                     status: 400,
-                                    body: "unsupported query type for okex engine".to_string(),
+                                    body: bytes::Bytes::from_static(
+                                        b"unsupported query type for okex engine",
+                                    ),
                                     exchange: exchange_copy,
                                     ip_used_weight_1m: None,
                                     query_count_1m: None,
@@ -460,7 +484,7 @@ impl TradeEngine {
                                     req_type: msg.req_type,
                                     client_query_id: msg.client_query_id,
                                     status: 401,
-                                    body: "missing OKX credentials in env".to_string(),
+                                    body: bytes::Bytes::from_static(b"missing OKX credentials in env"),
                                     exchange: exchange_copy,
                                     ip_used_weight_1m: None,
                                     query_count_1m: None,
@@ -484,11 +508,22 @@ impl TradeEngine {
                             .await
                             {
                                 Ok((status, body)) => {
+                                    let body_bytes = match msg.req_type {
+                                        crate::trade_engine::query_request::QueryRequestType::OkexMarginQuery
+                                        | crate::trade_engine::query_request::QueryRequestType::OkexUMQuery
+                                            if status == 200 =>
+                                        {
+                                            parse_okex_order_query_json(&body)
+                                                .map(|v| v.to_bytes())
+                                                .unwrap_or_else(|| bytes::Bytes::from(body))
+                                        }
+                                        _ => bytes::Bytes::from(body),
+                                    };
                                     let _ = query_resp_tx.send(QueryExecOutcome {
                                         req_type: msg.req_type,
                                         client_query_id: msg.client_query_id,
                                         status: status as u16,
-                                        body,
+                                        body: body_bytes,
                                         exchange: exchange_copy,
                                         ip_used_weight_1m: None,
                                         query_count_1m: None,
@@ -499,7 +534,7 @@ impl TradeEngine {
                                         req_type: msg.req_type,
                                         client_query_id: msg.client_query_id,
                                         status: 0,
-                                        body: e.to_string(),
+                                        body: bytes::Bytes::from(e.to_string()),
                                         exchange: exchange_copy,
                                         ip_used_weight_1m: None,
                                         query_count_1m: None,
@@ -512,7 +547,9 @@ impl TradeEngine {
                                 req_type: msg.req_type,
                                 client_query_id: msg.client_query_id,
                                 status: 400,
-                                body: "query channel not supported for this exchange".to_string(),
+                                body: bytes::Bytes::from_static(
+                                    b"query channel not supported for this exchange",
+                                ),
                                 exchange: exchange_copy,
                                 ip_used_weight_1m: None,
                                 query_count_1m: None,
