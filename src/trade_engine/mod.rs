@@ -1,8 +1,12 @@
 pub mod config;
 pub mod dispatcher;
 pub mod engine;
+pub mod okex_query;
 pub mod okex;
 pub mod order_event;
+pub mod query_request;
+pub mod query_response_handle;
+pub mod query_type_mapping;
 pub mod trade_request;
 pub mod trade_response_handle;
 pub mod trade_type_mapping;

@@ -15,8 +15,6 @@ pub enum TradeRequestType {
     BinanceCancelAllUMConditionalOrders = 4007, // 币安UM条件单撤销全部订单请求
     BinanceCancelMarginOrder = 4008,            // 币安杠杆账户撤单请求
     BinanceModifyUMOrder = 4009,                // 币安UM合约修改订单请求
-    BinanceQueryUMOrder = 4010,                 // 币安UM合约查询订单请求
-    BinanceQueryUMOpenOrder = 4011,             // 币安UM合约查询当前挂单请求
     BinanceUMSetLeverage = 4012,                // 币安UM设置杠杆
     OkexNewMarginOrder = 5001,                  // Okex 下单（现货/杠杆）
     OkexNewUMOrder = 5002,                      // Okex 下单（合约/UM风格）
@@ -55,8 +53,6 @@ impl TryFrom<u32> for TradeRequestType {
             4007 => Ok(TradeRequestType::BinanceCancelAllUMConditionalOrders),
             4008 => Ok(TradeRequestType::BinanceCancelMarginOrder),
             4009 => Ok(TradeRequestType::BinanceModifyUMOrder),
-            4010 => Ok(TradeRequestType::BinanceQueryUMOrder),
-            4011 => Ok(TradeRequestType::BinanceQueryUMOpenOrder),
             4012 => Ok(TradeRequestType::BinanceUMSetLeverage),
             5001 => Ok(TradeRequestType::OkexNewMarginOrder),
             5002 => Ok(TradeRequestType::OkexNewUMOrder),
@@ -427,76 +423,6 @@ impl BinanceModifyUMOrderRequest {
     pub fn create(create_time: i64, client_order_id: i64, params: Bytes) -> Self {
         let header = TradeRequestHeader {
             msg_type: TradeRequestType::BinanceModifyUMOrder as u32,
-            params_length: params.len() as u32,
-            create_time,
-            client_order_id,
-        };
-
-        Self { header, params }
-    }
-
-    pub fn to_bytes(&self) -> Bytes {
-        let total_size = 4 + 4 + 8 + 8 + self.params.len();
-
-        let mut buf = BytesMut::with_capacity(total_size);
-
-        buf.put_u32_le(self.header.msg_type);
-        buf.put_u32_le(self.header.params_length);
-        buf.put_i64_le(self.header.create_time);
-        buf.put_i64_le(self.header.client_order_id);
-        buf.put(self.params.clone());
-
-        buf.freeze()
-    }
-}
-
-// 币安UM合约查询订单请求
-#[repr(C, align(8))]
-#[derive(Debug, Clone)]
-pub struct BinanceQueryUMOrderRequest {
-    pub header: TradeRequestHeader,
-    pub params: Bytes, // 额外的请求参数（JSON或其他格式）
-}
-
-impl BinanceQueryUMOrderRequest {
-    pub fn create(create_time: i64, client_order_id: i64, params: Bytes) -> Self {
-        let header = TradeRequestHeader {
-            msg_type: TradeRequestType::BinanceQueryUMOrder as u32,
-            params_length: params.len() as u32,
-            create_time,
-            client_order_id,
-        };
-
-        Self { header, params }
-    }
-
-    pub fn to_bytes(&self) -> Bytes {
-        let total_size = 4 + 4 + 8 + 8 + self.params.len();
-
-        let mut buf = BytesMut::with_capacity(total_size);
-
-        buf.put_u32_le(self.header.msg_type);
-        buf.put_u32_le(self.header.params_length);
-        buf.put_i64_le(self.header.create_time);
-        buf.put_i64_le(self.header.client_order_id);
-        buf.put(self.params.clone());
-
-        buf.freeze()
-    }
-}
-
-// 币安UM合约查询当前挂单请求
-#[repr(C, align(8))]
-#[derive(Debug, Clone)]
-pub struct BinanceQueryUMOpenOrderRequest {
-    pub header: TradeRequestHeader,
-    pub params: Bytes, // 额外的请求参数（JSON或其他格式）
-}
-
-impl BinanceQueryUMOpenOrderRequest {
-    pub fn create(create_time: i64, client_order_id: i64, params: Bytes) -> Self {
-        let header = TradeRequestHeader {
-            msg_type: TradeRequestType::BinanceQueryUMOpenOrder as u32,
             params_length: params.len() as u32,
             create_time,
             client_order_id,

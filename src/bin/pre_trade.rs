@@ -8,6 +8,7 @@ use mkt_signal::pre_trade::persist_channel::PersistChannel;
 use mkt_signal::pre_trade::resample_channel::ResampleChannel;
 use mkt_signal::pre_trade::signal_channel::SignalChannel;
 use mkt_signal::pre_trade::PreTrade;
+use mkt_signal::pre_trade::QueryEngHub;
 use mkt_signal::pre_trade::TradeEngHub;
 use mkt_signal::signal::common::TradingVenue;
 use mkt_signal::strategy::StrategyManager;
@@ -147,6 +148,20 @@ async fn main() -> Result<()> {
             } else {
                 info!(
                     "TradeEngHub initialized for exchanges: {}",
+                    trade_eng_list.join(", ")
+                );
+            }
+
+            // 6.1 初始化 QueryEngHub（查询请求/响应通道）
+            info!(
+                "Initializing QueryEngHub singleton (query_exchanges={})",
+                trade_eng_list.join(", ")
+            );
+            if let Err(err) = QueryEngHub::initialize(trade_eng_list.iter().map(|s| s.as_str())) {
+                warn!("Failed to initialize QueryEngHub: {err:#}");
+            } else {
+                info!(
+                    "QueryEngHub initialized for exchanges: {}",
                     trade_eng_list.join(", ")
                 );
             }

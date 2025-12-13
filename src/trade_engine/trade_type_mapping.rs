@@ -16,8 +16,6 @@ impl TradeTypeMapping {
             | TradeRequestType::BinanceCancelAllUMConditionalOrders
             | TradeRequestType::BinanceCancelMarginOrder
             | TradeRequestType::BinanceModifyUMOrder
-            | TradeRequestType::BinanceQueryUMOrder
-            | TradeRequestType::BinanceQueryUMOpenOrder
             | TradeRequestType::BinanceUMSetLeverage => false,
 
             // OKEx 所有请求走 WebSocket
@@ -42,8 +40,6 @@ impl TradeTypeMapping {
             }
             TradeRequestType::BinanceCancelMarginOrder => "/papi/v1/margin/order",
             TradeRequestType::BinanceModifyUMOrder => "/papi/v1/um/order",
-            TradeRequestType::BinanceQueryUMOrder => "/papi/v1/um/order",
-            TradeRequestType::BinanceQueryUMOpenOrder => "/papi/v1/um/openOrder",
             TradeRequestType::BinanceUMSetLeverage => "/papi/v1/um/leverage",
             TradeRequestType::OkexNewMarginOrder
             | TradeRequestType::OkexNewUMOrder
@@ -66,8 +62,6 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceCancelAllUMConditionalOrders => "DELETE",
             TradeRequestType::BinanceCancelMarginOrder => "DELETE",
             TradeRequestType::BinanceModifyUMOrder => "PUT",
-            TradeRequestType::BinanceQueryUMOrder => "GET",
-            TradeRequestType::BinanceQueryUMOpenOrder => "GET",
             TradeRequestType::BinanceUMSetLeverage => "POST",
             TradeRequestType::OkexNewMarginOrder
             | TradeRequestType::OkexNewUMOrder
@@ -90,8 +84,6 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceCancelAllUMConditionalOrders => 1,
             TradeRequestType::BinanceCancelMarginOrder => 2,
             TradeRequestType::BinanceModifyUMOrder => 1,
-            TradeRequestType::BinanceQueryUMOrder => 1,
-            TradeRequestType::BinanceQueryUMOpenOrder => 1,
             TradeRequestType::BinanceUMSetLeverage => 1,
             TradeRequestType::OkexNewMarginOrder
             | TradeRequestType::OkexNewUMOrder
@@ -114,8 +106,6 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceCancelAllUMConditionalOrders => true,
             TradeRequestType::BinanceCancelMarginOrder => true,
             TradeRequestType::BinanceModifyUMOrder => true,
-            TradeRequestType::BinanceQueryUMOrder => true,
-            TradeRequestType::BinanceQueryUMOpenOrder => true,
             TradeRequestType::BinanceUMSetLeverage => true,
             TradeRequestType::OkexNewMarginOrder
             | TradeRequestType::OkexNewUMOrder
@@ -138,8 +128,6 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceCancelAllUMConditionalOrders => true,
             TradeRequestType::BinanceCancelMarginOrder => true,
             TradeRequestType::BinanceModifyUMOrder => true,
-            TradeRequestType::BinanceQueryUMOrder => true,
-            TradeRequestType::BinanceQueryUMOpenOrder => true,
             TradeRequestType::BinanceUMSetLeverage => true,
             TradeRequestType::OkexNewMarginOrder
             | TradeRequestType::OkexNewUMOrder

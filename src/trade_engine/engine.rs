@@ -2,6 +2,9 @@ use crate::common::exchange::Exchange;
 use crate::common::ipc_service_name::build_service_name;
 use crate::trade_engine::config::{ApiKey, WsConstants};
 use crate::trade_engine::dispatcher::Dispatcher;
+use crate::trade_engine::query_request::QueryRequestMsg;
+use crate::trade_engine::query_response_handle::{spawn_query_response_handle, QueryExecOutcome};
+use crate::trade_engine::query_type_mapping::QueryTypeMapping;
 use crate::trade_engine::trade_request::TradeRequestMsg;
 use crate::trade_engine::trade_response_handle::{spawn_response_handle, TradeExecOutcome};
 use crate::trade_engine::trade_type_mapping::TradeTypeMapping;
@@ -12,6 +15,7 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use std::net::IpAddr;
+use std::rc::Rc;
 
 pub struct TradeEngine {
     local_ips: Vec<IpAddr>,
@@ -61,10 +65,12 @@ impl TradeEngine {
         // 构建带命名空间的服务名
         let order_req_service = build_service_name(&format!("order_reqs/{}", canonical_exchange));
         let order_resp_service = build_service_name(&format!("order_resps/{}", canonical_exchange));
+        let query_req_service = build_service_name(&format!("query_reqs/{}", canonical_exchange));
+        let query_resp_service = build_service_name(&format!("query_resps/{}", canonical_exchange));
 
         info!(
-            "trade_engine starting; exchange={}, req_service='{}', resp_service='{}'",
-            canonical_exchange, order_req_service, order_resp_service
+            "trade_engine starting; exchange={}, order_req='{}', order_resp='{}', query_req='{}', query_resp='{}'",
+            canonical_exchange, order_req_service, order_resp_service, query_req_service, query_resp_service
         );
 
         // Iceoryx subscriber for order requests
@@ -92,6 +98,25 @@ impl TradeEngine {
             resp_service.publisher_builder().create()?;
         debug!("publisher created for service: {}", order_resp_service);
 
+        // Query subscriber/publisher
+        let query_service = node
+            .service_builder(&ServiceName::new(&query_req_service)?)
+            .publish_subscribe::<[u8; 4096]>()
+            .subscriber_max_buffer_size(256)
+            .open_or_create()?;
+        let query_subscriber: Subscriber<ipc::Service, [u8; 4096], ()> =
+            query_service.subscriber_builder().create()?;
+        debug!("subscriber created for service: {}", query_req_service);
+
+        let query_resp_service_obj = node
+            .service_builder(&ServiceName::new(&query_resp_service)?)
+            .publish_subscribe::<[u8; 16384]>()
+            .subscriber_max_buffer_size(256)
+            .open_or_create()?;
+        let query_resp_publisher: Publisher<ipc::Service, [u8; 16384], ()> =
+            query_resp_service_obj.publisher_builder().create()?;
+        debug!("publisher created for service: {}", query_resp_service);
+
         // 直接使用传入的 exchange 枚举
 
         // Internal mpsc pipeline
@@ -99,13 +124,20 @@ impl TradeEngine {
         self.req_tx = Some(req_tx.clone());
         let (resp_tx, resp_rx) = tokio::sync::mpsc::unbounded_channel();
 
+        let (query_req_tx, mut query_req_rx) =
+            tokio::sync::mpsc::unbounded_channel::<QueryRequestMsg>();
+        let (query_resp_tx, query_resp_rx) = tokio::sync::mpsc::unbounded_channel::<QueryExecOutcome>();
+
         if exchange == Exchange::Binance && self.accounts.is_empty() {
             return Err(anyhow!("Binance requires API keys in config"));
         }
 
         // 初始化 REST dispatcher（用于 Binance）
         let rest_dispatcher = if exchange == Exchange::Binance {
-            Some(Dispatcher::new(&self.local_ips, &self.accounts)?)
+            Some(Rc::new(tokio::sync::Mutex::new(Dispatcher::new(
+                &self.local_ips,
+                &self.accounts,
+            )?)))
         } else {
             None
         };
@@ -172,10 +204,11 @@ impl TradeEngine {
         };
 
         // Spawn unified request router
+        let rest_dispatcher_for_orders = rest_dispatcher.clone();
         let _req_worker = tokio::task::spawn_local(async move {
-            let mut rest_dispatcher = rest_dispatcher;
             let mut ws_endpoints = ws_endpoints;
             let mut ws_rr_cursor = 0usize; // 轮询计数器
+            let rest_dispatcher = rest_dispatcher_for_orders;
 
             while let Some(msg) = req_rx.recv().await {
                 debug!(
@@ -241,7 +274,7 @@ impl TradeEngine {
                     }
                 } else {
                     // 走 REST
-                    if let Some(ref mut dispatcher) = rest_dispatcher {
+                    if let Some(dispatcher) = &rest_dispatcher {
                         let endpoint = TradeTypeMapping::get_endpoint(msg.req_type).to_string();
                         let method = TradeTypeMapping::get_method(msg.req_type).to_string();
                         let weight = TradeTypeMapping::get_weight(msg.req_type);
@@ -267,7 +300,11 @@ impl TradeEngine {
                             req_id: Some(msg.client_order_id.to_string()),
                         };
 
-                        match dispatcher.dispatch(evt).await {
+                        let outcome = {
+                            let mut dispatcher = dispatcher.lock().await;
+                            dispatcher.dispatch(evt).await
+                        };
+                        match outcome {
                             Ok(outcome) => {
                                 debug!(
                                     "http outcome: status={}, ip={}, body_len={}",
@@ -315,7 +352,220 @@ impl TradeEngine {
             }
         });
 
+        // Query request router
+        {
+            let rest_dispatcher = rest_dispatcher.clone();
+            let exchange_copy = exchange;
+            tokio::task::spawn_local(async move {
+                let okex_http = reqwest::Client::new();
+                let okex_creds = crate::portfolio_margin::okex_auth::OkexCredentials::from_env().ok();
+
+                while let Some(msg) = query_req_rx.recv().await {
+                    debug!(
+                        "routing query: type={:?} client_query_id={}",
+                        msg.req_type, msg.client_query_id
+                    );
+
+                    match exchange_copy {
+                        Exchange::Binance => {
+                            if !QueryTypeMapping::is_binance_rest(msg.req_type) {
+                                let _ = query_resp_tx.send(QueryExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_query_id: msg.client_query_id,
+                                    status: 400,
+                                    body: "unsupported query type for binance engine".to_string(),
+                                    exchange: exchange_copy,
+                                    ip_used_weight_1m: None,
+                                    query_count_1m: None,
+                                });
+                                continue;
+                            }
+                            let Some(dispatcher) = &rest_dispatcher else {
+                                let _ = query_resp_tx.send(QueryExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_query_id: msg.client_query_id,
+                                    status: 503,
+                                    body: "no rest dispatcher available".to_string(),
+                                    exchange: exchange_copy,
+                                    ip_used_weight_1m: None,
+                                    query_count_1m: None,
+                                });
+                                continue;
+                            };
+
+                            let endpoint = QueryTypeMapping::get_endpoint(msg.req_type).to_string();
+                            let method = QueryTypeMapping::get_method(msg.req_type).to_string();
+                            let weight = QueryTypeMapping::get_weight(msg.req_type);
+                            let params: std::collections::BTreeMap<String, String> =
+                                match std::str::from_utf8(&msg.params) {
+                                    Ok(s) => url::form_urlencoded::parse(s.as_bytes())
+                                        .into_owned()
+                                        .collect(),
+                                    Err(_) => std::collections::BTreeMap::new(),
+                                };
+
+                            let evt = crate::trade_engine::order_event::OrderRequestEvent {
+                                endpoint,
+                                method,
+                                params,
+                                weight: Some(weight),
+                                account: None,
+                                req_id: Some(msg.client_query_id.to_string()),
+                            };
+
+                            let outcome = {
+                                let mut dispatcher = dispatcher.lock().await;
+                                dispatcher.dispatch(evt).await
+                            };
+                            match outcome {
+                                Ok(outcome) => {
+                                    let _ = query_resp_tx.send(QueryExecOutcome {
+                                        req_type: msg.req_type,
+                                        client_query_id: msg.client_query_id,
+                                        status: outcome.status,
+                                        body: outcome.body,
+                                        exchange: exchange_copy,
+                                        ip_used_weight_1m: outcome.ip_used_weight_1m,
+                                        query_count_1m: outcome.order_count_1m,
+                                    });
+                                }
+                                Err(e) => {
+                                    let _ = query_resp_tx.send(QueryExecOutcome {
+                                        req_type: msg.req_type,
+                                        client_query_id: msg.client_query_id,
+                                        status: 0,
+                                        body: e.to_string(),
+                                        exchange: exchange_copy,
+                                        ip_used_weight_1m: None,
+                                        query_count_1m: None,
+                                    });
+                                }
+                            }
+                        }
+                        Exchange::Okex => {
+                            if !QueryTypeMapping::is_okex_rest(msg.req_type) {
+                                let _ = query_resp_tx.send(QueryExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_query_id: msg.client_query_id,
+                                    status: 400,
+                                    body: "unsupported query type for okex engine".to_string(),
+                                    exchange: exchange_copy,
+                                    ip_used_weight_1m: None,
+                                    query_count_1m: None,
+                                });
+                                continue;
+                            }
+                            let Some(creds) = &okex_creds else {
+                                let _ = query_resp_tx.send(QueryExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_query_id: msg.client_query_id,
+                                    status: 401,
+                                    body: "missing OKX credentials in env".to_string(),
+                                    exchange: exchange_copy,
+                                    ip_used_weight_1m: None,
+                                    query_count_1m: None,
+                                });
+                                continue;
+                            };
+
+                            let endpoint = QueryTypeMapping::get_endpoint(msg.req_type);
+                            let qs = std::str::from_utf8(&msg.params).unwrap_or("");
+                            let path_with_query = if qs.is_empty() {
+                                endpoint.to_string()
+                            } else {
+                                format!("{}?{}", endpoint, qs)
+                            };
+
+                            match crate::trade_engine::okex_query::okex_rest_get(
+                                &okex_http,
+                                creds,
+                                &path_with_query,
+                            )
+                            .await
+                            {
+                                Ok((status, body)) => {
+                                    let _ = query_resp_tx.send(QueryExecOutcome {
+                                        req_type: msg.req_type,
+                                        client_query_id: msg.client_query_id,
+                                        status: status as u16,
+                                        body,
+                                        exchange: exchange_copy,
+                                        ip_used_weight_1m: None,
+                                        query_count_1m: None,
+                                    });
+                                }
+                                Err(e) => {
+                                    let _ = query_resp_tx.send(QueryExecOutcome {
+                                        req_type: msg.req_type,
+                                        client_query_id: msg.client_query_id,
+                                        status: 0,
+                                        body: e.to_string(),
+                                        exchange: exchange_copy,
+                                        ip_used_weight_1m: None,
+                                        query_count_1m: None,
+                                    });
+                                }
+                            }
+                        }
+                        _ => {
+                            let _ = query_resp_tx.send(QueryExecOutcome {
+                                req_type: msg.req_type,
+                                client_query_id: msg.client_query_id,
+                                status: 400,
+                                body: "query channel not supported for this exchange".to_string(),
+                                exchange: exchange_copy,
+                                ip_used_weight_1m: None,
+                                query_count_1m: None,
+                            });
+                        }
+                    }
+                }
+            });
+        }
+
         let _resp_worker = spawn_response_handle(resp_publisher, resp_rx);
+        let _query_resp_worker = spawn_query_response_handle(query_resp_publisher, query_resp_rx);
+
+        // Query subscriber loop
+        tokio::task::spawn_local(async move {
+            loop {
+                match query_subscriber.receive() {
+                    Ok(Some(sample)) => {
+                        let actual_len = {
+                            let payload = sample.payload();
+                            payload
+                                .iter()
+                                .rposition(|&x| x != 0)
+                                .map(|pos| pos + 1)
+                                .unwrap_or(0)
+                        };
+                        if actual_len == 0 {
+                            drop(sample);
+                            continue;
+                        }
+                        let owned = {
+                            let payload = sample.payload();
+                            bytes::Bytes::copy_from_slice(&payload[..actual_len])
+                        };
+                        drop(sample);
+
+                        match crate::trade_engine::query_request::QueryRequestMsg::parse(&owned) {
+                            Some(msg) => {
+                                let _ = query_req_tx.send(msg);
+                            }
+                            None => {
+                                warn!("invalid query request binary payload (len={})", actual_len);
+                            }
+                        }
+                    }
+                    Ok(None) => tokio::task::yield_now().await,
+                    Err(err) => {
+                        warn!("query request receive error: {err}");
+                        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                    }
+                }
+            }
+        });
 
         loop {
             match subscriber.receive()? {
