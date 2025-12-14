@@ -15,7 +15,9 @@ use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::trade_update::TradeUpdate;
-use crate::trade_engine::query_parsers::compact_order::CompactOrderQueryResp;
+use crate::trade_engine::query_parsers::compact_order::{
+    CompactOrderQueryResp, COMPACT_ORDER_QUERY_RESP_LEN,
+};
 use crate::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
@@ -1387,9 +1389,7 @@ impl HedgeArbStrategy {
         client_query_id: i64,
     ) -> Result<(String, bytes::Bytes), String> {
         let exchange = order.venue.trade_engine_exchange().to_string();
-        let Some(exchange_order_id) = order.exchange_order_id else {
-            return Err("missing exchange_order_id".to_string());
-        };
+        let exchange_order_id = order.exchange_order_id.filter(|&id| id > 0);
 
         let req_type = match order.venue {
             TradingVenue::BinanceMargin => QueryRequestType::BinanceMarginQuery,
@@ -1400,15 +1400,26 @@ impl HedgeArbStrategy {
         };
 
         let params = match order.venue {
-            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => bytes::Bytes::from(
-                format!("symbol={}&orderId={}", order.symbol, exchange_order_id),
-            ),
+            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => {
+                if let Some(order_id) = exchange_order_id {
+                    bytes::Bytes::from(format!("symbol={}&orderId={}", order.symbol, order_id))
+                } else {
+                    bytes::Bytes::from(format!(
+                        "symbol={}&origClientOrderId={}",
+                        order.symbol, client_query_id
+                    ))
+                }
+            }
             TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
                 let inst_id = crate::pre_trade::order_manager::okex_inst_id_from_symbol(
                     &order.symbol,
                     order.venue,
                 )?;
-                bytes::Bytes::from(format!("instId={}&ordId={}", inst_id, exchange_order_id))
+                if let Some(order_id) = exchange_order_id {
+                    bytes::Bytes::from(format!("instId={}&ordId={}", inst_id, order_id))
+                } else {
+                    bytes::Bytes::from(format!("instId={}&clOrdId={}", inst_id, client_query_id))
+                }
             }
             _ => bytes::Bytes::new(),
         };
@@ -1439,11 +1450,9 @@ impl HedgeArbStrategy {
 
         if order.exchange_order_id.unwrap_or(0) == 0 {
             warn!(
-                "HedgeArbStrategy: strategy_id={} cancel_failed but missing exchange_order_id (treat as not-exist), client_order_id={}",
+                "HedgeArbStrategy: strategy_id={} cancel_failed and exchange_order_id missing, will query by client_order_id first: client_order_id={}",
                 self.strategy_id, client_order_id
             );
-            self.alive_flag = false;
-            return;
         }
 
         match self.build_order_query_request(&order, client_order_id) {
@@ -1473,6 +1482,162 @@ impl HedgeArbStrategy {
                 self.alive_flag = false;
             }
         }
+    }
+
+    fn parse_compact_order_query_resp(body: &bytes::Bytes) -> Option<CompactOrderQueryResp> {
+        if body.len() < COMPACT_ORDER_QUERY_RESP_LEN {
+            return None;
+        }
+        let parsed = CompactOrderQueryResp::from_bytes_prefix(body.as_ref()).ok()?;
+        if !parsed.executed_qty.is_finite() || parsed.executed_qty < 0.0 {
+            return None;
+        }
+        if parsed.order_id <= 0 {
+            return None;
+        }
+        if crate::pre_trade::order_manager::OrderExecutionStatus::from_u8(parsed.status_u8)
+            .is_none()
+        {
+            return None;
+        }
+        if parsed.update_time_ms < 0 {
+            return None;
+        }
+        if parsed.update_time_ms != 0 {
+            let now_ms = get_timestamp_us().saturating_div(1_000);
+            if parsed.update_time_ms < 1_300_000_000_000 {
+                return None;
+            }
+            if parsed.update_time_ms > now_ms.saturating_add(86_400_000) {
+                return None;
+            }
+        }
+        Some(parsed)
+    }
+
+    fn apply_parsed_order_query_updates(
+        &mut self,
+        order: &crate::pre_trade::order_manager::Order,
+        parsed: CompactOrderQueryResp,
+        reason: PendingOrderQueryReason,
+    ) {
+        let event_time_us = parsed.update_time_ms.saturating_mul(1_000);
+        let order_id = parsed.order_id;
+
+        if parsed.executed_qty > 0.0 {
+            let status = if parsed.status_u8 == OrderExecutionStatus::Filled.to_u8() {
+                Some(OrderStatus::Filled)
+            } else {
+                Some(OrderStatus::PartiallyFilled)
+            };
+            let trade_id = parsed.update_time_ms.max(1);
+            let trade = OrderQueryTradeUpdate::new(
+                order,
+                order_id,
+                trade_id,
+                event_time_us,
+                parsed.executed_qty,
+                status,
+            );
+            self.apply_trade_update_with_record(&trade);
+        }
+
+        let status_u8 = parsed.status_u8;
+        if status_u8 == OrderExecutionStatus::Create.to_u8() {
+            let upd = OrderQueryOrderUpdate::new(
+                order,
+                order_id,
+                event_time_us,
+                OrderStatus::New,
+                ExecutionType::New,
+                parsed.executed_qty,
+            );
+            self.apply_order_update_with_record(&upd);
+        } else if status_u8 == OrderExecutionStatus::Cancelled.to_u8() {
+            let upd = OrderQueryOrderUpdate::new(
+                order,
+                order_id,
+                event_time_us,
+                OrderStatus::Canceled,
+                ExecutionType::Canceled,
+                parsed.executed_qty,
+            );
+            self.apply_order_update_with_record(&upd);
+        } else if status_u8 == OrderExecutionStatus::Rejected.to_u8() {
+            let upd = OrderQueryOrderUpdate::new(
+                order,
+                order_id,
+                event_time_us,
+                OrderStatus::Expired,
+                ExecutionType::Expired,
+                parsed.executed_qty,
+            );
+            self.apply_order_update_with_record(&upd);
+        }
+
+        info!(
+            "HedgeArbStrategy: strategy_id={} query_resp applied: client_order_id={} order_id={} exec_qty={:.8} status_u8={} reason={:?}",
+            self.strategy_id,
+            order.client_order_id,
+            order_id,
+            parsed.executed_qty,
+            parsed.status_u8,
+            reason
+        );
+    }
+
+    fn handle_open_leg_query_result(
+        &mut self,
+        _response: &dyn QueryEngineResponse,
+        client_order_id: i64,
+        reason: PendingOrderQueryReason,
+        parsed: CompactOrderQueryResp,
+    ) {
+        let order_mgr: std::rc::Rc<std::cell::RefCell<crate::pre_trade::order_manager::OrderManager>> = MonitorChannel::instance().order_manager();
+        let Some(order) = order_mgr.borrow().get(client_order_id) else {
+            warn!(
+                "HedgeArbStrategy: strategy_id={} open_leg query_resp but order missing: client_order_id={} reason={:?}",
+                self.strategy_id, client_order_id, reason
+            );
+            self.alive_flag = false;
+            return;
+        };
+        // 只有开仓订单撤单失败会走到这个rest-api对应的query分支
+        // 目前考虑到，造成撤单失败的原因包括:
+        // 1、完全成交，但ß是漏掉了订单的成交推送，此时订单已经不存在，无法撤单。
+        // 2、开仓侧已经cancel过了，但丢失了cancel的回报。因此无法推动后续的对冲执行。
+        // 3、订单挂单就失败了，这种情况下本地可以直接orderid不存在，无需处理。
+        // 4、rest api因为网络、频率限制等原因出错。
+
+        // 区分处理
+        // 1，2 => 使用rest api查询订单状态。判断订单状态。
+        // (1)查询到trade，增加一个trade update。补充成交信息。然后触发对冲。
+        // (2)查询到cancel，增加一个order update。补充cancel信息，然后触发对冲。
+        // 2 => 直接关闭strategy
+        // 3 => 重新撤单
+
+
+        self.apply_parsed_order_query_updates(&order, parsed, reason);
+    }
+
+    fn handle_hedge_leg_query_result(
+        &mut self,
+        _response: &dyn QueryEngineResponse,
+        client_order_id: i64,
+        reason: PendingOrderQueryReason,
+        parsed: CompactOrderQueryResp,
+    ) {
+        let order_mgr = MonitorChannel::instance().order_manager();
+        let Some(order) = order_mgr.borrow().get(client_order_id) else {
+            warn!(
+                "HedgeArbStrategy: strategy_id={} hedge_leg query_resp but order missing: client_order_id={} reason={:?}",
+                self.strategy_id, client_order_id, reason
+            );
+            self.alive_flag = false;
+            return;
+        };
+
+        self.apply_parsed_order_query_updates(&order, parsed, reason);
     }
 
     fn handle_open_leg_open_failed(
@@ -1767,106 +1932,48 @@ impl Strategy for HedgeArbStrategy {
             return;
         };
 
-        let body = response.body_bytes().as_ref();
-        let actual_len = body
-            .iter()
-            .rposition(|&b| b != 0)
-            .map(|pos| pos + 1)
-            .unwrap_or(0);
-        if actual_len == 0 {
-            return;
-        }
-        let slice = &body[..actual_len];
-        let Ok(parsed) = CompactOrderQueryResp::from_bytes_prefix(slice) else {
-            warn!(
-                "HedgeArbStrategy: strategy_id={} query_resp decode failed: client_order_id={} req_type={} reason={:?}",
-                self.strategy_id,
-                client_order_id,
-                response.req_type(),
-                reason
-            );
+        let Some(leg) = self.classify_leg(client_order_id) else {
             return;
         };
 
-        let order_mgr = MonitorChannel::instance().order_manager();
-        let Some(order) = order_mgr.borrow().get(client_order_id) else {
+        let body = response.body_bytes().as_ref();
+        let has_any_byte = body.iter().any(|&b| b != 0);
+        if !has_any_byte {
+            return;
+        }
+
+        let body_bytes = response.body_bytes();
+        let Some(parsed) = Self::parse_compact_order_query_resp(body_bytes) else {
+            let actual_len = body
+                .iter()
+                .rposition(|&b| b != 0)
+                .map(|pos| pos + 1)
+                .unwrap_or(0);
+            let text = if actual_len > 0 {
+                String::from_utf8_lossy(&body[..actual_len]).to_string()
+            } else {
+                String::new()
+            };
             warn!(
-                "HedgeArbStrategy: strategy_id={} query_resp but order missing: client_order_id={} reason={:?}",
-                self.strategy_id, client_order_id, reason
+                "HedgeArbStrategy: strategy_id={} query_resp decode failed (treat as case3, close): client_order_id={} req_type={} reason={:?} body='{}'",
+                self.strategy_id,
+                client_order_id,
+                response.req_type(),
+                reason,
+                text
             );
             self.alive_flag = false;
             return;
         };
 
-        let event_time_us = parsed.update_time_ms.saturating_mul(1_000);
-        let order_id = parsed.order_id;
-
-        if parsed.executed_qty > 0.0 {
-            let status = if parsed.status_u8
-                == crate::pre_trade::order_manager::OrderExecutionStatus::Filled.to_u8()
-            {
-                Some(OrderStatus::Filled)
-            } else {
-                Some(OrderStatus::PartiallyFilled)
-            };
-            let trade_id = parsed.update_time_ms.max(1);
-            let trade = OrderQueryTradeUpdate::new(
-                &order,
-                order_id,
-                trade_id,
-                event_time_us,
-                parsed.executed_qty,
-                status,
-            );
-            self.apply_trade_update_with_record(&trade);
+        match leg {
+            Leg::Open => {
+                self.handle_open_leg_query_result(response, client_order_id, reason, parsed)
+            }
+            Leg::Hedge => {
+                self.handle_hedge_leg_query_result(response, client_order_id, reason, parsed)
+            }
         }
-
-        let status_u8 = parsed.status_u8;
-        if status_u8 == crate::pre_trade::order_manager::OrderExecutionStatus::Create.to_u8() {
-            let upd = OrderQueryOrderUpdate::new(
-                &order,
-                order_id,
-                event_time_us,
-                OrderStatus::New,
-                ExecutionType::New,
-                parsed.executed_qty,
-            );
-            self.apply_order_update_with_record(&upd);
-        } else if status_u8
-            == crate::pre_trade::order_manager::OrderExecutionStatus::Cancelled.to_u8()
-        {
-            let upd = OrderQueryOrderUpdate::new(
-                &order,
-                order_id,
-                event_time_us,
-                OrderStatus::Canceled,
-                ExecutionType::Canceled,
-                parsed.executed_qty,
-            );
-            self.apply_order_update_with_record(&upd);
-        } else if status_u8
-            == crate::pre_trade::order_manager::OrderExecutionStatus::Rejected.to_u8()
-        {
-            let upd = OrderQueryOrderUpdate::new(
-                &order,
-                order_id,
-                event_time_us,
-                OrderStatus::Expired,
-                ExecutionType::Expired,
-                parsed.executed_qty,
-            );
-            self.apply_order_update_with_record(&upd);
-        }
-
-        info!(
-            "HedgeArbStrategy: strategy_id={} query_resp applied: client_order_id={} order_id={} exec_qty={:.8} status_u8={} reason={:?}",
-            self.strategy_id,
-            client_order_id,
-            order_id,
-            parsed.executed_qty,
-            parsed.status_u8,
-            reason
-        );
     }
 
     fn handle_period_clock(&mut self, _current_tp: i64) {
