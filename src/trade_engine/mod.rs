@@ -1,8 +1,8 @@
 pub mod config;
 pub mod dispatcher;
 pub mod engine;
-pub mod okex_query;
 pub mod okex;
+pub mod okex_query;
 pub mod order_event;
 pub mod query_parsers;
 pub mod query_request;

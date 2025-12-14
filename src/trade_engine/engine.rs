@@ -4,8 +4,8 @@ use crate::trade_engine::config::{ApiKey, WsConstants};
 use crate::trade_engine::dispatcher::Dispatcher;
 use crate::trade_engine::query_parsers::binance_margin_order::parse_binance_margin_order_query_json;
 use crate::trade_engine::query_parsers::binance_pm_balance_snapshot::parse_binance_pm_balance_snapshot;
-use crate::trade_engine::query_parsers::binance_um_order::parse_binance_um_order_query_json;
 use crate::trade_engine::query_parsers::binance_um_account_snapshot::parse_binance_um_account_snapshot;
+use crate::trade_engine::query_parsers::binance_um_order::parse_binance_um_order_query_json;
 use crate::trade_engine::query_parsers::okex_order::parse_okex_order_query_json;
 use crate::trade_engine::query_request::QueryRequestMsg;
 use crate::trade_engine::query_response_handle::{spawn_query_response_handle, QueryExecOutcome};
@@ -131,7 +131,8 @@ impl TradeEngine {
 
         let (query_req_tx, mut query_req_rx) =
             tokio::sync::mpsc::unbounded_channel::<QueryRequestMsg>();
-        let (query_resp_tx, query_resp_rx) = tokio::sync::mpsc::unbounded_channel::<QueryExecOutcome>();
+        let (query_resp_tx, query_resp_rx) =
+            tokio::sync::mpsc::unbounded_channel::<QueryExecOutcome>();
 
         if exchange == Exchange::Binance && self.accounts.is_empty() {
             return Err(anyhow!("Binance requires API keys in config"));
@@ -363,7 +364,8 @@ impl TradeEngine {
             let exchange_copy = exchange;
             tokio::task::spawn_local(async move {
                 let okex_http = reqwest::Client::new();
-                let okex_creds = crate::portfolio_margin::okex_auth::OkexCredentials::from_env().ok();
+                let okex_creds =
+                    crate::portfolio_margin::okex_auth::OkexCredentials::from_env().ok();
 
                 while let Some(msg) = query_req_rx.recv().await {
                     debug!(
@@ -392,7 +394,9 @@ impl TradeEngine {
                                     req_type: msg.req_type,
                                     client_query_id: msg.client_query_id,
                                     status: 503,
-                                    body: bytes::Bytes::from_static(b"no rest dispatcher available"),
+                                    body: bytes::Bytes::from_static(
+                                        b"no rest dispatcher available",
+                                    ),
                                     exchange: exchange_copy,
                                     ip_used_weight_1m: None,
                                     query_count_1m: None,
@@ -539,7 +543,9 @@ impl TradeEngine {
                                     req_type: msg.req_type,
                                     client_query_id: msg.client_query_id,
                                     status: 401,
-                                    body: bytes::Bytes::from_static(b"missing OKX credentials in env"),
+                                    body: bytes::Bytes::from_static(
+                                        b"missing OKX credentials in env",
+                                    ),
                                     exchange: exchange_copy,
                                     ip_used_weight_1m: None,
                                     query_count_1m: None,

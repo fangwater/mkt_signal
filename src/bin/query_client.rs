@@ -75,4 +75,3 @@ async fn main() -> Result<()> {
         })
         .await
 }
-

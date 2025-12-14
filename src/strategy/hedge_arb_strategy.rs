@@ -13,7 +13,9 @@ use crate::strategy::manager::{ForceCloseControl, Strategy};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_engine_response::TradeEngineResponse;
 use crate::strategy::trade_update::TradeUpdate;
+use crate::trade_engine::trade_request::TradeRequestType;
 use log::{debug, error, info, warn};
+use std::convert::TryFrom;
 
 pub struct HedgeArbStrategy {
     pub strategy_id: i32,              //策略id
@@ -1410,80 +1412,186 @@ impl Strategy for HedgeArbStrategy {
     }
 
     fn apply_trade_engine_response(&mut self, response: &dyn TradeEngineResponse) {
+        // 1、http 状态码200 代表请求成功，不检查code
+        // 2、无论是下单、撤单的成功，等待account monitor来推送结果，推送缺少的情况下，通过rest api请求回补
+        // 3、因此只要成功，就不进行处理
         if response.is_success() {
             return;
         }
 
-        let client_order_id = response.client_order_id();
+        // 当失败的时候，按你的逻辑分层处理：
+        // 1) 先区分开仓侧失败 vs 对冲侧失败
+        // 2) 再区分该 leg 是报单失败(open) 还是撤单失败(cancel)
+        // 3) 细节分支后续逐步补齐
+        enum Leg {
+            Open,
+            Hedge,
+        }
+        enum ReqKind {
+            Open,
+            Cancel,
+            Other,
+        }
 
-        // 检查是否是 Post Only 订单被拒绝的错误 (-5022)
-        // 这种情况下需要重新发送 hedge query signal 而不是关闭策略
-        let is_post_only_rejected = response.error_code() == -5022;
+        let client_order_id = response.client_order_id();
+        let req_type = TradeRequestType::try_from(response.req_type()).ok();
+
+        // 判断是开仓侧，还是平仓侧订单
+        let leg = if client_order_id == self.open_order_id {
+            Some(Leg::Open)
+        } else if self.hedge_order_ids.contains(&client_order_id) {
+            Some(Leg::Hedge)
+        } else {
+            None
+        };
+
+        let req_kind = match req_type {
+            Some(
+                TradeRequestType::BinanceNewUMOrder
+                | TradeRequestType::BinanceNewUMConditionalOrder
+                | TradeRequestType::BinanceNewMarginOrder
+                | TradeRequestType::OkexNewMarginOrder
+                | TradeRequestType::OkexNewUMOrder,
+            ) => ReqKind::Open,
+            Some(
+                TradeRequestType::BinanceCancelUMOrder
+                | TradeRequestType::BinanceCancelUMConditionalOrder
+                | TradeRequestType::BinanceCancelMarginOrder
+                | TradeRequestType::OkexCancelMarginOrder
+                | TradeRequestType::OkexCancelUMOrder,
+            ) => ReqKind::Cancel,
+            _ => ReqKind::Other,
+        };
+
+        // 币安合约可以挂gtx订单，现货margin不支持gtx订单，只能挂gtc
+        // okex的合约应该可以挂post-only，但是不知道error code是多少
+
         let exchange = Exchange::from_u8((response.exchange() & 0xFF) as u8);
+        let err_code = response.error_code();
+
+        // maker-only/post-only would-cross（Binance: -5022; OKX: TBD）
+        let is_post_only_rejected = response.is_post_only_rejected();
+        // OKX: 51006 = price-limit reject
+        let is_okx_price_limit_rejected = response.is_price_limit_rejected();
+
         let code_desc = exchange
-            .and_then(|ex| describe_trade_error_code(ex, response.error_code()))
+            .and_then(|ex| describe_trade_error_code(ex, err_code))
             .unwrap_or("unknown");
 
-        if client_order_id == self.open_order_id {
-            warn!(
-                "HedgeArbStrategy: strategy_id={} 开仓下单失败: status={} code={}({})",
-                self.strategy_id,
-                response.status(),
-                response.error_code(),
-                code_desc
-            );
-            self.alive_flag = false;
-        } else if self.hedge_order_ids.contains(&client_order_id) {
-            // 对冲订单失败
-            if is_post_only_rejected {
-                // Post Only 订单被拒绝，需要重新发送 hedge query signal
+        match (leg, req_kind) {
+            (Some(Leg::Open), ReqKind::Open) => {
+                // 开仓侧报单失败：直接关闭 strategy
                 warn!(
-                    "HedgeArbStrategy: strategy_id={} 对冲订单 Post Only 被拒绝 (code=-5022)，重新发送 hedge query signal: client_order_id={}",
-                    self.strategy_id, client_order_id
-                );
-
-                // 从 order manager 移除失败的订单
-                let order_mgr = MonitorChannel::instance().order_manager();
-                let _ = order_mgr.borrow_mut().remove(client_order_id);
-
-                // 从 hedge_order_ids 移除失败的订单
-                self.hedge_order_ids.retain(|&id| id != client_order_id);
-
-                // 清除对冲挂单截止时间，让定时器可以重新发起对冲
-                self.hedge_expire_ts = None;
-
-                // 计算待对冲量并重新发送 hedge query
-                let base_pending_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
-                if base_pending_qty > 1e-8 {
-                    let (can_hedge, hedged_qty, _) = self.try_hedge_with_residual(base_pending_qty);
-                    if can_hedge {
-                        info!(
-                            "HedgeArbStrategy: strategy_id={} Post Only 被拒后重新发送对冲请求，数量={:.8}",
-                            self.strategy_id, hedged_qty
-                        );
-                    } else {
-                        warn!(
-                            "HedgeArbStrategy: strategy_id={} Post Only 被拒后无法重新对冲，待对冲量={:.8}",
-                            self.strategy_id, base_pending_qty
-                        );
-                        // 如果无法重新对冲且没有其他挂单，则关闭策略
-                        if !self.has_pending_hedge_order() {
-                            self.alive_flag = false;
-                        }
-                    }
-                }
-            } else {
-                // 其他对冲订单错误，直接关闭策略
-                warn!(
-                    "HedgeArbStrategy: strategy_id={} 对冲下单失败: status={} code={}({}) client_order_id={}",
+                    "HedgeArbStrategy: strategy_id={} open_leg open_failed: req_type={} status={} code={}({}) client_order_id={}",
                     self.strategy_id,
+                    response.req_type(),
                     response.status(),
                     response.error_code(),
                     code_desc,
                     client_order_id
                 );
+
+                // 报单失败时，本地订单不会再有后续 update，直接标记为 Rejected，避免被清理时误报“非终态”。
+                let now = get_timestamp_us();
+                let order_mgr = MonitorChannel::instance().order_manager();
+                let _ = order_mgr.borrow_mut().update(client_order_id, |order| {
+                    order.update_status(OrderExecutionStatus::Rejected);
+                    order.set_end_time(now);
+                });
+
                 self.alive_flag = false;
             }
+            (Some(Leg::Open), ReqKind::Cancel) => {
+                // TODO: 开仓侧撤单失败：后续按你的方案引入 query/rest 对账补齐（trade/cancel）
+                warn!(
+                    "HedgeArbStrategy: strategy_id={} open_leg cancel_failed(TODO): req_type={} status={} code={}({}) client_order_id={}",
+                    self.strategy_id,
+                    response.req_type(),
+                    response.status(),
+                    response.error_code(),
+                    code_desc,
+                    client_order_id
+                );
+            }
+            (Some(Leg::Hedge), ReqKind::Open) => {
+                // 对冲侧报单失败：先保留现有 post-only 处理，其余先直接关闭（后续再按你的方案细分）
+                if is_post_only_rejected || is_okx_price_limit_rejected {
+                    let reason = if is_post_only_rejected {
+                        "post_only"
+                    } else {
+                        "price_limit"
+                    };
+                    warn!(
+                        "HedgeArbStrategy: strategy_id={} hedge_leg open_failed({}): code={}({}) client_order_id={}",
+                        self.strategy_id,
+                        reason,
+                        err_code,
+                        code_desc,
+                        client_order_id
+                    );
+
+                    let order_mgr = MonitorChannel::instance().order_manager();
+                    let _ = order_mgr.borrow_mut().remove(client_order_id);
+                    self.hedge_order_ids.retain(|&id| id != client_order_id);
+                    self.hedge_expire_ts = None;
+
+                    let base_pending_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
+                    if base_pending_qty > 1e-8 {
+                        let (can_hedge, hedged_qty, _) =
+                            self.try_hedge_with_residual(base_pending_qty);
+                        if can_hedge {
+                            info!(
+                                "HedgeArbStrategy: strategy_id={} hedge re-send after {} reject, qty={:.8}",
+                                self.strategy_id, reason, hedged_qty
+                            );
+                        } else {
+                            warn!(
+                                "HedgeArbStrategy: strategy_id={} hedge re-send failed after {} reject, pending_qty={:.8}",
+                                self.strategy_id, reason, base_pending_qty
+                            );
+                            if !self.has_pending_hedge_order() {
+                                self.alive_flag = false;
+                            }
+                        }
+                    }
+                } else {
+                    warn!(
+                        "HedgeArbStrategy: strategy_id={} hedge_leg open_failed: req_type={} status={} code={}({}) client_order_id={}",
+                        self.strategy_id,
+                        response.req_type(),
+                        response.status(),
+                        response.error_code(),
+                        code_desc,
+                        client_order_id
+                    );
+                    self.alive_flag = false;
+                }
+            }
+            (Some(Leg::Hedge), ReqKind::Cancel) => {
+                // TODO: 对冲侧撤单失败：后续按你的方案 query/rest 对账：filled=>更新对冲量并关闭；canceled=>继续对冲
+                warn!(
+                    "HedgeArbStrategy: strategy_id={} hedge_leg cancel_failed(TODO): req_type={} status={} code={}({}) client_order_id={}",
+                    self.strategy_id,
+                    response.req_type(),
+                    response.status(),
+                    response.error_code(),
+                    code_desc,
+                    client_order_id
+                );
+            }
+            (Some(Leg::Open), ReqKind::Other) | (Some(Leg::Hedge), ReqKind::Other) => {
+                // TODO: 目前不期望出现的类型，先打日志
+                warn!(
+                    "HedgeArbStrategy: strategy_id={} trade_engine_resp other(TODO): req_type={} status={} code={}({}) client_order_id={}",
+                    self.strategy_id,
+                    response.req_type(),
+                    response.status(),
+                    response.error_code(),
+                    code_desc,
+                    client_order_id
+                );
+            }
+            (None, _) => {}
         }
     }
 

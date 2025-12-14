@@ -8,13 +8,11 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::common::ipc_service_name::build_service_name;
-use crate::common::{
-    basic_account_msg::{
-        get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
-        BasicPositionMsg,
-    },
+use crate::common::basic_account_msg::{
+    get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
+    BasicPositionMsg,
 };
+use crate::common::ipc_service_name::build_service_name;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::signal::common::TradingVenue;
 use crate::strategy::query_engine_response::{QueryEngineResponse, QueryEngineResponseMessage};
@@ -119,7 +117,10 @@ impl QueryEngChannel {
         let query_resp_service = build_service_name(&format!("query_resps/{}", exchange));
 
         let req_node = NodeBuilder::new()
-            .name(&NodeName::new(&format!("pre_trade_query_req_{}", exchange))?)
+            .name(&NodeName::new(&format!(
+                "pre_trade_query_req_{}",
+                exchange
+            ))?)
             .create::<ipc::Service>()?;
 
         let req_service = req_node
@@ -146,7 +147,9 @@ impl QueryEngChannel {
             }
         });
 
-        Ok(Self { query_req_publisher })
+        Ok(Self {
+            query_req_publisher,
+        })
     }
 
     fn publish_query_request(&self, bytes: &Bytes) -> Result<()> {
@@ -174,7 +177,10 @@ impl QueryEngChannel {
 
     async fn run_query_resp_listener(exchange: &str, service_name: &str) -> Result<()> {
         let node = NodeBuilder::new()
-            .name(&NodeName::new(&format!("pre_trade_query_resp_{}", exchange))?)
+            .name(&NodeName::new(&format!(
+                "pre_trade_query_resp_{}",
+                exchange
+            ))?)
             .create::<ipc::Service>()?;
 
         let service = node
@@ -261,7 +267,10 @@ impl QueryEngChannel {
                             );
                         }
                         Err(err) => {
-                            warn!("failed to decode query response (exchange={}): {err:#}", exchange)
+                            warn!(
+                                "failed to decode query response (exchange={}): {err:#}",
+                                exchange
+                            )
                         }
                     }
                 }

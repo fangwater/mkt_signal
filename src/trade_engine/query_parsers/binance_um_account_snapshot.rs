@@ -79,4 +79,3 @@ mod tests {
         assert!((p.position_amount - 0.5).abs() < 1e-6);
     }
 }
-

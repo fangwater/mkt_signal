@@ -26,7 +26,9 @@ impl QueryTypeMapping {
             QueryRequestType::BinanceUMQuery => "/papi/v1/um/order",
             QueryRequestType::BinancePmBalanceSnapshot => "/papi/v1/balance",
             QueryRequestType::BinanceUmAccountSnapshot => "/papi/v1/um/account",
-            QueryRequestType::OkexMarginQuery | QueryRequestType::OkexUMQuery => "/api/v5/trade/order",
+            QueryRequestType::OkexMarginQuery | QueryRequestType::OkexUMQuery => {
+                "/api/v5/trade/order"
+            }
         }
     }
 

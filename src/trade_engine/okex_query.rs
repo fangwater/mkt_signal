@@ -45,4 +45,3 @@ pub async fn okex_rest_get(
     let body = resp.text().await.unwrap_or_default();
     Ok((status, body))
 }
-

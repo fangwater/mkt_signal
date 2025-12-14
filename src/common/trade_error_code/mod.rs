@@ -1,0 +1,80 @@
+use crate::common::exchange::Exchange;
+
+pub mod binance;
+pub mod okex;
+
+/// Map common trade/rest/ws error codes to a short, stable description.
+///
+/// Notes:
+/// - This intentionally maps only a small set of frequently-seen codes.
+/// - Some exchanges return additional dynamic details (e.g. OKX `sMsg`); those should be logged
+///   separately and are not encoded here.
+pub fn describe_trade_error_code(exchange: Exchange, code: i32) -> Option<&'static str> {
+    match exchange {
+        Exchange::Binance => binance::describe_trade_error_code(code),
+        Exchange::Okex => okex::describe_trade_error_code(code),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_known_codes() {
+        assert_eq!(
+            describe_trade_error_code(Exchange::Binance, -2011),
+            Some("Cancel rejected")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Binance, -4060),
+            Some("Invalid position side")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Binance, -4061),
+            Some("Position side not match")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Binance, -5022),
+            Some("Post Only rejected")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Okex, 60013),
+            Some("Invalid args")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Okex, 1),
+            Some("Request failed")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Okex, 51006),
+            Some("Price outside limit")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Okex, 51061),
+            Some("Insufficient loanable assets")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Okex, 51400),
+            Some("Cancel failed: filled/canceled/not exist")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Okex, 51410),
+            Some("Cancel failed: canceling/settling")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Okex, 51412),
+            Some("Cancel timeout")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Okex, 51416),
+            Some("Cancel not supported: order triggered")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Okex, 51511),
+            Some("Post Only rejected")
+        );
+        assert_eq!(describe_trade_error_code(Exchange::Okex, 999), None);
+    }
+}

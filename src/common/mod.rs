@@ -7,5 +7,5 @@ pub mod min_qty_table;
 pub mod mkt_msg;
 pub mod msg_parser;
 pub mod redis_client;
-pub mod trade_error_code;
 pub mod time_util;
+pub mod trade_error_code;

@@ -1,5 +1,5 @@
-use bytes::Bytes;
 use anyhow::Result;
+use bytes::Bytes;
 use clap::Parser;
 use log::{info, warn};
 use mkt_signal::common::redis_client::RedisSettings;

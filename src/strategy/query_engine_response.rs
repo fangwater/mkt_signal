@@ -16,7 +16,11 @@ pub struct QueryEngineResponseMessage {
 
 impl QueryEngineResponseMessage {
     pub fn new(req_type: u32, client_query_id: i64, body: Bytes) -> Self {
-        Self { req_type, client_query_id, body }
+        Self {
+            req_type,
+            client_query_id,
+            body,
+        }
     }
 
     pub fn from_payload(payload: &[u8]) -> Result<Self> {

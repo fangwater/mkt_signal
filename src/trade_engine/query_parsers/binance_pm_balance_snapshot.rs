@@ -58,9 +58,11 @@ mod tests {
         let msgs = parse_binance_pm_balance_snapshot(json).expect("parse ok");
         assert_eq!(msgs.len(), 2);
         let bal = BasicBalanceMsg::from_bytes(&msgs[0]).expect("bal ok");
-        assert_eq!(bal.msg_type as u32, BasicAccountEventType::BalanceUpdate as u32);
+        assert_eq!(
+            bal.msg_type as u32,
+            BasicAccountEventType::BalanceUpdate as u32
+        );
         assert_eq!(bal.symbol, "BTC");
         assert!((bal.balance - 1.234).abs() < 1e-12);
     }
 }
-

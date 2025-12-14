@@ -61,17 +61,26 @@ fn extract_code(v: &Value) -> Option<i32> {
     None
 }
 
+fn extract_s_code(v: &Value) -> Option<i32> {
+    let data = v.get("data")?;
+    let maybe_item = if let Some(arr) = data.as_array() {
+        arr.first()
+    } else if data.is_object() {
+        Some(data)
+    } else {
+        None
+    }?;
+    let s_code = maybe_item.get("sCode")?;
+    if let Some(n) = s_code.as_i64() {
+        return i32::try_from(n).ok();
+    }
+    if let Some(s) = s_code.as_str() {
+        return s.parse::<i32>().ok();
+    }
+    None
+}
+
 fn extract_msg(v: &Value) -> Option<String> {
-    if let Some(s) = v.get("msg").and_then(|m| m.as_str()) {
-        if !s.is_empty() {
-            return Some(s.to_string());
-        }
-    }
-    if let Some(s) = v.get("message").and_then(|m| m.as_str()) {
-        if !s.is_empty() {
-            return Some(s.to_string());
-        }
-    }
     if let Some(s) = v
         .get("data")
         .and_then(|d| d.as_array())
@@ -79,6 +88,16 @@ fn extract_msg(v: &Value) -> Option<String> {
         .and_then(|first| first.get("sMsg"))
         .and_then(|m| m.as_str())
     {
+        if !s.is_empty() {
+            return Some(s.to_string());
+        }
+    }
+    if let Some(s) = v.get("msg").and_then(|m| m.as_str()) {
+        if !s.is_empty() {
+            return Some(s.to_string());
+        }
+    }
+    if let Some(s) = v.get("message").and_then(|m| m.as_str()) {
         if !s.is_empty() {
             return Some(s.to_string());
         }
@@ -100,12 +119,41 @@ fn parse_error_code_and_msg(body: &str) -> (i32, Option<String>) {
     }
 
     if let Ok(v) = serde_json::from_str::<Value>(&candidate) {
-        let code = extract_code(&v).unwrap_or(0);
+        let mut code = extract_code(&v).unwrap_or(0);
+        if let Some(s_code) = extract_s_code(&v) {
+            if s_code != 0 {
+                code = s_code;
+            }
+        }
         let msg = extract_msg(&v);
         return (code, msg);
     }
 
     (0, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefers_okx_s_code_when_present() {
+        let body = r#"{"code":"1","data":[{"sCode":"51006","sMsg":"Order price is not within the price limit"}],"msg":"All operations failed"}"#;
+        let (code, msg) = parse_error_code_and_msg(body);
+        assert_eq!(code, 51006);
+        assert_eq!(
+            msg.as_deref(),
+            Some("Order price is not within the price limit")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_top_level_code() {
+        let body = r#"{"code":-5022,"msg":"Post Only order would be filled"}"#;
+        let (code, msg) = parse_error_code_and_msg(body);
+        assert_eq!(code, -5022);
+        assert_eq!(msg.as_deref(), Some("Post Only order would be filled"));
+    }
 }
 
 pub fn spawn_response_handle(
@@ -115,7 +163,7 @@ pub fn spawn_response_handle(
     tokio::task::spawn_local(async move {
         while let Some(out) = resp_rx.recv().await {
             let (error_code, msg) = parse_error_code_and_msg(&out.body);
-            if out.status != 200 {
+            if out.status != 200 || error_code != 0 {
                 if let Some(m) = msg.as_deref() {
                     warn!(
                         "trade resp error: ex={:?} type={:?} cli_ord_id={} status={} code={} msg={}",
@@ -147,9 +195,7 @@ pub fn spawn_response_handle(
             buf[..h].copy_from_slice(&hdr_bytes[..h]);
             debug!(
                 "publish trade resp header: type={}, status={}, code={}",
-                hdr.req_type,
-                hdr.status,
-                hdr.error_code
+                hdr.req_type, hdr.status, hdr.error_code
             );
             if let Ok(sample) = publisher.loan_uninit() {
                 let sample = sample.write_payload(buf);
