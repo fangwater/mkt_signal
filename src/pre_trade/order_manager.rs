@@ -53,7 +53,10 @@ fn extract_assets_from_symbol(symbol: &str) -> (String, String) {
     (symbol_upper, "USDT".to_string())
 }
 
-fn okex_inst_id_from_symbol(symbol: &str, venue: TradingVenue) -> Result<String, String> {
+pub(crate) fn okex_inst_id_from_symbol(
+    symbol: &str,
+    venue: TradingVenue,
+) -> Result<String, String> {
     let symbol_upper = symbol.to_uppercase();
 
     if symbol_upper.contains('-') {

@@ -1,5 +1,13 @@
 /// TradeEngineResponse trait 提供 trade engine 返回结果的通用访问接口
 use crate::common::exchange::Exchange;
+use crate::trade_engine::trade_request::TradeRequestType;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TradeRequestKind {
+    Open,
+    Cancel,
+    Other,
+}
 
 pub trait TradeEngineResponse {
     fn status(&self) -> u16;
@@ -10,14 +18,54 @@ pub trait TradeEngineResponse {
     fn ip_weight(&self) -> u32;
     fn order_count(&self) -> u32;
 
-    fn is_success(&self) -> bool {
-        // Some exchanges (e.g. OKX) return HTTP 200 even when the operation fails.
-        // We treat a response as successful only when HTTP status is OK *and* error_code is 0.
-        self.status() == 200 && self.error_code() == 0
+    /// Whether the HTTP layer returned 200 OK.
+    ///
+    /// Note: some exchanges (e.g. OKX) may still return an application error under HTTP 200.
+    fn is_http_ok(&self) -> bool {
+        self.status() == 200
+    }
+
+    /// Semantic success for a request:
+    /// - HTTP 200
+    /// - application `error_code == 0`
+    fn is_request_success(&self) -> bool {
+        self.is_http_ok() && self.error_code() == 0
     }
 
     fn exchange_enum(&self) -> Option<Exchange> {
         Exchange::from_u8((self.exchange() & 0xFF) as u8)
+    }
+
+    fn request_kind(&self) -> TradeRequestKind {
+        match TradeRequestType::try_from(self.req_type()) {
+            Ok(
+                TradeRequestType::BinanceNewUMOrder
+                | TradeRequestType::BinanceNewUMConditionalOrder
+                | TradeRequestType::BinanceNewMarginOrder
+                | TradeRequestType::OkexNewMarginOrder
+                | TradeRequestType::OkexNewUMOrder,
+            ) => TradeRequestKind::Open,
+            Ok(
+                TradeRequestType::BinanceCancelUMOrder
+                | TradeRequestType::BinanceCancelUMConditionalOrder
+                | TradeRequestType::BinanceCancelMarginOrder
+                | TradeRequestType::OkexCancelMarginOrder
+                | TradeRequestType::OkexCancelUMOrder,
+            ) => TradeRequestKind::Cancel,
+            _ => TradeRequestKind::Other,
+        }
+    }
+
+    fn is_open_request(&self) -> bool {
+        self.request_kind() == TradeRequestKind::Open
+    }
+
+    fn is_cancel_request(&self) -> bool {
+        self.request_kind() == TradeRequestKind::Cancel
+    }
+
+    fn is_open_rejected(&self) -> bool {
+        self.is_open_request() && !self.is_request_success()
     }
 
     /// Whether the order is rejected because maker-only/post-only would cross.
@@ -63,13 +111,16 @@ mod tests {
     #[test]
     fn is_success_requires_http_ok_and_no_error_code() {
         let ok = TradeEngineResponseMessage::new(200, 1, 1, 123, 0, 0, 0);
-        assert!(ok.is_success());
+        assert!(ok.is_http_ok());
+        assert!(ok.is_request_success());
 
         let okx_err = TradeEngineResponseMessage::new(200, 1, 1, 123, 51006, 0, 0);
-        assert!(!okx_err.is_success());
+        assert!(okx_err.is_http_ok());
+        assert!(!okx_err.is_request_success());
 
         let http_err = TradeEngineResponseMessage::new(400, 1, 1, 123, -2011, 0, 0);
-        assert!(!http_err.is_success());
+        assert!(!http_err.is_http_ok());
+        assert!(!http_err.is_request_success());
     }
 
     #[test]
@@ -105,6 +156,33 @@ mod tests {
         let okx_ex = crate::common::exchange::Exchange::Okex as u32;
         let resp = TradeEngineResponseMessage::new(200, 1, okx_ex, 123, 51416, 0, 0);
         assert!(resp.is_cancel_rejected());
+    }
+
+    #[test]
+    fn detects_open_rejected_by_req_kind() {
+        let okx_new = TradeEngineResponseMessage::new(
+            200,
+            TradeRequestType::OkexNewUMOrder as u32,
+            crate::common::exchange::Exchange::Okex as u32,
+            123,
+            51511,
+            0,
+            0,
+        );
+        assert!(okx_new.is_open_request());
+        assert!(okx_new.is_open_rejected());
+
+        let okx_cancel = TradeEngineResponseMessage::new(
+            200,
+            TradeRequestType::OkexCancelUMOrder as u32,
+            crate::common::exchange::Exchange::Okex as u32,
+            123,
+            51400,
+            0,
+            0,
+        );
+        assert!(okx_cancel.is_cancel_request());
+        assert!(!okx_cancel.is_open_rejected());
     }
 }
 

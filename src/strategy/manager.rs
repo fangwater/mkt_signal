@@ -1,5 +1,6 @@
 use crate::common::time_util::get_timestamp_us;
 use crate::signal::trade_signal::TradeSignal;
+use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::{
     order_update::OrderUpdate, trade_engine_response::TradeEngineResponse,
     trade_update::TradeUpdate,
@@ -19,7 +20,8 @@ pub trait Strategy: ForceCloseControl {
     fn handle_signal_with_record(&mut self, signal: &TradeSignal);
     fn apply_order_update_with_record(&mut self, update: &dyn OrderUpdate);
     fn apply_trade_update_with_record(&mut self, trade: &dyn TradeUpdate);
-    fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
+    fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse);
+    fn apply_query_engine_response(&mut self, _response: &dyn QueryEngineResponse) {}
     fn handle_period_clock(&mut self, current_tp: i64);
     fn is_active(&self) -> bool;
     fn symbol(&self) -> Option<&str>;
@@ -188,6 +190,16 @@ impl StrategyManager {
             }
         }
         inspected
+    }
+
+    pub fn apply_query_engine_response(
+        &mut self,
+        strategy_id: i32,
+        response: &dyn QueryEngineResponse,
+    ) {
+        if let Some(strategy) = self.strategies.get_mut(&strategy_id) {
+            strategy.apply_query_engine_response(response);
+        }
     }
 
     /// 基于当前时间戳生成策略 ID

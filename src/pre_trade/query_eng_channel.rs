@@ -16,6 +16,10 @@ use crate::common::ipc_service_name::build_service_name;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::signal::common::TradingVenue;
 use crate::strategy::query_engine_response::{QueryEngineResponse, QueryEngineResponseMessage};
+use crate::trade_engine::query_parsers::compact_order::{
+    CompactOrderQueryResp, COMPACT_ORDER_QUERY_RESP_LEN,
+};
+use crate::trade_engine::query_request::QueryRequestType;
 
 thread_local! {
     static QUERY_ENG_HUB: OnceCell<QueryEngHub> = OnceCell::new();
@@ -256,6 +260,76 @@ impl QueryEngChannel {
                                         }
                                     }
                                     _ => {}
+                                }
+                            }
+
+                            if let Ok(req_type) = QueryRequestType::try_from(resp.req_type()) {
+                                if matches!(
+                                    req_type,
+                                    QueryRequestType::BinanceMarginQuery
+                                        | QueryRequestType::BinanceUMQuery
+                                        | QueryRequestType::OkexMarginQuery
+                                        | QueryRequestType::OkexUMQuery
+                                ) {
+                                    let client_order_id = resp.client_query_id();
+                                    let body = resp.body_bytes().as_ref();
+                                    let actual_len = body
+                                        .iter()
+                                        .rposition(|&b| b != 0)
+                                        .map(|pos| pos + 1)
+                                        .unwrap_or(0);
+                                    let slice = &body[..actual_len];
+
+                                    if slice.first().copied() != Some(b'{')
+                                        && slice.first().copied() != Some(b'[')
+                                        && slice.len() >= COMPACT_ORDER_QUERY_RESP_LEN
+                                    {
+                                        if let Ok(parsed) =
+                                            CompactOrderQueryResp::from_bytes_prefix(slice)
+                                        {
+                                            let mc = MonitorChannel::instance();
+                                            let order_mgr = mc.order_manager();
+                                            let _ = order_mgr.borrow_mut().update(
+                                                client_order_id,
+                                                |order| {
+                                                    order.cumulative_filled_quantity =
+                                                        parsed.executed_qty;
+                                                    order.set_exchange_order_id(parsed.order_id);
+                                                    if let Some(st) = crate::pre_trade::order_manager::OrderExecutionStatus::from_u8(parsed.status_u8) {
+                                                        order.status = st;
+                                                    }
+                                                    let ts_us = parsed.update_time_ms.saturating_mul(1_000);
+                                                    if ts_us > 0 {
+                                                        match order.status {
+                                                            crate::pre_trade::order_manager::OrderExecutionStatus::Create => {
+                                                                order.set_create_time(ts_us);
+                                                            }
+                                                            crate::pre_trade::order_manager::OrderExecutionStatus::Filled => {
+                                                                order.set_filled_time(ts_us);
+                                                                order.set_end_time(ts_us);
+                                                            }
+                                                            crate::pre_trade::order_manager::OrderExecutionStatus::Cancelled
+                                                            | crate::pre_trade::order_manager::OrderExecutionStatus::Rejected => {
+                                                                order.set_end_time(ts_us);
+                                                            }
+                                                            crate::pre_trade::order_manager::OrderExecutionStatus::Commit => {}
+                                                        }
+                                                    }
+                                                },
+                                            );
+
+                                            let strategy_id = (client_order_id >> 32) as i32;
+                                            mc.strategy_mgr()
+                                                .borrow_mut()
+                                                .apply_query_engine_response(strategy_id, &resp);
+                                        }
+                                    } else {
+                                        let strategy_id = (client_order_id >> 32) as i32;
+                                        MonitorChannel::instance()
+                                            .strategy_mgr()
+                                            .borrow_mut()
+                                            .apply_query_engine_response(strategy_id, &resp);
+                                    }
                                 }
                             }
                             debug!(
