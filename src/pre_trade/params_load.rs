@@ -50,6 +50,13 @@ impl PreTradeParamsLoader {
     pub async fn load_from_redis(&self, redis: &RedisSettings) -> Result<()> {
         let mut client = RedisClient::connect(redis.clone()).await?;
         let hash_map = client.hgetall_map(REDIS_KEY_RISK_PARAMS).await?;
+        if hash_map.is_empty() {
+            anyhow::bail!(
+                "risk params hash not found or empty: key='{}' (prefix={:?})",
+                REDIS_KEY_RISK_PARAMS,
+                redis.prefix.as_deref()
+            );
+        }
 
         let parse_f64 =
             |k: &str| -> Option<f64> { hash_map.get(k).and_then(|v| v.parse::<f64>().ok()) };

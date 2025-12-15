@@ -1701,12 +1701,26 @@ impl HedgeArbStrategy {
                     }
                 }
             }
-            OrderExecutionStatus::Rejected | OrderExecutionStatus::Commit => {
-                self.apply_parsed_order_query_updates(&order, parsed, reason);
+            OrderExecutionStatus::Rejected => {
+                // 如果 query 返回 rejected，说明订单本身已被拒绝（不是撤单缺回报），无法再推进后续流程，直接关闭策略。
+                error!(
+                    "HedgeArbStrategy: strategy_id={} open_leg query shows rejected (close): client_order_id={} reason={:?}",
+                    self.strategy_id, client_order_id, reason
+                );
+                self.alive_flag = false;
+            }
+            OrderExecutionStatus::Commit => {
+                // Commit 是本地状态，query 不应该返回该状态；视为异常。
+                error!(
+                    "HedgeArbStrategy: strategy_id={} open_leg query shows commit(unexpected, close): client_order_id={} reason={:?}",
+                    self.strategy_id, client_order_id, reason
+                );
+                self.alive_flag = false;
             }
         }
     }
 
+    //通过 order query 的结果，补充traade/order update，来推进strategy逻辑
     fn handle_hedge_leg_query_result(
         &mut self,
         _response: &dyn QueryEngineResponse,
@@ -1733,7 +1747,63 @@ impl HedgeArbStrategy {
             return;
         };
 
-        self.apply_parsed_order_query_updates(&order, parsed, reason);
+        let Some(st) = OrderExecutionStatus::from_u8(parsed.status_u8) else {
+            warn!(
+                "HedgeArbStrategy: strategy_id={} hedge_leg query invalid status_u8={} (close): client_order_id={} reason={:?}",
+                self.strategy_id, parsed.status_u8, client_order_id, reason
+            );
+            self.alive_flag = false;
+            return;
+        };
+
+        match st {
+            OrderExecutionStatus::Filled | OrderExecutionStatus::Cancelled => {
+                self.apply_parsed_order_query_updates(&order, parsed, reason);
+            }
+            OrderExecutionStatus::Create => {
+                // 订单仍处于可撤销状态：重发撤单请求
+                let exchange = order.venue.trade_engine_exchange();
+                match order.get_order_cancel_bytes() {
+                    Ok(cancel_bytes) => {
+                        if let Err(e) = TradeEngHub::publish_order_request(exchange, &cancel_bytes)
+                        {
+                            warn!(
+                                "HedgeArbStrategy: strategy_id={} hedge_leg re-cancel publish failed: exchange={} client_order_id={} err={}",
+                                self.strategy_id, exchange, client_order_id, e
+                            );
+                        } else {
+                            info!(
+                                "HedgeArbStrategy: strategy_id={} hedge_leg re-cancel sent: exchange={} client_order_id={} reason={:?}",
+                                self.strategy_id, exchange, client_order_id, reason
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "HedgeArbStrategy: strategy_id={} hedge_leg get cancel bytes failed: client_order_id={} err={}",
+                            self.strategy_id, client_order_id, e
+                        );
+                    }
+                }
+            }
+            OrderExecutionStatus::Rejected => {
+                // 如果 query 返回 rejected，说明订单本身可能未挂上（等价对冲侧 open_failed），清理后重试对冲。
+                warn!(
+                    "HedgeArbStrategy: strategy_id={} hedge_leg query shows rejected (treat as open_failed): client_order_id={} reason={:?}",
+                    self.strategy_id, client_order_id, reason
+                );
+                self.cleanup_failed_hedge_order(client_order_id);
+                let base_pending_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
+                self.try_resend_hedge_after_open_failed(base_pending_qty, "rejected");
+            }
+            OrderExecutionStatus::Commit => {
+                warn!(
+                    "HedgeArbStrategy: strategy_id={} hedge_leg query shows commit(unexpected, close): client_order_id={} reason={:?}",
+                    self.strategy_id, client_order_id, reason
+                );
+                self.alive_flag = false;
+            }
+        }
     }
 
     fn handle_open_leg_open_failed(
@@ -1827,6 +1897,8 @@ impl HedgeArbStrategy {
         code_desc: &str,
         client_order_id: i64,
     ) {
+        //对重新报单失败的原因进行分类
+        //1、post only rejected是正常的，因为盘口出现穿价是正常情况，再次报单即可
         let is_post_only_rejected = response.is_post_only_rejected();
         let is_price_limit_rejected = response.is_price_limit_rejected();
 
@@ -1840,6 +1912,7 @@ impl HedgeArbStrategy {
 
         // 对冲侧报单失败：无论原因，都要继续对冲（不关闭策略），并让上游 cooldown/限频机制接管。
         if reason == "other" {
+            // 仅对非post only拒单的情况打印error日志，之后检索error日志，判断为什么会对冲失
             error!(
                 "HedgeArbStrategy: strategy_id={} hedge_leg open_failed(retry): req_type={} status={} code={}({}) client_order_id={}",
                 self.strategy_id,
@@ -1861,12 +1934,13 @@ impl HedgeArbStrategy {
                 client_order_id
             );
         }
-
+        //既然要撤单再报单，旧的不要了，没有作用了
         self.cleanup_failed_hedge_order(client_order_id);
         let base_pending_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
         self.try_resend_hedge_after_open_failed(base_pending_qty, reason);
     }
 
+    // 撤单失败的处理逻辑：通过rest api查询订单状态，补发order/trade update
     fn handle_hedge_leg_cancel_failed(
         &mut self,
         response: &dyn TradeEngineResponse,

@@ -74,15 +74,26 @@ async fn main() -> Result<()> {
             info!("Initializing PreTradeParamsLoader singleton...");
 
             // 使用默认 Redis 设置（127.0.0.1:6379/0）
-            let redis_settings = RedisSettings::default();
+            // Redis 风控参数按 open/hedge 实例隔离：<open>:<hedge>:fr_pre_trade_params
+            let mut redis_settings = RedisSettings::default();
+            redis_settings.prefix =
+                Some(format!("{}:{}:", open_venue.as_str(), hedge_venue.as_str()));
+            info!(
+                "pre_trade redis key prefix={:?}",
+                redis_settings.prefix.as_deref()
+            );
 
             let loader = PreTradeParamsLoader::instance();
-            if let Err(err) = loader.load_from_redis(&redis_settings).await {
-                warn!("Failed to load risk params from Redis: {:#}", err);
-                warn!("Using default parameters");
-            } else {
-                info!("Risk parameters loaded successfully");
-            }
+            loader
+                .load_from_redis(&redis_settings)
+                .await
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "Failed to load pre-trade risk params from Redis (open={:?} hedge={:?}): {err:#}",
+                        open_venue, hedge_venue
+                    )
+                });
+            info!("Risk parameters loaded successfully");
 
             // 打印风控参数三线表
             loader.print_params_table();

@@ -5,13 +5,12 @@
 将 Funding Rate Pre-Trade 风控参数同步到 Redis 并打印。
 
 写入 Redis Hash:
-  `fr_pre_trade_params` - 风控参数（max_pos_u, max_leverage等）
+  `<open>:<hedge>:fr_pre_trade_params` - 风控参数（max_pos_u, max_leverage等）
 
 同步完成后自动打印所有参数。
 
 示例：
-  python scripts/sync_fr_risk_params.py
-  python scripts/sync_fr_risk_params.py --redis-url redis://:pwd@127.0.0.1:6379/0
+  python scripts/sync_fr_risk_params.py --open-venue binance-margin --hedge-venue binance-futures
 """
 
 from __future__ import annotations
@@ -30,6 +29,30 @@ def try_import_redis():
         return None
 
 
+EXCHANGE_DEFAULTS = {
+    "binance": ("binance-margin", "binance-futures"),
+    "okex": ("okex-margin", "okex-futures"),
+    "bybit": ("bybit-margin", "bybit-futures"),
+    "bitget": ("bitget-margin", "bitget-futures"),
+    "gate": ("gate-margin", "gate-futures"),
+}
+
+
+def infer_venues_from_cwd():
+    """从当前目录名推断 open/hedge（如 okex_fr_trade -> okex-margin/okex-futures）"""
+    from pathlib import Path
+
+    name = Path.cwd().name.lower()
+    candidates = [name]
+    if "_" in name:
+        candidates.append(name.split("_", 1)[0])
+    for cand in candidates:
+        for ex, pair in EXCHANGE_DEFAULTS.items():
+            if cand.startswith(ex):
+                return pair
+    return None
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Sync Funding Rate pre-trade risk params to Redis")
     p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
@@ -37,7 +60,25 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
     p.add_argument("--db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
     p.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
-    return p.parse_args()
+    p.add_argument("--open-venue", default=os.environ.get("OPEN_VENUE"))
+    p.add_argument("--hedge-venue", default=os.environ.get("HEDGE_VENUE"))
+    args = p.parse_args()
+
+    open_venue = args.open_venue
+    hedge_venue = args.hedge_venue
+    if not open_venue and not hedge_venue:
+        if inferred := infer_venues_from_cwd():
+            open_venue, hedge_venue = inferred
+            print(f"[INFO] 未提供 open/hedge，基于目录推断: open={open_venue}, hedge={hedge_venue}")
+
+    if not open_venue or not hedge_venue:
+        p.error(
+            "需要 --open-venue 与 --hedge-venue，或在目录名包含 <exchange> 前缀（如 okex_fr_trade）以自动推断"
+        )
+
+    args.open_venue = open_venue
+    args.hedge_venue = hedge_venue
+    return args
 
 
 # ========== 风控参数配置 ==========
@@ -70,10 +111,15 @@ PARAM_COMMENTS: Dict[str, str] = {
     "max_pending_limit_orders": "最大挂单数",
 }
 
+def build_risk_params_key(open_venue: str | None, hedge_venue: str | None) -> str:
+    if not open_venue or not hedge_venue:
+        raise ValueError("missing open/hedge venue")
+    return f"{open_venue}:{hedge_venue}:fr_pre_trade_params"
 
-def sync_risk_params(rds) -> int:
+
+def sync_risk_params(rds, open_venue: str | None, hedge_venue: str | None) -> int:
     """同步风控参数到 Redis Hash"""
-    key = "fr_pre_trade_params"
+    key = build_risk_params_key(open_venue, hedge_venue)
     rds.hset(key, mapping=RISK_PARAMS) 
     print(f"✅ 已写入 {len(RISK_PARAMS)} 个参数到 HASH '{key}'")
     return len(RISK_PARAMS) 
@@ -110,12 +156,14 @@ def print_three_line_table(headers: List[str], rows: List[List[str]]) -> None:
     print(bot_rule)
 
 
-def print_risk_params(rds) -> None:
+def print_risk_params(rds, open_venue: str | None, hedge_venue: str | None) -> None:
     """打印风控参数"""
-    print("\n📊 风控参数 (fr_pre_trade_params):")
+    print("\n📊 风控参数:")
     print("-" * 80)
 
-    key = "fr_pre_trade_params"
+    key = build_risk_params_key(open_venue, hedge_venue)
+
+    print(f"🔑 Redis Hash Key: {key}")
     data = rds.hgetall(key)
 
     if not data:
@@ -157,13 +205,14 @@ def main() -> int:
 
     print("🔄 开始同步 Funding Rate 风控参数...")
     print(f"📍 Redis: {args.host}:{args.port}/{args.db}")
+    print(f"📍 pretrade open={args.open_venue} hedge={args.hedge_venue}")
     print()
 
     # 同步参数
-    sync_risk_params(rds)
+    sync_risk_params(rds, args.open_venue, args.hedge_venue)
 
     # 打印结果
-    print_risk_params(rds)
+    print_risk_params(rds, args.open_venue, args.hedge_venue)
 
     print("\n✅ 同步完成！")
     return 0
