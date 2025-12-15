@@ -1503,6 +1503,9 @@ impl HedgeArbStrategy {
         if TimeInForce::from_u8(parsed.time_in_force_u8).is_none() {
             return None;
         }
+        if parsed.trade_id < 0 {
+            return None;
+        }
         if parsed.update_time_ms < 0 {
             return None;
         }
@@ -1530,13 +1533,14 @@ impl HedgeArbStrategy {
         let order_id = parsed.order_id;
         let tif = TimeInForce::from_u8(parsed.time_in_force_u8).unwrap_or(TimeInForce::GTC);
 
+        // query结果里包含的executed qty，用作trade update
         if parsed.executed_qty > 0.0 {
             let status = if parsed.status_u8 == OrderExecutionStatus::Filled.to_u8() {
                 Some(OrderStatus::Filled)
             } else {
                 Some(OrderStatus::PartiallyFilled)
             };
-            let trade_id = parsed.update_time_ms.max(1);
+            let trade_id = parsed.trade_id;
             let trade = OrderQueryTradeUpdate::new(
                 order,
                 order_id,

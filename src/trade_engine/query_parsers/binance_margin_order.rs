@@ -40,6 +40,7 @@ pub fn parse_binance_margin_order_query_json(json: &str) -> Option<BinanceUmOrde
         status_u8: status_to_u8(parsed.status.as_str()),
         update_time_ms: parsed.update_time_ms,
         time_in_force_u8: tif_u8,
+        trade_id: 0,
     })
 }
 

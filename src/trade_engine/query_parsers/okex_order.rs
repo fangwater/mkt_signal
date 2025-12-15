@@ -22,6 +22,8 @@ struct OkexOrderQueryItem {
     ord_type: String,
     #[serde(default, rename = "state")]
     state: String,
+    #[serde(default, rename = "tradeId")]
+    trade_id: String,
     #[serde(default, rename = "uTime")]
     u_time: String,
 }
@@ -65,6 +67,7 @@ pub fn parse_okex_order_query_json(json: &str) -> Option<BinanceUmOrderQueryResp
         status_u8: status_to_u8(first.state.as_str()),
         update_time_ms: parse_i64_str(first.u_time.as_str()),
         time_in_force_u8: tif_to_u8(first.ord_type.as_str()),
+        trade_id: parse_i64_str(first.trade_id.as_str()),
     })
 }
 
@@ -81,6 +84,7 @@ mod tests {
                 "ordId": "680800019749904384",
                 "ordType": "market",
                 "state": "filled",
+                "tradeId": "744876980",
                 "uTime": "1708587373362"
             }],
             "msg": ""
@@ -91,5 +95,6 @@ mod tests {
         assert_eq!(parsed.status_u8, OrderExecutionStatus::Filled.to_u8());
         assert_eq!(parsed.update_time_ms, 1708587373362);
         assert_eq!(parsed.time_in_force_u8, TimeInForce::GTC.to_u8());
+        assert_eq!(parsed.trade_id, 744876980);
     }
 }
