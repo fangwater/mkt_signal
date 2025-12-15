@@ -19,8 +19,8 @@ impl PreTrade {
         let resample_interval = std::time::Duration::from_secs(3);
         let mut next_resample = std::time::Instant::now() + resample_interval;
 
-        // 提升周期检查频率到 100ms，使策略状态响应更及时
-        let mut ticker = tokio::time::interval(Duration::from_millis(100));
+        // 周期检查频率设为 200ms，在响应及时性与 CPU 开销间做平衡
+        let mut ticker = tokio::time::interval(Duration::from_millis(200));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
