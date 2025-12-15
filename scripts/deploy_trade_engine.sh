@@ -5,21 +5,43 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN_NAME="trade_engine"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 
-# 解析参数
-ENV_TYPE="${1:-trade}"
-case "$ENV_TYPE" in
-    trade)
-        TARGET_DIR="$HOME/fr_trade"
-        ;;
-    test)
-        TARGET_DIR="$HOME/fr_test"
-        ;;
-    *)
-        echo "[ERROR] 未知环境类型: $ENV_TYPE"
-        echo "用法: $0 [trade|test]"
+# 参数解析
+ENV_TYPE="trade"
+EXCHANGE="binance"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    trade|test)
+      ENV_TYPE="$1"
+      shift
+      ;;
+    --exchange)
+      EXCHANGE="${2:-}"
+      if [[ -z "$EXCHANGE" ]]; then
+        echo "[ERROR] --exchange 需要一个值"
         exit 1
-        ;;
+      fi
+      shift 2
+      ;;
+    *)
+      echo "[ERROR] 未知参数: $1"
+      echo "用法: $0 [trade|test] [--exchange binance|okex|bybit|bitget|gate]"
+      exit 1
+      ;;
+  esac
+done
+
+# 规范化为小写
+EXCHANGE="$(echo "$EXCHANGE" | tr 'A-Z' 'a-z')"
+case "$EXCHANGE" in
+  binance|okex|bybit|bitget|gate)
+    ;;
+  *)
+    echo "[ERROR] 不支持的 exchange: $EXCHANGE (支持: binance/okex/bybit/bitget/gate)"
+    exit 1
+    ;;
 esac
+
+TARGET_DIR="$HOME/${EXCHANGE}_fr_${ENV_TYPE}"
 
 echo "[INFO] 构建 $BIN_NAME (release)"
 cargo build --release --bin "$BIN_NAME"
@@ -32,6 +54,10 @@ chmod +x "$TARGET_DIR/$BIN_NAME"
 
 # 部署配置文件
 echo "[INFO] 部署配置文件到 $TARGET_DIR/config"
-cp "$ROOT_DIR/config/trade_engine.toml" "$TARGET_DIR/config/"
+if [[ -f "$ROOT_DIR/config/trade_engine.toml" ]]; then
+  cp "$ROOT_DIR/config/trade_engine.toml" "$TARGET_DIR/config/"
+else
+  echo "[WARN] 未找到 $ROOT_DIR/config/trade_engine.toml，跳过"
+fi
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"
