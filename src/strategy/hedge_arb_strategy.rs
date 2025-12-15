@@ -4,7 +4,7 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderType, Side};
 use crate::pre_trade::{PersistChannel, SignalChannel, TradeEngHub};
 use crate::signal::cancel_signal::ArbCancelCtx;
-use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TradingVenue};
+use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue};
 use crate::signal::hedge_signal::ArbHedgeCtx;
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::record::SignalRecordMessage;
@@ -1500,6 +1500,9 @@ impl HedgeArbStrategy {
         {
             return None;
         }
+        if TimeInForce::from_u8(parsed.time_in_force_u8).is_none() {
+            return None;
+        }
         if parsed.update_time_ms < 0 {
             return None;
         }
@@ -1515,14 +1518,17 @@ impl HedgeArbStrategy {
         Some(parsed)
     }
 
+    //通过 order query 的结果，补充traade/order update，来推进strategy逻辑
     fn apply_parsed_order_query_updates(
         &mut self,
         order: &crate::pre_trade::order_manager::Order,
         parsed: CompactOrderQueryResp,
         reason: PendingOrderQueryReason,
     ) {
+        // query里包含update time，用作event time
         let event_time_us = parsed.update_time_ms.saturating_mul(1_000);
         let order_id = parsed.order_id;
+        let tif = TimeInForce::from_u8(parsed.time_in_force_u8).unwrap_or(TimeInForce::GTC);
 
         if parsed.executed_qty > 0.0 {
             let status = if parsed.status_u8 == OrderExecutionStatus::Filled.to_u8() {
@@ -1551,6 +1557,7 @@ impl HedgeArbStrategy {
                 OrderStatus::New,
                 ExecutionType::New,
                 parsed.executed_qty,
+                tif,
             );
             self.apply_order_update_with_record(&upd);
         } else if status_u8 == OrderExecutionStatus::Cancelled.to_u8() {
@@ -1561,18 +1568,18 @@ impl HedgeArbStrategy {
                 OrderStatus::Canceled,
                 ExecutionType::Canceled,
                 parsed.executed_qty,
+                tif,
             );
             self.apply_order_update_with_record(&upd);
         } else if status_u8 == OrderExecutionStatus::Rejected.to_u8() {
-            let upd = OrderQueryOrderUpdate::new(
-                order,
+            error!(
+                "HedgeArbStrategy: strategy_id={} query_resp rejected: client_order_id={} order_id={} exec_qty={:.8} reason={:?}",
+                self.strategy_id,
+                order.client_order_id,
                 order_id,
-                event_time_us,
-                OrderStatus::Expired,
-                ExecutionType::Expired,
                 parsed.executed_qty,
+                reason
             );
-            self.apply_order_update_with_record(&upd);
         }
 
         info!(
@@ -1591,33 +1598,109 @@ impl HedgeArbStrategy {
         _response: &dyn QueryEngineResponse,
         client_order_id: i64,
         reason: PendingOrderQueryReason,
-        parsed: CompactOrderQueryResp,
+        parsed: Option<CompactOrderQueryResp>,
     ) {
-        let order_mgr: std::rc::Rc<std::cell::RefCell<crate::pre_trade::order_manager::OrderManager>> = MonitorChannel::instance().order_manager();
+        // 只有开仓订单撤单失败会走到这个rest-api对应的query分支
+        //
+        // 目前考虑到，造成撤单失败的原因包括:
+        // 0、订单挂单就失败了，这种情况下本地可以直接orderid不存在，无需处理。
+        // 1、完全成交，但漏掉了订单的成交推送，此时订单已经不存在，无法撤单。
+        // 2、开仓侧已经cancel过了，但丢失了cancel的回报。因此无法推动后续的对冲执行。
+        // 3、rest api因为网络、频率限制等原因出错。本质上订单处于partially_filled等，可以撤销的状态
+
+        if reason != PendingOrderQueryReason::OpenLegCancelFailed {
+            error!(
+                "HedgeArbStrategy: strategy_id={} open_leg query_resp unexpected reason={:?} client_order_id={}",
+                self.strategy_id, reason, client_order_id
+            );
+        }
+
+        // 先拿到本地订单（用于构造撤单请求、以及补发 order/trade update）。
+        let order_mgr = MonitorChannel::instance().order_manager();
         let Some(order) = order_mgr.borrow().get(client_order_id) else {
             warn!(
                 "HedgeArbStrategy: strategy_id={} open_leg query_resp but order missing: client_order_id={} reason={:?}",
                 self.strategy_id, client_order_id, reason
             );
+            //如果本地订单拿不到，说明也是开仓就失败了，不处理后续逻辑
             self.alive_flag = false;
             return;
         };
-        // 只有开仓订单撤单失败会走到这个rest-api对应的query分支
-        // 目前考虑到，造成撤单失败的原因包括:
-        // 1、完全成交，但ß是漏掉了订单的成交推送，此时订单已经不存在，无法撤单。
-        // 2、开仓侧已经cancel过了，但丢失了cancel的回报。因此无法推动后续的对冲执行。
-        // 3、订单挂单就失败了，这种情况下本地可以直接orderid不存在，无需处理。
-        // 4、rest api因为网络、频率限制等原因出错。
 
-        // 区分处理
-        // 1，2 => 使用rest api查询订单状态。判断订单状态。
-        // (1)查询到trade，增加一个trade update。补充成交信息。然后触发对冲。
-        // (2)查询到cancel，增加一个order update。补充cancel信息，然后触发对冲。
-        // 2 => 直接关闭strategy
-        // 3 => 重新撤单
+        // 这里已经使用rest api查询订单状态。首先要判断属于1、2、3的哪一个类型， 0就不处理
+        //
+        // 1、查看query的状态，如果query查询不到，请求错误，属于情况1，订单不存在，直接关闭strategy
+        let Some(parsed) = parsed else {
+            if order.exchange_order_id.unwrap_or(0) == 0
+                && order.cumulative_filled_quantity <= 1e-12
+            {
+                // 情况0：订单可能从未在交易所创建成功，本地也未记录到任何成交。
+                // 无需继续处理，直接结束策略即可。
+                warn!(
+                    "HedgeArbStrategy: strategy_id={} open_leg query failed and local order has no exchange_order_id/fills (case0): client_order_id={} reason={:?}",
+                    self.strategy_id, client_order_id, reason
+                );
+                self.alive_flag = false;
+            } else {
+                // 情况1：查询不到/请求错误 => 订单不存在（可能已经完全成交或其他原因），直接关闭 strategy。
+                warn!(
+                    "HedgeArbStrategy: strategy_id={} open_leg query failed (case1, close): client_order_id={} reason={:?}",
+                    self.strategy_id, client_order_id, reason
+                );
+                self.alive_flag = false;
+            }
+            return;
+        };
 
+        // 2、查询订单有状态，有match匹配状态，分情况处理
+        let Some(st) = OrderExecutionStatus::from_u8(parsed.status_u8) else {
+            warn!(
+                "HedgeArbStrategy: strategy_id={} open_leg query invalid status_u8={} (close): client_order_id={} reason={:?}",
+                self.strategy_id, parsed.status_u8, client_order_id, reason
+            );
+            self.alive_flag = false;
+            return;
+        };
 
-        self.apply_parsed_order_query_updates(&order, parsed, reason);
+        match st {
+            // (a)状态是filled，说明订单已经完全成交，补充成交信息，然后触发对冲。
+            OrderExecutionStatus::Filled => {
+                self.apply_parsed_order_query_updates(&order, parsed, reason);
+            }
+            // (b)状态是canceled，说明订单已经撤销成功，补充撤销信息，然后触发对冲。
+            OrderExecutionStatus::Cancelled => {
+                self.apply_parsed_order_query_updates(&order, parsed, reason);
+            }
+            // (c)状态是partially_filled等，可以撤销的状态，说明rest api出错，重新发起撤单请求。
+            OrderExecutionStatus::Create => {
+                let exchange = order.venue.trade_engine_exchange();
+                match order.get_order_cancel_bytes() {
+                    Ok(cancel_bytes) => {
+                        if let Err(e) = TradeEngHub::publish_order_request(exchange, &cancel_bytes)
+                        {
+                            warn!(
+                                "HedgeArbStrategy: strategy_id={} open_leg re-cancel publish failed: exchange={} client_order_id={} err={}",
+                                self.strategy_id, exchange, client_order_id, e
+                            );
+                        } else {
+                            info!(
+                                "HedgeArbStrategy: strategy_id={} open_leg re-cancel sent: exchange={} client_order_id={} reason={:?}",
+                                self.strategy_id, exchange, client_order_id, reason
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "HedgeArbStrategy: strategy_id={} open_leg get cancel bytes failed: client_order_id={} err={}",
+                            self.strategy_id, client_order_id, e
+                        );
+                    }
+                }
+            }
+            OrderExecutionStatus::Rejected | OrderExecutionStatus::Commit => {
+                self.apply_parsed_order_query_updates(&order, parsed, reason);
+            }
+        }
     }
 
     fn handle_hedge_leg_query_result(
@@ -1625,12 +1708,21 @@ impl HedgeArbStrategy {
         _response: &dyn QueryEngineResponse,
         client_order_id: i64,
         reason: PendingOrderQueryReason,
-        parsed: CompactOrderQueryResp,
+        parsed: Option<CompactOrderQueryResp>,
     ) {
         let order_mgr = MonitorChannel::instance().order_manager();
         let Some(order) = order_mgr.borrow().get(client_order_id) else {
             warn!(
                 "HedgeArbStrategy: strategy_id={} hedge_leg query_resp but order missing: client_order_id={} reason={:?}",
+                self.strategy_id, client_order_id, reason
+            );
+            self.alive_flag = false;
+            return;
+        };
+
+        let Some(parsed) = parsed else {
+            warn!(
+                "HedgeArbStrategy: strategy_id={} hedge_leg query failed (close): client_order_id={} reason={:?}",
                 self.strategy_id, client_order_id, reason
             );
             self.alive_flag = false;
@@ -1943,7 +2035,8 @@ impl Strategy for HedgeArbStrategy {
         }
 
         let body_bytes = response.body_bytes();
-        let Some(parsed) = Self::parse_compact_order_query_resp(body_bytes) else {
+        let parsed = Self::parse_compact_order_query_resp(body_bytes);
+        if parsed.is_none() {
             let actual_len = body
                 .iter()
                 .rposition(|&b| b != 0)
@@ -1955,16 +2048,14 @@ impl Strategy for HedgeArbStrategy {
                 String::new()
             };
             warn!(
-                "HedgeArbStrategy: strategy_id={} query_resp decode failed (treat as case3, close): client_order_id={} req_type={} reason={:?} body='{}'",
+                "HedgeArbStrategy: strategy_id={} query_resp decode failed: client_order_id={} req_type={} reason={:?} body='{}'",
                 self.strategy_id,
                 client_order_id,
                 response.req_type(),
                 reason,
                 text
             );
-            self.alive_flag = false;
-            return;
-        };
+        }
 
         match leg {
             Leg::Open => {

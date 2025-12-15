@@ -10,6 +10,7 @@ pub struct OrderQueryOrderUpdate {
     client_order_id: i64,
     side: Side,
     order_type: OrderType,
+    time_in_force: TimeInForce,
     price: f64,
     quantity: f64,
     cumulative_filled_quantity: f64,
@@ -26,6 +27,7 @@ impl OrderQueryOrderUpdate {
         status: OrderStatus,
         execution_type: ExecutionType,
         cumulative_filled_quantity: f64,
+        time_in_force: TimeInForce,
     ) -> Self {
         Self {
             event_time_us,
@@ -34,6 +36,7 @@ impl OrderQueryOrderUpdate {
             client_order_id: order.client_order_id,
             side: order.side,
             order_type: order.order_type,
+            time_in_force,
             price: order.price,
             quantity: order.quantity,
             cumulative_filled_quantity,
@@ -70,7 +73,7 @@ impl OrderUpdate for OrderQueryOrderUpdate {
     }
 
     fn time_in_force(&self) -> TimeInForce {
-        TimeInForce::GTC
+        self.time_in_force
     }
 
     fn price(&self) -> f64 {

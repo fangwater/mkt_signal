@@ -1,7 +1,7 @@
 use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
 
-pub const COMPACT_ORDER_QUERY_RESP_LEN: usize = 8 + 8 + 1 + 8;
+pub const COMPACT_ORDER_QUERY_RESP_LEN: usize = 8 + 8 + 1 + 8 + 1;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CompactOrderQueryResp {
@@ -9,6 +9,7 @@ pub struct CompactOrderQueryResp {
     pub order_id: i64,
     pub status_u8: u8,
     pub update_time_ms: i64,
+    pub time_in_force_u8: u8,
 }
 
 impl CompactOrderQueryResp {
@@ -18,6 +19,7 @@ impl CompactOrderQueryResp {
         buf.put_i64_le(self.order_id);
         buf.put_u8(self.status_u8);
         buf.put_i64_le(self.update_time_ms);
+        buf.put_u8(self.time_in_force_u8);
         buf.freeze()
     }
 
@@ -33,11 +35,13 @@ impl CompactOrderQueryResp {
         let order_id = i64::from_le_bytes(body[8..16].try_into()?);
         let status_u8 = body[16];
         let update_time_ms = i64::from_le_bytes(body[17..25].try_into()?);
+        let time_in_force_u8 = body[25];
         Ok(Self {
             executed_qty,
             order_id,
             status_u8,
             update_time_ms,
+            time_in_force_u8,
         })
     }
 }

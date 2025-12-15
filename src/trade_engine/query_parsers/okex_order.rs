@@ -1,4 +1,5 @@
 use crate::pre_trade::order_manager::OrderExecutionStatus;
+use crate::signal::common::TimeInForce;
 use serde::Deserialize;
 
 use super::binance_um_order::BinanceUmOrderQueryResp;
@@ -17,6 +18,8 @@ struct OkexOrderQueryItem {
     acc_fill_sz: String,
     #[serde(default, rename = "ordId")]
     ord_id: String,
+    #[serde(default, rename = "ordType")]
+    ord_type: String,
     #[serde(default, rename = "state")]
     state: String,
     #[serde(default, rename = "uTime")]
@@ -41,6 +44,15 @@ fn status_to_u8(state: &str) -> u8 {
     }
 }
 
+fn tif_to_u8(ord_type: &str) -> u8 {
+    match ord_type.to_ascii_lowercase().as_str() {
+        "fok" => TimeInForce::FOK.to_u8(),
+        "ioc" => TimeInForce::IOC.to_u8(),
+        "post_only" => TimeInForce::GTX.to_u8(),
+        _ => TimeInForce::GTC.to_u8(),
+    }
+}
+
 pub fn parse_okex_order_query_json(json: &str) -> Option<BinanceUmOrderQueryResp> {
     let outer: OkexOrderQueryOuter = serde_json::from_str(json).ok()?;
     if outer.code != "0" {
@@ -52,6 +64,7 @@ pub fn parse_okex_order_query_json(json: &str) -> Option<BinanceUmOrderQueryResp
         order_id: parse_i64_str(first.ord_id.as_str()),
         status_u8: status_to_u8(first.state.as_str()),
         update_time_ms: parse_i64_str(first.u_time.as_str()),
+        time_in_force_u8: tif_to_u8(first.ord_type.as_str()),
     })
 }
 
@@ -66,6 +79,7 @@ mod tests {
             "data": [{
                 "accFillSz": "0.00192834",
                 "ordId": "680800019749904384",
+                "ordType": "market",
                 "state": "filled",
                 "uTime": "1708587373362"
             }],
@@ -76,5 +90,6 @@ mod tests {
         assert_eq!(parsed.order_id, 680800019749904384);
         assert_eq!(parsed.status_u8, OrderExecutionStatus::Filled.to_u8());
         assert_eq!(parsed.update_time_ms, 1708587373362);
+        assert_eq!(parsed.time_in_force_u8, TimeInForce::GTC.to_u8());
     }
 }
