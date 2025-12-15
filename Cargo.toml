@@ -64,6 +64,10 @@ path = "src/bin/ipc_bridge.rs"
 name = "query_client"
 path = "src/bin/query_client.rs"
 
+[[bin]]
+name = "fr_manual_signal"
+path = "src/bin/frmanual_signal.rs"
+
 [dependencies]
 local-ip-address = "0.6"
 serde_yaml = "0.9"

@@ -183,6 +183,16 @@ impl SymbolList {
         Self::with_inner(|inner| inner.dump_symbols.iter().cloned().collect())
     }
 
+    /// 获取正套建仓列表
+    pub fn get_fwd_trade_symbols(&self) -> Vec<String> {
+        Self::with_inner(|inner| inner.fwd_trade_symbols.iter().cloned().collect())
+    }
+
+    /// 获取反套建仓列表
+    pub fn get_bwd_trade_symbols(&self) -> Vec<String> {
+        Self::with_inner(|inner| inner.bwd_trade_symbols.iter().cloned().collect())
+    }
+
     /// 获取 online symbols（平仓 ∪ 正套/反套建仓列表）
     pub fn get_online_symbols(&self) -> Vec<String> {
         Self::with_inner(|inner| Self::collect_online(inner))
