@@ -163,7 +163,8 @@ pub fn spawn_response_handle(
     tokio::task::spawn_local(async move {
         while let Some(out) = resp_rx.recv().await {
             let (error_code, msg) = parse_error_code_and_msg(&out.body);
-            if out.status != 200 || error_code != 0 {
+            let is_2xx = (200..300).contains(&(out.status as u32));
+            if !is_2xx || error_code != 0 {
                 if let Some(m) = msg.as_deref() {
                     warn!(
                         "trade resp error: ex={:?} type={:?} cli_ord_id={} status={} code={} msg={}",

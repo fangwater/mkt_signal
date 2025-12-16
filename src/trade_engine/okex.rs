@@ -369,9 +369,11 @@ impl ToOkexWsJson for OkexNewOrderRequest {
         let req_type = TradeRequestType::try_from(self.header.msg_type).ok()?;
         let params = self.params_struct()?;
 
-        // tdMode 映射：OkexMargin -> "cash", OkexFutures -> "cross"
+        // tdMode 映射：
+        // - OkexMargin：当前工程语义为“保证金/PM”，使用 "cross"
+        // - OkexFutures：使用 "cross"
         let td_mode = match req_type {
-            TradeRequestType::OkexNewMarginOrder => "cash",
+            TradeRequestType::OkexNewMarginOrder => "cross",
             TradeRequestType::OkexNewUMOrder => "cross",
             _ => return None,
         };

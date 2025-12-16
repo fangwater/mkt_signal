@@ -22,7 +22,7 @@ pub trait TradeEngineResponse {
     ///
     /// Note: some exchanges (e.g. OKX) may still return an application error under HTTP 200.
     fn is_http_ok(&self) -> bool {
-        self.status() == 200
+        (200..300).contains(&(self.status() as u32))
     }
 
     /// Semantic success for a request:
@@ -98,6 +98,23 @@ pub trait TradeEngineResponse {
         }
     }
 
+    /// Cancel has no further action value (re-cancel will not help); query-only is appropriate.
+    ///
+    /// - Binance: -2011 (already terminal / unknown order)
+    /// - OKX:
+    ///   - 51400: filled/canceled/not exist
+    ///   - 51410: canceling/settling (cancel already in progress)
+    ///   - 51416: cancel not supported (triggered order)
+    ///
+    /// Note: OKX 51412 is a timeout; query first, but re-cancel may still be useful if order remains live.
+    fn is_cancel_not_cancellable(&self) -> bool {
+        match self.exchange_enum() {
+            Some(Exchange::Binance) => self.error_code() == -2011,
+            Some(Exchange::Okex) => matches!(self.error_code(), 51400 | 51410 | 51416),
+            _ => false,
+        }
+    }
+
     /// Generic "aggressive price rejected" bucket used by hedge retry logic.
     fn is_aggressive_price_rejected(&self) -> bool {
         self.is_post_only_rejected() || self.is_price_limit_rejected()
@@ -114,6 +131,10 @@ mod tests {
         assert!(ok.is_http_ok());
         assert!(ok.is_request_success());
 
+        let ok_ws = TradeEngineResponseMessage::new(206, 1, 1, 123, 0, 0, 0);
+        assert!(ok_ws.is_http_ok());
+        assert!(ok_ws.is_request_success());
+
         let okx_err = TradeEngineResponseMessage::new(200, 1, 1, 123, 51006, 0, 0);
         assert!(okx_err.is_http_ok());
         assert!(!okx_err.is_request_success());
@@ -128,6 +149,7 @@ mod tests {
         let binance_ex = crate::common::exchange::Exchange::Binance as u32;
         let resp = TradeEngineResponseMessage::new(200, 1, binance_ex, 123, -2011, 0, 0);
         assert!(resp.is_cancel_rejected());
+        assert!(resp.is_cancel_not_cancellable());
     }
 
     #[test]
@@ -135,6 +157,7 @@ mod tests {
         let okx_ex = crate::common::exchange::Exchange::Okex as u32;
         let resp = TradeEngineResponseMessage::new(200, 1, okx_ex, 123, 51400, 0, 0);
         assert!(resp.is_cancel_rejected());
+        assert!(resp.is_cancel_not_cancellable());
     }
 
     #[test]
@@ -142,6 +165,7 @@ mod tests {
         let okx_ex = crate::common::exchange::Exchange::Okex as u32;
         let resp = TradeEngineResponseMessage::new(200, 1, okx_ex, 123, 51410, 0, 0);
         assert!(resp.is_cancel_rejected());
+        assert!(resp.is_cancel_not_cancellable());
     }
 
     #[test]
@@ -149,6 +173,7 @@ mod tests {
         let okx_ex = crate::common::exchange::Exchange::Okex as u32;
         let resp = TradeEngineResponseMessage::new(200, 1, okx_ex, 123, 51412, 0, 0);
         assert!(resp.is_cancel_rejected());
+        assert!(!resp.is_cancel_not_cancellable());
     }
 
     #[test]
@@ -156,6 +181,7 @@ mod tests {
         let okx_ex = crate::common::exchange::Exchange::Okex as u32;
         let resp = TradeEngineResponseMessage::new(200, 1, okx_ex, 123, 51416, 0, 0);
         assert!(resp.is_cancel_rejected());
+        assert!(resp.is_cancel_not_cancellable());
     }
 
     #[test]
