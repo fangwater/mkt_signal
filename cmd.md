@@ -7,5 +7,5 @@
 cargo run --bin fr_manual_signal -- --exchange okex --open okex-margin --hedge okex-futures --port 8911
 
 //
-
+bash scripts/deploy_setup_env_xarb.sh --open-venue okex-futures --hedge-venue binance-futures
 

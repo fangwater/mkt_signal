@@ -126,9 +126,6 @@ fi
 
 TARGET_DIR="$HOME/${ENV_NAME}"
 
-echo "[INFO] 构建 $BIN_NAME (release)"
-cargo build --release --bin "$BIN_NAME"
-
 echo "[INFO] 部署 $BIN_NAME 到 $TARGET_DIR"
 mkdir -p "$TARGET_DIR"
 
@@ -141,6 +138,7 @@ EXTRA_FILES=(
   "docs/rolling_metrics.md"
 )
 
+echo "[INFO] 同步 xarb_scripts/docs 到 $TARGET_DIR（先更新脚本，避免二进制 busy 影响脚本更新）"
 for file in "${EXTRA_FILES[@]}"; do
   SRC_PATH="$ROOT_DIR/$file"
   if [[ -f "$SRC_PATH" ]]; then
@@ -151,11 +149,26 @@ for file in "${EXTRA_FILES[@]}"; do
   fi
 done
 
-# 最后再覆盖二进制，避免 Text file busy
+echo "[INFO] 构建 $BIN_NAME (release)"
+cargo build --release --bin "$BIN_NAME"
+
+# 最后再覆盖二进制，避免 Text file busy（失败时脚本已更新）
 BIN_TMP="$TARGET_DIR/${BIN_NAME}.new"
 cp "$BIN_PATH" "$BIN_TMP"
 chmod +x "$BIN_TMP"
-mv -f "$BIN_TMP" "$TARGET_DIR/$BIN_NAME"
+move_ok="0"
+for _ in 1 2 3 4 5; do
+  if mv -f "$BIN_TMP" "$TARGET_DIR/$BIN_NAME" 2>/dev/null; then
+    move_ok="1"
+    break
+  fi
+  sleep 0.2
+done
+if [[ "$move_ok" != "1" ]]; then
+  echo "[WARN] 二进制更新失败（可能 Text file busy），但脚本已同步完成：$TARGET_DIR/xarb_scripts"
+  echo "[WARN] 请稍后重试二进制更新或先停止进程后再部署：$TARGET_DIR/$BIN_NAME"
+  exit 2
+fi
 
 echo "[INFO] 部署完成: $TARGET_DIR"
 echo "[INFO] venues: open=${OPEN_VENUE} hedge=${HEDGE_VENUE}"
