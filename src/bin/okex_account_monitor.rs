@@ -135,6 +135,8 @@ async fn main() -> Result<()> {
     // 主循环：接收事件、去重、转发
     loop {
         tokio::select! {
+            biased;
+            _ = shutdown_rx.changed() => { break; }
             Some(msg) = evt_rx.recv() => {
                 // 统一去重后再发送
                 if deduper.should_forward(&msg) {
@@ -146,10 +148,51 @@ async fn main() -> Result<()> {
             _ = stats.tick() => {
                 forwarder.log_stats();
             }
-            _ = &mut interest_poll => { warn!("interest poll task exited; continuing"); }
-            _ = &mut primary => { warn!("primary okex stream task exited; continuing"); }
-            _ = &mut secondary => { warn!("secondary okex stream task exited; continuing"); }
-            _ = shutdown_rx.changed() => { break; }
+            res = &mut interest_poll => {
+                match res {
+                    Ok(()) => warn!("interest poll task exited; restarting"),
+                    Err(e) => warn!("interest poll task join error: {}; restarting", e),
+                }
+                if !*shutdown_rx.borrow() {
+                    interest_poll = spawn_borrow_interest_poll(credentials.clone(), evt_tx.clone(), shutdown_rx.clone());
+                }
+            }
+            res = &mut primary => {
+                match res {
+                    Ok(()) => warn!("primary okex stream task exited; restarting"),
+                    Err(e) => warn!("primary okex stream task join error: {}; restarting", e),
+                }
+                if !*shutdown_rx.borrow() {
+                    primary = spawn_okex_stream_path(
+                        "primary",
+                        &ws_url,
+                        OKEX_PRIMARY_IP.to_string(),
+                        credentials.clone(),
+                        subscribe_messages.clone(),
+                        shutdown_rx.clone(),
+                        evt_tx.clone(),
+                        session_max,
+                    );
+                }
+            }
+            res = &mut secondary => {
+                match res {
+                    Ok(()) => warn!("secondary okex stream task exited; restarting"),
+                    Err(e) => warn!("secondary okex stream task join error: {}; restarting", e),
+                }
+                if !*shutdown_rx.borrow() {
+                    secondary = spawn_okex_stream_path(
+                        "secondary",
+                        &ws_url,
+                        OKEX_SECONDARY_IP.to_string(),
+                        credentials.clone(),
+                        subscribe_messages.clone(),
+                        shutdown_rx.clone(),
+                        evt_tx.clone(),
+                        session_max,
+                    );
+                }
+            }
         }
     }
 
@@ -305,8 +348,8 @@ fn log_parsed_event(msg: &Bytes) {
     let payload = msg.slice(8..8 + payload_len);
 
     if matches!(okex_event_type, BasicAccountEventType::Error) {
-        debug!(
-            "OKEx account event unknown type={} len={}",
+        info!(
+            "OKEx basic msg: type={} payload_len={}",
             u32::from_le_bytes([msg[0], msg[1], msg[2], msg[3]]),
             payload_len
         );
@@ -317,27 +360,23 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::OrderUpdate => {
             if let Ok(m) = OkexOrderMsg::from_bytes(&payload) {
                 info!(
-                    "OKEx OrderUpdate: inst={} side={} state={} cancel_src={} amend_src={} cli_id={} ord_id={} price={} qty={} cumulative_filled={} create_time={} update_time={} fill_time={}",
+                    "OKEx basic OrderUpdate: inst={} side={} state={} ord_id={} cli_id={} price={} qty={} filled={} update_time={}",
                     m.inst_id,
                     m.side,
                     OkexOrderMsg::state_to_str(m.state),
-                    OkexOrderMsg::cancel_source_to_str(m.cancel_source),
-                    OkexOrderMsg::amend_source_to_str(m.amend_source),
-                    m.cl_ord_id,
                     m.ord_id,
+                    m.cl_ord_id,
                     m.price,
                     m.quantity,
                     m.cumulative_filled_quantity,
-                    m.create_time,
-                    m.update_time,
-                    m.fill_time
+                    m.update_time
                 );
             }
         }
         BasicAccountEventType::BalanceUpdate => {
             if let Ok(m) = BasicBalanceMsg::from_bytes(&payload) {
                 info!(
-                    "OKEx BalanceUpdate: ts={} symbol={} balance={}",
+                    "OKEx basic BalanceUpdate: ts={} symbol={} balance={}",
                     m.timestamp, m.symbol, m.balance
                 );
             }
@@ -345,7 +384,7 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::PositionUpdate => {
             if let Ok(m) = BasicPositionMsg::from_bytes(&payload) {
                 info!(
-                    "OKEx PositionUpdate: ts={} inst={} side={} amt={}",
+                    "OKEx basic PositionUpdate: ts={} inst={} side={} amt={}",
                     m.timestamp, m.inst_id, m.position_side, m.position_amount
                 );
             }
@@ -353,14 +392,14 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::BorrowInterest => {
             if let Ok(m) = BasicBorrowInterestMsg::from_bytes(&payload) {
                 info!(
-                    "OKEx BorrowInterest: ts={} symbol={} borrowed={} interest={}",
+                    "OKEx basic BorrowInterest: ts={} symbol={} borrowed={} interest={}",
                     m.timestamp, m.symbol, m.borrowed, m.interest
                 );
             }
         }
         _ => {
-            debug!(
-                "OKEx account event (okex type={:?}) len={}",
+            info!(
+                "OKEx basic msg: type={:?} payload_len={}",
                 okex_event_type, payload_len
             );
         }

@@ -103,9 +103,18 @@ mod tests {
 
     #[test]
     fn test_extract_assets_from_symbol() {
-        assert_eq!(extract_assets_from_symbol("BTCUSDT"), ("BTC".to_string(), "USDT".to_string()));
-        assert_eq!(extract_assets_from_symbol("ETHUSDC"), ("ETH".to_string(), "USDC".to_string()));
-        assert_eq!(extract_assets_from_symbol("aptusdt"), ("APT".to_string(), "USDT".to_string()));
+        assert_eq!(
+            extract_assets_from_symbol("BTCUSDT"),
+            ("BTC".to_string(), "USDT".to_string())
+        );
+        assert_eq!(
+            extract_assets_from_symbol("ETHUSDC"),
+            ("ETH".to_string(), "USDC".to_string())
+        );
+        assert_eq!(
+            extract_assets_from_symbol("aptusdt"),
+            ("APT".to_string(), "USDT".to_string())
+        );
     }
 
     #[test]

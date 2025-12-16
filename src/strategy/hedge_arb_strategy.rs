@@ -439,7 +439,6 @@ impl HedgeArbStrategy {
             "HedgeArbStrategy: created hedge order with client_order_id: {} for strategy_id: {}",
             hedge_client_order_id,
             self.strategy_id
-
         );
         // 7. 将对冲订单ID添加到策略的对冲订单列表
         self.hedge_order_ids.push(hedge_order_id);

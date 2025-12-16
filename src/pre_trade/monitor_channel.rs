@@ -861,15 +861,30 @@ impl MonitorChannel {
                     .name(&NodeName::new(&node_name)?)
                     .create::<ipc::Service>()?;
 
+                // 严格启动顺序：账户流必须由 account_monitor 预先创建/发布；
+                // 若 service 不存在（account_monitor 未启动或 IPC_NAMESPACE 不一致），直接 panic 让进程退出。
                 let service = node
                     .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; ACCOUNT_PAYLOAD]>()
                     .max_publishers(1)
                     .max_subscribers(PM_MAX_SUBSCRIBERS)
                     .history_size(PM_HISTORY_SIZE)
-                    .open_or_create()?;
-                let subscriber: Subscriber<ipc::Service, [u8; ACCOUNT_PAYLOAD], ()> =
-                    service.subscriber_builder().create()?;
+                    .open()
+                    .unwrap_or_else(|err| {
+                        panic!(
+                            "打开账户 IceOryx service 失败（请先启动 account_monitor，并确认 IPC_NAMESPACE 一致）: service={} err={:?}",
+                            service_name, err
+                        )
+                    });
+                let subscriber: Subscriber<ipc::Service, [u8; ACCOUNT_PAYLOAD], ()> = service
+                    .subscriber_builder()
+                    .create()
+                    .unwrap_or_else(|err| {
+                        panic!(
+                            "创建账户 IceOryx subscriber 失败: service={} err={:?}",
+                            service_name, err
+                        )
+                    });
 
                 info!(
                     "basic account stream subscribed: service={} exchange={:?}",

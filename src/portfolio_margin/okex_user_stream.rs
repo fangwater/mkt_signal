@@ -20,7 +20,6 @@ use tokio_tungstenite::tungstenite::Message;
 /// OKX 用户数据流连接状态
 #[derive(Debug, Clone, PartialEq)]
 enum ConnectionState {
-    Connecting,
     LoggingIn,
     Subscribing,
     Running,
@@ -101,7 +100,8 @@ impl OkexUserDataConnection {
 #[async_trait]
 impl MktConnectionRunner for OkexUserDataConnection {
     async fn run_connection(&mut self) -> anyhow::Result<()> {
-        let mut state = ConnectionState::Connecting;
+        // start_ws() 已经完成底层 WS 连接并发送 login 消息，因此这里直接进入登录等待状态
+        let mut state = ConnectionState::LoggingIn;
         let mut ping_timer = Instant::now() + Duration::from_secs(25);
         let mut waiting_pong = false;
         let session_start = Instant::now();
@@ -185,10 +185,6 @@ impl MktConnectionRunner for OkexUserDataConnection {
                                     }
 
                                     match state {
-                                        ConnectionState::Connecting => {
-                                            // 不应该在这个状态收到消息
-                                            warn!("OKX: Unexpected message in Connecting state: {}", text);
-                                        }
                                         ConnectionState::LoggingIn => {
                                             // 等待登录响应
                                             if let Some(success) = Self::is_login_response(&text) {
