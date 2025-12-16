@@ -136,10 +136,16 @@ def parse_args() -> argparse.Namespace:
     )
     args = p.parse_args()
 
-    open_venue, hedge_venue = resolve_venues(
-        open_venue=args.open_venue,
-        hedge_venue=args.hedge_venue,
-    )
+    open_venue = args.open_venue
+    hedge_venue = args.hedge_venue
+    if not open_venue and not hedge_venue:
+        inferred = resolve_venues(None, None)
+        open_venue, hedge_venue = inferred
+        print(
+            f"[INFO] 未提供 open/hedge，基于目录推断: open={open_venue}, hedge={hedge_venue}",
+            file=sys.stderr,
+        )
+    open_venue, hedge_venue = resolve_venues(open_venue, hedge_venue)
     args.open_venue = open_venue
     args.hedge_venue = hedge_venue
     return args
@@ -229,6 +235,24 @@ def sort_items(data: Dict[str, Dict], sort_field: str):
     return sorted(data.items(), key=lambda item: item[0])
 
 
+def quantile_column_key(item: Dict[str, Any]) -> Tuple[Optional[str], Optional[float]]:
+    quantile = item.get("quantile")
+    label = item.get("label")
+    if isinstance(quantile, (int, float)):
+        try:
+            q = float(quantile)
+        except Exception:
+            q = None
+        if q is not None:
+            if q > 1.0:
+                q /= 100.0
+            if 0.0 <= q <= 1.0:
+                return str(int(round(q * 100))), q
+    if isinstance(label, str) and label:
+        return label, None
+    return None, None
+
+
 def collect_quantile_columns(
     data: Dict[str, Dict], quantile_key: str, display_prefix: str
 ) -> List[str]:
@@ -240,95 +264,110 @@ def collect_quantile_columns(
         for item in entries:
             if not isinstance(item, dict):
                 continue
-            q = item.get("q")
-            v = item.get("v")
-            if q is None:
+            col_name, order_key = quantile_column_key(item)
+            if col_name is None:
                 continue
-            col = f"{display_prefix}q{q}"
-            if col not in columns:
-                columns[col] = None
-            if isinstance(v, (int, float)) and math.isfinite(float(v)):
-                columns[col] = float(v)
-    def col_key(c: str) -> float:
+            full_name = f"{display_prefix}_{col_name}"
+            if full_name not in columns:
+                columns[full_name] = order_key
+
+    def sort_key(entry: Tuple[str, Optional[float]]):
+        name, order = entry
+        if order is not None:
+            return (0, int(round(order * 100)))
+        suffix = name.rpartition("_")[2]
         try:
-            return float(c.split("q", 1)[1])
-        except Exception:
-            return 0.0
-    return sorted(columns.keys(), key=col_key)
+            return (1, int(suffix))
+        except ValueError:
+            return (2, name)
+
+    return [col for col, _ in sorted(columns.items(), key=sort_key)]
+
+
+def build_quantile_map(entries: Any, display_prefix: str) -> Dict[str, Optional[float]]:
+    result: Dict[str, Optional[float]] = {}
+    if not isinstance(entries, list):
+        return result
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        col_name, _ = quantile_column_key(item)
+        if col_name is None:
+            continue
+        full_name = f"{display_prefix}_{col_name}"
+        threshold = item.get("threshold")
+        if threshold is None:
+            result[full_name] = None
+        else:
+            try:
+                result[full_name] = float(threshold)
+            except Exception:
+                result[full_name] = None
+    return result
+
+
+def build_factor_table(
+    data: Dict[str, Dict],
+    sort_field: str,
+    value_field: str,
+    quantile_key: str,
+    value_header: str,
+    quantile_prefix: str,
+    na: str,
+    tsfmt: str,
+) -> Tuple[List[str], List[List[str]]]:
+    quantile_columns = collect_quantile_columns(data, quantile_key, quantile_prefix)
+    headers = [
+        "symbol",
+        "update_tp",
+        "sample_size",
+        value_header,
+    ]
+    headers.extend(quantile_columns)
+    rows: List[List[str]] = []
+    for _field, obj in sort_items(data, sort_field):
+        base_symbol = obj.get("base_symbol") or obj.get("symbol") or "-"
+        update_str = format_ts(obj.get("update_tp"), tsfmt, na)
+        sample_str = str(obj.get("sample_size") or 0)
+        value = format_number(obj.get(value_field), na)
+        row = [
+            base_symbol,
+            update_str,
+            sample_str,
+            value,
+        ]
+        quant_map = build_quantile_map(obj.get(quantile_key), quantile_prefix)
+        for col in quantile_columns:
+            row.append(format_number(quant_map.get(col), na))
+        rows.append(row)
+    return headers, rows
+
+
+def compute_col_widths(headers: List[str], rows: List[List[str]]) -> List[int]:
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for idx, cell in enumerate(row):
+            widths[idx] = max(widths[idx], len(cell))
+    return widths
 
 
 def print_three_line_table(headers: List[str], rows: List[List[str]]) -> None:
-    widths = [len(h) for h in headers]
+    widths = compute_col_widths(headers, rows)
+
+    def fmt(row: List[str]) -> str:
+        return "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row))
+
+    header_line = fmt(headers)
+    top_rule = "=" * len(header_line)
+    mid_rule = "-" * len(header_line)
+    bot_rule = "=" * len(header_line)
+
+    print(top_rule)
+    print(header_line)
+    print(mid_rule)
     for row in rows:
-        for i, cell in enumerate(row):
-            widths[i] = max(widths[i], len(cell))
-
-    def fmt_row(cols: List[str]) -> str:
-        return " | ".join(c.ljust(widths[i]) for i, c in enumerate(cols))
-
-    top = "+-" + "-+-".join("-" * w for w in widths) + "-+"
-    mid = "+-" + "-+-".join("-" * w for w in widths) + "-+"
-    bot = "+-" + "-+-".join("-" * w for w in widths) + "-+"
-    print(top)
-    print("| " + fmt_row(headers) + " |")
-    print(mid)
-    for r in rows:
-        print("| " + fmt_row(r) + " |")
-    print(bot)
-
-
-def get_factor_value(obj: Dict[str, Any], key: str) -> Optional[float]:
-    raw = obj.get(key)
-    if raw is None:
-        return None
-    try:
-        return float(raw)
-    except Exception:
-        return None
-
-
-def build_table(
-    data: Dict[str, Dict],
-    *,
-    factor_label: str,
-    value_key: str,
-    quantile_key: str,
-    na: str,
-    tsfmt: str,
-    sort_field: str,
-) -> Tuple[List[str], List[List[str]]]:
-    q_cols = collect_quantile_columns(data, quantile_key=quantile_key, display_prefix="")
-    headers = [
-        "base_symbol",
-        "symbol_pair",
-        "update_tp",
-        "sample_size",
-        factor_label,
-        *q_cols,
-    ]
-
-    rows: List[List[str]] = []
-    for symbol_pair, obj in sort_items(data, sort_field=sort_field):
-        base_symbol = str(obj.get("base_symbol") or obj.get("symbol") or "")
-        update_tp = format_ts(obj.get("update_tp"), tsfmt, na)
-        sample_size = str(obj.get("sample_size") or obj.get("n") or na)
-        value = format_number(get_factor_value(obj, value_key), na)
-        q_map: Dict[str, str] = {c: na for c in q_cols}
-        entries = obj.get(quantile_key)
-        if isinstance(entries, list):
-            for item in entries:
-                if not isinstance(item, dict):
-                    continue
-                q = item.get("q")
-                v = item.get("v")
-                if q is None:
-                    continue
-                col = f"q{q}"
-                if col in q_map:
-                    q_map[col] = format_number(v if isinstance(v, (int, float)) else None, na)
-        rows.append([base_symbol, symbol_pair, update_tp, sample_size, value, *[q_map[c] for c in q_cols]])
-
-    return headers, rows
+        print(fmt(row))
+    print(bot_rule)
 
 
 def main() -> int:
@@ -340,50 +379,77 @@ def main() -> int:
 
     open_venue = args.open_venue.strip()
     hedge_venue = args.hedge_venue.strip()
-    key = f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
+    if not open_venue or not hedge_venue:
+        print("open-venue 和 hedge-venue 均不能为空。", file=sys.stderr)
+        return 1
+    hash_key = f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
+    print(f"📍 Reading from Redis hash: {hash_key}")
+    print(f"📍 Redis: {args.host}:{args.port}/{args.db}\n")
 
-    print(f"📍 Reading from Redis hash: {key}", file=sys.stderr)
-    print(f"📍 Redis: {args.host}:{args.port}/{args.db}", file=sys.stderr)
-    print("", file=sys.stderr)
-
-    data = read_hash(rds, key)
+    data = read_hash(rds, hash_key)
     if not data:
-        print(f"⚠️  未找到阈值或 HASH '{key}' 为空。", file=sys.stderr)
+        print(f"⚠️  Redis HASH '{hash_key}' 为空或不存在。")
         return 0
 
+    target_symbols: List[str] = []
     if args.symbol:
-        sym = args.symbol.upper()
-        data = {
-            k: v
-            for k, v in data.items()
-            if sym in str(k).upper()
-            or sym == str(v.get("base_symbol", "")).upper()
-            or sym == str(v.get("symbol", "")).upper()
-        }
+        target_symbols.append(args.symbol)
+    if args.symbols:
+        target_symbols.extend(args.symbols)
 
-    data = filter_symbols(data, args.symbols)
-    if not data:
-        print("⚠️  过滤后无任何行。", file=sys.stderr)
+    filtered = filter_symbols(data, target_symbols or None)
+    if not filtered:
+        if target_symbols:
+            joined = ", ".join(target_symbols)
+            print(f"未匹配到指定的 symbol：{joined}")
+        else:
+            print("未匹配到任何 symbol。")
         return 0
 
     tables = [
-        ("spread_rate", "spread_rate", "spread_quantiles"),
-        ("bidask_sr", "bidask_sr", "bidask_quantiles"),
-        ("askbid_sr", "askbid_sr", "askbid_quantiles"),
+        {
+            "label": "spread_rate",
+            "value_field": "spread_rate",
+            "value_header": "spread_rate",
+            "quantile_key": "spread_quantiles",
+            "quantile_prefix": "spread",
+        },
+        {
+            "label": "bidask_sr",
+            "value_field": "bidask_sr",
+            "value_header": "bidask_sr",
+            "quantile_key": "bidask_quantiles",
+            "quantile_prefix": "bidask",
+        },
+        {
+            "label": "askbid_sr",
+            "value_field": "askbid_sr",
+            "value_header": "askbid_sr",
+            "quantile_key": "askbid_quantiles",
+            "quantile_prefix": "askbid",
+        },
     ]
 
-    for label, value_key, quantile_key in tables:
-        print(f"\n📊 {label}")
-        headers, rows = build_table(
-            data,
-            factor_label=label,
-            value_key=value_key,
-            quantile_key=quantile_key,
-            na=args.na,
-            tsfmt=args.tsfmt,
-            sort_field=args.sort,
+    first = True
+    for spec in tables:
+        headers, rows = build_factor_table(
+            filtered,
+            args.sort,
+            spec["value_field"],
+            spec["quantile_key"],
+            spec["value_header"],
+            spec["quantile_prefix"],
+            args.na,
+            args.tsfmt,
         )
-        print_three_line_table(headers, rows)
+        if not first:
+            print()
+        print(f"## {spec['label']}")
+        if rows:
+            print_three_line_table(headers, rows)
+        else:
+            print("(no data)")
+        first = False
     return 0
 
 

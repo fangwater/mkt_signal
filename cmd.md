@@ -7,3 +7,5 @@
 cargo run --bin fr_manual_signal -- --exchange okex --open okex-margin --hedge okex-futures --port 8911
 
 //
+
+
