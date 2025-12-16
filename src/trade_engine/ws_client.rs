@@ -1,12 +1,11 @@
 use crate::common::exchange::Exchange;
 use crate::portfolio_margin::okex_auth::OkexCredentials;
-use crate::trade_engine::okex::OkexWsOrderResponse;
+use crate::trade_engine::okex::{OkexCancelOrderRequest, OkexNewOrderRequest, OkexWsOrderResponse};
 use crate::trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
 use crate::trade_engine::trade_response_handle::TradeExecOutcome;
 use anyhow::{anyhow, Context, Result};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
-use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use log::{debug, info, warn};
 use native_tls::TlsConnector;
@@ -24,6 +23,15 @@ use tokio_tungstenite::{
 };
 use url::Url;
 
+fn extract_okex_login_timestamp(payload: &str) -> Option<String> {
+    let v = serde_json::from_str::<Value>(payload).ok()?;
+    v.get("args")?
+        .get(0)?
+        .get("timestamp")?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
 #[derive(Debug)]
 pub enum WsCommand {
     Send(TradeRequestMsg),
@@ -39,6 +47,7 @@ pub struct TradeWsClient {
     ping_interval_ms: u64,
     max_inflight: usize,
     login_payload: Option<String>,
+    okex_creds: Option<OkexCredentials>,
     cmd_rx: mpsc::UnboundedReceiver<WsCommand>,
     resp_tx: mpsc::UnboundedSender<TradeExecOutcome>,
     pending: VecDeque<TradeRequestMsg>,
@@ -46,6 +55,7 @@ pub struct TradeWsClient {
     last_dispatched_type: TradeRequestType,
     shutdown: bool,
     should_reconnect: bool, // 标记是否需要重连（用于 notice 触发的重连）
+    last_okex_login_ts: Option<String>,
 }
 
 impl TradeWsClient {
@@ -62,23 +72,22 @@ impl TradeWsClient {
         cmd_rx: mpsc::UnboundedReceiver<WsCommand>,
         resp_tx: mpsc::UnboundedSender<TradeExecOutcome>,
     ) -> Self {
-        // 对于 OKEx，自动从环境变量生成登录 payload
-        let final_login_payload = if exchange == Exchange::Okex {
-            match OkexCredentials::from_env() {
-                Ok(creds) => {
-                    let login_msg = creds.build_login_message();
-                    info!(
-                        "OKEx credentials loaded from environment for ws client id={}",
-                        id
-                    );
-                    Some(login_msg.to_string())
-                }
-                Err(e) => {
-                    panic!("OKEx requires environment variables OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE: {}", e);
-                }
-            }
+        let (login_payload, okex_creds) = if exchange == Exchange::Okex {
+            // OKX login must use a fresh timestamp (signed) on each connect/reconnect.
+            // Keep credentials and rebuild payload in `run()`.
+            let creds = OkexCredentials::from_env().unwrap_or_else(|e| {
+                panic!(
+                    "OKEx requires environment variables OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE: {}",
+                    e
+                )
+            });
+            info!(
+                "OKEx credentials loaded from environment for ws client id={}",
+                id
+            );
+            (None, Some(creds))
         } else {
-            login_payload
+            (login_payload, None)
         };
 
         Self {
@@ -89,14 +98,19 @@ impl TradeWsClient {
             connect_timeout_ms,
             ping_interval_ms,
             max_inflight,
-            login_payload: final_login_payload,
+            login_payload,
+            okex_creds,
             cmd_rx,
             resp_tx,
             pending: VecDeque::new(),
             inflight: HashMap::new(),
-            last_dispatched_type: TradeRequestType::BinanceNewUMOrder,
+            last_dispatched_type: match exchange {
+                Exchange::Okex => TradeRequestType::OkexNewUMOrder,
+                _ => TradeRequestType::BinanceNewUMOrder,
+            },
             shutdown: false,
             should_reconnect: false,
+            last_okex_login_ts: None,
         }
     }
 
@@ -107,31 +121,108 @@ impl TradeWsClient {
     pub async fn run(mut self) {
         let mut backoff_ms = 500u64;
         while !self.shutdown {
-            match self.establish_connection().await {
-                Ok(mut ws) => {
-                    info!(
-                        "trade ws client id={} established connection to {} via {}",
-                        self.id, self.url, self.local_ip
-                    );
-                    backoff_ms = 500;
-                    if let Err(err) = self.event_loop(&mut ws).await {
-                        warn!(
-                            "trade ws client id={} connection loop exited: {}",
-                            self.id, err
-                        );
+            let local_ip = self.local_ip;
+            let url = self.url.clone();
+            let connect_timeout_ms = self.connect_timeout_ms;
+            tokio::select! {
+                biased;
+                cmd = self.cmd_rx.recv() => {
+                    match cmd {
+                        Some(WsCommand::Send(msg)) => {
+                            debug!(
+                                "trade ws client id={} queued order while disconnected client_order_id={}",
+                                self.id, msg.client_order_id
+                            );
+                            self.pending.push_back(msg);
+                            continue;
+                        }
+                        Some(WsCommand::Shutdown) | None => {
+                            info!("trade ws client id={} shutdown requested while disconnected", self.id);
+                            self.shutdown = true;
+                            break;
+                        }
                     }
                 }
-                Err(err) => {
-                    warn!(
-                        "trade ws client id={} failed to connect ({}), retrying in {} ms",
-                        self.id, err, backoff_ms
-                    );
+                res = Self::establish_connection_with(local_ip, &url, connect_timeout_ms) => {
+                    match res {
+                        Ok(mut ws) => {
+                            info!(
+                                "trade ws client id={} established connection to {} via {}",
+                                self.id, self.url, self.local_ip
+                            );
+
+                            let login_payload = if self.exchange == Exchange::Okex {
+                                self.okex_creds
+                                    .as_ref()
+                                    .map(|c| c.build_login_message().to_string())
+                            } else {
+                                self.login_payload.clone()
+                            };
+
+                            if let Some(payload) = login_payload {
+                                self.last_okex_login_ts = extract_okex_login_timestamp(&payload);
+                                let now_s = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs())
+                                    .unwrap_or(0);
+                                let now_ms = chrono::Utc::now().timestamp_millis();
+                                info!(
+                                    "trade ws client id={} sending login payload ({} bytes) okx_ts={:?} local_unix_s={} local_unix_ms={}",
+                                    self.id,
+                                    payload.len(),
+                                    self.last_okex_login_ts.as_deref(),
+                                    now_s,
+                                    now_ms
+                                );
+                                if let Err(err) = ws.send(Message::Text(payload)).await {
+                                    warn!(
+                                        "trade ws client id={} send login payload failed: {}",
+                                        self.id, err
+                                    );
+                                    let _ = ws.close(None).await;
+                                    continue;
+                                }
+                            }
+
+                            backoff_ms = 500;
+                            if let Err(err) = self.event_loop(&mut ws).await {
+                                warn!(
+                                    "trade ws client id={} connection loop exited: {}",
+                                    self.id, err
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            warn!(
+                                "trade ws client id={} failed to connect ({}), retrying in {} ms",
+                                self.id, err, backoff_ms
+                            );
+                        }
+                    }
                 }
             }
             if self.shutdown {
                 break;
             }
-            time::sleep(Duration::from_millis(backoff_ms)).await;
+            tokio::select! {
+                biased;
+                cmd = self.cmd_rx.recv() => {
+                    match cmd {
+                        Some(WsCommand::Send(msg)) => {
+                            debug!(
+                                "trade ws client id={} queued order during backoff client_order_id={}",
+                                self.id, msg.client_order_id
+                            );
+                            self.pending.push_back(msg);
+                        }
+                        Some(WsCommand::Shutdown) | None => {
+                            info!("trade ws client id={} shutdown requested during backoff", self.id);
+                            self.shutdown = true;
+                        }
+                    }
+                }
+                _ = time::sleep(Duration::from_millis(backoff_ms)) => {}
+            }
             backoff_ms = (backoff_ms * 2).min(30_000);
         }
         info!("trade ws client id={} stopped", self.id);
@@ -199,8 +290,12 @@ impl TradeWsClient {
         }
     }
 
-    async fn establish_connection(&self) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>> {
-        let url = Url::parse(&self.url).with_context(|| "invalid websocket url")?;
+    async fn establish_connection_with(
+        local_ip: IpAddr,
+        url_str: &str,
+        connect_timeout_ms: u64,
+    ) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>> {
+        let url = Url::parse(url_str).with_context(|| "invalid websocket url")?;
         let host = url
             .host_str()
             .ok_or_else(|| anyhow!("websocket url missing host"))?;
@@ -212,14 +307,14 @@ impl TradeWsClient {
             .await
             .with_context(|| format!("resolve {}:{}", host, port))?;
         let target = candidates
-            .find(|addr| match (addr, self.local_ip) {
+            .find(|addr| match (addr, local_ip) {
                 (SocketAddr::V4(_), IpAddr::V4(_)) => true,
                 (SocketAddr::V6(_), IpAddr::V6(_)) => true,
                 _ => false,
             })
-            .ok_or_else(|| anyhow!("no compatible address family for {}", self.local_ip))?;
+            .ok_or_else(|| anyhow!("no compatible address family for {}", local_ip))?;
 
-        let socket = match self.local_ip {
+        let socket = match local_ip {
             IpAddr::V4(ip) => {
                 let s = TcpSocket::new_v4()?;
                 s.bind((ip, 0).into())
@@ -234,13 +329,13 @@ impl TradeWsClient {
             }
         };
 
-        let connect_timeout = Duration::from_millis(self.connect_timeout_ms);
+        let connect_timeout = Duration::from_millis(connect_timeout_ms);
         let stream = tokio::time::timeout(connect_timeout, socket.connect(target))
             .await
-            .map_err(|_| anyhow!("connect timeout {}", self.url))?
+            .map_err(|_| anyhow!("connect timeout {}", url_str))?
             .with_context(|| format!("connect {}", target))?;
 
-        let (mut ws_stream, _resp) = if url.scheme().eq_ignore_ascii_case("wss") {
+        let (ws_stream, _resp) = if url.scheme().eq_ignore_ascii_case("wss") {
             let native = TlsConnector::builder()
                 .build()
                 .with_context(|| "build tls connector")?;
@@ -258,17 +353,6 @@ impl TradeWsClient {
                 .with_context(|| "websocket handshake (ws)")?
         };
 
-        if let Some(payload) = &self.login_payload {
-            info!(
-                "trade ws client id={} sending login payload ({} bytes)",
-                self.id,
-                payload.len()
-            );
-            ws_stream
-                .send(Message::Text(payload.clone()))
-                .await
-                .with_context(|| "send login payload")?;
-        }
         Ok(ws_stream)
     }
 
@@ -324,15 +408,60 @@ impl TradeWsClient {
     }
 
     fn build_payload(&self, msg: &TradeRequestMsg) -> Result<String> {
-        let params_b64 = BASE64_STANDARD.encode(&msg.params);
-        let payload = json!({
-            "transport": "ws",
-            "reqType": msg.req_type as u32,
-            "clientOrderId": msg.client_order_id,
-            "createTime": msg.create_time,
-            "paramsB64": params_b64,
-        });
-        serde_json::to_string(&payload).with_context(|| "serialize ws payload")
+        match self.exchange {
+            Exchange::Okex => self.build_okex_payload(msg),
+            _ => {
+                let params_b64 = BASE64_STANDARD.encode(&msg.params);
+                let payload = json!({
+                    "transport": "ws",
+                    "reqType": msg.req_type as u32,
+                    "clientOrderId": msg.client_order_id,
+                    "createTime": msg.create_time,
+                    "paramsB64": params_b64,
+                });
+                serde_json::to_string(&payload).with_context(|| "serialize ws payload")
+            }
+        }
+    }
+
+    fn build_okex_payload(&self, msg: &TradeRequestMsg) -> Result<String> {
+        use crate::trade_engine::okex::ToOkexWsJson;
+        use crate::trade_engine::trade_request::TradeRequestHeader;
+
+        let header = TradeRequestHeader {
+            msg_type: msg.req_type as u32,
+            params_length: msg.params.len() as u32,
+            create_time: msg.create_time,
+            client_order_id: msg.client_order_id,
+        };
+
+        let json_val = match msg.req_type {
+            TradeRequestType::OkexNewMarginOrder | TradeRequestType::OkexNewUMOrder => {
+                OkexNewOrderRequest {
+                    header,
+                    params: msg.params.clone(),
+                }
+                .to_ws_json()
+            }
+            TradeRequestType::OkexCancelMarginOrder | TradeRequestType::OkexCancelUMOrder => {
+                OkexCancelOrderRequest {
+                    header,
+                    params: msg.params.clone(),
+                }
+                .to_ws_json()
+            }
+            _ => None,
+        };
+
+        let payload = json_val.ok_or_else(|| {
+            anyhow!(
+                "failed to build okex ws payload (req_type={:?}, client_order_id={})",
+                msg.req_type,
+                msg.client_order_id
+            )
+        })?;
+
+        serde_json::to_string(&payload).with_context(|| "serialize okex ws payload")
     }
 
     fn track_inflight(&mut self, msg: &TradeRequestMsg) {
@@ -418,6 +547,9 @@ impl TradeWsClient {
         if self.exchange == Exchange::Okex {
             if let Ok(json_val) = serde_json::from_str::<Value>(payload) {
                 if let Some(event) = json_val.get("event").and_then(|v| v.as_str()) {
+                    // OKX will send control-plane events (login/subscribe/error/notice) with no clOrdId.
+                    // Those should not be forwarded into the trade response stream (otherwise they look like
+                    // "order responses" with client_order_id=0).
                     if event.eq_ignore_ascii_case("notice") {
                         let code = json_val
                             .get("code")
@@ -454,13 +586,91 @@ impl TradeWsClient {
                                 .get("msg")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or_default();
+                            let now_s = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0);
+                            let now_ms = chrono::Utc::now().timestamp_millis();
                             warn!(
-                                "trade ws client id={} OKEx login failed: code={}, msg={}",
-                                self.id, code, msg
+                                "trade ws client id={} OKEx login failed: code={}, msg={} okx_ts={:?} local_unix_s={} local_unix_ms={}",
+                                self.id,
+                                code,
+                                msg,
+                                self.last_okex_login_ts.as_deref(),
+                                now_s,
+                                now_ms
                             );
                         }
                         return;
                     }
+
+                    if event.eq_ignore_ascii_case("error") {
+                        let code = json_val
+                            .get("code")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
+                        let msg = json_val
+                            .get("msg")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
+                        let now_s = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        let now_ms = chrono::Utc::now().timestamp_millis();
+                        warn!(
+                            "trade ws client id={} OKEx error event: code={}, msg={} okx_ts={:?} local_unix_s={} local_unix_ms={}",
+                            self.id,
+                            code,
+                            msg,
+                            self.last_okex_login_ts.as_deref(),
+                            now_s,
+                            now_ms
+                        );
+                        if code == "60006" {
+                            warn!(
+                                "trade ws client id={} OKEx reports timestamp expired; check system clock/NTP",
+                                self.id
+                            );
+                        }
+
+                        // 从 error 事件中提取 client_order_id，发送错误响应给策略
+                        let client_order_id = json_val
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse::<i64>().ok())
+                            .unwrap_or(0);
+
+                        if client_order_id > 0 {
+                            // 解析错误码
+                            let error_code = code.parse::<i32>().unwrap_or(0);
+
+                            // 发送错误响应
+                            let outcome = TradeExecOutcome {
+                                req_type: TradeRequestType::OkexNewUMOrder, // 默认，实际类型无法确定
+                                exchange: self.exchange,
+                                client_order_id,
+                                status: 400, // Bad Request
+                                body: msg.to_string(),
+                                ip_used_weight_1m: None,
+                                order_count_1m: None,
+                            };
+
+                            let _ = self.resp_tx.send(outcome);
+                            info!(
+                                "trade ws client id={} sent error response to strategy: client_order_id={} error_code={}",
+                                self.id, client_order_id, error_code
+                            );
+                        }
+
+                        return;
+                    }
+
+                    debug!(
+                        "trade ws client id={} OKEx event ignored: event={}",
+                        self.id, event
+                    );
+                    return;
                 }
             }
         }
@@ -468,9 +678,8 @@ impl TradeWsClient {
         let (req_type, client_order_id) = self.extract_correlated(payload);
         if self.exchange == Exchange::Okex {
             if let Some(resp) = OkexWsOrderResponse::from_json_str(payload) {
-                let bin = resp.to_bytes();
                 let coid = resp.client_order_id().unwrap_or(client_order_id);
-                self.publish_okex_ws_response(coid, req_type, bin, payload);
+                self.publish_okex_ws_response(coid, req_type, &resp);
                 return;
             }
         }
@@ -566,14 +775,18 @@ impl TradeWsClient {
         &self,
         client_order_id: i64,
         req_type: TradeRequestType,
-        compact_payload: Bytes,
-        raw_text: &str,
+        resp: &OkexWsOrderResponse,
     ) {
+        // Keep the body compact (no raw JSON), but keep a parseable structure for error extraction.
         let body_payload = json!({
             "transport": "ws",
-            "encoding": "okex_bin",
-            "payload": BASE64_STANDARD.encode(&compact_payload),
-            "raw": raw_text,
+            "exchange": "okex",
+            "code": resp.code,
+            "msg": resp.msg,
+            "data": [{
+                "sCode": resp.data.as_ref().map(|d| d.status_code).unwrap_or(0),
+                "sMsg": resp.data.as_ref().map(|d| d.status_msg.as_str()).unwrap_or(""),
+            }],
             "endpointId": self.id,
             "localIp": self.local_ip.to_string(),
         })

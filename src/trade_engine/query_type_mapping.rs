@@ -16,7 +16,10 @@ impl QueryTypeMapping {
     pub fn is_okex_rest(request_type: QueryRequestType) -> bool {
         matches!(
             request_type,
-            QueryRequestType::OkexMarginQuery | QueryRequestType::OkexUMQuery
+            QueryRequestType::OkexMarginQuery
+                | QueryRequestType::OkexUMQuery
+                | QueryRequestType::OkexAccountBalanceSnapshot
+                | QueryRequestType::OkexPositionsSnapshot
         )
     }
 
@@ -29,6 +32,8 @@ impl QueryTypeMapping {
             QueryRequestType::OkexMarginQuery | QueryRequestType::OkexUMQuery => {
                 "/api/v5/trade/order"
             }
+            QueryRequestType::OkexAccountBalanceSnapshot => "/api/v5/account/balance",
+            QueryRequestType::OkexPositionsSnapshot => "/api/v5/account/positions",
         }
     }
 
@@ -39,7 +44,9 @@ impl QueryTypeMapping {
             | QueryRequestType::BinancePmBalanceSnapshot
             | QueryRequestType::BinanceUmAccountSnapshot
             | QueryRequestType::OkexMarginQuery
-            | QueryRequestType::OkexUMQuery => "GET",
+            | QueryRequestType::OkexUMQuery
+            | QueryRequestType::OkexAccountBalanceSnapshot
+            | QueryRequestType::OkexPositionsSnapshot => "GET",
         }
     }
 
@@ -50,6 +57,8 @@ impl QueryTypeMapping {
             QueryRequestType::BinancePmBalanceSnapshot => 1,
             QueryRequestType::BinanceUmAccountSnapshot => 1,
             QueryRequestType::OkexMarginQuery | QueryRequestType::OkexUMQuery => 1,
+            QueryRequestType::OkexAccountBalanceSnapshot => 1,
+            QueryRequestType::OkexPositionsSnapshot => 1,
         }
     }
 }

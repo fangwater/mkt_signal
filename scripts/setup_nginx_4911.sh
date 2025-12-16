@@ -37,6 +37,9 @@ locations() {
                 echo "忽略无效行: ${line}" >&2
                 continue
             fi
+            # nginx does not accept ws:// or wss:// in proxy_pass; WebSocket still uses HTTP(S)
+            upstream="${upstream/#ws:\/\//http:\/\/}"
+            upstream="${upstream/#wss:\/\//https:\/\/}"
             cat <<EOF
     location ${path} {
         proxy_pass ${upstream};
@@ -89,4 +92,4 @@ else
     ${SUDO} nginx -s reload
 fi
 
-echo "Nginx configured: listen ${PORT}, proxy_pass ${UPSTREAM}, server_name ${SERVER_NAME}"
+echo "Nginx configured: listen ${PORT}, mappings from ${MAPPING_FILE}, server_name ${SERVER_NAME}"

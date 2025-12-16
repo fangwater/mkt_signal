@@ -48,21 +48,62 @@ const DEFAULT_SIGNAL_CHANNEL: &str = "funding_rate_signal";
 const DEFAULT_BACKWARD_CHANNEL: &str = "signal_query";
 const ASKBID_PAYLOAD: usize = 64;
 
+fn exchange_from_venue(venue: TradingVenue) -> Exchange {
+    match venue {
+        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => Exchange::Binance,
+        TradingVenue::OkexMargin | TradingVenue::OkexFutures => Exchange::Okex,
+        TradingVenue::BybitMargin | TradingVenue::BybitFutures => Exchange::Bybit,
+        TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => Exchange::Bitget,
+        TradingVenue::GateMargin | TradingVenue::GateFutures => Exchange::Gate,
+    }
+}
+
+fn infer_default_venues(exchange: Exchange) -> (TradingVenue, TradingVenue) {
+    match exchange {
+        Exchange::Binance => (TradingVenue::BinanceMargin, TradingVenue::BinanceFutures),
+        Exchange::Okex => (TradingVenue::OkexMargin, TradingVenue::OkexFutures),
+        Exchange::Bybit => (TradingVenue::BybitMargin, TradingVenue::BybitFutures),
+        Exchange::Bitget => (TradingVenue::BitgetMargin, TradingVenue::BitgetFutures),
+        Exchange::Gate => (TradingVenue::GateMargin, TradingVenue::GateFutures),
+    }
+}
+
+fn infer_venues_from_cwd() -> Option<(TradingVenue, TradingVenue)> {
+    let cwd = std::env::current_dir().ok()?;
+    let name = cwd.file_name()?.to_string_lossy().to_ascii_lowercase();
+    let mut candidates = vec![name.as_str()];
+    let prefix = name.split('_').next().unwrap_or("");
+    if prefix != name {
+        candidates.push(prefix);
+    }
+
+    for cand in candidates {
+        for ex in [
+            Exchange::Binance,
+            Exchange::Okex,
+            Exchange::Bybit,
+            Exchange::Bitget,
+            Exchange::Gate,
+        ] {
+            if cand.starts_with(ex.as_str()) {
+                return Some(infer_default_venues(ex));
+            }
+        }
+    }
+    None
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(name = "fr_manual_signal")]
 #[command(about = "FR signal manual mock (web UI + hedge query responder)")]
-struct Args {
-    /// Exchange (used for SymbolList Redis keys)
-    #[arg(short, long)]
-    exchange: Exchange,
+struct CliArgs {
+    /// Opening venue (active leg). If omitted, inferred from CWD (e.g. okex_fr_trade).
+    #[arg(long, value_enum)]
+    open: Option<TradingVenue>,
 
-    /// Opening venue (active leg)
-    #[arg(long)]
-    open: TradingVenue,
-
-    /// Hedging venue (passive leg)
-    #[arg(long)]
-    hedge: TradingVenue,
+    /// Hedging venue (passive leg). If omitted, inferred from CWD (e.g. okex_fr_trade).
+    #[arg(long, value_enum)]
+    hedge: Option<TradingVenue>,
 
     /// Signal publish channel (same as fr_signal)
     #[arg(long, default_value = DEFAULT_SIGNAL_CHANNEL)]
@@ -98,6 +139,22 @@ struct Args {
 
     /// Hedge request seq >= threshold is considered aggressive (offset=0)
     #[arg(long, default_value_t = 6)]
+    hedge_aggressive_seq_threshold: u32,
+}
+
+#[derive(Debug, Clone)]
+struct Args {
+    exchange: Exchange,
+    open: TradingVenue,
+    hedge: TradingVenue,
+    channel: String,
+    backward_channel: String,
+    bind: String,
+    port: u16,
+    symbol_reload_secs: u64,
+    open_ttl_ms: u64,
+    mm_hedge_timeout_ms: u64,
+    hedge_price_offset: f64,
     hedge_aggressive_seq_threshold: u32,
 }
 
@@ -429,7 +486,7 @@ fn spawn_backward_query_responder(
             let service = node
                 .service_builder(&ServiceName::new(&service_path)?)
                 .publish_subscribe::<[u8; mkt_signal::common::iceoryx_publisher::SIGNAL_PAYLOAD]>()
-                .max_publishers(32)
+                .max_publishers(1)
                 .max_subscribers(32)
                 .history_size(128)
                 .subscriber_max_buffer_size(256)
@@ -950,15 +1007,17 @@ const INDEX_HTML: &str = r#"<!doctype html>
     <script>
       const $ = (id) => document.getElementById(id);
       const state = { symbols: [], selected: "" };
+      const basePath = window.location.pathname.replace(/\/$/, "");
+      const api = (path) => `${basePath}/api/${path}`;
 
       async function loadCfg() {
-        const r = await fetch("/api/config");
+        const r = await fetch(api("config"));
         const j = await r.json();
         $("cfg").textContent = `exchange=${j.exchange} open=${j.open} hedge=${j.hedge} channel=${j.signal_channel} backward=${j.backward_channel}`;
       }
 
       async function refreshStats() {
-        const r = await fetch("/api/stats");
+        const r = await fetch(api("stats"));
         const j = await r.json();
         const o = `open symbols=${j.open.symbols_cached} msgs=${j.open.msg_count} last=${j.open.last_symbol} @${j.open.last_recv_ts_us}`;
         const h = `hedge symbols=${j.hedge.symbols_cached} msgs=${j.hedge.msg_count} last=${j.hedge.last_symbol} @${j.hedge.last_recv_ts_us}`;
@@ -979,7 +1038,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
       }
 
       async function loadSymbols() {
-        const r = await fetch("/api/symbols");
+        const r = await fetch(api("symbols"));
         const j = await r.json();
         state.symbols = (j.online || []).sort();
         renderList();
@@ -988,7 +1047,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
       async function refreshQuote() {
         const sym = $("symbol").value.trim().toUpperCase();
         if (!sym) return;
-        const r = await fetch(`/api/quote?symbol=${encodeURIComponent(sym)}`);
+        const r = await fetch(`${api("quote")}?symbol=${encodeURIComponent(sym)}`);
         const j = await r.json();
         const o = j.open ? `open(${j.open.venue}) bid=${j.open.bid} ask=${j.open.ask} ts=${j.open.ts}` : "open: N/A";
         const h = j.hedge ? `hedge(${j.hedge.venue}) bid=${j.hedge.bid} ask=${j.hedge.ask} ts=${j.hedge.ts}` : "hedge: N/A";
@@ -1004,7 +1063,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
         $("resultBox").value = "";
         if (!symbol) { $("resultBox").value = "symbol is empty"; return; }
         const body = { symbol, kind, hedge_mode: hedgeMode, offset, qty };
-        const r = await fetch("/api/send", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+        const r = await fetch(api("send"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
         const text = await r.text();
         if (!r.ok) {
           $("resultBox").value = text;
@@ -1123,7 +1182,43 @@ async fn main() -> Result<()> {
     }
     env_logger::init();
 
-    let args = Args::parse();
+    let args = CliArgs::parse();
+    let (open, hedge) = match (args.open, args.hedge) {
+        (Some(open), Some(hedge)) => (open, hedge),
+        (None, None) => {
+            infer_venues_from_cwd().unwrap_or_else(|| {
+                panic!(
+                    "missing --open/--hedge and failed to infer from CWD; name the directory like '<exchange>_fr_trade' (e.g. okex_fr_trade) or pass --open/--hedge explicitly"
+                )
+            })
+        }
+        _ => {
+            anyhow::bail!("please provide both --open and --hedge, or omit both to infer from CWD")
+        }
+    };
+
+    let exchange = exchange_from_venue(open);
+    if exchange_from_venue(hedge) != exchange {
+        anyhow::bail!(
+            "open/hedge exchange mismatch: open={:?} hedge={:?}",
+            open,
+            hedge
+        );
+    }
+    let args = Args {
+        exchange,
+        open,
+        hedge,
+        channel: args.channel,
+        backward_channel: args.backward_channel,
+        bind: args.bind,
+        port: args.port,
+        symbol_reload_secs: args.symbol_reload_secs,
+        open_ttl_ms: args.open_ttl_ms,
+        mm_hedge_timeout_ms: args.mm_hedge_timeout_ms,
+        hedge_price_offset: args.hedge_price_offset,
+        hedge_aggressive_seq_threshold: args.hedge_aggressive_seq_threshold,
+    };
     let token = CancellationToken::new();
 
     let token_clone = token.clone();

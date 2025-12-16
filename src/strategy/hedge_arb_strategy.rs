@@ -2226,14 +2226,49 @@ impl Strategy for HedgeArbStrategy {
             return;
         }
 
+        let actual_len = body
+            .iter()
+            .rposition(|&b| b != 0)
+            .map(|pos| pos + 1)
+            .unwrap_or(0);
+        if actual_len == 1 && body[0] == b'E' {
+            match (leg, reason) {
+                (Leg::Open, PendingOrderQueryReason::OrderWatchdog) => {
+                    warn!(
+                        "HedgeArbStrategy: strategy_id={} open_leg order query failed (E, close): client_order_id={}",
+                        self.strategy_id, client_order_id
+                    );
+                    self.alive_flag = false;
+                    return;
+                }
+                (Leg::Hedge, PendingOrderQueryReason::OrderWatchdog) => {
+                    warn!(
+                        "HedgeArbStrategy: strategy_id={} hedge_leg order query failed (E, treat as open_failed): client_order_id={}",
+                        self.strategy_id, client_order_id
+                    );
+                    self.cleanup_failed_hedge_order(client_order_id);
+                    let base_pending_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
+                    self.try_resend_hedge_after_open_failed(base_pending_qty, "query_failed");
+                    return;
+                }
+                (Leg::Open, PendingOrderQueryReason::CancelWatchdog)
+                | (Leg::Open, PendingOrderQueryReason::OpenLegCancelFailed)
+                | (Leg::Open, PendingOrderQueryReason::HedgeLegCancelFailed) => {
+                    self.schedule_cancel_query_watchdog(client_order_id);
+                    return;
+                }
+                (Leg::Hedge, PendingOrderQueryReason::CancelWatchdog)
+                | (Leg::Hedge, PendingOrderQueryReason::OpenLegCancelFailed)
+                | (Leg::Hedge, PendingOrderQueryReason::HedgeLegCancelFailed) => {
+                    self.schedule_cancel_query_watchdog(client_order_id);
+                    return;
+                }
+            }
+        }
+
         let body_bytes = response.body_bytes();
         let parsed = Self::parse_compact_order_query_resp(body_bytes);
         if parsed.is_none() {
-            let actual_len = body
-                .iter()
-                .rposition(|&b| b != 0)
-                .map(|pos| pos + 1)
-                .unwrap_or(0);
             let text = if actual_len > 0 {
                 String::from_utf8_lossy(&body[..actual_len]).to_string()
             } else {
@@ -2246,7 +2281,7 @@ impl Strategy for HedgeArbStrategy {
                 response.req_type(),
                 reason,
                 text
-            );
+                );
         }
 
         match leg {

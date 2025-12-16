@@ -10,7 +10,107 @@ use crate::viz::resample::{
 use anyhow::Result;
 use log::debug;
 use log::{info, warn};
+use std::cell::Cell;
 use std::cell::OnceCell;
+
+fn print_exposure_table(
+    ts_ms: i64,
+    mut rows: Vec<(String, f64, f64, f64, f64)>,
+    abs_sum_usdt: f64,
+    include_header: bool,
+) {
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+
+    const FOOTER_LABEL: &str = "ABS_SUM";
+
+    let headers = [
+        "Asset",
+        "OpenQty",
+        "HedgeQty",
+        "ExposureQty",
+        "ExposureUSDT",
+        "AbsSumUSDT",
+    ];
+
+    let fmt_qty = |v: f64| format!("{:.8}", v);
+    let fmt_u = |v: f64| format!("{:.2}", v);
+
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+    for (asset, open, hedge, net, net_usdt) in &rows {
+        widths[0] = widths[0].max(asset.len());
+        widths[1] = widths[1].max(fmt_qty(*open).len());
+        widths[2] = widths[2].max(fmt_qty(*hedge).len());
+        widths[3] = widths[3].max(fmt_qty(*net).len());
+        widths[4] = widths[4].max(fmt_u(*net_usdt).len());
+    }
+    widths[0] = widths[0].max(FOOTER_LABEL.len());
+    widths[5] = widths[5].max(fmt_u(abs_sum_usdt).len());
+
+    let rule = |widths: &[usize]| -> String {
+        let mut s = String::new();
+        s.push('+');
+        for w in widths {
+            s.push_str(&"-".repeat(*w + 2));
+            s.push('+');
+        }
+        s
+    };
+
+    let fmt_row = |cols: [&str; 6], widths: &[usize]| -> String {
+        let mut out = String::new();
+        out.push('|');
+        for (i, (c, w)) in cols.iter().zip(widths.iter()).enumerate() {
+            out.push(' ');
+            if i == 0 {
+                out.push_str(&format!("{:<width$}", c, width = *w));
+            } else {
+                out.push_str(&format!("{:>width$}", c, width = *w));
+            }
+            out.push(' ');
+            out.push('|');
+        }
+        out
+    };
+
+    let ts_utc = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ts_ms)
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        .unwrap_or_else(|| "<invalid_ts_ms>".to_string());
+
+    let top_rule = rule(&widths);
+    let mid_rule = rule(&widths);
+
+    println!("\nts_utc={} (ts_ms={})", ts_utc, ts_ms);
+    println!("{top_rule}");
+    if include_header {
+        println!("{}", fmt_row(headers, &widths));
+        println!("{mid_rule}");
+    }
+    for (asset, open, hedge, net, net_usdt) in &rows {
+        println!(
+            "{}",
+            fmt_row(
+                [
+                    asset.as_str(),
+                    fmt_qty(*open).as_str(),
+                    fmt_qty(*hedge).as_str(),
+                    fmt_qty(*net).as_str(),
+                    fmt_u(*net_usdt).as_str(),
+                    "",
+                ],
+                &widths
+            )
+        );
+    }
+    println!("{mid_rule}");
+    println!(
+        "{}",
+        fmt_row(
+            [FOOTER_LABEL, "", "", "", "", fmt_u(abs_sum_usdt).as_str()],
+            &widths
+        )
+    );
+    println!("{top_rule}");
+}
 
 thread_local! {
     static RESAMPLE_CHANNEL: OnceCell<ResampleChannel> = OnceCell::new();
@@ -47,6 +147,8 @@ pub struct ResampleChannel {
     positions_pub: Option<ResamplePublisher>,
     exposure_pub: Option<ResamplePublisher>,
     risk_pub: Option<ResamplePublisher>,
+    printed_once: Cell<bool>,
+    last_printed_trade_update_seq: Cell<u64>,
 }
 
 impl ResampleChannel {
@@ -126,6 +228,8 @@ impl ResampleChannel {
             positions_pub: make_pub(positions_channel, "positions"),
             exposure_pub: make_pub(exposure_channel, "exposure"),
             risk_pub: make_pub(risk_channel, "risk"),
+            printed_once: Cell::new(false),
+            last_printed_trade_update_seq: Cell::new(0),
         }
     }
 
@@ -334,6 +438,37 @@ impl ResampleChannel {
         let (exposures, total_equity, total_abs_exposure, total_position) =
             mon.basic_state_snapshot();
 
+        {
+            let trade_seq = mon.trade_update_seq();
+            let should_print =
+                !self.printed_once.get() || trade_seq != self.last_printed_trade_update_seq.get();
+
+            let mut rows = Vec::new();
+            for (asset, &(open_qty, hedge_qty)) in &exposures {
+                let asset_upper = asset.to_ascii_uppercase();
+                if open_qty.abs() <= 1e-12 && hedge_qty.abs() <= 1e-12 {
+                    continue;
+                }
+                let net_qty = open_qty + hedge_qty;
+                let mark = if asset_upper == "USDT" {
+                    1.0
+                } else {
+                    price_snapshot
+                        .get(&format!("{}USDT", asset_upper))
+                        .map(|p| p.mark_price)
+                        .unwrap_or(0.0)
+                };
+                let net_usdt = net_qty * mark;
+                rows.push((asset_upper, open_qty, hedge_qty, net_qty, net_usdt));
+            }
+            if should_print && !rows.is_empty() {
+                let include_header = !self.printed_once.get();
+                self.printed_once.set(true);
+                self.last_printed_trade_update_seq.set(trade_seq);
+                print_exposure_table(ts_ms, rows, total_abs_exposure, include_header);
+            }
+        }
+
         let mut published = 0usize;
 
         // 发布持仓数据
@@ -392,7 +527,7 @@ impl ResampleChannel {
                     // 提取 base asset
                     let asset = extract_base_asset(&symbol).unwrap_or_else(|| symbol.clone());
                     let signed_base_qty =
-                        (pos.amount as f64) * min_qty.contract_multiplier(&symbol);
+                        (pos.amount as f64) * min_qty.contract_multiplier(&pos.inst_id);
 
                     let row = asset_map
                         .entry(asset.clone())
@@ -422,7 +557,7 @@ impl ResampleChannel {
                     // 提取 base asset
                     let asset = extract_base_asset(&symbol).unwrap_or_else(|| symbol.clone());
                     let signed_base_qty =
-                        (pos.amount as f64) * min_qty.contract_multiplier(&symbol);
+                        (pos.amount as f64) * min_qty.contract_multiplier(&pos.inst_id);
 
                     let row = asset_map
                         .entry(asset.clone())

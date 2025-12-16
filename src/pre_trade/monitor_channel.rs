@@ -173,6 +173,8 @@ struct MonitorChannelInner {
     order_manager: Rc<RefCell<OrderManager>>,
     /// 对冲残余量哈希表，key=(symbol, venue)，value=残余量
     hedge_residual_map: Rc<RefCell<HashMap<(String, TradingVenue), f64>>>,
+    /// Monotonic counter incremented when a TradeUpdate is received.
+    trade_update_seq: u64,
 }
 
 struct BasicState {
@@ -210,6 +212,27 @@ impl MonitorChannel {
             let inner = mc_ref.as_ref().expect("MonitorChannel not initialized");
             f(inner)
         })
+    }
+
+    fn with_inner_mut<F, R>(f: F) -> R
+    where
+        F: FnOnce(&mut MonitorChannelInner) -> R,
+    {
+        MONITOR_CHANNEL.with(|mc| {
+            let mut mc_ref = mc.borrow_mut();
+            let inner = mc_ref.as_mut().expect("MonitorChannel not initialized");
+            f(inner)
+        })
+    }
+
+    pub fn bump_trade_update_seq(&self) {
+        Self::with_inner_mut(|inner| {
+            inner.trade_update_seq = inner.trade_update_seq.saturating_add(1);
+        });
+    }
+
+    pub fn trade_update_seq(&self) -> u64 {
+        Self::with_inner(|inner| inner.trade_update_seq)
     }
 
     /// 获取指定交易场所的最小下单量表
@@ -423,6 +446,7 @@ impl MonitorChannel {
             strategy_mgr,
             order_manager: Rc::new(RefCell::new(OrderManager::new())),
             hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
+            trade_update_seq: 0,
         };
 
         MONITOR_CHANNEL.with(|mc| {
@@ -484,8 +508,8 @@ impl MonitorChannel {
                             symbol = symbol.replace("-SWAP", "").replace('-', "");
                         }
                         let asset = extract_base_asset(&symbol).unwrap_or_else(|| symbol.clone());
-                        let signed_base_qty =
-                            (pos.amount as f64) * min_qty.contract_multiplier(&symbol);
+                        let mult = min_qty.contract_multiplier(&pos.inst_id);
+                        let signed_base_qty = (pos.amount as f64) * mult;
                         if signed_base_qty.abs() <= 1e-12 {
                             continue;
                         }
@@ -522,7 +546,7 @@ impl MonitorChannel {
         }
 
         // total_equity 仍按“现货净头寸”估算：只从 margin balance 统计
-        let mut total_equity_usdt = 0.0;
+        let mut total_equity_usdt: f64 = 0.0;
         for leg in [&inner.open_leg, &inner.hedge_leg] {
             if let LegMgr::Margin { bal, .. } = leg {
                 let mgr = bal.borrow();
@@ -1361,6 +1385,10 @@ fn dispatch_order_update_generic<T>(
 ) where
     T: OrderUpdate + TradeUpdate,
 {
+    if update.execution_type() == ExecutionType::Trade {
+        MonitorChannel::instance().bump_trade_update_seq();
+    }
+
     let order_id = OrderUpdate::client_order_id(update);
     let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
     let mut matched = false;

@@ -1,9 +1,11 @@
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use log::info;
+use log::{error, info};
 use mkt_signal::common::exchange::Exchange;
 use mkt_signal::{ApiKey, TradeEngine};
 use std::net::IpAddr;
+use tokio::signal;
+use tokio_util::sync::CancellationToken;
 
 fn credential_edges(value: &str) -> (String, String, usize) {
     let trimmed = value.trim();
@@ -62,6 +64,35 @@ impl TradeEngineTarget {
             TradeEngineTarget::Bitget => "bitget",
             TradeEngineTarget::Gate => "gate",
         }
+    }
+}
+
+fn setup_signal_handlers(token: &CancellationToken) {
+    let ctrl_c = token.clone();
+    tokio::spawn(async move {
+        if let Err(e) = signal::ctrl_c().await {
+            error!("trade_engine: listen ctrl_c failed: {}", e);
+            return;
+        }
+        info!("trade_engine: received Ctrl+C");
+        ctrl_c.cancel();
+    });
+
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let term = token.clone();
+        tokio::spawn(async move {
+            match signal(SignalKind::terminate()) {
+                Ok(mut sig) => {
+                    if sig.recv().await.is_some() {
+                        info!("trade_engine: received SIGTERM");
+                        term.cancel();
+                    }
+                }
+                Err(e) => error!("trade_engine: listen SIGTERM failed: {}", e),
+            }
+        });
     }
 }
 
@@ -159,5 +190,9 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Invalid exchange name: {}", exchange_name))?;
 
     let local = tokio::task::LocalSet::new();
-    local.run_until(engine.run(exchange)).await
+    let shutdown = CancellationToken::new();
+    setup_signal_handlers(&shutdown);
+    local
+        .run_until(engine.run_with_shutdown(exchange, shutdown.clone()))
+        .await
 }

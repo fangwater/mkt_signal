@@ -3,4 +3,6 @@ pub mod binance_pm_balance_snapshot;
 pub mod binance_um_account_snapshot;
 pub mod binance_um_order;
 pub mod compact_order;
+pub mod okex_account_balance_snapshot;
 pub mod okex_order;
+pub mod okex_positions_snapshot;

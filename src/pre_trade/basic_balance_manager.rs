@@ -34,6 +34,10 @@ impl BasicBalanceManager {
         }
     }
 
+    pub fn exchange(&self) -> Exchange {
+        self.exchange
+    }
+
     /// 应用 balance 消息：覆盖当前余额，更新时间戳。
     pub fn apply_balance(&mut self, msg: &BasicBalanceMsg) {
         let symbol = msg.symbol.to_ascii_uppercase();

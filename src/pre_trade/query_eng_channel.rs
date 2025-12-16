@@ -12,6 +12,7 @@ use crate::common::basic_account_msg::{
     get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
     BasicPositionMsg,
 };
+use crate::common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::signal::common::TradingVenue;
@@ -21,9 +22,6 @@ use crate::trade_engine::query_request::QueryRequestType;
 thread_local! {
     static QUERY_ENG_HUB: OnceCell<QueryEngHub> = OnceCell::new();
 }
-
-const QUERY_REQ_PAYLOAD: usize = 4_096;
-const QUERY_RESP_PAYLOAD: usize = 64;
 
 pub struct QueryEngHub {
     channels: RefCell<HashMap<String, QueryEngChannel>>,
@@ -204,7 +202,7 @@ impl QueryEngChannel {
                     match QueryEngineResponseMessage::from_payload(payload) {
                         Ok(resp) => {
                             // Snapshot queries return basic account messages (no huge JSON body).
-                            if matches!(resp.req_type(), 6101 | 6102) {
+                            if matches!(resp.req_type(), 6101 | 6102 | 7101 | 7102) {
                                 let body = resp.body_bytes().as_ref();
                                 let event_type = get_basic_event_type(body);
 
@@ -216,12 +214,20 @@ impl QueryEngChannel {
                                 match event_type {
                                     BasicAccountEventType::BalanceUpdate => {
                                         if let Ok(m) = BasicBalanceMsg::from_bytes(body) {
-                                            if open_venue == TradingVenue::BinanceMargin {
+                                            if matches!(
+                                                open_venue,
+                                                TradingVenue::BinanceMargin
+                                                    | TradingVenue::OkexMargin
+                                            ) {
                                                 if let Some(bal) = mc.open_balance_mgr() {
                                                     bal.borrow_mut().apply_balance(&m);
                                                 }
                                             }
-                                            if hedge_venue == TradingVenue::BinanceMargin {
+                                            if matches!(
+                                                hedge_venue,
+                                                TradingVenue::BinanceMargin
+                                                    | TradingVenue::OkexMargin
+                                            ) {
                                                 if let Some(bal) = mc.hedge_balance_mgr() {
                                                     bal.borrow_mut().apply_balance(&m);
                                                 }
@@ -244,12 +250,20 @@ impl QueryEngChannel {
                                     }
                                     BasicAccountEventType::PositionUpdate => {
                                         if let Ok(m) = BasicPositionMsg::from_bytes(body) {
-                                            if open_venue == TradingVenue::BinanceFutures {
+                                            if matches!(
+                                                open_venue,
+                                                TradingVenue::BinanceFutures
+                                                    | TradingVenue::OkexFutures
+                                            ) {
                                                 if let Some((um, _)) = mc.open_um_mgr() {
                                                     um.borrow_mut().apply_position(&m);
                                                 }
                                             }
-                                            if hedge_venue == TradingVenue::BinanceFutures {
+                                            if matches!(
+                                                hedge_venue,
+                                                TradingVenue::BinanceFutures
+                                                    | TradingVenue::OkexFutures
+                                            ) {
                                                 if let Some((um, _)) = mc.hedge_um_mgr() {
                                                     um.borrow_mut().apply_position(&m);
                                                 }

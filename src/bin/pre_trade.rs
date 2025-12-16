@@ -76,8 +76,13 @@ async fn main() -> Result<()> {
             // 使用默认 Redis 设置（127.0.0.1:6379/0）
             // Redis 风控参数按 open/hedge 实例隔离：<open>:<hedge>:fr_pre_trade_params
             let mut redis_settings = RedisSettings::default();
-            redis_settings.prefix =
-                Some(format!("{}:{}:", open_venue.as_str(), hedge_venue.as_str()));
+            // 统一标准：使用 kebab-case venue slug（例如 okex-margin），与 scripts/ 运维保持一致。
+            let prefix = format!(
+                "{}:{}:",
+                open_venue.data_pub_slug(),
+                hedge_venue.data_pub_slug()
+            );
+            redis_settings.prefix = Some(prefix.clone());
             info!(
                 "pre_trade redis key prefix={:?}",
                 redis_settings.prefix.as_deref()
@@ -89,8 +94,10 @@ async fn main() -> Result<()> {
                 .await
                 .unwrap_or_else(|err| {
                     panic!(
-                        "Failed to load pre-trade risk params from Redis (open={:?} hedge={:?}): {err:#}",
-                        open_venue, hedge_venue
+                        "Failed to load pre-trade risk params from Redis (open={:?} hedge={:?}): {err:#}. expected hash key: '{}'",
+                        open_venue,
+                        hedge_venue,
+                        format!("{}fr_pre_trade_params", prefix),
                     )
                 });
             info!("Risk parameters loaded successfully");
@@ -188,12 +195,28 @@ async fn main() -> Result<()> {
                 tokio::task::spawn_local(async move {
                     let mut need_binance_balance = false;
                     let mut need_binance_um = false;
+                    let mut need_okex_balance = false;
+                    let mut need_okex_swap_positions = false;
                     for v in [open_venue, hedge_venue] {
                         match v {
                             TradingVenue::BinanceMargin => need_binance_balance = true,
                             TradingVenue::BinanceFutures => need_binance_um = true,
+                            TradingVenue::OkexMargin => need_okex_balance = true,
+                            TradingVenue::OkexFutures => need_okex_swap_positions = true,
                             _ => {}
                         }
+                    }
+
+                    if !need_binance_balance
+                        && !need_binance_um
+                        && !need_okex_balance
+                        && !need_okex_swap_positions
+                    {
+                        info!(
+                            "snapshot query skipped: venues are {:?}/{:?}; relying on account stream",
+                            open_venue, hedge_venue
+                        );
+                        return;
                     }
 
                     let mut interval = tokio::time::interval(Duration::from_secs(60));
@@ -221,10 +244,35 @@ async fn main() -> Result<()> {
                             let _ = QueryEngHub::publish_query_request("binance", &req.to_bytes());
                             info!("snapshot query sent: binance UM account snapshot");
                         }
+                        if need_okex_balance {
+                            let now = get_timestamp_us();
+                            let req = GenericQueryRequest::create(
+                                QueryRequestType::OkexAccountBalanceSnapshot,
+                                now,
+                                now,
+                                Bytes::new(),
+                            );
+                            let _ = QueryEngHub::publish_query_request("okex", &req.to_bytes());
+                            info!("snapshot query sent: okex account balance snapshot");
+                        }
+                        if need_okex_swap_positions {
+                            let now = get_timestamp_us();
+                            let req = GenericQueryRequest::create(
+                                QueryRequestType::OkexPositionsSnapshot,
+                                now,
+                                now,
+                                Bytes::from_static(b"instType=SWAP"),
+                            );
+                            let _ = QueryEngHub::publish_query_request("okex", &req.to_bytes());
+                            info!("snapshot query sent: okex positions snapshot (instType=SWAP)");
+                        }
                     };
 
                     // Run once at startup.
                     send_snapshot_queries();
+
+                    // interval.tick() returns immediately on first call; consume it to avoid a duplicate send.
+                    interval.tick().await;
 
                     // Re-run every 1 minute.
                     loop {

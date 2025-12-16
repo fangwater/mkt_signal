@@ -368,10 +368,14 @@ impl ToOkexWsJson for OkexNewOrderRequest {
     fn to_ws_json(&self) -> Option<Value> {
         let req_type = TradeRequestType::try_from(self.header.msg_type).ok()?;
         let params = self.params_struct()?;
+
+        // tdMode 映射：OkexMargin -> "cash", OkexFutures -> "cross"
         let td_mode = match req_type {
-            TradeRequestType::OkexNewMarginOrder | TradeRequestType::OkexNewUMOrder => "cross",
+            TradeRequestType::OkexNewMarginOrder => "cash",
+            TradeRequestType::OkexNewUMOrder => "cross",
             _ => return None,
         };
+
         let qty = format_decimal(params.quantity);
         let price = format_decimal(params.price);
         let cl_id = params.client_order_id.to_string();

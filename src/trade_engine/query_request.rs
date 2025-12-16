@@ -12,6 +12,8 @@ pub enum QueryRequestType {
     BinanceUmAccountSnapshot = 6102,
     OkexMarginQuery = 7001,
     OkexUMQuery = 7002,
+    OkexAccountBalanceSnapshot = 7101,
+    OkexPositionsSnapshot = 7102,
 }
 
 #[repr(C, align(8))]
@@ -41,6 +43,8 @@ impl TryFrom<u32> for QueryRequestType {
             6102 => Ok(QueryRequestType::BinanceUmAccountSnapshot),
             7001 => Ok(QueryRequestType::OkexMarginQuery),
             7002 => Ok(QueryRequestType::OkexUMQuery),
+            7101 => Ok(QueryRequestType::OkexAccountBalanceSnapshot),
+            7102 => Ok(QueryRequestType::OkexPositionsSnapshot),
             _ => Err(()),
         }
     }

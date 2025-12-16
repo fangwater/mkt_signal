@@ -1,6 +1,14 @@
 # 每行：<路径> <上游地址>。支持 WebSocket。
-# 示例：/fr/binance ws://127.0.0.1:12345
-#       /fr/okex    ws://127.0.0.1:12346
+# 示例：/fr/binance http://127.0.0.1:12345   (WebSocket 也用 http/https + Upgrade)
+#       /fr/okex    http://127.0.0.1:12346
 #       /api        http://127.0.0.1:8000
 
-/fr/binance ws://127.0.0.1:12345
+/fr/binance http://127.0.0.1:12345
+
+# fr_manual_signal (HTTP)
+# 说明：
+# - 这里的 upstream 请使用 127.0.0.1（或内网 IP），不要写 0.0.0.0
+# - 同时配置带/不带尾部斜杠，避免 /fr_manual_signal 和 /fr_manual_signal/ 行为不一致
+# - upstream 末尾带 /，用于将前缀 /fr_manual_signal(/) strip 掉并转发给后端的 /
+/fr_manual_signal http://127.0.0.1:8911/
+/fr_manual_signal/ http://127.0.0.1:8911/

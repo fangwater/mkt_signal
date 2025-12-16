@@ -52,12 +52,6 @@ mkdir -p "$TARGET_DIR/config"
 cp "$BIN_PATH" "$TARGET_DIR/"
 chmod +x "$TARGET_DIR/$BIN_NAME"
 
-# 部署配置文件
-echo "[INFO] 部署配置文件到 $TARGET_DIR/config"
-if [[ -f "$ROOT_DIR/config/trade_engine.toml" ]]; then
-  cp "$ROOT_DIR/config/trade_engine.toml" "$TARGET_DIR/config/"
-else
-  echo "[WARN] 未找到 $ROOT_DIR/config/trade_engine.toml，跳过"
-fi
+# 当前 trade_engine 使用环境变量/内置常量，无需部署 trade_engine.toml
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"

@@ -1,4 +1,5 @@
 use crate::common::exchange::Exchange;
+use crate::common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
 use crate::trade_engine::config::{ApiKey, WsConstants};
 use crate::trade_engine::dispatcher::Dispatcher;
@@ -6,7 +7,9 @@ use crate::trade_engine::query_parsers::binance_margin_order::parse_binance_marg
 use crate::trade_engine::query_parsers::binance_pm_balance_snapshot::parse_binance_pm_balance_snapshot;
 use crate::trade_engine::query_parsers::binance_um_account_snapshot::parse_binance_um_account_snapshot;
 use crate::trade_engine::query_parsers::binance_um_order::parse_binance_um_order_query_json;
+use crate::trade_engine::query_parsers::okex_account_balance_snapshot::parse_okex_account_balance_snapshot;
 use crate::trade_engine::query_parsers::okex_order::parse_okex_order_query_json;
+use crate::trade_engine::query_parsers::okex_positions_snapshot::parse_okex_positions_snapshot;
 use crate::trade_engine::query_request::QueryRequestMsg;
 use crate::trade_engine::query_response_handle::{spawn_query_response_handle, QueryExecOutcome};
 use crate::trade_engine::query_type_mapping::QueryTypeMapping;
@@ -21,6 +24,33 @@ use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use std::net::IpAddr;
 use std::rc::Rc;
+use std::time::Duration;
+use tokio_util::sync::CancellationToken;
+
+fn request_payload_len(payload: &[u8]) -> Option<usize> {
+    // Layout: u32 msg_type, u32 params_length, i64 create_time, i64 client_id, params...
+    if payload.len() < 24 {
+        return None;
+    }
+    let params_len = u32::from_le_bytes(payload[4..8].try_into().ok()?) as usize;
+    let total = 24usize.saturating_add(params_len);
+    if total == 0 || total > payload.len() {
+        return None;
+    }
+    Some(total)
+}
+
+async fn join_or_abort(name: &str, mut handle: tokio::task::JoinHandle<()>) {
+    match tokio::time::timeout(Duration::from_secs(2), &mut handle).await {
+        Ok(Ok(())) => info!("trade_engine worker stopped: {}", name),
+        Ok(Err(err)) => warn!("trade_engine worker join error ({}): {}", name, err),
+        Err(_) => {
+            warn!("trade_engine worker shutdown timeout, aborting: {}", name);
+            handle.abort();
+            let _ = handle.await;
+        }
+    }
+}
 
 pub struct TradeEngine {
     local_ips: Vec<IpAddr>,
@@ -50,7 +80,16 @@ impl TradeEngine {
         }
     }
 
-    pub async fn run(mut self, exchange: Exchange) -> Result<()> {
+    pub async fn run(self, exchange: Exchange) -> Result<()> {
+        self.run_with_shutdown(exchange, CancellationToken::new())
+            .await
+    }
+
+    pub async fn run_with_shutdown(
+        mut self,
+        exchange: Exchange,
+        shutdown: CancellationToken,
+    ) -> Result<()> {
         if !matches!(
             exchange,
             Exchange::Binance
@@ -106,19 +145,19 @@ impl TradeEngine {
         // Query subscriber/publisher
         let query_service = node
             .service_builder(&ServiceName::new(&query_req_service)?)
-            .publish_subscribe::<[u8; 4096]>()
+            .publish_subscribe::<[u8; QUERY_REQ_PAYLOAD]>()
             .subscriber_max_buffer_size(256)
             .open_or_create()?;
-        let query_subscriber: Subscriber<ipc::Service, [u8; 4096], ()> =
+        let query_subscriber: Subscriber<ipc::Service, [u8; QUERY_REQ_PAYLOAD], ()> =
             query_service.subscriber_builder().create()?;
         debug!("subscriber created for service: {}", query_req_service);
 
         let query_resp_service_obj = node
             .service_builder(&ServiceName::new(&query_resp_service)?)
-            .publish_subscribe::<[u8; 64]>()
+            .publish_subscribe::<[u8; QUERY_RESP_PAYLOAD]>()
             .subscriber_max_buffer_size(256)
             .open_or_create()?;
-        let query_resp_publisher: Publisher<ipc::Service, [u8; 64], ()> =
+        let query_resp_publisher: Publisher<ipc::Service, [u8; QUERY_RESP_PAYLOAD], ()> =
             query_resp_service_obj.publisher_builder().create()?;
         debug!("publisher created for service: {}", query_resp_service);
 
@@ -149,6 +188,8 @@ impl TradeEngine {
         };
 
         // 初始化 WebSocket 客户端（用于 OKEx）
+        let mut worker_handles: Vec<(&'static str, tokio::task::JoinHandle<()>)> = Vec::new();
+
         let ws_endpoints = if exchange == Exchange::Okex {
             let mut local_ips = self.local_ips.clone();
             if local_ips.is_empty() {
@@ -199,9 +240,10 @@ impl TradeEngine {
                     client.local_ip(),
                     max_inflight
                 );
-                tokio::task::spawn_local(async move {
+                let handle = tokio::task::spawn_local(async move {
                     client.run().await;
                 });
+                worker_handles.push(("ws_client", handle));
                 endpoints.push(tx);
             }
             Some(endpoints)
@@ -210,9 +252,12 @@ impl TradeEngine {
         };
 
         // Spawn unified request router
+        let ws_endpoints_for_req_worker = ws_endpoints.clone();
         let rest_dispatcher_for_orders = rest_dispatcher.clone();
-        let _req_worker = tokio::task::spawn_local(async move {
-            let mut ws_endpoints = ws_endpoints;
+        let resp_tx_for_req_worker = resp_tx.clone();
+        let exchange_for_req_worker = exchange;
+        let req_worker = tokio::task::spawn_local(async move {
+            let mut ws_endpoints = ws_endpoints_for_req_worker;
             let mut ws_rr_cursor = 0usize; // 轮询计数器
             let rest_dispatcher = rest_dispatcher_for_orders;
 
@@ -262,12 +307,12 @@ impl TradeEngine {
                                 "clientOrderId": msg.client_order_id,
                             })
                             .to_string();
-                            let _ = resp_tx.send(TradeExecOutcome {
+                            let _ = resp_tx_for_req_worker.send(TradeExecOutcome {
                                 req_type: msg.req_type,
                                 client_order_id: msg.client_order_id,
                                 status: 503,
                                 body,
-                                exchange,
+                                exchange: exchange_for_req_worker,
                                 ip_used_weight_1m: None,
                                 order_count_1m: None,
                             });
@@ -318,24 +363,24 @@ impl TradeEngine {
                                     outcome.ip,
                                     outcome.body.len()
                                 );
-                                let _ = resp_tx.send(TradeExecOutcome {
+                                let _ = resp_tx_for_req_worker.send(TradeExecOutcome {
                                     req_type: msg.req_type,
                                     client_order_id: msg.client_order_id,
                                     status: outcome.status,
                                     body: outcome.body,
-                                    exchange,
+                                    exchange: exchange_for_req_worker,
                                     ip_used_weight_1m: outcome.ip_used_weight_1m,
                                     order_count_1m: outcome.order_count_1m,
                                 });
                             }
                             Err(e) => {
                                 debug!("http error: {}", e);
-                                let _ = resp_tx.send(TradeExecOutcome {
+                                let _ = resp_tx_for_req_worker.send(TradeExecOutcome {
                                     req_type: msg.req_type,
                                     client_order_id: msg.client_order_id,
                                     status: 0,
                                     body: e.to_string(),
-                                    exchange,
+                                    exchange: exchange_for_req_worker,
                                     ip_used_weight_1m: None,
                                     order_count_1m: None,
                                 });
@@ -357,12 +402,14 @@ impl TradeEngine {
                 }
             }
         });
+        worker_handles.push(("req_worker", req_worker));
 
         // Query request router
         {
             let rest_dispatcher = rest_dispatcher.clone();
             let exchange_copy = exchange;
-            tokio::task::spawn_local(async move {
+            let query_resp_tx = query_resp_tx.clone();
+            let query_router = tokio::task::spawn_local(async move {
                 let okex_http = reqwest::Client::new();
                 let okex_creds =
                     crate::portfolio_margin::okex_auth::OkexCredentials::from_env().ok();
@@ -434,34 +481,62 @@ impl TradeEngine {
                                         crate::trade_engine::query_request::QueryRequestType::BinanceUMQuery
                                             if outcome.status == 200 =>
                                         {
-                                            let body_bytes = parse_binance_um_order_query_json(&outcome.body)
-                                                .map(|v| v.to_bytes())
-                                                .unwrap_or_else(|| bytes::Bytes::from(outcome.body));
-                                            let _ = query_resp_tx.send(QueryExecOutcome {
-                                                req_type: msg.req_type,
-                                                client_query_id: msg.client_query_id,
-                                                status: outcome.status,
-                                                body: body_bytes,
-                                                exchange: exchange_copy,
-                                                ip_used_weight_1m: outcome.ip_used_weight_1m,
-                                                query_count_1m: outcome.order_count_1m,
-                                            });
+                                            if let Some(v) = parse_binance_um_order_query_json(&outcome.body) {
+                                                let _ = query_resp_tx.send(QueryExecOutcome {
+                                                    req_type: msg.req_type,
+                                                    client_query_id: msg.client_query_id,
+                                                    status: outcome.status,
+                                                    body: v.to_bytes(),
+                                                    exchange: exchange_copy,
+                                                    ip_used_weight_1m: outcome.ip_used_weight_1m,
+                                                    query_count_1m: outcome.order_count_1m,
+                                                });
+                                            } else {
+                                                warn!(
+                                                    "binance um order query parse failed: client_query_id={} body_len={}",
+                                                    msg.client_query_id,
+                                                    outcome.body.len()
+                                                );
+                                                let _ = query_resp_tx.send(QueryExecOutcome {
+                                                    req_type: msg.req_type,
+                                                    client_query_id: msg.client_query_id,
+                                                    status: outcome.status,
+                                                    body: bytes::Bytes::from_static(b"E"),
+                                                    exchange: exchange_copy,
+                                                    ip_used_weight_1m: outcome.ip_used_weight_1m,
+                                                    query_count_1m: outcome.order_count_1m,
+                                                });
+                                            }
                                         }
                                         crate::trade_engine::query_request::QueryRequestType::BinanceMarginQuery
                                             if outcome.status == 200 =>
                                         {
-                                            let body_bytes = parse_binance_margin_order_query_json(&outcome.body)
-                                                .map(|v| v.to_bytes())
-                                                .unwrap_or_else(|| bytes::Bytes::from(outcome.body));
-                                            let _ = query_resp_tx.send(QueryExecOutcome {
-                                                req_type: msg.req_type,
-                                                client_query_id: msg.client_query_id,
-                                                status: outcome.status,
-                                                body: body_bytes,
-                                                exchange: exchange_copy,
-                                                ip_used_weight_1m: outcome.ip_used_weight_1m,
-                                                query_count_1m: outcome.order_count_1m,
-                                            });
+                                            if let Some(v) = parse_binance_margin_order_query_json(&outcome.body) {
+                                                let _ = query_resp_tx.send(QueryExecOutcome {
+                                                    req_type: msg.req_type,
+                                                    client_query_id: msg.client_query_id,
+                                                    status: outcome.status,
+                                                    body: v.to_bytes(),
+                                                    exchange: exchange_copy,
+                                                    ip_used_weight_1m: outcome.ip_used_weight_1m,
+                                                    query_count_1m: outcome.order_count_1m,
+                                                });
+                                            } else {
+                                                warn!(
+                                                    "binance margin order query parse failed: client_query_id={} body_len={}",
+                                                    msg.client_query_id,
+                                                    outcome.body.len()
+                                                );
+                                                let _ = query_resp_tx.send(QueryExecOutcome {
+                                                    req_type: msg.req_type,
+                                                    client_query_id: msg.client_query_id,
+                                                    status: outcome.status,
+                                                    body: bytes::Bytes::from_static(b"E"),
+                                                    exchange: exchange_copy,
+                                                    ip_used_weight_1m: outcome.ip_used_weight_1m,
+                                                    query_count_1m: outcome.order_count_1m,
+                                                });
+                                            }
                                         }
                                         crate::trade_engine::query_request::QueryRequestType::BinancePmBalanceSnapshot
                                             if outcome.status == 200 =>
@@ -510,12 +585,12 @@ impl TradeEngine {
                                         }
                                     }
                                 }
-                                Err(e) => {
-                                    let _ = query_resp_tx.send(QueryExecOutcome {
-                                        req_type: msg.req_type,
-                                        client_query_id: msg.client_query_id,
-                                        status: 0,
-                                        body: bytes::Bytes::from(e.to_string()),
+                                        Err(_e) => {
+                                            let _ = query_resp_tx.send(QueryExecOutcome {
+                                                req_type: msg.req_type,
+                                                client_query_id: msg.client_query_id,
+                                                status: 0,
+                                        body: bytes::Bytes::from_static(b"E"),
                                         exchange: exchange_copy,
                                         ip_used_weight_1m: None,
                                         query_count_1m: None,
@@ -571,12 +646,89 @@ impl TradeEngine {
                                 Ok((status, body)) => {
                                     let body_bytes = match msg.req_type {
                                         crate::trade_engine::query_request::QueryRequestType::OkexMarginQuery
-                                        | crate::trade_engine::query_request::QueryRequestType::OkexUMQuery
+                                            | crate::trade_engine::query_request::QueryRequestType::OkexUMQuery
                                             if status == 200 =>
                                         {
-                                            parse_okex_order_query_json(&body)
-                                                .map(|v| v.to_bytes())
-                                                .unwrap_or_else(|| bytes::Bytes::from(body))
+                                            if let Some(v) = parse_okex_order_query_json(&body) {
+                                                v.to_bytes()
+                                            } else {
+                                                const QUERY_RESP_HEADER_LEN: usize = 4 + 8;
+                                                let max_body_len = QUERY_RESP_PAYLOAD
+                                                    .saturating_sub(QUERY_RESP_HEADER_LEN);
+                                                let (okx_code, okx_msg) =
+                                                    match serde_json::from_str::<
+                                                        serde_json::Value,
+                                                    >(&body)
+                                                    {
+                                                        Ok(v) => (
+                                                            v.get("code")
+                                                                .and_then(|x| x.as_str())
+                                                                .unwrap_or_default()
+                                                                .to_string(),
+                                                            v.get("msg")
+                                                                .and_then(|x| x.as_str())
+                                                                .unwrap_or_default()
+                                                                .to_string(),
+                                                        ),
+                                                        Err(_) => (String::new(), String::new()),
+                                                    };
+                                                warn!(
+                                                    "okex order query parse failed: client_query_id={} http_status={} okx_code={} okx_msg={} body_len={} max_body_len={}",
+                                                    msg.client_query_id,
+                                                    status,
+                                                    okx_code,
+                                                    okx_msg,
+                                                    body.len(),
+                                                    max_body_len
+                                                );
+                                                bytes::Bytes::from_static(b"E")
+                                            }
+                                        }
+                                        crate::trade_engine::query_request::QueryRequestType::OkexAccountBalanceSnapshot
+                                            if status == 200 =>
+                                        {
+                                            if let Some(msgs) =
+                                                parse_okex_account_balance_snapshot(&body)
+                                            {
+                                                if !msgs.is_empty() {
+                                                    for payload in msgs {
+                                                        let _ = query_resp_tx.send(QueryExecOutcome {
+                                                            req_type: msg.req_type,
+                                                            client_query_id: msg.client_query_id,
+                                                            status: status as u16,
+                                                            body: payload,
+                                                            exchange: exchange_copy,
+                                                            ip_used_weight_1m: None,
+                                                            query_count_1m: None,
+                                                        });
+                                                    }
+                                                    continue;
+                                                }
+                                            }
+                                            warn!("okex account balance snapshot parse produced no basic msgs; skipping response body");
+                                            bytes::Bytes::new()
+                                        }
+                                        crate::trade_engine::query_request::QueryRequestType::OkexPositionsSnapshot
+                                            if status == 200 =>
+                                        {
+                                            if let Some(msgs) = parse_okex_positions_snapshot(&body) {
+                                                if !msgs.is_empty() {
+                                                    for payload in msgs {
+                                                        let _ = query_resp_tx.send(QueryExecOutcome {
+                                                            req_type: msg.req_type,
+                                                            client_query_id: msg.client_query_id,
+                                                            status: status as u16,
+                                                            body: payload,
+                                                            exchange: exchange_copy,
+                                                            ip_used_weight_1m: None,
+                                                            query_count_1m: None,
+                                                        });
+                                                    }
+                                                    continue;
+                                                }
+                                            }
+                                            warn!("okex positions snapshot parse produced no basic msgs; skipping response body");
+                                            bytes::Bytes::new()
                                         }
                                         _ => bytes::Bytes::from(body),
                                     };
@@ -608,9 +760,7 @@ impl TradeEngine {
                                 req_type: msg.req_type,
                                 client_query_id: msg.client_query_id,
                                 status: 400,
-                                body: bytes::Bytes::from_static(
-                                    b"query channel not supported for this exchange",
-                                ),
+                                body: bytes::Bytes::from_static(b"E"),
                                 exchange: exchange_copy,
                                 ip_used_weight_1m: None,
                                 query_count_1m: None,
@@ -619,42 +769,37 @@ impl TradeEngine {
                     }
                 }
             });
+            worker_handles.push(("query_router", query_router));
         }
 
-        let _resp_worker = spawn_response_handle(resp_publisher, resp_rx);
-        let _query_resp_worker = spawn_query_response_handle(query_resp_publisher, query_resp_rx);
-
         // Query subscriber loop
-        tokio::task::spawn_local(async move {
-            loop {
+        let shutdown_for_query_sub = shutdown.clone();
+        let query_req_tx_for_sub = query_req_tx.clone();
+        let query_subscriber_worker = tokio::task::spawn_local(async move {
+            while !shutdown_for_query_sub.is_cancelled() {
                 match query_subscriber.receive() {
                     Ok(Some(sample)) => {
-                        let actual_len = {
-                            let payload = sample.payload();
-                            payload
-                                .iter()
-                                .rposition(|&x| x != 0)
-                                .map(|pos| pos + 1)
-                                .unwrap_or(0)
-                        };
-                        if actual_len == 0 {
+                        let payload = sample.payload();
+                        let Some(actual_len) = request_payload_len(payload) else {
+                            warn!(
+                                "invalid query request binary payload (min_len=24, buf_len={})",
+                                payload.len()
+                            );
                             drop(sample);
                             continue;
-                        }
-                        let owned = {
-                            let payload = sample.payload();
-                            bytes::Bytes::copy_from_slice(&payload[..actual_len])
                         };
+                        let owned = bytes::Bytes::copy_from_slice(&payload[..actual_len]);
                         drop(sample);
 
                         match crate::trade_engine::query_request::QueryRequestMsg::parse(&owned) {
                             Some(msg) => {
-                                let _ = query_req_tx.send(msg);
+                                let _ = query_req_tx_for_sub.send(msg);
                             }
                             None => {
                                 warn!("invalid query request binary payload (len={})", actual_len);
                             }
                         }
+                        tokio::task::yield_now().await;
                     }
                     Ok(None) => tokio::task::yield_now().await,
                     Err(err) => {
@@ -663,27 +808,32 @@ impl TradeEngine {
                     }
                 }
             }
+            info!("query subscriber loop exiting (shutdown)");
         });
+        worker_handles.push(("query_subscriber", query_subscriber_worker));
 
-        loop {
+        worker_handles.push((
+            "resp_publisher",
+            spawn_response_handle(resp_publisher, resp_rx),
+        ));
+        worker_handles.push((
+            "query_resp_publisher",
+            spawn_query_response_handle(query_resp_publisher, query_resp_rx),
+        ));
+
+        while !shutdown.is_cancelled() {
             match subscriber.receive()? {
                 Some(sample) => {
-                    let actual_len = {
-                        let payload = sample.payload();
-                        payload
-                            .iter()
-                            .rposition(|&x| x != 0)
-                            .map(|pos| pos + 1)
-                            .unwrap_or(0)
-                    };
-                    if actual_len == 0 {
+                    let payload = sample.payload();
+                    let Some(actual_len) = request_payload_len(payload) else {
+                        warn!(
+                            "invalid trade request binary payload (min_len=24, buf_len={})",
+                            payload.len()
+                        );
                         drop(sample);
                         continue;
-                    }
-                    let owned = {
-                        let payload = sample.payload();
-                        bytes::Bytes::copy_from_slice(&payload[..actual_len])
                     };
+                    let owned = bytes::Bytes::copy_from_slice(&payload[..actual_len]);
                     drop(sample);
 
                     debug!("received payload bytes: {}", actual_len);
@@ -702,11 +852,37 @@ impl TradeEngine {
                             warn!("invalid trade request binary payload (len={})", actual_len);
                         }
                     }
+                    // Yield to allow Ctrl+C and other tasks to progress on current_thread runtime.
+                    tokio::task::yield_now().await;
                 }
                 None => {
                     tokio::task::yield_now().await;
                 }
             }
         }
+
+        info!("trade_engine shutdown requested; stopping workers");
+        self.req_tx = None;
+        drop(req_tx);
+        drop(query_req_tx);
+
+        // Give ws clients a direct shutdown signal to shorten reconnect/backoff delays.
+        if let Some(endpoints) = &ws_endpoints {
+            for tx in endpoints {
+                let _ = tx.send(WsCommand::Shutdown);
+            }
+        }
+        drop(ws_endpoints);
+
+        // Close response channels after request paths are down; workers will exit when all senders drop.
+        drop(resp_tx);
+        drop(query_resp_tx);
+
+        for (name, handle) in worker_handles {
+            join_or_abort(name, handle).await;
+        }
+
+        info!("trade_engine shutdown complete");
+        Ok(())
     }
 }

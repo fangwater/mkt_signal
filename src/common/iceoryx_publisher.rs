@@ -9,6 +9,8 @@ pub const SIGNAL_PAYLOAD: usize = 4_096;
 pub const RESAMPLE_PAYLOAD: usize = 32 * 1024;
 pub const BINANCE_MARGIN_UPDATE_PAYLOAD: usize = SIGNAL_PAYLOAD;
 pub const BINANCE_UM_UPDATE_PAYLOAD: usize = SIGNAL_PAYLOAD;
+pub const QUERY_REQ_PAYLOAD: usize = 256;
+pub const QUERY_RESP_PAYLOAD: usize = 64;
 
 pub struct GenericPublisher<const PAYLOAD: usize> {
     publisher: Publisher<ipc::Service, [u8; PAYLOAD], ()>,

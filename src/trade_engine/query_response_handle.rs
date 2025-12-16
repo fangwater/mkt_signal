@@ -1,4 +1,5 @@
 use crate::common::exchange::Exchange;
+use crate::common::iceoryx_publisher::QUERY_RESP_PAYLOAD;
 use crate::trade_engine::query_request::QueryRequestType;
 use bytes::{BufMut, Bytes, BytesMut};
 use iceoryx2::port::publisher::Publisher;
@@ -20,13 +21,13 @@ pub struct QueryExecOutcome {
 const QUERY_RESP_HEADER_LEN: usize = 4 + 8; // req_type + client_query_id
 
 pub fn spawn_query_response_handle(
-    publisher: Publisher<ipc::Service, [u8; 64], ()>,
+    publisher: Publisher<ipc::Service, [u8; QUERY_RESP_PAYLOAD], ()>,
     mut resp_rx: mpsc::UnboundedReceiver<QueryExecOutcome>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_local(async move {
         while let Some(out) = resp_rx.recv().await {
             let body = out.body.as_ref();
-            let mut buf = [0u8; 64];
+            let mut buf = [0u8; QUERY_RESP_PAYLOAD];
             let mut written = 0usize;
 
             // header: req_type + client_query_id (little-endian)

@@ -24,7 +24,7 @@ impl QueryEngineResponseMessage {
     }
 
     pub fn from_payload(payload: &[u8]) -> Result<Self> {
-        const HEADER_LEN: usize = 4 + 8;
+        const HEADER_LEN: usize = 4 + 8; // req_type + client_query_id
         if payload.len() < HEADER_LEN {
             anyhow::bail!("payload too short: {} < {}", payload.len(), HEADER_LEN);
         }
