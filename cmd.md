@@ -8,4 +8,6 @@ cargo run --bin fr_manual_signal -- --exchange okex --open okex-margin --hedge o
 
 //
 bash scripts/deploy_setup_env_xarb.sh --open-venue okex-futures --hedge-venue binance-futures
+scripts/deploy_xarb_trade_engine.sh --open-venue okex-futures --hedge-venue binance-futures
+
 
