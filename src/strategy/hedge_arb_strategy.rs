@@ -295,9 +295,14 @@ impl HedgeArbStrategy {
         // 9、考虑修正量，判断下单后是否会大于max u
         if force_close {
             self.log_force_close_skip("持仓上限 (max_pos_u)", &ctx);
-        } else if let Err(e) =
-            MonitorChannel::instance().ensure_max_pos_u(&symbol, aligned_qty, aligned_price)
-        {
+        } else if let Err(e) = MonitorChannel::instance().ensure_max_pos_u(
+            &symbol,
+            match open_side {
+                Side::Buy => aligned_qty.abs(),
+                Side::Sell => -aligned_qty.abs(),
+            },
+            aligned_price,
+        ) {
             error!(
                 "HedgeArbStrategy: strategy_id={} 仓位限制检查失败: {}，标记策略为不活跃",
                 self.strategy_id, e

@@ -16,13 +16,15 @@ use mkt_signal::signal::common::TradingVenue;
 // 使用模块化的 funding_rate
 use mkt_signal::common::iceoryx_publisher::SignalPublisher;
 use mkt_signal::common::time_util::get_timestamp_us;
+use mkt_signal::funding_rate::common::{ArbDirection, CompareOp, FactorMode, OperationType};
 use mkt_signal::funding_rate::{
     init_decision_branch, load_all_once_with_namespace, spawn_config_loader_with_namespace,
     DecisionBranch, FrDecision, FrSignalStateBatch, FundingRateFactor, MktChannel, RateFetcher,
-    SpreadFactor, SymbolList, XarbDecision, DEFAULT_STATE_CHANNEL,
+    SpreadFactor, SpreadType, SymbolList, XarbDecision, DEFAULT_STATE_CHANNEL,
 };
 
 const PROCESS_NAME: &str = "trade_signal";
+const SPREAD_LOG_INTERVAL_SECS: u64 = 10;
 
 #[derive(Parser, Debug)]
 #[command(name = "trade_signal")]
@@ -173,13 +175,31 @@ async fn run(
     );
     info!("配置加载器已启动（60秒定时重载）");
 
-    // 4️⃣ 定时发布信号状态快照（10 秒一次），仅 FR 分支支持
+    // 4️⃣ 定时打印 spread 信号状态（10 秒一次）
+    {
+        let cancel = token.clone();
+        tokio::task::spawn_local(async move {
+            let mut ticker =
+                tokio::time::interval(tokio::time::Duration::from_secs(SPREAD_LOG_INTERVAL_SECS));
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    _ = ticker.tick() => {
+                        print_spread_signal_state_table(branch, open_venue, hedge_venue);
+                    }
+                }
+            }
+        });
+    }
+
+    // 5️⃣ 定时发布信号状态快照（10 秒一次），仅 FR 分支支持
     if branch == DecisionBranch::Fr {
         let cancel = token.clone();
         tokio::task::spawn_local(async move {
             let state_pub = SignalPublisher::new_with_prefix("viz_pubs", DEFAULT_STATE_CHANNEL)
                 .expect("failed to create fr_signal_state publisher");
-            let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(10));
+            let mut ticker =
+                tokio::time::interval(tokio::time::Duration::from_secs(SPREAD_LOG_INTERVAL_SECS));
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,
@@ -201,12 +221,222 @@ async fn run(
 
     info!("✅ {} 启动完成，等待市场数据触发决策...", PROCESS_NAME);
 
-    // 5️⃣ 主循环：等待退出信号
+    // 6️⃣ 主循环：等待退出信号
     token.cancelled().await;
     info!("收到退出信号");
 
     info!("{} 退出", PROCESS_NAME);
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct SpreadStateRow {
+    symbol: String,
+    state: &'static str,
+    spread_type: &'static str,
+    value_pct: Option<f64>,
+    compare_op: &'static str,
+    threshold_pct: Option<f64>,
+}
+
+fn compare_op_short(op: CompareOp) -> &'static str {
+    match op {
+        CompareOp::GreaterThan => ">",
+        CompareOp::LessThan => "<",
+    }
+}
+
+fn spread_type_short(ty: SpreadType) -> &'static str {
+    match ty {
+        SpreadType::BidAsk => "BidAsk",
+        SpreadType::AskBid => "AskBid",
+        SpreadType::SpreadRate => "Rate",
+    }
+}
+
+fn fmt_opt_pct(v: Option<f64>, width: usize) -> String {
+    match v {
+        Some(x) if x.is_finite() => format!("{:>width$.3}", x, width = width),
+        _ => format!("{:>width$}", "-", width = width),
+    }
+}
+
+fn spread_state_to_detail_key(state: &str) -> Option<(ArbDirection, OperationType)> {
+    match state {
+        "FwdCancel" => Some((ArbDirection::Forward, OperationType::Cancel)),
+        "BwdCancel" => Some((ArbDirection::Backward, OperationType::Cancel)),
+        "FwdOpen" | "FlipBuy" | "BwdClose" => Some((ArbDirection::Forward, OperationType::Open)),
+        "BwdOpen" | "FlipSell" | "FwdClose" => Some((ArbDirection::Backward, OperationType::Open)),
+        _ => None,
+    }
+}
+
+fn compute_spread_state_row(
+    spread_factor: &SpreadFactor,
+    symbol_list: &SymbolList,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+    symbol: &str,
+) -> Option<SpreadStateRow> {
+    let in_dump = symbol_list.is_in_dump_list(symbol);
+
+    let fwd_open = !in_dump
+        && spread_factor.satisfy_forward_open(open_venue, symbol, hedge_venue, symbol)
+        && symbol_list.is_in_fwd_trade_list(symbol);
+    let bwd_open = !in_dump
+        && spread_factor.satisfy_backward_open(open_venue, symbol, hedge_venue, symbol)
+        && symbol_list.is_in_bwd_trade_list(symbol);
+
+    let fwd_close = spread_factor.satisfy_forward_close(open_venue, symbol, hedge_venue, symbol);
+    let bwd_close = spread_factor.satisfy_backward_close(open_venue, symbol, hedge_venue, symbol);
+
+    let fwd_cancel = spread_factor.satisfy_forward_cancel(open_venue, symbol, hedge_venue, symbol);
+    let bwd_cancel = spread_factor.satisfy_backward_cancel(open_venue, symbol, hedge_venue, symbol);
+
+    let state = if fwd_cancel {
+        "FwdCancel"
+    } else if bwd_cancel {
+        "BwdCancel"
+    } else if fwd_close && bwd_open {
+        "FlipSell"
+    } else if bwd_close && fwd_open {
+        "FlipBuy"
+    } else if fwd_close {
+        "FwdClose"
+    } else if bwd_close {
+        "BwdClose"
+    } else if fwd_open {
+        "FwdOpen"
+    } else if bwd_open {
+        "BwdOpen"
+    } else {
+        return None;
+    };
+
+    let (spread_type, value_pct, compare_op, threshold_pct) =
+        if let Some((arb_direction, operation)) = spread_state_to_detail_key(state) {
+            spread_factor
+                .get_spread_check_detail(
+                    open_venue,
+                    symbol,
+                    hedge_venue,
+                    symbol,
+                    arb_direction,
+                    operation,
+                )
+                .map(|(value, threshold, op, spread_type)| {
+                    (
+                        spread_type_short(spread_type),
+                        Some(value * 100.0),
+                        compare_op_short(op),
+                        Some(threshold * 100.0),
+                    )
+                })
+                .unwrap_or(("-", None, "-", None))
+        } else {
+            ("-", None, "-", None)
+        };
+
+    Some(SpreadStateRow {
+        symbol: symbol.to_string(),
+        state,
+        spread_type,
+        value_pct,
+        compare_op,
+        threshold_pct,
+    })
+}
+
+fn print_spread_signal_state_table(
+    branch: DecisionBranch,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) {
+    let spread_factor = SpreadFactor::instance();
+    let symbol_list = SymbolList::instance();
+    let mode: FactorMode = spread_factor.get_mode();
+
+    let mut symbols = symbol_list.get_online_symbols();
+    if symbols.is_empty() {
+        info!(
+            "SpreadSig: branch={:?} mode={:?} open={:?} hedge={:?} (no online symbols)",
+            branch, mode, open_venue, hedge_venue
+        );
+        return;
+    }
+    symbols.sort_unstable();
+
+    let mut rows: Vec<SpreadStateRow> = symbols
+        .iter()
+        .filter_map(|s| {
+            compute_spread_state_row(&spread_factor, &symbol_list, open_venue, hedge_venue, s)
+        })
+        .collect();
+    rows.sort_unstable_by(|a, b| a.symbol.cmp(&b.symbol));
+
+    info!(
+        "SpreadSig snapshot: branch={:?} mode={:?} open={:?} hedge={:?} active={}/{}",
+        branch,
+        mode,
+        open_venue,
+        hedge_venue,
+        rows.len(),
+        symbols.len()
+    );
+
+    // 三线表：top / header-sep / bottom（不逐行加横线）
+    const W_SYMBOL: usize = 14;
+    const W_STATE: usize = 9;
+    const W_TYPE: usize = 6;
+    const W_VAL: usize = 8;
+    const W_OP: usize = 1;
+    const W_THR: usize = 8;
+
+    let header_cells = vec![
+        format!("{:<W_SYMBOL$}", "Symbol", W_SYMBOL = W_SYMBOL),
+        format!("{:<W_STATE$}", "State", W_STATE = W_STATE),
+        format!("{:<W_TYPE$}", "Type", W_TYPE = W_TYPE),
+        format!("{:>W_VAL$}", "Val%", W_VAL = W_VAL),
+        format!("{:<W_OP$}", "Op", W_OP = W_OP),
+        format!("{:>W_THR$}", "Thr%", W_THR = W_THR),
+    ];
+    let header = format!("│ {} │", header_cells.join(" │ "));
+    let width = header.chars().count();
+    let top = format!("┌{}┐", "─".repeat(width.saturating_sub(2)));
+    let mid = format!("├{}┤", "─".repeat(width.saturating_sub(2)));
+    let bottom = format!("└{}┘", "─".repeat(width.saturating_sub(2)));
+
+    info!("{}", top);
+    info!("{}", header);
+    info!("{}", mid);
+
+    if rows.is_empty() {
+        let empty_cells = vec![
+            format!("{:<W_SYMBOL$}", "(none)", W_SYMBOL = W_SYMBOL),
+            format!("{:<W_STATE$}", "-", W_STATE = W_STATE),
+            format!("{:<W_TYPE$}", "-", W_TYPE = W_TYPE),
+            fmt_opt_pct(None, W_VAL),
+            format!("{:<W_OP$}", "-", W_OP = W_OP),
+            fmt_opt_pct(None, W_THR),
+        ];
+        info!("│ {} │", empty_cells.join(" │ "));
+        info!("{}", bottom);
+        return;
+    }
+
+    for r in rows {
+        let cells = vec![
+            format!("{:<W_SYMBOL$}", r.symbol, W_SYMBOL = W_SYMBOL),
+            format!("{:<W_STATE$}", r.state, W_STATE = W_STATE),
+            format!("{:<W_TYPE$}", r.spread_type, W_TYPE = W_TYPE),
+            fmt_opt_pct(r.value_pct, W_VAL),
+            format!("{:<W_OP$}", r.compare_op, W_OP = W_OP),
+            fmt_opt_pct(r.threshold_pct, W_THR),
+        ];
+        info!("│ {} │", cells.join(" │ "));
+    }
+
+    info!("{}", bottom);
 }
 
 /// 设置信号处理器

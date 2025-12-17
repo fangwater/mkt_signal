@@ -138,8 +138,8 @@ mkdir -p "$TARGET_DIR"
 EXTRA_FILES=(
   "xarb_scripts/start_xarb_pre_trade.sh"
   "xarb_scripts/stop_xarb_pre_trade.sh"
-  "scripts/sync_fr_risk_params.py"
-  "scripts/print_fr_risk_params.py"
+  "xarb_scripts/sync_xarb_risk_params.py"
+  "xarb_scripts/print_xarb_risk_params.py"
 )
 
 echo "[INFO] 同步 xarb_scripts/scripts 到 $TARGET_DIR（先更新脚本，避免二进制 busy 影响脚本更新）"
@@ -182,4 +182,3 @@ echo "[INFO] venues: open=${OPEN_VENUE} hedge=${HEDGE_VENUE}"
 echo "[INFO] 建议先配置 env: scripts/deploy_setup_env_xarb.sh --env-name ${ENV_NAME} --open-venue ${OPEN_VENUE} --hedge-venue ${HEDGE_VENUE}"
 echo "[INFO] 手动启动: cd $TARGET_DIR && ./xarb_scripts/start_xarb_pre_trade.sh"
 echo "[INFO] 停止: cd $TARGET_DIR && ./xarb_scripts/stop_xarb_pre_trade.sh"
-

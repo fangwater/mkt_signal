@@ -145,6 +145,12 @@ def normalize_for_rolling(symbol: str) -> str:
 
 
 def read_rolling_metrics(rds, key: str) -> Dict[str, Dict]:
+    """
+    rolling_metrics 输出的 hash field 在 xarb 环境常见为：
+      "<open>_<hedge>::<SYMBOL>" 例如 "okex-futures_binance-futures::BTCUSDT"
+
+    为了便于下游按 SYMBOL 查找，这里会把 field 统一索引为 symbol（去掉前缀部分）。
+    """
     result: Dict[str, Dict] = {}
     data = rds.hgetall(key)
     for k, v in data.items():
@@ -152,10 +158,21 @@ def read_rolling_metrics(rds, key: str) -> Dict[str, Dict]:
         val = v.decode("utf-8", "ignore") if isinstance(v, bytes) else str(v)
         try:
             obj = json.loads(val)
-            if isinstance(obj, dict):
-                result[field] = obj
         except Exception:
             continue
+        if not isinstance(obj, dict):
+            continue
+
+        # 优先用 payload 内的 base_symbol，其次使用 field 尾部（:: 之后）
+        base_symbol = obj.get("base_symbol") or obj.get("symbol")
+        if isinstance(base_symbol, str) and base_symbol.strip():
+            sym = normalize_for_rolling(base_symbol)
+            result[sym] = obj
+            continue
+
+        tail = field.split("::")[-1]
+        sym = normalize_for_rolling(tail)
+        result[sym] = obj
     return result
 
 
@@ -185,22 +202,42 @@ def extract_quantile_value(obj: Dict, field_ref: str) -> Optional[float]:
     if not isinstance(quantiles, list):
         return None
 
-    def _find_quantile(qs: List, p: float) -> Optional[float]:
-        best = None
-        for item in qs:
-            if not isinstance(item, dict):
-                continue
-            if abs(float(item.get("q", -1)) - p) < 1e-9:
-                best = item.get("v")
-                break
-        if best is None:
+    def _to_q(raw: object) -> Optional[float]:
+        if not isinstance(raw, (int, float, str)):
             return None
         try:
-            return float(best)
+            q = float(raw)
         except Exception:
             return None
+        # 兼容 10/15/90（百分位整数）与 0.10/0.15/0.90（比例）
+        if q > 1.0:
+            q = q / 100.0
+        if 0.0 <= q <= 1.0:
+            return q
+        return None
 
-    return _find_quantile(quantiles, percentile)
+    def _to_v(item: Dict) -> Optional[float]:
+        # 兼容两种 schema:
+        # - {"q": 0.15, "v": 0.0002}
+        # - {"quantile": 0.15, "threshold": 0.0002}
+        for key in ("v", "threshold", "value"):
+            if key in item:
+                try:
+                    return float(item[key])
+                except Exception:
+                    return None
+        return None
+
+    for item in quantiles:
+        if not isinstance(item, dict):
+            continue
+        q = _to_q(item.get("q") if "q" in item else item.get("quantile"))
+        if q is None:
+            continue
+        if abs(q - percentile) < 1e-9:
+            return _to_v(item)
+
+    return None
 
 
 def generate_spread_thresholds(symbols: List[str], rolling: Dict[str, Dict]) -> Dict[str, Dict[str, float]]:
@@ -272,6 +309,18 @@ def main() -> int:
     write_key = f"{NAMESPACE}_spread_thresholds_{open_venue}_{hedge_venue}"
     config_key = f"{NAMESPACE}_spread_thresholds_config_{open_venue}_{hedge_venue}"
 
+    config = {
+        "schema_version": 1,
+        "namespace": NAMESPACE,
+        "open_venue": open_venue,
+        "hedge_venue": hedge_venue,
+        "rolling_key": rolling_key,
+        "mapping": SPREAD_THRESHOLD_MAPPING,
+        "threshold_order": THRESHOLD_ORDER,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    rds.set(config_key, json.dumps(config, ensure_ascii=False, sort_keys=True))
+
     all_fields: Dict[str, str] = {}
     skipped_symbols: List[str] = []
 
@@ -287,19 +336,9 @@ def main() -> int:
 
     if not all_fields:
         print(f"❌ 无可写入的阈值字段（可能 rolling metrics 数据不足或 symbols 列表为空）", file=sys.stderr)
+        print(f"🧾 sync 配置已写入 '{config_key}'（可用 print 脚本查看 mapping 是否匹配）")
         return 2
 
-    config = {
-        "schema_version": 1,
-        "namespace": NAMESPACE,
-        "open_venue": open_venue,
-        "hedge_venue": hedge_venue,
-        "rolling_key": rolling_key,
-        "mapping": SPREAD_THRESHOLD_MAPPING,
-        "threshold_order": THRESHOLD_ORDER,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    rds.set(config_key, json.dumps(config, ensure_ascii=False, sort_keys=True))
     rds.hset(write_key, mapping=all_fields)
 
     successful_symbols = len(set(k.rsplit("_", 3)[0] for k in all_fields.keys()))
