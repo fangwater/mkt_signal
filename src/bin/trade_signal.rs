@@ -265,8 +265,8 @@ fn spread_state_to_detail_key(state: &str) -> Option<(ArbDirection, OperationTyp
     match state {
         "FwdCancel" => Some((ArbDirection::Forward, OperationType::Cancel)),
         "BwdCancel" => Some((ArbDirection::Backward, OperationType::Cancel)),
-        "FwdOpen" | "FlipBuy" | "BwdClose" => Some((ArbDirection::Forward, OperationType::Open)),
-        "BwdOpen" | "FlipSell" | "FwdClose" => Some((ArbDirection::Backward, OperationType::Open)),
+        "FwdOpen" | "BwdClose" => Some((ArbDirection::Forward, OperationType::Open)),
+        "BwdOpen" | "FwdClose" => Some((ArbDirection::Backward, OperationType::Open)),
         _ => None,
     }
 }
@@ -298,9 +298,9 @@ fn compute_spread_state_row(
     } else if bwd_cancel {
         "BwdCancel"
     } else if fwd_close && bwd_open {
-        "FlipSell"
+        "BwdOpen"
     } else if bwd_close && fwd_open {
-        "FlipBuy"
+        "FwdOpen"
     } else if fwd_close {
         "FwdClose"
     } else if bwd_close {
