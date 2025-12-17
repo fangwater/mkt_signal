@@ -7,6 +7,7 @@ use super::common::{
     ArbDirection, CompareOp, FactorMode, OperationType, SymbolPair, ThresholdKey, VenuePair,
 };
 use crate::signal::common::TradingVenue;
+use crate::symbol_match::normalize_symbol_for_whitelist;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -119,7 +120,10 @@ impl SpreadFactor {
         venue2_ask: f64,
     ) -> (Option<f64>, Option<f64>, Option<f64>) {
         let venue_pair = (venue1, venue2);
-        let symbol_pair = (symbol1.to_string(), symbol2.to_string());
+        let symbol_pair = (
+            Self::normalize_symbol_key(symbol1),
+            Self::normalize_symbol_key(symbol2),
+        );
 
         // 计算 askbid_sr = (venue1_ask - venue2_bid) / venue1_ask
         let askbid = if venue1_ask > 0.0 && venue2_bid > 0.0 {
@@ -186,7 +190,10 @@ impl SpreadFactor {
         };
 
         let venue_pair = (query_venue1, venue2);
-        let symbol_pair = (symbol1.to_string(), symbol2.to_string());
+        let symbol_pair = (
+            Self::normalize_symbol_key(symbol1),
+            Self::normalize_symbol_key(symbol2),
+        );
 
         self.askbid
             .borrow()
@@ -210,7 +217,10 @@ impl SpreadFactor {
         };
 
         let venue_pair = (query_venue1, venue2);
-        let symbol_pair = (symbol1.to_string(), symbol2.to_string());
+        let symbol_pair = (
+            Self::normalize_symbol_key(symbol1),
+            Self::normalize_symbol_key(symbol2),
+        );
 
         self.bidask
             .borrow()
@@ -234,7 +244,10 @@ impl SpreadFactor {
         };
 
         let venue_pair = (query_venue1, venue2);
-        let symbol_pair = (symbol1.to_string(), symbol2.to_string());
+        let symbol_pair = (
+            Self::normalize_symbol_key(symbol1),
+            Self::normalize_symbol_key(symbol2),
+        );
 
         self.spread_rate
             .borrow()
@@ -266,6 +279,12 @@ impl SpreadFactor {
         }
     }
 
+    #[inline]
+    fn normalize_symbol_key(symbol: &str) -> String {
+        // Keep consistent with rolling_metrics/symbol_list: uppercase, remove '-'/'_', strip trailing "SWAP".
+        normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
+    }
+
     // ===== 4 个 set 函数，简化，因为对价差而言只有正开、反开 =====
     // ===== 因此只需要正反开的开仓阈值和撤单阈值
 
@@ -288,9 +307,9 @@ impl SpreadFactor {
 
         let key = (
             store_venue1,
-            symbol1.to_string(),
+            Self::normalize_symbol_key(symbol1),
             venue2,
-            symbol2.to_string(),
+            Self::normalize_symbol_key(symbol2),
         );
         let mt_config = SpreadThresholdConfig {
             compare_op: CompareOp::LessThan,
@@ -332,9 +351,9 @@ impl SpreadFactor {
 
         let key = (
             store_venue1,
-            symbol1.to_string(),
+            Self::normalize_symbol_key(symbol1),
             venue2,
-            symbol2.to_string(),
+            Self::normalize_symbol_key(symbol2),
         );
         let mt_config = SpreadThresholdConfig {
             compare_op: CompareOp::GreaterThan,
@@ -377,9 +396,9 @@ impl SpreadFactor {
 
         let key = (
             store_venue1,
-            symbol1.to_string(),
+            Self::normalize_symbol_key(symbol1),
             venue2,
-            symbol2.to_string(),
+            Self::normalize_symbol_key(symbol2),
         );
         let mt_config = SpreadThresholdConfig {
             compare_op: CompareOp::GreaterThan,
@@ -421,9 +440,9 @@ impl SpreadFactor {
 
         let key = (
             store_venue1,
-            symbol1.to_string(),
+            Self::normalize_symbol_key(symbol1),
             venue2,
-            symbol2.to_string(),
+            Self::normalize_symbol_key(symbol2),
         );
         let mt_config = SpreadThresholdConfig {
             compare_op: CompareOp::LessThan,
@@ -466,9 +485,9 @@ impl SpreadFactor {
 
         let key = (
             query_venue1,
-            symbol1.to_string(),
+            Self::normalize_symbol_key(symbol1),
             venue2,
-            symbol2.to_string(),
+            Self::normalize_symbol_key(symbol2),
         );
 
         // 根据当前模式选择对应的 config
@@ -511,9 +530,9 @@ impl SpreadFactor {
         let query_venue1 = Self::map_venue(venue1);
         let key = (
             query_venue1,
-            symbol1.to_string(),
+            Self::normalize_symbol_key(symbol1),
             venue2,
-            symbol2.to_string(),
+            Self::normalize_symbol_key(symbol2),
         );
 
         // 根据当前模式选择对应的 config
@@ -568,9 +587,9 @@ impl SpreadFactor {
         let query_venue1 = Self::map_venue(venue1);
         let key = (
             query_venue1,
-            symbol1.to_string(),
+            Self::normalize_symbol_key(symbol1),
             venue2,
-            symbol2.to_string(),
+            Self::normalize_symbol_key(symbol2),
         );
 
         // 根据当前模式选择对应的 config
@@ -613,9 +632,9 @@ impl SpreadFactor {
         let query_venue1 = Self::map_venue(venue1);
         let key = (
             query_venue1,
-            symbol1.to_string(),
+            Self::normalize_symbol_key(symbol1),
             venue2,
-            symbol2.to_string(),
+            Self::normalize_symbol_key(symbol2),
         );
 
         // 根据当前模式选择对应的 config
@@ -677,9 +696,9 @@ impl SpreadFactor {
 
         let key = (
             query_venue1,
-            symbol1.to_string(),
+            Self::normalize_symbol_key(symbol1),
             venue2,
-            symbol2.to_string(),
+            Self::normalize_symbol_key(symbol2),
         );
 
         // 根据当前模式选择对应的 config

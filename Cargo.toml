@@ -13,8 +13,8 @@ name = "mkt_pub"
 path = "src/main.rs"
 
 [[bin]]
-name = "fr_signal"
-path = "src/bin/fr_signal.rs"
+name = "trade_signal"
+path = "src/bin/trade_signal.rs"
 
 [[bin]]
 name = "binance_account_monitor"

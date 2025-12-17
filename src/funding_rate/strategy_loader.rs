@@ -8,21 +8,43 @@ use anyhow::Result;
 use log::{info, warn};
 use serde::Deserialize;
 
-use crate::common::exchange::Exchange;
 use crate::common::redis_client::{RedisClient, RedisSettings};
 
-use super::common::{venue_pair_for_exchange, FactorMode};
-use super::decision::FrDecision;
+use super::common::FactorMode;
+use super::fr_decision::FrDecision;
 use super::spread_factor::SpreadFactor;
+use super::xarb_decision::XarbDecision;
+use crate::signal::common::TradingVenue;
 
 /// Redis Key 配置
-const REDIS_KEY_STRATEGY_PARAMS_PREFIX: &str = "fr_strategy_params";
+const DEFAULT_NAMESPACE: &str = "fr";
 
-fn strategy_params_key(exchange: Exchange) -> String {
-    let (open_venue, hedge_venue) = venue_pair_for_exchange(exchange);
+fn normalize_namespace(namespace: &str) -> String {
+    let ns = namespace
+        .trim()
+        .trim_end_matches(|c: char| c == '_' || c == '-' || c == ':')
+        .to_ascii_lowercase();
+    if ns.is_empty() {
+        DEFAULT_NAMESPACE.to_string()
+    } else {
+        ns
+    }
+}
+
+fn strategy_params_key(
+    namespace: &str,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> String {
+    let ns = normalize_namespace(namespace);
+    let prefix = if ns == "fr" {
+        "fr_strategy_params".to_string()
+    } else {
+        format!("{ns}_strategy_params")
+    };
     format!(
         "{}_{}_{}",
-        REDIS_KEY_STRATEGY_PARAMS_PREFIX,
+        prefix,
         open_venue.data_pub_slug(),
         hedge_venue.data_pub_slug()
     )
@@ -108,9 +130,14 @@ impl Default for StrategyParams {
 
 impl StrategyParams {
     /// 从 Redis Hash 加载
-    pub(crate) async fn load_from_redis(redis: &RedisSettings, exchange: Exchange) -> Result<Self> {
+    pub(crate) async fn load_from_redis(
+        redis: &RedisSettings,
+        namespace: &str,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+    ) -> Result<Self> {
         let mut client = RedisClient::connect(redis.clone()).await?;
-        let redis_key = strategy_params_key(exchange);
+        let redis_key = strategy_params_key(namespace, open_venue, hedge_venue);
         let hash_map = client.hgetall_map(&redis_key).await?;
         if hash_map.is_empty() {
             panic!("Redis hash '{}' 为空或不存在，无法加载策略参数", redis_key);
@@ -194,8 +221,8 @@ impl StrategyParams {
 
     /// 应用参数到所有单例
     pub(crate) fn apply(&self) {
-        // 1. 更新 FrDecision
-        FrDecision::with_mut(|decision| {
+        // 1. 更新 decision（FR or xarb）
+        let applied = FrDecision::try_with_mut(|decision| {
             decision.update_order_amount(self.order_amount);
             decision.update_price_offsets(self.parse_price_offsets());
             decision.update_open_order_timeout(self.open_order_timeout);
@@ -203,11 +230,26 @@ impl StrategyParams {
             decision.update_hedge_price_offset(self.hedge_price_offset);
             decision.update_hedge_aggressive_seq_threshold(self.hedge_aggressive_seq_threshold);
             decision.update_signal_cooldown(self.signal_cooldown);
-        });
+        })
+        .is_some()
+            || XarbDecision::try_with_mut(|decision| {
+                decision.update_order_amount(self.order_amount);
+                decision.update_price_offsets(self.parse_price_offsets());
+                decision.update_open_order_timeout(self.open_order_timeout);
+                decision.update_hedge_timeout(self.hedge_timeout);
+                decision.update_hedge_price_offset(self.hedge_price_offset);
+                decision.update_hedge_aggressive_seq_threshold(self.hedge_aggressive_seq_threshold);
+                decision.update_signal_cooldown(self.signal_cooldown);
+            })
+            .is_some();
 
         // 2. 更新 SpreadFactor 模式
         let spread_factor = SpreadFactor::instance();
         spread_factor.set_mode(self.parse_mode());
+
+        if !applied {
+            warn!("策略参数已加载，但 decision 尚未初始化（将仅更新 SpreadFactor）");
+        }
 
         info!(
             "✅ 策略参数已更新: mode={}, amount={:.2}, cooldown={}s",

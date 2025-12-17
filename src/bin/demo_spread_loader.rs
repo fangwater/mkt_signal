@@ -74,7 +74,11 @@ async fn main() -> Result<()> {
 
     // 4. 加载到 SpreadFactor
     info!("🔄 加载价差阈值到 SpreadFactor...");
-    spread_threshold_loader::load_from_redis(hash_data)?;
+    spread_threshold_loader::load_from_redis(
+        hash_data,
+        TradingVenue::BinanceMargin,
+        TradingVenue::BinanceFutures,
+    )?;
     info!("");
 
     // 5. 测试已加载的阈值

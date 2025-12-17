@@ -1,8 +1,8 @@
 # FR 可视化面板文档
 
 ## 目标
-- 不再在 `fr_signal` 里打印三线表。
-- `fr_signal` 周期性发布结构化状态快照到 IceOryx。
+- 不再在 `trade_signal` 里打印三线表。
+- `trade_signal` 周期性发布结构化状态快照到 IceOryx。
 - 单一 `fr_visualization` 进程默认订阅 5 个交易所快照，并通过 WebSocket 推送 JSON。
 - Web 前端实时订阅 WebSocket，按交易所展示表格。
 - Python 后端只负责页面导航/路由，不负责 WS 转发。
@@ -11,7 +11,7 @@
 
 ## 组件与数据流
 
-### 1) fr_signal（每个交易所一个进程）
+### 1) trade_signal（每个交易所一个进程）
 - 作用：订阅行情/费率 → 计算信号 → 每 10 秒生成快照并发布到 IceOryx。
 - 发布通道（按 exchange 隔离）：
   - `fr_signal_state_binance`
@@ -86,14 +86,14 @@
 
 ## 启动方式
 
-### 1) 启动 5 个 fr_signal
+### 1) 启动 5 个 trade_signal
 
 ```bash
-cargo run --bin fr_signal -- --exchange binance
-cargo run --bin fr_signal -- --exchange okex
-cargo run --bin fr_signal -- --exchange bybit
-cargo run --bin fr_signal -- --exchange bitget
-cargo run --bin fr_signal -- --exchange gate
+cargo run --bin trade_signal -- --exchange binance
+cargo run --bin trade_signal -- --exchange okex
+cargo run --bin trade_signal -- --exchange bybit
+cargo run --bin trade_signal -- --exchange bitget
+cargo run --bin trade_signal -- --exchange gate
 ```
 
 ### 2) 启动 fr_visualization（单进程）
@@ -122,8 +122,8 @@ python3 scripts/fr_dashboard_server.py --bind 0.0.0.0 --port 8900
 ## 目录/文件速查
 
 - 快照结构：`src/funding_rate/fr_signal_state.rs`
-- 快照生成：`src/funding_rate/decision.rs` 的 `collect_signal_state_entries`
-- fr_signal 发布：`src/bin/fr_signal.rs`
+- 快照生成：`src/funding_rate/fr_decision.rs` 的 `collect_signal_state_entries`
+- trade_signal 发布：`src/bin/trade_signal.rs`
 - fr_visualization 聚合订阅 + WS：`src/bin/fr_visualization.rs`
 - 前端页面：`docs/fr_signal_dashboard.html`
 - Python 后端：`scripts/fr_dashboard_server.py`
@@ -133,11 +133,10 @@ python3 scripts/fr_dashboard_server.py --bind 0.0.0.0 --port 8900
 ## 常见问题
 
 1) 面板无数据  
-- 确认对应 `fr_signal --exchange X` 已启动且能正常拿到行情。  
+- 确认对应 `trade_signal --exchange X` 已启动且能正常拿到行情。  
 - 确认 `fr_visualization` 日志里看到订阅的 5 个通道。  
 - 等一个 10 秒发布周期。
 
 2) 只看到别的交易所数据  
 - 确认访问路径是 `/fr_signal/{exchange}`（前端按路径推断并过滤）。  
 - 或手动带 `?exchange=binance`。
-

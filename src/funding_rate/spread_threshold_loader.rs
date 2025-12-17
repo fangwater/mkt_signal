@@ -14,7 +14,6 @@
 //!   - `{symbol}_backward_cancel_mt`: 反套撤单MT阈值
 //!
 //! 注意：
-//! - 默认使用币安现货和合约，venue 固定为 BinanceMargin 和 BinanceFutures
 //! - forward_close 和 backward_close 在代码中通过调用对应的 open 方法实现，无需单独加载
 
 use anyhow::Result;
@@ -52,11 +51,17 @@ impl ThresholdCache {
 ///
 /// # 参数
 /// - `hash_map`: Redis HGETALL 返回的 HashMap
+/// - `open_venue`: 开仓侧 venue（SpreadFactor 的 key 中 venue1）
+/// - `hedge_venue`: 对冲侧 venue（SpreadFactor 的 key 中 venue2）
 ///
 /// # 返回
 /// - `Ok(())`: 加载成功
 /// - `Err(e)`: 加载失败
-pub fn load_from_redis(hash_map: HashMap<String, String>) -> Result<()> {
+pub fn load_from_redis(
+    hash_map: HashMap<String, String>,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> Result<()> {
     let spread_factor = SpreadFactor::instance();
 
     // 按 symbol 分组收集阈值
@@ -117,9 +122,6 @@ pub fn load_from_redis(hash_map: HashMap<String, String>) -> Result<()> {
     let mut loaded_count = 0;
 
     for (symbol, operations) in symbols_thresholds.iter() {
-        let venue1 = TradingVenue::BinanceMargin;
-        let venue2 = TradingVenue::BinanceFutures;
-
         for (op_key, cache) in operations.iter() {
             if !cache.is_complete() {
                 warn!(
@@ -143,9 +145,9 @@ pub fn load_from_redis(hash_map: HashMap<String, String>) -> Result<()> {
             match (direction_str, operation_str) {
                 ("forward", "open") => {
                     spread_factor.set_forward_open_threshold(
-                        venue1,
+                        open_venue,
                         symbol,
-                        venue2,
+                        hedge_venue,
                         symbol,
                         mm_threshold,
                         mt_threshold,
@@ -154,9 +156,9 @@ pub fn load_from_redis(hash_map: HashMap<String, String>) -> Result<()> {
                 }
                 ("forward", "cancel") => {
                     spread_factor.set_forward_open_cancel_threshold(
-                        venue1,
+                        open_venue,
                         symbol,
-                        venue2,
+                        hedge_venue,
                         symbol,
                         mm_threshold,
                         mt_threshold,
@@ -165,9 +167,9 @@ pub fn load_from_redis(hash_map: HashMap<String, String>) -> Result<()> {
                 }
                 ("backward", "open") => {
                     spread_factor.set_backward_open_threshold(
-                        venue1,
+                        open_venue,
                         symbol,
-                        venue2,
+                        hedge_venue,
                         symbol,
                         mm_threshold,
                         mt_threshold,
@@ -176,9 +178,9 @@ pub fn load_from_redis(hash_map: HashMap<String, String>) -> Result<()> {
                 }
                 ("backward", "cancel") => {
                     spread_factor.set_backward_cancel_threshold(
-                        venue1,
+                        open_venue,
                         symbol,
-                        venue2,
+                        hedge_venue,
                         symbol,
                         mm_threshold,
                         mt_threshold,
@@ -214,7 +216,11 @@ mod tests {
             "0.0005".to_string(),
         );
 
-        let result = load_from_redis(hash_map);
+        let result = load_from_redis(
+            hash_map,
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+        );
         assert!(result.is_ok());
     }
 
@@ -224,7 +230,11 @@ mod tests {
         // 只有 mm 没有 mt
         hash_map.insert("BTCUSDT_forward_open_mm".to_string(), "0.0002".to_string());
 
-        let result = load_from_redis(hash_map);
+        let result = load_from_redis(
+            hash_map,
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+        );
         assert!(result.is_ok()); // 应该跳过不完整的配置但不报错
     }
 
@@ -233,7 +243,11 @@ mod tests {
         let mut hash_map = HashMap::new();
         hash_map.insert("BTCUSDT_forward_open_mm".to_string(), "invalid".to_string());
 
-        let result = load_from_redis(hash_map);
+        let result = load_from_redis(
+            hash_map,
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+        );
         assert!(result.is_ok()); // 应该跳过无效的值但不报错
     }
 
@@ -244,7 +258,11 @@ mod tests {
         hash_map.insert("BTC_USDT_forward_open_mm".to_string(), "0.0002".to_string());
         hash_map.insert("BTC_USDT_forward_open_mt".to_string(), "0.0003".to_string());
 
-        let result = load_from_redis(hash_map);
+        let result = load_from_redis(
+            hash_map,
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+        );
         assert!(result.is_ok());
     }
 }

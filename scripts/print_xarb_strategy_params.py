@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+打印 xarb（跨所）策略参数（从 Redis 读取）。
+
+读取 Redis Hash:
+  `xarb_strategy_params_{open_venue}_{hedge_venue}`
+
+推断规则：
+  - open/hedge venue：优先 --open-venue/--hedge-venue，其次 --env-name，再其次 CWD（如 okex-binance-xarb-trade）
+  - xarb 固定 futures-only：默认推断为 <exchange>-futures
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import sys
+from pathlib import Path
+from typing import Dict, Optional, Tuple
+
+SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
+
+
+def try_import_redis():
+    try:
+        import redis  # type: ignore
+
+        return redis
+    except Exception:
+        return None
+
+
+def normalize_exchange(ex: str) -> str:
+    ex = (ex or "").strip().lower()
+    if ex == "okx":
+        ex = "okex"
+    return ex
+
+
+def infer_pair_from_name(name: str) -> Optional[Tuple[str, str]]:
+    n = (name or "").strip().lower()
+    m = re.match(r"^([a-z0-9]+)[-_]([a-z0-9]+)[-_]xarb([_-].*)?$", n)
+    if not m:
+        return None
+    open_ex = normalize_exchange(m.group(1))
+    hedge_ex = normalize_exchange(m.group(2))
+    if open_ex not in SUPPORTED_EXCHANGES or hedge_ex not in SUPPORTED_EXCHANGES:
+        return None
+    if open_ex == hedge_ex:
+        return None
+    return open_ex, hedge_ex
+
+
+def infer_xarb_venues_from_env_name(env_name: str) -> Optional[Tuple[str, str]]:
+    pair = infer_pair_from_name(env_name)
+    if not pair:
+        return None
+    return f"{pair[0]}-futures", f"{pair[1]}-futures"
+
+
+def infer_xarb_venues_from_cwd() -> Optional[Tuple[str, str]]:
+    return infer_xarb_venues_from_env_name(Path.cwd().name)
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Print xarb strategy params from Redis")
+    p.add_argument("--open-venue", help="open 侧 venue（例如 okex-futures）")
+    p.add_argument("--hedge-venue", help="hedge 侧 venue（例如 binance-futures）")
+    p.add_argument("--env-name", help="环境目录名（例如 okex-binance-xarb-trade）")
+    p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
+    p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
+    p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
+    p.add_argument("--db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
+    p.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
+    args = p.parse_args()
+
+    open_venue = args.open_venue
+    hedge_venue = args.hedge_venue
+    if not open_venue and not hedge_venue:
+        inferred = (
+            infer_xarb_venues_from_env_name(args.env_name)
+            if args.env_name
+            else infer_xarb_venues_from_cwd()
+        )
+        if inferred:
+            open_venue, hedge_venue = inferred
+            print(
+                f"[INFO] 未提供 open/hedge，基于目录推断: open={open_venue}, hedge={hedge_venue}",
+                file=sys.stderr,
+            )
+
+    if not open_venue or not hedge_venue:
+        p.error(
+            "需要 --open-venue 与 --hedge-venue，或使用 --env-name / 在目录名包含 '<open>-<hedge>-xarb-...' 以自动推断"
+        )
+
+    args.open_venue = open_venue.lower()
+    args.hedge_venue = hedge_venue.lower()
+    return args
+
+
+PARAM_COMMENTS: Dict[str, str] = {
+    "mode": "做市模式(MM=双边挂单/MT=吃单对冲)",
+    "order_amount": "单笔下单量(USDT)",
+    "price_offsets": "开仓挂单档位(JSON数组)",
+    "open_order_timeout": "开仓订单超时(秒)",
+    "hedge_timeout": "对冲订单超时(秒)",
+    "hedge_price_offset": "对冲价格偏移(万分之几)",
+    "hedge_aggressive_seq_threshold": "对冲激进阈值(request_seq>=该值时不偏移，但仍为maker限价单)",
+    "signal_cooldown": "信号冷却时间(秒)",
+}
+
+
+def main() -> int:
+    args = parse_args()
+    redis = try_import_redis()
+    if redis is None:
+        print("❌ redis 包未安装，请使用 pip install redis", file=sys.stderr)
+        return 2
+
+    key = f"xarb_strategy_params_{args.open_venue}_{args.hedge_venue}"
+    rds = (
+        redis.from_url(args.redis_url)
+        if args.redis_url
+        else redis.Redis(host=args.host, port=args.port, db=args.db, password=args.password)
+    )
+
+    data = rds.hgetall(key)
+    print(f"📍 Redis: {args.host}:{args.port}/{args.db}")
+    print(f"📊 xarb 策略参数: {key}")
+    print("=" * 80)
+    if not data:
+        print(f"⚠️  HASH '{key}' 为空或不存在")
+        return 0
+
+    items = []
+    for raw_k, raw_v in data.items():
+        k = raw_k.decode("utf-8", "ignore") if isinstance(raw_k, bytes) else str(raw_k)
+        v = raw_v.decode("utf-8", "ignore") if isinstance(raw_v, bytes) else str(raw_v)
+        items.append((k, v))
+
+    for k, v in sorted(items, key=lambda kv: kv[0]):
+        comment = PARAM_COMMENTS.get(k, "")
+        if comment:
+            print(f"  {k:28} {v:>12}  # {comment}")
+        else:
+            print(f"  {k:28} {v:>12}")
+    print()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+

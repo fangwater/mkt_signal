@@ -19,6 +19,7 @@ use crate::common::mkt_msg::{
     get_msg_type, AskBidSpreadMsg, FundingRateMsg, MarkPriceMsg, MktMsgType,
 };
 use crate::signal::common::TradingVenue;
+use crate::symbol_match::normalize_symbol_for_whitelist;
 
 // 常量定义
 const ASKBID_PAYLOAD: usize = 64;
@@ -30,7 +31,7 @@ thread_local! {
 }
 
 fn build_node_name(slug: &str, suffix: &str) -> String {
-    format!("fr_signal_{}_{}", slug.replace('-', "_"), suffix)
+    format!("trade_signal_{}_{}", slug.replace('-', "_"), suffix)
 }
 
 fn is_futures(venue: TradingVenue) -> bool {
@@ -42,6 +43,11 @@ fn is_futures(venue: TradingVenue) -> bool {
             | TradingVenue::BitgetFutures
             | TradingVenue::GateFutures
     )
+}
+
+fn normalize_symbol_key(symbol: &str) -> String {
+    // Keep consistent with rolling_metrics/symbol_list: uppercase, remove '-'/'_', strip trailing "SWAP".
+    normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
 }
 
 /// MktChannel 单例访问器（零大小类型）
@@ -186,7 +192,7 @@ impl MktChannel {
     /// - Some(Quote): 盘口数据
     /// - None: 未找到或数据无效
     pub fn get_quote(&self, symbol: &str, venue: TradingVenue) -> Option<Quote> {
-        let symbol_upper = symbol.to_uppercase();
+        let symbol_upper = normalize_symbol_key(symbol);
 
         Self::with_inner(|inner| {
             let quotes_map = inner.quotes.borrow();
@@ -207,7 +213,7 @@ impl MktChannel {
     /// - `symbol`: 交易对符号
     /// - `venue`: 交易场所
     pub fn get_mark_price(&self, symbol: &str, venue: TradingVenue) -> Option<f64> {
-        let symbol_upper = symbol.to_uppercase();
+        let symbol_upper = normalize_symbol_key(symbol);
 
         Self::with_inner(|inner| {
             let mark_prices_map = inner.mark_prices.borrow();
@@ -222,7 +228,7 @@ impl MktChannel {
     /// - `symbol`: 交易对符号
     /// - `venue`: 交易场所
     pub fn get_funding_rate_mean(&self, symbol: &str, venue: TradingVenue) -> Option<f64> {
-        let symbol_upper = symbol.to_uppercase();
+        let symbol_upper = normalize_symbol_key(symbol);
 
         Self::with_inner(|inner| {
             let funding_rates_map = inner.funding_rates.borrow();
@@ -238,7 +244,7 @@ impl MktChannel {
     /// - `symbol`: 交易对符号
     /// - `venue`: 交易场所
     pub fn get_latest_funding_rate(&self, symbol: &str, venue: TradingVenue) -> Option<f64> {
-        let symbol_upper = symbol.to_uppercase();
+        let symbol_upper = normalize_symbol_key(symbol);
 
         Self::with_inner(|inner| {
             let funding_rates_map = inner.funding_rates.borrow();
@@ -286,7 +292,8 @@ impl MktChannel {
                             let msg_type = get_msg_type(payload);
                             if msg_type == MktMsgType::AskBidSpread {
                                 // 零拷贝解析
-                                let symbol = AskBidSpreadMsg::get_symbol(payload).to_uppercase();
+                                let symbol_raw = AskBidSpreadMsg::get_symbol(payload);
+                                let symbol = normalize_symbol_key(symbol_raw);
                                 let bid_price = AskBidSpreadMsg::get_bid_price(payload);
                                 let ask_price = AskBidSpreadMsg::get_ask_price(payload);
                                 let timestamp = AskBidSpreadMsg::get_timestamp(payload);
@@ -343,15 +350,12 @@ impl MktChannel {
 
                                 // 盘口更新后触发决策（事件驱动）
                                 if let Some(sym) = symbol_for_decision {
-                                    use super::decision::FrDecision;
-                                    FrDecision::with_mut(|decision| {
-                                        let _ = decision.make_combined_decision(
-                                            &sym,
-                                            &sym,
-                                            open_venue,
-                                            hedge_venue,
-                                        );
-                                    });
+                                    super::decision_router::trigger_decision(
+                                        &sym,
+                                        &sym,
+                                        open_venue,
+                                        hedge_venue,
+                                    );
                                 }
                             }
                         }
@@ -409,7 +413,8 @@ impl MktChannel {
                             match msg_type {
                                 MktMsgType::FundingRate => {
                                     // 零拷贝解析
-                                    let symbol = FundingRateMsg::get_symbol(payload).to_uppercase();
+                                    let symbol_raw = FundingRateMsg::get_symbol(payload);
+                                    let symbol = normalize_symbol_key(symbol_raw);
                                     let funding_rate = FundingRateMsg::get_funding_rate(payload);
 
                                     let symbol_for_decision = {
@@ -431,20 +436,18 @@ impl MktChannel {
 
                                     // Funding Rate MA 重算后触发决策（事件驱动）
                                     if let Some(sym) = symbol_for_decision {
-                                        use super::decision::FrDecision;
-                                        FrDecision::with_mut(|decision| {
-                                            let _ = decision.make_combined_decision(
-                                                &sym,
-                                                &sym,
-                                                open_venue,
-                                                hedge_venue,
-                                            );
-                                        });
+                                        super::decision_router::trigger_decision(
+                                            &sym,
+                                            &sym,
+                                            open_venue,
+                                            hedge_venue,
+                                        );
                                     }
                                 }
                                 MktMsgType::MarkPrice => {
                                     // 零拷贝解析
-                                    let symbol = MarkPriceMsg::get_symbol(payload).to_uppercase();
+                                    let symbol_raw = MarkPriceMsg::get_symbol(payload);
+                                    let symbol = normalize_symbol_key(symbol_raw);
                                     let mark_price = MarkPriceMsg::get_mark_price(payload);
 
                                     let mut mark_prices_map = mark_prices.borrow_mut();

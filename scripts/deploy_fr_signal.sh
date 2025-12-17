@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN_NAME="fr_signal"
+BIN_NAME="trade_signal"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 
 # 参数解析
@@ -43,6 +43,8 @@ chmod +x "$TARGET_DIR/$BIN_NAME"
 # 同步启动/停止脚本及相关工具
 SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
 SCRIPTS_TO_SYNC=(
+  "start_trade_signal.sh"
+  "stop_trade_signal.sh"
   "start_fr_signal.sh"
   "stop_fr_signal.sh"
   "sync_funding_rate_thresholds.py"
@@ -63,4 +65,4 @@ for script in "${SCRIPTS_TO_SYNC[@]}"; do
 done
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"
-echo "[INFO] 手动启动: cd $TARGET_DIR && ./scripts/start_fr_signal.sh"
+echo "[INFO] 手动启动: cd $TARGET_DIR && ./scripts/start_trade_signal.sh"

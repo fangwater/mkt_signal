@@ -298,6 +298,8 @@ struct RateFetcherInner {
     gate_api_key: Option<String>,
     /// Gate API Secret（必填，仅 Gate 使用）
     gate_api_secret: Option<String>,
+    /// 已启动的交易所任务（避免重复 spawn）
+    started_exchanges: HashSet<Exchange>,
 }
 
 impl RateFetcher {
@@ -345,6 +347,7 @@ impl RateFetcher {
                     okex_loan_rate_url: None,
                     gate_api_key: None,
                     gate_api_secret: None,
+                    started_exchanges: HashSet::new(),
                 };
                 *frf.borrow_mut() = Some(inner);
             }
@@ -352,11 +355,27 @@ impl RateFetcher {
         })
     }
 
+    fn exchange_from_venue(venue: TradingVenue) -> Exchange {
+        match venue {
+            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => Exchange::Binance,
+            TradingVenue::OkexMargin | TradingVenue::OkexFutures => Exchange::Okex,
+            TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => Exchange::Bitget,
+            TradingVenue::BybitMargin | TradingVenue::BybitFutures => Exchange::Bybit,
+            TradingVenue::GateMargin | TradingVenue::GateFutures => Exchange::Gate,
+        }
+    }
+
     // ==================== 初始化接口 ====================
 
     /// 根据 Exchange 初始化对应的费率拉取任务
     pub fn init(exchange: Exchange) -> Result<()> {
         Self::ensure_initialized()?;
+
+        let is_first_init = Self::with_inner_mut(|inner| inner.started_exchanges.insert(exchange));
+        if !is_first_init {
+            debug!("RateFetcher: {exchange} already initialized, skip spawn");
+            return Ok(());
+        }
 
         match exchange {
             Exchange::Binance => {
@@ -415,6 +434,19 @@ impl RateFetcher {
             }
         }
 
+        Ok(())
+    }
+
+    pub fn init_for_venues(open_venue: TradingVenue, hedge_venue: TradingVenue) -> Result<()> {
+        let open_exchange = Self::exchange_from_venue(open_venue);
+        let hedge_exchange = Self::exchange_from_venue(hedge_venue);
+
+        if open_exchange == hedge_exchange {
+            return Self::init(open_exchange);
+        }
+
+        Self::init(open_exchange)?;
+        Self::init(hedge_exchange)?;
         Ok(())
     }
 
@@ -2027,7 +2059,7 @@ impl RateFetcher {
 
     /// 打印信号状态表
     pub fn print_signal_table(symbols: &[String]) {
-        super::decision::FrDecision::print_signal_table(symbols);
+        super::fr_decision::FrDecision::print_signal_table(symbols);
     }
 }
 

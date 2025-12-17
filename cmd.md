@@ -16,3 +16,12 @@ scripts/deploy_xarb_trade_engine.sh --open-venue okex-futures --hedge-venue bina
 # deploy manual_signal
 scripts/deploy_fr_manual_signal.sh trade --exchange okex
 scripts/deploy_xarb_manual_signal.sh trade --open-venue okex-futures --hedge-venue binance-futures
+
+# xarb symbol lists (Redis)
+python scripts/sync_xarb_symbol_lists.py --open-venue okex-futures --hedge-venue binance-futures
+python scripts/print_xarb_symbol_lists.py --env-name okex-binance-xarb-trade
+
+# xarb configs (Redis)
+python scripts/sync_xarb_strategy_params.py --env-name okex-binance-xarb-trade
+python scripts/sync_xarb_funding_rate_thresholds.py --env-name okex-binance-xarb-trade
+python scripts/sync_xarb_spread_thresholds.py --env-name okex-binance-xarb-trade

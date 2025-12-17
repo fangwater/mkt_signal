@@ -1,4 +1,4 @@
-//! Funding Rate 套利决策模块
+//! Funding Rate 决策模块（FR 单所版）
 //!
 //! 纯决策逻辑，不维护状态。接收状态作为参数，返回决策结果并发布信号。
 
@@ -21,6 +21,7 @@ use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
+use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
 use crate::funding_rate::FundingRatePeriod;
 use crate::pre_trade::order_manager::{OrderType, Side};
@@ -30,6 +31,7 @@ use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
+use crate::symbol_match::normalize_symbol_for_whitelist;
 
 // ========== 线程本地单例 ==========
 
@@ -140,6 +142,14 @@ pub struct FrDecision {
 }
 
 impl FrDecision {
+    fn normalize_symbol_key(symbol: &str) -> String {
+        normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
+    }
+
+    pub fn is_initialized() -> bool {
+        FR_DECISION.with(|cell| cell.get().is_some())
+    }
+
     /// 访问线程本地单例（只读）
     ///
     /// # 使用示例
@@ -177,6 +187,16 @@ impl FrDecision {
                 .get()
                 .expect("FrDecision not initialized. Call init_singleton() first");
             f(&mut decision_ref.borrow_mut())
+        })
+    }
+
+    pub fn try_with_mut<F, R>(f: F) -> Option<R>
+    where
+        F: FnOnce(&mut FrDecision) -> R,
+    {
+        FR_DECISION.with(|cell| {
+            let decision_ref = cell.get()?;
+            Some(f(&mut decision_ref.borrow_mut()))
         })
     }
 
@@ -358,20 +378,25 @@ impl FrDecision {
         let spread_factor = SpreadFactor::instance();
         let now = get_timestamp_us();
         let symbol_list = SymbolList::instance();
+        let open_symbol_key = Self::normalize_symbol_key(open_symbol);
+        let hedge_symbol_key = Self::normalize_symbol_key(hedge_symbol);
 
         // 步骤1: 优先检查 cancel 信号（只和价差有关，不需要资费）
-        if spread_factor.satisfy_forward_cancel(open_venue, open_symbol, hedge_venue, hedge_symbol)
-            || spread_factor.satisfy_backward_cancel(
-                open_venue,
-                open_symbol,
-                hedge_venue,
-                hedge_symbol,
-            )
-        {
+        if spread_factor.satisfy_forward_cancel(
+            open_venue,
+            open_symbol_key.as_str(),
+            hedge_venue,
+            hedge_symbol_key.as_str(),
+        ) || spread_factor.satisfy_backward_cancel(
+            open_venue,
+            open_symbol_key.as_str(),
+            hedge_venue,
+            hedge_symbol_key.as_str(),
+        ) {
             // 检查 cancel 信号冷却
             if self.check_signal_cooldown(
-                open_symbol,
-                hedge_symbol,
+                open_symbol_key.as_str(),
+                hedge_symbol_key.as_str(),
                 open_venue,
                 hedge_venue,
                 now,
@@ -381,8 +406,8 @@ impl FrDecision {
             } else {
                 // 发送 cancel 信号
                 self.emit_signals(
-                    open_symbol,
-                    hedge_symbol,
+                    open_symbol_key.as_str(),
+                    hedge_symbol_key.as_str(),
                     open_venue,
                     hedge_venue,
                     SignalType::ArbCancel,
@@ -390,8 +415,8 @@ impl FrDecision {
                 )?;
                 // 更新 cancel 冷却时间戳
                 self.update_last_signal_ts(
-                    open_symbol,
-                    hedge_symbol,
+                    open_symbol_key.as_str(),
+                    hedge_symbol_key.as_str(),
                     open_venue,
                     hedge_venue,
                     now,
@@ -401,30 +426,34 @@ impl FrDecision {
             }
         }
 
-        let in_dump = symbol_list.is_in_dump_list(open_symbol);
+        let in_dump = symbol_list.is_in_dump_list(open_symbol_key.as_str());
 
         // 步骤2: 获取资费信号
         let fr_signal = if in_dump {
             // dump 列表：强制视为 close 信号，只要价差满足 close 条件即可
             if spread_factor.satisfy_forward_close(
                 open_venue,
-                open_symbol,
+                open_symbol_key.as_str(),
                 hedge_venue,
-                hedge_symbol,
+                hedge_symbol_key.as_str(),
             ) {
                 Some(FrSignal::ForwardClose)
             } else if spread_factor.satisfy_backward_close(
                 open_venue,
-                open_symbol,
+                open_symbol_key.as_str(),
                 hedge_venue,
-                hedge_symbol,
+                hedge_symbol_key.as_str(),
             ) {
                 Some(FrSignal::BackwardClose)
             } else {
                 None
             }
         } else {
-            self.get_funding_rate_signal(open_symbol, hedge_symbol, hedge_venue)?
+            self.get_funding_rate_signal(
+                open_symbol_key.as_str(),
+                hedge_symbol_key.as_str(),
+                hedge_venue,
+            )?
         };
 
         // 步骤3: 如果资费没有信号，返回 None
@@ -441,10 +470,10 @@ impl FrDecision {
                 }
                 if spread_factor.satisfy_forward_open(
                     open_venue,
-                    open_symbol,
+                    open_symbol_key.as_str(),
                     hedge_venue,
-                    hedge_symbol,
-                ) && symbol_list.is_in_fwd_trade_list(open_symbol)
+                    hedge_symbol_key.as_str(),
+                ) && symbol_list.is_in_fwd_trade_list(open_symbol_key.as_str())
                 {
                     Some(SignalType::ArbOpen)
                 } else {
@@ -454,9 +483,9 @@ impl FrDecision {
             FrSignal::ForwardClose => {
                 if spread_factor.satisfy_forward_close(
                     open_venue,
-                    open_symbol,
+                    open_symbol_key.as_str(),
                     hedge_venue,
-                    hedge_symbol,
+                    hedge_symbol_key.as_str(),
                 ) {
                     Some(SignalType::ArbClose)
                 } else {
@@ -469,10 +498,10 @@ impl FrDecision {
                 }
                 if spread_factor.satisfy_backward_open(
                     open_venue,
-                    open_symbol,
+                    open_symbol_key.as_str(),
                     hedge_venue,
-                    hedge_symbol,
-                ) && symbol_list.is_in_bwd_trade_list(open_symbol)
+                    hedge_symbol_key.as_str(),
+                ) && symbol_list.is_in_bwd_trade_list(open_symbol_key.as_str())
                 {
                     Some(SignalType::ArbOpen)
                 } else {
@@ -482,9 +511,9 @@ impl FrDecision {
             FrSignal::BackwardClose => {
                 if spread_factor.satisfy_backward_close(
                     open_venue,
-                    open_symbol,
+                    open_symbol_key.as_str(),
                     hedge_venue,
-                    hedge_symbol,
+                    hedge_symbol_key.as_str(),
                 ) {
                     Some(SignalType::ArbClose)
                 } else {
@@ -503,8 +532,8 @@ impl FrDecision {
 
         // 步骤6: 检查对应信号类型的冷却
         if self.check_signal_cooldown(
-            open_symbol,
-            hedge_symbol,
+            open_symbol_key.as_str(),
+            hedge_symbol_key.as_str(),
             open_venue,
             hedge_venue,
             now,
@@ -515,8 +544,8 @@ impl FrDecision {
 
         // 步骤7: 发送信号
         self.emit_signals(
-            open_symbol,
-            hedge_symbol,
+            open_symbol_key.as_str(),
+            hedge_symbol_key.as_str(),
             open_venue,
             hedge_venue,
             final_signal.clone(),
@@ -525,8 +554,8 @@ impl FrDecision {
 
         // 步骤8: 更新冷却时间戳
         self.update_last_signal_ts(
-            open_symbol,
-            hedge_symbol,
+            open_symbol_key.as_str(),
+            hedge_symbol_key.as_str(),
             open_venue,
             hedge_venue,
             now,
@@ -890,14 +919,16 @@ impl FrDecision {
     ) -> ArbOpenCtx {
         let mut ctx = ArbOpenCtx::new();
         let mkt_channel = MktChannel::instance();
+        let spot_trade_symbol = normalize_symbol_for_venue(spot_symbol, spot_venue);
+        let futures_trade_symbol = normalize_symbol_for_venue(futures_symbol, futures_venue);
 
         // opening_leg: 现货（主动腿）
         ctx.opening_leg = TradingLeg::new(spot_venue, spot_quote.bid, spot_quote.ask);
-        ctx.set_opening_symbol(spot_symbol);
+        ctx.set_opening_symbol(&spot_trade_symbol);
 
         // hedging_leg: 合约（对冲腿）
         ctx.hedging_leg = TradingLeg::new(futures_venue, futures_quote.bid, futures_quote.ask);
-        ctx.set_hedging_symbol(futures_symbol);
+        ctx.set_hedging_symbol(&futures_trade_symbol);
 
         // 交易参数
         ctx.set_side(side);
@@ -918,9 +949,9 @@ impl FrDecision {
         };
         ctx.price_tick = self
             .table_for(spot_venue)
-            .price_tick(spot_symbol)
+            .price_tick(&spot_trade_symbol)
             .unwrap_or(0.0);
-        let qty = self.convert_order_amount_to_qty(spot_venue, spot_symbol, ctx.price);
+        let qty = self.convert_order_amount_to_qty(spot_venue, &spot_trade_symbol, ctx.price);
         ctx.amount = qty as f32;
 
         ctx.exp_time = now + self.open_order_ttl_us;
@@ -1191,12 +1222,14 @@ impl FrDecision {
         now: i64,
     ) -> ArbCancelCtx {
         let mut ctx = ArbCancelCtx::new();
+        let spot_trade_symbol = normalize_symbol_for_venue(spot_symbol, spot_venue);
+        let futures_trade_symbol = normalize_symbol_for_venue(futures_symbol, futures_venue);
 
         ctx.opening_leg = TradingLeg::new(spot_venue, spot_quote.bid, spot_quote.ask);
-        ctx.set_opening_symbol(spot_symbol);
+        ctx.set_opening_symbol(&spot_trade_symbol);
 
         ctx.hedging_leg = TradingLeg::new(futures_venue, futures_quote.bid, futures_quote.ask);
-        ctx.set_hedging_symbol(futures_symbol);
+        ctx.set_hedging_symbol(&futures_trade_symbol);
 
         ctx.trigger_ts = now;
 

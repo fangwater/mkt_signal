@@ -11,7 +11,8 @@
 
 pub mod common;
 pub mod config_loader;
-pub mod decision;
+pub mod decision_router;
+pub mod fr_decision;
 pub mod fr_signal_state;
 pub mod fr_threshold_loader;
 pub mod funding_rate_factor;
@@ -21,6 +22,7 @@ pub mod spread_factor;
 pub mod spread_threshold_loader;
 pub mod strategy_loader;
 pub mod symbol_list;
+pub mod xarb_decision;
 
 // 公共导出 - 通用定义（枚举、数据结构、辅助函数）
 pub use common::{
@@ -30,14 +32,18 @@ pub use common::{
 };
 
 // 公共导出 - 统一配置加载器
-pub use config_loader::{load_all_once, spawn_config_loader};
+pub use config_loader::{
+    load_all_once, load_all_once_with_namespace, spawn_config_loader,
+    spawn_config_loader_with_namespace,
+};
 
 // 公共导出 - 阈值加载器
 pub use fr_threshold_loader::load_from_redis as load_fr_thresholds;
 pub use spread_threshold_loader::load_from_redis as load_spread_thresholds;
 
 // 公共导出 - 单例访问器
-pub use decision::FrDecision;
+pub use decision_router::{init_decision_branch, trigger_decision, DecisionBranch};
+pub use fr_decision::FrDecision;
 pub use fr_signal_state::{
     CompareOpTag, FrSignalStateBatch, FrSignalStateEntry, SignalTag, SpreadTypeTag,
     DEFAULT_STATE_CHANNEL,
@@ -45,6 +51,7 @@ pub use fr_signal_state::{
 pub use mkt_channel::MktChannel;
 pub use rate_fetcher::{ExchangeConfig, RateFetcher, BINANCE_CONFIG, OKEX_CONFIG};
 pub use symbol_list::SymbolList;
+pub use xarb_decision::XarbDecision;
 
 // 公共导出 - 价差因子
 pub use spread_factor::{SpreadFactor, SpreadThresholdConfig, SpreadType};
