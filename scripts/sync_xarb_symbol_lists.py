@@ -92,49 +92,15 @@ def parse_args() -> argparse.Namespace:
 
 # ========== 交易对白名单配置 ==========
 
-FWD_SYMBOLS_8H: List[str] = [
-    "ONE-USDT-SWAP",
-    "BICO-USDT-SWAP",
-]
+FWD_SYMBOLS_8H: List[str] = ["solusdt","dogeusdt","wldusdt","fiusdt","dotusdt"]
 
-FWD_SYMBOLS_4H: List[str] = [
-    "DEGEN-USDT-SWAP",
-    "ACT-USDT-SWAP",
-    "S-USDT-SWAP",
-    "TRB-USDT-SWAP",
-    "HYPE-USDT-SWAP",
-]
+FWD_SYMBOLS_4H: List[str] = []
 
 FWD_SYMBOLS: List[str] = FWD_SYMBOLS_8H + FWD_SYMBOLS_4H
 
-BWD_SYMBOLS_8H: List[str] = [
-    "APT-USDT-SWAP",
-    "ATOM-USDT-SWAP",
-    "XTZ-USDT-SWAP",
-    "ZRX-USDT-SWAP",
-    "ATH-USDT-SWAP",
-    "CELO-USDT-SWAP",
-    "CORE-USDT-SWAP",
-    "COMP-USDT-SWAP",
-    "ICP-USDT-SWAP",
-    "IOST-USDT-SWAP",
-    "KSM-USDT-SWAP",
-]
+BWD_SYMBOLS_8H: List[str] = []
 
-BWD_SYMBOLS_4H: List[str] = [
-    "BERA-USDT-SWAP",
-    "MORPHO-USDT-SWAP",
-    "ENA-USDT-SWAP",
-    "ZETA-USDT-SWAP",
-    "KMNO-USDT-SWAP",
-    "IMX-USDT-SWAP",
-    "WLFI-USDT-SWAP",
-    "ZK-USDT-SWAP",
-    "UMA-USDT-SWAP",
-    "JUP-USDT-SWAP",
-    "2Z-USDT-SWAP",
-    "HUMA-USDT-SWAP",
-]
+BWD_SYMBOLS_4H: List[str] = []
 
 BWD_SYMBOLS: List[str] = BWD_SYMBOLS_8H + BWD_SYMBOLS_4H
 

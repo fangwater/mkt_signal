@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -101,20 +102,6 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-SPREAD_THRESHOLD_MAPPING: Dict[str, str] = {
-    "forward_open_mm": "spread_15",
-    "forward_open_mt": "bidask_10",
-    "forward_cancel_mm": "spread_20",
-    "forward_cancel_mt": "bidask_15",
-    "backward_open_mm": "spread_30",
-    "backward_open_mt": "askbid_90",
-    "backward_cancel_mm": "spread_25",
-    "backward_cancel_mt": "askbid_85",
-}
-
-THRESHOLD_ORDER = list(SPREAD_THRESHOLD_MAPPING.keys())
-
-
 def print_three_line_table(headers: List[str], rows: List[List[str]]) -> None:
     widths = [len(h) for h in headers]
     for r in rows:
@@ -137,6 +124,28 @@ def print_three_line_table(headers: List[str], rows: List[List[str]]) -> None:
     print(bot_rule)
 
 
+def load_sync_config(rds, key: str) -> Optional[Dict]:
+    raw = rds.get(key)
+    if not raw:
+        return None
+    text = raw.decode("utf-8", "ignore") if isinstance(raw, bytes) else str(raw)
+    try:
+        obj = json.loads(text)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
+
+
+def infer_threshold_order_from_data(field_keys: List[str]) -> List[str]:
+    suffixes = set()
+    for field_key in field_keys:
+        parts = field_key.split("_")
+        if len(parts) < 4:
+            continue
+        suffixes.add("_".join(parts[-3:]))
+    return sorted(suffixes)
+
+
 def main() -> int:
     args = parse_args()
     redis = try_import_redis()
@@ -145,6 +154,7 @@ def main() -> int:
         return 2
 
     key = f"xarb_spread_thresholds_{args.open_venue}_{args.hedge_venue}"
+    config_key = f"xarb_spread_thresholds_config_{args.open_venue}_{args.hedge_venue}"
     rds = (
         redis.from_url(args.redis_url)
         if args.redis_url
@@ -155,9 +165,23 @@ def main() -> int:
     print(f"📊 xarb 价差阈值: {key}")
     print("-" * 80)
 
-    print("🔧 映射配置（对所有 symbol 通用）:")
-    rows = [[k, SPREAD_THRESHOLD_MAPPING.get(k, "-")] for k in THRESHOLD_ORDER]
-    print_three_line_table(["operation", "percentile_reference"], rows)
+    cfg = load_sync_config(rds, config_key)
+    mapping = None
+    threshold_order: List[str] = []
+    if cfg:
+        mapping = cfg.get("mapping") if isinstance(cfg.get("mapping"), dict) else None
+        threshold_order = (
+            cfg.get("threshold_order")
+            if isinstance(cfg.get("threshold_order"), list)
+            else list(mapping.keys()) if mapping else []
+        )
+        generated_at = cfg.get("generated_at")
+        print(f"🧾 sync 配置: {config_key}" + (f" (generated_at={generated_at})" if generated_at else ""))
+
+    if mapping and threshold_order:
+        print("🔧 映射配置（来自 Redis sync 配置，对所有 symbol 通用）:")
+        rows = [[k, str(mapping.get(k, "-"))] for k in threshold_order]
+        print_three_line_table(["operation", "percentile_reference"], rows)
 
     data = rds.hgetall(key)
     if not data:
@@ -170,16 +194,45 @@ def main() -> int:
         vv = v.decode("utf-8", "ignore") if isinstance(v, bytes) else str(v)
         kv[kk] = vv
 
+    scalar_kv: Dict[str, str] = {}
+    json_rows: Dict[str, Dict[str, str]] = {}
+    for field_key, val in kv.items():
+        try:
+            obj = json.loads(val)
+        except Exception:
+            obj = None
+
+        if isinstance(obj, dict):
+            row: Dict[str, str] = {}
+            for op in THRESHOLD_ORDER:
+                if op in obj:
+                    row[op] = str(obj[op])
+            if row:
+                json_rows[field_key] = row
+                continue
+
+        scalar_kv[field_key] = val
+
+    if not threshold_order:
+        threshold_order = infer_threshold_order_from_data(list(scalar_kv.keys()))
+
     all_symbols = set()
-    for field_key in kv:
+    for field_key in scalar_kv:
         parts = field_key.split("_")
         if len(parts) >= 4:
             symbol = "_".join(parts[:-3])
             all_symbols.add(symbol)
 
     print("\n📈 统计:")
-    print(f"   - 已同步 symbols: {len(all_symbols)} 个")
-    print(f"   - 阈值字段总数: {len(kv)} 个")
+    if all_symbols:
+        print(f"   - 已同步 symbols: {len(all_symbols)} 个")
+        print(f"   - 阈值字段总数: {len(scalar_kv)} 个")
+    elif json_rows:
+        print(f"   - 已同步 symbols: {len(json_rows)} 个 (legacy JSON 格式)")
+        print(f"   - 阈值字段总数: {len(json_rows)} 个 (每个 field=一个 symbol)")
+    else:
+        print(f"   - 已同步 symbols: 0 个")
+        print(f"   - 阈值字段总数: {len(kv)} 个")
     if all_symbols:
         print(f"   - Symbols: {', '.join(sorted(all_symbols))}")
 
@@ -187,8 +240,18 @@ def main() -> int:
         print("\n📊 各 Symbol 具体阈值:")
         for symbol in sorted(all_symbols):
             rows = []
-            for op in THRESHOLD_ORDER:
-                rows.append([op, kv.get(f"{symbol}_{op}", "-")])
+            for op in threshold_order:
+                rows.append([op, scalar_kv.get(f"{symbol}_{op}", "-")])
+            print(f"\n🔹 {symbol}:")
+            print_three_line_table(["operation", "threshold_value"], rows)
+    elif json_rows:
+        print("\n⚠️  检测到 legacy JSON 格式阈值（建议重新运行 sync_xarb_spread_thresholds.py 以写入标准字段格式）")
+        print("\n📊 各 Symbol 具体阈值:")
+        for symbol in sorted(json_rows.keys()):
+            rows = []
+            row = json_rows[symbol]
+            for op in threshold_order or sorted(row.keys()):
+                rows.append([op, row.get(op, "-")])
             print(f"\n🔹 {symbol}:")
             print_three_line_table(["operation", "threshold_value"], rows)
 
@@ -198,4 +261,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

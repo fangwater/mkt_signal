@@ -26,6 +26,7 @@ import math
 import os
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -99,13 +100,13 @@ def parse_args() -> argparse.Namespace:
 
 
 SPREAD_THRESHOLD_MAPPING = {
-    "forward_open_mm": "spread_15",
+    "forward_open_mm": "spread_5",
     "forward_open_mt": "bidask_10",
-    "forward_cancel_mm": "spread_20",
+    "forward_cancel_mm": "spread_10",
     "forward_cancel_mt": "bidask_15",
-    "backward_open_mm": "spread_30",
+    "backward_open_mm": "spread_95",
     "backward_open_mt": "askbid_90",
-    "backward_cancel_mm": "spread_25",
+    "backward_cancel_mm": "spread_90",
     "backward_cancel_mt": "askbid_85",
 }
 
@@ -269,17 +270,47 @@ def main() -> int:
 
     thresholds = generate_spread_thresholds(symbols, rolling)
     write_key = f"{NAMESPACE}_spread_thresholds_{open_venue}_{hedge_venue}"
+    config_key = f"{NAMESPACE}_spread_thresholds_config_{open_venue}_{hedge_venue}"
 
-    written_fields = 0
+    all_fields: Dict[str, str] = {}
+    skipped_symbols: List[str] = []
+
     for sym_key, row in thresholds.items():
-        rds.hset(write_key, sym_key, json.dumps(row, ensure_ascii=False))
-        written_fields += 1
+        missing = [k for k in THRESHOLD_ORDER if k not in row]
+        if missing:
+            skipped_symbols.append(sym_key)
+            continue
 
-    print(f"✅ 已写入 {written_fields} 个 symbols 的价差阈值到 HASH '{write_key}'")
+        for suffix in THRESHOLD_ORDER:
+            value = float(row[suffix])
+            all_fields[f"{sym_key}_{suffix}"] = f"{value:.8f}".rstrip("0").rstrip(".")
+
+    if not all_fields:
+        print(f"❌ 无可写入的阈值字段（可能 rolling metrics 数据不足或 symbols 列表为空）", file=sys.stderr)
+        return 2
+
+    config = {
+        "schema_version": 1,
+        "namespace": NAMESPACE,
+        "open_venue": open_venue,
+        "hedge_venue": hedge_venue,
+        "rolling_key": rolling_key,
+        "mapping": SPREAD_THRESHOLD_MAPPING,
+        "threshold_order": THRESHOLD_ORDER,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    rds.set(config_key, json.dumps(config, ensure_ascii=False, sort_keys=True))
+    rds.hset(write_key, mapping=all_fields)
+
+    successful_symbols = len(set(k.rsplit("_", 3)[0] for k in all_fields.keys()))
+    print(f"✅ 已写入 {len(all_fields)} 个价差阈值字段到 HASH '{write_key}'")
+    print(f"🧾 已写入 sync 配置到 '{config_key}'")
+    print(f"   成功: {successful_symbols} 个 symbols")
+    if skipped_symbols:
+        print(f"   跳过: {len(skipped_symbols)} 个 symbols ({', '.join(sorted(set(skipped_symbols)))})")
     print(f"📍 Redis: {args.host}:{args.port}/{args.db}\n")
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

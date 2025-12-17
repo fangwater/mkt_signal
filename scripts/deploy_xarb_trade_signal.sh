@@ -108,9 +108,12 @@ cp "$BIN_PATH" "$TARGET_DIR/"
 chmod +x "$TARGET_DIR/$BIN_NAME"
 
 SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
-SCRIPTS_TO_SYNC=(
-  "start_trade_signal.sh"
-  "stop_trade_signal.sh"
+XARB_SCRIPT_DIR_SRC="$ROOT_DIR/xarb_scripts"
+XARB_SCRIPTS_TO_SYNC=(
+  "start_xarb_trade_signal.sh"
+  "stop_xarb_trade_signal.sh"
+)
+XARB_TOOLS_TO_SYNC=(
   "sync_xarb_symbol_lists.py"
   "print_xarb_symbol_lists.py"
   "sync_xarb_strategy_params.py"
@@ -120,13 +123,30 @@ SCRIPTS_TO_SYNC=(
   "sync_xarb_funding_rate_thresholds.py"
   "print_xarb_funding_rate_thresholds.py"
 )
-mkdir -p "$TARGET_DIR/scripts"
-for script in "${SCRIPTS_TO_SYNC[@]}"; do
-  if [[ -f "$SCRIPT_DIR_SRC/$script" ]]; then
-    rsync -a "$SCRIPT_DIR_SRC/$script" "$TARGET_DIR/scripts/"
-    chmod +x "$TARGET_DIR/scripts/$script"
+mkdir -p "$TARGET_DIR/xarb_scripts"
+
+for script in "${XARB_SCRIPTS_TO_SYNC[@]}"; do
+  if [[ -f "$XARB_SCRIPT_DIR_SRC/$script" ]]; then
+    rsync -a "$XARB_SCRIPT_DIR_SRC/$script" "$TARGET_DIR/xarb_scripts/"
+    chmod +x "$TARGET_DIR/xarb_scripts/$script"
+  fi
+done
+
+for tool in "${XARB_TOOLS_TO_SYNC[@]}"; do
+  if [[ -f "$SCRIPT_DIR_SRC/$tool" ]]; then
+    rsync -a "$SCRIPT_DIR_SRC/$tool" "$TARGET_DIR/xarb_scripts/"
+    chmod +x "$TARGET_DIR/xarb_scripts/$tool"
   fi
 done
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"
-echo "[INFO] 手动启动: cd $TARGET_DIR && ./scripts/start_trade_signal.sh"
+echo "[INFO] 手动启动: cd $TARGET_DIR && ./xarb_scripts/start_xarb_trade_signal.sh"
+echo "[INFO] xarb 的 Redis 参数/交易对同步脚本在: $TARGET_DIR/xarb_scripts"
+cat <<EOF
+[INFO] 常用命令（在目标目录执行，可自动从 CWD 推断 open/hedge pair）:
+  cd "$TARGET_DIR"
+  ./xarb_scripts/sync_xarb_symbol_lists.py
+  ./xarb_scripts/print_xarb_symbol_lists.py
+  ./xarb_scripts/sync_xarb_strategy_params.py
+  ./xarb_scripts/print_xarb_strategy_params.py
+EOF
