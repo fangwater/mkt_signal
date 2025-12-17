@@ -12,6 +12,7 @@ use crate::common::basic_account_msg::{
     get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
     BasicPositionMsg,
 };
+use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
 use crate::pre_trade::monitor_channel::MonitorChannel;
@@ -175,6 +176,8 @@ impl QueryEngChannel {
     }
 
     async fn run_query_resp_listener(exchange: &str, service_name: &str) -> Result<()> {
+        let exchange_enum = Exchange::from_str(exchange)
+            .ok_or_else(|| anyhow!("QueryEngHub: unsupported exchange '{}'", exchange))?;
         let node = NodeBuilder::new()
             .name(&NodeName::new(&format!(
                 "pre_trade_query_resp_{}",
@@ -214,6 +217,11 @@ impl QueryEngChannel {
                                 match event_type {
                                     BasicAccountEventType::BalanceUpdate => {
                                         if let Ok(m) = BasicBalanceMsg::from_bytes(body) {
+                                            if m.symbol.eq_ignore_ascii_case("USDT") {
+                                                if let Some(usdt) = mc.usdt_mgr(exchange_enum) {
+                                                    usdt.borrow_mut().apply_balance(&m);
+                                                }
+                                            }
                                             if matches!(
                                                 open_venue,
                                                 TradingVenue::BinanceMargin
@@ -236,6 +244,11 @@ impl QueryEngChannel {
                                     }
                                     BasicAccountEventType::BorrowInterest => {
                                         if let Ok(m) = BasicBorrowInterestMsg::from_bytes(body) {
+                                            if m.symbol.eq_ignore_ascii_case("USDT") {
+                                                if let Some(usdt) = mc.usdt_mgr(exchange_enum) {
+                                                    usdt.borrow_mut().apply_borrow_interest(&m);
+                                                }
+                                            }
                                             if open_venue == TradingVenue::BinanceMargin {
                                                 if let Some(bal) = mc.open_balance_mgr() {
                                                     bal.borrow_mut().apply_borrow_interest(&m);

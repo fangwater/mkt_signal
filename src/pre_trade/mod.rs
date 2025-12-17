@@ -17,6 +17,7 @@ pub mod signal_channel;
 pub mod symbol_mapper;
 pub mod symbol_util;
 pub mod trade_eng_channel;
+pub mod usdt_balance_manager;
 pub use persist_channel::{
     PersistChannel, ORDER_UPDATE_RECORD_CHANNEL, TRADE_UPDATE_RECORD_CHANNEL,
 };

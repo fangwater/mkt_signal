@@ -190,22 +190,22 @@ async fn main() -> Result<()> {
 
             // 6.2 启动时执行一次账户快照查询（用于补齐/初始化本地风控状态）
             {
-                let open_venue = open_venue;
-                let hedge_venue = hedge_venue;
-                tokio::task::spawn_local(async move {
-                    let mut need_binance_balance = false;
-                    let mut need_binance_um = false;
-                    let mut need_okex_balance = false;
-                    let mut need_okex_swap_positions = false;
-                    for v in [open_venue, hedge_venue] {
-                        match v {
-                            TradingVenue::BinanceMargin => need_binance_balance = true,
-                            TradingVenue::BinanceFutures => need_binance_um = true,
-                            TradingVenue::OkexMargin => need_okex_balance = true,
-                            TradingVenue::OkexFutures => need_okex_swap_positions = true,
-                            _ => {}
-                        }
-                    }
+                    let open_venue = open_venue;
+                    let hedge_venue = hedge_venue;
+                    tokio::task::spawn_local(async move {
+                    // 定时快照查询：balance 与 position 都要 query。
+                    // 目的：
+                    // - futures-only 场景也需要 balance（特别是 USDT）用于风控/可用资金判断
+                    // - margin-only 场景也需要 position（部分交易所/模式下持仓会通过不同通道补齐）
+                    let need_binance = open_venue.trade_engine_exchange() == "binance"
+                        || hedge_venue.trade_engine_exchange() == "binance";
+                    let need_okex = open_venue.trade_engine_exchange() == "okex"
+                        || hedge_venue.trade_engine_exchange() == "okex";
+
+                    let need_binance_balance = need_binance;
+                    let need_binance_um = need_binance;
+                    let need_okex_balance = need_okex;
+                    let need_okex_swap_positions = need_okex;
 
                     if !need_binance_balance
                         && !need_binance_um

@@ -1,8 +1,11 @@
+use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::symbol_util::extract_base_asset;
+use crate::pre_trade::usdt_balance_manager::UsdtBalanceSnapshot;
+use crate::signal::common::TradingVenue;
 use crate::viz::resample::{
     PreTradeExposureResampleEntry, PreTradeExposureRow, PreTradePositionResampleEntry,
     PreTradePositionRow, PreTradeRiskResampleEntry,
@@ -110,6 +113,86 @@ fn print_exposure_table(
         )
     );
     println!("{top_rule}");
+}
+
+fn usdt_net_position(exchange: Exchange, s: &UsdtBalanceSnapshot) -> f64 {
+    match exchange {
+        Exchange::Okex => s.balance,
+        Exchange::Binance => s.balance - s.borrowed - s.cumulative_interest,
+        _ => s.balance,
+    }
+}
+
+fn print_usdt_summary(open_venue: TradingVenue, hedge_venue: TradingVenue, mon: &MonitorChannel) {
+    let Some(open_ex) = Exchange::from_str(open_venue.trade_engine_exchange()) else {
+        return;
+    };
+    let Some(hedge_ex) = Exchange::from_str(hedge_venue.trade_engine_exchange()) else {
+        return;
+    };
+
+    let open_snap = mon
+        .usdt_mgr(open_ex)
+        .map(|m| m.borrow().snapshot())
+        .unwrap_or_default();
+    let hedge_snap = mon
+        .usdt_mgr(hedge_ex)
+        .map(|m| m.borrow().snapshot())
+        .unwrap_or_default();
+
+    let fmt_u = |v: f64| format!("{:.2}", v);
+    let open_net = usdt_net_position(open_ex, &open_snap);
+    let hedge_net = usdt_net_position(hedge_ex, &hedge_snap);
+
+    let (total_balance, total_borrowed, total_interest, total_net) = if open_ex == hedge_ex {
+        (
+            open_snap.balance,
+            open_snap.borrowed,
+            open_snap.cumulative_interest,
+            open_net,
+        )
+    } else {
+        (
+            open_snap.balance + hedge_snap.balance,
+            open_snap.borrowed + hedge_snap.borrowed,
+            open_snap.cumulative_interest + hedge_snap.cumulative_interest,
+            open_net + hedge_net,
+        )
+    };
+
+    // 若完全没有更新过（避免刷屏）
+    if open_snap.last_timestamp == 0
+        && hedge_snap.last_timestamp == 0
+        && total_balance.abs() <= 1e-12
+        && total_borrowed.abs() <= 1e-12
+        && total_interest.abs() <= 1e-12
+    {
+        return;
+    }
+
+    println!(
+        "USDT(open:{}): balance={} borrowed={} interest={} net={}",
+        open_ex.as_str(),
+        fmt_u(open_snap.balance),
+        fmt_u(open_snap.borrowed),
+        fmt_u(open_snap.cumulative_interest),
+        fmt_u(open_net)
+    );
+    println!(
+        "USDT(hedge:{}): balance={} borrowed={} interest={} net={}",
+        hedge_ex.as_str(),
+        fmt_u(hedge_snap.balance),
+        fmt_u(hedge_snap.borrowed),
+        fmt_u(hedge_snap.cumulative_interest),
+        fmt_u(hedge_net)
+    );
+    println!(
+        "USDT(total): balance={} borrowed={} interest={} net={}",
+        fmt_u(total_balance),
+        fmt_u(total_borrowed),
+        fmt_u(total_interest),
+        fmt_u(total_net)
+    );
 }
 
 thread_local! {
@@ -450,22 +533,25 @@ impl ResampleChannel {
                     continue;
                 }
                 let net_qty = open_qty + hedge_qty;
-                let mark = if asset_upper == "USDT" {
-                    1.0
-                } else {
-                    price_snapshot
-                        .get(&format!("{}USDT", asset_upper))
-                        .map(|p| p.mark_price)
-                        .unwrap_or(0.0)
-                };
+                let mark = price_snapshot
+                    .get(&format!("{}USDT", asset_upper))
+                    .map(|p| p.mark_price)
+                    .unwrap_or(0.0);
                 let net_usdt = net_qty * mark;
                 rows.push((asset_upper, open_qty, hedge_qty, net_qty, net_usdt));
             }
-            if should_print && !rows.is_empty() {
+            if should_print {
                 let include_header = !self.printed_once.get();
                 self.printed_once.set(true);
                 self.last_printed_trade_update_seq.set(trade_seq);
-                print_exposure_table(ts_ms, rows, total_abs_exposure, include_header);
+                let rows_empty = rows.is_empty();
+                if !rows_empty {
+                    print_exposure_table(ts_ms, rows, total_abs_exposure, include_header);
+                }
+                // USDT 不在敞口表内，单独输出（按 exchange 维度）
+                let open_venue = mon.open_venue();
+                let hedge_venue = mon.hedge_venue();
+                print_usdt_summary(open_venue, hedge_venue, &mon);
             }
         }
 
@@ -670,20 +756,22 @@ impl ResampleChannel {
             {
                 for bal in bal_mgr.borrow().snapshot() {
                     let asset = bal.symbol.to_uppercase();
-                    let mark = if asset == "USDT" {
-                        1.0
-                    } else {
-                        price_snapshot
-                            .get(&format!("{}USDT", asset))
-                            .map(|p| p.mark_price)
-                            .unwrap_or(0.0)
-                    };
+                    let mark = price_snapshot
+                        .get(&format!("{}USDT", asset))
+                        .map(|p| p.mark_price)
+                        .unwrap_or(0.0);
                     if mark <= 0.0 {
                         continue;
                     }
                     borrowed_usd += bal.borrowed * mark;
                     interest_usd += bal.cumulative_interest * mark;
                 }
+            }
+            // USDT 借贷/利息单独维护：USDT 本身按 1:1 计价
+            for (ex, s) in mon.usdt_snapshot_all() {
+                let _ = ex; // 仅用于日志与排查，此处汇总不区分交易所
+                borrowed_usd += s.borrowed;
+                interest_usd += s.cumulative_interest;
             }
 
             let max_leverage = PreTradeParamsLoader::instance().max_leverage();

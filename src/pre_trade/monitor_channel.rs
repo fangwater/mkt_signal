@@ -20,6 +20,7 @@ use crate::pre_trade::basic_um_manager::BasicUmManager;
 use crate::pre_trade::net_position::NetPosition;
 use crate::pre_trade::price_table::{PriceEntry, PriceTable};
 use crate::pre_trade::symbol_util::extract_base_asset;
+use crate::pre_trade::usdt_balance_manager::{UsdtBalanceManager, UsdtBalanceSnapshot};
 use crate::signal::common::{ExecutionType, TradingVenue};
 
 const ACCOUNT_PAYLOAD: usize = 16_384;
@@ -163,6 +164,8 @@ struct MonitorChannelInner {
     hedge_venue: TradingVenue,
     open_leg: LegMgr,
     hedge_leg: LegMgr,
+    /// USDT 单独维护：exchange -> manager（open/hedge 若同交易所则共享同一 Rc）
+    usdt_mgrs: HashMap<Exchange, Rc<RefCell<UsdtBalanceManager>>>,
     /// 价格表（仍使用 Binance mark/index 价格作为统一估值源）
     price_table: Rc<RefCell<PriceTable>>,
     /// 各交易场所的最小下单量/步进信息
@@ -262,6 +265,22 @@ impl MonitorChannel {
         Self::with_inner(|inner| inner.hedge_venue)
     }
 
+    pub fn usdt_mgr(&self, exchange: Exchange) -> Option<Rc<RefCell<UsdtBalanceManager>>> {
+        Self::with_inner(|inner| inner.usdt_mgrs.get(&exchange).cloned())
+    }
+
+    pub fn usdt_snapshot_all(&self) -> Vec<(Exchange, UsdtBalanceSnapshot)> {
+        Self::with_inner(|inner| {
+            let mut out: Vec<(Exchange, UsdtBalanceSnapshot)> = inner
+                .usdt_mgrs
+                .iter()
+                .map(|(ex, mgr)| (*ex, mgr.borrow().snapshot()))
+                .collect();
+            out.sort_by_key(|(ex, _)| *ex as u8);
+            out
+        })
+    }
+
     /// 获取当前基础风控口径的快照（用于 resample/viz）
     ///
     /// 返回：
@@ -320,6 +339,14 @@ impl MonitorChannel {
             } else {
                 return 0.0;
             };
+            if asset.eq_ignore_ascii_case("USDT") {
+                let exchange = leg.exchange();
+                return inner
+                    .usdt_mgrs
+                    .get(&exchange)
+                    .map(|m| m.borrow().net_usdt_position())
+                    .unwrap_or(0.0);
+            }
             match leg {
                 LegMgr::Margin { bal, .. } => bal.borrow().net_position(asset, None),
                 _ => 0.0,
@@ -352,6 +379,14 @@ impl MonitorChannel {
 
         let open_exchange = exchange_from_venue(open_venue);
         let hedge_exchange = exchange_from_venue(hedge_venue);
+
+        // 初始化 USDT 管理器（按交易所维度，open/hedge 同交易所则共享）
+        let mut usdt_mgrs: HashMap<Exchange, Rc<RefCell<UsdtBalanceManager>>> = HashMap::new();
+        for ex in [open_exchange, hedge_exchange] {
+            usdt_mgrs
+                .entry(ex)
+                .or_insert_with(|| Rc::new(RefCell::new(UsdtBalanceManager::new(ex))));
+        }
 
         // 初始化开仓腿基础管理器
         let open_leg = if is_margin_venue(open_venue) {
@@ -428,6 +463,7 @@ impl MonitorChannel {
                 ex,
                 open_leg.clone(),
                 hedge_leg.clone(),
+                usdt_mgrs.get(&ex).cloned(),
                 strategy_mgr.clone(),
             );
         }
@@ -441,6 +477,7 @@ impl MonitorChannel {
             hedge_venue,
             open_leg,
             hedge_leg,
+            usdt_mgrs,
             price_table,
             venue_min_qty_tables,
             strategy_mgr,
@@ -545,7 +582,9 @@ impl MonitorChannel {
             exposures.insert(asset, (open_qty, hedge_qty));
         }
 
-        // total_equity 仍按“现货净头寸”估算：只从 margin balance 统计
+        // total_equity 口径：
+        // - 非 USDT 资产：只从 margin balance 统计（净头寸估值）
+        // - USDT：按交易所维度单独维护（余额/负债/利息），无论 open/hedge 是否为 futures
         let mut total_equity_usdt: f64 = 0.0;
         for leg in [&inner.open_leg, &inner.hedge_leg] {
             if let LegMgr::Margin { bal, .. } = leg {
@@ -562,6 +601,15 @@ impl MonitorChannel {
                     }
                 }
             }
+        }
+        // 加上各交易所 USDT 的净头寸（open/hedge 同交易所不会重复）
+        for (ex, mgr) in &inner.usdt_mgrs {
+            let net = mgr.borrow().net_usdt_position();
+            if net.abs() <= 1e-12 {
+                continue;
+            }
+            debug!("USDT net position: exchange={:?} net={:.6}", ex, net);
+            total_equity_usdt += net;
         }
 
         let mut total_position_usdt = 0.0;
@@ -851,6 +899,7 @@ impl MonitorChannel {
         exchange: Exchange,
         open_leg: LegMgr,
         hedge_leg: LegMgr,
+        usdt_mgr: Option<Rc<RefCell<UsdtBalanceManager>>>,
         strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
     ) {
         tokio::task::spawn_local(async move {
@@ -925,6 +974,11 @@ impl MonitorChannel {
                             match msg_type {
                                 BasicAccountEventType::BalanceUpdate => {
                                     if let Ok(msg) = BasicBalanceMsg::from_bytes(data) {
+                                        if msg.symbol.eq_ignore_ascii_case("USDT") {
+                                            if let Some(mgr) = usdt_mgr.as_ref() {
+                                                mgr.borrow_mut().apply_balance(&msg);
+                                            }
+                                        }
                                         if exchange == open_leg.exchange() {
                                             if let LegMgr::Margin { bal, .. } = &open_leg {
                                                 bal.borrow_mut().apply_balance(&msg);
@@ -953,6 +1007,11 @@ impl MonitorChannel {
                                 }
                                 BasicAccountEventType::BorrowInterest => {
                                     if let Ok(msg) = BasicBorrowInterestMsg::from_bytes(data) {
+                                        if msg.symbol.eq_ignore_ascii_case("USDT") {
+                                            if let Some(mgr) = usdt_mgr.as_ref() {
+                                                mgr.borrow_mut().apply_borrow_interest(&msg);
+                                            }
+                                        }
                                         if exchange == open_leg.exchange() {
                                             if let LegMgr::Margin { bal, .. } = &open_leg {
                                                 bal.borrow_mut().apply_borrow_interest(&msg);

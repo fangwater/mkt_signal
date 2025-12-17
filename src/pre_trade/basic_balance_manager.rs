@@ -41,6 +41,10 @@ impl BasicBalanceManager {
     /// 应用 balance 消息：覆盖当前余额，更新时间戳。
     pub fn apply_balance(&mut self, msg: &BasicBalanceMsg) {
         let symbol = msg.symbol.to_ascii_uppercase();
+        // USDT 单独维护（按 exchange 维度），不进入 BasicBalanceManager。
+        if symbol == "USDT" {
+            return;
+        }
         let entry = self
             .balances
             .entry(symbol.clone())
@@ -66,6 +70,10 @@ impl BasicBalanceManager {
     pub fn apply_borrow_interest(&mut self, msg: &BasicBorrowInterestMsg) {
         // 与 balance 更新保持一致：内部统一用大写 key，避免大小写不一致导致 borrowed/interest 丢失。
         let symbol = msg.symbol.to_ascii_uppercase();
+        // USDT 单独维护（按 exchange 维度），不进入 BasicBalanceManager。
+        if symbol == "USDT" {
+            return;
+        }
         let entry = self
             .balances
             .entry(symbol.clone())
