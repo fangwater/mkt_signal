@@ -2,12 +2,28 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN_NAME="fr_manual_signal"
+BIN_NAME="manual_signal"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 
-# 参数解析
+usage() {
+  cat <<'EOF'
+用法:
+  scripts/deploy_fr_manual_signal.sh [trade|test] --exchange <binance|okex|bybit|bitget|gate>
+
+说明:
+  - 仅构建并复制二进制 manual_signal 到目标目录（不自动启动）。
+  - FR 目标目录:  $HOME/<exchange>_fr_<trade|test>/
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
 ENV_TYPE="trade"
 EXCHANGE="binance"
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     trade|test)
@@ -24,7 +40,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "[ERROR] 未知参数: $1"
-      echo "用法: $0 [trade|test] [--exchange binance|okex]"
+      usage
       exit 1
       ;;
   esac
@@ -33,10 +49,10 @@ done
 # 规范化为小写
 EXCHANGE="$(echo "$EXCHANGE" | tr 'A-Z' 'a-z')"
 case "$EXCHANGE" in
-  binance|okex)
+  binance|okex|bybit|bitget|gate)
     ;;
   *)
-    echo "[ERROR] 不支持的 exchange: $EXCHANGE (支持: binance/okex)"
+    echo "[ERROR] 不支持的 exchange: $EXCHANGE (支持: binance/okex/bybit/bitget/gate)"
     exit 1
     ;;
 esac

@@ -19,10 +19,7 @@ use crate::common::redis_client::RedisClient;
 use crate::signal::common::TradingVenue;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 
-// Redis key 前缀
-const DUMP_SYMBOL_KEY_PREFIX: &str = "fr_dump_symbols";
-const FWD_TRADE_SYMBOL_KEY_PREFIX: &str = "fr_fwd_trade_symbols";
-const BWD_TRADE_SYMBOL_KEY_PREFIX: &str = "fr_bwd_trade_symbols";
+const DEFAULT_SYMBOL_NAMESPACE: &str = "fr";
 
 // Thread-local 单例存储
 thread_local! {
@@ -104,17 +101,42 @@ impl SymbolList {
         client: &mut RedisClient,
         exchange: Exchange,
     ) -> Result<()> {
-        let exchange_str = exchange.as_str();
+        self.reload_from_redis_with_key_suffix(client, exchange.as_str(), DEFAULT_SYMBOL_NAMESPACE)
+            .await
+    }
+
+    pub async fn reload_from_redis_with_namespace(
+        &self,
+        client: &mut RedisClient,
+        exchange: Exchange,
+        namespace: &str,
+    ) -> Result<()> {
+        self.reload_from_redis_with_key_suffix(client, exchange.as_str(), namespace)
+            .await?;
+        Self::with_inner_mut(|inner| {
+            inner.current_exchange = Some(exchange);
+        });
+        Ok(())
+    }
+
+    pub async fn reload_from_redis_with_key_suffix(
+        &self,
+        client: &mut RedisClient,
+        key_suffix: &str,
+        namespace: &str,
+    ) -> Result<()> {
+        let key_suffix = key_suffix.trim().to_ascii_lowercase();
+        let ns = normalize_symbol_list_namespace(namespace);
 
         // 读取平仓列表
-        let dump_key = format!("{}:{}", DUMP_SYMBOL_KEY_PREFIX, exchange_str);
+        let dump_key = format!("{ns}_dump_symbols:{key_suffix}");
         if let Ok(Some(value)) = client.get_string(&dump_key).await {
             if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
                 Self::with_inner_mut(|inner| {
                     inner.dump_symbols = symbols.iter().map(|s| s.to_uppercase()).collect();
                     info!(
                         "更新平仓列表 {}: {} 个交易对",
-                        exchange_str,
+                        key_suffix,
                         inner.dump_symbols.len()
                     );
                 });
@@ -124,14 +146,14 @@ impl SymbolList {
         // 读取建仓列表
         // （废弃）建仓列表现阶段未使用，留空
         // 读取正套建仓列表
-        let fwd_trade_key = format!("{}:{}", FWD_TRADE_SYMBOL_KEY_PREFIX, exchange_str);
+        let fwd_trade_key = format!("{ns}_fwd_trade_symbols:{key_suffix}");
         if let Ok(Some(value)) = client.get_string(&fwd_trade_key).await {
             if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
                 Self::with_inner_mut(|inner| {
                     inner.fwd_trade_symbols = symbols.iter().map(|s| s.to_uppercase()).collect();
                     info!(
                         "更新正套建仓列表 {}: {} 个交易对",
-                        exchange_str,
+                        key_suffix,
                         inner.fwd_trade_symbols.len()
                     );
                 });
@@ -139,23 +161,23 @@ impl SymbolList {
         }
 
         // 读取反套建仓列表
-        let bwd_trade_key = format!("{}:{}", BWD_TRADE_SYMBOL_KEY_PREFIX, exchange_str);
+        let bwd_trade_key = format!("{ns}_bwd_trade_symbols:{key_suffix}");
         if let Ok(Some(value)) = client.get_string(&bwd_trade_key).await {
             if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
                 Self::with_inner_mut(|inner| {
                     inner.bwd_trade_symbols = symbols.iter().map(|s| s.to_uppercase()).collect();
                     info!(
                         "更新反套建仓列表 {}: {} 个交易对",
-                        exchange_str,
+                        key_suffix,
                         inner.bwd_trade_symbols.len()
                     );
                 });
             }
         }
 
-        // 记录当前 exchange
+        // 记录当前 exchange（仅当 suffix 可解析为单交易所）
         Self::with_inner_mut(|inner| {
-            inner.current_exchange = Some(exchange);
+            inner.current_exchange = Exchange::from_str(&key_suffix);
         });
 
         Ok(())
@@ -245,5 +267,17 @@ impl SymbolList {
             Exchange::Bybit => vec![TradingVenue::BybitMargin, TradingVenue::BybitFutures],
             Exchange::Gate => vec![TradingVenue::GateMargin, TradingVenue::GateFutures],
         }
+    }
+}
+
+fn normalize_symbol_list_namespace(namespace: &str) -> String {
+    let namespace = namespace
+        .trim()
+        .trim_end_matches(|c: char| c == '_' || c == '-' || c == ':')
+        .to_ascii_lowercase();
+    if namespace.is_empty() {
+        DEFAULT_SYMBOL_NAMESPACE.to_string()
+    } else {
+        namespace
     }
 }

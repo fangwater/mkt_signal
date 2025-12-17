@@ -65,8 +65,8 @@ name = "query_client"
 path = "src/bin/query_client.rs"
 
 [[bin]]
-name = "fr_manual_signal"
-path = "src/bin/fr_manual_signal.rs"
+name = "manual_signal"
+path = "src/bin/manual_signal.rs"
 
 [dependencies]
 local-ip-address = "0.6"

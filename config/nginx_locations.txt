@@ -5,10 +5,10 @@
 
 /fr/binance http://127.0.0.1:12345
 
-# fr_manual_signal (HTTP)
+# manual_signal (HTTP)
 # 说明：
 # - 这里的 upstream 请使用 127.0.0.1（或内网 IP），不要写 0.0.0.0
-# - 同时配置带/不带尾部斜杠，避免 /fr_manual_signal 和 /fr_manual_signal/ 行为不一致
-# - upstream 末尾带 /，用于将前缀 /fr_manual_signal(/) strip 掉并转发给后端的 /
-/fr_manual_signal http://127.0.0.1:8911/
-/fr_manual_signal/ http://127.0.0.1:8911/
+# - 同时配置带/不带尾部斜杠，避免 /manual_signal 和 /manual_signal/ 行为不一致
+# - upstream 末尾带 /，用于将前缀 /manual_signal(/) strip 掉并转发给后端的 /
+/manual_signal http://127.0.0.1:8911/
+/manual_signal/ http://127.0.0.1:8911/

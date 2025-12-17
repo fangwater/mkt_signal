@@ -43,20 +43,10 @@ use mkt_signal::signal::open_signal::ArbOpenCtx;
 use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
 use mkt_signal::symbol_match::normalize_symbol_for_whitelist;
 
-const PROCESS_NAME: &str = "fr_manual_signal";
+const PROCESS_NAME: &str = "manual_signal";
 const DEFAULT_SIGNAL_CHANNEL: &str = "funding_rate_signal";
 const DEFAULT_BACKWARD_CHANNEL: &str = "signal_query";
 const ASKBID_PAYLOAD: usize = 64;
-
-fn exchange_from_venue(venue: TradingVenue) -> Exchange {
-    match venue {
-        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => Exchange::Binance,
-        TradingVenue::OkexMargin | TradingVenue::OkexFutures => Exchange::Okex,
-        TradingVenue::BybitMargin | TradingVenue::BybitFutures => Exchange::Bybit,
-        TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => Exchange::Bitget,
-        TradingVenue::GateMargin | TradingVenue::GateFutures => Exchange::Gate,
-    }
-}
 
 fn infer_default_venues(exchange: Exchange) -> (TradingVenue, TradingVenue) {
     match exchange {
@@ -93,9 +83,59 @@ fn infer_venues_from_cwd() -> Option<(TradingVenue, TradingVenue)> {
     None
 }
 
+fn infer_symbol_key_suffix_from_cwd(symbol_namespace: &str) -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    let name = cwd.file_name()?.to_string_lossy().to_ascii_lowercase();
+    let ns = symbol_namespace
+        .trim()
+        .trim_end_matches(|c: char| c == '_' || c == '-' || c == ':')
+        .to_ascii_lowercase();
+    if ns.is_empty() {
+        return None;
+    }
+
+    for pat in [format!("-{ns}-"), format!("_{ns}_")] {
+        if let Some(idx) = name.find(&pat) {
+            let prefix = name[..idx]
+                .trim_end_matches(|c: char| c == '_' || c == '-')
+                .to_string();
+            if !prefix.is_empty() {
+                return Some(prefix);
+            }
+        }
+    }
+
+    None
+}
+
+fn infer_symbol_namespace_and_key_suffix_from_cwd() -> Option<(String, String)> {
+    let cwd = std::env::current_dir().ok()?;
+    let name = cwd.file_name()?.to_string_lossy().to_ascii_lowercase();
+
+    if let Some(base) = name.strip_suffix("_trade") {
+        let base = base.trim_end_matches('_');
+        let (prefix, ns) = base.rsplit_once('_')?;
+        if prefix.is_empty() || ns.is_empty() {
+            return None;
+        }
+        return Some((ns.to_string(), prefix.to_string()));
+    }
+
+    if let Some(base) = name.strip_suffix("-trade") {
+        let base = base.trim_end_matches('-');
+        let (prefix, ns) = base.rsplit_once('-')?;
+        if prefix.is_empty() || ns.is_empty() {
+            return None;
+        }
+        return Some((ns.to_string(), prefix.to_string()));
+    }
+
+    None
+}
+
 #[derive(Parser, Debug, Clone)]
-#[command(name = "fr_manual_signal")]
-#[command(about = "FR signal manual mock (web UI + hedge query responder)")]
+#[command(name = "manual_signal")]
+#[command(about = "Manual signal (web UI + hedge query responder)")]
 struct CliArgs {
     /// Opening venue (active leg). If omitted, inferred from CWD (e.g. okex_fr_trade).
     #[arg(long, value_enum)]
@@ -118,12 +158,16 @@ struct CliArgs {
     bind: String,
 
     /// HTTP port
-    #[arg(long, default_value_t = 8911)]
+    #[arg(long)]
     port: u16,
 
     /// SymbolList reload interval seconds
     #[arg(long, default_value_t = 60)]
     symbol_reload_secs: u64,
+
+    /// SymbolList Redis key namespace (e.g. "xarb" -> xarb_dump_symbols:{...}); if omitted, inferred from CWD
+    #[arg(long)]
+    symbol_namespace: Option<String>,
 
     /// Default open order TTL (milliseconds) for manual signals
     #[arg(long, default_value_t = 120_000)]
@@ -144,7 +188,6 @@ struct CliArgs {
 
 #[derive(Debug, Clone)]
 struct Args {
-    exchange: Exchange,
     open: TradingVenue,
     hedge: TradingVenue,
     channel: String,
@@ -152,6 +195,8 @@ struct Args {
     bind: String,
     port: u16,
     symbol_reload_secs: u64,
+    symbol_namespace: String,
+    symbol_key_suffix: String,
     open_ttl_ms: u64,
     mm_hedge_timeout_ms: u64,
     hedge_price_offset: f64,
@@ -213,11 +258,12 @@ impl QuoteCache {
 
 #[derive(Clone)]
 struct AppCfg {
-    exchange: Exchange,
     open: TradingVenue,
     hedge: TradingVenue,
     signal_channel: String,
     backward_channel: String,
+    symbol_namespace: String,
+    symbol_key_suffix: String,
     default_open_ttl_ms: u64,
     default_mm_hedge_timeout_ms: u64,
     hedge_price_offset: f64,
@@ -323,11 +369,12 @@ struct QuoteQuery {
 
 #[derive(Debug, Serialize)]
 struct ConfigResponse {
-    exchange: Exchange,
     open: TradingVenue,
     hedge: TradingVenue,
     signal_channel: String,
     backward_channel: String,
+    symbol_namespace: String,
+    symbol_key_suffix: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -391,7 +438,12 @@ fn signal_type_for_kind(kind: &ManualSignalKind) -> SignalType {
     }
 }
 
-async fn symbol_list_reload_loop(exchange: Exchange, interval_secs: u64, token: CancellationToken) {
+async fn symbol_list_reload_loop(
+    interval_secs: u64,
+    symbol_namespace: String,
+    symbol_key_suffix: String,
+    token: CancellationToken,
+) {
     let redis = get_redis_settings();
     let mut interval = tokio::time::interval(Duration::from_secs(interval_secs.max(1)));
     loop {
@@ -401,7 +453,14 @@ async fn symbol_list_reload_loop(exchange: Exchange, interval_secs: u64, token: 
                 match RedisClient::connect(redis.clone()).await {
                     Ok(mut client) => {
                         let symbol_list = SymbolList::instance();
-                        if let Err(err) = symbol_list.reload_from_redis(&mut client, exchange).await {
+                        if let Err(err) = symbol_list
+                            .reload_from_redis_with_key_suffix(
+                                &mut client,
+                                &symbol_key_suffix,
+                                &symbol_namespace,
+                            )
+                            .await
+                        {
                             warn!("SymbolList reload failed: {err:#}");
                         }
                     }
@@ -475,7 +534,8 @@ fn spawn_backward_query_responder(
     token: CancellationToken,
 ) {
     tokio::task::spawn_local(async move {
-        let node_name = format!("{}_backward_sub_{}", PROCESS_NAME, cfg.exchange.as_str());
+        let node_suffix = cfg.symbol_key_suffix.replace('-', "_");
+        let node_name = format!("{}_backward_sub_{}", PROCESS_NAME, node_suffix);
         let service_path = build_service_name(&format!("signal_pubs/{}", cfg.backward_channel));
 
         let result: Result<()> = async move {
@@ -821,11 +881,12 @@ async fn api_symbols() -> impl IntoResponse {
 
 async fn api_config(State(st): State<AppState>) -> impl IntoResponse {
     Json(ConfigResponse {
-        exchange: st.cfg.exchange,
         open: st.cfg.open,
         hedge: st.cfg.hedge,
         signal_channel: st.cfg.signal_channel.clone(),
         backward_channel: st.cfg.backward_channel.clone(),
+        symbol_namespace: st.cfg.symbol_namespace.clone(),
+        symbol_key_suffix: st.cfg.symbol_key_suffix.clone(),
     })
 }
 
@@ -924,7 +985,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>fr_manual_signal</title>
+    <title>manual_signal</title>
     <style>
       body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 16px; }
       .row { display: flex; gap: 16px; }
@@ -946,7 +1007,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
     </style>
   </head>
   <body>
-    <h2>fr_manual_signal</h2>
+    <h2>manual_signal</h2>
     <div class="muted" id="cfg"></div>
     <div class="row">
       <div class="col symbols box">
@@ -1013,7 +1074,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
       async function loadCfg() {
         const r = await fetch(api("config"));
         const j = await r.json();
-        $("cfg").textContent = `exchange=${j.exchange} open=${j.open} hedge=${j.hedge} channel=${j.signal_channel} backward=${j.backward_channel}`;
+        $("cfg").textContent = `symbols=${j.symbol_namespace}_*:${j.symbol_key_suffix} open=${j.open} hedge=${j.hedge} channel=${j.signal_channel} backward=${j.backward_channel}`;
       }
 
       async function refreshStats() {
@@ -1104,7 +1165,7 @@ async fn serve_http(addr: SocketAddr, state: AppState, token: CancellationToken)
         .route("/api/send", post(api_send))
         .with_state(state);
 
-    info!("frmanual http listening at http://{}", addr);
+    info!("manual_signal http listening at http://{}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app)
         .with_graceful_shutdown(async move { token.cancelled().await })
@@ -1118,8 +1179,14 @@ async fn run(args: Args, token: CancellationToken) -> Result<()> {
     }
 
     info!(
-        "{} starting exchange={} open={:?} hedge={:?} http={}:{}",
-        PROCESS_NAME, args.exchange, args.open, args.hedge, args.bind, args.port
+        "{} starting open={:?} hedge={:?} http={}:{} symbol_key={}_*:{}",
+        PROCESS_NAME,
+        args.open,
+        args.hedge,
+        args.bind,
+        args.port,
+        args.symbol_namespace,
+        args.symbol_key_suffix
     );
 
     SymbolList::init_singleton()?;
@@ -1127,7 +1194,11 @@ async fn run(args: Args, token: CancellationToken) -> Result<()> {
     {
         if let Ok(mut client) = RedisClient::connect(redis).await {
             let _ = SymbolList::instance()
-                .reload_from_redis(&mut client, args.exchange)
+                .reload_from_redis_with_key_suffix(
+                    &mut client,
+                    &args.symbol_key_suffix,
+                    &args.symbol_namespace,
+                )
                 .await;
         }
     }
@@ -1137,11 +1208,12 @@ async fn run(args: Args, token: CancellationToken) -> Result<()> {
     spawn_askbid_listener(quotes.clone(), args.hedge);
 
     let cfg = AppCfg {
-        exchange: args.exchange,
         open: args.open,
         hedge: args.hedge,
         signal_channel: args.channel.clone(),
         backward_channel: args.backward_channel.clone(),
+        symbol_namespace: args.symbol_namespace.clone(),
+        symbol_key_suffix: args.symbol_key_suffix.clone(),
         default_open_ttl_ms: args.open_ttl_ms,
         default_mm_hedge_timeout_ms: args.mm_hedge_timeout_ms,
         hedge_price_offset: args.hedge_price_offset,
@@ -1158,8 +1230,9 @@ async fn run(args: Args, token: CancellationToken) -> Result<()> {
     );
 
     tokio::task::spawn_local(symbol_list_reload_loop(
-        args.exchange,
         args.symbol_reload_secs,
+        args.symbol_namespace,
+        args.symbol_key_suffix,
         token.clone(),
     ));
 
@@ -1183,30 +1256,43 @@ async fn main() -> Result<()> {
     env_logger::init();
 
     let args = CliArgs::parse();
-    let (open, hedge) = match (args.open, args.hedge) {
-        (Some(open), Some(hedge)) => (open, hedge),
+    let (open, hedge, venues_inferred) = match (args.open, args.hedge) {
+        (Some(open), Some(hedge)) => (open, hedge, false),
         (None, None) => {
-            infer_venues_from_cwd().unwrap_or_else(|| {
+            let (open, hedge) = infer_venues_from_cwd().unwrap_or_else(|| {
                 panic!(
-                    "missing --open/--hedge and failed to infer from CWD; name the directory like '<exchange>_fr_trade' (e.g. okex_fr_trade) or pass --open/--hedge explicitly"
+                    "missing --open/--hedge and failed to infer from CWD; pass --open/--hedge explicitly"
                 )
-            })
+            });
+            (open, hedge, true)
         }
         _ => {
             anyhow::bail!("please provide both --open and --hedge, or omit both to infer from CWD")
         }
     };
 
-    let exchange = exchange_from_venue(open);
-    if exchange_from_venue(hedge) != exchange {
+    let (symbol_namespace, symbol_key_suffix) = match args.symbol_namespace.clone() {
+        Some(ns) => {
+            let suffix = infer_symbol_key_suffix_from_cwd(&ns).with_context(|| {
+                format!(
+                    "failed to infer symbol key suffix from CWD for --symbol-namespace={}; expected dir like '<suffix>-{}-trade' or '<suffix>_{}_trade'",
+                    ns, ns, ns
+                )
+            })?;
+            (ns, suffix)
+        }
+        None => infer_symbol_namespace_and_key_suffix_from_cwd().with_context(|| {
+            "failed to infer symbol namespace/key suffix from CWD; pass --symbol-namespace or use a dir like '<suffix>_<namespace>_trade' or '<suffix>-<namespace>-trade'"
+                .to_string()
+        })?,
+    };
+    if venues_inferred && symbol_key_suffix.contains('-') {
         anyhow::bail!(
-            "open/hedge exchange mismatch: open={:?} hedge={:?}",
-            open,
-            hedge
+            "CWD suggests cross-exchange symbol key suffix='{}' but --open/--hedge were inferred; please pass --open and --hedge explicitly",
+            symbol_key_suffix
         );
     }
     let args = Args {
-        exchange,
         open,
         hedge,
         channel: args.channel,
@@ -1214,6 +1300,8 @@ async fn main() -> Result<()> {
         bind: args.bind,
         port: args.port,
         symbol_reload_secs: args.symbol_reload_secs,
+        symbol_namespace,
+        symbol_key_suffix,
         open_ttl_ms: args.open_ttl_ms,
         mm_hedge_timeout_ms: args.mm_hedge_timeout_ms,
         hedge_price_offset: args.hedge_price_offset,
