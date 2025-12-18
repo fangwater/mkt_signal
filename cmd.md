@@ -25,3 +25,6 @@ python scripts/print_xarb_symbol_lists.py --env-name okex-binance-xarb-trade
 python scripts/sync_xarb_strategy_params.py --env-name okex-binance-xarb-trade
 python scripts/sync_xarb_funding_rate_thresholds.py --env-name okex-binance-xarb-trade
 python scripts/sync_xarb_spread_thresholds.py --env-name okex-binance-xarb-trade
+
+
+python /home/ubuntu/crypto_mkt/mkt_signal/scripts/okx_swap_buy.py --inst-id APT-USDT-SWAP --side buy --sz 40 --reduce-only --execute
