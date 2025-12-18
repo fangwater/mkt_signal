@@ -223,6 +223,8 @@ async fn main() -> Result<()> {
                 );
             }
 
+            ResampleChannel::start_exposure_table_printer(Duration::from_secs(10));
+
             // 6. 初始化 TradeEngHub（按 open/hedge 需求注册交易所）
             use std::collections::BTreeSet;
             let mut trade_eng_set = BTreeSet::new();

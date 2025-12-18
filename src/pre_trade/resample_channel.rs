@@ -13,8 +13,8 @@ use crate::viz::resample::{
 use anyhow::Result;
 use log::debug;
 use log::{info, warn};
-use std::cell::Cell;
 use std::cell::OnceCell;
+use std::time::Duration;
 
 fn print_exposure_table(
     ts_ms: i64,
@@ -22,7 +22,6 @@ fn print_exposure_table(
     hedge_venue: TradingVenue,
     mut rows: Vec<(String, f64, f64, f64, f64)>,
     abs_sum_usdt: f64,
-    include_header: bool,
 ) {
     rows.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -89,10 +88,8 @@ fn print_exposure_table(
 
     println!("\nts_utc={} (ts_ms={})", ts_utc, ts_ms);
     println!("{top_rule}");
-    if include_header {
-        println!("{}", fmt_row(headers, &widths));
-        println!("{mid_rule}");
-    }
+    println!("{}", fmt_row(headers, &widths));
+    println!("{mid_rule}");
     for (asset, open, hedge, net, net_usdt) in &rows {
         println!(
             "{}",
@@ -235,8 +232,6 @@ pub struct ResampleChannel {
     positions_pub: Option<ResamplePublisher>,
     exposure_pub: Option<ResamplePublisher>,
     risk_pub: Option<ResamplePublisher>,
-    printed_once: Cell<bool>,
-    last_printed_trade_update_seq: Cell<u64>,
 }
 
 impl ResampleChannel {
@@ -316,9 +311,54 @@ impl ResampleChannel {
             positions_pub: make_pub(positions_channel, "positions"),
             exposure_pub: make_pub(exposure_channel, "exposure"),
             risk_pub: make_pub(risk_channel, "risk"),
-            printed_once: Cell::new(false),
-            last_printed_trade_update_seq: Cell::new(0),
         }
+    }
+
+    pub fn start_exposure_table_printer(interval: Duration) {
+        tokio::task::spawn_local(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                ticker.tick().await;
+                ResampleChannel::with(|ch| ch.print_exposure_table_snapshot());
+            }
+        });
+        info!(
+            "pre_trade exposure table printer started (interval={:?})",
+            interval
+        );
+    }
+
+    fn print_exposure_table_snapshot(&self) {
+        let mon = MonitorChannel::instance();
+        let price_snapshot = mon.price_table().borrow().snapshot();
+        let ts_ms = (get_timestamp_us() / 1000) as i64;
+        let (exposures, _total_equity, total_abs_exposure, _total_position) =
+            mon.basic_state_snapshot();
+
+        let mut rows = Vec::new();
+        for (asset, &(open_qty, hedge_qty)) in &exposures {
+            let asset_upper = asset.to_ascii_uppercase();
+            if open_qty.abs() <= 1e-12 && hedge_qty.abs() <= 1e-12 {
+                continue;
+            }
+            let net_qty = open_qty + hedge_qty;
+            let mark = price_snapshot
+                .get(&format!("{}USDT", asset_upper))
+                .map(|p| p.mark_price)
+                .unwrap_or(0.0);
+            let net_usdt = net_qty * mark;
+            rows.push((asset_upper, open_qty, hedge_qty, net_qty, net_usdt));
+        }
+
+        let open_venue = mon.open_venue();
+        let hedge_venue = mon.hedge_venue();
+        if !rows.is_empty() {
+            print_exposure_table(ts_ms, open_venue, hedge_venue, rows, total_abs_exposure);
+        }
+        // USDT 不在敞口表内，单独输出（按 exchange 维度）
+        print_usdt_summary(open_venue, hedge_venue, &mon);
     }
 
     /// 获取持仓数据 publisher 的引用
@@ -525,49 +565,6 @@ impl ResampleChannel {
 
         let (exposures, total_equity, total_abs_exposure, total_position) =
             mon.basic_state_snapshot();
-
-        {
-            let trade_seq = mon.trade_update_seq();
-            let should_print =
-                !self.printed_once.get() || trade_seq != self.last_printed_trade_update_seq.get();
-
-            let mut rows = Vec::new();
-            for (asset, &(open_qty, hedge_qty)) in &exposures {
-                let asset_upper = asset.to_ascii_uppercase();
-                if open_qty.abs() <= 1e-12 && hedge_qty.abs() <= 1e-12 {
-                    continue;
-                }
-                let net_qty = open_qty + hedge_qty;
-                let mark = price_snapshot
-                    .get(&format!("{}USDT", asset_upper))
-                    .map(|p| p.mark_price)
-                    .unwrap_or(0.0);
-                let net_usdt = net_qty * mark;
-                rows.push((asset_upper, open_qty, hedge_qty, net_qty, net_usdt));
-            }
-            if should_print {
-                let include_header = !self.printed_once.get();
-                self.printed_once.set(true);
-                self.last_printed_trade_update_seq.set(trade_seq);
-                let rows_empty = rows.is_empty();
-                if !rows_empty {
-                    let open_venue = mon.open_venue();
-                    let hedge_venue = mon.hedge_venue();
-                    print_exposure_table(
-                        ts_ms,
-                        open_venue,
-                        hedge_venue,
-                        rows,
-                        total_abs_exposure,
-                        include_header,
-                    );
-                }
-                // USDT 不在敞口表内，单独输出（按 exchange 维度）
-                let open_venue = mon.open_venue();
-                let hedge_venue = mon.hedge_venue();
-                print_usdt_summary(open_venue, hedge_venue, &mon);
-            }
-        }
 
         let mut published = 0usize;
 

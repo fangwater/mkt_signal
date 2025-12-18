@@ -163,6 +163,9 @@ struct BinanceRawExchangeFilter {
     tick_size: Option<String>,
     #[serde(rename = "minNotional")]
     min_notional: Option<String>,
+    // Binance UM futures uses `notional` (not `minNotional`) under MIN_NOTIONAL.
+    #[serde(rename = "notional")]
+    notional: Option<String>,
 }
 
 struct BinanceSymbolFilterValues {
@@ -199,7 +202,11 @@ fn binance_extract_filter_values(
                 }
             }
             "MIN_NOTIONAL" | "NOTIONAL" => {
-                if let Some(value) = &filter.min_notional {
+                let value = filter
+                    .min_notional
+                    .as_deref()
+                    .or(filter.notional.as_deref());
+                if let Some(value) = value {
                     let v = parse_decimal(value, "minNotional", symbol)?;
                     if v > 0.0 {
                         min_notional = Some(v);
@@ -221,6 +228,33 @@ fn parse_decimal(value: &str, field: &str, symbol: &str) -> Result<f64> {
     value
         .parse::<f64>()
         .with_context(|| format!("symbol={} field={}", symbol, field))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn binance_min_notional_parses_min_notional_field() {
+        let json = serde_json::json!([
+            {"filterType":"LOT_SIZE","minQty":"1","stepSize":"1"},
+            {"filterType":"MIN_NOTIONAL","minNotional":"5"}
+        ]);
+        let filters: Vec<BinanceRawExchangeFilter> = serde_json::from_value(json).unwrap();
+        let out = binance_extract_filter_values(&filters, "DOGEUSDT").unwrap();
+        assert_eq!(out.min_notional, Some(5.0));
+    }
+
+    #[test]
+    fn binance_min_notional_parses_notional_field_for_futures() {
+        let json = serde_json::json!([
+            {"filterType":"LOT_SIZE","minQty":"1","stepSize":"1"},
+            {"filterType":"MIN_NOTIONAL","notional":"5"}
+        ]);
+        let filters: Vec<BinanceRawExchangeFilter> = serde_json::from_value(json).unwrap();
+        let out = binance_extract_filter_values(&filters, "DOGEUSDT").unwrap();
+        assert_eq!(out.min_notional, Some(5.0));
+    }
 }
 
 // ============================================================================

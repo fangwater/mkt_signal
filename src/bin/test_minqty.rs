@@ -3,6 +3,7 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use mkt_signal::signal::{common::TradingVenue, venue_min_qty_table::VenueMinQtyTable};
 use serde::Deserialize;
+use serde_json::Value;
 
 #[derive(Debug, Deserialize)]
 struct OkexResponse {
@@ -50,6 +51,69 @@ struct Args {
     /// 交易场所（默认 okex-futures），只支持各交易所 USDT 本位场景
     #[arg(long, value_enum, default_value = "okex-futures")]
     venue: TradingVenue,
+
+    /// 针对单个 symbol 做最小交易要求检查（例如 DOGEUSDT），设置后只打印该 symbol 结果并退出
+    #[arg(long)]
+    check_symbol: Option<String>,
+
+    /// check_symbol 模式下的数量（qty）
+    #[arg(long, default_value_t = 1.17)]
+    qty: f64,
+
+    /// check_symbol 模式下的价格（用于名义金额 notional 计算）
+    #[arg(long, default_value_t = 0.12667)]
+    price: f64,
+
+    /// 额外打印交易所原始 filters（用于排查 minNotional / notional 字段差异）
+    #[arg(long, default_value_t = false)]
+    show_raw_filters: bool,
+}
+
+fn is_futures_venue(venue: TradingVenue) -> bool {
+    matches!(
+        venue,
+        TradingVenue::BinanceFutures
+            | TradingVenue::OkexFutures
+            | TradingVenue::BitgetFutures
+            | TradingVenue::BybitFutures
+            | TradingVenue::GateFutures
+    )
+}
+
+async fn fetch_binance_symbol_filters(venue: TradingVenue, symbol: &str) -> Result<Vec<Value>> {
+    let url = match venue {
+        TradingVenue::BinanceFutures => "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        TradingVenue::BinanceMargin => "https://api.binance.com/api/v3/exchangeInfo",
+        _ => bail!(
+            "fetch_binance_symbol_filters: unsupported venue={:?}",
+            venue
+        ),
+    };
+
+    let client = reqwest::Client::new();
+    let body: Value = client.get(url).send().await?.json().await?;
+
+    let symbols = body
+        .get("symbols")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow::anyhow!("binance exchangeInfo missing symbols[]"))?;
+
+    let symbol_upper = symbol.to_uppercase();
+    let Some(entry) = symbols.iter().find(|s| {
+        s.get("symbol")
+            .and_then(|v| v.as_str())
+            .map(|s| s.eq_ignore_ascii_case(&symbol_upper))
+            .unwrap_or(false)
+    }) else {
+        bail!("symbol not found in binance exchangeInfo: {}", symbol_upper);
+    };
+
+    let filters = entry
+        .get("filters")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow::anyhow!("binance exchangeInfo symbol entry missing filters[]"))?;
+
+    Ok(filters.clone())
 }
 
 #[tokio::main]
@@ -58,6 +122,93 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
     let venue = args.venue;
+    if let Some(symbol) = args.check_symbol.as_deref() {
+        println!("\n=== Check min trading requirements ===\n");
+        println!(
+            "venue={:?} symbol={} qty={:.8} price={:.8}\n",
+            venue,
+            symbol.to_uppercase(),
+            args.qty,
+            args.price
+        );
+
+        let mut table = VenueMinQtyTable::new(venue);
+        table.refresh().await?;
+
+        let symbol_key = symbol.to_uppercase();
+        let min_qty = table.min_qty(&symbol_key).unwrap_or(0.0);
+        let step_size = table.step_size(&symbol_key).unwrap_or(0.0);
+        let price_tick = table.price_tick(&symbol_key).unwrap_or(0.0);
+        let min_notional = table.min_notional(&symbol_key).unwrap_or(0.0);
+        let contract_size = table.contract_multiplier(&symbol_key);
+
+        println!("min_qty      = {:.12}", min_qty);
+        println!("step_size    = {:.12}", step_size);
+        println!("price_tick   = {:.12}", price_tick);
+        println!("min_notional = {:.12}", min_notional);
+        println!("contract_sz  = {:.12}", contract_size);
+        println!();
+
+        let mut ok = true;
+        if min_qty > 0.0 && args.qty + 1e-12 < min_qty {
+            ok = false;
+            println!(
+                "FAIL: qty {:.8} < min_qty {:.8} (qty + 1e-12 < min_qty)",
+                args.qty, min_qty
+            );
+        } else {
+            println!("PASS: min_qty check");
+        }
+
+        if is_futures_venue(venue) {
+            if min_notional > 0.0 {
+                let notional = args.qty * args.price;
+                if notional + 1e-8 < min_notional {
+                    ok = false;
+                    println!(
+                        "FAIL: notional {:.8} < min_notional {:.8} (price={:.8} qty={:.8})",
+                        notional, min_notional, args.price, args.qty
+                    );
+                } else {
+                    println!(
+                        "PASS: min_notional check (notional={:.8} >= {:.8})",
+                        notional, min_notional
+                    );
+                }
+            } else {
+                println!("SKIP: min_notional check (min_notional missing/0)");
+            }
+        } else {
+            println!("SKIP: min_notional check (non-futures venue)");
+        }
+
+        if args.show_raw_filters
+            && matches!(
+                venue,
+                TradingVenue::BinanceFutures | TradingVenue::BinanceMargin
+            )
+        {
+            println!("\n--- Raw filters (Binance exchangeInfo) ---");
+            let filters = fetch_binance_symbol_filters(venue, &symbol_key).await?;
+            for f in filters {
+                let filter_type = f
+                    .get("filterType")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<missing filterType>");
+                if matches!(
+                    filter_type,
+                    "LOT_SIZE" | "PRICE_FILTER" | "MIN_NOTIONAL" | "NOTIONAL"
+                ) {
+                    println!("{}", serde_json::to_string_pretty(&f)?);
+                }
+            }
+            println!("--- end ---");
+        }
+
+        println!("\nRESULT: {}\n", if ok { "PASS" } else { "FAIL" });
+        return Ok(());
+    }
+
     println!("\n=== 测试 {:?} 合约信息（验证 ctMult API）===\n", venue);
 
     // 原始 API 数据仅对 OKX 展示，其它 venue 直接跳过
