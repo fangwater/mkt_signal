@@ -5,7 +5,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::service::ipc;
-use log::{debug, info, warn};
+use log::{info, warn};
 
 use crate::common::time_util::get_timestamp_us;
 use crate::persist_manager::iceoryx::{create_signal_record_subscriber, trim_payload};
@@ -67,7 +67,7 @@ impl SignalPersistor {
             get_timestamp_us() as u64
         };
         let key = format!("{:020}_{:010}", ts, record.strategy_id);
-        debug!(
+        info!(
             "persist signal: strategy_id={} type={:?} cf={} key={} payload_len={}",
             record.strategy_id,
             record.signal_type,

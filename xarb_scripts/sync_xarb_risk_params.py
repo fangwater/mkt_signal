@@ -5,10 +5,10 @@
 将 xarb（跨所）Pre-Trade 风控参数同步到 Redis 并打印（futures-only）。
 
 注意：
-  - Rust pre_trade 固定读取 hash key: `fr_pre_trade_params`，并通过 Redis prefix 隔离实例。
+  - Rust pre_trade 固定读取 hash key: `pre_trade_risk_params`，并通过 Redis prefix 隔离实例。
   - pre_trade 的 prefix 规则："<open_venue>:<hedge_venue>:"
   - 因此这里写入的 Redis Hash key 为：
-      "<open_venue>:<hedge_venue>:fr_pre_trade_params"
+      "<open_venue>:<hedge_venue>:pre_trade_risk_params"
 
 推断规则（优先级从高到低）：
   1) --open-venue/--hedge-venue（必须为 *-futures）
@@ -129,7 +129,7 @@ PARAM_COMMENTS: Dict[str, str] = {
 
 
 def build_risk_params_key(open_venue: str, hedge_venue: str) -> str:
-    return f"{open_venue}:{hedge_venue}:fr_pre_trade_params"
+    return f"{open_venue}:{hedge_venue}:pre_trade_risk_params"
 
 
 def print_three_line_table(headers: List[str], rows: List[List[str]]) -> None:
@@ -176,7 +176,7 @@ def main() -> int:
 
     key = build_risk_params_key(args.open_venue, args.hedge_venue)
     rds.hset(key, mapping=RISK_PARAMS)
-    print(f"✅ 已写入 {len(RISK_PARAMS)} 个参数到 HASH '{key}'")
+    print(f"✅ 已写入 {len(RISK_PARAMS)} 个参数到 HASH '{key}' (primary)")
     print(f"📍 Redis: {args.host}:{args.port}/{args.db}")
     print(f"📍 pretrade open={args.open_venue} hedge={args.hedge_venue}")
 
@@ -193,4 +193,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

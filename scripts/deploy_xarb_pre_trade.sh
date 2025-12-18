@@ -7,17 +7,18 @@ BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 
 usage() {
   cat <<'EOF'
-用法: scripts/deploy_xarb_pre_trade.sh [--open-venue <okex-futures>] [--hedge-venue <binance-futures>] [--env-suffix xarb-trade] [--env-name okex-binance-xarb-trade]
+用法: scripts/deploy_xarb_pre_trade.sh [trade|test] --open-venue <okex-futures> --hedge-venue <binance-futures> [--env-name okex-binance-xarb-trade]
+      scripts/deploy_xarb_pre_trade.sh [--open-venue <okex-futures>] [--hedge-venue <binance-futures>] [--env-suffix xarb-trade] [--env-name okex-binance-xarb-trade]
 
 说明:
-  - 构建 pre_trade 并拷贝到 $HOME/<open>-<hedge>-<env_suffix>/ 目录（默认 env_suffix=xarb-trade）。
+  - 构建 pre_trade 并拷贝到 $HOME/<open>-<hedge>-xarb-<trade|test>/（或使用 --env-suffix / --env-name 指定）。
   - 跨所套利目录名约定: <open>-<hedge>-xarb-trade（例如 okex-binance-xarb-trade）。
   - xarb 固定 futures 资产类型：open/hedge 两侧都会被设置为 <exchange>-futures。
   - 同步辅助脚本:
       xarb_scripts/start_xarb_pre_trade.sh
       xarb_scripts/stop_xarb_pre_trade.sh
-      scripts/sync_fr_risk_params.py
-      scripts/print_fr_risk_params.py
+      xarb_scripts/sync_xarb_risk_params.py   (写入 pre_trade_risk_params)
+      xarb_scripts/print_xarb_risk_params.py  (读取 pre_trade_risk_params)
   - 不自动启动，部署后可在目标目录执行 start/stop：
       ./xarb_scripts/start_xarb_pre_trade.sh
       ./xarb_scripts/stop_xarb_pre_trade.sh
@@ -26,8 +27,8 @@ usage() {
   - 建议先生成并配置 env.sh（用于 IPC_NAMESPACE/凭证等）：scripts/deploy_setup_env_xarb.sh --open-venue ... --hedge-venue ...
 
 示例:
-  scripts/deploy_xarb_pre_trade.sh --open-venue okex-futures --hedge-venue binance-futures
-  scripts/deploy_xarb_pre_trade.sh --env-name okex-binance-xarb-trade
+  scripts/deploy_xarb_pre_trade.sh trade --open-venue okex-futures --hedge-venue binance-futures
+  scripts/deploy_xarb_pre_trade.sh --env-name okex-binance-xarb-trade --open-venue okex-futures --hedge-venue binance-futures
 EOF
 }
 
@@ -36,6 +37,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
+ENV_TYPE="trade"
 ENV_SUFFIX="xarb-trade"
 ENV_NAME=""
 OPEN_VENUE=""
@@ -43,6 +45,11 @@ HEDGE_VENUE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    trade|test)
+      ENV_TYPE="$1"
+      ENV_SUFFIX="xarb-${ENV_TYPE}"
+      shift
+      ;;
     --env-suffix)
       ENV_SUFFIX="${2:-xarb-trade}"
       shift 2
@@ -140,6 +147,8 @@ EXTRA_FILES=(
   "xarb_scripts/stop_xarb_pre_trade.sh"
   "xarb_scripts/sync_xarb_risk_params.py"
   "xarb_scripts/print_xarb_risk_params.py"
+  "xarb_scripts/start_xarb_persist_manager.sh"
+  "xarb_scripts/stop_xarb_persist_manager.sh"
 )
 
 echo "[INFO] 同步 xarb_scripts/scripts 到 $TARGET_DIR（先更新脚本，避免二进制 busy 影响脚本更新）"

@@ -23,18 +23,66 @@ use std::time::Duration;
 #[command(name = "pre_trade")]
 #[command(about = "Pre-trade risk management and order execution")]
 struct Args {
-    /// Venue for opening leg (e.g., binance-margin)
+    /// Venue for opening leg (e.g., binance-margin).
+    /// If omitted (and hedge_venue also omitted), venues will be inferred from current directory name.
     #[arg(long, value_enum)]
-    open_venue: TradingVenue,
+    open_venue: Option<TradingVenue>,
 
-    /// Venue for hedging leg (e.g., binance-futures)
+    /// Venue for hedging leg (e.g., binance-futures).
+    /// If omitted (and open_venue also omitted), venues will be inferred from current directory name.
     #[arg(long, value_enum)]
-    hedge_venue: TradingVenue,
+    hedge_venue: Option<TradingVenue>,
 
     /// Optional suffix for resample channels, to run multiple pre_trade instances.
     /// Example: --resample_suffix okex_m_okex_f
     #[arg(long)]
     resample_suffix: Option<String>,
+}
+
+fn infer_venues_from_cwd() -> Option<(TradingVenue, TradingVenue)> {
+    let cwd = std::env::current_dir().ok()?;
+    let leaf = cwd.file_name()?.to_string_lossy().to_string();
+    let normalized = leaf.to_lowercase().replace('_', "-");
+
+    fn normalize_exchange(ex: &str) -> &str {
+        match ex {
+            "okx" => "okex",
+            _ => ex,
+        }
+    }
+
+    fn futures_venue(ex: &str) -> Option<TradingVenue> {
+        match ex {
+            "binance" => Some(TradingVenue::BinanceFutures),
+            "okex" => Some(TradingVenue::OkexFutures),
+            _ => None,
+        }
+    }
+
+    fn margin_venue(ex: &str) -> Option<TradingVenue> {
+        match ex {
+            "binance" => Some(TradingVenue::BinanceMargin),
+            "okex" => Some(TradingVenue::OkexMargin),
+            _ => None,
+        }
+    }
+
+    let parts: Vec<&str> = normalized.split('-').filter(|s| !s.is_empty()).collect();
+
+    // xarb: <open>-<hedge>-xarb-<trade|test|...>
+    if parts.len() >= 3 && parts[2] == "xarb" {
+        let open_ex = normalize_exchange(parts[0]);
+        let hedge_ex = normalize_exchange(parts[1]);
+        return Some((futures_venue(open_ex)?, futures_venue(hedge_ex)?));
+    }
+
+    // fr: <exchange>-fr-<trade|test|...> (例如 binance_fr_trade -> binance-fr-trade)
+    if parts.len() >= 2 && parts[1] == "fr" {
+        let ex = normalize_exchange(parts[0]);
+        return Some((margin_venue(ex)?, futures_venue(ex)?));
+    }
+
+    None
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -44,8 +92,28 @@ async fn main() -> Result<()> {
 
     // 解析命令行参数
     let args = Args::parse();
-    let open_venue = args.open_venue;
-    let hedge_venue = args.hedge_venue;
+    let (open_venue, hedge_venue) = match (args.open_venue, args.hedge_venue) {
+        (Some(open), Some(hedge)) => (open, hedge),
+        (None, None) => {
+            let cwd = std::env::current_dir().ok();
+            let inferred = infer_venues_from_cwd().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "missing --open-venue/--hedge-venue and failed to infer from cwd={:?}; please pass both flags explicitly",
+                    cwd
+                )
+            })?;
+            info!(
+                "venues inferred from cwd={:?}: open_venue={:?} hedge_venue={:?}",
+                cwd, inferred.0, inferred.1
+            );
+            inferred
+        }
+        _ => {
+            return Err(anyhow::anyhow!(
+                "invalid args: --open-venue and --hedge-venue must be provided together, or both omitted"
+            ));
+        }
+    };
     let resample_suffix = args.resample_suffix.clone();
 
     info!(
@@ -74,7 +142,7 @@ async fn main() -> Result<()> {
             info!("Initializing PreTradeParamsLoader singleton...");
 
             // 使用默认 Redis 设置（127.0.0.1:6379/0）
-            // Redis 风控参数按 open/hedge 实例隔离：<open>:<hedge>:fr_pre_trade_params
+            // Redis 风控参数按 open/hedge 实例隔离：<open>:<hedge>:pre_trade_risk_params
             let mut redis_settings = RedisSettings::default();
             // 统一标准：使用 kebab-case venue slug（例如 okex-margin），与 scripts/ 运维保持一致。
             let prefix = format!(
@@ -97,7 +165,7 @@ async fn main() -> Result<()> {
                         "Failed to load pre-trade risk params from Redis (open={:?} hedge={:?}): {err:#}. expected hash key: '{}'",
                         open_venue,
                         hedge_venue,
-                        format!("{}fr_pre_trade_params", prefix),
+                        format!("{}pre_trade_risk_params", prefix),
                     )
                 });
             info!("Risk parameters loaded successfully");

@@ -33,3 +33,6 @@ pm2 start ./trade_engine --name trade_engine_binance -- --exchange binance
   - pre_trade_risk
 
   FR 相关的可视化由独立的 fr_visualization.rs 进程处理。编译通过 ✓
+
+
+1、旧程序启动

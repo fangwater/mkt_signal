@@ -16,7 +16,7 @@ Notes:
   - This script builds the existing per-exchange binaries:
       okex   -> okex_account_monitor
       binance-> binance_account_monitor
-  - Deploy dir follows deploy_mkt_pub.sh:
+  - Deploy dir:
       $HOME/<exchange>_fr_<env>   (e.g. $HOME/okex_fr_trade, $HOME/binance_fr_trade)
 EOF
 }

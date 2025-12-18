@@ -536,17 +536,41 @@ impl MonitorChannel {
                 } => {
                     let mgr = um.borrow();
                     let min_qty = min_qty_table.borrow();
+                    use std::collections::HashMap;
+
+                    // inst_id -> (long, short, net)
+                    let mut inst_map: HashMap<String, (f32, f32, f32)> = HashMap::new();
                     for pos in mgr.snapshot() {
-                        if (pos.amount as f64).abs() <= 1e-12 {
+                        let entry = inst_map
+                            .entry(pos.inst_id.clone())
+                            .or_insert((0.0, 0.0, 0.0));
+                        match pos.side {
+                            'L' => entry.0 = pos.amount,
+                            'S' => entry.1 = pos.amount,
+                            'N' => entry.2 = pos.amount,
+                            _ => {}
+                        }
+                    }
+
+                    for (inst_id, (long_amt, short_amt, net_amt)) in inst_map {
+                        let net_contracts = if long_amt != 0.0 || short_amt != 0.0 {
+                            long_amt - short_amt
+                        } else {
+                            net_amt
+                        };
+                        if (net_contracts as f64).abs() <= 1e-12 {
                             continue;
                         }
-                        let mut symbol = pos.inst_id.to_uppercase();
-                        if symbol.contains('-') {
-                            symbol = symbol.replace("-SWAP", "").replace('-', "");
+
+                        let mut symbol_key = inst_id.to_uppercase();
+                        if symbol_key.contains('-') {
+                            symbol_key = symbol_key.replace("-SWAP", "").replace('-', "");
                         }
-                        let asset = extract_base_asset(&symbol).unwrap_or_else(|| symbol.clone());
-                        let mult = min_qty.contract_multiplier(&pos.inst_id);
-                        let signed_base_qty = (pos.amount as f64) * mult;
+
+                        let asset =
+                            extract_base_asset(&symbol_key).unwrap_or_else(|| symbol_key.clone());
+                        let mult = min_qty.contract_multiplier(&symbol_key);
+                        let signed_base_qty = (net_contracts as f64) * mult;
                         if signed_base_qty.abs() <= 1e-12 {
                             continue;
                         }
@@ -993,6 +1017,20 @@ impl MonitorChannel {
                                 }
                                 BasicAccountEventType::PositionUpdate => {
                                     if let Ok(msg) = BasicPositionMsg::from_bytes(data) {
+                                        if exchange == Exchange::Okex
+                                            && !msg.inst_id.contains('-')
+                                            && !msg.inst_id.contains("-SWAP")
+                                        {
+                                            warn!(
+                                                "drop malformed OKX position update (unexpected inst_id format): exchange={:?} inst_id={} side={} amt={} ts={}",
+                                                exchange,
+                                                msg.inst_id,
+                                                msg.position_side,
+                                                msg.position_amount,
+                                                msg.timestamp
+                                            );
+                                            continue;
+                                        }
                                         if exchange == open_leg.exchange() {
                                             if let LegMgr::Futures { um, .. } = &open_leg {
                                                 um.borrow_mut().apply_position(&msg);

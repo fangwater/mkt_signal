@@ -213,6 +213,12 @@ impl QueryEngChannel {
                                 let mc = MonitorChannel::instance();
                                 let open_venue = mc.open_venue();
                                 let hedge_venue = mc.hedge_venue();
+                                let open_exchange =
+                                    Exchange::from_str(open_venue.trade_engine_exchange())
+                                        .unwrap_or(exchange_enum);
+                                let hedge_exchange =
+                                    Exchange::from_str(hedge_venue.trade_engine_exchange())
+                                        .unwrap_or(exchange_enum);
 
                                 match event_type {
                                     BasicAccountEventType::BalanceUpdate => {
@@ -227,8 +233,10 @@ impl QueryEngChannel {
                                                 TradingVenue::BinanceMargin
                                                     | TradingVenue::OkexMargin
                                             ) {
-                                                if let Some(bal) = mc.open_balance_mgr() {
-                                                    bal.borrow_mut().apply_balance(&m);
+                                                if exchange_enum == open_exchange {
+                                                    if let Some(bal) = mc.open_balance_mgr() {
+                                                        bal.borrow_mut().apply_balance(&m);
+                                                    }
                                                 }
                                             }
                                             if matches!(
@@ -236,8 +244,10 @@ impl QueryEngChannel {
                                                 TradingVenue::BinanceMargin
                                                     | TradingVenue::OkexMargin
                                             ) {
-                                                if let Some(bal) = mc.hedge_balance_mgr() {
-                                                    bal.borrow_mut().apply_balance(&m);
+                                                if exchange_enum == hedge_exchange {
+                                                    if let Some(bal) = mc.hedge_balance_mgr() {
+                                                        bal.borrow_mut().apply_balance(&m);
+                                                    }
                                                 }
                                             }
                                         }
@@ -250,13 +260,17 @@ impl QueryEngChannel {
                                                 }
                                             }
                                             if open_venue == TradingVenue::BinanceMargin {
-                                                if let Some(bal) = mc.open_balance_mgr() {
-                                                    bal.borrow_mut().apply_borrow_interest(&m);
+                                                if exchange_enum == open_exchange {
+                                                    if let Some(bal) = mc.open_balance_mgr() {
+                                                        bal.borrow_mut().apply_borrow_interest(&m);
+                                                    }
                                                 }
                                             }
                                             if hedge_venue == TradingVenue::BinanceMargin {
-                                                if let Some(bal) = mc.hedge_balance_mgr() {
-                                                    bal.borrow_mut().apply_borrow_interest(&m);
+                                                if exchange_enum == hedge_exchange {
+                                                    if let Some(bal) = mc.hedge_balance_mgr() {
+                                                        bal.borrow_mut().apply_borrow_interest(&m);
+                                                    }
                                                 }
                                             }
                                         }
@@ -268,8 +282,10 @@ impl QueryEngChannel {
                                                 TradingVenue::BinanceFutures
                                                     | TradingVenue::OkexFutures
                                             ) {
-                                                if let Some((um, _)) = mc.open_um_mgr() {
-                                                    um.borrow_mut().apply_position(&m);
+                                                if exchange_enum == open_exchange {
+                                                    if let Some((um, _)) = mc.open_um_mgr() {
+                                                        um.borrow_mut().apply_position(&m);
+                                                    }
                                                 }
                                             }
                                             if matches!(
@@ -277,8 +293,10 @@ impl QueryEngChannel {
                                                 TradingVenue::BinanceFutures
                                                     | TradingVenue::OkexFutures
                                             ) {
-                                                if let Some((um, _)) = mc.hedge_um_mgr() {
-                                                    um.borrow_mut().apply_position(&m);
+                                                if exchange_enum == hedge_exchange {
+                                                    if let Some((um, _)) = mc.hedge_um_mgr() {
+                                                        um.borrow_mut().apply_position(&m);
+                                                    }
                                                 }
                                             }
                                         }

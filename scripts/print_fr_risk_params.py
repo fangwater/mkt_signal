@@ -5,7 +5,7 @@
 打印 Funding Rate Pre-Trade 风控参数（从 Redis 读取）。
 
 读取 Redis Hash:
-  `<open>:<hedge>:fr_pre_trade_params` - 风控参数（max_pos_u, max_leverage等）
+  `<open>:<hedge>:pre_trade_risk_params` - 风控参数（max_pos_u, max_leverage等）
 
 示例：
   python scripts/print_fr_risk_params.py --open-venue binance-margin --hedge-venue binance-futures
@@ -134,7 +134,7 @@ def print_three_line_table(headers: List[str], rows: List[List[str]]) -> None:
 def build_risk_params_key(open_venue: str | None, hedge_venue: str | None) -> str:
     if not open_venue or not hedge_venue:
         raise ValueError("missing open/hedge venue")
-    return f"{open_venue}:{hedge_venue}:fr_pre_trade_params"
+    return f"{open_venue}:{hedge_venue}:pre_trade_risk_params"
 
 
 def print_risk_params(rds, open_venue: str | None, hedge_venue: str | None) -> None:
@@ -144,8 +144,8 @@ def print_risk_params(rds, open_venue: str | None, hedge_venue: str | None) -> N
 
     key = build_risk_params_key(open_venue, hedge_venue)
 
-    print(f"🔑 Redis Hash Key: {key}")
     data = rds.hgetall(key)
+    print(f"🔑 Redis Hash Key: {key}")
 
     if not data:
         print("⚠️  未找到参数或 HASH 为空")

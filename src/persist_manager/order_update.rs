@@ -5,7 +5,7 @@ use anyhow::Result;
 use bytes::Buf;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::service::ipc;
-use log::{debug, info, warn};
+use log::{info, warn};
 
 use crate::persist_manager::iceoryx::{create_signal_record_subscriber, trim_payload};
 use crate::persist_manager::storage::RocksDbStore;
@@ -47,7 +47,7 @@ impl OrderUpdatePersistor {
                         let mut cursor = &payload[..];
                         let ts = cursor.get_i64_le() as u64;
                         let key = format!("{:020}", ts);
-                        debug!(
+                        info!(
                             "persist order update: key={} payload_len={}",
                             key,
                             payload.len()

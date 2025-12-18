@@ -5,7 +5,7 @@
 将 Funding Rate Pre-Trade 风控参数同步到 Redis 并打印。
 
 写入 Redis Hash:
-  `<open>:<hedge>:fr_pre_trade_params` - 风控参数（max_pos_u, max_leverage等）
+  `<open>:<hedge>:pre_trade_risk_params` - 风控参数（max_pos_u, max_leverage等）
 
 同步完成后自动打印所有参数。
 
@@ -83,7 +83,7 @@ def parse_args() -> argparse.Namespace:
 
 # ========== 风控参数配置 ==========
 
-# Hash key: fr_pre_trade_params
+# Hash key: pre_trade_risk_params
 RISK_PARAMS = {
     # 最大单币种持仓 (USDT)
     "max_pos_u": "100000.0",
@@ -114,14 +114,14 @@ PARAM_COMMENTS: Dict[str, str] = {
 def build_risk_params_key(open_venue: str | None, hedge_venue: str | None) -> str:
     if not open_venue or not hedge_venue:
         raise ValueError("missing open/hedge venue")
-    return f"{open_venue}:{hedge_venue}:fr_pre_trade_params"
+    return f"{open_venue}:{hedge_venue}:pre_trade_risk_params"
 
 
 def sync_risk_params(rds, open_venue: str | None, hedge_venue: str | None) -> int:
     """同步风控参数到 Redis Hash"""
     key = build_risk_params_key(open_venue, hedge_venue)
-    rds.hset(key, mapping=RISK_PARAMS) 
-    print(f"✅ 已写入 {len(RISK_PARAMS)} 个参数到 HASH '{key}'")
+    rds.hset(key, mapping=RISK_PARAMS)
+    print(f"✅ 已写入 {len(RISK_PARAMS)} 个参数到 HASH '{key}' (primary)")
     return len(RISK_PARAMS) 
 
 

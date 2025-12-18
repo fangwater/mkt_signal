@@ -314,7 +314,7 @@ enum PublishCmd {
     },
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "snake_case")]
 enum ManualSignalKind {
     ForwardOpen,
@@ -355,7 +355,10 @@ struct ManualSendRequest {
 struct ManualSendResponse {
     ok: bool,
     published_at_us: i64,
+    kind: ManualSignalKind,
     signal_type: String,
+    opening_side: Option<String>,
+    hedging_side: Option<String>,
     opening_symbol: String,
     hedging_symbol: String,
     open: TradingVenue,
@@ -751,6 +754,7 @@ fn build_and_publish_manual(
         anyhow::bail!("symbol is empty");
     }
 
+    let kind = req.kind.clone();
     let opening_symbol = req
         .opening_symbol
         .as_deref()
@@ -800,7 +804,10 @@ fn build_and_publish_manual(
             return Ok(ManualSendResponse {
                 ok: true,
                 published_at_us: now,
+                kind,
                 signal_type: signal_type_str,
+                opening_side: None,
+                hedging_side: None,
                 opening_symbol,
                 hedging_symbol,
                 open: cfg.open,
@@ -817,6 +824,10 @@ fn build_and_publish_manual(
 
     let Some(side) = side_for_kind(&req.kind) else {
         anyhow::bail!("missing side mapping for kind");
+    };
+    let (opening_side, hedging_side) = match side {
+        Side::Buy => ("BUY".to_string(), "SELL".to_string()),
+        Side::Sell => ("SELL".to_string(), "BUY".to_string()),
     };
 
     let qty = req.qty.context("qty is required for open/close")?;
@@ -884,7 +895,10 @@ fn build_and_publish_manual(
     Ok(ManualSendResponse {
         ok: true,
         published_at_us: now,
+        kind,
         signal_type: signal_type_str,
+        opening_side: Some(opening_side),
+        hedging_side: Some(hedging_side),
         opening_symbol,
         hedging_symbol,
         open: cfg.open,

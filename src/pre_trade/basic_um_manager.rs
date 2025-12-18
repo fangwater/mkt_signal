@@ -55,8 +55,8 @@ impl BasicUmManager {
         entry.timestamp = msg.timestamp();
 
         info!(
-            "position updated: inst_id={} side={} amt={} ts={}",
-            entry.inst_id, entry.side, entry.amount, entry.timestamp
+            "position updated: exchange={:?} inst_id={} side={} amt={} ts={}",
+            self.exchange, entry.inst_id, entry.side, entry.amount, entry.timestamp
         );
     }
 

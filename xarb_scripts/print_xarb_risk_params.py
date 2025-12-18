@@ -5,7 +5,7 @@
 打印 xarb（跨所）Pre-Trade 风控参数（从 Redis 读取，futures-only）。
 
 读取 Redis Hash:
-  "<open_venue>:<hedge_venue>:fr_pre_trade_params"
+  "<open_venue>:<hedge_venue>:pre_trade_risk_params"
 
 open/hedge 推断规则同 sync_xarb_risk_params.py。
 """
@@ -122,7 +122,7 @@ PARAM_ORDER = [
 
 
 def build_risk_params_key(open_venue: str, hedge_venue: str) -> str:
-    return f"{open_venue}:{hedge_venue}:fr_pre_trade_params"
+    return f"{open_venue}:{hedge_venue}:pre_trade_risk_params"
 
 
 def print_three_line_table(headers: List[str], rows: List[List[str]]) -> None:
@@ -194,4 +194,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

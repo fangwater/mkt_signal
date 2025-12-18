@@ -18,6 +18,8 @@ use std::cell::OnceCell;
 
 fn print_exposure_table(
     ts_ms: i64,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
     mut rows: Vec<(String, f64, f64, f64, f64)>,
     abs_sum_usdt: f64,
     include_header: bool,
@@ -26,10 +28,13 @@ fn print_exposure_table(
 
     const FOOTER_LABEL: &str = "ABS_SUM";
 
+    let open_hdr = format!("OpenQty({})", open_venue.data_pub_slug());
+    let hedge_hdr = format!("HedgeQty({})", hedge_venue.data_pub_slug());
+
     let headers = [
         "Asset",
-        "OpenQty",
-        "HedgeQty",
+        open_hdr.as_str(),
+        hedge_hdr.as_str(),
         "ExposureQty",
         "ExposureUSDT",
         "AbsSumUSDT",
@@ -546,7 +551,16 @@ impl ResampleChannel {
                 self.last_printed_trade_update_seq.set(trade_seq);
                 let rows_empty = rows.is_empty();
                 if !rows_empty {
-                    print_exposure_table(ts_ms, rows, total_abs_exposure, include_header);
+                    let open_venue = mon.open_venue();
+                    let hedge_venue = mon.hedge_venue();
+                    print_exposure_table(
+                        ts_ms,
+                        open_venue,
+                        hedge_venue,
+                        rows,
+                        total_abs_exposure,
+                        include_header,
+                    );
                 }
                 // USDT 不在敞口表内，单独输出（按 exchange 维度）
                 let open_venue = mon.open_venue();

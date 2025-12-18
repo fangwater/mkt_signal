@@ -5,32 +5,62 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN_NAME="mkt_pub"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 
+usage() {
+  cat <<'EOF'
+Usage:
+  deploy_mkt_pub.sh [trade|test] [--dir <path>]
+
+Defaults:
+  trade -> $HOME/mkt_pub
+  test  -> $HOME/mkt_pub_test
+
+Examples:
+  bash scripts/deploy_mkt_pub.sh
+  bash scripts/deploy_mkt_pub.sh trade
+  bash scripts/deploy_mkt_pub.sh test
+  bash scripts/deploy_mkt_pub.sh trade --dir "$HOME/mkt_pub"
+
+Notes:
+  - Exchange is selected at runtime via start_mkt_pub.sh --exchange <exchange>
+EOF
+}
+
 # 参数解析
 ENV_TYPE="trade"
-EXCHANGE="binance"
+TARGET_DIR=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     trade|test)
       ENV_TYPE="$1"
       shift
       ;;
-    --exchange)
-      EXCHANGE="${2:-}"
-      if [[ -z "$EXCHANGE" ]]; then
-        echo "[ERROR] --exchange 需要一个值"
+    --dir)
+      TARGET_DIR="${2:-}"
+      if [[ -z "$TARGET_DIR" ]]; then
+        echo "[ERROR] --dir 需要一个路径" >&2
+        usage >&2
         exit 1
       fi
       shift 2
       ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
     *)
       echo "[ERROR] 未知参数: $1"
-      echo "用法: $0 [trade|test] [--exchange binance]"
+      usage >&2
       exit 1
       ;;
   esac
 done
 
-TARGET_DIR="$HOME/${EXCHANGE}_fr_${ENV_TYPE}"
+if [[ -z "$TARGET_DIR" ]]; then
+  case "$ENV_TYPE" in
+    trade) TARGET_DIR="$HOME/mkt_pub" ;;
+    test) TARGET_DIR="$HOME/mkt_pub_test" ;;
+  esac
+fi
 
 echo "[INFO] 构建 $BIN_NAME (release)"
 cargo build --release --bin "$BIN_NAME"
@@ -58,4 +88,4 @@ if [[ -f "$ROOT_DIR/config/mkt_cfg.yaml" ]]; then
 fi
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"
-echo "[INFO] 手动启动: cd $TARGET_DIR && ./scripts/start_mkt_pub.sh"
+echo "[INFO] 启动示例: cd $TARGET_DIR && ./scripts/start_mkt_pub.sh --exchange binance"

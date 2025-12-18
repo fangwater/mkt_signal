@@ -6,7 +6,7 @@ use std::time::Duration;
 use crate::common::redis_client::{RedisClient, RedisSettings};
 
 /// Redis Key 配置
-const REDIS_KEY_RISK_PARAMS: &str = "fr_pre_trade_params";
+const REDIS_KEY_RISK_PARAMS: &str = "pre_trade_risk_params";
 
 /// 后台刷新间隔（固定 60 秒）
 const REFRESH_INTERVAL_SECS: u64 = 60;
@@ -57,6 +57,12 @@ impl PreTradeParamsLoader {
                 redis.prefix.as_deref()
             );
         }
+
+        debug!(
+            "risk params loaded from redis key='{}' (prefix={:?})",
+            REDIS_KEY_RISK_PARAMS,
+            redis.prefix.as_deref()
+        );
 
         let parse_f64 =
             |k: &str| -> Option<f64> { hash_map.get(k).and_then(|v| v.parse::<f64>().ok()) };
