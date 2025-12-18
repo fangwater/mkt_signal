@@ -176,6 +176,30 @@ def pretty_print_json(label: str, body: str) -> None:
         print(body)
 
 
+def okx_response_ok(body: str) -> tuple[bool, str]:
+    """Return (ok, brief_error). OKX uses HTTP 200 even when `code != "0"`."""
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        return False, "non-JSON response body"
+
+    code = str(parsed.get("code", "")).strip()
+    msg = str(parsed.get("msg", "")).strip()
+    if code == "0":
+        return True, ""
+
+    brief = f"code={code} msg={msg}".strip()
+    data = parsed.get("data")
+    if isinstance(data, list) and data:
+        first = data[0] if isinstance(data[0], dict) else None
+        if first:
+            s_code = str(first.get("sCode", "")).strip()
+            s_msg = str(first.get("sMsg", "")).strip()
+            if s_code or s_msg:
+                brief = f"{brief} sCode={s_code} sMsg={s_msg}".strip()
+    return False, brief
+
+
 def main() -> None:
     args = parse_args()
     api_key, api_secret, passphrase = load_credentials()
@@ -192,6 +216,7 @@ def main() -> None:
     if not args.execute:
         print("Dry-run：未发送下单请求，添加 --execute 才会真正下单。")
     else:
+        order_ok = True
         status, body, headers = request_okx(
             base_url,
             "POST",
@@ -203,13 +228,17 @@ def main() -> None:
             timeout=args.timeout,
             simulated=args.simulate,
         )
-        tag = "OK" if 200 <= status < 300 else "ERR"
-        print(f"Order result: {tag} {status}; reqId={headers.get('x-request-id')}")
+        okx_ok, okx_brief = okx_response_ok(body)
+        order_ok = (200 <= status < 300) and okx_ok
+        tag = "OK" if order_ok else "ERR"
+        print(
+            f"Order result: {tag} http={status}; reqId={headers.get('x-request-id')}"
+        )
         pretty_print_json("Order response:", body)
-        if not (200 <= status < 300):
-            sys.exit(1)
+        if not order_ok and okx_brief:
+            print(f"Order rejected by OKX: {okx_brief}", file=sys.stderr)
 
-    if args.execute and args.sleep_sec > 0:
+    if args.execute and order_ok and args.sleep_sec > 0:
         time.sleep(args.sleep_sec)
 
     if args.execute:
@@ -230,6 +259,8 @@ def main() -> None:
         print(f"Positions result: {tag} {status}")
         pretty_print_json("Positions response:", body)
         if status != 200:
+            sys.exit(1)
+        if not order_ok:
             sys.exit(1)
 
 

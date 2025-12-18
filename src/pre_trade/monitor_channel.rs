@@ -5,7 +5,7 @@ use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::common::basic_account_msg::{
     get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
@@ -25,8 +25,8 @@ use crate::signal::common::{ExecutionType, TradingVenue};
 
 const ACCOUNT_PAYLOAD: usize = 16_384;
 const DERIVATIVES_PAYLOAD: usize = 128;
-const DERIVATIVES_SERVICE: &str = "data_pubs/binance-futures/derivatives";
-const NODE_PRE_TRADE_DERIVATIVES: &str = "pre_trade_derivatives";
+const DEFAULT_DERIVATIVES_SERVICE: &str = "data_pubs/binance-futures/derivatives";
+const DEFAULT_NODE_PRE_TRADE_DERIVATIVES: &str = "pre_trade_derivatives";
 
 // ==================== Helper Functions ====================
 
@@ -469,7 +469,18 @@ impl MonitorChannel {
         }
 
         // 启动衍生品价格监听任务（mark_price, index_price）
-        Self::spawn_derivatives_listener(price_table.clone());
+        //
+        // 约定：pre_trade 始终使用 Binance Futures 的衍生品指标（mark/index price）作为基准。
+        // 如需临时排查其它 venue，可通过 PRE_TRADE_DERIVATIVES_SERVICE 覆盖订阅的 service name。
+        let node_name = std::env::var("PRE_TRADE_DERIVATIVES_NODE")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_NODE_PRE_TRADE_DERIVATIVES.to_string());
+        let service_name = std::env::var("PRE_TRADE_DERIVATIVES_SERVICE")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_DERIVATIVES_SERVICE.to_string());
+        Self::spawn_derivatives_listener(price_table.clone(), node_name, service_name);
 
         // 创建内部实例并保存到 thread-local
         let inner = MonitorChannelInner {
@@ -1423,23 +1434,38 @@ impl MonitorChannel {
 
     // ==================== 内部辅助方法 ====================
 
-    fn spawn_derivatives_listener(price_table: Rc<RefCell<PriceTable>>) {
+    fn spawn_derivatives_listener(
+        price_table: Rc<RefCell<PriceTable>>,
+        node_name: String,
+        service_name: String,
+    ) {
         tokio::task::spawn_local(async move {
             let result: Result<()> = async move {
+                let print_each_mark_price =
+                    std::env::var_os("PRE_TRADE_PRINT_EACH_MARKPRICE").is_some();
+                let mark_price_log_interval = std::env::var("PRE_TRADE_MARKPRICE_LOG_INTERVAL_SECS")
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .map(|secs| Duration::from_secs(secs.max(1)))
+                    .unwrap_or_else(|| Duration::from_secs(5));
+                let mut last_mark_price_log_at = Instant::now();
+                let mut mark_price_samples_since_log: u64 = 0;
+                let mut last_mark_price: Option<(String, f64, i64)> = None;
+
                 let node = NodeBuilder::new()
-                    .name(&NodeName::new(NODE_PRE_TRADE_DERIVATIVES)?)
+                    .name(&NodeName::new(&node_name)?)
                     .create::<ipc::Service>()?;
 
                 let service = node
-                    .service_builder(&ServiceName::new(DERIVATIVES_SERVICE)?)
+                    .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; DERIVATIVES_PAYLOAD]>()
                     .open_or_create()?;
                 let subscriber: Subscriber<ipc::Service, [u8; DERIVATIVES_PAYLOAD], ()> =
                     service.subscriber_builder().create()?;
 
                 info!(
-                    "derivatives price stream subscribed: service={}",
-                    DERIVATIVES_SERVICE
+                    "derivatives price stream subscribed: node={} service={}",
+                    node_name, service_name
                 );
 
                 loop {
@@ -1455,6 +1481,36 @@ impl MonitorChannel {
                             match msg_type {
                                 MktMsgType::MarkPrice => match parse_mark_price(&payload) {
                                     Ok(msg) => {
+                                        mark_price_samples_since_log += 1;
+                                        let is_first_mark_price = last_mark_price.is_none();
+                                        last_mark_price = Some((
+                                            msg.symbol.clone(),
+                                            msg.mark_price,
+                                            msg.timestamp,
+                                        ));
+                                        if print_each_mark_price {
+                                            info!(
+                                                "mark price received: symbol={} mark_price={} ts={}",
+                                                msg.symbol, msg.mark_price, msg.timestamp
+                                            );
+                                        } else if is_first_mark_price
+                                            || last_mark_price_log_at.elapsed()
+                                                >= mark_price_log_interval
+                                        {
+                                            let (symbol, mark_price, ts) = last_mark_price
+                                                .as_ref()
+                                                .expect("last mark price set above");
+                                            info!(
+                                                "mark price stream live: samples={} last_symbol={} last_mark_price={} last_ts={}",
+                                                mark_price_samples_since_log,
+                                                symbol,
+                                                mark_price,
+                                                ts
+                                            );
+                                            mark_price_samples_since_log = 0;
+                                            last_mark_price_log_at = Instant::now();
+                                        }
+
                                         let mut table = price_table.borrow_mut();
                                         table.update_mark_price(
                                             &msg.symbol,

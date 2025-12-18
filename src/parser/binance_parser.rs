@@ -133,7 +133,9 @@ pub struct BinanceDerivativesMetricsParser {
 impl BinanceDerivativesMetricsParser {
     pub fn new(symbols_set: HashSet<String>) -> Self {
         Self {
-            symbols: symbols_set,
+            // Binance WS symbols are uppercase (e.g. "BTCUSDT"), while this parser uses
+            // lowercase keys for lookups.
+            symbols: symbols_set.into_iter().map(|s| s.to_lowercase()).collect(),
         }
     }
 }
