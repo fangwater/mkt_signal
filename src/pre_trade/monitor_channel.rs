@@ -502,15 +502,24 @@ impl MonitorChannel {
     ) -> f64 {
         match venue {
             TradingVenue::OkexFutures => {
+                let symbol_key = symbol.to_uppercase().replace("-SWAP", "").replace('-', "");
                 let mult = inner
                     .venue_min_qty_tables
                     .get(&venue)
-                    .map(|t| t.contract_multiplier(symbol))
+                    .map(|t| t.contract_multiplier(&symbol_key))
                     .unwrap_or(1.0);
                 qty * mult
             }
             _ => qty,
         }
+    }
+
+    /// 将订单数量（按 venue 语义）转换为 base qty（标的数量）
+    ///
+    /// - Binance futures: qty 本身就是 base qty
+    /// - OKX futures: qty 是 contracts，需要乘以合约面值（ctVal×ctMult）
+    pub fn qty_to_base(&self, venue: TradingVenue, symbol: &str, qty: f64) -> f64 {
+        Self::with_inner(|inner| Self::order_qty_to_base(inner, venue, symbol, qty))
     }
 
     /// 基于 open/hedge 两腿的基础管理器计算敞口与总量指标
@@ -1553,5 +1562,66 @@ fn dispatch_order_update_generic<T>(
             update.execution_type(),
             update.status()
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::min_qty_table::MinQtyTable;
+    use crate::pre_trade::price_table::PriceTable;
+    use crate::pre_trade::usdt_balance_manager::UsdtBalanceManager;
+    use crate::strategy::StrategyManager;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    #[test]
+    fn okex_futures_qty_to_base_uses_contract_multiplier() {
+        let mut okx_table = VenueMinQtyTable::new(TradingVenue::OkexFutures);
+        okx_table.set_contract_multiplier_for_test("FILUSDT", 0.1);
+
+        let open_leg = LegMgr::Futures {
+            exchange: Exchange::Okex,
+            um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Okex))),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Okex))),
+        };
+        let hedge_leg = LegMgr::Margin {
+            exchange: Exchange::Binance,
+            bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Binance))),
+        };
+
+        let mut venue_min_qty_tables: HashMap<TradingVenue, Rc<VenueMinQtyTable>> = HashMap::new();
+        venue_min_qty_tables.insert(TradingVenue::OkexFutures, Rc::new(okx_table));
+
+        let mut usdt_mgrs: HashMap<Exchange, Rc<RefCell<UsdtBalanceManager>>> = HashMap::new();
+        usdt_mgrs.insert(
+            Exchange::Okex,
+            Rc::new(RefCell::new(UsdtBalanceManager::new(Exchange::Okex))),
+        );
+
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::OkexFutures,
+            hedge_venue: TradingVenue::BinanceFutures,
+            open_leg,
+            hedge_leg,
+            usdt_mgrs,
+            price_table: Rc::new(RefCell::new(PriceTable::new())),
+            venue_min_qty_tables,
+            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new())),
+            hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
+            trade_update_seq: 0,
+        };
+
+        MONITOR_CHANNEL.with(|mc| {
+            *mc.borrow_mut() = Some(inner);
+        });
+
+        let base_qty =
+            MonitorChannel::instance().qty_to_base(TradingVenue::OkexFutures, "FIL-USDT-SWAP", 1.0);
+        assert!((base_qty - 0.1).abs() < 1e-12);
+        let overhedge_factor = 1.0 / base_qty;
+        assert!((overhedge_factor - 10.0).abs() < 1e-12);
     }
 }

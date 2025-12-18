@@ -255,6 +255,26 @@ mod tests {
         let out = binance_extract_filter_values(&filters, "DOGEUSDT").unwrap();
         assert_eq!(out.min_notional, Some(5.0));
     }
+
+    #[test]
+    fn okex_swap_contract_multiplier_is_ct_val_times_ct_mult() {
+        let provider = OkexProvider::new();
+        let instruments = vec![OkexInstrument {
+            inst_id: "FIL-USDT-SWAP".to_string(),
+            base_ccy: None,
+            quote_ccy: None,
+            settle_ccy: Some("USDT".to_string()),
+            ct_type: Some("linear".to_string()),
+            ct_val: Some("0.1".to_string()),
+            ct_mult: Some("1".to_string()),
+            lot_sz: "1".to_string(),
+            tick_sz: "0.001".to_string(),
+            min_sz: "1".to_string(),
+        }];
+
+        let (_entries, multipliers) = provider.parse_swap_response(&instruments).unwrap();
+        assert_eq!(multipliers.get("FILUSDT").copied(), Some(0.1));
+    }
 }
 
 // ============================================================================

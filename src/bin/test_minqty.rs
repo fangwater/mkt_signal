@@ -44,6 +44,15 @@ async fn fetch_okx_raw_data() -> Result<Vec<OkexInstrument>> {
     Ok(resp.data)
 }
 
+fn okex_inst_id_from_symbol_key(symbol_key: &str) -> Option<String> {
+    let key = symbol_key.to_uppercase().replace('-', "");
+    let base = key.strip_suffix("USDT")?;
+    if base.is_empty() {
+        return None;
+    }
+    Some(format!("{}-USDT-SWAP", base))
+}
+
 /// 命令行参数
 #[derive(Debug, Parser)]
 #[command(name = "test_minqty", about = "打印各交易场所的最小下单量/合约面值")]
@@ -149,6 +158,23 @@ async fn main() -> Result<()> {
         println!("contract_sz  = {:.12}", contract_size);
         println!();
 
+        if matches!(venue, TradingVenue::OkexFutures) {
+            println!("OKX 备注：永续合约的下单/成交数量通常是“张(contracts)”口径。");
+            println!(
+                "推算：contracts -> base_qty = contracts × contract_sz = {:.8} × {:.8} = {:.8}",
+                args.qty,
+                contract_size,
+                args.qty * contract_size
+            );
+            if contract_size > 0.0 {
+                println!(
+                    "如果把 contracts 误当成 base_qty 再去对冲，会出现倍率偏差：over_hedge_factor ≈ 1/contract_sz = {:.6}",
+                    1.0 / contract_size
+                );
+            }
+            println!();
+        }
+
         let mut ok = true;
         if min_qty > 0.0 && args.qty + 1e-12 < min_qty {
             ok = false;
@@ -203,6 +229,26 @@ async fn main() -> Result<()> {
                 }
             }
             println!("--- end ---");
+        }
+
+        if args.show_raw_filters && matches!(venue, TradingVenue::OkexFutures) {
+            if let Some(inst_id) = okex_inst_id_from_symbol_key(&symbol_key) {
+                println!("\n--- Raw instrument (OKX instruments?instType=SWAP) ---");
+                let instruments = fetch_okx_raw_data().await?;
+                if let Some(inst) = instruments.iter().find(|i| i.inst_id == inst_id) {
+                    println!("instId:      {}", inst.inst_id);
+                    println!("instType:    {:?}", inst.inst_type);
+                    println!("ctType:      {:?}", inst.ct_type);
+                    println!("ctVal:       {:?}", inst.ct_val);
+                    println!("ctMult:      {:?}", inst.ct_mult);
+                    println!("settleCcy:   {:?}", inst.settle_ccy);
+                    println!("minSz:       {}", inst.min_sz);
+                    println!("lotSz:       {}", inst.lot_sz);
+                } else {
+                    println!("instrument not found for instId={}", inst_id);
+                }
+                println!("--- end ---");
+            }
         }
 
         println!("\nRESULT: {}\n", if ok { "PASS" } else { "FAIL" });

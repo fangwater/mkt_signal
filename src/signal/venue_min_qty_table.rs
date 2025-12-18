@@ -157,3 +157,11 @@ impl VenueMinQtyTable {
         self.contract_multipliers.get(&key).copied().unwrap_or(1.0)
     }
 }
+
+#[cfg(test)]
+impl VenueMinQtyTable {
+    pub fn set_contract_multiplier_for_test(&mut self, symbol: &str, multiplier: f64) {
+        self.contract_multipliers
+            .insert(symbol.to_uppercase(), multiplier);
+    }
+}

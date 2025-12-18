@@ -1426,6 +1426,11 @@ impl HedgeArbStrategy {
         self.clear_query_watchdogs(client_order_id);
 
         let cumulative_qty = trade.cumulative_filled_quantity();
+        let cumulative_base_qty = MonitorChannel::instance().qty_to_base(
+            trade.trading_venue(),
+            trade.symbol(),
+            cumulative_qty,
+        );
         let trade_time = trade.trade_time();
         let event_time = trade.event_time();
         if let Some(OrderStatus::Filled) = trade.order_status() {
@@ -1448,20 +1453,26 @@ impl HedgeArbStrategy {
         //1 根据client order id，判断是开仓成交，还是对冲成交, 更新开仓量或对冲量
         if client_order_id == self.open_order_id {
             // 开仓成交，更新累计开仓量, 打印成交量
-            self.cumulative_open_qty = cumulative_qty;
+            self.cumulative_open_qty = cumulative_base_qty;
             info!(
                 "💰 开仓成交: strategy_id={} order_id={} symbol={} price={:.6} qty={:.4} cumulative={:.4} | 已对冲={:.4}",
                 self.strategy_id, client_order_id, self.open_symbol,
-                trade.price(), trade.quantity(), self.cumulative_open_qty, self.cumulative_hedged_qty
+                trade.price(),
+                trade.quantity(),
+                self.cumulative_open_qty,
+                self.cumulative_hedged_qty
             );
             self.process_open_leg_trade(trade);
         } else if self.hedge_order_ids.contains(&client_order_id) {
             // 对冲侧成交，增加累计对冲量
-            self.cumulative_hedged_qty = trade.quantity();
+            self.cumulative_hedged_qty = cumulative_base_qty;
             info!(
                 "🛡️ 对冲成交: strategy_id={} order_id={} symbol={} price={:.6} qty={:.4} | 开仓量={:.4} 已对冲={:.4}",
                 self.strategy_id, client_order_id, self.hedge_symbol,
-                trade.price(), trade.quantity(), self.cumulative_open_qty, self.cumulative_hedged_qty
+                trade.price(),
+                trade.quantity(),
+                self.cumulative_open_qty,
+                self.cumulative_hedged_qty
             );
             self.process_hedge_leg_trade(trade);
         } else {
