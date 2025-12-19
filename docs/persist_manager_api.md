@@ -383,11 +383,23 @@ print(df.head())
 
 ### Q3: 如何修改默认端口？
 
-启动 persist_manager 时使用 `--port` 参数：
+启动 persist_manager 时必须显式提供 `--port` 参数：
 
 ```bash
 ./target/release/persist_manager --port 9090
 ```
+
+### Q4: 如何限制 RocksDB 的内存占用？
+
+persist_manager 已在代码中写死 RocksDB 的内存预算（主要是 memtable + block cache），需要调整就改：
+
+- `src/persist_manager/mod.rs`：`ROCKSDB_*` 常量
+
+当前默认值：
+- `ROCKSDB_BLOCK_CACHE_BYTES = 64MiB`
+- `ROCKSDB_DB_WRITE_BUFFER_BYTES = 128MiB`
+- `ROCKSDB_WRITE_BUFFER_BYTES = 16MiB`
+- `ROCKSDB_MAX_WRITE_BUFFER_NUMBER = 2`
 
 ---
 

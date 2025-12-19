@@ -28,7 +28,7 @@ fi
 
 usage() {
   cat <<'EOF'
-用法: xarb_scripts/start_xarb_persist_manager.sh [--port 8088]
+用法: xarb_scripts/start_xarb_persist_manager.sh --port <PORT>
 
 说明:
   - 需要在部署目录存在 env.sh（包含 IPC_NAMESPACE），否则 persist_manager 会 panic。
@@ -36,7 +36,6 @@ usage() {
   - 会以 PM2 启动 1 个进程：persist_manager_xarb_<open>_<hedge>
 
 示例:
-  ./xarb_scripts/start_xarb_persist_manager.sh
   ./xarb_scripts/start_xarb_persist_manager.sh --port 8088
 EOF
 }
@@ -46,11 +45,11 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-PORT="8088"
+PORT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --port)
-      PORT="${2:-8088}"
+      PORT="${2:-}"
       shift 2
       ;;
     *)
@@ -60,6 +59,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+if [[ -z "$PORT" ]]; then
+  echo "[ERROR] 缺少必填参数：--port <PORT>"
+  usage
+  exit 1
+fi
 
 ENV_FILE="${BASE_DIR}/env.sh"
 if [[ -f "$ENV_FILE" ]]; then
@@ -115,4 +119,3 @@ echo "[INFO] Started persist_manager"
 echo "Namespace: ${PM2_NAMESPACE}"
 echo "Logs: npx pm2 logs --namespace ${PM2_NAMESPACE} ${PROC_NAME}"
 echo "Status: npx pm2 status --namespace ${PM2_NAMESPACE}"
-
