@@ -38,10 +38,19 @@ function renderTable(columns, rows) {
 }
 
 function toRowObjects(arrowTable) {
-  const cols = arrowTable.schema.fields.map((f) => f.name);
-  const vectors = cols.map((_, i) => arrowTable.getColumnAt(i));
+  const cols = (arrowTable.schema && arrowTable.schema.fields ? arrowTable.schema.fields : []).map((f) => f.name);
+
+  function getColAt(i) {
+    if (typeof arrowTable.getColumnAt === "function") return arrowTable.getColumnAt(i);
+    if (typeof arrowTable.getChildAt === "function") return arrowTable.getChildAt(i);
+    if (typeof arrowTable.getChild === "function") return arrowTable.getChild(cols[i]);
+    throw new Error("Arrow result: cannot access column vectors");
+  }
+
+  const vectors = cols.map((_, i) => getColAt(i));
   const rows = [];
-  for (let r = 0; r < arrowTable.numRows; r++) {
+  const numRows = typeof arrowTable.numRows === "number" ? arrowTable.numRows : arrowTable.length;
+  for (let r = 0; r < numRows; r++) {
     const obj = {};
     for (let c = 0; c < cols.length; c++) {
       let v = vectors[c].get(r);
@@ -57,11 +66,24 @@ async function loadDuckdb() {
   // Requires outbound network access from the browser to jsdelivr.
   const duckdb = await import("https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb-browser.mjs");
   const bundles = duckdb.getJsDelivrBundles();
-  const bundle = await duckdb.selectBundle(bundles);
-  const worker = new Worker(bundle.mainWorker);
+  const bundle = bundles.mvp || (await duckdb.selectBundle(bundles));
+
+  async function toBlobUrl(url) {
+    const res = await fetch(url, { mode: "cors" });
+    if (!res.ok) throw new Error(`fetch worker failed: HTTP ${res.status}`);
+    const code = await res.text();
+    const blob = new Blob([code], { type: "text/javascript" });
+    return URL.createObjectURL(blob);
+  }
+
+  // Avoid cross-origin classic worker restrictions by creating same-origin blob workers.
+  const mainWorkerUrl = await toBlobUrl(bundle.mainWorker);
+  const pthreadWorkerUrl = bundle.pthreadWorker ? await toBlobUrl(bundle.pthreadWorker) : null;
+
+  const worker = new Worker(mainWorkerUrl);
   const logger = new duckdb.ConsoleLogger();
   const db = new duckdb.AsyncDuckDB(logger, worker);
-  await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+  await db.instantiate(bundle.mainModule, pthreadWorkerUrl);
   return db;
 }
 
@@ -73,8 +95,14 @@ async function queryLatest100(db, parquetUrl) {
   await db.registerFileBuffer(fname, buf);
   const conn = await db.connect();
   try {
-    const q = "SELECT * FROM parquet_scan('" + fname + "') ORDER BY local_ts DESC LIMIT 100";
-    return await conn.query(q);
+    const head = await conn.query("SELECT * FROM parquet_scan('" + fname + "') LIMIT 0");
+    const cols = head.schema.fields.map((f) => f.name);
+    const candidates = ["local_ts", "update_ts", "create_ts", "ts_us", "key"];
+    const sortCol = candidates.find((c) => cols.includes(c));
+    const orderBy = sortCol ? ` ORDER BY ${sortCol} DESC ` : " ";
+    const q = "SELECT * FROM parquet_scan('" + fname + "')" + orderBy + "LIMIT 100";
+    const data = await conn.query(q);
+    return { table: data, sortCol: sortCol || "" };
   } finally {
     await conn.close();
   }
@@ -99,9 +127,9 @@ async function main() {
   try {
     const db = await loadDuckdb();
     setPill("querying", "running");
-    const table = await queryLatest100(db, parquetUrl);
-    const { columns, rows } = toRowObjects(table);
-    document.getElementById("txtHint").textContent = `rows=${rows.length} order_by=local_ts desc`;
+    const out = await queryLatest100(db, parquetUrl);
+    const { columns, rows } = toRowObjects(out.table);
+    document.getElementById("txtHint").textContent = `rows=${rows.length} order_by=${out.sortCol || "N/A"} desc`;
     renderTable(columns, rows);
     setPill("READY", "ready");
   } catch (e) {
@@ -111,4 +139,3 @@ async function main() {
 }
 
 main();
-
