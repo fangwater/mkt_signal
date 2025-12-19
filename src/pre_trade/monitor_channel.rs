@@ -1493,22 +1493,36 @@ impl MonitorChannel {
                                                 "mark price received: symbol={} mark_price={} ts={}",
                                                 msg.symbol, msg.mark_price, msg.timestamp
                                             );
-                                        } else if is_first_mark_price
-                                            || last_mark_price_log_at.elapsed()
+                                        } else {
+                                            if is_first_mark_price {
+                                                let (symbol, mark_price, ts) = last_mark_price
+                                                    .as_ref()
+                                                    .expect("last mark price set above");
+                                                info!(
+                                                    "mark price stream live: samples={} last_symbol={} last_mark_price={} last_ts={}",
+                                                    mark_price_samples_since_log,
+                                                    symbol,
+                                                    mark_price,
+                                                    ts
+                                                );
+                                                mark_price_samples_since_log = 0;
+                                                last_mark_price_log_at = Instant::now();
+                                            } else if last_mark_price_log_at.elapsed()
                                                 >= mark_price_log_interval
-                                        {
-                                            let (symbol, mark_price, ts) = last_mark_price
-                                                .as_ref()
-                                                .expect("last mark price set above");
-                                            info!(
-                                                "mark price stream live: samples={} last_symbol={} last_mark_price={} last_ts={}",
-                                                mark_price_samples_since_log,
-                                                symbol,
-                                                mark_price,
-                                                ts
-                                            );
-                                            mark_price_samples_since_log = 0;
-                                            last_mark_price_log_at = Instant::now();
+                                            {
+                                                let (symbol, mark_price, ts) = last_mark_price
+                                                    .as_ref()
+                                                    .expect("last mark price set above");
+                                                debug!(
+                                                    "mark price stream live: samples={} last_symbol={} last_mark_price={} last_ts={}",
+                                                    mark_price_samples_since_log,
+                                                    symbol,
+                                                    mark_price,
+                                                    ts
+                                                );
+                                                mark_price_samples_since_log = 0;
+                                                last_mark_price_log_at = Instant::now();
+                                            }
                                         }
 
                                         let mut table = price_table.borrow_mut();

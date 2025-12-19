@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 
-use log::info;
-
 use crate::common::{
     basic_account_msg::BasicPositionMsg, exchange::Exchange, min_qty_table::MinQtyTable,
 };
@@ -53,11 +51,6 @@ impl BasicUmManager {
         entry.side = side;
         entry.amount = msg.position_amount;
         entry.timestamp = msg.timestamp();
-
-        info!(
-            "position updated: exchange={:?} inst_id={} side={} amt={} ts={}",
-            self.exchange, entry.inst_id, entry.side, entry.amount, entry.timestamp
-        );
     }
 
     /// 获取单个 inst_id + side 的持仓。

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
@@ -38,8 +38,158 @@ pub fn create_signal_record_subscriber(
     Ok(subscriber)
 }
 
-pub fn trim_payload(payload: &[u8]) -> Bytes {
-    Bytes::copy_from_slice(payload)
+pub fn trim_signal_record_payload(payload: &[u8]) -> Bytes {
+    let used = signal_record_used_len(payload).unwrap_or(payload.len());
+    Bytes::copy_from_slice(&payload[..used])
+}
+
+pub fn trim_trade_update_payload(payload: &[u8]) -> Bytes {
+    let used = trade_update_used_len(payload).unwrap_or(payload.len());
+    Bytes::copy_from_slice(&payload[..used])
+}
+
+pub fn trim_order_update_payload(payload: &[u8]) -> Bytes {
+    let used = order_update_used_len(payload).unwrap_or(payload.len());
+    Bytes::copy_from_slice(&payload[..used])
+}
+
+fn signal_record_used_len(payload: &[u8]) -> Option<usize> {
+    // Format: i32 strategy_id + u32 signal_type + u32 ctx_len + ctx_bytes + optional i64 ts_us
+    if payload.len() < 12 {
+        return None;
+    }
+    let ctx_len = u32::from_le_bytes(payload[8..12].try_into().ok()?) as usize;
+    let base = 12usize.checked_add(ctx_len)?;
+    if payload.len() < base {
+        return None;
+    }
+    let with_ts = base.checked_add(8)?;
+    Some(if payload.len() >= with_ts {
+        with_ts
+    } else {
+        base
+    })
+}
+
+fn trade_update_used_len(payload: &[u8]) -> Option<usize> {
+    // Format must match pre_trade::persist_channel::serialize_trade_update
+    let mut cursor = Bytes::copy_from_slice(payload);
+
+    skip_i64(&mut cursor)?; // recv_ts_us
+    skip_i64(&mut cursor)?; // event_time
+    skip_i64(&mut cursor)?; // trade_time
+    skip_string(&mut cursor)?; // symbol
+    skip_i64(&mut cursor)?; // trade_id
+    skip_i64(&mut cursor)?; // order_id
+    skip_i64(&mut cursor)?; // client_order_id
+    skip_u8(&mut cursor)?; // side
+    skip_f64(&mut cursor)?; // price
+    skip_f64(&mut cursor)?; // quantity
+    skip_f64(&mut cursor)?; // commission
+    skip_string(&mut cursor)?; // commission_asset
+    skip_u8(&mut cursor)?; // is_maker
+    skip_f64(&mut cursor)?; // realized_pnl
+    skip_u8(&mut cursor)?; // trading_venue
+    skip_f64(&mut cursor)?; // cumulative_filled_quantity
+
+    let has_status = read_u8(&mut cursor)?;
+    if has_status != 0 {
+        skip_u8(&mut cursor)?; // status
+    }
+
+    Some(payload.len().saturating_sub(cursor.remaining()))
+}
+
+fn order_update_used_len(payload: &[u8]) -> Option<usize> {
+    // Format must match pre_trade::persist_channel::serialize_order_update
+    let mut cursor = Bytes::copy_from_slice(payload);
+
+    skip_i64(&mut cursor)?; // recv_ts_us
+    skip_i64(&mut cursor)?; // event_time
+    skip_string(&mut cursor)?; // symbol
+    skip_i64(&mut cursor)?; // order_id
+    skip_i64(&mut cursor)?; // client_order_id
+    skip_opt_string(&mut cursor)?; // client_order_id_str
+    skip_u8(&mut cursor)?; // side
+    skip_u8(&mut cursor)?; // order_type
+    skip_u8(&mut cursor)?; // time_in_force
+    skip_f64(&mut cursor)?; // price
+    skip_f64(&mut cursor)?; // quantity
+    skip_f64(&mut cursor)?; // last_time_executed_qty
+    skip_f64(&mut cursor)?; // cumulative_filled_quantity
+    skip_u8(&mut cursor)?; // status
+    skip_string(&mut cursor)?; // raw_status
+    skip_u8(&mut cursor)?; // execution_type
+    skip_string(&mut cursor)?; // raw_execution_type
+    skip_u8(&mut cursor)?; // trading_venue
+    skip_opt_f64(&mut cursor)?; // average_price
+    skip_opt_f64(&mut cursor)?; // last_executed_price
+    skip_opt_string(&mut cursor)?; // business_unit
+
+    Some(payload.len().saturating_sub(cursor.remaining()))
+}
+
+fn skip_string(cursor: &mut Bytes) -> Option<()> {
+    let len = read_u32(cursor)? as usize;
+    if cursor.remaining() < len {
+        return None;
+    }
+    cursor.advance(len);
+    Some(())
+}
+
+fn skip_opt_string(cursor: &mut Bytes) -> Option<()> {
+    let flag = read_u8(cursor)?;
+    if flag == 0 {
+        return Some(());
+    }
+    skip_string(cursor)
+}
+
+fn skip_opt_f64(cursor: &mut Bytes) -> Option<()> {
+    let flag = read_u8(cursor)?;
+    if flag == 0 {
+        return Some(());
+    }
+    skip_f64(cursor)
+}
+
+fn skip_i64(cursor: &mut Bytes) -> Option<()> {
+    if cursor.remaining() < 8 {
+        return None;
+    }
+    cursor.advance(8);
+    Some(())
+}
+
+fn skip_f64(cursor: &mut Bytes) -> Option<()> {
+    if cursor.remaining() < 8 {
+        return None;
+    }
+    cursor.advance(8);
+    Some(())
+}
+
+fn skip_u8(cursor: &mut Bytes) -> Option<()> {
+    if cursor.remaining() < 1 {
+        return None;
+    }
+    cursor.advance(1);
+    Some(())
+}
+
+fn read_u8(cursor: &mut Bytes) -> Option<u8> {
+    if cursor.remaining() < 1 {
+        return None;
+    }
+    Some(cursor.get_u8())
+}
+
+fn read_u32(cursor: &mut Bytes) -> Option<u32> {
+    if cursor.remaining() < 4 {
+        return None;
+    }
+    Some(cursor.get_u32_le())
 }
 
 fn sanitize_suffix(raw: &str) -> std::borrow::Cow<'_, str> {

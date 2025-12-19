@@ -8,7 +8,9 @@ use iceoryx2::service::ipc;
 use log::{info, warn};
 
 use crate::common::time_util::get_timestamp_us;
-use crate::persist_manager::iceoryx::{create_signal_record_subscriber, trim_payload};
+use crate::persist_manager::iceoryx::{
+    create_signal_record_subscriber, trim_signal_record_payload,
+};
 use crate::persist_manager::storage::RocksDbStore;
 use crate::signal::record::{SignalRecordMessage, PRE_TRADE_SIGNAL_RECORD_CHANNEL};
 use crate::signal::trade_signal::SignalType;
@@ -42,7 +44,7 @@ impl SignalPersistor {
         loop {
             match self.subscriber.receive() {
                 Ok(Some(sample)) => {
-                    let payload = trim_payload(sample.payload());
+                    let payload = trim_signal_record_payload(sample.payload());
                     if !payload.is_empty() {
                         let _ = self.handle_payload(payload.clone());
                     }

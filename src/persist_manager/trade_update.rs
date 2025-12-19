@@ -7,7 +7,7 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::service::ipc;
 use log::{info, warn};
 
-use crate::persist_manager::iceoryx::{create_signal_record_subscriber, trim_payload};
+use crate::persist_manager::iceoryx::{create_signal_record_subscriber, trim_trade_update_payload};
 use crate::persist_manager::storage::RocksDbStore;
 use crate::pre_trade::TRADE_UPDATE_RECORD_CHANNEL;
 
@@ -37,7 +37,7 @@ impl TradeUpdatePersistor {
         loop {
             match self.subscriber.receive() {
                 Ok(Some(sample)) => {
-                    let payload = trim_payload(sample.payload());
+                    let payload = trim_trade_update_payload(sample.payload());
                     if !payload.is_empty() {
                         // 从消息头部读取接收时间戳（前8字节）
                         if payload.len() < 8 {

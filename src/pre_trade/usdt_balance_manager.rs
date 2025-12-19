@@ -1,5 +1,3 @@
-use log::info;
-
 use crate::common::basic_account_msg::{BasicBalanceMsg, BasicBorrowInterestMsg};
 use crate::common::exchange::Exchange;
 
@@ -40,10 +38,6 @@ impl UsdtBalanceManager {
         }
         self.state.balance = msg.balance;
         self.state.last_timestamp = msg.timestamp;
-        info!(
-            "usdt balance updated: exchange={:?} balance={} ts={}",
-            self.exchange, self.state.balance, self.state.last_timestamp
-        );
     }
 
     pub fn apply_borrow_interest(&mut self, msg: &BasicBorrowInterestMsg) {
@@ -56,13 +50,6 @@ impl UsdtBalanceManager {
             _ => {}
         }
         self.state.last_timestamp = self.state.last_timestamp.max(msg.timestamp);
-        info!(
-            "usdt borrow/interest updated: exchange={:?} borrowed={} interest={} ts={}",
-            self.exchange,
-            self.state.borrowed,
-            self.state.cumulative_interest,
-            self.state.last_timestamp
-        );
     }
 
     /// 返回 USDT 的“净头寸”（与 BasicBalanceManager::balance_position_of 语义保持一致）。
