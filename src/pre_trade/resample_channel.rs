@@ -5,7 +5,9 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::usdt_balance_manager::UsdtBalanceSnapshot;
 use crate::signal::common::TradingVenue;
-use crate::viz::resample::{PreTradeExposureResampleEntry, PreTradeExposureRow, PreTradeRiskResampleEntry};
+use crate::viz::resample::{
+    PreTradeExposureResampleEntry, PreTradeExposureRow, PreTradeRiskResampleEntry,
+};
 use anyhow::Result;
 use log::debug;
 use log::{info, warn};
@@ -260,7 +262,7 @@ impl ResampleChannel {
                 return Err(anyhow::anyhow!("ResampleChannel already initialized"));
             }
             cell.set(ResampleChannel::new(exposure_channel, risk_channel))
-            .map_err(|_| anyhow::anyhow!("Failed to set ResampleChannel (race condition)"))
+                .map_err(|_| anyhow::anyhow!("Failed to set ResampleChannel (race condition)"))
         })
     }
 

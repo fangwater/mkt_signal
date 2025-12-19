@@ -527,6 +527,42 @@ impl MonitorChannel {
 
     /// 将订单数量（按 venue 语义）转换为 base qty（标的数量）
     ///
+    /// 用于风控等关键路径：对于需要合约乘数的 venue，若乘数缺失则直接返回错误，避免默认 1 导致风险口径失真。
+    fn order_qty_to_base_checked(
+        inner: &MonitorChannelInner,
+        venue: TradingVenue,
+        symbol: &str,
+        qty: f64,
+    ) -> Result<f64, String> {
+        match venue {
+            TradingVenue::OkexFutures => {
+                let symbol_key = symbol.to_uppercase().replace("-SWAP", "").replace('-', "");
+                let Some(table) = inner.venue_min_qty_tables.get(&venue) else {
+                    return Err(format!(
+                        "未初始化 {:?} 的交易对过滤器，无法转换数量 symbol={}",
+                        venue, symbol_key
+                    ));
+                };
+                let Some(mult) = table.contract_multiplier_opt(&symbol_key) else {
+                    return Err(format!(
+                        "symbol={} 缺少 OKX 合约乘数(ctVal×ctMult)，无法进行风控口径计算（请刷新 filters/multipliers）",
+                        symbol_key
+                    ));
+                };
+                if !(mult > 0.0) {
+                    return Err(format!(
+                        "symbol={} OKX contract multiplier invalid: {}",
+                        symbol_key, mult
+                    ));
+                }
+                Ok(qty * mult)
+            }
+            _ => Ok(qty),
+        }
+    }
+
+    /// 将订单数量（按 venue 语义）转换为 base qty（标的数量）
+    ///
     /// - Binance futures: qty 本身就是 base qty
     /// - OKX futures: qty 是 contracts，需要乘以合约面值（ctVal×ctMult）
     pub fn qty_to_base(&self, venue: TradingVenue, symbol: &str, qty: f64) -> f64 {
@@ -832,7 +868,12 @@ impl MonitorChannel {
                 }
                 TradingVenue::OkexFutures => {
                     // OKX 永续/交割合约 sz 使用“张数”，需要用 ctVal×ctMult 将 base qty 转成合约张数
-                    let contract_size = table.contract_multiplier(&symbol_key);
+                    let contract_size = table.contract_multiplier_opt(&symbol_key).ok_or_else(|| {
+                        format!(
+                            "symbol={} 缺少 OKX 合约乘数(ctVal×ctMult)，无法将 base qty 转成 contracts（请刷新 filters/multipliers）",
+                            symbol_key
+                        )
+                    })?;
                     if contract_size <= 0.0 {
                         return Err(format!(
                             "symbol={} OKX contract multiplier invalid: {}",
@@ -1264,6 +1305,7 @@ impl MonitorChannel {
                 panic!("max_pos_u not set!!");
             }
 
+            let open_venue = inner.open_venue;
             let symbol_upper = symbol.to_uppercase();
             let base_asset = extract_base_asset(&symbol_upper).ok_or_else(|| {
                 format!("无法识别 symbol={} 的基础资产，无法校验 max_pos_u", symbol)
@@ -1298,8 +1340,45 @@ impl MonitorChannel {
                 ));
             };
 
-            let add_base_qty =
-                Self::order_qty_to_base(inner, inner.open_venue, symbol, additional_qty);
+            let price_source = if price_from_table.is_some() {
+                "mark_price_table"
+            } else {
+                "price_hint"
+            };
+            let (qty_unit, okx_symbol_key, okx_contract_multiplier) = match open_venue {
+                TradingVenue::OkexFutures => {
+                    let symbol_key = symbol_upper.replace("-SWAP", "").replace('-', "");
+                    let mult = inner
+                        .venue_min_qty_tables
+                        .get(&open_venue)
+                        .and_then(|t| t.contract_multiplier_opt(&symbol_key));
+                    ("contracts", Some(symbol_key), mult)
+                }
+                _ => ("base_qty", None, None),
+            };
+
+            let add_base_qty = match Self::order_qty_to_base_checked(
+                inner,
+                open_venue,
+                symbol,
+                additional_qty,
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    info!(
+                            "max_pos_u check qty convert failed: symbol={} base_asset={} venue={:?} qty_unit={} raw_qty={:.8} okx_symbol_key={:?} okx_contract_multiplier(ctVal×ctMult)={:?} err={}",
+                            symbol,
+                            base_asset,
+                            open_venue,
+                            qty_unit,
+                            additional_qty,
+                            okx_symbol_key,
+                            okx_contract_multiplier,
+                            e
+                        );
+                    return Err(e);
+                }
+            };
             let projected_qty = current_exposure_qty + add_base_qty;
             let current_usdt = current_exposure_qty.abs() * price;
             let order_usdt = add_base_qty.abs() * price;
@@ -1307,6 +1386,26 @@ impl MonitorChannel {
             let limit_eps = 1e-6_f64;
 
             if projected_usdt > max_pos_u + limit_eps {
+                info!(
+                    "max_pos_u check reject detail: symbol={} base_asset={} venue={:?} price_source={} mark_symbol={} price={:.8} qty_unit={} raw_qty={:.8} okx_symbol_key={:?} okx_contract_multiplier(ctVal×ctMult)={:?} current_exposure_qty(base)={:.8} add_base_qty={:.8} projected_qty(base)={:.8} current_usdt={:.4} order_usdt={:.4} projected_usdt={:.4} max_pos_u={:.4}",
+                    symbol,
+                    base_asset,
+                    open_venue,
+                    price_source,
+                    mark_symbol,
+                    price,
+                    qty_unit,
+                    additional_qty,
+                    okx_symbol_key,
+                    okx_contract_multiplier,
+                    current_exposure_qty,
+                    add_base_qty,
+                    projected_qty,
+                    current_usdt,
+                    order_usdt,
+                    projected_usdt,
+                    max_pos_u
+                );
                 warn!(
                     "symbol={} 当前敞口={:.6}({:.4}USDT) 下单数量={:.6}({:.4}USDT) 预计敞口={:.4}USDT 超过阈值 {:.4}USDT",
                     symbol,
@@ -1693,5 +1792,95 @@ mod tests {
         assert!((base_qty - 0.1).abs() < 1e-12);
         let overhedge_factor = 1.0 / base_qty;
         assert!((overhedge_factor - 10.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn ensure_max_pos_u_rejects_when_okex_multiplier_missing() {
+        let okx_table = VenueMinQtyTable::new(TradingVenue::OkexFutures);
+
+        let open_leg = LegMgr::Futures {
+            exchange: Exchange::Okex,
+            um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Okex))),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Okex))),
+        };
+        let hedge_leg = LegMgr::Margin {
+            exchange: Exchange::Binance,
+            bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Binance))),
+        };
+
+        let mut venue_min_qty_tables: HashMap<TradingVenue, Rc<VenueMinQtyTable>> = HashMap::new();
+        venue_min_qty_tables.insert(TradingVenue::OkexFutures, Rc::new(okx_table));
+
+        let mut price_table = PriceTable::new();
+        price_table.update_mark_price("FILUSDT", 100.0, 0);
+
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::OkexFutures,
+            hedge_venue: TradingVenue::BinanceFutures,
+            open_leg,
+            hedge_leg,
+            usdt_mgrs: HashMap::new(),
+            price_table: Rc::new(RefCell::new(price_table)),
+            venue_min_qty_tables,
+            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new())),
+            hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
+            trade_update_seq: 0,
+        };
+
+        MONITOR_CHANNEL.with(|mc| {
+            *mc.borrow_mut() = Some(inner);
+        });
+
+        let err = MonitorChannel::instance()
+            .ensure_max_pos_u("FIL-USDT-SWAP", 2.0, 100.0)
+            .unwrap_err();
+        assert!(err.contains("缺少 OKX 合约乘数"), "err={err}");
+    }
+
+    #[test]
+    fn ensure_max_pos_u_uses_okex_multiplier_in_risk_calc() {
+        let mut okx_table = VenueMinQtyTable::new(TradingVenue::OkexFutures);
+        okx_table.set_contract_multiplier_for_test("FILUSDT", 10.0);
+
+        let open_leg = LegMgr::Futures {
+            exchange: Exchange::Okex,
+            um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Okex))),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Okex))),
+        };
+        let hedge_leg = LegMgr::Margin {
+            exchange: Exchange::Binance,
+            bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Binance))),
+        };
+
+        let mut venue_min_qty_tables: HashMap<TradingVenue, Rc<VenueMinQtyTable>> = HashMap::new();
+        venue_min_qty_tables.insert(TradingVenue::OkexFutures, Rc::new(okx_table));
+
+        let mut price_table = PriceTable::new();
+        price_table.update_mark_price("FILUSDT", 100.0, 0);
+
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::OkexFutures,
+            hedge_venue: TradingVenue::BinanceFutures,
+            open_leg,
+            hedge_leg,
+            usdt_mgrs: HashMap::new(),
+            price_table: Rc::new(RefCell::new(price_table)),
+            venue_min_qty_tables,
+            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new())),
+            hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
+            trade_update_seq: 0,
+        };
+
+        MONITOR_CHANNEL.with(|mc| {
+            *mc.borrow_mut() = Some(inner);
+        });
+
+        // max_pos_u default = 1000.0 (PreTradeParamsLoader::default)
+        // FIL mark = 100.0, contracts=2, mult=10 => base=20 => notional=2000 > 1000
+        assert!(MonitorChannel::instance()
+            .ensure_max_pos_u("FIL-USDT-SWAP", 2.0, 100.0)
+            .is_err());
     }
 }

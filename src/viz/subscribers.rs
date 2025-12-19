@@ -13,9 +13,7 @@ use crate::common::iceoryx_publisher::RESAMPLE_PAYLOAD as ICEORYX_RESAMPLE_PAYLO
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::resample_channel::{DEFAULT_EXPOSURE_CHANNEL, DEFAULT_RISK_CHANNEL};
 use crate::viz::config::{PreTradeSrcCfg, VizServerCfg};
-use crate::viz::resample::{
-    PreTradeExposureResampleEntry, PreTradeRiskResampleEntry,
-};
+use crate::viz::resample::{PreTradeExposureResampleEntry, PreTradeRiskResampleEntry};
 use crate::viz::server::WsHub;
 
 const PRE_TRADE_EXPOSURE_CHANNEL: &str = DEFAULT_EXPOSURE_CHANNEL;

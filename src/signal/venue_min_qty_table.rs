@@ -156,6 +156,12 @@ impl VenueMinQtyTable {
         let key = symbol.to_uppercase();
         self.contract_multipliers.get(&key).copied().unwrap_or(1.0)
     }
+
+    /// 返回合约面值（ctVal × ctMult / quanto_multiplier）；若不存在则返回 None
+    pub fn contract_multiplier_opt(&self, symbol: &str) -> Option<f64> {
+        let key = symbol.to_uppercase();
+        self.contract_multipliers.get(&key).copied()
+    }
 }
 
 #[cfg(test)]
