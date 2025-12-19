@@ -3,11 +3,22 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN_NAME="persist_manager"
-BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
+BIN_PATH=""
+
+# shellcheck source=scripts/deploy_xarb_lib.sh
+source "$ROOT_DIR/scripts/deploy_xarb_lib.sh"
+xarb_preparse_remote_args "$@"
+set -- "${XARB_FORWARD_ARGS[@]}"
+if [[ -n "${XARB_REMOTE_HOST}" ]]; then
+  xarb_remote_maybe_sync_repo "$ROOT_DIR"
+  xarb_remote_exec "scripts/$(basename "${BASH_SOURCE[0]}")" "$@"
+  exit $?
+fi
 
 usage() {
   cat <<'EOF'
-用法: scripts/deploy_xarb_persist_manager.sh [trade|test] --open-venue <okex-futures> --hedge-venue <binance-futures> [--env-name okex-binance-xarb-trade]
+用法: scripts/deploy_xarb_persist_manager.sh [trade|test] --open-venue <okex-futures> --hedge-venue <binance-futures> [--env-name okex-binance-xarb-trade] [--jobs <n>] [--cargo-target-dir <path>]
+      scripts/deploy_xarb_persist_manager.sh --remote-host awsjp [--remote-repo <path>] [--remote-sync] [...]
 
 说明:
   - 构建 persist_manager 并拷贝到 $HOME/<open>-<hedge>-xarb-<trade|test>/（或 --env-name 指定）。
@@ -23,6 +34,14 @@ usage() {
 示例:
   scripts/deploy_xarb_persist_manager.sh trade --open-venue okex-futures --hedge-venue binance-futures
   scripts/deploy_xarb_persist_manager.sh --env-name okex-binance-xarb-trade --open-venue okex-futures --hedge-venue binance-futures
+
+远程模式（可选）:
+  --remote-host <ssh_host>        在远端编译并部署（避免本机编译）
+  --remote-repo <path>            远端仓库目录（默认 $HOME/crypto_mkt/mkt_signal）
+  --remote-sync                   先 rsync 本地仓库到远端（默认关闭）
+  --remote-cargo-target-dir <p>   远端 cargo target 目录（默认 $HOME/.cache/mkt_signal/cargo_target_xarb）
+  --remote-nice <n>               远端执行优先级（默认 10）
+  --remote-ionice/--remote-no-ionice  远端使用 ionice 降低 IO 优先级（默认开启）
 EOF
 }
 
@@ -35,6 +54,11 @@ ENV_TYPE="trade"
 ENV_NAME=""
 OPEN_VENUE=""
 HEDGE_VENUE=""
+CARGO_TARGET_DIR_OVERRIDE=""
+BUILD_JOBS=""
+if [[ -n "${XARB_REMOTE_RUN:-}" ]]; then
+  BUILD_JOBS="1"
+fi
 
 normalize_venue() {
   echo "${1,,}"
@@ -66,6 +90,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --hedge-venue)
       HEDGE_VENUE="${2:-}"
+      shift 2
+      ;;
+    --jobs)
+      BUILD_JOBS="${2:-}"
+      shift 2
+      ;;
+    --cargo-target-dir)
+      CARGO_TARGET_DIR_OVERRIDE="${2:-}"
       shift 2
       ;;
     *)
@@ -104,15 +136,16 @@ fi
 TARGET_DIR="$HOME/${ENV_NAME}"
 
 echo "[INFO] 构建 $BIN_NAME (release)"
+CARGO_TARGET_DIR_EFFECTIVE="$(xarb_effective_cargo_target_dir "$ROOT_DIR" "$CARGO_TARGET_DIR_OVERRIDE")"
 (
   cd "$ROOT_DIR"
-  cargo build --release --bin "$BIN_NAME"
+  CARGO_TARGET_DIR="$CARGO_TARGET_DIR_EFFECTIVE" \
+    cargo build --release --bin "$BIN_NAME" ${BUILD_JOBS:+--jobs "$BUILD_JOBS"}
 )
+BIN_PATH="$(xarb_bin_path_release "$CARGO_TARGET_DIR_EFFECTIVE" "$BIN_NAME")"
 
 echo "[INFO] 部署 $BIN_NAME 到 $TARGET_DIR"
 mkdir -p "$TARGET_DIR"
-cp "$BIN_PATH" "$TARGET_DIR/"
-chmod +x "$TARGET_DIR/$BIN_NAME"
 mkdir -p "$TARGET_DIR/data/persist_manager" >/dev/null 2>&1 || true
 
 EXTRA_FILES=(
@@ -131,7 +164,10 @@ for file in "${EXTRA_FILES[@]}"; do
   fi
 done
 
+if ! xarb_atomic_install "$BIN_PATH" "$TARGET_DIR/$BIN_NAME"; then
+  exit 2
+fi
+
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"
 echo "[INFO] 启动: cd $TARGET_DIR && ./xarb_scripts/start_xarb_persist_manager.sh --port 8088"
 echo "[INFO] 停止: cd $TARGET_DIR && ./xarb_scripts/stop_xarb_persist_manager.sh"
-

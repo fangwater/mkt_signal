@@ -4,9 +4,9 @@
 #       /api        http://127.0.0.1:8000
 #
 # 静态目录（nginx 直出，不经过后端）：
-#   /xarb/okex-binance/ static:/home/ubuntu/okex-binance-xarb-trade/www/
+#   /xarb/okex-binance/ static:$HOME/okex-binance-xarb-trade/www/
 # 说明：
-# - static: 后面必须是绝对路径
+# - static: 后面建议写绝对路径；也支持 static:$HOME/... 或 static:~/...（由 scripts/setup_nginx_4191.sh 展开为绝对路径）
 # - 建议 path/dir 都以 / 结尾；脚本会自动生成 301：/xarb/okex-binance -> /xarb/okex-binance/
 
 /fr/binance http://127.0.0.1:12345
@@ -20,7 +20,7 @@
 /manual_signal/ http://127.0.0.1:8911/
 
 # xarb pre-trade dashboard (static) + viz_server (WS/healthz)
-/xarb/okex-binance/ static:/home/ubuntu/okex-binance-xarb-trade/www/
+/xarb/okex-binance/ static:$HOME/okex-binance-xarb-trade/www/
 /xarb/okex-binance/ws http://127.0.0.1:10111/ws
 /xarb/okex-binance/healthz http://127.0.0.1:10111/healthz
 

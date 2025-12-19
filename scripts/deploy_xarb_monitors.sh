@@ -3,9 +3,20 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# shellcheck source=scripts/deploy_xarb_lib.sh
+source "$ROOT_DIR/scripts/deploy_xarb_lib.sh"
+xarb_preparse_remote_args "$@"
+set -- "${XARB_FORWARD_ARGS[@]}"
+if [[ -n "${XARB_REMOTE_HOST}" ]]; then
+  xarb_remote_maybe_sync_repo "$ROOT_DIR"
+  xarb_remote_exec "scripts/$(basename "${BASH_SOURCE[0]}")" "$@"
+  exit $?
+fi
+
 usage() {
   cat <<'EOF'
-用法: scripts/deploy_xarb_monitors.sh [trade|test] --open-venue <okex-futures> --hedge-venue <binance-futures> [--env-name okex-binance-xarb-trade]
+用法: scripts/deploy_xarb_monitors.sh [trade|test] --open-venue <okex-futures> --hedge-venue <binance-futures> [--env-name okex-binance-xarb-trade] [--jobs <n>] [--cargo-target-dir <path>]
+      scripts/deploy_xarb_monitors.sh --remote-host awsjp [--remote-repo <path>] [--remote-sync] [...]
 
 说明:
   - 构建并部署 xarb 所需的两侧账户 monitor（二进制为 okex_account_monitor / binance_account_monitor）。
@@ -18,6 +29,14 @@ usage() {
 示例:
   scripts/deploy_xarb_monitors.sh trade --open-venue okex-futures --hedge-venue binance-futures
   scripts/deploy_xarb_monitors.sh --env-name okex-binance-xarb-trade --open-venue okex-futures --hedge-venue binance-futures
+
+远程模式（可选）:
+  --remote-host <ssh_host>        在远端编译并部署（避免本机编译）
+  --remote-repo <path>            远端仓库目录（默认 $HOME/crypto_mkt/mkt_signal）
+  --remote-sync                   先 rsync 本地仓库到远端（默认关闭）
+  --remote-cargo-target-dir <p>   远端 cargo target 目录（默认 $HOME/.cache/mkt_signal/cargo_target_xarb）
+  --remote-nice <n>               远端执行优先级（默认 10）
+  --remote-ionice/--remote-no-ionice  远端使用 ionice 降低 IO 优先级（默认开启）
 EOF
 }
 
@@ -30,6 +49,11 @@ ENV_TYPE="trade"
 ENV_NAME=""
 OPEN_VENUE=""
 HEDGE_VENUE=""
+CARGO_TARGET_DIR_OVERRIDE=""
+BUILD_JOBS=""
+if [[ -n "${XARB_REMOTE_RUN:-}" ]]; then
+  BUILD_JOBS="1"
+fi
 
 normalize_venue() {
   echo "${1,,}"
@@ -71,6 +95,14 @@ while [[ $# -gt 0 ]]; do
       HEDGE_VENUE="${2:-}"
       shift 2
       ;;
+    --jobs)
+      BUILD_JOBS="${2:-}"
+      shift 2
+      ;;
+    --cargo-target-dir)
+      CARGO_TARGET_DIR_OVERRIDE="${2:-}"
+      shift 2
+      ;;
     *)
       echo "[ERROR] 未知参数: $1"
       usage
@@ -100,6 +132,7 @@ fi
 
 TARGET_DIR="$HOME/${ENV_NAME}"
 mkdir -p "$TARGET_DIR/xarb_scripts"
+CARGO_TARGET_DIR_EFFECTIVE="$(xarb_effective_cargo_target_dir "$ROOT_DIR" "$CARGO_TARGET_DIR_OVERRIDE")"
 
 deploy_one() {
   local exchange="$1"
@@ -123,12 +156,16 @@ deploy_one() {
   echo "[INFO] 构建 $bin_name (release)"
   (
     cd "$ROOT_DIR"
-    cargo build --release --bin "$bin_name"
+    CARGO_TARGET_DIR="$CARGO_TARGET_DIR_EFFECTIVE" \
+      cargo build --release --bin "$bin_name" ${BUILD_JOBS:+--jobs "$BUILD_JOBS"}
   )
 
   echo "[INFO] 部署 $bin_name -> $TARGET_DIR/$out_name"
-  cp "$ROOT_DIR/target/release/$bin_name" "$TARGET_DIR/$out_name"
-  chmod +x "$TARGET_DIR/$out_name"
+  local bin_path
+  bin_path="$(xarb_bin_path_release "$CARGO_TARGET_DIR_EFFECTIVE" "$bin_name")"
+  if ! xarb_atomic_install "$bin_path" "$TARGET_DIR/$out_name"; then
+    exit 2
+  fi
 }
 
 deploy_one "$OPEN_EXCHANGE"

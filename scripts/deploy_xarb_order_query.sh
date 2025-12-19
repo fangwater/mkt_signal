@@ -3,6 +3,16 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# shellcheck source=scripts/deploy_xarb_lib.sh
+source "$ROOT_DIR/scripts/deploy_xarb_lib.sh"
+xarb_preparse_remote_args "$@"
+set -- "${XARB_FORWARD_ARGS[@]}"
+if [[ -n "${XARB_REMOTE_HOST}" ]]; then
+  xarb_remote_maybe_sync_repo "$ROOT_DIR"
+  xarb_remote_exec "scripts/$(basename "${BASH_SOURCE[0]}")" "$@"
+  exit $?
+fi
+
 usage() {
   cat <<'EOF'
 用法: scripts/deploy_xarb_order_query.sh [trade|test] --open-venue <okex-futures> --hedge-venue <binance-futures>
@@ -10,6 +20,9 @@ usage() {
                                        [--port 18080]
                                        [--nginx-prefix /xarb/okex-binance/order_query]
                                        [--nginx-port 4191]
+                                       [--nginx-mapping-file $HOME/nginx_locations.txt]
+                                       [--apply-nginx]
+      scripts/deploy_xarb_order_query.sh --remote-host awsjp [--remote-repo <path>] [--remote-sync] [...]
 
 说明:
   - 部署 Python webserver：order_query 到 $HOME/<open>-<hedge>-xarb-<trade|test>/（或 --env-name 指定）。
@@ -20,11 +33,19 @@ usage() {
       xarb_scripts/start_xarb_order_query.sh
       xarb_scripts/stop_xarb_order_query.sh
       scripts/setup_nginx_4191.sh
-  - 会把 nginx 映射写入当前仓库的 config/nginx_locations.txt（幂等更新）。
+  - 会把 nginx 映射写入 $HOME/nginx_locations.txt（幂等更新；可用 --nginx-mapping-file 覆盖）。
     这样可以避免用“只有 order_query 的映射文件”去重建 nginx 站点，导致其他路径（如静态面板）被覆盖而 404。
 
 示例:
   scripts/deploy_xarb_order_query.sh trade --open-venue okex-futures --hedge-venue binance-futures --port 18080
+
+远程模式（可选）:
+  --remote-host <ssh_host>        在远端部署（用于目标机为 awsjp 的场景）
+  --remote-repo <path>            远端仓库目录（默认 $HOME/crypto_mkt/mkt_signal）
+  --remote-sync                   先 rsync 本地仓库到远端（默认关闭）
+  --remote-tty                    远端执行分配 TTY（需要 sudo 输密码时用）
+  --remote-nice <n>               远端执行优先级（默认 10）
+  --remote-ionice/--remote-no-ionice  远端使用 ionice 降低 IO 优先级（默认开启）
 EOF
 }
 
@@ -40,6 +61,8 @@ HEDGE_VENUE=""
 PORT="18080"
 NGINX_PREFIX=""
 NGINX_PORT="4191"
+NGINX_MAPPING_FILE=""
+APPLY_NGINX="0"
 
 normalize_venue() {
   echo "${1,,}"
@@ -57,10 +80,22 @@ ensure_futures_venue() {
 
 upsert_main_nginx_mapping() {
   local main_file begin_marker end_marker tmp
-  main_file="${ROOT_DIR}/config/nginx_locations.txt"
+  if [[ -z "${NGINX_MAPPING_FILE}" ]]; then
+    NGINX_MAPPING_FILE="$HOME/nginx_locations.txt"
+  fi
+  main_file="${NGINX_MAPPING_FILE}"
+
   if [[ ! -f "$main_file" ]]; then
-    echo "[ERROR] 未找到 nginx 主映射文件: $main_file" >&2
-    exit 1
+    # Bootstrap from repo template (first-time setup on a fresh host)
+    if [[ -f "${ROOT_DIR}/config/nginx_locations.txt" ]]; then
+      mkdir -p "$(dirname "$main_file")" >/dev/null 2>&1 || true
+      cp "${ROOT_DIR}/config/nginx_locations.txt" "$main_file"
+      echo "[INFO] 初始化 nginx 映射文件: $main_file (from ${ROOT_DIR}/config/nginx_locations.txt)"
+    else
+      echo "[ERROR] 未找到 nginx 映射文件: $main_file" >&2
+      echo "[ERROR] 且未找到模板: ${ROOT_DIR}/config/nginx_locations.txt" >&2
+      exit 1
+    fi
   fi
   if [[ "${NGINX_PREFIX}" != /* ]]; then
     echo "[ERROR] --nginx-prefix 必须以 / 开头: ${NGINX_PREFIX}" >&2
@@ -150,6 +185,14 @@ while [[ $# -gt 0 ]]; do
       NGINX_PORT="${2:-4191}"
       shift 2
       ;;
+    --nginx-mapping-file)
+      NGINX_MAPPING_FILE="${2:-}"
+      shift 2
+      ;;
+    --apply-nginx)
+      APPLY_NGINX="1"
+      shift
+      ;;
     *)
       echo "[ERROR] 未知参数: $1"
       usage
@@ -189,6 +232,9 @@ TARGET_DIR="$HOME/${ENV_NAME}"
 if [[ -z "$NGINX_PREFIX" ]]; then
   NGINX_PREFIX="/xarb/${OPEN_EXCHANGE}-${HEDGE_EXCHANGE}/order_query"
 fi
+if [[ -z "${NGINX_MAPPING_FILE}" ]]; then
+  NGINX_MAPPING_FILE="$HOME/nginx_locations.txt"
+fi
 
 echo "[INFO] 部署 order_query 到 $TARGET_DIR"
 mkdir -p "$TARGET_DIR"
@@ -219,11 +265,19 @@ done
 
 upsert_main_nginx_mapping
 
+if [[ "${APPLY_NGINX}" == "1" ]]; then
+  echo "[INFO] 应用 nginx 配置 (PORT=${NGINX_PORT}, MAPPING_FILE=${NGINX_MAPPING_FILE})"
+  (
+    cd "$ROOT_DIR"
+    PORT="${NGINX_PORT}" MAPPING_FILE="${NGINX_MAPPING_FILE}" scripts/setup_nginx_4191.sh
+  )
+fi
+
 echo ""
 echo "[INFO] order_query 部署完成: $TARGET_DIR"
 echo "[INFO] 启动: cd $TARGET_DIR && PYTHON_BIN=/home/ubuntu/jupyter_env/bin/python ./xarb_scripts/start_xarb_order_query.sh --port ${PORT} --api-base http://127.0.0.1:8089"
 echo "[INFO] 停止: cd $TARGET_DIR && ./xarb_scripts/stop_xarb_order_query.sh"
 echo ""
-echo "[INFO] nginx 主映射已更新: ${ROOT_DIR}/config/nginx_locations.txt"
+echo "[INFO] nginx 主映射已更新: ${NGINX_MAPPING_FILE}"
 echo "[INFO] 如需在 nginx(${NGINX_PORT}) 上暴露该页面，请用主映射重建/重载 nginx："
-echo "       cd ${ROOT_DIR} && PORT=${NGINX_PORT} MAPPING_FILE=config/nginx_locations.txt scripts/setup_nginx_4191.sh"
+echo "       cd ${ROOT_DIR} && PORT=${NGINX_PORT} MAPPING_FILE=${NGINX_MAPPING_FILE} scripts/setup_nginx_4191.sh"

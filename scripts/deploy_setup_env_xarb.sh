@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Optional remote mode (runs on remote host via ssh)
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/deploy_xarb_lib.sh
+source "$ROOT_DIR/scripts/deploy_xarb_lib.sh"
+xarb_preparse_remote_args "$@"
+set -- "${XARB_FORWARD_ARGS[@]}"
+if [[ -n "${XARB_REMOTE_HOST}" ]]; then
+  xarb_remote_maybe_sync_repo "$ROOT_DIR"
+  xarb_remote_exec "scripts/$(basename "${BASH_SOURCE[0]}")" "$@"
+  exit $?
+fi
+
 # 生成 xarb 环境变量脚本（futures-only，跨所）
 #
 # 目录约定:
@@ -18,10 +30,18 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 用法: scripts/deploy_setup_env_xarb.sh [trade|test] --open-venue <okex-futures> --hedge-venue <binance-futures> [--env-name okex-binance-xarb-trade] [--namespace <ns>]
+      scripts/deploy_setup_env_xarb.sh --remote-host awsjp [--remote-repo <path>] [--remote-sync] [...]
 
 示例:
   scripts/deploy_setup_env_xarb.sh trade --open-venue okex-futures --hedge-venue binance-futures
   scripts/deploy_setup_env_xarb.sh --env-name okex-binance-xarb-trade --open-venue okex-futures --hedge-venue binance-futures
+
+远程模式（可选）:
+  --remote-host <ssh_host>        在远端执行该脚本（用于远端生成 env.sh）
+  --remote-repo <path>            远端仓库目录（默认 $HOME/crypto_mkt/mkt_signal）
+  --remote-sync                   先 rsync 本地仓库到远端（默认关闭）
+  --remote-nice <n>               远端执行优先级（默认 10）
+  --remote-ionice/--remote-no-ionice  远端使用 ionice 降低 IO 优先级（默认开启）
 EOF
 }
 

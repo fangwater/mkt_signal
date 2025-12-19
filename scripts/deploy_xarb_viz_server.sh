@@ -3,7 +3,17 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN_NAME="viz_server"
-BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
+BIN_PATH=""
+
+# shellcheck source=scripts/deploy_xarb_lib.sh
+source "$ROOT_DIR/scripts/deploy_xarb_lib.sh"
+xarb_preparse_remote_args "$@"
+set -- "${XARB_FORWARD_ARGS[@]}"
+if [[ -n "${XARB_REMOTE_HOST}" ]]; then
+  xarb_remote_maybe_sync_repo "$ROOT_DIR"
+  xarb_remote_exec "scripts/$(basename "${BASH_SOURCE[0]}")" "$@"
+  exit $?
+fi
 
 usage() {
   cat <<'EOF'
@@ -12,6 +22,8 @@ usage() {
                                        [--bind 0.0.0.0] [--port 10111] [--port2 10112] [--no-port2] [--ws-path /ws]
                                        [--namespace <IPC_NAMESPACE>]
                                        [--resample-suffix <suffix>] [--instance-label <label>]
+                                       [--jobs <n>] [--cargo-target-dir <path>]
+      scripts/deploy_xarb_viz_server.sh --remote-host awsjp [--remote-repo <path>] [--remote-sync] [...]
 
 说明:
   - 构建并部署 viz_server 到 xarb 环境目录 $HOME/<open>-<hedge>-xarb-<trade|test>/（或 --env-name 指定）。
@@ -34,6 +46,14 @@ usage() {
   source ./env.sh  # 可选，但推荐
   ./xarb_scripts/start_xarb_viz_server.sh
   ./xarb_scripts/stop_xarb_viz_server.sh
+
+远程模式（可选）:
+  --remote-host <ssh_host>        在远端编译并部署（避免本机编译）
+  --remote-repo <path>            远端仓库目录（默认 $HOME/crypto_mkt/mkt_signal）
+  --remote-sync                   先 rsync 本地仓库到远端（默认关闭）
+  --remote-cargo-target-dir <p>   远端 cargo target 目录（默认 $HOME/.cache/mkt_signal/cargo_target_xarb）
+  --remote-nice <n>               远端执行优先级（默认 10）
+  --remote-ionice/--remote-no-ionice  远端使用 ionice 降低 IO 优先级（默认开启）
 EOF
 }
 
@@ -56,6 +76,11 @@ WS_PATH="/ws"
 IPC_NS_OVERRIDE=""
 RESAMPLE_SUFFIX=""
 INSTANCE_LABEL="xarb"
+CARGO_TARGET_DIR_OVERRIDE=""
+BUILD_JOBS=""
+if [[ -n "${XARB_REMOTE_RUN:-}" ]]; then
+  BUILD_JOBS="1"
+fi
 
 normalize_venue() {
   echo "${1,,}"
@@ -143,6 +168,14 @@ while [[ $# -gt 0 ]]; do
       INSTANCE_LABEL="${2:-xarb}"
       shift 2
       ;;
+    --jobs)
+      BUILD_JOBS="${2:-}"
+      shift 2
+      ;;
+    --cargo-target-dir)
+      CARGO_TARGET_DIR_OVERRIDE="${2:-}"
+      shift 2
+      ;;
     *)
       echo "[ERROR] 未知参数: $1"
       usage
@@ -196,14 +229,13 @@ if [[ -z "$IPC_NAMESPACE" ]]; then
 fi
 
 echo "[INFO] 构建 $BIN_NAME (release)"
+CARGO_TARGET_DIR_EFFECTIVE="$(xarb_effective_cargo_target_dir "$ROOT_DIR" "$CARGO_TARGET_DIR_OVERRIDE")"
 (
   cd "$ROOT_DIR"
-  cargo build --release --bin "$BIN_NAME"
+  CARGO_TARGET_DIR="$CARGO_TARGET_DIR_EFFECTIVE" \
+    cargo build --release --bin "$BIN_NAME" ${BUILD_JOBS:+--jobs "$BUILD_JOBS"}
 )
-
-echo "[INFO] 部署 $BIN_NAME 到 $TARGET_DIR"
-cp "$BIN_PATH" "$TARGET_DIR/"
-chmod +x "$TARGET_DIR/$BIN_NAME"
+BIN_PATH="$(xarb_bin_path_release "$CARGO_TARGET_DIR_EFFECTIVE" "$BIN_NAME")"
 
 mkdir -p "$TARGET_DIR/config" "$TARGET_DIR/xarb_scripts"
 
@@ -285,6 +317,11 @@ for file in "${EXTRA_FILES[@]}"; do
     chmod +x "$TARGET_DIR/$file" 2>/dev/null || true
   fi
 done
+
+echo "[INFO] 部署 $BIN_NAME 到 $TARGET_DIR"
+if ! xarb_atomic_install "$BIN_PATH" "$TARGET_DIR/$BIN_NAME"; then
+  exit 2
+fi
 
 echo "[INFO] 部署完成: $TARGET_DIR"
 echo "[INFO] 启动: cd $TARGET_DIR && ./xarb_scripts/start_xarb_viz_server.sh"

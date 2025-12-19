@@ -8,10 +8,11 @@ set -euo pipefail
 PORT="${PORT:-4191}"
 DEFAULT_UPSTREAM="${UPSTREAM:-http://127.0.0.1:3000}"
 SERVER_NAME="${SERVER_NAME:-_}"
-MAPPING_FILE="${MAPPING_FILE:-config/nginx_locations.txt}"
+# Prefer a host-local mapping file so this script can run outside the repo.
+MAPPING_FILE="${MAPPING_FILE:-$HOME/nginx_locations.txt}"
 KEEP_OLD_PORTS="${KEEP_OLD_PORTS:-0}"
-SITE_NAME="crypto_proxy_${PORT}"
-CONF_PATH="/etc/nginx/sites-available/${SITE_NAME}.conf"
+SITE_NAME="${SITE_NAME:-crypto_proxy_${PORT}}"
+CONF_PATH="${CONF_PATH:-/etc/nginx/sites-available/${SITE_NAME}.conf}"
 
 need_sudo() {
     if [ "$(id -u)" -ne 0 ]; then
@@ -27,6 +28,28 @@ if ! command -v nginx >/dev/null 2>&1; then
     ${SUDO} apt-get update
     DEBIAN_FRONTEND=noninteractive ${SUDO} apt-get install -y nginx
 fi
+
+expand_static_dir() {
+    local raw="$1"
+    local dir="$raw"
+
+    # Allow writing $HOME or ~ in mapping file, expand to absolute path here.
+    if [[ "$dir" == "~/"* ]]; then
+        dir="${HOME}/${dir#~/}"
+    elif [[ "$dir" == "~" ]]; then
+        dir="${HOME}"
+    elif [[ "$dir" == "\$HOME/"* ]]; then
+        dir="${HOME}/${dir#\$HOME/}"
+    elif [[ "$dir" == "\$HOME" ]]; then
+        dir="${HOME}"
+    elif [[ "$dir" == "\${HOME}/"* ]]; then
+        dir="${HOME}/${dir#\${HOME}/}"
+    elif [[ "$dir" == "\${HOME}" ]]; then
+        dir="${HOME}"
+    fi
+
+    echo "$dir"
+}
 
 locations() {
     if [ -f "${MAPPING_FILE}" ]; then
@@ -45,7 +68,7 @@ locations() {
             #   /xarb/okex-binance/ static:/abs/path/to/www/
             # Note: path and directory are recommended to end with '/'.
             if [[ "${upstream}" == static:* ]]; then
-                dir="${upstream#static:}"
+                dir="$(expand_static_dir "${upstream#static:}")"
                 if [[ -z "${dir}" ]]; then
                     echo "忽略无效 static 映射（目录为空）: ${line}" >&2
                     continue
