@@ -116,6 +116,7 @@ XARB_SCRIPTS_TO_SYNC=(
 XARB_TOOLS_TO_SYNC=(
   "sync_xarb_symbol_lists.py"
   "print_xarb_symbol_lists.py"
+  "set_um_leverage.py"
   "sync_xarb_strategy_params.py"
   "print_xarb_strategy_params.py"
   "sync_xarb_spread_thresholds.py"
@@ -147,6 +148,7 @@ cat <<EOF
   cd "$TARGET_DIR"
   ./xarb_scripts/sync_xarb_symbol_lists.py
   ./xarb_scripts/print_xarb_symbol_lists.py
+  ./xarb_scripts/set_um_leverage.py --leverage 6
   ./xarb_scripts/sync_xarb_strategy_params.py
   ./xarb_scripts/print_xarb_strategy_params.py
 EOF

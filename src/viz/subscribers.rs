@@ -11,17 +11,14 @@ use tokio::time::Instant;
 
 use crate::common::iceoryx_publisher::RESAMPLE_PAYLOAD as ICEORYX_RESAMPLE_PAYLOAD;
 use crate::common::time_util::get_timestamp_us;
-use crate::pre_trade::resample_channel::{
-    DEFAULT_EXPOSURE_CHANNEL, DEFAULT_POSITIONS_CHANNEL, DEFAULT_RISK_CHANNEL,
-};
+use crate::pre_trade::resample_channel::{DEFAULT_EXPOSURE_CHANNEL, DEFAULT_RISK_CHANNEL};
 use crate::viz::config::{PreTradeSrcCfg, VizServerCfg};
 use crate::viz::resample::{
-    PreTradeExposureResampleEntry, PreTradePositionResampleEntry, PreTradeRiskResampleEntry,
+    PreTradeExposureResampleEntry, PreTradeRiskResampleEntry,
 };
 use crate::viz::server::WsHub;
 
 const PRE_TRADE_EXPOSURE_CHANNEL: &str = DEFAULT_EXPOSURE_CHANNEL;
-const PRE_TRADE_POSITIONS_CHANNEL: &str = DEFAULT_POSITIONS_CHANNEL;
 const PRE_TRADE_RISK_CHANNEL: &str = DEFAULT_RISK_CHANNEL;
 
 pub const RESAMPLE_PAYLOAD: usize = ICEORYX_RESAMPLE_PAYLOAD;
@@ -66,12 +63,6 @@ pub fn spawn_pre_trade_resample_listeners_with_cfg(
                 })?
             };
             for ns in target_namespaces {
-                spawn_pre_trade_positions_listener(
-                    hub.clone(),
-                    &ns,
-                    inst.positions_channel.as_str(),
-                    Some(inst.label.as_str()),
-                )?;
                 spawn_pre_trade_exposure_listener(
                     hub.clone(),
                     &ns,
@@ -92,52 +83,10 @@ pub fn spawn_pre_trade_resample_listeners_with_cfg(
     let namespaces = resolve_pre_trade_namespaces(server, pre_trade)?;
     // default single-instance behavior (subscribe each namespace)
     for ns in namespaces {
-        spawn_pre_trade_positions_listener(hub.clone(), &ns, PRE_TRADE_POSITIONS_CHANNEL, None)?;
         spawn_pre_trade_exposure_listener(hub.clone(), &ns, PRE_TRADE_EXPOSURE_CHANNEL, None)?;
         spawn_pre_trade_risk_listener(hub.clone(), &ns, PRE_TRADE_RISK_CHANNEL, None)?;
     }
     Ok(())
-}
-
-fn spawn_pre_trade_positions_listener(
-    hub: WsHub,
-    namespace: &str,
-    channel: &str,
-    label: Option<&str>,
-) -> Result<()> {
-    let namespace = namespace.to_string();
-    let channel = channel.to_string();
-    let channel_for_msg = channel.clone();
-    let label = label.map(|s| s.to_string());
-    let label_for_msg = label.clone();
-    let namespace_for_msg = namespace.clone();
-
-    let service_name = format!("{}/viz_pubs/{}", namespace, channel);
-    spawn_resample_channel(
-        &format!(
-            "viz_pretrade_positions{}_{}",
-            label
-                .as_deref()
-                .map(|s| format!("_{}", s))
-                .unwrap_or_default(),
-            sanitize_node_component(&namespace),
-        ),
-        &service_name,
-        move |entry: PreTradePositionResampleEntry, hub: WsHub| {
-            let now_ts_ms = (get_timestamp_us() / 1000) as i64;
-            if let Ok(msg) = serde_json::to_string(&json!({
-                "type": "pre_trade_positions",
-                "namespace": namespace_for_msg.as_str(),
-                "source": label_for_msg.as_deref(),
-                "channel": channel_for_msg.as_str(),
-                "ts_ms": now_ts_ms,
-                "entry": entry,
-            })) {
-                hub.broadcast(msg);
-            }
-        },
-        hub,
-    )
 }
 
 fn spawn_pre_trade_exposure_listener(

@@ -1,0 +1,292 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN_NAME="viz_server"
+BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
+
+usage() {
+  cat <<'EOF'
+用法: scripts/deploy_xarb_viz_server.sh [trade|test] --open-venue <okex-futures> --hedge-venue <binance-futures>
+                                       [--env-name okex-binance-xarb-trade]
+                                       [--bind 0.0.0.0] [--port 10111] [--port2 10112] [--no-port2] [--ws-path /ws]
+                                       [--namespace <IPC_NAMESPACE>]
+                                       [--resample-suffix <suffix>] [--instance-label <label>]
+
+说明:
+  - 构建并部署 viz_server 到 xarb 环境目录 $HOME/<open>-<hedge>-xarb-<trade|test>/（或 --env-name 指定）。
+  - 会在目标目录生成/覆盖：config/viz.toml（仅开启 pre_trade resample 订阅，关闭 fr_state）。
+  - 默认会在同一个 viz_server 进程里开两个端口（便于 nginx 做不同 location 的 upstream 或灰度）：
+      - --port  (默认 10111)
+      - --port2 (默认 = port+1)
+    若不需要第二端口可用 --no-port2 关闭。
+  - namespaces 字段对应 IceOryx 的 IPC_NAMESPACE（即 pre_trade 发布时使用的命名空间前缀）。
+      - 若目标目录已存在 env.sh，则优先读取其中的 IPC_NAMESPACE
+      - 否则可用 --namespace 显式指定；若不指定则按默认规则推断
+  - 可选 --resample-suffix：订阅带后缀的两路通道（pre_trade_exposure_<suffix>, pre_trade_risk_<suffix>）
+
+示例:
+  scripts/deploy_xarb_viz_server.sh trade --open-venue okex-futures --hedge-venue binance-futures --port 10111
+  scripts/deploy_xarb_viz_server.sh trade --env-name okex-binance-xarb-trade --open-venue okex-futures --hedge-venue binance-futures
+  scripts/deploy_xarb_viz_server.sh trade --open-venue okex-futures --hedge-venue binance-futures --resample-suffix okex_binance_xarb
+
+启动/停止（在目标目录）:
+  source ./env.sh  # 可选，但推荐
+  ./xarb_scripts/start_xarb_viz_server.sh
+  ./xarb_scripts/stop_xarb_viz_server.sh
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+ENV_TYPE="trade"
+ENV_NAME=""
+OPEN_VENUE=""
+HEDGE_VENUE=""
+
+BIND="0.0.0.0"
+PORT="10111"
+PORT2=""
+NO_PORT2="0"
+WS_PATH="/ws"
+
+IPC_NS_OVERRIDE=""
+RESAMPLE_SUFFIX=""
+INSTANCE_LABEL="xarb"
+
+normalize_venue() {
+  echo "${1,,}"
+}
+
+ensure_futures_venue() {
+  local v
+  v="$(normalize_venue "$1")"
+  if [[ -z "$v" || "$v" != *-futures ]]; then
+    echo "[ERROR] xarb 只支持 futures：venue 必须以 -futures 结尾: $1"
+    exit 1
+  fi
+  echo "$v"
+}
+
+infer_pair_from_name() {
+  local name="${1,,}"
+  local open_ex=""
+  local hedge_ex=""
+
+  if [[ "$name" =~ ^([a-z0-9]+)[-_]([a-z0-9]+)[-_]xarb([_-].*)?$ ]]; then
+    open_ex="${BASH_REMATCH[1]}"
+    hedge_ex="${BASH_REMATCH[2]}"
+  fi
+
+  if [[ "$open_ex" == "okx" ]]; then
+    open_ex="okex"
+  fi
+  if [[ "$hedge_ex" == "okx" ]]; then
+    hedge_ex="okex"
+  fi
+
+  if [[ -n "$open_ex" && -n "$hedge_ex" ]]; then
+    echo "${open_ex},${hedge_ex}"
+  fi
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    trade|test)
+      ENV_TYPE="$1"
+      shift
+      ;;
+    --env-name)
+      ENV_NAME="${2:-}"
+      shift 2
+      ;;
+    --open-venue)
+      OPEN_VENUE="${2:-}"
+      shift 2
+      ;;
+    --hedge-venue)
+      HEDGE_VENUE="${2:-}"
+      shift 2
+      ;;
+    --bind)
+      BIND="${2:-0.0.0.0}"
+      shift 2
+      ;;
+    --port)
+      PORT="${2:-10111}"
+      shift 2
+      ;;
+    --ws-path)
+      WS_PATH="${2:-/ws}"
+      shift 2
+      ;;
+    --port2)
+      PORT2="${2:-}"
+      shift 2
+      ;;
+    --no-port2)
+      NO_PORT2="1"
+      shift
+      ;;
+    --namespace)
+      IPC_NS_OVERRIDE="${2:-}"
+      shift 2
+      ;;
+    --resample-suffix)
+      RESAMPLE_SUFFIX="${2:-}"
+      shift 2
+      ;;
+    --instance-label)
+      INSTANCE_LABEL="${2:-xarb}"
+      shift 2
+      ;;
+    *)
+      echo "[ERROR] 未知参数: $1"
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -n "$ENV_NAME" && ( -z "$OPEN_VENUE" || -z "$HEDGE_VENUE" ) ]]; then
+  if inferred="$(infer_pair_from_name "$ENV_NAME")" && [[ -n "$inferred" ]]; then
+    OPEN_VENUE="${OPEN_VENUE:-${inferred%%,*}-futures}"
+    HEDGE_VENUE="${HEDGE_VENUE:-${inferred##*,}-futures}"
+  fi
+fi
+
+if [[ -z "$OPEN_VENUE" || -z "$HEDGE_VENUE" ]]; then
+  echo "[ERROR] 需要 --open-venue 与 --hedge-venue，或提供可推断的 --env-name"
+  usage
+  exit 1
+fi
+
+OPEN_VENUE="$(ensure_futures_venue "$OPEN_VENUE")"
+HEDGE_VENUE="$(ensure_futures_venue "$HEDGE_VENUE")"
+if [[ "$OPEN_VENUE" == "$HEDGE_VENUE" ]]; then
+  echo "[ERROR] xarb 需要跨所：open=$OPEN_VENUE hedge=$HEDGE_VENUE"
+  exit 1
+fi
+
+OPEN_EXCHANGE="${OPEN_VENUE%%-*}"
+HEDGE_EXCHANGE="${HEDGE_VENUE%%-*}"
+if [[ -z "$ENV_NAME" ]]; then
+  ENV_NAME="${OPEN_EXCHANGE}-${HEDGE_EXCHANGE}-xarb-${ENV_TYPE}"
+fi
+
+TARGET_DIR="$HOME/${ENV_NAME}"
+mkdir -p "$TARGET_DIR"
+
+IPC_NAMESPACE=""
+ENV_FILE="$TARGET_DIR/env.sh"
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  IPC_NAMESPACE="${IPC_NAMESPACE:-}"
+fi
+IPC_NAMESPACE="${IPC_NS_OVERRIDE:-${IPC_NAMESPACE:-}}"
+
+if [[ -z "$IPC_NAMESPACE" ]]; then
+  IPC_NAMESPACE="${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_xarb_${ENV_TYPE}"
+  echo "[WARN] 未读取到 $ENV_FILE 的 IPC_NAMESPACE，且未指定 --namespace；使用默认推断: $IPC_NAMESPACE"
+  echo "[WARN] 建议先生成 env.sh：scripts/deploy_setup_env_xarb.sh --env-name ${ENV_NAME} --open-venue ${OPEN_VENUE} --hedge-venue ${HEDGE_VENUE}"
+fi
+
+echo "[INFO] 构建 $BIN_NAME (release)"
+(
+  cd "$ROOT_DIR"
+  cargo build --release --bin "$BIN_NAME"
+)
+
+echo "[INFO] 部署 $BIN_NAME 到 $TARGET_DIR"
+cp "$BIN_PATH" "$TARGET_DIR/"
+chmod +x "$TARGET_DIR/$BIN_NAME"
+
+mkdir -p "$TARGET_DIR/config" "$TARGET_DIR/xarb_scripts"
+
+if [[ "$NO_PORT2" != "1" && -z "$PORT2" ]]; then
+  if [[ "$PORT" =~ ^[0-9]+$ ]]; then
+    PORT2="$((PORT + 1))"
+  fi
+fi
+if [[ "$NO_PORT2" == "1" ]]; then
+  PORT2=""
+fi
+if [[ -n "$PORT2" && "$PORT2" == "$PORT" ]]; then
+  echo "[ERROR] --port2 不能与 --port 相同: $PORT2"
+  exit 1
+fi
+
+echo "[INFO] 生成 viz 配置: $TARGET_DIR/config/viz.toml (namespaces=[\"$IPC_NAMESPACE\"] ports=${PORT}${PORT2:+,$PORT2})"
+
+emit_server_block() {
+  local bind="$1"
+  local port="$2"
+  local ws_path="$3"
+
+  cat << EOF
+[[servers]]
+namespaces = ["$IPC_NAMESPACE"]
+[servers.http]
+bind = "$bind"
+port = $port
+ws_path = "$ws_path"
+[servers.pre_trade]
+enabled = true
+EOF
+
+  local exposure_ch="pre_trade_exposure"
+  local risk_ch="pre_trade_risk"
+  if [[ -n "$RESAMPLE_SUFFIX" ]]; then
+    exposure_ch="pre_trade_exposure_${RESAMPLE_SUFFIX}"
+    risk_ch="pre_trade_risk_${RESAMPLE_SUFFIX}"
+  fi
+
+  # Default: only subscribe exposure/risk (dashboard does not use aggregated positions).
+  cat << EOF
+[[servers.pre_trade.instances]]
+label = "$INSTANCE_LABEL"
+exposure_channel = "$exposure_ch"
+risk_channel = "$risk_ch"
+EOF
+
+  cat <<'EOF'
+[servers.fr_state]
+enabled = false
+EOF
+}
+
+{
+  emit_server_block "$BIND" "$PORT" "$WS_PATH"
+  if [[ -n "$PORT2" ]]; then
+    echo ""
+    emit_server_block "$BIND" "$PORT2" "$WS_PATH"
+  fi
+} > "$TARGET_DIR/config/viz.toml"
+
+mkdir -p "$TARGET_DIR/www"
+if [[ -f "$ROOT_DIR/docs/pre_trade_dashboard.html" ]]; then
+  cp "$ROOT_DIR/docs/pre_trade_dashboard.html" "$TARGET_DIR/www/pre_trade_dashboard.html"
+  cp "$ROOT_DIR/docs/pre_trade_dashboard.html" "$TARGET_DIR/www/index.html"
+  echo "[INFO] 已同步 dashboard: $TARGET_DIR/www/pre_trade_dashboard.html"
+fi
+
+EXTRA_FILES=(
+  "xarb_scripts/start_xarb_viz_server.sh"
+  "xarb_scripts/stop_xarb_viz_server.sh"
+)
+for file in "${EXTRA_FILES[@]}"; do
+  SRC="$ROOT_DIR/$file"
+  if [[ -f "$SRC" ]]; then
+    rsync -a "$SRC" "$TARGET_DIR/$(dirname "$file")/"
+    chmod +x "$TARGET_DIR/$file" 2>/dev/null || true
+  fi
+done
+
+echo "[INFO] 部署完成: $TARGET_DIR"
+echo "[INFO] 启动: cd $TARGET_DIR && ./xarb_scripts/start_xarb_viz_server.sh"
+echo "[INFO] 停止: cd $TARGET_DIR && ./xarb_scripts/stop_xarb_viz_server.sh"
+echo "[INFO] dashboard(静态): $TARGET_DIR/www/ (建议用 nginx 或本地 http server 对外暴露)"

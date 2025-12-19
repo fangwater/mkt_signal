@@ -101,12 +101,11 @@ def parse_args() -> argparse.Namespace:
 # Hash key: xarb_strategy_params_{open_venue}_{hedge_venue}
 STRATEGY_PARAMS = {
     "mode": "MM",
-    "order_amount": "100.0",
-    # "price_offsets": "[0.0001, 0.0002, 0.0004, 0.0006, 0.0008, 0.001, 0.0012, 0.0014, 0.0016, 0.0018, 0.002]",
-    "price_offsets": "[0.0001]",
-    "open_order_timeout": "30",
+    "order_amount": "50.0",
+    "price_offsets": "[0.0001, 0.0003, 0.0005, 0.0007, 0.009, 0.0012, 0.0015, 0.002]",
+    "open_order_timeout": "120",
     "hedge_timeout": "30",
-    "hedge_price_offset": "0.001",
+    "hedge_price_offset": "0.0003",
     "hedge_aggressive_seq_threshold": "6",
     "signal_cooldown": "5",
 }

@@ -53,21 +53,6 @@ pub fn compute_askbid_sr(spot_ask: Option<f64>, fut_bid: Option<f64>) -> Option<
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PreTradePositionRow {
-    pub asset: String,
-    pub open_qty: f64,
-    pub hedge_qty: f64,
-    pub net_qty: f64,
-    pub net_usdt: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PreTradePositionResampleEntry {
-    pub ts_ms: i64,
-    pub rows: Vec<PreTradePositionRow>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreTradeExposureRow {
     pub asset: String,
     pub open_qty: Option<f64>,
@@ -113,6 +98,5 @@ macro_rules! impl_codec {
     };
 }
 
-impl_codec!(PreTradePositionResampleEntry);
 impl_codec!(PreTradeExposureResampleEntry);
 impl_codec!(PreTradeRiskResampleEntry);

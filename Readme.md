@@ -27,8 +27,7 @@ pm2 start ./trade_engine --name trade_engine_binance -- --exchange binance
   - 移除了 FR_RESAMPLE_MSG_CHANNEL 常量
   - 移除了 spawn_fr_resample_listener 整个函数（原 line 33-49）
 
-  现在 viz_server 只专注于转发 pre_trade 三路重采样数据：
-  - pre_trade_positions
+  现在 viz_server 只专注于转发 pre_trade 两路重采样数据：
   - pre_trade_exposure
   - pre_trade_risk
 

@@ -201,25 +201,20 @@ async fn main() -> Result<()> {
 
             // 5. 初始化 ResampleChannel
             info!("Initializing ResampleChannel singleton...");
-            let (pos_ch, exposure_ch, risk_ch) = if let Some(suffix) = resample_suffix.as_deref() {
+            let (exposure_ch, risk_ch) = if let Some(suffix) = resample_suffix.as_deref() {
                 (
-                    format!("pre_trade_positions_{}", suffix),
                     format!("pre_trade_exposure_{}", suffix),
                     format!("pre_trade_risk_{}", suffix),
                 )
             } else {
-                (
-                    "pre_trade_positions".to_string(),
-                    "pre_trade_exposure".to_string(),
-                    "pre_trade_risk".to_string(),
-                )
+                ("pre_trade_exposure".to_string(), "pre_trade_risk".to_string())
             };
-            if let Err(err) = ResampleChannel::initialize(&pos_ch, &exposure_ch, &risk_ch) {
+            if let Err(err) = ResampleChannel::initialize(&exposure_ch, &risk_ch) {
                 warn!("Failed to initialize ResampleChannel: {err:#}");
             } else {
                 info!(
-                    "ResampleChannel initialized successfully (positions={} exposure={} risk={})",
-                    pos_ch, exposure_ch, risk_ch
+                    "ResampleChannel initialized successfully (exposure={} risk={})",
+                    exposure_ch, risk_ch
                 );
             }
 

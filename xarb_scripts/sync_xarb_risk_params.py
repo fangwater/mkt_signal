@@ -112,7 +112,7 @@ def parse_args() -> argparse.Namespace:
 
 
 RISK_PARAMS = {
-    "max_pos_u": "100000.0",
+    "max_pos_u": "10000.0",
     "max_symbol_exposure_ratio": "0.015",
     "max_total_exposure_ratio": "0.01",
     "max_leverage": "1.75",

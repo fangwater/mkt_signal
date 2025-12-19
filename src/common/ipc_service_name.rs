@@ -22,8 +22,8 @@ use std::env;
 /// // => "mkt1/signal_pubs/pre_trade"
 ///
 /// // 可视化通道（隔离）：
-/// build_service_name("viz_pubs/pre_trade_positions")
-/// // => "mkt1/viz_pubs/pre_trade_positions"
+/// build_service_name("viz_pubs/pre_trade_exposure")
+/// // => "mkt1/viz_pubs/pre_trade_exposure"
 ///
 /// // 持久化通道（隔离）：
 /// build_service_name("persist_pubs/order_update_record")

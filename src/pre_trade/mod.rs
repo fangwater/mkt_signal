@@ -23,7 +23,7 @@ pub use persist_channel::{
 };
 pub use query_eng_channel::QueryEngHub;
 pub use resample_channel::{
-    ResampleChannel, DEFAULT_EXPOSURE_CHANNEL, DEFAULT_POSITIONS_CHANNEL, DEFAULT_RISK_CHANNEL,
+    ResampleChannel, DEFAULT_EXPOSURE_CHANNEL, DEFAULT_RISK_CHANNEL,
 };
 pub use runner::PreTrade;
 pub use signal_channel::{SignalChannel, DEFAULT_BACKWARD_CHANNEL, DEFAULT_SIGNAL_CHANNEL};

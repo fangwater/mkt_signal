@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Install nginx (Debian/Ubuntu) and configure a reverse proxy on port 4911.
-# Supports multiple path→upstream mappings for HTTP/WebSocket。
+# Install nginx (Debian/Ubuntu) and configure a reverse proxy on port 4191.
+# (Renamed from setup_nginx_4911.sh; now defaults to 4191.)
+# Supports multiple path→upstream mappings for HTTP/WebSocket, and optional static directory hosting.
 
 set -euo pipefail
 
-PORT="${PORT:-4911}"
+PORT="${PORT:-4191}"
 DEFAULT_UPSTREAM="${UPSTREAM:-http://127.0.0.1:3000}"
 SERVER_NAME="${SERVER_NAME:-_}"
 MAPPING_FILE="${MAPPING_FILE:-config/nginx_locations.txt}"
+KEEP_OLD_PORTS="${KEEP_OLD_PORTS:-0}"
 SITE_NAME="crypto_proxy_${PORT}"
 CONF_PATH="/etc/nginx/sites-available/${SITE_NAME}.conf"
 
@@ -37,6 +39,51 @@ locations() {
                 echo "忽略无效行: ${line}" >&2
                 continue
             fi
+
+            # static directory (served by nginx directly)
+            # Mapping format:
+            #   /xarb/okex-binance/ static:/abs/path/to/www/
+            # Note: path and directory are recommended to end with '/'.
+            if [[ "${upstream}" == static:* ]]; then
+                dir="${upstream#static:}"
+                if [[ -z "${dir}" ]]; then
+                    echo "忽略无效 static 映射（目录为空）: ${line}" >&2
+                    continue
+                fi
+                if [[ "${dir}" != /* ]]; then
+                    echo "忽略无效 static 映射（需绝对路径）: ${line}" >&2
+                    continue
+                fi
+                # normalize trailing slash
+                [[ "${dir}" != */ ]] && dir="${dir}/"
+
+                # Normalize to a single trailing slash, and always redirect the no-slash variant
+                # to keep relative URLs (e.g. ./ws, ./assets/...) stable.
+                if [[ "${path}" != "/" ]]; then
+                    base_path="${path%/}"
+                    path="${base_path}/"
+                    cat <<EOF
+    location = ${base_path} {
+        return 301 ${path};
+    }
+
+EOF
+                fi
+
+                # SPA-friendly: fallback to index.html under the same prefix.
+                index_uri="${path}index.html"
+                cat <<EOF
+    location ${path} {
+        alias ${dir};
+        index index.html;
+        try_files \$uri \$uri/ ${index_uri};
+        add_header Cache-Control "no-cache";
+    }
+
+EOF
+                continue
+            fi
+
             # nginx does not accept ws:// or wss:// in proxy_pass; WebSocket still uses HTTP(S)
             upstream="${upstream/#ws:\/\//http:\/\/}"
             upstream="${upstream/#wss:\/\//https:\/\/}"
@@ -80,6 +127,11 @@ $(locations)
 EOF
 
 ${SUDO} ln -sf "${CONF_PATH}" "/etc/nginx/sites-enabled/${SITE_NAME}.conf"
+
+if [[ "${KEEP_OLD_PORTS}" != "1" ]]; then
+    # Disable the previously used port to avoid confusion.
+    ${SUDO} rm -f /etc/nginx/sites-enabled/crypto_proxy_4911.conf
+fi
 
 if [ -L /etc/nginx/sites-enabled/default ]; then
     ${SUDO} rm /etc/nginx/sites-enabled/default

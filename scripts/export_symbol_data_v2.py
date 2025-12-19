@@ -22,6 +22,25 @@ def extract_strategy_id(client_order_id: int) -> int:
     return (client_order_id >> 32) & 0xFFFFFFFF
 
 
+def normalize_symbol(value) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    s = str(value).upper()
+    if s == "NAN":
+        return ""
+    s = s.replace("-", "").replace("_", "")
+    for suffix in ("SWAP", "PERP"):
+        if s.endswith(suffix):
+            s = s[: -len(suffix)]
+    return s
+
+
+def symbol_mask(df: pd.DataFrame, col: str, symbol_key: str) -> pd.Series:
+    if col not in df.columns:
+        return pd.Series(False, index=df.index)
+    return df[col].map(normalize_symbol) == symbol_key
+
+
 def classify_order_side(row) -> str:
     """根据 trading_venue 判断订单方向"""
     if pd.isna(row["opening_venue"]):
@@ -112,7 +131,7 @@ def main():
     args = parser.parse_args()
 
     data_dir = args.dir
-    symbol_filter = args.symbol
+    symbol_key = normalize_symbol(args.symbol)
     output_file = args.output
 
     # 加载所有 parquet 文件
@@ -141,19 +160,53 @@ def main():
     print(f"signals_arb_cancel: {len(df_cancel_sig)} rows")
     print(f"signals_arb_close: {len(df_close_sig)} rows")
 
-    # 按 symbol 筛选
-    df_order = df_order[df_order["symbol"] == symbol_filter].copy()
-    df_trade = df_trade[df_trade["symbol"] == symbol_filter].copy()
-    print(f"\n{symbol_filter} orders: {len(df_order)} rows")
-    print(f"{symbol_filter} trades: {len(df_trade)} rows")
+    # 筛选与 symbol 相关的策略 (支持 FILUSDT / FIL-USDT-SWAP / 大小写等)
+    sig_dfs = [df_open_sig, df_hedge_sig, df_cancel_sig]
+    if len(df_close_sig) > 0:
+        sig_dfs.append(df_close_sig)
+
+    strategy_ids = set()
+    for df_sig in sig_dfs:
+        m = symbol_mask(df_sig, "opening_symbol", symbol_key) | symbol_mask(df_sig, "hedging_symbol", symbol_key)
+        if "strategy_id" in df_sig.columns:
+            strategy_ids.update(df_sig.loc[m, "strategy_id"].astype("int64").tolist())
+
+    # 按 symbol 或 strategy_id 筛选订单/成交（保证两条腿都能导出）
+    order_m = symbol_mask(df_order, "symbol", symbol_key)
+    trade_m = symbol_mask(df_trade, "symbol", symbol_key)
+    if len(strategy_ids) > 0:
+        order_m = order_m | df_order["strategy_id"].isin(strategy_ids)
+        trade_m = trade_m | df_trade["strategy_id"].isin(strategy_ids)
+
+    df_order = df_order[order_m].copy()
+    df_trade = df_trade[trade_m].copy()
+
+    print(f"\nfilter_symbol_key={symbol_key}")
+    print(f"matched strategy_id: {len(strategy_ids)}")
+    print(f"orders: {len(df_order)} rows, symbols={sorted(df_order['symbol'].dropna().unique().tolist())}")
+    print(f"trades: {len(df_trade)} rows, symbols={sorted(df_trade['symbol'].dropna().unique().tolist())}")
 
     # 筛选对应 symbol 的信号
-    df_open_sig = df_open_sig[df_open_sig["opening_symbol"] == symbol_filter].copy()
-    # hedge signal 现在也有 opening_symbol，可以用于筛选开仓侧或对冲侧
-    df_hedge_sig_open = df_hedge_sig[df_hedge_sig["opening_symbol"] == symbol_filter].copy()
-    df_hedge_sig_hedge = df_hedge_sig[df_hedge_sig["hedging_symbol"] == symbol_filter].copy()
-    if len(df_close_sig) > 0:
-        df_close_sig = df_close_sig[df_close_sig["opening_symbol"] == symbol_filter].copy()
+    # 以 strategy_id 为准过滤，避免 opening_symbol / hedging_symbol 不一致导致丢数据
+    if len(strategy_ids) > 0:
+        df_open_sig = df_open_sig[df_open_sig["strategy_id"].isin(strategy_ids)].copy()
+        df_hedge_sig = df_hedge_sig[df_hedge_sig["strategy_id"].isin(strategy_ids)].copy()
+        df_cancel_sig = df_cancel_sig[df_cancel_sig["strategy_id"].isin(strategy_ids)].copy()
+        if len(df_close_sig) > 0:
+            df_close_sig = df_close_sig[df_close_sig["strategy_id"].isin(strategy_ids)].copy()
+    else:
+        m_open = symbol_mask(df_open_sig, "opening_symbol", symbol_key) | symbol_mask(df_open_sig, "hedging_symbol", symbol_key)
+        m_hedge = symbol_mask(df_hedge_sig, "opening_symbol", symbol_key) | symbol_mask(df_hedge_sig, "hedging_symbol", symbol_key)
+        m_cancel = symbol_mask(df_cancel_sig, "opening_symbol", symbol_key) | symbol_mask(df_cancel_sig, "hedging_symbol", symbol_key)
+        df_open_sig = df_open_sig[m_open].copy()
+        df_hedge_sig = df_hedge_sig[m_hedge].copy()
+        df_cancel_sig = df_cancel_sig[m_cancel].copy()
+        if len(df_close_sig) > 0:
+            m_close = symbol_mask(df_close_sig, "opening_symbol", symbol_key) | symbol_mask(df_close_sig, "hedging_symbol", symbol_key)
+            df_close_sig = df_close_sig[m_close].copy()
+
+    df_hedge_sig_open = df_hedge_sig[symbol_mask(df_hedge_sig, "opening_symbol", symbol_key)].copy()
+    df_hedge_sig_hedge = df_hedge_sig[symbol_mask(df_hedge_sig, "hedging_symbol", symbol_key)].copy()
 
     # 合并 open_sig 和 close_sig
     df_open_sig["signal_type"] = "open"
@@ -164,8 +217,8 @@ def main():
         df_all_open_sig = df_open_sig.copy()
 
     print(f"open_sig: {len(df_open_sig)}, close_sig: {len(df_close_sig)}, all_open_sig: {len(df_all_open_sig)}")
-    print(f"hedge_sig (opening_symbol={symbol_filter}): {len(df_hedge_sig_open)}")
-    print(f"hedge_sig (hedging_symbol={symbol_filter}): {len(df_hedge_sig_hedge)}")
+    print(f"hedge_sig (opening_symbol match): {len(df_hedge_sig_open)}")
+    print(f"hedge_sig (hedging_symbol match): {len(df_hedge_sig_hedge)}")
 
     # 筛选 NEW 状态订单
     drop_cols = ["key", "ts_us", "client_order_id_str", "raw_status", "raw_execution_type",
@@ -187,6 +240,7 @@ def main():
     # 分离开仓侧和对冲侧订单
     df_open_orders = df_new_orders[df_new_orders["order_side"] == "open"].copy()
     df_hedge_orders = df_new_orders[df_new_orders["order_side"] == "hedge"].copy()
+    df_other_orders = df_new_orders[~df_new_orders["order_side"].isin(["open", "hedge"])].copy()
 
     # 开仓侧订单：关联信号获取盘口信息
     df_open_orders = df_open_orders.merge(
@@ -217,7 +271,7 @@ def main():
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FutureWarning)
-        df_new_orders = pd.concat([df_open_orders, df_hedge_orders], ignore_index=True)
+        df_new_orders = pd.concat([df_open_orders, df_hedge_orders, df_other_orders], ignore_index=True)
 
     # 添加时间字段
     df_new_orders["update_ts"] = 0
@@ -232,16 +286,29 @@ def main():
     df_cancel_orders = df_order[df_order["status"] == "CANCELED"].copy()
     df_trade_sorted = df_trade.sort_values(["order_id", "event_time"])
 
-    outcome_df = df_new_orders.apply(
-        lambda row: find_order_outcome(row, df_cancel_orders, df_trade_sorted), axis=1
-    )
-    df_new_orders["status"] = outcome_df["status"]
-    df_new_orders["update_ts"] = outcome_df["update_ts"]
-    df_new_orders["filled_qty"] = outcome_df["filled_qty"]
+    if len(df_new_orders) == 0:
+        df_new_orders["status"] = pd.Series(dtype="object")
+        df_new_orders["update_ts"] = pd.Series(dtype="float64")
+        df_new_orders["filled_qty"] = pd.Series(dtype="float64")
+    else:
+        outcome_df = df_new_orders.apply(
+            lambda row: find_order_outcome(row, df_cancel_orders, df_trade_sorted),
+            axis=1,
+            result_type="expand",
+        )
+        for c in ("status", "update_ts", "filled_qty"):
+            if c not in outcome_df.columns:
+                outcome_df[c] = pd.NA
+        df_new_orders["status"] = outcome_df["status"].values
+        df_new_orders["update_ts"] = outcome_df["update_ts"].values
+        df_new_orders["filled_qty"] = outcome_df["filled_qty"].values
 
     # 统计结果
     print(f"\n订单最终状态统计:")
-    print(df_new_orders["status"].value_counts())
+    if len(df_new_orders) > 0:
+        print(df_new_orders["status"].value_counts())
+    else:
+        print("(empty)")
 
     # 检查 UNKNOWN 状态
     df_unknown = df_new_orders[df_new_orders["status"] == "UNKNOWN"]

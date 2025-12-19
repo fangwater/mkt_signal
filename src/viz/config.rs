@@ -83,7 +83,6 @@ pub struct PreTradeInstanceCfg {
     pub label: String,
     #[serde(default)]
     pub namespace: Option<String>,
-    pub positions_channel: String,
     pub exposure_channel: String,
     pub risk_channel: String,
 }

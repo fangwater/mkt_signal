@@ -1,7 +1,13 @@
-# 每行：<路径> <上游地址>。支持 WebSocket。
+# 每行：<路径> <上游地址>。支持 WebSocket / 静态目录。
 # 示例：/fr/binance http://127.0.0.1:12345   (WebSocket 也用 http/https + Upgrade)
 #       /fr/okex    http://127.0.0.1:12346
 #       /api        http://127.0.0.1:8000
+#
+# 静态目录（nginx 直出，不经过后端）：
+#   /xarb/okex-binance/ static:/home/ubuntu/okex-binance-xarb-trade/www/
+# 说明：
+# - static: 后面必须是绝对路径
+# - 建议 path/dir 都以 / 结尾；脚本会自动生成 301：/xarb/okex-binance -> /xarb/okex-binance/
 
 /fr/binance http://127.0.0.1:12345
 
@@ -12,3 +18,18 @@
 # - upstream 末尾带 /，用于将前缀 /manual_signal(/) strip 掉并转发给后端的 /
 /manual_signal http://127.0.0.1:8911/
 /manual_signal/ http://127.0.0.1:8911/
+
+# xarb pre-trade dashboard (static) + viz_server (WS/healthz)
+/xarb/okex-binance/ static:/home/ubuntu/okex-binance-xarb-trade/www/
+/xarb/okex-binance/ws http://127.0.0.1:10111/ws
+/xarb/okex-binance/healthz http://127.0.0.1:10111/healthz
+
+# xarb order_query (HTTP)
+# upstream 末尾带 /，用于将前缀 /xarb/okex-binance/order_query(/) strip 掉并转发给后端的 /
+
+# BEGIN managed: xarb order_query /xarb/okex-binance/order_query
+# xarb order_query (HTTP)
+# upstream 末尾带 /，用于将前缀 /xarb/okex-binance/order_query(/) strip 掉并转发给后端的 /
+/xarb/okex-binance/order_query http://127.0.0.1:18089/
+/xarb/okex-binance/order_query/ http://127.0.0.1:18089/
+# END managed: xarb order_query /xarb/okex-binance/order_query
