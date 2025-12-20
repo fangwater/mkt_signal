@@ -92,17 +92,12 @@ def parse_args() -> argparse.Namespace:
 
 # ========== 交易对白名单配置 ==========
 
-FWD_SYMBOLS_8H: List[str] = ["solusdt","dogeusdt","wldusdt","fiusdt","dotusdt"]
+FWD_SYMBOLS: List[str] = ["solusdt","dogeusdt","wldusdt","fiusdt","dotusdt"]
 
-FWD_SYMBOLS_4H: List[str] = []
+BWD_SYMBOLS: List[str] = ["solusdt","dogeusdt","wldusdt","fiusdt","dotusdt"]
 
-FWD_SYMBOLS: List[str] = FWD_SYMBOLS_8H + FWD_SYMBOLS_4H
-
-BWD_SYMBOLS_8H: List[str] = []
-
-BWD_SYMBOLS_4H: List[str] = []
-
-BWD_SYMBOLS: List[str] = BWD_SYMBOLS_8H + BWD_SYMBOLS_4H
+FWD_SYMBOLS: List[str] = []
+BWD_SYMBOLS: List[str] = []
 
 
 def resolve_key_suffix(args: argparse.Namespace) -> Optional[str]:
