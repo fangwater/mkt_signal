@@ -649,6 +649,13 @@ impl Order {
     }
 
     pub fn get_order_request_bytes(&self) -> Result<Bytes, String> {
+        if self.order_type.is_limit() && self.price <= 0.0 {
+            return Err(format!(
+                "invalid limit price: price={:.8} order_type={:?} symbol={} client_order_id={}",
+                self.price, self.order_type, self.symbol, self.client_order_id
+            ));
+        }
+
         match self.venue {
             //币安的杠杆账户下单
             TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => {

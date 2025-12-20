@@ -49,6 +49,8 @@ pub struct HedgeArbStrategy {
     pub hedge_bid0: f64,               //最新对冲侧bid
     pub hedge_ask0: f64,               //最新对冲侧ask
     pub force_close_mode: bool,        //是否强平模式
+    pub hedge_retry_after_ts: Option<i64>, //对冲报单失败后的冷却截止时间
+    pub hedge_retry_reason: Option<&'static str>, //对冲报单失败的重试原因
     pending_order_queries: HashMap<i64, PendingOrderQueryReason>,
     order_query_watchdog: Option<QueryWatchdog>,
     cancel_query_watchdog: Option<QueryWatchdog>,
@@ -99,6 +101,8 @@ impl HedgeArbStrategy {
             hedge_bid0: 0.0,
             hedge_ask0: 0.0,
             force_close_mode: false,
+            hedge_retry_after_ts: None,
+            hedge_retry_reason: None,
             pending_order_queries: HashMap::new(),
             order_query_watchdog: None,
             cancel_query_watchdog: None,
@@ -196,6 +200,18 @@ impl HedgeArbStrategy {
         // 开仓open leg，打开头寸，根据信号创建开仓leg, 进行风控判断，失败就直接把策略标记为不活跃，等待定时器清理
 
         let force_close = self.is_force_close_mode();
+        if ctx.price <= 0.0 {
+            let order_type = OrderType::from_u8(ctx.order_type);
+            warn!(
+                "HedgeArbStrategy: strategy_id={} open signal price invalid: symbol={} order_type={:?} price={:.8}",
+                self.strategy_id,
+                ctx.get_opening_symbol(),
+                order_type,
+                ctx.price
+            );
+            self.alive_flag = false;
+            return;
+        }
         if force_close {
             let opening_symbol = ctx.get_opening_symbol();
             let hedging_symbol = ctx.get_hedging_symbol();
@@ -269,6 +285,8 @@ impl HedgeArbStrategy {
             None
         };
         self.hedge_expire_ts = None;
+        self.hedge_retry_after_ts = None;
+        self.hedge_retry_reason = None;
 
         // 保存对冲侧信息
         self.hedge_symbol = ctx.get_hedging_symbol();
@@ -445,6 +463,25 @@ impl HedgeArbStrategy {
         let hedge_side = ctx
             .get_side()
             .ok_or_else(|| format!("无效的对冲方向: {}", ctx.hedge_side))?;
+
+        if ctx.is_maker() && ctx.limit_price <= 0.0 {
+            let detail = format!(
+                "limit_price_invalid client_order_id={} market_ts={} price_offset={:.6} opening_venue={} hedging_venue={}",
+                ctx.client_order_id,
+                ctx.market_ts,
+                ctx.price_offset,
+                ctx.opening_leg.venue,
+                ctx.hedging_leg.venue
+            );
+            self.push_hedge_residual_with_print(
+                "PRICE_LESS_THAN_ZERO/价格小于0",
+                &detail,
+                target_qty,
+                ctx.limit_price,
+                hedge_side,
+            );
+            return Ok(());
+        }
 
         // 3. 使用预交易环境对齐订单量和价格
         // 使用get_hedge_price 函数获取合适的对冲价格
@@ -1125,6 +1162,40 @@ impl HedgeArbStrategy {
                     self.send_order_query(w.client_order_id, w.reason);
                 }
             }
+        }
+    }
+
+    fn handle_hedge_retry_cooldown(&mut self) {
+        let Some(due_ts) = self.hedge_retry_after_ts else {
+            return;
+        };
+        let now = get_timestamp_us();
+        if now < due_ts {
+            return;
+        }
+
+        self.hedge_retry_after_ts = None;
+        let reason = self.hedge_retry_reason.take().unwrap_or("cooldown");
+        let base_pending_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
+        if base_pending_qty <= 1e-8 {
+            debug!(
+                "HedgeArbStrategy: strategy_id={} hedge retry skipped after cooldown (no pending qty) reason={}",
+                self.strategy_id, reason
+            );
+            return;
+        }
+
+        let (sent, hedged_qty, _) = self.try_hedge_with_residual(base_pending_qty);
+        if sent {
+            info!(
+                "HedgeArbStrategy: strategy_id={} hedge retry after cooldown sent qty={:.8} reason={}",
+                self.strategy_id, hedged_qty, reason
+            );
+        } else {
+            warn!(
+                "HedgeArbStrategy: strategy_id={} hedge retry after cooldown skipped/failed pending_qty={:.8} reason={}",
+                self.strategy_id, base_pending_qty, reason
+            );
         }
     }
 
@@ -2237,10 +2308,26 @@ impl HedgeArbStrategy {
         self.hedge_expire_ts = None;
     }
 
-    fn try_resend_hedge_after_open_failed(&mut self, base_pending_qty: f64, reason: &str) {
+    fn try_resend_hedge_after_open_failed(&mut self, base_pending_qty: f64, reason: &'static str) {
         if base_pending_qty <= 1e-8 {
+            self.hedge_retry_after_ts = None;
+            self.hedge_retry_reason = None;
             return;
         }
+
+        if let Some(cooldown_us) = self.hedge_timeout_us {
+            let now = get_timestamp_us();
+            let due_ts = now.saturating_add(cooldown_us);
+            let cooldown_ms = cooldown_us.saturating_div(1_000);
+            self.hedge_retry_after_ts = Some(due_ts);
+            self.hedge_retry_reason = Some(reason);
+            info!(
+                "HedgeArbStrategy: strategy_id={} hedge open_failed, cooldown={}ms retry_at={} reason={} pending_qty={:.8}",
+                self.strategy_id, cooldown_ms, due_ts, reason, base_pending_qty
+            );
+            return;
+        }
+
         let (sent, hedged_qty, _) = self.try_hedge_with_residual(base_pending_qty);
         if sent {
             debug!(
@@ -2598,6 +2685,7 @@ impl Strategy for HedgeArbStrategy {
             self.handle_open_leg_timeout();
             self.handle_hedge_leg_timeout();
             self.handle_query_watchdogs();
+            self.handle_hedge_retry_cooldown();
         }
     }
 
