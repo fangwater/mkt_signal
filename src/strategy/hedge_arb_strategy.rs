@@ -164,18 +164,6 @@ impl HedgeArbStrategy {
             );
         }
 
-        // 1、检查杠杆, 失败打印error
-        if force_close {
-            self.log_force_close_skip("杠杆", &ctx);
-        } else if let Err(e) = MonitorChannel::instance().check_leverage() {
-            error!(
-                "HedgeArbStrategy: strategy_id={} 杠杆风控检查失败: {}，标记策略为不活跃",
-                self.strategy_id, e
-            );
-            self.alive_flag = false;
-            return;
-        }
-
         // 2、检查symbol的敞口，失败打印error
         if force_close {
             self.log_force_close_skip("单品种敞口", &ctx);
@@ -292,15 +280,38 @@ impl HedgeArbStrategy {
             }
         };
 
+        let signed_qty = match open_side {
+            Side::Buy => aligned_qty.abs(),
+            Side::Sell => -aligned_qty.abs(),
+        };
+
+        // 8、检查杠杆：若绝对持仓不增加，则可跳过
+        if force_close {
+            self.log_force_close_skip("杠杆", &ctx);
+        } else {
+            let add_base_qty = MonitorChannel::instance().qty_to_base(venue, &symbol, signed_qty);
+            let current_base_qty = MonitorChannel::instance().get_position_qty(&symbol, venue);
+            let projected_base_qty = current_base_qty + add_base_qty;
+            let reduce_eps = 1e-12_f64;
+
+            if projected_base_qty.abs() > current_base_qty.abs() + reduce_eps {
+                if let Err(e) = MonitorChannel::instance().check_leverage() {
+                    error!(
+                        "HedgeArbStrategy: strategy_id={} 杠杆风控检查失败: {}，标记策略为不活跃",
+                        self.strategy_id, e
+                    );
+                    self.alive_flag = false;
+                    return;
+                }
+            }
+        }
+
         // 9、考虑修正量，判断下单后是否会大于max u
         if force_close {
             self.log_force_close_skip("持仓上限 (max_pos_u)", &ctx);
         } else if let Err(e) = MonitorChannel::instance().ensure_max_pos_u(
             &symbol,
-            match open_side {
-                Side::Buy => aligned_qty.abs(),
-                Side::Sell => -aligned_qty.abs(),
-            },
+            signed_qty,
             aligned_price,
         ) {
             error!(
