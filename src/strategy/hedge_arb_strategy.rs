@@ -26,6 +26,8 @@ use std::collections::{HashMap, HashSet};
 // 仅用于“发出请求但没收到回报”的兜底，不做持续轮询，避免 maker 长时间挂单时产生额外负担。
 const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
 const CANCEL_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
+const MAX_HEDGE_REQUESTS: u32 = 20;
+const HEDGE_RESIDUAL_EPS: f64 = 1e-12;
 
 pub struct HedgeArbStrategy {
     pub strategy_id: i32,              //策略id
@@ -109,6 +111,55 @@ impl HedgeArbStrategy {
         TradingVenue::from_u8(venue)
             .map(|v| format!("{:?}", v))
             .unwrap_or_else(|| format!("Unknown({})", venue))
+    }
+
+    fn hedge_invalid_param_reason(code: i32) -> Option<&'static str> {
+        match code {
+            4001 | -4001 => Some("PRICE_LESS_THAN_ZERO/价格小于0"),
+            4002 | -4002 => Some("PRICE_GREATER_THAN_MAX_PRICE/价格超过最大值"),
+            -4003 => Some("QTY_LESS_THAN_ZERO/数量小于0"),
+            -4004 => Some("QTY_LESS_THAN_MIN_QTY/数量小于最小值"),
+            -4005 => Some("QTY_GREATER_THAN_MAX_QTY/数量大于最大值"),
+            -4006 => Some("STOP_PRICE_LESS_THAN_ZERO/触发价小于最小值"),
+            -4007 => Some("STOP_PRICE_GREATER_THAN_MAX_PRICE/触发价大于最大值"),
+            -4008 => Some("TICK_SIZE_LESS_THAN_ZERO/价格精度小于0"),
+            -4009 => Some("MAX_PRICE_LESS_THAN_MIN_PRICE/最大价格小于最小价格"),
+            _ => None,
+        }
+    }
+
+    fn push_hedge_residual_with_print(
+        &mut self,
+        reason: &str,
+        detail: &str,
+        qty: f64,
+        price: f64,
+        side: Side,
+    ) {
+        let added = if qty > HEDGE_RESIDUAL_EPS {
+            MonitorChannel::instance().inc_hedge_residual(
+                self.hedge_symbol.clone(),
+                self.hedge_venue,
+                qty,
+            );
+            qty
+        } else {
+            0.0
+        };
+
+        println!(
+            "HedgeArbStrategy: strategy_id={} 对冲拒绝({}) | open_symbol={} hedge_symbol={} hedge_venue={:?} side={:?} qty={:.8} price={:.8} residual_add={:.8} detail={}",
+            self.strategy_id,
+            reason,
+            self.open_symbol,
+            self.hedge_symbol,
+            self.hedge_venue,
+            side,
+            qty,
+            price,
+            added,
+            detail
+        );
     }
 
     fn log_force_close_skip(&self, check_name: &str, ctx: &ArbOpenCtx) {
@@ -391,16 +442,61 @@ impl HedgeArbStrategy {
             .ok_or_else(|| format!("无效的对冲交易场所: {}", ctx.hedging_leg.venue))?;
         self.hedge_bid0 = ctx.hedging_leg.bid0;
         self.hedge_ask0 = ctx.hedging_leg.ask0;
+        let hedge_side = ctx
+            .get_side()
+            .ok_or_else(|| format!("无效的对冲方向: {}", ctx.hedge_side))?;
 
         // 3. 使用预交易环境对齐订单量和价格
         // 使用get_hedge_price 函数获取合适的对冲价格
         let hedge_price = ctx.get_hedge_price();
+        if hedge_price <= 0.0 {
+            let detail = format!(
+                "pre_trade_price_invalid mode={} client_order_id={} market_ts={} price_offset={:.6} opening_venue={} hedging_venue={}",
+                if ctx.is_maker() { "maker" } else { "taker" },
+                ctx.client_order_id,
+                ctx.market_ts,
+                ctx.price_offset,
+                ctx.opening_leg.venue,
+                ctx.hedging_leg.venue
+            );
+            if ctx.is_maker() {
+                self.push_hedge_residual_with_print(
+                    "PRICE_LESS_THAN_ZERO/价格小于0",
+                    &detail,
+                    target_qty,
+                    hedge_price,
+                    hedge_side,
+                );
+                return Ok(());
+            }
+            return Err(format!("对冲价格无效: {:.8}", hedge_price));
+        }
         let (aligned_qty, aligned_price) = MonitorChannel::instance().align_order_by_venue(
             hedge_venue,
             &hedge_symbol,
             target_qty,
             hedge_price,
         )?;
+        if aligned_price <= 0.0 {
+            let detail = format!(
+                "aligned_price_invalid mode={} client_order_id={} raw_price={:.8} aligned_price={:.8}",
+                if ctx.is_maker() { "maker" } else { "taker" },
+                ctx.client_order_id,
+                hedge_price,
+                aligned_price
+            );
+            if ctx.is_maker() {
+                self.push_hedge_residual_with_print(
+                    "PRICE_LESS_THAN_ZERO/价格小于0",
+                    &detail,
+                    target_qty,
+                    aligned_price,
+                    hedge_side,
+                );
+                return Ok(());
+            }
+            return Err(format!("对冲价格无效: {:.8}", aligned_price));
+        }
 
         // 4. 检查最小交易要求
         if let Err(e) = MonitorChannel::instance().check_min_trading_requirements(
@@ -430,11 +526,6 @@ impl HedgeArbStrategy {
         } else {
             OrderType::Market // Taker订单使用市价单
         };
-
-        // 获取对冲方向
-        let hedge_side = ctx
-            .get_side()
-            .ok_or_else(|| format!("无效的对冲方向: {}", ctx.hedge_side))?;
 
         // 6. 创建对冲订单并记录到order manager
         let hedge_client_order_id = MonitorChannel::instance()
@@ -1073,7 +1164,7 @@ impl HedgeArbStrategy {
 
         match send_result {
             Ok(true) => {
-                info!(
+                debug!(
                     "HedgeArbStrategy: strategy_id={} 发送对冲查询成功 hedge_venue={:?} side={:?} qty={:.8}",
                     self.strategy_id, self.hedge_venue, side, eff_qty
                 );
@@ -1113,10 +1204,25 @@ impl HedgeArbStrategy {
             MonitorChannel::instance().clear_hedge_residual(&self.hedge_symbol, self.hedge_venue);
         total_pending_qty += residual_qty;
 
-        info!(
+        debug!(
             "HedgeArbStrategy: strategy_id={} 待对冲量: 基础={:.8} 残余={:.8} 总计={:.8}",
             self.strategy_id, base_qty, residual_qty, total_pending_qty
         );
+
+        if self.hedge_request_seq >= MAX_HEDGE_REQUESTS {
+            let detail = format!(
+                "hedge_request_seq={} max_requests={}",
+                self.hedge_request_seq, MAX_HEDGE_REQUESTS
+            );
+            self.push_hedge_residual_with_print(
+                "HEDGE_REQUEST_LIMIT/对冲次数达到上限",
+                &detail,
+                total_pending_qty,
+                0.0,
+                self.hedge_side,
+            );
+            return (false, 0.0, total_pending_qty);
+        }
 
         // 2. 检查是否满足最小交易要求
         let can_hedge: bool = MonitorChannel::instance()
@@ -1136,7 +1242,7 @@ impl HedgeArbStrategy {
                     self.hedge_venue,
                     total_pending_qty,
                 );
-                info!(
+                debug!(
                     "HedgeArbStrategy: strategy_id={} 待对冲量={:.8} 不满足最小交易要求，累加到残余量表",
                     self.strategy_id, total_pending_qty
                 );
@@ -1146,21 +1252,21 @@ impl HedgeArbStrategy {
         }
 
         // 3. 满足要求，发起对冲
-        info!(
+        debug!(
             "HedgeArbStrategy: strategy_id={} 待对冲量={:.8} 满足最小交易要求，准备对冲",
             self.strategy_id, total_pending_qty
         );
 
         let hedge_result: Result<(), String> = if self.hedge_timeout_us.is_some() {
             // MM 模式：使用限价单对冲
-            info!(
+            debug!(
                 "HedgeArbStrategy: strategy_id={} MM模式，使用限价单对冲",
                 self.strategy_id
             );
             self.hedge_as_limit_order(self.hedge_side, total_pending_qty)
         } else {
             // MT 模式：使用市价单对冲
-            info!(
+            debug!(
                 "HedgeArbStrategy: strategy_id={} MT模式，使用市价单对冲",
                 self.strategy_id
             );
@@ -1170,7 +1276,7 @@ impl HedgeArbStrategy {
         match hedge_result {
             Ok(_) => {
                 // 对冲成功
-                info!(
+                debug!(
                     "HedgeArbStrategy: strategy_id={} 对冲信号已发送，数量={:.8}",
                     self.strategy_id, total_pending_qty
                 );
@@ -2137,7 +2243,7 @@ impl HedgeArbStrategy {
         }
         let (sent, hedged_qty, _) = self.try_hedge_with_residual(base_pending_qty);
         if sent {
-            info!(
+            debug!(
                 "HedgeArbStrategy: strategy_id={} hedge re-send after {} open_failed, qty={:.8}",
                 self.strategy_id, reason, hedged_qty
             );
@@ -2155,6 +2261,34 @@ impl HedgeArbStrategy {
         code_desc: &str,
         client_order_id: i64,
     ) {
+        let error_code = response.error_code();
+        if let Some(reason) = Self::hedge_invalid_param_reason(error_code) {
+            let order = MonitorChannel::instance()
+                .order_manager()
+                .borrow()
+                .get(client_order_id);
+            let (order_qty, order_price, order_side, order_symbol) = match order.as_ref() {
+                Some(o) => (o.quantity, o.price, o.side, o.symbol.clone()),
+                None => (0.0, 0.0, self.hedge_side, self.hedge_symbol.clone()),
+            };
+            let pending_qty = self.cumulative_open_qty - self.cumulative_hedged_qty;
+            let detail = format!(
+                "req_type={} status={} code={}({}) client_order_id={} order_symbol={} order_qty={:.8} order_price={:.8} pending_qty={:.8}",
+                response.req_type(),
+                response.status(),
+                error_code,
+                code_desc,
+                client_order_id,
+                order_symbol,
+                order_qty,
+                order_price,
+                pending_qty
+            );
+            self.push_hedge_residual_with_print(reason, &detail, pending_qty, order_price, order_side);
+            self.cleanup_failed_hedge_order(client_order_id);
+            return;
+        }
+
         //对重新报单失败的原因进行分类
         //1、post only rejected是正常的，因为盘口出现穿价是正常情况，再次报单即可
         let is_post_only_rejected = response.is_post_only_rejected();
@@ -2171,7 +2305,7 @@ impl HedgeArbStrategy {
         // 对冲侧报单失败：无论原因，都要继续对冲（不关闭策略），并让上游 cooldown/限频机制接管。
         if reason == "other" {
             // 仅对非post only拒单的情况打印error日志，之后检索error日志，判断为什么会对冲失
-            error!(
+            debug!(
                 "HedgeArbStrategy: strategy_id={} hedge_leg open_failed(retry): req_type={} status={} code={}({}) client_order_id={}",
                 self.strategy_id,
                 response.req_type(),
