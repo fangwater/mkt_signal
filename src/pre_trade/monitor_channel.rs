@@ -1386,6 +1386,10 @@ impl MonitorChannel {
             let projected_usdt = projected_qty.abs() * price;
             let limit_eps = 1e-6_f64;
 
+            if projected_usdt <= current_usdt + limit_eps {
+                return Ok(());
+            }
+
             if projected_usdt > max_pos_u + limit_eps {
                 info!(
                     "max_pos_u check reject detail: symbol={} base_asset={} venue={:?} price_source={} mark_symbol={} price={:.8} qty_unit={} raw_qty={:.8} okx_symbol_key={:?} okx_contract_multiplier(ctVal×ctMult)={:?} current_open_qty(base)={:.8} add_base_qty={:.8} projected_qty(base)={:.8} current_usdt={:.4} order_usdt={:.4} projected_usdt={:.4} max_pos_u={:.4}",
@@ -1738,6 +1742,7 @@ fn dispatch_order_update_generic<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::basic_account_msg::BasicPositionMsg;
     use crate::common::min_qty_table::MinQtyTable;
     use crate::pre_trade::price_table::PriceTable;
     use crate::pre_trade::usdt_balance_manager::UsdtBalanceManager;
@@ -1883,5 +1888,48 @@ mod tests {
         assert!(MonitorChannel::instance()
             .ensure_max_pos_u("FIL-USDT-SWAP", 2.0, 100.0)
             .is_err());
+    }
+
+    #[test]
+    fn ensure_max_pos_u_allows_reducing_when_over_limit() {
+        let mut um_mgr = BasicUmManager::new(Exchange::Binance);
+        let pos_msg = BasicPositionMsg::create(0, "FILUSDT".to_string(), 'L', 20.0);
+        um_mgr.apply_position(&pos_msg);
+
+        let open_leg = LegMgr::Futures {
+            exchange: Exchange::Binance,
+            um: Rc::new(RefCell::new(um_mgr)),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Binance))),
+        };
+        let hedge_leg = LegMgr::Margin {
+            exchange: Exchange::Binance,
+            bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Binance))),
+        };
+
+        let mut price_table = PriceTable::new();
+        price_table.update_mark_price("FILUSDT", 100.0, 0);
+
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::BinanceFutures,
+            hedge_venue: TradingVenue::BinanceFutures,
+            open_leg,
+            hedge_leg,
+            usdt_mgrs: HashMap::new(),
+            price_table: Rc::new(RefCell::new(price_table)),
+            venue_min_qty_tables: HashMap::new(),
+            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new())),
+            hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
+            trade_update_seq: 0,
+        };
+
+        MONITOR_CHANNEL.with(|mc| {
+            *mc.borrow_mut() = Some(inner);
+        });
+
+        // 当前持仓 20 * 100 = 2000 > max_pos_u(1000)，但减少仓位应放行。
+        assert!(MonitorChannel::instance()
+            .ensure_max_pos_u("FILUSDT", -5.0, 100.0)
+            .is_ok());
     }
 }
