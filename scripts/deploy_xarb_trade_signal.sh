@@ -17,7 +17,7 @@ fi
 
 usage() {
   cat <<'EOF'
-用法: scripts/deploy_xarb_trade_signal.sh [trade|test] --open-venue <okex-futures> --hedge-venue <binance-futures> [--env-name okex-binance-xarb-trade] [--jobs <n>] [--cargo-target-dir <path>]
+用法: scripts/deploy_xarb_trade_signal.sh [trade|test] --open-venue <okex-futures> --hedge-venue <binance-futures> [--env-name okex-binance-xarb-trade] [--jobs <n>] [--cargo-target-dir <path>] [--sync-scripts]
       scripts/deploy_xarb_trade_signal.sh --remote-host awsjp [--remote-repo <path>] [--remote-sync] [...]
 
 说明:
@@ -26,6 +26,7 @@ usage() {
   - trade_signal 启动时依赖 CWD 目录名推断分支与 Redis 前缀：
       - <exchange>_fr_trade / <exchange>_fr_test
       - <open>-<hedge>-xarb-trade / <open>-<hedge>-xarb-test
+  - 默认只更新二进制；如需同步脚本请添加 --sync-scripts
 
 示例:
   scripts/deploy_xarb_trade_signal.sh trade --open-venue okex-futures --hedge-venue binance-futures
@@ -52,6 +53,7 @@ OPEN_VENUE=""
 HEDGE_VENUE=""
 CARGO_TARGET_DIR_OVERRIDE=""
 BUILD_JOBS=""
+SYNC_SCRIPTS="0"
 if [[ -n "${XARB_REMOTE_RUN:-}" ]]; then
   BUILD_JOBS="1"
 fi
@@ -95,6 +97,10 @@ while [[ $# -gt 0 ]]; do
     --cargo-target-dir)
       CARGO_TARGET_DIR_OVERRIDE="${2:-}"
       shift 2
+      ;;
+    --sync-scripts)
+      SYNC_SCRIPTS="1"
+      shift
       ;;
     *)
       echo "[ERROR] 未知参数: $1"
@@ -143,38 +149,42 @@ BIN_PATH="$(xarb_bin_path_release "$CARGO_TARGET_DIR_EFFECTIVE" "$BIN_NAME")"
 echo "[INFO] 部署 $BIN_NAME 到 $TARGET_DIR"
 mkdir -p "$TARGET_DIR"
 
-SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
-XARB_SCRIPT_DIR_SRC="$ROOT_DIR/xarb_scripts"
-XARB_SCRIPTS_TO_SYNC=(
-  "start_xarb_trade_signal.sh"
-  "stop_xarb_trade_signal.sh"
-)
-XARB_TOOLS_TO_SYNC=(
-  "sync_xarb_symbol_lists.py"
-  "print_xarb_symbol_lists.py"
-  "set_um_leverage.py"
-  "sync_xarb_strategy_params.py"
-  "print_xarb_strategy_params.py"
-  "sync_xarb_spread_thresholds.py"
-  "print_xarb_spread_thresholds.py"
-  "sync_xarb_funding_rate_thresholds.py"
-  "print_xarb_funding_rate_thresholds.py"
-)
-mkdir -p "$TARGET_DIR/xarb_scripts"
+if [[ "$SYNC_SCRIPTS" == "1" ]]; then
+  SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
+  XARB_SCRIPT_DIR_SRC="$ROOT_DIR/xarb_scripts"
+  XARB_SCRIPTS_TO_SYNC=(
+    "start_xarb_trade_signal.sh"
+    "stop_xarb_trade_signal.sh"
+  )
+  XARB_TOOLS_TO_SYNC=(
+    "sync_xarb_symbol_lists.py"
+    "print_xarb_symbol_lists.py"
+    "set_um_leverage.py"
+    "sync_xarb_strategy_params.py"
+    "print_xarb_strategy_params.py"
+    "sync_xarb_spread_thresholds.py"
+    "print_xarb_spread_thresholds.py"
+    "sync_xarb_funding_rate_thresholds.py"
+    "print_xarb_funding_rate_thresholds.py"
+  )
+  mkdir -p "$TARGET_DIR/xarb_scripts"
 
-for script in "${XARB_SCRIPTS_TO_SYNC[@]}"; do
-  if [[ -f "$XARB_SCRIPT_DIR_SRC/$script" ]]; then
-    rsync -a "$XARB_SCRIPT_DIR_SRC/$script" "$TARGET_DIR/xarb_scripts/"
-    chmod +x "$TARGET_DIR/xarb_scripts/$script"
-  fi
-done
+  for script in "${XARB_SCRIPTS_TO_SYNC[@]}"; do
+    if [[ -f "$XARB_SCRIPT_DIR_SRC/$script" ]]; then
+      rsync -a "$XARB_SCRIPT_DIR_SRC/$script" "$TARGET_DIR/xarb_scripts/"
+      chmod +x "$TARGET_DIR/xarb_scripts/$script"
+    fi
+  done
 
-for tool in "${XARB_TOOLS_TO_SYNC[@]}"; do
-  if [[ -f "$SCRIPT_DIR_SRC/$tool" ]]; then
-    rsync -a "$SCRIPT_DIR_SRC/$tool" "$TARGET_DIR/xarb_scripts/"
-    chmod +x "$TARGET_DIR/xarb_scripts/$tool"
-  fi
-done
+  for tool in "${XARB_TOOLS_TO_SYNC[@]}"; do
+    if [[ -f "$SCRIPT_DIR_SRC/$tool" ]]; then
+      rsync -a "$SCRIPT_DIR_SRC/$tool" "$TARGET_DIR/xarb_scripts/"
+      chmod +x "$TARGET_DIR/xarb_scripts/$tool"
+    fi
+  done
+else
+  echo "[INFO] 跳过脚本同步（如需同步脚本，请添加 --sync-scripts）"
+fi
 
 if ! xarb_atomic_install "$BIN_PATH" "$TARGET_DIR/$BIN_NAME"; then
   exit 2
@@ -182,8 +192,9 @@ fi
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"
 echo "[INFO] 手动启动: cd $TARGET_DIR && ./xarb_scripts/start_xarb_trade_signal.sh"
-echo "[INFO] xarb 的 Redis 参数/交易对同步脚本在: $TARGET_DIR/xarb_scripts"
-cat <<EOF
+if [[ "$SYNC_SCRIPTS" == "1" ]]; then
+  echo "[INFO] xarb 的 Redis 参数/交易对同步脚本在: $TARGET_DIR/xarb_scripts"
+  cat <<EOF
 [INFO] 常用命令（在目标目录执行，可自动从 CWD 推断 open/hedge pair）:
   cd "$TARGET_DIR"
   ./xarb_scripts/sync_xarb_symbol_lists.py
@@ -192,3 +203,6 @@ cat <<EOF
   ./xarb_scripts/sync_xarb_strategy_params.py
   ./xarb_scripts/print_xarb_strategy_params.py
 EOF
+else
+  echo "[INFO] 未同步脚本（保留目标目录已有 xarb_scripts，需更新请加 --sync-scripts）"
+fi

@@ -18,7 +18,7 @@ fi
 usage() {
   cat <<'EOF'
 用法: scripts/deploy_xarb_pre_trade.sh [trade|test] --open-venue <okex-futures> --hedge-venue <binance-futures> [--env-name okex-binance-xarb-trade]
-      scripts/deploy_xarb_pre_trade.sh [--open-venue <okex-futures>] [--hedge-venue <binance-futures>] [--env-suffix xarb-trade] [--env-name okex-binance-xarb-trade] [--jobs <n>] [--cargo-target-dir <path>]
+      scripts/deploy_xarb_pre_trade.sh [--open-venue <okex-futures>] [--hedge-venue <binance-futures>] [--env-suffix xarb-trade] [--env-name okex-binance-xarb-trade] [--jobs <n>] [--cargo-target-dir <path>] [--sync-scripts]
       scripts/deploy_xarb_pre_trade.sh --remote-host awsjp [--remote-repo <path>] [--remote-sync] [...]
 
 说明:
@@ -33,6 +33,7 @@ usage() {
   - 不自动启动，部署后可在目标目录执行 start/stop：
       ./xarb_scripts/start_xarb_pre_trade.sh
       ./xarb_scripts/stop_xarb_pre_trade.sh
+  - 默认只更新二进制；如需同步脚本请添加 --sync-scripts
 
 提示:
   - 建议先生成并配置 env.sh（用于 IPC_NAMESPACE/凭证等）：scripts/deploy_setup_env_xarb.sh --open-venue ... --hedge-venue ...
@@ -63,6 +64,7 @@ OPEN_VENUE=""
 HEDGE_VENUE=""
 CARGO_TARGET_DIR_OVERRIDE=""
 BUILD_JOBS=""
+SYNC_SCRIPTS="0"
 if [[ -n "${XARB_REMOTE_RUN:-}" ]]; then
   BUILD_JOBS="1"
 fi
@@ -97,6 +99,10 @@ while [[ $# -gt 0 ]]; do
     --cargo-target-dir)
       CARGO_TARGET_DIR_OVERRIDE="${2:-}"
       shift 2
+      ;;
+    --sync-scripts)
+      SYNC_SCRIPTS="1"
+      shift
       ;;
     *)
       echo "[ERROR] 未知参数: $1"
@@ -183,16 +189,20 @@ EXTRA_FILES=(
   "xarb_scripts/stop_xarb_persist_manager.sh"
 )
 
-echo "[INFO] 同步 xarb_scripts/scripts 到 $TARGET_DIR（先更新脚本，避免二进制 busy 影响脚本更新）"
-for file in "${EXTRA_FILES[@]}"; do
-  SRC_PATH="$ROOT_DIR/$file"
-  if [[ -f "$SRC_PATH" ]]; then
-    DEST_DIR="$TARGET_DIR/$(dirname "$file")"
-    mkdir -p "$DEST_DIR"
-    rsync -a "$SRC_PATH" "$DEST_DIR/"
-    chmod +x "$DEST_DIR/$(basename "$file")" 2>/dev/null || true
-  fi
-done
+if [[ "$SYNC_SCRIPTS" == "1" ]]; then
+  echo "[INFO] 同步 xarb_scripts/scripts 到 $TARGET_DIR（先更新脚本，避免二进制 busy 影响脚本更新）"
+  for file in "${EXTRA_FILES[@]}"; do
+    SRC_PATH="$ROOT_DIR/$file"
+    if [[ -f "$SRC_PATH" ]]; then
+      DEST_DIR="$TARGET_DIR/$(dirname "$file")"
+      mkdir -p "$DEST_DIR"
+      rsync -a "$SRC_PATH" "$DEST_DIR/"
+      chmod +x "$DEST_DIR/$(basename "$file")" 2>/dev/null || true
+    fi
+  done
+else
+  echo "[INFO] 跳过脚本同步（如需同步脚本，请添加 --sync-scripts）"
+fi
 
 echo "[INFO] 构建 $BIN_NAME (release)"
 CARGO_TARGET_DIR_EFFECTIVE="$(xarb_effective_cargo_target_dir "$ROOT_DIR" "$CARGO_TARGET_DIR_OVERRIDE")"
@@ -216,7 +226,11 @@ for _ in 1 2 3 4 5; do
   sleep 0.2
 done
 if [[ "$move_ok" != "1" ]]; then
-  echo "[WARN] 二进制更新失败（可能 Text file busy），但脚本已同步完成：$TARGET_DIR/xarb_scripts"
+  if [[ "$SYNC_SCRIPTS" == "1" ]]; then
+    echo "[WARN] 二进制更新失败（可能 Text file busy），但脚本已同步完成：$TARGET_DIR/xarb_scripts"
+  else
+    echo "[WARN] 二进制更新失败（可能 Text file busy）"
+  fi
   echo "[WARN] 请稍后重试二进制更新或先停止进程后再部署：$TARGET_DIR/$BIN_NAME"
   exit 2
 fi

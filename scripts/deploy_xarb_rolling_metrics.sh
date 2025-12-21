@@ -17,7 +17,7 @@ fi
 
 usage() {
   cat <<'EOF'
-用法: scripts/deploy_xarb_rolling_metrics.sh [--open-venue <okex-futures>] [--hedge-venue <binance-futures>] [--env-suffix xarb-trade] [--env-name okex-binance-xarb-trade] [--jobs <n>] [--cargo-target-dir <path>]
+用法: scripts/deploy_xarb_rolling_metrics.sh [--open-venue <okex-futures>] [--hedge-venue <binance-futures>] [--env-suffix xarb-trade] [--env-name okex-binance-xarb-trade] [--jobs <n>] [--cargo-target-dir <path>] [--sync-scripts]
       scripts/deploy_xarb_rolling_metrics.sh --remote-host awsjp [--remote-repo <path>] [--remote-sync] [...]
 
 说明:
@@ -29,6 +29,7 @@ usage() {
   - 不自动启动，部署后可在目标目录执行 start/stop 脚本：
       ./xarb_scripts/start_xarb_rolling_metrics.sh
       ./xarb_scripts/stop_xarb_rolling_metrics.sh
+  - 默认只更新二进制；如需同步脚本请添加 --sync-scripts
 
 示例:
   scripts/deploy_xarb_rolling_metrics.sh --open-venue okex-futures --hedge-venue binance-futures
@@ -55,6 +56,7 @@ OPEN_VENUE=""
 HEDGE_VENUE=""
 CARGO_TARGET_DIR_OVERRIDE=""
 BUILD_JOBS=""
+SYNC_SCRIPTS="0"
 if [[ -n "${XARB_REMOTE_RUN:-}" ]]; then
   BUILD_JOBS="1"
 fi
@@ -84,6 +86,10 @@ while [[ $# -gt 0 ]]; do
     --cargo-target-dir)
       CARGO_TARGET_DIR_OVERRIDE="${2:-}"
       shift 2
+      ;;
+    --sync-scripts)
+      SYNC_SCRIPTS="1"
+      shift
       ;;
     *)
       echo "[ERROR] 未知参数: $1"
@@ -170,16 +176,20 @@ EXTRA_FILES=(
   "docs/rolling_metrics.md"
 )
 
-echo "[INFO] 同步 xarb_scripts/docs 到 $TARGET_DIR（先更新脚本，避免二进制 busy 影响脚本更新）"
-for file in "${EXTRA_FILES[@]}"; do
-  SRC_PATH="$ROOT_DIR/$file"
-  if [[ -f "$SRC_PATH" ]]; then
-    DEST_DIR="$TARGET_DIR/$(dirname "$file")"
-    mkdir -p "$DEST_DIR"
-    rsync -a "$SRC_PATH" "$DEST_DIR/"
-    chmod +x "$DEST_DIR/$(basename "$file")" 2>/dev/null || true
-  fi
-done
+if [[ "$SYNC_SCRIPTS" == "1" ]]; then
+  echo "[INFO] 同步 xarb_scripts/docs 到 $TARGET_DIR（先更新脚本，避免二进制 busy 影响脚本更新）"
+  for file in "${EXTRA_FILES[@]}"; do
+    SRC_PATH="$ROOT_DIR/$file"
+    if [[ -f "$SRC_PATH" ]]; then
+      DEST_DIR="$TARGET_DIR/$(dirname "$file")"
+      mkdir -p "$DEST_DIR"
+      rsync -a "$SRC_PATH" "$DEST_DIR/"
+      chmod +x "$DEST_DIR/$(basename "$file")" 2>/dev/null || true
+    fi
+  done
+else
+  echo "[INFO] 跳过脚本同步（如需同步脚本，请添加 --sync-scripts）"
+fi
 
 echo "[INFO] 构建 $BIN_NAME (release)"
 CARGO_TARGET_DIR_EFFECTIVE="$(xarb_effective_cargo_target_dir "$ROOT_DIR" "$CARGO_TARGET_DIR_OVERRIDE")"
@@ -203,7 +213,11 @@ for _ in 1 2 3 4 5; do
   sleep 0.2
 done
 if [[ "$move_ok" != "1" ]]; then
-  echo "[WARN] 二进制更新失败（可能 Text file busy），但脚本已同步完成：$TARGET_DIR/xarb_scripts"
+  if [[ "$SYNC_SCRIPTS" == "1" ]]; then
+    echo "[WARN] 二进制更新失败（可能 Text file busy），但脚本已同步完成：$TARGET_DIR/xarb_scripts"
+  else
+    echo "[WARN] 二进制更新失败（可能 Text file busy）"
+  fi
   echo "[WARN] 请稍后重试二进制更新或先停止进程后再部署：$TARGET_DIR/$BIN_NAME"
   exit 2
 fi
@@ -212,3 +226,6 @@ echo "[INFO] 部署完成: $TARGET_DIR"
 echo "[INFO] venues: open=${OPEN_VENUE} hedge=${HEDGE_VENUE}"
 echo "[INFO] 手动启动: cd $TARGET_DIR && ./xarb_scripts/start_xarb_rolling_metrics.sh"
 echo "[INFO] 停止: cd $TARGET_DIR && ./xarb_scripts/stop_xarb_rolling_metrics.sh"
+if [[ "$SYNC_SCRIPTS" != "1" ]]; then
+  echo "[INFO] 未同步脚本（保留目标目录已有 xarb_scripts，需更新请加 --sync-scripts）"
+fi
