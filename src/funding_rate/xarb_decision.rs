@@ -1,8 +1,8 @@
 //! Trade signal decision module (xarb cross-venue).
 //!
 //! Compared with FR decision, xarb decision is **spread-only**:
-//! - ignores funding/loan signals for Open/Close decisions
-//! - still supports Cancel (spread-only) and backward hedge queries
+//! - ignores funding/loan signals for Open decisions
+//! - only emits Open/Cancel (spread-only) and supports backward hedge queries
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -58,7 +58,6 @@ pub struct XarbDecision {
 
     signal_cooldown_us: i64,
     last_open_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
-    last_close_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
     last_cancel_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
 }
 
@@ -158,7 +157,6 @@ impl XarbDecision {
             hedge_aggressive_seq_threshold: 6,
             signal_cooldown_us: 5_000_000,
             last_open_ts: Rc::new(RefCell::new(HashMap::new())),
-            last_close_ts: Rc::new(RefCell::new(HashMap::new())),
             last_cancel_ts: Rc::new(RefCell::new(HashMap::new())),
         })
     }
@@ -244,30 +242,20 @@ impl XarbDecision {
             hedge_venue,
             hedge_symbol_key.as_str(),
         ) {
-            if !self.check_signal_cooldown(
+            let key = Self::threshold_key(
                 open_symbol_key.as_str(),
                 hedge_symbol_key.as_str(),
                 open_venue,
                 hedge_venue,
-                now,
-                &SignalType::ArbCancel,
-            ) {
-                self.emit_signals(
+            );
+            if !self.is_cooldown_hit(&self.last_cancel_ts, &key, now) {
+                self.emit_cancel_signal(
                     open_symbol_key.as_str(),
                     hedge_symbol_key.as_str(),
                     open_venue,
                     hedge_venue,
-                    SignalType::ArbCancel,
-                    None,
                 )?;
-                self.update_last_signal_ts(
-                    open_symbol_key.as_str(),
-                    hedge_symbol_key.as_str(),
-                    open_venue,
-                    hedge_venue,
-                    now,
-                    &SignalType::ArbCancel,
-                );
+                self.update_last_ts(&self.last_cancel_ts, key, now);
                 return Ok(Some(SignalType::ArbCancel));
             }
         }
@@ -291,69 +279,39 @@ impl XarbDecision {
             )
             && symbol_list.is_in_bwd_trade_list(open_symbol_key.as_str());
 
-        let forward_close = spread_factor.satisfy_forward_close(
-            open_venue,
-            open_symbol_key.as_str(),
-            hedge_venue,
-            hedge_symbol_key.as_str(),
-        );
-        let backward_close = spread_factor.satisfy_backward_close(
-            open_venue,
-            open_symbol_key.as_str(),
-            hedge_venue,
-            hedge_symbol_key.as_str(),
-        );
-
-        let final_signal_and_side: Option<(SignalType, Side)> = if forward_close && backward_open {
-            Some((SignalType::ArbOpen, Side::Sell))
-        } else if backward_close && forward_open {
-            Some((SignalType::ArbOpen, Side::Buy))
-        } else if forward_close {
-            Some((SignalType::ArbClose, Side::Sell))
-        } else if backward_close {
-            Some((SignalType::ArbClose, Side::Buy))
-        } else if forward_open {
-            Some((SignalType::ArbOpen, Side::Buy))
+        let side = if forward_open {
+            Some(Side::Buy)
         } else if backward_open {
-            Some((SignalType::ArbOpen, Side::Sell))
+            Some(Side::Sell)
         } else {
             None
         };
 
-        let Some((signal_type, side)) = final_signal_and_side else {
+        let Some(side) = side else {
             return Ok(None);
         };
 
-        if self.check_signal_cooldown(
+        let key = Self::threshold_key(
             open_symbol_key.as_str(),
             hedge_symbol_key.as_str(),
             open_venue,
             hedge_venue,
-            now,
-            &signal_type,
-        ) {
+        );
+        if self.is_cooldown_hit(&self.last_open_ts, &key, now) {
             return Ok(None);
         }
 
-        self.emit_signals(
+        self.emit_open_signals(
             open_symbol_key.as_str(),
             hedge_symbol_key.as_str(),
             open_venue,
             hedge_venue,
-            signal_type.clone(),
-            Some(side),
+            side,
         )?;
 
-        self.update_last_signal_ts(
-            open_symbol_key.as_str(),
-            hedge_symbol_key.as_str(),
-            open_venue,
-            hedge_venue,
-            now,
-            &signal_type,
-        );
+        self.update_last_ts(&self.last_open_ts, key, now);
 
-        Ok(Some(signal_type))
+        Ok(Some(SignalType::ArbOpen))
     }
 
     fn handle_backward_query(&mut self, data: Bytes) {
@@ -500,18 +458,14 @@ impl XarbDecision {
         );
     }
 
-    fn emit_signals(
-        &mut self,
+    fn load_valid_quotes(
+        &self,
         open_symbol: &str,
         hedge_symbol: &str,
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
-        signal_type: SignalType,
-        side: Option<Side>,
-    ) -> Result<()> {
-        let now = get_timestamp_us();
+    ) -> Option<(Quote, Quote)> {
         let mkt_channel = MktChannel::instance();
-
         let open_quote = mkt_channel.get_quote(open_symbol, open_venue);
         let hedge_quote = mkt_channel.get_quote(hedge_symbol, hedge_venue);
 
@@ -523,7 +477,7 @@ impl XarbDecision {
                 hedge_symbol,
                 hedge_quote.is_some()
             );
-            return Ok(());
+            return None;
         }
 
         let open_quote = open_quote.unwrap();
@@ -534,73 +488,97 @@ impl XarbDecision {
                 "XarbDecision: invalid open quote bid={:.8} >= ask={:.8} for {}",
                 open_quote.bid, open_quote.ask, open_symbol
             );
-            return Ok(());
+            return None;
         }
         if hedge_quote.bid >= hedge_quote.ask {
             warn!(
                 "XarbDecision: invalid hedge quote bid={:.8} >= ask={:.8} for {}",
                 hedge_quote.bid, hedge_quote.ask, hedge_symbol
             );
-            return Ok(());
+            return None;
         }
 
-        match signal_type {
-            SignalType::ArbOpen | SignalType::ArbClose => {
-                let side = match side {
-                    Some(s) => s,
-                    None => {
-                        warn!("XarbDecision: {:?} signal missing side info", signal_type);
-                        return Ok(());
-                    }
-                };
+        Some((open_quote, hedge_quote))
+    }
 
-                for offset in &self.price_offsets {
-                    let ctx = self.build_open_context(
-                        open_symbol,
-                        hedge_symbol,
-                        open_venue,
-                        hedge_venue,
-                        &open_quote,
-                        &hedge_quote,
-                        *offset,
-                        now,
-                        side,
-                    );
+    fn emit_open_signals(
+        &mut self,
+        open_symbol: &str,
+        hedge_symbol: &str,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+        side: Side,
+    ) -> Result<()> {
+        let (open_quote, hedge_quote) = match self.load_valid_quotes(
+            open_symbol,
+            hedge_symbol,
+            open_venue,
+            hedge_venue,
+        ) {
+            Some(quotes) => quotes,
+            None => return Ok(()),
+        };
+        let now = get_timestamp_us();
 
-                    let signal = TradeSignal::create(signal_type.clone(), now, 0.0, ctx.to_bytes());
-                    self.signal_pub.publish(&signal.to_bytes())?;
-                }
+        for offset in &self.price_offsets {
+            let ctx = self.build_open_context(
+                open_symbol,
+                hedge_symbol,
+                open_venue,
+                hedge_venue,
+                &open_quote,
+                &hedge_quote,
+                *offset,
+                now,
+                side,
+            );
 
-                info!(
-                    "XarbDecision: emitted {} {:?} signal(s) to '{}' open={} hedge={}",
-                    self.price_offsets.len(),
-                    signal_type,
-                    self.channel_name,
-                    open_symbol,
-                    hedge_symbol
-                );
-            }
-
-            SignalType::ArbCancel => {
-                let ctx = self.build_cancel_context(
-                    open_symbol,
-                    hedge_symbol,
-                    open_venue,
-                    hedge_venue,
-                    &open_quote,
-                    &hedge_quote,
-                    now,
-                );
-
-                let signal = TradeSignal::create(signal_type.clone(), now, 0.0, ctx.to_bytes());
-                self.signal_pub.publish(&signal.to_bytes())?;
-            }
-
-            _ => {
-                warn!("XarbDecision: unsupported signal type: {:?}", signal_type);
-            }
+            let signal = TradeSignal::create(SignalType::ArbOpen, now, 0.0, ctx.to_bytes());
+            self.signal_pub.publish(&signal.to_bytes())?;
         }
 
+        info!(
+            "XarbDecision: emitted {} {:?} signal(s) to '{}' open={} hedge={}",
+            self.price_offsets.len(),
+            SignalType::ArbOpen,
+            self.channel_name,
+            open_symbol,
+            hedge_symbol
+        );
+
+        Ok(())
+    }
+
+    fn emit_cancel_signal(
+        &mut self,
+        open_symbol: &str,
+        hedge_symbol: &str,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+    ) -> Result<()> {
+        let (open_quote, hedge_quote) = match self.load_valid_quotes(
+            open_symbol,
+            hedge_symbol,
+            open_venue,
+            hedge_venue,
+        ) {
+            Some(quotes) => quotes,
+            None => return Ok(()),
+        };
+        let now = get_timestamp_us();
+
+        let ctx = self.build_cancel_context(
+            open_symbol,
+            hedge_symbol,
+            open_venue,
+            hedge_venue,
+            &open_quote,
+            &hedge_quote,
+            now,
+        );
+
+        let signal = TradeSignal::create(SignalType::ArbCancel, now, 0.0, ctx.to_bytes());
+        self.signal_pub.publish(&signal.to_bytes())?;
         Ok(())
     }
 
@@ -805,33 +783,27 @@ impl XarbDecision {
         );
     }
 
-    fn check_signal_cooldown(
-        &self,
+    fn threshold_key(
         open_symbol: &str,
         hedge_symbol: &str,
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
-        now: i64,
-        signal_type: &SignalType,
-    ) -> bool {
-        let key = (
+    ) -> ThresholdKey {
+        (
             open_venue,
             open_symbol.to_uppercase(),
             hedge_venue,
             hedge_symbol.to_uppercase(),
-        );
+        )
+    }
 
-        let last_ts_map = match signal_type {
-            SignalType::ArbOpen => self.last_open_ts.borrow(),
-            SignalType::ArbClose => self.last_close_ts.borrow(),
-            SignalType::ArbCancel => self.last_cancel_ts.borrow(),
-            _ => {
-                warn!("XarbDecision: 不支持的信号类型 {:?}", signal_type);
-                return false;
-            }
-        };
-
-        if let Some(&last_ts) = last_ts_map.get(&key) {
+    fn is_cooldown_hit(
+        &self,
+        last_ts_map: &RefCell<HashMap<ThresholdKey, i64>>,
+        key: &ThresholdKey,
+        now: i64,
+    ) -> bool {
+        if let Some(&last_ts) = last_ts_map.borrow().get(key) {
             let elapsed = now - last_ts;
             if elapsed < self.signal_cooldown_us {
                 return true;
@@ -840,36 +812,13 @@ impl XarbDecision {
         false
     }
 
-    fn update_last_signal_ts(
+    fn update_last_ts(
         &self,
-        open_symbol: &str,
-        hedge_symbol: &str,
-        open_venue: TradingVenue,
-        hedge_venue: TradingVenue,
+        last_ts_map: &RefCell<HashMap<ThresholdKey, i64>>,
+        key: ThresholdKey,
         now: i64,
-        signal_type: &SignalType,
     ) {
-        let key = (
-            open_venue,
-            open_symbol.to_uppercase(),
-            hedge_venue,
-            hedge_symbol.to_uppercase(),
-        );
-
-        match signal_type {
-            SignalType::ArbOpen => {
-                self.last_open_ts.borrow_mut().insert(key, now);
-            }
-            SignalType::ArbClose => {
-                self.last_close_ts.borrow_mut().insert(key, now);
-            }
-            SignalType::ArbCancel => {
-                self.last_cancel_ts.borrow_mut().insert(key, now);
-            }
-            _ => {
-                warn!("XarbDecision: 不支持的信号类型 {:?}", signal_type);
-            }
-        }
+        last_ts_map.borrow_mut().insert(key, now);
     }
 
     pub fn spawn_backward_listener() {
