@@ -92,9 +92,9 @@ def parse_args() -> argparse.Namespace:
 
 # ========== 交易对白名单配置 ==========
 
-FWD_SYMBOLS: List[str] = ["SOLUSDT","dogeusdt","wldusdt","fiusdt","dotusdt"]
+FWD_SYMBOLS: List[str] = ["SOLUSDT","dogeusdt","wldusdt","filusdt","dotusdt","btcusdt","ethusdt"]
 
-BWD_SYMBOLS: List[str] = ["SOLUSDT","dogeusdt","wldusdt","fiusdt","dotusdt"]
+BWD_SYMBOLS: List[str] = ["SOLUSDT","dogeusdt","wldusdt","filusdt","dotusdt","btcusdt","ethusdt"]
 
 FWD_SYMBOLS: List[str] = []
 BWD_SYMBOLS: List[str] = []
