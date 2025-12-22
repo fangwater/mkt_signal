@@ -27,15 +27,10 @@ struct Args {
     /// 示例开仓合约数量（来自日志）
     #[arg(long, default_value_t = 0.2200)]
     example_open_qty: f64,
-
-    /// 搜索窗口（步数）
-    #[arg(long, default_value_t = 12)]
-    search_window: i64,
 }
 
 #[derive(Debug, Clone)]
 struct VenueSizing {
-    venue: TradingVenue,
     symbol: String,
     symbol_key: String,
     price_raw: f64,
@@ -132,7 +127,6 @@ async fn build_sizing(venue: TradingVenue, symbol: &str, price: f64) -> Result<V
     };
 
     Ok(VenueSizing {
-        venue,
         symbol: symbol.to_string(),
         symbol_key,
         price_raw: price,
@@ -145,28 +139,6 @@ async fn build_sizing(venue: TradingVenue, symbol: &str, price: f64) -> Result<V
         notional_per_step,
         min_count: min_count(min_qty, step_size),
     })
-}
-
-#[derive(Debug, Clone)]
-struct Candidate {
-    count_open: i64,
-    qty_open: f64,
-    notional_open: f64,
-    count_hedge: i64,
-    qty_hedge: f64,
-    notional_hedge: f64,
-    mismatch: f64,
-    deviation: f64,
-}
-
-fn better_candidate(a: &Candidate, b: &Candidate) -> bool {
-    if a.mismatch < b.mismatch - 1e-9 {
-        return true;
-    }
-    if (a.mismatch - b.mismatch).abs() <= 1e-9 {
-        return a.deviation < b.deviation - 1e-9;
-    }
-    false
 }
 
 #[tokio::main]
@@ -235,80 +207,36 @@ qty=0.2200 price=88077.200000\n"
         ));
     }
 
-    let ideal_open_count = (args.amount / okex.notional_per_step).round() as i64;
-    let start = (ideal_open_count - args.search_window).max(okex.min_count).max(1);
-    let end = (ideal_open_count + args.search_window).max(start);
+    let open_count = (args.amount / okex.notional_per_step).floor() as i64;
+    let open_count = open_count.max(okex.min_count).max(1);
+    let open_qty = open_count as f64 * okex.step_size;
+    let open_notional = open_count as f64 * okex.notional_per_step;
+    let open_base_qty = open_qty * okex.contract_multiplier;
 
-    println!("-- 计算窗口 --");
-    println!(
-        "ideal_open_count=round(U / notional_per_step_open) = {}",
-        ideal_open_count
+    let okex_base_step = okex.step_size * okex.contract_multiplier;
+    let binance_base_step = binance.step_size * binance.contract_multiplier;
+    let align_step = okex_base_step.max(binance_base_step);
+    let aligned_base_qty = align_price_floor(open_base_qty, align_step);
+    let aligned_open_qty = align_price_floor(
+        aligned_base_qty / okex.contract_multiplier,
+        okex.step_size,
     );
-    println!("search_range=[{}, {}] (count_open)\n", start, end);
+    let aligned_hedge_qty = align_price_floor(aligned_base_qty, binance.step_size);
 
-    let mut best: Option<Candidate> = None;
-    println!("-- 候选明细 --");
+    println!("-- 一次对齐（谁大对齐谁） --");
     println!(
-        "{:>6} {:>10} {:>12} | {:>6} {:>10} {:>12} | {:>10} {:>10}",
-        "cA", "qtyA", "notionalA", "cB", "qtyB", "notionalB", "mismatch", "deviation"
+        "open_qty(okx)={:.6} open_notional={:.6} base_qty={:.8}",
+        open_qty, open_notional, open_base_qty
     );
-
-    for count_open in start..=end {
-        let qty_open = count_open as f64 * okex.step_size;
-        let notional_open = count_open as f64 * okex.notional_per_step;
-        let count_hedge = (notional_open / binance.notional_per_step).round() as i64;
-        if count_hedge < binance.min_count || count_hedge <= 0 {
-            continue;
-        }
-        let qty_hedge = count_hedge as f64 * binance.step_size;
-        let notional_hedge = count_hedge as f64 * binance.notional_per_step;
-        let mismatch = (notional_open - notional_hedge).abs();
-        let deviation = (notional_open - args.amount).abs() + (notional_hedge - args.amount).abs();
-
-        println!(
-            "{:>6} {:>10.6} {:>12.6} | {:>6} {:>10.6} {:>12.6} | {:>10.6} {:>10.6}",
-            count_open, qty_open, notional_open, count_hedge, qty_hedge, notional_hedge, mismatch,
-            deviation
-        );
-
-        let cand = Candidate {
-            count_open,
-            qty_open,
-            notional_open,
-            count_hedge,
-            qty_hedge,
-            notional_hedge,
-            mismatch,
-            deviation,
-        };
-        match &best {
-            Some(best_cand) => {
-                if better_candidate(&cand, best_cand) {
-                    best = Some(cand);
-                }
-            }
-            None => best = Some(cand),
-        }
-    }
-
+    println!(
+        "okx_base_step={:.10} binance_base_step={:.10} align_step={:.10}",
+        okex_base_step, binance_base_step, align_step
+    );
+    println!(
+        "aligned_base_qty={:.8} -> okx_qty={:.6} hedge_qty(binance)={:.6}",
+        aligned_base_qty, aligned_open_qty, aligned_hedge_qty
+    );
     println!();
-    if let Some(best_cand) = best {
-        println!("-- 选择结果 --");
-        println!(
-            "open_qty={:.6} (cA={}) open_notional={:.6}",
-            best_cand.qty_open, best_cand.count_open, best_cand.notional_open
-        );
-        println!(
-            "hedge_qty={:.6} (cB={}) hedge_notional={:.6}",
-            best_cand.qty_hedge, best_cand.count_hedge, best_cand.notional_hedge
-        );
-        println!(
-            "mismatch={:.6} deviation={:.6}\n",
-            best_cand.mismatch, best_cand.deviation
-        );
-    } else {
-        println!("未找到可行候选（检查 min_qty/step_size 配置）。\n");
-    }
 
     println!("-- 示例开仓数量对齐 --");
     let example_open_count = if okex.step_size > 0.0 {
@@ -317,20 +245,21 @@ qty=0.2200 price=88077.200000\n"
         0
     };
     let example_open_qty = example_open_count as f64 * okex.step_size;
-    let example_open_notional = example_open_count as f64 * okex.notional_per_step;
     let example_base_qty = example_open_qty * okex.contract_multiplier;
-    let example_hedge_count =
-        (example_open_notional / binance.notional_per_step).round() as i64;
-    let example_hedge_qty = example_hedge_count as f64 * binance.step_size;
-    let example_hedge_notional = example_hedge_count as f64 * binance.notional_per_step;
+    let example_aligned_base = align_price_floor(example_base_qty, align_step);
+    let example_aligned_okx_qty = align_price_floor(
+        example_aligned_base / okex.contract_multiplier,
+        okex.step_size,
+    );
+    let example_hedge_qty = align_price_floor(example_aligned_base, binance.step_size);
 
     println!(
         "open_qty(OKX)={:.6} contracts -> base_qty={:.8}",
         example_open_qty, example_base_qty
     );
     println!(
-        "open_notional={:.6} -> hedge_qty(Binance)={:.6} (notional={:.6})",
-        example_open_notional, example_hedge_qty, example_hedge_notional
+        "aligned_base_qty={:.8} -> okx_qty={:.6} hedge_qty(Binance)={:.6}",
+        example_aligned_base, example_aligned_okx_qty, example_hedge_qty
     );
 
     Ok(())
