@@ -866,43 +866,71 @@ impl HedgeArbStrategy {
             let now = get_timestamp_us();
             if now >= expire_ts {
                 info!(
-                    "HedgeArbStrategy: strategy_id={} 对冲订单超时，直接撤单",
-                    self.strategy_id
+                    "HedgeArbStrategy: strategy_id={} 对冲订单超时，直接撤单 expire_ts={} now={} hedge_orders_len={}",
+                    self.strategy_id,
+                    expire_ts,
+                    now,
+                    self.hedge_order_ids.len()
                 );
 
-                // 遍历所有对冲订单，直接撤单
-                for &hedge_order_id in &self.hedge_order_ids.clone() {
+                // 只撤最后一个对冲订单（任意时刻只有一个有效对冲单）
+                if let Some(&hedge_order_id) = self.hedge_order_ids.last() {
                     let order = MonitorChannel::instance()
                         .order_manager()
                         .borrow()
                         .get(hedge_order_id);
                     if let Some(order) = order {
-                        match order.get_order_cancel_bytes() {
-                            Ok(cancel_bytes) => {
-                                let exchange = order.venue.trade_engine_exchange();
-                                if let Err(e) =
-                                    TradeEngHub::publish_order_request(exchange, &cancel_bytes)
-                                {
+                        info!(
+                            "HedgeArbStrategy: strategy_id={} 对冲超时撤单目标 order_id={} symbol={} status={:?} exch_ord_id={:?}",
+                            self.strategy_id,
+                            hedge_order_id,
+                            order.symbol,
+                            order.status,
+                            order.exchange_order_id
+                        );
+                        if order.status.is_terminal() {
+                            info!(
+                                "HedgeArbStrategy: strategy_id={} 对冲订单已终结，跳过撤单 order_id={}",
+                                self.strategy_id, hedge_order_id
+                            );
+                        } else {
+                            match order.get_order_cancel_bytes() {
+                                Ok(cancel_bytes) => {
+                                    let exchange = order.venue.trade_engine_exchange();
+                                    if let Err(e) =
+                                        TradeEngHub::publish_order_request(exchange, &cancel_bytes)
+                                    {
+                                        error!(
+                                            "HedgeArbStrategy: strategy_id={} exchange={} 发送对冲撤单请求失败 order_id={}: {}",
+                                            self.strategy_id, exchange, hedge_order_id, e
+                                        );
+                                    } else {
+                                        info!(
+                                            "HedgeArbStrategy: strategy_id={} 已发送对冲撤单请求 order_id={} exchange={} symbol={}",
+                                            self.strategy_id, hedge_order_id, exchange, order.symbol
+                                        );
+                                        self.schedule_cancel_query_watchdog(order.client_order_id);
+                                    }
+                                }
+                                Err(e) => {
                                     error!(
-                                        "HedgeArbStrategy: strategy_id={} exchange={} 发送对冲撤单请求失败 order_id={}: {}",
-                                        self.strategy_id, exchange, hedge_order_id, e
+                                        "HedgeArbStrategy: strategy_id={} 获取对冲撤单请求字节失败 order_id={}: {}",
+                                        self.strategy_id, hedge_order_id, e
                                     );
-                                } else {
-                                    debug!(
-                                        "HedgeArbStrategy: strategy_id={} 已发送对冲撤单请求 order_id={}",
-                                        self.strategy_id, hedge_order_id
-                                    );
-                                    self.schedule_cancel_query_watchdog(order.client_order_id);
                                 }
                             }
-                            Err(e) => {
-                                error!(
-                                    "HedgeArbStrategy: strategy_id={} 获取对冲撤单请求字节失败 order_id={}: {}",
-                                    self.strategy_id, hedge_order_id, e
-                                );
-                            }
                         }
+                    } else {
+                        warn!(
+                            "HedgeArbStrategy: strategy_id={} 对冲超时撤单但本地订单缺失 order_id={}",
+                            self.strategy_id, hedge_order_id
+                        );
                     }
+                } else {
+                    warn!(
+                        "HedgeArbStrategy: strategy_id={} 对冲超时撤单但未找到对冲订单ID",
+                        self.strategy_id
+                    );
                 }
 
                 // 清除对冲超时时间，避免重复发送撤单
