@@ -68,6 +68,10 @@ path = "src/bin/query_client.rs"
 name = "manual_signal"
 path = "src/bin/manual_signal.rs"
 
+[[bin]]
+name = "demo_qty_alignment"
+path = "src/bin/demo_qty_alignment.rs"
+
 [dependencies]
 local-ip-address = "0.6"
 serde_yaml = "0.9"
