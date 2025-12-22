@@ -37,6 +37,7 @@ struct Args {
 struct VenueSizing {
     venue: TradingVenue,
     symbol: String,
+    symbol_key: String,
     price_raw: f64,
     price_tick: f64,
     price_aligned: f64,
@@ -91,24 +92,35 @@ fn align_price_floor(price: f64, tick: f64) -> f64 {
     scaled * tick
 }
 
+fn normalize_symbol_key(venue: TradingVenue, symbol: &str) -> String {
+    let mut key = symbol.trim().to_uppercase();
+    if matches!(venue, TradingVenue::OkexFutures | TradingVenue::OkexMargin) {
+        if let Some(stripped) = key.strip_suffix("-SWAP") {
+            key = stripped.to_string();
+        }
+        key = key.replace('-', "");
+    }
+    key
+}
+
 async fn build_sizing(venue: TradingVenue, symbol: &str, price: f64) -> Result<VenueSizing> {
     let mut table = VenueMinQtyTable::new(venue);
     table.refresh().await?;
 
-    let symbol_upper = symbol.to_uppercase();
+    let symbol_key = normalize_symbol_key(venue, symbol);
     let step_size = table
-        .step_size(&symbol_upper)
-        .ok_or_else(|| anyhow!("missing step_size for {:?} {}", venue, symbol_upper))?;
-    let min_qty = table.min_qty(&symbol_upper).unwrap_or(0.0);
-    let min_notional = table.min_notional(&symbol_upper).unwrap_or(0.0);
-    let price_tick = table.price_tick(&symbol_upper).unwrap_or(0.0);
+        .step_size(&symbol_key)
+        .ok_or_else(|| anyhow!("missing step_size for {:?} {}", venue, symbol_key))?;
+    let min_qty = table.min_qty(&symbol_key).unwrap_or(0.0);
+    let min_notional = table.min_notional(&symbol_key).unwrap_or(0.0);
+    let price_tick = table.price_tick(&symbol_key).unwrap_or(0.0);
     let price_aligned = if price_tick > 0.0 {
         align_price_floor(price, price_tick)
     } else {
         price
     };
     let contract_multiplier = if matches!(venue, TradingVenue::OkexFutures) {
-        table.contract_multiplier(&symbol_upper)
+        table.contract_multiplier(&symbol_key)
     } else {
         1.0
     };
@@ -121,7 +133,8 @@ async fn build_sizing(venue: TradingVenue, symbol: &str, price: f64) -> Result<V
 
     Ok(VenueSizing {
         venue,
-        symbol: symbol_upper,
+        symbol: symbol.to_string(),
+        symbol_key,
         price_raw: price,
         price_tick,
         price_aligned,
@@ -178,8 +191,8 @@ qty=0.2200 price=88077.200000\n"
 
     println!("-- Open (OKX Futures) --");
     println!(
-        "symbol={} price_raw={:.6} price_tick={:.10} price_aligned={:.6}",
-        okex.symbol, okex.price_raw, okex.price_tick, okex.price_aligned
+        "symbol={} key={} price_raw={:.6} price_tick={:.10} price_aligned={:.6}",
+        okex.symbol, okex.symbol_key, okex.price_raw, okex.price_tick, okex.price_aligned
     );
     println!(
         "min_qty={:.10} step_size={:.10} min_notional={:.10}",
@@ -197,8 +210,12 @@ qty=0.2200 price=88077.200000\n"
 
     println!("-- Hedge (Binance UM Futures) --");
     println!(
-        "symbol={} price_raw={:.6} price_tick={:.10} price_aligned={:.6}",
-        binance.symbol, binance.price_raw, binance.price_tick, binance.price_aligned
+        "symbol={} key={} price_raw={:.6} price_tick={:.10} price_aligned={:.6}",
+        binance.symbol,
+        binance.symbol_key,
+        binance.price_raw,
+        binance.price_tick,
+        binance.price_aligned
     );
     println!(
         "min_qty={:.10} step_size={:.10} min_notional={:.10}",
