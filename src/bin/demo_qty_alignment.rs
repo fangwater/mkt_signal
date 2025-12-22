@@ -6,7 +6,10 @@ use mkt_signal::signal::common::TradingVenue;
 use mkt_signal::signal::venue_min_qty_table::VenueMinQtyTable;
 
 #[derive(Debug, Parser)]
-#[command(name = "demo_qty_alignment", about = "信号层数量对齐演示（OKX vs Binance）")]
+#[command(
+    name = "demo_qty_alignment",
+    about = "信号层数量对齐演示（OKX vs Binance）"
+)]
 struct Args {
     /// 目标名义金额（U）
     #[arg(long, default_value_t = 200.0)]
@@ -156,8 +159,12 @@ qty=0.2200 price=88077.200000\n"
 
     info!("刷新 OKX/币安 filters（真实 min_qty/step/tick）");
     let okex = build_sizing(TradingVenue::OkexFutures, &args.okex_symbol, args.price).await?;
-    let binance =
-        build_sizing(TradingVenue::BinanceFutures, &args.binance_symbol, args.price).await?;
+    let binance = build_sizing(
+        TradingVenue::BinanceFutures,
+        &args.binance_symbol,
+        args.price,
+    )
+    .await?;
 
     println!("目标名义金额 U = {:.4}\n", args.amount);
 
@@ -217,10 +224,8 @@ qty=0.2200 price=88077.200000\n"
     let binance_base_step = binance.step_size * binance.contract_multiplier;
     let align_step = okex_base_step.max(binance_base_step);
     let aligned_base_qty = align_price_floor(open_base_qty, align_step);
-    let aligned_open_qty = align_price_floor(
-        aligned_base_qty / okex.contract_multiplier,
-        okex.step_size,
-    );
+    let aligned_open_qty =
+        align_price_floor(aligned_base_qty / okex.contract_multiplier, okex.step_size);
     let aligned_hedge_qty = align_price_floor(aligned_base_qty, binance.step_size);
 
     println!("-- 一次对齐（谁大对齐谁） --");

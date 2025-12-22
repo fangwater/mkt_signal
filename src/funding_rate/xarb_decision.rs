@@ -25,7 +25,9 @@ use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::signal::cancel_signal::ArbCancelCtx;
-use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
+use crate::signal::common::{
+    align_price_ceil, align_price_floor, SignalBytes, TradingLeg, TradingVenue,
+};
 use crate::signal::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
@@ -33,6 +35,39 @@ use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 
 use super::fr_decision::{DEFAULT_BACKWARD_CHANNEL, DEFAULT_SIGNAL_CHANNEL};
+
+fn min_qty_symbol_key(venue: TradingVenue, trade_symbol: &str) -> String {
+    match venue {
+        TradingVenue::OkexMargin | TradingVenue::OkexFutures => trade_symbol
+            .to_uppercase()
+            .replace("-SWAP", "")
+            .replace('-', ""),
+        _ => trade_symbol.to_uppercase(),
+    }
+}
+
+fn venue_qty_is_contracts(venue: TradingVenue) -> bool {
+    matches!(venue, TradingVenue::OkexFutures)
+}
+
+fn base_step_size(
+    table: &VenueMinQtyTable,
+    venue: TradingVenue,
+    trade_symbol: &str,
+) -> (Option<f64>, Option<f64>) {
+    let symbol_key = min_qty_symbol_key(venue, trade_symbol);
+    let step = table.step_size(&symbol_key);
+    let min_qty = table.min_qty(&symbol_key);
+
+    if venue_qty_is_contracts(venue) {
+        let mult = table.contract_multiplier_opt(&symbol_key);
+        let step_base = step.zip(mult).map(|(s, m)| s * m);
+        let min_qty_base = min_qty.zip(mult).map(|(q, m)| q * m);
+        (step_base, min_qty_base)
+    } else {
+        (step, min_qty)
+    }
+}
 
 thread_local! {
     static XARB_DECISION: OnceCell<RefCell<XarbDecision>> = OnceCell::new();
@@ -509,15 +544,11 @@ impl XarbDecision {
         hedge_venue: TradingVenue,
         side: Side,
     ) -> Result<()> {
-        let (open_quote, hedge_quote) = match self.load_valid_quotes(
-            open_symbol,
-            hedge_symbol,
-            open_venue,
-            hedge_venue,
-        ) {
-            Some(quotes) => quotes,
-            None => return Ok(()),
-        };
+        let (open_quote, hedge_quote) =
+            match self.load_valid_quotes(open_symbol, hedge_symbol, open_venue, hedge_venue) {
+                Some(quotes) => quotes,
+                None => return Ok(()),
+            };
         let now = get_timestamp_us();
 
         for offset in &self.price_offsets {
@@ -556,15 +587,11 @@ impl XarbDecision {
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
     ) -> Result<()> {
-        let (open_quote, hedge_quote) = match self.load_valid_quotes(
-            open_symbol,
-            hedge_symbol,
-            open_venue,
-            hedge_venue,
-        ) {
-            Some(quotes) => quotes,
-            None => return Ok(()),
-        };
+        let (open_quote, hedge_quote) =
+            match self.load_valid_quotes(open_symbol, hedge_symbol, open_venue, hedge_venue) {
+                Some(quotes) => quotes,
+                None => return Ok(()),
+            };
         let now = get_timestamp_us();
 
         let ctx = self.build_cancel_context(
@@ -624,8 +651,17 @@ impl XarbDecision {
             .table_for(open_venue)
             .price_tick(&open_trade_symbol)
             .unwrap_or(0.0);
-        let qty = self.convert_order_amount_to_qty(open_venue, &open_trade_symbol, ctx.price);
-        ctx.amount = qty as f32;
+        let base_qty = self.convert_order_amount_to_aligned_base_qty(
+            open_venue,
+            &open_trade_symbol,
+            hedge_venue,
+            &hedge_trade_symbol,
+            open_quote,
+            hedge_quote,
+            ctx.price,
+            side,
+        );
+        ctx.amount = base_qty as f32;
 
         ctx.exp_time = now + self.open_order_ttl_us;
         ctx.create_ts = now;
@@ -686,26 +722,131 @@ impl XarbDecision {
         }
     }
 
-    fn convert_order_amount_to_qty(&self, venue: TradingVenue, symbol: &str, price: f64) -> f64 {
+    fn convert_order_amount_to_aligned_base_qty(
+        &self,
+        open_venue: TradingVenue,
+        open_symbol: &str,
+        hedge_venue: TradingVenue,
+        hedge_symbol: &str,
+        open_quote: &Quote,
+        hedge_quote: &Quote,
+        open_price: f64,
+        open_side: Side,
+    ) -> f64 {
         if !(self.order_amount > 0.0) {
             warn!(
                 "XarbDecision: order_amount <= 0 when building signal for {}, skip",
-                symbol
+                open_symbol
             );
             return 0.0;
         }
-        if price <= 0.0 {
+        if open_price <= 0.0 {
             warn!(
                 "XarbDecision: price for {} <= 0 when converting order amount, fallback to 0",
-                symbol
+                open_symbol
             );
             return 0.0;
         }
 
-        let table = self.table_for(venue);
-        let min_qty = table.min_qty(symbol);
-        let step = table.step_size(symbol);
-        convert_usdt_amount_to_qty(self.order_amount as f64, price, min_qty, step)
+        let open_table = self.table_for(open_venue);
+        let hedge_table = self.table_for(hedge_venue);
+
+        let raw_base_qty = self.order_amount as f64 / open_price;
+        let (open_base_step, open_min_base_qty) =
+            base_step_size(open_table, open_venue, open_symbol);
+        let (hedge_base_step, hedge_min_base_qty) =
+            base_step_size(hedge_table, hedge_venue, hedge_symbol);
+
+        let align_step = open_base_step
+            .unwrap_or(0.0)
+            .max(hedge_base_step.unwrap_or(0.0));
+        if align_step <= 0.0 {
+            return raw_base_qty;
+        }
+
+        let mut base_qty = align_price_floor(raw_base_qty, align_step);
+        if base_qty <= 0.0 {
+            base_qty = align_step;
+        }
+
+        let mut required_min_base = align_step;
+        if let Some(v) = open_min_base_qty {
+            if v > required_min_base {
+                required_min_base = v;
+            }
+        }
+        if let Some(v) = hedge_min_base_qty {
+            if v > required_min_base {
+                required_min_base = v;
+            }
+        }
+
+        let open_symbol_key = min_qty_symbol_key(open_venue, open_symbol);
+        let hedge_symbol_key = min_qty_symbol_key(hedge_venue, hedge_symbol);
+        if let Some(min_notional) = open_table.min_notional(&open_symbol_key) {
+            if min_notional > 0.0 && open_price > 0.0 {
+                required_min_base = required_min_base.max(min_notional / open_price);
+            }
+        }
+        let hedge_side = if open_side == Side::Buy {
+            Side::Sell
+        } else {
+            Side::Buy
+        };
+        let hedge_price_for_min_notional = match hedge_side {
+            Side::Buy => hedge_quote.ask,
+            Side::Sell => hedge_quote.bid,
+        };
+        if let Some(min_notional) = hedge_table.min_notional(&hedge_symbol_key) {
+            if min_notional > 0.0 && hedge_price_for_min_notional > 0.0 {
+                required_min_base =
+                    required_min_base.max(min_notional / hedge_price_for_min_notional);
+            }
+        }
+
+        if base_qty + 1e-12 < required_min_base {
+            base_qty = align_price_ceil(required_min_base, align_step);
+        }
+
+        // 对 OKX 合约腿：确保 multiplier 已加载（否则对齐口径会退化为默认 1）
+        for (venue, table, symbol_key) in [
+            (open_venue, open_table, &open_symbol_key),
+            (hedge_venue, hedge_table, &hedge_symbol_key),
+        ] {
+            if venue_qty_is_contracts(venue) && table.contract_multiplier_opt(symbol_key).is_none()
+            {
+                warn!(
+                    "XarbDecision: missing contract_multiplier for {:?} symbol_key={} (ctVal×ctMult), qty alignment may be inaccurate",
+                    venue, symbol_key
+                );
+            }
+        }
+
+        // 打印一次关键对齐信息（用于排障）
+        if log::log_enabled!(log::Level::Debug) {
+            let open_step = open_base_step.unwrap_or(0.0);
+            let hedge_step = hedge_base_step.unwrap_or(0.0);
+            let open_mid = (open_quote.bid + open_quote.ask) * 0.5;
+            let hedge_mid = (hedge_quote.bid + hedge_quote.ask) * 0.5;
+            log::debug!(
+                "XarbDecision qty_align: open={:?} {} step_base={:.10} hedge={:?} {} step_base={:.10} align_step={:.10} raw_base_qty={:.10} base_qty={:.10} required_min_base={:.10} open_price={:.6} hedge_mid={:.6} open_mid={:.6}",
+                open_venue,
+                open_symbol_key,
+                open_step,
+                hedge_venue,
+                hedge_symbol_key,
+                hedge_step,
+                align_step,
+                raw_base_qty,
+                base_qty,
+                required_min_base,
+                open_price,
+                hedge_mid,
+                open_mid
+            );
+        }
+
+        base_qty
     }
 
     pub fn update_price_offsets(&mut self, offsets: Vec<f64>) {
@@ -851,39 +992,4 @@ impl XarbDecision {
             }
         });
     }
-}
-
-fn convert_usdt_amount_to_qty(
-    order_amount_u: f64,
-    price: f64,
-    min_qty: Option<f64>,
-    step: Option<f64>,
-) -> f64 {
-    if order_amount_u <= 0.0 || price <= 0.0 {
-        return 0.0;
-    }
-    let mut qty = order_amount_u / price;
-    if let Some(step) = step {
-        qty = align_step_ceil(qty, step);
-    }
-
-    if let Some(min_qty) = min_qty {
-        if min_qty > 0.0 && qty < min_qty {
-            qty = if let Some(step) = step {
-                align_step_ceil(min_qty, step)
-            } else {
-                min_qty
-            };
-        }
-    }
-
-    qty
-}
-
-fn align_step_ceil(value: f64, step: f64) -> f64 {
-    if value <= 0.0 || step <= 0.0 {
-        return value;
-    }
-    let units = (value / step).ceil();
-    units * step
 }

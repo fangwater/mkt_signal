@@ -30,12 +30,12 @@ const MAX_HEDGE_REQUESTS: u32 = 20;
 const HEDGE_RESIDUAL_EPS: f64 = 1e-12;
 
 pub struct HedgeArbStrategy {
-    pub strategy_id: i32,              //策略id
-    pub open_symbol: String,           //开仓侧symbol
-    pub open_venue: TradingVenue,      //开仓侧交易场所
-    pub open_order_id: i64,            //开仓单唯一，报多单对应多个Strategy
-    pub hedge_order_ids: Vec<i64>,     //对冲单会产生一个or多个，因为部分成交
-    pub open_expire_ts: Option<i64>,   //开仓单挂单截止时间（绝对时间戳）
+    pub strategy_id: i32,                         //策略id
+    pub open_symbol: String,                      //开仓侧symbol
+    pub open_venue: TradingVenue,                 //开仓侧交易场所
+    pub open_order_id: i64,                       //开仓单唯一，报多单对应多个Strategy
+    pub hedge_order_ids: Vec<i64>,                //对冲单会产生一个or多个，因为部分成交
+    pub open_expire_ts: Option<i64>,              //开仓单挂单截止时间（绝对时间戳）
     pub hedge_timeout_us: Option<i64>, //对冲单允许的存活时间（微秒），>0 表示 MM，None 表示 MT
     pub hedge_expire_ts: Option<i64>,  //当前对冲挂单的截止时间（绝对时间戳）
     pub order_seq: u32,                //订单号计数器
@@ -378,11 +378,9 @@ impl HedgeArbStrategy {
         // 9、考虑修正量，判断下单后是否会大于max u
         if force_close {
             self.log_force_close_skip("持仓上限 (max_pos_u)", &ctx);
-        } else if let Err(e) = MonitorChannel::instance().ensure_max_pos_u(
-            &symbol,
-            signed_qty,
-            aligned_price,
-        ) {
+        } else if let Err(e) =
+            MonitorChannel::instance().ensure_max_pos_u(&symbol, signed_qty, aligned_price)
+        {
             error!(
                 "HedgeArbStrategy: strategy_id={} 仓位限制检查失败: {}，标记策略为不活跃",
                 self.strategy_id, e
@@ -2371,7 +2369,13 @@ impl HedgeArbStrategy {
                 order_price,
                 pending_qty
             );
-            self.push_hedge_residual_with_print(reason, &detail, pending_qty, order_price, order_side);
+            self.push_hedge_residual_with_print(
+                reason,
+                &detail,
+                pending_qty,
+                order_price,
+                order_side,
+            );
             self.cleanup_failed_hedge_order(client_order_id);
             return;
         }
