@@ -328,6 +328,45 @@ impl BinanceBasicAccountEventParser {
         1
     }
 
+    fn parse_outbound_account_position(
+        &self,
+        json: &Value,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> usize {
+        let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
+        let Some(balances) = json.get("B").and_then(|v| v.as_array()) else {
+            return 0;
+        };
+
+        let mut count = 0;
+        for balance in balances {
+            let asset = balance
+                .get("a")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if asset.is_empty() {
+                continue;
+            }
+            // Use free balance ("f") only; locked ("l") is ignored by design.
+            let free_balance = balance
+                .get("f")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+
+            let msg = BasicBalanceMsg::create(event_time, asset, free_balance);
+            let payload = msg.to_bytes();
+            let event = BasicAccountEventMsg::create(msg.msg_type, payload);
+            if tx.send(event.to_bytes()).is_err() {
+                return count;
+            }
+            count += 1;
+        }
+
+        count
+    }
+
     fn parse_account_update(&self, json: &Value, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
 
@@ -337,29 +376,7 @@ impl BinanceBasicAccountEventParser {
             return 0;
         };
 
-        // balances
-        if let Some(balances) = a.get("B").and_then(|v| v.as_array()) {
-            for balance in balances {
-                let asset = balance
-                    .get("a")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let cross_wallet_balance = balance
-                    .get("cw")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .unwrap_or(0.0);
-
-                let msg = BasicBalanceMsg::create(event_time, asset, cross_wallet_balance);
-                let payload = msg.to_bytes();
-                let event = BasicAccountEventMsg::create(msg.msg_type, payload);
-                if tx.send(event.to_bytes()).is_err() {
-                    return count;
-                }
-                count += 1;
-            }
-        }
+        // ACCOUNT_UPDATE balance ("cw") is ignored; use outboundAccountPosition ("f") instead.
 
         // positions (merge by (symbol, side))
         if let Some(positions) = a.get("P").and_then(|v| v.as_array()) {
@@ -419,6 +436,7 @@ impl Parser for BinanceBasicAccountEventParser {
             "ORDER_TRADE_UPDATE" => self.parse_order_trade_update(&json_value, tx),
             "ACCOUNT_UPDATE" => self.parse_account_update(&json_value, tx),
             "liabilityChange" => self.parse_liability_change(&json_value, tx),
+            "outboundAccountPosition" => self.parse_outbound_account_position(&json_value, tx),
             _ => 0,
         }
     }

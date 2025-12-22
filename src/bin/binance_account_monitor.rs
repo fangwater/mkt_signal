@@ -211,6 +211,11 @@ fn spawn_user_stream_path(
                                 Ok(b) => {
                                     if let Ok(s) = std::str::from_utf8(&b) {
                                         debug!("[{}][ip={}] ws json: {}", name, local_ip_log, s);
+                                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(s) {
+                                            if value.get("e").and_then(|v| v.as_str()) == Some("outboundAccountPosition") {
+                                                info!("[{}][ip={}] outboundAccountPosition raw: {}", name, local_ip_log, s);
+                                            }
+                                        }
                                     } else {
                                         debug!("[{}][ip={}] ws bin: {} bytes", name, local_ip_log, b.len());
                                     }
