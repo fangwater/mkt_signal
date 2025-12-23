@@ -523,6 +523,250 @@ impl BinanceBasicOrderMsg {
     }
 }
 
+/// Gate.io 订单更新消息（精简版，不包含 Gate 不提供的字段）
+///
+/// 字段映射：
+/// - `venue`: 8=GateMargin(spot), 9=GateFutures
+/// - `event_time`: update_time_ms
+/// - `symbol`: currency_pair
+/// - `order_id`: id (parse to i64)
+/// - `client_order_id`: text (必须能 parse 为 i64，否则 drop)
+/// - `side`: "buy"=1, "sell"=2
+/// - `order_type`: "limit"=1, "market"=3
+/// - `time_in_force`: "gtc"=0, "ioc"=1, "fok"=2, "poc"=3(GTX/PostOnly)
+/// - `execution_type`: "put"=1(New), "update"=5(Trade), "finish"=2或6
+/// - `order_status`: "open"=1(New), "filled"=3, "cancelled"=4
+#[derive(Debug, Clone)]
+pub struct GateBasicOrderMsg {
+    pub msg_type: BasicAccountEventType,
+    /// 8=GateMargin(spot), 9=GateFutures
+    pub venue: u8,
+    pub event_time: i64,
+    pub symbol_length: u32,
+    pub symbol: String,
+    pub order_id: i64,
+    pub client_order_id: i64,
+    /// Side: 1=Buy, 2=Sell
+    pub side: u8,
+    /// OrderType: 1=Limit, 3=Market
+    pub order_type: u8,
+    /// TimeInForce: 0=GTC, 1=IOC, 2=FOK, 3=GTX(poc/PostOnly)
+    pub time_in_force: u8,
+    /// ExecutionType: 1=New, 2=Canceled, 5=Trade, 6=Expired
+    pub execution_type: u8,
+    /// OrderStatus: 1=New, 2=PartiallyFilled, 3=Filled, 4=Canceled
+    pub order_status: u8,
+    pub price: f64,
+    pub quantity: f64,
+    pub cumulative_filled_quantity: f64,
+    pub average_price: f64,
+    pub commission_asset_length: u32,
+    pub commission_asset: String,
+}
+
+impl GateBasicOrderMsg {
+    /// Gate.io 现货 (对应 TradingVenue::GateMargin = 8)
+    pub const VENUE_SPOT: u8 = 8;
+    /// Gate.io 合约 (对应 TradingVenue::GateFutures = 9)
+    pub const VENUE_FUTURES: u8 = 9;
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        venue: u8,
+        event_time: i64,
+        symbol: String,
+        order_id: i64,
+        client_order_id: i64,
+        side: u8,
+        order_type: u8,
+        time_in_force: u8,
+        execution_type: u8,
+        order_status: u8,
+        price: f64,
+        quantity: f64,
+        cumulative_filled_quantity: f64,
+        average_price: f64,
+        commission_asset: String,
+    ) -> Self {
+        Self {
+            msg_type: BasicAccountEventType::OrderUpdate,
+            venue,
+            event_time,
+            symbol_length: symbol.len() as u32,
+            symbol,
+            order_id,
+            client_order_id,
+            side,
+            order_type,
+            time_in_force,
+            execution_type,
+            order_status,
+            price,
+            quantity,
+            cumulative_filled_quantity,
+            average_price,
+            commission_asset_length: commission_asset.len() as u32,
+            commission_asset,
+        }
+    }
+
+    /// Gate.io side 字符串转 u8
+    pub fn side_to_u8(side: &str) -> u8 {
+        match side.to_lowercase().as_str() {
+            "buy" => 1,
+            "sell" => 2,
+            _ => 0,
+        }
+    }
+
+    /// Gate.io order type 字符串转 u8
+    pub fn order_type_to_u8(order_type: &str) -> u8 {
+        match order_type.to_lowercase().as_str() {
+            "limit" => 1,
+            "market" => 3,
+            _ => 0,
+        }
+    }
+
+    /// Gate.io time_in_force 字符串转 u8
+    /// - gtc: Good Till Cancel (0)
+    /// - ioc: Immediate Or Cancel (1)
+    /// - fok: Fill Or Kill (2)
+    /// - poc: Pending Or Cancelled / PostOnly (3) - 被动委托，只挂单不吃单
+    pub fn time_in_force_to_u8(tif: &str) -> u8 {
+        match tif.to_lowercase().as_str() {
+            "gtc" => 0,
+            "ioc" => 1,
+            "fok" => 2,
+            "poc" => 3, // Pending Or Cancelled (PostOnly/GTX) - 被动委托
+            _ => 0,
+        }
+    }
+
+    /// Gate.io event + finish_as 转 (execution_type, order_status)
+    pub fn event_to_execution_and_status(event: &str, finish_as: &str) -> (u8, u8) {
+        match event.to_lowercase().as_str() {
+            "put" => (1, 1), // New, New
+            "update" => (5, 2), // Trade, PartiallyFilled
+            "finish" => {
+                match finish_as.to_lowercase().as_str() {
+                    "filled" => (5, 3), // Trade, Filled
+                    "cancelled" | "canceled" => (2, 4), // Canceled, Canceled
+                    "stp" => (7, 4), // TradePrevention, Canceled
+                    _ => (6, 5), // Expired, Expired
+                }
+            }
+            _ => (1, 1), // 默认 New
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4  // msg_type
+            + 1  // venue
+            + 8  // event_time
+            + 4 + self.symbol_length as usize  // symbol
+            + 8 * 2  // order_id, client_order_id
+            + 1 * 5  // side, order_type, time_in_force, execution_type, order_status
+            + 8 * 4  // price, quantity, cumulative_filled_quantity, average_price
+            + 4 + self.commission_asset_length as usize;  // commission_asset
+
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_u8(self.venue);
+        buf.put_i64_le(self.event_time);
+
+        buf.put_u32_le(self.symbol_length);
+        buf.put(self.symbol.as_bytes());
+
+        buf.put_i64_le(self.order_id);
+        buf.put_i64_le(self.client_order_id);
+
+        buf.put_u8(self.side);
+        buf.put_u8(self.order_type);
+        buf.put_u8(self.time_in_force);
+        buf.put_u8(self.execution_type);
+        buf.put_u8(self.order_status);
+
+        buf.put_f64_le(self.price);
+        buf.put_f64_le(self.quantity);
+        buf.put_f64_le(self.cumulative_filled_quantity);
+        buf.put_f64_le(self.average_price);
+
+        buf.put_u32_le(self.commission_asset_length);
+        buf.put(self.commission_asset.as_bytes());
+
+        buf.freeze()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        const MIN_FIXED_SIZE: usize = 4 + 1 + 8 + 4 + 8 * 2 + 1 * 5 + 8 * 4 + 4;
+        if data.len() < MIN_FIXED_SIZE {
+            anyhow::bail!("GateBasicOrderMsg too short: {}", data.len());
+        }
+
+        let mut cursor = Bytes::copy_from_slice(data);
+        let msg_type = cursor.get_u32_le();
+        if msg_type != BasicAccountEventType::OrderUpdate as u32 {
+            anyhow::bail!("invalid GateBasicOrderMsg type: {}", msg_type);
+        }
+
+        let venue = cursor.get_u8();
+        let event_time = cursor.get_i64_le();
+
+        let symbol_length = cursor.get_u32_le();
+        if cursor.remaining() < symbol_length as usize {
+            anyhow::bail!("GateBasicOrderMsg truncated before symbol");
+        }
+        let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_length as usize).to_vec())?;
+
+        if cursor.remaining() < 8 * 2 + 1 * 5 + 8 * 4 + 4 {
+            anyhow::bail!("GateBasicOrderMsg truncated after symbol");
+        }
+
+        let order_id = cursor.get_i64_le();
+        let client_order_id = cursor.get_i64_le();
+
+        let side = cursor.get_u8();
+        let order_type = cursor.get_u8();
+        let time_in_force = cursor.get_u8();
+        let execution_type = cursor.get_u8();
+        let order_status = cursor.get_u8();
+
+        let price = cursor.get_f64_le();
+        let quantity = cursor.get_f64_le();
+        let cumulative_filled_quantity = cursor.get_f64_le();
+        let average_price = cursor.get_f64_le();
+
+        let commission_asset_length = cursor.get_u32_le();
+        if cursor.remaining() < commission_asset_length as usize {
+            anyhow::bail!("GateBasicOrderMsg truncated before commission_asset");
+        }
+        let commission_asset =
+            String::from_utf8(cursor.copy_to_bytes(commission_asset_length as usize).to_vec())?;
+
+        Ok(Self {
+            msg_type: BasicAccountEventType::OrderUpdate,
+            venue,
+            event_time,
+            symbol_length,
+            symbol,
+            order_id,
+            client_order_id,
+            side,
+            order_type,
+            time_in_force,
+            execution_type,
+            order_status,
+            price,
+            quantity,
+            cumulative_filled_quantity,
+            average_price,
+            commission_asset_length,
+            commission_asset,
+        })
+    }
+}
+
 /// Basic 余额消息（仅一个时间字段）
 #[derive(Debug, Clone)]
 pub struct BasicBalanceMsg {
