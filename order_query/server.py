@@ -56,6 +56,21 @@ def safe_join(base: Path, *parts: str) -> Path:
         return p
     raise ValueError(f"unsafe path: {p}")
 
+def resolve_output_dir(data_dir: Path, default_dir: Path, output_dir: str | None) -> Path:
+    if not output_dir:
+        out = default_dir.resolve()
+    else:
+        raw = Path(output_dir).expanduser()
+        out = (raw if raw.is_absolute() else data_dir / raw).resolve()
+
+    data_root = data_dir.resolve()
+    if not (out == data_root or str(out).startswith(str(data_root) + os.sep)):
+        raise ValueError(f"output_dir must be under DATA_DIR: {data_root}")
+    if out.exists() and not out.is_dir():
+        raise ValueError(f"output_dir is not a directory: {out}")
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
 
 def infer_api_base(listen_port: int, explicit: str | None) -> str:
     if explicit:
@@ -133,6 +148,21 @@ def ensure_meta(state: "AppState") -> dict[str, Any] | None:
 
 
 @dataclass
+class ExportAllSymbolsJob:
+    job_id: str
+    status: str = "idle"  # idle|running|ok|error
+    started_ms: int | None = None
+    finished_ms: int | None = None
+    total: int = 0
+    done: int = 0
+    current_symbol: str | None = None
+    output_dir: str | None = None
+    export_ts_ms: int | None = None
+    errors: list[dict[str, str]] = field(default_factory=list)
+    error: str | None = None
+
+
+@dataclass
 class ExportJob:
     job_id: str
     status: str = "idle"  # idle|running|ok|error
@@ -155,6 +185,7 @@ class AppState:
     export_script: Path
     export_symbol_script: Path
     export_job: ExportJob = field(default_factory=lambda: ExportJob(job_id="none"))
+    export_all_symbols_job: ExportAllSymbolsJob = field(default_factory=lambda: ExportAllSymbolsJob(job_id="none"))
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def ensure_dirs(self) -> None:
@@ -212,7 +243,12 @@ def run_export_all(state: AppState, api_base: str) -> None:
             state.export_job.error = str(e)
 
 
-def build_derived_parquet(state: AppState, symbol: str, overwrite: bool = False) -> dict[str, Any]:
+def build_derived_parquet(
+    state: AppState,
+    symbol: str,
+    overwrite: bool = False,
+    output_dir: Path | None = None,
+) -> dict[str, Any]:
     if not (state.export_dir / "order_updates.parquet").exists():
         raise RuntimeError("export_all not run yet")
 
@@ -222,9 +258,12 @@ def build_derived_parquet(state: AppState, symbol: str, overwrite: bool = False)
     if not symbol_key:
         raise ValueError("invalid symbol")
 
+    out_dir = output_dir or state.derived_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     out_name = f"{symbol_key}_order.parquet"
-    out_path = state.derived_dir / out_name
-    out_meta_path = state.derived_dir / f"{symbol_key}_order.meta.json"
+    out_path = out_dir / out_name
+    out_meta_path = out_dir / f"{symbol_key}_order.meta.json"
 
     if out_path.exists() and not overwrite:
         try:
@@ -258,6 +297,58 @@ def build_derived_parquet(state: AppState, symbol: str, overwrite: bool = False)
         "utf-8",
     )
     return {"symbol_key": symbol_key, "export_ts_ms": export_ts, "path": str(out_path), "built": True}
+
+def run_export_all_symbols(state: AppState, output_dir: Path) -> None:
+    meta = ensure_meta(state)
+    symbols = ((meta or {}).get("symbols") or []) if meta else []
+    export_ts_ms = (meta or {}).get("export_ts_ms") if meta else None
+    symbol_keys = [s.get("symbol_key") for s in symbols if isinstance(s, dict) and s.get("symbol_key")]
+
+    with state.lock:
+        if state.export_all_symbols_job.status == "running":
+            return
+        job_id = uuid.uuid4().hex
+        state.export_all_symbols_job = ExportAllSymbolsJob(
+            job_id=job_id,
+            status="running",
+            started_ms=now_ms(),
+            total=len(symbol_keys),
+            done=0,
+            current_symbol=None,
+            output_dir=str(output_dir),
+            export_ts_ms=export_ts_ms if isinstance(export_ts_ms, int) else None,
+            errors=[],
+            error=None,
+        )
+
+    if not symbol_keys:
+        with state.lock:
+            state.export_all_symbols_job.status = "error"
+            state.export_all_symbols_job.finished_ms = now_ms()
+            state.export_all_symbols_job.error = "no symbols (did you run Export All?)"
+        return
+
+    for i, sym in enumerate(symbol_keys):
+        with state.lock:
+            state.export_all_symbols_job.current_symbol = sym
+            state.export_all_symbols_job.done = i
+        try:
+            build_derived_parquet(state, sym, overwrite=True, output_dir=output_dir)
+        except Exception as e:
+            with state.lock:
+                if len(state.export_all_symbols_job.errors) < 50:
+                    state.export_all_symbols_job.errors.append({"symbol": sym, "error": str(e)})
+        with state.lock:
+            state.export_all_symbols_job.done = i + 1
+
+    with state.lock:
+        state.export_all_symbols_job.current_symbol = None
+        state.export_all_symbols_job.finished_ms = now_ms()
+        if state.export_all_symbols_job.errors:
+            state.export_all_symbols_job.status = "error"
+            state.export_all_symbols_job.error = f"failed_symbols={len(state.export_all_symbols_job.errors)}"
+        else:
+            state.export_all_symbols_job.status = "ok"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -322,6 +413,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, job.__dict__)
             return
 
+        if path == "/api/export_all_symbols/status" or path == "/api/extra_all_symbol/status":
+            with self.state.lock:
+                job = self.state.export_all_symbols_job
+                self._send_json(200, job.__dict__)
+            return
+
         if path == "/api/config":
             self._send_json(
                 200,
@@ -379,6 +476,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/download_symbol":
             symbol = (qs.get("symbol", [""])[0] or "").strip()
+            output_dir_raw = (qs.get("output_dir", [""])[0] or "").strip() or None
             if not symbol:
                 self._send_json(400, {"error": "missing symbol"})
                 return
@@ -386,7 +484,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(409, {"error": "export_all not run yet"})
                 return
             try:
-                built = build_derived_parquet(self.state, symbol, overwrite=False)
+                output_dir = resolve_output_dir(self.state.data_dir, self.state.derived_dir, output_dir_raw)
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+                return
+            try:
+                built = build_derived_parquet(self.state, symbol, overwrite=False, output_dir=output_dir)
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
                 return
@@ -445,6 +548,10 @@ class Handler(BaseHTTPRequestHandler):
             if running:
                 self._send_json(409, {"error": "export already running"})
                 return
+            with self.state.lock:
+                if self.state.export_all_symbols_job.status == "running":
+                    self._send_json(409, {"error": "export_all_symbols running"})
+                    return
 
             t = threading.Thread(target=run_export_all, args=(self.state, api_base), daemon=True)
             t.start()
@@ -456,6 +563,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = self._read_json()
             symbol = (payload.get("symbol") or "").strip()
             overwrite = bool(payload.get("overwrite") or False)
+            output_dir_raw = (payload.get("output_dir") or "").strip() or None
             if not symbol:
                 self._send_json(400, {"error": "missing symbol"})
                 return
@@ -463,7 +571,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(409, {"error": "export_all not run yet"})
                 return
             try:
-                built = build_derived_parquet(self.state, symbol, overwrite=overwrite)
+                output_dir = resolve_output_dir(self.state.data_dir, self.state.derived_dir, output_dir_raw)
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+                return
+            try:
+                built = build_derived_parquet(self.state, symbol, overwrite=overwrite, output_dir=output_dir)
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
                 return
@@ -471,6 +584,31 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(500, {"error": str(e)})
                 return
             self._send_json(200, built)
+            return
+
+        if path == "/api/export_all_symbols" or path == "/api/extra_all_symbol":
+            payload = self._read_json()
+            output_dir_raw = (payload.get("output_dir") or "").strip() or None
+            if not (self.state.export_dir / "order_updates.parquet").exists():
+                self._send_json(409, {"error": "export_all not run yet"})
+                return
+            with self.state.lock:
+                if self.state.export_job.status == "running":
+                    self._send_json(409, {"error": "export_all running"})
+                    return
+                if self.state.export_all_symbols_job.status == "running":
+                    self._send_json(409, {"error": "export_all_symbols already running"})
+                    return
+            try:
+                output_dir = resolve_output_dir(self.state.data_dir, self.state.derived_dir, output_dir_raw)
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+                return
+
+            t = threading.Thread(target=run_export_all_symbols, args=(self.state, output_dir), daemon=True)
+            t.start()
+            with self.state.lock:
+                self._send_json(200, self.state.export_all_symbols_job.__dict__)
             return
 
         self._send_json(404, {"error": "not found"})

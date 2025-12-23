@@ -51,7 +51,9 @@ function setReadyPill(state, symbolCount, exportTsMs) {
 function downloadSelected() {
   const symbol = document.getElementById("symbolSelect").value;
   if (!symbol) return;
-  window.location.href = `api/download_symbol?symbol=${encodeURIComponent(symbol)}`;
+  const outputDir = (document.getElementById("outputDir").value || "").trim();
+  const base = `api/download_symbol?symbol=${encodeURIComponent(symbol)}`;
+  window.location.href = outputDir ? `${base}&output_dir=${encodeURIComponent(outputDir)}` : base;
 }
 
 function renderSymbols(meta, keyword) {
@@ -101,6 +103,8 @@ async function refreshReady() {
   const canUse = !!r.data_ready;
   document.getElementById("symbolSelect").disabled = !canUse;
   document.getElementById("btnExportSymbol").disabled = !canUse;
+  const btnExportAllSymbols = document.getElementById("btnExportAllSymbols");
+  if (btnExportAllSymbols) btnExportAllSymbols.disabled = !canUse;
 
   if (r.state === "ready") {
     document.getElementById("txtExportInfo").textContent = `可用：symbols=${r.symbol_count} last_export=${fmtTs(r.export_ts_ms)}`;
@@ -112,6 +116,45 @@ async function refreshReady() {
     document.getElementById("txtExportInfo").textContent = "未导出：点击 Export All";
   }
   return r;
+}
+
+function renderAllSymbolsJob(job) {
+  const el = document.getElementById("txtAllSymbolsProgress");
+  const btn = document.getElementById("btnExportAllSymbols");
+  if (!el || !btn) return;
+
+  const status = job && job.status ? job.status : "idle";
+  const total = (job && job.total) || 0;
+  const done = (job && job.done) || 0;
+  const current = (job && job.current_symbol) || "";
+  const errs = (job && job.errors && job.errors.length) || 0;
+  const pct = total > 0 ? Math.floor((done * 100) / total) : 0;
+
+  if (status === "running") {
+    btn.textContent = "Exporting...";
+    btn.disabled = true;
+    el.textContent = `progress=${done}/${total} (${pct}%) current=${current || "-"} errors=${errs}`;
+  } else if (status === "ok") {
+    btn.textContent = "Export All Symbols";
+    el.textContent = `done=${done}/${total} (100%) errors=0 finished=${fmtTs(job.finished_ms)}`;
+  } else if (status === "error") {
+    btn.textContent = "Export All Symbols";
+    const msg = (job && job.error) || "";
+    el.textContent = `done=${done}/${total} errors=${errs} ${msg ? `msg=${msg}` : ""}`.trim();
+  } else {
+    btn.textContent = "Export All Symbols";
+    el.textContent = "";
+  }
+}
+
+async function refreshAllSymbolsStatus() {
+  try {
+    const job = await fetchJson("api/export_all_symbols/status");
+    renderAllSymbolsJob(job);
+    return job;
+  } catch {
+    return null;
+  }
 }
 
 async function refreshSymbols() {
@@ -132,6 +175,15 @@ async function pollUntilNotExporting() {
   }
 }
 
+async function pollAllSymbolsUntilDone() {
+  for (;;) {
+    const job = await refreshAllSymbolsStatus();
+    if (!job) return null;
+    if (job.status !== "running") return job;
+    await sleep(1200);
+  }
+}
+
 async function main() {
   document.getElementById("btnExportAll").addEventListener("click", async () => {
     try {
@@ -140,6 +192,29 @@ async function main() {
       if (r.state === "ready") await refreshSymbols();
     } catch (e) {
       alert(`Export failed: ${e.message}`);
+    }
+  });
+
+  document.getElementById("btnExportAllSymbols").addEventListener("click", async () => {
+    const output_dir = (document.getElementById("outputDir").value || "").trim();
+    const btn = document.getElementById("btnExportAllSymbols");
+    const old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Exporting...";
+    try {
+      await fetchJson("api/extra_all_symbol", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ output_dir }),
+      });
+      await pollAllSymbolsUntilDone();
+    } catch (e) {
+      alert(`Export all symbols failed: ${e.message}`);
+    } finally {
+      btn.textContent = old;
+      btn.disabled = false;
+      await refreshAllSymbolsStatus();
+      await refreshReady();
     }
   });
 
@@ -152,12 +227,16 @@ async function main() {
     btn.disabled = true;
     btn.textContent = "Exporting...";
     try {
+      const output_dir = (document.getElementById("outputDir").value || "").trim();
       await fetchJson("api/export_symbol", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ symbol }),
+        body: JSON.stringify({ symbol, output_dir }),
       });
-      if (viewerWin) viewerWin.location.href = `view?symbol=${encodeURIComponent(symbol)}`;
+      if (viewerWin) {
+        const base = `view?symbol=${encodeURIComponent(symbol)}`;
+        viewerWin.location.href = output_dir ? `${base}&output_dir=${encodeURIComponent(output_dir)}` : base;
+      }
       downloadSelected();
     } catch (e) {
       if (viewerWin) viewerWin.close();
@@ -181,6 +260,7 @@ async function main() {
 
   await refreshReady();
   await refreshSymbols();
+  await refreshAllSymbolsStatus();
   const symbol = document.getElementById("symbolSelect").value;
   document.getElementById("btnExportSymbol").textContent = `Export ${symbol || "{symbol}"}_order.parquet`;
 }

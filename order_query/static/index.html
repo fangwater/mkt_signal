@@ -40,6 +40,20 @@
 
       <section class="card">
         <div class="row">
+          <label class="label" for="outputDir">Output Dir</label>
+          <input
+            id="outputDir"
+            class="input"
+            type="text"
+            placeholder="（可选）相对 DATA_DIR，比如 derived / derived2"
+          />
+          <button id="btnExportAllSymbols" class="btn primary">Export All Symbols</button>
+          <span class="muted" id="txtAllSymbolsProgress"></span>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="row">
           <label class="label" for="symbolSearch">Symbol</label>
           <input id="symbolSearch" class="input" type="text" placeholder="搜索，比如 FIL / DOGE ..." />
           <select id="symbolSelect" class="select"></select>
@@ -51,7 +65,7 @@
       </section>
 
       <footer class="footer muted">
-        <span>Endpoints: /api/export_all /api/symbols /api/export_symbol /api/download_symbol</span>
+        <span>Endpoints: /api/export_all /api/symbols /api/export_symbol /api/download_symbol /api/extra_all_symbol</span>
       </footer>
     </div>
 

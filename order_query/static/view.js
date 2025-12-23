@@ -110,6 +110,7 @@ async function queryLatest100(db, parquetUrl) {
 
 async function main() {
   const symbol = (qs().get("symbol") || "").trim();
+  const outputDir = (qs().get("output_dir") || "").trim();
   if (!symbol) {
     setPill("missing symbol", "error");
     document.getElementById("txtInfo").textContent = "missing ?symbol=";
@@ -117,12 +118,13 @@ async function main() {
   }
 
   document.getElementById("subtitle").textContent = `DuckDB-WASM 读取 ${symbol}_order.parquet，展示最新 100 行`;
-  const parquetUrl = `api/download_symbol?symbol=${encodeURIComponent(symbol)}`;
+  const parquetUrlBase = `api/download_symbol?symbol=${encodeURIComponent(symbol)}`;
+  const parquetUrl = outputDir ? `${parquetUrlBase}&output_dir=${encodeURIComponent(outputDir)}` : parquetUrlBase;
   document.getElementById("lnkDownload").href = parquetUrl;
   document.getElementById("btnReload").addEventListener("click", () => window.location.reload());
 
   setPill("loading wasm", "running");
-  document.getElementById("txtInfo").textContent = `symbol=${symbol}`;
+  document.getElementById("txtInfo").textContent = `symbol=${symbol}${outputDir ? ` output_dir=${outputDir}` : ""}`;
 
   try {
     const db = await loadDuckdb();
