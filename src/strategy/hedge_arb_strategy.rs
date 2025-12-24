@@ -26,7 +26,6 @@ use std::collections::{HashMap, HashSet};
 // 仅用于“发出请求但没收到回报”的兜底，不做持续轮询，避免 maker 长时间挂单时产生额外负担。
 const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
 const CANCEL_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
-const MAX_HEDGE_REQUESTS: u32 = 20;
 const HEDGE_RESIDUAL_EPS: f64 = 1e-12;
 
 pub struct HedgeArbStrategy {
@@ -1241,6 +1240,15 @@ impl HedgeArbStrategy {
         }
 
         // 1. 创建对冲查询消息（只携带符号+场所，盘口由 decision 获取）
+        info!(
+            "HedgeArbStrategy: strategy_id={} 第{}次对冲 hedge_symbol={} hedge_venue={:?} side={:?} qty={:.8}",
+            self.strategy_id,
+            self.hedge_request_seq + 1,
+            self.hedge_symbol,
+            self.hedge_venue,
+            side,
+            eff_qty
+        );
         let query_msg = crate::signal::hedge_signal::ArbHedgeSignalQueryMsg::new(
             self.strategy_id,
             self.open_order_id,
@@ -1306,30 +1314,20 @@ impl HedgeArbStrategy {
             self.strategy_id, base_qty, residual_qty, total_pending_qty
         );
 
-        if self.hedge_request_seq >= MAX_HEDGE_REQUESTS {
-            let detail = format!(
-                "hedge_request_seq={} max_requests={}",
-                self.hedge_request_seq, MAX_HEDGE_REQUESTS
-            );
-            self.push_hedge_residual_with_print(
-                "HEDGE_REQUEST_LIMIT/对冲次数达到上限",
-                &detail,
-                total_pending_qty,
-                0.0,
-                self.hedge_side,
-            );
-            return (false, 0.0, total_pending_qty);
-        }
-
         // 2. 检查是否满足最小交易要求
-        let can_hedge: bool = MonitorChannel::instance()
-            .check_min_trading_requirements(
-                self.hedge_venue,
-                &self.hedge_symbol,
-                total_pending_qty,
-                None,
-            )
-            .is_ok();
+        let mut min_req_reason: Option<String> = None;
+        let can_hedge = match MonitorChannel::instance().check_min_trading_requirements(
+            self.hedge_venue,
+            &self.hedge_symbol,
+            total_pending_qty,
+            None,
+        ) {
+            Ok(_) => true,
+            Err(e) => {
+                min_req_reason = Some(e);
+                false
+            }
+        };
 
         if !can_hedge {
             // 不满足最小交易要求，累加到残值表
@@ -1339,9 +1337,10 @@ impl HedgeArbStrategy {
                     self.hedge_venue,
                     total_pending_qty,
                 );
-                debug!(
-                    "HedgeArbStrategy: strategy_id={} 待对冲量={:.8} 不满足最小交易要求，累加到残余量表",
-                    self.strategy_id, total_pending_qty
+                let reason = min_req_reason.as_deref().unwrap_or("unknown");
+                info!(
+                    "HedgeArbStrategy: strategy_id={} 待对冲量={:.8} 不满足最小交易要求，累加到残余量表 reason={}",
+                    self.strategy_id, total_pending_qty, reason
                 );
                 return (false, 0.0, total_pending_qty);
             }
