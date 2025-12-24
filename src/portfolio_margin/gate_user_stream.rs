@@ -38,6 +38,8 @@ pub struct GateUserDataConnection {
     channels: Vec<SubscribeChannel>,
     session_max: Option<Duration>,
     restart_count: u32,
+    /// ping 频道名称 (unified.ping / futures.ping / spot.ping)
+    ping_channel: String,
 }
 
 impl GateUserDataConnection {
@@ -47,13 +49,31 @@ impl GateUserDataConnection {
         channels: Vec<SubscribeChannel>,
         session_max: Option<Duration>,
     ) -> Self {
+        // 根据订阅的频道推断 ping channel
+        let ping_channel = Self::infer_ping_channel(&channels);
         Self {
             base_connection: connection,
             credentials,
             channels,
             session_max,
             restart_count: 0,
+            ping_channel,
         }
+    }
+
+    /// 根据订阅的频道推断应该使用的 ping channel
+    fn infer_ping_channel(channels: &[SubscribeChannel]) -> String {
+        for ch in channels {
+            if ch.channel.starts_with("unified.") {
+                return "unified.ping".to_string();
+            } else if ch.channel.starts_with("futures.") {
+                return "futures.ping".to_string();
+            } else if ch.channel.starts_with("spot.") {
+                return "spot.ping".to_string();
+            }
+        }
+        // 默认使用 unified.ping
+        "unified.ping".to_string()
     }
 
     /// 生成订阅消息（每次重连时调用，确保签名时效性）
@@ -67,13 +87,13 @@ impl GateUserDataConnection {
             .collect()
     }
 
-    /// 构建应用层 ping 消息 (统一账户使用 unified.ping)
-    fn build_ping_message() -> String {
+    /// 构建应用层 ping 消息
+    fn build_ping_message(ping_channel: &str) -> String {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        format!(r#"{{"time": {}, "channel": "unified.ping"}}"#, timestamp)
+        format!(r#"{{"time": {}, "channel": "{}"}}"#, timestamp, ping_channel)
     }
 
     /// 检查是否为 pong 响应
@@ -119,6 +139,7 @@ impl MktConnectionRunner for GateUserDataConnection {
         let mut waiting_pong = false;
         let session_start = Instant::now();
         let mut pending_subscriptions = self.channels.len();
+        let ping_channel = self.ping_channel.clone();
 
         loop {
             // 检查会话时长限制
@@ -162,7 +183,7 @@ impl MktConnectionRunner for GateUserDataConnection {
                         break;
                     } else {
                         // 发送应用层 ping
-                        let ping_msg = Self::build_ping_message();
+                        let ping_msg = Self::build_ping_message(&ping_channel);
                         if let Err(e) = ws_stream.send(Message::Text(ping_msg.clone())).await {
                             error!("Gate: Failed to send ping: {:?}", e);
                             break;

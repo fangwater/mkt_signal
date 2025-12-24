@@ -72,8 +72,9 @@ async fn main() -> Result<()> {
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     setup_signals(shutdown_tx.clone());
 
-    // WebSocket URL
-    let ws_url = GatePrivateWsUrls::UNIFIED.to_string();
+    // WebSocket URLs
+    let unified_ws_url = GatePrivateWsUrls::UNIFIED.to_string();
+    let futures_ws_url = GatePrivateWsUrls::FUTURES_USDT.to_string();
 
     // IP 设置（可选，如果需要主备双路）
     const GATE_PRIMARY_IP: &str = "172.31.33.133";
@@ -86,14 +87,22 @@ async fn main() -> Result<()> {
         primary_ip, secondary_ip, session_max
     );
 
-    // 配置订阅频道（每次重连时会重新生成带新签名的订阅消息）
-    let channels = vec![
+    // 统一账户频道 (unified.asset_detail + spot.orders_v2)
+    let unified_channels = vec![
         SubscribeChannel {
             channel: "unified.asset_detail".to_string(),
             payload: vec!["!all".to_string()],
         },
         SubscribeChannel {
             channel: "spot.orders_v2".to_string(),
+            payload: vec!["!all".to_string()],
+        },
+    ];
+
+    // 合约频道 (futures.orders)
+    let futures_channels = vec![
+        SubscribeChannel {
+            channel: "futures.orders".to_string(),
             payload: vec!["!all".to_string()],
         },
     ];
@@ -106,23 +115,45 @@ async fn main() -> Result<()> {
     let mut deduper = AccountEventDeduper::new(8192);
     let mut stats = tokio::time::interval(Duration::from_secs(30));
 
-    // 启动主备双路连接
-    let mut primary = spawn_gate_stream_path(
-        "primary",
-        &ws_url,
-        primary_ip,
+    // 启动统一账户主备双路连接 (unified.asset_detail + spot.orders_v2)
+    let mut unified_primary = spawn_gate_stream_path(
+        "unified-primary",
+        &unified_ws_url,
+        primary_ip.clone(),
         credentials.clone(),
-        channels.clone(),
+        unified_channels.clone(),
         shutdown_rx.clone(),
         evt_tx.clone(),
         session_max,
     );
-    let mut secondary = spawn_gate_stream_path(
-        "secondary",
-        &ws_url,
+    let mut unified_secondary = spawn_gate_stream_path(
+        "unified-secondary",
+        &unified_ws_url,
+        secondary_ip.clone(),
+        credentials.clone(),
+        unified_channels.clone(),
+        shutdown_rx.clone(),
+        evt_tx.clone(),
+        session_max,
+    );
+
+    // 启动合约主备双路连接 (futures.orders)
+    let mut futures_primary = spawn_gate_stream_path(
+        "futures-primary",
+        &futures_ws_url,
+        primary_ip,
+        credentials.clone(),
+        futures_channels.clone(),
+        shutdown_rx.clone(),
+        evt_tx.clone(),
+        session_max,
+    );
+    let mut futures_secondary = spawn_gate_stream_path(
+        "futures-secondary",
+        &futures_ws_url,
         secondary_ip,
         credentials.clone(),
-        channels.clone(),
+        futures_channels.clone(),
         shutdown_rx.clone(),
         evt_tx.clone(),
         session_max,
@@ -144,36 +175,74 @@ async fn main() -> Result<()> {
             _ = stats.tick() => {
                 forwarder.log_stats();
             }
-            res = &mut primary => {
+            // 统一账户连接重启
+            res = &mut unified_primary => {
                 match res {
-                    Ok(()) => warn!("primary gate stream task exited; restarting"),
-                    Err(e) => warn!("primary gate stream task join error: {}; restarting", e),
+                    Ok(()) => warn!("unified-primary task exited; restarting"),
+                    Err(e) => warn!("unified-primary task join error: {}; restarting", e),
                 }
                 if !*shutdown_rx.borrow() {
-                    primary = spawn_gate_stream_path(
-                        "primary",
-                        &ws_url,
+                    unified_primary = spawn_gate_stream_path(
+                        "unified-primary",
+                        &unified_ws_url,
                         GATE_PRIMARY_IP.to_string(),
                         credentials.clone(),
-                        channels.clone(),
+                        unified_channels.clone(),
                         shutdown_rx.clone(),
                         evt_tx.clone(),
                         session_max,
                     );
                 }
             }
-            res = &mut secondary => {
+            res = &mut unified_secondary => {
                 match res {
-                    Ok(()) => warn!("secondary gate stream task exited; restarting"),
-                    Err(e) => warn!("secondary gate stream task join error: {}; restarting", e),
+                    Ok(()) => warn!("unified-secondary task exited; restarting"),
+                    Err(e) => warn!("unified-secondary task join error: {}; restarting", e),
                 }
                 if !*shutdown_rx.borrow() {
-                    secondary = spawn_gate_stream_path(
-                        "secondary",
-                        &ws_url,
+                    unified_secondary = spawn_gate_stream_path(
+                        "unified-secondary",
+                        &unified_ws_url,
                         GATE_SECONDARY_IP.to_string(),
                         credentials.clone(),
-                        channels.clone(),
+                        unified_channels.clone(),
+                        shutdown_rx.clone(),
+                        evt_tx.clone(),
+                        session_max,
+                    );
+                }
+            }
+            // 合约连接重启
+            res = &mut futures_primary => {
+                match res {
+                    Ok(()) => warn!("futures-primary task exited; restarting"),
+                    Err(e) => warn!("futures-primary task join error: {}; restarting", e),
+                }
+                if !*shutdown_rx.borrow() {
+                    futures_primary = spawn_gate_stream_path(
+                        "futures-primary",
+                        &futures_ws_url,
+                        GATE_PRIMARY_IP.to_string(),
+                        credentials.clone(),
+                        futures_channels.clone(),
+                        shutdown_rx.clone(),
+                        evt_tx.clone(),
+                        session_max,
+                    );
+                }
+            }
+            res = &mut futures_secondary => {
+                match res {
+                    Ok(()) => warn!("futures-secondary task exited; restarting"),
+                    Err(e) => warn!("futures-secondary task join error: {}; restarting", e),
+                }
+                if !*shutdown_rx.borrow() {
+                    futures_secondary = spawn_gate_stream_path(
+                        "futures-secondary",
+                        &futures_ws_url,
+                        GATE_SECONDARY_IP.to_string(),
+                        credentials.clone(),
+                        futures_channels.clone(),
                         shutdown_rx.clone(),
                         evt_tx.clone(),
                         session_max,
@@ -327,10 +396,10 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::OrderUpdate => {
             if let Ok(m) = GateBasicOrderMsg::from_bytes(&payload) {
                 info!(
-                    "Gate OrderUpdate: ts={} symbol={} oid={} cloid={} side={} type={} exec={} status={} px={} qty={} filled={} avgpx={}",
-                    m.event_time, m.symbol, m.order_id, m.client_order_id,
+                    "Gate OrderUpdate: venue={} ts={} symbol={} oid={} cloid={} side={} type={} exec={} status={} px={} qty={} filled={}",
+                    m.venue, m.event_time, m.symbol, m.order_id, m.client_order_id,
                     m.side, m.order_type, m.execution_type, m.order_status,
-                    m.price, m.quantity, m.cumulative_filled_quantity, m.average_price
+                    m.price, m.quantity, m.cumulative_filled_quantity
                 );
             }
         }

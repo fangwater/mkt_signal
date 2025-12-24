@@ -3,6 +3,7 @@
 //! 解析 Gate.io 统一账户的消息：
 //! - `unified.asset_detail`: 资产详情 -> BasicBalanceMsg + BasicBorrowInterestMsg
 //! - `spot.orders_v2`: 现货订单更新 -> GateBasicOrderMsg
+//! - `futures.orders`: 合约订单更新 -> GateBasicOrderMsg
 //!
 //! ## unified.asset_detail 消息格式:
 //! ```json
@@ -46,6 +47,29 @@
 //!         "update_time_ms": "1694655225315",
 //!         "event": "put",
 //!         "finish_as": "open"
+//!     }]
+//! }
+//! ```
+//!
+//! ## futures.orders 消息格式:
+//! ```json
+//! {
+//!     "channel": "futures.orders",
+//!     "event": "update",
+//!     "time": 1541505434,
+//!     "time_ms": 1541505434123,
+//!     "result": [{
+//!         "contract": "BTC_USD",
+//!         "id": 4872460,
+//!         "text": "123456789",           // client_order_id，必须为 i64
+//!         "size": "1",                   // 正=做多, 负=做空
+//!         "left": "0",                   // 剩余未成交
+//!         "price": "40000.4",
+//!         "fill_price": 40000.4,         // 平均成交价
+//!         "tif": "gtc",
+//!         "status": "finished",          // open / finished
+//!         "finish_as": "filled",         // filled/cancelled/liquidated/ioc/auto_deleveraging/reduce_only/position_close/stp/reduce_out
+//!         "update_time": 1541505434123   // 已经是 ms
 //!     }]
 //! }
 //! ```
@@ -209,12 +233,6 @@ impl GateAccountEventParser {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0.0);
 
-            let average_price: f64 = order
-                .get("avg_deal_price")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0.0);
-
             let commission_asset = order
                 .get("fee_currency")
                 .and_then(|v| v.as_str())
@@ -242,7 +260,123 @@ impl GateAccountEventParser {
                 price,
                 quantity,
                 cumulative_filled_quantity,
-                average_price,
+                commission_asset,
+            );
+
+            let payload = msg.to_bytes();
+            let event_msg = BasicAccountEventMsg::create(BasicAccountEventType::OrderUpdate, payload);
+            if tx.send(event_msg.to_bytes()).is_ok() {
+                count += 1;
+            }
+        }
+
+        count
+    }
+
+    /// 解析合约订单更新 (futures.orders)
+    ///
+    /// 字段映射：
+    /// - contract -> symbol
+    /// - size -> quantity (正=做多, 负=做空)
+    /// - size - left -> cumulative_filled_quantity
+    /// - tif -> time_in_force
+    /// - update_time -> event_time (已经是 ms)
+    /// - status -> 用于判断执行类型 (open/finished)
+    fn parse_futures_orders(
+        &self,
+        json_value: &serde_json::Value,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> usize {
+        let mut count = 0;
+
+        // 获取 result 数组
+        let Some(result) = json_value.get("result").and_then(|v| v.as_array()) else {
+            return 0;
+        };
+
+        for order in result {
+            // 解析 client_order_id (text 字段，必须是 i64)
+            let text = order.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            let client_order_id: i64 = match text.parse() {
+                Ok(id) => id,
+                Err(_) => {
+                    // 打印 JSON 并跳过
+                    warn!("Gate: futures.orders text is not i64, dropping: {}", order);
+                    continue;
+                }
+            };
+
+            // 解析 order_id
+            let order_id: i64 = order
+                .get("id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            // 解析 symbol (contract)
+            let symbol = order
+                .get("contract")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            // 解析 side: futures 没有直接的 side 字段，需要根据 size 正负判断
+            // size > 0 为 buy (做多), size < 0 为 sell (做空)
+            let size_str = order.get("size").and_then(|v| v.as_str()).unwrap_or("0");
+            let size: i64 = size_str.parse().unwrap_or(0);
+            let side: u8 = if size >= 0 { 1 } else { 2 }; // 1=Buy, 2=Sell
+            let quantity = size.abs() as f64;
+
+            // 解析 left (剩余未成交数量)
+            let left_str = order.get("left").and_then(|v| v.as_str()).unwrap_or("0");
+            let left: i64 = left_str.parse().unwrap_or(0);
+            let cumulative_filled_quantity = (size.abs() - left.abs()) as f64;
+
+            // 解析 order_type: futures 默认是 limit
+            // 可以通过 price 是否为 0 判断 market 单
+            let price: f64 = order
+                .get("price")
+                .and_then(|v| v.as_str().or_else(|| v.as_f64().map(|f| f.to_string()).as_deref().map(|_| "")))
+                .and_then(|s| s.parse().ok())
+                .or_else(|| order.get("price").and_then(|v| v.as_f64()))
+                .unwrap_or(0.0);
+            let order_type: u8 = if price == 0.0 { 3 } else { 1 }; // 3=Market, 1=Limit
+
+            // 解析 time_in_force
+            let time_in_force = GateBasicOrderMsg::time_in_force_to_u8(
+                order.get("tif").and_then(|v| v.as_str()).unwrap_or("gtc")
+            );
+
+            // 解析 status 和 finish_as
+            let status = order.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            let finish_as = order.get("finish_as").and_then(|v| v.as_str()).unwrap_or("");
+            let (execution_type, order_status) =
+                GateBasicOrderMsg::event_to_execution_and_status(status, finish_as);
+
+            // 解析 event_time (update_time 已经是 ms)
+            let event_time: i64 = order
+                .get("update_time")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            // 手续费币种: futures 合约的手续费币种通常是 USDT
+            // Gate 合约不在订单消息中提供手续费币种，这里留空
+            let commission_asset = String::new();
+
+            // 创建消息
+            let msg = GateBasicOrderMsg::create(
+                GateBasicOrderMsg::VENUE_FUTURES,
+                event_time,
+                symbol,
+                order_id,
+                client_order_id,
+                side,
+                order_type,
+                time_in_force,
+                execution_type,
+                order_status,
+                price,
+                quantity,
+                cumulative_filled_quantity,
                 commission_asset,
             );
 
@@ -295,6 +429,14 @@ impl Parser for GateAccountEventParser {
                     self.parse_spot_orders_v2(&json_value, tx)
                 } else {
                     debug!("Gate: spot.orders_v2 event={} (ignored)", event);
+                    0
+                }
+            }
+            "futures.orders" => {
+                if event == "update" {
+                    self.parse_futures_orders(&json_value, tx)
+                } else {
+                    debug!("Gate: futures.orders event={} (ignored)", event);
                     0
                 }
             }

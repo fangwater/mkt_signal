@@ -559,7 +559,6 @@ pub struct GateBasicOrderMsg {
     pub price: f64,
     pub quantity: f64,
     pub cumulative_filled_quantity: f64,
-    pub average_price: f64,
     pub commission_asset_length: u32,
     pub commission_asset: String,
 }
@@ -585,7 +584,6 @@ impl GateBasicOrderMsg {
         price: f64,
         quantity: f64,
         cumulative_filled_quantity: f64,
-        average_price: f64,
         commission_asset: String,
     ) -> Self {
         Self {
@@ -604,7 +602,6 @@ impl GateBasicOrderMsg {
             price,
             quantity,
             cumulative_filled_quantity,
-            average_price,
             commission_asset_length: commission_asset.len() as u32,
             commission_asset,
         }
@@ -644,18 +641,64 @@ impl GateBasicOrderMsg {
     }
 
     /// Gate.io event + finish_as 转 (execution_type, order_status)
+    ///
+    /// event (spot.orders_v2): "put" / "update" / "finish"
+    /// status (futures.orders): "open" / "finished"
+    ///
+    /// finish_as 可能的值:
+    /// - filled：全部成交
+    /// - cancelled：手动取消
+    /// - liquidated：因清算而取消
+    /// - ioc：IOC 立即完成
+    /// - auto_deleveraging：ADL 完成
+    /// - reduce_only：因减仓设置而增仓而取消
+    /// - position_close：因平仓而取消
+    /// - stp：自成交限制而被撤销
+    /// - _new：新建 (futures 特有)
+    /// - _update：成交或部分成交 (futures 特有)
+    /// - reduce_out: 只减仓被排除的不容易成交的挂单
     pub fn event_to_execution_and_status(event: &str, finish_as: &str) -> (u8, u8) {
-        match event.to_lowercase().as_str() {
-            "put" => (1, 1), // New, New
+        let event_lower = event.to_lowercase();
+        let finish_as_lower = finish_as.to_lowercase();
+
+        match event_lower.as_str() {
+            // spot.orders_v2 的事件
+            "put" => (1, 1),    // New, New
             "update" => (5, 2), // Trade, PartiallyFilled
-            "finish" => {
-                match finish_as.to_lowercase().as_str() {
+
+            // futures.orders 的 status
+            "open" => {
+                // futures 订单还在挂单中
+                match finish_as_lower.as_str() {
+                    "_new" => (1, 1),    // New, New
+                    "_update" => (5, 2), // Trade, PartiallyFilled
+                    _ => (1, 1),         // 默认 New
+                }
+            }
+
+            // 共用: spot 的 "finish" 或 futures 的 "finished"
+            "finish" | "finished" => {
+                match finish_as_lower.as_str() {
+                    // 成交完成
                     "filled" => (5, 3), // Trade, Filled
+
+                    // 各种取消原因 -> Canceled
                     "cancelled" | "canceled" => (2, 4), // Canceled, Canceled
-                    "stp" => (7, 4), // TradePrevention, Canceled
+                    "liquidated" => (2, 4),             // 清算取消
+                    "reduce_only" => (2, 4),            // 减仓设置取消
+                    "position_close" => (2, 4),         // 平仓取消
+                    "reduce_out" => (2, 4),             // 只减仓排除
+                    "stp" => (7, 4),                    // TradePrevention, Canceled
+
+                    // IOC/ADL 特殊完成
+                    "ioc" => (5, 3),              // IOC 立即完成视为 Trade, Filled
+                    "auto_deleveraging" => (5, 3), // ADL 完成视为 Trade, Filled
+
+                    // 其他未知情况
                     _ => (6, 5), // Expired, Expired
                 }
             }
+
             _ => (1, 1), // 默认 New
         }
     }
@@ -667,7 +710,7 @@ impl GateBasicOrderMsg {
             + 4 + self.symbol_length as usize  // symbol
             + 8 * 2  // order_id, client_order_id
             + 1 * 5  // side, order_type, time_in_force, execution_type, order_status
-            + 8 * 4  // price, quantity, cumulative_filled_quantity, average_price
+            + 8 * 3  // price, quantity, cumulative_filled_quantity
             + 4 + self.commission_asset_length as usize;  // commission_asset
 
         let mut buf = BytesMut::with_capacity(total_size);
@@ -690,7 +733,6 @@ impl GateBasicOrderMsg {
         buf.put_f64_le(self.price);
         buf.put_f64_le(self.quantity);
         buf.put_f64_le(self.cumulative_filled_quantity);
-        buf.put_f64_le(self.average_price);
 
         buf.put_u32_le(self.commission_asset_length);
         buf.put(self.commission_asset.as_bytes());
@@ -699,7 +741,7 @@ impl GateBasicOrderMsg {
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        const MIN_FIXED_SIZE: usize = 4 + 1 + 8 + 4 + 8 * 2 + 1 * 5 + 8 * 4 + 4;
+        const MIN_FIXED_SIZE: usize = 4 + 1 + 8 + 4 + 8 * 2 + 1 * 5 + 8 * 3 + 4;
         if data.len() < MIN_FIXED_SIZE {
             anyhow::bail!("GateBasicOrderMsg too short: {}", data.len());
         }
@@ -719,7 +761,7 @@ impl GateBasicOrderMsg {
         }
         let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_length as usize).to_vec())?;
 
-        if cursor.remaining() < 8 * 2 + 1 * 5 + 8 * 4 + 4 {
+        if cursor.remaining() < 8 * 2 + 1 * 5 + 8 * 3 + 4 {
             anyhow::bail!("GateBasicOrderMsg truncated after symbol");
         }
 
@@ -735,7 +777,6 @@ impl GateBasicOrderMsg {
         let price = cursor.get_f64_le();
         let quantity = cursor.get_f64_le();
         let cumulative_filled_quantity = cursor.get_f64_le();
-        let average_price = cursor.get_f64_le();
 
         let commission_asset_length = cursor.get_u32_le();
         if cursor.remaining() < commission_asset_length as usize {
@@ -760,7 +801,6 @@ impl GateBasicOrderMsg {
             price,
             quantity,
             cumulative_filled_quantity,
-            average_price,
             commission_asset_length,
             commission_asset,
         })
