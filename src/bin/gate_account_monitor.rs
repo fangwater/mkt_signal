@@ -396,10 +396,10 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::OrderUpdate => {
             if let Ok(m) = GateBasicOrderMsg::from_bytes(&payload) {
                 info!(
-                    "Gate OrderUpdate: venue={} ts={} symbol={} oid={} cloid={} side={} type={} exec={} status={} px={} qty={} filled={}",
+                    "Gate OrderUpdate: venue={} ts={} symbol={} oid={} cloid={} side={} type={} exec={} status={} maker={} px={} qty={} filled={} fill_px={}",
                     m.venue, m.event_time, m.symbol, m.order_id, m.client_order_id,
                     m.side, m.order_type, m.execution_type, m.order_status,
-                    m.price, m.quantity, m.cumulative_filled_quantity
+                    m.is_maker, m.price, m.quantity, m.cumulative_filled_quantity, m.last_executed_price
                 );
             }
         }

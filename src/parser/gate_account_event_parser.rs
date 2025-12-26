@@ -73,6 +73,32 @@
 //!     }]
 //! }
 //! ```
+//!
+//! ## 现货/合约字段差异（便于后续统一）
+//! - 现货 spot.orders_v2 独有字段：
+//!   - `currency_pair`（交易对）
+//!   - `type`（订单类型）
+//!   - `side`（方向）
+//!   - `amount`（委托数量，现货为币数量）
+//!   - `time_in_force`
+//!   - `filled_amount`（累计成交量）
+//!   - `avg_deal_price`（均价）
+//!   - `fee_currency`（手续费币种）
+//!   - `update_time_ms`（字符串 ms）
+//!   - `event`（put/update/finish）
+//! - 合约 futures.orders 独有字段：
+//!   - `contract`（交易对/合约名）
+//!   - `size`（张数，正负表示方向；与现货 amount 语义不同）
+//!   - `left`（剩余未成交张数）
+//!   - `fill_price`（均价）
+//!   - `tif`
+//!   - `status`（open/finished）
+//!   - `update_time`（i64 ms）
+//! - 两边共有/相近字段：
+//!   - `id`（order_id）
+//!   - `text`（client_order_id，建议使用纯数字或以数字结尾，如 `t-123456`）
+//!   - `price`（委托价；市价单常为 0）
+//!   - `finish_as`（终态原因，用于映射 execution_type / order_status）
 
 use crate::common::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
@@ -81,6 +107,7 @@ use crate::common::basic_account_msg::{
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use log::{debug, warn};
+use serde_json::Value;
 use tokio::sync::mpsc;
 
 #[derive(Clone)]
@@ -179,7 +206,6 @@ impl GateAccountEventParser {
             let client_order_id: i64 = match text.parse() {
                 Ok(id) => id,
                 Err(_) => {
-                    // 打印 JSON 并跳过
                     warn!("Gate: spot.orders_v2 text is not i64, dropping: {}", order);
                     continue;
                 }
@@ -210,6 +236,30 @@ impl GateAccountEventParser {
                 order.get("time_in_force").and_then(|v| v.as_str()).unwrap_or("")
             );
 
+            // spot: maker/taker 推断（按需求：poc 一定是 taker；否则使用 create/update ms 判断是否立即成交）
+            let time_in_force_raw = order
+                .get("time_in_force")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let create_time_ms: i64 = order
+                .get("create_time_ms")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let update_time_ms: i64 = order
+                .get("update_time_ms")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let is_maker: u8 = if time_in_force_raw == "poc" {
+                0
+            } else if create_time_ms > 0 && update_time_ms > create_time_ms {
+                1
+            } else {
+                0
+            };
+
             let event = order.get("event").and_then(|v| v.as_str()).unwrap_or("");
             let finish_as = order.get("finish_as").and_then(|v| v.as_str()).unwrap_or("");
             let (execution_type, order_status) =
@@ -229,6 +279,13 @@ impl GateAccountEventParser {
 
             let cumulative_filled_quantity: f64 = order
                 .get("filled_amount")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
+
+            // spot: Gate 只提供 avg_deal_price（成交价/均价口径）
+            let last_executed_price: f64 = order
+                .get("avg_deal_price")
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0.0);
@@ -257,9 +314,11 @@ impl GateAccountEventParser {
                 time_in_force,
                 execution_type,
                 order_status,
+                is_maker,
                 price,
                 quantity,
                 cumulative_filled_quantity,
+                last_executed_price,
                 commission_asset,
             );
 
@@ -300,7 +359,6 @@ impl GateAccountEventParser {
             let client_order_id: i64 = match text.parse() {
                 Ok(id) => id,
                 Err(_) => {
-                    // 打印 JSON 并跳过
                     warn!("Gate: futures.orders text is not i64, dropping: {}", order);
                     continue;
                 }
@@ -333,30 +391,48 @@ impl GateAccountEventParser {
 
             // 解析 order_type: futures 默认是 limit
             // 可以通过 price 是否为 0 判断 market 单
-            let price: f64 = order
-                .get("price")
-                .and_then(|v| v.as_str().or_else(|| v.as_f64().map(|f| f.to_string()).as_deref().map(|_| "")))
-                .and_then(|s| s.parse().ok())
-                .or_else(|| order.get("price").and_then(|v| v.as_f64()))
-                .unwrap_or(0.0);
+            let price: f64 = parse_f64_str_or_num(order.get("price")).unwrap_or(0.0);
             let order_type: u8 = if price == 0.0 { 3 } else { 1 }; // 3=Market, 1=Limit
 
-            // 解析 time_in_force
-            let time_in_force = GateBasicOrderMsg::time_in_force_to_u8(
-                order.get("tif").and_then(|v| v.as_str()).unwrap_or("gtc")
-            );
-
-            // 解析 status 和 finish_as
-            let status = order.get("status").and_then(|v| v.as_str()).unwrap_or("");
-            let finish_as = order.get("finish_as").and_then(|v| v.as_str()).unwrap_or("");
-            let (execution_type, order_status) =
-                GateBasicOrderMsg::event_to_execution_and_status(status, finish_as);
+            // futures: fill_price 为成交价口径（部分接口为 number）
+            let last_executed_price: f64 =
+                parse_f64_str_or_num(order.get("fill_price")).unwrap_or(0.0);
 
             // 解析 event_time (update_time 已经是 ms)
             let event_time: i64 = order
                 .get("update_time")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
+
+            // 解析 time_in_force
+            let time_in_force = GateBasicOrderMsg::time_in_force_to_u8(
+                order.get("tif").and_then(|v| v.as_str()).unwrap_or("gtc")
+            );
+
+            // futures: maker/taker 推断（同 spot：优先使用 ms 版本的时间字段）
+            // - tif == "poc" => taker
+            // - 其余：若 update_time_ms > create_time_ms => maker（有挂单生命周期）
+            let tif_raw = order
+                .get("tif")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let create_time_ms: i64 = parse_i64_ms_field(order.get("create_time_ms"))
+                .or_else(|| parse_i64_ms_field(order.get("create_time")))
+                .unwrap_or(0);
+            let is_maker: u8 = if tif_raw == "poc" {
+                0
+            } else if create_time_ms > 0 && event_time > create_time_ms {
+                1
+            } else {
+                0
+            };
+
+            // 解析 status 和 finish_as
+            let status = order.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            let finish_as = order.get("finish_as").and_then(|v| v.as_str()).unwrap_or("");
+            let (execution_type, order_status) =
+                GateBasicOrderMsg::event_to_execution_and_status(status, finish_as);
 
             // 手续费币种: futures 合约的手续费币种通常是 USDT
             // Gate 合约不在订单消息中提供手续费币种，这里留空
@@ -374,9 +450,11 @@ impl GateAccountEventParser {
                 time_in_force,
                 execution_type,
                 order_status,
+                is_maker,
                 price,
                 quantity,
                 cumulative_filled_quantity,
+                last_executed_price,
                 commission_asset,
             );
 
@@ -388,6 +466,46 @@ impl GateAccountEventParser {
         }
 
         count
+    }
+}
+
+fn parse_f64_str_or_num(v: Option<&Value>) -> Option<f64> {
+    v.and_then(|val| {
+        if let Some(f) = val.as_f64() {
+            Some(f)
+        } else if let Some(i) = val.as_i64() {
+            Some(i as f64)
+        } else if let Some(u) = val.as_u64() {
+            Some(u as f64)
+        } else if let Some(s) = val.as_str() {
+            s.parse::<f64>().ok()
+        } else {
+            None
+        }
+    })
+}
+
+fn parse_i64_str_or_num(v: Option<&Value>) -> Option<i64> {
+    v.and_then(|val| {
+        if let Some(i) = val.as_i64() {
+            Some(i)
+        } else if let Some(u) = val.as_u64() {
+            Some(u as i64)
+        } else if let Some(s) = val.as_str() {
+            s.parse::<i64>().ok()
+        } else {
+            None
+        }
+    })
+}
+
+fn parse_i64_ms_field(v: Option<&Value>) -> Option<i64> {
+    let ts = parse_i64_str_or_num(v)?;
+    // 仅接受 ms 级时间戳（避免把秒级误当 ms 导致精度/语义错误）
+    if ts >= 1_000_000_000_000 {
+        Some(ts)
+    } else {
+        None
     }
 }
 
@@ -455,4 +573,3 @@ impl Parser for GateAccountEventParser {
         }
     }
 }
-

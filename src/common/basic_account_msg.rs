@@ -534,8 +534,11 @@ impl BinanceBasicOrderMsg {
 /// - `side`: "buy"=1, "sell"=2
 /// - `order_type`: "limit"=1, "market"=3
 /// - `time_in_force`: "gtc"=0, "ioc"=1, "fok"=2, "poc"=3(GTX/PostOnly)
-/// - `execution_type`: "put"=1(New), "update"=5(Trade), "finish"=2或6
-/// - `order_status`: "open"=1(New), "filled"=3, "cancelled"=4
+/// - `execution_type`: 1(New), 2(Canceled), 5(Trade), 6(Expired), 7(TradePrevention)
+/// - `order_status`: 1(New), 2(PartiallyFilled), 3(Filled), 4(Canceled), 5(Expired)
+/// - `last_executed_price`:
+///   - spot.orders_v2: avg_deal_price（成交价/均价口径，Gate 仅提供此字段）
+///   - futures.orders: fill_price（成交价口径）
 #[derive(Debug, Clone)]
 pub struct GateBasicOrderMsg {
     pub msg_type: BasicAccountEventType,
@@ -556,9 +559,12 @@ pub struct GateBasicOrderMsg {
     pub execution_type: u8,
     /// OrderStatus: 1=New, 2=PartiallyFilled, 3=Filled, 4=Canceled
     pub order_status: u8,
+    /// 是否 maker：1=maker, 0=taker/unknown
+    pub is_maker: u8,
     pub price: f64,
     pub quantity: f64,
     pub cumulative_filled_quantity: f64,
+    pub last_executed_price: f64,
     pub commission_asset_length: u32,
     pub commission_asset: String,
 }
@@ -581,9 +587,11 @@ impl GateBasicOrderMsg {
         time_in_force: u8,
         execution_type: u8,
         order_status: u8,
+        is_maker: u8,
         price: f64,
         quantity: f64,
         cumulative_filled_quantity: f64,
+        last_executed_price: f64,
         commission_asset: String,
     ) -> Self {
         Self {
@@ -599,9 +607,11 @@ impl GateBasicOrderMsg {
             time_in_force,
             execution_type,
             order_status,
+            is_maker,
             price,
             quantity,
             cumulative_filled_quantity,
+            last_executed_price,
             commission_asset_length: commission_asset.len() as u32,
             commission_asset,
         }
@@ -709,8 +719,8 @@ impl GateBasicOrderMsg {
             + 8  // event_time
             + 4 + self.symbol_length as usize  // symbol
             + 8 * 2  // order_id, client_order_id
-            + 1 * 5  // side, order_type, time_in_force, execution_type, order_status
-            + 8 * 3  // price, quantity, cumulative_filled_quantity
+            + 1 * 6  // side, order_type, time_in_force, execution_type, order_status, is_maker
+            + 8 * 4  // price, quantity, cumulative_filled_quantity, last_executed_price
             + 4 + self.commission_asset_length as usize;  // commission_asset
 
         let mut buf = BytesMut::with_capacity(total_size);
@@ -729,10 +739,12 @@ impl GateBasicOrderMsg {
         buf.put_u8(self.time_in_force);
         buf.put_u8(self.execution_type);
         buf.put_u8(self.order_status);
+        buf.put_u8(self.is_maker);
 
         buf.put_f64_le(self.price);
         buf.put_f64_le(self.quantity);
         buf.put_f64_le(self.cumulative_filled_quantity);
+        buf.put_f64_le(self.last_executed_price);
 
         buf.put_u32_le(self.commission_asset_length);
         buf.put(self.commission_asset.as_bytes());
@@ -741,7 +753,7 @@ impl GateBasicOrderMsg {
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        const MIN_FIXED_SIZE: usize = 4 + 1 + 8 + 4 + 8 * 2 + 1 * 5 + 8 * 3 + 4;
+        const MIN_FIXED_SIZE: usize = 4 + 1 + 8 + 4 + 8 * 2 + 1 * 6 + 8 * 4 + 4;
         if data.len() < MIN_FIXED_SIZE {
             anyhow::bail!("GateBasicOrderMsg too short: {}", data.len());
         }
@@ -761,7 +773,7 @@ impl GateBasicOrderMsg {
         }
         let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_length as usize).to_vec())?;
 
-        if cursor.remaining() < 8 * 2 + 1 * 5 + 8 * 3 + 4 {
+        if cursor.remaining() < 8 * 2 + 1 * 6 + 8 * 4 + 4 {
             anyhow::bail!("GateBasicOrderMsg truncated after symbol");
         }
 
@@ -773,10 +785,12 @@ impl GateBasicOrderMsg {
         let time_in_force = cursor.get_u8();
         let execution_type = cursor.get_u8();
         let order_status = cursor.get_u8();
+        let is_maker = cursor.get_u8();
 
         let price = cursor.get_f64_le();
         let quantity = cursor.get_f64_le();
         let cumulative_filled_quantity = cursor.get_f64_le();
+        let last_executed_price = cursor.get_f64_le();
 
         let commission_asset_length = cursor.get_u32_le();
         if cursor.remaining() < commission_asset_length as usize {
@@ -798,9 +812,11 @@ impl GateBasicOrderMsg {
             time_in_force,
             execution_type,
             order_status,
+            is_maker,
             price,
             quantity,
             cumulative_filled_quantity,
+            last_executed_price,
             commission_asset_length,
             commission_asset,
         })
