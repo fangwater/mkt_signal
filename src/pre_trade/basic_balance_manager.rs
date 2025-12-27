@@ -88,7 +88,9 @@ impl BasicBalanceManager {
         entry.borrowed = msg.borrowed;
         // interest 字段为“当前应计利息总额”，按最新值覆盖即可。
         match self.exchange {
-            Exchange::Okex | Exchange::Binance => entry.cumulative_interest = msg.interest,
+            Exchange::Okex | Exchange::Binance | Exchange::Gate => {
+                entry.cumulative_interest = msg.interest
+            }
             _ => {}
         }
         entry.last_timestamp = entry.last_timestamp.max(msg.timestamp);
@@ -119,7 +121,7 @@ impl BasicBalanceManager {
     /// 其他交易所暂不支持，会 panic。
     pub fn balance_position_of(&self, symbol: &str) -> f64 {
         let mapped = match self.exchange {
-            Exchange::Okex | Exchange::Binance => symbol.to_ascii_uppercase(),
+            Exchange::Okex | Exchange::Binance | Exchange::Gate => symbol.to_ascii_uppercase(),
             _ => panic!(
                 "balance_position_of not implemented for {:?}",
                 self.exchange
@@ -136,7 +138,9 @@ impl BasicBalanceManager {
 
         match self.exchange {
             Exchange::Okex => b.balance,
-            Exchange::Binance => b.balance - b.borrowed - b.cumulative_interest,
+            Exchange::Binance | Exchange::Gate => {
+                b.balance - b.borrowed - b.cumulative_interest
+            }
             _ => unreachable!(),
         }
     }

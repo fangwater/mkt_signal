@@ -1,8 +1,10 @@
 use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
 use crate::common::time_util::get_timestamp_us;
+use crate::pre_trade::basic_exposure_manager::BasicExposureManager;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
+use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::usdt_balance_manager::UsdtBalanceSnapshot;
 use crate::signal::common::TradingVenue;
 use crate::viz::resample::{
@@ -118,7 +120,7 @@ fn print_exposure_table(
 fn usdt_net_position(exchange: Exchange, s: &UsdtBalanceSnapshot) -> f64 {
     match exchange {
         Exchange::Okex => s.balance,
-        Exchange::Binance => s.balance - s.borrowed - s.cumulative_interest,
+        Exchange::Binance | Exchange::Gate => s.balance - s.borrowed - s.cumulative_interest,
         _ => s.balance,
     }
 }
@@ -305,8 +307,9 @@ impl ResampleChannel {
         let mon = MonitorChannel::instance();
         let price_snapshot = mon.price_table().borrow().snapshot();
         let ts_ms = (get_timestamp_us() / 1000) as i64;
-        let (exposures, _total_equity, total_abs_exposure, _total_position) =
+        let (exposures, _total_equity, total_abs_exposure, _total_position, _um_unrealized_usd) =
             mon.basic_state_snapshot();
+        let price_mapper = create_symbol_mapper(Exchange::Binance);
 
         let mut rows = Vec::new();
         for (asset, &(open_qty, hedge_qty)) in &exposures {
@@ -315,8 +318,9 @@ impl ResampleChannel {
                 continue;
             }
             let net_qty = open_qty + hedge_qty;
+            let symbol = price_mapper.asset_to_price_symbol(&asset_upper);
             let mark = price_snapshot
-                .get(&format!("{}USDT", asset_upper))
+                .get(&symbol)
                 .map(|p| p.mark_price)
                 .unwrap_or(0.0);
             let net_usdt = net_qty * mark;
@@ -361,8 +365,9 @@ impl ResampleChannel {
         let mon = MonitorChannel::instance();
         let price_snapshot = mon.price_table().borrow().snapshot();
         let ts_ms = (get_timestamp_us() / 1000) as i64;
+        let exposure_price_mapper = create_symbol_mapper(Exchange::Binance);
 
-        let (exposures, total_equity, total_abs_exposure, total_position) =
+        let (exposures, total_equity, total_abs_exposure, total_position, um_unrealized_usd) =
             mon.basic_state_snapshot();
 
         let mut published = 0usize;
@@ -386,7 +391,7 @@ impl ResampleChannel {
                     continue;
                 }
 
-                let symbol = format!("{}USDT", asset_upper);
+                let symbol = exposure_price_mapper.asset_to_price_symbol(&asset_upper);
                 let mark = price_snapshot
                     .get(&symbol)
                     .map(|p| p.mark_price)
@@ -441,17 +446,31 @@ impl ResampleChannel {
                 .into_iter()
                 .flatten()
             {
-                for bal in bal_mgr.borrow().snapshot() {
-                    let asset = bal.symbol.to_uppercase();
+                let mgr = bal_mgr.borrow();
+                let exchange = mgr.exchange();
+                let price_mapper = create_symbol_mapper(exchange);
+                let entries = BasicExposureManager::compute_exposures_for_exchange(
+                    exchange,
+                    std::slice::from_ref(&*mgr),
+                    &[],
+                );
+                for entry in entries {
+                    if entry.borrowed.abs() <= 1e-12 && entry.interest.abs() <= 1e-12 {
+                        continue;
+                    }
+                    if entry.asset.eq_ignore_ascii_case("USDT") {
+                        continue;
+                    }
+                    let symbol = price_mapper.asset_to_price_symbol(&entry.asset);
                     let mark = price_snapshot
-                        .get(&format!("{}USDT", asset))
+                        .get(&symbol)
                         .map(|p| p.mark_price)
                         .unwrap_or(0.0);
                     if mark <= 0.0 {
                         continue;
                     }
-                    borrowed_usd += bal.borrowed * mark;
-                    interest_usd += bal.cumulative_interest * mark;
+                    borrowed_usd += entry.borrowed * mark;
+                    interest_usd += entry.interest * mark;
                 }
             }
             // USDT 借贷/利息单独维护：USDT 本身按 1:1 计价
@@ -476,7 +495,7 @@ impl ResampleChannel {
                 spot_equity_usd: total_equity,
                 borrowed_usd,
                 interest_usd,
-                um_unrealized_usd: 0.0,
+                um_unrealized_usd,
                 leverage,
                 max_leverage,
             };

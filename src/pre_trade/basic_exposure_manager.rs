@@ -97,25 +97,14 @@ impl BasicExposureManager {
         exposures
     }
 
-    /// 创建新的敞口管理器
-    ///
-    /// # 参数
-    /// - `exchange`: 交易所
-    /// - `balance_mgr`: 现货余额管理器
-    /// - `um_mgr`: UM 持仓管理器
-    /// - `min_qty_table`: 用于获取合约乘数
-    pub fn new(
+    /// 创建新的敞口管理器（支持空的 balance/um 输入）
+    pub fn new_from_sources(
         exchange: Exchange,
-        balance_mgr: &BasicBalanceManager,
-        um_mgr: &BasicUmManager,
-        min_qty_table: &MinQtyTable,
+        balance_mgrs: &[&BasicBalanceManager],
+        um_mgrs: &[(&BasicUmManager, &MinQtyTable)],
     ) -> Self {
         let symbol_mapper = crate::pre_trade::symbol_mapper::create_symbol_mapper(exchange);
-        let exposures = Self::compute_exposures_for_exchange(
-            exchange,
-            std::slice::from_ref(&balance_mgr),
-            std::slice::from_ref(&(um_mgr, min_qty_table)),
-        );
+        let exposures = Self::compute_exposures_for_exchange(exchange, balance_mgrs, um_mgrs);
         let total_exposure = exposures.iter().map(|e| e.exposure.abs()).sum();
 
         debug!(
@@ -133,6 +122,20 @@ impl BasicExposureManager {
             total_borrowed_usd: 0.0,
             total_interest_usd: 0.0,
         }
+    }
+
+    /// 创建新的敞口管理器（旧接口）
+    pub fn new(
+        exchange: Exchange,
+        balance_mgr: &BasicBalanceManager,
+        um_mgr: &BasicUmManager,
+        min_qty_table: &MinQtyTable,
+    ) -> Self {
+        Self::new_from_sources(
+            exchange,
+            std::slice::from_ref(&balance_mgr),
+            std::slice::from_ref(&(um_mgr, min_qty_table)),
+        )
     }
 
     /// 重新计算敞口，返回是否发生变更
@@ -239,10 +242,6 @@ impl BasicExposureManager {
     pub fn total_interest_usd(&self) -> f64 {
         self.total_interest_usd
     }
-
-    /// 计算敞口列表
-    // NOTE: compute_exposures() 已被 compute_exposures_for_exchange() 取代，
-    // 新逻辑支持合并多个 balance/um 输入源，便于跨腿/跨交易所汇总。
 
     /// 判断持仓是否发生变更
     fn positions_changed(prev: &[BasicExposureEntry], next: &[BasicExposureEntry]) -> bool {

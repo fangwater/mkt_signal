@@ -1830,6 +1830,8 @@ impl HedgeArbStrategy {
             TradingVenue::BinanceFutures => QueryRequestType::BinanceUMQuery,
             TradingVenue::OkexMargin => QueryRequestType::OkexMarginQuery,
             TradingVenue::OkexFutures => QueryRequestType::OkexUMQuery,
+            TradingVenue::GateMargin => QueryRequestType::GateUnifiedOrderQuery,
+            TradingVenue::GateFutures => QueryRequestType::GateFuturesOrderQuery,
             _ => return Err(format!("unsupported venue for query: {:?}", order.venue)),
         };
 
@@ -1854,6 +1856,34 @@ impl HedgeArbStrategy {
                 } else {
                     bytes::Bytes::from(format!("instId={}&clOrdId={}", inst_id, client_query_id))
                 }
+            }
+            TradingVenue::GateMargin => {
+                let currency_pair =
+                    crate::pre_trade::order_manager::gate_currency_pair_from_symbol(&order.symbol);
+                let Some(order_id) = exchange_order_id else {
+                    return Err(format!(
+                        "gate order query requires exchange_order_id: client_order_id={} venue={:?}",
+                        client_query_id, order.venue
+                    ));
+                };
+                let req_param = serde_json::json!({
+                    "order_id": order_id.to_string(),
+                    "currency_pair": currency_pair,
+                    "account": "cross_margin",
+                });
+                bytes::Bytes::from(req_param.to_string())
+            }
+            TradingVenue::GateFutures => {
+                let Some(order_id) = exchange_order_id else {
+                    return Err(format!(
+                        "gate order query requires exchange_order_id: client_order_id={} venue={:?}",
+                        client_query_id, order.venue
+                    ));
+                };
+                let req_param = serde_json::json!({
+                    "order_id": order_id.to_string(),
+                });
+                bytes::Bytes::from(req_param.to_string())
             }
             _ => bytes::Bytes::new(),
         };

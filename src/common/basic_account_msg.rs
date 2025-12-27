@@ -15,6 +15,8 @@ pub enum BasicAccountEventType {
     PositionUpdate = 4003,
     /// 借贷利息更新
     BorrowInterest = 4004,
+    /// 合约未实现盈亏更新
+    UnrealizedPnlUpdate = 4005,
     /// 错误
     Error = 4999,
 }
@@ -899,6 +901,18 @@ pub struct BasicPositionMsg {
     pub position_amount: f32,
 }
 
+/// Basic 合约未实现盈亏消息（USDT 计价）
+#[derive(Debug, Clone)]
+pub struct BasicUmUnrealizedMsg {
+    pub msg_type: BasicAccountEventType,
+    pub timestamp: i64,
+    pub inst_id_length: u32,
+    pub position_side: char,
+    pub padding: [u8; 3],
+    pub inst_id: String,
+    pub unrealized_pnl: f64,
+}
+
 /// Basic 借贷利息消息（REST 拉取 OKX GET /api/v5/account/interest-accrued）
 #[derive(Debug, Clone)]
 pub struct BasicBorrowInterestMsg {
@@ -986,6 +1000,69 @@ impl BasicPositionMsg {
             padding,
             inst_id,
             position_amount,
+        })
+    }
+}
+
+impl BasicUmUnrealizedMsg {
+    pub fn create(
+        timestamp: i64,
+        inst_id: String,
+        position_side: char,
+        unrealized_pnl: f64,
+    ) -> Self {
+        Self {
+            msg_type: BasicAccountEventType::UnrealizedPnlUpdate,
+            timestamp,
+            inst_id_length: inst_id.len() as u32,
+            position_side,
+            padding: [0u8; 3],
+            inst_id,
+            unrealized_pnl,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 8 + 4 + 1 + 3 + self.inst_id_length as usize + 8;
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_i64_le(self.timestamp);
+        buf.put_u32_le(self.inst_id_length);
+        buf.put_u8(self.position_side as u8);
+        buf.put(&self.padding[..]);
+        buf.put(self.inst_id.as_bytes());
+        buf.put_f64_le(self.unrealized_pnl);
+        buf.freeze()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        const MIN_SIZE: usize = 4 + 8 + 4 + 1 + 3 + 8;
+        if data.len() < MIN_SIZE {
+            anyhow::bail!("unrealized pnl msg too short: {}", data.len());
+        }
+        let mut cursor = Bytes::copy_from_slice(data);
+        let msg_type = cursor.get_u32_le();
+        if msg_type != BasicAccountEventType::UnrealizedPnlUpdate as u32 {
+            anyhow::bail!("invalid unrealized pnl msg type: {}", msg_type);
+        }
+        let timestamp = cursor.get_i64_le();
+        let inst_id_length = cursor.get_u32_le();
+        let position_side = cursor.get_u8() as char;
+        let mut padding = [0u8; 3];
+        cursor.copy_to_slice(&mut padding);
+        if cursor.remaining() < inst_id_length as usize + 8 {
+            anyhow::bail!("unrealized pnl msg truncated");
+        }
+        let inst_id = String::from_utf8(cursor.copy_to_bytes(inst_id_length as usize).to_vec())?;
+        let unrealized_pnl = cursor.get_f64_le();
+        Ok(Self {
+            msg_type: BasicAccountEventType::UnrealizedPnlUpdate,
+            timestamp,
+            inst_id_length,
+            position_side,
+            padding,
+            inst_id,
+            unrealized_pnl,
         })
     }
 }
@@ -1086,6 +1163,7 @@ pub fn get_basic_event_type(data: &[u8]) -> BasicAccountEventType {
         4002 => BasicAccountEventType::BalanceUpdate,
         4003 => BasicAccountEventType::PositionUpdate,
         4004 => BasicAccountEventType::BorrowInterest,
+        4005 => BasicAccountEventType::UnrealizedPnlUpdate,
         _ => BasicAccountEventType::Error,
     }
 }

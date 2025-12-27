@@ -14,6 +14,10 @@ pub enum QueryRequestType {
     OkexUMQuery = 7002,
     OkexAccountBalanceSnapshot = 7101,
     OkexPositionsSnapshot = 7102,
+    GateUnifiedOrderQuery = 8001,
+    GateFuturesOrderQuery = 8002,
+    GateUnifiedBalanceSnapshot = 8101,
+    GateUnifiedPositionsSnapshot = 8102,
 }
 
 #[repr(C, align(8))]
@@ -45,6 +49,10 @@ impl TryFrom<u32> for QueryRequestType {
             7002 => Ok(QueryRequestType::OkexUMQuery),
             7101 => Ok(QueryRequestType::OkexAccountBalanceSnapshot),
             7102 => Ok(QueryRequestType::OkexPositionsSnapshot),
+            8001 => Ok(QueryRequestType::GateUnifiedOrderQuery),
+            8002 => Ok(QueryRequestType::GateFuturesOrderQuery),
+            8101 => Ok(QueryRequestType::GateUnifiedBalanceSnapshot),
+            8102 => Ok(QueryRequestType::GateUnifiedPositionsSnapshot),
             _ => Err(()),
         }
     }

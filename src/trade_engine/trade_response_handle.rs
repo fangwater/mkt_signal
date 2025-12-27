@@ -92,6 +92,26 @@ fn extract_msg(v: &Value) -> Option<String> {
             return Some(s.to_string());
         }
     }
+    if let Some(s) = v
+        .get("data")
+        .and_then(|d| d.get("errs"))
+        .and_then(|e| e.get("message"))
+        .and_then(|m| m.as_str())
+    {
+        if !s.is_empty() {
+            return Some(s.to_string());
+        }
+    }
+    if let Some(s) = v
+        .get("data")
+        .and_then(|d| d.get("errs"))
+        .and_then(|e| e.get("label"))
+        .and_then(|m| m.as_str())
+    {
+        if !s.is_empty() {
+            return Some(s.to_string());
+        }
+    }
     if let Some(s) = v.get("msg").and_then(|m| m.as_str()) {
         if !s.is_empty() {
             return Some(s.to_string());

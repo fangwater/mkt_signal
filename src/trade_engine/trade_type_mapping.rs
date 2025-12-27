@@ -23,6 +23,12 @@ impl TradeTypeMapping {
             | TradeRequestType::OkexNewUMOrder
             | TradeRequestType::OkexCancelMarginOrder
             | TradeRequestType::OkexCancelUMOrder => true,
+
+            // Gate 统一账户 / 合约走 WebSocket
+            TradeRequestType::GateUnifiedNewOrder
+            | TradeRequestType::GateUnifiedCancelOrder
+            | TradeRequestType::GateFuturesNewOrder
+            | TradeRequestType::GateFuturesCancelOrder => true,
         }
     }
 
@@ -47,6 +53,12 @@ impl TradeTypeMapping {
             | TradeRequestType::OkexCancelUMOrder => {
                 unreachable!("Okex requests run via websocket; REST mapping not used")
             }
+            TradeRequestType::GateUnifiedNewOrder
+            | TradeRequestType::GateUnifiedCancelOrder
+            | TradeRequestType::GateFuturesNewOrder
+            | TradeRequestType::GateFuturesCancelOrder => {
+                unreachable!("Gate requests run via websocket; REST mapping not used")
+            }
         }
     }
 
@@ -68,6 +80,12 @@ impl TradeTypeMapping {
             | TradeRequestType::OkexCancelMarginOrder
             | TradeRequestType::OkexCancelUMOrder => {
                 unreachable!("Okex requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::GateUnifiedNewOrder
+            | TradeRequestType::GateUnifiedCancelOrder
+            | TradeRequestType::GateFuturesNewOrder
+            | TradeRequestType::GateFuturesCancelOrder => {
+                unreachable!("Gate requests run via websocket; REST mapping not used")
             }
         }
     }
@@ -91,6 +109,12 @@ impl TradeTypeMapping {
             | TradeRequestType::OkexCancelUMOrder => {
                 unreachable!("Okex requests run via websocket; REST mapping not used")
             }
+            TradeRequestType::GateUnifiedNewOrder
+            | TradeRequestType::GateUnifiedCancelOrder
+            | TradeRequestType::GateFuturesNewOrder
+            | TradeRequestType::GateFuturesCancelOrder => {
+                unreachable!("Gate requests run via websocket; REST mapping not used")
+            }
         }
     }
 
@@ -113,6 +137,12 @@ impl TradeTypeMapping {
             | TradeRequestType::OkexCancelUMOrder => {
                 unreachable!("Okex requests run via websocket; REST mapping not used")
             }
+            TradeRequestType::GateUnifiedNewOrder
+            | TradeRequestType::GateUnifiedCancelOrder
+            | TradeRequestType::GateFuturesNewOrder
+            | TradeRequestType::GateFuturesCancelOrder => {
+                unreachable!("Gate requests run via websocket; REST mapping not used")
+            }
         }
     }
 
@@ -134,6 +164,12 @@ impl TradeTypeMapping {
             | TradeRequestType::OkexCancelMarginOrder
             | TradeRequestType::OkexCancelUMOrder => {
                 unreachable!("Okex requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::GateUnifiedNewOrder
+            | TradeRequestType::GateUnifiedCancelOrder
+            | TradeRequestType::GateFuturesNewOrder
+            | TradeRequestType::GateFuturesCancelOrder => {
+                unreachable!("Gate requests run via websocket; REST mapping not used")
             }
         }
     }

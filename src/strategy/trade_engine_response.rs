@@ -43,14 +43,18 @@ pub trait TradeEngineResponse {
                 | TradeRequestType::BinanceNewUMConditionalOrder
                 | TradeRequestType::BinanceNewMarginOrder
                 | TradeRequestType::OkexNewMarginOrder
-                | TradeRequestType::OkexNewUMOrder,
+                | TradeRequestType::OkexNewUMOrder
+                | TradeRequestType::GateUnifiedNewOrder
+                | TradeRequestType::GateFuturesNewOrder,
             ) => TradeRequestKind::Open,
             Ok(
                 TradeRequestType::BinanceCancelUMOrder
                 | TradeRequestType::BinanceCancelUMConditionalOrder
                 | TradeRequestType::BinanceCancelMarginOrder
                 | TradeRequestType::OkexCancelMarginOrder
-                | TradeRequestType::OkexCancelUMOrder,
+                | TradeRequestType::OkexCancelUMOrder
+                | TradeRequestType::GateUnifiedCancelOrder
+                | TradeRequestType::GateFuturesCancelOrder,
             ) => TradeRequestKind::Cancel,
             _ => TradeRequestKind::Other,
         }

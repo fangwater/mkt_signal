@@ -1,9 +1,17 @@
 use crate::common::exchange::Exchange;
+use crate::portfolio_margin::gate_auth::GateCredentials;
 use crate::portfolio_margin::okex_auth::OkexCredentials;
+use crate::trade_engine::gate_ws;
+use crate::trade_engine::query_parsers::gate_order_status::{
+    parse_gate_futures_order_status_json, parse_gate_spot_order_status_json,
+};
+use crate::trade_engine::query_request::{QueryRequestMsg, QueryRequestType};
+use crate::trade_engine::query_response_handle::QueryExecOutcome;
 use crate::trade_engine::okex::{OkexCancelOrderRequest, OkexNewOrderRequest, OkexWsOrderResponse};
 use crate::trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
 use crate::trade_engine::trade_response_handle::TradeExecOutcome;
 use anyhow::{anyhow, Context, Result};
+use bytes::Bytes;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -35,6 +43,7 @@ fn extract_okex_login_timestamp(payload: &str) -> Option<String> {
 #[derive(Debug)]
 pub enum WsCommand {
     Send(TradeRequestMsg),
+    SendQuery(QueryRequestMsg),
     Shutdown,
 }
 
@@ -48,14 +57,21 @@ pub struct TradeWsClient {
     max_inflight: usize,
     login_payload: Option<String>,
     okex_creds: Option<OkexCredentials>,
+    gate_creds: Option<GateCredentials>,
+    gate_ws_kind: Option<gate_ws::GateWsKind>,
     cmd_rx: mpsc::UnboundedReceiver<WsCommand>,
     resp_tx: mpsc::UnboundedSender<TradeExecOutcome>,
+    query_resp_tx: Option<mpsc::UnboundedSender<QueryExecOutcome>>,
     pending: VecDeque<TradeRequestMsg>,
+    pending_query: VecDeque<QueryRequestMsg>,
     inflight: HashMap<i64, TradeRequestType>,
+    query_inflight: HashMap<i64, QueryRequestType>,
     last_dispatched_type: TradeRequestType,
+    last_dispatched_query_type: QueryRequestType,
     shutdown: bool,
     should_reconnect: bool, // 标记是否需要重连（用于 notice 触发的重连）
     last_okex_login_ts: Option<String>,
+    last_gate_login_req_id: Option<String>,
 }
 
 impl TradeWsClient {
@@ -69,25 +85,40 @@ impl TradeWsClient {
         ping_interval_ms: u64,
         max_inflight: usize,
         login_payload: Option<String>,
+        gate_ws_kind: Option<gate_ws::GateWsKind>,
+        query_resp_tx: Option<mpsc::UnboundedSender<QueryExecOutcome>>,
         cmd_rx: mpsc::UnboundedReceiver<WsCommand>,
         resp_tx: mpsc::UnboundedSender<TradeExecOutcome>,
     ) -> Self {
-        let (login_payload, okex_creds) = if exchange == Exchange::Okex {
-            // OKX login must use a fresh timestamp (signed) on each connect/reconnect.
-            // Keep credentials and rebuild payload in `run()`.
-            let creds = OkexCredentials::from_env().unwrap_or_else(|e| {
-                panic!(
-                    "OKEx requires environment variables OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE: {}",
-                    e
-                )
-            });
-            info!(
-                "OKEx credentials loaded from environment for ws client id={}",
-                id
-            );
-            (None, Some(creds))
-        } else {
-            (login_payload, None)
+        let (login_payload, okex_creds, gate_creds) = match exchange {
+            Exchange::Okex => {
+                // OKX login must use a fresh timestamp (signed) on each connect/reconnect.
+                let creds = OkexCredentials::from_env().unwrap_or_else(|e| {
+                    panic!(
+                        "OKEx requires environment variables OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE: {}",
+                        e
+                    )
+                });
+                info!(
+                    "OKEx credentials loaded from environment for ws client id={}",
+                    id
+                );
+                (None, Some(creds), None)
+            }
+            Exchange::Gate => {
+                let creds = GateCredentials::from_env().unwrap_or_else(|e| {
+                    panic!(
+                        "Gate requires environment variables GATE_API_KEY, GATE_API_SECRET: {}",
+                        e
+                    )
+                });
+                info!(
+                    "Gate credentials loaded from environment for ws client id={}",
+                    id
+                );
+                (None, None, Some(creds))
+            }
+            _ => (login_payload, None, None),
         };
 
         Self {
@@ -100,17 +131,33 @@ impl TradeWsClient {
             max_inflight,
             login_payload,
             okex_creds,
+            gate_creds,
+            gate_ws_kind,
             cmd_rx,
             resp_tx,
+            query_resp_tx,
             pending: VecDeque::new(),
+            pending_query: VecDeque::new(),
             inflight: HashMap::new(),
+            query_inflight: HashMap::new(),
             last_dispatched_type: match exchange {
                 Exchange::Okex => TradeRequestType::OkexNewUMOrder,
+                Exchange::Gate => gate_ws_kind
+                    .unwrap_or(gate_ws::GateWsKind::SpotUnified)
+                    .default_request_type(),
                 _ => TradeRequestType::BinanceNewUMOrder,
+            },
+            last_dispatched_query_type: match exchange {
+                Exchange::Gate => match gate_ws_kind.unwrap_or(gate_ws::GateWsKind::SpotUnified) {
+                    gate_ws::GateWsKind::SpotUnified => QueryRequestType::GateUnifiedOrderQuery,
+                    gate_ws::GateWsKind::FuturesUsdt => QueryRequestType::GateFuturesOrderQuery,
+                },
+                _ => QueryRequestType::GateUnifiedOrderQuery,
             },
             shutdown: false,
             should_reconnect: false,
             last_okex_login_ts: None,
+            last_gate_login_req_id: None,
         }
     }
 
@@ -136,6 +183,14 @@ impl TradeWsClient {
                             self.pending.push_back(msg);
                             continue;
                         }
+                        Some(WsCommand::SendQuery(msg)) => {
+                            debug!(
+                                "trade ws client id={} queued query while disconnected client_query_id={}",
+                                self.id, msg.client_query_id
+                            );
+                            self.pending_query.push_back(msg);
+                            continue;
+                        }
                         Some(WsCommand::Shutdown) | None => {
                             info!("trade ws client id={} shutdown requested while disconnected", self.id);
                             self.shutdown = true;
@@ -155,6 +210,21 @@ impl TradeWsClient {
                                 self.okex_creds
                                     .as_ref()
                                     .map(|c| c.build_login_message().to_string())
+                            } else if self.exchange == Exchange::Gate {
+                                self.gate_creds.as_ref().map(|c| {
+                                    let kind = self
+                                        .gate_ws_kind
+                                        .unwrap_or(gate_ws::GateWsKind::SpotUnified);
+                                    let (payload, req_id) = if kind
+                                        == gate_ws::GateWsKind::SpotUnified
+                                    {
+                                        gate_ws::build_login_message(c)
+                                    } else {
+                                        gate_ws::build_login_message_with_kind(c, kind)
+                                    };
+                                    self.last_gate_login_req_id = Some(req_id);
+                                    payload
+                                })
                             } else {
                                 self.login_payload.clone()
                             };
@@ -167,10 +237,11 @@ impl TradeWsClient {
                                     .unwrap_or(0);
                                 let now_ms = chrono::Utc::now().timestamp_millis();
                                 info!(
-                                    "trade ws client id={} sending login payload ({} bytes) okx_ts={:?} local_unix_s={} local_unix_ms={}",
+                                    "trade ws client id={} sending login payload ({} bytes) okx_ts={:?} gate_req_id={:?} local_unix_s={} local_unix_ms={}",
                                     self.id,
                                     payload.len(),
                                     self.last_okex_login_ts.as_deref(),
+                                    self.last_gate_login_req_id.as_deref(),
                                     now_s,
                                     now_ms
                                 );
@@ -215,6 +286,13 @@ impl TradeWsClient {
                             );
                             self.pending.push_back(msg);
                         }
+                        Some(WsCommand::SendQuery(msg)) => {
+                            debug!(
+                                "trade ws client id={} queued query during backoff client_query_id={}",
+                                self.id, msg.client_query_id
+                            );
+                            self.pending_query.push_back(msg);
+                        }
                         Some(WsCommand::Shutdown) | None => {
                             info!("trade ws client id={} shutdown requested during backoff", self.id);
                             self.shutdown = true;
@@ -243,6 +321,13 @@ impl TradeWsClient {
                         Some(WsCommand::Send(msg)) => {
                             debug!("trade ws client id={} received order client_order_id={}", self.id, msg.client_order_id);
                             self.handle_send(msg, ws).await?;
+                        }
+                        Some(WsCommand::SendQuery(msg)) => {
+                            debug!(
+                                "trade ws client id={} received query client_query_id={}",
+                                self.id, msg.client_query_id
+                            );
+                            self.handle_send_query(msg, ws).await?;
                         }
                         Some(WsCommand::Shutdown) => {
                             info!("trade ws client id={} received shutdown signal", self.id);
@@ -378,6 +463,31 @@ impl TradeWsClient {
         self.flush_pending(ws).await
     }
 
+    async fn handle_send_query(
+        &mut self,
+        msg: QueryRequestMsg,
+        ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+    ) -> Result<()> {
+        if self.query_resp_tx.is_none() {
+            return Ok(());
+        }
+        if self.pending_query.len() >= self.max_inflight {
+            let reason = format!(
+                "ws query inflight limit exceeded (limit={}, pending={})",
+                self.max_inflight,
+                self.pending_query.len()
+            );
+            warn!(
+                "trade ws client id={} rejecting query {}: {}",
+                self.id, msg.client_query_id, reason
+            );
+            self.notify_query_rejected(&msg);
+            return Ok(());
+        }
+        self.pending_query.push_back(msg);
+        self.flush_pending(ws).await
+    }
+
     async fn flush_pending(
         &mut self,
         ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
@@ -394,6 +504,17 @@ impl TradeWsClient {
             self.track_inflight(&msg);
             self.notify_sent(&msg);
         }
+        while let Some(msg) = self.pending_query.pop_front() {
+            if let Err(err) = self.send_one_query(ws, &msg).await {
+                warn!(
+                    "trade ws client id={} send failed for query {}: {}",
+                    self.id, msg.client_query_id, err
+                );
+                self.pending_query.push_front(msg);
+                return Err(err);
+            }
+            self.track_inflight_query(&msg);
+        }
         Ok(())
     }
 
@@ -407,9 +528,20 @@ impl TradeWsClient {
         Ok(())
     }
 
+    async fn send_one_query(
+        &self,
+        ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+        msg: &QueryRequestMsg,
+    ) -> Result<()> {
+        let payload = self.build_query_payload(msg)?;
+        ws.send(Message::Text(payload)).await?;
+        Ok(())
+    }
+
     fn build_payload(&self, msg: &TradeRequestMsg) -> Result<String> {
         match self.exchange {
             Exchange::Okex => self.build_okex_payload(msg),
+            Exchange::Gate => self.build_gate_payload(msg),
             _ => {
                 let params_b64 = BASE64_STANDARD.encode(&msg.params);
                 let payload = json!({
@@ -421,6 +553,16 @@ impl TradeWsClient {
                 });
                 serde_json::to_string(&payload).with_context(|| "serialize ws payload")
             }
+        }
+    }
+
+    fn build_query_payload(&self, msg: &QueryRequestMsg) -> Result<String> {
+        match self.exchange {
+            Exchange::Gate => gate_ws::build_query_payload(msg),
+            _ => Err(anyhow!(
+                "unsupported query ws payload for exchange {:?}",
+                self.exchange
+            )),
         }
     }
 
@@ -464,9 +606,19 @@ impl TradeWsClient {
         serde_json::to_string(&payload).with_context(|| "serialize okex ws payload")
     }
 
+    fn build_gate_payload(&self, msg: &TradeRequestMsg) -> Result<String> {
+        gate_ws::build_api_payload(msg)
+    }
+
     fn track_inflight(&mut self, msg: &TradeRequestMsg) {
         self.inflight.insert(msg.client_order_id, msg.req_type);
         self.last_dispatched_type = msg.req_type;
+    }
+
+    fn track_inflight_query(&mut self, msg: &QueryRequestMsg) {
+        self.query_inflight
+            .insert(msg.client_query_id, msg.req_type);
+        self.last_dispatched_query_type = msg.req_type;
     }
 
     fn notify_sent(&self, msg: &TradeRequestMsg) {
@@ -508,6 +660,10 @@ impl TradeWsClient {
             ip_used_weight_1m: None,
             order_count_1m: None,
         });
+    }
+
+    fn notify_query_rejected(&self, msg: &QueryRequestMsg) {
+        self.publish_gate_query_error(msg.req_type, msg.client_query_id);
     }
 
     async fn handle_incoming(
@@ -675,6 +831,10 @@ impl TradeWsClient {
             }
         }
 
+        if self.exchange == Exchange::Gate && self.handle_gate_payload(payload) {
+            return;
+        }
+
         let (req_type, client_order_id) = self.extract_correlated(payload);
         if self.exchange == Exchange::Okex {
             if let Some(resp) = OkexWsOrderResponse::from_json_str(payload) {
@@ -734,6 +894,236 @@ impl TradeWsClient {
         None
     }
 
+    fn handle_gate_payload(&mut self, payload: &str) -> bool {
+        let Ok(json_val) = serde_json::from_str::<Value>(payload) else {
+            return false;
+        };
+
+        let channel = json_val
+            .get("channel")
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                json_val
+                    .get("header")
+                    .and_then(|h| h.get("channel"))
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or("");
+
+        if channel.eq_ignore_ascii_case("spot.login") || channel.eq_ignore_ascii_case("futures.login")
+        {
+            let errs = json_val
+                .get("data")
+                .and_then(|d| d.get("errs"))
+                .and_then(|v| v.as_object());
+            if let Some(errs) = errs {
+                let label = errs
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let msg = errs
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                warn!(
+                    "trade ws client id={} Gate login failed: label={} msg={}",
+                    self.id, label, msg
+                );
+            } else {
+                info!(
+                    "trade ws client id={} Gate login ok req_id={:?}",
+                    self.id,
+                    self.last_gate_login_req_id.as_deref()
+                );
+            }
+            return true;
+        }
+
+        if channel.eq_ignore_ascii_case("spot.order_status")
+            || channel.eq_ignore_ascii_case("futures.order_status")
+        {
+            return self.handle_gate_order_status(&json_val, payload, channel);
+        }
+
+        if channel != "spot.order_place"
+            && channel != "spot.order_cancel"
+            && channel != "futures.order_place"
+            && channel != "futures.order_cancel"
+        {
+            return false;
+        }
+
+        if json_val.get("ack").and_then(|v| v.as_bool()) == Some(true) {
+            return true;
+        }
+
+        let client_order_id = Self::extract_gate_client_order_id(&json_val).unwrap_or(0);
+        if client_order_id <= 0 {
+            return false;
+        }
+
+        let req_type = self
+            .inflight
+            .remove(&client_order_id)
+            .unwrap_or(self.last_dispatched_type);
+        let status = Self::extract_gate_status(&json_val);
+        self.publish_gate_ws_response(client_order_id, req_type, status, payload.to_string());
+        true
+    }
+
+    fn handle_gate_order_status(&mut self, json_val: &Value, payload: &str, channel: &str) -> bool {
+        if json_val.get("ack").and_then(|v| v.as_bool()) == Some(true) {
+            return true;
+        }
+
+        let default_req_type = if channel.eq_ignore_ascii_case("futures.order_status") {
+            QueryRequestType::GateFuturesOrderQuery
+        } else {
+            QueryRequestType::GateUnifiedOrderQuery
+        };
+
+        let client_query_id = Self::extract_gate_request_id(json_val).unwrap_or(0);
+        let req_type = if client_query_id > 0 {
+            self.query_inflight
+                .remove(&client_query_id)
+                .unwrap_or(default_req_type)
+        } else {
+            default_req_type
+        };
+
+        let status = Self::extract_gate_status(json_val);
+        if !(200..300).contains(&(status as u32)) {
+            self.publish_gate_query_error(req_type, client_query_id);
+            return true;
+        }
+
+        let parsed = if channel.eq_ignore_ascii_case("futures.order_status") {
+            parse_gate_futures_order_status_json(payload)
+        } else {
+            parse_gate_spot_order_status_json(payload)
+        };
+
+        if let Some(parsed) = parsed {
+            self.publish_gate_query_response(req_type, client_query_id, status, parsed.to_bytes());
+        } else {
+            self.publish_gate_query_error(req_type, client_query_id);
+        }
+
+        true
+    }
+
+    fn extract_gate_client_order_id(val: &Value) -> Option<i64> {
+        fn parse_i64_value(v: &Value) -> Option<i64> {
+            if let Some(n) = v.as_i64() {
+                return Some(n);
+            }
+            if let Some(n) = v.as_u64() {
+                return Some(n as i64);
+            }
+            if let Some(s) = v.as_str() {
+                if let Ok(parsed) = s.parse::<i64>() {
+                    return Some(parsed);
+                }
+            }
+            None
+        }
+
+        if let Some(id) = val.get("request_id").and_then(parse_i64_value) {
+            return Some(id);
+        }
+
+        if let Some(text) = val.pointer("/data/result/text") {
+            if let Some(id) = parse_i64_value(text) {
+                return Some(id);
+            }
+        }
+
+        if let Some(text) = val.pointer("/data/result/req_param/text") {
+            if let Some(id) = parse_i64_value(text) {
+                return Some(id);
+            }
+        }
+
+        if let Some(order_id) = val.pointer("/data/result/req_param/order_id") {
+            if let Some(id) = parse_i64_value(order_id) {
+                return Some(id);
+            }
+        }
+
+        None
+    }
+
+    fn extract_gate_request_id(val: &Value) -> Option<i64> {
+        fn parse_i64_value(v: &Value) -> Option<i64> {
+            if let Some(n) = v.as_i64() {
+                return Some(n);
+            }
+            if let Some(n) = v.as_u64() {
+                return Some(n as i64);
+            }
+            if let Some(s) = v.as_str() {
+                if let Ok(parsed) = s.parse::<i64>() {
+                    return Some(parsed);
+                }
+            }
+            None
+        }
+
+        if let Some(id) = val.get("request_id").and_then(parse_i64_value) {
+            return Some(id);
+        }
+        if let Some(id) = val.pointer("/header/request_id").and_then(parse_i64_value) {
+            return Some(id);
+        }
+        if let Some(text) = val.pointer("/data/result/text").and_then(parse_i64_value) {
+            return Some(text);
+        }
+        if let Some(order_id) = val
+            .pointer("/data/result/order_id")
+            .and_then(parse_i64_value)
+        {
+            return Some(order_id);
+        }
+        if let Some(order_id) = val.pointer("/data/result/id").and_then(parse_i64_value) {
+            return Some(order_id);
+        }
+        None
+    }
+
+    fn extract_gate_status(val: &Value) -> u16 {
+        let status = val
+            .get("header")
+            .and_then(|h| h.get("status"))
+            .and_then(|v| {
+                if let Some(n) = v.as_u64() {
+                    return u16::try_from(n).ok();
+                }
+                if let Some(n) = v.as_i64() {
+                    return u16::try_from(n).ok();
+                }
+                if let Some(s) = v.as_str() {
+                    return s.parse::<u16>().ok();
+                }
+                None
+            })
+            .unwrap_or(0);
+
+        let has_errs = val
+            .get("data")
+            .and_then(|d| d.get("errs"))
+            .is_some();
+
+        if has_errs && (200..300).contains(&(status as u32)) {
+            return 400;
+        }
+
+        if status == 0 {
+            206
+        } else {
+            status
+        }
+    }
+
     fn publish_generic_response(
         &self,
         client_order_id: i64,
@@ -769,6 +1159,62 @@ impl TradeWsClient {
             ip_used_weight_1m: None,
             order_count_1m: None,
         });
+    }
+
+    fn publish_gate_ws_response(
+        &self,
+        client_order_id: i64,
+        req_type: TradeRequestType,
+        status: u16,
+        body: String,
+    ) {
+        let body_payload = json!({
+            "transport": "ws",
+            "encoding": "text",
+            "payload": body,
+            "endpointId": self.id,
+            "localIp": self.local_ip.to_string(),
+        })
+        .to_string();
+        let _ = self.resp_tx.send(TradeExecOutcome {
+            req_type,
+            client_order_id,
+            status,
+            body: body_payload,
+            exchange: self.exchange,
+            ip_used_weight_1m: None,
+            order_count_1m: None,
+        });
+    }
+
+    fn publish_gate_query_response(
+        &self,
+        req_type: QueryRequestType,
+        client_query_id: i64,
+        status: u16,
+        body: Bytes,
+    ) {
+        let Some(tx) = &self.query_resp_tx else {
+            return;
+        };
+        let _ = tx.send(QueryExecOutcome {
+            req_type,
+            client_query_id,
+            status,
+            body,
+            exchange: self.exchange,
+            ip_used_weight_1m: None,
+            query_count_1m: None,
+        });
+    }
+
+    fn publish_gate_query_error(&self, req_type: QueryRequestType, client_query_id: i64) {
+        self.publish_gate_query_response(
+            req_type,
+            client_query_id,
+            400,
+            Bytes::from_static(b"E"),
+        );
     }
 
     fn publish_okex_ws_response(

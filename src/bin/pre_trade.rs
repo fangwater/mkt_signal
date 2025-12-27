@@ -266,16 +266,22 @@ async fn main() -> Result<()> {
                         || hedge_venue.trade_engine_exchange() == "binance";
                     let need_okex = open_venue.trade_engine_exchange() == "okex"
                         || hedge_venue.trade_engine_exchange() == "okex";
+                    let need_gate = open_venue.trade_engine_exchange() == "gate"
+                        || hedge_venue.trade_engine_exchange() == "gate";
 
                     let need_binance_balance = need_binance;
                     let need_binance_um = need_binance;
                     let need_okex_balance = need_okex;
                     let need_okex_swap_positions = need_okex;
+                    let need_gate_balance = need_gate;
+                    let need_gate_positions = need_gate;
 
                     if !need_binance_balance
                         && !need_binance_um
                         && !need_okex_balance
                         && !need_okex_swap_positions
+                        && !need_gate_balance
+                        && !need_gate_positions
                     {
                         info!(
                             "snapshot query skipped: venues are {:?}/{:?}; relying on account stream",
@@ -330,6 +336,28 @@ async fn main() -> Result<()> {
                             );
                             let _ = QueryEngHub::publish_query_request("okex", &req.to_bytes());
                             info!("snapshot query sent: okex positions snapshot (instType=SWAP)");
+                        }
+                        if need_gate_balance {
+                            let now = get_timestamp_us();
+                            let req = GenericQueryRequest::create(
+                                QueryRequestType::GateUnifiedBalanceSnapshot,
+                                now,
+                                now,
+                                Bytes::new(),
+                            );
+                            let _ = QueryEngHub::publish_query_request("gate", &req.to_bytes());
+                            info!("snapshot query sent: gate unified balance snapshot");
+                        }
+                        if need_gate_positions {
+                            let now = get_timestamp_us();
+                            let req = GenericQueryRequest::create(
+                                QueryRequestType::GateUnifiedPositionsSnapshot,
+                                now,
+                                now,
+                                Bytes::new(),
+                            );
+                            let _ = QueryEngHub::publish_query_request("gate", &req.to_bytes());
+                            info!("snapshot query sent: gate futures positions snapshot (includes upl)");
                         }
                     };
 

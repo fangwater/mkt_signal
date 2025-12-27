@@ -5,7 +5,8 @@ use crate::trade_engine::okex::{
 use crate::trade_engine::trade_request::BinanceNewMarginOrderRequest;
 use crate::trade_engine::trade_request::BinanceNewUMOrderRequest;
 use crate::trade_engine::trade_request::{
-    BinanceCancelMarginOrderRequest, BinanceCancelUMOrderRequest,
+    BinanceCancelMarginOrderRequest, BinanceCancelUMOrderRequest, GateFuturesCancelOrderRequest,
+    GateFuturesNewOrderRequest, GateUnifiedCancelOrderRequest, GateUnifiedNewOrderRequest,
 };
 use crate::{common::time_util::get_timestamp_us, signal::common::TradingVenue};
 use bytes::Bytes;
@@ -81,6 +82,21 @@ pub(crate) fn okex_inst_id_from_symbol(
     }
 }
 
+pub fn gate_currency_pair_from_symbol(symbol: &str) -> String {
+    let mut upper = symbol.to_ascii_uppercase();
+    if upper.contains("-SWAP") {
+        upper = upper.replace("-SWAP", "");
+    }
+    if upper.contains('_') {
+        return upper;
+    }
+    if upper.contains('-') {
+        return upper.replace('-', "_");
+    }
+    let (base, quote) = extract_assets_from_symbol(&upper);
+    format!("{base}_{quote}")
+}
+
 fn okex_order_type_from_order_type(order_type: OrderType) -> Result<OkexOrderType, String> {
     match order_type {
         OrderType::Market => Ok(OkexOrderType::Market),
@@ -91,6 +107,7 @@ fn okex_order_type_from_order_type(order_type: OrderType) -> Result<OkexOrderTyp
 }
 
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Side {
@@ -644,6 +661,31 @@ impl Order {
                 .ok_or_else(|| "failed to build okex cancel request".to_string())?;
                 Ok(request.to_bytes())
             }
+            TradingVenue::GateMargin => {
+                let currency_pair = gate_currency_pair_from_symbol(&self.symbol);
+                let order_id = self.exchange_order_id.unwrap_or(self.client_order_id);
+                let req_param = json!({
+                    "order_id": order_id.to_string(),
+                    "currency_pair": currency_pair,
+                    "account": "unified",
+                });
+                let params = Bytes::from(req_param.to_string());
+                let request =
+                    GateUnifiedCancelOrderRequest::create(now, self.client_order_id, params);
+                Ok(request.to_bytes())
+            }
+            TradingVenue::GateFutures => {
+                let contract = gate_currency_pair_from_symbol(&self.symbol);
+                let order_id = self.exchange_order_id.unwrap_or(self.client_order_id);
+                let req_param = json!({
+                    "order_id": order_id.to_string(),
+                    "contract": contract,
+                });
+                let params = Bytes::from(req_param.to_string());
+                let request =
+                    GateFuturesCancelOrderRequest::create(now, self.client_order_id, params);
+                Ok(request.to_bytes())
+            }
             _ => Err(format!("Unsupported trading venue: {:?}", self.venue)),
         }
     }
@@ -768,6 +810,82 @@ impl Order {
                     _ => None,
                 }
                 .ok_or_else(|| "failed to build okex new order request".to_string())?;
+                Ok(request.to_bytes())
+            }
+            TradingVenue::GateMargin => {
+                let create_ts = get_timestamp_us();
+                let currency_pair = gate_currency_pair_from_symbol(&self.symbol);
+                let order_type = match self.order_type {
+                    OrderType::Limit | OrderType::LimitMaker => "limit",
+                    OrderType::Market => "market",
+                    _ => {
+                        return Err(format!(
+                            "unsupported gate order type: {:?}",
+                            self.order_type
+                        ));
+                    }
+                };
+                let time_in_force = match self.order_type {
+                    OrderType::Limit => Some("gtc"),
+                    OrderType::LimitMaker => Some("poc"),
+                    OrderType::Market => None,
+                    _ => None,
+                };
+
+                let mut req_param = serde_json::Map::new();
+                req_param.insert("text".to_string(), json!(self.client_order_id.to_string()));
+                req_param.insert("currency_pair".to_string(), json!(currency_pair));
+                req_param.insert("type".to_string(), json!(order_type));
+                req_param.insert("account".to_string(), json!("unified"));
+                req_param.insert("side".to_string(), json!(self.side.as_str_lower()));
+                req_param.insert(
+                    "amount".to_string(),
+                    json!(format_quantity(self.quantity)),
+                );
+                if self.order_type.is_limit() {
+                    req_param.insert("price".to_string(), json!(format_price(self.price)));
+                }
+                if let Some(tif) = time_in_force {
+                    req_param.insert("time_in_force".to_string(), json!(tif));
+                }
+
+                let params = Bytes::from(Value::Object(req_param).to_string());
+                let request =
+                    GateUnifiedNewOrderRequest::create(create_ts, self.client_order_id, params);
+                Ok(request.to_bytes())
+            }
+            TradingVenue::GateFutures => {
+                let create_ts = get_timestamp_us();
+                let contract = gate_currency_pair_from_symbol(&self.symbol);
+                let time_in_force = match self.order_type {
+                    OrderType::Limit => Some("gtc"),
+                    OrderType::LimitMaker => Some("poc"),
+                    OrderType::Market => Some("ioc"),
+                    _ => None,
+                };
+
+                let signed_size = match self.side {
+                    Side::Buy => self.quantity,
+                    Side::Sell => -self.quantity,
+                };
+
+                let mut req_param = serde_json::Map::new();
+                req_param.insert("text".to_string(), json!(self.client_order_id.to_string()));
+                req_param.insert("contract".to_string(), json!(contract));
+                req_param.insert("size".to_string(), json!(format_quantity(signed_size)));
+
+                if self.order_type.is_limit() {
+                    req_param.insert("price".to_string(), json!(format_price(self.price)));
+                } else {
+                    req_param.insert("price".to_string(), json!("0"));
+                }
+                if let Some(tif) = time_in_force {
+                    req_param.insert("tif".to_string(), json!(tif));
+                }
+
+                let params = Bytes::from(Value::Object(req_param).to_string());
+                let request =
+                    GateFuturesNewOrderRequest::create(create_ts, self.client_order_id, params);
                 Ok(request.to_bytes())
             }
             //之后在这支持别的类型下单，根据资产类型决定下单的request，统一序列化为bytes

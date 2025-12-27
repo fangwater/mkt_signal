@@ -90,11 +90,40 @@ impl SymbolMapper for BinanceSymbolMapper {
     }
 }
 
+/// Gate 的 symbol 映射实现
+#[derive(Debug)]
+pub struct GateSymbolMapper;
+
+impl SymbolMapper for GateSymbolMapper {
+    fn balance_asset_to_um_symbol(&self, asset: &str) -> String {
+        let upper = asset.to_uppercase();
+        if upper == "USDT" {
+            "USDT".to_string()
+        } else {
+            format!("{}USDT", upper)
+        }
+    }
+
+    fn inst_id_to_base_asset(&self, inst_id: &str) -> Option<String> {
+        extract_base_asset(inst_id)
+    }
+
+    fn asset_to_price_symbol(&self, asset: &str) -> String {
+        let upper = asset.to_uppercase();
+        if upper == "USDT" {
+            "USDT".to_string()
+        } else {
+            format!("{}USDT", upper)
+        }
+    }
+}
+
 /// 根据交易所创建对应的 SymbolMapper
 pub fn create_symbol_mapper(exchange: Exchange) -> Box<dyn SymbolMapper> {
     match exchange {
         Exchange::Okex => Box::new(OkexSymbolMapper),
         Exchange::Binance => Box::new(BinanceSymbolMapper),
+        Exchange::Gate => Box::new(GateSymbolMapper),
         _ => panic!("SymbolMapper not implemented for {:?}", exchange),
     }
 }

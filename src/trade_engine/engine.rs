@@ -7,13 +7,15 @@ use crate::trade_engine::query_parsers::binance_margin_order::parse_binance_marg
 use crate::trade_engine::query_parsers::binance_pm_balance_snapshot::parse_binance_pm_balance_snapshot;
 use crate::trade_engine::query_parsers::binance_um_account_snapshot::parse_binance_um_account_snapshot;
 use crate::trade_engine::query_parsers::binance_um_order::parse_binance_um_order_query_json;
+use crate::trade_engine::query_parsers::gate_positions_snapshot::parse_gate_positions_snapshot;
+use crate::trade_engine::query_parsers::gate_unified_balance_snapshot::parse_gate_unified_balance_snapshot;
 use crate::trade_engine::query_parsers::okex_account_balance_snapshot::parse_okex_account_balance_snapshot;
 use crate::trade_engine::query_parsers::okex_order::parse_okex_order_query_json;
 use crate::trade_engine::query_parsers::okex_positions_snapshot::parse_okex_positions_snapshot;
 use crate::trade_engine::query_request::QueryRequestMsg;
 use crate::trade_engine::query_response_handle::{spawn_query_response_handle, QueryExecOutcome};
 use crate::trade_engine::query_type_mapping::QueryTypeMapping;
-use crate::trade_engine::trade_request::TradeRequestMsg;
+use crate::trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
 use crate::trade_engine::trade_response_handle::{spawn_response_handle, TradeExecOutcome};
 use crate::trade_engine::trade_type_mapping::TradeTypeMapping;
 use crate::trade_engine::ws_client::{TradeWsClient, WsCommand};
@@ -190,6 +192,9 @@ impl TradeEngine {
         // 初始化 WebSocket 客户端（用于 OKEx）
         let mut worker_handles: Vec<(&'static str, tokio::task::JoinHandle<()>)> = Vec::new();
 
+        let mut gate_futures_ws_endpoints: Option<Vec<tokio::sync::mpsc::UnboundedSender<WsCommand>>> =
+            None;
+
         let ws_endpoints = if exchange == Exchange::Okex {
             let mut local_ips = self.local_ips.clone();
             if local_ips.is_empty() {
@@ -231,6 +236,8 @@ impl TradeEngine {
                     ping_interval_ms,
                     max_inflight,
                     None, // OKEx 认证会自动从环境变量读取
+                    None,
+                    None,
                     rx,
                     resp_tx.clone(),
                 );
@@ -247,17 +254,91 @@ impl TradeEngine {
                 endpoints.push(tx);
             }
             Some(endpoints)
+        } else if exchange == Exchange::Gate {
+            let mut local_ips = self.local_ips.clone();
+            if local_ips.is_empty() {
+                warn!("gate ws local_ips empty; using default binding 0.0.0.0");
+                local_ips.push("0.0.0.0".parse()?);
+            }
+
+            let connect_timeout_ms = WsConstants::CONNECT_TIMEOUT_MS;
+            let ping_interval_ms = WsConstants::PING_INTERVAL_MS;
+            let max_inflight = WsConstants::MAX_INFLIGHT;
+
+            let mut spot_endpoints = Vec::with_capacity(local_ips.len());
+            let mut futures_endpoints = Vec::with_capacity(local_ips.len());
+
+            for (idx, ip) in local_ips.into_iter().enumerate() {
+                let (spot_tx, spot_rx) = tokio::sync::mpsc::unbounded_channel();
+                let spot_client = TradeWsClient::new(
+                    idx,
+                    exchange,
+                    ip,
+                    WsConstants::GATE_SPOT_WS_URL.to_string(),
+                    connect_timeout_ms,
+                    ping_interval_ms,
+                    max_inflight,
+                    None,
+                    Some(crate::trade_engine::gate_ws::GateWsKind::SpotUnified),
+                    Some(query_resp_tx.clone()),
+                    spot_rx,
+                    resp_tx.clone(),
+                );
+                info!(
+                    "spawning gate spot ws client id={} ip={} max_inflight={}",
+                    idx,
+                    spot_client.local_ip(),
+                    max_inflight
+                );
+                let handle = tokio::task::spawn_local(async move {
+                    spot_client.run().await;
+                });
+                worker_handles.push(("gate_spot_ws_client", handle));
+                spot_endpoints.push(spot_tx);
+
+                let (fut_tx, fut_rx) = tokio::sync::mpsc::unbounded_channel();
+                let fut_client = TradeWsClient::new(
+                    idx,
+                    exchange,
+                    ip,
+                    WsConstants::GATE_FUTURES_WS_URL.to_string(),
+                    connect_timeout_ms,
+                    ping_interval_ms,
+                    max_inflight,
+                    None,
+                    Some(crate::trade_engine::gate_ws::GateWsKind::FuturesUsdt),
+                    Some(query_resp_tx.clone()),
+                    fut_rx,
+                    resp_tx.clone(),
+                );
+                info!(
+                    "spawning gate futures ws client id={} ip={} max_inflight={}",
+                    idx,
+                    fut_client.local_ip(),
+                    max_inflight
+                );
+                let handle = tokio::task::spawn_local(async move {
+                    fut_client.run().await;
+                });
+                worker_handles.push(("gate_futures_ws_client", handle));
+                futures_endpoints.push(fut_tx);
+            }
+
+            gate_futures_ws_endpoints = Some(futures_endpoints);
+            Some(spot_endpoints)
         } else {
             None
         };
 
         // Spawn unified request router
         let ws_endpoints_for_req_worker = ws_endpoints.clone();
+        let gate_futures_ws_endpoints_for_req_worker = gate_futures_ws_endpoints.clone();
         let rest_dispatcher_for_orders = rest_dispatcher.clone();
         let resp_tx_for_req_worker = resp_tx.clone();
         let exchange_for_req_worker = exchange;
         let req_worker = tokio::task::spawn_local(async move {
             let mut ws_endpoints = ws_endpoints_for_req_worker;
+            let mut gate_futures_ws_endpoints = gate_futures_ws_endpoints_for_req_worker;
             let mut ws_rr_cursor = 0usize; // 轮询计数器
             let rest_dispatcher = rest_dispatcher_for_orders;
 
@@ -269,8 +350,19 @@ impl TradeEngine {
 
                 // 根据 mapping 判断是否走 WebSocket
                 if TradeTypeMapping::is_websocket(msg.req_type) {
+                    let target_endpoints = if exchange_for_req_worker == Exchange::Gate
+                        && matches!(
+                            msg.req_type,
+                            TradeRequestType::GateFuturesNewOrder
+                                | TradeRequestType::GateFuturesCancelOrder
+                        ) {
+                        gate_futures_ws_endpoints.as_mut()
+                    } else {
+                        ws_endpoints.as_mut()
+                    };
+
                     // 走 WebSocket - 直接轮询分配
-                    if let Some(ref mut endpoints) = ws_endpoints {
+                    if let Some(ref mut endpoints) = target_endpoints {
                         let len = endpoints.len();
                         if len == 0 {
                             warn!("no websocket endpoints available");
@@ -409,10 +501,17 @@ impl TradeEngine {
             let rest_dispatcher = rest_dispatcher.clone();
             let exchange_copy = exchange;
             let query_resp_tx = query_resp_tx.clone();
+            let gate_spot_ws_endpoints = ws_endpoints.clone();
+            let gate_futures_ws_endpoints = gate_futures_ws_endpoints.clone();
             let query_router = tokio::task::spawn_local(async move {
                 let okex_http = reqwest::Client::new();
                 let okex_creds =
                     crate::portfolio_margin::okex_auth::OkexCredentials::from_env().ok();
+                let gate_http = reqwest::Client::new();
+                let gate_creds =
+                    crate::portfolio_margin::gate_auth::GateCredentials::from_env().ok();
+                let mut gate_query_rr = 0usize;
+                let mut gate_futures_query_rr = 0usize;
 
                 while let Some(msg) = query_req_rx.recv().await {
                     debug!(
@@ -728,6 +827,207 @@ impl TradeEngine {
                                                 }
                                             }
                                             warn!("okex positions snapshot parse produced no basic msgs; skipping response body");
+                                            bytes::Bytes::new()
+                                        }
+                                        _ => bytes::Bytes::from(body),
+                                    };
+                                    let _ = query_resp_tx.send(QueryExecOutcome {
+                                        req_type: msg.req_type,
+                                        client_query_id: msg.client_query_id,
+                                        status: status as u16,
+                                        body: body_bytes,
+                                        exchange: exchange_copy,
+                                        ip_used_weight_1m: None,
+                                        query_count_1m: None,
+                                    });
+                                }
+                                Err(e) => {
+                                    let _ = query_resp_tx.send(QueryExecOutcome {
+                                        req_type: msg.req_type,
+                                        client_query_id: msg.client_query_id,
+                                        status: 0,
+                                        body: bytes::Bytes::from(e.to_string()),
+                                        exchange: exchange_copy,
+                                        ip_used_weight_1m: None,
+                                        query_count_1m: None,
+                                    });
+                                }
+                            }
+                        }
+                        Exchange::Gate => {
+                            if matches!(
+                                msg.req_type,
+                                crate::trade_engine::query_request::QueryRequestType::GateUnifiedOrderQuery
+                                    | crate::trade_engine::query_request::QueryRequestType::GateFuturesOrderQuery
+                            ) {
+                                let target_endpoints = if matches!(
+                                    msg.req_type,
+                                    crate::trade_engine::query_request::QueryRequestType::GateFuturesOrderQuery
+                                ) {
+                                    gate_futures_ws_endpoints.as_ref()
+                                } else {
+                                    gate_spot_ws_endpoints.as_ref()
+                                };
+
+                                let Some(endpoints) = target_endpoints else {
+                                    let _ = query_resp_tx.send(QueryExecOutcome {
+                                        req_type: msg.req_type,
+                                        client_query_id: msg.client_query_id,
+                                        status: 503,
+                                        body: bytes::Bytes::from_static(
+                                            b"no gate ws endpoints available",
+                                        ),
+                                        exchange: exchange_copy,
+                                        ip_used_weight_1m: None,
+                                        query_count_1m: None,
+                                    });
+                                    continue;
+                                };
+                                if endpoints.is_empty() {
+                                    let _ = query_resp_tx.send(QueryExecOutcome {
+                                        req_type: msg.req_type,
+                                        client_query_id: msg.client_query_id,
+                                        status: 503,
+                                        body: bytes::Bytes::from_static(
+                                            b"no gate ws endpoints available",
+                                        ),
+                                        exchange: exchange_copy,
+                                        ip_used_weight_1m: None,
+                                        query_count_1m: None,
+                                    });
+                                    continue;
+                                }
+
+                                let (cursor, len) = if matches!(
+                                    msg.req_type,
+                                    crate::trade_engine::query_request::QueryRequestType::GateFuturesOrderQuery
+                                ) {
+                                    let len = endpoints.len();
+                                    let start = gate_futures_query_rr;
+                                    gate_futures_query_rr = (gate_futures_query_rr + 1) % len;
+                                    (start, len)
+                                } else {
+                                    let len = endpoints.len();
+                                    let start = gate_query_rr;
+                                    gate_query_rr = (gate_query_rr + 1) % len;
+                                    (start, len)
+                                };
+
+                                let mut sent = false;
+                                for offset in 0..len {
+                                    let idx = (cursor + offset) % len;
+                                    if endpoints[idx]
+                                        .send(WsCommand::SendQuery(msg.clone()))
+                                        .is_ok()
+                                    {
+                                        sent = true;
+                                        break;
+                                    }
+                                }
+
+                                if !sent {
+                                    let _ = query_resp_tx.send(QueryExecOutcome {
+                                        req_type: msg.req_type,
+                                        client_query_id: msg.client_query_id,
+                                        status: 503,
+                                        body: bytes::Bytes::from_static(
+                                            b"gate ws query dispatch failed",
+                                        ),
+                                        exchange: exchange_copy,
+                                        ip_used_weight_1m: None,
+                                        query_count_1m: None,
+                                    });
+                                }
+                                continue;
+                            }
+
+                            if !QueryTypeMapping::is_gate_rest(msg.req_type) {
+                                let _ = query_resp_tx.send(QueryExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_query_id: msg.client_query_id,
+                                    status: 400,
+                                    body: bytes::Bytes::from_static(
+                                        b"unsupported query type for gate engine",
+                                    ),
+                                    exchange: exchange_copy,
+                                    ip_used_weight_1m: None,
+                                    query_count_1m: None,
+                                });
+                                continue;
+                            }
+                            let Some(creds) = &gate_creds else {
+                                let _ = query_resp_tx.send(QueryExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_query_id: msg.client_query_id,
+                                    status: 401,
+                                    body: bytes::Bytes::from_static(
+                                        b"missing Gate credentials in env",
+                                    ),
+                                    exchange: exchange_copy,
+                                    ip_used_weight_1m: None,
+                                    query_count_1m: None,
+                                });
+                                continue;
+                            };
+
+                            let endpoint = QueryTypeMapping::get_endpoint(msg.req_type);
+                            let qs = std::str::from_utf8(&msg.params).unwrap_or("");
+
+                            match crate::trade_engine::gate_query::gate_rest_get(
+                                &gate_http,
+                                creds,
+                                endpoint,
+                                qs,
+                            )
+                            .await
+                            {
+                                Ok((status, body)) => {
+                                    let body_bytes = match msg.req_type {
+                                        crate::trade_engine::query_request::QueryRequestType::GateUnifiedBalanceSnapshot
+                                            if status == 200 =>
+                                        {
+                                            if let Some(msgs) =
+                                                parse_gate_unified_balance_snapshot(&body)
+                                            {
+                                                if !msgs.is_empty() {
+                                                    for payload in msgs {
+                                                        let _ = query_resp_tx.send(QueryExecOutcome {
+                                                            req_type: msg.req_type,
+                                                            client_query_id: msg.client_query_id,
+                                                            status: status as u16,
+                                                            body: payload,
+                                                            exchange: exchange_copy,
+                                                            ip_used_weight_1m: None,
+                                                            query_count_1m: None,
+                                                        });
+                                                    }
+                                                    continue;
+                                                }
+                                            }
+                                            warn!("gate unified balance snapshot parse produced no basic msgs; skipping response body");
+                                            bytes::Bytes::new()
+                                        }
+                                        crate::trade_engine::query_request::QueryRequestType::GateUnifiedPositionsSnapshot
+                                            if status == 200 =>
+                                        {
+                                            if let Some(msgs) = parse_gate_positions_snapshot(&body)
+                                            {
+                                                if !msgs.is_empty() {
+                                                    for payload in msgs {
+                                                        let _ = query_resp_tx.send(QueryExecOutcome {
+                                                            req_type: msg.req_type,
+                                                            client_query_id: msg.client_query_id,
+                                                            status: status as u16,
+                                                            body: payload,
+                                                            exchange: exchange_copy,
+                                                            ip_used_weight_1m: None,
+                                                            query_count_1m: None,
+                                                        });
+                                                    }
+                                                    continue;
+                                                }
+                                            }
+                                            warn!("gate positions snapshot parse produced no basic msgs; skipping response body");
                                             bytes::Bytes::new()
                                         }
                                         _ => bytes::Bytes::from(body),

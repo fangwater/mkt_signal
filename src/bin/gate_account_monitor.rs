@@ -19,7 +19,7 @@ use bytes::Bytes;
 use log::{debug, error, info, warn};
 use mkt_signal::common::basic_account_msg::{
     get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
-    GateBasicOrderMsg,
+    BasicUmUnrealizedMsg, GateBasicOrderMsg,
 };
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::default_parser::Parser;
@@ -403,6 +403,14 @@ fn log_parsed_event(msg: &Bytes) {
                 );
             }
         }
+        BasicAccountEventType::UnrealizedPnlUpdate => {
+            if let Ok(m) = BasicUmUnrealizedMsg::from_bytes(&payload) {
+                info!(
+                    "Gate UnrealizedPnl: ts={} inst={} side={} pnl={}",
+                    m.timestamp, m.inst_id, m.position_side, m.unrealized_pnl
+                );
+            }
+        }
         _ => {
             info!(
                 "Gate basic msg: type={:?} payload_len={}",
@@ -453,6 +461,9 @@ impl AccountEventDeduper {
             BasicAccountEventType::OrderUpdate => GateBasicOrderMsg::from_bytes(&payload)
                 .ok()
                 .map(|msg| self.key_order(&msg)),
+            BasicAccountEventType::UnrealizedPnlUpdate => BasicUmUnrealizedMsg::from_bytes(&payload)
+                .ok()
+                .map(|msg| self.key_unrealized_pnl(&msg)),
             _ => return true, // 其他类型直接转发
         };
 
@@ -522,6 +533,16 @@ impl AccountEventDeduper {
             msg.execution_type as u64,
             msg.order_status as u64,
             msg.cumulative_filled_quantity.to_bits(),
+        ])
+    }
+
+    fn key_unrealized_pnl(&self, msg: &BasicUmUnrealizedMsg) -> u64 {
+        self.hash64(&[
+            BasicAccountEventType::UnrealizedPnlUpdate as u32 as u64,
+            msg.timestamp as u64,
+            self.hash_str64(&msg.inst_id),
+            msg.position_side as u8 as u64,
+            msg.unrealized_pnl.to_bits(),
         ])
     }
 }

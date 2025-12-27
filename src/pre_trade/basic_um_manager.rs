@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use crate::common::{
-    basic_account_msg::BasicPositionMsg, exchange::Exchange, min_qty_table::MinQtyTable,
+    basic_account_msg::{BasicPositionMsg, BasicUmUnrealizedMsg},
+    exchange::Exchange,
+    min_qty_table::MinQtyTable,
 };
 use crate::pre_trade::net_position::NetPosition;
 
@@ -13,6 +15,8 @@ pub struct BasicUmPosition {
     pub side: char, // 'L' / 'S' / 'N'
     pub amount: f32,
     pub timestamp: i64, // uTime
+    /// 合约未实现盈亏（USDT 计价），当前未填充时为 0
+    pub unrealized_pnl_usdt: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +48,7 @@ impl BasicUmManager {
                 side,
                 amount: 0.0,
                 timestamp: msg.timestamp(),
+                unrealized_pnl_usdt: 0.0,
             });
 
         entry.exchange = self.exchange;
@@ -51,6 +56,31 @@ impl BasicUmManager {
         entry.side = side;
         entry.amount = msg.position_amount;
         entry.timestamp = msg.timestamp();
+    }
+
+    /// 应用未实现盈亏消息：按 inst_id+side 覆盖当前值。
+    pub fn apply_unrealized_pnl(&mut self, msg: &BasicUmUnrealizedMsg) {
+        let inst = msg.inst_id.clone();
+        let side = msg.position_side;
+        let key = format!("{}|{}", inst, side);
+
+        let entry = self
+            .positions
+            .entry(key)
+            .or_insert_with(|| BasicUmPosition {
+                exchange: self.exchange,
+                inst_id: inst.clone(),
+                side,
+                amount: 0.0,
+                timestamp: msg.timestamp,
+                unrealized_pnl_usdt: 0.0,
+            });
+
+        entry.exchange = self.exchange;
+        entry.inst_id = inst;
+        entry.side = side;
+        entry.timestamp = msg.timestamp;
+        entry.unrealized_pnl_usdt = msg.unrealized_pnl;
     }
 
     /// 获取单个 inst_id + side 的持仓。
@@ -62,6 +92,14 @@ impl BasicUmManager {
     /// 返回当前全部持仓的快照副本。
     pub fn snapshot(&self) -> Vec<BasicUmPosition> {
         self.positions.values().cloned().collect()
+    }
+
+    /// 汇总合约未实现盈亏（USDT 计价）。
+    pub fn total_unrealized_pnl_usdt(&self) -> f64 {
+        self.positions
+            .values()
+            .map(|p| p.unrealized_pnl_usdt)
+            .sum()
     }
 
     /// 计算指定 inst_id 的净持仓张数（long - short）

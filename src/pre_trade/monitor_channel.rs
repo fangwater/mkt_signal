@@ -9,16 +9,18 @@ use std::time::{Duration, Instant};
 
 use crate::common::basic_account_msg::{
     get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
-    BasicPositionMsg, BinanceBasicOrderMsg, OkexOrderMsg,
+    BasicPositionMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg, OkexOrderMsg,
 };
 use crate::common::exchange::Exchange;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::min_qty_table::MinQtyTable;
 use crate::portfolio_margin::pm_forwarder::{PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS};
 use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
+use crate::pre_trade::basic_exposure_manager::{BasicExposureEntry, BasicExposureManager};
 use crate::pre_trade::basic_um_manager::BasicUmManager;
 use crate::pre_trade::net_position::NetPosition;
-use crate::pre_trade::price_table::{PriceEntry, PriceTable};
+use crate::pre_trade::price_table::PriceTable;
+use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
 use crate::pre_trade::usdt_balance_manager::{UsdtBalanceManager, UsdtBalanceSnapshot};
 use crate::signal::common::{ExecutionType, TradingVenue};
@@ -33,14 +35,14 @@ const DEFAULT_NODE_PRE_TRADE_DERIVATIVES: &str = "pre_trade_derivatives";
 fn is_margin_venue(venue: TradingVenue) -> bool {
     matches!(
         venue,
-        TradingVenue::BinanceMargin | TradingVenue::OkexMargin
+        TradingVenue::BinanceMargin | TradingVenue::OkexMargin | TradingVenue::GateMargin
     )
 }
 
 fn is_futures_venue(venue: TradingVenue) -> bool {
     matches!(
         venue,
-        TradingVenue::BinanceFutures | TradingVenue::OkexFutures
+        TradingVenue::BinanceFutures | TradingVenue::OkexFutures | TradingVenue::GateFutures
     )
 }
 
@@ -48,6 +50,7 @@ fn exchange_from_venue(venue: TradingVenue) -> Exchange {
     match venue {
         TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => Exchange::Binance,
         TradingVenue::OkexMargin | TradingVenue::OkexFutures => Exchange::Okex,
+        TradingVenue::GateMargin | TradingVenue::GateFutures => Exchange::Gate,
         _ => panic!("unsupported venue for pre_trade: {:?}", venue),
     }
 }
@@ -186,6 +189,7 @@ struct BasicState {
     total_equity_usdt: f64,
     abs_total_exposure_usdt: f64,
     total_position_usdt: f64,
+    total_um_unrealized_usdt: f64,
 }
 
 impl MonitorChannel {
@@ -285,10 +289,11 @@ impl MonitorChannel {
     ///
     /// 返回：
     /// - `exposures`: asset -> (open_qty, hedge_qty)，都按标的数量（base qty）表达
-    /// - `total_equity_usdt`: 以现货净头寸估算的 USDT 权益（与风控口径一致）
+    /// - `total_equity_usdt`: 以现货净头寸估算的 USDT 权益（不含合约未实现盈亏）
     /// - `abs_total_exposure_usdt`: 各资产净敞口按 USDT 估值后取绝对值求和
     /// - `total_position_usdt`: 各资产现货/合约头寸按 USDT 估值后取绝对值求和
-    pub fn basic_state_snapshot(&self) -> (HashMap<String, (f64, f64)>, f64, f64, f64) {
+    /// - `total_um_unrealized_usdt`: 合约未实现盈亏（USDT 计价）
+    pub fn basic_state_snapshot(&self) -> (HashMap<String, (f64, f64)>, f64, f64, f64, f64) {
         Self::with_inner(|inner| {
             let state = Self::compute_basic_state(inner);
             (
@@ -296,6 +301,7 @@ impl MonitorChannel {
                 state.total_equity_usdt,
                 state.abs_total_exposure_usdt,
                 state.total_position_usdt,
+                state.total_um_unrealized_usdt,
             )
         })
     }
@@ -372,6 +378,8 @@ impl MonitorChannel {
                     | TradingVenue::BinanceFutures
                     | TradingVenue::OkexMargin
                     | TradingVenue::OkexFutures
+                    | TradingVenue::GateMargin
+                    | TradingVenue::GateFutures
             ) {
                 panic!("pre_trade does not support venue {:?}", v);
             }
@@ -573,113 +581,80 @@ impl MonitorChannel {
     fn compute_basic_state(inner: &MonitorChannelInner) -> BasicState {
         let price_snap = inner.price_table.borrow().snapshot();
 
-        fn collect_leg_positions(leg: &LegMgr) -> HashMap<String, f64> {
-            let mut positions: HashMap<String, f64> = HashMap::new();
+        fn collect_leg_entries(leg: &LegMgr) -> Vec<BasicExposureEntry> {
             match leg {
-                LegMgr::Margin { bal, .. } => {
+                LegMgr::Margin { exchange, bal } => {
                     let mgr = bal.borrow();
-                    for entry in mgr.snapshot() {
-                        let asset = entry.symbol.to_uppercase();
-                        let qty = mgr.balance_position_of(&asset);
-                        if qty.abs() <= 1e-12 {
-                            continue;
-                        }
-                        *positions.entry(asset).or_insert(0.0) += qty;
-                    }
+                    BasicExposureManager::compute_exposures_for_exchange(
+                        *exchange,
+                        std::slice::from_ref(&*mgr),
+                        &[],
+                    )
                 }
                 LegMgr::Futures {
-                    um, min_qty_table, ..
+                    exchange,
+                    um,
+                    min_qty_table,
                 } => {
-                    let mgr = um.borrow();
+                    let um_mgr = um.borrow();
                     let min_qty = min_qty_table.borrow();
-                    use std::collections::HashMap;
-
-                    // inst_id -> (long, short, net)
-                    let mut inst_map: HashMap<String, (f32, f32, f32)> = HashMap::new();
-                    for pos in mgr.snapshot() {
-                        let entry = inst_map
-                            .entry(pos.inst_id.clone())
-                            .or_insert((0.0, 0.0, 0.0));
-                        match pos.side {
-                            'L' => entry.0 = pos.amount,
-                            'S' => entry.1 = pos.amount,
-                            'N' => entry.2 = pos.amount,
-                            _ => {}
-                        }
-                    }
-
-                    for (inst_id, (long_amt, short_amt, net_amt)) in inst_map {
-                        let net_contracts = if long_amt != 0.0 || short_amt != 0.0 {
-                            long_amt - short_amt
-                        } else {
-                            net_amt
-                        };
-                        if (net_contracts as f64).abs() <= 1e-12 {
-                            continue;
-                        }
-
-                        let mut symbol_key = inst_id.to_uppercase();
-                        if symbol_key.contains('-') {
-                            symbol_key = symbol_key.replace("-SWAP", "").replace('-', "");
-                        }
-
-                        let asset =
-                            extract_base_asset(&symbol_key).unwrap_or_else(|| symbol_key.clone());
-                        let mult = min_qty.contract_multiplier(&symbol_key);
-                        let signed_base_qty = (net_contracts as f64) * mult;
-                        if signed_base_qty.abs() <= 1e-12 {
-                            continue;
-                        }
-                        *positions.entry(asset).or_insert(0.0) += signed_base_qty;
-                    }
+                    let um_pair = (&*um_mgr, &*min_qty);
+                    BasicExposureManager::compute_exposures_for_exchange(
+                        *exchange,
+                        &[],
+                        std::slice::from_ref(&um_pair),
+                    )
                 }
             }
-            positions
         }
 
-        fn mark_price_usdt(
-            price_snap: &std::collections::BTreeMap<String, PriceEntry>,
-            asset: &str,
-        ) -> f64 {
+        let open_entries = collect_leg_entries(&inner.open_leg);
+        let hedge_entries = collect_leg_entries(&inner.hedge_leg);
+
+        let price_mapper = create_symbol_mapper(Exchange::Binance);
+        let mark_price_usdt = |asset: &str| -> f64 {
             if asset.eq_ignore_ascii_case("USDT") {
                 1.0
             } else {
+                let symbol = price_mapper.asset_to_price_symbol(asset);
                 price_snap
-                    .get(&format!("{}USDT", asset))
+                    .get(&symbol)
                     .map(|p| p.mark_price)
                     .unwrap_or(0.0)
             }
-        }
-
-        let open_positions = collect_leg_positions(&inner.open_leg);
-        let hedge_positions = collect_leg_positions(&inner.hedge_leg);
+        };
 
         let mut exposures: HashMap<String, (f64, f64)> = HashMap::new();
-        for asset in open_positions.keys().chain(hedge_positions.keys()) {
-            let asset = asset.to_uppercase();
-            let open_qty = open_positions.get(&asset).copied().unwrap_or(0.0);
-            let hedge_qty = hedge_positions.get(&asset).copied().unwrap_or(0.0);
-            exposures.insert(asset, (open_qty, hedge_qty));
+        for entry in open_entries {
+            if entry.exposure.abs() <= 1e-12 {
+                continue;
+            }
+            let asset = entry.asset.to_uppercase();
+            exposures.entry(asset).or_insert((0.0, 0.0)).0 += entry.exposure;
+        }
+        for entry in hedge_entries {
+            if entry.exposure.abs() <= 1e-12 {
+                continue;
+            }
+            let asset = entry.asset.to_uppercase();
+            exposures.entry(asset).or_insert((0.0, 0.0)).1 += entry.exposure;
         }
 
         // total_equity 口径：
         // - 非 USDT 资产：只从 margin balance 统计（净头寸估值）
         // - USDT：按交易所维度单独维护（余额/负债/利息），无论 open/hedge 是否为 futures
+        // - 不包含合约未实现盈亏（UPL）
         let mut total_equity_usdt: f64 = 0.0;
         for leg in [&inner.open_leg, &inner.hedge_leg] {
-            if let LegMgr::Margin { bal, .. } = leg {
+            if let LegMgr::Margin { exchange, bal } = leg {
                 let mgr = bal.borrow();
-                for entry in mgr.snapshot() {
-                    let asset = entry.symbol.to_uppercase();
-                    let qty = mgr.balance_position_of(&asset);
-                    if qty.abs() <= 1e-12 {
-                        continue;
-                    }
-                    let mark = mark_price_usdt(&price_snap, &asset);
-                    if mark > 0.0 {
-                        total_equity_usdt += qty * mark;
-                    }
-                }
+                let mut exposure_mgr = BasicExposureManager::new_from_sources(
+                    *exchange,
+                    std::slice::from_ref(&*mgr),
+                    &[],
+                );
+                exposure_mgr.revalue_with_prices(&price_snap);
+                total_equity_usdt += exposure_mgr.total_equity();
             }
         }
         // 加上各交易所 USDT 的净头寸（open/hedge 同交易所不会重复）
@@ -692,13 +667,20 @@ impl MonitorChannel {
             total_equity_usdt += net;
         }
 
+        let mut total_um_unrealized_usdt = 0.0;
+        for leg in [&inner.open_leg, &inner.hedge_leg] {
+            if let LegMgr::Futures { um, .. } = leg {
+                total_um_unrealized_usdt += um.borrow().total_unrealized_pnl_usdt();
+            }
+        }
+
         let mut total_position_usdt = 0.0;
         let mut abs_total_exposure_usdt = 0.0;
         for (asset, (open_qty, hedge_qty)) in &exposures {
             if asset == "USDT" {
                 continue;
             }
-            let mark = mark_price_usdt(&price_snap, asset);
+            let mark = mark_price_usdt(asset);
             if mark <= 0.0 {
                 continue;
             }
@@ -711,6 +693,7 @@ impl MonitorChannel {
             total_equity_usdt,
             abs_total_exposure_usdt,
             total_position_usdt,
+            total_um_unrealized_usdt,
         }
     }
 
@@ -831,6 +814,9 @@ impl MonitorChannel {
                 TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
                     symbol.to_uppercase().replace("-SWAP", "").replace('-', "")
                 }
+                TradingVenue::GateMargin | TradingVenue::GateFutures => {
+                    symbol.to_uppercase().replace('_', "").replace('-', "")
+                }
                 _ => symbol.to_uppercase(),
             };
 
@@ -899,9 +885,20 @@ impl MonitorChannel {
                 TradingVenue::BybitMargin | TradingVenue::BybitFutures => {
                     Err("尚未实现 Bybit 的订单对齐".to_string())
                 }
-                TradingVenue::GateMargin | TradingVenue::GateFutures => {
-                    Err("尚未实现 Gate 的订单对齐".to_string())
-                }
+                TradingVenue::GateMargin => Self::align_order_with_table(
+                    &symbol_key,
+                    raw_qty,
+                    raw_price,
+                    table.as_ref(),
+                    false,
+                ),
+                TradingVenue::GateFutures => Self::align_order_with_table(
+                    &symbol_key,
+                    raw_qty,
+                    raw_price,
+                    table.as_ref(),
+                    true,
+                ),
             }
         })
     }
@@ -919,6 +916,9 @@ impl MonitorChannel {
             let symbol_key = match venue {
                 TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
                     symbol.to_uppercase().replace("-SWAP", "").replace('-', "")
+                }
+                TradingVenue::GateMargin | TradingVenue::GateFutures => {
+                    symbol.to_uppercase().replace('_', "").replace('-', "")
                 }
                 _ => symbol.to_uppercase(),
             };
@@ -1104,6 +1104,20 @@ impl MonitorChannel {
                                         }
                                     }
                                 }
+                                BasicAccountEventType::UnrealizedPnlUpdate => {
+                                    if let Ok(msg) = BasicUmUnrealizedMsg::from_bytes(data) {
+                                        if exchange == open_leg.exchange() {
+                                            if let LegMgr::Futures { um, .. } = &open_leg {
+                                                um.borrow_mut().apply_unrealized_pnl(&msg);
+                                            }
+                                        }
+                                        if exchange == hedge_leg.exchange() {
+                                            if let LegMgr::Futures { um, .. } = &hedge_leg {
+                                                um.borrow_mut().apply_unrealized_pnl(&msg);
+                                            }
+                                        }
+                                    }
+                                }
                                 BasicAccountEventType::BorrowInterest => {
                                     if let Ok(msg) = BasicBorrowInterestMsg::from_bytes(data) {
                                         if msg.symbol.eq_ignore_ascii_case("USDT") {
@@ -1213,10 +1227,11 @@ impl MonitorChannel {
                 .map(|(open, hedge)| open + hedge)
                 .unwrap_or(0.0);
 
+            let price_mapper = create_symbol_mapper(Exchange::Binance);
             let mark = if base_asset.eq_ignore_ascii_case("USDT") {
                 1.0
             } else {
-                let sym = format!("{}USDT", base_asset);
+                let sym = price_mapper.asset_to_price_symbol(&base_asset);
                 let snap = inner.price_table.borrow().snapshot();
                 snap.get(&sym).map(|e| e.mark_price).unwrap_or(0.0)
             };
@@ -1320,7 +1335,8 @@ impl MonitorChannel {
                 .unwrap_or(0.0);
 
             let base_upper = base_asset.to_uppercase();
-            let mark_symbol = format!("{}USDT", base_upper);
+            let price_mapper = create_symbol_mapper(Exchange::Binance);
+            let mark_symbol = price_mapper.asset_to_price_symbol(&base_upper);
             let price_from_table = {
                 let table = inner.price_table.borrow();
                 table.mark_price(&mark_symbol)

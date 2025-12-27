@@ -23,6 +23,14 @@ impl QueryTypeMapping {
         )
     }
 
+    pub fn is_gate_rest(request_type: QueryRequestType) -> bool {
+        matches!(
+            request_type,
+            QueryRequestType::GateUnifiedBalanceSnapshot
+                | QueryRequestType::GateUnifiedPositionsSnapshot
+        )
+    }
+
     pub fn get_endpoint(request_type: QueryRequestType) -> &'static str {
         match request_type {
             QueryRequestType::BinanceMarginQuery => "/papi/v1/margin/order",
@@ -34,6 +42,12 @@ impl QueryTypeMapping {
             }
             QueryRequestType::OkexAccountBalanceSnapshot => "/api/v5/account/balance",
             QueryRequestType::OkexPositionsSnapshot => "/api/v5/account/positions",
+            QueryRequestType::GateUnifiedBalanceSnapshot => "/api/v4/unified/accounts",
+            QueryRequestType::GateUnifiedPositionsSnapshot => "/api/v4/futures/usdt/positions",
+            QueryRequestType::GateUnifiedOrderQuery
+            | QueryRequestType::GateFuturesOrderQuery => {
+                unreachable!("Gate order queries run via websocket; REST mapping not used")
+            }
         }
     }
 
@@ -46,7 +60,13 @@ impl QueryTypeMapping {
             | QueryRequestType::OkexMarginQuery
             | QueryRequestType::OkexUMQuery
             | QueryRequestType::OkexAccountBalanceSnapshot
-            | QueryRequestType::OkexPositionsSnapshot => "GET",
+            | QueryRequestType::OkexPositionsSnapshot
+            | QueryRequestType::GateUnifiedBalanceSnapshot
+            | QueryRequestType::GateUnifiedPositionsSnapshot => "GET",
+            QueryRequestType::GateUnifiedOrderQuery
+            | QueryRequestType::GateFuturesOrderQuery => {
+                unreachable!("Gate order queries run via websocket; REST mapping not used")
+            }
         }
     }
 
@@ -59,6 +79,12 @@ impl QueryTypeMapping {
             QueryRequestType::OkexMarginQuery | QueryRequestType::OkexUMQuery => 1,
             QueryRequestType::OkexAccountBalanceSnapshot => 1,
             QueryRequestType::OkexPositionsSnapshot => 1,
+            QueryRequestType::GateUnifiedBalanceSnapshot => 1,
+            QueryRequestType::GateUnifiedPositionsSnapshot => 1,
+            QueryRequestType::GateUnifiedOrderQuery
+            | QueryRequestType::GateFuturesOrderQuery => {
+                unreachable!("Gate order queries run via websocket; REST mapping not used")
+            }
         }
     }
 }

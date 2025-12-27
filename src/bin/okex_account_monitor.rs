@@ -20,7 +20,7 @@ use bytes::Bytes;
 use log::{debug, error, info, warn};
 use mkt_signal::common::basic_account_msg::{
     get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
-    BasicPositionMsg, OkexOrderMsg,
+    BasicPositionMsg, BasicUmUnrealizedMsg, OkexOrderMsg,
 };
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::default_parser::Parser;
@@ -397,6 +397,14 @@ fn log_parsed_event(msg: &Bytes) {
                 );
             }
         }
+        BasicAccountEventType::UnrealizedPnlUpdate => {
+            if let Ok(m) = BasicUmUnrealizedMsg::from_bytes(&payload) {
+                info!(
+                    "OKEx basic UnrealizedPnl: ts={} inst={} side={} pnl={}",
+                    m.timestamp, m.inst_id, m.position_side, m.unrealized_pnl
+                );
+            }
+        }
         _ => {
             info!(
                 "OKEx basic msg: type={:?} payload_len={}",
@@ -450,6 +458,9 @@ impl AccountEventDeduper {
             BasicAccountEventType::BorrowInterest => BasicBorrowInterestMsg::from_bytes(&payload)
                 .ok()
                 .map(|msg| self.key_okex_borrow_interest(&msg)),
+            BasicAccountEventType::UnrealizedPnlUpdate => BasicUmUnrealizedMsg::from_bytes(&payload)
+                .ok()
+                .map(|msg| self.key_okex_unrealized_pnl(&msg)),
             BasicAccountEventType::Error => return true,
         };
 
@@ -516,6 +527,16 @@ impl AccountEventDeduper {
             self.hash_str64(&msg.inst_id),
             msg.position_side as u8 as u64,
             msg.position_amount.to_bits() as u64,
+        ])
+    }
+
+    fn key_okex_unrealized_pnl(&self, msg: &BasicUmUnrealizedMsg) -> u64 {
+        self.hash64(&[
+            BasicAccountEventType::UnrealizedPnlUpdate as u32 as u64,
+            msg.timestamp as u64,
+            self.hash_str64(&msg.inst_id),
+            msg.position_side as u8 as u64,
+            msg.unrealized_pnl.to_bits(),
         ])
     }
 

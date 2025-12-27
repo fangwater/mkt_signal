@@ -20,6 +20,10 @@ pub enum TradeRequestType {
     OkexNewUMOrder = 5002,                      // Okex 下单（合约/UM风格）
     OkexCancelMarginOrder = 5003,               // Okex 撤单（现货/杠杆）
     OkexCancelUMOrder = 5004,                   // Okex 撤单（合约/UM风格）
+    GateUnifiedNewOrder = 5201,                 // Gate 统一账户下单请求
+    GateUnifiedCancelOrder = 5202,              // Gate 统一账户撤单请求
+    GateFuturesNewOrder = 5203,                 // Gate U 本位合约下单请求
+    GateFuturesCancelOrder = 5204,              // Gate U 本位合约撤单请求
 }
 
 // 交易请求的公共头部
@@ -58,6 +62,10 @@ impl TryFrom<u32> for TradeRequestType {
             5002 => Ok(TradeRequestType::OkexNewUMOrder),
             5003 => Ok(TradeRequestType::OkexCancelMarginOrder),
             5004 => Ok(TradeRequestType::OkexCancelUMOrder),
+            5201 => Ok(TradeRequestType::GateUnifiedNewOrder),
+            5202 => Ok(TradeRequestType::GateUnifiedCancelOrder),
+            5203 => Ok(TradeRequestType::GateFuturesNewOrder),
+            5204 => Ok(TradeRequestType::GateFuturesCancelOrder),
             _ => Err(()),
         }
     }
@@ -442,6 +450,130 @@ impl BinanceModifyUMOrderRequest {
         buf.put_i64_le(self.header.client_order_id);
         buf.put(self.params.clone());
 
+        buf.freeze()
+    }
+}
+
+// Gate 统一账户下单请求
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct GateUnifiedNewOrderRequest {
+    pub header: TradeRequestHeader,
+    pub params: Bytes, // JSON 参数（req_param）
+}
+
+impl GateUnifiedNewOrderRequest {
+    pub fn create(create_time: i64, client_order_id: i64, params: Bytes) -> Self {
+        let header = TradeRequestHeader {
+            msg_type: TradeRequestType::GateUnifiedNewOrder as u32,
+            params_length: params.len() as u32,
+            create_time,
+            client_order_id,
+        };
+        Self { header, params }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 4 + 8 + 8 + self.params.len();
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.header.msg_type);
+        buf.put_u32_le(self.header.params_length);
+        buf.put_i64_le(self.header.create_time);
+        buf.put_i64_le(self.header.client_order_id);
+        buf.put(self.params.clone());
+        buf.freeze()
+    }
+}
+
+// Gate 统一账户撤单请求
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct GateUnifiedCancelOrderRequest {
+    pub header: TradeRequestHeader,
+    pub params: Bytes, // JSON 参数（req_param）
+}
+
+impl GateUnifiedCancelOrderRequest {
+    pub fn create(create_time: i64, client_order_id: i64, params: Bytes) -> Self {
+        let header = TradeRequestHeader {
+            msg_type: TradeRequestType::GateUnifiedCancelOrder as u32,
+            params_length: params.len() as u32,
+            create_time,
+            client_order_id,
+        };
+        Self { header, params }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 4 + 8 + 8 + self.params.len();
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.header.msg_type);
+        buf.put_u32_le(self.header.params_length);
+        buf.put_i64_le(self.header.create_time);
+        buf.put_i64_le(self.header.client_order_id);
+        buf.put(self.params.clone());
+        buf.freeze()
+    }
+}
+
+// Gate U 本位合约下单请求
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct GateFuturesNewOrderRequest {
+    pub header: TradeRequestHeader,
+    pub params: Bytes, // JSON 参数（req_param）
+}
+
+impl GateFuturesNewOrderRequest {
+    pub fn create(create_time: i64, client_order_id: i64, params: Bytes) -> Self {
+        let header = TradeRequestHeader {
+            msg_type: TradeRequestType::GateFuturesNewOrder as u32,
+            params_length: params.len() as u32,
+            create_time,
+            client_order_id,
+        };
+        Self { header, params }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 4 + 8 + 8 + self.params.len();
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.header.msg_type);
+        buf.put_u32_le(self.header.params_length);
+        buf.put_i64_le(self.header.create_time);
+        buf.put_i64_le(self.header.client_order_id);
+        buf.put(self.params.clone());
+        buf.freeze()
+    }
+}
+
+// Gate U 本位合约撤单请求
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct GateFuturesCancelOrderRequest {
+    pub header: TradeRequestHeader,
+    pub params: Bytes, // JSON 参数（req_param）
+}
+
+impl GateFuturesCancelOrderRequest {
+    pub fn create(create_time: i64, client_order_id: i64, params: Bytes) -> Self {
+        let header = TradeRequestHeader {
+            msg_type: TradeRequestType::GateFuturesCancelOrder as u32,
+            params_length: params.len() as u32,
+            create_time,
+            client_order_id,
+        };
+        Self { header, params }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 4 + 8 + 8 + self.params.len();
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.header.msg_type);
+        buf.put_u32_le(self.header.params_length);
+        buf.put_i64_le(self.header.create_time);
+        buf.put_i64_le(self.header.client_order_id);
+        buf.put(self.params.clone());
         buf.freeze()
     }
 }

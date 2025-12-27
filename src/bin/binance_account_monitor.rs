@@ -3,7 +3,7 @@ use bytes::Bytes;
 use log::{debug, error, info, warn};
 use mkt_signal::common::basic_account_msg::{
     get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
-    BasicPositionMsg, BinanceBasicOrderMsg,
+    BasicPositionMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg,
 };
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::binance_basic_account_event_parser::BinanceBasicAccountEventParser;
@@ -315,6 +315,14 @@ fn log_parsed_event(msg: &Bytes) {
                 );
             }
         }
+        BasicAccountEventType::UnrealizedPnlUpdate => {
+            if let Ok(m) = BasicUmUnrealizedMsg::from_bytes(&payload) {
+                info!(
+                    "Binance UnrealizedPnl: ts={} inst={} side={} pnl={}",
+                    m.timestamp, m.inst_id, m.position_side, m.unrealized_pnl
+                );
+            }
+        }
         BasicAccountEventType::Error => {}
     }
 }
@@ -359,6 +367,9 @@ impl AccountEventDeduper {
             BasicAccountEventType::BorrowInterest => BasicBorrowInterestMsg::from_bytes(&payload)
                 .ok()
                 .map(|m| self.key_borrow_interest(&m)),
+            BasicAccountEventType::UnrealizedPnlUpdate => BasicUmUnrealizedMsg::from_bytes(&payload)
+                .ok()
+                .map(|m| self.key_unrealized_pnl(&m)),
             BasicAccountEventType::OrderUpdate => BinanceBasicOrderMsg::from_bytes(&payload)
                 .ok()
                 .map(|m| self.key_binance_basic_order(&m)),
@@ -425,6 +436,16 @@ impl AccountEventDeduper {
             self.hash_str64(&msg.inst_id),
             msg.position_side as u8 as u64,
             msg.position_amount.to_bits() as u64,
+        ])
+    }
+
+    fn key_unrealized_pnl(&self, msg: &BasicUmUnrealizedMsg) -> u64 {
+        self.hash64(&[
+            BasicAccountEventType::UnrealizedPnlUpdate as u32 as u64,
+            msg.timestamp as u64,
+            self.hash_str64(&msg.inst_id),
+            msg.position_side as u8 as u64,
+            msg.unrealized_pnl.to_bits(),
         ])
     }
 
