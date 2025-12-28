@@ -2,14 +2,17 @@
 # -*- coding: utf-8 -*-
 
 """
-将 Funding Rate 交易对列表同步到 Redis 并打印（按交易所维度）。
+将 Funding Rate 交易对列表同步到 Redis 并打印（按 key_suffix 维度）。
 
-根据交易所写入 Redis key（String 类型，JSON 数组）：
-  - fr_dump_symbols:{exchange}          - 平仓列表
-  - fr_fwd_trade_symbols:{exchange}     - 正套建仓列表
-  - fr_bwd_trade_symbols:{exchange}     - 反套建仓列表
+根据 open/hedge 生成 key_suffix 并写入 Redis key（String 类型，JSON 数组）：
+  - fr_dump_symbols:{key_suffix}          - 平仓列表
+  - fr_fwd_trade_symbols:{key_suffix}     - 正套建仓列表
+  - fr_bwd_trade_symbols:{key_suffix}     - 反套建仓列表
+
+其中 key_suffix 为 "<open_venue>_<hedge_venue>"（例如 gate-margin_gate-futures）。
 
 示例：
+  python scripts/sync_fr_symbol_lists.py --open-venue binance-margin --hedge-venue binance-futures
   python scripts/sync_fr_symbol_lists.py --exchange binance
   python scripts/sync_fr_symbol_lists.py       # 在目录名包含 binance/okex/bybit/... 前缀时自动推断
   python scripts/sync_fr_symbol_lists.py --exchange okex --redis-url redis://:pwd@127.0.0.1:6379/0
@@ -25,6 +28,15 @@ from typing import Dict, List, Optional
 
 # 支持的交易所
 SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
+
+# 目录推断用的默认 open/hedge 组合
+EXCHANGE_DEFAULTS = {
+    "binance": ("binance-margin", "binance-futures"),
+    "okex": ("okex-margin", "okex-futures"),
+    "bybit": ("bybit-margin", "bybit-futures"),
+    "bitget": ("bitget-margin", "bitget-futures"),
+    "gate": ("gate-margin", "gate-futures"),
+}
 
 
 def try_import_redis():
@@ -52,6 +64,8 @@ def infer_exchange_from_cwd() -> Optional[str]:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Sync Funding Rate symbol lists to Redis")
+    p.add_argument("--open-venue", help="open 侧 venue（如 binance-margin）")
+    p.add_argument("--hedge-venue", help="hedge 侧 venue（如 binance-futures）")
     p.add_argument(
         "--exchange",
         choices=SUPPORTED_EXCHANGES,
@@ -119,21 +133,36 @@ BWD_SYMBOLS: List[str] = BWD_SYMBOLS_8H + BWD_SYMBOLS_4H
 SYMBOL_ALLOWLIST: List[str] = list(set(FWD_SYMBOLS + BWD_SYMBOLS))
 
 
-def sync_symbol_lists(rds, exchange: str) -> int:
+def make_key_suffix(open_venue: str, hedge_venue: str) -> str:
+    return f"{open_venue.strip().lower()}_{hedge_venue.strip().lower()}"
+
+
+def resolve_venues(args: argparse.Namespace) -> Optional[tuple[str, str]]:
+    if args.open_venue and args.hedge_venue:
+        return args.open_venue.strip().lower(), args.hedge_venue.strip().lower()
+    if args.exchange:
+        return EXCHANGE_DEFAULTS.get(args.exchange)
+    inferred = infer_exchange_from_cwd()
+    if inferred:
+        return EXCHANGE_DEFAULTS.get(inferred)
+    return None
+
+
+def sync_symbol_lists(rds, key_suffix: str) -> int:
     """同步交易对列表到 Redis"""
     # 1. 平仓列表（默认空）
-    dump_key = f"fr_dump_symbols:{exchange}"
+    dump_key = f"fr_dump_symbols:{key_suffix}"
     empty_list: List[str] = []
     rds.set(dump_key, json.dumps(empty_list, ensure_ascii=False))
     print(f"✅ 已写入 {len(empty_list)} 个交易对到 '{dump_key}'（平仓列表）")
 
     # 2. 正套建仓列表
-    fwd_key = f"fr_fwd_trade_symbols:{exchange}"
+    fwd_key = f"fr_fwd_trade_symbols:{key_suffix}"
     rds.set(fwd_key, json.dumps(FWD_SYMBOLS, ensure_ascii=False))
     print(f"✅ 已写入 {len(FWD_SYMBOLS)} 个交易对到 '{fwd_key}'（正套）")
     total = 0 + len(FWD_SYMBOLS)
     # 3. 反套建仓列表
-    bwd_key = f"fr_bwd_trade_symbols:{exchange}"
+    bwd_key = f"fr_bwd_trade_symbols:{key_suffix}"
     rds.set(bwd_key, json.dumps(BWD_SYMBOLS, ensure_ascii=False))
     print(f"✅ 已写入 {len(BWD_SYMBOLS)} 个交易对到 '{bwd_key}'（反套）")
     total += len(BWD_SYMBOLS)
@@ -198,14 +227,14 @@ def print_symbol_list(rds, key: str, title: str) -> None:
         print(f"  原始值: {symbols_str}")
 
 
-def print_all_symbol_lists(rds, exchange: str) -> None:
+def print_all_symbol_lists(rds, key_suffix: str) -> None:
     """打印所有交易对列表"""
     print("\n📊 交易对列表配置:")
     print("=" * 80)
 
-    print_symbol_list(rds, f"fr_dump_symbols:{exchange}", f"🔴 {exchange.upper()} - 平仓列表")
-    print_symbol_list(rds, f"fr_fwd_trade_symbols:{exchange}", f"🟢 {exchange.upper()} - 正套建仓列表")
-    print_symbol_list(rds, f"fr_bwd_trade_symbols:{exchange}", f"🔴 {exchange.upper()} - 反套建仓列表")
+    print_symbol_list(rds, f"fr_dump_symbols:{key_suffix}", f"🔴 {key_suffix} - 平仓列表")
+    print_symbol_list(rds, f"fr_fwd_trade_symbols:{key_suffix}", f"🟢 {key_suffix} - 正套建仓列表")
+    print_symbol_list(rds, f"fr_bwd_trade_symbols:{key_suffix}", f"🔴 {key_suffix} - 反套建仓列表")
 
 
 def main() -> int:
@@ -215,25 +244,30 @@ def main() -> int:
         print("❌ redis 包未安装，请使用 pip install redis", file=sys.stderr)
         return 2
 
-    exchange = args.exchange or infer_exchange_from_cwd()
-    if not exchange:
-        print("❌ 需要 --exchange，或在目录名包含 binance/okex/bybit/bitget/gate 前缀以自动推断", file=sys.stderr)
+    venues = resolve_venues(args)
+    if not venues:
+        print(
+            "❌ 需要 --open-venue/--hedge-venue，或 --exchange，或在目录名包含 binance/okex/bybit/bitget/gate 前缀以自动推断",
+            file=sys.stderr,
+        )
         return 2
+    open_venue, hedge_venue = venues
+    key_suffix = make_key_suffix(open_venue, hedge_venue)
 
     rds = redis.from_url(args.redis_url) if args.redis_url else redis.Redis(
         host=args.host, port=args.port, db=args.db, password=args.password
     )
 
-    print(f"🔄 开始同步 Funding Rate 交易对列表 (exchange={exchange})...")
+    print(f"🔄 开始同步 Funding Rate 交易对列表 (key_suffix={key_suffix})...")
     print(f"📍 Redis: {args.host}:{args.port}/{args.db}")
     print()
 
     # 同步列表
-    total = sync_symbol_lists(rds, exchange)
+    total = sync_symbol_lists(rds, key_suffix)
     print(f"\n✅ 共写入 {total} 个交易对条目")
 
     # 打印结果
-    print_all_symbol_lists(rds, exchange)
+    print_all_symbol_lists(rds, key_suffix)
 
     print("\n✅ 同步完成！")
     return 0

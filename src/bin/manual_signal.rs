@@ -83,6 +83,34 @@ fn infer_venues_from_cwd() -> Option<(TradingVenue, TradingVenue)> {
     None
 }
 
+fn venue_from_slug(raw: &str) -> Option<TradingVenue> {
+    let slug = raw.trim().to_ascii_lowercase().replace('_', "-");
+    match slug.as_str() {
+        "binance-margin" => Some(TradingVenue::BinanceMargin),
+        "binance-futures" => Some(TradingVenue::BinanceFutures),
+        "okex-margin" => Some(TradingVenue::OkexMargin),
+        "okex-futures" => Some(TradingVenue::OkexFutures),
+        "bybit-margin" => Some(TradingVenue::BybitMargin),
+        "bybit-futures" => Some(TradingVenue::BybitFutures),
+        "bitget-margin" => Some(TradingVenue::BitgetMargin),
+        "bitget-futures" => Some(TradingVenue::BitgetFutures),
+        "gate-margin" => Some(TradingVenue::GateMargin),
+        "gate-futures" => Some(TradingVenue::GateFutures),
+        _ => None,
+    }
+}
+
+fn infer_fr_venues_from_key_suffix(key_suffix: &str) -> Option<(TradingVenue, TradingVenue)> {
+    let suffix = key_suffix.trim().to_ascii_lowercase();
+    let mut parts = suffix.split('_');
+    let open = venue_from_slug(parts.next()?)?;
+    let hedge = venue_from_slug(parts.next()?)?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((open, hedge))
+}
+
 fn futures_venue_for_exchange(exchange: &str) -> Option<TradingVenue> {
     match exchange {
         "binance" => Some(TradingVenue::BinanceFutures),
@@ -92,6 +120,10 @@ fn futures_venue_for_exchange(exchange: &str) -> Option<TradingVenue> {
         "gate" => Some(TradingVenue::GateFutures),
         _ => None,
     }
+}
+
+fn fr_symbol_key_suffix(open: TradingVenue, hedge: TradingVenue) -> String {
+    format!("{}_{}", open.data_pub_slug(), hedge.data_pub_slug())
 }
 
 fn infer_xarb_venues_from_key_suffix(key_suffix: &str) -> Option<(TradingVenue, TradingVenue)> {
@@ -1297,7 +1329,7 @@ async fn main() -> Result<()> {
     env_logger::init();
 
     let args = CliArgs::parse();
-    let (symbol_namespace, symbol_key_suffix) = match args.symbol_namespace.clone() {
+    let (symbol_namespace, mut symbol_key_suffix) = match args.symbol_namespace.clone() {
         Some(ns) => {
             let suffix = infer_symbol_key_suffix_from_cwd(&ns).with_context(|| {
                 format!(
@@ -1316,14 +1348,9 @@ async fn main() -> Result<()> {
     let (open, hedge) = match (args.open, args.hedge) {
         (Some(open), Some(hedge)) => (open, hedge),
         (None, None) => {
-            if symbol_key_suffix.contains('-') {
+            if let Some(venues) = infer_xarb_venues_from_key_suffix(&symbol_key_suffix) {
                 if symbol_namespace.eq_ignore_ascii_case("xarb") {
-                    infer_xarb_venues_from_key_suffix(&symbol_key_suffix).with_context(|| {
-                        format!(
-                            "failed to infer xarb venues from CWD suffix='{}'; please pass --open and --hedge explicitly",
-                            symbol_key_suffix
-                        )
-                    })?
+                    venues
                 } else {
                     anyhow::bail!(
                         "CWD suggests cross-exchange symbol key suffix='{}' but --open/--hedge were not provided; please pass --open and --hedge explicitly",
@@ -1341,6 +1368,12 @@ async fn main() -> Result<()> {
             anyhow::bail!("please provide both --open and --hedge, or omit both to infer from CWD")
         }
     };
+
+    if symbol_namespace.eq_ignore_ascii_case("fr")
+        && infer_fr_venues_from_key_suffix(&symbol_key_suffix).is_none()
+    {
+        symbol_key_suffix = fr_symbol_key_suffix(open, hedge);
+    }
 
     let args = Args {
         open,

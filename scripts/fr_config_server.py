@@ -5,9 +5,11 @@ Funding Rate 配置服务器（fr_config_server）
 -------------------------------------------
 一个轻量级的 HTTP 服务，提供页面/接口用于查看和编辑 Funding Rate 相关的 symbol 列表，
 直接读写 Redis 中的以下 3 个 key（JSON 数组，String 类型）：
-  - fr_dump_symbols:{exchange}      平仓列表
-  - fr_fwd_trade_symbols:{exchange} 正套建仓列表
-  - fr_bwd_trade_symbols:{exchange} 反套建仓列表
+  - fr_dump_symbols:{key_suffix}      平仓列表
+  - fr_fwd_trade_symbols:{key_suffix} 正套建仓列表
+  - fr_bwd_trade_symbols:{key_suffix} 反套建仓列表
+
+其中 key_suffix 为 "<open_venue>_<hedge_venue>"（例如 gate-margin_gate-futures）。
 
 启动示例：
   python scripts/fr_config_server.py --port 8000 --default-exchange okex
@@ -27,6 +29,14 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
 SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
+
+EXCHANGE_DEFAULTS = {
+    "binance": ("binance-margin", "binance-futures"),
+    "okex": ("okex-margin", "okex-futures"),
+    "bybit": ("bybit-margin", "bybit-futures"),
+    "bitget": ("bitget-margin", "bitget-futures"),
+    "gate": ("gate-margin", "gate-futures"),
+}
 
 INDEX_HTML_TEMPLATE = """<!doctype html>
 <html lang="zh-CN">
@@ -87,7 +97,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         </div>
       </div>
 
-      <footer>默认 exchange: <span id="default-exchange"></span> · 数据来源/落地：Redis</footer>
+      <footer>默认 exchange: <span id="default-exchange"></span> · key_suffix: <span id="key-suffix">-</span> · 数据来源/落地：Redis</footer>
     </div>
   </main>
   <script>
@@ -139,6 +149,8 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         dumpEl.value = fromList(data.dump_symbols || []);
         fwdEl.value = fromList(data.fwd_trade_symbols || []);
         bwdEl.value = fromList(data.bwd_trade_symbols || []);
+        const keySuffixEl = document.getElementById('key-suffix');
+        if (keySuffixEl) keySuffixEl.textContent = data.key_suffix || '-';
         setStatus('读取完成', true);
       } catch (err) {
         console.error(err);
@@ -246,6 +258,19 @@ def read_symbol_list(rds, key: str) -> List[str]:
     return []
 
 
+def make_key_suffix(open_venue: str, hedge_venue: str) -> str:
+    return f"{open_venue.strip().lower()}_{hedge_venue.strip().lower()}"
+
+
+def resolve_key_suffix(exchange: str, key_suffix: Optional[str]) -> Optional[str]:
+    if key_suffix:
+        return str(key_suffix).strip().lower()
+    venues = EXCHANGE_DEFAULTS.get(exchange)
+    if not venues:
+        return None
+    return make_key_suffix(venues[0], venues[1])
+
+
 def render_index_html(default_exchange: str) -> str:
     html = INDEX_HTML_TEMPLATE.replace("__EXCHANGES__", json.dumps(SUPPORTED_EXCHANGES))
     html = html.replace("__DEFAULT_EXCHANGE__", default_exchange)
@@ -313,12 +338,17 @@ class RequestHandler(BaseHTTPRequestHandler):
             if exchange not in SUPPORTED_EXCHANGES:
                 self._send_error(400, f"unsupported exchange: {exchange}")
                 return
+            key_suffix = resolve_key_suffix(exchange, (params.get("key_suffix") or [None])[0])
+            if not key_suffix:
+                self._send_error(400, f"invalid key_suffix for exchange: {exchange}")
+                return
             rds = self.server.context.redis_client
             data = {
                 "exchange": exchange,
-                "dump_symbols": read_symbol_list(rds, f"fr_dump_symbols:{exchange}"),
-                "fwd_trade_symbols": read_symbol_list(rds, f"fr_fwd_trade_symbols:{exchange}"),
-                "bwd_trade_symbols": read_symbol_list(rds, f"fr_bwd_trade_symbols:{exchange}"),
+                "key_suffix": key_suffix,
+                "dump_symbols": read_symbol_list(rds, f"fr_dump_symbols:{key_suffix}"),
+                "fwd_trade_symbols": read_symbol_list(rds, f"fr_fwd_trade_symbols:{key_suffix}"),
+                "bwd_trade_symbols": read_symbol_list(rds, f"fr_bwd_trade_symbols:{key_suffix}"),
             }
             self._send_json(200, data)
             return
@@ -346,6 +376,10 @@ class RequestHandler(BaseHTTPRequestHandler):
         if exchange not in SUPPORTED_EXCHANGES:
             self._send_error(400, f"unsupported exchange: {exchange}")
             return
+        key_suffix = resolve_key_suffix(exchange, payload.get("key_suffix"))
+        if not key_suffix:
+            self._send_error(400, f"invalid key_suffix for exchange: {exchange}")
+            return
 
         dump_symbols = normalize_symbol_list(payload.get("dump_symbols") or [])
         fwd_symbols = normalize_symbol_list(payload.get("fwd_trade_symbols") or [])
@@ -357,9 +391,9 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         rds = self.server.context.redis_client
         try:
-            rds.set(f"fr_dump_symbols:{exchange}", json.dumps(dump_symbols, ensure_ascii=False))
-            rds.set(f"fr_fwd_trade_symbols:{exchange}", json.dumps(fwd_symbols, ensure_ascii=False))
-            rds.set(f"fr_bwd_trade_symbols:{exchange}", json.dumps(bwd_symbols, ensure_ascii=False))
+            rds.set(f"fr_dump_symbols:{key_suffix}", json.dumps(dump_symbols, ensure_ascii=False))
+            rds.set(f"fr_fwd_trade_symbols:{key_suffix}", json.dumps(fwd_symbols, ensure_ascii=False))
+            rds.set(f"fr_bwd_trade_symbols:{key_suffix}", json.dumps(bwd_symbols, ensure_ascii=False))
         except Exception as exc:
             self._send_error(500, f"redis write failed: {exc}")
             return
@@ -368,6 +402,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             200,
             {
                 "exchange": exchange,
+                "key_suffix": key_suffix,
                 "dump_count": len(dump_symbols),
                 "fwd_count": len(fwd_symbols),
                 "bwd_count": len(bwd_symbols),

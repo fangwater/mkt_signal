@@ -5,15 +5,15 @@
 从 rolling_metrics_thresholds_{open_venue}_{hedge_venue} 读取百分位数据，生成价差阈值并同步到 Redis。
 
 工作流程：
-  1. 从 Redis 读取 fr_dump_symbols:{venue}、fr_fwd_trade_symbols:{venue}、fr_bwd_trade_symbols:{venue}
+  1. 从 Redis 读取 fr_dump_symbols:{key_suffix}、fr_fwd_trade_symbols:{key_suffix}、fr_bwd_trade_symbols:{key_suffix}
   2. 合并列表得到要同步的 symbols（去重）
   3. 从 rolling_metrics_thresholds_{open_venue}_{hedge_venue} 读取这些 symbols 的百分位数据
   4. 根据 SPREAD_THRESHOLD_MAPPING 配置，提取对应的百分位值
   5. 生成价差阈值并写入 fr_spread_thresholds_{open_venue}_{hedge_venue}
 
 读取 Redis:
-  - String `fr_dump_symbols:{venue}` - 平仓列表（JSON 数组）
-  - String `fr_fwd_trade_symbols:{venue}` / `fr_bwd_trade_symbols:{venue}` - 建仓列表（JSON 数组）
+  - String `fr_dump_symbols:{key_suffix}` - 平仓列表（JSON 数组）
+  - String `fr_fwd_trade_symbols:{key_suffix}` / `fr_bwd_trade_symbols:{key_suffix}` - 建仓列表（JSON 数组）
   - Hash `rolling_metrics_thresholds_{open_venue}_{hedge_venue}` - rolling metrics 百分位数据
 
 写入 Redis Hash:
@@ -81,8 +81,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
     p.add_argument("--symbol", help="只同步指定 symbol（如 BTCUSDT 或 BTC-USDT）")
     p.add_argument(
+        "--key-suffix",
+        help="自定义 dump/fwd_trade/bwd_trade 列表用的 key_suffix（如 gate-margin_gate-futures）",
+    )
+    p.add_argument(
         "--venue",
-        help="自定义 dump/fwd_trade/bwd_trade 列表用的 venue 后缀（如 binance_margin, okex_swap），默认使用 open_venue 转换",
+        help="(deprecated) dump/fwd_trade/bwd_trade 列表用的 key_suffix（如 binance_margin），建议使用 --key-suffix",
     )
     return p.parse_args()
 
@@ -462,14 +466,18 @@ def resolve_venues(args: argparse.Namespace) -> Tuple[str, str]:
     hedge_venue = args.hedge_venue
 
     if open_venue and hedge_venue:
-        return open_venue.strip(), hedge_venue.strip()
+        return open_venue.strip().lower(), hedge_venue.strip().lower()
 
     inferred = infer_venues_from_cwd()
     if inferred:
         print(f"[INFO] 未提供 open/hedge，基于目录推断: open={inferred[0]}, hedge={inferred[1]}")
-        return inferred
+        return inferred[0].lower(), inferred[1].lower()
 
     raise SystemExit("需要 --open-venue 与 --hedge-venue，或在目录名包含可推断的前缀（如 okex_fr_trade）")
+
+
+def make_key_suffix(open_venue: str, hedge_venue: str) -> str:
+    return f"{open_venue.strip().lower()}_{hedge_venue.strip().lower()}"
 
 
 def main() -> int:
@@ -489,15 +497,14 @@ def main() -> int:
     # 根据 open/hedge 生成 key
     rolling_key = f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
     write_key = f"fr_spread_thresholds_{open_venue}_{hedge_venue}"
-    venue_for_lists = args.venue or open_venue.replace("-", "_")
-    venue_candidates = [venue_for_lists]
-    if "_" in venue_for_lists:
-        venue_candidates.append(venue_for_lists.split("_", 1)[0])  # 兼容无后缀的 key，如 okex
-    venue_candidates = list(dict.fromkeys(venue_candidates))  # 去重且保留顺序
+    key_suffix = args.key_suffix or args.venue or make_key_suffix(open_venue, hedge_venue)
+    key_suffix = key_suffix.strip().lower()
+    if args.venue and not args.key_suffix:
+        print(f"[WARN] --venue 已废弃，请改用 --key-suffix（当前 key_suffix={key_suffix}）")
 
-    dump_keys = [f"fr_dump_symbols:{v}" for v in venue_candidates]
-    fwd_trade_keys = [f"fr_fwd_trade_symbols:{v}" for v in venue_candidates]
-    bwd_trade_keys = [f"fr_bwd_trade_symbols:{v}" for v in venue_candidates]
+    dump_keys = [f"fr_dump_symbols:{key_suffix}"]
+    fwd_trade_keys = [f"fr_fwd_trade_symbols:{key_suffix}"]
+    bwd_trade_keys = [f"fr_bwd_trade_symbols:{key_suffix}"]
 
     def fmt_keys(keys: List[str]) -> str:
         return ", ".join(keys) if keys else "-"

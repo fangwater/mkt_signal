@@ -350,7 +350,7 @@ impl TradeEngine {
 
                 // 根据 mapping 判断是否走 WebSocket
                 if TradeTypeMapping::is_websocket(msg.req_type) {
-                    let target_endpoints = if exchange_for_req_worker == Exchange::Gate
+                    let mut target_endpoints = if exchange_for_req_worker == Exchange::Gate
                         && matches!(
                             msg.req_type,
                             TradeRequestType::GateFuturesNewOrder

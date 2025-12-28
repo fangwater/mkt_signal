@@ -5,7 +5,7 @@
 //! - trade_symbol_list: 建仓列表（算法会根据信号建仓）
 //!
 //! 数据结构：Exchange -> Vec<String>
-//! Symbol 列表是 exchange 维度的（所有 venue 共享）
+//! Symbol 列表按 key_suffix 维度加载（可区分 open/hedge venue 组合）
 //! 从 Redis 读取并支持热更新
 
 use anyhow::Result;
@@ -177,7 +177,7 @@ impl SymbolList {
 
         // 记录当前 exchange（仅当 suffix 可解析为单交易所）
         Self::with_inner_mut(|inner| {
-            inner.current_exchange = Exchange::from_str(&key_suffix);
+            inner.current_exchange = exchange_from_key_suffix(&key_suffix);
         });
 
         Ok(())
@@ -280,4 +280,14 @@ fn normalize_symbol_list_namespace(namespace: &str) -> String {
     } else {
         namespace
     }
+}
+
+fn exchange_from_key_suffix(key_suffix: &str) -> Option<Exchange> {
+    let suffix = key_suffix.trim().to_ascii_lowercase();
+    if !suffix.contains('_') {
+        return Exchange::from_str(&suffix);
+    }
+    let open_part = suffix.split('_').next()?;
+    let open_exchange = open_part.split('-').next().unwrap_or(open_part);
+    Exchange::from_str(open_exchange)
 }

@@ -1,6 +1,7 @@
 use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
 use crate::common::time_util::get_timestamp_us;
+use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
 use crate::pre_trade::basic_exposure_manager::BasicExposureManager;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
@@ -447,11 +448,12 @@ impl ResampleChannel {
                 .flatten()
             {
                 let mgr = bal_mgr.borrow();
+                let mgr_ref: &BasicBalanceManager = &*mgr;
                 let exchange = mgr.exchange();
                 let price_mapper = create_symbol_mapper(exchange);
                 let entries = BasicExposureManager::compute_exposures_for_exchange(
                     exchange,
-                    std::slice::from_ref(&*mgr),
+                    std::slice::from_ref(&mgr_ref),
                     &[],
                 );
                 for entry in entries {

@@ -585,9 +585,10 @@ impl MonitorChannel {
             match leg {
                 LegMgr::Margin { exchange, bal } => {
                     let mgr = bal.borrow();
+                    let mgr_ref: &BasicBalanceManager = &*mgr;
                     BasicExposureManager::compute_exposures_for_exchange(
                         *exchange,
-                        std::slice::from_ref(&*mgr),
+                        std::slice::from_ref(&mgr_ref),
                         &[],
                     )
                 }
@@ -648,9 +649,10 @@ impl MonitorChannel {
         for leg in [&inner.open_leg, &inner.hedge_leg] {
             if let LegMgr::Margin { exchange, bal } = leg {
                 let mgr = bal.borrow();
+                let mgr_ref: &BasicBalanceManager = &*mgr;
                 let mut exposure_mgr = BasicExposureManager::new_from_sources(
                     *exchange,
-                    std::slice::from_ref(&*mgr),
+                    std::slice::from_ref(&mgr_ref),
                     &[],
                 );
                 exposure_mgr.revalue_with_prices(&price_snap);

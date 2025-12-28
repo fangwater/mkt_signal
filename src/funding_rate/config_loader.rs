@@ -171,14 +171,17 @@ async fn reload_symbol_list(
     namespace: &str,
     symbol_key_suffix: &str,
     open_venue: TradingVenue,
-    _hedge_venue: TradingVenue,
+    hedge_venue: TradingVenue,
 ) -> Result<()> {
     match RedisClient::connect(redis.clone()).await {
         Ok(mut client) => {
             let symbol_list = SymbolList::instance();
             let suffix = if symbol_key_suffix.trim().is_empty() {
-                // Backward compatible for FR callers; derive from open venue exchange.
-                open_venue.trade_engine_exchange().to_string()
+                format!(
+                    "{}_{}",
+                    open_venue.data_pub_slug(),
+                    hedge_venue.data_pub_slug()
+                )
             } else {
                 symbol_key_suffix.to_string()
             };

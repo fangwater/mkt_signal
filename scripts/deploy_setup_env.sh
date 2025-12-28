@@ -36,6 +36,16 @@ IPC_NAMESPACE="${EXCHANGE}_fr_${ENV_TYPE}"
 mkdir -p "$TARGET_DIR"
 
 ENV_FILE="$TARGET_DIR/env.sh"
+CREDS_BLOCK=""
+if [[ "$EXCHANGE" == "gate" ]]; then
+  CREDS_BLOCK=$(cat <<'EOF'
+
+# Gate credentials
+export GATE_API_KEY="${GATE_API_KEY:-}"
+export GATE_API_SECRET="${GATE_API_SECRET:-}"
+EOF
+)
+fi
 cat > "$ENV_FILE" << EOF
 #!/usr/bin/env bash
 # 自动生成的环境配置文件
@@ -47,6 +57,7 @@ export IPC_NAMESPACE='$IPC_NAMESPACE'
 
 # RUST_LOG 配置
 export RUST_LOG="\${RUST_LOG:-info,funding_rate_signal=info,mkt_signal=info,hyper=warn,hyper_util=warn,h2=warn,reqwest=warn}"
+$CREDS_BLOCK
 EOF
 
 chmod +x "$ENV_FILE"

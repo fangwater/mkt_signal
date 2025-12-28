@@ -82,6 +82,34 @@ fn normalize_exchange_str(raw: &str) -> &str {
     }
 }
 
+fn venue_from_slug(raw: &str) -> Option<TradingVenue> {
+    let slug = raw.trim().to_ascii_lowercase().replace('_', "-");
+    match slug.as_str() {
+        "binance-margin" => Some(TradingVenue::BinanceMargin),
+        "binance-futures" => Some(TradingVenue::BinanceFutures),
+        "okex-margin" => Some(TradingVenue::OkexMargin),
+        "okex-futures" => Some(TradingVenue::OkexFutures),
+        "bybit-margin" => Some(TradingVenue::BybitMargin),
+        "bybit-futures" => Some(TradingVenue::BybitFutures),
+        "bitget-margin" => Some(TradingVenue::BitgetMargin),
+        "bitget-futures" => Some(TradingVenue::BitgetFutures),
+        "gate-margin" => Some(TradingVenue::GateMargin),
+        "gate-futures" => Some(TradingVenue::GateFutures),
+        _ => None,
+    }
+}
+
+fn infer_fr_venues_from_key_suffix(key_suffix: &str) -> Option<(TradingVenue, TradingVenue)> {
+    let suffix = key_suffix.trim().to_ascii_lowercase();
+    let mut parts = suffix.split('_');
+    let open = venue_from_slug(parts.next()?)?;
+    let hedge = venue_from_slug(parts.next()?)?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((open, hedge))
+}
+
 fn futures_venue_for_exchange(exchange: &str) -> Option<TradingVenue> {
     match exchange {
         "binance" => Some(TradingVenue::BinanceFutures),
@@ -91,6 +119,14 @@ fn futures_venue_for_exchange(exchange: &str) -> Option<TradingVenue> {
         "gate" => Some(TradingVenue::GateFutures),
         _ => None,
     }
+}
+
+fn fr_symbol_key_suffix(open_venue: TradingVenue, hedge_venue: TradingVenue) -> String {
+    format!(
+        "{}_{}",
+        open_venue.data_pub_slug(),
+        hedge_venue.data_pub_slug()
+    )
 }
 
 fn infer_xarb_venues_from_key_suffix(key_suffix: &str) -> Option<(TradingVenue, TradingVenue)> {
@@ -223,13 +259,32 @@ async fn main() -> Result<()> {
                 )
             }
             Some((ns, suffix)) if ns.eq_ignore_ascii_case("fr") => {
-                let expected = normalize_exchange_str(&suffix);
-                let inferred = Exchange::from_str(expected).with_context(|| {
-                    format!(
-                        "failed to infer exchange from CWD suffix='{}' (namespace=fr)",
-                        suffix
-                    )
-                })?;
+                let (open_venue, hedge_venue, inferred) =
+                    if let Some((open, hedge)) = infer_fr_venues_from_key_suffix(&suffix) {
+                        let open_ex = Exchange::from_str(open.trade_engine_exchange())
+                            .context("invalid FR open venue exchange")?;
+                        let hedge_ex = Exchange::from_str(hedge.trade_engine_exchange())
+                            .context("invalid FR hedge venue exchange")?;
+                        if open_ex != hedge_ex {
+                            anyhow::bail!(
+                                "FR venues must share the same exchange (open={:?}, hedge={:?})",
+                                open,
+                                hedge
+                            );
+                        }
+                        (open, hedge, open_ex)
+                    } else {
+                        let expected = normalize_exchange_str(&suffix);
+                        let inferred = Exchange::from_str(expected).with_context(|| {
+                            format!(
+                                "failed to infer exchange from CWD suffix='{}' (namespace=fr)",
+                                suffix
+                            )
+                        })?;
+                        let (open_venue, hedge_venue) =
+                            mkt_signal::funding_rate::common::venue_pair_for_exchange(inferred);
+                        (open_venue, hedge_venue, inferred)
+                    };
                 if let Some(cli_ex) = args.exchange {
                     if cli_ex != inferred {
                         anyhow::bail!(
@@ -239,12 +294,10 @@ async fn main() -> Result<()> {
                         );
                     }
                 }
-                let (open_venue, hedge_venue) =
-                    mkt_signal::funding_rate::common::venue_pair_for_exchange(inferred);
                 (
                     DecisionBranch::Fr,
                     ns,
-                    suffix,
+                    fr_symbol_key_suffix(open_venue, hedge_venue),
                     Some(inferred),
                     open_venue,
                     hedge_venue,
@@ -260,7 +313,7 @@ async fn main() -> Result<()> {
                 (
                     DecisionBranch::Fr,
                     "fr".to_string(),
-                    exchange.as_str().to_string(),
+                    fr_symbol_key_suffix(open_venue, hedge_venue),
                     Some(exchange),
                     open_venue,
                     hedge_venue,
