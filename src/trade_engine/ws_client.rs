@@ -236,15 +236,40 @@ impl TradeWsClient {
                                     .map(|d| d.as_secs())
                                     .unwrap_or(0);
                                 let now_ms = chrono::Utc::now().timestamp_millis();
-                                info!(
-                                    "trade ws client id={} sending login payload ({} bytes) okx_ts={:?} gate_req_id={:?} local_unix_s={} local_unix_ms={}",
-                                    self.id,
-                                    payload.len(),
-                                    self.last_okex_login_ts.as_deref(),
-                                    self.last_gate_login_req_id.as_deref(),
-                                    now_s,
-                                    now_ms
-                                );
+                                match self.exchange {
+                                    Exchange::Okex => {
+                                        info!(
+                                            "trade ws client id={} exchange={} sending login payload ({} bytes) okx_ts={:?} local_unix_s={} local_unix_ms={}",
+                                            self.id,
+                                            self.exchange,
+                                            payload.len(),
+                                            self.last_okex_login_ts.as_deref(),
+                                            now_s,
+                                            now_ms
+                                        );
+                                    }
+                                    Exchange::Gate => {
+                                        info!(
+                                            "trade ws client id={} exchange={} sending login payload ({} bytes) gate_req_id={:?} local_unix_s={} local_unix_ms={}",
+                                            self.id,
+                                            self.exchange,
+                                            payload.len(),
+                                            self.last_gate_login_req_id.as_deref(),
+                                            now_s,
+                                            now_ms
+                                        );
+                                    }
+                                    _ => {
+                                        info!(
+                                            "trade ws client id={} exchange={} sending login payload ({} bytes) local_unix_s={} local_unix_ms={}",
+                                            self.id,
+                                            self.exchange,
+                                            payload.len(),
+                                            now_s,
+                                            now_ms
+                                        );
+                                    }
+                                }
                                 if let Err(err) = ws.send(Message::Text(payload)).await {
                                     warn!(
                                         "trade ws client id={} send login payload failed: {}",
@@ -524,6 +549,14 @@ impl TradeWsClient {
         msg: &TradeRequestMsg,
     ) -> Result<()> {
         let payload = self.build_payload(msg)?;
+        if self.exchange == Exchange::Gate {
+            info!(
+                "trade ws client id={} exchange={} order payload: {}",
+                self.id,
+                self.exchange,
+                payload
+            );
+        }
         ws.send(Message::Text(payload)).await?;
         Ok(())
     }
@@ -534,6 +567,14 @@ impl TradeWsClient {
         msg: &QueryRequestMsg,
     ) -> Result<()> {
         let payload = self.build_query_payload(msg)?;
+        if self.exchange == Exchange::Gate {
+            info!(
+                "trade ws client id={} exchange={} query payload: {}",
+                self.id,
+                self.exchange,
+                payload
+            );
+        }
         ws.send(Message::Text(payload)).await?;
         Ok(())
     }
@@ -867,8 +908,14 @@ impl TradeWsClient {
                 return Some(n as i64);
             }
             if let Some(s) = v.as_str() {
+                let s = s.trim();
                 if let Ok(parsed) = s.parse::<i64>() {
                     return Some(parsed);
+                }
+                if let Some(rest) = s.strip_prefix("t-") {
+                    if let Ok(parsed) = rest.parse::<i64>() {
+                        return Some(parsed);
+                    }
                 }
             }
             None
@@ -1021,8 +1068,14 @@ impl TradeWsClient {
                 return Some(n as i64);
             }
             if let Some(s) = v.as_str() {
+                let s = s.trim();
                 if let Ok(parsed) = s.parse::<i64>() {
                     return Some(parsed);
+                }
+                if let Some(rest) = s.strip_prefix("t-") {
+                    if let Ok(parsed) = rest.parse::<i64>() {
+                        return Some(parsed);
+                    }
                 }
             }
             None
@@ -1062,8 +1115,14 @@ impl TradeWsClient {
                 return Some(n as i64);
             }
             if let Some(s) = v.as_str() {
+                let s = s.trim();
                 if let Ok(parsed) = s.parse::<i64>() {
                     return Some(parsed);
+                }
+                if let Some(rest) = s.strip_prefix("t-") {
+                    if let Ok(parsed) = rest.parse::<i64>() {
+                        return Some(parsed);
+                    }
                 }
             }
             None

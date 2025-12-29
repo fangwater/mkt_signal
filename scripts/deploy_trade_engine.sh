@@ -52,6 +52,18 @@ mkdir -p "$TARGET_DIR/config"
 cp "$BIN_PATH" "$TARGET_DIR/"
 chmod +x "$TARGET_DIR/$BIN_NAME"
 
+# 同步启动/停止脚本
+SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
+SCRIPTS_TO_SYNC=("start_trade_engine.sh" "stop_trade_engine.sh")
+mkdir -p "$TARGET_DIR/scripts"
+for script in "${SCRIPTS_TO_SYNC[@]}"; do
+  if [[ -f "$SCRIPT_DIR_SRC/$script" ]]; then
+    rsync -a "$SCRIPT_DIR_SRC/$script" "$TARGET_DIR/scripts/"
+    chmod +x "$TARGET_DIR/scripts/$script"
+  fi
+done
+
 # 当前 trade_engine 使用环境变量/内置常量，无需部署 trade_engine.toml
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"
+echo "[INFO] 手动启动: cd $TARGET_DIR && ./scripts/start_trade_engine.sh"

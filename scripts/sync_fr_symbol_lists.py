@@ -82,6 +82,7 @@ def parse_args() -> argparse.Namespace:
 # ========== 交易对白名单配置 ==========
 
 # 正套币对列表（替换为提供的 OKX 列表）
+# 默认正套币对列表（OKX）
 FWD_SYMBOLS_8H: List[str] = [
     "ONE-USDT-SWAP",
     "BICO-USDT-SWAP",
@@ -98,6 +99,7 @@ FWD_SYMBOLS_4H: List[str] = [
 FWD_SYMBOLS: List[str] = FWD_SYMBOLS_8H + FWD_SYMBOLS_4H
 
 # 反套币对列表（替换为提供的 OKX 列表）
+# 默认反套币对列表（OKX）
 BWD_SYMBOLS_8H: List[str] = [
     "APT-USDT-SWAP",
     "ATOM-USDT-SWAP",
@@ -132,6 +134,61 @@ BWD_SYMBOLS: List[str] = BWD_SYMBOLS_8H + BWD_SYMBOLS_4H
 # 合并所有交易对（用于平仓列表）
 SYMBOL_ALLOWLIST: List[str] = list(set(FWD_SYMBOLS + BWD_SYMBOLS))
 
+# Gate 专用交易对列表（USDT，下划线格式）
+GATE_FWD_SYMBOLS_8H: List[str] = [
+    "STX_USDT",
+    "RSR_USDT",
+    "VET_USDT",
+    "IOTA_USDT",
+    "ACH_USDT",
+    "RUNE_USDT",
+]
+
+GATE_FWD_SYMBOLS_4H: List[str] = [
+    "COOKIE_USDT",
+    "ALCH_USDT",
+    "NOT_USDT",
+    "PEAQ_USDT",
+    "CETUS_USDT",
+    "AEVO_USDT",
+    "JTO_USDT",
+    "PNUT_USDT",
+    "MANTA_USDT",
+    "KAIA_USDT",
+    "XDC_USDT",
+    "CATI_USDT",
+    "DOGS_USDT",
+    "USTC_USDT",
+    "SATS_USDT",
+    "XPL_USDT",
+    "VINE_USDT",
+    "POPCAT_USDT",
+    "METIS_USDT",
+    "HUMA_USDT",
+    "MOVE_USDT",
+    "AKT_USDT",
+]
+
+GATE_FWD_SYMBOLS: List[str] = GATE_FWD_SYMBOLS_8H + GATE_FWD_SYMBOLS_4H
+
+GATE_BWD_SYMBOLS_8H: List[str] = [
+    "APT_USDT",
+    "ATOM_USDT",
+    "CORE_USDT",
+    "MINA_USDT",
+    "ICP_USDT",
+]
+
+GATE_BWD_SYMBOLS_4H: List[str] = [
+    "BB_USDT",
+    "ZORA_USDT",
+    "OM_USDT",
+    "SQD_USDT",
+    "KERNEL_USDT",
+]
+
+GATE_BWD_SYMBOLS: List[str] = GATE_BWD_SYMBOLS_8H + GATE_BWD_SYMBOLS_4H
+
 
 def make_key_suffix(open_venue: str, hedge_venue: str) -> str:
     return f"{open_venue.strip().lower()}_{hedge_venue.strip().lower()}"
@@ -148,7 +205,19 @@ def resolve_venues(args: argparse.Namespace) -> Optional[tuple[str, str]]:
     return None
 
 
-def sync_symbol_lists(rds, key_suffix: str) -> int:
+def resolve_symbol_lists(exchange: str) -> tuple[List[str], List[str], str]:
+    ex = exchange.strip().lower()
+    if ex == "gate":
+        return GATE_FWD_SYMBOLS, GATE_BWD_SYMBOLS, "gate"
+    return FWD_SYMBOLS, BWD_SYMBOLS, ex or "default"
+
+
+def sync_symbol_lists(
+    rds,
+    key_suffix: str,
+    fwd_symbols: List[str],
+    bwd_symbols: List[str],
+) -> int:
     """同步交易对列表到 Redis"""
     # 1. 平仓列表（默认空）
     dump_key = f"fr_dump_symbols:{key_suffix}"
@@ -158,14 +227,14 @@ def sync_symbol_lists(rds, key_suffix: str) -> int:
 
     # 2. 正套建仓列表
     fwd_key = f"fr_fwd_trade_symbols:{key_suffix}"
-    rds.set(fwd_key, json.dumps(FWD_SYMBOLS, ensure_ascii=False))
-    print(f"✅ 已写入 {len(FWD_SYMBOLS)} 个交易对到 '{fwd_key}'（正套）")
-    total = 0 + len(FWD_SYMBOLS)
+    rds.set(fwd_key, json.dumps(fwd_symbols, ensure_ascii=False))
+    print(f"✅ 已写入 {len(fwd_symbols)} 个交易对到 '{fwd_key}'（正套）")
+    total = len(fwd_symbols)
     # 3. 反套建仓列表
     bwd_key = f"fr_bwd_trade_symbols:{key_suffix}"
-    rds.set(bwd_key, json.dumps(BWD_SYMBOLS, ensure_ascii=False))
-    print(f"✅ 已写入 {len(BWD_SYMBOLS)} 个交易对到 '{bwd_key}'（反套）")
-    total += len(BWD_SYMBOLS)
+    rds.set(bwd_key, json.dumps(bwd_symbols, ensure_ascii=False))
+    print(f"✅ 已写入 {len(bwd_symbols)} 个交易对到 '{bwd_key}'（反套）")
+    total += len(bwd_symbols)
 
     return total
 
@@ -253,6 +322,8 @@ def main() -> int:
         return 2
     open_venue, hedge_venue = venues
     key_suffix = make_key_suffix(open_venue, hedge_venue)
+    exchange = open_venue.split("-", 1)[0] if "-" in open_venue else open_venue
+    fwd_symbols, bwd_symbols, source = resolve_symbol_lists(exchange)
 
     rds = redis.from_url(args.redis_url) if args.redis_url else redis.Redis(
         host=args.host, port=args.port, db=args.db, password=args.password
@@ -260,10 +331,11 @@ def main() -> int:
 
     print(f"🔄 开始同步 Funding Rate 交易对列表 (key_suffix={key_suffix})...")
     print(f"📍 Redis: {args.host}:{args.port}/{args.db}")
+    print(f"📋 Symbol source: {source}")
     print()
 
     # 同步列表
-    total = sync_symbol_lists(rds, key_suffix)
+    total = sync_symbol_lists(rds, key_suffix, fwd_symbols, bwd_symbols)
     print(f"\n✅ 共写入 {total} 个交易对条目")
 
     # 打印结果

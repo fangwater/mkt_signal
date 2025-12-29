@@ -74,6 +74,7 @@ async fn main() -> Result<()> {
 
     // WebSocket URLs
     let unified_ws_url = GatePrivateWsUrls::UNIFIED.to_string();
+    let spot_ws_url = GatePrivateWsUrls::SPOT.to_string();
     let futures_ws_url = GatePrivateWsUrls::FUTURES_USDT.to_string();
 
     // IP 设置（可选，如果需要主备双路）
@@ -87,17 +88,19 @@ async fn main() -> Result<()> {
         primary_ip, secondary_ip, session_max
     );
 
-    // 统一账户频道 (unified.asset_detail + spot.orders_v2)
+    // 统一账户频道 (unified.asset_detail)
     let unified_channels = vec![
         SubscribeChannel {
             channel: "unified.asset_detail".to_string(),
             payload: vec!["!all".to_string()],
         },
-        SubscribeChannel {
-            channel: "spot.orders_v2".to_string(),
-            payload: vec!["!all".to_string()],
-        },
     ];
+
+    // 现货频道 (spot.orders_v2)
+    let spot_channels = vec![SubscribeChannel {
+        channel: "spot.orders_v2".to_string(),
+        payload: vec!["!all".to_string()],
+    }];
 
     // 合约频道 (futures.orders)
     let futures_channels = vec![
@@ -115,7 +118,7 @@ async fn main() -> Result<()> {
     let mut deduper = AccountEventDeduper::new(8192);
     let mut stats = tokio::time::interval(Duration::from_secs(30));
 
-    // 启动统一账户主备双路连接 (unified.asset_detail + spot.orders_v2)
+    // 启动统一账户主备双路连接 (unified.asset_detail)
     let mut unified_primary = spawn_gate_stream_path(
         "unified-primary",
         &unified_ws_url,
@@ -132,6 +135,28 @@ async fn main() -> Result<()> {
         secondary_ip.clone(),
         credentials.clone(),
         unified_channels.clone(),
+        shutdown_rx.clone(),
+        evt_tx.clone(),
+        session_max,
+    );
+
+    // 启动现货主备双路连接 (spot.orders_v2)
+    let mut spot_primary = spawn_gate_stream_path(
+        "spot-primary",
+        &spot_ws_url,
+        primary_ip.clone(),
+        credentials.clone(),
+        spot_channels.clone(),
+        shutdown_rx.clone(),
+        evt_tx.clone(),
+        session_max,
+    );
+    let mut spot_secondary = spawn_gate_stream_path(
+        "spot-secondary",
+        &spot_ws_url,
+        secondary_ip.clone(),
+        credentials.clone(),
+        spot_channels.clone(),
         shutdown_rx.clone(),
         evt_tx.clone(),
         session_max,
@@ -206,6 +231,43 @@ async fn main() -> Result<()> {
                         GATE_SECONDARY_IP.to_string(),
                         credentials.clone(),
                         unified_channels.clone(),
+                        shutdown_rx.clone(),
+                        evt_tx.clone(),
+                        session_max,
+                    );
+                }
+            }
+            // 现货连接重启
+            res = &mut spot_primary => {
+                match res {
+                    Ok(()) => warn!("spot-primary task exited; restarting"),
+                    Err(e) => warn!("spot-primary task join error: {}; restarting", e),
+                }
+                if !*shutdown_rx.borrow() {
+                    spot_primary = spawn_gate_stream_path(
+                        "spot-primary",
+                        &spot_ws_url,
+                        GATE_PRIMARY_IP.to_string(),
+                        credentials.clone(),
+                        spot_channels.clone(),
+                        shutdown_rx.clone(),
+                        evt_tx.clone(),
+                        session_max,
+                    );
+                }
+            }
+            res = &mut spot_secondary => {
+                match res {
+                    Ok(()) => warn!("spot-secondary task exited; restarting"),
+                    Err(e) => warn!("spot-secondary task join error: {}; restarting", e),
+                }
+                if !*shutdown_rx.borrow() {
+                    spot_secondary = spawn_gate_stream_path(
+                        "spot-secondary",
+                        &spot_ws_url,
+                        GATE_SECONDARY_IP.to_string(),
+                        credentials.clone(),
+                        spot_channels.clone(),
                         shutdown_rx.clone(),
                         evt_tx.clone(),
                         session_max,
@@ -317,9 +379,14 @@ fn spawn_gate_stream_path(
                             match msg {
                                 Ok(b) => {
                                     if let Ok(s) = std::str::from_utf8(&b) {
-                                        debug!("[{}][ip={}] gate ws json: {}", name, local_ip_log, s);
+                                        info!("[{}][ip={}] gate ws json: {}", name, local_ip_log, s);
                                     } else {
-                                        debug!("[{}][ip={}] gate ws bin: {} bytes", name, local_ip_log, b.len());
+                                        info!(
+                                            "[{}][ip={}] gate ws bin: {} bytes",
+                                            name,
+                                            local_ip_log,
+                                            b.len()
+                                        );
                                     }
                                     // 解析并通过通道发送解析后的账户事件（二进制）
                                     let _ = parser.parse(b, &evt_tx_clone);

@@ -2,7 +2,7 @@
 //!
 //! 解析 Gate.io 统一账户的消息：
 //! - `unified.asset_detail`: 资产详情 -> BasicBalanceMsg + BasicBorrowInterestMsg
-//! - `spot.orders_v2`: 现货订单更新 -> GateBasicOrderMsg
+//! - `spot.orders`/`spot.orders_v2`: 现货订单更新 -> GateBasicOrderMsg
 //! - `futures.orders`: 合约订单更新 -> GateBasicOrderMsg
 //!
 //! ## unified.asset_detail 消息格式:
@@ -25,7 +25,7 @@
 //! }
 //! ```
 //!
-//! ## spot.orders_v2 消息格式:
+//! ## spot.orders_v2 / spot.orders 消息格式:
 //! ```json
 //! {
 //!     "time": 1694655225,
@@ -118,6 +118,22 @@ impl GateAccountEventParser {
         Self
     }
 
+    fn parse_gate_client_order_id(text: &str) -> Option<i64> {
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+        if let Ok(id) = text.parse::<i64>() {
+            return Some(id);
+        }
+        if let Some(rest) = text.strip_prefix("t-") {
+            if let Ok(id) = rest.parse::<i64>() {
+                return Some(id);
+            }
+        }
+        None
+    }
+
     /// 解析统一账户资产详情
     fn parse_unified_asset_detail(
         &self,
@@ -187,7 +203,7 @@ impl GateAccountEventParser {
         count
     }
 
-    /// 解析现货订单更新 (spot.orders_v2)
+    /// 解析现货订单更新 (spot.orders_v2 / spot.orders)
     fn parse_spot_orders_v2(
         &self,
         json_value: &serde_json::Value,
@@ -203,9 +219,9 @@ impl GateAccountEventParser {
         for order in result {
             // 解析 client_order_id (text 字段，必须是 i64)
             let text = order.get("text").and_then(|v| v.as_str()).unwrap_or("");
-            let client_order_id: i64 = match text.parse() {
-                Ok(id) => id,
-                Err(_) => {
+            let client_order_id = match Self::parse_gate_client_order_id(text) {
+                Some(id) => id,
+                None => {
                     warn!("Gate: spot.orders_v2 text is not i64, dropping: {}", order);
                     continue;
                 }
@@ -356,9 +372,9 @@ impl GateAccountEventParser {
         for order in result {
             // 解析 client_order_id (text 字段，必须是 i64)
             let text = order.get("text").and_then(|v| v.as_str()).unwrap_or("");
-            let client_order_id: i64 = match text.parse() {
-                Ok(id) => id,
-                Err(_) => {
+            let client_order_id = match Self::parse_gate_client_order_id(text) {
+                Some(id) => id,
+                None => {
                     warn!("Gate: futures.orders text is not i64, dropping: {}", order);
                     continue;
                 }
@@ -542,11 +558,11 @@ impl Parser for GateAccountEventParser {
                     0
                 }
             }
-            "spot.orders_v2" => {
+            "spot.orders_v2" | "spot.orders" => {
                 if event == "update" {
                     self.parse_spot_orders_v2(&json_value, tx)
                 } else {
-                    debug!("Gate: spot.orders_v2 event={} (ignored)", event);
+                    debug!("Gate: spot.orders event={} (ignored)", event);
                     0
                 }
             }

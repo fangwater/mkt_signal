@@ -384,12 +384,19 @@
       (function () {
         const RECONNECT_MS = 5000;
         const STALE_MS = 15000;
+        const POLL_MS = 2000;
+        const MAX_WS_FAILS = 2;
 
         const state = {
           ws: null,
           reconnectTimer: null,
           lastMessageAtMs: null,
           wsUrl: null,
+          snapshotUrl: null,
+          pollTimer: null,
+          wsConnected: false,
+          wsFailCount: 0,
+          wsDisabled: false,
           filter: "",
           hideZero: false,
           risk: null,
@@ -452,6 +459,15 @@
             ? new URL(override, window.location.href)
             : new URL("./ws", window.location.href);
           return toWsUrl(base.toString());
+        }
+
+        function computeSnapshotUrl() {
+          const qs = new URLSearchParams(window.location.search);
+          const override = qs.get("snapshot");
+          const base = override
+            ? new URL(override, window.location.href)
+            : new URL("./snapshot", window.location.href);
+          return base.toString();
         }
 
         function isFiniteNumber(x) {
@@ -635,6 +651,44 @@
           state.lastMessageAtMs = Date.now();
         }
 
+        function applySnapshot(payload) {
+          if (!payload || !Array.isArray(payload.entries)) return;
+          for (const entry of payload.entries) {
+            applyIncoming(entry);
+          }
+          renderAll();
+        }
+
+        function fetchSnapshot() {
+          if (!state.snapshotUrl) {
+            state.snapshotUrl = computeSnapshotUrl();
+          }
+          fetch(state.snapshotUrl, { cache: "no-store" })
+            .then((res) => {
+              if (!res.ok) {
+                throw new Error(`snapshot ${res.status}`);
+              }
+              return res.json();
+            })
+            .then((payload) => {
+              applySnapshot(payload);
+            })
+            .catch(() => {});
+        }
+
+        function startPolling() {
+          if (state.pollTimer) return;
+          state.pollTimer = setInterval(fetchSnapshot, POLL_MS);
+          setStatus("warn", state.wsDisabled ? "WS 不可用，轮询中…" : "WS 断开，轮询中…");
+          fetchSnapshot();
+        }
+
+        function stopPolling() {
+          if (!state.pollTimer) return;
+          clearInterval(state.pollTimer);
+          state.pollTimer = null;
+        }
+
         function handleMessage(ev) {
           let payload;
           try {
@@ -655,6 +709,10 @@
         }
 
         function connect() {
+          if (state.wsDisabled) {
+            startPolling();
+            return;
+          }
           if (state.ws) {
             state.ws.close();
             state.ws = null;
@@ -662,13 +720,17 @@
 
           setStatus("warn", "连接中…");
           state.wsUrl = computeWsUrl();
+          state.snapshotUrl = computeSnapshotUrl();
           el.wsUrl.textContent = state.wsUrl;
 
           try {
             const ws = new WebSocket(state.wsUrl);
             state.ws = ws;
             ws.addEventListener("open", () => {
+              state.wsConnected = true;
+              state.wsFailCount = 0;
               setStatus("ok", "已连接");
+              stopPolling();
               if (state.reconnectTimer) {
                 clearTimeout(state.reconnectTimer);
                 state.reconnectTimer = null;
@@ -676,16 +738,44 @@
             });
             ws.addEventListener("message", handleMessage);
             ws.addEventListener("close", () => {
-              setStatus("warn", "连接断开，准备重试…");
-              scheduleReconnect();
+              state.wsConnected = false;
+              state.wsFailCount += 1;
+              if (state.wsFailCount >= MAX_WS_FAILS) {
+                state.wsDisabled = true;
+                setStatus("warn", "WS 不可用，轮询中…");
+                startPolling();
+              } else {
+                setStatus("warn", "连接断开，准备重试…");
+                startPolling();
+                scheduleReconnect();
+              }
             });
             ws.addEventListener("error", () => {
-              setStatus("err", "连接异常");
-              ws.close();
+              state.wsConnected = false;
+              state.wsFailCount += 1;
+              if (state.wsFailCount >= MAX_WS_FAILS) {
+                state.wsDisabled = true;
+                setStatus("warn", "WS 不可用，轮询中…");
+                startPolling();
+                ws.close();
+              } else {
+                setStatus("err", "连接异常");
+                startPolling();
+                ws.close();
+              }
             });
           } catch (err) {
-            setStatus("err", "创建连接失败");
-            scheduleReconnect();
+            state.wsConnected = false;
+            state.wsFailCount += 1;
+            if (state.wsFailCount >= MAX_WS_FAILS) {
+              state.wsDisabled = true;
+              setStatus("warn", "WS 不可用，轮询中…");
+              startPolling();
+            } else {
+              setStatus("err", "创建连接失败");
+              startPolling();
+              scheduleReconnect();
+            }
           }
         }
 
@@ -768,7 +858,11 @@
           state.hideZero = !!el.hideZero.checked;
           renderAll();
         });
-        el.reloadBtn.addEventListener("click", connect);
+        el.reloadBtn.addEventListener("click", () => {
+          state.wsDisabled = false;
+          state.wsFailCount = 0;
+          connect();
+        });
         el.demoBtn.addEventListener("click", loadDemoData);
 
         connect();

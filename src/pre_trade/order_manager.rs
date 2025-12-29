@@ -826,7 +826,7 @@ impl Order {
                     }
                 };
                 let time_in_force = match self.order_type {
-                    OrderType::Limit => Some("gtc"),
+                    OrderType::Limit => Some("poc"),
                     OrderType::LimitMaker => Some("poc"),
                     OrderType::Market => None,
                     _ => None,
@@ -858,7 +858,7 @@ impl Order {
                 let create_ts = get_timestamp_us();
                 let contract = gate_currency_pair_from_symbol(&self.symbol);
                 let time_in_force = match self.order_type {
-                    OrderType::Limit => Some("gtc"),
+                    OrderType::Limit => Some("poc"),
                     OrderType::LimitMaker => Some("poc"),
                     OrderType::Market => Some("ioc"),
                     _ => None,
@@ -872,6 +872,7 @@ impl Order {
                 let mut req_param = serde_json::Map::new();
                 req_param.insert("text".to_string(), json!(self.client_order_id.to_string()));
                 req_param.insert("contract".to_string(), json!(contract));
+                req_param.insert("account".to_string(), json!("unified"));
                 req_param.insert("size".to_string(), json!(format_quantity(signed_size)));
 
                 if self.order_type.is_limit() {

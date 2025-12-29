@@ -33,8 +33,9 @@ dir_name="$(basename "${BASE_DIR}")"
 case "$dir_name" in
   okex_fr_*|*okex*|*OKEX*) EXCHANGE="okex" ;;
   binance_fr_*|*binance*|*BINANCE*) EXCHANGE="binance" ;;
+  gate_fr_*|*gate*|*GATE*) EXCHANGE="gate" ;;
   *)
-    echo "[ERROR] 无法从部署目录名推断 exchange: ${dir_name} (期望 okex_fr_* 或 binance_fr_*)" >&2
+    echo "[ERROR] 无法从部署目录名推断 exchange: ${dir_name} (期望 okex_fr_* / binance_fr_* / gate_fr_*)" >&2
     exit 1
     ;;
 esac

@@ -11,13 +11,27 @@
 
 /fr/binance http://127.0.0.1:12345
 
-# manual_signal (HTTP)
+# manual_signal (HTTP，旧路径)
 # 说明：
 # - 这里的 upstream 请使用 127.0.0.1（或内网 IP），不要写 0.0.0.0
 # - 同时配置带/不带尾部斜杠，避免 /manual_signal 和 /manual_signal/ 行为不一致
 # - upstream 末尾带 /，用于将前缀 /manual_signal(/) strip 掉并转发给后端的 /
 /manual_signal http://127.0.0.1:8911/
 /manual_signal/ http://127.0.0.1:8911/
+
+# fr manual_signal (每个交易所固定端口)
+# 端口: okex=8911 gate=8921 binance=8931 bybit=8941 bitget=8951
+# - upstream 末尾带 /，用于将前缀 /fr/<exchange>/manual_signal(/) strip 掉并转发给后端的 /
+/fr/okex/manual_signal http://127.0.0.1:8911/
+/fr/okex/manual_signal/ http://127.0.0.1:8911/
+/fr/gate/manual_signal http://127.0.0.1:8921/
+/fr/gate/manual_signal/ http://127.0.0.1:8921/
+/fr/binance/manual_signal http://127.0.0.1:8931/
+/fr/binance/manual_signal/ http://127.0.0.1:8931/
+/fr/bybit/manual_signal http://127.0.0.1:8941/
+/fr/bybit/manual_signal/ http://127.0.0.1:8941/
+/fr/bitget/manual_signal http://127.0.0.1:8951/
+/fr/bitget/manual_signal/ http://127.0.0.1:8951/
 
 # xarb pre-trade dashboard (static) + viz_server (WS/healthz)
 /xarb/okex-binance/ static:$HOME/okex-binance-xarb-trade/www/

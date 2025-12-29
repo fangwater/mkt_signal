@@ -32,11 +32,6 @@ struct Args {
     /// If omitted (and open_venue also omitted), venues will be inferred from current directory name.
     #[arg(long, value_enum)]
     hedge_venue: Option<TradingVenue>,
-
-    /// Optional suffix for resample channels, to run multiple pre_trade instances.
-    /// Example: --resample_suffix okex_m_okex_f
-    #[arg(long)]
-    resample_suffix: Option<String>,
 }
 
 fn infer_venues_from_cwd() -> Option<(TradingVenue, TradingVenue)> {
@@ -55,6 +50,7 @@ fn infer_venues_from_cwd() -> Option<(TradingVenue, TradingVenue)> {
         match ex {
             "binance" => Some(TradingVenue::BinanceFutures),
             "okex" => Some(TradingVenue::OkexFutures),
+            "gate" => Some(TradingVenue::GateFutures),
             _ => None,
         }
     }
@@ -63,6 +59,7 @@ fn infer_venues_from_cwd() -> Option<(TradingVenue, TradingVenue)> {
         match ex {
             "binance" => Some(TradingVenue::BinanceMargin),
             "okex" => Some(TradingVenue::OkexMargin),
+            "gate" => Some(TradingVenue::GateMargin),
             _ => None,
         }
     }
@@ -114,8 +111,6 @@ async fn main() -> Result<()> {
             ));
         }
     };
-    let resample_suffix = args.resample_suffix.clone();
-
     info!(
         "pre_trade starting, open_venue={:?}, hedge_venue={:?}",
         open_venue, hedge_venue
@@ -201,14 +196,8 @@ async fn main() -> Result<()> {
 
             // 5. 初始化 ResampleChannel
             info!("Initializing ResampleChannel singleton...");
-            let (exposure_ch, risk_ch) = if let Some(suffix) = resample_suffix.as_deref() {
-                (
-                    format!("pre_trade_exposure_{}", suffix),
-                    format!("pre_trade_risk_{}", suffix),
-                )
-            } else {
-                ("pre_trade_exposure".to_string(), "pre_trade_risk".to_string())
-            };
+            let exposure_ch = "pre_trade_exposure".to_string();
+            let risk_ch = "pre_trade_risk".to_string();
             if let Err(err) = ResampleChannel::initialize(&exposure_ch, &risk_ch) {
                 warn!("Failed to initialize ResampleChannel: {err:#}");
             } else {

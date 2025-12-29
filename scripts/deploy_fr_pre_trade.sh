@@ -2,8 +2,26 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN_NAME="trade_signal"
+BIN_NAME="pre_trade"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
+
+usage() {
+  cat <<'EOF'
+用法:
+  scripts/deploy_fr_pre_trade.sh [trade|test] --exchange <binance|okex|gate> [--scripts-only|--bin-only]
+
+说明:
+  - 默认构建并复制二进制 pre_trade 到目标目录（不自动启动）。
+  - --scripts-only: 仅同步脚本
+  - --bin-only: 仅构建并同步二进制
+  - FR 目标目录:  $HOME/<exchange>_fr_<trade|test>/
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
 
 # 参数解析
 ENV_TYPE="trade"
@@ -47,11 +65,22 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "[ERROR] 未知参数: $1"
-      echo "用法: $0 [trade|test] [--exchange binance] [--scripts-only|--bin-only]"
+      usage
       exit 1
       ;;
   esac
 done
+
+# 规范化为小写
+EXCHANGE="$(echo "$EXCHANGE" | tr 'A-Z' 'a-z')"
+case "$EXCHANGE" in
+  binance|okex|gate)
+    ;;
+  *)
+    echo "[ERROR] 不支持的 exchange: $EXCHANGE (支持: binance/okex/gate)"
+    exit 1
+    ;;
+esac
 
 TARGET_DIR="$HOME/${EXCHANGE}_fr_${ENV_TYPE}"
 
@@ -67,21 +96,12 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
   chmod +x "$TARGET_DIR/$BIN_NAME"
 fi
 
-# 同步启动/停止脚本及相关工具
 SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
 SCRIPTS_TO_SYNC=(
-  "start_trade_signal.sh"
-  "stop_trade_signal.sh"
-  "start_fr_signal.sh"
-  "stop_fr_signal.sh"
-  "sync_funding_rate_thresholds.py"
-  "print_funding_rate_thresholds.py"
-  "sync_fr_strategy_params.py"
-  "print_fr_strategy_params.py"
-  "sync_fr_symbol_lists.py"
-  "print_fr_symbol_lists.py"
-  "sync_fr_spread_thresholds.py"
-  "print_spread_thresholds.py"
+  "sync_fr_risk_params.py"
+  "print_fr_risk_params.py"
+  "start_fr_pre_trade.sh"
+  "stop_fr_pre_trade.sh"
 )
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   mkdir -p "$TARGET_DIR/scripts"
@@ -94,4 +114,4 @@ if [[ "$DO_SCRIPTS" -eq 1 ]]; then
 fi
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"
-echo "[INFO] 手动启动: cd $TARGET_DIR && ./scripts/start_trade_signal.sh"
+echo "[INFO] 风控参数同步: cd $TARGET_DIR && ./scripts/sync_fr_risk_params.py  # 会按目录推断 open/hedge"

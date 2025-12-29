@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::common::basic_account_msg::{
     get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
-    BasicPositionMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg, OkexOrderMsg,
+    BasicPositionMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg, GateBasicOrderMsg, OkexOrderMsg,
 };
 use crate::common::exchange::Exchange;
 use crate::common::ipc_service_name::build_service_name;
@@ -997,21 +997,52 @@ impl MonitorChannel {
                     .name(&NodeName::new(&node_name)?)
                     .create::<ipc::Service>()?;
 
-                // 严格启动顺序：账户流必须由 account_monitor 预先创建/发布；
-                // 若 service 不存在（account_monitor 未启动或 IPC_NAMESPACE 不一致），直接 panic 让进程退出。
-                let service = node
-                    .service_builder(&ServiceName::new(&service_name)?)
-                    .publish_subscribe::<[u8; ACCOUNT_PAYLOAD]>()
-                    .max_publishers(1)
-                    .max_subscribers(PM_MAX_SUBSCRIBERS)
-                    .history_size(PM_HISTORY_SIZE)
-                    .open()
-                    .unwrap_or_else(|err| {
-                        panic!(
-                            "打开账户 IceOryx service 失败（请先启动 account_monitor，并确认 IPC_NAMESPACE 一致）: service={} err={:?}",
-                            service_name, err
-                        )
-                    });
+                // Gate 依赖 account_monitor 的 client_order_id，对缺失严格报错；
+                // 其他交易所允许先启动 pre_trade，再由 account_monitor 补上。
+                let service_name_obj = ServiceName::new(&service_name)?;
+                let service = if exchange == Exchange::Gate {
+                    node.service_builder(&service_name_obj)
+                        .publish_subscribe::<[u8; ACCOUNT_PAYLOAD]>()
+                        .max_publishers(1)
+                        .max_subscribers(PM_MAX_SUBSCRIBERS)
+                        .history_size(PM_HISTORY_SIZE)
+                        .open()
+                        .unwrap_or_else(|err| {
+                            panic!(
+                                "打开账户 IceOryx service 失败（请先启动 account_monitor，并确认 IPC_NAMESPACE 一致）: service={} err={:?}",
+                                service_name, err
+                            )
+                        })
+                } else {
+                    match node
+                        .service_builder(&service_name_obj)
+                        .publish_subscribe::<[u8; ACCOUNT_PAYLOAD]>()
+                        .max_publishers(1)
+                        .max_subscribers(PM_MAX_SUBSCRIBERS)
+                        .history_size(PM_HISTORY_SIZE)
+                        .open()
+                    {
+                        Ok(service) => service,
+                        Err(err) => {
+                            warn!(
+                                "account_monitor service missing, continue with open_or_create: service={} err={:?}",
+                                service_name, err
+                            );
+                            node.service_builder(&service_name_obj)
+                                .publish_subscribe::<[u8; ACCOUNT_PAYLOAD]>()
+                                .max_publishers(1)
+                                .max_subscribers(PM_MAX_SUBSCRIBERS)
+                                .history_size(PM_HISTORY_SIZE)
+                                .open_or_create()
+                                .unwrap_or_else(|err| {
+                                    panic!(
+                                        "创建账户 IceOryx service 失败: service={} err={:?}",
+                                        service_name, err
+                                    )
+                                })
+                        }
+                    }
+                };
                 let subscriber: Subscriber<ipc::Service, [u8; ACCOUNT_PAYLOAD], ()> = service
                     .subscriber_builder()
                     .create()
@@ -1147,6 +1178,11 @@ impl MonitorChannel {
                                     }
                                     Exchange::Binance => {
                                         if let Ok(msg) = BinanceBasicOrderMsg::from_bytes(data) {
+                                            dispatch_order_update_generic(&strategy_mgr, &msg);
+                                        }
+                                    }
+                                    Exchange::Gate => {
+                                        if let Ok(msg) = GateBasicOrderMsg::from_bytes(data) {
                                             dispatch_order_update_generic(&strategy_mgr, &msg);
                                         }
                                     }

@@ -12,8 +12,7 @@ use crate::viz::resample::{
     PreTradeExposureResampleEntry, PreTradeExposureRow, PreTradeRiskResampleEntry,
 };
 use anyhow::Result;
-use log::debug;
-use log::{info, warn};
+use log::{debug, info, trace, warn};
 use std::cell::OnceCell;
 use std::time::Duration;
 
@@ -173,7 +172,7 @@ fn print_usdt_summary(open_venue: TradingVenue, hedge_venue: TradingVenue, mon: 
         return;
     }
 
-    println!(
+    trace!(
         "USDT(open:{}): balance={} borrowed={} interest={} net={}",
         open_ex.as_str(),
         fmt_u(open_snap.balance),
@@ -181,7 +180,7 @@ fn print_usdt_summary(open_venue: TradingVenue, hedge_venue: TradingVenue, mon: 
         fmt_u(open_snap.cumulative_interest),
         fmt_u(open_net)
     );
-    println!(
+    trace!(
         "USDT(hedge:{}): balance={} borrowed={} interest={} net={}",
         hedge_ex.as_str(),
         fmt_u(hedge_snap.balance),
@@ -189,7 +188,7 @@ fn print_usdt_summary(open_venue: TradingVenue, hedge_venue: TradingVenue, mon: 
         fmt_u(hedge_snap.cumulative_interest),
         fmt_u(hedge_net)
     );
-    println!(
+    trace!(
         "USDT(total): balance={} borrowed={} interest={} net={}",
         fmt_u(total_balance),
         fmt_u(total_borrowed),

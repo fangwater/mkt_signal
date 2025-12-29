@@ -74,6 +74,27 @@ pub fn build_login_message_with_kind(
     (msg, req_id)
 }
 
+fn ensure_gate_text_prefix(req_param: &mut Value, client_order_id: i64) {
+    let Some(obj) = req_param.as_object_mut() else {
+        return;
+    };
+    let default_text = format!("t-{}", client_order_id);
+    let text_value = obj
+        .get("text")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string());
+    match text_value {
+        Some(text) => {
+            if !text.starts_with("t-") {
+                obj.insert("text".to_string(), Value::String(format!("t-{}", text)));
+            }
+        }
+        None => {
+            obj.insert("text".to_string(), Value::String(default_text));
+        }
+    }
+}
+
 pub fn build_api_payload(msg: &TradeRequestMsg) -> Result<String> {
     let channel = match msg.req_type {
         TradeRequestType::GateUnifiedNewOrder => CHANNEL_SPOT_ORDER_PLACE,
@@ -88,8 +109,14 @@ pub fn build_api_payload(msg: &TradeRequestMsg) -> Result<String> {
         }
     };
 
-    let req_param: Value = serde_json::from_slice(&msg.params)
+    let mut req_param: Value = serde_json::from_slice(&msg.params)
         .with_context(|| "invalid gate req_param json")?;
+    if matches!(
+        msg.req_type,
+        TradeRequestType::GateUnifiedNewOrder | TradeRequestType::GateFuturesNewOrder
+    ) {
+        ensure_gate_text_prefix(&mut req_param, msg.client_order_id);
+    }
 
     let ts_s = chrono::Utc::now().timestamp();
     let payload = json!({

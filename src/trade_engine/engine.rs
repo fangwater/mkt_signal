@@ -7,7 +7,7 @@ use crate::trade_engine::query_parsers::binance_margin_order::parse_binance_marg
 use crate::trade_engine::query_parsers::binance_pm_balance_snapshot::parse_binance_pm_balance_snapshot;
 use crate::trade_engine::query_parsers::binance_um_account_snapshot::parse_binance_um_account_snapshot;
 use crate::trade_engine::query_parsers::binance_um_order::parse_binance_um_order_query_json;
-use crate::trade_engine::query_parsers::gate_positions_snapshot::parse_gate_positions_snapshot;
+use crate::trade_engine::query_parsers::gate_positions_snapshot::parse_gate_positions_snapshot_with_meta;
 use crate::trade_engine::query_parsers::gate_unified_balance_snapshot::parse_gate_unified_balance_snapshot;
 use crate::trade_engine::query_parsers::okex_account_balance_snapshot::parse_okex_account_balance_snapshot;
 use crate::trade_engine::query_parsers::okex_order::parse_okex_order_query_json;
@@ -1010,10 +1010,11 @@ impl TradeEngine {
                                         crate::trade_engine::query_request::QueryRequestType::GateUnifiedPositionsSnapshot
                                             if status == 200 =>
                                         {
-                                            if let Some(msgs) = parse_gate_positions_snapshot(&body)
+                                            if let Some(parsed) =
+                                                parse_gate_positions_snapshot_with_meta(&body)
                                             {
-                                                if !msgs.is_empty() {
-                                                    for payload in msgs {
+                                                if !parsed.msgs.is_empty() {
+                                                    for payload in parsed.msgs {
                                                         let _ = query_resp_tx.send(QueryExecOutcome {
                                                             req_type: msg.req_type,
                                                             client_query_id: msg.client_query_id,
@@ -1026,8 +1027,33 @@ impl TradeEngine {
                                                     }
                                                     continue;
                                                 }
+                                                let no_positions = parsed.rows_total == 0
+                                                    || (parsed.rows_with_inst > 0
+                                                        && parsed.rows_with_nonzero_size == 0
+                                                        && parsed.rows_with_pnl == 0);
+                                                if no_positions {
+                                                    info!(
+                                                        "gate positions snapshot empty; rows_total={}, rows_with_inst={}, rows_nonzero_size={}, rows_with_pnl={}",
+                                                        parsed.rows_total,
+                                                        parsed.rows_with_inst,
+                                                        parsed.rows_with_nonzero_size,
+                                                        parsed.rows_with_pnl
+                                                    );
+                                                } else {
+                                                    warn!(
+                                                        "gate positions snapshot parse produced no basic msgs; rows_total={}, rows_with_inst={}, rows_nonzero_size={}, rows_with_pnl={}",
+                                                        parsed.rows_total,
+                                                        parsed.rows_with_inst,
+                                                        parsed.rows_with_nonzero_size,
+                                                        parsed.rows_with_pnl
+                                                    );
+                                                }
+                                            } else {
+                                                warn!(
+                                                    "gate positions snapshot parse failed; body_len={}",
+                                                    body.len()
+                                                );
                                             }
-                                            warn!("gate positions snapshot parse produced no basic msgs; skipping response body");
                                             bytes::Bytes::new()
                                         }
                                         _ => bytes::Bytes::from(body),

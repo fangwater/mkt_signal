@@ -152,14 +152,32 @@ fn find_unrealized_pnl(row: &Value) -> Option<f64> {
     None
 }
 
-pub fn parse_gate_positions_snapshot(json: &str) -> Option<Vec<Bytes>> {
+pub struct GatePositionsSnapshotParse {
+    pub msgs: Vec<Bytes>,
+    pub rows_total: usize,
+    pub rows_with_inst: usize,
+    pub rows_with_nonzero_size: usize,
+    pub rows_with_pnl: usize,
+}
+
+pub fn parse_gate_positions_snapshot_with_meta(
+    json: &str,
+) -> Option<GatePositionsSnapshotParse> {
     let value: Value = serde_json::from_str(json).ok()?;
     let rows = extract_rows(&value)?;
     let now_ts = chrono::Utc::now().timestamp_millis();
     let mut out = Vec::new();
+    let mut rows_with_inst = 0;
+    let mut rows_with_nonzero_size = 0;
+    let mut rows_with_pnl = 0;
 
     for row in rows {
-        let inst_raw = find_str(row, &["contract", "symbol", "inst_id", "instId", "currency_pair"])?;
+        let Some(inst_raw) =
+            find_str(row, &["contract", "symbol", "inst_id", "instId", "currency_pair"])
+        else {
+            continue;
+        };
+        rows_with_inst += 1;
         let size = find_size(row).unwrap_or(0.0);
         let ts = find_time_ms(row).unwrap_or(now_ts);
         let inst_id = normalize_contract(inst_raw);
@@ -184,15 +202,27 @@ pub fn parse_gate_positions_snapshot(json: &str) -> Option<Vec<Bytes>> {
         };
 
         if size != 0.0 {
+            rows_with_nonzero_size += 1;
             out.push(BasicPositionMsg::create(ts, inst_id.clone(), side_char, amount).to_bytes());
         }
 
         if let Some(pnl) = find_unrealized_pnl(row) {
+            rows_with_pnl += 1;
             out.push(BasicUmUnrealizedMsg::create(ts, inst_id, side_char, pnl).to_bytes());
         }
     }
 
-    Some(out)
+    Some(GatePositionsSnapshotParse {
+        msgs: out,
+        rows_total: rows.len(),
+        rows_with_inst,
+        rows_with_nonzero_size,
+        rows_with_pnl,
+    })
+}
+
+pub fn parse_gate_positions_snapshot(json: &str) -> Option<Vec<Bytes>> {
+    parse_gate_positions_snapshot_with_meta(json).map(|parsed| parsed.msgs)
 }
 
 #[cfg(test)]
