@@ -29,8 +29,6 @@ pub struct VizServerCfg {
     pub namespaces: Vec<String>,
     #[serde(default)]
     pub pre_trade: PreTradeSrcCfg,
-    #[serde(default)]
-    pub fr_state: FrStateSrcCfg,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -85,12 +83,4 @@ pub struct PreTradeInstanceCfg {
     pub namespace: Option<String>,
     pub exposure_channel: String,
     pub risk_channel: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct FrStateSrcCfg {
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub namespaces: Vec<String>,
 }

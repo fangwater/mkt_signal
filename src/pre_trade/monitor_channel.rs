@@ -14,7 +14,9 @@ use crate::common::basic_account_msg::{
 use crate::common::exchange::Exchange;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::min_qty_table::MinQtyTable;
-use crate::portfolio_margin::pm_forwarder::{PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS};
+use crate::portfolio_margin::pm_forwarder::{
+    PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE,
+};
 use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
 use crate::pre_trade::basic_exposure_manager::{BasicExposureEntry, BasicExposureManager};
 use crate::pre_trade::basic_um_manager::BasicUmManager;
@@ -1006,6 +1008,7 @@ impl MonitorChannel {
                         .max_publishers(1)
                         .max_subscribers(PM_MAX_SUBSCRIBERS)
                         .history_size(PM_HISTORY_SIZE)
+                        .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE)
                         .open()
                         .unwrap_or_else(|err| {
                             panic!(
@@ -1020,6 +1023,7 @@ impl MonitorChannel {
                         .max_publishers(1)
                         .max_subscribers(PM_MAX_SUBSCRIBERS)
                         .history_size(PM_HISTORY_SIZE)
+                        .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE)
                         .open()
                     {
                         Ok(service) => service,
@@ -1033,6 +1037,7 @@ impl MonitorChannel {
                                 .max_publishers(1)
                                 .max_subscribers(PM_MAX_SUBSCRIBERS)
                                 .history_size(PM_HISTORY_SIZE)
+                                .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE)
                                 .open_or_create()
                                 .unwrap_or_else(|err| {
                                     panic!(

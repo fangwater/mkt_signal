@@ -76,6 +76,10 @@ path = "src/bin/manual_signal.rs"
 name = "demo_qty_alignment"
 path = "src/bin/demo_qty_alignment.rs"
 
+[[bin]]
+name = "demo_gate_minqty"
+path = "src/bin/demo_gate_minqty.rs"
+
 [dependencies]
 local-ip-address = "0.6"
 serde_yaml = "0.9"

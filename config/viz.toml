@@ -2,34 +2,10 @@
 namespaces = ["okex_fr_trade"]
 [servers.http]
 bind = "0.0.0.0"
-port = 10010
-ws_path = "/ws"
-[servers.fr_state]
-enabled = true
-[servers.pre_trade]
-enabled = false
-
-[[servers]]
-namespaces = ["okex_fr_trade"]
-[servers.http]
-bind = "0.0.0.0"
 port = 10011
 ws_path = "/ws"
 [servers.pre_trade]
 enabled = true
-[servers.fr_state]
-enabled = false
-
-[[servers]]
-namespaces = ["gate_fr_trade"]
-[servers.http]
-bind = "0.0.0.0"
-port = 10020
-ws_path = "/ws"
-[servers.fr_state]
-enabled = true
-[servers.pre_trade]
-enabled = false
 
 [[servers]]
 namespaces = ["gate_fr_trade"]
@@ -39,19 +15,6 @@ port = 10021
 ws_path = "/ws"
 [servers.pre_trade]
 enabled = true
-[servers.fr_state]
-enabled = false
-
-[[servers]]
-namespaces = ["binance_fr_trade"]
-[servers.http]
-bind = "0.0.0.0"
-port = 10030
-ws_path = "/ws"
-[servers.fr_state]
-enabled = true
-[servers.pre_trade]
-enabled = false
 
 [[servers]]
 namespaces = ["binance_fr_trade"]
@@ -61,5 +24,3 @@ port = 10031
 ws_path = "/ws"
 [servers.pre_trade]
 enabled = true
-[servers.fr_state]
-enabled = false

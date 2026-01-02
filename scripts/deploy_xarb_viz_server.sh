@@ -27,7 +27,7 @@ usage() {
 
 说明:
   - 构建并部署 viz_server 到 xarb 环境目录 $HOME/<open>-<hedge>-xarb-<trade|test>/（或 --env-name 指定）。
-  - 会在目标目录生成/覆盖：config/viz.toml（仅开启 pre_trade resample 订阅，关闭 fr_state）。
+  - 会在目标目录生成/覆盖：config/viz.toml（仅开启 pre_trade resample 订阅）。
   - 默认会在同一个 viz_server 进程里开两个端口（便于 nginx 做不同 location 的 upstream 或灰度）：
       - --port  (默认 10111)
       - --port2 (默认 = port+1)
@@ -285,10 +285,6 @@ exposure_channel = "$exposure_ch"
 risk_channel = "$risk_ch"
 EOF
 
-  cat <<'EOF'
-[servers.fr_state]
-enabled = false
-EOF
 }
 
 {

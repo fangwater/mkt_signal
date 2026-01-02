@@ -5,6 +5,8 @@ pub fn describe_trade_error_code(code: i32) -> Option<&'static str> {
         1 => Some("Request failed"),
         51000 => Some("Parameter error"),
         51006 => Some("Price outside limit"),
+        51008 => Some("Insufficient margin in account"),
+        51137 => Some("Price above upper limit"),
         51061 => Some("Insufficient loanable assets"),
         51400 => Some("Cancel failed: filled/canceled/not exist"),
         51410 => Some("Cancel failed: canceling/settling"),

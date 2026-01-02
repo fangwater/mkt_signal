@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 
-use log::info;
-
 use crate::common::{
     basic_account_msg::{BasicBalanceMsg, BasicBorrowInterestMsg},
     exchange::Exchange,
@@ -60,10 +58,6 @@ impl BasicBalanceManager {
         entry.balance = msg.balance;
         entry.last_timestamp = msg.timestamp;
 
-        info!(
-            "balance updated: symbol={} balance={} ts={}",
-            entry.symbol, entry.balance, entry.last_timestamp
-        );
     }
 
     /// 应用借贷利息消息：累加利息，保留余额不变。
@@ -95,10 +89,6 @@ impl BasicBalanceManager {
         }
         entry.last_timestamp = entry.last_timestamp.max(msg.timestamp);
 
-        info!(
-            "borrow interest applied: symbol={} borrowed={} interest={} cumulative_interest={}",
-            entry.symbol, msg.borrowed, msg.interest, entry.cumulative_interest
-        );
     }
 
     /// 获取某个 symbol 的余额视图。

@@ -52,6 +52,14 @@ mod tests {
             Some("Price outside limit")
         );
         assert_eq!(
+            describe_trade_error_code(Exchange::Okex, 51008),
+            Some("Insufficient margin in account")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Okex, 51137),
+            Some("Price above upper limit")
+        );
+        assert_eq!(
             describe_trade_error_code(Exchange::Okex, 51061),
             Some("Insufficient loanable assets")
         );

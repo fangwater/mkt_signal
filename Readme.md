@@ -31,7 +31,7 @@ pm2 start ./trade_engine --name trade_engine_binance -- --exchange binance
   - pre_trade_exposure
   - pre_trade_risk
 
-  FR 相关的可视化由独立的 fr_visualization.rs 进程处理。编译通过 ✓
+  FR 相关的可视化已移除。编译通过 ✓
 
 
 1、旧程序启动

@@ -1,7 +1,6 @@
 use anyhow::Result;
 use log::{info, warn};
 use mkt_signal::viz::config::VizCfg;
-use mkt_signal::viz::fr_state::spawn_fr_state_listeners;
 use mkt_signal::viz::server::{serve_http, WsHub};
 use mkt_signal::viz::subscribers::spawn_pre_trade_resample_listeners_with_cfg;
 
@@ -27,13 +26,6 @@ async fn main() -> Result<()> {
                 {
                     warn!(
                         "spawn pre_trade resample listener failed (port={}): {err:#}",
-                        http_cfg.port
-                    );
-                }
-
-                if let Err(err) = spawn_fr_state_listeners(hub.clone(), &server) {
-                    warn!(
-                        "spawn fr_state listener failed (port={}): {err:#}",
                         http_cfg.port
                     );
                 }

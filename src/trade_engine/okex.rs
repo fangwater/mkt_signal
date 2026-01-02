@@ -504,7 +504,7 @@ impl OkexWsOrderResponse {
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
-        if !op.eq_ignore_ascii_case("order") {
+        if !op.eq_ignore_ascii_case("order") && !op.eq_ignore_ascii_case("cancel-order") {
             return None;
         }
 

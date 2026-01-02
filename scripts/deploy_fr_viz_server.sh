@@ -21,7 +21,7 @@ Usage: scripts/deploy_fr_viz_server.sh [trade|test] [--exchange <binance|okex|ga
 Notes:
   - exchange 可省略，会从 --env-name 或当前目录名推断（格式如 binance-fr-trade / binance_fr_trade）。
   - Deploys viz_server into $HOME/<exchange>_fr_<trade|test>/ (or --env-name).
-  - Generates config/viz.toml with pre_trade resample only (fr_state disabled).
+  - Generates config/viz.toml with pre_trade resample only.
   - Copies docs/pre_trade_dashboard.html into www/ and index.html.
   - Updates nginx mapping file with static + ws + healthz entries (managed block).
 EOF
@@ -413,10 +413,6 @@ exposure_channel = "$exposure_ch"
 risk_channel = "$risk_ch"
 EOF
 
-  cat <<'EOF'
-[servers.fr_state]
-enabled = false
-EOF
 }
 
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then

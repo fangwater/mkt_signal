@@ -3,17 +3,13 @@
 """
 Funding Rate 配置服务器（fr_config_server）
 -------------------------------------------
-一个轻量级的 HTTP 服务，提供页面/接口用于查看和编辑 Funding Rate 相关的 symbol 列表，
-直接读写 Redis 中的以下 3 个 key（JSON 数组，String 类型）：
-  - fr_dump_symbols:{key_suffix}      平仓列表
-  - fr_fwd_trade_symbols:{key_suffix} 正套建仓列表
-  - fr_bwd_trade_symbols:{key_suffix} 反套建仓列表
-
-其中 key_suffix 为 "<open_venue>_<hedge_venue>"（例如 gate-margin_gate-futures）。
-
-启动示例：
-  python scripts/fr_config_server.py --port 8000 --default-exchange okex
-  REDIS_URL=redis://:pwd@127.0.0.1:6379/0 python scripts/fr_config_server.py
+提供页面/接口用于查看和编辑 FR 相关配置：
+- symbol lists
+- rolling metrics params
+- funding rate thresholds
+- strategy params
+- risk params
+- spread thresholds (可从 rolling_metrics 同步)
 """
 
 from __future__ import annotations
@@ -25,7 +21,7 @@ import re
 import sys
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
@@ -38,99 +34,395 @@ EXCHANGE_DEFAULTS = {
     "gate": ("gate-margin", "gate-futures"),
 }
 
+try:
+    import sync_fr_risk_params as risk_defaults
+
+    DEFAULT_RISK_PARAMS = dict(risk_defaults.RISK_PARAMS)
+    RISK_PARAM_COMMENTS = dict(risk_defaults.PARAM_COMMENTS)
+except Exception:
+    DEFAULT_RISK_PARAMS = {}
+    RISK_PARAM_COMMENTS = {}
+
+try:
+    import sync_fr_strategy_params as strategy_defaults
+
+    DEFAULT_STRATEGY_PARAMS = dict(strategy_defaults.STRATEGY_PARAMS)
+    STRATEGY_PARAM_COMMENTS = dict(strategy_defaults.PARAM_COMMENTS)
+except Exception:
+    DEFAULT_STRATEGY_PARAMS = {}
+    STRATEGY_PARAM_COMMENTS = {}
+
+try:
+    import sync_funding_rate_thresholds as funding_defaults
+
+    DEFAULT_FUNDING_THRESHOLDS = dict(funding_defaults.FUNDING_RATE_THRESHOLDS)
+    FUNDING_THRESHOLD_COMMENTS = dict(funding_defaults.THRESHOLD_COMMENTS)
+    FUNDING_THRESHOLD_ORDER = list(funding_defaults.THRESHOLD_ORDER)
+except Exception:
+    DEFAULT_FUNDING_THRESHOLDS = {}
+    FUNDING_THRESHOLD_COMMENTS = {}
+    FUNDING_THRESHOLD_ORDER = []
+
+try:
+    import sync_fr_rolling_metrics_params as rolling_defaults
+
+    DEFAULT_ROLLING_PARAMS = dict(rolling_defaults.DEFAULTS)
+except Exception:
+    DEFAULT_ROLLING_PARAMS = {
+        "MAX_LENGTH": 150_000,
+        "refresh_sec": 30,
+        "reload_param_sec": 3,
+        "factors": {},
+    }
+
+try:
+    import sync_fr_symbol_lists as symbol_defaults
+
+    SYMBOL_DEFAULTS_SRC = symbol_defaults
+except Exception:
+    SYMBOL_DEFAULTS_SRC = None
+
+spread_sync = None
+try:
+    import sync_fr_spread_thresholds as spread_sync
+
+    SPREAD_THRESHOLD_MAPPING = dict(spread_sync.SPREAD_THRESHOLD_MAPPING)
+    SPREAD_THRESHOLD_ORDER = list(spread_sync.THRESHOLD_ORDER)
+except Exception:
+    SPREAD_THRESHOLD_MAPPING = {}
+    SPREAD_THRESHOLD_ORDER = []
+
 INDEX_HTML_TEMPLATE = """<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Funding Rate Symbol 列表管理</title>
+  <title>FR 配置中心</title>
   <style>
-    :root { color-scheme: light dark; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; padding: 0; background: #0b1221; color: #e4ecff; }
-    header { padding: 16px 20px; background: #101a33; border-bottom: 1px solid #1f2a44; }
-    h1 { margin: 0; font-size: 20px; }
+    :root {
+      color-scheme: light dark;
+      --bg: #0b1221;
+      --panel: #111a33;
+      --panel-2: #0f172a;
+      --border: #223259;
+      --muted: #94a3b8;
+      --text: #e4ecff;
+      --accent: #38bdf8;
+      --accent-2: #2563eb;
+      --danger: #ef4444;
+      --ok: #34d399;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Space Grotesk", "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      padding: 18px 20px;
+      background: linear-gradient(180deg, #0f1830, #0b1221);
+      border-bottom: 1px solid var(--border);
+    }
+    h1 { margin: 0 0 12px 0; font-size: 20px; }
     main { padding: 20px; }
-    .panel { background: #121c36; border: 1px solid #223259; border-radius: 10px; padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.35); }
-    .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 16px; }
-    select, button { padding: 8px 12px; border-radius: 6px; border: 1px solid #2f4066; background: #19274a; color: #e4ecff; }
-    button { cursor: pointer; border-color: #3b82f6; background: linear-gradient(90deg, #2563eb, #38bdf8); color: #fff; font-weight: 600; }
-    button.secondary { background: #19274a; color: #cbd5f5; border-color: #32476d; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: 0 10px 28px rgba(0,0,0,0.35);
+      margin-bottom: 18px;
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 180px;
+    }
+    label { font-size: 12px; color: var(--muted); }
+    input, select, button, textarea {
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid #2f4066;
+      background: #0f1c3b;
+      color: var(--text);
+      font-family: inherit;
+    }
+    input.mono, textarea.mono { font-family: Menlo, Consolas, monospace; }
+    textarea { width: 100%; min-height: 160px; resize: vertical; }
+    button {
+      cursor: pointer;
+      border-color: var(--accent-2);
+      background: linear-gradient(90deg, var(--accent-2), var(--accent));
+      color: white;
+      font-weight: 600;
+    }
+    button.secondary {
+      background: #16213c;
+      border-color: #31446d;
+      color: #cbd5f5;
+    }
+    button.ghost {
+      background: transparent;
+      border-color: #2f4066;
+      color: #cbd5f5;
+    }
     button:disabled { opacity: 0.6; cursor: not-allowed; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
-    .card { background: #0f172a; border: 1px solid #1f2a44; border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-    .card h3 { margin: 0; font-size: 16px; display: flex; justify-content: space-between; align-items: center; }
-    textarea { width: 100%; height: 220px; resize: vertical; border-radius: 8px; padding: 10px; border: 1px solid #283a5f; background: #0b1221; color: #e4ecff; font-family: Menlo, Consolas, monospace; line-height: 1.4; }
-    .hint { color: #94a3b8; font-size: 12px; }
-    .status { margin-top: 10px; font-size: 14px; }
-    .status.ok { color: #34d399; }
-    .status.err { color: #f87171; }
-    footer { margin-top: 12px; font-size: 12px; color: #94a3b8; text-align: right; }
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .section-header h2 { margin: 0; font-size: 16px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .status { font-size: 12px; color: var(--muted); min-height: 16px; }
+    .status.ok { color: var(--ok); }
+    .status.err { color: var(--danger); }
+    .hint { color: var(--muted); font-size: 12px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+    .kv-table { display: grid; grid-template-columns: 220px 1fr 1.5fr; gap: 8px; }
+    .kv-row { display: contents; }
+    .kv-key {
+      padding: 8px 10px;
+      background: #0c142b;
+      border: 1px solid #1b294c;
+      border-radius: 6px;
+      font-family: Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+    .kv-input input { width: 100%; }
+    .kv-desc { font-size: 12px; color: var(--muted); padding: 8px 4px; }
+    .subnav { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+    .subnav a {
+      color: #cbd5f5;
+      text-decoration: none;
+      padding: 6px 10px;
+      border: 1px solid #26375b;
+      border-radius: 999px;
+      font-size: 12px;
+    }
+    .badge { font-size: 12px; color: var(--muted); }
+    .inline { display: inline-flex; align-items: center; gap: 8px; }
+    @media (max-width: 960px) {
+      .kv-table { grid-template-columns: 1fr; }
+      .kv-key { border-radius: 8px; }
+    }
   </style>
 </head>
 <body>
   <header>
-    <h1>Funding Rate Symbol 列表管理</h1>
-  </header>
-  <main>
-    <div class="panel">
-      <div class="toolbar">
-        <label for="exchange">Exchange:</label>
+    <h1>FR 配置中心</h1>
+    <div class="toolbar">
+      <div class="field">
+        <label for="exchange">Exchange</label>
         <select id="exchange"></select>
-        <button id="btn-load" class="secondary">读取</button>
-        <button id="btn-save">保存到 Redis</button>
-        <span id="status" class="status"></span>
       </div>
-
-      <div class="grid">
-        <div class="card">
-          <h3>平仓列表 <span class="hint">fr_dump_symbols</span></h3>
-          <textarea id="dump-list" placeholder="每行一个 symbol，例如&#10;BTCUSDT&#10;ETHUSDT"></textarea>
-          <div class="hint">未填写时会使用正套/反套并集作为平仓列表</div>
-        </div>
-        <div class="card">
-          <h3>正套建仓列表 <span class="hint">fr_fwd_trade_symbols</span></h3>
-          <textarea id="fwd-list" placeholder="每行一个 symbol，例如&#10;LTCUSDT"></textarea>
-        </div>
-        <div class="card">
-          <h3>反套建仓列表 <span class="hint">fr_bwd_trade_symbols</span></h3>
-          <textarea id="bwd-list" placeholder="每行一个 symbol，例如&#10;XMRUSDT"></textarea>
-        </div>
+      <div class="field">
+        <label for="open-venue">Open Venue</label>
+        <input id="open-venue" />
       </div>
-
-      <footer>默认 exchange: <span id="default-exchange"></span> · key_suffix: <span id="key-suffix">-</span> · 数据来源/落地：Redis</footer>
+      <div class="field">
+        <label for="hedge-venue">Hedge Venue</label>
+        <input id="hedge-venue" />
+      </div>
+      <div class="field">
+        <label>Key Suffix</label>
+        <div class="inline"><span id="key-suffix" class="badge">-</span></div>
+      </div>
+      <button id="reload-all" class="ghost" title="批量读取">读取全部</button>
     </div>
+  </header>
+
+  <main>
+    <div class="subnav">
+      <a href="#symbol-lists">Symbol Lists</a>
+      <a href="#strategy-params">Strategy Params</a>
+      <a href="#risk-params">Risk Params</a>
+      <a href="#funding-thresholds">Funding Thresholds</a>
+      <a href="#rolling-params">Rolling Params</a>
+      <a href="#spread-thresholds">Spread Thresholds</a>
+    </div>
+
+    <section id="symbol-lists" class="panel">
+      <div class="section-header">
+        <h2>Symbol Lists</h2>
+        <div class="actions">
+          <button id="sym-load" class="secondary">读取</button>
+          <button id="sym-save">保存</button>
+          <button id="sym-default" class="ghost">默认列表</button>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div>
+          <h3>平仓列表 <span class="hint">fr_dump_symbols</span></h3>
+          <textarea id="sym-dump" class="mono" placeholder="每行一个 symbol"></textarea>
+        </div>
+        <div>
+          <h3>正套建仓 <span class="hint">fr_fwd_trade_symbols</span></h3>
+          <textarea id="sym-fwd" class="mono" placeholder="每行一个 symbol"></textarea>
+        </div>
+        <div>
+          <h3>反套建仓 <span class="hint">fr_bwd_trade_symbols</span></h3>
+          <textarea id="sym-bwd" class="mono" placeholder="每行一个 symbol"></textarea>
+        </div>
+        <div>
+          <div class="hint">说明：支持逗号/空格/换行分隔；不拆分符号内的 '-' 或 '_'。</div>
+        </div>
+      </div>
+      <div id="sym-status" class="status"></div>
+    </section>
+
+    <section id="strategy-params" class="panel">
+      <div class="section-header">
+        <h2>Strategy Params</h2>
+        <div class="actions">
+          <button id="strategy-load" class="secondary">读取</button>
+          <button id="strategy-save">保存</button>
+          <button id="strategy-default" class="ghost">默认</button>
+        </div>
+      </div>
+      <div id="strategy-table" class="kv-table"></div>
+      <div id="strategy-status" class="status"></div>
+    </section>
+
+    <section id="risk-params" class="panel">
+      <div class="section-header">
+        <h2>Risk Params</h2>
+        <div class="actions">
+          <button id="risk-load" class="secondary">读取</button>
+          <button id="risk-save">保存</button>
+          <button id="risk-default" class="ghost">默认</button>
+        </div>
+      </div>
+      <div id="risk-table" class="kv-table"></div>
+      <div id="risk-status" class="status"></div>
+    </section>
+
+    <section id="funding-thresholds" class="panel">
+      <div class="section-header">
+        <h2>Funding Rate Thresholds</h2>
+        <div class="actions">
+          <button id="funding-load" class="secondary">读取</button>
+          <button id="funding-save">保存</button>
+          <button id="funding-default" class="ghost">默认</button>
+        </div>
+      </div>
+      <div id="funding-table" class="kv-table"></div>
+      <div id="funding-status" class="status"></div>
+    </section>
+
+    <section id="rolling-params" class="panel">
+      <div class="section-header">
+        <h2>Rolling Metrics Params</h2>
+        <div class="actions">
+          <button id="rolling-load" class="secondary">读取</button>
+          <button id="rolling-save">保存</button>
+          <button id="rolling-default" class="ghost">默认</button>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div>
+          <label for="rolling-max">MAX_LENGTH</label>
+          <input id="rolling-max" class="mono" />
+        </div>
+        <div>
+          <label for="rolling-refresh">refresh_sec</label>
+          <input id="rolling-refresh" class="mono" />
+        </div>
+        <div>
+          <label for="rolling-reload">reload_param_sec</label>
+          <input id="rolling-reload" class="mono" />
+        </div>
+        <div>
+          <label for="rolling-output">output_hash_key</label>
+          <input id="rolling-output" class="mono" />
+        </div>
+      </div>
+      <div style="margin-top: 12px;">
+        <label for="rolling-factors">factors (JSON)</label>
+        <textarea id="rolling-factors" class="mono"></textarea>
+      </div>
+      <div id="rolling-status" class="status"></div>
+    </section>
+
+    <section id="spread-thresholds" class="panel">
+      <div class="section-header">
+        <h2>Spread Threshold Mapping</h2>
+        <div class="actions">
+          <button id="spread-config-load" class="secondary">读取配置</button>
+          <button id="spread-config-save">保存配置</button>
+          <button id="spread-sync" class="ghost">同步阈值</button>
+        </div>
+      </div>
+      <div class="toolbar" style="margin-bottom: 10px;">
+        <div class="field">
+          <label for="spread-symbol">Symbol (可选)</label>
+          <input id="spread-symbol" placeholder="BTCUSDT" />
+        </div>
+        <div class="hint">格式: bidask_10 / askbid_90 / spread_15</div>
+      </div>
+      <div id="spread-table" class="kv-table"></div>
+      <div id="spread-status" class="status"></div>
+    </section>
   </main>
+
   <script>
-    const EXCHANGES = __EXCHANGES__;
-    const DEFAULT_EXCHANGE = "__DEFAULT_EXCHANGE__";
+    const BOOTSTRAP = __BOOTSTRAP__;
 
     const exchangeSelect = document.getElementById('exchange');
-    const statusEl = document.getElementById('status');
-    const dumpEl = document.getElementById('dump-list');
-    const fwdEl = document.getElementById('fwd-list');
-    const bwdEl = document.getElementById('bwd-list');
-    const defaultExEl = document.getElementById('default-exchange');
-    defaultExEl.textContent = DEFAULT_EXCHANGE || '-';
+    const openVenueInput = document.getElementById('open-venue');
+    const hedgeVenueInput = document.getElementById('hedge-venue');
+    const keySuffixEl = document.getElementById('key-suffix');
 
-    function setStatus(msg, ok = true) {
-      statusEl.textContent = msg;
-      statusEl.className = 'status ' + (ok ? 'ok' : 'err');
+    function setStatus(id, msg, ok = true) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.textContent = msg;
+      el.className = 'status ' + (ok ? 'ok' : 'err');
+    }
+
+    function normalizeExchange(ex) {
+      const raw = (ex || '').toLowerCase();
+      return raw === 'okx' ? 'okex' : raw;
     }
 
     function fillExchanges() {
       exchangeSelect.innerHTML = '';
-      EXCHANGES.forEach(ex => {
+      BOOTSTRAP.exchanges.forEach(ex => {
         const opt = document.createElement('option');
         opt.value = ex;
         opt.textContent = ex;
-        if (ex === DEFAULT_EXCHANGE) opt.selected = true;
+        if (ex === BOOTSTRAP.default_exchange) opt.selected = true;
         exchangeSelect.appendChild(opt);
       });
     }
 
+    function applyExchangeDefaults() {
+      const ex = normalizeExchange(exchangeSelect.value);
+      const pair = BOOTSTRAP.exchange_defaults[ex] || [];
+      if (!openVenueInput.value) openVenueInput.value = pair[0] || '';
+      if (!hedgeVenueInput.value) hedgeVenueInput.value = pair[1] || '';
+      refreshKeySuffix();
+    }
+
+    function refreshKeySuffix() {
+      const open = (openVenueInput.value || '').trim().toLowerCase();
+      const hedge = (hedgeVenueInput.value || '').trim().toLowerCase();
+      keySuffixEl.textContent = open && hedge ? `${open}_${hedge}` : '-';
+    }
+
     function toList(text) {
-      return text
-        .split(/[^A-Za-z0-9]+/)
+      return (text || '')
+        .split(/[\\s,]+/)
         .map(s => s.trim().toUpperCase())
         .filter(Boolean);
     }
@@ -139,56 +431,395 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       return (arr || []).join("\\n");
     }
 
-    async function loadLists() {
-      const ex = exchangeSelect.value;
-      setStatus('读取中...', true);
+    function queryParams(extra = {}) {
+      const params = new URLSearchParams();
+      params.set('exchange', normalizeExchange(exchangeSelect.value));
+      if (openVenueInput.value) params.set('open_venue', openVenueInput.value.trim());
+      if (hedgeVenueInput.value) params.set('hedge_venue', hedgeVenueInput.value.trim());
+      Object.keys(extra).forEach(key => {
+        if (extra[key]) params.set(key, extra[key]);
+      });
+      return params.toString();
+    }
+
+    function apiUrl(path) {
+      const base = window.location.pathname.endsWith('/') ? window.location.pathname : window.location.pathname + '/';
+      const clean = path.replace(/^\\//, '');
+      return `${base}api/${clean}`;
+    }
+
+    async function fetchJson(url, opts = {}) {
+      const resp = await fetch(url, opts);
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(`HTTP ${resp.status} ${text}`);
+      }
+      return await resp.json();
+    }
+
+    function buildParamRows(containerId, defaults, comments, order, values = {}) {
+      const container = document.getElementById(containerId);
+      container.innerHTML = '';
+      const ordered = [...order];
+      Object.keys(defaults).forEach(key => {
+        if (!ordered.includes(key)) ordered.push(key);
+      });
+      Object.keys(values).forEach(key => {
+        if (!ordered.includes(key)) ordered.push(key);
+      });
+      ordered.forEach(key => {
+        const row = document.createElement('div');
+        row.className = 'kv-row';
+
+        const keyCell = document.createElement('div');
+        keyCell.className = 'kv-key';
+        keyCell.textContent = key;
+
+        const inputCell = document.createElement('div');
+        inputCell.className = 'kv-input';
+        const input = document.createElement('input');
+        input.dataset.key = key;
+        input.className = 'mono';
+        input.value = values[key] ?? defaults[key] ?? '';
+        inputCell.appendChild(input);
+
+        const descCell = document.createElement('div');
+        descCell.className = 'kv-desc';
+        descCell.textContent = comments[key] || '';
+
+        container.appendChild(keyCell);
+        container.appendChild(inputCell);
+        container.appendChild(descCell);
+      });
+    }
+
+    function collectParamValues(containerId) {
+      const container = document.getElementById(containerId);
+      const values = {};
+      container.querySelectorAll('input[data-key]').forEach(input => {
+        values[input.dataset.key] = input.value.trim();
+      });
+      return values;
+    }
+
+    async function loadSymbolLists() {
+      setStatus('sym-status', '读取中...');
       try {
-        const resp = await fetch(`/api/symbol-lists?exchange=${encodeURIComponent(ex)}`);
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const data = await resp.json();
-        dumpEl.value = fromList(data.dump_symbols || []);
-        fwdEl.value = fromList(data.fwd_trade_symbols || []);
-        bwdEl.value = fromList(data.bwd_trade_symbols || []);
-        const keySuffixEl = document.getElementById('key-suffix');
-        if (keySuffixEl) keySuffixEl.textContent = data.key_suffix || '-';
-        setStatus('读取完成', true);
+        const data = await fetchJson(`${apiUrl('symbol-lists')}?${queryParams()}`);
+        document.getElementById('sym-dump').value = fromList(data.dump_symbols || []);
+        document.getElementById('sym-fwd').value = fromList(data.fwd_trade_symbols || []);
+        document.getElementById('sym-bwd').value = fromList(data.bwd_trade_symbols || []);
+        setStatus('sym-status', '读取完成');
       } catch (err) {
-        console.error(err);
-        setStatus(`读取失败: ${err}`, false);
+        setStatus('sym-status', `读取失败: ${err}`, false);
       }
     }
 
-    async function saveLists() {
-      const ex = exchangeSelect.value;
-      const payload = {
-        exchange: ex,
-        dump_symbols: toList(dumpEl.value),
-        fwd_trade_symbols: toList(fwdEl.value),
-        bwd_trade_symbols: toList(bwdEl.value),
-      };
-      setStatus('保存中...', true);
+    async function saveSymbolLists() {
+      setStatus('sym-status', '保存中...');
       try {
-        const resp = await fetch('/api/symbol-lists', {
+        const payload = {
+          exchange: normalizeExchange(exchangeSelect.value),
+          open_venue: openVenueInput.value.trim(),
+          hedge_venue: hedgeVenueInput.value.trim(),
+          dump_symbols: toList(document.getElementById('sym-dump').value),
+          fwd_trade_symbols: toList(document.getElementById('sym-fwd').value),
+          bwd_trade_symbols: toList(document.getElementById('sym-bwd').value),
+        };
+        await fetchJson(apiUrl('symbol-lists'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
-        if (!resp.ok) {
-          const txt = await resp.text();
-          throw new Error(`HTTP ${resp.status} ${txt}`);
-        }
-        const data = await resp.json();
-        setStatus(`保存成功：dump=${data.dump_count}, fwd=${data.fwd_count}, bwd=${data.bwd_count}`, true);
+        setStatus('sym-status', '保存成功');
       } catch (err) {
-        console.error(err);
-        setStatus(`保存失败: ${err}`, false);
+        setStatus('sym-status', `保存失败: ${err}`, false);
       }
     }
 
-    document.getElementById('btn-load').addEventListener('click', loadLists);
-    document.getElementById('btn-save').addEventListener('click', saveLists);
+    function applySymbolDefaults() {
+      const ex = normalizeExchange(exchangeSelect.value);
+      const defaults = (BOOTSTRAP.defaults.symbol_lists || {})[ex] || {};
+      document.getElementById('sym-dump').value = fromList(defaults.dump_symbols || []);
+      document.getElementById('sym-fwd').value = fromList(defaults.fwd_trade_symbols || []);
+      document.getElementById('sym-bwd').value = fromList(defaults.bwd_trade_symbols || []);
+      setStatus('sym-status', '已载入默认列表');
+    }
+
+    async function loadRiskParams() {
+      setStatus('risk-status', '读取中...');
+      try {
+        const data = await fetchJson(`${apiUrl('risk-params')}?${queryParams()}`);
+        buildParamRows('risk-table', BOOTSTRAP.defaults.risk_params || {}, BOOTSTRAP.comments.risk_params || {}, BOOTSTRAP.order.risk || [], data.values || {});
+        setStatus('risk-status', '读取完成');
+      } catch (err) {
+        setStatus('risk-status', `读取失败: ${err}`, false);
+      }
+    }
+
+    async function saveRiskParams() {
+      setStatus('risk-status', '保存中...');
+      try {
+        const payload = {
+          exchange: normalizeExchange(exchangeSelect.value),
+          open_venue: openVenueInput.value.trim(),
+          hedge_venue: hedgeVenueInput.value.trim(),
+          values: collectParamValues('risk-table'),
+        };
+        await fetchJson(apiUrl('risk-params'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        setStatus('risk-status', '保存成功');
+      } catch (err) {
+        setStatus('risk-status', `保存失败: ${err}`, false);
+      }
+    }
+
+    function applyRiskDefaults() {
+      buildParamRows('risk-table', BOOTSTRAP.defaults.risk_params || {}, BOOTSTRAP.comments.risk_params || {}, BOOTSTRAP.order.risk || [], {});
+      setStatus('risk-status', '已载入默认参数');
+    }
+
+    async function loadStrategyParams() {
+      setStatus('strategy-status', '读取中...');
+      try {
+        const data = await fetchJson(`${apiUrl('strategy-params')}?${queryParams()}`);
+        buildParamRows('strategy-table', BOOTSTRAP.defaults.strategy_params || {}, BOOTSTRAP.comments.strategy_params || {}, BOOTSTRAP.order.strategy || [], data.values || {});
+        setStatus('strategy-status', '读取完成');
+      } catch (err) {
+        setStatus('strategy-status', `读取失败: ${err}`, false);
+      }
+    }
+
+    async function saveStrategyParams() {
+      setStatus('strategy-status', '保存中...');
+      try {
+        const payload = {
+          exchange: normalizeExchange(exchangeSelect.value),
+          open_venue: openVenueInput.value.trim(),
+          hedge_venue: hedgeVenueInput.value.trim(),
+          values: collectParamValues('strategy-table'),
+        };
+        await fetchJson(apiUrl('strategy-params'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        setStatus('strategy-status', '保存成功');
+      } catch (err) {
+        setStatus('strategy-status', `保存失败: ${err}`, false);
+      }
+    }
+
+    function applyStrategyDefaults() {
+      buildParamRows('strategy-table', BOOTSTRAP.defaults.strategy_params || {}, BOOTSTRAP.comments.strategy_params || {}, BOOTSTRAP.order.strategy || [], {});
+      setStatus('strategy-status', '已载入默认参数');
+    }
+
+    async function loadFundingThresholds() {
+      setStatus('funding-status', '读取中...');
+      try {
+        const data = await fetchJson(`${apiUrl('funding-thresholds')}?${queryParams()}`);
+        buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, BOOTSTRAP.comments.funding_thresholds || {}, BOOTSTRAP.order.funding_thresholds || [], data.values || {});
+        setStatus('funding-status', '读取完成');
+      } catch (err) {
+        setStatus('funding-status', `读取失败: ${err}`, false);
+      }
+    }
+
+    async function saveFundingThresholds() {
+      setStatus('funding-status', '保存中...');
+      try {
+        const payload = {
+          exchange: normalizeExchange(exchangeSelect.value),
+          open_venue: openVenueInput.value.trim(),
+          hedge_venue: hedgeVenueInput.value.trim(),
+          values: collectParamValues('funding-table'),
+        };
+        await fetchJson(apiUrl('funding-thresholds'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        setStatus('funding-status', '保存成功');
+      } catch (err) {
+        setStatus('funding-status', `保存失败: ${err}`, false);
+      }
+    }
+
+    function applyFundingDefaults() {
+      buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, BOOTSTRAP.comments.funding_thresholds || {}, BOOTSTRAP.order.funding_thresholds || [], {});
+      setStatus('funding-status', '已载入默认参数');
+    }
+
+    function applyRollingDefaults() {
+      const open = openVenueInput.value.trim().toLowerCase();
+      const hedge = hedgeVenueInput.value.trim().toLowerCase();
+      const defaults = BOOTSTRAP.defaults.rolling_params || {};
+      document.getElementById('rolling-max').value = defaults.MAX_LENGTH ?? '';
+      document.getElementById('rolling-refresh').value = defaults.refresh_sec ?? '';
+      document.getElementById('rolling-reload').value = defaults.reload_param_sec ?? '';
+      document.getElementById('rolling-output').value = `rolling_metrics_thresholds_${open}_${hedge}`;
+      document.getElementById('rolling-factors').value = JSON.stringify(defaults.factors || {}, null, 2);
+      setStatus('rolling-status', '已载入默认参数');
+    }
+
+    async function loadRollingParams() {
+      setStatus('rolling-status', '读取中...');
+      try {
+        const data = await fetchJson(`${apiUrl('rolling-params')}?${queryParams()}`);
+        const values = data.values || {};
+        document.getElementById('rolling-max').value = values.MAX_LENGTH ?? '';
+        document.getElementById('rolling-refresh').value = values.refresh_sec ?? '';
+        document.getElementById('rolling-reload').value = values.reload_param_sec ?? '';
+        document.getElementById('rolling-output').value = values.output_hash_key ?? '';
+        document.getElementById('rolling-factors').value = JSON.stringify(values.factors || {}, null, 2);
+        setStatus('rolling-status', '读取完成');
+      } catch (err) {
+        setStatus('rolling-status', `读取失败: ${err}`, false);
+      }
+    }
+
+    async function saveRollingParams() {
+      setStatus('rolling-status', '保存中...');
+      try {
+        const factorsText = document.getElementById('rolling-factors').value || '{}';
+        let factors;
+        try {
+          factors = JSON.parse(factorsText);
+        } catch (err) {
+          throw new Error(`factors JSON 无法解析: ${err}`);
+        }
+        const payload = {
+          exchange: normalizeExchange(exchangeSelect.value),
+          open_venue: openVenueInput.value.trim(),
+          hedge_venue: hedgeVenueInput.value.trim(),
+          values: {
+            MAX_LENGTH: document.getElementById('rolling-max').value.trim(),
+            refresh_sec: document.getElementById('rolling-refresh').value.trim(),
+            reload_param_sec: document.getElementById('rolling-reload').value.trim(),
+            output_hash_key: document.getElementById('rolling-output').value.trim(),
+            factors: factors,
+          }
+        };
+        await fetchJson(apiUrl('rolling-params'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        setStatus('rolling-status', '保存成功');
+      } catch (err) {
+        setStatus('rolling-status', `保存失败: ${err}`, false);
+      }
+    }
+
+    async function loadSpreadMapping() {
+      setStatus('spread-status', '读取中...');
+      try {
+        const data = await fetchJson(`${apiUrl('spread-thresholds')}?${queryParams()}`);
+        buildParamRows('spread-table', BOOTSTRAP.defaults.spread_mapping || {}, {}, BOOTSTRAP.order.spread_mapping || [], data.values || {});
+        setStatus('spread-status', '读取完成');
+      } catch (err) {
+        setStatus('spread-status', `读取失败: ${err}`, false);
+      }
+    }
+
+    async function saveSpreadMapping() {
+      setStatus('spread-status', '保存中...');
+      try {
+        const payload = {
+          exchange: normalizeExchange(exchangeSelect.value),
+          open_venue: openVenueInput.value.trim(),
+          hedge_venue: hedgeVenueInput.value.trim(),
+          values: collectParamValues('spread-table'),
+        };
+        const data = await fetchJson(apiUrl('spread-thresholds'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        setStatus('spread-status', `保存成功 (${data.count || 0} 字段)`);
+      } catch (err) {
+        setStatus('spread-status', `保存失败: ${err}`, false);
+      }
+    }
+
+    async function syncSpreadThresholds() {
+      setStatus('spread-status', '同步中...');
+      try {
+        const symbol = document.getElementById('spread-symbol').value.trim();
+        const payload = {
+          exchange: normalizeExchange(exchangeSelect.value),
+          open_venue: openVenueInput.value.trim(),
+          hedge_venue: hedgeVenueInput.value.trim(),
+          symbol,
+          mapping: collectParamValues('spread-table'),
+        };
+        const data = await fetchJson(apiUrl('spread-thresholds/sync'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const changed = data.changed != null ? `, changed=${data.changed}` : '';
+        setStatus('spread-status', `同步完成: ${data.written || 0} 字段${changed}`);
+      } catch (err) {
+        setStatus('spread-status', `同步失败: ${err}`, false);
+      }
+    }
+
+    async function reloadAll() {
+      await loadSymbolLists();
+      await loadStrategyParams();
+      await loadRiskParams();
+      await loadFundingThresholds();
+      await loadRollingParams();
+      await loadSpreadMapping();
+    }
+
     fillExchanges();
-    loadLists();
+    applyExchangeDefaults();
+    buildParamRows('risk-table', BOOTSTRAP.defaults.risk_params || {}, BOOTSTRAP.comments.risk_params || {}, BOOTSTRAP.order.risk || [], {});
+    buildParamRows('strategy-table', BOOTSTRAP.defaults.strategy_params || {}, BOOTSTRAP.comments.strategy_params || {}, BOOTSTRAP.order.strategy || [], {});
+    buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, BOOTSTRAP.comments.funding_thresholds || {}, BOOTSTRAP.order.funding_thresholds || [], {});
+    buildParamRows('spread-table', BOOTSTRAP.defaults.spread_mapping || {}, {}, BOOTSTRAP.order.spread_mapping || [], {});
+
+    exchangeSelect.addEventListener('change', () => {
+      openVenueInput.value = '';
+      hedgeVenueInput.value = '';
+      applyExchangeDefaults();
+    });
+    openVenueInput.addEventListener('input', refreshKeySuffix);
+    hedgeVenueInput.addEventListener('input', refreshKeySuffix);
+
+    document.getElementById('sym-load').addEventListener('click', loadSymbolLists);
+    document.getElementById('sym-save').addEventListener('click', saveSymbolLists);
+    document.getElementById('sym-default').addEventListener('click', applySymbolDefaults);
+
+    document.getElementById('risk-load').addEventListener('click', loadRiskParams);
+    document.getElementById('risk-save').addEventListener('click', saveRiskParams);
+    document.getElementById('risk-default').addEventListener('click', applyRiskDefaults);
+
+    document.getElementById('strategy-load').addEventListener('click', loadStrategyParams);
+    document.getElementById('strategy-save').addEventListener('click', saveStrategyParams);
+    document.getElementById('strategy-default').addEventListener('click', applyStrategyDefaults);
+
+    document.getElementById('funding-load').addEventListener('click', loadFundingThresholds);
+    document.getElementById('funding-save').addEventListener('click', saveFundingThresholds);
+    document.getElementById('funding-default').addEventListener('click', applyFundingDefaults);
+
+    document.getElementById('rolling-load').addEventListener('click', loadRollingParams);
+    document.getElementById('rolling-save').addEventListener('click', saveRollingParams);
+    document.getElementById('rolling-default').addEventListener('click', applyRollingDefaults);
+
+    document.getElementById('spread-config-load').addEventListener('click', loadSpreadMapping);
+    document.getElementById('spread-config-save').addEventListener('click', saveSpreadMapping);
+    document.getElementById('spread-sync').addEventListener('click', syncSpreadThresholds);
+
+    document.getElementById('reload-all').addEventListener('click', reloadAll);
+
+    reloadAll();
   </script>
 </body>
 </html>
@@ -221,13 +852,17 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def normalize_exchange(exchange: str) -> str:
+    ex = exchange.strip().lower()
+    return "okex" if ex == "okx" else ex
+
+
 def normalize_symbol_list(value: Any) -> List[str]:
-    """将字符串/数组标准化为大写且去重的列表"""
     items: List[str] = []
     if isinstance(value, list):
         raw_items = value
     elif isinstance(value, str):
-        raw_items = re.split(r"[^\w]+", value)
+        raw_items = re.split(r"[\s,]+", value)
     else:
         raw_items = []
 
@@ -258,22 +893,207 @@ def read_symbol_list(rds, key: str) -> List[str]:
     return []
 
 
+def decode_redis_value(value: Any) -> str:
+    return value.decode("utf-8", "ignore") if isinstance(value, (bytes, bytearray)) else str(value)
+
+
+def read_hash(rds, key: str) -> Dict[str, str]:
+    raw = rds.hgetall(key)
+    return {decode_redis_value(k): decode_redis_value(v) for k, v in (raw or {}).items()}
+
+
+def write_hash(rds, key: str, values: Dict[str, Any]) -> int:
+    payload = {str(k): str(v) for k, v in values.items()}
+    if not payload:
+        return 0
+    rds.hset(key, mapping=payload)
+    return len(payload)
+
+
 def make_key_suffix(open_venue: str, hedge_venue: str) -> str:
     return f"{open_venue.strip().lower()}_{hedge_venue.strip().lower()}"
 
 
-def resolve_key_suffix(exchange: str, key_suffix: Optional[str]) -> Optional[str]:
-    if key_suffix:
-        return str(key_suffix).strip().lower()
-    venues = EXCHANGE_DEFAULTS.get(exchange)
-    if not venues:
-        return None
-    return make_key_suffix(venues[0], venues[1])
+def resolve_venues(
+    exchange: str, open_venue: Optional[str], hedge_venue: Optional[str]
+) -> Tuple[str, str, str, str]:
+    ex = normalize_exchange(exchange)
+    if ex not in SUPPORTED_EXCHANGES:
+        raise ValueError(f"unsupported exchange: {ex}")
+
+    if open_venue or hedge_venue:
+        if not open_venue or not hedge_venue:
+            raise ValueError("open_venue/hedge_venue 需要成对提供")
+        open_v = open_venue.strip().lower()
+        hedge_v = hedge_venue.strip().lower()
+    else:
+        open_v, hedge_v = EXCHANGE_DEFAULTS[ex]
+
+    key_suffix = make_key_suffix(open_v, hedge_v)
+    return ex, open_v, hedge_v, key_suffix
+
+
+def get_symbol_defaults() -> Dict[str, Dict[str, List[str]]]:
+    defaults: Dict[str, Dict[str, List[str]]] = {}
+    if not SYMBOL_DEFAULTS_SRC:
+        return defaults
+    for ex in SUPPORTED_EXCHANGES:
+        fwd, bwd, _ = SYMBOL_DEFAULTS_SRC.resolve_symbol_lists(ex)
+        dump_symbols = list(dict.fromkeys(fwd + bwd))
+        defaults[ex] = {
+            "dump_symbols": dump_symbols,
+            "fwd_trade_symbols": fwd,
+            "bwd_trade_symbols": bwd,
+        }
+    return defaults
+
+
+def parse_rolling_params(values: Dict[str, str]) -> Dict[str, Any]:
+    parsed: Dict[str, Any] = {}
+    for key, value in values.items():
+        if key == "factors":
+            try:
+                parsed[key] = json.loads(value)
+            except Exception:
+                parsed[key] = {}
+            continue
+        if key in ("MAX_LENGTH", "refresh_sec", "reload_param_sec"):
+            try:
+                parsed[key] = int(float(value))
+            except Exception:
+                parsed[key] = value
+            continue
+        parsed[key] = value
+    return parsed
+
+
+def serialize_rolling_params(values: Dict[str, Any]) -> Dict[str, str]:
+    payload: Dict[str, str] = {}
+    for key, value in values.items():
+        if key == "factors":
+            payload[key] = json.dumps(value or {}, ensure_ascii=False, separators=(",", ":"))
+        else:
+            payload[key] = str(value)
+    return payload
+
+
+def spread_mapping_key(open_venue: str, hedge_venue: str) -> str:
+    return f"fr_spread_threshold_mapping_{open_venue}_{hedge_venue}"
+
+
+def normalize_spread_mapping(values: Dict[str, Any]) -> Dict[str, str]:
+    mapping: Dict[str, str] = {}
+    for key, value in (values or {}).items():
+        k = str(key).strip()
+        v = str(value).strip()
+        if not k or not v:
+            continue
+        mapping[k] = v
+    return mapping
+
+
+def read_spread_mapping(rds, open_venue: str, hedge_venue: str) -> Dict[str, str]:
+    key = spread_mapping_key(open_venue, hedge_venue)
+    values = read_hash(rds, key)
+    if values:
+        return normalize_spread_mapping(values)
+    return normalize_spread_mapping(SPREAD_THRESHOLD_MAPPING)
+
+
+def generate_threshold_fields(
+    symbol_data: Dict[str, Dict],
+    mapping: Dict[str, str],
+) -> tuple[Dict[str, str], set[str]]:
+    all_fields: Dict[str, str] = {}
+    skipped: set[str] = set()
+    for symbol, obj in symbol_data.items():
+        symbol_fields: Dict[str, str] = {}
+        for suffix, field_ref in mapping.items():
+            value = spread_sync.extract_quantile_value(obj, field_ref)
+            if value is None:
+                skipped.add(symbol)
+                symbol_fields = {}
+                break
+            field_key = f"{symbol}_{suffix}"
+            symbol_fields[field_key] = f"{value:.8f}".rstrip("0").rstrip(".")
+        if symbol_fields:
+            all_fields.update(symbol_fields)
+    return all_fields, skipped
+
+
+def sync_spread_thresholds(
+    rds,
+    open_venue: str,
+    hedge_venue: str,
+    key_suffix: str,
+    mapping: Optional[Dict[str, str]] = None,
+    symbol: Optional[str] = None,
+) -> Dict[str, Any]:
+    if spread_sync is None:
+        raise RuntimeError("sync_fr_spread_thresholds.py not available")
+
+    dump_keys = [f"fr_dump_symbols:{key_suffix}"]
+    fwd_keys = [f"fr_fwd_trade_symbols:{key_suffix}"]
+    bwd_keys = [f"fr_bwd_trade_symbols:{key_suffix}"]
+    rolling_key = f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
+    write_key = f"fr_spread_thresholds_{open_venue}_{hedge_venue}"
+
+    mapping = normalize_spread_mapping(mapping or {})
+    if not mapping:
+        mapping = normalize_spread_mapping(SPREAD_THRESHOLD_MAPPING)
+    if not mapping:
+        raise RuntimeError("spread mapping is empty")
+
+    target_symbols = spread_sync._get_target_symbols(rds, dump_keys, fwd_keys, bwd_keys, symbol)
+    rolling_data = spread_sync.read_rolling_metrics(rds, rolling_key)
+    symbol_data, missing_symbols = spread_sync._find_symbol_data(
+        rolling_data, target_symbols
+    )
+    all_fields, skipped_symbols = generate_threshold_fields(symbol_data, mapping)
+
+    changed = 0
+    if all_fields:
+        res = rds.hset(write_key, mapping=all_fields)
+        changed = int(res) if res is not None else 0
+
+    return {
+        "written": len(all_fields),
+        "changed": changed,
+        "missing_symbols": sorted(list(missing_symbols)),
+        "skipped_symbols": sorted(list(skipped_symbols)),
+        "write_key": write_key,
+        "rolling_key": rolling_key,
+        "mapping_key": spread_mapping_key(open_venue, hedge_venue),
+    }
 
 
 def render_index_html(default_exchange: str) -> str:
-    html = INDEX_HTML_TEMPLATE.replace("__EXCHANGES__", json.dumps(SUPPORTED_EXCHANGES))
-    html = html.replace("__DEFAULT_EXCHANGE__", default_exchange)
+    bootstrap = {
+        "exchanges": SUPPORTED_EXCHANGES,
+        "default_exchange": default_exchange,
+        "exchange_defaults": EXCHANGE_DEFAULTS,
+        "defaults": {
+            "symbol_lists": get_symbol_defaults(),
+            "risk_params": DEFAULT_RISK_PARAMS,
+            "strategy_params": DEFAULT_STRATEGY_PARAMS,
+            "funding_thresholds": DEFAULT_FUNDING_THRESHOLDS,
+            "rolling_params": DEFAULT_ROLLING_PARAMS,
+            "spread_mapping": SPREAD_THRESHOLD_MAPPING,
+        },
+        "comments": {
+            "risk_params": RISK_PARAM_COMMENTS,
+            "strategy_params": STRATEGY_PARAM_COMMENTS,
+            "funding_thresholds": FUNDING_THRESHOLD_COMMENTS,
+        },
+        "order": {
+            "risk": list(DEFAULT_RISK_PARAMS.keys()),
+            "strategy": list(DEFAULT_STRATEGY_PARAMS.keys()),
+            "funding_thresholds": FUNDING_THRESHOLD_ORDER,
+            "spread_mapping": SPREAD_THRESHOLD_ORDER,
+        },
+    }
+
+    html = INDEX_HTML_TEMPLATE.replace("__BOOTSTRAP__", json.dumps(bootstrap, ensure_ascii=False))
     return html
 
 
@@ -283,14 +1103,14 @@ class ServerContext:
     default_exchange: str
 
 
-class SymbolConfigServer(ThreadingHTTPServer):
+class FrConfigServer(ThreadingHTTPServer):
     def __init__(self, server_address, RequestHandlerClass, context: ServerContext):
         super().__init__(server_address, RequestHandlerClass)
         self.context = context
 
 
 class RequestHandler(BaseHTTPRequestHandler):
-    server: SymbolConfigServer  # type hint for self.server.context
+    server: FrConfigServer
 
     def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -314,16 +1134,25 @@ class RequestHandler(BaseHTTPRequestHandler):
         self._send_json(status, {"error": message})
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        # 复用 stdout，避免写入 stderr。
-        sys.stdout.write("%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), fmt % args))
+        sys.stdout.write(
+            "%s - - [%s] %s\n"
+            % (self.address_string(), self.log_date_time_string(), fmt % args)
+        )
 
     def do_OPTIONS(self) -> None:
-        # 简单处理预检请求
         self.send_response(200)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
+
+    def _resolve_request_context(self, params: Dict[str, List[str]]) -> Tuple[str, str, str, str]:
+        exchange = normalize_exchange(
+            (params.get("exchange") or [self.server.context.default_exchange])[0]
+        )
+        open_venue = (params.get("open_venue") or [None])[0]
+        hedge_venue = (params.get("hedge_venue") or [None])[0]
+        return resolve_venues(exchange, open_venue, hedge_venue)
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -332,16 +1161,17 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_html(html)
             return
 
+        params = parse_qs(parsed.query)
+
         if parsed.path == "/api/symbol-lists":
-            params = parse_qs(parsed.query)
-            exchange = (params.get("exchange") or [self.server.context.default_exchange])[0].lower()
-            if exchange not in SUPPORTED_EXCHANGES:
-                self._send_error(400, f"unsupported exchange: {exchange}")
+            try:
+                exchange, open_venue, hedge_venue, key_suffix = self._resolve_request_context(
+                    params
+                )
+            except Exception as exc:
+                self._send_error(400, str(exc))
                 return
-            key_suffix = resolve_key_suffix(exchange, (params.get("key_suffix") or [None])[0])
-            if not key_suffix:
-                self._send_error(400, f"invalid key_suffix for exchange: {exchange}")
-                return
+
             rds = self.server.context.redis_client
             data = {
                 "exchange": exchange,
@@ -353,14 +1183,72 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, data)
             return
 
+        if parsed.path == "/api/risk-params":
+            try:
+                _, open_venue, hedge_venue, _ = self._resolve_request_context(params)
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            key = f"{open_venue}:{hedge_venue}:pre_trade_risk_params"
+            values = read_hash(self.server.context.redis_client, key)
+            self._send_json(200, {"key": key, "values": values})
+            return
+
+        if parsed.path == "/api/strategy-params":
+            try:
+                _, open_venue, hedge_venue, _ = self._resolve_request_context(params)
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            key = f"fr_strategy_params_{open_venue}_{hedge_venue}"
+            values = read_hash(self.server.context.redis_client, key)
+            self._send_json(200, {"key": key, "values": values})
+            return
+
+        if parsed.path == "/api/funding-thresholds":
+            try:
+                _, open_venue, hedge_venue, _ = self._resolve_request_context(params)
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            key = f"funding_rate_thresholds_{open_venue}_{hedge_venue}"
+            values = read_hash(self.server.context.redis_client, key)
+            self._send_json(200, {"key": key, "values": values})
+            return
+
+        if parsed.path == "/api/rolling-params":
+            try:
+                _, open_venue, hedge_venue, _ = self._resolve_request_context(params)
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            key = f"rolling_metrics_params_{open_venue}_{hedge_venue}"
+            values = read_hash(self.server.context.redis_client, key)
+            parsed_values = parse_rolling_params(values)
+            if "output_hash_key" not in parsed_values:
+                parsed_values["output_hash_key"] = (
+                    f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
+                )
+            self._send_json(200, {"key": key, "values": parsed_values})
+            return
+
+        if parsed.path == "/api/spread-thresholds":
+            try:
+                _, open_venue, hedge_venue, _ = self._resolve_request_context(params)
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            key = spread_mapping_key(open_venue, hedge_venue)
+            values = read_hash(self.server.context.redis_client, key)
+            if not values:
+                values = normalize_spread_mapping(SPREAD_THRESHOLD_MAPPING)
+            self._send_json(200, {"key": key, "count": len(values), "values": values})
+            return
+
         self._send_error(404, "not found")
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path != "/api/symbol-lists":
-            self._send_error(404, "not found")
-            return
-
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
@@ -372,42 +1260,189 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_error(400, "invalid json")
             return
 
-        exchange = str(payload.get("exchange") or self.server.context.default_exchange).lower()
-        if exchange not in SUPPORTED_EXCHANGES:
-            self._send_error(400, f"unsupported exchange: {exchange}")
+        if parsed.path == "/api/symbol-lists":
+            exchange = normalize_exchange(
+                str(payload.get("exchange") or self.server.context.default_exchange)
+            )
+            open_venue = payload.get("open_venue")
+            hedge_venue = payload.get("hedge_venue")
+            try:
+                _, open_v, hedge_v, key_suffix = resolve_venues(
+                    exchange, open_venue, hedge_venue
+                )
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            dump_symbols = normalize_symbol_list(payload.get("dump_symbols") or [])
+            fwd_symbols = normalize_symbol_list(payload.get("fwd_trade_symbols") or [])
+            bwd_symbols = normalize_symbol_list(payload.get("bwd_trade_symbols") or [])
+            if not dump_symbols:
+                dump_symbols = list(dict.fromkeys(fwd_symbols + bwd_symbols))
+
+            rds = self.server.context.redis_client
+            try:
+                rds.set(
+                    f"fr_dump_symbols:{key_suffix}",
+                    json.dumps(dump_symbols, ensure_ascii=False),
+                )
+                rds.set(
+                    f"fr_fwd_trade_symbols:{key_suffix}",
+                    json.dumps(fwd_symbols, ensure_ascii=False),
+                )
+                rds.set(
+                    f"fr_bwd_trade_symbols:{key_suffix}",
+                    json.dumps(bwd_symbols, ensure_ascii=False),
+                )
+            except Exception as exc:
+                self._send_error(500, f"redis write failed: {exc}")
+                return
+
+            self._send_json(
+                200,
+                {
+                    "exchange": exchange,
+                    "key_suffix": key_suffix,
+                    "dump_count": len(dump_symbols),
+                    "fwd_count": len(fwd_symbols),
+                    "bwd_count": len(bwd_symbols),
+                },
+            )
             return
-        key_suffix = resolve_key_suffix(exchange, payload.get("key_suffix"))
-        if not key_suffix:
-            self._send_error(400, f"invalid key_suffix for exchange: {exchange}")
+
+        if parsed.path == "/api/risk-params":
+            exchange = normalize_exchange(
+                str(payload.get("exchange") or self.server.context.default_exchange)
+            )
+            try:
+                _, open_v, hedge_v, _ = resolve_venues(
+                    exchange, payload.get("open_venue"), payload.get("hedge_venue")
+                )
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            values = payload.get("values") or {}
+            if not isinstance(values, dict):
+                self._send_error(400, "values must be object")
+                return
+            key = f"{open_v}:{hedge_v}:pre_trade_risk_params"
+            written = write_hash(self.server.context.redis_client, key, values)
+            self._send_json(200, {"key": key, "count": written})
             return
 
-        dump_symbols = normalize_symbol_list(payload.get("dump_symbols") or [])
-        fwd_symbols = normalize_symbol_list(payload.get("fwd_trade_symbols") or [])
-        bwd_symbols = normalize_symbol_list(payload.get("bwd_trade_symbols") or [])
-
-        # 若未提供平仓/建仓列表，则默认使用正套+反套的并集
-        if not dump_symbols:
-            dump_symbols = list(dict.fromkeys(fwd_symbols + bwd_symbols))
-
-        rds = self.server.context.redis_client
-        try:
-            rds.set(f"fr_dump_symbols:{key_suffix}", json.dumps(dump_symbols, ensure_ascii=False))
-            rds.set(f"fr_fwd_trade_symbols:{key_suffix}", json.dumps(fwd_symbols, ensure_ascii=False))
-            rds.set(f"fr_bwd_trade_symbols:{key_suffix}", json.dumps(bwd_symbols, ensure_ascii=False))
-        except Exception as exc:
-            self._send_error(500, f"redis write failed: {exc}")
+        if parsed.path == "/api/strategy-params":
+            exchange = normalize_exchange(
+                str(payload.get("exchange") or self.server.context.default_exchange)
+            )
+            try:
+                _, open_v, hedge_v, _ = resolve_venues(
+                    exchange, payload.get("open_venue"), payload.get("hedge_venue")
+                )
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            values = payload.get("values") or {}
+            if not isinstance(values, dict):
+                self._send_error(400, "values must be object")
+                return
+            key = f"fr_strategy_params_{open_v}_{hedge_v}"
+            written = write_hash(self.server.context.redis_client, key, values)
+            self._send_json(200, {"key": key, "count": written})
             return
 
-        self._send_json(
-            200,
-            {
-                "exchange": exchange,
-                "key_suffix": key_suffix,
-                "dump_count": len(dump_symbols),
-                "fwd_count": len(fwd_symbols),
-                "bwd_count": len(bwd_symbols),
-            },
-        )
+        if parsed.path == "/api/funding-thresholds":
+            exchange = normalize_exchange(
+                str(payload.get("exchange") or self.server.context.default_exchange)
+            )
+            try:
+                _, open_v, hedge_v, _ = resolve_venues(
+                    exchange, payload.get("open_venue"), payload.get("hedge_venue")
+                )
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            values = payload.get("values") or {}
+            if not isinstance(values, dict):
+                self._send_error(400, "values must be object")
+                return
+            key = f"funding_rate_thresholds_{open_v}_{hedge_v}"
+            written = write_hash(self.server.context.redis_client, key, values)
+            self._send_json(200, {"key": key, "count": written})
+            return
+
+        if parsed.path == "/api/rolling-params":
+            exchange = normalize_exchange(
+                str(payload.get("exchange") or self.server.context.default_exchange)
+            )
+            try:
+                _, open_v, hedge_v, _ = resolve_venues(
+                    exchange, payload.get("open_venue"), payload.get("hedge_venue")
+                )
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            values = payload.get("values") or {}
+            if not isinstance(values, dict):
+                self._send_error(400, "values must be object")
+                return
+            key = f"rolling_metrics_params_{open_v}_{hedge_v}"
+            serialized = serialize_rolling_params(values)
+            written = write_hash(self.server.context.redis_client, key, serialized)
+            self._send_json(200, {"key": key, "count": written})
+            return
+
+        if parsed.path == "/api/spread-thresholds":
+            exchange = normalize_exchange(
+                str(payload.get("exchange") or self.server.context.default_exchange)
+            )
+            try:
+                _, open_v, hedge_v, _ = resolve_venues(
+                    exchange, payload.get("open_venue"), payload.get("hedge_venue")
+                )
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            values = payload.get("values") or {}
+            if not isinstance(values, dict):
+                self._send_error(400, "values must be object")
+                return
+            mapping = normalize_spread_mapping(values)
+            if not mapping:
+                self._send_error(400, "mapping is empty")
+                return
+            key = spread_mapping_key(open_v, hedge_v)
+            written = write_hash(self.server.context.redis_client, key, mapping)
+            self._send_json(200, {"key": key, "count": written})
+            return
+
+        if parsed.path == "/api/spread-thresholds/sync":
+            exchange = normalize_exchange(
+                str(payload.get("exchange") or self.server.context.default_exchange)
+            )
+            try:
+                _, open_v, hedge_v, key_suffix = resolve_venues(
+                    exchange, payload.get("open_venue"), payload.get("hedge_venue")
+                )
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            symbol = payload.get("symbol")
+            mapping = payload.get("mapping") if isinstance(payload, dict) else None
+            try:
+                result = sync_spread_thresholds(
+                    self.server.context.redis_client,
+                    open_v,
+                    hedge_v,
+                    key_suffix,
+                    mapping,
+                    symbol,
+                )
+            except Exception as exc:
+                self._send_error(500, f"sync failed: {exc}")
+                return
+            self._send_json(200, result)
+            return
+
+        self._send_error(404, "not found")
 
 
 def main() -> int:
@@ -417,9 +1452,12 @@ def main() -> int:
         print("❌ redis 包未安装，请执行: pip install redis", file=sys.stderr)
         return 2
 
-    default_exchange = args.default_exchange.lower()
+    default_exchange = normalize_exchange(args.default_exchange)
     if default_exchange not in SUPPORTED_EXCHANGES:
-        print(f"❌ 默认交易所 {default_exchange} 不在支持列表 {SUPPORTED_EXCHANGES}", file=sys.stderr)
+        print(
+            f"❌ 默认交易所 {default_exchange} 不在支持列表 {SUPPORTED_EXCHANGES}",
+            file=sys.stderr,
+        )
         return 2
 
     rds = redis.from_url(args.redis_url) if args.redis_url else redis.Redis(
@@ -430,7 +1468,14 @@ def main() -> int:
     )
 
     context = ServerContext(redis_client=rds, default_exchange=default_exchange)
-    server = SymbolConfigServer((args.host, args.port), RequestHandler, context)
+    try:
+        server = FrConfigServer((args.host, args.port), RequestHandler, context)
+    except OSError as exc:
+        print(
+            f"❌ 无法监听 {args.host}:{args.port}，端口可能被占用: {exc}",
+            file=sys.stderr,
+        )
+        return 2
     print(
         f"🚀 fr_config_server started on http://{args.host}:{args.port} "
         f"(default_exchange={default_exchange})"

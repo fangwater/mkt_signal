@@ -644,6 +644,11 @@ impl Order {
             }
             TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
                 let inst_id = okex_inst_id_from_symbol(&self.symbol, self.venue)?;
+                // Use a distinct request id to avoid overwriting inflight mapping for the original order.
+                let mut cancel_req_id = now;
+                if cancel_req_id == self.client_order_id {
+                    cancel_req_id = cancel_req_id.saturating_add(1);
+                }
                 let params = OkexCancelOrderParams {
                     ord_id: self.exchange_order_id.unwrap_or(0),
                     cl_ord_id: self.client_order_id,
@@ -651,10 +656,10 @@ impl Order {
                 };
                 let request = match self.venue {
                     TradingVenue::OkexMargin => {
-                        OkexCancelOrderRequest::create_margin(now, self.client_order_id, params)
+                        OkexCancelOrderRequest::create_margin(now, cancel_req_id, params)
                     }
                     TradingVenue::OkexFutures => {
-                        OkexCancelOrderRequest::create_um(now, self.client_order_id, params)
+                        OkexCancelOrderRequest::create_um(now, cancel_req_id, params)
                     }
                     _ => None,
                 }
@@ -837,6 +842,7 @@ impl Order {
                 req_param.insert("currency_pair".to_string(), json!(currency_pair));
                 req_param.insert("type".to_string(), json!(order_type));
                 req_param.insert("account".to_string(), json!("unified"));
+                req_param.insert("auto_borrow".to_string(), json!(true));
                 req_param.insert("side".to_string(), json!(self.side.as_str_lower()));
                 req_param.insert(
                     "amount".to_string(),

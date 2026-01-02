@@ -85,9 +85,16 @@ pub trait TradeEngineResponse {
         }
     }
 
-    /// OKX: price is outside the allowed price-limit range (sCode=51006).
+    /// OKX: price is outside the allowed price-limit range (e.g. sCode=51006/51137).
     fn is_price_limit_rejected(&self) -> bool {
-        matches!(self.exchange_enum(), Some(Exchange::Okex)) && self.error_code() == 51006
+        matches!(self.exchange_enum(), Some(Exchange::Okex))
+            && matches!(self.error_code(), 51006 | 51137)
+    }
+
+    /// OKX: insufficient margin / loanable assets.
+    fn is_insufficient_margin(&self) -> bool {
+        matches!(self.exchange_enum(), Some(Exchange::Okex))
+            && matches!(self.error_code(), 51008 | 51061)
     }
 
     /// Cancel rejected / cancel failed because order is already terminal.

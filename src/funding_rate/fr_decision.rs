@@ -176,6 +176,19 @@ pub struct FrDecision {
     last_cancel_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
 }
 
+struct SignalTableEntry {
+    symbol: String,
+    pred_fr_pct: f64,
+    fr_ma_pct: f64,
+    pred_loan_pct: f64,
+    cur_loan_pct: f64,
+    fr_plus_pred_loan_pct: f64,
+    ma_plus_cur_loan_pct: f64,
+    fr_sig: &'static str,
+    spread_sig: &'static str,
+    final_sig: &'static str,
+}
+
 impl FrDecision {
     fn normalize_symbol_key(symbol: &str) -> String {
         normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
@@ -1453,7 +1466,7 @@ impl FrDecision {
         }
         info!("");
 
-        let mut entries = Self::collect_signal_state_entries(symbols);
+        let mut entries = Self::collect_signal_table_entries(symbols);
         entries.sort_unstable_by(|a, b| a.symbol.cmp(&b.symbol));
 
         info!("┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐");
@@ -1461,36 +1474,25 @@ impl FrDecision {
         info!("├───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤");
 
         for e in entries {
-            let symbol = String::from_utf8_lossy(&e.symbol)
-                .trim_end_matches('\0')
-                .to_string();
-            let fr_sig = e.fr_sig;
-            let spread_sig = e.spread_sig;
-            let final_sig = e.final_sig;
             info!(
                 "│ {:<14} │ {:>7.3} │ {:>6.3} │ {:>9.3} │ {:>8.3} │ {:>9.3} │ {:>9.3} │ {:<10} │ {:<10} │ {:<10} │",
-                symbol,
+                e.symbol,
                 e.pred_fr_pct,
                 e.fr_ma_pct,
                 e.pred_loan_pct,
                 e.cur_loan_pct,
                 e.fr_plus_pred_loan_pct,
                 e.ma_plus_cur_loan_pct,
-                format!("{:?}", fr_sig),
-                format!("{:?}", spread_sig),
-                format!("{:?}", final_sig)
+                e.fr_sig,
+                e.spread_sig,
+                e.final_sig
             );
         }
 
         info!("└───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘");
     }
 
-    /// 生成信号状态快照（不打印），供 fr_visualization 使用。
-    pub fn collect_signal_state_entries(
-        symbols: &[String],
-    ) -> Vec<super::fr_signal_state::FrSignalStateEntry> {
-        use super::common::{ArbDirection, OperationType};
-        use super::fr_signal_state::{CompareOpTag, FrSignalStateEntry, SignalTag, SpreadTypeTag};
+    fn collect_signal_table_entries(symbols: &[String]) -> Vec<SignalTableEntry> {
         use super::funding_rate_factor::FundingRateFactor;
         use super::mkt_channel::MktChannel;
         use super::rate_fetcher::RateFetcher;
@@ -1531,7 +1533,7 @@ impl FrDecision {
                 let backward_open = fr_factor.satisfy_backward_open(symbol, period, hedge_venue);
                 let backward_close = fr_factor.satisfy_backward_close(symbol, period, hedge_venue);
 
-                let fr_signal_label = if forward_close && backward_open {
+                let fr_signal_label: &'static str = if forward_close && backward_open {
                     "BwdOpen"
                 } else if backward_close && forward_open {
                     "FwdOpen"
@@ -1546,7 +1548,6 @@ impl FrDecision {
                 } else {
                     "-"
                 };
-                let fr_sig = SignalTag::from_label(fr_signal_label);
 
                 let spread_fwd_open =
                     spread_factor.satisfy_forward_open(open_venue, symbol, hedge_venue, symbol);
@@ -1557,7 +1558,7 @@ impl FrDecision {
                 let spread_bwd_cancel =
                     spread_factor.satisfy_backward_cancel(open_venue, symbol, hedge_venue, symbol);
 
-                let spread_signal_label = if spread_fwd_cancel {
+                let spread_signal_label: &'static str = if spread_fwd_cancel {
                     "FwdCancel"
                 } else if spread_bwd_cancel {
                     "BwdCancel"
@@ -1568,105 +1569,8 @@ impl FrDecision {
                 } else {
                     "-"
                 };
-                let spread_sig = SignalTag::from_label(spread_signal_label);
 
-                let (used_value, threshold, compare_op_tag, spread_type_tag) = if spread_fwd_cancel
-                {
-                    spread_factor
-                        .get_spread_check_detail(
-                            open_venue,
-                            symbol,
-                            hedge_venue,
-                            symbol,
-                            ArbDirection::Forward,
-                            OperationType::Cancel,
-                        )
-                        .map(|(v, t, op, st)| {
-                            (v, t, CompareOpTag::from(op), SpreadTypeTag::from(st))
-                        })
-                        .unwrap_or((
-                            f64::NAN,
-                            f64::NAN,
-                            CompareOpTag::Unknown,
-                            SpreadTypeTag::Unknown,
-                        ))
-                } else if spread_bwd_cancel {
-                    spread_factor
-                        .get_spread_check_detail(
-                            open_venue,
-                            symbol,
-                            hedge_venue,
-                            symbol,
-                            ArbDirection::Backward,
-                            OperationType::Cancel,
-                        )
-                        .map(|(v, t, op, st)| {
-                            (v, t, CompareOpTag::from(op), SpreadTypeTag::from(st))
-                        })
-                        .unwrap_or((
-                            f64::NAN,
-                            f64::NAN,
-                            CompareOpTag::Unknown,
-                            SpreadTypeTag::Unknown,
-                        ))
-                } else if spread_fwd_open {
-                    spread_factor
-                        .get_spread_check_detail(
-                            open_venue,
-                            symbol,
-                            hedge_venue,
-                            symbol,
-                            ArbDirection::Forward,
-                            OperationType::Open,
-                        )
-                        .map(|(v, t, op, st)| {
-                            (v, t, CompareOpTag::from(op), SpreadTypeTag::from(st))
-                        })
-                        .unwrap_or((
-                            f64::NAN,
-                            f64::NAN,
-                            CompareOpTag::Unknown,
-                            SpreadTypeTag::Unknown,
-                        ))
-                } else if spread_bwd_open {
-                    spread_factor
-                        .get_spread_check_detail(
-                            open_venue,
-                            symbol,
-                            hedge_venue,
-                            symbol,
-                            ArbDirection::Backward,
-                            OperationType::Open,
-                        )
-                        .map(|(v, t, op, st)| {
-                            (v, t, CompareOpTag::from(op), SpreadTypeTag::from(st))
-                        })
-                        .unwrap_or((
-                            f64::NAN,
-                            f64::NAN,
-                            CompareOpTag::Unknown,
-                            SpreadTypeTag::Unknown,
-                        ))
-                } else {
-                    (
-                        f64::NAN,
-                        f64::NAN,
-                        CompareOpTag::Unknown,
-                        SpreadTypeTag::Unknown,
-                    )
-                };
-
-                let spread_bidask = spread_factor
-                    .get_bidask(open_venue, symbol, hedge_venue, symbol)
-                    .unwrap_or(f64::NAN);
-                let spread_askbid = spread_factor
-                    .get_askbid(open_venue, symbol, hedge_venue, symbol)
-                    .unwrap_or(f64::NAN);
-                let spread_rate = spread_factor
-                    .get_spread_rate(open_venue, symbol, hedge_venue, symbol)
-                    .unwrap_or(f64::NAN);
-
-                let final_signal_label = if spread_fwd_cancel {
+                let final_signal_label: &'static str = if spread_fwd_cancel {
                     "FwdCancel"
                 } else if spread_bwd_cancel {
                     "BwdCancel"
@@ -1679,27 +1583,19 @@ impl FrDecision {
                         _ => "-",
                     }
                 };
-                let final_sig = SignalTag::from_label(final_signal_label);
 
-                FrSignalStateEntry::new(
-                    symbol,
-                    fr * 100.0,
-                    fr_ma * 100.0,
-                    predict_loan * 100.0,
-                    current_loan * 100.0,
-                    fr_predict_loan * 100.0,
-                    fr_ma_cur_loan * 100.0,
-                    fr_sig,
-                    spread_sig,
-                    spread_bidask,
-                    spread_askbid,
-                    spread_rate,
-                    used_value,
-                    threshold,
-                    compare_op_tag,
-                    spread_type_tag,
-                    final_sig,
-                )
+                SignalTableEntry {
+                    symbol: symbol.clone(),
+                    pred_fr_pct: fr * 100.0,
+                    fr_ma_pct: fr_ma * 100.0,
+                    pred_loan_pct: predict_loan * 100.0,
+                    cur_loan_pct: current_loan * 100.0,
+                    fr_plus_pred_loan_pct: fr_predict_loan * 100.0,
+                    ma_plus_cur_loan_pct: fr_ma_cur_loan * 100.0,
+                    fr_sig: fr_signal_label,
+                    spread_sig: spread_signal_label,
+                    final_sig: final_signal_label,
+                }
             })
             .collect()
     }
