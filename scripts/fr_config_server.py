@@ -1276,8 +1276,6 @@ class RequestHandler(BaseHTTPRequestHandler):
             dump_symbols = normalize_symbol_list(payload.get("dump_symbols") or [])
             fwd_symbols = normalize_symbol_list(payload.get("fwd_trade_symbols") or [])
             bwd_symbols = normalize_symbol_list(payload.get("bwd_trade_symbols") or [])
-            if not dump_symbols:
-                dump_symbols = list(dict.fromkeys(fwd_symbols + bwd_symbols))
 
             rds = self.server.context.redis_client
             try:

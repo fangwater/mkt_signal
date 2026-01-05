@@ -311,9 +311,9 @@
         </div>
         <div class="card-grid">
           <div class="metric-card">
-            <h3>total_equity</h3>
+            <h3>总权益</h3>
             <div class="value" id="risk-equity">--</div>
-            <div class="hint">总权益（USDT 计）</div>
+            <div class="hint">总权益（含合约未实现盈亏，USDT 计）</div>
           </div>
           <div class="metric-card">
             <h3>total_exposure</h3>
@@ -497,6 +497,20 @@
           return normalizeStr(asset).includes(filter);
         }
 
+        function sumIfFinite(a, b) {
+          let total = 0;
+          let has = false;
+          if (isFiniteNumber(a)) {
+            total += a;
+            has = true;
+          }
+          if (isFiniteNumber(b)) {
+            total += b;
+            has = true;
+          }
+          return has ? total : null;
+        }
+
         function isZeroRow(row) {
           const fields = ["open_qty", "hedge_qty", "net_qty", "net_usdt"];
           for (const f of fields) {
@@ -528,7 +542,11 @@
           el.riskMeta.classList.toggle("stale", meta.stale);
 
           const e = s && s.entry ? s.entry : null;
-          el.riskEquity.textContent = e ? fmt(e.total_equity, fmtUsd) : "--";
+          const totalEquity = e
+            ? sumIfFinite(e.total_equity, e.um_unrealized_usd)
+            : null;
+          el.riskEquity.textContent =
+            totalEquity !== null ? fmt(totalEquity, fmtUsd) : "--";
           el.riskExposure.textContent = e ? fmt(e.total_exposure, fmtUsd) : "--";
           el.riskPosition.textContent = e ? fmt(e.total_position, fmtUsd) : "--";
           el.riskLeverage.textContent = e ? fmt(e.leverage, fmtLev) : "--";
