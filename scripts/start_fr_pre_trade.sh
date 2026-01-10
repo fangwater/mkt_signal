@@ -71,6 +71,7 @@ if [[ -z "$OPEN_VENUE" && -n "$HEDGE_VENUE" ]] || [[ -n "$OPEN_VENUE" && -z "$HE
 fi
 
 dir_name="$(basename "${BASE_DIR}")"
+dir_tag="$(echo "${dir_name,,}" | sed 's/[^a-z0-9_-]/_/g')"
 case "$dir_name" in
   okex_fr_*|*okex*|*OKEX*) EXCHANGE="okex" ;;
   binance_fr_*|*binance*|*BINANCE*) EXCHANGE="binance" ;;
@@ -83,7 +84,7 @@ case "$dir_name" in
     ;;
 esac
 
-PROC_NAME="pre_trade_${EXCHANGE}"
+PROC_NAME="${PM2_NAME:-pre_trade_${dir_tag}}"
 RUST_LOG="${RUST_LOG:-info}"
 ARGS=()
 if [[ -n "$OPEN_VENUE" ]]; then

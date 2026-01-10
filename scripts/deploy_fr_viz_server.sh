@@ -6,23 +6,25 @@ BIN_NAME="viz_server"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy_fr_viz_server.sh [trade|test] [--exchange <binance|okex|gate|bybit|bitget>]
+Usage: scripts/deploy_fr_viz_server.sh [--exchange <binance|okex|gate|bybit|bitget>]
                                       [--env-name <exchange>_fr_trade]
-                                      [--bind 0.0.0.0] [--port <default>] [--port2 <port+1>] [--no-port2]
+                                      [--bind 0.0.0.0] [--port <default>]
                                       [--ws-path /ws]
                                       [--namespace <IPC_NAMESPACE>]
                                       [--instance-label <label>]
                                       [--jobs <n>] [--cargo-target-dir <path>]
-                                      [--nginx-prefix /fr/binance] [--nginx-port 4191]
+                                      [--nginx-prefix /fr/<env-name>] [--nginx-port 4191]
                                       [--nginx-mapping-file $HOME/nginx_locations.txt]
                                       [--apply-nginx]
                                       [--scripts-only|--bin-only]
 
 Notes:
   - exchange 可省略，会从 --env-name 或当前目录名推断（格式如 binance-fr-trade / binance_fr_trade）。
-  - Deploys viz_server into $HOME/<exchange>_fr_<trade|test>/ (or --env-name).
+  - Deploys viz_server into $HOME/<exchange>_fr_trade/ (or --env-name).
   - Generates config/viz.toml with pre_trade resample only.
   - Copies docs/pre_trade_dashboard.html into www/ and index.html.
+  - env-name 必须匹配 <exchange>_fr_<suffix>（例如 binance_fr_trade / binance_fr_hf01）。
+  - Default nginx prefix follows deploy dir name: /fr/<env-name> (e.g. /fr/binance_fr_trade).
   - Updates nginx mapping file with static + ws + healthz entries (managed block).
 EOF
 }
@@ -38,8 +40,6 @@ ENV_NAME=""
 
 BIND="0.0.0.0"
 PORT=""
-PORT2=""
-NO_PORT2="0"
 WS_PATH="/ws"
 
 IPC_NS_OVERRIDE=""
@@ -63,6 +63,19 @@ normalize_exchange() {
     ex="okex"
   fi
   echo "$ex"
+}
+
+normalize_env_name() {
+  echo "$1" | tr 'A-Z' 'a-z'
+}
+
+require_fr_env_name() {
+  local exchange="$1"
+  local name="$2"
+  if [[ ! "$name" =~ ^${exchange}_fr(_[a-z0-9][a-z0-9_-]*)?$ ]]; then
+    echo "[ERROR] env-name must match ${exchange}_fr_<suffix> (got: ${name})" >&2
+    exit 1
+  fi
 }
 
 default_port_for_exchange() {
@@ -186,10 +199,6 @@ upsert_main_nginx_mapping() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    trade|test)
-      ENV_TYPE="$1"
-      shift
-      ;;
     --exchange)
       EXCHANGE="${2:-}"
       shift 2
@@ -205,14 +214,6 @@ while [[ $# -gt 0 ]]; do
     --port)
       PORT="${2:-}"
       shift 2
-      ;;
-    --port2)
-      PORT2="${2:-}"
-      shift 2
-      ;;
-    --no-port2)
-      NO_PORT2="1"
-      shift
       ;;
     --ws-path)
       WS_PATH="${2:-/ws}"
@@ -304,6 +305,8 @@ esac
 if [[ -z "$ENV_NAME" ]]; then
   ENV_NAME="${EXCHANGE}_fr_${ENV_TYPE}"
 fi
+ENV_NAME="$(normalize_env_name "$ENV_NAME")"
+require_fr_env_name "$EXCHANGE" "$ENV_NAME"
 
 if [[ -z "$INSTANCE_LABEL" ]]; then
   INSTANCE_LABEL="$EXCHANGE"
@@ -317,28 +320,16 @@ if [[ "$WS_PATH" != /* ]]; then
   WS_PATH="/$WS_PATH"
 fi
 
-if [[ "$NO_PORT2" != "1" && -z "$PORT2" ]]; then
-  if [[ "$PORT" =~ ^[0-9]+$ ]]; then
-    PORT2="$((PORT + 1))"
-  fi
-fi
-if [[ "$NO_PORT2" == "1" ]]; then
-  PORT2=""
-fi
-if [[ -n "$PORT2" && "$PORT2" == "$PORT" ]]; then
-  echo "[ERROR] --port2 cannot equal --port ($PORT2)"
-  exit 1
-fi
+TARGET_DIR="$HOME/${ENV_NAME}"
+mkdir -p "$TARGET_DIR"
+DEPLOY_DIR_NAME="$(basename "$TARGET_DIR")"
 
 if [[ -z "$NGINX_PREFIX" ]]; then
-  NGINX_PREFIX="/fr/${EXCHANGE}"
+  NGINX_PREFIX="/fr/${DEPLOY_DIR_NAME}"
 fi
 if [[ -z "$NGINX_MAPPING_FILE" ]]; then
   NGINX_MAPPING_FILE="$HOME/nginx_locations.txt"
 fi
-
-TARGET_DIR="$HOME/${ENV_NAME}"
-mkdir -p "$TARGET_DIR"
 
 IPC_NAMESPACE=""
 ENV_FILE="$TARGET_DIR/env.sh"
@@ -419,13 +410,7 @@ if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   mkdir -p "$TARGET_DIR/config" "$TARGET_DIR/www" "$TARGET_DIR/scripts"
 
   echo "[INFO] Writing viz config: $TARGET_DIR/config/viz.toml (namespace=$IPC_NAMESPACE)"
-  {
-    emit_server_block "$BIND" "$PORT" "$WS_PATH"
-    if [[ -n "$PORT2" ]]; then
-      echo ""
-      emit_server_block "$BIND" "$PORT2" "$WS_PATH"
-    fi
-  } > "$TARGET_DIR/config/viz.toml"
+  emit_server_block "$BIND" "$PORT" "$WS_PATH" > "$TARGET_DIR/config/viz.toml"
 
   if [[ -f "$ROOT_DIR/docs/pre_trade_dashboard.html" ]]; then
     cp "$ROOT_DIR/docs/pre_trade_dashboard.html" "$TARGET_DIR/www/pre_trade_dashboard.html"

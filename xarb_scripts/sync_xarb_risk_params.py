@@ -6,9 +6,9 @@
 
 注意：
   - Rust pre_trade 固定读取 hash key: `pre_trade_risk_params`，并通过 Redis prefix 隔离实例。
-  - pre_trade 的 prefix 规则："<open_venue>:<hedge_venue>:"
+  - pre_trade 的 prefix 规则："<dir>:<open_venue>:<hedge_venue>:"
   - 因此这里写入的 Redis Hash key 为：
-      "<open_venue>:<hedge_venue>:pre_trade_risk_params"
+      "<dir>:<open_venue>:<hedge_venue>:pre_trade_risk_params"
 
 推断规则（优先级从高到低）：
   1) --open-venue/--hedge-venue（必须为 *-futures）
@@ -79,6 +79,13 @@ def infer_xarb_venues_from_cwd() -> Optional[Tuple[str, str]]:
     return infer_xarb_venues_from_env_name(Path.cwd().name)
 
 
+def infer_dir_prefix_from_cwd() -> Optional[str]:
+    from pathlib import Path
+
+    name = Path.cwd().name.strip().lower()
+    return name or None
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Sync xarb pre-trade risk params to Redis (futures-only)")
     p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
@@ -129,6 +136,9 @@ PARAM_COMMENTS: Dict[str, str] = {
 
 
 def build_risk_params_key(open_venue: str, hedge_venue: str) -> str:
+    dir_prefix = infer_dir_prefix_from_cwd()
+    if dir_prefix:
+        return f"{dir_prefix}:{open_venue}:{hedge_venue}:pre_trade_risk_params"
     return f"{open_venue}:{hedge_venue}:pre_trade_risk_params"
 
 

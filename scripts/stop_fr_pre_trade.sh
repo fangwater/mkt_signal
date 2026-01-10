@@ -18,6 +18,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 dir_name="$(basename "${BASE_DIR}")"
+dir_tag="$(echo "${dir_name,,}" | sed 's/[^a-z0-9_-]/_/g')"
 case "$dir_name" in
   okex_fr_*|*okex*|*OKEX*) EXCHANGE="okex" ;;
   binance_fr_*|*binance*|*BINANCE*) EXCHANGE="binance" ;;
@@ -30,7 +31,7 @@ case "$dir_name" in
     ;;
 esac
 
-PROC_NAME="pre_trade_${EXCHANGE}"
+PROC_NAME="${PM2_NAME:-pre_trade_${dir_tag}}"
 
 if npx pm2 describe "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1; then
   echo "[INFO] Stopping $PROC_NAME (namespace: $NAMESPACE)"

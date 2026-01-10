@@ -18,7 +18,7 @@ usage() {
 用法: scripts/deploy_xarb_order_query.sh [trade|test] --open-venue <okex-futures> --hedge-venue <binance-futures>
                                        [--env-name okex-binance-xarb-trade]
                                        [--port 18080]
-                                       [--nginx-prefix /xarb/okex-binance/order_query]
+                                       [--nginx-prefix /xarb/<env-name>/order_query]
                                        [--nginx-port 4191]
                                        [--nginx-mapping-file $HOME/nginx_locations.txt]
                                        [--apply-nginx]
@@ -33,6 +33,7 @@ usage() {
       xarb_scripts/start_xarb_order_query.sh
       xarb_scripts/stop_xarb_order_query.sh
       scripts/setup_nginx_4191.sh
+  - nginx 默认前缀：/xarb/<env-name>/order_query（如 /xarb/okex-binance-xarb-trade/order_query）。
   - 会把 nginx 映射写入 $HOME/nginx_locations.txt（幂等更新；可用 --nginx-mapping-file 覆盖）。
     这样可以避免用“只有 order_query 的映射文件”去重建 nginx 站点，导致其他路径（如静态面板）被覆盖而 404。
 
@@ -228,9 +229,10 @@ if [[ -z "$ENV_NAME" ]]; then
 fi
 
 TARGET_DIR="$HOME/${ENV_NAME}"
+DEPLOY_DIR_NAME="$(basename "$TARGET_DIR")"
 
 if [[ -z "$NGINX_PREFIX" ]]; then
-  NGINX_PREFIX="/xarb/${OPEN_EXCHANGE}-${HEDGE_EXCHANGE}/order_query"
+  NGINX_PREFIX="/xarb/${DEPLOY_DIR_NAME}/order_query"
 fi
 if [[ -z "${NGINX_MAPPING_FILE}" ]]; then
   NGINX_MAPPING_FILE="$HOME/nginx_locations.txt"

@@ -10,7 +10,7 @@ usage() {
                                        [--env-name <exchange>_fr_trade]
                                        [--target <path>]
                                        [--bind 0.0.0.0] [--port <default>]
-                                       [--nginx-prefix /fr/<exchange>/config]
+                                       [--nginx-prefix /fr/<env-name>/config]
                                        [--nginx-port 4191]
                                        [--nginx-mapping-file $HOME/nginx_locations.txt]
                                        [--apply-nginx]
@@ -19,7 +19,8 @@ usage() {
   - 部署 fr_config_server 到 $HOME/<exchange>_fr_<trade|test>/（或 --env-name / --target）。
   - exchange 可省略，会从 --env-name 或当前目录名推断（如 binance_fr_trade）。
   - 默认端口按交易所分配（okex=18011 gate=18021 binance=18031 bybit=18041 bitget=18051）。
-  - 可选写入 nginx mapping（/fr/<exchange>/config）。
+  - 可选写入 nginx mapping（/fr/<env-name>/config）。
+  - env-name/目标目录名必须匹配 <exchange>_fr_<suffix>（例如 binance_fr_trade / binance_fr_hf01）。
 
 示例:
   scripts/deploy_fr_config_server.sh --exchange okex
@@ -52,6 +53,19 @@ normalize_exchange() {
     ex="okex"
   fi
   echo "$ex"
+}
+
+normalize_env_name() {
+  echo "$1" | tr 'A-Z' 'a-z'
+}
+
+require_fr_env_name() {
+  local exchange="$1"
+  local name="$2"
+  if [[ ! "$name" =~ ^${exchange}_fr(_[a-z0-9][a-z0-9_-]*)?$ ]]; then
+    echo "[ERROR] env-name must match ${exchange}_fr_<suffix> (got: ${name})" >&2
+    exit 1
+  fi
 }
 
 default_port_for_exchange() {
@@ -227,18 +241,35 @@ fi
 
 if [[ -z "$TARGET_DIR" ]]; then
   if [[ -n "$ENV_NAME" ]]; then
+    ENV_NAME="$(normalize_env_name "$ENV_NAME")"
     TARGET_DIR="$HOME/${ENV_NAME}"
   else
     TARGET_DIR="$HOME/${EXCHANGE}_fr_${ENV_TYPE}"
   fi
 fi
 
+if [[ -z "$ENV_NAME" ]]; then
+  ENV_NAME="$(basename "$TARGET_DIR")"
+else
+  ENV_NAME="$(normalize_env_name "$ENV_NAME")"
+fi
+ENV_NAME="$(normalize_env_name "$ENV_NAME")"
+if [[ -n "$TARGET_DIR" ]]; then
+  target_base="$(basename "$TARGET_DIR")"
+  target_base="$(normalize_env_name "$target_base")"
+  if [[ "$target_base" != "$ENV_NAME" ]]; then
+    echo "[ERROR] --target basename must match env-name (${ENV_NAME}), got: ${target_base}" >&2
+    exit 1
+  fi
+fi
+require_fr_env_name "$EXCHANGE" "$ENV_NAME"
+
 if [[ -z "$PORT" ]]; then
   PORT="$(default_port_for_exchange "$EXCHANGE")"
 fi
 
 if [[ -z "$NGINX_PREFIX" ]]; then
-  NGINX_PREFIX="/fr/${EXCHANGE}/config"
+  NGINX_PREFIX="/fr/${ENV_NAME}/config"
 fi
 
 DEST_SCRIPT_DIR="$TARGET_DIR/scripts"

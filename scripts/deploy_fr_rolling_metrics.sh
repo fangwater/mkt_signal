@@ -11,7 +11,7 @@ usage() {
 
 说明:
   - 构建 rolling_metrics 并拷贝到 $HOME/<exchange>_<env_suffix>/ 目录（默认 env_suffix=fr_trade）。
-  - 如未指定 --exchange，将尝试从 env_suffix 或当前目录名的前缀（遇到下划线前）推断 exchange。
+  - 如未指定 --exchange，将尝试从 env-suffix 或当前目录名推断 exchange。
   - 同步辅助脚本: scripts/print_fr_rolling_metrics_thresholds.py, scripts/print_fr_rolling_metrics_params.py,
     scripts/sync_fr_rolling_metrics_params.py, scripts/start_fr_rolling_metrics.sh, scripts/stop_fr_rolling_metrics.sh, docs/rolling_metrics.md
   - 不自动启动，部署后可在目标目录执行 start/stop 脚本：

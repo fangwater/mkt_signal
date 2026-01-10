@@ -93,8 +93,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+dir_name="$(basename "${BASE_DIR}")"
+dir_tag="$(echo "${dir_name,,}" | sed 's/[^a-z0-9_-]/_/g')"
 if [[ -z "$EXCHANGE" ]]; then
-  dir_name="$(basename "${BASE_DIR}")"
   case "$dir_name" in
     okex_fr_*|*okex*|*OKEX*) EXCHANGE="okex" ;;
     binance_fr_*|*binance*|*BINANCE*) EXCHANGE="binance" ;;
@@ -159,7 +160,7 @@ elif [[ -z "$OPEN_VENUE" || -z "$HEDGE_VENUE" ]]; then
   exit 1
 fi
 
-PROC_NAME="manual_signal_fr_${EXCHANGE}"
+PROC_NAME="${PM2_NAME:-manual_signal_${dir_tag}}"
 RUST_LOG="${RUST_LOG:-info}"
 
 echo "[INFO] Restarting ${PROC_NAME} (exchange=${EXCHANGE}, port=${PORT}, namespace=${NAMESPACE})"

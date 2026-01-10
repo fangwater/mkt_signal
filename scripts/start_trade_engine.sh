@@ -29,9 +29,15 @@ fi
 
 dir_name="$(basename "${BASE_DIR}")"
 dir_lc="$(echo "${dir_name}" | tr 'A-Z' 'a-z')"
+dir_tag="$(echo "${dir_lc}" | sed 's/[^a-z0-9_-]/_/g')"
 
 infer_ns_and_suffix() {
   local name="$1"
+
+  if [[ "$name" =~ ^([a-z0-9]+)[-_]fr([_-].*)?$ ]]; then
+    echo "fr ${BASH_REMATCH[1]}"
+    return 0
+  fi
 
   for env_suffix in "_trade" "_test"; do
     if [[ "$name" == *"$env_suffix" ]]; then
@@ -80,11 +86,11 @@ if [[ "$NS" == "fr" ]]; then
 elif [[ -n "$CLI_EXCHANGE" ]]; then
   EXCHANGE="$CLI_EXCHANGE"
 else
-  echo "[ERROR] missing exchange; use a dir like '<exchange>_fr_trade' or pass exchange arg" >&2
+  echo "[ERROR] missing exchange; use a dir like '<exchange>_fr_<suffix>' or pass exchange arg" >&2
   exit 1
 fi
 
-PROC_NAME="trade_engine_${EXCHANGE}"
+PROC_NAME="${PM2_NAME:-trade_engine_${dir_tag}}"
 RUST_LOG="${RUST_LOG:-info}"
 
 echo "[INFO] Restarting ${PROC_NAME} (namespace=${NAMESPACE})"

@@ -30,6 +30,7 @@ if [[ -z "$BIN_PATH" ]]; then
 fi
 
 dir_name="$(basename "${BASE_DIR}")"
+dir_tag="$(echo "${dir_name,,}" | sed 's/[^a-z0-9_-]/_/g')"
 case "$dir_name" in
   okex_fr_*|*okex*|*OKEX*) EXCHANGE="okex" ;;
   binance_fr_*|*binance*|*BINANCE*) EXCHANGE="binance" ;;
@@ -40,7 +41,7 @@ case "$dir_name" in
     ;;
 esac
 
-PM2_NAME="account_monitor_${EXCHANGE}"
+PM2_NAME="${PM2_NAME:-account_monitor_${dir_tag}}"
 
 echo "[INFO] 使用 PM2 启动 ${PM2_NAME} (namespace: ${NAMESPACE})"
 npx pm2 delete "$PM2_NAME" --namespace "$NAMESPACE" 2>/dev/null || true

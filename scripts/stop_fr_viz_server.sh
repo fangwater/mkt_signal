@@ -11,7 +11,7 @@ Usage: scripts/stop_fr_viz_server.sh [--exchange <binance|okex|gate|bybit|bitget
 
 Notes:
   - Exchange is inferred from the directory name (<exchange>_fr_<env>), unless --exchange is set.
-  - Stops PM2 process: viz_server_fr_<exchange>
+  - Stops PM2 process: viz_server_<dir>
 EOF
 }
 
@@ -35,9 +35,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+dir_name="$(basename "${BASE_DIR}")"
+dir_lc="${dir_name,,}"
+dir_tag="$(echo "${dir_lc}" | sed 's/[^a-z0-9_-]/_/g')"
 if [[ -z "$EXCHANGE" ]]; then
-  dir_name="$(basename "${BASE_DIR}")"
-  dir_lc="${dir_name,,}"
   if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]fr([_-].*)?$ ]]; then
     EXCHANGE="${BASH_REMATCH[1]}"
   fi
@@ -52,7 +53,7 @@ if [[ -z "$EXCHANGE" ]]; then
   exit 1
 fi
 
-PROC_NAME="viz_server_fr_${EXCHANGE}"
+PROC_NAME="${PM2_NAME:-viz_server_${dir_tag}}"
 
 echo "[INFO] Deleting ${PROC_NAME} (namespace=${PM2_NAMESPACE})"
 if npx pm2 delete "$PROC_NAME" --namespace "$PM2_NAMESPACE"; then

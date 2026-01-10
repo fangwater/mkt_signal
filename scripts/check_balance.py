@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 import time
+import urllib.error
 import urllib.request
 import urllib.parse
 
@@ -16,6 +17,19 @@ def now_ms():
 
 def sign(query, secret):
     return hmac.new(secret.encode(), query.encode(), hashlib.sha256).hexdigest()
+
+
+def fetch_balance(url, api_key):
+    req = urllib.request.Request(url, headers={"X-MBX-APIKEY": api_key})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read().decode(errors="replace")
+            return True, resp.status, body, None
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
+        return False, exc.code, body, f"HTTPError: {exc.code} {exc.reason}"
+    except urllib.error.URLError as exc:
+        return False, None, "", f"URLError: {exc.reason}"
 
 
 def main():
@@ -32,11 +46,21 @@ def main():
     signature = sign(query, api_secret)
     url = f"{base_url}/papi/v1/balance?{query}&signature={signature}"
 
-    req = urllib.request.Request(url, headers={"X-MBX-APIKEY": api_key})
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        body = resp.read().decode()
+    success, status, body, error = fetch_balance(url, api_key)
+    status_text = status if status is not None else "N/A"
+    print(f"Request success: {success} (status={status_text})")
+    if error:
+        print(f"Request error: {error}")
+    print("Raw response:")
+    print(body)
+    if not success:
+        return
 
-    data = json.loads(body)
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as exc:
+        print(f"ERROR: invalid JSON response: {exc}")
+        return
 
     print("=== Assets with crossMarginBorrowed > 0 ===")
     for item in data:

@@ -6,6 +6,7 @@ BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
 
 dir_name="$(basename "${BASE_DIR}")"
+dir_tag="$(echo "${dir_name,,}" | sed 's/[^a-z0-9_-]/_/g')"
 case "$dir_name" in
   okex_fr_*|*okex*|*OKEX*) EXCHANGE="okex" ;;
   binance_fr_*|*binance*|*BINANCE*) EXCHANGE="binance" ;;
@@ -16,7 +17,7 @@ case "$dir_name" in
     ;;
 esac
 
-PM2_NAME="account_monitor_${EXCHANGE}"
+PM2_NAME="${PM2_NAME:-account_monitor_${dir_tag}}"
 
 if npx pm2 describe "$PM2_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1; then
   echo "[INFO] 停止 $PM2_NAME (namespace: $NAMESPACE)"

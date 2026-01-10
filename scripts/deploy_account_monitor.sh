@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 usage() {
   cat <<'EOF'
 Usage:
-  deploy_account_monitor.sh [trade|test] --exchange okex|binance|gate [--scripts-only|--bin-only]
+  deploy_account_monitor.sh [trade|test] --exchange okex|binance|gate [--env-name <exchange>_fr_<suffix>] [--scripts-only|--bin-only]
 
 Examples:
   bash scripts/deploy_account_monitor.sh trade --exchange okex
@@ -19,12 +19,13 @@ Notes:
       binance-> binance_account_monitor
       gate   -> gate_account_monitor
   - Deploy dir:
-      $HOME/<exchange>_fr_<env>   (e.g. $HOME/okex_fr_trade, $HOME/binance_fr_trade)
+      $HOME/<exchange>_fr_<suffix> (e.g. $HOME/okex_fr_trade, $HOME/binance_fr_hf01)
 EOF
 }
 
 ENV_TYPE="trade"
 EXCHANGE=""
+ENV_NAME=""
 DO_BUILD=1
 DO_SCRIPTS=1
 ONLY_MODE=""
@@ -37,6 +38,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --exchange)
       EXCHANGE="${2:-}"
+      shift 2
+      ;;
+    --env-name)
+      ENV_NAME="${2:-}"
       shift 2
       ;;
     --scripts-only)
@@ -89,7 +94,26 @@ case "$EXCHANGE" in
     ;;
 esac
 
-TARGET_DIR="$HOME/${EXCHANGE}_fr_${ENV_TYPE}"
+normalize_env_name() {
+  echo "$1" | tr 'A-Z' 'a-z'
+}
+
+require_fr_env_name() {
+  local exchange="$1"
+  local name="$2"
+  if [[ ! "$name" =~ ^${exchange}_fr(_[a-z0-9][a-z0-9_-]*)?$ ]]; then
+    echo "[ERROR] env-name must match ${exchange}_fr_<suffix> (got: ${name})" >&2
+    exit 1
+  fi
+}
+
+if [[ -z "$ENV_NAME" ]]; then
+  ENV_NAME="${EXCHANGE}_fr_${ENV_TYPE}"
+fi
+ENV_NAME="$(normalize_env_name "$ENV_NAME")"
+require_fr_env_name "$EXCHANGE" "$ENV_NAME"
+
+TARGET_DIR="$HOME/${ENV_NAME}"
 
 case "$EXCHANGE" in
   okex) BIN_NAME="okex_account_monitor" ;;

@@ -82,6 +82,15 @@ fn infer_venues_from_cwd() -> Option<(TradingVenue, TradingVenue)> {
     None
 }
 
+fn infer_dir_prefix_from_cwd() -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    let leaf = cwd.file_name()?.to_string_lossy().trim().to_string();
+    if leaf.is_empty() {
+        return None;
+    }
+    Some(leaf.to_lowercase())
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let log_env = env_logger::Env::default().default_filter_or("info");
@@ -137,18 +146,29 @@ async fn main() -> Result<()> {
             info!("Initializing PreTradeParamsLoader singleton...");
 
             // 使用默认 Redis 设置（127.0.0.1:6379/0）
-            // Redis 风控参数按 open/hedge 实例隔离：<open>:<hedge>:pre_trade_risk_params
+            // Redis 风控参数按目录 + open/hedge 实例隔离：
+            // <dir>:<open>:<hedge>:pre_trade_risk_params
             let mut redis_settings = RedisSettings::default();
             // 统一标准：使用 kebab-case venue slug（例如 okex-margin），与 scripts/ 运维保持一致。
-            let prefix = format!(
-                "{}:{}:",
-                open_venue.data_pub_slug(),
-                hedge_venue.data_pub_slug()
-            );
+            let dir_prefix = infer_dir_prefix_from_cwd();
+            let prefix = match dir_prefix.as_deref() {
+                Some(name) if !name.is_empty() => format!(
+                    "{}:{}:{}:",
+                    name,
+                    open_venue.data_pub_slug(),
+                    hedge_venue.data_pub_slug()
+                ),
+                _ => format!(
+                    "{}:{}:",
+                    open_venue.data_pub_slug(),
+                    hedge_venue.data_pub_slug()
+                ),
+            };
             redis_settings.prefix = Some(prefix.clone());
             info!(
-                "pre_trade redis key prefix={:?}",
-                redis_settings.prefix.as_deref()
+                "pre_trade redis key prefix={:?} (dir_prefix={:?})",
+                redis_settings.prefix.as_deref(),
+                dir_prefix
             );
 
             let loader = PreTradeParamsLoader::instance();

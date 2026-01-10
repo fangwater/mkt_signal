@@ -6,6 +6,7 @@ BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
 
 dir_name="$(basename "$BASE_DIR")"
+dir_tag="$(echo "${dir_name,,}" | sed 's/[^a-z0-9_-]/_/g')"
 detected_exchange=""
 case "$dir_name" in
   *okex*|*OKEX*) detected_exchange="okex" ;;
@@ -16,7 +17,7 @@ case "$dir_name" in
 esac
 
 EXCHANGE="${EXCHANGE:-${detected_exchange:-okex}}"
-APP_NAME="${PM2_NAME:-fr_config_server_${EXCHANGE}}"
+APP_NAME="${PM2_NAME:-fr_config_server_${dir_tag}}"
 
 echo "[INFO] 停止 fr_config_server (name=${APP_NAME}, namespace=${NAMESPACE})"
 npx pm2 delete "$APP_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true

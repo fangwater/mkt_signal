@@ -1,0 +1,273 @@
+# 部署 binance_fr_trade + binance_fr_hf01
+
+本文记录两套环境的部署步骤：
+- `binance_fr_trade`
+- `binance_fr_hf01`
+
+默认端口示例：
+- viz server: `10031` / `10041`
+- config server: `18031` / `18041`
+- persist_manager: `19131` / `19141`
+- manual_signal: `8931` / `8932`
+
+---
+
+## 步骤 1：部署 config server 并写入 risk 参数
+
+> 说明：risk 参数按目录前缀隔离（`<dir>:<open>:<hedge>:pre_trade_risk_params`）。
+> 现在如果 Redis 没有对应 key，点击“读取”会直接报错，所以必须先保存。
+
+### 1.1 binance_fr_trade
+
+```bash
+cd ~/crypto_mkt/mkt_signal
+
+bash scripts/deploy_fr_config_server.sh \
+  --env-name binance_fr_trade \
+  --exchange binance \
+  --port 18031 \
+  --apply-nginx
+
+cd ~/binance_fr_trade
+./scripts/start_fr_config_server.sh
+```
+
+打开配置页：
+```
+http://<host>:4191/fr/binance_fr_trade/config/
+```
+
+在页面中填写并保存 **Risk Params**（open/hedge = `binance-margin` / `binance-futures`）。
+
+可选确认：
+```bash
+cd ~/binance_fr_trade
+./scripts/print_fr_risk_params.py --open-venue binance-margin --hedge-venue binance-futures
+```
+
+---
+
+### 1.2 binance_fr_hf01
+
+```bash
+cd ~/crypto_mkt/mkt_signal
+
+bash scripts/deploy_fr_config_server.sh \
+  --env-name binance_fr_hf01 \
+  --exchange binance \
+  --port 18041 \
+  --apply-nginx
+
+cd ~/binance_fr_hf01
+./scripts/start_fr_config_server.sh
+```
+
+打开配置页：
+```
+http://<host>:4191/fr/binance_fr_hf01/config/
+```
+
+在页面中填写并保存 **Risk Params**（open/hedge = `binance-margin` / `binance-futures`）。
+
+可选确认：
+```bash
+cd ~/binance_fr_hf01
+./scripts/print_fr_risk_params.py --open-venue binance-margin --hedge-venue binance-futures
+```
+
+---
+
+## 步骤 2：部署 account_monitor 和 trade_engine
+
+### 2.1 account_monitor
+
+```bash
+cd ~/crypto_mkt/mkt_signal
+
+bash scripts/deploy_account_monitor.sh \
+  --exchange binance \
+  --env-name binance_fr_trade
+
+bash scripts/deploy_account_monitor.sh \
+  --exchange binance \
+  --env-name binance_fr_hf01
+```
+
+启动：
+```bash
+cd ~/binance_fr_trade
+./scripts/start_account_monitor.sh
+
+cd ~/binance_fr_hf01
+./scripts/start_account_monitor.sh
+```
+
+---
+
+### 2.2 trade_engine
+
+```bash
+cd ~/crypto_mkt/mkt_signal
+
+bash scripts/deploy_fr_trade_engine.sh \
+  --exchange binance \
+  --env-name binance_fr_trade
+
+bash scripts/deploy_fr_trade_engine.sh \
+  --exchange binance \
+  --env-name binance_fr_hf01
+```
+
+启动：
+```bash
+cd ~/binance_fr_trade
+./scripts/start_trade_engine.sh
+
+cd ~/binance_fr_hf01
+./scripts/start_trade_engine.sh
+```
+
+---
+
+## 步骤 3：部署 viz server（面板）
+
+### 3.1 部署
+
+```bash
+cd ~/crypto_mkt/mkt_signal
+
+bash scripts/deploy_fr_viz_server.sh \
+  --env-name binance_fr_trade \
+  --exchange binance \
+  --port 10031 \
+  --apply-nginx
+
+bash scripts/deploy_fr_viz_server.sh \
+  --env-name binance_fr_hf01 \
+  --exchange binance \
+  --port 10041 \
+  --apply-nginx
+```
+
+### 3.2 启动
+
+```bash
+cd ~/binance_fr_trade
+./scripts/start_fr_viz_server.sh
+
+cd ~/binance_fr_hf01
+./scripts/start_fr_viz_server.sh
+```
+
+---
+
+## 步骤 4：部署 persist_manager
+
+> 端口必须 <= 65535；两套环境需要使用不同端口。
+
+### 4.1 部署二进制与脚本
+
+```bash
+cd ~/crypto_mkt/mkt_signal
+
+bash scripts/deploy_fr_persist_manager.sh \
+  --exchange binance \
+  --env-name binance_fr_trade
+
+bash scripts/deploy_fr_persist_manager.sh \
+  --exchange binance \
+  --env-name binance_fr_hf01
+```
+
+### 4.2 启动（示例端口）
+
+```bash
+cd ~/binance_fr_trade
+./scripts/start_fr_persist_manager.sh --port 19131
+
+cd ~/binance_fr_hf01
+./scripts/start_fr_persist_manager.sh --port 19141
+```
+
+---
+
+## 步骤 5：部署 manual_signal
+
+> manual_signal 需要不同端口；并且要求 IPC_NAMESPACE 已设置（env.sh 或环境变量）。
+### 5.1 部署
+
+```bash
+cd ~/crypto_mkt/mkt_signal
+
+bash scripts/deploy_fr_manual_signal.sh \
+  --exchange binance \
+  --env-name binance_fr_trade \
+  --port 8931 \
+  --apply-nginx
+
+bash scripts/deploy_fr_manual_signal.sh \
+  --exchange binance \
+  --env-name binance_fr_hf01 \
+  --port 8932 \
+  --apply-nginx
+```
+
+### 5.2 启动
+
+```bash
+cd ~/binance_fr_trade
+./scripts/start_fr_manual_signal.sh --port 8931
+
+cd ~/binance_fr_hf01
+./scripts/start_fr_manual_signal.sh --port 8932
+```
+
+---
+
+## 步骤 6：部署 pre_trade
+
+> 注意：pre_trade 启动时会读取 Redis 中带目录前缀的 risk params；若缺失会 panic。
+
+### 6.1 部署二进制与脚本
+
+```bash
+cd ~/crypto_mkt/mkt_signal
+
+bash scripts/deploy_fr_pre_trade.sh \
+  --exchange binance \
+  --env-name binance_fr_trade
+
+bash scripts/deploy_fr_pre_trade.sh \
+  --exchange binance \
+  --env-name binance_fr_hf01
+```
+
+### 6.2 启动（如需）
+
+```bash
+cd ~/binance_fr_trade
+./scripts/start_fr_pre_trade.sh
+
+cd ~/binance_fr_hf01
+./scripts/start_fr_pre_trade.sh
+```
+
+---
+
+## 步骤 7：部署 trade_signal（只部署，不启动）
+
+```bash
+cd ~/crypto_mkt/mkt_signal
+
+bash scripts/deploy_fr_signal.sh \
+  --exchange binance \
+  --env-name binance_fr_trade
+
+bash scripts/deploy_fr_signal.sh \
+  --exchange binance \
+  --env-name binance_fr_hf01
+```
+
+> 如需后续启动：
+> `cd ~/binance_fr_trade && ./scripts/start_trade_signal.sh`
+> `cd ~/binance_fr_hf01 && ./scripts/start_trade_signal.sh`

@@ -31,9 +31,15 @@ fi
 
 dir_name="$(basename "${BASE_DIR}")"
 dir_lc="$(echo "${dir_name}" | tr 'A-Z' 'a-z')"
+dir_tag="$(echo "${dir_lc}" | sed 's/[^a-z0-9_-]/_/g')"
 
 infer_ns_and_suffix() {
   local name="$1"
+
+  if [[ "$name" =~ ^([a-z0-9]+)[-_]fr([_-].*)?$ ]]; then
+    echo "fr ${BASH_REMATCH[1]}"
+    return 0
+  fi
 
   for env_suffix in "_trade" "_test"; do
     if [[ "$name" == *"$env_suffix" ]]; then
@@ -81,7 +87,7 @@ case "$NS" in
       echo "[ERROR] exchange mismatch: dir exchange=${EXCHANGE} arg exchange=${CLI_EXCHANGE}"
       exit 1
     fi
-    PM2_TAG="$EXCHANGE"
+    PM2_TAG="$dir_tag"
     ARGS=(--exchange "$EXCHANGE")
     ;;
   xarb)
@@ -100,7 +106,7 @@ case "$NS" in
     ;;
 esac
 
-PROC_NAME="trade_signal_${PM2_TAG}"
+PROC_NAME="${PM2_NAME:-trade_signal_${PM2_TAG}}"
 RUST_LOG="${RUST_LOG:-info}"
 
 echo "[INFO] Restarting ${PROC_NAME} (namespace=${NAMESPACE})"
@@ -117,4 +123,3 @@ echo "[INFO] Started trade_signal (ns=${NS:-unknown} suffix=${SUFFIX:-unknown})"
 echo "Namespace: ${NAMESPACE}"
 echo "Logs: npx pm2 logs --namespace ${NAMESPACE} ${PROC_NAME}"
 echo "Status: npx pm2 status --namespace ${NAMESPACE}"
-

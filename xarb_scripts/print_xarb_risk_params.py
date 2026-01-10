@@ -5,7 +5,7 @@
 打印 xarb（跨所）Pre-Trade 风控参数（从 Redis 读取，futures-only）。
 
 读取 Redis Hash:
-  "<open_venue>:<hedge_venue>:pre_trade_risk_params"
+  "<dir>:<open_venue>:<hedge_venue>:pre_trade_risk_params"
 
 open/hedge 推断规则同 sync_xarb_risk_params.py。
 """
@@ -72,6 +72,13 @@ def infer_xarb_venues_from_cwd() -> Optional[Tuple[str, str]]:
     return infer_xarb_venues_from_env_name(Path.cwd().name)
 
 
+def infer_dir_prefix_from_cwd() -> Optional[str]:
+    from pathlib import Path
+
+    name = Path.cwd().name.strip().lower()
+    return name or None
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Print xarb pre-trade risk params from Redis (futures-only)")
     p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
@@ -122,6 +129,9 @@ PARAM_ORDER = [
 
 
 def build_risk_params_key(open_venue: str, hedge_venue: str) -> str:
+    dir_prefix = infer_dir_prefix_from_cwd()
+    if dir_prefix:
+        return f"{dir_prefix}:{open_venue}:{hedge_venue}:pre_trade_risk_params"
     return f"{open_venue}:{hedge_venue}:pre_trade_risk_params"
 
 

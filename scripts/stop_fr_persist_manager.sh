@@ -31,8 +31,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+dir_name="$(basename "${BASE_DIR}")"
+dir_tag="$(echo "${dir_name,,}" | sed 's/[^a-z0-9_-]/_/g')"
 if [[ -z "$EXCHANGE" ]]; then
-  dir_name="$(basename "${BASE_DIR}")"
   case "$dir_name" in
     okex_fr_*|*okex*|*OKEX*) EXCHANGE="okex" ;;
     binance_fr_*|*binance*|*BINANCE*) EXCHANGE="binance" ;;
@@ -51,7 +52,7 @@ if [[ "$EXCHANGE" == "okx" ]]; then
   EXCHANGE="okex"
 fi
 
-PROC_NAME="persist_manager_fr_${EXCHANGE}"
+PROC_NAME="${PM2_NAME:-persist_manager_${dir_tag}}"
 
 if npx pm2 describe "$PROC_NAME" --namespace "$PM2_NAMESPACE" >/dev/null 2>&1; then
   echo "[INFO] Stopping $PROC_NAME (namespace: $PM2_NAMESPACE)"

@@ -33,6 +33,7 @@ Usage: scripts/start_fr_viz_server.sh [--cfg config/viz.toml] [--exchange <binan
 Notes:
   - Starts viz_server with PM2 using config/viz.toml (or VIZ_CFG / --cfg).
   - Exchange is inferred from the directory name (<exchange>_fr_<env>), unless --exchange is set.
+  - Default PM2 name uses the deploy dir name to avoid collisions.
 EOF
 }
 
@@ -71,9 +72,10 @@ if [[ -f "$ENV_FILE" ]]; then
   source "$ENV_FILE"
 fi
 
+dir_name="$(basename "${BASE_DIR}")"
+dir_lc="${dir_name,,}"
+dir_tag="$(echo "${dir_lc}" | sed 's/[^a-z0-9_-]/_/g')"
 if [[ -z "$EXCHANGE" ]]; then
-  dir_name="$(basename "${BASE_DIR}")"
-  dir_lc="${dir_name,,}"
   if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]fr([_-].*)?$ ]]; then
     EXCHANGE="${BASH_REMATCH[1]}"
   fi
@@ -88,7 +90,7 @@ if [[ -z "$EXCHANGE" ]]; then
   exit 1
 fi
 
-PROC_NAME="viz_server_fr_${EXCHANGE}"
+PROC_NAME="${PM2_NAME:-viz_server_${dir_tag}}"
 RUST_LOG="${RUST_LOG:-info}"
 
 if [[ ! -f "$BASE_DIR/$CFG_PATH" ]]; then

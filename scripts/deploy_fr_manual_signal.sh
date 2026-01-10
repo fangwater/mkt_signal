@@ -10,7 +10,8 @@ usage() {
 用法:
   scripts/deploy_fr_manual_signal.sh [trade|test] --exchange <binance|okex|bybit|bitget|gate>
                                       [--port <default>]
-                                      [--nginx-prefix /fr/<exchange>/manual_signal]
+                                      [--env-name <exchange>_fr_<suffix>]
+                                      [--nginx-prefix /fr/<env-name>/manual_signal]
                                       [--nginx-port 4191]
                                       [--nginx-mapping-file $HOME/nginx_locations.txt]
                                       [--apply-nginx]
@@ -19,7 +20,8 @@ usage() {
 说明:
   - 构建并复制 manual_signal 到目标目录（不自动启动）。
   - 默认同步启动/停止脚本，并写入 nginx 映射（managed block）。
-  - FR 目标目录:  $HOME/<exchange>_fr_<trade|test>/
+  - FR 目标目录:  $HOME/<exchange>_fr_<suffix>/
+  - env-name 必须匹配 <exchange>_fr_<suffix>（例如 binance_fr_trade / binance_fr_hf01）。
 EOF
 }
 
@@ -118,6 +120,7 @@ upsert_main_nginx_mapping() {
 
 ENV_TYPE="trade"
 EXCHANGE=""
+ENV_NAME=""
 PORT=""
 DO_BUILD=1
 DO_SCRIPTS=1
@@ -138,6 +141,14 @@ while [[ $# -gt 0 ]]; do
       EXCHANGE="${2:-}"
       if [[ -z "$EXCHANGE" ]]; then
         echo "[ERROR] --exchange 需要一个值"
+        exit 1
+      fi
+      shift 2
+      ;;
+    --env-name)
+      ENV_NAME="${2:-}"
+      if [[ -z "$ENV_NAME" ]]; then
+        echo "[ERROR] --env-name 需要一个值"
         exit 1
       fi
       shift 2
@@ -207,6 +218,25 @@ case "$EXCHANGE" in
     ;;
 esac
 
+normalize_env_name() {
+  echo "$1" | tr 'A-Z' 'a-z'
+}
+
+require_fr_env_name() {
+  local exchange="$1"
+  local name="$2"
+  if [[ ! "$name" =~ ^${exchange}_fr(_[a-z0-9][a-z0-9_-]*)?$ ]]; then
+    echo "[ERROR] env-name must match ${exchange}_fr_<suffix> (got: ${name})" >&2
+    exit 1
+  fi
+}
+
+if [[ -z "$ENV_NAME" ]]; then
+  ENV_NAME="${EXCHANGE}_fr_${ENV_TYPE}"
+fi
+ENV_NAME="$(normalize_env_name "$ENV_NAME")"
+require_fr_env_name "$EXCHANGE" "$ENV_NAME"
+
 if [[ -z "$PORT" ]]; then
   PORT="$(default_port_for_exchange "$EXCHANGE")"
 fi
@@ -216,13 +246,13 @@ if [[ ! "$PORT" =~ ^[0-9]+$ ]]; then
 fi
 
 if [[ -z "$NGINX_PREFIX" ]]; then
-  NGINX_PREFIX="/fr/${EXCHANGE}/manual_signal"
+  NGINX_PREFIX="/fr/${ENV_NAME}/manual_signal"
 fi
 if [[ -z "$NGINX_MAPPING_FILE" ]]; then
   NGINX_MAPPING_FILE="$HOME/nginx_locations.txt"
 fi
 
-TARGET_DIR="$HOME/${EXCHANGE}_fr_${ENV_TYPE}"
+TARGET_DIR="$HOME/${ENV_NAME}"
 
 if [[ "$DO_BUILD" -eq 1 ]]; then
   echo "[INFO] 构建 $BIN_NAME (release)"

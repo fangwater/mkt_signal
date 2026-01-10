@@ -23,6 +23,7 @@ if [[ ! -f "$APP_SCRIPT" ]]; then
 fi
 
 dir_name="$(basename "$BASE_DIR")"
+dir_tag="$(echo "${dir_name,,}" | sed 's/[^a-z0-9_-]/_/g')"
 detected_exchange=""
 case "$dir_name" in
   *okex*|*OKEX*) detected_exchange="okex" ;;
@@ -35,7 +36,7 @@ esac
 EXCHANGE="${EXCHANGE:-${detected_exchange:-okex}}"
 HOST="${HOST:-0.0.0.0}"
 DEFAULT_EXCHANGE="${DEFAULT_EXCHANGE:-$EXCHANGE}"
-APP_NAME="${PM2_NAME:-fr_config_server_${EXCHANGE}}"
+APP_NAME="${PM2_NAME:-fr_config_server_${dir_tag}}"
 if [[ -z "${PYTHON_BIN:-}" ]]; then
   if [[ -x "/home/ubuntu/jupyter_env/bin/python" ]]; then
     PYTHON_BIN="/home/ubuntu/jupyter_env/bin/python"
@@ -84,16 +85,19 @@ fi
 echo "[INFO] 启动 fr_config_server (exchange=${DEFAULT_EXCHANGE}, port=${PORT}, namespace=${NAMESPACE})"
 npx pm2 delete "$APP_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
 
-PORT="$PORT" HOST="$HOST" DEFAULT_EXCHANGE="$DEFAULT_EXCHANGE" \
-npx pm2 start "$PYTHON_BIN" \
-  --name "$APP_NAME" \
-  --namespace "$NAMESPACE" \
-  --interpreter none \
-  -- \
-  "$APP_SCRIPT" \
-  --host "$HOST" \
-  --port "$PORT" \
-  --default-exchange "$DEFAULT_EXCHANGE"
+(
+  cd "$BASE_DIR"
+  PORT="$PORT" HOST="$HOST" DEFAULT_EXCHANGE="$DEFAULT_EXCHANGE" \
+  npx pm2 start "$PYTHON_BIN" \
+    --name "$APP_NAME" \
+    --namespace "$NAMESPACE" \
+    --interpreter none \
+    -- \
+    "$APP_SCRIPT" \
+    --host "$HOST" \
+    --port "$PORT" \
+    --default-exchange "$DEFAULT_EXCHANGE"
+)
 
 echo "[INFO] 已启动：pm2 status --namespace ${NAMESPACE} ${APP_NAME}"
 echo "[INFO] 日志：npx pm2 logs --namespace ${NAMESPACE} ${APP_NAME}"

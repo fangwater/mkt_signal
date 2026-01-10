@@ -34,6 +34,18 @@ EXCHANGE_DEFAULTS = {
     "gate": ("gate-margin", "gate-futures"),
 }
 
+
+def infer_dir_prefix_from_cwd() -> Optional[str]:
+    name = os.path.basename(os.getcwd()).strip().lower()
+    return name or None
+
+
+def build_risk_params_key(open_venue: str, hedge_venue: str) -> str:
+    dir_prefix = infer_dir_prefix_from_cwd()
+    if dir_prefix:
+        return f"{dir_prefix}:{open_venue}:{hedge_venue}:pre_trade_risk_params"
+    return f"{open_venue}:{hedge_venue}:pre_trade_risk_params"
+
 try:
     import sync_fr_risk_params as risk_defaults
 
@@ -1189,8 +1201,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
-            key = f"{open_venue}:{hedge_venue}:pre_trade_risk_params"
+            key = build_risk_params_key(open_venue, hedge_venue)
             values = read_hash(self.server.context.redis_client, key)
+            if not values:
+                self._send_error(404, f"risk params not found: {key}")
+                return
             self._send_json(200, {"key": key, "values": values})
             return
 
@@ -1322,7 +1337,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             if not isinstance(values, dict):
                 self._send_error(400, "values must be object")
                 return
-            key = f"{open_v}:{hedge_v}:pre_trade_risk_params"
+            key = build_risk_params_key(open_v, hedge_v)
             written = write_hash(self.server.context.redis_client, key, values)
             self._send_json(200, {"key": key, "count": written})
             return

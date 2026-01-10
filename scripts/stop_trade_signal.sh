@@ -8,9 +8,15 @@ NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
 
 dir_name="$(basename "${BASE_DIR}")"
 dir_lc="$(echo "${dir_name}" | tr 'A-Z' 'a-z')"
+dir_tag="$(echo "${dir_lc}" | sed 's/[^a-z0-9_-]/_/g')"
 
 infer_ns_and_suffix() {
   local name="$1"
+
+  if [[ "$name" =~ ^([a-z0-9]+)[-_]fr([_-].*)?$ ]]; then
+    echo "fr ${BASH_REMATCH[1]}"
+    return 0
+  fi
 
   for env_suffix in "_trade" "_test"; do
     if [[ "$name" == *"$env_suffix" ]]; then
@@ -57,7 +63,7 @@ case "$NS" in
       echo "[ERROR] exchange mismatch: dir exchange=${EXCHANGE} arg exchange=${CLI_EXCHANGE}"
       exit 1
     fi
-    PM2_TAG="$EXCHANGE"
+    PM2_TAG="$dir_tag"
     ;;
   xarb)
     open_ex="${SUFFIX%%-*}"
@@ -74,7 +80,7 @@ case "$NS" in
     ;;
 esac
 
-PROC_NAME="trade_signal_${PM2_TAG}"
+PROC_NAME="${PM2_NAME:-trade_signal_${PM2_TAG}}"
 
 echo "[INFO] Deleting ${PROC_NAME} (namespace=${NAMESPACE})"
 if npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE"; then
@@ -85,4 +91,3 @@ fi
 
 echo ""
 echo "[INFO] Remaining processes: npx pm2 status --namespace ${NAMESPACE}"
-

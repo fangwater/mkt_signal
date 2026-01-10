@@ -5,7 +5,7 @@
 将 Funding Rate Pre-Trade 风控参数同步到 Redis 并打印。
 
 写入 Redis Hash:
-  `<open>:<hedge>:pre_trade_risk_params` - 风控参数（max_pos_u, max_leverage等）
+  `<dir>:<open>:<hedge>:pre_trade_risk_params` - 风控参数（max_pos_u, max_leverage等）
 
 同步完成后自动打印所有参数。
 
@@ -51,6 +51,13 @@ def infer_venues_from_cwd():
             if cand.startswith(ex):
                 return pair
     return None
+
+
+def infer_dir_prefix_from_cwd() -> str | None:
+    from pathlib import Path
+
+    name = Path.cwd().name.strip().lower()
+    return name or None
 
 
 def parse_args() -> argparse.Namespace:
@@ -114,6 +121,9 @@ PARAM_COMMENTS: Dict[str, str] = {
 def build_risk_params_key(open_venue: str | None, hedge_venue: str | None) -> str:
     if not open_venue or not hedge_venue:
         raise ValueError("missing open/hedge venue")
+    dir_prefix = infer_dir_prefix_from_cwd()
+    if dir_prefix:
+        return f"{dir_prefix}:{open_venue}:{hedge_venue}:pre_trade_risk_params"
     return f"{open_venue}:{hedge_venue}:pre_trade_risk_params"
 
 

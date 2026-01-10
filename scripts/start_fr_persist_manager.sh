@@ -82,8 +82,9 @@ default_port_for_exchange() {
   esac
 }
 
+dir_name="$(basename "${BASE_DIR}")"
+dir_tag="$(echo "${dir_name,,}" | sed 's/[^a-z0-9_-]/_/g')"
 if [[ -z "$EXCHANGE" ]]; then
-  dir_name="$(basename "${BASE_DIR}")"
   case "$dir_name" in
     okex_fr_*|*okex*|*OKEX*) EXCHANGE="okex" ;;
     binance_fr_*|*binance*|*BINANCE*) EXCHANGE="binance" ;;
@@ -115,7 +116,7 @@ if [[ -z "${IPC_NAMESPACE:-}" ]]; then
   exit 1
 fi
 
-PROC_NAME="persist_manager_fr_${EXCHANGE}"
+PROC_NAME="${PM2_NAME:-persist_manager_${dir_tag}}"
 RUST_LOG="${RUST_LOG:-info}"
 
 mkdir -p "${BASE_DIR}/data/persist_manager" >/dev/null 2>&1 || true
