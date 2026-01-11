@@ -43,6 +43,8 @@ pub struct DataTypesConfig {
     pub enable_kline: bool,          // K线数据
     pub enable_derivatives: bool,    // 衍生品指标
     pub enable_ask_bid_spread: bool, // 买卖价差（最优买卖价）
+    #[serde(default)]
+    pub max_levels_per_msg: Option<usize>, // 每条增量消息最大档数限制(bids+asks)，超过则截断
 }
 
 #[derive(Debug, Deserialize)]

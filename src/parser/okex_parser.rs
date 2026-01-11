@@ -581,6 +581,9 @@ fn parse_okex_order_book_levels(
 ) {
     // 解析bids - OKEx格式：[price, amount, deprecated, order_count]
     for (i, bid_item) in bids_array.iter().enumerate() {
+        if i >= inc_msg.bids_count as usize {
+            break;
+        }
         if let Some(bid_array) = bid_item.as_array() {
             if bid_array.len() >= 2 {
                 if let (Some(price_str), Some(amount_str)) =
@@ -595,6 +598,9 @@ fn parse_okex_order_book_levels(
 
     // 解析asks - OKEx格式：[price, amount, deprecated, order_count]
     for (i, ask_item) in asks_array.iter().enumerate() {
+        if i >= inc_msg.asks_count as usize {
+            break;
+        }
         if let Some(ask_array) = ask_item.as_array() {
             if ask_array.len() >= 2 {
                 if let (Some(price_str), Some(amount_str)) =
@@ -608,12 +614,31 @@ fn parse_okex_order_book_levels(
     }
 }
 
+/// 根据max_levels限制计算截断后的bids和asks数量
+fn truncate_levels(bids_count: usize, asks_count: usize, max_levels: Option<usize>) -> (usize, usize) {
+    match max_levels {
+        Some(max) if bids_count + asks_count > max => {
+            let total = bids_count + asks_count;
+            let new_bids = (bids_count * max) / total;
+            let new_asks = max - new_bids;
+            (new_bids.max(1).min(bids_count), new_asks.max(1).min(asks_count))
+        }
+        _ => (bids_count, asks_count),
+    }
+}
+
 #[derive(Clone)]
-pub struct OkexIncParser;
+pub struct OkexIncParser {
+    max_levels: Option<usize>,
+}
 
 impl OkexIncParser {
     pub fn new() -> Self {
-        Self
+        Self { max_levels: None }
+    }
+
+    pub fn with_max_levels(max_levels: Option<usize>) -> Self {
+        Self { max_levels }
     }
 }
 
@@ -677,8 +702,12 @@ impl OkexIncParser {
                         _ => return 0,
                     };
 
-                    let bids_count = bids_array.len() as u32;
-                    let asks_count = asks_array.len() as u32;
+                    // 根据max_levels限制截断档数
+                    let (bids_count, asks_count) = truncate_levels(
+                        bids_array.len(),
+                        asks_array.len(),
+                        self.max_levels,
+                    );
 
                     // 判断是否为快照消息
                     let is_snapshot = action == "snapshot";
@@ -690,8 +719,8 @@ impl OkexIncParser {
                         prev_seq_id, // final_update_id
                         timestamp,   // 使用ts时间戳
                         is_snapshot, // 根据action字段确定
-                        bids_count,
-                        asks_count,
+                        bids_count as u32,
+                        asks_count as u32,
                     );
 
                     // 使用公共函数解析订单簿层级

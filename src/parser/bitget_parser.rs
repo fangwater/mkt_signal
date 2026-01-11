@@ -385,17 +385,39 @@ impl Parser for BitgetDerivativesMetricsParser {
     }
 }
 
+/// 根据max_levels限制计算截断后的bids和asks数量
+fn truncate_levels_count(bids_count: usize, asks_count: usize, max_levels: Option<usize>) -> (usize, usize) {
+    match max_levels {
+        Some(max) if bids_count + asks_count > max => {
+            let total = bids_count + asks_count;
+            let new_bids = (bids_count * max) / total;
+            let new_asks = max - new_bids;
+            (new_bids.max(1).min(bids_count), new_asks.max(1).min(asks_count))
+        }
+        _ => (bids_count, asks_count),
+    }
+}
+
 /// Bitget 增量深度解析（books snapshot/update）
 #[derive(Clone)]
-pub struct BitgetIncParser;
+pub struct BitgetIncParser {
+    max_levels: Option<usize>,
+}
 
 impl BitgetIncParser {
     pub fn new() -> Self {
-        Self
+        Self { max_levels: None }
     }
 
-    fn parse_levels(levels: &Vec<serde_json::Value>, inc_msg: &mut IncMsg, is_bid: bool) {
+    pub fn with_max_levels(max_levels: Option<usize>) -> Self {
+        Self { max_levels }
+    }
+
+    fn parse_levels(levels: &Vec<serde_json::Value>, inc_msg: &mut IncMsg, is_bid: bool, max_count: usize) {
         for (i, entry) in levels.iter().enumerate() {
+            if i >= max_count {
+                break;
+            }
             if let Some(arr) = entry.as_array() {
                 if arr.len() >= 2 {
                     if let (Some(price), Some(amount)) = (arr[0].as_str(), arr[1].as_str()) {
@@ -469,17 +491,24 @@ impl Parser for BitgetIncParser {
                             })
                             .unwrap_or(0);
 
+                        // 根据max_levels限制截断档数
+                        let (bids_count, asks_count) = truncate_levels_count(
+                            bids.len(),
+                            asks.len(),
+                            self.max_levels,
+                        );
+
                         let mut inc_msg = IncMsg::create(
                             symbol.to_string(),
                             seq,
                             seq,
                             timestamp,
                             action == "snapshot",
-                            bids.len() as u32,
-                            asks.len() as u32,
+                            bids_count as u32,
+                            asks_count as u32,
                         );
-                        Self::parse_levels(&bids, &mut inc_msg, true);
-                        Self::parse_levels(&asks, &mut inc_msg, false);
+                        Self::parse_levels(&bids, &mut inc_msg, true, bids_count);
+                        Self::parse_levels(&asks, &mut inc_msg, false, asks_count);
 
                         if tx.send(inc_msg.to_bytes()).is_ok() {
                             sent += 1;

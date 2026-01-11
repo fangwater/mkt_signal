@@ -199,6 +199,7 @@ impl MktManager {
     async fn start_incremental_connections(&mut self) {
         let exchange = self.cfg.get_exchange();
         let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+        let max_levels = self.cfg.data_types.max_levels_per_msg;
 
         for i in 0..self.subscribe_msgs.get_inc_subscribe_msg_len() {
             let subscribe_msg = self.subscribe_msgs.get_inc_subscribe_msg(i).clone();
@@ -206,7 +207,7 @@ impl MktManager {
 
             match exchange {
                 Exchange::Binance => {
-                    let parser = BinanceIncParser::new();
+                    let parser = BinanceIncParser::with_max_levels(max_levels);
                     self.spawn_connection_with_mpsc(
                         exchange,
                         url.clone(),
@@ -218,7 +219,7 @@ impl MktManager {
                     .await;
                 }
                 Exchange::Bybit => {
-                    let parser = BybitIncParser::new();
+                    let parser = BybitIncParser::with_max_levels(max_levels);
                     self.spawn_connection_with_mpsc(
                         exchange,
                         url.clone(),
@@ -230,7 +231,7 @@ impl MktManager {
                     .await;
                 }
                 Exchange::Okex => {
-                    let parser = OkexIncParser::new();
+                    let parser = OkexIncParser::with_max_levels(max_levels);
                     self.spawn_connection_with_mpsc(
                         exchange,
                         url.clone(),
@@ -242,7 +243,7 @@ impl MktManager {
                     .await;
                 }
                 Exchange::Bitget => {
-                    let parser = BitgetIncParser::new();
+                    let parser = BitgetIncParser::with_max_levels(max_levels);
                     self.spawn_connection_with_mpsc(
                         exchange,
                         url.clone(),
@@ -714,7 +715,7 @@ impl MktManager {
 
                         tokio::spawn(async move {
                             let (snapshot_raw_tx, mut snapshot_raw_rx) = broadcast::channel(100);
-                            let parser = BinanceSnapshotParser::new();
+                            let parser = BinanceSnapshotParser::with_max_levels(cfg_for_snapshot.data_types.max_levels_per_msg);
 
                             let snapshot_tx_for_fetcher = snapshot_raw_tx.clone();
                             let cfg_for_fetcher = cfg_for_snapshot.clone();

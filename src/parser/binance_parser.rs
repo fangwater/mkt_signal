@@ -326,11 +326,17 @@ impl BinanceDerivativesMetricsParser {
 }
 
 #[derive(Clone)]
-pub struct BinanceSnapshotParser;
+pub struct BinanceSnapshotParser {
+    max_levels: Option<usize>,
+}
 
 impl BinanceSnapshotParser {
     pub fn new() -> Self {
-        Self
+        Self { max_levels: None }
+    }
+
+    pub fn with_max_levels(max_levels: Option<usize>) -> Self {
+        Self { max_levels }
     }
 }
 
@@ -354,6 +360,9 @@ fn parse_order_book_levels(
 ) {
     // 解析bids
     for (i, bid_item) in bids_array.iter().enumerate() {
+        if i >= inc_msg.bids_count as usize {
+            break;
+        }
         if let Some(bid_array) = bid_item.as_array() {
             if bid_array.len() >= 2 {
                 if let (Some(price_str), Some(amount_str)) =
@@ -368,6 +377,9 @@ fn parse_order_book_levels(
 
     // 解析asks
     for (i, ask_item) in asks_array.iter().enumerate() {
+        if i >= inc_msg.asks_count as usize {
+            break;
+        }
         if let Some(ask_array) = ask_item.as_array() {
             if ask_array.len() >= 2 {
                 if let (Some(price_str), Some(amount_str)) =
@@ -378,6 +390,21 @@ fn parse_order_book_levels(
                 }
             }
         }
+    }
+}
+
+/// 根据max_levels限制计算截断后的bids和asks数量
+/// 按原始比例分配，确保总数不超过max_levels
+fn truncate_levels(bids_count: usize, asks_count: usize, max_levels: Option<usize>) -> (usize, usize) {
+    match max_levels {
+        Some(max) if bids_count + asks_count > max => {
+            let total = bids_count + asks_count;
+            // 按比例分配
+            let new_bids = (bids_count * max) / total;
+            let new_asks = max - new_bids;
+            (new_bids.max(1).min(bids_count), new_asks.max(1).min(asks_count))
+        }
+        _ => (bids_count, asks_count),
     }
 }
 
@@ -394,8 +421,12 @@ impl BinanceSnapshotParser {
             json_value.get("bids").and_then(|v| v.as_array()),
             json_value.get("asks").and_then(|v| v.as_array()),
         ) {
-            let bids_count = bids_array.len() as u32;
-            let asks_count = asks_array.len() as u32;
+            // 根据max_levels限制截断档数
+            let (bids_count, asks_count) = truncate_levels(
+                bids_array.len(),
+                asks_array.len(),
+                self.max_levels,
+            );
 
             // 创建快照消息，对于快照消息，first_update_id = last_update_id + 1
             let mut inc_msg = IncMsg::create(
@@ -404,8 +435,8 @@ impl BinanceSnapshotParser {
                 last_update_id + 1, // final_update_id（对于快照相同）
                 0,                  // timestamp（快照没有实际时间戳）
                 true,               // is_snapshot = true
-                bids_count,
-                asks_count,
+                bids_count as u32,
+                asks_count as u32,
             );
 
             // 使用公共函数解析订单簿层级
@@ -421,11 +452,17 @@ impl BinanceSnapshotParser {
 }
 
 #[derive(Clone)]
-pub struct BinanceIncParser;
+pub struct BinanceIncParser {
+    max_levels: Option<usize>,
+}
 
 impl BinanceIncParser {
     pub fn new() -> Self {
-        Self
+        Self { max_levels: None }
+    }
+
+    pub fn with_max_levels(max_levels: Option<usize>) -> Self {
+        Self { max_levels }
     }
 }
 
@@ -468,8 +505,12 @@ impl BinanceIncParser {
             json_value.get("b").and_then(|v| v.as_array()), // bids
             json_value.get("a").and_then(|v| v.as_array()), // asks
         ) {
-            let bids_count = bids_array.len() as u32;
-            let asks_count = asks_array.len() as u32;
+            // 根据max_levels限制截断档数
+            let (bids_count, asks_count) = truncate_levels(
+                bids_array.len(),
+                asks_array.len(),
+                self.max_levels,
+            );
 
             // 创建增量消息
             let mut inc_msg = IncMsg::create(
@@ -478,8 +519,8 @@ impl BinanceIncParser {
                 final_update_id,
                 event_time,
                 false, // is_snapshot = false
-                bids_count,
-                asks_count,
+                bids_count as u32,
+                asks_count as u32,
             );
 
             // 使用公共函数解析订单簿层级
