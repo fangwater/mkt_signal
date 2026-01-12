@@ -328,7 +328,7 @@ pub struct IncMsg {
     pub timestamp: i64,
     // 8字节对齐的字段
     pub is_snapshot: bool,
-    // 在Rust中，我们使用数组来表示padding
+    // 在Rust中，我们使用数组来表示padding，padding[0] 表示 is_last
     pub padding: [u8; 7],
     pub bids_count: u32,
     pub asks_count: u32,
@@ -350,6 +350,8 @@ impl IncMsg {
         let symbol_length = symbol.len() as u32;
         let total_levels = (bids_count + asks_count) as usize;
         let levels = vec![Level::from_values(0.0, 0.0); total_levels];
+        let mut padding = [0u8; 7];
+        padding[0] = 1; // 默认为最后一条
 
         Self {
             msg_type: MktMsgType::OrderBookInc,
@@ -359,11 +361,21 @@ impl IncMsg {
             final_update_id,
             timestamp,
             is_snapshot,
-            padding: [0u8; 7],
+            padding,
             bids_count,
             asks_count,
             levels,
         }
+    }
+
+    /// 获取 is_last 标志
+    pub fn is_last(&self) -> bool {
+        self.padding[0] != 0
+    }
+
+    /// 设置 is_last 标志
+    pub fn set_is_last(&mut self, is_last: bool) {
+        self.padding[0] = if is_last { 1 } else { 0 };
     }
 
     /// Set a bid level
@@ -386,7 +398,7 @@ impl IncMsg {
     pub fn to_bytes(&self) -> Bytes {
         // Calculate total size:
         // msg_type(4) + symbol_length(4) + symbol + first_update_id(8) + final_update_id(8) + timestamp(8) +
-        // is_snapshot(1) + padding(7) + bids_count(4) + asks_count(4) + levels(levels.len() * 16)
+        // is_snapshot(1) + padding(7, padding[0] 为 is_last) + bids_count(4) + asks_count(4) + levels(levels.len() * 16)
         let levels_size = self.levels.len() * std::mem::size_of::<Level>();
         let total_size =
             4 + 4 + self.symbol_length as usize + 8 + 8 + 8 + 1 + 7 + 4 + 4 + levels_size;
@@ -404,7 +416,7 @@ impl IncMsg {
         buf.put_i64_le(self.final_update_id);
         buf.put_i64_le(self.timestamp);
 
-        // Write is_snapshot with 8-byte alignment (1 byte + 7 bytes padding)
+        // Write is_snapshot and padding (padding[0] stores is_last)
         buf.put_u8(if self.is_snapshot { 1 } else { 0 });
         buf.put(&self.padding[..]); // 7 bytes padding
 

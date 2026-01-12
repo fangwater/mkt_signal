@@ -1,7 +1,7 @@
 {
   "env": {
-    "ANTHROPIC_AUTH_TOKEN": "sk-3a39974a18add043e82a997525c4cd6f",
-    "ANTHROPIC_BASE_URL": "https://claude.hanbbq.top",
+    "ANTHROPIC_BASE_URL": "https://api.ccodezh.com",
+    "ANTHROPIC_AUTH_TOKEN": "sk-cPPSgj40ywgKL19FFFpxuvpSIv6W4Lr9AxDNCGoUQ5Ks0ITE",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
   },
   "permissions": {

@@ -1,0 +1,11 @@
+# Depth Message 配置文件
+
+# 深度档位开关
+depth_levels:
+  enable_depth5: true     # 5档深度
+  enable_depth20: true    # 20档深度
+  enable_depth50: false   # 50档深度
+
+# 推送配置
+push_config:
+  min_push_interval_ms: 100  # 最小推送间隔(毫秒)，用于定时强制推送
