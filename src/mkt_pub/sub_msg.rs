@@ -85,6 +85,7 @@ fn construct_subscribe_message(exchange: &Exchange, symbols: &[String], channel:
 pub struct SubscribeMsgs {
     active_symbols: HashSet<String>,              //当前所有u本位符号
     inc_subscribe_msgs: Vec<serde_json::Value>,   //增量orderbook
+    depth_subscribe_msgs: Vec<serde_json::Value>, //有限档深度快照（binance-futures: depth20@100ms）
     trade_subscribe_msgs: Vec<serde_json::Value>, //逐笔成交
     kline_subscribe_msgs: Vec<serde_json::Value>, //k线
     signal_subscribe_msg: serde_json::Value,      //只需要一个，实际是和btc深度有关的某个行情
@@ -290,6 +291,14 @@ impl SubscribeMsgs {
         self.inc_subscribe_msgs.len()
     }
 
+    pub fn get_depth_subscribe_msg_len(&self) -> usize {
+        self.depth_subscribe_msgs.len()
+    }
+
+    pub fn get_depth_subscribe_msg(&self, index: usize) -> &serde_json::Value {
+        &self.depth_subscribe_msgs[index]
+    }
+
     pub fn get_trade_subscribe_msg_len(&self) -> usize {
         self.trade_subscribe_msgs.len()
     }
@@ -351,6 +360,14 @@ impl SubscribeMsgs {
             Exchange::Bybit => "orderbook.500".to_string(),
             Exchange::Bitget => "books".to_string(),
             Exchange::Gate => panic!("Gate.io does not support incremental orderbook"),
+        }
+    }
+
+    /// 获取有限档深度快照 channel（目前只有 binance-futures 支持）
+    fn get_depth_channel(exchange: &Exchange) -> Option<String> {
+        match exchange {
+            Exchange::Binance => Some("depth20@100ms".to_string()),
+            _ => None, // 其他交易所暂不支持
         }
     }
 
@@ -470,6 +487,7 @@ impl SubscribeMsgs {
         let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
         let batch_size = cfg.get_batch_size();
         let mut inc_subscribe_msgs = Vec::new();
+        let mut depth_subscribe_msgs = Vec::new();
         let mut trade_subscribe_msgs = Vec::new();
         let mut kline_subscribe_msgs = Vec::new();
         let mut ask_bid_spread_msgs = Vec::new();
@@ -479,12 +497,20 @@ impl SubscribeMsgs {
         } else {
             None
         };
+        let depth_channel = if cfg.data_types.enable_incremental {
+            SubscribeMsgs::get_depth_channel(&exchange)
+        } else {
+            None
+        };
         let trade_channel = SubscribeMsgs::get_trade_channel(&exchange);
         let kline_channel = SubscribeMsgs::get_kline_channel(&exchange);
         let best_price_spread_channel = SubscribeMsgs::get_ask_bid_spread_channel(&exchange);
         for chunk in symbols.chunks(batch_size) {
             if let Some(ref ch) = inc_channel {
                 inc_subscribe_msgs.push(construct_subscribe_message(&exchange, chunk, ch));
+            }
+            if let Some(ref ch) = depth_channel {
+                depth_subscribe_msgs.push(construct_subscribe_message(&exchange, chunk, ch));
             }
             trade_subscribe_msgs.push(construct_subscribe_message(
                 &exchange,
@@ -505,6 +531,7 @@ impl SubscribeMsgs {
         Self {
             active_symbols: symbols.iter().map(|s| s.clone()).collect(),
             inc_subscribe_msgs,
+            depth_subscribe_msgs,
             trade_subscribe_msgs,
             kline_subscribe_msgs,
             signal_subscribe_msg: SubscribeMsgs::get_signal_subscribe_message(&exchange),

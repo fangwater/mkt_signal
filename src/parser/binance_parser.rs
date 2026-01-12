@@ -505,27 +505,84 @@ impl BinanceSnapshotParser {
 #[derive(Clone)]
 pub struct BinanceIncParser {
     max_levels: Option<usize>,
+    is_snapshot: bool,
+    mode: BinanceDepthMode,
 }
 
 impl BinanceIncParser {
     pub fn new() -> Self {
-        Self { max_levels: None }
+        Self::futures_incremental(None)
     }
 
     pub fn with_max_levels(max_levels: Option<usize>) -> Self {
-        Self { max_levels }
+        Self::futures_incremental(max_levels)
+    }
+
+    pub fn with_snapshot(max_levels: Option<usize>) -> Self {
+        Self::futures_snapshot(max_levels)
+    }
+
+    pub fn futures_incremental(max_levels: Option<usize>) -> Self {
+        Self {
+            max_levels,
+            is_snapshot: false,
+            mode: BinanceDepthMode::FuturesDepthUpdate,
+        }
+    }
+
+    pub fn futures_snapshot(max_levels: Option<usize>) -> Self {
+        Self {
+            max_levels,
+            is_snapshot: true,
+            mode: BinanceDepthMode::FuturesDepthUpdate,
+        }
+    }
+
+    pub fn spot_incremental(max_levels: Option<usize>) -> Self {
+        Self {
+            max_levels,
+            is_snapshot: false,
+            mode: BinanceDepthMode::SpotDepthUpdate,
+        }
+    }
+
+    pub fn spot_snapshot(max_levels: Option<usize>) -> Self {
+        Self {
+            max_levels,
+            is_snapshot: true,
+            mode: BinanceDepthMode::SpotSnapshot,
+        }
     }
 }
 
 impl Parser for BinanceIncParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
-        // 解析币安增量消息
+        // 解析币安增量/深度20快照消息
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
-                // 检查是否是增量更新事件
-                if let Some(event_type) = json_value.get("e").and_then(|v| v.as_str()) {
-                    if event_type == "depthUpdate" {
-                        return self.parse_inc_event(&json_value, tx);
+                let (payload, stream_symbol) = match (
+                    json_value.get("data"),
+                    json_value.get("stream").and_then(|v| v.as_str()),
+                ) {
+                    (Some(data), Some(stream)) => (data, parse_binance_stream_symbol(stream)),
+                    _ => (&json_value, None),
+                };
+
+                match self.mode {
+                    BinanceDepthMode::FuturesDepthUpdate | BinanceDepthMode::SpotDepthUpdate => {
+                        let is_depth_update = payload
+                            .get("e")
+                            .and_then(|v| v.as_str())
+                            .map(|e| e == "depthUpdate")
+                            .unwrap_or(false)
+                            || (payload.get("U").is_some() && payload.get("u").is_some());
+                        if !is_depth_update {
+                            return 0;
+                        }
+                        return self.parse_depth_update(payload, stream_symbol.as_deref(), tx);
+                    }
+                    BinanceDepthMode::SpotSnapshot => {
+                        return self.parse_spot_snapshot(payload, stream_symbol.as_deref(), tx);
                     }
                 }
             }
@@ -534,13 +591,30 @@ impl Parser for BinanceIncParser {
     }
 }
 
+#[derive(Clone, Copy)]
+enum BinanceDepthMode {
+    FuturesDepthUpdate,
+    SpotDepthUpdate,
+    SpotSnapshot,
+}
+
+fn parse_binance_stream_symbol(stream: &str) -> Option<String> {
+    stream.split('@').next().map(|s| s.to_uppercase())
+}
+
 impl BinanceIncParser {
-    fn parse_inc_event(
+    fn parse_depth_update(
         &self,
         json_value: &serde_json::Value,
+        symbol_override: Option<&str>,
         tx: &mpsc::UnboundedSender<Bytes>,
     ) -> usize {
-        // 从增量数据中提取信息
+        // futures/spot 增量：depthUpdate (U/u + b/a)
+        let symbol = json_value
+            .get("s")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| symbol_override.map(|s| s.to_uppercase()));
         if let (
             Some(symbol),
             Some(first_update_id),
@@ -549,12 +623,15 @@ impl BinanceIncParser {
             Some(bids_array),
             Some(asks_array),
         ) = (
-            json_value.get("s").and_then(|v| v.as_str()),
-            json_value.get("U").and_then(|v| v.as_i64()), // first update id
-            json_value.get("u").and_then(|v| v.as_i64()), // final update id
-            json_value.get("E").and_then(|v| v.as_i64()), // event time
-            json_value.get("b").and_then(|v| v.as_array()), // bids
-            json_value.get("a").and_then(|v| v.as_array()), // asks
+            symbol,
+            json_value.get("U").and_then(|v| v.as_i64()),
+            json_value.get("u").and_then(|v| v.as_i64()),
+            json_value
+                .get("E")
+                .and_then(|v| v.as_i64())
+                .or_else(|| json_value.get("T").and_then(|v| v.as_i64())),
+            json_value.get("b").and_then(|v| v.as_array()),
+            json_value.get("a").and_then(|v| v.as_array()),
         ) {
             // 计算拆分方案
             let chunks = split_levels(bids_array.len(), asks_array.len(), self.max_levels);
@@ -566,11 +643,11 @@ impl BinanceIncParser {
             {
                 // 创建增量消息
                 let mut inc_msg = IncMsg::create(
-                    symbol.to_string(),
+                    symbol.clone(),
                     first_update_id,
                     final_update_id,
                     event_time,
-                    false, // is_snapshot = false
+                    self.is_snapshot,
                     bids_count as u32,
                     asks_count as u32,
                 );
@@ -597,6 +674,76 @@ impl BinanceIncParser {
             }
             return sent_count;
         }
+        0
+    }
+
+    fn parse_spot_snapshot(
+        &self,
+        json_value: &serde_json::Value,
+        symbol_override: Option<&str>,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> usize {
+        // spot/margin depth20 快照：lastUpdateId + bids/asks
+        let symbol = json_value
+            .get("s")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| symbol_override.map(|s| s.to_uppercase()));
+
+        if let (
+            Some(symbol),
+            Some(last_update_id),
+            Some(bids_array),
+            Some(asks_array),
+        ) = (
+            symbol,
+            json_value.get("lastUpdateId").and_then(|v| v.as_i64()),
+            json_value.get("bids").and_then(|v| v.as_array()),
+            json_value.get("asks").and_then(|v| v.as_array()),
+        ) {
+            let chunks = split_levels(bids_array.len(), asks_array.len(), self.max_levels);
+            let total_chunks = chunks.len();
+            let mut sent_count = 0;
+            let event_time = json_value
+                .get("E")
+                .and_then(|v| v.as_i64())
+                .or_else(|| json_value.get("T").and_then(|v| v.as_i64()))
+                .unwrap_or(0);
+
+            for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
+                chunks.into_iter().enumerate()
+            {
+                let mut inc_msg = IncMsg::create(
+                    symbol.clone(),
+                    last_update_id,
+                    last_update_id,
+                    event_time,
+                    self.is_snapshot,
+                    bids_count as u32,
+                    asks_count as u32,
+                );
+
+                inc_msg.set_chunk_index(chunk_idx as u8);
+                inc_msg.set_is_last(chunk_idx == total_chunks - 1);
+
+                parse_order_book_levels_with_offset(
+                    bids_array,
+                    asks_array,
+                    bids_start,
+                    bids_count,
+                    asks_start,
+                    asks_count,
+                    &mut inc_msg,
+                );
+
+                if tx.send(inc_msg.to_bytes()).is_ok() {
+                    sent_count += 1;
+                }
+            }
+
+            return sent_count;
+        }
+
         0
     }
 }

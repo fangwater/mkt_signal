@@ -20,6 +20,7 @@ use crate::parser::okex_parser::{
     OkexAskBidSpreadParser, OkexDerivativesMetricsParser, OkexIncParser, OkexKlineParser,
     OkexSignalParser, OkexTradeParser,
 };
+use crate::signal::common::TradingVenue;
 use crate::sub_msg::{DerivativesMetricsSubscribeMsgs, SubscribeMsgs};
 use bytes::Bytes;
 use log::{debug, error, info};
@@ -199,7 +200,15 @@ impl MktManager {
 
             match exchange {
                 Exchange::Binance => {
-                    let parser = BinanceIncParser::with_max_levels(max_levels);
+                    let parser = match self.cfg.venue {
+                        TradingVenue::BinanceFutures => {
+                            BinanceIncParser::futures_incremental(max_levels)
+                        }
+                        TradingVenue::BinanceMargin => {
+                            BinanceIncParser::spot_incremental(max_levels)
+                        }
+                        _ => BinanceIncParser::futures_incremental(max_levels),
+                    };
                     self.spawn_connection_with_mpsc(
                         exchange,
                         url.clone(),
@@ -250,6 +259,42 @@ impl MktManager {
                     panic!("Unsupported exchange for inc parser: {}", exchange);
                 }
             }
+        }
+
+        if self.subscribe_msgs.get_depth_subscribe_msg_len() > 0 {
+            self.start_depth_snapshot_connections().await;
+        }
+    }
+
+    async fn start_depth_snapshot_connections(&mut self) {
+        let exchange = self.cfg.get_exchange();
+        if exchange != Exchange::Binance {
+            return;
+        }
+
+        let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+        let max_levels = self.cfg.data_types.max_levels_per_msg;
+
+        let parser = match self.cfg.venue {
+            TradingVenue::BinanceFutures => BinanceIncParser::futures_snapshot(max_levels),
+            TradingVenue::BinanceMargin => BinanceIncParser::spot_snapshot(max_levels),
+            _ => BinanceIncParser::futures_snapshot(max_levels),
+        };
+
+        for i in 0..self.subscribe_msgs.get_depth_subscribe_msg_len() {
+            let subscribe_msg = self.subscribe_msgs.get_depth_subscribe_msg(i).clone();
+            let tx = self.incremental_tx.clone();
+            let parser = parser.clone();
+
+            self.spawn_connection_with_mpsc(
+                exchange,
+                url.clone(),
+                subscribe_msg,
+                format!("depth snapshot batch {}", i),
+                parser,
+                tx,
+            )
+            .await;
         }
     }
 
