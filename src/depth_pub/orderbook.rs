@@ -9,9 +9,10 @@ use std::collections::BTreeMap;
 /// - 卖方: 价格升序 (最低价在前)
 #[derive(Debug, Clone, Default)]
 pub struct OrderBookSide {
-    /// 价格 -> 数量 的映射
+    /// 价格 -> (数量, update_id) 的映射
     /// 使用 i64 存储价格 (价格 * 1e8 转整数，避免浮点精度问题)
-    levels: BTreeMap<i64, f64>,
+    /// 每个档位记录 update_id，只有更新的 update_id 更大时才会覆盖
+    levels: BTreeMap<i64, (f64, i64)>,
 }
 
 impl OrderBookSide {
@@ -22,14 +23,23 @@ impl OrderBookSide {
     }
 
     /// 更新价格档位
-    /// - amount > 0: 更新或新增
-    /// - amount == 0: 删除该档位
-    pub fn update(&mut self, price: f64, amount: f64) {
+    /// - amount > 0: 更新或新增（只有当 update_id > 当前档位的 update_id 时才更新）
+    /// - amount == 0: 删除该档位（只有当 update_id > 当前档位的 update_id 时才删除）
+    pub fn update(&mut self, price: f64, amount: f64, update_id: i64) {
         let price_key = price_to_key(price);
+
+        // 检查是否需要更新：只有新的 update_id 大于当前档位的 update_id 时才更新
+        if let Some(&(_, existing_update_id)) = self.levels.get(&price_key) {
+            if update_id <= existing_update_id {
+                // 旧消息，跳过
+                return;
+            }
+        }
+
         if amount == 0.0 {
             self.levels.remove(&price_key);
         } else {
-            self.levels.insert(price_key, amount);
+            self.levels.insert(price_key, (amount, update_id));
         }
     }
 
@@ -40,17 +50,18 @@ impl OrderBookSide {
 
     /// 获取最优 N 档 (买方: 最高价优先; 卖方: 最低价优先)
     /// is_bid: true 表示买方 (降序), false 表示卖方 (升序)
+    /// 返回 (price, amount)，不包含 update_id
     pub fn top_n(&self, n: usize, is_bid: bool) -> Vec<(f64, f64)> {
         let mut result = Vec::with_capacity(n);
 
         if is_bid {
             // 买方: 价格降序 (从高到低)
-            for (&price_key, &amount) in self.levels.iter().rev().take(n) {
+            for (&price_key, &(amount, _)) in self.levels.iter().rev().take(n) {
                 result.push((key_to_price(price_key), amount));
             }
         } else {
             // 卖方: 价格升序 (从低到高)
-            for (&price_key, &amount) in self.levels.iter().take(n) {
+            for (&price_key, &(amount, _)) in self.levels.iter().take(n) {
                 result.push((key_to_price(price_key), amount));
             }
         }
@@ -97,6 +108,7 @@ impl OrderBook {
     }
 
     /// 应用增量更新
+    /// 每个档位会检查 update_id，只有更新的 update_id 大于当前档位的 update_id 时才覆盖
     pub fn apply_update(
         &mut self,
         bids: &[(f64, f64)],
@@ -105,16 +117,21 @@ impl OrderBook {
         timestamp: i64,
     ) {
         for &(price, amount) in bids {
-            self.bids.update(price, amount);
+            self.bids.update(price, amount, update_id);
         }
         for &(price, amount) in asks {
-            self.asks.update(price, amount);
+            self.asks.update(price, amount, update_id);
         }
-        self.last_update_id = update_id;
-        self.timestamp = timestamp;
+        // 更新全局 last_update_id（取最大值，防止乱序）
+        if update_id > self.last_update_id {
+            self.last_update_id = update_id;
+            self.timestamp = timestamp;
+        }
     }
 
-    /// 应用快照 (清空后重建)
+    /// 应用快照（与增量更新相同处理，不清空）
+    /// 快照只是一部分档位，不是完整订单簿，视为普通更新即可
+    #[inline]
     pub fn apply_snapshot(
         &mut self,
         bids: &[(f64, f64)],
@@ -122,8 +139,6 @@ impl OrderBook {
         update_id: i64,
         timestamp: i64,
     ) {
-        self.bids.clear();
-        self.asks.clear();
         self.apply_update(bids, asks, update_id, timestamp);
     }
 
@@ -167,10 +182,10 @@ mod tests {
     fn test_orderbook_side() {
         let mut bids = OrderBookSide::new();
 
-        // 添加买单
-        bids.update(100.0, 1.0);
-        bids.update(99.0, 2.0);
-        bids.update(101.0, 0.5);
+        // 添加买单 (update_id = 1)
+        bids.update(100.0, 1.0, 1);
+        bids.update(99.0, 2.0, 1);
+        bids.update(101.0, 0.5, 1);
 
         // 获取 top 2 (买方: 价格降序)
         let top2 = bids.top_n(2, true);
@@ -178,10 +193,27 @@ mod tests {
         assert_eq!(top2[0].0, 101.0); // 最高价
         assert_eq!(top2[1].0, 100.0);
 
-        // 删除一档
-        bids.update(101.0, 0.0);
+        // 删除一档 (update_id = 2)
+        bids.update(101.0, 0.0, 2);
         let top2 = bids.top_n(2, true);
         assert_eq!(top2[0].0, 100.0);
+    }
+
+    #[test]
+    fn test_orderbook_side_update_id_check() {
+        let mut bids = OrderBookSide::new();
+
+        // 添加买单 (update_id = 10)
+        bids.update(100.0, 1.0, 10);
+        assert_eq!(bids.top_n(1, true)[0].1, 1.0);
+
+        // 尝试用旧的 update_id 更新，应该被忽略
+        bids.update(100.0, 5.0, 5);
+        assert_eq!(bids.top_n(1, true)[0].1, 1.0); // 仍然是 1.0
+
+        // 用新的 update_id 更新，应该成功
+        bids.update(100.0, 3.0, 15);
+        assert_eq!(bids.top_n(1, true)[0].1, 3.0); // 更新为 3.0
     }
 
     #[test]
@@ -212,5 +244,26 @@ mod tests {
 
         ob.apply_update(&[(102.0, 1.0)], &[(101.0, 1.0)], 2, 1001);
         assert!(!ob.is_valid());
+    }
+
+    #[test]
+    fn test_orderbook_out_of_order() {
+        let mut ob = OrderBook::new();
+
+        // 先收到 update_id = 10
+        ob.apply_update(&[(100.0, 1.0)], &[(101.0, 1.0)], 10, 1000);
+        assert_eq!(ob.last_update_id, 10);
+
+        // 再收到乱序的 update_id = 5（应该被忽略）
+        ob.apply_update(&[(100.0, 5.0)], &[(101.0, 5.0)], 5, 900);
+        assert_eq!(ob.last_update_id, 10); // 仍然是 10
+        let (bids, _) = ob.get_depth(1);
+        assert_eq!(bids[0].1, 1.0); // 数量仍然是 1.0，没有被覆盖
+
+        // 收到更新的 update_id = 15
+        ob.apply_update(&[(100.0, 3.0)], &[(101.0, 3.0)], 15, 1100);
+        assert_eq!(ob.last_update_id, 15);
+        let (bids, _) = ob.get_depth(1);
+        assert_eq!(bids[0].1, 3.0); // 数量更新为 3.0
     }
 }
