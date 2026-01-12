@@ -378,6 +378,16 @@ impl IncMsg {
         self.padding[0] = if is_last { 1 } else { 0 };
     }
 
+    /// 获取 chunk_index（分片索引）
+    pub fn chunk_index(&self) -> u8 {
+        self.padding[1]
+    }
+
+    /// 设置 chunk_index（分片索引）
+    pub fn set_chunk_index(&mut self, index: u8) {
+        self.padding[1] = index;
+    }
+
     /// Set a bid level
     pub fn set_bid_level(&mut self, index: usize, level: Level) {
         if index < self.bids_count as usize && index < self.levels.len() {

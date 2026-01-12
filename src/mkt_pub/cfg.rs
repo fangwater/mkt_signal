@@ -29,7 +29,6 @@ struct ConfigFile {
     restart_duration_secs: u64,
     primary_local_ip: String,
     secondary_local_ip: String,
-    snapshot_requery_time: Option<String>,
     // 数据类型开关
     data_types: DataTypesConfig,
     // Iceoryx 配置
@@ -170,7 +169,6 @@ pub struct Config {
     pub restart_duration_secs: u64,
     pub primary_local_ip: String,
     pub secondary_local_ip: String,
-    pub snapshot_requery_time: Option<String>,
     pub data_types: DataTypesConfig, // 数据类型开关
     pub venue: TradingVenue,         // 在运行时设置，不从配置文件读取（区分资产类型）
     pub iceoryx: Option<IceoryxCfg>, // Iceoryx 配置（可选）
@@ -189,7 +187,6 @@ impl Config {
             restart_duration_secs: config_file.restart_duration_secs,
             primary_local_ip: config_file.primary_local_ip,
             secondary_local_ip: config_file.secondary_local_ip,
-            snapshot_requery_time: config_file.snapshot_requery_time,
             data_types: config_file.data_types, // 数据类型开关
             iceoryx: config_file.iceoryx,
             venue, // 从命令行参数设置

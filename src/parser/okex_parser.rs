@@ -614,16 +614,86 @@ fn parse_okex_order_book_levels(
     }
 }
 
-/// 根据max_levels限制计算截断后的bids和asks数量
-fn truncate_levels(bids_count: usize, asks_count: usize, max_levels: Option<usize>) -> (usize, usize) {
-    match max_levels {
-        Some(max) if bids_count + asks_count > max => {
-            let total = bids_count + asks_count;
-            let new_bids = (bids_count * max) / total;
-            let new_asks = max - new_bids;
-            (new_bids.max(1).min(bids_count), new_asks.max(1).min(asks_count))
+// 解析订单簿层级数据（支持偏移量）
+fn parse_okex_order_book_levels_with_offset(
+    bids_array: &[serde_json::Value],
+    asks_array: &[serde_json::Value],
+    bids_start: usize,
+    bids_count: usize,
+    asks_start: usize,
+    asks_count: usize,
+    inc_msg: &mut IncMsg,
+) {
+    for i in 0..bids_count {
+        let src_idx = bids_start + i;
+        if src_idx >= bids_array.len() {
+            break;
         }
-        _ => (bids_count, asks_count),
+        if let Some(bid_array) = bids_array[src_idx].as_array() {
+            if bid_array.len() >= 2 {
+                if let (Some(price_str), Some(amount_str)) =
+                    (bid_array[0].as_str(), bid_array[1].as_str())
+                {
+                    let level = Level::new(price_str, amount_str);
+                    inc_msg.set_bid_level(i, level);
+                }
+            }
+        }
+    }
+
+    for i in 0..asks_count {
+        let src_idx = asks_start + i;
+        if src_idx >= asks_array.len() {
+            break;
+        }
+        if let Some(ask_array) = asks_array[src_idx].as_array() {
+            if ask_array.len() >= 2 {
+                if let (Some(price_str), Some(amount_str)) =
+                    (ask_array[0].as_str(), ask_array[1].as_str())
+                {
+                    let level = Level::new(price_str, amount_str);
+                    inc_msg.set_ask_level(i, level);
+                }
+            }
+        }
+    }
+}
+
+/// 计算如何拆分 levels 成多个 chunk
+fn split_levels(
+    total_bids: usize,
+    total_asks: usize,
+    max_levels: Option<usize>,
+) -> Vec<(usize, usize, usize, usize)> {
+    let total = total_bids + total_asks;
+
+    match max_levels {
+        Some(max) if total > max && max > 0 => {
+            let mut chunks = Vec::new();
+            let mut bids_sent = 0;
+            let mut asks_sent = 0;
+
+            while bids_sent < total_bids || asks_sent < total_asks {
+                let bids_remaining = total_bids - bids_sent;
+                let asks_remaining = total_asks - asks_sent;
+                let remaining = bids_remaining + asks_remaining;
+
+                let chunk_bids = if remaining <= max {
+                    bids_remaining
+                } else {
+                    let ratio = bids_remaining as f64 / remaining as f64;
+                    ((max as f64 * ratio).round() as usize).max(1).min(bids_remaining)
+                };
+                let chunk_asks = (max - chunk_bids).min(asks_remaining);
+
+                chunks.push((bids_sent, chunk_bids, asks_sent, chunk_asks));
+                bids_sent += chunk_bids;
+                asks_sent += chunk_asks;
+            }
+
+            chunks
+        }
+        _ => vec![(0, total_bids, 0, total_asks)],
     }
 }
 
@@ -702,34 +772,49 @@ impl OkexIncParser {
                         _ => return 0,
                     };
 
-                    // 根据max_levels限制截断档数
-                    let (bids_count, asks_count) = truncate_levels(
-                        bids_array.len(),
-                        asks_array.len(),
-                        self.max_levels,
-                    );
-
                     // 判断是否为快照消息
                     let is_snapshot = action == "snapshot";
 
-                    // 创建增量/快照消息
-                    let mut inc_msg = IncMsg::create(
-                        symbol,
-                        seq_id,      // first_update_id
-                        prev_seq_id, // final_update_id
-                        timestamp,   // 使用ts时间戳
-                        is_snapshot, // 根据action字段确定
-                        bids_count as u32,
-                        asks_count as u32,
-                    );
+                    // 计算拆分方案
+                    let chunks = split_levels(bids_array.len(), asks_array.len(), self.max_levels);
+                    let total_chunks = chunks.len();
+                    let mut sent_count = 0;
 
-                    // 使用公共函数解析订单簿层级
-                    parse_okex_order_book_levels(bids_array, asks_array, &mut inc_msg);
+                    for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
+                        chunks.into_iter().enumerate()
+                    {
+                        // 创建增量/快照消息
+                        let mut inc_msg = IncMsg::create(
+                            symbol.clone(),
+                            seq_id,      // first_update_id
+                            prev_seq_id, // final_update_id
+                            timestamp,   // 使用ts时间戳
+                            is_snapshot, // 根据action字段确定
+                            bids_count as u32,
+                            asks_count as u32,
+                        );
 
-                    // 发送消息
-                    if tx.send(inc_msg.to_bytes()).is_ok() {
-                        return 1;
+                        // 设置 chunk_index 和 is_last
+                        inc_msg.set_chunk_index(chunk_idx as u8);
+                        inc_msg.set_is_last(chunk_idx == total_chunks - 1);
+
+                        // 解析订单簿层级（带偏移量）
+                        parse_okex_order_book_levels_with_offset(
+                            bids_array,
+                            asks_array,
+                            bids_start,
+                            bids_count,
+                            asks_start,
+                            asks_count,
+                            &mut inc_msg,
+                        );
+
+                        // 发送消息
+                        if tx.send(inc_msg.to_bytes()).is_ok() {
+                            sent_count += 1;
+                        }
                     }
+                    return sent_count;
                 }
             }
         }

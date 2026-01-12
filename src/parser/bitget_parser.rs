@@ -385,16 +385,41 @@ impl Parser for BitgetDerivativesMetricsParser {
     }
 }
 
-/// 根据max_levels限制计算截断后的bids和asks数量
-fn truncate_levels_count(bids_count: usize, asks_count: usize, max_levels: Option<usize>) -> (usize, usize) {
+/// 计算如何拆分 levels 成多个 chunk
+fn split_levels(
+    total_bids: usize,
+    total_asks: usize,
+    max_levels: Option<usize>,
+) -> Vec<(usize, usize, usize, usize)> {
+    let total = total_bids + total_asks;
+
     match max_levels {
-        Some(max) if bids_count + asks_count > max => {
-            let total = bids_count + asks_count;
-            let new_bids = (bids_count * max) / total;
-            let new_asks = max - new_bids;
-            (new_bids.max(1).min(bids_count), new_asks.max(1).min(asks_count))
+        Some(max) if total > max && max > 0 => {
+            let mut chunks = Vec::new();
+            let mut bids_sent = 0;
+            let mut asks_sent = 0;
+
+            while bids_sent < total_bids || asks_sent < total_asks {
+                let bids_remaining = total_bids - bids_sent;
+                let asks_remaining = total_asks - asks_sent;
+                let remaining = bids_remaining + asks_remaining;
+
+                let chunk_bids = if remaining <= max {
+                    bids_remaining
+                } else {
+                    let ratio = bids_remaining as f64 / remaining as f64;
+                    ((max as f64 * ratio).round() as usize).max(1).min(bids_remaining)
+                };
+                let chunk_asks = (max - chunk_bids).min(asks_remaining);
+
+                chunks.push((bids_sent, chunk_bids, asks_sent, chunk_asks));
+                bids_sent += chunk_bids;
+                asks_sent += chunk_asks;
+            }
+
+            chunks
         }
-        _ => (bids_count, asks_count),
+        _ => vec![(0, total_bids, 0, total_asks)],
     }
 }
 
@@ -413,12 +438,19 @@ impl BitgetIncParser {
         Self { max_levels }
     }
 
-    fn parse_levels(levels: &Vec<serde_json::Value>, inc_msg: &mut IncMsg, is_bid: bool, max_count: usize) {
-        for (i, entry) in levels.iter().enumerate() {
-            if i >= max_count {
+    fn parse_levels_with_offset(
+        levels: &[serde_json::Value],
+        inc_msg: &mut IncMsg,
+        is_bid: bool,
+        start: usize,
+        count: usize,
+    ) {
+        for i in 0..count {
+            let src_idx = start + i;
+            if src_idx >= levels.len() {
                 break;
             }
-            if let Some(arr) = entry.as_array() {
+            if let Some(arr) = levels[src_idx].as_array() {
                 if arr.len() >= 2 {
                     if let (Some(price), Some(amount)) = (arr[0].as_str(), arr[1].as_str()) {
                         let level = Level::new(price, amount);
@@ -491,27 +523,33 @@ impl Parser for BitgetIncParser {
                             })
                             .unwrap_or(0);
 
-                        // 根据max_levels限制截断档数
-                        let (bids_count, asks_count) = truncate_levels_count(
-                            bids.len(),
-                            asks.len(),
-                            self.max_levels,
-                        );
+                        // 计算拆分方案
+                        let chunks = split_levels(bids.len(), asks.len(), self.max_levels);
+                        let total_chunks = chunks.len();
 
-                        let mut inc_msg = IncMsg::create(
-                            symbol.to_string(),
-                            seq,
-                            seq,
-                            timestamp,
-                            action == "snapshot",
-                            bids_count as u32,
-                            asks_count as u32,
-                        );
-                        Self::parse_levels(&bids, &mut inc_msg, true, bids_count);
-                        Self::parse_levels(&asks, &mut inc_msg, false, asks_count);
+                        for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
+                            chunks.into_iter().enumerate()
+                        {
+                            let mut inc_msg = IncMsg::create(
+                                symbol.to_string(),
+                                seq,
+                                seq,
+                                timestamp,
+                                action == "snapshot",
+                                bids_count as u32,
+                                asks_count as u32,
+                            );
 
-                        if tx.send(inc_msg.to_bytes()).is_ok() {
-                            sent += 1;
+                            // 设置 chunk_index 和 is_last
+                            inc_msg.set_chunk_index(chunk_idx as u8);
+                            inc_msg.set_is_last(chunk_idx == total_chunks - 1);
+
+                            Self::parse_levels_with_offset(&bids, &mut inc_msg, true, bids_start, bids_count);
+                            Self::parse_levels_with_offset(&asks, &mut inc_msg, false, asks_start, asks_count);
+
+                            if tx.send(inc_msg.to_bytes()).is_ok() {
+                                sent += 1;
+                            }
                         }
                     }
                 }

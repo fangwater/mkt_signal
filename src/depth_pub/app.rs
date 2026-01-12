@@ -7,23 +7,30 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use super::cfg::DepthPubConfig;
 use super::depth_msg::DepthMsg;
 use super::orderbook::OrderBook;
-use super::publisher::DepthPubPublisher;
+use super::publisher::DepthMsgPublisher;
 
 /// IceOryx 增量消息缓冲区大小 (与 mkt_pub 一致)
 const INC_MAX_BYTES: usize = 16384;
 const TIMER_CHECK_EVERY_INCS: u64 = 500;
 const IDLE_SLEEP_MICROS: u64 = 100;
+/// 滑动窗口大小：用于去重的最近 update_id 数量
+const DEDUP_WINDOW_SIZE: usize = 256;
 
 /// 每个 symbol 的状态
 struct SymbolState {
     orderbook: OrderBook,
     last_push_time: Instant,
+    /// 滑动窗口：存储最近处理过的 (update_id, chunk_index)，用于去重
+    /// VecDeque 维护插入顺序（用于淘汰最旧的）
+    recent_msg_keys: VecDeque<(i64, u8)>,
+    /// HashSet 用于 O(1) 快速查找
+    msg_key_set: HashSet<(i64, u8)>,
 }
 
 impl SymbolState {
@@ -31,7 +38,32 @@ impl SymbolState {
         Self {
             orderbook: OrderBook::new(),
             last_push_time: Instant::now(),
+            recent_msg_keys: VecDeque::with_capacity(DEDUP_WINDOW_SIZE),
+            msg_key_set: HashSet::with_capacity(DEDUP_WINDOW_SIZE),
         }
+    }
+
+    /// 检查 (update_id, chunk_index) 是否重复
+    /// 返回 true 表示是重复的，应该跳过
+    #[inline]
+    fn is_duplicate(&mut self, update_id: i64, chunk_index: u8) -> bool {
+        let key = (update_id, chunk_index);
+
+        // O(1) 查找
+        if self.msg_key_set.contains(&key) {
+            return true;
+        }
+
+        // 不重复，加入窗口
+        if self.recent_msg_keys.len() >= DEDUP_WINDOW_SIZE {
+            // 淘汰最旧的
+            if let Some(old_key) = self.recent_msg_keys.pop_front() {
+                self.msg_key_set.remove(&old_key);
+            }
+        }
+        self.recent_msg_keys.push_back(key);
+        self.msg_key_set.insert(key);
+        false
     }
 }
 
@@ -39,7 +71,7 @@ impl SymbolState {
 pub struct DepthPubApp {
     config: DepthPubConfig,
     venue_slug: String,
-    publisher: DepthPubPublisher,
+    publisher: DepthMsgPublisher,
     subscriber: Subscriber<ipc::Service, [u8; INC_MAX_BYTES], ()>,
     /// symbol -> SymbolState
     symbols: HashMap<String, SymbolState>,
@@ -64,7 +96,7 @@ impl DepthPubApp {
         );
 
         // 创建发布器
-        let publisher = DepthPubPublisher::new(
+        let publisher = DepthMsgPublisher::new(
             venue_slug,
             config.depth_levels.enable_depth5,
             config.depth_levels.enable_depth20,
@@ -212,9 +244,10 @@ impl DepthPubApp {
         ]);
         offset += 8;
 
-        // is_snapshot (1 byte) + padding (7 bytes, padding[0] is is_last)
+        // is_snapshot (1 byte) + padding (7 bytes, padding[0] is is_last, padding[1] is chunk_index)
         let is_snapshot = data[offset] != 0;
         let is_last = data[offset + 1] != 0;
+        let chunk_index = data[offset + 2];
         offset += 8;
 
         // bids_count 和 asks_count
@@ -293,6 +326,15 @@ impl DepthPubApp {
 
         // 更新订单簿
         let state = self.symbols.entry(symbol.clone()).or_insert_with(SymbolState::new);
+
+        // 滑动窗口去重：检查 (update_id, chunk_index) 是否已处理过
+        if state.is_duplicate(final_update_id, chunk_index) {
+            debug!(
+                "Duplicate msg (update_id={}, chunk_index={}) for {}, skipping",
+                final_update_id, chunk_index, symbol
+            );
+            return;
+        }
 
         if is_snapshot {
             state.orderbook.apply_snapshot(&bids, &asks, final_update_id, timestamp);

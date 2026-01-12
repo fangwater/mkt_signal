@@ -16,7 +16,7 @@
 
 use anyhow::Result;
 use bytes::Bytes;
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use mkt_signal::common::basic_account_msg::{
     get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
     BasicUmUnrealizedMsg, GateBasicOrderMsg,
