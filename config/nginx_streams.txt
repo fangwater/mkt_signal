@@ -1,0 +1,8 @@
+# Each line: <listen> <upstream>. For nginx stream (TCP) proxying.
+# listen: port or ip:port (also accepts redis://host:port[/db]).
+# upstream: host:port (also accepts redis://host:port[/db]).
+#
+# Example: expose local Redis on public port 4190
+#   4190 redis://127.0.0.1:6379/0
+
+4190 redis://127.0.0.1:6379/0

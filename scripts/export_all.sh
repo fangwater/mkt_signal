@@ -5,7 +5,7 @@
 set -e
 
 OUTPUT_DIR="${1:-./export_data}"
-API_BASE="${2:-http://localhost:8089}"
+API_BASE="${2:-http://localhost:19141}"
 
 # 如果目录已存在则删除旧的
 if [ -d "$OUTPUT_DIR" ]; then
