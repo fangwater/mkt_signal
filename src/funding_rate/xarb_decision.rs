@@ -4,14 +4,17 @@
 //! - ignores funding/loan signals for Open decisions
 //! - only emits Open/Cancel (spread-only) and supports backward hedge queries
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bytes::Bytes;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
+use redis::Commands;
+use serde::Deserialize;
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::fmt;
 
 use super::common::{Quote, ThresholdKey, VenuePair};
 use super::mkt_channel::MktChannel;
@@ -21,6 +24,7 @@ use super::symbol_list::SymbolList;
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
+use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::order_manager::{OrderType, Side};
@@ -35,6 +39,107 @@ use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 
 use super::fr_decision::{DEFAULT_BACKWARD_CHANNEL, DEFAULT_SIGNAL_CHANNEL};
+
+const DEFAULT_PNLU_REDIS_HOST: &str = "127.0.0.1";
+const DEFAULT_PNLU_REDIS_PORT: u16 = 6730;
+const DEFAULT_PNLU_REDIS_DB: i64 = 0;
+const DEFAULT_PNLU_KEY_SUFFIX: &str = "_pnlu_factor_thresholds";
+const PNLU_MAX_AGE_SECS: i64 = 30 * 60;
+
+#[derive(Debug, Deserialize)]
+struct PnluFactorPayload {
+    ts: Option<i64>,
+    target_ts: Option<i64>,
+    factor: Option<f64>,
+    quantiles: Option<Vec<f64>>,
+    thresholds: Option<Vec<f64>>,
+    ready: Option<bool>,
+}
+
+#[derive(Debug)]
+struct PnluCheckResult {
+    ok: bool,
+    reason: String,
+    factor: Option<f64>,
+    threshold: Option<f64>,
+    ts: Option<i64>,
+    age_secs: Option<i64>,
+    ready: Option<bool>,
+}
+
+impl PnluCheckResult {
+    fn fail(reason: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            reason: reason.into(),
+            factor: None,
+            threshold: None,
+            ts: None,
+            age_secs: None,
+            ready: None,
+        }
+    }
+}
+
+struct PnluRedis {
+    settings: RedisSettings,
+    client: redis::Client,
+    conn: Option<redis::Connection>,
+}
+
+impl fmt::Debug for PnluRedis {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PnluRedis")
+            .field("host", &self.settings.host)
+            .field("port", &self.settings.port)
+            .field("db", &self.settings.db)
+            .field("prefix", &self.settings.prefix)
+            .finish()
+    }
+}
+
+impl PnluRedis {
+    fn new(settings: RedisSettings) -> Result<Self> {
+        let url = settings.connection_url();
+        let client = redis::Client::open(url.clone())
+            .with_context(|| format!("PnluRedis: invalid redis url: {url}"))?;
+        Ok(Self {
+            settings,
+            client,
+            conn: None,
+        })
+    }
+
+    fn prefixed_key(&self, key: &str) -> String {
+        match &self.settings.prefix {
+            Some(prefix) if !prefix.is_empty() => format!("{}{}", prefix, key),
+            _ => key.to_string(),
+        }
+    }
+
+    fn get_string(&mut self, key: &str) -> Result<Option<String>> {
+        if self.conn.is_none() {
+            self.conn = Some(
+                self.client
+                    .get_connection()
+                    .with_context(|| format!("PnluRedis: connect failed {}", self.settings.host))?,
+            );
+        }
+        let full_key = self.prefixed_key(key);
+        let conn = self
+            .conn
+            .as_mut()
+            .expect("PnluRedis: connection missing after init");
+        let result: redis::RedisResult<Option<String>> = conn.get(full_key);
+        match result {
+            Ok(value) => Ok(value),
+            Err(err) => {
+                self.conn = None;
+                Err(anyhow::anyhow!("PnluRedis: get failed: {}", err))
+            }
+        }
+    }
+}
 
 fn min_qty_symbol_key(venue: TradingVenue, trade_symbol: &str) -> String {
     match venue {
@@ -90,6 +195,9 @@ pub struct XarbDecision {
     hedge_timeout_mm_us: i64,
     hedge_price_offset: f64,
     hedge_aggressive_seq_threshold: u32,
+
+    pnlu_redis: PnluRedis,
+    pnlu_key_suffix: String,
 
     signal_cooldown_us: i64,
     last_open_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
@@ -175,6 +283,20 @@ impl XarbDecision {
         let price_offsets = vec![0.0002, 0.0004, 0.0006, 0.0008, 0.001];
         let open_min_qty_table = VenueMinQtyTable::new(venues.0);
         let hedge_min_qty_table = VenueMinQtyTable::new(venues.1);
+        let pnlu_redis = PnluRedis::new(RedisSettings {
+            host: DEFAULT_PNLU_REDIS_HOST.to_string(),
+            port: DEFAULT_PNLU_REDIS_PORT,
+            db: DEFAULT_PNLU_REDIS_DB,
+            username: None,
+            password: None,
+            prefix: None,
+        })?;
+        let pnlu_key_suffix = DEFAULT_PNLU_KEY_SUFFIX.to_string();
+
+        info!(
+            "XarbDecision: pnlu redis configured host={} port={} db={} suffix={}",
+            pnlu_redis.settings.host, pnlu_redis.settings.port, pnlu_redis.settings.db, pnlu_key_suffix
+        );
 
         Ok(Self {
             signal_pub,
@@ -190,6 +312,8 @@ impl XarbDecision {
             hedge_timeout_mm_us: 30_000_000,
             hedge_price_offset: 0.0003,
             hedge_aggressive_seq_threshold: 6,
+            pnlu_redis,
+            pnlu_key_suffix,
             signal_cooldown_us: 5_000_000,
             last_open_ts: Rc::new(RefCell::new(HashMap::new())),
             last_cancel_ts: Rc::new(RefCell::new(HashMap::new())),
@@ -332,7 +456,20 @@ impl XarbDecision {
             open_venue,
             hedge_venue,
         );
-        if self.is_cooldown_hit(&self.last_open_ts, &key, now) {
+        let cooldown_hit = self.is_cooldown_hit(&self.last_open_ts, &key, now);
+        let pnlu_check = self.check_pnlu_factor(open_symbol_key.as_str(), now);
+        self.log_pnlu_check(
+            open_symbol_key.as_str(),
+            forward_open,
+            backward_open,
+            cooldown_hit,
+            &pnlu_check,
+        );
+
+        if !pnlu_check.ok {
+            return Ok(None);
+        }
+        if cooldown_hit {
             return Ok(None);
         }
 
@@ -960,6 +1097,110 @@ impl XarbDecision {
         now: i64,
     ) {
         last_ts_map.borrow_mut().insert(key, now);
+    }
+
+    fn normalize_pnlu_ts_us(ts: i64) -> Option<i64> {
+        if ts <= 0 {
+            return None;
+        }
+        let abs = ts.abs();
+        let ts_us = if abs > 1_000_000_000_000_000 {
+            ts
+        } else if abs > 1_000_000_000_000 {
+            ts.saturating_mul(1_000)
+        } else {
+            ts.saturating_mul(1_000_000)
+        };
+        Some(ts_us)
+    }
+
+    fn check_pnlu_factor(&mut self, symbol_key: &str, now_us: i64) -> PnluCheckResult {
+        let key = format!("{}{}", symbol_key, self.pnlu_key_suffix);
+        let raw = match self.pnlu_redis.get_string(&key) {
+            Ok(Some(text)) => text,
+            Ok(None) => return PnluCheckResult::fail("missing_key"),
+            Err(err) => return PnluCheckResult::fail(format!("redis_error: {err}")),
+        };
+
+        let payload: PnluFactorPayload = match serde_json::from_str(&raw) {
+            Ok(val) => val,
+            Err(err) => return PnluCheckResult::fail(format!("invalid_json: {err}")),
+        };
+
+        let factor = payload.factor;
+        let threshold = payload
+            .thresholds
+            .as_ref()
+            .and_then(|vals| vals.first().copied());
+        let ts = payload.ts;
+
+        let ts_us = ts.and_then(Self::normalize_pnlu_ts_us);
+        let age_secs = match ts_us {
+            Some(ts_us) if ts_us <= now_us => Some((now_us - ts_us) / 1_000_000),
+            Some(_) => return PnluCheckResult::fail("ts_in_future"),
+            None => None,
+        };
+        let fresh = match age_secs {
+            Some(age) => age <= PNLU_MAX_AGE_SECS,
+            None => false,
+        };
+        let missing_factor_or_threshold = factor.is_none() || threshold.is_none();
+        let factor_ok = match (factor, threshold) {
+            (Some(f), Some(t)) => f > t,
+            _ => false,
+        };
+
+        let ok = fresh && !missing_factor_or_threshold && factor_ok;
+        let reason = if ok {
+            "ok".to_string()
+        } else if ts_us.is_none() {
+            "missing_ts".to_string()
+        } else if !fresh {
+            "stale_ts".to_string()
+        } else if missing_factor_or_threshold {
+            "missing_factor_or_threshold".to_string()
+        } else {
+            "factor_not_gt_threshold".to_string()
+        };
+
+        PnluCheckResult {
+            ok,
+            reason,
+            factor,
+            threshold,
+            ts,
+            age_secs,
+            ready: payload.ready,
+        }
+    }
+
+    fn log_pnlu_check(
+        &self,
+        symbol_key: &str,
+        forward_open: bool,
+        backward_open: bool,
+        cooldown_hit: bool,
+        result: &PnluCheckResult,
+    ) {
+        let direction = match (forward_open, backward_open) {
+            (true, true) => "both",
+            (true, false) => "forward",
+            (false, true) => "backward",
+            (false, false) => "none",
+        };
+        info!(
+            "XarbDecision: pnlu_check symbol={} dir={} ok={} reason={} factor={:?} threshold={:?} ts={:?} age_s={:?} ready={:?} cooldown_hit={}",
+            symbol_key,
+            direction,
+            result.ok,
+            result.reason,
+            result.factor,
+            result.threshold,
+            result.ts,
+            result.age_secs,
+            result.ready,
+            cooldown_hit
+        );
     }
 
     pub fn spawn_backward_listener() {
