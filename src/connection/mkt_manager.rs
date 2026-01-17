@@ -3,7 +3,7 @@ use crate::common::exchange::Exchange;
 use crate::connection::connection::construct_connection_with_ip;
 use crate::parser::binance_parser::{
     BinanceAskBidSpreadParser, BinanceDerivativesMetricsParser, BinanceIncParser,
-    BinanceKlineParser, BinanceSignalParser, BinanceTradeParser,
+    BinanceKlineParser, BinanceSbeDepthSnapshotParser, BinanceSignalParser, BinanceTradeParser,
 };
 use crate::parser::bitget_parser::{
     BitgetDerivativesMetricsParser, BitgetIncParser, BitgetSignalParser, BitgetTradeParser,
@@ -272,13 +272,24 @@ impl MktManager {
             return;
         }
 
-        let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
         let max_levels = self.cfg.data_types.max_levels_per_msg;
 
-        let parser = match self.cfg.venue {
-            TradingVenue::BinanceFutures => BinanceIncParser::futures_snapshot(max_levels),
-            TradingVenue::BinanceMargin => BinanceIncParser::spot_snapshot(max_levels),
-            _ => BinanceIncParser::futures_snapshot(max_levels),
+        let (url, parser, desc_prefix) = match self.cfg.venue {
+            TradingVenue::BinanceMargin => (
+                "wss://stream-sbe.binance.com:9443/ws".to_string(),
+                BinanceSbeDepthSnapshotParser::with_max_levels(max_levels),
+                "sbe depth snapshot batch",
+            ),
+            TradingVenue::BinanceFutures => (
+                SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string(),
+                BinanceIncParser::futures_snapshot(max_levels),
+                "depth snapshot batch",
+            ),
+            _ => (
+                SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string(),
+                BinanceIncParser::futures_snapshot(max_levels),
+                "depth snapshot batch",
+            ),
         };
 
         for i in 0..self.subscribe_msgs.get_depth_subscribe_msg_len() {
@@ -290,7 +301,7 @@ impl MktManager {
                 exchange,
                 url.clone(),
                 subscribe_msg,
-                format!("depth snapshot batch {}", i),
+                format!("{} {}", desc_prefix, i),
                 parser,
                 tx,
             )

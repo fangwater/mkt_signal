@@ -1,5 +1,6 @@
 use crate::cfg::Config;
 use crate::common::exchange::Exchange;
+use crate::signal::common::TradingVenue;
 use serde_json::Value;
 use std::collections::HashSet;
 
@@ -85,7 +86,7 @@ fn construct_subscribe_message(exchange: &Exchange, symbols: &[String], channel:
 pub struct SubscribeMsgs {
     active_symbols: HashSet<String>,              //当前所有u本位符号
     inc_subscribe_msgs: Vec<serde_json::Value>,   //增量orderbook
-    depth_subscribe_msgs: Vec<serde_json::Value>, //有限档深度快照（binance-futures: depth20@100ms）
+    depth_subscribe_msgs: Vec<serde_json::Value>, //有限档深度快照（binance-futures: depth20@100ms, binance-margin: depth20/SBE）
     trade_subscribe_msgs: Vec<serde_json::Value>, //逐笔成交
     kline_subscribe_msgs: Vec<serde_json::Value>, //k线
     signal_subscribe_msg: serde_json::Value,      //只需要一个，实际是和btc深度有关的某个行情
@@ -363,10 +364,13 @@ impl SubscribeMsgs {
         }
     }
 
-    /// 获取有限档深度快照 channel（目前只有 binance-futures 支持）
-    fn get_depth_channel(exchange: &Exchange) -> Option<String> {
+    /// 获取有限档深度快照 channel（目前只有 binance 支持）
+    fn get_depth_channel(exchange: &Exchange, venue: TradingVenue) -> Option<String> {
         match exchange {
-            Exchange::Binance => Some("depth20@100ms".to_string()),
+            Exchange::Binance => match venue {
+                TradingVenue::BinanceMargin => Some("depth20".to_string()),
+                _ => Some("depth20@100ms".to_string()),
+            },
             _ => None, // 其他交易所暂不支持
         }
     }
@@ -498,7 +502,7 @@ impl SubscribeMsgs {
             None
         };
         let depth_channel = if cfg.data_types.enable_incremental {
-            SubscribeMsgs::get_depth_channel(&exchange)
+            SubscribeMsgs::get_depth_channel(&exchange, cfg.venue)
         } else {
             None
         };

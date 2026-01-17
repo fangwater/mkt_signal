@@ -399,6 +399,35 @@ fn parse_order_book_levels_with_offset(
     }
 }
 
+// 公共函数：解析订单簿层级数据（f64 pairs, 支持偏移量）
+fn parse_order_book_levels_from_pairs(
+    bids: &[(f64, f64)],
+    asks: &[(f64, f64)],
+    bids_start: usize,
+    bids_count: usize,
+    asks_start: usize,
+    asks_count: usize,
+    inc_msg: &mut IncMsg,
+) {
+    for i in 0..bids_count {
+        let src_idx = bids_start + i;
+        if src_idx >= bids.len() {
+            break;
+        }
+        let (price, amount) = bids[src_idx];
+        inc_msg.set_bid_level(i, Level::from_values(price, amount));
+    }
+
+    for i in 0..asks_count {
+        let src_idx = asks_start + i;
+        if src_idx >= asks.len() {
+            break;
+        }
+        let (price, amount) = asks[src_idx];
+        inc_msg.set_ask_level(i, Level::from_values(price, amount));
+    }
+}
+
 /// 计算如何拆分 levels 成多个 chunk
 /// 返回 Vec<(bids_start, bids_count, asks_start, asks_count)>
 /// 每个 chunk 的总档数不超过 max_levels
@@ -442,6 +471,212 @@ fn split_levels(
             vec![(0, total_bids, 0, total_asks)]
         }
     }
+}
+
+#[derive(Clone)]
+pub struct BinanceSbeDepthSnapshotParser {
+    max_levels: Option<usize>,
+}
+
+impl BinanceSbeDepthSnapshotParser {
+    pub fn with_max_levels(max_levels: Option<usize>) -> Self {
+        Self { max_levels }
+    }
+
+    fn parse_snapshot(
+        &self,
+        msg: &[u8],
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> usize {
+        let header = match read_sbe_header(msg) {
+            Some(h) => h,
+            None => return 0,
+        };
+        if header.template_id != 10002 {
+            return 0;
+        }
+
+        let base = header.body_offset;
+        if msg.len() < base + header.block_length {
+            return 0;
+        }
+
+        let event_time = match read_i64_le(msg, base) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let book_update_id = match read_i64_le(msg, base + 8) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let price_exponent = match read_i8(msg, base + 16) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let qty_exponent = match read_i8(msg, base + 17) {
+            Some(v) => v,
+            None => return 0,
+        };
+
+        let mut offset = base + header.block_length;
+        let (bids, next_offset) =
+            match read_group_levels(msg, offset, price_exponent, qty_exponent) {
+                Some(v) => v,
+                None => return 0,
+            };
+        offset = next_offset;
+        let (asks, next_offset) =
+            match read_group_levels(msg, offset, price_exponent, qty_exponent) {
+                Some(v) => v,
+                None => return 0,
+            };
+        offset = next_offset;
+
+        let symbol = match read_var_string8(msg, offset) {
+            Some((s, _)) => s.to_uppercase(),
+            None => return 0,
+        };
+
+        // SBE timestamps are in microseconds; keep ms alignment with other parsers.
+        let timestamp = event_time / 1000;
+        let chunks = split_levels(bids.len(), asks.len(), self.max_levels);
+        let total_chunks = chunks.len();
+        let mut sent_count = 0;
+
+        for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
+            chunks.into_iter().enumerate()
+        {
+            let mut inc_msg = IncMsg::create(
+                symbol.clone(),
+                book_update_id,
+                book_update_id,
+                timestamp,
+                true,
+                bids_count as u32,
+                asks_count as u32,
+            );
+
+            inc_msg.set_chunk_index(chunk_idx as u8);
+            inc_msg.set_is_last(chunk_idx == total_chunks - 1);
+
+            parse_order_book_levels_from_pairs(
+                &bids,
+                &asks,
+                bids_start,
+                bids_count,
+                asks_start,
+                asks_count,
+                &mut inc_msg,
+            );
+
+            if tx.send(inc_msg.to_bytes()).is_ok() {
+                sent_count += 1;
+            }
+        }
+
+        sent_count
+    }
+}
+
+impl Parser for BinanceSbeDepthSnapshotParser {
+    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if msg.is_empty() {
+            return 0;
+        }
+        if msg[0] == b'{' || msg[0] == b'[' {
+            return 0;
+        }
+        self.parse_snapshot(&msg, tx)
+    }
+}
+
+struct SbeHeader {
+    block_length: usize,
+    template_id: u16,
+    body_offset: usize,
+}
+
+fn read_sbe_header(msg: &[u8]) -> Option<SbeHeader> {
+    if msg.len() < 8 {
+        return None;
+    }
+    let block_length = read_u16_le(msg, 0)? as usize;
+    let template_id = read_u16_le(msg, 2)?;
+    Some(SbeHeader {
+        block_length,
+        template_id,
+        body_offset: 8,
+    })
+}
+
+fn read_u16_le(msg: &[u8], offset: usize) -> Option<u16> {
+    if msg.len() < offset + 2 {
+        return None;
+    }
+    Some(u16::from_le_bytes([msg[offset], msg[offset + 1]]))
+}
+
+fn read_i64_le(msg: &[u8], offset: usize) -> Option<i64> {
+    if msg.len() < offset + 8 {
+        return None;
+    }
+    Some(i64::from_le_bytes([
+        msg[offset],
+        msg[offset + 1],
+        msg[offset + 2],
+        msg[offset + 3],
+        msg[offset + 4],
+        msg[offset + 5],
+        msg[offset + 6],
+        msg[offset + 7],
+    ]))
+}
+
+fn read_i8(msg: &[u8], offset: usize) -> Option<i8> {
+    msg.get(offset).map(|v| *v as i8)
+}
+
+fn scale_mantissa(mantissa: i64, exponent: i8) -> f64 {
+    let factor = 10_f64.powi(exponent as i32);
+    (mantissa as f64) * factor
+}
+
+fn read_group_levels(
+    msg: &[u8],
+    offset: usize,
+    price_exponent: i8,
+    qty_exponent: i8,
+) -> Option<(Vec<(f64, f64)>, usize)> {
+    if msg.len() < offset + 4 {
+        return None;
+    }
+    let block_length = read_u16_le(msg, offset)? as usize;
+    let num_in_group = read_u16_le(msg, offset + 2)? as usize;
+    let mut pos = offset + 4;
+    let mut levels = Vec::with_capacity(num_in_group);
+
+    for _ in 0..num_in_group {
+        if msg.len() < pos + block_length || block_length < 16 {
+            break;
+        }
+        let price = read_i64_le(msg, pos)?;
+        let qty = read_i64_le(msg, pos + 8)?;
+        levels.push((scale_mantissa(price, price_exponent), scale_mantissa(qty, qty_exponent)));
+        pos += block_length;
+    }
+
+    Some((levels, pos))
+}
+
+fn read_var_string8(msg: &[u8], offset: usize) -> Option<(String, usize)> {
+    let len = msg.get(offset).copied()? as usize;
+    let start = offset + 1;
+    if msg.len() < start + len {
+        return None;
+    }
+    let data = &msg[start..start + len];
+    let s = std::str::from_utf8(data).ok()?.to_string();
+    Some((s, start + len))
 }
 
 impl BinanceSnapshotParser {

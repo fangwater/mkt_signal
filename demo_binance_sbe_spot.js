@@ -8,11 +8,50 @@ if (!apiKey) {
 
 const arg = process.argv[2];
 const channel = process.argv[3] || process.env.BINANCE_SBE_CHANNEL || 'depth20';
-const stream =
-  process.env.BINANCE_SBE_STREAM ||
-  (arg && arg.includes('@') ? arg.toLowerCase() : `${(arg || 'btcusdt').toLowerCase()}@${channel}`);
+const streamsEnv = process.env.BINANCE_SBE_STREAMS;
+const symbolsEnv = process.env.BINANCE_SBE_SYMBOLS;
+const useSubscribe =
+  (process.env.BINANCE_SBE_SUBSCRIBE || '').toLowerCase() === '1' ||
+  (process.env.BINANCE_SBE_SUBSCRIBE || '').toLowerCase() === 'true';
+const useCombined =
+  (process.env.BINANCE_SBE_COMBINED || '').toLowerCase() === '1' ||
+  (process.env.BINANCE_SBE_COMBINED || '').toLowerCase() === 'true';
 
-const url = `wss://stream-sbe.binance.com:9443/ws/${stream}`;
+function buildStreams() {
+  if (streamsEnv) {
+    return streamsEnv
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+  }
+  if (symbolsEnv) {
+    return symbolsEnv
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean)
+      .map((s) => `${s}@${channel}`);
+  }
+  if (arg && arg.includes(',')) {
+    return arg
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean)
+      .map((s) => (s.includes('@') ? s : `${s}@${channel}`));
+  }
+  if (arg && arg.includes('@')) {
+    return [arg.toLowerCase()];
+  }
+  const symbol = (arg || 'btcusdt').toLowerCase();
+  return [`${symbol}@${channel}`];
+}
+
+const streams = buildStreams();
+const baseUrl = 'wss://stream-sbe.binance.com:9443';
+const url = useCombined
+  ? `${baseUrl}/stream?streams=${streams.join('/')}`
+  : streams.length > 1 || useSubscribe
+    ? `${baseUrl}/ws`
+    : `${baseUrl}/ws/${streams[0]}`;
 const ws = new WebSocket(url, {
   headers: { 'X-MBX-APIKEY': apiKey },
 });
@@ -184,12 +223,12 @@ function decodeTrades(buf, header) {
   const priceExponent = buf.readInt8(base + 16);
   const qtyExponent = buf.readInt8(base + 17);
   let pos = base + header.blockLength;
-  if (pos + 4 > buf.length) {
+  if (pos + 6 > buf.length) {
     return null;
   }
   const blockLength = buf.readUInt16LE(pos);
-  const numInGroup = buf.readUInt16LE(pos + 2);
-  pos += 4;
+  const numInGroup = buf.readUInt32LE(pos + 2);
+  pos += 6;
   const trades = [];
   for (let i = 0; i < numInGroup; i += 1) {
     if (pos + blockLength > buf.length) {
@@ -298,6 +337,15 @@ function logTrades(msg) {
 
 ws.on('open', () => {
   console.log(`[open] ${url}`);
+  if (!useCombined && (streams.length > 1 || useSubscribe)) {
+    const subMsg = {
+      method: 'SUBSCRIBE',
+      params: streams,
+      id: 1,
+    };
+    ws.send(JSON.stringify(subMsg));
+    console.log(`[subscribe] ${streams.length} streams`);
+  }
 });
 
 ws.on('ping', (data) => {

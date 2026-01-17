@@ -15,7 +15,13 @@ use tokio_native_tls::TlsConnector as TokioTlsConnector;
 
 use crate::common::exchange::Exchange;
 use tokio_tungstenite::{
-    client_async, connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream,
+    client_async, connect_async,
+    tungstenite::{
+        client::IntoClientRequest,
+        http::{HeaderName, HeaderValue},
+        Message,
+    },
+    MaybeTlsStream, WebSocketStream,
 };
 use url::Url;
 
@@ -185,6 +191,99 @@ impl WsConnector {
         })
     }
 
+    pub async fn connect_with_local_ip_and_headers(
+        url: &str,
+        sub_msg: &serde_json::Value,
+        local_ip: &str,
+        headers: &[(String, String)],
+    ) -> anyhow::Result<WsConnectionResult> {
+        if local_ip == "0.0.0.0" || local_ip.is_empty() {
+            return Self::connect_with_headers(url, sub_msg, headers).await;
+        }
+
+        let local_addr: IpAddr = local_ip
+            .parse()
+            .with_context(|| format!("Invalid local IP address: {}", local_ip))?;
+        debug!(
+            "Using local IP {} for WebSocket connection to {}",
+            local_ip, url
+        );
+
+        let ws_url = Url::parse(url).with_context(|| "Invalid URL")?;
+        let scheme = ws_url.scheme();
+        let host = ws_url
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("URL has no host"))?;
+        let port = ws_url
+            .port_or_known_default()
+            .ok_or_else(|| anyhow::anyhow!("URL has no port"))?;
+
+        let mut addrs = lookup_host((host, port))
+            .await
+            .with_context(|| format!("Failed to resolve {}:{}", host, port))?;
+        let target = addrs
+            .find(|sa| match (sa, local_addr) {
+                (SocketAddr::V4(_), IpAddr::V4(_)) => true,
+                (SocketAddr::V6(_), IpAddr::V6(_)) => true,
+                _ => false,
+            })
+            .ok_or_else(|| anyhow::anyhow!("No matching address family for host"))?;
+
+        let socket = match local_addr {
+            IpAddr::V4(ip) => {
+                let s = TcpSocket::new_v4()?;
+                s.bind((ip, 0).into())
+                    .with_context(|| format!("Failed to bind to IPv4 address {}", ip))?;
+                s
+            }
+            IpAddr::V6(ip) => {
+                let s = TcpSocket::new_v6()?;
+                s.bind((ip, 0).into())
+                    .with_context(|| format!("Failed to bind to IPv6 address {}", ip))?;
+                s
+            }
+        };
+
+        let stream = socket
+            .connect(target)
+            .await
+            .with_context(|| format!("Failed to connect to {}", target))?;
+
+        let mut request = ws_url.clone().into_client_request()?;
+        apply_headers(request.headers_mut(), headers)?;
+
+        let (mut ws_stream, _resp) = if scheme.eq_ignore_ascii_case("wss") {
+            let native = NativeTlsConnector::builder()
+                .build()
+                .with_context(|| "Failed to build native-tls connector")?;
+            let connector = TokioTlsConnector::from(native);
+            let tls_stream = connector
+                .connect(host, stream)
+                .await
+                .with_context(|| "TLS handshake failed")?;
+            let tls_wrapped = MaybeTlsStream::NativeTls(tls_stream);
+            client_async(request, tls_wrapped).await?
+        } else {
+            let plain_stream = MaybeTlsStream::Plain(stream);
+            client_async(request, plain_stream).await?
+        };
+
+        let sub_text = sub_msg.to_string();
+        ws_stream
+            .send(Message::Text(sub_text.clone()))
+            .await
+            .with_context(|| "Failed to send subscription message")?;
+        debug!(
+            "Successfully sent subscription message via local IP {} payload={}",
+            local_ip, sub_text
+        );
+
+        Ok(WsConnectionResult {
+            ws_stream: Arc::new(Mutex::new(ws_stream)),
+            connected_at: Instant::now(),
+        })
+    }
+
     pub async fn connect(
         url: &str,
         sub_msg: &serde_json::Value,
@@ -197,6 +296,56 @@ impl WsConnector {
                     match ws_stream.send(Message::Text(sub_text.clone())).await {
                         Ok(_) => {
                             info!("Successful send subscription message payload={}", sub_text);
+                            return Ok(WsConnectionResult {
+                                ws_stream: Arc::new(Mutex::new(ws_stream)),
+                                connected_at: Instant::now(),
+                            });
+                        }
+                        Err(e) => {
+                            error!("Failed to send subscription message: {}", e);
+                            return Err(e.into());
+                        }
+                    }
+                }
+                Err(e) => {
+                    if Self::is_dns_error(&e) {
+                        error!(
+                            "DNS error, retrying... ({}/{})",
+                            retry + 1,
+                            Self::MAX_RETRIES
+                        );
+                        time::sleep(Self::RETRY_DELAY).await;
+                    } else {
+                        return Err(e.into());
+                    }
+                }
+            }
+        }
+        Err(anyhow::anyhow!(
+            "Failed to connect to WebSocket after {} retries",
+            Self::MAX_RETRIES
+        ))
+    }
+
+    pub async fn connect_with_headers(
+        url: &str,
+        sub_msg: &serde_json::Value,
+        headers: &[(String, String)],
+    ) -> anyhow::Result<WsConnectionResult> {
+        let url = Url::parse(url).with_context(|| "Invalid URL")?;
+        for retry in 0..Self::MAX_RETRIES {
+            let mut request = url.clone().into_client_request()?;
+            apply_headers(request.headers_mut(), headers)?;
+
+            match connect_async(request).await {
+                Ok((mut ws_stream, _)) => {
+                    let sub_text = sub_msg.to_string();
+                    match ws_stream.send(Message::Text(sub_text.clone())).await {
+                        Ok(_) => {
+                            info!(
+                                "Successful send subscription message payload={}",
+                                sub_text
+                            );
                             return Ok(WsConnectionResult {
                                 ws_stream: Arc::new(Mutex::new(ws_stream)),
                                 connected_at: Instant::now(),
@@ -340,6 +489,20 @@ impl WsConnector {
             connected_at: Instant::now(),
         })
     }
+}
+
+fn apply_headers(
+    target: &mut tokio_tungstenite::tungstenite::http::HeaderMap,
+    headers: &[(String, String)],
+) -> anyhow::Result<()> {
+    for (key, value) in headers {
+        let name = HeaderName::from_bytes(key.as_bytes())
+            .with_context(|| format!("Invalid header name: {}", key))?;
+        let val = HeaderValue::from_str(value)
+            .with_context(|| format!("Invalid header value for {}", key))?;
+        target.insert(name, val);
+    }
+    Ok(())
 }
 
 //两个trait，start stop是通用trait，run_connection是交易所的具体实现
