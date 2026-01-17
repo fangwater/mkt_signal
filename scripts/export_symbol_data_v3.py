@@ -323,17 +323,18 @@ def main():
     df_new_orders["inpos"] = pd.NA
     df_new_orders["tlen"] = pd.NA
     df_new_orders["from_key"] = df_new_orders["strategy_id"]
+    df_new_orders["sid"] = df_new_orders["trading_venue"]
     if "price_offset" not in df_new_orders.columns:
         df_new_orders["price_offset"] = pd.NA
 
     output_cols = [
+        "symbol",
         "create_ts",
         "update_ts",
         "client_order_id",
-        "symbol",
         "trading_venue",
         "ttype",
-        "strategy_id",
+        "sid",
         "side",
         "price",
         "quantity",
@@ -352,7 +353,6 @@ def main():
         columns={
             "symbol": SYMBOL_COL_NAME,
             "trading_venue": "venue",
-            "strategy_id": "sid",
             "quantity": "amount_init",
             "filled_qty": "amount_update",
         },
