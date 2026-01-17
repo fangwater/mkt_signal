@@ -1,4 +1,3 @@
-const axios = require('axios');
 const WebSocket = require('ws');
 
 const apiKey = process.env.BINANCE_SBE_API_KEY || process.env.BINANCE_API_KEY;
@@ -23,8 +22,19 @@ if (!Number.isFinite(batchSize) || batchSize <= 0) {
 }
 
 async function fetchSymbols() {
-  const res = await axios.get(exchangeInfoUrl, { timeout: 10_000 });
-  const raw = res.data && res.data.symbols ? res.data.symbols : [];
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  let data;
+  try {
+    const res = await fetch(exchangeInfoUrl, { signal: controller.signal });
+    if (!res.ok) {
+      throw new Error(`exchangeInfo status ${res.status}`);
+    }
+    data = await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+  const raw = data && data.symbols ? data.symbols : [];
   const symbols = raw
     .filter((s) => s && s.status === 'TRADING')
     .filter((s) => s && s.quoteAsset === quoteAsset)
