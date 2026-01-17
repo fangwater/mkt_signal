@@ -18,6 +18,12 @@ import pandas as pd
 
 
 SYMBOL_COL_NAME = "symbol"
+TARGETS = {
+    "xarb-okex-binance": {
+        "dir": "/home/ubuntu/okex-binance-xarb-trade/data/order_query/export_data",
+        "output_dir": os.path.expanduser("~/data/xarb-okex-binance"),
+    }
+}
 
 
 def extract_strategy_id(client_order_id: int) -> int:
@@ -131,39 +137,37 @@ def infer_ttype(row) -> str:
     return pd.NA
 
 
-def main():
-    parser = argparse.ArgumentParser(description="导出指定 symbol 的订单和信号数据 (v3)")
-    parser.add_argument("--dir", required=True, help="包含 parquet 文件的文件夹路径")
-    parser.add_argument("--symbol", required=True, help="目标 symbol (如 SLPUSDT)")
-    parser.add_argument("--output", required=True, help="输出文件名")
-    args = parser.parse_args()
+def collect_symbol_keys(df: pd.DataFrame, cols: list[str]) -> set[str]:
+    keys: set[str] = set()
+    for col in cols:
+        if col not in df.columns:
+            continue
+        series = df[col].map(normalize_symbol)
+        for val in series.dropna().unique().tolist():
+            if val:
+                keys.add(val)
+    return keys
 
-    data_dir = args.dir
-    symbol_key = normalize_symbol(args.symbol)
-    output_file = args.output
 
-    print("加载 parquet 文件...")
-    df_trade = pd.read_parquet(os.path.join(data_dir, "trade_updates.parquet"))
-    df_order = pd.read_parquet(os.path.join(data_dir, "order_updates.parquet"))
-    df_open_sig = pd.read_parquet(os.path.join(data_dir, "signals_arb_open.parquet"))
-    df_hedge_sig = pd.read_parquet(os.path.join(data_dir, "signals_arb_hedge.parquet"))
-    df_cancel_sig = pd.read_parquet(os.path.join(data_dir, "signals_arb_cancel.parquet"))
-
-    close_sig_path = os.path.join(data_dir, "signals_arb_close.parquet")
-    if os.path.exists(close_sig_path):
-        df_close_sig = pd.read_parquet(close_sig_path)
-    else:
-        df_close_sig = pd.DataFrame()
-
-    df_trade["strategy_id"] = df_trade["client_order_id"].apply(extract_strategy_id)
-    df_order["strategy_id"] = df_order["client_order_id"].apply(extract_strategy_id)
-
-    print(f"trade_updates: {len(df_trade)} rows")
-    print(f"order_updates: {len(df_order)} rows")
-    print(f"signals_arb_open: {len(df_open_sig)} rows")
-    print(f"signals_arb_hedge: {len(df_hedge_sig)} rows")
-    print(f"signals_arb_cancel: {len(df_cancel_sig)} rows")
-    print(f"signals_arb_close: {len(df_close_sig)} rows")
+def export_symbol(
+    data_dir: str,
+    df_trade: pd.DataFrame,
+    df_order: pd.DataFrame,
+    df_open_sig: pd.DataFrame,
+    df_hedge_sig: pd.DataFrame,
+    df_cancel_sig: pd.DataFrame,
+    df_close_sig: pd.DataFrame,
+    symbol_key: str,
+    output_file: str,
+) -> None:
+    print(f"\n=== export symbol={symbol_key} -> {output_file} ===")
+    # copy to avoid mutating shared frames
+    df_trade = df_trade.copy()
+    df_order = df_order.copy()
+    df_open_sig = df_open_sig.copy()
+    df_hedge_sig = df_hedge_sig.copy()
+    df_cancel_sig = df_cancel_sig.copy()
+    df_close_sig = df_close_sig.copy()
 
     sig_dfs = [df_open_sig, df_hedge_sig, df_cancel_sig]
     if len(df_close_sig) > 0:
@@ -186,7 +190,6 @@ def main():
     df_order = df_order[order_m].copy()
     df_trade = df_trade[trade_m].copy()
 
-    print(f"\nfilter_symbol_key={symbol_key}")
     print(f"matched strategy_id: {len(strategy_ids)}")
     if len(df_order) > 0 and "symbol" in df_order.columns:
         print(f"orders: {len(df_order)} rows, symbols={sorted(df_order['symbol'].dropna().unique().tolist())}")
@@ -360,7 +363,130 @@ def main():
     )
 
     df_out.to_parquet(output_file)
-    print(f"\n✅ 导出完成: {output_file}")
+    print(f"✅ 导出完成: {output_file}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="导出指定 symbol 的订单和信号数据 (v3)")
+    parser.add_argument(
+        "--dir",
+        help="包含 parquet 文件的文件夹路径",
+    )
+    parser.add_argument("--symbol", help="目标 symbol (如 SLPUSDT)")
+    parser.add_argument("--all", action="store_true", help="导出全部 symbol")
+    parser.add_argument(
+        "--target",
+        choices=sorted(TARGETS.keys()),
+        help="预设数据目录与输出目录",
+    )
+    parser.add_argument("--output", help="输出文件名 (单 symbol)")
+    parser.add_argument("--output-dir", help="输出目录 (导出全部 symbol)")
+    args = parser.parse_args()
+
+    if args.target and args.dir:
+        raise SystemExit("不能同时使用 --target 和 --dir")
+    if args.target:
+        data_dir = TARGETS[args.target]["dir"]
+        default_output_dir = TARGETS[args.target]["output_dir"]
+    elif args.dir:
+        data_dir = os.path.expanduser(args.dir)
+        default_output_dir = "."
+    else:
+        raise SystemExit("请指定 --target 或 --dir")
+
+    data_dir = os.path.expanduser(data_dir)
+    os.makedirs(data_dir, exist_ok=True)
+
+    output_dir = args.output_dir
+    if output_dir:
+        output_dir = os.path.expanduser(output_dir)
+    else:
+        output_dir = default_output_dir
+    output_dir = os.path.expanduser(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+    if args.all and args.symbol:
+        raise SystemExit("不能同时使用 --all 和 --symbol")
+    if args.all and args.output:
+        raise SystemExit("--all 模式下请使用 --output-dir")
+    if not args.all and not args.symbol:
+        raise SystemExit("请指定 --symbol 或使用 --all")
+
+    print("加载 parquet 文件...")
+    df_trade = pd.read_parquet(os.path.join(data_dir, "trade_updates.parquet"))
+    df_order = pd.read_parquet(os.path.join(data_dir, "order_updates.parquet"))
+    df_open_sig = pd.read_parquet(os.path.join(data_dir, "signals_arb_open.parquet"))
+    df_hedge_sig = pd.read_parquet(os.path.join(data_dir, "signals_arb_hedge.parquet"))
+    df_cancel_sig = pd.read_parquet(os.path.join(data_dir, "signals_arb_cancel.parquet"))
+
+    close_sig_path = os.path.join(data_dir, "signals_arb_close.parquet")
+    if os.path.exists(close_sig_path):
+        df_close_sig = pd.read_parquet(close_sig_path)
+    else:
+        df_close_sig = pd.DataFrame()
+
+    df_trade["strategy_id"] = df_trade["client_order_id"].apply(extract_strategy_id)
+    df_order["strategy_id"] = df_order["client_order_id"].apply(extract_strategy_id)
+
+    print(f"trade_updates: {len(df_trade)} rows")
+    print(f"order_updates: {len(df_order)} rows")
+    print(f"signals_arb_open: {len(df_open_sig)} rows")
+    print(f"signals_arb_hedge: {len(df_hedge_sig)} rows")
+    print(f"signals_arb_cancel: {len(df_cancel_sig)} rows")
+    print(f"signals_arb_close: {len(df_close_sig)} rows")
+
+    if args.all:
+        output_dir = os.path.abspath(output_dir)
+        symbol_keys = set()
+        symbol_keys |= collect_symbol_keys(df_order, ["symbol"])
+        symbol_keys |= collect_symbol_keys(df_trade, ["symbol"])
+        symbol_keys |= collect_symbol_keys(
+            df_open_sig, ["opening_symbol", "hedging_symbol"]
+        )
+        symbol_keys |= collect_symbol_keys(
+            df_hedge_sig, ["opening_symbol", "hedging_symbol"]
+        )
+        symbol_keys |= collect_symbol_keys(
+            df_cancel_sig, ["opening_symbol", "hedging_symbol"]
+        )
+        if len(df_close_sig) > 0:
+            symbol_keys |= collect_symbol_keys(
+                df_close_sig, ["opening_symbol", "hedging_symbol"]
+            )
+
+        for symbol_key in sorted(symbol_keys):
+            output_file = os.path.join(output_dir, f"{symbol_key}_order.parquet")
+            export_symbol(
+                data_dir,
+                df_trade,
+                df_order,
+                df_open_sig,
+                df_hedge_sig,
+                df_cancel_sig,
+                df_close_sig,
+                symbol_key,
+                output_file,
+            )
+        return
+
+    symbol_key = normalize_symbol(args.symbol)
+    if args.output:
+        output_file = os.path.expanduser(args.output)
+        output_parent = os.path.dirname(output_file)
+        if output_parent:
+            os.makedirs(output_parent, exist_ok=True)
+    else:
+        output_file = os.path.join(output_dir, f"{symbol_key}_order.parquet")
+    export_symbol(
+        data_dir,
+        df_trade,
+        df_order,
+        df_open_sig,
+        df_hedge_sig,
+        df_cancel_sig,
+        df_close_sig,
+        symbol_key,
+        output_file,
+    )
 
 
 if __name__ == "__main__":
