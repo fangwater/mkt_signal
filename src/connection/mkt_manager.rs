@@ -3,7 +3,8 @@ use crate::common::exchange::Exchange;
 use crate::connection::connection::construct_connection_with_ip;
 use crate::parser::binance_parser::{
     BinanceAskBidSpreadParser, BinanceDerivativesMetricsParser, BinanceIncParser,
-    BinanceKlineParser, BinanceSbeDepthSnapshotParser, BinanceSignalParser, BinanceTradeParser,
+    BinanceKlineParser, BinanceSbeBestBidAskParser, BinanceSbeDepthDiffParser,
+    BinanceSbeDepthSnapshotParser, BinanceSbeTradeParser, BinanceSignalParser, BinanceTradeParser,
 };
 use crate::parser::bitget_parser::{
     BitgetDerivativesMetricsParser, BitgetIncParser, BitgetSignalParser, BitgetTradeParser,
@@ -191,7 +192,6 @@ impl MktManager {
 
     async fn start_incremental_connections(&mut self) {
         let exchange = self.cfg.get_exchange();
-        let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
         let max_levels = self.cfg.data_types.max_levels_per_msg;
 
         for i in 0..self.subscribe_msgs.get_inc_subscribe_msg_len() {
@@ -200,26 +200,35 @@ impl MktManager {
 
             match exchange {
                 Exchange::Binance => {
-                    let parser = match self.cfg.venue {
-                        TradingVenue::BinanceFutures => {
-                            BinanceIncParser::futures_incremental(max_levels)
-                        }
-                        TradingVenue::BinanceMargin => {
-                            BinanceIncParser::spot_incremental(max_levels)
-                        }
-                        _ => BinanceIncParser::futures_incremental(max_levels),
+                    let (url, parser, desc_prefix) = match self.cfg.venue {
+                        TradingVenue::BinanceMargin => (
+                            "wss://stream-sbe.binance.com:9443/ws".to_string(),
+                            BinanceSbeDepthDiffParser::with_max_levels(max_levels),
+                            "sbe inc msg batch",
+                        ),
+                        TradingVenue::BinanceFutures => (
+                            SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string(),
+                            BinanceIncParser::futures_incremental(max_levels),
+                            "inc msg batch",
+                        ),
+                        _ => (
+                            SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string(),
+                            BinanceIncParser::futures_incremental(max_levels),
+                            "inc msg batch",
+                        ),
                     };
                     self.spawn_connection_with_mpsc(
                         exchange,
-                        url.clone(),
+                        url,
                         subscribe_msg,
-                        format!("inc msg batch {}", i),
+                        format!("{} {}", desc_prefix, i),
                         parser,
                         tx,
                     )
                     .await;
                 }
                 Exchange::Bybit => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
                     let parser = BybitIncParser::with_max_levels(max_levels);
                     self.spawn_connection_with_mpsc(
                         exchange,
@@ -232,6 +241,7 @@ impl MktManager {
                     .await;
                 }
                 Exchange::Okex => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
                     let parser = OkexIncParser::with_max_levels(max_levels);
                     self.spawn_connection_with_mpsc(
                         exchange,
@@ -244,6 +254,7 @@ impl MktManager {
                     .await;
                 }
                 Exchange::Bitget => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
                     let parser = BitgetIncParser::with_max_levels(max_levels);
                     self.spawn_connection_with_mpsc(
                         exchange,
@@ -311,7 +322,6 @@ impl MktManager {
 
     async fn start_trade_connections(&mut self) {
         let exchange = self.cfg.get_exchange();
-        let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
 
         for i in 0..self.subscribe_msgs.get_trade_subscribe_msg_len() {
             let subscribe_msg = self.subscribe_msgs.get_trade_subscribe_msg(i).clone();
@@ -319,18 +329,30 @@ impl MktManager {
 
             match exchange {
                 Exchange::Binance => {
-                    let parser = BinanceTradeParser::new();
+                    let (url, parser, desc_prefix) = match self.cfg.venue {
+                        TradingVenue::BinanceMargin => (
+                            "wss://stream-sbe.binance.com:9443/ws".to_string(),
+                            BinanceSbeTradeParser::new(),
+                            "sbe trade msg batch",
+                        ),
+                        _ => (
+                            SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string(),
+                            BinanceTradeParser::new(),
+                            "trade msg batch",
+                        ),
+                    };
                     self.spawn_connection_with_mpsc(
                         exchange,
-                        url.clone(),
+                        url,
                         subscribe_msg,
-                        format!("trade msg batch {}", i),
+                        format!("{} {}", desc_prefix, i),
                         parser,
                         tx,
                     )
                     .await;
                 }
                 Exchange::Bybit => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
                     let parser = BybitTradeParser::new();
                     self.spawn_connection_with_mpsc(
                         exchange,
@@ -343,6 +365,7 @@ impl MktManager {
                     .await;
                 }
                 Exchange::Okex => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
                     let parser = OkexTradeParser::new();
                     self.spawn_connection_with_mpsc(
                         exchange,
@@ -355,6 +378,7 @@ impl MktManager {
                     .await;
                 }
                 Exchange::Bitget => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
                     let parser = BitgetTradeParser::new();
                     self.spawn_connection_with_mpsc(
                         exchange,
@@ -440,7 +464,6 @@ impl MktManager {
 
     async fn start_ask_bid_spread_connections(&mut self) {
         let exchange = self.cfg.get_exchange();
-        let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
 
         for i in 0..self.subscribe_msgs.get_ask_bid_spread_subscribe_msg_len() {
             let subscribe_msg = self
@@ -451,18 +474,30 @@ impl MktManager {
 
             match exchange {
                 Exchange::Binance => {
-                    let parser = BinanceAskBidSpreadParser::new();
+                    let (url, parser, desc_prefix) = match self.cfg.venue {
+                        TradingVenue::BinanceMargin => (
+                            "wss://stream-sbe.binance.com:9443/ws".to_string(),
+                            BinanceSbeBestBidAskParser::new(),
+                            "sbe ask_bid_spread batch",
+                        ),
+                        _ => (
+                            SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string(),
+                            BinanceAskBidSpreadParser::new(),
+                            "ask_bid_spread batch",
+                        ),
+                    };
                     self.spawn_connection_with_mpsc(
                         exchange,
-                        url.clone(),
+                        url,
                         subscribe_msg,
-                        format!("ask_bid_spread batch {}", i),
+                        format!("{} {}", desc_prefix, i),
                         parser,
                         tx,
                     )
                     .await;
                 }
                 Exchange::Bybit => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
                     let parser = BybitAskBidSpreadParser::new();
                     self.spawn_connection_with_mpsc(
                         exchange,
@@ -475,6 +510,7 @@ impl MktManager {
                     .await;
                 }
                 Exchange::Okex => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
                     let parser = OkexAskBidSpreadParser::new();
                     self.spawn_connection_with_mpsc(
                         exchange,
@@ -487,6 +523,7 @@ impl MktManager {
                     .await;
                 }
                 Exchange::Gate => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
                     // Gate ticker 包含最优买卖价
                     let parser = GateTickerParser::new();
                     log::info!(

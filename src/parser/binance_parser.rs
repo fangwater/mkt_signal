@@ -590,6 +590,333 @@ impl Parser for BinanceSbeDepthSnapshotParser {
     }
 }
 
+#[derive(Clone)]
+pub struct BinanceSbeDepthDiffParser {
+    max_levels: Option<usize>,
+}
+
+impl BinanceSbeDepthDiffParser {
+    pub fn with_max_levels(max_levels: Option<usize>) -> Self {
+        Self { max_levels }
+    }
+
+    fn parse_diff(&self, msg: &[u8], tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        let header = match read_sbe_header(msg) {
+            Some(h) => h,
+            None => return 0,
+        };
+        if header.template_id != 10003 {
+            return 0;
+        }
+
+        let base = header.body_offset;
+        if msg.len() < base + header.block_length {
+            return 0;
+        }
+
+        let event_time = match read_i64_le(msg, base) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let first_update_id = match read_i64_le(msg, base + 8) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let last_update_id = match read_i64_le(msg, base + 16) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let price_exponent = match read_i8(msg, base + 24) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let qty_exponent = match read_i8(msg, base + 25) {
+            Some(v) => v,
+            None => return 0,
+        };
+
+        let mut offset = base + header.block_length;
+        let (bids, next_offset) =
+            match read_group_levels(msg, offset, price_exponent, qty_exponent) {
+                Some(v) => v,
+                None => return 0,
+            };
+        offset = next_offset;
+        let (asks, next_offset) =
+            match read_group_levels(msg, offset, price_exponent, qty_exponent) {
+                Some(v) => v,
+                None => return 0,
+            };
+        offset = next_offset;
+
+        let symbol = match read_var_string8(msg, offset) {
+            Some((s, _)) => s.to_uppercase(),
+            None => return 0,
+        };
+
+        let timestamp = event_time / 1000;
+        let chunks = split_levels(bids.len(), asks.len(), self.max_levels);
+        let total_chunks = chunks.len();
+        let mut sent_count = 0;
+
+        for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
+            chunks.into_iter().enumerate()
+        {
+            let mut inc_msg = IncMsg::create(
+                symbol.clone(),
+                first_update_id,
+                last_update_id,
+                timestamp,
+                false,
+                bids_count as u32,
+                asks_count as u32,
+            );
+
+            inc_msg.set_chunk_index(chunk_idx as u8);
+            inc_msg.set_is_last(chunk_idx == total_chunks - 1);
+
+            parse_order_book_levels_from_pairs(
+                &bids,
+                &asks,
+                bids_start,
+                bids_count,
+                asks_start,
+                asks_count,
+                &mut inc_msg,
+            );
+
+            if tx.send(inc_msg.to_bytes()).is_ok() {
+                sent_count += 1;
+            }
+        }
+
+        sent_count
+    }
+}
+
+impl Parser for BinanceSbeDepthDiffParser {
+    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if msg.is_empty() {
+            return 0;
+        }
+        if msg[0] == b'{' || msg[0] == b'[' {
+            return 0;
+        }
+        self.parse_diff(&msg, tx)
+    }
+}
+
+#[derive(Clone)]
+pub struct BinanceSbeBestBidAskParser;
+
+impl BinanceSbeBestBidAskParser {
+    pub fn new() -> Self {
+        Self
+    }
+
+    fn parse_bbo(&self, msg: &[u8], tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        let header = match read_sbe_header(msg) {
+            Some(h) => h,
+            None => return 0,
+        };
+        if header.template_id != 10001 {
+            return 0;
+        }
+
+        let base = header.body_offset;
+        if msg.len() < base + header.block_length {
+            return 0;
+        }
+
+        let event_time = match read_i64_le(msg, base) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let _book_update_id = match read_i64_le(msg, base + 8) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let price_exponent = match read_i8(msg, base + 16) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let qty_exponent = match read_i8(msg, base + 17) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let bid_price = match read_i64_le(msg, base + 18) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let bid_qty = match read_i64_le(msg, base + 26) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let ask_price = match read_i64_le(msg, base + 34) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let ask_qty = match read_i64_le(msg, base + 42) {
+            Some(v) => v,
+            None => return 0,
+        };
+
+        let symbol = match read_var_string8(msg, base + header.block_length) {
+            Some((s, _)) => s.to_uppercase(),
+            None => return 0,
+        };
+
+        let timestamp = event_time / 1000;
+        let bid_price = scale_mantissa(bid_price, price_exponent);
+        let bid_amount = scale_mantissa(bid_qty, qty_exponent);
+        let ask_price = scale_mantissa(ask_price, price_exponent);
+        let ask_amount = scale_mantissa(ask_qty, qty_exponent);
+
+        if bid_price <= 0.0 || bid_amount <= 0.0 || ask_price <= 0.0 || ask_amount <= 0.0 {
+            return 0;
+        }
+
+        let spread_msg = AskBidSpreadMsg::create(
+            symbol,
+            timestamp,
+            bid_price,
+            bid_amount,
+            ask_price,
+            ask_amount,
+        );
+        if tx.send(spread_msg.to_bytes()).is_ok() {
+            return 1;
+        }
+        0
+    }
+}
+
+impl Parser for BinanceSbeBestBidAskParser {
+    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if msg.is_empty() {
+            return 0;
+        }
+        if msg[0] == b'{' || msg[0] == b'[' {
+            return 0;
+        }
+        self.parse_bbo(&msg, tx)
+    }
+}
+
+#[derive(Clone)]
+pub struct BinanceSbeTradeParser;
+
+impl BinanceSbeTradeParser {
+    pub fn new() -> Self {
+        Self
+    }
+
+    fn parse_trades(&self, msg: &[u8], tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        let header = match read_sbe_header(msg) {
+            Some(h) => h,
+            None => return 0,
+        };
+        if header.template_id != 10000 {
+            return 0;
+        }
+
+        let base = header.body_offset;
+        if msg.len() < base + header.block_length {
+            return 0;
+        }
+
+        let event_time = match read_i64_le(msg, base) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let _transact_time = match read_i64_le(msg, base + 8) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let price_exponent = match read_i8(msg, base + 16) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let qty_exponent = match read_i8(msg, base + 17) {
+            Some(v) => v,
+            None => return 0,
+        };
+
+        let mut offset = base + header.block_length;
+        if msg.len() < offset + 6 {
+            return 0;
+        }
+        let block_length = match read_u16_le(msg, offset) {
+            Some(v) => v as usize,
+            None => return 0,
+        };
+        let num_in_group = match read_u32_le(msg, offset + 2) {
+            Some(v) => v as usize,
+            None => return 0,
+        };
+        offset += 6;
+
+        let mut trades = Vec::with_capacity(num_in_group);
+        for _ in 0..num_in_group {
+            if msg.len() < offset + block_length || block_length < 25 {
+                break;
+            }
+            let trade_id = match read_i64_le(msg, offset) {
+                Some(v) => v,
+                None => break,
+            };
+            let price = match read_i64_le(msg, offset + 8) {
+                Some(v) => v,
+                None => break,
+            };
+            let qty = match read_i64_le(msg, offset + 16) {
+                Some(v) => v,
+                None => break,
+            };
+            let is_buyer_maker = msg.get(offset + 24).copied().unwrap_or(0) != 0;
+            trades.push((trade_id, price, qty, is_buyer_maker));
+            offset += block_length;
+        }
+
+        let symbol = match read_var_string8(msg, offset) {
+            Some((s, _)) => s.to_uppercase(),
+            None => return 0,
+        };
+
+        let timestamp = event_time / 1000;
+        let mut sent_count = 0;
+
+        for (trade_id, price, qty, is_buyer_maker) in trades {
+            let price = scale_mantissa(price, price_exponent);
+            let amount = scale_mantissa(qty, qty_exponent);
+            if price <= 0.0 || amount <= 0.0 {
+                continue;
+            }
+
+            let side = if is_buyer_maker { 'S' } else { 'B' };
+            let trade_msg =
+                TradeMsg::create(symbol.clone(), trade_id, timestamp, side, price, amount);
+            if tx.send(trade_msg.to_bytes()).is_ok() {
+                sent_count += 1;
+            }
+        }
+
+        sent_count
+    }
+}
+
+impl Parser for BinanceSbeTradeParser {
+    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if msg.is_empty() {
+            return 0;
+        }
+        if msg[0] == b'{' || msg[0] == b'[' {
+            return 0;
+        }
+        self.parse_trades(&msg, tx)
+    }
+}
+
 struct SbeHeader {
     block_length: usize,
     template_id: u16,
@@ -614,6 +941,18 @@ fn read_u16_le(msg: &[u8], offset: usize) -> Option<u16> {
         return None;
     }
     Some(u16::from_le_bytes([msg[offset], msg[offset + 1]]))
+}
+
+fn read_u32_le(msg: &[u8], offset: usize) -> Option<u32> {
+    if msg.len() < offset + 4 {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        msg[offset],
+        msg[offset + 1],
+        msg[offset + 2],
+        msg[offset + 3],
+    ]))
 }
 
 fn read_i64_le(msg: &[u8], offset: usize) -> Option<i64> {

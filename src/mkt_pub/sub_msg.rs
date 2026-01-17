@@ -354,9 +354,12 @@ impl SubscribeMsgs {
         }
     }
 
-    fn get_inc_channel(exchange: &Exchange) -> String {
+    fn get_inc_channel(exchange: &Exchange, venue: TradingVenue) -> String {
         match exchange {
-            Exchange::Binance => "depth@100ms".to_string(),
+            Exchange::Binance => match venue {
+                TradingVenue::BinanceMargin => "depth".to_string(),
+                _ => "depth@100ms".to_string(),
+            },
             Exchange::Okex => "books".to_string(),
             Exchange::Bybit => "orderbook.500".to_string(),
             Exchange::Bitget => "books".to_string(),
@@ -395,9 +398,12 @@ impl SubscribeMsgs {
         }
     }
 
-    fn get_ask_bid_spread_channel(exchange: &Exchange) -> String {
+    fn get_ask_bid_spread_channel(exchange: &Exchange, venue: TradingVenue) -> String {
         match exchange {
-            Exchange::Binance => "bookTicker".to_string(),
+            Exchange::Binance => match venue {
+                TradingVenue::BinanceMargin => "bestBidAsk".to_string(),
+                _ => "bookTicker".to_string(),
+            },
             Exchange::Okex => "bbo-tbt".to_string(),
             Exchange::Bybit => "orderbook.1".to_string(),
             Exchange::Bitget => "books1".to_string(),
@@ -497,7 +503,7 @@ impl SubscribeMsgs {
         let mut ask_bid_spread_msgs = Vec::new();
         let exchange = cfg.get_exchange();
         let inc_channel = if cfg.data_types.enable_incremental {
-            Some(SubscribeMsgs::get_inc_channel(&exchange))
+            Some(SubscribeMsgs::get_inc_channel(&exchange, cfg.venue))
         } else {
             None
         };
@@ -508,7 +514,8 @@ impl SubscribeMsgs {
         };
         let trade_channel = SubscribeMsgs::get_trade_channel(&exchange);
         let kline_channel = SubscribeMsgs::get_kline_channel(&exchange);
-        let best_price_spread_channel = SubscribeMsgs::get_ask_bid_spread_channel(&exchange);
+        let best_price_spread_channel =
+            SubscribeMsgs::get_ask_bid_spread_channel(&exchange, cfg.venue);
         for chunk in symbols.chunks(batch_size) {
             if let Some(ref ch) = inc_channel {
                 inc_subscribe_msgs.push(construct_subscribe_message(&exchange, chunk, ch));
