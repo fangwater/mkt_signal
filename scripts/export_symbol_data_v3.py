@@ -542,6 +542,13 @@ def export_symbol(
         df_new_orders["update_ts"] = outcome_df["update_ts"].values
         df_new_orders["filled_qty"] = outcome_df["filled_qty"].values
 
+    df_new_orders["create_ts"] = pd.to_numeric(
+        df_new_orders["create_ts"], errors="coerce"
+    ).astype("Int64")
+    df_new_orders["update_ts"] = pd.to_numeric(
+        df_new_orders["update_ts"], errors="coerce"
+    ).astype("Int64")
+
     last_trade = df_trade_sorted.groupby("order_id", sort=False).tail(1)
     trade_is_maker = last_trade.set_index("order_id")["is_maker"] if len(last_trade) > 0 else {}
     df_new_orders["is_maker"] = df_new_orders["order_id"].map(trade_is_maker)
