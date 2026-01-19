@@ -3,7 +3,7 @@
 导出指定 symbol 的订单和信号数据 (v3)
 
 v3 输出列:
-    create_ts, update_ts, client_order_id, <symbol_col>, venue, ttype, side,
+    create_ts, update_ts, signal_ts, client_order_id, <symbol_col>, venue, ttype, side,
     price, amount_init, amount_update, status, inpos, tlen, from_key, price_offset,
     bid1, ask1
 
@@ -14,11 +14,23 @@ v3 输出列:
 """
 
 import argparse
+import json
 import os
+import time
+import urllib.request
+
 import pandas as pd
 
 
 SYMBOL_COL_NAME = "symbol"
+TS_US_THRESHOLD = 100_000_000_000_000  # 1e14
+TS_MS_THRESHOLD = 100_000_000_000      # 1e11
+TS_S_THRESHOLD = 1_000_000_000         # 1e9
+OKX_SWAP_URL = "https://www.okx.com/api/v5/public/instruments?instType=SWAP"
+OKX_MULTIPLIER_CACHE = os.path.join(
+    os.path.dirname(__file__),
+    "okx_swap_multipliers.json",
+)
 TARGETS = {
     "xarb-okex-binance": {
         "dir": "/home/ubuntu/okex-binance-xarb-trade/data/order_query/export_data",
@@ -43,6 +55,145 @@ def normalize_symbol(value) -> str:
         if s.endswith(suffix):
             s = s[: -len(suffix)]
     return s
+
+
+def parse_float(value, default=None):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def read_okx_multiplier_cache(cache_path: str) -> dict[str, float] | None:
+    if not os.path.exists(cache_path):
+        return None
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"⚠️ 读取 OKX 合约乘数缓存失败: {cache_path} ({exc})")
+        return None
+    if not isinstance(payload, dict):
+        return None
+    mapping = payload.get("multipliers", payload)
+    if not isinstance(mapping, dict):
+        return None
+    multipliers: dict[str, float] = {}
+    for key, value in mapping.items():
+        symbol_key = normalize_symbol(key)
+        if not symbol_key:
+            continue
+        mult = parse_float(value)
+        if mult is None:
+            continue
+        multipliers[symbol_key] = mult
+    return multipliers or None
+
+
+def fetch_okx_swap_instruments() -> list[dict]:
+    with urllib.request.urlopen(OKX_SWAP_URL, timeout=10) as resp:
+        body = resp.read().decode("utf-8", errors="replace")
+    payload = json.loads(body)
+    if payload.get("code") != "0":
+        raise RuntimeError(f"OKX API error: {payload.get('code')} - {payload.get('msg')}")
+    data = payload.get("data")
+    return data if isinstance(data, list) else []
+
+
+def build_okx_multipliers(instruments: list[dict]) -> dict[str, float]:
+    multipliers: dict[str, float] = {}
+    for inst in instruments:
+        if not isinstance(inst, dict):
+            continue
+        if inst.get("ctType") != "linear":
+            continue
+        if inst.get("settleCcy") != "USDT":
+            continue
+        inst_id = inst.get("instId") or ""
+        symbol_key = normalize_symbol(inst_id)
+        if not symbol_key:
+            continue
+        ct_val = parse_float(inst.get("ctVal"), 1.0)
+        ct_mult = parse_float(inst.get("ctMult"), 1.0)
+        if ct_val is None or ct_mult is None:
+            continue
+        contract_size = ct_val * ct_mult
+        if contract_size <= 0.0:
+            continue
+        multipliers[symbol_key] = contract_size
+    return multipliers
+
+
+def load_okx_multipliers(cache_path: str) -> dict[str, float]:
+    cached = read_okx_multiplier_cache(cache_path)
+    if cached is not None:
+        print(f"✅ 使用 OKX 合约乘数缓存: {cache_path} ({len(cached)} symbols)")
+        return cached
+
+    print("缓存不存在，正在拉取 OKX 合约乘数...")
+    try:
+        instruments = fetch_okx_swap_instruments()
+        multipliers = build_okx_multipliers(instruments)
+    except Exception as exc:
+        print(f"⚠️ 拉取 OKX 合约乘数失败: {exc}")
+        return {}
+
+    if multipliers:
+        payload = {"fetched_at": int(time.time()), "multipliers": multipliers}
+        try:
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, sort_keys=True)
+            print(f"✅ OKX 合约乘数已缓存: {cache_path}")
+        except OSError as exc:
+            print(f"⚠️ 写入 OKX 合约乘数缓存失败: {cache_path} ({exc})")
+    return multipliers
+
+
+def apply_okx_contract_multipliers(
+    df: pd.DataFrame, multipliers: dict[str, float], qty_cols: list[str]
+) -> None:
+    if df.empty or not multipliers:
+        return
+    if "trading_venue" not in df.columns or "symbol" not in df.columns:
+        return
+    okx_mask = df["trading_venue"].astype(str) == "OkexFutures"
+    if not okx_mask.any():
+        return
+    symbol_keys = df.loc[okx_mask, "symbol"].map(normalize_symbol)
+    mults = symbol_keys.map(lambda k: multipliers.get(k, pd.NA))
+    if mults.isna().any():
+        missing = sorted(set(symbol_keys[mults.isna()].dropna().tolist()))
+        if missing:
+            example = ", ".join(missing[:5])
+            print(f"⚠️ OKX 合约乘数缺失: {len(missing)} 个 (示例: {example})")
+    mults = mults.fillna(1.0)
+    for col in qty_cols:
+        if col in df.columns:
+            df.loc[okx_mask, col] = df.loc[okx_mask, col] * mults
+
+
+def normalize_ts_us(value):
+    if value is None or pd.isna(value):
+        return pd.NA
+    try:
+        ts = int(value)
+    except (TypeError, ValueError):
+        return pd.NA
+    if ts <= 0:
+        return ts
+    if ts >= TS_US_THRESHOLD:
+        return ts
+    if ts >= TS_MS_THRESHOLD:
+        return ts * 1000
+    if ts >= TS_S_THRESHOLD:
+        return ts * 1_000_000
+    return ts
+
+
+def normalize_ts_col(df: pd.DataFrame, col: str) -> None:
+    if col not in df.columns:
+        return
+    df[col] = df[col].map(normalize_ts_us).astype("Int64")
 
 
 def symbol_mask(df: pd.DataFrame, col: str, symbol_key: str) -> pd.Series:
@@ -76,20 +227,39 @@ def classify_order_side(row) -> str:
 
 
 def match_hedge_signal(order_row, df_hedge_sig_sorted: pd.DataFrame) -> pd.Series:
-    """找到 event_time * 1000 > market_ts 且最接近的对冲信号"""
+    """找到 event_time_us > market_ts 且最接近的对冲信号"""
     sid = order_row["strategy_id"]
-    event_time_us = order_row["event_time"] * 1000  # ms -> us
+    event_time_us = order_row["event_time"]
+    if pd.isna(event_time_us):
+        return pd.Series(
+            {
+                "hedging_bid0": pd.NA,
+                "hedging_ask0": pd.NA,
+                "price_offset": pd.NA,
+                "signal_ts": pd.NA,
+            }
+        )
 
     signals = df_hedge_sig_sorted[df_hedge_sig_sorted["strategy_id"] == sid]
     if len(signals) == 0:
         return pd.Series(
-            {"hedging_bid0": pd.NA, "hedging_ask0": pd.NA, "price_offset": pd.NA}
+            {
+                "hedging_bid0": pd.NA,
+                "hedging_ask0": pd.NA,
+                "price_offset": pd.NA,
+                "signal_ts": pd.NA,
+            }
         )
 
     valid_signals = signals[signals["market_ts"] < event_time_us]
     if len(valid_signals) == 0:
         return pd.Series(
-            {"hedging_bid0": pd.NA, "hedging_ask0": pd.NA, "price_offset": pd.NA}
+            {
+                "hedging_bid0": pd.NA,
+                "hedging_ask0": pd.NA,
+                "price_offset": pd.NA,
+                "signal_ts": pd.NA,
+            }
         )
 
     best_signal = valid_signals.loc[valid_signals["market_ts"].idxmax()]
@@ -98,8 +268,29 @@ def match_hedge_signal(order_row, df_hedge_sig_sorted: pd.DataFrame) -> pd.Serie
             "hedging_bid0": best_signal.get("hedging_bid0", pd.NA),
             "hedging_ask0": best_signal.get("hedging_ask0", pd.NA),
             "price_offset": best_signal.get("price_offset", pd.NA),
+            "signal_ts": best_signal.get("market_ts", pd.NA),
         }
     )
+
+
+def match_open_signal_ts(order_row, df_open_sig_sorted: pd.DataFrame) -> pd.Series:
+    sid = order_row["strategy_id"]
+    event_time_us = order_row["event_time"]
+    if pd.isna(event_time_us):
+        return pd.Series({"signal_ts": pd.NA})
+    if "create_ts" not in df_open_sig_sorted.columns:
+        return pd.Series({"signal_ts": pd.NA})
+
+    signals = df_open_sig_sorted[df_open_sig_sorted["strategy_id"] == sid]
+    if len(signals) == 0:
+        return pd.Series({"signal_ts": pd.NA})
+
+    valid_signals = signals[signals["create_ts"] <= event_time_us]
+    if len(valid_signals) == 0:
+        return pd.Series({"signal_ts": pd.NA})
+
+    best_signal = valid_signals.loc[valid_signals["create_ts"].idxmax()]
+    return pd.Series({"signal_ts": best_signal.get("create_ts", pd.NA)})
 
 
 def find_order_outcome(row, df_cancel_orders: pd.DataFrame, df_trade_sorted: pd.DataFrame) -> pd.Series:
@@ -112,7 +303,7 @@ def find_order_outcome(row, df_cancel_orders: pd.DataFrame, df_trade_sorted: pd.
         return pd.Series(
             {
                 "status": "CANCELED",
-                "update_ts": cancel_row["event_time"] * 1000,
+                "update_ts": cancel_row["event_time"],
                 "filled_qty": cancel_row.get("cumulative_filled_quantity", pd.NA),
             }
         )
@@ -123,7 +314,7 @@ def find_order_outcome(row, df_cancel_orders: pd.DataFrame, df_trade_sorted: pd.
         return pd.Series(
             {
                 "status": "FILLED",
-                "update_ts": last_trade["event_time"] * 1000,
+                "update_ts": last_trade["event_time"],
                 "filled_qty": last_trade.get("cumulative_filled_quantity", pd.NA),
             }
         )
@@ -256,6 +447,8 @@ def export_symbol(
         df_all_open_sig = pd.concat([df_open_sig, df_close_sig], ignore_index=True)
     else:
         df_all_open_sig = df_open_sig.copy()
+    if "create_ts" not in df_all_open_sig.columns:
+        df_all_open_sig["create_ts"] = pd.NA
 
     print(f"open_sig: {len(df_open_sig)}, close_sig: {len(df_close_sig)}, all_open_sig: {len(df_all_open_sig)}")
 
@@ -273,6 +466,9 @@ def export_symbol(
     df_open_orders = df_new_orders[df_new_orders["order_side"] == "open"].copy()
     df_hedge_orders = df_new_orders[df_new_orders["order_side"] == "hedge"].copy()
     df_other_orders = df_new_orders[~df_new_orders["order_side"].isin(["open", "hedge"])].copy()
+    df_open_orders["signal_ts"] = pd.NA
+    df_hedge_orders["signal_ts"] = pd.NA
+    df_other_orders["signal_ts"] = pd.NA
 
     df_open_orders = df_open_orders.merge(
         df_all_open_sig[
@@ -289,6 +485,14 @@ def export_symbol(
         how="left",
     )
 
+    df_open_sig_sorted = df_all_open_sig.sort_values(["strategy_id", "create_ts"])
+    if len(df_open_orders) > 0:
+        open_matched = df_open_orders.apply(
+            lambda row: match_open_signal_ts(row, df_open_sig_sorted), axis=1
+        )
+        df_open_orders = df_open_orders.reset_index(drop=True)
+        df_open_orders["signal_ts"] = open_matched["signal_ts"].values
+
     df_hedge_sig_sorted = df_hedge_sig.sort_values(["strategy_id", "market_ts"])
     if len(df_hedge_orders) > 0:
         hedge_matched = df_hedge_orders.apply(
@@ -298,6 +502,7 @@ def export_symbol(
         df_hedge_orders["hedging_bid0"] = hedge_matched["hedging_bid0"].values
         df_hedge_orders["hedging_ask0"] = hedge_matched["hedging_ask0"].values
         df_hedge_orders["price_offset"] = hedge_matched["price_offset"].values
+        df_hedge_orders["signal_ts"] = hedge_matched["signal_ts"].values
 
     import warnings
 
@@ -307,11 +512,15 @@ def export_symbol(
             [df_open_orders, df_hedge_orders, df_other_orders], ignore_index=True
         )
 
-    df_new_orders["create_ts"] = df_new_orders["event_time"] * 1000
+    df_new_orders["create_ts"] = df_new_orders["event_time"]
     df_new_orders["update_ts"] = 0
     df_new_orders["client_order_id"] = pd.to_numeric(
         df_new_orders["client_order_id"], errors="coerce"
     ).astype("Int64")
+    if "signal_ts" in df_new_orders.columns:
+        df_new_orders["signal_ts"] = pd.to_numeric(
+            df_new_orders["signal_ts"], errors="coerce"
+        ).astype("Int64")
 
     df_cancel_orders = df_order[df_order["status"] == "CANCELED"].copy()
     df_trade_sorted = df_trade.sort_values(["order_id", "event_time"])
@@ -361,6 +570,7 @@ def export_symbol(
         "symbol",
         "create_ts",
         "update_ts",
+        "signal_ts",
         "client_order_id",
         "trading_venue",
         "ttype",
@@ -444,11 +654,38 @@ def main():
     df_hedge_sig = pd.read_parquet(os.path.join(data_dir, "signals_arb_hedge.parquet"))
     df_cancel_sig = pd.read_parquet(os.path.join(data_dir, "signals_arb_cancel.parquet"))
 
+    normalize_ts_col(df_trade, "event_time")
+    normalize_ts_col(df_order, "event_time")
+
+    needs_okx = False
+    if "trading_venue" in df_order.columns:
+        needs_okx = (df_order["trading_venue"].astype(str) == "OkexFutures").any()
+    if not needs_okx and "trading_venue" in df_trade.columns:
+        needs_okx = (df_trade["trading_venue"].astype(str) == "OkexFutures").any()
+
+    if needs_okx:
+        okx_multipliers = load_okx_multipliers(OKX_MULTIPLIER_CACHE)
+        apply_okx_contract_multipliers(
+            df_order,
+            okx_multipliers,
+            ["quantity", "last_executed_qty", "cumulative_filled_quantity"],
+        )
+        apply_okx_contract_multipliers(
+            df_trade,
+            okx_multipliers,
+            ["quantity", "cumulative_filled_quantity"],
+        )
+
     close_sig_path = os.path.join(data_dir, "signals_arb_close.parquet")
     if os.path.exists(close_sig_path):
         df_close_sig = pd.read_parquet(close_sig_path)
     else:
         df_close_sig = pd.DataFrame()
+
+    normalize_ts_col(df_open_sig, "create_ts")
+    normalize_ts_col(df_hedge_sig, "market_ts")
+    if len(df_close_sig) > 0:
+        normalize_ts_col(df_close_sig, "create_ts")
 
     df_trade["strategy_id"] = df_trade["client_order_id"].apply(extract_strategy_id)
     df_order["strategy_id"] = df_order["client_order_id"].apply(extract_strategy_id)

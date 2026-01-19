@@ -23,7 +23,7 @@ fn map_trading_venue(code: u8) -> TradingVenue {
 
 impl OrderUpdate for GateBasicOrderMsg {
     fn event_time(&self) -> i64 {
-        self.event_time
+        self.event_time.saturating_mul(1_000)
     }
 
     fn symbol(&self) -> &str {
@@ -90,12 +90,12 @@ impl OrderUpdate for GateBasicOrderMsg {
 
 impl TradeUpdate for GateBasicOrderMsg {
     fn event_time(&self) -> i64 {
-        self.event_time
+        self.event_time.saturating_mul(1_000)
     }
 
     fn trade_time(&self) -> i64 {
         // Gate 订单推送里没有独立的成交时间，这里使用 update time
-        self.event_time
+        self.event_time.saturating_mul(1_000)
     }
 
     fn symbol(&self) -> &str {
