@@ -3,8 +3,9 @@
 导出指定 symbol 的订单和信号数据 (v3)
 
 v3 输出列:
-    create_ts, update_ts, client_order_id, <symbol_col>, venue, ttype, sid, side,
-    price, amount_init, amount_update, status, inpos, tlen, from_key, bid1, ask1
+    create_ts, update_ts, client_order_id, <symbol_col>, venue, ttype, side,
+    price, amount_init, amount_update, status, inpos, tlen, from_key, price_offset,
+    bid1, ask1
 
 参数:
     --dir: 包含 parquet 文件的文件夹路径
@@ -48,6 +49,19 @@ def symbol_mask(df: pd.DataFrame, col: str, symbol_key: str) -> pd.Series:
     if col not in df.columns:
         return pd.Series(False, index=df.index)
     return df[col].map(normalize_symbol) == symbol_key
+
+
+def signal_missing_mask(df: pd.DataFrame, cols: list[str]) -> pd.Series:
+    missing = pd.Series(True, index=df.index)
+    found_col = False
+    for col in cols:
+        if col not in df.columns:
+            continue
+        found_col = True
+        missing = missing & (df[col].map(normalize_symbol) == "")
+    if not found_col:
+        return pd.Series(True, index=df.index)
+    return missing
 
 
 def classify_order_side(row) -> str:
@@ -184,8 +198,16 @@ def export_symbol(
     order_m = symbol_mask(df_order, "symbol", symbol_key)
     trade_m = symbol_mask(df_trade, "symbol", symbol_key)
     if len(strategy_ids) > 0:
-        order_m = order_m | df_order["strategy_id"].isin(strategy_ids)
-        trade_m = trade_m | df_trade["strategy_id"].isin(strategy_ids)
+        if "symbol" in df_order.columns:
+            order_missing = df_order["symbol"].map(normalize_symbol) == ""
+            order_m = order_m | (df_order["strategy_id"].isin(strategy_ids) & order_missing)
+        else:
+            order_m = order_m | df_order["strategy_id"].isin(strategy_ids)
+        if "symbol" in df_trade.columns:
+            trade_missing = df_trade["symbol"].map(normalize_symbol) == ""
+            trade_m = trade_m | (df_trade["strategy_id"].isin(strategy_ids) & trade_missing)
+        else:
+            trade_m = trade_m | df_trade["strategy_id"].isin(strategy_ids)
 
     df_order = df_order[order_m].copy()
     df_trade = df_trade[trade_m].copy()
@@ -200,30 +222,33 @@ def export_symbol(
     else:
         print(f"trades: {len(df_trade)} rows")
 
+    m_open = symbol_mask(df_open_sig, "opening_symbol", symbol_key) | symbol_mask(
+        df_open_sig, "hedging_symbol", symbol_key
+    )
+    m_hedge = symbol_mask(df_hedge_sig, "opening_symbol", symbol_key) | symbol_mask(
+        df_hedge_sig, "hedging_symbol", symbol_key
+    )
+    m_cancel = symbol_mask(df_cancel_sig, "opening_symbol", symbol_key) | symbol_mask(
+        df_cancel_sig, "hedging_symbol", symbol_key
+    )
     if len(strategy_ids) > 0:
-        df_open_sig = df_open_sig[df_open_sig["strategy_id"].isin(strategy_ids)].copy()
-        df_hedge_sig = df_hedge_sig[df_hedge_sig["strategy_id"].isin(strategy_ids)].copy()
-        df_cancel_sig = df_cancel_sig[df_cancel_sig["strategy_id"].isin(strategy_ids)].copy()
-        if len(df_close_sig) > 0:
-            df_close_sig = df_close_sig[df_close_sig["strategy_id"].isin(strategy_ids)].copy()
-    else:
-        m_open = symbol_mask(df_open_sig, "opening_symbol", symbol_key) | symbol_mask(
-            df_open_sig, "hedging_symbol", symbol_key
+        m_open = m_open | signal_missing_mask(df_open_sig, ["opening_symbol", "hedging_symbol"])
+        m_hedge = m_hedge | signal_missing_mask(df_hedge_sig, ["opening_symbol", "hedging_symbol"])
+        m_cancel = m_cancel | signal_missing_mask(df_cancel_sig, ["opening_symbol", "hedging_symbol"])
+        m_open = m_open & df_open_sig["strategy_id"].isin(strategy_ids)
+        m_hedge = m_hedge & df_hedge_sig["strategy_id"].isin(strategy_ids)
+        m_cancel = m_cancel & df_cancel_sig["strategy_id"].isin(strategy_ids)
+    df_open_sig = df_open_sig[m_open].copy()
+    df_hedge_sig = df_hedge_sig[m_hedge].copy()
+    df_cancel_sig = df_cancel_sig[m_cancel].copy()
+    if len(df_close_sig) > 0:
+        m_close = symbol_mask(df_close_sig, "opening_symbol", symbol_key) | symbol_mask(
+            df_close_sig, "hedging_symbol", symbol_key
         )
-        m_hedge = symbol_mask(df_hedge_sig, "opening_symbol", symbol_key) | symbol_mask(
-            df_hedge_sig, "hedging_symbol", symbol_key
-        )
-        m_cancel = symbol_mask(df_cancel_sig, "opening_symbol", symbol_key) | symbol_mask(
-            df_cancel_sig, "hedging_symbol", symbol_key
-        )
-        df_open_sig = df_open_sig[m_open].copy()
-        df_hedge_sig = df_hedge_sig[m_hedge].copy()
-        df_cancel_sig = df_cancel_sig[m_cancel].copy()
-        if len(df_close_sig) > 0:
-            m_close = symbol_mask(df_close_sig, "opening_symbol", symbol_key) | symbol_mask(
-                df_close_sig, "hedging_symbol", symbol_key
-            )
-            df_close_sig = df_close_sig[m_close].copy()
+        if len(strategy_ids) > 0:
+            m_close = m_close | signal_missing_mask(df_close_sig, ["opening_symbol", "hedging_symbol"])
+            m_close = m_close & df_close_sig["strategy_id"].isin(strategy_ids)
+        df_close_sig = df_close_sig[m_close].copy()
 
     df_open_sig["signal_type"] = "open"
     if len(df_close_sig) > 0:
@@ -323,12 +348,14 @@ def export_symbol(
     df_new_orders.loc[hedge_mask, "ask1"] = df_new_orders.loc[hedge_mask, "hedging_ask0"]
 
     df_new_orders["status"] = df_new_orders["status"].astype(str).str.lower()
+    if "side" in df_new_orders.columns:
+        df_new_orders["side"] = df_new_orders["side"].astype(str).str.lower()
     df_new_orders["inpos"] = pd.NA
     df_new_orders["tlen"] = pd.NA
     df_new_orders["from_key"] = df_new_orders["strategy_id"]
-    df_new_orders["sid"] = df_new_orders["trading_venue"]
     if "price_offset" not in df_new_orders.columns:
         df_new_orders["price_offset"] = pd.NA
+    df_new_orders["symbol"] = df_new_orders["symbol"].map(normalize_symbol)
 
     output_cols = [
         "symbol",
@@ -337,7 +364,6 @@ def export_symbol(
         "client_order_id",
         "trading_venue",
         "ttype",
-        "sid",
         "side",
         "price",
         "quantity",

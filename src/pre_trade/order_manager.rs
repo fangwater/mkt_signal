@@ -100,8 +100,7 @@ pub fn gate_currency_pair_from_symbol(symbol: &str) -> String {
 fn okex_order_type_from_order_type(order_type: OrderType) -> Result<OkexOrderType, String> {
     match order_type {
         OrderType::Market => Ok(OkexOrderType::Market),
-        OrderType::Limit => Ok(OkexOrderType::Limit),
-        OrderType::LimitMaker => Ok(OkexOrderType::PostOnly),
+        OrderType::Limit => Ok(OkexOrderType::PostOnly),
         _ => Err(format!("unsupported okex order type: {:?}", order_type)),
     }
 }
@@ -232,7 +231,6 @@ impl OrderExecutionStatus {
 #[repr(u8)]
 pub enum OrderType {
     Limit = 1,
-    LimitMaker = 2,
     Market = 3,
     StopLoss = 4,
     StopLossLimit = 5,
@@ -247,7 +245,6 @@ impl OrderType {
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
             1 => Some(OrderType::Limit),
-            2 => Some(OrderType::LimitMaker),
             3 => Some(OrderType::Market),
             4 => Some(OrderType::StopLoss),
             5 => Some(OrderType::StopLossLimit),
@@ -261,7 +258,6 @@ impl OrderType {
     pub fn to_u8(self) -> u8 {
         match self {
             OrderType::Limit => 1,
-            OrderType::LimitMaker => 2,
             OrderType::Market => 3,
             OrderType::StopLoss => 4,
             OrderType::StopLossLimit => 5,
@@ -276,7 +272,6 @@ impl OrderType {
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "LIMIT" => Some(OrderType::Limit),
-            "LIMIT_MAKER" => Some(OrderType::LimitMaker),
             "MARKET" => Some(OrderType::Market),
             "STOP_LOSS" => Some(OrderType::StopLoss),
             "STOP_LOSS_LIMIT" => Some(OrderType::StopLossLimit),
@@ -292,7 +287,6 @@ impl OrderType {
     pub fn as_str(&self) -> &'static str {
         match self {
             OrderType::Limit => "LIMIT",
-            OrderType::LimitMaker => "LIMIT_MAKER",
             OrderType::Market => "MARKET",
             OrderType::StopLoss => "STOP_LOSS",
             OrderType::StopLossLimit => "STOP_LOSS_LIMIT",
@@ -308,7 +302,6 @@ impl OrderType {
         matches!(
             self,
             OrderType::Limit
-                | OrderType::LimitMaker
                 | OrderType::StopLossLimit
                 | OrderType::TakeProfitLimit
         )
@@ -324,10 +317,7 @@ impl OrderType {
 
     /// 是否是条件单（止损/止盈）
     pub fn is_conditional(&self) -> bool {
-        !matches!(
-            self,
-            OrderType::Limit | OrderType::LimitMaker | OrderType::Market
-        )
+        !matches!(self, OrderType::Limit | OrderType::Market)
     }
 }
 
@@ -821,7 +811,7 @@ impl Order {
                 let create_ts = get_timestamp_us();
                 let currency_pair = gate_currency_pair_from_symbol(&self.symbol);
                 let order_type = match self.order_type {
-                    OrderType::Limit | OrderType::LimitMaker => "limit",
+                    OrderType::Limit => "limit",
                     OrderType::Market => "market",
                     _ => {
                         return Err(format!(
@@ -832,7 +822,6 @@ impl Order {
                 };
                 let time_in_force = match self.order_type {
                     OrderType::Limit => Some("poc"),
-                    OrderType::LimitMaker => Some("poc"),
                     OrderType::Market => None,
                     _ => None,
                 };
@@ -865,7 +854,6 @@ impl Order {
                 let contract = gate_currency_pair_from_symbol(&self.symbol);
                 let time_in_force = match self.order_type {
                     OrderType::Limit => Some("poc"),
-                    OrderType::LimitMaker => Some("poc"),
                     OrderType::Market => Some("ioc"),
                     _ => None,
                 };

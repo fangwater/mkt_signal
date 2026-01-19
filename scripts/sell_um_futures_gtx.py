@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Submit a Binance Portfolio Margin UM futures LIMIT_MAKER (GTX) order.
+"""Submit a Binance Portfolio Margin UM futures LIMIT (GTX) order.
 
 Example:
   BINANCE_API_KEY=... BINANCE_API_SECRET=... \\
@@ -16,7 +16,7 @@ from sell_margin_spot import request_papi
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Submit a Binance Portfolio Margin UM futures LIMIT_MAKER (GTX) order",
+        description="Submit a Binance Portfolio Margin UM futures LIMIT (GTX) order",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
