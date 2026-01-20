@@ -16,6 +16,8 @@ pub enum TradeRequestType {
     BinanceCancelMarginOrder = 4008,            // 币安杠杆账户撤单请求
     BinanceModifyUMOrder = 4009,                // 币安UM合约修改订单请求
     BinanceUMSetLeverage = 4012,                // 币安UM设置杠杆
+    BinanceWsNewUMOrder = 4013,                 // 币安UM WebSocket 下单请求
+    BinanceWsCancelUMOrder = 4014,              // 币安UM WebSocket 撤单请求
     OkexNewMarginOrder = 5001,                  // Okex 下单（现货/杠杆）
     OkexNewUMOrder = 5002,                      // Okex 下单（合约/UM风格）
     OkexCancelMarginOrder = 5003,               // Okex 撤单（现货/杠杆）
@@ -58,6 +60,8 @@ impl TryFrom<u32> for TradeRequestType {
             4008 => Ok(TradeRequestType::BinanceCancelMarginOrder),
             4009 => Ok(TradeRequestType::BinanceModifyUMOrder),
             4012 => Ok(TradeRequestType::BinanceUMSetLeverage),
+            4013 => Ok(TradeRequestType::BinanceWsNewUMOrder),
+            4014 => Ok(TradeRequestType::BinanceWsCancelUMOrder),
             5001 => Ok(TradeRequestType::OkexNewMarginOrder),
             5002 => Ok(TradeRequestType::OkexNewUMOrder),
             5003 => Ok(TradeRequestType::OkexCancelMarginOrder),

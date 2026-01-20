@@ -44,6 +44,9 @@ impl WsConstants {
 
     /// Gate USDT 合约交易 WebSocket URL
     pub const GATE_FUTURES_WS_URL: &'static str = "wss://fx-ws.gateio.ws/v4/ws/usdt";
+
+    /// Binance UM WebSocket API URL
+    pub const BINANCE_UM_WS_URL: &'static str = "wss://ws-fapi.binance.com/ws-fapi/v1";
 }
 
 /// 默认的本地 IP 列表（用于 OKEx 双连接）

@@ -8,6 +8,7 @@ use std::convert::TryFrom;
 pub enum QueryRequestType {
     BinanceMarginQuery = 6001,
     BinanceUMQuery = 6002,
+    BinanceWsUMQuery = 6003,
     BinancePmBalanceSnapshot = 6101,
     BinanceUmAccountSnapshot = 6102,
     OkexMarginQuery = 7001,
@@ -43,6 +44,7 @@ impl TryFrom<u32> for QueryRequestType {
         match v {
             6001 => Ok(QueryRequestType::BinanceMarginQuery),
             6002 => Ok(QueryRequestType::BinanceUMQuery),
+            6003 => Ok(QueryRequestType::BinanceWsUMQuery),
             6101 => Ok(QueryRequestType::BinancePmBalanceSnapshot),
             6102 => Ok(QueryRequestType::BinanceUmAccountSnapshot),
             7001 => Ok(QueryRequestType::OkexMarginQuery),

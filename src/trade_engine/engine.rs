@@ -12,7 +12,7 @@ use crate::trade_engine::query_parsers::gate_unified_balance_snapshot::parse_gat
 use crate::trade_engine::query_parsers::okex_account_balance_snapshot::parse_okex_account_balance_snapshot;
 use crate::trade_engine::query_parsers::okex_order::parse_okex_order_query_json;
 use crate::trade_engine::query_parsers::okex_positions_snapshot::parse_okex_positions_snapshot;
-use crate::trade_engine::query_request::QueryRequestMsg;
+use crate::trade_engine::query_request::{QueryRequestMsg, QueryRequestType};
 use crate::trade_engine::query_response_handle::{spawn_query_response_handle, QueryExecOutcome};
 use crate::trade_engine::query_type_mapping::QueryTypeMapping;
 use crate::trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
@@ -189,7 +189,7 @@ impl TradeEngine {
             None
         };
 
-        // 初始化 WebSocket 客户端（用于 OKEx）
+        // 初始化 WebSocket 客户端（用于 OKEx/Gate/Binance）
         let mut worker_handles: Vec<(&'static str, tokio::task::JoinHandle<()>)> = Vec::new();
 
         let mut gate_futures_ws_endpoints: Option<Vec<tokio::sync::mpsc::UnboundedSender<WsCommand>>> =
@@ -238,6 +238,7 @@ impl TradeEngine {
                     None, // OKEx 认证会自动从环境变量读取
                     None,
                     None,
+                    None,
                     rx,
                     resp_tx.clone(),
                 );
@@ -279,6 +280,7 @@ impl TradeEngine {
                     ping_interval_ms,
                     max_inflight,
                     None,
+                    None,
                     Some(crate::trade_engine::gate_ws::GateWsKind::SpotUnified),
                     Some(query_resp_tx.clone()),
                     spot_rx,
@@ -306,6 +308,7 @@ impl TradeEngine {
                     ping_interval_ms,
                     max_inflight,
                     None,
+                    None,
                     Some(crate::trade_engine::gate_ws::GateWsKind::FuturesUsdt),
                     Some(query_resp_tx.clone()),
                     fut_rx,
@@ -326,6 +329,49 @@ impl TradeEngine {
 
             gate_futures_ws_endpoints = Some(futures_endpoints);
             Some(spot_endpoints)
+        } else if exchange == Exchange::Binance {
+            let mut local_ips = self.local_ips.clone();
+            if local_ips.is_empty() {
+                warn!("binance ws local_ips empty; using default binding 0.0.0.0");
+                local_ips.push("0.0.0.0".parse()?);
+            }
+
+            let connect_timeout_ms = WsConstants::CONNECT_TIMEOUT_MS;
+            let ping_interval_ms = WsConstants::PING_INTERVAL_MS;
+            let max_inflight = WsConstants::MAX_INFLIGHT;
+            let binance_creds = self.accounts.get(0).cloned();
+
+            let mut endpoints = Vec::with_capacity(local_ips.len());
+            for (idx, ip) in local_ips.into_iter().enumerate() {
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                let client = TradeWsClient::new(
+                    idx,
+                    exchange,
+                    ip,
+                    WsConstants::BINANCE_UM_WS_URL.to_string(),
+                    connect_timeout_ms,
+                    ping_interval_ms,
+                    max_inflight,
+                    None,
+                    binance_creds.clone(),
+                    None,
+                    Some(query_resp_tx.clone()),
+                    rx,
+                    resp_tx.clone(),
+                );
+                info!(
+                    "spawning binance ws client id={} ip={} max_inflight={}",
+                    idx,
+                    client.local_ip(),
+                    max_inflight
+                );
+                let handle = tokio::task::spawn_local(async move {
+                    client.run().await;
+                });
+                worker_handles.push(("binance_ws_client", handle));
+                endpoints.push(tx);
+            }
+            Some(endpoints)
         } else {
             None
         };
@@ -501,6 +547,7 @@ impl TradeEngine {
             let rest_dispatcher = rest_dispatcher.clone();
             let exchange_copy = exchange;
             let query_resp_tx = query_resp_tx.clone();
+            let binance_ws_endpoints = ws_endpoints.clone();
             let gate_spot_ws_endpoints = ws_endpoints.clone();
             let gate_futures_ws_endpoints = gate_futures_ws_endpoints.clone();
             let query_router = tokio::task::spawn_local(async move {
@@ -510,6 +557,7 @@ impl TradeEngine {
                 let gate_http = reqwest::Client::new();
                 let gate_creds =
                     crate::portfolio_margin::gate_auth::GateCredentials::from_env().ok();
+                let mut binance_query_rr = 0usize;
                 let mut gate_query_rr = 0usize;
                 let mut gate_futures_query_rr = 0usize;
 
@@ -521,6 +569,68 @@ impl TradeEngine {
 
                     match exchange_copy {
                         Exchange::Binance => {
+                            if msg.req_type == QueryRequestType::BinanceWsUMQuery {
+                                let Some(endpoints) = binance_ws_endpoints.as_ref() else {
+                                    let _ = query_resp_tx.send(QueryExecOutcome {
+                                        req_type: msg.req_type,
+                                        client_query_id: msg.client_query_id,
+                                        status: 503,
+                                        body: bytes::Bytes::from_static(
+                                            b"no binance ws endpoints available",
+                                        ),
+                                        exchange: exchange_copy,
+                                        ip_used_weight_1m: None,
+                                        query_count_1m: None,
+                                    });
+                                    continue;
+                                };
+                                if endpoints.is_empty() {
+                                    let _ = query_resp_tx.send(QueryExecOutcome {
+                                        req_type: msg.req_type,
+                                        client_query_id: msg.client_query_id,
+                                        status: 503,
+                                        body: bytes::Bytes::from_static(
+                                            b"no binance ws endpoints available",
+                                        ),
+                                        exchange: exchange_copy,
+                                        ip_used_weight_1m: None,
+                                        query_count_1m: None,
+                                    });
+                                    continue;
+                                }
+
+                                let len = endpoints.len();
+                                let start = binance_query_rr;
+                                binance_query_rr = (binance_query_rr + 1) % len;
+
+                                let mut sent = false;
+                                for offset in 0..len {
+                                    let idx = (start + offset) % len;
+                                    if endpoints[idx]
+                                        .send(WsCommand::SendQuery(msg.clone()))
+                                        .is_ok()
+                                    {
+                                        sent = true;
+                                        break;
+                                    }
+                                }
+
+                                if !sent {
+                                    let _ = query_resp_tx.send(QueryExecOutcome {
+                                        req_type: msg.req_type,
+                                        client_query_id: msg.client_query_id,
+                                        status: 503,
+                                        body: bytes::Bytes::from_static(
+                                            b"binance ws endpoints unavailable",
+                                        ),
+                                        exchange: exchange_copy,
+                                        ip_used_weight_1m: None,
+                                        query_count_1m: None,
+                                    });
+                                }
+                                continue;
+                            }
+
                             if !QueryTypeMapping::is_binance_rest(msg.req_type) {
                                 let _ = query_resp_tx.send(QueryExecOutcome {
                                     req_type: msg.req_type,

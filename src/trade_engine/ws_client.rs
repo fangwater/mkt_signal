@@ -1,7 +1,10 @@
 use crate::common::exchange::Exchange;
 use crate::portfolio_margin::gate_auth::GateCredentials;
 use crate::portfolio_margin::okex_auth::OkexCredentials;
+use crate::trade_engine::binance_ws;
+use crate::trade_engine::config::ApiKey;
 use crate::trade_engine::gate_ws;
+use crate::trade_engine::query_parsers::binance_um_order::parse_binance_um_order_query_json;
 use crate::trade_engine::query_parsers::gate_order_status::{
     parse_gate_futures_order_status_json, parse_gate_spot_order_status_json,
 };
@@ -56,6 +59,7 @@ pub struct TradeWsClient {
     ping_interval_ms: u64,
     max_inflight: usize,
     login_payload: Option<String>,
+    binance_creds: Option<ApiKey>,
     okex_creds: Option<OkexCredentials>,
     gate_creds: Option<GateCredentials>,
     gate_ws_kind: Option<gate_ws::GateWsKind>,
@@ -85,6 +89,7 @@ impl TradeWsClient {
         ping_interval_ms: u64,
         max_inflight: usize,
         login_payload: Option<String>,
+        binance_creds: Option<ApiKey>,
         gate_ws_kind: Option<gate_ws::GateWsKind>,
         query_resp_tx: Option<mpsc::UnboundedSender<QueryExecOutcome>>,
         cmd_rx: mpsc::UnboundedReceiver<WsCommand>,
@@ -121,6 +126,13 @@ impl TradeWsClient {
             _ => (login_payload, None, None),
         };
 
+        if exchange == Exchange::Binance && binance_creds.is_none() {
+            warn!(
+                "trade ws client id={} missing Binance credentials; ws requests will fail",
+                id
+            );
+        }
+
         Self {
             id,
             exchange,
@@ -130,6 +142,7 @@ impl TradeWsClient {
             ping_interval_ms,
             max_inflight,
             login_payload,
+            binance_creds,
             okex_creds,
             gate_creds,
             gate_ws_kind,
@@ -145,6 +158,7 @@ impl TradeWsClient {
                 Exchange::Gate => gate_ws_kind
                     .unwrap_or(gate_ws::GateWsKind::SpotUnified)
                     .default_request_type(),
+                Exchange::Binance => TradeRequestType::BinanceWsNewUMOrder,
                 _ => TradeRequestType::BinanceNewUMOrder,
             },
             last_dispatched_query_type: match exchange {
@@ -152,6 +166,7 @@ impl TradeWsClient {
                     gate_ws::GateWsKind::SpotUnified => QueryRequestType::GateUnifiedOrderQuery,
                     gate_ws::GateWsKind::FuturesUsdt => QueryRequestType::GateFuturesOrderQuery,
                 },
+                Exchange::Binance => QueryRequestType::BinanceWsUMQuery,
                 _ => QueryRequestType::GateUnifiedOrderQuery,
             },
             shutdown: false,
@@ -583,6 +598,7 @@ impl TradeWsClient {
         match self.exchange {
             Exchange::Okex => self.build_okex_payload(msg),
             Exchange::Gate => self.build_gate_payload(msg),
+            Exchange::Binance => self.build_binance_payload(msg),
             _ => {
                 let params_b64 = BASE64_STANDARD.encode(&msg.params);
                 let payload = json!({
@@ -600,6 +616,7 @@ impl TradeWsClient {
     fn build_query_payload(&self, msg: &QueryRequestMsg) -> Result<String> {
         match self.exchange {
             Exchange::Gate => gate_ws::build_query_payload(msg),
+            Exchange::Binance => self.build_binance_query_payload(msg),
             _ => Err(anyhow!(
                 "unsupported query ws payload for exchange {:?}",
                 self.exchange
@@ -649,6 +666,22 @@ impl TradeWsClient {
 
     fn build_gate_payload(&self, msg: &TradeRequestMsg) -> Result<String> {
         gate_ws::build_api_payload(msg)
+    }
+
+    fn build_binance_payload(&self, msg: &TradeRequestMsg) -> Result<String> {
+        let creds = self
+            .binance_creds
+            .as_ref()
+            .ok_or_else(|| anyhow!("missing binance ws credentials"))?;
+        binance_ws::build_order_payload(msg, creds)
+    }
+
+    fn build_binance_query_payload(&self, msg: &QueryRequestMsg) -> Result<String> {
+        let creds = self
+            .binance_creds
+            .as_ref()
+            .ok_or_else(|| anyhow!("missing binance ws credentials"))?;
+        binance_ws::build_query_payload(msg, creds)
     }
 
     fn track_inflight(&mut self, msg: &TradeRequestMsg) {
@@ -704,7 +737,7 @@ impl TradeWsClient {
     }
 
     fn notify_query_rejected(&self, msg: &QueryRequestMsg) {
-        self.publish_gate_query_error(msg.req_type, msg.client_query_id);
+        self.publish_query_error(msg.req_type, msg.client_query_id);
     }
 
     async fn handle_incoming(
@@ -876,6 +909,10 @@ impl TradeWsClient {
             return;
         }
 
+        if self.exchange == Exchange::Binance && self.handle_binance_payload(payload) {
+            return;
+        }
+
         let (req_type, client_order_id) = self.extract_correlated(payload);
         if self.exchange == Exchange::Okex {
             if let Some(resp) = OkexWsOrderResponse::from_json_str(payload) {
@@ -1018,6 +1055,96 @@ impl TradeWsClient {
         true
     }
 
+    fn handle_binance_payload(&mut self, payload: &str) -> bool {
+        let Some(resp) = binance_ws::parse_ws_response(payload) else {
+            return false;
+        };
+        let id = resp.id.unwrap_or(0);
+        if id <= 0 {
+            return false;
+        }
+
+        if let Some(req_type) = self.query_inflight.remove(&id) {
+            self.publish_binance_query_response(req_type, id, &resp);
+            return true;
+        }
+
+        let req_type = self
+            .inflight
+            .remove(&id)
+            .unwrap_or(self.last_dispatched_type);
+        self.publish_binance_ws_response(id, req_type, &resp);
+        true
+    }
+
+    fn binance_status(resp: &binance_ws::BinanceWsResponse) -> u16 {
+        match resp.status {
+            Some(status) if status > 0 => status,
+            _ if resp.error_code.is_some() => 400,
+            _ => 206,
+        }
+    }
+
+    fn publish_binance_ws_response(
+        &self,
+        client_order_id: i64,
+        req_type: TradeRequestType,
+        resp: &binance_ws::BinanceWsResponse,
+    ) {
+        let status = Self::binance_status(resp);
+        let body_payload = json!({
+            "transport": "ws",
+            "exchange": "binance",
+            "status": resp.status.unwrap_or(0),
+            "code": resp.error_code.unwrap_or(0),
+            "msg": resp.error_msg.as_deref().unwrap_or(""),
+            "result": resp.result.clone().unwrap_or(Value::Null),
+            "endpointId": self.id,
+            "localIp": self.local_ip.to_string(),
+        })
+        .to_string();
+        let _ = self.resp_tx.send(TradeExecOutcome {
+            req_type,
+            client_order_id,
+            status,
+            body: body_payload,
+            exchange: self.exchange,
+            ip_used_weight_1m: None,
+            order_count_1m: None,
+        });
+    }
+
+    fn publish_binance_query_response(
+        &self,
+        req_type: QueryRequestType,
+        client_query_id: i64,
+        resp: &binance_ws::BinanceWsResponse,
+    ) {
+        let status = Self::binance_status(resp);
+        if !(200..300).contains(&(status as u32)) || resp.error_code.unwrap_or(0) != 0 {
+            self.publish_query_error(req_type, client_query_id);
+            return;
+        }
+
+        let Some(result) = resp.result.as_ref() else {
+            self.publish_query_error(req_type, client_query_id);
+            return;
+        };
+        let result_json = match serde_json::to_string(result) {
+            Ok(s) => s,
+            Err(_) => {
+                self.publish_query_error(req_type, client_query_id);
+                return;
+            }
+        };
+
+        if let Some(parsed) = parse_binance_um_order_query_json(&result_json) {
+            self.publish_query_response(req_type, client_query_id, status, parsed.to_bytes());
+        } else {
+            self.publish_query_error(req_type, client_query_id);
+        }
+    }
+
     fn handle_gate_order_status(&mut self, json_val: &Value, payload: &str, channel: &str) -> bool {
         if json_val.get("ack").and_then(|v| v.as_bool()) == Some(true) {
             return true;
@@ -1040,7 +1167,7 @@ impl TradeWsClient {
 
         let status = Self::extract_gate_status(json_val);
         if !(200..300).contains(&(status as u32)) {
-            self.publish_gate_query_error(req_type, client_query_id);
+            self.publish_query_error(req_type, client_query_id);
             return true;
         }
 
@@ -1051,9 +1178,9 @@ impl TradeWsClient {
         };
 
         if let Some(parsed) = parsed {
-            self.publish_gate_query_response(req_type, client_query_id, status, parsed.to_bytes());
+            self.publish_query_response(req_type, client_query_id, status, parsed.to_bytes());
         } else {
-            self.publish_gate_query_error(req_type, client_query_id);
+            self.publish_query_error(req_type, client_query_id);
         }
 
         true
@@ -1246,7 +1373,7 @@ impl TradeWsClient {
         });
     }
 
-    fn publish_gate_query_response(
+    fn publish_query_response(
         &self,
         req_type: QueryRequestType,
         client_query_id: i64,
@@ -1267,13 +1394,8 @@ impl TradeWsClient {
         });
     }
 
-    fn publish_gate_query_error(&self, req_type: QueryRequestType, client_query_id: i64) {
-        self.publish_gate_query_response(
-            req_type,
-            client_query_id,
-            400,
-            Bytes::from_static(b"E"),
-        );
+    fn publish_query_error(&self, req_type: QueryRequestType, client_query_id: i64) {
+        self.publish_query_response(req_type, client_query_id, 400, Bytes::from_static(b"E"));
     }
 
     fn publish_okex_ws_response(

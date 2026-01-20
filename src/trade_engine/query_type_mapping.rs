@@ -35,6 +35,9 @@ impl QueryTypeMapping {
         match request_type {
             QueryRequestType::BinanceMarginQuery => "/papi/v1/margin/order",
             QueryRequestType::BinanceUMQuery => "/papi/v1/um/order",
+            QueryRequestType::BinanceWsUMQuery => {
+                unreachable!("Binance ws queries run via websocket; REST mapping not used")
+            }
             QueryRequestType::BinancePmBalanceSnapshot => "/papi/v1/balance",
             QueryRequestType::BinanceUmAccountSnapshot => "/papi/v1/um/account",
             QueryRequestType::OkexMarginQuery | QueryRequestType::OkexUMQuery => {
@@ -63,6 +66,9 @@ impl QueryTypeMapping {
             | QueryRequestType::OkexPositionsSnapshot
             | QueryRequestType::GateUnifiedBalanceSnapshot
             | QueryRequestType::GateUnifiedPositionsSnapshot => "GET",
+            QueryRequestType::BinanceWsUMQuery => {
+                unreachable!("Binance ws queries run via websocket; REST mapping not used")
+            }
             QueryRequestType::GateUnifiedOrderQuery
             | QueryRequestType::GateFuturesOrderQuery => {
                 unreachable!("Gate order queries run via websocket; REST mapping not used")
@@ -74,6 +80,9 @@ impl QueryTypeMapping {
         match request_type {
             QueryRequestType::BinanceMarginQuery => 1,
             QueryRequestType::BinanceUMQuery => 1,
+            QueryRequestType::BinanceWsUMQuery => {
+                unreachable!("Binance ws queries run via websocket; REST mapping not used")
+            }
             QueryRequestType::BinancePmBalanceSnapshot => 1,
             QueryRequestType::BinanceUmAccountSnapshot => 1,
             QueryRequestType::OkexMarginQuery | QueryRequestType::OkexUMQuery => 1,
