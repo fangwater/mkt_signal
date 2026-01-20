@@ -1416,8 +1416,6 @@ impl Parser for BinanceAskBidSpreadParser {
         // Parse Binance bookTicker message
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
-                // 币安期货格式没有 E 和 T 字段，现货有
-                // 统一处理，如果有 E 字段就用，没有就用 0
                 if let (
                     Some(symbol),
                     Some(bid_price_str),
@@ -1431,9 +1429,17 @@ impl Parser for BinanceAskBidSpreadParser {
                     json_value.get("a").and_then(|v| v.as_str()), // best ask price
                     json_value.get("A").and_then(|v| v.as_str()), // best ask qty
                 ) {
-                    // 获取时间戳：统一使用u字段（order book updateId）作为索引
-                    // 币安现货和期货的bookTicker都有u字段
-                    let timestamp = json_value.get("u").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let parse_ts = |key: &str| {
+                        json_value.get(key).and_then(|v| {
+                            v.as_i64()
+                                .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
+                        })
+                    };
+                    // 优先使用事件时间 E（ms），fallback 到 T，再 fallback 到 u
+                    let timestamp = parse_ts("E")
+                        .or_else(|| parse_ts("T"))
+                        .or_else(|| parse_ts("u"))
+                        .unwrap_or(0);
 
                     // Parse prices and amounts
                     if let (Ok(bid_price), Ok(bid_amount), Ok(ask_price), Ok(ask_amount)) = (

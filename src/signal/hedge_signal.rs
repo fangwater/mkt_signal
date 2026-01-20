@@ -72,12 +72,14 @@ impl ArbHedgeCtx {
                 venue: 0,
                 bid0: 0.0,
                 ask0: 0.0,
+                ts: 0,
             },
             opening_symbol: [0u8; 32],
             hedging_leg: TradingLeg {
                 venue: 0,
                 bid0: 0.0,
                 ask0: 0.0,
+                ts: 0,
             },
             hedging_symbol: [0u8; 32],
             market_ts: 0,
@@ -238,12 +240,14 @@ impl SignalBytes for ArbHedgeCtx {
         buf.put_u8(self.opening_leg.venue);
         buf.put_f64_le(self.opening_leg.bid0);
         buf.put_f64_le(self.opening_leg.ask0);
+        buf.put_i64_le(self.opening_leg.ts);
         bytes_helper::write_fixed_bytes(&mut buf, &self.opening_symbol);
 
         // Hedging leg market data
         buf.put_u8(self.hedging_leg.venue);
         buf.put_f64_le(self.hedging_leg.bid0);
         buf.put_f64_le(self.hedging_leg.ask0);
+        buf.put_i64_le(self.hedging_leg.ts);
         bytes_helper::write_fixed_bytes(&mut buf, &self.hedging_symbol);
 
         buf.put_i64_le(self.market_ts);
@@ -252,75 +256,149 @@ impl SignalBytes for ArbHedgeCtx {
         buf.freeze()
     }
 
-    fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
+    fn from_bytes(bytes: Bytes) -> Result<Self, String> {
         // 基本字段长度: 4 + 8 + 8 + 1 + 8 + 8 + 1 + 8 = 46
         const BASIC_FIELDS_LEN: usize = 4 + 8 + 8 + 1 + 8 + 8 + 1 + 8;
 
-        if bytes.remaining() < BASIC_FIELDS_LEN {
-            return Err("Not enough bytes for ArbHedgeCtx basic fields".to_string());
+        fn detect_legacy_format(bytes: &Bytes, base_offset: usize, tail_len: usize) -> Option<bool> {
+            let total = bytes.len();
+            let mut new_match = false;
+            let mut old_match = false;
+
+            let open_len_idx_new = base_offset + 25;
+            if total > open_len_idx_new {
+                let open_len = bytes[open_len_idx_new] as usize;
+                if open_len <= 32 {
+                    let hedge_len_idx = base_offset + 51 + open_len;
+                    if total > hedge_len_idx {
+                        let hedge_len = bytes[hedge_len_idx] as usize;
+                        if hedge_len <= 32 {
+                            let expected = base_offset + 52 + open_len + hedge_len + tail_len;
+                            if total == expected {
+                                new_match = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            let open_len_idx_old = base_offset + 17;
+            if total > open_len_idx_old {
+                let open_len = bytes[open_len_idx_old] as usize;
+                if open_len <= 32 {
+                    let hedge_len_idx = base_offset + 35 + open_len;
+                    if total > hedge_len_idx {
+                        let hedge_len = bytes[hedge_len_idx] as usize;
+                        if hedge_len <= 32 {
+                            let expected = base_offset + 36 + open_len + hedge_len + tail_len;
+                            if total == expected {
+                                old_match = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            match (new_match, old_match) {
+                (true, false) => Some(false),
+                (false, true) => Some(true),
+                (true, true) => Some(false),
+                _ => None,
+            }
         }
 
-        let strategy_id = bytes.get_i32_le();
-        let client_order_id = bytes.get_i64_le();
-        let hedge_qty = bytes.get_f64_le();
-        let hedge_side = bytes.get_u8();
-        let limit_price = bytes.get_f64_le();
-        let price_tick = bytes.get_f64_le();
-        let maker_only = bytes.get_u8() != 0;
-        let exp_time = bytes.get_i64_le();
+        fn parse(mut bytes: Bytes, with_ts: bool) -> Result<ArbHedgeCtx, String> {
+            if bytes.remaining() < BASIC_FIELDS_LEN {
+                return Err("Not enough bytes for ArbHedgeCtx basic fields".to_string());
+            }
 
-        // Opening leg market data（统一按新格式解析）
-        if bytes.remaining() < 1 + 8 + 8 {
-            return Err("Not enough bytes for opening leg".to_string());
+            let strategy_id = bytes.get_i32_le();
+            let client_order_id = bytes.get_i64_le();
+            let hedge_qty = bytes.get_f64_le();
+            let hedge_side = bytes.get_u8();
+            let limit_price = bytes.get_f64_le();
+            let price_tick = bytes.get_f64_le();
+            let maker_only = bytes.get_u8() != 0;
+            let exp_time = bytes.get_i64_le();
+
+            // Opening leg market data
+            if bytes.remaining() < 1 + 8 + 8 {
+                return Err("Not enough bytes for opening leg".to_string());
+            }
+            let opening_venue = bytes.get_u8();
+            let opening_bid0 = bytes.get_f64_le();
+            let opening_ask0 = bytes.get_f64_le();
+            let opening_ts = if with_ts {
+                if bytes.remaining() < 8 {
+                    return Err("Not enough bytes for opening leg ts".to_string());
+                }
+                bytes.get_i64_le()
+            } else {
+                0
+            };
+            let opening_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
+
+            // Hedging leg market data
+            if bytes.remaining() < 1 + 8 + 8 {
+                return Err("Not enough bytes for hedging leg".to_string());
+            }
+            let hedging_venue = bytes.get_u8();
+            let hedging_bid0 = bytes.get_f64_le();
+            let hedging_ask0 = bytes.get_f64_le();
+            let hedging_ts = if with_ts {
+                if bytes.remaining() < 8 {
+                    return Err("Not enough bytes for hedging leg ts".to_string());
+                }
+                bytes.get_i64_le()
+            } else {
+                0
+            };
+            let hedging_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
+
+            if bytes.remaining() < 8 {
+                return Err("Not enough bytes for market_ts".to_string());
+            }
+            let market_ts = bytes.get_i64_le();
+
+            if bytes.remaining() < 8 {
+                return Err("Not enough bytes for price_offset".to_string());
+            }
+            let price_offset = bytes.get_f64_le();
+
+            Ok(ArbHedgeCtx {
+                strategy_id,
+                client_order_id,
+                hedge_qty,
+                hedge_side,
+                limit_price,
+                price_tick,
+                maker_only,
+                exp_time,
+                opening_leg: TradingLeg {
+                    venue: opening_venue,
+                    bid0: opening_bid0,
+                    ask0: opening_ask0,
+                    ts: opening_ts,
+                },
+                opening_symbol,
+                hedging_leg: TradingLeg {
+                    venue: hedging_venue,
+                    bid0: hedging_bid0,
+                    ask0: hedging_ask0,
+                    ts: hedging_ts,
+                },
+                hedging_symbol,
+                market_ts,
+                price_offset,
+            })
         }
-        let opening_venue = bytes.get_u8();
-        let opening_bid0 = bytes.get_f64_le();
-        let opening_ask0 = bytes.get_f64_le();
-        let opening_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
 
-        // Hedging leg market data
-        if bytes.remaining() < 1 + 8 + 8 {
-            return Err("Not enough bytes for hedging leg".to_string());
+        let format = detect_legacy_format(&bytes, BASIC_FIELDS_LEN, 16);
+        match format {
+            Some(true) => parse(bytes, false),
+            Some(false) => parse(bytes, true),
+            None => parse(bytes.clone(), true).or_else(|_| parse(bytes, false)),
         }
-        let hedging_venue = bytes.get_u8();
-        let hedging_bid0 = bytes.get_f64_le();
-        let hedging_ask0 = bytes.get_f64_le();
-        let hedging_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
-
-        if bytes.remaining() < 8 {
-            return Err("Not enough bytes for market_ts".to_string());
-        }
-        let market_ts = bytes.get_i64_le();
-
-        if bytes.remaining() < 8 {
-            return Err("Not enough bytes for price_offset".to_string());
-        }
-        let price_offset = bytes.get_f64_le();
-
-        Ok(Self {
-            strategy_id,
-            client_order_id,
-            hedge_qty,
-            hedge_side,
-            limit_price,
-            price_tick,
-            maker_only,
-            exp_time,
-            opening_leg: TradingLeg {
-                venue: opening_venue,
-                bid0: opening_bid0,
-                ask0: opening_ask0,
-            },
-            opening_symbol,
-            hedging_leg: TradingLeg {
-                venue: hedging_venue,
-                bid0: hedging_bid0,
-                ask0: hedging_ask0,
-            },
-            hedging_symbol,
-            market_ts,
-            price_offset,
-        })
     }
 }
 

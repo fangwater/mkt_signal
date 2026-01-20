@@ -600,9 +600,9 @@ impl XarbDecision {
             false,
             now + self.hedge_timeout_mm_us,
         );
-        ctx.opening_leg = TradingLeg::new(open_venue, open_quote.bid, open_quote.ask);
+        ctx.opening_leg = TradingLeg::new(open_venue, open_quote.bid, open_quote.ask, open_quote.ts);
         ctx.set_opening_symbol(&open_symbol);
-        ctx.hedging_leg = TradingLeg::new(hedge_venue, hedge_quote.bid, hedge_quote.ask);
+        ctx.hedging_leg = TradingLeg::new(hedge_venue, hedge_quote.bid, hedge_quote.ask, hedge_quote.ts);
         ctx.set_hedging_symbol(&hedge_symbol);
         ctx.market_ts = now;
         ctx.price_offset = offset;
@@ -763,10 +763,10 @@ impl XarbDecision {
         let open_trade_symbol = normalize_symbol_for_venue(open_symbol, open_venue);
         let hedge_trade_symbol = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
 
-        ctx.opening_leg = TradingLeg::new(open_venue, open_quote.bid, open_quote.ask);
+        ctx.opening_leg = TradingLeg::new(open_venue, open_quote.bid, open_quote.ask, open_quote.ts);
         ctx.set_opening_symbol(&open_trade_symbol);
 
-        ctx.hedging_leg = TradingLeg::new(hedge_venue, hedge_quote.bid, hedge_quote.ask);
+        ctx.hedging_leg = TradingLeg::new(hedge_venue, hedge_quote.bid, hedge_quote.ask, hedge_quote.ts);
         ctx.set_hedging_symbol(&hedge_trade_symbol);
 
         ctx.set_side(side);
@@ -841,10 +841,10 @@ impl XarbDecision {
         let open_trade_symbol = normalize_symbol_for_venue(open_symbol, open_venue);
         let hedge_trade_symbol = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
 
-        ctx.opening_leg = TradingLeg::new(open_venue, open_quote.bid, open_quote.ask);
+        ctx.opening_leg = TradingLeg::new(open_venue, open_quote.bid, open_quote.ask, open_quote.ts);
         ctx.set_opening_symbol(&open_trade_symbol);
 
-        ctx.hedging_leg = TradingLeg::new(hedge_venue, hedge_quote.bid, hedge_quote.ask);
+        ctx.hedging_leg = TradingLeg::new(hedge_venue, hedge_quote.bid, hedge_quote.ask, hedge_quote.ts);
         ctx.set_hedging_symbol(&hedge_trade_symbol);
 
         ctx.trigger_ts = now;

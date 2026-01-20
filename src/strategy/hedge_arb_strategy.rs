@@ -982,6 +982,7 @@ impl HedgeArbStrategy {
             venue: self.open_venue.to_u8(),
             bid0: 0.0,
             ask0: 0.0,
+            ts: 0,
         };
         hedge_ctx.set_opening_symbol(&self.open_symbol);
 
@@ -1004,6 +1005,7 @@ impl HedgeArbStrategy {
             venue: self.hedge_venue.to_u8(),
             bid0,
             ask0,
+            ts: 0,
         };
         self.hedge_bid0 = bid0;
         self.hedge_ask0 = ask0;

@@ -789,10 +789,12 @@ impl FrDecision {
             now + self.hedge_timeout_mm_us,
         );
         // 设置开仓侧信息（从 query 获取 venue/symbol，盘口从 MktChannel 获取）
-        ctx.opening_leg = TradingLeg::new(open_venue, open_quote.bid, open_quote.ask);
+        ctx.opening_leg =
+            TradingLeg::new(open_venue, open_quote.bid, open_quote.ask, open_quote.ts);
         ctx.set_opening_symbol(&open_symbol);
         // 设置对冲侧信息
-        ctx.hedging_leg = TradingLeg::new(hedge_venue, fut_quote.bid, fut_quote.ask);
+        ctx.hedging_leg =
+            TradingLeg::new(hedge_venue, fut_quote.bid, fut_quote.ask, fut_quote.ts);
         ctx.set_hedging_symbol(&hedge_symbol);
         ctx.market_ts = now;
         ctx.price_offset = offset; // aggressive 时 offset=0.0
@@ -971,11 +973,17 @@ impl FrDecision {
         let futures_trade_symbol = normalize_symbol_for_venue(futures_symbol, futures_venue);
 
         // opening_leg: 现货（主动腿）
-        ctx.opening_leg = TradingLeg::new(spot_venue, spot_quote.bid, spot_quote.ask);
+        ctx.opening_leg =
+            TradingLeg::new(spot_venue, spot_quote.bid, spot_quote.ask, spot_quote.ts);
         ctx.set_opening_symbol(&spot_trade_symbol);
 
         // hedging_leg: 合约（对冲腿）
-        ctx.hedging_leg = TradingLeg::new(futures_venue, futures_quote.bid, futures_quote.ask);
+        ctx.hedging_leg = TradingLeg::new(
+            futures_venue,
+            futures_quote.bid,
+            futures_quote.ask,
+            futures_quote.ts,
+        );
         ctx.set_hedging_symbol(&futures_trade_symbol);
 
         // 交易参数
@@ -1386,10 +1394,16 @@ impl FrDecision {
         let spot_trade_symbol = normalize_symbol_for_venue(spot_symbol, spot_venue);
         let futures_trade_symbol = normalize_symbol_for_venue(futures_symbol, futures_venue);
 
-        ctx.opening_leg = TradingLeg::new(spot_venue, spot_quote.bid, spot_quote.ask);
+        ctx.opening_leg =
+            TradingLeg::new(spot_venue, spot_quote.bid, spot_quote.ask, spot_quote.ts);
         ctx.set_opening_symbol(&spot_trade_symbol);
 
-        ctx.hedging_leg = TradingLeg::new(futures_venue, futures_quote.bid, futures_quote.ask);
+        ctx.hedging_leg = TradingLeg::new(
+            futures_venue,
+            futures_quote.bid,
+            futures_quote.ask,
+            futures_quote.ts,
+        );
         ctx.set_hedging_symbol(&futures_trade_symbol);
 
         ctx.trigger_ts = now;

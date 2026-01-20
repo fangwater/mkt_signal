@@ -649,12 +649,14 @@ fn decode_context(signal_kind: SignalKind, record: &SignalRecordMessage) -> Opti
                     "venue": ctx.opening_leg.venue,
                     "bid0": ctx.opening_leg.bid0,
                     "ask0": ctx.opening_leg.ask0,
+                    "ts": ctx.opening_leg.ts,
                 },
                 "opening_symbol": ctx.get_opening_symbol(),
                 "hedging_leg": {
                     "venue": ctx.hedging_leg.venue,
                     "bid0": ctx.hedging_leg.bid0,
                     "ask0": ctx.hedging_leg.ask0,
+                    "ts": ctx.hedging_leg.ts,
                 },
                 "hedging_symbol": ctx.get_hedging_symbol(),
                 "amount": ctx.amount,
@@ -689,12 +691,14 @@ fn decode_context(signal_kind: SignalKind, record: &SignalRecordMessage) -> Opti
                     "venue": ctx.opening_leg.venue,
                     "bid0": ctx.opening_leg.bid0,
                     "ask0": ctx.opening_leg.ask0,
+                    "ts": ctx.opening_leg.ts,
                 },
                 "opening_symbol": ctx.get_opening_symbol(),
                 "hedging_leg": {
                     "venue": ctx.hedging_leg.venue,
                     "bid0": ctx.hedging_leg.bid0,
                     "ask0": ctx.hedging_leg.ask0,
+                    "ts": ctx.hedging_leg.ts,
                 },
                 "hedging_symbol": ctx.get_hedging_symbol(),
                 "market_ts": ctx.market_ts,
@@ -711,12 +715,14 @@ fn decode_context(signal_kind: SignalKind, record: &SignalRecordMessage) -> Opti
                     "venue": ctx.opening_leg.venue,
                     "bid0": ctx.opening_leg.bid0,
                     "ask0": ctx.opening_leg.ask0,
+                    "ts": ctx.opening_leg.ts,
                 },
                 "opening_symbol": ctx.get_opening_symbol(),
                 "hedging_leg": {
                     "venue": ctx.hedging_leg.venue,
                     "bid0": ctx.hedging_leg.bid0,
                     "ask0": ctx.hedging_leg.ask0,
+                    "ts": ctx.hedging_leg.ts,
                 },
                 "hedging_symbol": ctx.get_hedging_symbol(),
                 "trigger_ts": ctx.trigger_ts,
@@ -799,10 +805,12 @@ fn build_parquet_open(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> 
     let mut opening_symbol_col: Vec<String> = Vec::with_capacity(entries.len());
     let mut opening_bid0_col: Vec<f64> = Vec::with_capacity(entries.len());
     let mut opening_ask0_col: Vec<f64> = Vec::with_capacity(entries.len());
+    let mut opening_ts_col: Vec<i64> = Vec::with_capacity(entries.len());
     let mut hedging_venue_col: Vec<String> = Vec::with_capacity(entries.len());
     let mut hedging_symbol_col: Vec<String> = Vec::with_capacity(entries.len());
     let mut hedging_bid0_col: Vec<f64> = Vec::with_capacity(entries.len());
     let mut hedging_ask0_col: Vec<f64> = Vec::with_capacity(entries.len());
+    let mut hedging_ts_col: Vec<i64> = Vec::with_capacity(entries.len());
     let mut amount_col: Vec<f32> = Vec::with_capacity(entries.len());
     let mut side_col: Vec<String> = Vec::with_capacity(entries.len());
     let mut order_type_col: Vec<String> = Vec::with_capacity(entries.len());
@@ -837,6 +845,7 @@ fn build_parquet_open(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> 
         opening_symbol_col.push(ctx.get_opening_symbol());
         opening_bid0_col.push(ctx.opening_leg.bid0);
         opening_ask0_col.push(ctx.opening_leg.ask0);
+        opening_ts_col.push(ctx.opening_leg.ts);
         hedging_venue_col.push(
             TradingVenue::from_u8(ctx.hedging_leg.venue)
                 .map(|v| v.as_str().to_string())
@@ -845,6 +854,7 @@ fn build_parquet_open(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> 
         hedging_symbol_col.push(ctx.get_hedging_symbol());
         hedging_bid0_col.push(ctx.hedging_leg.bid0);
         hedging_ask0_col.push(ctx.hedging_leg.ask0);
+        hedging_ts_col.push(ctx.hedging_leg.ts);
         amount_col.push(ctx.amount);
         side_col.push(
             ctx.get_side()
@@ -887,10 +897,12 @@ fn build_parquet_open(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> 
         Series::new("opening_symbol".into(), opening_symbol_col),
         Series::new("opening_bid0".into(), opening_bid0_col),
         Series::new("opening_ask0".into(), opening_ask0_col),
+        Series::new("opening_ts".into(), opening_ts_col),
         Series::new("hedging_venue".into(), hedging_venue_col),
         Series::new("hedging_symbol".into(), hedging_symbol_col),
         Series::new("hedging_bid0".into(), hedging_bid0_col),
         Series::new("hedging_ask0".into(), hedging_ask0_col),
+        Series::new("hedging_ts".into(), hedging_ts_col),
         Series::new("amount".into(), amount_col),
         Series::new("side".into(), side_col),
         Series::new("order_type".into(), order_type_col),
@@ -920,10 +932,12 @@ fn build_parquet_cancel(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -
     let mut opening_symbol_col = Vec::with_capacity(entries.len());
     let mut opening_bid0_col = Vec::with_capacity(entries.len());
     let mut opening_ask0_col = Vec::with_capacity(entries.len());
+    let mut opening_ts_col = Vec::with_capacity(entries.len());
     let mut hedging_venue_col: Vec<String> = Vec::with_capacity(entries.len());
     let mut hedging_symbol_col = Vec::with_capacity(entries.len());
     let mut hedging_bid0_col = Vec::with_capacity(entries.len());
     let mut hedging_ask0_col = Vec::with_capacity(entries.len());
+    let mut hedging_ts_col = Vec::with_capacity(entries.len());
     let mut trigger_ts_col = Vec::with_capacity(entries.len());
 
     for (key_bytes, value_bytes) in entries {
@@ -947,6 +961,7 @@ fn build_parquet_cancel(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -
         opening_symbol_col.push(ctx.get_opening_symbol());
         opening_bid0_col.push(ctx.opening_leg.bid0);
         opening_ask0_col.push(ctx.opening_leg.ask0);
+        opening_ts_col.push(ctx.opening_leg.ts);
         hedging_venue_col.push(
             TradingVenue::from_u8(ctx.hedging_leg.venue)
                 .map(|v| v.as_str().to_string())
@@ -955,6 +970,7 @@ fn build_parquet_cancel(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -
         hedging_symbol_col.push(ctx.get_hedging_symbol());
         hedging_bid0_col.push(ctx.hedging_leg.bid0);
         hedging_ask0_col.push(ctx.hedging_leg.ask0);
+        hedging_ts_col.push(ctx.hedging_leg.ts);
         trigger_ts_col.push(ctx.trigger_ts);
     }
 
@@ -966,10 +982,12 @@ fn build_parquet_cancel(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -
         Series::new("opening_symbol".into(), opening_symbol_col),
         Series::new("opening_bid0".into(), opening_bid0_col),
         Series::new("opening_ask0".into(), opening_ask0_col),
+        Series::new("opening_ts".into(), opening_ts_col),
         Series::new("hedging_venue".into(), hedging_venue_col),
         Series::new("hedging_symbol".into(), hedging_symbol_col),
         Series::new("hedging_bid0".into(), hedging_bid0_col),
         Series::new("hedging_ask0".into(), hedging_ask0_col),
+        Series::new("hedging_ts".into(), hedging_ts_col),
         Series::new("trigger_ts".into(), trigger_ts_col),
     ];
 
@@ -996,10 +1014,12 @@ fn build_parquet_hedge(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) ->
     let mut opening_symbol_col = Vec::with_capacity(entries.len());
     let mut opening_bid0_col = Vec::with_capacity(entries.len());
     let mut opening_ask0_col = Vec::with_capacity(entries.len());
+    let mut opening_ts_col = Vec::with_capacity(entries.len());
     let mut hedging_venue_col: Vec<String> = Vec::with_capacity(entries.len());
     let mut hedging_symbol_col = Vec::with_capacity(entries.len());
     let mut hedging_bid0_col = Vec::with_capacity(entries.len());
     let mut hedging_ask0_col = Vec::with_capacity(entries.len());
+    let mut hedging_ts_col = Vec::with_capacity(entries.len());
     let mut market_ts_col = Vec::with_capacity(entries.len());
     let mut price_offset_col = Vec::with_capacity(entries.len());
 
@@ -1037,6 +1057,7 @@ fn build_parquet_hedge(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) ->
         opening_symbol_col.push(ctx.get_opening_symbol());
         opening_bid0_col.push(ctx.opening_leg.bid0);
         opening_ask0_col.push(ctx.opening_leg.ask0);
+        opening_ts_col.push(ctx.opening_leg.ts);
         hedging_venue_col.push(
             TradingVenue::from_u8(ctx.hedging_leg.venue)
                 .map(|v| v.as_str().to_string())
@@ -1045,6 +1066,7 @@ fn build_parquet_hedge(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) ->
         hedging_symbol_col.push(ctx.get_hedging_symbol());
         hedging_bid0_col.push(ctx.hedging_leg.bid0);
         hedging_ask0_col.push(ctx.hedging_leg.ask0);
+        hedging_ts_col.push(ctx.hedging_leg.ts);
         market_ts_col.push(ctx.market_ts);
         price_offset_col.push(ctx.price_offset);
     }
@@ -1066,10 +1088,12 @@ fn build_parquet_hedge(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) ->
         Series::new("opening_symbol".into(), opening_symbol_col),
         Series::new("opening_bid0".into(), opening_bid0_col),
         Series::new("opening_ask0".into(), opening_ask0_col),
+        Series::new("opening_ts".into(), opening_ts_col),
         Series::new("hedging_venue".into(), hedging_venue_col),
         Series::new("hedging_symbol".into(), hedging_symbol_col),
         Series::new("hedging_bid0".into(), hedging_bid0_col),
         Series::new("hedging_ask0".into(), hedging_ask0_col),
+        Series::new("hedging_ts".into(), hedging_ts_col),
         Series::new("market_ts".into(), market_ts_col),
         Series::new("price_offset".into(), price_offset_col),
     ];

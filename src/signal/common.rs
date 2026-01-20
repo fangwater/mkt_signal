@@ -618,14 +618,16 @@ pub struct TradingLeg {
     pub venue: u8, // TradingVenue as u8
     pub bid0: f64,
     pub ask0: f64,
+    pub ts: i64, // last quote event time (ms)
 }
 
 impl TradingLeg {
-    pub fn new(venue: TradingVenue, bid0: f64, ask0: f64) -> Self {
+    pub fn new(venue: TradingVenue, bid0: f64, ask0: f64, ts: i64) -> Self {
         Self {
             venue: venue.to_u8(),
             bid0,
             ask0,
+            ts,
         }
     }
 

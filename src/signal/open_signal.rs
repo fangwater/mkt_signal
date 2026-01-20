@@ -63,12 +63,14 @@ impl ArbOpenCtx {
                 venue: 0,
                 bid0: 0.0,
                 ask0: 0.0,
+                ts: 0,
             },
             opening_symbol: [0u8; 32],
             hedging_leg: TradingLeg {
                 venue: 0,
                 bid0: 0.0,
                 ask0: 0.0,
+                ts: 0,
             },
             hedging_symbol: [0u8; 32],
             amount: 0.0,
@@ -149,12 +151,14 @@ impl SignalBytes for ArbOpenCtx {
         buf.put_u8(self.opening_leg.venue);
         buf.put_f64_le(self.opening_leg.bid0);
         buf.put_f64_le(self.opening_leg.ask0);
+        buf.put_i64_le(self.opening_leg.ts);
         bytes_helper::write_fixed_bytes(&mut buf, &self.opening_symbol);
 
         // Hedging leg
         buf.put_u8(self.hedging_leg.venue);
         buf.put_f64_le(self.hedging_leg.bid0);
         buf.put_f64_le(self.hedging_leg.ask0);
+        buf.put_i64_le(self.hedging_leg.ts);
         bytes_helper::write_fixed_bytes(&mut buf, &self.hedging_symbol);
 
         // Trade parameters
@@ -176,69 +180,143 @@ impl SignalBytes for ArbOpenCtx {
         buf.freeze()
     }
 
-    fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
-        // Opening leg
-        if bytes.remaining() < 1 + 8 + 8 {
-            return Err("Not enough bytes for opening leg".to_string());
+    fn from_bytes(bytes: Bytes) -> Result<Self, String> {
+        fn detect_legacy_format(bytes: &Bytes, base_offset: usize, tail_len: usize) -> Option<bool> {
+            let total = bytes.len();
+            let mut new_match = false;
+            let mut old_match = false;
+
+            let open_len_idx_new = base_offset + 25;
+            if total > open_len_idx_new {
+                let open_len = bytes[open_len_idx_new] as usize;
+                if open_len <= 32 {
+                    let hedge_len_idx = base_offset + 51 + open_len;
+                    if total > hedge_len_idx {
+                        let hedge_len = bytes[hedge_len_idx] as usize;
+                        if hedge_len <= 32 {
+                            let expected = base_offset + 52 + open_len + hedge_len + tail_len;
+                            if total == expected {
+                                new_match = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            let open_len_idx_old = base_offset + 17;
+            if total > open_len_idx_old {
+                let open_len = bytes[open_len_idx_old] as usize;
+                if open_len <= 32 {
+                    let hedge_len_idx = base_offset + 35 + open_len;
+                    if total > hedge_len_idx {
+                        let hedge_len = bytes[hedge_len_idx] as usize;
+                        if hedge_len <= 32 {
+                            let expected = base_offset + 36 + open_len + hedge_len + tail_len;
+                            if total == expected {
+                                old_match = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            match (new_match, old_match) {
+                (true, false) => Some(false),
+                (false, true) => Some(true),
+                (true, true) => Some(false),
+                _ => None,
+            }
         }
-        let opening_venue = bytes.get_u8();
-        let opening_bid0 = bytes.get_f64_le();
-        let opening_ask0 = bytes.get_f64_le();
-        let opening_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
 
-        // Hedging leg
-        if bytes.remaining() < 1 + 8 + 8 {
-            return Err("Not enough bytes for hedging leg".to_string());
+        fn parse(mut bytes: Bytes, with_ts: bool) -> Result<ArbOpenCtx, String> {
+            // Opening leg
+            if bytes.remaining() < 1 + 8 + 8 {
+                return Err("Not enough bytes for opening leg".to_string());
+            }
+            let opening_venue = bytes.get_u8();
+            let opening_bid0 = bytes.get_f64_le();
+            let opening_ask0 = bytes.get_f64_le();
+            let opening_ts = if with_ts {
+                if bytes.remaining() < 8 {
+                    return Err("Not enough bytes for opening leg ts".to_string());
+                }
+                bytes.get_i64_le()
+            } else {
+                0
+            };
+            let opening_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
+
+            // Hedging leg
+            if bytes.remaining() < 1 + 8 + 8 {
+                return Err("Not enough bytes for hedging leg".to_string());
+            }
+            let hedging_venue = bytes.get_u8();
+            let hedging_bid0 = bytes.get_f64_le();
+            let hedging_ask0 = bytes.get_f64_le();
+            let hedging_ts = if with_ts {
+                if bytes.remaining() < 8 {
+                    return Err("Not enough bytes for hedging leg ts".to_string());
+                }
+                bytes.get_i64_le()
+            } else {
+                0
+            };
+            let hedging_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
+
+            // Trade parameters
+            if bytes.remaining() < 4 + 1 + 1 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 {
+                return Err("Not enough bytes for trade parameters".to_string());
+            }
+            let amount = bytes.get_f32_le();
+            let side = bytes.get_u8();
+            let order_type = bytes.get_u8();
+            let price = bytes.get_f64_le();
+            let price_tick = bytes.get_f64_le();
+            let exp_time = bytes.get_i64_le();
+            let create_ts = bytes.get_i64_le();
+            let price_offset = bytes.get_f64_le();
+            let hedge_timeout_us = bytes.get_i64_le();
+
+            // Optional fields
+            let funding_ma = bytes.get_f64_le();
+            let predicted_funding_rate = bytes.get_f64_le();
+            let loan_rate = bytes.get_f64_le();
+
+            Ok(ArbOpenCtx {
+                opening_leg: TradingLeg {
+                    venue: opening_venue,
+                    bid0: opening_bid0,
+                    ask0: opening_ask0,
+                    ts: opening_ts,
+                },
+                opening_symbol,
+                hedging_leg: TradingLeg {
+                    venue: hedging_venue,
+                    bid0: hedging_bid0,
+                    ask0: hedging_ask0,
+                    ts: hedging_ts,
+                },
+                hedging_symbol,
+                amount,
+                side,
+                order_type,
+                price,
+                price_tick,
+                exp_time,
+                create_ts,
+                price_offset,
+                hedge_timeout_us,
+                funding_ma,
+                predicted_funding_rate,
+                loan_rate,
+            })
         }
-        let hedging_venue = bytes.get_u8();
-        let hedging_bid0 = bytes.get_f64_le();
-        let hedging_ask0 = bytes.get_f64_le();
-        let hedging_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
 
-        // Trade parameters
-        if bytes.remaining() < 4 + 1 + 1 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 {
-            return Err("Not enough bytes for trade parameters".to_string());
+        let format = detect_legacy_format(&bytes, 0, 78);
+        match format {
+            Some(true) => parse(bytes, false),
+            Some(false) => parse(bytes, true),
+            None => parse(bytes.clone(), true).or_else(|_| parse(bytes, false)),
         }
-        let amount = bytes.get_f32_le();
-        let side = bytes.get_u8();
-        let order_type = bytes.get_u8();
-        let price = bytes.get_f64_le();
-        let price_tick = bytes.get_f64_le();
-        let exp_time = bytes.get_i64_le();
-        let create_ts = bytes.get_i64_le();
-        let price_offset = bytes.get_f64_le();
-        let hedge_timeout_us = bytes.get_i64_le();
-
-        // Optional fields
-        let funding_ma = bytes.get_f64_le();
-        let predicted_funding_rate = bytes.get_f64_le();
-        let loan_rate = bytes.get_f64_le();
-
-        Ok(Self {
-            opening_leg: TradingLeg {
-                venue: opening_venue,
-                bid0: opening_bid0,
-                ask0: opening_ask0,
-            },
-            opening_symbol,
-            hedging_leg: TradingLeg {
-                venue: hedging_venue,
-                bid0: hedging_bid0,
-                ask0: hedging_ask0,
-            },
-            hedging_symbol,
-            amount,
-            side,
-            order_type,
-            price,
-            price_tick,
-            exp_time,
-            create_ts,
-            price_offset,
-            hedge_timeout_us,
-            funding_ma,
-            predicted_funding_rate,
-            loan_rate,
-        })
     }
 }
