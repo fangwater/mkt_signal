@@ -5,6 +5,7 @@ use log::{info, warn};
 use mkt_signal::common::redis_client::RedisSettings;
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::pre_trade::monitor_channel::MonitorChannel;
+use mkt_signal::pre_trade::auto_repay_service::AutoRepayService;
 use mkt_signal::pre_trade::params_load::PreTradeParamsLoader;
 use mkt_signal::pre_trade::persist_channel::PersistChannel;
 use mkt_signal::pre_trade::resample_channel::ResampleChannel;
@@ -14,6 +15,7 @@ use mkt_signal::pre_trade::QueryEngHub;
 use mkt_signal::pre_trade::TradeEngHub;
 use mkt_signal::signal::common::TradingVenue;
 use mkt_signal::strategy::StrategyManager;
+use mkt_signal::trade_engine::config::RestConstants;
 use mkt_signal::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -204,6 +206,31 @@ async fn main() -> Result<()> {
                 return Err(err);
             }
             info!("MonitorChannel initialized successfully");
+
+            // 3.1 启动 Binance 自动还币任务（每小时 55 分触发）
+            if matches!(open_venue, TradingVenue::BinanceMargin)
+                || matches!(hedge_venue, TradingVenue::BinanceMargin)
+            {
+                info!("auto repay enabled (binance-margin detected)");
+                let binance_api_key = std::env::var("BINANCE_API_KEY").unwrap_or_default();
+                let binance_api_secret = std::env::var("BINANCE_API_SECRET").unwrap_or_default();
+                if binance_api_key.trim().is_empty() || binance_api_secret.trim().is_empty() {
+                    warn!("BINANCE_API_KEY/SECRET missing; auto repay task will still start but API calls may fail");
+                }
+                let rest_base = match std::env::var("BINANCE_PAPI_URL")
+                    .or_else(|_| std::env::var("BINANCE_FAPI_URL"))
+                {
+                    Ok(url) if !url.trim().is_empty() => url,
+                    _ => RestConstants::BINANCE_BASE_URL.to_string(),
+                };
+                AutoRepayService::new(
+                    rest_base,
+                    binance_api_key,
+                    binance_api_secret,
+                    RestConstants::RECV_WINDOW_MS,
+                )
+                .start_auto_repay_task();
+            }
 
             // 4. 初始化 SignalChannel
             info!("Initializing SignalChannel singleton...");

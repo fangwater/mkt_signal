@@ -1,37 +1,41 @@
-pm2 start ./trade_signal --name trade_signal_binance -- --exchange binance
-pm2 start ./pre_trade --name pre_trade_binance -- --open-venue binance-margin --hedge-venue binance-futures
-pm2 start ./trade_engine --name trade_engine_binance -- --exchange binance
+xarb v2
+1、依然维护okex开，binance平的交易策略。
+
+2、问题在于，okex开，binance平，现在交易决策发生在awsjp
+
+价差触发交易决策--->awsjp触发交易指令--->HK下单
+这种架构导致，判断价差出现到交易的gap太大。
+主要吃开仓侧价差，则开仓侧下单。平仓侧目前不依赖价差，因此pre-trade要移动到hk来部署。
+
+3、架构调整
+(1) pre-trade要移动。即哪边报单吃spread，要移动到哪边。
+需要汇总pre-trade涉及的所有http请求，分快速请求和慢速请求。
+快速请求通过engine实现，慢速请求用nginx代理，使用一个jp的ip
+
+(2) 行情进程不需要移动。直接在jp订阅，然后就是okex快，binance慢。
+这一步暂时不用专线处理。之后对比，目前认为不会是主要的延迟来源。
+
+(3) trade signal移动到hk。本地也需要配置一个redis和nginx
+
+(4) account monitor，测试hk是否能通ws，印象中可以。listen key的续期可以走nginx即可。
+account monitor直接也都迁移到okex来
+
+(5) trade engine执行
+现有盘子只需要做了nginx代理就可以移动到binance。
+
+(6) 订单记录
+移动到hk
+
+总结
+1、开仓测只需移动到hk就可以看到效果
+2、平仓侧看下单是如何指导的。按8照之前的情况平仓侧关心盘口，需要进行特殊处理。
 
 
-• 已经把 Binance account monitor 的下发改成 basic 模式了，包含你风控需要的余额/持仓/负债 + 订单回报。
+问题
+是否需要出两版还是一次到位
+1、xarb-v2 nginx代理部分http，整体迁移到hk
+2、xarb-v3
 
-  改动内容
-
-  - Binance basic 的 OrderUpdate payload 已统一为一个纯 basic 结构 `BinanceBasicOrderMsg`
-    src/common/basic_account_msg.rs 新增：
-      - struct BinanceBasicOrderMsg（单一 schema，带 venue 字段区分 margin/um）
-  - Binance basic parser 统一生成该结构并下发
-    src/parser/binance_basic_account_event_parser.rs
-  - pre‑trade / account monitor 侧直接解析 `BinanceBasicOrderMsg`
-    src/pre_trade/monitor_channel.rs
-    src/bin/binance_account_monitor.rs
-    OrderUpdate 不再需要二次细分/额外判断，直接按统一 schema 解码即可。
-● 完成！已经移除了所有 FR (Funding Rate) 相关的可视化代码。修改内容如下：
-
-  src/bin/viz_server.rs:5
-  - 移除了 spawn_fr_resample_listener 的 import
-  - 移除了对 spawn_fr_resample_listener(hub.clone()) 的调用（src/bin/viz_server.rs:27-29）
-
-  src/common/viz/subscribers.rs:1
-  - 移除了 FundingRateArbResampleEntry 的 import
-  - 移除了 FR_RESAMPLE_MSG_CHANNEL 常量
-  - 移除了 spawn_fr_resample_listener 整个函数（原 line 33-49）
-
-  现在 viz_server 只专注于转发 pre_trade 两路重采样数据：
-  - pre_trade_exposure
-  - pre_trade_risk
-
-  FR 相关的可视化已移除。编译通过 ✓
-
-
-1、旧程序启动
+平仓的优化
+1、盘口挂单(快40ms的binance盘口)(Q:平仓是否要要考虑okex行情？还是只考虑binance的行情？正常我理解只考虑币安)
+2、币安的挂单改为ws执行
