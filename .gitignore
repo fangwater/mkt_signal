@@ -14,3 +14,4 @@ __pycache__/
 
 *.parquet
 export_data
+anlysis_binance_fr_trade/output/
