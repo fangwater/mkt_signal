@@ -18,7 +18,7 @@ fi
 usage() {
   cat <<'EOF'
 用法: scripts/deploy_xarb_pre_trade.sh [trade|test] --open-venue <okex-futures> --hedge-venue <binance-futures> [--env-name okex-binance-xarb-trade]
-      scripts/deploy_xarb_pre_trade.sh [--open-venue <okex-futures>] [--hedge-venue <binance-futures>] [--env-suffix xarb-trade] [--env-name okex-binance-xarb-trade] [--jobs <n>] [--cargo-target-dir <path>] [--sync-scripts]
+      scripts/deploy_xarb_pre_trade.sh [--open-venue <okex-futures>] [--hedge-venue <binance-futures>] [--env-suffix xarb-trade] [--env-name okex-binance-xarb-trade] [--jobs <n>] [--cargo-target-dir <path>] [--sync-scripts|--bin-only]
       scripts/deploy_xarb_pre_trade.sh --remote-host awsjp [--remote-repo <path>] [--remote-sync] [...]
 
 说明:
@@ -33,7 +33,7 @@ usage() {
   - 不自动启动，部署后可在目标目录执行 start/stop：
       ./xarb_scripts/start_xarb_pre_trade.sh
       ./xarb_scripts/stop_xarb_pre_trade.sh
-  - 默认只更新二进制；如需同步脚本请添加 --sync-scripts
+  - 默认只更新二进制；如需同步脚本请添加 --sync-scripts（或显式使用 --bin-only）
 
 提示:
   - 建议先生成并配置 env.sh（用于 IPC_NAMESPACE/凭证等）：scripts/deploy_setup_env_xarb.sh --open-venue ... --hedge-venue ...
@@ -65,6 +65,7 @@ HEDGE_VENUE=""
 CARGO_TARGET_DIR_OVERRIDE=""
 BUILD_JOBS=""
 SYNC_SCRIPTS="0"
+BIN_ONLY="0"
 if [[ -n "${XARB_REMOTE_RUN:-}" ]]; then
   BUILD_JOBS="1"
 fi
@@ -101,7 +102,20 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --sync-scripts)
+      if [[ "$BIN_ONLY" == "1" ]]; then
+        echo "[ERROR] --sync-scripts 与 --bin-only 互斥"
+        exit 1
+      fi
       SYNC_SCRIPTS="1"
+      shift
+      ;;
+    --bin-only)
+      if [[ "$SYNC_SCRIPTS" == "1" ]]; then
+        echo "[ERROR] --sync-scripts 与 --bin-only 互斥"
+        exit 1
+      fi
+      BIN_ONLY="1"
+      SYNC_SCRIPTS="0"
       shift
       ;;
     *)
