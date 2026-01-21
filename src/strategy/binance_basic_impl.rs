@@ -59,7 +59,7 @@ impl OrderUpdate for BinanceBasicOrderMsg {
     }
 
     fn last_time_executed_qty(&self) -> f64 {
-        self.last_executed_quantity
+        0.0
     }
 
     fn cumulative_filled_quantity(&self) -> f64 {
