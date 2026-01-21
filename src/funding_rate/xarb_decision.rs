@@ -457,6 +457,13 @@ impl XarbDecision {
             hedge_venue,
         );
         let cooldown_hit = self.is_cooldown_hit(&self.last_open_ts, &key, now);
+        if cooldown_hit {
+            info!(
+                "XarbDecision: cooldown_hit symbol={} forward_open={} backward_open={}",
+                open_symbol_key, forward_open, backward_open
+            );
+            return Ok(None);
+        }
         let pnlu_check = self.check_pnlu_factor(open_symbol_key.as_str(), now);
         self.log_pnlu_check(
             open_symbol_key.as_str(),
@@ -467,9 +474,6 @@ impl XarbDecision {
         );
 
         if !pnlu_check.ok {
-            return Ok(None);
-        }
-        if cooldown_hit {
             return Ok(None);
         }
 
