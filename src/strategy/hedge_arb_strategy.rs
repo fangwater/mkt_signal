@@ -40,6 +40,7 @@ pub struct HedgeArbStrategy {
     pub order_seq: u32,                //订单号计数器
     pub cumulative_hedged_qty: f64,    //累计对冲数量
     pub cumulative_open_qty: f64,      //累计开仓数量
+    pub open_filled_hedge_triggered: bool, //开仓成交已触发对冲（防止query重复触发）
     pub alive_flag: bool,              //策略是否存活
     pub hedge_symbol: String,          //对冲侧symbol
     pub hedge_venue: TradingVenue,     //对冲侧交易场所
@@ -92,6 +93,7 @@ impl HedgeArbStrategy {
             order_seq: 0,
             cumulative_hedged_qty: 0.0,
             cumulative_open_qty: 0.0,
+            open_filled_hedge_triggered: false,
             alive_flag: true,
             hedge_symbol: String::new(),
             hedge_venue: TradingVenue::BinanceMargin, // 默认值，将在开仓时更新
@@ -452,6 +454,14 @@ impl HedgeArbStrategy {
             );
             return Err(format!("对冲数量无效: {}", ctx.hedge_qty));
         };
+
+        if self.has_pending_hedge_order() {
+            info!(
+                "HedgeArbStrategy: strategy_id={} 对冲信号忽略（已有活跃对冲单） qty={:.8}",
+                self.strategy_id, target_qty
+            );
+            return Ok(());
+        }
 
         // 2. 获取对冲交易的 symbol 和 venue
         let hedge_symbol = ctx.get_hedging_symbol();
@@ -940,21 +950,17 @@ impl HedgeArbStrategy {
         }
     }
 
-    // 检查当前的对冲单的id列表的最后一个。查看是否是terminal状态
+    // 当前策略只允许一个活跃对冲单，检查最后一个对冲单是否未终结
     fn has_pending_hedge_order(&self) -> bool {
-        // 获取最后一个对冲订单ID
         if let Some(&last_hedge_id) = self.hedge_order_ids.last() {
-            // 从order manager获取订单
             let order = MonitorChannel::instance()
                 .order_manager()
                 .borrow()
                 .get(last_hedge_id);
             if let Some(order) = order {
-                // 检查是否不是终结状态（即是pending状态）
                 return !order.status.is_terminal();
             }
         }
-        // 如果没有对冲订单或找不到订单，返回false
         false
     }
 
@@ -1520,6 +1526,14 @@ impl HedgeArbStrategy {
         if self.hedge_timeout_us.is_some() {
             match trade.order_status() {
                 Some(OrderStatus::Filled) => {
+                    if self.open_filled_hedge_triggered {
+                        debug!(
+                            "HedgeArbStrategy: strategy_id={} 开仓成交已触发对冲，忽略重复成交回报 order_id={}",
+                            self.strategy_id,
+                            trade.client_order_id()
+                        );
+                        return;
+                    }
                     // 计算待对冲量 = 已经成交的量 - 已经对冲的量
                     let base_pending_qty: f64 =
                         self.cumulative_open_qty - self.cumulative_hedged_qty;
@@ -1527,6 +1541,7 @@ impl HedgeArbStrategy {
                     let (can_hedge, _hedged_qty, residual_qty) =
                         self.try_hedge_with_residual(base_pending_qty);
                     if can_hedge {
+                        self.open_filled_hedge_triggered = true;
                         //开仓量修改
                         self.cumulative_open_qty += residual_qty;
                         //MM 模式，挂单不一定成交。所以等实际成交再更新对冲量
