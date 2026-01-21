@@ -573,47 +573,6 @@ impl Parser for OkexAskBidSpreadParser {
     }
 }
 
-// 公共函数：解析OKEx订单簿层级数据
-fn parse_okex_order_book_levels(
-    bids_array: &Vec<serde_json::Value>,
-    asks_array: &Vec<serde_json::Value>,
-    inc_msg: &mut IncMsg,
-) {
-    // 解析bids - OKEx格式：[price, amount, deprecated, order_count]
-    for (i, bid_item) in bids_array.iter().enumerate() {
-        if i >= inc_msg.bids_count as usize {
-            break;
-        }
-        if let Some(bid_array) = bid_item.as_array() {
-            if bid_array.len() >= 2 {
-                if let (Some(price_str), Some(amount_str)) =
-                    (bid_array[0].as_str(), bid_array[1].as_str())
-                {
-                    let level = Level::new(price_str, amount_str);
-                    inc_msg.set_bid_level(i, level);
-                }
-            }
-        }
-    }
-
-    // 解析asks - OKEx格式：[price, amount, deprecated, order_count]
-    for (i, ask_item) in asks_array.iter().enumerate() {
-        if i >= inc_msg.asks_count as usize {
-            break;
-        }
-        if let Some(ask_array) = ask_item.as_array() {
-            if ask_array.len() >= 2 {
-                if let (Some(price_str), Some(amount_str)) =
-                    (ask_array[0].as_str(), ask_array[1].as_str())
-                {
-                    let level = Level::new(price_str, amount_str);
-                    inc_msg.set_ask_level(i, level);
-                }
-            }
-        }
-    }
-}
-
 // 解析订单簿层级数据（支持偏移量）
 fn parse_okex_order_book_levels_with_offset(
     bids_array: &[serde_json::Value],
@@ -798,7 +757,6 @@ impl OkexIncParser {
                         inc_msg.set_chunk_index(chunk_idx as u8);
                         inc_msg.set_is_last(chunk_idx == total_chunks - 1);
 
-                        // 解析订单簿层级（带偏移量）
                         parse_okex_order_book_levels_with_offset(
                             bids_array,
                             asks_array,

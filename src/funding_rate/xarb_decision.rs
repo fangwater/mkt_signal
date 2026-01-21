@@ -63,8 +63,10 @@ struct PnluCheckResult {
     factor: Option<f64>,
     threshold: Option<f64>,
     ts: Option<i64>,
+    target_ts: Option<i64>,
     age_secs: Option<i64>,
     ready: Option<bool>,
+    quantiles: Option<Vec<f64>>,
 }
 
 impl PnluCheckResult {
@@ -75,8 +77,10 @@ impl PnluCheckResult {
             factor: None,
             threshold: None,
             ts: None,
+            target_ts: None,
             age_secs: None,
             ready: None,
+            quantiles: None,
         }
     }
 }
@@ -1127,12 +1131,15 @@ impl XarbDecision {
             Err(err) => return PnluCheckResult::fail(format!("invalid_json: {err}")),
         };
 
-        let factor = payload.factor;
-        let threshold = payload
-            .thresholds
-            .as_ref()
-            .and_then(|vals| vals.first().copied());
-        let ts = payload.ts;
+        let PnluFactorPayload {
+            ts,
+            target_ts,
+            factor,
+            quantiles,
+            thresholds,
+            ready,
+        } = payload;
+        let threshold = thresholds.as_ref().and_then(|vals| vals.first().copied());
 
         let ts_us = ts.and_then(Self::normalize_pnlu_ts_us);
         let age_secs = match ts_us {
@@ -1169,8 +1176,10 @@ impl XarbDecision {
             factor,
             threshold,
             ts,
+            target_ts,
             age_secs,
-            ready: payload.ready,
+            ready,
+            quantiles,
         }
     }
 
@@ -1189,7 +1198,7 @@ impl XarbDecision {
             (false, false) => "none",
         };
         info!(
-            "XarbDecision: pnlu_check symbol={} dir={} ok={} reason={} factor={:?} threshold={:?} ts={:?} age_s={:?} ready={:?} cooldown_hit={}",
+            "XarbDecision: pnlu_check symbol={} dir={} ok={} reason={} factor={:?} threshold={:?} ts={:?} target_ts={:?} age_s={:?} ready={:?} quantiles={:?} cooldown_hit={}",
             symbol_key,
             direction,
             result.ok,
@@ -1197,8 +1206,10 @@ impl XarbDecision {
             result.factor,
             result.threshold,
             result.ts,
+            result.target_ts,
             result.age_secs,
             result.ready,
+            result.quantiles,
             cooldown_hit
         );
     }

@@ -200,32 +200,35 @@ impl MktManager {
 
             match exchange {
                 Exchange::Binance => {
-                    let (url, parser, desc_prefix) = match self.cfg.venue {
-                        TradingVenue::BinanceMargin => (
-                            "wss://stream-sbe.binance.com:9443/ws".to_string(),
-                            BinanceSbeDepthDiffParser::with_max_levels(max_levels),
-                            "sbe inc msg batch",
-                        ),
-                        TradingVenue::BinanceFutures => (
-                            SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string(),
-                            BinanceIncParser::futures_incremental(max_levels),
-                            "inc msg batch",
-                        ),
-                        _ => (
-                            SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string(),
-                            BinanceIncParser::futures_incremental(max_levels),
-                            "inc msg batch",
-                        ),
-                    };
-                    self.spawn_connection_with_mpsc(
-                        exchange,
-                        url,
-                        subscribe_msg,
-                        format!("{} {}", desc_prefix, i),
-                        parser,
-                        tx,
-                    )
-                    .await;
+                    match self.cfg.venue {
+                        TradingVenue::BinanceMargin => {
+                            let url = "wss://stream-sbe.binance.com:9443/ws".to_string();
+                            let parser = BinanceSbeDepthDiffParser::with_max_levels(max_levels);
+                            self.spawn_connection_with_mpsc(
+                                exchange,
+                                url,
+                                subscribe_msg,
+                                format!("sbe inc msg batch {}", i),
+                                parser,
+                                tx,
+                            )
+                            .await;
+                        }
+                        _ => {
+                            let url =
+                                SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                            let parser = BinanceIncParser::futures_incremental(max_levels);
+                            self.spawn_connection_with_mpsc(
+                                exchange,
+                                url,
+                                subscribe_msg,
+                                format!("inc msg batch {}", i),
+                                parser,
+                                tx,
+                            )
+                            .await;
+                        }
+                    }
                 }
                 Exchange::Bybit => {
                     let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
@@ -285,38 +288,38 @@ impl MktManager {
 
         let max_levels = self.cfg.data_types.max_levels_per_msg;
 
-        let (url, parser, desc_prefix) = match self.cfg.venue {
-            TradingVenue::BinanceMargin => (
-                "wss://stream-sbe.binance.com:9443/ws".to_string(),
-                BinanceSbeDepthSnapshotParser::with_max_levels(max_levels),
-                "sbe depth snapshot batch",
-            ),
-            TradingVenue::BinanceFutures => (
-                SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string(),
-                BinanceIncParser::futures_snapshot(max_levels),
-                "depth snapshot batch",
-            ),
-            _ => (
-                SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string(),
-                BinanceIncParser::futures_snapshot(max_levels),
-                "depth snapshot batch",
-            ),
-        };
-
         for i in 0..self.subscribe_msgs.get_depth_subscribe_msg_len() {
             let subscribe_msg = self.subscribe_msgs.get_depth_subscribe_msg(i).clone();
             let tx = self.incremental_tx.clone();
-            let parser = parser.clone();
 
-            self.spawn_connection_with_mpsc(
-                exchange,
-                url.clone(),
-                subscribe_msg,
-                format!("{} {}", desc_prefix, i),
-                parser,
-                tx,
-            )
-            .await;
+            match self.cfg.venue {
+                TradingVenue::BinanceMargin => {
+                    let url = "wss://stream-sbe.binance.com:9443/ws".to_string();
+                    let parser = BinanceSbeDepthSnapshotParser::with_max_levels(max_levels);
+                    self.spawn_connection_with_mpsc(
+                        exchange,
+                        url,
+                        subscribe_msg,
+                        format!("sbe depth snapshot batch {}", i),
+                        parser,
+                        tx,
+                    )
+                    .await;
+                }
+                _ => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                    let parser = BinanceIncParser::futures_snapshot(max_levels);
+                    self.spawn_connection_with_mpsc(
+                        exchange,
+                        url,
+                        subscribe_msg,
+                        format!("depth snapshot batch {}", i),
+                        parser,
+                        tx,
+                    )
+                    .await;
+                }
+            }
         }
     }
 
@@ -329,27 +332,35 @@ impl MktManager {
 
             match exchange {
                 Exchange::Binance => {
-                    let (url, parser, desc_prefix) = match self.cfg.venue {
-                        TradingVenue::BinanceMargin => (
-                            "wss://stream-sbe.binance.com:9443/ws".to_string(),
-                            BinanceSbeTradeParser::new(),
-                            "sbe trade msg batch",
-                        ),
-                        _ => (
-                            SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string(),
-                            BinanceTradeParser::new(),
-                            "trade msg batch",
-                        ),
-                    };
-                    self.spawn_connection_with_mpsc(
-                        exchange,
-                        url,
-                        subscribe_msg,
-                        format!("{} {}", desc_prefix, i),
-                        parser,
-                        tx,
-                    )
-                    .await;
+                    match self.cfg.venue {
+                        TradingVenue::BinanceMargin => {
+                            let url = "wss://stream-sbe.binance.com:9443/ws".to_string();
+                            let parser = BinanceSbeTradeParser::new();
+                            self.spawn_connection_with_mpsc(
+                                exchange,
+                                url,
+                                subscribe_msg,
+                                format!("sbe trade msg batch {}", i),
+                                parser,
+                                tx,
+                            )
+                            .await;
+                        }
+                        _ => {
+                            let url =
+                                SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                            let parser = BinanceTradeParser::new();
+                            self.spawn_connection_with_mpsc(
+                                exchange,
+                                url,
+                                subscribe_msg,
+                                format!("trade msg batch {}", i),
+                                parser,
+                                tx,
+                            )
+                            .await;
+                        }
+                    }
                 }
                 Exchange::Bybit => {
                     let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
@@ -474,27 +485,35 @@ impl MktManager {
 
             match exchange {
                 Exchange::Binance => {
-                    let (url, parser, desc_prefix) = match self.cfg.venue {
-                        TradingVenue::BinanceMargin => (
-                            "wss://stream-sbe.binance.com:9443/ws".to_string(),
-                            BinanceSbeBestBidAskParser::new(),
-                            "sbe ask_bid_spread batch",
-                        ),
-                        _ => (
-                            SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string(),
-                            BinanceAskBidSpreadParser::new(),
-                            "ask_bid_spread batch",
-                        ),
-                    };
-                    self.spawn_connection_with_mpsc(
-                        exchange,
-                        url,
-                        subscribe_msg,
-                        format!("{} {}", desc_prefix, i),
-                        parser,
-                        tx,
-                    )
-                    .await;
+                    match self.cfg.venue {
+                        TradingVenue::BinanceMargin => {
+                            let url = "wss://stream-sbe.binance.com:9443/ws".to_string();
+                            let parser = BinanceSbeBestBidAskParser::new();
+                            self.spawn_connection_with_mpsc(
+                                exchange,
+                                url,
+                                subscribe_msg,
+                                format!("sbe ask_bid_spread batch {}", i),
+                                parser,
+                                tx,
+                            )
+                            .await;
+                        }
+                        _ => {
+                            let url =
+                                SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                            let parser = BinanceAskBidSpreadParser::new();
+                            self.spawn_connection_with_mpsc(
+                                exchange,
+                                url,
+                                subscribe_msg,
+                                format!("ask_bid_spread batch {}", i),
+                                parser,
+                                tx,
+                            )
+                            .await;
+                        }
+                    }
                 }
                 Exchange::Bybit => {
                     let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
