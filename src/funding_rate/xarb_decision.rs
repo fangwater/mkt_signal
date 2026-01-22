@@ -41,7 +41,7 @@ use crate::symbol_match::normalize_symbol_for_whitelist;
 use super::fr_decision::{DEFAULT_BACKWARD_CHANNEL, DEFAULT_SIGNAL_CHANNEL};
 
 const DEFAULT_PNLU_REDIS_HOST: &str = "127.0.0.1";
-const DEFAULT_PNLU_REDIS_PORT: u16 = 6730;
+const DEFAULT_PNLU_REDIS_PORT: u16 = 6379;
 const DEFAULT_PNLU_REDIS_DB: i64 = 0;
 const DEFAULT_PNLU_KEY_SUFFIX: &str = "_pnlu_factor_thresholds";
 const PNLU_MAX_AGE_SECS: i64 = 30 * 60;
@@ -462,21 +462,9 @@ impl XarbDecision {
         );
         let cooldown_hit = self.is_cooldown_hit(&self.last_open_ts, &key, now);
         if cooldown_hit {
-            info!(
-                "XarbDecision: cooldown_hit symbol={} forward_open={} backward_open={}",
-                open_symbol_key, forward_open, backward_open
-            );
             return Ok(None);
         }
         let pnlu_check = self.check_pnlu_factor(open_symbol_key.as_str(), now);
-        self.log_pnlu_check(
-            open_symbol_key.as_str(),
-            forward_open,
-            backward_open,
-            cooldown_hit,
-            &pnlu_check,
-        );
-
         if !pnlu_check.ok {
             return Ok(None);
         }
@@ -490,6 +478,13 @@ impl XarbDecision {
         )?;
 
         self.update_last_ts(&self.last_open_ts, key, now);
+        self.log_pnlu_check(
+            open_symbol_key.as_str(),
+            forward_open,
+            backward_open,
+            false,
+            &pnlu_check,
+        );
 
         Ok(Some(SignalType::ArbOpen))
     }

@@ -9,6 +9,7 @@
   - pre_trade 的 prefix 规则："<dir>:<open_venue>:<hedge_venue>:"
   - 因此这里写入的 Redis Hash key 为：
       "<dir>:<open_venue>:<hedge_venue>:pre_trade_risk_params"
+  - dir 推断优先级：--dir-prefix > --env-name > CWD 目录名
 
 推断规则（优先级从高到低）：
   1) --open-venue/--hedge-venue（必须为 *-futures）
@@ -86,6 +87,23 @@ def infer_dir_prefix_from_cwd() -> Optional[str]:
     return name or None
 
 
+def normalize_dir_prefix(prefix: Optional[str]) -> Optional[str]:
+    if prefix is None:
+        return None
+    value = prefix.strip()
+    if not value:
+        return None
+    return value.lower()
+
+
+def resolve_dir_prefix(dir_prefix: Optional[str], env_name: Optional[str]) -> Optional[str]:
+    if dir_prefix:
+        return normalize_dir_prefix(dir_prefix)
+    if env_name:
+        return normalize_dir_prefix(env_name)
+    return infer_dir_prefix_from_cwd()
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Sync xarb pre-trade risk params to Redis (futures-only)")
     p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
@@ -96,6 +114,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--open-venue", default=os.environ.get("OPEN_VENUE"))
     p.add_argument("--hedge-venue", default=os.environ.get("HEDGE_VENUE"))
     p.add_argument("--env-name", help="环境目录名（例如 okex-binance-xarb-trade）")
+    p.add_argument("--dir-prefix", help="Redis key 前缀中的 dir（默认使用 --env-name 或当前目录名）")
     args = p.parse_args()
 
     open_venue = args.open_venue
@@ -120,9 +139,9 @@ def parse_args() -> argparse.Namespace:
 
 RISK_PARAMS = {
     "max_pos_u": "10000.0",
-    "max_symbol_exposure_ratio": "0.015",
-    "max_total_exposure_ratio": "0.01",
-    "max_leverage": "1.75",
+    "max_symbol_exposure_ratio": "0.05",
+    "max_total_exposure_ratio": "0.02",
+    "max_leverage": "5.0",
     "max_pending_limit_orders": "10",
 }
 
@@ -135,10 +154,10 @@ PARAM_COMMENTS: Dict[str, str] = {
 }
 
 
-def build_risk_params_key(open_venue: str, hedge_venue: str) -> str:
-    dir_prefix = infer_dir_prefix_from_cwd()
-    if dir_prefix:
-        return f"{dir_prefix}:{open_venue}:{hedge_venue}:pre_trade_risk_params"
+def build_risk_params_key(open_venue: str, hedge_venue: str, dir_prefix: Optional[str]) -> str:
+    resolved = normalize_dir_prefix(dir_prefix) or infer_dir_prefix_from_cwd()
+    if resolved:
+        return f"{resolved}:{open_venue}:{hedge_venue}:pre_trade_risk_params"
     return f"{open_venue}:{hedge_venue}:pre_trade_risk_params"
 
 
@@ -184,7 +203,8 @@ def main() -> int:
         host=args.host, port=args.port, db=args.db, password=args.password
     )
 
-    key = build_risk_params_key(args.open_venue, args.hedge_venue)
+    dir_prefix = resolve_dir_prefix(args.dir_prefix, args.env_name)
+    key = build_risk_params_key(args.open_venue, args.hedge_venue, dir_prefix)
     rds.hset(key, mapping=RISK_PARAMS)
     print(f"✅ 已写入 {len(RISK_PARAMS)} 个参数到 HASH '{key}' (primary)")
     print(f"📍 Redis: {args.host}:{args.port}/{args.db}")
