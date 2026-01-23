@@ -238,10 +238,19 @@ async fn reload_fr_thresholds(
 
     match RedisClient::connect(redis.clone()).await {
         Ok(mut client) => {
-            let funding_map = client
-                .hgetall_map(&redis_key)
-                .await
-                .with_context(|| format!("读取 Redis Hash 失败: {}", redis_key))?;
+            let funding_map = match client.hgetall_map(&redis_key).await {
+                Ok(map) => map,
+                Err(err) => {
+                    if ns == "fr" {
+                        panic!(
+                            "读取 Redis Hash '{}' 失败，无法加载资金费率阈值: {:?}",
+                            redis_key, err
+                        );
+                    }
+                    warn!("读取 Redis Hash 失败: {} ({:?})", redis_key, err);
+                    return Ok(());
+                }
+            };
             if funding_map.is_empty() {
                 if ns == "fr" {
                     panic!(
@@ -260,6 +269,9 @@ async fn reload_fr_thresholds(
             info!("资金费率阈值重载成功 (key: {})", redis_key);
         }
         Err(err) => {
+            if ns == "fr" {
+                panic!("连接 Redis 失败，无法加载资金费率阈值: {:?}", err);
+            }
             warn!("连接 Redis 加载资金费率阈值失败: {:?}", err);
         }
     }

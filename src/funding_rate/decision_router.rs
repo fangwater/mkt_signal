@@ -8,6 +8,7 @@ use log::warn;
 use std::cell::OnceCell;
 
 use crate::signal::common::TradingVenue;
+use crate::funding_rate::RateFetcher;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecisionBranch {
@@ -48,6 +49,9 @@ pub fn trigger_decision(
     match branch {
         DecisionBranch::Fr => {
             use super::fr_decision::FrDecision;
+            if !RateFetcher::is_initial_ready(hedge_venue) {
+                return;
+            }
             FrDecision::with_mut(|decision| {
                 let _ = decision.make_combined_decision(
                     open_symbol,

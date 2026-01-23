@@ -3,8 +3,7 @@ use crate::common::exchange::Exchange;
 use crate::connection::connection::construct_connection_with_ip;
 use crate::parser::binance_parser::{
     BinanceAskBidSpreadParser, BinanceDerivativesMetricsParser, BinanceIncParser,
-    BinanceKlineParser, BinanceSbeBestBidAskParser, BinanceSbeDepthDiffParser,
-    BinanceSbeDepthSnapshotParser, BinanceSbeTradeParser, BinanceSignalParser, BinanceTradeParser,
+    BinanceKlineParser, BinanceSignalParser, BinanceTradeParser,
 };
 use crate::parser::bitget_parser::{
     BitgetDerivativesMetricsParser, BitgetIncParser, BitgetSignalParser, BitgetTradeParser,
@@ -28,6 +27,8 @@ use log::{debug, error, info};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, watch, Notify};
 use tokio::task::JoinSet;
+
+const BINANCE_SPOT_WS_URL: &str = "wss://stream.binance.com:9443/ws";
 
 // 消息队列结构，每种数据类型对应一个mpsc channel
 pub struct MessageQueues {
@@ -202,13 +203,13 @@ impl MktManager {
                 Exchange::Binance => {
                     match self.cfg.venue {
                         TradingVenue::BinanceMargin => {
-                            let url = "wss://stream-sbe.binance.com:9443/ws".to_string();
-                            let parser = BinanceSbeDepthDiffParser::with_max_levels(max_levels);
+                            let url = BINANCE_SPOT_WS_URL.to_string();
+                            let parser = BinanceIncParser::spot_incremental(max_levels);
                             self.spawn_connection_with_mpsc(
                                 exchange,
                                 url,
                                 subscribe_msg,
-                                format!("sbe inc msg batch {}", i),
+                                format!("inc msg batch {}", i),
                                 parser,
                                 tx,
                             )
@@ -294,13 +295,13 @@ impl MktManager {
 
             match self.cfg.venue {
                 TradingVenue::BinanceMargin => {
-                    let url = "wss://stream-sbe.binance.com:9443/ws".to_string();
-                    let parser = BinanceSbeDepthSnapshotParser::with_max_levels(max_levels);
+                    let url = BINANCE_SPOT_WS_URL.to_string();
+                    let parser = BinanceIncParser::spot_snapshot(max_levels);
                     self.spawn_connection_with_mpsc(
                         exchange,
                         url,
                         subscribe_msg,
-                        format!("sbe depth snapshot batch {}", i),
+                        format!("depth snapshot batch {}", i),
                         parser,
                         tx,
                     )
@@ -334,13 +335,13 @@ impl MktManager {
                 Exchange::Binance => {
                     match self.cfg.venue {
                         TradingVenue::BinanceMargin => {
-                            let url = "wss://stream-sbe.binance.com:9443/ws".to_string();
-                            let parser = BinanceSbeTradeParser::new();
+                            let url = BINANCE_SPOT_WS_URL.to_string();
+                            let parser = BinanceTradeParser::new();
                             self.spawn_connection_with_mpsc(
                                 exchange,
                                 url,
                                 subscribe_msg,
-                                format!("sbe trade msg batch {}", i),
+                                format!("trade msg batch {}", i),
                                 parser,
                                 tx,
                             )
@@ -410,7 +411,12 @@ impl MktManager {
 
     async fn start_kline_connections(&mut self) {
         let exchange = self.cfg.get_exchange();
-        let url = crate::sub_msg::SubscribeMsgs::get_exchange_kline_data_url(&exchange).to_string();
+        let url = if exchange == Exchange::Binance && self.cfg.venue == TradingVenue::BinanceMargin
+        {
+            BINANCE_SPOT_WS_URL.to_string()
+        } else {
+            crate::sub_msg::SubscribeMsgs::get_exchange_kline_data_url(&exchange).to_string()
+        };
 
         for i in 0..self.subscribe_msgs.get_kline_subscribe_msg_len() {
             let subscribe_msg = self.subscribe_msgs.get_kline_subscribe_msg(i).clone();
@@ -487,13 +493,13 @@ impl MktManager {
                 Exchange::Binance => {
                     match self.cfg.venue {
                         TradingVenue::BinanceMargin => {
-                            let url = "wss://stream-sbe.binance.com:9443/ws".to_string();
-                            let parser = BinanceSbeBestBidAskParser::new();
+                            let url = BINANCE_SPOT_WS_URL.to_string();
+                            let parser = BinanceAskBidSpreadParser::new();
                             self.spawn_connection_with_mpsc(
                                 exchange,
                                 url,
                                 subscribe_msg,
-                                format!("sbe ask_bid_spread batch {}", i),
+                                format!("ask_bid_spread batch {}", i),
                                 parser,
                                 tx,
                             )

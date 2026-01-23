@@ -428,19 +428,30 @@ impl FrDecision {
         let symbol_list = SymbolList::instance();
         let open_symbol_key = Self::normalize_symbol_key(open_symbol);
         let hedge_symbol_key = Self::normalize_symbol_key(hedge_symbol);
+        if log::log_enabled!(log::Level::Debug) {
+            log::debug!(
+                "FrDecision decision start open={} hedge={} open_venue={:?} hedge_venue={:?}",
+                open_symbol_key,
+                hedge_symbol_key,
+                open_venue,
+                hedge_venue
+            );
+        }
 
         // 步骤1: 优先检查 cancel 信号（只和价差有关，不需要资费）
-        if spread_factor.satisfy_forward_cancel(
+        let forward_cancel = spread_factor.satisfy_forward_cancel(
             open_venue,
             open_symbol_key.as_str(),
             hedge_venue,
             hedge_symbol_key.as_str(),
-        ) || spread_factor.satisfy_backward_cancel(
+        );
+        let backward_cancel = spread_factor.satisfy_backward_cancel(
             open_venue,
             open_symbol_key.as_str(),
             hedge_venue,
             hedge_symbol_key.as_str(),
-        ) {
+        );
+        if forward_cancel || backward_cancel {
             // 检查 cancel 信号冷却
             if self.check_signal_cooldown(
                 open_symbol_key.as_str(),
@@ -450,8 +461,26 @@ impl FrDecision {
                 now,
                 &SignalType::ArbCancel,
             ) {
+                log::debug!(
+                    "FrDecision cancel suppressed by cooldown open={} hedge={} open_venue={:?} hedge_venue={:?} forward_cancel={} backward_cancel={}",
+                    open_symbol_key,
+                    hedge_symbol_key,
+                    open_venue,
+                    hedge_venue,
+                    forward_cancel,
+                    backward_cancel
+                );
                 // 在冷却期内，不返回，继续检查 open/close 信号
             } else {
+                log::debug!(
+                    "FrDecision cancel triggered open={} hedge={} open_venue={:?} hedge_venue={:?} forward_cancel={} backward_cancel={}",
+                    open_symbol_key,
+                    hedge_symbol_key,
+                    open_venue,
+                    hedge_venue,
+                    forward_cancel,
+                    backward_cancel
+                );
                 // 发送 cancel 信号
                 self.emit_signals(
                     open_symbol_key.as_str(),
@@ -475,6 +504,15 @@ impl FrDecision {
         }
 
         let in_dump = symbol_list.is_in_dump_list(open_symbol_key.as_str());
+        if in_dump {
+            log::debug!(
+                "FrDecision symbol in dump list open={} hedge={} open_venue={:?} hedge_venue={:?}",
+                open_symbol_key,
+                hedge_symbol_key,
+                open_venue,
+                hedge_venue
+            );
+        }
 
         // 步骤2: 获取资费信号
         let fr_signal = if in_dump {
@@ -494,6 +532,13 @@ impl FrDecision {
             ) {
                 Some(FrSignal::BackwardClose)
             } else {
+                log::debug!(
+                    "FrDecision dump close not satisfied open={} hedge={} open_venue={:?} hedge_venue={:?}",
+                    open_symbol_key,
+                    hedge_symbol_key,
+                    open_venue,
+                    hedge_venue
+                );
                 None
             }
         } else {
@@ -507,64 +552,125 @@ impl FrDecision {
         // 步骤3: 如果资费没有信号，返回 None
         let fr_signal = match fr_signal {
             Some(s) => s,
-            None => return Ok(None),
+            None => {
+                log::debug!(
+                    "FrDecision no funding-rate signal open={} hedge={} open_venue={:?} hedge_venue={:?}",
+                    open_symbol_key,
+                    hedge_symbol_key,
+                    open_venue,
+                    hedge_venue
+                );
+                return Ok(None);
+            }
         };
 
         // 步骤4: 根据资费信号验证对应的价差 satisfy
         let final_signal = match fr_signal {
             FrSignal::ForwardOpen => {
                 if in_dump {
+                    log::debug!(
+                        "FrDecision forward_open blocked by dump list open={} hedge={} open_venue={:?} hedge_venue={:?}",
+                        open_symbol_key,
+                        hedge_symbol_key,
+                        open_venue,
+                        hedge_venue
+                    );
                     return Ok(None);
                 }
-                if spread_factor.satisfy_forward_open(
+                let spread_ok = spread_factor.satisfy_forward_open(
                     open_venue,
                     open_symbol_key.as_str(),
                     hedge_venue,
                     hedge_symbol_key.as_str(),
-                ) && symbol_list.is_in_fwd_trade_list(open_symbol_key.as_str())
-                {
+                );
+                let in_trade_list = symbol_list.is_in_fwd_trade_list(open_symbol_key.as_str());
+                if spread_ok && in_trade_list {
                     Some(SignalType::ArbOpen)
                 } else {
+                    log::debug!(
+                        "FrDecision forward_open rejected spread_ok={} in_fwd_list={} open={} hedge={} open_venue={:?} hedge_venue={:?}",
+                        spread_ok,
+                        in_trade_list,
+                        open_symbol_key,
+                        hedge_symbol_key,
+                        open_venue,
+                        hedge_venue
+                    );
                     None
                 }
             }
             FrSignal::ForwardClose => {
-                if spread_factor.satisfy_forward_close(
+                let spread_ok = spread_factor.satisfy_forward_close(
                     open_venue,
                     open_symbol_key.as_str(),
                     hedge_venue,
                     hedge_symbol_key.as_str(),
-                ) {
+                );
+                if spread_ok {
                     Some(SignalType::ArbClose)
                 } else {
+                    log::debug!(
+                        "FrDecision forward_close rejected spread_ok={} open={} hedge={} open_venue={:?} hedge_venue={:?}",
+                        spread_ok,
+                        open_symbol_key,
+                        hedge_symbol_key,
+                        open_venue,
+                        hedge_venue
+                    );
                     None
                 }
             }
             FrSignal::BackwardOpen => {
                 if in_dump {
+                    log::debug!(
+                        "FrDecision backward_open blocked by dump list open={} hedge={} open_venue={:?} hedge_venue={:?}",
+                        open_symbol_key,
+                        hedge_symbol_key,
+                        open_venue,
+                        hedge_venue
+                    );
                     return Ok(None);
                 }
-                if spread_factor.satisfy_backward_open(
+                let spread_ok = spread_factor.satisfy_backward_open(
                     open_venue,
                     open_symbol_key.as_str(),
                     hedge_venue,
                     hedge_symbol_key.as_str(),
-                ) && symbol_list.is_in_bwd_trade_list(open_symbol_key.as_str())
-                {
+                );
+                let in_trade_list = symbol_list.is_in_bwd_trade_list(open_symbol_key.as_str());
+                if spread_ok && in_trade_list {
                     Some(SignalType::ArbOpen)
                 } else {
+                    log::debug!(
+                        "FrDecision backward_open rejected spread_ok={} in_bwd_list={} open={} hedge={} open_venue={:?} hedge_venue={:?}",
+                        spread_ok,
+                        in_trade_list,
+                        open_symbol_key,
+                        hedge_symbol_key,
+                        open_venue,
+                        hedge_venue
+                    );
                     None
                 }
             }
             FrSignal::BackwardClose => {
-                if spread_factor.satisfy_backward_close(
+                let spread_ok = spread_factor.satisfy_backward_close(
                     open_venue,
                     open_symbol_key.as_str(),
                     hedge_venue,
                     hedge_symbol_key.as_str(),
-                ) {
+                );
+                if spread_ok {
                     Some(SignalType::ArbClose)
                 } else {
+                    log::debug!(
+                        "FrDecision backward_close rejected spread_ok={} open={} hedge={} open_venue={:?} hedge_venue={:?}",
+                        spread_ok,
+                        open_symbol_key,
+                        hedge_symbol_key,
+                        open_venue,
+                        hedge_venue
+                    );
                     None
                 }
             }
@@ -587,6 +693,14 @@ impl FrDecision {
             now,
             &final_signal,
         ) {
+            log::debug!(
+                "FrDecision {:?} suppressed by cooldown open={} hedge={} open_venue={:?} hedge_venue={:?}",
+                final_signal,
+                open_symbol_key,
+                hedge_symbol_key,
+                open_venue,
+                hedge_venue
+            );
             return Ok(None);
         }
 
@@ -638,34 +752,81 @@ impl FrDecision {
         let forward_close = fr_factor.satisfy_forward_close(hedge_symbol, period, hedge_venue);
         let backward_open = fr_factor.satisfy_backward_open(hedge_symbol, period, hedge_venue);
         let backward_close = fr_factor.satisfy_backward_close(hedge_symbol, period, hedge_venue);
+        if log::log_enabled!(log::Level::Debug) {
+            log::debug!(
+                "FrDecision funding-rate flags hedge={} venue={:?} period={:?} fwd_open={} fwd_close={} bwd_open={} bwd_close={}",
+                hedge_symbol,
+                hedge_venue,
+                period,
+                forward_open,
+                forward_close,
+                backward_open,
+                backward_close
+            );
+        }
 
         // 优先级规则1: forward_close 和 backward_open 冲突时，选择 backward_open
         if forward_close && backward_open {
+            log::debug!(
+                "FrDecision funding-rate signal=BackwardOpen (conflict fwd_close/bwd_open) hedge={} venue={:?}",
+                hedge_symbol,
+                hedge_venue
+            );
             return Ok(Some(FrSignal::BackwardOpen));
         }
 
         // 优先级规则2: backward_close 和 forward_open 冲突时，选择 forward_open
         if backward_close && forward_open {
+            log::debug!(
+                "FrDecision funding-rate signal=ForwardOpen (conflict bwd_close/fwd_open) hedge={} venue={:?}",
+                hedge_symbol,
+                hedge_venue
+            );
             return Ok(Some(FrSignal::ForwardOpen));
         }
 
         // 默认优先级: close > open
         if forward_close {
+            log::debug!(
+                "FrDecision funding-rate signal=ForwardClose hedge={} venue={:?}",
+                hedge_symbol,
+                hedge_venue
+            );
             return Ok(Some(FrSignal::ForwardClose));
         }
         if backward_close {
+            log::debug!(
+                "FrDecision funding-rate signal=BackwardClose hedge={} venue={:?}",
+                hedge_symbol,
+                hedge_venue
+            );
             return Ok(Some(FrSignal::BackwardClose));
         }
 
         // 开仓信号
         if forward_open {
+            log::debug!(
+                "FrDecision funding-rate signal=ForwardOpen hedge={} venue={:?}",
+                hedge_symbol,
+                hedge_venue
+            );
             return Ok(Some(FrSignal::ForwardOpen));
         }
         if backward_open {
+            log::debug!(
+                "FrDecision funding-rate signal=BackwardOpen hedge={} venue={:?}",
+                hedge_symbol,
+                hedge_venue
+            );
             return Ok(Some(FrSignal::BackwardOpen));
         }
 
         // 无资费信号
+        log::debug!(
+            "FrDecision no funding-rate condition met hedge={} venue={:?}",
+            hedge_symbol,
+            hedge_venue
+        );
         Ok(None)
     }
 
