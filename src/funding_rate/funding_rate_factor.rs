@@ -273,13 +273,43 @@ impl FundingRateFactor {
         );
 
         let thresholds = self.thresholds.borrow();
-        if let Some(config) = thresholds.get(&key) {
-            if let Some(predict_fr) = self.get_predict_fr(symbol, period, venue) {
-                return config.compare_op.check(predict_fr, config.threshold);
+        let config = thresholds.get(&key);
+        let mut ok = false;
+        let mut reason = "missing_threshold";
+        let mut compare_op = None;
+        let mut threshold = None;
+        let mut predict_fr = None;
+
+        if let Some(cfg) = config {
+            compare_op = Some(cfg.compare_op);
+            threshold = Some(cfg.threshold);
+            predict_fr = self.get_predict_fr(symbol, period, venue);
+            if let Some(value) = predict_fr {
+                ok = cfg.compare_op.check(value, cfg.threshold);
+                reason = if ok { "hit" } else { "not_hit_threshold" };
+            } else {
+                RateFetcher::mark_missing(venue, symbol, "missing_predict_fr");
+                reason = "missing_predict_fr";
             }
         }
 
-        false
+        if log::log_enabled!(log::Level::Debug) {
+            log::debug!(
+                "FRFactor forward_open symbol={} venue={:?} period={:?} mode={:?} cfg={} op={:?} threshold={:?} predict_fr={:?} ok={} reason={}",
+                symbol,
+                venue,
+                period,
+                current_mode,
+                config.is_some(),
+                compare_op,
+                threshold,
+                predict_fr,
+                ok,
+                reason
+            );
+        }
+
+        ok
     }
 
     /// 检查是否满足反套开仓条件
@@ -301,17 +331,53 @@ impl FundingRateFactor {
         );
 
         let thresholds = self.thresholds.borrow();
-        if let Some(config) = thresholds.get(&key) {
-            if let (Some(predict_fr), Some(loan_rate)) = (
-                self.get_predict_fr(symbol, period, venue),
-                self.get_predict_loan_rate(symbol, period, venue),
-            ) {
-                let factor = predict_fr + loan_rate * BWD_OPEN_LOAN_RATE_MULTIPLIER;
-                return config.compare_op.check(factor, config.threshold);
+        let config = thresholds.get(&key);
+        let mut ok = false;
+        let mut reason = "missing_threshold";
+        let mut compare_op = None;
+        let mut threshold = None;
+        let mut predict_fr = None;
+        let mut predict_loan = None;
+        let mut factor = None;
+
+        if let Some(cfg) = config {
+            compare_op = Some(cfg.compare_op);
+            threshold = Some(cfg.threshold);
+            predict_fr = self.get_predict_fr(symbol, period, venue);
+            predict_loan = self.get_predict_loan_rate(symbol, period, venue);
+            if let (Some(fr), Some(loan)) = (predict_fr, predict_loan) {
+                let value = fr + loan * BWD_OPEN_LOAN_RATE_MULTIPLIER;
+                factor = Some(value);
+                ok = cfg.compare_op.check(value, cfg.threshold);
+                reason = if ok { "hit" } else { "not_hit_threshold" };
+            } else if predict_fr.is_none() {
+                RateFetcher::mark_missing(venue, symbol, "missing_predict_fr");
+                reason = "missing_predict_fr";
+            } else {
+                RateFetcher::mark_missing(venue, symbol, "missing_predict_loan");
+                reason = "missing_predict_loan";
             }
         }
 
-        false
+        if log::log_enabled!(log::Level::Debug) {
+            log::debug!(
+                "FRFactor backward_open symbol={} venue={:?} period={:?} mode={:?} cfg={} op={:?} threshold={:?} predict_fr={:?} predict_loan={:?} factor={:?} ok={} reason={}",
+                symbol,
+                venue,
+                period,
+                current_mode,
+                config.is_some(),
+                compare_op,
+                threshold,
+                predict_fr,
+                predict_loan,
+                factor,
+                ok,
+                reason
+            );
+        }
+
+        ok
     }
 
     /// 检查是否满足正套平仓条件
@@ -332,13 +398,43 @@ impl FundingRateFactor {
         );
 
         let thresholds = self.thresholds.borrow();
-        if let Some(config) = thresholds.get(&key) {
-            if let Some(current_fr_ma) = self.get_current_fr_ma(symbol, venue) {
-                return config.compare_op.check(current_fr_ma, config.threshold);
+        let config = thresholds.get(&key);
+        let mut ok = false;
+        let mut reason = "missing_threshold";
+        let mut compare_op = None;
+        let mut threshold = None;
+        let mut current_fr_ma = None;
+
+        if let Some(cfg) = config {
+            compare_op = Some(cfg.compare_op);
+            threshold = Some(cfg.threshold);
+            current_fr_ma = self.get_current_fr_ma(symbol, venue);
+            if let Some(value) = current_fr_ma {
+                ok = cfg.compare_op.check(value, cfg.threshold);
+                reason = if ok { "hit" } else { "not_hit_threshold" };
+            } else {
+                RateFetcher::mark_missing(venue, symbol, "missing_current_fr_ma");
+                reason = "missing_current_fr_ma";
             }
         }
 
-        false
+        if log::log_enabled!(log::Level::Debug) {
+            log::debug!(
+                "FRFactor forward_close symbol={} venue={:?} period={:?} mode={:?} cfg={} op={:?} threshold={:?} current_fr_ma={:?} ok={} reason={}",
+                symbol,
+                venue,
+                period,
+                current_mode,
+                config.is_some(),
+                compare_op,
+                threshold,
+                current_fr_ma,
+                ok,
+                reason
+            );
+        }
+
+        ok
     }
 
     /// 检查是否满足反套平仓条件
@@ -359,16 +455,52 @@ impl FundingRateFactor {
         );
 
         let thresholds = self.thresholds.borrow();
-        if let Some(config) = thresholds.get(&key) {
-            if let (Some(current_fr_ma), Some(current_loan)) = (
-                self.get_current_fr_ma(symbol, venue),
-                self.get_current_loan_rate(symbol, period, venue),
-            ) {
-                let factor = current_fr_ma + current_loan;
-                return config.compare_op.check(factor, config.threshold);
+        let config = thresholds.get(&key);
+        let mut ok = false;
+        let mut reason = "missing_threshold";
+        let mut compare_op = None;
+        let mut threshold = None;
+        let mut current_fr_ma = None;
+        let mut current_loan = None;
+        let mut factor = None;
+
+        if let Some(cfg) = config {
+            compare_op = Some(cfg.compare_op);
+            threshold = Some(cfg.threshold);
+            current_fr_ma = self.get_current_fr_ma(symbol, venue);
+            current_loan = self.get_current_loan_rate(symbol, period, venue);
+            if let (Some(fr_ma), Some(loan)) = (current_fr_ma, current_loan) {
+                let value = fr_ma + loan;
+                factor = Some(value);
+                ok = cfg.compare_op.check(value, cfg.threshold);
+                reason = if ok { "hit" } else { "not_hit_threshold" };
+            } else if current_fr_ma.is_none() {
+                RateFetcher::mark_missing(venue, symbol, "missing_current_fr_ma");
+                reason = "missing_current_fr_ma";
+            } else {
+                RateFetcher::mark_missing(venue, symbol, "missing_current_loan");
+                reason = "missing_current_loan";
             }
         }
 
-        false
+        if log::log_enabled!(log::Level::Debug) {
+            log::debug!(
+                "FRFactor backward_close symbol={} venue={:?} period={:?} mode={:?} cfg={} op={:?} threshold={:?} current_fr_ma={:?} current_loan={:?} factor={:?} ok={} reason={}",
+                symbol,
+                venue,
+                period,
+                current_mode,
+                config.is_some(),
+                compare_op,
+                threshold,
+                current_fr_ma,
+                current_loan,
+                factor,
+                ok,
+                reason
+            );
+        }
+
+        ok
     }
 }

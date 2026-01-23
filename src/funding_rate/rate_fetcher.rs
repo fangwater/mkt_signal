@@ -274,6 +274,7 @@ struct LendingRateCache {
 struct VenueState {
     symbol_cache: HashSet<String>,
     last_full_fetch_hour: Option<u32>,
+    initial_ready: bool,
 }
 
 /// RateFetcher 内部实现
@@ -497,6 +498,13 @@ impl RateFetcher {
         if let Err(e) = lr_result {
             warn!("Binance 借贷利率拉取失败: {:?}", e);
         }
+
+        Self::check_initial_rates_if_needed(
+            BINANCE_CONFIG.venue,
+            &online_symbols,
+            true,
+            all_changed || is_full_fetch,
+        );
 
         if all_changed || is_full_fetch {
             Self::print_binance_rate_table(&online_symbols);
@@ -804,6 +812,13 @@ impl RateFetcher {
 
         Self::fetch_okex_funding_rates(symbols_to_fetch).await?;
         Self::fetch_okex_lending_rates(&online_symbols).await?;
+
+        Self::check_initial_rates_if_needed(
+            OKEX_CONFIG.venue,
+            &online_symbols,
+            true,
+            all_changed || is_full_fetch,
+        );
 
         if all_changed || is_full_fetch {
             Self::print_okex_rate_table(&online_symbols);
@@ -1126,6 +1141,13 @@ impl RateFetcher {
 
         Self::fetch_bitget_funding_rates(symbols_to_fetch).await?;
 
+        Self::check_initial_rates_if_needed(
+            BITGET_CONFIG.venue,
+            &online_symbols,
+            false,
+            all_changed || is_full_fetch,
+        );
+
         if all_changed || is_full_fetch {
             Self::print_bitget_rate_table(&online_symbols);
         }
@@ -1300,6 +1322,13 @@ impl RateFetcher {
         };
 
         Self::fetch_bybit_funding_rates(symbols_to_fetch).await?;
+
+        Self::check_initial_rates_if_needed(
+            BYBIT_CONFIG.venue,
+            &online_symbols,
+            false,
+            all_changed || is_full_fetch,
+        );
 
         if all_changed || is_full_fetch {
             Self::print_bybit_rate_table(&online_symbols);
@@ -1534,6 +1563,13 @@ impl RateFetcher {
                 warn!("Gate 借贷利率拉取失败: {:?}", e);
             }
         }
+
+        Self::check_initial_rates_if_needed(
+            GATE_CONFIG.venue,
+            &online_symbols,
+            true,
+            all_changed || is_full_fetch,
+        );
 
         if all_changed || is_full_fetch {
             Self::print_gate_rate_table(&online_symbols);
@@ -1918,6 +1954,104 @@ impl RateFetcher {
                 new_symbols.len()
             );
         }
+    }
+
+    fn check_initial_rates_if_needed(
+        venue: TradingVenue,
+        symbols: &[String],
+        require_loan: bool,
+        force_check: bool,
+    ) {
+        let ready = Self::with_inner(|inner| {
+            inner
+                .venue_states
+                .get(&venue)
+                .map(|state| state.initial_ready)
+                .unwrap_or(false)
+        });
+        if (ready && !force_check) || symbols.is_empty() {
+            return;
+        }
+
+        let mut missing_fr = Vec::new();
+        let mut missing_loan = Vec::new();
+        for sym in symbols {
+            if Self::instance()
+                .get_predicted_funding_rate(sym, venue)
+                .is_none()
+            {
+                missing_fr.push(sym.clone());
+            }
+            if require_loan
+                && Self::instance().get_predict_loan_rate(sym, venue).is_none()
+            {
+                missing_loan.push(sym.clone());
+            }
+        }
+
+        if missing_fr.is_empty() && missing_loan.is_empty() {
+            if !ready {
+                Self::with_inner_mut(|inner| {
+                    if let Some(state) = inner.venue_states.get_mut(&venue) {
+                        state.initial_ready = true;
+                    }
+                });
+                info!(
+                    "RateFetcher: 初次费率数据就绪 venue={:?} symbols={}",
+                    venue,
+                    symbols.len()
+                );
+            }
+            return;
+        }
+
+        if ready {
+            Self::with_inner_mut(|inner| {
+                if let Some(state) = inner.venue_states.get_mut(&venue) {
+                    state.initial_ready = false;
+                }
+            });
+        }
+        log::error!(
+            "RateFetcher: 初次费率数据不完整 venue={:?} missing_fr={:?} missing_loan={:?}",
+            venue,
+            missing_fr,
+            missing_loan
+        );
+    }
+
+    pub fn is_initial_ready(venue: TradingVenue) -> bool {
+        Self::with_inner(|inner| {
+            inner
+                .venue_states
+                .get(&venue)
+                .map(|state| state.initial_ready)
+                .unwrap_or(false)
+        })
+    }
+
+    pub fn mark_missing(venue: TradingVenue, symbol: &str, reason: &str) {
+        let ready = Self::with_inner(|inner| {
+            inner
+                .venue_states
+                .get(&venue)
+                .map(|state| state.initial_ready)
+                .unwrap_or(false)
+        });
+        if !ready {
+            return;
+        }
+        Self::with_inner_mut(|inner| {
+            if let Some(state) = inner.venue_states.get_mut(&venue) {
+                state.initial_ready = false;
+            }
+        });
+        log::error!(
+            "RateFetcher: missing data, disable signals venue={:?} symbol={} reason={}",
+            venue,
+            symbol,
+            reason
+        );
     }
 
     fn okex_loan_rate_url() -> String {

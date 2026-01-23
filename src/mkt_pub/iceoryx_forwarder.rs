@@ -373,12 +373,7 @@ impl IceOryxForwarder {
         label: &str,
     ) -> bool {
         if msg.len() > max_size {
-            warn!(
-                "Message size {} exceeds max size {} for {}",
-                msg.len(),
-                max_size,
-                label
-            );
+            self.log_oversize(label, msg, max_size);
             return false;
         }
 
@@ -393,6 +388,33 @@ impl IceOryxForwarder {
                 matches!(sample.send(), Ok(_))
             }
             Err(_e) => false,
+        }
+    }
+
+    fn log_oversize(&self, label: &str, msg: &[u8], max_size: usize) {
+        let symbol_info = match label {
+            "trade" | "ask_bid_spread" | "kline" | "derivatives" => {
+                Self::extract_symbol(msg).map(|symbol| (symbol, symbol.len()))
+            }
+            _ => None,
+        };
+
+        if let Some((symbol, len)) = symbol_info {
+            info!(
+                "Message size {} exceeds max size {} for {} (symbol={} len={})",
+                msg.len(),
+                max_size,
+                label,
+                symbol,
+                len
+            );
+        } else {
+            info!(
+                "Message size {} exceeds max size {} for {}",
+                msg.len(),
+                max_size,
+                label
+            );
         }
     }
 

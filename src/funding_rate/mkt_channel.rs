@@ -15,6 +15,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use super::common::{FundingRateData, Quote};
+use super::symbol_list::SymbolList;
 use crate::common::mkt_msg::{
     get_msg_type, AskBidSpreadMsg, FundingRateMsg, MarkPriceMsg, MktMsgType,
 };
@@ -48,6 +49,13 @@ fn is_futures(venue: TradingVenue) -> bool {
 fn normalize_symbol_key(symbol: &str) -> String {
     // Keep consistent with rolling_metrics/symbol_list: uppercase, remove '-'/'_', strip trailing "SWAP".
     normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
+}
+
+fn should_trigger_decision(symbol: &str) -> bool {
+    let symbol_list = SymbolList::instance();
+    symbol_list.is_in_dump_list(symbol)
+        || symbol_list.is_in_fwd_trade_list(symbol)
+        || symbol_list.is_in_bwd_trade_list(symbol)
 }
 
 /// MktChannel 单例访问器（零大小类型）
@@ -350,12 +358,14 @@ impl MktChannel {
 
                                 // 盘口更新后触发决策（事件驱动）
                                 if let Some(sym) = symbol_for_decision {
-                                    super::decision_router::trigger_decision(
-                                        &sym,
-                                        &sym,
-                                        open_venue,
-                                        hedge_venue,
-                                    );
+                                    if should_trigger_decision(&sym) {
+                                        super::decision_router::trigger_decision(
+                                            &sym,
+                                            &sym,
+                                            open_venue,
+                                            hedge_venue,
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -436,12 +446,14 @@ impl MktChannel {
 
                                     // Funding Rate MA 重算后触发决策（事件驱动）
                                     if let Some(sym) = symbol_for_decision {
-                                        super::decision_router::trigger_decision(
-                                            &sym,
-                                            &sym,
-                                            open_venue,
-                                            hedge_venue,
-                                        );
+                                        if should_trigger_decision(&sym) {
+                                            super::decision_router::trigger_decision(
+                                                &sym,
+                                                &sym,
+                                                open_venue,
+                                                hedge_venue,
+                                            );
+                                        }
                                     }
                                 }
                                 MktMsgType::MarkPrice => {

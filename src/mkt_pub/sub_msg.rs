@@ -357,7 +357,7 @@ impl SubscribeMsgs {
     fn get_inc_channel(exchange: &Exchange, venue: TradingVenue) -> String {
         match exchange {
             Exchange::Binance => match venue {
-                TradingVenue::BinanceMargin => "depth".to_string(),
+                TradingVenue::BinanceMargin => "depth@100ms".to_string(),
                 _ => "depth@100ms".to_string(),
             },
             Exchange::Okex => "books".to_string(),
@@ -371,7 +371,7 @@ impl SubscribeMsgs {
     fn get_depth_channel(exchange: &Exchange, venue: TradingVenue) -> Option<String> {
         match exchange {
             Exchange::Binance => match venue {
-                TradingVenue::BinanceMargin => Some("depth20".to_string()),
+                TradingVenue::BinanceMargin => Some("depth20@100ms".to_string()),
                 _ => Some("depth20@100ms".to_string()),
             },
             _ => None, // 其他交易所暂不支持
@@ -401,7 +401,7 @@ impl SubscribeMsgs {
     fn get_ask_bid_spread_channel(exchange: &Exchange, venue: TradingVenue) -> String {
         match exchange {
             Exchange::Binance => match venue {
-                TradingVenue::BinanceMargin => "bestBidAsk".to_string(),
+                TradingVenue::BinanceMargin => "bookTicker".to_string(),
                 _ => "bookTicker".to_string(),
             },
             Exchange::Okex => "bbo-tbt".to_string(),

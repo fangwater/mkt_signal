@@ -32,10 +32,8 @@ struct Args {
 }
 
 fn get_redis_settings() -> RedisSettings {
-    let redis_host =
-        std::env::var("FUNDING_RATE_REDIS_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     RedisSettings {
-        host: redis_host,
+        host: "127.0.0.1".to_string(),
         port: 6379,
         db: 0,
         username: None,
@@ -206,6 +204,21 @@ async fn run(
         hedge_venue,
     );
     info!("配置加载器已启动（60秒定时重载）");
+
+    // if matches!(branch, DecisionBranch::Fr) {
+    //     tokio::task::spawn_local(async move {
+    //         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
+    //         loop {
+    //             interval.tick().await;
+    //             let symbols = SymbolList::instance().get_online_symbols();
+    //             if symbols.is_empty() {
+    //                 continue;
+    //             }
+    //             RateFetcher::print_signal_table(&symbols);
+    //         }
+    //     });
+    //     info!("资费信号表打印器已启动（10秒间隔）");
+    // }
 
     info!("✅ {} 启动完成，等待市场数据触发决策...", PROCESS_NAME);
 
