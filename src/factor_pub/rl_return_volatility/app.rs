@@ -7,7 +7,8 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
-use polars::prelude::{RollingOptionsFixedWindow, Series, SeriesOpsTime};
+use polars::prelude::{NamedFrom, RollingOptionsFixedWindow, Series};
+use polars_time::prelude::SeriesOpsTime;
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
@@ -41,7 +42,7 @@ pub struct RlReturnVolatilityApp {
 
 impl RlReturnVolatilityApp {
     pub fn new(config_path: &str, venue_slug: &str) -> Result<Self> {
-        let mut config = RlReturnVolatilityConfig::load(config_path)?;
+        let config = RlReturnVolatilityConfig::load(config_path)?;
         config.validate()?;
 
         let subscriber = Self::create_subscriber(venue_slug)?;
