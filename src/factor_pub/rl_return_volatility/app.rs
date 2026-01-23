@@ -269,7 +269,7 @@ fn compute_factor(
         returns[idx] = Some(window[idx] / prev - 1.0);
     }
 
-    let series = Series::new("returns", returns);
+    let series = Series::new("returns".into(), returns);
     let options = RollingOptionsFixedWindow {
         window_size: cfg.rolling_window,
         min_periods: cfg.rolling_window,

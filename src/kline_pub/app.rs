@@ -233,7 +233,6 @@ struct KlineSnapshot {
 
 /// Kline Publisher 应用
 pub struct KlinePubApp {
-    config: KlinePubConfig,
     venue_slug: String,
     publisher: KlineMsgPublisher,
     subscriber: Subscriber<ipc::Service, [u8; TRADE_MAX_BYTES], ()>,
@@ -272,7 +271,6 @@ impl KlinePubApp {
         );
 
         Ok(Self {
-            config,
             venue_slug: venue_slug.to_string(),
             publisher,
             subscriber,
