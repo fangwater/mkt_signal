@@ -1,0 +1,5 @@
+# Kline Message 配置文件
+
+kline_timing:
+  period_ms: 5000       # K线周期（毫秒）
+  close_delay_us: 500   # 封bar延迟（微秒）

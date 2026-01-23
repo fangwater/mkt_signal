@@ -15,6 +15,7 @@ pub enum MktMsgType {
     LiquidationOrder = 1013,
     FundingRate = 1014,
     AskBidSpread = 1015,
+    RlReturnVolatility = 2001,
     Error = 2222,
 }
 
@@ -205,6 +206,7 @@ pub fn get_msg_type(data: &[u8]) -> Option<MktMsgType> {
         1013 => Some(MktMsgType::LiquidationOrder),
         1014 => Some(MktMsgType::FundingRate),
         1015 => Some(MktMsgType::AskBidSpread),
+        2001 => Some(MktMsgType::RlReturnVolatility),
         2222 => Some(MktMsgType::Error),
         _ => None,
     }

@@ -1,0 +1,8 @@
+# RL Return Volatility 配置
+
+rl_return_volatility:
+  pct_change_period: 12
+  rolling_window: 720
+  clip_min: 0.0003
+  clip_max: 0.005
+  max_keep_count: 900

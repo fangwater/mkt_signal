@@ -14,6 +14,7 @@ pub enum MktMsgType {
     LiquidationOrder = 1013,
     FundingRate = 1014,
     AskBidSpread = 1015, // 买卖价差（最优买卖价）
+    RlReturnVolatility = 2001,
     Error = 2222,
 }
 
@@ -56,6 +57,16 @@ pub struct FundingRateMsg {
     pub funding_rate: f64, // 当前资金费率
     pub next_funding_time: i64,
     pub timestamp: i64,
+}
+
+pub struct RlReturnVolatilityMsg {
+    pub msg_type: MktMsgType,
+    pub symbol_length: u32,
+    pub symbol: String,
+    pub value: f64,
+    pub timestamp_ms: i64,
+    pub ready: bool,
+    pub padding: [u8; 7],
 }
 
 #[allow(dead_code)]
@@ -617,6 +628,7 @@ pub fn get_msg_type(data: &[u8]) -> MktMsgType {
         1013 => MktMsgType::LiquidationOrder,
         1014 => MktMsgType::FundingRate,
         1015 => MktMsgType::AskBidSpread,
+        2001 => MktMsgType::RlReturnVolatility,
         _ => MktMsgType::TpReset, // 默认值
     }
 }
@@ -709,6 +721,37 @@ impl FundingRateMsg {
         buf.put_f64_le(self.funding_rate);
         buf.put_i64_le(self.next_funding_time);
         buf.put_i64_le(self.timestamp);
+
+        buf.freeze()
+    }
+}
+
+impl RlReturnVolatilityMsg {
+    pub fn create(symbol: String, value: f64, timestamp_ms: i64, ready: bool) -> Self {
+        let symbol_length = symbol.len() as u32;
+        Self {
+            msg_type: MktMsgType::RlReturnVolatility,
+            symbol_length,
+            symbol,
+            value,
+            timestamp_ms,
+            ready,
+            padding: [0u8; 7],
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        // msg_type(4) + symbol_length(4) + symbol + value(8) + timestamp(8) + ready(1) + padding(7)
+        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 8 + 1 + 7;
+        let mut buf = BytesMut::with_capacity(total_size);
+
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_u32_le(self.symbol_length);
+        buf.put(self.symbol.as_bytes());
+        buf.put_f64_le(self.value);
+        buf.put_i64_le(self.timestamp_ms);
+        buf.put_u8(if self.ready { 1 } else { 0 });
+        buf.put(&self.padding[..]);
 
         buf.freeze()
     }
