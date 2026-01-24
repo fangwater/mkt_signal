@@ -7,10 +7,12 @@ use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
+use std::time::{Duration, Instant};
 
 use crate::common::mkt_msg::KlineMsg;
 
 const KLINE_MAX_BYTES: usize = 128;
+const WARN_INTERVAL_SECS: u64 = 5;
 
 /// Kline Message Publisher
 pub struct KlineMsgPublisher {
@@ -18,6 +20,7 @@ pub struct KlineMsgPublisher {
     venue_slug: String,
     channel_label: String,
     publisher: Publisher<ipc::Service, [u8; KLINE_MAX_BYTES], ()>,
+    last_warn: Instant,
     // 统计
     publish_count: u64,
     dropped_count: u64,
@@ -40,6 +43,7 @@ impl KlineMsgPublisher {
             .max_publishers(1)
             .max_subscribers(10)
             .history_size(100)
+            .subscriber_max_buffer_size(8192)
             .open_or_create()?;
 
         let publisher = service.publisher_builder().create()?;
@@ -54,6 +58,7 @@ impl KlineMsgPublisher {
             venue_slug: venue_slug.to_string(),
             channel_label: channel_label.to_string(),
             publisher,
+            last_warn: Instant::now() - Duration::from_secs(WARN_INTERVAL_SECS),
             publish_count: 0,
             dropped_count: 0,
         })
@@ -70,7 +75,7 @@ impl KlineMsgPublisher {
         false
     }
 
-    fn send_with_publisher(&self, msg: &[u8], max_size: usize) -> bool {
+    fn send_with_publisher(&mut self, msg: &[u8], max_size: usize) -> bool {
         if msg.len() > max_size {
             warn!(
                 "Kline message size {} exceeds max size {}",
@@ -86,9 +91,18 @@ impl KlineMsgPublisher {
         match self.publisher.loan_uninit() {
             Ok(sample) => {
                 let sample = sample.write_payload(buffer);
-                matches!(sample.send(), Ok(_))
+                match sample.send() {
+                    Ok(_) => true,
+                    Err(err) => {
+                        self.warn_throttled("send", &err);
+                        false
+                    }
+                }
             }
-            Err(_) => false,
+            Err(err) => {
+                self.warn_throttled("loan_uninit", &err);
+                false
+            }
         }
     }
 
@@ -105,5 +119,12 @@ impl KlineMsgPublisher {
         );
         self.publish_count = 0;
         self.dropped_count = 0;
+    }
+
+    fn warn_throttled(&mut self, action: &str, err: &dyn std::fmt::Debug) {
+        if self.last_warn.elapsed() >= Duration::from_secs(WARN_INTERVAL_SECS) {
+            warn!("Kline publish {} failed: {:?}", action, err);
+            self.last_warn = Instant::now();
+        }
     }
 }

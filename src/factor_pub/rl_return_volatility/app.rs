@@ -16,10 +16,12 @@ use super::cfg::RlReturnVolatilityConfig;
 use super::publisher::FactorPublisher;
 use crate::common::mkt_msg::RlReturnVolatilityMsg;
 use crate::common::mkt_msg::MktMsgType;
+use crate::common::symbol_util::extract_assets_from_symbol;
 
 const KLINE_MAX_BYTES: usize = 128;
 const IDLE_SLEEP_MICROS: u64 = 200;
 const KLINE_CHANNEL_LABEL: &str = "kline5s";
+const LOG_BASE_SYMBOLS: [&str; 3] = ["BTC", "ETH", "SOL"];
 
 #[derive(Debug)]
 struct KlineTick {
@@ -129,6 +131,13 @@ impl RlReturnVolatilityApp {
             Some(value) => (value, true),
             None => (0.0, false),
         };
+
+        if should_log_factor_symbol(&kline.symbol) {
+            info!(
+                "rl_return_volatility factor: venue={} symbol={} value={} ready={} ts_ms={}",
+                self.venue_slug, kline.symbol, value, ready, kline.timestamp_ms
+            );
+        }
 
         let msg = RlReturnVolatilityMsg::create(kline.symbol.clone(), value, kline.timestamp_ms, ready);
         if !self.publisher.publish(&msg) {
@@ -285,4 +294,11 @@ fn compute_factor(
         return Ok(None);
     }
     Ok(Some(value.clamp(cfg.clip_min, cfg.clip_max)))
+}
+
+fn should_log_factor_symbol(symbol: &str) -> bool {
+    let (base, _) = extract_assets_from_symbol(symbol);
+    LOG_BASE_SYMBOLS
+        .iter()
+        .any(|candidate| base.eq_ignore_ascii_case(candidate))
 }

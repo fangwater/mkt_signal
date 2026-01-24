@@ -5,7 +5,7 @@
 //! - only emits Open/Cancel (spread-only) and supports backward hedge queries
 
 use anyhow::{Context, Result};
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
@@ -24,6 +24,7 @@ use super::symbol_list::SymbolList;
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
+use crate::common::mkt_msg::MktMsgType;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
@@ -45,6 +46,7 @@ const DEFAULT_PNLU_REDIS_PORT: u16 = 6379;
 const DEFAULT_PNLU_REDIS_DB: i64 = 0;
 const DEFAULT_PNLU_KEY_SUFFIX: &str = "_pnlu_factor_thresholds";
 const PNLU_MAX_AGE_SECS: i64 = 30 * 60;
+const RL_RETURN_VOLATILITY_KEY_PREFIX: &str = "rl_return_volatility";
 
 #[derive(Debug, Deserialize)]
 struct PnluFactorPayload {
@@ -67,6 +69,13 @@ struct PnluCheckResult {
     age_secs: Option<i64>,
     ready: Option<bool>,
     quantiles: Option<Vec<f64>>,
+}
+
+#[derive(Debug)]
+struct RlReturnVolatilitySnapshot {
+    value: f64,
+    ready: bool,
+    timestamp_ms: i64,
 }
 
 impl PnluCheckResult {
@@ -143,6 +152,66 @@ impl PnluRedis {
             }
         }
     }
+
+    fn get_bytes(&mut self, key: &str) -> Result<Option<Vec<u8>>> {
+        if self.conn.is_none() {
+            self.conn = Some(
+                self.client
+                    .get_connection()
+                    .with_context(|| format!("PnluRedis: connect failed {}", self.settings.host))?,
+            );
+        }
+        let full_key = self.prefixed_key(key);
+        let conn = self
+            .conn
+            .as_mut()
+            .expect("PnluRedis: connection missing after init");
+        let result: redis::RedisResult<Option<Vec<u8>>> = conn.get(full_key);
+        match result {
+            Ok(value) => Ok(value),
+            Err(err) => {
+                self.conn = None;
+                Err(anyhow::anyhow!("PnluRedis: get failed: {}", err))
+            }
+        }
+    }
+}
+
+struct RlReturnVolatilityResult {
+    key: String,
+    symbol_key: String,
+    ready: Option<bool>,
+    factor: Option<f64>,
+    ts_ms: Option<i64>,
+    note: String,
+}
+
+fn parse_rl_return_volatility_payload(data: &[u8]) -> Result<RlReturnVolatilitySnapshot> {
+    let mut cursor = Bytes::copy_from_slice(data);
+    if cursor.remaining() < 8 {
+        anyhow::bail!("payload too short");
+    }
+
+    let msg_type = cursor.get_u32_le();
+    if msg_type != MktMsgType::RlReturnVolatility as u32 {
+        anyhow::bail!("invalid msg_type {}", msg_type);
+    }
+
+    let symbol_len = cursor.get_u32_le() as usize;
+    if cursor.remaining() < symbol_len + 8 + 8 + 1 {
+        anyhow::bail!("payload missing symbol/value/ts/ready");
+    }
+    cursor.advance(symbol_len);
+
+    let value = cursor.get_f64_le();
+    let timestamp_ms = cursor.get_i64_le();
+    let ready = cursor.get_u8() != 0;
+
+    Ok(RlReturnVolatilitySnapshot {
+        value,
+        ready,
+        timestamp_ms,
+    })
 }
 
 fn min_qty_symbol_key(venue: TradingVenue, trade_symbol: &str) -> String {
@@ -211,6 +280,66 @@ pub struct XarbDecision {
 impl XarbDecision {
     fn normalize_symbol_key(symbol: &str) -> String {
         normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
+    }
+
+    fn fetch_rl_return_volatility(
+        &mut self,
+        hedge_symbol: &str,
+        hedge_venue: TradingVenue,
+    ) -> RlReturnVolatilityResult {
+        let symbol_key = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
+        let key = format!(
+            "{}_{}_{}",
+            RL_RETURN_VOLATILITY_KEY_PREFIX,
+            hedge_venue.data_pub_slug(),
+            symbol_key
+        );
+        let raw = match self.pnlu_redis.get_bytes(&key) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                return RlReturnVolatilityResult {
+                    key,
+                    symbol_key,
+                    ready: None,
+                    factor: None,
+                    ts_ms: None,
+                    note: "missing_key".to_string(),
+                }
+            }
+            Err(err) => {
+                return RlReturnVolatilityResult {
+                    key,
+                    symbol_key,
+                    ready: None,
+                    factor: None,
+                    ts_ms: None,
+                    note: format!("redis_error: {err}"),
+                }
+            }
+        };
+
+        let snapshot = match parse_rl_return_volatility_payload(&raw) {
+            Ok(val) => val,
+            Err(err) => {
+                return RlReturnVolatilityResult {
+                    key,
+                    symbol_key,
+                    ready: None,
+                    factor: None,
+                    ts_ms: None,
+                    note: format!("parse_error: {err}"),
+                }
+            }
+        };
+
+        RlReturnVolatilityResult {
+            key,
+            symbol_key,
+            ready: Some(snapshot.ready),
+            factor: Some(snapshot.value),
+            ts_ms: Some(snapshot.timestamp_ms),
+            note: "ok".to_string(),
+        }
     }
 
     pub fn is_initialized() -> bool {
@@ -566,11 +695,56 @@ impl XarbDecision {
         let now = get_timestamp_us();
         let seq_threshold = self.hedge_aggressive_seq_threshold;
         let aggressive = query.request_seq >= seq_threshold;
-        let offset = if aggressive {
-            0.0
+        let default_offset = self.hedge_price_offset.abs();
+        let mut offset = default_offset;
+        let mut offset_source = "config";
+        let mut offset_note = String::new();
+
+        let factor_lookup = self.fetch_rl_return_volatility(&hedge_symbol, hedge_venue);
+        let ready = factor_lookup.ready.unwrap_or(false);
+
+        if ready {
+            if let Some(value) = factor_lookup.factor {
+                if value.is_finite() && value > 0.0 {
+                    offset = value;
+                    offset_source = "rl_return_volatility";
+                } else {
+                    offset_note = "invalid_factor".to_string();
+                }
+            } else {
+                offset_note = "missing_factor".to_string();
+            }
+        } else if factor_lookup.note == "ok" {
+            offset_note = "not_ready".to_string();
         } else {
-            self.hedge_price_offset.abs()
-        };
+            offset_note = factor_lookup.note.clone();
+        }
+
+        if aggressive {
+            offset = 0.0;
+            offset_source = "aggressive";
+            if offset_note.is_empty() {
+                offset_note = "aggressive_override".to_string();
+            } else {
+                offset_note = format!("aggressive_override({})", offset_note);
+            }
+        }
+
+        info!(
+            "XarbDecision: hedge query offset source={} key={} symbol={} venue={:?} norm_symbol={} ready={} factor={:?} ts_ms={:?} offset={:.6} default_offset={:.6} aggressive={} note={}",
+            offset_source,
+            factor_lookup.key,
+            hedge_symbol,
+            hedge_venue,
+            factor_lookup.symbol_key,
+            ready,
+            factor_lookup.factor,
+            factor_lookup.ts_ms,
+            offset,
+            default_offset,
+            aggressive,
+            offset_note
+        );
 
         let base_price = match side {
             Side::Buy => hedge_quote.bid,

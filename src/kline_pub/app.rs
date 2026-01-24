@@ -248,6 +248,8 @@ pub struct KlinePubApp {
     signal_count: u64,
     timer_check_interval: Duration,
     last_timer_check: Instant,
+    table_log_interval: Duration,
+    last_table_log: Instant,
 }
 
 impl KlinePubApp {
@@ -286,6 +288,8 @@ impl KlinePubApp {
             signal_count: 0,
             timer_check_interval: Duration::from_micros(TIMER_CHECK_INTERVAL_US),
             last_timer_check: Instant::now(),
+            table_log_interval: Duration::from_millis(config.kline_timing.period_ms),
+            last_table_log: Instant::now(),
         })
     }
 
@@ -340,6 +344,8 @@ impl KlinePubApp {
                 self.process_signal(&data);
             }
 
+            self.maybe_log_table();
+
             if !has_message {
                 self.maybe_close_due_bars();
                 std::thread::sleep(Duration::from_micros(IDLE_SLEEP_MICROS));
@@ -392,11 +398,9 @@ impl KlinePubApp {
     }
 
     fn process_signal(&mut self, data: &[u8]) {
-        let Some(signal_ts) = parse_signal(data) else {
-            return;
-        };
-        self.signal_count += 1;
-        self.log_kline_table(signal_ts);
+        if parse_signal(data).is_some() {
+            self.signal_count += 1;
+        }
     }
 
     fn maybe_close_due_bars(&mut self) {
@@ -470,7 +474,16 @@ impl KlinePubApp {
         }
     }
 
-    fn log_kline_table(&self, signal_ts: i64) {
+    fn maybe_log_table(&mut self) {
+        if self.last_table_log.elapsed() < self.table_log_interval {
+            return;
+        }
+        self.last_table_log = Instant::now();
+        let ts_ms = now_micros() / 1_000;
+        self.log_kline_table(ts_ms);
+    }
+
+    fn log_kline_table(&self, snapshot_ts_ms: i64) {
         let mut table = Table::new();
         let format = FormatBuilder::new()
             .padding(1, 1)
@@ -531,8 +544,8 @@ impl KlinePubApp {
             }
         }
 
-        info!("Time signal: {}", signal_ts);
-        table.printstd();
+        info!("Kline snapshot ts_ms: {}", snapshot_ts_ms);
+        let _ = table.print(&mut std::io::stderr());
     }
 }
 
