@@ -3,10 +3,10 @@
 //! 订阅 mkt_pub 的 incremental 数据，维护订单簿，发布深度快照
 
 use anyhow::Result;
-use iceoryx2::port::subscriber::Subscriber;
+use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{debug, info};
+use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
@@ -14,6 +14,12 @@ use super::cfg::DepthPubConfig;
 use super::depth_msg::DepthMsg;
 use super::orderbook::OrderBook;
 use super::publisher::DepthMsgPublisher;
+use super::query_msg::{
+    DepthQueryHeader, DepthQueryLoadTlenCtx, DepthQueryType, DEPTH_QUERY_PAYLOAD,
+    RESP_STATUS_UNSUPPORTED_TYPE,
+};
+use crate::signal::common::{align_price_floor, TradingVenue};
+use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 
 /// IceOryx 增量消息缓冲区大小 (与 mkt_pub 一致)
 const INC_MAX_BYTES: usize = 16384;
@@ -70,9 +76,13 @@ impl SymbolState {
 /// Depth Publisher 应用
 pub struct DepthPubApp {
     config: DepthPubConfig,
+    venue: TradingVenue,
     venue_slug: String,
     publisher: DepthMsgPublisher,
     subscriber: Subscriber<ipc::Service, [u8; INC_MAX_BYTES], ()>,
+    query_subscriber: Subscriber<ipc::Service, [u8; DEPTH_QUERY_PAYLOAD], ()>,
+    query_publisher: Publisher<ipc::Service, [u8; DEPTH_QUERY_PAYLOAD], ()>,
+    min_qty_table: VenueMinQtyTable,
     /// symbol -> SymbolState
     symbols: HashMap<String, SymbolState>,
     /// 推送间隔
@@ -87,13 +97,17 @@ pub struct DepthPubApp {
 
 impl DepthPubApp {
     /// 创建应用实例
-    /// venue_slug: 例如 "binance-futures", "okex-margin"
-    pub fn new(config: DepthPubConfig, venue_slug: &str) -> Result<Self> {
+    /// venue: 例如 TradingVenue::BinanceFutures
+    pub async fn new(config: DepthPubConfig, venue: TradingVenue) -> Result<Self> {
+        let venue_slug = venue.data_pub_slug();
         let push_interval = Duration::from_millis(config.push_config.min_push_interval_ms);
         let idle_check_every = std::cmp::max(
             1,
             (push_interval.as_micros() / IDLE_SLEEP_MICROS as u128) as u64,
         );
+
+        let mut min_qty_table = VenueMinQtyTable::new(venue);
+        min_qty_table.refresh().await?;
 
         // 创建发布器
         let publisher = DepthMsgPublisher::new(
@@ -107,6 +121,9 @@ impl DepthPubApp {
         let subscriber = Self::create_subscriber(publisher.node(), venue_slug)?;
         info!("Subscribed to incremental channel: data_pubs/{}/incremental", venue_slug);
 
+        let query_subscriber = Self::create_query_subscriber(publisher.node(), venue_slug)?;
+        let query_publisher = Self::create_query_publisher(publisher.node(), venue_slug)?;
+
         info!(
             "DepthPubApp created for {}: push_interval={}ms, depth5={}, depth20={}, depth50={}",
             venue_slug,
@@ -118,9 +135,13 @@ impl DepthPubApp {
 
         Ok(Self {
             config,
+            venue,
             venue_slug: venue_slug.to_string(),
             publisher,
             subscriber,
+            query_subscriber,
+            query_publisher,
+            min_qty_table,
             symbols: HashMap::new(),
             push_interval,
             update_count: 0,
@@ -146,6 +167,36 @@ impl DepthPubApp {
         Ok(subscriber)
     }
 
+    fn create_query_subscriber(
+        node: &Node<ipc::Service>,
+        venue: &str,
+    ) -> Result<Subscriber<ipc::Service, [u8; DEPTH_QUERY_PAYLOAD], ()>> {
+        let service_name = format!("depth_query_reqs/{}", venue);
+        let service = node
+            .service_builder(&ServiceName::new(&service_name)?)
+            .publish_subscribe::<[u8; DEPTH_QUERY_PAYLOAD]>()
+            .subscriber_max_buffer_size(256)
+            .open_or_create()?;
+        let subscriber = service.subscriber_builder().create()?;
+        info!("Subscribed to depth query reqs: {}", service_name);
+        Ok(subscriber)
+    }
+
+    fn create_query_publisher(
+        node: &Node<ipc::Service>,
+        venue: &str,
+    ) -> Result<Publisher<ipc::Service, [u8; DEPTH_QUERY_PAYLOAD], ()>> {
+        let service_name = format!("depth_query_resps/{}", venue);
+        let service = node
+            .service_builder(&ServiceName::new(&service_name)?)
+            .publish_subscribe::<[u8; DEPTH_QUERY_PAYLOAD]>()
+            .subscriber_max_buffer_size(256)
+            .open_or_create()?;
+        let publisher = service.publisher_builder().create()?;
+        info!("Depth query responder ready: {}", service_name);
+        Ok(publisher)
+    }
+
     /// 主循环
     pub fn run(&mut self) -> Result<()> {
         info!("DepthMsgApp[{}] starting main loop", self.venue_slug);
@@ -160,6 +211,11 @@ impl DepthPubApp {
                 // 复制数据以避免借用冲突
                 let data = sample.payload().to_vec();
                 self.process_message(&data);
+            }
+
+            while let Some(sample) = self.query_subscriber.receive()? {
+                has_message = true;
+                self.handle_query_request(sample.payload());
             }
 
             // 如果没有消息，短暂休眠避免 CPU 空转
@@ -427,6 +483,118 @@ impl DepthPubApp {
 
         state.last_push_time = Instant::now();
         self.push_count += 1;
+    }
+
+    fn handle_query_request(&mut self, payload: &[u8; DEPTH_QUERY_PAYLOAD]) {
+        let header = match DepthQueryHeader::parse(payload) {
+            Ok(h) => h,
+            Err(err) => {
+                warn!("Depth query parse failed: {err:#}");
+                return;
+            }
+        };
+
+        let mut resp = [0u8; DEPTH_QUERY_PAYLOAD];
+        let payload_offset =
+            match DepthQueryHeader::write(&mut resp, header.query_type, &header.symbol) {
+                Ok(offset) => offset,
+                Err(err) => {
+                    warn!("Depth query response header build failed: {err:#}");
+                    return;
+                }
+            };
+
+        let resp_payload = &mut resp[payload_offset..];
+        match DepthQueryType::from_u8(header.query_type) {
+            Some(DepthQueryType::LoadTlen) => {
+                let req_payload = &payload[payload_offset..];
+                self.handle_load_tlen_query(&header.symbol, req_payload, resp_payload);
+            }
+            _ => {
+                if !resp_payload.is_empty() {
+                    resp_payload[0] = RESP_STATUS_UNSUPPORTED_TYPE;
+                }
+            }
+        }
+
+        if let Err(err) = self.publish_query_response(&resp) {
+            warn!("Depth query response send failed: {err:#}");
+        }
+    }
+
+    fn handle_load_tlen_query(
+        &mut self,
+        symbol: &str,
+        req_payload: &[u8],
+        resp_payload: &mut [u8],
+    ) {
+        if resp_payload.len() < DepthQueryLoadTlenCtx::RESP_LEN {
+            return;
+        }
+
+        let ctx = match DepthQueryLoadTlenCtx::from_payload(req_payload) {
+            Ok(ctx) => ctx,
+            Err(err) => {
+                warn!("Depth query load_tlen ctx parse failed: {err:#}");
+                return;
+            }
+        };
+
+        let table_symbol_key = self.symbol_key_for_table(symbol);
+        let Some(tick) = self.min_qty_table.price_tick(&table_symbol_key) else {
+            error!(
+                "DepthPubApp[{}] missing price_tick: symbol={} table_key={}",
+                self.venue_slug, symbol, table_symbol_key
+            );
+            panic!(
+                "DepthPubApp missing price_tick for symbol={} (venue={:?})",
+                symbol, self.venue
+            );
+        };
+        let aligned_price = align_price_floor(ctx.price, tick);
+
+        let orderbook_symbol = if self.symbols.contains_key(symbol) {
+            Some(symbol.to_string())
+        } else {
+            let upper = symbol.to_ascii_uppercase();
+            if self.symbols.contains_key(&upper) {
+                Some(upper)
+            } else {
+                None
+            }
+        };
+
+        let mut amount = 0.0;
+        if let Some(orderbook_symbol) = orderbook_symbol {
+            if let Some(state) = self.symbols.get(&orderbook_symbol) {
+                if state.orderbook.is_valid() {
+                    amount = state.orderbook.amount_at_price(aligned_price).unwrap_or(0.0);
+                }
+            }
+        }
+
+        if let Err(err) = ctx.write_response(resp_payload, amount) {
+            warn!("Depth query load_tlen resp write failed: {err:#}");
+        }
+    }
+
+    fn publish_query_response(&self, payload: &[u8; DEPTH_QUERY_PAYLOAD]) -> Result<()> {
+        let sample = self.query_publisher.loan_uninit()?;
+        let sample = sample.write_payload(*payload);
+        sample.send()?;
+        Ok(())
+    }
+
+    fn symbol_key_for_table(&self, symbol: &str) -> String {
+        match self.venue {
+            TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
+                symbol.to_uppercase().replace("-SWAP", "").replace('-', "")
+            }
+            TradingVenue::GateMargin | TradingVenue::GateFutures => {
+                symbol.to_uppercase().replace('_', "").replace('-', "")
+            }
+            _ => symbol.to_uppercase(),
+        }
     }
 
     /// 打印统计

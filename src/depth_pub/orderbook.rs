@@ -83,6 +83,11 @@ impl OrderBookSide {
         self.levels.len()
     }
 
+    pub fn amount_at_price(&self, price: f64) -> Option<f64> {
+        let key = price_to_key(price);
+        self.levels.get(&key).map(|(amount, _)| *amount)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.levels.is_empty()
     }
@@ -159,6 +164,12 @@ impl OrderBook {
             (Some(best_bid), Some(best_ask)) => best_bid < best_ask,
             _ => false,
         }
+    }
+
+    pub fn amount_at_price(&self, price: f64) -> Option<f64> {
+        self.bids
+            .amount_at_price(price)
+            .or_else(|| self.asks.amount_at_price(price))
     }
 }
 

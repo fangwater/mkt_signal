@@ -26,7 +26,6 @@ async fn main() -> Result<()> {
     env_logger::init();
 
     let args = Args::parse();
-    let venue_slug = args.venue.data_pub_slug();
 
     // 固定配置文件路径
     let config_path = "config/depth_cfg.yaml";
@@ -41,6 +40,6 @@ async fn main() -> Result<()> {
         config.push_config.min_push_interval_ms
     );
 
-    let mut app = DepthPubApp::new(config, venue_slug)?;
+    let mut app = DepthPubApp::new(config, args.venue).await?;
     app.run()
 }
