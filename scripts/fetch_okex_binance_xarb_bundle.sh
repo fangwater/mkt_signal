@@ -22,9 +22,13 @@ fi
 echo "[INFO] fetching bundle from ${REMOTE_HOST}:${REMOTE_TAR}"
 SCP_OPTS=(-i "${SSH_KEY}")
 if [ -n "${JUMP_HOST}" ]; then
-  SCP_OPTS+=(-J "${JUMP_HOST}")
+  SCP_OPTS+=(-o "ProxyJump=${JUMP_HOST}")
 fi
 scp "${SCP_OPTS[@]}" "${REMOTE_HOST}:${REMOTE_TAR}" "${LOCAL_TAR}"
+if [ ! -f "${LOCAL_TAR}" ]; then
+  echo "[ERROR] scp failed to fetch bundle: ${LOCAL_TAR}" >&2
+  exit 1
+fi
 
 echo "[INFO] extracting bundle to ${BUNDLE_DIR}"
 rm -rf "${BUNDLE_DIR}"
