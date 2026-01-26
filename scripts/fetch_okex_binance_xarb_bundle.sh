@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REMOTE_HOST="${REMOTE_HOST:-ubuntu@54.64.147.69}"
 REMOTE_TAR="${REMOTE_TAR:-/home/ubuntu/exporter_data/okex-binance-xarb-trade/okex-binance-xarb.tar.gz}"
 SSH_KEY="${SSH_KEY:-${SCRIPT_DIR}/../aws-jp-srv-1.pem}"
+JUMP_HOST="${JUMP_HOST:-root@38.55.198.59}"
 LOCAL_DIR="${LOCAL_DIR:-${SCRIPT_DIR}}"
 OUTPUT_DIR="${OUTPUT_DIR:-/mnt/Data/fanghaihzou/persist_data/okex-binance-xarb}"
 
@@ -19,7 +20,11 @@ if [ ! -f "${SSH_KEY}" ]; then
 fi
 
 echo "[INFO] fetching bundle from ${REMOTE_HOST}:${REMOTE_TAR}"
-scp -i "${SSH_KEY}" "${REMOTE_HOST}:${REMOTE_TAR}" "${LOCAL_TAR}"
+SCP_OPTS=(-i "${SSH_KEY}")
+if [ -n "${JUMP_HOST}" ]; then
+  SCP_OPTS+=(-J "${JUMP_HOST}")
+fi
+scp "${SCP_OPTS[@]}" "${REMOTE_HOST}:${REMOTE_TAR}" "${LOCAL_TAR}"
 
 echo "[INFO] extracting bundle to ${BUNDLE_DIR}"
 rm -rf "${BUNDLE_DIR}"
