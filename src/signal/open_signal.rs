@@ -181,54 +181,64 @@ impl SignalBytes for ArbOpenCtx {
     }
 
     fn from_bytes(bytes: Bytes) -> Result<Self, String> {
-        fn detect_legacy_format(bytes: &Bytes, base_offset: usize, tail_len: usize) -> Option<bool> {
+        const BASE_TAIL_LEN: usize = 4 + 1 + 1 + 8 + 8 + 8 + 8;
+        const EXTRA_FIELDS_MAX: usize = 5;
+
+        fn detect_format(bytes: &Bytes, base_offset: usize) -> Option<(bool, usize)> {
             let total = bytes.len();
-            let mut new_match = false;
-            let mut old_match = false;
+            let mut with_ts_match = None;
+            let mut without_ts_match = None;
 
-            let open_len_idx_new = base_offset + 25;
-            if total > open_len_idx_new {
-                let open_len = bytes[open_len_idx_new] as usize;
-                if open_len <= 32 {
-                    let hedge_len_idx = base_offset + 51 + open_len;
-                    if total > hedge_len_idx {
-                        let hedge_len = bytes[hedge_len_idx] as usize;
-                        if hedge_len <= 32 {
-                            let expected = base_offset + 52 + open_len + hedge_len + tail_len;
-                            if total == expected {
-                                new_match = true;
-                            }
+            for with_ts in [true, false] {
+                let (open_len_idx, hedge_len_base, total_base) = if with_ts {
+                    (base_offset + 25, base_offset + 51, base_offset + 52)
+                } else {
+                    (base_offset + 17, base_offset + 35, base_offset + 36)
+                };
+
+                if total <= open_len_idx {
+                    continue;
+                }
+                let open_len = bytes[open_len_idx] as usize;
+                if open_len > 32 {
+                    continue;
+                }
+                let hedge_len_idx = hedge_len_base + open_len;
+                if total <= hedge_len_idx {
+                    continue;
+                }
+                let hedge_len = bytes[hedge_len_idx] as usize;
+                if hedge_len > 32 {
+                    continue;
+                }
+
+                for extra_fields in 0..=EXTRA_FIELDS_MAX {
+                    let tail_len = BASE_TAIL_LEN + extra_fields * 8;
+                    let expected = total_base + open_len + hedge_len + tail_len;
+                    if total == expected {
+                        if with_ts {
+                            with_ts_match = Some(extra_fields);
+                        } else {
+                            without_ts_match = Some(extra_fields);
                         }
+                        break;
                     }
                 }
             }
 
-            let open_len_idx_old = base_offset + 17;
-            if total > open_len_idx_old {
-                let open_len = bytes[open_len_idx_old] as usize;
-                if open_len <= 32 {
-                    let hedge_len_idx = base_offset + 35 + open_len;
-                    if total > hedge_len_idx {
-                        let hedge_len = bytes[hedge_len_idx] as usize;
-                        if hedge_len <= 32 {
-                            let expected = base_offset + 36 + open_len + hedge_len + tail_len;
-                            if total == expected {
-                                old_match = true;
-                            }
-                        }
-                    }
-                }
-            }
-
-            match (new_match, old_match) {
-                (true, false) => Some(false),
-                (false, true) => Some(true),
-                (true, true) => Some(false),
-                _ => None,
+            match (with_ts_match, without_ts_match) {
+                (Some(extra), None) => Some((true, extra)),
+                (None, Some(extra)) => Some((false, extra)),
+                (Some(extra), Some(_)) => Some((true, extra)),
+                (None, None) => None,
             }
         }
 
-        fn parse(mut bytes: Bytes, with_ts: bool) -> Result<ArbOpenCtx, String> {
+        fn parse(
+            mut bytes: Bytes,
+            with_ts: bool,
+            extra_fields: Option<usize>,
+        ) -> Result<ArbOpenCtx, String> {
             // Opening leg
             if bytes.remaining() < 1 + 8 + 8 {
                 return Err("Not enough bytes for opening leg".to_string());
@@ -264,7 +274,7 @@ impl SignalBytes for ArbOpenCtx {
             let hedging_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
 
             // Trade parameters
-            if bytes.remaining() < 4 + 1 + 1 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 {
+            if bytes.remaining() < BASE_TAIL_LEN {
                 return Err("Not enough bytes for trade parameters".to_string());
             }
             let amount = bytes.get_f32_le();
@@ -274,13 +284,50 @@ impl SignalBytes for ArbOpenCtx {
             let price_tick = bytes.get_f64_le();
             let exp_time = bytes.get_i64_le();
             let create_ts = bytes.get_i64_le();
-            let price_offset = bytes.get_f64_le();
-            let hedge_timeout_us = bytes.get_i64_le();
+            let remaining = bytes.remaining();
+            let extra_fields = match extra_fields {
+                Some(fields) => {
+                    if remaining != fields * 8 {
+                        return Err("Unexpected tail length for ArbOpenCtx".to_string());
+                    }
+                    fields
+                }
+                None => {
+                    if remaining % 8 != 0 {
+                        return Err("Invalid tail length for ArbOpenCtx".to_string());
+                    }
+                    let fields = remaining / 8;
+                    if fields > EXTRA_FIELDS_MAX {
+                        return Err("Too many tail fields for ArbOpenCtx".to_string());
+                    }
+                    fields
+                }
+            };
 
-            // Optional fields
-            let funding_ma = bytes.get_f64_le();
-            let predicted_funding_rate = bytes.get_f64_le();
-            let loan_rate = bytes.get_f64_le();
+            let mut price_offset = 0.0;
+            let mut hedge_timeout_us = 0;
+            let mut funding_ma = 0.0;
+            let mut predicted_funding_rate = 0.0;
+            let mut loan_rate = 0.0;
+
+            if extra_fields >= 1 {
+                price_offset = bytes.get_f64_le();
+            }
+            if extra_fields >= 2 {
+                hedge_timeout_us = bytes.get_i64_le();
+            }
+            if extra_fields >= 3 {
+                funding_ma = bytes.get_f64_le();
+            }
+            if extra_fields >= 4 {
+                predicted_funding_rate = bytes.get_f64_le();
+            }
+            if extra_fields >= 5 {
+                loan_rate = bytes.get_f64_le();
+            }
+            if bytes.remaining() != 0 {
+                return Err("Unexpected trailing bytes for ArbOpenCtx".to_string());
+            }
 
             Ok(ArbOpenCtx {
                 opening_leg: TradingLeg {
@@ -312,11 +359,10 @@ impl SignalBytes for ArbOpenCtx {
             })
         }
 
-        let format = detect_legacy_format(&bytes, 0, 78);
+        let format = detect_format(&bytes, 0);
         match format {
-            Some(true) => parse(bytes, false),
-            Some(false) => parse(bytes, true),
-            None => parse(bytes.clone(), true).or_else(|_| parse(bytes, false)),
+            Some((with_ts, extra_fields)) => parse(bytes, with_ts, Some(extra_fields)),
+            None => parse(bytes.clone(), true, None).or_else(|_| parse(bytes, false, None)),
         }
     }
 }

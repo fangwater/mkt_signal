@@ -53,8 +53,8 @@ name = "persist_manager"
 path = "src/bin/persist_manager.rs"
 
 [[bin]]
-name = "demo_spread_loader"
-path = "src/bin/demo_spread_loader.rs"
+name = "persist_exporter"
+path = "src/bin/persist_exporter.rs"
 
 [[bin]]
 name = "test_minqty"

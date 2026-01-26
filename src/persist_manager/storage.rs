@@ -47,6 +47,7 @@ impl RocksDbTuning {
 pub struct RocksDbStore {
     db: Arc<DB>,
     sync_writes: bool,
+    read_only: bool,
 }
 
 impl RocksDbStore {
@@ -95,10 +96,55 @@ impl RocksDbStore {
         Ok(Self {
             db: Arc::new(db),
             sync_writes,
+            read_only: false,
+        })
+    }
+
+    pub fn open_read_only(path: &str, cf_names: &[&str]) -> Result<Self> {
+        Self::open_read_only_with_tuning(path, cf_names, &RocksDbTuning::default())
+    }
+
+    pub fn open_read_only_with_tuning(
+        path: &str,
+        cf_names: &[&str],
+        tuning: &RocksDbTuning,
+    ) -> Result<Self> {
+        let path_ref = Path::new(path);
+        if !path_ref.exists() {
+            return Err(anyhow!("rocksdb path does not exist: {}", path));
+        }
+
+        let mut db_opts = Options::default();
+        db_opts.create_if_missing(false);
+        db_opts.create_missing_column_families(false);
+        db_opts.set_compression_type(DBCompressionType::Lz4);
+        tuning.apply_db_options(&mut db_opts);
+
+        let mut cf_opts = Options::default();
+        tuning.apply_cf_options(&mut cf_opts);
+
+        let mut cf_list = vec![("default", cf_opts.clone())];
+        let mut seen = HashSet::new();
+        seen.insert("default");
+        for name in cf_names {
+            if seen.insert(*name) {
+                cf_list.push((*name, cf_opts.clone()));
+            }
+        }
+
+        let db = DB::open_cf_with_opts_for_read_only(&db_opts, path_ref, cf_list, false)?;
+
+        Ok(Self {
+            db: Arc::new(db),
+            sync_writes: false,
+            read_only: true,
         })
     }
 
     pub fn put(&self, cf_name: &str, key: &[u8], value: &[u8]) -> Result<()> {
+        if self.read_only {
+            return Err(anyhow!("rocksdb store is read-only"));
+        }
         let cf = self
             .db
             .cf_handle(cf_name)
@@ -122,6 +168,9 @@ impl RocksDbStore {
     }
 
     pub fn delete(&self, cf_name: &str, key: &[u8]) -> Result<()> {
+        if self.read_only {
+            return Err(anyhow!("rocksdb store is read-only"));
+        }
         let cf = self
             .db
             .cf_handle(cf_name)

@@ -15,10 +15,10 @@ use crate::persist_manager::storage::RocksDbStore;
 use crate::signal::record::{SignalRecordMessage, PRE_TRADE_SIGNAL_RECORD_CHANNEL};
 use crate::signal::trade_signal::SignalType;
 
-const CF_ARB_OPEN: &str = "signals_arb_open";
-const CF_ARB_HEDGE: &str = "signals_arb_hedge";
-const CF_ARB_CANCEL: &str = "signals_arb_cancel";
-const CF_ARB_CLOSE: &str = "signals_arb_close";
+pub(crate) const CF_ARB_OPEN: &str = "signals_arb_open";
+pub(crate) const CF_ARB_HEDGE: &str = "signals_arb_hedge";
+pub(crate) const CF_ARB_CANCEL: &str = "signals_arb_cancel";
+pub(crate) const CF_ARB_CLOSE: &str = "signals_arb_close";
 
 pub fn required_column_families() -> &'static [&'static str] {
     &[CF_ARB_OPEN, CF_ARB_HEDGE, CF_ARB_CANCEL, CF_ARB_CLOSE]

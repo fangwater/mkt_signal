@@ -742,12 +742,19 @@ fn signal_type_name(signal_type: &SignalType) -> &'static str {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct RangeFilter {
+pub(crate) struct RangeFilter {
     start_ts: Option<u64>,
     end_ts: Option<u64>,
 }
 
 impl RangeFilter {
+    pub(crate) fn all() -> Self {
+        Self {
+            start_ts: None,
+            end_ts: None,
+        }
+    }
+
     fn contains(&self, ts: u64) -> bool {
         if let Some(start) = self.start_ts {
             if ts < start {
@@ -796,7 +803,10 @@ fn build_parquet_bytes(
     }
 }
 
-fn build_parquet_open(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> Result<Vec<u8>> {
+pub(crate) fn build_parquet_open(
+    entries: Vec<(Vec<u8>, Vec<u8>)>,
+    range: &RangeFilter,
+) -> Result<Vec<u8>> {
     let mut key_col: Vec<String> = Vec::with_capacity(entries.len());
     let mut ts_us_col: Vec<i64> = Vec::with_capacity(entries.len());
     let mut strategy_id_col: Vec<i32> = Vec::with_capacity(entries.len());
@@ -924,7 +934,10 @@ fn build_parquet_open(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> 
     Ok(buffer)
 }
 
-fn build_parquet_cancel(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> Result<Vec<u8>> {
+pub(crate) fn build_parquet_cancel(
+    entries: Vec<(Vec<u8>, Vec<u8>)>,
+    range: &RangeFilter,
+) -> Result<Vec<u8>> {
     let mut key_col = Vec::with_capacity(entries.len());
     let mut ts_us_col = Vec::with_capacity(entries.len());
     let mut strategy_id_col = Vec::with_capacity(entries.len());
@@ -997,7 +1010,10 @@ fn build_parquet_cancel(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -
     Ok(buf)
 }
 
-fn build_parquet_hedge(entries: Vec<(Vec<u8>, Vec<u8>)>, range: &RangeFilter) -> Result<Vec<u8>> {
+pub(crate) fn build_parquet_hedge(
+    entries: Vec<(Vec<u8>, Vec<u8>)>,
+    range: &RangeFilter,
+) -> Result<Vec<u8>> {
     let mut key_col = Vec::with_capacity(entries.len());
     let mut ts_us_col = Vec::with_capacity(entries.len());
     let mut strategy_id_col = Vec::with_capacity(entries.len());
@@ -1160,7 +1176,7 @@ fn build_order_dto(key: String, ts_us: u64, value_bytes: Vec<u8>) -> Result<Orde
     })
 }
 
-fn build_parquet_trade_updates(
+pub(crate) fn build_parquet_trade_updates(
     entries: Vec<(Vec<u8>, Vec<u8>)>,
     range: &RangeFilter,
 ) -> Result<Vec<u8>> {
@@ -1254,7 +1270,7 @@ fn build_parquet_trade_updates(
     Ok(buf)
 }
 
-fn build_parquet_order_updates(
+pub(crate) fn build_parquet_order_updates(
     entries: Vec<(Vec<u8>, Vec<u8>)>,
     range: &RangeFilter,
 ) -> Result<Vec<u8>> {

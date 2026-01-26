@@ -11,7 +11,7 @@ use crate::persist_manager::iceoryx::{create_signal_record_subscriber, trim_orde
 use crate::persist_manager::storage::RocksDbStore;
 use crate::pre_trade::ORDER_UPDATE_RECORD_CHANNEL;
 
-pub(super) const CF_ORDER_UPDATE: &str = "order_updates";
+pub(crate) const CF_ORDER_UPDATE: &str = "order_updates";
 
 pub fn required_column_families() -> &'static [&'static str] {
     &[CF_ORDER_UPDATE]
