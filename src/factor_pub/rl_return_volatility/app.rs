@@ -84,13 +84,14 @@ impl RlReturnVolatilityApp {
 
     pub fn run(&mut self) -> Result<()> {
         info!(
-            "RlReturnVolatilityApp[{}] started with config: pct_change_period={}, rolling_window={}, clip=[{}, {}], max_keep_count={}",
+            "RlReturnVolatilityApp[{}] started with config: pct_change_period={}, rolling_window={}, clip=[{}, {}], max_keep_count={}, scale_factor={}",
             self.venue_slug,
             self.config.pct_change_period,
             self.config.rolling_window,
             self.config.clip_min,
             self.config.clip_max,
-            self.config.max_keep_count
+            self.config.max_keep_count,
+            self.config.scale_factor
         );
 
         loop {
@@ -131,15 +132,25 @@ impl RlReturnVolatilityApp {
             Some(value) => (value, true),
             None => (0.0, false),
         };
+        let published_value = if ready {
+            value * self.config.scale_factor
+        } else {
+            0.0
+        };
 
         if should_log_factor_symbol(&kline.symbol) {
             info!(
                 "rl_return_volatility factor: venue={} symbol={} value={} ready={} ts_ms={}",
-                self.venue_slug, kline.symbol, value, ready, kline.timestamp_ms
+                self.venue_slug, kline.symbol, published_value, ready, kline.timestamp_ms
             );
         }
 
-        let msg = RlReturnVolatilityMsg::create(kline.symbol.clone(), value, kline.timestamp_ms, ready);
+        let msg = RlReturnVolatilityMsg::create(
+            kline.symbol.clone(),
+            published_value,
+            kline.timestamp_ms,
+            ready,
+        );
         if !self.publisher.publish(&msg) {
             warn!(
                 "Failed to publish rl_return_volatility for {}",
@@ -165,12 +176,13 @@ impl RlReturnVolatilityApp {
                 Ok(()) => {
                     if new_cfg != self.config {
                         info!(
-                            "Reloaded config: pct_change_period={}, rolling_window={}, clip=[{}, {}], max_keep_count={}",
+                            "Reloaded config: pct_change_period={}, rolling_window={}, clip=[{}, {}], max_keep_count={}, scale_factor={}",
                             new_cfg.pct_change_period,
                             new_cfg.rolling_window,
                             new_cfg.clip_min,
                             new_cfg.clip_max,
-                            new_cfg.max_keep_count
+                            new_cfg.max_keep_count,
+                            new_cfg.scale_factor
                         );
                         self.config = new_cfg;
                         self.shrink_series();

@@ -6,3 +6,4 @@ rl_return_volatility:
   clip_min: 0.0003
   clip_max: 0.005
   max_keep_count: 900
+  scale_factor: 1.3

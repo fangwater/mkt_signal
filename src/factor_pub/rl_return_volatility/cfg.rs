@@ -11,6 +11,8 @@ pub struct RlReturnVolatilityConfig {
     pub clip_min: f64,
     pub clip_max: f64,
     pub max_keep_count: usize,
+    #[serde(default = "default_scale_factor")]
+    pub scale_factor: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,6 +47,12 @@ impl RlReturnVolatilityConfig {
         if self.clip_min >= self.clip_max {
             anyhow::bail!("clip_min must be < clip_max");
         }
+        if !self.scale_factor.is_finite() {
+            anyhow::bail!("scale_factor must be finite");
+        }
+        if self.scale_factor <= 0.0 {
+            anyhow::bail!("scale_factor must be > 0");
+        }
         let required = self.min_required_len();
         if self.max_keep_count <= required {
             anyhow::bail!(
@@ -55,4 +63,8 @@ impl RlReturnVolatilityConfig {
         }
         Ok(())
     }
+}
+
+fn default_scale_factor() -> f64 {
+    1.3
 }
