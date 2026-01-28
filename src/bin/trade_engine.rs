@@ -106,6 +106,22 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let exchange_name = args.exchange.as_str();
     info!("trade_engine starting (exchange={})", exchange_name);
+    if exchange_name == "binance" {
+        match std::env::var("BINANCE_ACCOUNT_MODE") {
+            Ok(v) if v == "UNIFIED" || v == "STANDARD" => {
+                info!("BINANCE_ACCOUNT_MODE={}", v);
+            }
+            Ok(other) => {
+                panic!(
+                    "BINANCE_ACCOUNT_MODE must be 'UNIFIED' or 'STANDARD' when exchange=binance, got '{}'",
+                    other
+                );
+            }
+            Err(_) => {
+                panic!("BINANCE_ACCOUNT_MODE must be set to 'UNIFIED' or 'STANDARD' when exchange=binance");
+            }
+        }
+    }
 
     // 使用命令行参数或默认 IP 列表
     let local_ips = args.local_ips.unwrap_or_else(|| {
@@ -146,7 +162,11 @@ async fn main() -> Result<()> {
         let api_secret_var = format!("{}_API_SECRET", env_prefix);
         let api_name_var = format!("{}_API_NAME", env_prefix);
 
-        info!("Required env vars: {}, {}", api_key_var, api_secret_var);
+        let mut required_env = vec![api_key_var.clone(), api_secret_var.clone()];
+        if exchange_name == "binance" {
+            required_env.push("BINANCE_ACCOUNT_MODE".to_string());
+        }
+        info!("Required env vars: {}", required_env.join(", "));
         info!(
             "Optional env vars: TRADE_ENGINE_CFG, {} (default=\"default\")",
             api_name_var

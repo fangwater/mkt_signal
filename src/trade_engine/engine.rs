@@ -191,6 +191,14 @@ impl TradeEngine {
         };
 
         // 初始化 WebSocket 客户端（用于 OKEx/Gate/Binance）
+        let binance_ws_enabled = exchange == Exchange::Binance
+            && matches!(
+                std::env::var("BINANCE_ACCOUNT_MODE").ok().as_deref(),
+                Some("STANDARD")
+            );
+        if exchange == Exchange::Binance && !binance_ws_enabled {
+            info!("binance ws disabled (BINANCE_ACCOUNT_MODE!=STANDARD)");
+        }
         let mut worker_handles: Vec<(&'static str, tokio::task::JoinHandle<()>)> = Vec::new();
 
         let mut gate_futures_ws_endpoints: Option<Vec<tokio::sync::mpsc::UnboundedSender<WsCommand>>> =
@@ -330,7 +338,7 @@ impl TradeEngine {
 
             gate_futures_ws_endpoints = Some(futures_endpoints);
             Some(spot_endpoints)
-        } else if exchange == Exchange::Binance {
+        } else if exchange == Exchange::Binance && binance_ws_enabled {
             let mut local_ips = self.local_ips.clone();
             if local_ips.is_empty() {
                 warn!("binance ws local_ips empty; using default binding 0.0.0.0");

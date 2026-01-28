@@ -91,8 +91,8 @@ impl QueryTypeMapping {
             }
             QueryRequestType::BinancePmBalanceSnapshot => 1,
             QueryRequestType::BinanceUmAccountSnapshot => 1,
-            QueryRequestType::BinanceUmBalanceSnapshotStd => 1,
-            QueryRequestType::BinanceUmAccountSnapshotStd => 1,
+            QueryRequestType::BinanceUmBalanceSnapshotStd => 5,
+            QueryRequestType::BinanceUmAccountSnapshotStd => 5,
             QueryRequestType::OkexMarginQuery | QueryRequestType::OkexUMQuery => 1,
             QueryRequestType::OkexAccountBalanceSnapshot => 1,
             QueryRequestType::OkexPositionsSnapshot => 1,

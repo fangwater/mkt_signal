@@ -44,7 +44,8 @@ struct AccountState {
 }
 
 pub struct Dispatcher {
-    base_url: String,
+    base_url_papi: String,
+    base_url_fapi: String,
     ip_clients: Vec<IpClient>,
     accounts: Vec<AccountState>,
 }
@@ -80,8 +81,18 @@ impl Dispatcher {
             })
             .collect();
 
+        let base_url_papi = std::env::var("BINANCE_PAPI_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| RestConstants::BINANCE_BASE_URL.to_string());
+        let base_url_fapi = std::env::var("BINANCE_FAPI_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| RestConstants::BINANCE_FAPI_BASE_URL.to_string());
+
         Ok(Self {
-            base_url: RestConstants::BINANCE_BASE_URL.to_string(),
+            base_url_papi,
+            base_url_fapi,
             ip_clients,
             accounts,
         })
@@ -167,7 +178,12 @@ impl Dispatcher {
             );
         }
 
-        let url = format!("{}{}", self.base_url, evt.endpoint);
+        let base_url = if evt.endpoint.starts_with("/fapi/") {
+            &self.base_url_fapi
+        } else {
+            &self.base_url_papi
+        };
+        let url = format!("{}{}", base_url, evt.endpoint);
         let recv_window = RestConstants::RECV_WINDOW_MS;
         let ts = chrono::Utc::now().timestamp_millis();
 
