@@ -5,8 +5,9 @@ use crate::trade_engine::okex::{
 use crate::trade_engine::trade_request::BinanceNewMarginOrderRequest;
 use crate::trade_engine::trade_request::BinanceNewUMOrderRequest;
 use crate::trade_engine::trade_request::{
-    BinanceCancelMarginOrderRequest, BinanceCancelUMOrderRequest, GateFuturesCancelOrderRequest,
-    GateFuturesNewOrderRequest, GateUnifiedCancelOrderRequest, GateUnifiedNewOrderRequest,
+    BinanceCancelMarginOrderRequest, BinanceCancelUMOrderRequest, BinanceWsCancelUMOrderRequest,
+    BinanceWsNewUMOrderRequest, GateFuturesCancelOrderRequest, GateFuturesNewOrderRequest,
+    GateUnifiedCancelOrderRequest, GateUnifiedNewOrderRequest,
 };
 use crate::{common::time_util::get_timestamp_us, signal::common::TradingVenue};
 use bytes::Bytes;
@@ -325,14 +326,25 @@ impl OrderType {
 pub struct OrderManager {
     orders: HashMap<i64, Order>,                     //映射order id到order
     pending_limit_order_count: HashMap<String, i32>, //单个交易品种当前有多少待成交的maker单
+    binance_account_mode: BinanceAccountMode,
 }
 
 impl OrderManager {
     pub fn new() -> Self {
+        let binance_account_mode = read_binance_account_mode();
+        info!(
+            "OrderManager: BINANCE_ACCOUNT_MODE={} (Binance UM account mode)",
+            binance_account_mode.as_str()
+        );
         Self {
             orders: HashMap::new(),
             pending_limit_order_count: HashMap::new(),
+            binance_account_mode,
         }
+    }
+
+    pub fn binance_is_standard(&self) -> bool {
+        self.binance_account_mode == BinanceAccountMode::Standard
     }
 
     pub fn create_order(
@@ -507,6 +519,29 @@ impl OrderManager {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BinanceAccountMode {
+    Unified,
+    Standard,
+}
+
+impl BinanceAccountMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unified => "UNIFIED",
+            Self::Standard => "STANDARD",
+        }
+    }
+}
+
+fn read_binance_account_mode() -> BinanceAccountMode {
+    match std::env::var("BINANCE_ACCOUNT_MODE").ok().as_deref() {
+        Some("STANDARD") => BinanceAccountMode::Standard,
+        Some("UNIFIED") => BinanceAccountMode::Unified,
+        _ => BinanceAccountMode::Unified,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct OrderTimeStamp {
     pub submit_t: i64, // 订单提交时间(本地时间)
@@ -628,6 +663,11 @@ impl Order {
                     "symbol={}&origClientOrderId={}",
                     self.symbol, self.client_order_id
                 ));
+                if self.binance_account_mode == BinanceAccountMode::Standard {
+                    let request: BinanceWsCancelUMOrderRequest =
+                        BinanceWsCancelUMOrderRequest::create(now, self.client_order_id, params);
+                    return Ok(request.to_bytes());
+                }
                 let request: BinanceCancelUMOrderRequest =
                     BinanceCancelUMOrderRequest::create(now, self.client_order_id, params);
                 return Ok(request.to_bytes());
@@ -695,7 +735,7 @@ impl Order {
 
         match self.venue {
             //币安的杠杆账户下单
-            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => {
+            TradingVenue::BinanceMargin => {
                 let mut params_parts = vec![
                     format!("symbol={}", self.symbol),
                     format!("side={}", self.side.as_str()), //下单方向确定就可以
@@ -704,60 +744,79 @@ impl Order {
                     format!("newClientOrderId={}", self.client_order_id),
                 ];
                 let local_create_ts = get_timestamp_us();
-                if self.venue == TradingVenue::BinanceMargin {
-                    // ===== 余额检查和日志记录 =====
-                    // 提取 base asset 和 quote asset
-                    let (base_asset, quote_asset) = extract_assets_from_symbol(&self.symbol);
+                // ===== 余额检查和日志记录 =====
+                // 提取 base asset 和 quote asset
+                let (base_asset, quote_asset) = extract_assets_from_symbol(&self.symbol);
 
-                    // 根据 side 确定需要检查的资产和所需金额
-                    let (check_asset, required_amount) = match self.side {
-                        Side::Buy => {
-                            // BUY: 需要 quote asset (USDT) 的余额
-                            let required = self.quantity * self.price;
-                            (quote_asset, required)
-                        }
-                        Side::Sell => {
-                            // SELL: 需要 base asset 的余额
-                            (base_asset, self.quantity)
-                        }
-                    };
-
-                    // 从 MonitorChannel 获取 basic margin 余额（当前实现以净余额作为可用余额近似）
-                    use crate::pre_trade::monitor_channel::MonitorChannel;
-                    let available_balance = MonitorChannel::instance()
-                        .balance_position_for_venue(self.venue, &check_asset);
-
-                    // 余额判断：决定是否需要借币
-                    if available_balance < required_amount {
-                        let borrow_amount = required_amount - available_balance;
-                        warn!(
-                            "💰 余额不足将借币: 资产={} 需要={:.8} 可用={:.8} 需借={:.8} symbol={} side={:?} qty={:.4} price={:.6}",
-                            check_asset, required_amount, available_balance, borrow_amount,
-                            self.symbol, self.side, self.quantity, self.price
-                        );
-                        // 余额不足，使用 MARGIN_BUY（有额度就买）
-                        params_parts.push("sideEffectType=MARGIN_BUY".to_string());
-                    } else {
-                        info!(
-                            "✅ 余额充足: 资产={} 需要={:.8} 可用={:.8} symbol={} side={:?}",
-                            check_asset, required_amount, available_balance, self.symbol, self.side
-                        );
-                        // 余额充足，不添加 sideEffectType（默认 NO_SIDE_EFFECT）
+                // 根据 side 确定需要检查的资产和所需金额
+                let (check_asset, required_amount) = match self.side {
+                    Side::Buy => {
+                        // BUY: 需要 quote asset (USDT) 的余额
+                        let required = self.quantity * self.price;
+                        (quote_asset, required)
                     }
-                    // ===== 余额检查结束 =====/
-
-                    //margin下单不支持GTX模式，无论是否要作为maker，都是gtc
-                    if self.order_type.is_limit() {
-                        params_parts.push("timeInForce=GTC".to_string());
-                        params_parts.push(format!("price={}", format_price(self.price)));
+                    Side::Sell => {
+                        // SELL: 需要 base asset 的余额
+                        (base_asset, self.quantity)
                     }
-                    //如果是市价单，不需要价格和tif参数
+                };
+
+                // 从 MonitorChannel 获取 basic margin 余额（当前实现以净余额作为可用余额近似）
+                use crate::pre_trade::monitor_channel::MonitorChannel;
+                let available_balance =
+                    MonitorChannel::instance().balance_position_for_venue(self.venue, &check_asset);
+
+                // 余额判断：决定是否需要借币
+                if available_balance < required_amount {
+                    let borrow_amount = required_amount - available_balance;
+                    warn!(
+                        "💰 余额不足将借币: 资产={} 需要={:.8} 可用={:.8} 需借={:.8} symbol={} side={:?} qty={:.4} price={:.6}",
+                        check_asset, required_amount, available_balance, borrow_amount,
+                        self.symbol, self.side, self.quantity, self.price
+                    );
+                    // 余额不足，使用 MARGIN_BUY（有额度就买）
+                    params_parts.push("sideEffectType=MARGIN_BUY".to_string());
                 } else {
-                    //UM合约下单
-                    if self.order_type.is_limit() {
-                        params_parts.push("timeInForce=GTX".to_string());
-                        params_parts.push(format!("price={}", format_price(self.price)));
-                    }
+                    info!(
+                        "✅ 余额充足: 资产={} 需要={:.8} 可用={:.8} symbol={} side={:?}",
+                        check_asset, required_amount, available_balance, self.symbol, self.side
+                    );
+                    // 余额充足，不添加 sideEffectType（默认 NO_SIDE_EFFECT）
+                }
+                // ===== 余额检查结束 =====/
+
+                //margin下单不支持GTX模式，无论是否要作为maker，都是gtc
+                if self.order_type.is_limit() {
+                    params_parts.push("timeInForce=GTC".to_string());
+                    params_parts.push(format!("price={}", format_price(self.price)));
+                }
+                //如果是市价单，不需要价格和tif参数
+                let params_plain = params_parts.join("&");
+                info!(
+                    "OrderManager: venue={:?} client_order_id={} params={}",
+                    self.venue, self.client_order_id, params_plain
+                );
+                let params = Bytes::from(params_plain);
+                let request = BinanceNewMarginOrderRequest::create(
+                    local_create_ts,
+                    self.client_order_id,
+                    params,
+                );
+                Ok(request.to_bytes())
+            }
+            TradingVenue::BinanceFutures => {
+                let mut params_parts = vec![
+                    format!("symbol={}", self.symbol),
+                    format!("side={}", self.side.as_str()), //下单方向确定就可以
+                    format!("type={}", self.order_type.as_str()),
+                    format!("quantity={}", format_quantity(self.quantity)),
+                    format!("newClientOrderId={}", self.client_order_id),
+                ];
+                let local_create_ts = get_timestamp_us();
+                //UM合约下单
+                if self.order_type.is_limit() {
+                    params_parts.push("timeInForce=GTX".to_string());
+                    params_parts.push(format!("price={}", format_price(self.price)));
                 }
                 let params_plain = params_parts.join("&");
                 info!(
@@ -765,19 +824,16 @@ impl Order {
                     self.venue, self.client_order_id, params_plain
                 );
                 let params = Bytes::from(params_plain);
-                if self.venue == TradingVenue::BinanceMargin {
-                    let request = BinanceNewMarginOrderRequest::create(
+                if self.binance_account_mode == BinanceAccountMode::Standard {
+                    let request = BinanceWsNewUMOrderRequest::create(
                         local_create_ts,
                         self.client_order_id,
                         params,
                     );
                     Ok(request.to_bytes())
                 } else {
-                    let request = BinanceNewUMOrderRequest::create(
-                        local_create_ts,
-                        self.client_order_id,
-                        params,
-                    );
+                    let request =
+                        BinanceNewUMOrderRequest::create(local_create_ts, self.client_order_id, params);
                     Ok(request.to_bytes())
                 }
             }

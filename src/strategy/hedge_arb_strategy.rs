@@ -1846,7 +1846,17 @@ impl HedgeArbStrategy {
 
         let req_type = match order.venue {
             TradingVenue::BinanceMargin => QueryRequestType::BinanceMarginQuery,
-            TradingVenue::BinanceFutures => QueryRequestType::BinanceUMQuery,
+            TradingVenue::BinanceFutures => {
+                if MonitorChannel::instance()
+                    .order_manager()
+                    .borrow()
+                    .binance_is_standard()
+                {
+                    QueryRequestType::BinanceWsUMQuery
+                } else {
+                    QueryRequestType::BinanceUMQuery
+                }
+            }
             TradingVenue::OkexMargin => QueryRequestType::OkexMarginQuery,
             TradingVenue::OkexFutures => QueryRequestType::OkexUMQuery,
             TradingVenue::GateMargin => QueryRequestType::GateUnifiedOrderQuery,

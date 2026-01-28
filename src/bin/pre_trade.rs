@@ -126,11 +126,34 @@ async fn main() -> Result<()> {
         "pre_trade starting, open_venue={:?}, hedge_venue={:?}",
         open_venue, hedge_venue
     );
+    let binance_futures_in_use = matches!(open_venue, TradingVenue::BinanceFutures)
+        || matches!(hedge_venue, TradingVenue::BinanceFutures);
+    let binance_account_mode = if binance_futures_in_use {
+        match std::env::var("BINANCE_ACCOUNT_MODE") {
+            Ok(v) if v == "UNIFIED" || v == "STANDARD" => Some(v),
+            Ok(other) => {
+                panic!(
+                    "BINANCE_ACCOUNT_MODE must be 'UNIFIED' or 'STANDARD' when using binance-futures, got '{}'",
+                    other
+                );
+            }
+            Err(_) => {
+                panic!(
+                    "BINANCE_ACCOUNT_MODE must be set to 'UNIFIED' or 'STANDARD' when using binance-futures"
+                );
+            }
+        }
+    } else {
+        None
+    };
     let mut required_env: Vec<&str> = Vec::new();
     if open_venue.trade_engine_exchange() == "binance"
         || hedge_venue.trade_engine_exchange() == "binance"
     {
         required_env.extend(["BINANCE_API_KEY", "BINANCE_API_SECRET"]);
+    }
+    if binance_futures_in_use {
+        required_env.push("BINANCE_ACCOUNT_MODE");
     }
     if open_venue.trade_engine_exchange() == "okex" || hedge_venue.trade_engine_exchange() == "okex"
     {
@@ -138,6 +161,9 @@ async fn main() -> Result<()> {
     }
     if !required_env.is_empty() {
         info!("Required env vars: {}", required_env.join(", "));
+    }
+    if let Some(v) = binance_account_mode.as_deref() {
+        info!("BINANCE_ACCOUNT_MODE={}", v);
     }
     info!("Optional env vars: REDIS_URL");
 
@@ -293,6 +319,7 @@ async fn main() -> Result<()> {
             {
                     let open_venue = open_venue;
                     let hedge_venue = hedge_venue;
+                    let binance_account_mode = binance_account_mode.clone();
                     tokio::task::spawn_local(async move {
                     // 定时快照查询：balance 与 position 都要 query。
                     // 目的：
@@ -328,28 +355,46 @@ async fn main() -> Result<()> {
 
                     let mut interval = tokio::time::interval(Duration::from_secs(60));
 
+                    let binance_is_standard =
+                        matches!(binance_account_mode.as_deref(), Some("STANDARD"));
                     let send_snapshot_queries = || {
                         if need_binance_balance {
                             let now = get_timestamp_us();
                             let req = GenericQueryRequest::create(
-                                QueryRequestType::BinancePmBalanceSnapshot,
+                                if binance_is_standard {
+                                    QueryRequestType::BinanceUmBalanceSnapshotStd
+                                } else {
+                                    QueryRequestType::BinancePmBalanceSnapshot
+                                },
                                 now,
                                 now,
                                 Bytes::new(),
                             );
                             let _ = QueryEngHub::publish_query_request("binance", &req.to_bytes());
-                            info!("snapshot query sent: binance PM balance snapshot");
+                            if binance_is_standard {
+                                info!("snapshot query sent: binance UM balance snapshot (standard)");
+                            } else {
+                                info!("snapshot query sent: binance PM balance snapshot");
+                            }
                         }
                         if need_binance_um {
                             let now = get_timestamp_us();
                             let req = GenericQueryRequest::create(
-                                QueryRequestType::BinanceUmAccountSnapshot,
+                                if binance_is_standard {
+                                    QueryRequestType::BinanceUmAccountSnapshotStd
+                                } else {
+                                    QueryRequestType::BinanceUmAccountSnapshot
+                                },
                                 now,
                                 now,
                                 Bytes::new(),
                             );
                             let _ = QueryEngHub::publish_query_request("binance", &req.to_bytes());
-                            info!("snapshot query sent: binance UM account snapshot");
+                            if binance_is_standard {
+                                info!("snapshot query sent: binance UM account snapshot (standard)");
+                            } else {
+                                info!("snapshot query sent: binance UM account snapshot");
+                            }
                         }
                         if need_okex_balance {
                             let now = get_timestamp_us();

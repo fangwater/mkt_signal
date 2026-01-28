@@ -6,6 +6,7 @@ use crate::trade_engine::dispatcher::Dispatcher;
 use crate::trade_engine::query_parsers::binance_margin_order::parse_binance_margin_order_query_json;
 use crate::trade_engine::query_parsers::binance_pm_balance_snapshot::parse_binance_pm_balance_snapshot;
 use crate::trade_engine::query_parsers::binance_um_account_snapshot::parse_binance_um_account_snapshot;
+use crate::trade_engine::query_parsers::binance_um_balance_snapshot_std::parse_binance_um_balance_snapshot_std;
 use crate::trade_engine::query_parsers::binance_um_order::parse_binance_um_order_query_json;
 use crate::trade_engine::query_parsers::gate_positions_snapshot::parse_gate_positions_snapshot_with_meta;
 use crate::trade_engine::query_parsers::gate_unified_balance_snapshot::parse_gate_unified_balance_snapshot;
@@ -764,7 +765,43 @@ impl TradeEngine {
                                                 }
                                             }
                                         }
+                                        crate::trade_engine::query_request::QueryRequestType::BinanceUmBalanceSnapshotStd
+                                            if outcome.status == 200 =>
+                                        {
+                                            if let Some(msgs) =
+                                                parse_binance_um_balance_snapshot_std(&outcome.body)
+                                            {
+                                                for payload in msgs {
+                                                    let _ = query_resp_tx.send(QueryExecOutcome {
+                                                        req_type: msg.req_type,
+                                                        client_query_id: msg.client_query_id,
+                                                        status: outcome.status,
+                                                        body: payload,
+                                                        exchange: exchange_copy,
+                                                        ip_used_weight_1m: outcome.ip_used_weight_1m,
+                                                        query_count_1m: outcome.order_count_1m,
+                                                    });
+                                                }
+                                            }
+                                        }
                                         crate::trade_engine::query_request::QueryRequestType::BinanceUmAccountSnapshot
+                                            if outcome.status == 200 =>
+                                        {
+                                            if let Some(msgs) = parse_binance_um_account_snapshot(&outcome.body) {
+                                                for payload in msgs {
+                                                    let _ = query_resp_tx.send(QueryExecOutcome {
+                                                        req_type: msg.req_type,
+                                                        client_query_id: msg.client_query_id,
+                                                        status: outcome.status,
+                                                        body: payload,
+                                                        exchange: exchange_copy,
+                                                        ip_used_weight_1m: outcome.ip_used_weight_1m,
+                                                        query_count_1m: outcome.order_count_1m,
+                                                    });
+                                                }
+                                            }
+                                        }
+                                        crate::trade_engine::query_request::QueryRequestType::BinanceUmAccountSnapshotStd
                                             if outcome.status == 200 =>
                                         {
                                             if let Some(msgs) = parse_binance_um_account_snapshot(&outcome.body) {

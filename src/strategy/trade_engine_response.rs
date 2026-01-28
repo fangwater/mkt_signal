@@ -40,6 +40,7 @@ pub trait TradeEngineResponse {
         match TradeRequestType::try_from(self.req_type()) {
             Ok(
                 TradeRequestType::BinanceNewUMOrder
+                | TradeRequestType::BinanceWsNewUMOrder
                 | TradeRequestType::BinanceNewUMConditionalOrder
                 | TradeRequestType::BinanceNewMarginOrder
                 | TradeRequestType::OkexNewMarginOrder
@@ -49,6 +50,7 @@ pub trait TradeEngineResponse {
             ) => TradeRequestKind::Open,
             Ok(
                 TradeRequestType::BinanceCancelUMOrder
+                | TradeRequestType::BinanceWsCancelUMOrder
                 | TradeRequestType::BinanceCancelUMConditionalOrder
                 | TradeRequestType::BinanceCancelMarginOrder
                 | TradeRequestType::OkexCancelMarginOrder

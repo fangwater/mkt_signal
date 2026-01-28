@@ -178,6 +178,41 @@ impl BinanceNewUMOrderRequest {
     }
 }
 
+// 币安UM WebSocket 下单请求
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct BinanceWsNewUMOrderRequest {
+    pub header: TradeRequestHeader,
+    pub params: Bytes, // 额外的请求参数（JSON或其他格式）
+}
+
+impl BinanceWsNewUMOrderRequest {
+    pub fn create(create_time: i64, client_order_id: i64, params: Bytes) -> Self {
+        let header = TradeRequestHeader {
+            msg_type: TradeRequestType::BinanceWsNewUMOrder as u32,
+            params_length: params.len() as u32,
+            create_time,
+            client_order_id,
+        };
+
+        Self { header, params }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 4 + 8 + 8 + self.params.len();
+
+        let mut buf = BytesMut::with_capacity(total_size);
+
+        buf.put_u32_le(self.header.msg_type);
+        buf.put_u32_le(self.header.params_length);
+        buf.put_i64_le(self.header.create_time);
+        buf.put_i64_le(self.header.client_order_id);
+        buf.put(self.params.clone());
+
+        buf.freeze()
+    }
+}
+
 // 币安UM条件单下单请求
 #[repr(C, align(8))]
 #[derive(Debug, Clone)]
@@ -260,6 +295,41 @@ impl BinanceCancelUMOrderRequest {
     pub fn create(create_time: i64, client_order_id: i64, params: Bytes) -> Self {
         let header = TradeRequestHeader {
             msg_type: TradeRequestType::BinanceCancelUMOrder as u32,
+            params_length: params.len() as u32,
+            create_time,
+            client_order_id,
+        };
+
+        Self { header, params }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 4 + 8 + 8 + self.params.len();
+
+        let mut buf = BytesMut::with_capacity(total_size);
+
+        buf.put_u32_le(self.header.msg_type);
+        buf.put_u32_le(self.header.params_length);
+        buf.put_i64_le(self.header.create_time);
+        buf.put_i64_le(self.header.client_order_id);
+        buf.put(self.params.clone());
+
+        buf.freeze()
+    }
+}
+
+// 币安UM WebSocket 撤单请求
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct BinanceWsCancelUMOrderRequest {
+    pub header: TradeRequestHeader,
+    pub params: Bytes, // 额外的请求参数（JSON或其他格式）
+}
+
+impl BinanceWsCancelUMOrderRequest {
+    pub fn create(create_time: i64, client_order_id: i64, params: Bytes) -> Self {
+        let header = TradeRequestHeader {
+            msg_type: TradeRequestType::BinanceWsCancelUMOrder as u32,
             params_length: params.len() as u32,
             create_time,
             client_order_id,

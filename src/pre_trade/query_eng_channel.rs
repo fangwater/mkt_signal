@@ -352,6 +352,7 @@ impl QueryEngChannel {
                                     req_type,
                                     QueryRequestType::BinanceMarginQuery
                                         | QueryRequestType::BinanceUMQuery
+                                        | QueryRequestType::BinanceWsUMQuery
                                         | QueryRequestType::OkexMarginQuery
                                         | QueryRequestType::OkexUMQuery
                                 ) {
