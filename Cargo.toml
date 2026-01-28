@@ -96,6 +96,10 @@ path = "src/bin/kline_pub.rs"
 name = "rl_return_volatility"
 path = "src/bin/rl_return_volatility.rs"
 
+[[bin]]
+name = "pairmm_resample"
+path = "src/bin/pairmm_resample.rs"
+
 [dependencies]
 local-ip-address = "0.6"
 serde_yaml = "0.9"

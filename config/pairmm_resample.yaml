@@ -1,0 +1,8 @@
+# PairMM Resample 配置
+
+pairmm_resample:
+  resample_interval_ms: 1000
+  symbol: "PAIRMM"
+  iceoryx:
+    history_size: 100
+    max_subscribers: 10

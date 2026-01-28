@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use bytes::{Buf, Bytes};
 
 /// 消息类型枚举（与mkt_signal保持一致）
@@ -16,8 +16,11 @@ pub enum MktMsgType {
     FundingRate = 1014,
     AskBidSpread = 1015,
     RlReturnVolatility = 2001,
+    PairMmResample = 3001,
     Error = 2222,
 }
+
+pub const PAIRMM_RESAMPLE_MAX_VALUES: usize = 512;
 
 /// 买卖价差消息
 #[derive(Debug, Clone)]
@@ -53,6 +56,14 @@ pub struct IndexPriceMsg {
     pub symbol: String,
     pub index_price: f64,
     pub timestamp: i64,
+}
+
+/// PairMM resample 消息
+#[derive(Debug, Clone)]
+pub struct PairMmResampleMsg {
+    pub symbol: String,
+    pub venue: u8,
+    pub values: Vec<f64>,
 }
 
 /// 解析买卖价差消息
@@ -187,6 +198,58 @@ pub fn parse_index_price(data: &[u8]) -> Result<IndexPriceMsg> {
     })
 }
 
+/// 解析 PairMM resample 消息
+pub fn parse_pairmm_resample(data: &[u8]) -> Result<PairMmResampleMsg> {
+    if data.len() < 9 {
+        bail!("PairMmResampleMsg too short: {}", data.len());
+    }
+
+    let mut cursor = Bytes::copy_from_slice(data);
+    let msg_type = cursor.get_u32_le();
+    if msg_type != MktMsgType::PairMmResample as u32 {
+        bail!("Invalid message type: {}", msg_type);
+    }
+
+    let symbol_len = cursor.get_u32_le() as usize;
+    if cursor.len() < symbol_len + 1 {
+        bail!(
+            "PairMmResampleMsg truncated before symbol: len={} need={}",
+            cursor.len(),
+            symbol_len + 1
+        );
+    }
+    let symbol_bytes = cursor.copy_to_bytes(symbol_len);
+    let symbol = String::from_utf8(symbol_bytes.to_vec())?;
+
+    let venue = cursor.get_u8();
+    let remaining = cursor.len();
+    if remaining % 8 != 0 {
+        bail!(
+            "PairMmResampleMsg payload misaligned: {} bytes remaining",
+            remaining
+        );
+    }
+    let count = remaining / 8;
+    if count > PAIRMM_RESAMPLE_MAX_VALUES {
+        bail!(
+            "PairMmResampleMsg value count {} exceeds limit {}",
+            count,
+            PAIRMM_RESAMPLE_MAX_VALUES
+        );
+    }
+
+    let mut values = Vec::with_capacity(count);
+    for _ in 0..count {
+        values.push(cursor.get_f64_le());
+    }
+
+    Ok(PairMmResampleMsg {
+        symbol,
+        venue,
+        values,
+    })
+}
+
 /// 获取消息类型
 pub fn get_msg_type(data: &[u8]) -> Option<MktMsgType> {
     if data.len() < 4 {
@@ -207,6 +270,7 @@ pub fn get_msg_type(data: &[u8]) -> Option<MktMsgType> {
         1014 => Some(MktMsgType::FundingRate),
         1015 => Some(MktMsgType::AskBidSpread),
         2001 => Some(MktMsgType::RlReturnVolatility),
+        3001 => Some(MktMsgType::PairMmResample),
         2222 => Some(MktMsgType::Error),
         _ => None,
     }

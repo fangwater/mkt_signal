@@ -1,4 +1,5 @@
-use bytes::{BufMut, Bytes, BytesMut};
+use anyhow::{bail, Result};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,8 +16,11 @@ pub enum MktMsgType {
     FundingRate = 1014,
     AskBidSpread = 1015, // 买卖价差（最优买卖价）
     RlReturnVolatility = 2001,
+    PairMmResample = 3001,
     Error = 2222,
 }
+
+pub const PAIRMM_RESAMPLE_MAX_VALUES: usize = 512;
 
 #[allow(dead_code)]
 pub struct MktMsg {
@@ -67,6 +71,15 @@ pub struct RlReturnVolatilityMsg {
     pub timestamp_ms: i64,
     pub ready: bool,
     pub padding: [u8; 7],
+}
+
+#[derive(Debug, Clone)]
+pub struct PairMmResampleMsg {
+    pub msg_type: MktMsgType,
+    pub symbol_length: u32,
+    pub symbol: String,
+    pub venue: u8,
+    pub values: Vec<f64>,
 }
 
 #[allow(dead_code)]
@@ -629,6 +642,7 @@ pub fn get_msg_type(data: &[u8]) -> MktMsgType {
         1014 => MktMsgType::FundingRate,
         1015 => MktMsgType::AskBidSpread,
         2001 => MktMsgType::RlReturnVolatility,
+        3001 => MktMsgType::PairMmResample,
         _ => MktMsgType::TpReset, // 默认值
     }
 }
@@ -754,6 +768,120 @@ impl RlReturnVolatilityMsg {
         buf.put(&self.padding[..]);
 
         buf.freeze()
+    }
+}
+
+impl PairMmResampleMsg {
+    pub fn create(symbol: String, venue: u8, values: Vec<f64>) -> Result<Self> {
+        if values.len() > PAIRMM_RESAMPLE_MAX_VALUES {
+            bail!(
+                "PairMmResampleMsg value count {} exceeds limit {}",
+                values.len(),
+                PAIRMM_RESAMPLE_MAX_VALUES
+            );
+        }
+        let symbol_length = symbol.len() as u32;
+        Ok(Self {
+            msg_type: MktMsgType::PairMmResample,
+            symbol_length,
+            symbol,
+            venue,
+            values,
+        })
+    }
+
+    pub fn with_len(symbol: String, venue: u8, n: usize) -> Result<Self> {
+        if n > PAIRMM_RESAMPLE_MAX_VALUES {
+            bail!(
+                "PairMmResampleMsg value count {} exceeds limit {}",
+                n,
+                PAIRMM_RESAMPLE_MAX_VALUES
+            );
+        }
+        let symbol_length = symbol.len() as u32;
+        Ok(Self {
+            msg_type: MktMsgType::PairMmResample,
+            symbol_length,
+            symbol,
+            venue,
+            values: vec![0.0; n],
+        })
+    }
+
+    pub fn value_count(&self) -> usize {
+        self.values.len()
+    }
+
+    pub fn to_bytes(&self) -> Result<Bytes> {
+        if self.values.len() > PAIRMM_RESAMPLE_MAX_VALUES {
+            bail!(
+                "PairMmResampleMsg value count {} exceeds limit {}",
+                self.values.len(),
+                PAIRMM_RESAMPLE_MAX_VALUES
+            );
+        }
+        let total_size = 4 + 4 + self.symbol_length as usize + 1 + self.values.len() * 8;
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_u32_le(self.symbol_length);
+        buf.put(self.symbol.as_bytes());
+        buf.put_u8(self.venue);
+        for v in &self.values {
+            buf.put_f64_le(*v);
+        }
+        Ok(buf.freeze())
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        if data.len() < 9 {
+            bail!(
+                "PairMmResampleMsg too short: {} < 9",
+                data.len()
+            );
+        }
+        let mut cursor = Bytes::copy_from_slice(data);
+        let msg_type = cursor.get_u32_le();
+        if msg_type != MktMsgType::PairMmResample as u32 {
+            bail!("invalid PairMmResampleMsg type: {}", msg_type);
+        }
+        let symbol_len = cursor.get_u32_le() as usize;
+        if cursor.len() < symbol_len + 1 {
+            bail!(
+                "PairMmResampleMsg truncated before symbol: len={} need={}",
+                cursor.len(),
+                symbol_len + 1
+            );
+        }
+        let symbol_bytes = cursor.copy_to_bytes(symbol_len);
+        let symbol = String::from_utf8(symbol_bytes.to_vec())?;
+        let symbol_length = symbol.len() as u32;
+        let venue = cursor.get_u8();
+        let remaining = cursor.len();
+        if remaining % 8 != 0 {
+            bail!(
+                "PairMmResampleMsg payload misaligned: {} bytes remaining",
+                remaining
+            );
+        }
+        let count = remaining / 8;
+        if count > PAIRMM_RESAMPLE_MAX_VALUES {
+            bail!(
+                "PairMmResampleMsg value count {} exceeds limit {}",
+                count,
+                PAIRMM_RESAMPLE_MAX_VALUES
+            );
+        }
+        let mut values = Vec::with_capacity(count);
+        for _ in 0..count {
+            values.push(cursor.get_f64_le());
+        }
+        Ok(Self {
+            msg_type: MktMsgType::PairMmResample,
+            symbol_length,
+            symbol,
+            venue,
+            values,
+        })
     }
 }
 
