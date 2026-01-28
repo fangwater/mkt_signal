@@ -3,6 +3,10 @@ use clap::{Parser, ValueEnum};
 use log::{error, info};
 use mkt_signal::common::exchange::Exchange;
 use mkt_signal::{ApiKey, TradeEngine};
+use mkt_signal::trade_engine::config::RestConstants;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
@@ -94,6 +98,125 @@ fn setup_signal_handlers(token: &CancellationToken) {
             }
         });
     }
+}
+
+type HmacSha256 = Hmac<Sha256>;
+
+fn sign_binance_query(
+    params: &BTreeMap<String, String>,
+    api_secret: &str,
+) -> Result<String> {
+    let mut ser = url::form_urlencoded::Serializer::new(String::new());
+    for (k, v) in params.iter() {
+        ser.append_pair(k, v);
+    }
+    let query = ser.finish();
+
+    let mut mac = HmacSha256::new_from_slice(api_secret.as_bytes())
+        .map_err(|_| anyhow::anyhow!("invalid binance secret"))?;
+    mac.update(query.as_bytes());
+    let sig = hex::encode(mac.finalize().into_bytes());
+    Ok(format!("{}&signature={}", query, sig))
+}
+
+async fn fetch_binance_fee_burn(
+    api_key: &str,
+    api_secret: &str,
+    base_url: &str,
+) -> Result<bool> {
+    let mut params: BTreeMap<String, String> = BTreeMap::new();
+    params.insert(
+        "timestamp".to_string(),
+        chrono::Utc::now().timestamp_millis().to_string(),
+    );
+    params.insert(
+        "recvWindow".to_string(),
+        RestConstants::RECV_WINDOW_MS.to_string(),
+    );
+    let query = sign_binance_query(&params, api_secret)?;
+    let full_url = format!("{}/fapi/v1/feeBurn?{}", base_url, query);
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&full_url)
+        .header("X-MBX-APIKEY", api_key)
+        .send()
+        .await?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(anyhow::anyhow!(
+            "feeBurn check http status={} body={}",
+            status.as_u16(),
+            body
+        ));
+    }
+    info!("feeBurn check response: {}", body);
+    let v: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| anyhow::anyhow!("feeBurn parse json error: {e} body={body}"))?;
+    let fee_burn = match v.get("feeBurn") {
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(serde_json::Value::String(s)) => {
+            matches!(s.trim(), "true" | "TRUE" | "True")
+        }
+        _ => return Err(anyhow::anyhow!("feeBurn field missing or invalid: {}", body)),
+    };
+    Ok(fee_burn)
+}
+
+async fn enable_binance_fee_burn(
+    api_key: &str,
+    api_secret: &str,
+    base_url: &str,
+) -> Result<()> {
+    let mut params: BTreeMap<String, String> = BTreeMap::new();
+    params.insert("feeBurn".to_string(), "true".to_string());
+    params.insert(
+        "timestamp".to_string(),
+        chrono::Utc::now().timestamp_millis().to_string(),
+    );
+    params.insert(
+        "recvWindow".to_string(),
+        RestConstants::RECV_WINDOW_MS.to_string(),
+    );
+    let query = sign_binance_query(&params, api_secret)?;
+    let full_url = format!("{}/fapi/v1/feeBurn?{}", base_url, query);
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&full_url)
+        .header("X-MBX-APIKEY", api_key)
+        .send()
+        .await?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(anyhow::anyhow!(
+            "feeBurn enable http status={} body={}",
+            status.as_u16(),
+            body
+        ));
+    }
+    info!("feeBurn enable response: {}", body);
+    let v: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| anyhow::anyhow!("feeBurn enable parse json error: {e} body={body}"))?;
+    let code = v.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
+    if code != 200 {
+        return Err(anyhow::anyhow!("feeBurn enable failed: {}", body));
+    }
+    Ok(())
+}
+
+async fn check_binance_fee_burn(api_key: &str, api_secret: &str, base_url: &str) -> Result<()> {
+    let fee_burn = fetch_binance_fee_burn(api_key, api_secret, base_url).await?;
+    if fee_burn {
+        return Ok(());
+    }
+    info!("feeBurn=false detected; attempting to enable...");
+    enable_binance_fee_burn(api_key, api_secret, base_url).await?;
+    let fee_burn_after = fetch_binance_fee_burn(api_key, api_secret, base_url).await?;
+    if !fee_burn_after {
+        return Err(anyhow::anyhow!("feeBurn still false after enable attempt"));
+    }
+    Ok(())
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -194,6 +317,23 @@ async fn main() -> Result<()> {
         info!("trade_engine account name: {}", api_name);
         log_credential_preview(&api_key_var, &api_key);
         log_credential_preview(&api_secret_var, &api_secret);
+
+        if exchange_name == "binance"
+            && matches!(
+                std::env::var("BINANCE_ACCOUNT_MODE").ok().as_deref(),
+                Some("STANDARD")
+            )
+        {
+            let base_url = std::env::var("BINANCE_FAPI_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| "https://fapi.binance.com".to_string());
+            info!("checking binance feeBurn (STANDARD mode) base_url={}", base_url);
+            if let Err(err) = check_binance_fee_burn(&api_key, &api_secret, &base_url).await {
+                panic!("binance feeBurn check failed: {err}");
+            }
+            info!("binance feeBurn enabled");
+        }
 
         vec![ApiKey {
             name: api_name,

@@ -20,6 +20,7 @@ use tokio::{select, sync::watch};
 pub struct BinanceListenKeyService {
     client: Client,
     rest_base: String,
+    listen_key_path: String,
     api_key: String,
 }
 
@@ -31,18 +32,23 @@ struct ListenKeyResp {
 
 impl BinanceListenKeyService {
     /// 创建服务实例
-    pub fn new(rest_base: impl Into<String>, api_key: impl Into<String>) -> Self {
+    pub fn new(
+        rest_base: impl Into<String>,
+        api_key: impl Into<String>,
+        listen_key_path: impl Into<String>,
+    ) -> Self {
         let client = Client::new();
         Self {
             client,
             rest_base: rest_base.into(),
+            listen_key_path: listen_key_path.into(),
             api_key: api_key.into(),
         }
     }
 
     /// 通过 REST 创建 listenKey
     async fn create_listen_key(&self) -> Result<String> {
-        let url = format!("{}{}", self.rest_base, "/papi/v1/listenKey");
+        let url = format!("{}{}", self.rest_base, self.listen_key_path);
         debug!("[listenKey] Creating on {}", self.rest_base);
         let resp = self
             .client
@@ -68,7 +74,7 @@ impl BinanceListenKeyService {
     async fn keepalive_listen_key(&self, key: &str) -> Result<()> {
         let url = format!(
             "{}{}?listenKey={}",
-            self.rest_base, "/papi/v1/listenKey", key
+            self.rest_base, self.listen_key_path, key
         );
         debug!("[listenKey] Keepalive sent");
         let resp = self
@@ -95,7 +101,7 @@ impl BinanceListenKeyService {
     async fn delete_listen_key(&self, key: &str) -> Result<()> {
         let url = format!(
             "{}{}?listenKey={}",
-            self.rest_base, "/papi/v1/listenKey", key
+            self.rest_base, self.listen_key_path, key
         );
         debug!("[listenKey] Deleting before shutdown");
         let resp = self

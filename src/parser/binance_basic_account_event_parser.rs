@@ -18,11 +18,15 @@ use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce};
 
 #[derive(Clone)]
-pub struct BinanceBasicAccountEventParser;
+pub struct BinanceBasicAccountEventParser {
+    parse_account_update_balances: bool,
+}
 
 impl BinanceBasicAccountEventParser {
-    pub fn new() -> Self {
-        Self
+    pub fn new(parse_account_update_balances: bool) -> Self {
+        Self {
+            parse_account_update_balances,
+        }
     }
 
     fn encode_order_type(order_type: &str) -> u8 {
@@ -376,7 +380,39 @@ impl BinanceBasicAccountEventParser {
             return 0;
         };
 
-        // ACCOUNT_UPDATE balance ("cw") is ignored; use outboundAccountPosition ("f") instead.
+        // ACCOUNT_UPDATE balance ("cw"/"wb") parsing is optional for standard mode.
+        if self.parse_account_update_balances {
+            if let Some(balances) = a.get("B").and_then(|v| v.as_array()) {
+                for balance in balances {
+                    let asset = balance
+                        .get("a")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if asset.is_empty() {
+                        continue;
+                    }
+                    let balance_value = balance
+                        .get("cw")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| {
+                            balance
+                                .get("wb")
+                                .and_then(|v| v.as_str())
+                                .and_then(|s| s.parse::<f64>().ok())
+                        })
+                        .unwrap_or(0.0);
+                    let msg = BasicBalanceMsg::create(event_time, asset, balance_value);
+                    let payload = msg.to_bytes();
+                    let event = BasicAccountEventMsg::create(msg.msg_type, payload);
+                    if tx.send(event.to_bytes()).is_err() {
+                        return count;
+                    }
+                    count += 1;
+                }
+            }
+        }
 
         // positions (merge by (symbol, side))
         if let Some(positions) = a.get("P").and_then(|v| v.as_array()) {

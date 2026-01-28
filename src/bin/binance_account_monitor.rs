@@ -64,6 +64,20 @@ async fn main() -> Result<()> {
         std::env::set_var("RUST_LOG", "debug");
     }
     env_logger::init();
+    match std::env::var("BINANCE_ACCOUNT_MODE") {
+        Ok(v) if v == "UNIFIED" || v == "STANDARD" => {
+            info!("BINANCE_ACCOUNT_MODE={}", v);
+        }
+        Ok(other) => {
+            panic!(
+                "BINANCE_ACCOUNT_MODE must be 'UNIFIED' or 'STANDARD' for binance_account_monitor, got '{}'",
+                other
+            );
+        }
+        Err(_) => {
+            panic!("BINANCE_ACCOUNT_MODE must be set to 'UNIFIED' or 'STANDARD' for binance_account_monitor");
+        }
+    }
     let api_key_raw = std::env::var("BINANCE_API_KEY").map_err(|_| {
         anyhow::anyhow!("BINANCE_API_KEY not set. Export it before running account_monitor")
     })?;
@@ -84,10 +98,21 @@ async fn main() -> Result<()> {
     // Resolve endpoints from config
     const BINANCE_PM_WS: &str = "wss://fstream.binance.com/pm";
     const BINANCE_PM_REST: &str = "https://papi.binance.com";
+    const BINANCE_STD_WS: &str = "wss://fstream.binance.com/ws";
+    const BINANCE_STD_REST: &str = "https://fapi.binance.com";
     const BINANCE_PRIMARY_IP: &str = "172.31.33.133";
     const BINANCE_SECONDARY_IP: &str = "172.31.46.90";
-    let ws_pm = BINANCE_PM_WS.to_string();
-    let rest_pm = BINANCE_PM_REST.to_string();
+    let (ws_base, rest_base, listen_key_path) =
+        match std::env::var("BINANCE_ACCOUNT_MODE").ok().as_deref() {
+            Some("STANDARD") => (BINANCE_STD_WS, BINANCE_STD_REST, "/fapi/v1/listenKey"),
+            _ => (BINANCE_PM_WS, BINANCE_PM_REST, "/papi/v1/listenKey"),
+        };
+    let ws_pm = ws_base.to_string();
+    let rest_pm = rest_base.to_string();
+    info!(
+        "binance account monitor endpoints: ws_base={} rest_base={} listen_key_path={}",
+        ws_pm, rest_pm, listen_key_path
+    );
 
     // IP and session settings
     const BINANCE_SESSION_MAX_SECS: u64 = 2 * 3600;
@@ -100,7 +125,7 @@ async fn main() -> Result<()> {
     );
 
     // Start listenKey service
-    let listen_key_rx = BinanceListenKeyService::new(rest_pm.clone(), api_key)
+    let listen_key_rx = BinanceListenKeyService::new(rest_pm.clone(), api_key, listen_key_path)
         .start(shutdown_rx.clone())
         .await?;
 
@@ -202,7 +227,9 @@ fn spawn_user_stream_path(
             let mut consumer_shutdown = shutdown_rx.clone();
             let evt_tx_clone = evt_tx.clone();
             let local_ip_log = local_ip.clone();
-            let parser = BinanceBasicAccountEventParser::new();
+            let parse_balances_from_account_update =
+                matches!(std::env::var("BINANCE_ACCOUNT_MODE").ok().as_deref(), Some("STANDARD"));
+            let parser = BinanceBasicAccountEventParser::new(parse_balances_from_account_update);
             tokio::spawn(async move {
                 loop {
                     tokio::select! {
