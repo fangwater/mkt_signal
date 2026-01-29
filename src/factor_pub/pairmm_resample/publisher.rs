@@ -10,6 +10,8 @@ use super::cfg::PairMmResampleConfig;
 
 const FACTOR_MAX_BYTES: usize = 256;
 const BUFFER_SIZE: usize = 8192;
+const HISTORY_SIZE: usize = 100;
+const MAX_SUBSCRIBERS: usize = 10;
 
 pub struct PairMmPublisher {
     venue_slug: String,
@@ -19,7 +21,7 @@ pub struct PairMmPublisher {
 }
 
 impl PairMmPublisher {
-    pub fn new(venue_slug: &str, config: &PairMmResampleConfig) -> Result<Self> {
+    pub fn new(venue_slug: &str, _config: &PairMmResampleConfig) -> Result<Self> {
         let node_name = format!(
             "factor_pub_{}_pairmm_resample",
             venue_slug.replace('-', "_")
@@ -33,8 +35,8 @@ impl PairMmPublisher {
             .service_builder(&ServiceName::new(&service_path)?)
             .publish_subscribe::<[u8; FACTOR_MAX_BYTES]>()
             .max_publishers(1)
-            .max_subscribers(config.max_subscribers())
-            .history_size(config.history_size())
+            .max_subscribers(MAX_SUBSCRIBERS)
+            .history_size(HISTORY_SIZE)
             .subscriber_max_buffer_size(BUFFER_SIZE)
             .open_or_create()?;
 
@@ -44,8 +46,8 @@ impl PairMmPublisher {
             "PairMmPublisher created for {}: {} (history_size={}, max_subscribers={})",
             venue_slug,
             service_path,
-            config.history_size(),
-            config.max_subscribers()
+            HISTORY_SIZE,
+            MAX_SUBSCRIBERS
         );
 
         Ok(Self {

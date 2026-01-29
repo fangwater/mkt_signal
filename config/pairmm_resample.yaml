@@ -4,6 +4,9 @@ pairmm_resample:
   resample_interval_ms: 1000
   online_symbols:
     - "BTCUSDT"
-  iceoryx:
-    history_size: 100
-    max_subscribers: 10
+  factor_names:
+    - "history_threshold"
+    - "model_threshold"
+    - "cancel_threshold"
+    - "factor1"
+    - "factor2"

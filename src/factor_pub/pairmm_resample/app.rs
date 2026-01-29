@@ -53,9 +53,12 @@ pub struct PairMmResampleApp {
     config_path: String,
     config: PairMmResampleConfig,
     symbols: Vec<String>,
+    factor_names: Vec<String>,
+    factor_indices: Vec<usize>,
     publisher: PairMmPublisher,
     state: PairMmState,
     last_log_stats: Instant,
+    last_reload_at: Instant,
 }
 
 impl PairMmResampleApp {
@@ -68,6 +71,8 @@ impl PairMmResampleApp {
         let config = PairMmResampleConfig::load(config_path)?;
         config.validate()?;
         let symbols = normalize_symbols(&config.online_symbols, venue);
+        let factor_names = config.factor_names.clone();
+        let factor_indices = config.factor_indices()?;
         let publisher = PairMmPublisher::new(venue_slug, &config)?;
 
         Ok(Self {
@@ -77,9 +82,12 @@ impl PairMmResampleApp {
             config_path: config_path.to_string(),
             config,
             symbols,
+            factor_names,
+            factor_indices,
             publisher,
             state: PairMmState::new(),
             last_log_stats: Instant::now(),
+            last_reload_at: Instant::now(),
         })
     }
 
@@ -99,6 +107,11 @@ impl PairMmResampleApp {
                 next_tick = now + Duration::from_millis(self.config.resample_interval_ms);
             }
 
+            if self.last_reload_at.elapsed() >= Duration::from_secs(60) {
+                self.reload_config();
+                self.last_reload_at = Instant::now();
+            }
+
             if self.last_log_stats.elapsed() >= Duration::from_secs(LOG_INTERVAL_SECS) {
                 self.publisher.log_stats();
                 self.last_log_stats = Instant::now();
@@ -111,7 +124,28 @@ impl PairMmResampleApp {
     fn tick(&mut self) {
         for (symbol, values) in self.state.resample(&self.symbols) {
             let values = values.to_vec();
-            let msg = match PairMmResampleMsg::create(symbol.clone(), self.venue_u8, values) {
+            let mut buf = String::new();
+            for (i, name) in self.factor_names.iter().enumerate() {
+                if let Some(idx) = self.factor_indices.get(i) {
+                    let val = values.get(*idx).copied().unwrap_or(0.0);
+                    if !buf.is_empty() {
+                        buf.push(' ');
+                    }
+                    buf.push_str(name);
+                    buf.push('=');
+                    buf.push_str(&format!("{}", val));
+                }
+            }
+            info!(
+                "pairmm_resample: venue={} symbol={} {}",
+                self.venue_slug, symbol, buf
+            );
+            let mapped: Vec<f64> = self
+                .factor_indices
+                .iter()
+                .filter_map(|idx| values.get(*idx).copied())
+                .collect();
+            let msg = match PairMmResampleMsg::create(symbol.clone(), self.venue_u8, mapped) {
                 Ok(msg) => msg,
                 Err(err) => {
                     warn!("PairMmResampleMsg create failed: {err}");
@@ -141,6 +175,11 @@ impl PairMmResampleApp {
                         );
                         self.config = new_cfg;
                         self.symbols = normalize_symbols(&self.config.online_symbols, self.venue);
+                        self.factor_names = self.config.factor_names.clone();
+                        match self.config.factor_indices() {
+                            Ok(indices) => self.factor_indices = indices,
+                            Err(err) => warn!("PairMmResample factor map invalid: {err}"),
+                        }
                     }
                 }
                 Err(err) => warn!("PairMmResample config reload invalid: {err}"),
