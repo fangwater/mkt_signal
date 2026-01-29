@@ -25,10 +25,11 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let venue_slug = args.venue.data_pub_slug();
     let venue_u8 = args.venue.to_u8();
+    let venue = args.venue;
     let config_path = "config/pairmm_resample.yaml";
 
     info!("Loading config from: {}", config_path);
 
-    let mut app = PairMmResampleApp::new(config_path, venue_slug, venue_u8)?;
+    let mut app = PairMmResampleApp::new(config_path, venue_slug, venue_u8, venue)?;
     app.run()
 }

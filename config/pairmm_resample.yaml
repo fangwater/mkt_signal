@@ -2,7 +2,8 @@
 
 pairmm_resample:
   resample_interval_ms: 1000
-  symbol: "PAIRMM"
+  online_symbols:
+    - "BTCUSDT"
   iceoryx:
     history_size: 100
     max_subscribers: 10

@@ -3,7 +3,9 @@ use log::{info, warn};
 use std::time::{Duration, Instant};
 
 use crate::common::mkt_msg::PairMmResampleMsg;
+use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
+use crate::signal::common::TradingVenue;
 use super::cfg::PairMmResampleConfig;
 use super::publisher::PairMmPublisher;
 
@@ -11,11 +13,7 @@ const LOG_INTERVAL_SECS: u64 = 60;
 
 #[derive(Debug)]
 struct PairMmState {
-    history_threshold: f64,
-    model_threshold: f64,
-    cancel_threshold: f64,
-    factor1: f64,
-    factor2: f64,
+    values: std::collections::HashMap<String, [f64; 5]>,
     last_ts_ms: i64,
     rng: SimpleRng,
 }
@@ -23,54 +21,62 @@ struct PairMmState {
 impl PairMmState {
     fn new() -> Self {
         Self {
-            history_threshold: 0.0,
-            model_threshold: 0.0,
-            cancel_threshold: 0.0,
-            factor1: 0.0,
-            factor2: 0.0,
+            values: std::collections::HashMap::new(),
             last_ts_ms: 0,
             rng: SimpleRng::new((get_timestamp_us() / 1000) as u64),
         }
     }
 
-    fn resample(&mut self) -> [f64; 5] {
-        self.history_threshold = self.rng.gen_range(0.05, 0.30);
-        self.model_threshold = self.rng.gen_range(0.05, 0.30);
-        self.cancel_threshold = self.rng.gen_range(0.05, 0.30);
-        self.factor1 = self.rng.gen_range(0.0, 1.0);
-        self.factor2 = self.rng.gen_range(0.0, 1.0);
-        self.last_ts_ms = get_timestamp_us() / 1000;
-        [
-            self.history_threshold,
-            self.model_threshold,
-            self.cancel_threshold,
-            self.factor1,
-            self.factor2,
-        ]
+    fn resample(&mut self, symbols: &[String]) -> Vec<(String, [f64; 5])> {
+        let ts_ms = get_timestamp_us() / 1000;
+        self.last_ts_ms = ts_ms;
+        let mut out = Vec::with_capacity(symbols.len());
+        for symbol in symbols {
+            let values = [
+                self.rng.gen_range(0.05, 0.30),
+                self.rng.gen_range(0.05, 0.30),
+                self.rng.gen_range(0.05, 0.30),
+                self.rng.gen_range(0.0, 1.0),
+                self.rng.gen_range(0.0, 1.0),
+            ];
+            self.values.insert(symbol.clone(), values);
+            out.push((symbol.clone(), values));
+        }
+        out
     }
 }
 
 pub struct PairMmResampleApp {
     venue_slug: String,
     venue_u8: u8,
+    venue: TradingVenue,
     config_path: String,
     config: PairMmResampleConfig,
+    symbols: Vec<String>,
     publisher: PairMmPublisher,
     state: PairMmState,
     last_log_stats: Instant,
 }
 
 impl PairMmResampleApp {
-    pub fn new(config_path: &str, venue_slug: &str, venue_u8: u8) -> Result<Self> {
+    pub fn new(
+        config_path: &str,
+        venue_slug: &str,
+        venue_u8: u8,
+        venue: TradingVenue,
+    ) -> Result<Self> {
         let config = PairMmResampleConfig::load(config_path)?;
         config.validate()?;
+        let symbols = normalize_symbols(&config.online_symbols, venue);
         let publisher = PairMmPublisher::new(venue_slug, &config)?;
 
         Ok(Self {
             venue_slug: venue_slug.to_string(),
             venue_u8,
+            venue,
             config_path: config_path.to_string(),
             config,
+            symbols,
             publisher,
             state: PairMmState::new(),
             last_log_stats: Instant::now(),
@@ -79,8 +85,10 @@ impl PairMmResampleApp {
 
     pub fn run(&mut self) -> Result<()> {
         info!(
-            "PairMmResampleApp[{}] started: resample_interval_ms={}, symbol={}",
-            self.venue_slug, self.config.resample_interval_ms, self.config.symbol
+            "PairMmResampleApp[{}] started: resample_interval_ms={}, symbols={}",
+            self.venue_slug,
+            self.config.resample_interval_ms,
+            self.symbols.len()
         );
 
         let mut next_tick = Instant::now();
@@ -101,25 +109,22 @@ impl PairMmResampleApp {
     }
 
     fn tick(&mut self) {
-        let values = self.state.resample();
-        let values = values.to_vec();
-        let msg = match PairMmResampleMsg::create(
-            self.config.symbol.clone(),
-            self.venue_u8,
-            values,
-        ) {
-            Ok(msg) => msg,
-            Err(err) => {
-                warn!("PairMmResampleMsg create failed: {err}");
-                return;
-            }
-        };
+        for (symbol, values) in self.state.resample(&self.symbols) {
+            let values = values.to_vec();
+            let msg = match PairMmResampleMsg::create(symbol.clone(), self.venue_u8, values) {
+                Ok(msg) => msg,
+                Err(err) => {
+                    warn!("PairMmResampleMsg create failed: {err}");
+                    continue;
+                }
+            };
 
-        if !self.publisher.publish(&msg) {
-            warn!(
-                "PairMmResample publish failed: venue={} symbol={}",
-                self.venue_slug, self.config.symbol
-            );
+            if !self.publisher.publish(&msg) {
+                warn!(
+                    "PairMmResample publish failed: venue={} symbol={}",
+                    self.venue_slug, symbol
+                );
+            }
         }
     }
 
@@ -130,10 +135,12 @@ impl PairMmResampleApp {
                 Ok(()) => {
                     if new_cfg != self.config {
                         info!(
-                            "PairMmResample config reloaded: resample_interval_ms={}, symbol={}",
-                            new_cfg.resample_interval_ms, new_cfg.symbol
+                            "PairMmResample config reloaded: resample_interval_ms={}, symbols={}",
+                            new_cfg.resample_interval_ms,
+                            new_cfg.online_symbols.len()
                         );
                         self.config = new_cfg;
+                        self.symbols = normalize_symbols(&self.config.online_symbols, self.venue);
                     }
                 }
                 Err(err) => warn!("PairMmResample config reload invalid: {err}"),
@@ -171,4 +178,22 @@ impl SimpleRng {
     fn gen_range(&mut self, min: f64, max: f64) -> f64 {
         min + (max - min) * self.next_f64()
     }
+}
+
+fn normalize_symbols(symbols: &[String], venue: TradingVenue) -> Vec<String> {
+    use std::collections::HashSet;
+
+    let mut seen = HashSet::new();
+    let mut out = Vec::with_capacity(symbols.len());
+    for raw in symbols {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let normalized = normalize_symbol_for_venue(trimmed, venue);
+        if seen.insert(normalized.clone()) {
+            out.push(normalized);
+        }
+    }
+    out
 }

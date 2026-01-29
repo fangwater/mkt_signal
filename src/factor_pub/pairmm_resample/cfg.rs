@@ -11,7 +11,7 @@ pub struct IceoryxCfg {
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct PairMmResampleConfig {
     pub resample_interval_ms: u64,
-    pub symbol: String,
+    pub online_symbols: Vec<String>,
     pub iceoryx: Option<IceoryxCfg>,
 }
 
@@ -31,8 +31,15 @@ impl PairMmResampleConfig {
         if self.resample_interval_ms == 0 {
             anyhow::bail!("resample_interval_ms must be > 0");
         }
-        if self.symbol.trim().is_empty() {
-            anyhow::bail!("symbol must not be empty");
+        if self.online_symbols.is_empty() {
+            anyhow::bail!("online_symbols must not be empty");
+        }
+        if self
+            .online_symbols
+            .iter()
+            .any(|s| s.trim().is_empty())
+        {
+            anyhow::bail!("online_symbols contains empty symbol");
         }
         Ok(())
     }
