@@ -1,4 +1,5 @@
 pub mod basic_account_msg;
+pub mod binance_account_mode;
 pub mod exchange;
 pub mod iceoryx_publisher;
 pub mod iceoryx_subscriber;

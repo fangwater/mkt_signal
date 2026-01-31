@@ -189,6 +189,7 @@ impl PairMmResampleApp {
     }
 }
 
+#[derive(Debug)]
 struct SimpleRng {
     state: u64,
 }

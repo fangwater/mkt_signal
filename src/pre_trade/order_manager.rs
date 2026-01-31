@@ -108,6 +108,7 @@ fn okex_order_type_from_order_type(order_type: OrderType) -> Result<OkexOrderTyp
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use crate::common::binance_account_mode::BinanceAccountMode;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Side {
@@ -326,16 +327,17 @@ impl OrderType {
 pub struct OrderManager {
     orders: HashMap<i64, Order>,                     //映射order id到order
     pending_limit_order_count: HashMap<String, i32>, //单个交易品种当前有多少待成交的maker单
-    binance_account_mode: BinanceAccountMode,
+    binance_account_mode: Option<BinanceAccountMode>,
 }
 
 impl OrderManager {
-    pub fn new() -> Self {
-        let binance_account_mode = read_binance_account_mode();
-        info!(
-            "OrderManager: BINANCE_ACCOUNT_MODE={} (Binance UM account mode)",
-            binance_account_mode.as_str()
-        );
+    pub fn new(binance_account_mode: Option<BinanceAccountMode>) -> Self {
+        if let Some(mode) = binance_account_mode {
+            info!(
+                "OrderManager: BINANCE_ACCOUNT_MODE={} (Binance UM account mode)",
+                mode.as_str()
+            );
+        }
         Self {
             orders: HashMap::new(),
             pending_limit_order_count: HashMap::new(),
@@ -344,7 +346,7 @@ impl OrderManager {
     }
 
     pub fn binance_is_standard(&self) -> bool {
-        self.binance_account_mode == BinanceAccountMode::Standard
+        self.binance_account_mode == Some(BinanceAccountMode::Standard)
     }
 
     pub fn create_order(
@@ -358,7 +360,16 @@ impl OrderManager {
         price: f64,
         sumbit_ts_local: i64,
     ) -> i64 {
-        let mut order = Order::new(venue, id, order_type, symbol.clone(), side, quantity, price);
+        let mut order = Order::new(
+            venue,
+            id,
+            order_type,
+            symbol.clone(),
+            side,
+            quantity,
+            price,
+            self.binance_account_mode,
+        );
         order.set_submit_time(sumbit_ts_local);
         self.insert(order);
         id
@@ -519,28 +530,6 @@ impl OrderManager {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BinanceAccountMode {
-    Unified,
-    Standard,
-}
-
-impl BinanceAccountMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Unified => "UNIFIED",
-            Self::Standard => "STANDARD",
-        }
-    }
-}
-
-fn read_binance_account_mode() -> BinanceAccountMode {
-    match std::env::var("BINANCE_ACCOUNT_MODE").ok().as_deref() {
-        Some("STANDARD") => BinanceAccountMode::Standard,
-        Some("UNIFIED") => BinanceAccountMode::Unified,
-        _ => BinanceAccountMode::Unified,
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct OrderTimeStamp {
@@ -574,6 +563,7 @@ pub struct Order {
     pub exchange_order_id: Option<i64>,  // 交易所返回的 orderId
     pub status: OrderExecutionStatus,    // 订单执行状态
     pub timestamp: OrderTimeStamp,
+    binance_account_mode: Option<BinanceAccountMode>,
 }
 
 impl Order {
@@ -583,7 +573,7 @@ impl Order {
     }
 
     /// 创建新订单
-    pub fn new(
+    fn new(
         venue: TradingVenue,
         client_order_id: i64,
         order_type: OrderType,
@@ -591,6 +581,7 @@ impl Order {
         side: Side,
         quantity: f64,
         price: f64,
+        binance_account_mode: Option<BinanceAccountMode>,
     ) -> Self {
         Order {
             venue,
@@ -604,7 +595,14 @@ impl Order {
             cumulative_filled_quantity: 0.0,
             exchange_order_id: None,
             timestamp: OrderTimeStamp::new(),
+            binance_account_mode,
         }
+    }
+
+    fn require_binance_account_mode(&self) -> BinanceAccountMode {
+        self.binance_account_mode.unwrap_or_else(|| {
+            panic!("BINANCE_ACCOUNT_MODE must be set to 'UNIFIED' or 'STANDARD' when using binance-futures");
+        })
     }
 
     /// 更新订单状态
@@ -663,7 +661,7 @@ impl Order {
                     "symbol={}&origClientOrderId={}",
                     self.symbol, self.client_order_id
                 ));
-                if self.binance_account_mode == BinanceAccountMode::Standard {
+                if self.require_binance_account_mode() == BinanceAccountMode::Standard {
                     let request: BinanceWsCancelUMOrderRequest =
                         BinanceWsCancelUMOrderRequest::create(now, self.client_order_id, params);
                     return Ok(request.to_bytes());
@@ -824,7 +822,7 @@ impl Order {
                     self.venue, self.client_order_id, params_plain
                 );
                 let params = Bytes::from(params_plain);
-                if self.binance_account_mode == BinanceAccountMode::Standard {
+                if self.require_binance_account_mode() == BinanceAccountMode::Standard {
                     let request = BinanceWsNewUMOrderRequest::create(
                         local_create_ts,
                         self.client_order_id,

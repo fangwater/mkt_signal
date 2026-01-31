@@ -5,6 +5,7 @@ use mkt_signal::common::basic_account_msg::{
     get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
     BasicPositionMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg,
 };
+use mkt_signal::common::binance_account_mode::{BinanceAccountMode, init_binance_account_mode};
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::binance_basic_account_event_parser::BinanceBasicAccountEventParser;
 use mkt_signal::parser::default_parser::Parser;
@@ -64,20 +65,8 @@ async fn main() -> Result<()> {
         std::env::set_var("RUST_LOG", "debug");
     }
     env_logger::init();
-    match std::env::var("BINANCE_ACCOUNT_MODE") {
-        Ok(v) if v == "UNIFIED" || v == "STANDARD" => {
-            info!("BINANCE_ACCOUNT_MODE={}", v);
-        }
-        Ok(other) => {
-            panic!(
-                "BINANCE_ACCOUNT_MODE must be 'UNIFIED' or 'STANDARD' for binance_account_monitor, got '{}'",
-                other
-            );
-        }
-        Err(_) => {
-            panic!("BINANCE_ACCOUNT_MODE must be set to 'UNIFIED' or 'STANDARD' for binance_account_monitor");
-        }
-    }
+    let binance_account_mode = init_binance_account_mode("binance_account_monitor");
+    info!("BINANCE_ACCOUNT_MODE={}", binance_account_mode.as_str());
     let api_key_raw = std::env::var("BINANCE_API_KEY").map_err(|_| {
         anyhow::anyhow!("BINANCE_API_KEY not set. Export it before running account_monitor")
     })?;
@@ -102,11 +91,12 @@ async fn main() -> Result<()> {
     const BINANCE_STD_REST: &str = "https://fapi.binance.com";
     const BINANCE_PRIMARY_IP: &str = "172.31.33.133";
     const BINANCE_SECONDARY_IP: &str = "172.31.46.90";
-    let (ws_base, rest_base, listen_key_path) =
-        match std::env::var("BINANCE_ACCOUNT_MODE").ok().as_deref() {
-            Some("STANDARD") => (BINANCE_STD_WS, BINANCE_STD_REST, "/fapi/v1/listenKey"),
-            _ => (BINANCE_PM_WS, BINANCE_PM_REST, "/papi/v1/listenKey"),
-        };
+    let binance_is_standard = binance_account_mode == BinanceAccountMode::Standard;
+    let (ws_base, rest_base, listen_key_path) = if binance_is_standard {
+        (BINANCE_STD_WS, BINANCE_STD_REST, "/fapi/v1/listenKey")
+    } else {
+        (BINANCE_PM_WS, BINANCE_PM_REST, "/papi/v1/listenKey")
+    };
     let ws_pm = ws_base.to_string();
     let rest_pm = rest_base.to_string();
     info!(
@@ -146,6 +136,7 @@ async fn main() -> Result<()> {
         shutdown_rx.clone(),
         evt_tx.clone(),
         session_max,
+        binance_is_standard,
     );
     let mut secondary = spawn_user_stream_path(
         "secondary",
@@ -155,6 +146,7 @@ async fn main() -> Result<()> {
         shutdown_rx.clone(),
         evt_tx.clone(),
         session_max,
+        binance_is_standard,
     );
 
     // Forwarding loop with periodic stats logging runs in the main task
@@ -197,6 +189,7 @@ fn spawn_user_stream_path(
     shutdown_rx: watch::Receiver<bool>,
     evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
     session_max: Option<Duration>,
+    binance_is_standard: bool,
 ) -> tokio::task::JoinHandle<()> {
     let ws_base = ws_base.to_string();
     tokio::spawn(async move {
@@ -227,8 +220,7 @@ fn spawn_user_stream_path(
             let mut consumer_shutdown = shutdown_rx.clone();
             let evt_tx_clone = evt_tx.clone();
             let local_ip_log = local_ip.clone();
-            let parse_balances_from_account_update =
-                matches!(std::env::var("BINANCE_ACCOUNT_MODE").ok().as_deref(), Some("STANDARD"));
+            let parse_balances_from_account_update = binance_is_standard;
             let parser = BinanceBasicAccountEventParser::new(parse_balances_from_account_update);
             tokio::spawn(async move {
                 loop {

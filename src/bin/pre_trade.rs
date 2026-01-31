@@ -2,6 +2,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use clap::Parser;
 use log::{info, warn};
+use mkt_signal::common::binance_account_mode::{BinanceAccountMode, init_binance_account_mode};
 use mkt_signal::common::redis_client::RedisSettings;
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::pre_trade::monitor_channel::MonitorChannel;
@@ -126,23 +127,10 @@ async fn main() -> Result<()> {
         "pre_trade starting, open_venue={:?}, hedge_venue={:?}",
         open_venue, hedge_venue
     );
-    let binance_futures_in_use = matches!(open_venue, TradingVenue::BinanceFutures)
-        || matches!(hedge_venue, TradingVenue::BinanceFutures);
-    let binance_account_mode = if binance_futures_in_use {
-        match std::env::var("BINANCE_ACCOUNT_MODE") {
-            Ok(v) if v == "UNIFIED" || v == "STANDARD" => Some(v),
-            Ok(other) => {
-                panic!(
-                    "BINANCE_ACCOUNT_MODE must be 'UNIFIED' or 'STANDARD' when using binance-futures, got '{}'",
-                    other
-                );
-            }
-            Err(_) => {
-                panic!(
-                    "BINANCE_ACCOUNT_MODE must be set to 'UNIFIED' or 'STANDARD' when using binance-futures"
-                );
-            }
-        }
+    let need_binance = open_venue.trade_engine_exchange() == "binance"
+        || hedge_venue.trade_engine_exchange() == "binance";
+    let binance_account_mode = if need_binance {
+        Some(init_binance_account_mode("pre_trade"))
     } else {
         None
     };
@@ -152,7 +140,7 @@ async fn main() -> Result<()> {
     {
         required_env.extend(["BINANCE_API_KEY", "BINANCE_API_SECRET"]);
     }
-    if binance_futures_in_use {
+    if need_binance {
         required_env.push("BINANCE_ACCOUNT_MODE");
     }
     if open_venue.trade_engine_exchange() == "okex" || hedge_venue.trade_engine_exchange() == "okex"
@@ -162,8 +150,8 @@ async fn main() -> Result<()> {
     if !required_env.is_empty() {
         info!("Required env vars: {}", required_env.join(", "));
     }
-    if let Some(v) = binance_account_mode.as_deref() {
-        info!("BINANCE_ACCOUNT_MODE={}", v);
+    if let Some(mode) = binance_account_mode {
+        info!("BINANCE_ACCOUNT_MODE={}", mode.as_str());
     }
     info!("Optional env vars: REDIS_URL");
 
@@ -227,7 +215,13 @@ async fn main() -> Result<()> {
             // 3. 初始化 MonitorChannel（包含所有账户管理器）
             info!("Initializing MonitorChannel singleton...");
             if let Err(err) =
-                MonitorChannel::init_singleton(strategy_mgr.clone(), open_venue, hedge_venue).await
+                MonitorChannel::init_singleton(
+                    strategy_mgr.clone(),
+                    open_venue,
+                    hedge_venue,
+                    binance_account_mode,
+                )
+                .await
             {
                 return Err(err);
             }
@@ -319,7 +313,7 @@ async fn main() -> Result<()> {
             {
                     let open_venue = open_venue;
                     let hedge_venue = hedge_venue;
-                    let binance_account_mode = binance_account_mode.clone();
+                    let binance_account_mode = binance_account_mode;
                     tokio::task::spawn_local(async move {
                     // 定时快照查询：balance 与 position 都要 query。
                     // 目的：
@@ -356,7 +350,7 @@ async fn main() -> Result<()> {
                     let mut interval = tokio::time::interval(Duration::from_secs(60));
 
                     let binance_is_standard =
-                        matches!(binance_account_mode.as_deref(), Some("STANDARD"));
+                        matches!(binance_account_mode, Some(BinanceAccountMode::Standard));
                     let send_snapshot_queries = || {
                         if need_binance_balance {
                             let now = get_timestamp_us();

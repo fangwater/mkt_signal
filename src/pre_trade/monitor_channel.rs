@@ -102,6 +102,7 @@ pub fn hash64(parts: &[u64]) -> u64 {
 
 // ==================== Monitor Channel ====================
 
+use crate::common::binance_account_mode::BinanceAccountMode;
 use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
 use crate::pre_trade::order_manager::OrderManager;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
@@ -371,6 +372,7 @@ impl MonitorChannel {
         strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
+        binance_account_mode: Option<BinanceAccountMode>,
     ) -> Result<()> {
         // 仅支持 Binance / OKX
         for v in [open_venue, hedge_venue] {
@@ -502,7 +504,7 @@ impl MonitorChannel {
             price_table,
             venue_min_qty_tables,
             strategy_mgr,
-            order_manager: Rc::new(RefCell::new(OrderManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(binance_account_mode))),
             hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
             trade_update_seq: 0,
         };
@@ -1843,7 +1845,9 @@ mod tests {
             price_table: Rc::new(RefCell::new(PriceTable::new())),
             venue_min_qty_tables,
             strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
-            order_manager: Rc::new(RefCell::new(OrderManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
             hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
             trade_update_seq: 0,
         };
@@ -1888,7 +1892,9 @@ mod tests {
             price_table: Rc::new(RefCell::new(price_table)),
             venue_min_qty_tables,
             strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
-            order_manager: Rc::new(RefCell::new(OrderManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
             hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
             trade_update_seq: 0,
         };
@@ -1933,7 +1939,9 @@ mod tests {
             price_table: Rc::new(RefCell::new(price_table)),
             venue_min_qty_tables,
             strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
-            order_manager: Rc::new(RefCell::new(OrderManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
             hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
             trade_update_seq: 0,
         };
@@ -1977,7 +1985,9 @@ mod tests {
             price_table: Rc::new(RefCell::new(price_table)),
             venue_min_qty_tables: HashMap::new(),
             strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
-            order_manager: Rc::new(RefCell::new(OrderManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
             hedge_residual_map: Rc::new(RefCell::new(HashMap::new())),
             trade_update_seq: 0,
         };

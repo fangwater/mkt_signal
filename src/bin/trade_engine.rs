@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use log::{error, info};
+use mkt_signal::common::binance_account_mode::{BinanceAccountMode, init_binance_account_mode};
 use mkt_signal::common::exchange::Exchange;
 use mkt_signal::{ApiKey, TradeEngine};
 use mkt_signal::trade_engine::config::RestConstants;
@@ -229,22 +230,13 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let exchange_name = args.exchange.as_str();
     info!("trade_engine starting (exchange={})", exchange_name);
-    if exchange_name == "binance" {
-        match std::env::var("BINANCE_ACCOUNT_MODE") {
-            Ok(v) if v == "UNIFIED" || v == "STANDARD" => {
-                info!("BINANCE_ACCOUNT_MODE={}", v);
-            }
-            Ok(other) => {
-                panic!(
-                    "BINANCE_ACCOUNT_MODE must be 'UNIFIED' or 'STANDARD' when exchange=binance, got '{}'",
-                    other
-                );
-            }
-            Err(_) => {
-                panic!("BINANCE_ACCOUNT_MODE must be set to 'UNIFIED' or 'STANDARD' when exchange=binance");
-            }
-        }
-    }
+    let binance_account_mode = if exchange_name == "binance" {
+        let mode = init_binance_account_mode("trade_engine");
+        info!("BINANCE_ACCOUNT_MODE={}", mode.as_str());
+        Some(mode)
+    } else {
+        None
+    };
 
     // 使用命令行参数或默认 IP 列表
     let local_ips = args.local_ips.unwrap_or_else(|| {
@@ -319,10 +311,7 @@ async fn main() -> Result<()> {
         log_credential_preview(&api_secret_var, &api_secret);
 
         if exchange_name == "binance"
-            && matches!(
-                std::env::var("BINANCE_ACCOUNT_MODE").ok().as_deref(),
-                Some("STANDARD")
-            )
+            && matches!(binance_account_mode, Some(BinanceAccountMode::Standard))
         {
             let base_url = std::env::var("BINANCE_FAPI_URL")
                 .ok()

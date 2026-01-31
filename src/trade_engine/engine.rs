@@ -1,6 +1,7 @@
 use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
+use crate::common::binance_account_mode::{binance_account_mode, BinanceAccountMode};
 use crate::trade_engine::config::{ApiKey, WsConstants};
 use crate::trade_engine::dispatcher::Dispatcher;
 use crate::trade_engine::query_parsers::binance_margin_order::parse_binance_margin_order_query_json;
@@ -191,11 +192,8 @@ impl TradeEngine {
         };
 
         // 初始化 WebSocket 客户端（用于 OKEx/Gate/Binance）
-        let binance_ws_enabled = exchange == Exchange::Binance
-            && matches!(
-                std::env::var("BINANCE_ACCOUNT_MODE").ok().as_deref(),
-                Some("STANDARD")
-            );
+        let binance_ws_enabled =
+            exchange == Exchange::Binance && binance_account_mode() == BinanceAccountMode::Standard;
         if exchange == Exchange::Binance && !binance_ws_enabled {
             info!("binance ws disabled (BINANCE_ACCOUNT_MODE!=STANDARD)");
         }
