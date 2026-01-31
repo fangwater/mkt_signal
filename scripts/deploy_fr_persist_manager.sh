@@ -144,5 +144,5 @@ if [[ "$DO_SCRIPTS" -eq 1 ]]; then
 fi
 
 echo "[INFO] $BIN_NAME deployed to $TARGET_DIR"
-echo "[INFO] Start: cd $TARGET_DIR && ./scripts/start_fr_persist_manager.sh --port <PORT>"
+echo "[INFO] Start: cd $TARGET_DIR && ./scripts/start_fr_persist_manager.sh"
 echo "[INFO] Stop:  cd $TARGET_DIR && ./scripts/stop_fr_persist_manager.sh"

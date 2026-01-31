@@ -38,25 +38,15 @@ fi
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/start_fr_persist_manager.sh --port <PORT> [--exchange <binance|okex|bybit|bitget|gate>]
   scripts/start_fr_persist_manager.sh [--exchange <binance|okex|bybit|bitget|gate>]
-
-Notes:
-  - If --port is omitted, a default port is chosen by exchange:
-      okex=9101, gate=9102, binance=9103, bybit=9104, bitget=9105
 EOF
 }
 
 EXCHANGE=""
-PORT="${PORT:-}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --exchange)
       EXCHANGE="${2:-}"
-      shift 2
-      ;;
-    --port)
-      PORT="${2:-}"
       shift 2
       ;;
     -h|--help)
@@ -70,17 +60,6 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-
-default_port_for_exchange() {
-  case "$1" in
-    okex) echo "9101" ;;
-    gate) echo "9102" ;;
-    binance) echo "9103" ;;
-    bybit) echo "9104" ;;
-    bitget) echo "9105" ;;
-    *) echo "9101" ;;
-  esac
-}
 
 dir_name="$(basename "${BASE_DIR}")"
 dir_tag="$(echo "${dir_name,,}" | sed 's/[^a-z0-9_-]/_/g')"
@@ -103,14 +82,6 @@ if [[ "$EXCHANGE" == "okx" ]]; then
   EXCHANGE="okex"
 fi
 
-if [[ -z "$PORT" ]]; then
-  PORT="$(default_port_for_exchange "$EXCHANGE")"
-fi
-if [[ ! "$PORT" =~ ^[0-9]+$ ]]; then
-  echo "[ERROR] --port must be numeric: $PORT" >&2
-  exit 1
-fi
-
 if [[ -z "${IPC_NAMESPACE:-}" ]]; then
   echo "[ERROR] IPC_NAMESPACE is not set; run: source ${ENV_FILE}" >&2
   exit 1
@@ -121,7 +92,7 @@ RUST_LOG="${RUST_LOG:-info}"
 
 mkdir -p "${BASE_DIR}/data/persist_manager" >/dev/null 2>&1 || true
 
-echo "[INFO] Restarting ${PROC_NAME} (namespace=${PM2_NAMESPACE} port=${PORT})"
+echo "[INFO] Restarting ${PROC_NAME} (namespace=${PM2_NAMESPACE})"
 npx pm2 delete "$PROC_NAME" --namespace "$PM2_NAMESPACE" >/dev/null 2>&1 || true
 
 (
@@ -129,8 +100,7 @@ npx pm2 delete "$PROC_NAME" --namespace "$PM2_NAMESPACE" >/dev/null 2>&1 || true
   RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
     --name "$PROC_NAME" \
     --namespace "$PM2_NAMESPACE" \
-    -- \
-    --port "$PORT"
+    --
 )
 
 echo ""

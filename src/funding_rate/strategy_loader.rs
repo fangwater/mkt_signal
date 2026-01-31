@@ -82,6 +82,10 @@ pub struct StrategyParams {
     #[serde(default = "default_hedge_aggressive_seq_threshold")]
     pub hedge_aggressive_seq_threshold: u32,
 
+    /// 对冲触发 taker 的最大价格变动比例（百分比，1~20 表示 1%~20%）
+    #[serde(default = "default_max_hedge_price_pct_change")]
+    pub max_hedge_price_pct_change: f64,
+
     /// 信号冷却时间（秒）
     #[serde(default = "default_signal_cooldown")]
     pub signal_cooldown: u64,
@@ -109,6 +113,9 @@ fn default_hedge_price_offset() -> f64 {
 fn default_hedge_aggressive_seq_threshold() -> u32 {
     6
 }
+fn default_max_hedge_price_pct_change() -> f64 {
+    5.0
+}
 fn default_signal_cooldown() -> u64 {
     5
 }
@@ -123,6 +130,7 @@ impl Default for StrategyParams {
             hedge_timeout: default_hedge_timeout(),
             hedge_price_offset: default_hedge_price_offset(),
             hedge_aggressive_seq_threshold: default_hedge_aggressive_seq_threshold(),
+            max_hedge_price_pct_change: default_max_hedge_price_pct_change(),
             signal_cooldown: default_signal_cooldown(),
         }
     }
@@ -137,7 +145,8 @@ impl StrategyParams {
         hedge_venue: TradingVenue,
     ) -> Result<Self> {
         let mut client = RedisClient::connect(redis.clone()).await?;
-        let redis_key = strategy_params_key(namespace, open_venue, hedge_venue);
+        let ns = normalize_namespace(namespace);
+        let redis_key = strategy_params_key(&ns, open_venue, hedge_venue);
         let hash_map = client.hgetall_map(&redis_key).await?;
         if hash_map.is_empty() {
             panic!("Redis hash '{}' 为空或不存在，无法加载策略参数", redis_key);
@@ -179,6 +188,34 @@ impl StrategyParams {
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or_else(default_hedge_aggressive_seq_threshold);
 
+        let require_max_hedge_pct = ns == "xarb";
+        let max_hedge_price_pct_change = match hash_map.get("max_hedge_price_pct_change") {
+            Some(raw) => {
+                let parsed = raw.parse::<f64>().unwrap_or_else(|_| {
+                    panic!(
+                        "Redis hash '{}' max_hedge_price_pct_change 无法解析: {}",
+                        redis_key, raw
+                    )
+                });
+                if !(parsed.is_finite() && parsed >= 1.0 && parsed <= 20.0) {
+                    panic!(
+                        "Redis hash '{}' max_hedge_price_pct_change 无效(需在1~20): {}",
+                        redis_key, parsed
+                    );
+                }
+                parsed
+            }
+            None => {
+                if require_max_hedge_pct {
+                    panic!(
+                        "Redis hash '{}' 缺少 max_hedge_price_pct_change",
+                        redis_key
+                    );
+                }
+                default_max_hedge_price_pct_change()
+            }
+        };
+
         let signal_cooldown = hash_map
             .get("signal_cooldown")
             .and_then(|s| s.parse::<u64>().ok())
@@ -192,6 +229,7 @@ impl StrategyParams {
             hedge_timeout,
             hedge_price_offset,
             hedge_aggressive_seq_threshold,
+            max_hedge_price_pct_change,
             signal_cooldown,
         })
     }
@@ -234,13 +272,14 @@ impl StrategyParams {
         .is_some()
             || XarbDecision::try_with_mut(|decision| {
                 decision.update_order_amount(self.order_amount);
-                decision.update_price_offsets(self.parse_price_offsets());
-                decision.update_open_order_timeout(self.open_order_timeout);
-                decision.update_hedge_timeout(self.hedge_timeout);
-                decision.update_hedge_price_offset(self.hedge_price_offset);
-                decision.update_hedge_aggressive_seq_threshold(self.hedge_aggressive_seq_threshold);
-                decision.update_signal_cooldown(self.signal_cooldown);
-            })
+            decision.update_price_offsets(self.parse_price_offsets());
+            decision.update_open_order_timeout(self.open_order_timeout);
+            decision.update_hedge_timeout(self.hedge_timeout);
+            decision.update_hedge_price_offset(self.hedge_price_offset);
+            decision.update_hedge_aggressive_seq_threshold(self.hedge_aggressive_seq_threshold);
+            decision.update_max_hedge_price_pct_change(self.max_hedge_price_pct_change);
+            decision.update_signal_cooldown(self.signal_cooldown);
+        })
             .is_some();
 
         // 2. 更新 SpreadFactor 模式

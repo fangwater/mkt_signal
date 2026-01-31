@@ -1,10 +1,13 @@
+use crate::common::bbo::{Bbo, DualBbo};
 use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderType, Side};
 use crate::pre_trade::{PersistChannel, SignalChannel, TradeEngHub};
 use crate::signal::cancel_signal::ArbCancelCtx;
-use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue};
+use crate::signal::common::{
+    align_price_floor, ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue,
+};
 use crate::signal::hedge_signal::ArbHedgeCtx;
 use crate::signal::open_signal::ArbOpenCtx;
 use crate::signal::record::SignalRecordMessage;
@@ -46,8 +49,9 @@ pub struct HedgeArbStrategy {
     pub hedge_venue: TradingVenue,     //对冲侧交易场所
     pub hedge_side: Side,              //对冲侧方向
     pub hedge_request_seq: u32,        //累计对冲请求次数
-    pub hedge_bid0: f64,               //最新对冲侧bid
-    pub hedge_ask0: f64,               //最新对冲侧ask
+    pub open_signal_ts: i64, //开仓信号时间戳（微秒）
+    pub open_bbo: DualBbo,  //开仓时双腿盘口
+    pub hedge_bbo: DualBbo, //对冲时刻双腿盘口
     pub force_close_mode: bool,        //是否强平模式
     pub hedge_retry_after_ts: Option<i64>, //对冲报单失败后的冷却截止时间
     pub hedge_retry_reason: Option<&'static str>, //对冲报单失败的重试原因
@@ -99,8 +103,9 @@ impl HedgeArbStrategy {
             hedge_venue: TradingVenue::BinanceMargin, // 默认值，将在开仓时更新
             hedge_side: Side::Buy,                    // 默认值，将在开仓时更新
             hedge_request_seq: 0,
-            hedge_bid0: 0.0,
-            hedge_ask0: 0.0,
+            open_signal_ts: 0,
+            open_bbo: DualBbo::default(),
+            hedge_bbo: DualBbo::default(),
             force_close_mode: false,
             hedge_retry_after_ts: None,
             hedge_retry_reason: None,
@@ -301,8 +306,12 @@ impl HedgeArbStrategy {
         } else {
             Side::Buy
         };
-        self.hedge_bid0 = ctx.hedging_leg.bid0;
-        self.hedge_ask0 = ctx.hedging_leg.ask0;
+        self.open_signal_ts = ctx.create_ts;
+        self.open_bbo.open =
+            Bbo::new(ctx.opening_leg.bid0, ctx.opening_leg.ask0, ctx.opening_leg.ts);
+        self.open_bbo.hedge =
+            Bbo::new(ctx.hedging_leg.bid0, ctx.hedging_leg.ask0, ctx.hedging_leg.ts);
+        self.hedge_bbo = self.open_bbo;
 
         // 7、根据交易标的物，修正量、价格
         let symbol = ctx.get_opening_symbol();
@@ -426,20 +435,70 @@ impl HedgeArbStrategy {
         );
     }
 
-    fn latest_hedge_quotes(&self) -> Option<(f64, f64)> {
-        if self.hedge_bid0 > 0.0 && self.hedge_ask0 > 0.0 {
-            return Some((self.hedge_bid0, self.hedge_ask0));
+    fn align_taker_qty(
+        &self,
+        venue: TradingVenue,
+        symbol: &str,
+        raw_qty: f64,
+    ) -> Result<f64, String> {
+        if raw_qty <= 0.0 {
+            return Err(format!(
+                "symbol={} 原始下单量无效 raw_qty={}",
+                symbol, raw_qty
+            ));
         }
-        let price_table = MonitorChannel::instance().price_table();
-        let price = price_table
-            .borrow()
-            .mark_price(&self.hedge_symbol)
-            .unwrap_or(0.0);
-        if price > 0.0 {
-            Some((price, price))
-        } else {
-            None
+
+        let symbol_key = match venue {
+            TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
+                symbol.to_uppercase().replace("-SWAP", "").replace('-', "")
+            }
+            TradingVenue::GateMargin | TradingVenue::GateFutures => {
+                symbol.to_uppercase().replace('_', "").replace('-', "")
+            }
+            _ => symbol.to_uppercase(),
+        };
+
+        let Some(table) = MonitorChannel::instance().venue_min_qty_table(venue) else {
+            return Err(format!(
+                "未初始化 {:?} 的最小下单量表，请检查启动参数",
+                venue
+            ));
+        };
+
+        let mut qty = raw_qty;
+        if venue == TradingVenue::OkexFutures {
+            let contract_size = table.contract_multiplier_opt(&symbol_key).ok_or_else(|| {
+                format!(
+                    "symbol={} 缺少 OKX 合约乘数(ctVal×ctMult)，无法将 base qty 转成 contracts",
+                    symbol_key
+                )
+            })?;
+            if contract_size <= 0.0 {
+                return Err(format!(
+                    "symbol={} OKX contract multiplier invalid: {}",
+                    symbol_key, contract_size
+                ));
+            }
+            qty = raw_qty / contract_size;
         }
+
+        if let Some(step) = table.step_size(&symbol_key) {
+            if step > 0.0 {
+                qty = align_price_floor(qty, step);
+            }
+        }
+
+        if let Some(min_qty) = table.min_qty(&symbol_key) {
+            if min_qty > 0.0 && qty < min_qty {
+                qty = min_qty;
+            }
+        }
+
+        if qty <= 0.0 {
+            return Err(format!("symbol={} 对齐后数量无效 qty={}", symbol_key, qty));
+        }
+
+        Ok(qty)
     }
 
     // 收到对冲信号，按照需求进行maker对冲，或者直接taker对冲
@@ -467,11 +526,22 @@ impl HedgeArbStrategy {
         let hedge_symbol = ctx.get_hedging_symbol();
         let hedge_venue = TradingVenue::from_u8(ctx.hedging_leg.venue)
             .ok_or_else(|| format!("无效的对冲交易场所: {}", ctx.hedging_leg.venue))?;
-        self.hedge_bid0 = ctx.hedging_leg.bid0;
-        self.hedge_ask0 = ctx.hedging_leg.ask0;
+        self.hedge_bbo.hedge =
+            Bbo::new(ctx.hedging_leg.bid0, ctx.hedging_leg.ask0, ctx.hedging_leg.ts);
+        self.hedge_bbo.open = Bbo::new(ctx.opening_leg.bid0, ctx.opening_leg.ask0, ctx.opening_leg.ts);
         let hedge_side = ctx
             .get_side()
             .ok_or_else(|| format!("无效的对冲方向: {}", ctx.hedge_side))?;
+        if ctx.is_taker() {
+            info!(
+                "HedgeArbStrategy: strategy_id={} taker hedge signal hedge_symbol={} venue={:?} side={:?} qty={:.8}",
+                self.strategy_id,
+                hedge_symbol,
+                hedge_venue,
+                hedge_side,
+                target_qty
+            );
+        }
 
         if ctx.is_maker() && ctx.limit_price <= 0.0 {
             let detail = format!(
@@ -493,69 +563,77 @@ impl HedgeArbStrategy {
         }
 
         // 3. 使用预交易环境对齐订单量和价格
-        // 使用get_hedge_price 函数获取合适的对冲价格
-        let hedge_price = ctx.get_hedge_price();
-        if hedge_price <= 0.0 {
-            let detail = format!(
-                "pre_trade_price_invalid mode={} client_order_id={} market_ts={} price_offset={:.6} opening_venue={} hedging_venue={}",
-                if ctx.is_maker() { "maker" } else { "taker" },
-                ctx.client_order_id,
-                ctx.market_ts,
-                ctx.price_offset,
-                ctx.opening_leg.venue,
-                ctx.hedging_leg.venue
-            );
-            if ctx.is_maker() {
-                self.push_hedge_residual_with_print(
-                    "PRICE_LESS_THAN_ZERO/价格小于0",
-                    &detail,
-                    target_qty,
-                    hedge_price,
-                    hedge_side,
+        let (aligned_qty, aligned_price) = if ctx.is_taker() {
+            let aligned_qty = self.align_taker_qty(hedge_venue, &hedge_symbol, target_qty)?;
+            (aligned_qty, 0.0)
+        } else {
+            // 使用get_hedge_price 函数获取合适的对冲价格
+            let hedge_price = ctx.get_hedge_price();
+            if hedge_price <= 0.0 {
+                let detail = format!(
+                    "pre_trade_price_invalid mode={} client_order_id={} market_ts={} price_offset={:.6} opening_venue={} hedging_venue={}",
+                    if ctx.is_maker() { "maker" } else { "taker" },
+                    ctx.client_order_id,
+                    ctx.market_ts,
+                    ctx.price_offset,
+                    ctx.opening_leg.venue,
+                    ctx.hedging_leg.venue
                 );
-                return Ok(());
+                if ctx.is_maker() {
+                    self.push_hedge_residual_with_print(
+                        "PRICE_LESS_THAN_ZERO/价格小于0",
+                        &detail,
+                        target_qty,
+                        hedge_price,
+                        hedge_side,
+                    );
+                    return Ok(());
+                }
+                return Err(format!("对冲价格无效: {:.8}", hedge_price));
             }
-            return Err(format!("对冲价格无效: {:.8}", hedge_price));
-        }
-        let (aligned_qty, aligned_price) = MonitorChannel::instance().align_order_by_venue(
-            hedge_venue,
-            &hedge_symbol,
-            target_qty,
-            hedge_price,
-        )?;
-        if aligned_price <= 0.0 {
-            let detail = format!(
-                "aligned_price_invalid mode={} client_order_id={} raw_price={:.8} aligned_price={:.8}",
-                if ctx.is_maker() { "maker" } else { "taker" },
-                ctx.client_order_id,
+            let (aligned_qty, aligned_price) = MonitorChannel::instance().align_order_by_venue(
+                hedge_venue,
+                &hedge_symbol,
+                target_qty,
                 hedge_price,
-                aligned_price
-            );
-            if ctx.is_maker() {
-                self.push_hedge_residual_with_print(
-                    "PRICE_LESS_THAN_ZERO/价格小于0",
-                    &detail,
-                    target_qty,
-                    aligned_price,
-                    hedge_side,
+            )?;
+            if aligned_price <= 0.0 {
+                let detail = format!(
+                    "aligned_price_invalid mode={} client_order_id={} raw_price={:.8} aligned_price={:.8}",
+                    if ctx.is_maker() { "maker" } else { "taker" },
+                    ctx.client_order_id,
+                    hedge_price,
+                    aligned_price
                 );
-                return Ok(());
+                if ctx.is_maker() {
+                    self.push_hedge_residual_with_print(
+                        "PRICE_LESS_THAN_ZERO/价格小于0",
+                        &detail,
+                        target_qty,
+                        aligned_price,
+                        hedge_side,
+                    );
+                    return Ok(());
+                }
+                return Err(format!("对冲价格无效: {:.8}", aligned_price));
             }
-            return Err(format!("对冲价格无效: {:.8}", aligned_price));
-        }
+            (aligned_qty, aligned_price)
+        };
 
         // 4. 检查最小交易要求
-        if let Err(e) = MonitorChannel::instance().check_min_trading_requirements(
-            hedge_venue,
-            &hedge_symbol,
-            aligned_qty,
-            Some(aligned_price),
-        ) {
-            debug!(
-                "HedgeArbStrategy: strategy_id={} 对冲订单不满足最小要求: {}，等待更多成交",
-                self.strategy_id, e
-            );
-            return Ok(());
+        if !ctx.is_taker() {
+            if let Err(e) = MonitorChannel::instance().check_min_trading_requirements(
+                hedge_venue,
+                &hedge_symbol,
+                aligned_qty,
+                Some(aligned_price),
+            ) {
+                debug!(
+                    "HedgeArbStrategy: strategy_id={} 对冲订单不满足最小要求: {}，等待更多成交",
+                    self.strategy_id, e
+                );
+                return Ok(());
+            }
         }
 
         // 5. 对冲无需风控逻辑，直接构造订单即可
@@ -995,26 +1073,15 @@ impl HedgeArbStrategy {
         // 3. 设置对冲symbol
         hedge_ctx.set_hedging_symbol(&self.hedge_symbol);
 
-        // 4. 设置对冲leg，市价单也需要有效价格供风控/名义金额对齐
-        let (bid0, ask0) = match self.latest_hedge_quotes() {
-            Some((bid, ask)) => (bid, ask),
-            None => {
-                let msg = format!(
-                    "strategy_id={} 对冲行情缺失 symbol={} hedge venue={:?}",
-                    self.strategy_id, self.hedge_symbol, self.hedge_venue
-                );
-                error!("HedgeArbStrategy: {}", msg);
-                return Err(msg);
-            }
-        };
+        // 4. 设置对冲leg（市价对冲，盘口写0）
         hedge_ctx.hedging_leg = crate::signal::common::TradingLeg {
             venue: self.hedge_venue.to_u8(),
-            bid0,
-            ask0,
+            bid0: 0.0,
+            ask0: 0.0,
             ts: 0,
         };
-        self.hedge_bid0 = bid0;
-        self.hedge_ask0 = ask0;
+        self.hedge_bbo.hedge = Bbo::default();
+        self.hedge_bbo.open = Bbo::default();
 
         // 5. 设置市场数据时间戳
         hedge_ctx.market_ts = get_timestamp_us();
@@ -1249,7 +1316,7 @@ impl HedgeArbStrategy {
             return Ok(());
         }
 
-        // 1. 创建对冲查询消息（只携带符号+场所，盘口由 decision 获取）
+        // 1. 创建对冲查询消息（携带开仓盘口快照，便于上游风控/止损判断）
         info!(
             "HedgeArbStrategy: strategy_id={} 第{}次对冲 hedge_symbol={} hedge_venue={:?} side={:?} qty={:.8}",
             self.strategy_id,
@@ -1270,6 +1337,13 @@ impl HedgeArbStrategy {
             self.hedge_venue.to_u8(),
             &self.hedge_symbol,
             self.hedge_request_seq,
+            self.open_signal_ts,
+            self.open_bbo.open.bid0,
+            self.open_bbo.open.ask0,
+            self.open_bbo.open.ts,
+            self.open_bbo.hedge.bid0,
+            self.open_bbo.hedge.ask0,
+            self.open_bbo.hedge.ts,
         );
 
         self.hedge_request_seq = self.hedge_request_seq.wrapping_add(1);

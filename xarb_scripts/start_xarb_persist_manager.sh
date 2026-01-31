@@ -28,15 +28,12 @@ fi
 
 usage() {
   cat <<'EOF'
-用法: xarb_scripts/start_xarb_persist_manager.sh --port <PORT>
+用法: xarb_scripts/start_xarb_persist_manager.sh
 
 说明:
   - 需要在部署目录存在 env.sh（包含 IPC_NAMESPACE），否则 persist_manager 会 panic。
   - 会基于部署目录名推断 open/hedge exchange（目录名需形如 <open>-<hedge>-xarb-...）。
   - 会以 PM2 启动 1 个进程：persist_manager_xarb_<open>_<hedge>
-
-示例:
-  ./xarb_scripts/start_xarb_persist_manager.sh --port 8088
 EOF
 }
 
@@ -45,22 +42,8 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-PORT=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --port)
-      PORT="${2:-}"
-      shift 2
-      ;;
-    *)
-      echo "[ERROR] 未知参数: $1"
-      usage
-      exit 1
-      ;;
-  esac
-done
-if [[ -z "$PORT" ]]; then
-  echo "[ERROR] 缺少必填参数：--port <PORT>"
+if [[ $# -gt 0 ]]; then
+  echo "[ERROR] 不支持参数：$*"
   usage
   exit 1
 fi
@@ -102,7 +85,7 @@ RUST_LOG="${RUST_LOG:-info}"
 
 mkdir -p "${BASE_DIR}/data/persist_manager" >/dev/null 2>&1 || true
 
-echo "[INFO] Restarting ${PROC_NAME} (namespace=${PM2_NAMESPACE} port=${PORT})"
+echo "[INFO] Restarting ${PROC_NAME} (namespace=${PM2_NAMESPACE})"
 npx pm2 delete "$PROC_NAME" --namespace "$PM2_NAMESPACE" >/dev/null 2>&1 || true
 
 (
@@ -110,8 +93,7 @@ npx pm2 delete "$PROC_NAME" --namespace "$PM2_NAMESPACE" >/dev/null 2>&1 || true
   RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
     --name "$PROC_NAME" \
     --namespace "$PM2_NAMESPACE" \
-    -- \
-    --port "$PORT"
+    --
 )
 
 echo ""

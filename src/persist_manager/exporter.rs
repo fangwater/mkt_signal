@@ -4,14 +4,14 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use log::info;
 
-use super::http::{
+use super::order_update::CF_ORDER_UPDATE;
+use super::parquet::{
     build_parquet_cancel, build_parquet_hedge, build_parquet_open,
     build_parquet_order_updates, build_parquet_trade_updates, RangeFilter,
 };
-use super::order_update::CF_ORDER_UPDATE;
 use super::signal::{CF_ARB_CANCEL, CF_ARB_CLOSE, CF_ARB_HEDGE, CF_ARB_OPEN};
-use super::trade_update::CF_TRADE_UPDATE;
 use super::storage::RocksDbStore;
+use super::trade_update::CF_TRADE_UPDATE;
 
 fn write_parquet(output_dir: &Path, name: &str, bytes: Vec<u8>) -> Result<()> {
     let path = output_dir.join(name);

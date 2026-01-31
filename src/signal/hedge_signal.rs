@@ -464,6 +464,19 @@ pub struct ArbHedgeSignalQueryMsg {
 
     /// Number of hedge requests issued for this strategy (monotonic)
     pub request_seq: u32,
+
+    /// Open signal timestamp (microseconds)
+    pub open_signal_ts: i64,
+
+    /// Opening leg bid/ask at open signal time
+    pub open_bid0: f64,
+    pub open_ask0: f64,
+    pub open_leg_ts: i64,
+
+    /// Hedging leg bid/ask at open signal time
+    pub hedge_bid0: f64,
+    pub hedge_ask0: f64,
+    pub hedge_leg_ts: i64,
 }
 
 impl ArbHedgeSignalQueryMsg {
@@ -479,6 +492,13 @@ impl ArbHedgeSignalQueryMsg {
         hedging_venue: u8,
         hedging_symbol: &str,
         request_seq: u32,
+        open_signal_ts: i64,
+        open_bid0: f64,
+        open_ask0: f64,
+        open_leg_ts: i64,
+        hedge_bid0: f64,
+        hedge_ask0: f64,
+        hedge_leg_ts: i64,
     ) -> Self {
         let mut opening_symbol_bytes = [0u8; 32];
         let bytes = opening_symbol.as_bytes();
@@ -501,6 +521,13 @@ impl ArbHedgeSignalQueryMsg {
             hedging_venue,
             hedging_symbol: hedging_symbol_bytes,
             request_seq,
+            open_signal_ts,
+            open_bid0,
+            open_ask0,
+            open_leg_ts,
+            hedge_bid0,
+            hedge_ask0,
+            hedge_leg_ts,
         }
     }
 
@@ -531,6 +558,15 @@ impl ArbHedgeSignalQueryMsg {
         buf.put_u8(self.hedging_venue);
         bytes_helper::write_fixed_bytes(&mut buf, &self.hedging_symbol);
         buf.put_u32_le(self.request_seq);
+
+        // Open signal snapshot (optional for backward compatibility)
+        buf.put_i64_le(self.open_signal_ts);
+        buf.put_f64_le(self.open_bid0);
+        buf.put_f64_le(self.open_ask0);
+        buf.put_i64_le(self.open_leg_ts);
+        buf.put_f64_le(self.hedge_bid0);
+        buf.put_f64_le(self.hedge_ask0);
+        buf.put_i64_le(self.hedge_leg_ts);
         buf.freeze()
     }
 
@@ -580,6 +616,17 @@ impl ArbHedgeSignalQueryMsg {
         }
         let request_seq = bytes.get_u32_le();
 
+        if bytes.remaining() < 56 {
+            return Err("insufficient bytes for open signal snapshot".into());
+        }
+        let open_signal_ts = bytes.get_i64_le();
+        let open_bid0 = bytes.get_f64_le();
+        let open_ask0 = bytes.get_f64_le();
+        let open_leg_ts = bytes.get_i64_le();
+        let hedge_bid0 = bytes.get_f64_le();
+        let hedge_ask0 = bytes.get_f64_le();
+        let hedge_leg_ts = bytes.get_i64_le();
+
         Ok(Self {
             strategy_id,
             client_order_id,
@@ -591,6 +638,13 @@ impl ArbHedgeSignalQueryMsg {
             hedging_venue,
             hedging_symbol,
             request_seq,
+            open_signal_ts,
+            open_bid0,
+            open_ask0,
+            open_leg_ts,
+            hedge_bid0,
+            hedge_ask0,
+            hedge_leg_ts,
         })
     }
 

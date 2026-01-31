@@ -13,4 +13,22 @@ pairmm
 
 增加一个判定机制。
 1、目前的代码中，有mid-price的计算方法。
-2、修改trade signal处理hedge query msg的逻辑
+
+参考目前的xarb xarb_scripts/sync_xarb_strategy_params.py 和
+在这个基础上加一个
+max_hedge_price_pct_change:
+默认值为5，修改脚本。
+
+1、修改程序 trade signal初始化读取配置的时候，校验一下是这个参数是否存在，如果不存在就panic，且值需大于0，小于2、其他就是保持现在的动态生效逻辑。
+
+3、修改trade signal处理hedge query msg的逻辑
+增加一段优先执行的止损逻辑，根据query msg中提供的提供open signal时候的两侧盘口，计算一个open时候的midprice
+此时获取当前hedge的两侧盘口，参考现在填充到hedge signal的逻辑，计算一个当前的midprice
+计算两个midprice的差值abs / open时候的midprice，判断pct change
+如果pct change 大于 max_hedge_price_pct_change 则最终挂taker单
+pub maker_only: 写false，其他数据合理填充。
+上述判断逻辑用一行日志打印，info级别
+
+4、handle_arb_hedge_signal 检查一下，这样的情况下，可以用taker。如果发taker单要打印日志。
+5
+

@@ -5,7 +5,7 @@
 批量设置 U 本位合约杠杆（仅支持 binance / okex）。
 
 默认逻辑（推荐，适配 xarb 目录/部署）：
-  - 按照 sync_xarb_symbol_lists.py 的规则推断 key_suffix（例如 okex-binance）
+  - 按照 xarb_scripts/sync_xarb_symbol_lists.py 的规则推断 key_suffix（例如 okex-binance）
   - 从 Redis 读取:
       xarb_fwd_trade_symbols:{key_suffix}
       xarb_bwd_trade_symbols:{key_suffix}

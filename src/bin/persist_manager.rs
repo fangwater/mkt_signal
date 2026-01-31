@@ -9,17 +9,11 @@ async fn main() -> Result<()> {
     }
     env_logger::init();
 
-    let args = Args::parse();
-
-    let manager = PersistManager::new(args.port);
+    let manager = PersistManager::new();
     let local = tokio::task::LocalSet::new();
     local.run_until(manager.run()).await
 }
 
 #[derive(Parser, Debug)]
 #[command(name = "persist_manager")]
-struct Args {
-    /// HTTP 监听端口（必填；若端口被占用会直接 panic）
-    #[arg(long)]
-    port: u16,
-}
+struct Args {}

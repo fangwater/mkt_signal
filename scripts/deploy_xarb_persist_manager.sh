@@ -169,5 +169,5 @@ if ! xarb_atomic_install "$BIN_PATH" "$TARGET_DIR/$BIN_NAME"; then
 fi
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"
-echo "[INFO] 启动: cd $TARGET_DIR && ./xarb_scripts/start_xarb_persist_manager.sh --port 8088"
+echo "[INFO] 启动: cd $TARGET_DIR && ./xarb_scripts/start_xarb_persist_manager.sh"
 echo "[INFO] 停止: cd $TARGET_DIR && ./xarb_scripts/stop_xarb_persist_manager.sh"

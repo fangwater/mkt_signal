@@ -174,11 +174,6 @@ fn bundle_export_artifacts(
         "trade_updates.parquet",
     ];
 
-    let export_script = resolve_artifact(
-        exe_dir,
-        Path::new("scripts/export_symbol_data_v5.py"),
-        "export_symbol_data_v5.py",
-    )?;
     let okx_cache = resolve_artifact(
         exe_dir,
         Path::new("scripts/okx_swap_multipliers.json"),
@@ -199,8 +194,6 @@ fn bundle_export_artifacts(
             .with_context(|| format!("failed to add {}", path.display()))?;
     }
 
-    tar.append_path_with_name(&export_script, "export_symbol_data_v5.py")
-        .with_context(|| format!("failed to add {}", export_script.display()))?;
     tar.append_path_with_name(&okx_cache, "okx_swap_multipliers.json")
         .with_context(|| format!("failed to add {}", okx_cache.display()))?;
 

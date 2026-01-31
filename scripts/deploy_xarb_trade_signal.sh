@@ -191,7 +191,10 @@ if [[ "$SYNC_SCRIPTS" == "1" ]]; then
   done
 
   for tool in "${XARB_TOOLS_TO_SYNC[@]}"; do
-    if [[ -f "$SCRIPT_DIR_SRC/$tool" ]]; then
+    if [[ -f "$XARB_SCRIPT_DIR_SRC/$tool" ]]; then
+      rsync -a "$XARB_SCRIPT_DIR_SRC/$tool" "$TARGET_DIR/xarb_scripts/"
+      chmod +x "$TARGET_DIR/xarb_scripts/$tool"
+    elif [[ -f "$SCRIPT_DIR_SRC/$tool" ]]; then
       rsync -a "$SCRIPT_DIR_SRC/$tool" "$TARGET_DIR/xarb_scripts/"
       chmod +x "$TARGET_DIR/xarb_scripts/$tool"
     fi

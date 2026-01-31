@@ -18,13 +18,13 @@ scripts/deploy_fr_manual_signal.sh trade --exchange okex
 scripts/deploy_xarb_manual_signal.sh trade --open-venue okex-futures --hedge-venue binance-futures
 
 # xarb symbol lists (Redis)
-python scripts/sync_xarb_symbol_lists.py --open-venue okex-futures --hedge-venue binance-futures
-python scripts/print_xarb_symbol_lists.py --env-name okex-binance-xarb-trade
+python xarb_scripts/sync_xarb_symbol_lists.py --open-venue okex-futures --hedge-venue binance-futures
+python xarb_scripts/print_xarb_symbol_lists.py --env-name okex-binance-xarb-trade
 
 # xarb configs (Redis)
-python scripts/sync_xarb_strategy_params.py --env-name okex-binance-xarb-trade
-python scripts/sync_xarb_funding_rate_thresholds.py --env-name okex-binance-xarb-trade
-python scripts/sync_xarb_spread_thresholds.py --env-name okex-binance-xarb-trade
+python xarb_scripts/sync_xarb_strategy_params.py --env-name okex-binance-xarb-trade
+python xarb_scripts/sync_xarb_funding_rate_thresholds.py --env-name okex-binance-xarb-trade
+python xarb_scripts/sync_xarb_spread_thresholds.py --env-name okex-binance-xarb-trade
 
 
 python /home/ubuntu/crypto_mkt/mkt_signal/scripts/okx_swap_buy.py --inst-id APT-USDT-SWAP --side buy --sz 40 --reduce-only --execute
@@ -58,5 +58,5 @@ http://54.64.147.6:4191/xarb/okex-binance/
 
   前置条件
 
-  - persist_manager HTTP 已在 API_BASE 提供导出接口（同 scripts/export_all.sh 所需）
+- persist_manager 仅写入 RocksDB（HTTP/Parquet 导出已移除）
   - 运行环境有 python3、pm2（通过 npx pm2）、以及 pandas + parquet 依赖（你当前环境已满足）

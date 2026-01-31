@@ -1,6 +1,6 @@
-mod http;
 mod iceoryx;
 mod order_update;
+mod parquet;
 pub mod exporter;
 mod signal;
 mod storage;
@@ -43,12 +43,11 @@ pub fn default_tuning() -> RocksDbTuning {
 }
 
 pub struct PersistManager {
-    port: u16,
 }
 
 impl PersistManager {
-    pub fn new(port: u16) -> Self {
-        Self { port }
+    pub fn new() -> Self {
+        Self {}
     }
 
     pub async fn run(self) -> Result<()> {
@@ -82,22 +81,7 @@ impl PersistManager {
             let _ = s3.run().await;
         });
 
-        // 启动 HTTP 服务器（端口冲突要直接 panic）
-        let bind_addr = format!("0.0.0.0:{}", self.port);
-        info!("starting http server on {}", bind_addr);
-        let store_for_http = store.clone();
-
         tokio::select! {
-            res = http::serve(&bind_addr, store_for_http) => {
-                match res {
-                    Ok(()) => {
-                        panic!("persist_manager http server exited unexpectedly");
-                    }
-                    Err(err) => {
-                        panic!("persist_manager failed to start http server on {}: {:#}", bind_addr, err);
-                    }
-                }
-            }
             _ = tokio::signal::ctrl_c() => {
                 info!("persist_manager shutdown");
                 Ok(())

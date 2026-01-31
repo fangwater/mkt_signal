@@ -25,6 +25,7 @@ use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::mkt_msg::MktMsgType;
+use crate::common::bbo::Bbo;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
@@ -268,6 +269,7 @@ pub struct XarbDecision {
     hedge_timeout_mm_us: i64,
     hedge_price_offset: f64,
     hedge_aggressive_seq_threshold: u32,
+    max_hedge_price_pct_change: f64, // percent, 1~20
 
     pnlu_redis: PnluRedis,
     pnlu_key_suffix: String,
@@ -445,6 +447,7 @@ impl XarbDecision {
             hedge_timeout_mm_us: 30_000_000,
             hedge_price_offset: 0.0003,
             hedge_aggressive_seq_threshold: 6,
+            max_hedge_price_pct_change: 5.0,
             pnlu_redis,
             pnlu_key_suffix,
             signal_cooldown_us: 5_000_000,
@@ -696,6 +699,67 @@ impl XarbDecision {
         let seq_threshold = self.hedge_aggressive_seq_threshold;
         let aggressive = query.request_seq >= seq_threshold;
         let default_offset = self.hedge_price_offset.abs();
+        let open_bbo = Bbo::new(query.hedge_bid0, query.hedge_ask0, query.hedge_leg_ts);
+        let hedge_bbo = Bbo::new(hedge_quote.bid, hedge_quote.ask, hedge_quote.ts);
+        let open_mid = open_bbo.get_mid_price().unwrap_or(0.0);
+        let hedge_mid = hedge_bbo.get_mid_price().unwrap_or(0.0);
+        let mut pct_change = 0.0;
+        let mut stop_loss_triggered = false;
+        let mut stop_loss_valid = false;
+        let threshold_pct = self.max_hedge_price_pct_change;
+        let threshold_ratio = threshold_pct / 100.0;
+        if open_mid > 0.0 && hedge_mid > 0.0 {
+            pct_change = (hedge_mid - open_mid).abs() / open_mid;
+            stop_loss_valid = true;
+            stop_loss_triggered = pct_change > threshold_ratio;
+        }
+        info!(
+            "XarbDecision: hedge stop-loss check strategy_id={} open_mid={:.6} hedge_mid={:.6} pct_change={:.6} threshold_pct={:.2} trigger={} valid={}",
+            query.strategy_id,
+            open_mid,
+            hedge_mid,
+            pct_change,
+            threshold_pct,
+            stop_loss_triggered,
+            stop_loss_valid
+        );
+        if stop_loss_triggered {
+            let mut ctx = ArbHedgeCtx::new_taker(
+                query.strategy_id,
+                query.client_order_id,
+                qty,
+                side.to_u8(),
+            );
+            ctx.opening_leg =
+                TradingLeg::new(open_venue, open_quote.bid, open_quote.ask, open_quote.ts);
+            ctx.set_opening_symbol(&open_symbol);
+            ctx.hedging_leg =
+                TradingLeg::new(hedge_venue, hedge_quote.bid, hedge_quote.ask, hedge_quote.ts);
+            ctx.set_hedging_symbol(&hedge_symbol);
+            ctx.market_ts = now;
+            ctx.price_tick = price_tick;
+            ctx.price_offset = 0.0;
+            ctx.maker_only = false;
+
+            let signal = TradeSignal::create(SignalType::ArbHedge, now, 0.0, ctx.to_bytes());
+            if let Err(err) = self.signal_pub.publish(&signal.to_bytes()) {
+                warn!(
+                    "XarbDecision: 发送 stop-loss taker hedge 失败 strategy_id={} err={:?}",
+                    query.strategy_id, err
+                );
+                return;
+            }
+            info!(
+                "XarbDecision: 触发 stop-loss taker hedge strategy_id={} hedge_symbol={} qty={:.6} side={:?} pct_change={:.6} threshold_pct={:.2}",
+                query.strategy_id,
+                hedge_symbol,
+                qty,
+                side,
+                pct_change,
+                threshold_pct
+            );
+            return;
+        }
         let mut offset = default_offset;
         let mut offset_source = "config";
         let mut offset_note = String::new();
@@ -1224,6 +1288,21 @@ impl XarbDecision {
         info!(
             "XarbDecision: hedge_aggressive_seq_threshold 更新为 {}",
             threshold
+        );
+    }
+
+    pub fn update_max_hedge_price_pct_change(&mut self, pct_change: f64) {
+        if !(pct_change.is_finite() && pct_change >= 1.0 && pct_change <= 20.0) {
+            warn!(
+                "XarbDecision: max_hedge_price_pct_change 无效(需在1~20)，忽略更新 value={}",
+                pct_change
+            );
+            return;
+        }
+        self.max_hedge_price_pct_change = pct_change;
+        info!(
+            "XarbDecision: max_hedge_price_pct_change 更新为 {:.2}",
+            pct_change
         );
     }
 
