@@ -836,9 +836,8 @@ fn order_status_from_u8(value: u8) -> Option<OrderStatus> {
         1 => Some(OrderStatus::PartiallyFilled),
         2 => Some(OrderStatus::Filled),
         3 => Some(OrderStatus::Canceled),
-        4 => Some(OrderStatus::Rejected),
-        5 => Some(OrderStatus::Expired),
-        6 => Some(OrderStatus::Triggered),
+        4 => Some(OrderStatus::Expired),
+        5 => Some(OrderStatus::ExpiredInMatch),
         _ => None,
     }
 }
