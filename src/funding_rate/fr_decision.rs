@@ -1009,7 +1009,8 @@ impl FrDecision {
         signal_type: SignalType,
         side: Option<Side>,
     ) -> Result<()> {
-        let now = get_timestamp_us();
+        // Use one batch timestamp for all grid offsets in this emit call.
+        let batch_ts = get_timestamp_us();
         let mkt_channel = MktChannel::instance();
 
         // 获取盘口数据
@@ -1068,11 +1069,12 @@ impl FrDecision {
                         &spot_quote,
                         &futures_quote,
                         *offset,
-                        now,
+                        batch_ts,
                         side,
                     );
 
-                    let signal = TradeSignal::create(signal_type.clone(), now, 0.0, ctx.to_bytes());
+                    let signal =
+                        TradeSignal::create(signal_type.clone(), batch_ts, 0.0, ctx.to_bytes());
                     self.signal_pub.publish(&signal.to_bytes())?;
                 }
 
@@ -1095,11 +1097,11 @@ impl FrDecision {
                     futures_venue,
                     &spot_quote,
                     &futures_quote,
-                    now,
+                    batch_ts,
                 );
 
                 let context = ctx.to_bytes();
-                let signal = TradeSignal::create(signal_type.clone(), now, 0.0, context);
+                let signal = TradeSignal::create(signal_type.clone(), batch_ts, 0.0, context);
                 let signal_bytes = signal.to_bytes();
                 self.signal_pub.publish(&signal_bytes)?;
             }

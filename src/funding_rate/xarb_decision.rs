@@ -863,7 +863,8 @@ impl XarbDecision {
                 Some(quotes) => quotes,
                 None => return Ok(()),
             };
-        let now = get_timestamp_us();
+        // Use one batch timestamp for all grid offsets in this emit call.
+        let batch_ts = get_timestamp_us();
 
         for offset in &self.price_offsets {
             let ctx = self.build_open_context(
@@ -874,11 +875,12 @@ impl XarbDecision {
                 &open_quote,
                 &hedge_quote,
                 *offset,
-                now,
+                batch_ts,
                 side,
             );
 
-            let signal = TradeSignal::create(SignalType::ArbOpen, now, 0.0, ctx.to_bytes());
+            let signal =
+                TradeSignal::create(SignalType::ArbOpen, batch_ts, 0.0, ctx.to_bytes());
             self.signal_pub.publish(&signal.to_bytes())?;
         }
 
@@ -906,7 +908,7 @@ impl XarbDecision {
                 Some(quotes) => quotes,
                 None => return Ok(()),
             };
-        let now = get_timestamp_us();
+        let batch_ts = get_timestamp_us();
 
         let ctx = self.build_cancel_context(
             open_symbol,
@@ -915,10 +917,10 @@ impl XarbDecision {
             hedge_venue,
             &open_quote,
             &hedge_quote,
-            now,
+            batch_ts,
         );
 
-        let signal = TradeSignal::create(SignalType::ArbCancel, now, 0.0, ctx.to_bytes());
+        let signal = TradeSignal::create(SignalType::ArbCancel, batch_ts, 0.0, ctx.to_bytes());
         self.signal_pub.publish(&signal.to_bytes())?;
         Ok(())
     }
