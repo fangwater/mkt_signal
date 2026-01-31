@@ -1,6 +1,6 @@
 ---
 name: binance-fr-deploy
-description: Interactive deployment workflow for binance fr environments (config/viz/pre_trade/etc.) with per-command confirmation.
+description: Interactive deployment workflow for binance fr environments (config/viz/pre_trade/etc.) with per-command confirmation; includes required env.sh setup (IPC_NAMESPACE, BINANCE_ACCOUNT_MODE, BINANCE_API_KEY/SECRET) before any deploy/start.
 metadata:
   short-description: Deploy binance fr with per-command confirmation
 ---
@@ -18,6 +18,7 @@ Goal: guide the full deploy sequence and **confirm before every shell command**.
 - **One command at a time**: Do not chain commands with `&&` or `;`.
 - **Manual steps**: For web UI steps (risk params), ask for confirmation before continuing.
 - **Env name** must match `binance_fr_<suffix>` and should be lowercase.
+- **Env setup first**: `env.sh` must be created and configured before any deploy/start. Require IPC namespace, account mode, and API credentials.
 
 ## Port rules (binance)
 
@@ -34,6 +35,18 @@ General rule for hfNN (NN as 2-digit number):
 If any port conflicts or the user provides a different mapping, stop and ask.
 
 ## Deployment flow (commands must be confirmed)
+
+0) **env.sh (required, before everything else)**
+   - Create `~/\<env>/env.sh` manually (do not run any script for this).
+   - Must include:
+     - `export IPC_NAMESPACE='<env>'` (exactly the env name, e.g. `binance_fr_hf02`)
+     - `export BINANCE_ACCOUNT_MODE='STANDARD'| 'UNIFIED'` (must be set)
+     - `export BINANCE_API_KEY='...'`
+     - `export BINANCE_API_SECRET='...'`
+   - Make sure it is readable and sourceable:
+     - `cd ~/<env>`
+     - `source ./env.sh`
+   - Do not proceed until the user confirms `env.sh` is ready and sourced.
 
 1) **Config server**
    - Deploy:
@@ -72,6 +85,7 @@ If any port conflicts or the user provides a different mapping, stop and ask.
      - `bash scripts/deploy_fr_persist_manager.sh --exchange binance --env-name <env>`
    - Start:
      - `cd ~/<env>`
+     - `source ./env.sh`
      - `./scripts/start_fr_persist_manager.sh --port <persist_port>`
 
 6) **manual_signal**
@@ -79,6 +93,7 @@ If any port conflicts or the user provides a different mapping, stop and ask.
      - `bash scripts/deploy_fr_manual_signal.sh --exchange binance --env-name <env> --port <manual_port> --apply-nginx`
    - Start:
      - `cd ~/<env>`
+     - `source ./env.sh`
      - `./scripts/start_fr_manual_signal.sh --port <manual_port>`
 
 7) **pre_trade**
@@ -86,6 +101,7 @@ If any port conflicts or the user provides a different mapping, stop and ask.
      - `bash scripts/deploy_fr_pre_trade.sh --exchange binance --env-name <env>`
    - Start:
      - `cd ~/<env>`
+     - `source ./env.sh`
      - `./scripts/start_fr_pre_trade.sh`
 
 8) **trade_signal (deploy only)**
@@ -93,6 +109,7 @@ If any port conflicts or the user provides a different mapping, stop and ask.
      - `bash scripts/deploy_fr_signal.sh --exchange binance --env-name <env>`
    - Start (if requested):
      - `cd ~/<env>`
+     - `source ./env.sh`
      - `./scripts/start_trade_signal.sh`
 
 ## Inputs to collect before running
@@ -100,5 +117,7 @@ If any port conflicts or the user provides a different mapping, stop and ask.
 - Target env name (e.g. `binance_fr_hf02`)
 - Target host for config UI (for user to open)
 - Confirmed ports (computed from rules or provided by user)
+- Confirmed BINANCE_ACCOUNT_MODE (STANDARD or UNIFIED)
+- Confirmed BINANCE_API_KEY / BINANCE_API_SECRET are set in env.sh
 
 If any input is missing, ask before proceeding.
