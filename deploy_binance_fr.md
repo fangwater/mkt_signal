@@ -1,14 +1,15 @@
-# 部署 binance_fr_trade + binance_fr_hf01
+# 部署 binance_fr_trade + binance_fr_hf01 + binance_fr_hf02
 
 本文记录两套环境的部署步骤：
 - `binance_fr_trade`
 - `binance_fr_hf01`
+- `binance_fr_hf02`
 
 默认端口示例：
-- viz server: `10031` / `10041`
-- config server: `18031` / `18041`
-- persist_manager: `19131` / `19141`
-- manual_signal: `8931` / `8932`
+- viz server: `10031` / `10041` / `10042`
+- config server: `18031` / `18041` / `18042`
+- persist_manager: `19131` / `19141` / `19142`
+- manual_signal: `8931` / `8932` / `8933`
 
 ---
 
@@ -77,6 +78,36 @@ cd ~/binance_fr_hf01
 
 ---
 
+### 1.3 binance_fr_hf02
+
+```bash
+cd ~/crypto_mkt/mkt_signal
+
+bash scripts/deploy_fr_config_server.sh \
+  --env-name binance_fr_hf02 \
+  --exchange binance \
+  --port 18042 \
+  --apply-nginx
+
+cd ~/binance_fr_hf02
+./scripts/start_fr_config_server.sh
+```
+
+打开配置页：
+```
+http://<host>:4191/fr/binance_fr_hf02/config/
+```
+
+在页面中填写并保存 **Risk Params**（open/hedge = `binance-margin` / `binance-futures`）。
+
+可选确认：
+```bash
+cd ~/binance_fr_hf02
+./scripts/print_fr_risk_params.py --open-venue binance-margin --hedge-venue binance-futures
+```
+
+---
+
 ## 步骤 2：部署 account_monitor 和 trade_engine
 
 ### 2.1 account_monitor
@@ -91,6 +122,10 @@ bash scripts/deploy_account_monitor.sh \
 bash scripts/deploy_account_monitor.sh \
   --exchange binance \
   --env-name binance_fr_hf01
+
+bash scripts/deploy_account_monitor.sh \
+  --exchange binance \
+  --env-name binance_fr_hf02
 ```
 
 启动：
@@ -99,6 +134,9 @@ cd ~/binance_fr_trade
 ./scripts/start_account_monitor.sh
 
 cd ~/binance_fr_hf01
+./scripts/start_account_monitor.sh
+
+cd ~/binance_fr_hf02
 ./scripts/start_account_monitor.sh
 ```
 
@@ -116,6 +154,10 @@ bash scripts/deploy_fr_trade_engine.sh \
 bash scripts/deploy_fr_trade_engine.sh \
   --exchange binance \
   --env-name binance_fr_hf01
+
+bash scripts/deploy_fr_trade_engine.sh \
+  --exchange binance \
+  --env-name binance_fr_hf02
 ```
 
 启动：
@@ -124,6 +166,9 @@ cd ~/binance_fr_trade
 ./scripts/start_trade_engine.sh
 
 cd ~/binance_fr_hf01
+./scripts/start_trade_engine.sh
+
+cd ~/binance_fr_hf02
 ./scripts/start_trade_engine.sh
 ```
 
@@ -147,6 +192,12 @@ bash scripts/deploy_fr_viz_server.sh \
   --exchange binance \
   --port 10041 \
   --apply-nginx
+
+bash scripts/deploy_fr_viz_server.sh \
+  --env-name binance_fr_hf02 \
+  --exchange binance \
+  --port 10042 \
+  --apply-nginx
 ```
 
 ### 3.2 启动
@@ -156,6 +207,9 @@ cd ~/binance_fr_trade
 ./scripts/start_fr_viz_server.sh
 
 cd ~/binance_fr_hf01
+./scripts/start_fr_viz_server.sh
+
+cd ~/binance_fr_hf02
 ./scripts/start_fr_viz_server.sh
 ```
 
@@ -177,6 +231,10 @@ bash scripts/deploy_fr_persist_manager.sh \
 bash scripts/deploy_fr_persist_manager.sh \
   --exchange binance \
   --env-name binance_fr_hf01
+
+bash scripts/deploy_fr_persist_manager.sh \
+  --exchange binance \
+  --env-name binance_fr_hf02
 ```
 
 ### 4.2 启动（示例端口）
@@ -187,6 +245,9 @@ cd ~/binance_fr_trade
 
 cd ~/binance_fr_hf01
 ./scripts/start_fr_persist_manager.sh --port 19141
+
+cd ~/binance_fr_hf02
+./scripts/start_fr_persist_manager.sh --port 19142
 ```
 
 ---
@@ -210,6 +271,12 @@ bash scripts/deploy_fr_manual_signal.sh \
   --env-name binance_fr_hf01 \
   --port 8932 \
   --apply-nginx
+
+bash scripts/deploy_fr_manual_signal.sh \
+  --exchange binance \
+  --env-name binance_fr_hf02 \
+  --port 8933 \
+  --apply-nginx
 ```
 
 ### 5.2 启动
@@ -220,6 +287,9 @@ cd ~/binance_fr_trade
 
 cd ~/binance_fr_hf01
 ./scripts/start_fr_manual_signal.sh --port 8932
+
+cd ~/binance_fr_hf02
+./scripts/start_fr_manual_signal.sh --port 8933
 ```
 
 ---
@@ -240,6 +310,10 @@ bash scripts/deploy_fr_pre_trade.sh \
 bash scripts/deploy_fr_pre_trade.sh \
   --exchange binance \
   --env-name binance_fr_hf01
+
+bash scripts/deploy_fr_pre_trade.sh \
+  --exchange binance \
+  --env-name binance_fr_hf02
 ```
 
 ### 6.2 启动（如需）
@@ -249,6 +323,9 @@ cd ~/binance_fr_trade
 ./scripts/start_fr_pre_trade.sh
 
 cd ~/binance_fr_hf01
+./scripts/start_fr_pre_trade.sh
+
+cd ~/binance_fr_hf02
 ./scripts/start_fr_pre_trade.sh
 ```
 
@@ -266,8 +343,13 @@ bash scripts/deploy_fr_signal.sh \
 bash scripts/deploy_fr_signal.sh \
   --exchange binance \
   --env-name binance_fr_hf01
+
+bash scripts/deploy_fr_signal.sh \
+  --exchange binance \
+  --env-name binance_fr_hf02
 ```
 
 > 如需后续启动：
 > `cd ~/binance_fr_trade && ./scripts/start_trade_signal.sh`
 > `cd ~/binance_fr_hf01 && ./scripts/start_trade_signal.sh`
+> `cd ~/binance_fr_hf02 && ./scripts/start_trade_signal.sh`
