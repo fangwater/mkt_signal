@@ -1,6 +1,6 @@
 ---
 name: binance-fr-deploy
-description: Interactive deployment workflow for binance fr environments (config/viz/pre_trade/etc.) with per-command confirmation; includes required env.sh setup (IPC_NAMESPACE, BINANCE_ACCOUNT_MODE, BINANCE_API_KEY/SECRET) before any deploy/start.
+description: Interactive deployment workflow for binance fr environments (config/viz/pre_trade/etc.) with per-command confirmation; includes required env.sh setup (IPC_NAMESPACE from env folder name, BINANCE_ACCOUNT_MODE=UNIFIED, BINANCE_API_KEY/SECRET) before any deploy/start.
 metadata:
   short-description: Deploy binance fr with per-command confirmation
 ---
@@ -19,6 +19,8 @@ Goal: guide the full deploy sequence and **confirm before every shell command**.
 - **Manual steps**: For web UI steps (risk params), ask for confirmation before continuing.
 - **Env name** must match `binance_fr_<suffix>` and should be lowercase.
 - **Env setup first**: `env.sh` must be created and configured before any deploy/start. Require IPC namespace, account mode, and API credentials.
+- **IPC_NAMESPACE rule**: must equal the env folder name (e.g. `~/binance_fr_hf02` => `IPC_NAMESPACE=binance_fr_hf02`).
+- **Account mode rule**: set `BINANCE_ACCOUNT_MODE=UNIFIED` unless the user explicitly asks for STANDARD.
 
 ## Port rules (binance)
 
@@ -39,10 +41,13 @@ If any port conflicts or the user provides a different mapping, stop and ask.
 0) **env.sh (required, before everything else)**
    - Create `~/\<env>/env.sh` manually (do not run any script for this).
    - Must include:
-     - `export IPC_NAMESPACE='<env>'` (exactly the env name, e.g. `binance_fr_hf02`)
-     - `export BINANCE_ACCOUNT_MODE='STANDARD'| 'UNIFIED'` (must be set)
+     - `export IPC_NAMESPACE='<env>'` (exactly the env folder name, e.g. `binance_fr_hf02`)
+     - `export BINANCE_ACCOUNT_MODE='UNIFIED'` (fixed default; change only if user explicitly requests STANDARD)
      - `export BINANCE_API_KEY='...'`
      - `export BINANCE_API_SECRET='...'`
+   - **Allow interactive input for API/secret** (if user wants):
+     - Prompt for key/secret in shell, then write `env.sh` from those variables.
+     - Keep commands one-at-a-time (no `&&` / `;`), and confirm each command before running.
    - Make sure it is readable and sourceable:
      - `cd ~/<env>`
      - `source ./env.sh`
@@ -117,7 +122,7 @@ If any port conflicts or the user provides a different mapping, stop and ask.
 - Target env name (e.g. `binance_fr_hf02`)
 - Target host for config UI (for user to open)
 - Confirmed ports (computed from rules or provided by user)
-- Confirmed BINANCE_ACCOUNT_MODE (STANDARD or UNIFIED)
-- Confirmed BINANCE_API_KEY / BINANCE_API_SECRET are set in env.sh
+- Confirmed BINANCE_ACCOUNT_MODE (defaults to UNIFIED; STANDARD only if explicitly requested)
+- Confirmed BINANCE_API_KEY / BINANCE_API_SECRET are set in env.sh (manual or interactive)
 
 If any input is missing, ask before proceeding.
