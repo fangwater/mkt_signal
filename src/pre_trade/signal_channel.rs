@@ -2,10 +2,11 @@ use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::Side;
-use crate::signal::cancel_signal::ArbCancelCtx;
+use crate::signal::cancel_signal::{ArbCancelCtx, MmCancelCtx};
 use crate::signal::common::{SignalBytes, TradingVenue};
-use crate::signal::hedge_signal::ArbHedgeCtx;
+use crate::signal::hedge_signal::{ArbHedgeCtx, MmHedgeCtx};
 use crate::signal::open_signal::ArbOpenCtx;
+use crate::signal::open_signal::MmOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::hedge_arb_strategy::HedgeArbStrategy;
 use crate::strategy::{ForceCloseControl, Strategy, StrategyManager};
@@ -550,6 +551,45 @@ fn handle_trade_signal(signal: TradeSignal) {
                 drop(strategy_mgr);
             }
             Err(err) => warn!("failed to decode hedge context: {err}"),
+        },
+        SignalType::MMOpen => match MmOpenCtx::from_bytes(signal.context.clone()) {
+            Ok(open_ctx) => {
+                let opening_symbol = open_ctx.get_opening_symbol();
+                let hedging_symbol = open_ctx.get_hedging_symbol();
+                info!(
+                    "MMOpen: received opening={} hedging={} amount={:.4} price={:.6}",
+                    opening_symbol, hedging_symbol, open_ctx.amount, open_ctx.price
+                );
+            }
+            Err(err) => warn!("failed to decode MMOpen context: {err}"),
+        },
+        SignalType::MMCancel => match MmCancelCtx::from_bytes(signal.context.clone()) {
+            Ok(cancel_ctx) => {
+                let opening_symbol = cancel_ctx.get_opening_symbol();
+                let hedging_symbol = cancel_ctx.get_hedging_symbol();
+                info!(
+                    "MMCancel: received opening={} hedging={} trigger_ts={} from_key_len={}",
+                    opening_symbol,
+                    hedging_symbol,
+                    cancel_ctx.trigger_ts,
+                    cancel_ctx.from_key_len
+                );
+            }
+            Err(err) => warn!("failed to decode MMCancel context: {err}"),
+        },
+        SignalType::MMHedge => match MmHedgeCtx::from_bytes(signal.context.clone()) {
+            Ok(hedge_ctx) => {
+                let opening_symbol = hedge_ctx.get_opening_symbol();
+                let hedging_symbol = hedge_ctx.get_hedging_symbol();
+                info!(
+                    "MMHedge: received opening={} hedging={} trigger_ts={} from_key_len={}",
+                    opening_symbol,
+                    hedging_symbol,
+                    hedge_ctx.trigger_ts,
+                    hedge_ctx.from_key_len
+                );
+            }
+            Err(err) => warn!("failed to decode MMHedge context: {err}"),
         },
     }
 }

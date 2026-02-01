@@ -19,9 +19,20 @@ pub(crate) const CF_ARB_OPEN: &str = "signals_arb_open";
 pub(crate) const CF_ARB_HEDGE: &str = "signals_arb_hedge";
 pub(crate) const CF_ARB_CANCEL: &str = "signals_arb_cancel";
 pub(crate) const CF_ARB_CLOSE: &str = "signals_arb_close";
+pub(crate) const CF_MM_OPEN: &str = "signals_mm_open";
+pub(crate) const CF_MM_CANCEL: &str = "signals_mm_cancel";
+pub(crate) const CF_MM_HEDGE: &str = "signals_mm_hedge";
 
 pub fn required_column_families() -> &'static [&'static str] {
-    &[CF_ARB_OPEN, CF_ARB_HEDGE, CF_ARB_CANCEL, CF_ARB_CLOSE]
+    &[
+        CF_ARB_OPEN,
+        CF_ARB_HEDGE,
+        CF_ARB_CANCEL,
+        CF_ARB_CLOSE,
+        CF_MM_OPEN,
+        CF_MM_CANCEL,
+        CF_MM_HEDGE,
+    ]
 }
 
 pub struct SignalPersistor {
@@ -88,5 +99,8 @@ fn column_family_for_signal(signal_type: &SignalType) -> Option<&'static str> {
         SignalType::ArbHedge => Some(CF_ARB_HEDGE),
         SignalType::ArbCancel => Some(CF_ARB_CANCEL),
         SignalType::ArbClose => Some(CF_ARB_CLOSE),
+        SignalType::MMOpen => Some(CF_MM_OPEN),
+        SignalType::MMCancel => Some(CF_MM_CANCEL),
+        SignalType::MMHedge => Some(CF_MM_HEDGE),
     }
 }

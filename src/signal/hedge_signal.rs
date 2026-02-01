@@ -56,6 +56,31 @@ pub struct ArbHedgeCtx {
     pub price_offset: f64,
 }
 
+/// Market maker hedge signal context (same layout as MmCancelCtx)
+#[derive(Debug, Clone)]
+pub struct MmHedgeCtx {
+    /// Opening leg
+    pub opening_leg: TradingLeg,
+
+    /// Opening leg symbol
+    pub opening_symbol: [u8; 32],
+
+    /// Hedging leg
+    pub hedging_leg: TradingLeg,
+
+    /// Hedging leg symbol
+    pub hedging_symbol: [u8; 32],
+
+    /// Trigger timestamp
+    pub trigger_ts: i64,
+
+    /// From key length
+    pub from_key_len: u32,
+
+    /// From key bytes
+    pub from_key: Vec<u8>,
+}
+
 impl ArbHedgeCtx {
     /// Create new hedge context
     pub fn new() -> Self {
@@ -220,6 +245,71 @@ impl ArbHedgeCtx {
                 self.hedging_leg.bid0
             }
         }
+    }
+}
+
+impl MmHedgeCtx {
+    /// Create new market maker hedge context
+    pub fn new() -> Self {
+        Self {
+            opening_leg: TradingLeg {
+                venue: 0,
+                bid0: 0.0,
+                ask0: 0.0,
+                ts: 0,
+            },
+            opening_symbol: [0u8; 32],
+            hedging_leg: TradingLeg {
+                venue: 0,
+                bid0: 0.0,
+                ask0: 0.0,
+                ts: 0,
+            },
+            hedging_symbol: [0u8; 32],
+            trigger_ts: 0,
+            from_key_len: 0,
+            from_key: Vec::new(),
+        }
+    }
+
+    /// Set opening leg symbol
+    pub fn set_opening_symbol(&mut self, symbol: &str) {
+        let bytes = symbol.as_bytes();
+        let len = bytes.len().min(32);
+        self.opening_symbol[..len].copy_from_slice(&bytes[..len]);
+    }
+
+    /// Get opening leg symbol
+    pub fn get_opening_symbol(&self) -> String {
+        let end = self
+            .opening_symbol
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(32);
+        String::from_utf8_lossy(&self.opening_symbol[..end]).to_string()
+    }
+
+    /// Set hedging leg symbol
+    pub fn set_hedging_symbol(&mut self, symbol: &str) {
+        let bytes = symbol.as_bytes();
+        let len = bytes.len().min(32);
+        self.hedging_symbol[..len].copy_from_slice(&bytes[..len]);
+    }
+
+    /// Get hedging leg symbol
+    pub fn get_hedging_symbol(&self) -> String {
+        let end = self
+            .hedging_symbol
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(32);
+        String::from_utf8_lossy(&self.hedging_symbol[..end]).to_string()
+    }
+
+    /// Set from key bytes (updates length)
+    pub fn set_from_key(&mut self, from_key: Vec<u8>) {
+        self.from_key_len = from_key.len() as u32;
+        self.from_key = from_key;
     }
 }
 
@@ -428,6 +518,96 @@ impl SignalBytes for ArbHedgeCtx {
             Some((with_ts, extra_fields)) => parse(bytes, with_ts, Some(extra_fields)),
             None => parse(bytes.clone(), true, None).or_else(|_| parse(bytes, false, None)),
         }
+    }
+}
+
+impl SignalBytes for MmHedgeCtx {
+    fn to_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::new();
+
+        // Opening leg
+        buf.put_u8(self.opening_leg.venue);
+        buf.put_f64_le(self.opening_leg.bid0);
+        buf.put_f64_le(self.opening_leg.ask0);
+        buf.put_i64_le(self.opening_leg.ts);
+        bytes_helper::write_fixed_bytes(&mut buf, &self.opening_symbol);
+
+        // Hedging leg
+        buf.put_u8(self.hedging_leg.venue);
+        buf.put_f64_le(self.hedging_leg.bid0);
+        buf.put_f64_le(self.hedging_leg.ask0);
+        buf.put_i64_le(self.hedging_leg.ts);
+        bytes_helper::write_fixed_bytes(&mut buf, &self.hedging_symbol);
+
+        // Trigger timestamp
+        buf.put_i64_le(self.trigger_ts);
+
+        let from_key_len = self.from_key.len() as u32;
+        buf.put_u32_le(from_key_len);
+        buf.put_slice(&self.from_key);
+
+        buf.freeze()
+    }
+
+    fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
+        // Opening leg
+        if bytes.remaining() < 1 + 8 + 8 + 8 {
+            return Err("Not enough bytes for opening leg".to_string());
+        }
+        let opening_venue = bytes.get_u8();
+        let opening_bid0 = bytes.get_f64_le();
+        let opening_ask0 = bytes.get_f64_le();
+        let opening_ts = bytes.get_i64_le();
+        let opening_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
+
+        // Hedging leg
+        if bytes.remaining() < 1 + 8 + 8 + 8 {
+            return Err("Not enough bytes for hedging leg".to_string());
+        }
+        let hedging_venue = bytes.get_u8();
+        let hedging_bid0 = bytes.get_f64_le();
+        let hedging_ask0 = bytes.get_f64_le();
+        let hedging_ts = bytes.get_i64_le();
+        let hedging_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
+
+        if bytes.remaining() < 8 + 4 {
+            return Err("Not enough bytes for trigger timestamp".to_string());
+        }
+        let trigger_ts = bytes.get_i64_le();
+        let from_key_len = bytes.get_u32_le() as usize;
+
+        if bytes.remaining() < from_key_len {
+            return Err(format!(
+                "Not enough bytes for from_key: need {}, have {}",
+                from_key_len,
+                bytes.remaining()
+            ));
+        }
+        let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
+
+        if bytes.remaining() != 0 {
+            return Err("Unexpected trailing bytes for MmHedgeCtx".to_string());
+        }
+
+        Ok(MmHedgeCtx {
+            opening_leg: TradingLeg {
+                venue: opening_venue,
+                bid0: opening_bid0,
+                ask0: opening_ask0,
+                ts: opening_ts,
+            },
+            opening_symbol,
+            hedging_leg: TradingLeg {
+                venue: hedging_venue,
+                bid0: hedging_bid0,
+                ask0: hedging_ask0,
+                ts: hedging_ts,
+            },
+            hedging_symbol,
+            trigger_ts,
+            from_key_len: from_key_len as u32,
+            from_key,
+        })
     }
 }
 
