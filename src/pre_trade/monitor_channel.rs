@@ -584,6 +584,9 @@ impl MonitorChannel {
     /// 基于 open/hedge 两腿的基础管理器计算敞口与总量指标
     fn compute_basic_state(inner: &MonitorChannelInner) -> BasicState {
         let price_snap = inner.price_table.borrow().snapshot();
+        // MM 模式下 open_venue == hedge_venue 时，两条腿实际指向同一账户数据，
+        // 若同时统计会造成敞口翻倍；此时仅以 open 单边为准。
+        let same_venue = inner.open_venue == inner.hedge_venue;
 
         fn collect_leg_entries(leg: &LegMgr) -> Vec<BasicExposureEntry> {
             match leg {
@@ -614,7 +617,11 @@ impl MonitorChannel {
         }
 
         let open_entries = collect_leg_entries(&inner.open_leg);
-        let hedge_entries = collect_leg_entries(&inner.hedge_leg);
+        let hedge_entries = if same_venue {
+            Vec::new()
+        } else {
+            collect_leg_entries(&inner.hedge_leg)
+        };
 
         let price_mapper = create_symbol_mapper(Exchange::Binance);
         let mark_price_usdt = |asset: &str| -> f64 {
@@ -650,7 +657,10 @@ impl MonitorChannel {
         // - USDT：按交易所维度单独维护（余额/负债/利息），无论 open/hedge 是否为 futures
         // - 不包含合约未实现盈亏（UPL）
         let mut total_equity_usdt: f64 = 0.0;
-        for leg in [&inner.open_leg, &inner.hedge_leg] {
+        for (idx, leg) in [&inner.open_leg, &inner.hedge_leg].iter().enumerate() {
+            if same_venue && idx == 1 {
+                continue;
+            }
             if let LegMgr::Margin { exchange, bal } = leg {
                 let mgr = bal.borrow();
                 let mgr_ref: &BasicBalanceManager = &*mgr;
@@ -674,7 +684,10 @@ impl MonitorChannel {
         }
 
         let mut total_um_unrealized_usdt = 0.0;
-        for leg in [&inner.open_leg, &inner.hedge_leg] {
+        for (idx, leg) in [&inner.open_leg, &inner.hedge_leg].iter().enumerate() {
+            if same_venue && idx == 1 {
+                continue;
+            }
             if let LegMgr::Futures { um, .. } = leg {
                 total_um_unrealized_usdt += um.borrow().total_unrealized_pnl_usdt();
             }

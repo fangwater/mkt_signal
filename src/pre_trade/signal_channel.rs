@@ -1,14 +1,14 @@
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::pre_trade::order_manager::Side;
+use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::signal::cancel_signal::{ArbCancelCtx, MmCancelCtx};
 use crate::signal::common::{SignalBytes, TradingVenue};
 use crate::signal::hedge_signal::{ArbHedgeCtx, MmHedgeCtx};
-use crate::signal::open_signal::ArbOpenCtx;
-use crate::signal::open_signal::MmOpenCtx;
+use crate::signal::open_signal::{ArbOpenCtx, MmOpenCtx};
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::hedge_arb_strategy::HedgeArbStrategy;
+use crate::strategy::mm_open_strategy::MarketMakerOpenStrategy;
 use crate::strategy::{ForceCloseControl, Strategy, StrategyManager};
 use anyhow::Result;
 use bytes::Bytes;
@@ -240,6 +240,10 @@ fn handle_trade_signal(signal: TradeSignal) {
         SignalType::ArbOpen => match ArbOpenCtx::from_bytes(signal.context.clone()) {
             Ok(open_ctx) => {
                 let symbol = open_ctx.get_opening_symbol().to_uppercase();
+                if symbol.is_empty() {
+                    warn!("ArbOpen: empty symbol");
+                    return;
+                }
                 let hedging_symbol = open_ctx.get_hedging_symbol();
                 let side = open_ctx.get_side();
                 let opening_venue = TradingVenue::from_u8(open_ctx.opening_leg.venue)
@@ -552,39 +556,102 @@ fn handle_trade_signal(signal: TradeSignal) {
             }
             Err(err) => warn!("failed to decode hedge context: {err}"),
         },
-        SignalType::MMOpen => match MmOpenCtx::from_bytes(signal.context.clone()) {
-            Ok(open_ctx) => {
-                let opening_symbol = open_ctx.get_opening_symbol();
-                let hedging_symbol = open_ctx.get_hedging_symbol();
-                info!(
-                    "MMOpen: received opening={} hedging={} amount={:.4} price={:.6}",
-                    opening_symbol, hedging_symbol, open_ctx.amount, open_ctx.price
-                );
+        SignalType::MMOpen => {
+            let Ok(open_ctx) = MmOpenCtx::from_bytes(signal.context.clone()) else {
+                warn!("failed to decode MMOpen context");
+                return;
+            };
+            let symbol = open_ctx.get_opening_symbol().to_uppercase();
+            if symbol.is_empty() {
+                warn!("MMOpen: empty symbol");
+                return;
             }
-            Err(err) => warn!("failed to decode MMOpen context: {err}"),
-        },
+            if let Some(order_type) = OrderType::from_u8(open_ctx.order_type) {
+                if order_type.is_limit() {
+                    if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol)
+                    {
+                        warn!("MMOpen: {} 限价挂单数量超限: {}", symbol, e);
+                        return;
+                    }
+                }
+            } else {
+                warn!("MMOpen: invalid order_type {}", open_ctx.order_type);
+                return;
+            }
+
+            let strategy_id = StrategyManager::generate_strategy_id();
+            let mut strategy = MarketMakerOpenStrategy::new(strategy_id);
+            strategy.handle_signal_with_record(&signal);
+            if strategy.is_active() {
+                info!("✅ MMOpen: strategy_id={} 已创建并激活", strategy_id);
+                MonitorChannel::instance()
+                    .strategy_mgr()
+                    .borrow_mut()
+                    .insert(Box::new(strategy));
+            } else {
+                warn!("⚠️ MMOpen: strategy_id={} 未激活", strategy_id);
+            }
+        }
         SignalType::MMCancel => match MmCancelCtx::from_bytes(signal.context.clone()) {
             Ok(cancel_ctx) => {
-                let opening_symbol = cancel_ctx.get_opening_symbol();
-                let hedging_symbol = cancel_ctx.get_hedging_symbol();
+                let symbol = cancel_ctx.get_opening_symbol().to_uppercase();
+                let opening_venue = TradingVenue::from_u8(cancel_ctx.opening_leg.venue)
+                    .unwrap_or(TradingVenue::BinanceMargin);
+
+                let configured_open_venue = MonitorChannel::instance().open_venue();
+                if opening_venue != configured_open_venue {
+                    warn!(
+                        "MMCancel: signal venue mismatch, configured_open={:?} but got {:?}, ignore",
+                        configured_open_venue, opening_venue
+                    );
+                    return;
+                }
+
+                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                let candidate_ids: Vec<i32> = {
+                    strategy_mgr
+                        .borrow()
+                        .ids_for_symbol(&symbol)
+                        .map(|set| set.iter().copied().collect())
+                        .unwrap_or_default()
+                };
+
+                if candidate_ids.is_empty() {
+                    return;
+                }
                 info!(
-                    "MMCancel: received opening={} hedging={} trigger_ts={} from_key_len={}",
-                    opening_symbol,
-                    hedging_symbol,
-                    cancel_ctx.trigger_ts,
-                    cancel_ctx.from_key_len
+                    "MMCancel: 找到 {} 个活跃策略 {:?}, symbol={} {:?}",
+                    candidate_ids.len(),
+                    candidate_ids,
+                    symbol,
+                    opening_venue
                 );
+                for strategy_id in candidate_ids {
+                    let exists = { strategy_mgr.borrow().contains(strategy_id) };
+                    if !exists {
+                        continue;
+                    }
+                    let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
+                    if let Some(mut strategy) = strategy_opt {
+                        info!("MMCancel: 处理策略 id={}", strategy_id);
+                        strategy.handle_signal_with_record(&signal);
+                        if strategy.is_active() {
+                            strategy_mgr.borrow_mut().insert(strategy);
+                        } else {
+                            info!("MMCancel: 策略 id={} 已不活跃，不再放回", strategy_id);
+                        }
+                    }
+                }
+                drop(strategy_mgr);
             }
             Err(err) => warn!("failed to decode MMCancel context: {err}"),
         },
         SignalType::MMHedge => match MmHedgeCtx::from_bytes(signal.context.clone()) {
             Ok(hedge_ctx) => {
-                let opening_symbol = hedge_ctx.get_opening_symbol();
-                let hedging_symbol = hedge_ctx.get_hedging_symbol();
+                let symbol = hedge_ctx.get_opening_symbol();
                 info!(
-                    "MMHedge: received opening={} hedging={} trigger_ts={} from_key_len={}",
-                    opening_symbol,
-                    hedging_symbol,
+                    "MMHedge: received symbol={} trigger_ts={} from_key_len={}",
+                    symbol,
                     hedge_ctx.trigger_ts,
                     hedge_ctx.from_key_len
                 );

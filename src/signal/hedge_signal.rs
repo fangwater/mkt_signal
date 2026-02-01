@@ -56,20 +56,14 @@ pub struct ArbHedgeCtx {
     pub price_offset: f64,
 }
 
-/// Market maker hedge signal context (same layout as MmCancelCtx)
+/// Market maker hedge signal context (same layout as MmCancelCtx, single leg)
 #[derive(Debug, Clone)]
 pub struct MmHedgeCtx {
-    /// Opening leg
+    /// Single leg (MM only has one leg)
     pub opening_leg: TradingLeg,
 
-    /// Opening leg symbol
+    /// Leg symbol
     pub opening_symbol: [u8; 32],
-
-    /// Hedging leg
-    pub hedging_leg: TradingLeg,
-
-    /// Hedging leg symbol
-    pub hedging_symbol: [u8; 32],
 
     /// Trigger timestamp
     pub trigger_ts: i64,
@@ -259,13 +253,6 @@ impl MmHedgeCtx {
                 ts: 0,
             },
             opening_symbol: [0u8; 32],
-            hedging_leg: TradingLeg {
-                venue: 0,
-                bid0: 0.0,
-                ask0: 0.0,
-                ts: 0,
-            },
-            hedging_symbol: [0u8; 32],
             trigger_ts: 0,
             from_key_len: 0,
             from_key: Vec::new(),
@@ -287,23 +274,6 @@ impl MmHedgeCtx {
             .position(|&b| b == 0)
             .unwrap_or(32);
         String::from_utf8_lossy(&self.opening_symbol[..end]).to_string()
-    }
-
-    /// Set hedging leg symbol
-    pub fn set_hedging_symbol(&mut self, symbol: &str) {
-        let bytes = symbol.as_bytes();
-        let len = bytes.len().min(32);
-        self.hedging_symbol[..len].copy_from_slice(&bytes[..len]);
-    }
-
-    /// Get hedging leg symbol
-    pub fn get_hedging_symbol(&self) -> String {
-        let end = self
-            .hedging_symbol
-            .iter()
-            .position(|&b| b == 0)
-            .unwrap_or(32);
-        String::from_utf8_lossy(&self.hedging_symbol[..end]).to_string()
     }
 
     /// Set from key bytes (updates length)
@@ -532,13 +502,6 @@ impl SignalBytes for MmHedgeCtx {
         buf.put_i64_le(self.opening_leg.ts);
         bytes_helper::write_fixed_bytes(&mut buf, &self.opening_symbol);
 
-        // Hedging leg
-        buf.put_u8(self.hedging_leg.venue);
-        buf.put_f64_le(self.hedging_leg.bid0);
-        buf.put_f64_le(self.hedging_leg.ask0);
-        buf.put_i64_le(self.hedging_leg.ts);
-        bytes_helper::write_fixed_bytes(&mut buf, &self.hedging_symbol);
-
         // Trigger timestamp
         buf.put_i64_le(self.trigger_ts);
 
@@ -559,16 +522,6 @@ impl SignalBytes for MmHedgeCtx {
         let opening_ask0 = bytes.get_f64_le();
         let opening_ts = bytes.get_i64_le();
         let opening_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
-
-        // Hedging leg
-        if bytes.remaining() < 1 + 8 + 8 + 8 {
-            return Err("Not enough bytes for hedging leg".to_string());
-        }
-        let hedging_venue = bytes.get_u8();
-        let hedging_bid0 = bytes.get_f64_le();
-        let hedging_ask0 = bytes.get_f64_le();
-        let hedging_ts = bytes.get_i64_le();
-        let hedging_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
 
         if bytes.remaining() < 8 + 4 {
             return Err("Not enough bytes for trigger timestamp".to_string());
@@ -597,13 +550,6 @@ impl SignalBytes for MmHedgeCtx {
                 ts: opening_ts,
             },
             opening_symbol,
-            hedging_leg: TradingLeg {
-                venue: hedging_venue,
-                bid0: hedging_bid0,
-                ask0: hedging_ask0,
-                ts: hedging_ts,
-            },
-            hedging_symbol,
             trigger_ts,
             from_key_len: from_key_len as u32,
             from_key,

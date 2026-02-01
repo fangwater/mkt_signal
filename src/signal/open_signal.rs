@@ -58,17 +58,11 @@ pub struct ArbOpenCtx {
 /// Market maker open signal context
 #[derive(Debug, Clone)]
 pub struct MmOpenCtx {
-    /// Opening leg (active leg)
+    /// Single leg (MM only has one leg)
     pub opening_leg: TradingLeg,
 
-    /// Opening leg symbol - using fixed size array to avoid heap allocation
+    /// Leg symbol - using fixed size array to avoid heap allocation
     pub opening_symbol: [u8; 32],
-
-    /// Hedging leg (passive leg)
-    pub hedging_leg: TradingLeg,
-
-    /// Hedging leg symbol
-    pub hedging_symbol: [u8; 32],
 
     /// Trade amount
     pub amount: f32,
@@ -237,13 +231,6 @@ impl MmOpenCtx {
                 ts: 0,
             },
             opening_symbol: [0u8; 32],
-            hedging_leg: TradingLeg {
-                venue: 0,
-                bid0: 0.0,
-                ask0: 0.0,
-                ts: 0,
-            },
-            hedging_symbol: [0u8; 32],
             amount: 0.0,
             side: 0,
             order_type: 0,
@@ -265,16 +252,6 @@ impl MmOpenCtx {
     /// Get opening leg symbol
     pub fn get_opening_symbol(&self) -> String {
         get_symbol(&self.opening_symbol)
-    }
-
-    /// Set hedging leg symbol
-    pub fn set_hedging_symbol(&mut self, symbol: &str) {
-        set_symbol(&mut self.hedging_symbol, symbol);
-    }
-
-    /// Get hedging leg symbol
-    pub fn get_hedging_symbol(&self) -> String {
-        get_symbol(&self.hedging_symbol)
     }
 
     /// Get Side enum
@@ -489,9 +466,6 @@ impl SignalBytes for MmOpenCtx {
         // Opening leg
         write_leg(&mut buf, &self.opening_leg, &self.opening_symbol);
 
-        // Hedging leg
-        write_leg(&mut buf, &self.hedging_leg, &self.hedging_symbol);
-
         // Trade parameters
         buf.put_f32_le(self.amount);
         buf.put_u8(self.side);
@@ -511,12 +485,8 @@ impl SignalBytes for MmOpenCtx {
 
     fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
         const TAIL_LEN: usize = 4 + 1 + 1 + 8 + 8 + 8 + 8 + 8 + 4;
-
         // Opening leg
         let (opening_leg, opening_symbol) = read_leg(&mut bytes, true, "opening leg")?;
-
-        // Hedging leg
-        let (hedging_leg, hedging_symbol) = read_leg(&mut bytes, true, "hedging leg")?;
 
         // Trade parameters + from_key_len
         if bytes.remaining() < TAIL_LEN {
@@ -548,8 +518,6 @@ impl SignalBytes for MmOpenCtx {
         Ok(MmOpenCtx {
             opening_leg,
             opening_symbol,
-            hedging_leg,
-            hedging_symbol,
             amount,
             side,
             order_type,

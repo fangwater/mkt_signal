@@ -23,17 +23,11 @@ pub struct ArbCancelCtx {
 /// Market maker cancel signal context
 #[derive(Debug, Clone)]
 pub struct MmCancelCtx {
-    /// Opening leg
+    /// Single leg (MM only has one leg)
     pub opening_leg: TradingLeg,
 
-    /// Opening leg symbol
+    /// Leg symbol
     pub opening_symbol: [u8; 32],
-
-    /// Hedging leg
-    pub hedging_leg: TradingLeg,
-
-    /// Hedging leg symbol
-    pub hedging_symbol: [u8; 32],
 
     /// Trigger timestamp
     pub trigger_ts: i64,
@@ -150,13 +144,6 @@ impl MmCancelCtx {
                 ts: 0,
             },
             opening_symbol: [0u8; 32],
-            hedging_leg: TradingLeg {
-                venue: 0,
-                bid0: 0.0,
-                ask0: 0.0,
-                ts: 0,
-            },
-            hedging_symbol: [0u8; 32],
             trigger_ts: 0,
             from_key_len: 0,
             from_key: Vec::new(),
@@ -171,16 +158,6 @@ impl MmCancelCtx {
     /// Get opening leg symbol
     pub fn get_opening_symbol(&self) -> String {
         get_symbol(&self.opening_symbol)
-    }
-
-    /// Set hedging leg symbol
-    pub fn set_hedging_symbol(&mut self, symbol: &str) {
-        set_symbol(&mut self.hedging_symbol, symbol);
-    }
-
-    /// Get hedging leg symbol
-    pub fn get_hedging_symbol(&self) -> String {
-        get_symbol(&self.hedging_symbol)
     }
 
     /// Set from key bytes (updates length)
@@ -292,9 +269,6 @@ impl SignalBytes for MmCancelCtx {
         // Opening leg
         write_leg(&mut buf, &self.opening_leg, &self.opening_symbol);
 
-        // Hedging leg
-        write_leg(&mut buf, &self.hedging_leg, &self.hedging_symbol);
-
         // Trigger timestamp
         buf.put_i64_le(self.trigger_ts);
 
@@ -308,9 +282,6 @@ impl SignalBytes for MmCancelCtx {
     fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
         // Opening leg
         let (opening_leg, opening_symbol) = read_leg(&mut bytes, true, "opening leg")?;
-
-        // Hedging leg
-        let (hedging_leg, hedging_symbol) = read_leg(&mut bytes, true, "hedging leg")?;
 
         // Trigger timestamp + from_key_len
         if bytes.remaining() < 8 + 4 {
@@ -335,8 +306,6 @@ impl SignalBytes for MmCancelCtx {
         Ok(MmCancelCtx {
             opening_leg,
             opening_symbol,
-            hedging_leg,
-            hedging_symbol,
             trigger_ts,
             from_key_len: from_key_len as u32,
             from_key,
