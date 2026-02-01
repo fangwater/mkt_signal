@@ -2,6 +2,7 @@ pub mod binance_basic_impl;
 pub mod gate_basic_impl;
 pub mod hedge_arb_strategy;
 pub mod manager;
+pub mod mm_hedge_strategy;
 pub mod mm_open_strategy;
 pub mod okex_basic_impl;
 pub mod order_update;

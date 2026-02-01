@@ -23,6 +23,7 @@ use crate::trade_engine::query_parsers::compact_order::{
 };
 use crate::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 use log::{debug, error, info, warn};
+use std::any::Any;
 use std::collections::{HashMap, HashSet};
 
 // 下单后若迟迟收不到 account monitor 的推送（New/Filled 等），用一次 query 回补。
@@ -2694,6 +2695,14 @@ impl ForceCloseControl for HedgeArbStrategy {
 }
 
 impl Strategy for HedgeArbStrategy {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
     fn get_id(&self) -> i32 {
         self.strategy_id
     }

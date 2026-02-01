@@ -19,6 +19,7 @@ use crate::trade_engine::query_parsers::compact_order::{
 };
 use crate::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 use log::{debug, error, info, warn};
+use std::any::Any;
 
 const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
 const CANCEL_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
@@ -44,6 +45,7 @@ pub struct MarketMakerOpenStrategy {
     open_order_id: i64,
     open_expire_ts: Option<i64>,
     alive_flag: bool,
+    recorded_to_hedge: bool,
     pending_order_query: Option<PendingOrderQueryReason>,
     order_query_watchdog: Option<QueryWatchdog>,
     cancel_query_watchdog: Option<QueryWatchdog>,
@@ -57,6 +59,7 @@ impl MarketMakerOpenStrategy {
             open_order_id: 0,
             open_expire_ts: None,
             alive_flag: true,
+            recorded_to_hedge: false,
             pending_order_query: None,
             order_query_watchdog: None,
             cancel_query_watchdog: None,
@@ -374,6 +377,44 @@ impl MarketMakerOpenStrategy {
             warn!(
                 "MarketMakerOpenStrategy: strategy_id={} 未找到要撤销的订单 order_id={}",
                 self.strategy_id, self.open_order_id
+            );
+        }
+    }
+
+    fn record_mm_hedge_qty(
+        &mut self,
+        venue: TradingVenue,
+        symbol: &str,
+        side: Side,
+        cumulative_qty: f64,
+    ) {
+        if self.recorded_to_hedge {
+            return;
+        }
+        self.recorded_to_hedge = true;
+        if cumulative_qty <= 0.0 {
+            return;
+        }
+        let base_qty = MonitorChannel::instance().qty_to_base(venue, symbol, cumulative_qty);
+        if base_qty <= 0.0 {
+            return;
+        }
+        let (signed_qty, buy_qty, sell_qty) = match side {
+            Side::Buy => (base_qty, base_qty, 0.0),
+            Side::Sell => (-base_qty, 0.0, base_qty),
+        };
+
+        let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+        let updated = strategy_mgr.borrow_mut().record_mm_hedge_fill(
+            &symbol.to_ascii_uppercase(),
+            signed_qty,
+            buy_qty,
+            sell_qty,
+        );
+        if !updated {
+            warn!(
+                "MarketMakerOpenStrategy: strategy_id={} record mm hedge failed symbol={} qty={:.8}",
+                self.strategy_id, symbol, base_qty
             );
         }
     }
@@ -883,6 +924,7 @@ impl MarketMakerOpenStrategy {
 
         let order_mgr = MonitorChannel::instance().order_manager();
         let mut order_manager = order_mgr.borrow_mut();
+        let mut record_fill: Option<(TradingVenue, String, Side, f64)> = None;
         let updated = order_manager.update(client_order_id, |order| match order_update.status() {
             OrderStatus::New => {
                 order.status = OrderExecutionStatus::Create;
@@ -902,6 +944,12 @@ impl MarketMakerOpenStrategy {
             OrderStatus::Canceled => {
                 order.status = OrderExecutionStatus::Cancelled;
                 order.set_end_time(order_update.event_time());
+                record_fill = Some((
+                    order.venue,
+                    order.symbol.clone(),
+                    order.side,
+                    order.cumulative_filled_quantity,
+                ));
                 info!(
                     "🚫 MM订单已撤销: strategy_id={} client_order_id={} exchange_order_id={} symbol={} filled={:.4}/{:.4}",
                     self.strategy_id,
@@ -916,6 +964,12 @@ impl MarketMakerOpenStrategy {
             OrderStatus::Filled => {
                 order.status = OrderExecutionStatus::Filled;
                 order.set_end_time(order_update.event_time());
+                record_fill = Some((
+                    order.venue,
+                    order.symbol.clone(),
+                    order.side,
+                    order.cumulative_filled_quantity,
+                ));
                 info!(
                     "✅ MM订单已完全成交: strategy_id={} client_order_id={} exchange_order_id={} symbol={}",
                     self.strategy_id,
@@ -957,6 +1011,10 @@ impl MarketMakerOpenStrategy {
                 self.strategy_id, client_order_id
             );
         }
+
+        if let Some((venue, symbol, side, qty)) = record_fill {
+            self.record_mm_hedge_qty(venue, &symbol, side, qty);
+        }
     }
 
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
@@ -996,6 +1054,12 @@ impl MarketMakerOpenStrategy {
                 trade.price(),
                 trade.quantity(),
                 cumulative_qty
+            );
+            self.record_mm_hedge_qty(
+                trade.trading_venue(),
+                trade.symbol(),
+                trade.side(),
+                cumulative_qty,
             );
             self.alive_flag = false;
         }
@@ -1041,6 +1105,14 @@ impl ForceCloseControl for MarketMakerOpenStrategy {
 }
 
 impl Strategy for MarketMakerOpenStrategy {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
     fn get_id(&self) -> i32 {
         self.strategy_id
     }

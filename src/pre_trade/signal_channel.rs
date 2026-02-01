@@ -579,15 +579,17 @@ fn handle_trade_signal(signal: TradeSignal) {
                 return;
             }
 
+            let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+            let _ = strategy_mgr
+                .borrow_mut()
+                .ensure_mm_hedge_strategy(&symbol);
+
             let strategy_id = StrategyManager::generate_strategy_id();
             let mut strategy = MarketMakerOpenStrategy::new(strategy_id);
             strategy.handle_signal_with_record(&signal);
             if strategy.is_active() {
                 info!("✅ MMOpen: strategy_id={} 已创建并激活", strategy_id);
-                MonitorChannel::instance()
-                    .strategy_mgr()
-                    .borrow_mut()
-                    .insert(Box::new(strategy));
+                strategy_mgr.borrow_mut().insert(Box::new(strategy));
             } else {
                 warn!("⚠️ MMOpen: strategy_id={} 未激活", strategy_id);
             }
@@ -648,13 +650,24 @@ fn handle_trade_signal(signal: TradeSignal) {
         },
         SignalType::MMHedge => match MmHedgeCtx::from_bytes(signal.context.clone()) {
             Ok(hedge_ctx) => {
-                let symbol = hedge_ctx.get_opening_symbol();
-                info!(
-                    "MMHedge: received symbol={} trigger_ts={} from_key_len={}",
-                    symbol,
-                    hedge_ctx.trigger_ts,
-                    hedge_ctx.from_key_len
-                );
+                let symbol = hedge_ctx.get_opening_symbol().to_uppercase();
+                if symbol.is_empty() {
+                    warn!("MMHedge: empty symbol");
+                    return;
+                }
+                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                let strategy_id = strategy_mgr
+                    .borrow_mut()
+                    .ensure_mm_hedge_strategy(&symbol);
+                let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
+                if let Some(mut strategy) = strategy_opt {
+                    strategy.handle_signal_with_record(&signal);
+                    if strategy.is_active() {
+                        strategy_mgr.borrow_mut().insert(strategy);
+                    } else {
+                        info!("MMHedge: 策略 id={} 已不活跃，不再放回", strategy_id);
+                    }
+                }
             }
             Err(err) => warn!("failed to decode MMHedge context: {err}"),
         },

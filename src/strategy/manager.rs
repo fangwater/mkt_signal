@@ -1,4 +1,5 @@
 use crate::common::time_util::get_timestamp_us;
+use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
 use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::{
@@ -6,6 +7,7 @@ use crate::strategy::{
     trade_update::TradeUpdate,
 };
 use log::info;
+use std::any::Any;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 /// 控制策略是否处于强平模式的 Trait
@@ -15,6 +17,8 @@ pub trait ForceCloseControl {
 }
 
 pub trait Strategy: ForceCloseControl {
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
     fn get_id(&self) -> i32;
     fn is_strategy_order(&self, order_id: i64) -> bool;
     fn handle_signal_with_record(&mut self, signal: &TradeSignal);
@@ -165,6 +169,70 @@ impl StrategyManager {
     /// 获取只读引用（用于快照）
     pub fn get(&self, id: i32) -> Option<&dyn Strategy> {
         self.strategies.get(&id).map(|b| b.as_ref())
+    }
+
+    /// 查询指定 symbol 的 MM 对冲策略 id（symbol 不区分大小写）
+    pub fn find_mm_hedge_id(&self, symbol: &str) -> Option<i32> {
+        let symbol_upper = symbol.to_ascii_uppercase();
+        let Some(ids) = self.symbol_index.get(&symbol_upper) else {
+            return None;
+        };
+        for id in ids {
+            if let Some(strategy) = self.strategies.get(id) {
+                if strategy.as_any().is::<MarketMakerHedgeStrategy>() {
+                    return Some(*id);
+                }
+            }
+        }
+        None
+    }
+
+    /// 确保指定 symbol 存在 MM 对冲策略（symbol 不区分大小写）
+    pub fn ensure_mm_hedge_strategy(&mut self, symbol: &str) -> i32 {
+        let symbol_upper = symbol.to_ascii_uppercase();
+        if let Some(id) = self.find_mm_hedge_id(&symbol_upper) {
+            return id;
+        }
+        let strategy_id = StrategyManager::generate_strategy_id();
+        let strategy = MarketMakerHedgeStrategy::new(strategy_id, symbol_upper);
+        self.insert(Box::new(strategy));
+        strategy_id
+    }
+
+    /// 记录 MM 开仓成交，累加到对应 symbol 的对冲策略
+    pub fn record_mm_hedge_fill(
+        &mut self,
+        symbol: &str,
+        signed_qty: f64,
+        buy_qty: f64,
+        sell_qty: f64,
+    ) -> bool {
+        let symbol_upper = symbol.to_ascii_uppercase();
+        let Some(id) = self.find_mm_hedge_id(&symbol_upper) else {
+            return false;
+        };
+        let Some(strategy) = self.strategies.get_mut(&id) else {
+            return false;
+        };
+        let Some(mm_hedge) = strategy
+            .as_any_mut()
+            .downcast_mut::<MarketMakerHedgeStrategy>()
+        else {
+            return false;
+        };
+        mm_hedge.record_fill(signed_qty, buy_qty, sell_qty);
+        true
+    }
+
+    /// 获取所有 MM 对冲策略的快照
+    pub fn mm_hedge_snapshots(&self) -> Vec<MmHedgeSnapshot> {
+        let mut snapshots = Vec::new();
+        for strategy in self.strategies.values() {
+            if let Some(mm_hedge) = strategy.as_any().downcast_ref::<MarketMakerHedgeStrategy>() {
+                snapshots.push(mm_hedge.snapshot());
+            }
+        }
+        snapshots
     }
 
     /// 触发全部策略的周期检查，返回本次检查到的策略数量
