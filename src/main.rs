@@ -27,6 +27,7 @@ async fn main() -> anyhow::Result<()> {
     let config_path = resolve_cfg_path()?;
     let config_path_str = config_path.to_string_lossy();
     let config = Config::load_config(&config_path_str, venue).await?;
+    let config = Box::leak(Box::new(config));
 
     // 资金费率管理器已移除：预测/借贷逻辑在策略进程内处理
 
