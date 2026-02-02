@@ -915,6 +915,22 @@ def normalize_symbol_list_for_exchange(exchange: str, value: Any) -> List[str]:
     return items
 
 
+def summarize_symbol_payload(value: Any) -> Tuple[int, List[str]]:
+    """Return (count, sample) for raw symbol payload."""
+    raw_items: List[str] = []
+    if isinstance(value, list):
+        raw_items = [item for item in value if isinstance(item, str)]
+    elif isinstance(value, str):
+        raw_items = [s for s in re.split(r"[\s,]+", value) if s]
+
+    cleaned: List[str] = []
+    for item in raw_items:
+        sym = item.strip()
+        if sym:
+            cleaned.append(sym)
+    return len(cleaned), cleaned[:5]
+
+
 def read_symbol_list(rds, key: str) -> List[str]:
     raw = rds.get(key)
     if not raw:
@@ -1312,15 +1328,42 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
+            raw_dump = payload.get("dump_symbols") or []
+            raw_fwd = payload.get("fwd_trade_symbols") or []
+            raw_bwd = payload.get("bwd_trade_symbols") or []
             dump_symbols = normalize_symbol_list_for_exchange(
-                exchange, payload.get("dump_symbols") or []
+                exchange, raw_dump
             )
             fwd_symbols = normalize_symbol_list_for_exchange(
-                exchange, payload.get("fwd_trade_symbols") or []
+                exchange, raw_fwd
             )
             bwd_symbols = normalize_symbol_list_for_exchange(
-                exchange, payload.get("bwd_trade_symbols") or []
+                exchange, raw_bwd
             )
+            raw_dump_len, raw_dump_sample = summarize_symbol_payload(raw_dump)
+            raw_fwd_len, raw_fwd_sample = summarize_symbol_payload(raw_fwd)
+            raw_bwd_len, raw_bwd_sample = summarize_symbol_payload(raw_bwd)
+            print(
+                "[symbol-lists] exchange={} open={} hedge={} key_suffix={}".format(
+                    exchange, open_v, hedge_v, key_suffix
+                )
+            )
+            print(
+                "[symbol-lists] dump raw={} norm={} sample_raw={} sample_norm={}".format(
+                    raw_dump_len, len(dump_symbols), raw_dump_sample, dump_symbols[:5]
+                )
+            )
+            print(
+                "[symbol-lists] fwd  raw={} norm={} sample_raw={} sample_norm={}".format(
+                    raw_fwd_len, len(fwd_symbols), raw_fwd_sample, fwd_symbols[:5]
+                )
+            )
+            print(
+                "[symbol-lists] bwd  raw={} norm={} sample_raw={} sample_norm={}".format(
+                    raw_bwd_len, len(bwd_symbols), raw_bwd_sample, bwd_symbols[:5]
+                )
+            )
+            sys.stdout.flush()
 
             rds = self.server.context.redis_client
             try:
