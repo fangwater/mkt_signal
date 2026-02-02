@@ -25,6 +25,9 @@ use crate::symbol_match::normalize_symbol_for_whitelist;
 // 常量定义
 const ASKBID_PAYLOAD: usize = 64;
 const DERIVATIVES_PAYLOAD: usize = 128;
+const DERIVATIVES_HISTORY_SIZE: usize = 50;
+const DERIVATIVES_MAX_SUBSCRIBERS: usize = 10;
+const DERIVATIVES_SUBSCRIBER_MAX_BUFFER: usize = 8192;
 
 // Thread-local 单例存储
 thread_local! {
@@ -404,6 +407,10 @@ impl MktChannel {
                 let service = node
                     .service_builder(&ServiceName::new(&service_name)?)
                     .publish_subscribe::<[u8; DERIVATIVES_PAYLOAD]>()
+                    .max_publishers(1)
+                    .max_subscribers(DERIVATIVES_MAX_SUBSCRIBERS)
+                    .history_size(DERIVATIVES_HISTORY_SIZE)
+                    .subscriber_max_buffer_size(DERIVATIVES_SUBSCRIBER_MAX_BUFFER)
                     .open_or_create()?;
 
                 let subscriber: Subscriber<ipc::Service, [u8; DERIVATIVES_PAYLOAD], ()> =

@@ -15,33 +15,3 @@ data_types:
   enable_ask_bid_spread: true # 买卖价差（最优买卖价）数据
   max_levels_per_msg: 50      # 每条增量消息最大档数(bids+asks)，超过则按比例截断
 
-# IceOryx配置
-iceoryx:
-  # IceOryx 会根据 venue slug 创建频道（kebab case，无下划线）
-  # 频道格式: data_pubs/{venue}/{data_type}
-  # 例如: data_pubs/binance-spot/incremental, data_pubs/binance-futures/derivatives
-  
-  # 历史记录和订阅者配置
-  incremental:
-    history_size: 100
-    max_subscribers: 10
-  
-  trade:
-    history_size: 100
-    max_subscribers: 10
-  
-  kline:
-    history_size: 50
-    max_subscribers: 10
-  
-  derivatives:
-    history_size: 50
-    max_subscribers: 10
-  
-  ask_bid_spread:
-    history_size: 100
-    max_subscribers: 10
-  
-  signal:
-    history_size: 50
-    max_subscribers: 10

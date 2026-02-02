@@ -15,6 +15,18 @@ const KLINE_MAX_BYTES: usize = 128;
 const DERIVATIVES_MAX_BYTES: usize = 128;
 const SPREAD_MAX_BYTES: usize = 64;
 const SIGNAL_MAX_BYTES: usize = 64;
+const INC_HISTORY_SIZE: usize = 100;
+const INC_MAX_SUBSCRIBERS: usize = 10;
+const TRADE_HISTORY_SIZE: usize = 100;
+const TRADE_MAX_SUBSCRIBERS: usize = 10;
+const KLINE_HISTORY_SIZE: usize = 50;
+const KLINE_MAX_SUBSCRIBERS: usize = 10;
+const DERIVATIVES_HISTORY_SIZE: usize = 50;
+const DERIVATIVES_MAX_SUBSCRIBERS: usize = 10;
+const SPREAD_HISTORY_SIZE: usize = 100;
+const SPREAD_MAX_SUBSCRIBERS: usize = 10;
+const SIGNAL_HISTORY_SIZE: usize = 50;
+const SIGNAL_MAX_SUBSCRIBERS: usize = 10;
 const DERIVATIVES_DEBUG_INTERVAL: Duration = Duration::from_secs(5);
 
 pub struct IceOryxForwarder {
@@ -69,23 +81,12 @@ impl IceOryxForwarder {
         // 固定增量最大字节（编译期上限 8192），不从配置读取
         let inc_max = 16384usize;
 
-        // 读取各频道的历史与订阅者配置
-        let get_cfg = |ch: Option<&crate::cfg::ChannelCfg>,
-                       default_hist: usize,
-                       default_subs: usize|
-         -> (usize, usize) {
-            let h = ch.and_then(|c| c.history_size).unwrap_or(default_hist);
-            let s = ch.and_then(|c| c.max_subscribers).unwrap_or(default_subs);
-            (h, s)
-        };
-        let ice = config.iceoryx.as_ref();
-        let (inc_hist, _inc_subs) = get_cfg(ice.and_then(|c| c.incremental.as_ref()), 100, 10);
-        let (trade_hist, trade_subs) = get_cfg(ice.and_then(|c| c.trade.as_ref()), 100, 10);
-        let (kline_hist, kline_subs) = get_cfg(ice.and_then(|c| c.kline.as_ref()), 50, 10);
-        let (der_hist, der_subs) = get_cfg(ice.and_then(|c| c.derivatives.as_ref()), 50, 10);
-        let (spread_hist, spread_subs) =
-            get_cfg(ice.and_then(|c| c.ask_bid_spread.as_ref()), 100, 10);
-        let (signal_hist, signal_subs) = get_cfg(ice.and_then(|c| c.signal.as_ref()), 50, 10);
+        let inc_hist = INC_HISTORY_SIZE;
+        let trade_hist = TRADE_HISTORY_SIZE;
+        let kline_hist = KLINE_HISTORY_SIZE;
+        let der_hist = DERIVATIVES_HISTORY_SIZE;
+        let spread_hist = SPREAD_HISTORY_SIZE;
+        let signal_hist = SIGNAL_HISTORY_SIZE;
 
         let incremental_publisher = if config.data_types.enable_incremental {
             let service = node
@@ -95,7 +96,7 @@ impl IceOryxForwarder {
                 ))?)
                 .publish_subscribe::<[u8; 16384]>()
                 .max_publishers(1)
-                .max_subscribers(10)
+                .max_subscribers(INC_MAX_SUBSCRIBERS)
                 .history_size(inc_hist)
                 .subscriber_max_buffer_size(8192)
                 .open_or_create()?;
@@ -113,7 +114,7 @@ impl IceOryxForwarder {
                 ))?)
                 .publish_subscribe::<[u8; TRADE_MAX_BYTES]>()
                 .max_publishers(1)
-                .max_subscribers(trade_subs)
+                .max_subscribers(TRADE_MAX_SUBSCRIBERS)
                 .history_size(trade_hist)
                 .subscriber_max_buffer_size(8192)
                 .open_or_create()?;
@@ -131,7 +132,7 @@ impl IceOryxForwarder {
                 ))?)
                 .publish_subscribe::<[u8; KLINE_MAX_BYTES]>()
                 .max_publishers(1)
-                .max_subscribers(kline_subs)
+                .max_subscribers(KLINE_MAX_SUBSCRIBERS)
                 .history_size(kline_hist)
                 .subscriber_max_buffer_size(8192)
                 .open_or_create()?;
@@ -150,7 +151,7 @@ impl IceOryxForwarder {
                 ))?)
                 .publish_subscribe::<[u8; DERIVATIVES_MAX_BYTES]>()
                 .max_publishers(1)
-                .max_subscribers(der_subs)
+                .max_subscribers(DERIVATIVES_MAX_SUBSCRIBERS)
                 .history_size(der_hist)
                 .subscriber_max_buffer_size(8192)
                 .open_or_create()?;
@@ -168,7 +169,7 @@ impl IceOryxForwarder {
                 ))?)
                 .publish_subscribe::<[u8; SPREAD_MAX_BYTES]>()
                 .max_publishers(1)
-                .max_subscribers(spread_subs)
+                .max_subscribers(SPREAD_MAX_SUBSCRIBERS)
                 .history_size(spread_hist)
                 .subscriber_max_buffer_size(8192)
                 .open_or_create()?;
@@ -187,7 +188,7 @@ impl IceOryxForwarder {
                 ))?)
                 .publish_subscribe::<[u8; SIGNAL_MAX_BYTES]>()
                 .max_publishers(1)
-                .max_subscribers(signal_subs)
+                .max_subscribers(SIGNAL_MAX_SUBSCRIBERS)
                 .history_size(signal_hist)
                 .subscriber_max_buffer_size(8192)
                 .open_or_create()?;

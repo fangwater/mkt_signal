@@ -8,22 +8,6 @@ use serde_yaml;
 use std::time::Duration;
 use tokio::fs;
 
-#[derive(Debug, Deserialize, Clone, Default)]
-pub struct ChannelCfg {
-    pub history_size: Option<usize>,
-    pub max_subscribers: Option<usize>,
-}
-
-#[derive(Debug, Deserialize, Clone, Default)]
-pub struct IceoryxCfg {
-    pub incremental: Option<ChannelCfg>,
-    pub trade: Option<ChannelCfg>,
-    pub kline: Option<ChannelCfg>,
-    pub derivatives: Option<ChannelCfg>,
-    pub ask_bid_spread: Option<ChannelCfg>,
-    pub signal: Option<ChannelCfg>,
-}
-
 #[derive(Debug, Deserialize)]
 struct ConfigFile {
     restart_duration_secs: u64,
@@ -31,8 +15,6 @@ struct ConfigFile {
     secondary_local_ip: String,
     // 数据类型开关
     data_types: DataTypesConfig,
-    // Iceoryx 配置
-    iceoryx: Option<IceoryxCfg>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -171,7 +153,6 @@ pub struct Config {
     pub secondary_local_ip: String,
     pub data_types: DataTypesConfig, // 数据类型开关
     pub venue: TradingVenue,         // 在运行时设置，不从配置文件读取（区分资产类型）
-    pub iceoryx: Option<IceoryxCfg>, // Iceoryx 配置（可选）
 }
 
 impl Config {
@@ -188,7 +169,6 @@ impl Config {
             primary_local_ip: config_file.primary_local_ip,
             secondary_local_ip: config_file.secondary_local_ip,
             data_types: config_file.data_types, // 数据类型开关
-            iceoryx: config_file.iceoryx,
             venue, // 从命令行参数设置
         };
 
