@@ -119,7 +119,10 @@ impl BinancePerpsSubscribeMsgs {
 
 #[derive(Debug, Clone)]
 pub struct OkexPerpsSubscribeMsgs {
-    pub unified_perps_msgs: Vec<serde_json::Value>, //统一的衍生品订阅消息，包含标记价格、指数价格、资金费率、强平信息
+    pub mark_price_msgs: Vec<serde_json::Value>,      // 标记价格订阅
+    pub index_tickers_msgs: Vec<serde_json::Value>,   // 指数价格订阅
+    pub funding_rate_msgs: Vec<serde_json::Value>,    // 资金费率订阅
+    pub liquidation_orders_msgs: Vec<serde_json::Value>, // 强平信息订阅
 }
 
 impl OkexPerpsSubscribeMsgs {
@@ -127,54 +130,72 @@ impl OkexPerpsSubscribeMsgs {
     pub async fn new(cfg: &Config) -> Self {
         let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
         let batch_size = cfg.get_batch_size();
-        let mut unified_perps_msgs = Vec::new();
+        let mut mark_price_msgs = Vec::new();
+        let mut index_tickers_msgs = Vec::new();
+        let mut funding_rate_msgs = Vec::new();
+        let mut liquidation_orders_msgs = Vec::new();
 
-        // 为每个批次创建统一的订阅消息，包含4种数据类型
+        // 为每个批次创建独立的订阅消息（拆分 mark/index/funding）
         for chunk in symbols.chunks(batch_size) {
-            let mut args = Vec::new();
-
-            // 添加标记价格订阅
+            // 标记价格订阅
+            let mut mark_args = Vec::new();
             for symbol in chunk {
-                args.push(serde_json::json!({
+                mark_args.push(serde_json::json!({
                     "channel": "mark-price",
                     "instId": symbol
                 }));
             }
+            mark_price_msgs.push(serde_json::json!({
+                "op": "subscribe",
+                "args": mark_args
+            }));
 
-            // 添加指数价格订阅（使用USD作为基准）
+            // 指数价格订阅（使用USD作为基准）
+            let mut index_args = Vec::new();
             for symbol in chunk {
                 // 从USDT永续合约符号转换为USD指数符号 (如：BTC-USDT-SWAP -> BTC-USD)
                 let index_symbol = symbol
                     .replace("-USDT-SWAP", "-USD")
                     .replace("-USDT", "-USD");
-                args.push(serde_json::json!({
+                index_args.push(serde_json::json!({
                     "channel": "index-tickers",
                     "instId": index_symbol
                 }));
             }
+            index_tickers_msgs.push(serde_json::json!({
+                "op": "subscribe",
+                "args": index_args
+            }));
 
-            // 添加资金费率订阅
+            // 资金费率订阅
+            let mut funding_args = Vec::new();
             for symbol in chunk {
-                args.push(serde_json::json!({
+                funding_args.push(serde_json::json!({
                     "channel": "funding-rate",
                     "instId": symbol
                 }));
             }
-
-            // 为每个批次添加强平信息（只需要一次，但每个批次都包含）
-            args.push(serde_json::json!({
-                "channel": "liquidation-orders",
-                "instType": "SWAP"
-            }));
-
-            // 创建统一的订阅消息
-            unified_perps_msgs.push(serde_json::json!({
+            funding_rate_msgs.push(serde_json::json!({
                 "op": "subscribe",
-                "args": args
+                "args": funding_args
             }));
         }
 
-        Self { unified_perps_msgs }
+        // 强平信息只需要订阅一次
+        liquidation_orders_msgs.push(serde_json::json!({
+            "op": "subscribe",
+            "args": [serde_json::json!({
+                "channel": "liquidation-orders",
+                "instType": "SWAP"
+            })]
+        }));
+
+        Self {
+            mark_price_msgs,
+            index_tickers_msgs,
+            funding_rate_msgs,
+            liquidation_orders_msgs,
+        }
     }
 }
 

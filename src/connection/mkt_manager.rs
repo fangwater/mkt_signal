@@ -27,6 +27,7 @@ use log::{debug, error, info};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, watch, Notify};
 use tokio::task::JoinSet;
+use tokio::time::{sleep, Duration};
 
 const BINANCE_SPOT_WS_URL: &str = "wss://stream.binance.com:9443/ws";
 
@@ -653,21 +654,68 @@ impl MktManager {
             .clone();
 
         info!(
-            "Starting OKEx derivatives connections ({} batches, symbols={})",
-            msgs.unified_perps_msgs.len(),
+            "Starting OKEx derivatives connections (mark_price={} index_tickers={} funding_rate={} liquidation={} symbols={})",
+            msgs.mark_price_msgs.len(),
+            msgs.index_tickers_msgs.len(),
+            msgs.funding_rate_msgs.len(),
+            msgs.liquidation_orders_msgs.len(),
             symbols.len()
         );
-        for (i, unified_msg) in msgs.unified_perps_msgs.iter().enumerate() {
+
+        for (i, msg) in msgs.mark_price_msgs.iter().enumerate() {
             let parser = OkexDerivativesMetricsParser::new(symbols.clone());
             self.spawn_connection_with_mpsc(
                 exchange,
                 url.clone(),
-                unified_msg.clone(),
-                format!("okex unified derivatives batch {}", i),
+                msg.clone(),
+                format!("okex mark-price batch {}", i),
                 parser,
                 tx.clone(),
             )
             .await;
+            sleep(Duration::from_millis(200)).await;
+        }
+
+        for (i, msg) in msgs.index_tickers_msgs.iter().enumerate() {
+            let parser = OkexDerivativesMetricsParser::new(symbols.clone());
+            self.spawn_connection_with_mpsc(
+                exchange,
+                url.clone(),
+                msg.clone(),
+                format!("okex index-tickers batch {}", i),
+                parser,
+                tx.clone(),
+            )
+            .await;
+            sleep(Duration::from_millis(200)).await;
+        }
+
+        for (i, msg) in msgs.funding_rate_msgs.iter().enumerate() {
+            let parser = OkexDerivativesMetricsParser::new(symbols.clone());
+            self.spawn_connection_with_mpsc(
+                exchange,
+                url.clone(),
+                msg.clone(),
+                format!("okex funding-rate batch {}", i),
+                parser,
+                tx.clone(),
+            )
+            .await;
+            sleep(Duration::from_millis(200)).await;
+        }
+
+        for (i, msg) in msgs.liquidation_orders_msgs.iter().enumerate() {
+            let parser = OkexDerivativesMetricsParser::new(symbols.clone());
+            self.spawn_connection_with_mpsc(
+                exchange,
+                url.clone(),
+                msg.clone(),
+                format!("okex liquidation batch {}", i),
+                parser,
+                tx.clone(),
+            )
+            .await;
+            sleep(Duration::from_millis(200)).await;
         }
     }
 
