@@ -31,6 +31,7 @@ struct DecisionSkipNotReadyStats {
     last_hedge_symbol: String,
     last_open_venue: Option<TradingVenue>,
     last_hedge_venue: Option<TradingVenue>,
+    last_detail: String,
 }
 
 impl Default for DecisionSkipNotReadyStats {
@@ -42,6 +43,7 @@ impl Default for DecisionSkipNotReadyStats {
             last_hedge_symbol: String::new(),
             last_open_venue: None,
             last_hedge_venue: None,
+            last_detail: String::new(),
         }
     }
 }
@@ -61,15 +63,19 @@ fn log_skip_not_ready(
         stats.last_hedge_symbol.push_str(hedge_symbol);
         stats.last_open_venue = Some(open_venue);
         stats.last_hedge_venue = Some(hedge_venue);
+        stats.last_detail = RateFetcher::not_ready_detail(hedge_venue).unwrap_or_else(|| {
+            "reason=unknown symbol=-".to_string()
+        });
 
         if stats.last_log.elapsed() >= Duration::from_secs(10) {
             info!(
-                "DecisionRouter: skip trigger (RateFetcher not ready) count={} last_open_symbol={} last_hedge_symbol={} open_venue={:?} hedge_venue={:?}",
+                "DecisionRouter: skip trigger (RateFetcher not ready) count={} last_open_symbol={} last_hedge_symbol={} open_venue={:?} hedge_venue={:?} {}",
                 stats.skipped,
                 stats.last_open_symbol,
                 stats.last_hedge_symbol,
                 stats.last_open_venue,
-                stats.last_hedge_venue
+                stats.last_hedge_venue,
+                stats.last_detail
             );
             stats.last_log = Instant::now();
             stats.skipped = 0;

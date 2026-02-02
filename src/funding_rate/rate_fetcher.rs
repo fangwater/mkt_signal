@@ -275,6 +275,10 @@ struct VenueState {
     symbol_cache: HashSet<String>,
     last_full_fetch_hour: Option<u32>,
     initial_ready: bool,
+    last_not_ready_reason: Option<String>,
+    last_not_ready_symbol: Option<String>,
+    last_missing_fr: usize,
+    last_missing_loan: usize,
 }
 
 /// RateFetcher 内部实现
@@ -1994,6 +1998,10 @@ impl RateFetcher {
                 Self::with_inner_mut(|inner| {
                     if let Some(state) = inner.venue_states.get_mut(&venue) {
                         state.initial_ready = true;
+                        state.last_not_ready_reason = None;
+                        state.last_not_ready_symbol = None;
+                        state.last_missing_fr = 0;
+                        state.last_missing_loan = 0;
                     }
                 });
                 info!(
@@ -2005,13 +2013,18 @@ impl RateFetcher {
             return;
         }
 
-        if ready {
-            Self::with_inner_mut(|inner| {
-                if let Some(state) = inner.venue_states.get_mut(&venue) {
-                    state.initial_ready = false;
-                }
-            });
-        }
+        Self::with_inner_mut(|inner| {
+            if let Some(state) = inner.venue_states.get_mut(&venue) {
+                state.initial_ready = false;
+                state.last_not_ready_reason = Some("initial_missing".to_string());
+                state.last_not_ready_symbol = missing_fr
+                    .first()
+                    .cloned()
+                    .or_else(|| missing_loan.first().cloned());
+                state.last_missing_fr = missing_fr.len();
+                state.last_missing_loan = missing_loan.len();
+            }
+        });
         log::error!(
             "RateFetcher: 初次费率数据不完整 venue={:?} missing_fr={:?} missing_loan={:?}",
             venue,
@@ -2044,6 +2057,10 @@ impl RateFetcher {
         Self::with_inner_mut(|inner| {
             if let Some(state) = inner.venue_states.get_mut(&venue) {
                 state.initial_ready = false;
+                state.last_not_ready_reason = Some(reason.to_string());
+                state.last_not_ready_symbol = Some(symbol.to_string());
+                state.last_missing_fr = 0;
+                state.last_missing_loan = 0;
             }
         });
         log::error!(
@@ -2052,6 +2069,28 @@ impl RateFetcher {
             symbol,
             reason
         );
+    }
+
+    pub fn not_ready_detail(venue: TradingVenue) -> Option<String> {
+        Self::with_inner(|inner| {
+            let state = inner.venue_states.get(&venue)?;
+            if state.initial_ready {
+                return None;
+            }
+            let reason = state
+                .last_not_ready_reason
+                .as_deref()
+                .unwrap_or("unknown");
+            let symbol = state.last_not_ready_symbol.as_deref().unwrap_or("-");
+            let mut detail = format!("reason={} symbol={}", reason, symbol);
+            if state.last_missing_fr > 0 || state.last_missing_loan > 0 {
+                detail.push_str(&format!(
+                    " missing_fr={} missing_loan={}",
+                    state.last_missing_fr, state.last_missing_loan
+                ));
+            }
+            Some(detail)
+        })
     }
 
     fn okex_loan_rate_url() -> String {
