@@ -11,16 +11,19 @@ struct LocalIpConfig {
 pub fn home_mkt_cfg_path() -> Result<PathBuf> {
     if let Ok(home) = std::env::var("HOME") {
         if !home.trim().is_empty() {
-            return Ok(PathBuf::from(home).join("config/mkt_cfg.yaml"));
+            return Ok(PathBuf::from(home).join("mkt_pub/config/mkt_cfg.yaml"));
         }
     }
     if let Ok(user) = std::env::var("USER") {
         if !user.trim().is_empty() {
-            return Ok(PathBuf::from(format!("/home/{}/config/mkt_cfg.yaml", user)));
+            return Ok(PathBuf::from(format!(
+                "/home/{}/mkt_pub/config/mkt_cfg.yaml",
+                user
+            )));
         }
     }
     Err(anyhow!(
-        "HOME/USER not set; cannot resolve /home/<user>/config/mkt_cfg.yaml"
+        "HOME/USER not set; cannot resolve /home/<user>/mkt_pub/config/mkt_cfg.yaml"
     ))
 }
 

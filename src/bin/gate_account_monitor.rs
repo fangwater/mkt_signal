@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
     let spot_ws_url = GatePrivateWsUrls::SPOT.to_string();
     let futures_ws_url = GatePrivateWsUrls::FUTURES_USDT.to_string();
 
-    // IP 设置（从 /home/<user>/config/mkt_cfg.yaml 读取）
+    // IP 设置（从 /home/<user>/mkt_pub/config/mkt_cfg.yaml 读取）
     let cfg_path = home_mkt_cfg_path()?;
     let (primary_ip, secondary_ip) = load_local_ips_from_path(&cfg_path).await?;
     let session_max = None; // Gate.io 没有明确的会话时长限制

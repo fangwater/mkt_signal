@@ -175,12 +175,12 @@ pub struct Config {
 }
 
 impl Config {
-    pub async fn load_config(
-        path: &str,
-        venue: TradingVenue,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let content = fs::read_to_string(path).await?;
-        let config_file: ConfigFile = serde_yaml::from_str(&content)?;
+    pub async fn load_config(path: &str, venue: TradingVenue) -> Result<Self> {
+        let content = fs::read_to_string(path)
+            .await
+            .with_context(|| format!("read mkt cfg: {}", path))?;
+        let config_file: ConfigFile = serde_yaml::from_str(&content)
+            .with_context(|| format!("parse mkt cfg: {}", path))?;
 
         // 构造 Config 结构体，使用默认值如果配置不存在
         let config = Config {

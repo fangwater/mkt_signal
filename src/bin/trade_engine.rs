@@ -234,7 +234,7 @@ async fn main() -> Result<()> {
         None
     };
 
-    // 从 /home/<user>/config/mkt_cfg.yaml 解析
+    // 从 /home/<user>/mkt_pub/config/mkt_cfg.yaml 解析
     let cfg_path = home_mkt_cfg_path()?;
     let (primary_ip_raw, secondary_ip_raw) = load_local_ips_from_path(&cfg_path).await?;
     let primary_ip: IpAddr = primary_ip_raw
