@@ -1314,6 +1314,13 @@ class RequestHandler(BaseHTTPRequestHandler):
         except Exception:
             self._send_error(400, "invalid json")
             return
+        if parsed.path.startswith("/api/"):
+            print(
+                "[request] POST {} len={} keys={}".format(
+                    parsed.path, length, list(payload.keys())
+                )
+            )
+            sys.stdout.flush()
 
         if parsed.path == "/api/symbol-lists":
             exchange = normalize_exchange(
