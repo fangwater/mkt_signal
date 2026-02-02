@@ -891,6 +891,30 @@ def normalize_symbol_list(value: Any) -> List[str]:
     return items
 
 
+def normalize_symbol_list_for_exchange(exchange: str, value: Any) -> List[str]:
+    """Normalize symbol list with exchange-specific rules.
+
+    For OKEx: uppercase, drop '-'/'_', and strip trailing 'SWAP' to align with rolling_metrics keys.
+    Other exchanges keep the basic normalization only.
+    """
+    base = normalize_symbol_list(value)
+    if normalize_exchange(exchange) != "okex":
+        return base
+
+    items: List[str] = []
+    seen = set()
+    for sym in base:
+        norm = sym.replace("-", "").replace("_", "")
+        if norm.endswith("SWAP"):
+            norm = norm[:-4]
+        if not norm:
+            continue
+        if norm not in seen:
+            seen.add(norm)
+            items.append(norm)
+    return items
+
+
 def read_symbol_list(rds, key: str) -> List[str]:
     raw = rds.get(key)
     if not raw:
@@ -1288,9 +1312,15 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
-            dump_symbols = normalize_symbol_list(payload.get("dump_symbols") or [])
-            fwd_symbols = normalize_symbol_list(payload.get("fwd_trade_symbols") or [])
-            bwd_symbols = normalize_symbol_list(payload.get("bwd_trade_symbols") or [])
+            dump_symbols = normalize_symbol_list_for_exchange(
+                exchange, payload.get("dump_symbols") or []
+            )
+            fwd_symbols = normalize_symbol_list_for_exchange(
+                exchange, payload.get("fwd_trade_symbols") or []
+            )
+            bwd_symbols = normalize_symbol_list_for_exchange(
+                exchange, payload.get("bwd_trade_symbols") or []
+            )
 
             rds = self.server.context.redis_client
             try:
