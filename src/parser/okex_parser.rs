@@ -5,6 +5,7 @@ use crate::mkt_msg::{
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
+use log::info;
 use std::collections::HashSet;
 use tokio::sync::mpsc;
 
@@ -327,6 +328,10 @@ impl OkexDerivativesMetricsParser {
                         next_funding_time_str.parse::<i64>(),
                         timestamp_str.parse::<i64>(),
                     ) {
+                        info!(
+                            "[OKEx][funding-rate] instId={} symbol={} rate={} next_time={} ts={}",
+                            inst_id, symbol, funding_rate, next_funding_time, timestamp
+                        );
                         // Build FundingRate message (prediction no longer embedded)
                         let funding_rate_msg = FundingRateMsg::create(
                             symbol,
