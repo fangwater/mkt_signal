@@ -4,8 +4,9 @@
 //! or `XarbDecision` (cross-venue xarb), based on a startup-selected branch.
 
 use anyhow::Result;
-use log::warn;
-use std::cell::OnceCell;
+use log::{info, warn};
+use std::cell::{OnceCell, RefCell};
+use std::time::{Duration, Instant};
 
 use crate::signal::common::TradingVenue;
 use crate::funding_rate::RateFetcher;
@@ -18,6 +19,62 @@ pub enum DecisionBranch {
 
 thread_local! {
     static DECISION_BRANCH: OnceCell<DecisionBranch> = OnceCell::new();
+    static DECISION_SKIP_NOT_READY: RefCell<DecisionSkipNotReadyStats> =
+        RefCell::new(DecisionSkipNotReadyStats::default());
+}
+
+#[derive(Debug)]
+struct DecisionSkipNotReadyStats {
+    last_log: Instant,
+    skipped: u64,
+    last_open_symbol: String,
+    last_hedge_symbol: String,
+    last_open_venue: Option<TradingVenue>,
+    last_hedge_venue: Option<TradingVenue>,
+}
+
+impl Default for DecisionSkipNotReadyStats {
+    fn default() -> Self {
+        Self {
+            last_log: Instant::now(),
+            skipped: 0,
+            last_open_symbol: String::new(),
+            last_hedge_symbol: String::new(),
+            last_open_venue: None,
+            last_hedge_venue: None,
+        }
+    }
+}
+
+fn log_skip_not_ready(
+    open_symbol: &str,
+    hedge_symbol: &str,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) {
+    DECISION_SKIP_NOT_READY.with(|cell| {
+        let mut stats = cell.borrow_mut();
+        stats.skipped += 1;
+        stats.last_open_symbol.clear();
+        stats.last_open_symbol.push_str(open_symbol);
+        stats.last_hedge_symbol.clear();
+        stats.last_hedge_symbol.push_str(hedge_symbol);
+        stats.last_open_venue = Some(open_venue);
+        stats.last_hedge_venue = Some(hedge_venue);
+
+        if stats.last_log.elapsed() >= Duration::from_secs(10) {
+            info!(
+                "DecisionRouter: skip trigger (RateFetcher not ready) count={} last_open_symbol={} last_hedge_symbol={} open_venue={:?} hedge_venue={:?}",
+                stats.skipped,
+                stats.last_open_symbol,
+                stats.last_hedge_symbol,
+                stats.last_open_venue,
+                stats.last_hedge_venue
+            );
+            stats.last_log = Instant::now();
+            stats.skipped = 0;
+        }
+    });
 }
 
 pub fn init_decision_branch(branch: DecisionBranch) -> Result<()> {
@@ -50,6 +107,7 @@ pub fn trigger_decision(
         DecisionBranch::Fr => {
             use super::fr_decision::FrDecision;
             if !RateFetcher::is_initial_ready(hedge_venue) {
+                log_skip_not_ready(open_symbol, hedge_symbol, open_venue, hedge_venue);
                 return;
             }
             FrDecision::with_mut(|decision| {
