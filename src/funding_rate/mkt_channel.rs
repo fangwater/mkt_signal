@@ -406,7 +406,6 @@ impl MktChannel {
                                     stats_unlisted_sample.clear();
                                 }
                             }
-                            }
                         }
                         Ok(None) => tokio::task::yield_now().await,
                         Err(err) => {
