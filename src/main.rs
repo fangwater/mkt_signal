@@ -1,5 +1,6 @@
 use clap::Parser;
 use mkt_signal::app::MktSignalApp;
+use mkt_signal::common::mkt_cfg::home_mkt_cfg_path;
 use mkt_signal::cfg::Config;
 use mkt_signal::signal::common::TradingVenue;
 use tokio::sync::OnceCell;
@@ -21,8 +22,8 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let venue = args.venue;
 
-    // 固定配置文件路径
-    let config_path = "config/mkt_cfg.yaml";
+    // 固定配置文件路径: /home/<user>/config/mkt_cfg.yaml
+    let config_path = home_mkt_cfg_path()?.to_string_lossy().to_string();
 
     static CFG: OnceCell<Config> = OnceCell::const_new();
 
@@ -31,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
             .await
     }
 
-    let config = get_config(config_path, venue).await;
+    let config = get_config(&config_path, venue).await;
 
     // 资金费率管理器已移除：预测/借贷逻辑在策略进程内处理
 

@@ -1,8 +1,9 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use log::{error, info};
 use mkt_signal::common::binance_account_mode::{BinanceAccountMode, init_binance_account_mode};
 use mkt_signal::common::exchange::Exchange;
+use mkt_signal::common::mkt_cfg::{home_mkt_cfg_path, load_local_ips_from_path};
 use mkt_signal::{ApiKey, TradeEngine};
 use mkt_signal::trade_engine::config::RestConstants;
 use hmac::{Hmac, Mac};
@@ -44,11 +45,6 @@ struct Args {
     /// Target exchange (binance, okex, bybit, bitget, gate)
     #[arg(long, value_enum)]
     exchange: TradeEngineTarget,
-
-    /// Local IP addresses for outbound connections (comma-separated)
-    /// Default: "172.31.33.133,172.31.46.90"
-    #[arg(long, value_delimiter = ',')]
-    local_ips: Option<Vec<IpAddr>>,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -238,22 +234,22 @@ async fn main() -> Result<()> {
         None
     };
 
-    // 使用命令行参数或默认 IP 列表
-    let local_ips = args.local_ips.unwrap_or_else(|| {
-        use mkt_signal::DEFAULT_LOCAL_IPS;
-        let ips: Vec<IpAddr> = DEFAULT_LOCAL_IPS
-            .iter()
-            .filter_map(|s| s.parse().ok())
-            .collect();
-        info!(
-            "using default local IPs: {}",
-            ips.iter()
-                .map(|ip| ip.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        ips
-    });
+    // 从 /home/<user>/config/mkt_cfg.yaml 解析
+    let cfg_path = home_mkt_cfg_path()?;
+    let (primary_ip_raw, secondary_ip_raw) = load_local_ips_from_path(&cfg_path).await?;
+    let primary_ip: IpAddr = primary_ip_raw
+        .parse()
+        .with_context(|| format!("invalid primary_local_ip: {}", primary_ip_raw))?;
+    let secondary_ip: IpAddr = secondary_ip_raw
+        .parse()
+        .with_context(|| format!("invalid secondary_local_ip: {}", secondary_ip_raw))?;
+    info!(
+        "using local IPs from {}: {}, {}",
+        cfg_path.display(),
+        primary_ip,
+        secondary_ip
+    );
+    let local_ips = vec![primary_ip, secondary_ip];
 
     if !local_ips.is_empty() {
         info!(

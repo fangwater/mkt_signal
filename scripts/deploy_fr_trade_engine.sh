@@ -91,7 +91,7 @@ for script in "${SCRIPTS_TO_SYNC[@]}"; do
   fi
 done
 
-# 当前 trade_engine 使用环境变量/内置常量，无需部署 trade_engine.toml
+# trade_engine 读取 /home/<user>/config/mkt_cfg.yaml 的本地 IP；无需部署额外配置文件
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"
 echo "[INFO] 手动启动: cd $TARGET_DIR && ./scripts/start_trade_engine.sh"

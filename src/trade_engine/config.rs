@@ -49,6 +49,3 @@ impl WsConstants {
     /// Binance UM WebSocket API URL
     pub const BINANCE_UM_WS_URL: &'static str = "wss://ws-fapi.binance.com/ws-fapi/v1";
 }
-
-/// 默认的本地 IP 列表（用于 OKEx 双连接）
-pub const DEFAULT_LOCAL_IPS: [&str; 2] = ["172.31.33.133", "172.31.46.90"];

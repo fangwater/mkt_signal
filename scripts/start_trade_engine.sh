@@ -94,6 +94,7 @@ PROC_NAME="${PM2_NAME:-trade_engine_${dir_tag}}"
 RUST_LOG="${RUST_LOG:-info}"
 
 echo "[INFO] Restarting ${PROC_NAME} (namespace=${NAMESPACE})"
+echo "[INFO] 本地 IP 配置来自 /home/<user>/config/mkt_cfg.yaml"
 npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
 
 RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \

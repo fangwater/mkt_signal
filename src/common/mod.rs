@@ -8,6 +8,7 @@ pub mod ipc_service_name;
 pub mod min_qty_table;
 pub mod mkt_msg;
 pub mod msg_parser;
+pub mod mkt_cfg;
 pub mod redis_client;
 pub mod symbol_util;
 pub mod time_util;

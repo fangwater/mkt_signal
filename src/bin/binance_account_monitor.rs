@@ -6,6 +6,7 @@ use mkt_signal::common::basic_account_msg::{
     BasicPositionMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg,
 };
 use mkt_signal::common::binance_account_mode::{BinanceAccountMode, init_binance_account_mode};
+use mkt_signal::common::mkt_cfg::{home_mkt_cfg_path, load_local_ips_from_path};
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::binance_basic_account_event_parser::BinanceBasicAccountEventParser;
 use mkt_signal::parser::default_parser::Parser;
@@ -89,8 +90,6 @@ async fn main() -> Result<()> {
     const BINANCE_PM_REST: &str = "https://papi.binance.com";
     const BINANCE_STD_WS: &str = "wss://fstream.binance.com/ws";
     const BINANCE_STD_REST: &str = "https://fapi.binance.com";
-    const BINANCE_PRIMARY_IP: &str = "172.31.33.133";
-    const BINANCE_SECONDARY_IP: &str = "172.31.46.90";
     let binance_is_standard = binance_account_mode == BinanceAccountMode::Standard;
     let (ws_base, rest_base, listen_key_path) = if binance_is_standard {
         (BINANCE_STD_WS, BINANCE_STD_REST, "/fapi/v1/listenKey")
@@ -106,12 +105,15 @@ async fn main() -> Result<()> {
 
     // IP and session settings
     const BINANCE_SESSION_MAX_SECS: u64 = 2 * 3600;
-    let primary_ip = BINANCE_PRIMARY_IP.to_string();
-    let secondary_ip = BINANCE_SECONDARY_IP.to_string();
+    let cfg_path = home_mkt_cfg_path()?;
+    let (primary_ip, secondary_ip) = load_local_ips_from_path(&cfg_path).await?;
     let session_max = Some(Duration::from_secs(BINANCE_SESSION_MAX_SECS));
     info!(
-        "Primary IP='{}', Secondary IP='{}', session_max={:?} (hardcoded for Binance PM)",
-        primary_ip, secondary_ip, session_max
+        "Primary IP='{}', Secondary IP='{}', session_max={:?} (mkt_cfg: {})",
+        primary_ip,
+        secondary_ip,
+        session_max,
+        cfg_path.display()
     );
 
     // Start listenKey service

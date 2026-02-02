@@ -22,6 +22,7 @@ use mkt_signal::common::basic_account_msg::{
     get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
     BasicPositionMsg, BasicUmUnrealizedMsg, OkexOrderMsg,
 };
+use mkt_signal::common::mkt_cfg::{home_mkt_cfg_path, load_local_ips_from_path};
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::default_parser::Parser;
 use mkt_signal::parser::okex_account_event_parser::OkexAccountEventParser;
@@ -80,17 +81,18 @@ async fn main() -> Result<()> {
 
     // WebSocket URL 固定，跳过配置
     const OKEX_PM_WS: &str = OkexPrivateWsUrls::PRIVATE;
-    const OKEX_PRIMARY_IP: &str = "172.31.33.133";
-    const OKEX_SECONDARY_IP: &str = "172.31.46.90";
     let ws_url = OKEX_PM_WS.to_string();
 
     // IP 和会话设置
-    let primary_ip = OKEX_PRIMARY_IP.to_string();
-    let secondary_ip = OKEX_SECONDARY_IP.to_string();
+    let cfg_path = home_mkt_cfg_path()?;
+    let (primary_ip, secondary_ip) = load_local_ips_from_path(&cfg_path).await?;
     let session_max = None;
     info!(
-        "Primary IP='{}', Secondary IP='{}', session_max={:?}",
-        primary_ip, secondary_ip, session_max
+        "Primary IP='{}', Secondary IP='{}', session_max={:?} (mkt_cfg: {})",
+        primary_ip,
+        secondary_ip,
+        session_max,
+        cfg_path.display()
     );
 
     // 构建订阅消息 - 同时订阅 SPOT/SWAP 订单和持仓
@@ -114,7 +116,7 @@ async fn main() -> Result<()> {
     let mut primary = spawn_okex_stream_path(
         "primary",
         &ws_url,
-        primary_ip,
+        primary_ip.clone(),
         credentials.clone(),
         subscribe_messages.clone(),
         shutdown_rx.clone(),
@@ -124,7 +126,7 @@ async fn main() -> Result<()> {
     let mut secondary = spawn_okex_stream_path(
         "secondary",
         &ws_url,
-        secondary_ip,
+        secondary_ip.clone(),
         credentials.clone(),
         subscribe_messages.clone(),
         shutdown_rx.clone(),
@@ -166,7 +168,7 @@ async fn main() -> Result<()> {
                     primary = spawn_okex_stream_path(
                         "primary",
                         &ws_url,
-                        OKEX_PRIMARY_IP.to_string(),
+                        primary_ip.clone(),
                         credentials.clone(),
                         subscribe_messages.clone(),
                         shutdown_rx.clone(),
@@ -184,7 +186,7 @@ async fn main() -> Result<()> {
                     secondary = spawn_okex_stream_path(
                         "secondary",
                         &ws_url,
-                        OKEX_SECONDARY_IP.to_string(),
+                        secondary_ip.clone(),
                         credentials.clone(),
                         subscribe_messages.clone(),
                         shutdown_rx.clone(),

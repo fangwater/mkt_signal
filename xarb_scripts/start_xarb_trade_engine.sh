@@ -25,7 +25,7 @@ fi
 
 usage() {
   cat <<'EOF'
-用法: xarb_scripts/start_xarb_trade_engine.sh [--local-ips "ip1,ip2"] [--open-local-ips "ip1,ip2"] [--hedge-local-ips "ip1,ip2"]
+用法: xarb_scripts/start_xarb_trade_engine.sh
 
 说明:
   - 会基于部署目录名推断 open/hedge exchange（目录名需形如 <open>-<hedge>-xarb-...）
@@ -33,10 +33,10 @@ usage() {
       xarb_te_<open>_<hedge>_open   -> trade_engine --exchange <open>
       xarb_te_<open>_<hedge>_hedge  -> trade_engine --exchange <hedge>
   - 若存在 env.sh，会自动 source（用于 API credentials 等）
+  - trade_engine 的本地 IP 从 /home/<user>/config/mkt_cfg.yaml 读取
 
 示例:
   ./xarb_scripts/start_xarb_trade_engine.sh
-  ./xarb_scripts/start_xarb_trade_engine.sh --local-ips "172.31.33.133,172.31.46.90"
 EOF
 }
 
@@ -45,31 +45,11 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-LOCAL_IPS=""
-OPEN_LOCAL_IPS=""
-HEDGE_LOCAL_IPS=""
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --local-ips)
-      LOCAL_IPS="${2:-}"
-      shift 2
-      ;;
-    --open-local-ips)
-      OPEN_LOCAL_IPS="${2:-}"
-      shift 2
-      ;;
-    --hedge-local-ips)
-      HEDGE_LOCAL_IPS="${2:-}"
-      shift 2
-      ;;
-    *)
-      echo "[ERROR] 未知参数: $1"
-      usage
-      exit 1
-      ;;
-  esac
-done
+if [[ $# -gt 0 ]]; then
+  echo "[ERROR] 不支持的参数: $*"
+  usage
+  exit 1
+fi
 
 ENV_FILE="${BASE_DIR}/env.sh"
 if [[ -f "$ENV_FILE" ]]; then
@@ -119,13 +99,9 @@ fi
 pm2_start_one() {
   local side="$1"
   local exchange="$2"
-  local ips="$3"
   local pm2_name="xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${side}"
 
   local args=(--exchange "$exchange")
-  if [[ -n "$ips" ]]; then
-    args+=(--local-ips "$ips")
-  fi
 
   echo "[INFO] Restarting $pm2_name (exchange=$exchange)"
   npx pm2 delete "$pm2_name" >/dev/null 2>&1 || true
@@ -136,15 +112,11 @@ pm2_start_one() {
     "${args[@]}"
 }
 
-open_ips="${OPEN_LOCAL_IPS:-$LOCAL_IPS}"
-hedge_ips="${HEDGE_LOCAL_IPS:-$LOCAL_IPS}"
-
-pm2_start_one "open" "$OPEN_EXCHANGE" "$open_ips"
+pm2_start_one "open" "$OPEN_EXCHANGE"
 sleep 0.5
-pm2_start_one "hedge" "$HEDGE_EXCHANGE" "$hedge_ips"
+pm2_start_one "hedge" "$HEDGE_EXCHANGE"
 
 echo "[INFO] Started:"
 echo "  - xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_open"
 echo "  - xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_hedge"
 echo "[INFO] Logs: npx pm2 logs xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_open"
-

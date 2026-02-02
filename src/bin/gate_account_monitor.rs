@@ -21,6 +21,7 @@ use mkt_signal::common::basic_account_msg::{
     get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
     BasicUmUnrealizedMsg, GateBasicOrderMsg,
 };
+use mkt_signal::common::mkt_cfg::{home_mkt_cfg_path, load_local_ips_from_path};
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::default_parser::Parser;
 use mkt_signal::parser::gate_account_event_parser::GateAccountEventParser;
@@ -77,15 +78,16 @@ async fn main() -> Result<()> {
     let spot_ws_url = GatePrivateWsUrls::SPOT.to_string();
     let futures_ws_url = GatePrivateWsUrls::FUTURES_USDT.to_string();
 
-    // IP 设置（可选，如果需要主备双路）
-    const GATE_PRIMARY_IP: &str = "172.31.33.133";
-    const GATE_SECONDARY_IP: &str = "172.31.46.90";
-    let primary_ip = GATE_PRIMARY_IP.to_string();
-    let secondary_ip = GATE_SECONDARY_IP.to_string();
+    // IP 设置（从 /home/<user>/config/mkt_cfg.yaml 读取）
+    let cfg_path = home_mkt_cfg_path()?;
+    let (primary_ip, secondary_ip) = load_local_ips_from_path(&cfg_path).await?;
     let session_max = None; // Gate.io 没有明确的会话时长限制
     info!(
-        "Primary IP='{}', Secondary IP='{}', session_max={:?}",
-        primary_ip, secondary_ip, session_max
+        "Primary IP='{}', Secondary IP='{}', session_max={:?} (mkt_cfg: {})",
+        primary_ip,
+        secondary_ip,
+        session_max,
+        cfg_path.display()
     );
 
     // 统一账户频道 (unified.asset_detail)
@@ -166,7 +168,7 @@ async fn main() -> Result<()> {
     let mut futures_primary = spawn_gate_stream_path(
         "futures-primary",
         &futures_ws_url,
-        primary_ip,
+        primary_ip.clone(),
         credentials.clone(),
         futures_channels.clone(),
         shutdown_rx.clone(),
@@ -176,7 +178,7 @@ async fn main() -> Result<()> {
     let mut futures_secondary = spawn_gate_stream_path(
         "futures-secondary",
         &futures_ws_url,
-        secondary_ip,
+        secondary_ip.clone(),
         credentials.clone(),
         futures_channels.clone(),
         shutdown_rx.clone(),
@@ -210,7 +212,7 @@ async fn main() -> Result<()> {
                     unified_primary = spawn_gate_stream_path(
                         "unified-primary",
                         &unified_ws_url,
-                        GATE_PRIMARY_IP.to_string(),
+                        primary_ip.clone(),
                         credentials.clone(),
                         unified_channels.clone(),
                         shutdown_rx.clone(),
@@ -228,7 +230,7 @@ async fn main() -> Result<()> {
                     unified_secondary = spawn_gate_stream_path(
                         "unified-secondary",
                         &unified_ws_url,
-                        GATE_SECONDARY_IP.to_string(),
+                        secondary_ip.clone(),
                         credentials.clone(),
                         unified_channels.clone(),
                         shutdown_rx.clone(),
@@ -247,7 +249,7 @@ async fn main() -> Result<()> {
                     spot_primary = spawn_gate_stream_path(
                         "spot-primary",
                         &spot_ws_url,
-                        GATE_PRIMARY_IP.to_string(),
+                        primary_ip.clone(),
                         credentials.clone(),
                         spot_channels.clone(),
                         shutdown_rx.clone(),
@@ -265,7 +267,7 @@ async fn main() -> Result<()> {
                     spot_secondary = spawn_gate_stream_path(
                         "spot-secondary",
                         &spot_ws_url,
-                        GATE_SECONDARY_IP.to_string(),
+                        secondary_ip.clone(),
                         credentials.clone(),
                         spot_channels.clone(),
                         shutdown_rx.clone(),
@@ -284,7 +286,7 @@ async fn main() -> Result<()> {
                     futures_primary = spawn_gate_stream_path(
                         "futures-primary",
                         &futures_ws_url,
-                        GATE_PRIMARY_IP.to_string(),
+                        primary_ip.clone(),
                         credentials.clone(),
                         futures_channels.clone(),
                         shutdown_rx.clone(),
@@ -302,7 +304,7 @@ async fn main() -> Result<()> {
                     futures_secondary = spawn_gate_stream_path(
                         "futures-secondary",
                         &futures_ws_url,
-                        GATE_SECONDARY_IP.to_string(),
+                        secondary_ip.clone(),
                         credentials.clone(),
                         futures_channels.clone(),
                         shutdown_rx.clone(),
