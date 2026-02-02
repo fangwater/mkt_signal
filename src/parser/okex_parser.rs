@@ -8,6 +8,15 @@ use bytes::Bytes;
 use std::collections::HashSet;
 use tokio::sync::mpsc;
 
+fn normalize_okex_symbol(symbol: &str) -> String {
+    let mut upper = symbol.to_ascii_uppercase();
+    if upper.ends_with("-SWAP") && upper.len() > 5 {
+        upper.truncate(upper.len() - 5);
+    }
+    upper.retain(|ch| ch != '-');
+    upper
+}
+
 #[derive(Clone)]
 pub struct OkexSignalParser {
     source: SignalSource,
@@ -73,6 +82,7 @@ impl Parser for OkexKlineParser {
                     .and_then(|arg| arg.get("instId"))
                     .and_then(|inst_id| inst_id.as_str())
                 {
+                    let symbol = normalize_okex_symbol(symbol);
                     // Extract kline data from data array
                     if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
                         if let Some(kline_data) = data_array.first().and_then(|v| v.as_array()) {
@@ -120,7 +130,7 @@ impl Parser for OkexKlineParser {
                                     ) {
                                         // Create kline message
                                         let kline_msg = KlineMsg::create(
-                                            symbol.to_string(),
+                                            symbol.clone(),
                                             open,
                                             high,
                                             low,
@@ -200,6 +210,7 @@ impl OkexDerivativesMetricsParser {
                         if !self.symbols.contains(inst_id) {
                             continue;
                         }
+                        let symbol = normalize_okex_symbol(inst_id);
 
                         for detail in details_array {
                             if let (
@@ -228,7 +239,7 @@ impl OkexDerivativesMetricsParser {
 
                                     // Create liquidation message
                                     let liquidation_msg = LiquidationMsg::create(
-                                        inst_id.to_string(),
+                                        symbol.clone(),
                                         liquidation_side,
                                         size,
                                         price,
@@ -266,13 +277,14 @@ impl OkexDerivativesMetricsParser {
                     data_item.get("markPx").and_then(|v| v.as_str()),
                     data_item.get("ts").and_then(|v| v.as_str()),
                 ) {
+                    let symbol = normalize_okex_symbol(inst_id);
                     // Parse mark price and timestamp
                     if let (Ok(mark_price), Ok(timestamp)) =
                         (mark_px_str.parse::<f64>(), timestamp_str.parse::<i64>())
                     {
                         // Create mark price message
                         let mark_price_msg =
-                            MarkPriceMsg::create(inst_id.to_string(), mark_price, timestamp);
+                            MarkPriceMsg::create(symbol, mark_price, timestamp);
 
                         // Send mark price message
                         if tx.send(mark_price_msg.to_bytes()).is_ok() {
@@ -308,6 +320,7 @@ impl OkexDerivativesMetricsParser {
                     data_item.get("nextFundingTime").and_then(|v| v.as_str()),
                     data_item.get("ts").and_then(|v| v.as_str()),
                 ) {
+                    let symbol = normalize_okex_symbol(inst_id);
                     // Parse funding rate, next funding time and timestamp
                     if let (Ok(funding_rate), Ok(next_funding_time), Ok(timestamp)) = (
                         funding_rate_str.parse::<f64>(),
@@ -316,7 +329,7 @@ impl OkexDerivativesMetricsParser {
                     ) {
                         // Build FundingRate message (prediction no longer embedded)
                         let funding_rate_msg = FundingRateMsg::create(
-                            inst_id.to_string(),
+                            symbol,
                             funding_rate,
                             next_funding_time,
                             timestamp,
@@ -350,13 +363,14 @@ impl OkexDerivativesMetricsParser {
                     data_item.get("idxPx").and_then(|v| v.as_str()),
                     data_item.get("ts").and_then(|v| v.as_str()),
                 ) {
+                    let symbol = normalize_okex_symbol(inst_id);
                     // Parse index price and timestamp
                     if let (Ok(index_price), Ok(timestamp)) =
                         (idx_px_str.parse::<f64>(), timestamp_str.parse::<i64>())
                     {
                         // Create index price message
                         let index_price_msg =
-                            IndexPriceMsg::create(inst_id.to_string(), index_price, timestamp);
+                            IndexPriceMsg::create(symbol, index_price, timestamp);
 
                         // Send index price message
                         if tx.send(index_price_msg.to_bytes()).is_ok() {
@@ -420,6 +434,7 @@ impl OkexTradeParser {
             trade_data.get("side").and_then(|v| v.as_str()),   // 买卖方向
             trade_data.get("ts").and_then(|v| v.as_str()),     // 时间戳
         ) {
+            let symbol = normalize_okex_symbol(symbol);
             // Parse price, size, trade_id and timestamp
             if let (Ok(price), Ok(amount), Ok(trade_id), Ok(timestamp)) = (
                 price_str.parse::<f64>(),
@@ -444,7 +459,7 @@ impl OkexTradeParser {
 
                 // Create trade message
                 let trade_msg =
-                    TradeMsg::create(symbol.to_string(), trade_id, timestamp, side, price, amount);
+                    TradeMsg::create(symbol, trade_id, timestamp, side, price, amount);
 
                 // Send trade message
                 if tx.send(trade_msg.to_bytes()).is_ok() {
@@ -491,6 +506,7 @@ impl Parser for OkexAskBidSpreadParser {
                                         spread_data.get("asks").and_then(|v| v.as_array()),
                                         spread_data.get("ts").and_then(|v| v.as_str()),
                                     ) {
+                                        let symbol = normalize_okex_symbol(symbol);
                                         // Parse timestamp
                                         let timestamp = timestamp_str.parse::<i64>().unwrap_or(0);
 
@@ -535,13 +551,9 @@ impl Parser for OkexAskBidSpreadParser {
                                                             }
 
                                                             // Create spread message
-                                                            let spread_symbol = symbol
-                                                                .strip_suffix("-SWAP")
-                                                                .unwrap_or(symbol)
-                                                                .to_string();
                                                             let spread_msg =
                                                                 AskBidSpreadMsg::create(
-                                                                    spread_symbol,
+                                                                    symbol,
                                                                     timestamp,
                                                                     bid_price,
                                                                     bid_amount,
@@ -727,7 +739,7 @@ impl OkexIncParser {
                         .and_then(|arg| arg.get("instId"))
                         .and_then(|v| v.as_str())
                     {
-                        Some(s) => s.to_string(),
+                        Some(s) => normalize_okex_symbol(s),
                         _ => return 0,
                     };
 
