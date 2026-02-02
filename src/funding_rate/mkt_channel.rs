@@ -10,9 +10,9 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::common::{FundingRateData, Quote};
 use super::symbol_list::SymbolList;
@@ -292,6 +292,13 @@ impl MktChannel {
 
                 info!("订阅盘口: {} ({:?})", service_name, this_venue);
 
+                let mut stats_window_start = Instant::now();
+                let mut stats_total_msgs: u64 = 0;
+                let mut stats_triggerable_msgs: u64 = 0;
+                let mut stats_unique_symbols: HashSet<String> = HashSet::new();
+                let mut stats_unlisted_sample: HashSet<String> = HashSet::new();
+                let mut stats_last_symbol: String = String::new();
+
                 loop {
                     match subscriber.receive() {
                         Ok(Some(sample)) => {
@@ -361,15 +368,44 @@ impl MktChannel {
 
                                 // 盘口更新后触发决策（事件驱动）
                                 if let Some(sym) = symbol_for_decision {
-                                    if should_trigger_decision(&sym) {
+                                    stats_total_msgs += 1;
+                                    stats_last_symbol = sym.clone();
+                                    stats_unique_symbols.insert(sym.clone());
+
+                                    let can_trigger = should_trigger_decision(&sym);
+                                    if can_trigger {
+                                        stats_triggerable_msgs += 1;
                                         super::decision_router::trigger_decision(
                                             &sym,
                                             &sym,
                                             open_venue,
                                             hedge_venue,
                                         );
+                                    } else if stats_unlisted_sample.len() < 10 {
+                                        stats_unlisted_sample.insert(sym.clone());
                                     }
                                 }
+
+                                if stats_window_start.elapsed() >= Duration::from_secs(10) {
+                                    let mut sample: Vec<String> =
+                                        stats_unlisted_sample.iter().cloned().collect();
+                                    sample.sort();
+                                    info!(
+                                        "askbid stats: venue={:?} total_msgs={} triggerable_msgs={} unique_symbols={} last_symbol={} unlisted_sample={}",
+                                        this_venue,
+                                        stats_total_msgs,
+                                        stats_triggerable_msgs,
+                                        stats_unique_symbols.len(),
+                                        stats_last_symbol,
+                                        sample.join(",")
+                                    );
+                                    stats_window_start = Instant::now();
+                                    stats_total_msgs = 0;
+                                    stats_triggerable_msgs = 0;
+                                    stats_unique_symbols.clear();
+                                    stats_unlisted_sample.clear();
+                                }
+                            }
                             }
                         }
                         Ok(None) => tokio::task::yield_now().await,
@@ -418,6 +454,14 @@ impl MktChannel {
 
                 info!("订阅衍生品数据: {}", service_name);
 
+                let mut stats_window_start = Instant::now();
+                let mut stats_funding_msgs: u64 = 0;
+                let mut stats_mark_msgs: u64 = 0;
+                let mut stats_triggerable_msgs: u64 = 0;
+                let mut stats_unique_symbols: HashSet<String> = HashSet::new();
+                let mut stats_unlisted_sample: HashSet<String> = HashSet::new();
+                let mut stats_last_symbol: String = String::new();
+
                 loop {
                     match subscriber.receive() {
                         Ok(Some(sample)) => {
@@ -433,6 +477,9 @@ impl MktChannel {
                                     let symbol_raw = FundingRateMsg::get_symbol(payload);
                                     let symbol = normalize_symbol_key(symbol_raw);
                                     let funding_rate = FundingRateMsg::get_funding_rate(payload);
+                                    stats_funding_msgs += 1;
+                                    stats_last_symbol = symbol.clone();
+                                    stats_unique_symbols.insert(symbol.clone());
 
                                     let symbol_for_decision = {
                                         let mut funding_rates_map = funding_rates.borrow_mut();
@@ -453,13 +500,17 @@ impl MktChannel {
 
                                     // Funding Rate MA 重算后触发决策（事件驱动）
                                     if let Some(sym) = symbol_for_decision {
-                                        if should_trigger_decision(&sym) {
+                                        let can_trigger = should_trigger_decision(&sym);
+                                        if can_trigger {
+                                            stats_triggerable_msgs += 1;
                                             super::decision_router::trigger_decision(
                                                 &sym,
                                                 &sym,
                                                 open_venue,
                                                 hedge_venue,
                                             );
+                                        } else if stats_unlisted_sample.len() < 10 {
+                                            stats_unlisted_sample.insert(sym.clone());
                                         }
                                     }
                                 }
@@ -468,6 +519,7 @@ impl MktChannel {
                                     let symbol_raw = MarkPriceMsg::get_symbol(payload);
                                     let symbol = normalize_symbol_key(symbol_raw);
                                     let mark_price = MarkPriceMsg::get_mark_price(payload);
+                                    stats_mark_msgs += 1;
 
                                     let mut mark_prices_map = mark_prices.borrow_mut();
                                     if let Some(venue_prices) = mark_prices_map.get_mut(&feed_venue)
@@ -482,6 +534,28 @@ impl MktChannel {
                                     }
                                 }
                                 _ => {}
+                            }
+
+                            if stats_window_start.elapsed() >= Duration::from_secs(10) {
+                                let mut sample: Vec<String> =
+                                    stats_unlisted_sample.iter().cloned().collect();
+                                sample.sort();
+                                info!(
+                                    "derivatives stats: venue={:?} funding_msgs={} mark_msgs={} triggerable_msgs={} unique_symbols={} last_symbol={} unlisted_sample={}",
+                                    feed_venue,
+                                    stats_funding_msgs,
+                                    stats_mark_msgs,
+                                    stats_triggerable_msgs,
+                                    stats_unique_symbols.len(),
+                                    stats_last_symbol,
+                                    sample.join(",")
+                                );
+                                stats_window_start = Instant::now();
+                                stats_funding_msgs = 0;
+                                stats_mark_msgs = 0;
+                                stats_triggerable_msgs = 0;
+                                stats_unique_symbols.clear();
+                                stats_unlisted_sample.clear();
                             }
                         }
                         Ok(None) => tokio::task::yield_now().await,
