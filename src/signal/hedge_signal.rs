@@ -65,6 +65,9 @@ pub struct MmHedgeCtx {
     /// Leg symbol
     pub opening_symbol: [u8; 32],
 
+    /// Signal timestamp (microseconds)
+    pub signal_ts: i64,
+
     /// From key length
     pub from_key_len: u32,
 
@@ -253,6 +256,7 @@ impl MmHedgeCtx {
                 ts: 0,
             },
             opening_symbol: [0u8; 32],
+            signal_ts: 0,
             from_key_len: 0,
             from_key: Vec::new(),
             price_offsets: Vec::new(),
@@ -513,6 +517,9 @@ impl SignalBytes for MmHedgeCtx {
             buf.put_f64_le(*offset);
         }
 
+        // Signal timestamp
+        buf.put_i64_le(self.signal_ts);
+
         buf.freeze()
     }
 
@@ -561,6 +568,10 @@ impl SignalBytes for MmHedgeCtx {
             price_offsets.push(offset);
         }
 
+        if bytes.remaining() < 8 {
+            return Err("Not enough bytes for signal_ts".to_string());
+        }
+        let signal_ts = bytes.get_i64_le();
         if bytes.remaining() != 0 {
             return Err("Unexpected trailing bytes for MmHedgeCtx".to_string());
         }
@@ -573,6 +584,7 @@ impl SignalBytes for MmHedgeCtx {
                 ts: opening_ts,
             },
             opening_symbol,
+            signal_ts,
             from_key_len: from_key_len as u32,
             from_key,
             price_offsets,

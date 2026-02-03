@@ -15,6 +15,7 @@ use log::{debug, info, warn};
 use std::any::Any;
 
 const HEDGE_QUERY_INTERVAL_US: i64 = 30_000_000;
+const HEDGE_QUERY_WATCHDOG_US: i64 = 30_000;
 
 #[derive(Debug, Clone)]
 pub struct MmHedgeSnapshot {
@@ -31,8 +32,11 @@ pub struct MarketMakerHedgeStrategy {
     net_qty: f64,
     period_buy_qty: f64,
     period_sell_qty: f64,
+    signal_ts: i64,
     alive_flag: bool,
     next_query_ts_us: i64,
+    pending_query: bool,
+    query_watchdog_due_ts: i64,
 }
 
 impl MarketMakerHedgeStrategy {
@@ -44,8 +48,11 @@ impl MarketMakerHedgeStrategy {
             net_qty: 0.0,
             period_buy_qty: 0.0,
             period_sell_qty: 0.0,
+            signal_ts: 0,
             alive_flag: true,
             next_query_ts_us: now.saturating_add(HEDGE_QUERY_INTERVAL_US),
+            pending_query: false,
+            query_watchdog_due_ts: 0,
         }
     }
 
@@ -66,6 +73,11 @@ impl MarketMakerHedgeStrategy {
     }
 
     fn handle_mm_hedge_signal(&mut self, ctx: MmHedgeCtx) {
+        self.signal_ts = ctx.signal_ts;
+        self.next_query_ts_us = ctx.signal_ts.saturating_add(HEDGE_QUERY_INTERVAL_US);
+        self.pending_query = false;
+        self.query_watchdog_due_ts = 0;
+
         // 打印所有 MM 对冲策略的累积头寸（净头寸 + 买/卖累计）
         let strategy_mgr = MonitorChannel::instance().strategy_mgr();
         let snapshots = strategy_mgr.borrow().mm_hedge_snapshots();
@@ -89,13 +101,35 @@ impl MarketMakerHedgeStrategy {
     }
 
     fn handle_query_timer(&mut self) {
+        if self.next_query_ts_us <= 0 {
+            return;
+        }
+
         let now = get_timestamp_us();
         if now < self.next_query_ts_us {
             return;
         }
 
-        self.next_query_ts_us = now.saturating_add(HEDGE_QUERY_INTERVAL_US);
+        self.send_hedge_query();
+        self.next_query_ts_us = 0;
+    }
 
+    fn handle_query_watchdog(&mut self) {
+        if !self.pending_query {
+            return;
+        }
+        let now = get_timestamp_us();
+        if now < self.query_watchdog_due_ts {
+            return;
+        }
+        warn!(
+            "MarketMakerHedgeStrategy: strategy_id={} symbol={} query watchdog timeout, retry send",
+            self.strategy_id, self.symbol
+        );
+        self.send_hedge_query();
+    }
+
+    fn send_hedge_query(&mut self) {
         // 定时发送对冲查询（只携带 symbol + 期间累计买/卖成交）
         let query_msg = MmHedgeSignalQueryMsg::new(
             &self.symbol,
@@ -109,18 +143,25 @@ impl MarketMakerHedgeStrategy {
                     "MarketMakerHedgeStrategy: strategy_id={} send hedge query ok symbol={}",
                     self.strategy_id, self.symbol
                 );
+                let now = get_timestamp_us();
+                self.pending_query = true;
+                self.query_watchdog_due_ts = now.saturating_add(HEDGE_QUERY_WATCHDOG_US);
             }
             Ok(false) => {
                 warn!(
                     "MarketMakerHedgeStrategy: backward publisher 未配置，无法发送对冲查询 symbol={}",
                     self.symbol
                 );
+                self.pending_query = false;
+                self.query_watchdog_due_ts = 0;
             }
             Err(err) => {
                 warn!(
                     "MarketMakerHedgeStrategy: 发送对冲查询失败 symbol={} err={:#}",
                     self.symbol, err
                 );
+                self.pending_query = false;
+                self.query_watchdog_due_ts = 0;
             }
         }
     }
@@ -198,6 +239,7 @@ impl Strategy for MarketMakerHedgeStrategy {
     fn handle_period_clock(&mut self, _current_tp: i64) {
         if self.is_active() {
             self.handle_query_timer();
+            self.handle_query_watchdog();
         }
     }
 

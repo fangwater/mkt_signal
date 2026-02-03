@@ -1,4 +1,5 @@
 use crate::common::time_util::get_timestamp_us;
+use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
 use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::query_engine_response::QueryEngineResponse;
@@ -194,7 +195,23 @@ impl StrategyManager {
             return id;
         }
         let strategy_id = StrategyManager::generate_strategy_id();
-        let strategy = MarketMakerHedgeStrategy::new(strategy_id, symbol_upper);
+        let mut strategy = MarketMakerHedgeStrategy::new(strategy_id, symbol_upper.clone());
+        let open_venue = MonitorChannel::instance().open_venue();
+        let net_qty = MonitorChannel::instance().get_position_qty(&symbol_upper, open_venue);
+        if net_qty.abs() > 1e-12 {
+            let buy_qty = if net_qty > 0.0 { net_qty } else { 0.0 };
+            let sell_qty = if net_qty < 0.0 { -net_qty } else { 0.0 };
+            strategy.record_fill(net_qty, buy_qty, sell_qty);
+            info!(
+                "MMHedge init: symbol={} venue={:?} net={:.8} buy={:.8} sell={:.8} (seed from position)",
+                symbol_upper, open_venue, net_qty, buy_qty, sell_qty
+            );
+        } else {
+            info!(
+                "MMHedge init: symbol={} venue={:?} net=0.0 (no seed)",
+                symbol_upper, open_venue
+            );
+        }
         self.insert(Box::new(strategy));
         strategy_id
     }
