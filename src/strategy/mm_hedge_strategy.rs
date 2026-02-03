@@ -11,13 +11,14 @@ use crate::strategy::manager::{ForceCloseControl, Strategy};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
-use crate::strategy::trade_engine_response::TradeEngineResponse;
+use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::ws_order_update::WsOrderUpdate;
 use crate::trade_engine::query_parsers::compact_order::{
     CompactOrderQueryResp, COMPACT_ORDER_QUERY_RESP_LEN,
 };
 use crate::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
+use crate::trade_engine::trade_request::TradeRequestType;
 use log::{debug, info, warn};
 use std::any::Any;
 use std::collections::HashMap;
@@ -93,6 +94,25 @@ impl MarketMakerHedgeStrategy {
 
     fn extract_strategy_id(order_id: i64) -> i32 {
         (order_id >> 32) as i32
+    }
+
+    fn cleanup_strategy_orders(&mut self) {
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return;
+        };
+        let mut mgr = order_mgr.borrow_mut();
+        let order_ids = mgr.get_all_ids();
+        for order_id in order_ids {
+            if Self::extract_strategy_id(order_id) != self.strategy_id {
+                continue;
+            }
+            if let Some(order) = mgr.get(order_id) {
+                if !order.status.is_terminal() {
+                    mgr.log_order_details(&order, "对冲订单未达到终结状态被清理", self.strategy_id);
+                }
+            }
+            let _ = mgr.remove(order_id);
+        }
     }
 
     fn try_apply_ws_order_update(&mut self, response: &dyn TradeEngineResponse) -> bool {
@@ -916,7 +936,48 @@ impl Strategy for MarketMakerHedgeStrategy {
     }
 
     fn apply_trade_engine_response(&mut self, response: &dyn TradeEngineResponse) {
-        let _ = self.try_apply_ws_order_update(response);
+        if self.try_apply_ws_order_update(response) {
+            return;
+        }
+        if response.is_request_success() {
+            return;
+        }
+
+        let req_type_enum = match TradeRequestType::try_from(response.req_type()) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        if !matches!(
+            req_type_enum,
+            TradeRequestType::BinanceWsNewUMOrder | TradeRequestType::BinanceWsCancelUMOrder
+        ) {
+            return;
+        }
+
+        let req_type = response.req_type();
+        match response.request_kind() {
+            TradeRequestKind::Open => {
+                warn!(
+                    "MarketMakerHedgeStrategy: strategy_id={} ws open failed: req_type={} status={} code={} client_order_id={}",
+                    self.strategy_id,
+                    req_type,
+                    response.status(),
+                    response.error_code(),
+                    response.client_order_id()
+                );
+            }
+            TradeRequestKind::Cancel => {
+                warn!(
+                    "MarketMakerHedgeStrategy: strategy_id={} ws cancel failed: req_type={} status={} code={} client_order_id={}",
+                    self.strategy_id,
+                    req_type,
+                    response.status(),
+                    response.error_code(),
+                    response.client_order_id()
+                );
+            }
+            TradeRequestKind::Other => {}
+        }
     }
 
     fn apply_query_engine_response(&mut self, response: &dyn QueryEngineResponse) {
@@ -972,5 +1033,12 @@ impl Strategy for MarketMakerHedgeStrategy {
 
     fn is_active(&self) -> bool {
         self.alive_flag
+    }
+}
+
+impl Drop for MarketMakerHedgeStrategy {
+    fn drop(&mut self) {
+        self.alive_flag = false;
+        self.cleanup_strategy_orders();
     }
 }

@@ -79,6 +79,22 @@ impl MarketMakerOpenStrategy {
         (order_id >> 32) as i32
     }
 
+    fn cleanup_strategy_orders(&mut self) {
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return;
+        };
+        let mut mgr = order_mgr.borrow_mut();
+
+        if self.open_order_id != 0 {
+            if let Some(order) = mgr.get(self.open_order_id) {
+                if !order.status.is_terminal() {
+                    mgr.log_order_details(&order, "开仓订单未达到终结状态被清理", self.strategy_id);
+                }
+            }
+            let _ = mgr.remove(self.open_order_id);
+        }
+    }
+
     fn try_apply_ws_order_update(&mut self, response: &dyn TradeEngineResponse) -> bool {
         let client_order_id = response.client_order_id();
         if client_order_id != self.open_order_id {
@@ -1314,5 +1330,11 @@ impl Strategy for MarketMakerOpenStrategy {
 
     fn is_active(&self) -> bool {
         self.alive_flag
+    }
+}
+
+impl Drop for MarketMakerOpenStrategy {
+    fn drop(&mut self) {
+        self.cleanup_strategy_orders();
     }
 }
