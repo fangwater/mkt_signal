@@ -44,6 +44,7 @@ pub struct MarketMakerOpenStrategy {
     open_symbol: String,
     open_order_id: i64,
     open_expire_ts: Option<i64>,
+    signal_ts: i64,
     alive_flag: bool,
     recorded_to_hedge: bool,
     pending_order_query: Option<PendingOrderQueryReason>,
@@ -58,6 +59,7 @@ impl MarketMakerOpenStrategy {
             open_symbol: String::new(),
             open_order_id: 0,
             open_expire_ts: None,
+            signal_ts: 0,
             alive_flag: true,
             recorded_to_hedge: false,
             pending_order_query: None,
@@ -238,6 +240,7 @@ impl MarketMakerOpenStrategy {
         } else {
             None
         };
+        self.signal_ts = ctx.create_ts;
 
         let client_order_id = Self::compose_order_id(self.strategy_id);
         self.open_order_id = client_order_id;
