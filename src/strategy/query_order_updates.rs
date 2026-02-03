@@ -84,10 +84,6 @@ impl OrderUpdate for OrderQueryOrderUpdate {
         self.quantity
     }
 
-    fn last_time_executed_qty(&self) -> f64 {
-        0.0
-    }
-
     fn cumulative_filled_quantity(&self) -> f64 {
         self.cumulative_filled_quantity
     }

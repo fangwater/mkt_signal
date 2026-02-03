@@ -18,7 +18,8 @@ thread_local! {
 
 const TRADE_REQ_PAYLOAD: usize = 4_096;
 const TRADE_RESP_PAYLOAD: usize = 64;
-const TRADE_RESP_HEADER_LEN: usize = 40;
+const TRADE_RESP_HEADER_LEN: usize = 22;
+const TRADE_RESP_TAIL_LEN: usize = 25;
 
 /// TradeEngHub 负责与多个 trade engine 进程进行双向通信
 ///
@@ -219,35 +220,68 @@ impl TradeEngChannel {
 
                     let req_type =
                         u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-                    let exchange =
-                        u32::from_le_bytes([payload[20], payload[21], payload[22], payload[23]]);
-                    let status = u16::from_le_bytes([payload[24], payload[25]]);
-                    // 跳过 2 字节 reserved，再读取 ip_weight 和 order_count
-                    let ip_weight =
-                        u32::from_le_bytes([payload[28], payload[29], payload[30], payload[31]]);
-                    let order_count =
-                        u32::from_le_bytes([payload[32], payload[33], payload[34], payload[35]]);
-                    let error_code =
-                        i32::from_le_bytes([payload[36], payload[37], payload[38], payload[39]]);
                     let client_order_id = i64::from_le_bytes([
-                        payload[12],
-                        payload[13],
-                        payload[14],
-                        payload[15],
-                        payload[16],
-                        payload[17],
-                        payload[18],
-                        payload[19],
+                        payload[4],
+                        payload[5],
+                        payload[6],
+                        payload[7],
+                        payload[8],
+                        payload[9],
+                        payload[10],
+                        payload[11],
                     ]);
-
-                    let response = TradeEngineResponseMessage::new(
+                    let exchange =
+                        u32::from_le_bytes([payload[12], payload[13], payload[14], payload[15]]);
+                    let status = u16::from_le_bytes([payload[16], payload[17]]);
+                    let error_code =
+                        i32::from_le_bytes([payload[18], payload[19], payload[20], payload[21]]);
+                    let mut order_id = 0i64;
+                    let mut order_status_u8 = 0u8;
+                    let mut order_update_time = 0i64;
+                    let mut executed_qty = 0.0f64;
+                    if payload.len() >= TRADE_RESP_HEADER_LEN + TRADE_RESP_TAIL_LEN {
+                        order_id = i64::from_le_bytes([
+                            payload[22],
+                            payload[23],
+                            payload[24],
+                            payload[25],
+                            payload[26],
+                            payload[27],
+                            payload[28],
+                            payload[29],
+                        ]);
+                        order_status_u8 = payload[30];
+                        order_update_time = i64::from_le_bytes([
+                            payload[31],
+                            payload[32],
+                            payload[33],
+                            payload[34],
+                            payload[35],
+                            payload[36],
+                            payload[37],
+                            payload[38],
+                        ]);
+                        executed_qty = f64::from_le_bytes([
+                            payload[39],
+                            payload[40],
+                            payload[41],
+                            payload[42],
+                            payload[43],
+                            payload[44],
+                            payload[45],
+                            payload[46],
+                        ]);
+                    }
+                    let response = TradeEngineResponseMessage::new_with_tail(
                         status,
                         req_type,
                         exchange,
                         client_order_id,
                         error_code,
-                        ip_weight,
-                        order_count,
+                        order_id,
+                        order_status_u8,
+                        order_update_time,
+                        executed_qty,
                     );
 
                     Self::handle_trade_engine_response(&response);

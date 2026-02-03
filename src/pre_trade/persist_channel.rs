@@ -270,16 +270,16 @@ fn serialize_trade_update(trade: &dyn TradeUpdate) -> Bytes {
 /// - time_in_force: u8 (1 byte)
 /// - price: f64 (8 bytes)
 /// - quantity: f64 (8 bytes)
-/// - last_time_executed_qty: f64 (8 bytes)
+/// - last_time_executed_qty: f64 (deprecated, write 0)
 /// - cumulative_filled_quantity: f64 (8 bytes)
 /// - status: u8 (1 byte)
 /// - raw_status: String (4 bytes len + data)
 /// - execution_type: u8 (1 byte)
 /// - raw_execution_type: String (4 bytes len + data)
 /// - trading_venue: u8 (1 byte)
-/// - average_price: Option<f64> (1 byte flag + 8 bytes)
-/// - last_executed_price: Option<f64> (1 byte flag + 8 bytes)
-/// - business_unit: Option<String> (1 byte flag + 4 bytes len + data)
+/// - average_price: Option<f64> (deprecated, write 0 flag)
+/// - last_executed_price: Option<f64> (deprecated, write 0 flag)
+/// - business_unit: Option<String> (deprecated, write 0 flag)
 fn serialize_order_update(order: &dyn OrderUpdate) -> Bytes {
     let mut buf = BytesMut::with_capacity(512);
 
@@ -305,7 +305,8 @@ fn serialize_order_update(order: &dyn OrderUpdate) -> Bytes {
     // 价格数量
     buf.put_f64_le(order.price());
     buf.put_f64_le(order.quantity());
-    buf.put_f64_le(order.last_time_executed_qty());
+    // 兼容旧布局：last_time_executed_qty 已移除，固定写入 0
+    buf.put_f64_le(0.0);
     buf.put_f64_le(order.cumulative_filled_quantity());
 
     // 状态
@@ -319,24 +320,10 @@ fn serialize_order_update(order: &dyn OrderUpdate) -> Bytes {
     // 交易所类型
     buf.put_u8(order.trading_venue() as u8);
 
-    // 可选字段：平均价格
-    if let Some(avg_price) = order.average_price() {
-        buf.put_u8(1);
-        buf.put_f64_le(avg_price);
-    } else {
-        buf.put_u8(0);
-    }
-
-    // 可选字段：最后成交价格
-    if let Some(last_price) = order.last_executed_price() {
-        buf.put_u8(1);
-        buf.put_f64_le(last_price);
-    } else {
-        buf.put_u8(0);
-    }
-
-    // 可选字段：业务单元
-    put_opt_string(&mut buf, order.business_unit());
+    // 兼容旧布局：平均价/最新成交价/业务单元字段已移除，固定写入 0
+    buf.put_u8(0);
+    buf.put_u8(0);
+    buf.put_u8(0);
 
     buf.freeze()
 }

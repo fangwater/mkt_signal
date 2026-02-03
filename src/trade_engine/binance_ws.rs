@@ -42,6 +42,25 @@ fn parse_u16_value(v: &Value) -> Option<u16> {
     None
 }
 
+fn parse_f64_value(v: &Value) -> Option<f64> {
+    if let Some(n) = v.as_f64() {
+        return Some(n);
+    }
+    if let Some(n) = v.as_i64() {
+        return Some(n as f64);
+    }
+    if let Some(n) = v.as_u64() {
+        return Some(n as f64);
+    }
+    if let Some(s) = v.as_str() {
+        let s = s.trim();
+        if let Ok(parsed) = s.parse::<f64>() {
+            return Some(parsed);
+        }
+    }
+    None
+}
+
 fn parse_params(raw: &[u8]) -> Result<BTreeMap<String, String>> {
     let raw_str = std::str::from_utf8(raw).with_context(|| "binance ws params not utf8")?;
     Ok(url::form_urlencoded::parse(raw_str.as_bytes())
@@ -150,4 +169,42 @@ pub fn parse_ws_response(payload: &str) -> Option<BinanceWsResponse> {
         error_msg,
         result,
     })
+}
+
+fn parse_order_status_u8(s: &str) -> Option<u8> {
+    match s.to_uppercase().as_str() {
+        "NEW" => Some(1),
+        "PARTIALLY_FILLED" => Some(2),
+        "FILLED" => Some(3),
+        "CANCELED" | "CANCELLED" => Some(4),
+        "EXPIRED" => Some(5),
+        "EXPIRED_IN_MATCH" => Some(6),
+        _ => None,
+    }
+}
+
+/// Extract compact order info from Binance WS response result.
+/// Returns (order_id, order_status_u8, update_time, executed_qty). Missing fields are returned as 0.
+pub fn extract_order_info(resp: &BinanceWsResponse) -> (i64, u8, i64, f64) {
+    let Some(result) = resp.result.as_ref() else {
+        return (0, 0, 0, 0.0);
+    };
+    let order_id = result
+        .get("orderId")
+        .and_then(parse_i64_value)
+        .unwrap_or(0);
+    let status_u8 = result
+        .get("status")
+        .and_then(|v| v.as_str())
+        .and_then(parse_order_status_u8)
+        .unwrap_or(0);
+    let update_time = result
+        .get("updateTime")
+        .and_then(parse_i64_value)
+        .unwrap_or(0);
+    let executed_qty = result
+        .get("executedQty")
+        .and_then(parse_f64_value)
+        .unwrap_or(0.0);
+    (order_id, status_u8, update_time, executed_qty)
 }

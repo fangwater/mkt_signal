@@ -65,17 +65,29 @@ pub struct MmHedgeCtx {
     /// Leg symbol
     pub opening_symbol: [u8; 32],
 
+    /// Price tick as power of 10 (price_tick = 10^price_tick_exp)
+    pub price_tick_exp: i32,
+
+    /// Qty tick as power of 10 (qty_tick = 10^qty_tick_exp)
+    pub qty_tick_exp: i32,
+
+    /// Price levels in ticks (price = price_list[i] * 10^price_tick_exp)
+    pub price_list: Vec<i32>,
+
+    /// Amount per level in qty ticks (qty = amount_list[i] * 10^qty_tick_exp)
+    pub amount_list: Vec<i64>,
+
     /// Signal timestamp (microseconds)
     pub signal_ts: i64,
+
+    /// Next query timestamp (microseconds)
+    pub next_query_ts: i64,
 
     /// From key length
     pub from_key_len: u32,
 
     /// From key bytes
     pub from_key: Vec<u8>,
-
-    /// Price offset list for limit order placement
-    pub price_offsets: Vec<f64>,
 }
 
 impl ArbHedgeCtx {
@@ -256,10 +268,14 @@ impl MmHedgeCtx {
                 ts: 0,
             },
             opening_symbol: [0u8; 32],
+            price_tick_exp: 0,
+            qty_tick_exp: 0,
+            price_list: Vec::new(),
+            amount_list: Vec::new(),
             signal_ts: 0,
+            next_query_ts: 0,
             from_key_len: 0,
             from_key: Vec::new(),
-            price_offsets: Vec::new(),
         }
     }
 
@@ -506,19 +522,32 @@ impl SignalBytes for MmHedgeCtx {
         buf.put_i64_le(self.opening_leg.ts);
         bytes_helper::write_fixed_bytes(&mut buf, &self.opening_symbol);
 
-        // from_key
-        let from_key_len = self.from_key.len() as u32;
-        buf.put_u32_le(from_key_len);
-        buf.put_slice(&self.from_key);
+        // Price/qty tick exponents
+        buf.put_i32_le(self.price_tick_exp);
+        buf.put_i32_le(self.qty_tick_exp);
 
-        // Price offset list
-        buf.put_u32_le(self.price_offsets.len() as u32);
-        for offset in &self.price_offsets {
-            buf.put_f64_le(*offset);
+        // Price list (ticks)
+        buf.put_u32_le(self.price_list.len() as u32);
+        for price in &self.price_list {
+            buf.put_i32_le(*price);
+        }
+
+        // Amount list (qty ticks)
+        buf.put_u32_le(self.amount_list.len() as u32);
+        for amount in &self.amount_list {
+            buf.put_i64_le(*amount);
         }
 
         // Signal timestamp
         buf.put_i64_le(self.signal_ts);
+
+        // Next query timestamp
+        buf.put_i64_le(self.next_query_ts);
+
+        // from_key
+        let from_key_len = self.from_key.len() as u32;
+        buf.put_u32_le(from_key_len);
+        buf.put_slice(&self.from_key);
 
         buf.freeze()
     }
@@ -534,6 +563,63 @@ impl SignalBytes for MmHedgeCtx {
         let opening_ts = bytes.get_i64_le();
         let opening_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
 
+        if bytes.remaining() < 8 {
+            return Err("Not enough bytes for price/qty tick exponents".to_string());
+        }
+        let price_tick_exp = bytes.get_i32_le();
+        let qty_tick_exp = bytes.get_i32_le();
+
+        if bytes.remaining() < 4 {
+            return Err("Not enough bytes for price_list length".to_string());
+        }
+        let price_len = bytes.get_u32_le() as usize;
+        if bytes.remaining() < price_len.saturating_mul(4) {
+            return Err(format!(
+                "Not enough bytes for price_list: need {}, have {}",
+                price_len.saturating_mul(4),
+                bytes.remaining()
+            ));
+        }
+        let mut price_list = Vec::with_capacity(price_len);
+        for _ in 0..price_len {
+            price_list.push(bytes.get_i32_le());
+        }
+
+        if bytes.remaining() < 4 {
+            return Err("Not enough bytes for amount_list length".to_string());
+        }
+        let amount_len = bytes.get_u32_le() as usize;
+        if bytes.remaining() < amount_len.saturating_mul(8) {
+            return Err(format!(
+                "Not enough bytes for amount_list: need {}, have {}",
+                amount_len.saturating_mul(8),
+                bytes.remaining()
+            ));
+        }
+        let mut amount_list = Vec::with_capacity(amount_len);
+        for _ in 0..amount_len {
+            let amount = bytes.get_i64_le();
+            amount_list.push(amount);
+        }
+
+        if price_list.len() != amount_list.len() {
+            return Err(format!(
+                "price_list/amount_list length mismatch: price_len={} amount_len={}",
+                price_list.len(),
+                amount_list.len()
+            ));
+        }
+
+        if bytes.remaining() < 8 {
+            return Err("Not enough bytes for signal_ts".to_string());
+        }
+        let signal_ts = bytes.get_i64_le();
+
+        if bytes.remaining() < 8 {
+            return Err("Not enough bytes for next_query_ts".to_string());
+        }
+        let next_query_ts = bytes.get_i64_le();
+
         if bytes.remaining() < 4 {
             return Err("Not enough bytes for from_key length".to_string());
         }
@@ -547,31 +633,6 @@ impl SignalBytes for MmHedgeCtx {
         }
         let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
 
-        if bytes.remaining() < 4 {
-            return Err("Not enough bytes for price_offsets length".to_string());
-        }
-        let offsets_len = bytes.get_u32_le() as usize;
-
-        if bytes.remaining() < offsets_len.saturating_mul(8) {
-            return Err(format!(
-                "Not enough bytes for price_offsets: need {}, have {}",
-                offsets_len.saturating_mul(8),
-                bytes.remaining()
-            ));
-        }
-        let mut price_offsets = Vec::with_capacity(offsets_len);
-        for _ in 0..offsets_len {
-            let offset = bytes.get_f64_le();
-            if !offset.is_finite() {
-                return Err("Invalid price_offset value".to_string());
-            }
-            price_offsets.push(offset);
-        }
-
-        if bytes.remaining() < 8 {
-            return Err("Not enough bytes for signal_ts".to_string());
-        }
-        let signal_ts = bytes.get_i64_le();
         if bytes.remaining() != 0 {
             return Err("Unexpected trailing bytes for MmHedgeCtx".to_string());
         }
@@ -584,10 +645,14 @@ impl SignalBytes for MmHedgeCtx {
                 ts: opening_ts,
             },
             opening_symbol,
+            price_tick_exp,
+            qty_tick_exp,
+            price_list,
+            amount_list,
             signal_ts,
+            next_query_ts,
             from_key_len: from_key_len as u32,
             from_key,
-            price_offsets,
         })
     }
 }

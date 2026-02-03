@@ -58,11 +58,6 @@ impl OrderUpdate for GateBasicOrderMsg {
         self.quantity
     }
 
-    fn last_time_executed_qty(&self) -> f64 {
-        // Gate 订单推送里没有 last_fill_qty，这里沿用 OKX 的处理：返回累计成交量
-        self.cumulative_filled_quantity
-    }
-
     fn cumulative_filled_quantity(&self) -> f64 {
         self.cumulative_filled_quantity
     }
@@ -77,14 +72,6 @@ impl OrderUpdate for GateBasicOrderMsg {
 
     fn trading_venue(&self) -> TradingVenue {
         map_trading_venue(self.venue)
-    }
-
-    fn last_executed_price(&self) -> Option<f64> {
-        if self.last_executed_price > 0.0 {
-            Some(self.last_executed_price)
-        } else {
-            None
-        }
     }
 }
 

@@ -14,6 +14,7 @@ use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::trade_update::TradeUpdate;
+use crate::strategy::ws_order_update::WsOrderUpdate;
 use crate::trade_engine::query_parsers::compact_order::{
     CompactOrderQueryResp, COMPACT_ORDER_QUERY_RESP_LEN,
 };
@@ -76,6 +77,27 @@ impl MarketMakerOpenStrategy {
     /// 从订单ID中提取策略ID
     fn extract_strategy_id(order_id: i64) -> i32 {
         (order_id >> 32) as i32
+    }
+
+    fn try_apply_ws_order_update(&mut self, response: &dyn TradeEngineResponse) -> bool {
+        let client_order_id = response.client_order_id();
+        if client_order_id != self.open_order_id {
+            return false;
+        }
+        let order_mgr = MonitorChannel::instance().order_manager();
+        let order_mgr = order_mgr.borrow();
+        let Some(order) = order_mgr.get(client_order_id) else {
+            warn!(
+                "MarketMakerOpenStrategy: strategy_id={} ws order update missing local order: client_order_id={}",
+                self.strategy_id, client_order_id
+            );
+            return false;
+        };
+        let Some(update) = WsOrderUpdate::from_trade_response(response, &order) else {
+            return false;
+        };
+        self.apply_order_update_with_record(&update);
+        true
     }
 
     fn handle_mm_open_signal(&mut self, ctx: MmOpenCtx) {
@@ -1155,6 +1177,10 @@ impl Strategy for MarketMakerOpenStrategy {
     }
 
     fn apply_trade_engine_response(&mut self, response: &dyn TradeEngineResponse) {
+        if self.try_apply_ws_order_update(response) {
+            return;
+        }
+
         if response.is_request_success() {
             return;
         }

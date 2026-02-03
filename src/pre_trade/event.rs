@@ -14,11 +14,8 @@ pub struct TradeEngineResponse {
     pub received_at: i64,
     pub payload_len: usize,
     pub req_type: u32,
-    pub local_recv_time: i64,
     pub client_order_id: i64,
     pub exchange: u32,
     pub status: u16,
-    pub ip_used_weight_1m: Option<u32>,
-    pub order_count_1m: Option<u32>,
     pub error_code: i32,
 }

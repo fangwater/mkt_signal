@@ -15,8 +15,18 @@ pub trait TradeEngineResponse {
     fn exchange(&self) -> u32;
     fn client_order_id(&self) -> i64;
     fn error_code(&self) -> i32;
-    fn ip_weight(&self) -> u32;
-    fn order_count(&self) -> u32;
+    fn order_id(&self) -> Option<i64> {
+        None
+    }
+    fn order_status_u8(&self) -> Option<u8> {
+        None
+    }
+    fn order_update_time(&self) -> Option<i64> {
+        None
+    }
+    fn executed_qty(&self) -> Option<f64> {
+        None
+    }
 
     /// Whether the HTTP layer returned 200 OK.
     ///
@@ -140,19 +150,19 @@ mod tests {
 
     #[test]
     fn is_success_requires_http_ok_and_no_error_code() {
-        let ok = TradeEngineResponseMessage::new(200, 1, 1, 123, 0, 0, 0);
+        let ok = TradeEngineResponseMessage::new(200, 1, 1, 123, 0);
         assert!(ok.is_http_ok());
         assert!(ok.is_request_success());
 
-        let ok_ws = TradeEngineResponseMessage::new(206, 1, 1, 123, 0, 0, 0);
+        let ok_ws = TradeEngineResponseMessage::new(206, 1, 1, 123, 0);
         assert!(ok_ws.is_http_ok());
         assert!(ok_ws.is_request_success());
 
-        let okx_err = TradeEngineResponseMessage::new(200, 1, 1, 123, 51006, 0, 0);
+        let okx_err = TradeEngineResponseMessage::new(200, 1, 1, 123, 51006);
         assert!(okx_err.is_http_ok());
         assert!(!okx_err.is_request_success());
 
-        let http_err = TradeEngineResponseMessage::new(400, 1, 1, 123, -2011, 0, 0);
+        let http_err = TradeEngineResponseMessage::new(400, 1, 1, 123, -2011);
         assert!(!http_err.is_http_ok());
         assert!(!http_err.is_request_success());
     }
@@ -160,7 +170,7 @@ mod tests {
     #[test]
     fn detects_binance_cancel_rejected() {
         let binance_ex = crate::common::exchange::Exchange::Binance as u32;
-        let resp = TradeEngineResponseMessage::new(200, 1, binance_ex, 123, -2011, 0, 0);
+        let resp = TradeEngineResponseMessage::new(200, 1, binance_ex, 123, -2011);
         assert!(resp.is_cancel_rejected());
         assert!(resp.is_cancel_not_cancellable());
     }
@@ -168,7 +178,7 @@ mod tests {
     #[test]
     fn detects_okx_cancel_rejected() {
         let okx_ex = crate::common::exchange::Exchange::Okex as u32;
-        let resp = TradeEngineResponseMessage::new(200, 1, okx_ex, 123, 51400, 0, 0);
+        let resp = TradeEngineResponseMessage::new(200, 1, okx_ex, 123, 51400);
         assert!(resp.is_cancel_rejected());
         assert!(resp.is_cancel_not_cancellable());
     }
@@ -176,7 +186,7 @@ mod tests {
     #[test]
     fn detects_okx_canceling_or_settling() {
         let okx_ex = crate::common::exchange::Exchange::Okex as u32;
-        let resp = TradeEngineResponseMessage::new(200, 1, okx_ex, 123, 51410, 0, 0);
+        let resp = TradeEngineResponseMessage::new(200, 1, okx_ex, 123, 51410);
         assert!(resp.is_cancel_rejected());
         assert!(resp.is_cancel_not_cancellable());
     }
@@ -184,7 +194,7 @@ mod tests {
     #[test]
     fn detects_okx_cancel_timeout() {
         let okx_ex = crate::common::exchange::Exchange::Okex as u32;
-        let resp = TradeEngineResponseMessage::new(200, 1, okx_ex, 123, 51412, 0, 0);
+        let resp = TradeEngineResponseMessage::new(200, 1, okx_ex, 123, 51412);
         assert!(resp.is_cancel_rejected());
         assert!(!resp.is_cancel_not_cancellable());
     }
@@ -192,7 +202,7 @@ mod tests {
     #[test]
     fn detects_okx_cancel_not_supported_triggered() {
         let okx_ex = crate::common::exchange::Exchange::Okex as u32;
-        let resp = TradeEngineResponseMessage::new(200, 1, okx_ex, 123, 51416, 0, 0);
+        let resp = TradeEngineResponseMessage::new(200, 1, okx_ex, 123, 51416);
         assert!(resp.is_cancel_rejected());
         assert!(resp.is_cancel_not_cancellable());
     }
@@ -205,8 +215,6 @@ mod tests {
             crate::common::exchange::Exchange::Okex as u32,
             123,
             51511,
-            0,
-            0,
         );
         assert!(okx_new.is_open_request());
         assert!(okx_new.is_open_rejected());
@@ -217,8 +225,6 @@ mod tests {
             crate::common::exchange::Exchange::Okex as u32,
             123,
             51400,
-            0,
-            0,
         );
         assert!(okx_cancel.is_cancel_request());
         assert!(!okx_cancel.is_open_rejected());
@@ -233,8 +239,10 @@ pub struct TradeEngineResponseMessage {
     exchange: u32,
     client_order_id: i64,
     error_code: i32,
-    ip_weight: u32,
-    order_count: u32,
+    order_id: i64,
+    order_status_u8: u8,
+    order_update_time: i64,
+    executed_qty: f64,
 }
 
 impl TradeEngineResponseMessage {
@@ -244,8 +252,6 @@ impl TradeEngineResponseMessage {
         exchange: u32,
         client_order_id: i64,
         error_code: i32,
-        ip_weight: u32,
-        order_count: u32,
     ) -> Self {
         Self {
             status,
@@ -253,9 +259,51 @@ impl TradeEngineResponseMessage {
             exchange,
             client_order_id,
             error_code,
-            ip_weight,
-            order_count,
+            order_id: 0,
+            order_status_u8: 0,
+            order_update_time: 0,
+            executed_qty: 0.0,
         }
+    }
+
+    pub fn new_with_tail(
+        status: u16,
+        req_type: u32,
+        exchange: u32,
+        client_order_id: i64,
+        error_code: i32,
+        order_id: i64,
+        order_status_u8: u8,
+        order_update_time: i64,
+        executed_qty: f64,
+    ) -> Self {
+        Self {
+            status,
+            req_type,
+            exchange,
+            client_order_id,
+            error_code,
+            order_id,
+            order_status_u8,
+            order_update_time,
+            executed_qty,
+        }
+    }
+
+    pub fn order_id_raw(&self) -> i64 {
+        self.order_id
+    }
+
+    pub fn order_status_u8_raw(&self) -> u8 {
+        self.order_status_u8
+    }
+
+    pub fn order_update_time_raw(&self) -> i64 {
+        self.order_update_time
+    }
+
+    pub fn executed_qty_raw(&self) -> f64 {
+        self.executed_qty
     }
 }
 
@@ -280,11 +328,35 @@ impl TradeEngineResponse for TradeEngineResponseMessage {
         self.error_code
     }
 
-    fn ip_weight(&self) -> u32 {
-        self.ip_weight
+    fn order_id(&self) -> Option<i64> {
+        if self.order_id > 0 {
+            Some(self.order_id)
+        } else {
+            None
+        }
     }
 
-    fn order_count(&self) -> u32 {
-        self.order_count
+    fn order_status_u8(&self) -> Option<u8> {
+        if self.order_status_u8 > 0 {
+            Some(self.order_status_u8)
+        } else {
+            None
+        }
+    }
+
+    fn order_update_time(&self) -> Option<i64> {
+        if self.order_update_time > 0 {
+            Some(self.order_update_time)
+        } else {
+            None
+        }
+    }
+
+    fn executed_qty(&self) -> Option<f64> {
+        if self.executed_qty > 0.0 {
+            Some(self.executed_qty)
+        } else {
+            None
+        }
     }
 }

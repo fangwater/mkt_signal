@@ -458,8 +458,10 @@ impl TradeEngine {
                                 status: 503,
                                 body,
                                 exchange: exchange_for_req_worker,
-                                ip_used_weight_1m: None,
-                                order_count_1m: None,
+                                order_id: 0,
+                                order_status_u8: 0,
+                                order_update_time: 0,
+                                executed_qty: 0.0,
                             });
                         }
                     } else {
@@ -514,8 +516,10 @@ impl TradeEngine {
                                     status: outcome.status,
                                     body: outcome.body,
                                     exchange: exchange_for_req_worker,
-                                    ip_used_weight_1m: outcome.ip_used_weight_1m,
-                                    order_count_1m: outcome.order_count_1m,
+                                    order_id: 0,
+                                    order_status_u8: 0,
+                                    order_update_time: 0,
+                                    executed_qty: 0.0,
                                 });
                             }
                             Err(e) => {
@@ -526,8 +530,10 @@ impl TradeEngine {
                                     status: 0,
                                     body: e.to_string(),
                                     exchange: exchange_for_req_worker,
-                                    ip_used_weight_1m: None,
-                                    order_count_1m: None,
+                                    order_id: 0,
+                                    order_status_u8: 0,
+                                    order_update_time: 0,
+                                    executed_qty: 0.0,
                                 });
                             }
                         }

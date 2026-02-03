@@ -15,36 +15,30 @@ pub struct TradeExecOutcome {
     pub status: u16,
     pub body: String,
     pub exchange: Exchange,
-    pub ip_used_weight_1m: Option<u32>,
-    pub order_count_1m: Option<u32>,
+    pub order_id: i64,
+    pub order_status_u8: u8,
+    pub order_update_time: i64,
+    pub executed_qty: f64,
 }
 
-// 固定长度 trade response header（40 bytes），不再携带 raw JSON body。
+// 固定长度 trade response header（22 bytes），不再携带 raw JSON body。
 #[repr(C, align(8))]
 #[derive(Debug, Clone)]
 struct GenericResponseHeader {
     req_type: u32,
-    local_recv_time: i64,
     client_order_id: i64,
     exchange: u32,
     status: u16,
-    reserved: u16,
-    ip_used_weight_1m: u32,
-    order_count_1m: u32,
     error_code: i32,
 }
 
 impl GenericResponseHeader {
     fn to_bytes(&self) -> bytes::Bytes {
-        let mut buf = BytesMut::with_capacity(40);
+        let mut buf = BytesMut::with_capacity(22);
         buf.put_u32_le(self.req_type);
-        buf.put_i64_le(self.local_recv_time);
         buf.put_i64_le(self.client_order_id);
         buf.put_u32_le(self.exchange);
         buf.put_u16_le(self.status);
-        buf.put_u16_le(self.reserved);
-        buf.put_u32_le(self.ip_used_weight_1m);
-        buf.put_u32_le(self.order_count_1m);
         buf.put_i32_le(self.error_code);
         buf.freeze()
     }
@@ -198,22 +192,23 @@ pub fn spawn_response_handle(
                 }
             }
 
-            let now = chrono::Utc::now().timestamp_millis();
             let hdr = GenericResponseHeader {
                 req_type: out.req_type as u32,
-                local_recv_time: now,
                 client_order_id: out.client_order_id,
                 exchange: out.exchange as u32,
                 status: out.status,
-                reserved: 0,
-                ip_used_weight_1m: out.ip_used_weight_1m.unwrap_or(u32::MAX),
-                order_count_1m: out.order_count_1m.unwrap_or(u32::MAX),
                 error_code,
             };
             let hdr_bytes = hdr.to_bytes();
             let mut buf = [0u8; 64];
             let h = hdr_bytes.len().min(buf.len());
             buf[..h].copy_from_slice(&hdr_bytes[..h]);
+            if buf.len() >= h + 25 {
+                buf[h..h + 8].copy_from_slice(&out.order_id.to_le_bytes());
+                buf[h + 8] = out.order_status_u8;
+                buf[h + 9..h + 17].copy_from_slice(&out.order_update_time.to_le_bytes());
+                buf[h + 17..h + 25].copy_from_slice(&out.executed_qty.to_le_bytes());
+            }
             debug!(
                 "publish trade resp header: type={}, status={}, code={}",
                 hdr.req_type, hdr.status, hdr.error_code

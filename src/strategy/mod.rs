@@ -9,5 +9,6 @@ pub mod order_update;
 pub mod query_engine_response;
 pub mod query_order_updates;
 pub mod trade_engine_response;
+pub mod ws_order_update;
 pub mod trade_update;
 pub use manager::{ForceCloseControl, Strategy, StrategyManager};

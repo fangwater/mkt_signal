@@ -58,10 +58,6 @@ impl OrderUpdate for BinanceBasicOrderMsg {
         self.quantity
     }
 
-    fn last_time_executed_qty(&self) -> f64 {
-        0.0
-    }
-
     fn cumulative_filled_quantity(&self) -> f64 {
         self.cumulative_filled_quantity
     }
@@ -76,22 +72,6 @@ impl OrderUpdate for BinanceBasicOrderMsg {
 
     fn trading_venue(&self) -> TradingVenue {
         map_trading_venue(self.venue)
-    }
-
-    fn average_price(&self) -> Option<f64> {
-        if self.average_price > 0.0 {
-            Some(self.average_price)
-        } else {
-            None
-        }
-    }
-
-    fn last_executed_price(&self) -> Option<f64> {
-        if self.last_executed_price > 0.0 {
-            Some(self.last_executed_price)
-        } else {
-            None
-        }
     }
 }
 

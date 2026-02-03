@@ -1,21 +1,30 @@
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
+use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderType, Side};
 use crate::pre_trade::signal_channel::SignalChannel;
-use crate::pre_trade::PersistChannel;
-use crate::signal::common::SignalBytes;
+use crate::pre_trade::{PersistChannel, QueryEngHub, TradeEngHub};
+use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue};
 use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use crate::signal::record::SignalRecordMessage;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::{ForceCloseControl, Strategy};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::query_engine_response::QueryEngineResponse;
+use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use crate::strategy::trade_engine_response::TradeEngineResponse;
 use crate::strategy::trade_update::TradeUpdate;
+use crate::strategy::ws_order_update::WsOrderUpdate;
+use crate::trade_engine::query_parsers::compact_order::{
+    CompactOrderQueryResp, COMPACT_ORDER_QUERY_RESP_LEN,
+};
+use crate::trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 use log::{debug, info, warn};
 use std::any::Any;
+use std::collections::HashMap;
 
 const HEDGE_QUERY_INTERVAL_US: i64 = 30_000_000;
 const HEDGE_QUERY_WATCHDOG_US: i64 = 30_000;
+const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
 
 #[derive(Debug, Clone)]
 pub struct MmHedgeSnapshot {
@@ -23,6 +32,14 @@ pub struct MmHedgeSnapshot {
     pub net_qty: f64,
     pub buy_qty: f64,
     pub sell_qty: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct HedgePlanOrder {
+    pub client_order_id: i64,
+    pub side: Side,
+    pub price: f64,
+    pub qty: f64,
 }
 
 /// 做市对冲策略（每个 symbol 仅一个实例）
@@ -33,10 +50,19 @@ pub struct MarketMakerHedgeStrategy {
     period_buy_qty: f64,
     period_sell_qty: f64,
     signal_ts: i64,
+    order_seq: u32,
+    hedge_plan: Vec<HedgePlanOrder>,
     alive_flag: bool,
     next_query_ts_us: i64,
     pending_query: bool,
     query_watchdog_due_ts: i64,
+    pending_order_queries: HashMap<i64, PendingOrderQueryReason>,
+    order_query_watchdogs: HashMap<i64, i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingOrderQueryReason {
+    OrderWatchdog,
 }
 
 impl MarketMakerHedgeStrategy {
@@ -49,11 +75,42 @@ impl MarketMakerHedgeStrategy {
             period_buy_qty: 0.0,
             period_sell_qty: 0.0,
             signal_ts: 0,
+            order_seq: 0,
+            hedge_plan: Vec::new(),
             alive_flag: true,
             next_query_ts_us: now.saturating_add(HEDGE_QUERY_INTERVAL_US),
             pending_query: false,
             query_watchdog_due_ts: 0,
+            pending_order_queries: HashMap::new(),
+            order_query_watchdogs: HashMap::new(),
         }
+    }
+
+    /// 组合订单ID：高32位为策略ID，低32位为序列号
+    fn compose_order_id(strategy_id: i32, seq: u32) -> i64 {
+        ((strategy_id as i64) << 32) | seq as i64
+    }
+
+    fn extract_strategy_id(order_id: i64) -> i32 {
+        (order_id >> 32) as i32
+    }
+
+    fn try_apply_ws_order_update(&mut self, response: &dyn TradeEngineResponse) -> bool {
+        let client_order_id = response.client_order_id();
+        let order_mgr = MonitorChannel::instance().order_manager();
+        let order_mgr = order_mgr.borrow();
+        let Some(order) = order_mgr.get(client_order_id) else {
+            warn!(
+                "MarketMakerHedgeStrategy: strategy_id={} ws order update missing local order: client_order_id={}",
+                self.strategy_id, client_order_id
+            );
+            return false;
+        };
+        let Some(update) = WsOrderUpdate::from_trade_response(response, &order) else {
+            return false;
+        };
+        self.apply_order_update_with_record(&update);
+        true
     }
 
     /// 累加成交（使用 base qty 口径）
@@ -74,7 +131,7 @@ impl MarketMakerHedgeStrategy {
 
     fn handle_mm_hedge_signal(&mut self, ctx: MmHedgeCtx) {
         self.signal_ts = ctx.signal_ts;
-        self.next_query_ts_us = ctx.signal_ts.saturating_add(HEDGE_QUERY_INTERVAL_US);
+        self.next_query_ts_us = ctx.next_query_ts;
         self.pending_query = false;
         self.query_watchdog_due_ts = 0;
 
@@ -89,11 +146,103 @@ impl MarketMakerHedgeStrategy {
         }
         let from_key = String::from_utf8_lossy(&ctx.from_key).to_string();
         info!(
-            "MMHedge ctx: symbol={} offsets_len={} from_key='{}'",
+            "MMHedge ctx: symbol={} price_tick_exp={} qty_tick_exp={} price_levels={} amount_levels={} signal_ts={} next_query_ts={} from_key='{}'",
             ctx.get_opening_symbol(),
-            ctx.price_offsets.len(),
+            ctx.price_tick_exp,
+            ctx.qty_tick_exp,
+            ctx.price_list.len(),
+            ctx.amount_list.len(),
+            ctx.signal_ts,
+            ctx.next_query_ts,
             from_key
         );
+
+        let net_qty = self.net_qty;
+        let hedge_side = if net_qty > 0.0 {
+            Some(Side::Sell)
+        } else if net_qty < 0.0 {
+            Some(Side::Buy)
+        } else {
+            None
+        };
+
+        let price_tick = 10f64.powi(ctx.price_tick_exp);
+        let qty_tick = 10f64.powi(ctx.qty_tick_exp);
+        let mut remaining_qty = net_qty.abs();
+        let mut total_qty = 0.0;
+        let mut total_usdt = 0.0;
+
+        self.hedge_plan.clear();
+        if let Some(hedge_side) = hedge_side {
+            for (price_tick_level, amount_tick) in
+                ctx.price_list.iter().zip(ctx.amount_list.iter())
+            {
+                if remaining_qty <= 0.0 {
+                    break;
+                }
+                let level_qty = (*amount_tick as f64) * qty_tick;
+                if level_qty <= 0.0 {
+                    continue;
+                }
+                if remaining_qty + 1e-12 < level_qty {
+                    break;
+                }
+                let level_price = (*price_tick_level as f64) * price_tick;
+                if self.order_seq >= u32::MAX {
+                    self.order_seq = 1;
+                } else {
+                    self.order_seq += 1;
+                    if self.order_seq == 0 {
+                        self.order_seq = 1;
+                    }
+                }
+                let client_order_id = Self::compose_order_id(self.strategy_id, self.order_seq);
+                self.hedge_plan.push(HedgePlanOrder {
+                    client_order_id,
+                    side: hedge_side,
+                    price: level_price,
+                    qty: level_qty,
+                });
+                remaining_qty -= level_qty;
+                total_qty += level_qty;
+                total_usdt += level_price * level_qty;
+            }
+        }
+
+        let mut table = String::new();
+        table.push_str("+----------------------+--------------+--------------+--------------+\n");
+        table.push_str("| client_order_id      | price        | qty          | usdt         |\n");
+        table.push_str("+----------------------+--------------+--------------+--------------+\n");
+        for row in &self.hedge_plan {
+            let usdt = row.price * row.qty;
+            table.push_str(&format!(
+                "| {:>20} | {:>12.6} | {:>12.6} | {:>12.6} |\n",
+                row.client_order_id, row.price, row.qty, usdt
+            ));
+        }
+        table.push_str("+----------------------+--------------+--------------+--------------+");
+
+        let hedge_side_str = match hedge_side {
+            Some(Side::Buy) => "BUY",
+            Some(Side::Sell) => "SELL",
+            None => "FLAT",
+        };
+        info!(
+            "MMHedge split: symbol={} side={} net_qty={:.8} total_qty={:.8} total_usdt={:.8} remain_qty={:.8}\n{}",
+            ctx.get_opening_symbol(),
+            hedge_side_str,
+            net_qty,
+            total_qty,
+            total_usdt,
+            remaining_qty,
+            table
+        );
+
+        if !self.hedge_plan.is_empty() {
+            let venue = MonitorChannel::instance().open_venue();
+            let symbol = ctx.get_opening_symbol().to_uppercase();
+            self.send_hedge_orders(venue, &symbol);
+        }
 
         // 清空期间累计多空成交
         self.period_buy_qty = 0.0;
@@ -166,6 +315,534 @@ impl MarketMakerHedgeStrategy {
         }
     }
 
+    fn schedule_order_query_watchdog(&mut self, client_order_id: i64) {
+        let due = get_timestamp_us().saturating_add(ORDER_QUERY_WATCHDOG_DELAY_US);
+        self.order_query_watchdogs.insert(client_order_id, due);
+    }
+
+    fn clear_order_query_state(&mut self, client_order_id: i64) {
+        self.order_query_watchdogs.remove(&client_order_id);
+        self.pending_order_queries.remove(&client_order_id);
+    }
+
+    fn handle_order_query_watchdogs(&mut self) {
+        if self.order_query_watchdogs.is_empty() {
+            return;
+        }
+        let now = get_timestamp_us();
+        let mut due_ids: Vec<i64> = Vec::new();
+        for (client_order_id, due_ts) in &self.order_query_watchdogs {
+            if now >= *due_ts {
+                due_ids.push(*client_order_id);
+            }
+        }
+        if due_ids.is_empty() {
+            return;
+        }
+
+        let order_mgr = MonitorChannel::instance().order_manager();
+        for client_order_id in due_ids {
+            self.order_query_watchdogs.remove(&client_order_id);
+            let order_opt = order_mgr.borrow().get(client_order_id);
+            if let Some(order) = order_opt.as_ref().filter(|o| !o.status.is_terminal()) {
+                let scheduled_at = now.saturating_sub(ORDER_QUERY_WATCHDOG_DELAY_US);
+                let waited_ms = now.saturating_sub(scheduled_at).saturating_div(1_000);
+                info!(
+                    "MMHedge OrderWatchdog触发: strategy_id={} client_order_id={} symbol={} status={:?} exch_ord_id={:?} 等待{}ms仍未收到回报，发送order query回补",
+                    self.strategy_id,
+                    client_order_id,
+                    order.symbol,
+                    order.status,
+                    order.exchange_order_id,
+                    waited_ms
+                );
+                self.send_order_query(client_order_id, PendingOrderQueryReason::OrderWatchdog);
+            }
+        }
+    }
+
+    fn build_order_query_request(
+        &self,
+        order: &crate::pre_trade::order_manager::Order,
+        client_query_id: i64,
+    ) -> Result<(String, bytes::Bytes), String> {
+        let exchange = order.venue.trade_engine_exchange().to_string();
+        let exchange_order_id = order.exchange_order_id.filter(|&id| id > 0);
+
+        let req_type = match order.venue {
+            TradingVenue::BinanceMargin => QueryRequestType::BinanceMarginQuery,
+            TradingVenue::BinanceFutures => {
+                if MonitorChannel::instance()
+                    .order_manager()
+                    .borrow()
+                    .binance_is_standard()
+                {
+                    QueryRequestType::BinanceWsUMQuery
+                } else {
+                    QueryRequestType::BinanceUMQuery
+                }
+            }
+            TradingVenue::OkexMargin => QueryRequestType::OkexMarginQuery,
+            TradingVenue::OkexFutures => QueryRequestType::OkexUMQuery,
+            TradingVenue::GateMargin => QueryRequestType::GateUnifiedOrderQuery,
+            TradingVenue::GateFutures => QueryRequestType::GateFuturesOrderQuery,
+            _ => return Err(format!("unsupported venue for query: {:?}", order.venue)),
+        };
+
+        let params = match order.venue {
+            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => {
+                if let Some(order_id) = exchange_order_id {
+                    bytes::Bytes::from(format!("symbol={}&orderId={}", order.symbol, order_id))
+                } else {
+                    bytes::Bytes::from(format!(
+                        "symbol={}&origClientOrderId={}",
+                        order.symbol, client_query_id
+                    ))
+                }
+            }
+            TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
+                let inst_id = crate::pre_trade::order_manager::okex_inst_id_from_symbol(
+                    &order.symbol,
+                    order.venue,
+                )?;
+                if let Some(order_id) = exchange_order_id {
+                    bytes::Bytes::from(format!("instId={}&ordId={}", inst_id, order_id))
+                } else {
+                    bytes::Bytes::from(format!("instId={}&clOrdId={}", inst_id, client_query_id))
+                }
+            }
+            TradingVenue::GateMargin => {
+                let currency_pair =
+                    crate::pre_trade::order_manager::gate_currency_pair_from_symbol(&order.symbol);
+                let Some(order_id) = exchange_order_id else {
+                    return Err(format!(
+                        "gate order query requires exchange_order_id: client_order_id={} venue={:?}",
+                        client_query_id, order.venue
+                    ));
+                };
+                let req_param = serde_json::json!({
+                    "order_id": order_id.to_string(),
+                    "currency_pair": currency_pair,
+                    "account": "cross_margin",
+                });
+                bytes::Bytes::from(req_param.to_string())
+            }
+            TradingVenue::GateFutures => {
+                let Some(order_id) = exchange_order_id else {
+                    return Err(format!(
+                        "gate order query requires exchange_order_id: client_order_id={} venue={:?}",
+                        client_query_id, order.venue
+                    ));
+                };
+                let req_param = serde_json::json!({
+                    "order_id": order_id.to_string(),
+                });
+                bytes::Bytes::from(req_param.to_string())
+            }
+            _ => bytes::Bytes::new(),
+        };
+
+        let now = get_timestamp_us();
+        let req = GenericQueryRequest::create(req_type, now, client_query_id, params);
+        Ok((exchange, req.to_bytes()))
+    }
+
+    fn send_order_query(&mut self, client_order_id: i64, reason: PendingOrderQueryReason) {
+        if self.pending_order_queries.contains_key(&client_order_id) {
+            return;
+        }
+
+        let order_mgr = MonitorChannel::instance().order_manager();
+        let Some(order) = order_mgr.borrow().get(client_order_id) else {
+            warn!(
+                "MarketMakerHedgeStrategy: strategy_id={} send_order_query but local order missing: client_order_id={} reason={:?}",
+                self.strategy_id, client_order_id, reason
+            );
+            return;
+        };
+
+        match self.build_order_query_request(&order, client_order_id) {
+            Ok((exchange, req_bytes)) => {
+                if let Err(err) = QueryEngHub::publish_query_request(exchange.as_str(), &req_bytes)
+                {
+                    warn!(
+                        "MarketMakerHedgeStrategy: strategy_id={} publish order query failed: exchange={} client_order_id={} reason={:?} err={:#}",
+                        self.strategy_id, exchange, client_order_id, reason, err
+                    );
+                    return;
+                }
+                self.pending_order_queries.insert(client_order_id, reason);
+                debug!(
+                    "MarketMakerHedgeStrategy: strategy_id={} order query sent: exchange={} client_order_id={} reason={:?}",
+                    self.strategy_id, exchange, client_order_id, reason
+                );
+            }
+            Err(err) => {
+                warn!(
+                    "MarketMakerHedgeStrategy: strategy_id={} build order query failed: client_order_id={} reason={:?} err={}",
+                    self.strategy_id, client_order_id, reason, err
+                );
+            }
+        }
+    }
+
+    fn parse_compact_order_query_resp(body: &bytes::Bytes) -> Option<CompactOrderQueryResp> {
+        if body.len() < COMPACT_ORDER_QUERY_RESP_LEN {
+            return None;
+        }
+        let parsed = CompactOrderQueryResp::from_bytes_prefix(body.as_ref()).ok()?;
+        if !parsed.executed_qty.is_finite() || parsed.executed_qty < 0.0 {
+            return None;
+        }
+        if parsed.order_id <= 0 {
+            return None;
+        }
+        if OrderExecutionStatus::from_u8(parsed.status_u8).is_none() {
+            return None;
+        }
+        if TimeInForce::from_u8(parsed.time_in_force_u8).is_none() {
+            return None;
+        }
+        if parsed.trade_id < 0 {
+            return None;
+        }
+        if parsed.update_time_ms < 0 {
+            return None;
+        }
+        if parsed.update_time_ms != 0 {
+            let now_ms = get_timestamp_us().saturating_div(1_000);
+            if parsed.update_time_ms < 1_300_000_000_000 {
+                return None;
+            }
+            if parsed.update_time_ms > now_ms.saturating_add(86_400_000) {
+                return None;
+            }
+        }
+        Some(parsed)
+    }
+
+    fn apply_parsed_order_query_updates(
+        &mut self,
+        order: &crate::pre_trade::order_manager::Order,
+        parsed: CompactOrderQueryResp,
+        reason: PendingOrderQueryReason,
+    ) {
+        let event_time_us = parsed.update_time_ms.saturating_mul(1_000);
+        let order_id = parsed.order_id;
+        let tif = TimeInForce::from_u8(parsed.time_in_force_u8).unwrap_or(TimeInForce::GTC);
+
+        if parsed.executed_qty > order.cumulative_filled_quantity + 1e-12 {
+            let status = if parsed.status_u8 == OrderExecutionStatus::Filled.to_u8() {
+                Some(OrderStatus::Filled)
+            } else {
+                Some(OrderStatus::PartiallyFilled)
+            };
+            let trade = OrderQueryTradeUpdate::new(
+                order,
+                order_id,
+                parsed.trade_id,
+                event_time_us,
+                parsed.executed_qty,
+                status,
+            );
+            self.apply_trade_update_with_record(&trade);
+        }
+
+        let status_u8 = parsed.status_u8;
+        if status_u8 == OrderExecutionStatus::Create.to_u8() {
+            let already_live = order.status == OrderExecutionStatus::Create
+                && order.exchange_order_id.is_some_and(|id| id == order_id);
+            if !already_live {
+                let upd = OrderQueryOrderUpdate::new(
+                    order,
+                    order_id,
+                    event_time_us,
+                    OrderStatus::New,
+                    ExecutionType::New,
+                    parsed.executed_qty,
+                    tif,
+                );
+                self.apply_order_update_with_record(&upd);
+            }
+        } else if status_u8 == OrderExecutionStatus::Cancelled.to_u8() {
+            let upd = OrderQueryOrderUpdate::new(
+                order,
+                order_id,
+                event_time_us,
+                OrderStatus::Canceled,
+                ExecutionType::Canceled,
+                parsed.executed_qty,
+                tif,
+            );
+            self.apply_order_update_with_record(&upd);
+        } else if status_u8 == OrderExecutionStatus::Rejected.to_u8() {
+            warn!(
+                "MarketMakerHedgeStrategy: strategy_id={} query_resp rejected: client_order_id={} order_id={} exec_qty={:.8} reason={:?}",
+                self.strategy_id,
+                order.client_order_id,
+                order_id,
+                parsed.executed_qty,
+                reason
+            );
+        }
+
+        info!(
+            "MarketMakerHedgeStrategy: strategy_id={} query回补: client_order_id={} order_id={} exec_qty={:.8} status_u8={} reason={:?}",
+            self.strategy_id,
+            order.client_order_id,
+            order_id,
+            parsed.executed_qty,
+            parsed.status_u8,
+            reason
+        );
+    }
+
+    fn handle_query_result(
+        &mut self,
+        client_order_id: i64,
+        reason: PendingOrderQueryReason,
+        parsed: Option<CompactOrderQueryResp>,
+    ) {
+        let order_mgr = MonitorChannel::instance().order_manager();
+        let Some(order) = order_mgr.borrow().get(client_order_id) else {
+            warn!(
+                "MarketMakerHedgeStrategy: strategy_id={} query_resp but order missing: client_order_id={} reason={:?}",
+                self.strategy_id, client_order_id, reason
+            );
+            return;
+        };
+
+        let Some(parsed) = parsed else {
+            self.schedule_order_query_watchdog(client_order_id);
+            return;
+        };
+
+        let Some(st) = OrderExecutionStatus::from_u8(parsed.status_u8) else {
+            warn!(
+                "MarketMakerHedgeStrategy: strategy_id={} query invalid status_u8={} client_order_id={} reason={:?}",
+                self.strategy_id, parsed.status_u8, client_order_id, reason
+            );
+            return;
+        };
+
+        match st {
+            OrderExecutionStatus::Filled | OrderExecutionStatus::Cancelled => {
+                self.apply_parsed_order_query_updates(&order, parsed, reason);
+            }
+            OrderExecutionStatus::Create => {
+                self.apply_parsed_order_query_updates(&order, parsed, reason);
+            }
+            OrderExecutionStatus::Rejected | OrderExecutionStatus::Commit => {
+                warn!(
+                    "MarketMakerHedgeStrategy: strategy_id={} query shows {:?} client_order_id={} reason={:?}",
+                    self.strategy_id, st, client_order_id, reason
+                );
+            }
+        }
+    }
+
+    fn send_hedge_orders(&mut self, venue: TradingVenue, symbol: &str) {
+        let plans = self.hedge_plan.clone();
+        for plan in plans {
+            let submit_ts = get_timestamp_us();
+            MonitorChannel::instance()
+                .order_manager()
+                .borrow_mut()
+                .create_order(
+                    venue,
+                    plan.client_order_id,
+                    OrderType::Limit,
+                    symbol.to_string(),
+                    plan.side,
+                    plan.qty,
+                    plan.price,
+                    submit_ts,
+                );
+
+            let order = MonitorChannel::instance()
+                .order_manager()
+                .borrow()
+                .get(plan.client_order_id);
+            let Some(order) = order else {
+                warn!(
+                    "MarketMakerHedgeStrategy: strategy_id={} hedge order missing after create: client_order_id={}",
+                    self.strategy_id, plan.client_order_id
+                );
+                continue;
+            };
+            let exchange = order.venue.trade_engine_exchange();
+            match order.get_order_request_bytes() {
+                Ok(req_bin) => {
+                    if let Err(e) = TradeEngHub::publish_order_request(exchange, &req_bin) {
+                        warn!(
+                            "MarketMakerHedgeStrategy: strategy_id={} send hedge order failed: exchange={} client_order_id={} err={}",
+                            self.strategy_id, exchange, plan.client_order_id, e
+                        );
+                    } else {
+                        info!(
+                            "MarketMakerHedgeStrategy: strategy_id={} hedge order sent: exchange={} client_order_id={} side={:?} price={:.8} qty={:.8}",
+                            self.strategy_id,
+                            exchange,
+                            plan.client_order_id,
+                            plan.side,
+                            plan.price,
+                            plan.qty
+                        );
+                        self.schedule_order_query_watchdog(plan.client_order_id);
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "MarketMakerHedgeStrategy: strategy_id={} get hedge order bytes failed: client_order_id={} err={}",
+                        self.strategy_id, plan.client_order_id, e
+                    );
+                }
+            }
+        }
+    }
+
+    fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) {
+        let client_order_id = order_update.client_order_id();
+        self.clear_order_query_state(client_order_id);
+
+        let order_mgr = MonitorChannel::instance().order_manager();
+        let mut order_manager = order_mgr.borrow_mut();
+        let updated = order_manager.update(client_order_id, |order| match order_update.status() {
+            OrderStatus::New => {
+                order.status = OrderExecutionStatus::Create;
+                order.set_exchange_order_id(order_update.order_id());
+                order.set_create_time(order_update.event_time());
+                info!(
+                    "✅ MMHedge订单已挂单: strategy_id={} client_order_id={} exchange_order_id={} symbol={} side={:?} price={:.6} qty={:.4}",
+                    self.strategy_id,
+                    client_order_id,
+                    order_update.order_id(),
+                    order.symbol,
+                    order.side,
+                    order.price,
+                    order.quantity
+                );
+            }
+            OrderStatus::Canceled => {
+                order.status = OrderExecutionStatus::Cancelled;
+                order.cumulative_filled_quantity = order_update.cumulative_filled_quantity();
+                order.set_end_time(order_update.event_time());
+                let filled_qty = order.cumulative_filled_quantity;
+                if filled_qty > 0.0 {
+                    let base_qty = MonitorChannel::instance().qty_to_base(
+                        order.venue,
+                        &order.symbol,
+                        filled_qty,
+                    );
+                    if base_qty > 0.0 {
+                        let signed_qty = match order.side {
+                            Side::Buy => base_qty,
+                            Side::Sell => -base_qty,
+                        };
+                        let before = self.net_qty;
+                        self.net_qty += signed_qty;
+                        info!(
+                            "🚫 MMHedge订单撤销(含部分成交): strategy_id={} client_order_id={} symbol={} side={:?} filled={:.8} base_filled={:.8} net_before={:.8} net_after={:.8}",
+                            self.strategy_id,
+                            client_order_id,
+                            order.symbol,
+                            order.side,
+                            filled_qty,
+                            base_qty,
+                            before,
+                            self.net_qty
+                        );
+                    }
+                } else {
+                    info!(
+                        "🚫 MMHedge订单撤销: strategy_id={} client_order_id={} exchange_order_id={} symbol={} filled=0",
+                        self.strategy_id,
+                        client_order_id,
+                        order_update.order_id(),
+                        order.symbol
+                    );
+                }
+            }
+            OrderStatus::Filled => {
+                order.status = OrderExecutionStatus::Filled;
+                order.set_end_time(order_update.event_time());
+            }
+            OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
+                order.status = OrderExecutionStatus::Rejected;
+                order.set_end_time(order_update.event_time());
+            }
+            OrderStatus::PartiallyFilled => {
+                order.set_exchange_order_id(order_update.order_id());
+                order.set_create_time(order_update.event_time());
+            }
+        });
+        drop(order_manager);
+
+        if !updated {
+            warn!(
+                "MarketMakerHedgeStrategy: strategy_id={} order update not found client_order_id={}",
+                self.strategy_id, client_order_id
+            );
+        }
+    }
+
+    fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
+        let client_order_id = trade.client_order_id();
+        self.clear_order_query_state(client_order_id);
+
+        if trade.order_status() != Some(OrderStatus::Filled) {
+            return;
+        }
+
+        let cumulative_qty = trade.cumulative_filled_quantity();
+        let trade_time = trade.trade_time();
+        let event_time = trade.event_time();
+
+        let order_mgr = MonitorChannel::instance().order_manager();
+        let mut order_manager = order_mgr.borrow_mut();
+        let updated = order_manager.update(client_order_id, |order| {
+            order.cumulative_filled_quantity = cumulative_qty;
+            order.set_filled_time(trade_time);
+            order.status = OrderExecutionStatus::Filled;
+            order.set_end_time(event_time);
+        });
+        drop(order_manager);
+
+        if !updated {
+            warn!(
+                "MarketMakerHedgeStrategy: strategy_id={} trade update order missing client_order_id={}",
+                self.strategy_id, client_order_id
+            );
+            return;
+        }
+
+        let base_qty = MonitorChannel::instance().qty_to_base(
+            trade.trading_venue(),
+            trade.symbol(),
+            cumulative_qty,
+        );
+        if base_qty <= 0.0 {
+            return;
+        }
+        let signed_qty = match trade.side() {
+            Side::Buy => base_qty,
+            Side::Sell => -base_qty,
+        };
+        let before = self.net_qty;
+        self.net_qty += signed_qty;
+        info!(
+            "✅ MMHedge订单完全成交: strategy_id={} client_order_id={} symbol={} side={:?} filled={:.8} base_filled={:.8} net_before={:.8} net_after={:.8}",
+            self.strategy_id,
+            client_order_id,
+            trade.symbol(),
+            trade.side(),
+            cumulative_qty,
+            base_qty,
+            before,
+            self.net_qty
+        );
+    }
+
     fn handle_signal(&mut self, signal: &TradeSignal) {
         match &signal.signal_type {
             SignalType::MMHedge => match MmHedgeCtx::from_bytes(signal.context.clone()) {
@@ -212,8 +889,8 @@ impl Strategy for MarketMakerHedgeStrategy {
         Some(&self.symbol)
     }
 
-    fn is_strategy_order(&self, _order_id: i64) -> bool {
-        false
+    fn is_strategy_order(&self, order_id: i64) -> bool {
+        Self::extract_strategy_id(order_id) == self.strategy_id
     }
 
     fn handle_signal_with_record(&mut self, signal: &TradeSignal) {
@@ -228,18 +905,68 @@ impl Strategy for MarketMakerHedgeStrategy {
         PersistChannel::with(|ch| ch.publish_signal_record(&record));
     }
 
-    fn apply_order_update_with_record(&mut self, _update: &dyn OrderUpdate) {}
+    fn apply_order_update_with_record(&mut self, update: &dyn OrderUpdate) {
+        self.apply_order_update(update);
+        PersistChannel::with(|ch| ch.publish_order_update(update));
+    }
 
-    fn apply_trade_update_with_record(&mut self, _trade: &dyn TradeUpdate) {}
+    fn apply_trade_update_with_record(&mut self, trade: &dyn TradeUpdate) {
+        self.apply_trade_update(trade);
+        PersistChannel::with(|ch| ch.publish_trade_update(trade));
+    }
 
-    fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
+    fn apply_trade_engine_response(&mut self, response: &dyn TradeEngineResponse) {
+        let _ = self.try_apply_ws_order_update(response);
+    }
 
-    fn apply_query_engine_response(&mut self, _response: &dyn QueryEngineResponse) {}
+    fn apply_query_engine_response(&mut self, response: &dyn QueryEngineResponse) {
+        let client_order_id = response.client_query_id();
+        let Some(reason) = self.pending_order_queries.remove(&client_order_id) else {
+            return;
+        };
+
+        let body = response.body_bytes().as_ref();
+        let has_any_byte = body.iter().any(|&b| b != 0);
+        if !has_any_byte {
+            return;
+        }
+
+        let actual_len = body
+            .iter()
+            .rposition(|&b| b != 0)
+            .map(|pos| pos + 1)
+            .unwrap_or(0);
+        if actual_len == 1 && body[0] == b'E' {
+            self.schedule_order_query_watchdog(client_order_id);
+            return;
+        }
+
+        let body_bytes = response.body_bytes();
+        let parsed = Self::parse_compact_order_query_resp(body_bytes);
+        if parsed.is_none() {
+            let text = if actual_len > 0 {
+                String::from_utf8_lossy(&body[..actual_len]).to_string()
+            } else {
+                String::new()
+            };
+            warn!(
+                "MarketMakerHedgeStrategy: strategy_id={} query_resp decode failed: client_order_id={} req_type={} reason={:?} body='{}'",
+                self.strategy_id,
+                client_order_id,
+                response.req_type(),
+                reason,
+                text
+            );
+        }
+
+        self.handle_query_result(client_order_id, reason, parsed);
+    }
 
     fn handle_period_clock(&mut self, _current_tp: i64) {
         if self.is_active() {
             self.handle_query_timer();
             self.handle_query_watchdog();
+            self.handle_order_query_watchdogs();
         }
     }
 

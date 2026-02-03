@@ -710,8 +710,10 @@ impl TradeWsClient {
             status: 200,
             body,
             exchange: self.exchange,
-            ip_used_weight_1m: None,
-            order_count_1m: None,
+            order_id: 0,
+            order_status_u8: 0,
+            order_update_time: 0,
+            executed_qty: 0.0,
         });
     }
 
@@ -731,8 +733,10 @@ impl TradeWsClient {
             status: 429,
             body,
             exchange: self.exchange,
-            ip_used_weight_1m: None,
-            order_count_1m: None,
+            order_id: 0,
+            order_status_u8: 0,
+            order_update_time: 0,
+            executed_qty: 0.0,
         });
     }
 
@@ -882,8 +886,10 @@ impl TradeWsClient {
                                 client_order_id,
                                 status: 400, // Bad Request
                                 body: msg.to_string(),
-                                ip_used_weight_1m: None,
-                                order_count_1m: None,
+                                order_id: 0,
+                                order_status_u8: 0,
+                                order_update_time: 0,
+                                executed_qty: 0.0,
                             };
 
                             let _ = self.resp_tx.send(outcome);
@@ -1092,6 +1098,8 @@ impl TradeWsClient {
         resp: &binance_ws::BinanceWsResponse,
     ) {
         let status = Self::binance_status(resp);
+        let (order_id, order_status_u8, order_update_time, executed_qty) =
+            binance_ws::extract_order_info(resp);
         let body_payload = json!({
             "transport": "ws",
             "exchange": "binance",
@@ -1109,8 +1117,10 @@ impl TradeWsClient {
             status,
             body: body_payload,
             exchange: self.exchange,
-            ip_used_weight_1m: None,
-            order_count_1m: None,
+            order_id,
+            order_status_u8,
+            order_update_time,
+            executed_qty,
         });
     }
 
@@ -1342,8 +1352,10 @@ impl TradeWsClient {
             status: 206,
             body: body_payload,
             exchange: self.exchange,
-            ip_used_weight_1m: None,
-            order_count_1m: None,
+            order_id: 0,
+            order_status_u8: 0,
+            order_update_time: 0,
+            executed_qty: 0.0,
         });
     }
 
@@ -1368,8 +1380,10 @@ impl TradeWsClient {
             status,
             body: body_payload,
             exchange: self.exchange,
-            ip_used_weight_1m: None,
-            order_count_1m: None,
+            order_id: 0,
+            order_status_u8: 0,
+            order_update_time: 0,
+            executed_qty: 0.0,
         });
     }
 
@@ -1425,8 +1439,10 @@ impl TradeWsClient {
             status: 206,
             body: body_payload,
             exchange: self.exchange,
-            ip_used_weight_1m: None,
-            order_count_1m: None,
+            order_id: 0,
+            order_status_u8: 0,
+            order_update_time: 0,
+            executed_qty: 0.0,
         });
     }
 
