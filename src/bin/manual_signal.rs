@@ -1,8 +1,8 @@
 //! Manual mock for `fr_signal`.
 //!
-//! - Publishes manual signals to the same channel as `fr_signal` (`funding_rate_signal` by default).
+//! - Publishes manual signals to the same channel as `trade_signal` (default).
 //! - Subscribes `data_pubs/{open,hedge}/ask_bid_spread` to build bid/ask and compute prices.
-//! - Subscribes `signal_query` (backward channel) and replies with `ArbHedge` pricing, to assist
+//! - Subscribes `trade_query` (backward channel) and replies with `ArbHedge` pricing, to assist
 //!   pre_trade's MM hedge-query flow.
 //! - Serves a tiny web UI for symbol list + manual signal emission.
 
@@ -44,8 +44,8 @@ use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
 use mkt_signal::symbol_match::normalize_symbol_for_whitelist;
 
 const PROCESS_NAME: &str = "manual_signal";
-const DEFAULT_SIGNAL_CHANNEL: &str = "funding_rate_signal";
-const DEFAULT_BACKWARD_CHANNEL: &str = "signal_query";
+const DEFAULT_SIGNAL_CHANNEL: &str = "trade_signal";
+const DEFAULT_BACKWARD_CHANNEL: &str = "trade_query";
 const ASKBID_PAYLOAD: usize = 64;
 
 fn infer_default_venues(exchange: Exchange) -> (TradingVenue, TradingVenue) {

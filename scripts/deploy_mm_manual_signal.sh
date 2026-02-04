@@ -13,7 +13,7 @@ Usage:
 Notes:
   - Default target dir: $HOME/<exchange>_mm_<trade|test>/
   - --env-suffix overrides the default suffix (e.g. beta -> <exchange>_mm_beta)
-  - manual_mm_signal.yaml will be copied to target dir.
+  - config/manual_mm_signal.yaml will be copied to target dir.
 USAGE
 }
 
@@ -135,8 +135,9 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
   chmod +x "$TARGET_DIR/$BIN_NAME"
 fi
 
-if [[ -f "$ROOT_DIR/manual_mm_signal.yaml" ]]; then
-  rsync -a "$ROOT_DIR/manual_mm_signal.yaml" "$TARGET_DIR/"
+if [[ -f "$ROOT_DIR/config/manual_mm_signal.yaml" ]]; then
+  mkdir -p "$TARGET_DIR/config"
+  rsync -a "$ROOT_DIR/config/manual_mm_signal.yaml" "$TARGET_DIR/config/"
 fi
 
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then
@@ -148,7 +149,7 @@ if [[ "$DO_SCRIPTS" -eq 1 ]]; then
     fi
   done
   mkdir -p "$TARGET_DIR/scripts"
-  for script in sync_mm_symbol_list.py print_mm_symbol_list.py; do
+  for script in sync_mm_symbol_list.py print_mm_symbol_list.py sync_mm_strategy_params.py print_mm_strategy_params.py; do
     if [[ -f "$ROOT_DIR/scripts/$script" ]]; then
       rsync -a "$ROOT_DIR/scripts/$script" "$TARGET_DIR/scripts/"
       chmod +x "$TARGET_DIR/scripts/$script"

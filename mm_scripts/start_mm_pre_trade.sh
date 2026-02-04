@@ -31,13 +31,13 @@ Usage:
   mm_scripts/start_mm_pre_trade.sh [--venue <binance-futures>] [--config <path>]
 
 Notes:
-  - If --venue not provided, try to read venue from config (default: manual_mm_signal.yaml).
+  - If --venue not provided, try to read venue from config (default: config/manual_mm_signal.yaml).
   - If still missing, infer exchange from dir name and default to <exchange>-futures.
 USAGE
 }
 
 VENUE=""
-CONFIG_PATH="${BASE_DIR}/manual_mm_signal.yaml"
+CONFIG_PATH="${BASE_DIR}/config/manual_mm_signal.yaml"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --venue)

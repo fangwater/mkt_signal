@@ -31,11 +31,11 @@ Usage:
   mm_scripts/start_manual_mm_signal.sh [--config <path>]
 
 Notes:
-  - Default config: manual_mm_signal.yaml in base dir.
+  - Default config: config/manual_mm_signal.yaml in base dir.
 USAGE
 }
 
-CONFIG_PATH="${BASE_DIR}/manual_mm_signal.yaml"
+CONFIG_PATH="${BASE_DIR}/config/manual_mm_signal.yaml"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --config)

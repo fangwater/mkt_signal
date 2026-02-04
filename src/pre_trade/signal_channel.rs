@@ -23,11 +23,11 @@ thread_local! {
     static SIGNAL_CHANNEL: OnceCell<SignalChannel> = OnceCell::new();
 }
 
-/// 默认信号频道名称（与 fr_signal 的发布频道一致）
-pub const DEFAULT_SIGNAL_CHANNEL: &str = "funding_rate_signal";
+/// 默认信号频道名称（与 trade_signal 的发布频道一致）
+pub const DEFAULT_SIGNAL_CHANNEL: &str = "trade_signal";
 
 /// 默认反向信号频道名称
-pub const DEFAULT_BACKWARD_CHANNEL: &str = "signal_query";
+pub const DEFAULT_BACKWARD_CHANNEL: &str = "trade_query";
 
 /// 信号频道 - 负责信号进程和 pre-trade 之间的双向通讯
 ///

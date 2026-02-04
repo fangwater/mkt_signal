@@ -10,7 +10,9 @@ use mkt_signal::pre_trade::auto_repay_service::AutoRepayService;
 use mkt_signal::pre_trade::params_load::PreTradeParamsLoader;
 use mkt_signal::pre_trade::persist_channel::PersistChannel;
 use mkt_signal::pre_trade::resample_channel::ResampleChannel;
-use mkt_signal::pre_trade::signal_channel::SignalChannel;
+use mkt_signal::pre_trade::signal_channel::{
+    SignalChannel, DEFAULT_BACKWARD_CHANNEL, DEFAULT_SIGNAL_CHANNEL,
+};
 use mkt_signal::pre_trade::PreTrade;
 use mkt_signal::pre_trade::QueryEngHub;
 use mkt_signal::pre_trade::TradeEngHub;
@@ -252,11 +254,15 @@ async fn main() -> Result<()> {
 
             // 4. 初始化 SignalChannel
             info!("Initializing SignalChannel singleton...");
-            if let Err(err) = SignalChannel::initialize("funding_rate_signal", Some("signal_query"))
+            if let Err(err) =
+                SignalChannel::initialize(DEFAULT_SIGNAL_CHANNEL, Some(DEFAULT_BACKWARD_CHANNEL))
             {
                 warn!("Failed to initialize SignalChannel: {err:#}");
             } else {
-                info!("SignalChannel initialized on channel: funding_rate_signal");
+                info!(
+                    "SignalChannel initialized on channel: {}",
+                    DEFAULT_SIGNAL_CHANNEL
+                );
             }
 
             // 5. 初始化 ResampleChannel

@@ -31,12 +31,12 @@ Usage:
   mm_scripts/start_mm_trade_engine.sh [exchange] [--config <path>]
 
 Notes:
-  - If exchange not provided, try to read venue from config (default: manual_mm_signal.yaml).
+  - If exchange not provided, try to read venue from config (default: config/manual_mm_signal.yaml).
   - Otherwise infer exchange from dir name.
 USAGE
 }
 
-CONFIG_PATH="${BASE_DIR}/manual_mm_signal.yaml"
+CONFIG_PATH="${BASE_DIR}/config/manual_mm_signal.yaml"
 EXCHANGE="${1:-}"
 shift || true
 

@@ -2,7 +2,7 @@
 //!
 //! - Publishes manual MMOpen signals to the normal signal channel.
 //! - Subscribes ask_bid_spread to build quotes.
-//! - Subscribes backward channel (signal_query) and replies with MMHedge.
+//! - Subscribes backward channel (trade_query) and replies with MMHedge.
 
 use anyhow::{Context, Result};
 use axum::extract::State;
@@ -41,12 +41,10 @@ use mkt_signal::signal::trade_signal::{SignalType, TradeSignal};
 use mkt_signal::signal::venue_min_qty_table::VenueMinQtyTable;
 
 const PROCESS_NAME: &str = "manual_mm_signal";
-const DEFAULT_SIGNAL_CHANNEL: &str = "funding_rate_signal";
-const DEFAULT_BACKWARD_CHANNEL: &str = "signal_query";
+const DEFAULT_SIGNAL_CHANNEL: &str = "trade_signal";
+const DEFAULT_BACKWARD_CHANNEL: &str = "trade_query";
 const DEFAULT_BIND: &str = "0.0.0.0";
 const DEFAULT_PORT: u16 = 6366;
-const DEFAULT_OPEN_TTL_MS: u64 = 120_000;
-const DEFAULT_NEXT_QUERY_DELAY_MS: u64 = 30_000;
 const ASKBID_PAYLOAD: usize = 64;
 const DEFAULT_SYMBOL_RELOAD_SECS: u64 = 60;
 const MM_SYMBOL_NAMESPACE: &str = "mm";
@@ -56,7 +54,7 @@ const MM_SYMBOL_NAMESPACE: &str = "mm";
 #[command(about = "Manual MM signal (web UI + mm hedge query responder)")]
 struct CliArgs {
     /// Config file path
-    #[arg(long, default_value = "manual_mm_signal.yaml")]
+    #[arg(long, default_value = "config/manual_mm_signal.yaml")]
     config: String,
 }
 
@@ -65,12 +63,6 @@ struct ManualMmConfig {
     venue: String,
     port: Option<u16>,
     bind: Option<String>,
-    signal_channel: Option<String>,
-    backward_channel: Option<String>,
-    open_ttl_ms: Option<u64>,
-    order_amount_u: f64,
-    price_offsets: Vec<f64>,
-    next_query_delay_ms: Option<u64>,
     from_key: Option<String>,
 }
 
@@ -170,8 +162,6 @@ struct ConfigResponse {
     venue: TradingVenue,
     bind: String,
     port: u16,
-    signal_channel: String,
-    backward_channel: String,
     default_open_ttl_ms: u64,
     order_amount_u: f64,
     price_offsets: Vec<f64>,
@@ -223,7 +213,7 @@ fn venue_from_slug(raw: &str) -> Option<TradingVenue> {
     }
 }
 
-fn load_config(path: &str) -> Result<AppCfg> {
+async fn load_config(path: &str) -> Result<AppCfg> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("read config failed: {}", path))?;
     let cfg: ManualMmConfig = serde_yaml::from_str(&raw)
@@ -233,26 +223,41 @@ fn load_config(path: &str) -> Result<AppCfg> {
         .with_context(|| format!("invalid venue: {}", cfg.venue))?;
     let port = cfg.port.unwrap_or(DEFAULT_PORT);
     let bind = cfg.bind.unwrap_or_else(|| DEFAULT_BIND.to_string());
-    let signal_channel = cfg
-        .signal_channel
-        .unwrap_or_else(|| DEFAULT_SIGNAL_CHANNEL.to_string());
-    let backward_channel = cfg
-        .backward_channel
-        .unwrap_or_else(|| DEFAULT_BACKWARD_CHANNEL.to_string());
-    let default_open_ttl_ms = cfg.open_ttl_ms.unwrap_or(DEFAULT_OPEN_TTL_MS);
-    let next_query_delay_ms = cfg
-        .next_query_delay_ms
-        .unwrap_or(DEFAULT_NEXT_QUERY_DELAY_MS);
+    let signal_channel = DEFAULT_SIGNAL_CHANNEL.to_string();
+    let backward_channel = DEFAULT_BACKWARD_CHANNEL.to_string();
     let from_key = cfg
         .from_key
         .unwrap_or_else(|| PROCESS_NAME.to_string())
         .into_bytes();
 
-    if !(cfg.order_amount_u > 0.0) {
-        anyhow::bail!("order_amount_u must be > 0");
+    let params_key = format!("mm_strategy_params_{}", venue.data_pub_slug());
+    let mut redis = RedisClient::connect(get_redis_settings())
+        .await
+        .with_context(|| "connect redis failed")?;
+    let params = redis
+        .hgetall_map(&params_key)
+        .await
+        .with_context(|| format!("read redis hash failed: {}", params_key))?;
+    if params.is_empty() {
+        anyhow::bail!("redis hash '{}' is empty; run scripts/sync_mm_strategy_params.py", params_key);
     }
-    if cfg.price_offsets.is_empty() {
-        anyhow::bail!("price_offsets is empty");
+
+    let order_amount_u = parse_required_f64(&params, "order_amount")?;
+    let price_offsets = parse_required_offsets(&params, "open_price_offsets")?;
+    let open_timeout_s = parse_required_u64(&params, "open_order_timeout")?;
+    let next_query_delay_ms = parse_required_u64(&params, "next_query_delay_ms")?;
+    let _hedge_aggressive_seq_threshold =
+        parse_required_u32(&params, "hedge_aggressive_seq_threshold")?;
+    let _max_hedge_price_pct_change = parse_required_f64(&params, "max_hedge_price_pct_change")?;
+    let _signal_cooldown = parse_required_u64(&params, "signal_cooldown")?;
+
+    let default_open_ttl_ms = open_timeout_s.saturating_mul(1000);
+
+    if !(order_amount_u > 0.0) {
+        anyhow::bail!("order_amount must be > 0");
+    }
+    if price_offsets.is_empty() {
+        anyhow::bail!("open_price_offsets is empty");
     }
 
     Ok(AppCfg {
@@ -262,12 +267,45 @@ fn load_config(path: &str) -> Result<AppCfg> {
         signal_channel,
         backward_channel,
         default_open_ttl_ms,
-        order_amount_u: cfg.order_amount_u,
-        price_offsets: cfg.price_offsets,
+        order_amount_u,
+        price_offsets,
         next_query_delay_ms,
         from_key,
         symbol_key_suffix: venue.data_pub_slug().to_string(),
     })
+}
+
+fn parse_required_f64(params: &HashMap<String, String>, key: &str) -> Result<f64> {
+    let raw = params
+        .get(key)
+        .ok_or_else(|| anyhow::anyhow!("missing redis field: {}", key))?;
+    raw.parse::<f64>()
+        .with_context(|| format!("parse redis field '{}' failed: {}", key, raw))
+}
+
+fn parse_required_u64(params: &HashMap<String, String>, key: &str) -> Result<u64> {
+    let raw = params
+        .get(key)
+        .ok_or_else(|| anyhow::anyhow!("missing redis field: {}", key))?;
+    raw.parse::<u64>()
+        .with_context(|| format!("parse redis field '{}' failed: {}", key, raw))
+}
+
+fn parse_required_u32(params: &HashMap<String, String>, key: &str) -> Result<u32> {
+    let raw = params
+        .get(key)
+        .ok_or_else(|| anyhow::anyhow!("missing redis field: {}", key))?;
+    raw.parse::<u32>()
+        .with_context(|| format!("parse redis field '{}' failed: {}", key, raw))
+}
+
+fn parse_required_offsets(params: &HashMap<String, String>, key: &str) -> Result<Vec<f64>> {
+    let raw = params
+        .get(key)
+        .ok_or_else(|| anyhow::anyhow!("missing redis field: {}", key))?;
+    let offsets: Vec<f64> = serde_json::from_str(raw)
+        .with_context(|| format!("parse redis field '{}' failed: {}", key, raw))?;
+    Ok(offsets)
 }
 
 fn get_redis_settings() -> RedisSettings {
@@ -873,8 +911,6 @@ async fn api_config(State(st): State<AppState>) -> impl IntoResponse {
         venue: st.cfg.venue,
         bind: st.cfg.bind.clone(),
         port: st.cfg.port,
-        signal_channel: st.cfg.signal_channel.clone(),
-        backward_channel: st.cfg.backward_channel.clone(),
         default_open_ttl_ms: st.cfg.default_open_ttl_ms,
         order_amount_u: st.cfg.order_amount_u,
         price_offsets: st.cfg.price_offsets.clone(),
@@ -1057,7 +1093,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
       async function loadCfg() {
         const resp = await fetch('/api/config');
         const cfg = await resp.json();
-        cfgEl.textContent = `mm_trade_symbols:${cfg.symbol_key_suffix} venue=${cfg.venue} channel=${cfg.signal_channel} backward=${cfg.backward_channel}`;
+        cfgEl.textContent = `mm_trade_symbols:${cfg.symbol_key_suffix} venue=${cfg.venue}`;
       }
 
       function renderList() {
@@ -1190,7 +1226,7 @@ async fn main() -> Result<()> {
     env_logger::init();
 
     let args = CliArgs::parse();
-    let cfg = load_config(&args.config)?;
+    let cfg = load_config(&args.config).await?;
     let token = CancellationToken::new();
     let token_clone = token.clone();
     tokio::spawn(async move {

@@ -78,11 +78,11 @@ fn base_step_size(
 
 /// 默认信号发布频道名称（发往 pre_trade）
 /// 对应 pre_trade/signal_channel.rs 中的订阅频道
-pub const DEFAULT_SIGNAL_CHANNEL: &str = "funding_rate_signal";
+pub const DEFAULT_SIGNAL_CHANNEL: &str = "trade_signal";
 
 /// 默认反向订阅频道名称（来自 pre_trade 的查询反馈）
 /// 对应 pre_trade/signal_channel.rs 中的 DEFAULT_BACKWARD_CHANNEL
-pub const DEFAULT_BACKWARD_CHANNEL: &str = "signal_query";
+pub const DEFAULT_BACKWARD_CHANNEL: &str = "trade_query";
 
 // ========== 无状态设计 ==========
 // FrDecision 不维护任何状态，所有状态由外部（如 Engine）维护
