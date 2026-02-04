@@ -701,7 +701,7 @@ impl MmHedgeSignalQueryMsg {
         }
         let buy_qty = bytes.get_f64_le();
         let sell_qty = bytes.get_f64_le();
-        if bytes.remaining() != 0 {
+        if bytes.remaining() != 0 && bytes.iter().any(|&b| b != 0) {
             return Err("Unexpected trailing bytes for MmHedgeSignalQueryMsg".to_string());
         }
         Ok(Self {
