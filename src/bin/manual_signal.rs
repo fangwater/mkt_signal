@@ -263,10 +263,8 @@ struct Args {
 }
 
 fn get_redis_settings() -> RedisSettings {
-    let redis_host =
-        std::env::var("FUNDING_RATE_REDIS_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     RedisSettings {
-        host: redis_host,
+        host: "127.0.0.1".to_string(),
         port: 6379,
         db: 0,
         username: None,

@@ -42,18 +42,6 @@ use mkt_signal::symbol_match::normalize_symbol_for_pairing;
 )]
 struct Args {
     #[arg(long)]
-    redis_url: Option<String>,
-    #[arg(long, default_value = "127.0.0.1")]
-    redis_host: String,
-    #[arg(long, default_value_t = 6379)]
-    redis_port: u16,
-    #[arg(long, default_value_t = 0)]
-    redis_db: i64,
-    #[arg(long)]
-    redis_username: Option<String>,
-    #[arg(long)]
-    redis_password: Option<String>,
-    #[arg(long)]
     redis_prefix: Option<String>,
     #[arg(long)]
     params_hash_key: Option<String>,
@@ -278,7 +266,7 @@ async fn main() -> Result<()> {
         log_prefix_str, open_topic, hedge_topic, iceoryx_node
     );
 
-    let redis_settings = build_redis_settings(&args)?;
+    let redis_settings = build_redis_settings(&args);
     let redis_url = redis_settings.connection_url();
 
     // 根据 open/hedge 组合生成独立的 hash key
@@ -395,43 +383,10 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn build_redis_settings(args: &Args) -> Result<RedisSettings> {
+fn build_redis_settings(args: &Args) -> RedisSettings {
     let mut settings = RedisSettings::default();
-    if let Some(url) = &args.redis_url {
-        let parsed =
-            url::Url::parse(url).with_context(|| format!("解析 redis_url 失败: {}", url))?;
-        if let Some(host) = parsed.host_str() {
-            settings.host = host.to_string();
-        }
-        if let Some(port) = parsed.port() {
-            settings.port = port;
-        }
-        if let Some(pass) = parsed.password() {
-            settings.password = Some(pass.to_string());
-        }
-        let user = parsed.username();
-        if !user.is_empty() {
-            settings.username = Some(user.to_string());
-        }
-        let path = parsed.path().trim_start_matches('/');
-        if !path.is_empty() {
-            let db_str = path.split('/').next().unwrap_or(path);
-            if let Ok(db) = db_str.parse::<i64>() {
-                settings.db = db;
-            }
-        }
-        if parsed.scheme() == "rediss" {
-            warn!("rediss:// 暂未启用 TLS，按 redis:// 处理");
-        }
-    } else {
-        settings.host = args.redis_host.clone();
-        settings.port = args.redis_port;
-        settings.db = args.redis_db;
-        settings.username = args.redis_username.clone();
-        settings.password = args.redis_password.clone();
-    }
     settings.prefix = args.redis_prefix.clone();
-    Ok(settings)
+    settings
 }
 
 async fn config_reload_loop(
@@ -934,7 +889,10 @@ async fn fetch_binance_futures_symbols() -> Result<Vec<String>> {
                 return None;
             }
             let base = &upper[..upper.len().saturating_sub(4)];
-            let digit_prefix = base.chars().take_while(|ch| ch.is_ascii_digit()).count();
+            let digit_prefix = base
+                .chars()
+                .take_while(|ch: &char| ch.is_ascii_digit())
+                .count();
             if digit_prefix >= 3 {
                 // 跳过自带乘数的合约（如 1000PEPEUSDT），与现货单位不一致。
                 None

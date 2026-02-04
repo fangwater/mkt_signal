@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -90,11 +89,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--open-venue", help="open 侧 venue（例如 okex-futures）")
     p.add_argument("--hedge-venue", help="hedge 侧 venue（例如 binance-futures）")
     p.add_argument("--env-name", help="环境目录名（例如 okex-binance-xarb-trade）")
-    p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
-    p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
-    p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
-    p.add_argument("--db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
-    p.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
     p.add_argument("--symbol", help="只同步指定 symbol（如 BTCUSDT 或 BTC-USDT）")
     return p.parse_args()
 
@@ -287,11 +281,7 @@ def main() -> int:
         return 2
     key_suffix = f"{open_ex}-{hedge_ex}"
 
-    rds = (
-        redis.from_url(args.redis_url)
-        if args.redis_url
-        else redis.Redis(host=args.host, port=args.port, db=args.db, password=args.password)
-    )
+    rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
     symbols = load_symbol_lists(rds, key_suffix)
     if args.symbol:
@@ -347,7 +337,7 @@ def main() -> int:
     print(f"   成功: {successful_symbols} 个 symbols")
     if skipped_symbols:
         print(f"   跳过: {len(skipped_symbols)} 个 symbols ({', '.join(sorted(set(skipped_symbols)))})")
-    print(f"📍 Redis: {args.host}:{args.port}/{args.db}\n")
+    print("📍 Redis: 127.0.0.1:6379/0")
     return 0
 
 

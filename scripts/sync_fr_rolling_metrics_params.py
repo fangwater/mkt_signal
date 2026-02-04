@@ -20,7 +20,7 @@
 
 示例：
   python scripts/sync_fr_rolling_metrics_params.py --open-venue binance-margin --hedge-venue binance-futures
-  python scripts/sync_fr_rolling_metrics_params.py --open-venue okex-margin --hedge-venue okex-futures --redis-url redis://:pwd@127.0.0.1:6379/0
+  python scripts/sync_fr_rolling_metrics_params.py --open-venue okex-margin --hedge-venue okex-futures
   python scripts/sync_fr_rolling_metrics_params.py --open-venue binance-margin --hedge-venue binance-futures --max-length 200000
   python scripts/sync_fr_rolling_metrics_params.py --open-venue okex-margin --hedge-venue okex-futures --factors-json '
     {"bidask":{"resample_interval_ms":1000,"rolling_window":100000,
@@ -104,11 +104,6 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--open-venue", help="open 侧 venue（如 binance-margin）")
     p.add_argument("--hedge-venue", help="hedge 侧 venue（如 binance-futures）")
-    p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
-    p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
-    p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
-    p.add_argument("--db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
-    p.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
     p.add_argument("--max-length", type=int)
     p.add_argument("--refresh-sec", type=int)
     p.add_argument("--reload-param-sec", type=int)
@@ -245,10 +240,7 @@ def main() -> int:
         print("redis 包未安装，请使用 pip install redis。", file=sys.stderr)
         return 2
 
-    if args.redis_url:
-        rds = redis.from_url(args.redis_url)
-    else:
-        rds = redis.Redis(host=args.host, port=args.port, db=args.db, password=args.password)
+    rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
     open_venue = args.open_venue.strip()
     hedge_venue = args.hedge_venue.strip()

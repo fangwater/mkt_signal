@@ -153,8 +153,6 @@ async fn main() -> Result<()> {
     if let Some(mode) = binance_account_mode {
         info!("BINANCE_ACCOUNT_MODE={}", mode.as_str());
     }
-    info!("Optional env vars: REDIS_URL");
-
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {

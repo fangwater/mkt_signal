@@ -17,6 +17,7 @@ use iceoryx2::service::ipc;
 use log::{info, warn};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use serde_json;
 use std::collections::HashMap;
 use std::fs;
 use std::net::SocketAddr;
@@ -29,6 +30,7 @@ use mkt_signal::common::iceoryx_publisher::SignalPublisher;
 use mkt_signal::common::iceoryx_subscriber::GenericSignalSubscriber;
 use mkt_signal::common::ipc_service_name::build_service_name;
 use mkt_signal::common::mkt_msg::{get_msg_type, AskBidSpreadMsg, MktMsgType};
+use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::funding_rate::common::Quote;
 use mkt_signal::pre_trade::order_manager::{OrderType, Side};
@@ -46,6 +48,8 @@ const DEFAULT_PORT: u16 = 6366;
 const DEFAULT_OPEN_TTL_MS: u64 = 120_000;
 const DEFAULT_NEXT_QUERY_DELAY_MS: u64 = 30_000;
 const ASKBID_PAYLOAD: usize = 64;
+const DEFAULT_SYMBOL_RELOAD_SECS: u64 = 60;
+const MM_SYMBOL_NAMESPACE: &str = "mm";
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "manual_mm_signal")]
@@ -82,6 +86,7 @@ struct AppCfg {
     price_offsets: Vec<f64>,
     next_query_delay_ms: u64,
     from_key: Vec<u8>,
+    symbol_key_suffix: String,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -121,6 +126,8 @@ impl QuoteCache {
 #[derive(Clone)]
 struct AppState {
     cfg: AppCfg,
+    quotes: Arc<RwLock<QuoteCache>>,
+    symbols: Arc<RwLock<SymbolCache>>,
     publish_tx: mpsc::UnboundedSender<PublishCmd>,
 }
 
@@ -170,6 +177,33 @@ struct ConfigResponse {
     price_offsets: Vec<f64>,
     next_query_delay_ms: u64,
     from_key: String,
+    symbol_key_suffix: String,
+}
+
+#[derive(Debug, Default)]
+struct SymbolCache {
+    symbols: Vec<String>,
+    last_reload_ts_us: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct SymbolsResponse {
+    symbols: Vec<String>,
+    last_reload_ts_us: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct QuoteResponse {
+    symbol: String,
+    venue: TradingVenue,
+    bid: f64,
+    ask: f64,
+    ts: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct QuoteQuery {
+    symbol: String,
 }
 
 fn venue_from_slug(raw: &str) -> Option<TradingVenue> {
@@ -232,7 +266,56 @@ fn load_config(path: &str) -> Result<AppCfg> {
         price_offsets: cfg.price_offsets,
         next_query_delay_ms,
         from_key,
+        symbol_key_suffix: venue.data_pub_slug().to_string(),
     })
+}
+
+fn get_redis_settings() -> RedisSettings {
+    RedisSettings {
+        host: "127.0.0.1".to_string(),
+        port: 6379,
+        db: 0,
+        username: None,
+        password: None,
+        prefix: None,
+    }
+}
+
+async fn symbol_list_reload_loop(
+    interval_secs: u64,
+    key_suffix: String,
+    symbols: Arc<RwLock<SymbolCache>>,
+    token: CancellationToken,
+) {
+    let redis = get_redis_settings();
+    let mut interval = tokio::time::interval(Duration::from_secs(interval_secs.max(1)));
+    let trade_key = format!("{MM_SYMBOL_NAMESPACE}_trade_symbols:{key_suffix}");
+    loop {
+        tokio::select! {
+            _ = token.cancelled() => break,
+            _ = interval.tick() => {
+                match RedisClient::connect(redis.clone()).await {
+                    Ok(mut client) => {
+                        let payload = client.get_string(&trade_key).await.ok().flatten();
+                        let Some(value) = payload else {
+                            panic!("missing redis key: {}", trade_key);
+                        };
+                        let list = serde_json::from_str::<Vec<String>>(&value)
+                            .unwrap_or_else(|err| panic!("invalid mm symbol list {}: {}", trade_key, err));
+                        let list: Vec<String> = list
+                            .into_iter()
+                            .map(|s| s.trim().to_uppercase())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                        let mut cache = symbols.write();
+                        cache.symbols = list;
+                        cache.last_reload_ts_us = get_timestamp_us();
+                    }
+                    Err(err) => warn!("manual_mm: redis connect failed: {err:#}"),
+                }
+            }
+        }
+    }
 }
 
 fn min_qty_symbol_key(venue: TradingVenue, symbol: &str) -> String {
@@ -797,7 +880,36 @@ async fn api_config(State(st): State<AppState>) -> impl IntoResponse {
         price_offsets: st.cfg.price_offsets.clone(),
         next_query_delay_ms: st.cfg.next_query_delay_ms,
         from_key: String::from_utf8_lossy(&st.cfg.from_key).to_string(),
+        symbol_key_suffix: st.cfg.symbol_key_suffix.clone(),
     })
+}
+
+async fn api_symbols(State(st): State<AppState>) -> impl IntoResponse {
+    let cache = st.symbols.read();
+    Json(SymbolsResponse {
+        symbols: cache.symbols.clone(),
+        last_reload_ts_us: cache.last_reload_ts_us,
+    })
+}
+
+async fn api_quote(
+    State(st): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<QuoteQuery>,
+) -> impl IntoResponse {
+    let sym = q.symbol.trim().to_uppercase();
+    let quote = st.quotes.read().get_valid(&sym);
+    if let Some(qt) = quote {
+        Json(QuoteResponse {
+            symbol: sym,
+            venue: st.cfg.venue,
+            bid: qt.bid,
+            ask: qt.ask,
+            ts: qt.ts,
+        })
+        .into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "quote unavailable").into_response()
+    }
 }
 
 async fn api_send(
@@ -829,6 +941,8 @@ async fn serve_http(addr: SocketAddr, state: AppState, token: CancellationToken)
     let app = axum::Router::new()
         .route("/", get(index))
         .route("/api/config", get(api_config))
+        .route("/api/symbols", get(api_symbols))
+        .route("/api/quote", get(api_quote))
         .route("/api/send", post(api_send))
         .with_state(state);
 
@@ -870,9 +984,21 @@ const INDEX_HTML: &str = r#"<!doctype html>
       <div class="col box">
         <div class="grid">
           <div>
-            <label class="muted">Symbol</label>
-            <input id="symbol" placeholder="BTCUSDT" />
+            <label class="muted">Search</label>
+            <input id="q" placeholder="e.g. BTCUSDT" />
           </div>
+          <div>
+            <label class="muted">Selected</label>
+            <input id="symbol" placeholder="click from list" />
+          </div>
+        </div>
+        <div style="margin-top:10px;">
+          <div class="muted">Symbols</div>
+          <ul id="list" style="max-height: 420px; overflow: auto; margin:0; padding-left: 18px;"></ul>
+        </div>
+      </div>
+      <div class="col box">
+        <div class="grid">
           <div>
             <label class="muted">Side</label>
             <select id="side">
@@ -911,6 +1037,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
         <div style="margin-top:10px;">
           <button id="send">Send MMOpen</button>
         </div>
+        <div style="margin-top:12px;" class="mono" id="quote"></div>
         <div style="margin-top:10px;">
           <div id="resp" class="muted"></div>
         </div>
@@ -925,11 +1052,48 @@ const INDEX_HTML: &str = r#"<!doctype html>
       const cfgEl = document.getElementById('cfg');
       const logEl = document.getElementById('log');
       const respEl = document.getElementById('resp');
+      const state = { symbols: [], selected: "" };
 
       async function loadCfg() {
         const resp = await fetch('/api/config');
         const cfg = await resp.json();
-        cfgEl.textContent = `venue=${cfg.venue} channel=${cfg.signal_channel} backward=${cfg.backward_channel} order_amount_u=${cfg.order_amount_u} offsets=${cfg.price_offsets.length}`;
+        cfgEl.textContent = `mm_trade_symbols:${cfg.symbol_key_suffix} venue=${cfg.venue} channel=${cfg.signal_channel} backward=${cfg.backward_channel}`;
+      }
+
+      function renderList() {
+        const q = document.getElementById("q").value.trim().toUpperCase();
+        const ul = document.getElementById("list");
+        ul.innerHTML = "";
+        const items = state.symbols.filter(s => !q || s.includes(q)).slice(0, 500);
+        for (const s of items) {
+          const li = document.createElement("li");
+          li.textContent = s;
+          li.onclick = () => {
+            document.getElementById("symbol").value = s;
+            state.selected = s;
+            refreshQuote();
+          };
+          ul.appendChild(li);
+        }
+      }
+
+      async function loadSymbols() {
+        const r = await fetch('/api/symbols');
+        const j = await r.json();
+        state.symbols = (j.symbols || []).sort();
+        renderList();
+      }
+
+      async function refreshQuote() {
+        const sym = document.getElementById("symbol").value.trim().toUpperCase();
+        if (!sym) return;
+        const r = await fetch(`/api/quote?symbol=${encodeURIComponent(sym)}`);
+        if (!r.ok) {
+          document.getElementById("quote").textContent = "quote: N/A";
+          return;
+        }
+        const j = await r.json();
+        document.getElementById("quote").textContent = `${j.venue} bid=${j.bid} ask=${j.ask} ts=${j.ts}`;
       }
 
       function log(obj, ok=true) {
@@ -973,6 +1137,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
       };
 
       loadCfg();
+      loadSymbols();
+      document.getElementById("q").oninput = renderList;
     </script>
   </body>
 </html>
@@ -984,7 +1150,14 @@ async fn run(cfg: AppCfg, token: CancellationToken) -> Result<()> {
     let table = Arc::new(RwLock::new(table));
 
     let quotes = Arc::new(RwLock::new(QuoteCache::default()));
+    let symbols = Arc::new(RwLock::new(SymbolCache::default()));
     spawn_ask_bid_listener(cfg.venue, quotes.clone(), token.clone());
+    tokio::task::spawn_local(symbol_list_reload_loop(
+        DEFAULT_SYMBOL_RELOAD_SECS,
+        cfg.symbol_key_suffix.clone(),
+        symbols.clone(),
+        token.clone(),
+    ));
 
     let (publish_tx, publish_rx) = mpsc::unbounded_channel();
     spawn_publisher_worker(cfg.clone(), publish_rx, token.clone());
@@ -998,6 +1171,8 @@ async fn run(cfg: AppCfg, token: CancellationToken) -> Result<()> {
 
     let state = AppState {
         cfg: cfg.clone(),
+        quotes,
+        symbols,
         publish_tx,
     };
 

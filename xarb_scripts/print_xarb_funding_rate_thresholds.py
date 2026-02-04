@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import sys
 from pathlib import Path
@@ -92,11 +91,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--open-venue", help="open 侧 venue（例如 okex-futures）")
     p.add_argument("--hedge-venue", help="hedge 侧 venue（例如 binance-futures）")
     p.add_argument("--env-name", help="环境目录名（例如 okex-binance-xarb-trade）")
-    p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
-    p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
-    p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
-    p.add_argument("--db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
-    p.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
     args = p.parse_args()
 
     open_venue = args.open_venue
@@ -154,14 +148,10 @@ def main() -> int:
         return 2
 
     key = f"xarb_funding_rate_thresholds_{args.open_venue}_{args.hedge_venue}"
-    rds = (
-        redis.from_url(args.redis_url)
-        if args.redis_url
-        else redis.Redis(host=args.host, port=args.port, db=args.db, password=args.password)
-    )
+    rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
     data = rds.hgetall(key)
-    print(f"📍 Redis: {args.host}:{args.port}/{args.db}")
+    print("📍 Redis: 127.0.0.1:6379/0")
     print(f"📊 xarb 资金费率阈值: {key}")
     print("-" * 80)
     if not data:
@@ -186,4 +176,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

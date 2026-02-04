@@ -856,11 +856,6 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("DEFAULT_EXCHANGE", "okex"),
         help="默认选中的交易所（也用于接口缺省值）",
     )
-    parser.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
-    parser.add_argument("--redis-host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
-    parser.add_argument("--redis-port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
-    parser.add_argument("--redis-db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
-    parser.add_argument("--redis-password", default=os.environ.get("REDIS_PASSWORD"))
     return parser.parse_args()
 
 
@@ -1553,12 +1548,7 @@ def main() -> int:
         )
         return 2
 
-    rds = redis.from_url(args.redis_url) if args.redis_url else redis.Redis(
-        host=args.redis_host,
-        port=args.redis_port,
-        db=args.redis_db,
-        password=args.redis_password,
-    )
+    rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
     context = ServerContext(redis_client=rds, default_exchange=default_exchange)
     try:

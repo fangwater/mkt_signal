@@ -106,11 +106,6 @@ def resolve_dir_prefix(dir_prefix: Optional[str], env_name: Optional[str]) -> Op
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Sync xarb pre-trade risk params to Redis (futures-only)")
-    p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
-    p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
-    p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
-    p.add_argument("--db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
-    p.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
     p.add_argument("--open-venue", default=os.environ.get("OPEN_VENUE"))
     p.add_argument("--hedge-venue", default=os.environ.get("HEDGE_VENUE"))
     p.add_argument("--env-name", help="环境目录名（例如 okex-binance-xarb-trade）")
@@ -199,15 +194,13 @@ def main() -> int:
         print("❌ redis 包未安装，请使用 pip install redis", file=sys.stderr)
         return 2
 
-    rds = redis.from_url(args.redis_url) if args.redis_url else redis.Redis(
-        host=args.host, port=args.port, db=args.db, password=args.password
-    )
+    rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
     dir_prefix = resolve_dir_prefix(args.dir_prefix, args.env_name)
     key = build_risk_params_key(args.open_venue, args.hedge_venue, dir_prefix)
     rds.hset(key, mapping=RISK_PARAMS)
     print(f"✅ 已写入 {len(RISK_PARAMS)} 个参数到 HASH '{key}' (primary)")
-    print(f"📍 Redis: {args.host}:{args.port}/{args.db}")
+    print("📍 Redis: 127.0.0.1:6379/0")
     print(f"📍 pretrade open={args.open_venue} hedge={args.hedge_venue}")
 
     data = rds.hgetall(key)

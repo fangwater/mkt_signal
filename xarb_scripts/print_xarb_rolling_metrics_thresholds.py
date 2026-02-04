@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -100,15 +99,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--open-venue", help="open 侧 venue（如 okex-futures）")
     p.add_argument("--hedge-venue", help="hedge 侧 venue（如 binance-futures）")
     p.add_argument(
-        "--redis-url",
-        default=os.environ.get("REDIS_URL"),
-        help="Redis URL, e.g. redis://:pwd@host:6379/0 (overrides host/port/db)",
-    )
-    p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
-    p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
-    p.add_argument("--db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
-    p.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
-    p.add_argument(
         "--symbol",
         help="仅打印单个 symbol（匹配 base_symbol 或字段名 / 键尾部）",
     )
@@ -155,14 +145,7 @@ def connect_redis(args: argparse.Namespace):
     redis = try_import_redis()
     if redis is None:
         return None
-    if args.redis_url:
-        return redis.from_url(args.redis_url)
-    return redis.Redis(
-        host=args.host,
-        port=args.port,
-        db=args.db,
-        password=args.password,
-    )
+    return redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
 
 def read_hash(rds, key: str) -> Dict[str, Dict]:
@@ -384,7 +367,7 @@ def main() -> int:
         return 1
     hash_key = f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
     print(f"📍 Reading from Redis hash: {hash_key}")
-    print(f"📍 Redis: {args.host}:{args.port}/{args.db}\n")
+    print("📍 Redis: 127.0.0.1:6379/0")
 
     data = read_hash(rds, hash_key)
     if not data:

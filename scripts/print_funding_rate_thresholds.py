@@ -14,7 +14,7 @@
 
 示例：
   python scripts/print_funding_rate_thresholds.py --exchange binance
-  python scripts/print_funding_rate_thresholds.py --exchange okex --redis-url redis://:pwd@127.0.0.1:6379/0
+  python scripts/print_funding_rate_thresholds.py --exchange okex
   # 也可省略 --exchange，脚本会基于当前目录名推断 (binance/okex/bybit/bitget/gate 前缀)
 """
 
@@ -45,11 +45,6 @@ def parse_args() -> argparse.Namespace:
         choices=SUPPORTED_EXCHANGES,
         help="交易所名称（可选，未提供则尝试根据当前目录名推断）",
     )
-    p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
-    p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
-    p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
-    p.add_argument("--db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
-    p.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
     return p.parse_args()
 
 
@@ -192,11 +187,9 @@ def main() -> int:
     if not args.exchange:
         print(f"[INFO] 未提供 exchange，基于目录推断: {exchange}", file=sys.stderr)
 
-    rds = redis.from_url(args.redis_url) if args.redis_url else redis.Redis(
-        host=args.host, port=args.port, db=args.db, password=args.password
-    )
+    rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
-    print(f"📍 Redis: {args.host}:{args.port}/{args.db}\n")
+    print("📍 Redis: 127.0.0.1:6379/0\n")
 
     # 打印阈值
     print_thresholds(rds, exchange)

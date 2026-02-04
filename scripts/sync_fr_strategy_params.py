@@ -13,7 +13,7 @@
 
 示例：
   python scripts/sync_fr_strategy_params.py --open-venue binance-margin --hedge-venue binance-futures
-  python scripts/sync_fr_strategy_params.py --redis-url redis://:pwd@127.0.0.1:6379/0
+  python scripts/sync_fr_strategy_params.py
   # 也可不带 open/hedge，脚本会基于当前目录名推断 exchange（形如 okex_fr_trade -> okex-margin/okex-futures）
 """
 
@@ -63,11 +63,6 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--open-venue", help="open 侧 venue（如 binance-margin）")
     p.add_argument("--hedge-venue", help="hedge 侧 venue（如 binance-futures）")
-    p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
-    p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
-    p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
-    p.add_argument("--db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
-    p.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
     args = p.parse_args()
 
     open_venue = args.open_venue
@@ -222,12 +217,10 @@ def main() -> int:
         print("❌ redis 包未安装，请使用 pip install redis", file=sys.stderr)
         return 2
 
-    rds = redis.from_url(args.redis_url) if args.redis_url else redis.Redis(
-        host=args.host, port=args.port, db=args.db, password=args.password
-    )
+    rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
     print("🔄 开始同步 Funding Rate 策略参数...")
-    print(f"📍 Redis: {args.host}:{args.port}/{args.db}")
+    print("📍 Redis: 127.0.0.1:6379/0")
     print()
 
     # 同步参数

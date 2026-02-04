@@ -44,15 +44,6 @@ def parse_args() -> argparse.Namespace:
         description="检查 Binance UM 杠杆：从 Redis HASH 获取 symbol 列表并打印当前杠杆"
     )
     parser.add_argument(
-        "--redis-url",
-        default=os.environ.get("REDIS_URL"),
-        help="Redis URL，例如 redis://:pwd@host:6379/0（存在则覆盖 host/port/db）",
-    )
-    parser.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
-    parser.add_argument("--db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
-    parser.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
-    parser.add_argument(
         "--key",
         default="binance_arb_price_spread_threshold",
         help="Redis HASH key，字段名视为 symbol（默认：binance_arb_price_spread_threshold）",
@@ -124,9 +115,7 @@ def connect_redis(args: argparse.Namespace):
     if redis is None:
         print("ERROR: 需要 redis 模块，请先执行 pip install redis", file=sys.stderr)
         sys.exit(1)
-    if args.redis_url:
-        return redis.from_url(args.redis_url)
-    return redis.Redis(host=args.host, port=args.port, db=args.db, password=args.password)
+    return redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
 
 def fetch_symbols(rds, key: str) -> List[str]:

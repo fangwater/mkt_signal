@@ -11,7 +11,6 @@
 
 示例：
   BINANCE_API_KEY=... BINANCE_API_SECRET=... python scripts/fetch_lending_rate_df.py
-  BINANCE_API_KEY=... BINANCE_API_SECRET=... python scripts/fetch_lending_rate_df.py --redis-url redis://:pwd@127.0.0.1:6379/0
 """
 
 from __future__ import annotations
@@ -51,12 +50,6 @@ def parse_args() -> argparse.Namespace:
         description="Fetch lending rate history for FR symbols and build DataFrame",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    # Redis 参数
-    p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
-    p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
-    p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
-    p.add_argument("--db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
-    p.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
     # Binance API 参数
     p.add_argument(
         "--base-url",
@@ -202,11 +195,9 @@ def main() -> int:
         return 1
 
     # 连接 Redis
-    rds = redis.from_url(args.redis_url) if args.redis_url else redis.Redis(
-        host=args.host, port=args.port, db=args.db, password=args.password
-    )
+    rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
-    print(f"📍 Redis: {args.host}:{args.port}/{args.db}")
+    print("📍 Redis: 127.0.0.1:6379/0")
     print(f"📍 Redis Key: {args.redis_key}")
 
     # 获取 symbol list

@@ -15,7 +15,7 @@
   python scripts/sync_fr_symbol_lists.py --open-venue binance-margin --hedge-venue binance-futures
   python scripts/sync_fr_symbol_lists.py --exchange binance
   python scripts/sync_fr_symbol_lists.py       # 在目录名包含 binance/okex/bybit/... 前缀时自动推断
-  python scripts/sync_fr_symbol_lists.py --exchange okex --redis-url redis://:pwd@127.0.0.1:6379/0
+  python scripts/sync_fr_symbol_lists.py --exchange okex
 """
 
 from __future__ import annotations
@@ -71,11 +71,6 @@ def parse_args() -> argparse.Namespace:
         choices=SUPPORTED_EXCHANGES,
         help="交易所名称（可选，若未提供则尝试从目录名推断）",
     )
-    p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
-    p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
-    p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
-    p.add_argument("--db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
-    p.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
     return p.parse_args()
 
 
@@ -325,12 +320,10 @@ def main() -> int:
     exchange = open_venue.split("-", 1)[0] if "-" in open_venue else open_venue
     fwd_symbols, bwd_symbols, source = resolve_symbol_lists(exchange)
 
-    rds = redis.from_url(args.redis_url) if args.redis_url else redis.Redis(
-        host=args.host, port=args.port, db=args.db, password=args.password
-    )
+    rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
     print(f"🔄 开始同步 Funding Rate 交易对列表 (key_suffix={key_suffix})...")
-    print(f"📍 Redis: {args.host}:{args.port}/{args.db}")
+    print("📍 Redis: 127.0.0.1:6379/0")
     print(f"📋 Symbol source: {source}")
     print()
 

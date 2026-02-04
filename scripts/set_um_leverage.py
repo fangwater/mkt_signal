@@ -16,7 +16,6 @@
   - 或指定单边：--exchange binance --symbol BTCUSDT
 
 环境变量：
-  - Redis: REDIS_URL / REDIS_HOST / REDIS_PORT / REDIS_DB / REDIS_PASSWORD
   - Binance: BINANCE_API_KEY / BINANCE_API_SECRET / BINANCE_PAPI_URL(BINANCE_FAPI_URL)
   - OKX: OKX_API_KEY / OKX_API_SECRET / OKX_PASSPHRASE / OKX_BASE_URL
 """
@@ -117,12 +116,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sleep", type=float, default=0.12, help="每个请求之间 sleep 秒数")
     p.add_argument("--timeout", type=int, default=10, help="HTTP 超时秒数")
 
-    p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
-    p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
-    p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
-    p.add_argument("--db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
-    p.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
-
     p.add_argument(
         "--binance-base-url",
         default=(
@@ -142,9 +135,7 @@ def connect_redis(args: argparse.Namespace):
     if redis is None:
         print("❌ redis 包未安装，请使用 pip install redis", file=sys.stderr)
         sys.exit(2)
-    if args.redis_url:
-        return redis.from_url(args.redis_url)
-    return redis.Redis(host=args.host, port=args.port, db=args.db, password=args.password)
+    return redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
 
 def load_redis_list(rds, key: str) -> List[str]:

@@ -57,11 +57,6 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--open-venue", help="open 侧 venue（如 binance-margin）")
     p.add_argument("--hedge-venue", help="hedge 侧 venue（如 binance-futures）")
-    p.add_argument("--redis-url", default=os.environ.get("REDIS_URL"))
-    p.add_argument("--host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
-    p.add_argument("--port", type=int, default=int(os.environ.get("REDIS_PORT", 6379)))
-    p.add_argument("--db", type=int, default=int(os.environ.get("REDIS_DB", 0)))
-    p.add_argument("--password", default=os.environ.get("REDIS_PASSWORD"))
     p.add_argument("--prefix", help="只打印指定前缀的参数，例如 --prefix bidask_")
     args = p.parse_args()
 
@@ -136,9 +131,7 @@ def main() -> int:
     if redis is None:
         print("redis 包未安装，请先 `pip install redis`。", file=sys.stderr)
         return 2
-    rds = redis.from_url(args.redis_url) if args.redis_url else redis.Redis(
-        host=args.host, port=args.port, db=args.db, password=args.password
-    )
+    rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
     open_venue = args.open_venue.strip()
     hedge_venue = args.hedge_venue.strip()
@@ -147,7 +140,7 @@ def main() -> int:
         return 1
     key = f"rolling_metrics_params_{open_venue}_{hedge_venue}"
     print(f"📍 Reading from Redis hash: {key}", file=sys.stderr)
-    print(f"📍 Redis: {args.host}:{args.port}/{args.db}", file=sys.stderr)
+    print("📍 Redis: 127.0.0.1:6379/0", file=sys.stderr)
     if args.prefix:
         print(f"📍 Filter prefix: {args.prefix}", file=sys.stderr)
     print("", file=sys.stderr)
