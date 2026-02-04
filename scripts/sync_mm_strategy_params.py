@@ -95,7 +95,7 @@ PARAM_COMMENTS: Dict[str, str] = {
     "open_order_timeout": "开仓订单超时(秒)",
     "next_query_delay_ms": "对冲 query 触发间隔(ms)",
     "hedge_aggressive_seq_threshold": "对冲激进阈值(request_seq>=该值时不偏移，但仍为maker限价单)",
-    "max_hedge_price_pct_change": "对冲价格最大变动阈值(%)，范围1-20，超过则强制 taker",
+    "max_hedge_price_pct_change": "对冲价格最大变动阈值(%)，范围1-99，可为小数，超过则强制 taker",
     "signal_cooldown": "信号冷却时间(秒)",
 }
 

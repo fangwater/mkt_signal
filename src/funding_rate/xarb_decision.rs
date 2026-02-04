@@ -269,7 +269,7 @@ pub struct XarbDecision {
     hedge_timeout_mm_us: i64,
     hedge_price_offset: f64,
     hedge_aggressive_seq_threshold: u32,
-    max_hedge_price_pct_change: f64, // percent, 1~20
+    max_hedge_price_pct_change: f64, // percent, 1~99
 
     pnlu_redis: PnluRedis,
     pnlu_key_suffix: String,
@@ -1292,9 +1292,9 @@ impl XarbDecision {
     }
 
     pub fn update_max_hedge_price_pct_change(&mut self, pct_change: f64) {
-        if !(pct_change.is_finite() && pct_change >= 1.0 && pct_change <= 20.0) {
+        if !(pct_change.is_finite() && pct_change >= 1.0 && pct_change <= 99.0) {
             warn!(
-                "XarbDecision: max_hedge_price_pct_change 无效(需在1~20)，忽略更新 value={}",
+                "XarbDecision: max_hedge_price_pct_change 无效(需在1~99)，忽略更新 value={}",
                 pct_change
             );
             return;

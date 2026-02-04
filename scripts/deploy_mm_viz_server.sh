@@ -6,8 +6,8 @@ BIN_NAME="viz_server"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy_mm_viz_server.sh [trade|test] --exchange <binance|okex|gate|bybit|bitget>
-                                      [--env-suffix <suffix>] [--env-name <exchange>_mm_<suffix>]
+Usage: scripts/deploy_mm_viz_server.sh --exchange <binance|okex|gate|bybit|bitget>
+                                      --env-suffix <suffix> [--env-name <exchange>_mm_<suffix>]
                                       [--bind 0.0.0.0] [--port <default>]
                                       [--ws-path /ws]
                                       [--namespace <IPC_NAMESPACE>]
@@ -19,7 +19,8 @@ Usage: scripts/deploy_mm_viz_server.sh [trade|test] --exchange <binance|okex|gat
                                       [--scripts-only|--bin-only]
 
 Notes:
-  - Default target dir: $HOME/<exchange>_mm_<trade|test>/ (or --env-name).
+  - Default target dir: $HOME/<exchange>_mm_<suffix>/.
+  - --env-suffix is required.
   - Default port per exchange (mm beta / trade):
       okex=10211, gate=10221, binance=10231, bybit=10241, bitget=10251
   - If env-suffix/env-name indicates "alpha", default port = base + 1
@@ -34,7 +35,6 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-ENV_TYPE="trade"
 EXCHANGE=""
 ENV_NAME=""
 ENV_SUFFIX=""
@@ -100,10 +100,6 @@ infer_mm_suffix_from_env_name() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    trade|test)
-      ENV_TYPE="$1"
-      shift
-      ;;
     --exchange)
       EXCHANGE="${2:-}"
       shift 2
@@ -188,6 +184,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -z "$ENV_SUFFIX" ]]; then
+  echo "[ERROR] --env-suffix is required" >&2
+  usage >&2
+  exit 1
+fi
+
 EXCHANGE="$(normalize_exchange "$EXCHANGE")"
 case "$EXCHANGE" in
   binance|okex|gate|bybit|bitget)
@@ -203,11 +205,7 @@ case "$EXCHANGE" in
 esac
 
 if [[ -z "$ENV_NAME" ]]; then
-  if [[ -n "$ENV_SUFFIX" ]]; then
-    ENV_NAME="${EXCHANGE}_mm_${ENV_SUFFIX}"
-  else
-    ENV_NAME="${EXCHANGE}_mm_${ENV_TYPE}"
-  fi
+  ENV_NAME="${EXCHANGE}_mm_${ENV_SUFFIX}"
 fi
 ENV_NAME="$(normalize_env_name "$ENV_NAME")"
 require_mm_env_name "$EXCHANGE" "$ENV_NAME"

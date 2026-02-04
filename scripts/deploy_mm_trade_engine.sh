@@ -8,11 +8,12 @@ BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/deploy_mm_trade_engine.sh [trade|test] --exchange <binance|okex|gate|bybit|bitget> [--env-suffix <suffix>] [--env-name <exchange>_mm_<suffix>] [--scripts-only|--bin-only]
+  scripts/deploy_mm_trade_engine.sh --exchange <binance|okex|gate|bybit|bitget> --env-suffix <suffix>
+                                    [--env-name <exchange>_mm_<suffix>] [--scripts-only|--bin-only]
 
 Notes:
-  - Default target dir: $HOME/<exchange>_mm_<trade|test>/
-  - --env-suffix overrides the default suffix (e.g. beta -> <exchange>_mm_beta)
+  - Default target dir: $HOME/<exchange>_mm_<suffix>/
+  - --env-suffix is required (e.g. alpha -> <exchange>_mm_alpha)
   - --scripts-only: sync scripts only
   - --bin-only: build/copy binary only
 USAGE
@@ -23,7 +24,6 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-ENV_TYPE="trade"
 EXCHANGE="binance"
 ENV_NAME=""
 ENV_SUFFIX=""
@@ -33,10 +33,6 @@ ONLY_MODE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    trade|test)
-      ENV_TYPE="$1"
-      shift
-      ;;
     --exchange)
       EXCHANGE="${2:-}"
       if [[ -z "$EXCHANGE" ]]; then
@@ -89,6 +85,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -z "$ENV_SUFFIX" ]]; then
+  echo "[ERROR] --env-suffix is required" >&2
+  usage >&2
+  exit 1
+fi
+
 EXCHANGE="$(echo "$EXCHANGE" | tr 'A-Z' 'a-z')"
 case "$EXCHANGE" in
   binance|okex|gate|bybit|bitget)
@@ -113,11 +115,7 @@ require_mm_env_name() {
 }
 
 if [[ -z "$ENV_NAME" ]]; then
-  if [[ -n "$ENV_SUFFIX" ]]; then
-    ENV_NAME="${EXCHANGE}_mm_${ENV_SUFFIX}"
-  else
-    ENV_NAME="${EXCHANGE}_mm_${ENV_TYPE}"
-  fi
+  ENV_NAME="${EXCHANGE}_mm_${ENV_SUFFIX}"
 fi
 ENV_NAME="$(normalize_env_name "$ENV_NAME")"
 require_mm_env_name "$EXCHANGE" "$ENV_NAME"
