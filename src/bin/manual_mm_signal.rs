@@ -134,14 +134,17 @@ enum PublishCmd {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+struct ApiOpenRequest {
+    symbol: String,
+    from_key: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 struct ManualOpenRequest {
     symbol: String,
-    side: String,
-    qty: f64,
-    price: f64,
-    order_type: Option<String>,
-    exp_ms: Option<u64>,
-    price_tick: Option<f64>,
+    bid: f64,
+    ask: f64,
+    quote_ts: i64,
     from_key: Option<String>,
 }
 
@@ -150,11 +153,9 @@ struct ManualOpenResponse {
     ok: bool,
     published_at_us: i64,
     symbol: String,
-    side: String,
-    order_type: String,
-    qty: f64,
-    price: f64,
-    exp_ms: u64,
+    levels: usize,
+    buy_orders: usize,
+    sell_orders: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -570,7 +571,7 @@ fn build_mm_hedge_ctx(
         .get_valid(&symbol)
         .context("quote unavailable")?;
 
-    let net_qty = query.buy_qty - query.sell_qty;
+    let net_qty = query.net_qty;
     let side = if net_qty >= 0.0 { Side::Sell } else { Side::Buy };
 
     let base_price = match side {
@@ -808,6 +809,7 @@ fn spawn_backward_query_responder(
 
 fn spawn_publisher_worker(
     cfg: AppCfg,
+    min_qty_table: Arc<RwLock<VenueMinQtyTable>>,
     mut rx: mpsc::UnboundedReceiver<PublishCmd>,
     token: CancellationToken,
 ) {
@@ -833,7 +835,8 @@ fn spawn_publisher_worker(
                             }
                         }
                         PublishCmd::ManualOpen { req, reply } => {
-                            let res = build_and_publish_open(&cfg, &publisher, req);
+                            let res =
+                                build_and_publish_open(&cfg, &publisher, &min_qty_table, req);
                             let _ = reply.send(res);
                         }
                     }
@@ -846,6 +849,7 @@ fn spawn_publisher_worker(
 fn build_and_publish_open(
     cfg: &AppCfg,
     publisher: &SignalPublisher,
+    min_qty_table: &Arc<RwLock<VenueMinQtyTable>>,
     req: ManualOpenRequest,
 ) -> Result<ManualOpenResponse> {
     let symbol = req.symbol.trim().to_uppercase();
@@ -853,56 +857,97 @@ fn build_and_publish_open(
         anyhow::bail!("symbol is empty");
     }
 
-    let side = Side::from_str(req.side.trim())
-        .with_context(|| format!("invalid side: {}", req.side))?;
-
-    let order_type_raw = req.order_type.unwrap_or_else(|| "LIMIT".to_string());
-    let order_type_norm = order_type_raw.trim().to_ascii_uppercase();
-    let order_type = OrderType::from_str(order_type_norm.as_str())
-        .with_context(|| format!("invalid order_type: {}", order_type_raw))?;
-
-    if req.qty <= 0.0 {
-        anyhow::bail!("qty must be > 0");
-    }
-    if req.price <= 0.0 {
-        anyhow::bail!("price must be > 0");
+    if req.bid <= 0.0 || req.ask <= 0.0 || req.bid >= req.ask {
+        anyhow::bail!("invalid quote bid={} ask={}", req.bid, req.ask);
     }
 
-    let exp_ms = req.exp_ms.unwrap_or(cfg.default_open_ttl_ms);
     let now = get_timestamp_us();
-    let mut ctx = MmOpenCtx::new();
-    ctx.opening_leg = TradingLeg::new(cfg.venue, req.price, req.price, now);
-    ctx.set_opening_symbol(&symbol);
-    ctx.amount = req.qty as f32;
-    ctx.set_side(side);
-    ctx.set_order_type(order_type);
-    ctx.price = req.price;
-    ctx.price_tick = req.price_tick.unwrap_or(0.0);
-    ctx.exp_time = if exp_ms > 0 {
+    let exp_ms = cfg.default_open_ttl_ms;
+    let exp_time = if exp_ms > 0 {
         now + (exp_ms as i64) * 1000
     } else {
         0
     };
-    ctx.create_ts = now;
-    ctx.price_offset = 0.0;
-    if let Some(from_key) = req.from_key {
-        ctx.set_from_key(from_key.into_bytes());
-    } else {
-        ctx.set_from_key(cfg.from_key.clone());
+
+    let from_key = req
+        .from_key
+        .map(|k| k.into_bytes())
+        .unwrap_or_else(|| cfg.from_key.clone());
+
+    let symbol_key = min_qty_symbol_key(cfg.venue, &symbol);
+    let table_guard = min_qty_table.read();
+    let price_tick = table_guard.price_tick(&symbol_key).unwrap_or(0.0);
+    let qty_tick = table_guard.step_size(&symbol_key).unwrap_or(0.0);
+    if price_tick <= 0.0 || qty_tick <= 0.0 {
+        anyhow::bail!(
+            "missing tick for {} (price_tick={}, qty_tick={})",
+            symbol_key,
+            price_tick,
+            qty_tick
+        );
     }
 
-    let signal = TradeSignal::create(SignalType::MMOpen, now, 0.0, ctx.to_bytes());
-    publisher.publish(&signal.to_bytes())?;
+    let mut buy_orders = 0usize;
+    let mut sell_orders = 0usize;
+
+    for offset in &cfg.price_offsets {
+        let offset = offset.abs();
+        for side in [Side::Buy, Side::Sell] {
+            let base_price = match side {
+                Side::Buy => req.bid,
+                Side::Sell => req.ask,
+            };
+            let raw_price = match side {
+                Side::Buy => base_price * (1.0 - offset),
+                Side::Sell => base_price * (1.0 + offset),
+            };
+            if raw_price <= 0.0 {
+                continue;
+            }
+            let raw_qty = cfg.order_amount_u / raw_price;
+            if raw_qty <= 0.0 {
+                continue;
+            }
+
+            let (aligned_qty, aligned_price) = align_order_for_venue(
+                cfg.venue,
+                &symbol_key,
+                raw_qty,
+                raw_price,
+                &table_guard,
+            )
+            .map_err(anyhow::Error::msg)?;
+
+            let mut ctx = MmOpenCtx::new();
+            ctx.opening_leg = TradingLeg::new(cfg.venue, req.bid, req.ask, req.quote_ts);
+            ctx.set_opening_symbol(&symbol);
+            ctx.amount = aligned_qty as f32;
+            ctx.set_side(side);
+            ctx.set_order_type(OrderType::Limit);
+            ctx.price = aligned_price;
+            ctx.price_tick = price_tick;
+            ctx.exp_time = exp_time;
+            ctx.create_ts = now;
+            ctx.price_offset = offset;
+            ctx.set_from_key(from_key.clone());
+
+            let signal = TradeSignal::create(SignalType::MMOpen, now, 0.0, ctx.to_bytes());
+            publisher.publish(&signal.to_bytes())?;
+
+            match side {
+                Side::Buy => buy_orders += 1,
+                Side::Sell => sell_orders += 1,
+            }
+        }
+    }
 
     Ok(ManualOpenResponse {
         ok: true,
         published_at_us: now,
         symbol,
-        side: side.as_str().to_string(),
-        order_type: order_type_norm,
-        qty: req.qty,
-        price: req.price,
-        exp_ms,
+        levels: cfg.price_offsets.len(),
+        buy_orders,
+        sell_orders,
     })
 }
 
@@ -950,8 +995,23 @@ async fn api_quote(
 
 async fn api_send(
     State(st): State<AppState>,
-    Json(req): Json<ManualOpenRequest>,
+    Json(req): Json<ApiOpenRequest>,
 ) -> impl IntoResponse {
+    let symbol = req.symbol.trim().to_uppercase();
+    if symbol.is_empty() {
+        return (StatusCode::BAD_REQUEST, "symbol is empty").into_response();
+    }
+    let quote = st.quotes.read().get_valid(&symbol);
+    let Some(qt) = quote else {
+        return (StatusCode::BAD_REQUEST, "quote unavailable").into_response();
+    };
+    let req = ManualOpenRequest {
+        symbol,
+        bid: qt.bid,
+        ask: qt.ask,
+        quote_ts: qt.ts,
+        from_key: req.from_key,
+    };
     let (tx, rx) = oneshot::channel();
     if st
         .publish_tx
@@ -1036,42 +1096,15 @@ const INDEX_HTML: &str = r#"<!doctype html>
       <div class="col box">
         <div class="grid">
           <div>
-            <label class="muted">Side</label>
-            <select id="side">
-              <option value="BUY">BUY</option>
-              <option value="SELL">SELL</option>
-            </select>
-          </div>
-          <div>
-            <label class="muted">Qty</label>
-            <input id="qty" type="number" step="0.0001" value="0.01" />
-          </div>
-          <div>
-            <label class="muted">Price</label>
-            <input id="price" type="number" step="0.01" value="1" />
-          </div>
-          <div>
-            <label class="muted">Order Type</label>
-            <select id="orderType">
-              <option value="LIMIT">LIMIT</option>
-              <option value="MARKET">MARKET</option>
-            </select>
-          </div>
-          <div>
-            <label class="muted">Exp ms (0 = no ttl)</label>
-            <input id="expMs" type="number" step="1000" />
-          </div>
-          <div>
-            <label class="muted">Price Tick (optional)</label>
-            <input id="priceTick" type="number" step="0.0001" />
-          </div>
-          <div>
             <label class="muted">From Key (optional)</label>
             <input id="fromKey" />
           </div>
         </div>
         <div style="margin-top:10px;">
-          <button id="send">Send MMOpen</button>
+          <button id="send">Send MMOpen (Both Sides)</button>
+        </div>
+        <div class="muted" style="margin-top:6px;">
+          自动使用 open_price_offsets + order_amount 生成多空两侧订单
         </div>
         <div style="margin-top:12px;" class="mono" id="quote"></div>
         <div style="margin-top:10px;">
@@ -1142,15 +1175,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
       document.getElementById('send').onclick = async () => {
         const payload = {
           symbol: document.getElementById('symbol').value.trim(),
-          side: document.getElementById('side').value,
-          qty: Number(document.getElementById('qty').value),
-          price: Number(document.getElementById('price').value),
-          order_type: document.getElementById('orderType').value,
         };
-        const expMs = document.getElementById('expMs').value.trim();
-        if (expMs) payload.exp_ms = Number(expMs);
-        const priceTick = document.getElementById('priceTick').value.trim();
-        if (priceTick) payload.price_tick = Number(priceTick);
         const fromKey = document.getElementById('fromKey').value.trim();
         if (fromKey) payload.from_key = fromKey;
 
@@ -1196,7 +1221,7 @@ async fn run(cfg: AppCfg, token: CancellationToken) -> Result<()> {
     ));
 
     let (publish_tx, publish_rx) = mpsc::unbounded_channel();
-    spawn_publisher_worker(cfg.clone(), publish_rx, token.clone());
+    spawn_publisher_worker(cfg.clone(), table.clone(), publish_rx, token.clone());
     spawn_backward_query_responder(
         cfg.clone(),
         quotes.clone(),

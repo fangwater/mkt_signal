@@ -374,11 +374,12 @@ impl MarketMakerHedgeStrategy {
 
 
     fn send_hedge_query(&mut self) {
-        // 定时发送对冲查询（只携带 symbol + 期间累计买/卖成交）
+        // 定时发送对冲查询（携带 symbol + 当期买/卖成交 + 累计净头寸）
         let query_msg = MmHedgeSignalQueryMsg::new(
             &self.symbol,
             self.period_buy_qty,
             self.period_sell_qty,
+            self.net_qty,
         );
         let send_result = SignalChannel::with(|ch| ch.publish_backward(&query_msg.to_bytes()));
         match send_result {

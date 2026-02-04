@@ -657,27 +657,30 @@ impl SignalBytes for MmHedgeCtx {
     }
 }
 
-/// MM 对冲查询消息（仅携带 symbol + 期间累计买/卖成交）
+/// MM 对冲查询消息（携带 symbol + 当期买/卖成交 + 累计净头寸）
 #[derive(Debug, Clone)]
 pub struct MmHedgeSignalQueryMsg {
     /// 交易对
     pub symbol: [u8; 32],
-    /// 期间累计买成交量（base qty）
-    pub buy_qty: f64,
-    /// 期间累计卖成交量（base qty）
-    pub sell_qty: f64,
+    /// 当期买成交量（base qty）
+    pub period_buy_qty: f64,
+    /// 当期卖成交量（base qty）
+    pub period_sell_qty: f64,
+    /// 累计净头寸（base qty，正=多，负=空）
+    pub net_qty: f64,
 }
 
 impl MmHedgeSignalQueryMsg {
-    pub fn new(symbol: &str, buy_qty: f64, sell_qty: f64) -> Self {
+    pub fn new(symbol: &str, period_buy_qty: f64, period_sell_qty: f64, net_qty: f64) -> Self {
         let mut symbol_bytes = [0u8; 32];
         let bytes = symbol.as_bytes();
         let len = bytes.len().min(32);
         symbol_bytes[..len].copy_from_slice(&bytes[..len]);
         Self {
             symbol: symbol_bytes,
-            buy_qty,
-            sell_qty,
+            period_buy_qty,
+            period_sell_qty,
+            net_qty,
         }
     }
 
@@ -689,25 +692,28 @@ impl MmHedgeSignalQueryMsg {
     pub fn to_bytes(&self) -> Bytes {
         let mut buf = BytesMut::new();
         bytes_helper::write_fixed_bytes(&mut buf, &self.symbol);
-        buf.put_f64_le(self.buy_qty);
-        buf.put_f64_le(self.sell_qty);
+        buf.put_f64_le(self.period_buy_qty);
+        buf.put_f64_le(self.period_sell_qty);
+        buf.put_f64_le(self.net_qty);
         buf.freeze()
     }
 
     pub fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
         let symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
-        if bytes.remaining() < 16 {
-            return Err("insufficient bytes for buy/sell qty".to_string());
+        if bytes.remaining() < 24 {
+            return Err("insufficient bytes for buy/sell/net qty".to_string());
         }
-        let buy_qty = bytes.get_f64_le();
-        let sell_qty = bytes.get_f64_le();
+        let period_buy_qty = bytes.get_f64_le();
+        let period_sell_qty = bytes.get_f64_le();
+        let net_qty = bytes.get_f64_le();
         if bytes.remaining() != 0 && bytes.iter().any(|&b| b != 0) {
             return Err("Unexpected trailing bytes for MmHedgeSignalQueryMsg".to_string());
         }
         Ok(Self {
             symbol,
-            buy_qty,
-            sell_qty,
+            period_buy_qty,
+            period_sell_qty,
+            net_qty,
         })
     }
 }

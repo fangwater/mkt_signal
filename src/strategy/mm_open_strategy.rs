@@ -221,26 +221,12 @@ impl MarketMakerOpenStrategy {
             }
         }
 
-        // 4、根据交易场所对齐量价
-        let raw_qty = qty;
-        let raw_price = ctx.price;
-        let align_result =
-            MonitorChannel::instance().align_order_by_venue(venue, &symbol, raw_qty, raw_price);
-        let (aligned_qty, aligned_price) = match align_result {
-            Ok((aligned_qty, aligned_price)) => (aligned_qty, aligned_price),
-            Err(e) => {
-                error!(
-                    "MarketMakerOpenStrategy: strategy_id={} 订单对齐失败: {}，原始量={:.8} 原始价格={:.8}，标记策略为不活跃",
-                    self.strategy_id, e, raw_qty, raw_price
-                );
-                self.alive_flag = false;
-                return;
-            }
-        };
-
+        // 4、信号已完成量价对齐，直接使用
+        let order_qty = qty;
+        let order_price = ctx.price;
         let signed_qty = match side {
-            Side::Buy => aligned_qty.abs(),
-            Side::Sell => -aligned_qty.abs(),
+            Side::Buy => order_qty.abs(),
+            Side::Sell => -order_qty.abs(),
         };
 
         // 5、检查杠杆：若绝对持仓不增加，则可跳过
@@ -262,7 +248,7 @@ impl MarketMakerOpenStrategy {
 
         // 6、检查 max_pos_u
         if let Err(e) =
-            MonitorChannel::instance().ensure_max_pos_u(&symbol, signed_qty, aligned_price)
+            MonitorChannel::instance().ensure_max_pos_u(&symbol, signed_qty, order_price)
         {
             error!(
                 "MarketMakerOpenStrategy: strategy_id={} 仓位限制检查失败: {}，标记策略为不活跃",
@@ -293,8 +279,8 @@ impl MarketMakerOpenStrategy {
                 order_type,
                 symbol.clone(),
                 side,
-                aligned_qty,
-                aligned_price,
+                order_qty,
+                order_price,
                 submit_ts,
             );
 
@@ -305,8 +291,8 @@ impl MarketMakerOpenStrategy {
             symbol,
             venue,
             side,
-            aligned_qty,
-            aligned_price,
+            order_qty,
+            order_price,
             ctx.from_key_len
         );
 
