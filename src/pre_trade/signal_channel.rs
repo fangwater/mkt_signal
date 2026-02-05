@@ -279,12 +279,14 @@ fn handle_trade_signal(signal: TradeSignal) {
                     } else {
                         "MT"
                     };
+                    let from_key = String::from_utf8_lossy(&open_ctx.from_key);
                     info!(
-                        "🔔 收到 ArbOpen 信号({}): opening={} {:?} side={:?} price={:.6} hedging={} {:?} | amount={:.4} fr_ma={:.6} pred_fr={:.6} loan={:.6} hedge_timeout_us={}",
+                        "🔔 收到 ArbOpen 信号({}): opening={} {:?} side={:?} price={:.6} hedging={} {:?} | amount={:.4} hedge_timeout_us={} from_key='{}'",
                         hedge_mode,
                         symbol, opening_venue, side, open_ctx.price,
                         hedging_symbol, hedging_venue,
-                        open_ctx.amount, open_ctx.funding_ma, open_ctx.predicted_funding_rate, open_ctx.loan_rate, open_ctx.hedge_timeout_us
+                        open_ctx.amount, open_ctx.hedge_timeout_us,
+                        from_key
                     );
                     info!(
                         "✅ ArbOpen: strategy_id={} {} 已创建并激活",
@@ -521,6 +523,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     .unwrap_or(TradingVenue::BinanceFutures);
                 let hedge_side = hedge_ctx.get_side();
                 let hedge_price = hedge_ctx.get_hedge_price();
+                let from_key = String::from_utf8_lossy(&hedge_ctx.from_key);
 
                 let configured_hedge_venue = MonitorChannel::instance().hedge_venue();
                 if hedging_venue != configured_hedge_venue {
@@ -532,8 +535,15 @@ fn handle_trade_signal(signal: TradeSignal) {
                 }
 
                 info!(
-                    "🔔 收到 ArbHedge 信号: strategy_id={} hedging={} {:?} | side={:?} qty={:.4} price={:.6} is_maker={}",
-                    strategy_id, hedging_symbol, hedging_venue, hedge_side, hedge_ctx.hedge_qty, hedge_price, hedge_ctx.is_maker()
+                    "🔔 收到 ArbHedge 信号: strategy_id={} hedging={} {:?} | side={:?} qty={:.4} price={:.6} is_maker={} from_key='{}'",
+                    strategy_id,
+                    hedging_symbol,
+                    hedging_venue,
+                    hedge_side,
+                    hedge_ctx.hedge_qty,
+                    hedge_price,
+                    hedge_ctx.is_maker(),
+                    from_key
                 );
 
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();

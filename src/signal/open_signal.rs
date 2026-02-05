@@ -4,7 +4,7 @@ use crate::signal::common::{bytes_helper, SignalBytes};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 /// Generic arbitrage open signal context
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ArbOpenCtx {
     /// Opening leg (active leg)
     pub opening_leg: TradingLeg,
@@ -45,14 +45,11 @@ pub struct ArbOpenCtx {
     /// Hedge timeout (microseconds)
     pub hedge_timeout_us: i64,
 
-    /// Funding rate moving average (futures specific, 0 means none)
-    pub funding_ma: f64,
+    /// From key length
+    pub from_key_len: u32,
 
-    /// Predicted funding rate (futures specific, 0 means none)
-    pub predicted_funding_rate: f64,
-
-    /// Loan rate (margin/leverage specific, 0 means none)
-    pub loan_rate: f64,
+    /// From key bytes
+    pub from_key: Vec<u8>,
 }
 
 /// Market maker open signal context
@@ -173,9 +170,8 @@ impl ArbOpenCtx {
             create_ts: 0,
             price_offset: 0.0,
             hedge_timeout_us: 0,
-            funding_ma: 0.0,
-            predicted_funding_rate: 0.0,
-            loan_rate: 0.0,
+            from_key_len: 0,
+            from_key: Vec::new(),
         }
     }
 
@@ -217,6 +213,12 @@ impl ArbOpenCtx {
     /// Set OrderType
     pub fn set_order_type(&mut self, order_type: OrderType) {
         self.order_type = order_type.to_u8();
+    }
+
+    /// Set from key bytes (updates length)
+    pub fn set_from_key(&mut self, from_key: Vec<u8>) {
+        self.from_key_len = from_key.len() as u32;
+        self.from_key = from_key;
     }
 }
 
@@ -302,160 +304,67 @@ impl SignalBytes for ArbOpenCtx {
         buf.put_f64_le(self.price_offset);
         buf.put_i64_le(self.hedge_timeout_us);
 
-        // Optional fields (using 0.0 for None)
-        buf.put_f64_le(self.funding_ma);
-        buf.put_f64_le(self.predicted_funding_rate);
-        buf.put_f64_le(self.loan_rate);
+        let from_key_len = self.from_key.len() as u32;
+        buf.put_u32_le(from_key_len);
+        buf.put_slice(&self.from_key);
 
         buf.freeze()
     }
 
-    fn from_bytes(bytes: Bytes) -> Result<Self, String> {
-        const BASE_TAIL_LEN: usize = 4 + 1 + 1 + 8 + 8 + 8 + 8;
-        const EXTRA_FIELDS_MAX: usize = 5;
+    fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
+        const TAIL_LEN: usize = 4 + 1 + 1 + 8 + 8 + 8 + 8 + 8 + 8 + 4;
 
-        fn detect_format(bytes: &Bytes, base_offset: usize) -> Option<(bool, usize)> {
-            let total = bytes.len();
-            let mut with_ts_match = None;
-            let mut without_ts_match = None;
+        // Opening leg
+        let (opening_leg, opening_symbol) = read_leg(&mut bytes, true, "opening leg")?;
 
-            for with_ts in [true, false] {
-                let (open_len_idx, hedge_len_base, total_base) = if with_ts {
-                    (base_offset + 25, base_offset + 51, base_offset + 52)
-                } else {
-                    (base_offset + 17, base_offset + 35, base_offset + 36)
-                };
+        // Hedging leg
+        let (hedging_leg, hedging_symbol) = read_leg(&mut bytes, true, "hedging leg")?;
 
-                if total <= open_len_idx {
-                    continue;
-                }
-                let open_len = bytes[open_len_idx] as usize;
-                if open_len > 32 {
-                    continue;
-                }
-                let hedge_len_idx = hedge_len_base + open_len;
-                if total <= hedge_len_idx {
-                    continue;
-                }
-                let hedge_len = bytes[hedge_len_idx] as usize;
-                if hedge_len > 32 {
-                    continue;
-                }
+        // Trade parameters + from_key_len
+        if bytes.remaining() < TAIL_LEN {
+            return Err("Not enough bytes for trade parameters".to_string());
+        }
+        let amount = bytes.get_f32_le();
+        let side = bytes.get_u8();
+        let order_type = bytes.get_u8();
+        let price = bytes.get_f64_le();
+        let price_tick = bytes.get_f64_le();
+        let exp_time = bytes.get_i64_le();
+        let create_ts = bytes.get_i64_le();
+        let price_offset = bytes.get_f64_le();
+        let hedge_timeout_us = bytes.get_i64_le();
+        let from_key_len = bytes.get_u32_le() as usize;
 
-                for extra_fields in 0..=EXTRA_FIELDS_MAX {
-                    let tail_len = BASE_TAIL_LEN + extra_fields * 8;
-                    let expected = total_base + open_len + hedge_len + tail_len;
-                    if total == expected {
-                        if with_ts {
-                            with_ts_match = Some(extra_fields);
-                        } else {
-                            without_ts_match = Some(extra_fields);
-                        }
-                        break;
-                    }
-                }
-            }
+        if bytes.remaining() < from_key_len {
+            return Err(format!(
+                "Not enough bytes for from_key: need {}, have {}",
+                from_key_len,
+                bytes.remaining()
+            ));
+        }
+        let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
 
-            match (with_ts_match, without_ts_match) {
-                (Some(extra), None) => Some((true, extra)),
-                (None, Some(extra)) => Some((false, extra)),
-                (Some(extra), Some(_)) => Some((true, extra)),
-                (None, None) => None,
-            }
+        if bytes.remaining() != 0 {
+            return Err("Unexpected trailing bytes for ArbOpenCtx".to_string());
         }
 
-        fn parse(
-            mut bytes: Bytes,
-            with_ts: bool,
-            extra_fields: Option<usize>,
-        ) -> Result<ArbOpenCtx, String> {
-            // Opening leg
-            let (opening_leg, opening_symbol) = read_leg(&mut bytes, with_ts, "opening leg")?;
-
-            // Hedging leg
-            let (hedging_leg, hedging_symbol) = read_leg(&mut bytes, with_ts, "hedging leg")?;
-
-            // Trade parameters
-            if bytes.remaining() < BASE_TAIL_LEN {
-                return Err("Not enough bytes for trade parameters".to_string());
-            }
-            let amount = bytes.get_f32_le();
-            let side = bytes.get_u8();
-            let order_type = bytes.get_u8();
-            let price = bytes.get_f64_le();
-            let price_tick = bytes.get_f64_le();
-            let exp_time = bytes.get_i64_le();
-            let create_ts = bytes.get_i64_le();
-            let remaining = bytes.remaining();
-            let extra_fields = match extra_fields {
-                Some(fields) => {
-                    if remaining != fields * 8 {
-                        return Err("Unexpected tail length for ArbOpenCtx".to_string());
-                    }
-                    fields
-                }
-                None => {
-                    if remaining % 8 != 0 {
-                        return Err("Invalid tail length for ArbOpenCtx".to_string());
-                    }
-                    let fields = remaining / 8;
-                    if fields > EXTRA_FIELDS_MAX {
-                        return Err("Too many tail fields for ArbOpenCtx".to_string());
-                    }
-                    fields
-                }
-            };
-
-            let mut price_offset = 0.0;
-            let mut hedge_timeout_us = 0;
-            let mut funding_ma = 0.0;
-            let mut predicted_funding_rate = 0.0;
-            let mut loan_rate = 0.0;
-
-            if extra_fields >= 1 {
-                price_offset = bytes.get_f64_le();
-            }
-            if extra_fields >= 2 {
-                hedge_timeout_us = bytes.get_i64_le();
-            }
-            if extra_fields >= 3 {
-                funding_ma = bytes.get_f64_le();
-            }
-            if extra_fields >= 4 {
-                predicted_funding_rate = bytes.get_f64_le();
-            }
-            if extra_fields >= 5 {
-                loan_rate = bytes.get_f64_le();
-            }
-            if bytes.remaining() != 0 {
-                return Err("Unexpected trailing bytes for ArbOpenCtx".to_string());
-            }
-
-            Ok(ArbOpenCtx {
-                opening_leg,
-                opening_symbol,
-                hedging_leg,
-                hedging_symbol,
-                amount,
-                side,
-                order_type,
-                price,
-                price_tick,
-                exp_time,
-                create_ts,
-                price_offset,
-                hedge_timeout_us,
-                funding_ma,
-                predicted_funding_rate,
-                loan_rate,
-            })
-        }
-
-        let format = detect_format(&bytes, 0);
-        match format {
-            Some((with_ts, extra_fields)) => parse(bytes, with_ts, Some(extra_fields)),
-            None => parse(bytes.clone(), true, None).or_else(|_| parse(bytes, false, None)),
-        }
+        Ok(ArbOpenCtx {
+            opening_leg,
+            opening_symbol,
+            hedging_leg,
+            hedging_symbol,
+            amount,
+            side,
+            order_type,
+            price,
+            price_tick,
+            exp_time,
+            create_ts,
+            price_offset,
+            hedge_timeout_us,
+            from_key_len: from_key.len() as u32,
+            from_key,
+        })
     }
 }
 

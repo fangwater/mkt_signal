@@ -782,6 +782,7 @@ impl MarketMakerOpenStrategy {
                 event_time_us,
                 parsed.executed_qty,
                 status,
+                tif,
             );
             self.apply_trade_update_with_record(&trade);
         }
@@ -1074,12 +1075,11 @@ impl MarketMakerOpenStrategy {
                 );
             }
             info!(
-                "✅ MM订单成交完成: strategy_id={} client_order_id={} symbol={} price={:.6} qty={:.4} cumulative={:.4}",
+                "✅ MM订单成交完成: strategy_id={} client_order_id={} symbol={} price={:.6} cumulative={:.4}",
                 self.strategy_id,
                 client_order_id,
                 trade.symbol(),
                 trade.price(),
-                trade.quantity(),
                 cumulative_qty
             );
             self.record_mm_hedge_qty(

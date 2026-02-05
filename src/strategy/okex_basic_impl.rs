@@ -165,28 +165,12 @@ impl TradeUpdate for OkexOrderMsg {
         self.price
     }
 
-    fn quantity(&self) -> f64 {
-        self.cumulative_filled_quantity
-    }
-
-    fn commission(&self) -> f64 {
-        0.0
-    }
-
-    fn commission_asset(&self) -> &str {
-        ""
-    }
-
     fn is_maker(&self) -> bool {
-        false
+        matches!(self.ord_type, 1 | 2)
     }
 
     fn trading_venue(&self) -> TradingVenue {
         map_trading_venue(self.inst_type)
-    }
-
-    fn realized_pnl(&self) -> f64 {
-        0.0
     }
 
     fn cumulative_filled_quantity(&self) -> f64 {

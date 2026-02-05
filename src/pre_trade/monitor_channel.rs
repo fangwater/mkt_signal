@@ -21,6 +21,7 @@ use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
 use crate::pre_trade::basic_exposure_manager::{BasicExposureEntry, BasicExposureManager};
 use crate::pre_trade::basic_um_manager::BasicUmManager;
 use crate::pre_trade::net_position::NetPosition;
+use crate::pre_trade::PersistChannel;
 use crate::pre_trade::price_table::PriceTable;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
@@ -1809,6 +1810,13 @@ fn dispatch_order_update_generic<T>(
     }
 
     if !matched {
+        PersistChannel::with(|ch| {
+            if update.execution_type() == ExecutionType::Trade {
+                ch.publish_trade_update_unmatched(update);
+            } else {
+                ch.publish_order_update_unmatched(update);
+            }
+        });
         debug!(
             "order update unmatched: sym={} cli_id={} ord_id={} x={:?} X={:?}",
             OrderUpdate::symbol(update),

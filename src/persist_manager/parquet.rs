@@ -82,9 +82,7 @@ pub(crate) fn build_parquet_open(
     let mut exp_time_col: Vec<i64> = Vec::with_capacity(entries.len());
     let mut price_offset_col: Vec<f64> = Vec::with_capacity(entries.len());
     let mut hedge_timeout_us_col: Vec<i64> = Vec::with_capacity(entries.len());
-    let mut funding_ma_col: Vec<Option<f64>> = Vec::with_capacity(entries.len());
-    let mut predicted_funding_rate_col: Vec<Option<f64>> = Vec::with_capacity(entries.len());
-    let mut loan_rate_col: Vec<Option<f64>> = Vec::with_capacity(entries.len());
+    let mut from_key_col: Vec<Option<String>> = Vec::with_capacity(entries.len());
 
     for (key_bytes, value_bytes) in entries {
         let key = String::from_utf8(key_bytes)?;
@@ -134,20 +132,10 @@ pub(crate) fn build_parquet_open(
         exp_time_col.push(ctx.exp_time);
         price_offset_col.push(ctx.price_offset);
         hedge_timeout_us_col.push(ctx.hedge_timeout_us);
-        funding_ma_col.push(if ctx.funding_ma != 0.0 {
-            Some(ctx.funding_ma)
-        } else {
+        from_key_col.push(if ctx.from_key.is_empty() {
             None
-        });
-        predicted_funding_rate_col.push(if ctx.predicted_funding_rate != 0.0 {
-            Some(ctx.predicted_funding_rate)
         } else {
-            None
-        });
-        loan_rate_col.push(if ctx.loan_rate != 0.0 {
-            Some(ctx.loan_rate)
-        } else {
-            None
+            Some(String::from_utf8_lossy(&ctx.from_key).to_string())
         });
     }
 
@@ -174,12 +162,7 @@ pub(crate) fn build_parquet_open(
         Series::new("exp_time".into(), exp_time_col),
         Series::new("price_offset".into(), price_offset_col),
         Series::new("hedge_timeout_us".into(), hedge_timeout_us_col),
-        Series::new("funding_ma".into(), funding_ma_col.as_slice()),
-        Series::new(
-            "predicted_funding_rate".into(),
-            predicted_funding_rate_col.as_slice(),
-        ),
-        Series::new("loan_rate".into(), loan_rate_col.as_slice()),
+        Series::new("from_key".into(), from_key_col.as_slice()),
     ])?;
 
     let mut buffer = Vec::new();
@@ -291,6 +274,7 @@ pub(crate) fn build_parquet_hedge(
     let mut hedging_ts_col = Vec::with_capacity(entries.len());
     let mut market_ts_col = Vec::with_capacity(entries.len());
     let mut price_offset_col = Vec::with_capacity(entries.len());
+    let mut from_key_col: Vec<Option<String>> = Vec::with_capacity(entries.len());
 
     for (key_bytes, value_bytes) in entries {
         let key = String::from_utf8(key_bytes)?;
@@ -338,6 +322,11 @@ pub(crate) fn build_parquet_hedge(
         hedging_ts_col.push(ctx.hedging_leg.ts);
         market_ts_col.push(ctx.market_ts);
         price_offset_col.push(ctx.price_offset);
+        from_key_col.push(if ctx.from_key.is_empty() {
+            None
+        } else {
+            Some(String::from_utf8_lossy(&ctx.from_key).to_string())
+        });
     }
 
     let columns = vec![
@@ -365,6 +354,7 @@ pub(crate) fn build_parquet_hedge(
         Series::new("hedging_ts".into(), hedging_ts_col),
         Series::new("market_ts".into(), market_ts_col),
         Series::new("price_offset".into(), price_offset_col),
+        Series::new("from_key".into(), from_key_col.as_slice()),
     ];
 
     let mut df = DataFrame::new(columns)?;
@@ -387,11 +377,7 @@ pub(crate) fn build_parquet_trade_updates(
     let mut client_order_id_col = Vec::with_capacity(entries.len());
     let mut side_col = Vec::with_capacity(entries.len());
     let mut price_col = Vec::with_capacity(entries.len());
-    let mut qty_col = Vec::with_capacity(entries.len());
-    let mut commission_col = Vec::with_capacity(entries.len());
-    let mut commission_asset_col = Vec::with_capacity(entries.len());
     let mut is_maker_col = Vec::with_capacity(entries.len());
-    let mut realized_col = Vec::with_capacity(entries.len());
     let mut venue_col = Vec::with_capacity(entries.len());
     let mut cumulative_col = Vec::with_capacity(entries.len());
     let mut status_col: Vec<Option<String>> = Vec::with_capacity(entries.len());
@@ -412,11 +398,7 @@ pub(crate) fn build_parquet_trade_updates(
             client_order_id,
             side,
             price,
-            quantity,
-            commission,
-            commission_asset,
             is_maker,
-            realized_pnl,
             trading_venue,
             cumulative_filled_quantity,
             order_status,
@@ -431,11 +413,7 @@ pub(crate) fn build_parquet_trade_updates(
         client_order_id_col.push(client_order_id);
         side_col.push(side);
         price_col.push(price);
-        qty_col.push(quantity);
-        commission_col.push(commission);
-        commission_asset_col.push(commission_asset);
         is_maker_col.push(is_maker);
-        realized_col.push(realized_pnl);
         venue_col.push(trading_venue);
         cumulative_col.push(cumulative_filled_quantity);
         status_col.push(order_status.clone());
@@ -452,11 +430,7 @@ pub(crate) fn build_parquet_trade_updates(
         Series::new("client_order_id".into(), client_order_id_col),
         Series::new("side".into(), side_col),
         Series::new("price".into(), price_col),
-        Series::new("quantity".into(), qty_col),
-        Series::new("commission".into(), commission_col),
-        Series::new("commission_asset".into(), commission_asset_col),
         Series::new("is_maker".into(), is_maker_col),
-        Series::new("realized_pnl".into(), realized_col),
         Series::new("trading_venue".into(), venue_col),
         Series::new("cumulative_filled_quantity".into(), cumulative_col),
         Series::new("order_status".into(), status_col.as_slice()),
@@ -587,11 +561,7 @@ struct DecodedTradeRecord {
     client_order_id: i64,
     side: String,
     price: f64,
-    quantity: f64,
-    commission: f64,
-    commission_asset: String,
     is_maker: bool,
-    realized_pnl: f64,
     trading_venue: String,
     cumulative_filled_quantity: f64,
     order_status: Option<String>,
@@ -632,11 +602,7 @@ fn decode_trade_record(bytes: &[u8]) -> Result<DecodedTradeRecord> {
     let client_order_id = read_i64(&mut cursor, "trade update client_order_id")?;
     let side_raw = read_u8(&mut cursor, "trade update side")?;
     let price = read_f64(&mut cursor, "trade update price")?;
-    let quantity = read_f64(&mut cursor, "trade update quantity")?;
-    let commission = read_f64(&mut cursor, "trade update commission")?;
-    let commission_asset = read_string(&mut cursor)?;
     let is_maker = read_u8(&mut cursor, "trade update is_maker")? != 0;
-    let realized_pnl = read_f64(&mut cursor, "trade update realized_pnl")?;
     let trading_venue = read_u8(&mut cursor, "trade update trading_venue")?;
     let cumulative_filled_quantity = read_f64(&mut cursor, "trade update cumulative_qty")?;
     let has_status = read_u8(&mut cursor, "trade update status flag")?;
@@ -663,11 +629,7 @@ fn decode_trade_record(bytes: &[u8]) -> Result<DecodedTradeRecord> {
         client_order_id,
         side: side_str,
         price,
-        quantity,
-        commission,
-        commission_asset,
         is_maker,
-        realized_pnl,
         trading_venue: venue_str,
         cumulative_filled_quantity,
         order_status,

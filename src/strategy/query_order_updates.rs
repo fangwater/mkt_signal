@@ -111,6 +111,7 @@ pub struct OrderQueryTradeUpdate {
     side: Side,
     price: f64,
     cumulative_filled_quantity: f64,
+    is_maker: bool,
     venue: TradingVenue,
     order_status: Option<OrderStatus>,
 }
@@ -123,7 +124,9 @@ impl OrderQueryTradeUpdate {
         event_time_us: i64,
         cumulative_filled_quantity: f64,
         order_status: Option<OrderStatus>,
+        time_in_force: TimeInForce,
     ) -> Self {
+        let is_maker = infer_query_is_maker(order, time_in_force);
         Self {
             event_time_us,
             trade_time_us: event_time_us,
@@ -134,9 +137,24 @@ impl OrderQueryTradeUpdate {
             side: order.side,
             price: order.price,
             cumulative_filled_quantity,
+            is_maker,
             venue: order.venue,
             order_status,
         }
+    }
+}
+
+fn infer_query_is_maker(order: &Order, time_in_force: TimeInForce) -> bool {
+    match order.venue {
+        TradingVenue::BinanceMargin
+        | TradingVenue::BinanceFutures
+        | TradingVenue::OkexMargin
+        | TradingVenue::OkexFutures => match time_in_force {
+            TimeInForce::GTX => true,
+            TimeInForce::GTC => order.price > 0.0,
+            _ => false,
+        },
+        _ => false,
     }
 }
 
@@ -173,20 +191,8 @@ impl TradeUpdate for OrderQueryTradeUpdate {
         self.price
     }
 
-    fn quantity(&self) -> f64 {
-        self.cumulative_filled_quantity
-    }
-
-    fn commission(&self) -> f64 {
-        0.0
-    }
-
-    fn commission_asset(&self) -> &str {
-        ""
-    }
-
     fn is_maker(&self) -> bool {
-        false
+        self.is_maker
     }
 
     fn trading_venue(&self) -> TradingVenue {

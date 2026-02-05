@@ -48,9 +48,9 @@ fn status_to_u8(state: &str) -> u8 {
 
 fn tif_to_u8(ord_type: &str) -> u8 {
     match ord_type.to_ascii_lowercase().as_str() {
-        "fok" => TimeInForce::FOK.to_u8(),
-        "ioc" => TimeInForce::IOC.to_u8(),
-        "post_only" => TimeInForce::GTX.to_u8(),
+        "fok" | "op_fok" => TimeInForce::FOK.to_u8(),
+        "ioc" | "optimal_limit_ioc" => TimeInForce::IOC.to_u8(),
+        "post_only" | "mmp_and_post_only" => TimeInForce::GTX.to_u8(),
         _ => TimeInForce::GTC.to_u8(),
     }
 }

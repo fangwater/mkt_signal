@@ -50,7 +50,9 @@ pub struct HedgeArbStrategy {
     pub hedge_venue: TradingVenue,     //对冲侧交易场所
     pub hedge_side: Side,              //对冲侧方向
     pub hedge_request_seq: u32,        //累计对冲请求次数
-    pub open_signal_ts: i64, //开仓信号时间戳（微秒）
+    pub open_signal_ts: i64,    //开仓信号时间戳（微秒）
+    pub open_from_key: String,  //开仓来源标记
+    pub hedge_from_key: String, //对冲来源标记
     pub open_bbo: DualBbo,  //开仓时双腿盘口
     pub hedge_bbo: DualBbo, //对冲时刻双腿盘口
     pub force_close_mode: bool,        //是否强平模式
@@ -105,6 +107,8 @@ impl HedgeArbStrategy {
             hedge_side: Side::Buy,                    // 默认值，将在开仓时更新
             hedge_request_seq: 0,
             open_signal_ts: 0,
+            open_from_key: String::new(),
+            hedge_from_key: String::new(),
             open_bbo: DualBbo::default(),
             hedge_bbo: DualBbo::default(),
             force_close_mode: false,
@@ -308,6 +312,7 @@ impl HedgeArbStrategy {
             Side::Buy
         };
         self.open_signal_ts = ctx.create_ts;
+        self.open_from_key = String::from_utf8_lossy(&ctx.from_key).to_string();
         self.open_bbo.open =
             Bbo::new(ctx.opening_leg.bid0, ctx.opening_leg.ask0, ctx.opening_leg.ts);
         self.open_bbo.hedge =
@@ -514,6 +519,7 @@ impl HedgeArbStrategy {
             );
             return Err(format!("对冲数量无效: {}", ctx.hedge_qty));
         };
+        self.hedge_from_key = String::from_utf8_lossy(&ctx.from_key).to_string();
 
         if self.has_pending_hedge_order() {
             info!(
@@ -1089,6 +1095,12 @@ impl HedgeArbStrategy {
 
         // 6. MT 对冲是市价单，price_offset 设置为 0
         hedge_ctx.price_offset = 0.0;
+        let from_key = if !self.hedge_from_key.is_empty() {
+            self.hedge_from_key.clone()
+        } else {
+            self.open_from_key.clone()
+        };
+        hedge_ctx.set_from_key(from_key.into_bytes());
 
         // 7. 直接调用对冲处理逻辑（不再通过队列循环）
         debug!(
@@ -1762,10 +1774,9 @@ impl HedgeArbStrategy {
             // 开仓成交，更新累计开仓量, 打印成交量
             self.cumulative_open_qty = cumulative_base_qty;
             info!(
-                "💰 开仓成交: strategy_id={} order_id={} symbol={} price={:.6} qty={:.4} cumulative={:.4} | 已对冲={:.4}",
+                "💰 开仓成交: strategy_id={} order_id={} symbol={} price={:.6} cumulative={:.4} | 已对冲={:.4}",
                 self.strategy_id, client_order_id, self.open_symbol,
                 trade.price(),
-                trade.quantity(),
                 self.cumulative_open_qty,
                 self.cumulative_hedged_qty
             );
@@ -1774,10 +1785,9 @@ impl HedgeArbStrategy {
             // 对冲侧成交，增加累计对冲量
             self.cumulative_hedged_qty = cumulative_base_qty;
             info!(
-                "🛡️ 对冲成交: strategy_id={} order_id={} symbol={} price={:.6} qty={:.4} | 开仓量={:.4} 已对冲={:.4}",
+                "🛡️ 对冲成交: strategy_id={} order_id={} symbol={} price={:.6} | 开仓量={:.4} 已对冲={:.4}",
                 self.strategy_id, client_order_id, self.hedge_symbol,
                 trade.price(),
-                trade.quantity(),
                 self.cumulative_open_qty,
                 self.cumulative_hedged_qty
             );
@@ -2081,6 +2091,7 @@ impl HedgeArbStrategy {
                 event_time_us,
                 parsed.executed_qty,
                 status,
+                tif,
             );
             self.apply_trade_update_with_record(&trade);
         }

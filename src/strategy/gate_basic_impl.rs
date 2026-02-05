@@ -114,19 +114,6 @@ impl TradeUpdate for GateBasicOrderMsg {
         }
     }
 
-    fn quantity(&self) -> f64 {
-        // Gate 订单推送里没有 last_fill_qty，这里返回累计成交量（与 OKX 保持一致）
-        self.cumulative_filled_quantity
-    }
-
-    fn commission(&self) -> f64 {
-        0.0
-    }
-
-    fn commission_asset(&self) -> &str {
-        &self.commission_asset
-    }
-
     fn is_maker(&self) -> bool {
         self.is_maker != 0
     }

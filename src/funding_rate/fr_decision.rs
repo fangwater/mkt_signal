@@ -939,6 +939,7 @@ impl FrDecision {
             return;
         }
 
+        let from_key = self.build_hedge_from_key(now, query.request_seq, aggressive);
         let mut ctx = ArbHedgeCtx::new_maker(
             query.strategy_id,
             query.client_order_id,
@@ -959,6 +960,7 @@ impl FrDecision {
         ctx.set_hedging_symbol(&hedge_symbol);
         ctx.market_ts = now;
         ctx.price_offset = offset; // aggressive 时 offset=0.0
+        ctx.set_from_key(from_key);
 
         let signal = TradeSignal::create(SignalType::ArbHedge, now, 0.0, ctx.to_bytes());
 
@@ -1048,6 +1050,8 @@ impl FrDecision {
             return Ok(());
         }
 
+        let from_key = self.build_from_key(batch_ts, futures_symbol, futures_venue);
+
         // 根据信号类型决定发送策略
         match signal_type {
             SignalType::ArbOpen | SignalType::ArbClose => {
@@ -1071,6 +1075,7 @@ impl FrDecision {
                         *offset,
                         batch_ts,
                         side,
+                        &from_key,
                     );
 
                     let signal =
@@ -1114,6 +1119,34 @@ impl FrDecision {
         Ok(())
     }
 
+    fn build_from_key(
+        &self,
+        now: i64,
+        futures_symbol: &str,
+        futures_venue: TradingVenue,
+    ) -> Vec<u8> {
+        let mkt_channel = MktChannel::instance();
+        let rate_fetcher = RateFetcher::instance();
+        let funding_ma = mkt_channel
+            .get_funding_rate_mean(futures_symbol, futures_venue)
+            .unwrap_or(0.0);
+        let predicted = rate_fetcher
+            .get_predicted_funding_rate(futures_symbol, futures_venue)
+            .map(|(_, v)| v)
+            .unwrap_or(0.0);
+        let loan = rate_fetcher
+            .get_predict_loan_rate(futures_symbol, futures_venue)
+            .map(|(_, v)| v)
+            .unwrap_or(0.0);
+
+        format!("{now}:{funding_ma:.6}:{predicted:.6}:{loan:.6}").into_bytes()
+    }
+
+    fn build_hedge_from_key(&self, now: i64, request_seq: u32, aggressive: bool) -> Vec<u8> {
+        let aggressive_flag = if aggressive { 1 } else { 0 };
+        format!("{now}:{request_seq}:{aggressive_flag}").into_bytes()
+    }
+
     /// 构造 ArbOpen/ArbClose 信号上下文
     ///
     /// opening_leg: 现货（主动腿），hedging_leg: 合约（对冲腿）
@@ -1129,9 +1162,9 @@ impl FrDecision {
         price_offset: f64,
         now: i64,
         side: Side,
+        from_key: &[u8],
     ) -> ArbOpenCtx {
         let mut ctx = ArbOpenCtx::new();
-        let mkt_channel = MktChannel::instance();
         let spot_trade_symbol = normalize_symbol_for_venue(spot_symbol, spot_venue);
         let futures_trade_symbol = normalize_symbol_for_venue(futures_symbol, futures_venue);
 
@@ -1194,25 +1227,7 @@ impl FrDecision {
             super::common::FactorMode::MM => self.hedge_timeout_mm_us,
         };
 
-        // 资费相关字段
-        let rate_fetcher = RateFetcher::instance();
-
-        // funding_ma 从 MktChannel 获取
-        ctx.funding_ma = mkt_channel
-            .get_funding_rate_mean(futures_symbol, futures_venue)
-            .unwrap_or(0.0);
-
-        // predicted_funding_rate 从 RateFetcher 获取（内部根据 symbol 获取 period）
-        ctx.predicted_funding_rate = rate_fetcher
-            .get_predicted_funding_rate(futures_symbol, futures_venue)
-            .map(|(_, v)| v)
-            .unwrap_or(0.0);
-
-        // loan_rate 使用 RateFetcher 的预测借贷利率
-        ctx.loan_rate = rate_fetcher
-            .get_predict_loan_rate(futures_symbol, futures_venue)
-            .map(|(_, v)| v)
-            .unwrap_or(0.0);
+        ctx.set_from_key(from_key.to_vec());
 
         ctx
     }

@@ -17,10 +17,7 @@ use crate::signal::common::{OrderStatus, TradingVenue};
 ///     if adapter.trade_id() > 0 {
 ///         println!("成交ID: {}", adapter.trade_id());
 ///         println!("成交价格: {}", adapter.price());
-///         println!("成交数量: {}", adapter.quantity());
-///         println!("手续费: {} {}", adapter.commission(), adapter.commission_asset());
 ///         println!("是否Maker: {}", adapter.is_maker());
-///         println!("成交金额: {}", adapter.notional());
 ///     }
 /// }
 /// ```
@@ -49,30 +46,11 @@ pub trait TradeUpdate {
     /// 获取成交价格
     fn price(&self) -> f64;
 
-    /// 获取成交数量
-    fn quantity(&self) -> f64;
-
-    /// 获取手续费金额
-    fn commission(&self) -> f64;
-
-    /// 获取手续费资产
-    fn commission_asset(&self) -> &str;
-
     /// 是否为做市商成交 (true=maker, false=taker)
     fn is_maker(&self) -> bool;
 
-    /// 获取已实现盈亏 (期货特有，现货返回0.0)
-    fn realized_pnl(&self) -> f64 {
-        0.0
-    }
-
     /// 获取交易标的类型（交易所和市场类型）
     fn trading_venue(&self) -> TradingVenue;
-
-    /// 辅助方法：计算成交金额 (价格 × 数量)
-    fn notional(&self) -> f64 {
-        self.price() * self.quantity()
-    }
 
     fn cumulative_filled_quantity(&self) -> f64;
 

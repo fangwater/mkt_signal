@@ -720,6 +720,9 @@ fn spawn_backward_query_responder(
                                 ctx.set_hedging_symbol(&hedging_symbol);
                                 ctx.market_ts = now;
                                 ctx.price_offset = offset;
+                                let aggressive_flag = if aggressive { 1 } else { 0 };
+                                let from_key = format!("{now}:{}:{aggressive_flag}", query.request_seq);
+                                ctx.set_from_key(from_key.into_bytes());
 
                                 let signal = TradeSignal::create(SignalType::ArbHedge, now, 0.0, ctx.to_bytes());
                                 let bytes = signal.to_bytes();
@@ -936,9 +939,16 @@ fn build_and_publish_manual(
     ctx.create_ts = now;
     ctx.price_offset = offset;
     ctx.hedge_timeout_us = hedge_timeout_us;
-    ctx.funding_ma = 0.0;
-    ctx.predicted_funding_rate = 0.0;
-    ctx.loan_rate = 0.0;
+    let from_key = if cfg.symbol_key_suffix.trim().is_empty() {
+        cfg.symbol_namespace.trim().to_string()
+    } else {
+        format!(
+            "{}:{}",
+            cfg.symbol_namespace.trim(),
+            cfg.symbol_key_suffix.trim()
+        )
+    };
+    ctx.set_from_key(from_key.into_bytes());
 
     let signal = TradeSignal::create(signal_type.clone(), now, 0.0, ctx.to_bytes());
     publisher.publish(&signal.to_bytes())?;

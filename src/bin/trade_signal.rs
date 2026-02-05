@@ -127,6 +127,7 @@ fn fr_symbol_key_suffix(open_venue: TradingVenue, hedge_venue: TradingVenue) -> 
     )
 }
 
+
 fn infer_xarb_venues_from_key_suffix(key_suffix: &str) -> Option<(TradingVenue, TradingVenue)> {
     let suffix = key_suffix.trim().to_ascii_lowercase();
     let mut parts = suffix.split('-');

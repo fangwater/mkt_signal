@@ -108,24 +108,8 @@ impl TradeUpdate for BinanceBasicOrderMsg {
         self.last_executed_price
     }
 
-    fn quantity(&self) -> f64 {
-        self.last_executed_quantity
-    }
-
-    fn commission(&self) -> f64 {
-        self.commission
-    }
-
-    fn commission_asset(&self) -> &str {
-        &self.commission_asset
-    }
-
     fn is_maker(&self) -> bool {
         self.is_maker != 0
-    }
-
-    fn realized_pnl(&self) -> f64 {
-        self.realized_pnl
     }
 
     fn trading_venue(&self) -> TradingVenue {

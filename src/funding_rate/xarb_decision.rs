@@ -18,7 +18,6 @@ use std::fmt;
 
 use super::common::{Quote, ThresholdKey, VenuePair};
 use super::mkt_channel::MktChannel;
-use super::rate_fetcher::RateFetcher;
 use super::spread_factor::SpreadFactor;
 use super::symbol_list::SymbolList;
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
@@ -276,6 +275,7 @@ pub struct XarbDecision {
 
     signal_cooldown_us: i64,
     last_open_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
+    last_close_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
     last_cancel_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
 }
 
@@ -452,6 +452,7 @@ impl XarbDecision {
             pnlu_key_suffix,
             signal_cooldown_us: 5_000_000,
             last_open_ts: Rc::new(RefCell::new(HashMap::new())),
+            last_close_ts: Rc::new(RefCell::new(HashMap::new())),
             last_cancel_ts: Rc::new(RefCell::new(HashMap::new())),
         })
     }
@@ -556,6 +557,50 @@ impl XarbDecision {
         }
 
         let in_dump = symbol_list.is_in_dump_list(open_symbol_key.as_str());
+        if in_dump {
+            let forward_close = spread_factor.satisfy_forward_close(
+                open_venue,
+                open_symbol_key.as_str(),
+                hedge_venue,
+                hedge_symbol_key.as_str(),
+            );
+            let backward_close = spread_factor.satisfy_backward_close(
+                open_venue,
+                open_symbol_key.as_str(),
+                hedge_venue,
+                hedge_symbol_key.as_str(),
+            );
+            let side = if forward_close {
+                Some(Side::Sell)
+            } else if backward_close {
+                Some(Side::Buy)
+            } else {
+                None
+            };
+            let Some(side) = side else {
+                return Ok(None);
+            };
+            let key = Self::threshold_key(
+                open_symbol_key.as_str(),
+                hedge_symbol_key.as_str(),
+                open_venue,
+                hedge_venue,
+            );
+            if !self.is_cooldown_hit(&self.last_close_ts, &key, now) {
+                let from_key = format!("{now}:dump");
+                self.emit_close_signals(
+                    open_symbol_key.as_str(),
+                    hedge_symbol_key.as_str(),
+                    open_venue,
+                    hedge_venue,
+                    side,
+                    &from_key,
+                )?;
+                self.update_last_ts(&self.last_close_ts, key, now);
+                return Ok(Some(SignalType::ArbClose));
+            }
+            return Ok(None);
+        }
 
         let forward_open = !in_dump
             && spread_factor.satisfy_forward_open(
@@ -600,6 +645,8 @@ impl XarbDecision {
         if !pnlu_check.ok {
             return Ok(None);
         }
+        let pnlu_factor = pnlu_check.factor.unwrap_or(0.0);
+        let from_key = format!("{now}:{pnlu_factor:.6}");
 
         self.emit_open_signals(
             open_symbol_key.as_str(),
@@ -607,6 +654,7 @@ impl XarbDecision {
             open_venue,
             hedge_venue,
             side,
+            &from_key,
         )?;
 
         self.update_last_ts(&self.last_open_ts, key, now);
@@ -740,6 +788,8 @@ impl XarbDecision {
             ctx.price_tick = price_tick;
             ctx.price_offset = 0.0;
             ctx.maker_only = false;
+            let from_key = self.build_hedge_from_key(now, None, false, pct_change, threshold_pct);
+            ctx.set_from_key(from_key);
 
             let signal = TradeSignal::create(SignalType::ArbHedge, now, 0.0, ctx.to_bytes());
             if let Err(err) = self.signal_pub.publish(&signal.to_bytes()) {
@@ -847,6 +897,14 @@ impl XarbDecision {
         ctx.set_hedging_symbol(&hedge_symbol);
         ctx.market_ts = now;
         ctx.price_offset = offset;
+        let from_key = self.build_hedge_from_key(
+            now,
+            factor_lookup.factor,
+            aggressive,
+            pct_change,
+            threshold_pct,
+        );
+        ctx.set_from_key(from_key);
 
         let signal = TradeSignal::create(SignalType::ArbHedge, now, 0.0, ctx.to_bytes());
 
@@ -921,6 +979,7 @@ impl XarbDecision {
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
         side: Side,
+        from_key: &str,
     ) -> Result<()> {
         let (open_quote, hedge_quote) =
             match self.load_valid_quotes(open_symbol, hedge_symbol, open_venue, hedge_venue) {
@@ -941,6 +1000,7 @@ impl XarbDecision {
                 *offset,
                 batch_ts,
                 side,
+                from_key,
             );
 
             let signal =
@@ -952,6 +1012,53 @@ impl XarbDecision {
             "XarbDecision: emitted {} {:?} signal(s) to '{}' open={} hedge={}",
             self.price_offsets.len(),
             SignalType::ArbOpen,
+            self.channel_name,
+            open_symbol,
+            hedge_symbol
+        );
+
+        Ok(())
+    }
+
+    fn emit_close_signals(
+        &mut self,
+        open_symbol: &str,
+        hedge_symbol: &str,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+        side: Side,
+        from_key: &str,
+    ) -> Result<()> {
+        let (open_quote, hedge_quote) =
+            match self.load_valid_quotes(open_symbol, hedge_symbol, open_venue, hedge_venue) {
+                Some(quotes) => quotes,
+                None => return Ok(()),
+            };
+        let batch_ts = get_timestamp_us();
+
+        for offset in &self.price_offsets {
+            let ctx = self.build_open_context(
+                open_symbol,
+                hedge_symbol,
+                open_venue,
+                hedge_venue,
+                &open_quote,
+                &hedge_quote,
+                *offset,
+                batch_ts,
+                side,
+                from_key,
+            );
+
+            let signal =
+                TradeSignal::create(SignalType::ArbClose, batch_ts, 0.0, ctx.to_bytes());
+            self.signal_pub.publish(&signal.to_bytes())?;
+        }
+
+        info!(
+            "XarbDecision: emitted {} {:?} signal(s) to '{}' open={} hedge={}",
+            self.price_offsets.len(),
+            SignalType::ArbClose,
             self.channel_name,
             open_symbol,
             hedge_symbol
@@ -1000,9 +1107,9 @@ impl XarbDecision {
         price_offset: f64,
         now: i64,
         side: Side,
+        from_key: &str,
     ) -> ArbOpenCtx {
         let mut ctx = ArbOpenCtx::new();
-        let mkt_channel = MktChannel::instance();
         let open_trade_symbol = normalize_symbol_for_venue(open_symbol, open_venue);
         let hedge_trade_symbol = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
 
@@ -1054,20 +1161,25 @@ impl XarbDecision {
             super::common::FactorMode::MM => self.hedge_timeout_mm_us,
         };
 
-        let rate_fetcher = RateFetcher::instance();
-        ctx.funding_ma = mkt_channel
-            .get_funding_rate_mean(hedge_symbol, hedge_venue)
-            .unwrap_or(0.0);
-        ctx.predicted_funding_rate = rate_fetcher
-            .get_predicted_funding_rate(hedge_symbol, hedge_venue)
-            .map(|(_, v)| v)
-            .unwrap_or(0.0);
-        ctx.loan_rate = rate_fetcher
-            .get_predict_loan_rate(hedge_symbol, hedge_venue)
-            .map(|(_, v)| v)
-            .unwrap_or(0.0);
+        ctx.set_from_key(from_key.as_bytes().to_vec());
 
         ctx
+    }
+
+    fn build_hedge_from_key(
+        &self,
+        now: i64,
+        factor: Option<f64>,
+        aggressive: bool,
+        pct_change: f64,
+        threshold_pct: f64,
+    ) -> Vec<u8> {
+        let factor_val = factor.unwrap_or(0.0);
+        let aggressive_flag = if aggressive { 1 } else { 0 };
+        format!(
+            "{now}:{factor_val:.6}:{aggressive_flag}:{pct_change:.6}:{threshold_pct:.6}"
+        )
+        .into_bytes()
     }
 
     fn build_cancel_context(

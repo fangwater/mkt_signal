@@ -16,9 +16,13 @@ thread_local! {
 
 /// 通用交易更新记录频道（支持所有交易所）
 pub const TRADE_UPDATE_RECORD_CHANNEL: &str = "trade_update_record";
+/// 未匹配到策略的交易更新记录频道
+pub const TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL: &str = "trade_update_unmatched_record";
 
 /// 通用订单更新记录频道（支持所有交易所）
 pub const ORDER_UPDATE_RECORD_CHANNEL: &str = "order_update_record";
+/// 未匹配到策略的订单更新记录频道
+pub const ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL: &str = "order_update_unmatched_record";
 
 /// 持久化通道：负责将信号记录、交易更新和订单更新通过 IceOryx 发布到下游持久化服务
 ///
@@ -26,6 +30,8 @@ pub const ORDER_UPDATE_RECORD_CHANNEL: &str = "order_update_record";
 /// - Signal: `persist_manager::SignalPersistor` -> RocksDB (`pre_trade_signal_record`)
 /// - Trade Update: `persist_manager::TradeUpdatePersistor` -> RocksDB (`trade_update_record`)
 /// - Order Update: `persist_manager::OrderUpdatePersistor` -> RocksDB (`order_update_record`)
+/// - Unmatched Trade Update: `persist_manager::TradeUpdateUnmatchedPersistor` -> RocksDB (`trade_updates_unmatched`)
+/// - Unmatched Order Update: `persist_manager::OrderUpdateUnmatchedPersistor` -> RocksDB (`order_updates_unmatched`)
 ///
 /// 采用直接发布模式（无中间队列），优先保证低延迟
 ///
@@ -36,6 +42,8 @@ pub struct PersistChannel {
     signal_record_pub: Option<SignalPublisher>,
     trade_update_record_pub: Option<TradeUpdatePublisher>,
     order_update_record_pub: Option<OrderUpdatePublisher>,
+    trade_update_unmatched_pub: Option<TradeUpdatePublisher>,
+    order_update_unmatched_pub: Option<OrderUpdatePublisher>,
 }
 
 impl PersistChannel {
@@ -87,10 +95,22 @@ impl PersistChannel {
                 .map_err(|e| warn!("PersistChannel order_update_record_pub failed: {e:#}"))
                 .ok();
 
+        let trade_update_unmatched_pub =
+            TradeUpdatePublisher::new_with_prefix("persist_pubs", TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL)
+                .map_err(|e| warn!("PersistChannel trade_update_unmatched_pub failed: {e:#}"))
+                .ok();
+
+        let order_update_unmatched_pub =
+            OrderUpdatePublisher::new_with_prefix("persist_pubs", ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL)
+                .map_err(|e| warn!("PersistChannel order_update_unmatched_pub failed: {e:#}"))
+                .ok();
+
         Self {
             signal_record_pub,
             trade_update_record_pub,
             order_update_record_pub,
+            trade_update_unmatched_pub,
+            order_update_unmatched_pub,
         }
     }
 
@@ -164,6 +184,40 @@ impl PersistChannel {
         }
     }
 
+    /// 发布未匹配到策略的交易更新记录
+    pub fn publish_trade_update_unmatched(&self, trade_update: &dyn TradeUpdate) {
+        let Some(publisher) = &self.trade_update_unmatched_pub else {
+            return;
+        };
+
+        let payload = serialize_trade_update(trade_update);
+        if let Err(err) = publisher.publish(payload.as_ref()) {
+            warn!(
+                "failed to publish unmatched trade update trade_id={} order_id={} symbol={}: {err:#}",
+                trade_update.trade_id(),
+                trade_update.order_id(),
+                trade_update.symbol()
+            );
+        }
+    }
+
+    /// 发布未匹配到策略的订单更新记录
+    pub fn publish_order_update_unmatched(&self, order_update: &dyn OrderUpdate) {
+        let Some(publisher) = &self.order_update_unmatched_pub else {
+            return;
+        };
+
+        let payload = serialize_order_update(order_update);
+        if let Err(err) = publisher.publish(payload.as_ref()) {
+            warn!(
+                "failed to publish unmatched order update order_id={} client_order_id={} symbol={}: {err:#}",
+                order_update.order_id(),
+                order_update.client_order_id(),
+                order_update.symbol()
+            );
+        }
+    }
+
     /// 检查信号记录发布器是否可用
     pub fn is_signal_publisher_available(&self) -> bool {
         self.signal_record_pub.is_some()
@@ -196,11 +250,7 @@ impl PersistChannel {
 /// - client_order_id: i64 (8 bytes)
 /// - side: u8 (1 byte) - 0=Buy, 1=Sell
 /// - price: f64 (8 bytes)
-/// - quantity: f64 (8 bytes)
-/// - commission: f64 (8 bytes)
-/// - commission_asset: String (4 bytes len + data)
 /// - is_maker: u8 (1 byte)
-/// - realized_pnl: f64 (8 bytes)
 /// - trading_venue: u8 (1 byte)
 /// - cumulative_filled_quantity: f64 (8 bytes)
 /// - order_status: u8 (1 byte) + Option flag
@@ -225,19 +275,11 @@ fn serialize_trade_update(trade: &dyn TradeUpdate) -> Bytes {
     // 方向
     buf.put_u8(trade.side() as u8);
 
-    // 价格数量
+    // 价格
     buf.put_f64_le(trade.price());
-    buf.put_f64_le(trade.quantity());
-
-    // 手续费
-    buf.put_f64_le(trade.commission());
-    put_string(&mut buf, trade.commission_asset());
 
     // Maker/Taker
     buf.put_u8(trade.is_maker() as u8);
-
-    // 已实现盈亏
-    buf.put_f64_le(trade.realized_pnl());
 
     // 交易所类型
     buf.put_u8(trade.trading_venue() as u8);

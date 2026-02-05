@@ -11,9 +11,9 @@ use std::sync::Arc;
 use anyhow::Result;
 use log::info;
 
-use order_update::OrderUpdatePersistor;
+use order_update::{OrderUpdatePersistor, OrderUpdateUnmatchedPersistor};
 use signal::SignalPersistor;
-use trade_update::TradeUpdatePersistor;
+use trade_update::{TradeUpdatePersistor, TradeUpdateUnmatchedPersistor};
 
 pub use storage::{RocksDbStore, RocksDbTuning};
 
@@ -75,10 +75,22 @@ impl PersistManager {
             let _ = s2.run().await;
         });
 
+        info!("starting trade update unmatched persistor");
+        let s2_unmatched = TradeUpdateUnmatchedPersistor::new(store.clone())?;
+        tokio::task::spawn_local(async move {
+            let _ = s2_unmatched.run().await;
+        });
+
         info!("starting order update persistor");
         let s3 = OrderUpdatePersistor::new(store.clone())?;
         tokio::task::spawn_local(async move {
             let _ = s3.run().await;
+        });
+
+        info!("starting order update unmatched persistor");
+        let s3_unmatched = OrderUpdateUnmatchedPersistor::new(store.clone())?;
+        tokio::task::spawn_local(async move {
+            let _ = s3_unmatched.run().await;
         });
 
         tokio::select! {

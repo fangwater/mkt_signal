@@ -84,11 +84,7 @@ fn trade_update_used_len(payload: &[u8]) -> Option<usize> {
     skip_i64(&mut cursor)?; // client_order_id
     skip_u8(&mut cursor)?; // side
     skip_f64(&mut cursor)?; // price
-    skip_f64(&mut cursor)?; // quantity
-    skip_f64(&mut cursor)?; // commission
-    skip_string(&mut cursor)?; // commission_asset
     skip_u8(&mut cursor)?; // is_maker
-    skip_f64(&mut cursor)?; // realized_pnl
     skip_u8(&mut cursor)?; // trading_venue
     skip_f64(&mut cursor)?; // cumulative_filled_quantity
 

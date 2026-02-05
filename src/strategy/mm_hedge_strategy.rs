@@ -642,6 +642,7 @@ impl MarketMakerHedgeStrategy {
                 event_time_us,
                 parsed.executed_qty,
                 status,
+                tif,
             );
             self.apply_trade_update_with_record(&trade);
         }
