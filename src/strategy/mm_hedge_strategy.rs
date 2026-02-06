@@ -755,6 +755,7 @@ impl MarketMakerHedgeStrategy {
                     plan.side,
                     plan.qty,
                     plan.price,
+                    false,
                     submit_ts,
                 );
             self.hedge_order_ids.insert(plan.client_order_id);

@@ -281,6 +281,7 @@ impl MarketMakerOpenStrategy {
                 side,
                 order_qty,
                 order_price,
+                false,
                 submit_ts,
             );
 

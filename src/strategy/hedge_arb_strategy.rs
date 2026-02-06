@@ -419,6 +419,7 @@ impl HedgeArbStrategy {
                 Side::from_u8(ctx.side).unwrap(),
                 aligned_qty,
                 aligned_price,
+                self.is_force_close_mode(),
                 ts,
             );
         info!(
@@ -670,6 +671,7 @@ impl HedgeArbStrategy {
                 hedge_side,
                 aligned_qty,
                 aligned_price,
+                self.is_force_close_mode(),
                 ts,
             );
 

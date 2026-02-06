@@ -86,10 +86,7 @@ def parse_args() -> argparse.Namespace:
 
 # ========== 交易对白名单配置 ==========
 
-FWD_SYMBOLS: List[str] = ["SOLUSDT","dogeusdt","wldusdt","filusdt","dotusdt","btcusdt","ethusdt"]
-
-BWD_SYMBOLS: List[str] = ["SOLUSDT","dogeusdt","wldusdt","filusdt","dotusdt","btcusdt","ethusdt"]
-
+DUMP_SYMBOLS: List[str] = []
 FWD_SYMBOLS: List[str] = []
 BWD_SYMBOLS: List[str] = []
 
@@ -135,14 +132,34 @@ def print_symbol_list(rds, key: str, title: str) -> None:
         print(f"  原始值: {text}")
 
 
+def normalize_symbol(symbol: str) -> str:
+    return (symbol or "").strip().upper()
+
+
+def validate_symbol_partition() -> bool:
+    dump_set = {normalize_symbol(symbol) for symbol in DUMP_SYMBOLS if normalize_symbol(symbol)}
+    fwd_set = {normalize_symbol(symbol) for symbol in FWD_SYMBOLS if normalize_symbol(symbol)}
+    bwd_set = {normalize_symbol(symbol) for symbol in BWD_SYMBOLS if normalize_symbol(symbol)}
+
+    conflicts = sorted(dump_set & (fwd_set | bwd_set))
+    if conflicts:
+        print(
+            "❌ 配置错误：以下交易对同时出现在 dump 与 fwd/bwd 列表中（只允许二选一）:",
+            file=sys.stderr,
+        )
+        print("   " + ", ".join(conflicts), file=sys.stderr)
+        return False
+
+    return True
+
+
 def sync_symbol_lists(rds, key_suffix: str) -> int:
     dump_key = f"{NAMESPACE}_dump_symbols:{key_suffix}"
     fwd_key = f"{NAMESPACE}_fwd_trade_symbols:{key_suffix}"
     bwd_key = f"{NAMESPACE}_bwd_trade_symbols:{key_suffix}"
 
-    empty_list: List[str] = []
-    rds.set(dump_key, json.dumps(empty_list, ensure_ascii=False))
-    print(f"✅ 已写入 {len(empty_list)} 个交易对到 '{dump_key}'（平仓列表）")
+    rds.set(dump_key, json.dumps(DUMP_SYMBOLS, ensure_ascii=False))
+    print(f"✅ 已写入 {len(DUMP_SYMBOLS)} 个交易对到 '{dump_key}'（平仓列表）")
 
     rds.set(fwd_key, json.dumps(FWD_SYMBOLS, ensure_ascii=False))
     print(f"✅ 已写入 {len(FWD_SYMBOLS)} 个交易对到 '{fwd_key}'（正套）")
@@ -150,11 +167,14 @@ def sync_symbol_lists(rds, key_suffix: str) -> int:
     rds.set(bwd_key, json.dumps(BWD_SYMBOLS, ensure_ascii=False))
     print(f"✅ 已写入 {len(BWD_SYMBOLS)} 个交易对到 '{bwd_key}'（反套）")
 
-    return len(FWD_SYMBOLS) + len(BWD_SYMBOLS)
+    return len(DUMP_SYMBOLS) + len(FWD_SYMBOLS) + len(BWD_SYMBOLS)
 
 
 def main() -> int:
     args = parse_args()
+    if not validate_symbol_partition():
+        return 2
+
     redis = try_import_redis()
     if redis is None:
         print("❌ redis 包未安装，请使用 pip install redis", file=sys.stderr)

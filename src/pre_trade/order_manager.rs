@@ -358,6 +358,7 @@ impl OrderManager {
         side: Side,
         quantity: f64,
         price: f64,
+        reduce_only: bool,
         sumbit_ts_local: i64,
     ) -> i64 {
         let mut order = Order::new(
@@ -368,6 +369,7 @@ impl OrderManager {
             side,
             quantity,
             price,
+            reduce_only,
             self.binance_account_mode,
         );
         order.set_submit_time(sumbit_ts_local);
@@ -442,6 +444,7 @@ impl OrderManager {
         warn!("方向:         {:?}", order.side);
         warn!("价格:         {:.8}", order.price);
         warn!("数量:         {:.8}", order.quantity);
+        warn!("只减仓:       {}", order.reduce_only);
         warn!("成交量:       {:.8}", order.cumulative_filled_quantity);
         warn!("订单状态:     {:?}", order.status);
         warn!("提交时间:     {}", order.timestamp.submit_t);
@@ -559,6 +562,7 @@ pub struct Order {
     pub side: Side,                      // 买卖方向
     pub price: f64,                      // 限价单价格, 市价单没有意义
     pub quantity: f64,                   // 数量
+    pub reduce_only: bool,               // 是否只减仓
     pub cumulative_filled_quantity: f64, // 成交量
     pub exchange_order_id: Option<i64>,  // 交易所返回的 orderId
     pub status: OrderExecutionStatus,    // 订单执行状态
@@ -581,6 +585,7 @@ impl Order {
         side: Side,
         quantity: f64,
         price: f64,
+        reduce_only: bool,
         binance_account_mode: Option<BinanceAccountMode>,
     ) -> Self {
         Order {
@@ -591,6 +596,7 @@ impl Order {
             side,
             price,
             quantity,
+            reduce_only,
             status: OrderExecutionStatus::Commit,
             cumulative_filled_quantity: 0.0,
             exchange_order_id: None,
@@ -808,6 +814,7 @@ impl Order {
                     format!("side={}", self.side.as_str()), //下单方向确定就可以
                     format!("type={}", self.order_type.as_str()),
                     format!("quantity={}", format_quantity(self.quantity)),
+                    format!("reduceOnly={}", self.reduce_only),
                     format!("newClientOrderId={}", self.client_order_id),
                 ];
                 let local_create_ts = get_timestamp_us();
@@ -846,6 +853,7 @@ impl Order {
                     quantity: self.quantity,
                     price: self.price,
                     symbol: inst_id,
+                    reduce_only: self.reduce_only,
                     client_order_id: self.client_order_id,
                 };
 
