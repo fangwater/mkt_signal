@@ -1,8 +1,9 @@
 use crate::common::bbo::{Bbo, DualBbo};
 use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
+use crate::persist_manager::unified_order::UnifiedOrderRecord;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderManager, OrderType, Side};
+use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::{PersistChannel, SignalChannel, TradeEngHub};
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{
@@ -50,6 +51,9 @@ pub struct HedgeArbStrategy {
     pub hedge_side: Side,              //对冲侧方向
     pub hedge_request_seq: u32,        //累计对冲请求次数
     pub open_signal_ts: i64,           //开仓信号时间戳（微秒）
+    pub hedge_signal_ts: i64,          //对冲信号时间戳（微秒）
+    pub open_price_offset: f64,        //开仓信号 price_offset
+    pub hedge_price_offset: f64,       //对冲信号 price_offset
     pub open_from_key: String,         //开仓来源标记
     pub hedge_from_key: String,        //对冲来源标记
     pub open_bbo: DualBbo,             //开仓时双腿盘口
@@ -106,6 +110,9 @@ impl HedgeArbStrategy {
             hedge_side: Side::Buy,                    // 默认值，将在开仓时更新
             hedge_request_seq: 0,
             open_signal_ts: 0,
+            hedge_signal_ts: 0,
+            open_price_offset: 0.0,
+            hedge_price_offset: 0.0,
             open_from_key: String::new(),
             hedge_from_key: String::new(),
             open_bbo: DualBbo::default(),
@@ -311,6 +318,7 @@ impl HedgeArbStrategy {
             Side::Buy
         };
         self.open_signal_ts = ctx.create_ts;
+        self.open_price_offset = ctx.price_offset;
         self.open_from_key = String::from_utf8_lossy(&ctx.from_key).to_string();
         self.open_bbo.open = Bbo::new(
             ctx.opening_leg.bid0,
@@ -525,6 +533,8 @@ impl HedgeArbStrategy {
             );
             return Err(format!("对冲数量无效: {}", ctx.hedge_qty));
         };
+        self.hedge_signal_ts = ctx.market_ts;
+        self.hedge_price_offset = ctx.price_offset;
         self.hedge_from_key = String::from_utf8_lossy(&ctx.from_key).to_string();
 
         if self.has_pending_hedge_order() {
@@ -1846,6 +1856,7 @@ impl HedgeArbStrategy {
             return false;
         }
 
+        let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
         let updated = order_manager.update(client_order_id, |order| match order_update.status() {
             OrderStatus::New => {
                 order.status = OrderExecutionStatus::Create;
@@ -1902,6 +1913,34 @@ impl HedgeArbStrategy {
             );
             return false;
         }
+
+        if order_update.status() == OrderStatus::New {
+            if let Some(order) = MonitorChannel::instance()
+                .order_manager()
+                .borrow()
+                .get(client_order_id)
+            {
+                self.publish_uniform_new_order(order_update, &order, prev_cumulative_filled_qty);
+            }
+        }
+
+        if matches!(
+            order_update.status(),
+            OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
+        ) {
+            if let Some(order) = MonitorChannel::instance()
+                .order_manager()
+                .borrow()
+                .get(client_order_id)
+            {
+                self.publish_uniform_terminal_order(
+                    order_update,
+                    &order,
+                    prev_cumulative_filled_qty,
+                );
+            }
+        }
+
         if order_update.status() == OrderStatus::Canceled {
             if self
                 .processed_cancel_updates
@@ -1922,6 +1961,128 @@ impl HedgeArbStrategy {
         }
 
         true
+    }
+
+    fn uniform_leg_fields(&self, order: &Order) -> Option<(i64, Vec<u8>, f64)> {
+        let leg = self.classify_leg(order.client_order_id)?;
+        match leg {
+            Leg::Open => Some((
+                self.open_signal_ts,
+                format!("open|{}", self.open_from_key).into_bytes(),
+                self.open_price_offset,
+            )),
+            Leg::Hedge => Some((
+                self.hedge_signal_ts,
+                format!("hedge|{}", self.hedge_from_key).into_bytes(),
+                self.hedge_price_offset,
+            )),
+        }
+    }
+
+    fn compute_uniform_amount_update(
+        &self,
+        order: &Order,
+        incoming_cum: f64,
+        prev_cumulative_filled_qty: f64,
+        status: OrderStatus,
+    ) -> f64 {
+        if incoming_cum >= prev_cumulative_filled_qty {
+            incoming_cum - prev_cumulative_filled_qty
+        } else {
+            warn!(
+                "HedgeArbStrategy: strategy_id={} uniform {:?} amount_update rollback detected: client_order_id={} prev={:.8} incoming={:.8}",
+                self.strategy_id,
+                status,
+                order.client_order_id,
+                prev_cumulative_filled_qty,
+                incoming_cum
+            );
+            0.0
+        }
+    }
+
+    fn publish_uniform_new_order(
+        &self,
+        order_update: &dyn OrderUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+    ) {
+        let Some((signal_ts, from_key_bytes, price_offset)) = self.uniform_leg_fields(order) else {
+            return;
+        };
+
+        let incoming_cum = order_update.cumulative_filled_quantity();
+        let amount_update = self.compute_uniform_amount_update(
+            order,
+            incoming_cum,
+            prev_cumulative_filled_qty,
+            order_update.status(),
+        );
+
+        let mut record = UnifiedOrderRecord {
+            symbol_len: 0,
+            symbol: order.symbol.as_bytes().to_vec(),
+            create_ts: order_update.event_time(),
+            update_ts: order_update.event_time(),
+            signal_ts,
+            client_order_id: order.client_order_id,
+            venue: order.venue as u8,
+            ttype: order.order_type.to_u8(),
+            side: order.side.to_u8(),
+            price: order.price,
+            price_offset,
+            amount_init: order.quantity,
+            amount_update,
+            status: order_update.status().to_u8(),
+            from_key_len: 0,
+            from_key: from_key_bytes,
+        };
+        record.refresh_lengths();
+
+        PersistChannel::with(|ch| ch.publish_uniform_order(&record));
+    }
+
+    fn publish_uniform_terminal_order(
+        &self,
+        order_update: &dyn OrderUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+    ) {
+        let Some((signal_ts, from_key_bytes, price_offset)) = self.uniform_leg_fields(order) else {
+            return;
+        };
+
+        let incoming_cum = order_update.cumulative_filled_quantity();
+        let amount_update = self.compute_uniform_amount_update(
+            order,
+            incoming_cum,
+            prev_cumulative_filled_qty,
+            order_update.status(),
+        );
+
+        let create_ts = order.timestamp.create_t;
+
+        let mut record = UnifiedOrderRecord {
+            symbol_len: 0,
+            symbol: order.symbol.as_bytes().to_vec(),
+            create_ts,
+            update_ts: order_update.event_time(),
+            signal_ts,
+            client_order_id: order.client_order_id,
+            venue: order.venue as u8,
+            ttype: order.order_type.to_u8(),
+            side: order.side.to_u8(),
+            price: order.price,
+            price_offset,
+            amount_init: order.quantity,
+            amount_update,
+            status: order_update.status().to_u8(),
+            from_key_len: 0,
+            from_key: from_key_bytes,
+        };
+        record.refresh_lengths();
+
+        PersistChannel::with(|ch| ch.publish_uniform_order(&record));
     }
 
     fn cleanup_strategy_orders(&mut self) {

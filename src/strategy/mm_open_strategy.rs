@@ -1,7 +1,8 @@
 use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
+use crate::persist_manager::unified_order::UnifiedOrderRecord;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderManager, OrderType, Side};
+use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::{PersistChannel, QueryEngHub, TradeEngHub};
 use crate::signal::cancel_signal::MmCancelCtx;
 use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue};
@@ -45,6 +46,8 @@ pub struct MarketMakerOpenStrategy {
     open_order_id: i64,
     open_expire_ts: Option<i64>,
     signal_ts: i64,
+    open_from_key: String,
+    open_price_offset: f64,
     alive_flag: bool,
     recorded_to_hedge: bool,
     pending_order_query: Option<PendingOrderQueryReason>,
@@ -60,6 +63,8 @@ impl MarketMakerOpenStrategy {
             open_order_id: 0,
             open_expire_ts: None,
             signal_ts: 0,
+            open_from_key: String::new(),
+            open_price_offset: 0.0,
             alive_flag: true,
             recorded_to_hedge: false,
             pending_order_query: None,
@@ -264,6 +269,8 @@ impl MarketMakerOpenStrategy {
             None
         };
         self.signal_ts = ctx.create_ts;
+        self.open_from_key = String::from_utf8_lossy(&ctx.from_key).to_string();
+        self.open_price_offset = ctx.price_offset;
 
         let client_order_id = Self::compose_order_id(self.strategy_id);
         self.open_order_id = client_order_id;
@@ -985,6 +992,8 @@ impl MarketMakerOpenStrategy {
             return false;
         }
 
+        let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
+
         let mut record_fill: Option<(TradingVenue, String, Side, f64)> = None;
         let updated = order_manager.update(client_order_id, |order| match order_update.status() {
             OrderStatus::New => {
@@ -1078,7 +1087,134 @@ impl MarketMakerOpenStrategy {
             self.record_mm_hedge_qty(venue, &symbol, side, qty);
         }
 
+        if order_update.status() == OrderStatus::New {
+            if let Some(order) = MonitorChannel::instance()
+                .order_manager()
+                .borrow()
+                .get(client_order_id)
+            {
+                self.publish_uniform_new_order(order_update, &order, prev_cumulative_filled_qty);
+            }
+        }
+
+        if matches!(
+            order_update.status(),
+            OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
+        ) {
+            if let Some(order) = MonitorChannel::instance()
+                .order_manager()
+                .borrow()
+                .get(client_order_id)
+            {
+                self.publish_uniform_terminal_order(
+                    order_update,
+                    &order,
+                    prev_cumulative_filled_qty,
+                );
+            }
+        }
+
         true
+    }
+
+    fn compute_uniform_amount_update(
+        &self,
+        order: &Order,
+        incoming_cum: f64,
+        prev_cumulative_filled_qty: f64,
+        status: OrderStatus,
+    ) -> f64 {
+        if incoming_cum >= prev_cumulative_filled_qty {
+            incoming_cum - prev_cumulative_filled_qty
+        } else {
+            warn!(
+                "MarketMakerOpenStrategy: strategy_id={} uniform {:?} amount_update rollback detected: client_order_id={} prev={:.8} incoming={:.8}",
+                self.strategy_id,
+                status,
+                order.client_order_id,
+                prev_cumulative_filled_qty,
+                incoming_cum
+            );
+            0.0
+        }
+    }
+
+    fn publish_uniform_new_order(
+        &self,
+        order_update: &dyn OrderUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+    ) {
+        let price_offset = self.open_price_offset;
+
+        let incoming_cum = order_update.cumulative_filled_quantity();
+        let amount_update = self.compute_uniform_amount_update(
+            order,
+            incoming_cum,
+            prev_cumulative_filled_qty,
+            order_update.status(),
+        );
+
+        let mut record = UnifiedOrderRecord {
+            symbol_len: 0,
+            symbol: order.symbol.as_bytes().to_vec(),
+            create_ts: order_update.event_time(),
+            update_ts: order_update.event_time(),
+            signal_ts: self.signal_ts,
+            client_order_id: order.client_order_id,
+            venue: order.venue as u8,
+            ttype: order.order_type.to_u8(),
+            side: order.side.to_u8(),
+            price: order.price,
+            price_offset,
+            amount_init: order.quantity,
+            amount_update,
+            status: order_update.status().to_u8(),
+            from_key_len: 0,
+            from_key: format!("open|{}", self.open_from_key).into_bytes(),
+        };
+        record.refresh_lengths();
+
+        PersistChannel::with(|ch| ch.publish_uniform_order(&record));
+    }
+
+    fn publish_uniform_terminal_order(
+        &self,
+        order_update: &dyn OrderUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+    ) {
+        let incoming_cum = order_update.cumulative_filled_quantity();
+        let amount_update = self.compute_uniform_amount_update(
+            order,
+            incoming_cum,
+            prev_cumulative_filled_qty,
+            order_update.status(),
+        );
+
+        let create_ts = order.timestamp.create_t;
+
+        let mut record = UnifiedOrderRecord {
+            symbol_len: 0,
+            symbol: order.symbol.as_bytes().to_vec(),
+            create_ts,
+            update_ts: order_update.event_time(),
+            signal_ts: self.signal_ts,
+            client_order_id: order.client_order_id,
+            venue: order.venue as u8,
+            ttype: order.order_type.to_u8(),
+            side: order.side.to_u8(),
+            price: order.price,
+            price_offset: self.open_price_offset,
+            amount_init: order.quantity,
+            amount_update,
+            status: order_update.status().to_u8(),
+            from_key_len: 0,
+            from_key: format!("open|{}", self.open_from_key).into_bytes(),
+        };
+        record.refresh_lengths();
+
+        PersistChannel::with(|ch| ch.publish_uniform_order(&record));
     }
 
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
