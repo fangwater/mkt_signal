@@ -32,3 +32,4 @@
 
 - [Trade Update 幂等规则](../trade_update_idempotency.md)
 - [统一订单映射说明](../uniform_order_mapping.md)
+- [Binance Margin WS FULL 回报处理约定](../binance_margin_ws_full_handling.md)

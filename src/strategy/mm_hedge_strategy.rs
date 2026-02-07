@@ -122,6 +122,10 @@ impl MarketMakerHedgeStrategy {
     }
 
     fn try_apply_ws_order_update(&mut self, response: &dyn TradeEngineResponse) -> bool {
+        if !WsOrderUpdate::supports_trade_response_req_type(response.req_type()) {
+            return false;
+        }
+
         let client_order_id = response.client_order_id();
         let order_mgr = MonitorChannel::instance().order_manager();
         let Some(order_snapshot) = order_mgr.borrow().get(client_order_id) else {
@@ -136,6 +140,27 @@ impl MarketMakerHedgeStrategy {
         let Some(update) = WsOrderUpdate::from_trade_response(response, &order_snapshot) else {
             return false;
         };
+
+        // Binance WS 下单响应在 FULL/RESULT 模式下可能直接返回 FILLED/PartiallyFilled
+        // （并携带 fills），不再稳定经过 NEW 阶段。
+        // 这里统一只接收 NEW/CANCELED，其他状态等待 account ws 的正常推送处理。
+        if matches!(
+            order_snapshot.venue,
+            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures
+        ) {
+            if matches!(update.status(), OrderStatus::New | OrderStatus::Canceled) {
+                <Self as Strategy>::apply_order_update(self, &update);
+            } else {
+                debug!(
+                    "MarketMakerHedgeStrategy: strategy_id={} skip non-NEW/CANCELED binance ws response: venue={:?} client_order_id={} status={:?}",
+                    self.strategy_id,
+                    order_snapshot.venue,
+                    client_order_id,
+                    update.status()
+                );
+            }
+            return true;
+        }
 
         if matches!(
             update.status(),

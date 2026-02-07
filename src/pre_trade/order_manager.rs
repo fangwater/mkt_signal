@@ -42,6 +42,10 @@ fn format_price(price: f64) -> String {
     format_decimal(price)
 }
 
+fn binance_ws_um_new_order_resp_type() -> &'static str {
+    "RESULT"
+}
+
 /// 从交易对符号中提取 base asset 和 quote asset
 /// 例如: "BTCUSDT" -> ("BTC", "USDT")
 fn extract_assets_from_symbol(symbol: &str) -> (String, String) {
@@ -1039,6 +1043,8 @@ impl Order {
                 }
             }
             TradingVenue::BinanceFutures => {
+                let use_binance_ws_um =
+                    self.require_binance_account_mode() == BinanceAccountMode::Standard;
                 let mut params_parts = vec![
                     format!("symbol={}", self.symbol),
                     format!("side={}", self.side.as_str()), //下单方向确定就可以
@@ -1047,6 +1053,12 @@ impl Order {
                     format!("reduceOnly={}", self.reduce_only),
                     format!("newClientOrderId={}", self.client_order_id),
                 ];
+                if use_binance_ws_um {
+                    params_parts.push(format!(
+                        "newOrderRespType={}",
+                        binance_ws_um_new_order_resp_type()
+                    ));
+                }
                 let local_create_ts = get_timestamp_us();
                 //UM合约下单
                 if self.order_type.is_limit() {
@@ -1059,7 +1071,7 @@ impl Order {
                     self.venue, self.client_order_id, params_plain
                 );
                 let params = Bytes::from(params_plain);
-                if self.require_binance_account_mode() == BinanceAccountMode::Standard {
+                if use_binance_ws_um {
                     let request = BinanceWsNewUMOrderRequest::create(
                         local_create_ts,
                         self.client_order_id,

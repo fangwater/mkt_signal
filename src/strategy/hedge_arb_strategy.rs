@@ -18,6 +18,7 @@ use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTrad
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_order_helper::{publish_uniform_order_event, UniformOrderEventKind};
+use crate::strategy::ws_order_update::WsOrderUpdate;
 use crate::trade_engine::query_parsers::compact_order::{
     CompactOrderQueryResp, COMPACT_ORDER_QUERY_RESP_LEN,
 };
@@ -2179,6 +2180,51 @@ impl HedgeArbStrategy {
         }
     }
 
+    fn try_apply_ws_order_update(&mut self, response: &dyn TradeEngineResponse) -> bool {
+        if !WsOrderUpdate::supports_trade_response_req_type(response.req_type()) {
+            return false;
+        }
+
+        let client_order_id = response.client_order_id();
+        if self.classify_leg(client_order_id).is_none() {
+            return false;
+        }
+
+        let order_mgr = MonitorChannel::instance().order_manager();
+        let Some(order_snapshot) = order_mgr.borrow().get(client_order_id) else {
+            warn!(
+                "HedgeArbStrategy: strategy_id={} ws order update missing local order: client_order_id={}",
+                self.strategy_id, client_order_id
+            );
+            return false;
+        };
+        let order_snapshot = order_snapshot.clone();
+
+        let Some(update) = WsOrderUpdate::from_trade_response(response, &order_snapshot) else {
+            return false;
+        };
+
+        if matches!(
+            order_snapshot.venue,
+            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures
+        ) {
+            if matches!(update.status(), OrderStatus::New | OrderStatus::Canceled) {
+                <Self as Strategy>::apply_order_update(self, &update);
+            } else {
+                debug!(
+                    "HedgeArbStrategy: strategy_id={} skip non-NEW/CANCELED binance ws response: venue={:?} client_order_id={} status={:?}",
+                    self.strategy_id,
+                    order_snapshot.venue,
+                    client_order_id,
+                    update.status()
+                );
+            }
+            return true;
+        }
+
+        false
+    }
+
     fn build_order_query_request(
         &self,
         order: &crate::pre_trade::order_manager::Order,
@@ -3016,9 +3062,12 @@ impl Strategy for HedgeArbStrategy {
     }
 
     fn apply_trade_engine_response(&mut self, response: &dyn TradeEngineResponse) {
+        if self.try_apply_ws_order_update(response) {
+            return;
+        }
+
         // 1、is_request_success表示http200 + error code为0，这种不处理
-        // 2、无论是下单、撤单的成功，等待account monitor来推送结果，推送缺少的情况下，通过rest api请求回补
-        // 3、因此只要成功，就不进行处理
+        // 2、成功回包默认等待 account monitor 推送；推送缺失时由 query 回补
         if response.is_request_success() {
             return;
         }

@@ -23,6 +23,18 @@ pub struct WsOrderUpdate {
 }
 
 impl WsOrderUpdate {
+    pub fn supports_trade_response_req_type(req_type: u32) -> bool {
+        matches!(
+            TradeRequestType::try_from(req_type),
+            Ok(
+                TradeRequestType::BinanceWsNewUMOrder
+                    | TradeRequestType::BinanceWsCancelUMOrder
+                    | TradeRequestType::BinanceWsNewMarginOrder
+                    | TradeRequestType::BinanceWsCancelMarginOrder
+            )
+        )
+    }
+
     pub fn new(
         event_time: i64,
         symbol: String,
@@ -69,14 +81,7 @@ impl WsOrderUpdate {
         if !response.is_request_success() {
             return None;
         }
-        let req_type = TradeRequestType::try_from(response.req_type()).ok()?;
-        if !matches!(
-            req_type,
-            TradeRequestType::BinanceWsNewUMOrder
-                | TradeRequestType::BinanceWsCancelUMOrder
-                | TradeRequestType::BinanceWsNewMarginOrder
-                | TradeRequestType::BinanceWsCancelMarginOrder
-        ) {
+        if !Self::supports_trade_response_req_type(response.req_type()) {
             return None;
         }
 
