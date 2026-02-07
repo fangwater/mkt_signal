@@ -16,3 +16,8 @@ __pycache__/
 export_data
 anlysis_binance_fr_trade/output/
 anlysis_binance_fr_trade/*.csv
+
+# factor_pool 产出文件
+factor_pool/**/*.ipynb
+factor_pool/**/*.h5
+.venv/**
