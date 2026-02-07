@@ -10,7 +10,7 @@ pub struct CompactOrderQueryResp {
     pub status_u8: u8,
     pub update_time_ms: i64,
     pub time_in_force_u8: u8,
-    pub trade_id: i64,
+    pub response_price: f64,
 }
 
 impl CompactOrderQueryResp {
@@ -21,7 +21,7 @@ impl CompactOrderQueryResp {
         buf.put_u8(self.status_u8);
         buf.put_i64_le(self.update_time_ms);
         buf.put_u8(self.time_in_force_u8);
-        buf.put_i64_le(self.trade_id);
+        buf.put_f64_le(self.response_price);
         buf.freeze()
     }
 
@@ -38,14 +38,14 @@ impl CompactOrderQueryResp {
         let status_u8 = body[16];
         let update_time_ms = i64::from_le_bytes(body[17..25].try_into()?);
         let time_in_force_u8 = body[25];
-        let trade_id = i64::from_le_bytes(body[26..34].try_into()?);
+        let response_price = f64::from_le_bytes(body[26..34].try_into()?);
         Ok(Self {
             executed_qty,
             order_id,
             status_u8,
             update_time_ms,
             time_in_force_u8,
-            trade_id,
+            response_price,
         })
     }
 }

@@ -17,6 +17,7 @@ pub fn build_uniform_order_record(
     status: OrderStatus,
     signal_ts: i64,
     from_key: Vec<u8>,
+    price: f64,
     price_offset: f64,
     amount_update: f64,
 ) -> UnifiedOrderRecord {
@@ -30,7 +31,7 @@ pub fn build_uniform_order_record(
         venue: order.venue as u8,
         ttype: order.order_type.to_u8(),
         side: order.side.to_u8(),
-        price: order.price,
+        price,
         price_offset,
         amount_init: order.quantity,
         amount_update,
@@ -49,6 +50,7 @@ pub fn publish_uniform_order_event(
     status: OrderStatus,
     signal_ts: i64,
     from_key: Vec<u8>,
+    price_override: Option<f64>,
     price_offset: f64,
     amount_update: f64,
 ) {
@@ -56,6 +58,9 @@ pub fn publish_uniform_order_event(
         UniformOrderEventKind::New => event_ts,
         UniformOrderEventKind::Terminal | UniformOrderEventKind::Trade => order.timestamp.create_t,
     };
+    let price = price_override
+        .filter(|p| p.is_finite() && *p > 0.0)
+        .unwrap_or(order.price);
 
     let record = build_uniform_order_record(
         order,
@@ -64,6 +69,7 @@ pub fn publish_uniform_order_event(
         status,
         signal_ts,
         from_key,
+        price,
         price_offset,
         amount_update,
     );

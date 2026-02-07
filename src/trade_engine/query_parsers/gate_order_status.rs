@@ -140,7 +140,7 @@ pub fn parse_gate_spot_order_status_json(json: &str) -> Option<CompactOrderQuery
         status_u8,
         update_time_ms,
         time_in_force_u8: tif_u8,
-        trade_id: 0,
+        response_price: 0.0,
     })
 }
 
@@ -181,7 +181,7 @@ pub fn parse_gate_futures_order_status_json(json: &str) -> Option<CompactOrderQu
         status_u8,
         update_time_ms,
         time_in_force_u8: tif_u8,
-        trade_id: 0,
+        response_price: 0.0,
     })
 }
 

@@ -656,7 +656,7 @@ impl MarketMakerHedgeStrategy {
         if TimeInForce::from_u8(parsed.time_in_force_u8).is_none() {
             return None;
         }
-        if parsed.trade_id < 0 {
+        if !parsed.response_price.is_finite() || parsed.response_price < 0.0 {
             return None;
         }
         if parsed.update_time_ms < 0 {
@@ -695,7 +695,7 @@ impl MarketMakerHedgeStrategy {
                 order_id,
                 event_time_us,
                 parsed.executed_qty,
-                Some(order.price),
+                Some(parsed.response_price),
                 status,
                 tif,
             );
@@ -913,6 +913,7 @@ impl MarketMakerHedgeStrategy {
             order_update.status(),
             signal_ts,
             from_key,
+            None,
             price_offset,
             amount_update,
         );
@@ -939,6 +940,7 @@ impl MarketMakerHedgeStrategy {
             order_update.status(),
             signal_ts,
             from_key,
+            None,
             price_offset,
             amount_update,
         );
@@ -970,6 +972,7 @@ impl MarketMakerHedgeStrategy {
             status,
             signal_ts,
             from_key,
+            Some(trade.price()),
             price_offset,
             amount_update,
         );
@@ -1001,6 +1004,7 @@ impl MarketMakerHedgeStrategy {
             status,
             signal_ts,
             from_key,
+            None,
             price_offset,
             amount_update,
         );

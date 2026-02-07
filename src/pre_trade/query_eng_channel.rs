@@ -446,7 +446,7 @@ fn persist_unmatched_query_response(strategy_id: i32, resp: &QueryEngineResponse
                 order_id,
                 event_time_us,
                 parsed.executed_qty,
-                Some(order.price),
+                Some(parsed.response_price),
                 order_status,
                 tif,
             );
@@ -508,7 +508,10 @@ fn parse_compact_order_query_resp(body: &bytes::Bytes) -> Option<CompactOrderQue
     }
     let parsed = CompactOrderQueryResp::from_bytes_prefix(body.as_ref()).ok()?;
 
-    if parsed.order_id < 0 || parsed.trade_id < 0 || parsed.executed_qty < 0.0 {
+    if parsed.order_id < 0 || parsed.executed_qty < 0.0 {
+        return None;
+    }
+    if !parsed.response_price.is_finite() || parsed.response_price < 0.0 {
         return None;
     }
     if parsed.status_u8 == 0 {
