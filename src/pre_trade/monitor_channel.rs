@@ -21,11 +21,11 @@ use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
 use crate::pre_trade::basic_exposure_manager::{BasicExposureEntry, BasicExposureManager};
 use crate::pre_trade::basic_um_manager::BasicUmManager;
 use crate::pre_trade::net_position::NetPosition;
-use crate::pre_trade::PersistChannel;
 use crate::pre_trade::price_table::PriceTable;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
 use crate::pre_trade::usdt_balance_manager::{UsdtBalanceManager, UsdtBalanceSnapshot};
+use crate::pre_trade::PersistChannel;
 use crate::signal::common::{ExecutionType, TradingVenue};
 
 const ACCOUNT_PAYLOAD: usize = 16_384;
@@ -633,10 +633,7 @@ impl MonitorChannel {
                 1.0
             } else {
                 let symbol = price_mapper.asset_to_price_symbol(asset);
-                price_snap
-                    .get(&symbol)
-                    .map(|p| p.mark_price)
-                    .unwrap_or(0.0)
+                price_snap.get(&symbol).map(|p| p.mark_price).unwrap_or(0.0)
             }
         };
 
@@ -1777,10 +1774,10 @@ fn dispatch_order_update_generic<T>(
                 matched = true;
                 match update.execution_type() {
                     ExecutionType::New | ExecutionType::Canceled => {
-                        strategy.apply_order_update_with_record(update);
+                        strategy.apply_order_update(update);
                     }
                     ExecutionType::Trade => {
-                        strategy.apply_trade_update_with_record(update);
+                        strategy.apply_trade_update(update);
                     }
                     ExecutionType::Expired | ExecutionType::Rejected => {
                         warn!(
@@ -1790,7 +1787,7 @@ fn dispatch_order_update_generic<T>(
                             OrderUpdate::client_order_id(update),
                             OrderUpdate::order_id(update)
                         );
-                        strategy.apply_order_update_with_record(update);
+                        strategy.apply_order_update(update);
                     }
                     _ => {
                         log::error!(

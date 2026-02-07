@@ -3,10 +3,9 @@ use crate::common::trade_error_code::describe_trade_error_code;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderType, Side};
 use crate::pre_trade::{PersistChannel, QueryEngHub, TradeEngHub};
-use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue};
 use crate::signal::cancel_signal::MmCancelCtx;
+use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue};
 use crate::signal::open_signal::MmOpenCtx;
-use crate::signal::record::SignalRecordMessage;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::{ForceCloseControl, Strategy};
 use crate::strategy::order_update::OrderUpdate;
@@ -112,7 +111,7 @@ impl MarketMakerOpenStrategy {
         let Some(update) = WsOrderUpdate::from_trade_response(response, &order) else {
             return false;
         };
-        self.apply_order_update_with_record(&update);
+        <Self as Strategy>::apply_order_update(self, &update);
         true
     }
 
@@ -785,7 +784,7 @@ impl MarketMakerOpenStrategy {
                 status,
                 tif,
             );
-            self.apply_trade_update_with_record(&trade);
+            <Self as Strategy>::apply_trade_update(self, &trade);
         }
 
         let status_u8 = parsed.status_u8;
@@ -802,7 +801,7 @@ impl MarketMakerOpenStrategy {
                     parsed.executed_qty,
                     tif,
                 );
-                self.apply_order_update_with_record(&upd);
+                <Self as Strategy>::apply_order_update(self, &upd);
             }
         } else if status_u8 == OrderExecutionStatus::Cancelled.to_u8() {
             let upd = OrderQueryOrderUpdate::new(
@@ -814,7 +813,7 @@ impl MarketMakerOpenStrategy {
                 parsed.executed_qty,
                 tif,
             );
-            self.apply_order_update_with_record(&upd);
+            <Self as Strategy>::apply_order_update(self, &upd);
         } else if status_u8 == OrderExecutionStatus::Rejected.to_u8() {
             error!(
                 "MarketMakerOpenStrategy: strategy_id={} query_resp rejected: client_order_id={} order_id={} exec_qty={:.8} reason={:?}",
@@ -900,7 +899,9 @@ impl MarketMakerOpenStrategy {
                     let exchange = order.venue.trade_engine_exchange();
                     match order.get_order_cancel_bytes() {
                         Ok(cancel_bytes) => {
-                            if let Err(e) = TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
+                            if let Err(e) =
+                                TradeEngHub::publish_order_request(exchange, &cancel_bytes)
+                            {
                                 warn!(
                                     "MarketMakerOpenStrategy: strategy_id={} re-cancel publish failed: exchange={} client_order_id={} err={}",
                                     self.strategy_id, exchange, client_order_id, e
@@ -1157,25 +1158,17 @@ impl Strategy for MarketMakerOpenStrategy {
         Self::extract_strategy_id(order_id) == self.strategy_id
     }
 
-    fn handle_signal_with_record(&mut self, signal: &TradeSignal) {
-        self.handle_signal(signal);
-
-        let record = SignalRecordMessage::new(
-            self.strategy_id,
-            signal.signal_type.clone(),
-            signal.context.clone().to_vec(),
-            signal.generation_time,
-        );
-        PersistChannel::with(|ch| ch.publish_signal_record(&record));
+    fn handle_signal(&mut self, signal: &TradeSignal) {
+        MarketMakerOpenStrategy::handle_signal(self, signal);
     }
 
-    fn apply_order_update_with_record(&mut self, update: &dyn OrderUpdate) {
-        self.apply_order_update(update);
+    fn apply_order_update(&mut self, update: &dyn OrderUpdate) {
+        MarketMakerOpenStrategy::apply_order_update(self, update);
         PersistChannel::with(|ch| ch.publish_order_update(update));
     }
 
-    fn apply_trade_update_with_record(&mut self, trade: &dyn TradeUpdate) {
-        self.apply_trade_update(trade);
+    fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
+        MarketMakerOpenStrategy::apply_trade_update(self, trade);
         PersistChannel::with(|ch| ch.publish_trade_update(trade));
     }
 

@@ -2,11 +2,8 @@ use bytes::{BufMut, Bytes, BytesMut};
 use log::warn;
 use std::cell::OnceCell;
 
-use crate::common::iceoryx_publisher::{
-    OrderUpdatePublisher, SignalPublisher, TradeUpdatePublisher,
-};
+use crate::common::iceoryx_publisher::{OrderUpdatePublisher, TradeUpdatePublisher};
 use crate::common::time_util::get_timestamp_us;
-use crate::signal::record::{SignalRecordMessage, PRE_TRADE_SIGNAL_RECORD_CHANNEL};
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
 
@@ -24,10 +21,9 @@ pub const ORDER_UPDATE_RECORD_CHANNEL: &str = "order_update_record";
 /// 未匹配到策略的订单更新记录频道
 pub const ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL: &str = "order_update_unmatched_record";
 
-/// 持久化通道：负责将信号记录、交易更新和订单更新通过 IceOryx 发布到下游持久化服务
+/// 持久化通道：负责将交易更新和订单更新通过 IceOryx 发布到下游持久化服务
 ///
 /// 下游消费者：
-/// - Signal: `persist_manager::SignalPersistor` -> RocksDB (`pre_trade_signal_record`)
 /// - Trade Update: `persist_manager::TradeUpdatePersistor` -> RocksDB (`trade_update_record`)
 /// - Order Update: `persist_manager::OrderUpdatePersistor` -> RocksDB (`order_update_record`)
 /// - Unmatched Trade Update: `persist_manager::TradeUpdateUnmatchedPersistor` -> RocksDB (`trade_updates_unmatched`)
@@ -39,7 +35,6 @@ pub const ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL: &str = "order_update_unmatched_
 /// - `publish_trade_update(&dyn TradeUpdate)` - 发布成交记录
 /// - `publish_order_update(&dyn OrderUpdate)` - 发布订单更新
 pub struct PersistChannel {
-    signal_record_pub: Option<SignalPublisher>,
     trade_update_record_pub: Option<TradeUpdatePublisher>,
     order_update_record_pub: Option<OrderUpdatePublisher>,
     trade_update_unmatched_pub: Option<TradeUpdatePublisher>,
@@ -56,7 +51,6 @@ impl PersistChannel {
     /// use crate::pre_trade::PersistChannel;
     ///
     /// // 在任何地方直接使用，无需传递引用
-    /// PersistChannel::with(|ch| ch.publish_signal_record(&record));
     /// PersistChannel::with(|ch| ch.publish_trade_update(&trade));
     /// PersistChannel::with(|ch| ch.publish_order_update(&order));
     /// ```
@@ -73,18 +67,13 @@ impl PersistChannel {
         })
     }
 
-    /// 创建持久化通道，初始化三个 IceOryx 发布器
+    /// 创建持久化通道，初始化 IceOryx 发布器
     ///
     /// 注意：通常应使用 `PersistChannel::with()` 访问线程本地单例，
     /// 而不是直接调用 `new()` 创建多个实例
     ///
     /// 如果发布器创建失败，会记录警告并继续运行（降级模式）
     fn new() -> Self {
-        let signal_record_pub =
-            SignalPublisher::new_with_prefix("persist_pubs", PRE_TRADE_SIGNAL_RECORD_CHANNEL)
-                .map_err(|e| warn!("PersistChannel signal_record_pub failed: {e:#}"))
-                .ok();
-
         let trade_update_record_pub =
             TradeUpdatePublisher::new_with_prefix("persist_pubs", TRADE_UPDATE_RECORD_CHANNEL)
                 .map_err(|e| warn!("PersistChannel trade_update_record_pub failed: {e:#}"))
@@ -95,44 +84,25 @@ impl PersistChannel {
                 .map_err(|e| warn!("PersistChannel order_update_record_pub failed: {e:#}"))
                 .ok();
 
-        let trade_update_unmatched_pub =
-            TradeUpdatePublisher::new_with_prefix("persist_pubs", TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL)
-                .map_err(|e| warn!("PersistChannel trade_update_unmatched_pub failed: {e:#}"))
-                .ok();
+        let trade_update_unmatched_pub = TradeUpdatePublisher::new_with_prefix(
+            "persist_pubs",
+            TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL,
+        )
+        .map_err(|e| warn!("PersistChannel trade_update_unmatched_pub failed: {e:#}"))
+        .ok();
 
-        let order_update_unmatched_pub =
-            OrderUpdatePublisher::new_with_prefix("persist_pubs", ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL)
-                .map_err(|e| warn!("PersistChannel order_update_unmatched_pub failed: {e:#}"))
-                .ok();
+        let order_update_unmatched_pub = OrderUpdatePublisher::new_with_prefix(
+            "persist_pubs",
+            ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL,
+        )
+        .map_err(|e| warn!("PersistChannel order_update_unmatched_pub failed: {e:#}"))
+        .ok();
 
         Self {
-            signal_record_pub,
             trade_update_record_pub,
             order_update_record_pub,
             trade_update_unmatched_pub,
             order_update_unmatched_pub,
-        }
-    }
-
-    /// 发布信号记录到持久化通道
-    ///
-    /// # 参数
-    /// - `record`: 信号记录消息（包含策略ID、信号类型、上下文等）
-    ///
-    /// # 错误处理
-    /// - 如果发布器未初始化，静默跳过
-    /// - 如果发布失败，记录警告但不阻塞调用者
-    pub fn publish_signal_record(&self, record: &SignalRecordMessage) {
-        let Some(publisher) = &self.signal_record_pub else {
-            return;
-        };
-
-        let payload = record.to_bytes();
-        if let Err(err) = publisher.publish(payload.as_ref()) {
-            warn!(
-                "failed to publish signal record strategy_id={}: {err:#}",
-                record.strategy_id
-            );
         }
     }
 
@@ -218,11 +188,6 @@ impl PersistChannel {
         }
     }
 
-    /// 检查信号记录发布器是否可用
-    pub fn is_signal_publisher_available(&self) -> bool {
-        self.signal_record_pub.is_some()
-    }
-
     /// 检查交易更新记录发布器是否可用
     pub fn is_trade_update_publisher_available(&self) -> bool {
         self.trade_update_record_pub.is_some()
@@ -237,7 +202,6 @@ impl PersistChannel {
 // 不实现 Default trait，鼓励使用 PersistChannel::global() 单例模式
 
 // ==================== 序列化辅助函数 ====================
-
 /// 将 TradeUpdate trait object 序列化为字节流
 ///
 /// 格式：

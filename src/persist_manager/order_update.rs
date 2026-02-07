@@ -7,7 +7,7 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::service::ipc;
 use log::{info, warn};
 
-use crate::persist_manager::iceoryx::{create_signal_record_subscriber, trim_order_update_payload};
+use crate::persist_manager::iceoryx::{create_record_subscriber, trim_order_update_payload};
 use crate::persist_manager::storage::RocksDbStore;
 use crate::pre_trade::{ORDER_UPDATE_RECORD_CHANNEL, ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL};
 
@@ -26,7 +26,7 @@ pub struct OrderUpdatePersistor {
 
 impl OrderUpdatePersistor {
     pub fn new(store: Arc<RocksDbStore>) -> Result<Self> {
-        let subscriber = create_signal_record_subscriber(ORDER_UPDATE_RECORD_CHANNEL)?;
+        let subscriber = create_record_subscriber(ORDER_UPDATE_RECORD_CHANNEL)?;
         Ok(Self { subscriber, store })
     }
 
@@ -76,7 +76,7 @@ pub struct OrderUpdateUnmatchedPersistor {
 
 impl OrderUpdateUnmatchedPersistor {
     pub fn new(store: Arc<RocksDbStore>) -> Result<Self> {
-        let subscriber = create_signal_record_subscriber(ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL)?;
+        let subscriber = create_record_subscriber(ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL)?;
         Ok(Self { subscriber, store })
     }
 

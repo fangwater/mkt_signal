@@ -5,7 +5,6 @@ use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::{PersistChannel, QueryEngHub, TradeEngHub};
 use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue};
 use crate::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
-use crate::signal::record::SignalRecordMessage;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::{ForceCloseControl, Strategy};
 use crate::strategy::order_update::OrderUpdate;
@@ -133,7 +132,7 @@ impl MarketMakerHedgeStrategy {
         let Some(update) = WsOrderUpdate::from_trade_response(response, &order) else {
             return false;
         };
-        self.apply_order_update_with_record(&update);
+        <Self as Strategy>::apply_order_update(self, &update);
         true
     }
 
@@ -198,8 +197,7 @@ impl MarketMakerHedgeStrategy {
 
         self.hedge_plan.clear();
         if let Some(hedge_side) = hedge_side {
-            for (price_tick_level, amount_tick) in
-                ctx.price_list.iter().zip(ctx.amount_list.iter())
+            for (price_tick_level, amount_tick) in ctx.price_list.iter().zip(ctx.amount_list.iter())
             {
                 if remaining_qty <= 0.0 {
                     break;
@@ -372,7 +370,6 @@ impl MarketMakerHedgeStrategy {
         true
     }
 
-
     fn send_hedge_query(&mut self) {
         // 定时发送对冲查询（携带 symbol + 当期买/卖成交 + 累计净头寸）
         let query_msg = MmHedgeSignalQueryMsg::new(
@@ -452,7 +449,8 @@ impl MarketMakerHedgeStrategy {
                     order.exchange_order_id,
                     waited_ms
                 );
-                let _ = self.send_order_query(client_order_id, PendingOrderQueryReason::OrderWatchdog);
+                let _ =
+                    self.send_order_query(client_order_id, PendingOrderQueryReason::OrderWatchdog);
             }
         }
     }
@@ -644,7 +642,7 @@ impl MarketMakerHedgeStrategy {
                 status,
                 tif,
             );
-            self.apply_trade_update_with_record(&trade);
+            <Self as Strategy>::apply_trade_update(self, &trade);
         }
 
         let status_u8 = parsed.status_u8;
@@ -661,7 +659,7 @@ impl MarketMakerHedgeStrategy {
                     parsed.executed_qty,
                     tif,
                 );
-                self.apply_order_update_with_record(&upd);
+                <Self as Strategy>::apply_order_update(self, &upd);
             }
         } else if status_u8 == OrderExecutionStatus::Cancelled.to_u8() {
             let upd = OrderQueryOrderUpdate::new(
@@ -673,7 +671,7 @@ impl MarketMakerHedgeStrategy {
                 parsed.executed_qty,
                 tif,
             );
-            self.apply_order_update_with_record(&upd);
+            <Self as Strategy>::apply_order_update(self, &upd);
         } else if status_u8 == OrderExecutionStatus::Rejected.to_u8() {
             warn!(
                 "MarketMakerHedgeStrategy: strategy_id={} query_resp rejected: client_order_id={} order_id={} exec_qty={:.8} reason={:?}",
@@ -1026,25 +1024,17 @@ impl Strategy for MarketMakerHedgeStrategy {
         Self::extract_strategy_id(order_id) == self.strategy_id
     }
 
-    fn handle_signal_with_record(&mut self, signal: &TradeSignal) {
-        self.handle_signal(signal);
-
-        let record = SignalRecordMessage::new(
-            self.strategy_id,
-            signal.signal_type.clone(),
-            signal.context.clone().to_vec(),
-            signal.generation_time,
-        );
-        PersistChannel::with(|ch| ch.publish_signal_record(&record));
+    fn handle_signal(&mut self, signal: &TradeSignal) {
+        MarketMakerHedgeStrategy::handle_signal(self, signal);
     }
 
-    fn apply_order_update_with_record(&mut self, update: &dyn OrderUpdate) {
-        self.apply_order_update(update);
+    fn apply_order_update(&mut self, update: &dyn OrderUpdate) {
+        MarketMakerHedgeStrategy::apply_order_update(self, update);
         PersistChannel::with(|ch| ch.publish_order_update(update));
     }
 
-    fn apply_trade_update_with_record(&mut self, trade: &dyn TradeUpdate) {
-        self.apply_trade_update(trade);
+    fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
+        MarketMakerHedgeStrategy::apply_trade_update(self, trade);
         PersistChannel::with(|ch| ch.publish_trade_update(trade));
     }
 
@@ -1089,7 +1079,8 @@ impl Strategy for MarketMakerHedgeStrategy {
                     response.client_order_id()
                 );
                 let client_order_id = response.client_order_id();
-                let sent = self.send_order_query(client_order_id, PendingOrderQueryReason::CancelFailed);
+                let sent =
+                    self.send_order_query(client_order_id, PendingOrderQueryReason::CancelFailed);
                 if !sent {
                     self.hedge_order_ids.remove(&client_order_id);
                     if let Some(order_mgr) = MonitorChannel::try_order_manager() {

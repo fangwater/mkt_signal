@@ -10,7 +10,6 @@ use crate::signal::common::{
 };
 use crate::signal::hedge_signal::ArbHedgeCtx;
 use crate::signal::open_signal::ArbOpenCtx;
-use crate::signal::record::SignalRecordMessage;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::{ForceCloseControl, Strategy};
 use crate::strategy::order_update::OrderUpdate;
@@ -50,11 +49,11 @@ pub struct HedgeArbStrategy {
     pub hedge_venue: TradingVenue,     //对冲侧交易场所
     pub hedge_side: Side,              //对冲侧方向
     pub hedge_request_seq: u32,        //累计对冲请求次数
-    pub open_signal_ts: i64,    //开仓信号时间戳（微秒）
-    pub open_from_key: String,  //开仓来源标记
-    pub hedge_from_key: String, //对冲来源标记
-    pub open_bbo: DualBbo,  //开仓时双腿盘口
-    pub hedge_bbo: DualBbo, //对冲时刻双腿盘口
+    pub open_signal_ts: i64,           //开仓信号时间戳（微秒）
+    pub open_from_key: String,         //开仓来源标记
+    pub hedge_from_key: String,        //对冲来源标记
+    pub open_bbo: DualBbo,             //开仓时双腿盘口
+    pub hedge_bbo: DualBbo,            //对冲时刻双腿盘口
     pub force_close_mode: bool,        //是否强平模式
     pub hedge_retry_after_ts: Option<i64>, //对冲报单失败后的冷却截止时间
     pub hedge_retry_reason: Option<&'static str>, //对冲报单失败的重试原因
@@ -313,10 +312,16 @@ impl HedgeArbStrategy {
         };
         self.open_signal_ts = ctx.create_ts;
         self.open_from_key = String::from_utf8_lossy(&ctx.from_key).to_string();
-        self.open_bbo.open =
-            Bbo::new(ctx.opening_leg.bid0, ctx.opening_leg.ask0, ctx.opening_leg.ts);
-        self.open_bbo.hedge =
-            Bbo::new(ctx.hedging_leg.bid0, ctx.hedging_leg.ask0, ctx.hedging_leg.ts);
+        self.open_bbo.open = Bbo::new(
+            ctx.opening_leg.bid0,
+            ctx.opening_leg.ask0,
+            ctx.opening_leg.ts,
+        );
+        self.open_bbo.hedge = Bbo::new(
+            ctx.hedging_leg.bid0,
+            ctx.hedging_leg.ask0,
+            ctx.hedging_leg.ts,
+        );
         self.hedge_bbo = self.open_bbo;
 
         // 7、根据交易标的物，修正量、价格
@@ -534,9 +539,16 @@ impl HedgeArbStrategy {
         let hedge_symbol = ctx.get_hedging_symbol();
         let hedge_venue = TradingVenue::from_u8(ctx.hedging_leg.venue)
             .ok_or_else(|| format!("无效的对冲交易场所: {}", ctx.hedging_leg.venue))?;
-        self.hedge_bbo.hedge =
-            Bbo::new(ctx.hedging_leg.bid0, ctx.hedging_leg.ask0, ctx.hedging_leg.ts);
-        self.hedge_bbo.open = Bbo::new(ctx.opening_leg.bid0, ctx.opening_leg.ask0, ctx.opening_leg.ts);
+        self.hedge_bbo.hedge = Bbo::new(
+            ctx.hedging_leg.bid0,
+            ctx.hedging_leg.ask0,
+            ctx.hedging_leg.ts,
+        );
+        self.hedge_bbo.open = Bbo::new(
+            ctx.opening_leg.bid0,
+            ctx.opening_leg.ask0,
+            ctx.opening_leg.ts,
+        );
         let hedge_side = ctx
             .get_side()
             .ok_or_else(|| format!("无效的对冲方向: {}", ctx.hedge_side))?;
@@ -2095,7 +2107,7 @@ impl HedgeArbStrategy {
                 status,
                 tif,
             );
-            self.apply_trade_update_with_record(&trade);
+            <Self as Strategy>::apply_trade_update(self, &trade);
         }
 
         let status_u8 = parsed.status_u8;
@@ -2113,7 +2125,7 @@ impl HedgeArbStrategy {
                     parsed.executed_qty,
                     tif,
                 );
-                self.apply_order_update_with_record(&upd);
+                <Self as Strategy>::apply_order_update(self, &upd);
             }
         } else if status_u8 == OrderExecutionStatus::Cancelled.to_u8() {
             let already_processed = self
@@ -2129,7 +2141,7 @@ impl HedgeArbStrategy {
                     parsed.executed_qty,
                     tif,
                 );
-                self.apply_order_update_with_record(&upd);
+                <Self as Strategy>::apply_order_update(self, &upd);
             }
         } else if status_u8 == OrderExecutionStatus::Rejected.to_u8() {
             error!(
@@ -2728,27 +2740,18 @@ impl Strategy for HedgeArbStrategy {
         Self::extract_strategy_id(order_id) == self.strategy_id
     }
 
-    fn handle_signal_with_record(&mut self, signal: &TradeSignal) {
+    fn handle_signal(&mut self, signal: &TradeSignal) {
         HedgeArbStrategy::handle_signal(self, signal);
-
-        // 持久化信号记录
-        let record = SignalRecordMessage::new(
-            self.strategy_id,
-            signal.signal_type.clone(),
-            signal.context.clone().to_vec(),
-            signal.generation_time,
-        );
-        PersistChannel::with(|ch| ch.publish_signal_record(&record));
     }
 
-    fn apply_order_update_with_record(&mut self, update: &dyn OrderUpdate) {
+    fn apply_order_update(&mut self, update: &dyn OrderUpdate) {
         HedgeArbStrategy::apply_order_update(self, update);
 
         // 持久化订单更新记录
         PersistChannel::with(|ch| ch.publish_order_update(update));
     }
 
-    fn apply_trade_update_with_record(&mut self, trade: &dyn TradeUpdate) {
+    fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
         HedgeArbStrategy::apply_trade_update(self, trade);
 
         // 持久化成交记录

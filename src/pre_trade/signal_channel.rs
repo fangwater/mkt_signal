@@ -272,7 +272,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                 }
                 let strategy_id = StrategyManager::generate_strategy_id();
                 let mut strategy = HedgeArbStrategy::new(strategy_id, symbol.clone());
-                strategy.handle_signal_with_record(&signal);
+                strategy.handle_signal(&signal);
                 if strategy.is_active() {
                     let hedge_mode = if open_ctx.hedge_timeout_us > 0 {
                         "MM"
@@ -424,7 +424,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                         HedgeArbStrategy::new(strategy_id, opening_symbol.clone());
                     strategy.set_force_close_mode(true);
 
-                    strategy.handle_signal_with_record(&converted_signal);
+                    strategy.handle_signal(&converted_signal);
 
                     if strategy.is_active() {
                         let hedge_mode = if close_ctx.hedge_timeout_us > 0 {
@@ -503,7 +503,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                     if let Some(mut strategy) = strategy_opt {
                         info!("ArbCancel: 处理策略 id={}", strategy_id);
-                        strategy.handle_signal_with_record(&signal);
+                        strategy.handle_signal(&signal);
                         if strategy.is_active() {
                             strategy_mgr.borrow_mut().insert(strategy);
                         } else {
@@ -555,7 +555,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                 if let Some(mut strategy) = strategy_opt {
                     info!("ArbHedge: 处理策略 id={}", strategy_id);
-                    strategy.handle_signal_with_record(&signal);
+                    strategy.handle_signal(&signal);
                     if strategy.is_active() {
                         strategy_mgr.borrow_mut().insert(strategy);
                     } else {
@@ -578,8 +578,7 @@ fn handle_trade_signal(signal: TradeSignal) {
             }
             if let Some(order_type) = OrderType::from_u8(open_ctx.order_type) {
                 if order_type.is_limit() {
-                    if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol)
-                    {
+                    if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol) {
                         warn!("MMOpen: {} 限价挂单数量超限: {}", symbol, e);
                         return;
                     }
@@ -590,13 +589,11 @@ fn handle_trade_signal(signal: TradeSignal) {
             }
 
             let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-            let _ = strategy_mgr
-                .borrow_mut()
-                .ensure_mm_hedge_strategy(&symbol);
+            let _ = strategy_mgr.borrow_mut().ensure_mm_hedge_strategy(&symbol);
 
             let strategy_id = StrategyManager::generate_strategy_id();
             let mut strategy = MarketMakerOpenStrategy::new(strategy_id);
-            strategy.handle_signal_with_record(&signal);
+            strategy.handle_signal(&signal);
             if strategy.is_active() {
                 info!("✅ MMOpen: strategy_id={} 已创建并激活", strategy_id);
                 strategy_mgr.borrow_mut().insert(Box::new(strategy));
@@ -646,7 +643,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                     if let Some(mut strategy) = strategy_opt {
                         info!("MMCancel: 处理策略 id={}", strategy_id);
-                        strategy.handle_signal_with_record(&signal);
+                        strategy.handle_signal(&signal);
                         if strategy.is_active() {
                             strategy_mgr.borrow_mut().insert(strategy);
                         } else {
@@ -666,12 +663,10 @@ fn handle_trade_signal(signal: TradeSignal) {
                     return;
                 }
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-                let strategy_id = strategy_mgr
-                    .borrow_mut()
-                    .ensure_mm_hedge_strategy(&symbol);
+                let strategy_id = strategy_mgr.borrow_mut().ensure_mm_hedge_strategy(&symbol);
                 let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                 if let Some(mut strategy) = strategy_opt {
-                    strategy.handle_signal_with_record(&signal);
+                    strategy.handle_signal(&signal);
                     if strategy.is_active() {
                         strategy_mgr.borrow_mut().insert(strategy);
                     } else {

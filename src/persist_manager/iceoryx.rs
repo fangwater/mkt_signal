@@ -7,9 +7,9 @@ use iceoryx2::service::ipc;
 use crate::common::iceoryx_publisher::SIGNAL_PAYLOAD;
 use crate::common::ipc_service_name::build_service_name;
 
-const NODE_PREFIX: &str = "persist_signal_";
+const NODE_PREFIX: &str = "persist_record_";
 
-pub fn create_signal_record_subscriber(
+pub fn create_record_subscriber(
     channel: &str,
 ) -> Result<Subscriber<ipc::Service, [u8; SIGNAL_PAYLOAD], ()>> {
     let node_name = format!("{}{}", NODE_PREFIX, sanitize_suffix(channel));
@@ -38,11 +38,6 @@ pub fn create_signal_record_subscriber(
     Ok(subscriber)
 }
 
-pub fn trim_signal_record_payload(payload: &[u8]) -> Bytes {
-    let used = signal_record_used_len(payload).unwrap_or(payload.len());
-    Bytes::copy_from_slice(&payload[..used])
-}
-
 pub fn trim_trade_update_payload(payload: &[u8]) -> Bytes {
     let used = trade_update_used_len(payload).unwrap_or(payload.len());
     Bytes::copy_from_slice(&payload[..used])
@@ -51,24 +46,6 @@ pub fn trim_trade_update_payload(payload: &[u8]) -> Bytes {
 pub fn trim_order_update_payload(payload: &[u8]) -> Bytes {
     let used = order_update_used_len(payload).unwrap_or(payload.len());
     Bytes::copy_from_slice(&payload[..used])
-}
-
-fn signal_record_used_len(payload: &[u8]) -> Option<usize> {
-    // Format: i32 strategy_id + u32 signal_type + u32 ctx_len + ctx_bytes + optional i64 ts_us
-    if payload.len() < 12 {
-        return None;
-    }
-    let ctx_len = u32::from_le_bytes(payload[8..12].try_into().ok()?) as usize;
-    let base = 12usize.checked_add(ctx_len)?;
-    if payload.len() < base {
-        return None;
-    }
-    let with_ts = base.checked_add(8)?;
-    Some(if payload.len() >= with_ts {
-        with_ts
-    } else {
-        base
-    })
 }
 
 fn trade_update_used_len(payload: &[u8]) -> Option<usize> {
