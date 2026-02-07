@@ -506,6 +506,7 @@ impl TradeEngine {
                                 order_status_u8: 0,
                                 order_update_time: 0,
                                 executed_qty: 0.0,
+                                response_price: 0.0,
                             });
                         }
                     } else {
@@ -564,6 +565,7 @@ impl TradeEngine {
                                     order_status_u8: 0,
                                     order_update_time: 0,
                                     executed_qty: 0.0,
+                                    response_price: 0.0,
                                 });
                             }
                             Err(e) => {
@@ -578,6 +580,7 @@ impl TradeEngine {
                                     order_status_u8: 0,
                                     order_update_time: 0,
                                     executed_qty: 0.0,
+                                    response_price: 0.0,
                                 });
                             }
                         }

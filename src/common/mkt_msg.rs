@@ -52,6 +52,7 @@ pub struct KlineMsg {
     pub close_price: f64,
     pub volume: f64,
     pub timestamp: i64,
+    pub count: u64,
 }
 
 pub struct FundingRateMsg {
@@ -658,6 +659,29 @@ impl KlineMsg {
         volume: f64,
         timestamp: i64,
     ) -> Self {
+        Self::create_with_count(
+            symbol,
+            open_price,
+            high_price,
+            low_price,
+            close_price,
+            volume,
+            timestamp,
+            0,
+        )
+    }
+
+    /// Create a kline message with trade count
+    pub fn create_with_count(
+        symbol: String,
+        open_price: f64,
+        high_price: f64,
+        low_price: f64,
+        close_price: f64,
+        volume: f64,
+        timestamp: i64,
+        count: u64,
+    ) -> Self {
         let symbol_length = symbol.len() as u32;
         Self {
             msg_type: MktMsgType::Kline,
@@ -669,13 +693,14 @@ impl KlineMsg {
             close_price,
             volume,
             timestamp,
+            count,
         }
     }
 
     /// Convert message to bytes
     pub fn to_bytes(&self) -> Bytes {
-        // Calculate total size: msg_type(4) + symbol_length(4) + symbol + 5*f64(8*5) + timestamp(8)
-        let total_size = 4 + 4 + self.symbol_length as usize + 5 * 8 + 8;
+        // Calculate total size: msg_type(4) + symbol_length(4) + symbol + 5*f64(8*5) + timestamp(8) + count(8)
+        let total_size = 4 + 4 + self.symbol_length as usize + 5 * 8 + 8 + 8;
         let mut buf = BytesMut::with_capacity(total_size);
 
         // Write header
@@ -694,6 +719,9 @@ impl KlineMsg {
 
         // Write timestamp
         buf.put_i64_le(self.timestamp);
+
+        // Write trade count
+        buf.put_u64_le(self.count);
 
         buf.freeze()
     }

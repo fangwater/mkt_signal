@@ -5,15 +5,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 usage() {
-  cat <<'EOF'
+  cat <<'USAGE'
 Usage:
-  start_rl_return_volatility.sh [--namespace <ns>] (--exchange <exchange> | <exchange> | <venue...>)
+  stop_depth_factor_pub.sh [--namespace <ns>] (--exchange <exchange> | <exchange> | <venue...>)
 
 Examples:
-  ./scripts/start_rl_return_volatility.sh --exchange binance
-  ./scripts/start_rl_return_volatility.sh okex
-  ./scripts/start_rl_return_volatility.sh binance-futures
-  ./scripts/start_rl_return_volatility.sh binance-futures binance-margin
+  ./scripts/stop_depth_factor_pub.sh --exchange binance
+  ./scripts/stop_depth_factor_pub.sh okex
+  ./scripts/stop_depth_factor_pub.sh binance-futures
+  ./scripts/stop_depth_factor_pub.sh binance-futures binance-margin
 
 Notes:
   - Exchange expands to default venues:
@@ -23,7 +23,7 @@ Notes:
       bitget  -> bitget-futures bitget-margin
       gate    -> gate-futures gate-margin
   - Namespace defaults to $PM2_NAMESPACE or the deploy directory name.
-EOF
+USAGE
 }
 
 KNOWN_EXCHANGES=("okex" "binance" "bybit" "bitget" "gate")
@@ -59,7 +59,7 @@ if ! command -v pm2 >/dev/null 2>&1; then
   PM2=(npx pm2)
 fi
 
-# 可选：设置 PM2 namespace（默认使用部署目录名，可用环境变量覆盖）
+# Optional PM2 namespace; defaults to deploy dir name unless PM2_NAMESPACE is set
 NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
 
 # Args parsing
@@ -139,52 +139,24 @@ if [[ ${#VENUES[@]} -eq 0 ]]; then
   exit 1
 fi
 
-# Candidate locations: deployed dir first, then repo targets
-BIN_CANDIDATES=(
-  "${SCRIPT_DIR}/rl_return_volatility"
-  "${SCRIPT_DIR}/target/release/rl_return_volatility"
-  "${SCRIPT_DIR}/../rl_return_volatility"
-  "${SCRIPT_DIR}/../target/release/rl_return_volatility"
-  "${BASE_DIR}/rl_return_volatility"
-  "${BASE_DIR}/target/release/rl_return_volatility"
-)
-
-BIN_PATH=""
-for cand in "${BIN_CANDIDATES[@]}"; do
-  if [[ -x "$cand" ]]; then
-    BIN_PATH="$cand"
-    break
-  fi
-done
-
-if [[ -z "$BIN_PATH" ]]; then
-  echo "[ERROR] rl_return_volatility binary not found. Build first with: cargo build --release --bin rl_return_volatility" >&2
-  exit 1
-fi
-
-start_one() {
+stop_one() {
   local venue="$1"
-  local name="rl_return_volatility_${venue}"
-  local rust_log="${RUST_LOG:-info}"
+  local name="depth_factor_pub_${venue}"
 
-  echo "[INFO] Restarting ${name}"
-  "${PM2[@]}" delete "$name" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
-
-  RUST_LOG="${rust_log}" "${PM2[@]}" start "$BIN_PATH" \
-    --name "$name" \
-    --namespace "$NAMESPACE" \
-    --cwd "$BASE_DIR" \
-    -- \
-    --venue "$venue"
+  echo "[INFO] Deleting ${name} (namespace: ${NAMESPACE})"
+  if "${PM2[@]}" delete "$name" --namespace "$NAMESPACE"; then
+    echo "[INFO] Deleted ${name}"
+  else
+    echo "[WARN] ${name} not found in namespace ${NAMESPACE}"
+  fi
 }
 
 for venue in "${VENUES[@]}"; do
-  start_one "$venue"
+  stop_one "$venue"
   sleep 1
 done
 
 echo ""
-echo "[INFO] Started venues: ${VENUES[*]}"
+echo "[INFO] Stopped venues: ${VENUES[*]}"
 echo "Namespace: ${NAMESPACE}"
-echo "Logs: ${PM2[*]} logs --namespace ${NAMESPACE} rl_return_volatility_<venue>"
-echo "Status: ${PM2[*]} status --namespace ${NAMESPACE}"
+echo "To view remaining processes: ${PM2[*]} status --namespace ${NAMESPACE}"

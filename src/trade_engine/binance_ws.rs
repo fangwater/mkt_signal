@@ -190,10 +190,10 @@ fn parse_order_status_u8(s: &str) -> Option<u8> {
 }
 
 /// Extract compact order info from Binance WS response result.
-/// Returns (order_id, order_status_u8, update_time, executed_qty). Missing fields are returned as 0.
-pub fn extract_order_info(resp: &BinanceWsResponse) -> (i64, u8, i64, f64) {
+/// Returns (order_id, order_status_u8, update_time, executed_qty, price). Missing fields are returned as 0.
+pub fn extract_order_info(resp: &BinanceWsResponse) -> (i64, u8, i64, f64, f64) {
     let Some(result) = resp.result.as_ref() else {
-        return (0, 0, 0, 0.0);
+        return (0, 0, 0, 0.0, 0.0);
     };
     let order_id = result.get("orderId").and_then(parse_i64_value).unwrap_or(0);
     let status_u8 = result
@@ -210,5 +210,6 @@ pub fn extract_order_info(resp: &BinanceWsResponse) -> (i64, u8, i64, f64) {
         .get("executedQty")
         .and_then(parse_f64_value)
         .unwrap_or(0.0);
-    (order_id, status_u8, update_time, executed_qty)
+    let price = result.get("price").and_then(parse_f64_value).unwrap_or(0.0);
+    (order_id, status_u8, update_time, executed_qty, price)
 }

@@ -27,3 +27,8 @@
 - 时间戳统一使用微秒（us）。
 - 浮点字段默认保留 6 位小数（仅适用于定义了数值格式的规则）。
 - `from_key` 最终为 UTF-8 字符串并存储为 `Vec<u8>`。
+
+## 相关文档
+
+- [Trade Update 幂等规则](../trade_update_idempotency.md)
+- [统一订单映射说明](../uniform_order_mapping.md)

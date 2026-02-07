@@ -93,12 +93,20 @@ name = "depth_pub"
 path = "src/bin/depth_pub.rs"
 
 [[bin]]
+name = "depth_factor_pub"
+path = "src/bin/depth_factor_pub.rs"
+
+[[bin]]
 name = "kline_pub"
 path = "src/bin/kline_pub.rs"
 
 [[bin]]
-name = "rl_return_volatility"
-path = "src/bin/rl_return_volatility.rs"
+name = "kline_factor_pub"
+path = "src/bin/kline_factor_pub.rs"
+
+[[bin]]
+name = "trade_factor_pub"
+path = "src/bin/trade_factor_pub.rs"
 
 [[bin]]
 name = "pairmm_resample"

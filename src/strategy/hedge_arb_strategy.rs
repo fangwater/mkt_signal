@@ -1,7 +1,6 @@
 use crate::common::bbo::{Bbo, DualBbo};
 use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
-use crate::persist_manager::unified_order::UnifiedOrderRecord;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::{PersistChannel, SignalChannel, TradeEngHub};
@@ -18,6 +17,7 @@ use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::trade_update::TradeUpdate;
+use crate::strategy::uniform_order_helper::{publish_uniform_order_event, UniformOrderEventKind};
 use crate::trade_engine::query_parsers::compact_order::{
     CompactOrderQueryResp, COMPACT_ORDER_QUERY_RESP_LEN,
 };
@@ -1668,7 +1668,7 @@ impl HedgeArbStrategy {
                     error!(
                         "unexpected MM model trade event: {} {}",
                         trade.client_order_id(),
-                        trade.trade_id()
+                        trade.order_id()
                     );
                 }
             }
@@ -1764,7 +1764,7 @@ impl HedgeArbStrategy {
     }
 
     // 处理交易更新
-    fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
+    fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) -> bool {
         let client_order_id = trade.client_order_id();
         self.clear_query_watchdogs(client_order_id);
 
@@ -1776,20 +1776,60 @@ impl HedgeArbStrategy {
         );
         let trade_time = trade.trade_time();
         let event_time = trade.event_time();
-        if let Some(OrderStatus::Filled) = trade.order_status() {
+
+        if let Some(status @ (OrderStatus::PartiallyFilled | OrderStatus::Filled)) =
+            trade.order_status()
+        {
             let order_mgr = MonitorChannel::instance().order_manager();
             let mut order_manager = order_mgr.borrow_mut();
+            let Some(current_order) = order_manager.get(client_order_id) else {
+                warn!(
+                    "HedgeArbStrategy: strategy_id={} 未找到成交对应的订单 client_order_id={}",
+                    self.strategy_id, client_order_id
+                );
+                return false;
+            };
+            let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
+
+            if OrderManager::should_skip_idempotent_trade_update(
+                &current_order,
+                status,
+                trade.cumulative_filled_quantity(),
+                trade.event_time(),
+                "HedgeArbStrategy",
+                self.strategy_id,
+            )
+            .is_some()
+            {
+                return false;
+            }
+
             let updated = order_manager.update(client_order_id, |order| {
                 order.cumulative_filled_quantity = cumulative_qty;
                 order.set_filled_time(trade_time);
-                order.status = OrderExecutionStatus::Filled;
-                order.set_end_time(event_time);
+                order.set_exchange_order_id(trade.order_id());
+                match status {
+                    OrderStatus::Filled => {
+                        order.status = OrderExecutionStatus::Filled;
+                        order.set_end_time(event_time);
+                    }
+                    OrderStatus::PartiallyFilled => {
+                        if !order.status.is_terminal() {
+                            order.status = OrderExecutionStatus::Create;
+                        }
+                    }
+                    _ => {}
+                }
             });
             if !updated {
                 warn!(
                     "HedgeArbStrategy: strategy_id={} 未找到成交对应的订单 client_order_id={}",
                     self.strategy_id, client_order_id
                 );
+                return false;
+            }
+            if let Some(order) = order_manager.get(client_order_id) {
+                self.publish_uniform_trade_order(trade, &order, prev_cumulative_filled_qty, status);
             }
         }
 
@@ -1822,7 +1862,44 @@ impl HedgeArbStrategy {
                 "⚠️ 收到未知订单成交: strategy_id={} order_id={}",
                 self.strategy_id, client_order_id
             );
+            return false;
         }
+
+        true
+    }
+
+    fn publish_uniform_trade_order(
+        &self,
+        trade: &dyn TradeUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+        status: OrderStatus,
+    ) {
+        if !matches!(status, OrderStatus::PartiallyFilled | OrderStatus::Filled) {
+            return;
+        }
+        let Some((signal_ts, from_key_bytes, price_offset)) = self.uniform_leg_fields(order) else {
+            return;
+        };
+
+        let incoming_cum = trade.cumulative_filled_quantity();
+        let amount_update = self.compute_uniform_amount_update(
+            order,
+            incoming_cum,
+            prev_cumulative_filled_qty,
+            status,
+        );
+
+        publish_uniform_order_event(
+            order,
+            UniformOrderEventKind::Trade,
+            trade.event_time(),
+            status,
+            signal_ts,
+            from_key_bytes,
+            price_offset,
+            amount_update,
+        );
     }
 
     fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) -> bool {
@@ -1986,18 +2063,22 @@ impl HedgeArbStrategy {
         prev_cumulative_filled_qty: f64,
         status: OrderStatus,
     ) -> f64 {
-        if incoming_cum >= prev_cumulative_filled_qty {
-            incoming_cum - prev_cumulative_filled_qty
-        } else {
-            warn!(
-                "HedgeArbStrategy: strategy_id={} uniform {:?} amount_update rollback detected: client_order_id={} prev={:.8} incoming={:.8}",
-                self.strategy_id,
-                status,
-                order.client_order_id,
-                prev_cumulative_filled_qty,
-                incoming_cum
-            );
-            0.0
+        match OrderManager::compute_uniform_amount_update_from_cumulative(
+            prev_cumulative_filled_qty,
+            incoming_cum,
+        ) {
+            Some(delta) => delta,
+            None => {
+                warn!(
+                    "HedgeArbStrategy: strategy_id={} uniform {:?} amount_update rollback detected: client_order_id={} prev={:.8} incoming={:.8}",
+                    self.strategy_id,
+                    status,
+                    order.client_order_id,
+                    prev_cumulative_filled_qty,
+                    incoming_cum
+                );
+                0.0
+            }
         }
     }
 
@@ -2019,27 +2100,16 @@ impl HedgeArbStrategy {
             order_update.status(),
         );
 
-        let mut record = UnifiedOrderRecord {
-            symbol_len: 0,
-            symbol: order.symbol.as_bytes().to_vec(),
-            create_ts: order_update.event_time(),
-            update_ts: order_update.event_time(),
+        publish_uniform_order_event(
+            order,
+            UniformOrderEventKind::New,
+            order_update.event_time(),
+            order_update.status(),
             signal_ts,
-            client_order_id: order.client_order_id,
-            venue: order.venue as u8,
-            ttype: order.order_type.to_u8(),
-            side: order.side.to_u8(),
-            price: order.price,
+            from_key_bytes,
             price_offset,
-            amount_init: order.quantity,
             amount_update,
-            status: order_update.status().to_u8(),
-            from_key_len: 0,
-            from_key: from_key_bytes,
-        };
-        record.refresh_lengths();
-
-        PersistChannel::with(|ch| ch.publish_uniform_order(&record));
+        );
     }
 
     fn publish_uniform_terminal_order(
@@ -2060,29 +2130,16 @@ impl HedgeArbStrategy {
             order_update.status(),
         );
 
-        let create_ts = order.timestamp.create_t;
-
-        let mut record = UnifiedOrderRecord {
-            symbol_len: 0,
-            symbol: order.symbol.as_bytes().to_vec(),
-            create_ts,
-            update_ts: order_update.event_time(),
+        publish_uniform_order_event(
+            order,
+            UniformOrderEventKind::Terminal,
+            order_update.event_time(),
+            order_update.status(),
             signal_ts,
-            client_order_id: order.client_order_id,
-            venue: order.venue as u8,
-            ttype: order.order_type.to_u8(),
-            side: order.side.to_u8(),
-            price: order.price,
+            from_key_bytes,
             price_offset,
-            amount_init: order.quantity,
             amount_update,
-            status: order_update.status().to_u8(),
-            from_key_len: 0,
-            from_key: from_key_bytes,
-        };
-        record.refresh_lengths();
-
-        PersistChannel::with(|ch| ch.publish_uniform_order(&record));
+        );
     }
 
     fn cleanup_strategy_orders(&mut self) {
@@ -2294,13 +2351,12 @@ impl HedgeArbStrategy {
             } else {
                 Some(OrderStatus::PartiallyFilled)
             };
-            let trade_id = parsed.trade_id;
             let trade = OrderQueryTradeUpdate::new(
                 order,
                 order_id,
-                trade_id,
                 event_time_us,
                 parsed.executed_qty,
+                Some(order.price),
                 status,
                 tif,
             );
@@ -2951,10 +3007,12 @@ impl Strategy for HedgeArbStrategy {
     }
 
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
-        HedgeArbStrategy::apply_trade_update(self, trade);
+        let should_persist = HedgeArbStrategy::apply_trade_update(self, trade);
 
         // 持久化成交记录
-        PersistChannel::with(|ch| ch.publish_trade_update(trade));
+        if should_persist {
+            PersistChannel::with(|ch| ch.publish_trade_update(trade));
+        }
     }
 
     fn apply_trade_engine_response(&mut self, response: &dyn TradeEngineResponse) {

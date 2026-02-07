@@ -5,15 +5,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 usage() {
-  cat <<'EOF'
+  cat <<'USAGE'
 Usage:
-  stop_rl_return_volatility.sh [--namespace <ns>] (--exchange <exchange> | <exchange> | <venue...>)
+  stop_kline_factor_pub.sh [--namespace <ns>] (--exchange <exchange> | <exchange> | <venue...>)
 
 Examples:
-  ./scripts/stop_rl_return_volatility.sh --exchange binance
-  ./scripts/stop_rl_return_volatility.sh okex
-  ./scripts/stop_rl_return_volatility.sh binance-futures
-  ./scripts/stop_rl_return_volatility.sh binance-futures binance-margin
+  ./scripts/stop_kline_factor_pub.sh --exchange binance
+  ./scripts/stop_kline_factor_pub.sh okex
+  ./scripts/stop_kline_factor_pub.sh binance-futures
+  ./scripts/stop_kline_factor_pub.sh binance-futures binance-margin
 
 Notes:
   - Exchange expands to default venues:
@@ -23,7 +23,7 @@ Notes:
       bitget  -> bitget-futures bitget-margin
       gate    -> gate-futures gate-margin
   - Namespace defaults to $PM2_NAMESPACE or the deploy directory name.
-EOF
+USAGE
 }
 
 KNOWN_EXCHANGES=("okex" "binance" "bybit" "bitget" "gate")
@@ -141,7 +141,7 @@ fi
 
 stop_one() {
   local venue="$1"
-  local name="rl_return_volatility_${venue}"
+  local name="kline_factor_pub_${venue}"
 
   echo "[INFO] Deleting ${name} (namespace: ${NAMESPACE})"
   if "${PM2[@]}" delete "$name" --namespace "$NAMESPACE"; then

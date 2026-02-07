@@ -1,0 +1,69 @@
+# 成交因子发布统一配置（基于 trade 聚合 bar）
+
+data_source:
+  trade_channel: "trade"
+
+runtime:
+  reload_every: 120
+  max_keep_count: 900
+  bar_ms: 5000
+  medium_order_notional: 10000.0
+  large_order_notional: 100000.0
+
+factors:
+  hf_active_rate_std:
+    enabled: true
+    short: 6
+    long: 360
+    scale_factor: 1.0
+
+  hf_active_rate_rank:
+    enabled: true
+    short: 6
+    long: 360
+    scale_factor: 1.0
+
+  hf_netbuy_std:
+    enabled: true
+    window: 30
+    scale_factor: 1.0
+
+  hf_netbuy_rank:
+    enabled: true
+    window: 360
+    scale_factor: 1.0
+
+  hf_ab_rate:
+    enabled: true
+    window: 6
+    scale_factor: 1.0
+
+  hf_large_order_std:
+    enabled: true
+    window: 360
+    scale_factor: 1.0
+
+  hf_large_order_rate_std:
+    enabled: true
+    window: 10
+    scale_factor: 1.0
+
+  hf_medium_order_rate_std:
+    enabled: true
+    window: 10
+    scale_factor: 1.0
+
+  hf_small_order_rate_std:
+    enabled: true
+    window: 10
+    scale_factor: 1.0
+
+  hf_small_order_rate_mean:
+    enabled: true
+    window: 6
+    scale_factor: 1.0
+
+  hf_vwap_diff_std:
+    enabled: true
+    window: 300
+    scale_factor: 1.0

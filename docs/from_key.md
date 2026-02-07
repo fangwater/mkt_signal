@@ -1,70 +1,48 @@
-# from_key 规则说明（Arb / Hedge）
+# from_key 规则总览
 
-本文档描述 `from_key` 在 FR / XARB 的构造规则、格式和落地位置。
+本文档给出当前代码实现对应的 `from_key` 总览。详细拆分规则见 `docs/from_key_rules/`。
 
-## 通用规则
+## 重要说明
 
-- `time` 统一使用 `get_timestamp_us()`，单位微秒（us）。
-- 所有浮点数固定保留 6 位小数（`:.6`）。
-- `from_key` 是 UTF-8 字符串，最终存为 `Vec<u8>`。
+- `from_key` 与 `signal` **不是一一对应**。
+- dump 强平复用 `ArbClose`，不存在单独的 `DumpClose` 信号类型。
+- `time` 统一使用 `get_timestamp_us()`（微秒）。
+- 浮点字段统一 `:.6` 精度。
+- `from_key` 为 UTF-8 字符串，落地为 `Vec<u8>`。
 
-## ArbOpen / ArbClose（FR）
+## 当前格式（按策略/信号）
 
-**格式**  
-```
-time:funding_ma:predicted_funding_rate:loan_rate
-```
+### FR
 
-**来源**  
-- `funding_ma`：`MktChannel::get_funding_rate_mean`
-- `predicted_funding_rate`：`RateFetcher::get_predicted_funding_rate`
-- `loan_rate`：`RateFetcher::get_predict_loan_rate`
+- `ArbOpen` / `ArbClose`
+  - `time:funding_ma:predicted_funding_rate:loan_rate:spread_rate`
+- `ArbHedge`
+  - `time:request_seq:spread_rate`
 
-**说明**  
-FR 的 `ArbClose` 与 `ArbOpen` 使用同一格式（包含 funding 相关字段）。
+### XARB
 
-## ArbOpen / ArbClose（XARB）
+- `ArbOpen`
+  - `time:pnlu_factor:rl_factor:spread_rate`
+- `ArbHedge`
+  - `time:pnlu_factor:rl_factor:pct_change:threshold_pct:spread_rate`
+- `ArbClose`（dump 路径）
+  - `time:dump:spread_rate`
 
-**格式**
-```
-time:pnlu_factor
-```
+### MM
 
-**说明**
-- `pnlu_factor` 来源于 Redis 的 pnlu 因子（缺失时为 `0.000000`）。
-- XARB 在 dump list 触发 close 时，`from_key` 直接为：
-```
-time:dump
-```
+- `MMOpen` / `MMHedge` 的 `from_key` 目前由上游透传，仓库内未定义固定字段拼装格式。
 
-## ArbHedge（FR）
+## 详细规则文档
 
-**格式**
-```
-time:request_seq:aggressive
-```
-
-**说明**
-- `request_seq` 来自 `ArbHedgeSignalQueryMsg`。
-- `aggressive` 为 `0/1` 标记（`request_seq >= hedge_aggressive_seq_threshold` 时为 1）。
-
-## ArbHedge（XARB）
-
-**格式**
-```
-time:rl_factor:aggressive:pct_change:threshold_pct
-```
-
-**说明**
-- `rl_factor` 来源于 Redis `rl_return_volatility`（缺失时为 `0.000000`）。
-- `aggressive` 为 `0/1` 标记。
-- `pct_change` / `threshold_pct` 来源于 stop-loss 逻辑的价差变动计算。
-- stop-loss 的 hedge 信号同样使用该格式（`rl_factor` 可能为 0）。
-
-## Strategy 保存
-
-`HedgeArbStrategy` 会保存两份来源标记：
-- `open_from_key`：来自 `ArbOpen` 信号
-- `hedge_from_key`：来自 `ArbHedge` 信号（每次 hedge 信号会覆盖更新）
-
-若 MT 直接对冲且当前 `hedge_from_key` 为空，会回退使用 `open_from_key`。
+- 索引：`docs/from_key_rules/README.md`
+- FR：
+  - `docs/from_key_rules/arb_open_fr.md`
+  - `docs/from_key_rules/arb_hedge_fr.md`
+  - `docs/from_key_rules/arb_close_fr.md`
+- XARB：
+  - `docs/from_key_rules/arb_open_xarb.md`
+  - `docs/from_key_rules/arb_hedge_xarb.md`
+  - `docs/from_key_rules/arb_close_xarb.md`
+- MM：
+  - `docs/from_key_rules/mm_open.md`
+  - `docs/from_key_rules/mm_hedge.md`

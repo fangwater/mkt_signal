@@ -44,7 +44,6 @@ pub(crate) fn build_parquet_trade_updates(
     let mut event_time_col = Vec::with_capacity(entries.len());
     let mut trade_time_col = Vec::with_capacity(entries.len());
     let mut symbol_col = Vec::with_capacity(entries.len());
-    let mut trade_id_col = Vec::with_capacity(entries.len());
     let mut order_id_col = Vec::with_capacity(entries.len());
     let mut client_order_id_col = Vec::with_capacity(entries.len());
     let mut side_col = Vec::with_capacity(entries.len());
@@ -65,7 +64,6 @@ pub(crate) fn build_parquet_trade_updates(
             event_time,
             trade_time,
             symbol,
-            trade_id,
             order_id,
             client_order_id,
             side,
@@ -80,7 +78,6 @@ pub(crate) fn build_parquet_trade_updates(
         event_time_col.push(event_time);
         trade_time_col.push(trade_time);
         symbol_col.push(symbol);
-        trade_id_col.push(trade_id);
         order_id_col.push(order_id);
         client_order_id_col.push(client_order_id);
         side_col.push(side);
@@ -97,7 +94,6 @@ pub(crate) fn build_parquet_trade_updates(
         Series::new("event_time".into(), event_time_col),
         Series::new("trade_time".into(), trade_time_col),
         Series::new("symbol".into(), symbol_col),
-        Series::new("trade_id".into(), trade_id_col),
         Series::new("order_id".into(), order_id_col),
         Series::new("client_order_id".into(), client_order_id_col),
         Series::new("side".into(), side_col),
@@ -231,7 +227,6 @@ struct DecodedTradeRecord {
     event_time: i64,
     trade_time: i64,
     symbol: String,
-    trade_id: i64,
     order_id: i64,
     client_order_id: i64,
     side: String,
@@ -272,7 +267,6 @@ fn decode_trade_record(bytes: &[u8]) -> Result<DecodedTradeRecord> {
     let event_time = read_i64(&mut cursor, "trade update event_time")?;
     let trade_time = read_i64(&mut cursor, "trade update trade_time")?;
     let symbol = read_string(&mut cursor)?;
-    let trade_id = read_i64(&mut cursor, "trade update trade_id")?;
     let order_id = read_i64(&mut cursor, "trade update order_id")?;
     let client_order_id = read_i64(&mut cursor, "trade update client_order_id")?;
     let side_raw = read_u8(&mut cursor, "trade update side")?;
@@ -299,7 +293,6 @@ fn decode_trade_record(bytes: &[u8]) -> Result<DecodedTradeRecord> {
         event_time,
         trade_time,
         symbol,
-        trade_id,
         order_id,
         client_order_id,
         side: side_str,

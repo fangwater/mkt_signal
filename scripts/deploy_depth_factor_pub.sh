@@ -2,27 +2,27 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN_NAME="rl_return_volatility"
+BIN_NAME="depth_factor_pub"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 
 usage() {
-  cat <<'EOF'
+  cat <<'USAGE'
 Usage:
-  deploy_rl_return_volatility.sh [trade|test] [--dir <path>]
+  deploy_depth_factor_pub.sh [trade|test] [--dir <path>]
 
 Defaults:
   trade -> $HOME/factor_pub
   test  -> $HOME/factor_pub_test
 
 Examples:
-  bash scripts/deploy_rl_return_volatility.sh
-  bash scripts/deploy_rl_return_volatility.sh trade
-  bash scripts/deploy_rl_return_volatility.sh test
-  bash scripts/deploy_rl_return_volatility.sh trade --dir "$HOME/factor_pub"
+  bash scripts/deploy_depth_factor_pub.sh
+  bash scripts/deploy_depth_factor_pub.sh trade
+  bash scripts/deploy_depth_factor_pub.sh test
+  bash scripts/deploy_depth_factor_pub.sh trade --dir "$HOME/factor_pub"
 
 Notes:
-  - Venue is selected at runtime via start_rl_return_volatility.sh --venue <venue>
-EOF
+  - Venue is selected at runtime via start_depth_factor_pub.sh --venue <venue>
+USAGE
 }
 
 # 参数解析
@@ -72,7 +72,7 @@ chmod +x "$TARGET_DIR/$BIN_NAME"
 
 # 同步启动/停止脚本到 scripts/
 SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
-SCRIPTS_TO_SYNC=("start_rl_return_volatility.sh" "stop_rl_return_volatility.sh")
+SCRIPTS_TO_SYNC=("start_depth_factor_pub.sh" "stop_depth_factor_pub.sh")
 mkdir -p "$TARGET_DIR/scripts"
 for script in "${SCRIPTS_TO_SYNC[@]}"; do
   if [[ -f "$SCRIPT_DIR_SRC/$script" ]]; then
@@ -81,11 +81,11 @@ for script in "${SCRIPTS_TO_SYNC[@]}"; do
   fi
 done
 
-# 仅同步配置文件
+# 同步配置文件
 mkdir -p "$TARGET_DIR/config"
-if [[ -f "$ROOT_DIR/config/rl_return_volatility.yaml" ]]; then
-  rsync -a "$ROOT_DIR/config/rl_return_volatility.yaml" "$TARGET_DIR/config/"
+if [[ -f "$ROOT_DIR/config/depth_factor_pub.yaml" ]]; then
+  rsync -a "$ROOT_DIR/config/depth_factor_pub.yaml" "$TARGET_DIR/config/"
 fi
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"
-echo "[INFO] 启动示例: cd $TARGET_DIR && ./scripts/start_rl_return_volatility.sh --venue binance-futures"
+echo "[INFO] 启动示例: cd $TARGET_DIR && ./scripts/start_depth_factor_pub.sh --venue binance-futures"

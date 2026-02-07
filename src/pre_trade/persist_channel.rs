@@ -134,9 +134,9 @@ impl PersistChannel {
         let payload = serialize_trade_update(trade_update);
         if let Err(err) = publisher.publish(payload.as_ref()) {
             warn!(
-                "failed to publish trade update trade_id={} order_id={} symbol={}: {err:#}",
-                trade_update.trade_id(),
+                "failed to publish trade update order_id={} client_order_id={} symbol={}: {err:#}",
                 trade_update.order_id(),
+                trade_update.client_order_id(),
                 trade_update.symbol()
             );
         }
@@ -175,9 +175,9 @@ impl PersistChannel {
         let payload = serialize_trade_update(trade_update);
         if let Err(err) = publisher.publish(payload.as_ref()) {
             warn!(
-                "failed to publish unmatched trade update trade_id={} order_id={} symbol={}: {err:#}",
-                trade_update.trade_id(),
+                "failed to publish unmatched trade update order_id={} client_order_id={} symbol={}: {err:#}",
                 trade_update.order_id(),
+                trade_update.client_order_id(),
                 trade_update.symbol()
             );
         }
@@ -238,7 +238,6 @@ impl PersistChannel {
 /// - event_time: i64 (8 bytes)
 /// - trade_time: i64 (8 bytes)
 /// - symbol: String (4 bytes len + data)
-/// - trade_id: i64 (8 bytes)
 /// - order_id: i64 (8 bytes)
 /// - client_order_id: i64 (8 bytes)
 /// - side: u8 (1 byte) - 0=Buy, 1=Sell
@@ -261,7 +260,6 @@ fn serialize_trade_update(trade: &dyn TradeUpdate) -> Bytes {
     put_string(&mut buf, trade.symbol());
 
     // ID 字段
-    buf.put_i64_le(trade.trade_id());
     buf.put_i64_le(trade.order_id());
     buf.put_i64_le(trade.client_order_id());
 

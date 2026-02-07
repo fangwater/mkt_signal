@@ -61,7 +61,6 @@ fn trade_update_used_len(payload: &[u8]) -> Option<usize> {
     skip_i64(&mut cursor)?; // event_time
     skip_i64(&mut cursor)?; // trade_time
     skip_string(&mut cursor)?; // symbol
-    skip_i64(&mut cursor)?; // trade_id
     skip_i64(&mut cursor)?; // order_id
     skip_i64(&mut cursor)?; // client_order_id
     skip_u8(&mut cursor)?; // side

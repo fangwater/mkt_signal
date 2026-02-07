@@ -37,6 +37,7 @@ struct KlineBar {
     low: f64,
     close: f64,
     volume: f64,
+    trade_count: u64,
     first_trade_us: i64,
     last_trade_us: i64,
 }
@@ -50,6 +51,7 @@ impl KlineBar {
             low: price,
             close: price,
             volume: amount,
+            trade_count: 1,
             first_trade_us: trade_us,
             last_trade_us: trade_us,
         }
@@ -63,6 +65,7 @@ impl KlineBar {
             low: price,
             close: price,
             volume: 0.0,
+            trade_count: 0,
             first_trade_us: start_us,
             last_trade_us: start_us,
         }
@@ -76,6 +79,7 @@ impl KlineBar {
             self.low = price;
         }
         self.volume += amount;
+        self.trade_count += 1;
 
         if trade_us < self.first_trade_us {
             self.first_trade_us = trade_us;
@@ -421,7 +425,7 @@ impl KlinePubApp {
 
     fn publish_bar(&mut self, symbol: &str, bar: KlineBar) {
         let timestamp_ms = bar.start_us / 1_000;
-        let msg = KlineMsg::create(
+        let msg = KlineMsg::create_with_count(
             symbol.to_string(),
             bar.open,
             bar.high,
@@ -429,6 +433,7 @@ impl KlinePubApp {
             bar.close,
             bar.volume,
             timestamp_ms,
+            bar.trade_count,
         );
 
         if self.publisher.publish(&msg) {
@@ -496,6 +501,7 @@ impl KlinePubApp {
             Cell::new("Low").style_spec("c"),
             Cell::new("Close").style_spec("c"),
             Cell::new("Volume").style_spec("c"),
+            Cell::new("Count").style_spec("c"),
             Cell::new("State").style_spec("c"),
         ]));
 
@@ -518,11 +524,13 @@ impl KlinePubApp {
                     Cell::new(&format!("{:.8}", bar.low)),
                     Cell::new(&format!("{:.8}", bar.close)),
                     Cell::new(&format!("{:.8}", bar.volume)),
+                    Cell::new(&bar.trade_count.to_string()),
                     Cell::new(snapshot.status),
                 ]));
             } else {
                 table.add_row(Row::from(vec![
                     Cell::new(&symbol),
+                    Cell::new("-"),
                     Cell::new("-"),
                     Cell::new("-"),
                     Cell::new("-"),

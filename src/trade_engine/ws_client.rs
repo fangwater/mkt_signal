@@ -725,6 +725,7 @@ impl TradeWsClient {
             order_status_u8: 0,
             order_update_time: 0,
             executed_qty: 0.0,
+            response_price: 0.0,
         });
     }
 
@@ -748,6 +749,7 @@ impl TradeWsClient {
             order_status_u8: 0,
             order_update_time: 0,
             executed_qty: 0.0,
+            response_price: 0.0,
         });
     }
 
@@ -901,6 +903,7 @@ impl TradeWsClient {
                                 order_status_u8: 0,
                                 order_update_time: 0,
                                 executed_qty: 0.0,
+                                response_price: 0.0,
                             };
 
                             let _ = self.resp_tx.send(outcome);
@@ -1104,7 +1107,7 @@ impl TradeWsClient {
         resp: &binance_ws::BinanceWsResponse,
     ) {
         let status = Self::binance_status(resp);
-        let (order_id, order_status_u8, order_update_time, executed_qty) =
+        let (order_id, order_status_u8, order_update_time, executed_qty, response_price) =
             binance_ws::extract_order_info(resp);
         let body_payload = json!({
             "transport": "ws",
@@ -1127,6 +1130,7 @@ impl TradeWsClient {
             order_status_u8,
             order_update_time,
             executed_qty,
+            response_price,
         });
     }
 
@@ -1359,6 +1363,7 @@ impl TradeWsClient {
             order_status_u8: 0,
             order_update_time: 0,
             executed_qty: 0.0,
+            response_price: 0.0,
         });
     }
 
@@ -1387,6 +1392,7 @@ impl TradeWsClient {
             order_status_u8: 0,
             order_update_time: 0,
             executed_qty: 0.0,
+            response_price: 0.0,
         });
     }
 
@@ -1446,6 +1452,7 @@ impl TradeWsClient {
             order_status_u8: 0,
             order_update_time: 0,
             executed_qty: 0.0,
+            response_price: 0.0,
         });
     }
 

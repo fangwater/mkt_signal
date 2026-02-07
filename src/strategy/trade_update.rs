@@ -13,12 +13,9 @@ use crate::signal::common::{OrderStatus, TradingVenue};
 /// fn handle_trade(msg: &BinanceBasicOrderMsg) {
 ///     let adapter = BinanceOrderUpdateAdapter::new(msg);
 ///
-///     // 检查是否有成交
-///     if adapter.trade_id() > 0 {
-///         println!("成交ID: {}", adapter.trade_id());
-///         println!("成交价格: {}", adapter.price());
-///         println!("是否Maker: {}", adapter.is_maker());
-///     }
+///     println!("订单ID: {}", adapter.order_id());
+///     println!("成交价格: {}", adapter.price());
+///     println!("是否Maker: {}", adapter.is_maker());
 /// }
 /// ```
 pub trait TradeUpdate {
@@ -30,9 +27,6 @@ pub trait TradeUpdate {
 
     /// 获取交易对符号
     fn symbol(&self) -> &str;
-
-    /// 获取成交ID (0表示非成交更新)
-    fn trade_id(&self) -> i64;
 
     /// 获取订单ID
     fn order_id(&self) -> i64;
@@ -53,11 +47,6 @@ pub trait TradeUpdate {
     fn trading_venue(&self) -> TradingVenue;
 
     fn cumulative_filled_quantity(&self) -> f64;
-
-    /// 辅助方法：检查是否为有效成交 (trade_id > 0)
-    fn is_valid_trade(&self) -> bool {
-        self.trade_id() > 0
-    }
 
     // 成交单状态，即对应的额order_status
     fn order_status(&self) -> Option<OrderStatus>;

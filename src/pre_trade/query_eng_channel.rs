@@ -444,9 +444,9 @@ fn persist_unmatched_query_response(strategy_id: i32, resp: &QueryEngineResponse
             let trade = OrderQueryTradeUpdate::new(
                 &order,
                 order_id,
-                parsed.trade_id,
                 event_time_us,
                 parsed.executed_qty,
+                Some(order.price),
                 order_status,
                 tif,
             );

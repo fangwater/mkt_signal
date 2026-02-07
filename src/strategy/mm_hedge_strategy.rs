@@ -1,6 +1,6 @@
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderManager, OrderType, Side};
+use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::{PersistChannel, QueryEngHub, TradeEngHub};
 use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue};
@@ -12,6 +12,7 @@ use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::trade_update::TradeUpdate;
+use crate::strategy::uniform_order_helper::{publish_uniform_order_event, UniformOrderEventKind};
 use crate::strategy::ws_order_update::WsOrderUpdate;
 use crate::trade_engine::query_parsers::compact_order::{
     CompactOrderQueryResp, COMPACT_ORDER_QUERY_RESP_LEN,
@@ -50,6 +51,7 @@ pub struct MarketMakerHedgeStrategy {
     period_buy_qty: f64,
     period_sell_qty: f64,
     signal_ts: i64,
+    hedge_from_key: Vec<u8>,
     order_seq: u32,
     hedge_plan: Vec<HedgePlanOrder>,
     hedge_order_ids: HashSet<i64>,
@@ -77,6 +79,7 @@ impl MarketMakerHedgeStrategy {
             period_buy_qty: 0.0,
             period_sell_qty: 0.0,
             signal_ts: 0,
+            hedge_from_key: Vec::new(),
             order_seq: 0,
             hedge_plan: Vec::new(),
             hedge_order_ids: HashSet::new(),
@@ -121,18 +124,36 @@ impl MarketMakerHedgeStrategy {
     fn try_apply_ws_order_update(&mut self, response: &dyn TradeEngineResponse) -> bool {
         let client_order_id = response.client_order_id();
         let order_mgr = MonitorChannel::instance().order_manager();
-        let order_mgr = order_mgr.borrow();
-        let Some(order) = order_mgr.get(client_order_id) else {
+        let Some(order_snapshot) = order_mgr.borrow().get(client_order_id) else {
             warn!(
                 "MarketMakerHedgeStrategy: strategy_id={} ws order update missing local order: client_order_id={}",
                 self.strategy_id, client_order_id
             );
             return false;
         };
-        let Some(update) = WsOrderUpdate::from_trade_response(response, &order) else {
+        let order_snapshot = order_snapshot.clone();
+
+        let Some(update) = WsOrderUpdate::from_trade_response(response, &order_snapshot) else {
             return false;
         };
-        <Self as Strategy>::apply_order_update(self, &update);
+
+        if matches!(
+            update.status(),
+            OrderStatus::PartiallyFilled | OrderStatus::Filled
+        ) {
+            let trade = OrderQueryTradeUpdate::new(
+                &order_snapshot,
+                update.order_id(),
+                update.event_time(),
+                update.cumulative_filled_quantity(),
+                response.response_price(),
+                Some(update.status()),
+                update.time_in_force(),
+            );
+            <Self as Strategy>::apply_trade_update(self, &trade);
+        } else {
+            <Self as Strategy>::apply_order_update(self, &update);
+        }
         true
     }
 
@@ -154,6 +175,7 @@ impl MarketMakerHedgeStrategy {
 
     fn handle_mm_hedge_signal(&mut self, ctx: MmHedgeCtx) {
         self.signal_ts = ctx.signal_ts;
+        self.hedge_from_key = ctx.from_key.clone();
         self.next_query_ts_us = ctx.next_query_ts;
         self.pending_query = false;
         self.query_watchdog_due_ts = 0;
@@ -167,7 +189,7 @@ impl MarketMakerHedgeStrategy {
                 snap.symbol, snap.net_qty, snap.buy_qty, snap.sell_qty
             );
         }
-        let from_key = String::from_utf8_lossy(&ctx.from_key).to_string();
+        let from_key = String::from_utf8_lossy(&self.hedge_from_key);
         info!(
             "MMHedge ctx: symbol={} price_tick_exp={} qty_tick_exp={} price_levels={} amount_levels={} signal_ts={} next_query_ts={} from_key='{}'",
             ctx.get_opening_symbol(),
@@ -646,9 +668,9 @@ impl MarketMakerHedgeStrategy {
             let trade = OrderQueryTradeUpdate::new(
                 order,
                 order_id,
-                parsed.trade_id,
                 event_time_us,
                 parsed.executed_qty,
+                Some(order.price),
                 status,
                 tif,
             );
@@ -810,6 +832,155 @@ impl MarketMakerHedgeStrategy {
         }
     }
 
+    fn uniform_hedge_fields(&self) -> (i64, Vec<u8>, f64) {
+        (
+            self.signal_ts,
+            format!("hedge|{}", String::from_utf8_lossy(&self.hedge_from_key)).into_bytes(),
+            0.0,
+        )
+    }
+
+    fn compute_uniform_amount_update(
+        &self,
+        order: &Order,
+        incoming_cum: f64,
+        prev_cumulative_filled_qty: f64,
+        status: OrderStatus,
+    ) -> f64 {
+        match OrderManager::compute_uniform_amount_update_from_cumulative(
+            prev_cumulative_filled_qty,
+            incoming_cum,
+        ) {
+            Some(delta) => delta,
+            None => {
+                warn!(
+                    "MarketMakerHedgeStrategy: strategy_id={} uniform {:?} amount_update rollback detected: client_order_id={} prev={:.8} incoming={:.8}",
+                    self.strategy_id,
+                    status,
+                    order.client_order_id,
+                    prev_cumulative_filled_qty,
+                    incoming_cum
+                );
+                0.0
+            }
+        }
+    }
+
+    fn publish_uniform_new_order(
+        &self,
+        order_update: &dyn OrderUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+    ) {
+        let (signal_ts, from_key, price_offset) = self.uniform_hedge_fields();
+        let incoming_cum = order_update.cumulative_filled_quantity();
+        let amount_update = self.compute_uniform_amount_update(
+            order,
+            incoming_cum,
+            prev_cumulative_filled_qty,
+            order_update.status(),
+        );
+
+        publish_uniform_order_event(
+            order,
+            UniformOrderEventKind::New,
+            order_update.event_time(),
+            order_update.status(),
+            signal_ts,
+            from_key,
+            price_offset,
+            amount_update,
+        );
+    }
+
+    fn publish_uniform_terminal_order(
+        &self,
+        order_update: &dyn OrderUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+    ) {
+        let (signal_ts, from_key, price_offset) = self.uniform_hedge_fields();
+        let incoming_cum = order_update.cumulative_filled_quantity();
+        let amount_update = self.compute_uniform_amount_update(
+            order,
+            incoming_cum,
+            prev_cumulative_filled_qty,
+            order_update.status(),
+        );
+        publish_uniform_order_event(
+            order,
+            UniformOrderEventKind::Terminal,
+            order_update.event_time(),
+            order_update.status(),
+            signal_ts,
+            from_key,
+            price_offset,
+            amount_update,
+        );
+    }
+
+    fn publish_uniform_trade_order(
+        &self,
+        trade: &dyn TradeUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+        status: OrderStatus,
+    ) {
+        if !matches!(status, OrderStatus::PartiallyFilled | OrderStatus::Filled) {
+            return;
+        }
+        let (signal_ts, from_key, price_offset) = self.uniform_hedge_fields();
+        let incoming_cum = trade.cumulative_filled_quantity();
+        let amount_update = self.compute_uniform_amount_update(
+            order,
+            incoming_cum,
+            prev_cumulative_filled_qty,
+            status,
+        );
+
+        publish_uniform_order_event(
+            order,
+            UniformOrderEventKind::Trade,
+            trade.event_time(),
+            status,
+            signal_ts,
+            from_key,
+            price_offset,
+            amount_update,
+        );
+    }
+
+    fn publish_uniform_trade_order_from_order_update(
+        &self,
+        order_update: &dyn OrderUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+    ) {
+        let status = order_update.status();
+        if !matches!(status, OrderStatus::PartiallyFilled | OrderStatus::Filled) {
+            return;
+        }
+        let (signal_ts, from_key, price_offset) = self.uniform_hedge_fields();
+        let incoming_cum = order_update.cumulative_filled_quantity();
+        let amount_update = self.compute_uniform_amount_update(
+            order,
+            incoming_cum,
+            prev_cumulative_filled_qty,
+            status,
+        );
+
+        publish_uniform_order_event(
+            order,
+            UniformOrderEventKind::Trade,
+            order_update.event_time(),
+            status,
+            signal_ts,
+            from_key,
+            price_offset,
+            amount_update,
+        );
+    }
+
     fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) -> bool {
         let client_order_id = order_update.client_order_id();
         self.clear_order_query_state(client_order_id);
@@ -838,6 +1009,8 @@ impl MarketMakerHedgeStrategy {
             return false;
         }
 
+        let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
+
         let updated = order_manager.update(client_order_id, |order| match status {
             OrderStatus::New => {
                 order.status = OrderExecutionStatus::Create;
@@ -856,21 +1029,28 @@ impl MarketMakerHedgeStrategy {
             }
             OrderStatus::Canceled => {
                 order.status = OrderExecutionStatus::Cancelled;
+                order.set_exchange_order_id(order_update.order_id());
                 order.cumulative_filled_quantity = order_update.cumulative_filled_quantity();
                 order.set_end_time(order_update.event_time());
             }
             OrderStatus::Filled => {
                 order.status = OrderExecutionStatus::Filled;
+                order.set_exchange_order_id(order_update.order_id());
                 order.cumulative_filled_quantity = order_update.cumulative_filled_quantity();
+                order.set_filled_time(order_update.event_time());
                 order.set_end_time(order_update.event_time());
             }
             OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
                 order.status = OrderExecutionStatus::Rejected;
+                order.set_exchange_order_id(order_update.order_id());
+                order.cumulative_filled_quantity = order_update.cumulative_filled_quantity();
                 order.set_end_time(order_update.event_time());
             }
             OrderStatus::PartiallyFilled => {
+                order.status = OrderExecutionStatus::Create;
                 order.set_exchange_order_id(order_update.order_id());
-                order.set_create_time(order_update.event_time());
+                order.cumulative_filled_quantity = order_update.cumulative_filled_quantity();
+                order.set_filled_time(order_update.event_time());
             }
         });
         drop(order_manager);
@@ -881,6 +1061,47 @@ impl MarketMakerHedgeStrategy {
                 self.strategy_id, client_order_id
             );
             return false;
+        }
+
+        if status == OrderStatus::New {
+            if let Some(order) = MonitorChannel::instance()
+                .order_manager()
+                .borrow()
+                .get(client_order_id)
+            {
+                self.publish_uniform_new_order(order_update, &order, prev_cumulative_filled_qty);
+            }
+        }
+
+        if matches!(
+            status,
+            OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
+        ) {
+            if let Some(order) = MonitorChannel::instance()
+                .order_manager()
+                .borrow()
+                .get(client_order_id)
+            {
+                self.publish_uniform_terminal_order(
+                    order_update,
+                    &order,
+                    prev_cumulative_filled_qty,
+                );
+            }
+        }
+
+        if matches!(status, OrderStatus::PartiallyFilled | OrderStatus::Filled) {
+            if let Some(order) = MonitorChannel::instance()
+                .order_manager()
+                .borrow()
+                .get(client_order_id)
+            {
+                self.publish_uniform_trade_order_from_order_update(
+                    order_update,
+                    &order,
+                    prev_cumulative_filled_qty,
+                );
+            }
         }
 
         if status.is_finished() && self.hedge_order_ids.remove(&client_order_id) {
@@ -932,27 +1153,50 @@ impl MarketMakerHedgeStrategy {
         true
     }
 
-    fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
+    fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) -> bool {
         let client_order_id = trade.client_order_id();
         self.clear_order_query_state(client_order_id);
 
         let status = trade.order_status();
         let Some(status) = status else {
-            return;
+            return false;
         };
         if status != OrderStatus::Filled && status != OrderStatus::PartiallyFilled {
-            return;
+            return false;
+        }
+
+        let order_mgr = MonitorChannel::instance().order_manager();
+        let mut order_manager = order_mgr.borrow_mut();
+        let Some(current_order) = order_manager.get(client_order_id) else {
+            warn!(
+                "MarketMakerHedgeStrategy: strategy_id={} trade update order missing client_order_id={}",
+                self.strategy_id, client_order_id
+            );
+            return false;
+        };
+        let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
+
+        if OrderManager::should_skip_idempotent_trade_update(
+            &current_order,
+            status,
+            trade.cumulative_filled_quantity(),
+            trade.event_time(),
+            "MarketMakerHedgeStrategy",
+            self.strategy_id,
+        )
+        .is_some()
+        {
+            return false;
         }
 
         let cumulative_qty = trade.cumulative_filled_quantity();
         let trade_time = trade.trade_time();
         let event_time = trade.event_time();
 
-        let order_mgr = MonitorChannel::instance().order_manager();
-        let mut order_manager = order_mgr.borrow_mut();
         let updated = order_manager.update(client_order_id, |order| {
             order.cumulative_filled_quantity = cumulative_qty;
             order.set_filled_time(trade_time);
+            order.set_exchange_order_id(trade.order_id());
             order.status = if status == OrderStatus::Filled {
                 OrderExecutionStatus::Filled
             } else {
@@ -960,25 +1204,30 @@ impl MarketMakerHedgeStrategy {
             };
             order.set_end_time(event_time);
         });
-        drop(order_manager);
 
         if !updated {
             warn!(
                 "MarketMakerHedgeStrategy: strategy_id={} trade update order missing client_order_id={}",
                 self.strategy_id, client_order_id
             );
-            return;
+            return false;
         }
 
+        if let Some(order) = order_manager.get(client_order_id) {
+            self.publish_uniform_trade_order(trade, &order, prev_cumulative_filled_qty, status);
+        }
+
+        drop(order_manager);
+
         if status != OrderStatus::Filled {
-            return;
+            return true;
         }
 
         if !self.hedge_order_ids.remove(&client_order_id) {
-            return;
+            return true;
         }
         if cumulative_qty <= 0.0 {
-            return;
+            return true;
         }
         let base_qty = MonitorChannel::instance().qty_to_base(
             trade.trading_venue(),
@@ -986,7 +1235,7 @@ impl MarketMakerHedgeStrategy {
             cumulative_qty,
         );
         if base_qty <= 0.0 {
-            return;
+            return true;
         }
         let signed_qty = match trade.side() {
             Side::Buy => base_qty,
@@ -1005,6 +1254,8 @@ impl MarketMakerHedgeStrategy {
             before,
             self.net_qty
         );
+
+        true
     }
 
     fn handle_signal(&mut self, signal: &TradeSignal) {
@@ -1069,8 +1320,10 @@ impl Strategy for MarketMakerHedgeStrategy {
     }
 
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
-        MarketMakerHedgeStrategy::apply_trade_update(self, trade);
-        PersistChannel::with(|ch| ch.publish_trade_update(trade));
+        let should_persist = MarketMakerHedgeStrategy::apply_trade_update(self, trade);
+        if should_persist {
+            PersistChannel::with(|ch| ch.publish_trade_update(trade));
+        }
     }
 
     fn apply_trade_engine_response(&mut self, response: &dyn TradeEngineResponse) {

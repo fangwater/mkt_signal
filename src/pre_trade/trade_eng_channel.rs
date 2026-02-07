@@ -27,7 +27,7 @@ thread_local! {
 const TRADE_REQ_PAYLOAD: usize = 4_096;
 const TRADE_RESP_PAYLOAD: usize = 64;
 const TRADE_RESP_HEADER_LEN: usize = 22;
-const TRADE_RESP_TAIL_LEN: usize = 25;
+const TRADE_RESP_TAIL_LEN: usize = 33;
 
 /// TradeEngHub 负责与多个 trade engine 进程进行双向通信
 ///
@@ -247,6 +247,7 @@ impl TradeEngChannel {
                     let mut order_status_u8 = 0u8;
                     let mut order_update_time = 0i64;
                     let mut executed_qty = 0.0f64;
+                    let mut response_price = 0.0f64;
                     if payload.len() >= TRADE_RESP_HEADER_LEN + TRADE_RESP_TAIL_LEN {
                         order_id = i64::from_le_bytes([
                             payload[22],
@@ -279,6 +280,16 @@ impl TradeEngChannel {
                             payload[45],
                             payload[46],
                         ]);
+                        response_price = f64::from_le_bytes([
+                            payload[47],
+                            payload[48],
+                            payload[49],
+                            payload[50],
+                            payload[51],
+                            payload[52],
+                            payload[53],
+                            payload[54],
+                        ]);
                     }
                     let response = TradeEngineResponseMessage::new_with_tail(
                         status,
@@ -290,6 +301,7 @@ impl TradeEngChannel {
                         order_status_u8,
                         order_update_time,
                         executed_qty,
+                        response_price,
                     );
 
                     Self::handle_trade_engine_response(&response);
@@ -447,9 +459,9 @@ fn persist_unmatched_trade_engine_response(response: &TradeEngineResponseMessage
                 let trade = OrderQueryTradeUpdate::new(
                     &order,
                     order_id,
-                    0,
                     event_time_us,
                     cumulative_exec_qty,
+                    response.response_price(),
                     order_status,
                     tif,
                 );

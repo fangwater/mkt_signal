@@ -1,17 +1,17 @@
-//! RL Return Volatility 入口
+//! Trade Factor Publisher 入口
 //!
-//! 使用方式: cargo run --bin rl_return_volatility -- --venue binance-futures
+//! 使用方式: cargo run --bin trade_factor_pub -- --venue binance-futures
 
 use anyhow::Result;
 use clap::Parser;
 use log::info;
 
-use mkt_signal::factor_pub::rl_return_volatility::app::RlReturnVolatilityApp;
+use mkt_signal::factor_pub::trade_factor_pub::app::TradeFactorPubApp;
 use mkt_signal::signal::common::TradingVenue;
 
 #[derive(Parser)]
-#[command(name = "rl_return_volatility")]
-#[command(about = "RL Return Volatility - rolling return volatility factor")]
+#[command(name = "trade_factor_pub")]
+#[command(about = "Trade Factor Publisher - trade behavior factors from trade stream")]
 struct Args {
     /// Trading venue (e.g., binance-futures, binance-margin, okex-futures)
     #[arg(short, long)]
@@ -24,10 +24,10 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
     let venue_slug = args.venue.data_pub_slug();
-    let config_path = "config/rl_return_volatility.yaml";
+    let config_path = "config/trade_factor_pub.yaml";
 
     info!("Loading config from: {}", config_path);
 
-    let mut app = RlReturnVolatilityApp::new(config_path, venue_slug)?;
+    let mut app = TradeFactorPubApp::new(config_path, venue_slug)?;
     app.run()
 }

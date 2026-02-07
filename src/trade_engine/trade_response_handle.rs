@@ -19,6 +19,7 @@ pub struct TradeExecOutcome {
     pub order_status_u8: u8,
     pub order_update_time: i64,
     pub executed_qty: f64,
+    pub response_price: f64,
 }
 
 // 固定长度 trade response header（22 bytes），不再携带 raw JSON body。
@@ -203,11 +204,12 @@ pub fn spawn_response_handle(
             let mut buf = [0u8; 64];
             let h = hdr_bytes.len().min(buf.len());
             buf[..h].copy_from_slice(&hdr_bytes[..h]);
-            if buf.len() >= h + 25 {
+            if buf.len() >= h + 33 {
                 buf[h..h + 8].copy_from_slice(&out.order_id.to_le_bytes());
                 buf[h + 8] = out.order_status_u8;
                 buf[h + 9..h + 17].copy_from_slice(&out.order_update_time.to_le_bytes());
                 buf[h + 17..h + 25].copy_from_slice(&out.executed_qty.to_le_bytes());
+                buf[h + 25..h + 33].copy_from_slice(&out.response_price.to_le_bytes());
             }
             debug!(
                 "publish trade resp header: type={}, status={}, code={}",

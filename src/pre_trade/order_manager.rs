@@ -240,6 +240,12 @@ pub enum OrderUpdateSkipReason {
     StaleNewOnTerminal,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TradeUpdateSkipReason {
+    DuplicateFilled,
+    StaleOrDuplicatePartial,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum OrderType {
@@ -473,6 +479,60 @@ impl OrderManager {
         }
 
         None
+    }
+
+    pub fn should_skip_idempotent_trade_update(
+        order: &Order,
+        incoming_status: OrderStatus,
+        incoming_cum_qty: f64,
+        incoming_update_ts: i64,
+        log_owner: &str,
+        strategy_id: i32,
+    ) -> Option<TradeUpdateSkipReason> {
+        if incoming_status == OrderStatus::Filled && order.status == OrderExecutionStatus::Filled {
+            debug!(
+                "{}: strategy_id={} skip duplicate filled trade update: client_order_id={} cum={:.8} event_time={}",
+                log_owner,
+                strategy_id,
+                order.client_order_id,
+                incoming_cum_qty,
+                incoming_update_ts
+            );
+            return Some(TradeUpdateSkipReason::DuplicateFilled);
+        }
+
+        if incoming_status == OrderStatus::PartiallyFilled {
+            let prev_cum = order.cumulative_filled_quantity;
+            let prev_ts = order.timestamp.filled_t;
+            if incoming_cum_qty < prev_cum - 1e-12
+                || (incoming_cum_qty - prev_cum).abs() <= 1e-12 && incoming_update_ts <= prev_ts
+            {
+                debug!(
+                    "{}: strategy_id={} skip stale/duplicate partial trade update: client_order_id={} prev_cum={:.8} incoming_cum={:.8} prev_ts={} incoming_ts={}",
+                    log_owner,
+                    strategy_id,
+                    order.client_order_id,
+                    prev_cum,
+                    incoming_cum_qty,
+                    prev_ts,
+                    incoming_update_ts
+                );
+                return Some(TradeUpdateSkipReason::StaleOrDuplicatePartial);
+            }
+        }
+
+        None
+    }
+
+    pub fn compute_uniform_amount_update_from_cumulative(
+        prev_cumulative_filled_qty: f64,
+        incoming_cum_qty: f64,
+    ) -> Option<f64> {
+        if incoming_cum_qty >= prev_cumulative_filled_qty {
+            Some(incoming_cum_qty - prev_cumulative_filled_qty)
+        } else {
+            None
+        }
     }
 
     pub fn create_order(
@@ -769,8 +829,21 @@ impl Order {
     }
 
     pub fn set_exchange_order_id(&mut self, exchange_order_id: i64) {
-        if exchange_order_id > 0 {
-            self.exchange_order_id = Some(exchange_order_id);
+        if exchange_order_id <= 0 {
+            return;
+        }
+
+        match self.exchange_order_id {
+            None => {
+                self.exchange_order_id = Some(exchange_order_id);
+            }
+            Some(existing_order_id) if existing_order_id == exchange_order_id => {}
+            Some(existing_order_id) => {
+                warn!(
+                    "ignore mismatched exchange_order_id update: client_order_id={} local={} incoming={}",
+                    self.client_order_id, existing_order_id, exchange_order_id
+                );
+            }
         }
     }
 
@@ -874,13 +947,24 @@ impl Order {
         match self.venue {
             //币安的杠杆账户下单
             TradingVenue::BinanceMargin => {
+                let use_binance_ws_margin =
+                    self.require_binance_account_mode() == BinanceAccountMode::Standard;
+                let binance_margin_type = if use_binance_ws_margin && self.order_type.is_limit() {
+                    "LIMIT_MAKER"
+                } else {
+                    self.order_type.as_str()
+                };
+
                 let mut params_parts = vec![
                     format!("symbol={}", self.symbol),
                     format!("side={}", self.side.as_str()), //下单方向确定就可以
-                    format!("type={}", self.order_type.as_str()),
+                    format!("type={}", binance_margin_type),
                     format!("quantity={}", format_quantity(self.quantity)),
                     format!("newClientOrderId={}", self.client_order_id),
                 ];
+                if use_binance_ws_margin {
+                    params_parts.push("newOrderRespType=FULL".to_string());
+                }
                 let local_create_ts = get_timestamp_us();
                 // ===== 余额检查和日志记录 =====
                 // 提取 base asset 和 quote asset
@@ -923,9 +1007,12 @@ impl Order {
                 }
                 // ===== 余额检查结束 =====/
 
-                //margin下单不支持GTX模式，无论是否要作为maker，都是gtc
+                // WS margin: LIMIT_MAKER 作为 post-only，不传 tif。
+                // REST margin: 保持原逻辑（LIMIT + GTC）。
                 if self.order_type.is_limit() {
-                    params_parts.push("timeInForce=GTC".to_string());
+                    if !use_binance_ws_margin {
+                        params_parts.push("timeInForce=GTC".to_string());
+                    }
                     params_parts.push(format!("price={}", format_price(self.price)));
                 }
                 //如果是市价单，不需要价格和tif参数
@@ -935,7 +1022,7 @@ impl Order {
                     self.venue, self.client_order_id, params_plain
                 );
                 let params = Bytes::from(params_plain);
-                if self.require_binance_account_mode() == BinanceAccountMode::Standard {
+                if use_binance_ws_margin {
                     let request = BinanceWsNewMarginOrderRequest::create(
                         local_create_ts,
                         self.client_order_id,
