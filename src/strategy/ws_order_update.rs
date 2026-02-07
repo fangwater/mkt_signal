@@ -65,10 +65,7 @@ impl WsOrderUpdate {
         }
     }
 
-pub fn from_trade_response(
-        response: &dyn TradeEngineResponse,
-        order: &Order,
-    ) -> Option<Self> {
+    pub fn from_trade_response(response: &dyn TradeEngineResponse, order: &Order) -> Option<Self> {
         if !response.is_request_success() {
             return None;
         }

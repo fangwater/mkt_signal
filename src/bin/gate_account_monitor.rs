@@ -91,12 +91,10 @@ async fn main() -> Result<()> {
     );
 
     // 统一账户频道 (unified.asset_detail)
-    let unified_channels = vec![
-        SubscribeChannel {
-            channel: "unified.asset_detail".to_string(),
-            payload: vec!["!all".to_string()],
-        },
-    ];
+    let unified_channels = vec![SubscribeChannel {
+        channel: "unified.asset_detail".to_string(),
+        payload: vec!["!all".to_string()],
+    }];
 
     // 现货频道 (spot.orders_v2)
     let spot_channels = vec![SubscribeChannel {
@@ -105,12 +103,10 @@ async fn main() -> Result<()> {
     }];
 
     // 合约频道 (futures.orders)
-    let futures_channels = vec![
-        SubscribeChannel {
-            channel: "futures.orders".to_string(),
-            payload: vec!["!all".to_string()],
-        },
-    ];
+    let futures_channels = vec![SubscribeChannel {
+        channel: "futures.orders".to_string(),
+        payload: vec!["!all".to_string()],
+    }];
 
     // 创建事件收集通道
     let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
@@ -530,9 +526,11 @@ impl AccountEventDeduper {
             BasicAccountEventType::OrderUpdate => GateBasicOrderMsg::from_bytes(&payload)
                 .ok()
                 .map(|msg| self.key_order(&msg)),
-            BasicAccountEventType::UnrealizedPnlUpdate => BasicUmUnrealizedMsg::from_bytes(&payload)
-                .ok()
-                .map(|msg| self.key_unrealized_pnl(&msg)),
+            BasicAccountEventType::UnrealizedPnlUpdate => {
+                BasicUmUnrealizedMsg::from_bytes(&payload)
+                    .ok()
+                    .map(|msg| self.key_unrealized_pnl(&msg))
+            }
             _ => return true, // 其他类型直接转发
         };
 

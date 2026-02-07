@@ -6,7 +6,9 @@
 //! 3. 如果客户端想主动检测连接状态，可以发送应用层 ping 消息
 //!    对于统一账户，使用 "unified.ping" 频道
 
-use crate::connection::connection::{MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector};
+use crate::connection::connection::{
+    MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
+};
 use crate::portfolio_margin::gate_auth::GateCredentials;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -82,7 +84,8 @@ impl GateUserDataConnection {
             .iter()
             .map(|ch| {
                 let payload: Vec<&str> = ch.payload.iter().map(|s| s.as_str()).collect();
-                self.credentials.build_subscribe_message(&ch.channel, payload)
+                self.credentials
+                    .build_subscribe_message(&ch.channel, payload)
             })
             .collect()
     }
@@ -93,7 +96,10 @@ impl GateUserDataConnection {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        format!(r#"{{"time": {}, "channel": "{}"}}"#, timestamp, ping_channel)
+        format!(
+            r#"{{"time": {}, "channel": "{}"}}"#,
+            timestamp, ping_channel
+        )
     }
 
     /// 检查是否为 pong 响应
@@ -123,7 +129,10 @@ impl GateUserDataConnection {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
             if let Some(error) = json.get("error") {
                 let code = error.get("code").and_then(|v| v.as_i64()).unwrap_or(0);
-                let msg = error.get("message").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let msg = error
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
                 return Some(format!("code={}, msg={}", code, msg));
             }
         }
@@ -339,7 +348,8 @@ impl MktConnectionHandler for GateUserDataConnection {
                             .await;
 
                         for sub_msg in &subscribe_messages {
-                            if let Err(e) = ws_stream.send(Message::Text(sub_msg.to_string())).await {
+                            if let Err(e) = ws_stream.send(Message::Text(sub_msg.to_string())).await
+                            {
                                 error!("Gate: Failed to send subscribe message: {:?}", e);
                                 break;
                             }

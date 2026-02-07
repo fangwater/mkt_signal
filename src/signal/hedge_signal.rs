@@ -55,6 +55,9 @@ pub struct ArbHedgeCtx {
     /// Actual offset value for query-derived maker orders
     pub price_offset: f64,
 
+    /// Spread rate between opening and hedging legs
+    pub spread_rate: f64,
+
     /// From key length
     pub from_key_len: u32,
 
@@ -124,6 +127,7 @@ impl ArbHedgeCtx {
             hedging_symbol: [0u8; 32],
             market_ts: 0,
             price_offset: 0.0,
+            spread_rate: 0.0,
             from_key_len: 0,
             from_key: Vec::new(),
         }
@@ -346,6 +350,7 @@ impl SignalBytes for ArbHedgeCtx {
 
         buf.put_i64_le(self.market_ts);
         buf.put_f64_le(self.price_offset);
+        buf.put_f64_le(self.spread_rate);
 
         let from_key_len = self.from_key.len() as u32;
         buf.put_u32_le(from_key_len);
@@ -390,11 +395,12 @@ impl SignalBytes for ArbHedgeCtx {
         let hedging_ts = bytes.get_i64_le();
         let hedging_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
 
-        if bytes.remaining() < 8 + 8 + 4 {
+        if bytes.remaining() < 8 + 8 + 8 + 4 {
             return Err("Not enough bytes for ArbHedgeCtx tail".to_string());
         }
         let market_ts = bytes.get_i64_le();
         let price_offset = bytes.get_f64_le();
+        let spread_rate = bytes.get_f64_le();
         let from_key_len = bytes.get_u32_le() as usize;
         if bytes.remaining() < from_key_len {
             return Err(format!(
@@ -434,6 +440,7 @@ impl SignalBytes for ArbHedgeCtx {
             hedging_symbol,
             market_ts,
             price_offset,
+            spread_rate,
             from_key_len: from_key.len() as u32,
             from_key,
         })

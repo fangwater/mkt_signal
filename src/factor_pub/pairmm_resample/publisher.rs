@@ -5,8 +5,8 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
 
-use crate::common::mkt_msg::PairMmResampleMsg;
 use super::cfg::PairMmResampleConfig;
+use crate::common::mkt_msg::PairMmResampleMsg;
 
 const FACTOR_MAX_BYTES: usize = 256;
 const BUFFER_SIZE: usize = 8192;
@@ -44,10 +44,7 @@ impl PairMmPublisher {
 
         info!(
             "PairMmPublisher created for {}: {} (history_size={}, max_subscribers={})",
-            venue_slug,
-            service_path,
-            HISTORY_SIZE,
-            MAX_SUBSCRIBERS
+            venue_slug, service_path, HISTORY_SIZE, MAX_SUBSCRIBERS
         );
 
         Ok(Self {

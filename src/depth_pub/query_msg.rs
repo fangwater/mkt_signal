@@ -51,10 +51,7 @@ impl DepthQueryHeader {
         let symbol_len = payload[1] as usize;
         let symbol_end = HEADER_LEN + symbol_len;
         if symbol_len == 0 || symbol_end > payload.len() {
-            return Err(anyhow!(
-                "invalid depth query symbol length: {}",
-                symbol_len
-            ));
+            return Err(anyhow!("invalid depth query symbol length: {}", symbol_len));
         }
 
         let symbol = std::str::from_utf8(&payload[HEADER_LEN..symbol_end])
@@ -78,10 +75,7 @@ impl DepthQueryHeader {
             return Err(anyhow!("depth query symbol is empty"));
         }
         if symbol_len > (DEPTH_QUERY_PAYLOAD - HEADER_LEN) {
-            return Err(anyhow!(
-                "depth query symbol too long: {}",
-                symbol_len
-            ));
+            return Err(anyhow!("depth query symbol too long: {}", symbol_len));
         }
 
         buf[0] = query_type;

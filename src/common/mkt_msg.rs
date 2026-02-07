@@ -834,10 +834,7 @@ impl PairMmResampleMsg {
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < 9 {
-            bail!(
-                "PairMmResampleMsg too short: {} < 9",
-                data.len()
-            );
+            bail!("PairMmResampleMsg too short: {} < 9", data.len());
         }
         let mut cursor = Bytes::copy_from_slice(data);
         let msg_type = cursor.get_u32_le();

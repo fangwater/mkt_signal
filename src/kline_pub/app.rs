@@ -7,8 +7,8 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::info;
-use prettytable::{Cell, Row, Table};
 use prettytable::format::{FormatBuilder, LinePosition, LineSeparator};
+use prettytable::{Cell, Row, Table};
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -146,12 +146,7 @@ impl SymbolState {
         (closed, late_trade)
     }
 
-    fn close_due_bars(
-        &mut self,
-        now_us: i64,
-        period_us: i64,
-        delay_us: i64,
-    ) -> Vec<KlineBar> {
+    fn close_due_bars(&mut self, now_us: i64, period_us: i64, delay_us: i64) -> Vec<KlineBar> {
         let mut closed = Vec::new();
 
         if let Some(bar) = self.bar.take() {
@@ -188,12 +183,7 @@ impl SymbolState {
         bar
     }
 
-    fn fill_empty_until(
-        &mut self,
-        target_start_us: i64,
-        period_us: i64,
-        out: &mut Vec<KlineBar>,
-    ) {
+    fn fill_empty_until(&mut self, target_start_us: i64, period_us: i64, out: &mut Vec<KlineBar>) {
         let Some(last_start) = self.last_bar_start_us else {
             return;
         };
@@ -269,7 +259,10 @@ impl KlinePubApp {
 
         info!(
             "KlinePubApp created for {}: period={}ms, delay={}us, channel={}",
-            venue_slug, config.kline_timing.period_ms, config.kline_timing.close_delay_us, channel_label
+            venue_slug,
+            config.kline_timing.period_ms,
+            config.kline_timing.close_delay_us,
+            channel_label
         );
 
         Ok(Self {
@@ -513,10 +506,7 @@ impl KlinePubApp {
                 .cloned()
                 .unwrap_or_else(|| base.to_string());
 
-            let snapshot = self
-                .symbols
-                .get(&symbol)
-                .and_then(|state| state.snapshot());
+            let snapshot = self.symbols.get(&symbol).and_then(|state| state.snapshot());
 
             if let Some(snapshot) = snapshot {
                 let bar = snapshot.bar;

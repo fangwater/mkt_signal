@@ -80,7 +80,10 @@ fn map_gate_status(
     if matches!(status.as_str(), "open" | "new") {
         return OrderExecutionStatus::Create.to_u8();
     }
-    if matches!(status.as_str(), "finished" | "closed" | "cancelled" | "canceled") {
+    if matches!(
+        status.as_str(),
+        "finished" | "closed" | "cancelled" | "canceled"
+    ) {
         if let (Some(left), Some(total)) = (left, total) {
             if left <= 0.0 || (total > 0.0 && (executed_qty - total).abs() < 1e-9) {
                 return OrderExecutionStatus::Filled.to_u8();
@@ -99,7 +102,8 @@ pub fn parse_gate_spot_order_status_json(json: &str) -> Option<CompactOrderQuery
     let root: Value = serde_json::from_str(json).ok()?;
     let result = extract_result(&root)?;
 
-    let order_id = parse_i64_value(result.get("id")).or_else(|| parse_i64_value(result.get("order_id")))?;
+    let order_id =
+        parse_i64_value(result.get("id")).or_else(|| parse_i64_value(result.get("order_id")))?;
     let filled_total = parse_f64_value(result.get("filled_total")).unwrap_or(0.0);
     let amount = parse_f64_value(result.get("amount")).unwrap_or(0.0);
     let left = parse_f64_value(result.get("left")).unwrap_or(0.0);
@@ -144,7 +148,8 @@ pub fn parse_gate_futures_order_status_json(json: &str) -> Option<CompactOrderQu
     let root: Value = serde_json::from_str(json).ok()?;
     let result = extract_result(&root)?;
 
-    let order_id = parse_i64_value(result.get("id")).or_else(|| parse_i64_value(result.get("order_id")))?;
+    let order_id =
+        parse_i64_value(result.get("id")).or_else(|| parse_i64_value(result.get("order_id")))?;
     let size = parse_f64_value(result.get("size")).unwrap_or(0.0);
     let left = parse_f64_value(result.get("left")).unwrap_or(0.0);
     let executed_qty = (size.abs() - left.abs()).max(0.0);
@@ -154,7 +159,13 @@ pub fn parse_gate_futures_order_status_json(json: &str) -> Option<CompactOrderQu
         .get("finish_as")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let status_u8 = map_gate_status(status, finish_as, executed_qty, Some(left.abs()), Some(size.abs()));
+    let status_u8 = map_gate_status(
+        status,
+        finish_as,
+        executed_qty,
+        Some(left.abs()),
+        Some(size.abs()),
+    );
 
     let update_time_ms = parse_i64_ms(result.get("update_time"))
         .or_else(|| parse_i64_ms(result.get("finish_time")))

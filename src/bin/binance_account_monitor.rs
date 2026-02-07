@@ -5,7 +5,7 @@ use mkt_signal::common::basic_account_msg::{
     get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
     BasicPositionMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg,
 };
-use mkt_signal::common::binance_account_mode::{BinanceAccountMode, init_binance_account_mode};
+use mkt_signal::common::binance_account_mode::{init_binance_account_mode, BinanceAccountMode};
 use mkt_signal::common::mkt_cfg::{home_mkt_cfg_path, load_local_ips_from_path};
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::binance_basic_account_event_parser::BinanceBasicAccountEventParser;
@@ -388,9 +388,11 @@ impl AccountEventDeduper {
             BasicAccountEventType::BorrowInterest => BasicBorrowInterestMsg::from_bytes(&payload)
                 .ok()
                 .map(|m| self.key_borrow_interest(&m)),
-            BasicAccountEventType::UnrealizedPnlUpdate => BasicUmUnrealizedMsg::from_bytes(&payload)
-                .ok()
-                .map(|m| self.key_unrealized_pnl(&m)),
+            BasicAccountEventType::UnrealizedPnlUpdate => {
+                BasicUmUnrealizedMsg::from_bytes(&payload)
+                    .ok()
+                    .map(|m| self.key_unrealized_pnl(&m))
+            }
             BasicAccountEventType::OrderUpdate => BinanceBasicOrderMsg::from_bytes(&payload)
                 .ok()
                 .map(|m| self.key_binance_basic_order(&m)),

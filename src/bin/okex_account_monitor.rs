@@ -460,9 +460,11 @@ impl AccountEventDeduper {
             BasicAccountEventType::BorrowInterest => BasicBorrowInterestMsg::from_bytes(&payload)
                 .ok()
                 .map(|msg| self.key_okex_borrow_interest(&msg)),
-            BasicAccountEventType::UnrealizedPnlUpdate => BasicUmUnrealizedMsg::from_bytes(&payload)
-                .ok()
-                .map(|msg| self.key_okex_unrealized_pnl(&msg)),
+            BasicAccountEventType::UnrealizedPnlUpdate => {
+                BasicUmUnrealizedMsg::from_bytes(&payload)
+                    .ok()
+                    .map(|msg| self.key_okex_unrealized_pnl(&msg))
+            }
             BasicAccountEventType::Error => return true,
         };
 

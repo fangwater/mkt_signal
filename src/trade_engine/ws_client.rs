@@ -4,19 +4,19 @@ use crate::portfolio_margin::okex_auth::OkexCredentials;
 use crate::trade_engine::binance_ws;
 use crate::trade_engine::config::ApiKey;
 use crate::trade_engine::gate_ws;
+use crate::trade_engine::okex::{OkexCancelOrderRequest, OkexNewOrderRequest, OkexWsOrderResponse};
 use crate::trade_engine::query_parsers::binance_um_order::parse_binance_um_order_query_json;
 use crate::trade_engine::query_parsers::gate_order_status::{
     parse_gate_futures_order_status_json, parse_gate_spot_order_status_json,
 };
 use crate::trade_engine::query_request::{QueryRequestMsg, QueryRequestType};
 use crate::trade_engine::query_response_handle::QueryExecOutcome;
-use crate::trade_engine::okex::{OkexCancelOrderRequest, OkexNewOrderRequest, OkexWsOrderResponse};
 use crate::trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
 use crate::trade_engine::trade_response_handle::TradeExecOutcome;
 use anyhow::{anyhow, Context, Result};
-use bytes::Bytes;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use log::{debug, info, warn};
 use native_tls::TlsConnector;
@@ -567,9 +567,7 @@ impl TradeWsClient {
         if self.exchange == Exchange::Gate {
             info!(
                 "trade ws client id={} exchange={} order payload: {}",
-                self.id,
-                self.exchange,
-                payload
+                self.id, self.exchange, payload
             );
         }
         ws.send(Message::Text(payload)).await?;
@@ -585,9 +583,7 @@ impl TradeWsClient {
         if self.exchange == Exchange::Gate {
             info!(
                 "trade ws client id={} exchange={} query payload: {}",
-                self.id,
-                self.exchange,
-                payload
+                self.id, self.exchange, payload
             );
         }
         ws.send(Message::Text(payload)).await?;
@@ -1000,21 +996,16 @@ impl TradeWsClient {
             })
             .unwrap_or("");
 
-        if channel.eq_ignore_ascii_case("spot.login") || channel.eq_ignore_ascii_case("futures.login")
+        if channel.eq_ignore_ascii_case("spot.login")
+            || channel.eq_ignore_ascii_case("futures.login")
         {
             let errs = json_val
                 .get("data")
                 .and_then(|d| d.get("errs"))
                 .and_then(|v| v.as_object());
             if let Some(errs) = errs {
-                let label = errs
-                    .get("label")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let msg = errs
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let label = errs.get("label").and_then(|v| v.as_str()).unwrap_or("");
+                let msg = errs.get("message").and_then(|v| v.as_str()).unwrap_or("");
                 warn!(
                     "trade ws client id={} Gate login failed: label={} msg={}",
                     self.id, label, msg
@@ -1304,10 +1295,7 @@ impl TradeWsClient {
             })
             .unwrap_or(0);
 
-        let has_errs = val
-            .get("data")
-            .and_then(|d| d.get("errs"))
-            .is_some();
+        let has_errs = val.get("data").and_then(|d| d.get("errs")).is_some();
 
         if has_errs && (200..300).contains(&(status as u32)) {
             return 400;

@@ -42,6 +42,9 @@ pub struct ArbOpenCtx {
     /// Price offset from best bid/ask for limit order placement
     pub price_offset: f64,
 
+    /// Spread rate between opening and hedging legs
+    pub spread_rate: f64,
+
     /// Hedge timeout (microseconds)
     pub hedge_timeout_us: i64,
 
@@ -169,6 +172,7 @@ impl ArbOpenCtx {
             exp_time: 0,
             create_ts: 0,
             price_offset: 0.0,
+            spread_rate: 0.0,
             hedge_timeout_us: 0,
             from_key_len: 0,
             from_key: Vec::new(),
@@ -302,6 +306,7 @@ impl SignalBytes for ArbOpenCtx {
         buf.put_i64_le(self.exp_time);
         buf.put_i64_le(self.create_ts);
         buf.put_f64_le(self.price_offset);
+        buf.put_f64_le(self.spread_rate);
         buf.put_i64_le(self.hedge_timeout_us);
 
         let from_key_len = self.from_key.len() as u32;
@@ -312,7 +317,7 @@ impl SignalBytes for ArbOpenCtx {
     }
 
     fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
-        const TAIL_LEN: usize = 4 + 1 + 1 + 8 + 8 + 8 + 8 + 8 + 8 + 4;
+        const TAIL_LEN: usize = 4 + 1 + 1 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 4;
 
         // Opening leg
         let (opening_leg, opening_symbol) = read_leg(&mut bytes, true, "opening leg")?;
@@ -332,6 +337,7 @@ impl SignalBytes for ArbOpenCtx {
         let exp_time = bytes.get_i64_le();
         let create_ts = bytes.get_i64_le();
         let price_offset = bytes.get_f64_le();
+        let spread_rate = bytes.get_f64_le();
         let hedge_timeout_us = bytes.get_i64_le();
         let from_key_len = bytes.get_u32_le() as usize;
 
@@ -361,6 +367,7 @@ impl SignalBytes for ArbOpenCtx {
             exp_time,
             create_ts,
             price_offset,
+            spread_rate,
             hedge_timeout_us,
             from_key_len: from_key.len() as u32,
             from_key,

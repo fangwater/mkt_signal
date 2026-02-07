@@ -160,8 +160,8 @@ impl Config {
         let content = fs::read_to_string(path)
             .await
             .with_context(|| format!("read mkt cfg: {}", path))?;
-        let config_file: ConfigFile = serde_yaml::from_str(&content)
-            .with_context(|| format!("parse mkt cfg: {}", path))?;
+        let config_file: ConfigFile =
+            serde_yaml::from_str(&content).with_context(|| format!("parse mkt cfg: {}", path))?;
 
         // 构造 Config 结构体，使用默认值如果配置不存在
         let config = Config {
@@ -169,7 +169,7 @@ impl Config {
             primary_local_ip: config_file.primary_local_ip,
             secondary_local_ip: config_file.secondary_local_ip,
             data_types: config_file.data_types, // 数据类型开关
-            venue, // 从命令行参数设置
+            venue,                              // 从命令行参数设置
         };
 
         Ok(config)

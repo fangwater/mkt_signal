@@ -151,7 +151,7 @@ impl GateAccountEventParser {
         let timestamp = result
             .get("t")
             .and_then(|v| v.as_i64())
-            .map(|t| t * 1000)  // 转换为毫秒
+            .map(|t| t * 1000) // 转换为毫秒
             .unwrap_or_else(|| {
                 // 备用: 使用外层的 time_ms
                 json_value
@@ -172,7 +172,8 @@ impl GateAccountEventParser {
                 if let Ok(balance) = balance_str.parse::<f64>() {
                     let msg = BasicBalanceMsg::create(timestamp, symbol.clone(), balance);
                     let payload = msg.to_bytes();
-                    let event = BasicAccountEventMsg::create(BasicAccountEventType::BalanceUpdate, payload);
+                    let event =
+                        BasicAccountEventMsg::create(BasicAccountEventType::BalanceUpdate, payload);
                     if tx.send(event.to_bytes()).is_ok() {
                         count += 1;
                     }
@@ -188,10 +189,13 @@ impl GateAccountEventParser {
                             timestamp,
                             symbol.clone(),
                             borrowed,
-                            0.0,  // Gate.io 不在此消息中提供利息，设为 0
+                            0.0, // Gate.io 不在此消息中提供利息，设为 0
                         );
                         let payload = msg.to_bytes();
-                        let event = BasicAccountEventMsg::create(BasicAccountEventType::BorrowInterest, payload);
+                        let event = BasicAccountEventMsg::create(
+                            BasicAccountEventType::BorrowInterest,
+                            payload,
+                        );
                         if tx.send(event.to_bytes()).is_ok() {
                             count += 1;
                         }
@@ -241,15 +245,18 @@ impl GateAccountEventParser {
                 .to_string();
 
             let side = GateBasicOrderMsg::side_to_u8(
-                order.get("side").and_then(|v| v.as_str()).unwrap_or("")
+                order.get("side").and_then(|v| v.as_str()).unwrap_or(""),
             );
 
             let order_type = GateBasicOrderMsg::order_type_to_u8(
-                order.get("type").and_then(|v| v.as_str()).unwrap_or("")
+                order.get("type").and_then(|v| v.as_str()).unwrap_or(""),
             );
 
             let time_in_force = GateBasicOrderMsg::time_in_force_to_u8(
-                order.get("time_in_force").and_then(|v| v.as_str()).unwrap_or("")
+                order
+                    .get("time_in_force")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(""),
             );
 
             // spot: maker/taker 推断（按需求：poc 一定是 taker；否则使用 create/update ms 判断是否立即成交）
@@ -277,7 +284,10 @@ impl GateAccountEventParser {
             };
 
             let event = order.get("event").and_then(|v| v.as_str()).unwrap_or("");
-            let finish_as = order.get("finish_as").and_then(|v| v.as_str()).unwrap_or("");
+            let finish_as = order
+                .get("finish_as")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let (execution_type, order_status) =
                 GateBasicOrderMsg::event_to_execution_and_status(event, finish_as);
 
@@ -339,7 +349,8 @@ impl GateAccountEventParser {
             );
 
             let payload = msg.to_bytes();
-            let event_msg = BasicAccountEventMsg::create(BasicAccountEventType::OrderUpdate, payload);
+            let event_msg =
+                BasicAccountEventMsg::create(BasicAccountEventType::OrderUpdate, payload);
             if tx.send(event_msg.to_bytes()).is_ok() {
                 count += 1;
             }
@@ -381,10 +392,7 @@ impl GateAccountEventParser {
             };
 
             // 解析 order_id
-            let order_id: i64 = order
-                .get("id")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
+            let order_id: i64 = order.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
 
             // 解析 symbol (contract)
             let symbol = order
@@ -422,7 +430,7 @@ impl GateAccountEventParser {
 
             // 解析 time_in_force
             let time_in_force = GateBasicOrderMsg::time_in_force_to_u8(
-                order.get("tif").and_then(|v| v.as_str()).unwrap_or("gtc")
+                order.get("tif").and_then(|v| v.as_str()).unwrap_or("gtc"),
             );
 
             // futures: maker/taker 推断（同 spot：优先使用 ms 版本的时间字段）
@@ -446,7 +454,10 @@ impl GateAccountEventParser {
 
             // 解析 status 和 finish_as
             let status = order.get("status").and_then(|v| v.as_str()).unwrap_or("");
-            let finish_as = order.get("finish_as").and_then(|v| v.as_str()).unwrap_or("");
+            let finish_as = order
+                .get("finish_as")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let (execution_type, order_status) =
                 GateBasicOrderMsg::event_to_execution_and_status(status, finish_as);
 
@@ -475,7 +486,8 @@ impl GateAccountEventParser {
             );
 
             let payload = msg.to_bytes();
-            let event_msg = BasicAccountEventMsg::create(BasicAccountEventType::OrderUpdate, payload);
+            let event_msg =
+                BasicAccountEventMsg::create(BasicAccountEventType::OrderUpdate, payload);
             if tx.send(event_msg.to_bytes()).is_ok() {
                 count += 1;
             }

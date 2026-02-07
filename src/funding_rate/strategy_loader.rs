@@ -207,10 +207,7 @@ impl StrategyParams {
             }
             None => {
                 if require_max_hedge_pct {
-                    panic!(
-                        "Redis hash '{}' 缺少 max_hedge_price_pct_change",
-                        redis_key
-                    );
+                    panic!("Redis hash '{}' 缺少 max_hedge_price_pct_change", redis_key);
                 }
                 default_max_hedge_price_pct_change()
             }
@@ -272,14 +269,14 @@ impl StrategyParams {
         .is_some()
             || XarbDecision::try_with_mut(|decision| {
                 decision.update_order_amount(self.order_amount);
-            decision.update_price_offsets(self.parse_price_offsets());
-            decision.update_open_order_timeout(self.open_order_timeout);
-            decision.update_hedge_timeout(self.hedge_timeout);
-            decision.update_hedge_price_offset(self.hedge_price_offset);
-            decision.update_hedge_aggressive_seq_threshold(self.hedge_aggressive_seq_threshold);
-            decision.update_max_hedge_price_pct_change(self.max_hedge_price_pct_change);
-            decision.update_signal_cooldown(self.signal_cooldown);
-        })
+                decision.update_price_offsets(self.parse_price_offsets());
+                decision.update_open_order_timeout(self.open_order_timeout);
+                decision.update_hedge_timeout(self.hedge_timeout);
+                decision.update_hedge_price_offset(self.hedge_price_offset);
+                decision.update_hedge_aggressive_seq_threshold(self.hedge_aggressive_seq_threshold);
+                decision.update_max_hedge_price_pct_change(self.max_hedge_price_pct_change);
+                decision.update_signal_cooldown(self.signal_cooldown);
+            })
             .is_some();
 
         // 2. 更新 SpreadFactor 模式

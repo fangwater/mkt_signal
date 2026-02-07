@@ -51,8 +51,7 @@ impl QueryTypeMapping {
             QueryRequestType::OkexPositionsSnapshot => "/api/v5/account/positions",
             QueryRequestType::GateUnifiedBalanceSnapshot => "/api/v4/unified/accounts",
             QueryRequestType::GateUnifiedPositionsSnapshot => "/api/v4/futures/usdt/positions",
-            QueryRequestType::GateUnifiedOrderQuery
-            | QueryRequestType::GateFuturesOrderQuery => {
+            QueryRequestType::GateUnifiedOrderQuery | QueryRequestType::GateFuturesOrderQuery => {
                 unreachable!("Gate order queries run via websocket; REST mapping not used")
             }
         }
@@ -75,8 +74,7 @@ impl QueryTypeMapping {
             QueryRequestType::BinanceWsUMQuery => {
                 unreachable!("Binance ws queries run via websocket; REST mapping not used")
             }
-            QueryRequestType::GateUnifiedOrderQuery
-            | QueryRequestType::GateFuturesOrderQuery => {
+            QueryRequestType::GateUnifiedOrderQuery | QueryRequestType::GateFuturesOrderQuery => {
                 unreachable!("Gate order queries run via websocket; REST mapping not used")
             }
         }
@@ -98,8 +96,7 @@ impl QueryTypeMapping {
             QueryRequestType::OkexPositionsSnapshot => 1,
             QueryRequestType::GateUnifiedBalanceSnapshot => 1,
             QueryRequestType::GateUnifiedPositionsSnapshot => 1,
-            QueryRequestType::GateUnifiedOrderQuery
-            | QueryRequestType::GateFuturesOrderQuery => {
+            QueryRequestType::GateUnifiedOrderQuery | QueryRequestType::GateFuturesOrderQuery => {
                 unreachable!("Gate order queries run via websocket; REST mapping not used")
             }
         }

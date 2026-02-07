@@ -1,8 +1,8 @@
 use anyhow::bail;
 use clap::Parser;
 use mkt_signal::app::MktSignalApp;
-use mkt_signal::common::mkt_cfg::home_mkt_cfg_path;
 use mkt_signal::cfg::Config;
+use mkt_signal::common::mkt_cfg::home_mkt_cfg_path;
 use mkt_signal::signal::common::TradingVenue;
 use std::path::PathBuf;
 
@@ -41,8 +41,5 @@ fn resolve_cfg_path() -> anyhow::Result<PathBuf> {
     if home_path.exists() {
         return Ok(home_path);
     }
-    bail!(
-        "mkt_cfg.yaml not found at {}",
-        home_path.display()
-    );
+    bail!("mkt_cfg.yaml not found at {}", home_path.display());
 }

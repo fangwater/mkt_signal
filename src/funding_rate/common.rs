@@ -193,6 +193,18 @@ impl Quote {
     }
 }
 
+/// 计算开仓腿与对冲腿的中间价价差率
+/// spread_rate = (mid_open - mid_hedge) / mid_open
+pub fn compute_spread_rate(open_quote: &Quote, hedge_quote: &Quote) -> f64 {
+    let open_mid = (open_quote.bid + open_quote.ask) / 2.0;
+    let hedge_mid = (hedge_quote.bid + hedge_quote.ask) / 2.0;
+    if open_mid > 0.0 {
+        (open_mid - hedge_mid) / open_mid
+    } else {
+        0.0
+    }
+}
+
 /// Funding Rate 数据（维护60条 + rolling sum/mean）
 #[derive(Debug, Clone)]
 pub struct FundingRateData {

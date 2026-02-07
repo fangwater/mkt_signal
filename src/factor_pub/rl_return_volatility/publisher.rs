@@ -9,8 +9,8 @@ use log::{info, warn};
 use redis::Commands;
 use std::time::{Duration, Instant};
 
-use crate::common::redis_client::RedisSettings;
 use crate::common::mkt_msg::RlReturnVolatilityMsg;
+use crate::common::redis_client::RedisSettings;
 
 const FACTOR_MAX_BYTES: usize = 256;
 const FACTOR_NAME: &str = "rl_return_volatility";
@@ -85,10 +85,7 @@ pub struct FactorPublisher {
 
 impl FactorPublisher {
     pub fn new(venue_slug: &str) -> Result<Self> {
-        let node_name = format!(
-            "factor_pub_{}_rl_return_vol",
-            venue_slug.replace('-', "_")
-        );
+        let node_name = format!("factor_pub_{}_rl_return_vol", venue_slug.replace('-', "_"));
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;

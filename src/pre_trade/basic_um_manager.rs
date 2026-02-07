@@ -96,10 +96,7 @@ impl BasicUmManager {
 
     /// 汇总合约未实现盈亏（USDT 计价）。
     pub fn total_unrealized_pnl_usdt(&self) -> f64 {
-        self.positions
-            .values()
-            .map(|p| p.unrealized_pnl_usdt)
-            .sum()
+        self.positions.values().map(|p| p.unrealized_pnl_usdt).sum()
     }
 
     /// 计算指定 inst_id 的净持仓张数（long - short）

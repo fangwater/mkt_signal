@@ -1,7 +1,7 @@
+use crate::common::binance_account_mode::{binance_account_mode, BinanceAccountMode};
 use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
-use crate::common::binance_account_mode::{binance_account_mode, BinanceAccountMode};
 use crate::trade_engine::config::{ApiKey, WsConstants};
 use crate::trade_engine::dispatcher::Dispatcher;
 use crate::trade_engine::query_parsers::binance_margin_order::parse_binance_margin_order_query_json;
@@ -199,8 +199,9 @@ impl TradeEngine {
         }
         let mut worker_handles: Vec<(&'static str, tokio::task::JoinHandle<()>)> = Vec::new();
 
-        let mut gate_futures_ws_endpoints: Option<Vec<tokio::sync::mpsc::UnboundedSender<WsCommand>>> =
-            None;
+        let mut gate_futures_ws_endpoints: Option<
+            Vec<tokio::sync::mpsc::UnboundedSender<WsCommand>>,
+        > = None;
 
         let ws_endpoints = if exchange == Exchange::Okex {
             let mut local_ips = self.local_ips.clone();
@@ -1133,10 +1134,7 @@ impl TradeEngine {
                             let qs = std::str::from_utf8(&msg.params).unwrap_or("");
 
                             match crate::trade_engine::gate_query::gate_rest_get(
-                                &gate_http,
-                                creds,
-                                endpoint,
-                                qs,
+                                &gate_http, creds, endpoint, qs,
                             )
                             .await
                             {

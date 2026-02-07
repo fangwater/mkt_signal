@@ -281,11 +281,12 @@ fn handle_trade_signal(signal: TradeSignal) {
                     };
                     let from_key = String::from_utf8_lossy(&open_ctx.from_key);
                     info!(
-                        "🔔 收到 ArbOpen 信号({}): opening={} {:?} side={:?} price={:.6} hedging={} {:?} | amount={:.4} hedge_timeout_us={} from_key='{}'",
+                        "🔔 收到 ArbOpen 信号({}): opening={} {:?} side={:?} price={:.6} hedging={} {:?} | amount={:.4} hedge_timeout_us={} spread_rate={:.6} from_key='{}'",
                         hedge_mode,
                         symbol, opening_venue, side, open_ctx.price,
                         hedging_symbol, hedging_venue,
                         open_ctx.amount, open_ctx.hedge_timeout_us,
+                        open_ctx.spread_rate,
                         from_key
                     );
                     info!(
@@ -535,7 +536,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                 }
 
                 info!(
-                    "🔔 收到 ArbHedge 信号: strategy_id={} hedging={} {:?} | side={:?} qty={:.4} price={:.6} is_maker={} from_key='{}'",
+                    "🔔 收到 ArbHedge 信号: strategy_id={} hedging={} {:?} | side={:?} qty={:.4} price={:.6} is_maker={} spread_rate={:.6} from_key='{}'",
                     strategy_id,
                     hedging_symbol,
                     hedging_venue,
@@ -543,6 +544,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     hedge_ctx.hedge_qty,
                     hedge_price,
                     hedge_ctx.is_maker(),
+                    hedge_ctx.spread_rate,
                     from_key
                 );
 

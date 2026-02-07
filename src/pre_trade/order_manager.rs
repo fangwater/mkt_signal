@@ -106,9 +106,9 @@ fn okex_order_type_from_order_type(order_type: OrderType) -> Result<OkexOrderTyp
     }
 }
 
+use crate::common::binance_account_mode::BinanceAccountMode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use crate::common::binance_account_mode::BinanceAccountMode;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Side {
@@ -303,9 +303,7 @@ impl OrderType {
     pub fn is_limit(&self) -> bool {
         matches!(
             self,
-            OrderType::Limit
-                | OrderType::StopLossLimit
-                | OrderType::TakeProfitLimit
+            OrderType::Limit | OrderType::StopLossLimit | OrderType::TakeProfitLimit
         )
     }
 
@@ -532,7 +530,6 @@ impl OrderManager {
         );
     }
 }
-
 
 #[derive(Debug, Clone)]
 pub struct OrderTimeStamp {
@@ -837,8 +834,11 @@ impl Order {
                     );
                     Ok(request.to_bytes())
                 } else {
-                    let request =
-                        BinanceNewUMOrderRequest::create(local_create_ts, self.client_order_id, params);
+                    let request = BinanceNewUMOrderRequest::create(
+                        local_create_ts,
+                        self.client_order_id,
+                        params,
+                    );
                     Ok(request.to_bytes())
                 }
             }
@@ -895,10 +895,7 @@ impl Order {
                 req_param.insert("account".to_string(), json!("unified"));
                 req_param.insert("auto_borrow".to_string(), json!(true));
                 req_param.insert("side".to_string(), json!(self.side.as_str_lower()));
-                req_param.insert(
-                    "amount".to_string(),
-                    json!(format_quantity(self.quantity)),
-                );
+                req_param.insert("amount".to_string(), json!(format_quantity(self.quantity)));
                 if self.order_type.is_limit() {
                     req_param.insert("price".to_string(), json!(format_price(self.price)));
                 }

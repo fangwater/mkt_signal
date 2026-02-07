@@ -184,7 +184,11 @@ impl SignalBytes for ArbCancelCtx {
     }
 
     fn from_bytes(bytes: Bytes) -> Result<Self, String> {
-        fn detect_legacy_format(bytes: &Bytes, base_offset: usize, tail_len: usize) -> Option<bool> {
+        fn detect_legacy_format(
+            bytes: &Bytes,
+            base_offset: usize,
+            tail_len: usize,
+        ) -> Option<bool> {
             let total = bytes.len();
             let mut new_match = false;
             let mut old_match = false;

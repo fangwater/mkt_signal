@@ -47,17 +47,32 @@ pub struct DepthMsg {
 
 impl DepthMsg {
     /// 创建 Depth5 消息
-    pub fn depth5(symbol: String, timestamp: i64, bids: Vec<(f64, f64)>, asks: Vec<(f64, f64)>) -> Self {
+    pub fn depth5(
+        symbol: String,
+        timestamp: i64,
+        bids: Vec<(f64, f64)>,
+        asks: Vec<(f64, f64)>,
+    ) -> Self {
         Self::new(DepthMsgType::Depth5, symbol, timestamp, bids, asks, 5)
     }
 
     /// 创建 Depth20 消息
-    pub fn depth20(symbol: String, timestamp: i64, bids: Vec<(f64, f64)>, asks: Vec<(f64, f64)>) -> Self {
+    pub fn depth20(
+        symbol: String,
+        timestamp: i64,
+        bids: Vec<(f64, f64)>,
+        asks: Vec<(f64, f64)>,
+    ) -> Self {
         Self::new(DepthMsgType::Depth20, symbol, timestamp, bids, asks, 20)
     }
 
     /// 创建 Depth50 消息
-    pub fn depth50(symbol: String, timestamp: i64, bids: Vec<(f64, f64)>, asks: Vec<(f64, f64)>) -> Self {
+    pub fn depth50(
+        symbol: String,
+        timestamp: i64,
+        bids: Vec<(f64, f64)>,
+        asks: Vec<(f64, f64)>,
+    ) -> Self {
         Self::new(DepthMsgType::Depth50, symbol, timestamp, bids, asks, 50)
     }
 

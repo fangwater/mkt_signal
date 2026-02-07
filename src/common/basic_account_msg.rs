@@ -703,7 +703,7 @@ impl GateBasicOrderMsg {
                     "stp" => (7, 4),                    // TradePrevention, Canceled
 
                     // IOC/ADL 特殊完成
-                    "ioc" => (5, 3),              // IOC 立即完成视为 Trade, Filled
+                    "ioc" => (5, 3),               // IOC 立即完成视为 Trade, Filled
                     "auto_deleveraging" => (5, 3), // ADL 完成视为 Trade, Filled
 
                     // 其他未知情况
@@ -723,7 +723,7 @@ impl GateBasicOrderMsg {
             + 8 * 2  // order_id, client_order_id
             + 1 * 6  // side, order_type, time_in_force, execution_type, order_status, is_maker
             + 8 * 4  // price, quantity, cumulative_filled_quantity, last_executed_price
-            + 4 + self.commission_asset_length as usize;  // commission_asset
+            + 4 + self.commission_asset_length as usize; // commission_asset
 
         let mut buf = BytesMut::with_capacity(total_size);
         buf.put_u32_le(self.msg_type as u32);
@@ -798,8 +798,11 @@ impl GateBasicOrderMsg {
         if cursor.remaining() < commission_asset_length as usize {
             anyhow::bail!("GateBasicOrderMsg truncated before commission_asset");
         }
-        let commission_asset =
-            String::from_utf8(cursor.copy_to_bytes(commission_asset_length as usize).to_vec())?;
+        let commission_asset = String::from_utf8(
+            cursor
+                .copy_to_bytes(commission_asset_length as usize)
+                .to_vec(),
+        )?;
 
         Ok(Self {
             msg_type: BasicAccountEventType::OrderUpdate,

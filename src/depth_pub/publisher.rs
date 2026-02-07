@@ -8,7 +8,7 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
 
-use super::depth_msg::{DepthMsg, DEPTH5_MAX_BYTES, DEPTH20_MAX_BYTES, DEPTH50_MAX_BYTES};
+use super::depth_msg::{DepthMsg, DEPTH20_MAX_BYTES, DEPTH50_MAX_BYTES, DEPTH5_MAX_BYTES};
 
 /// Depth Message Publisher
 pub struct DepthMsgPublisher {
@@ -150,11 +150,7 @@ impl DepthMsgPublisher {
         max_size: usize,
     ) -> bool {
         if msg.len() > max_size {
-            warn!(
-                "Message size {} exceeds max size {}",
-                msg.len(),
-                max_size
-            );
+            warn!("Message size {} exceeds max size {}", msg.len(), max_size);
             return false;
         }
 
@@ -179,7 +175,11 @@ impl DepthMsgPublisher {
     pub fn log_stats(&mut self) {
         info!(
             "DepthMsgPublisher[{}] stats: depth5={}, depth20={}, depth50={}, dropped={}",
-            self.venue_slug, self.depth5_count, self.depth20_count, self.depth50_count, self.dropped_count
+            self.venue_slug,
+            self.depth5_count,
+            self.depth20_count,
+            self.depth50_count,
+            self.dropped_count
         );
         self.depth5_count = 0;
         self.depth20_count = 0;

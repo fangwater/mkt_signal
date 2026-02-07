@@ -215,13 +215,12 @@ fn venue_from_slug(raw: &str) -> Option<TradingVenue> {
 }
 
 async fn load_config(path: &str) -> Result<AppCfg> {
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("read config failed: {}", path))?;
-    let cfg: ManualMmConfig = serde_yaml::from_str(&raw)
-        .with_context(|| format!("parse yaml failed: {}", path))?;
+    let raw = fs::read_to_string(path).with_context(|| format!("read config failed: {}", path))?;
+    let cfg: ManualMmConfig =
+        serde_yaml::from_str(&raw).with_context(|| format!("parse yaml failed: {}", path))?;
 
-    let venue = venue_from_slug(&cfg.venue)
-        .with_context(|| format!("invalid venue: {}", cfg.venue))?;
+    let venue =
+        venue_from_slug(&cfg.venue).with_context(|| format!("invalid venue: {}", cfg.venue))?;
     let port = cfg.port.unwrap_or(DEFAULT_PORT);
     let bind = cfg.bind.unwrap_or_else(|| DEFAULT_BIND.to_string());
     let signal_channel = DEFAULT_SIGNAL_CHANNEL.to_string();
@@ -240,7 +239,10 @@ async fn load_config(path: &str) -> Result<AppCfg> {
         .await
         .with_context(|| format!("read redis hash failed: {}", params_key))?;
     if params.is_empty() {
-        anyhow::bail!("redis hash '{}' is empty; run scripts/sync_mm_strategy_params.py", params_key);
+        anyhow::bail!(
+            "redis hash '{}' is empty; run scripts/sync_mm_strategy_params.py",
+            params_key
+        );
     }
 
     let order_amount_u = parse_required_f64(&params, "order_amount")?;
@@ -359,10 +361,9 @@ async fn symbol_list_reload_loop(
 
 fn min_qty_symbol_key(venue: TradingVenue, symbol: &str) -> String {
     match venue {
-        TradingVenue::OkexMargin | TradingVenue::OkexFutures => symbol
-            .to_uppercase()
-            .replace("-SWAP", "")
-            .replace('-', ""),
+        TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
+            symbol.to_uppercase().replace("-SWAP", "").replace('-', "")
+        }
         TradingVenue::GateMargin | TradingVenue::GateFutures => {
             symbol.to_uppercase().replace('_', "").replace('-', "")
         }
@@ -572,7 +573,11 @@ fn build_mm_hedge_ctx(
         .context("quote unavailable")?;
 
     let net_qty = query.net_qty;
-    let side = if net_qty >= 0.0 { Side::Sell } else { Side::Buy };
+    let side = if net_qty >= 0.0 {
+        Side::Sell
+    } else {
+        Side::Buy
+    };
 
     let base_price = match side {
         Side::Buy => quote.bid,
@@ -595,8 +600,7 @@ fn build_mm_hedge_ctx(
         );
     }
 
-    let price_tick_exp =
-        tick_to_exp(price_tick).context("price_tick is not power-of-10")?;
+    let price_tick_exp = tick_to_exp(price_tick).context("price_tick is not power-of-10")?;
     let qty_tick_exp = tick_to_exp(qty_tick).context("qty_tick is not power-of-10")?;
 
     let mut price_list: Vec<i32> = Vec::with_capacity(cfg.price_offsets.len());
@@ -611,14 +615,9 @@ fn build_mm_hedge_ctx(
             continue;
         }
         let raw_qty = cfg.order_amount_u / raw_price;
-        let (aligned_qty, aligned_price) = align_order_for_venue(
-            cfg.venue,
-            &symbol_key,
-            raw_qty,
-            raw_price,
-            &table_guard,
-        )
-        .map_err(anyhow::Error::msg)?;
+        let (aligned_qty, aligned_price) =
+            align_order_for_venue(cfg.venue, &symbol_key, raw_qty, raw_price, &table_guard)
+                .map_err(anyhow::Error::msg)?;
 
         let price_level = (aligned_price / price_tick).round() as i32;
         let amount_level = (aligned_qty / qty_tick).round() as i64;
@@ -909,14 +908,9 @@ fn build_and_publish_open(
                 continue;
             }
 
-            let (aligned_qty, aligned_price) = align_order_for_venue(
-                cfg.venue,
-                &symbol_key,
-                raw_qty,
-                raw_price,
-                &table_guard,
-            )
-            .map_err(anyhow::Error::msg)?;
+            let (aligned_qty, aligned_price) =
+                align_order_for_venue(cfg.venue, &symbol_key, raw_qty, raw_price, &table_guard)
+                    .map_err(anyhow::Error::msg)?;
 
             let mut ctx = MmOpenCtx::new();
             ctx.opening_leg = TradingLeg::new(cfg.venue, req.bid, req.ask, req.quote_ts);

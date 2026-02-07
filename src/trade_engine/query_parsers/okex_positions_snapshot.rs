@@ -68,9 +68,7 @@ pub fn parse_okex_positions_snapshot(json: &str) -> Option<Vec<Bytes>> {
         };
         let ts = parse_i64(&row.u_time).unwrap_or(chrono::Utc::now().timestamp_millis());
         let side = pos_side_char(&row.pos_side);
-        out.push(
-            BasicPositionMsg::create(ts, row.inst_id.clone(), side, pos).to_bytes(),
-        );
+        out.push(BasicPositionMsg::create(ts, row.inst_id.clone(), side, pos).to_bytes());
         if let Some(upl) = parse_f32(&row.upl) {
             let pnl = upl as f64;
             if pnl.abs() > 0.0 {

@@ -38,14 +38,7 @@ pub async fn gate_rest_get(
     query: &str,
 ) -> Result<(u16, String)> {
     let ts = Utc::now().timestamp();
-    let sign = sign_gate_request(
-        &credentials.secret_key,
-        "GET",
-        path,
-        query,
-        "",
-        ts,
-    );
+    let sign = sign_gate_request(&credentials.secret_key, "GET", path, query, "", ts);
 
     let mut url = format!("{}{}", GATE_REST_BASE, path);
     if !query.is_empty() {

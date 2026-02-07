@@ -284,8 +284,7 @@ impl OkexDerivativesMetricsParser {
                         (mark_px_str.parse::<f64>(), timestamp_str.parse::<i64>())
                     {
                         // Create mark price message
-                        let mark_price_msg =
-                            MarkPriceMsg::create(symbol, mark_price, timestamp);
+                        let mark_price_msg = MarkPriceMsg::create(symbol, mark_price, timestamp);
 
                         // Send mark price message
                         if tx.send(mark_price_msg.to_bytes()).is_ok() {
@@ -374,8 +373,7 @@ impl OkexDerivativesMetricsParser {
                         (idx_px_str.parse::<f64>(), timestamp_str.parse::<i64>())
                     {
                         // Create index price message
-                        let index_price_msg =
-                            IndexPriceMsg::create(symbol, index_price, timestamp);
+                        let index_price_msg = IndexPriceMsg::create(symbol, index_price, timestamp);
 
                         // Send index price message
                         if tx.send(index_price_msg.to_bytes()).is_ok() {
@@ -463,8 +461,7 @@ impl OkexTradeParser {
                 };
 
                 // Create trade message
-                let trade_msg =
-                    TradeMsg::create(symbol, trade_id, timestamp, side, price, amount);
+                let trade_msg = TradeMsg::create(symbol, trade_id, timestamp, side, price, amount);
 
                 // Send trade message
                 if tx.send(trade_msg.to_bytes()).is_ok() {
@@ -558,11 +555,8 @@ impl Parser for OkexAskBidSpreadParser {
                                                             // Create spread message
                                                             let spread_msg =
                                                                 AskBidSpreadMsg::create(
-                                                                    symbol,
-                                                                    timestamp,
-                                                                    bid_price,
-                                                                    bid_amount,
-                                                                    ask_price,
+                                                                    symbol, timestamp, bid_price,
+                                                                    bid_amount, ask_price,
                                                                     ask_amount,
                                                                 );
 
@@ -658,7 +652,9 @@ fn split_levels(
                     bids_remaining
                 } else {
                     let ratio = bids_remaining as f64 / remaining as f64;
-                    ((max as f64 * ratio).round() as usize).max(1).min(bids_remaining)
+                    ((max as f64 * ratio).round() as usize)
+                        .max(1)
+                        .min(bids_remaining)
                 };
                 let chunk_asks = (max - chunk_bids).min(asks_remaining);
 

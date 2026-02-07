@@ -1986,9 +1986,7 @@ impl RateFetcher {
             {
                 missing_fr.push(sym.clone());
             }
-            if require_loan
-                && Self::instance().get_predict_loan_rate(sym, venue).is_none()
-            {
+            if require_loan && Self::instance().get_predict_loan_rate(sym, venue).is_none() {
                 missing_loan.push(sym.clone());
             }
         }
@@ -2077,10 +2075,7 @@ impl RateFetcher {
             if state.initial_ready {
                 return None;
             }
-            let reason = state
-                .last_not_ready_reason
-                .as_deref()
-                .unwrap_or("unknown");
+            let reason = state.last_not_ready_reason.as_deref().unwrap_or("unknown");
             let symbol = state.last_not_ready_symbol.as_deref().unwrap_or("-");
             let mut detail = format!("reason={} symbol={}", reason, symbol);
             if state.last_missing_fr > 0 || state.last_missing_loan > 0 {

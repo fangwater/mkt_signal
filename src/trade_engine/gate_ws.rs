@@ -18,7 +18,13 @@ const CHANNEL_FUTURES_ORDER_CANCEL: &str = "futures.order_cancel";
 const CHANNEL_FUTURES_ORDER_STATUS: &str = "futures.order_status";
 const EVENT_API: &str = "api";
 
-fn sign_ws_api(secret: &str, event: &str, channel: &str, req_param: &str, timestamp: i64) -> String {
+fn sign_ws_api(
+    secret: &str,
+    event: &str,
+    channel: &str,
+    req_param: &str,
+    timestamp: i64,
+) -> String {
     let sign_str = format!("{event}\n{channel}\n{req_param}\n{timestamp}");
     let mut mac = HmacSha512::new_from_slice(secret.as_bytes()).expect("invalid secret");
     mac.update(sign_str.as_bytes());
@@ -101,16 +107,11 @@ pub fn build_api_payload(msg: &TradeRequestMsg) -> Result<String> {
         TradeRequestType::GateUnifiedCancelOrder => CHANNEL_SPOT_ORDER_CANCEL,
         TradeRequestType::GateFuturesNewOrder => CHANNEL_FUTURES_ORDER_PLACE,
         TradeRequestType::GateFuturesCancelOrder => CHANNEL_FUTURES_ORDER_CANCEL,
-        _ => {
-            return Err(anyhow!(
-                "unsupported gate request type: {:?}",
-                msg.req_type
-            ))
-        }
+        _ => return Err(anyhow!("unsupported gate request type: {:?}", msg.req_type)),
     };
 
-    let mut req_param: Value = serde_json::from_slice(&msg.params)
-        .with_context(|| "invalid gate req_param json")?;
+    let mut req_param: Value =
+        serde_json::from_slice(&msg.params).with_context(|| "invalid gate req_param json")?;
     if matches!(
         msg.req_type,
         TradeRequestType::GateUnifiedNewOrder | TradeRequestType::GateFuturesNewOrder
@@ -135,16 +136,11 @@ pub fn build_query_payload(msg: &QueryRequestMsg) -> Result<String> {
     let channel = match msg.req_type {
         QueryRequestType::GateUnifiedOrderQuery => CHANNEL_SPOT_ORDER_STATUS,
         QueryRequestType::GateFuturesOrderQuery => CHANNEL_FUTURES_ORDER_STATUS,
-        _ => {
-            return Err(anyhow!(
-                "unsupported gate query type: {:?}",
-                msg.req_type
-            ))
-        }
+        _ => return Err(anyhow!("unsupported gate query type: {:?}", msg.req_type)),
     };
 
-    let req_param: Value = serde_json::from_slice(&msg.params)
-        .with_context(|| "invalid gate query req_param json")?;
+    let req_param: Value =
+        serde_json::from_slice(&msg.params).with_context(|| "invalid gate query req_param json")?;
 
     let ts_s = chrono::Utc::now().timestamp();
     let payload = json!({

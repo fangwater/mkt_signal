@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use super::cfg::RlReturnVolatilityConfig;
 use super::publisher::FactorPublisher;
-use crate::common::mkt_msg::RlReturnVolatilityMsg;
 use crate::common::mkt_msg::MktMsgType;
+use crate::common::mkt_msg::RlReturnVolatilityMsg;
 use crate::common::symbol_util::extract_assets_from_symbol;
 
 const KLINE_MAX_BYTES: usize = 128;
@@ -268,10 +268,7 @@ fn read_f64(data: &[u8], offset: &mut usize) -> Option<f64> {
     Some(value)
 }
 
-fn compute_factor(
-    closes: &VecDeque<f64>,
-    cfg: &RlReturnVolatilityConfig,
-) -> Result<Option<f64>> {
+fn compute_factor(closes: &VecDeque<f64>, cfg: &RlReturnVolatilityConfig) -> Result<Option<f64>> {
     let required = cfg.min_required_len();
     if closes.len() < required {
         return Ok(None);

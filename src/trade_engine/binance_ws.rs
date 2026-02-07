@@ -189,10 +189,7 @@ pub fn extract_order_info(resp: &BinanceWsResponse) -> (i64, u8, i64, f64) {
     let Some(result) = resp.result.as_ref() else {
         return (0, 0, 0, 0.0);
     };
-    let order_id = result
-        .get("orderId")
-        .and_then(parse_i64_value)
-        .unwrap_or(0);
+    let order_id = result.get("orderId").and_then(parse_i64_value).unwrap_or(0);
     let status_u8 = result
         .get("status")
         .and_then(|v| v.as_str())

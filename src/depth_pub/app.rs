@@ -119,7 +119,10 @@ impl DepthPubApp {
 
         // 创建订阅器
         let subscriber = Self::create_subscriber(publisher.node(), venue_slug)?;
-        info!("Subscribed to incremental channel: data_pubs/{}/incremental", venue_slug);
+        info!(
+            "Subscribed to incremental channel: data_pubs/{}/incremental",
+            venue_slug
+        );
 
         let query_subscriber = Self::create_query_subscriber(publisher.node(), venue_slug)?;
         let query_publisher = Self::create_query_publisher(publisher.node(), venue_slug)?;
@@ -310,13 +313,19 @@ impl DepthPubApp {
         if data.len() < offset + 8 {
             return;
         }
-        let bids_count =
-            u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]])
-                as usize;
+        let bids_count = u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]) as usize;
         offset += 4;
-        let asks_count =
-            u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]])
-                as usize;
+        let asks_count = u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]) as usize;
         offset += 4;
 
         // 解析 levels
@@ -381,7 +390,10 @@ impl DepthPubApp {
         }
 
         // 更新订单簿
-        let state = self.symbols.entry(symbol.clone()).or_insert_with(SymbolState::new);
+        let state = self
+            .symbols
+            .entry(symbol.clone())
+            .or_insert_with(SymbolState::new);
 
         // 滑动窗口去重：检查 (update_id, chunk_index) 是否已处理过
         if state.is_duplicate(final_update_id, chunk_index) {
@@ -393,10 +405,17 @@ impl DepthPubApp {
         }
 
         if is_snapshot {
-            state.orderbook.apply_snapshot(&bids, &asks, final_update_id, timestamp);
-            debug!("Snapshot applied for {}: {} bids, {} asks", symbol, bids_count, asks_count);
+            state
+                .orderbook
+                .apply_snapshot(&bids, &asks, final_update_id, timestamp);
+            debug!(
+                "Snapshot applied for {}: {} bids, {} asks",
+                symbol, bids_count, asks_count
+            );
         } else {
-            state.orderbook.apply_update(&bids, &asks, final_update_id, timestamp);
+            state
+                .orderbook
+                .apply_update(&bids, &asks, final_update_id, timestamp);
         }
 
         self.update_count += 1;
@@ -568,7 +587,10 @@ impl DepthPubApp {
         if let Some(orderbook_symbol) = orderbook_symbol {
             if let Some(state) = self.symbols.get(&orderbook_symbol) {
                 if state.orderbook.is_valid() {
-                    amount = state.orderbook.amount_at_price(aligned_price).unwrap_or(0.0);
+                    amount = state
+                        .orderbook
+                        .amount_at_price(aligned_price)
+                        .unwrap_or(0.0);
                 }
             }
         }

@@ -41,4 +41,3 @@ pub fn parse_binance_um_balance_snapshot_std(json: &str) -> Option<Vec<Bytes>> {
     }
     Some(out)
 }
-
