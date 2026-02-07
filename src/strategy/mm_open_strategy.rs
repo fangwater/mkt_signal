@@ -1,7 +1,7 @@
 use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderType, Side};
+use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::{PersistChannel, QueryEngHub, TradeEngHub};
 use crate::signal::cancel_signal::MmCancelCtx;
 use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue};
@@ -538,7 +538,17 @@ impl MarketMakerOpenStrategy {
         let exchange_order_id = order.exchange_order_id.filter(|&id| id > 0);
 
         let req_type = match order.venue {
-            TradingVenue::BinanceMargin => QueryRequestType::BinanceMarginQuery,
+            TradingVenue::BinanceMargin => {
+                if MonitorChannel::instance()
+                    .order_manager()
+                    .borrow()
+                    .binance_is_standard()
+                {
+                    QueryRequestType::BinanceWsMarginQuery
+                } else {
+                    QueryRequestType::BinanceMarginQuery
+                }
+            }
             TradingVenue::BinanceFutures => {
                 if MonitorChannel::instance()
                     .order_manager()
@@ -941,7 +951,7 @@ impl MarketMakerOpenStrategy {
         }
     }
 
-    fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) {
+    fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) -> bool {
         let client_order_id = order_update.client_order_id();
         self.clear_query_watchdogs(client_order_id);
         if client_order_id != self.open_order_id {
@@ -949,11 +959,32 @@ impl MarketMakerOpenStrategy {
                 "MarketMakerOpenStrategy: strategy_id={} ignore order_update client_order_id={}",
                 self.strategy_id, client_order_id
             );
-            return;
+            return false;
         }
 
         let order_mgr = MonitorChannel::instance().order_manager();
         let mut order_manager = order_mgr.borrow_mut();
+        let Some(current_order) = order_manager.get(client_order_id) else {
+            warn!(
+                "MarketMakerOpenStrategy: strategy_id={} order update not found client_order_id={}",
+                self.strategy_id, client_order_id
+            );
+            return false;
+        };
+
+        if OrderManager::should_skip_idempotent_order_update(
+            &current_order,
+            order_update.status(),
+            order_update.order_id(),
+            order_update.cumulative_filled_quantity(),
+            "MarketMakerOpenStrategy",
+            self.strategy_id,
+        )
+        .is_some()
+        {
+            return false;
+        }
+
         let mut record_fill: Option<(TradingVenue, String, Side, f64)> = None;
         let updated = order_manager.update(client_order_id, |order| match order_update.status() {
             OrderStatus::New => {
@@ -1040,11 +1071,14 @@ impl MarketMakerOpenStrategy {
                 "MarketMakerOpenStrategy: strategy_id={} order update not found client_order_id={}",
                 self.strategy_id, client_order_id
             );
+            return false;
         }
 
         if let Some((venue, symbol, side, qty)) = record_fill {
             self.record_mm_hedge_qty(venue, &symbol, side, qty);
         }
+
+        true
     }
 
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
@@ -1163,8 +1197,10 @@ impl Strategy for MarketMakerOpenStrategy {
     }
 
     fn apply_order_update(&mut self, update: &dyn OrderUpdate) {
-        MarketMakerOpenStrategy::apply_order_update(self, update);
-        PersistChannel::with(|ch| ch.publish_order_update(update));
+        let should_persist = MarketMakerOpenStrategy::apply_order_update(self, update);
+        if should_persist {
+            PersistChannel::with(|ch| ch.publish_order_update(update));
+        }
     }
 
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {

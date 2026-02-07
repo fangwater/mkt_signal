@@ -10,6 +10,7 @@ use mkt_signal::common::mkt_cfg::{home_mkt_cfg_path, load_local_ips_from_path};
 use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
 use mkt_signal::parser::binance_basic_account_event_parser::BinanceBasicAccountEventParser;
 use mkt_signal::parser::default_parser::Parser;
+use mkt_signal::portfolio_margin::binance_spot_ws_api_user_stream::BinanceSpotWsApiUserDataConnection;
 use mkt_signal::portfolio_margin::binance_user_stream::BinanceUserDataConnection;
 use mkt_signal::portfolio_margin::listen_key::BinanceListenKeyService;
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
@@ -74,13 +75,17 @@ async fn main() -> Result<()> {
     let api_key = api_key_raw.trim().to_string();
     log_credential_preview("BINANCE_API_KEY", &api_key);
 
-    match std::env::var("BINANCE_API_SECRET") {
+    let api_secret = match std::env::var("BINANCE_API_SECRET") {
         Ok(secret_raw) => {
             let secret = secret_raw.trim().to_string();
             log_credential_preview("BINANCE_API_SECRET", &secret);
+            secret
         }
-        Err(_) => info!("BINANCE_API_SECRET not set or empty"),
-    }
+        Err(_) => {
+            info!("BINANCE_API_SECRET not set or empty");
+            String::new()
+        }
+    };
 
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     setup_signals(shutdown_tx.clone());
@@ -88,20 +93,63 @@ async fn main() -> Result<()> {
     // Resolve endpoints from config
     const BINANCE_PM_WS: &str = "wss://fstream.binance.com/pm";
     const BINANCE_PM_REST: &str = "https://papi.binance.com";
-    const BINANCE_STD_WS: &str = "wss://fstream.binance.com/ws";
-    const BINANCE_STD_REST: &str = "https://fapi.binance.com";
+    const BINANCE_STD_FAPI_WS: &str = "wss://fstream.binance.com/ws";
+    const BINANCE_STD_FAPI_REST: &str = "https://fapi.binance.com";
+    const BINANCE_STD_SPOT_WS_API: &str = "wss://ws-api.binance.com:443/ws-api/v3";
+    const BINANCE_STD_SPOT_REST: &str = "https://api.binance.com";
     let binance_is_standard = binance_account_mode == BinanceAccountMode::Standard;
-    let (ws_base, rest_base, listen_key_path) = if binance_is_standard {
-        (BINANCE_STD_WS, BINANCE_STD_REST, "/fapi/v1/listenKey")
+    let mut stream_cfgs: Vec<UserStreamConfig> = if binance_is_standard {
+        vec![
+            UserStreamConfig {
+                stream_label: "fapi",
+                ws_base: BINANCE_STD_FAPI_WS.to_string(),
+                rest_base: BINANCE_STD_FAPI_REST.to_string(),
+                listen_key_path: "/fapi/v1/listenKey".to_string(),
+                parse_balances_from_account_update: true,
+                stream_kind: UserStreamKind::ListenKeyUrl,
+                listen_key_rx: None,
+            },
+            UserStreamConfig {
+                stream_label: "spot-ws-api",
+                ws_base: BINANCE_STD_SPOT_WS_API.to_string(),
+                rest_base: BINANCE_STD_SPOT_REST.to_string(),
+                listen_key_path: "/api/v3/userDataStream".to_string(),
+                parse_balances_from_account_update: false,
+                stream_kind: UserStreamKind::SpotWsApiSignature {
+                    api_key: api_key.clone(),
+                    api_secret: api_secret.clone(),
+                },
+                listen_key_rx: None,
+            },
+        ]
     } else {
-        (BINANCE_PM_WS, BINANCE_PM_REST, "/papi/v1/listenKey")
+        vec![UserStreamConfig {
+            stream_label: "papi",
+            ws_base: BINANCE_PM_WS.to_string(),
+            rest_base: BINANCE_PM_REST.to_string(),
+            listen_key_path: "/papi/v1/listenKey".to_string(),
+            parse_balances_from_account_update: false,
+            stream_kind: UserStreamKind::ListenKeyUrl,
+            listen_key_rx: None,
+        }]
     };
-    let ws_pm = ws_base.to_string();
-    let rest_pm = rest_base.to_string();
-    info!(
-        "binance account monitor endpoints: ws_base={} rest_base={} listen_key_path={}",
-        ws_pm, rest_pm, listen_key_path
-    );
+
+    if binance_is_standard && api_secret.is_empty() {
+        return Err(anyhow::anyhow!(
+            "BINANCE_API_SECRET not set. STANDARD mode needs spot ws-api signature subscription"
+        ));
+    }
+
+    for cfg in &stream_cfgs {
+        info!(
+            "binance account stream [{}]: ws_base={} rest_base={} listen_key_path={} kind={}",
+            cfg.stream_label,
+            cfg.ws_base,
+            cfg.rest_base,
+            cfg.listen_key_path,
+            cfg.stream_kind.as_str()
+        );
+    }
 
     // IP and session settings
     const BINANCE_SESSION_MAX_SECS: u64 = 2 * 3600;
@@ -116,10 +164,19 @@ async fn main() -> Result<()> {
         cfg_path.display()
     );
 
-    // Start listenKey service
-    let listen_key_rx = BinanceListenKeyService::new(rest_pm.clone(), api_key, listen_key_path)
-        .start(shutdown_rx.clone())
-        .await?;
+    // Start listenKey services
+    for cfg in stream_cfgs.iter_mut() {
+        if matches!(cfg.stream_kind, UserStreamKind::ListenKeyUrl) {
+            let listen_key_rx = BinanceListenKeyService::new(
+                cfg.rest_base.clone(),
+                api_key.clone(),
+                cfg.listen_key_path.clone(),
+            )
+            .start(shutdown_rx.clone())
+            .await?;
+            cfg.listen_key_rx = Some(listen_key_rx);
+        }
+    }
 
     // Channel to collect events from both paths and forward via Iceoryx
     let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
@@ -129,27 +186,34 @@ async fn main() -> Result<()> {
     let mut deduper = AccountEventDeduper::new(8192);
     let mut stats = tokio::time::interval(Duration::from_secs(30));
 
-    // Spawn primary and secondary paths
-    let mut primary = spawn_user_stream_path(
-        "primary",
-        &ws_pm,
-        primary_ip.clone(),
-        listen_key_rx.clone(),
-        shutdown_rx.clone(),
-        evt_tx.clone(),
-        session_max,
-        binance_is_standard,
-    );
-    let mut secondary = spawn_user_stream_path(
-        "secondary",
-        &ws_pm,
-        secondary_ip.clone(),
-        listen_key_rx.clone(),
-        shutdown_rx.clone(),
-        evt_tx.clone(),
-        session_max,
-        binance_is_standard,
-    );
+    // Spawn primary and secondary paths for each enabled stream.
+    for cfg in stream_cfgs {
+        let primary_name = format!("{}-primary", cfg.stream_label);
+        spawn_user_stream_path(
+            primary_name,
+            cfg.ws_base.clone(),
+            primary_ip.clone(),
+            cfg.listen_key_rx.clone(),
+            shutdown_rx.clone(),
+            evt_tx.clone(),
+            session_max,
+            cfg.parse_balances_from_account_update,
+            cfg.stream_kind.clone(),
+        );
+
+        let secondary_name = format!("{}-secondary", cfg.stream_label);
+        spawn_user_stream_path(
+            secondary_name,
+            cfg.ws_base,
+            secondary_ip.clone(),
+            cfg.listen_key_rx,
+            shutdown_rx.clone(),
+            evt_tx.clone(),
+            session_max,
+            cfg.parse_balances_from_account_update,
+            cfg.stream_kind,
+        );
+    }
 
     // Forwarding loop with periodic stats logging runs in the main task
 
@@ -166,8 +230,6 @@ async fn main() -> Result<()> {
             _ = stats.tick() => {
                 forwarder.log_stats();
             }
-            _ = &mut primary => { warn!("primary user-data task exited; continuing"); }
-            _ = &mut secondary => { warn!("secondary user-data task exited; continuing"); }
             _ = shutdown_rx.changed() => { break; }
         }
     }
@@ -183,28 +245,70 @@ fn setup_signals(shutdown_tx: watch::Sender<bool>) {
     });
 }
 
+#[derive(Clone)]
+enum UserStreamKind {
+    ListenKeyUrl,
+    SpotWsApiSignature { api_key: String, api_secret: String },
+}
+
+impl UserStreamKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            UserStreamKind::ListenKeyUrl => "listen_key_url",
+            UserStreamKind::SpotWsApiSignature { .. } => "spot_ws_api_signature",
+        }
+    }
+}
+
+struct UserStreamConfig {
+    stream_label: &'static str,
+    ws_base: String,
+    rest_base: String,
+    listen_key_path: String,
+    parse_balances_from_account_update: bool,
+    stream_kind: UserStreamKind,
+    listen_key_rx: Option<watch::Receiver<String>>,
+}
+
 fn spawn_user_stream_path(
-    name: &'static str,
-    ws_base: &str,
+    name: String,
+    ws_base: String,
     local_ip: String,
-    mut listen_key_rx: watch::Receiver<String>,
+    mut listen_key_rx: Option<watch::Receiver<String>>,
     shutdown_rx: watch::Receiver<bool>,
     evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
     session_max: Option<Duration>,
-    binance_is_standard: bool,
+    parse_balances_from_account_update: bool,
+    stream_kind: UserStreamKind,
 ) -> tokio::task::JoinHandle<()> {
-    let ws_base = ws_base.to_string();
     tokio::spawn(async move {
         loop {
-            // wait for non-empty listenKey
-            let mut listen_key = listen_key_rx.borrow().clone();
-            while listen_key.is_empty() {
-                if listen_key_rx.changed().await.is_ok() {
-                    listen_key = listen_key_rx.borrow().clone();
-                }
-            }
+            let listen_key = match &stream_kind {
+                UserStreamKind::ListenKeyUrl => {
+                    let Some(rx) = listen_key_rx.as_mut() else {
+                        error!(
+                            "[{}] missing listenKey receiver for ListenKeyUrl stream",
+                            name
+                        );
+                        break;
+                    };
 
-            let url = build_ws_url(&ws_base, &listen_key);
+                    let mut key = rx.borrow().clone();
+                    while key.is_empty() {
+                        if rx.changed().await.is_err() {
+                            return;
+                        }
+                        key = rx.borrow().clone();
+                    }
+                    key
+                }
+                UserStreamKind::SpotWsApiSignature { .. } => String::new(),
+            };
+
+            let url = match &stream_kind {
+                UserStreamKind::ListenKeyUrl => build_ws_url(&ws_base, &listen_key),
+                UserStreamKind::SpotWsApiSignature { .. } => ws_base.clone(),
+            };
             info!("[{}] connecting to {} (local_ip='{}')", name, url, local_ip);
             let (raw_tx, mut raw_rx) = broadcast::channel::<Bytes>(8192);
             let mut conn = MktConnection::new(
@@ -216,13 +320,25 @@ fn spawn_user_stream_path(
             if !local_ip.is_empty() {
                 conn.local_ip = Some(local_ip.clone());
             }
-            let mut runner = BinanceUserDataConnection::new(conn, session_max);
+            let mut runner: Box<dyn MktConnectionHandler> = match &stream_kind {
+                UserStreamKind::ListenKeyUrl => {
+                    Box::new(BinanceUserDataConnection::new(conn, session_max))
+                }
+                UserStreamKind::SpotWsApiSignature {
+                    api_key,
+                    api_secret,
+                } => Box::new(BinanceSpotWsApiUserDataConnection::new(
+                    conn,
+                    api_key.clone(),
+                    api_secret.clone(),
+                )),
+            };
 
             // consumer
             let mut consumer_shutdown = shutdown_rx.clone();
             let evt_tx_clone = evt_tx.clone();
             let local_ip_log = local_ip.clone();
-            let parse_balances_from_account_update = binance_is_standard;
+            let consumer_name = name.clone();
             let parser = BinanceBasicAccountEventParser::new(parse_balances_from_account_update);
             tokio::spawn(async move {
                 loop {
@@ -231,20 +347,21 @@ fn spawn_user_stream_path(
                             match msg {
                                 Ok(b) => {
                                     if let Ok(s) = std::str::from_utf8(&b) {
-                                        debug!("[{}][ip={}] ws json: {}", name, local_ip_log, s);
+                                        debug!("[{}][ip={}] ws json: {}", consumer_name, local_ip_log, s);
                                         if let Ok(value) = serde_json::from_str::<serde_json::Value>(s) {
-                                            if value.get("e").and_then(|v| v.as_str()) == Some("outboundAccountPosition") {
-                                                info!("[{}][ip={}] outboundAccountPosition raw: {}", name, local_ip_log, s);
+                                            let event = value.get("event").filter(|v| v.is_object()).unwrap_or(&value);
+                                            if event.get("e").and_then(|v| v.as_str()) == Some("outboundAccountPosition") {
+                                                info!("[{}][ip={}] outboundAccountPosition raw: {}", consumer_name, local_ip_log, s);
                                             }
                                         }
                                     } else {
-                                        debug!("[{}][ip={}] ws bin: {} bytes", name, local_ip_log, b.len());
+                                        debug!("[{}][ip={}] ws bin: {} bytes", consumer_name, local_ip_log, b.len());
                                     }
                                     // 解析并通过通道发送解析后的账户事件（二进制）
                                     let _ = parser.parse(b, &evt_tx_clone);
                                 }
                                 Err(broadcast::error::RecvError::Closed) => break,
-                                Err(broadcast::error::RecvError::Lagged(skipped)) => { warn!("[{}] lagged: skipped {} msgs", name, skipped); }
+                                Err(broadcast::error::RecvError::Lagged(skipped)) => { warn!("[{}] lagged: skipped {} msgs", consumer_name, skipped); }
                             }
                         }
                         _ = consumer_shutdown.changed() => {
@@ -259,14 +376,25 @@ fn spawn_user_stream_path(
                 error!("[{}] connection error: {}", name, e);
             }
 
-            // if listenKey changed, reconnect immediately; otherwise wait 2s and retry
-            let prev = listen_key;
-            tokio::select! {
-                _ = listen_key_rx.changed() => {
-                    let new_key = listen_key_rx.borrow().clone();
-                    if new_key != prev { info!("[{}] detected listenKey rotation -> reconnect", name); }
+            // for listenKey streams, reconnect quickly on key rotation; otherwise short backoff
+            match &stream_kind {
+                UserStreamKind::ListenKeyUrl => {
+                    let prev = listen_key;
+                    if let Some(rx) = listen_key_rx.as_mut() {
+                        tokio::select! {
+                            _ = rx.changed() => {
+                                let new_key = rx.borrow().clone();
+                                if new_key != prev { info!("[{}] detected listenKey rotation -> reconnect", name); }
+                            }
+                            _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                        }
+                    } else {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
                 }
-                _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                UserStreamKind::SpotWsApiSignature { .. } => {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
             }
         }
     })

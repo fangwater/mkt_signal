@@ -72,7 +72,10 @@ impl WsOrderUpdate {
         let req_type = TradeRequestType::try_from(response.req_type()).ok()?;
         if !matches!(
             req_type,
-            TradeRequestType::BinanceWsNewUMOrder | TradeRequestType::BinanceWsCancelUMOrder
+            TradeRequestType::BinanceWsNewUMOrder
+                | TradeRequestType::BinanceWsCancelUMOrder
+                | TradeRequestType::BinanceWsNewMarginOrder
+                | TradeRequestType::BinanceWsCancelMarginOrder
         ) {
             return None;
         }

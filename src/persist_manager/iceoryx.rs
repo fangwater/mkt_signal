@@ -48,6 +48,11 @@ pub fn trim_order_update_payload(payload: &[u8]) -> Bytes {
     Bytes::copy_from_slice(&payload[..used])
 }
 
+pub fn trim_uniform_order_payload(payload: &[u8]) -> Bytes {
+    let used = uniform_order_used_len(payload).unwrap_or(payload.len());
+    Bytes::copy_from_slice(&payload[..used])
+}
+
 fn trade_update_used_len(payload: &[u8]) -> Option<usize> {
     // Format must match pre_trade::persist_channel::serialize_trade_update
     let mut cursor = Bytes::copy_from_slice(payload);
@@ -98,6 +103,44 @@ fn order_update_used_len(payload: &[u8]) -> Option<usize> {
     skip_opt_f64(&mut cursor)?; // average_price
     skip_opt_f64(&mut cursor)?; // last_executed_price
     skip_opt_string(&mut cursor)?; // business_unit
+
+    Some(payload.len().saturating_sub(cursor.remaining()))
+}
+
+fn uniform_order_used_len(payload: &[u8]) -> Option<usize> {
+    // Format must match pre_trade::persist_channel::serialize_uniform_order
+    let mut cursor = Bytes::copy_from_slice(payload);
+
+    skip_i64(&mut cursor)?; // recv_ts_us
+
+    let symbol_len = read_u16(&mut cursor)? as usize;
+    if cursor.remaining() < symbol_len {
+        return None;
+    }
+    cursor.advance(symbol_len);
+
+    skip_i64(&mut cursor)?; // create_ts
+    skip_i64(&mut cursor)?; // update_ts
+    skip_i64(&mut cursor)?; // signal_ts
+
+    skip_i64(&mut cursor)?; // client_order_id
+
+    skip_u8(&mut cursor)?; // venue
+    skip_u8(&mut cursor)?; // ttype
+    skip_u8(&mut cursor)?; // side
+
+    skip_f64(&mut cursor)?; // price
+    skip_f64(&mut cursor)?; // price_offset
+    skip_f64(&mut cursor)?; // amount_init
+    skip_f64(&mut cursor)?; // amount_update
+
+    skip_u8(&mut cursor)?; // status
+
+    let from_key_len = read_u32(&mut cursor)? as usize;
+    if cursor.remaining() < from_key_len {
+        return None;
+    }
+    cursor.advance(from_key_len);
 
     Some(payload.len().saturating_sub(cursor.remaining()))
 }
@@ -163,6 +206,13 @@ fn read_u32(cursor: &mut Bytes) -> Option<u32> {
         return None;
     }
     Some(cursor.get_u32_le())
+}
+
+fn read_u16(cursor: &mut Bytes) -> Option<u16> {
+    if cursor.remaining() < 2 {
+        return None;
+    }
+    Some(cursor.get_u16_le())
 }
 
 fn sanitize_suffix(raw: &str) -> std::borrow::Cow<'_, str> {

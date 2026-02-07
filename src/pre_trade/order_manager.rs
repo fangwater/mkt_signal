@@ -5,11 +5,15 @@ use crate::trade_engine::okex::{
 use crate::trade_engine::trade_request::BinanceNewMarginOrderRequest;
 use crate::trade_engine::trade_request::BinanceNewUMOrderRequest;
 use crate::trade_engine::trade_request::{
-    BinanceCancelMarginOrderRequest, BinanceCancelUMOrderRequest, BinanceWsCancelUMOrderRequest,
-    BinanceWsNewUMOrderRequest, GateFuturesCancelOrderRequest, GateFuturesNewOrderRequest,
-    GateUnifiedCancelOrderRequest, GateUnifiedNewOrderRequest,
+    BinanceCancelMarginOrderRequest, BinanceCancelUMOrderRequest,
+    BinanceWsCancelMarginOrderRequest, BinanceWsCancelUMOrderRequest,
+    BinanceWsNewMarginOrderRequest, BinanceWsNewUMOrderRequest, GateFuturesCancelOrderRequest,
+    GateFuturesNewOrderRequest, GateUnifiedCancelOrderRequest, GateUnifiedNewOrderRequest,
 };
-use crate::{common::time_util::get_timestamp_us, signal::common::TradingVenue};
+use crate::{
+    common::time_util::get_timestamp_us,
+    signal::common::{OrderStatus, TradingVenue},
+};
 use bytes::Bytes;
 use log::{debug, info, warn};
 use std::collections::HashMap;
@@ -229,6 +233,13 @@ impl OrderExecutionStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderUpdateSkipReason {
+    DuplicateStatus,
+    TerminalToTerminal,
+    StaleNewOnTerminal,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum OrderType {
@@ -345,6 +356,123 @@ impl OrderManager {
 
     pub fn binance_is_standard(&self) -> bool {
         self.binance_account_mode == Some(BinanceAccountMode::Standard)
+    }
+
+    pub fn map_update_status(status: OrderStatus) -> Option<OrderExecutionStatus> {
+        match status {
+            OrderStatus::New => Some(OrderExecutionStatus::Create),
+            OrderStatus::Canceled => Some(OrderExecutionStatus::Cancelled),
+            OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
+                Some(OrderExecutionStatus::Rejected)
+            }
+            _ => None,
+        }
+    }
+
+    fn validate_duplicate_order_update_fields(
+        order: &Order,
+        incoming_status: OrderStatus,
+        incoming_order_id: i64,
+        incoming_cum_qty: f64,
+        log_owner: &str,
+        strategy_id: i32,
+    ) {
+        if incoming_order_id > 0 {
+            if let Some(existing_order_id) = order.exchange_order_id {
+                if existing_order_id != incoming_order_id {
+                    warn!(
+                        "{}: strategy_id={} duplicate order update has mismatched exchange_order_id: client_order_id={} local={} incoming={}",
+                        log_owner,
+                        strategy_id,
+                        order.client_order_id,
+                        existing_order_id,
+                        incoming_order_id
+                    );
+                }
+            }
+        }
+
+        if matches!(
+            incoming_status,
+            OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
+        ) && (order.cumulative_filled_quantity - incoming_cum_qty).abs() > 1e-8
+        {
+            warn!(
+                "{}: strategy_id={} duplicate terminal update has mismatched cumulative qty: client_order_id={} local={:.8} incoming={:.8}",
+                log_owner,
+                strategy_id,
+                order.client_order_id,
+                order.cumulative_filled_quantity,
+                incoming_cum_qty
+            );
+        }
+    }
+
+    pub fn should_skip_idempotent_order_update(
+        order: &Order,
+        incoming_status: OrderStatus,
+        incoming_order_id: i64,
+        incoming_cum_qty: f64,
+        log_owner: &str,
+        strategy_id: i32,
+    ) -> Option<OrderUpdateSkipReason> {
+        let Some(incoming_exec_status) = Self::map_update_status(incoming_status) else {
+            return None;
+        };
+
+        if order.status == incoming_exec_status {
+            Self::validate_duplicate_order_update_fields(
+                order,
+                incoming_status,
+                incoming_order_id,
+                incoming_cum_qty,
+                log_owner,
+                strategy_id,
+            );
+            debug!(
+                "{}: strategy_id={} skip duplicate order update: client_order_id={} status={:?}",
+                log_owner, strategy_id, order.client_order_id, incoming_status
+            );
+            return Some(OrderUpdateSkipReason::DuplicateStatus);
+        }
+
+        if order.status.is_terminal() && incoming_exec_status.is_terminal() {
+            Self::validate_duplicate_order_update_fields(
+                order,
+                incoming_status,
+                incoming_order_id,
+                incoming_cum_qty,
+                log_owner,
+                strategy_id,
+            );
+            warn!(
+                "{}: strategy_id={} skip terminal->terminal order update: client_order_id={} local={:?} incoming={:?}",
+                log_owner,
+                strategy_id,
+                order.client_order_id,
+                order.status,
+                incoming_status
+            );
+            return Some(OrderUpdateSkipReason::TerminalToTerminal);
+        }
+
+        if order.status.is_terminal() && incoming_exec_status == OrderExecutionStatus::Create {
+            Self::validate_duplicate_order_update_fields(
+                order,
+                incoming_status,
+                incoming_order_id,
+                incoming_cum_qty,
+                log_owner,
+                strategy_id,
+            );
+            warn!(
+                "{}: strategy_id={} skip stale NEW update on terminal order: client_order_id={} local={:?}",
+                log_owner, strategy_id, order.client_order_id, order.status
+            );
+            return Some(OrderUpdateSkipReason::StaleNewOnTerminal);
+        }
+
+        None
     }
 
     pub fn create_order(
@@ -655,6 +783,15 @@ impl Order {
                     "symbol={}&origClientOrderId={}",
                     self.symbol, self.client_order_id
                 ));
+                if self.require_binance_account_mode() == BinanceAccountMode::Standard {
+                    let request: BinanceWsCancelMarginOrderRequest =
+                        BinanceWsCancelMarginOrderRequest::create(
+                            now,
+                            self.client_order_id,
+                            params,
+                        );
+                    return Ok(request.to_bytes());
+                }
                 let request: BinanceCancelMarginOrderRequest =
                     BinanceCancelMarginOrderRequest::create(now, self.client_order_id, params);
                 return Ok(request.to_bytes());
@@ -798,12 +935,21 @@ impl Order {
                     self.venue, self.client_order_id, params_plain
                 );
                 let params = Bytes::from(params_plain);
-                let request = BinanceNewMarginOrderRequest::create(
-                    local_create_ts,
-                    self.client_order_id,
-                    params,
-                );
-                Ok(request.to_bytes())
+                if self.require_binance_account_mode() == BinanceAccountMode::Standard {
+                    let request = BinanceWsNewMarginOrderRequest::create(
+                        local_create_ts,
+                        self.client_order_id,
+                        params,
+                    );
+                    Ok(request.to_bytes())
+                } else {
+                    let request = BinanceNewMarginOrderRequest::create(
+                        local_create_ts,
+                        self.client_order_id,
+                        params,
+                    );
+                    Ok(request.to_bytes())
+                }
             }
             TradingVenue::BinanceFutures => {
                 let mut params_parts = vec![

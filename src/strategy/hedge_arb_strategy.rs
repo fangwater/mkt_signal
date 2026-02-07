@@ -2,7 +2,7 @@ use crate::common::bbo::{Bbo, DualBbo};
 use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderType, Side};
+use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::{PersistChannel, SignalChannel, TradeEngHub};
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{
@@ -1815,13 +1815,37 @@ impl HedgeArbStrategy {
         }
     }
 
-    fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) {
+    fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) -> bool {
         //状态更新是通用部分，非成交只更新状态，不更新量
         let client_order_id = order_update.client_order_id();
         self.clear_query_watchdogs(client_order_id);
 
         let order_mgr = MonitorChannel::instance().order_manager();
         let mut order_manager = order_mgr.borrow_mut();
+
+        let Some(current_order) = order_manager.get(client_order_id) else {
+            error!(
+                "update failed {} {} {:?}",
+                order_update.client_order_id(),
+                order_update.order_id(),
+                order_update.status()
+            );
+            return false;
+        };
+
+        if OrderManager::should_skip_idempotent_order_update(
+            &current_order,
+            order_update.status(),
+            order_update.order_id(),
+            order_update.cumulative_filled_quantity(),
+            "HedgeArbStrategy",
+            self.strategy_id,
+        )
+        .is_some()
+        {
+            return false;
+        }
+
         let updated = order_manager.update(client_order_id, |order| match order_update.status() {
             OrderStatus::New => {
                 order.status = OrderExecutionStatus::Create;
@@ -1876,14 +1900,14 @@ impl HedgeArbStrategy {
                 order_update.order_id(),
                 order_update.status()
             );
-            return;
+            return false;
         }
         if order_update.status() == OrderStatus::Canceled {
             if self
                 .processed_cancel_updates
                 .contains(&order_update.client_order_id())
             {
-                return;
+                return false;
             }
             if order_update.client_order_id() == self.open_order_id {
                 self.process_open_leg_cancel(order_update);
@@ -1896,6 +1920,8 @@ impl HedgeArbStrategy {
                 self.process_hedge_leg_cancel(order_update);
             }
         }
+
+        true
     }
 
     fn cleanup_strategy_orders(&mut self) {
@@ -1944,7 +1970,17 @@ impl HedgeArbStrategy {
         let exchange_order_id = order.exchange_order_id.filter(|&id| id > 0);
 
         let req_type = match order.venue {
-            TradingVenue::BinanceMargin => QueryRequestType::BinanceMarginQuery,
+            TradingVenue::BinanceMargin => {
+                if MonitorChannel::instance()
+                    .order_manager()
+                    .borrow()
+                    .binance_is_standard()
+                {
+                    QueryRequestType::BinanceWsMarginQuery
+                } else {
+                    QueryRequestType::BinanceMarginQuery
+                }
+            }
             TradingVenue::BinanceFutures => {
                 if MonitorChannel::instance()
                     .order_manager()
@@ -2745,10 +2781,12 @@ impl Strategy for HedgeArbStrategy {
     }
 
     fn apply_order_update(&mut self, update: &dyn OrderUpdate) {
-        HedgeArbStrategy::apply_order_update(self, update);
+        let should_persist = HedgeArbStrategy::apply_order_update(self, update);
 
         // 持久化订单更新记录
-        PersistChannel::with(|ch| ch.publish_order_update(update));
+        if should_persist {
+            PersistChannel::with(|ch| ch.publish_order_update(update));
+        }
     }
 
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {

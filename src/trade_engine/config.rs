@@ -48,4 +48,7 @@ impl WsConstants {
 
     /// Binance UM WebSocket API URL
     pub const BINANCE_UM_WS_URL: &'static str = "wss://ws-fapi.binance.com/ws-fapi/v1";
+
+    /// Binance Spot WebSocket API URL
+    pub const BINANCE_SPOT_WS_URL: &'static str = "wss://ws-api.binance.com:443/ws-api/v3";
 }

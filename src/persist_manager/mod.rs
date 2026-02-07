@@ -4,6 +4,8 @@ mod order_update;
 mod parquet;
 mod storage;
 mod trade_update;
+pub mod unified_order;
+mod uniform_order_persist;
 
 use std::sync::Arc;
 
@@ -12,6 +14,7 @@ use log::info;
 
 use order_update::{OrderUpdatePersistor, OrderUpdateUnmatchedPersistor};
 use trade_update::{TradeUpdatePersistor, TradeUpdateUnmatchedPersistor};
+use uniform_order_persist::UniformOrderPersistor;
 
 pub use storage::{RocksDbStore, RocksDbTuning};
 
@@ -27,6 +30,7 @@ pub fn required_column_families() -> Vec<&'static str> {
     let mut cf_names: Vec<&'static str> = Vec::new();
     cf_names.extend_from_slice(trade_update::required_column_families());
     cf_names.extend_from_slice(order_update::required_column_families());
+    cf_names.extend_from_slice(uniform_order_persist::required_column_families());
     cf_names
 }
 
@@ -81,6 +85,12 @@ impl PersistManager {
         let s3_unmatched = OrderUpdateUnmatchedPersistor::new(store.clone())?;
         tokio::task::spawn_local(async move {
             let _ = s3_unmatched.run().await;
+        });
+
+        info!("starting uniform order persistor");
+        let s4 = UniformOrderPersistor::new(store.clone())?;
+        tokio::task::spawn_local(async move {
+            let _ = s4.run().await;
         });
 
         tokio::select! {

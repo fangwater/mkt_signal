@@ -8,6 +8,7 @@ impl QueryTypeMapping {
             request_type,
             QueryRequestType::BinanceMarginQuery
                 | QueryRequestType::BinanceUMQuery
+                | QueryRequestType::BinanceWsMarginQuery
                 | QueryRequestType::BinancePmBalanceSnapshot
                 | QueryRequestType::BinanceUmAccountSnapshot
                 | QueryRequestType::BinanceUmBalanceSnapshotStd
@@ -37,7 +38,7 @@ impl QueryTypeMapping {
         match request_type {
             QueryRequestType::BinanceMarginQuery => "/papi/v1/margin/order",
             QueryRequestType::BinanceUMQuery => "/papi/v1/um/order",
-            QueryRequestType::BinanceWsUMQuery => {
+            QueryRequestType::BinanceWsUMQuery | QueryRequestType::BinanceWsMarginQuery => {
                 unreachable!("Binance ws queries run via websocket; REST mapping not used")
             }
             QueryRequestType::BinancePmBalanceSnapshot => "/papi/v1/balance",
@@ -71,7 +72,7 @@ impl QueryTypeMapping {
             | QueryRequestType::OkexPositionsSnapshot
             | QueryRequestType::GateUnifiedBalanceSnapshot
             | QueryRequestType::GateUnifiedPositionsSnapshot => "GET",
-            QueryRequestType::BinanceWsUMQuery => {
+            QueryRequestType::BinanceWsUMQuery | QueryRequestType::BinanceWsMarginQuery => {
                 unreachable!("Binance ws queries run via websocket; REST mapping not used")
             }
             QueryRequestType::GateUnifiedOrderQuery | QueryRequestType::GateFuturesOrderQuery => {
@@ -84,7 +85,7 @@ impl QueryTypeMapping {
         match request_type {
             QueryRequestType::BinanceMarginQuery => 1,
             QueryRequestType::BinanceUMQuery => 1,
-            QueryRequestType::BinanceWsUMQuery => {
+            QueryRequestType::BinanceWsUMQuery | QueryRequestType::BinanceWsMarginQuery => {
                 unreachable!("Binance ws queries run via websocket; REST mapping not used")
             }
             QueryRequestType::BinancePmBalanceSnapshot => 1,

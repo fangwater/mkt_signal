@@ -1,6 +1,6 @@
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderType, Side};
+use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::{PersistChannel, QueryEngHub, TradeEngHub};
 use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue};
@@ -464,7 +464,17 @@ impl MarketMakerHedgeStrategy {
         let exchange_order_id = order.exchange_order_id.filter(|&id| id > 0);
 
         let req_type = match order.venue {
-            TradingVenue::BinanceMargin => QueryRequestType::BinanceMarginQuery,
+            TradingVenue::BinanceMargin => {
+                if MonitorChannel::instance()
+                    .order_manager()
+                    .borrow()
+                    .binance_is_standard()
+                {
+                    QueryRequestType::BinanceWsMarginQuery
+                } else {
+                    QueryRequestType::BinanceMarginQuery
+                }
+            }
             TradingVenue::BinanceFutures => {
                 if MonitorChannel::instance()
                     .order_manager()
@@ -800,13 +810,34 @@ impl MarketMakerHedgeStrategy {
         }
     }
 
-    fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) {
+    fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) -> bool {
         let client_order_id = order_update.client_order_id();
         self.clear_order_query_state(client_order_id);
 
         let order_mgr = MonitorChannel::instance().order_manager();
         let mut order_manager = order_mgr.borrow_mut();
         let status = order_update.status();
+        let Some(current_order) = order_manager.get(client_order_id) else {
+            warn!(
+                "MarketMakerHedgeStrategy: strategy_id={} order update not found client_order_id={}",
+                self.strategy_id, client_order_id
+            );
+            return false;
+        };
+
+        if OrderManager::should_skip_idempotent_order_update(
+            &current_order,
+            order_update.status(),
+            order_update.order_id(),
+            order_update.cumulative_filled_quantity(),
+            "MarketMakerHedgeStrategy",
+            self.strategy_id,
+        )
+        .is_some()
+        {
+            return false;
+        }
+
         let updated = order_manager.update(client_order_id, |order| match status {
             OrderStatus::New => {
                 order.status = OrderExecutionStatus::Create;
@@ -849,7 +880,7 @@ impl MarketMakerHedgeStrategy {
                 "MarketMakerHedgeStrategy: strategy_id={} order update not found client_order_id={}",
                 self.strategy_id, client_order_id
             );
-            return;
+            return false;
         }
 
         if status.is_finished() && self.hedge_order_ids.remove(&client_order_id) {
@@ -863,7 +894,7 @@ impl MarketMakerHedgeStrategy {
                         order_update.order_id()
                     );
                 }
-                return;
+                return true;
             }
             let base_qty = MonitorChannel::instance().qty_to_base(
                 order_update.trading_venue(),
@@ -871,7 +902,7 @@ impl MarketMakerHedgeStrategy {
                 filled_qty,
             );
             if base_qty <= 0.0 {
-                return;
+                return true;
             }
             let signed_qty = match order_update.side() {
                 Side::Buy => base_qty,
@@ -897,6 +928,8 @@ impl MarketMakerHedgeStrategy {
                 self.net_qty
             );
         }
+
+        true
     }
 
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
@@ -1029,8 +1062,10 @@ impl Strategy for MarketMakerHedgeStrategy {
     }
 
     fn apply_order_update(&mut self, update: &dyn OrderUpdate) {
-        MarketMakerHedgeStrategy::apply_order_update(self, update);
-        PersistChannel::with(|ch| ch.publish_order_update(update));
+        let should_persist = MarketMakerHedgeStrategy::apply_order_update(self, update);
+        if should_persist {
+            PersistChannel::with(|ch| ch.publish_order_update(update));
+        }
     }
 
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
@@ -1052,7 +1087,10 @@ impl Strategy for MarketMakerHedgeStrategy {
         };
         if !matches!(
             req_type_enum,
-            TradeRequestType::BinanceWsNewUMOrder | TradeRequestType::BinanceWsCancelUMOrder
+            TradeRequestType::BinanceWsNewUMOrder
+                | TradeRequestType::BinanceWsCancelUMOrder
+                | TradeRequestType::BinanceWsNewMarginOrder
+                | TradeRequestType::BinanceWsCancelMarginOrder
         ) {
             return;
         }

@@ -202,6 +202,9 @@ impl TradeEngine {
         let mut gate_futures_ws_endpoints: Option<
             Vec<tokio::sync::mpsc::UnboundedSender<WsCommand>>,
         > = None;
+        let mut binance_spot_ws_endpoints: Option<
+            Vec<tokio::sync::mpsc::UnboundedSender<WsCommand>>,
+        > = None;
 
         let ws_endpoints = if exchange == Exchange::Okex {
             let mut local_ips = self.local_ips.clone();
@@ -349,10 +352,11 @@ impl TradeEngine {
             let max_inflight = WsConstants::MAX_INFLIGHT;
             let binance_creds = self.accounts.get(0).cloned();
 
-            let mut endpoints = Vec::with_capacity(local_ips.len());
+            let mut um_endpoints = Vec::with_capacity(local_ips.len());
+            let mut spot_endpoints = Vec::with_capacity(local_ips.len());
             for (idx, ip) in local_ips.into_iter().enumerate() {
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                let client = TradeWsClient::new(
+                let (um_tx, um_rx) = tokio::sync::mpsc::unbounded_channel();
+                let um_client = TradeWsClient::new(
                     idx,
                     exchange,
                     ip,
@@ -364,22 +368,51 @@ impl TradeEngine {
                     binance_creds.clone(),
                     None,
                     Some(query_resp_tx.clone()),
-                    rx,
+                    um_rx,
                     resp_tx.clone(),
                 );
                 info!(
-                    "spawning binance ws client id={} ip={} max_inflight={}",
+                    "spawning binance um ws client id={} ip={} max_inflight={}",
                     idx,
-                    client.local_ip(),
+                    um_client.local_ip(),
                     max_inflight
                 );
                 let handle = tokio::task::spawn_local(async move {
-                    client.run().await;
+                    um_client.run().await;
                 });
-                worker_handles.push(("binance_ws_client", handle));
-                endpoints.push(tx);
+                worker_handles.push(("binance_um_ws_client", handle));
+                um_endpoints.push(um_tx);
+
+                let (spot_tx, spot_rx) = tokio::sync::mpsc::unbounded_channel();
+                let spot_client = TradeWsClient::new(
+                    idx,
+                    exchange,
+                    ip,
+                    WsConstants::BINANCE_SPOT_WS_URL.to_string(),
+                    connect_timeout_ms,
+                    ping_interval_ms,
+                    max_inflight,
+                    None,
+                    binance_creds.clone(),
+                    None,
+                    None,
+                    spot_rx,
+                    resp_tx.clone(),
+                );
+                info!(
+                    "spawning binance spot ws client id={} ip={} max_inflight={}",
+                    idx,
+                    spot_client.local_ip(),
+                    max_inflight
+                );
+                let handle = tokio::task::spawn_local(async move {
+                    spot_client.run().await;
+                });
+                worker_handles.push(("binance_spot_ws_client", handle));
+                spot_endpoints.push(spot_tx);
             }
-            Some(endpoints)
+            binance_spot_ws_endpoints = Some(spot_endpoints);
+            Some(um_endpoints)
         } else {
             None
         };
@@ -387,12 +420,14 @@ impl TradeEngine {
         // Spawn unified request router
         let ws_endpoints_for_req_worker = ws_endpoints.clone();
         let gate_futures_ws_endpoints_for_req_worker = gate_futures_ws_endpoints.clone();
+        let binance_spot_ws_endpoints_for_req_worker = binance_spot_ws_endpoints.clone();
         let rest_dispatcher_for_orders = rest_dispatcher.clone();
         let resp_tx_for_req_worker = resp_tx.clone();
         let exchange_for_req_worker = exchange;
         let req_worker = tokio::task::spawn_local(async move {
             let mut ws_endpoints = ws_endpoints_for_req_worker;
             let mut gate_futures_ws_endpoints = gate_futures_ws_endpoints_for_req_worker;
+            let mut binance_spot_ws_endpoints = binance_spot_ws_endpoints_for_req_worker;
             let mut ws_rr_cursor = 0usize; // 轮询计数器
             let rest_dispatcher = rest_dispatcher_for_orders;
 
@@ -411,6 +446,14 @@ impl TradeEngine {
                                 | TradeRequestType::GateFuturesCancelOrder
                         ) {
                         gate_futures_ws_endpoints.as_mut()
+                    } else if exchange_for_req_worker == Exchange::Binance
+                        && matches!(
+                            msg.req_type,
+                            TradeRequestType::BinanceWsNewMarginOrder
+                                | TradeRequestType::BinanceWsCancelMarginOrder
+                        )
+                    {
+                        binance_spot_ws_endpoints.as_mut()
                     } else {
                         ws_endpoints.as_mut()
                     };
@@ -553,6 +596,11 @@ impl TradeEngine {
                     let _ = tx.send(WsCommand::Shutdown);
                 }
             }
+            if let Some(ref endpoints) = binance_spot_ws_endpoints {
+                for tx in endpoints {
+                    let _ = tx.send(WsCommand::Shutdown);
+                }
+            }
         });
         worker_handles.push(("req_worker", req_worker));
 
@@ -562,6 +610,7 @@ impl TradeEngine {
             let exchange_copy = exchange;
             let query_resp_tx = query_resp_tx.clone();
             let binance_ws_endpoints = ws_endpoints.clone();
+            let binance_spot_ws_endpoints = binance_spot_ws_endpoints.clone();
             let gate_spot_ws_endpoints = ws_endpoints.clone();
             let gate_futures_ws_endpoints = gate_futures_ws_endpoints.clone();
             let query_router = tokio::task::spawn_local(async move {
@@ -583,8 +632,17 @@ impl TradeEngine {
 
                     match exchange_copy {
                         Exchange::Binance => {
-                            if msg.req_type == QueryRequestType::BinanceWsUMQuery {
-                                let Some(endpoints) = binance_ws_endpoints.as_ref() else {
+                            if msg.req_type == QueryRequestType::BinanceWsUMQuery
+                                || msg.req_type == QueryRequestType::BinanceWsMarginQuery
+                            {
+                                let target_endpoints =
+                                    if msg.req_type == QueryRequestType::BinanceWsMarginQuery {
+                                        binance_spot_ws_endpoints.as_ref()
+                                    } else {
+                                        binance_ws_endpoints.as_ref()
+                                    };
+
+                                let Some(endpoints) = target_endpoints else {
                                     let _ = query_resp_tx.send(QueryExecOutcome {
                                         req_type: msg.req_type,
                                         client_query_id: msg.client_query_id,
@@ -1351,6 +1409,11 @@ impl TradeEngine {
 
         // Give ws clients a direct shutdown signal to shorten reconnect/backoff delays.
         if let Some(endpoints) = &ws_endpoints {
+            for tx in endpoints {
+                let _ = tx.send(WsCommand::Shutdown);
+            }
+        }
+        if let Some(endpoints) = &binance_spot_ws_endpoints {
             for tx in endpoints {
                 let _ = tx.send(WsCommand::Shutdown);
             }

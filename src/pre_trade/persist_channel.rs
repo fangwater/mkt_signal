@@ -2,8 +2,11 @@ use bytes::{BufMut, Bytes, BytesMut};
 use log::warn;
 use std::cell::OnceCell;
 
-use crate::common::iceoryx_publisher::{OrderUpdatePublisher, TradeUpdatePublisher};
+use crate::common::iceoryx_publisher::{
+    OrderUpdatePublisher, TradeUpdatePublisher, UniformOrderPublisher,
+};
 use crate::common::time_util::get_timestamp_us;
+use crate::persist_manager::unified_order::UnifiedOrderRecord;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
 
@@ -20,6 +23,8 @@ pub const TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL: &str = "trade_update_unmatched_
 pub const ORDER_UPDATE_RECORD_CHANNEL: &str = "order_update_record";
 /// 未匹配到策略的订单更新记录频道
 pub const ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL: &str = "order_update_unmatched_record";
+/// 统一订单记录频道
+pub const UNIFORM_ORDER_RECORD_CHANNEL: &str = "uniform_order_record";
 
 /// 持久化通道：负责将交易更新和订单更新通过 IceOryx 发布到下游持久化服务
 ///
@@ -39,6 +44,7 @@ pub struct PersistChannel {
     order_update_record_pub: Option<OrderUpdatePublisher>,
     trade_update_unmatched_pub: Option<TradeUpdatePublisher>,
     order_update_unmatched_pub: Option<OrderUpdatePublisher>,
+    uniform_order_record_pub: Option<UniformOrderPublisher>,
 }
 
 impl PersistChannel {
@@ -98,11 +104,17 @@ impl PersistChannel {
         .map_err(|e| warn!("PersistChannel order_update_unmatched_pub failed: {e:#}"))
         .ok();
 
+        let uniform_order_record_pub =
+            UniformOrderPublisher::new_with_prefix("persist_pubs", UNIFORM_ORDER_RECORD_CHANNEL)
+                .map_err(|e| warn!("PersistChannel uniform_order_record_pub failed: {e:#}"))
+                .ok();
+
         Self {
             trade_update_record_pub,
             order_update_record_pub,
             trade_update_unmatched_pub,
             order_update_unmatched_pub,
+            uniform_order_record_pub,
         }
     }
 
@@ -184,6 +196,23 @@ impl PersistChannel {
                 order_update.order_id(),
                 order_update.client_order_id(),
                 order_update.symbol()
+            );
+        }
+    }
+
+    /// 发布统一订单记录（二进制格式）
+    pub fn publish_uniform_order(&self, record: &UnifiedOrderRecord) {
+        let Some(publisher) = &self.uniform_order_record_pub else {
+            return;
+        };
+
+        let payload = serialize_uniform_order(record);
+        if let Err(err) = publisher.publish(payload.as_ref()) {
+            warn!(
+                "failed to publish uniform order update client_order_id={} symbol_len={} from_key_len={}: {err:#}",
+                record.client_order_id,
+                record.symbol_len,
+                record.from_key_len
             );
         }
     }
@@ -347,6 +376,59 @@ fn put_opt_string(buf: &mut BytesMut, value: Option<&str>) {
     } else {
         buf.put_u8(0); // no value
     }
+}
+
+/// 将 UnifiedOrderRecord 序列化为字节流
+///
+/// 格式：
+/// - recv_ts_us: i64
+/// - symbol_len: u16
+/// - symbol: [u8; symbol_len]
+/// - create_ts: i64
+/// - update_ts: i64
+/// - signal_ts: i64
+/// - client_order_id: i64
+/// - venue: u8
+/// - ttype: u8
+/// - side: u8
+/// - price: f64
+/// - price_offset: f64
+/// - amount_init: f64
+/// - amount_update: f64
+/// - status: u8
+/// - from_key_len: u32
+/// - from_key: [u8; from_key_len]
+fn serialize_uniform_order(record: &UnifiedOrderRecord) -> Bytes {
+    let mut buf = BytesMut::with_capacity(512);
+
+    buf.put_i64_le(get_timestamp_us());
+
+    let symbol_len = record.symbol.len() as u16;
+    buf.put_u16_le(symbol_len);
+    buf.put_slice(&record.symbol);
+
+    buf.put_i64_le(record.create_ts);
+    buf.put_i64_le(record.update_ts);
+    buf.put_i64_le(record.signal_ts);
+
+    buf.put_i64_le(record.client_order_id);
+
+    buf.put_u8(record.venue);
+    buf.put_u8(record.ttype);
+    buf.put_u8(record.side);
+
+    buf.put_f64_le(record.price);
+    buf.put_f64_le(record.price_offset);
+    buf.put_f64_le(record.amount_init);
+    buf.put_f64_le(record.amount_update);
+
+    buf.put_u8(record.status);
+
+    let from_key_len = record.from_key.len() as u32;
+    buf.put_u32_le(from_key_len);
+    buf.put_slice(&record.from_key);
+
+    buf.freeze()
 }
 
 // NOTE: persist-channel unit tests removed per repo usage (requires IceOryx runtime/namespace).

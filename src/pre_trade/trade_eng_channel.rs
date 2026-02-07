@@ -374,7 +374,10 @@ fn persist_unmatched_trade_engine_response(response: &TradeEngineResponseMessage
 
     if !matches!(
         req_type,
-        TradeRequestType::BinanceWsNewUMOrder | TradeRequestType::BinanceWsCancelUMOrder
+        TradeRequestType::BinanceWsNewUMOrder
+            | TradeRequestType::BinanceWsCancelUMOrder
+            | TradeRequestType::BinanceWsNewMarginOrder
+            | TradeRequestType::BinanceWsCancelMarginOrder
     ) {
         debug!(
             "skip unmatched persist for req_type without stable tail fields: req_type={:?} cli_ord_id={}",

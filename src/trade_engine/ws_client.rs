@@ -133,6 +133,9 @@ impl TradeWsClient {
             );
         }
 
+        let is_binance_spot_ws =
+            exchange == Exchange::Binance && url.contains("ws-api.binance.com");
+
         Self {
             id,
             exchange,
@@ -158,7 +161,13 @@ impl TradeWsClient {
                 Exchange::Gate => gate_ws_kind
                     .unwrap_or(gate_ws::GateWsKind::SpotUnified)
                     .default_request_type(),
-                Exchange::Binance => TradeRequestType::BinanceWsNewUMOrder,
+                Exchange::Binance => {
+                    if is_binance_spot_ws {
+                        TradeRequestType::BinanceWsNewMarginOrder
+                    } else {
+                        TradeRequestType::BinanceWsNewUMOrder
+                    }
+                }
                 _ => TradeRequestType::BinanceNewUMOrder,
             },
             last_dispatched_query_type: match exchange {
@@ -166,7 +175,13 @@ impl TradeWsClient {
                     gate_ws::GateWsKind::SpotUnified => QueryRequestType::GateUnifiedOrderQuery,
                     gate_ws::GateWsKind::FuturesUsdt => QueryRequestType::GateFuturesOrderQuery,
                 },
-                Exchange::Binance => QueryRequestType::BinanceWsUMQuery,
+                Exchange::Binance => {
+                    if is_binance_spot_ws {
+                        QueryRequestType::BinanceWsMarginQuery
+                    } else {
+                        QueryRequestType::BinanceWsUMQuery
+                    }
+                }
                 _ => QueryRequestType::GateUnifiedOrderQuery,
             },
             shutdown: false,

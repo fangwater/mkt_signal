@@ -102,8 +102,12 @@ fn build_signed_params(raw: &[u8], creds: &ApiKey) -> Result<BTreeMap<String, St
 
 pub fn build_order_payload(msg: &TradeRequestMsg, creds: &ApiKey) -> Result<String> {
     let method = match msg.req_type {
-        TradeRequestType::BinanceWsNewUMOrder => METHOD_ORDER_PLACE,
-        TradeRequestType::BinanceWsCancelUMOrder => METHOD_ORDER_CANCEL,
+        TradeRequestType::BinanceWsNewUMOrder | TradeRequestType::BinanceWsNewMarginOrder => {
+            METHOD_ORDER_PLACE
+        }
+        TradeRequestType::BinanceWsCancelUMOrder | TradeRequestType::BinanceWsCancelMarginOrder => {
+            METHOD_ORDER_CANCEL
+        }
         _ => {
             return Err(anyhow!(
                 "unsupported binance ws request type: {:?}",
@@ -122,7 +126,9 @@ pub fn build_order_payload(msg: &TradeRequestMsg, creds: &ApiKey) -> Result<Stri
 }
 
 pub fn build_query_payload(msg: &QueryRequestMsg, creds: &ApiKey) -> Result<String> {
-    if msg.req_type != QueryRequestType::BinanceWsUMQuery {
+    if msg.req_type != QueryRequestType::BinanceWsUMQuery
+        && msg.req_type != QueryRequestType::BinanceWsMarginQuery
+    {
         return Err(anyhow!(
             "unsupported binance ws query type: {:?}",
             msg.req_type
@@ -198,6 +204,7 @@ pub fn extract_order_info(resp: &BinanceWsResponse) -> (i64, u8, i64, f64) {
     let update_time = result
         .get("updateTime")
         .and_then(parse_i64_value)
+        .or_else(|| result.get("transactTime").and_then(parse_i64_value))
         .unwrap_or(0);
     let executed_qty = result
         .get("executedQty")

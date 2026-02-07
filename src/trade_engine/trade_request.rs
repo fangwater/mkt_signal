@@ -18,6 +18,8 @@ pub enum TradeRequestType {
     BinanceUMSetLeverage = 4012,                // 币安UM设置杠杆
     BinanceWsNewUMOrder = 4013,                 // 币安UM WebSocket 下单请求
     BinanceWsCancelUMOrder = 4014,              // 币安UM WebSocket 撤单请求
+    BinanceWsNewMarginOrder = 4015,             // 币安现货(标准账户) WebSocket 下单请求
+    BinanceWsCancelMarginOrder = 4016,          // 币安现货(标准账户) WebSocket 撤单请求
     OkexNewMarginOrder = 5001,                  // Okex 下单（现货/杠杆）
     OkexNewUMOrder = 5002,                      // Okex 下单（合约/UM风格）
     OkexCancelMarginOrder = 5003,               // Okex 撤单（现货/杠杆）
@@ -62,6 +64,8 @@ impl TryFrom<u32> for TradeRequestType {
             4012 => Ok(TradeRequestType::BinanceUMSetLeverage),
             4013 => Ok(TradeRequestType::BinanceWsNewUMOrder),
             4014 => Ok(TradeRequestType::BinanceWsCancelUMOrder),
+            4015 => Ok(TradeRequestType::BinanceWsNewMarginOrder),
+            4016 => Ok(TradeRequestType::BinanceWsCancelMarginOrder),
             5001 => Ok(TradeRequestType::OkexNewMarginOrder),
             5002 => Ok(TradeRequestType::OkexNewUMOrder),
             5003 => Ok(TradeRequestType::OkexCancelMarginOrder),
@@ -213,6 +217,41 @@ impl BinanceWsNewUMOrderRequest {
     }
 }
 
+// 币安现货(标准账户) WebSocket 下单请求
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct BinanceWsNewMarginOrderRequest {
+    pub header: TradeRequestHeader,
+    pub params: Bytes, // 额外的请求参数（JSON或其他格式）
+}
+
+impl BinanceWsNewMarginOrderRequest {
+    pub fn create(create_time: i64, client_order_id: i64, params: Bytes) -> Self {
+        let header = TradeRequestHeader {
+            msg_type: TradeRequestType::BinanceWsNewMarginOrder as u32,
+            params_length: params.len() as u32,
+            create_time,
+            client_order_id,
+        };
+
+        Self { header, params }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 4 + 8 + 8 + self.params.len();
+
+        let mut buf = BytesMut::with_capacity(total_size);
+
+        buf.put_u32_le(self.header.msg_type);
+        buf.put_u32_le(self.header.params_length);
+        buf.put_i64_le(self.header.create_time);
+        buf.put_i64_le(self.header.client_order_id);
+        buf.put(self.params.clone());
+
+        buf.freeze()
+    }
+}
+
 // 币安UM条件单下单请求
 #[repr(C, align(8))]
 #[derive(Debug, Clone)]
@@ -324,6 +363,41 @@ impl BinanceCancelUMOrderRequest {
 pub struct BinanceWsCancelUMOrderRequest {
     pub header: TradeRequestHeader,
     pub params: Bytes, // 额外的请求参数（JSON或其他格式）
+}
+
+// 币安现货(标准账户) WebSocket 撤单请求
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct BinanceWsCancelMarginOrderRequest {
+    pub header: TradeRequestHeader,
+    pub params: Bytes, // 额外的请求参数（JSON或其他格式）
+}
+
+impl BinanceWsCancelMarginOrderRequest {
+    pub fn create(create_time: i64, client_order_id: i64, params: Bytes) -> Self {
+        let header = TradeRequestHeader {
+            msg_type: TradeRequestType::BinanceWsCancelMarginOrder as u32,
+            params_length: params.len() as u32,
+            create_time,
+            client_order_id,
+        };
+
+        Self { header, params }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 4 + 8 + 8 + self.params.len();
+
+        let mut buf = BytesMut::with_capacity(total_size);
+
+        buf.put_u32_le(self.header.msg_type);
+        buf.put_u32_le(self.header.params_length);
+        buf.put_i64_le(self.header.create_time);
+        buf.put_i64_le(self.header.client_order_id);
+        buf.put(self.params.clone());
+
+        buf.freeze()
+    }
 }
 
 impl BinanceWsCancelUMOrderRequest {
