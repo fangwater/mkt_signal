@@ -54,18 +54,6 @@ todo:
   - [MMOpen](docs/from_key_rules/mm_open.md)
   - [MMHedge](docs/from_key_rules/mm_hedge.md)
   
-### 订单信息构造规则
-#### 屏蔽重复倒入的情况
-#### 订单create规则
-- [1] 资费套利开仓
-- [2] 跨所套利开仓
-- [3] 做市开仓
-
-#### 订单部分成交/成交记录
-#### 订单撤单记录
-
-
-
 
 ## 做市信号开发
 

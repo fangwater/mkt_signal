@@ -184,7 +184,7 @@ struct RlReturnVolatilityResult {
     note: String,
 }
 
-fn parse_rl_return_volatility_payload(data: &[u8]) -> Result<RlReturnVolatilitySnapshot> {
+fn parse_factor_value_payload(data: &[u8]) -> Result<RlReturnVolatilitySnapshot> {
     let mut cursor = Bytes::copy_from_slice(data);
     if cursor.remaining() < 8 {
         anyhow::bail!("payload too short");
@@ -318,7 +318,7 @@ impl XarbDecision {
             }
         };
 
-        let snapshot = match parse_rl_return_volatility_payload(&raw) {
+        let snapshot = match parse_factor_value_payload(&raw) {
             Ok(val) => val,
             Err(err) => {
                 return RlReturnVolatilityResult {
