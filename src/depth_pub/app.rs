@@ -3,10 +3,11 @@
 //! 订阅 mkt_pub 的 incremental 数据，维护订单簿，发布深度快照
 
 use anyhow::Result;
-use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
+use iceoryx2::active_request::ActiveRequest;
+use iceoryx2::port::{server::Server, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
@@ -15,10 +16,12 @@ use super::depth_msg::DepthMsg;
 use super::orderbook::OrderBook;
 use super::publisher::DepthMsgPublisher;
 use super::query_msg::{
-    DepthQueryHeader, DepthQueryLoadTlenCtx, DepthQueryType, DEPTH_QUERY_PAYLOAD,
+    resp_status_name, DepthQueryHeader, DepthQueryLoadTlenBatchReq, DepthQueryLoadTlenBatchResp,
+    DepthQueryLoadTlenSingleReq, DepthQueryLoadTlenSingleResp, DepthQueryType,
+    DEPTH_QUERY_PAYLOAD, RESP_STATUS_BAD_REQUEST, RESP_STATUS_OK, RESP_STATUS_PAYLOAD_TOO_LARGE,
     RESP_STATUS_UNSUPPORTED_TYPE,
 };
-use crate::signal::common::{align_price_floor, TradingVenue};
+use crate::signal::common::TradingVenue;
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 
 /// IceOryx 增量消息缓冲区大小 (与 mkt_pub 一致)
@@ -27,6 +30,10 @@ const TIMER_CHECK_EVERY_INCS: u64 = 500;
 const IDLE_SLEEP_MICROS: u64 = 100;
 /// 滑动窗口大小：用于去重的最近 update_id 数量
 const DEDUP_WINDOW_SIZE: usize = 256;
+const DEPTH_QUERY_SERVICE_PREFIX: &str = "depth_queries";
+
+type DepthQueryServer = Server<ipc::Service, [u8], (), [u8], ()>;
+type DepthQueryActiveRequest = ActiveRequest<ipc::Service, [u8], (), [u8], ()>;
 
 /// 每个 symbol 的状态
 struct SymbolState {
@@ -80,8 +87,7 @@ pub struct DepthPubApp {
     venue_slug: String,
     publisher: DepthMsgPublisher,
     subscriber: Subscriber<ipc::Service, [u8; INC_MAX_BYTES], ()>,
-    query_subscriber: Subscriber<ipc::Service, [u8; DEPTH_QUERY_PAYLOAD], ()>,
-    query_publisher: Publisher<ipc::Service, [u8; DEPTH_QUERY_PAYLOAD], ()>,
+    query_server: DepthQueryServer,
     min_qty_table: VenueMinQtyTable,
     /// symbol -> SymbolState
     symbols: HashMap<String, SymbolState>,
@@ -123,8 +129,7 @@ impl DepthPubApp {
             venue_slug
         );
 
-        let query_subscriber = Self::create_query_subscriber(publisher.node(), venue_slug)?;
-        let query_publisher = Self::create_query_publisher(publisher.node(), venue_slug)?;
+        let query_server = Self::create_query_server(publisher.node(), venue_slug)?;
 
         info!(
             "DepthPubApp created for {}: push_interval={}ms, depth25={}, depth50={}",
@@ -140,8 +145,7 @@ impl DepthPubApp {
             venue_slug: venue_slug.to_string(),
             publisher,
             subscriber,
-            query_subscriber,
-            query_publisher,
+            query_server,
             min_qty_table,
             symbols: HashMap::new(),
             push_interval,
@@ -168,34 +172,29 @@ impl DepthPubApp {
         Ok(subscriber)
     }
 
-    fn create_query_subscriber(
+    fn create_query_server(
         node: &Node<ipc::Service>,
         venue: &str,
-    ) -> Result<Subscriber<ipc::Service, [u8; DEPTH_QUERY_PAYLOAD], ()>> {
-        let service_name = format!("depth_query_reqs/{}", venue);
+    ) -> Result<DepthQueryServer> {
+        let service_name = format!("{}/{}", DEPTH_QUERY_SERVICE_PREFIX, venue);
         let service = node
             .service_builder(&ServiceName::new(&service_name)?)
-            .publish_subscribe::<[u8; DEPTH_QUERY_PAYLOAD]>()
-            .subscriber_max_buffer_size(256)
+            .request_response::<[u8], [u8]>()
+            .max_active_requests_per_client(64)
+            .max_loaned_requests(64)
+            .max_response_buffer_size(64)
+            .max_clients(64)
+            .max_servers(1)
             .open_or_create()?;
-        let subscriber = service.subscriber_builder().create()?;
-        info!("Subscribed to depth query reqs: {}", service_name);
-        Ok(subscriber)
-    }
 
-    fn create_query_publisher(
-        node: &Node<ipc::Service>,
-        venue: &str,
-    ) -> Result<Publisher<ipc::Service, [u8; DEPTH_QUERY_PAYLOAD], ()>> {
-        let service_name = format!("depth_query_resps/{}", venue);
-        let service = node
-            .service_builder(&ServiceName::new(&service_name)?)
-            .publish_subscribe::<[u8; DEPTH_QUERY_PAYLOAD]>()
-            .subscriber_max_buffer_size(256)
-            .open_or_create()?;
-        let publisher = service.publisher_builder().create()?;
-        info!("Depth query responder ready: {}", service_name);
-        Ok(publisher)
+        let server = service
+            .server_builder()
+            .initial_max_slice_len(DEPTH_QUERY_PAYLOAD)
+            .max_loaned_responses_per_request(1)
+            .create()?;
+
+        info!("Depth query sync server ready: {}", service_name);
+        Ok(server)
     }
 
     /// 主循环
@@ -214,9 +213,9 @@ impl DepthPubApp {
                 self.process_message(&data);
             }
 
-            while let Some(sample) = self.query_subscriber.receive()? {
+            while let Some(active_request) = self.query_server.receive()? {
                 has_message = true;
-                self.handle_query_request(sample.payload());
+                self.handle_query_request(active_request);
             }
 
             // 如果没有消息，短暂休眠避免 CPU 空转
@@ -495,11 +494,14 @@ impl DepthPubApp {
         self.push_count += 1;
     }
 
-    fn handle_query_request(&mut self, payload: &[u8; DEPTH_QUERY_PAYLOAD]) {
+    fn handle_query_request(&mut self, active_request: DepthQueryActiveRequest) {
+        let payload = active_request.payload();
+
         let header = match DepthQueryHeader::parse(payload) {
             Ok(h) => h,
             Err(err) => {
                 warn!("Depth query parse failed: {err:#}");
+                let _ = self.send_query_response(active_request, &[RESP_STATUS_BAD_REQUEST]);
                 return;
             }
         };
@@ -510,91 +512,191 @@ impl DepthPubApp {
                 Ok(offset) => offset,
                 Err(err) => {
                     warn!("Depth query response header build failed: {err:#}");
+                    let _ = self.send_query_response(active_request, &[RESP_STATUS_BAD_REQUEST]);
                     return;
                 }
             };
 
-        let resp_payload = &mut resp[payload_offset..];
+        let req_payload = &payload[payload_offset..];
+        let status;
+        let mut body_len = 0usize;
+
         match DepthQueryType::from_u8(header.query_type) {
-            Some(DepthQueryType::LoadTlen) => {
-                let req_payload = &payload[payload_offset..];
-                self.handle_load_tlen_query(&header.symbol, req_payload, resp_payload);
+            Some(DepthQueryType::LoadTlenSingle) => {
+                let resp_payload = &mut resp[payload_offset..];
+                let (st, written) =
+                    self.handle_load_tlen_single_query(&header.symbol, req_payload, resp_payload);
+                status = st;
+                body_len = written;
+            }
+            Some(DepthQueryType::LoadTlenBatch) => {
+                let resp_payload = &mut resp[payload_offset..];
+                let (st, written) =
+                    self.handle_load_tlen_batch_query(&header.symbol, req_payload, resp_payload);
+                status = st;
+                body_len = written;
             }
             _ => {
+                let resp_payload = &mut resp[payload_offset..];
                 if !resp_payload.is_empty() {
                     resp_payload[0] = RESP_STATUS_UNSUPPORTED_TYPE;
+                    body_len = 1;
                 }
+                status = RESP_STATUS_UNSUPPORTED_TYPE;
             }
         }
 
-        if let Err(err) = self.publish_query_response(&resp) {
+        if body_len == 0 {
+            let resp_payload = &mut resp[payload_offset..];
+            if !resp_payload.is_empty() {
+                resp_payload[0] = status;
+                body_len = 1;
+            }
+        }
+
+        debug!(
+            "Depth query handled: venue={} symbol={} type={} status={}({})",
+            self.venue_slug,
+            header.symbol,
+            header.query_type,
+            status,
+            resp_status_name(status)
+        );
+
+        let total_len = payload_offset + body_len;
+        if let Err(err) = self.send_query_response(active_request, &resp[..total_len]) {
             warn!("Depth query response send failed: {err:#}");
         }
     }
 
-    fn handle_load_tlen_query(
-        &mut self,
+    fn handle_load_tlen_single_query(
+        &self,
         symbol: &str,
         req_payload: &[u8],
         resp_payload: &mut [u8],
-    ) {
-        if resp_payload.len() < DepthQueryLoadTlenCtx::RESP_LEN {
-            return;
+    ) -> (u8, usize) {
+        if resp_payload.len() < 1 + DepthQueryLoadTlenSingleResp::RESP_LEN {
+            return (RESP_STATUS_PAYLOAD_TOO_LARGE, 0);
         }
 
-        let ctx = match DepthQueryLoadTlenCtx::from_payload(req_payload) {
+        let req = match DepthQueryLoadTlenSingleReq::from_payload(req_payload) {
             Ok(ctx) => ctx,
             Err(err) => {
-                warn!("Depth query load_tlen ctx parse failed: {err:#}");
-                return;
+                warn!("Depth query load_tlen single req parse failed: {err:#}");
+                return (RESP_STATUS_BAD_REQUEST, 1);
             }
         };
 
-        let table_symbol_key = self.symbol_key_for_table(symbol);
-        let Some(tick) = self.min_qty_table.price_tick(&table_symbol_key) else {
-            error!(
-                "DepthPubApp[{}] missing price_tick: symbol={} table_key={}",
-                self.venue_slug, symbol, table_symbol_key
-            );
-            panic!(
-                "DepthPubApp missing price_tick for symbol={} (venue={:?})",
-                symbol, self.venue
-            );
+        let amount = self.query_tlen_amount(symbol, req.price);
+
+        let resp = DepthQueryLoadTlenSingleResp {
+            timestamp_us: req.timestamp_us,
+            amount,
         };
-        let aligned_price = align_price_floor(ctx.price, tick);
-
-        let orderbook_symbol = if self.symbols.contains_key(symbol) {
-            Some(symbol.to_string())
-        } else {
-            let upper = symbol.to_ascii_uppercase();
-            if self.symbols.contains_key(&upper) {
-                Some(upper)
-            } else {
-                None
+        match resp.write_to(&mut resp_payload[1..]) {
+            Ok(written) => {
+                resp_payload[0] = RESP_STATUS_OK;
+                (RESP_STATUS_OK, 1 + written)
             }
-        };
-
-        let mut amount = 0.0;
-        if let Some(orderbook_symbol) = orderbook_symbol {
-            if let Some(state) = self.symbols.get(&orderbook_symbol) {
-                if state.orderbook.is_valid() {
-                    amount = state
-                        .orderbook
-                        .amount_at_price(aligned_price)
-                        .unwrap_or(0.0);
-                }
+            Err(err) => {
+                warn!("Depth query load_tlen single resp write failed: {err:#}");
+                resp_payload[0] = RESP_STATUS_PAYLOAD_TOO_LARGE;
+                (RESP_STATUS_PAYLOAD_TOO_LARGE, 1)
             }
-        }
-
-        if let Err(err) = ctx.write_response(resp_payload, amount) {
-            warn!("Depth query load_tlen resp write failed: {err:#}");
         }
     }
 
-    fn publish_query_response(&self, payload: &[u8; DEPTH_QUERY_PAYLOAD]) -> Result<()> {
-        let sample = self.query_publisher.loan_uninit()?;
-        let sample = sample.write_payload(*payload);
-        sample.send()?;
+    fn handle_load_tlen_batch_query(
+        &self,
+        symbol: &str,
+        req_payload: &[u8],
+        resp_payload: &mut [u8],
+    ) -> (u8, usize) {
+        if resp_payload.len() < 2 {
+            return (RESP_STATUS_PAYLOAD_TOO_LARGE, 0);
+        }
+
+        let req = match DepthQueryLoadTlenBatchReq::from_payload(req_payload) {
+            Ok(v) => v,
+            Err(err) => {
+                warn!("Depth query load_tlen batch req parse failed: {err:#}");
+                return (RESP_STATUS_BAD_REQUEST, 1);
+            }
+        };
+
+        let mut amounts = Vec::with_capacity(req.prices.len());
+        for price in req.prices {
+            amounts.push(self.query_tlen_amount(symbol, price));
+        }
+
+        match DepthQueryLoadTlenBatchResp::write_to(&mut resp_payload[1..], req.timestamp_us, &amounts) {
+            Ok(written) => {
+                resp_payload[0] = RESP_STATUS_OK;
+                (RESP_STATUS_OK, 1 + written)
+            }
+            Err(err) => {
+                warn!("Depth query load_tlen batch resp write failed: {err:#}");
+                resp_payload[0] = RESP_STATUS_PAYLOAD_TOO_LARGE;
+                (RESP_STATUS_PAYLOAD_TOO_LARGE, 1)
+            }
+        }
+    }
+
+    fn query_tlen_amount(&self, symbol: &str, raw_price: f64) -> f64 {
+        if !raw_price.is_finite() {
+            return -1.0;
+        }
+
+        let table_symbol_key = self.symbol_key_for_table(symbol);
+        let Some(tick) = self.min_qty_table.price_tick(&table_symbol_key) else {
+            return -1.0;
+        };
+
+        if !Self::is_price_on_tick(raw_price, tick) {
+            return -1.0;
+        }
+
+        let orderbook_symbol = if self.symbols.contains_key(symbol) {
+            symbol.to_string()
+        } else {
+            let upper = symbol.to_ascii_uppercase();
+            if self.symbols.contains_key(&upper) {
+                upper
+            } else {
+                return -1.0;
+            }
+        };
+
+        let Some(state) = self.symbols.get(&orderbook_symbol) else {
+            return -1.0;
+        };
+        if !state.orderbook.is_valid() {
+            return -1.0;
+        }
+
+        state.orderbook.amount_at_price(raw_price).unwrap_or(0.0)
+    }
+
+    fn is_price_on_tick(price: f64, tick: f64) -> bool {
+        if !tick.is_finite() || tick <= 0.0 {
+            return false;
+        }
+
+        let steps = price / tick;
+        if !steps.is_finite() {
+            return false;
+        }
+
+        let nearest = steps.round();
+        let reconstructed = nearest * tick;
+        let tolerance = tick.abs() * 1e-9 + 1e-12;
+        (reconstructed - price).abs() <= tolerance
+    }
+
+    fn send_query_response(&self, active_request: DepthQueryActiveRequest, payload: &[u8]) -> Result<()> {
+        let response = active_request.loan_slice_uninit(payload.len())?;
+        let response = response.write_from_slice(payload);
+        response.send()?;
         Ok(())
     }
 

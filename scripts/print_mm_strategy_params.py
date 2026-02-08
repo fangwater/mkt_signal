@@ -77,12 +77,38 @@ def parse_args() -> argparse.Namespace:
 PARAM_COMMENTS: Dict[str, str] = {
     "order_amount": "单笔下单量(USDT)",
     "open_price_offsets": "开仓挂单档位(JSON数组)",
+    "open_vol_upper_scale": "开仓侧上界修正系数（基于波动率因子）",
+    "open_vol_lower_scale": "开仓侧下界修正系数（基于波动率因子）",
+    "open_price_offset_limit_upper": "开仓侧偏移上界（price_offset_limit）",
+    "open_price_offset_limit_lower": "开仓侧偏移下界（price_offset_limit）",
     "open_order_timeout": "开仓订单超时(秒)",
     "next_query_delay_ms": "对冲 query 触发间隔(ms)",
+    "hedge_vol_upper_scale": "对冲侧上界修正系数（基于波动率因子，如 rl_return_volatility）",
+    "hedge_vol_lower_scale": "对冲侧下界修正系数（基于波动率因子，如 rl_return_volatility）",
+    "hedge_price_offset_limit_upper": "对冲侧偏移上界（price_offset_limit）",
+    "hedge_price_offset_limit_lower": "对冲侧偏移下界（price_offset_limit）",
     "hedge_aggressive_seq_threshold": "对冲激进阈值(request_seq>=该值时不偏移，但仍为maker限价单)",
     "max_hedge_price_pct_change": "对冲价格最大变动阈值(%)，范围1-99，可为小数，超过则强制 taker",
     "signal_cooldown": "信号冷却时间(秒)",
 }
+
+PARAM_PRINT_ORDER = [
+    "order_amount",
+    "open_price_offsets",
+    "open_vol_upper_scale",
+    "open_vol_lower_scale",
+    "open_price_offset_limit_upper",
+    "open_price_offset_limit_lower",
+    "open_order_timeout",
+    "next_query_delay_ms",
+    "hedge_vol_upper_scale",
+    "hedge_vol_lower_scale",
+    "hedge_price_offset_limit_upper",
+    "hedge_price_offset_limit_lower",
+    "hedge_aggressive_seq_threshold",
+    "max_hedge_price_pct_change",
+    "signal_cooldown",
+]
 
 
 def print_params(rds, key: str) -> None:
@@ -93,14 +119,30 @@ def print_params(rds, key: str) -> None:
         print(f"⚠️  HASH '{key}' 为空或不存在")
         return
 
-    for raw_k, raw_v in sorted(data.items(), key=lambda kv: str(kv[0])):
+    decoded: Dict[str, str] = {}
+    for raw_k, raw_v in data.items():
         k = raw_k.decode("utf-8", "ignore") if isinstance(raw_k, bytes) else str(raw_k)
         v = raw_v.decode("utf-8", "ignore") if isinstance(raw_v, bytes) else str(raw_v)
+        decoded[k] = v
+
+    def print_one(k: str, v: str) -> None:
         comment = PARAM_COMMENTS.get(k, "")
         if comment:
             print(f"  {k:28} {v:>12}  # {comment}")
         else:
             print(f"  {k:28} {v:>12}")
+
+    printed = set()
+    for k in PARAM_PRINT_ORDER:
+        if k in decoded:
+            print_one(k, decoded[k])
+            printed.add(k)
+
+    # 兼容未来新增字段：未在固定顺序中的字段按字典序追加。
+    for k in sorted(decoded.keys()):
+        if k in printed:
+            continue
+        print_one(k, decoded[k])
 
 
 def main() -> int:

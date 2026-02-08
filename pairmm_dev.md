@@ -57,6 +57,63 @@ todo:
 
 ## 做市信号开发
 
+### MM Hedge Query 重构（阶段 1：rl_return_volatility 中心范围）
+
+#### 背景
+- 现状：`MMHedge` query 回复使用固定 `open_price_offsets` 直接生成对冲价格层。
+- 问题：不同波动阶段下，固定偏移无法反映当前市场“应挂在多远”的动态变化。
+- 目标：参考 `xarb_decision` 中对 `rl_return_volatility` 的使用方式，在 MM 场景引入“中心偏移范围”。
+
+#### 输入
+- Query 输入（当前）：
+  - `symbol`
+  - `period_buy_qty`
+  - `period_sell_qty`
+  - `net_qty`
+- 因子输入：`rl_return_volatility`（按 `hedge venue + symbol` 查询）
+- 策略参数（新增）：
+  - `mm_strategy_params_{venue}.hedge_vol_upper_scale`
+  - `mm_strategy_params_{venue}.hedge_vol_lower_scale`
+
+#### 计算定义
+- 记 `rl_return_volatility` 最终值为 `x`（要求 `x > 0` 且可用）。
+- 定义上/下界偏移：
+  - `upper = x * (1 + hedge_vol_upper_scale)`
+  - `lower = x * (1 + hedge_vol_lower_scale)`
+- 对冲中心范围定义为：
+  - `range = [min(lower, upper), max(lower, upper)]`
+  - 约束：`range` 下界需要 `>= 0`（负值按 0 截断）。
+
+#### 与 MM 挂单层的衔接（阶段 1 约定）
+- 仍复用现有档位模板 `open_price_offsets` 的“层数与形状”。
+- 将模板偏移映射到上述 `range`，得到 query 回复使用的实际对冲偏移序列。
+- 即：
+  - 模板负责“多少档 + 相对稀疏度”；
+  - `rl_return_volatility + scale` 负责“整体中心位置与区间宽度”。
+
+#### Fallback 规则
+- 若因子缺失/未 ready/非法（非有限值、`<=0`），则回退到旧逻辑：
+  - 直接使用模板偏移（`open_price_offsets`）生成对冲价格层。
+- 若 `hedge_vol_upper_scale/hedge_vol_lower_scale` 缺失或解析失败：
+  - 视为配置错误，启动阶段直接失败（fail fast）。
+
+#### 日志与可观测性
+- 每次 query 处理需要记录：
+  - 因子 key、因子值、ready、ts、factor_index
+  - `hedge_vol_upper_scale/hedge_vol_lower_scale`
+  - `center/range` 及最终偏移序列来源（`factor_range` 或 `template_fallback`）
+
+#### 示例
+- 输入：`x = 0.0012, hedge_vol_upper_scale = 0.25, hedge_vol_lower_scale = -0.20`
+- 计算：
+  - `upper = 0.0012 * 1.25 = 0.0015`
+  - `lower = 0.0012 * 0.80 = 0.00096`
+- 对冲中心范围：`[0.00096, 0.00150]`
+
+#### 后续阶段（未在本阶段实现）
+- 在 query 中补充 request 元信息（如 `request_seq/query_ts`）以支持更强的幂等与回放诊断。
+- 在真实（非 mock）MM 信号层复用同一 `mm_hedge_decision` 逻辑，避免双实现漂移。
+
 ## 单所做市回测
 
 ## 支持现货做市交易
