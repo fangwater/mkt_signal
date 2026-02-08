@@ -182,7 +182,7 @@ struct FactorValueLookupResult {
     key: String,
     symbol_key: String,
     ready: Option<bool>,
-    factor: Option<f64>,
+    rl_return_volatility_factor: Option<f64>,
     ts_ms: Option<i64>,
     factor_index: Option<u16>,
     note: String,
@@ -300,7 +300,7 @@ impl XarbDecision {
         normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
     }
 
-    fn fetch_factor_value(
+    fn fetch_rl_return_volatility_factor(
         &mut self,
         hedge_symbol: &str,
         hedge_venue: TradingVenue,
@@ -317,7 +317,7 @@ impl XarbDecision {
                 key,
                 symbol_key,
                 ready: None,
-                factor: None,
+                rl_return_volatility_factor: None,
                 ts_ms: None,
                 factor_index: None,
                 note: format!("missing_factor_index_mapping:{}", TARGET_FACTOR_NAME),
@@ -331,7 +331,7 @@ impl XarbDecision {
                     key,
                     symbol_key,
                     ready: None,
-                    factor: None,
+                    rl_return_volatility_factor: None,
                     ts_ms: None,
                     factor_index: None,
                     note: "missing_key".to_string(),
@@ -342,7 +342,7 @@ impl XarbDecision {
                     key,
                     symbol_key,
                     ready: None,
-                    factor: None,
+                    rl_return_volatility_factor: None,
                     ts_ms: None,
                     factor_index: None,
                     note: format!("redis_error: {err}"),
@@ -357,7 +357,7 @@ impl XarbDecision {
                     key,
                     symbol_key,
                     ready: None,
-                    factor: None,
+                    rl_return_volatility_factor: None,
                     ts_ms: None,
                     factor_index: None,
                     note: format!("parse_error: {err}"),
@@ -369,7 +369,7 @@ impl XarbDecision {
             key,
             symbol_key,
             ready: Some(snapshot.ready),
-            factor: Some(snapshot.value),
+            rl_return_volatility_factor: Some(snapshot.value),
             ts_ms: Some(snapshot.timestamp_ms),
             factor_index: Some(snapshot.factor_index),
             note: "ok".to_string(),
@@ -679,9 +679,9 @@ impl XarbDecision {
             return Ok(None);
         }
         let pnlu_factor = pnlu_check.factor.unwrap_or(0.0);
-        let factor_value = self
-            .fetch_factor_value(hedge_symbol, hedge_venue)
-            .factor
+        let rl_return_volatility_factor = self
+            .fetch_rl_return_volatility_factor(hedge_symbol, hedge_venue)
+            .rl_return_volatility_factor
             .unwrap_or(0.0);
 
         self.emit_open_signals(
@@ -691,7 +691,7 @@ impl XarbDecision {
             hedge_venue,
             side,
             pnlu_factor,
-            factor_value,
+            rl_return_volatility_factor,
         )?;
 
         self.update_last_ts(&self.last_open_ts, key, now);
@@ -787,7 +787,8 @@ impl XarbDecision {
             .check_pnlu_factor(open_symbol_key.as_str(), now)
             .factor
             .unwrap_or(0.0);
-        let factor_lookup = self.fetch_factor_value(&hedge_symbol, hedge_venue);
+        let rl_return_volatility_lookup =
+            self.fetch_rl_return_volatility_factor(&hedge_symbol, hedge_venue);
         let seq_threshold = self.hedge_aggressive_seq_threshold;
         let aggressive = query.request_seq >= seq_threshold;
         let default_offset = self.hedge_price_offset.abs();
@@ -836,9 +837,8 @@ impl XarbDecision {
             let from_key = self.build_hedge_from_key(
                 now,
                 pnlu_factor,
-                factor_lookup.factor,
+                rl_return_volatility_lookup.rl_return_volatility_factor,
                 pct_change,
-                threshold_pct,
                 spread_rate,
             );
             ctx.set_from_key(from_key);
@@ -867,23 +867,23 @@ impl XarbDecision {
         let mut offset_source = "config";
         let mut offset_note = String::new();
 
-        let ready = factor_lookup.ready.unwrap_or(false);
+        let ready = rl_return_volatility_lookup.ready.unwrap_or(false);
 
         if ready {
-            if let Some(value) = factor_lookup.factor {
+            if let Some(value) = rl_return_volatility_lookup.rl_return_volatility_factor {
                 if value.is_finite() && value > 0.0 {
                     offset = value;
-                    offset_source = "factor_value";
+                    offset_source = "rl_return_volatility_factor";
                 } else {
                     offset_note = "invalid_factor".to_string();
                 }
             } else {
                 offset_note = "missing_factor".to_string();
             }
-        } else if factor_lookup.note == "ok" {
+        } else if rl_return_volatility_lookup.note == "ok" {
             offset_note = "not_ready".to_string();
         } else {
-            offset_note = factor_lookup.note.clone();
+            offset_note = rl_return_volatility_lookup.note.clone();
         }
 
         if aggressive {
@@ -899,14 +899,14 @@ impl XarbDecision {
         info!(
             "XarbDecision: hedge query offset source={} key={} symbol={} venue={:?} norm_symbol={} ready={} factor={:?} factor_index={:?} ts_ms={:?} offset={:.6} default_offset={:.6} aggressive={} note={}",
             offset_source,
-            factor_lookup.key,
+            rl_return_volatility_lookup.key,
             hedge_symbol,
             hedge_venue,
-            factor_lookup.symbol_key,
+            rl_return_volatility_lookup.symbol_key,
             ready,
-            factor_lookup.factor,
-            factor_lookup.factor_index,
-            factor_lookup.ts_ms,
+            rl_return_volatility_lookup.rl_return_volatility_factor,
+            rl_return_volatility_lookup.factor_index,
+            rl_return_volatility_lookup.ts_ms,
             offset,
             default_offset,
             aggressive,
@@ -960,9 +960,8 @@ impl XarbDecision {
         let from_key = self.build_hedge_from_key(
             now,
             pnlu_factor,
-            factor_lookup.factor,
+            rl_return_volatility_lookup.rl_return_volatility_factor,
             pct_change,
-            threshold_pct,
             spread_rate,
         );
         ctx.set_from_key(from_key);
@@ -1042,7 +1041,7 @@ impl XarbDecision {
         hedge_venue: TradingVenue,
         side: Side,
         pnlu_factor: f64,
-        factor_value: f64,
+        rl_return_volatility_factor: f64,
     ) -> Result<()> {
         let (open_quote, hedge_quote) =
             match self.load_valid_quotes(open_symbol, hedge_symbol, open_venue, hedge_venue) {
@@ -1052,7 +1051,9 @@ impl XarbDecision {
         // Use one batch timestamp for all grid offsets in this emit call.
         let batch_ts = get_timestamp_us();
         let spread_rate = compute_spread_rate(&open_quote, &hedge_quote);
-        let from_key = format!("{batch_ts}:{pnlu_factor:.6}:{factor_value:.6}:{spread_rate:.6}");
+        let from_key = format!(
+            "{batch_ts}:{pnlu_factor:.6}:{rl_return_volatility_factor:.6}:{spread_rate:.6}"
+        );
 
         for offset in &self.price_offsets {
             let ctx = self.build_open_context(
@@ -1241,14 +1242,13 @@ impl XarbDecision {
         &self,
         now: i64,
         pnlu_factor: f64,
-        factor_value: Option<f64>,
+        rl_return_volatility_factor: Option<f64>,
         pct_change: f64,
-        threshold_pct: f64,
         spread_rate: f64,
     ) -> Vec<u8> {
-        let factor_value_val = factor_value.unwrap_or(0.0);
+        let rl_return_volatility_factor = rl_return_volatility_factor.unwrap_or(0.0);
         format!(
-            "{now}:{pnlu_factor:.6}:{factor_value_val:.6}:{pct_change:.6}:{threshold_pct:.6}:{spread_rate:.6}"
+            "{now}:{pnlu_factor:.6}:{rl_return_volatility_factor:.6}:{pct_change:.6}:{spread_rate:.6}"
         )
         .into_bytes()
     }
