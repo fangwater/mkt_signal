@@ -26,12 +26,10 @@ impl WsOrderUpdate {
     pub fn supports_trade_response_req_type(req_type: u32) -> bool {
         matches!(
             TradeRequestType::try_from(req_type),
-            Ok(
-                TradeRequestType::BinanceWsNewUMOrder
-                    | TradeRequestType::BinanceWsCancelUMOrder
-                    | TradeRequestType::BinanceWsNewMarginOrder
-                    | TradeRequestType::BinanceWsCancelMarginOrder
-            )
+            Ok(TradeRequestType::BinanceWsNewUMOrder
+                | TradeRequestType::BinanceWsCancelUMOrder
+                | TradeRequestType::BinanceWsNewMarginOrder
+                | TradeRequestType::BinanceWsCancelMarginOrder)
         )
     }
 

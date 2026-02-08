@@ -191,7 +191,7 @@ fn parse_rl_return_volatility_payload(data: &[u8]) -> Result<RlReturnVolatilityS
     }
 
     let msg_type = cursor.get_u32_le();
-    if msg_type != MktMsgType::RlReturnVolatility as u32 {
+    if msg_type != MktMsgType::FactorValue as u32 {
         anyhow::bail!("invalid msg_type {}", msg_type);
     }
 

@@ -1,7 +1,7 @@
 # 深度因子发布统一配置（基于 depth snapshot）
 
 data_source:
-  depth_channel: "depth20"
+  depth_channel: "depth25"
 
 runtime:
   reload_every: 120

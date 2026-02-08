@@ -10,8 +10,9 @@ use redis::Commands;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::common::mkt_msg::RlReturnVolatilityMsg;
+use crate::common::mkt_msg::FactorValueMsg;
 use crate::common::redis_client::RedisSettings;
+use crate::factor_pub::factor_index::factor_name_to_index;
 
 const FACTOR_MAX_BYTES: usize = 256;
 const REDIS_WARN_INTERVAL_SECS: u64 = 60;
@@ -83,6 +84,7 @@ struct FactorStats {
 
 pub struct DepthFactorPublisher {
     venue_slug: String,
+    factor_indices: HashMap<String, u16>,
     publishers: HashMap<String, Publisher<ipc::Service, [u8; FACTOR_MAX_BYTES], ()>>,
     redis_writer: Option<RedisKvWriter>,
     stats: HashMap<String, FactorStats>,
@@ -90,10 +92,15 @@ pub struct DepthFactorPublisher {
 
 impl DepthFactorPublisher {
     pub fn new(venue_slug: &str, factor_names: &[String]) -> Result<Self> {
+        let mut factor_indices = HashMap::new();
         let mut publishers = HashMap::new();
         let mut stats = HashMap::new();
 
         for factor_name in factor_names {
+            let Some(factor_index) = factor_name_to_index(factor_name.as_str()) else {
+                anyhow::bail!("unknown factor name for index mapping: {}", factor_name);
+            };
+
             let node_name = format!(
                 "depth_factor_pub_{}_{}",
                 venue_slug.replace('-', "_"),
@@ -115,10 +122,11 @@ impl DepthFactorPublisher {
             let publisher = service.publisher_builder().create()?;
 
             info!(
-                "DepthFactorPublisher created for {}: {}",
-                factor_name, service_path
+                "DepthFactorPublisher created for {}: {} (factor_index={})",
+                factor_name, service_path, factor_index
             );
 
+            factor_indices.insert(factor_name.clone(), factor_index);
             publishers.insert(factor_name.clone(), publisher);
             stats.insert(factor_name.clone(), FactorStats::default());
         }
@@ -133,6 +141,7 @@ impl DepthFactorPublisher {
 
         Ok(Self {
             venue_slug: venue_slug.to_string(),
+            factor_indices,
             publishers,
             redis_writer,
             stats,
@@ -147,7 +156,19 @@ impl DepthFactorPublisher {
         timestamp_ms: i64,
         ready: bool,
     ) -> bool {
-        let msg = RlReturnVolatilityMsg::create(symbol.to_string(), value, timestamp_ms, ready);
+        let Some(factor_index) = self.factor_indices.get(factor_name).copied() else {
+            warn!("Missing factor index for factor_name={}", factor_name);
+            self.bump_dropped(factor_name);
+            return false;
+        };
+
+        let msg = FactorValueMsg::create_with_factor_index(
+            symbol.to_string(),
+            value,
+            timestamp_ms,
+            ready,
+            factor_index,
+        );
         let bytes: Bytes = msg.to_bytes();
 
         if let Some(writer) = self.redis_writer.as_mut() {

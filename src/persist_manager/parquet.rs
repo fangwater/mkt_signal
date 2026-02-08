@@ -20,6 +20,13 @@ impl RangeFilter {
         }
     }
 
+    pub(crate) fn from_bounds(start_ts: u64, end_ts_inclusive: u64) -> Self {
+        Self {
+            start_ts: Some(start_ts),
+            end_ts: Some(end_ts_inclusive),
+        }
+    }
+
     fn contains(&self, ts: u64) -> bool {
         if let Some(start) = self.start_ts {
             if ts < start {
@@ -222,6 +229,102 @@ pub(crate) fn build_parquet_order_updates(
     Ok(buf)
 }
 
+pub(crate) fn build_parquet_uniform_orders(
+    entries: Vec<(Vec<u8>, Vec<u8>)>,
+    range: &RangeFilter,
+) -> Result<Vec<u8>> {
+    let mut key_col = Vec::with_capacity(entries.len());
+    let mut ts_col = Vec::with_capacity(entries.len());
+    let mut recv_ts_col = Vec::with_capacity(entries.len());
+    let mut symbol_col = Vec::with_capacity(entries.len());
+    let mut create_ts_col = Vec::with_capacity(entries.len());
+    let mut update_ts_col = Vec::with_capacity(entries.len());
+    let mut signal_ts_col = Vec::with_capacity(entries.len());
+    let mut client_order_id_col = Vec::with_capacity(entries.len());
+    let mut venue_col = Vec::with_capacity(entries.len());
+    let mut order_type_col = Vec::with_capacity(entries.len());
+    let mut side_col = Vec::with_capacity(entries.len());
+    let mut price_col = Vec::with_capacity(entries.len());
+    let mut price_offset_col = Vec::with_capacity(entries.len());
+    let mut amount_init_col = Vec::with_capacity(entries.len());
+    let mut amount_update_col = Vec::with_capacity(entries.len());
+    let mut status_col = Vec::with_capacity(entries.len());
+    let mut from_key_col = Vec::with_capacity(entries.len());
+    let mut from_key_hex_col = Vec::with_capacity(entries.len());
+
+    for (key_bytes, value_bytes) in entries {
+        let key = String::from_utf8(key_bytes)?;
+        let ts_us = parse_simple_key(&key)?;
+        if !range.contains(ts_us) {
+            continue;
+        }
+
+        let record = decode_uniform_order_record(&value_bytes)?;
+        let DecodedUniformOrderRecord {
+            recv_ts_us,
+            symbol,
+            create_ts,
+            update_ts,
+            signal_ts,
+            client_order_id,
+            trading_venue,
+            order_type,
+            side,
+            price,
+            price_offset,
+            amount_init,
+            amount_update,
+            status,
+            from_key,
+            from_key_hex,
+        } = record;
+
+        key_col.push(key);
+        ts_col.push(ts_us as i64);
+        recv_ts_col.push(recv_ts_us);
+        symbol_col.push(symbol);
+        create_ts_col.push(create_ts);
+        update_ts_col.push(update_ts);
+        signal_ts_col.push(signal_ts);
+        client_order_id_col.push(client_order_id);
+        venue_col.push(trading_venue);
+        order_type_col.push(order_type);
+        side_col.push(side);
+        price_col.push(price);
+        price_offset_col.push(price_offset);
+        amount_init_col.push(amount_init);
+        amount_update_col.push(amount_update);
+        status_col.push(status);
+        from_key_col.push(from_key);
+        from_key_hex_col.push(from_key_hex);
+    }
+
+    let mut df = DataFrame::new(vec![
+        Series::new("key".into(), key_col),
+        Series::new("ts_us".into(), ts_col),
+        Series::new("recv_ts_us".into(), recv_ts_col),
+        Series::new("symbol".into(), symbol_col),
+        Series::new("create_ts".into(), create_ts_col),
+        Series::new("update_ts".into(), update_ts_col),
+        Series::new("signal_ts".into(), signal_ts_col),
+        Series::new("client_order_id".into(), client_order_id_col),
+        Series::new("trading_venue".into(), venue_col),
+        Series::new("order_type".into(), order_type_col),
+        Series::new("side".into(), side_col),
+        Series::new("price".into(), price_col),
+        Series::new("price_offset".into(), price_offset_col),
+        Series::new("amount_init".into(), amount_init_col),
+        Series::new("amount_update".into(), amount_update_col),
+        Series::new("status".into(), status_col),
+        Series::new("from_key".into(), from_key_col),
+        Series::new("from_key_hex".into(), from_key_hex_col),
+    ])?;
+
+    let mut buf = Vec::new();
+    ParquetWriter::new(&mut buf).finish(&mut df)?;
+    Ok(buf)
+}
+
 #[derive(Debug)]
 struct DecodedTradeRecord {
     event_time: i64,
@@ -259,6 +362,26 @@ struct DecodedOrderRecord {
     average_price: Option<f64>,
     last_executed_price: Option<f64>,
     business_unit: Option<String>,
+}
+
+#[derive(Debug)]
+struct DecodedUniformOrderRecord {
+    recv_ts_us: i64,
+    symbol: String,
+    create_ts: i64,
+    update_ts: i64,
+    signal_ts: i64,
+    client_order_id: i64,
+    trading_venue: String,
+    order_type: String,
+    side: String,
+    price: f64,
+    price_offset: f64,
+    amount_init: f64,
+    amount_update: f64,
+    status: String,
+    from_key: String,
+    from_key_hex: String,
 }
 
 fn decode_trade_record(bytes: &[u8]) -> Result<DecodedTradeRecord> {
@@ -371,6 +494,93 @@ fn decode_order_record(bytes: &[u8]) -> Result<DecodedOrderRecord> {
     })
 }
 
+fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord> {
+    let mut cursor = Bytes::copy_from_slice(bytes);
+    let recv_ts_us = read_i64(&mut cursor, "uniform order recv_ts_us")?;
+
+    let symbol_len = read_u16(&mut cursor, "uniform order symbol_len")? as usize;
+    let symbol = read_bytes_as_string(&mut cursor, symbol_len, "uniform order symbol")?;
+
+    let create_ts = read_i64(&mut cursor, "uniform order create_ts")?;
+    let update_ts = read_i64(&mut cursor, "uniform order update_ts")?;
+    let signal_ts = read_i64(&mut cursor, "uniform order signal_ts")?;
+
+    let client_order_id = read_i64(&mut cursor, "uniform order client_order_id")?;
+
+    let venue_raw = read_u8(&mut cursor, "uniform order venue")?;
+    let order_type_raw = read_u8(&mut cursor, "uniform order order_type")?;
+    let side_raw = read_u8(&mut cursor, "uniform order side")?;
+
+    let price = read_f64(&mut cursor, "uniform order price")?;
+    let price_offset = read_f64(&mut cursor, "uniform order price_offset")?;
+    let amount_init = read_f64(&mut cursor, "uniform order amount_init")?;
+    let amount_update = read_f64(&mut cursor, "uniform order amount_update")?;
+
+    let status_raw = read_u8(&mut cursor, "uniform order status")?;
+
+    let from_key_len = read_u32(&mut cursor, "uniform order from_key_len")? as usize;
+    if cursor.remaining() < from_key_len {
+        return Err(anyhow!(
+            "payload too short to read uniform order from_key (need {from_key_len}, have {})",
+            cursor.remaining()
+        ));
+    }
+    let from_key_bytes = cursor.copy_to_bytes(from_key_len);
+    let from_key = String::from_utf8_lossy(from_key_bytes.as_ref()).into_owned();
+    let from_key_hex = hex::encode(from_key_bytes.as_ref());
+
+    if cursor.has_remaining() {
+        return Err(anyhow!(
+            "uniform order payload has {} trailing bytes",
+            cursor.remaining()
+        ));
+    }
+
+    let trading_venue = TradingVenue::from_u8(venue_raw)
+        .map(|v| v.as_str().to_string())
+        .unwrap_or_else(|| format!("Venue({venue_raw})"));
+    let order_type = OrderType::from_u8(order_type_raw)
+        .map(|v| v.as_str().to_string())
+        .unwrap_or_else(|| format!("Type({order_type_raw})"));
+    let side = Side::from_u8(side_raw)
+        .map(|v| v.as_str().to_string())
+        .unwrap_or_else(|| format!("Side({side_raw})"));
+    let status = OrderStatus::from_u8(status_raw)
+        .map(|v| v.as_str().to_string())
+        .unwrap_or_else(|| format!("Status({status_raw})"));
+
+    Ok(DecodedUniformOrderRecord {
+        recv_ts_us,
+        symbol,
+        create_ts,
+        update_ts,
+        signal_ts,
+        client_order_id,
+        trading_venue,
+        order_type,
+        side,
+        price,
+        price_offset,
+        amount_init,
+        amount_update,
+        status,
+        from_key,
+        from_key_hex,
+    })
+}
+
+fn read_bytes_as_string(cursor: &mut Bytes, len: usize, field: &str) -> Result<String> {
+    if cursor.remaining() < len {
+        return Err(anyhow!(
+            "payload too short to read {field} (need {len}, have {})",
+            cursor.remaining()
+        ));
+    }
+
+    let bytes = cursor.copy_to_bytes(len);
+    Ok(String::from_utf8_lossy(bytes.as_ref()).into_owned())
+}
+
 fn read_string(cursor: &mut Bytes) -> Result<String> {
     if cursor.remaining() < 4 {
         return Err(anyhow!("payload too short to read string length"));
@@ -416,6 +626,20 @@ fn read_i64(cursor: &mut Bytes, field: &str) -> Result<i64> {
         return Err(anyhow!("payload too short to read {field}"));
     }
     Ok(cursor.get_i64_le())
+}
+
+fn read_u16(cursor: &mut Bytes, field: &str) -> Result<u16> {
+    if cursor.remaining() < 2 {
+        return Err(anyhow!("payload too short to read {field}"));
+    }
+    Ok(cursor.get_u16_le())
+}
+
+fn read_u32(cursor: &mut Bytes, field: &str) -> Result<u32> {
+    if cursor.remaining() < 4 {
+        return Err(anyhow!("payload too short to read {field}"));
+    }
+    Ok(cursor.get_u32_le())
 }
 
 fn read_f64(cursor: &mut Bytes, field: &str) -> Result<f64> {

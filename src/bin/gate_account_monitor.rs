@@ -593,11 +593,9 @@ impl AccountEventDeduper {
     fn key_order(&self, msg: &GateBasicOrderMsg) -> u64 {
         self.hash64(&[
             BasicAccountEventType::OrderUpdate as u32 as u64,
-            msg.event_time as u64,
-            self.hash_str64(&msg.symbol),
             msg.order_id as u64,
             msg.client_order_id as u64,
-            msg.execution_type as u64,
+            msg.event_time as u64,
             msg.order_status as u64,
             msg.cumulative_filled_quantity.to_bits(),
         ])

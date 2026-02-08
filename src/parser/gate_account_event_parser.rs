@@ -62,8 +62,8 @@
 //!         "contract": "BTC_USD",
 //!         "id": 4872460,
 //!         "text": "123456789",           // client_order_id，必须为 i64
-//!         "size": "1",                   // 正=做多, 负=做空
-//!         "left": "0",                   // 剩余未成交
+//!         "size": "1",                   // 合约张数(contracts)，正=做多, 负=做空
+//!         "left": "0",                   // 剩余未成交张数(contracts)
 //!         "price": "40000.4",
 //!         "fill_price": 40000.4,         // 平均成交价
 //!         "tif": "gtc",
@@ -88,8 +88,8 @@
 //!   - `event`（put/update/finish）
 //! - 合约 futures.orders 独有字段：
 //!   - `contract`（交易对/合约名）
-//!   - `size`（张数，正负表示方向；与现货 amount 语义不同）
-//!   - `left`（剩余未成交张数）
+//!   - `size`（合约张数 contracts，正负表示方向；与现货 amount 语义不同）
+//!   - `left`（剩余未成交 contracts）
 //!   - `fill_price`（均价）
 //!   - `tif`
 //!   - `status`（open/finished）
@@ -231,12 +231,8 @@ impl GateAccountEventParser {
                 }
             };
 
-            // 解析其他字段
-            let order_id: i64 = order
-                .get("id")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
+            // 解析其他字段（兼容 string/number）
+            let order_id: i64 = parse_i64_str_or_num(order.get("id")).unwrap_or(0);
 
             let symbol = order
                 .get("currency_pair")
@@ -265,15 +261,11 @@ impl GateAccountEventParser {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_lowercase();
-            let create_time_ms: i64 = order
-                .get("create_time_ms")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse().ok())
+            let create_time_ms: i64 = parse_i64_ms_field(order.get("create_time_ms"))
+                .or_else(|| parse_i64_ms_field(order.get("create_time")))
                 .unwrap_or(0);
-            let update_time_ms: i64 = order
-                .get("update_time_ms")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse().ok())
+            let update_time_ms: i64 = parse_i64_ms_field(order.get("update_time_ms"))
+                .or_else(|| parse_i64_ms_field(order.get("update_time")))
                 .unwrap_or(0);
             let is_maker: u8 = if time_in_force_raw == "poc" {
                 0
@@ -317,7 +309,8 @@ impl GateAccountEventParser {
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0.0);
-            let last_executed_price = select_gate_price_by_update_kind(event, finish_as, fill_price, price);
+            let last_executed_price =
+                select_gate_price_by_update_kind(event, finish_as, fill_price, price);
 
             let commission_asset = order
                 .get("fee_currency")
@@ -325,10 +318,8 @@ impl GateAccountEventParser {
                 .unwrap_or("")
                 .to_string();
 
-            let event_time: i64 = order
-                .get("update_time_ms")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse().ok())
+            let event_time: i64 = parse_i64_ms_field(order.get("update_time_ms"))
+                .or_else(|| parse_i64_ms_field(order.get("update_time")))
                 .unwrap_or(0);
 
             // 创建消息
@@ -366,11 +357,14 @@ impl GateAccountEventParser {
     ///
     /// 字段映射：
     /// - contract -> symbol
-    /// - size -> quantity (正=做多, 负=做空)
-    /// - size - left -> cumulative_filled_quantity
+    /// - size -> quantity（contracts，正=做多, 负=做空）
+    /// - size - left -> cumulative_filled_quantity（contracts）
     /// - tif -> time_in_force
     /// - update_time -> event_time (已经是 ms)
     /// - status -> 用于判断执行类型 (open/finished)
+    ///
+    /// 注意：这里的 quantity/cumulative_filled_quantity 保持交易所 contracts 口径；
+    /// 策略层统一通过 `MonitorChannel::qty_to_base(...)` 转为 base qty 口径。
     fn parse_futures_orders(
         &self,
         json_value: &serde_json::Value,
@@ -394,8 +388,8 @@ impl GateAccountEventParser {
                 }
             };
 
-            // 解析 order_id
-            let order_id: i64 = order.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+            // 解析 order_id（兼容 string/number）
+            let order_id: i64 = parse_i64_str_or_num(order.get("id")).unwrap_or(0);
 
             // 解析 symbol (contract)
             let symbol = order
@@ -404,17 +398,17 @@ impl GateAccountEventParser {
                 .unwrap_or("")
                 .to_string();
 
-            // 解析 side: futures 没有直接的 side 字段，需要根据 size 正负判断
+            // 解析 side: futures 没有直接的 side 字段，需要根据 size(contracts) 正负判断
             // size > 0 为 buy (做多), size < 0 为 sell (做空)
             let size_str = order.get("size").and_then(|v| v.as_str()).unwrap_or("0");
             let size: i64 = size_str.parse().unwrap_or(0);
             let side: u8 = if size >= 0 { 1 } else { 2 }; // 1=Buy, 2=Sell
-            let quantity = size.abs() as f64;
+            let quantity = size.abs() as f64; // contracts
 
-            // 解析 left (剩余未成交数量)
+            // 解析 left (剩余未成交 contracts)
             let left_str = order.get("left").and_then(|v| v.as_str()).unwrap_or("0");
             let left: i64 = left_str.parse().unwrap_or(0);
-            let cumulative_filled_quantity = (size.abs() - left.abs()) as f64;
+            let cumulative_filled_quantity = (size.abs() - left.abs()) as f64; // contracts
 
             // 解析 order_type: futures 默认是 limit
             // 可以通过 price 是否为 0 判断 market 单
@@ -426,10 +420,9 @@ impl GateAccountEventParser {
             // - 其余 order update 取 price
             let fill_price: f64 = parse_f64_str_or_num(order.get("fill_price")).unwrap_or(0.0);
 
-            // 解析 event_time (update_time 已经是 ms)
-            let event_time: i64 = order
-                .get("update_time")
-                .and_then(|v| v.as_i64())
+            // 解析 event_time (兼容 string/number；仅接受 ms)
+            let event_time: i64 = parse_i64_ms_field(order.get("update_time"))
+                .or_else(|| parse_i64_ms_field(order.get("update_time_ms")))
                 .unwrap_or(0);
 
             // 解析 time_in_force
@@ -556,8 +549,13 @@ fn select_gate_price_by_update_kind(
     // Gate 语义：
     // - trade update: futures 的 finish_as="_update"/"filled"；spot 的 event="update"
     // - order update: 其余状态
-    let use_fill_price = event_or_status == "update" || matches!(finish_as.as_str(), "_update" | "filled");
-    let selected = if use_fill_price { fill_price } else { order_price };
+    let use_fill_price =
+        event_or_status == "update" || matches!(finish_as.as_str(), "_update" | "filled");
+    let selected = if use_fill_price {
+        fill_price
+    } else {
+        order_price
+    };
 
     if selected.is_finite() && selected > 0.0 {
         selected

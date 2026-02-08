@@ -384,8 +384,7 @@ fn parse_depth(data: &[u8], channel: &str) -> Option<DepthTick> {
     }
 
     let levels = match msg_type {
-        x if x == DepthMsgType::Depth5 as u32 => 5usize,
-        x if x == DepthMsgType::Depth20 as u32 => 20usize,
+        x if x == DepthMsgType::Depth25 as u32 => 25usize,
         x if x == DepthMsgType::Depth50 as u32 => 50usize,
         _ => return None,
     };
@@ -442,8 +441,7 @@ fn parse_depth(data: &[u8], channel: &str) -> Option<DepthTick> {
 
 fn expected_depth_msg_type(channel: &str) -> Option<u32> {
     match channel {
-        "depth5" => Some(DepthMsgType::Depth5 as u32),
-        "depth20" => Some(DepthMsgType::Depth20 as u32),
+        "depth25" => Some(DepthMsgType::Depth25 as u32),
         "depth50" => Some(DepthMsgType::Depth50 as u32),
         _ => None,
     }

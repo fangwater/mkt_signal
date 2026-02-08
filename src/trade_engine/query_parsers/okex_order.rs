@@ -73,6 +73,10 @@ pub fn parse_okex_order_query_json(json: &str) -> Option<BinanceUmOrderQueryResp
     let fill_px = parse_f64_str(first.fill_px.as_str());
     let px = parse_f64_str(first.px.as_str());
     let response_price = response_price_for_state(first.state.as_str(), fill_px, px);
+    // OKX query:
+    // - spot/margin: accFillSz 为 base qty
+    // - futures(swap): accFillSz 为 contracts
+    // 这里保持交易所原始口径；策略层再通过 qty_to_base(...) 统一转换为 base qty。
     Some(BinanceUmOrderQueryResp {
         executed_qty: parse_f64_str(first.acc_fill_sz.as_str()),
         order_id: parse_i64_str(first.ord_id.as_str()),

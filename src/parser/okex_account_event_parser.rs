@@ -130,9 +130,15 @@ impl OkexAccountEventParser {
                 .map(OkexOrderMsg::inst_type_to_u8)
                 .unwrap_or(u8::MAX);
             let ord_id = parse_i64_field(order.get("ordId"));
-            let cl_ord_id = parse_i64_field(order.get("clOrdId"));
+            let cl_ord_id = match parse_i64_field_opt(order.get("clOrdId")) {
+                Some(id) => id,
+                None => {
+                    warn!("OKX: orders clOrdId is not i64, dropping: {}", order);
+                    continue;
+                }
+            };
             let trade_id = parse_i64_field(order.get("tradeId"));
-            let state = order
+            let order_status = order
                 .get("state")
                 .and_then(|v| v.as_str())
                 .map(OkexOrderMsg::state_to_u8)
@@ -142,7 +148,7 @@ impl OkexAccountEventParser {
                 parse_ord_type(order.get("ordType").and_then(|v| v.as_str()).unwrap_or(""));
             let cancel_source = parse_u8_field(order.get("cancelSource"));
             let amend_source = parse_u8_field(order.get("amendSource"));
-            let price = parse_okex_order_price_by_state(order, state);
+            let price = parse_okex_order_price_by_state(order, order_status);
             let quantity = parse_f64_field(order.get("sz"));
             let cumulative_filled_quantity = parse_f64_field(order.get("accFillSz"));
             let create_time = parse_i64_field(order.get("cTime"));
@@ -172,7 +178,7 @@ impl OkexAccountEventParser {
                 ord_id,
                 cl_ord_id,
                 trade_id,
-                state,
+                state: order_status,
                 side,
                 ord_type,
                 cancel_source,
@@ -233,7 +239,7 @@ impl Parser for OkexAccountEventParser {
     }
 }
 
-fn parse_i64_field(v: Option<&serde_json::Value>) -> i64 {
+fn parse_i64_field_opt(v: Option<&serde_json::Value>) -> Option<i64> {
     v.and_then(|val| {
         if let Some(n) = val.as_i64() {
             Some(n)
@@ -245,7 +251,10 @@ fn parse_i64_field(v: Option<&serde_json::Value>) -> i64 {
             None
         }
     })
-    .unwrap_or(0)
+}
+
+fn parse_i64_field(v: Option<&serde_json::Value>) -> i64 {
+    parse_i64_field_opt(v).unwrap_or(0)
 }
 
 fn parse_f64_field(v: Option<&serde_json::Value>) -> f64 {

@@ -394,12 +394,16 @@ impl GateProvider {
                 .unwrap_or((&contract.name, "USDT"));
             let price_tick: f64 = contract.order_price_round.parse().unwrap_or(0.0);
             let quanto: f64 = contract.quanto_multiplier.parse().unwrap_or(1.0);
+            // Gate futures: 下单 size 使用 contracts。
+            // 统一口径：
+            // - min_qty / step_size 使用 contracts 单位（与 OKX futures 一致）
+            // - contract multiplier 记录 base/contract（quanto_multiplier）
             let entry = MinQtyEntry {
                 symbol: symbol.clone(),
                 base_asset: base.to_uppercase(),
                 quote_asset: quote.to_uppercase(),
-                min_qty: contract.order_size_min as f64 * quanto,
-                step_size: quanto,
+                min_qty: contract.order_size_min as f64,
+                step_size: 1.0,
                 price_tick: if price_tick > 0.0 {
                     Some(price_tick)
                 } else {

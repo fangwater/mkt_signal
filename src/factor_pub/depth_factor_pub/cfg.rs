@@ -116,10 +116,10 @@ impl DepthFactorPubConfig {
             anyhow::bail!("data_source.depth_channel must not be empty");
         }
         match self.data_source.depth_channel.as_str() {
-            "depth5" | "depth20" | "depth50" => {}
+            "depth25" | "depth50" => {}
             _ => {
                 anyhow::bail!(
-                    "data_source.depth_channel must be one of depth5/depth20/depth50, got '{}'",
+                    "data_source.depth_channel must be one of depth25/depth50, got '{}'",
                     self.data_source.depth_channel
                 );
             }
@@ -248,5 +248,5 @@ fn default_reload_every() -> usize {
 }
 
 fn default_depth_channel() -> String {
-    "depth20".to_string()
+    "depth25".to_string()
 }

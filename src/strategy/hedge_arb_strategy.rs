@@ -487,17 +487,17 @@ impl HedgeArbStrategy {
         };
 
         let mut qty = raw_qty;
-        if venue == TradingVenue::OkexFutures {
+        if venue == TradingVenue::OkexFutures || venue == TradingVenue::GateFutures {
             let contract_size = table.contract_multiplier_opt(&symbol_key).ok_or_else(|| {
                 format!(
-                    "symbol={} 缺少 OKX 合约乘数(ctVal×ctMult)，无法将 base qty 转成 contracts",
-                    symbol_key
+                    "symbol={} 缺少 {:?} 合约乘数，无法将 base qty 转成 contracts",
+                    symbol_key, venue
                 )
             })?;
             if contract_size <= 0.0 {
                 return Err(format!(
-                    "symbol={} OKX contract multiplier invalid: {}",
-                    symbol_key, contract_size
+                    "symbol={} {:?} contract multiplier invalid: {}",
+                    symbol_key, venue, contract_size
                 ));
             }
             qty = raw_qty / contract_size;

@@ -603,12 +603,11 @@ impl AccountEventDeduper {
     fn key_binance_basic_order(&self, msg: &BinanceBasicOrderMsg) -> u64 {
         self.hash64(&[
             BasicAccountEventType::OrderUpdate as u32 as u64,
-            msg.venue as u64,
             msg.order_id as u64,
-            msg.trade_id as u64,
+            msg.client_order_id as u64,
             msg.event_time as u64,
-            msg.execution_type as u64,
             msg.order_status as u64,
+            msg.cumulative_filled_quantity.to_bits(),
         ])
     }
 }

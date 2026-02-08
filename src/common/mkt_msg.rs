@@ -15,7 +15,7 @@ pub enum MktMsgType {
     LiquidationOrder = 1013,
     FundingRate = 1014,
     AskBidSpread = 1015, // 买卖价差（最优买卖价）
-    RlReturnVolatility = 2001,
+    FactorValue = 2001,
     PairMmResample = 3001,
     Error = 2222,
 }
@@ -64,7 +64,7 @@ pub struct FundingRateMsg {
     pub timestamp: i64,
 }
 
-pub struct RlReturnVolatilityMsg {
+pub struct FactorValueMsg {
     pub msg_type: MktMsgType,
     pub symbol_length: u32,
     pub symbol: String,
@@ -642,7 +642,7 @@ pub fn get_msg_type(data: &[u8]) -> MktMsgType {
         1013 => MktMsgType::LiquidationOrder,
         1014 => MktMsgType::FundingRate,
         1015 => MktMsgType::AskBidSpread,
-        2001 => MktMsgType::RlReturnVolatility,
+        2001 => MktMsgType::FactorValue,
         3001 => MktMsgType::PairMmResample,
         _ => MktMsgType::TpReset, // 默认值
     }
@@ -768,18 +768,37 @@ impl FundingRateMsg {
     }
 }
 
-impl RlReturnVolatilityMsg {
+impl FactorValueMsg {
     pub fn create(symbol: String, value: f64, timestamp_ms: i64, ready: bool) -> Self {
+        Self::create_with_factor_index(symbol, value, timestamp_ms, ready, 0)
+    }
+
+    pub fn create_with_factor_index(
+        symbol: String,
+        value: f64,
+        timestamp_ms: i64,
+        ready: bool,
+        factor_index: u16,
+    ) -> Self {
         let symbol_length = symbol.len() as u32;
+        let mut padding = [0u8; 7];
+        let [idx_lo, idx_hi] = factor_index.to_le_bytes();
+        padding[0] = idx_lo;
+        padding[1] = idx_hi;
+
         Self {
-            msg_type: MktMsgType::RlReturnVolatility,
+            msg_type: MktMsgType::FactorValue,
             symbol_length,
             symbol,
             value,
             timestamp_ms,
             ready,
-            padding: [0u8; 7],
+            padding,
         }
+    }
+
+    pub fn factor_index(&self) -> u16 {
+        u16::from_le_bytes([self.padding[0], self.padding[1]])
     }
 
     pub fn to_bytes(&self) -> Bytes {

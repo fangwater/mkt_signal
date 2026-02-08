@@ -22,6 +22,12 @@ pub enum BasicAccountEventType {
 }
 
 /// Basic 订单更新消息（仍用于 OKX WS 订单日志）
+///
+/// 数量字段口径：
+/// - spot/margin：`quantity` / `cumulative_filled_quantity` 为 base qty
+/// - futures(swap)：`quantity` / `cumulative_filled_quantity` 为 contracts
+///
+/// 策略层统一通过 `MonitorChannel::qty_to_base(...)` 转换成 base qty 做风控与策略计算。
 #[derive(Debug, Clone)]
 pub struct OkexOrderMsg {
     pub msg_type: BasicAccountEventType,

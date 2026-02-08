@@ -110,8 +110,8 @@ fn select_gate_response_price(
     // Gate 规则（按状态语义）：
     // - trade update: finish_as == "_update" 或 "filled" => 取 fill_price
     // - order update: 其余状态 => 取 order_price
-    let use_fill_price = matches!(finish.as_str(), "_update" | "filled")
-        || matches!(status.as_str(), "filled");
+    let use_fill_price =
+        matches!(finish.as_str(), "_update" | "filled") || matches!(status.as_str(), "filled");
 
     let selected = if use_fill_price {
         fill_price
@@ -167,8 +167,7 @@ pub fn parse_gate_spot_order_status_json(json: &str) -> Option<CompactOrderQuery
         .or_else(|| parse_f64_value(result.get("avg_deal_price")))
         .or_else(|| parse_f64_value(result.get("avg_price")))
         .unwrap_or(0.0);
-    let response_price =
-        select_gate_response_price(status, finish_as, fill_price, order_price);
+    let response_price = select_gate_response_price(status, finish_as, fill_price, order_price);
 
     Some(CompactOrderQueryResp {
         executed_qty,
@@ -186,6 +185,8 @@ pub fn parse_gate_futures_order_status_json(json: &str) -> Option<CompactOrderQu
 
     let order_id =
         parse_i64_value(result.get("id")).or_else(|| parse_i64_value(result.get("order_id")))?;
+    // Gate futures query: size/left 口径均为 contracts。
+    // 这里保持 executed_qty 为 contracts；策略层再统一通过 qty_to_base 转换为 base qty。
     let size = parse_f64_value(result.get("size")).unwrap_or(0.0);
     let left = parse_f64_value(result.get("left")).unwrap_or(0.0);
     let executed_qty = (size.abs() - left.abs()).max(0.0);
@@ -215,8 +216,7 @@ pub fn parse_gate_futures_order_status_json(json: &str) -> Option<CompactOrderQu
     let fill_price = parse_f64_value(result.get("fill_price"))
         .or_else(|| parse_f64_value(result.get("avg_price")))
         .unwrap_or(0.0);
-    let response_price =
-        select_gate_response_price(status, finish_as, fill_price, order_price);
+    let response_price = select_gate_response_price(status, finish_as, fill_price, order_price);
 
     Some(CompactOrderQueryResp {
         executed_qty,

@@ -361,11 +361,12 @@ fn log_parsed_event(msg: &Bytes) {
     match okex_event_type {
         BasicAccountEventType::OrderUpdate => {
             if let Ok(m) = OkexOrderMsg::from_bytes(&payload) {
+                let order_status = m.state;
                 info!(
                     "OKEx basic OrderUpdate: inst={} side={} state={} ord_id={} cli_id={} price={} qty={} filled={} update_time={}",
                     m.inst_id,
                     m.side,
-                    OkexOrderMsg::state_to_str(m.state),
+                    OkexOrderMsg::state_to_str(order_status),
                     m.ord_id,
                     m.cl_ord_id,
                     m.price,
@@ -545,12 +546,14 @@ impl AccountEventDeduper {
     }
 
     fn key_okex_order(&self, msg: &OkexOrderMsg) -> u64 {
+        let order_status = msg.state;
         self.hash64(&[
             BasicAccountEventType::OrderUpdate as u32 as u64,
             msg.ord_id as u64,
             msg.cl_ord_id as u64,
-            msg.ord_type as u64,
             msg.update_time as u64,
+            order_status as u64,
+            msg.cumulative_filled_quantity.to_bits(),
         ])
     }
 }

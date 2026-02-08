@@ -549,7 +549,6 @@ impl TradeFactorPubApp {
                             );
                             return;
                         }
-
                         info!(
                             "Reloaded config: channel={}, reload_every={}, max_keep_count={}, bar_ms={}, factors={}",
                             new_cfg.data_source.trade_channel,

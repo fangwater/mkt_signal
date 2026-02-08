@@ -112,8 +112,7 @@ impl DepthPubApp {
         // 创建发布器
         let publisher = DepthMsgPublisher::new(
             venue_slug,
-            config.depth_levels.enable_depth5,
-            config.depth_levels.enable_depth20,
+            config.depth_levels.enable_depth25,
             config.depth_levels.enable_depth50,
         )?;
 
@@ -128,11 +127,10 @@ impl DepthPubApp {
         let query_publisher = Self::create_query_publisher(publisher.node(), venue_slug)?;
 
         info!(
-            "DepthPubApp created for {}: push_interval={}ms, depth5={}, depth20={}, depth50={}",
+            "DepthPubApp created for {}: push_interval={}ms, depth25={}, depth50={}",
             venue_slug,
             config.push_config.min_push_interval_ms,
-            config.depth_levels.enable_depth5,
-            config.depth_levels.enable_depth20,
+            config.depth_levels.enable_depth25,
             config.depth_levels.enable_depth50
         );
 
@@ -434,7 +432,7 @@ impl DepthPubApp {
 
     /// 检查定时推送
     fn check_timer_push(&mut self) {
-        self.log_btc_depth5();
+        self.log_btc_depth25();
 
         let now = Instant::now();
         let symbols_to_push: Vec<String> = self
@@ -449,7 +447,7 @@ impl DepthPubApp {
         }
     }
 
-    fn log_btc_depth5(&self) {
+    fn log_btc_depth25(&self) {
         for (symbol, state) in &self.symbols {
             let is_btc = symbol
                 .get(0..3)
@@ -458,9 +456,9 @@ impl DepthPubApp {
             if !is_btc {
                 continue;
             }
-            let (bids, asks) = state.orderbook.get_depth(5);
+            let (bids, asks) = state.orderbook.get_depth(25);
             info!(
-                "DepthPubApp[{}] BTC depth5 {} bids={:?} asks={:?}",
+                "DepthPubApp[{}] BTC depth25 {} bids={:?} asks={:?}",
                 self.venue_slug, symbol, bids, asks
             );
         }
@@ -479,18 +477,11 @@ impl DepthPubApp {
 
         let timestamp = state.orderbook.timestamp;
 
-        // Depth5
-        if self.config.depth_levels.enable_depth5 {
-            let (bids, asks) = state.orderbook.get_depth(5);
-            let msg = DepthMsg::depth5(symbol.to_string(), timestamp, bids, asks);
-            self.publisher.publish_depth5(&msg);
-        }
-
-        // Depth20
-        if self.config.depth_levels.enable_depth20 {
-            let (bids, asks) = state.orderbook.get_depth(20);
-            let msg = DepthMsg::depth20(symbol.to_string(), timestamp, bids, asks);
-            self.publisher.publish_depth20(&msg);
+        // Depth25
+        if self.config.depth_levels.enable_depth25 {
+            let (bids, asks) = state.orderbook.get_depth(25);
+            let msg = DepthMsg::depth25(symbol.to_string(), timestamp, bids, asks);
+            self.publisher.publish_depth25(&msg);
         }
 
         // Depth50

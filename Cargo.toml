@@ -57,6 +57,10 @@ name = "persist_exporter"
 path = "src/bin/persist_exporter.rs"
 
 [[bin]]
+name = "persist_auto_exporter"
+path = "src/bin/persist_auto_exporter.rs"
+
+[[bin]]
 name = "test_minqty"
 path = "src/bin/test_minqty.rs"
 

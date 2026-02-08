@@ -214,4 +214,42 @@ impl RocksDbStore {
         }
         Ok(entries)
     }
+
+    pub fn scan_range(
+        &self,
+        cf_name: &str,
+        start_key: &[u8],
+        end_key_exclusive: &[u8],
+        limit: Option<usize>,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        if start_key >= end_key_exclusive {
+            return Ok(Vec::new());
+        }
+
+        let cf = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or_else(|| anyhow!("column family {} not found", cf_name))?;
+
+        let iter = self
+            .db
+            .iterator_cf(cf, IteratorMode::From(start_key, Direction::Forward));
+        let mut entries = Vec::new();
+
+        for item in iter {
+            let (key, value) = item?;
+            if key.as_ref() >= end_key_exclusive {
+                break;
+            }
+
+            entries.push((key.as_ref().to_vec(), value.as_ref().to_vec()));
+            if let Some(max) = limit {
+                if entries.len() >= max {
+                    break;
+                }
+            }
+        }
+
+        Ok(entries)
+    }
 }
