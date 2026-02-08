@@ -71,7 +71,7 @@ pub struct FactorValueMsg {
     pub value: f64,
     pub timestamp_ms: i64,
     pub ready: bool,
-    pub padding: [u8; 7],
+    pub factor_index: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -781,10 +781,6 @@ impl FactorValueMsg {
         factor_index: u16,
     ) -> Self {
         let symbol_length = symbol.len() as u32;
-        let mut padding = [0u8; 7];
-        let [idx_lo, idx_hi] = factor_index.to_le_bytes();
-        padding[0] = idx_lo;
-        padding[1] = idx_hi;
 
         Self {
             msg_type: MktMsgType::FactorValue,
@@ -793,17 +789,17 @@ impl FactorValueMsg {
             value,
             timestamp_ms,
             ready,
-            padding,
+            factor_index,
         }
     }
 
     pub fn factor_index(&self) -> u16 {
-        u16::from_le_bytes([self.padding[0], self.padding[1]])
+        self.factor_index
     }
 
     pub fn to_bytes(&self) -> Bytes {
-        // msg_type(4) + symbol_length(4) + symbol + value(8) + timestamp(8) + ready(1) + padding(7)
-        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 8 + 1 + 7;
+        // msg_type(4) + symbol_length(4) + symbol + value(8) + timestamp(8) + ready(1) + factor_index(2)
+        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 8 + 1 + 2;
         let mut buf = BytesMut::with_capacity(total_size);
 
         buf.put_u32_le(self.msg_type as u32);
@@ -812,7 +808,7 @@ impl FactorValueMsg {
         buf.put_f64_le(self.value);
         buf.put_i64_le(self.timestamp_ms);
         buf.put_u8(if self.ready { 1 } else { 0 });
-        buf.put(&self.padding[..]);
+        buf.put_u16_le(self.factor_index);
 
         buf.freeze()
     }
