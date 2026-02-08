@@ -1231,7 +1231,9 @@ impl MarketMakerHedgeStrategy {
             } else {
                 OrderExecutionStatus::Create
             };
-            order.set_end_time(event_time);
+            if status == OrderStatus::Filled {
+                order.set_end_time(event_time);
+            }
         });
 
         if !updated {

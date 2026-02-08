@@ -309,12 +309,15 @@ impl GateAccountEventParser {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0.0);
 
-            // spot: Gate 只提供 avg_deal_price（成交价/均价口径）
-            let last_executed_price: f64 = order
+            // spot: 根据状态语义选择成交价/委托价
+            // - trade update（event=update 或 finish_as=filled）取 avg_deal_price
+            // - 其余 order update 取 price
+            let fill_price: f64 = order
                 .get("avg_deal_price")
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0.0);
+            let last_executed_price = select_gate_price_by_update_kind(event, finish_as, fill_price, price);
 
             let commission_asset = order
                 .get("fee_currency")
@@ -418,9 +421,10 @@ impl GateAccountEventParser {
             let price: f64 = parse_f64_str_or_num(order.get("price")).unwrap_or(0.0);
             let order_type: u8 = if price == 0.0 { 3 } else { 1 }; // 3=Market, 1=Limit
 
-            // futures: fill_price 为成交价口径（部分接口为 number）
-            let last_executed_price: f64 =
-                parse_f64_str_or_num(order.get("fill_price")).unwrap_or(0.0);
+            // futures: 根据状态语义选择成交价/委托价
+            // - trade update（finish_as=_update 或 filled）取 fill_price
+            // - 其余 order update 取 price
+            let fill_price: f64 = parse_f64_str_or_num(order.get("fill_price")).unwrap_or(0.0);
 
             // 解析 event_time (update_time 已经是 ms)
             let event_time: i64 = order
@@ -460,6 +464,9 @@ impl GateAccountEventParser {
                 .unwrap_or("");
             let (execution_type, order_status) =
                 GateBasicOrderMsg::event_to_execution_and_status(status, finish_as);
+
+            let last_executed_price =
+                select_gate_price_by_update_kind(status, finish_as, fill_price, price);
 
             // 手续费币种: futures 合约的手续费币种通常是 USDT
             // Gate 合约不在订单消息中提供手续费币种，这里留空
@@ -534,6 +541,28 @@ fn parse_i64_ms_field(v: Option<&Value>) -> Option<i64> {
         Some(ts)
     } else {
         None
+    }
+}
+
+fn select_gate_price_by_update_kind(
+    event_or_status: &str,
+    finish_as: &str,
+    fill_price: f64,
+    order_price: f64,
+) -> f64 {
+    let event_or_status = event_or_status.trim().to_ascii_lowercase();
+    let finish_as = finish_as.trim().to_ascii_lowercase();
+
+    // Gate 语义：
+    // - trade update: futures 的 finish_as="_update"/"filled"；spot 的 event="update"
+    // - order update: 其余状态
+    let use_fill_price = event_or_status == "update" || matches!(finish_as.as_str(), "_update" | "filled");
+    let selected = if use_fill_price { fill_price } else { order_price };
+
+    if selected.is_finite() && selected > 0.0 {
+        selected
+    } else {
+        0.0
     }
 }
 

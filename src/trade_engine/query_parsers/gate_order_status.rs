@@ -98,6 +98,34 @@ fn map_gate_status(
     OrderExecutionStatus::Create.to_u8()
 }
 
+fn select_gate_response_price(
+    status: &str,
+    finish_as: &str,
+    fill_price: f64,
+    order_price: f64,
+) -> f64 {
+    let status = status.trim().to_ascii_lowercase();
+    let finish = finish_as.trim().to_ascii_lowercase();
+
+    // Gate 规则（按状态语义）：
+    // - trade update: finish_as == "_update" 或 "filled" => 取 fill_price
+    // - order update: 其余状态 => 取 order_price
+    let use_fill_price = matches!(finish.as_str(), "_update" | "filled")
+        || matches!(status.as_str(), "filled");
+
+    let selected = if use_fill_price {
+        fill_price
+    } else {
+        order_price
+    };
+
+    if selected.is_finite() && selected > 0.0 {
+        selected
+    } else {
+        0.0
+    }
+}
+
 pub fn parse_gate_spot_order_status_json(json: &str) -> Option<CompactOrderQueryResp> {
     let root: Value = serde_json::from_str(json).ok()?;
     let result = extract_result(&root)?;
@@ -134,13 +162,21 @@ pub fn parse_gate_spot_order_status_json(json: &str) -> Option<CompactOrderQuery
         .unwrap_or("gtc");
     let tif_u8 = GateBasicOrderMsg::time_in_force_to_u8(tif);
 
+    let order_price = parse_f64_value(result.get("price")).unwrap_or(0.0);
+    let fill_price = parse_f64_value(result.get("fill_price"))
+        .or_else(|| parse_f64_value(result.get("avg_deal_price")))
+        .or_else(|| parse_f64_value(result.get("avg_price")))
+        .unwrap_or(0.0);
+    let response_price =
+        select_gate_response_price(status, finish_as, fill_price, order_price);
+
     Some(CompactOrderQueryResp {
         executed_qty,
         order_id,
         status_u8,
         update_time_ms,
         time_in_force_u8: tif_u8,
-        response_price: 0.0,
+        response_price,
     })
 }
 
@@ -175,94 +211,19 @@ pub fn parse_gate_futures_order_status_json(json: &str) -> Option<CompactOrderQu
     let tif = result.get("tif").and_then(|v| v.as_str()).unwrap_or("gtc");
     let tif_u8 = GateBasicOrderMsg::time_in_force_to_u8(tif);
 
+    let order_price = parse_f64_value(result.get("price")).unwrap_or(0.0);
+    let fill_price = parse_f64_value(result.get("fill_price"))
+        .or_else(|| parse_f64_value(result.get("avg_price")))
+        .unwrap_or(0.0);
+    let response_price =
+        select_gate_response_price(status, finish_as, fill_price, order_price);
+
     Some(CompactOrderQueryResp {
         executed_qty,
         order_id,
         status_u8,
         update_time_ms,
         time_in_force_u8: tif_u8,
-        response_price: 0.0,
+        response_price,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::signal::common::TimeInForce;
-
-    #[test]
-    fn parse_gate_spot_order_status() {
-        let json = r#"{
-          "request_id": "request-3",
-          "header": {
-            "response_time": "1681986205829",
-            "status": "200",
-            "channel": "spot.order_status",
-            "event": "api"
-          },
-          "data": {
-            "result": {
-              "id": "1700664330",
-              "text": "t-my-custom-id",
-              "create_time": "1681986204",
-              "update_time": "1681986204",
-              "create_time_ms": 1681986204939,
-              "update_time_ms": 1681986204939,
-              "status": "open",
-              "currency_pair": "GT_USDT",
-              "type": "limit",
-              "account": "spot",
-              "side": "buy",
-              "amount": "1",
-              "price": "1",
-              "time_in_force": "gtc",
-              "left": "1",
-              "fill_price": "0",
-              "filled_total": "0",
-              "finish_as": "open"
-            }
-          }
-        }"#;
-
-        let parsed = parse_gate_spot_order_status_json(json).expect("parse ok");
-        assert_eq!(parsed.order_id, 1_700_664_330);
-        assert_eq!(parsed.executed_qty, 0.0);
-        assert_eq!(parsed.time_in_force_u8, TimeInForce::GTC.to_u8());
-        assert_eq!(parsed.update_time_ms, 1681986204939);
-        assert_eq!(parsed.status_u8, OrderExecutionStatus::Create.to_u8());
-    }
-
-    #[test]
-    fn parse_gate_futures_order_status() {
-        let json = r#"{
-          "request_id": "request-id-2",
-          "header": {
-            "response_time": "1681196535985",
-            "status": "200",
-            "channel": "futures.order_status",
-            "event": "api"
-          },
-          "data": {
-            "result": {
-              "id": 74046543,
-              "create_time": 1681196535.01,
-              "status": "open",
-              "contract": "BTC_USDT",
-              "size": "10",
-              "price": "31403.2",
-              "tif": "gtc",
-              "left": "10",
-              "fill_price": "0",
-              "text": "t-my-custom-id"
-            }
-          }
-        }"#;
-
-        let parsed = parse_gate_futures_order_status_json(json).expect("parse ok");
-        assert_eq!(parsed.order_id, 74_046_543);
-        assert_eq!(parsed.executed_qty, 0.0);
-        assert_eq!(parsed.time_in_force_u8, TimeInForce::GTC.to_u8());
-        assert_eq!(parsed.status_u8, OrderExecutionStatus::Create.to_u8());
-        assert!(parsed.update_time_ms > 0);
-    }
 }

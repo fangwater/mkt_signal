@@ -142,7 +142,7 @@ impl OkexAccountEventParser {
                 parse_ord_type(order.get("ordType").and_then(|v| v.as_str()).unwrap_or(""));
             let cancel_source = parse_u8_field(order.get("cancelSource"));
             let amend_source = parse_u8_field(order.get("amendSource"));
-            let price = parse_f64_field(order.get("px"));
+            let price = parse_okex_order_price_by_state(order, state);
             let quantity = parse_f64_field(order.get("sz"));
             let cumulative_filled_quantity = parse_f64_field(order.get("accFillSz"));
             let create_time = parse_i64_field(order.get("cTime"));
@@ -296,6 +296,15 @@ fn parse_ord_type(ord_type: &str) -> u8 {
         "mmp_and_post_only" => 7,
         "elp" => 8,
         _ => u8::MAX,
+    }
+}
+
+fn parse_okex_order_price_by_state(order: &serde_json::Value, state_u8: u8) -> f64 {
+    let px = parse_f64_field(order.get("px"));
+    let fill_px = parse_f64_field(order.get("fillPx"));
+    match state_u8 {
+        3 | 4 => fill_px,
+        _ => px,
     }
 }
 

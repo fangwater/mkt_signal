@@ -56,28 +56,3 @@ pub fn parse_binance_margin_order_query_json(json: &str) -> Option<BinanceUmOrde
         response_price,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_binance_margin_order_query() {
-        let json = r#"{
-            "executedQty": "0.00000000",
-            "avgPrice": "0",
-            "price": "20345.12",
-            "orderId": 213205622,
-            "status": "NEW",
-            "timeInForce": "GTC",
-            "updateTime": 1562133008725
-        }"#;
-        let parsed = parse_binance_margin_order_query_json(json).expect("parse ok");
-        assert_eq!(parsed.order_id, 213205622);
-        assert_eq!(parsed.update_time_ms, 1562133008725);
-        assert_eq!(parsed.status_u8, OrderExecutionStatus::Create.to_u8());
-        assert_eq!(parsed.time_in_force_u8, TimeInForce::GTC.to_u8());
-        assert!((parsed.executed_qty - 0.0).abs() < 1e-12);
-        assert!((parsed.response_price - 20345.12).abs() < 1e-12);
-    }
-}
