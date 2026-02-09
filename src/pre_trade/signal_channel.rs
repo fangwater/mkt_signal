@@ -280,12 +280,14 @@ fn handle_trade_signal(signal: TradeSignal) {
                         "MT"
                     };
                     let from_key = String::from_utf8_lossy(&open_ctx.from_key);
+                    let signal_price = open_ctx.price_value();
+                    let signal_amount = open_ctx.amount_value();
                     info!(
                         "🔔 收到 ArbOpen 信号({}): opening={} {:?} side={:?} price={:.6} hedging={} {:?} | amount={:.4} hedge_timeout_us={} spread_rate={:.6} from_key='{}'",
                         hedge_mode,
-                        symbol, opening_venue, side, open_ctx.price,
+                        symbol, opening_venue, side, signal_price,
                         hedging_symbol, hedging_venue,
-                        open_ctx.amount, open_ctx.hedge_timeout_us,
+                        signal_amount, open_ctx.hedge_timeout_us,
                         open_ctx.spread_rate,
                         from_key
                     );
@@ -389,24 +391,26 @@ fn handle_trade_signal(signal: TradeSignal) {
                     // 两条腿方向都匹配，取绝对值的最小值
                     let closeable_qty = opening_pos.abs().min(hedging_pos.abs());
 
+                    let signal_amount = close_ctx.amount_value();
+
                     // 和信号中的amount对比，取较小值
-                    let final_qty = closeable_qty.min(close_ctx.amount as f64);
+                    let final_qty = closeable_qty.min(signal_amount);
 
                     if final_qty <= 0.0 {
                         warn!(
                             "ArbClose: final_qty <= 0, closeable_qty={:.6} signal_amount={:.6}",
-                            closeable_qty, close_ctx.amount
+                            closeable_qty, signal_amount
                         );
                         return;
                     }
 
                     info!(
                         "ArbClose: final_qty={:.6} (closeable={:.6} signal_amount={:.6}) opening_symbol={} opening_pos={:.6} hedging_symbol={} hedging_pos={:.6}",
-                        final_qty, closeable_qty, close_ctx.amount, opening_symbol, opening_pos, hedging_symbol, hedging_pos
+                        final_qty, closeable_qty, signal_amount, opening_symbol, opening_pos, hedging_symbol, hedging_pos
                     );
 
                     // 使用最终可平仓数量覆盖原始 amount，并转换为 ArbOpen 信号
-                    close_ctx.amount = final_qty as f32;
+                    close_ctx.set_amount_from_value_floor(final_qty);
                     let converted_signal = TradeSignal::create(
                         SignalType::ArbOpen,
                         signal.generation_time,
@@ -437,7 +441,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                             "🔔 收到 ArbClose 信号({}): opening={} {:?} hedging={} {:?} | side={:?} amount={:.4} price={:.6} hedge_timeout_us={}",
                             hedge_mode,
                             opening_symbol, opening_venue, hedging_symbol, hedging_venue,
-                            close_side, close_ctx.amount, close_ctx.price, close_ctx.hedge_timeout_us
+                            close_side, close_ctx.amount_value(), close_ctx.price_value(), close_ctx.hedge_timeout_us
                         );
 
                         MonitorChannel::instance()

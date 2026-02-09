@@ -921,11 +921,19 @@ fn build_and_publish_manual(
     ctx.set_opening_symbol(&opening_symbol);
     ctx.hedging_leg = TradingLeg::new(cfg.hedge, hedge_quote.bid, hedge_quote.ask, hedge_quote.ts);
     ctx.set_hedging_symbol(&hedging_symbol);
-    ctx.amount = qty as f32;
     ctx.set_side(side);
     ctx.set_order_type(OrderType::Limit);
-    ctx.price = price;
-    ctx.price_tick = 0.0;
+
+    ctx.set_price_with_tick_floor(price, price);
+    if ctx.price_count() <= 0 {
+        anyhow::bail!("failed to encode price into tick/count");
+    }
+
+    ctx.set_amount_with_tick_floor(qty, qty);
+    if ctx.amount_count() <= 0 {
+        anyhow::bail!("failed to encode qty into tick/count");
+    }
+
     ctx.exp_time = now + (open_ttl_ms as i64) * 1000;
     ctx.create_ts = now;
     ctx.price_offset = offset;

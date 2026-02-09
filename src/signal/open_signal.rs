@@ -1,3 +1,4 @@
+use crate::common::tick_math::QuantizedValue;
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::signal::common::TradingLeg;
 use crate::signal::common::{bytes_helper, SignalBytes};
@@ -18,20 +19,17 @@ pub struct ArbOpenCtx {
     /// Hedging leg symbol
     pub hedging_symbol: [u8; 32],
 
-    /// Trade amount
-    pub amount: f32,
-
     /// Trade side (for opening leg) - stored as u8
     pub side: u8,
 
     /// Order type - stored as u8
     pub order_type: u8,
 
-    /// Opening price
-    pub price: f64,
+    /// Price tick/count encoding (price = tick * count)
+    pub price_qv: QuantizedValue,
 
-    /// Price tick size / minimum price movement
-    pub price_tick: f64,
+    /// Amount tick/count encoding (amount = tick * count)
+    pub amount_qv: QuantizedValue,
 
     /// Order expiration time (microseconds)
     pub exp_time: i64,
@@ -164,11 +162,10 @@ impl ArbOpenCtx {
                 ts: 0,
             },
             hedging_symbol: [0u8; 32],
-            amount: 0.0,
             side: 0,
             order_type: 0,
-            price: 0.0,
-            price_tick: 0.0,
+            price_qv: QuantizedValue::zero(),
+            amount_qv: QuantizedValue::zero(),
             exp_time: 0,
             create_ts: 0,
             price_offset: 0.0,
@@ -223,6 +220,40 @@ impl ArbOpenCtx {
     pub fn set_from_key(&mut self, from_key: Vec<u8>) {
         self.from_key_len = from_key.len() as u32;
         self.from_key = from_key;
+    }
+
+    pub fn set_price_with_tick_floor(&mut self, price: f64, preferred_tick: f64) -> bool {
+        let fallback = !(preferred_tick.is_finite() && preferred_tick > 0.0);
+        self.price_qv = QuantizedValue::encode_floor(price, preferred_tick)
+            .unwrap_or_else(QuantizedValue::zero);
+        fallback
+    }
+
+    pub fn set_amount_with_tick_floor(&mut self, amount: f64, preferred_tick: f64) -> bool {
+        let fallback = !(preferred_tick.is_finite() && preferred_tick > 0.0);
+        self.amount_qv = QuantizedValue::encode_floor(amount, preferred_tick)
+            .unwrap_or_else(QuantizedValue::zero);
+        fallback
+    }
+
+    pub fn price_value(&self) -> f64 {
+        self.price_qv.get_val()
+    }
+
+    pub fn amount_value(&self) -> f64 {
+        self.amount_qv.get_val()
+    }
+
+    pub fn price_count(&self) -> i64 {
+        self.price_qv.get_count()
+    }
+
+    pub fn amount_count(&self) -> i64 {
+        self.amount_qv.get_count()
+    }
+
+    pub fn set_amount_from_value_floor(&mut self, amount: f64) {
+        self.amount_qv.set_count_floor_from_val(amount);
     }
 }
 
@@ -298,11 +329,16 @@ impl SignalBytes for ArbOpenCtx {
         write_leg(&mut buf, &self.hedging_leg, &self.hedging_symbol);
 
         // Trade parameters
-        buf.put_f32_le(self.amount);
         buf.put_u8(self.side);
         buf.put_u8(self.order_type);
-        buf.put_f64_le(self.price);
-        buf.put_f64_le(self.price_tick);
+        let (price_tick_i64, price_tick_exp) = self.price_qv.get_tick_parts();
+        let (amount_tick_i64, amount_tick_exp) = self.amount_qv.get_tick_parts();
+        buf.put_i64_le(price_tick_i64);
+        buf.put_i32_le(price_tick_exp);
+        buf.put_i64_le(self.price_qv.get_count());
+        buf.put_i64_le(amount_tick_i64);
+        buf.put_i32_le(amount_tick_exp);
+        buf.put_i64_le(self.amount_qv.get_count());
         buf.put_i64_le(self.exp_time);
         buf.put_i64_le(self.create_ts);
         buf.put_f64_le(self.price_offset);
@@ -317,7 +353,7 @@ impl SignalBytes for ArbOpenCtx {
     }
 
     fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
-        const TAIL_LEN: usize = 4 + 1 + 1 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 4;
+        const TAIL_LEN: usize = 1 + 1 + 8 + 4 + 8 + 8 + 4 + 8 + 8 + 8 + 8 + 8 + 4;
 
         // Opening leg
         let (opening_leg, opening_symbol) = read_leg(&mut bytes, true, "opening leg")?;
@@ -329,11 +365,14 @@ impl SignalBytes for ArbOpenCtx {
         if bytes.remaining() < TAIL_LEN {
             return Err("Not enough bytes for trade parameters".to_string());
         }
-        let amount = bytes.get_f32_le();
         let side = bytes.get_u8();
         let order_type = bytes.get_u8();
-        let price = bytes.get_f64_le();
-        let price_tick = bytes.get_f64_le();
+        let price_tick_i64 = bytes.get_i64_le();
+        let price_tick_exp = bytes.get_i32_le();
+        let price_count = bytes.get_i64_le();
+        let amount_tick_i64 = bytes.get_i64_le();
+        let amount_tick_exp = bytes.get_i32_le();
+        let amount_count = bytes.get_i64_le();
         let exp_time = bytes.get_i64_le();
         let create_ts = bytes.get_i64_le();
         let price_offset = bytes.get_f64_le();
@@ -359,11 +398,10 @@ impl SignalBytes for ArbOpenCtx {
             opening_symbol,
             hedging_leg,
             hedging_symbol,
-            amount,
             side,
             order_type,
-            price,
-            price_tick,
+            price_qv: QuantizedValue::from_parts(price_tick_i64, price_tick_exp, price_count),
+            amount_qv: QuantizedValue::from_parts(amount_tick_i64, amount_tick_exp, amount_count),
             exp_time,
             create_ts,
             price_offset,

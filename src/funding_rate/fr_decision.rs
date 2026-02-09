@@ -47,12 +47,33 @@ fn min_qty_symbol_key(venue: TradingVenue, trade_symbol: &str) -> String {
             .to_uppercase()
             .replace("-SWAP", "")
             .replace('-', ""),
+        TradingVenue::GateMargin | TradingVenue::GateFutures => trade_symbol
+            .to_uppercase()
+            .replace('_', "")
+            .replace('-', ""),
         _ => trade_symbol.to_uppercase(),
     }
 }
 
 fn venue_qty_is_contracts(venue: TradingVenue) -> bool {
-    matches!(venue, TradingVenue::OkexFutures)
+    matches!(
+        venue,
+        TradingVenue::BinanceFutures | TradingVenue::OkexFutures | TradingVenue::GateFutures
+    )
+}
+
+fn contract_qty_multiplier(
+    table: &VenueMinQtyTable,
+    venue: TradingVenue,
+    symbol_key: &str,
+) -> Option<f64> {
+    match venue {
+        TradingVenue::BinanceFutures => Some(1.0),
+        TradingVenue::OkexFutures | TradingVenue::GateFutures => table
+            .contract_multiplier_opt(symbol_key)
+            .filter(|v| v.is_finite() && *v > 0.0),
+        _ => Some(1.0),
+    }
 }
 
 fn base_step_size(
@@ -65,7 +86,7 @@ fn base_step_size(
     let min_qty = table.min_qty(&symbol_key);
 
     if venue_qty_is_contracts(venue) {
-        let mult = table.contract_multiplier_opt(&symbol_key);
+        let mult = contract_qty_multiplier(table, venue, &symbol_key);
         let step_base = step.zip(mult).map(|(s, m)| s * m);
         let min_qty_base = min_qty.zip(mult).map(|(q, m)| q * m);
         (step_base, min_qty_base)
@@ -1199,7 +1220,7 @@ impl FrDecision {
             Side::Buy => spot_quote.bid,
             Side::Sell => spot_quote.ask,
         };
-        ctx.price = if base_price > 0.0 {
+        let raw_open_price = if base_price > 0.0 {
             match side {
                 Side::Buy => base_price * (1.0 - price_offset),
                 Side::Sell => base_price * (1.0 + price_offset),
@@ -1207,10 +1228,9 @@ impl FrDecision {
         } else {
             0.0
         };
-        ctx.price_tick = self
-            .table_for(spot_venue)
-            .price_tick(&spot_trade_symbol)
-            .unwrap_or(0.0);
+        let aligned_open_price =
+            self.align_open_price_for_signal(spot_venue, &spot_trade_symbol, raw_open_price);
+
         let base_qty = self.convert_order_amount_to_aligned_base_qty(
             spot_venue,
             &spot_trade_symbol,
@@ -1218,10 +1238,48 @@ impl FrDecision {
             &futures_trade_symbol,
             spot_quote,
             futures_quote,
-            ctx.price,
+            aligned_open_price,
             side,
         );
-        ctx.amount = base_qty as f32;
+        let aligned_open_qty = self.convert_aligned_base_qty_to_open_venue_qty(
+            spot_venue,
+            &spot_trade_symbol,
+            aligned_open_price,
+            base_qty,
+        );
+
+        let table = self.table_for(spot_venue);
+        let symbol_key = min_qty_symbol_key(spot_venue, &spot_trade_symbol);
+
+        let raw_price_tick = table.price_tick(&symbol_key).unwrap_or(0.0);
+        let price_fallback = ctx.set_price_with_tick_floor(aligned_open_price, raw_price_tick);
+        if raw_price_tick <= 0.0 || price_fallback {
+            warn!(
+                "FrDecision: missing price_tick for {:?} symbol_key={}, fallback to full-price tick",
+                spot_venue, symbol_key
+            );
+        }
+        if ctx.price_count() <= 0 {
+            warn!(
+                "FrDecision: invalid aligned_open_price for {:?} symbol_key={}, fallback to zero",
+                spot_venue, symbol_key
+            );
+        }
+
+        let raw_amount_tick = table.step_size(&symbol_key).unwrap_or(0.0);
+        let amount_fallback = ctx.set_amount_with_tick_floor(aligned_open_qty, raw_amount_tick);
+        if raw_amount_tick <= 0.0 || amount_fallback {
+            warn!(
+                "FrDecision: missing step_size for {:?} symbol_key={}, fallback to full-qty tick",
+                spot_venue, symbol_key
+            );
+        }
+        if ctx.amount_count() <= 0 {
+            warn!(
+                "FrDecision: invalid aligned_open_qty for {:?} symbol_key={}, fallback to zero",
+                spot_venue, symbol_key
+            );
+        }
 
         ctx.exp_time = now + self.open_order_ttl_us;
         ctx.create_ts = now;
@@ -1247,6 +1305,86 @@ impl FrDecision {
         } else {
             &self.hedge_min_qty_table
         }
+    }
+
+    fn align_open_price_for_signal(
+        &self,
+        open_venue: TradingVenue,
+        open_symbol: &str,
+        raw_price: f64,
+    ) -> f64 {
+        if raw_price <= 0.0 {
+            return 0.0;
+        }
+        let table = self.table_for(open_venue);
+        let symbol_key = min_qty_symbol_key(open_venue, open_symbol);
+        let tick = table.price_tick(&symbol_key).unwrap_or(0.0);
+        if tick > 0.0 {
+            align_price_floor(raw_price, tick)
+        } else {
+            raw_price
+        }
+    }
+
+    fn convert_aligned_base_qty_to_open_venue_qty(
+        &self,
+        open_venue: TradingVenue,
+        open_symbol: &str,
+        open_price: f64,
+        aligned_base_qty: f64,
+    ) -> f64 {
+        if aligned_base_qty <= 0.0 || open_price <= 0.0 {
+            return 0.0;
+        }
+
+        let table = self.table_for(open_venue);
+        let symbol_key = min_qty_symbol_key(open_venue, open_symbol);
+
+        let qty_multiplier = if venue_qty_is_contracts(open_venue) {
+            let Some(multiplier) = contract_qty_multiplier(table, open_venue, &symbol_key) else {
+                warn!(
+                    "FrDecision: missing/invalid contract_multiplier for {:?} symbol_key={}, cannot convert aligned base qty to venue qty",
+                    open_venue, symbol_key
+                );
+                return 0.0;
+            };
+            multiplier
+        } else {
+            1.0
+        };
+
+        let mut venue_qty = aligned_base_qty / qty_multiplier;
+        let step = table.step_size(&symbol_key).unwrap_or(0.0);
+        if step > 0.0 {
+            venue_qty = align_price_floor(venue_qty, step);
+            if venue_qty <= 0.0 {
+                venue_qty = step;
+            }
+        }
+
+        if let Some(min_qty) = table.min_qty(&symbol_key) {
+            if min_qty > 0.0 && venue_qty < min_qty {
+                venue_qty = min_qty;
+            }
+        }
+
+        if open_venue.is_futures() {
+            if let Some(min_notional) = table.min_notional(&symbol_key) {
+                if min_notional > 0.0 {
+                    let required_base_qty = min_notional / open_price;
+                    let required_venue_qty = required_base_qty / qty_multiplier;
+                    if venue_qty + 1e-12 < required_venue_qty {
+                        venue_qty = if step > 0.0 {
+                            align_price_ceil(required_venue_qty, step)
+                        } else {
+                            required_venue_qty
+                        };
+                    }
+                }
+            }
+        }
+
+        venue_qty
     }
 
     /// 将 USDT 名义金额转换为 base qty，并按 open/hedge 两腿共同的 base_step 对齐；
@@ -1343,10 +1481,11 @@ impl FrDecision {
             (open_venue, open_table, &open_symbol_key),
             (hedge_venue, hedge_table, &hedge_symbol_key),
         ] {
-            if venue_qty_is_contracts(venue) && table.contract_multiplier_opt(symbol_key).is_none()
+            if venue_qty_is_contracts(venue)
+                && contract_qty_multiplier(table, venue, symbol_key).is_none()
             {
                 warn!(
-                    "FrDecision: missing contract_multiplier for {:?} symbol_key={} (ctVal×ctMult), qty alignment may be inaccurate",
+                    "FrDecision: missing contract_multiplier for {:?} symbol_key={} (BinanceFutures fixed=1, OKX/Gate need table), qty alignment may be inaccurate",
                     venue, symbol_key
                 );
             }

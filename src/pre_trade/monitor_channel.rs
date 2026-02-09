@@ -144,7 +144,7 @@ enum LegMgr {
         exchange: Exchange,
         bal: Rc<RefCell<BasicBalanceManager>>,
     },
-    /// U 本位合约腿，sz=张数（OKX）或标的数量（Binance）
+    /// U 本位合约腿：Binance 按 contracts(mult=1) 处理，OKX/Gate 按 contracts(需合约乘数)处理
     Futures {
         exchange: Exchange,
         um: Rc<RefCell<BasicUmManager>>,
@@ -543,6 +543,7 @@ impl MonitorChannel {
         qty: f64,
     ) -> f64 {
         match venue {
+            TradingVenue::BinanceFutures => qty,
             TradingVenue::OkexFutures | TradingVenue::GateFutures => {
                 let symbol_key = match venue {
                     TradingVenue::OkexFutures => {
@@ -574,6 +575,7 @@ impl MonitorChannel {
         qty: f64,
     ) -> Result<f64, String> {
         match venue {
+            TradingVenue::BinanceFutures => Ok(qty),
             TradingVenue::OkexFutures | TradingVenue::GateFutures => {
                 let symbol_key = match venue {
                     TradingVenue::OkexFutures => {
@@ -610,7 +612,7 @@ impl MonitorChannel {
 
     /// 将订单数量（按 venue 语义）转换为 base qty（标的数量）
     ///
-    /// - Binance futures: qty 本身就是 base qty
+    /// - Binance futures: qty 按 contracts(mult=1) 处理，等价于 base qty
     /// - OKX/Gate futures: qty 是 contracts，需要乘以合约面值（contract multiplier）
     pub fn qty_to_base(&self, venue: TradingVenue, symbol: &str, qty: f64) -> f64 {
         Self::with_inner(|inner| Self::order_qty_to_base(inner, venue, symbol, qty))
@@ -879,13 +881,10 @@ impl MonitorChannel {
             };
 
             match venue {
-                TradingVenue::BinanceFutures => Self::align_order_with_table(
-                    &symbol_key,
-                    raw_qty,
-                    raw_price,
-                    table.as_ref(),
-                    true,
-                ),
+                TradingVenue::BinanceFutures => {
+                    // Binance U 本地统一按 contracts(multiplier=1.0) 处理
+                    Self::align_order_with_table(&symbol_key, raw_qty, raw_price, table.as_ref(), true)
+                }
                 TradingVenue::BinanceMargin => Self::align_order_with_table(
                     &symbol_key,
                     raw_qty,
@@ -904,7 +903,7 @@ impl MonitorChannel {
                     )
                 }
                 TradingVenue::OkexFutures | TradingVenue::GateFutures => {
-                    // OKX 永续/交割合约 sz 使用“张数”，需要用 ctVal×ctMult 将 base qty 转成合约张数
+                    // OKX/Gate 永续/交割合约 sz 使用“张数”，需要用合约乘数将 base qty 转成 contracts
                     let contract_size = table.contract_multiplier_opt(&symbol_key).ok_or_else(|| {
                         format!(
                             "symbol={} 缺少 {:?} 合约乘数，无法将 base qty 转成 contracts（请刷新 filters/multipliers）",
@@ -1451,7 +1450,8 @@ impl MonitorChannel {
             } else {
                 "price_hint"
             };
-            let (qty_unit, fut_symbol_key, fut_contract_multiplier) = match open_venue {
+            let (qty_unit, fut_symbol_key, qty_multiplier) = match open_venue {
+                TradingVenue::BinanceFutures => ("contracts(mult=1)", Some(symbol_upper.clone()), Some(1.0)),
                 TradingVenue::OkexFutures | TradingVenue::GateFutures => {
                     let symbol_key = match open_venue {
                         TradingVenue::OkexFutures => {
@@ -1478,14 +1478,14 @@ impl MonitorChannel {
                 Ok(v) => v,
                 Err(e) => {
                     info!(
-                            "max_pos_u check qty convert failed: symbol={} base_asset={} venue={:?} qty_unit={} raw_qty={:.8} okx_symbol_key={:?} okx_contract_multiplier(ctVal×ctMult)={:?} err={}",
+                            "max_pos_u check qty convert failed: symbol={} base_asset={} venue={:?} qty_unit={} raw_qty={:.8} fut_symbol_key={:?} qty_multiplier={:?} err={}",
                             symbol,
                             base_asset,
                             open_venue,
                             qty_unit,
                             additional_qty,
                             fut_symbol_key,
-                            fut_contract_multiplier,
+                            qty_multiplier,
                             e
                         );
                     return Err(e);
@@ -1503,7 +1503,7 @@ impl MonitorChannel {
 
             if projected_usdt > max_pos_u + limit_eps {
                 info!(
-                    "max_pos_u check reject detail: symbol={} base_asset={} venue={:?} price_source={} mark_symbol={} price={:.8} qty_unit={} raw_qty={:.8} okx_symbol_key={:?} okx_contract_multiplier(ctVal×ctMult)={:?} current_open_qty(base)={:.8} add_base_qty={:.8} projected_qty(base)={:.8} current_usdt={:.4} order_usdt={:.4} projected_usdt={:.4} max_pos_u={:.4}",
+                    "max_pos_u check reject detail: symbol={} base_asset={} venue={:?} price_source={} mark_symbol={} price={:.8} qty_unit={} raw_qty={:.8} fut_symbol_key={:?} qty_multiplier={:?} current_open_qty(base)={:.8} add_base_qty={:.8} projected_qty(base)={:.8} current_usdt={:.4} order_usdt={:.4} projected_usdt={:.4} max_pos_u={:.4}",
                     symbol,
                     base_asset,
                     open_venue,
@@ -1513,7 +1513,7 @@ impl MonitorChannel {
                     qty_unit,
                     additional_qty,
                     fut_symbol_key,
-                    fut_contract_multiplier,
+                    qty_multiplier,
                     current_open_qty,
                     add_base_qty,
                     projected_qty,
