@@ -1,5 +1,6 @@
 pub mod binance_basic_account_event_parser;
 pub mod binance_parser;
+pub mod bitget_account_event_parser;
 pub mod bitget_parser;
 pub mod bybit_parser;
 pub mod default_parser;

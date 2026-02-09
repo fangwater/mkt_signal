@@ -11,6 +11,7 @@ use crate::common::basic_account_msg::{
     get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
     BasicPositionMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg, GateBasicOrderMsg, OkexOrderMsg,
 };
+use crate::common::bitget_account_msg::BitgetBasicOrderMsg;
 use crate::common::exchange::Exchange;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::min_qty_table::MinQtyTable;
@@ -41,14 +42,20 @@ const DEFAULT_NODE_PRE_TRADE_DERIVATIVES: &str = "pre_trade_derivatives";
 fn is_margin_venue(venue: TradingVenue) -> bool {
     matches!(
         venue,
-        TradingVenue::BinanceMargin | TradingVenue::OkexMargin | TradingVenue::GateMargin
+        TradingVenue::BinanceMargin
+            | TradingVenue::OkexMargin
+            | TradingVenue::GateMargin
+            | TradingVenue::BitgetMargin
     )
 }
 
 fn is_futures_venue(venue: TradingVenue) -> bool {
     matches!(
         venue,
-        TradingVenue::BinanceFutures | TradingVenue::OkexFutures | TradingVenue::GateFutures
+        TradingVenue::BinanceFutures
+            | TradingVenue::OkexFutures
+            | TradingVenue::GateFutures
+            | TradingVenue::BitgetFutures
     )
 }
 
@@ -57,6 +64,7 @@ fn exchange_from_venue(venue: TradingVenue) -> Exchange {
         TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => Exchange::Binance,
         TradingVenue::OkexMargin | TradingVenue::OkexFutures => Exchange::Okex,
         TradingVenue::GateMargin | TradingVenue::GateFutures => Exchange::Gate,
+        TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => Exchange::Bitget,
         _ => panic!("unsupported venue for pre_trade: {:?}", venue),
     }
 }
@@ -1221,6 +1229,11 @@ impl MonitorChannel {
                                     }
                                     Exchange::Gate => {
                                         if let Ok(msg) = GateBasicOrderMsg::from_bytes(data) {
+                                            dispatch_order_update_generic(&strategy_mgr, &msg);
+                                        }
+                                    }
+                                    Exchange::Bitget => {
+                                        if let Ok(msg) = BitgetBasicOrderMsg::from_bytes(data) {
                                             dispatch_order_update_generic(&strategy_mgr, &msg);
                                         }
                                     }

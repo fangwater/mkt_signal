@@ -14,6 +14,8 @@
 //! 每条 WS 连接最长不超过 24 小时，应定期断开重连；listenKey 需要每 30 分钟保活。
 pub mod binance_spot_ws_api_user_stream;
 pub mod binance_user_stream;
+pub mod bitget_auth;
+pub mod bitget_user_stream;
 pub mod gate_auth;
 pub mod gate_user_stream;
 pub mod listen_key;

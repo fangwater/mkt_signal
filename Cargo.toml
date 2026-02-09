@@ -29,6 +29,10 @@ name = "gate_account_monitor"
 path = "src/bin/gate_account_monitor.rs"
 
 [[bin]]
+name = "bitget_account_monitor"
+path = "src/bin/bitget_account_monitor.rs"
+
+[[bin]]
 name = "trade_engine"
 path = "src/bin/trade_engine.rs"
 

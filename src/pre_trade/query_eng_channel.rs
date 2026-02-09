@@ -238,6 +238,7 @@ impl QueryEngChannel {
                                                 TradingVenue::BinanceMargin
                                                     | TradingVenue::OkexMargin
                                                     | TradingVenue::GateMargin
+                                                    | TradingVenue::BitgetMargin
                                             ) {
                                                 if exchange_enum == open_exchange {
                                                     if let Some(bal) = mc.open_balance_mgr() {
@@ -250,6 +251,7 @@ impl QueryEngChannel {
                                                 TradingVenue::BinanceMargin
                                                     | TradingVenue::OkexMargin
                                                     | TradingVenue::GateMargin
+                                                    | TradingVenue::BitgetMargin
                                             ) {
                                                 if exchange_enum == hedge_exchange {
                                                     if let Some(bal) = mc.hedge_balance_mgr() {
@@ -271,6 +273,7 @@ impl QueryEngChannel {
                                                 TradingVenue::BinanceMargin
                                                     | TradingVenue::OkexMargin
                                                     | TradingVenue::GateMargin
+                                                    | TradingVenue::BitgetMargin
                                             ) {
                                                 if exchange_enum == open_exchange {
                                                     if let Some(bal) = mc.open_balance_mgr() {
@@ -283,6 +286,7 @@ impl QueryEngChannel {
                                                 TradingVenue::BinanceMargin
                                                     | TradingVenue::OkexMargin
                                                     | TradingVenue::GateMargin
+                                                    | TradingVenue::BitgetMargin
                                             ) {
                                                 if exchange_enum == hedge_exchange {
                                                     if let Some(bal) = mc.hedge_balance_mgr() {
@@ -299,6 +303,7 @@ impl QueryEngChannel {
                                                 TradingVenue::BinanceFutures
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
+                                                    | TradingVenue::BitgetFutures
                                             ) {
                                                 if exchange_enum == open_exchange {
                                                     if let Some((um, _)) = mc.open_um_mgr() {
@@ -311,6 +316,7 @@ impl QueryEngChannel {
                                                 TradingVenue::BinanceFutures
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
+                                                    | TradingVenue::BitgetFutures
                                             ) {
                                                 if exchange_enum == hedge_exchange {
                                                     if let Some((um, _)) = mc.hedge_um_mgr() {
@@ -327,6 +333,7 @@ impl QueryEngChannel {
                                                 TradingVenue::BinanceFutures
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
+                                                    | TradingVenue::BitgetFutures
                                             ) {
                                                 if exchange_enum == open_exchange {
                                                     if let Some((um, _)) = mc.open_um_mgr() {
@@ -339,6 +346,7 @@ impl QueryEngChannel {
                                                 TradingVenue::BinanceFutures
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
+                                                    | TradingVenue::BitgetFutures
                                             ) {
                                                 if exchange_enum == hedge_exchange {
                                                     if let Some((um, _)) = mc.hedge_um_mgr() {

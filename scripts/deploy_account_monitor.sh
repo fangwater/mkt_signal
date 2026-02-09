@@ -4,23 +4,25 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
-  cat <<'EOF'
+  cat <<'USAGE_EOF'
 Usage:
-  deploy_account_monitor.sh [trade|test] --exchange okex|binance|gate [--env-name <exchange>_fr_<suffix>] [--scripts-only|--bin-only]
+  deploy_account_monitor.sh [trade|test] --exchange okex|binance|gate|bitget [--env-name <exchange>_fr_<suffix>] [--scripts-only|--bin-only]
 
 Examples:
   bash scripts/deploy_account_monitor.sh trade --exchange okex
   bash scripts/deploy_account_monitor.sh test  --exchange binance
   bash scripts/deploy_account_monitor.sh trade --exchange gate
+  bash scripts/deploy_account_monitor.sh trade --exchange bitget
 
 Notes:
   - This script builds the existing per-exchange binaries:
       okex   -> okex_account_monitor
       binance-> binance_account_monitor
       gate   -> gate_account_monitor
+      bitget -> bitget_account_monitor
   - Deploy dir:
       $HOME/<exchange>_fr_<suffix> (e.g. $HOME/okex_fr_trade, $HOME/binance_fr_hf01)
-EOF
+USAGE_EOF
 }
 
 ENV_TYPE="trade"
@@ -77,7 +79,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$EXCHANGE" ]]; then
-  echo "[ERROR] --exchange must be one of: okex, binance, gate" >&2
+  echo "[ERROR] --exchange must be one of: okex, binance, gate, bitget" >&2
   usage >&2
   exit 1
 fi
@@ -86,9 +88,9 @@ fi
 EXCHANGE="$(echo "$EXCHANGE" | tr 'A-Z' 'a-z')"
 
 case "$EXCHANGE" in
-  okex|binance|gate) ;;
+  okex|binance|gate|bitget) ;;
   *)
-    echo "[ERROR] --exchange must be one of: okex, binance, gate" >&2
+    echo "[ERROR] --exchange must be one of: okex, binance, gate, bitget" >&2
     usage >&2
     exit 1
     ;;
@@ -119,6 +121,7 @@ case "$EXCHANGE" in
   okex) BIN_NAME="okex_account_monitor" ;;
   binance) BIN_NAME="binance_account_monitor" ;;
   gate) BIN_NAME="gate_account_monitor" ;;
+  bitget) BIN_NAME="bitget_account_monitor" ;;
 esac
 
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
