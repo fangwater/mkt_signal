@@ -655,8 +655,7 @@ impl SubscribeMsgs {
         let mut kline_subscribe_msgs = Vec::new();
         let mut ask_bid_spread_msgs = Vec::new();
         let exchange = cfg.get_exchange();
-        let inc_channel = if cfg.data_types.enable_incremental && exchange != Exchange::Hyperliquid
-        {
+        let inc_channel = if cfg.data_types.enable_incremental {
             Some(SubscribeMsgs::get_inc_channel(&exchange, cfg.venue))
         } else {
             None
@@ -676,14 +675,13 @@ impl SubscribeMsgs {
         } else {
             None
         };
-        let best_price_spread_channel =
-            if cfg.data_types.enable_ask_bid_spread && exchange != Exchange::Hyperliquid {
-                Some(SubscribeMsgs::get_ask_bid_spread_channel(
-                    &exchange, cfg.venue,
-                ))
-            } else {
-                None
-            };
+        let best_price_spread_channel = if cfg.data_types.enable_ask_bid_spread {
+            Some(SubscribeMsgs::get_ask_bid_spread_channel(
+                &exchange, cfg.venue,
+            ))
+        } else {
+            None
+        };
         for chunk in symbols.chunks(batch_size) {
             if let Some(ref ch) = inc_channel {
                 inc_subscribe_msgs

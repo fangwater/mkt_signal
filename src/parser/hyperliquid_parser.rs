@@ -1,5 +1,6 @@
 use crate::common::mkt_msg::{
-    FundingRateMsg, KlineMsg, MarkPriceMsg, SignalMsg, SignalSource, TradeMsg,
+    AskBidSpreadMsg, FundingRateMsg, IncMsg, KlineMsg, Level, MarkPriceMsg, SignalMsg,
+    SignalSource, TradeMsg,
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
@@ -158,6 +159,142 @@ fn is_closed_kline(close_ts: i64) -> bool {
     close_ts <= now_ts_ms() + 1_000
 }
 
+fn parse_book_level(level: &serde_json::Value) -> Option<(f64, f64)> {
+    if let Some(level_obj) = level.as_object() {
+        let price = parse_num(level_obj.get("px").or_else(|| level_obj.get("price")))?;
+        let amount = parse_num(
+            level_obj
+                .get("sz")
+                .or_else(|| level_obj.get("size"))
+                .or_else(|| level_obj.get("amount")),
+        )?;
+        return Some((price, amount));
+    }
+
+    if let Some(level_array) = level.as_array() {
+        if level_array.len() >= 2 {
+            let price = parse_num(level_array.first())?;
+            let amount = parse_num(level_array.get(1))?;
+            return Some((price, amount));
+        }
+    }
+
+    None
+}
+
+fn parse_book_side_levels(side: Option<&serde_json::Value>) -> Vec<(f64, f64)> {
+    let Some(levels) = side.and_then(|value| value.as_array()) else {
+        return Vec::new();
+    };
+
+    let mut parsed_levels = Vec::new();
+    for level in levels {
+        if let Some((price, amount)) = parse_book_level(level) {
+            if price > 0.0 {
+                parsed_levels.push((price, amount));
+            }
+        }
+    }
+    parsed_levels
+}
+
+fn parse_best_bid_ask(data: &serde_json::Value) -> Option<((f64, f64), (f64, f64))> {
+    if let Some(bbo) = data.get("bbo").and_then(|value| value.as_array()) {
+        if bbo.len() >= 2 {
+            let bid = parse_book_level(&bbo[0])?;
+            let ask = parse_book_level(&bbo[1])?;
+            return Some((bid, ask));
+        }
+    }
+
+    if let (Some(bid), Some(ask)) = (data.get("bid"), data.get("ask")) {
+        let bid = parse_book_level(bid)?;
+        let ask = parse_book_level(ask)?;
+        return Some((bid, ask));
+    }
+
+    if let Some(levels) = data.get("levels").and_then(|value| value.as_array()) {
+        if levels.len() >= 2 {
+            let bid = levels[0].as_array().and_then(|items| items.first());
+            let ask = levels[1].as_array().and_then(|items| items.first());
+            if let (Some(bid), Some(ask)) = (bid, ask) {
+                let bid = parse_book_level(bid)?;
+                let ask = parse_book_level(ask)?;
+                return Some((bid, ask));
+            }
+        }
+    }
+
+    None
+}
+
+fn split_levels(
+    total_bids: usize,
+    total_asks: usize,
+    max_levels: Option<usize>,
+) -> Vec<(usize, usize, usize, usize)> {
+    let total = total_bids + total_asks;
+
+    match max_levels {
+        Some(max) if total > max && max > 0 => {
+            let mut chunks = Vec::new();
+            let mut bids_sent = 0;
+            let mut asks_sent = 0;
+
+            while bids_sent < total_bids || asks_sent < total_asks {
+                let bids_remaining = total_bids - bids_sent;
+                let asks_remaining = total_asks - asks_sent;
+                let remaining = bids_remaining + asks_remaining;
+
+                let chunk_bids = if remaining <= max {
+                    bids_remaining
+                } else {
+                    let ratio = bids_remaining as f64 / remaining as f64;
+                    ((max as f64 * ratio).round() as usize)
+                        .max(1)
+                        .min(bids_remaining)
+                };
+                let chunk_asks = (max - chunk_bids).min(asks_remaining);
+
+                chunks.push((bids_sent, chunk_bids, asks_sent, chunk_asks));
+                bids_sent += chunk_bids;
+                asks_sent += chunk_asks;
+            }
+
+            chunks
+        }
+        _ => vec![(0, total_bids, 0, total_asks)],
+    }
+}
+
+fn fill_inc_levels(
+    bids: &[(f64, f64)],
+    asks: &[(f64, f64)],
+    bids_start: usize,
+    bids_count: usize,
+    asks_start: usize,
+    asks_count: usize,
+    inc_msg: &mut IncMsg,
+) {
+    for level_idx in 0..bids_count {
+        let src_idx = bids_start + level_idx;
+        if src_idx >= bids.len() {
+            break;
+        }
+        let (price, amount) = bids[src_idx];
+        inc_msg.set_bid_level(level_idx, Level::from_values(price, amount));
+    }
+
+    for level_idx in 0..asks_count {
+        let src_idx = asks_start + level_idx;
+        if src_idx >= asks.len() {
+            break;
+        }
+        let (price, amount) = asks[src_idx];
+        inc_msg.set_ask_level(level_idx, Level::from_values(price, amount));
+    }
+}
+
 #[derive(Clone)]
 pub struct HyperliquidSignalParser {
     source: SignalSource,
@@ -198,6 +335,106 @@ impl Parser for HyperliquidSignalParser {
             return 1;
         }
         0
+    }
+}
+
+#[derive(Clone)]
+pub struct HyperliquidIncParser {
+    max_levels: Option<usize>,
+}
+
+impl HyperliquidIncParser {
+    pub fn new() -> Self {
+        Self { max_levels: None }
+    }
+
+    pub fn with_max_levels(max_levels: Option<usize>) -> Self {
+        Self { max_levels }
+    }
+}
+
+impl Parser for HyperliquidIncParser {
+    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        let Ok(json_str) = std::str::from_utf8(&msg) else {
+            return 0;
+        };
+        let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) else {
+            return 0;
+        };
+
+        let channel = json_value
+            .get("channel")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+
+        if channel != "l2Book" {
+            return 0;
+        }
+
+        let Some(data) = json_value.get("data") else {
+            return 0;
+        };
+        let Some(data_obj) = data.as_object() else {
+            return 0;
+        };
+
+        let Some(symbol) = normalized_symbol_from_value(data) else {
+            return 0;
+        };
+
+        let levels = data_obj.get("levels").and_then(|value| value.as_array());
+        let bids = parse_book_side_levels(levels.and_then(|items| items.first()));
+        let asks = parse_book_side_levels(levels.and_then(|items| items.get(1)));
+
+        if bids.is_empty() && asks.is_empty() {
+            return 0;
+        }
+
+        let timestamp = parse_timestamp(&json_value);
+        let update_id = parse_i64(data_obj.get("seqNum"))
+            .or_else(|| parse_i64(data_obj.get("seq")))
+            .unwrap_or(timestamp);
+        let is_snapshot = data_obj
+            .get("isSnapshot")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true);
+
+        let chunks = split_levels(bids.len(), asks.len(), self.max_levels);
+        let total_chunks = chunks.len();
+        let mut sent_count = 0;
+
+        for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
+            chunks.into_iter().enumerate()
+        {
+            let mut inc_msg = IncMsg::create(
+                symbol.clone(),
+                update_id,
+                update_id,
+                timestamp,
+                is_snapshot,
+                bids_count as u32,
+                asks_count as u32,
+            );
+
+            inc_msg.set_chunk_index(chunk_idx as u8);
+            inc_msg.set_is_last(chunk_idx == total_chunks - 1);
+
+            fill_inc_levels(
+                &bids,
+                &asks,
+                bids_start,
+                bids_count,
+                asks_start,
+                asks_count,
+                &mut inc_msg,
+            );
+
+            if tx.send(inc_msg.to_bytes()).is_ok() {
+                sent_count += 1;
+            }
+        }
+
+        sent_count
     }
 }
 
@@ -285,6 +522,62 @@ impl Parser for HyperliquidTradeParser {
             }
         }
         parsed
+    }
+}
+
+#[derive(Clone)]
+pub struct HyperliquidAskBidSpreadParser;
+
+impl HyperliquidAskBidSpreadParser {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Parser for HyperliquidAskBidSpreadParser {
+    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        let Ok(json_str) = std::str::from_utf8(&msg) else {
+            return 0;
+        };
+        let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) else {
+            return 0;
+        };
+
+        let channel = json_value
+            .get("channel")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+
+        if channel != "bbo" {
+            return 0;
+        }
+
+        let Some(data) = json_value.get("data") else {
+            return 0;
+        };
+
+        let Some(symbol) = normalized_symbol_from_value(data) else {
+            return 0;
+        };
+
+        let Some(((bid_price, bid_amount), (ask_price, ask_amount))) = parse_best_bid_ask(data)
+        else {
+            return 0;
+        };
+
+        if bid_price <= 0.0 || bid_amount <= 0.0 || ask_price <= 0.0 || ask_amount <= 0.0 {
+            return 0;
+        }
+
+        let timestamp = parse_timestamp(&json_value);
+        let spread_msg = AskBidSpreadMsg::create(
+            symbol, timestamp, bid_price, bid_amount, ask_price, ask_amount,
+        );
+
+        if tx.send(spread_msg.to_bytes()).is_ok() {
+            return 1;
+        }
+        0
     }
 }
 
