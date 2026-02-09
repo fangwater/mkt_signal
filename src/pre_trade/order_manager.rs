@@ -549,8 +549,21 @@ impl OrderManager {
         quantity: f64,
         price: f64,
         reduce_only: bool,
+        qty_multiplier: f64,
         sumbit_ts_local: i64,
     ) -> i64 {
+        let qty_multiplier = if qty_multiplier.is_finite() && qty_multiplier > 0.0 {
+            qty_multiplier
+        } else {
+            warn!(
+                "OrderManager: invalid qty_multiplier={}, fallback to 1.0 client_order_id={} symbol={} venue={:?}",
+                qty_multiplier,
+                id,
+                symbol,
+                venue
+            );
+            1.0
+        };
         let mut order = Order::new(
             venue,
             id,
@@ -560,6 +573,7 @@ impl OrderManager {
             quantity,
             price,
             reduce_only,
+            qty_multiplier,
             self.binance_account_mode,
         );
         order.set_submit_time(sumbit_ts_local);
@@ -622,6 +636,17 @@ impl OrderManager {
         self.orders.get(&order_id).cloned()
     }
 
+    /// 获取订单数量乘数（venue qty -> base qty）
+    pub fn get_qty_multiplier(&self, order_id: i64) -> Option<f64> {
+        self.orders.get(&order_id).map(|order| order.qty_multiplier)
+    }
+
+    /// 基于订单记录的数量乘数，将 venue qty 转为 base qty
+    pub fn venue_qty_to_base_by_order(&self, order_id: i64, venue_qty: f64) -> Option<f64> {
+        self.get_qty_multiplier(order_id)
+            .map(|qty_multiplier| venue_qty * qty_multiplier)
+    }
+
     /// 打印订单详细信息的三线表日志
     pub fn log_order_details(&self, order: &Order, title: &str, strategy_id: i32) {
         warn!("═══════════════════════════════════════════════════════════════");
@@ -634,6 +659,7 @@ impl OrderManager {
         warn!("方向:         {:?}", order.side);
         warn!("价格:         {:.8}", order.price);
         warn!("数量:         {:.8}", order.quantity);
+        warn!("数量乘数:     {:.8}", order.qty_multiplier);
         warn!("只减仓:       {}", order.reduce_only);
         warn!("成交量:       {:.8}", order.cumulative_filled_quantity);
         warn!("订单状态:     {:?}", order.status);
@@ -751,6 +777,7 @@ pub struct Order {
     pub side: Side,                      // 买卖方向
     pub price: f64,                      // 限价单价格, 市价单没有意义
     pub quantity: f64,                   // 数量
+    pub qty_multiplier: f64,             // 数量乘数（venue qty -> base qty）
     pub reduce_only: bool,               // 是否只减仓
     pub cumulative_filled_quantity: f64, // 成交量
     pub exchange_order_id: Option<i64>,  // 交易所返回的 orderId
@@ -775,6 +802,7 @@ impl Order {
         quantity: f64,
         price: f64,
         reduce_only: bool,
+        qty_multiplier: f64,
         binance_account_mode: Option<BinanceAccountMode>,
     ) -> Self {
         Order {
@@ -785,6 +813,7 @@ impl Order {
             side,
             price,
             quantity,
+            qty_multiplier,
             reduce_only,
             status: OrderExecutionStatus::Commit,
             cumulative_filled_quantity: 0.0,

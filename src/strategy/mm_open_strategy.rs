@@ -331,6 +331,7 @@ impl MarketMakerOpenStrategy {
                 order_qty,
                 order_price,
                 false,
+                1.0,
                 submit_ts,
             );
 

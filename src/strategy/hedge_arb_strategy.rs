@@ -45,6 +45,8 @@ pub struct HedgeArbStrategy {
     pub order_seq: u32,                //订单号计数器
     pub cumulative_hedged_qty: f64,    //累计对冲数量
     pub cumulative_open_qty: f64,      //累计开仓数量
+    pub open_qty_multiplier: f64,      //开仓侧数量乘数（venue qty -> base qty）
+    pub hedge_qty_multiplier: f64,     //对冲侧数量乘数（venue qty -> base qty）
     pub open_filled_hedge_triggered: bool, //开仓成交已触发对冲（防止query重复触发）
     pub alive_flag: bool,              //策略是否存活
     pub hedge_symbol: String,          //对冲侧symbol
@@ -104,6 +106,8 @@ impl HedgeArbStrategy {
             order_seq: 0,
             cumulative_hedged_qty: 0.0,
             cumulative_open_qty: 0.0,
+            open_qty_multiplier: 1.0,
+            hedge_qty_multiplier: 1.0,
             open_filled_hedge_triggered: false,
             alive_flag: true,
             hedge_symbol: String::new(),
@@ -133,6 +137,63 @@ impl HedgeArbStrategy {
         TradingVenue::from_u8(venue)
             .map(|v| format!("{:?}", v))
             .unwrap_or_else(|| format!("Unknown({})", venue))
+    }
+
+    fn qty_symbol_key(venue: TradingVenue, symbol: &str) -> String {
+        match venue {
+            TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
+                symbol.to_uppercase().replace("-SWAP", "").replace('-', "")
+            }
+            TradingVenue::GateMargin | TradingVenue::GateFutures => {
+                symbol.to_uppercase().replace('_', "").replace('-', "")
+            }
+            _ => symbol.to_uppercase(),
+        }
+    }
+
+    fn resolve_qty_multiplier(venue: TradingVenue, symbol: &str) -> Result<f64, String> {
+        match venue {
+            TradingVenue::OkexFutures | TradingVenue::GateFutures => {
+                let symbol_key = Self::qty_symbol_key(venue, symbol);
+                let Some(table) = MonitorChannel::instance().venue_min_qty_table(venue) else {
+                    return Err(format!(
+                        "未初始化 {:?} 的最小下单量表，无法获取乘数 symbol={}",
+                        venue, symbol_key
+                    ));
+                };
+                let Some(multiplier) = table.contract_multiplier_opt(&symbol_key) else {
+                    return Err(format!(
+                        "symbol={} 缺少 {:?} 合约乘数，无法转换 qty 口径",
+                        symbol_key, venue
+                    ));
+                };
+                if multiplier <= 0.0 {
+                    return Err(format!(
+                        "symbol={} {:?} contract multiplier invalid: {}",
+                        symbol_key, venue, multiplier
+                    ));
+                }
+                Ok(multiplier)
+            }
+            _ => Ok(1.0),
+        }
+    }
+
+    fn refresh_qty_multipliers(&mut self, open_symbol: &str) -> Result<(), String> {
+        self.open_qty_multiplier = Self::resolve_qty_multiplier(self.open_venue, open_symbol)?;
+        self.hedge_qty_multiplier =
+            Self::resolve_qty_multiplier(self.hedge_venue, &self.hedge_symbol)?;
+        Ok(())
+    }
+
+    fn base_to_venue_qty(base_qty: f64, multiplier: f64, leg_name: &str) -> Result<f64, String> {
+        if multiplier <= 0.0 {
+            return Err(format!(
+                "{} multiplier invalid: {}",
+                leg_name, multiplier
+            ));
+        }
+        Ok(base_qty / multiplier)
     }
 
     fn hedge_invalid_param_reason(code: i32) -> Option<&'static str> {
@@ -364,6 +425,15 @@ impl HedgeArbStrategy {
             }
         }
 
+        if let Err(err) = self.refresh_qty_multipliers(&symbol) {
+            error!(
+                "HedgeArbStrategy: strategy_id={} 初始化数量乘数失败: {}",
+                self.strategy_id, err
+            );
+            self.alive_flag = false;
+            return;
+        }
+
         let align_result =
             MonitorChannel::instance().align_order_by_venue(venue, &symbol, raw_qty, raw_price);
         let (aligned_qty, aligned_price) = match align_result {
@@ -390,7 +460,7 @@ impl HedgeArbStrategy {
         if force_close {
             self.log_force_close_skip("杠杆", &ctx);
         } else {
-            let add_base_qty = MonitorChannel::instance().qty_to_base(venue, &symbol, signed_qty);
+            let add_base_qty = signed_qty * self.open_qty_multiplier;
             let current_base_qty = MonitorChannel::instance().get_position_qty(&symbol, venue);
             let projected_base_qty = current_base_qty + add_base_qty;
             let reduce_eps = 1e-12_f64;
@@ -434,6 +504,7 @@ impl HedgeArbStrategy {
                 aligned_qty,
                 aligned_price,
                 self.is_force_close_mode(),
+                self.open_qty_multiplier,
                 ts,
             );
         info!(
@@ -695,6 +766,7 @@ impl HedgeArbStrategy {
                 aligned_qty,
                 aligned_price,
                 self.is_force_close_mode(),
+                self.hedge_qty_multiplier,
                 ts,
             );
 
@@ -1438,12 +1510,19 @@ impl HedgeArbStrategy {
 
         // 2. 检查是否满足最小交易要求
         let mut min_req_reason: Option<String> = None;
-        let can_hedge = match MonitorChannel::instance().check_min_trading_requirements(
-            self.hedge_venue,
-            &self.hedge_symbol,
+        let can_hedge = match Self::base_to_venue_qty(
             total_pending_qty,
-            None,
-        ) {
+            self.hedge_qty_multiplier,
+            "hedge",
+        )
+        .and_then(|hedge_check_qty| {
+            MonitorChannel::instance().check_min_trading_requirements(
+                self.hedge_venue,
+                &self.hedge_symbol,
+                hedge_check_qty,
+                None,
+            )
+        }) {
             Ok(_) => true,
             Err(e) => {
                 min_req_reason = Some(e);
@@ -1724,14 +1803,20 @@ impl HedgeArbStrategy {
 
             // 检查剩余量是否满足最小交易要求
             if total_remaining > 1e-12 {
-                let can_hedge = MonitorChannel::instance()
-                    .check_min_trading_requirements(
+                let can_hedge = Self::base_to_venue_qty(
+                    total_remaining,
+                    self.hedge_qty_multiplier,
+                    "hedge",
+                )
+                .and_then(|hedge_check_qty| {
+                    MonitorChannel::instance().check_min_trading_requirements(
                         self.hedge_venue,
                         &self.hedge_symbol,
-                        total_remaining,
+                        hedge_check_qty,
                         None,
                     )
-                    .is_ok();
+                })
+                .is_ok();
 
                 if !can_hedge {
                     // 剩余量不足以对冲，且没有待处理的对冲订单，关闭策略
@@ -1770,11 +1855,20 @@ impl HedgeArbStrategy {
         self.clear_query_watchdogs(client_order_id);
 
         let cumulative_qty = trade.cumulative_filled_quantity();
-        let cumulative_base_qty = MonitorChannel::instance().qty_to_base(
-            trade.trading_venue(),
-            trade.symbol(),
-            cumulative_qty,
-        );
+        let cumulative_base_qty = {
+            let order_mgr = MonitorChannel::instance().order_manager();
+            order_mgr
+                .borrow()
+                .venue_qty_to_base_by_order(client_order_id, cumulative_qty)
+                .unwrap_or_else(|| {
+                    warn!(
+                        "HedgeArbStrategy: strategy_id={} 未找到订单数量乘数，按 1.0 处理 client_order_id={} cumulative_qty={:.8}",
+                        self.strategy_id, client_order_id, cumulative_qty
+                    );
+                    cumulative_qty
+                })
+            })
+        };
         let trade_time = trade.trade_time();
         let event_time = trade.event_time();
 
@@ -1908,6 +2002,7 @@ impl HedgeArbStrategy {
         //状态更新是通用部分，非成交只更新状态，不更新量
         let client_order_id = order_update.client_order_id();
         self.clear_query_watchdogs(client_order_id);
+        let incoming_cum_qty = order_update.cumulative_filled_quantity();
 
         let order_mgr = MonitorChannel::instance().order_manager();
         let mut order_manager = order_mgr.borrow_mut();
@@ -1921,6 +2016,7 @@ impl HedgeArbStrategy {
             );
             return false;
         };
+        let incoming_cum_base_qty = incoming_cum_qty * current_order.qty_multiplier;
 
         if OrderManager::should_skip_idempotent_order_update(
             &current_order,
@@ -1936,49 +2032,70 @@ impl HedgeArbStrategy {
         }
 
         let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
-        let updated = order_manager.update(client_order_id, |order| match order_update.status() {
-            OrderStatus::New => {
-                order.status = OrderExecutionStatus::Create;
-                order.set_exchange_order_id(order_update.order_id());
-                order.set_create_time(order_update.event_time());
-                info!(
-                    "✅ 订单已挂单: strategy_id={} client_order_id={} exchange_order_id={} symbol={} side={:?} price={:.6} qty={:.4}",
-                    self.strategy_id, client_order_id, order_update.order_id(),
-                    order.symbol, order.side, order.price, order.quantity
-                );
+        let updated = order_manager.update(client_order_id, |order| {
+            order.set_exchange_order_id(order_update.order_id());
+            if incoming_cum_qty > order.cumulative_filled_quantity + 1e-12 {
+                order.cumulative_filled_quantity = incoming_cum_qty;
+                order.set_filled_time(order_update.event_time());
             }
-            OrderStatus::Canceled => {
-                order.status = OrderExecutionStatus::Cancelled;
-                order.set_end_time(order_update.event_time());
-                info!(
-                    "🚫 订单已撤销: strategy_id={} client_order_id={} exchange_order_id={} symbol={} filled={:.4}/{:.4}",
-                    self.strategy_id, client_order_id, order_update.order_id(),
-                    order.symbol, order.cumulative_filled_quantity, order.quantity
-                );
-            }
-            OrderStatus::Expired => {
-                order.status = OrderExecutionStatus::Rejected;
-                order.set_end_time(order_update.event_time());
-                warn!(
-                    "⏰ 订单已过期: strategy_id={} client_order_id={} exchange_order_id={} symbol={}",
-                    self.strategy_id, client_order_id, order_update.order_id(), order.symbol
-                );
-            }
-            OrderStatus::ExpiredInMatch => {
-                order.status = OrderExecutionStatus::Rejected;
-                order.set_end_time(order_update.event_time());
-                warn!(
-                    "⏰ 订单匹配中过期: strategy_id={} client_order_id={} exchange_order_id={} symbol={}",
-                    self.strategy_id, client_order_id, order_update.order_id(), order.symbol
-                );
-            }
-            _ => {
-                panic!(
-                    "unexpected order status received {} {} {:?}",
-                    order_update.client_order_id(),
-                    order_update.order_id(),
-                    order_update.status()
-                );
+
+            match order_update.status() {
+                OrderStatus::New => {
+                    order.status = OrderExecutionStatus::Create;
+                    order.set_create_time(order_update.event_time());
+                    info!(
+                        "✅ 订单已挂单: strategy_id={} client_order_id={} exchange_order_id={} symbol={} side={:?} price={:.6} qty={:.4}",
+                        self.strategy_id, client_order_id, order_update.order_id(),
+                        order.symbol, order.side, order.price, order.quantity
+                    );
+                }
+                OrderStatus::Canceled => {
+                    order.status = OrderExecutionStatus::Cancelled;
+                    order.set_end_time(order_update.event_time());
+                    info!(
+                        "🚫 订单已撤销: strategy_id={} client_order_id={} exchange_order_id={} symbol={} filled={:.4}/{:.4}",
+                        self.strategy_id, client_order_id, order_update.order_id(),
+                        order.symbol, order.cumulative_filled_quantity, order.quantity
+                    );
+                }
+                OrderStatus::Expired => {
+                    order.status = OrderExecutionStatus::Rejected;
+                    order.set_end_time(order_update.event_time());
+                    warn!(
+                        "⏰ 订单已过期: strategy_id={} client_order_id={} exchange_order_id={} symbol={}",
+                        self.strategy_id, client_order_id, order_update.order_id(), order.symbol
+                    );
+                }
+                OrderStatus::ExpiredInMatch => {
+                    order.status = OrderExecutionStatus::Rejected;
+                    order.set_end_time(order_update.event_time());
+                    warn!(
+                        "⏰ 订单匹配中过期: strategy_id={} client_order_id={} exchange_order_id={} symbol={}",
+                        self.strategy_id, client_order_id, order_update.order_id(), order.symbol
+                    );
+                }
+                OrderStatus::Filled => {
+                    order.status = OrderExecutionStatus::Filled;
+                    order.set_filled_time(order_update.event_time());
+                    order.set_end_time(order_update.event_time());
+                    info!(
+                        "✅ 订单已完全成交: strategy_id={} client_order_id={} exchange_order_id={} symbol={}",
+                        self.strategy_id, client_order_id, order_update.order_id(), order.symbol
+                    );
+                }
+                OrderStatus::PartiallyFilled => {
+                    if !order.status.is_terminal() {
+                        order.status = OrderExecutionStatus::Create;
+                    }
+                    debug!(
+                        "订单部分成交: strategy_id={} client_order_id={} exchange_order_id={} symbol={} cumulative={:.8}",
+                        self.strategy_id,
+                        client_order_id,
+                        order_update.order_id(),
+                        order.symbol,
+                        order.cumulative_filled_quantity
+                    );
+                }
             }
         });
         drop(order_manager);
@@ -1991,6 +2108,19 @@ impl HedgeArbStrategy {
                 order_update.status()
             );
             return false;
+        }
+
+        // 同步推进策略累计成交量（base 口径）：
+        // 某些交易所/链路可能先到 order update，后到 trade update；
+        // 这里先做一次上限推进，避免策略累计量滞后。
+        if client_order_id == self.open_order_id {
+            if incoming_cum_base_qty > self.cumulative_open_qty + 1e-12 {
+                self.cumulative_open_qty = incoming_cum_base_qty;
+            }
+        } else if self.hedge_order_ids.contains(&client_order_id)
+            && incoming_cum_base_qty > self.cumulative_hedged_qty + 1e-12
+        {
+            self.cumulative_hedged_qty = incoming_cum_base_qty;
         }
 
         if order_update.status() == OrderStatus::New {
