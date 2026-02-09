@@ -480,9 +480,6 @@ impl MktManager {
                     )
                     .await;
                 }
-                _ => {
-                    error!("Unsupported exchange for kline parser: {}", exchange);
-                }
             }
         }
     }
@@ -583,12 +580,6 @@ impl MktManager {
                         tx,
                     )
                     .await;
-                }
-                _ => {
-                    error!(
-                        "Unsupported exchange for ask_bid_spread parser: {}",
-                        exchange
-                    );
                 }
             }
         }
