@@ -7,9 +7,9 @@ use iceoryx2::service::ipc;
 use crate::common::iceoryx_publisher::SIGNAL_PAYLOAD;
 use crate::common::ipc_service_name::build_service_name;
 
-const NODE_PREFIX: &str = "persist_signal_";
+const NODE_PREFIX: &str = "persist_record_";
 
-pub fn create_signal_record_subscriber(
+pub fn create_record_subscriber(
     channel: &str,
 ) -> Result<Subscriber<ipc::Service, [u8; SIGNAL_PAYLOAD], ()>> {
     let node_name = format!("{}{}", NODE_PREFIX, sanitize_suffix(channel));
@@ -38,11 +38,6 @@ pub fn create_signal_record_subscriber(
     Ok(subscriber)
 }
 
-pub fn trim_signal_record_payload(payload: &[u8]) -> Bytes {
-    let used = signal_record_used_len(payload).unwrap_or(payload.len());
-    Bytes::copy_from_slice(&payload[..used])
-}
-
 pub fn trim_trade_update_payload(payload: &[u8]) -> Bytes {
     let used = trade_update_used_len(payload).unwrap_or(payload.len());
     Bytes::copy_from_slice(&payload[..used])
@@ -53,22 +48,9 @@ pub fn trim_order_update_payload(payload: &[u8]) -> Bytes {
     Bytes::copy_from_slice(&payload[..used])
 }
 
-fn signal_record_used_len(payload: &[u8]) -> Option<usize> {
-    // Format: i32 strategy_id + u32 signal_type + u32 ctx_len + ctx_bytes + optional i64 ts_us
-    if payload.len() < 12 {
-        return None;
-    }
-    let ctx_len = u32::from_le_bytes(payload[8..12].try_into().ok()?) as usize;
-    let base = 12usize.checked_add(ctx_len)?;
-    if payload.len() < base {
-        return None;
-    }
-    let with_ts = base.checked_add(8)?;
-    Some(if payload.len() >= with_ts {
-        with_ts
-    } else {
-        base
-    })
+pub fn trim_uniform_order_payload(payload: &[u8]) -> Bytes {
+    let used = uniform_order_used_len(payload).unwrap_or(payload.len());
+    Bytes::copy_from_slice(&payload[..used])
 }
 
 fn trade_update_used_len(payload: &[u8]) -> Option<usize> {
@@ -79,7 +61,6 @@ fn trade_update_used_len(payload: &[u8]) -> Option<usize> {
     skip_i64(&mut cursor)?; // event_time
     skip_i64(&mut cursor)?; // trade_time
     skip_string(&mut cursor)?; // symbol
-    skip_i64(&mut cursor)?; // trade_id
     skip_i64(&mut cursor)?; // order_id
     skip_i64(&mut cursor)?; // client_order_id
     skip_u8(&mut cursor)?; // side
@@ -121,6 +102,44 @@ fn order_update_used_len(payload: &[u8]) -> Option<usize> {
     skip_opt_f64(&mut cursor)?; // average_price
     skip_opt_f64(&mut cursor)?; // last_executed_price
     skip_opt_string(&mut cursor)?; // business_unit
+
+    Some(payload.len().saturating_sub(cursor.remaining()))
+}
+
+fn uniform_order_used_len(payload: &[u8]) -> Option<usize> {
+    // Format must match pre_trade::persist_channel::serialize_uniform_order
+    let mut cursor = Bytes::copy_from_slice(payload);
+
+    skip_i64(&mut cursor)?; // recv_ts_us
+
+    let symbol_len = read_u16(&mut cursor)? as usize;
+    if cursor.remaining() < symbol_len {
+        return None;
+    }
+    cursor.advance(symbol_len);
+
+    skip_i64(&mut cursor)?; // create_ts
+    skip_i64(&mut cursor)?; // update_ts
+    skip_i64(&mut cursor)?; // signal_ts
+
+    skip_i64(&mut cursor)?; // client_order_id
+
+    skip_u8(&mut cursor)?; // venue
+    skip_u8(&mut cursor)?; // ttype
+    skip_u8(&mut cursor)?; // side
+
+    skip_f64(&mut cursor)?; // price
+    skip_f64(&mut cursor)?; // price_offset
+    skip_f64(&mut cursor)?; // amount_init
+    skip_f64(&mut cursor)?; // amount_update
+
+    skip_u8(&mut cursor)?; // status
+
+    let from_key_len = read_u32(&mut cursor)? as usize;
+    if cursor.remaining() < from_key_len {
+        return None;
+    }
+    cursor.advance(from_key_len);
 
     Some(payload.len().saturating_sub(cursor.remaining()))
 }
@@ -186,6 +205,13 @@ fn read_u32(cursor: &mut Bytes) -> Option<u32> {
         return None;
     }
     Some(cursor.get_u32_le())
+}
+
+fn read_u16(cursor: &mut Bytes) -> Option<u16> {
+    if cursor.remaining() < 2 {
+        return None;
+    }
+    Some(cursor.get_u16_le())
 }
 
 fn sanitize_suffix(raw: &str) -> std::borrow::Cow<'_, str> {

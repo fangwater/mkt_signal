@@ -2,12 +2,12 @@ use anyhow::Result;
 use log::{info, warn};
 use std::time::{Duration, Instant};
 
+use super::cfg::PairMmResampleConfig;
+use super::publisher::PairMmPublisher;
 use crate::common::mkt_msg::PairMmResampleMsg;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
 use crate::signal::common::TradingVenue;
-use super::cfg::PairMmResampleConfig;
-use super::publisher::PairMmPublisher;
 
 const LOG_INTERVAL_SECS: u64 = 60;
 

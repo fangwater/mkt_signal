@@ -1,0 +1,22 @@
+# 深度因子发布统一配置（基于 depth snapshot）
+
+data_source:
+  depth_channel: "depth25"
+
+runtime:
+  reload_every: 120
+  max_keep_count: 900
+
+factors:
+  hf_orderbook_buy_amount:
+    enabled: true
+    scale_factor: 1.0
+
+  hf_orderbook_sell_amount:
+    enabled: true
+    scale_factor: 1.0
+
+  hf_orderbook_skew:
+    enabled: true
+    window: 360
+    scale_factor: 1.0

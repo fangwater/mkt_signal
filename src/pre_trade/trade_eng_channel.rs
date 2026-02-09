@@ -9,8 +9,16 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::common::ipc_service_name::build_service_name;
+use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeEngineResponseMessage};
+use crate::pre_trade::order_manager::OrderType;
+use crate::pre_trade::PersistChannel;
+use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
+use crate::strategy::trade_engine_response::{
+    TradeEngineResponse, TradeEngineResponseMessage, TradeRequestKind,
+};
+use crate::trade_engine::trade_request::TradeRequestType;
 
 thread_local! {
     static TRADE_ENG_HUB: OnceCell<TradeEngHub> = OnceCell::new();
@@ -19,7 +27,7 @@ thread_local! {
 const TRADE_REQ_PAYLOAD: usize = 4_096;
 const TRADE_RESP_PAYLOAD: usize = 64;
 const TRADE_RESP_HEADER_LEN: usize = 22;
-const TRADE_RESP_TAIL_LEN: usize = 25;
+const TRADE_RESP_TAIL_LEN: usize = 33;
 
 /// TradeEngHub 负责与多个 trade engine 进程进行双向通信
 ///
@@ -239,6 +247,7 @@ impl TradeEngChannel {
                     let mut order_status_u8 = 0u8;
                     let mut order_update_time = 0i64;
                     let mut executed_qty = 0.0f64;
+                    let mut response_price = 0.0f64;
                     if payload.len() >= TRADE_RESP_HEADER_LEN + TRADE_RESP_TAIL_LEN {
                         order_id = i64::from_le_bytes([
                             payload[22],
@@ -271,6 +280,16 @@ impl TradeEngChannel {
                             payload[45],
                             payload[46],
                         ]);
+                        response_price = f64::from_le_bytes([
+                            payload[47],
+                            payload[48],
+                            payload[49],
+                            payload[50],
+                            payload[51],
+                            payload[52],
+                            payload[53],
+                            payload[54],
+                        ]);
                     }
                     let response = TradeEngineResponseMessage::new_with_tail(
                         status,
@@ -282,6 +301,7 @@ impl TradeEngChannel {
                         order_status_u8,
                         order_update_time,
                         executed_qty,
+                        response_price,
                     );
 
                     Self::handle_trade_engine_response(&response);
@@ -334,6 +354,7 @@ fn dispatch_trade_engine_response(response: &TradeEngineResponseMessage) {
     }
 
     if !matched {
+        persist_unmatched_trade_engine_response(response);
         let expected_strategy_id = (order_id >> 32) as i32;
         debug!(
             "tradeEngineResponse unmatched: cli_ord_id={} status={} expect_strategy={}",
@@ -341,5 +362,142 @@ fn dispatch_trade_engine_response(response: &TradeEngineResponseMessage) {
             response.status(),
             expected_strategy_id
         );
+    }
+}
+
+fn persist_unmatched_trade_engine_response(response: &TradeEngineResponseMessage) {
+    if matches!(response.request_kind(), TradeRequestKind::Other) {
+        debug!(
+            "skip unmatched persist for non-order tradeEngineResponse: req_type={} cli_ord_id={}",
+            response.req_type(),
+            response.client_order_id()
+        );
+        return;
+    }
+
+    let Ok(req_type) = TradeRequestType::try_from(response.req_type()) else {
+        debug!(
+            "skip unmatched persist for unknown req_type: req_type={} cli_ord_id={}",
+            response.req_type(),
+            response.client_order_id()
+        );
+        return;
+    };
+
+    if !matches!(
+        req_type,
+        TradeRequestType::BinanceWsNewUMOrder
+            | TradeRequestType::BinanceWsCancelUMOrder
+            | TradeRequestType::BinanceWsNewMarginOrder
+            | TradeRequestType::BinanceWsCancelMarginOrder
+    ) {
+        debug!(
+            "skip unmatched persist for req_type without stable tail fields: req_type={:?} cli_ord_id={}",
+            req_type,
+            response.client_order_id()
+        );
+        return;
+    }
+
+    let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+        return;
+    };
+
+    let client_order_id = response.client_order_id();
+    let Some(order) = order_mgr.borrow().get(client_order_id) else {
+        debug!(
+            "tradeEngineResponse unmatched and order missing in order_manager: cli_ord_id={}",
+            client_order_id
+        );
+        return;
+    };
+
+    let Some(status) = response.order_status_u8().and_then(OrderStatus::from_u8) else {
+        debug!(
+            "skip unmatched persist: response lacks order_status_u8, ex={:?} req_type={} cli_ord_id={}",
+            response.exchange_enum(),
+            response.req_type(),
+            client_order_id
+        );
+        return;
+    };
+
+    let Some(update_time_ms) = response.order_update_time() else {
+        debug!(
+            "skip unmatched persist: response lacks order_update_time, ex={:?} req_type={} cli_ord_id={}",
+            response.exchange_enum(),
+            response.req_type(),
+            client_order_id
+        );
+        return;
+    };
+
+    let event_time_us = response
+        .order_update_time()
+        .and_then(|ts_ms| ts_ms.checked_mul(1_000))
+        .filter(|ts_us| *ts_us > 0)
+        .unwrap_or_else(|| update_time_ms.saturating_mul(1_000).max(get_timestamp_us()));
+    let order_id = response
+        .order_id()
+        .or(order.exchange_order_id)
+        .unwrap_or(client_order_id);
+    let tif = infer_time_in_force(order.venue, order.order_type);
+    let cumulative_exec_qty = response
+        .executed_qty()
+        .unwrap_or(order.cumulative_filled_quantity);
+
+    let execution_type = execution_type_from_status(status);
+
+    PersistChannel::with(|ch| {
+        if execution_type == ExecutionType::Trade {
+            if cumulative_exec_qty > order.cumulative_filled_quantity + 1e-12 {
+                let order_status = if status == OrderStatus::Filled {
+                    Some(OrderStatus::Filled)
+                } else {
+                    Some(OrderStatus::PartiallyFilled)
+                };
+                let trade = OrderQueryTradeUpdate::new(
+                    &order,
+                    order_id,
+                    event_time_us,
+                    cumulative_exec_qty,
+                    response.response_price(),
+                    order_status,
+                    tif,
+                );
+                ch.publish_trade_update_unmatched(&trade);
+            }
+            return;
+        }
+
+        let update = OrderQueryOrderUpdate::new(
+            &order,
+            order_id,
+            event_time_us,
+            status,
+            execution_type,
+            cumulative_exec_qty,
+            tif,
+        );
+        ch.publish_order_update_unmatched(&update);
+    });
+}
+
+fn infer_time_in_force(venue: TradingVenue, order_type: OrderType) -> TimeInForce {
+    if !order_type.is_limit() {
+        return TimeInForce::GTC;
+    }
+    match venue {
+        TradingVenue::BinanceFutures => TimeInForce::GTX,
+        _ => TimeInForce::GTC,
+    }
+}
+
+fn execution_type_from_status(status: OrderStatus) -> ExecutionType {
+    match status {
+        OrderStatus::New => ExecutionType::New,
+        OrderStatus::PartiallyFilled | OrderStatus::Filled => ExecutionType::Trade,
+        OrderStatus::Canceled => ExecutionType::Canceled,
+        OrderStatus::Expired | OrderStatus::ExpiredInMatch => ExecutionType::Expired,
     }
 }

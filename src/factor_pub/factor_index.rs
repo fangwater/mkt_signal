@@ -1,0 +1,28 @@
+pub fn factor_name_to_index(name: &str) -> Option<u16> {
+    match name {
+        "rl_return_volatility" => Some(0),
+        "hf_vol_std" => Some(1),
+        "hf_vol_abs_pct_by_vol" => Some(2),
+        "hf_highlow_range" => Some(3),
+        "hf_spread_return" => Some(4),
+        "hf_volume_mean" => Some(5),
+        "hf_count_mean" => Some(6),
+        "hf_active_rate_std" => Some(7),
+        "hf_active_rate_rank" => Some(8),
+        "hf_netbuy_std" => Some(9),
+        "hf_netbuy_rank" => Some(10),
+        "hf_ab_rate" => Some(11),
+        "hf_large_order_std" => Some(12),
+        "hf_large_order_rate_std" => Some(13),
+        "hf_medium_order_rate_std" => Some(14),
+        "hf_small_order_rate_std" => Some(15),
+        "hf_small_order_rate_mean" => Some(16),
+        "hf_vwap_diff_std" => Some(17),
+        "hf_price_volume_corr" => Some(18),
+        "hf_orderbook_buy_amount" => Some(19),
+        "hf_orderbook_sell_amount" => Some(20),
+        "hf_orderbook_skew" => Some(21),
+        "hf_vol_volume_combined" => Some(22),
+        _ => None,
+    }
+}

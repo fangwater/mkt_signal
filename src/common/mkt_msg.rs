@@ -15,7 +15,7 @@ pub enum MktMsgType {
     LiquidationOrder = 1013,
     FundingRate = 1014,
     AskBidSpread = 1015, // 买卖价差（最优买卖价）
-    RlReturnVolatility = 2001,
+    FactorValue = 2001,
     PairMmResample = 3001,
     Error = 2222,
 }
@@ -52,6 +52,7 @@ pub struct KlineMsg {
     pub close_price: f64,
     pub volume: f64,
     pub timestamp: i64,
+    pub count: u64,
 }
 
 pub struct FundingRateMsg {
@@ -63,14 +64,14 @@ pub struct FundingRateMsg {
     pub timestamp: i64,
 }
 
-pub struct RlReturnVolatilityMsg {
+pub struct FactorValueMsg {
     pub msg_type: MktMsgType,
     pub symbol_length: u32,
     pub symbol: String,
     pub value: f64,
     pub timestamp_ms: i64,
     pub ready: bool,
-    pub padding: [u8; 7],
+    pub factor_index: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -641,7 +642,7 @@ pub fn get_msg_type(data: &[u8]) -> MktMsgType {
         1013 => MktMsgType::LiquidationOrder,
         1014 => MktMsgType::FundingRate,
         1015 => MktMsgType::AskBidSpread,
-        2001 => MktMsgType::RlReturnVolatility,
+        2001 => MktMsgType::FactorValue,
         3001 => MktMsgType::PairMmResample,
         _ => MktMsgType::TpReset, // 默认值
     }
@@ -658,6 +659,29 @@ impl KlineMsg {
         volume: f64,
         timestamp: i64,
     ) -> Self {
+        Self::create_with_count(
+            symbol,
+            open_price,
+            high_price,
+            low_price,
+            close_price,
+            volume,
+            timestamp,
+            0,
+        )
+    }
+
+    /// Create a kline message with trade count
+    pub fn create_with_count(
+        symbol: String,
+        open_price: f64,
+        high_price: f64,
+        low_price: f64,
+        close_price: f64,
+        volume: f64,
+        timestamp: i64,
+        count: u64,
+    ) -> Self {
         let symbol_length = symbol.len() as u32;
         Self {
             msg_type: MktMsgType::Kline,
@@ -669,13 +693,14 @@ impl KlineMsg {
             close_price,
             volume,
             timestamp,
+            count,
         }
     }
 
     /// Convert message to bytes
     pub fn to_bytes(&self) -> Bytes {
-        // Calculate total size: msg_type(4) + symbol_length(4) + symbol + 5*f64(8*5) + timestamp(8)
-        let total_size = 4 + 4 + self.symbol_length as usize + 5 * 8 + 8;
+        // Calculate total size: msg_type(4) + symbol_length(4) + symbol + 5*f64(8*5) + timestamp(8) + count(8)
+        let total_size = 4 + 4 + self.symbol_length as usize + 5 * 8 + 8 + 8;
         let mut buf = BytesMut::with_capacity(total_size);
 
         // Write header
@@ -694,6 +719,9 @@ impl KlineMsg {
 
         // Write timestamp
         buf.put_i64_le(self.timestamp);
+
+        // Write trade count
+        buf.put_u64_le(self.count);
 
         buf.freeze()
     }
@@ -740,23 +768,38 @@ impl FundingRateMsg {
     }
 }
 
-impl RlReturnVolatilityMsg {
+impl FactorValueMsg {
     pub fn create(symbol: String, value: f64, timestamp_ms: i64, ready: bool) -> Self {
+        Self::create_with_factor_index(symbol, value, timestamp_ms, ready, 0)
+    }
+
+    pub fn create_with_factor_index(
+        symbol: String,
+        value: f64,
+        timestamp_ms: i64,
+        ready: bool,
+        factor_index: u16,
+    ) -> Self {
         let symbol_length = symbol.len() as u32;
+
         Self {
-            msg_type: MktMsgType::RlReturnVolatility,
+            msg_type: MktMsgType::FactorValue,
             symbol_length,
             symbol,
             value,
             timestamp_ms,
             ready,
-            padding: [0u8; 7],
+            factor_index,
         }
     }
 
+    pub fn factor_index(&self) -> u16 {
+        self.factor_index
+    }
+
     pub fn to_bytes(&self) -> Bytes {
-        // msg_type(4) + symbol_length(4) + symbol + value(8) + timestamp(8) + ready(1) + padding(7)
-        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 8 + 1 + 7;
+        // msg_type(4) + symbol_length(4) + symbol + value(8) + timestamp(8) + ready(1) + factor_index(2)
+        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 8 + 1 + 2;
         let mut buf = BytesMut::with_capacity(total_size);
 
         buf.put_u32_le(self.msg_type as u32);
@@ -765,7 +808,7 @@ impl RlReturnVolatilityMsg {
         buf.put_f64_le(self.value);
         buf.put_i64_le(self.timestamp_ms);
         buf.put_u8(if self.ready { 1 } else { 0 });
-        buf.put(&self.padding[..]);
+        buf.put_u16_le(self.factor_index);
 
         buf.freeze()
     }
@@ -834,10 +877,7 @@ impl PairMmResampleMsg {
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < 9 {
-            bail!(
-                "PairMmResampleMsg too short: {} < 9",
-                data.len()
-            );
+            bail!("PairMmResampleMsg too short: {} < 9", data.len());
         }
         let mut cursor = Bytes::copy_from_slice(data);
         let msg_type = cursor.get_u32_le();

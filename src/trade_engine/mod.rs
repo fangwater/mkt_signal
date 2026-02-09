@@ -1,7 +1,7 @@
+pub mod binance_ws;
 pub mod config;
 pub mod dispatcher;
 pub mod engine;
-pub mod binance_ws;
 pub mod gate_query;
 pub mod gate_ws;
 pub mod okex;

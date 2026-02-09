@@ -12,6 +12,7 @@
 //!
 //! 说明：统一账户的用户数据流通过 URL 携带 listenKey 鉴权，不需要发送订阅报文；
 //! 每条 WS 连接最长不超过 24 小时，应定期断开重连；listenKey 需要每 30 分钟保活。
+pub mod binance_spot_ws_api_user_stream;
 pub mod binance_user_stream;
 pub mod gate_auth;
 pub mod gate_user_stream;

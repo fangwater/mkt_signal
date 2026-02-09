@@ -7,8 +7,8 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::info;
-use prettytable::{Cell, Row, Table};
 use prettytable::format::{FormatBuilder, LinePosition, LineSeparator};
+use prettytable::{Cell, Row, Table};
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -37,6 +37,7 @@ struct KlineBar {
     low: f64,
     close: f64,
     volume: f64,
+    trade_count: u64,
     first_trade_us: i64,
     last_trade_us: i64,
 }
@@ -50,6 +51,7 @@ impl KlineBar {
             low: price,
             close: price,
             volume: amount,
+            trade_count: 1,
             first_trade_us: trade_us,
             last_trade_us: trade_us,
         }
@@ -63,6 +65,7 @@ impl KlineBar {
             low: price,
             close: price,
             volume: 0.0,
+            trade_count: 0,
             first_trade_us: start_us,
             last_trade_us: start_us,
         }
@@ -76,6 +79,7 @@ impl KlineBar {
             self.low = price;
         }
         self.volume += amount;
+        self.trade_count += 1;
 
         if trade_us < self.first_trade_us {
             self.first_trade_us = trade_us;
@@ -146,12 +150,7 @@ impl SymbolState {
         (closed, late_trade)
     }
 
-    fn close_due_bars(
-        &mut self,
-        now_us: i64,
-        period_us: i64,
-        delay_us: i64,
-    ) -> Vec<KlineBar> {
+    fn close_due_bars(&mut self, now_us: i64, period_us: i64, delay_us: i64) -> Vec<KlineBar> {
         let mut closed = Vec::new();
 
         if let Some(bar) = self.bar.take() {
@@ -188,12 +187,7 @@ impl SymbolState {
         bar
     }
 
-    fn fill_empty_until(
-        &mut self,
-        target_start_us: i64,
-        period_us: i64,
-        out: &mut Vec<KlineBar>,
-    ) {
+    fn fill_empty_until(&mut self, target_start_us: i64, period_us: i64, out: &mut Vec<KlineBar>) {
         let Some(last_start) = self.last_bar_start_us else {
             return;
         };
@@ -269,7 +263,10 @@ impl KlinePubApp {
 
         info!(
             "KlinePubApp created for {}: period={}ms, delay={}us, channel={}",
-            venue_slug, config.kline_timing.period_ms, config.kline_timing.close_delay_us, channel_label
+            venue_slug,
+            config.kline_timing.period_ms,
+            config.kline_timing.close_delay_us,
+            channel_label
         );
 
         Ok(Self {
@@ -428,7 +425,7 @@ impl KlinePubApp {
 
     fn publish_bar(&mut self, symbol: &str, bar: KlineBar) {
         let timestamp_ms = bar.start_us / 1_000;
-        let msg = KlineMsg::create(
+        let msg = KlineMsg::create_with_count(
             symbol.to_string(),
             bar.open,
             bar.high,
@@ -436,6 +433,7 @@ impl KlinePubApp {
             bar.close,
             bar.volume,
             timestamp_ms,
+            bar.trade_count,
         );
 
         if self.publisher.publish(&msg) {
@@ -503,6 +501,7 @@ impl KlinePubApp {
             Cell::new("Low").style_spec("c"),
             Cell::new("Close").style_spec("c"),
             Cell::new("Volume").style_spec("c"),
+            Cell::new("Count").style_spec("c"),
             Cell::new("State").style_spec("c"),
         ]));
 
@@ -513,10 +512,7 @@ impl KlinePubApp {
                 .cloned()
                 .unwrap_or_else(|| base.to_string());
 
-            let snapshot = self
-                .symbols
-                .get(&symbol)
-                .and_then(|state| state.snapshot());
+            let snapshot = self.symbols.get(&symbol).and_then(|state| state.snapshot());
 
             if let Some(snapshot) = snapshot {
                 let bar = snapshot.bar;
@@ -528,11 +524,13 @@ impl KlinePubApp {
                     Cell::new(&format!("{:.8}", bar.low)),
                     Cell::new(&format!("{:.8}", bar.close)),
                     Cell::new(&format!("{:.8}", bar.volume)),
+                    Cell::new(&bar.trade_count.to_string()),
                     Cell::new(snapshot.status),
                 ]));
             } else {
                 table.add_row(Row::from(vec![
                     Cell::new(&symbol),
+                    Cell::new("-"),
                     Cell::new("-"),
                     Cell::new("-"),
                     Cell::new("-"),

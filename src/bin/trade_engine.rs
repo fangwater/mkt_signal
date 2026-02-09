@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
+use hmac::{Hmac, Mac};
 use log::{error, info};
-use mkt_signal::common::binance_account_mode::{BinanceAccountMode, init_binance_account_mode};
+use mkt_signal::common::binance_account_mode::{init_binance_account_mode, BinanceAccountMode};
 use mkt_signal::common::exchange::Exchange;
 use mkt_signal::common::mkt_cfg::{home_mkt_cfg_path, load_local_ips_from_path};
-use mkt_signal::{ApiKey, TradeEngine};
 use mkt_signal::trade_engine::config::RestConstants;
-use hmac::{Hmac, Mac};
+use mkt_signal::{ApiKey, TradeEngine};
 use sha2::Sha256;
 use std::collections::BTreeMap;
 use std::net::IpAddr;
@@ -99,10 +99,7 @@ fn setup_signal_handlers(token: &CancellationToken) {
 
 type HmacSha256 = Hmac<Sha256>;
 
-fn sign_binance_query(
-    params: &BTreeMap<String, String>,
-    api_secret: &str,
-) -> Result<String> {
+fn sign_binance_query(params: &BTreeMap<String, String>, api_secret: &str) -> Result<String> {
     let mut ser = url::form_urlencoded::Serializer::new(String::new());
     for (k, v) in params.iter() {
         ser.append_pair(k, v);
@@ -116,11 +113,7 @@ fn sign_binance_query(
     Ok(format!("{}&signature={}", query, sig))
 }
 
-async fn fetch_binance_fee_burn(
-    api_key: &str,
-    api_secret: &str,
-    base_url: &str,
-) -> Result<bool> {
+async fn fetch_binance_fee_burn(api_key: &str, api_secret: &str, base_url: &str) -> Result<bool> {
     let mut params: BTreeMap<String, String> = BTreeMap::new();
     params.insert(
         "timestamp".to_string(),
@@ -155,16 +148,17 @@ async fn fetch_binance_fee_burn(
         Some(serde_json::Value::String(s)) => {
             matches!(s.trim(), "true" | "TRUE" | "True")
         }
-        _ => return Err(anyhow::anyhow!("feeBurn field missing or invalid: {}", body)),
+        _ => {
+            return Err(anyhow::anyhow!(
+                "feeBurn field missing or invalid: {}",
+                body
+            ))
+        }
     };
     Ok(fee_burn)
 }
 
-async fn enable_binance_fee_burn(
-    api_key: &str,
-    api_secret: &str,
-    base_url: &str,
-) -> Result<()> {
+async fn enable_binance_fee_burn(api_key: &str, api_secret: &str, base_url: &str) -> Result<()> {
     let mut params: BTreeMap<String, String> = BTreeMap::new();
     params.insert("feeBurn".to_string(), "true".to_string());
     params.insert(
@@ -313,7 +307,10 @@ async fn main() -> Result<()> {
                 .ok()
                 .filter(|v| !v.trim().is_empty())
                 .unwrap_or_else(|| "https://fapi.binance.com".to_string());
-            info!("checking binance feeBurn (STANDARD mode) base_url={}", base_url);
+            info!(
+                "checking binance feeBurn (STANDARD mode) base_url={}",
+                base_url
+            );
             if let Err(err) = check_binance_fee_burn(&api_key, &api_secret, &base_url).await {
                 panic!("binance feeBurn check failed: {err}");
             }

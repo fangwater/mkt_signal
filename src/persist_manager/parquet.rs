@@ -4,11 +4,7 @@ use polars::prelude::ParquetWriter;
 use polars::prelude::*;
 
 use crate::pre_trade::order_manager::{OrderType, Side};
-use crate::signal::cancel_signal::ArbCancelCtx;
-use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue};
-use crate::signal::hedge_signal::ArbHedgeCtx;
-use crate::signal::open_signal::ArbOpenCtx;
-use crate::signal::record::SignalRecordMessage;
+use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RangeFilter {
@@ -21,6 +17,13 @@ impl RangeFilter {
         Self {
             start_ts: None,
             end_ts: None,
+        }
+    }
+
+    pub(crate) fn from_bounds(start_ts: u64, end_ts_inclusive: u64) -> Self {
+        Self {
+            start_ts: Some(start_ts),
+            end_ts: Some(end_ts_inclusive),
         }
     }
 
@@ -39,330 +42,6 @@ impl RangeFilter {
     }
 }
 
-fn parse_key(key: &str) -> Result<(u64, i32)> {
-    let mut parts = key.splitn(2, '_');
-    let ts_str = parts
-        .next()
-        .ok_or_else(|| anyhow!("invalid key format: missing timestamp"))?;
-    let strategy_str = parts
-        .next()
-        .ok_or_else(|| anyhow!("invalid key format: missing strategy id"))?;
-    let ts_us = ts_str
-        .parse::<u64>()
-        .with_context(|| format!("invalid timestamp part: {}", ts_str))?;
-    let strategy_id = strategy_str
-        .parse::<i32>()
-        .with_context(|| format!("invalid strategy id part: {}", strategy_str))?;
-    Ok((ts_us, strategy_id))
-}
-
-pub(crate) fn build_parquet_open(
-    entries: Vec<(Vec<u8>, Vec<u8>)>,
-    range: &RangeFilter,
-) -> Result<Vec<u8>> {
-    let mut key_col: Vec<String> = Vec::with_capacity(entries.len());
-    let mut ts_us_col: Vec<i64> = Vec::with_capacity(entries.len());
-    let mut strategy_id_col: Vec<i32> = Vec::with_capacity(entries.len());
-    let mut create_ts_col: Vec<i64> = Vec::with_capacity(entries.len());
-    let mut opening_venue_col: Vec<String> = Vec::with_capacity(entries.len());
-    let mut opening_symbol_col: Vec<String> = Vec::with_capacity(entries.len());
-    let mut opening_bid0_col: Vec<f64> = Vec::with_capacity(entries.len());
-    let mut opening_ask0_col: Vec<f64> = Vec::with_capacity(entries.len());
-    let mut opening_ts_col: Vec<i64> = Vec::with_capacity(entries.len());
-    let mut hedging_venue_col: Vec<String> = Vec::with_capacity(entries.len());
-    let mut hedging_symbol_col: Vec<String> = Vec::with_capacity(entries.len());
-    let mut hedging_bid0_col: Vec<f64> = Vec::with_capacity(entries.len());
-    let mut hedging_ask0_col: Vec<f64> = Vec::with_capacity(entries.len());
-    let mut hedging_ts_col: Vec<i64> = Vec::with_capacity(entries.len());
-    let mut amount_col: Vec<f32> = Vec::with_capacity(entries.len());
-    let mut side_col: Vec<String> = Vec::with_capacity(entries.len());
-    let mut order_type_col: Vec<String> = Vec::with_capacity(entries.len());
-    let mut price_col: Vec<f64> = Vec::with_capacity(entries.len());
-    let mut price_tick_col: Vec<f64> = Vec::with_capacity(entries.len());
-    let mut exp_time_col: Vec<i64> = Vec::with_capacity(entries.len());
-    let mut price_offset_col: Vec<f64> = Vec::with_capacity(entries.len());
-    let mut hedge_timeout_us_col: Vec<i64> = Vec::with_capacity(entries.len());
-    let mut from_key_col: Vec<Option<String>> = Vec::with_capacity(entries.len());
-
-    for (key_bytes, value_bytes) in entries {
-        let key = String::from_utf8(key_bytes)?;
-        let (ts_us, strategy_id) = parse_key(&key)?;
-        if !range.contains(ts_us) {
-            continue;
-        }
-        let record = SignalRecordMessage::from_bytes(Bytes::from(value_bytes))?;
-        let ctx = ArbOpenCtx::from_bytes(Bytes::from(record.context.clone()))
-            .map_err(|err| anyhow!("failed to decode ArbOpenCtx: {err}"))?;
-
-        key_col.push(key);
-        ts_us_col.push(ts_us as i64);
-        strategy_id_col.push(strategy_id);
-        create_ts_col.push(ctx.create_ts);
-        opening_venue_col.push(
-            TradingVenue::from_u8(ctx.opening_leg.venue)
-                .map(|v| v.as_str().to_string())
-                .unwrap_or("Unknown".to_string()),
-        );
-        opening_symbol_col.push(ctx.get_opening_symbol());
-        opening_bid0_col.push(ctx.opening_leg.bid0);
-        opening_ask0_col.push(ctx.opening_leg.ask0);
-        opening_ts_col.push(ctx.opening_leg.ts);
-        hedging_venue_col.push(
-            TradingVenue::from_u8(ctx.hedging_leg.venue)
-                .map(|v| v.as_str().to_string())
-                .unwrap_or("Unknown".to_string()),
-        );
-        hedging_symbol_col.push(ctx.get_hedging_symbol());
-        hedging_bid0_col.push(ctx.hedging_leg.bid0);
-        hedging_ask0_col.push(ctx.hedging_leg.ask0);
-        hedging_ts_col.push(ctx.hedging_leg.ts);
-        amount_col.push(ctx.amount);
-        side_col.push(
-            ctx.get_side()
-                .map(|s| s.as_str().to_string())
-                .unwrap_or("Unknown".to_string()),
-        );
-        order_type_col.push(
-            ctx.get_order_type()
-                .map(|t| t.as_str().to_string())
-                .unwrap_or("Unknown".to_string()),
-        );
-        price_col.push(ctx.price);
-        price_tick_col.push(ctx.price_tick);
-        exp_time_col.push(ctx.exp_time);
-        price_offset_col.push(ctx.price_offset);
-        hedge_timeout_us_col.push(ctx.hedge_timeout_us);
-        from_key_col.push(if ctx.from_key.is_empty() {
-            None
-        } else {
-            Some(String::from_utf8_lossy(&ctx.from_key).to_string())
-        });
-    }
-
-    let mut df = DataFrame::new(vec![
-        Series::new("key".into(), key_col),
-        Series::new("ts_us".into(), ts_us_col),
-        Series::new("strategy_id".into(), strategy_id_col),
-        Series::new("create_ts".into(), create_ts_col),
-        Series::new("opening_venue".into(), opening_venue_col),
-        Series::new("opening_symbol".into(), opening_symbol_col),
-        Series::new("opening_bid0".into(), opening_bid0_col),
-        Series::new("opening_ask0".into(), opening_ask0_col),
-        Series::new("opening_ts".into(), opening_ts_col),
-        Series::new("hedging_venue".into(), hedging_venue_col),
-        Series::new("hedging_symbol".into(), hedging_symbol_col),
-        Series::new("hedging_bid0".into(), hedging_bid0_col),
-        Series::new("hedging_ask0".into(), hedging_ask0_col),
-        Series::new("hedging_ts".into(), hedging_ts_col),
-        Series::new("amount".into(), amount_col),
-        Series::new("side".into(), side_col),
-        Series::new("order_type".into(), order_type_col),
-        Series::new("price".into(), price_col),
-        Series::new("price_tick".into(), price_tick_col),
-        Series::new("exp_time".into(), exp_time_col),
-        Series::new("price_offset".into(), price_offset_col),
-        Series::new("hedge_timeout_us".into(), hedge_timeout_us_col),
-        Series::new("from_key".into(), from_key_col.as_slice()),
-    ])?;
-
-    let mut buffer = Vec::new();
-    ParquetWriter::new(&mut buffer).finish(&mut df)?;
-    Ok(buffer)
-}
-
-pub(crate) fn build_parquet_cancel(
-    entries: Vec<(Vec<u8>, Vec<u8>)>,
-    range: &RangeFilter,
-) -> Result<Vec<u8>> {
-    let mut key_col = Vec::with_capacity(entries.len());
-    let mut ts_us_col = Vec::with_capacity(entries.len());
-    let mut strategy_id_col = Vec::with_capacity(entries.len());
-    let mut opening_venue_col: Vec<String> = Vec::with_capacity(entries.len());
-    let mut opening_symbol_col = Vec::with_capacity(entries.len());
-    let mut opening_bid0_col = Vec::with_capacity(entries.len());
-    let mut opening_ask0_col = Vec::with_capacity(entries.len());
-    let mut opening_ts_col = Vec::with_capacity(entries.len());
-    let mut hedging_venue_col: Vec<String> = Vec::with_capacity(entries.len());
-    let mut hedging_symbol_col = Vec::with_capacity(entries.len());
-    let mut hedging_bid0_col = Vec::with_capacity(entries.len());
-    let mut hedging_ask0_col = Vec::with_capacity(entries.len());
-    let mut hedging_ts_col = Vec::with_capacity(entries.len());
-    let mut trigger_ts_col = Vec::with_capacity(entries.len());
-
-    for (key_bytes, value_bytes) in entries {
-        let key = String::from_utf8(key_bytes)?;
-        let (ts_us, strategy_id) = parse_key(&key)?;
-        if !range.contains(ts_us) {
-            continue;
-        }
-        let record = SignalRecordMessage::from_bytes(Bytes::from(value_bytes))?;
-        let ctx = ArbCancelCtx::from_bytes(Bytes::from(record.context.clone()))
-            .map_err(|err| anyhow!("failed to decode ArbCancelCtx: {err}"))?;
-
-        key_col.push(key);
-        ts_us_col.push(ts_us as i64);
-        strategy_id_col.push(strategy_id);
-        opening_venue_col.push(
-            TradingVenue::from_u8(ctx.opening_leg.venue)
-                .map(|v| v.as_str().to_string())
-                .unwrap_or("Unknown".to_string()),
-        );
-        opening_symbol_col.push(ctx.get_opening_symbol());
-        opening_bid0_col.push(ctx.opening_leg.bid0);
-        opening_ask0_col.push(ctx.opening_leg.ask0);
-        opening_ts_col.push(ctx.opening_leg.ts);
-        hedging_venue_col.push(
-            TradingVenue::from_u8(ctx.hedging_leg.venue)
-                .map(|v| v.as_str().to_string())
-                .unwrap_or("Unknown".to_string()),
-        );
-        hedging_symbol_col.push(ctx.get_hedging_symbol());
-        hedging_bid0_col.push(ctx.hedging_leg.bid0);
-        hedging_ask0_col.push(ctx.hedging_leg.ask0);
-        hedging_ts_col.push(ctx.hedging_leg.ts);
-        trigger_ts_col.push(ctx.trigger_ts);
-    }
-
-    let columns = vec![
-        Series::new("key".into(), key_col),
-        Series::new("ts_us".into(), ts_us_col),
-        Series::new("strategy_id".into(), strategy_id_col),
-        Series::new("opening_venue".into(), opening_venue_col),
-        Series::new("opening_symbol".into(), opening_symbol_col),
-        Series::new("opening_bid0".into(), opening_bid0_col),
-        Series::new("opening_ask0".into(), opening_ask0_col),
-        Series::new("opening_ts".into(), opening_ts_col),
-        Series::new("hedging_venue".into(), hedging_venue_col),
-        Series::new("hedging_symbol".into(), hedging_symbol_col),
-        Series::new("hedging_bid0".into(), hedging_bid0_col),
-        Series::new("hedging_ask0".into(), hedging_ask0_col),
-        Series::new("hedging_ts".into(), hedging_ts_col),
-        Series::new("trigger_ts".into(), trigger_ts_col),
-    ];
-
-    let mut df = DataFrame::new(columns)?;
-    let mut buf = Vec::new();
-    ParquetWriter::new(&mut buf).finish(&mut df)?;
-    Ok(buf)
-}
-
-pub(crate) fn build_parquet_hedge(
-    entries: Vec<(Vec<u8>, Vec<u8>)>,
-    range: &RangeFilter,
-) -> Result<Vec<u8>> {
-    let mut key_col = Vec::with_capacity(entries.len());
-    let mut ts_us_col = Vec::with_capacity(entries.len());
-    let mut strategy_id_col = Vec::with_capacity(entries.len());
-    let mut record_ts_col = Vec::with_capacity(entries.len());
-    let mut ctx_strategy_id_col = Vec::with_capacity(entries.len());
-    let mut client_order_id_col = Vec::with_capacity(entries.len());
-    let mut hedge_qty_col = Vec::with_capacity(entries.len());
-    let mut hedge_side_col = Vec::with_capacity(entries.len());
-    let mut limit_price_col = Vec::with_capacity(entries.len());
-    let mut price_tick_col = Vec::with_capacity(entries.len());
-    let mut maker_only_col = Vec::with_capacity(entries.len());
-    let mut exp_time_col = Vec::with_capacity(entries.len());
-    let mut opening_venue_col: Vec<String> = Vec::with_capacity(entries.len());
-    let mut opening_symbol_col = Vec::with_capacity(entries.len());
-    let mut opening_bid0_col = Vec::with_capacity(entries.len());
-    let mut opening_ask0_col = Vec::with_capacity(entries.len());
-    let mut opening_ts_col = Vec::with_capacity(entries.len());
-    let mut hedging_venue_col: Vec<String> = Vec::with_capacity(entries.len());
-    let mut hedging_symbol_col = Vec::with_capacity(entries.len());
-    let mut hedging_bid0_col = Vec::with_capacity(entries.len());
-    let mut hedging_ask0_col = Vec::with_capacity(entries.len());
-    let mut hedging_ts_col = Vec::with_capacity(entries.len());
-    let mut market_ts_col = Vec::with_capacity(entries.len());
-    let mut price_offset_col = Vec::with_capacity(entries.len());
-    let mut from_key_col: Vec<Option<String>> = Vec::with_capacity(entries.len());
-
-    for (key_bytes, value_bytes) in entries {
-        let key = String::from_utf8(key_bytes)?;
-        let (ts_us, strategy_id) = parse_key(&key)?;
-        if !range.contains(ts_us) {
-            continue;
-        }
-        let record = SignalRecordMessage::from_bytes(Bytes::from(value_bytes))?;
-        let ctx = ArbHedgeCtx::from_bytes(Bytes::from(record.context.clone()))
-            .map_err(|err| anyhow!("failed to decode ArbHedgeCtx: {err}"))?;
-
-        key_col.push(key);
-        ts_us_col.push(ts_us as i64);
-        strategy_id_col.push(strategy_id);
-        record_ts_col.push(record.timestamp_us);
-        ctx_strategy_id_col.push(ctx.strategy_id);
-        client_order_id_col.push(ctx.client_order_id);
-        hedge_qty_col.push(ctx.hedge_qty);
-        hedge_side_col.push(
-            ctx.get_side()
-                .map(|s| s.as_str().to_string())
-                .unwrap_or("Unknown".to_string()),
-        );
-        limit_price_col.push(ctx.limit_price);
-        price_tick_col.push(ctx.price_tick);
-        maker_only_col.push(ctx.maker_only);
-        exp_time_col.push(ctx.exp_time);
-        opening_venue_col.push(
-            TradingVenue::from_u8(ctx.opening_leg.venue)
-                .map(|v| v.as_str().to_string())
-                .unwrap_or("Unknown".to_string()),
-        );
-        opening_symbol_col.push(ctx.get_opening_symbol());
-        opening_bid0_col.push(ctx.opening_leg.bid0);
-        opening_ask0_col.push(ctx.opening_leg.ask0);
-        opening_ts_col.push(ctx.opening_leg.ts);
-        hedging_venue_col.push(
-            TradingVenue::from_u8(ctx.hedging_leg.venue)
-                .map(|v| v.as_str().to_string())
-                .unwrap_or("Unknown".to_string()),
-        );
-        hedging_symbol_col.push(ctx.get_hedging_symbol());
-        hedging_bid0_col.push(ctx.hedging_leg.bid0);
-        hedging_ask0_col.push(ctx.hedging_leg.ask0);
-        hedging_ts_col.push(ctx.hedging_leg.ts);
-        market_ts_col.push(ctx.market_ts);
-        price_offset_col.push(ctx.price_offset);
-        from_key_col.push(if ctx.from_key.is_empty() {
-            None
-        } else {
-            Some(String::from_utf8_lossy(&ctx.from_key).to_string())
-        });
-    }
-
-    let columns = vec![
-        Series::new("key".into(), key_col),
-        Series::new("ts_us".into(), ts_us_col),
-        Series::new("strategy_id".into(), strategy_id_col),
-        Series::new("record_ts_us".into(), record_ts_col),
-        Series::new("ctx_strategy_id".into(), ctx_strategy_id_col),
-        Series::new("client_order_id".into(), client_order_id_col),
-        Series::new("hedge_qty".into(), hedge_qty_col),
-        Series::new("hedge_side".into(), hedge_side_col),
-        Series::new("limit_price".into(), limit_price_col),
-        Series::new("price_tick".into(), price_tick_col),
-        Series::new("maker_only".into(), maker_only_col),
-        Series::new("exp_time".into(), exp_time_col),
-        Series::new("opening_venue".into(), opening_venue_col),
-        Series::new("opening_symbol".into(), opening_symbol_col),
-        Series::new("opening_bid0".into(), opening_bid0_col),
-        Series::new("opening_ask0".into(), opening_ask0_col),
-        Series::new("opening_ts".into(), opening_ts_col),
-        Series::new("hedging_venue".into(), hedging_venue_col),
-        Series::new("hedging_symbol".into(), hedging_symbol_col),
-        Series::new("hedging_bid0".into(), hedging_bid0_col),
-        Series::new("hedging_ask0".into(), hedging_ask0_col),
-        Series::new("hedging_ts".into(), hedging_ts_col),
-        Series::new("market_ts".into(), market_ts_col),
-        Series::new("price_offset".into(), price_offset_col),
-        Series::new("from_key".into(), from_key_col.as_slice()),
-    ];
-
-    let mut df = DataFrame::new(columns)?;
-    let mut buf = Vec::new();
-    ParquetWriter::new(&mut buf).finish(&mut df)?;
-    Ok(buf)
-}
-
 pub(crate) fn build_parquet_trade_updates(
     entries: Vec<(Vec<u8>, Vec<u8>)>,
     range: &RangeFilter,
@@ -372,7 +51,6 @@ pub(crate) fn build_parquet_trade_updates(
     let mut event_time_col = Vec::with_capacity(entries.len());
     let mut trade_time_col = Vec::with_capacity(entries.len());
     let mut symbol_col = Vec::with_capacity(entries.len());
-    let mut trade_id_col = Vec::with_capacity(entries.len());
     let mut order_id_col = Vec::with_capacity(entries.len());
     let mut client_order_id_col = Vec::with_capacity(entries.len());
     let mut side_col = Vec::with_capacity(entries.len());
@@ -393,7 +71,6 @@ pub(crate) fn build_parquet_trade_updates(
             event_time,
             trade_time,
             symbol,
-            trade_id,
             order_id,
             client_order_id,
             side,
@@ -408,7 +85,6 @@ pub(crate) fn build_parquet_trade_updates(
         event_time_col.push(event_time);
         trade_time_col.push(trade_time);
         symbol_col.push(symbol);
-        trade_id_col.push(trade_id);
         order_id_col.push(order_id);
         client_order_id_col.push(client_order_id);
         side_col.push(side);
@@ -425,7 +101,6 @@ pub(crate) fn build_parquet_trade_updates(
         Series::new("event_time".into(), event_time_col),
         Series::new("trade_time".into(), trade_time_col),
         Series::new("symbol".into(), symbol_col),
-        Series::new("trade_id".into(), trade_id_col),
         Series::new("order_id".into(), order_id_col),
         Series::new("client_order_id".into(), client_order_id_col),
         Series::new("side".into(), side_col),
@@ -528,7 +203,10 @@ pub(crate) fn build_parquet_order_updates(
         Series::new("symbol".into(), symbol_col),
         Series::new("order_id".into(), order_id_col),
         Series::new("client_order_id".into(), client_order_id_col),
-        Series::new("client_order_id_str".into(), client_order_id_str_col.as_slice()),
+        Series::new(
+            "client_order_id_str".into(),
+            client_order_id_str_col.as_slice(),
+        ),
         Series::new("side".into(), side_col),
         Series::new("order_type".into(), order_type_col),
         Series::new("time_in_force".into(), tif_col),
@@ -551,12 +229,107 @@ pub(crate) fn build_parquet_order_updates(
     Ok(buf)
 }
 
+pub(crate) fn build_parquet_uniform_orders(
+    entries: Vec<(Vec<u8>, Vec<u8>)>,
+    range: &RangeFilter,
+) -> Result<Vec<u8>> {
+    let mut key_col = Vec::with_capacity(entries.len());
+    let mut ts_col = Vec::with_capacity(entries.len());
+    let mut recv_ts_col = Vec::with_capacity(entries.len());
+    let mut symbol_col = Vec::with_capacity(entries.len());
+    let mut create_ts_col = Vec::with_capacity(entries.len());
+    let mut update_ts_col = Vec::with_capacity(entries.len());
+    let mut signal_ts_col = Vec::with_capacity(entries.len());
+    let mut client_order_id_col = Vec::with_capacity(entries.len());
+    let mut venue_col = Vec::with_capacity(entries.len());
+    let mut order_type_col = Vec::with_capacity(entries.len());
+    let mut side_col = Vec::with_capacity(entries.len());
+    let mut price_col = Vec::with_capacity(entries.len());
+    let mut price_offset_col = Vec::with_capacity(entries.len());
+    let mut amount_init_col = Vec::with_capacity(entries.len());
+    let mut amount_update_col = Vec::with_capacity(entries.len());
+    let mut status_col = Vec::with_capacity(entries.len());
+    let mut from_key_col = Vec::with_capacity(entries.len());
+    let mut from_key_hex_col = Vec::with_capacity(entries.len());
+
+    for (key_bytes, value_bytes) in entries {
+        let key = String::from_utf8(key_bytes)?;
+        let ts_us = parse_simple_key(&key)?;
+        if !range.contains(ts_us) {
+            continue;
+        }
+
+        let record = decode_uniform_order_record(&value_bytes)?;
+        let DecodedUniformOrderRecord {
+            recv_ts_us,
+            symbol,
+            create_ts,
+            update_ts,
+            signal_ts,
+            client_order_id,
+            trading_venue,
+            order_type,
+            side,
+            price,
+            price_offset,
+            amount_init,
+            amount_update,
+            status,
+            from_key,
+            from_key_hex,
+        } = record;
+
+        key_col.push(key);
+        ts_col.push(ts_us as i64);
+        recv_ts_col.push(recv_ts_us);
+        symbol_col.push(symbol);
+        create_ts_col.push(create_ts);
+        update_ts_col.push(update_ts);
+        signal_ts_col.push(signal_ts);
+        client_order_id_col.push(client_order_id);
+        venue_col.push(trading_venue);
+        order_type_col.push(order_type);
+        side_col.push(side);
+        price_col.push(price);
+        price_offset_col.push(price_offset);
+        amount_init_col.push(amount_init);
+        amount_update_col.push(amount_update);
+        status_col.push(status);
+        from_key_col.push(from_key);
+        from_key_hex_col.push(from_key_hex);
+    }
+
+    let mut df = DataFrame::new(vec![
+        Series::new("key".into(), key_col),
+        Series::new("ts_us".into(), ts_col),
+        Series::new("recv_ts_us".into(), recv_ts_col),
+        Series::new("symbol".into(), symbol_col),
+        Series::new("create_ts".into(), create_ts_col),
+        Series::new("update_ts".into(), update_ts_col),
+        Series::new("signal_ts".into(), signal_ts_col),
+        Series::new("client_order_id".into(), client_order_id_col),
+        Series::new("trading_venue".into(), venue_col),
+        Series::new("order_type".into(), order_type_col),
+        Series::new("side".into(), side_col),
+        Series::new("price".into(), price_col),
+        Series::new("price_offset".into(), price_offset_col),
+        Series::new("amount_init".into(), amount_init_col),
+        Series::new("amount_update".into(), amount_update_col),
+        Series::new("status".into(), status_col),
+        Series::new("from_key".into(), from_key_col),
+        Series::new("from_key_hex".into(), from_key_hex_col),
+    ])?;
+
+    let mut buf = Vec::new();
+    ParquetWriter::new(&mut buf).finish(&mut df)?;
+    Ok(buf)
+}
+
 #[derive(Debug)]
 struct DecodedTradeRecord {
     event_time: i64,
     trade_time: i64,
     symbol: String,
-    trade_id: i64,
     order_id: i64,
     client_order_id: i64,
     side: String,
@@ -591,13 +364,32 @@ struct DecodedOrderRecord {
     business_unit: Option<String>,
 }
 
+#[derive(Debug)]
+struct DecodedUniformOrderRecord {
+    recv_ts_us: i64,
+    symbol: String,
+    create_ts: i64,
+    update_ts: i64,
+    signal_ts: i64,
+    client_order_id: i64,
+    trading_venue: String,
+    order_type: String,
+    side: String,
+    price: f64,
+    price_offset: f64,
+    amount_init: f64,
+    amount_update: f64,
+    status: String,
+    from_key: String,
+    from_key_hex: String,
+}
+
 fn decode_trade_record(bytes: &[u8]) -> Result<DecodedTradeRecord> {
     let mut cursor = Bytes::copy_from_slice(bytes);
     let _recv_ts_us = read_i64(&mut cursor, "trade update recv_ts_us")?;
     let event_time = read_i64(&mut cursor, "trade update event_time")?;
     let trade_time = read_i64(&mut cursor, "trade update trade_time")?;
     let symbol = read_string(&mut cursor)?;
-    let trade_id = read_i64(&mut cursor, "trade update trade_id")?;
     let order_id = read_i64(&mut cursor, "trade update order_id")?;
     let client_order_id = read_i64(&mut cursor, "trade update client_order_id")?;
     let side_raw = read_u8(&mut cursor, "trade update side")?;
@@ -624,7 +416,6 @@ fn decode_trade_record(bytes: &[u8]) -> Result<DecodedTradeRecord> {
         event_time,
         trade_time,
         symbol,
-        trade_id,
         order_id,
         client_order_id,
         side: side_str,
@@ -703,6 +494,93 @@ fn decode_order_record(bytes: &[u8]) -> Result<DecodedOrderRecord> {
     })
 }
 
+fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord> {
+    let mut cursor = Bytes::copy_from_slice(bytes);
+    let recv_ts_us = read_i64(&mut cursor, "uniform order recv_ts_us")?;
+
+    let symbol_len = read_u16(&mut cursor, "uniform order symbol_len")? as usize;
+    let symbol = read_bytes_as_string(&mut cursor, symbol_len, "uniform order symbol")?;
+
+    let create_ts = read_i64(&mut cursor, "uniform order create_ts")?;
+    let update_ts = read_i64(&mut cursor, "uniform order update_ts")?;
+    let signal_ts = read_i64(&mut cursor, "uniform order signal_ts")?;
+
+    let client_order_id = read_i64(&mut cursor, "uniform order client_order_id")?;
+
+    let venue_raw = read_u8(&mut cursor, "uniform order venue")?;
+    let order_type_raw = read_u8(&mut cursor, "uniform order order_type")?;
+    let side_raw = read_u8(&mut cursor, "uniform order side")?;
+
+    let price = read_f64(&mut cursor, "uniform order price")?;
+    let price_offset = read_f64(&mut cursor, "uniform order price_offset")?;
+    let amount_init = read_f64(&mut cursor, "uniform order amount_init")?;
+    let amount_update = read_f64(&mut cursor, "uniform order amount_update")?;
+
+    let status_raw = read_u8(&mut cursor, "uniform order status")?;
+
+    let from_key_len = read_u32(&mut cursor, "uniform order from_key_len")? as usize;
+    if cursor.remaining() < from_key_len {
+        return Err(anyhow!(
+            "payload too short to read uniform order from_key (need {from_key_len}, have {})",
+            cursor.remaining()
+        ));
+    }
+    let from_key_bytes = cursor.copy_to_bytes(from_key_len);
+    let from_key = String::from_utf8_lossy(from_key_bytes.as_ref()).into_owned();
+    let from_key_hex = hex::encode(from_key_bytes.as_ref());
+
+    if cursor.has_remaining() {
+        return Err(anyhow!(
+            "uniform order payload has {} trailing bytes",
+            cursor.remaining()
+        ));
+    }
+
+    let trading_venue = TradingVenue::from_u8(venue_raw)
+        .map(|v| v.as_str().to_string())
+        .unwrap_or_else(|| format!("Venue({venue_raw})"));
+    let order_type = OrderType::from_u8(order_type_raw)
+        .map(|v| v.as_str().to_string())
+        .unwrap_or_else(|| format!("Type({order_type_raw})"));
+    let side = Side::from_u8(side_raw)
+        .map(|v| v.as_str().to_string())
+        .unwrap_or_else(|| format!("Side({side_raw})"));
+    let status = OrderStatus::from_u8(status_raw)
+        .map(|v| v.as_str().to_string())
+        .unwrap_or_else(|| format!("Status({status_raw})"));
+
+    Ok(DecodedUniformOrderRecord {
+        recv_ts_us,
+        symbol,
+        create_ts,
+        update_ts,
+        signal_ts,
+        client_order_id,
+        trading_venue,
+        order_type,
+        side,
+        price,
+        price_offset,
+        amount_init,
+        amount_update,
+        status,
+        from_key,
+        from_key_hex,
+    })
+}
+
+fn read_bytes_as_string(cursor: &mut Bytes, len: usize, field: &str) -> Result<String> {
+    if cursor.remaining() < len {
+        return Err(anyhow!(
+            "payload too short to read {field} (need {len}, have {})",
+            cursor.remaining()
+        ));
+    }
+
+    let bytes = cursor.copy_to_bytes(len);
+    Ok(String::from_utf8_lossy(bytes.as_ref()).into_owned())
+}
+
 fn read_string(cursor: &mut Bytes) -> Result<String> {
     if cursor.remaining() < 4 {
         return Err(anyhow!("payload too short to read string length"));
@@ -748,6 +626,20 @@ fn read_i64(cursor: &mut Bytes, field: &str) -> Result<i64> {
         return Err(anyhow!("payload too short to read {field}"));
     }
     Ok(cursor.get_i64_le())
+}
+
+fn read_u16(cursor: &mut Bytes, field: &str) -> Result<u16> {
+    if cursor.remaining() < 2 {
+        return Err(anyhow!("payload too short to read {field}"));
+    }
+    Ok(cursor.get_u16_le())
+}
+
+fn read_u32(cursor: &mut Bytes, field: &str) -> Result<u32> {
+    if cursor.remaining() < 4 {
+        return Err(anyhow!("payload too short to read {field}"));
+    }
+    Ok(cursor.get_u32_le())
 }
 
 fn read_f64(cursor: &mut Bytes, field: &str) -> Result<f64> {

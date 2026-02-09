@@ -88,10 +88,6 @@ impl TradeUpdate for BinanceBasicOrderMsg {
         &self.symbol
     }
 
-    fn trade_id(&self) -> i64 {
-        self.trade_id
-    }
-
     fn order_id(&self) -> i64 {
         self.order_id
     }

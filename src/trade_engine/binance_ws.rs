@@ -102,8 +102,12 @@ fn build_signed_params(raw: &[u8], creds: &ApiKey) -> Result<BTreeMap<String, St
 
 pub fn build_order_payload(msg: &TradeRequestMsg, creds: &ApiKey) -> Result<String> {
     let method = match msg.req_type {
-        TradeRequestType::BinanceWsNewUMOrder => METHOD_ORDER_PLACE,
-        TradeRequestType::BinanceWsCancelUMOrder => METHOD_ORDER_CANCEL,
+        TradeRequestType::BinanceWsNewUMOrder | TradeRequestType::BinanceWsNewMarginOrder => {
+            METHOD_ORDER_PLACE
+        }
+        TradeRequestType::BinanceWsCancelUMOrder | TradeRequestType::BinanceWsCancelMarginOrder => {
+            METHOD_ORDER_CANCEL
+        }
         _ => {
             return Err(anyhow!(
                 "unsupported binance ws request type: {:?}",
@@ -122,7 +126,9 @@ pub fn build_order_payload(msg: &TradeRequestMsg, creds: &ApiKey) -> Result<Stri
 }
 
 pub fn build_query_payload(msg: &QueryRequestMsg, creds: &ApiKey) -> Result<String> {
-    if msg.req_type != QueryRequestType::BinanceWsUMQuery {
+    if msg.req_type != QueryRequestType::BinanceWsUMQuery
+        && msg.req_type != QueryRequestType::BinanceWsMarginQuery
+    {
         return Err(anyhow!(
             "unsupported binance ws query type: {:?}",
             msg.req_type
@@ -184,15 +190,12 @@ fn parse_order_status_u8(s: &str) -> Option<u8> {
 }
 
 /// Extract compact order info from Binance WS response result.
-/// Returns (order_id, order_status_u8, update_time, executed_qty). Missing fields are returned as 0.
-pub fn extract_order_info(resp: &BinanceWsResponse) -> (i64, u8, i64, f64) {
+/// Returns (order_id, order_status_u8, update_time, executed_qty, price). Missing fields are returned as 0.
+pub fn extract_order_info(resp: &BinanceWsResponse) -> (i64, u8, i64, f64, f64) {
     let Some(result) = resp.result.as_ref() else {
-        return (0, 0, 0, 0.0);
+        return (0, 0, 0, 0.0, 0.0);
     };
-    let order_id = result
-        .get("orderId")
-        .and_then(parse_i64_value)
-        .unwrap_or(0);
+    let order_id = result.get("orderId").and_then(parse_i64_value).unwrap_or(0);
     let status_u8 = result
         .get("status")
         .and_then(|v| v.as_str())
@@ -201,10 +204,12 @@ pub fn extract_order_info(resp: &BinanceWsResponse) -> (i64, u8, i64, f64) {
     let update_time = result
         .get("updateTime")
         .and_then(parse_i64_value)
+        .or_else(|| result.get("transactTime").and_then(parse_i64_value))
         .unwrap_or(0);
     let executed_qty = result
         .get("executedQty")
         .and_then(parse_f64_value)
         .unwrap_or(0.0);
-    (order_id, status_u8, update_time, executed_qty)
+    let price = result.get("price").and_then(parse_f64_value).unwrap_or(0.0);
+    (order_id, status_u8, update_time, executed_qty, price)
 }

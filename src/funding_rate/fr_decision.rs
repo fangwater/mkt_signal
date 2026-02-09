@@ -11,7 +11,7 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::common::{Quote, ThresholdKey, VenuePair};
+use super::common::{compute_spread_rate, Quote, ThresholdKey, VenuePair};
 use super::funding_rate_factor::FundingRateFactor;
 use super::mkt_channel::MktChannel;
 use super::rate_fetcher::RateFetcher;
@@ -894,7 +894,7 @@ impl FrDecision {
         };
 
         // 获取对冲侧行情
-        let Some(fut_quote) = mkt_channel.get_quote(&hedge_symbol, hedge_venue) else {
+        let Some(hedge_quote) = mkt_channel.get_quote(&hedge_symbol, hedge_venue) else {
             warn!(
                 "FrDecision: hedge query 无行情 strategy_id={} symbol={} venue={:?}",
                 query.strategy_id, hedge_symbol, hedge_venue
@@ -918,8 +918,8 @@ impl FrDecision {
 
         // 统一按 maker 限价对冲：aggressive 仅代表不使用偏移（直接挂在 bid/ask）
         let base_price = match side {
-            Side::Buy => fut_quote.bid,
-            Side::Sell => fut_quote.ask,
+            Side::Buy => hedge_quote.bid,
+            Side::Sell => hedge_quote.ask,
         };
         // ask 是卖价，用于 sell 挂单；bid 是买价，用于 buy 挂单
         let limit_price = if base_price > 0.0 {
@@ -939,7 +939,8 @@ impl FrDecision {
             return;
         }
 
-        let from_key = self.build_hedge_from_key(now, query.request_seq, aggressive);
+        let spread_rate = compute_spread_rate(&open_quote, &hedge_quote);
+        let from_key = self.build_hedge_from_key(now, query.request_seq, spread_rate);
         let mut ctx = ArbHedgeCtx::new_maker(
             query.strategy_id,
             query.client_order_id,
@@ -955,11 +956,16 @@ impl FrDecision {
             TradingLeg::new(open_venue, open_quote.bid, open_quote.ask, open_quote.ts);
         ctx.set_opening_symbol(&open_symbol);
         // 设置对冲侧信息
-        ctx.hedging_leg =
-            TradingLeg::new(hedge_venue, fut_quote.bid, fut_quote.ask, fut_quote.ts);
+        ctx.hedging_leg = TradingLeg::new(
+            hedge_venue,
+            hedge_quote.bid,
+            hedge_quote.ask,
+            hedge_quote.ts,
+        );
         ctx.set_hedging_symbol(&hedge_symbol);
         ctx.market_ts = now;
         ctx.price_offset = offset; // aggressive 时 offset=0.0
+        ctx.spread_rate = spread_rate;
         ctx.set_from_key(from_key);
 
         let signal = TradeSignal::create(SignalType::ArbHedge, now, 0.0, ctx.to_bytes());
@@ -973,7 +979,7 @@ impl FrDecision {
         }
 
         info!(
-            "FrDecision: 回复 hedge query strategy_id={} hedge_symbol={} qty={:.6} side={:?} seq={} aggressive={} limit_price={:.8} offset={:.6} (maker)",
+            "FrDecision: 回复 hedge query strategy_id={} hedge_symbol={} qty={:.6} side={:?} seq={} aggressive={} limit_price={:.8} offset={:.6} spread_rate={:.6} (maker)",
             query.strategy_id,
             hedge_symbol,
             qty,
@@ -981,7 +987,8 @@ impl FrDecision {
             query.request_seq,
             aggressive,
             limit_price,
-            offset
+            offset,
+            spread_rate
         );
     }
 
@@ -1050,7 +1057,8 @@ impl FrDecision {
             return Ok(());
         }
 
-        let from_key = self.build_from_key(batch_ts, futures_symbol, futures_venue);
+        let spread_rate = compute_spread_rate(&spot_quote, &futures_quote);
+        let from_key = self.build_from_key(batch_ts, futures_symbol, futures_venue, spread_rate);
 
         // 根据信号类型决定发送策略
         match signal_type {
@@ -1124,6 +1132,7 @@ impl FrDecision {
         now: i64,
         futures_symbol: &str,
         futures_venue: TradingVenue,
+        spread_rate: f64,
     ) -> Vec<u8> {
         let mkt_channel = MktChannel::instance();
         let rate_fetcher = RateFetcher::instance();
@@ -1139,12 +1148,11 @@ impl FrDecision {
             .map(|(_, v)| v)
             .unwrap_or(0.0);
 
-        format!("{now}:{funding_ma:.6}:{predicted:.6}:{loan:.6}").into_bytes()
+        format!("{now}:{funding_ma:.6}:{predicted:.6}:{loan:.6}:{spread_rate:.6}").into_bytes()
     }
 
-    fn build_hedge_from_key(&self, now: i64, request_seq: u32, aggressive: bool) -> Vec<u8> {
-        let aggressive_flag = if aggressive { 1 } else { 0 };
-        format!("{now}:{request_seq}:{aggressive_flag}").into_bytes()
+    fn build_hedge_from_key(&self, now: i64, request_seq: u32, spread_rate: f64) -> Vec<u8> {
+        format!("{now}:{request_seq}:{spread_rate:.6}").into_bytes()
     }
 
     /// 构造 ArbOpen/ArbClose 信号上下文
@@ -1218,6 +1226,7 @@ impl FrDecision {
         ctx.exp_time = now + self.open_order_ttl_us;
         ctx.create_ts = now;
         ctx.price_offset = price_offset;
+        ctx.spread_rate = compute_spread_rate(spot_quote, futures_quote);
 
         // hedge_timeout_us 根据 SpreadFactor 的 mode 决定
         let spread_factor = SpreadFactor::instance();

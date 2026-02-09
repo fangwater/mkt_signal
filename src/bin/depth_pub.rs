@@ -33,9 +33,8 @@ async fn main() -> Result<()> {
 
     let config = DepthPubConfig::load(config_path).await?;
     info!(
-        "Config loaded: depth5={}, depth20={}, depth50={}, push_interval={}ms",
-        config.depth_levels.enable_depth5,
-        config.depth_levels.enable_depth20,
+        "Config loaded: depth25={}, depth50={}, push_interval={}ms",
+        config.depth_levels.enable_depth25,
         config.depth_levels.enable_depth50,
         config.push_config.min_push_interval_ms
     );

@@ -119,9 +119,9 @@ impl BinancePerpsSubscribeMsgs {
 
 #[derive(Debug, Clone)]
 pub struct OkexPerpsSubscribeMsgs {
-    pub mark_price_msgs: Vec<serde_json::Value>,      // 标记价格订阅
-    pub index_tickers_msgs: Vec<serde_json::Value>,   // 指数价格订阅
-    pub funding_rate_msgs: Vec<serde_json::Value>,    // 资金费率订阅
+    pub mark_price_msgs: Vec<serde_json::Value>, // 标记价格订阅
+    pub index_tickers_msgs: Vec<serde_json::Value>, // 指数价格订阅
+    pub funding_rate_msgs: Vec<serde_json::Value>, // 资金费率订阅
     pub liquidation_orders_msgs: Vec<serde_json::Value>, // 强平信息订阅
 }
 

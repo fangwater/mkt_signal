@@ -105,7 +105,6 @@ pub struct OrderQueryTradeUpdate {
     event_time_us: i64,
     trade_time_us: i64,
     symbol: String,
-    trade_id: i64,
     order_id: i64,
     client_order_id: i64,
     side: Side,
@@ -120,22 +119,24 @@ impl OrderQueryTradeUpdate {
     pub fn new(
         order: &Order,
         order_id: i64,
-        trade_id: i64,
         event_time_us: i64,
         cumulative_filled_quantity: f64,
+        response_price: Option<f64>,
         order_status: Option<OrderStatus>,
         time_in_force: TimeInForce,
     ) -> Self {
         let is_maker = infer_query_is_maker(order, time_in_force);
+        let price = response_price
+            .filter(|p| p.is_finite() && *p > 0.0)
+            .unwrap_or(order.price);
         Self {
             event_time_us,
             trade_time_us: event_time_us,
             symbol: order.symbol.clone(),
-            trade_id,
             order_id,
             client_order_id: order.client_order_id,
             side: order.side,
-            price: order.price,
+            price,
             cumulative_filled_quantity,
             is_maker,
             venue: order.venue,
@@ -169,10 +170,6 @@ impl TradeUpdate for OrderQueryTradeUpdate {
 
     fn symbol(&self) -> &str {
         &self.symbol
-    }
-
-    fn trade_id(&self) -> i64 {
-        self.trade_id
     }
 
     fn order_id(&self) -> i64 {

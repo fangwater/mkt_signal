@@ -1,10 +1,11 @@
+pub mod exporter;
 mod iceoryx;
 mod order_update;
 mod parquet;
-pub mod exporter;
-mod signal;
 mod storage;
 mod trade_update;
+pub mod unified_order;
+mod uniform_order_persist;
 
 use std::sync::Arc;
 
@@ -12,8 +13,8 @@ use anyhow::Result;
 use log::info;
 
 use order_update::{OrderUpdatePersistor, OrderUpdateUnmatchedPersistor};
-use signal::SignalPersistor;
 use trade_update::{TradeUpdatePersistor, TradeUpdateUnmatchedPersistor};
+use uniform_order_persist::UniformOrderPersistor;
 
 pub use storage::{RocksDbStore, RocksDbTuning};
 
@@ -27,9 +28,9 @@ const ROCKSDB_MAX_WRITE_BUFFER_NUMBER: i32 = 2;
 
 pub fn required_column_families() -> Vec<&'static str> {
     let mut cf_names: Vec<&'static str> = Vec::new();
-    cf_names.extend_from_slice(signal::required_column_families());
     cf_names.extend_from_slice(trade_update::required_column_families());
     cf_names.extend_from_slice(order_update::required_column_families());
+    cf_names.extend_from_slice(uniform_order_persist::required_column_families());
     cf_names
 }
 
@@ -42,8 +43,7 @@ pub fn default_tuning() -> RocksDbTuning {
     }
 }
 
-pub struct PersistManager {
-}
+pub struct PersistManager {}
 
 impl PersistManager {
     pub fn new() -> Self {
@@ -63,12 +63,6 @@ impl PersistManager {
         )?);
 
         // 启动所有持久化器
-        info!("starting signal persistor");
-        let s1 = SignalPersistor::new(store.clone())?;
-        tokio::task::spawn_local(async move {
-            let _ = s1.run().await;
-        });
-
         info!("starting trade update persistor");
         let s2 = TradeUpdatePersistor::new(store.clone())?;
         tokio::task::spawn_local(async move {
@@ -91,6 +85,12 @@ impl PersistManager {
         let s3_unmatched = OrderUpdateUnmatchedPersistor::new(store.clone())?;
         tokio::task::spawn_local(async move {
             let _ = s3_unmatched.run().await;
+        });
+
+        info!("starting uniform order persistor");
+        let s4 = UniformOrderPersistor::new(store.clone())?;
+        tokio::task::spawn_local(async move {
+            let _ = s4.run().await;
         });
 
         tokio::select! {

@@ -1,62 +1,28 @@
- python scripts/okx_margin_sell.py --inst-id SOL-USDT --sz 0.01 --ord-type market --execute
- python scripts/okx_margin_sell.py --inst-id SOL-USDT --sz 0.01 --ord-type market --buy --execute
- python scripts/okx_balance_and_positions_ws.py --inst-type MARGIN --duration 5
- python scripts/okx_post_only_reject_test.py --inst-id SOL-USDT-SWAP --px 200 --notional-usdt 1000 --execute
+# 支持做市模式的报单信号
+## 开仓决策
+量价因子列表-->不同的symbol选择factor动态组合成特征向量->预测模型-> 0/1 开仓或者不开仓（主决策因子）
+计算fairpirce，或者直接基于midprice，确定报单的中心价
+多空同时报单，报单方式参考目前
 
-//mock 壳子，用于测试交易链路是否正常
-# 目录名需要包含 `<suffix>-<namespace>-trade` 或 `<suffix>_<namespace>_trade`，用于从 CWD 推断 namespace/suffix
-# - 例：`okex_fr_trade` -> namespace=fr, suffix=okex -> 读 `fr_*:okex`
-# - 例：`okex-binance-xarb-trade` -> namespace=xarb, suffix=okex-binance -> 读 `xarb_*:okex-binance`
-cargo run --bin manual_signal -- --open okex-futures --hedge binance-futures --port 8911
+## 对冲决策
+- [1]基于波动率因子rl_return_volatility, 确定对冲中心范围，参考xarb
+xarb是直接用来中心定价，而做市模式下，提供两个修正系数，上界偏移upper_scale和下界偏移，两个参数放在strategy params中
+假设rl_return_volatility最终值为x，得到对冲报单范围[x(1+upper_scale),x(1+lower_scale)]
 
-//
-bash scripts/deploy_setup_env_xarb.sh --open-venue okex-futures --hedge-venue binance-futures
-scripts/deploy_xarb_trade_engine.sh --open-venue okex-futures --hedge-venue binance-futures
-
-# deploy manual_signal
-scripts/deploy_fr_manual_signal.sh trade --exchange okex
-scripts/deploy_xarb_manual_signal.sh trade --open-venue okex-futures --hedge-venue binance-futures
-
-# xarb symbol lists (Redis)
-python xarb_scripts/sync_xarb_symbol_lists.py --open-venue okex-futures --hedge-venue binance-futures
-python xarb_scripts/print_xarb_symbol_lists.py --env-name okex-binance-xarb-trade
-
-# xarb configs (Redis)
-python xarb_scripts/sync_xarb_strategy_params.py --env-name okex-binance-xarb-trade
-python xarb_scripts/sync_xarb_funding_rate_thresholds.py --env-name okex-binance-xarb-trade
-python xarb_scripts/sync_xarb_spread_thresholds.py --env-name okex-binance-xarb-trade
+- [2]上下边界修正
+挂单目前以maker方式对冲，则报单不可以穿价，也不应该偏移报单范围太远。给出报单偏移上下界
+[hedge_upper_limit,] cut后获得最终的挂单范围
 
 
-python /home/ubuntu/crypto_mkt/mkt_signal/scripts/okx_swap_buy.py --inst-id APT-USDT-SWAP --side buy --sz 40 --reduce-only --execute
-bash scripts/deploy_xarb_viz_server.sh trade --open-venue okex-futures --hedge-venue binance-futures --port 10111
-http://54.64.147.6:4191/xarb/okex-binance/
+- [3]对冲盘口偏移系数
+计算一个对冲盘口偏移系数，即对冲需求越迫切，越希望尽快成交，则最终报单范围越偏向于ask0/bid0。盘口范围进行一个再放缩，得到最终的报单范围。这个对冲偏移系数应该通过计算得到。根据hedge的query，包含期间多方成交，期间空方成交，类似净头寸（both，即当前敞口）决策
 
+- [4]根据合约price_tick定价
+此时得到了最终的报单范围，需要做的事情是拆单。策略参数包含对冲侧拆单档数k。
+盘口值*[] 即拆k档次，并从orderbook发送一个查询消息，等待tlen查询同步查询，补全当前所有tlen
 
-• 本机部署（mkt_signal 仓库内）
+- [5]根据单手量拆单
+计算得到拆单结果。
 
-  - 启动（PM2）：./scripts/start_order_query.sh
-      - 可选环境变量：PORT=18080 API_BASE=http://127.0.0.1:8089 DATA_DIR=./data/order_query PM2_NAMESPACE=$(basename "$PWD")
-  - 停止：./scripts/stop_order_query.sh
-  - 访问：http://<host>:18080/
-  - 页面操作：
-      - Export All：从 API_BASE 拉全量 parquet 到 DATA_DIR/export_data/ 并生成 DATA_DIR/meta.json
-      - 选择 symbol + dataset 点 Latest 100：预览该数据集最新 100 行
-      - Download Zip：下载该 symbol 的 parquet 子集 zip
+相当于我要把现在mm hedge的分单逻辑直接在mm signal直接完成，不再做多次。
 
-  xarb 部署（部署到 ~/okex-binance-xarb-trade 这类目录）
-
-  - 部署：scripts/deploy_xarb_order_query.sh trade --open-venue okex-futures --hedge-venue binance-futures --port 18089
-  - 启动（在目标目录）：PYTHON_BIN=/home/ubuntu/jupyter_env/bin/python ./xarb_scripts/start_xarb_order_query.sh --port 18080 --api-base http://127.0.0.1:8089
-  - 停止（在目标目录）：./xarb_scripts/stop_xarb_order_query.sh
-
-  nginx 反代（可选）
-
-  - 部署脚本会在目标目录生成：config/nginx_locations_order_query.txt（两行映射）
-  - 直接启用一个独立映射文件（需要 sudo）：
-    cd ~/okex-binance-xarb-trade && PORT=4191 MAPPING_FILE=config/nginx_locations_order_query.txt scripts/setup_nginx_4191.sh
-  - 访问路径默认是：/xarb/<open>-<hedge>/order_query/（例如 /xarb/okex-binance/order_query/）
-
-  前置条件
-
-- persist_manager 仅写入 RocksDB（HTTP/Parquet 导出已移除）
-  - 运行环境有 python3、pm2（通过 npx pm2）、以及 pandas + parquet 依赖（你当前环境已满足）

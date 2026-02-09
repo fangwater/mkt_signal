@@ -1,6 +1,6 @@
 //! Depth 消息结构模块
 //!
-//! 定义 Depth5/Depth20/Depth50 消息格式
+//! 定义 Depth25/Depth50 消息格式
 
 use bytes::{BufMut, Bytes, BytesMut};
 
@@ -8,8 +8,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DepthMsgType {
-    Depth5 = 2005,
-    Depth20 = 2020,
+    Depth25 = 2025,
     Depth50 = 2050,
 }
 
@@ -46,18 +45,23 @@ pub struct DepthMsg {
 }
 
 impl DepthMsg {
-    /// 创建 Depth5 消息
-    pub fn depth5(symbol: String, timestamp: i64, bids: Vec<(f64, f64)>, asks: Vec<(f64, f64)>) -> Self {
-        Self::new(DepthMsgType::Depth5, symbol, timestamp, bids, asks, 5)
-    }
-
-    /// 创建 Depth20 消息
-    pub fn depth20(symbol: String, timestamp: i64, bids: Vec<(f64, f64)>, asks: Vec<(f64, f64)>) -> Self {
-        Self::new(DepthMsgType::Depth20, symbol, timestamp, bids, asks, 20)
+    /// 创建 Depth25 消息
+    pub fn depth25(
+        symbol: String,
+        timestamp: i64,
+        bids: Vec<(f64, f64)>,
+        asks: Vec<(f64, f64)>,
+    ) -> Self {
+        Self::new(DepthMsgType::Depth25, symbol, timestamp, bids, asks, 25)
     }
 
     /// 创建 Depth50 消息
-    pub fn depth50(symbol: String, timestamp: i64, bids: Vec<(f64, f64)>, asks: Vec<(f64, f64)>) -> Self {
+    pub fn depth50(
+        symbol: String,
+        timestamp: i64,
+        bids: Vec<(f64, f64)>,
+        asks: Vec<(f64, f64)>,
+    ) -> Self {
         Self::new(DepthMsgType::Depth50, symbol, timestamp, bids, asks, 50)
     }
 
@@ -92,8 +96,7 @@ impl DepthMsg {
     /// 获取深度档数
     pub fn depth_level(&self) -> usize {
         match self.msg_type {
-            DepthMsgType::Depth5 => 5,
-            DepthMsgType::Depth20 => 20,
+            DepthMsgType::Depth25 => 25,
             DepthMsgType::Depth50 => 50,
         }
     }
@@ -141,13 +144,9 @@ impl DepthMsg {
     }
 }
 
-/// Depth5 消息最大字节数
-/// symbol 最长 20 字节: 4 + 4 + 20 + 8 + 5*16*2 = 196
-pub const DEPTH5_MAX_BYTES: usize = 256;
-
-/// Depth20 消息最大字节数
-/// 4 + 4 + 20 + 8 + 20*16*2 = 676
-pub const DEPTH20_MAX_BYTES: usize = 768;
+/// Depth25 消息最大字节数
+/// symbol 最长 20 字节: 4 + 4 + 20 + 8 + 25*16*2 = 836
+pub const DEPTH25_MAX_BYTES: usize = 1024;
 
 /// Depth50 消息最大字节数
 /// 4 + 4 + 20 + 8 + 50*16*2 = 1636
@@ -162,12 +161,12 @@ mod tests {
         let bids = vec![(100.0, 1.0), (99.0, 2.0)];
         let asks = vec![(101.0, 1.5), (102.0, 2.5)];
 
-        let msg = DepthMsg::depth5("BTCUSDT".to_string(), 1234567890, bids, asks);
+        let msg = DepthMsg::depth25("BTCUSDT".to_string(), 1234567890, bids, asks);
 
-        assert_eq!(msg.msg_type, DepthMsgType::Depth5);
-        assert_eq!(msg.depth_level(), 5);
+        assert_eq!(msg.msg_type, DepthMsgType::Depth25);
+        assert_eq!(msg.depth_level(), 25);
 
         let bytes = msg.to_bytes();
-        assert!(bytes.len() <= DEPTH5_MAX_BYTES);
+        assert!(bytes.len() <= DEPTH25_MAX_BYTES);
     }
 }

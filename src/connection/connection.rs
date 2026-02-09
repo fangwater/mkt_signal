@@ -342,10 +342,7 @@ impl WsConnector {
                     let sub_text = sub_msg.to_string();
                     match ws_stream.send(Message::Text(sub_text.clone())).await {
                         Ok(_) => {
-                            info!(
-                                "Successful send subscription message payload={}",
-                                sub_text
-                            );
+                            info!("Successful send subscription message payload={}", sub_text);
                             return Ok(WsConnectionResult {
                                 ws_stream: Arc::new(Mutex::new(ws_stream)),
                                 connected_at: Instant::now(),

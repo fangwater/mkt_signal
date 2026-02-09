@@ -835,19 +835,11 @@ fn build_and_publish_manual(
                 });
 
             let mut ctx = ArbCancelCtx::new();
-            ctx.opening_leg = TradingLeg::new(
-                cfg.open,
-                open_quote.bid,
-                open_quote.ask,
-                open_quote.ts,
-            );
+            ctx.opening_leg =
+                TradingLeg::new(cfg.open, open_quote.bid, open_quote.ask, open_quote.ts);
             ctx.set_opening_symbol(&opening_symbol);
-            ctx.hedging_leg = TradingLeg::new(
-                cfg.hedge,
-                hedge_quote.bid,
-                hedge_quote.ask,
-                hedge_quote.ts,
-            );
+            ctx.hedging_leg =
+                TradingLeg::new(cfg.hedge, hedge_quote.bid, hedge_quote.ask, hedge_quote.ts);
             ctx.set_hedging_symbol(&hedging_symbol);
             ctx.trigger_ts = now;
 
@@ -927,8 +919,7 @@ fn build_and_publish_manual(
     let mut ctx = ArbOpenCtx::new();
     ctx.opening_leg = TradingLeg::new(cfg.open, open_quote.bid, open_quote.ask, open_quote.ts);
     ctx.set_opening_symbol(&opening_symbol);
-    ctx.hedging_leg =
-        TradingLeg::new(cfg.hedge, hedge_quote.bid, hedge_quote.ask, hedge_quote.ts);
+    ctx.hedging_leg = TradingLeg::new(cfg.hedge, hedge_quote.bid, hedge_quote.ask, hedge_quote.ts);
     ctx.set_hedging_symbol(&hedging_symbol);
     ctx.amount = qty as f32;
     ctx.set_side(side);

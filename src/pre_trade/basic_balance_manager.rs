@@ -57,7 +57,6 @@ impl BasicBalanceManager {
         entry.symbol = symbol.clone();
         entry.balance = msg.balance;
         entry.last_timestamp = msg.timestamp;
-
     }
 
     /// 应用借贷利息消息：累加利息，保留余额不变。
@@ -88,7 +87,6 @@ impl BasicBalanceManager {
             _ => {}
         }
         entry.last_timestamp = entry.last_timestamp.max(msg.timestamp);
-
     }
 
     /// 获取某个 symbol 的余额视图。
@@ -128,9 +126,7 @@ impl BasicBalanceManager {
 
         match self.exchange {
             Exchange::Okex => b.balance,
-            Exchange::Binance | Exchange::Gate => {
-                b.balance - b.borrowed - b.cumulative_interest
-            }
+            Exchange::Binance | Exchange::Gate => b.balance - b.borrowed - b.cumulative_interest,
             _ => unreachable!(),
         }
     }

@@ -112,24 +112,25 @@ impl DepthPubApp {
         // 创建发布器
         let publisher = DepthMsgPublisher::new(
             venue_slug,
-            config.depth_levels.enable_depth5,
-            config.depth_levels.enable_depth20,
+            config.depth_levels.enable_depth25,
             config.depth_levels.enable_depth50,
         )?;
 
         // 创建订阅器
         let subscriber = Self::create_subscriber(publisher.node(), venue_slug)?;
-        info!("Subscribed to incremental channel: data_pubs/{}/incremental", venue_slug);
+        info!(
+            "Subscribed to incremental channel: data_pubs/{}/incremental",
+            venue_slug
+        );
 
         let query_subscriber = Self::create_query_subscriber(publisher.node(), venue_slug)?;
         let query_publisher = Self::create_query_publisher(publisher.node(), venue_slug)?;
 
         info!(
-            "DepthPubApp created for {}: push_interval={}ms, depth5={}, depth20={}, depth50={}",
+            "DepthPubApp created for {}: push_interval={}ms, depth25={}, depth50={}",
             venue_slug,
             config.push_config.min_push_interval_ms,
-            config.depth_levels.enable_depth5,
-            config.depth_levels.enable_depth20,
+            config.depth_levels.enable_depth25,
             config.depth_levels.enable_depth50
         );
 
@@ -310,13 +311,19 @@ impl DepthPubApp {
         if data.len() < offset + 8 {
             return;
         }
-        let bids_count =
-            u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]])
-                as usize;
+        let bids_count = u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]) as usize;
         offset += 4;
-        let asks_count =
-            u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]])
-                as usize;
+        let asks_count = u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]) as usize;
         offset += 4;
 
         // 解析 levels
@@ -381,7 +388,10 @@ impl DepthPubApp {
         }
 
         // 更新订单簿
-        let state = self.symbols.entry(symbol.clone()).or_insert_with(SymbolState::new);
+        let state = self
+            .symbols
+            .entry(symbol.clone())
+            .or_insert_with(SymbolState::new);
 
         // 滑动窗口去重：检查 (update_id, chunk_index) 是否已处理过
         if state.is_duplicate(final_update_id, chunk_index) {
@@ -393,10 +403,17 @@ impl DepthPubApp {
         }
 
         if is_snapshot {
-            state.orderbook.apply_snapshot(&bids, &asks, final_update_id, timestamp);
-            debug!("Snapshot applied for {}: {} bids, {} asks", symbol, bids_count, asks_count);
+            state
+                .orderbook
+                .apply_snapshot(&bids, &asks, final_update_id, timestamp);
+            debug!(
+                "Snapshot applied for {}: {} bids, {} asks",
+                symbol, bids_count, asks_count
+            );
         } else {
-            state.orderbook.apply_update(&bids, &asks, final_update_id, timestamp);
+            state
+                .orderbook
+                .apply_update(&bids, &asks, final_update_id, timestamp);
         }
 
         self.update_count += 1;
@@ -415,7 +432,7 @@ impl DepthPubApp {
 
     /// 检查定时推送
     fn check_timer_push(&mut self) {
-        self.log_btc_depth5();
+        self.log_btc_depth25();
 
         let now = Instant::now();
         let symbols_to_push: Vec<String> = self
@@ -430,7 +447,7 @@ impl DepthPubApp {
         }
     }
 
-    fn log_btc_depth5(&self) {
+    fn log_btc_depth25(&self) {
         for (symbol, state) in &self.symbols {
             let is_btc = symbol
                 .get(0..3)
@@ -439,9 +456,9 @@ impl DepthPubApp {
             if !is_btc {
                 continue;
             }
-            let (bids, asks) = state.orderbook.get_depth(5);
+            let (bids, asks) = state.orderbook.get_depth(25);
             info!(
-                "DepthPubApp[{}] BTC depth5 {} bids={:?} asks={:?}",
+                "DepthPubApp[{}] BTC depth25 {} bids={:?} asks={:?}",
                 self.venue_slug, symbol, bids, asks
             );
         }
@@ -460,18 +477,11 @@ impl DepthPubApp {
 
         let timestamp = state.orderbook.timestamp;
 
-        // Depth5
-        if self.config.depth_levels.enable_depth5 {
-            let (bids, asks) = state.orderbook.get_depth(5);
-            let msg = DepthMsg::depth5(symbol.to_string(), timestamp, bids, asks);
-            self.publisher.publish_depth5(&msg);
-        }
-
-        // Depth20
-        if self.config.depth_levels.enable_depth20 {
-            let (bids, asks) = state.orderbook.get_depth(20);
-            let msg = DepthMsg::depth20(symbol.to_string(), timestamp, bids, asks);
-            self.publisher.publish_depth20(&msg);
+        // Depth25
+        if self.config.depth_levels.enable_depth25 {
+            let (bids, asks) = state.orderbook.get_depth(25);
+            let msg = DepthMsg::depth25(symbol.to_string(), timestamp, bids, asks);
+            self.publisher.publish_depth25(&msg);
         }
 
         // Depth50
@@ -568,7 +578,10 @@ impl DepthPubApp {
         if let Some(orderbook_symbol) = orderbook_symbol {
             if let Some(state) = self.symbols.get(&orderbook_symbol) {
                 if state.orderbook.is_valid() {
-                    amount = state.orderbook.amount_at_price(aligned_price).unwrap_or(0.0);
+                    amount = state
+                        .orderbook
+                        .amount_at_price(aligned_price)
+                        .unwrap_or(0.0);
                 }
             }
         }

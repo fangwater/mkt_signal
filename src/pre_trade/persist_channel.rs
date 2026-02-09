@@ -3,10 +3,12 @@ use log::warn;
 use std::cell::OnceCell;
 
 use crate::common::iceoryx_publisher::{
-    OrderUpdatePublisher, SignalPublisher, TradeUpdatePublisher,
+    OrderUpdatePublisher, TradeUpdatePublisher, UniformOrderPublisher,
 };
 use crate::common::time_util::get_timestamp_us;
-use crate::signal::record::{SignalRecordMessage, PRE_TRADE_SIGNAL_RECORD_CHANNEL};
+use crate::persist_manager::unified_order::UnifiedOrderRecord;
+use crate::pre_trade::monitor_channel::MonitorChannel;
+use crate::signal::common::TradingVenue;
 use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::trade_update::TradeUpdate;
 
@@ -23,11 +25,12 @@ pub const TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL: &str = "trade_update_unmatched_
 pub const ORDER_UPDATE_RECORD_CHANNEL: &str = "order_update_record";
 /// 未匹配到策略的订单更新记录频道
 pub const ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL: &str = "order_update_unmatched_record";
+/// 统一订单记录频道
+pub const UNIFORM_ORDER_RECORD_CHANNEL: &str = "uniform_order_record";
 
-/// 持久化通道：负责将信号记录、交易更新和订单更新通过 IceOryx 发布到下游持久化服务
+/// 持久化通道：负责将交易更新和订单更新通过 IceOryx 发布到下游持久化服务
 ///
 /// 下游消费者：
-/// - Signal: `persist_manager::SignalPersistor` -> RocksDB (`pre_trade_signal_record`)
 /// - Trade Update: `persist_manager::TradeUpdatePersistor` -> RocksDB (`trade_update_record`)
 /// - Order Update: `persist_manager::OrderUpdatePersistor` -> RocksDB (`order_update_record`)
 /// - Unmatched Trade Update: `persist_manager::TradeUpdateUnmatchedPersistor` -> RocksDB (`trade_updates_unmatched`)
@@ -39,11 +42,11 @@ pub const ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL: &str = "order_update_unmatched_
 /// - `publish_trade_update(&dyn TradeUpdate)` - 发布成交记录
 /// - `publish_order_update(&dyn OrderUpdate)` - 发布订单更新
 pub struct PersistChannel {
-    signal_record_pub: Option<SignalPublisher>,
     trade_update_record_pub: Option<TradeUpdatePublisher>,
     order_update_record_pub: Option<OrderUpdatePublisher>,
     trade_update_unmatched_pub: Option<TradeUpdatePublisher>,
     order_update_unmatched_pub: Option<OrderUpdatePublisher>,
+    uniform_order_record_pub: Option<UniformOrderPublisher>,
 }
 
 impl PersistChannel {
@@ -56,7 +59,6 @@ impl PersistChannel {
     /// use crate::pre_trade::PersistChannel;
     ///
     /// // 在任何地方直接使用，无需传递引用
-    /// PersistChannel::with(|ch| ch.publish_signal_record(&record));
     /// PersistChannel::with(|ch| ch.publish_trade_update(&trade));
     /// PersistChannel::with(|ch| ch.publish_order_update(&order));
     /// ```
@@ -73,18 +75,13 @@ impl PersistChannel {
         })
     }
 
-    /// 创建持久化通道，初始化三个 IceOryx 发布器
+    /// 创建持久化通道，初始化 IceOryx 发布器
     ///
     /// 注意：通常应使用 `PersistChannel::with()` 访问线程本地单例，
     /// 而不是直接调用 `new()` 创建多个实例
     ///
     /// 如果发布器创建失败，会记录警告并继续运行（降级模式）
     fn new() -> Self {
-        let signal_record_pub =
-            SignalPublisher::new_with_prefix("persist_pubs", PRE_TRADE_SIGNAL_RECORD_CHANNEL)
-                .map_err(|e| warn!("PersistChannel signal_record_pub failed: {e:#}"))
-                .ok();
-
         let trade_update_record_pub =
             TradeUpdatePublisher::new_with_prefix("persist_pubs", TRADE_UPDATE_RECORD_CHANNEL)
                 .map_err(|e| warn!("PersistChannel trade_update_record_pub failed: {e:#}"))
@@ -95,44 +92,31 @@ impl PersistChannel {
                 .map_err(|e| warn!("PersistChannel order_update_record_pub failed: {e:#}"))
                 .ok();
 
-        let trade_update_unmatched_pub =
-            TradeUpdatePublisher::new_with_prefix("persist_pubs", TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL)
-                .map_err(|e| warn!("PersistChannel trade_update_unmatched_pub failed: {e:#}"))
-                .ok();
+        let trade_update_unmatched_pub = TradeUpdatePublisher::new_with_prefix(
+            "persist_pubs",
+            TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL,
+        )
+        .map_err(|e| warn!("PersistChannel trade_update_unmatched_pub failed: {e:#}"))
+        .ok();
 
-        let order_update_unmatched_pub =
-            OrderUpdatePublisher::new_with_prefix("persist_pubs", ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL)
-                .map_err(|e| warn!("PersistChannel order_update_unmatched_pub failed: {e:#}"))
+        let order_update_unmatched_pub = OrderUpdatePublisher::new_with_prefix(
+            "persist_pubs",
+            ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL,
+        )
+        .map_err(|e| warn!("PersistChannel order_update_unmatched_pub failed: {e:#}"))
+        .ok();
+
+        let uniform_order_record_pub =
+            UniformOrderPublisher::new_with_prefix("persist_pubs", UNIFORM_ORDER_RECORD_CHANNEL)
+                .map_err(|e| warn!("PersistChannel uniform_order_record_pub failed: {e:#}"))
                 .ok();
 
         Self {
-            signal_record_pub,
             trade_update_record_pub,
             order_update_record_pub,
             trade_update_unmatched_pub,
             order_update_unmatched_pub,
-        }
-    }
-
-    /// 发布信号记录到持久化通道
-    ///
-    /// # 参数
-    /// - `record`: 信号记录消息（包含策略ID、信号类型、上下文等）
-    ///
-    /// # 错误处理
-    /// - 如果发布器未初始化，静默跳过
-    /// - 如果发布失败，记录警告但不阻塞调用者
-    pub fn publish_signal_record(&self, record: &SignalRecordMessage) {
-        let Some(publisher) = &self.signal_record_pub else {
-            return;
-        };
-
-        let payload = record.to_bytes();
-        if let Err(err) = publisher.publish(payload.as_ref()) {
-            warn!(
-                "failed to publish signal record strategy_id={}: {err:#}",
-                record.strategy_id
-            );
+            uniform_order_record_pub,
         }
     }
 
@@ -152,9 +136,9 @@ impl PersistChannel {
         let payload = serialize_trade_update(trade_update);
         if let Err(err) = publisher.publish(payload.as_ref()) {
             warn!(
-                "failed to publish trade update trade_id={} order_id={} symbol={}: {err:#}",
-                trade_update.trade_id(),
+                "failed to publish trade update order_id={} client_order_id={} symbol={}: {err:#}",
                 trade_update.order_id(),
+                trade_update.client_order_id(),
                 trade_update.symbol()
             );
         }
@@ -193,9 +177,9 @@ impl PersistChannel {
         let payload = serialize_trade_update(trade_update);
         if let Err(err) = publisher.publish(payload.as_ref()) {
             warn!(
-                "failed to publish unmatched trade update trade_id={} order_id={} symbol={}: {err:#}",
-                trade_update.trade_id(),
+                "failed to publish unmatched trade update order_id={} client_order_id={} symbol={}: {err:#}",
                 trade_update.order_id(),
+                trade_update.client_order_id(),
                 trade_update.symbol()
             );
         }
@@ -218,9 +202,21 @@ impl PersistChannel {
         }
     }
 
-    /// 检查信号记录发布器是否可用
-    pub fn is_signal_publisher_available(&self) -> bool {
-        self.signal_record_pub.is_some()
+    /// 发布统一订单记录（二进制格式）
+    pub fn publish_uniform_order(&self, record: &UnifiedOrderRecord) {
+        let Some(publisher) = &self.uniform_order_record_pub else {
+            return;
+        };
+
+        let payload = serialize_uniform_order(record);
+        if let Err(err) = publisher.publish(payload.as_ref()) {
+            warn!(
+                "failed to publish uniform order update client_order_id={} symbol_len={} from_key_len={}: {err:#}",
+                record.client_order_id,
+                record.symbol_len,
+                record.from_key_len
+            );
+        }
     }
 
     /// 检查交易更新记录发布器是否可用
@@ -238,6 +234,48 @@ impl PersistChannel {
 
 // ==================== 序列化辅助函数 ====================
 
+fn normalize_symbol_for_venue(venue: TradingVenue, symbol: &str) -> String {
+    let upper = symbol.to_uppercase();
+    match venue {
+        TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
+            upper.replace("-SWAP", "").replace('-', "")
+        }
+        TradingVenue::GateMargin | TradingVenue::GateFutures => {
+            upper.replace('_', "").replace('-', "")
+        }
+        _ => upper,
+    }
+}
+
+fn resolve_futures_qty_multiplier(venue: TradingVenue, normalized_symbol: &str) -> f64 {
+    if !venue.is_futures() {
+        return 1.0;
+    }
+    if venue == TradingVenue::BinanceFutures {
+        return 1.0;
+    }
+
+    let Some(table) = MonitorChannel::instance().try_venue_min_qty_table(venue) else {
+        return 1.0;
+    };
+
+    table
+        .contract_multiplier_opt(normalized_symbol)
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .unwrap_or(1.0)
+}
+
+fn normalize_symbol_and_qty(venue: TradingVenue, symbol: &str, qty: f64) -> (String, f64) {
+    let normalized_symbol = normalize_symbol_for_venue(venue, symbol);
+    let multiplier = resolve_futures_qty_multiplier(venue, normalized_symbol.as_str());
+    let normalized_qty = if venue.is_futures() {
+        qty * multiplier
+    } else {
+        qty
+    };
+    (normalized_symbol, normalized_qty)
+}
+
 /// 将 TradeUpdate trait object 序列化为字节流
 ///
 /// 格式：
@@ -245,7 +283,6 @@ impl PersistChannel {
 /// - event_time: i64 (8 bytes)
 /// - trade_time: i64 (8 bytes)
 /// - symbol: String (4 bytes len + data)
-/// - trade_id: i64 (8 bytes)
 /// - order_id: i64 (8 bytes)
 /// - client_order_id: i64 (8 bytes)
 /// - side: u8 (1 byte) - 0=Buy, 1=Sell
@@ -256,6 +293,9 @@ impl PersistChannel {
 /// - order_status: u8 (1 byte) + Option flag
 fn serialize_trade_update(trade: &dyn TradeUpdate) -> Bytes {
     let mut buf = BytesMut::with_capacity(512);
+    let venue = trade.trading_venue();
+    let (normalized_symbol, normalized_cum_qty) =
+        normalize_symbol_and_qty(venue, trade.symbol(), trade.cumulative_filled_quantity());
 
     // 接收时间戳（在发布时记录）
     buf.put_i64_le(get_timestamp_us());
@@ -265,10 +305,9 @@ fn serialize_trade_update(trade: &dyn TradeUpdate) -> Bytes {
     buf.put_i64_le(trade.trade_time());
 
     // 交易对符号
-    put_string(&mut buf, trade.symbol());
+    put_string(&mut buf, normalized_symbol.as_str());
 
     // ID 字段
-    buf.put_i64_le(trade.trade_id());
     buf.put_i64_le(trade.order_id());
     buf.put_i64_le(trade.client_order_id());
 
@@ -282,10 +321,10 @@ fn serialize_trade_update(trade: &dyn TradeUpdate) -> Bytes {
     buf.put_u8(trade.is_maker() as u8);
 
     // 交易所类型
-    buf.put_u8(trade.trading_venue() as u8);
+    buf.put_u8(venue as u8);
 
     // 累计成交量
-    buf.put_f64_le(trade.cumulative_filled_quantity());
+    buf.put_f64_le(normalized_cum_qty);
 
     // 订单状态（可选）
     if let Some(status) = trade.order_status() {
@@ -324,6 +363,11 @@ fn serialize_trade_update(trade: &dyn TradeUpdate) -> Bytes {
 /// - business_unit: Option<String> (deprecated, write 0 flag)
 fn serialize_order_update(order: &dyn OrderUpdate) -> Bytes {
     let mut buf = BytesMut::with_capacity(512);
+    let venue = order.trading_venue();
+    let (normalized_symbol, normalized_qty) =
+        normalize_symbol_and_qty(venue, order.symbol(), order.quantity());
+    let (_, normalized_cum_qty) =
+        normalize_symbol_and_qty(venue, order.symbol(), order.cumulative_filled_quantity());
 
     // 接收时间戳（在发布时记录）
     buf.put_i64_le(get_timestamp_us());
@@ -332,7 +376,7 @@ fn serialize_order_update(order: &dyn OrderUpdate) -> Bytes {
     buf.put_i64_le(order.event_time());
 
     // 交易对符号
-    put_string(&mut buf, order.symbol());
+    put_string(&mut buf, normalized_symbol.as_str());
 
     // ID 字段
     buf.put_i64_le(order.order_id());
@@ -346,10 +390,10 @@ fn serialize_order_update(order: &dyn OrderUpdate) -> Bytes {
 
     // 价格数量
     buf.put_f64_le(order.price());
-    buf.put_f64_le(order.quantity());
+    buf.put_f64_le(normalized_qty);
     // 兼容旧布局：last_time_executed_qty 已移除，固定写入 0
     buf.put_f64_le(0.0);
-    buf.put_f64_le(order.cumulative_filled_quantity());
+    buf.put_f64_le(normalized_cum_qty);
 
     // 状态
     buf.put_u8(order.status() as u8);
@@ -360,7 +404,7 @@ fn serialize_order_update(order: &dyn OrderUpdate) -> Bytes {
     put_string(&mut buf, order.raw_execution_type());
 
     // 交易所类型
-    buf.put_u8(order.trading_venue() as u8);
+    buf.put_u8(venue as u8);
 
     // 兼容旧布局：平均价/最新成交价/业务单元字段已移除，固定写入 0
     buf.put_u8(0);
@@ -383,6 +427,66 @@ fn put_opt_string(buf: &mut BytesMut, value: Option<&str>) {
     } else {
         buf.put_u8(0); // no value
     }
+}
+
+/// 将 UnifiedOrderRecord 序列化为字节流
+///
+/// 格式：
+/// - recv_ts_us: i64
+/// - symbol_len: u16
+/// - symbol: [u8; symbol_len]
+/// - create_ts: i64
+/// - update_ts: i64
+/// - signal_ts: i64
+/// - client_order_id: i64
+/// - venue: u8
+/// - ttype: u8
+/// - side: u8
+/// - price: f64
+/// - price_offset: f64
+/// - amount_init: f64
+/// - amount_update: f64
+/// - status: u8
+/// - from_key_len: u32
+/// - from_key: [u8; from_key_len]
+fn serialize_uniform_order(record: &UnifiedOrderRecord) -> Bytes {
+    let mut buf = BytesMut::with_capacity(512);
+
+    let venue = TradingVenue::from_u8(record.venue).unwrap_or(TradingVenue::BinanceMargin);
+    let raw_symbol = String::from_utf8_lossy(&record.symbol);
+    let (normalized_symbol, normalized_amount_init) =
+        normalize_symbol_and_qty(venue, raw_symbol.as_ref(), record.amount_init);
+    let (_, normalized_amount_update) =
+        normalize_symbol_and_qty(venue, raw_symbol.as_ref(), record.amount_update);
+
+    buf.put_i64_le(get_timestamp_us());
+
+    let symbol_len = normalized_symbol.len() as u16;
+    buf.put_u16_le(symbol_len);
+    buf.put_slice(normalized_symbol.as_bytes());
+
+    buf.put_i64_le(record.create_ts);
+    buf.put_i64_le(record.update_ts);
+    buf.put_i64_le(record.signal_ts);
+
+    buf.put_i64_le(record.client_order_id);
+
+    buf.put_u8(record.venue);
+    buf.put_u8(record.ttype);
+    buf.put_u8(record.side);
+
+    buf.put_f64_le(record.price);
+    buf.put_f64_le(record.price_offset);
+    buf.put_f64_le(normalized_amount_init);
+    buf.put_f64_le(normalized_amount_update);
+
+    buf.put_u8(record.status);
+
+    let from_key_len = record.from_key.len() as u32;
+    buf.put_u32_le(from_key_len);
+    buf.put_slice(&record.from_key);
+
+    buf.freeze()
 }
 
 // NOTE: persist-channel unit tests removed per repo usage (requires IceOryx runtime/namespace).

@@ -5,7 +5,10 @@ use mkt_signal::signal::{common::TradingVenue, venue_min_qty_table::VenueMinQtyT
 use serde_json::Value;
 
 #[derive(Debug, Parser)]
-#[command(name = "demo_gate_minqty", about = "Gate futures min-qty demo (contracts -> base)")]
+#[command(
+    name = "demo_gate_minqty",
+    about = "Gate futures min-qty demo (contracts -> base)"
+)]
 struct Args {
     /// Gate contract, e.g. SOL_USDT
     #[arg(long, default_value = "SOL_USDT")]
@@ -97,14 +100,8 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("invalid quanto_multiplier: {}", quanto_value))?;
     let min_contracts = value_to_f64(min_contracts_value)
         .ok_or_else(|| anyhow!("invalid order_size_min: {}", min_contracts_value))?;
-    let step_contracts = gate
-        .json
-        .get("order_size_step")
-        .and_then(value_to_f64);
-    let price_tick = gate
-        .json
-        .get("order_price_round")
-        .and_then(value_to_f64);
+    let step_contracts = gate.json.get("order_size_step").and_then(value_to_f64);
+    let price_tick = gate.json.get("order_price_round").and_then(value_to_f64);
     let mark_price = gate.json.get("mark_price").and_then(value_to_f64);
     let last_price = gate.json.get("last_price").and_then(value_to_f64);
     let price_ref = if args.price > 0.0 {
@@ -146,7 +143,10 @@ async fn main() -> Result<()> {
         None => println!("price_tick            = N/A"),
     }
     println!();
-    println!("contracts -> base_qty = {:.8} * {:.8} = {:.8}", args.size, quanto, base_qty);
+    println!(
+        "contracts -> base_qty = {:.8} * {:.8} = {:.8}",
+        args.size, quanto, base_qty
+    );
     println!("min_base_qty          = {:.8}", min_base_qty);
     match step_contracts {
         Some(step_contracts) => println!("step_base_qty         = {:.8}", step_contracts * quanto),

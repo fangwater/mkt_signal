@@ -1,12 +1,11 @@
 use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderType, Side};
+use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use crate::pre_trade::{PersistChannel, QueryEngHub, TradeEngHub};
-use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue};
 use crate::signal::cancel_signal::MmCancelCtx;
+use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue};
 use crate::signal::open_signal::MmOpenCtx;
-use crate::signal::record::SignalRecordMessage;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::{ForceCloseControl, Strategy};
 use crate::strategy::order_update::OrderUpdate;
@@ -14,6 +13,7 @@ use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
 use crate::strategy::trade_update::TradeUpdate;
+use crate::strategy::uniform_order_helper::{publish_uniform_order_event, UniformOrderEventKind};
 use crate::strategy::ws_order_update::WsOrderUpdate;
 use crate::trade_engine::query_parsers::compact_order::{
     CompactOrderQueryResp, COMPACT_ORDER_QUERY_RESP_LEN,
@@ -46,6 +46,8 @@ pub struct MarketMakerOpenStrategy {
     open_order_id: i64,
     open_expire_ts: Option<i64>,
     signal_ts: i64,
+    open_from_key: String,
+    open_price_offset: f64,
     alive_flag: bool,
     recorded_to_hedge: bool,
     pending_order_query: Option<PendingOrderQueryReason>,
@@ -61,6 +63,8 @@ impl MarketMakerOpenStrategy {
             open_order_id: 0,
             open_expire_ts: None,
             signal_ts: 0,
+            open_from_key: String::new(),
+            open_price_offset: 0.0,
             alive_flag: true,
             recorded_to_hedge: false,
             pending_order_query: None,
@@ -96,23 +100,66 @@ impl MarketMakerOpenStrategy {
     }
 
     fn try_apply_ws_order_update(&mut self, response: &dyn TradeEngineResponse) -> bool {
+        if !WsOrderUpdate::supports_trade_response_req_type(response.req_type()) {
+            return false;
+        }
+
         let client_order_id = response.client_order_id();
         if client_order_id != self.open_order_id {
             return false;
         }
         let order_mgr = MonitorChannel::instance().order_manager();
-        let order_mgr = order_mgr.borrow();
-        let Some(order) = order_mgr.get(client_order_id) else {
+        let Some(order_snapshot) = order_mgr.borrow().get(client_order_id) else {
             warn!(
                 "MarketMakerOpenStrategy: strategy_id={} ws order update missing local order: client_order_id={}",
                 self.strategy_id, client_order_id
             );
             return false;
         };
-        let Some(update) = WsOrderUpdate::from_trade_response(response, &order) else {
+        let order_snapshot = order_snapshot.clone();
+
+        let Some(update) = WsOrderUpdate::from_trade_response(response, &order_snapshot) else {
             return false;
         };
-        self.apply_order_update_with_record(&update);
+
+        // Binance WS 下单响应在 FULL/RESULT 模式下可能直接返回 FILLED/PartiallyFilled
+        // （并携带 fills），不再稳定经过 NEW 阶段。
+        // 这里统一只接收 NEW/CANCELED，其他状态等待 account ws 的正常推送处理。
+        if matches!(
+            order_snapshot.venue,
+            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures
+        ) {
+            if matches!(update.status(), OrderStatus::New | OrderStatus::Canceled) {
+                <Self as Strategy>::apply_order_update(self, &update);
+            } else {
+                debug!(
+                    "MarketMakerOpenStrategy: strategy_id={} skip non-NEW/CANCELED binance ws response: venue={:?} client_order_id={} status={:?}",
+                    self.strategy_id,
+                    order_snapshot.venue,
+                    client_order_id,
+                    update.status()
+                );
+            }
+            return true;
+        }
+
+        if matches!(
+            update.status(),
+            OrderStatus::PartiallyFilled | OrderStatus::Filled
+        ) {
+            let trade = OrderQueryTradeUpdate::new(
+                &order_snapshot,
+                update.order_id(),
+                update.event_time(),
+                update.cumulative_filled_quantity(),
+                response.response_price(),
+                Some(update.status()),
+                update.time_in_force(),
+            );
+            <Self as Strategy>::apply_trade_update(self, &trade);
+        } else {
+            <Self as Strategy>::apply_order_update(self, &update);
+        }
         true
     }
 
@@ -265,6 +312,8 @@ impl MarketMakerOpenStrategy {
             None
         };
         self.signal_ts = ctx.create_ts;
+        self.open_from_key = String::from_utf8_lossy(&ctx.from_key).to_string();
+        self.open_price_offset = ctx.price_offset;
 
         let client_order_id = Self::compose_order_id(self.strategy_id);
         self.open_order_id = client_order_id;
@@ -539,7 +588,17 @@ impl MarketMakerOpenStrategy {
         let exchange_order_id = order.exchange_order_id.filter(|&id| id > 0);
 
         let req_type = match order.venue {
-            TradingVenue::BinanceMargin => QueryRequestType::BinanceMarginQuery,
+            TradingVenue::BinanceMargin => {
+                if MonitorChannel::instance()
+                    .order_manager()
+                    .borrow()
+                    .binance_is_standard()
+                {
+                    QueryRequestType::BinanceWsMarginQuery
+                } else {
+                    QueryRequestType::BinanceMarginQuery
+                }
+            }
             TradingVenue::BinanceFutures => {
                 if MonitorChannel::instance()
                     .order_manager()
@@ -742,7 +801,7 @@ impl MarketMakerOpenStrategy {
         if TimeInForce::from_u8(parsed.time_in_force_u8).is_none() {
             return None;
         }
-        if parsed.trade_id < 0 {
+        if !parsed.response_price.is_finite() || parsed.response_price < 0.0 {
             return None;
         }
         if parsed.update_time_ms < 0 {
@@ -779,13 +838,13 @@ impl MarketMakerOpenStrategy {
             let trade = OrderQueryTradeUpdate::new(
                 order,
                 order_id,
-                parsed.trade_id,
                 event_time_us,
                 parsed.executed_qty,
+                Some(parsed.response_price),
                 status,
                 tif,
             );
-            self.apply_trade_update_with_record(&trade);
+            <Self as Strategy>::apply_trade_update(self, &trade);
         }
 
         let status_u8 = parsed.status_u8;
@@ -802,7 +861,7 @@ impl MarketMakerOpenStrategy {
                     parsed.executed_qty,
                     tif,
                 );
-                self.apply_order_update_with_record(&upd);
+                <Self as Strategy>::apply_order_update(self, &upd);
             }
         } else if status_u8 == OrderExecutionStatus::Cancelled.to_u8() {
             let upd = OrderQueryOrderUpdate::new(
@@ -814,7 +873,7 @@ impl MarketMakerOpenStrategy {
                 parsed.executed_qty,
                 tif,
             );
-            self.apply_order_update_with_record(&upd);
+            <Self as Strategy>::apply_order_update(self, &upd);
         } else if status_u8 == OrderExecutionStatus::Rejected.to_u8() {
             error!(
                 "MarketMakerOpenStrategy: strategy_id={} query_resp rejected: client_order_id={} order_id={} exec_qty={:.8} reason={:?}",
@@ -900,7 +959,9 @@ impl MarketMakerOpenStrategy {
                     let exchange = order.venue.trade_engine_exchange();
                     match order.get_order_cancel_bytes() {
                         Ok(cancel_bytes) => {
-                            if let Err(e) = TradeEngHub::publish_order_request(exchange, &cancel_bytes) {
+                            if let Err(e) =
+                                TradeEngHub::publish_order_request(exchange, &cancel_bytes)
+                            {
                                 warn!(
                                     "MarketMakerOpenStrategy: strategy_id={} re-cancel publish failed: exchange={} client_order_id={} err={}",
                                     self.strategy_id, exchange, client_order_id, e
@@ -940,7 +1001,7 @@ impl MarketMakerOpenStrategy {
         }
     }
 
-    fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) {
+    fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) -> bool {
         let client_order_id = order_update.client_order_id();
         self.clear_query_watchdogs(client_order_id);
         if client_order_id != self.open_order_id {
@@ -948,11 +1009,34 @@ impl MarketMakerOpenStrategy {
                 "MarketMakerOpenStrategy: strategy_id={} ignore order_update client_order_id={}",
                 self.strategy_id, client_order_id
             );
-            return;
+            return false;
         }
 
         let order_mgr = MonitorChannel::instance().order_manager();
         let mut order_manager = order_mgr.borrow_mut();
+        let Some(current_order) = order_manager.get(client_order_id) else {
+            warn!(
+                "MarketMakerOpenStrategy: strategy_id={} order update not found client_order_id={}",
+                self.strategy_id, client_order_id
+            );
+            return false;
+        };
+
+        if OrderManager::should_skip_idempotent_order_update(
+            &current_order,
+            order_update.status(),
+            order_update.order_id(),
+            order_update.cumulative_filled_quantity(),
+            "MarketMakerOpenStrategy",
+            self.strategy_id,
+        )
+        .is_some()
+        {
+            return false;
+        }
+
+        let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
+
         let mut record_fill: Option<(TradingVenue, String, Side, f64)> = None;
         let updated = order_manager.update(client_order_id, |order| match order_update.status() {
             OrderStatus::New => {
@@ -972,6 +1056,8 @@ impl MarketMakerOpenStrategy {
             }
             OrderStatus::Canceled => {
                 order.status = OrderExecutionStatus::Cancelled;
+                order.set_exchange_order_id(order_update.order_id());
+                order.cumulative_filled_quantity = order_update.cumulative_filled_quantity();
                 order.set_end_time(order_update.event_time());
                 record_fill = Some((
                     order.venue,
@@ -992,6 +1078,9 @@ impl MarketMakerOpenStrategy {
             }
             OrderStatus::Filled => {
                 order.status = OrderExecutionStatus::Filled;
+                order.set_exchange_order_id(order_update.order_id());
+                order.cumulative_filled_quantity = order_update.cumulative_filled_quantity();
+                order.set_filled_time(order_update.event_time());
                 order.set_end_time(order_update.event_time());
                 record_fill = Some((
                     order.venue,
@@ -1010,6 +1099,8 @@ impl MarketMakerOpenStrategy {
             }
             OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
                 order.status = OrderExecutionStatus::Rejected;
+                order.set_exchange_order_id(order_update.order_id());
+                order.cumulative_filled_quantity = order_update.cumulative_filled_quantity();
                 order.set_end_time(order_update.event_time());
                 warn!(
                     "⏰ MM订单已过期: strategy_id={} client_order_id={} exchange_order_id={} symbol={}",
@@ -1021,8 +1112,10 @@ impl MarketMakerOpenStrategy {
                 self.alive_flag = false;
             }
             OrderStatus::PartiallyFilled => {
+                order.status = OrderExecutionStatus::Create;
                 order.set_exchange_order_id(order_update.order_id());
-                order.set_create_time(order_update.event_time());
+                order.cumulative_filled_quantity = order_update.cumulative_filled_quantity();
+                order.set_filled_time(order_update.event_time());
                 debug!(
                     "MM订单部分成交: strategy_id={} client_order_id={} exchange_order_id={} symbol={}",
                     self.strategy_id,
@@ -1039,14 +1132,216 @@ impl MarketMakerOpenStrategy {
                 "MarketMakerOpenStrategy: strategy_id={} order update not found client_order_id={}",
                 self.strategy_id, client_order_id
             );
+            return false;
         }
 
         if let Some((venue, symbol, side, qty)) = record_fill {
             self.record_mm_hedge_qty(venue, &symbol, side, qty);
         }
+
+        if order_update.status() == OrderStatus::New {
+            if let Some(order) = MonitorChannel::instance()
+                .order_manager()
+                .borrow()
+                .get(client_order_id)
+            {
+                self.publish_uniform_new_order(order_update, &order, prev_cumulative_filled_qty);
+            }
+        }
+
+        if matches!(
+            order_update.status(),
+            OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
+        ) {
+            if let Some(order) = MonitorChannel::instance()
+                .order_manager()
+                .borrow()
+                .get(client_order_id)
+            {
+                self.publish_uniform_terminal_order(
+                    order_update,
+                    &order,
+                    prev_cumulative_filled_qty,
+                );
+            }
+        }
+
+        if matches!(
+            order_update.status(),
+            OrderStatus::PartiallyFilled | OrderStatus::Filled
+        ) {
+            if let Some(order) = MonitorChannel::instance()
+                .order_manager()
+                .borrow()
+                .get(client_order_id)
+            {
+                self.publish_uniform_trade_order_from_order_update(
+                    order_update,
+                    &order,
+                    prev_cumulative_filled_qty,
+                );
+            }
+        }
+
+        true
     }
 
-    fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
+    fn compute_uniform_amount_update(
+        &self,
+        order: &Order,
+        incoming_cum: f64,
+        prev_cumulative_filled_qty: f64,
+        status: OrderStatus,
+    ) -> f64 {
+        match OrderManager::compute_uniform_amount_update_from_cumulative(
+            prev_cumulative_filled_qty,
+            incoming_cum,
+        ) {
+            Some(delta) => delta,
+            None => {
+                warn!(
+                    "MarketMakerOpenStrategy: strategy_id={} uniform {:?} amount_update rollback detected: client_order_id={} prev={:.8} incoming={:.8}",
+                    self.strategy_id,
+                    status,
+                    order.client_order_id,
+                    prev_cumulative_filled_qty,
+                    incoming_cum
+                );
+                0.0
+            }
+        }
+    }
+
+    fn uniform_open_fields(&self) -> (i64, Vec<u8>, f64) {
+        (
+            self.signal_ts,
+            format!("open|{}", self.open_from_key).into_bytes(),
+            self.open_price_offset,
+        )
+    }
+
+    fn publish_uniform_new_order(
+        &self,
+        order_update: &dyn OrderUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+    ) {
+        let (signal_ts, from_key, price_offset) = self.uniform_open_fields();
+
+        let incoming_cum = order_update.cumulative_filled_quantity();
+        let amount_update = self.compute_uniform_amount_update(
+            order,
+            incoming_cum,
+            prev_cumulative_filled_qty,
+            order_update.status(),
+        );
+
+        publish_uniform_order_event(
+            order,
+            UniformOrderEventKind::New,
+            order_update.event_time(),
+            order_update.status(),
+            signal_ts,
+            from_key,
+            None,
+            price_offset,
+            amount_update,
+        );
+    }
+
+    fn publish_uniform_terminal_order(
+        &self,
+        order_update: &dyn OrderUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+    ) {
+        let (signal_ts, from_key, price_offset) = self.uniform_open_fields();
+        let incoming_cum = order_update.cumulative_filled_quantity();
+        let amount_update = self.compute_uniform_amount_update(
+            order,
+            incoming_cum,
+            prev_cumulative_filled_qty,
+            order_update.status(),
+        );
+
+        publish_uniform_order_event(
+            order,
+            UniformOrderEventKind::Terminal,
+            order_update.event_time(),
+            order_update.status(),
+            signal_ts,
+            from_key,
+            None,
+            price_offset,
+            amount_update,
+        );
+    }
+
+    fn publish_uniform_trade_order(
+        &self,
+        trade: &dyn TradeUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+        status: OrderStatus,
+    ) {
+        if !matches!(status, OrderStatus::PartiallyFilled | OrderStatus::Filled) {
+            return;
+        }
+        let (signal_ts, from_key, price_offset) = self.uniform_open_fields();
+        let incoming_cum = trade.cumulative_filled_quantity();
+        let amount_update = self.compute_uniform_amount_update(
+            order,
+            incoming_cum,
+            prev_cumulative_filled_qty,
+            status,
+        );
+
+        publish_uniform_order_event(
+            order,
+            UniformOrderEventKind::Trade,
+            trade.event_time(),
+            status,
+            signal_ts,
+            from_key,
+            Some(trade.price()),
+            price_offset,
+            amount_update,
+        );
+    }
+
+    fn publish_uniform_trade_order_from_order_update(
+        &self,
+        order_update: &dyn OrderUpdate,
+        order: &Order,
+        prev_cumulative_filled_qty: f64,
+    ) {
+        let status = order_update.status();
+        if !matches!(status, OrderStatus::PartiallyFilled | OrderStatus::Filled) {
+            return;
+        }
+        let (signal_ts, from_key, price_offset) = self.uniform_open_fields();
+        let incoming_cum = order_update.cumulative_filled_quantity();
+        let amount_update = self.compute_uniform_amount_update(
+            order,
+            incoming_cum,
+            prev_cumulative_filled_qty,
+            status,
+        );
+
+        publish_uniform_order_event(
+            order,
+            UniformOrderEventKind::Trade,
+            order_update.event_time(),
+            status,
+            signal_ts,
+            from_key,
+            None,
+            price_offset,
+            amount_update,
+        );
+    }
+
+    fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) -> bool {
         let client_order_id = trade.client_order_id();
         self.clear_query_watchdogs(client_order_id);
         if client_order_id != self.open_order_id {
@@ -1054,27 +1349,66 @@ impl MarketMakerOpenStrategy {
                 "MarketMakerOpenStrategy: strategy_id={} ignore trade_update client_order_id={}",
                 self.strategy_id, client_order_id
             );
-            return;
+            return false;
+        }
+
+        let Some(status @ (OrderStatus::PartiallyFilled | OrderStatus::Filled)) =
+            trade.order_status()
+        else {
+            return false;
+        };
+
+        let order_mgr = MonitorChannel::instance().order_manager();
+        let mut order_manager = order_mgr.borrow_mut();
+        let Some(current_order) = order_manager.get(client_order_id) else {
+            warn!(
+                "MarketMakerOpenStrategy: strategy_id={} trade update order missing client_order_id={}",
+                self.strategy_id, client_order_id
+            );
+            return false;
+        };
+        let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
+        if OrderManager::should_skip_idempotent_trade_update(
+            &current_order,
+            status,
+            trade.cumulative_filled_quantity(),
+            trade.event_time(),
+            "MarketMakerOpenStrategy",
+            self.strategy_id,
+        )
+        .is_some()
+        {
+            return false;
         }
 
         let cumulative_qty = trade.cumulative_filled_quantity();
         let trade_time = trade.trade_time();
         let event_time = trade.event_time();
-        if trade.order_status() == Some(OrderStatus::Filled) {
-            let order_mgr = MonitorChannel::instance().order_manager();
-            let mut order_manager = order_mgr.borrow_mut();
-            let updated = order_manager.update(client_order_id, |order| {
-                order.cumulative_filled_quantity = cumulative_qty;
-                order.set_filled_time(trade_time);
+        let updated = order_manager.update(client_order_id, |order| {
+            order.cumulative_filled_quantity = cumulative_qty;
+            order.set_filled_time(trade_time);
+            order.set_exchange_order_id(trade.order_id());
+            if status == OrderStatus::Filled {
                 order.status = OrderExecutionStatus::Filled;
                 order.set_end_time(event_time);
-            });
-            if !updated {
-                warn!(
-                    "MarketMakerOpenStrategy: strategy_id={} trade update order missing client_order_id={}",
-                    self.strategy_id, client_order_id
-                );
+            } else if !order.status.is_terminal() {
+                order.status = OrderExecutionStatus::Create;
             }
+        });
+        if !updated {
+            warn!(
+                "MarketMakerOpenStrategy: strategy_id={} trade update order missing client_order_id={}",
+                self.strategy_id, client_order_id
+            );
+            return false;
+        }
+
+        if let Some(order) = order_manager.get(client_order_id) {
+            self.publish_uniform_trade_order(trade, &order, prev_cumulative_filled_qty, status);
+        }
+        drop(order_manager);
+
+        if status == OrderStatus::Filled {
             info!(
                 "✅ MM订单成交完成: strategy_id={} client_order_id={} symbol={} price={:.6} cumulative={:.4}",
                 self.strategy_id,
@@ -1091,6 +1425,8 @@ impl MarketMakerOpenStrategy {
             );
             self.alive_flag = false;
         }
+
+        true
     }
 
     fn handle_signal(&mut self, signal: &TradeSignal) {
@@ -1157,26 +1493,22 @@ impl Strategy for MarketMakerOpenStrategy {
         Self::extract_strategy_id(order_id) == self.strategy_id
     }
 
-    fn handle_signal_with_record(&mut self, signal: &TradeSignal) {
-        self.handle_signal(signal);
-
-        let record = SignalRecordMessage::new(
-            self.strategy_id,
-            signal.signal_type.clone(),
-            signal.context.clone().to_vec(),
-            signal.generation_time,
-        );
-        PersistChannel::with(|ch| ch.publish_signal_record(&record));
+    fn handle_signal(&mut self, signal: &TradeSignal) {
+        MarketMakerOpenStrategy::handle_signal(self, signal);
     }
 
-    fn apply_order_update_with_record(&mut self, update: &dyn OrderUpdate) {
-        self.apply_order_update(update);
-        PersistChannel::with(|ch| ch.publish_order_update(update));
+    fn apply_order_update(&mut self, update: &dyn OrderUpdate) {
+        let should_persist = MarketMakerOpenStrategy::apply_order_update(self, update);
+        if should_persist {
+            PersistChannel::with(|ch| ch.publish_order_update(update));
+        }
     }
 
-    fn apply_trade_update_with_record(&mut self, trade: &dyn TradeUpdate) {
-        self.apply_trade_update(trade);
-        PersistChannel::with(|ch| ch.publish_trade_update(trade));
+    fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
+        let should_persist = MarketMakerOpenStrategy::apply_trade_update(self, trade);
+        if should_persist {
+            PersistChannel::with(|ch| ch.publish_trade_update(trade));
+        }
     }
 
     fn apply_trade_engine_response(&mut self, response: &dyn TradeEngineResponse) {

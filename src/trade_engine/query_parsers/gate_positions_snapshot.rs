@@ -143,7 +143,13 @@ fn find_side(row: &Value) -> Option<char> {
 }
 
 fn find_unrealized_pnl(row: &Value) -> Option<f64> {
-    let keys = ["unrealised_pnl", "unrealized_pnl", "upl", "unrealisedPnl", "unrealizedPnl"];
+    let keys = [
+        "unrealised_pnl",
+        "unrealized_pnl",
+        "upl",
+        "unrealisedPnl",
+        "unrealizedPnl",
+    ];
     for key in keys {
         if let Some(v) = row.get(key).and_then(parse_f32_value) {
             return Some(v as f64);
@@ -160,9 +166,7 @@ pub struct GatePositionsSnapshotParse {
     pub rows_with_pnl: usize,
 }
 
-pub fn parse_gate_positions_snapshot_with_meta(
-    json: &str,
-) -> Option<GatePositionsSnapshotParse> {
+pub fn parse_gate_positions_snapshot_with_meta(json: &str) -> Option<GatePositionsSnapshotParse> {
     let value: Value = serde_json::from_str(json).ok()?;
     let rows = extract_rows(&value)?;
     let now_ts = chrono::Utc::now().timestamp_millis();
@@ -172,9 +176,10 @@ pub fn parse_gate_positions_snapshot_with_meta(
     let mut rows_with_pnl = 0;
 
     for row in rows {
-        let Some(inst_raw) =
-            find_str(row, &["contract", "symbol", "inst_id", "instId", "currency_pair"])
-        else {
+        let Some(inst_raw) = find_str(
+            row,
+            &["contract", "symbol", "inst_id", "instId", "currency_pair"],
+        ) else {
             continue;
         };
         rows_with_inst += 1;

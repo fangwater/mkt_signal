@@ -140,9 +140,7 @@ pub fn parse_gate_unified_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
             let symbol = find_str(row, &["currency", "ccy", "asset", "symbol", "coin"])?;
             let balance = find_balance(row)?;
             let ts = find_time_ms(row).unwrap_or(now_ts);
-            out.push(
-                BasicBalanceMsg::create(ts, symbol.to_ascii_uppercase(), balance).to_bytes(),
-            );
+            out.push(BasicBalanceMsg::create(ts, symbol.to_ascii_uppercase(), balance).to_bytes());
         }
     }
 
@@ -169,9 +167,7 @@ pub fn parse_gate_unified_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
             }
 
             let ts = now_ts;
-            out.push(
-                BasicBalanceMsg::create(ts, symbol.to_ascii_uppercase(), balance).to_bytes(),
-            );
+            out.push(BasicBalanceMsg::create(ts, symbol.to_ascii_uppercase(), balance).to_bytes());
 
             let total_liab = find_f64(details, &["total_liab"]).unwrap_or(0.0);
             let borrowed = find_f64(details, &["borrowed"]).unwrap_or(0.0);

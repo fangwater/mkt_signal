@@ -21,11 +21,11 @@ use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
 use crate::pre_trade::basic_exposure_manager::{BasicExposureEntry, BasicExposureManager};
 use crate::pre_trade::basic_um_manager::BasicUmManager;
 use crate::pre_trade::net_position::NetPosition;
-use crate::pre_trade::PersistChannel;
 use crate::pre_trade::price_table::PriceTable;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
 use crate::pre_trade::usdt_balance_manager::{UsdtBalanceManager, UsdtBalanceSnapshot};
+use crate::pre_trade::PersistChannel;
 use crate::signal::common::{ExecutionType, TradingVenue};
 
 const ACCOUNT_PAYLOAD: usize = 16_384;
@@ -252,6 +252,13 @@ impl MonitorChannel {
     /// 获取指定交易场所的最小下单量表
     pub fn venue_min_qty_table(&self, venue: TradingVenue) -> Option<Rc<VenueMinQtyTable>> {
         Self::with_inner(|inner| inner.venue_min_qty_tables.get(&venue).cloned())
+    }
+
+    /// 尝试获取指定交易场所的最小下单量表（若 MonitorChannel 未初始化则返回 None）
+    pub fn try_venue_min_qty_table(&self, venue: TradingVenue) -> Option<Rc<VenueMinQtyTable>> {
+        Self::try_with_inner(|inner| inner.venue_min_qty_tables.get(&venue).cloned())
+            .ok()
+            .flatten()
     }
 
     /// 获取 order_manager 的引用
@@ -528,8 +535,16 @@ impl MonitorChannel {
         qty: f64,
     ) -> f64 {
         match venue {
-            TradingVenue::OkexFutures => {
-                let symbol_key = symbol.to_uppercase().replace("-SWAP", "").replace('-', "");
+            TradingVenue::OkexFutures | TradingVenue::GateFutures => {
+                let symbol_key = match venue {
+                    TradingVenue::OkexFutures => {
+                        symbol.to_uppercase().replace("-SWAP", "").replace('-', "")
+                    }
+                    TradingVenue::GateFutures => {
+                        symbol.to_uppercase().replace('_', "").replace('-', "")
+                    }
+                    _ => symbol.to_uppercase(),
+                };
                 let mult = inner
                     .venue_min_qty_tables
                     .get(&venue)
@@ -551,8 +566,16 @@ impl MonitorChannel {
         qty: f64,
     ) -> Result<f64, String> {
         match venue {
-            TradingVenue::OkexFutures => {
-                let symbol_key = symbol.to_uppercase().replace("-SWAP", "").replace('-', "");
+            TradingVenue::OkexFutures | TradingVenue::GateFutures => {
+                let symbol_key = match venue {
+                    TradingVenue::OkexFutures => {
+                        symbol.to_uppercase().replace("-SWAP", "").replace('-', "")
+                    }
+                    TradingVenue::GateFutures => {
+                        symbol.to_uppercase().replace('_', "").replace('-', "")
+                    }
+                    _ => symbol.to_uppercase(),
+                };
                 let Some(table) = inner.venue_min_qty_tables.get(&venue) else {
                     return Err(format!(
                         "未初始化 {:?} 的交易对过滤器，无法转换数量 symbol={}",
@@ -561,14 +584,14 @@ impl MonitorChannel {
                 };
                 let Some(mult) = table.contract_multiplier_opt(&symbol_key) else {
                     return Err(format!(
-                        "symbol={} 缺少 OKX 合约乘数(ctVal×ctMult)，无法进行风控口径计算（请刷新 filters/multipliers）",
-                        symbol_key
+                        "symbol={} 缺少 {:?} 合约乘数，无法进行风控口径计算（请刷新 filters/multipliers）",
+                        symbol_key, venue
                     ));
                 };
                 if !(mult > 0.0) {
                     return Err(format!(
-                        "symbol={} OKX contract multiplier invalid: {}",
-                        symbol_key, mult
+                        "symbol={} {:?} contract multiplier invalid: {}",
+                        symbol_key, venue, mult
                     ));
                 }
                 Ok(qty * mult)
@@ -580,7 +603,7 @@ impl MonitorChannel {
     /// 将订单数量（按 venue 语义）转换为 base qty（标的数量）
     ///
     /// - Binance futures: qty 本身就是 base qty
-    /// - OKX futures: qty 是 contracts，需要乘以合约面值（ctVal×ctMult）
+    /// - OKX/Gate futures: qty 是 contracts，需要乘以合约面值（contract multiplier）
     pub fn qty_to_base(&self, venue: TradingVenue, symbol: &str, qty: f64) -> f64 {
         Self::with_inner(|inner| Self::order_qty_to_base(inner, venue, symbol, qty))
     }
@@ -633,10 +656,7 @@ impl MonitorChannel {
                 1.0
             } else {
                 let symbol = price_mapper.asset_to_price_symbol(asset);
-                price_snap
-                    .get(&symbol)
-                    .map(|p| p.mark_price)
-                    .unwrap_or(0.0)
+                price_snap.get(&symbol).map(|p| p.mark_price).unwrap_or(0.0)
             }
         };
 
@@ -875,24 +895,25 @@ impl MonitorChannel {
                         false,
                     )
                 }
-                TradingVenue::OkexFutures => {
+                TradingVenue::OkexFutures | TradingVenue::GateFutures => {
                     // OKX 永续/交割合约 sz 使用“张数”，需要用 ctVal×ctMult 将 base qty 转成合约张数
                     let contract_size = table.contract_multiplier_opt(&symbol_key).ok_or_else(|| {
                         format!(
-                            "symbol={} 缺少 OKX 合约乘数(ctVal×ctMult)，无法将 base qty 转成 contracts（请刷新 filters/multipliers）",
-                            symbol_key
+                            "symbol={} 缺少 {:?} 合约乘数，无法将 base qty 转成 contracts（请刷新 filters/multipliers）",
+                            symbol_key,
+                            venue
                         )
                     })?;
                     if contract_size <= 0.0 {
                         return Err(format!(
-                            "symbol={} OKX contract multiplier invalid: {}",
-                            symbol_key, contract_size
+                            "symbol={} {:?} contract multiplier invalid: {}",
+                            symbol_key, venue, contract_size
                         ));
                     }
                     let raw_contracts = raw_qty / contract_size;
                     debug!(
-                        "OKX futures qty convert: symbol={} raw_base_qty={:.8} contract_size={:.8} -> raw_contracts={:.8}",
-                        symbol_key, raw_qty, contract_size, raw_contracts
+                        "futures qty convert: venue={:?} symbol={} raw_base_qty={:.8} contract_size={:.8} -> raw_contracts={:.8}",
+                        venue, symbol_key, raw_qty, contract_size, raw_contracts
                     );
                     Self::align_order_with_table(
                         &symbol_key,
@@ -914,13 +935,6 @@ impl MonitorChannel {
                     raw_price,
                     table.as_ref(),
                     false,
-                ),
-                TradingVenue::GateFutures => Self::align_order_with_table(
-                    &symbol_key,
-                    raw_qty,
-                    raw_price,
-                    table.as_ref(),
-                    true,
                 ),
             }
         })
@@ -1424,9 +1438,15 @@ impl MonitorChannel {
             } else {
                 "price_hint"
             };
-            let (qty_unit, okx_symbol_key, okx_contract_multiplier) = match open_venue {
-                TradingVenue::OkexFutures => {
-                    let symbol_key = symbol_upper.replace("-SWAP", "").replace('-', "");
+            let (qty_unit, fut_symbol_key, fut_contract_multiplier) = match open_venue {
+                TradingVenue::OkexFutures | TradingVenue::GateFutures => {
+                    let symbol_key = match open_venue {
+                        TradingVenue::OkexFutures => {
+                            symbol_upper.replace("-SWAP", "").replace('-', "")
+                        }
+                        TradingVenue::GateFutures => symbol_upper.replace('_', "").replace('-', ""),
+                        _ => symbol_upper.clone(),
+                    };
                     let mult = inner
                         .venue_min_qty_tables
                         .get(&open_venue)
@@ -1451,8 +1471,8 @@ impl MonitorChannel {
                             open_venue,
                             qty_unit,
                             additional_qty,
-                            okx_symbol_key,
-                            okx_contract_multiplier,
+                            fut_symbol_key,
+                            fut_contract_multiplier,
                             e
                         );
                     return Err(e);
@@ -1479,8 +1499,8 @@ impl MonitorChannel {
                     price,
                     qty_unit,
                     additional_qty,
-                    okx_symbol_key,
-                    okx_contract_multiplier,
+                    fut_symbol_key,
+                    fut_contract_multiplier,
                     current_open_qty,
                     add_base_qty,
                     projected_qty,
@@ -1777,10 +1797,10 @@ fn dispatch_order_update_generic<T>(
                 matched = true;
                 match update.execution_type() {
                     ExecutionType::New | ExecutionType::Canceled => {
-                        strategy.apply_order_update_with_record(update);
+                        strategy.apply_order_update(update);
                     }
                     ExecutionType::Trade => {
-                        strategy.apply_trade_update_with_record(update);
+                        strategy.apply_trade_update(update);
                     }
                     ExecutionType::Expired | ExecutionType::Rejected => {
                         warn!(
@@ -1790,7 +1810,7 @@ fn dispatch_order_update_generic<T>(
                             OrderUpdate::client_order_id(update),
                             OrderUpdate::order_id(update)
                         );
-                        strategy.apply_order_update_with_record(update);
+                        strategy.apply_order_update(update);
                     }
                     _ => {
                         log::error!(

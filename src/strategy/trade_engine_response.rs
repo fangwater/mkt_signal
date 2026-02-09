@@ -27,6 +27,9 @@ pub trait TradeEngineResponse {
     fn executed_qty(&self) -> Option<f64> {
         None
     }
+    fn response_price(&self) -> Option<f64> {
+        None
+    }
 
     /// Whether the HTTP layer returned 200 OK.
     ///
@@ -51,6 +54,7 @@ pub trait TradeEngineResponse {
             Ok(
                 TradeRequestType::BinanceNewUMOrder
                 | TradeRequestType::BinanceWsNewUMOrder
+                | TradeRequestType::BinanceWsNewMarginOrder
                 | TradeRequestType::BinanceNewUMConditionalOrder
                 | TradeRequestType::BinanceNewMarginOrder
                 | TradeRequestType::OkexNewMarginOrder
@@ -61,6 +65,7 @@ pub trait TradeEngineResponse {
             Ok(
                 TradeRequestType::BinanceCancelUMOrder
                 | TradeRequestType::BinanceWsCancelUMOrder
+                | TradeRequestType::BinanceWsCancelMarginOrder
                 | TradeRequestType::BinanceCancelUMConditionalOrder
                 | TradeRequestType::BinanceCancelMarginOrder
                 | TradeRequestType::OkexCancelMarginOrder
@@ -243,6 +248,7 @@ pub struct TradeEngineResponseMessage {
     order_status_u8: u8,
     order_update_time: i64,
     executed_qty: f64,
+    response_price: f64,
 }
 
 impl TradeEngineResponseMessage {
@@ -263,6 +269,7 @@ impl TradeEngineResponseMessage {
             order_status_u8: 0,
             order_update_time: 0,
             executed_qty: 0.0,
+            response_price: 0.0,
         }
     }
 
@@ -276,6 +283,7 @@ impl TradeEngineResponseMessage {
         order_status_u8: u8,
         order_update_time: i64,
         executed_qty: f64,
+        response_price: f64,
     ) -> Self {
         Self {
             status,
@@ -287,6 +295,7 @@ impl TradeEngineResponseMessage {
             order_status_u8,
             order_update_time,
             executed_qty,
+            response_price,
         }
     }
 
@@ -304,6 +313,10 @@ impl TradeEngineResponseMessage {
 
     pub fn executed_qty_raw(&self) -> f64 {
         self.executed_qty
+    }
+
+    pub fn response_price_raw(&self) -> f64 {
+        self.response_price
     }
 }
 
@@ -355,6 +368,14 @@ impl TradeEngineResponse for TradeEngineResponseMessage {
     fn executed_qty(&self) -> Option<f64> {
         if self.executed_qty > 0.0 {
             Some(self.executed_qty)
+        } else {
+            None
+        }
+    }
+
+    fn response_price(&self) -> Option<f64> {
+        if self.response_price > 0.0 {
+            Some(self.response_price)
         } else {
             None
         }

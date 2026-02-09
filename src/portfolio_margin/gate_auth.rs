@@ -104,10 +104,7 @@ mod tests {
 
     #[test]
     fn test_sign_generation() {
-        let creds = GateCredentials::new(
-            "test_api_key".to_string(),
-            "test_secret".to_string(),
-        );
+        let creds = GateCredentials::new("test_api_key".to_string(), "test_secret".to_string());
 
         let timestamp = 1716796362i64;
         let sign = creds.sign("unified.asset_detail", "subscribe", timestamp);
@@ -120,10 +117,7 @@ mod tests {
 
     #[test]
     fn test_subscribe_message_format() {
-        let creds = GateCredentials::new(
-            "test_api_key".to_string(),
-            "test_secret".to_string(),
-        );
+        let creds = GateCredentials::new("test_api_key".to_string(), "test_secret".to_string());
 
         let msg = creds.build_subscribe_message("unified.asset_detail", vec!["!all"]);
 

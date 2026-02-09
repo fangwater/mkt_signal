@@ -639,7 +639,9 @@ fn split_levels(
                     bids_remaining
                 } else {
                     let ratio = bids_remaining as f64 / remaining as f64;
-                    ((max as f64 * ratio).round() as usize).max(1).min(bids_remaining)
+                    ((max as f64 * ratio).round() as usize)
+                        .max(1)
+                        .min(bids_remaining)
                 };
                 let chunk_asks = (max - chunk_bids).min(asks_remaining);
 

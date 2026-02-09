@@ -89,10 +89,6 @@ impl TradeUpdate for GateBasicOrderMsg {
         &self.symbol
     }
 
-    fn trade_id(&self) -> i64 {
-        0
-    }
-
     fn order_id(&self) -> i64 {
         self.order_id
     }

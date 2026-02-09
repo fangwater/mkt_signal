@@ -1,7 +1,7 @@
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
 use crate::signal::trade_signal::TradeSignal;
+use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
 use crate::strategy::query_engine_response::QueryEngineResponse;
 use crate::strategy::{
     order_update::OrderUpdate, trade_engine_response::TradeEngineResponse,
@@ -22,9 +22,9 @@ pub trait Strategy: ForceCloseControl {
     fn as_any_mut(&mut self) -> &mut dyn Any;
     fn get_id(&self) -> i32;
     fn is_strategy_order(&self, order_id: i64) -> bool;
-    fn handle_signal_with_record(&mut self, signal: &TradeSignal);
-    fn apply_order_update_with_record(&mut self, update: &dyn OrderUpdate);
-    fn apply_trade_update_with_record(&mut self, trade: &dyn TradeUpdate);
+    fn handle_signal(&mut self, signal: &TradeSignal);
+    fn apply_order_update(&mut self, update: &dyn OrderUpdate);
+    fn apply_trade_update(&mut self, trade: &dyn TradeUpdate);
     fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse);
     fn apply_query_engine_response(&mut self, _response: &dyn QueryEngineResponse) {}
     fn handle_period_clock(&mut self, current_tp: i64);

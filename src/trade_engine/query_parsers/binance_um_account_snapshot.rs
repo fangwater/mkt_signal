@@ -46,8 +46,7 @@ pub fn parse_binance_um_account_snapshot(json: &str) -> Option<Vec<Bytes>> {
         let side = side_to_char(&pos.position_side);
         if amount != 0.0 {
             out.push(
-                BasicPositionMsg::create(pos.update_time, inst_id.clone(), side, amount)
-                    .to_bytes(),
+                BasicPositionMsg::create(pos.update_time, inst_id.clone(), side, amount).to_bytes(),
             );
         }
         if !pos.unrealized_profit.trim().is_empty() {

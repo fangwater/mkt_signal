@@ -29,11 +29,7 @@ impl PairMmResampleConfig {
         if self.online_symbols.is_empty() {
             anyhow::bail!("online_symbols must not be empty");
         }
-        if self
-            .online_symbols
-            .iter()
-            .any(|s| s.trim().is_empty())
-        {
+        if self.online_symbols.iter().any(|s| s.trim().is_empty()) {
             anyhow::bail!("online_symbols contains empty symbol");
         }
         if self.factor_names.is_empty() {

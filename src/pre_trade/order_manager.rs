@@ -5,11 +5,15 @@ use crate::trade_engine::okex::{
 use crate::trade_engine::trade_request::BinanceNewMarginOrderRequest;
 use crate::trade_engine::trade_request::BinanceNewUMOrderRequest;
 use crate::trade_engine::trade_request::{
-    BinanceCancelMarginOrderRequest, BinanceCancelUMOrderRequest, BinanceWsCancelUMOrderRequest,
-    BinanceWsNewUMOrderRequest, GateFuturesCancelOrderRequest, GateFuturesNewOrderRequest,
-    GateUnifiedCancelOrderRequest, GateUnifiedNewOrderRequest,
+    BinanceCancelMarginOrderRequest, BinanceCancelUMOrderRequest,
+    BinanceWsCancelMarginOrderRequest, BinanceWsCancelUMOrderRequest,
+    BinanceWsNewMarginOrderRequest, BinanceWsNewUMOrderRequest, GateFuturesCancelOrderRequest,
+    GateFuturesNewOrderRequest, GateUnifiedCancelOrderRequest, GateUnifiedNewOrderRequest,
 };
-use crate::{common::time_util::get_timestamp_us, signal::common::TradingVenue};
+use crate::{
+    common::time_util::get_timestamp_us,
+    signal::common::{OrderStatus, TradingVenue},
+};
 use bytes::Bytes;
 use log::{debug, info, warn};
 use std::collections::HashMap;
@@ -36,6 +40,10 @@ fn format_quantity(quantity: f64) -> String {
 
 fn format_price(price: f64) -> String {
     format_decimal(price)
+}
+
+fn binance_ws_um_new_order_resp_type() -> &'static str {
+    "RESULT"
 }
 
 /// 从交易对符号中提取 base asset 和 quote asset
@@ -106,9 +114,9 @@ fn okex_order_type_from_order_type(order_type: OrderType) -> Result<OkexOrderTyp
     }
 }
 
+use crate::common::binance_account_mode::BinanceAccountMode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use crate::common::binance_account_mode::BinanceAccountMode;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Side {
@@ -229,6 +237,19 @@ impl OrderExecutionStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderUpdateSkipReason {
+    DuplicateStatus,
+    TerminalToTerminal,
+    StaleNewOnTerminal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TradeUpdateSkipReason {
+    DuplicateFilled,
+    StaleOrDuplicatePartial,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum OrderType {
@@ -303,9 +324,7 @@ impl OrderType {
     pub fn is_limit(&self) -> bool {
         matches!(
             self,
-            OrderType::Limit
-                | OrderType::StopLossLimit
-                | OrderType::TakeProfitLimit
+            OrderType::Limit | OrderType::StopLossLimit | OrderType::TakeProfitLimit
         )
     }
 
@@ -347,6 +366,177 @@ impl OrderManager {
 
     pub fn binance_is_standard(&self) -> bool {
         self.binance_account_mode == Some(BinanceAccountMode::Standard)
+    }
+
+    pub fn map_update_status(status: OrderStatus) -> Option<OrderExecutionStatus> {
+        match status {
+            OrderStatus::New => Some(OrderExecutionStatus::Create),
+            OrderStatus::Canceled => Some(OrderExecutionStatus::Cancelled),
+            OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
+                Some(OrderExecutionStatus::Rejected)
+            }
+            _ => None,
+        }
+    }
+
+    fn validate_duplicate_order_update_fields(
+        order: &Order,
+        incoming_status: OrderStatus,
+        incoming_order_id: i64,
+        incoming_cum_qty: f64,
+        log_owner: &str,
+        strategy_id: i32,
+    ) {
+        if incoming_order_id > 0 {
+            if let Some(existing_order_id) = order.exchange_order_id {
+                if existing_order_id != incoming_order_id {
+                    warn!(
+                        "{}: strategy_id={} duplicate order update has mismatched exchange_order_id: client_order_id={} local={} incoming={}",
+                        log_owner,
+                        strategy_id,
+                        order.client_order_id,
+                        existing_order_id,
+                        incoming_order_id
+                    );
+                }
+            }
+        }
+
+        if matches!(
+            incoming_status,
+            OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
+        ) && (order.cumulative_filled_quantity - incoming_cum_qty).abs() > 1e-8
+        {
+            warn!(
+                "{}: strategy_id={} duplicate terminal update has mismatched cumulative qty: client_order_id={} local={:.8} incoming={:.8}",
+                log_owner,
+                strategy_id,
+                order.client_order_id,
+                order.cumulative_filled_quantity,
+                incoming_cum_qty
+            );
+        }
+    }
+
+    pub fn should_skip_idempotent_order_update(
+        order: &Order,
+        incoming_status: OrderStatus,
+        incoming_order_id: i64,
+        incoming_cum_qty: f64,
+        log_owner: &str,
+        strategy_id: i32,
+    ) -> Option<OrderUpdateSkipReason> {
+        let Some(incoming_exec_status) = Self::map_update_status(incoming_status) else {
+            return None;
+        };
+
+        if order.status == incoming_exec_status {
+            Self::validate_duplicate_order_update_fields(
+                order,
+                incoming_status,
+                incoming_order_id,
+                incoming_cum_qty,
+                log_owner,
+                strategy_id,
+            );
+            debug!(
+                "{}: strategy_id={} skip duplicate order update: client_order_id={} status={:?}",
+                log_owner, strategy_id, order.client_order_id, incoming_status
+            );
+            return Some(OrderUpdateSkipReason::DuplicateStatus);
+        }
+
+        if order.status.is_terminal() && incoming_exec_status.is_terminal() {
+            Self::validate_duplicate_order_update_fields(
+                order,
+                incoming_status,
+                incoming_order_id,
+                incoming_cum_qty,
+                log_owner,
+                strategy_id,
+            );
+            warn!(
+                "{}: strategy_id={} skip terminal->terminal order update: client_order_id={} local={:?} incoming={:?}",
+                log_owner,
+                strategy_id,
+                order.client_order_id,
+                order.status,
+                incoming_status
+            );
+            return Some(OrderUpdateSkipReason::TerminalToTerminal);
+        }
+
+        if order.status.is_terminal() && incoming_exec_status == OrderExecutionStatus::Create {
+            Self::validate_duplicate_order_update_fields(
+                order,
+                incoming_status,
+                incoming_order_id,
+                incoming_cum_qty,
+                log_owner,
+                strategy_id,
+            );
+            warn!(
+                "{}: strategy_id={} skip stale NEW update on terminal order: client_order_id={} local={:?}",
+                log_owner, strategy_id, order.client_order_id, order.status
+            );
+            return Some(OrderUpdateSkipReason::StaleNewOnTerminal);
+        }
+
+        None
+    }
+
+    pub fn should_skip_idempotent_trade_update(
+        order: &Order,
+        incoming_status: OrderStatus,
+        incoming_cum_qty: f64,
+        incoming_update_ts: i64,
+        log_owner: &str,
+        strategy_id: i32,
+    ) -> Option<TradeUpdateSkipReason> {
+        if incoming_status == OrderStatus::Filled && order.status == OrderExecutionStatus::Filled {
+            debug!(
+                "{}: strategy_id={} skip duplicate filled trade update: client_order_id={} cum={:.8} event_time={}",
+                log_owner,
+                strategy_id,
+                order.client_order_id,
+                incoming_cum_qty,
+                incoming_update_ts
+            );
+            return Some(TradeUpdateSkipReason::DuplicateFilled);
+        }
+
+        if incoming_status == OrderStatus::PartiallyFilled {
+            let prev_cum = order.cumulative_filled_quantity;
+            let prev_ts = order.timestamp.filled_t;
+            if incoming_cum_qty < prev_cum - 1e-12
+                || (incoming_cum_qty - prev_cum).abs() <= 1e-12 && incoming_update_ts <= prev_ts
+            {
+                debug!(
+                    "{}: strategy_id={} skip stale/duplicate partial trade update: client_order_id={} prev_cum={:.8} incoming_cum={:.8} prev_ts={} incoming_ts={}",
+                    log_owner,
+                    strategy_id,
+                    order.client_order_id,
+                    prev_cum,
+                    incoming_cum_qty,
+                    prev_ts,
+                    incoming_update_ts
+                );
+                return Some(TradeUpdateSkipReason::StaleOrDuplicatePartial);
+            }
+        }
+
+        None
+    }
+
+    pub fn compute_uniform_amount_update_from_cumulative(
+        prev_cumulative_filled_qty: f64,
+        incoming_cum_qty: f64,
+    ) -> Option<f64> {
+        if incoming_cum_qty >= prev_cumulative_filled_qty {
+            Some(incoming_cum_qty - prev_cumulative_filled_qty)
+        } else {
+            None
+        }
     }
 
     pub fn create_order(
@@ -533,7 +723,6 @@ impl OrderManager {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub struct OrderTimeStamp {
     pub submit_t: i64, // 订单提交时间(本地时间)
@@ -644,8 +833,21 @@ impl Order {
     }
 
     pub fn set_exchange_order_id(&mut self, exchange_order_id: i64) {
-        if exchange_order_id > 0 {
-            self.exchange_order_id = Some(exchange_order_id);
+        if exchange_order_id <= 0 {
+            return;
+        }
+
+        match self.exchange_order_id {
+            None => {
+                self.exchange_order_id = Some(exchange_order_id);
+            }
+            Some(existing_order_id) if existing_order_id == exchange_order_id => {}
+            Some(existing_order_id) => {
+                warn!(
+                    "ignore mismatched exchange_order_id update: client_order_id={} local={} incoming={}",
+                    self.client_order_id, existing_order_id, exchange_order_id
+                );
+            }
         }
     }
 
@@ -658,6 +860,15 @@ impl Order {
                     "symbol={}&origClientOrderId={}",
                     self.symbol, self.client_order_id
                 ));
+                if self.require_binance_account_mode() == BinanceAccountMode::Standard {
+                    let request: BinanceWsCancelMarginOrderRequest =
+                        BinanceWsCancelMarginOrderRequest::create(
+                            now,
+                            self.client_order_id,
+                            params,
+                        );
+                    return Ok(request.to_bytes());
+                }
                 let request: BinanceCancelMarginOrderRequest =
                     BinanceCancelMarginOrderRequest::create(now, self.client_order_id, params);
                 return Ok(request.to_bytes());
@@ -740,13 +951,24 @@ impl Order {
         match self.venue {
             //币安的杠杆账户下单
             TradingVenue::BinanceMargin => {
+                let use_binance_ws_margin =
+                    self.require_binance_account_mode() == BinanceAccountMode::Standard;
+                let binance_margin_type = if use_binance_ws_margin && self.order_type.is_limit() {
+                    "LIMIT_MAKER"
+                } else {
+                    self.order_type.as_str()
+                };
+
                 let mut params_parts = vec![
                     format!("symbol={}", self.symbol),
                     format!("side={}", self.side.as_str()), //下单方向确定就可以
-                    format!("type={}", self.order_type.as_str()),
+                    format!("type={}", binance_margin_type),
                     format!("quantity={}", format_quantity(self.quantity)),
                     format!("newClientOrderId={}", self.client_order_id),
                 ];
+                if use_binance_ws_margin {
+                    params_parts.push("newOrderRespType=FULL".to_string());
+                }
                 let local_create_ts = get_timestamp_us();
                 // ===== 余额检查和日志记录 =====
                 // 提取 base asset 和 quote asset
@@ -789,9 +1011,12 @@ impl Order {
                 }
                 // ===== 余额检查结束 =====/
 
-                //margin下单不支持GTX模式，无论是否要作为maker，都是gtc
+                // WS margin: LIMIT_MAKER 作为 post-only，不传 tif。
+                // REST margin: 保持原逻辑（LIMIT + GTC）。
                 if self.order_type.is_limit() {
-                    params_parts.push("timeInForce=GTC".to_string());
+                    if !use_binance_ws_margin {
+                        params_parts.push("timeInForce=GTC".to_string());
+                    }
                     params_parts.push(format!("price={}", format_price(self.price)));
                 }
                 //如果是市价单，不需要价格和tif参数
@@ -801,14 +1026,25 @@ impl Order {
                     self.venue, self.client_order_id, params_plain
                 );
                 let params = Bytes::from(params_plain);
-                let request = BinanceNewMarginOrderRequest::create(
-                    local_create_ts,
-                    self.client_order_id,
-                    params,
-                );
-                Ok(request.to_bytes())
+                if use_binance_ws_margin {
+                    let request = BinanceWsNewMarginOrderRequest::create(
+                        local_create_ts,
+                        self.client_order_id,
+                        params,
+                    );
+                    Ok(request.to_bytes())
+                } else {
+                    let request = BinanceNewMarginOrderRequest::create(
+                        local_create_ts,
+                        self.client_order_id,
+                        params,
+                    );
+                    Ok(request.to_bytes())
+                }
             }
             TradingVenue::BinanceFutures => {
+                let use_binance_ws_um =
+                    self.require_binance_account_mode() == BinanceAccountMode::Standard;
                 let mut params_parts = vec![
                     format!("symbol={}", self.symbol),
                     format!("side={}", self.side.as_str()), //下单方向确定就可以
@@ -817,6 +1053,12 @@ impl Order {
                     format!("reduceOnly={}", self.reduce_only),
                     format!("newClientOrderId={}", self.client_order_id),
                 ];
+                if use_binance_ws_um {
+                    params_parts.push(format!(
+                        "newOrderRespType={}",
+                        binance_ws_um_new_order_resp_type()
+                    ));
+                }
                 let local_create_ts = get_timestamp_us();
                 //UM合约下单
                 if self.order_type.is_limit() {
@@ -829,7 +1071,7 @@ impl Order {
                     self.venue, self.client_order_id, params_plain
                 );
                 let params = Bytes::from(params_plain);
-                if self.require_binance_account_mode() == BinanceAccountMode::Standard {
+                if use_binance_ws_um {
                     let request = BinanceWsNewUMOrderRequest::create(
                         local_create_ts,
                         self.client_order_id,
@@ -837,8 +1079,11 @@ impl Order {
                     );
                     Ok(request.to_bytes())
                 } else {
-                    let request =
-                        BinanceNewUMOrderRequest::create(local_create_ts, self.client_order_id, params);
+                    let request = BinanceNewUMOrderRequest::create(
+                        local_create_ts,
+                        self.client_order_id,
+                        params,
+                    );
                     Ok(request.to_bytes())
                 }
             }
@@ -895,10 +1140,7 @@ impl Order {
                 req_param.insert("account".to_string(), json!("unified"));
                 req_param.insert("auto_borrow".to_string(), json!(true));
                 req_param.insert("side".to_string(), json!(self.side.as_str_lower()));
-                req_param.insert(
-                    "amount".to_string(),
-                    json!(format_quantity(self.quantity)),
-                );
+                req_param.insert("amount".to_string(), json!(format_quantity(self.quantity)));
                 if self.order_type.is_limit() {
                     req_param.insert("price".to_string(), json!(format_price(self.price)));
                 }

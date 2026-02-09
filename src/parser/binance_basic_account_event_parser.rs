@@ -463,16 +463,21 @@ impl Parser for BinanceBasicAccountEventParser {
             Ok(v) => v,
             Err(_) => return 0,
         };
-        let Some(event_type) = json_value.get("e").and_then(|v| v.as_str()) else {
+        let event_json = json_value
+            .get("event")
+            .filter(|v| v.is_object())
+            .unwrap_or(&json_value);
+
+        let Some(event_type) = event_json.get("e").and_then(|v| v.as_str()) else {
             return 0;
         };
 
         match event_type {
-            "executionReport" => self.parse_execution_report(&json_value, tx),
-            "ORDER_TRADE_UPDATE" => self.parse_order_trade_update(&json_value, tx),
-            "ACCOUNT_UPDATE" => self.parse_account_update(&json_value, tx),
-            "liabilityChange" => self.parse_liability_change(&json_value, tx),
-            "outboundAccountPosition" => self.parse_outbound_account_position(&json_value, tx),
+            "executionReport" => self.parse_execution_report(event_json, tx),
+            "ORDER_TRADE_UPDATE" => self.parse_order_trade_update(event_json, tx),
+            "ACCOUNT_UPDATE" => self.parse_account_update(event_json, tx),
+            "liabilityChange" => self.parse_liability_change(event_json, tx),
+            "outboundAccountPosition" => self.parse_outbound_account_position(event_json, tx),
             _ => 0,
         }
     }

@@ -7,17 +7,15 @@ use tokio::fs;
 /// 深度档位开关配置
 #[derive(Debug, Deserialize, Clone)]
 pub struct DepthLevelsConfig {
-    pub enable_depth5: bool,
-    pub enable_depth20: bool,
+    pub enable_depth25: bool,
     pub enable_depth50: bool,
 }
 
 impl Default for DepthLevelsConfig {
     fn default() -> Self {
         Self {
-            enable_depth5: true,
-            enable_depth20: true,
-            enable_depth50: false,
+            enable_depth25: true,
+            enable_depth50: true,
         }
     }
 }

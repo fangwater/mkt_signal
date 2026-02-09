@@ -145,10 +145,6 @@ impl TradeUpdate for OkexOrderMsg {
         &self.inst_id
     }
 
-    fn trade_id(&self) -> i64 {
-        self.trade_id
-    }
-
     fn order_id(&self) -> i64 {
         self.ord_id
     }

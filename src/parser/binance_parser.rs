@@ -472,7 +472,9 @@ fn split_levels(
                 } else {
                     // 按原始比例分配
                     let ratio = bids_remaining as f64 / remaining as f64;
-                    ((max as f64 * ratio).round() as usize).max(1).min(bids_remaining)
+                    ((max as f64 * ratio).round() as usize)
+                        .max(1)
+                        .min(bids_remaining)
                 };
                 let chunk_asks = (max - chunk_bids).min(asks_remaining);
 
@@ -500,11 +502,7 @@ impl BinanceSbeDepthSnapshotParser {
         Self { max_levels }
     }
 
-    fn parse_snapshot(
-        &self,
-        msg: &[u8],
-        tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> usize {
+    fn parse_snapshot(&self, msg: &[u8], tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         let header = match read_sbe_header(msg) {
             Some(h) => h,
             None => return 0,
@@ -536,17 +534,17 @@ impl BinanceSbeDepthSnapshotParser {
         };
 
         let mut offset = base + header.block_length;
-        let (bids, next_offset) =
-            match read_group_levels(msg, offset, price_exponent, qty_exponent) {
-                Some(v) => v,
-                None => return 0,
-            };
+        let (bids, next_offset) = match read_group_levels(msg, offset, price_exponent, qty_exponent)
+        {
+            Some(v) => v,
+            None => return 0,
+        };
         offset = next_offset;
-        let (asks, next_offset) =
-            match read_group_levels(msg, offset, price_exponent, qty_exponent) {
-                Some(v) => v,
-                None => return 0,
-            };
+        let (asks, next_offset) = match read_group_levels(msg, offset, price_exponent, qty_exponent)
+        {
+            Some(v) => v,
+            None => return 0,
+        };
         offset = next_offset;
 
         let symbol = match read_var_string8(msg, offset) {
@@ -656,17 +654,17 @@ impl BinanceSbeDepthDiffParser {
         };
 
         let mut offset = base + header.block_length;
-        let (bids, next_offset) =
-            match read_group_levels(msg, offset, price_exponent, qty_exponent) {
-                Some(v) => v,
-                None => return 0,
-            };
+        let (bids, next_offset) = match read_group_levels(msg, offset, price_exponent, qty_exponent)
+        {
+            Some(v) => v,
+            None => return 0,
+        };
         offset = next_offset;
-        let (asks, next_offset) =
-            match read_group_levels(msg, offset, price_exponent, qty_exponent) {
-                Some(v) => v,
-                None => return 0,
-            };
+        let (asks, next_offset) = match read_group_levels(msg, offset, price_exponent, qty_exponent)
+        {
+            Some(v) => v,
+            None => return 0,
+        };
         offset = next_offset;
 
         let symbol = match read_var_string8(msg, offset) {
@@ -803,12 +801,7 @@ impl BinanceSbeBestBidAskParser {
         }
 
         let spread_msg = AskBidSpreadMsg::create(
-            symbol,
-            timestamp,
-            bid_price,
-            bid_amount,
-            ask_price,
-            ask_amount,
+            symbol, timestamp, bid_price, bid_amount, ask_price, ask_amount,
         );
         if tx.send(spread_msg.to_bytes()).is_ok() {
             return 1;
@@ -1029,7 +1022,10 @@ fn read_group_levels(
         }
         let price = read_i64_le(msg, pos)?;
         let qty = read_i64_le(msg, pos + 8)?;
-        levels.push((scale_mantissa(price, price_exponent), scale_mantissa(qty, qty_exponent)));
+        levels.push((
+            scale_mantissa(price, price_exponent),
+            scale_mantissa(qty, qty_exponent),
+        ));
         pos += block_length;
     }
 
@@ -1306,12 +1302,7 @@ impl BinanceIncParser {
             }
         }
 
-        if let (
-            Some(symbol),
-            Some(last_update_id),
-            Some(bids_array),
-            Some(asks_array),
-        ) = (
+        if let (Some(symbol), Some(last_update_id), Some(bids_array), Some(asks_array)) = (
             symbol,
             json_value.get("lastUpdateId").and_then(|v| v.as_i64()),
             json_value.get("bids").and_then(|v| v.as_array()),

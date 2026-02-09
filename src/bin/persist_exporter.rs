@@ -22,10 +22,12 @@ fn main() -> Result<()> {
     let config_path = resolve_config_path(&exe_dir)?;
     let config_text = fs::read_to_string(&config_path)
         .with_context(|| format!("failed to read config {}", config_path.display()))?;
-    let config: ExporterConfig =
-        toml::from_str(&config_text).context("failed to parse config")?;
+    let config: ExporterConfig = toml::from_str(&config_text).context("failed to parse config")?;
     if config.targets.is_empty() {
-        return Err(anyhow!("no targets configured in {}", config_path.display()));
+        return Err(anyhow!(
+            "no targets configured in {}",
+            config_path.display()
+        ));
     }
 
     let selected = if let Some(name) = args.target.as_deref() {
@@ -55,10 +57,7 @@ fn main() -> Result<()> {
         let input_dir = Path::new(&target.input_dir);
         ensure_absolute("input_dir", input_dir)?;
         if !input_dir.exists() {
-            return Err(anyhow!(
-                "input_dir does not exist: {}",
-                input_dir.display()
-            ));
+            return Err(anyhow!("input_dir does not exist: {}", input_dir.display()));
         }
 
         let output_dir = Path::new(&target.output_dir);
@@ -66,11 +65,8 @@ fn main() -> Result<()> {
 
         let cf_names = persist_manager::required_column_families();
         let tuning = persist_manager::default_tuning();
-        let store = RocksDbStore::open_read_only_with_tuning(
-            &target.input_dir,
-            &cf_names,
-            &tuning,
-        )?;
+        let store =
+            RocksDbStore::open_read_only_with_tuning(&target.input_dir, &cf_names, &tuning)?;
 
         exporter::export_all_to_dir(&store, output_dir)?;
         bundle_export_artifacts(target, output_dir, &exe_dir)?;
@@ -158,20 +154,14 @@ fn resolve_artifact(exe_dir: &Path, fallback: &Path, label: &str) -> Result<Path
     ))
 }
 
-fn bundle_export_artifacts(
-    target: &ExportTarget,
-    output_dir: &Path,
-    exe_dir: &Path,
-) -> Result<()> {
+fn bundle_export_artifacts(target: &ExportTarget, output_dir: &Path, exe_dir: &Path) -> Result<()> {
     let archive_path = output_dir.join(format!("{}.tar.gz", target.name));
 
     let parquet_files = [
-        "signals_arb_open.parquet",
-        "signals_arb_hedge.parquet",
-        "signals_arb_cancel.parquet",
-        "signals_arb_close.parquet",
         "order_updates.parquet",
+        "order_updates_unmatched.parquet",
         "trade_updates.parquet",
+        "trade_updates_unmatched.parquet",
     ];
 
     let okx_cache = resolve_artifact(

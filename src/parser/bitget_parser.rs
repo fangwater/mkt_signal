@@ -408,7 +408,9 @@ fn split_levels(
                     bids_remaining
                 } else {
                     let ratio = bids_remaining as f64 / remaining as f64;
-                    ((max as f64 * ratio).round() as usize).max(1).min(bids_remaining)
+                    ((max as f64 * ratio).round() as usize)
+                        .max(1)
+                        .min(bids_remaining)
                 };
                 let chunk_asks = (max - chunk_bids).min(asks_remaining);
 
@@ -544,8 +546,20 @@ impl Parser for BitgetIncParser {
                             inc_msg.set_chunk_index(chunk_idx as u8);
                             inc_msg.set_is_last(chunk_idx == total_chunks - 1);
 
-                            Self::parse_levels_with_offset(&bids, &mut inc_msg, true, bids_start, bids_count);
-                            Self::parse_levels_with_offset(&asks, &mut inc_msg, false, asks_start, asks_count);
+                            Self::parse_levels_with_offset(
+                                &bids,
+                                &mut inc_msg,
+                                true,
+                                bids_start,
+                                bids_count,
+                            );
+                            Self::parse_levels_with_offset(
+                                &asks,
+                                &mut inc_msg,
+                                false,
+                                asks_start,
+                                asks_count,
+                            );
 
                             if tx.send(inc_msg.to_bytes()).is_ok() {
                                 sent += 1;

@@ -13,21 +13,22 @@ use redis::Commands;
 use serde::Deserialize;
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::fmt;
+use std::rc::Rc;
 
-use super::common::{Quote, ThresholdKey, VenuePair};
+use super::common::{compute_spread_rate, Quote, ThresholdKey, VenuePair};
 use super::mkt_channel::MktChannel;
 use super::spread_factor::SpreadFactor;
 use super::symbol_list::SymbolList;
+use crate::common::bbo::Bbo;
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::mkt_msg::MktMsgType;
-use crate::common::bbo::Bbo;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
+use crate::factor_pub::factor_index::factor_name_to_index;
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{
@@ -46,7 +47,8 @@ const DEFAULT_PNLU_REDIS_PORT: u16 = 6379;
 const DEFAULT_PNLU_REDIS_DB: i64 = 0;
 const DEFAULT_PNLU_KEY_SUFFIX: &str = "_pnlu_factor_thresholds";
 const PNLU_MAX_AGE_SECS: i64 = 30 * 60;
-const RL_RETURN_VOLATILITY_KEY_PREFIX: &str = "rl_return_volatility";
+const TARGET_FACTOR_NAME: &str = "rl_return_volatility";
+const TARGET_FACTOR_KEY_PREFIX: &str = TARGET_FACTOR_NAME;
 
 #[derive(Debug, Deserialize)]
 struct PnluFactorPayload {
@@ -72,10 +74,11 @@ struct PnluCheckResult {
 }
 
 #[derive(Debug)]
-struct RlReturnVolatilitySnapshot {
+struct FactorValueSnapshot {
     value: f64,
     ready: bool,
     timestamp_ms: i64,
+    factor_index: u16,
 }
 
 impl PnluCheckResult {
@@ -132,11 +135,10 @@ impl PnluRedis {
 
     fn get_string(&mut self, key: &str) -> Result<Option<String>> {
         if self.conn.is_none() {
-            self.conn = Some(
-                self.client
-                    .get_connection()
-                    .with_context(|| format!("PnluRedis: connect failed {}", self.settings.host))?,
-            );
+            self.conn =
+                Some(self.client.get_connection().with_context(|| {
+                    format!("PnluRedis: connect failed {}", self.settings.host)
+                })?);
         }
         let full_key = self.prefixed_key(key);
         let conn = self
@@ -155,11 +157,10 @@ impl PnluRedis {
 
     fn get_bytes(&mut self, key: &str) -> Result<Option<Vec<u8>>> {
         if self.conn.is_none() {
-            self.conn = Some(
-                self.client
-                    .get_connection()
-                    .with_context(|| format!("PnluRedis: connect failed {}", self.settings.host))?,
-            );
+            self.conn =
+                Some(self.client.get_connection().with_context(|| {
+                    format!("PnluRedis: connect failed {}", self.settings.host)
+                })?);
         }
         let full_key = self.prefixed_key(key);
         let conn = self
@@ -177,40 +178,55 @@ impl PnluRedis {
     }
 }
 
-struct RlReturnVolatilityResult {
+struct FactorValueLookupResult {
     key: String,
     symbol_key: String,
     ready: Option<bool>,
-    factor: Option<f64>,
+    rl_return_volatility_factor: Option<f64>,
     ts_ms: Option<i64>,
+    factor_index: Option<u16>,
     note: String,
 }
 
-fn parse_rl_return_volatility_payload(data: &[u8]) -> Result<RlReturnVolatilitySnapshot> {
+fn parse_factor_value_payload(
+    data: &[u8],
+    expected_factor_index: u16,
+) -> Result<FactorValueSnapshot> {
     let mut cursor = Bytes::copy_from_slice(data);
     if cursor.remaining() < 8 {
         anyhow::bail!("payload too short");
     }
 
     let msg_type = cursor.get_u32_le();
-    if msg_type != MktMsgType::RlReturnVolatility as u32 {
+    if msg_type != MktMsgType::FactorValue as u32 {
         anyhow::bail!("invalid msg_type {}", msg_type);
     }
 
     let symbol_len = cursor.get_u32_le() as usize;
-    if cursor.remaining() < symbol_len + 8 + 8 + 1 {
-        anyhow::bail!("payload missing symbol/value/ts/ready");
+    if cursor.remaining() < symbol_len + 8 + 8 + 1 + 2 {
+        anyhow::bail!("payload missing symbol/value/ts/ready/factor_index");
     }
     cursor.advance(symbol_len);
 
     let value = cursor.get_f64_le();
     let timestamp_ms = cursor.get_i64_le();
     let ready = cursor.get_u8() != 0;
+    let factor_index = cursor.get_u16_le();
 
-    Ok(RlReturnVolatilitySnapshot {
+    if factor_index != expected_factor_index {
+        anyhow::bail!(
+            "factor_index mismatch for {}: expected={}, got={}",
+            TARGET_FACTOR_NAME,
+            expected_factor_index,
+            factor_index
+        );
+    }
+
+    Ok(FactorValueSnapshot {
         value,
         ready,
         timestamp_ms,
+        factor_index,
     })
 }
 
@@ -284,62 +300,78 @@ impl XarbDecision {
         normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
     }
 
-    fn fetch_rl_return_volatility(
+    fn fetch_rl_return_volatility_factor(
         &mut self,
         hedge_symbol: &str,
         hedge_venue: TradingVenue,
-    ) -> RlReturnVolatilityResult {
+    ) -> FactorValueLookupResult {
         let symbol_key = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
         let key = format!(
             "{}_{}_{}",
-            RL_RETURN_VOLATILITY_KEY_PREFIX,
+            TARGET_FACTOR_KEY_PREFIX,
             hedge_venue.data_pub_slug(),
             symbol_key
         );
+        let Some(expected_factor_index) = factor_name_to_index(TARGET_FACTOR_NAME) else {
+            return FactorValueLookupResult {
+                key,
+                symbol_key,
+                ready: None,
+                rl_return_volatility_factor: None,
+                ts_ms: None,
+                factor_index: None,
+                note: format!("missing_factor_index_mapping:{}", TARGET_FACTOR_NAME),
+            };
+        };
+
         let raw = match self.pnlu_redis.get_bytes(&key) {
             Ok(Some(bytes)) => bytes,
             Ok(None) => {
-                return RlReturnVolatilityResult {
+                return FactorValueLookupResult {
                     key,
                     symbol_key,
                     ready: None,
-                    factor: None,
+                    rl_return_volatility_factor: None,
                     ts_ms: None,
+                    factor_index: None,
                     note: "missing_key".to_string(),
                 }
             }
             Err(err) => {
-                return RlReturnVolatilityResult {
+                return FactorValueLookupResult {
                     key,
                     symbol_key,
                     ready: None,
-                    factor: None,
+                    rl_return_volatility_factor: None,
                     ts_ms: None,
+                    factor_index: None,
                     note: format!("redis_error: {err}"),
                 }
             }
         };
 
-        let snapshot = match parse_rl_return_volatility_payload(&raw) {
+        let snapshot = match parse_factor_value_payload(&raw, expected_factor_index) {
             Ok(val) => val,
             Err(err) => {
-                return RlReturnVolatilityResult {
+                return FactorValueLookupResult {
                     key,
                     symbol_key,
                     ready: None,
-                    factor: None,
+                    rl_return_volatility_factor: None,
                     ts_ms: None,
+                    factor_index: None,
                     note: format!("parse_error: {err}"),
                 }
             }
         };
 
-        RlReturnVolatilityResult {
+        FactorValueLookupResult {
             key,
             symbol_key,
             ready: Some(snapshot.ready),
-            factor: Some(snapshot.value),
+            rl_return_volatility_factor: Some(snapshot.value),
             ts_ms: Some(snapshot.timestamp_ms),
+            factor_index: Some(snapshot.factor_index),
             note: "ok".to_string(),
         }
     }
@@ -430,7 +462,10 @@ impl XarbDecision {
 
         info!(
             "XarbDecision: pnlu redis configured host={} port={} db={} suffix={}",
-            pnlu_redis.settings.host, pnlu_redis.settings.port, pnlu_redis.settings.db, pnlu_key_suffix
+            pnlu_redis.settings.host,
+            pnlu_redis.settings.port,
+            pnlu_redis.settings.db,
+            pnlu_key_suffix
         );
 
         Ok(Self {
@@ -587,14 +622,12 @@ impl XarbDecision {
                 hedge_venue,
             );
             if !self.is_cooldown_hit(&self.last_close_ts, &key, now) {
-                let from_key = format!("{now}:dump");
                 self.emit_close_signals(
                     open_symbol_key.as_str(),
                     hedge_symbol_key.as_str(),
                     open_venue,
                     hedge_venue,
                     side,
-                    &from_key,
                 )?;
                 self.update_last_ts(&self.last_close_ts, key, now);
                 return Ok(Some(SignalType::ArbClose));
@@ -646,7 +679,10 @@ impl XarbDecision {
             return Ok(None);
         }
         let pnlu_factor = pnlu_check.factor.unwrap_or(0.0);
-        let from_key = format!("{now}:{pnlu_factor:.6}");
+        let rl_return_volatility_factor = self
+            .fetch_rl_return_volatility_factor(hedge_symbol, hedge_venue)
+            .rl_return_volatility_factor
+            .unwrap_or(0.0);
 
         self.emit_open_signals(
             open_symbol_key.as_str(),
@@ -654,7 +690,8 @@ impl XarbDecision {
             open_venue,
             hedge_venue,
             side,
-            &from_key,
+            pnlu_factor,
+            rl_return_volatility_factor,
         )?;
 
         self.update_last_ts(&self.last_open_ts, key, now);
@@ -742,8 +779,16 @@ impl XarbDecision {
             .table_for(hedge_venue)
             .price_tick(&hedge_symbol)
             .unwrap_or(0.0);
+        let spread_rate = compute_spread_rate(&open_quote, &hedge_quote);
 
         let now = get_timestamp_us();
+        let open_symbol_key = Self::normalize_symbol_key(&open_symbol);
+        let pnlu_factor = self
+            .check_pnlu_factor(open_symbol_key.as_str(), now)
+            .factor
+            .unwrap_or(0.0);
+        let rl_return_volatility_lookup =
+            self.fetch_rl_return_volatility_factor(&hedge_symbol, hedge_venue);
         let seq_threshold = self.hedge_aggressive_seq_threshold;
         let aggressive = query.request_seq >= seq_threshold;
         let default_offset = self.hedge_price_offset.abs();
@@ -772,23 +817,30 @@ impl XarbDecision {
             stop_loss_valid
         );
         if stop_loss_triggered {
-            let mut ctx = ArbHedgeCtx::new_taker(
-                query.strategy_id,
-                query.client_order_id,
-                qty,
-                side.to_u8(),
-            );
+            let mut ctx =
+                ArbHedgeCtx::new_taker(query.strategy_id, query.client_order_id, qty, side.to_u8());
             ctx.opening_leg =
                 TradingLeg::new(open_venue, open_quote.bid, open_quote.ask, open_quote.ts);
             ctx.set_opening_symbol(&open_symbol);
-            ctx.hedging_leg =
-                TradingLeg::new(hedge_venue, hedge_quote.bid, hedge_quote.ask, hedge_quote.ts);
+            ctx.hedging_leg = TradingLeg::new(
+                hedge_venue,
+                hedge_quote.bid,
+                hedge_quote.ask,
+                hedge_quote.ts,
+            );
             ctx.set_hedging_symbol(&hedge_symbol);
             ctx.market_ts = now;
             ctx.price_tick = price_tick;
             ctx.price_offset = 0.0;
+            ctx.spread_rate = spread_rate;
             ctx.maker_only = false;
-            let from_key = self.build_hedge_from_key(now, None, false, pct_change, threshold_pct);
+            let from_key = self.build_hedge_from_key(
+                now,
+                pnlu_factor,
+                rl_return_volatility_lookup.rl_return_volatility_factor,
+                pct_change,
+                spread_rate,
+            );
             ctx.set_from_key(from_key);
 
             let signal = TradeSignal::create(SignalType::ArbHedge, now, 0.0, ctx.to_bytes());
@@ -800,13 +852,14 @@ impl XarbDecision {
                 return;
             }
             info!(
-                "XarbDecision: 触发 stop-loss taker hedge strategy_id={} hedge_symbol={} qty={:.6} side={:?} pct_change={:.6} threshold_pct={:.2}",
+                "XarbDecision: 触发 stop-loss taker hedge strategy_id={} hedge_symbol={} qty={:.6} side={:?} pct_change={:.6} threshold_pct={:.2} spread_rate={:.6}",
                 query.strategy_id,
                 hedge_symbol,
                 qty,
                 side,
                 pct_change,
-                threshold_pct
+                threshold_pct,
+                spread_rate
             );
             return;
         }
@@ -814,24 +867,23 @@ impl XarbDecision {
         let mut offset_source = "config";
         let mut offset_note = String::new();
 
-        let factor_lookup = self.fetch_rl_return_volatility(&hedge_symbol, hedge_venue);
-        let ready = factor_lookup.ready.unwrap_or(false);
+        let ready = rl_return_volatility_lookup.ready.unwrap_or(false);
 
         if ready {
-            if let Some(value) = factor_lookup.factor {
+            if let Some(value) = rl_return_volatility_lookup.rl_return_volatility_factor {
                 if value.is_finite() && value > 0.0 {
                     offset = value;
-                    offset_source = "rl_return_volatility";
+                    offset_source = "rl_return_volatility_factor";
                 } else {
                     offset_note = "invalid_factor".to_string();
                 }
             } else {
                 offset_note = "missing_factor".to_string();
             }
-        } else if factor_lookup.note == "ok" {
+        } else if rl_return_volatility_lookup.note == "ok" {
             offset_note = "not_ready".to_string();
         } else {
-            offset_note = factor_lookup.note.clone();
+            offset_note = rl_return_volatility_lookup.note.clone();
         }
 
         if aggressive {
@@ -845,15 +897,16 @@ impl XarbDecision {
         }
 
         info!(
-            "XarbDecision: hedge query offset source={} key={} symbol={} venue={:?} norm_symbol={} ready={} factor={:?} ts_ms={:?} offset={:.6} default_offset={:.6} aggressive={} note={}",
+            "XarbDecision: hedge query offset source={} key={} symbol={} venue={:?} norm_symbol={} ready={} factor={:?} factor_index={:?} ts_ms={:?} offset={:.6} default_offset={:.6} aggressive={} note={}",
             offset_source,
-            factor_lookup.key,
+            rl_return_volatility_lookup.key,
             hedge_symbol,
             hedge_venue,
-            factor_lookup.symbol_key,
+            rl_return_volatility_lookup.symbol_key,
             ready,
-            factor_lookup.factor,
-            factor_lookup.ts_ms,
+            rl_return_volatility_lookup.rl_return_volatility_factor,
+            rl_return_volatility_lookup.factor_index,
+            rl_return_volatility_lookup.ts_ms,
             offset,
             default_offset,
             aggressive,
@@ -891,18 +944,25 @@ impl XarbDecision {
             false,
             now + self.hedge_timeout_mm_us,
         );
-        ctx.opening_leg = TradingLeg::new(open_venue, open_quote.bid, open_quote.ask, open_quote.ts);
+        ctx.opening_leg =
+            TradingLeg::new(open_venue, open_quote.bid, open_quote.ask, open_quote.ts);
         ctx.set_opening_symbol(&open_symbol);
-        ctx.hedging_leg = TradingLeg::new(hedge_venue, hedge_quote.bid, hedge_quote.ask, hedge_quote.ts);
+        ctx.hedging_leg = TradingLeg::new(
+            hedge_venue,
+            hedge_quote.bid,
+            hedge_quote.ask,
+            hedge_quote.ts,
+        );
         ctx.set_hedging_symbol(&hedge_symbol);
         ctx.market_ts = now;
         ctx.price_offset = offset;
+        ctx.spread_rate = spread_rate;
         let from_key = self.build_hedge_from_key(
             now,
-            factor_lookup.factor,
-            aggressive,
+            pnlu_factor,
+            rl_return_volatility_lookup.rl_return_volatility_factor,
             pct_change,
-            threshold_pct,
+            spread_rate,
         );
         ctx.set_from_key(from_key);
 
@@ -917,7 +977,7 @@ impl XarbDecision {
         }
 
         info!(
-            "XarbDecision: 回复 hedge query strategy_id={} hedge_symbol={} qty={:.6} side={:?} seq={} aggressive={} limit_price={:.8} offset={:.6} (maker)",
+            "XarbDecision: 回复 hedge query strategy_id={} hedge_symbol={} qty={:.6} side={:?} seq={} aggressive={} limit_price={:.8} offset={:.6} spread_rate={:.6} (maker)",
             query.strategy_id,
             hedge_symbol,
             qty,
@@ -925,7 +985,8 @@ impl XarbDecision {
             query.request_seq,
             aggressive,
             limit_price,
-            offset
+            offset,
+            spread_rate
         );
     }
 
@@ -979,7 +1040,8 @@ impl XarbDecision {
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
         side: Side,
-        from_key: &str,
+        pnlu_factor: f64,
+        rl_return_volatility_factor: f64,
     ) -> Result<()> {
         let (open_quote, hedge_quote) =
             match self.load_valid_quotes(open_symbol, hedge_symbol, open_venue, hedge_venue) {
@@ -988,6 +1050,10 @@ impl XarbDecision {
             };
         // Use one batch timestamp for all grid offsets in this emit call.
         let batch_ts = get_timestamp_us();
+        let spread_rate = compute_spread_rate(&open_quote, &hedge_quote);
+        let from_key = format!(
+            "{batch_ts}:{pnlu_factor:.6}:{rl_return_volatility_factor:.6}:{spread_rate:.6}"
+        );
 
         for offset in &self.price_offsets {
             let ctx = self.build_open_context(
@@ -1000,11 +1066,10 @@ impl XarbDecision {
                 *offset,
                 batch_ts,
                 side,
-                from_key,
+                from_key.as_str(),
             );
 
-            let signal =
-                TradeSignal::create(SignalType::ArbOpen, batch_ts, 0.0, ctx.to_bytes());
+            let signal = TradeSignal::create(SignalType::ArbOpen, batch_ts, 0.0, ctx.to_bytes());
             self.signal_pub.publish(&signal.to_bytes())?;
         }
 
@@ -1027,7 +1092,6 @@ impl XarbDecision {
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
         side: Side,
-        from_key: &str,
     ) -> Result<()> {
         let (open_quote, hedge_quote) =
             match self.load_valid_quotes(open_symbol, hedge_symbol, open_venue, hedge_venue) {
@@ -1035,6 +1099,8 @@ impl XarbDecision {
                 None => return Ok(()),
             };
         let batch_ts = get_timestamp_us();
+        let spread_rate = compute_spread_rate(&open_quote, &hedge_quote);
+        let from_key = format!("{batch_ts}:dump:{spread_rate:.6}");
 
         for offset in &self.price_offsets {
             let ctx = self.build_open_context(
@@ -1047,11 +1113,10 @@ impl XarbDecision {
                 *offset,
                 batch_ts,
                 side,
-                from_key,
+                from_key.as_str(),
             );
 
-            let signal =
-                TradeSignal::create(SignalType::ArbClose, batch_ts, 0.0, ctx.to_bytes());
+            let signal = TradeSignal::create(SignalType::ArbClose, batch_ts, 0.0, ctx.to_bytes());
             self.signal_pub.publish(&signal.to_bytes())?;
         }
 
@@ -1113,10 +1178,16 @@ impl XarbDecision {
         let open_trade_symbol = normalize_symbol_for_venue(open_symbol, open_venue);
         let hedge_trade_symbol = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
 
-        ctx.opening_leg = TradingLeg::new(open_venue, open_quote.bid, open_quote.ask, open_quote.ts);
+        ctx.opening_leg =
+            TradingLeg::new(open_venue, open_quote.bid, open_quote.ask, open_quote.ts);
         ctx.set_opening_symbol(&open_trade_symbol);
 
-        ctx.hedging_leg = TradingLeg::new(hedge_venue, hedge_quote.bid, hedge_quote.ask, hedge_quote.ts);
+        ctx.hedging_leg = TradingLeg::new(
+            hedge_venue,
+            hedge_quote.bid,
+            hedge_quote.ask,
+            hedge_quote.ts,
+        );
         ctx.set_hedging_symbol(&hedge_trade_symbol);
 
         ctx.set_side(side);
@@ -1153,6 +1224,7 @@ impl XarbDecision {
         ctx.exp_time = now + self.open_order_ttl_us;
         ctx.create_ts = now;
         ctx.price_offset = price_offset;
+        ctx.spread_rate = compute_spread_rate(open_quote, hedge_quote);
 
         let spread_factor = SpreadFactor::instance();
         let mode = spread_factor.get_mode();
@@ -1169,15 +1241,14 @@ impl XarbDecision {
     fn build_hedge_from_key(
         &self,
         now: i64,
-        factor: Option<f64>,
-        aggressive: bool,
+        pnlu_factor: f64,
+        rl_return_volatility_factor: Option<f64>,
         pct_change: f64,
-        threshold_pct: f64,
+        spread_rate: f64,
     ) -> Vec<u8> {
-        let factor_val = factor.unwrap_or(0.0);
-        let aggressive_flag = if aggressive { 1 } else { 0 };
+        let rl_return_volatility_factor = rl_return_volatility_factor.unwrap_or(0.0);
         format!(
-            "{now}:{factor_val:.6}:{aggressive_flag}:{pct_change:.6}:{threshold_pct:.6}"
+            "{now}:{pnlu_factor:.6}:{rl_return_volatility_factor:.6}:{pct_change:.6}:{spread_rate:.6}"
         )
         .into_bytes()
     }
@@ -1196,10 +1267,16 @@ impl XarbDecision {
         let open_trade_symbol = normalize_symbol_for_venue(open_symbol, open_venue);
         let hedge_trade_symbol = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
 
-        ctx.opening_leg = TradingLeg::new(open_venue, open_quote.bid, open_quote.ask, open_quote.ts);
+        ctx.opening_leg =
+            TradingLeg::new(open_venue, open_quote.bid, open_quote.ask, open_quote.ts);
         ctx.set_opening_symbol(&open_trade_symbol);
 
-        ctx.hedging_leg = TradingLeg::new(hedge_venue, hedge_quote.bid, hedge_quote.ask, hedge_quote.ts);
+        ctx.hedging_leg = TradingLeg::new(
+            hedge_venue,
+            hedge_quote.bid,
+            hedge_quote.ask,
+            hedge_quote.ts,
+        );
         ctx.set_hedging_symbol(&hedge_trade_symbol);
 
         ctx.trigger_ts = now;
