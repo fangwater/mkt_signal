@@ -166,6 +166,7 @@ pub fn venue_pair_for_exchange(exchange: Exchange) -> (TradingVenue, TradingVenu
         Exchange::Bybit => (TradingVenue::BybitMargin, TradingVenue::BybitFutures),
         Exchange::Bitget => (TradingVenue::BitgetMargin, TradingVenue::BitgetFutures),
         Exchange::Gate => (TradingVenue::GateMargin, TradingVenue::GateFutures),
+        Exchange::Hyperliquid => (TradingVenue::HyperliquidMargin, TradingVenue::HyperliquidFutures),
     }
 }
 

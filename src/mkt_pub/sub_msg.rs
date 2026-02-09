@@ -55,6 +55,59 @@ fn construct_subscribe_message(
                 "args": args
             })
         }
+        Exchange::Hyperliquid => {
+            let mut requests = Vec::new();
+
+            if channel == "allMids" {
+                requests.push(serde_json::json!({
+                    "method": "subscribe",
+                    "subscription": {
+                        "type": "allMids",
+                    }
+                }));
+            } else {
+                for symbol in symbols {
+                    let coin = hyperliquid_coin_from_internal(symbol);
+                    let subscription = match channel {
+                        "l2Book" => Some(serde_json::json!({
+                            "type": "l2Book",
+                            "coin": coin,
+                        })),
+                        "trades" => Some(serde_json::json!({
+                            "type": "trades",
+                            "coin": coin,
+                        })),
+                        "bbo" => Some(serde_json::json!({
+                            "type": "bbo",
+                            "coin": coin,
+                        })),
+                        "candle" => Some(serde_json::json!({
+                            "type": "candle",
+                            "coin": coin,
+                            "interval": "1m",
+                        })),
+                        _ => None,
+                    };
+
+                    if let Some(subscription) = subscription {
+                        requests.push(serde_json::json!({
+                            "method": "subscribe",
+                            "subscription": subscription,
+                        }));
+                    }
+                }
+            }
+
+            if requests.is_empty() {
+                panic!("unsupported hyperliquid channel: {}", channel);
+            }
+
+            if requests.len() == 1 {
+                requests.remove(0)
+            } else {
+                Value::Array(requests)
+            }
+        }
         Exchange::Bitget => {
             // Bitget v2 API 格式
             let inst_type = bitget_inst_type_for_venue(venue);
@@ -300,12 +353,53 @@ impl GatePerpsSubscribeMsgs {
 }
 
 #[derive(Debug, Clone)]
+pub struct HyperliquidPerpsSubscribeMsgs {
+    pub active_asset_ctx_msgs: Vec<serde_json::Value>,
+}
+
+impl HyperliquidPerpsSubscribeMsgs {
+    pub const WS_URL: &'static str = "wss://api.hyperliquid.xyz/ws";
+
+    pub async fn new(cfg: &Config) -> Self {
+        let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
+        let batch_size = cfg.get_batch_size();
+        let mut active_asset_ctx_msgs = Vec::new();
+
+        for chunk in symbols.chunks(batch_size) {
+            let mut requests = Vec::new();
+            for symbol in chunk {
+                requests.push(serde_json::json!({
+                    "method": "subscribe",
+                    "subscription": {
+                        "type": "activeAssetCtx",
+                        "coin": hyperliquid_coin_from_internal(symbol),
+                    }
+                }));
+            }
+
+            let payload = if requests.len() == 1 {
+                requests.remove(0)
+            } else {
+                Value::Array(requests)
+            };
+
+            active_asset_ctx_msgs.push(payload);
+        }
+
+        Self {
+            active_asset_ctx_msgs,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum ExchangePerpsSubscribeMsgs {
     Binance(BinancePerpsSubscribeMsgs),
     Okex(OkexPerpsSubscribeMsgs),
     Bybit(BybitPerpsSubscribeMsgs),
     Bitget(BitgetPerpsSubscribeMsgs),
     Gate(GatePerpsSubscribeMsgs),
+    Hyperliquid(HyperliquidPerpsSubscribeMsgs),
 }
 
 //衍生品(永续合约)的额外消息
@@ -408,6 +502,7 @@ impl SubscribeMsgs {
             Exchange::Bybit => "orderbook.500".to_string(),
             Exchange::Bitget => "books".to_string(),
             Exchange::Gate => panic!("Gate.io does not support incremental orderbook"),
+            Exchange::Hyperliquid => "l2Book".to_string(),
         }
     }
 
@@ -429,6 +524,7 @@ impl SubscribeMsgs {
             Exchange::Bybit => "kline.1".to_string(),
             Exchange::Bitget => "candle1m".to_string(),
             Exchange::Gate => "candlesticks".to_string(),
+            Exchange::Hyperliquid => "candle".to_string(),
         }
     }
 
@@ -439,6 +535,7 @@ impl SubscribeMsgs {
             Exchange::Bybit => "publicTrade".to_string(),
             Exchange::Bitget => "trade".to_string(),
             Exchange::Gate => "trades".to_string(),
+            Exchange::Hyperliquid => "trades".to_string(),
         }
     }
 
@@ -452,6 +549,7 @@ impl SubscribeMsgs {
             Exchange::Bybit => "orderbook.1".to_string(),
             Exchange::Bitget => "books1".to_string(),
             Exchange::Gate => "book_ticker".to_string(),
+            Exchange::Hyperliquid => "bbo".to_string(),
         }
     }
 }
@@ -469,6 +567,7 @@ impl SubscribeMsgs {
             Exchange::Gate => "wss://fx-ws.gateio.ws/v4/ws/usdt",
             //Bitget
             Exchange::Bitget => "wss://ws.bitget.com/v2/ws/public",
+            Exchange::Hyperliquid => "wss://api.hyperliquid.xyz/ws",
         }
     }
 
@@ -484,6 +583,7 @@ impl SubscribeMsgs {
             Exchange::Gate => "wss://fx-ws.gateio.ws/v4/ws/usdt",
             //Bitget
             Exchange::Bitget => "wss://ws.bitget.com/v2/ws/public",
+            Exchange::Hyperliquid => "wss://api.hyperliquid.xyz/ws",
         }
     }
 
@@ -535,6 +635,14 @@ impl SubscribeMsgs {
                     "payload": ["BTC_USDT"]
                 })
             }
+            Exchange::Hyperliquid => {
+                serde_json::json!({
+                    "method": "subscribe",
+                    "subscription": {
+                        "type": "allMids"
+                    }
+                })
+            }
         }
     }
 
@@ -547,7 +655,8 @@ impl SubscribeMsgs {
         let mut kline_subscribe_msgs = Vec::new();
         let mut ask_bid_spread_msgs = Vec::new();
         let exchange = cfg.get_exchange();
-        let inc_channel = if cfg.data_types.enable_incremental {
+        let inc_channel = if cfg.data_types.enable_incremental && exchange != Exchange::Hyperliquid
+        {
             Some(SubscribeMsgs::get_inc_channel(&exchange, cfg.venue))
         } else {
             None
@@ -557,10 +666,24 @@ impl SubscribeMsgs {
         } else {
             None
         };
-        let trade_channel = SubscribeMsgs::get_trade_channel(&exchange);
-        let kline_channel = SubscribeMsgs::get_kline_channel(&exchange);
+        let trade_channel = if cfg.data_types.enable_trade {
+            Some(SubscribeMsgs::get_trade_channel(&exchange))
+        } else {
+            None
+        };
+        let kline_channel = if cfg.data_types.enable_kline {
+            Some(SubscribeMsgs::get_kline_channel(&exchange))
+        } else {
+            None
+        };
         let best_price_spread_channel =
-            SubscribeMsgs::get_ask_bid_spread_channel(&exchange, cfg.venue);
+            if cfg.data_types.enable_ask_bid_spread && exchange != Exchange::Hyperliquid {
+                Some(SubscribeMsgs::get_ask_bid_spread_channel(
+                    &exchange, cfg.venue,
+                ))
+            } else {
+                None
+            };
         for chunk in symbols.chunks(batch_size) {
             if let Some(ref ch) = inc_channel {
                 inc_subscribe_msgs
@@ -570,24 +693,30 @@ impl SubscribeMsgs {
                 depth_subscribe_msgs
                     .push(construct_subscribe_message(&exchange, cfg.venue, chunk, ch));
             }
-            trade_subscribe_msgs.push(construct_subscribe_message(
-                &exchange,
-                cfg.venue,
-                chunk,
-                &trade_channel,
-            ));
-            kline_subscribe_msgs.push(construct_subscribe_message(
-                &exchange,
-                cfg.venue,
-                chunk,
-                &kline_channel,
-            ));
-            ask_bid_spread_msgs.push(construct_subscribe_message(
-                &exchange,
-                cfg.venue,
-                chunk,
-                &best_price_spread_channel,
-            ));
+            if let Some(ref ch) = trade_channel {
+                trade_subscribe_msgs.push(construct_subscribe_message(
+                    &exchange,
+                    cfg.venue,
+                    chunk,
+                    ch,
+                ));
+            }
+            if let Some(ref ch) = kline_channel {
+                kline_subscribe_msgs.push(construct_subscribe_message(
+                    &exchange,
+                    cfg.venue,
+                    chunk,
+                    ch,
+                ));
+            }
+            if let Some(ref ch) = best_price_spread_channel {
+                ask_bid_spread_msgs.push(construct_subscribe_message(
+                    &exchange,
+                    cfg.venue,
+                    chunk,
+                    ch,
+                ));
+            }
         }
         Self {
             active_symbols: symbols.iter().map(|s| s.clone()).collect(),
@@ -621,6 +750,9 @@ impl DerivativesMetricsSubscribeMsgs {
             Exchange::Gate => {
                 ExchangePerpsSubscribeMsgs::Gate(GatePerpsSubscribeMsgs::new(cfg).await)
             }
+            Exchange::Hyperliquid => ExchangePerpsSubscribeMsgs::Hyperliquid(
+                HyperliquidPerpsSubscribeMsgs::new(cfg).await,
+            ),
         };
 
         Self {

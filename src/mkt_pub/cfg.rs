@@ -189,6 +189,7 @@ impl Config {
             TradingVenue::BybitMargin => 10,
             TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => 50,
             TradingVenue::GateMargin | TradingVenue::GateFutures => 50,
+            TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => 200,
         }
     }
 
@@ -635,6 +636,84 @@ impl Config {
         Ok(spot_symbols_related_to_futures)
     }
 
+    fn normalize_hyperliquid_internal_symbol(raw: &str) -> String {
+        raw.to_uppercase().replace(['/', '-', '_'], "")
+    }
+
+    fn normalize_hyperliquid_perp_symbol(coin: &str) -> String {
+        let normalized = Self::normalize_hyperliquid_internal_symbol(coin);
+        if normalized.ends_with("USDC") {
+            normalized
+        } else {
+            format!("{}USDC", normalized)
+        }
+    }
+
+    async fn fetch_hyperliquid_info(payload: serde_json::Value) -> Result<serde_json::Value> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .context("Failed to build Hyperliquid HTTP client")?;
+
+        let response = client
+            .post("https://api.hyperliquid.xyz/info")
+            .json(&payload)
+            .send()
+            .await
+            .with_context(|| format!("Failed to request Hyperliquid info payload={payload}"))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            anyhow::bail!(
+                "Hyperliquid info request failed: status={} payload={}",
+                status,
+                payload
+            );
+        }
+
+        let body = response
+            .text()
+            .await
+            .context("Failed to read Hyperliquid response body")?;
+
+        serde_json::from_str(&body).context("Failed to parse Hyperliquid response JSON")
+    }
+
+    async fn get_symbol_for_hyperliquid_futures() -> Result<Vec<String>> {
+        let meta = Self::fetch_hyperliquid_info(serde_json::json!({ "type": "meta" })).await?;
+        let universe = meta
+            .get("universe")
+            .and_then(|value| value.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Hyperliquid meta missing universe"))?;
+
+        let symbols: Vec<String> = universe
+            .iter()
+            .filter_map(|item| item.get("name").and_then(|value| value.as_str()))
+            .map(Self::normalize_hyperliquid_perp_symbol)
+            .collect();
+
+        info!("Hyperliquid futures symbol count: {}", symbols.len());
+        Ok(symbols)
+    }
+
+    async fn get_symbol_for_hyperliquid_spot() -> Result<Vec<String>> {
+        let spot_meta =
+            Self::fetch_hyperliquid_info(serde_json::json!({ "type": "spotMeta" })).await?;
+        let universe = spot_meta
+            .get("universe")
+            .and_then(|value| value.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Hyperliquid spotMeta missing universe"))?;
+
+        let symbols: Vec<String> = universe
+            .iter()
+            .filter_map(|item| item.get("name").and_then(|value| value.as_str()))
+            .map(Self::normalize_hyperliquid_internal_symbol)
+            .collect();
+
+        info!("Hyperliquid spot symbol count: {}", symbols.len());
+        Ok(symbols)
+    }
+
     pub async fn get_symbols(&self) -> Result<Vec<String>> {
         match self.venue {
             //币安u本位期货合约
@@ -660,6 +739,8 @@ impl Config {
             TradingVenue::GateFutures => Self::get_symbol_for_gate_futures().await,
             //Gate现货（与Futures关联的）
             TradingVenue::GateMargin => Self::get_spot_symbols_related_to_gate_futures().await,
+            TradingVenue::HyperliquidFutures => Self::get_symbol_for_hyperliquid_futures().await,
+            TradingVenue::HyperliquidMargin => Self::get_symbol_for_hyperliquid_spot().await,
         }
     }
 

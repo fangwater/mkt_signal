@@ -20,6 +20,8 @@ pub enum TradingVenue {
     BitgetFutures = 7,
     GateMargin = 8,
     GateFutures = 9,
+    HyperliquidMargin = 12,
+    HyperliquidFutures = 13,
 }
 
 impl TradingVenue {
@@ -31,6 +33,7 @@ impl TradingVenue {
             TradingVenue::BybitMargin | TradingVenue::BybitFutures => "bybit",
             TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => "bitget",
             TradingVenue::GateMargin | TradingVenue::GateFutures => "gate",
+            TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => "hyperliquid",
         }
     }
 
@@ -47,6 +50,8 @@ impl TradingVenue {
             TradingVenue::BitgetFutures => "bitget-futures",
             TradingVenue::GateMargin => "gate-margin",
             TradingVenue::GateFutures => "gate-futures",
+            TradingVenue::HyperliquidMargin => "hyperliquid-margin",
+            TradingVenue::HyperliquidFutures => "hyperliquid-futures",
         }
     }
 }
@@ -520,6 +525,8 @@ impl TradingVenue {
             // 兼容旧值
             10 => Some(TradingVenue::BybitFutures),
             11 => Some(TradingVenue::GateFutures),
+            12 => Some(TradingVenue::HyperliquidMargin),
+            13 => Some(TradingVenue::HyperliquidFutures),
             _ => None,
         }
     }
@@ -537,6 +544,8 @@ impl TradingVenue {
             TradingVenue::BitgetFutures => "BitgetFutures",
             TradingVenue::GateMargin => "GateMargin",
             TradingVenue::GateFutures => "GateFutures",
+            TradingVenue::HyperliquidMargin => "HyperliquidMargin",
+            TradingVenue::HyperliquidFutures => "HyperliquidFutures",
         }
     }
 
@@ -552,6 +561,8 @@ impl TradingVenue {
             TradingVenue::BitgetFutures => "bitget_futures",
             TradingVenue::GateMargin => "gate_margin",
             TradingVenue::GateFutures => "gate_futures",
+            TradingVenue::HyperliquidMargin => "hyperliquid_margin",
+            TradingVenue::HyperliquidFutures => "hyperliquid_futures",
         }
     }
 
@@ -568,6 +579,8 @@ impl TradingVenue {
             TradingVenue::BitgetFutures => "futures",
             TradingVenue::GateMargin => "margin",
             TradingVenue::GateFutures => "futures",
+            TradingVenue::HyperliquidMargin => "margin",
+            TradingVenue::HyperliquidFutures => "futures",
         }
     }
 
@@ -580,6 +593,7 @@ impl TradingVenue {
                 | TradingVenue::BitgetFutures
                 | TradingVenue::BybitFutures
                 | TradingVenue::GateFutures
+                | TradingVenue::HyperliquidFutures
         )
     }
 
@@ -592,6 +606,7 @@ impl TradingVenue {
                 | TradingVenue::BitgetMargin
                 | TradingVenue::BybitMargin
                 | TradingVenue::GateMargin
+                | TradingVenue::HyperliquidMargin
         )
     }
 }

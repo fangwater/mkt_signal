@@ -124,6 +124,7 @@ pub fn create_symbol_mapper(exchange: Exchange) -> Box<dyn SymbolMapper> {
         Exchange::Okex => Box::new(OkexSymbolMapper),
         Exchange::Binance => Box::new(BinanceSymbolMapper),
         Exchange::Gate => Box::new(GateSymbolMapper),
+        Exchange::Hyperliquid => Box::new(BinanceSymbolMapper),
         _ => panic!("SymbolMapper not implemented for {:?}", exchange),
     }
 }

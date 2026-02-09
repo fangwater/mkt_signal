@@ -17,6 +17,10 @@ use crate::parser::default_parser::Parser;
 use crate::parser::gate_parser::{
     GateDerivativesMetricsParser, GateKlineParser, GateSignalParser, GateTickerParser,
 };
+use crate::parser::hyperliquid_parser::{
+    HyperliquidDerivativesMetricsParser, HyperliquidKlineParser, HyperliquidSignalParser,
+    HyperliquidTradeParser,
+};
 use crate::parser::okex_parser::{
     OkexAskBidSpreadParser, OkexDerivativesMetricsParser, OkexIncParser, OkexKlineParser,
     OkexSignalParser, OkexTradeParser,
@@ -195,6 +199,9 @@ impl MktManager {
 
     async fn start_incremental_connections(&mut self) {
         let exchange = self.cfg.get_exchange();
+        if exchange == Exchange::Hyperliquid {
+            return;
+        }
         let max_levels = self.cfg.data_types.max_levels_per_msg;
 
         for i in 0..self.subscribe_msgs.get_inc_subscribe_msg_len() {
@@ -398,6 +405,19 @@ impl MktManager {
                     )
                     .await;
                 }
+                Exchange::Hyperliquid => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                    let parser = HyperliquidTradeParser::new();
+                    self.spawn_connection_with_mpsc(
+                        exchange,
+                        url,
+                        subscribe_msg,
+                        format!("trade msg batch {}", i),
+                        parser,
+                        tx,
+                    )
+                    .await;
+                }
                 _ => {
                     error!("Unsupported exchange for trade parser: {}", exchange);
                 }
@@ -468,8 +488,8 @@ impl MktManager {
                     )
                     .await;
                 }
-                Exchange::Bitget => {
-                    let parser = BitgetKlineParser::new();
+                Exchange::Hyperliquid => {
+                    let parser = HyperliquidKlineParser::new(true);
                     self.spawn_connection_with_mpsc(
                         exchange,
                         url.clone(),
@@ -479,6 +499,9 @@ impl MktManager {
                         tx,
                     )
                     .await;
+                }
+                _ => {
+                    error!("Unsupported exchange for kline parser: {}", exchange);
                 }
             }
         }
@@ -580,6 +603,14 @@ impl MktManager {
                         tx,
                     )
                     .await;
+                Exchange::Hyperliquid => {
+                    // currently skipped for hyperliquid
+                }
+                _ => {
+                    error!(
+                        "Unsupported exchange for ask_bid_spread parser: {}",
+                        exchange
+                    );
                 }
             }
         }
@@ -605,6 +636,10 @@ impl MktManager {
                 }
                 crate::sub_msg::ExchangePerpsSubscribeMsgs::Gate(gate_msgs) => {
                     self.start_gate_derivatives_connections(&gate_msgs).await;
+                }
+                crate::sub_msg::ExchangePerpsSubscribeMsgs::Hyperliquid(hyperliquid_msgs) => {
+                    self.start_hyperliquid_derivatives_connections(&hyperliquid_msgs)
+                        .await;
                 }
             }
         }
@@ -820,6 +855,33 @@ impl MktManager {
         }
     }
 
+    async fn start_hyperliquid_derivatives_connections(
+        &mut self,
+        msgs: &crate::sub_msg::HyperliquidPerpsSubscribeMsgs,
+    ) {
+        let exchange = self.cfg.get_exchange();
+        let url = crate::sub_msg::HyperliquidPerpsSubscribeMsgs::WS_URL.to_string();
+        let tx = self.derivatives_tx.clone();
+
+        info!(
+            "Starting Hyperliquid derivatives connections (activeAssetCtx batches={})",
+            msgs.active_asset_ctx_msgs.len()
+        );
+
+        for (index, subscribe_msg) in msgs.active_asset_ctx_msgs.iter().enumerate() {
+            let parser = HyperliquidDerivativesMetricsParser::new();
+            self.spawn_connection_with_mpsc(
+                exchange,
+                url.clone(),
+                subscribe_msg.clone(),
+                format!("hyperliquid active-asset-ctx batch {}", index),
+                parser,
+                tx.clone(),
+            )
+            .await;
+        }
+    }
+
     async fn start_signal_connection(&mut self) {
         let exchange = self.cfg.get_exchange();
         let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
@@ -832,6 +894,7 @@ impl MktManager {
             Exchange::Bybit => Box::new(BybitSignalParser::new(false)),
             Exchange::Bitget => Box::new(BitgetSignalParser::new()),
             Exchange::Gate => Box::new(GateSignalParser::new(false)),
+            Exchange::Hyperliquid => Box::new(HyperliquidSignalParser::new(false)),
         };
 
         self.spawn_connection_with_mpsc_dyn(
