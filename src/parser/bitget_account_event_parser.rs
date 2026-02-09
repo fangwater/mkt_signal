@@ -242,11 +242,18 @@ impl BitgetAccountEventParser {
                 })
                 .unwrap_or(0);
 
-            let price = parse_f64_str_or_num(order_obj.get("price"))
+            let order_price = parse_f64_str_or_num(order_obj.get("price"))
                 .or_else(|| parse_f64_str_or_num(order_obj.get("px")))
-                .or_else(|| parse_f64_str_or_num(order_obj.get("avgPrice")))
-                .or_else(|| parse_f64_str_or_num(order_obj.get("fillPx")))
                 .unwrap_or(0.0);
+            let avg_price = parse_f64_str_or_num(order_obj.get("avgPrice"))
+                .or_else(|| parse_f64_str_or_num(order_obj.get("fillPx")))
+                .or_else(|| parse_f64_str_or_num(order_obj.get("fillPrice")));
+            let price = if execution_type == 5 {
+                avg_price.unwrap_or(order_price)
+            } else {
+                order_price
+            };
+
             let quantity = parse_f64_str_or_num(order_obj.get("qty"))
                 .or_else(|| parse_f64_str_or_num(order_obj.get("sz")))
                 .or_else(|| parse_f64_str_or_num(order_obj.get("baseVolume")))
@@ -255,10 +262,11 @@ impl BitgetAccountEventParser {
                 .or_else(|| parse_f64_str_or_num(order_obj.get("accFillSz")))
                 .or_else(|| parse_f64_str_or_num(order_obj.get("filledBaseVolume")))
                 .unwrap_or(0.0);
-            let last_executed_price = parse_f64_str_or_num(order_obj.get("avgPrice"))
-                .or_else(|| parse_f64_str_or_num(order_obj.get("fillPx")))
-                .or_else(|| parse_f64_str_or_num(order_obj.get("fillPrice")))
-                .unwrap_or(price);
+            let last_executed_price = if execution_type == 5 {
+                avg_price.unwrap_or(order_price)
+            } else {
+                0.0
+            };
 
             let commission_asset = order_obj
                 .get("feeDetail")

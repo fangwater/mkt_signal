@@ -101,10 +101,14 @@ impl TradeUpdate for BitgetBasicOrderMsg {
     }
 
     fn price(&self) -> f64 {
-        if self.last_executed_price > 0.0 {
-            self.last_executed_price
+        if self.execution_type == 5 {
+            if self.last_executed_price > 0.0 {
+                self.last_executed_price
+            } else {
+                self.price
+            }
         } else {
-            0.0
+            self.price
         }
     }
 
