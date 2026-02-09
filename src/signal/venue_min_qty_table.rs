@@ -66,6 +66,11 @@ impl VenueInfoProvider for ExchangeVenueProvider {
                 self.exchange,
                 self.venue
             )),
+            Exchange::Hyperliquid => Err(anyhow!(
+                "exchange {} not supported yet for venue {:?}",
+                self.exchange,
+                self.venue
+            )),
         }
     }
 }
@@ -82,6 +87,8 @@ fn provider_for_venue(venue: TradingVenue) -> ExchangeVenueProvider {
         TradingVenue::BitgetFutures => (Exchange::Bitget, MarketType::Futures),
         TradingVenue::GateMargin => (Exchange::Gate, MarketType::Margin),
         TradingVenue::GateFutures => (Exchange::Gate, MarketType::Futures),
+        TradingVenue::HyperliquidMargin => (Exchange::Hyperliquid, MarketType::Margin),
+        TradingVenue::HyperliquidFutures => (Exchange::Hyperliquid, MarketType::Futures),
     };
     ExchangeVenueProvider::new(venue, exchange, market_type)
 }

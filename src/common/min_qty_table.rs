@@ -825,6 +825,7 @@ impl MinQtyTable {
             Exchange::Bitget => self.refresh_bitget().await,
             Exchange::Okex => self.refresh_okex().await,
             Exchange::Bybit => Err(anyhow!("exchange {} not supported yet", self.exchange)),
+            Exchange::Hyperliquid => Err(anyhow!("exchange {} not supported yet", self.exchange)),
         }
     }
 
@@ -943,6 +944,7 @@ impl MinQtyTable {
                 let key = symbol.to_uppercase();
                 *self.contract_multipliers.get(&key).unwrap_or(&1.0)
             }
+            Exchange::Hyperliquid => 1.0,
             _ => panic!("contract_multiplier not implemented for {}", self.exchange),
         }
     }

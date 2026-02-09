@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::SinkExt;
-use log::{debug, error, info, warn};
+use log::{debug, error, warn};
 use native_tls::TlsConnector as NativeTlsConnector;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -90,6 +90,31 @@ impl WsConnector {
     const MAX_RETRIES: usize = 5;
     const RETRY_DELAY: Duration = Duration::from_secs(1);
 
+    async fn send_subscription_messages(
+        ws_stream: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+        sub_msg: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        if let Some(messages) = sub_msg.as_array() {
+            for message in messages {
+                let payload = message.to_string();
+                ws_stream
+                    .send(Message::Text(payload.clone()))
+                    .await
+                    .with_context(|| "Failed to send subscription message")?;
+                debug!("Successful send subscription message payload={}", payload);
+            }
+            return Ok(());
+        }
+
+        let payload = sub_msg.to_string();
+        ws_stream
+            .send(Message::Text(payload.clone()))
+            .await
+            .with_context(|| "Failed to send subscription message")?;
+        debug!("Successful send subscription message payload={}", payload);
+        Ok(())
+    }
+
     pub async fn connect_with_local_ip(
         url: &str,
         sub_msg: &serde_json::Value,
@@ -175,14 +200,10 @@ impl WsConnector {
         };
 
         // 发送订阅消息
-        let sub_text = sub_msg.to_string();
-        ws_stream
-            .send(Message::Text(sub_text.clone()))
-            .await
-            .with_context(|| "Failed to send subscription message")?;
+        Self::send_subscription_messages(&mut ws_stream, sub_msg).await?;
         debug!(
-            "Successfully sent subscription message via local IP {} payload={}",
-            local_ip, sub_text
+            "Successfully sent subscription messages via local IP {}",
+            local_ip
         );
 
         Ok(WsConnectionResult {
@@ -268,14 +289,10 @@ impl WsConnector {
             client_async(request, plain_stream).await?
         };
 
-        let sub_text = sub_msg.to_string();
-        ws_stream
-            .send(Message::Text(sub_text.clone()))
-            .await
-            .with_context(|| "Failed to send subscription message")?;
+        Self::send_subscription_messages(&mut ws_stream, sub_msg).await?;
         debug!(
-            "Successfully sent subscription message via local IP {} payload={}",
-            local_ip, sub_text
+            "Successfully sent subscription messages via local IP {}",
+            local_ip
         );
 
         Ok(WsConnectionResult {
@@ -292,10 +309,8 @@ impl WsConnector {
         for retry in 0..Self::MAX_RETRIES {
             match connect_async(url.clone()).await {
                 Ok((mut ws_stream, _)) => {
-                    let sub_text = sub_msg.to_string();
-                    match ws_stream.send(Message::Text(sub_text.clone())).await {
+                    match Self::send_subscription_messages(&mut ws_stream, sub_msg).await {
                         Ok(_) => {
-                            info!("Successful send subscription message payload={}", sub_text);
                             return Ok(WsConnectionResult {
                                 ws_stream: Arc::new(Mutex::new(ws_stream)),
                                 connected_at: Instant::now(),
@@ -303,7 +318,7 @@ impl WsConnector {
                         }
                         Err(e) => {
                             error!("Failed to send subscription message: {}", e);
-                            return Err(e.into());
+                            return Err(e);
                         }
                     }
                 }
@@ -339,10 +354,8 @@ impl WsConnector {
 
             match connect_async(request).await {
                 Ok((mut ws_stream, _)) => {
-                    let sub_text = sub_msg.to_string();
-                    match ws_stream.send(Message::Text(sub_text.clone())).await {
+                    match Self::send_subscription_messages(&mut ws_stream, sub_msg).await {
                         Ok(_) => {
-                            info!("Successful send subscription message payload={}", sub_text);
                             return Ok(WsConnectionResult {
                                 ws_stream: Arc::new(Mutex::new(ws_stream)),
                                 connected_at: Instant::now(),
@@ -350,7 +363,7 @@ impl WsConnector {
                         }
                         Err(e) => {
                             error!("Failed to send subscription message: {}", e);
-                            return Err(e.into());
+                            return Err(e);
                         }
                     }
                 }
@@ -528,6 +541,7 @@ pub fn construct_connection_with_ip(
     use crate::connection::bitget_conn::BitgetConnection;
     use crate::connection::bybit_conn::BybitConnection;
     use crate::connection::gate_conn::GateConnection;
+    use crate::connection::hyperliquid_conn::HyperliquidConnection;
     use crate::connection::okex_conn::OkexConnection;
 
     let mut base_connection = MktConnection::new(url, subscribe_msg, tx, global_shutdown_rx);
@@ -539,6 +553,7 @@ pub fn construct_connection_with_ip(
         Exchange::Bybit => Ok(Box::new(BybitConnection::new(base_connection))),
         Exchange::Bitget => Ok(Box::new(BitgetConnection::new(base_connection))),
         Exchange::Gate => Ok(Box::new(GateConnection::new(base_connection, false))),
+        Exchange::Hyperliquid => Ok(Box::new(HyperliquidConnection::new(base_connection))),
     }
 }
 
@@ -555,6 +570,7 @@ pub fn construct_connection(
     use crate::connection::bitget_conn::BitgetConnection;
     use crate::connection::bybit_conn::BybitConnection;
     use crate::connection::gate_conn::GateConnection;
+    use crate::connection::hyperliquid_conn::HyperliquidConnection;
     use crate::connection::okex_conn::OkexConnection;
 
     let base_connection = MktConnection::new(url, subscribe_msg, tx, global_shutdown_rx);
@@ -565,5 +581,6 @@ pub fn construct_connection(
         Exchange::Bybit => Ok(Box::new(BybitConnection::new(base_connection))),
         Exchange::Bitget => Ok(Box::new(BitgetConnection::new(base_connection))),
         Exchange::Gate => Ok(Box::new(GateConnection::new(base_connection, false))),
+        Exchange::Hyperliquid => Ok(Box::new(HyperliquidConnection::new(base_connection))),
     }
 }

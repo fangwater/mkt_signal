@@ -55,6 +55,7 @@ fn infer_default_venues(exchange: Exchange) -> (TradingVenue, TradingVenue) {
         Exchange::Bybit => (TradingVenue::BybitMargin, TradingVenue::BybitFutures),
         Exchange::Bitget => (TradingVenue::BitgetMargin, TradingVenue::BitgetFutures),
         Exchange::Gate => (TradingVenue::GateMargin, TradingVenue::GateFutures),
+        Exchange::Hyperliquid => (TradingVenue::HyperliquidMargin, TradingVenue::HyperliquidFutures),
     }
 }
 
@@ -74,6 +75,7 @@ fn infer_venues_from_cwd() -> Option<(TradingVenue, TradingVenue)> {
             Exchange::Bybit,
             Exchange::Bitget,
             Exchange::Gate,
+            Exchange::Hyperliquid,
         ] {
             if cand.starts_with(ex.as_str()) {
                 return Some(infer_default_venues(ex));
@@ -96,6 +98,8 @@ fn venue_from_slug(raw: &str) -> Option<TradingVenue> {
         "bitget-futures" => Some(TradingVenue::BitgetFutures),
         "gate-margin" => Some(TradingVenue::GateMargin),
         "gate-futures" => Some(TradingVenue::GateFutures),
+        "hyperliquid-margin" => Some(TradingVenue::HyperliquidMargin),
+        "hyperliquid-futures" => Some(TradingVenue::HyperliquidFutures),
         _ => None,
     }
 }
@@ -118,6 +122,7 @@ fn futures_venue_for_exchange(exchange: &str) -> Option<TradingVenue> {
         "bybit" => Some(TradingVenue::BybitFutures),
         "bitget" => Some(TradingVenue::BitgetFutures),
         "gate" => Some(TradingVenue::GateFutures),
+        "hyperliquid" => Some(TradingVenue::HyperliquidFutures),
         _ => None,
     }
 }

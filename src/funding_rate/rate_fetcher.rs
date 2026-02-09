@@ -367,6 +367,9 @@ impl RateFetcher {
             TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => Exchange::Bitget,
             TradingVenue::BybitMargin | TradingVenue::BybitFutures => Exchange::Bybit,
             TradingVenue::GateMargin | TradingVenue::GateFutures => Exchange::Gate,
+            TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => {
+                Exchange::Hyperliquid
+            }
         }
     }
 
@@ -436,6 +439,15 @@ impl RateFetcher {
                 });
                 info!("RateFetcher: Gate 初始化完成");
                 Self::spawn_gate_fetch_task();
+            }
+            Exchange::Hyperliquid => {
+                Self::with_inner_mut(|inner| {
+                    inner
+                        .venue_states
+                        .entry(TradingVenue::HyperliquidFutures)
+                        .or_default();
+                });
+                info!("RateFetcher: Hyperliquid initialized (fetch task not enabled)");
             }
         }
 

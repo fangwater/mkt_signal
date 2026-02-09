@@ -120,7 +120,7 @@ fn print_exposure_table(
 fn usdt_net_position(exchange: Exchange, s: &UsdtBalanceSnapshot) -> f64 {
     match exchange {
         Exchange::Okex => s.balance,
-        Exchange::Binance | Exchange::Gate => s.balance - s.borrowed - s.cumulative_interest,
+        Exchange::Binance | Exchange::Gate | Exchange::Hyperliquid => s.balance - s.borrowed - s.cumulative_interest,
         _ => s.balance,
     }
 }
