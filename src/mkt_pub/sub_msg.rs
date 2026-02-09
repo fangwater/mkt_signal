@@ -4,7 +4,20 @@ use crate::signal::common::TradingVenue;
 use serde_json::Value;
 use std::collections::HashSet;
 
-fn construct_subscribe_message(exchange: &Exchange, symbols: &[String], channel: &str) -> Value {
+fn bitget_inst_type_for_venue(venue: TradingVenue) -> &'static str {
+    match venue {
+        TradingVenue::BitgetFutures => "USDT-FUTURES",
+        TradingVenue::BitgetMargin => "SPOT",
+        _ => "USDT-FUTURES",
+    }
+}
+
+fn construct_subscribe_message(
+    exchange: &Exchange,
+    venue: TradingVenue,
+    symbols: &[String],
+    channel: &str,
+) -> Value {
     match exchange {
         Exchange::Binance => {
             let params: Vec<String> = symbols
@@ -44,12 +57,12 @@ fn construct_subscribe_message(exchange: &Exchange, symbols: &[String], channel:
         }
         Exchange::Bitget => {
             // Bitget v2 API 格式
-            // channel 映射: "ticker" -> "ticker"
+            let inst_type = bitget_inst_type_for_venue(venue);
             let args: Vec<Value> = symbols
                 .iter()
                 .map(|symbol| {
                     serde_json::json!({
-                        "instType": "USDT-FUTURES",
+                        "instType": inst_type,
                         "channel": channel,
                         "instId": symbol
                     })
@@ -214,9 +227,12 @@ impl BybitPerpsSubscribeMsgs {
         let mut liquidation_orders_msgs = Vec::new();
         let exchange = cfg.get_exchange();
         for chunk in symbols.chunks(batch_size) {
-            ticker_stream_msgs.push(construct_subscribe_message(&exchange, chunk, "tickers"));
+            ticker_stream_msgs.push(construct_subscribe_message(
+                &exchange, cfg.venue, chunk, "tickers",
+            ));
             liquidation_orders_msgs.push(construct_subscribe_message(
                 &exchange,
+                cfg.venue,
                 chunk,
                 "allLiquidation",
             ));
@@ -246,7 +262,12 @@ impl BitgetPerpsSubscribeMsgs {
         let exchange = cfg.get_exchange();
 
         for chunk in symbols.chunks(batch_size) {
-            ticker_stream_msgs.push(construct_subscribe_message(&exchange, chunk, "ticker"));
+            ticker_stream_msgs.push(construct_subscribe_message(
+                &exchange,
+                TradingVenue::BitgetFutures,
+                chunk,
+                "ticker",
+            ));
         }
 
         Self { ticker_stream_msgs }
@@ -269,7 +290,9 @@ impl GatePerpsSubscribeMsgs {
         let exchange = cfg.get_exchange();
 
         for chunk in symbols.chunks(batch_size) {
-            ticker_stream_msgs.push(construct_subscribe_message(&exchange, chunk, "tickers"));
+            ticker_stream_msgs.push(construct_subscribe_message(
+                &exchange, cfg.venue, chunk, "tickers",
+            ));
         }
 
         Self { ticker_stream_msgs }
@@ -404,7 +427,7 @@ impl SubscribeMsgs {
             Exchange::Binance => "kline_1m".to_string(),
             Exchange::Okex => "candle1m".to_string(),
             Exchange::Bybit => "kline.1".to_string(),
-            Exchange::Bitget => "kline_1m".to_string(),
+            Exchange::Bitget => "candle1m".to_string(),
             Exchange::Gate => "candlesticks".to_string(),
         }
     }
@@ -464,7 +487,7 @@ impl SubscribeMsgs {
         }
     }
 
-    fn get_signal_subscribe_message(exchange: &Exchange) -> serde_json::Value {
+    fn get_signal_subscribe_message(exchange: &Exchange, venue: TradingVenue) -> serde_json::Value {
         match exchange {
             Exchange::Binance => {
                 serde_json::json!({
@@ -489,10 +512,11 @@ impl SubscribeMsgs {
                 })
             }
             Exchange::Bitget => {
+                let inst_type = bitget_inst_type_for_venue(venue);
                 serde_json::json!({
                     "op": "subscribe",
                     "args": [serde_json::json!({
-                        "instType": "USDT-FUTURES",
+                        "instType": inst_type,
                         "channel": "ticker",
                         "instId": "BTCUSDT"
                     })]
@@ -539,23 +563,28 @@ impl SubscribeMsgs {
             SubscribeMsgs::get_ask_bid_spread_channel(&exchange, cfg.venue);
         for chunk in symbols.chunks(batch_size) {
             if let Some(ref ch) = inc_channel {
-                inc_subscribe_msgs.push(construct_subscribe_message(&exchange, chunk, ch));
+                inc_subscribe_msgs
+                    .push(construct_subscribe_message(&exchange, cfg.venue, chunk, ch));
             }
             if let Some(ref ch) = depth_channel {
-                depth_subscribe_msgs.push(construct_subscribe_message(&exchange, chunk, ch));
+                depth_subscribe_msgs
+                    .push(construct_subscribe_message(&exchange, cfg.venue, chunk, ch));
             }
             trade_subscribe_msgs.push(construct_subscribe_message(
                 &exchange,
+                cfg.venue,
                 chunk,
                 &trade_channel,
             ));
             kline_subscribe_msgs.push(construct_subscribe_message(
                 &exchange,
+                cfg.venue,
                 chunk,
                 &kline_channel,
             ));
             ask_bid_spread_msgs.push(construct_subscribe_message(
                 &exchange,
+                cfg.venue,
                 chunk,
                 &best_price_spread_channel,
             ));
@@ -566,7 +595,7 @@ impl SubscribeMsgs {
             depth_subscribe_msgs,
             trade_subscribe_msgs,
             kline_subscribe_msgs,
-            signal_subscribe_msg: SubscribeMsgs::get_signal_subscribe_message(&exchange),
+            signal_subscribe_msg: SubscribeMsgs::get_signal_subscribe_message(&exchange, cfg.venue),
             ask_bid_spread_msgs,
         }
     }

@@ -6,7 +6,8 @@ use crate::parser::binance_parser::{
     BinanceKlineParser, BinanceSignalParser, BinanceTradeParser,
 };
 use crate::parser::bitget_parser::{
-    BitgetDerivativesMetricsParser, BitgetIncParser, BitgetSignalParser, BitgetTradeParser,
+    BitgetAskBidSpreadParser, BitgetDerivativesMetricsParser, BitgetIncParser, BitgetKlineParser,
+    BitgetSignalParser, BitgetTradeParser,
 };
 use crate::parser::bybit_parser::{
     BybitAskBidSpreadParser, BybitDerivativesMetricsParser, BybitIncParser, BybitKlineParser,
@@ -467,6 +468,18 @@ impl MktManager {
                     )
                     .await;
                 }
+                Exchange::Bitget => {
+                    let parser = BitgetKlineParser::new();
+                    self.spawn_connection_with_mpsc(
+                        exchange,
+                        url.clone(),
+                        subscribe_msg,
+                        format!("kline batch {}", i),
+                        parser,
+                        tx,
+                    )
+                    .await;
+                }
                 _ => {
                     error!("Unsupported exchange for kline parser: {}", exchange);
                 }
@@ -551,6 +564,19 @@ impl MktManager {
                     self.spawn_connection_with_mpsc(
                         exchange,
                         url.clone(),
+                        subscribe_msg,
+                        format!("ask_bid_spread batch {}", i),
+                        parser,
+                        tx,
+                    )
+                    .await;
+                }
+                Exchange::Bitget => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                    let parser = BitgetAskBidSpreadParser::new();
+                    self.spawn_connection_with_mpsc(
+                        exchange,
+                        url,
                         subscribe_msg,
                         format!("ask_bid_spread batch {}", i),
                         parser,
