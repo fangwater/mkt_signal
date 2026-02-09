@@ -17,8 +17,8 @@ use crate::parser::gate_parser::{
     GateDerivativesMetricsParser, GateKlineParser, GateSignalParser, GateTickerParser,
 };
 use crate::parser::hyperliquid_parser::{
-    HyperliquidDerivativesMetricsParser, HyperliquidKlineParser, HyperliquidSignalParser,
-    HyperliquidTradeParser,
+    HyperliquidAskBidSpreadParser, HyperliquidDerivativesMetricsParser, HyperliquidIncParser,
+    HyperliquidKlineParser, HyperliquidSignalParser, HyperliquidTradeParser,
 };
 use crate::parser::okex_parser::{
     OkexAskBidSpreadParser, OkexDerivativesMetricsParser, OkexIncParser, OkexKlineParser,
@@ -198,9 +198,6 @@ impl MktManager {
 
     async fn start_incremental_connections(&mut self) {
         let exchange = self.cfg.get_exchange();
-        if exchange == Exchange::Hyperliquid {
-            return;
-        }
         let max_levels = self.cfg.data_types.max_levels_per_msg;
 
         for i in 0..self.subscribe_msgs.get_inc_subscribe_msg_len() {
@@ -268,6 +265,19 @@ impl MktManager {
                     self.spawn_connection_with_mpsc(
                         exchange,
                         url.clone(),
+                        subscribe_msg,
+                        format!("inc msg batch {}", i),
+                        parser,
+                        tx,
+                    )
+                    .await;
+                }
+                Exchange::Hyperliquid => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                    let parser = HyperliquidIncParser::with_max_levels(max_levels);
+                    self.spawn_connection_with_mpsc(
+                        exchange,
+                        url,
                         subscribe_msg,
                         format!("inc msg batch {}", i),
                         parser,
@@ -591,7 +601,17 @@ impl MktManager {
                     .await;
                 }
                 Exchange::Hyperliquid => {
-                    info!("Hyperliquid ask_bid_spread parser is not implemented yet");
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                    let parser = HyperliquidAskBidSpreadParser::new();
+                    self.spawn_connection_with_mpsc(
+                        exchange,
+                        url,
+                        subscribe_msg,
+                        format!("ask_bid_spread batch {}", i),
+                        parser,
+                        tx,
+                    )
+                    .await;
                 }
                 _ => {
                     error!(
