@@ -10,6 +10,14 @@
 - 浮点字段统一 `:.6` 精度。
 - `from_key` 为 UTF-8 字符串，落地为 `Vec<u8>`。
 
+## 协议更新（ArbHedge）
+
+- `ArbHedgeSignalQueryMsg` 的数量字段为 `hedge_base_qty`（base 口径），用于向上游决策侧请求对冲报价。
+- `ArbHedge` 信号上下文 `ArbHedgeCtx` 的量价使用 `qv`（tick/count）编码：
+  - `hedge_qty_qv`
+  - `hedge_price_qv`
+- `fr/xarb decision` 在返回 `ArbHedge` 信号前已完成量价对齐；下游策略直接消费对齐后的 `qv` 值。
+
 ## 当前格式（按策略/信号）
 
 ### FR

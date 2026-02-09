@@ -11,6 +11,12 @@ time:request_seq:spread_rate
 - `request_seq`：`ArbHedgeSignalQueryMsg.request_seq`。
 - `spread_rate`：开仓腿与对冲腿的中间价价差率。
 
+信号与查询字段口径：
+- hedge query 使用 `ArbHedgeSignalQueryMsg.hedge_base_qty`（base 口径数量）。
+- `ArbHedgeCtx` 量价均为 `qv` 编码：
+  - 数量：`hedge_qty_qv`
+  - 价格：`hedge_price_qv`
+
 说明：
 - `aggressive` 逻辑仍用于报价偏移（offset）决策，但不再写入 `from_key`。
 

@@ -769,11 +769,11 @@ impl XarbDecision {
             return;
         };
 
-        let qty = query.hedge_qty;
-        if qty <= 0.0 {
+        let hedge_base_qty = query.hedge_base_qty;
+        if hedge_base_qty <= 0.0 {
             warn!(
                 "XarbDecision: hedge query quantity <= 0 strategy_id={} qty={:.8}",
-                query.strategy_id, qty
+                query.strategy_id, hedge_base_qty
             );
             return;
         }
@@ -796,10 +796,10 @@ impl XarbDecision {
             return;
         };
 
-        let price_tick = self
-            .table_for(hedge_venue)
-            .price_tick(&hedge_symbol)
-            .unwrap_or(0.0);
+        let table = self.table_for(hedge_venue);
+        let symbol_key = min_qty_symbol_key(hedge_venue, &hedge_symbol);
+        let qty_tick = table.step_size(&symbol_key).unwrap_or(0.0);
+        let price_tick = table.price_tick(&symbol_key).unwrap_or(0.0);
         let spread_rate = compute_spread_rate(&open_quote, &hedge_quote);
 
         let now = get_timestamp_us();
@@ -838,8 +838,32 @@ impl XarbDecision {
             stop_loss_valid
         );
         if stop_loss_triggered {
-            let mut ctx =
-                ArbHedgeCtx::new_taker(query.strategy_id, query.client_order_id, qty, side.to_u8());
+            let market_price = match side {
+                Side::Buy => hedge_quote.ask,
+                Side::Sell => hedge_quote.bid,
+            };
+            let aligned_hedge_qty = self.convert_aligned_base_qty_to_open_venue_qty(
+                hedge_venue,
+                &hedge_symbol,
+                market_price,
+                hedge_base_qty,
+            );
+            if aligned_hedge_qty <= 0.0 {
+                warn!(
+                    "XarbDecision: stop-loss taker aligned qty invalid strategy_id={} symbol_key={} base_qty={:.8}",
+                    query.strategy_id,
+                    symbol_key,
+                    hedge_base_qty
+                );
+                return;
+            }
+            let mut ctx = ArbHedgeCtx::new_taker(
+                query.strategy_id,
+                query.client_order_id,
+                side.to_u8(),
+                aligned_hedge_qty,
+                qty_tick,
+            );
             ctx.opening_leg =
                 TradingLeg::new(open_venue, open_quote.bid, open_quote.ask, open_quote.ts);
             ctx.set_opening_symbol(&open_symbol);
@@ -851,7 +875,6 @@ impl XarbDecision {
             );
             ctx.set_hedging_symbol(&hedge_symbol);
             ctx.market_ts = now;
-            ctx.price_tick = price_tick;
             ctx.price_offset = 0.0;
             ctx.spread_rate = spread_rate;
             ctx.maker_only = false;
@@ -876,7 +899,7 @@ impl XarbDecision {
                 "XarbDecision: 触发 stop-loss taker hedge strategy_id={} hedge_symbol={} qty={:.6} side={:?} pct_change={:.6} threshold_pct={:.2} spread_rate={:.6}",
                 query.strategy_id,
                 hedge_symbol,
-                qty,
+                ctx.hedge_qty_value(),
                 side,
                 pct_change,
                 threshold_pct,
@@ -955,16 +978,42 @@ impl XarbDecision {
             return;
         }
 
+        let aligned_hedge_qty = self.convert_aligned_base_qty_to_open_venue_qty(
+            hedge_venue,
+            &hedge_symbol,
+            limit_price,
+            hedge_base_qty,
+        );
+        if aligned_hedge_qty <= 0.0 {
+            warn!(
+                "XarbDecision: hedge query aligned qty invalid strategy_id={} symbol_key={} base_qty={:.8}",
+                query.strategy_id,
+                symbol_key,
+                hedge_base_qty
+            );
+            return;
+        }
+
         let mut ctx = ArbHedgeCtx::new_maker(
             query.strategy_id,
             query.client_order_id,
-            qty,
             side.to_u8(),
+            aligned_hedge_qty,
+            qty_tick,
             limit_price,
             price_tick,
             false,
             now + self.hedge_timeout_mm_us,
         );
+        if ctx.hedge_qty_count() <= 0 || ctx.hedge_price_count() <= 0 {
+            warn!(
+                "XarbDecision: hedge query qv invalid strategy_id={} qty={:.8} price={:.8}",
+                query.strategy_id,
+                ctx.hedge_qty_value(),
+                ctx.hedge_price_value()
+            );
+            return;
+        }
         ctx.opening_leg =
             TradingLeg::new(open_venue, open_quote.bid, open_quote.ask, open_quote.ts);
         ctx.set_opening_symbol(&open_symbol);
@@ -1001,11 +1050,11 @@ impl XarbDecision {
             "XarbDecision: 回复 hedge query strategy_id={} hedge_symbol={} qty={:.6} side={:?} seq={} aggressive={} limit_price={:.8} offset={:.6} spread_rate={:.6} (maker)",
             query.strategy_id,
             hedge_symbol,
-            qty,
+            ctx.hedge_qty_value(),
             side,
             query.request_seq,
             aggressive,
-            limit_price,
+            ctx.hedge_price_value(),
             offset,
             spread_rate
         );

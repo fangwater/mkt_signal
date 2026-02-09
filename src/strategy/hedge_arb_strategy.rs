@@ -556,19 +556,20 @@ impl HedgeArbStrategy {
             if venue == TradingVenue::BinanceFutures {
                 qty = raw_qty;
             } else {
-            let contract_size = table.contract_multiplier_opt(&symbol_key).ok_or_else(|| {
-                format!(
-                    "symbol={} 缺少 {:?} 合约乘数，无法将 base qty 转成 contracts",
-                    symbol_key, venue
-                )
-            })?;
-            if contract_size <= 0.0 {
-                return Err(format!(
-                    "symbol={} {:?} contract multiplier invalid: {}",
-                    symbol_key, venue, contract_size
-                ));
-            }
-            qty = raw_qty / contract_size;
+                let contract_size =
+                    table.contract_multiplier_opt(&symbol_key).ok_or_else(|| {
+                        format!(
+                            "symbol={} 缺少 {:?} 合约乘数，无法将 base qty 转成 contracts",
+                            symbol_key, venue
+                        )
+                    })?;
+                if contract_size <= 0.0 {
+                    return Err(format!(
+                        "symbol={} {:?} contract multiplier invalid: {}",
+                        symbol_key, venue, contract_size
+                    ));
+                }
+                qty = raw_qty / contract_size;
             }
         }
 
@@ -594,15 +595,44 @@ impl HedgeArbStrategy {
     // 收到对冲信号，按照需求进行maker对冲，或者直接taker对冲
     fn handle_arb_hedge_signal(&mut self, ctx: ArbHedgeCtx) -> Result<(), String> {
         // 1. 确定对冲数量
-        let target_qty = if ctx.hedge_qty > 0.0 {
-            ctx.hedge_qty as f64
-        } else {
+        let target_qty = ctx.hedge_qty_value();
+        if target_qty <= 0.0 {
             warn!(
                 "HedgeArbStrategy: strategy_id={} 对冲信号的数量无效: {}",
-                self.strategy_id, ctx.hedge_qty
+                self.strategy_id, target_qty
             );
-            return Err(format!("对冲数量无效: {}", ctx.hedge_qty));
-        };
+            return Err(format!("对冲数量无效: {}", target_qty));
+        }
+
+        let target_price = ctx.hedge_price_value();
+        if ctx.is_maker() && target_price <= 0.0 {
+            let detail = format!(
+                "limit_price_invalid client_order_id={} market_ts={} price_offset={:.6} opening_venue={} hedging_venue={}",
+                ctx.client_order_id,
+                ctx.market_ts,
+                ctx.price_offset,
+                ctx.opening_leg.venue,
+                ctx.hedging_leg.venue
+            );
+            self.push_hedge_residual_with_print(
+                "PRICE_LESS_THAN_ZERO/价格小于0",
+                &detail,
+                target_qty,
+                target_price,
+                ctx.get_side().unwrap_or(self.hedge_side),
+            );
+            return Ok(());
+        }
+
+        if ctx.hedge_qty_count() <= 0 || (ctx.is_maker() && ctx.hedge_price_count() <= 0) {
+            warn!(
+                "HedgeArbStrategy: strategy_id={} 对冲信号 qv 计数无效 qty_count={} price_count={}",
+                self.strategy_id,
+                ctx.hedge_qty_count(),
+                ctx.hedge_price_count()
+            );
+            return Err("对冲信号 qv 无效".to_string());
+        }
         self.hedge_signal_ts = ctx.market_ts;
         self.hedge_price_offset = ctx.price_offset;
         self.hedge_from_key = String::from_utf8_lossy(&ctx.from_key).to_string();
@@ -643,32 +673,12 @@ impl HedgeArbStrategy {
             );
         }
 
-        if ctx.is_maker() && ctx.limit_price <= 0.0 {
-            let detail = format!(
-                "limit_price_invalid client_order_id={} market_ts={} price_offset={:.6} opening_venue={} hedging_venue={}",
-                ctx.client_order_id,
-                ctx.market_ts,
-                ctx.price_offset,
-                ctx.opening_leg.venue,
-                ctx.hedging_leg.venue
-            );
-            self.push_hedge_residual_with_print(
-                "PRICE_LESS_THAN_ZERO/价格小于0",
-                &detail,
-                target_qty,
-                ctx.limit_price,
-                hedge_side,
-            );
-            return Ok(());
-        }
-
-        // 3. 使用预交易环境对齐订单量和价格
+        // 3. 使用信号层已对齐的量价
         let (aligned_qty, aligned_price) = if ctx.is_taker() {
-            let aligned_qty = self.align_taker_qty(hedge_venue, &hedge_symbol, target_qty)?;
+            let aligned_qty = target_qty;
             (aligned_qty, 0.0)
         } else {
-            // 使用get_hedge_price 函数获取合适的对冲价格
-            let hedge_price = ctx.get_hedge_price();
+            let hedge_price = target_price;
             if hedge_price <= 0.0 {
                 let detail = format!(
                     "pre_trade_price_invalid mode={} client_order_id={} market_ts={} price_offset={:.6} opening_venue={} hedging_venue={}",
@@ -691,12 +701,7 @@ impl HedgeArbStrategy {
                 }
                 return Err(format!("对冲价格无效: {:.8}", hedge_price));
             }
-            let (aligned_qty, aligned_price) = MonitorChannel::instance().align_order_by_venue(
-                hedge_venue,
-                &hedge_symbol,
-                target_qty,
-                hedge_price,
-            )?;
+            let (aligned_qty, aligned_price) = (target_qty, hedge_price);
             if aligned_price <= 0.0 {
                 let detail = format!(
                     "aligned_price_invalid mode={} client_order_id={} raw_price={:.8} aligned_price={:.8}",
@@ -1160,8 +1165,14 @@ impl HedgeArbStrategy {
         }
 
         // 1. 创建对冲上下文（市价单模式，exp_time = 0）
-        let mut hedge_ctx =
-            ArbHedgeCtx::new_taker(self.strategy_id, self.open_order_id, eff_qty, side.to_u8());
+        let aligned_qty = self.align_taker_qty(self.hedge_venue, &self.hedge_symbol, eff_qty)?;
+        let mut hedge_ctx = ArbHedgeCtx::new_taker(
+            self.strategy_id,
+            self.open_order_id,
+            side.to_u8(),
+            aligned_qty,
+            0.0,
+        );
 
         // 2. 设置开仓侧信息（as market对冲，盘口写0）
         hedge_ctx.opening_leg = crate::signal::common::TradingLeg {

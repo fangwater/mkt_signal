@@ -14,6 +14,12 @@ time:pnlu_factor:rl_factor:pct_change:threshold_pct:spread_rate
 - `threshold_pct`：止损阈值百分比。
 - `spread_rate`：对冲信号生成时的中间价价差率。
 
+信号与查询字段口径：
+- hedge query 使用 `ArbHedgeSignalQueryMsg.hedge_base_qty`（base 口径数量）。
+- `ArbHedgeCtx` 量价均为 `qv` 编码：
+  - 数量：`hedge_qty_qv`
+  - 价格：`hedge_price_qv`
+
 说明：
 - `aggressive` 逻辑仍用于报价偏移（offset）决策，但不写入 `from_key`。
 - 为统一追踪，`ArbHedge` 的 `from_key` 现在同时携带 `pnlu_factor` 与 `rl_factor`。

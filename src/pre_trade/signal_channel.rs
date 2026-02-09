@@ -545,7 +545,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     hedging_symbol,
                     hedging_venue,
                     hedge_side,
-                    hedge_ctx.hedge_qty,
+                    hedge_ctx.hedge_qty_value(),
                     hedge_price,
                     hedge_ctx.is_maker(),
                     hedge_ctx.spread_rate,

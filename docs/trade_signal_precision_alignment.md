@@ -96,3 +96,11 @@ The chosen pair should minimize mismatch and stay within the risk preference.
 The signal layer has all the context: target `U`, prices, exchange metadata, and
 hedge pairing. Emitting already-aligned quantities prevents downstream failures
 and makes the trading layer deterministic and auditable.
+
+## Current ArbHedge protocol notes
+
+- Hedge query (`ArbHedgeSignalQueryMsg`) uses `hedge_base_qty` as input quantity (base units).
+- Hedge signal (`ArbHedgeCtx`) encodes qty/price using qv fields:
+  - `hedge_qty_qv`
+  - `hedge_price_qv`
+- `fr/xarb decision` aligns hedge qty/price before emitting `ArbHedge`; downstream strategy consumes aligned qv values directly.

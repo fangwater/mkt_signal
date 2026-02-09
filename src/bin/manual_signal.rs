@@ -55,7 +55,10 @@ fn infer_default_venues(exchange: Exchange) -> (TradingVenue, TradingVenue) {
         Exchange::Bybit => (TradingVenue::BybitMargin, TradingVenue::BybitFutures),
         Exchange::Bitget => (TradingVenue::BitgetMargin, TradingVenue::BitgetFutures),
         Exchange::Gate => (TradingVenue::GateMargin, TradingVenue::GateFutures),
-        Exchange::Hyperliquid => (TradingVenue::HyperliquidMargin, TradingVenue::HyperliquidFutures),
+        Exchange::Hyperliquid => (
+            TradingVenue::HyperliquidMargin,
+            TradingVenue::HyperliquidFutures,
+        ),
     }
 }
 
@@ -665,9 +668,9 @@ fn spawn_backward_query_responder(
                                     continue;
                                 };
 
-                                let qty = query.hedge_qty;
-                                if qty <= 0.0 {
-                                    warn!("frmanual: hedge query qty<=0 strategy_id={} qty={}", query.strategy_id, qty);
+                                let hedge_base_qty = query.hedge_base_qty;
+                                if hedge_base_qty <= 0.0 {
+                                    warn!("frmanual: hedge query qty<=0 strategy_id={} qty={}", query.strategy_id, hedge_base_qty);
                                     continue;
                                 }
 
@@ -702,8 +705,9 @@ fn spawn_backward_query_responder(
                                 let mut ctx = ArbHedgeCtx::new_maker(
                                     query.strategy_id,
                                     query.client_order_id,
-                                    qty,
                                     side.to_u8(),
+                                    hedge_base_qty,
+                                    0.0,
                                     limit_price,
                                     0.0,
                                     false,
