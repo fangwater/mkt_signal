@@ -95,6 +95,21 @@ pub fn build_mm_hedge_ctx(
         scaled.offset_min_scaled,
         scaled.offset_max_scaled,
     );
+    info!(
+        "MMHedgeQuerySummary {{\"symbol\":\"{}\",\"side\":\"{}\",\"net_qty_base\":{:.8},\"hedge_bid0\":{:.8},\"hedge_ask0\":{:.8},\"inv_notional\":{:.8},\"symbol_exposure_u\":{:.8},\"scale\":{:.8},\"offset_min_in\":{:.8},\"offset_max_in\":{:.8},\"offset_min_out\":{:.8},\"offset_max_out\":{:.8}}}",
+        symbol,
+        side.as_str(),
+        net_qty,
+        input.quote.bid,
+        input.quote.ask,
+        scaled.inv_notional,
+        query.symbol_exposure_u,
+        scaled.scale,
+        base_offset_min,
+        base_offset_max,
+        scaled.offset_min_scaled,
+        scaled.offset_max_scaled,
+    );
 
     let denom = (base_offset_max - base_offset_min).abs();
     let mapped_offsets: Vec<f64> = offset_abs
@@ -140,6 +155,16 @@ pub fn build_mm_hedge_ctx(
         qty_tick_exp,
         price_list,
         amount_list,
+    );
+    info!(
+        "MMHedgeCtxSummary {{\"symbol\":\"{}\",\"side\":\"{}\",\"levels\":{},\"price_tick_exp\":{},\"qty_tick_exp\":{},\"next_query_delay_ms\":{},\"signal_ts\":{}}}",
+        symbol,
+        side.as_str(),
+        price_list.len(),
+        price_tick_exp,
+        qty_tick_exp,
+        input.next_query_delay_ms,
+        get_timestamp_us(),
     );
 
     if price_list.is_empty() || amount_list.is_empty() {

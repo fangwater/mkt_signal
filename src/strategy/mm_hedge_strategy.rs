@@ -300,6 +300,36 @@ impl MarketMakerHedgeStrategy {
             remaining_qty,
             level_stats_text,
         );
+        let level_stats_json = split
+            .level_stats
+            .iter()
+            .map(|s| {
+                format!(
+                    "{{\"idx\":{},\"price\":{:.8},\"hand_venue\":{:.8},\"hand_base\":{:.8},\"n\":{},\"out_venue\":{:.8},\"out_base\":{:.8}}}",
+                    s.level_index,
+                    s.price,
+                    s.qty_venue_one_hand,
+                    s.qty_base_one_hand,
+                    s.hand_count,
+                    s.order_qty_venue,
+                    s.order_qty_base
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        info!(
+            "MMHedgeSplitSummary {{\"strategy_id\":{},\"symbol\":\"{}\",\"venue\":\"{:?}\",\"side\":\"{}\",\"net_qty_base\":{:.8},\"qty_multiplier\":{:.8},\"total_qty_base\":{:.8},\"total_usdt\":{:.8},\"remaining_base\":{:.8},\"levels\":[{}]}}",
+            self.strategy_id,
+            symbol,
+            venue,
+            hedge_side.map(|s| s.as_str()).unwrap_or("FLAT"),
+            net_qty,
+            qty_multiplier,
+            total_qty,
+            total_usdt,
+            remaining_qty,
+            level_stats_json,
+        );
 
         self.hedge_plan.clear();
         for HedgeSplitOrder { side, price, qty } in split.orders {
