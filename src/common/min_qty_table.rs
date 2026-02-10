@@ -275,6 +275,60 @@ mod tests {
         let (_entries, multipliers) = provider.parse_swap_response(&instruments).unwrap();
         assert_eq!(multipliers.get("FILUSDT").copied(), Some(0.1));
     }
+
+    #[test]
+    fn bitget_futures_multiplier_defaults_to_one_in_unified_mode() {
+        let provider = BitgetProvider::new();
+        let response = BitgetResponse {
+            code: "00000".to_string(),
+            msg: "success".to_string(),
+            data: vec![BitgetInstrument {
+                symbol: "BTCUSDT".to_string(),
+                base_coin: "BTC".to_string(),
+                quote_coin: "USDT".to_string(),
+                min_order_qty: "0.001".to_string(),
+                price_multiplier: Some("0.1".to_string()),
+                quantity_multiplier: Some("0.001".to_string()),
+                min_order_amount: Some("5".to_string()),
+            }],
+        };
+
+        let (_entries, multipliers) = provider
+            .parse_response(response, MarketType::Futures)
+            .unwrap();
+        assert_eq!(multipliers.get("BTCUSDT").copied(), Some(1.0));
+    }
+
+    #[test]
+    fn bybit_linear_multiplier_defaults_to_one_in_unified_mode() {
+        let provider = BybitProvider::new();
+        let response = BybitInstrumentsResponse {
+            ret_code: 0,
+            ret_msg: "OK".to_string(),
+            result: Some(BybitInstrumentsResult {
+                list: vec![BybitInstrument {
+                    symbol: "BTCUSDT".to_string(),
+                    status: "Trading".to_string(),
+                    base_coin: "BTC".to_string(),
+                    quote_coin: "USDT".to_string(),
+                    contract_type: "LinearPerpetual".to_string(),
+                    lot_size_filter: BybitLotSizeFilter {
+                        min_order_qty: Some("0.001".to_string()),
+                        qty_step: Some("0.001".to_string()),
+                        min_notional_value: Some("5".to_string()),
+                    },
+                    price_filter: BybitPriceFilter {
+                        tick_size: Some("0.1".to_string()),
+                    },
+                }],
+            }),
+        };
+
+        let (_entries, multipliers) = provider
+            .parse_response_for_test(response, MarketType::Futures)
+            .unwrap();
+        assert_eq!(multipliers.get("BTCUSDT").copied(), Some(1.0));
+    }
 }
 
 // ============================================================================
@@ -656,6 +710,226 @@ struct OkexInstrument {
 }
 
 // ============================================================================
+// Bybit Provider
+// ============================================================================
+
+pub struct BybitProvider;
+
+impl BybitProvider {
+    pub fn new() -> Self {
+        Self
+    }
+
+    fn get_api_url(&self, market_type: MarketType) -> &'static str {
+        match market_type {
+            MarketType::Spot => "https://api.bybit.com/v5/market/instruments-info?category=spot",
+            MarketType::Margin => "https://api.bybit.com/v5/market/instruments-info?category=spot",
+            MarketType::Futures => {
+                "https://api.bybit.com/v5/market/instruments-info?category=linear"
+            }
+        }
+    }
+
+    pub async fn fetch_filters(
+        &self,
+        client: &Client,
+        market_type: MarketType,
+    ) -> Result<HashMap<String, MinQtyEntry>> {
+        let (entries, _) = self
+            .fetch_filters_with_multipliers(client, market_type)
+            .await?;
+        Ok(entries)
+    }
+
+    pub async fn fetch_filters_with_multipliers(
+        &self,
+        client: &Client,
+        market_type: MarketType,
+    ) -> Result<(HashMap<String, MinQtyEntry>, HashMap<String, f64>)> {
+        let url = self.get_api_url(market_type);
+        let label = match market_type {
+            MarketType::Spot => "bybit_spot",
+            MarketType::Futures => "bybit_linear",
+            MarketType::Margin => "bybit_margin",
+        };
+        let resp = client.get(url).send().await?;
+        let status = resp.status();
+        let body = resp.text().await?;
+        debug!(
+            "GET {} ({}) -> status={} bytes={}",
+            url,
+            label,
+            status.as_u16(),
+            body.len()
+        );
+        if !status.is_success() {
+            return Err(anyhow!("GET {} failed: {} - {}", url, status, body));
+        }
+
+        let response: BybitInstrumentsResponse = serde_json::from_str(&body)
+            .with_context(|| format!("failed to parse {} response", label))?;
+        self.parse_response(response, market_type)
+    }
+
+    fn parse_response(
+        &self,
+        response: BybitInstrumentsResponse,
+        market_type: MarketType,
+    ) -> Result<(HashMap<String, MinQtyEntry>, HashMap<String, f64>)> {
+        if response.ret_code != 0 {
+            return Err(anyhow!(
+                "Bybit API error: {} - {}",
+                response.ret_code,
+                response.ret_msg
+            ));
+        }
+
+        let result = response
+            .result
+            .ok_or_else(|| anyhow!("Bybit response missing result"))?;
+
+        let mut entries = HashMap::new();
+        let mut multipliers = HashMap::new();
+
+        for inst in result.list {
+            if !inst.status.eq_ignore_ascii_case("trading") {
+                continue;
+            }
+            if !inst.quote_coin.eq_ignore_ascii_case("USDT") {
+                continue;
+            }
+
+            if market_type == MarketType::Futures
+                && !inst.contract_type.eq_ignore_ascii_case("LinearPerpetual")
+            {
+                continue;
+            }
+
+            let symbol = inst.symbol.to_uppercase();
+            let min_qty = inst
+                .lot_size_filter
+                .min_order_qty
+                .as_deref()
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let step_size = inst
+                .lot_size_filter
+                .qty_step
+                .as_deref()
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let price_tick = inst
+                .price_filter
+                .tick_size
+                .as_deref()
+                .and_then(|v| v.parse::<f64>().ok())
+                .filter(|v| *v > 0.0);
+
+            let min_notional = inst
+                .lot_size_filter
+                .min_notional_value
+                .as_deref()
+                .and_then(|v| v.parse::<f64>().ok())
+                .filter(|v| *v > 0.0);
+
+            let entry = MinQtyEntry {
+                symbol: symbol.clone(),
+                base_asset: inst.base_coin.to_uppercase(),
+                quote_asset: inst.quote_coin.to_uppercase(),
+                min_qty,
+                step_size,
+                price_tick,
+                min_notional,
+            };
+            entries.insert(symbol.clone(), entry);
+
+            if market_type == MarketType::Futures {
+                // Bybit U本位线性永续（统一账户）按 base qty 口径处理，乘数固定 1。
+                multipliers.insert(symbol, 1.0);
+            }
+        }
+        Ok((entries, multipliers))
+    }
+
+    #[cfg(test)]
+    fn parse_response_for_test(
+        &self,
+        response: BybitInstrumentsResponse,
+        market_type: MarketType,
+    ) -> Result<(HashMap<String, MinQtyEntry>, HashMap<String, f64>)> {
+        self.parse_response(response, market_type)
+    }
+}
+
+impl Default for BybitProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ExchangeInfoProvider for BybitProvider {
+    fn exchange(&self) -> Exchange {
+        Exchange::Bybit
+    }
+    fn supported_market_types(&self) -> Vec<MarketType> {
+        vec![MarketType::Spot, MarketType::Futures, MarketType::Margin]
+    }
+    fn margin_reuses_spot(&self) -> bool {
+        true
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BybitInstrumentsResponse {
+    ret_code: i32,
+    ret_msg: String,
+    result: Option<BybitInstrumentsResult>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BybitInstrumentsResult {
+    #[serde(default)]
+    list: Vec<BybitInstrument>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BybitInstrument {
+    symbol: String,
+    status: String,
+    #[serde(default)]
+    base_coin: String,
+    #[serde(default)]
+    quote_coin: String,
+    #[serde(default)]
+    contract_type: String,
+    #[serde(default)]
+    lot_size_filter: BybitLotSizeFilter,
+    #[serde(default)]
+    price_filter: BybitPriceFilter,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BybitLotSizeFilter {
+    #[serde(default)]
+    min_order_qty: Option<String>,
+    #[serde(default)]
+    qty_step: Option<String>,
+    #[serde(default)]
+    min_notional_value: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BybitPriceFilter {
+    #[serde(default)]
+    tick_size: Option<String>,
+}
+
+// ============================================================================
 // Bitget Provider
 // ============================================================================
 
@@ -683,6 +957,17 @@ impl BitgetProvider {
         client: &Client,
         market_type: MarketType,
     ) -> Result<HashMap<String, MinQtyEntry>> {
+        let (entries, _) = self
+            .fetch_filters_with_multipliers(client, market_type)
+            .await?;
+        Ok(entries)
+    }
+
+    pub async fn fetch_filters_with_multipliers(
+        &self,
+        client: &Client,
+        market_type: MarketType,
+    ) -> Result<(HashMap<String, MinQtyEntry>, HashMap<String, f64>)> {
         let url = self.get_api_url(market_type);
         let label = match market_type {
             MarketType::Spot => "bitget_spot",
@@ -704,6 +989,14 @@ impl BitgetProvider {
         }
         let response: BitgetResponse = serde_json::from_str(&body)
             .with_context(|| format!("failed to parse {} response", label))?;
+        self.parse_response(response, market_type)
+    }
+
+    fn parse_response(
+        &self,
+        response: BitgetResponse,
+        market_type: MarketType,
+    ) -> Result<(HashMap<String, MinQtyEntry>, HashMap<String, f64>)> {
         if response.code != "00000" {
             return Err(anyhow!(
                 "Bitget API error: {} - {}",
@@ -712,6 +1005,7 @@ impl BitgetProvider {
             ));
         }
         let mut map = HashMap::new();
+        let mut multipliers = HashMap::new();
         for inst in response.data {
             let symbol = inst.symbol.to_uppercase();
             let step_size: f64 = inst
@@ -740,9 +1034,13 @@ impl BitgetProvider {
                     .and_then(|v| v.parse().ok())
                     .filter(|v| *v > 0.0),
             };
+            if market_type == MarketType::Futures {
+                // 统一账户 USDT-FUTURES: qty 使用 base coin 口径，合约乘数按 1.0 处理。
+                multipliers.insert(symbol.clone(), 1.0);
+            }
             map.insert(symbol, entry);
         }
-        Ok(map)
+        Ok((map, multipliers))
     }
 }
 
@@ -824,7 +1122,7 @@ impl MinQtyTable {
             Exchange::Gate => self.refresh_gate().await,
             Exchange::Bitget => self.refresh_bitget().await,
             Exchange::Okex => self.refresh_okex().await,
-            Exchange::Bybit => Err(anyhow!("exchange {} not supported yet", self.exchange)),
+            Exchange::Bybit => self.refresh_bybit().await,
             Exchange::Hyperliquid => Err(anyhow!("exchange {} not supported yet", self.exchange)),
         }
     }
@@ -881,7 +1179,9 @@ impl MinQtyTable {
     async fn refresh_bitget(&mut self) -> Result<()> {
         let provider = BitgetProvider::new();
         for market_type in provider.supported_market_types() {
-            let data = provider.fetch_filters(&self.client, market_type).await?;
+            let (data, multipliers) = provider
+                .fetch_filters_with_multipliers(&self.client, market_type)
+                .await?;
             info!(
                 "刷新交易对过滤器: exchange={} market_type={:?} count={}",
                 self.exchange,
@@ -889,6 +1189,9 @@ impl MinQtyTable {
                 data.len()
             );
             self.filters.insert(market_type, data);
+            if !multipliers.is_empty() {
+                self.contract_multipliers.extend(multipliers);
+            }
         }
         Ok(())
     }
@@ -896,6 +1199,34 @@ impl MinQtyTable {
     async fn refresh_okex(&mut self) -> Result<()> {
         let provider = OkexProvider::new();
         for market_type in provider.supported_market_types() {
+            let (data, multipliers) = provider
+                .fetch_filters_with_multipliers(&self.client, market_type)
+                .await?;
+            info!(
+                "刷新交易对过滤器: exchange={} market_type={:?} count={}",
+                self.exchange,
+                market_type,
+                data.len()
+            );
+            self.filters.insert(market_type, data);
+            if !multipliers.is_empty() {
+                self.contract_multipliers.extend(multipliers);
+            }
+        }
+        Ok(())
+    }
+
+    async fn refresh_bybit(&mut self) -> Result<()> {
+        let provider = BybitProvider::new();
+        for market_type in provider.supported_market_types() {
+            if market_type == MarketType::Margin && provider.margin_reuses_spot() {
+                if let Some(spot_data) = self.filters.get(&MarketType::Spot).cloned() {
+                    debug!("reuse spot filters for {}_margin", self.exchange);
+                    self.filters.insert(MarketType::Margin, spot_data);
+                    continue;
+                }
+            }
+
             let (data, multipliers) = provider
                 .fetch_filters_with_multipliers(&self.client, market_type)
                 .await?;
@@ -940,7 +1271,7 @@ impl MinQtyTable {
     pub fn contract_multiplier(&self, symbol: &str) -> f64 {
         match self.exchange {
             Exchange::Binance => 1.0, // Binance UM 合约面值默认为 1
-            Exchange::Gate | Exchange::Okex => {
+            Exchange::Gate | Exchange::Okex | Exchange::Bitget | Exchange::Bybit => {
                 let key = symbol.to_uppercase();
                 *self.contract_multipliers.get(&key).unwrap_or(&1.0)
             }

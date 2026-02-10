@@ -25,15 +25,7 @@ pub fn is_futures_venue(venue: TradingVenue) -> bool {
 }
 
 pub fn ensure_supported_mm_open_venue(venue: TradingVenue) -> Result<(), String> {
-    if matches!(
-        venue,
-        TradingVenue::BybitFutures | TradingVenue::BitgetFutures
-    ) {
-        return Err(format!(
-            "manual_mm_signal 暂不支持 {:?}: 该 futures 口径尚未完成 contract multiplier 对齐",
-            venue
-        ));
-    }
+    let _ = venue;
     Ok(())
 }
 

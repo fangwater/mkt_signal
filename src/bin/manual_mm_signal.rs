@@ -232,7 +232,6 @@ async fn load_config(path: &str) -> Result<AppCfg> {
 
     let venue =
         venue_from_slug(&cfg.venue).with_context(|| format!("invalid venue: {}", cfg.venue))?;
-    ensure_supported_mm_open_venue(venue)?;
     let port = cfg.port.unwrap_or(DEFAULT_PORT);
     let bind = cfg.bind.unwrap_or_else(|| DEFAULT_BIND.to_string());
     let signal_channel = DEFAULT_SIGNAL_CHANNEL.to_string();
