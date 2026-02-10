@@ -38,62 +38,38 @@
   - 最终得到可用于后续拆档的偏移范围：`[final_offset_min, final_offset_max]`。
 
 
-- [3] 对冲盘口偏移函数映射（基于同/反向成交的区间压缩与放大）
-  - 输入来自 hedge query：`period_buy_qty`, `period_sell_qty`, `net_qty`（当前敞口，`both`）。
-  - 方向硬规则：`net_qty > 0` 必须 `sell`；`net_qty < 0` 必须 `buy`。
-  - 记号：
-    - `n = net_qty`
-    - `q_b = period_buy_qty`
-    - `q_s = period_sell_qty`
+- [3] 对冲偏移简化映射（仅看净头寸 + 风控预算）
+  - 输入来自 hedge query：`period_buy_qty`, `period_sell_qty`, `net_qty`。
+    - 当前版本只使用 `net_qty`（base 口径）；`period_buy_qty/period_sell_qty` 先保留，不参与映射。
+  - 方向硬规则：
+    - `net_qty > 0`：必须 `sell`
+    - `net_qty < 0`：必须 `buy`
+    - `net_qty == 0`：不触发对冲下单（或沿用现有空仓分支）
+  - 第一步：先把净头寸转成敞口净值（USDT）
+    - `mid = (hedge_bid0 + hedge_ask0) / 2`
+    - `inv_notional = |net_qty| * mid`
+  - 第二步：用风控参数计算“单币敞口净值预算”（USDT）
+    - 风控来源：`pre_trade_risk_params`
+    - `symbol_exposure_u = max_pos_u * max_symbol_exposure_ratio`
+  - 第三步：计算放缩因子（你确认的核心公式）
     - `\varepsilon = 10^{-9}`
-  - 公式（MathJax）：
+    - `x = inv_notional / (symbol_exposure_u + \varepsilon)`
+    - `scale = 1 / (1 + x)`
+    - 性质：`inv_notional` 越大，`x` 越大，`scale` 越小（更贴近盘口，提升去库存速度）。
+  - 第四步：将第 [2] 步得到的偏移区间按金额和比例双口径放缩
 
 $$
 \begin{aligned}
-q_{\text{same}} &=
-\begin{cases}
-q_s, & n > 0\\
-q_b, & n < 0
-\end{cases},
-\qquad
-q_{\text{opp}} =
-\begin{cases}
-q_b, & n > 0\\
-q_s, & n < 0
-\end{cases}, \\
-\mathrm{flow} &= q_{\text{same}} + q_{\text{opp}} + \varepsilon, \\
-a &= \frac{q_{\text{same}} - q_{\text{opp}}}{\mathrm{flow}} \in [-1,1], \\
-p_{\text{inv}} &= \frac{|n|}{|n| + \mathrm{flow} + \varepsilon}, \\
-p_{\text{adv}} &= \max(0,-a), \\
-u &= \operatorname{clip}(\max(p_{\text{inv}},p_{\text{adv}}),0,1), \\
-s(x) &= x^2(3-2x), \\
-g_a &= s(\max(0,a)),
-\qquad
-g_u = s(u), \\
-c &= \frac{\mathrm{final\_offset\_min}+\mathrm{final\_offset\_max}}{2}, \\
-w &= \mathrm{final\_offset\_max}-\mathrm{final\_offset\_min}, \\
-\beta_{\text{exp}} &= \max(0,\alpha_{\max}-1),
-\qquad
-\beta_{\text{cmp}} = \max(0,1-\alpha_{\min}), \\
-\mathrm{scale} &= \operatorname{clip}\left(1+\beta_{\text{exp}}g_a-\beta_{\text{cmp}}g_u,\alpha_{\min},\alpha_{\max}\right), \\
-\mathrm{shift\_cap} &= \min\big(\max(0,c-\mathrm{limit\_lower}),\max(0,\mathrm{limit\_upper}-c)\big), \\
-d &= g_a-g_u, \\
-\mathrm{shift} &= \mathrm{shift\_cap}\,\tanh(d), \\
-c_2 &= \operatorname{clip}(c+\mathrm{shift},\mathrm{limit\_lower},\mathrm{limit\_upper}), \\
-w_2 &= w\cdot\mathrm{scale}, \\
-o_{\min} &= \max\left(0,c_2-\frac{w_2}{2}\right), \\
-o_{\max} &= \max\left(o_{\min},c_2+\frac{w_2}{2}\right), \\
-\mathrm{offset\_min\_2} &= \operatorname{clip}(o_{\min},\mathrm{limit\_lower},\mathrm{limit\_upper}), \\
-\mathrm{offset\_max\_2} &= \operatorname{clip}(o_{\max},\mathrm{limit\_lower},\mathrm{limit\_upper}).
+\Delta_{\min} &= mid \cdot final\_offset\_min, \\
+\Delta_{\max} &= mid \cdot final\_offset\_max, \\
+\Delta_{\min,2} &= \Delta_{\min} \cdot scale, \\
+\Delta_{\max,2} &= \Delta_{\max} \cdot scale, \\
+offset\_{min,2} &= \operatorname{clip}(\Delta_{\min,2}/mid,\ limit\_lower,\ limit\_upper), \\
+offset\_{max,2} &= \operatorname{clip}(\max(offset\_{min,2},\Delta_{\max,2}/mid),\ limit\_lower,\ limit\_upper).
 \end{aligned}
 $$
 
-  - 其中：`\alpha_{\min}=hedge_offset_scale_min`，`\alpha_{\max}=hedge_offset_scale_max`。
-  - 性质：
-    - `a>0`（同向成交占优）时，`g_a` 增大，倾向于放宽区间并外移；
-    - `a<0` 或库存压力大时，`u` 与 `g_u` 增大，倾向于压缩区间并向内贴近；
-    - 全流程保持 `offset >= 0`，最终区间受 `[limit_lower, limit_upper]` 保护。
-  - 说明：当 `net_qty == 0` 时不触发对冲下单（或沿用现有空仓分支逻辑）。
+  - 结论：最终用于拆档的偏移范围为 `[offset_min_2, offset_max_2]`。
 
 - [4] 根据合约 `price_tick` 定价并生成拆档价格
   - 目标：把第 [3] 步的偏移区间 `[offset_min_2, offset_max_2]` 映射为可下单的 `k` 档价格，并补齐每档盘口厚度 `tlen`。
@@ -115,16 +91,99 @@ $$
     - `buy`：`p_i = align_price_floor(p_i^{raw}, price_tick)`
   - 去重与排序：
     - 对齐后若出现重复价位，按“离盘口由近到远”去重保序，得到最终 `price_levels[]`。
+    - 距离定义：
+      - `sell`：`p` 越小越近（靠近 `ask0`）
+      - `buy`：`p` 越大越近（靠近 `bid0`）
   - 厚度补全：
     - 对 `price_levels[]` 发起 orderbook 查询，等待同步回包，补齐每档 `tlen_i`（盘口价格厚度）。
   - 输出：`[(price_i, tlen_i)]`，用于第 [5] 步的按量拆单分配。
 
-- [5]根据单手量，将累积需要对冲的头寸进行拆单。
-已知总qty，单手量，并有了对齐prick_tick的k档价格。我现在要进行的计算是把
+- [5] 拆单分配（仅前序分配模式，近端优先）
+  - 目标：基于第 [4] 步的 `price_levels[]`，先生成 `amount_list`（单手量对应 qty），再按近到远顺序分配。
+  - 输入：
+    - `price_levels[]`（已对齐 `price_tick`，按近到远）
+    - `Q = |net_qty|`（base 口径待对冲量）
+    - `amount_u`（USDT 单手名义金额）
+    - `venue`、`qty_step_venue`、`min_qty_venue`、`contract_multiplier`
 
-从离盘口最近的位置开始拆单，按照等比分布，
+### [5.1] 先生成 `amount_list`（每档一手 qty）
+  - 先算每档按金额换算的 base 数量：
+    - `q_base_raw_i = amount_u / price_i`
+  - 按 venue 统一口径：
+    - `margin/spot`：`contract_multiplier = 1`
+    - `futures`：`contract_multiplier = m`（每张合约折算 base 数量）
+  - venue 下单单位对齐：
 
-相当于我要把现在mm hedge的分单逻辑直接在mm signal直接完成，不再做多次。
+$$
+\begin{aligned}
+q_{venue,raw,i} &= \frac{q_{base,raw,i}}{m},\\
+q_{venue,1hand,i} &= align\_qty\_ceil\Big(\max(q_{venue,raw,i},\ min\_qty_{venue}),\ qty\_step_{venue}\Big),\\
+q_{base,1hand,i} &= q_{venue,1hand,i} \cdot m.
+\end{aligned}
+$$
+
+  - 结果：
+    - `amount_list_venue[i] = q_venue_1hand_i`（真实下单单位）
+    - `amount_list_base[i] = q_base_1hand_i`（风险与剩余计算单位）
+
+### [5.2] 前序分配（唯一模式）
+  - 规则：仅从近到远分配，不做均匀分配，不做复杂权重。
+  - 要求：支持多手，不限制“每档最多 1 手”。
+
+$$
+\begin{aligned}
+Q_{rem} &= Q,\\
+n_i &= 0 \quad (i=0,1,\dots,k-1),\\
+\text{while}\ \exists i:\ Q_{rem} \ge q_{base,1hand,i}:\\
+&\quad \text{for } i=0\ldots k-1:\\
+&\qquad \text{if } Q_{rem} \ge q_{base,1hand,i}:\\
+&\qquad\qquad n_i = n_i + 1,\\
+&\qquad\qquad Q_{rem}=Q_{rem}-q_{base,1hand,i}
+\end{aligned}
+$$
+
+  - 最终每档下单量：
+    - `order_qty_venue_i = n_i * q_venue_1hand_i`
+    - `order_qty_base_i = n_i * q_base_1hand_i`
+  - 特性：
+    - 严格前序优先（每一轮都从近到远）
+    - 自动支持极大仓位下的多手分配
+    - 当各档一手数量接近时，分布近似均衡；当差异较大时，近端档位会自然获得更多手数
+
+### [5.3] 剩余量
+  - `Q_rem` 始终是 `base qty` 口径。
+  - 当 `Q_rem` 不足下一档一手时，不下碎单，直接保留到下一轮 query。
+
+### [5.4] 具体例子（futures，含合约乘数）
+  - 已知：
+    - `price_levels = [100, 102, 105, 110]`（近到远）
+    - `Q = |net_qty| = 620`（base）
+    - `amount_u = 5000`（USDT）
+    - `venue = futures`
+    - `contract_multiplier = m = 10`（1 contract = 10 base）
+    - `qty_step_venue = 1 contract`
+    - `min_qty_venue = 1 contract`
+  - 第一步：计算每档 1 手对应数量
+    - `q_base_raw = amount_u / price`
+      - `[50.000000, 49.019608, 47.619048, 45.454545]`
+    - `q_venue_raw = q_base_raw / m`
+      - `[5.000, 4.902, 4.762, 4.545]` contracts
+    - 向上对齐后：
+      - `q_venue_1hand = [5, 5, 5, 5]` contracts
+      - `q_base_1hand = [50, 50, 50, 50]`
+  - 第二步：前序分配（轮转多手）
+    - 初始 `Q_rem = 620`
+    - 每完整一轮（4 档都下一手）消耗 `200 base`
+    - 前 3 轮后：`Q_rem = 620 - 3*200 = 20`
+    - 第 4 轮起：`Q_rem=20 < 50`，所有档位均不足一手，停止
+  - 输出：
+    - 手数：`n = [3, 3, 3, 3]`
+    - 下单：`[(100,15), (102,15), (105,15), (110,15)]`（单位：contracts）
+    - 剩余：`residual_base_qty = 20`（base）
+
+  - 输出：
+    - 下单列表：`[(price_i, order_qty_venue_i)]`（仅 `order_qty_venue_i > 0`）
+    - 剩余：`residual_base_qty = Q_rem`
 
 ## 参数汇总（写入 `mm_strategy_params_{venue}`）
 
@@ -140,15 +199,18 @@ $$
 ### 对冲侧（hedge）
 - `next_query_delay_ms`：对冲 query 触发间隔（ms）
 - `hedge_split_levels`：对冲拆档数（`k`）
+- `hedge_order_amount_u`：对冲单手名义金额（USDT，若未配置可回退使用 `order_amount`）
 - `hedge_vol_upper_scale`：对冲波动率上界修正系数
 - `hedge_vol_lower_scale`：对冲波动率下界修正系数
 - `hedge_price_offset_limit_upper`：对冲偏移上界（price_offset_limit）
 - `hedge_price_offset_limit_lower`：对冲偏移下界（price_offset_limit）
-- `hedge_offset_scale_min`：区间缩放下限
-- `hedge_offset_scale_max`：区间缩放上限
-- `hedge_offset_mapping_mode`：偏移映射模式（建议默认 `smoothstep`）
 - `hedge_aggressive_seq_threshold`：对冲激进阈值
 - `max_hedge_price_pct_change`：对冲价格最大变动阈值（%）
+
+### Pre-Trade 风控（写入 `<dir>:<open>:<hedge>:pre_trade_risk_params`）
+- `max_pos_u`：单币种基准上限（USDT）
+- `max_symbol_exposure_ratio`：单币种敞口比例（0~1）
+- `symbol_exposure_u = max_pos_u * max_symbol_exposure_ratio`（供 MM 对冲放缩计算）
 
 ### 通用
 - `signal_cooldown`：信号冷却时间（秒）

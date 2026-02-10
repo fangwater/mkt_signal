@@ -17,8 +17,8 @@ use super::orderbook::OrderBook;
 use super::publisher::DepthMsgPublisher;
 use super::query_msg::{
     resp_status_name, DepthQueryHeader, DepthQueryLoadTlenBatchReq, DepthQueryLoadTlenBatchResp,
-    DepthQueryLoadTlenSingleReq, DepthQueryLoadTlenSingleResp, DepthQueryType,
-    DEPTH_QUERY_PAYLOAD, RESP_STATUS_BAD_REQUEST, RESP_STATUS_OK, RESP_STATUS_PAYLOAD_TOO_LARGE,
+    DepthQueryLoadTlenSingleReq, DepthQueryLoadTlenSingleResp, DepthQueryType, DEPTH_QUERY_PAYLOAD,
+    RESP_STATUS_BAD_REQUEST, RESP_STATUS_OK, RESP_STATUS_PAYLOAD_TOO_LARGE,
     RESP_STATUS_UNSUPPORTED_TYPE,
 };
 use crate::signal::common::TradingVenue;
@@ -172,10 +172,7 @@ impl DepthPubApp {
         Ok(subscriber)
     }
 
-    fn create_query_server(
-        node: &Node<ipc::Service>,
-        venue: &str,
-    ) -> Result<DepthQueryServer> {
+    fn create_query_server(node: &Node<ipc::Service>, venue: &str) -> Result<DepthQueryServer> {
         let service_name = format!("{}/{}", DEPTH_QUERY_SERVICE_PREFIX, venue);
         let service = node
             .service_builder(&ServiceName::new(&service_name)?)
@@ -629,7 +626,11 @@ impl DepthPubApp {
             amounts.push(self.query_tlen_amount(symbol, price));
         }
 
-        match DepthQueryLoadTlenBatchResp::write_to(&mut resp_payload[1..], req.timestamp_us, &amounts) {
+        match DepthQueryLoadTlenBatchResp::write_to(
+            &mut resp_payload[1..],
+            req.timestamp_us,
+            &amounts,
+        ) {
             Ok(written) => {
                 resp_payload[0] = RESP_STATUS_OK;
                 (RESP_STATUS_OK, 1 + written)
@@ -693,7 +694,11 @@ impl DepthPubApp {
         (reconstructed - price).abs() <= tolerance
     }
 
-    fn send_query_response(&self, active_request: DepthQueryActiveRequest, payload: &[u8]) -> Result<()> {
+    fn send_query_response(
+        &self,
+        active_request: DepthQueryActiveRequest,
+        payload: &[u8],
+    ) -> Result<()> {
         let response = active_request.loan_slice_uninit(payload.len())?;
         let response = response.write_from_slice(payload);
         response.send()?;

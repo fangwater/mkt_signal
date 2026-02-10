@@ -701,28 +701,16 @@ impl SubscribeMsgs {
                     .push(construct_subscribe_message(&exchange, cfg.venue, chunk, ch));
             }
             if let Some(ref ch) = trade_channel {
-                trade_subscribe_msgs.push(construct_subscribe_message(
-                    &exchange,
-                    cfg.venue,
-                    chunk,
-                    ch,
-                ));
+                trade_subscribe_msgs
+                    .push(construct_subscribe_message(&exchange, cfg.venue, chunk, ch));
             }
             if let Some(ref ch) = kline_channel {
-                kline_subscribe_msgs.push(construct_subscribe_message(
-                    &exchange,
-                    cfg.venue,
-                    chunk,
-                    ch,
-                ));
+                kline_subscribe_msgs
+                    .push(construct_subscribe_message(&exchange, cfg.venue, chunk, ch));
             }
             if let Some(ref ch) = best_price_spread_channel {
-                ask_bid_spread_msgs.push(construct_subscribe_message(
-                    &exchange,
-                    cfg.venue,
-                    chunk,
-                    ch,
-                ));
+                ask_bid_spread_msgs
+                    .push(construct_subscribe_message(&exchange, cfg.venue, chunk, ch));
             }
         }
         Self {

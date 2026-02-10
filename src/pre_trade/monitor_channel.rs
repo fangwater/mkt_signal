@@ -883,7 +883,13 @@ impl MonitorChannel {
             match venue {
                 TradingVenue::BinanceFutures => {
                     // Binance U 本地统一按 contracts(multiplier=1.0) 处理
-                    Self::align_order_with_table(&symbol_key, raw_qty, raw_price, table.as_ref(), true)
+                    Self::align_order_with_table(
+                        &symbol_key,
+                        raw_qty,
+                        raw_price,
+                        table.as_ref(),
+                        true,
+                    )
                 }
                 TradingVenue::BinanceMargin => Self::align_order_with_table(
                     &symbol_key,
@@ -1454,7 +1460,9 @@ impl MonitorChannel {
                 "price_hint"
             };
             let (qty_unit, fut_symbol_key, qty_multiplier) = match open_venue {
-                TradingVenue::BinanceFutures => ("contracts(mult=1)", Some(symbol_upper.clone()), Some(1.0)),
+                TradingVenue::BinanceFutures => {
+                    ("contracts(mult=1)", Some(symbol_upper.clone()), Some(1.0))
+                }
                 TradingVenue::OkexFutures | TradingVenue::GateFutures => {
                     let symbol_key = match open_venue {
                         TradingVenue::OkexFutures => {

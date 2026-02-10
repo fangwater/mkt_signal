@@ -109,7 +109,9 @@ impl BasicBalanceManager {
     /// 其他交易所暂不支持，会 panic。
     pub fn balance_position_of(&self, symbol: &str) -> f64 {
         let mapped = match self.exchange {
-            Exchange::Okex | Exchange::Binance | Exchange::Gate | Exchange::Hyperliquid => symbol.to_ascii_uppercase(),
+            Exchange::Okex | Exchange::Binance | Exchange::Gate | Exchange::Hyperliquid => {
+                symbol.to_ascii_uppercase()
+            }
             _ => panic!(
                 "balance_position_of not implemented for {:?}",
                 self.exchange
@@ -126,7 +128,9 @@ impl BasicBalanceManager {
 
         match self.exchange {
             Exchange::Okex => b.balance,
-            Exchange::Binance | Exchange::Gate | Exchange::Hyperliquid => b.balance - b.borrowed - b.cumulative_interest,
+            Exchange::Binance | Exchange::Gate | Exchange::Hyperliquid => {
+                b.balance - b.borrowed - b.cumulative_interest
+            }
             _ => unreachable!(),
         }
     }
