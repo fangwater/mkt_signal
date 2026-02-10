@@ -127,6 +127,7 @@ struct AppState {
     cfg: AppCfg,
     quotes: Arc<RwLock<QuoteCache>>,
     symbols: Arc<RwLock<SymbolCache>>,
+    min_qty_table: Arc<RwLock<VenueMinQtyTable>>,
     publish_tx: mpsc::UnboundedSender<PublishCmd>,
 }
 
@@ -161,6 +162,65 @@ struct ManualOpenResponse {
     published_at_us: i64,
     symbol: String,
     levels: usize,
+    buy_orders: usize,
+    sell_orders: usize,
+}
+
+#[derive(Debug, Clone)]
+struct PlannedOpenOrder {
+    side: Side,
+    offset: f64,
+    base_price: f64,
+    raw_price: f64,
+    raw_qty: f64,
+    aligned_price: f64,
+    aligned_qty: f64,
+    price_tick_count: i64,
+    qty_tick_count: i64,
+}
+
+#[derive(Debug, Clone)]
+struct ManualOpenPlan {
+    symbol: String,
+    bid: f64,
+    ask: f64,
+    quote_ts: i64,
+    now_us: i64,
+    exp_time_us: i64,
+    from_key: Vec<u8>,
+    price_tick: f64,
+    qty_tick: f64,
+    levels: Vec<PlannedOpenOrder>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenPreviewLevel {
+    side: String,
+    offset: f64,
+    base_price: f64,
+    raw_price: f64,
+    raw_qty: f64,
+    aligned_price: f64,
+    aligned_qty: f64,
+    price_tick_count: i64,
+    qty_tick_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenPreviewResponse {
+    ok: bool,
+    symbol: String,
+    venue: TradingVenue,
+    bid: f64,
+    ask: f64,
+    quote_ts: i64,
+    preview_ts_us: i64,
+    exp_time_us: i64,
+    order_amount_u: f64,
+    price_tick: f64,
+    qty_tick: f64,
+    from_key: String,
+    levels: Vec<OpenPreviewLevel>,
     buy_orders: usize,
     sell_orders: usize,
 }
@@ -232,6 +292,7 @@ async fn load_config(path: &str) -> Result<AppCfg> {
 
     let venue =
         venue_from_slug(&cfg.venue).with_context(|| format!("invalid venue: {}", cfg.venue))?;
+    ensure_supported_mm_open_venue(venue)?;
     let port = cfg.port.unwrap_or(DEFAULT_PORT);
     let bind = cfg.bind.unwrap_or_else(|| DEFAULT_BIND.to_string());
     let signal_channel = DEFAULT_SIGNAL_CHANNEL.to_string();
@@ -604,6 +665,47 @@ fn build_and_publish_open(
     min_qty_table: &Arc<RwLock<VenueMinQtyTable>>,
     req: ManualOpenRequest,
 ) -> Result<ManualOpenResponse> {
+    let plan = build_manual_open_plan(cfg, min_qty_table, req)?;
+
+    let mut buy_orders = 0usize;
+    let mut sell_orders = 0usize;
+    for level in &plan.levels {
+        let mut ctx = MmOpenCtx::new();
+        ctx.opening_leg = TradingLeg::new(cfg.venue, plan.bid, plan.ask, plan.quote_ts);
+        ctx.set_opening_symbol(&plan.symbol);
+        ctx.set_side(level.side);
+        ctx.set_order_type(OrderType::Limit);
+        let _ = ctx.set_amount_with_tick_floor(level.aligned_qty, plan.qty_tick);
+        let _ = ctx.set_price_with_tick_floor(level.aligned_price, plan.price_tick);
+        ctx.exp_time = plan.exp_time_us;
+        ctx.create_ts = plan.now_us;
+        ctx.price_offset = level.offset;
+        ctx.set_from_key(plan.from_key.clone());
+
+        let signal = TradeSignal::create(SignalType::MMOpen, plan.now_us, 0.0, ctx.to_bytes());
+        publisher.publish(&signal.to_bytes())?;
+
+        match level.side {
+            Side::Buy => buy_orders += 1,
+            Side::Sell => sell_orders += 1,
+        }
+    }
+
+    Ok(ManualOpenResponse {
+        ok: true,
+        published_at_us: plan.now_us,
+        symbol: plan.symbol,
+        levels: cfg.price_offsets.len(),
+        buy_orders,
+        sell_orders,
+    })
+}
+
+fn build_manual_open_plan(
+    cfg: &AppCfg,
+    min_qty_table: &Arc<RwLock<VenueMinQtyTable>>,
+    req: ManualOpenRequest,
+) -> Result<ManualOpenPlan> {
     let symbol = req.symbol.trim().to_uppercase();
     if symbol.is_empty() {
         anyhow::bail!("symbol is empty");
@@ -639,8 +741,7 @@ fn build_and_publish_open(
         );
     }
 
-    let mut buy_orders = 0usize;
-    let mut sell_orders = 0usize;
+    let mut levels = Vec::with_capacity(cfg.price_offsets.len().saturating_mul(2));
 
     for offset in &cfg.price_offsets {
         let offset = offset.abs();
@@ -666,35 +767,78 @@ fn build_and_publish_open(
                     .map_err(anyhow::Error::msg)?;
 
             let mut ctx = MmOpenCtx::new();
-            ctx.opening_leg = TradingLeg::new(cfg.venue, req.bid, req.ask, req.quote_ts);
-            ctx.set_opening_symbol(&symbol);
-            ctx.set_side(side);
-            ctx.set_order_type(OrderType::Limit);
-            let _ = ctx.set_amount_with_tick_floor(aligned_qty, qty_tick);
             let _ = ctx.set_price_with_tick_floor(aligned_price, price_tick);
-            ctx.exp_time = exp_time;
-            ctx.create_ts = now;
-            ctx.price_offset = offset;
-            ctx.set_from_key(from_key.clone());
-
-            let signal = TradeSignal::create(SignalType::MMOpen, now, 0.0, ctx.to_bytes());
-            publisher.publish(&signal.to_bytes())?;
-
-            match side {
-                Side::Buy => buy_orders += 1,
-                Side::Sell => sell_orders += 1,
-            }
+            let _ = ctx.set_amount_with_tick_floor(aligned_qty, qty_tick);
+            levels.push(PlannedOpenOrder {
+                side,
+                offset,
+                base_price,
+                raw_price,
+                raw_qty,
+                aligned_price,
+                aligned_qty,
+                price_tick_count: ctx.price_count(),
+                qty_tick_count: ctx.amount_count(),
+            });
         }
     }
 
-    Ok(ManualOpenResponse {
-        ok: true,
-        published_at_us: now,
+    Ok(ManualOpenPlan {
         symbol,
-        levels: cfg.price_offsets.len(),
+        bid: req.bid,
+        ask: req.ask,
+        quote_ts: req.quote_ts,
+        now_us: now,
+        exp_time_us: exp_time,
+        from_key,
+        price_tick,
+        qty_tick,
+        levels,
+    })
+}
+
+fn build_open_preview_response(cfg: &AppCfg, plan: ManualOpenPlan) -> OpenPreviewResponse {
+    let mut buy_orders = 0usize;
+    let mut sell_orders = 0usize;
+    let levels = plan
+        .levels
+        .iter()
+        .map(|order| {
+            match order.side {
+                Side::Buy => buy_orders += 1,
+                Side::Sell => sell_orders += 1,
+            }
+            OpenPreviewLevel {
+                side: order.side.as_str_lower().to_string(),
+                offset: order.offset,
+                base_price: order.base_price,
+                raw_price: order.raw_price,
+                raw_qty: order.raw_qty,
+                aligned_price: order.aligned_price,
+                aligned_qty: order.aligned_qty,
+                price_tick_count: order.price_tick_count,
+                qty_tick_count: order.qty_tick_count,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    OpenPreviewResponse {
+        ok: true,
+        symbol: plan.symbol,
+        venue: cfg.venue,
+        bid: plan.bid,
+        ask: plan.ask,
+        quote_ts: plan.quote_ts,
+        preview_ts_us: plan.now_us,
+        exp_time_us: plan.exp_time_us,
+        order_amount_u: cfg.order_amount_u,
+        price_tick: plan.price_tick,
+        qty_tick: plan.qty_tick,
+        from_key: String::from_utf8_lossy(&plan.from_key).to_string(),
+        levels,
         buy_orders,
         sell_orders,
-    })
+    }
 }
 
 async fn api_config(State(st): State<AppState>) -> impl IntoResponse {
@@ -775,6 +919,32 @@ async fn api_send(
     }
 }
 
+async fn api_preview(
+    State(st): State<AppState>,
+    Json(req): Json<ApiOpenRequest>,
+) -> impl IntoResponse {
+    let symbol = req.symbol.trim().to_uppercase();
+    if symbol.is_empty() {
+        return (StatusCode::BAD_REQUEST, "symbol is empty").into_response();
+    }
+    let quote = st.quotes.read().get_valid(&symbol);
+    let Some(qt) = quote else {
+        return (StatusCode::BAD_REQUEST, "quote unavailable").into_response();
+    };
+    let req = ManualOpenRequest {
+        symbol,
+        bid: qt.bid,
+        ask: qt.ask,
+        quote_ts: qt.ts,
+        from_key: req.from_key,
+    };
+
+    match build_manual_open_plan(&st.cfg, &st.min_qty_table, req) {
+        Ok(plan) => Json(build_open_preview_response(&st.cfg, plan)).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    }
+}
+
 async fn index() -> impl IntoResponse {
     Html(INDEX_HTML)
 }
@@ -785,6 +955,7 @@ async fn serve_http(addr: SocketAddr, state: AppState, token: CancellationToken)
         .route("/api/config", get(api_config))
         .route("/api/symbols", get(api_symbols))
         .route("/api/quote", get(api_quote))
+        .route("/api/preview", post(api_preview))
         .route("/api/send", post(api_send))
         .with_state(state);
 
@@ -805,126 +976,390 @@ const INDEX_HTML: &str = r#"<!doctype html>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>manual_mm_signal</title>
     <style>
-      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 16px; }
-      .row { display: flex; gap: 16px; align-items: flex-start; }
-      .col { flex: 1; min-width: 320px; }
-      .box { border: 1px solid #ddd; border-radius: 10px; padding: 12px; }
-      input, select, button { padding: 8px; font-size: 14px; }
-      input, select { width: 100%; box-sizing: border-box; }
-      button { cursor: pointer; }
-      .muted { color: #666; font-size: 12px; }
-      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-      .ok { color: #0b7; }
-      .err { color: #c33; white-space: pre-wrap; }
-      textarea { width: 100%; box-sizing: border-box; padding: 10px; font-size: 12px; line-height: 1.35; }
+      :root {
+        --fg: #111;
+        --muted: #667085;
+        --line: #dfe3e8;
+        --bg: #f8fafc;
+        --ok: #067647;
+        --err: #b42318;
+      }
+      body {
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+        margin: 14px;
+        color: var(--fg);
+        background: #fff;
+      }
+      h2, h3 {
+        margin: 0 0 10px 0;
+      }
+      .muted { color: var(--muted); font-size: 12px; }
+      .layout {
+        display: grid;
+        grid-template-columns: 320px 1fr;
+        gap: 12px;
+        align-items: start;
+      }
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--bg);
+        padding: 12px;
+      }
+      .stack { display: grid; gap: 12px; }
+      .row { display: flex; gap: 8px; align-items: center; }
+      .row-between { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+      .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      input, button {
+        font-size: 13px;
+        padding: 8px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        box-sizing: border-box;
+      }
+      input { width: 100%; }
+      button {
+        cursor: pointer;
+        background: #fff;
+      }
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+      ul {
+        margin: 0;
+        padding-left: 18px;
+        max-height: 360px;
+        overflow: auto;
+      }
+      li {
+        cursor: pointer;
+        line-height: 1.45;
+      }
+      li:hover { text-decoration: underline; }
+      .pill {
+        font-size: 11px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        border: 1px solid #cdd5df;
+        background: #fff;
+      }
+      .pill.ok {
+        color: var(--ok);
+        border-color: #a6f4c5;
+        background: #ecfdf3;
+      }
+      .pill.err {
+        color: var(--err);
+        border-color: #fecdca;
+        background: #fef3f2;
+      }
+      .kv {
+        display: grid;
+        grid-template-columns: 140px 1fr;
+        gap: 4px 10px;
+        font-size: 12px;
+      }
+      .kv .k { color: var(--muted); }
+      .table-wrap {
+        max-height: 360px;
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+      th, td {
+        border-bottom: 1px solid #edf0f3;
+        padding: 6px 8px;
+        text-align: right;
+        white-space: nowrap;
+      }
+      th:first-child, td:first-child { text-align: left; }
+      th:nth-child(2), td:nth-child(2) { text-align: left; }
+      .buy { color: #175cd3; }
+      .sell { color: #b42318; }
+      textarea {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 8px;
+        font-size: 12px;
+        line-height: 1.35;
+        background: #fff;
+      }
     </style>
   </head>
   <body>
     <h2>manual_mm_signal</h2>
-    <div class="muted" id="cfg"></div>
-    <div class="row">
-      <div class="col box">
-        <div class="grid">
-          <div>
-            <label class="muted">Search</label>
-            <input id="q" placeholder="e.g. BTCUSDT" />
+    <div class="muted" id="cfgLine"></div>
+
+    <div class="layout" style="margin-top: 12px;">
+      <div class="stack">
+        <section class="panel">
+          <div class="row-between">
+            <h3 style="font-size:15px;">Symbols</h3>
+            <span class="pill" id="statusPill">IDLE</span>
           </div>
-          <div>
-            <label class="muted">Selected</label>
-            <input id="symbol" placeholder="click from list" />
+          <div class="muted">筛选并选中交易对，自动刷新 quote</div>
+          <div style="margin-top:8px;">
+            <input id="q" placeholder="Search e.g. BTCUSDT" />
           </div>
-        </div>
-        <div style="margin-top:10px;">
-          <div class="muted">Symbols</div>
-          <ul id="list" style="max-height: 420px; overflow: auto; margin:0; padding-left: 18px;"></ul>
-        </div>
+          <div style="margin-top:8px;">
+            <input id="symbol" placeholder="Selected symbol" />
+          </div>
+          <div style="margin-top:8px;">
+            <ul id="list"></ul>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h3 style="font-size:15px;">Actions</h3>
+          <div class="grid2">
+            <div>
+              <div class="muted">From Key (optional)</div>
+              <input id="fromKey" />
+            </div>
+            <div>
+              <div class="muted">Quote</div>
+              <div id="quote" style="font-size:12px; padding-top:9px;">N/A</div>
+            </div>
+          </div>
+          <div class="row" style="margin-top:10px;">
+            <button id="refreshQuote">Refresh Quote</button>
+            <button id="preview">Preview MMOpen</button>
+            <button id="send">Send MMOpen</button>
+          </div>
+          <div class="muted" id="actionHint" style="margin-top:8px;">请选择 symbol 后操作</div>
+        </section>
       </div>
-      <div class="col box">
-        <div class="grid">
-          <div>
-            <label class="muted">From Key (optional)</label>
-            <input id="fromKey" />
+
+      <div class="stack">
+        <section class="panel">
+          <h3 style="font-size:15px;">Config Summary</h3>
+          <div class="kv" id="cfgKv"></div>
+        </section>
+
+        <section class="panel">
+          <div class="row-between">
+            <h3 style="font-size:15px;">MMOpen Preview</h3>
+            <div class="muted" id="previewMeta">No preview yet</div>
           </div>
-        </div>
-        <div style="margin-top:10px;">
-          <button id="send">Send MMOpen (Both Sides)</button>
-        </div>
-        <div class="muted" style="margin-top:6px;">
-          自动使用 open_price_offsets + order_amount 生成多空两侧订单
-        </div>
-        <div style="margin-top:12px;" class="mono" id="quote"></div>
-        <div style="margin-top:10px;">
-          <div id="resp" class="muted"></div>
-        </div>
-      </div>
-      <div class="col box">
-        <div class="muted">Last Response</div>
-        <textarea id="log" rows="16" readonly></textarea>
+          <div class="table-wrap" style="margin-top:8px;">
+            <table>
+              <thead>
+                <tr>
+                  <th>side</th>
+                  <th>offset</th>
+                  <th>base_price</th>
+                  <th>raw_price</th>
+                  <th>raw_qty</th>
+                  <th>aligned_price</th>
+                  <th>aligned_qty</th>
+                  <th>price_count</th>
+                  <th>qty_count</th>
+                </tr>
+              </thead>
+              <tbody id="previewRows">
+                <tr><td colspan="9" class="muted" style="text-align:center;">No data</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h3 style="font-size:15px;">Last Response</h3>
+          <textarea id="log" rows="14" readonly></textarea>
+        </section>
       </div>
     </div>
 
     <script>
-      const cfgEl = document.getElementById('cfg');
-      const logEl = document.getElementById('log');
-      const respEl = document.getElementById('resp');
-      const state = { symbols: [], selected: "" };
+      const state = {
+        cfg: null,
+        symbols: [],
+        selected: '',
+        lastPreview: null,
+      };
 
-      async function loadCfg() {
-        const resp = await fetch('/api/config');
-        const cfg = await resp.json();
-        cfgEl.textContent = `mm_trade_symbols:${cfg.symbol_key_suffix} venue=${cfg.venue}`;
+      const els = {
+        cfgLine: document.getElementById('cfgLine'),
+        cfgKv: document.getElementById('cfgKv'),
+        q: document.getElementById('q'),
+        symbol: document.getElementById('symbol'),
+        list: document.getElementById('list'),
+        quote: document.getElementById('quote'),
+        fromKey: document.getElementById('fromKey'),
+        statusPill: document.getElementById('statusPill'),
+        actionHint: document.getElementById('actionHint'),
+        previewRows: document.getElementById('previewRows'),
+        previewMeta: document.getElementById('previewMeta'),
+        log: document.getElementById('log'),
+        refreshQuote: document.getElementById('refreshQuote'),
+        preview: document.getElementById('preview'),
+        send: document.getElementById('send'),
+      };
+
+      function fmtNum(v, d=8) {
+        if (typeof v !== 'number' || !Number.isFinite(v)) return '-';
+        return v.toFixed(d);
+      }
+
+      function setStatus(label, isErr = false) {
+        els.statusPill.textContent = label;
+        els.statusPill.className = `pill ${isErr ? 'err' : 'ok'}`;
+      }
+
+      function setLog(obj) {
+        els.log.value = JSON.stringify(obj, null, 2);
+      }
+
+      function updateButtons() {
+        const symbol = els.symbol.value.trim().toUpperCase();
+        const enabled = !!symbol;
+        els.preview.disabled = !enabled;
+        els.send.disabled = !enabled;
+        els.actionHint.textContent = enabled ? '可先 Preview 确认，再 Send' : '请选择 symbol 后操作';
+      }
+
+      function renderCfg(cfg) {
+        state.cfg = cfg;
+        els.cfgLine.textContent = `mm_trade_symbols:${cfg.symbol_key_suffix} | venue=${cfg.venue}`;
+        els.fromKey.value = cfg.from_key || '';
+
+        const kv = [
+          ['venue', cfg.venue],
+          ['bind', `${cfg.bind}:${cfg.port}`],
+          ['order_amount_u', cfg.order_amount_u],
+          ['default_open_ttl_ms', cfg.default_open_ttl_ms],
+          ['next_query_delay_ms', cfg.next_query_delay_ms],
+          ['offset_count', (cfg.price_offsets || []).length],
+          ['offsets', JSON.stringify(cfg.price_offsets || [])],
+          ['default_from_key', cfg.from_key || ''],
+        ];
+        els.cfgKv.innerHTML = kv
+          .map(([k, v]) => `<div class="k">${k}</div><div>${v}</div>`)
+          .join('');
       }
 
       function renderList() {
-        const q = document.getElementById("q").value.trim().toUpperCase();
-        const ul = document.getElementById("list");
-        ul.innerHTML = "";
-        const items = state.symbols.filter(s => !q || s.includes(q)).slice(0, 500);
+        const q = els.q.value.trim().toUpperCase();
+        const items = state.symbols.filter((s) => !q || s.includes(q)).slice(0, 600);
+        els.list.innerHTML = '';
         for (const s of items) {
-          const li = document.createElement("li");
+          const li = document.createElement('li');
           li.textContent = s;
-          li.onclick = () => {
-            document.getElementById("symbol").value = s;
+          li.onclick = async () => {
+            els.symbol.value = s;
             state.selected = s;
-            refreshQuote();
+            updateButtons();
+            await refreshQuote();
           };
-          ul.appendChild(li);
+          els.list.appendChild(li);
         }
       }
 
+      function renderPreview(preview) {
+        state.lastPreview = preview;
+        const rows = preview.levels || [];
+        if (!rows.length) {
+          els.previewRows.innerHTML = '<tr><td colspan="9" class="muted" style="text-align:center;">No levels</td></tr>';
+          return;
+        }
+
+        els.previewRows.innerHTML = rows.map((row) => {
+          const sideCls = row.side === 'buy' ? 'buy' : 'sell';
+          return `
+            <tr>
+              <td class="${sideCls}">${row.side}</td>
+              <td>${fmtNum(row.offset, 6)}</td>
+              <td>${fmtNum(row.base_price, 6)}</td>
+              <td>${fmtNum(row.raw_price, 6)}</td>
+              <td>${fmtNum(row.raw_qty, 8)}</td>
+              <td>${fmtNum(row.aligned_price, 6)}</td>
+              <td>${fmtNum(row.aligned_qty, 8)}</td>
+              <td>${row.price_tick_count}</td>
+              <td>${row.qty_tick_count}</td>
+            </tr>
+          `;
+        }).join('');
+
+        els.previewMeta.textContent =
+          `symbol=${preview.symbol} buy=${preview.buy_orders} sell=${preview.sell_orders} quote_ts=${preview.quote_ts}`;
+      }
+
+      async function loadCfg() {
+        const resp = await fetch('/api/config');
+        if (!resp.ok) {
+          throw new Error(await resp.text());
+        }
+        renderCfg(await resp.json());
+      }
+
       async function loadSymbols() {
-        const r = await fetch('/api/symbols');
-        const j = await r.json();
-        state.symbols = (j.symbols || []).sort();
+        const resp = await fetch('/api/symbols');
+        if (!resp.ok) {
+          throw new Error(await resp.text());
+        }
+        const data = await resp.json();
+        state.symbols = (data.symbols || []).slice().sort();
         renderList();
       }
 
       async function refreshQuote() {
-        const sym = document.getElementById("symbol").value.trim().toUpperCase();
-        if (!sym) return;
-        const r = await fetch(`/api/quote?symbol=${encodeURIComponent(sym)}`);
-        if (!r.ok) {
-          document.getElementById("quote").textContent = "quote: N/A";
+        const symbol = els.symbol.value.trim().toUpperCase();
+        if (!symbol) {
+          els.quote.textContent = 'N/A';
           return;
         }
-        const j = await r.json();
-        document.getElementById("quote").textContent = `${j.venue} bid=${j.bid} ask=${j.ask} ts=${j.ts}`;
+
+        const resp = await fetch(`/api/quote?symbol=${encodeURIComponent(symbol)}`);
+        if (!resp.ok) {
+          els.quote.textContent = 'quote unavailable';
+          setStatus('QUOTE_MISSING', true);
+          return;
+        }
+
+        const data = await resp.json();
+        els.quote.textContent = `${data.venue} bid=${fmtNum(data.bid, 6)} ask=${fmtNum(data.ask, 6)} ts=${data.ts}`;
+        setStatus('READY');
       }
 
-      function log(obj, ok=true) {
-        const txt = JSON.stringify(obj, null, 2);
-        logEl.value = txt;
-        respEl.className = ok ? 'ok' : 'err';
-        respEl.textContent = ok ? 'OK' : 'ERROR';
-      }
-
-      document.getElementById('send').onclick = async () => {
-        const payload = {
-          symbol: document.getElementById('symbol').value.trim(),
-        };
-        const fromKey = document.getElementById('fromKey').value.trim();
+      function buildPayload() {
+        const payload = { symbol: els.symbol.value.trim().toUpperCase() };
+        const fromKey = els.fromKey.value.trim();
         if (fromKey) payload.from_key = fromKey;
+        return payload;
+      }
 
+      async function previewOpen() {
+        const payload = buildPayload();
+        const resp = await fetch('/api/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        const text = await resp.text();
+        if (!resp.ok) {
+          setStatus('PREVIEW_ERR', true);
+          setLog({ error: text });
+          return;
+        }
+
+        const data = JSON.parse(text);
+        renderPreview(data);
+        setStatus('PREVIEW_OK');
+        setLog(data);
+      }
+
+      async function sendOpen() {
+        const payload = buildPayload();
         const resp = await fetch('/api/send', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -933,19 +1368,38 @@ const INDEX_HTML: &str = r#"<!doctype html>
 
         const text = await resp.text();
         if (!resp.ok) {
-          log({ error: text }, false);
+          setStatus('SEND_ERR', true);
+          setLog({ error: text });
           return;
         }
-        try {
-          log(JSON.parse(text), true);
-        } catch {
-          log({ raw: text }, true);
-        }
-      };
 
-      loadCfg();
-      loadSymbols();
-      document.getElementById("q").oninput = renderList;
+        const data = JSON.parse(text);
+        setStatus('SEND_OK');
+        setLog(data);
+      }
+
+      els.q.oninput = renderList;
+      els.symbol.oninput = () => {
+        updateButtons();
+      };
+      els.symbol.onchange = async () => {
+        await refreshQuote();
+      };
+      els.refreshQuote.onclick = refreshQuote;
+      els.preview.onclick = previewOpen;
+      els.send.onclick = sendOpen;
+
+      (async () => {
+        try {
+          await loadCfg();
+          await loadSymbols();
+          updateButtons();
+          setStatus('READY');
+        } catch (err) {
+          setStatus('INIT_ERR', true);
+          setLog({ error: String(err) });
+        }
+      })();
     </script>
   </body>
 </html>
@@ -980,6 +1434,7 @@ async fn run(cfg: AppCfg, token: CancellationToken) -> Result<()> {
         cfg: cfg.clone(),
         quotes,
         symbols,
+        min_qty_table: table.clone(),
         publish_tx,
     };
 
