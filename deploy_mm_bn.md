@@ -2,7 +2,7 @@
 
 本文按你确认的规则整理：
 - `mkt_pub` / `depth_pub` / `kline_pub` / `factor_pub` 属于**公共服务**，用各自默认目录命名空间；
-- MM 服务（`trade_engine` / `pre_trade` / `manual_mm_signal` / `viz_server`）只放在 `binance_mm_<suffix>` 目录下，独立运行。
+- MM 服务（`trade_engine` / `pre_trade` / `persist_manager` / `manual_mm_signal` / `viz_server`）只放在 `binance_mm_<suffix>` 目录下，独立运行。
 
 ---
 
@@ -139,11 +139,19 @@ pm2 logs --namespace factor_pub pairmm_resample_binance-futures --lines 80
 ```bash
 cd ~/crypto_mkt/mkt_signal
 
+bash scripts/deploy_mm_account_monitor.sh \
+  --exchange binance \
+  --env-suffix "$MM_SUFFIX"
+
 bash scripts/deploy_mm_trade_engine.sh \
   --exchange binance \
   --env-suffix "$MM_SUFFIX"
 
 bash scripts/deploy_mm_pre_trade.sh \
+  --exchange binance \
+  --env-suffix "$MM_SUFFIX"
+
+bash scripts/deploy_mm_persist_manager.sh \
   --exchange binance \
   --env-suffix "$MM_SUFFIX"
 
@@ -159,6 +167,31 @@ bash scripts/deploy_mm_viz_server.sh \
 ```
 
 如需自动更新并应用 Nginx 映射，可在最后一个命令追加 `--apply-nginx`。
+
+### 5.1 仅更新 trade_engine 后重启 pre_trade（你当前场景）
+
+```bash
+cd ~/$MM_ENV
+
+export IPC_NAMESPACE="$MM_ENV"
+unset PM2_NAMESPACE
+
+# 1) 重启 trade_engine
+./mm_scripts/start_mm_trade_engine.sh binance
+
+# 2) trade_engine 就绪后，重启 pre_trade
+./mm_scripts/stop_mm_pre_trade.sh
+./mm_scripts/start_mm_pre_trade.sh --venue "$MM_VENUE"
+
+# 3) 可选：重启 persist_manager（保证订阅链路干净）
+./mm_scripts/stop_mm_persist_manager.sh
+./mm_scripts/start_mm_persist_manager.sh
+
+# 4) 查看日志
+pm2 logs --namespace "$MM_ENV" "mm_trade_engine_${MM_ENV}" --lines 80
+pm2 logs --namespace "$MM_ENV" "mm_pre_trade_${MM_ENV}" --lines 80
+pm2 logs --namespace "$MM_ENV" "mm_persist_manager_${MM_ENV}" --lines 80
+```
 
 ---
 
@@ -204,8 +237,10 @@ cd ~/$MM_ENV
 export IPC_NAMESPACE="$MM_ENV"
 unset PM2_NAMESPACE
 
+./scripts/start_account_monitor.sh
 ./mm_scripts/start_mm_trade_engine.sh binance
 ./mm_scripts/start_mm_pre_trade.sh --venue "$MM_VENUE"
+./mm_scripts/start_mm_persist_manager.sh
 ./mm_scripts/start_manual_mm_signal.sh --config config/manual_mm_signal.yaml
 ./mm_scripts/start_mm_viz_server.sh --exchange binance
 ```
@@ -214,8 +249,10 @@ unset PM2_NAMESPACE
 
 ```bash
 pm2 status --namespace "$MM_ENV"
+pm2 logs --namespace "$MM_ENV" "account_monitor_${MM_ENV}" --lines 80
 pm2 logs --namespace "$MM_ENV" "mm_trade_engine_${MM_ENV}" --lines 80
 pm2 logs --namespace "$MM_ENV" "mm_pre_trade_${MM_ENV}" --lines 80
+pm2 logs --namespace "$MM_ENV" "mm_persist_manager_${MM_ENV}" --lines 80
 pm2 logs --namespace "$MM_ENV" "manual_mm_signal_${MM_ENV}" --lines 80
 pm2 logs --namespace "$MM_ENV" "viz_server_${MM_ENV}" --lines 80
 ```
@@ -244,8 +281,10 @@ pm2 status --namespace "$MM_ENV"
 cd ~/$MM_ENV
 ./mm_scripts/stop_mm_viz_server.sh --exchange binance
 ./mm_scripts/stop_manual_mm_signal.sh
+./mm_scripts/stop_mm_persist_manager.sh
 ./mm_scripts/stop_mm_pre_trade.sh
 ./mm_scripts/stop_mm_trade_engine.sh
+./scripts/stop_account_monitor.sh
 ```
 
 ### 9.2 停止公共层
