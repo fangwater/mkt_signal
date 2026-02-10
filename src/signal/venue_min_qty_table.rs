@@ -7,7 +7,8 @@ use reqwest::Client;
 
 use crate::common::exchange::Exchange;
 use crate::common::min_qty_table::{
-    BinanceProvider, BitgetProvider, GateProvider, MarketType, MinQtyEntry, OkexProvider,
+    BinanceProvider, BitgetProvider, BybitProvider, GateProvider, MarketType, MinQtyEntry,
+    OkexProvider,
 };
 use crate::signal::common::TradingVenue;
 
@@ -52,8 +53,9 @@ impl VenueInfoProvider for ExchangeVenueProvider {
             }
             Exchange::Bitget => {
                 let provider = BitgetProvider::new();
-                let entries = provider.fetch_filters(client, self.market_type).await?;
-                Ok((entries, HashMap::new()))
+                provider
+                    .fetch_filters_with_multipliers(client, self.market_type)
+                    .await
             }
             Exchange::Okex => {
                 let provider = OkexProvider::new();
@@ -61,11 +63,12 @@ impl VenueInfoProvider for ExchangeVenueProvider {
                     .fetch_filters_with_multipliers(client, self.market_type)
                     .await
             }
-            Exchange::Bybit => Err(anyhow!(
-                "exchange {} not supported yet for venue {:?}",
-                self.exchange,
-                self.venue
-            )),
+            Exchange::Bybit => {
+                let provider = BybitProvider::new();
+                provider
+                    .fetch_filters_with_multipliers(client, self.market_type)
+                    .await
+            }
             Exchange::Hyperliquid => Err(anyhow!(
                 "exchange {} not supported yet for venue {:?}",
                 self.exchange,

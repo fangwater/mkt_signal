@@ -214,19 +214,6 @@ fn venue_from_slug(raw: &str) -> Option<TradingVenue> {
     }
 }
 
-fn ensure_supported_mm_open_venue(venue: TradingVenue) -> Result<()> {
-    if matches!(
-        venue,
-        TradingVenue::BybitFutures | TradingVenue::BitgetFutures
-    ) {
-        anyhow::bail!(
-            "manual_mm_signal 暂不支持 {:?}: 该 futures 口径尚未完成 contract multiplier 对齐",
-            venue
-        );
-    }
-    Ok(())
-}
-
 async fn load_config(path: &str) -> Result<AppCfg> {
     let raw = fs::read_to_string(path).with_context(|| format!("read config failed: {}", path))?;
     let cfg: ManualMmConfig =
@@ -234,7 +221,6 @@ async fn load_config(path: &str) -> Result<AppCfg> {
 
     let venue =
         venue_from_slug(&cfg.venue).with_context(|| format!("invalid venue: {}", cfg.venue))?;
-    ensure_supported_mm_open_venue(venue)?;
     let port = cfg.port.unwrap_or(DEFAULT_PORT);
     let bind = cfg.bind.unwrap_or_else(|| DEFAULT_BIND.to_string());
     let signal_channel = DEFAULT_SIGNAL_CHANNEL.to_string();
