@@ -37,7 +37,7 @@ impl TradingVenue {
         }
     }
 
-    /// 返回用于 data_pubs 频道前缀的 slug（kebab case，无下划线）
+    /// 返回用于 dat_pbs 频道前缀的 slug（kebab case，无下划线）
     pub fn data_pub_slug(&self) -> &'static str {
         match self {
             TradingVenue::BinanceMargin => "binance-margin",

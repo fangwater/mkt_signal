@@ -1,7 +1,7 @@
 # 部署 Binance 做市（MM）流程（公共服务 + MM 独立）
 
 本文按你确认的规则整理：
-- `mkt_pub` / `depth_pub` / `kline_pub` / `factor_pub` 属于**公共服务**，用各自默认目录命名空间；
+- `dat_pbs` / `depth_pub` / `kline_pub` / `factor_pub` 属于**公共服务**，用各自默认目录命名空间；
 - MM 服务（`trade_engine` / `pre_trade` / `persist_manager` / `manual_mm_signal` / `viz_server`）只放在 `binance_mm_<suffix>` 目录下，独立运行。
 
 ---
@@ -28,30 +28,30 @@ export BINANCE_ACCOUNT_MODE="standard"   # 或 portfolio
 python3 -m pip install --user redis
 ```
 
-> 说明：`trade_engine` 会读取 `~/mkt_pub/config/mkt_cfg.yaml`，所以必须先部署 `mkt_pub`。
+> 说明：`trade_engine` 会读取 `~/dat_pbs/config/mkt_cfg.yaml`，所以必须先部署 `dat_pbs`。
 
 ---
 
-## 1. 部署并启动 mkt_pub（公共）
+## 1. 部署并启动 dat_pbs（公共）
 
-> 不要给它传 `MM_ENV`，保持公共命名空间（默认 `mkt_pub`）。
+> 不要给它传 `MM_ENV`，保持公共命名空间（默认 `dat_pbs`）。
 
 ```bash
 unset PM2_NAMESPACE
 
 cd ~/crypto_mkt/mkt_signal
-bash scripts/deploy_mkt_pub.sh
+bash scripts/deploy_dat_pbs.sh
 
-cd ~/mkt_pub
-./scripts/start_mkt_pub.sh --exchange binance
+cd ~/dat_pbs
+./scripts/start_dat_pbs.sh --exchange binance
 ```
 
 检查：
 
 ```bash
-pm2 status --namespace mkt_pub
-pm2 logs --namespace mkt_pub mkt_pub_binance-futures --lines 80
-pm2 logs --namespace mkt_pub mkt_pub_binance-margin --lines 80
+pm2 status --namespace dat_pbs
+pm2 logs --namespace dat_pbs dat_pbs_binance-futures --lines 80
+pm2 logs --namespace dat_pbs dat_pbs_binance-margin --lines 80
 ```
 
 ---
@@ -262,7 +262,7 @@ pm2 logs --namespace "$MM_ENV" "viz_server_${MM_ENV}" --lines 80
 ## 8. 快速验收（按命名空间分组）
 
 ```bash
-pm2 status --namespace mkt_pub
+pm2 status --namespace dat_pbs
 pm2 status --namespace depth_pub
 pm2 status --namespace kline_pub
 pm2 status --namespace factor_pub
@@ -302,6 +302,6 @@ cd ~/kline_pub
 cd ~/depth_pub
 ./scripts/stop_depth_pub.sh --exchange binance
 
-cd ~/mkt_pub
-./scripts/stop_mkt_pub.sh --exchange binance
+cd ~/dat_pbs
+./scripts/stop_dat_pbs.sh --exchange binance
 ```

@@ -294,7 +294,7 @@ impl KlinePubApp {
         node: &Node<ipc::Service>,
         venue: &str,
     ) -> Result<Subscriber<ipc::Service, [u8; TRADE_MAX_BYTES], ()>> {
-        let service_name = format!("data_pubs/{}/trade", venue);
+        let service_name = format!("dat_pbs/{}/trade", venue);
         let service = node
             .service_builder(&ServiceName::new(&service_name)?)
             .publish_subscribe::<[u8; TRADE_MAX_BYTES]>()
@@ -309,7 +309,7 @@ impl KlinePubApp {
         node: &Node<ipc::Service>,
         venue: &str,
     ) -> Result<Subscriber<ipc::Service, [u8; SIGNAL_MAX_BYTES], ()>> {
-        let service_name = format!("data_pubs/{}/signal", venue);
+        let service_name = format!("dat_pbs/{}/signal", venue);
         let service = node
             .service_builder(&ServiceName::new(&service_name)?)
             .publish_subscribe::<[u8; SIGNAL_MAX_BYTES]>()

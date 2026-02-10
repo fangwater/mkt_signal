@@ -5,7 +5,7 @@
 #
 # Iceoryx service names should be base names. They will be namespaced via
 # IPC_NAMESPACE (see src/common/ipc_service_name.rs) unless starting with
-# "data_pubs/".
+# "dat_pbs/".
 #
 # Supported sizes: 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384.
 

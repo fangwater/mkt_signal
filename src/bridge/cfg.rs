@@ -39,7 +39,7 @@ pub struct RouteConfig {
 pub struct RouteEndpoint {
     /// Node id of this endpoint
     pub node: String,
-    /// Iceoryx base service name (will be namespaced via IPC_NAMESPACE unless starts with data_pubs/)
+    /// Iceoryx base service name (will be namespaced via IPC_NAMESPACE unless starts with dat_pbs/)
     pub service: String,
     /// Iceoryx payload size in bytes for this endpoint
     pub size: usize,

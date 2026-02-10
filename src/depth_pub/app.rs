@@ -125,7 +125,7 @@ impl DepthPubApp {
         // 创建订阅器
         let subscriber = Self::create_subscriber(publisher.node(), venue_slug)?;
         info!(
-            "Subscribed to incremental channel: data_pubs/{}/incremental",
+            "Subscribed to incremental channel: dat_pbs/{}/incremental",
             venue_slug
         );
 
@@ -162,7 +162,7 @@ impl DepthPubApp {
         node: &Node<ipc::Service>,
         venue: &str,
     ) -> Result<Subscriber<ipc::Service, [u8; INC_MAX_BYTES], ()>> {
-        let service_name = format!("data_pubs/{}/incremental", venue);
+        let service_name = format!("dat_pbs/{}/incremental", venue);
         let service = node
             .service_builder(&ServiceName::new(&service_name)?)
             .publish_subscribe::<[u8; INC_MAX_BYTES]>()

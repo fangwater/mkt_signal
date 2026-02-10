@@ -667,7 +667,7 @@ fn spawn_ask_bid_listener(
     tokio::task::spawn_local(async move {
         let node_name = format!("{}_ask_bid_{}", PROCESS_NAME, venue.data_pub_slug());
         let service_path = build_service_name(&format!(
-            "data_pubs/{}/ask_bid_spread",
+            "dat_pbs/{}/ask_bid_spread",
             venue.data_pub_slug()
         ));
 

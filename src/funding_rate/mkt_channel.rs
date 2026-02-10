@@ -102,8 +102,8 @@ impl MktChannel {
         let open_slug = open_venue.data_pub_slug();
         let hedge_slug = hedge_venue.data_pub_slug();
 
-        let open_service = format!("data_pubs/{}/ask_bid_spread", open_slug);
-        let hedge_service = format!("data_pubs/{}/ask_bid_spread", hedge_slug);
+        let open_service = format!("dat_pbs/{}/ask_bid_spread", open_slug);
+        let hedge_service = format!("dat_pbs/{}/ask_bid_spread", hedge_slug);
 
         let open_node = build_node_name(open_slug, "askbid");
         let hedge_node = build_node_name(hedge_slug, "askbid");
@@ -151,7 +151,7 @@ impl MktChannel {
             quotes.clone(),
         );
         if is_futures(open_venue) {
-            let derivatives_service = format!("data_pubs/{}/derivatives", open_slug);
+            let derivatives_service = format!("dat_pbs/{}/derivatives", open_slug);
             let derivatives_node = build_node_name(open_slug, "derivatives");
             Self::spawn_derivatives_listener(
                 derivatives_node,
@@ -164,7 +164,7 @@ impl MktChannel {
             );
         }
         if is_futures(hedge_venue) {
-            let derivatives_service = format!("data_pubs/{}/derivatives", hedge_slug);
+            let derivatives_service = format!("dat_pbs/{}/derivatives", hedge_slug);
             let derivatives_node = build_node_name(hedge_slug, "derivatives");
             Self::spawn_derivatives_listener(
                 derivatives_node,

@@ -160,7 +160,7 @@ cat > "$ENV_FILE" << EOF
 # hedge venue: $HEDGE_VENUE
 # 生成时间: $(date '+%Y-%m-%d %H:%M:%S')
 
-# IceOryx 命名空间（非 data_pubs 通道会被加上该前缀）
+# IceOryx 命名空间（非 dat_pbs 通道会被加上该前缀）
 export IPC_NAMESPACE='$NAMESPACE'
 
 # xhub 两侧 venue（futures-only）

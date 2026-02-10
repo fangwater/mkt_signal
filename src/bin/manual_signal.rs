@@ -1,7 +1,7 @@
 //! Manual mock for `fr_signal`.
 //!
 //! - Publishes manual signals to the same channel as `trade_signal` (default).
-//! - Subscribes `data_pubs/{open,hedge}/ask_bid_spread` to build bid/ask and compute prices.
+//! - Subscribes `dat_pbs/{open,hedge}/ask_bid_spread` to build bid/ask and compute prices.
 //! - Subscribes `trade_query` (backward channel) and replies with `ArbHedge` pricing, to assist
 //!   pre_trade's MM hedge-query flow.
 //! - Serves a tiny web UI for symbol list + manual signal emission.
@@ -542,7 +542,7 @@ async fn symbol_list_reload_loop(
 fn spawn_askbid_listener(quotes: Arc<RwLock<QuoteCache>>, venue: TradingVenue) {
     let slug = venue.data_pub_slug();
     let node_name = format!("frmanual_{}_askbid", slug.replace('-', "_"));
-    let service_name = format!("data_pubs/{}/ask_bid_spread", slug);
+    let service_name = format!("dat_pbs/{}/ask_bid_spread", slug);
 
     tokio::task::spawn_local(async move {
         let result: Result<()> = async move {

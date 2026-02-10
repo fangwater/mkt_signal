@@ -53,10 +53,10 @@ struct Args {
     log_filter: String,
     #[arg(long, default_value_t = 1800)]
     symbol_refresh_sec: u64,
-    /// open 侧 data_pubs 前缀（必填，如 binance-spot，可与 hedge 任意组合）
+    /// open 侧 dat_pbs 前缀（必填，如 binance-spot，可与 hedge 任意组合）
     #[arg(long)]
     open_venue: String,
-    /// hedge 侧 data_pubs 前缀（必填，如 binance-futures，可与 open 任意组合）
+    /// hedge 侧 dat_pbs 前缀（必填，如 binance-futures，可与 open 任意组合）
     #[arg(long)]
     hedge_venue: String,
 }

@@ -276,7 +276,7 @@ impl TradeFactorPubApp {
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
 
-        let service_name = format!("data_pubs/{}/{}", venue, channel);
+        let service_name = format!("dat_pbs/{}/{}", venue, channel);
         let service = node
             .service_builder(&ServiceName::new(&service_name)?)
             .publish_subscribe::<[u8; TRADE_MAX_BYTES]>()

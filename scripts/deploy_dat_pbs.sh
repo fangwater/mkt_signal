@@ -2,26 +2,27 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN_NAME="mkt_pub"
+BIN_NAME="dat_pbs"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 
 usage() {
   cat <<'EOF'
 Usage:
-  deploy_mkt_pub.sh [trade|test] [--dir <path>]
+  deploy_dat_pbs.sh [trade|test] [--dir <path>]
 
 Defaults:
-  trade -> $HOME/mkt_pub
-  test  -> $HOME/mkt_pub_test
+  trade -> $HOME/dat_pbs
+  test  -> $HOME/dat_pbs_test
 
 Examples:
-  bash scripts/deploy_mkt_pub.sh
-  bash scripts/deploy_mkt_pub.sh trade
-  bash scripts/deploy_mkt_pub.sh test
-  bash scripts/deploy_mkt_pub.sh trade --dir "$HOME/mkt_pub"
+  bash scripts/deploy_dat_pbs.sh
+  bash scripts/deploy_dat_pbs.sh trade
+  bash scripts/deploy_dat_pbs.sh test
+  bash scripts/deploy_dat_pbs.sh trade --dir "$HOME/dat_pbs"
 
 Notes:
-  - Exchange is selected at runtime via start_mkt_pub.sh --exchange <exchange>
+  - Exchange is selected at runtime via start_dat_pbs.sh --exchange <exchange>
+  - This deploy variant is for the dat_pbs channel namespace.
 EOF
 }
 
@@ -57,8 +58,8 @@ done
 
 if [[ -z "$TARGET_DIR" ]]; then
   case "$ENV_TYPE" in
-    trade) TARGET_DIR="$HOME/mkt_pub" ;;
-    test) TARGET_DIR="$HOME/mkt_pub_test" ;;
+    trade) TARGET_DIR="$HOME/dat_pbs" ;;
+    test) TARGET_DIR="$HOME/dat_pbs_test" ;;
   esac
 fi
 
@@ -72,7 +73,7 @@ chmod +x "$TARGET_DIR/$BIN_NAME"
 
 # 同步启动/停止脚本到 scripts/
 SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
-SCRIPTS_TO_SYNC=("start_mkt_pub.sh" "stop_mkt_pub.sh")
+SCRIPTS_TO_SYNC=("start_dat_pbs.sh" "stop_dat_pbs.sh")
 mkdir -p "$TARGET_DIR/scripts"
 for script in "${SCRIPTS_TO_SYNC[@]}"; do
   if [[ -f "$SCRIPT_DIR_SRC/$script" ]]; then
@@ -91,4 +92,5 @@ if [[ -f "$ROOT_DIR/config/iceoryx2.toml" ]]; then
 fi
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"
-echo "[INFO] 启动示例: cd $TARGET_DIR && ./scripts/start_mkt_pub.sh --exchange binance"
+echo "[INFO] 启动示例: cd $TARGET_DIR && ./scripts/start_dat_pbs.sh --exchange binance"
+

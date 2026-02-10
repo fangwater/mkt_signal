@@ -5,15 +5,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 usage() {
-  cat <<'EOF'
+  cat <<'USAGE'
 Usage:
-  stop_mkt_pub.sh [--namespace <ns>] (--exchange <exchange> | <exchange> | <venue...>)
+  start_dat_pbs.sh [--namespace <ns>] (--exchange <exchange> | <exchange> | <venue...>)
 
 Examples:
-  ./scripts/stop_mkt_pub.sh --exchange binance
-  ./scripts/stop_mkt_pub.sh okex
-  ./scripts/stop_mkt_pub.sh binance-futures
-  ./scripts/stop_mkt_pub.sh binance-futures binance-margin
+  ./scripts/start_dat_pbs.sh --exchange binance
+  ./scripts/start_dat_pbs.sh okex
+  ./scripts/start_dat_pbs.sh binance-futures
+  ./scripts/start_dat_pbs.sh binance-futures binance-margin
 
 Notes:
   - Exchange expands to default venues:
@@ -23,7 +23,7 @@ Notes:
       bitget  -> bitget-futures bitget-margin
       gate    -> gate-futures gate-margin
   - Namespace defaults to $PM2_NAMESPACE or the deploy directory name.
-EOF
+USAGE
 }
 
 KNOWN_EXCHANGES=("okex" "binance" "bybit" "bitget" "gate")
@@ -53,16 +53,13 @@ default_venues_for_exchange() {
   esac
 }
 
-# PM2 binary: prefer pm2, fallback to npx pm2
 PM2=(pm2)
 if ! command -v pm2 >/dev/null 2>&1; then
   PM2=(npx pm2)
 fi
 
-# Optional PM2 namespace; defaults to deploy dir name unless PM2_NAMESPACE is set
 NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
 
-# Args parsing
 EXCHANGE=""
 VENUES=()
 POSITIONAL=()
@@ -119,7 +116,6 @@ if [[ ${#VENUES[@]} -eq 0 && ${#POSITIONAL[@]} -gt 0 ]]; then
   VENUES=("${POSITIONAL[@]}")
 fi
 
-# Infer exchange from deploy directory name for backward compatibility (e.g., okex_fr_trade)
 if [[ -z "$EXCHANGE" && ${#VENUES[@]} -eq 0 ]]; then
   dir_name="$(basename "${BASE_DIR}")"
   if [[ "$dir_name" =~ okex|OKEX ]]; then EXCHANGE="okex"; fi
@@ -139,24 +135,51 @@ if [[ ${#VENUES[@]} -eq 0 ]]; then
   exit 1
 fi
 
-stop_one() {
-  local venue="$1"
-  local name="mkt_pub_${venue}"
+BIN_CANDIDATES=(
+  "${SCRIPT_DIR}/dat_pbs"
+  "${SCRIPT_DIR}/target/release/dat_pbs"
+  "${SCRIPT_DIR}/../dat_pbs"
+  "${SCRIPT_DIR}/../target/release/dat_pbs"
+  "${BASE_DIR}/dat_pbs"
+  "${BASE_DIR}/target/release/dat_pbs"
+)
 
-  echo "[INFO] Deleting ${name} (namespace: ${NAMESPACE})"
-  if "${PM2[@]}" delete "$name" --namespace "$NAMESPACE"; then
-    echo "[INFO] Deleted ${name}"
-  else
-    echo "[WARN] ${name} not found in namespace ${NAMESPACE}"
+BIN_PATH=""
+for cand in "${BIN_CANDIDATES[@]}"; do
+  if [[ -x "$cand" ]]; then
+    BIN_PATH="$cand"
+    break
   fi
+done
+
+if [[ -z "$BIN_PATH" ]]; then
+  echo "[ERROR] dat_pbs binary not found. Build first with: cargo build --release --bin dat_pbs" >&2
+  exit 1
+fi
+
+start_one() {
+  local venue="$1"
+  local name="dat_pbs_${venue}"
+  local rust_log="${RUST_LOG:-info}"
+
+  echo "[INFO] Restarting ${name}"
+  "${PM2[@]}" delete "$name" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+
+  RUST_LOG="${rust_log}" "${PM2[@]}" start "$BIN_PATH" \
+    --name "$name" \
+    --namespace "$NAMESPACE" \
+    --cwd "$BASE_DIR" \
+    -- \
+    --venue "$venue"
 }
 
 for venue in "${VENUES[@]}"; do
-  stop_one "$venue"
+  start_one "$venue"
   sleep 1
 done
 
 echo ""
-echo "[INFO] Stopped venues: ${VENUES[*]}"
+echo "[INFO] Started venues: ${VENUES[*]}"
 echo "Namespace: ${NAMESPACE}"
-echo "To view remaining processes: ${PM2[*]} status --namespace ${NAMESPACE}"
+echo "Logs: ${PM2[*]} logs --namespace ${NAMESPACE} dat_pbs_<venue>"
+echo "Status: ${PM2[*]} status --namespace ${NAMESPACE}"

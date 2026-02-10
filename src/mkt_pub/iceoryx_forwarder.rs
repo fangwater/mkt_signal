@@ -95,7 +95,7 @@ impl IceOryxForwarder {
         let incremental_publisher = if config.data_types.enable_incremental {
             let service = node
                 .service_builder(&ServiceName::new(&format!(
-                    "data_pubs/{}/incremental",
+                    "dat_pbs/{}/incremental",
                     venue_slug
                 ))?)
                 .publish_subscribe::<[u8; INC_CHANNEL_MAX_BYTES]>()
@@ -113,7 +113,7 @@ impl IceOryxForwarder {
         let trade_publisher = if config.data_types.enable_trade {
             let service = node
                 .service_builder(&ServiceName::new(&format!(
-                    "data_pubs/{}/trade",
+                    "dat_pbs/{}/trade",
                     venue_slug
                 ))?)
                 .publish_subscribe::<[u8; TRADE_MAX_BYTES]>()
@@ -131,7 +131,7 @@ impl IceOryxForwarder {
         let kline_publisher = if config.data_types.enable_kline {
             let service = node
                 .service_builder(&ServiceName::new(&format!(
-                    "data_pubs/{}/kline",
+                    "dat_pbs/{}/kline",
                     venue_slug
                 ))?)
                 .publish_subscribe::<[u8; KLINE_MAX_BYTES]>()
@@ -150,7 +150,7 @@ impl IceOryxForwarder {
         let derivatives_publisher = if config.data_types.enable_derivatives {
             let service = node
                 .service_builder(&ServiceName::new(&format!(
-                    "data_pubs/{}/derivatives",
+                    "dat_pbs/{}/derivatives",
                     venue_slug
                 ))?)
                 .publish_subscribe::<[u8; DERIVATIVES_MAX_BYTES]>()
@@ -168,7 +168,7 @@ impl IceOryxForwarder {
         let ask_bid_spread_publisher = if config.data_types.enable_ask_bid_spread {
             let service = node
                 .service_builder(&ServiceName::new(&format!(
-                    "data_pubs/{}/ask_bid_spread",
+                    "dat_pbs/{}/ask_bid_spread",
                     venue_slug
                 ))?)
                 .publish_subscribe::<[u8; SPREAD_MAX_BYTES]>()
@@ -187,7 +187,7 @@ impl IceOryxForwarder {
         let signal_publisher = {
             let service = node
                 .service_builder(&ServiceName::new(&format!(
-                    "data_pubs/{}/signal",
+                    "dat_pbs/{}/signal",
                     venue_slug
                 ))?)
                 .publish_subscribe::<[u8; SIGNAL_MAX_BYTES]>()

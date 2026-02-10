@@ -45,7 +45,7 @@ impl ChannelType {
 /// 订阅参数
 #[derive(Debug, Clone)]
 pub struct SubscribeParams {
-    /// data_pubs 下的前缀（通常为 venue slug，例如 binance-futures）
+    /// dat_pbs 下的前缀（通常为 venue slug，例如 binance-futures）
     pub topic_prefix: String,
     pub channel: ChannelType,
 }
@@ -126,7 +126,7 @@ impl MultiChannelSubscriber {
     /// 订阅单个频道
     pub fn subscribe_single(&mut self, param: SubscribeParams) -> Result<()> {
         let service_name: String = format!(
-            "data_pubs/{}/{}",
+            "dat_pbs/{}/{}",
             param.topic_prefix,
             param.channel.as_str()
         );
