@@ -33,6 +33,13 @@ use mkt_signal::common::mkt_msg::{get_msg_type, AskBidSpreadMsg, MktMsgType};
 use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::funding_rate::common::Quote;
+use mkt_signal::market_maker::manual_signal::{
+    build_mm_hedge_ctx as build_mm_hedge_ctx_core, MmHedgeBuildInput,
+};
+use mkt_signal::market_maker::order_align::{
+    align_order_for_venue, ensure_supported_mm_open_venue as ensure_supported_mm_open_venue_raw,
+    min_qty_symbol_key,
+};
 use mkt_signal::pre_trade::order_manager::{OrderType, Side};
 use mkt_signal::signal::common::{SignalBytes, TradingLeg, TradingVenue};
 use mkt_signal::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
@@ -215,16 +222,7 @@ fn venue_from_slug(raw: &str) -> Option<TradingVenue> {
 }
 
 fn ensure_supported_mm_open_venue(venue: TradingVenue) -> Result<()> {
-    if matches!(
-        venue,
-        TradingVenue::BybitFutures | TradingVenue::BitgetFutures
-    ) {
-        anyhow::bail!(
-            "manual_mm_signal 暂不支持 {:?}: 该 futures 口径尚未完成 contract multiplier 对齐",
-            venue
-        );
-    }
-    Ok(())
+    ensure_supported_mm_open_venue_raw(venue).map_err(anyhow::Error::msg)
 }
 
 async fn load_config(path: &str) -> Result<AppCfg> {
@@ -373,218 +371,6 @@ async fn symbol_list_reload_loop(
     }
 }
 
-fn min_qty_symbol_key(venue: TradingVenue, symbol: &str) -> String {
-    match venue {
-        TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
-            symbol.to_uppercase().replace("-SWAP", "").replace('-', "")
-        }
-        TradingVenue::GateMargin | TradingVenue::GateFutures => {
-            symbol.to_uppercase().replace('_', "").replace('-', "")
-        }
-        _ => symbol.to_uppercase(),
-    }
-}
-
-fn is_futures_venue(venue: TradingVenue) -> bool {
-    matches!(
-        venue,
-        TradingVenue::BinanceFutures
-            | TradingVenue::OkexFutures
-            | TradingVenue::BybitFutures
-            | TradingVenue::BitgetFutures
-            | TradingVenue::GateFutures
-    )
-}
-
-fn venue_qty_is_contracts(venue: TradingVenue) -> bool {
-    matches!(
-        venue,
-        TradingVenue::BinanceFutures | TradingVenue::OkexFutures | TradingVenue::GateFutures
-    )
-}
-
-fn contract_qty_multiplier(
-    table: &VenueMinQtyTable,
-    venue: TradingVenue,
-    symbol_key: &str,
-) -> Option<f64> {
-    match venue {
-        TradingVenue::BinanceFutures => Some(1.0),
-        TradingVenue::OkexFutures | TradingVenue::GateFutures => table
-            .contract_multiplier_opt(symbol_key)
-            .filter(|v| v.is_finite() && *v > 0.0),
-        _ => Some(1.0),
-    }
-}
-
-fn align_order_with_table(
-    symbol_key: &str,
-    raw_qty: f64,
-    raw_price: f64,
-    table: &VenueMinQtyTable,
-    enforce_min_notional: bool,
-) -> Result<(f64, f64), String> {
-    if raw_qty <= 0.0 {
-        return Err(format!(
-            "symbol={} raw qty invalid raw_qty={}",
-            symbol_key, raw_qty
-        ));
-    }
-    if raw_price <= 0.0 {
-        return Err(format!(
-            "symbol={} raw price invalid raw_price={}",
-            symbol_key, raw_price
-        ));
-    }
-
-    let price_tick = table.price_tick(symbol_key).unwrap_or(0.0);
-    let price = if price_tick > 0.0 {
-        align_price_floor(raw_price, price_tick)
-    } else {
-        raw_price
-    };
-    if price <= 0.0 {
-        return Err(format!("symbol={} aligned price invalid", symbol_key));
-    }
-
-    let step = table.step_size(symbol_key).unwrap_or(0.0);
-    let mut qty = if step > 0.0 {
-        align_price_floor(raw_qty, step)
-    } else {
-        raw_qty
-    };
-
-    if let Some(min_qty) = table.min_qty(symbol_key) {
-        if min_qty > 0.0 && qty < min_qty {
-            qty = min_qty;
-        }
-    }
-
-    if enforce_min_notional {
-        if let Some(min_notional) = table.min_notional(symbol_key) {
-            if min_notional > 0.0 {
-                let required_qty = min_notional / price;
-                if qty < required_qty {
-                    qty = if step > 0.0 {
-                        align_price_ceil(required_qty, step)
-                    } else {
-                        required_qty
-                    };
-                }
-            }
-        }
-    }
-
-    if qty <= 0.0 {
-        return Err(format!("symbol={} aligned qty invalid", symbol_key));
-    }
-
-    Ok((qty, price))
-}
-
-fn align_order_for_venue(
-    venue: TradingVenue,
-    symbol_key: &str,
-    raw_qty_base: f64,
-    raw_price: f64,
-    table: &VenueMinQtyTable,
-) -> Result<(f64, f64), String> {
-    let enforce_min_notional = is_futures_venue(venue);
-    let raw_qty = if venue_qty_is_contracts(venue) {
-        let contract_size = contract_qty_multiplier(table, venue, symbol_key).ok_or_else(|| {
-            format!(
-                "symbol={} missing {:?} contract multiplier, cannot convert base qty",
-                symbol_key, venue
-            )
-        })?;
-        raw_qty_base / contract_size
-    } else {
-        raw_qty_base
-    };
-
-    align_order_with_table(symbol_key, raw_qty, raw_price, table, enforce_min_notional)
-}
-
-fn to_fraction(value: f64) -> Option<(i64, i64)> {
-    if value <= 0.0 {
-        return None;
-    }
-    let mut denom: i64 = 1;
-    let mut scaled = value;
-    for _ in 0..9 {
-        let rounded = scaled.round();
-        if (scaled - rounded).abs() < 1e-9 {
-            return Some((rounded as i64, denom));
-        }
-        scaled *= 10.0;
-        denom = denom.saturating_mul(10);
-    }
-    None
-}
-
-fn align_price_floor(price: f64, tick: f64) -> f64 {
-    if tick <= 0.0 {
-        return price;
-    }
-    if let Some((tick_num, tick_den)) = to_fraction(tick) {
-        if tick_num == 0 {
-            return price;
-        }
-        let tick_num = tick_num as i128;
-        let tick_den = tick_den as i128;
-        let units = ((price * tick_den as f64) + 1e-9).floor() as i128;
-        let aligned_units = (units / tick_num) * tick_num;
-        return aligned_units as f64 / tick_den as f64;
-    }
-    let scaled = ((price / tick) + 1e-9).floor();
-    scaled * tick
-}
-
-fn align_price_ceil(price: f64, tick: f64) -> f64 {
-    if tick <= 0.0 {
-        return price;
-    }
-    if let Some((tick_num, tick_den)) = to_fraction(tick) {
-        if tick_num == 0 {
-            return price;
-        }
-        let tick_num = tick_num as i128;
-        let tick_den = tick_den as i128;
-        let units = ((price * tick_den as f64) - 1e-9).ceil() as i128;
-        let aligned_units = ((units + tick_num - 1) / tick_num) * tick_num;
-        return aligned_units as f64 / tick_den as f64;
-    }
-    let scaled = ((price / tick) - 1e-9).ceil();
-    scaled * tick
-}
-
-fn tick_to_exp(tick: f64) -> Option<i32> {
-    if tick <= 0.0 {
-        return None;
-    }
-    let mut exp: i32 = 0;
-    let mut val = tick;
-    while val < 1.0 {
-        val *= 10.0;
-        exp -= 1;
-        if exp < -12 {
-            break;
-        }
-    }
-    while val >= 10.0 {
-        val /= 10.0;
-        exp += 1;
-        if exp > 12 {
-            break;
-        }
-    }
-    if (val - 1.0).abs() <= 1e-9 {
-        Some(exp)
-    } else {
-        None
-    }
-}
-
 fn build_mm_hedge_ctx(
     cfg: &AppCfg,
     quotes: &Arc<RwLock<QuoteCache>>,
@@ -601,78 +387,17 @@ fn build_mm_hedge_ctx(
         .get_valid(&symbol)
         .context("quote unavailable")?;
 
-    let net_qty = query.net_qty;
-    let side = if net_qty >= 0.0 {
-        Side::Sell
-    } else {
-        Side::Buy
-    };
-
-    let base_price = match side {
-        Side::Buy => quote.bid,
-        Side::Sell => quote.ask,
-    };
-    if base_price <= 0.0 {
-        anyhow::bail!("invalid base price");
-    }
-
-    let symbol_key = min_qty_symbol_key(cfg.venue, &symbol);
     let table_guard = table.read();
-    let price_tick = table_guard.price_tick(&symbol_key).unwrap_or(0.0);
-    let qty_tick = table_guard.step_size(&symbol_key).unwrap_or(0.0);
-    if price_tick <= 0.0 || qty_tick <= 0.0 {
-        anyhow::bail!(
-            "missing tick for {} (price_tick={}, qty_tick={})",
-            symbol_key,
-            price_tick,
-            qty_tick
-        );
-    }
-
-    let price_tick_exp = tick_to_exp(price_tick).context("price_tick is not power-of-10")?;
-    let qty_tick_exp = tick_to_exp(qty_tick).context("qty_tick is not power-of-10")?;
-
-    let mut price_list: Vec<i32> = Vec::with_capacity(cfg.price_offsets.len());
-    let mut amount_list: Vec<i64> = Vec::with_capacity(cfg.price_offsets.len());
-    for offset in &cfg.price_offsets {
-        let offset = offset.abs();
-        let raw_price = match side {
-            Side::Buy => base_price * (1.0 - offset),
-            Side::Sell => base_price * (1.0 + offset),
-        };
-        if raw_price <= 0.0 {
-            continue;
-        }
-        let raw_qty = cfg.order_amount_u / raw_price;
-        let (aligned_qty, aligned_price) =
-            align_order_for_venue(cfg.venue, &symbol_key, raw_qty, raw_price, &table_guard)
-                .map_err(anyhow::Error::msg)?;
-
-        let price_level = (aligned_price / price_tick).round() as i32;
-        let amount_level = (aligned_qty / qty_tick).round() as i64;
-        if price_level == 0 || amount_level == 0 {
-            continue;
-        }
-        price_list.push(price_level);
-        amount_list.push(amount_level);
-    }
-
-    if price_list.is_empty() || amount_list.is_empty() {
-        anyhow::bail!("empty price/amount list after alignment");
-    }
-
-    let now = get_timestamp_us();
-    let mut ctx = MmHedgeCtx::new();
-    ctx.opening_leg = TradingLeg::new(cfg.venue, quote.bid, quote.ask, quote.ts);
-    ctx.set_opening_symbol(&symbol);
-    ctx.price_tick_exp = price_tick_exp;
-    ctx.qty_tick_exp = qty_tick_exp;
-    ctx.price_list = price_list;
-    ctx.amount_list = amount_list;
-    ctx.signal_ts = now;
-    ctx.next_query_ts = now + (cfg.next_query_delay_ms as i64) * 1000;
-    ctx.set_from_key(cfg.from_key.clone());
-    Ok(ctx)
+    let input = MmHedgeBuildInput {
+        venue: cfg.venue,
+        symbol: &symbol,
+        quote,
+        order_amount_u: cfg.order_amount_u,
+        offsets: &cfg.price_offsets,
+        next_query_delay_ms: cfg.next_query_delay_ms,
+        from_key: cfg.from_key.clone(),
+    };
+    build_mm_hedge_ctx_core(input, &table_guard, query).map_err(anyhow::Error::msg)
 }
 
 fn spawn_ask_bid_listener(

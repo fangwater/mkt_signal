@@ -648,10 +648,18 @@ pub struct MmHedgeSignalQueryMsg {
     pub period_sell_qty: f64,
     /// 累计净头寸（base qty，正=多，负=空）
     pub net_qty: f64,
+    /// 单币敞口预算（USDT），来源 pre_trade_risk_params: max_pos_u * max_symbol_exposure_ratio
+    pub symbol_exposure_u: f64,
 }
 
 impl MmHedgeSignalQueryMsg {
-    pub fn new(symbol: &str, period_buy_qty: f64, period_sell_qty: f64, net_qty: f64) -> Self {
+    pub fn new(
+        symbol: &str,
+        period_buy_qty: f64,
+        period_sell_qty: f64,
+        net_qty: f64,
+        symbol_exposure_u: f64,
+    ) -> Self {
         let mut symbol_bytes = [0u8; 32];
         let bytes = symbol.as_bytes();
         let len = bytes.len().min(32);
@@ -661,6 +669,7 @@ impl MmHedgeSignalQueryMsg {
             period_buy_qty,
             period_sell_qty,
             net_qty,
+            symbol_exposure_u,
         }
     }
 
@@ -675,18 +684,20 @@ impl MmHedgeSignalQueryMsg {
         buf.put_f64_le(self.period_buy_qty);
         buf.put_f64_le(self.period_sell_qty);
         buf.put_f64_le(self.net_qty);
+        buf.put_f64_le(self.symbol_exposure_u);
         buf.freeze()
     }
 
     pub fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
         let symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
-        if bytes.remaining() < 24 {
-            return Err("insufficient bytes for buy/sell/net qty".to_string());
+        if bytes.remaining() < 32 {
+            return Err("insufficient bytes for buy/sell/net qty/symbol_exposure_u".to_string());
         }
         let period_buy_qty = bytes.get_f64_le();
         let period_sell_qty = bytes.get_f64_le();
         let net_qty = bytes.get_f64_le();
-        if bytes.remaining() != 0 && bytes.iter().any(|&b| b != 0) {
+        let symbol_exposure_u = bytes.get_f64_le();
+        if bytes.remaining() != 0 {
             return Err("Unexpected trailing bytes for MmHedgeSignalQueryMsg".to_string());
         }
         Ok(Self {
@@ -694,6 +705,7 @@ impl MmHedgeSignalQueryMsg {
             period_buy_qty,
             period_sell_qty,
             net_qty,
+            symbol_exposure_u,
         })
     }
 }

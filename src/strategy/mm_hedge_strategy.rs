@@ -1,6 +1,11 @@
 use crate::common::time_util::get_timestamp_us;
+use crate::market_maker::hedge_split::{
+    split_hedge_orders_round_robin, HedgeLevel, HedgeSplitOrder,
+};
+use crate::market_maker::order_align::{contract_qty_multiplier, min_qty_symbol_key};
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
+use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::{PersistChannel, QueryEngHub, TradeEngHub};
 use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue};
@@ -236,46 +241,83 @@ impl MarketMakerHedgeStrategy {
             None
         };
 
+        let symbol = ctx.get_opening_symbol().to_uppercase();
+        let venue = MonitorChannel::instance().open_venue();
+        let symbol_key = min_qty_symbol_key(venue, &symbol);
+        let qty_multiplier = MonitorChannel::instance()
+            .venue_min_qty_table(venue)
+            .and_then(|table| contract_qty_multiplier(&table, venue, &symbol_key))
+            .unwrap_or(1.0);
+
         let price_tick = 10f64.powi(ctx.price_tick_exp);
         let qty_tick = 10f64.powi(ctx.qty_tick_exp);
-        let mut remaining_qty = net_qty.abs();
-        let mut total_qty = 0.0;
-        let mut total_usdt = 0.0;
+        let levels: Vec<HedgeLevel> = ctx
+            .price_list
+            .iter()
+            .zip(ctx.amount_list.iter())
+            .filter_map(|(price_tick_level, amount_tick)| {
+                let qty_venue = (*amount_tick as f64) * qty_tick;
+                if qty_venue <= 0.0 {
+                    return None;
+                }
+                Some(HedgeLevel {
+                    price: (*price_tick_level as f64) * price_tick,
+                    qty_venue_one_hand: qty_venue,
+                })
+            })
+            .collect();
+
+        let split = split_hedge_orders_round_robin(hedge_side, net_qty, &levels, qty_multiplier);
+        let remaining_qty = split.remaining_qty_base;
+        let total_qty = split.total_qty_base;
+        let total_usdt = split.total_usdt;
+
+        let level_stats_text = split
+            .level_stats
+            .iter()
+            .map(|s| {
+                format!(
+                    "#{} p={:.8} hand_venue={:.8} hand_base={:.8} n={} out_venue={:.8} out_base={:.8}",
+                    s.level_index,
+                    s.price,
+                    s.qty_venue_one_hand,
+                    s.qty_base_one_hand,
+                    s.hand_count,
+                    s.order_qty_venue,
+                    s.order_qty_base
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" | ");
+        info!(
+            "MMHedge split detail: symbol={} venue={:?} side={:?} net_qty_base={:.8} qty_multiplier={:.8} levels={} remaining_base={:.8} detail={}",
+            symbol,
+            venue,
+            hedge_side,
+            net_qty,
+            qty_multiplier,
+            levels.len(),
+            remaining_qty,
+            level_stats_text,
+        );
 
         self.hedge_plan.clear();
-        if let Some(hedge_side) = hedge_side {
-            for (price_tick_level, amount_tick) in ctx.price_list.iter().zip(ctx.amount_list.iter())
-            {
-                if remaining_qty <= 0.0 {
-                    break;
-                }
-                let level_qty = (*amount_tick as f64) * qty_tick;
-                if level_qty <= 0.0 {
-                    continue;
-                }
-                if remaining_qty + 1e-12 < level_qty {
-                    break;
-                }
-                let level_price = (*price_tick_level as f64) * price_tick;
-                if self.order_seq >= u32::MAX {
+        for HedgeSplitOrder { side, price, qty } in split.orders {
+            if self.order_seq >= u32::MAX {
+                self.order_seq = 1;
+            } else {
+                self.order_seq += 1;
+                if self.order_seq == 0 {
                     self.order_seq = 1;
-                } else {
-                    self.order_seq += 1;
-                    if self.order_seq == 0 {
-                        self.order_seq = 1;
-                    }
                 }
-                let client_order_id = Self::compose_order_id(self.strategy_id, self.order_seq);
-                self.hedge_plan.push(HedgePlanOrder {
-                    client_order_id,
-                    side: hedge_side,
-                    price: level_price,
-                    qty: level_qty,
-                });
-                remaining_qty -= level_qty;
-                total_qty += level_qty;
-                total_usdt += level_price * level_qty;
             }
+            let client_order_id = Self::compose_order_id(self.strategy_id, self.order_seq);
+            self.hedge_plan.push(HedgePlanOrder {
+                client_order_id,
+                side,
+                price,
+                qty,
+            });
         }
 
         let mut table = String::new();
@@ -308,8 +350,6 @@ impl MarketMakerHedgeStrategy {
         );
 
         if !self.hedge_plan.is_empty() {
-            let venue = MonitorChannel::instance().open_venue();
-            let symbol = ctx.get_opening_symbol().to_uppercase();
             self.send_hedge_orders(venue, &symbol);
         }
 
@@ -419,11 +459,15 @@ impl MarketMakerHedgeStrategy {
 
     fn send_hedge_query(&mut self) {
         // 定时发送对冲查询（携带 symbol + 当期买/卖成交 + 累计净头寸）
+        let risk_loader = PreTradeParamsLoader::instance();
+        let symbol_exposure_u =
+            risk_loader.max_pos_u().max(0.0) * risk_loader.max_symbol_exposure_ratio().max(0.0);
         let query_msg = MmHedgeSignalQueryMsg::new(
             &self.symbol,
             self.period_buy_qty,
             self.period_sell_qty,
             self.net_qty,
+            symbol_exposure_u,
         );
         let send_result = SignalChannel::with(|ch| ch.publish_backward(&query_msg.to_bytes()));
         match send_result {
