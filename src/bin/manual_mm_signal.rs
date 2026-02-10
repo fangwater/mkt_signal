@@ -4,13 +4,14 @@
 //! - Subscribes ask_bid_spread to build quotes.
 //! - Subscribes backward channel (trade_query) and replies with MMHedge.
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use axum::Json;
 use clap::Parser;
+use iceoryx2::port::client::Client;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
@@ -32,6 +33,10 @@ use mkt_signal::common::ipc_service_name::build_service_name;
 use mkt_signal::common::mkt_msg::{get_msg_type, AskBidSpreadMsg, MktMsgType};
 use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
 use mkt_signal::common::time_util::get_timestamp_us;
+use mkt_signal::depth_pub::query_msg::{
+    resp_status_name, DepthQueryHeader, DepthQueryLoadTlenBatchReq, DepthQueryLoadTlenBatchResp,
+    DepthQueryType, DEPTH_QUERY_PAYLOAD, RESP_STATUS_OK,
+};
 use mkt_signal::funding_rate::common::Quote;
 use mkt_signal::market_maker::manual_signal::{
     build_mm_hedge_ctx as build_mm_hedge_ctx_core, MmHedgeBuildInput,
@@ -55,6 +60,11 @@ const DEFAULT_PORT: u16 = 6366;
 const ASKBID_PAYLOAD: usize = 64;
 const DEFAULT_SYMBOL_RELOAD_SECS: u64 = 60;
 const MM_SYMBOL_NAMESPACE: &str = "mm";
+const DEPTH_QUERY_SERVICE_PREFIX: &str = "depth_queries";
+const DEPTH_QUERY_RESPONSE_WAIT_RETRY: usize = 20;
+const DEPTH_QUERY_RESPONSE_WAIT_MS: u64 = 1;
+
+type DepthQueryClient = Client<ipc::Service, [u8], (), [u8], ()>;
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "manual_mm_signal")]
@@ -128,6 +138,7 @@ struct AppState {
     quotes: Arc<RwLock<QuoteCache>>,
     symbols: Arc<RwLock<SymbolCache>>,
     min_qty_table: Arc<RwLock<VenueMinQtyTable>>,
+    mm_hedge_tlen: Arc<RwLock<Option<MmHedgeTlenSnapshot>>>,
     publish_tx: mpsc::UnboundedSender<PublishCmd>,
 }
 
@@ -259,9 +270,197 @@ struct QuoteResponse {
     ts: i64,
 }
 
+#[derive(Debug, Serialize, Clone)]
+struct MmHedgeTlenLevel {
+    index: usize,
+    price: f64,
+    amount: f64,
+    price_tick_i64: i64,
+    price_tick_exp: i32,
+    price_count: i64,
+    tlen: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct MmHedgeTlenSnapshot {
+    updated_at_us: i64,
+    symbol: String,
+    signal_ts: i64,
+    next_query_ts: i64,
+    levels: usize,
+    query_ok: bool,
+    query_err: Option<String>,
+    rows: Vec<MmHedgeTlenLevel>,
+}
+
 #[derive(Debug, Deserialize)]
 struct QuoteQuery {
     symbol: String,
+}
+
+fn create_depth_query_client(venue: TradingVenue) -> Result<DepthQueryClient> {
+    let node_name = format!("{}_depth_query_client", PROCESS_NAME);
+    let node = NodeBuilder::new()
+        .name(&NodeName::new(&node_name)?)
+        .create::<ipc::Service>()?;
+
+    let service_name = format!(
+        "{}/{}",
+        DEPTH_QUERY_SERVICE_PREFIX,
+        venue.data_pub_slug()
+    );
+    let service = node
+        .service_builder(&ServiceName::new(&service_name)?)
+        .request_response::<[u8], [u8]>()
+        .open()?;
+
+    let client = service
+        .client_builder()
+        .initial_max_slice_len(DEPTH_QUERY_PAYLOAD)
+        .create()?;
+
+    info!("manual_mm depth query client ready: {}", service_name);
+    Ok(client)
+}
+
+fn query_tlen_batch(
+    client: &DepthQueryClient,
+    symbol: &str,
+    prices: &[f64],
+) -> Result<Vec<f64>> {
+    if prices.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut req_buf = [0u8; DEPTH_QUERY_PAYLOAD];
+    let header_len = DepthQueryHeader::write(
+        &mut req_buf,
+        DepthQueryType::LoadTlenBatch as u8,
+        symbol,
+    )
+    .map_err(|err| anyhow!(err.to_string()))?;
+
+    let payload_len = DepthQueryLoadTlenBatchReq::write_to(
+        &mut req_buf[header_len..],
+        get_timestamp_us(),
+        prices,
+    )
+    .map_err(|err| anyhow!(err.to_string()))?;
+
+    let req_len = header_len + payload_len;
+    let pending = client
+        .loan_slice_uninit(req_len)
+        .map_err(|err| anyhow!("loan depth query request failed: {err:?}"))?
+        .write_from_slice(&req_buf[..req_len])
+        .send()
+        .map_err(|err| anyhow!("send depth query request failed: {err:?}"))?;
+
+    for _ in 0..DEPTH_QUERY_RESPONSE_WAIT_RETRY {
+        let maybe_response = pending
+            .receive()
+            .map_err(|err| anyhow!("receive depth query response failed: {err:?}"))?;
+
+        if let Some(response) = maybe_response {
+            let payload = response.payload();
+            if payload.len() < 2 {
+                return Err(anyhow!("depth query response too short: {}", payload.len()));
+            }
+
+            let header = DepthQueryHeader::parse(payload).map_err(|err| anyhow!(err.to_string()))?;
+            if header.query_type != DepthQueryType::LoadTlenBatch as u8 {
+                return Err(anyhow!(
+                    "unexpected depth query type: {}",
+                    header.query_type
+                ));
+            }
+
+            let resp_payload = &payload[header.payload_offset..];
+            if resp_payload.is_empty() {
+                return Err(anyhow!("depth query response payload empty"));
+            }
+
+            let status = resp_payload[0];
+            if status != RESP_STATUS_OK {
+                return Err(anyhow!(
+                    "depth query status={}({})",
+                    status,
+                    resp_status_name(status)
+                ));
+            }
+
+            let resp = DepthQueryLoadTlenBatchResp::from_payload(&resp_payload[1..])
+                .map_err(|err| anyhow!(err.to_string()))?;
+            return Ok(resp.amounts);
+        }
+
+        std::thread::sleep(Duration::from_millis(DEPTH_QUERY_RESPONSE_WAIT_MS));
+    }
+
+    Err(anyhow!("depth query response timeout"))
+}
+
+fn build_mm_hedge_tlen_snapshot(
+    symbol: &str,
+    ctx: &MmHedgeCtx,
+    tlen_values: Option<&[f64]>,
+    query_err: Option<String>,
+) -> MmHedgeTlenSnapshot {
+    let mut rows = Vec::with_capacity(ctx.price_qv_list.len());
+    for (index, (price_qv, amount_qv)) in ctx
+        .price_qv_list
+        .iter()
+        .zip(ctx.amount_qv_list.iter())
+        .enumerate()
+    {
+        let (price_tick_i64, price_tick_exp) = price_qv.get_tick_parts();
+        let price_count = price_qv.get_count();
+        let tlen = tlen_values.and_then(|values| values.get(index)).copied();
+        rows.push(MmHedgeTlenLevel {
+            index,
+            price: price_qv.get_val(),
+            amount: amount_qv.get_val(),
+            price_tick_i64,
+            price_tick_exp,
+            price_count,
+            tlen,
+        });
+    }
+
+    MmHedgeTlenSnapshot {
+        updated_at_us: get_timestamp_us(),
+        symbol: symbol.to_string(),
+        signal_ts: ctx.signal_ts,
+        next_query_ts: ctx.next_query_ts,
+        levels: rows.len(),
+        query_ok: query_err.is_none(),
+        query_err,
+        rows,
+    }
+}
+
+fn format_mm_hedge_tlen_rows(rows: &[MmHedgeTlenLevel]) -> String {
+    if rows.is_empty() {
+        return "none".to_string();
+    }
+    rows.iter()
+        .map(|row| {
+            let tlen_text = match row.tlen {
+                Some(v) => format!("{v:.8}"),
+                None => "NA".to_string(),
+            };
+            format!(
+                "#{} p={:.8}(tick={}/10^{},cnt={}) qty={:.8} tlen={}",
+                row.index,
+                row.price,
+                row.price_tick_i64,
+                row.price_tick_exp,
+                row.price_count,
+                row.amount,
+                tlen_text
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
 fn venue_from_slug(raw: &str) -> Option<TradingVenue> {
@@ -526,6 +725,7 @@ fn spawn_backward_query_responder(
     cfg: AppCfg,
     quotes: Arc<RwLock<QuoteCache>>,
     min_qty_table: Arc<RwLock<VenueMinQtyTable>>,
+    mm_hedge_tlen: Arc<RwLock<Option<MmHedgeTlenSnapshot>>>,
     publish_tx: mpsc::UnboundedSender<PublishCmd>,
     token: CancellationToken,
 ) {
@@ -534,6 +734,16 @@ fn spawn_backward_query_responder(
         let service_path = build_service_name(&format!("signal_pubs/{}", cfg.backward_channel));
 
         let result: Result<()> = async move {
+            let depth_client = match create_depth_query_client(cfg.venue) {
+                Ok(client) => Some(client),
+                Err(err) => {
+                    warn!(
+                        "manual_mm: depth query client unavailable, continue without tlen: {err:#}"
+                    );
+                    None
+                }
+            };
+
             let node = NodeBuilder::new()
                 .name(&NodeName::new(&node_name)?)
                 .create::<ipc::Service>()?;
@@ -583,12 +793,53 @@ fn spawn_backward_query_responder(
                                 };
 
                                 let symbol = ctx.get_opening_symbol();
+                                let query_prices: Vec<f64> =
+                                    ctx.price_qv_list.iter().map(|qv| qv.get_val()).collect();
+                                let tlen_query_result = if let Some(client) = depth_client.as_ref()
+                                {
+                                    query_tlen_batch(client, &symbol, &query_prices)
+                                } else {
+                                    Err(anyhow!("depth query client unavailable"))
+                                };
+
+                                let snapshot = match &tlen_query_result {
+                                    Ok(tlens) => build_mm_hedge_tlen_snapshot(
+                                        &symbol,
+                                        &ctx,
+                                        Some(tlens.as_slice()),
+                                        None,
+                                    ),
+                                    Err(err) => build_mm_hedge_tlen_snapshot(
+                                        &symbol,
+                                        &ctx,
+                                        None,
+                                        Some(err.to_string()),
+                                    ),
+                                };
+                                let rows_text = format_mm_hedge_tlen_rows(&snapshot.rows);
+                                *mm_hedge_tlen.write() = Some(snapshot.clone());
+
+                                if let Some(err) = &snapshot.query_err {
+                                    warn!(
+                                        "manual_mm: hedge qv+tlen symbol={} levels={} query_err='{}' rows={}",
+                                        symbol,
+                                        snapshot.levels,
+                                        err,
+                                        rows_text
+                                    );
+                                } else {
+                                    info!(
+                                        "manual_mm: hedge qv+tlen symbol={} levels={} rows={}",
+                                        symbol,
+                                        snapshot.levels,
+                                        rows_text
+                                    );
+                                }
+
                                 info!(
-                                    "manual_mm: hedge query reply symbol={} levels={} price_tick_exp={} qty_tick_exp={}",
+                                    "manual_mm: hedge query reply symbol={} levels={}",
                                     symbol,
-                                    ctx.price_list.len(),
-                                    ctx.price_tick_exp,
-                                    ctx.qty_tick_exp
+                                    ctx.price_qv_list.len(),
                                 );
 
                                 let signal = TradeSignal::create(
@@ -945,6 +1196,11 @@ async fn api_preview(
     }
 }
 
+async fn api_mm_hedge_tlen(State(st): State<AppState>) -> impl IntoResponse {
+    let snapshot = st.mm_hedge_tlen.read().clone();
+    Json(snapshot).into_response()
+}
+
 async fn index() -> impl IntoResponse {
     Html(INDEX_HTML)
 }
@@ -956,6 +1212,7 @@ async fn serve_http(addr: SocketAddr, state: AppState, token: CancellationToken)
         .route("/api/symbols", get(api_symbols))
         .route("/api/quote", get(api_quote))
         .route("/api/preview", post(api_preview))
+        .route("/api/mm_hedge_tlen", get(api_mm_hedge_tlen))
         .route("/api/send", post(api_send))
         .with_state(state);
 
@@ -1182,6 +1439,32 @@ const INDEX_HTML: &str = r#"<!doctype html>
           <h3 style="font-size:15px;">Last Response</h3>
           <textarea id="log" rows="14" readonly></textarea>
         </section>
+
+        <section class="panel">
+          <div class="row-between">
+            <h3 style="font-size:15px;">MMHedge QV/TLen</h3>
+            <button id="refreshHedgeTlen">Refresh</button>
+          </div>
+          <div class="muted" id="hedgeTlenMeta">No MMHedge query yet</div>
+          <div class="table-wrap" style="margin-top:8px; max-height:260px;">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>price</th>
+                  <th>qty</th>
+                  <th>price_tick_i64</th>
+                  <th>price_tick_exp</th>
+                  <th>price_count</th>
+                  <th>tlen</th>
+                </tr>
+              </thead>
+              <tbody id="hedgeTlenRows">
+                <tr><td colspan="7" class="muted" style="text-align:center;">No data</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
       </div>
     </div>
 
@@ -1206,8 +1489,11 @@ const INDEX_HTML: &str = r#"<!doctype html>
         previewRows: document.getElementById('previewRows'),
         previewSummaryRows: document.getElementById('previewSummaryRows'),
         previewMeta: document.getElementById('previewMeta'),
+        hedgeTlenMeta: document.getElementById('hedgeTlenMeta'),
+        hedgeTlenRows: document.getElementById('hedgeTlenRows'),
         log: document.getElementById('log'),
         refreshQuote: document.getElementById('refreshQuote'),
+        refreshHedgeTlen: document.getElementById('refreshHedgeTlen'),
         preview: document.getElementById('preview'),
         send: document.getElementById('send'),
       };
@@ -1336,6 +1622,48 @@ const INDEX_HTML: &str = r#"<!doctype html>
           `symbol=${preview.symbol} buy=${preview.buy_orders} sell=${preview.sell_orders} total_notional_u=${fmtNum(totalAlignedNotional, 4)} quote_ts=${preview.quote_ts}`;
       }
 
+      function renderHedgeTlen(snapshot) {
+        if (!snapshot) {
+          els.hedgeTlenMeta.textContent = 'No MMHedge query yet';
+          els.hedgeTlenRows.innerHTML = '<tr><td colspan="7" class="muted" style="text-align:center;">No data</td></tr>';
+          return;
+        }
+
+        const rows = snapshot.rows || [];
+        const errText = snapshot.query_err ? ` err=${snapshot.query_err}` : '';
+        els.hedgeTlenMeta.textContent =
+          `symbol=${snapshot.symbol} levels=${snapshot.levels} signal_ts=${snapshot.signal_ts} next_query_ts=${snapshot.next_query_ts} query_ok=${snapshot.query_ok}${errText}`;
+
+        if (!rows.length) {
+          els.hedgeTlenRows.innerHTML = '<tr><td colspan="7" class="muted" style="text-align:center;">No levels</td></tr>';
+          return;
+        }
+
+        els.hedgeTlenRows.innerHTML = rows.map((row) => {
+          const tlenText = row.tlen == null ? 'NA' : fmtNum(row.tlen, 8);
+          return `
+            <tr>
+              <td>${row.index}</td>
+              <td>${fmtNum(row.price, 8)}</td>
+              <td>${fmtNum(row.amount, 8)}</td>
+              <td>${row.price_tick_i64}</td>
+              <td>${row.price_tick_exp}</td>
+              <td>${row.price_count}</td>
+              <td>${tlenText}</td>
+            </tr>
+          `;
+        }).join('');
+      }
+
+      async function refreshHedgeTlen() {
+        const resp = await fetch('/api/mm_hedge_tlen');
+        if (!resp.ok) {
+          setLog({ error: `hedge_tlen fetch failed: ${await resp.text()}` });
+          return;
+        }
+        renderHedgeTlen(await resp.json());
+      }
+
       async function loadCfg() {
         const resp = await fetch('/api/config');
         if (!resp.ok) {
@@ -1429,6 +1757,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
         await refreshQuote();
       };
       els.refreshQuote.onclick = refreshQuote;
+      els.refreshHedgeTlen.onclick = refreshHedgeTlen;
       els.preview.onclick = previewOpen;
       els.send.onclick = sendOpen;
 
@@ -1436,6 +1765,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
         try {
           await loadCfg();
           await loadSymbols();
+          await refreshHedgeTlen();
           updateButtons();
           setStatus('READY');
         } catch (err) {
@@ -1455,6 +1785,7 @@ async fn run(cfg: AppCfg, token: CancellationToken) -> Result<()> {
 
     let quotes = Arc::new(RwLock::new(QuoteCache::default()));
     let symbols = Arc::new(RwLock::new(SymbolCache::default()));
+    let mm_hedge_tlen = Arc::new(RwLock::new(None));
     spawn_ask_bid_listener(cfg.venue, quotes.clone(), token.clone());
     tokio::task::spawn_local(symbol_list_reload_loop(
         DEFAULT_SYMBOL_RELOAD_SECS,
@@ -1469,6 +1800,7 @@ async fn run(cfg: AppCfg, token: CancellationToken) -> Result<()> {
         cfg.clone(),
         quotes.clone(),
         table.clone(),
+        mm_hedge_tlen.clone(),
         publish_tx.clone(),
         token.clone(),
     );
@@ -1478,6 +1810,7 @@ async fn run(cfg: AppCfg, token: CancellationToken) -> Result<()> {
         quotes,
         symbols,
         min_qty_table: table.clone(),
+        mm_hedge_tlen,
         publish_tx,
     };
 

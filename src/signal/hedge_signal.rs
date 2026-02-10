@@ -72,17 +72,11 @@ pub struct MmHedgeCtx {
     /// Leg symbol
     pub opening_symbol: [u8; 32],
 
-    /// Price tick as power of 10 (price_tick = 10^price_tick_exp)
-    pub price_tick_exp: i32,
+    /// Price levels encoded by QuantizedValue (same encoding style as MmOpenCtx::price_qv)
+    pub price_qv_list: Vec<QuantizedValue>,
 
-    /// Qty tick as power of 10 (qty_tick = 10^qty_tick_exp)
-    pub qty_tick_exp: i32,
-
-    /// Price levels in ticks (price = price_list[i] * 10^price_tick_exp)
-    pub price_list: Vec<i32>,
-
-    /// Amount per level in qty ticks (qty = amount_list[i] * 10^qty_tick_exp)
-    pub amount_list: Vec<i64>,
+    /// Amount levels encoded by QuantizedValue (same encoding style as MmOpenCtx::amount_qv)
+    pub amount_qv_list: Vec<QuantizedValue>,
 
     /// Signal timestamp (microseconds)
     pub signal_ts: i64,
@@ -315,10 +309,8 @@ impl MmHedgeCtx {
                 ts: 0,
             },
             opening_symbol: [0u8; 32],
-            price_tick_exp: 0,
-            qty_tick_exp: 0,
-            price_list: Vec::new(),
-            amount_list: Vec::new(),
+            price_qv_list: Vec::new(),
+            amount_qv_list: Vec::new(),
             signal_ts: 0,
             next_query_ts: 0,
             from_key_len: 0,
@@ -502,20 +494,22 @@ impl SignalBytes for MmHedgeCtx {
         buf.put_i64_le(self.opening_leg.ts);
         bytes_helper::write_fixed_bytes(&mut buf, &self.opening_symbol);
 
-        // Price/qty tick exponents
-        buf.put_i32_le(self.price_tick_exp);
-        buf.put_i32_le(self.qty_tick_exp);
-
-        // Price list (ticks)
-        buf.put_u32_le(self.price_list.len() as u32);
-        for price in &self.price_list {
-            buf.put_i32_le(*price);
+        // Price qv list
+        buf.put_u32_le(self.price_qv_list.len() as u32);
+        for price_qv in &self.price_qv_list {
+            let (tick_i64, tick_exp) = price_qv.get_tick_parts();
+            buf.put_i64_le(tick_i64);
+            buf.put_i32_le(tick_exp);
+            buf.put_i64_le(price_qv.get_count());
         }
 
-        // Amount list (qty ticks)
-        buf.put_u32_le(self.amount_list.len() as u32);
-        for amount in &self.amount_list {
-            buf.put_i64_le(*amount);
+        // Amount qv list
+        buf.put_u32_le(self.amount_qv_list.len() as u32);
+        for amount_qv in &self.amount_qv_list {
+            let (tick_i64, tick_exp) = amount_qv.get_tick_parts();
+            buf.put_i64_le(tick_i64);
+            buf.put_i32_le(tick_exp);
+            buf.put_i64_le(amount_qv.get_count());
         }
 
         // Signal timestamp
@@ -533,6 +527,8 @@ impl SignalBytes for MmHedgeCtx {
     }
 
     fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
+        const QV_BYTES_LEN: usize = 8 + 4 + 8;
+
         // Opening leg
         if bytes.remaining() < 1 + 8 + 8 + 8 {
             return Err("Not enough bytes for opening leg".to_string());
@@ -543,50 +539,49 @@ impl SignalBytes for MmHedgeCtx {
         let opening_ts = bytes.get_i64_le();
         let opening_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
 
-        if bytes.remaining() < 8 {
-            return Err("Not enough bytes for price/qty tick exponents".to_string());
-        }
-        let price_tick_exp = bytes.get_i32_le();
-        let qty_tick_exp = bytes.get_i32_le();
-
         if bytes.remaining() < 4 {
-            return Err("Not enough bytes for price_list length".to_string());
+            return Err("Not enough bytes for price_qv_list length".to_string());
         }
         let price_len = bytes.get_u32_le() as usize;
-        if bytes.remaining() < price_len.saturating_mul(4) {
+        if bytes.remaining() < price_len.saturating_mul(QV_BYTES_LEN) {
             return Err(format!(
-                "Not enough bytes for price_list: need {}, have {}",
-                price_len.saturating_mul(4),
+                "Not enough bytes for price_qv_list: need {}, have {}",
+                price_len.saturating_mul(QV_BYTES_LEN),
                 bytes.remaining()
             ));
         }
-        let mut price_list = Vec::with_capacity(price_len);
+        let mut price_qv_list = Vec::with_capacity(price_len);
         for _ in 0..price_len {
-            price_list.push(bytes.get_i32_le());
+            let tick_i64 = bytes.get_i64_le();
+            let tick_exp = bytes.get_i32_le();
+            let count = bytes.get_i64_le();
+            price_qv_list.push(QuantizedValue::from_parts(tick_i64, tick_exp, count));
         }
 
         if bytes.remaining() < 4 {
-            return Err("Not enough bytes for amount_list length".to_string());
+            return Err("Not enough bytes for amount_qv_list length".to_string());
         }
         let amount_len = bytes.get_u32_le() as usize;
-        if bytes.remaining() < amount_len.saturating_mul(8) {
+        if bytes.remaining() < amount_len.saturating_mul(QV_BYTES_LEN) {
             return Err(format!(
-                "Not enough bytes for amount_list: need {}, have {}",
-                amount_len.saturating_mul(8),
+                "Not enough bytes for amount_qv_list: need {}, have {}",
+                amount_len.saturating_mul(QV_BYTES_LEN),
                 bytes.remaining()
             ));
         }
-        let mut amount_list = Vec::with_capacity(amount_len);
+        let mut amount_qv_list = Vec::with_capacity(amount_len);
         for _ in 0..amount_len {
-            let amount = bytes.get_i64_le();
-            amount_list.push(amount);
+            let tick_i64 = bytes.get_i64_le();
+            let tick_exp = bytes.get_i32_le();
+            let count = bytes.get_i64_le();
+            amount_qv_list.push(QuantizedValue::from_parts(tick_i64, tick_exp, count));
         }
 
-        if price_list.len() != amount_list.len() {
+        if price_qv_list.len() != amount_qv_list.len() {
             return Err(format!(
-                "price_list/amount_list length mismatch: price_len={} amount_len={}",
-                price_list.len(),
-                amount_list.len()
+                "price_qv_list/amount_qv_list length mismatch: price_len={} amount_len={}",
+                price_qv_list.len(),
+                amount_qv_list.len()
             ));
         }
 
@@ -625,10 +620,8 @@ impl SignalBytes for MmHedgeCtx {
                 ts: opening_ts,
             },
             opening_symbol,
-            price_tick_exp,
-            qty_tick_exp,
-            price_list,
-            amount_list,
+            price_qv_list,
+            amount_qv_list,
             signal_ts,
             next_query_ts,
             from_key_len: from_key_len as u32,

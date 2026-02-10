@@ -221,12 +221,10 @@ impl MarketMakerHedgeStrategy {
         }
         let from_key = String::from_utf8_lossy(&self.hedge_from_key);
         info!(
-            "MMHedge ctx: symbol={} price_tick_exp={} qty_tick_exp={} price_levels={} amount_levels={} signal_ts={} next_query_ts={} from_key='{}'",
+            "MMHedge ctx: symbol={} price_levels={} amount_levels={} signal_ts={} next_query_ts={} from_key='{}'",
             ctx.get_opening_symbol(),
-            ctx.price_tick_exp,
-            ctx.qty_tick_exp,
-            ctx.price_list.len(),
-            ctx.amount_list.len(),
+            ctx.price_qv_list.len(),
+            ctx.amount_qv_list.len(),
             ctx.signal_ts,
             ctx.next_query_ts,
             from_key
@@ -249,19 +247,21 @@ impl MarketMakerHedgeStrategy {
             .and_then(|table| contract_qty_multiplier(&table, venue, &symbol_key))
             .unwrap_or(1.0);
 
-        let price_tick = 10f64.powi(ctx.price_tick_exp);
-        let qty_tick = 10f64.powi(ctx.qty_tick_exp);
         let levels: Vec<HedgeLevel> = ctx
-            .price_list
+            .price_qv_list
             .iter()
-            .zip(ctx.amount_list.iter())
-            .filter_map(|(price_tick_level, amount_tick)| {
-                let qty_venue = (*amount_tick as f64) * qty_tick;
+            .zip(ctx.amount_qv_list.iter())
+            .filter_map(|(price_qv, amount_qv)| {
+                let price = price_qv.get_val();
+                let qty_venue = amount_qv.get_val();
+                if price <= 0.0 || qty_venue <= 0.0 {
+                    return None;
+                }
                 if qty_venue <= 0.0 {
                     return None;
                 }
                 Some(HedgeLevel {
-                    price: (*price_tick_level as f64) * price_tick,
+                    price,
                     qty_venue_one_hand: qty_venue,
                 })
             })

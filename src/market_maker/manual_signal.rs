@@ -1,3 +1,4 @@
+use crate::common::tick_math::QuantizedValue;
 use crate::market_maker::hedge_scale::{scale_offsets_by_inventory, HedgeOffsetScaleInput};
 use crate::market_maker::order_align::{align_order_for_venue, min_qty_symbol_key};
 use crate::pre_trade::order_manager::Side;
@@ -54,9 +55,6 @@ pub fn build_mm_hedge_ctx(
             symbol_key, price_tick, qty_tick
         ));
     }
-
-    let price_tick_exp = tick_to_exp(price_tick).ok_or("price_tick is not power-of-10")?;
-    let qty_tick_exp = tick_to_exp(qty_tick).ok_or("qty_tick is not power-of-10")?;
 
     let offset_abs: Vec<f64> = input.offsets.iter().map(|v| v.abs()).collect();
     if offset_abs.is_empty() {
@@ -124,8 +122,8 @@ pub fn build_mm_hedge_ctx(
         })
         .collect();
 
-    let mut price_list: Vec<i32> = Vec::with_capacity(mapped_offsets.len());
-    let mut amount_list: Vec<i64> = Vec::with_capacity(mapped_offsets.len());
+    let mut price_qv_list: Vec<QuantizedValue> = Vec::with_capacity(mapped_offsets.len());
+    let mut amount_qv_list: Vec<QuantizedValue> = Vec::with_capacity(mapped_offsets.len());
     for offset in mapped_offsets {
         let raw_price = match side {
             Side::Buy => base_price * (1.0 - offset),
@@ -138,36 +136,38 @@ pub fn build_mm_hedge_ctx(
         let (aligned_qty, aligned_price) =
             align_order_for_venue(input.venue, &symbol_key, raw_qty, raw_price, table)?;
 
-        let price_level = (aligned_price / price_tick).round() as i32;
-        let amount_level = (aligned_qty / qty_tick).round() as i64;
-        if price_level == 0 || amount_level == 0 {
+        let Some(price_qv) = QuantizedValue::encode_floor(aligned_price, price_tick) else {
+            continue;
+        };
+        let Some(amount_qv) = QuantizedValue::encode_floor(aligned_qty, qty_tick) else {
+            continue;
+        };
+        if price_qv.get_count() <= 0 || amount_qv.get_count() <= 0 {
             continue;
         }
-        price_list.push(price_level);
-        amount_list.push(amount_level);
+        price_qv_list.push(price_qv);
+        amount_qv_list.push(amount_qv);
     }
 
+    let price_values: Vec<f64> = price_qv_list.iter().map(QuantizedValue::get_val).collect();
+    let amount_values: Vec<f64> = amount_qv_list.iter().map(QuantizedValue::get_val).collect();
     info!(
-        "MMHedge ctx levels: symbol={} levels={} price_tick_exp={} qty_tick_exp={} price_list={:?} amount_list={:?}",
+        "MMHedge ctx levels: symbol={} levels={} price_values={:?} amount_values={:?}",
         symbol,
-        price_list.len(),
-        price_tick_exp,
-        qty_tick_exp,
-        price_list,
-        amount_list,
+        price_qv_list.len(),
+        price_values,
+        amount_values,
     );
     info!(
-        "MMHedgeCtxSummary {{\"symbol\":\"{}\",\"side\":\"{}\",\"levels\":{},\"price_tick_exp\":{},\"qty_tick_exp\":{},\"next_query_delay_ms\":{},\"signal_ts\":{}}}",
+        "MMHedgeCtxSummary {{\"symbol\":\"{}\",\"side\":\"{}\",\"levels\":{},\"next_query_delay_ms\":{},\"signal_ts\":{}}}",
         symbol,
         side.as_str(),
-        price_list.len(),
-        price_tick_exp,
-        qty_tick_exp,
+        price_qv_list.len(),
         input.next_query_delay_ms,
         get_timestamp_us(),
     );
 
-    if price_list.is_empty() || amount_list.is_empty() {
+    if price_qv_list.is_empty() || amount_qv_list.is_empty() {
         return Err("empty price/amount list after alignment".to_string());
     }
 
@@ -180,39 +180,10 @@ pub fn build_mm_hedge_ctx(
         input.quote.ts,
     );
     ctx.set_opening_symbol(&symbol);
-    ctx.price_tick_exp = price_tick_exp;
-    ctx.qty_tick_exp = qty_tick_exp;
-    ctx.price_list = price_list;
-    ctx.amount_list = amount_list;
+    ctx.price_qv_list = price_qv_list;
+    ctx.amount_qv_list = amount_qv_list;
     ctx.signal_ts = now;
     ctx.next_query_ts = now + (input.next_query_delay_ms as i64) * 1000;
     ctx.set_from_key(input.from_key);
     Ok(ctx)
-}
-
-fn tick_to_exp(tick: f64) -> Option<i32> {
-    if tick <= 0.0 {
-        return None;
-    }
-    let mut exp: i32 = 0;
-    let mut val = tick;
-    while val < 1.0 {
-        val *= 10.0;
-        exp -= 1;
-        if exp < -12 {
-            break;
-        }
-    }
-    while val >= 10.0 {
-        val /= 10.0;
-        exp += 1;
-        if exp > 12 {
-            break;
-        }
-    }
-    if (val - 1.0).abs() <= 1e-9 {
-        Some(exp)
-    } else {
-        None
-    }
 }

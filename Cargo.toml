@@ -177,3 +177,9 @@ version = "0.43.1"
 optional = false
 default-features = false
 features = ["fmt", "lazy", "parquet", "polars-io", "rolling_window"]
+
+[profile.release]
+debug = 0
+strip = "symbols"
+lto = "thin"
+codegen-units = 1
