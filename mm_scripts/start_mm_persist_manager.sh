@@ -31,7 +31,7 @@ Usage:
   mm_scripts/start_mm_persist_manager.sh
 
 Notes:
-  - Requires IPC_NAMESPACE to be set (in shell or env.sh).
+  - IPC_NAMESPACE is optional; defaults to deploy dir name.
 USAGE
 }
 
@@ -46,10 +46,10 @@ if [[ -f "$ENV_FILE" ]]; then
   source "$ENV_FILE"
 fi
 
-if [[ -z "${IPC_NAMESPACE:-}" ]]; then
-  echo "[ERROR] IPC_NAMESPACE is not set." >&2
-  echo "[ERROR] export IPC_NAMESPACE=$(basename "$BASE_DIR")  # or source ${ENV_FILE}" >&2
-  exit 1
+IPC_NS="${IPC_NAMESPACE:-}"
+if [[ -z "$IPC_NS" ]]; then
+  IPC_NS="$(basename "${BASE_DIR}")"
+  echo "[WARN] IPC_NAMESPACE not set; use default: ${IPC_NS}"
 fi
 
 PROC_NAME="${PM2_NAME:-mm_persist_manager_$(echo "${BASE_DIR##*/}" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9_-]/_/g')}"
@@ -62,11 +62,10 @@ npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
 
 (
   cd "$BASE_DIR"
-  RUST_LOG="$RUST_LOG" npx pm2 start "$BIN_PATH" \
+  IPC_NAMESPACE="$IPC_NS" RUST_LOG="$RUST_LOG" npx pm2 start "$BIN_PATH" \
     --name "$PROC_NAME" \
-    --namespace "$NAMESPACE" \
-    --
+    --namespace "$NAMESPACE"
 )
 
-echo "[INFO] Started ${PROC_NAME}"
+echo "[INFO] Started ${PROC_NAME} (ipc_namespace=${IPC_NS})"
 echo "[INFO] Logs: npx pm2 logs --namespace ${NAMESPACE} ${PROC_NAME}"

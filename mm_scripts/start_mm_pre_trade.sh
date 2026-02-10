@@ -38,6 +38,13 @@ USAGE
 
 VENUE=""
 CONFIG_PATH="${BASE_DIR}/config/manual_mm_signal.yaml"
+
+ENV_FILE="${BASE_DIR}/env.sh"
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+fi
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --venue)
@@ -100,14 +107,19 @@ VENUE="$(normalize_venue "$VENUE")"
 
 PROC_NAME="${PM2_NAME:-mm_pre_trade_$(echo "${BASE_DIR##*/}" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9_-]/_/g')}"
 RUST_LOG="${RUST_LOG:-info}"
+IPC_NS="${IPC_NAMESPACE:-}"
+if [[ -z "$IPC_NS" ]]; then
+  IPC_NS="$(basename "${BASE_DIR}")"
+  echo "[WARN] IPC_NAMESPACE not set; use default: ${IPC_NS}"
+fi
 
 npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
 
-RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
+IPC_NAMESPACE="$IPC_NS" RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
   --name "$PROC_NAME" \
   --namespace "$NAMESPACE" \
   -- \
   --open-venue "$VENUE" --hedge-venue "$VENUE"
 
-echo "[INFO] Started ${PROC_NAME} (venue=${VENUE})"
+echo "[INFO] Started ${PROC_NAME} (venue=${VENUE}, ipc_namespace=${IPC_NS})"
 echo "[INFO] Logs: npx pm2 logs --namespace ${NAMESPACE} ${PROC_NAME}"

@@ -27,14 +27,14 @@ if [[ -z "$BIN_PATH" ]]; then
 fi
 
 usage() {
-  cat <<'EOF'
+  cat <<'EOF_USAGE'
 Usage: mm_scripts/start_mm_viz_server.sh [--cfg config/viz.toml] [--exchange <binance|okex|gate|bybit|bitget>]
 
 Notes:
   - Starts viz_server with PM2 using config/viz.toml (or VIZ_CFG / --cfg).
   - Exchange is inferred from the directory name (<exchange>_mm_<env>), unless --exchange is set.
   - Default PM2 name uses the deploy dir name to avoid collisions.
-EOF
+EOF_USAGE
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -92,6 +92,11 @@ fi
 
 PROC_NAME="${PM2_NAME:-viz_server_${dir_tag}}"
 RUST_LOG="${RUST_LOG:-info}"
+IPC_NS="${IPC_NAMESPACE:-}"
+if [[ -z "$IPC_NS" ]]; then
+  IPC_NS="$(basename "${BASE_DIR}")"
+  echo "[WARN] IPC_NAMESPACE not set; use default: ${IPC_NS}"
+fi
 
 if [[ ! -f "$BASE_DIR/$CFG_PATH" ]]; then
   echo "[ERROR] viz config not found: $BASE_DIR/$CFG_PATH"
@@ -104,7 +109,7 @@ npx pm2 delete "$PROC_NAME" --namespace "$PM2_NAMESPACE" >/dev/null 2>&1 || true
 
 (
   cd "$BASE_DIR"
-  VIZ_CFG="$CFG_PATH" RUST_LOG="$RUST_LOG" npx pm2 start "$BIN_PATH" \
+  IPC_NAMESPACE="$IPC_NS" VIZ_CFG="$CFG_PATH" RUST_LOG="$RUST_LOG" npx pm2 start "$BIN_PATH" \
     --name "$PROC_NAME" \
     --namespace "$PM2_NAMESPACE"
 )
