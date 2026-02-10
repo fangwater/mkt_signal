@@ -1161,12 +1161,13 @@ const INDEX_HTML: &str = r#"<!doctype html>
                   <th>raw_qty</th>
                   <th>aligned_price</th>
                   <th>aligned_qty</th>
+                  <th>aligned_notional_u</th>
                   <th>price_count</th>
                   <th>qty_count</th>
                 </tr>
               </thead>
               <tbody id="previewRows">
-                <tr><td colspan="9" class="muted" style="text-align:center;">No data</td></tr>
+                <tr><td colspan="10" class="muted" style="text-align:center;">No data</td></tr>
               </tbody>
             </table>
           </div>
@@ -1268,12 +1269,18 @@ const INDEX_HTML: &str = r#"<!doctype html>
         state.lastPreview = preview;
         const rows = preview.levels || [];
         if (!rows.length) {
-          els.previewRows.innerHTML = '<tr><td colspan="9" class="muted" style="text-align:center;">No levels</td></tr>';
+          els.previewRows.innerHTML = '<tr><td colspan="10" class="muted" style="text-align:center;">No levels</td></tr>';
           return;
         }
 
+        const totalAlignedNotional = rows.reduce((sum, row) => {
+          const notional = Number(row.aligned_price) * Number(row.aligned_qty);
+          return Number.isFinite(notional) ? sum + notional : sum;
+        }, 0);
+
         els.previewRows.innerHTML = rows.map((row) => {
           const sideCls = row.side === 'buy' ? 'buy' : 'sell';
+          const alignedNotional = Number(row.aligned_price) * Number(row.aligned_qty);
           return `
             <tr>
               <td class="${sideCls}">${row.side}</td>
@@ -1283,6 +1290,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
               <td>${fmtNum(row.raw_qty, 8)}</td>
               <td>${fmtNum(row.aligned_price, 6)}</td>
               <td>${fmtNum(row.aligned_qty, 8)}</td>
+              <td>${fmtNum(alignedNotional, 4)}</td>
               <td>${row.price_tick_count}</td>
               <td>${row.qty_tick_count}</td>
             </tr>
@@ -1290,7 +1298,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
         }).join('');
 
         els.previewMeta.textContent =
-          `symbol=${preview.symbol} buy=${preview.buy_orders} sell=${preview.sell_orders} quote_ts=${preview.quote_ts}`;
+          `symbol=${preview.symbol} buy=${preview.buy_orders} sell=${preview.sell_orders} total_notional_u=${fmtNum(totalAlignedNotional, 4)} quote_ts=${preview.quote_ts}`;
       }
 
       async function loadCfg() {
