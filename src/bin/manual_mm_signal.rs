@@ -1073,6 +1073,10 @@ const INDEX_HTML: &str = r#"<!doctype html>
         border-collapse: collapse;
         font-size: 12px;
       }
+      tfoot td {
+        font-weight: 600;
+        background: #f2f4f7;
+      }
       th, td {
         border-bottom: 1px solid #edf0f3;
         padding: 6px 8px;
@@ -1169,6 +1173,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
               <tbody id="previewRows">
                 <tr><td colspan="10" class="muted" style="text-align:center;">No data</td></tr>
               </tbody>
+              <tfoot id="previewSummaryRows"></tfoot>
             </table>
           </div>
         </section>
@@ -1199,6 +1204,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
         statusPill: document.getElementById('statusPill'),
         actionHint: document.getElementById('actionHint'),
         previewRows: document.getElementById('previewRows'),
+        previewSummaryRows: document.getElementById('previewSummaryRows'),
         previewMeta: document.getElementById('previewMeta'),
         log: document.getElementById('log'),
         refreshQuote: document.getElementById('refreshQuote'),
@@ -1270,13 +1276,21 @@ const INDEX_HTML: &str = r#"<!doctype html>
         const rows = preview.levels || [];
         if (!rows.length) {
           els.previewRows.innerHTML = '<tr><td colspan="10" class="muted" style="text-align:center;">No levels</td></tr>';
+          els.previewSummaryRows.innerHTML = '';
           return;
         }
 
-        const totalAlignedNotional = rows.reduce((sum, row) => {
+        const buyNotional = rows.reduce((sum, row) => {
+          if (row.side !== 'buy') return sum;
           const notional = Number(row.aligned_price) * Number(row.aligned_qty);
           return Number.isFinite(notional) ? sum + notional : sum;
         }, 0);
+        const sellNotional = rows.reduce((sum, row) => {
+          if (row.side !== 'sell') return sum;
+          const notional = Number(row.aligned_price) * Number(row.aligned_qty);
+          return Number.isFinite(notional) ? sum + notional : sum;
+        }, 0);
+        const totalAlignedNotional = buyNotional + sellNotional;
 
         els.previewRows.innerHTML = rows.map((row) => {
           const sideCls = row.side === 'buy' ? 'buy' : 'sell';
@@ -1296,6 +1310,27 @@ const INDEX_HTML: &str = r#"<!doctype html>
             </tr>
           `;
         }).join('');
+
+        els.previewSummaryRows.innerHTML = `
+          <tr>
+            <td class="buy">buy_subtotal</td>
+            <td colspan="6">-</td>
+            <td>${fmtNum(buyNotional, 4)}</td>
+            <td colspan="2">-</td>
+          </tr>
+          <tr>
+            <td class="sell">sell_subtotal</td>
+            <td colspan="6">-</td>
+            <td>${fmtNum(sellNotional, 4)}</td>
+            <td colspan="2">-</td>
+          </tr>
+          <tr>
+            <td>total</td>
+            <td colspan="6">-</td>
+            <td>${fmtNum(totalAlignedNotional, 4)}</td>
+            <td colspan="2">-</td>
+          </tr>
+        `;
 
         els.previewMeta.textContent =
           `symbol=${preview.symbol} buy=${preview.buy_orders} sell=${preview.sell_orders} total_notional_u=${fmtNum(totalAlignedNotional, 4)} quote_ts=${preview.quote_ts}`;
