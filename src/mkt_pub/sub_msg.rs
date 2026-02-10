@@ -12,6 +12,15 @@ fn bitget_inst_type_for_venue(venue: TradingVenue) -> &'static str {
     }
 }
 
+fn hyperliquid_coin_from_internal(symbol: &str) -> String {
+    let normalized = symbol.trim().to_uppercase().replace(['/', '-', '_'], "");
+    normalized
+        .strip_suffix("USDC")
+        .filter(|coin| !coin.is_empty())
+        .unwrap_or(normalized.as_str())
+        .to_string()
+}
+
 fn construct_subscribe_message(
     exchange: &Exchange,
     venue: TradingVenue,

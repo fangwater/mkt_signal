@@ -201,7 +201,7 @@ impl MarketMakerOpenStrategy {
             return;
         };
 
-        let qty = ctx.amount as f64;
+        let qty = ctx.amount_value();
         if qty <= 0.0 {
             warn!(
                 "MarketMakerOpenStrategy: strategy_id={} invalid qty={}",
@@ -211,10 +211,22 @@ impl MarketMakerOpenStrategy {
             return;
         }
 
-        if ctx.price <= 0.0 {
+        let signal_price = ctx.price_value();
+        if signal_price <= 0.0 {
             warn!(
                 "MarketMakerOpenStrategy: strategy_id={} invalid price={} order_type={:?}",
-                self.strategy_id, ctx.price, order_type
+                self.strategy_id, signal_price, order_type
+            );
+            self.alive_flag = false;
+            return;
+        }
+
+        if ctx.price_count() <= 0 || ctx.amount_count() <= 0 {
+            warn!(
+                "MarketMakerOpenStrategy: strategy_id={} invalid MMOpen qv count price_count={} amount_count={}",
+                self.strategy_id,
+                ctx.price_count(),
+                ctx.amount_count()
             );
             self.alive_flag = false;
             return;
@@ -270,7 +282,7 @@ impl MarketMakerOpenStrategy {
 
         // 4、信号已完成量价对齐，直接使用
         let order_qty = qty;
-        let order_price = ctx.price;
+        let order_price = signal_price;
         let signed_qty = match side {
             Side::Buy => order_qty.abs(),
             Side::Sell => -order_qty.abs(),

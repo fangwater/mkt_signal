@@ -915,11 +915,10 @@ fn build_and_publish_open(
             let mut ctx = MmOpenCtx::new();
             ctx.opening_leg = TradingLeg::new(cfg.venue, req.bid, req.ask, req.quote_ts);
             ctx.set_opening_symbol(&symbol);
-            ctx.amount = aligned_qty as f32;
             ctx.set_side(side);
             ctx.set_order_type(OrderType::Limit);
-            ctx.price = aligned_price;
-            ctx.price_tick = price_tick;
+            let _ = ctx.set_amount_with_tick_floor(aligned_qty, qty_tick);
+            let _ = ctx.set_price_with_tick_floor(aligned_price, price_tick);
             ctx.exp_time = exp_time;
             ctx.create_ts = now;
             ctx.price_offset = offset;
