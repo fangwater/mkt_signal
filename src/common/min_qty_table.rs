@@ -1276,7 +1276,6 @@ impl MinQtyTable {
                 *self.contract_multipliers.get(&key).unwrap_or(&1.0)
             }
             Exchange::Hyperliquid => 1.0,
-            _ => panic!("contract_multiplier not implemented for {}", self.exchange),
         }
     }
 }

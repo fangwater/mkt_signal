@@ -6,8 +6,8 @@ use crate::parser::binance_parser::{
     BinanceKlineParser, BinanceSignalParser, BinanceTradeParser,
 };
 use crate::parser::bitget_parser::{
-    BitgetAskBidSpreadParser, BitgetDerivativesMetricsParser, BitgetIncParser, BitgetKlineParser,
-    BitgetSignalParser, BitgetTradeParser,
+    BitgetAskBidSpreadParser, BitgetDerivativesMetricsParser, BitgetIncParser, BitgetSignalParser,
+    BitgetTradeParser,
 };
 use crate::parser::bybit_parser::{
     BybitAskBidSpreadParser, BybitDerivativesMetricsParser, BybitIncParser, BybitKlineParser,
@@ -626,12 +626,6 @@ impl MktManager {
                         tx,
                     )
                     .await;
-                }
-                _ => {
-                    error!(
-                        "Unsupported exchange for ask_bid_spread parser: {}",
-                        exchange
-                    );
                 }
             }
         }
