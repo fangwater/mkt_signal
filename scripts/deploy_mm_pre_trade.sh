@@ -142,6 +142,14 @@ if [[ "$DO_SCRIPTS" -eq 1 ]]; then
       chmod +x "$TARGET_DIR/mm_scripts/$script"
     fi
   done
+
+  mkdir -p "$TARGET_DIR/scripts"
+  for script in sync_mm_risk_params.py print_mm_risk_params.py; do
+    if [[ -f "$ROOT_DIR/scripts/$script" ]]; then
+      rsync -a "$ROOT_DIR/scripts/$script" "$TARGET_DIR/scripts/"
+      chmod +x "$TARGET_DIR/scripts/$script"
+    fi
+  done
 fi
 
 echo "[INFO] $BIN_NAME deployed to $TARGET_DIR"

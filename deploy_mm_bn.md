@@ -209,7 +209,7 @@ python3 ./scripts/sync_mm_strategy_params.py --venue "$MM_VENUE"
 python3 ./scripts/sync_mm_symbol_list.py --venue "$MM_VENUE"
 
 # 6.3 pre_trade 风控参数（Hash: <dir>:<open>:<hedge>:pre_trade_risk_params）
-python3 ~/crypto_mkt/mkt_signal/scripts/sync_fr_risk_params.py \
+python3 ./scripts/sync_mm_risk_params.py \
   --open-venue "$MM_VENUE" \
   --hedge-venue "$MM_VENUE"
 ```
@@ -220,7 +220,7 @@ python3 ~/crypto_mkt/mkt_signal/scripts/sync_fr_risk_params.py \
 cd ~/$MM_ENV
 python3 ./scripts/print_mm_strategy_params.py --venue "$MM_VENUE"
 python3 ./scripts/print_mm_symbol_list.py --venue "$MM_VENUE"
-python3 ~/crypto_mkt/mkt_signal/scripts/print_fr_risk_params.py \
+python3 ./scripts/print_mm_risk_params.py \
   --open-venue "$MM_VENUE" \
   --hedge-venue "$MM_VENUE"
 ```
