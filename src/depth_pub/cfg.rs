@@ -37,7 +37,9 @@ impl Default for PushConfig {
 /// 配置文件结构
 #[derive(Debug, Deserialize)]
 struct ConfigFile {
+    #[serde(default)]
     depth_levels: DepthLevelsConfig,
+    #[serde(default)]
     push_config: PushConfig,
 }
 

@@ -5,4 +5,4 @@ depth_levels:
   enable_depth50: true    # 50档深度
 
 push_config:
-  min_push_interval_ms: 100   # 最小推送间隔（毫秒）
+  min_push_interval_ms: 100   # 兼容字段（当前未使用，保活固定1000ms）

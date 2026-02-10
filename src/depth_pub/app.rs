@@ -30,6 +30,8 @@ const TIMER_CHECK_EVERY_INCS: u64 = 500;
 const IDLE_SLEEP_MICROS: u64 = 100;
 /// 滑动窗口大小：用于去重的最近 update_id 数量
 const DEDUP_WINDOW_SIZE: usize = 256;
+const KEEPALIVE_PUSH_INTERVAL_MS: u64 = 1000;
+const BTC_DEPTH25_LOG_INTERVAL_SECS: u64 = 30;
 const DEPTH_QUERY_SERVICE_PREFIX: &str = "depth_queries";
 
 type DepthQueryServer = Server<ipc::Service, [u8], (), [u8], ()>;
@@ -99,6 +101,7 @@ pub struct DepthPubApp {
     timer_check_counter: u64,
     idle_check_counter: u64,
     idle_check_every: u64,
+    last_btc_depth25_log: Instant,
 }
 
 impl DepthPubApp {
@@ -106,7 +109,7 @@ impl DepthPubApp {
     /// venue: 例如 TradingVenue::BinanceFutures
     pub async fn new(config: DepthPubConfig, venue: TradingVenue) -> Result<Self> {
         let venue_slug = venue.data_pub_slug();
-        let push_interval = Duration::from_millis(config.push_config.min_push_interval_ms);
+        let push_interval = Duration::from_millis(KEEPALIVE_PUSH_INTERVAL_MS);
         let idle_check_every = std::cmp::max(
             1,
             (push_interval.as_micros() / IDLE_SLEEP_MICROS as u128) as u64,
@@ -132,9 +135,9 @@ impl DepthPubApp {
         let query_server = Self::create_query_server(publisher.node(), venue_slug)?;
 
         info!(
-            "DepthPubApp created for {}: push_interval={}ms, depth25={}, depth50={}",
+            "DepthPubApp created for {}: keepalive_push_interval={}ms, depth25={}, depth50={}",
             venue_slug,
-            config.push_config.min_push_interval_ms,
+            KEEPALIVE_PUSH_INTERVAL_MS,
             config.depth_levels.enable_depth25,
             config.depth_levels.enable_depth50
         );
@@ -154,6 +157,7 @@ impl DepthPubApp {
             timer_check_counter: 0,
             idle_check_counter: 0,
             idle_check_every,
+            last_btc_depth25_log: Instant::now(),
         })
     }
 
@@ -443,7 +447,12 @@ impl DepthPubApp {
         }
     }
 
-    fn log_btc_depth25(&self) {
+    fn log_btc_depth25(&mut self) {
+        if self.last_btc_depth25_log.elapsed() < Duration::from_secs(BTC_DEPTH25_LOG_INTERVAL_SECS) {
+            return;
+        }
+        self.last_btc_depth25_log = Instant::now();
+
         for (symbol, state) in &self.symbols {
             let is_btc = symbol
                 .get(0..3)
