@@ -1,0 +1,7 @@
+# Local iceoryx2 config.
+# Presence of this file avoids runtime warning:
+#   Config::global_config() No config file was loaded...
+
+[global]
+
+[defaults]

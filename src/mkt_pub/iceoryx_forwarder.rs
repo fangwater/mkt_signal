@@ -29,10 +29,14 @@ const SIGNAL_HISTORY_SIZE: usize = 50;
 const SIGNAL_MAX_SUBSCRIBERS: usize = 10;
 const DERIVATIVES_DEBUG_INTERVAL: Duration = Duration::from_secs(5);
 
+// 对应 max_levels_per_msg=50 的增量消息，实际消息体通常 <1KB；
+// 这里保留 2KB 作为稳妥上限并减少共享内存占用。
+const INC_CHANNEL_MAX_BYTES: usize = 2048;
+
 pub struct IceOryxForwarder {
     exchange: String,
     // Publishers for different message types
-    incremental_publisher: Option<Publisher<ipc::Service, [u8; 16384], ()>>,
+    incremental_publisher: Option<Publisher<ipc::Service, [u8; INC_CHANNEL_MAX_BYTES], ()>>,
     trade_publisher: Option<Publisher<ipc::Service, [u8; TRADE_MAX_BYTES], ()>>,
     kline_publisher: Option<Publisher<ipc::Service, [u8; KLINE_MAX_BYTES], ()>>,
     derivatives_publisher: Option<Publisher<ipc::Service, [u8; DERIVATIVES_MAX_BYTES], ()>>, // 只有期货使用
@@ -79,7 +83,7 @@ impl IceOryxForwarder {
 
         // 创建各个频道的publisher
         // 固定增量最大字节（编译期上限 8192），不从配置读取
-        let inc_max = 16384usize;
+        let inc_max = INC_CHANNEL_MAX_BYTES;
 
         let inc_hist = INC_HISTORY_SIZE;
         let trade_hist = TRADE_HISTORY_SIZE;
@@ -94,7 +98,7 @@ impl IceOryxForwarder {
                     "data_pubs/{}/incremental",
                     venue_slug
                 ))?)
-                .publish_subscribe::<[u8; 16384]>()
+                .publish_subscribe::<[u8; INC_CHANNEL_MAX_BYTES]>()
                 .max_publishers(1)
                 .max_subscribers(INC_MAX_SUBSCRIBERS)
                 .history_size(inc_hist)
@@ -429,7 +433,7 @@ impl IceOryxForwarder {
         let mut sent = false;
 
         if let Some(ref publisher) = self.incremental_publisher {
-            if self.send_with_publisher(publisher, &msg_bytes, 2048, "tp_reset_incremental") {
+            if self.send_with_publisher(publisher, &msg_bytes, INC_CHANNEL_MAX_BYTES, "tp_reset_incremental") {
                 sent = true;
             }
         }

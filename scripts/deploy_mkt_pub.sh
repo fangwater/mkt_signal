@@ -81,10 +81,13 @@ for script in "${SCRIPTS_TO_SYNC[@]}"; do
   fi
 done
 
-# 仅同步 mkt_cfg.yaml
+# 同步 mkt_cfg.yaml + iceoryx2.toml
 mkdir -p "$TARGET_DIR/config"
 if [[ -f "$ROOT_DIR/config/mkt_cfg.yaml" ]]; then
   rsync -a "$ROOT_DIR/config/mkt_cfg.yaml" "$TARGET_DIR/config/"
+fi
+if [[ -f "$ROOT_DIR/config/iceoryx2.toml" ]]; then
+  rsync -a "$ROOT_DIR/config/iceoryx2.toml" "$TARGET_DIR/config/"
 fi
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"

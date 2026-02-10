@@ -25,7 +25,7 @@ use crate::signal::common::TradingVenue;
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 
 /// IceOryx 增量消息缓冲区大小 (与 mkt_pub 一致)
-const INC_MAX_BYTES: usize = 16384;
+const INC_MAX_BYTES: usize = 2048;
 const TIMER_CHECK_EVERY_INCS: u64 = 500;
 const IDLE_SLEEP_MICROS: u64 = 100;
 /// 滑动窗口大小：用于去重的最近 update_id 数量

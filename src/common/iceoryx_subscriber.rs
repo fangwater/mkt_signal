@@ -32,7 +32,7 @@ impl ChannelType {
     /// 获取频道的最大消息大小
     pub fn max_size(&self) -> usize {
         match self {
-            ChannelType::Incremental => 16384,
+            ChannelType::Incremental => 2048,
             ChannelType::Trade => 64,
             ChannelType::Kline => 128,
             ChannelType::Derivatives => 128,
@@ -54,7 +54,7 @@ pub struct SubscribeParams {
 enum SubscriberEnum {
     Size64(Subscriber<ipc::Service, [u8; 64], ()>),
     Size128(Subscriber<ipc::Service, [u8; 128], ()>),
-    Size16384(Subscriber<ipc::Service, [u8; 16384], ()>),
+    Size2048(Subscriber<ipc::Service, [u8; 2048], ()>),
 }
 
 impl SubscriberEnum {
@@ -62,7 +62,7 @@ impl SubscriberEnum {
         match self {
             SubscriberEnum::Size64(sub) => Self::receive_from_subscriber(sub),
             SubscriberEnum::Size128(sub) => Self::receive_from_subscriber(sub),
-            SubscriberEnum::Size16384(sub) => Self::receive_from_subscriber(sub),
+            SubscriberEnum::Size2048(sub) => Self::receive_from_subscriber(sub),
         }
     }
 
@@ -146,12 +146,12 @@ impl MultiChannelSubscriber {
                 let service = self
                     .node
                     .service_builder(&ServiceName::new(&service_name)?)
-                    .publish_subscribe::<[u8; 16384]>()
+                    .publish_subscribe::<[u8; 2048]>()
                     .max_publishers(1)
                     .max_subscribers(10)
                     .open_or_create()?;
                 let subscriber = service.subscriber_builder().create()?;
-                SubscriberEnum::Size16384(subscriber)
+                SubscriberEnum::Size2048(subscriber)
             }
             ChannelType::Trade | ChannelType::AskBidSpread | ChannelType::Signal => {
                 let service = self

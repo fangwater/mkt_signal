@@ -734,15 +734,17 @@ fn spawn_backward_query_responder(
         let service_path = build_service_name(&format!("signal_pubs/{}", cfg.backward_channel));
 
         let result: Result<()> = async move {
-            let depth_client = match create_depth_query_client(cfg.venue) {
-                Ok(client) => Some(client),
-                Err(err) => {
-                    warn!(
-                        "manual_mm: depth query client unavailable, continue without tlen: {err:#}"
-                    );
-                    None
-                }
-            };
+            // [TRADE_MECH_TEST] 暂时禁用 depth query tlen。
+            // 保留原逻辑（仅注释，不删除），便于后续恢复。
+            // let depth_client = match create_depth_query_client(cfg.venue) {
+            //     Ok(client) => Some(client),
+            //     Err(err) => {
+            //         warn!(
+            //             "manual_mm: depth query client unavailable, continue without tlen: {err:#}"
+            //         );
+            //         None
+            //     }
+            // };
 
             let node = NodeBuilder::new()
                 .name(&NodeName::new(&node_name)?)
@@ -795,27 +797,40 @@ fn spawn_backward_query_responder(
                                 let symbol = ctx.get_opening_symbol();
                                 let query_prices: Vec<f64> =
                                     ctx.price_qv_list.iter().map(|qv| qv.get_val()).collect();
-                                let tlen_query_result = if let Some(client) = depth_client.as_ref()
-                                {
-                                    query_tlen_batch(client, &symbol, &query_prices)
-                                } else {
-                                    Err(anyhow!("depth query client unavailable"))
-                                };
 
-                                let snapshot = match &tlen_query_result {
-                                    Ok(tlens) => build_mm_hedge_tlen_snapshot(
-                                        &symbol,
-                                        &ctx,
-                                        Some(tlens.as_slice()),
-                                        None,
-                                    ),
-                                    Err(err) => build_mm_hedge_tlen_snapshot(
-                                        &symbol,
-                                        &ctx,
-                                        None,
-                                        Some(err.to_string()),
-                                    ),
-                                };
+                                // [TRADE_MECH_TEST] 暂时禁用 tlen 查询，全部填 0。
+                                // 原逻辑保留（仅注释，不删除）：
+                                // let tlen_query_result = if let Some(client) = depth_client.as_ref() {
+                                //     query_tlen_batch(client, &symbol, &query_prices)
+                                // } else {
+                                //     Err(anyhow!("depth query client unavailable"))
+                                // };
+                                // let snapshot = match &tlen_query_result {
+                                //     Ok(tlens) => build_mm_hedge_tlen_snapshot(
+                                //         &symbol,
+                                //         &ctx,
+                                //         Some(tlens.as_slice()),
+                                //         None,
+                                //     ),
+                                //     Err(err) => build_mm_hedge_tlen_snapshot(
+                                //         &symbol,
+                                //         &ctx,
+                                //         None,
+                                //         Some(err.to_string()),
+                                //     ),
+                                // };
+                                let tlens_zero = vec![0.0_f64; query_prices.len()];
+                                let snapshot = build_mm_hedge_tlen_snapshot(
+                                    &symbol,
+                                    &ctx,
+                                    Some(tlens_zero.as_slice()),
+                                    None,
+                                );
+                                info!(
+                                    "manual_mm: [TRADE_MECH_TEST] tlen query disabled, filled zeros symbol={} levels={}",
+                                    symbol,
+                                    tlens_zero.len()
+                                );
                                 let rows_text = format_mm_hedge_tlen_rows(&snapshot.rows);
                                 *mm_hedge_tlen.write() = Some(snapshot.clone());
 
