@@ -176,7 +176,7 @@ parking_lot = "0.12"
 crossbeam-channel = "0.5"
 libc = "0.2"
 zmq = "0.10"
-xgboost = "0.1"
+xgb = "3.0.5"
 
 [features]
 default = []

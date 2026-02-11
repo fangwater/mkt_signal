@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use xgboost::{Booster, DMatrix};
+use xgb::{Booster, DMatrix};
 
 pub struct XgbModel {
     booster: Booster,
