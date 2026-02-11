@@ -584,6 +584,16 @@ impl TradeWsClient {
                 "trade ws client id={} exchange={} order payload: {}",
                 self.id, self.exchange, payload
             );
+        } else if self.exchange == Exchange::Binance {
+            info!(
+                "trade ws client id={} exchange={} sending {} req_type={:?} client_order_id={} payload_bytes={}",
+                self.id,
+                self.exchange,
+                Self::binance_trade_action(msg.req_type),
+                msg.req_type,
+                msg.client_order_id,
+                payload.len()
+            );
         }
         ws.send(Message::Text(payload)).await?;
         Ok(())
@@ -600,9 +610,39 @@ impl TradeWsClient {
                 "trade ws client id={} exchange={} query payload: {}",
                 self.id, self.exchange, payload
             );
+        } else if self.exchange == Exchange::Binance {
+            info!(
+                "trade ws client id={} exchange={} sending {} req_type={:?} client_query_id={} payload_bytes={}",
+                self.id,
+                self.exchange,
+                Self::binance_query_action(msg.req_type),
+                msg.req_type,
+                msg.client_query_id,
+                payload.len()
+            );
         }
         ws.send(Message::Text(payload)).await?;
         Ok(())
+    }
+
+    fn binance_trade_action(req_type: TradeRequestType) -> &'static str {
+        match req_type {
+            TradeRequestType::BinanceWsNewUMOrder | TradeRequestType::BinanceWsNewMarginOrder => {
+                "new_order"
+            }
+            TradeRequestType::BinanceWsCancelUMOrder
+            | TradeRequestType::BinanceWsCancelMarginOrder => "cancel_order",
+            _ => "trade_request",
+        }
+    }
+
+    fn binance_query_action(req_type: QueryRequestType) -> &'static str {
+        match req_type {
+            QueryRequestType::BinanceWsUMQuery | QueryRequestType::BinanceWsMarginQuery => {
+                "order_query"
+            }
+            _ => "query_request",
+        }
     }
 
     fn build_payload(&self, msg: &TradeRequestMsg) -> Result<String> {
@@ -1109,6 +1149,17 @@ impl TradeWsClient {
         let status = Self::binance_status(resp);
         let (order_id, order_status_u8, order_update_time, executed_qty, response_price) =
             binance_ws::extract_order_info(resp);
+        info!(
+            "trade ws client id={} exchange=binance recv {} response req_type={:?} client_order_id={} status={} code={} order_id={} executed_qty={:.8}",
+            self.id,
+            Self::binance_trade_action(req_type),
+            req_type,
+            client_order_id,
+            status,
+            resp.error_code.unwrap_or(0),
+            order_id,
+            executed_qty
+        );
         let body_payload = json!({
             "transport": "ws",
             "exchange": "binance",
@@ -1141,6 +1192,15 @@ impl TradeWsClient {
         resp: &binance_ws::BinanceWsResponse,
     ) {
         let status = Self::binance_status(resp);
+        info!(
+            "trade ws client id={} exchange=binance recv {} response req_type={:?} client_query_id={} status={} code={}",
+            self.id,
+            Self::binance_query_action(req_type),
+            req_type,
+            client_query_id,
+            status,
+            resp.error_code.unwrap_or(0)
+        );
         if !(200..300).contains(&(status as u32)) || resp.error_code.unwrap_or(0) != 0 {
             self.publish_query_error(req_type, client_query_id);
             return;
