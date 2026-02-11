@@ -31,6 +31,8 @@ pub struct RuntimeConfig {
     #[serde(default = "default_reload_every")]
     pub reload_every: usize,
     pub max_keep_count: usize,
+    #[serde(default = "default_bar_ms")]
+    pub bar_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -127,6 +129,9 @@ impl DepthFactorPubConfig {
 
         if self.runtime.reload_every == 0 {
             anyhow::bail!("runtime.reload_every must be > 0");
+        }
+        if self.runtime.bar_ms <= 0 {
+            anyhow::bail!("runtime.bar_ms must be > 0");
         }
         if self.factors.is_empty() {
             anyhow::bail!("factors must not be empty");
@@ -245,6 +250,10 @@ fn default_scale_factor() -> f64 {
 
 fn default_reload_every() -> usize {
     120
+}
+
+fn default_bar_ms() -> i64 {
+    5_000
 }
 
 fn default_depth_channel() -> String {

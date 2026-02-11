@@ -19,6 +19,7 @@ use crate::common::symbol_util::extract_assets_from_symbol;
 
 const TRADE_MAX_BYTES: usize = 64;
 const IDLE_SLEEP_MICROS: u64 = 200;
+const TIMER_CHECK_INTERVAL_MICROS: u64 = 500;
 const LOG_BASE_SYMBOLS: [&str; 3] = ["BTC", "ETH", "SOL"];
 
 #[derive(Debug, Clone, Copy)]
@@ -130,6 +131,7 @@ impl TradeBar {
 struct SymbolState {
     bar: Option<TradeBar>,
     last_bar_start_ms: Option<i64>,
+    closed_bars: Vec<TradeBar>,
 }
 
 impl SymbolState {
@@ -137,11 +139,11 @@ impl SymbolState {
         Self {
             bar: None,
             last_bar_start_ms: None,
+            closed_bars: Vec::new(),
         }
     }
 
-    fn apply_trade(&mut self, trade: &TradeTick, runtime: &RuntimeConfig) -> (Vec<TradeBar>, bool) {
-        let mut closed = Vec::new();
+    fn apply_trade(&mut self, trade: &TradeTick, runtime: &RuntimeConfig) -> bool {
         let mut late_trade = false;
         let trade_bar_start_ms = align_to_period(trade.timestamp_ms, runtime.bar_ms);
 
@@ -149,10 +151,10 @@ impl SymbolState {
             None => {
                 if let Some(last_start) = self.last_bar_start_ms {
                     if trade_bar_start_ms <= last_start {
-                        return (closed, true);
+                        return true;
                     }
                 }
-                self.fill_empty_until(trade_bar_start_ms, runtime.bar_ms, &mut closed);
+                self.fill_empty_until(trade_bar_start_ms, runtime.bar_ms);
                 let mut bar = TradeBar::new(trade_bar_start_ms);
                 bar.update(trade, runtime);
                 self.bar = Some(bar);
@@ -162,9 +164,9 @@ impl SymbolState {
                     bar.update(trade, runtime);
                 } else if trade_bar_start_ms > bar.start_ms {
                     if let Some(closed_bar) = self.bar.take().map(|b| self.finalize_bar(b)) {
-                        closed.push(closed_bar);
+                        self.closed_bars.push(closed_bar);
                     }
-                    self.fill_empty_until(trade_bar_start_ms, runtime.bar_ms, &mut closed);
+                    self.fill_empty_until(trade_bar_start_ms, runtime.bar_ms);
                     let mut bar = TradeBar::new(trade_bar_start_ms);
                     bar.update(trade, runtime);
                     self.bar = Some(bar);
@@ -174,7 +176,7 @@ impl SymbolState {
             }
         }
 
-        (closed, late_trade)
+        late_trade
     }
 
     fn finalize_bar(&mut self, bar: TradeBar) -> TradeBar {
@@ -183,7 +185,32 @@ impl SymbolState {
         bar
     }
 
-    fn fill_empty_until(&mut self, target_start_ms: i64, period_ms: i64, out: &mut Vec<TradeBar>) {
+    fn close_due_bars(&mut self, now_ms: i64, period_ms: i64) {
+        if let Some(bar) = self.bar.take() {
+            let close_at_ms = bar.start_ms + period_ms;
+            if now_ms >= close_at_ms {
+                let finalized = self.finalize_bar(bar);
+                self.closed_bars.push(finalized);
+            } else {
+                self.bar = Some(bar);
+            }
+        }
+
+        if self.bar.is_none() {
+            let mut next_start = match self.last_bar_start_ms {
+                Some(start) => start + period_ms,
+                None => return,
+            };
+
+            while next_start + period_ms <= now_ms {
+                let finalized = self.finalize_bar(TradeBar::empty(next_start));
+                self.closed_bars.push(finalized);
+                next_start += period_ms;
+            }
+        }
+    }
+
+    fn fill_empty_until(&mut self, target_start_ms: i64, period_ms: i64) {
         let Some(last_start) = self.last_bar_start_ms else {
             return;
         };
@@ -191,9 +218,14 @@ impl SymbolState {
         let mut next_start = last_start + period_ms;
         while next_start < target_start_ms {
             let bar = TradeBar::empty(next_start);
-            out.push(self.finalize_bar(bar));
+            let finalized = self.finalize_bar(bar);
+            self.closed_bars.push(finalized);
             next_start += period_ms;
         }
+    }
+
+    fn take_closed_bars(&mut self) -> Vec<TradeBar> {
+        std::mem::take(&mut self.closed_bars)
     }
 }
 
@@ -226,6 +258,8 @@ pub struct TradeFactorPubApp {
     late_trade_count: u64,
     last_reload_at: u64,
     last_log_stats: Instant,
+    timer_check_interval: Duration,
+    last_timer_check: Instant,
 }
 
 impl TradeFactorPubApp {
@@ -264,6 +298,8 @@ impl TradeFactorPubApp {
             late_trade_count: 0,
             last_reload_at: 0,
             last_log_stats: Instant::now(),
+            timer_check_interval: Duration::from_micros(TIMER_CHECK_INTERVAL_MICROS),
+            last_timer_check: Instant::now(),
         })
     }
 
@@ -305,10 +341,12 @@ impl TradeFactorPubApp {
                 let data = sample.payload().to_vec();
                 if let Some(trade) = parse_trade(&data) {
                     self.handle_trade(trade)?;
+                    self.maybe_close_due_bars()?;
                 }
             }
 
             if !has_message {
+                self.maybe_close_due_bars()?;
                 std::thread::sleep(Duration::from_micros(IDLE_SLEEP_MICROS));
             }
 
@@ -329,7 +367,7 @@ impl TradeFactorPubApp {
         self.trade_count += 1;
         self.maybe_reload_config();
 
-        let (closed_bars, late_trade) = {
+        let late_trade = {
             let state = self
                 .symbols
                 .entry(trade.symbol.clone())
@@ -341,33 +379,55 @@ impl TradeFactorPubApp {
             self.late_trade_count += 1;
         }
 
+        Ok(())
+    }
+
+    fn maybe_close_due_bars(&mut self) -> Result<()> {
+        if self.last_timer_check.elapsed() < self.timer_check_interval {
+            return Ok(());
+        }
+
+        self.last_timer_check = Instant::now();
+        self.close_due_bars(now_millis())
+    }
+
+    fn close_due_bars(&mut self, now_ms: i64) -> Result<()> {
+        let mut to_publish = Vec::new();
+        for (symbol, state) in self.symbols.iter_mut() {
+            state.close_due_bars(now_ms, self.config.runtime.bar_ms);
+            let closed = state.take_closed_bars();
+            if !closed.is_empty() {
+                to_publish.push((symbol.clone(), closed));
+            }
+        }
+
+        for (symbol, closed_bars) in to_publish {
+            self.process_closed_bars(&symbol, closed_bars)?;
+        }
+
+        Ok(())
+    }
+
+    fn process_closed_bars(&mut self, symbol: &str, closed_bars: Vec<TradeBar>) -> Result<()> {
         for bar in closed_bars {
-            self.push_trade_bar(&trade.symbol, &bar);
-            let outputs = self.compute_all_factors(&trade.symbol)?;
+            self.push_trade_bar(symbol, &bar);
+            let outputs = self.compute_all_factors(symbol)?;
             for (factor_name, out) in outputs {
-                if should_log_factor_symbol(&trade.symbol) {
+                if should_log_factor_symbol(symbol) {
                     info!(
                         "trade-factor: venue={} factor={} symbol={} value={} ready={} ts_ms={}",
-                        self.venue_slug,
-                        factor_name,
-                        trade.symbol,
-                        out.value,
-                        out.ready,
-                        bar.start_ms,
+                        self.venue_slug, factor_name, symbol, out.value, out.ready, bar.start_ms,
                     );
                 }
 
                 if !self.publisher.publish_factor(
                     &factor_name,
-                    &trade.symbol,
+                    symbol,
                     out.value,
                     bar.start_ms,
                     out.ready,
                 ) {
-                    warn!(
-                        "Failed to publish factor={} symbol={}",
-                        factor_name, trade.symbol
-                    );
+                    warn!("Failed to publish factor={} symbol={}", factor_name, symbol);
                 }
             }
         }
@@ -980,9 +1040,82 @@ fn align_to_period(ts_ms: i64, period_ms: i64) -> i64 {
     ts_ms - (ts_ms % period_ms)
 }
 
+fn now_millis() -> i64 {
+    let Ok(duration) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return 0;
+    };
+
+    let millis = duration.as_millis();
+    if millis > i64::MAX as u128 {
+        i64::MAX
+    } else {
+        millis as i64
+    }
+}
+
 fn should_log_factor_symbol(symbol: &str) -> bool {
     let (base, _) = extract_assets_from_symbol(symbol);
     LOG_BASE_SYMBOLS
         .iter()
         .any(|candidate| base.eq_ignore_ascii_case(candidate))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn runtime(bar_ms: i64) -> RuntimeConfig {
+        RuntimeConfig {
+            reload_every: 120,
+            max_keep_count: 900,
+            bar_ms,
+            large_order_notional: 100_000.0,
+            medium_order_notional: 10_000.0,
+        }
+    }
+
+    fn trade(symbol: &str, ts_ms: i64, side: TradeSide, price: f64, amount: f64) -> TradeTick {
+        TradeTick {
+            symbol: symbol.to_string(),
+            timestamp_ms: ts_ms,
+            side,
+            price,
+            amount,
+        }
+    }
+
+    #[test]
+    fn close_due_bars_flushes_open_and_empty_bars() {
+        let mut state = SymbolState::new();
+        let cfg = runtime(5_000);
+
+        let late = state.apply_trade(&trade("BTCUSDT", 1_000, TradeSide::Buy, 100.0, 2.0), &cfg);
+        assert!(!late);
+
+        state.close_due_bars(5_000, cfg.bar_ms);
+        let first_close = state.take_closed_bars();
+        assert_eq!(first_close.len(), 1);
+        assert_eq!(first_close[0].start_ms, 0);
+        assert!((first_close[0].amount - 200.0).abs() < 1e-9);
+
+        state.close_due_bars(15_000, cfg.bar_ms);
+        let empty_closes = state.take_closed_bars();
+        assert_eq!(empty_closes.len(), 2);
+        assert_eq!(empty_closes[0].start_ms, 5_000);
+        assert_eq!(empty_closes[1].start_ms, 10_000);
+        assert!(empty_closes.iter().all(|bar| bar.amount.abs() < 1e-12));
+    }
+
+    #[test]
+    fn late_trade_after_timer_close_is_marked_late() {
+        let mut state = SymbolState::new();
+        let cfg = runtime(5_000);
+
+        let _ = state.apply_trade(&trade("BTCUSDT", 1_000, TradeSide::Buy, 100.0, 1.0), &cfg);
+        state.close_due_bars(5_000, cfg.bar_ms);
+        let _ = state.take_closed_bars();
+
+        let late = state.apply_trade(&trade("BTCUSDT", 4_000, TradeSide::Sell, 100.0, 1.0), &cfg);
+        assert!(late);
+    }
 }

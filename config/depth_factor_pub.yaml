@@ -6,6 +6,7 @@ data_source:
 runtime:
   reload_every: 120
   max_keep_count: 900
+  bar_ms: 5000
 
 factors:
   hf_orderbook_buy_amount:
