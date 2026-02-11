@@ -29,6 +29,8 @@ thread_local! {
     static QUERY_ENG_HUB: OnceCell<QueryEngHub> = OnceCell::new();
 }
 
+const QUERY_ENG_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 256;
+
 pub struct QueryEngHub {
     channels: RefCell<HashMap<String, QueryEngChannel>>,
 }
@@ -131,6 +133,7 @@ impl QueryEngChannel {
         let req_service = req_node
             .service_builder(&ServiceName::new(&query_req_service)?)
             .publish_subscribe::<[u8; QUERY_REQ_PAYLOAD]>()
+            .subscriber_max_buffer_size(QUERY_ENG_SUBSCRIBER_MAX_BUFFER_SIZE)
             .open_or_create()?;
 
         let query_req_publisher = req_service.publisher_builder().create()?;
@@ -193,6 +196,7 @@ impl QueryEngChannel {
         let service = node
             .service_builder(&ServiceName::new(service_name)?)
             .publish_subscribe::<[u8; QUERY_RESP_PAYLOAD]>()
+            .subscriber_max_buffer_size(QUERY_ENG_SUBSCRIBER_MAX_BUFFER_SIZE)
             .open_or_create()?;
 
         let subscriber: Subscriber<ipc::Service, [u8; QUERY_RESP_PAYLOAD], ()> =

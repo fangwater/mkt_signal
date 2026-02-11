@@ -28,6 +28,7 @@ const TRADE_REQ_PAYLOAD: usize = 4_096;
 const TRADE_RESP_PAYLOAD: usize = 64;
 const TRADE_RESP_HEADER_LEN: usize = 22;
 const TRADE_RESP_TAIL_LEN: usize = 33;
+const TRADE_ENG_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 256;
 
 /// TradeEngHub 负责与多个 trade engine 进程进行双向通信
 ///
@@ -140,6 +141,7 @@ impl TradeEngChannel {
         let req_service = req_node
             .service_builder(&ServiceName::new(&order_req_service)?)
             .publish_subscribe::<[u8; TRADE_REQ_PAYLOAD]>()
+            .subscriber_max_buffer_size(TRADE_ENG_SUBSCRIBER_MAX_BUFFER_SIZE)
             .open_or_create()?;
 
         let order_req_publisher = req_service.publisher_builder().create()?;
@@ -202,6 +204,7 @@ impl TradeEngChannel {
         let service = node
             .service_builder(&ServiceName::new(service_name)?)
             .publish_subscribe::<[u8; TRADE_RESP_PAYLOAD]>()
+            .subscriber_max_buffer_size(TRADE_ENG_SUBSCRIBER_MAX_BUFFER_SIZE)
             .open_or_create()?;
 
         let subscriber: Subscriber<ipc::Service, [u8; TRADE_RESP_PAYLOAD], ()> =
