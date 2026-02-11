@@ -9,7 +9,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use log::{error, info, warn};
 use mkt_signal::persist_manager::{self, exporter, RocksDbStore};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tar::Builder;
 
 const EXPORT_DELAY_SECS: i64 = 60;
@@ -57,24 +57,30 @@ struct Args {
     state_file: Option<PathBuf>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct AutoExporterConfig {
     targets: Vec<TargetConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 struct TargetConfig {
     name: String,
     input_dir: String,
     output_dir: String,
     interval: ExportInterval,
+    #[serde(default = "default_enabled")]
+    enabled: bool,
 }
 
-#[derive(Debug, Deserialize, Clone, Copy)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 enum ExportInterval {
     Hour,
     Day,
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 impl ExportInterval {
@@ -152,14 +158,18 @@ fn run_once(
 ) -> Result<()> {
     let cfg = load_config(config_path)?;
     if cfg.targets.is_empty() {
-        return Err(anyhow!(
-            "no targets configured in {}",
+        warn!(
+            "no targets configured in {}; skip this round",
             config_path.display()
-        ));
+        );
+        return Ok(());
     }
 
     let mut changed = false;
     for target in &cfg.targets {
+        if !target.enabled {
+            continue;
+        }
         match process_target(target, state, now) {
             Ok(did_export) => {
                 if did_export {
@@ -186,16 +196,11 @@ fn load_config(path: &Path) -> Result<AutoExporterConfig> {
         .with_context(|| format!("failed to parse config {}", path.display()))?;
 
     for target in &cfg.targets {
-        let input_dir = Path::new(&target.input_dir);
-        let output_dir = Path::new(&target.output_dir);
-        ensure_absolute("input_dir", input_dir)?;
-        ensure_absolute("output_dir", output_dir)?;
-        if !input_dir.exists() {
-            return Err(anyhow!(
-                "target={} input_dir does not exist: {}",
-                target.name,
-                input_dir.display()
-            ));
+        if target.enabled {
+            let input_dir = Path::new(&target.input_dir);
+            let output_dir = Path::new(&target.output_dir);
+            ensure_absolute("input_dir", input_dir)?;
+            ensure_absolute("output_dir", output_dir)?;
         }
     }
 

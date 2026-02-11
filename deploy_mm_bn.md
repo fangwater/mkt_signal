@@ -302,3 +302,46 @@ cd ~/depth_pub
 cd ~/dat_pbs
 ./scripts/stop_dat_pbs.sh --exchange binance
 ```
+
+---
+
+## 10. 公共 Persist Auto Exporter（推荐）
+
+> 这是公共服务，不是 MM 专属。用于统一管理所有导出 target（含 MM/xarb）。
+
+```bash
+cd ~/crypto_mkt/mkt_signal
+
+# 1) 部署公共自动导出服务
+bash scripts/deploy_persist_auto_exporter_public.sh
+
+# 2) 部署配置管理/手动导出 Web 服务
+bash scripts/deploy_persist_admin_server.sh
+
+# 3) 启动
+cd ~/persist_exporter_public
+./start_persist_auto_exporter_public.sh
+./start_persist_admin_server.sh
+```
+
+检查：
+
+```bash
+pm2 status --namespace persist_exporter
+pm2 logs --namespace persist_exporter persist_auto_exporter_public --lines 80
+pm2 logs --namespace persist_exporter persist_admin_server --lines 80
+```
+
+访问：
+
+```text
+http://<your-host>:10331/
+```
+
+停止：
+
+```bash
+cd ~/persist_exporter_public
+./stop_persist_admin_server.sh
+./stop_persist_auto_exporter_public.sh
+```

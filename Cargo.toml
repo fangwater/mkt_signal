@@ -65,6 +65,10 @@ name = "persist_auto_exporter"
 path = "src/bin/persist_auto_exporter.rs"
 
 [[bin]]
+name = "persist_admin_server"
+path = "src/bin/persist_admin_server.rs"
+
+[[bin]]
 name = "test_minqty"
 path = "src/bin/test_minqty.rs"
 
@@ -120,6 +124,10 @@ path = "src/bin/trade_factor_pub.rs"
 name = "pairmm_resample"
 path = "src/bin/pairmm_resample.rs"
 
+[[bin]]
+name = "model_pub"
+path = "src/bin/model_pub.rs"
+
 [dependencies]
 local-ip-address = "0.6"
 serde_yaml = "0.9"
@@ -168,6 +176,7 @@ parking_lot = "0.12"
 crossbeam-channel = "0.5"
 libc = "0.2"
 zmq = "0.10"
+xgboost = "0.1"
 
 [features]
 default = []
