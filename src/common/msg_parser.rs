@@ -17,6 +17,8 @@ pub enum MktMsgType {
     AskBidSpread = 1015,
     FactorValue = 2001,
     PairMmResample = 3001,
+    Feature = 4101,
+    Model = 4102,
     Error = 2222,
 }
 
@@ -271,6 +273,8 @@ pub fn get_msg_type(data: &[u8]) -> Option<MktMsgType> {
         1015 => Some(MktMsgType::AskBidSpread),
         2001 => Some(MktMsgType::FactorValue),
         3001 => Some(MktMsgType::PairMmResample),
+        4101 => Some(MktMsgType::Feature),
+        4102 => Some(MktMsgType::Model),
         2222 => Some(MktMsgType::Error),
         _ => None,
     }

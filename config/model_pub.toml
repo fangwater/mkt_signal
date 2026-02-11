@@ -1,0 +1,5 @@
+model_name = "xgb_mm_v1"
+model_path = "./models/xgb_mm_v1.json"
+n_features = 48
+input_service = "model_input/binance-futures/xgb_mm_v1"
+output_service = "model_output/binance-futures/xgb_mm_v1"

@@ -17,10 +17,19 @@ pub enum MktMsgType {
     AskBidSpread = 1015, // 买卖价差（最优买卖价）
     FactorValue = 2001,
     PairMmResample = 3001,
+    Feature = 4101,
+    Model = 4102,
     Error = 2222,
 }
 
 pub const PAIRMM_RESAMPLE_MAX_VALUES: usize = 512;
+pub const FEATURE_MSG_TYPE: u32 = MktMsgType::Feature as u32;
+pub const MODEL_MSG_TYPE: u32 = MktMsgType::Model as u32;
+
+pub const MODEL_STATUS_OK: u8 = 0;
+pub const MODEL_STATUS_BAD_DIM: u8 = 1;
+pub const MODEL_STATUS_INFER_ERR: u8 = 2;
+pub const MODEL_STATUS_DECODE_ERR: u8 = 3;
 
 #[allow(dead_code)]
 pub struct MktMsg {
@@ -81,6 +90,30 @@ pub struct PairMmResampleMsg {
     pub symbol: String,
     pub venue: u8,
     pub values: Vec<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FeatureMsg {
+    pub msg_type: u32,
+    pub symbol_length: u32,
+    pub symbol: String,
+    pub ts_ms: i64,
+    pub seq_no: u64,
+    pub feature_dim: u16,
+    pub flags: u16,
+    pub features: Vec<f32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelMsg {
+    pub msg_type: u32,
+    pub symbol_length: u32,
+    pub symbol: String,
+    pub ts_in_ms: i64,
+    pub ts_out_ms: i64,
+    pub seq_no: u64,
+    pub score: f64,
+    pub status: u8,
 }
 
 #[allow(dead_code)]
@@ -644,6 +677,8 @@ pub fn get_msg_type(data: &[u8]) -> MktMsgType {
         1015 => MktMsgType::AskBidSpread,
         2001 => MktMsgType::FactorValue,
         3001 => MktMsgType::PairMmResample,
+        4101 => MktMsgType::Feature,
+        4102 => MktMsgType::Model,
         _ => MktMsgType::TpReset, // 默认值
     }
 }
@@ -921,6 +956,197 @@ impl PairMmResampleMsg {
             symbol,
             venue,
             values,
+        })
+    }
+}
+
+impl FeatureMsg {
+    pub fn create(symbol: String, ts_ms: i64, seq_no: u64, flags: u16, features: Vec<f32>) -> Self {
+        let symbol_length = symbol.len() as u32;
+        let feature_dim = features.len() as u16;
+        Self {
+            msg_type: FEATURE_MSG_TYPE,
+            symbol_length,
+            symbol,
+            ts_ms,
+            seq_no,
+            feature_dim,
+            flags,
+            features,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Result<Bytes> {
+        if self.msg_type != FEATURE_MSG_TYPE {
+            bail!(
+                "invalid FeatureMsg type {}, expected {}",
+                self.msg_type,
+                FEATURE_MSG_TYPE
+            );
+        }
+
+        let feature_dim = self.features.len();
+        if feature_dim > u16::MAX as usize {
+            bail!("FeatureMsg feature_dim {} exceeds u16::MAX", feature_dim);
+        }
+
+        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 8 + 2 + 2 + feature_dim * 4;
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.msg_type);
+        buf.put_u32_le(self.symbol_length);
+        buf.put(self.symbol.as_bytes());
+        buf.put_i64_le(self.ts_ms);
+        buf.put_u64_le(self.seq_no);
+        buf.put_u16_le(feature_dim as u16);
+        buf.put_u16_le(self.flags);
+        for value in &self.features {
+            buf.put_f32_le(*value);
+        }
+        Ok(buf.freeze())
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        if data.len() < 4 + 4 + 8 + 8 + 2 + 2 {
+            bail!("FeatureMsg too short: {}", data.len());
+        }
+
+        let mut cursor = Bytes::copy_from_slice(data);
+        let msg_type = cursor.get_u32_le();
+        if msg_type != FEATURE_MSG_TYPE {
+            bail!(
+                "invalid FeatureMsg type {}, expected {}",
+                msg_type,
+                FEATURE_MSG_TYPE
+            );
+        }
+
+        let symbol_len = cursor.get_u32_le() as usize;
+        if cursor.remaining() < symbol_len + 8 + 8 + 2 + 2 {
+            bail!(
+                "FeatureMsg truncated before body: remaining={} need={}",
+                cursor.remaining(),
+                symbol_len + 8 + 8 + 2 + 2
+            );
+        }
+
+        let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_len).to_vec())?;
+        let ts_ms = cursor.get_i64_le();
+        let seq_no = cursor.get_u64_le();
+        let feature_dim = cursor.get_u16_le() as usize;
+        let flags = cursor.get_u16_le();
+
+        if cursor.remaining() < feature_dim * 4 {
+            bail!(
+                "FeatureMsg feature payload too short: remaining={} need={}",
+                cursor.remaining(),
+                feature_dim * 4
+            );
+        }
+
+        let mut features = Vec::with_capacity(feature_dim);
+        for _ in 0..feature_dim {
+            features.push(cursor.get_f32_le());
+        }
+
+        Ok(Self {
+            msg_type,
+            symbol_length: symbol.len() as u32,
+            symbol,
+            ts_ms,
+            seq_no,
+            feature_dim: feature_dim as u16,
+            flags,
+            features,
+        })
+    }
+}
+
+impl ModelMsg {
+    pub fn create(
+        symbol: String,
+        ts_in_ms: i64,
+        ts_out_ms: i64,
+        seq_no: u64,
+        score: f64,
+        status: u8,
+    ) -> Self {
+        let symbol_length = symbol.len() as u32;
+        Self {
+            msg_type: MODEL_MSG_TYPE,
+            symbol_length,
+            symbol,
+            ts_in_ms,
+            ts_out_ms,
+            seq_no,
+            score,
+            status,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Result<Bytes> {
+        if self.msg_type != MODEL_MSG_TYPE {
+            bail!(
+                "invalid ModelMsg type {}, expected {}",
+                self.msg_type,
+                MODEL_MSG_TYPE
+            );
+        }
+
+        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 8 + 8 + 8 + 1 + 7;
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.msg_type);
+        buf.put_u32_le(self.symbol_length);
+        buf.put(self.symbol.as_bytes());
+        buf.put_i64_le(self.ts_in_ms);
+        buf.put_i64_le(self.ts_out_ms);
+        buf.put_u64_le(self.seq_no);
+        buf.put_f64_le(self.score);
+        buf.put_u8(self.status);
+        buf.put_slice(&[0u8; 7]);
+        Ok(buf.freeze())
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        if data.len() < 4 + 4 + 8 + 8 + 8 + 8 + 1 + 7 {
+            bail!("ModelMsg too short: {}", data.len());
+        }
+
+        let mut cursor = Bytes::copy_from_slice(data);
+        let msg_type = cursor.get_u32_le();
+        if msg_type != MODEL_MSG_TYPE {
+            bail!(
+                "invalid ModelMsg type {}, expected {}",
+                msg_type,
+                MODEL_MSG_TYPE
+            );
+        }
+
+        let symbol_len = cursor.get_u32_le() as usize;
+        if cursor.remaining() < symbol_len + 8 + 8 + 8 + 8 + 1 + 7 {
+            bail!(
+                "ModelMsg truncated before body: remaining={} need={}",
+                cursor.remaining(),
+                symbol_len + 8 + 8 + 8 + 8 + 1 + 7
+            );
+        }
+
+        let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_len).to_vec())?;
+        let ts_in_ms = cursor.get_i64_le();
+        let ts_out_ms = cursor.get_i64_le();
+        let seq_no = cursor.get_u64_le();
+        let score = cursor.get_f64_le();
+        let status = cursor.get_u8();
+        cursor.advance(7);
+
+        Ok(Self {
+            msg_type,
+            symbol_length: symbol.len() as u32,
+            symbol,
+            ts_in_ms,
+            ts_out_ms,
+            seq_no,
+            score,
+            status,
         })
     }
 }
