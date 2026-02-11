@@ -181,7 +181,7 @@ unset PM2_NAMESPACE
 
 # 2) trade_engine 就绪后，重启 pre_trade
 ./mm_scripts/stop_mm_pre_trade.sh
-./mm_scripts/start_mm_pre_trade.sh --venue "$MM_VENUE"
+./mm_scripts/start_mm_pre_trade.sh
 
 # 3) 可选：重启 persist_manager（保证订阅链路干净）
 ./mm_scripts/stop_mm_persist_manager.sh
@@ -203,26 +203,22 @@ pm2 logs --namespace "$MM_ENV" "mm_persist_manager_${MM_ENV}" --lines 80
 cd ~/$MM_ENV
 
 # 6.1 MM 策略参数（Hash: mm_strategy_params_<venue>）
-python3 ./scripts/sync_mm_strategy_params.py --venue "$MM_VENUE"
+python3 ./scripts/sync_mm_strategy_params.py
 
 # 6.2 MM 交易对列表（String: mm_trade_symbols:<venue>）
-python3 ./scripts/sync_mm_symbol_list.py --venue "$MM_VENUE"
+python3 ./scripts/sync_mm_symbol_list.py
 
 # 6.3 pre_trade 风控参数（Hash: <dir>:<open>:<hedge>:pre_trade_risk_params）
-python3 ./scripts/sync_mm_risk_params.py \
-  --open-venue "$MM_VENUE" \
-  --hedge-venue "$MM_VENUE"
+python3 ./scripts/sync_mm_risk_params.py
 ```
 
 可选核验：
 
 ```bash
 cd ~/$MM_ENV
-python3 ./scripts/print_mm_strategy_params.py --venue "$MM_VENUE"
-python3 ./scripts/print_mm_symbol_list.py --venue "$MM_VENUE"
-python3 ./scripts/print_mm_risk_params.py \
-  --open-venue "$MM_VENUE" \
-  --hedge-venue "$MM_VENUE"
+python3 ./scripts/print_mm_strategy_params.py
+python3 ./scripts/print_mm_symbol_list.py
+python3 ./scripts/print_mm_risk_params.py
 ```
 
 ---
@@ -239,9 +235,10 @@ unset PM2_NAMESPACE
 
 ./scripts/start_account_monitor.sh
 ./mm_scripts/start_mm_trade_engine.sh binance
-./mm_scripts/start_mm_pre_trade.sh --venue "$MM_VENUE"
+./mm_scripts/start_mm_pre_trade.sh
 ./mm_scripts/start_mm_persist_manager.sh
-./mm_scripts/start_manual_mm_signal.sh --config config/manual_mm_signal.yaml
+# manual_mm_signal 用于 mock 测试，建议手动前台启动（不走 start/stop 脚本）
+./manual_mm_signal --config config/manual_mm_signal.yaml
 ./mm_scripts/start_mm_viz_server.sh --exchange binance
 ```
 
@@ -280,7 +277,7 @@ pm2 status --namespace "$MM_ENV"
 ```bash
 cd ~/$MM_ENV
 ./mm_scripts/stop_mm_viz_server.sh --exchange binance
-./mm_scripts/stop_manual_mm_signal.sh
+# manual_mm_signal 为手动进程，按需 Ctrl+C 或 pkill 停止
 ./mm_scripts/stop_mm_persist_manager.sh
 ./mm_scripts/stop_mm_pre_trade.sh
 ./mm_scripts/stop_mm_trade_engine.sh

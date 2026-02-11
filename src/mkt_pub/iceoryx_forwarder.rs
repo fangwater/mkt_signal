@@ -112,10 +112,7 @@ impl IceOryxForwarder {
 
         let trade_publisher = if config.data_types.enable_trade {
             let service = node
-                .service_builder(&ServiceName::new(&format!(
-                    "dat_pbs/{}/trade",
-                    venue_slug
-                ))?)
+                .service_builder(&ServiceName::new(&format!("dat_pbs/{}/trade", venue_slug))?)
                 .publish_subscribe::<[u8; TRADE_MAX_BYTES]>()
                 .max_publishers(1)
                 .max_subscribers(TRADE_MAX_SUBSCRIBERS)
@@ -130,10 +127,7 @@ impl IceOryxForwarder {
 
         let kline_publisher = if config.data_types.enable_kline {
             let service = node
-                .service_builder(&ServiceName::new(&format!(
-                    "dat_pbs/{}/kline",
-                    venue_slug
-                ))?)
+                .service_builder(&ServiceName::new(&format!("dat_pbs/{}/kline", venue_slug))?)
                 .publish_subscribe::<[u8; KLINE_MAX_BYTES]>()
                 .max_publishers(1)
                 .max_subscribers(KLINE_MAX_SUBSCRIBERS)
@@ -433,7 +427,12 @@ impl IceOryxForwarder {
         let mut sent = false;
 
         if let Some(ref publisher) = self.incremental_publisher {
-            if self.send_with_publisher(publisher, &msg_bytes, INC_CHANNEL_MAX_BYTES, "tp_reset_incremental") {
+            if self.send_with_publisher(
+                publisher,
+                &msg_bytes,
+                INC_CHANNEL_MAX_BYTES,
+                "tp_reset_incremental",
+            ) {
                 sent = true;
             }
         }

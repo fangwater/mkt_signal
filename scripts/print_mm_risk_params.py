@@ -10,13 +10,13 @@
 MM 默认 open/hedge 都是 futures（同一 venue）。
 
 示例：
-  python scripts/print_mm_risk_params.py --open-venue binance-futures --hedge-venue binance-futures
+  cd ~/binance_mm_beta
+  python scripts/print_mm_risk_params.py
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from typing import Dict, List
 
@@ -61,22 +61,19 @@ def infer_dir_prefix_from_cwd() -> str | None:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Print MM pre-trade risk params from Redis")
-    p.add_argument("--open-venue", default=os.environ.get("OPEN_VENUE"))
-    p.add_argument("--hedge-venue", default=os.environ.get("HEDGE_VENUE"))
+    p = argparse.ArgumentParser(
+        description="Print MM pre-trade risk params from Redis (venues are inferred from current directory)"
+    )
     args = p.parse_args()
 
-    open_venue = args.open_venue
-    hedge_venue = args.hedge_venue
-    if not open_venue and not hedge_venue:
-        if inferred := infer_venues_from_cwd():
-            open_venue, hedge_venue = inferred
-            print(f"[INFO] 未提供 open/hedge，基于目录推断: open={open_venue}, hedge={hedge_venue}")
-
-    if not open_venue or not hedge_venue:
+    inferred = infer_venues_from_cwd()
+    if not inferred:
         p.error(
-            "需要 --open-venue 与 --hedge-venue，或在目录名包含 <exchange> 前缀（如 binance_mm_beta）以自动推断"
+            "无法从当前目录推断 open/hedge venue。请在目录名包含 <exchange> 前缀（如 binance_mm_beta）的 MM 目录运行"
         )
+
+    open_venue, hedge_venue = inferred
+    print(f"[INFO] 基于目录推断: open={open_venue}, hedge={hedge_venue}")
 
     args.open_venue = open_venue
     args.hedge_venue = hedge_venue

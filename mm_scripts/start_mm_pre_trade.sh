@@ -28,15 +28,15 @@ fi
 usage() {
   cat <<'USAGE'
 Usage:
-  mm_scripts/start_mm_pre_trade.sh [--venue <binance-futures>] [--config <path>]
+  mm_scripts/start_mm_pre_trade.sh [--config <path>]
 
 Notes:
-  - If --venue not provided, try to read venue from config (default: config/manual_mm_signal.yaml).
-  - If still missing, infer exchange from dir name and default to <exchange>-futures.
+  - venue is always inferred (forced), cannot be overridden by CLI args.
+  - First try venue from config (default: config/manual_mm_signal.yaml).
+  - If missing, infer exchange from dir name and default to <exchange>-futures.
 USAGE
 }
 
-VENUE=""
 CONFIG_PATH="${BASE_DIR}/config/manual_mm_signal.yaml"
 
 ENV_FILE="${BASE_DIR}/env.sh"
@@ -48,8 +48,9 @@ fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --venue)
-      VENUE="${2:-}"
-      shift 2
+      echo "[ERROR] --venue is not allowed; venue must be inferred from config/cwd" >&2
+      usage >&2
+      exit 1
       ;;
     --config)
       CONFIG_PATH="${2:-}"
@@ -78,9 +79,7 @@ read_config_venue() {
   fi
 }
 
-if [[ -z "$VENUE" ]]; then
-  VENUE="$(read_config_venue "$CONFIG_PATH")"
-fi
+VENUE="$(read_config_venue "$CONFIG_PATH")"
 
 if [[ -z "$VENUE" ]]; then
   dir_name="$(basename "${BASE_DIR}")"
@@ -99,7 +98,7 @@ if [[ -z "$VENUE" ]]; then
 fi
 
 if [[ -z "$VENUE" ]]; then
-  echo "[ERROR] missing venue; use --venue or provide venue in config" >&2
+  echo "[ERROR] missing inferred venue; provide venue in config or use a dir name like <exchange>_mm_<suffix>" >&2
   exit 1
 fi
 

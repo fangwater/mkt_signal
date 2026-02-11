@@ -16,6 +16,7 @@ Notes:
   - Default target dir: $HOME/<exchange>_mm_<suffix>/
   - --env-suffix is required (e.g. alpha -> <exchange>_mm_alpha)
   - config/manual_mm_signal.yaml will be copied to target dir.
+  - manual_mm_signal is for manual/mock testing; start/stop scripts are not deployed.
   - Default port: beta/base=6366, alpha=6367 (auto when env-suffix/env-name indicates alpha).
   - --port overrides auto port.
 USAGE
@@ -186,12 +187,6 @@ fi
 
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   mkdir -p "$TARGET_DIR/mm_scripts"
-  for script in start_manual_mm_signal.sh stop_manual_mm_signal.sh; do
-    if [[ -f "$ROOT_DIR/mm_scripts/$script" ]]; then
-      rsync -a "$ROOT_DIR/mm_scripts/$script" "$TARGET_DIR/mm_scripts/"
-      chmod +x "$TARGET_DIR/mm_scripts/$script"
-    fi
-  done
   mkdir -p "$TARGET_DIR/scripts"
   for script in sync_mm_symbol_list.py print_mm_symbol_list.py sync_mm_strategy_params.py print_mm_strategy_params.py; do
     if [[ -f "$ROOT_DIR/scripts/$script" ]]; then

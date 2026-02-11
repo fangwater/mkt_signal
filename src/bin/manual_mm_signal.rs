@@ -304,11 +304,7 @@ fn create_depth_query_client(venue: TradingVenue) -> Result<DepthQueryClient> {
         .name(&NodeName::new(&node_name)?)
         .create::<ipc::Service>()?;
 
-    let service_name = format!(
-        "{}/{}",
-        DEPTH_QUERY_SERVICE_PREFIX,
-        venue.data_pub_slug()
-    );
+    let service_name = format!("{}/{}", DEPTH_QUERY_SERVICE_PREFIX, venue.data_pub_slug());
     let service = node
         .service_builder(&ServiceName::new(&service_name)?)
         .request_response::<[u8], [u8]>()
@@ -323,22 +319,15 @@ fn create_depth_query_client(venue: TradingVenue) -> Result<DepthQueryClient> {
     Ok(client)
 }
 
-fn query_tlen_batch(
-    client: &DepthQueryClient,
-    symbol: &str,
-    prices: &[f64],
-) -> Result<Vec<f64>> {
+fn query_tlen_batch(client: &DepthQueryClient, symbol: &str, prices: &[f64]) -> Result<Vec<f64>> {
     if prices.is_empty() {
         return Ok(Vec::new());
     }
 
     let mut req_buf = [0u8; DEPTH_QUERY_PAYLOAD];
-    let header_len = DepthQueryHeader::write(
-        &mut req_buf,
-        DepthQueryType::LoadTlenBatch as u8,
-        symbol,
-    )
-    .map_err(|err| anyhow!(err.to_string()))?;
+    let header_len =
+        DepthQueryHeader::write(&mut req_buf, DepthQueryType::LoadTlenBatch as u8, symbol)
+            .map_err(|err| anyhow!(err.to_string()))?;
 
     let payload_len = DepthQueryLoadTlenBatchReq::write_to(
         &mut req_buf[header_len..],
@@ -366,7 +355,8 @@ fn query_tlen_batch(
                 return Err(anyhow!("depth query response too short: {}", payload.len()));
             }
 
-            let header = DepthQueryHeader::parse(payload).map_err(|err| anyhow!(err.to_string()))?;
+            let header =
+                DepthQueryHeader::parse(payload).map_err(|err| anyhow!(err.to_string()))?;
             if header.query_type != DepthQueryType::LoadTlenBatch as u8 {
                 return Err(anyhow!(
                     "unexpected depth query type: {}",
@@ -666,10 +656,8 @@ fn spawn_ask_bid_listener(
 ) {
     tokio::task::spawn_local(async move {
         let node_name = format!("{}_ask_bid_{}", PROCESS_NAME, venue.data_pub_slug());
-        let service_path = build_service_name(&format!(
-            "dat_pbs/{}/ask_bid_spread",
-            venue.data_pub_slug()
-        ));
+        let service_path =
+            build_service_name(&format!("dat_pbs/{}/ask_bid_spread", venue.data_pub_slug()));
 
         let result: Result<()> = async move {
             let node = NodeBuilder::new()

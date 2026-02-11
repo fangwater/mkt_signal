@@ -448,7 +448,8 @@ impl DepthPubApp {
     }
 
     fn log_btc_depth25(&mut self) {
-        if self.last_btc_depth25_log.elapsed() < Duration::from_secs(BTC_DEPTH25_LOG_INTERVAL_SECS) {
+        if self.last_btc_depth25_log.elapsed() < Duration::from_secs(BTC_DEPTH25_LOG_INTERVAL_SECS)
+        {
             return;
         }
         self.last_btc_depth25_log = Instant::now();

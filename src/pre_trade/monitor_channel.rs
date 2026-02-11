@@ -1809,8 +1809,12 @@ fn dispatch_order_update_generic<T>(
     let mut matched = false;
 
     for strategy_id in strategy_ids {
-        let mut mgr = strategy_mgr.borrow_mut();
-        if let Some(mut strategy) = mgr.take(strategy_id) {
+        let strategy_opt = {
+            let mut mgr = strategy_mgr.borrow_mut();
+            mgr.take(strategy_id)
+        };
+
+        if let Some(mut strategy) = strategy_opt {
             if strategy.is_strategy_order(order_id) {
                 matched = true;
                 match update.execution_type() {
@@ -1842,7 +1846,7 @@ fn dispatch_order_update_generic<T>(
                 }
             }
             if strategy.is_active() {
-                mgr.insert(strategy);
+                strategy_mgr.borrow_mut().insert(strategy);
             }
         }
     }

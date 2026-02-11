@@ -9,7 +9,11 @@
 
 说明:
   - venue 形如 binance-futures / okex-futures。
-  - 可通过 --venue 指定；或通过 --env-name / CWD 推断（例如 binance_mm_beta -> binance-futures）。
+  - venue 必须由当前目录强制推断（例如 binance_mm_beta -> binance-futures）。
+
+示例:
+  cd ~/binance_mm_beta
+  python scripts/sync_mm_strategy_params.py
 """
 
 from __future__ import annotations
@@ -49,22 +53,7 @@ def infer_exchange_from_cwd() -> Optional[str]:
     return infer_exchange_from_name(Path.cwd().name)
 
 
-def normalize_venue(raw: str) -> Optional[str]:
-    if not raw:
-        return None
-    v = raw.strip().lower().replace("_", "-")
-    if "-" not in v:
-        v = f"{v}-futures"
-    return v
-
-
-def resolve_venue(args: argparse.Namespace) -> Optional[str]:
-    if args.venue:
-        return normalize_venue(args.venue)
-    if args.env_name:
-        ex = infer_exchange_from_name(args.env_name)
-        if ex:
-            return f"{ex}-futures"
+def resolve_venue() -> Optional[str]:
     ex = infer_exchange_from_cwd()
     if ex:
         return f"{ex}-futures"
@@ -72,9 +61,9 @@ def resolve_venue(args: argparse.Namespace) -> Optional[str]:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Sync mm strategy params to Redis")
-    p.add_argument("--venue", help="MM venue（例如 binance-futures）")
-    p.add_argument("--env-name", help="环境目录名（例如 binance_mm_beta）")
+    p = argparse.ArgumentParser(
+        description="Sync mm strategy params to Redis (venue is inferred from current directory)"
+    )
     return p.parse_args()
 
 
@@ -193,15 +182,18 @@ def print_params(rds, key: str) -> None:
 
 
 def main() -> int:
-    args = parse_args()
+    _args = parse_args()
     redis = try_import_redis()
     if redis is None:
         print("❌ redis 包未安装，请使用 pip install redis", file=sys.stderr)
         return 2
 
-    venue = resolve_venue(args)
+    venue = resolve_venue()
     if not venue:
-        print("❌ 需要 --venue，或从 --env-name / CWD 推断 exchange", file=sys.stderr)
+        print(
+            "❌ 无法从当前目录推断 venue。请在目录名包含 binance/okex/bybit/bitget/gate 前缀的 MM 目录运行（如 ~/binance_mm_beta）",
+            file=sys.stderr,
+        )
         return 1
 
     key = f"mm_strategy_params_{venue}"

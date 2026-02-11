@@ -125,11 +125,8 @@ impl MultiChannelSubscriber {
 
     /// 订阅单个频道
     pub fn subscribe_single(&mut self, param: SubscribeParams) -> Result<()> {
-        let service_name: String = format!(
-            "dat_pbs/{}/{}",
-            param.topic_prefix,
-            param.channel.as_str()
-        );
+        let service_name: String =
+            format!("dat_pbs/{}/{}", param.topic_prefix, param.channel.as_str());
 
         let key = format!("{}_{}", param.topic_prefix, param.channel.as_str());
 

@@ -691,7 +691,11 @@ impl MmHedgeSignalQueryMsg {
         let net_qty = bytes.get_f64_le();
         let symbol_exposure_u = bytes.get_f64_le();
         if bytes.remaining() != 0 {
-            return Err("Unexpected trailing bytes for MmHedgeSignalQueryMsg".to_string());
+            if bytes.iter().any(|&b| b != 0) {
+                return Err(
+                    "Unexpected non-zero trailing bytes for MmHedgeSignalQueryMsg".to_string(),
+                );
+            }
         }
         Ok(Self {
             symbol,
@@ -938,5 +942,37 @@ impl ArbHedgeSignalQueryMsg {
             .position(|&b| b == 0)
             .unwrap_or(32);
         String::from_utf8_lossy(&self.hedging_symbol[..end]).to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MmHedgeSignalQueryMsg;
+
+    #[test]
+    fn mm_hedge_query_from_bytes_accepts_zero_padding() {
+        let msg = MmHedgeSignalQueryMsg::new("SOLUSDT", 1.0, 0.5, 0.5, 1000.0);
+        let mut raw = msg.to_bytes().to_vec();
+        raw.extend_from_slice(&[0u8; 16]);
+
+        let parsed = MmHedgeSignalQueryMsg::from_bytes(bytes::Bytes::from(raw));
+        assert!(parsed.is_ok());
+        let parsed = parsed.unwrap();
+        assert_eq!(parsed.get_symbol(), "SOLUSDT");
+        assert!((parsed.period_buy_qty - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn mm_hedge_query_from_bytes_rejects_non_zero_trailing_bytes() {
+        let msg = MmHedgeSignalQueryMsg::new("SOLUSDT", 1.0, 0.5, 0.5, 1000.0);
+        let mut raw = msg.to_bytes().to_vec();
+        raw.extend_from_slice(&[0u8, 0u8, 1u8]);
+
+        let parsed = MmHedgeSignalQueryMsg::from_bytes(bytes::Bytes::from(raw));
+        assert!(parsed.is_err());
+        assert!(parsed
+            .err()
+            .unwrap()
+            .contains("Unexpected non-zero trailing bytes"));
     }
 }
