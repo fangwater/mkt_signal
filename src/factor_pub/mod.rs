@@ -6,3 +6,4 @@ pub mod kline_factor_pub;
 pub mod model_pub;
 pub mod pairmm_resample;
 pub mod trade_factor_pub;
+pub mod trade_flow_feature_pub;

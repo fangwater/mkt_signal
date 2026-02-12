@@ -1,3 +1,4 @@
+use crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg;
 use anyhow::{bail, Result};
 use bytes::{Buf, Bytes};
 
@@ -17,6 +18,7 @@ pub enum MktMsgType {
     AskBidSpread = 1015,
     FactorValue = 2001,
     PairMmResample = 3001,
+    TradeFlowFeature = 3002,
     Feature = 4101,
     Model = 4102,
     Error = 2222,
@@ -252,6 +254,11 @@ pub fn parse_pairmm_resample(data: &[u8]) -> Result<PairMmResampleMsg> {
     })
 }
 
+/// 解析 TradeFlowFeature 消息
+pub fn parse_trade_flow_feature(data: &[u8]) -> Result<TradeFlowFeatureMsg> {
+    TradeFlowFeatureMsg::from_bytes(data)
+}
+
 /// 获取消息类型
 pub fn get_msg_type(data: &[u8]) -> Option<MktMsgType> {
     if data.len() < 4 {
@@ -273,6 +280,7 @@ pub fn get_msg_type(data: &[u8]) -> Option<MktMsgType> {
         1015 => Some(MktMsgType::AskBidSpread),
         2001 => Some(MktMsgType::FactorValue),
         3001 => Some(MktMsgType::PairMmResample),
+        3002 => Some(MktMsgType::TradeFlowFeature),
         4101 => Some(MktMsgType::Feature),
         4102 => Some(MktMsgType::Model),
         2222 => Some(MktMsgType::Error),

@@ -17,6 +17,7 @@ pub enum MktMsgType {
     AskBidSpread = 1015, // 买卖价差（最优买卖价）
     FactorValue = 2001,
     PairMmResample = 3001,
+    TradeFlowFeature = 3002,
     Feature = 4101,
     Model = 4102,
     Error = 2222,
@@ -677,6 +678,7 @@ pub fn get_msg_type(data: &[u8]) -> MktMsgType {
         1015 => MktMsgType::AskBidSpread,
         2001 => MktMsgType::FactorValue,
         3001 => MktMsgType::PairMmResample,
+        3002 => MktMsgType::TradeFlowFeature,
         4101 => MktMsgType::Feature,
         4102 => MktMsgType::Model,
         _ => MktMsgType::TpReset, // 默认值

@@ -1,0 +1,16 @@
+# Trade flow feature 发布配置（基于 trade 聚合 bar + Redis 分位阈值）
+
+trade_flow_feature_pub:
+  data_source:
+    trade_channel: "trade"
+
+  runtime:
+    bar_ms: 5000
+    # 3分钟热更新一次 amount 分位阈值
+    quantile_reload_secs: 180
+
+  redis:
+    host: "127.0.0.1"
+    port: 6379
+    db: 0
+    # prefix: ""
