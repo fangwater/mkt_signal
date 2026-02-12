@@ -21,3 +21,6 @@ anlysis_binance_fr_trade/*.csv
 factor_pool/**/*.ipynb
 factor_pool/**/*.h5
 .venv/**
+
+# local model artifacts
+model/
