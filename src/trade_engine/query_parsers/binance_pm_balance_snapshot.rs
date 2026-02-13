@@ -6,6 +6,8 @@ use serde::Deserialize;
 struct BinancePmBalanceRow {
     #[serde(default)]
     asset: String,
+    #[serde(default, rename = "totalWalletBalance")]
+    total_wallet_balance: String,
     #[serde(default, rename = "crossMarginAsset")]
     cross_margin_asset: String,
     #[serde(default, rename = "crossMarginBorrowed")]
@@ -29,12 +31,17 @@ pub fn parse_binance_pm_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
         }
         let ts = row.update_time;
         let asset = row.asset.to_ascii_uppercase();
-        let balance = parse_f64(&row.cross_margin_asset);
+        // PM 口径优先使用 totalWalletBalance；老字段缺失时回退到 crossMarginAsset。
+        let balance = if !row.total_wallet_balance.trim().is_empty() {
+            parse_f64(&row.total_wallet_balance)
+        } else {
+            parse_f64(&row.cross_margin_asset)
+        };
         let borrowed = parse_f64(&row.cross_margin_borrowed);
         let interest = parse_f64(&row.cross_margin_interest);
 
         // Align with Binance ACCOUNT_UPDATE parser semantics:
-        // - BalanceUpdate uses "cw" (cross wallet balance), here approximated by crossMarginAsset.
+        // - BalanceUpdate uses PM 统一余额口径 totalWalletBalance（缺失时回退 crossMarginAsset）。
         out.push(BasicBalanceMsg::create(ts, asset.clone(), balance).to_bytes());
         out.push(BasicBorrowInterestMsg::create(ts, asset, borrowed, interest).to_bytes());
     }
@@ -50,6 +57,7 @@ mod tests {
     fn parse_balance_snapshot_to_basic_msgs() {
         let json = r#"[{
             "asset": "BTC",
+            "totalWalletBalance": "2.345",
             "crossMarginAsset": "1.234",
             "crossMarginBorrowed": "0.1",
             "crossMarginInterest": "0.01",
@@ -63,6 +71,6 @@ mod tests {
             BasicAccountEventType::BalanceUpdate as u32
         );
         assert_eq!(bal.symbol, "BTC");
-        assert!((bal.balance - 1.234).abs() < 1e-12);
+        assert!((bal.balance - 2.345).abs() < 1e-12);
     }
 }
