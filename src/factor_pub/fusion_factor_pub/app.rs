@@ -11,6 +11,7 @@ use log::{info, warn};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use super::cfg::{FusionFactorPubConfig, ModelManagerConfig};
@@ -105,7 +106,6 @@ struct DepthLevel {
 
 #[derive(Debug, Clone)]
 struct DepthSnapshot {
-    timestamp_ms: i64,
     bids: Vec<DepthLevel>,
     asks: Vec<DepthLevel>,
 }
@@ -362,8 +362,6 @@ struct FactorBinding {
 #[derive(Default)]
 struct OrderedEvalStats {
     factor118_ready_count: u64,
-    mapped_unimplemented_count: usize,
-    unknown_name_count: usize,
 }
 
 struct SymbolSeries {
@@ -451,10 +449,14 @@ enum DepthSubscriber {
 }
 
 impl DepthSubscriber {
-    fn receive_bytes(&self) -> Result<Option<Vec<u8>>> {
+    fn receive_snapshot(&self, venue: TradingVenue) -> Result<Option<(String, DepthSnapshot)>> {
         match self {
-            Self::Depth25(sub) => Ok(sub.receive()?.map(|sample| sample.payload().to_vec())),
-            Self::Depth50(sub) => Ok(sub.receive()?.map(|sample| sample.payload().to_vec())),
+            Self::Depth25(sub) => Ok(sub.receive()?.and_then(|sample| {
+                parse_depth_snapshot(sample.payload(), DepthChannel::Depth25, venue)
+            })),
+            Self::Depth50(sub) => Ok(sub.receive()?.and_then(|sample| {
+                parse_depth_snapshot(sample.payload(), DepthChannel::Depth50, venue)
+            })),
         }
     }
 }
@@ -462,12 +464,11 @@ impl DepthSubscriber {
 pub struct FusionFactorPubApp {
     venue_slug: String,
     venue: TradingVenue,
-    depth_channel: DepthChannel,
     trade_flow_subscriber: Subscriber<ipc::Service, [u8; TRADE_FLOW_MAX_BYTES], ()>,
     depth_subscriber: DepthSubscriber,
     allowed_symbols: HashSet<String>,
     symbol_factor_plans: HashMap<String, SymbolFactorPlan>,
-    latest_depth_by_symbol: HashMap<String, DepthSnapshot>,
+    latest_depth_by_symbol: HashMap<String, Rc<DepthSnapshot>>,
     symbol_states: HashMap<String, SymbolCalcState>,
     depth_count: u64,
     trade_flow_count: u64,
@@ -525,7 +526,6 @@ impl FusionFactorPubApp {
         Ok(Self {
             venue_slug,
             venue,
-            depth_channel,
             trade_flow_subscriber,
             depth_subscriber,
             allowed_symbols: allowed_symbols.into_iter().collect(),
@@ -605,25 +605,10 @@ impl FusionFactorPubApp {
         loop {
             let mut has_message = false;
 
-            while let Some(payload) = self.depth_subscriber.receive_bytes()? {
-                has_message = true;
-                if let Some((symbol, depth)) =
-                    parse_depth_snapshot(&payload, self.depth_channel, self.venue)
-                {
-                    if !self.allowed_symbols.contains(&symbol) {
-                        self.depth_dropped_symbol_count =
-                            self.depth_dropped_symbol_count.saturating_add(1);
-                        continue;
-                    }
-                    self.latest_depth_by_symbol.insert(symbol, depth);
-                    self.depth_count = self.depth_count.saturating_add(1);
-                }
-            }
-
+            // trade_flow 是计算触发源，优先消费可降低触发延迟。
             while let Some(sample) = self.trade_flow_subscriber.receive()? {
                 has_message = true;
-                let payload = sample.payload().to_vec();
-                match parse_trade_flow_feature(&payload) {
+                match parse_trade_flow_feature(sample.payload()) {
                     Ok(msg) => {
                         let symbol = normalize_symbol_for_venue(&msg.symbol, self.venue);
                         if !self.allowed_symbols.contains(&symbol) {
@@ -638,6 +623,22 @@ impl FusionFactorPubApp {
                         self.venue_slug, err
                     ),
                 }
+            }
+
+            // depth 读到空为止，并在单轮内按 symbol 合并到最后一条。
+            let mut depth_updates: HashMap<String, Rc<DepthSnapshot>> = HashMap::new();
+            while let Some((symbol, depth)) = self.depth_subscriber.receive_snapshot(self.venue)? {
+                has_message = true;
+                if !self.allowed_symbols.contains(&symbol) {
+                    self.depth_dropped_symbol_count =
+                        self.depth_dropped_symbol_count.saturating_add(1);
+                    continue;
+                }
+                depth_updates.insert(symbol, Rc::new(depth));
+                self.depth_count = self.depth_count.saturating_add(1);
+            }
+            for (symbol, depth) in depth_updates {
+                self.latest_depth_by_symbol.insert(symbol, depth);
             }
 
             if !has_message {
@@ -682,7 +683,7 @@ impl FusionFactorPubApp {
         {
             let state = self.symbol_states.entry(symbol.clone()).or_default();
             state.push_trade_flow(&msg);
-            if let Some(depth) = depth_opt.as_ref() {
+            if let Some(depth) = depth_opt.as_deref() {
                 state.push_depth_metrics(depth);
             }
         }
@@ -691,9 +692,7 @@ impl FusionFactorPubApp {
             self.missing_depth_count = self.missing_depth_count.saturating_add(1);
         }
 
-        let Some((ordered_outputs, eval_stats)) =
-            self.evaluate_ordered_factors(&symbol, depth_opt.as_ref())
-        else {
+        let Some(eval_stats) = self.evaluate_ordered_factors(&symbol, depth_opt.as_deref()) else {
             warn!(
                 "fusion-trigger: venue={} symbol={} trade_ts={} reason=missing_factor_plan",
                 self.venue_slug, symbol, msg.ts
@@ -704,27 +703,13 @@ impl FusionFactorPubApp {
         self.factor_118_ready_count = self
             .factor_118_ready_count
             .saturating_add(eval_stats.factor118_ready_count);
-
-        info!(
-            "fusion-trigger: venue={} symbol={} trade_ts={} depth_ts={} close={} amount={} ordered_factor_count={} mapped_unimplemented_count={} unknown_name_count={} ordered_results={:?}",
-            self.venue_slug,
-            symbol,
-            msg.ts,
-            depth_opt.map(|d| d.timestamp_ms).unwrap_or(-1),
-            msg.values[FIELD_CLOSE],
-            msg.values[FIELD_AMOUNT],
-            ordered_outputs.len(),
-            eval_stats.mapped_unimplemented_count,
-            eval_stats.unknown_name_count,
-            ordered_outputs,
-        );
     }
 
     fn evaluate_ordered_factors(
         &mut self,
         symbol: &str,
         depth: Option<&DepthSnapshot>,
-    ) -> Option<(Vec<String>, OrderedEvalStats)> {
+    ) -> Option<OrderedEvalStats> {
         let needs_factor_118 = self
             .symbol_factor_plans
             .get(symbol)
@@ -742,40 +727,19 @@ impl FusionFactorPubApp {
         let series = self.build_symbol_series(symbol);
 
         let plan = self.symbol_factor_plans.get(symbol)?;
-        let mut outputs = Vec::with_capacity(plan.ordered_factors.len());
         let mut stats = OrderedEvalStats::default();
 
         for binding in &plan.ordered_factors {
-            let (value, ready, status) = match self.compute_supported_factor(
-                binding,
-                factor_118_result,
-                depth,
-                series.as_ref(),
-            ) {
-                Some((value, ready, status)) => {
-                    if ready && binding.factor_id == Some(FusionFactorId::Factor118) {
-                        stats.factor118_ready_count = stats.factor118_ready_count.saturating_add(1);
-                    }
-                    (value, ready, status)
+            if let Some((_value, ready, _status)) =
+                self.compute_supported_factor(binding, factor_118_result, depth, series.as_ref())
+            {
+                if ready && binding.factor_id == Some(FusionFactorId::Factor118) {
+                    stats.factor118_ready_count = stats.factor118_ready_count.saturating_add(1);
                 }
-                None => {
-                    if binding.factor_id.is_some() || binding.extra_factor_id.is_some() {
-                        stats.mapped_unimplemented_count += 1;
-                        (f64::NAN, false, "unimplemented")
-                    } else {
-                        stats.unknown_name_count += 1;
-                        (f64::NAN, false, "unknown_name")
-                    }
-                }
-            };
-
-            outputs.push(format!(
-                "{}={}|ready={}|status={}",
-                binding.name, value, ready, status
-            ));
+            }
         }
 
-        Some((outputs, stats))
+        Some(stats)
     }
 
     fn build_symbol_series(&self, symbol: &str) -> Option<SymbolSeries> {
@@ -4901,8 +4865,6 @@ fn parse_depth_snapshot(
     }
 
     let ts_offset = 8 + symbol_len;
-    let timestamp_ms = read_i64_at(data, ts_offset)?;
-
     let mut bids = Vec::with_capacity(MAX_DEPTH_LEVELS_CACHE);
     let mut asks = Vec::with_capacity(MAX_DEPTH_LEVELS_CACHE);
 
@@ -4925,30 +4887,7 @@ fn parse_depth_snapshot(
         }
     }
 
-    Some((
-        symbol,
-        DepthSnapshot {
-            timestamp_ms,
-            bids,
-            asks,
-        },
-    ))
-}
-
-fn read_i64_at(data: &[u8], offset: usize) -> Option<i64> {
-    if data.len() < offset + 8 {
-        return None;
-    }
-    Some(i64::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-        data[offset + 4],
-        data[offset + 5],
-        data[offset + 6],
-        data[offset + 7],
-    ]))
+    Some((symbol, DepthSnapshot { bids, asks }))
 }
 
 fn read_f64_at(data: &[u8], offset: usize) -> Option<f64> {

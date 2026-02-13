@@ -7,7 +7,7 @@ BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 usage() {
   cat <<'USAGE'
 Usage:
-  start_dat_pbs.sh [--namespace <ns>] (--exchange <exchange> | <exchange> | <venue...>)
+  start_dat_pbs.sh (--exchange <exchange> | <exchange> | <venue...>)
 
 Examples:
   ./scripts/start_dat_pbs.sh --exchange binance
@@ -22,7 +22,11 @@ Notes:
       bybit   -> bybit-futures bybit-margin
       bitget  -> bitget-futures bitget-margin
       gate    -> gate-futures gate-margin
-  - Namespace defaults to $PM2_NAMESPACE or the deploy directory name.
+  - Runs as systemd user services:
+      dat_pbs@<venue>.service
+  - Optional env files:
+      config/dat_pbs.env
+      config/dat_pbs-<venue>.env
 USAGE
 }
 
@@ -53,12 +57,8 @@ default_venues_for_exchange() {
   esac
 }
 
-PM2=(pm2)
-if ! command -v pm2 >/dev/null 2>&1; then
-  PM2=(npx pm2)
-fi
-
-NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
+SYSTEMCTL=(systemctl --user)
+UNIT_DIR="${SYSTEMD_USER_UNIT_DIR:-$HOME/.config/systemd/user}"
 
 EXCHANGE=""
 VENUES=()
@@ -67,12 +67,13 @@ POSITIONAL=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --namespace)
-      NAMESPACE="${2:-}"
-      if [[ -z "$NAMESPACE" ]]; then
+      # Backward compatibility: namespace is no longer used for dat_pbs.
+      if [[ -z "${2:-}" ]]; then
         echo "[ERROR] --namespace 需要一个值" >&2
         usage >&2
         exit 1
       fi
+      echo "[WARN] --namespace is ignored for dat_pbs (using unit dat_pbs@<venue>.service)"
       shift 2
       ;;
     --exchange)
@@ -135,6 +136,17 @@ if [[ ${#VENUES[@]} -eq 0 ]]; then
   exit 1
 fi
 
+if ! command -v systemctl >/dev/null 2>&1; then
+  echo "[ERROR] systemctl not found" >&2
+  exit 1
+fi
+
+if ! "${SYSTEMCTL[@]}" show-environment >/dev/null 2>&1; then
+  echo "[ERROR] systemd --user is not available for current session" >&2
+  echo "[HINT] For server usage, run once: sudo loginctl enable-linger $(whoami)" >&2
+  exit 1
+fi
+
 BIN_CANDIDATES=(
   "${SCRIPT_DIR}/dat_pbs"
   "${SCRIPT_DIR}/target/release/dat_pbs"
@@ -157,21 +169,66 @@ if [[ -z "$BIN_PATH" ]]; then
   exit 1
 fi
 
+UNIT_TEMPLATE="dat_pbs@.service"
+UNIT_PATH="${UNIT_DIR}/${UNIT_TEMPLATE}"
+RUST_LOG_DEFAULT="${RUST_LOG:-info}"
+
+install_or_update_unit_template() {
+  mkdir -p "$UNIT_DIR"
+
+  local tmp_path="${UNIT_PATH}.tmp"
+  cat >"$tmp_path" <<EOF
+[Unit]
+Description=dat_pbs instance (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${BASE_DIR}
+ExecStart=${BIN_PATH} --venue %i
+Restart=always
+RestartSec=2
+Environment=RUST_LOG=${RUST_LOG_DEFAULT}
+EnvironmentFile=-${BASE_DIR}/config/dat_pbs.env
+EnvironmentFile=-${BASE_DIR}/config/dat_pbs-%i.env
+KillSignal=SIGINT
+TimeoutStopSec=15
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=default.target
+EOF
+
+  if [[ ! -f "$UNIT_PATH" ]] || ! cmp -s "$tmp_path" "$UNIT_PATH"; then
+    mv "$tmp_path" "$UNIT_PATH"
+    echo "[INFO] Updated unit template: $UNIT_PATH"
+  else
+    rm -f "$tmp_path"
+  fi
+
+  "${SYSTEMCTL[@]}" daemon-reload
+}
+
+unit_name_for_venue() {
+  local venue="$1"
+  if command -v systemd-escape >/dev/null 2>&1; then
+    systemd-escape --template "$UNIT_TEMPLATE" "$venue"
+  else
+    echo "${UNIT_TEMPLATE/@.service/@${venue}.service}"
+  fi
+}
+
 start_one() {
   local venue="$1"
-  local name="dat_pbs_${venue}"
-  local rust_log="${RUST_LOG:-info}"
+  local unit_name
+  unit_name="$(unit_name_for_venue "$venue")"
 
-  echo "[INFO] Restarting ${name}"
-  "${PM2[@]}" delete "$name" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
-
-  RUST_LOG="${rust_log}" "${PM2[@]}" start "$BIN_PATH" \
-    --name "$name" \
-    --namespace "$NAMESPACE" \
-    --cwd "$BASE_DIR" \
-    -- \
-    --venue "$venue"
+  echo "[INFO] Restarting ${unit_name}"
+  "${SYSTEMCTL[@]}" restart "$unit_name"
 }
+
+install_or_update_unit_template
 
 for venue in "${VENUES[@]}"; do
   start_one "$venue"
@@ -180,6 +237,6 @@ done
 
 echo ""
 echo "[INFO] Started venues: ${VENUES[*]}"
-echo "Namespace: ${NAMESPACE}"
-echo "Logs: ${PM2[*]} logs --namespace ${NAMESPACE} dat_pbs_<venue>"
-echo "Status: ${PM2[*]} status --namespace ${NAMESPACE}"
+echo "Template: ${UNIT_TEMPLATE}"
+echo "Logs: journalctl --user -u dat_pbs@<venue>.service -f"
+echo "Status: systemctl --user status dat_pbs@<venue>.service"

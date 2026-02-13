@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 
 use crate::common::mkt_msg::MktMsgType;
 
@@ -94,13 +94,13 @@ impl TradeFlowFeatureMsg {
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        let min_len = 4 + 4 + 1 + 8 + (TRADE_FLOW_FEATURE_DIM * 8);
+        let value_bytes = TRADE_FLOW_FEATURE_DIM * 8;
+        let min_len = 4 + 4 + 1 + 8 + value_bytes;
         if data.len() < min_len {
             bail!("TradeFlowFeatureMsg too short: {}", data.len());
         }
 
-        let mut cursor = Bytes::copy_from_slice(data);
-        let msg_type = cursor.get_u32_le();
+        let msg_type = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
         if msg_type != TRADE_FLOW_FEATURE_MSG_TYPE {
             bail!(
                 "invalid TradeFlowFeatureMsg type {}, expected {}",
@@ -109,22 +109,66 @@ impl TradeFlowFeatureMsg {
             );
         }
 
-        let symbol_len = cursor.get_u32_le() as usize;
-        if cursor.remaining() < symbol_len + 1 + 8 + (TRADE_FLOW_FEATURE_DIM * 8) {
+        let symbol_len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let need = match symbol_len.checked_add(1 + 8 + value_bytes) {
+            Some(v) => v,
+            None => {
+                bail!(
+                    "TradeFlowFeatureMsg payload size overflow: symbol_len={}",
+                    symbol_len
+                )
+            }
+        };
+        let remaining = data.len().saturating_sub(8);
+        if remaining < need {
             bail!(
                 "TradeFlowFeatureMsg truncated before payload: remaining={} need={}",
-                cursor.remaining(),
-                symbol_len + 1 + 8 + (TRADE_FLOW_FEATURE_DIM * 8)
+                remaining,
+                need
             );
         }
 
-        let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_len).to_vec())?;
-        let venue = cursor.get_u8();
-        let ts = cursor.get_i64_le();
+        let mut offset = 8usize;
+        let symbol_end = match offset.checked_add(symbol_len) {
+            Some(v) => v,
+            None => {
+                bail!(
+                    "TradeFlowFeatureMsg symbol end overflow: offset={} symbol_len={}",
+                    offset,
+                    symbol_len
+                )
+            }
+        };
+        let symbol = String::from_utf8(data[offset..symbol_end].to_vec())?;
+        offset = symbol_end;
+
+        let venue = data[offset];
+        offset += 1;
+        let ts = i64::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+            data[offset + 4],
+            data[offset + 5],
+            data[offset + 6],
+            data[offset + 7],
+        ]);
+        offset += 8;
 
         let mut values = [0.0f64; TRADE_FLOW_FEATURE_DIM];
         for value in &mut values {
-            *value = cursor.get_f64_le();
+            *value = f64::from_le_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+                data[offset + 4],
+                data[offset + 5],
+                data[offset + 6],
+                data[offset + 7],
+            ]);
+            offset += 8;
         }
 
         Ok(Self {
@@ -135,5 +179,33 @@ impl TradeFlowFeatureMsg {
             ts,
             values,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roundtrip_from_bytes_matches_original() {
+        let values: Vec<f64> = (0..TRADE_FLOW_FEATURE_DIM)
+            .map(|i| i as f64 * 1.25 - 3.0)
+            .collect();
+        let original = TradeFlowFeatureMsg::from_indexed_values(
+            "BTCUSDT".to_string(),
+            2,
+            1_735_000_000_123,
+            &values,
+        )
+        .expect("build message");
+        let bytes = original.to_bytes().expect("serialize");
+        let parsed = TradeFlowFeatureMsg::from_bytes(bytes.as_ref()).expect("parse");
+
+        assert_eq!(parsed.msg_type, original.msg_type);
+        assert_eq!(parsed.symbol_length, original.symbol_length);
+        assert_eq!(parsed.symbol, original.symbol);
+        assert_eq!(parsed.venue, original.venue);
+        assert_eq!(parsed.ts, original.ts);
+        assert_eq!(parsed.values, original.values);
     }
 }

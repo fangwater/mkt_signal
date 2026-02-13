@@ -7,7 +7,7 @@ BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 usage() {
   cat <<'USAGE'
 Usage:
-  stop_dat_pbs.sh [--namespace <ns>] (--exchange <exchange> | <exchange> | <venue...>)
+  stop_dat_pbs.sh (--exchange <exchange> | <exchange> | <venue...>)
 
 Examples:
   ./scripts/stop_dat_pbs.sh --exchange binance
@@ -22,7 +22,8 @@ Notes:
       bybit   -> bybit-futures bybit-margin
       bitget  -> bitget-futures bitget-margin
       gate    -> gate-futures gate-margin
-  - Namespace defaults to $PM2_NAMESPACE or the deploy directory name.
+  - Stops systemd user services:
+      dat_pbs@<venue>.service
 USAGE
 }
 
@@ -53,12 +54,7 @@ default_venues_for_exchange() {
   esac
 }
 
-PM2=(pm2)
-if ! command -v pm2 >/dev/null 2>&1; then
-  PM2=(npx pm2)
-fi
-
-NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
+SYSTEMCTL=(systemctl --user)
 
 EXCHANGE=""
 VENUES=()
@@ -67,12 +63,13 @@ POSITIONAL=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --namespace)
-      NAMESPACE="${2:-}"
-      if [[ -z "$NAMESPACE" ]]; then
+      # Backward compatibility: namespace is no longer used for dat_pbs.
+      if [[ -z "${2:-}" ]]; then
         echo "[ERROR] --namespace 需要一个值" >&2
         usage >&2
         exit 1
       fi
+      echo "[WARN] --namespace is ignored for dat_pbs (using unit dat_pbs@<venue>.service)"
       shift 2
       ;;
     --exchange)
@@ -135,15 +132,39 @@ if [[ ${#VENUES[@]} -eq 0 ]]; then
   exit 1
 fi
 
+if ! command -v systemctl >/dev/null 2>&1; then
+  echo "[ERROR] systemctl not found" >&2
+  exit 1
+fi
+
+if ! "${SYSTEMCTL[@]}" show-environment >/dev/null 2>&1; then
+  echo "[ERROR] systemd --user is not available for current session" >&2
+  echo "[HINT] For server usage, run once: sudo loginctl enable-linger $(whoami)" >&2
+  exit 1
+fi
+
+UNIT_TEMPLATE="dat_pbs@.service"
+
+unit_name_for_venue() {
+  local venue="$1"
+  if command -v systemd-escape >/dev/null 2>&1; then
+    systemd-escape --template "$UNIT_TEMPLATE" "$venue"
+  else
+    echo "${UNIT_TEMPLATE/@.service/@${venue}.service}"
+  fi
+}
+
 stop_one() {
   local venue="$1"
-  local name="dat_pbs_${venue}"
+  local unit_name
+  unit_name="$(unit_name_for_venue "$venue")"
 
-  echo "[INFO] Deleting ${name} (namespace: ${NAMESPACE})"
-  if "${PM2[@]}" delete "$name" --namespace "$NAMESPACE"; then
-    echo "[INFO] Deleted ${name}"
+  echo "[INFO] Stopping ${unit_name}"
+  if "${SYSTEMCTL[@]}" stop "$unit_name" >/dev/null 2>&1; then
+    "${SYSTEMCTL[@]}" reset-failed "$unit_name" >/dev/null 2>&1 || true
+    echo "[INFO] Stopped ${unit_name}"
   else
-    echo "[WARN] ${name} not found in namespace ${NAMESPACE}"
+    echo "[WARN] ${unit_name} not found or already stopped"
   fi
 }
 
@@ -154,5 +175,4 @@ done
 
 echo ""
 echo "[INFO] Stopped venues: ${VENUES[*]}"
-echo "Namespace: ${NAMESPACE}"
-echo "To view remaining processes: ${PM2[*]} status --namespace ${NAMESPACE}"
+echo "To view remaining services: systemctl --user status dat_pbs@<venue>.service"

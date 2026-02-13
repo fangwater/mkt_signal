@@ -22,7 +22,7 @@ Examples:
 
 Notes:
   - Exchange is selected at runtime via start_dat_pbs.sh --exchange <exchange>
-  - This deploy variant is for the dat_pbs channel namespace.
+  - This deploy variant is for dat_pbs systemd user services.
 EOF
 }
 
@@ -73,7 +73,7 @@ chmod +x "$TARGET_DIR/$BIN_NAME"
 
 # 同步启动/停止脚本到 scripts/
 SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
-SCRIPTS_TO_SYNC=("start_dat_pbs.sh" "stop_dat_pbs.sh")
+SCRIPTS_TO_SYNC=("start_dat_pbs.sh" "stop_dat_pbs.sh" "setup_journald_retention.sh")
 mkdir -p "$TARGET_DIR/scripts"
 for script in "${SCRIPTS_TO_SYNC[@]}"; do
   if [[ -f "$SCRIPT_DIR_SRC/$script" ]]; then
@@ -93,4 +93,3 @@ fi
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"
 echo "[INFO] 启动示例: cd $TARGET_DIR && ./scripts/start_dat_pbs.sh --exchange binance"
-
