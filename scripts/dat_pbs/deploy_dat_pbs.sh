@@ -8,17 +8,14 @@ BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 usage() {
   cat <<'EOF'
 Usage:
-  deploy_dat_pbs.sh [trade|test] [--dir <path>]
+  deploy_dat_pbs.sh [--dir <path>]
 
 Defaults:
-  trade -> $HOME/dat_pbs
-  test  -> $HOME/dat_pbs_test
+  --dir not set -> $HOME/dat_pbs
 
 Examples:
   bash scripts/dat_pbs/deploy_dat_pbs.sh
-  bash scripts/dat_pbs/deploy_dat_pbs.sh trade
-  bash scripts/dat_pbs/deploy_dat_pbs.sh test
-  bash scripts/dat_pbs/deploy_dat_pbs.sh trade --dir "$HOME/dat_pbs"
+  bash scripts/dat_pbs/deploy_dat_pbs.sh --dir "$HOME/dat_pbs"
 
 Notes:
   - Exchange is selected at runtime via scripts/dat_pbs/start_dat_pbs.sh --exchange <exchange>
@@ -27,14 +24,9 @@ EOF
 }
 
 # 参数解析
-ENV_TYPE="trade"
 TARGET_DIR=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    trade|test)
-      ENV_TYPE="$1"
-      shift
-      ;;
     --dir)
       TARGET_DIR="${2:-}"
       if [[ -z "$TARGET_DIR" ]]; then
@@ -57,10 +49,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$TARGET_DIR" ]]; then
-  case "$ENV_TYPE" in
-    trade) TARGET_DIR="$HOME/dat_pbs" ;;
-    test) TARGET_DIR="$HOME/dat_pbs_test" ;;
-  esac
+  TARGET_DIR="$HOME/dat_pbs"
 fi
 
 echo "[INFO] 构建 $BIN_NAME (release)"
