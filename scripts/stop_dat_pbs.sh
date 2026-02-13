@@ -22,8 +22,9 @@ Notes:
       bybit   -> bybit-futures bybit-margin
       bitget  -> bitget-futures bitget-margin
       gate    -> gate-futures gate-margin
-  - Stops systemd user services:
-      dat_pbs@<venue>.service
+  - Stops pmdaemon process names:
+      dat_pbs_<venue>
+  - --namespace is accepted for backward compatibility, but ignored.
 USAGE
 }
 
@@ -54,7 +55,8 @@ default_venues_for_exchange() {
   esac
 }
 
-SYSTEMCTL=(systemctl --user)
+PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
+PMDAEMON=("$PMDAEMON_BIN")
 
 EXCHANGE=""
 VENUES=()
@@ -69,7 +71,7 @@ while [[ $# -gt 0 ]]; do
         usage >&2
         exit 1
       fi
-      echo "[WARN] --namespace is ignored for dat_pbs (using unit dat_pbs@<venue>.service)"
+      echo "[WARN] --namespace is ignored for dat_pbs (using process dat_pbs_<venue>)"
       shift 2
       ;;
     --exchange)
@@ -132,39 +134,21 @@ if [[ ${#VENUES[@]} -eq 0 ]]; then
   exit 1
 fi
 
-if ! command -v systemctl >/dev/null 2>&1; then
-  echo "[ERROR] systemctl not found" >&2
+if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
+  echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2
+  echo "[HINT] install with: cargo install pmdaemon" >&2
   exit 1
 fi
-
-if ! "${SYSTEMCTL[@]}" show-environment >/dev/null 2>&1; then
-  echo "[ERROR] systemd --user is not available for current session" >&2
-  echo "[HINT] For server usage, run once: sudo loginctl enable-linger $(whoami)" >&2
-  exit 1
-fi
-
-UNIT_TEMPLATE="dat_pbs@.service"
-
-unit_name_for_venue() {
-  local venue="$1"
-  if command -v systemd-escape >/dev/null 2>&1; then
-    systemd-escape --template "$UNIT_TEMPLATE" "$venue"
-  else
-    echo "${UNIT_TEMPLATE/@.service/@${venue}.service}"
-  fi
-}
 
 stop_one() {
   local venue="$1"
-  local unit_name
-  unit_name="$(unit_name_for_venue "$venue")"
+  local name="dat_pbs_${venue}"
 
-  echo "[INFO] Stopping ${unit_name}"
-  if "${SYSTEMCTL[@]}" stop "$unit_name" >/dev/null 2>&1; then
-    "${SYSTEMCTL[@]}" reset-failed "$unit_name" >/dev/null 2>&1 || true
-    echo "[INFO] Stopped ${unit_name}"
+  echo "[INFO] Stopping ${name}"
+  if "${PMDAEMON[@]}" delete "$name" >/dev/null 2>&1; then
+    echo "[INFO] Stopped ${name}"
   else
-    echo "[WARN] ${unit_name} not found or already stopped"
+    echo "[WARN] ${name} not found"
   fi
 }
 
@@ -175,4 +159,4 @@ done
 
 echo ""
 echo "[INFO] Stopped venues: ${VENUES[*]}"
-echo "To view remaining services: systemctl --user status dat_pbs@<venue>.service"
+echo "To view remaining processes: ${PMDAEMON[*]} list"

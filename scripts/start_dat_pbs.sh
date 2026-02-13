@@ -22,11 +22,9 @@ Notes:
       bybit   -> bybit-futures bybit-margin
       bitget  -> bitget-futures bitget-margin
       gate    -> gate-futures gate-margin
-  - Runs as systemd user services:
-      dat_pbs@<venue>.service
-  - Optional env files:
-      config/dat_pbs.env
-      config/dat_pbs-<venue>.env
+  - Runs with pmdaemon process names:
+      dat_pbs_<venue>
+  - --namespace is accepted for backward compatibility, but ignored.
 USAGE
 }
 
@@ -57,8 +55,8 @@ default_venues_for_exchange() {
   esac
 }
 
-SYSTEMCTL=(systemctl --user)
-UNIT_DIR="${SYSTEMD_USER_UNIT_DIR:-$HOME/.config/systemd/user}"
+PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
+PMDAEMON=("$PMDAEMON_BIN")
 
 EXCHANGE=""
 VENUES=()
@@ -73,7 +71,7 @@ while [[ $# -gt 0 ]]; do
         usage >&2
         exit 1
       fi
-      echo "[WARN] --namespace is ignored for dat_pbs (using unit dat_pbs@<venue>.service)"
+      echo "[WARN] --namespace is ignored for dat_pbs (using process dat_pbs_<venue>)"
       shift 2
       ;;
     --exchange)
@@ -136,14 +134,9 @@ if [[ ${#VENUES[@]} -eq 0 ]]; then
   exit 1
 fi
 
-if ! command -v systemctl >/dev/null 2>&1; then
-  echo "[ERROR] systemctl not found" >&2
-  exit 1
-fi
-
-if ! "${SYSTEMCTL[@]}" show-environment >/dev/null 2>&1; then
-  echo "[ERROR] systemd --user is not available for current session" >&2
-  echo "[HINT] For server usage, run once: sudo loginctl enable-linger $(whoami)" >&2
+if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
+  echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2
+  echo "[HINT] install with: cargo install pmdaemon" >&2
   exit 1
 fi
 
@@ -169,66 +162,53 @@ if [[ -z "$BIN_PATH" ]]; then
   exit 1
 fi
 
-UNIT_TEMPLATE="dat_pbs@.service"
-UNIT_PATH="${UNIT_DIR}/${UNIT_TEMPLATE}"
-RUST_LOG_DEFAULT="${RUST_LOG:-info}"
-
-install_or_update_unit_template() {
-  mkdir -p "$UNIT_DIR"
-
-  local tmp_path="${UNIT_PATH}.tmp"
-  cat >"$tmp_path" <<EOF
-[Unit]
-Description=dat_pbs instance (%i)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=${BASE_DIR}
-ExecStart=${BIN_PATH} --venue %i
-Restart=always
-RestartSec=2
-Environment=RUST_LOG=${RUST_LOG_DEFAULT}
-EnvironmentFile=-${BASE_DIR}/config/dat_pbs.env
-EnvironmentFile=-${BASE_DIR}/config/dat_pbs-%i.env
-KillSignal=SIGINT
-TimeoutStopSec=15
-LimitNOFILE=1048576
-
-[Install]
-WantedBy=default.target
-EOF
-
-  if [[ ! -f "$UNIT_PATH" ]] || ! cmp -s "$tmp_path" "$UNIT_PATH"; then
-    mv "$tmp_path" "$UNIT_PATH"
-    echo "[INFO] Updated unit template: $UNIT_PATH"
-  else
-    rm -f "$tmp_path"
+TMP_FILES=()
+cleanup_tmp_files() {
+  if [[ ${#TMP_FILES[@]} -gt 0 ]]; then
+    rm -f "${TMP_FILES[@]}" >/dev/null 2>&1 || true
   fi
-
-  "${SYSTEMCTL[@]}" daemon-reload
 }
+trap cleanup_tmp_files EXIT
 
-unit_name_for_venue() {
-  local venue="$1"
-  if command -v systemd-escape >/dev/null 2>&1; then
-    systemd-escape --template "$UNIT_TEMPLATE" "$venue"
-  else
-    echo "${UNIT_TEMPLATE/@.service/@${venue}.service}"
-  fi
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
 start_one() {
   local venue="$1"
-  local unit_name
-  unit_name="$(unit_name_for_venue "$venue")"
+  local name="dat_pbs_${venue}"
+  local rust_log="${RUST_LOG:-info}"
+  local cfg_file
+  cfg_file="$(mktemp)"
+  TMP_FILES+=("$cfg_file")
 
-  echo "[INFO] Restarting ${unit_name}"
-  "${SYSTEMCTL[@]}" restart "$unit_name"
+  local json_name json_bin json_base json_venue json_rust_log
+  json_name="$(json_escape "$name")"
+  json_bin="$(json_escape "$BIN_PATH")"
+  json_base="$(json_escape "$BASE_DIR")"
+  json_venue="$(json_escape "$venue")"
+  json_rust_log="$(json_escape "$rust_log")"
+
+  cat >"$cfg_file" <<EOF
+{
+  "apps": [
+    {
+      "name": "${json_name}",
+      "script": "${json_bin}",
+      "args": ["--venue", "${json_venue}"],
+      "cwd": "${json_base}",
+      "env": {
+        "RUST_LOG": "${json_rust_log}"
+      }
+    }
+  ]
 }
+EOF
 
-install_or_update_unit_template
+  echo "[INFO] Restarting ${name}"
+  "${PMDAEMON[@]}" delete "$name" >/dev/null 2>&1 || true
+  "${PMDAEMON[@]}" --config "$cfg_file" start --name "$name"
+}
 
 for venue in "${VENUES[@]}"; do
   start_one "$venue"
@@ -237,6 +217,5 @@ done
 
 echo ""
 echo "[INFO] Started venues: ${VENUES[*]}"
-echo "Template: ${UNIT_TEMPLATE}"
-echo "Logs: journalctl --user -u dat_pbs@<venue>.service -f"
-echo "Status: systemctl --user status dat_pbs@<venue>.service"
+echo "Logs: ${PMDAEMON[*]} logs dat_pbs_<venue> --follow"
+echo "Status: ${PMDAEMON[*]} list"
