@@ -5,9 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
   cat <<'EOF2'
-用法: scripts/deploy_fr_config_server.sh [trade|test]
+用法: scripts/deploy_fr_config_server.sh --env-name <exchange>_fr_<suffix>
                                        [--exchange <binance|okex|gate|bybit|bitget>]
-                                       [--env-name <exchange>_fr_trade]
                                        [--target <path>]
                                        [--bind 0.0.0.0] [--port <default>]
                                        [--nginx-prefix /fr/<env-name>/config]
@@ -16,15 +15,16 @@ usage() {
                                        [--apply-nginx]
 
 说明:
-  - 部署 fr_config_server 到 $HOME/<exchange>_fr_<trade|test>/（或 --env-name / --target）。
-  - exchange 可省略，会从 --env-name 或当前目录名推断（如 binance_fr_trade）。
+  - 不再支持 trade/test 位置参数；统一通过 --env-name 指定部署环境。
+  - 部署 fr_config_server 到 $HOME/<env-name>/（或 --target）。
+  - exchange 可省略，会从 --env-name 推断（如 binance_fr_hf01 -> binance）。
   - 默认端口按交易所分配（okex=18011 gate=18021 binance=18031 bybit=18041 bitget=18051）。
   - 可选写入 nginx mapping（/fr/<env-name>/config）。
   - env-name/目标目录名必须匹配 <exchange>_fr_<suffix>（例如 binance_fr_trade / binance_fr_hf01）。
 
 示例:
-  scripts/deploy_fr_config_server.sh --exchange okex
-  scripts/deploy_fr_config_server.sh trade --exchange binance --apply-nginx
+  scripts/deploy_fr_config_server.sh --env-name okex_fr_hf01
+  scripts/deploy_fr_config_server.sh --env-name binance_fr_hf01 --exchange binance --apply-nginx
   scripts/deploy_fr_config_server.sh --env-name okex_fr_trade --port 18011
 EOF2
 }
@@ -34,7 +34,6 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-ENV_TYPE="trade"
 EXCHANGE=""
 ENV_NAME=""
 TARGET_DIR=""
@@ -84,12 +83,6 @@ infer_exchange_from_env_name() {
   if [[ "$name" =~ ^([a-z0-9]+)[-_]fr([_-].*)?$ ]]; then
     echo "${BASH_REMATCH[1]}"
   fi
-}
-
-infer_exchange_from_cwd() {
-  local name
-  name="$(basename "$(pwd)")"
-  infer_exchange_from_env_name "$name"
 }
 
 upsert_main_nginx_mapping() {
@@ -172,10 +165,6 @@ upsert_main_nginx_mapping() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    trade|test)
-      ENV_TYPE="$1"
-      shift
-      ;;
     --exchange)
       EXCHANGE="${2:-}"
       shift 2
@@ -224,36 +213,28 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -z "$ENV_NAME" ]]; then
+  echo "[ERROR] 需要使用 --env-name 指定部署环境名（例如 okex_fr_hf01）" >&2
+  usage
+  exit 1
+fi
+
+ENV_NAME="$(normalize_env_name "$ENV_NAME")"
+
 if [[ -z "$EXCHANGE" ]]; then
-  if [[ -n "$ENV_NAME" ]]; then
-    EXCHANGE="$(infer_exchange_from_env_name "$ENV_NAME")"
-  else
-    EXCHANGE="$(infer_exchange_from_cwd)"
-  fi
+  EXCHANGE="$(infer_exchange_from_env_name "$ENV_NAME")"
 fi
 
 EXCHANGE="$(normalize_exchange "$EXCHANGE")"
 if [[ -z "$EXCHANGE" ]]; then
-  echo "[ERROR] 需要使用 --exchange 指定交易所（例如 okex / binance / bybit ...）" >&2
+  echo "[ERROR] 无法从 --env-name 推断 exchange，请显式传 --exchange" >&2
   usage
   exit 1
 fi
 
 if [[ -z "$TARGET_DIR" ]]; then
-  if [[ -n "$ENV_NAME" ]]; then
-    ENV_NAME="$(normalize_env_name "$ENV_NAME")"
-    TARGET_DIR="$HOME/${ENV_NAME}"
-  else
-    TARGET_DIR="$HOME/${EXCHANGE}_fr_${ENV_TYPE}"
-  fi
+  TARGET_DIR="$HOME/${ENV_NAME}"
 fi
-
-if [[ -z "$ENV_NAME" ]]; then
-  ENV_NAME="$(basename "$TARGET_DIR")"
-else
-  ENV_NAME="$(normalize_env_name "$ENV_NAME")"
-fi
-ENV_NAME="$(normalize_env_name "$ENV_NAME")"
 if [[ -n "$TARGET_DIR" ]]; then
   target_base="$(basename "$TARGET_DIR")"
   target_base="$(normalize_env_name "$target_base")"
