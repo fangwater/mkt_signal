@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN_NAME="rolling_metrics"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/deploy_rolling_metrics.sh --open-venue <venue> --hedge-venue <venue> [--dir <path>]
+  scripts/rolling_metrics/deploy_rolling_metrics.sh --open-venue <venue> --hedge-venue <venue> [--dir <path>]
 
 Description:
   - Build rolling_metrics and deploy to:
       $HOME/rolling_metrics/<open-venue>-<hedge-venue>
     (or to --dir if specified)
   - Process management uses pmdaemon via:
-      ./scripts/start_rolling_metrics.sh
-      ./scripts/stop_rolling_metrics.sh
+      ./scripts/rolling_metrics/start_rolling_metrics.sh
+      ./scripts/rolling_metrics/stop_rolling_metrics.sh
   - Unified scripts layout: deploy dir contains `scripts/` only
     (no split between xarb_scripts/fr scripts for rolling_metrics).
 
 Examples:
-  scripts/deploy_rolling_metrics.sh --open-venue binance-margin --hedge-venue binance-futures
-  scripts/deploy_rolling_metrics.sh --open-venue okex-futures --hedge-venue binance-futures
-  scripts/deploy_rolling_metrics.sh --open-venue okex-futures --hedge-venue binance-futures --dir "$HOME/rolling_metrics/okex-futures-binance-futures"
+  scripts/rolling_metrics/deploy_rolling_metrics.sh --open-venue binance-margin --hedge-venue binance-futures
+  scripts/rolling_metrics/deploy_rolling_metrics.sh --open-venue okex-futures --hedge-venue binance-futures
+  scripts/rolling_metrics/deploy_rolling_metrics.sh --open-venue okex-futures --hedge-venue binance-futures --dir "$HOME/rolling_metrics/okex-futures-binance-futures"
 EOF
 }
 
@@ -97,12 +97,12 @@ mkdir -p "$TARGET_DIR"
 mkdir -p "$TARGET_DIR/scripts"
 
 SYNC_FILES=(
-  "scripts/deploy_rolling_metrics.sh"
-  "scripts/start_rolling_metrics.sh"
-  "scripts/stop_rolling_metrics.sh"
-  "scripts/print_fr_rolling_metrics_thresholds.py"
-  "scripts/print_fr_rolling_metrics_params.py"
-  "scripts/sync_fr_rolling_metrics_params.py"
+  "scripts/rolling_metrics/deploy_rolling_metrics.sh"
+  "scripts/rolling_metrics/start_rolling_metrics.sh"
+  "scripts/rolling_metrics/stop_rolling_metrics.sh"
+  "scripts/rolling_metrics/print_rolling_metrics_thresholds.py"
+  "scripts/rolling_metrics/print_rolling_metrics_params.py"
+  "scripts/rolling_metrics/sync_rolling_metrics_params.py"
   "docs/rolling_metrics_migration.md"
 )
 
@@ -125,6 +125,6 @@ mv -f "$tmp_bin" "$TARGET_DIR/$BIN_NAME"
 
 echo "[INFO] deploy finished: $TARGET_DIR"
 echo "[INFO] venues: open=${OPEN_VENUE} hedge=${HEDGE_VENUE}"
-echo "[INFO] start: cd $TARGET_DIR && ./scripts/start_rolling_metrics.sh"
-echo "[INFO] stop:  cd $TARGET_DIR && ./scripts/stop_rolling_metrics.sh"
+echo "[INFO] start: cd $TARGET_DIR && ./scripts/rolling_metrics/start_rolling_metrics.sh"
+echo "[INFO] stop:  cd $TARGET_DIR && ./scripts/rolling_metrics/stop_rolling_metrics.sh"
 echo "[INFO] logs:  pmdaemon logs rolling_metrics_<open>_<hedge> --follow"

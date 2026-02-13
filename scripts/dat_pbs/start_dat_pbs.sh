@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+BASE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 usage() {
   cat <<'USAGE'
@@ -10,10 +10,10 @@ Usage:
   start_dat_pbs.sh (--exchange <exchange> | <exchange> | <venue...>)
 
 Examples:
-  ./scripts/start_dat_pbs.sh --exchange binance
-  ./scripts/start_dat_pbs.sh okex
-  ./scripts/start_dat_pbs.sh binance-futures
-  ./scripts/start_dat_pbs.sh binance-futures binance-margin
+  ./scripts/dat_pbs/start_dat_pbs.sh --exchange binance
+  ./scripts/dat_pbs/start_dat_pbs.sh okex
+  ./scripts/dat_pbs/start_dat_pbs.sh binance-futures
+  ./scripts/dat_pbs/start_dat_pbs.sh binance-futures binance-margin
 
 Notes:
   - Exchange expands to default venues:
@@ -130,10 +130,6 @@ if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1;
 fi
 
 BIN_CANDIDATES=(
-  "${SCRIPT_DIR}/dat_pbs"
-  "${SCRIPT_DIR}/target/release/dat_pbs"
-  "${SCRIPT_DIR}/../dat_pbs"
-  "${SCRIPT_DIR}/../target/release/dat_pbs"
   "${BASE_DIR}/dat_pbs"
   "${BASE_DIR}/target/release/dat_pbs"
 )

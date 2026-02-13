@@ -8,8 +8,8 @@
   - JSON：结构化输出 general / factors，便于进一步处理。
 
 示例：
-  python scripts/print_fr_rolling_metrics_params.py --open-venue binance-margin --hedge-venue binance-futures
-  python scripts/print_fr_rolling_metrics_params.py --open-venue okex-margin --hedge-venue okex-futures --prefix bidask_
+  python scripts/rolling_metrics/print_rolling_metrics_params.py --open-venue binance-margin --hedge-venue binance-futures
+  python scripts/rolling_metrics/print_rolling_metrics_params.py --open-venue okex-margin --hedge-venue okex-futures --prefix bidask_
   # 也可不带参数，脚本会基于当前目录名推断（形如 binance-margin-binance-futures）
 """
 

@@ -19,10 +19,10 @@
     }
 
 示例：
-  python scripts/sync_fr_rolling_metrics_params.py --open-venue binance-margin --hedge-venue binance-futures
-  python scripts/sync_fr_rolling_metrics_params.py --open-venue okex-margin --hedge-venue okex-futures
-  python scripts/sync_fr_rolling_metrics_params.py --open-venue binance-margin --hedge-venue binance-futures --max-length 200000
-  python scripts/sync_fr_rolling_metrics_params.py --open-venue okex-margin --hedge-venue okex-futures --factors-json '
+  python scripts/rolling_metrics/sync_rolling_metrics_params.py --open-venue binance-margin --hedge-venue binance-futures
+  python scripts/rolling_metrics/sync_rolling_metrics_params.py --open-venue okex-margin --hedge-venue okex-futures
+  python scripts/rolling_metrics/sync_rolling_metrics_params.py --open-venue binance-margin --hedge-venue binance-futures --max-length 200000
+  python scripts/rolling_metrics/sync_rolling_metrics_params.py --open-venue okex-margin --hedge-venue okex-futures --factors-json '
     {"bidask":{"resample_interval_ms":1000,"rolling_window":100000,
     "min_periods":90000,"quantiles":[5,70]}}'
   # 也可不带参数，脚本会基于当前目录名推断（形如 binance-margin-binance-futures）
@@ -266,7 +266,7 @@ def main() -> int:
         print(f"已删除旧字段：{', '.join(deprecated)}")
     print(f"\n💡 下一步：")
     print(
-        "  - 查看配置: python scripts/print_fr_rolling_metrics_params.py "
+        "  - 查看配置: python scripts/rolling_metrics/print_rolling_metrics_params.py "
         f"--open-venue {open_venue} --hedge-venue {hedge_venue}"
     )
     print(

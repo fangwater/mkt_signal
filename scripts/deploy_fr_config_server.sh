@@ -281,7 +281,7 @@ FILES=(
   "scripts/start_fr_config_server.sh"
   "scripts/stop_fr_config_server.sh"
   "scripts/sync_fr_risk_params.py"
-  "scripts/sync_fr_rolling_metrics_params.py"
+  "scripts/rolling_metrics/sync_rolling_metrics_params.py"
   "scripts/sync_funding_rate_thresholds.py"
   "scripts/sync_fr_symbol_lists.py"
   "scripts/sync_fr_strategy_params.py"

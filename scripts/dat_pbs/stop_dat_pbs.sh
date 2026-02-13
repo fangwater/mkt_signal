@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+BASE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 usage() {
   cat <<'USAGE'
@@ -10,10 +10,10 @@ Usage:
   stop_dat_pbs.sh (--exchange <exchange> | <exchange> | <venue...>)
 
 Examples:
-  ./scripts/stop_dat_pbs.sh --exchange binance
-  ./scripts/stop_dat_pbs.sh okex
-  ./scripts/stop_dat_pbs.sh binance-futures
-  ./scripts/stop_dat_pbs.sh binance-futures binance-margin
+  ./scripts/dat_pbs/stop_dat_pbs.sh --exchange binance
+  ./scripts/dat_pbs/stop_dat_pbs.sh okex
+  ./scripts/dat_pbs/stop_dat_pbs.sh binance-futures
+  ./scripts/dat_pbs/stop_dat_pbs.sh binance-futures binance-margin
 
 Notes:
   - Exchange expands to default venues:

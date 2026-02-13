@@ -40,10 +40,10 @@ python3 -m pip install --user redis
 unset PM2_NAMESPACE
 
 cd ~/crypto_mkt/mkt_signal
-bash scripts/deploy_dat_pbs.sh
+bash scripts/dat_pbs/deploy_dat_pbs.sh
 
 cd ~/dat_pbs
-./scripts/start_dat_pbs.sh --exchange binance
+./scripts/dat_pbs/start_dat_pbs.sh --exchange binance
 ```
 
 检查：
@@ -300,7 +300,7 @@ cd ~/depth_pub
 ./scripts/stop_depth_pub.sh --exchange binance
 
 cd ~/dat_pbs
-./scripts/stop_dat_pbs.sh --exchange binance
+./scripts/dat_pbs/stop_dat_pbs.sh --exchange binance
 ```
 
 ---

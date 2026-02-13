@@ -34,6 +34,13 @@ EXCHANGE_DEFAULTS = {
     "gate": ("gate-margin", "gate-futures"),
 }
 
+ROLLING_METRICS_SCRIPT_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "rolling_metrics",
+)
+if os.path.isdir(ROLLING_METRICS_SCRIPT_DIR):
+    sys.path.insert(0, ROLLING_METRICS_SCRIPT_DIR)
+
 
 def infer_dir_prefix_from_cwd() -> Optional[str]:
     name = os.path.basename(os.getcwd()).strip().lower()
@@ -76,7 +83,7 @@ except Exception:
     FUNDING_THRESHOLD_ORDER = []
 
 try:
-    import sync_fr_rolling_metrics_params as rolling_defaults
+    import sync_rolling_metrics_params as rolling_defaults
 
     DEFAULT_ROLLING_PARAMS = dict(rolling_defaults.DEFAULTS)
 except Exception:
