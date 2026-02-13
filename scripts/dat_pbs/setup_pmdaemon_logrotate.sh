@@ -7,7 +7,7 @@ set -euo pipefail
 #   - retention: 3 days
 #
 # Covered paths:
-#   - /home/*/.pmdaemon/logs/*.log
+#   - /home/<user>/.pmdaemon/logs/*.log  (user resolved from SUDO_USER/USER or PMDAEMON_LOG_USER)
 #   - /root/.pmdaemon/logs/*.log
 #
 # Usage:
@@ -20,6 +20,8 @@ MAX_SIZE="500M"
 RETENTION_DAYS="3"
 DRY_RUN="0"
 FORCE_ROTATE="0"
+LOG_USER="${PMDAEMON_LOG_USER:-${SUDO_USER:-${USER:-root}}}"
+LOG_GROUP="${PMDAEMON_LOG_GROUP:-}"
 
 usage() {
   cat <<'USAGE'
@@ -71,10 +73,41 @@ if [[ "$EUID" -ne 0 ]]; then
   exit 1
 fi
 
+if ! id "$LOG_USER" >/dev/null 2>&1; then
+  echo "[ERROR] logrotate user not found: ${LOG_USER}" >&2
+  echo "[HINT] set PMDAEMON_LOG_USER=<linux_user> and rerun" >&2
+  exit 1
+fi
+
+if [[ -z "$LOG_GROUP" ]]; then
+  LOG_GROUP="$(id -gn "$LOG_USER")"
+fi
+
+USER_HOME="$(eval echo "~${LOG_USER}")"
+if [[ -z "$USER_HOME" || ! -d "$USER_HOME" ]]; then
+  echo "[ERROR] cannot resolve home directory for user: ${LOG_USER}" >&2
+  exit 1
+fi
+
 mkdir -p "$(dirname "$CONFIG_FILE")"
 
 cat >"$CONFIG_FILE" <<EOF
-/home/*/.pmdaemon/logs/*.log /root/.pmdaemon/logs/*.log {
+${USER_HOME}/.pmdaemon/logs/*.log {
+    su ${LOG_USER} ${LOG_GROUP}
+    daily
+    maxsize ${MAX_SIZE}
+    rotate ${RETENTION_DAYS}
+    maxage ${RETENTION_DAYS}
+    missingok
+    notifempty
+    compress
+    delaycompress
+    dateext
+    copytruncate
+}
+
+/root/.pmdaemon/logs/*.log {
+    su root root
     daily
     maxsize ${MAX_SIZE}
     rotate ${RETENTION_DAYS}
@@ -90,6 +123,7 @@ EOF
 
 echo "[INFO] Wrote ${CONFIG_FILE}"
 echo "[INFO] Policy: maxsize=${MAX_SIZE}, retention=${RETENTION_DAYS} day(s)"
+echo "[INFO] User logs: ${USER_HOME}/.pmdaemon/logs/*.log (su ${LOG_USER}:${LOG_GROUP})"
 
 if ! command -v logrotate >/dev/null 2>&1; then
   echo "[WARN] logrotate command not found. Install it, then validate with:"
