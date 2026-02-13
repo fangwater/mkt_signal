@@ -24,7 +24,6 @@ Notes:
       gate    -> gate-futures gate-margin
   - Runs with pmdaemon process names:
       dat_pbs_<venue>
-  - --namespace is accepted for backward compatibility, but ignored.
 USAGE
 }
 
@@ -64,16 +63,6 @@ POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --namespace)
-      # Backward compatibility: namespace is no longer used for dat_pbs.
-      if [[ -z "${2:-}" ]]; then
-        echo "[ERROR] --namespace 需要一个值" >&2
-        usage >&2
-        exit 1
-      fi
-      echo "[WARN] --namespace is ignored for dat_pbs (using process dat_pbs_<venue>)"
-      shift 2
-      ;;
     --exchange)
       EXCHANGE="${2:-}"
       if [[ -z "$EXCHANGE" ]]; then
