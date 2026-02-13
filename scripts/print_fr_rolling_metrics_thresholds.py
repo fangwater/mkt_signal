@@ -17,7 +17,7 @@ Outputs
 示例：
   python scripts/print_fr_rolling_metrics_thresholds.py --open-venue binance-margin --hedge-venue binance-futures
   python scripts/print_fr_rolling_metrics_thresholds.py --open-venue okex-margin --hedge-venue okex-futures --symbol BTCUSDT
-  # 也可不带参数，脚本会基于当前目录名推断 exchange（形如 okex_fr_trade -> okex-margin/okex-futures）
+  # 也可不带参数，脚本会基于当前目录名推断（形如 binance-margin-binance-futures）
 """
 
 from __future__ import annotations
@@ -25,19 +25,13 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-EXCHANGE_DEFAULTS = {
-    "binance": ("binance-margin", "binance-futures"),
-    "okex": ("okex-margin", "okex-futures"),
-    "bybit": ("bybit-margin", "bybit-futures"),
-    "bitget": ("bitget-margin", "bitget-futures"),
-    "gate": ("gate-margin", "gate-futures"),
-}
+VENUE_RE = r"[a-z0-9]+-(?:margin|futures|spot|swap|perp|perpetual)"
 
 
 def try_import_redis():
@@ -51,14 +45,10 @@ def try_import_redis():
 
 def infer_venues_from_cwd() -> Optional[Tuple[str, str]]:
     name = Path.cwd().name.lower()
-    candidates = [name]
-    if "_" in name:
-        candidates.append(name.split("_", 1)[0])
-    for cand in candidates:
-        for ex, pair in EXCHANGE_DEFAULTS.items():
-            if cand.startswith(ex):
-                return pair
-    return None
+    matched = re.fullmatch(rf"({VENUE_RE})[-_]({VENUE_RE})", name)
+    if not matched:
+        return None
+    return matched.group(1), matched.group(2)
 
 
 def parse_args() -> argparse.Namespace:
@@ -108,7 +98,7 @@ def parse_args() -> argparse.Namespace:
                 file=sys.stderr,
             )
     if not open_venue or not hedge_venue:
-        p.error("需要 --open-venue 与 --hedge-venue，或在目录名包含 <exchange> 前缀（如 okex_fr_trade）以自动推断")
+        p.error("需要 --open-venue 与 --hedge-venue，或在目录名使用 <open-venue>-<hedge-venue> 以自动推断")
 
     args.open_venue = open_venue
     args.hedge_venue = hedge_venue
