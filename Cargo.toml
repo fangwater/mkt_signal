@@ -128,6 +128,10 @@ path = "src/bin/pairmm_resample.rs"
 name = "model_pub"
 path = "src/bin/model_pub.rs"
 
+[[bin]]
+name = "fusion_factor_pub"
+path = "src/bin/fusion_factor_pub.rs"
+
 [dependencies]
 local-ip-address = "0.6"
 serde_yaml = "0.9"
@@ -185,7 +189,7 @@ default = []
 version = "0.43.1"
 optional = false
 default-features = false
-features = ["fmt", "lazy", "parquet", "polars-io", "rolling_window"]
+features = ["fmt", "lazy", "parquet", "polars-io", "rolling_window", "rank", "moment", "cov"]
 
 [profile.release]
 debug = 0

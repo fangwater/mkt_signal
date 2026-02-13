@@ -2,6 +2,7 @@
 
 pub mod depth_factor_pub;
 pub mod factor_index;
+pub mod fusion_factor_pub;
 pub mod kline_factor_pub;
 pub mod model_pub;
 pub mod pairmm_resample;

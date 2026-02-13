@@ -1,0 +1,19 @@
+# Fusion factor 发布配置
+
+fusion_factor_pub:
+  data_source:
+    trade_flow_channel: "trade_flow_feature"
+    depth_channel: "depth25"
+
+  # 仅维护并计算这些 symbol（其他 symbol 的 trade_flow/depth 直接丢弃）
+  symbols:
+    - "BTCUSDT"
+    - "ETHUSDT"
+
+  # 启动时按 symbol 拉取有序 factor 列表，并固化到进程内
+  model_manager:
+    base_url: "http://127.0.0.1:6300"
+    model_name: "default_model"
+    # bearer_token: ""
+    # password: ""
+    request_timeout_ms: 5000

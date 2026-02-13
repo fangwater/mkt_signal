@@ -1,0 +1,4968 @@
+//! Fusion Factor 数据通路应用
+//!
+//! 订阅 trade_flow_feature 与 depth 快照，trade_flow 到达时触发融合因子计算。
+//! 当前先落地 factor_118，后续在同一框架上扩展全部因子。
+
+use anyhow::{Context, Result};
+use iceoryx2::port::subscriber::Subscriber;
+use iceoryx2::prelude::*;
+use iceoryx2::service::ipc;
+use log::{info, warn};
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::{Duration, Instant};
+
+use super::cfg::{FusionFactorPubConfig, ModelManagerConfig};
+use super::factor_enum::FusionFactorId;
+use super::window_primitives::{
+    rolling_corr_last, rolling_kurt_last, rolling_mean_last, rolling_mean_last_with_min_periods,
+    rolling_mean_series, rolling_mean_series_opt, rolling_rank_last, rolling_skew_last,
+    rolling_std_last, rolling_sum_last_with_min_periods, rolling_sum_series,
+    rolling_sum_series_opt, tail_skew_last_opt,
+};
+use crate::common::msg_parser::parse_trade_flow_feature;
+use crate::common::symbol_util::normalize_symbol_for_venue;
+use crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg;
+use crate::depth_pub::depth_msg::{DepthMsgType, DEPTH25_MAX_BYTES, DEPTH50_MAX_BYTES};
+use crate::signal::common::TradingVenue;
+
+const TRADE_FLOW_MAX_BYTES: usize = 512;
+const IDLE_SLEEP_MICROS: u64 = 200;
+const STATS_LOG_INTERVAL_SECS: u64 = 60;
+const MAX_SYMBOL_HISTORY: usize = 4096;
+const MAX_DEPTH_LEVELS_CACHE: usize = 20;
+const FACTOR_118_WINDOW: usize = 120;
+const FACTOR_118_VWAP_LEVELS: usize = 5;
+const FIELD_OPEN: usize = 0;
+const FIELD_HIGH: usize = 1;
+const FIELD_LOW: usize = 2;
+const FIELD_CLOSE: usize = 3;
+const FIELD_VOLUME: usize = 4;
+const FIELD_AMOUNT: usize = 5;
+const FIELD_BUY_COUNT: usize = 8;
+const FIELD_SELL_COUNT: usize = 9;
+const FIELD_BUY_AMOUNT: usize = 10;
+const FIELD_SELL_AMOUNT: usize = 11;
+const FIELD_BUY_VOLUME: usize = 12;
+const FIELD_SELL_VOLUME: usize = 13;
+const FIELD_LARGE_ORDER: usize = 14;
+const FIELD_SMALL_ORDER: usize = 16;
+const FIELD_LARGE_BUY: usize = 17;
+const FIELD_LARGE_SELL: usize = 18;
+const FIELD_SMALL_BUY: usize = 21;
+const FIELD_SMALL_SELL: usize = 22;
+const FIELD_VWAP: usize = 23;
+const FIELD_BUY_VWAP: usize = 24;
+const FIELD_SELL_VWAP: usize = 25;
+const FIELD_NET_BUY_AMOUNT: usize = 26;
+const FIELD_NET_BUY_LARGE: usize = 29;
+const FIELD_NET_BUY_SMALL: usize = 31;
+const FACTOR_160_RANDOM_LEVELS: [usize; 10] = [18, 1, 19, 8, 10, 17, 6, 13, 4, 2];
+
+#[derive(Debug, Clone, Copy)]
+enum DepthChannel {
+    Depth25,
+    Depth50,
+}
+
+impl DepthChannel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Depth25 => "depth25",
+            Self::Depth50 => "depth50",
+        }
+    }
+
+    fn from_cfg(value: &str) -> Result<Self> {
+        match value {
+            "depth25" => Ok(Self::Depth25),
+            "depth50" => Ok(Self::Depth50),
+            other => anyhow::bail!("unsupported depth channel: {}", other),
+        }
+    }
+
+    fn expected_msg_type(self) -> u32 {
+        match self {
+            Self::Depth25 => DepthMsgType::Depth25 as u32,
+            Self::Depth50 => DepthMsgType::Depth50 as u32,
+        }
+    }
+
+    fn level_count(self) -> usize {
+        match self {
+            Self::Depth25 => 25,
+            Self::Depth50 => 50,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DepthLevel {
+    price: f64,
+    amount: f64,
+}
+
+#[derive(Debug, Clone)]
+struct DepthSnapshot {
+    timestamp_ms: i64,
+    bids: Vec<DepthLevel>,
+    asks: Vec<DepthLevel>,
+}
+
+#[derive(Default)]
+struct SymbolCalcState {
+    factor_118_mid_price_diffs: VecDeque<f64>,
+    open: VecDeque<f64>,
+    high: VecDeque<f64>,
+    low: VecDeque<f64>,
+    close: VecDeque<f64>,
+    volume: VecDeque<f64>,
+    amount: VecDeque<f64>,
+    buy_count: VecDeque<f64>,
+    sell_count: VecDeque<f64>,
+    buy_amount: VecDeque<f64>,
+    sell_amount: VecDeque<f64>,
+    buy_volume: VecDeque<f64>,
+    sell_volume: VecDeque<f64>,
+    large_order: VecDeque<f64>,
+    large_buy: VecDeque<f64>,
+    large_sell: VecDeque<f64>,
+    small_order: VecDeque<f64>,
+    small_buy: VecDeque<f64>,
+    small_sell: VecDeque<f64>,
+    vwap: VecDeque<f64>,
+    buy_vwap: VecDeque<f64>,
+    sell_vwap: VecDeque<f64>,
+    net_buy_large: VecDeque<f64>,
+    net_buy_small: VecDeque<f64>,
+    net_buy_amount: VecDeque<f64>,
+    bid0v: VecDeque<f64>,
+    mid_price: VecDeque<f64>,
+    spread: VecDeque<f64>,
+    relative_spread: VecDeque<f64>,
+    bid_vwap20: VecDeque<f64>,
+    total_bid20: VecDeque<f64>,
+    total_ask20: VecDeque<f64>,
+    top10_bid_volume: VecDeque<f64>,
+    top10_ask_volume: VecDeque<f64>,
+    top10_bid_mean: VecDeque<f64>,
+    top10_ask_mean: VecDeque<f64>,
+    bid9v: VecDeque<f64>,
+    ask9v: VecDeque<f64>,
+    mean_bid_vol20: VecDeque<f64>,
+    mean_bid_price20: VecDeque<f64>,
+    avg_ask_price5: VecDeque<f64>,
+    ask_pv15_mean: VecDeque<f64>,
+    bid_pv15_mean: VecDeque<f64>,
+    factor_031_ratio: VecDeque<f64>,
+    factor_119_mid_minus_ask_vwap5: VecDeque<f64>,
+    total_volume20_sum: VecDeque<f64>,
+    factor_152_prev_price_diff10: Option<[f64; 10]>,
+    factor_152_pct_mean: VecDeque<Option<f64>>,
+    ask_vwap20: VecDeque<f64>,
+    ask_vwap_diff_5_20: VecDeque<f64>,
+    ask_mean_volume_20: VecDeque<f64>,
+    ask0v: VecDeque<f64>,
+    factor_128_ask_price_sum: VecDeque<f64>,
+    factor_128_diff_sum: VecDeque<Option<f64>>,
+    factor_128_skew: VecDeque<Option<f64>>,
+    factor_160_prev_ratios: Option<[f64; 10]>,
+    factor_160_pct_change_mean: VecDeque<Option<f64>>,
+}
+
+impl SymbolCalcState {
+    fn push_mid_price_diff(&mut self, value: f64) {
+        self.factor_118_mid_price_diffs.push_back(value);
+        if self.factor_118_mid_price_diffs.len() > MAX_SYMBOL_HISTORY {
+            self.factor_118_mid_price_diffs.pop_front();
+        }
+    }
+
+    fn push_trade_flow(&mut self, msg: &TradeFlowFeatureMsg) {
+        push_with_limit(&mut self.open, msg.values[FIELD_OPEN]);
+        push_with_limit(&mut self.high, msg.values[FIELD_HIGH]);
+        push_with_limit(&mut self.low, msg.values[FIELD_LOW]);
+        push_with_limit(&mut self.close, msg.values[FIELD_CLOSE]);
+        push_with_limit(&mut self.volume, msg.values[FIELD_VOLUME]);
+        push_with_limit(&mut self.amount, msg.values[FIELD_AMOUNT]);
+        push_with_limit(&mut self.buy_count, msg.values[FIELD_BUY_COUNT]);
+        push_with_limit(&mut self.sell_count, msg.values[FIELD_SELL_COUNT]);
+        push_with_limit(&mut self.buy_amount, msg.values[FIELD_BUY_AMOUNT]);
+        push_with_limit(&mut self.sell_amount, msg.values[FIELD_SELL_AMOUNT]);
+        push_with_limit(&mut self.buy_volume, msg.values[FIELD_BUY_VOLUME]);
+        push_with_limit(&mut self.sell_volume, msg.values[FIELD_SELL_VOLUME]);
+        push_with_limit(&mut self.large_order, msg.values[FIELD_LARGE_ORDER]);
+        push_with_limit(&mut self.large_buy, msg.values[FIELD_LARGE_BUY]);
+        push_with_limit(&mut self.large_sell, msg.values[FIELD_LARGE_SELL]);
+        push_with_limit(&mut self.small_order, msg.values[FIELD_SMALL_ORDER]);
+        push_with_limit(&mut self.small_buy, msg.values[FIELD_SMALL_BUY]);
+        push_with_limit(&mut self.small_sell, msg.values[FIELD_SMALL_SELL]);
+        push_with_limit(&mut self.vwap, msg.values[FIELD_VWAP]);
+        push_with_limit(&mut self.buy_vwap, msg.values[FIELD_BUY_VWAP]);
+        push_with_limit(&mut self.sell_vwap, msg.values[FIELD_SELL_VWAP]);
+        push_with_limit(&mut self.net_buy_large, msg.values[FIELD_NET_BUY_LARGE]);
+        push_with_limit(&mut self.net_buy_small, msg.values[FIELD_NET_BUY_SMALL]);
+        push_with_limit(&mut self.net_buy_amount, msg.values[FIELD_NET_BUY_AMOUNT]);
+    }
+
+    fn push_depth_metrics(&mut self, depth: &DepthSnapshot) {
+        let (bid0p, bid0v) = depth_best_bid(depth);
+        let (ask0p, ask0v) = depth_best_ask(depth);
+
+        let spread = ask0p - bid0p;
+        let mid = (ask0p + bid0p) / 2.0;
+        push_with_limit(&mut self.bid0v, bid0v);
+        push_with_limit(&mut self.mid_price, mid);
+        push_with_limit(&mut self.spread, spread);
+        let rel_spread = if mid.abs() > 1e-12 {
+            spread / mid
+        } else {
+            f64::NAN
+        };
+        push_with_limit(&mut self.relative_spread, rel_spread);
+
+        let top10_bid = depth_sum_amount(&depth.bids, 10);
+        let top10_ask = depth_sum_amount(&depth.asks, 10);
+        let total_bid20 = depth_sum_amount(&depth.bids, 20);
+        let total_ask20 = depth_sum_amount(&depth.asks, 20);
+        push_with_limit(&mut self.total_bid20, total_bid20);
+        push_with_limit(&mut self.total_ask20, total_ask20);
+        push_with_limit(&mut self.total_volume20_sum, total_bid20 + total_ask20);
+        push_with_limit(&mut self.top10_bid_volume, top10_bid);
+        push_with_limit(&mut self.top10_ask_volume, top10_ask);
+        push_with_limit(&mut self.top10_bid_mean, top10_bid / 10.0);
+        push_with_limit(&mut self.top10_ask_mean, top10_ask / 10.0);
+        push_with_limit(&mut self.bid9v, depth_level_amount(&depth.bids, 9));
+        push_with_limit(&mut self.ask9v, depth_level_amount(&depth.asks, 9));
+        push_with_limit(&mut self.mean_bid_vol20, depth_mean_amount(&depth.bids, 20));
+        push_with_limit(
+            &mut self.mean_bid_price20,
+            depth_mean_price(&depth.bids, 20),
+        );
+        push_with_limit(&mut self.avg_ask_price5, depth_mean_price(&depth.asks, 5));
+        push_with_limit(&mut self.ask_pv15_mean, depth_mean_pxv(&depth.asks, 15));
+        push_with_limit(&mut self.bid_pv15_mean, depth_mean_pxv(&depth.bids, 15));
+        let ratio_031 = {
+            let num = depth_mean_price(&depth.bids, 15);
+            if mid.abs() > 1e-12 {
+                num / mid
+            } else {
+                f64::NAN
+            }
+        };
+        push_with_limit(&mut self.factor_031_ratio, ratio_031);
+
+        let ask_vwap5 = depth_vwap(&depth.asks, 5);
+        let ask_vwap20 = depth_vwap(&depth.asks, 20);
+        let bid_vwap20 = depth_vwap(&depth.bids, 20);
+        push_with_limit(&mut self.bid_vwap20, bid_vwap20.unwrap_or(f64::NAN));
+        let ask_vwap_diff = match (ask_vwap5, ask_vwap20) {
+            (Some(a), Some(b)) => a - b,
+            _ => f64::NAN,
+        };
+        push_with_limit(&mut self.ask_vwap_diff_5_20, ask_vwap_diff);
+        push_with_limit(&mut self.ask_vwap20, ask_vwap20.unwrap_or(f64::NAN));
+        let factor_119_diff = ask_vwap5
+            .map(|v| mid - v)
+            .filter(|v| v.is_finite())
+            .unwrap_or(f64::NAN);
+        push_with_limit(&mut self.factor_119_mid_minus_ask_vwap5, factor_119_diff);
+
+        let ask_mean20 = depth_mean_amount(&depth.asks, 20);
+        push_with_limit(&mut self.ask_mean_volume_20, ask_mean20);
+
+        push_with_limit(&mut self.ask0v, ask0v);
+
+        let ask_price_sum20 = depth_sum_price(&depth.asks, 20);
+        let prev_sum = self.factor_128_ask_price_sum.back().copied();
+        push_with_limit(&mut self.factor_128_ask_price_sum, ask_price_sum20);
+        let curr_diff = prev_sum.map(|prev| ask_price_sum20 - prev).or(Some(0.0));
+        push_opt_with_limit(&mut self.factor_128_diff_sum, curr_diff);
+
+        let diff_vec: Vec<Option<f64>> = self.factor_128_diff_sum.iter().copied().collect();
+        let skew = tail_skew_last_opt(&diff_vec, 90, 30, false).ok().flatten();
+        push_opt_with_limit(&mut self.factor_128_skew, skew);
+
+        let mut curr_ratios = [f64::NAN; 10];
+        for (k, level_idx) in FACTOR_160_RANDOM_LEVELS.iter().enumerate() {
+            let bid = depth_level_amount(&depth.bids, *level_idx);
+            let ask = depth_level_amount(&depth.asks, *level_idx);
+            let den = bid + ask;
+            curr_ratios[k] = if den.abs() > 1e-12 {
+                bid / den
+            } else {
+                f64::NAN
+            };
+        }
+        let pct_change_mean = self.factor_160_prev_ratios.and_then(|prev| {
+            let mut vals = Vec::with_capacity(10);
+            for i in 0..10 {
+                let p = prev[i];
+                let c = curr_ratios[i];
+                if !p.is_finite() || !c.is_finite() || p.abs() <= 1e-12 {
+                    continue;
+                }
+                let v = (c - p) / p;
+                if v.is_finite() {
+                    vals.push(v);
+                }
+            }
+            if vals.is_empty() {
+                None
+            } else {
+                Some(vals.iter().sum::<f64>() / vals.len() as f64)
+            }
+        });
+        self.factor_160_prev_ratios = Some(curr_ratios);
+        push_opt_with_limit(&mut self.factor_160_pct_change_mean, pct_change_mean);
+
+        let mut curr_diff = [f64::NAN; 10];
+        for (i, val) in curr_diff.iter_mut().enumerate() {
+            let bidp = depth_level_price(&depth.bids, i);
+            let askp = depth_level_price(&depth.asks, i);
+            *val = bidp - askp;
+        }
+        let pct_mean = self.factor_152_prev_price_diff10.and_then(|prev| {
+            let mut vals = Vec::with_capacity(10);
+            for i in 0..10 {
+                let p = prev[i];
+                let c = curr_diff[i];
+                if !p.is_finite() || !c.is_finite() || p.abs() <= 1e-12 {
+                    continue;
+                }
+                let v = (c - p) / p;
+                if v.is_finite() {
+                    vals.push(v);
+                }
+            }
+            if vals.is_empty() {
+                None
+            } else {
+                Some(vals.iter().sum::<f64>() / vals.len() as f64)
+            }
+        });
+        self.factor_152_prev_price_diff10 = Some(curr_diff);
+        push_opt_with_limit(&mut self.factor_152_pct_mean, pct_mean);
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SymbolFactorPlan {
+    ordered_factors: Vec<FactorBinding>,
+}
+
+#[derive(Debug, Clone)]
+struct FactorBinding {
+    name: String,
+    factor_id: Option<FusionFactorId>,
+    extra_factor_id: Option<ExtraFactorId>,
+}
+
+#[derive(Default)]
+struct OrderedEvalStats {
+    factor118_ready_count: u64,
+    mapped_unimplemented_count: usize,
+    unknown_name_count: usize,
+}
+
+struct SymbolSeries {
+    open: Vec<f64>,
+    high: Vec<f64>,
+    low: Vec<f64>,
+    close: Vec<f64>,
+    volume: Vec<f64>,
+    amount: Vec<f64>,
+    buy_count: Vec<f64>,
+    sell_count: Vec<f64>,
+    buy_amount: Vec<f64>,
+    sell_amount: Vec<f64>,
+    buy_volume: Vec<f64>,
+    sell_volume: Vec<f64>,
+    large_order: Vec<f64>,
+    large_buy: Vec<f64>,
+    large_sell: Vec<f64>,
+    small_order: Vec<f64>,
+    small_buy: Vec<f64>,
+    small_sell: Vec<f64>,
+    vwap: Vec<f64>,
+    buy_vwap: Vec<f64>,
+    sell_vwap: Vec<f64>,
+    net_buy_large: Vec<f64>,
+    net_buy_small: Vec<f64>,
+    net_buy_amount: Vec<f64>,
+    bid0v: Vec<f64>,
+    mid_price: Vec<f64>,
+    spread: Vec<f64>,
+    relative_spread: Vec<f64>,
+    bid_vwap20: Vec<f64>,
+    total_bid20: Vec<f64>,
+    total_ask20: Vec<f64>,
+    top10_bid_volume: Vec<f64>,
+    top10_ask_volume: Vec<f64>,
+    top10_bid_mean: Vec<f64>,
+    top10_ask_mean: Vec<f64>,
+    bid9v: Vec<f64>,
+    ask9v: Vec<f64>,
+    mean_bid_vol20: Vec<f64>,
+    mean_bid_price20: Vec<f64>,
+    avg_ask_price5: Vec<f64>,
+    ask_pv15_mean: Vec<f64>,
+    bid_pv15_mean: Vec<f64>,
+    factor_031_ratio: Vec<f64>,
+    factor_119_mid_minus_ask_vwap5: Vec<f64>,
+    total_volume20_sum: Vec<f64>,
+    factor_152_pct_mean: Vec<Option<f64>>,
+    ask_vwap_diff_5_20: Vec<f64>,
+    ask_mean_volume_20: Vec<f64>,
+    ask0v: Vec<f64>,
+    ask_vwap20: Vec<f64>,
+    factor_128_skew: Vec<Option<f64>>,
+    factor_160_pct_change_mean: Vec<Option<f64>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExtraFactorId {
+    AvgPrice,
+    BuyAvgPrice,
+    SellAvgPrice,
+    SmallBuy,
+    SmallSell,
+    NetBuyLarge,
+}
+
+impl ExtraFactorId {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "avg_price" => Some(Self::AvgPrice),
+            "buy_avg_price" => Some(Self::BuyAvgPrice),
+            "sell_avg_price" => Some(Self::SellAvgPrice),
+            "small_buy" => Some(Self::SmallBuy),
+            "small_sell" => Some(Self::SmallSell),
+            "net_buy_large" => Some(Self::NetBuyLarge),
+            _ => None,
+        }
+    }
+}
+
+enum DepthSubscriber {
+    Depth25(Subscriber<ipc::Service, [u8; DEPTH25_MAX_BYTES], ()>),
+    Depth50(Subscriber<ipc::Service, [u8; DEPTH50_MAX_BYTES], ()>),
+}
+
+impl DepthSubscriber {
+    fn receive_bytes(&self) -> Result<Option<Vec<u8>>> {
+        match self {
+            Self::Depth25(sub) => Ok(sub.receive()?.map(|sample| sample.payload().to_vec())),
+            Self::Depth50(sub) => Ok(sub.receive()?.map(|sample| sample.payload().to_vec())),
+        }
+    }
+}
+
+pub struct FusionFactorPubApp {
+    venue_slug: String,
+    venue: TradingVenue,
+    depth_channel: DepthChannel,
+    trade_flow_subscriber: Subscriber<ipc::Service, [u8; TRADE_FLOW_MAX_BYTES], ()>,
+    depth_subscriber: DepthSubscriber,
+    allowed_symbols: HashSet<String>,
+    symbol_factor_plans: HashMap<String, SymbolFactorPlan>,
+    latest_depth_by_symbol: HashMap<String, DepthSnapshot>,
+    symbol_states: HashMap<String, SymbolCalcState>,
+    depth_count: u64,
+    trade_flow_count: u64,
+    trigger_count: u64,
+    missing_depth_count: u64,
+    factor_118_ready_count: u64,
+    depth_dropped_symbol_count: u64,
+    trade_flow_dropped_symbol_count: u64,
+    last_stats_log: Instant,
+}
+
+impl FusionFactorPubApp {
+    pub async fn new(config_path: &str, venue: TradingVenue) -> Result<Self> {
+        let cfg = FusionFactorPubConfig::load(config_path)?;
+        let venue_slug = venue.data_pub_slug().to_string();
+        let depth_channel = DepthChannel::from_cfg(cfg.data_source.depth_channel.as_str())?;
+
+        let allowed_symbols: Vec<String> = cfg
+            .symbols
+            .iter()
+            .map(|s| normalize_symbol_for_venue(s, venue))
+            .filter(|s| !s.is_empty())
+            .collect();
+        if allowed_symbols.is_empty() {
+            anyhow::bail!(
+                "no valid symbols after normalization for venue={}",
+                venue_slug
+            );
+        }
+
+        let symbol_factor_plans = load_symbol_factor_plans(&cfg.model_manager, &allowed_symbols)
+            .await
+            .with_context(|| {
+                format!(
+                    "load symbol factor plans failed: model={} symbols={}",
+                    cfg.model_manager.model_name,
+                    allowed_symbols.len()
+                )
+            })?;
+
+        let trade_flow_subscriber =
+            Self::create_trade_flow_subscriber(&venue_slug, &cfg.data_source.trade_flow_channel)?;
+        let depth_subscriber = Self::create_depth_subscriber(&venue_slug, depth_channel)?;
+
+        info!(
+            "FusionFactorPubApp created: venue={} symbols={} trade_flow_channel=factor_pub/{}/{} depth_channel=depth_pubs/{}/{}",
+            venue_slug,
+            allowed_symbols.len(),
+            venue_slug,
+            cfg.data_source.trade_flow_channel,
+            venue_slug,
+            depth_channel.as_str()
+        );
+
+        Ok(Self {
+            venue_slug,
+            venue,
+            depth_channel,
+            trade_flow_subscriber,
+            depth_subscriber,
+            allowed_symbols: allowed_symbols.into_iter().collect(),
+            symbol_factor_plans,
+            latest_depth_by_symbol: HashMap::new(),
+            symbol_states: HashMap::new(),
+            depth_count: 0,
+            trade_flow_count: 0,
+            trigger_count: 0,
+            missing_depth_count: 0,
+            factor_118_ready_count: 0,
+            depth_dropped_symbol_count: 0,
+            trade_flow_dropped_symbol_count: 0,
+            last_stats_log: Instant::now(),
+        })
+    }
+
+    fn create_trade_flow_subscriber(
+        venue: &str,
+        channel: &str,
+    ) -> Result<Subscriber<ipc::Service, [u8; TRADE_FLOW_MAX_BYTES], ()>> {
+        let node_name = format!("fusion_sub_{}_trade_flow", venue.replace('-', "_"));
+        let node = NodeBuilder::new()
+            .name(&NodeName::new(&node_name)?)
+            .create::<ipc::Service>()?;
+
+        let service_name = format!("factor_pub/{}/{}", venue, channel);
+        let service = node
+            .service_builder(&ServiceName::new(&service_name)?)
+            .publish_subscribe::<[u8; TRADE_FLOW_MAX_BYTES]>()
+            .open()?;
+        let subscriber = service.subscriber_builder().create()?;
+
+        info!("Subscribed to trade_flow channel: {}", service_name);
+        Ok(subscriber)
+    }
+
+    fn create_depth_subscriber(venue: &str, channel: DepthChannel) -> Result<DepthSubscriber> {
+        let node_name = format!(
+            "fusion_sub_{}_{}",
+            venue.replace('-', "_"),
+            channel.as_str()
+        );
+        let node = NodeBuilder::new()
+            .name(&NodeName::new(&node_name)?)
+            .create::<ipc::Service>()?;
+
+        let service_name = format!("depth_pubs/{}/{}", venue, channel.as_str());
+        let depth_subscriber = match channel {
+            DepthChannel::Depth25 => {
+                let service = node
+                    .service_builder(&ServiceName::new(&service_name)?)
+                    .publish_subscribe::<[u8; DEPTH25_MAX_BYTES]>()
+                    .open()?;
+                DepthSubscriber::Depth25(service.subscriber_builder().create()?)
+            }
+            DepthChannel::Depth50 => {
+                let service = node
+                    .service_builder(&ServiceName::new(&service_name)?)
+                    .publish_subscribe::<[u8; DEPTH50_MAX_BYTES]>()
+                    .open()?;
+                DepthSubscriber::Depth50(service.subscriber_builder().create()?)
+            }
+        };
+
+        info!("Subscribed to depth channel: {}", service_name);
+        Ok(depth_subscriber)
+    }
+
+    pub fn run(&mut self) -> Result<()> {
+        info!(
+            "FusionFactorPubApp[{}] started: symbols={} trade_flow=... depth=...",
+            self.venue_slug,
+            self.allowed_symbols.len()
+        );
+
+        loop {
+            let mut has_message = false;
+
+            while let Some(payload) = self.depth_subscriber.receive_bytes()? {
+                has_message = true;
+                if let Some((symbol, depth)) =
+                    parse_depth_snapshot(&payload, self.depth_channel, self.venue)
+                {
+                    if !self.allowed_symbols.contains(&symbol) {
+                        self.depth_dropped_symbol_count =
+                            self.depth_dropped_symbol_count.saturating_add(1);
+                        continue;
+                    }
+                    self.latest_depth_by_symbol.insert(symbol, depth);
+                    self.depth_count = self.depth_count.saturating_add(1);
+                }
+            }
+
+            while let Some(sample) = self.trade_flow_subscriber.receive()? {
+                has_message = true;
+                let payload = sample.payload().to_vec();
+                match parse_trade_flow_feature(&payload) {
+                    Ok(msg) => {
+                        let symbol = normalize_symbol_for_venue(&msg.symbol, self.venue);
+                        if !self.allowed_symbols.contains(&symbol) {
+                            self.trade_flow_dropped_symbol_count =
+                                self.trade_flow_dropped_symbol_count.saturating_add(1);
+                            continue;
+                        }
+                        self.on_trade_flow(symbol, msg);
+                    }
+                    Err(err) => warn!(
+                        "trade_flow decode failed: venue={} err={}",
+                        self.venue_slug, err
+                    ),
+                }
+            }
+
+            if !has_message {
+                std::thread::sleep(Duration::from_micros(IDLE_SLEEP_MICROS));
+            }
+
+            if self.last_stats_log.elapsed() >= Duration::from_secs(STATS_LOG_INTERVAL_SECS) {
+                info!(
+                    "FusionFactorPubApp[{}] stats: depth_msgs={} trade_flow_msgs={} triggers={} missing_depth={} factor118_ready={} depth_drop_symbols={} trade_drop_symbols={} depth_symbols={} calc_symbols={}",
+                    self.venue_slug,
+                    self.depth_count,
+                    self.trade_flow_count,
+                    self.trigger_count,
+                    self.missing_depth_count,
+                    self.factor_118_ready_count,
+                    self.depth_dropped_symbol_count,
+                    self.trade_flow_dropped_symbol_count,
+                    self.latest_depth_by_symbol.len(),
+                    self.symbol_states.len(),
+                );
+                self.depth_count = 0;
+                self.trade_flow_count = 0;
+                self.trigger_count = 0;
+                self.missing_depth_count = 0;
+                self.factor_118_ready_count = 0;
+                self.depth_dropped_symbol_count = 0;
+                self.trade_flow_dropped_symbol_count = 0;
+                self.last_stats_log = Instant::now();
+            }
+        }
+    }
+
+    fn on_trade_flow(
+        &mut self,
+        symbol: String,
+        msg: crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg,
+    ) {
+        self.trade_flow_count = self.trade_flow_count.saturating_add(1);
+        self.trigger_count = self.trigger_count.saturating_add(1);
+
+        let depth_opt = self.latest_depth_by_symbol.get(&symbol).cloned();
+        {
+            let state = self.symbol_states.entry(symbol.clone()).or_default();
+            state.push_trade_flow(&msg);
+            if let Some(depth) = depth_opt.as_ref() {
+                state.push_depth_metrics(depth);
+            }
+        }
+
+        if depth_opt.is_none() {
+            self.missing_depth_count = self.missing_depth_count.saturating_add(1);
+        }
+
+        let Some((ordered_outputs, eval_stats)) =
+            self.evaluate_ordered_factors(&symbol, depth_opt.as_ref())
+        else {
+            warn!(
+                "fusion-trigger: venue={} symbol={} trade_ts={} reason=missing_factor_plan",
+                self.venue_slug, symbol, msg.ts
+            );
+            return;
+        };
+
+        self.factor_118_ready_count = self
+            .factor_118_ready_count
+            .saturating_add(eval_stats.factor118_ready_count);
+
+        info!(
+            "fusion-trigger: venue={} symbol={} trade_ts={} depth_ts={} close={} amount={} ordered_factor_count={} mapped_unimplemented_count={} unknown_name_count={} ordered_results={:?}",
+            self.venue_slug,
+            symbol,
+            msg.ts,
+            depth_opt.map(|d| d.timestamp_ms).unwrap_or(-1),
+            msg.values[FIELD_CLOSE],
+            msg.values[FIELD_AMOUNT],
+            ordered_outputs.len(),
+            eval_stats.mapped_unimplemented_count,
+            eval_stats.unknown_name_count,
+            ordered_outputs,
+        );
+    }
+
+    fn evaluate_ordered_factors(
+        &mut self,
+        symbol: &str,
+        depth: Option<&DepthSnapshot>,
+    ) -> Option<(Vec<String>, OrderedEvalStats)> {
+        let needs_factor_118 = self
+            .symbol_factor_plans
+            .get(symbol)
+            .map(|plan| {
+                plan.ordered_factors
+                    .iter()
+                    .any(|factor| factor.factor_id == Some(FusionFactorId::Factor118))
+            })
+            .unwrap_or(false);
+        let factor_118_result = if needs_factor_118 {
+            depth.and_then(|d| self.compute_factor_118(symbol, d))
+        } else {
+            None
+        };
+        let series = self.build_symbol_series(symbol);
+
+        let plan = self.symbol_factor_plans.get(symbol)?;
+        let mut outputs = Vec::with_capacity(plan.ordered_factors.len());
+        let mut stats = OrderedEvalStats::default();
+
+        for binding in &plan.ordered_factors {
+            let (value, ready, status) = match self.compute_supported_factor(
+                binding,
+                factor_118_result,
+                depth,
+                series.as_ref(),
+            ) {
+                Some((value, ready, status)) => {
+                    if ready && binding.factor_id == Some(FusionFactorId::Factor118) {
+                        stats.factor118_ready_count = stats.factor118_ready_count.saturating_add(1);
+                    }
+                    (value, ready, status)
+                }
+                None => {
+                    if binding.factor_id.is_some() || binding.extra_factor_id.is_some() {
+                        stats.mapped_unimplemented_count += 1;
+                        (f64::NAN, false, "unimplemented")
+                    } else {
+                        stats.unknown_name_count += 1;
+                        (f64::NAN, false, "unknown_name")
+                    }
+                }
+            };
+
+            outputs.push(format!(
+                "{}={}|ready={}|status={}",
+                binding.name, value, ready, status
+            ));
+        }
+
+        Some((outputs, stats))
+    }
+
+    fn build_symbol_series(&self, symbol: &str) -> Option<SymbolSeries> {
+        let state = self.symbol_states.get(symbol)?;
+        Some(SymbolSeries {
+            open: state.open.iter().copied().collect(),
+            high: state.high.iter().copied().collect(),
+            low: state.low.iter().copied().collect(),
+            close: state.close.iter().copied().collect(),
+            volume: state.volume.iter().copied().collect(),
+            amount: state.amount.iter().copied().collect(),
+            buy_count: state.buy_count.iter().copied().collect(),
+            sell_count: state.sell_count.iter().copied().collect(),
+            buy_amount: state.buy_amount.iter().copied().collect(),
+            sell_amount: state.sell_amount.iter().copied().collect(),
+            buy_volume: state.buy_volume.iter().copied().collect(),
+            sell_volume: state.sell_volume.iter().copied().collect(),
+            large_order: state.large_order.iter().copied().collect(),
+            large_buy: state.large_buy.iter().copied().collect(),
+            large_sell: state.large_sell.iter().copied().collect(),
+            small_order: state.small_order.iter().copied().collect(),
+            small_buy: state.small_buy.iter().copied().collect(),
+            small_sell: state.small_sell.iter().copied().collect(),
+            vwap: state.vwap.iter().copied().collect(),
+            buy_vwap: state.buy_vwap.iter().copied().collect(),
+            sell_vwap: state.sell_vwap.iter().copied().collect(),
+            net_buy_large: state.net_buy_large.iter().copied().collect(),
+            net_buy_small: state.net_buy_small.iter().copied().collect(),
+            net_buy_amount: state.net_buy_amount.iter().copied().collect(),
+            bid0v: state.bid0v.iter().copied().collect(),
+            mid_price: state.mid_price.iter().copied().collect(),
+            spread: state.spread.iter().copied().collect(),
+            relative_spread: state.relative_spread.iter().copied().collect(),
+            bid_vwap20: state.bid_vwap20.iter().copied().collect(),
+            total_bid20: state.total_bid20.iter().copied().collect(),
+            total_ask20: state.total_ask20.iter().copied().collect(),
+            top10_bid_volume: state.top10_bid_volume.iter().copied().collect(),
+            top10_ask_volume: state.top10_ask_volume.iter().copied().collect(),
+            top10_bid_mean: state.top10_bid_mean.iter().copied().collect(),
+            top10_ask_mean: state.top10_ask_mean.iter().copied().collect(),
+            bid9v: state.bid9v.iter().copied().collect(),
+            ask9v: state.ask9v.iter().copied().collect(),
+            mean_bid_vol20: state.mean_bid_vol20.iter().copied().collect(),
+            mean_bid_price20: state.mean_bid_price20.iter().copied().collect(),
+            avg_ask_price5: state.avg_ask_price5.iter().copied().collect(),
+            ask_pv15_mean: state.ask_pv15_mean.iter().copied().collect(),
+            bid_pv15_mean: state.bid_pv15_mean.iter().copied().collect(),
+            factor_031_ratio: state.factor_031_ratio.iter().copied().collect(),
+            factor_119_mid_minus_ask_vwap5: state
+                .factor_119_mid_minus_ask_vwap5
+                .iter()
+                .copied()
+                .collect(),
+            total_volume20_sum: state.total_volume20_sum.iter().copied().collect(),
+            factor_152_pct_mean: state.factor_152_pct_mean.iter().copied().collect(),
+            ask_vwap_diff_5_20: state.ask_vwap_diff_5_20.iter().copied().collect(),
+            ask_mean_volume_20: state.ask_mean_volume_20.iter().copied().collect(),
+            ask0v: state.ask0v.iter().copied().collect(),
+            ask_vwap20: state.ask_vwap20.iter().copied().collect(),
+            factor_128_skew: state.factor_128_skew.iter().copied().collect(),
+            factor_160_pct_change_mean: state.factor_160_pct_change_mean.iter().copied().collect(),
+        })
+    }
+
+    fn compute_supported_factor(
+        &self,
+        binding: &FactorBinding,
+        factor_118_result: Option<(f64, bool, usize)>,
+        depth: Option<&DepthSnapshot>,
+        series: Option<&SymbolSeries>,
+    ) -> Option<(f64, bool, &'static str)> {
+        match binding.factor_id {
+            Some(FusionFactorId::Factor118) => {
+                let out = match factor_118_result {
+                    Some((value, ready, _samples)) => {
+                        let status = if ready { "ready" } else { "warming_up" };
+                        (value, ready, status)
+                    }
+                    None => (f64::NAN, false, "missing_depth"),
+                };
+                return Some(out);
+            }
+            Some(FusionFactorId::FactorTrades015) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_trades_015),
+                ));
+            }
+            Some(FusionFactorId::FactorTrades014) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_trades_014),
+                ));
+            }
+            Some(FusionFactorId::FactorTrades018) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_trades_018),
+                ));
+            }
+            Some(FusionFactorId::FactorTrades025) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_trades_025),
+                ));
+            }
+            Some(FusionFactorId::FactorTrades028) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_trades_028),
+                ));
+            }
+            Some(FusionFactorId::FactorTrades029) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_trades_029),
+                ));
+            }
+            Some(FusionFactorId::FactorTrades034) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_trades_034),
+                ));
+            }
+            Some(FusionFactorId::FactorTrades035) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_trades_035),
+                ));
+            }
+            Some(FusionFactorId::FactorTrades048) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_trades_048),
+                ));
+            }
+            Some(FusionFactorId::TdTi010) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_ti_010),
+                ));
+            }
+            Some(FusionFactorId::TdTi015) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_ti_015),
+                ));
+            }
+            Some(FusionFactorId::TdTi026) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_ti_026),
+                ));
+            }
+            Some(FusionFactorId::TdTi031) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_ti_031),
+                ));
+            }
+            Some(FusionFactorId::TdTi033) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_ti_033),
+                ));
+            }
+            Some(FusionFactorId::TdTi034) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_ti_034),
+                ));
+            }
+            Some(FusionFactorId::TdTi036) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_ti_036),
+                ));
+            }
+            Some(FusionFactorId::TdTi037) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_ti_037),
+                ));
+            }
+            Some(FusionFactorId::TdMt003) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_mt_003),
+                ));
+            }
+            Some(FusionFactorId::TdMt008) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_mt_008),
+                ));
+            }
+            Some(FusionFactorId::TdMt014) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_mt_014),
+                ));
+            }
+            Some(FusionFactorId::TdMt015) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_mt_015),
+                ));
+            }
+            Some(FusionFactorId::TdMt039) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_mt_039),
+                ));
+            }
+            Some(FusionFactorId::TpVpi004) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_tp_vpi_004),
+                ));
+            }
+            Some(FusionFactorId::TpVpi006) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_tp_vpi_006),
+                ));
+            }
+            Some(FusionFactorId::TpVpi001) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_tp_vpi_001),
+                ));
+            }
+            Some(FusionFactorId::TpVpi002) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_tp_vpi_002),
+                ));
+            }
+            Some(FusionFactorId::TpVpi005) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_tp_vpi_005),
+                ));
+            }
+            Some(FusionFactorId::TpVpi015) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_tp_vpi_015),
+                ));
+            }
+            Some(FusionFactorId::TpVpi014) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_tp_vpi_014),
+                ));
+            }
+            Some(FusionFactorId::TpVpi017) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_tp_vpi_017),
+                ));
+            }
+            Some(FusionFactorId::TdPt001) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_pt_001),
+                ));
+            }
+            Some(FusionFactorId::TdPt002) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_pt_002),
+                ));
+            }
+            Some(FusionFactorId::TdPt003) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_pt_003),
+                ));
+            }
+            Some(FusionFactorId::TdPt004) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_pt_004),
+                ));
+            }
+            Some(FusionFactorId::TdPt010) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_pt_010),
+                ));
+            }
+            Some(FusionFactorId::TdPt027) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_pt_027),
+                ));
+            }
+            Some(FusionFactorId::TdVi010) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_vi_010),
+                ));
+            }
+            Some(FusionFactorId::TdVi011) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_vi_011),
+                ));
+            }
+            Some(FusionFactorId::TdVi025) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_vi_025),
+                ));
+            }
+            Some(FusionFactorId::TdVi026) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_vi_026),
+                ));
+            }
+            Some(FusionFactorId::TdVi028) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_vi_028),
+                ));
+            }
+            Some(FusionFactorId::TdCi007) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_ci_007),
+                ));
+            }
+            Some(FusionFactorId::TdCi003) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_ci_003),
+                ));
+            }
+            Some(FusionFactorId::TdCi008) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_ci_008),
+                ));
+            }
+            Some(FusionFactorId::TdPr001) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_pr_001),
+                ));
+            }
+            Some(FusionFactorId::TdPr002) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_pr_002),
+                ));
+            }
+            Some(FusionFactorId::TdPr005) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_pr_005),
+                ));
+            }
+            Some(FusionFactorId::TdPr006) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_pr_006),
+                ));
+            }
+            Some(FusionFactorId::TdPr007) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_pr_007),
+                ));
+            }
+            Some(FusionFactorId::TdPr015) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_pr_015),
+                ));
+            }
+            Some(FusionFactorId::TdPr016) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_pr_016),
+                ));
+            }
+            Some(FusionFactorId::TdPr017) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_td_pr_017),
+                ));
+            }
+            Some(FusionFactorId::Factor001) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_001),
+                ));
+            }
+            Some(FusionFactorId::Factor003) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_003),
+                ));
+            }
+            Some(FusionFactorId::Factor004) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(|s| Self::compute_factor_004(s, depth)),
+                ));
+            }
+            Some(FusionFactorId::Factor006) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_006),
+                ));
+            }
+            Some(FusionFactorId::Factor009) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_009),
+                ));
+            }
+            Some(FusionFactorId::Factor010) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_010),
+                ));
+            }
+            Some(FusionFactorId::Factor011) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_011),
+                ));
+            }
+            Some(FusionFactorId::Factor014) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_014),
+                ));
+            }
+            Some(FusionFactorId::Factor016) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_016),
+                ));
+            }
+            Some(FusionFactorId::Factor017) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_017),
+                ));
+            }
+            Some(FusionFactorId::Factor018) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_018),
+                ));
+            }
+            Some(FusionFactorId::Factor019) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_019),
+                ));
+            }
+            Some(FusionFactorId::Factor021) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_021),
+                ));
+            }
+            Some(FusionFactorId::Factor022) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_022),
+                ));
+            }
+            Some(FusionFactorId::Factor023) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_023),
+                ));
+            }
+            Some(FusionFactorId::Factor024) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_024),
+                ));
+            }
+            Some(FusionFactorId::Factor025) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_025),
+                ));
+            }
+            Some(FusionFactorId::Factor027) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_027),
+                ));
+            }
+            Some(FusionFactorId::Factor029) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_029),
+                ));
+            }
+            Some(FusionFactorId::Factor030) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_030),
+                ));
+            }
+            Some(FusionFactorId::Factor031) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_031),
+                ));
+            }
+            Some(FusionFactorId::Factor032) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_032),
+                ));
+            }
+            Some(FusionFactorId::Factor033) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_033),
+                ));
+            }
+            Some(FusionFactorId::Factor035) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_035),
+                ));
+            }
+            Some(FusionFactorId::Factor037) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_037),
+                ));
+            }
+            Some(FusionFactorId::Factor038) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_038),
+                ));
+            }
+            Some(FusionFactorId::Factor041) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_041),
+                ));
+            }
+            Some(FusionFactorId::Factor045) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_045),
+                ));
+            }
+            Some(FusionFactorId::Factor046) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_046),
+                ));
+            }
+            Some(FusionFactorId::Factor047) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_047),
+                ));
+            }
+            Some(FusionFactorId::Factor048) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_048),
+                ));
+            }
+            Some(FusionFactorId::Factor051) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_051),
+                ));
+            }
+            Some(FusionFactorId::Factor052) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_052),
+                ));
+            }
+            Some(FusionFactorId::Factor054) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_054),
+                ));
+            }
+            Some(FusionFactorId::Factor055) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_055),
+                ));
+            }
+            Some(FusionFactorId::Factor056) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_056),
+                ));
+            }
+            Some(FusionFactorId::Factor057) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_057),
+                ));
+            }
+            Some(FusionFactorId::Factor060) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_060),
+                ));
+            }
+            Some(FusionFactorId::Factor061) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_061),
+                ));
+            }
+            Some(FusionFactorId::Factor063) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_063),
+                ));
+            }
+            Some(FusionFactorId::Factor065) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_065),
+                ));
+            }
+            Some(FusionFactorId::Factor066) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_066),
+                ));
+            }
+            Some(FusionFactorId::Factor074) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_074),
+                ));
+            }
+            Some(FusionFactorId::Factor075) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_075),
+                ));
+            }
+            Some(FusionFactorId::Factor076) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_076),
+                ));
+            }
+            Some(FusionFactorId::Factor077) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_077),
+                ));
+            }
+            Some(FusionFactorId::Factor086) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_086),
+                ));
+            }
+            Some(FusionFactorId::Factor087) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_087),
+                ));
+            }
+            Some(FusionFactorId::Factor088) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_088),
+                ));
+            }
+            Some(FusionFactorId::Factor089) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_089),
+                ));
+            }
+            Some(FusionFactorId::Factor094) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_094),
+                ));
+            }
+            Some(FusionFactorId::Factor096) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_096),
+                ));
+            }
+            Some(FusionFactorId::Factor097) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_097),
+                ));
+            }
+            Some(FusionFactorId::Factor102) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_102),
+                ));
+            }
+            Some(FusionFactorId::Factor107) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_107),
+                ));
+            }
+            Some(FusionFactorId::Factor108) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_108),
+                ));
+            }
+            Some(FusionFactorId::Factor110) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_110),
+                ));
+            }
+            Some(FusionFactorId::Factor116) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_116),
+                ));
+            }
+            Some(FusionFactorId::Factor119) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_119),
+                ));
+            }
+            Some(FusionFactorId::Factor121) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_121),
+                ));
+            }
+            Some(FusionFactorId::Factor123) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_123),
+                ));
+            }
+            Some(FusionFactorId::Factor124) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_124),
+                ));
+            }
+            Some(FusionFactorId::Factor126) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_126),
+                ));
+            }
+            Some(FusionFactorId::Factor128) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_128),
+                ));
+            }
+            Some(FusionFactorId::Factor133) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_133),
+                ));
+            }
+            Some(FusionFactorId::Factor134) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_134),
+                ));
+            }
+            Some(FusionFactorId::Factor139) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_139),
+                ));
+            }
+            Some(FusionFactorId::Factor144) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_144),
+                ));
+            }
+            Some(FusionFactorId::Factor151) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_151),
+                ));
+            }
+            Some(FusionFactorId::Factor152) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_152),
+                ));
+            }
+            Some(FusionFactorId::Factor156) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_156),
+                ));
+            }
+            Some(FusionFactorId::Factor160) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_160),
+                ));
+            }
+            Some(FusionFactorId::Factor165) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_165),
+                ));
+            }
+            Some(FusionFactorId::Factor166) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_166),
+                ));
+            }
+            Some(FusionFactorId::Factor168) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_168),
+                ));
+            }
+            Some(FusionFactorId::Factor170) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_170),
+                ));
+            }
+            Some(FusionFactorId::Factor175) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_175),
+                ));
+            }
+            Some(FusionFactorId::Factor176) => {
+                return Some(Self::wrap_factor_value(
+                    depth.and_then(Self::compute_factor_176),
+                ));
+            }
+            Some(FusionFactorId::Factor164) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_factor_164),
+                ));
+            }
+            Some(FusionFactorId::Baseline018) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_018),
+                ));
+            }
+            Some(FusionFactorId::Baseline004) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_004),
+                ));
+            }
+            Some(FusionFactorId::Baseline007) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_007),
+                ));
+            }
+            Some(FusionFactorId::Baseline008) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_008),
+                ));
+            }
+            Some(FusionFactorId::Baseline016) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_016),
+                ));
+            }
+            Some(FusionFactorId::Baseline028) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_028),
+                ));
+            }
+            Some(FusionFactorId::Baseline034) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_034),
+                ));
+            }
+            Some(FusionFactorId::Baseline040) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_040),
+                ));
+            }
+            Some(FusionFactorId::Baseline045) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_045),
+                ));
+            }
+            Some(FusionFactorId::Baseline046) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_046),
+                ));
+            }
+            Some(FusionFactorId::Baseline047) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_047),
+                ));
+            }
+            Some(FusionFactorId::Baseline073) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_073),
+                ));
+            }
+            Some(FusionFactorId::Baseline076) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_076),
+                ));
+            }
+            Some(FusionFactorId::Baseline079) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_079),
+                ));
+            }
+            Some(FusionFactorId::Baseline080) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_080),
+                ));
+            }
+            Some(FusionFactorId::Baseline082) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_082),
+                ));
+            }
+            Some(FusionFactorId::Baseline135) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_135),
+                ));
+            }
+            Some(FusionFactorId::Baseline100) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_100),
+                ));
+            }
+            Some(FusionFactorId::Baseline113) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_113),
+                ));
+            }
+            Some(FusionFactorId::Baseline116) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_116),
+                ));
+            }
+            Some(FusionFactorId::Baseline117) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_117),
+                ));
+            }
+            Some(FusionFactorId::Baseline120) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_120),
+                ));
+            }
+            Some(FusionFactorId::Baseline134) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_134),
+                ));
+            }
+            Some(FusionFactorId::Baseline137) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_137),
+                ));
+            }
+            Some(FusionFactorId::Baseline140) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_140),
+                ));
+            }
+            Some(FusionFactorId::Baseline141) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_141),
+                ));
+            }
+            Some(FusionFactorId::Baseline163) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_163),
+                ));
+            }
+            Some(FusionFactorId::Baseline164) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_164),
+                ));
+            }
+            Some(FusionFactorId::Baseline172) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_172),
+                ));
+            }
+            Some(FusionFactorId::Baseline177) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_177),
+                ));
+            }
+            Some(FusionFactorId::Baseline178) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_178),
+                ));
+            }
+            Some(FusionFactorId::Baseline189) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_189),
+                ));
+            }
+            Some(FusionFactorId::Baseline191) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_191),
+                ));
+            }
+            Some(FusionFactorId::Baseline193) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_193),
+                ));
+            }
+            Some(FusionFactorId::Baseline196) => {
+                return Some(Self::wrap_factor_value(
+                    series.and_then(Self::compute_baseline_196),
+                ));
+            }
+            Some(_) | None => {}
+        }
+        if let Some(extra_factor_id) = binding.extra_factor_id {
+            return Some(Self::wrap_factor_value(Self::compute_extra_factor(
+                series,
+                extra_factor_id,
+            )));
+        }
+        None
+    }
+
+    fn compute_extra_factor(
+        series: Option<&SymbolSeries>,
+        extra_factor_id: ExtraFactorId,
+    ) -> Option<f64> {
+        let series = series?;
+        match extra_factor_id {
+            ExtraFactorId::AvgPrice => rolling_kurt_last(&series.vwap, 250, true, false)
+                .ok()
+                .flatten(),
+            ExtraFactorId::BuyAvgPrice => rolling_skew_last(&series.buy_vwap, 500, false)
+                .ok()
+                .flatten(),
+            ExtraFactorId::SellAvgPrice => {
+                let n = series.vwap.len().min(series.sell_vwap.len());
+                if n < 360 {
+                    return None;
+                }
+                let diff: Vec<f64> = (0..n)
+                    .map(|i| series.vwap[i] - series.sell_vwap[i])
+                    .collect();
+                rolling_mean_last(&diff, 360).ok().flatten()
+            }
+            ExtraFactorId::SmallBuy => finite_opt(series.small_buy.last().copied()),
+            ExtraFactorId::SmallSell => finite_opt(series.small_sell.last().copied()),
+            ExtraFactorId::NetBuyLarge => finite_opt(series.net_buy_large.last().copied()),
+        }
+    }
+
+    fn wrap_factor_value(value: Option<f64>) -> (f64, bool, &'static str) {
+        match value {
+            Some(v) if v.is_finite() => (v, true, "ready"),
+            Some(v) => (v, false, "invalid_value"),
+            None => (f64::NAN, false, "warming_up"),
+        }
+    }
+
+    fn compute_factor_trades_015(series: &SymbolSeries) -> Option<f64> {
+        let n = series.sell_amount.len().min(series.sell_count.len());
+        if n == 0 {
+            return None;
+        }
+        let sell_count = series.sell_count[n - 1];
+        if sell_count.abs() <= 1e-12 {
+            return None;
+        }
+        let value = series.sell_amount[n - 1] / sell_count;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn compute_factor_trades_014(series: &SymbolSeries) -> Option<f64> {
+        let n = series.buy_amount.len().min(series.buy_count.len());
+        if n == 0 {
+            return None;
+        }
+        let buy_count = series.buy_count[n - 1];
+        if buy_count.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some(series.buy_amount[n - 1] / buy_count))
+    }
+
+    fn compute_factor_trades_018(series: &SymbolSeries) -> Option<f64> {
+        let n = series.amount.len().min(series.small_order.len());
+        if n == 0 {
+            return None;
+        }
+        let amount = series.amount[n - 1];
+        if amount.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some(series.small_order[n - 1] / amount))
+    }
+
+    fn compute_factor_trades_025(series: &SymbolSeries) -> Option<f64> {
+        let n = series.close.len().min(series.vwap.len());
+        if n == 0 {
+            return None;
+        }
+        let vwap = series.vwap[n - 1];
+        if vwap.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some((series.close[n - 1] - vwap) / vwap))
+    }
+
+    fn compute_factor_trades_028(series: &SymbolSeries) -> Option<f64> {
+        let n = series.buy_amount.len().min(series.buy_count.len());
+        if n == 0 {
+            return None;
+        }
+        finite_opt(Some(series.buy_amount[n - 1] * series.buy_count[n - 1]))
+    }
+
+    fn compute_factor_trades_029(series: &SymbolSeries) -> Option<f64> {
+        let n = series.sell_amount.len().min(series.sell_count.len());
+        if n == 0 {
+            return None;
+        }
+        let value = series.sell_amount[n - 1] * series.sell_count[n - 1];
+        if value.is_finite() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn compute_factor_trades_034(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .high
+            .len()
+            .min(series.low.len())
+            .min(series.open.len())
+            .min(series.close.len());
+        if n == 0 {
+            return None;
+        }
+        let upper_shadow = series.high[n - 1] - series.open[n - 1].max(series.close[n - 1]);
+        let range_hl = series.high[n - 1] - series.low[n - 1];
+        if range_hl.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some(upper_shadow / range_hl))
+    }
+
+    fn compute_factor_trades_035(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .high
+            .len()
+            .min(series.low.len())
+            .min(series.open.len())
+            .min(series.close.len());
+        if n == 0 {
+            return None;
+        }
+        let lower_shadow = series.open[n - 1].min(series.close[n - 1]) - series.low[n - 1];
+        let range_hl = series.high[n - 1] - series.low[n - 1];
+        if range_hl.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some(lower_shadow / range_hl))
+    }
+
+    fn compute_factor_trades_048(series: &SymbolSeries) -> Option<f64> {
+        let n = series.close.len();
+        if n < 10 {
+            return None;
+        }
+        let mut pct = Vec::with_capacity(n);
+        pct.push(f64::NAN);
+        for i in 1..n {
+            let prev = series.close[i - 1];
+            let curr = series.close[i];
+            if prev.abs() <= 1e-12 {
+                pct.push(f64::NAN);
+            } else {
+                pct.push((curr - prev) / prev);
+            }
+        }
+        let tail = &pct[n - 10..n];
+        let valid: Vec<Option<f64>> = tail
+            .iter()
+            .map(|v| if v.is_finite() { Some(*v) } else { None })
+            .collect();
+        tail_skew_last_opt(&valid, 10, 3, false).ok().flatten()
+    }
+
+    fn compute_factor_001(series: &SymbolSeries) -> Option<f64> {
+        let n = series.bid_vwap20.len();
+        if n < 3 {
+            return None;
+        }
+        let d1 = series.bid_vwap20[n - 1] - series.bid_vwap20[n - 2];
+        let d0 = series.bid_vwap20[n - 2] - series.bid_vwap20[n - 3];
+        if !d1.is_finite() || !d0.is_finite() || d0.abs() <= 1e-12 {
+            return None;
+        }
+        let value = (d1 - d0) / d0;
+        finite_opt(Some(value))
+    }
+
+    fn compute_factor_003(depth: &DepthSnapshot) -> Option<f64> {
+        let bid = depth_sum_price(&depth.bids, 15);
+        let ask = depth_sum_price(&depth.asks, 15);
+        let den = bid + ask;
+        if den.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some((bid - ask) / den))
+    }
+
+    fn compute_factor_006(depth: &DepthSnapshot) -> Option<f64> {
+        let mut ask_strength = 0.0;
+        let mut bid_strength = 0.0;
+        for i in 0..5 {
+            ask_strength += depth_level_price(&depth.asks, i) * depth_level_amount(&depth.asks, i);
+            bid_strength += depth_level_price(&depth.bids, i) * depth_level_amount(&depth.bids, i);
+        }
+        let den = bid_strength + ask_strength;
+        if den.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some((bid_strength - ask_strength) / den))
+    }
+
+    fn compute_factor_010(series: &SymbolSeries) -> Option<f64> {
+        let n = series.bid_vwap20.len();
+        if n < 2 {
+            return None;
+        }
+        finite_opt(Some(series.bid_vwap20[n - 1] - series.bid_vwap20[n - 2]))
+    }
+
+    fn compute_factor_011(series: &SymbolSeries) -> Option<f64> {
+        let n = series.ask_vwap20.len();
+        if n < 2 {
+            return None;
+        }
+        finite_opt(Some(series.ask_vwap20[n - 1] - series.ask_vwap20[n - 2]))
+    }
+
+    fn compute_factor_014(depth: &DepthSnapshot) -> Option<f64> {
+        let top5 = depth_sum_amount(&depth.asks, 5);
+        let total = depth_sum_amount(&depth.asks, 20);
+        if total.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some(top5 / total))
+    }
+
+    fn compute_factor_016(depth: &DepthSnapshot) -> Option<f64> {
+        let total_ask_price = depth_sum_price(&depth.asks, 20);
+        if (total_ask_price + 1e-6).abs() <= 1e-12 {
+            return None;
+        }
+        let mut weighted_depth = 0.0;
+        for i in 0..20 {
+            let askv = depth_level_amount(&depth.asks, i);
+            let askp = depth_level_price(&depth.asks, i);
+            if askv.is_finite() && askp.is_finite() {
+                weighted_depth += askv * askp / (total_ask_price + 1e-6);
+            }
+        }
+        finite_opt(Some(weighted_depth))
+    }
+
+    fn compute_factor_017(depth: &DepthSnapshot) -> Option<f64> {
+        let bids: Vec<f64> = (0..20)
+            .map(|i| depth_level_amount(&depth.bids, i))
+            .collect();
+        let mean = bids.iter().filter(|v| v.is_finite()).sum::<f64>() / bids.len() as f64;
+        let den = mean + 1e-6;
+        let norm: Vec<f64> = bids.into_iter().map(|v| v / den).collect();
+        std_pop(&norm)
+    }
+
+    fn compute_factor_019(series: &SymbolSeries) -> Option<f64> {
+        let n = series.bid_vwap20.len();
+        if n < 2 {
+            return None;
+        }
+        let ma = rolling_mean_series(&series.bid_vwap20, 5, 1).ok()?;
+        let curr = finite_opt(ma[n - 1])?;
+        let prev = finite_opt(ma[n - 2])?;
+        finite_opt(Some(curr - prev))
+    }
+
+    fn compute_factor_021(series: &SymbolSeries) -> Option<f64> {
+        let bid_std = sample_std_last(&series.total_bid20, 10, 1)?;
+        let ask_std = sample_std_last(&series.total_ask20, 10, 1)?;
+        if ask_std.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some(bid_std / ask_std))
+    }
+
+    fn compute_factor_025(depth: &DepthSnapshot) -> Option<f64> {
+        let top3 = depth_sum_amount(&depth.bids, 3);
+        let bottom17 = (3..20)
+            .map(|i| depth_level_amount(&depth.bids, i))
+            .filter(|v| v.is_finite())
+            .sum::<f64>();
+        if bottom17.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some(top3 / bottom17))
+    }
+
+    fn compute_factor_027(depth: &DepthSnapshot) -> Option<f64> {
+        let bids: Vec<f64> = (0..20)
+            .map(|i| depth_level_amount(&depth.bids, i))
+            .collect();
+        rolling_skew_last(&bids, 20, false).ok().flatten()
+    }
+
+    fn compute_factor_030(depth: &DepthSnapshot) -> Option<f64> {
+        let asks: Vec<f64> = (0..20)
+            .map(|i| depth_level_amount(&depth.asks, i))
+            .collect();
+        rolling_kurt_last(&asks, 20, true, false).ok().flatten()
+    }
+
+    fn compute_factor_031(series: &SymbolSeries) -> Option<f64> {
+        rolling_rank_last(&series.factor_031_ratio, 500)
+            .ok()
+            .flatten()
+    }
+
+    fn compute_factor_033(series: &SymbolSeries) -> Option<f64> {
+        let last = *series.top10_bid_volume.last()?;
+        let ma = rolling_mean_last(&series.top10_bid_volume, 30)
+            .ok()
+            .flatten()?;
+        if ma.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some(last / ma))
+    }
+
+    fn compute_factor_035(depth: &DepthSnapshot) -> Option<f64> {
+        let bid = depth_vwap(&depth.bids, 5)?;
+        let ask = depth_vwap(&depth.asks, 5)?;
+        if ask.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some(bid / ask))
+    }
+
+    fn compute_factor_037(depth: &DepthSnapshot) -> Option<f64> {
+        let bid5 = depth_vwap(&depth.bids, 5)?;
+        let bid15 = depth_vwap(&depth.bids, 15)?;
+        finite_opt(Some(bid5 - bid15))
+    }
+
+    fn compute_factor_041(depth: &DepthSnapshot) -> Option<f64> {
+        let asks: Vec<f64> = (0..10)
+            .map(|i| depth_level_amount(&depth.asks, i))
+            .collect();
+        std_pop(&asks)
+    }
+
+    fn compute_factor_045(series: &SymbolSeries) -> Option<f64> {
+        rolling_kurt_last(&series.top10_bid_mean, 30, true, false)
+            .ok()
+            .flatten()
+    }
+
+    fn compute_factor_046(series: &SymbolSeries) -> Option<f64> {
+        rolling_kurt_last(&series.top10_ask_mean, 30, true, false)
+            .ok()
+            .flatten()
+    }
+
+    fn compute_factor_047(series: &SymbolSeries) -> Option<f64> {
+        rolling_skew_last(&series.ask_pv15_mean, 60, false)
+            .ok()
+            .flatten()
+    }
+
+    fn compute_factor_048(series: &SymbolSeries) -> Option<f64> {
+        rolling_skew_last(&series.bid_pv15_mean, 60, false)
+            .ok()
+            .flatten()
+    }
+
+    fn compute_factor_051(series: &SymbolSeries) -> Option<f64> {
+        let last = *series.avg_ask_price5.last()?;
+        let ma = rolling_mean_last(&series.avg_ask_price5, 300)
+            .ok()
+            .flatten()?;
+        if ma.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some(last / ma))
+    }
+
+    fn compute_factor_052(series: &SymbolSeries) -> Option<f64> {
+        let n = series.avg_ask_price5.len();
+        if n < 300 {
+            return None;
+        }
+        let mut neg_diff = Vec::with_capacity(n);
+        neg_diff.push(0.0);
+        for i in 1..n {
+            let d = series.avg_ask_price5[i] - series.avg_ask_price5[i - 1];
+            neg_diff.push(if d < 0.0 { d } else { 0.0 });
+        }
+        let ma30 = rolling_mean_last(&neg_diff, 30).ok().flatten()?;
+        let ma300 = rolling_mean_last(&neg_diff, 300).ok().flatten()?;
+        if ma300.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some(ma30 / ma300))
+    }
+
+    fn compute_factor_054(depth: &DepthSnapshot) -> Option<f64> {
+        let mut num = 0.0;
+        let mut den = 0.0;
+        for i in 0..20 {
+            let bidp = depth_level_price(&depth.bids, i);
+            let bidv = depth_level_amount(&depth.bids, i);
+            let askp = depth_level_price(&depth.asks, i);
+            let askv = depth_level_amount(&depth.asks, i);
+            num += bidp * bidv + askp * askv;
+            den += bidv + askv;
+        }
+        if den.abs() <= 1e-12 {
+            return None;
+        }
+        let vwap = num / den;
+        let (bid0p, bid0v) = depth_best_bid(depth);
+        let mid = (bid0p + bid0v) / 2.0;
+        finite_opt(Some(mid - vwap))
+    }
+
+    fn compute_factor_055(series: &SymbolSeries) -> Option<f64> {
+        rolling_sum_last_with_min_periods(&series.bid9v, 3, 3)
+            .ok()
+            .flatten()
+    }
+
+    fn compute_factor_056(series: &SymbolSeries) -> Option<f64> {
+        rolling_sum_last_with_min_periods(&series.ask9v, 3, 3)
+            .ok()
+            .flatten()
+    }
+
+    fn compute_factor_057(series: &SymbolSeries) -> Option<f64> {
+        finite_opt(series.total_volume20_sum.last().copied())
+    }
+
+    fn compute_factor_060(series: &SymbolSeries) -> Option<f64> {
+        pct_change_last(&series.mean_bid_vol20, 10)
+    }
+
+    fn compute_factor_063(depth: &DepthSnapshot) -> Option<f64> {
+        let v = (0..10)
+            .map(|i| depth_level_amount(&depth.bids, i))
+            .filter(|x| x.is_finite())
+            .fold(f64::NEG_INFINITY, f64::max);
+        finite_opt(Some(v))
+    }
+
+    fn compute_factor_065(depth: &DepthSnapshot) -> Option<f64> {
+        let v = (0..10)
+            .map(|i| depth_level_amount(&depth.bids, i))
+            .filter(|x| x.is_finite())
+            .fold(f64::INFINITY, f64::min);
+        finite_opt(Some(v))
+    }
+
+    fn compute_factor_066(depth: &DepthSnapshot) -> Option<f64> {
+        let v = (0..10)
+            .map(|i| depth_level_amount(&depth.asks, i))
+            .filter(|x| x.is_finite())
+            .fold(f64::INFINITY, f64::min);
+        finite_opt(Some(v))
+    }
+
+    fn compute_factor_074(depth: &DepthSnapshot) -> Option<f64> {
+        let asks: Vec<f64> = (0..5).map(|i| depth_level_amount(&depth.asks, i)).collect();
+        std_pop(&asks)
+    }
+
+    fn compute_factor_075(depth: &DepthSnapshot) -> Option<f64> {
+        let bids: Vec<f64> = (0..5).map(|i| depth_level_amount(&depth.bids, i)).collect();
+        let mean = bids.iter().sum::<f64>() / bids.len() as f64;
+        if mean.abs() <= 1e-12 {
+            return None;
+        }
+        let std = std_pop(&bids)?;
+        finite_opt(Some(std / mean))
+    }
+
+    fn compute_factor_077(depth: &DepthSnapshot) -> Option<f64> {
+        let bids: Vec<f64> = (0..10)
+            .map(|i| depth_level_amount(&depth.bids, i))
+            .collect();
+        let asks: Vec<f64> = (0..10)
+            .map(|i| depth_level_amount(&depth.asks, i))
+            .collect();
+        rolling_corr_last(&bids, &asks, 10, 1).ok().flatten()
+    }
+
+    fn compute_factor_086(depth: &DepthSnapshot) -> Option<f64> {
+        let bid = depth_sum_amount(&depth.bids, 15);
+        let ask = depth_sum_amount(&depth.asks, 15);
+        finite_opt(Some(bid - ask))
+    }
+
+    fn compute_factor_087(depth: &DepthSnapshot) -> Option<f64> {
+        let bid = depth_sum_amount(&depth.bids, 20);
+        let ask = depth_sum_amount(&depth.asks, 20);
+        if ask.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some(bid / ask))
+    }
+
+    fn compute_factor_088(depth: &DepthSnapshot) -> Option<f64> {
+        let bids: Vec<f64> = (0..10)
+            .map(|i| depth_level_amount(&depth.bids, i))
+            .collect();
+        let std = std_pop(&bids)?;
+        finite_opt(Some(std * std))
+    }
+
+    fn compute_factor_089(depth: &DepthSnapshot) -> Option<f64> {
+        let asks: Vec<f64> = (0..10)
+            .map(|i| depth_level_amount(&depth.asks, i))
+            .collect();
+        let std = std_pop(&asks)?;
+        finite_opt(Some(std * std))
+    }
+
+    fn compute_factor_094(series: &SymbolSeries) -> Option<f64> {
+        tail_quantile_last(&series.avg_ask_price5, 100, 0.1)
+    }
+
+    fn compute_factor_097(depth: &DepthSnapshot) -> Option<f64> {
+        let mut vals = Vec::with_capacity(10);
+        for i in 0..10 {
+            let b = depth_level_amount(&depth.bids, i);
+            let a = depth_level_amount(&depth.asks, i);
+            if a.abs() > 1e-12 {
+                let r = b / a;
+                if r.is_finite() {
+                    vals.push(r);
+                }
+            }
+        }
+        if vals.is_empty() {
+            None
+        } else {
+            Some(vals.iter().sum::<f64>() / vals.len() as f64)
+        }
+    }
+
+    fn compute_factor_102(depth: &DepthSnapshot) -> Option<f64> {
+        let bids: Vec<f64> = (0..10)
+            .map(|i| depth_level_amount(&depth.bids, i))
+            .collect();
+        if bids.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+            return None;
+        }
+        let den = bids.iter().map(|v| 1.0 / v).sum::<f64>();
+        if den.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some(10.0 / den))
+    }
+
+    fn compute_factor_107(depth: &DepthSnapshot) -> Option<f64> {
+        let prices: Vec<f64> = (0..10).map(|i| depth_level_price(&depth.bids, i)).collect();
+        let vols: Vec<f64> = (0..10)
+            .map(|i| depth_level_amount(&depth.bids, i))
+            .collect();
+        rolling_corr_last(&prices, &vols, 10, 1).ok().flatten()
+    }
+
+    fn compute_factor_108(depth: &DepthSnapshot) -> Option<f64> {
+        let prices: Vec<f64> = (0..10).map(|i| depth_level_price(&depth.asks, i)).collect();
+        let vols: Vec<f64> = (0..10)
+            .map(|i| depth_level_amount(&depth.asks, i))
+            .collect();
+        rolling_corr_last(&prices, &vols, 10, 1).ok().flatten()
+    }
+
+    fn compute_factor_110(depth: &DepthSnapshot) -> Option<f64> {
+        let (bid0p, _) = depth_best_bid(depth);
+        let (ask0p, _) = depth_best_ask(depth);
+        let mid = (bid0p + ask0p) / 2.0;
+        let mut sum = 0.0;
+        let mut cnt = 0usize;
+        for i in 0..5 {
+            let v = depth_level_price(&depth.asks, i) - mid;
+            if v.is_finite() {
+                sum += v;
+                cnt += 1;
+            }
+        }
+        if cnt == 0 {
+            None
+        } else {
+            finite_opt(Some(sum / cnt as f64))
+        }
+    }
+
+    fn compute_factor_116(series: &SymbolSeries) -> Option<f64> {
+        let n = series.mean_bid_price20.len();
+        if n < 50 {
+            return None;
+        }
+        let mut diff3 = Vec::with_capacity(n);
+        for i in 0..n {
+            if i >= 3 {
+                diff3.push(series.mean_bid_price20[i] - series.mean_bid_price20[i - 3]);
+            } else {
+                diff3.push(f64::NAN);
+            }
+        }
+        let tail_len = n.min(300);
+        rank_last_average(&diff3[n - tail_len..], 50)
+    }
+
+    fn compute_factor_119(series: &SymbolSeries) -> Option<f64> {
+        let last = *series.factor_119_mid_minus_ask_vwap5.last()?;
+        let ma = rolling_mean_last(&series.factor_119_mid_minus_ask_vwap5, 120)
+            .ok()
+            .flatten()?;
+        if ma.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some(last / ma))
+    }
+
+    fn compute_factor_121(depth: &DepthSnapshot) -> Option<f64> {
+        let mut asks: Vec<f64> = (0..10)
+            .map(|i| depth_level_amount(&depth.asks, i))
+            .collect();
+        asks.sort_by(|a, b| a.total_cmp(b));
+        let mid = asks.len() / 2;
+        finite_opt(Some((asks[mid - 1] + asks[mid]) / 2.0))
+    }
+
+    fn compute_factor_123(depth: &DepthSnapshot) -> Option<f64> {
+        let top3 = depth_sum_amount(&depth.bids, 3);
+        let total15 = depth_sum_amount(&depth.bids, 15);
+        if total15.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some(top3 / total15))
+    }
+
+    fn compute_factor_124(depth: &DepthSnapshot) -> Option<f64> {
+        let bids: Vec<f64> = (0..10)
+            .map(|i| depth_level_amount(&depth.bids, i))
+            .collect();
+        let asks: Vec<f64> = (0..10)
+            .map(|i| depth_level_amount(&depth.asks, i))
+            .collect();
+        let bid_var = std_pop(&bids)?;
+        let ask_var = std_pop(&asks)?;
+        let bid_var = bid_var * bid_var;
+        let ask_var = ask_var * ask_var;
+        if ask_var.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some(bid_var / ask_var))
+    }
+
+    fn compute_factor_126(depth: &DepthSnapshot) -> Option<f64> {
+        let mut vals = Vec::with_capacity(10);
+        for i in 0..10 {
+            vals.push(depth_level_amount(&depth.bids, i) + depth_level_amount(&depth.asks, i));
+        }
+        let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+        if mean.abs() <= 1e-12 {
+            return None;
+        }
+        let std = std_pop(&vals)?;
+        finite_opt(Some(std / mean))
+    }
+
+    fn compute_factor_133(series: &SymbolSeries) -> Option<f64> {
+        let bid = *series.total_bid20.last()?;
+        let ask = *series.total_ask20.last()?;
+        let den = bid + ask;
+        if den.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some((bid - ask) / den))
+    }
+
+    fn compute_factor_134(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .mid_price
+            .len()
+            .min(series.bid0v.len())
+            .min(series.ask0v.len());
+        if n < 300 {
+            return None;
+        }
+        let mid = &series.mid_price[..n];
+        let mid_vol: Vec<f64> = (0..n)
+            .map(|i| (series.bid0v[i] + series.ask0v[i]) / 2.0)
+            .collect();
+        rolling_corr_last(mid, &mid_vol, 300, 1).ok().flatten()
+    }
+
+    fn compute_factor_139(depth: &DepthSnapshot) -> Option<f64> {
+        let mut sum = 0.0;
+        let mut cnt = 0usize;
+        for i in 0..5 {
+            let v = depth_level_price(&depth.bids, i) - depth_level_price(&depth.asks, i);
+            if v.is_finite() {
+                sum += v;
+                cnt += 1;
+            }
+        }
+        if cnt == 0 {
+            None
+        } else {
+            finite_opt(Some(sum / cnt as f64))
+        }
+    }
+
+    fn compute_factor_144(depth: &DepthSnapshot) -> Option<f64> {
+        let diffs: Vec<f64> = (0..15)
+            .map(|i| depth_level_price(&depth.bids, i) - depth_level_price(&depth.asks, i))
+            .collect();
+        let mut sum = 0.0;
+        let mut cnt = 0usize;
+        for i in 1..diffs.len() {
+            let v = diffs[i] - diffs[i - 1];
+            if v.is_finite() {
+                sum += v;
+                cnt += 1;
+            }
+        }
+        if cnt == 0 {
+            None
+        } else {
+            finite_opt(Some(sum / cnt as f64))
+        }
+    }
+
+    fn compute_factor_151(series: &SymbolSeries) -> Option<f64> {
+        rolling_skew_last(&series.total_volume20_sum, 45, false)
+            .ok()
+            .flatten()
+    }
+
+    fn compute_factor_152(series: &SymbolSeries) -> Option<f64> {
+        last_opt(&series.factor_152_pct_mean)
+    }
+
+    fn compute_factor_164(series: &SymbolSeries) -> Option<f64> {
+        let n = series.bid0v.len();
+        if n < 2 {
+            return None;
+        }
+        finite_opt(Some(series.bid0v[n - 1] - series.bid0v[n - 2]))
+    }
+
+    fn compute_factor_168(series: &SymbolSeries) -> Option<f64> {
+        let spread = *series.spread.last()?;
+        let mid = *series.mid_price.last()?;
+        if mid.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some(spread / mid))
+    }
+
+    fn compute_factor_170(series: &SymbolSeries) -> Option<f64> {
+        pct_change_last(&series.mid_price, 120)
+    }
+
+    fn compute_factor_175(series: &SymbolSeries) -> Option<f64> {
+        sample_std_last(&series.spread, 5, 1)
+    }
+
+    fn compute_factor_004(series: &SymbolSeries, depth: Option<&DepthSnapshot>) -> Option<f64> {
+        let depth = depth?;
+        let buy_vwap = *series.buy_vwap.last()?;
+        let (bid0p, _) = depth_best_bid(depth);
+        let (ask0p, _) = depth_best_ask(depth);
+        let mid = (bid0p + ask0p) / 2.0;
+        let value = mid - buy_vwap;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn compute_factor_009(depth: &DepthSnapshot) -> Option<f64> {
+        let (bid0p, _) = depth_best_bid(depth);
+        let (ask0p, _) = depth_best_ask(depth);
+        if bid0p <= 0.0 || ask0p <= 0.0 {
+            return None;
+        }
+        let value = ask0p.ln() - bid0p.ln();
+        if value.is_finite() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn compute_factor_018(depth: &DepthSnapshot) -> Option<f64> {
+        let asks: Vec<f64> = (0..20)
+            .map(|i| depth_level_amount(&depth.asks, i))
+            .collect();
+        let mean = asks.iter().sum::<f64>() / asks.len() as f64;
+        let denom = mean + 1e-6;
+        let norm: Vec<f64> = asks.into_iter().map(|v| v / denom).collect();
+        std_pop(&norm)
+    }
+
+    fn compute_factor_022(series: &SymbolSeries) -> Option<f64> {
+        let n = series.relative_spread.len();
+        if n < 2 {
+            return None;
+        }
+        let value = series.relative_spread[n - 1] - series.relative_spread[n - 2];
+        if value.is_finite() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn compute_factor_023(series: &SymbolSeries) -> Option<f64> {
+        let values = &series.top10_bid_volume;
+        let last = *values.last()?;
+        let ma = rolling_mean_last_with_min_periods(values, 5, 1)
+            .ok()
+            .flatten()?;
+        let value = last - ma;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn compute_factor_024(series: &SymbolSeries) -> Option<f64> {
+        let values = &series.top10_ask_volume;
+        let last = *values.last()?;
+        let ma = rolling_mean_last_with_min_periods(values, 5, 1)
+            .ok()
+            .flatten()?;
+        let value = last - ma;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn compute_factor_029(depth: &DepthSnapshot) -> Option<f64> {
+        let bids: Vec<f64> = (0..20)
+            .map(|i| depth_level_amount(&depth.bids, i))
+            .collect();
+        rolling_kurt_last(&bids, 20, true, false).ok().flatten()
+    }
+
+    fn compute_factor_032(series: &SymbolSeries) -> Option<f64> {
+        rolling_mean_last(&series.ask_vwap_diff_5_20, 300)
+            .ok()
+            .flatten()
+    }
+
+    fn compute_factor_038(depth: &DepthSnapshot) -> Option<f64> {
+        let vwap5 = depth_vwap(&depth.asks, 5)?;
+        let vwap15 = depth_vwap(&depth.asks, 15)?;
+        let value = vwap5 - vwap15;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn compute_factor_061(series: &SymbolSeries) -> Option<f64> {
+        let n = series.ask_mean_volume_20.len();
+        if n <= 10 {
+            return None;
+        }
+        let curr = series.ask_mean_volume_20[n - 1];
+        let prev = series.ask_mean_volume_20[n - 11];
+        if prev.abs() <= 1e-12 {
+            return None;
+        }
+        let value = (curr - prev) / prev;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn compute_factor_076(depth: &DepthSnapshot) -> Option<f64> {
+        let asks: Vec<f64> = (0..5).map(|i| depth_level_amount(&depth.asks, i)).collect();
+        let mean = asks.iter().sum::<f64>() / asks.len() as f64;
+        if mean.abs() <= 1e-12 {
+            return None;
+        }
+        let std = std_pop(&asks)?;
+        let value = std / mean;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn compute_factor_096(depth: &DepthSnapshot) -> Option<f64> {
+        let mut asks: Vec<f64> = (0..20)
+            .map(|i| depth_level_amount(&depth.asks, i))
+            .collect();
+        asks.sort_by(|a, b| a.total_cmp(b));
+        let mid = asks.len() / 2;
+        let value = (asks[mid - 1] + asks[mid]) / 2.0;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn compute_factor_128(series: &SymbolSeries) -> Option<f64> {
+        let mean_series = rolling_mean_series_opt(&series.factor_128_skew, 300, 50).ok()?;
+        last_opt(&mean_series)
+    }
+
+    fn compute_factor_156(depth: &DepthSnapshot) -> Option<f64> {
+        let bid_prices: Vec<f64> = (0..10).map(|i| depth_level_price(&depth.bids, i)).collect();
+        let ask_prices: Vec<f64> = (0..10).map(|i| depth_level_price(&depth.asks, i)).collect();
+        let bid_std = std_pop(&bid_prices)?;
+        let ask_std = std_pop(&ask_prices)?;
+        let value = bid_std - ask_std;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn compute_factor_160(series: &SymbolSeries) -> Option<f64> {
+        last_opt(&series.factor_160_pct_change_mean)
+    }
+
+    fn compute_factor_165(series: &SymbolSeries) -> Option<f64> {
+        let n = series.ask0v.len();
+        if n < 2 {
+            return None;
+        }
+        let value = series.ask0v[n - 1] - series.ask0v[n - 2];
+        if value.is_finite() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn compute_factor_166(depth: &DepthSnapshot) -> Option<f64> {
+        let (_, bid0v) = depth_best_bid(depth);
+        let (ask0p, ask0v) = depth_best_ask(depth);
+        let depth_mean = (bid0v + ask0v) / 2.0;
+        if depth_mean.abs() <= 1e-12 {
+            return None;
+        }
+        let value = (ask0p - ask0v) / depth_mean;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn compute_factor_176(depth: &DepthSnapshot) -> Option<f64> {
+        let (_, bid0v) = depth_best_bid(depth);
+        let (_, ask0v) = depth_best_ask(depth);
+        if ask0v.abs() <= 1e-12 {
+            return None;
+        }
+        let value = bid0v / ask0v;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn compute_baseline_018(series: &SymbolSeries) -> Option<f64> {
+        let n = series.buy_volume.len().min(series.sell_volume.len());
+        if n <= 60 {
+            return None;
+        }
+        let mut ratio = Vec::with_capacity(n);
+        for i in 0..n {
+            let sell = series.sell_volume[i];
+            if sell.abs() <= 1e-12 {
+                ratio.push(f64::NAN);
+                continue;
+            }
+            ratio.push(series.buy_volume[i] / sell);
+        }
+        pct_change_last(&ratio, 60)
+    }
+
+    fn compute_baseline_034(series: &SymbolSeries) -> Option<f64> {
+        let n = series.close.len();
+        if n == 0 {
+            return None;
+        }
+        let fast = rolling_mean_series(&series.close, 12, 12).ok()?;
+        let slow = rolling_mean_series(&series.close, 26, 26).ok()?;
+        let macd: Vec<Option<f64>> = (0..n)
+            .map(|i| match (fast[i], slow[i]) {
+                (Some(f), Some(s)) => finite_opt(Some(f - s)),
+                _ => None,
+            })
+            .collect();
+        let signal = rolling_mean_series_opt(&macd, 9, 9).ok()?;
+        let smmao: Vec<Option<f64>> = macd
+            .iter()
+            .zip(signal.iter())
+            .map(|(m, s)| {
+                let m = finite_opt(*m)?;
+                let s = finite_opt(*s)?;
+                finite_opt(Some(m - 2.0 * s))
+            })
+            .collect();
+        last_opt(&smmao)
+    }
+
+    fn compute_baseline_045(series: &SymbolSeries) -> Option<f64> {
+        let n = series.buy_amount.len().min(series.sell_amount.len());
+        let window = 90;
+        if n < window {
+            return None;
+        }
+        let tail: Vec<f64> = (n - window..n)
+            .map(|i| series.buy_amount[i] - series.sell_amount[i])
+            .collect();
+        linear_regression_intercept(&tail)
+    }
+
+    fn compute_baseline_047(series: &SymbolSeries) -> Option<f64> {
+        let n = series.small_buy.len().min(series.small_sell.len());
+        if n < 300 {
+            return None;
+        }
+        let diff: Vec<f64> = (0..n)
+            .map(|i| series.small_buy[i] - series.small_sell[i])
+            .collect();
+        rolling_mean_last(&diff, 300).ok().flatten()
+    }
+
+    fn compute_baseline_080(series: &SymbolSeries) -> Option<f64> {
+        let n = series.high.len().min(series.low.len());
+        if n < 10 {
+            return None;
+        }
+        let highs = &series.high[..n];
+        let lows = &series.low[..n];
+        let corr = rolling_corr_last(highs, lows, 10, 1).ok().flatten()?;
+        let std_high = rolling_std_last(highs, 10).ok().flatten()?;
+        let std_low = rolling_std_last(lows, 10).ok().flatten()?;
+        if std_low.abs() <= 1e-12 {
+            return None;
+        }
+        let beta = corr * std_high / std_low;
+        if beta.is_finite() {
+            Some(beta)
+        } else {
+            None
+        }
+    }
+
+    fn compute_baseline_082(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .close
+            .len()
+            .min(series.low.len())
+            .min(series.buy_amount.len())
+            .min(series.sell_amount.len());
+        if n == 0 {
+            return None;
+        }
+        let den = series.sell_amount[n - 1] - series.buy_amount[n - 1];
+        if den.abs() <= 1e-12 {
+            return None;
+        }
+        let value = (series.close[n - 1] - series.low[n - 1]) / den;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn compute_baseline_135(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .high
+            .len()
+            .min(series.low.len())
+            .min(series.open.len())
+            .min(series.close.len());
+        if n == 0 {
+            return None;
+        }
+        let high = series.high[n - 1];
+        let low = series.low[n - 1];
+        let open = series.open[n - 1];
+        let close = series.close[n - 1];
+        let range = high - low;
+        let is_hangingman =
+            (range > 3.0 * (open - close).abs()) && ((close - high).abs() / (0.0001 + range) > 0.6);
+        Some(if is_hangingman { 1.0 } else { 0.0 })
+    }
+
+    fn compute_baseline_193(series: &SymbolSeries) -> Option<f64> {
+        let n = series.buy_amount.len().min(series.sell_amount.len());
+        if n == 0 {
+            return None;
+        }
+        let sell = series.sell_amount[n - 1];
+        if sell.abs() <= 1e-12 {
+            return None;
+        }
+        let value = series.buy_amount[n - 1] / sell;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn compute_baseline_004(series: &SymbolSeries) -> Option<f64> {
+        let s1 = rolling_mean_series(&series.close, 30, 30).ok()?;
+        let s2 = rolling_mean_series_opt(&s1, 30, 30).ok()?;
+        let s3 = rolling_mean_series_opt(&s2, 30, 30).ok()?;
+        let s4 = rolling_mean_series_opt(&s3, 30, 30).ok()?;
+        let s5 = rolling_mean_series_opt(&s4, 30, 30).ok()?;
+        let s6 = rolling_mean_series_opt(&s5, 30, 30).ok()?;
+        let v1 = last_opt(&s1)?;
+        let v2 = last_opt(&s2)?;
+        let v3 = last_opt(&s3)?;
+        let v4 = last_opt(&s4)?;
+        let v5 = last_opt(&s5)?;
+        let v6 = last_opt(&s6)?;
+        finite_opt(Some(
+            v1 - 2.0 * v2 + 3.0 * v3 - 4.0 * v4 + 5.0 * v5 - 6.0 * v6,
+        ))
+    }
+
+    fn compute_baseline_007(series: &SymbolSeries) -> Option<f64> {
+        let fast = rolling_mean_series(&series.net_buy_amount, 12, 12).ok()?;
+        let slow = rolling_mean_series(&series.net_buy_amount, 26, 26).ok()?;
+        let macd: Vec<Option<f64>> = (0..series.net_buy_amount.len())
+            .map(|i| match (fast[i], slow[i]) {
+                (Some(f), Some(s)) => finite_opt(Some(f - s)),
+                _ => None,
+            })
+            .collect();
+        let signal = rolling_mean_series_opt(&macd, 9, 9).ok()?;
+        last_opt(&signal)
+    }
+
+    fn compute_baseline_008(series: &SymbolSeries) -> Option<f64> {
+        let fast = rolling_mean_series(&series.large_buy, 12, 12).ok()?;
+        let slow = rolling_mean_series(&series.large_buy, 26, 26).ok()?;
+        let macd: Vec<Option<f64>> = (0..series.large_buy.len())
+            .map(|i| match (fast[i], slow[i]) {
+                (Some(f), Some(s)) => finite_opt(Some(f - s)),
+                _ => None,
+            })
+            .collect();
+        let signal = rolling_mean_series_opt(&macd, 9, 9).ok()?;
+        let hist: Vec<Option<f64>> = macd
+            .iter()
+            .zip(signal.iter())
+            .map(|(m, s)| {
+                let m = finite_opt(*m)?;
+                let s = finite_opt(*s)?;
+                finite_opt(Some(m - s))
+            })
+            .collect();
+        last_opt(&hist)
+    }
+
+    fn compute_baseline_016(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .high
+            .len()
+            .min(series.low.len())
+            .min(series.close.len());
+        if n < 14 {
+            return None;
+        }
+        let mut plus_dm = vec![0.0; n];
+        let mut minus_dm = vec![0.0; n];
+        let mut tr = vec![f64::NAN; n];
+        for i in 1..n {
+            let hd = series.high[i] - series.high[i - 1];
+            let ld = series.low[i] - series.low[i - 1];
+            plus_dm[i] = if hd > ld { hd } else { 0.0 };
+            minus_dm[i] = if ld > hd { ld } else { 0.0 };
+            tr[i] = (series.high[i] - series.low[i])
+                .max(series.high[i] - series.close[i - 1])
+                .max(series.low[i] - series.close[i - 1]);
+        }
+        let plus_ma = rolling_mean_series(&plus_dm, 14, 14).ok()?;
+        let minus_ma = rolling_mean_series(&minus_dm, 14, 14).ok()?;
+        let tr_ma = rolling_mean_series_opt(
+            &tr.iter()
+                .map(|v| if v.is_finite() { Some(*v) } else { None })
+                .collect::<Vec<_>>(),
+            14,
+            14,
+        )
+        .ok()?;
+        let dx: Vec<Option<f64>> = (0..n)
+            .map(|i| {
+                let p = finite_opt(plus_ma[i])?;
+                let m = finite_opt(minus_ma[i])?;
+                let t = finite_opt(tr_ma[i])?;
+                if t.abs() <= 1e-12 {
+                    return None;
+                }
+                let plus_di = 100.0 * p / t;
+                let minus_di = 100.0 * m / t;
+                let den = plus_di + minus_di;
+                if den.abs() <= 1e-12 {
+                    return None;
+                }
+                finite_opt(Some((plus_di - minus_di).abs() / den * 100.0))
+            })
+            .collect();
+        let adx = rolling_mean_series_opt(&dx, 14, 14).ok()?;
+        last_opt(&adx)
+    }
+
+    fn compute_baseline_028(series: &SymbolSeries) -> Option<f64> {
+        let n = series.close.len();
+        if n <= 30 {
+            return None;
+        }
+        let change = series.close[n - 1] - series.close[n - 1 - 30];
+        let mut abs_diff = Vec::with_capacity(n);
+        abs_diff.push(f64::NAN);
+        for i in 1..n {
+            abs_diff.push((series.close[i] - series.close[i - 1]).abs());
+        }
+        let volatility = tail_quantile_last(&abs_diff, 30, 0.3)?;
+        if volatility.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some(change / volatility))
+    }
+
+    fn compute_baseline_040(series: &SymbolSeries) -> Option<f64> {
+        let n = series.close.len().min(series.volume.len());
+        if n < 360 {
+            return None;
+        }
+        let mut x = Vec::with_capacity(n);
+        x.push(0.0);
+        for i in 1..n {
+            let prev = series.close[i - 1];
+            let delta = series.close[i] - series.close[i - 1];
+            let pct = if prev.abs() > 1e-12 {
+                delta / prev
+            } else {
+                0.0
+            };
+            x.push(pct * series.volume[i]);
+        }
+        rolling_sum_last_with_min_periods(&x, 360, 360)
+            .ok()
+            .flatten()
+    }
+
+    fn compute_baseline_046(series: &SymbolSeries) -> Option<f64> {
+        let n = series.large_buy.len().min(series.large_sell.len());
+        if n < 30 {
+            return None;
+        }
+        let tail: Vec<f64> = (n - 30..n)
+            .map(|i| series.large_buy[i] - series.large_sell[i])
+            .collect();
+        linear_regression_predict_last(&tail)
+    }
+
+    fn compute_baseline_073(series: &SymbolSeries) -> Option<f64> {
+        let std = sample_std_last(&series.close, 5, 5)?;
+        finite_opt(Some(std * std))
+    }
+
+    fn compute_baseline_076(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .high
+            .len()
+            .min(series.low.len())
+            .min(series.close.len());
+        if n < 14 {
+            return None;
+        }
+        let mut tr = Vec::with_capacity(n);
+        for i in 0..n {
+            let prev_close = if i == 0 {
+                series.close[n - 1]
+            } else {
+                series.close[i - 1]
+            };
+            let mut v = (series.high[i] - series.low[i]).max(0.0);
+            v = v.max((series.high[i] - prev_close).abs());
+            v = v.max((series.low[i] - prev_close).abs());
+            tr.push(v);
+        }
+        let atr = rolling_mean_last(&tr, 14).ok().flatten()?;
+        let close = series.close[n - 1];
+        if close.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some((atr / close) * 100.0))
+    }
+
+    fn compute_baseline_079(series: &SymbolSeries) -> Option<f64> {
+        rolling_corr_last(&series.close, &series.volume, 14, 1)
+            .ok()
+            .flatten()
+    }
+
+    fn compute_baseline_100(series: &SymbolSeries) -> Option<f64> {
+        rolling_mean_last(&series.close, 180).ok().flatten()
+    }
+
+    fn compute_baseline_113(series: &SymbolSeries) -> Option<f64> {
+        let n = series.high.len().min(series.low.len());
+        if n < 90 {
+            return None;
+        }
+        let mid_log: Vec<f64> = (0..n)
+            .map(|i| ((series.high[i] + series.low[i]) / 2.0).ln())
+            .collect();
+        tail_quantile_last(&mid_log, 90, 0.2)
+    }
+
+    fn compute_baseline_116(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .high
+            .len()
+            .min(series.low.len())
+            .min(series.close.len())
+            .min(series.volume.len());
+        if n < 14 {
+            return None;
+        }
+        let mut tp = Vec::with_capacity(n);
+        for i in 0..n {
+            tp.push((series.high[i] + series.low[i] + series.close[i]) / 3.0);
+        }
+        let mut pos = vec![0.0; n];
+        let mut neg = vec![0.0; n];
+        for i in 1..n {
+            let dt = tp[i] - tp[i - 1];
+            pos[i] = dt.max(0.0) * series.volume[i];
+            neg[i] = (-dt).max(0.0) * series.volume[i];
+        }
+        let pos_sum = rolling_sum_last_with_min_periods(&pos, 14, 14)
+            .ok()
+            .flatten()?;
+        let neg_sum = rolling_sum_last_with_min_periods(&neg, 14, 14)
+            .ok()
+            .flatten()?;
+        finite_opt(Some(pos_sum - neg_sum))
+    }
+
+    fn compute_baseline_117(series: &SymbolSeries) -> Option<f64> {
+        let n = series.close.len();
+        if n < 26 {
+            return None;
+        }
+        let mut pos = vec![0.0; n];
+        let mut neg = vec![0.0; n];
+        for i in 1..n {
+            let d = series.close[i] - series.close[i - 1];
+            if d > 0.0 {
+                pos[i] = d;
+            } else if d < 0.0 {
+                neg[i] = -d;
+            }
+        }
+        let pos_avg = rolling_mean_last(&pos, 12).ok().flatten()?;
+        let neg_avg = rolling_mean_last(&neg, 26).ok().flatten()?;
+        if neg_avg.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some(pos_avg / neg_avg))
+    }
+
+    fn compute_baseline_120(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .high
+            .len()
+            .min(series.low.len())
+            .min(series.close.len());
+        if n < 350 {
+            return None;
+        }
+        let mut wcl = Vec::with_capacity(n);
+        for i in 0..n {
+            wcl.push((series.high[i] + series.low[i] + 2.0 * series.close[i]) / 4.0);
+        }
+        let mut pct = vec![f64::NAN; n];
+        for i in 50..n {
+            let prev = wcl[i - 50];
+            if prev.abs() > 1e-12 {
+                pct[i] = (wcl[i] - prev) / prev;
+            }
+        }
+        let tail: Vec<f64> = pct[n - 300..n].to_vec();
+        if tail.iter().filter(|v| v.is_finite()).count() < 300 {
+            return None;
+        }
+        let mean = tail.iter().sum::<f64>() / 300.0;
+        finite_opt(Some(mean))
+    }
+
+    fn compute_baseline_134(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .high
+            .len()
+            .min(series.low.len())
+            .min(series.open.len())
+            .min(series.close.len());
+        if n == 0 {
+            return None;
+        }
+        let h = series.high[n - 1];
+        let l = series.low[n - 1];
+        let o = series.open[n - 1];
+        let c = series.close[n - 1];
+        let range = h - l;
+        let is_hammer = (range > 3.0 * (o - c))
+            && ((c - l) / (0.001 + range) > 0.6)
+            && ((o - l) / (0.001 + range) > 0.6);
+        Some(if is_hammer { 1.0 } else { 0.0 })
+    }
+
+    fn compute_baseline_137(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .close
+            .len()
+            .min(series.open.len())
+            .min(series.volume.len());
+        if n == 0 {
+            return None;
+        }
+        let den = series.volume[n - 1];
+        if den.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some((series.close[n - 1] - series.open[n - 1]) / den))
+    }
+
+    fn compute_baseline_140(series: &SymbolSeries) -> Option<f64> {
+        let n = series.low.len().min(series.close.len());
+        if n < 60 {
+            return None;
+        }
+        let low_min = series.low[n - 60..n]
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        finite_opt(Some(low_min - series.close[n - 1]))
+    }
+
+    fn compute_baseline_141(series: &SymbolSeries) -> Option<f64> {
+        let n = series.high.len().min(series.close.len());
+        if n < 60 {
+            return None;
+        }
+        let high_max = series.high[n - 60..n]
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        finite_opt(Some(high_max - series.close[n - 1]))
+    }
+
+    fn compute_baseline_163(series: &SymbolSeries) -> Option<f64> {
+        let n = series.close.len();
+        if n < 30 {
+            return None;
+        }
+        let min_close = series.close[n - 30..n]
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        let den = series.close[n - 1];
+        if den.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some((min_close - den) / den))
+    }
+
+    fn compute_baseline_164(series: &SymbolSeries) -> Option<f64> {
+        let n = series.close.len();
+        if n < 30 {
+            return None;
+        }
+        let max_close = series.close[n - 30..n]
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        let den = series.close[n - 1];
+        if den.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some((max_close - den) / den))
+    }
+
+    fn compute_baseline_172(series: &SymbolSeries) -> Option<f64> {
+        // Same ADX-style approximation as baseline_172 python formula.
+        let n = series
+            .high
+            .len()
+            .min(series.low.len())
+            .min(series.close.len());
+        if n < 14 {
+            return None;
+        }
+        let mut plus_dm = vec![0.0; n];
+        let mut minus_dm = vec![0.0; n];
+        let mut tr = vec![f64::NAN; n];
+        for i in 1..n {
+            plus_dm[i] = (series.high[i] - series.high[i - 1]).max(0.0);
+            minus_dm[i] = (series.low[i - 1] - series.low[i]).max(0.0);
+            tr[i] = (series.high[i] - series.low[i])
+                .max((series.high[i] - series.close[i - 1]).abs())
+                .max((series.low[i] - series.close[i - 1]).abs());
+        }
+        let plus_ma = rolling_mean_series(&plus_dm, 14, 14).ok()?;
+        let minus_ma = rolling_mean_series(&minus_dm, 14, 14).ok()?;
+        let tr_ma = rolling_mean_series_opt(
+            &tr.iter()
+                .map(|v| if v.is_finite() { Some(*v) } else { None })
+                .collect::<Vec<_>>(),
+            14,
+            14,
+        )
+        .ok()?;
+        let dx: Vec<Option<f64>> = (0..n)
+            .map(|i| {
+                let p = finite_opt(plus_ma[i])?;
+                let m = finite_opt(minus_ma[i])?;
+                let t = finite_opt(tr_ma[i])?;
+                if t.abs() <= 1e-12 {
+                    return None;
+                }
+                let plus_di = 100.0 * p / t;
+                let minus_di = 100.0 * m / t;
+                let den = plus_di + minus_di;
+                if den.abs() <= 1e-12 {
+                    return None;
+                }
+                finite_opt(Some((plus_di - minus_di).abs() / den * 100.0))
+            })
+            .collect();
+        let adx = rolling_mean_series_opt(&dx, 14, 14).ok()?;
+        last_opt(&adx)
+    }
+
+    fn compute_baseline_177(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .high
+            .len()
+            .min(series.low.len())
+            .min(series.close.len());
+        if n < 125 {
+            return None;
+        }
+        let hl: Vec<f64> = (0..n).map(|i| series.high[i] + series.low[i]).collect();
+        let mut diff5 = vec![f64::NAN; n];
+        for i in 5..n {
+            diff5[i] = hl[i] - hl[i - 5];
+        }
+        let tail: Vec<f64> = diff5[n - 120..n].to_vec();
+        if tail.iter().filter(|v| v.is_finite()).count() < 120 {
+            return None;
+        }
+        let den = tail.iter().sum::<f64>() / 120.0;
+        if den.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some((series.high[n - 1] - series.close[n - 1]) / den))
+    }
+
+    fn compute_baseline_178(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .high
+            .len()
+            .min(series.low.len())
+            .min(series.close.len());
+        if n < 33 {
+            return None;
+        }
+        let hl: Vec<f64> = (0..n).map(|i| series.high[i] + series.low[i]).collect();
+        let mut diff3 = vec![f64::NAN; n];
+        for i in 3..n {
+            diff3[i] = hl[i] - hl[i - 3];
+        }
+        let tail: Vec<f64> = diff3[n - 30..n].to_vec();
+        if tail.iter().filter(|v| v.is_finite()).count() < 30 {
+            return None;
+        }
+        let den = tail.iter().sum::<f64>() / 30.0;
+        if den.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some((series.close[n - 1] - series.low[n - 1]) / den))
+    }
+
+    fn compute_baseline_189(series: &SymbolSeries) -> Option<f64> {
+        let short = rolling_mean_series(&series.close, 20, 20).ok()?;
+        let long = rolling_mean_series(&series.close, 90, 90).ok()?;
+        let x: Vec<f64> = (0..series.close.len())
+            .map(|i| match (short[i], long[i]) {
+                (Some(s), Some(l)) => s - l,
+                _ => f64::NAN,
+            })
+            .collect();
+        let y: Vec<f64> = long.iter().map(|v| v.unwrap_or(f64::NAN)).collect();
+        corr_last_with_min_periods(&x, &y, 100, 30)
+    }
+
+    fn compute_baseline_191(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .high
+            .len()
+            .min(series.low.len())
+            .min(series.close.len());
+        if n < 16 {
+            return None;
+        }
+        let mut fastk = vec![f64::NAN; n];
+        for i in 13..n {
+            let low_min = series.low[i + 1 - 14..i + 1]
+                .iter()
+                .copied()
+                .fold(f64::INFINITY, f64::min);
+            let high_max = series.high[i + 1 - 14..i + 1]
+                .iter()
+                .copied()
+                .fold(f64::NEG_INFINITY, f64::max);
+            let den = high_max - low_min;
+            if den.abs() > 1e-12 {
+                fastk[i] = 100.0 * (series.close[i] - low_min) / den;
+            }
+        }
+        let slowk = rolling_mean_series_opt(
+            &fastk
+                .iter()
+                .map(|v| if v.is_finite() { Some(*v) } else { None })
+                .collect::<Vec<_>>(),
+            3,
+            3,
+        )
+        .ok()?;
+        let slowd = rolling_mean_series_opt(&slowk, 3, 3).ok()?;
+        let k = last_opt(&slowk)?;
+        let d = last_opt(&slowd)?;
+        finite_opt(Some(k - d))
+    }
+
+    fn compute_baseline_196(series: &SymbolSeries) -> Option<f64> {
+        pct_change_last(&series.large_buy, 10)
+    }
+
+    fn compute_td_ti_010(series: &SymbolSeries) -> Option<f64> {
+        let ema1 = rolling_mean_series(&series.close, 30, 30).ok()?;
+        let ema2 = rolling_mean_series_opt(&ema1, 30, 30).ok()?;
+        let ema3 = rolling_mean_series_opt(&ema2, 30, 30).ok()?;
+        last_opt(&ema3)
+    }
+
+    fn compute_td_ti_015(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .close
+            .len()
+            .min(series.open.len())
+            .min(series.high.len())
+            .min(series.low.len());
+        if n < 39 {
+            return None;
+        }
+        let ratio1: Vec<f64> = (0..n)
+            .map(|i| {
+                let den = series.open[i];
+                if den.abs() > 1e-12 {
+                    series.close[i] / den
+                } else {
+                    f64::NAN
+                }
+            })
+            .collect();
+        let ratio2: Vec<f64> = (0..n)
+            .map(|i| {
+                let den = series.low[i];
+                if den.abs() > 1e-12 {
+                    series.high[i] / den
+                } else {
+                    f64::NAN
+                }
+            })
+            .collect();
+        let mut sum = 0.0;
+        for j in n - 20..n {
+            let mb = sample_std_last(&ratio1[..=j], 20, 20)?;
+            let sd = sample_std_last(&ratio2[..=j], 20, 20)?;
+            sum += mb - sd;
+        }
+        finite_opt(Some(sum))
+    }
+
+    fn compute_td_ti_031(series: &SymbolSeries) -> Option<f64> {
+        corr_last_with_min_periods(&series.large_order, &series.small_order, 60, 10)
+    }
+
+    fn compute_td_ti_036(series: &SymbolSeries) -> Option<f64> {
+        let n = series.high.len();
+        let period = 14usize;
+        if n < period + 1 {
+            return None;
+        }
+        let tail = &series.high[n - (period + 1)..n];
+        let mut argmax = 0usize;
+        let mut best = f64::NEG_INFINITY;
+        for (i, v) in tail.iter().enumerate() {
+            if *v > best {
+                best = *v;
+                argmax = i;
+            }
+        }
+        finite_opt(Some(100.0 * argmax as f64 / period as f64))
+    }
+
+    fn compute_td_ti_037(series: &SymbolSeries) -> Option<f64> {
+        let n = series.low.len();
+        let period = 14usize;
+        if n < period + 1 {
+            return None;
+        }
+        let tail = &series.low[n - (period + 1)..n];
+        let mut argmin = 0usize;
+        let mut best = f64::INFINITY;
+        for (i, v) in tail.iter().enumerate() {
+            if *v < best {
+                best = *v;
+                argmin = i;
+            }
+        }
+        finite_opt(Some(100.0 * argmin as f64 / period as f64))
+    }
+
+    fn compute_td_mt_003(series: &SymbolSeries) -> Option<f64> {
+        let n = series.close.len();
+        if n < 90 {
+            return None;
+        }
+        let mut sum = 0.0;
+        for i in n - 30..n {
+            sum += series.close[i] - series.close[i - 60];
+        }
+        finite_opt(Some(sum / 30.0))
+    }
+
+    fn compute_td_mt_008(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .high
+            .len()
+            .min(series.low.len())
+            .min(series.close.len());
+        if n < 14 {
+            return None;
+        }
+        let mut plus_dm = vec![0.0; n];
+        let mut minus_dm = vec![0.0; n];
+        let mut tr = vec![f64::NAN; n];
+        for i in 1..n {
+            let hd = series.high[i] - series.high[i - 1];
+            let ld = series.low[i] - series.low[i - 1];
+            plus_dm[i] = if hd > ld { hd } else { 0.0 };
+            minus_dm[i] = if ld > hd { ld } else { 0.0 };
+            tr[i] = (series.high[i] - series.low[i])
+                .max((series.high[i] - series.close[i - 1]).abs())
+                .max((series.low[i] - series.close[i - 1]).abs());
+        }
+        let plus_ma = rolling_mean_last(&plus_dm, 14).ok().flatten()?;
+        let minus_ma = rolling_mean_last(&minus_dm, 14).ok().flatten()?;
+        let tr_ma = rolling_mean_last_with_min_periods(
+            &tr.iter()
+                .map(|v| if v.is_finite() { *v } else { f64::NAN })
+                .collect::<Vec<_>>(),
+            14,
+            14,
+        )
+        .ok()
+        .flatten()?;
+        if tr_ma.abs() <= 1e-12 {
+            return None;
+        }
+        let plus_di = 100.0 * plus_ma / tr_ma;
+        let minus_di = 100.0 * minus_ma / tr_ma;
+        let den = plus_di + minus_di;
+        if den.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some((plus_di - minus_di).abs() / den * 100.0))
+    }
+
+    fn compute_td_mt_014(series: &SymbolSeries) -> Option<f64> {
+        let n = series.close.len();
+        if n == 0 {
+            return None;
+        }
+        let fast = rolling_mean_series(&series.close, 12, 1).ok()?;
+        let slow = rolling_mean_series(&series.close, 26, 1).ok()?;
+        let macd: Vec<Option<f64>> = (0..n)
+            .map(|i| match (fast[i], slow[i]) {
+                (Some(f), Some(s)) => finite_opt(Some(f - s)),
+                _ => None,
+            })
+            .collect();
+        let signal = rolling_mean_series_opt(&macd, 9, 1).ok()?;
+        let m = last_opt(&macd)?;
+        let s = last_opt(&signal)?;
+        finite_opt(Some(m - s))
+    }
+
+    fn compute_td_mt_015(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .high
+            .len()
+            .min(series.low.len())
+            .min(series.close.len());
+        if n < 14 {
+            return None;
+        }
+        let mut minus_dm = vec![0.0; n];
+        let mut tr = vec![f64::NAN; n];
+        for i in 1..n {
+            let hd = series.high[i] - series.high[i - 1];
+            let ld = series.low[i] - series.low[i - 1];
+            minus_dm[i] = if ld > hd { ld } else { 0.0 };
+            tr[i] = (series.high[i] - series.low[i])
+                .max((series.high[i] - series.close[i - 1]).abs())
+                .max((series.low[i] - series.close[i - 1]).abs());
+        }
+        let m = rolling_mean_last(&minus_dm, 14).ok().flatten()?;
+        let t = rolling_mean_last_with_min_periods(
+            &tr.iter()
+                .map(|v| if v.is_finite() { *v } else { f64::NAN })
+                .collect::<Vec<_>>(),
+            14,
+            14,
+        )
+        .ok()
+        .flatten()?;
+        if t.abs() <= 1e-12 {
+            return None;
+        }
+        finite_opt(Some(100.0 * m / t))
+    }
+
+    fn compute_td_mt_039(series: &SymbolSeries) -> Option<f64> {
+        let n = series.close.len().min(series.low.len());
+        if n < 10 {
+            return None;
+        }
+        let mut sum = 0.0;
+        for i in n - 10..n {
+            sum += series.close[i] - series.low[i];
+        }
+        finite_opt(Some(sum))
+    }
+
+    fn compute_td_vi_010(series: &SymbolSeries) -> Option<f64> {
+        let n = series.high.len().min(series.low.len());
+        if n < 2 {
+            return None;
+        }
+        let hd = series.high[n - 1] - series.high[n - 2];
+        let ld = series.low[n - 1] - series.low[n - 2];
+        finite_opt(Some(if hd > ld { hd } else { 0.0 }))
+    }
+
+    fn compute_td_vi_011(series: &SymbolSeries) -> Option<f64> {
+        let n = series.high.len().min(series.low.len());
+        if n < 2 {
+            return None;
+        }
+        let mut plus_dm = vec![0.0; n];
+        for (i, v) in plus_dm.iter_mut().enumerate().take(n).skip(1) {
+            let hd = series.high[i] - series.high[i - 1];
+            let ld = series.low[i] - series.low[i - 1];
+            *v = if hd > ld { hd } else { 0.0 };
+        }
+        rolling_sum_last_with_min_periods(&plus_dm, 14, 1)
+            .ok()
+            .flatten()
+    }
+
+    fn compute_td_vi_025(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .high
+            .len()
+            .min(series.low.len())
+            .min(series.close.len());
+        if n < 2 {
+            return None;
+        }
+        let mut bp = vec![0.0; n];
+        let mut tr = vec![0.0; n];
+        for i in 1..n {
+            bp[i] = series.close[i] - series.low[i].min(series.close[i - 1]);
+            tr[i] = (series.high[i] - series.low[i])
+                .max((series.high[i] - series.close[i - 1]).abs())
+                .max((series.low[i] - series.close[i - 1]).abs());
+        }
+        let avg = |w: usize| -> Option<f64> {
+            let b = rolling_sum_last_with_min_periods(&bp, w, 1)
+                .ok()
+                .flatten()?;
+            let t = rolling_sum_last_with_min_periods(&tr, w, 1)
+                .ok()
+                .flatten()?;
+            if t.abs() <= 1e-12 {
+                None
+            } else {
+                Some(b / t)
+            }
+        };
+        let a7 = avg(7)?;
+        let a14 = avg(14)?;
+        let a28 = avg(28)?;
+        finite_opt(Some((4.0 * a7 + 2.0 * a14 + a28) / 7.0))
+    }
+
+    fn compute_td_vi_026(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .high
+            .len()
+            .min(series.low.len())
+            .min(series.close.len())
+            .min(series.open.len());
+        if n == 0 {
+            return None;
+        }
+        let mut x = Vec::with_capacity(n);
+        for i in 0..n {
+            let upper = series.high[i] - series.close[i].max(series.open[i]);
+            let lower = series.close[i].min(series.open[i]) - series.low[i];
+            let body = (series.close[i] - series.open[i]).abs();
+            x.push(upper - lower - body);
+        }
+        rolling_sum_last_with_min_periods(&x, 14, 1).ok().flatten()
+    }
+
+    fn compute_td_vi_028(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .high
+            .len()
+            .min(series.close.len())
+            .min(series.open.len());
+        if n == 0 {
+            return None;
+        }
+        let x: Vec<f64> = (0..n)
+            .map(|i| series.high[i] - series.close[i].max(series.open[i]))
+            .collect();
+        rolling_sum_last_with_min_periods(&x, 14, 1).ok().flatten()
+    }
+
+    fn compute_td_pt_001(series: &SymbolSeries) -> Option<f64> {
+        finite_opt(series.close.last().copied().map(f64::sin))
+    }
+
+    fn compute_td_pt_002(series: &SymbolSeries) -> Option<f64> {
+        finite_opt(series.close.last().copied().map(f64::cos))
+    }
+
+    fn compute_td_pt_010(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .close
+            .len()
+            .min(series.high.len())
+            .min(series.low.len());
+        if n < 15 {
+            return None;
+        }
+        let mid = (series.close[n - 1] + series.high[n - 1] + series.low[n - 1]) / 3.0;
+        let llv_low = series.low[n - 15..n]
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        let llv_high = series.high[n - 15..n]
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        let zc2 = mid - llv_high + llv_low;
+        finite_opt(Some(series.close[n - 1] - zc2))
+    }
+
+    fn compute_td_pt_027(series: &SymbolSeries) -> Option<f64> {
+        let n = series.close.len();
+        if n < 14 {
+            return None;
+        }
+        let tail = &series.close[n - 14..n];
+        let mut idx = 0usize;
+        let mut best = f64::INFINITY;
+        for (i, v) in tail.iter().enumerate() {
+            if *v < best {
+                best = *v;
+                idx = i;
+            }
+        }
+        Some(idx as f64)
+    }
+
+    fn compute_td_ci_007(series: &SymbolSeries) -> Option<f64> {
+        let ma = rolling_mean_last_with_min_periods(&series.close, 30, 1)
+            .ok()
+            .flatten()?;
+        finite_opt(Some(ma.sin()))
+    }
+
+    fn compute_td_ci_008(series: &SymbolSeries) -> Option<f64> {
+        let ma = rolling_mean_last_with_min_periods(&series.close, 30, 1)
+            .ok()
+            .flatten()?;
+        finite_opt(Some(ma.cos()))
+    }
+
+    fn compute_td_pr_001(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .close
+            .len()
+            .min(series.open.len())
+            .min(series.high.len())
+            .min(series.low.len());
+        if n == 0 {
+            return None;
+        }
+        let i = n - 1;
+        let body = (series.close[i] - series.open[i]).abs();
+        let upper = series.high[i] - series.close[i].max(series.open[i]);
+        let lower = series.close[i].min(series.open[i]) - series.low[i];
+        let inv_hammer = (upper > 2.0 * body) && (lower < 0.1 * body);
+        Some(if inv_hammer { 1.0 } else { 0.0 })
+    }
+
+    fn compute_td_pr_002(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .close
+            .len()
+            .min(series.open.len())
+            .min(series.high.len())
+            .min(series.low.len());
+        if n == 0 {
+            return None;
+        }
+        let i = n - 1;
+        let body = (series.close[i] - series.open[i]).abs();
+        let upper = series.high[i] - series.close[i].max(series.open[i]);
+        let lower = series.close[i].min(series.open[i]) - series.low[i];
+        let hammer = (lower > 2.0 * body) && (upper < 0.1 * body);
+        Some(if hammer { 1.0 } else { 0.0 })
+    }
+
+    fn compute_td_pr_007(series: &SymbolSeries) -> Option<f64> {
+        let n = series.close.len().min(series.open.len());
+        if n < 2 {
+            return None;
+        }
+        let i = n - 1;
+        let prev_bull = series.close[i - 1] > series.open[i - 1];
+        let open_gap = series.open[i] > series.close[i - 1];
+        let prev_mid = series.open[i - 1] + (series.close[i - 1] - series.open[i - 1]) / 2.0;
+        let close_below_mid = series.close[i] < prev_mid;
+        let curr_bear = series.close[i] < series.open[i];
+        Some(if prev_bull && open_gap && close_below_mid && curr_bear {
+            1.0
+        } else {
+            0.0
+        })
+    }
+
+    fn compute_td_pr_015(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .open
+            .len()
+            .min(series.low.len())
+            .min(series.high.len());
+        if n == 0 {
+            return None;
+        }
+        let i = n - 1;
+        Some(
+            if series.open[i] == series.low[i] || series.open[i] == series.high[i] {
+                100.0
+            } else {
+                0.0
+            },
+        )
+    }
+
+    fn compute_td_pr_016(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .open
+            .len()
+            .min(series.close.len())
+            .min(series.volume.len());
+        if n < 90 {
+            return None;
+        }
+        let i = n - 1;
+        let oc = series.open[i] - series.close[i];
+        let var1 = if oc > 0.0 {
+            -1.0
+        } else if oc < 0.0 {
+            1.0
+        } else {
+            0.0
+        };
+        let oc_ma = rolling_mean_last(
+            &(0..n)
+                .map(|k| series.open[k] - series.close[k])
+                .collect::<Vec<_>>(),
+            90,
+        )
+        .ok()
+        .flatten()?;
+        let vol_ma = rolling_mean_last(&series.volume, 90).ok().flatten()?;
+        if oc_ma.abs() <= 1e-12 || vol_ma.abs() <= 1e-12 {
+            return None;
+        }
+        let var2 = oc / oc_ma;
+        let var3 = series.volume[i] / vol_ma;
+        finite_opt(Some(var1 * var2 * var3))
+    }
+
+    fn compute_td_pr_017(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .open
+            .len()
+            .min(series.close.len())
+            .min(series.low.len())
+            .min(series.high.len());
+        if n == 0 {
+            return None;
+        }
+        let i = n - 1;
+        let range = series.high[i] - series.low[i];
+        let takuri = (series.open[i] == series.close[i])
+            && (series.low[i] < series.open[i])
+            && (series.close[i] - series.low[i] > 0.5 * range);
+        Some(if takuri { 100.0 } else { 0.0 })
+    }
+
+    fn compute_tp_vpi_006(series: &SymbolSeries) -> Option<f64> {
+        let n = series.close.len().min(series.volume.len());
+        if n < 373 {
+            return None;
+        }
+        let mut obv_delta = Vec::with_capacity(n);
+        obv_delta.push(0.0);
+        for i in 1..n {
+            let d = series.close[i] - series.close[i - 1];
+            let v = if d > 0.0 {
+                series.volume[i]
+            } else if d < 0.0 {
+                -series.volume[i]
+            } else {
+                0.0
+            };
+            obv_delta.push(v);
+        }
+        let obv = rolling_sum_series(&obv_delta, 360, 360).ok()?;
+        let ma = rolling_mean_series_opt(&obv, 14, 14).ok()?;
+        last_opt(&ma)
+    }
+
+    fn compute_tp_vpi_014(series: &SymbolSeries) -> Option<f64> {
+        let n = series.volume.len();
+        if n < 39 {
+            return None;
+        }
+        let vol_ma = rolling_mean_series(&series.volume, 20, 20).ok()?;
+        let ratio: Vec<Option<f64>> = (0..n)
+            .map(|i| {
+                let m = finite_opt(vol_ma[i])?;
+                if m.abs() <= 1e-12 {
+                    return None;
+                }
+                finite_opt(Some(series.volume[i] / m))
+            })
+            .collect();
+        let ratio_ma = rolling_mean_series_opt(&ratio, 20, 20).ok()?;
+        last_opt(&ratio_ma)
+    }
+
+    fn compute_tp_vpi_017(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .high
+            .len()
+            .min(series.low.len())
+            .min(series.close.len())
+            .min(series.volume.len());
+        if n < 14 {
+            return None;
+        }
+        let mut pos = vec![0.0; n];
+        let mut neg = vec![0.0; n];
+        let mut tp = Vec::with_capacity(n);
+        for i in 0..n {
+            tp.push((series.high[i] + series.low[i] + series.close[i]) / 3.0);
+        }
+        for i in 1..n {
+            let money_flow = tp[i] * series.volume[i];
+            if series.close[i] - series.close[i - 1] > 0.0 {
+                pos[i] = money_flow;
+            } else if series.close[i] - series.close[i - 1] < 0.0 {
+                neg[i] = money_flow;
+            }
+        }
+        let pos_sum = rolling_sum_last_with_min_periods(&pos, 14, 14)
+            .ok()
+            .flatten()?;
+        let neg_sum = rolling_sum_last_with_min_periods(&neg, 14, 14)
+            .ok()
+            .flatten()?;
+        finite_opt(Some(pos_sum - neg_sum))
+    }
+
+    fn compute_td_ti_026(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .close
+            .len()
+            .min(series.high.len())
+            .min(series.low.len());
+        if n == 0 {
+            return None;
+        }
+        let close_last = series.close[n - 1];
+        let close_prev = if n >= 2 {
+            series.close[n - 2]
+        } else {
+            f64::NAN
+        };
+        let sar = if close_prev < close_last {
+            series.high[n - 1]
+        } else {
+            series.low[n - 1]
+        };
+        let value = close_last - sar;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn compute_td_ti_033(series: &SymbolSeries) -> Option<f64> {
+        let n = series.open.len().min(series.volume.len());
+        if n < 100 {
+            return None;
+        }
+        let window = n.min(300);
+        rolling_corr_last(&series.open[..n], &series.volume[..n], window, 1)
+            .ok()
+            .flatten()
+    }
+
+    fn compute_td_ti_034(series: &SymbolSeries) -> Option<f64> {
+        let n = series.net_buy_large.len().min(series.net_buy_small.len());
+        if n < 2 {
+            return None;
+        }
+        let high_diff = series.net_buy_large[n - 1] - series.net_buy_large[n - 2];
+        let low_diff = series.net_buy_small[n - 1] - series.net_buy_small[n - 2];
+        let value = high_diff / low_diff;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn compute_tp_vpi_004(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .close
+            .len()
+            .min(series.high.len())
+            .min(series.low.len())
+            .min(series.volume.len());
+        if n == 0 {
+            return None;
+        }
+
+        let mut clv_x = Vec::with_capacity(n);
+        for i in 0..n {
+            let den = series.high[i] - series.low[i];
+            let raw =
+                ((series.close[i] - series.low[i]) - (series.high[i] - series.close[i])) / den;
+            let clv = if raw.is_finite() { raw } else { 0.0 };
+            clv_x.push(clv * series.volume[i]);
+        }
+        let clv_x_opt: Vec<Option<f64>> = clv_x
+            .into_iter()
+            .map(|v| if v.is_finite() { Some(v) } else { None })
+            .collect();
+        let ad = rolling_sum_series_opt(&clv_x_opt, 360, 360).ok()?;
+        let fast = rolling_mean_series_opt(&ad, 12, 1).ok()?;
+        let slow = rolling_mean_series_opt(&ad, 26, 1).ok()?;
+        let value = last_opt(&fast)? - last_opt(&slow)?;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn compute_tp_vpi_001(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .close
+            .len()
+            .min(series.high.len())
+            .min(series.low.len())
+            .min(series.volume.len());
+        if n == 0 {
+            return None;
+        }
+
+        let mut clv_x = Vec::with_capacity(n);
+        for i in 0..n {
+            let den = series.high[i] - series.low[i];
+            let raw =
+                ((series.close[i] - series.low[i]) - (series.high[i] - series.close[i])) / den;
+            clv_x.push(if raw.is_finite() {
+                raw * series.volume[i]
+            } else {
+                f64::NAN
+            });
+        }
+        let clv_x_opt: Vec<Option<f64>> = clv_x
+            .into_iter()
+            .map(|v| if v.is_finite() { Some(v) } else { None })
+            .collect();
+        let ad = rolling_sum_series_opt(&clv_x_opt, 360, 360).ok()?;
+        last_opt(&ad)
+    }
+
+    fn compute_tp_vpi_002(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .close
+            .len()
+            .min(series.high.len())
+            .min(series.low.len())
+            .min(series.volume.len());
+        if n == 0 {
+            return None;
+        }
+
+        let mut clv_x = Vec::with_capacity(n);
+        for i in 0..n {
+            let den = series.high[i] - series.low[i];
+            let raw =
+                ((series.close[i] - series.low[i]) - (series.high[i] - series.close[i])) / den;
+            clv_x.push(if raw.is_finite() {
+                raw * series.volume[i]
+            } else {
+                f64::NAN
+            });
+        }
+        let clv_x_opt: Vec<Option<f64>> = clv_x
+            .into_iter()
+            .map(|v| if v.is_finite() { Some(v) } else { None })
+            .collect();
+        let ad = rolling_sum_series_opt(&clv_x_opt, 360, 360).ok()?;
+        let ad_ma = rolling_mean_series_opt(&ad, 14, 14).ok()?;
+        last_opt(&ad_ma)
+    }
+
+    fn compute_tp_vpi_005(series: &SymbolSeries) -> Option<f64> {
+        let n = series.close.len().min(series.volume.len());
+        if n == 0 {
+            return None;
+        }
+
+        let mut obv_delta = Vec::with_capacity(n);
+        obv_delta.push(0.0);
+        for i in 1..n {
+            let price_diff = series.close[i] - series.close[i - 1];
+            let delta = if price_diff > 0.0 {
+                series.volume[i]
+            } else if price_diff < 0.0 {
+                -series.volume[i]
+            } else {
+                0.0
+            };
+            obv_delta.push(delta);
+        }
+        let obv = rolling_sum_series(&obv_delta, 360, 360).ok()?;
+        last_opt(&obv)
+    }
+
+    fn compute_tp_vpi_015(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .close
+            .len()
+            .min(series.open.len())
+            .min(series.volume.len());
+        if n == 0 {
+            return None;
+        }
+        let value = (series.close[n - 1] - series.open[n - 1]) / series.volume[n - 1];
+        if value.is_finite() {
+            Some(value)
+        } else {
+            Some(0.0)
+        }
+    }
+
+    fn compute_td_pt_003(series: &SymbolSeries) -> Option<f64> {
+        let n = series.amount.len().min(series.volume.len());
+        if n == 0 {
+            return None;
+        }
+
+        let vwap: Vec<Option<f64>> = (0..n)
+            .map(|i| {
+                let vol = series.volume[i];
+                if vol.abs() > 1e-12 {
+                    let value = series.amount[i] / vol;
+                    finite_opt(Some(value))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let numerator = rolling_mean_series_opt(&vwap, 6, 6).ok()?;
+        let amount_roll = rolling_sum_series(&series.amount[..n], 6, 6).ok()?;
+        let volume_roll = rolling_sum_series(&series.volume[..n], 6, 6).ok()?;
+
+        let denominator: Vec<Option<f64>> = amount_roll
+            .iter()
+            .zip(volume_roll.iter())
+            .map(|(a, v)| {
+                let a = finite_opt(*a)?;
+                let v = finite_opt(*v)?;
+                if v.abs() > 1e-12 {
+                    finite_opt(Some(a / v))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let apb: Vec<Option<f64>> = numerator
+            .iter()
+            .zip(denominator.iter())
+            .map(|(num, den)| {
+                let num = finite_opt(*num)?;
+                let den = finite_opt(*den)?;
+                if den.abs() <= 1e-12 {
+                    return None;
+                }
+                let ratio = num / den;
+                if ratio > 0.0 {
+                    finite_opt(Some(ratio.ln()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let apb_roll = rolling_mean_series_opt(&apb, 18, 18).ok()?;
+        last_opt(&apb_roll)
+    }
+
+    fn compute_td_pt_004(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .close
+            .len()
+            .min(series.open.len())
+            .min(series.high.len())
+            .min(series.low.len())
+            .min(series.volume.len());
+        if n == 0 {
+            return None;
+        }
+
+        let vol_ma = rolling_mean_series(&series.volume[..n], 120, 120).ok()?;
+        let var1: Vec<Option<f64>> = (0..n)
+            .map(|i| {
+                let hl = series.high[i] - series.low[i];
+                let vol_ma_i = finite_opt(vol_ma[i])?;
+                if hl.abs() <= 1e-12 || vol_ma_i.abs() <= 1e-12 {
+                    return None;
+                }
+                let value = (series.close[i] - series.open[i]) / hl * (series.volume[i] / vol_ma_i);
+                finite_opt(Some(value))
+            })
+            .collect();
+
+        let accum = rolling_sum_series_opt(&var1, 60, 60).ok()?;
+        let sma_fast = rolling_mean_series_opt(&accum, 9, 1).ok()?;
+        let sma_slow = rolling_mean_series_opt(&accum, 25, 1).ok()?;
+        let raw = match (last_opt(&sma_fast), last_opt(&sma_slow)) {
+            (Some(f), Some(s)) => f - s,
+            _ => 0.0,
+        };
+        if raw.is_finite() {
+            Some(raw)
+        } else if raw.is_sign_positive() {
+            Some(f64::MAX)
+        } else if raw.is_sign_negative() {
+            Some(f64::MIN)
+        } else {
+            Some(0.0)
+        }
+    }
+
+    fn compute_td_ci_003(series: &SymbolSeries) -> Option<f64> {
+        let n = series.close.len();
+        if n == 0 {
+            return None;
+        }
+
+        let mut close_diff: Vec<Option<f64>> = Vec::with_capacity(n);
+        close_diff.push(None);
+        for i in 1..n {
+            close_diff.push(finite_opt(Some(series.close[i] - series.close[i - 1])));
+        }
+
+        let diff_sma = rolling_mean_series_opt(&close_diff, 30, 1).ok()?;
+        let close_sma = rolling_mean_series(&series.close, 30, 1).ok()?;
+        let phase: Vec<Option<f64>> = diff_sma
+            .iter()
+            .zip(close_sma.iter())
+            .map(|(d, c)| {
+                let d = finite_opt(*d)?;
+                let c = finite_opt(*c)?;
+                if c.abs() <= 1e-12 {
+                    return None;
+                }
+                finite_opt(Some((d / c).atan()))
+            })
+            .collect();
+        let inv_phase: Vec<Option<f64>> = phase
+            .iter()
+            .map(|p| {
+                let p = finite_opt(*p)?;
+                if p.abs() <= 1e-12 {
+                    return None;
+                }
+                finite_opt(Some((2.0 * std::f64::consts::PI) / p))
+            })
+            .collect();
+        let result = rolling_mean_series_opt(&inv_phase, 30, 1).ok()?;
+        last_opt(&result)
+    }
+
+    fn compute_td_pr_005(series: &SymbolSeries) -> Option<f64> {
+        let n = series
+            .close
+            .len()
+            .min(series.open.len())
+            .min(series.high.len())
+            .min(series.low.len());
+        if n == 0 {
+            return None;
+        }
+
+        let i = n - 1;
+        let small_body = if i >= 1 {
+            (series.close[i - 1] - series.open[i - 1]).abs()
+                < (series.high[i - 1] - series.low[i - 1]) * 0.1
+        } else {
+            false
+        };
+        let first_down = if i >= 2 {
+            series.close[i - 2] < series.open[i - 2]
+        } else {
+            false
+        };
+        let third_up = series.close[i] > series.open[i];
+        let morning_star = first_down && small_body && third_up;
+        Some(if morning_star { 1.0 } else { 0.0 })
+    }
+
+    fn compute_td_pr_006(series: &SymbolSeries) -> Option<f64> {
+        let n = series.close.len().min(series.open.len());
+        if n < 3 {
+            return None;
+        }
+        let i = n - 1;
+        let three_black_crows = (series.close[i - 2] < series.open[i - 2])
+            && (series.close[i - 1] < series.open[i - 1])
+            && (series.close[i] < series.open[i]);
+        Some(if three_black_crows { 1.0 } else { 0.0 })
+    }
+
+    fn compute_factor_118(
+        &mut self,
+        symbol: &str,
+        depth: &DepthSnapshot,
+    ) -> Option<(f64, bool, usize)> {
+        let mid_price_diff = compute_mid_price_minus_bid_vwap(depth)?;
+
+        let state = self.symbol_states.entry(symbol.to_string()).or_default();
+        state.push_mid_price_diff(mid_price_diff);
+
+        let series: Vec<f64> = state.factor_118_mid_price_diffs.iter().copied().collect();
+        let samples = series.len();
+        let denom = rolling_mean_last(&series, FACTOR_118_WINDOW).ok().flatten();
+
+        match denom {
+            Some(ma) if ma.abs() > 1e-12 && ma.is_finite() => {
+                let value = mid_price_diff / ma;
+                if value.is_finite() {
+                    Some((value, true, samples))
+                } else {
+                    Some((0.0, false, samples))
+                }
+            }
+            _ => Some((0.0, false, samples)),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SymbolDetailResp {
+    factors: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LoginResp {
+    token: String,
+}
+
+#[derive(Debug, Serialize)]
+struct LoginReq<'a> {
+    password: &'a str,
+}
+
+async fn load_symbol_factor_plans(
+    mm: &ModelManagerConfig,
+    symbols: &[String],
+) -> Result<HashMap<String, SymbolFactorPlan>> {
+    let base_url = mm.base_url.trim_end_matches('/');
+    let client = Client::builder()
+        .timeout(Duration::from_millis(mm.request_timeout_ms))
+        .build()
+        .context("build reqwest client failed")?;
+
+    let token = authenticate_model_manager(&client, mm, base_url).await?;
+
+    let mut out = HashMap::with_capacity(symbols.len());
+    for symbol in symbols {
+        let url = format!(
+            "{}/api/models/{}/symbols/{}",
+            base_url,
+            urlencoding::encode(mm.model_name.as_str()),
+            urlencoding::encode(symbol)
+        );
+
+        let mut req = client.get(&url);
+        if let Some(token) = token.as_deref() {
+            req = req.bearer_auth(token);
+        }
+
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("GET {} failed", url))?
+            .error_for_status()
+            .with_context(|| format!("GET {} returned error status", url))?;
+
+        let detail: SymbolDetailResp = resp
+            .json()
+            .await
+            .with_context(|| format!("decode symbol detail failed: {}", url))?;
+
+        let mut ordered_factors = Vec::with_capacity(detail.factors.len());
+        for name in detail.factors {
+            let factor_id = FusionFactorId::from_name(&name);
+            let extra_factor_id = ExtraFactorId::from_name(&name);
+            if factor_id.is_none() && extra_factor_id.is_none() {
+                warn!(
+                    "model_manager factor name is not mapped yet: symbol={} factor={}",
+                    symbol, name
+                );
+            }
+            ordered_factors.push(FactorBinding {
+                name,
+                factor_id,
+                extra_factor_id,
+            });
+        }
+
+        let printable: Vec<&str> = ordered_factors.iter().map(|f| f.name.as_str()).collect();
+        let mapped_count = ordered_factors
+            .iter()
+            .filter(|f| f.factor_id.is_some() || f.extra_factor_id.is_some())
+            .count();
+        let unknown_names: Vec<&str> = ordered_factors
+            .iter()
+            .filter(|f| f.factor_id.is_none() && f.extra_factor_id.is_none())
+            .map(|f| f.name.as_str())
+            .collect();
+        info!(
+            "startup-factors: symbol={} ordered_count={} mapped_count={} unknown_count={} ordered_names={:?} unknown_names={:?}",
+            symbol,
+            ordered_factors.len(),
+            mapped_count,
+            unknown_names.len(),
+            printable,
+            unknown_names
+        );
+
+        out.insert(symbol.clone(), SymbolFactorPlan { ordered_factors });
+    }
+
+    Ok(out)
+}
+
+async fn authenticate_model_manager(
+    client: &Client,
+    mm: &ModelManagerConfig,
+    base_url: &str,
+) -> Result<Option<String>> {
+    if let Some(token) = mm
+        .bearer_token
+        .as_ref()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+    {
+        return Ok(Some(token));
+    }
+
+    let Some(password) = mm
+        .password
+        .as_ref()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    let login_url = format!("{}/api/auth/login", base_url);
+    let resp = client
+        .post(&login_url)
+        .json(&LoginReq {
+            password: password.as_str(),
+        })
+        .send()
+        .await
+        .with_context(|| format!("POST {} failed", login_url))?
+        .error_for_status()
+        .with_context(|| format!("POST {} returned error status", login_url))?;
+
+    let payload: LoginResp = resp
+        .json()
+        .await
+        .with_context(|| format!("decode login response failed: {}", login_url))?;
+
+    Ok(Some(payload.token))
+}
+
+fn compute_mid_price_minus_bid_vwap(depth: &DepthSnapshot) -> Option<f64> {
+    let bid1 = depth.bids.first()?;
+    let ask1 = depth.asks.first()?;
+    if bid1.price <= 0.0 || ask1.price <= 0.0 {
+        return None;
+    }
+
+    let mid_price = (bid1.price + ask1.price) / 2.0;
+    if !mid_price.is_finite() || mid_price <= 0.0 {
+        return None;
+    }
+
+    let mut sum_pxv = 0.0;
+    let mut sum_v = 0.0;
+    for level in depth.bids.iter().take(FACTOR_118_VWAP_LEVELS) {
+        if level.price > 0.0 && level.amount > 0.0 {
+            sum_pxv += level.price * level.amount;
+            sum_v += level.amount;
+        }
+    }
+    if sum_v <= 0.0 {
+        return None;
+    }
+
+    let bid_vwap = sum_pxv / sum_v;
+    let diff = mid_price - bid_vwap;
+    if diff.is_finite() {
+        Some(diff)
+    } else {
+        None
+    }
+}
+
+fn depth_best_bid(depth: &DepthSnapshot) -> (f64, f64) {
+    match depth.bids.first() {
+        Some(level) => (level.price, level.amount),
+        None => (f64::NAN, f64::NAN),
+    }
+}
+
+fn depth_best_ask(depth: &DepthSnapshot) -> (f64, f64) {
+    match depth.asks.first() {
+        Some(level) => (level.price, level.amount),
+        None => (f64::NAN, f64::NAN),
+    }
+}
+
+fn depth_level_amount(levels: &[DepthLevel], idx: usize) -> f64 {
+    levels
+        .get(idx)
+        .map(|level| level.amount)
+        .unwrap_or(f64::NAN)
+}
+
+fn depth_level_price(levels: &[DepthLevel], idx: usize) -> f64 {
+    levels.get(idx).map(|level| level.price).unwrap_or(f64::NAN)
+}
+
+fn depth_sum_amount(levels: &[DepthLevel], limit: usize) -> f64 {
+    levels
+        .iter()
+        .take(limit)
+        .map(|level| level.amount)
+        .filter(|v| v.is_finite())
+        .sum()
+}
+
+fn depth_mean_amount(levels: &[DepthLevel], limit: usize) -> f64 {
+    let mut sum = 0.0;
+    let mut cnt = 0usize;
+    for level in levels.iter().take(limit) {
+        if level.amount.is_finite() {
+            sum += level.amount;
+            cnt += 1;
+        }
+    }
+    if cnt == 0 {
+        f64::NAN
+    } else {
+        sum / cnt as f64
+    }
+}
+
+fn depth_mean_price(levels: &[DepthLevel], limit: usize) -> f64 {
+    let mut sum = 0.0;
+    let mut cnt = 0usize;
+    for level in levels.iter().take(limit) {
+        if level.price.is_finite() {
+            sum += level.price;
+            cnt += 1;
+        }
+    }
+    if cnt == 0 {
+        f64::NAN
+    } else {
+        sum / cnt as f64
+    }
+}
+
+fn depth_mean_pxv(levels: &[DepthLevel], limit: usize) -> f64 {
+    let mut sum = 0.0;
+    let mut cnt = 0usize;
+    for level in levels.iter().take(limit) {
+        let v = level.price * level.amount;
+        if v.is_finite() {
+            sum += v;
+            cnt += 1;
+        }
+    }
+    if cnt == 0 {
+        f64::NAN
+    } else {
+        sum / cnt as f64
+    }
+}
+
+fn depth_sum_price(levels: &[DepthLevel], limit: usize) -> f64 {
+    levels
+        .iter()
+        .take(limit)
+        .map(|level| level.price)
+        .filter(|v| v.is_finite())
+        .sum()
+}
+
+fn depth_vwap(levels: &[DepthLevel], limit: usize) -> Option<f64> {
+    let mut sum_pxv = 0.0;
+    let mut sum_v = 0.0;
+    for level in levels.iter().take(limit) {
+        if !level.price.is_finite() || !level.amount.is_finite() {
+            continue;
+        }
+        sum_pxv += level.price * level.amount;
+        sum_v += level.amount;
+    }
+    if sum_v.abs() <= 1e-12 {
+        return None;
+    }
+    let value = sum_pxv / sum_v;
+    if value.is_finite() {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn tail_quantile_last(values: &[f64], window: usize, q: f64) -> Option<f64> {
+    if window == 0 || values.len() < window || !(0.0..=1.0).contains(&q) {
+        return None;
+    }
+    let mut tail: Vec<f64> = values[values.len() - window..]
+        .iter()
+        .copied()
+        .filter(|v| v.is_finite())
+        .collect();
+    if tail.is_empty() {
+        return None;
+    }
+    tail.sort_by(|a, b| a.total_cmp(b));
+    let n = tail.len();
+    let idx = ((n - 1) as f64 * q).floor() as usize;
+    tail.get(idx).copied().filter(|v| v.is_finite())
+}
+
+fn sample_std_last(values: &[f64], window: usize, min_periods: usize) -> Option<f64> {
+    if window == 0 || min_periods == 0 || values.len() < min_periods {
+        return None;
+    }
+    let start = values.len().saturating_sub(window);
+    let tail: Vec<f64> = values[start..]
+        .iter()
+        .copied()
+        .filter(|v| v.is_finite())
+        .collect();
+    if tail.len() < min_periods || tail.len() < 2 {
+        return None;
+    }
+    let mean = tail.iter().sum::<f64>() / tail.len() as f64;
+    let var = tail
+        .iter()
+        .map(|v| {
+            let d = *v - mean;
+            d * d
+        })
+        .sum::<f64>()
+        / (tail.len() as f64 - 1.0);
+    let out = var.sqrt();
+    if out.is_finite() {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+fn rank_last_average(values: &[f64], min_periods: usize) -> Option<f64> {
+    if values.len() < min_periods {
+        return None;
+    }
+    let last = *values.last()?;
+    if !last.is_finite() {
+        return None;
+    }
+    let mut lt = 0usize;
+    let mut eq = 0usize;
+    let mut valid = 0usize;
+    for v in values {
+        if !v.is_finite() {
+            continue;
+        }
+        valid += 1;
+        if *v < last {
+            lt += 1;
+        } else if (*v - last).abs() <= 1e-12 {
+            eq += 1;
+        }
+    }
+    if valid < min_periods || eq == 0 {
+        return None;
+    }
+    Some(lt as f64 + (eq as f64 + 1.0) / 2.0)
+}
+
+fn corr_last_with_min_periods(
+    xs: &[f64],
+    ys: &[f64],
+    window: usize,
+    min_periods: usize,
+) -> Option<f64> {
+    if window == 0 || min_periods == 0 {
+        return None;
+    }
+    let n = xs.len().min(ys.len());
+    if n < min_periods {
+        return None;
+    }
+    let start = n.saturating_sub(window);
+    let mut x = Vec::new();
+    let mut y = Vec::new();
+    for i in start..n {
+        let xv = xs[i];
+        let yv = ys[i];
+        if xv.is_finite() && yv.is_finite() {
+            x.push(xv);
+            y.push(yv);
+        }
+    }
+    if x.len() < min_periods {
+        return None;
+    }
+    let mean_x = x.iter().sum::<f64>() / x.len() as f64;
+    let mean_y = y.iter().sum::<f64>() / y.len() as f64;
+    let mut cov = 0.0;
+    let mut var_x = 0.0;
+    let mut var_y = 0.0;
+    for i in 0..x.len() {
+        let dx = x[i] - mean_x;
+        let dy = y[i] - mean_y;
+        cov += dx * dy;
+        var_x += dx * dx;
+        var_y += dy * dy;
+    }
+    if var_x.abs() <= 1e-12 || var_y.abs() <= 1e-12 {
+        return None;
+    }
+    let out = cov / (var_x.sqrt() * var_y.sqrt());
+    finite_opt(Some(out))
+}
+
+fn linear_regression_predict_last(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let n = values.len() as f64;
+    let mut sum_x = 0.0;
+    let mut sum_y = 0.0;
+    let mut sum_xx = 0.0;
+    let mut sum_xy = 0.0;
+    for (i, y) in values.iter().enumerate() {
+        if !y.is_finite() {
+            return None;
+        }
+        let x = i as f64;
+        sum_x += x;
+        sum_y += *y;
+        sum_xx += x * x;
+        sum_xy += x * *y;
+    }
+    let denom = n * sum_xx - sum_x * sum_x;
+    if denom.abs() <= 1e-12 {
+        return None;
+    }
+    let slope = (n * sum_xy - sum_x * sum_y) / denom;
+    let intercept = (sum_y - slope * sum_x) / n;
+    let pred = slope * (n - 1.0) + intercept;
+    finite_opt(Some(pred))
+}
+
+fn pct_change_last(values: &[f64], periods: usize) -> Option<f64> {
+    if periods == 0 || values.len() <= periods {
+        return None;
+    }
+    let curr = *values.last()?;
+    let prev = values[values.len() - 1 - periods];
+    if !curr.is_finite() || !prev.is_finite() || prev.abs() <= 1e-12 {
+        return None;
+    }
+    let value = (curr - prev) / prev;
+    if value.is_finite() {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn linear_regression_intercept(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let n = values.len() as f64;
+    let mut sum_x = 0.0;
+    let mut sum_y = 0.0;
+    let mut sum_xx = 0.0;
+    let mut sum_xy = 0.0;
+
+    for (i, y) in values.iter().enumerate() {
+        if !y.is_finite() {
+            return None;
+        }
+        let x = i as f64;
+        sum_x += x;
+        sum_y += *y;
+        sum_xx += x * x;
+        sum_xy += x * *y;
+    }
+
+    let denom = n * sum_xx - sum_x * sum_x;
+    if denom.abs() <= 1e-12 {
+        return None;
+    }
+    let slope = (n * sum_xy - sum_x * sum_y) / denom;
+    let intercept = (sum_y - slope * sum_x) / n;
+    if intercept.is_finite() {
+        Some(intercept)
+    } else {
+        None
+    }
+}
+
+fn std_pop(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sum = 0.0;
+    let mut cnt = 0usize;
+    for v in values {
+        if v.is_finite() {
+            sum += *v;
+            cnt += 1;
+        }
+    }
+    if cnt == 0 {
+        return None;
+    }
+    let mean = sum / cnt as f64;
+    let mut var_sum = 0.0;
+    for v in values {
+        if v.is_finite() {
+            let d = *v - mean;
+            var_sum += d * d;
+        }
+    }
+    let value = (var_sum / cnt as f64).sqrt();
+    if value.is_finite() {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn push_with_limit(buf: &mut VecDeque<f64>, value: f64) {
+    buf.push_back(value);
+    if buf.len() > MAX_SYMBOL_HISTORY {
+        buf.pop_front();
+    }
+}
+
+fn push_opt_with_limit(buf: &mut VecDeque<Option<f64>>, value: Option<f64>) {
+    buf.push_back(finite_opt(value));
+    if buf.len() > MAX_SYMBOL_HISTORY {
+        buf.pop_front();
+    }
+}
+
+fn finite_opt(value: Option<f64>) -> Option<f64> {
+    match value {
+        Some(v) if v.is_finite() => Some(v),
+        _ => None,
+    }
+}
+
+fn last_opt(values: &[Option<f64>]) -> Option<f64> {
+    finite_opt(values.last().copied().flatten())
+}
+
+fn parse_depth_snapshot(
+    data: &[u8],
+    channel: DepthChannel,
+    venue: TradingVenue,
+) -> Option<(String, DepthSnapshot)> {
+    if data.len() < 8 {
+        return None;
+    }
+
+    let msg_type = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if msg_type != channel.expected_msg_type() {
+        return None;
+    }
+
+    let levels = channel.level_count();
+    let symbol_len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+    let min_len = 8 + symbol_len + 8 + levels * 16 * 2;
+    if data.len() < min_len {
+        return None;
+    }
+
+    let symbol_raw = std::str::from_utf8(&data[8..8 + symbol_len]).ok()?;
+    let symbol = normalize_symbol_for_venue(symbol_raw, venue);
+    if symbol.is_empty() {
+        return None;
+    }
+
+    let ts_offset = 8 + symbol_len;
+    let timestamp_ms = read_i64_at(data, ts_offset)?;
+
+    let mut bids = Vec::with_capacity(MAX_DEPTH_LEVELS_CACHE);
+    let mut asks = Vec::with_capacity(MAX_DEPTH_LEVELS_CACHE);
+
+    let mut offset = ts_offset + 8;
+    for idx in 0..levels {
+        let price = read_f64_at(data, offset)?;
+        let amount = read_f64_at(data, offset + 8)?;
+        offset += 16;
+        if idx < MAX_DEPTH_LEVELS_CACHE {
+            bids.push(DepthLevel { price, amount });
+        }
+    }
+
+    for idx in 0..levels {
+        let price = read_f64_at(data, offset)?;
+        let amount = read_f64_at(data, offset + 8)?;
+        offset += 16;
+        if idx < MAX_DEPTH_LEVELS_CACHE {
+            asks.push(DepthLevel { price, amount });
+        }
+    }
+
+    Some((
+        symbol,
+        DepthSnapshot {
+            timestamp_ms,
+            bids,
+            asks,
+        },
+    ))
+}
+
+fn read_i64_at(data: &[u8], offset: usize) -> Option<i64> {
+    if data.len() < offset + 8 {
+        return None;
+    }
+    Some(i64::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+        data[offset + 4],
+        data[offset + 5],
+        data[offset + 6],
+        data[offset + 7],
+    ]))
+}
+
+fn read_f64_at(data: &[u8], offset: usize) -> Option<f64> {
+    if data.len() < offset + 8 {
+        return None;
+    }
+    Some(f64::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+        data[offset + 4],
+        data[offset + 5],
+        data[offset + 6],
+        data[offset + 7],
+    ]))
+}
