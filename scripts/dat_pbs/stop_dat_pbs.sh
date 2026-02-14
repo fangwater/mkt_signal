@@ -56,6 +56,7 @@ default_venues_for_exchange() {
 
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 PMDAEMON=("$PMDAEMON_BIN")
+KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
 EXCHANGE=""
 VENUES=()
@@ -129,6 +130,67 @@ if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1;
   exit 1
 fi
 
+find_running_pids_for_venue() {
+  local venue="$1"
+  local venue_arg="--venue ${venue}"
+  local pids=()
+  while IFS= read -r pid; do
+    if [[ -n "$pid" && "$pid" != "$$" && "$pid" != "$PPID" ]]; then
+      pids+=("$pid")
+    fi
+  done < <(
+    ps -eo pid=,args= | awk -v venue_arg="$venue_arg" -v base_dir="$BASE_DIR" '
+      index($0, "dat_pbs") > 0 &&
+      index($0, venue_arg) > 0 &&
+      index($0, base_dir) > 0 &&
+      index($0, "awk -v venue_arg") == 0 &&
+      index($0, "stop_dat_pbs.sh") == 0 {
+        print $1
+      }
+    '
+  )
+
+  if [[ ${#pids[@]} -gt 0 ]]; then
+    printf '%s\n' "${pids[@]}"
+  fi
+}
+
+cleanup_leaked_for_venue() {
+  local venue="$1"
+  mapfile -t leaked_pids < <(find_running_pids_for_venue "$venue" || true)
+  if [[ ${#leaked_pids[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  echo "[WARN] Found leaked dat_pbs process after pmdaemon delete: venue=${venue} pids=${leaked_pids[*]}"
+  echo "[INFO] Sending SIGTERM to leaked process(es)"
+  kill "${leaked_pids[@]}" >/dev/null 2>&1 || true
+
+  local deadline=$((SECONDS + KILL_WAIT_SECS))
+  while [[ $SECONDS -lt $deadline ]]; do
+    mapfile -t leaked_pids < <(find_running_pids_for_venue "$venue" || true)
+    if [[ ${#leaked_pids[@]} -eq 0 ]]; then
+      break
+    fi
+    sleep 1
+  done
+
+  if [[ ${#leaked_pids[@]} -gt 0 ]]; then
+    echo "[WARN] SIGTERM timeout, sending SIGKILL: venue=${venue} pids=${leaked_pids[*]}"
+    kill -9 "${leaked_pids[@]}" >/dev/null 2>&1 || true
+    sleep 1
+    mapfile -t leaked_pids < <(find_running_pids_for_venue "$venue" || true)
+  fi
+
+  if [[ ${#leaked_pids[@]} -gt 0 ]]; then
+    echo "[ERROR] Failed to kill leaked dat_pbs process(es): venue=${venue} pids=${leaked_pids[*]}" >&2
+    return 1
+  fi
+
+  echo "[INFO] Leaked process cleanup done: venue=${venue}"
+  return 0
+}
+
 stop_one() {
   local venue="$1"
   local name="dat_pbs_${venue}"
@@ -139,6 +201,8 @@ stop_one() {
   else
     echo "[WARN] ${name} not found"
   fi
+
+  cleanup_leaked_for_venue "$venue"
 }
 
 for venue in "${VENUES[@]}"; do

@@ -32,6 +32,7 @@ const TIMER_CHECK_INTERVAL_MICROS: u64 = 500;
 const AMOUNT_THRESHOLD_REDIS_KEY_SUFFIX: &str = "amount-threshold";
 const REDIS_WARN_INTERVAL_SECS: u64 = 60;
 const ROCKSDB_WARN_INTERVAL_SECS: u64 = 60;
+const MISSING_DEPTH_WARN_INTERVAL_SECS: u64 = 60;
 const TRADE_FLOW_FEATURE_CF_SUFFIX: &str = "trade_flow:feature";
 const FIXED_TRADE_CHANNEL: &str = "trade";
 const FIXED_REDIS_HOST: &str = "127.0.0.1";
@@ -945,6 +946,8 @@ pub struct TradeFlowFeaturePubApp {
     rocksdb_store: Option<TradeFlowFeatureRocksDbStore>,
     rocksdb_open_path: Option<String>,
     last_rocksdb_warn: Instant,
+    last_missing_depth_warn: Instant,
+    missing_depth_drop_count: u64,
     last_threshold_reload: Instant,
     threshold_reload_interval: Duration,
     last_retired_symbols: usize,
@@ -991,6 +994,9 @@ impl TradeFlowFeaturePubApp {
             rocksdb_store: None,
             rocksdb_open_path: None,
             last_rocksdb_warn: Instant::now() - Duration::from_secs(ROCKSDB_WARN_INTERVAL_SECS),
+            last_missing_depth_warn: Instant::now()
+                - Duration::from_secs(MISSING_DEPTH_WARN_INTERVAL_SECS),
+            missing_depth_drop_count: 0,
             last_threshold_reload: Instant::now() - threshold_reload_interval,
             threshold_reload_interval,
             last_retired_symbols: 0,
@@ -1156,7 +1162,11 @@ impl TradeFlowFeaturePubApp {
             let mut feature_values =
                 Vec::with_capacity(TRADE_FLOW_FEATURE_DIM + APPENDED_DEPTH_DIM);
             feature_values.extend_from_slice(&bar.to_feature_values());
-            feature_values.extend_from_slice(&self.appended_depth_values(&symbol_norm));
+            let Some(depth_values) = self.appended_depth_values(&symbol_norm) else {
+                self.warn_missing_depth_throttled(&symbol_norm, bar.start_ms);
+                continue;
+            };
+            feature_values.extend_from_slice(&depth_values);
             let msg = TradeFlowFeatureMsg::from_indexed_values(
                 symbol_norm.clone(),
                 self.venue_u8,
@@ -1176,11 +1186,15 @@ impl TradeFlowFeaturePubApp {
         Ok(())
     }
 
-    fn appended_depth_values(&self, symbol: &str) -> [f64; APPENDED_DEPTH_DIM] {
-        let mut out = [f64::NAN; APPENDED_DEPTH_DIM];
-        let Some(depth) = self.latest_depth_by_symbol.get(symbol) else {
-            return out;
-        };
+    fn appended_depth_values(&self, symbol: &str) -> Option<[f64; APPENDED_DEPTH_DIM]> {
+        let depth = self.latest_depth_by_symbol.get(symbol)?;
+        if depth.bids.first().map(|level| level.price).unwrap_or(0.0) <= 0.0
+            || depth.asks.first().map(|level| level.price).unwrap_or(0.0) <= 0.0
+        {
+            return None;
+        }
+
+        let mut out = [0.0f64; APPENDED_DEPTH_DIM];
 
         let mut offset = 0usize;
         for level in depth.bids.iter().take(MAX_DEPTH_LEVELS_CACHE) {
@@ -1196,7 +1210,7 @@ impl TradeFlowFeaturePubApp {
             offset += 2;
         }
 
-        out
+        Some(out)
     }
 
     fn maybe_reload_runtime(&mut self) {
@@ -1485,6 +1499,20 @@ impl TradeFlowFeaturePubApp {
         if self.last_rocksdb_warn.elapsed() >= Duration::from_secs(ROCKSDB_WARN_INTERVAL_SECS) {
             warn!("{}", msg);
             self.last_rocksdb_warn = Instant::now();
+        }
+    }
+
+    fn warn_missing_depth_throttled(&mut self, symbol: &str, ts_ms: i64) {
+        self.missing_depth_drop_count = self.missing_depth_drop_count.saturating_add(1);
+        if self.last_missing_depth_warn.elapsed()
+            >= Duration::from_secs(MISSING_DEPTH_WARN_INTERVAL_SECS)
+        {
+            warn!(
+                "trade_flow_feature skip bar due to missing depth: venue={} symbol={} ts={} dropped_since_last_warn={}",
+                self.venue_slug, symbol, ts_ms, self.missing_depth_drop_count
+            );
+            self.last_missing_depth_warn = Instant::now();
+            self.missing_depth_drop_count = 0;
         }
     }
 }

@@ -9,7 +9,7 @@ use log::{info, warn};
 
 use crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg;
 
-pub const TRADE_FLOW_FEATURE_MAX_BYTES: usize = 4096;
+pub const TRADE_FLOW_FEATURE_MAX_BYTES: usize = 1024;
 
 pub struct TradeFlowFeaturePublisher {
     venue_slug: String,

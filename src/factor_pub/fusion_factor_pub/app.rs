@@ -26,7 +26,7 @@ use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::trade_flow_feature_msg::{TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM};
 use crate::signal::common::TradingVenue;
 
-const TRADE_FLOW_MAX_BYTES: usize = 4096;
+const TRADE_FLOW_MAX_BYTES: usize = 1024;
 const IDLE_SLEEP_MICROS: u64 = 200;
 const STATS_LOG_INTERVAL_SECS: u64 = 60;
 const MAX_SYMBOL_HISTORY: usize = 4096;

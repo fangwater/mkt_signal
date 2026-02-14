@@ -52,12 +52,63 @@ if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1;
 fi
 
 name="trade_flow_feature_pub_${venue}"
+KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
+
+find_running_pids() {
+  local venue_arg="--venue ${venue}"
+  local pids=()
+  while IFS= read -r pid; do
+    if [[ -n "$pid" ]]; then
+      pids+=("$pid")
+    fi
+  done < <(
+    ps -eo pid=,args= | awk -v venue_arg="$venue_arg" -v base_dir="$BASE_DIR" '
+      index($0, "trade_flow_feature_pub") > 0 && index($0, venue_arg) > 0 && index($0, base_dir) > 0 {
+        print $1
+      }
+    '
+  )
+
+  if [[ ${#pids[@]} -gt 0 ]]; then
+    printf '%s\n' "${pids[@]}"
+  fi
+}
 
 echo "[INFO] Stopping ${name}"
 if "${PMDAEMON[@]}" delete "$name" >/dev/null 2>&1; then
   echo "[INFO] Stopped ${name}"
 else
   echo "[WARN] ${name} not found"
+fi
+
+mapfile -t leaked_pids < <(find_running_pids || true)
+if [[ ${#leaked_pids[@]} -gt 0 ]]; then
+  echo "[WARN] Found leaked process after pmdaemon delete: ${leaked_pids[*]}"
+  echo "[INFO] Sending SIGTERM to leaked process(es)"
+  kill "${leaked_pids[@]}" >/dev/null 2>&1 || true
+
+  deadline=$((SECONDS + KILL_WAIT_SECS))
+  while [[ $SECONDS -lt $deadline ]]; do
+    mapfile -t leaked_pids < <(find_running_pids || true)
+    if [[ ${#leaked_pids[@]} -eq 0 ]]; then
+      break
+    fi
+    sleep 1
+  done
+
+  if [[ ${#leaked_pids[@]} -gt 0 ]]; then
+    echo "[WARN] SIGTERM timeout, sending SIGKILL: ${leaked_pids[*]}"
+    kill -9 "${leaked_pids[@]}" >/dev/null 2>&1 || true
+    sleep 1
+    mapfile -t leaked_pids < <(find_running_pids || true)
+  fi
+
+  if [[ ${#leaked_pids[@]} -gt 0 ]]; then
+    echo "[ERROR] Failed to kill leaked process(es): ${leaked_pids[*]}" >&2
+    exit 1
+  fi
+
+  echo "[INFO] Leaked process cleanup done"
 fi
 
 echo ""
