@@ -8,11 +8,16 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
 use redis::Commands;
+use rocksdb::{
+    ColumnFamilyDescriptor, DBCompressionType, Direction, IteratorMode, Options, WriteOptions, DB,
+};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
-use super::cfg::{RuntimeConfig, TradeFlowFeaturePubConfig};
+use super::cfg::{PersistenceConfig, RuntimeConfig, TradeFlowFeaturePubConfig};
 use super::publisher::TradeFlowFeaturePublisher;
 use crate::common::mkt_msg::MktMsgType;
 use crate::common::redis_client::RedisSettings;
@@ -24,8 +29,10 @@ const TRADE_MAX_BYTES: usize = 64;
 const IDLE_SLEEP_MICROS: u64 = 200;
 const TIMER_CHECK_INTERVAL_MICROS: u64 = 500;
 const LOG_BASE_SYMBOLS: [&str; 3] = ["BTC", "ETH", "SOL"];
-const QUANTILE_REDIS_KEY_SUFFIX: &str = "amount-quantile";
+const AMOUNT_THRESHOLD_REDIS_KEY_SUFFIX: &str = "amount-threshold";
 const REDIS_WARN_INTERVAL_SECS: u64 = 60;
+const ROCKSDB_WARN_INTERVAL_SECS: u64 = 60;
+const TRADE_FLOW_FEATURE_CF_SUFFIX: &str = "trade_flow:feature";
 
 #[derive(Debug, Clone, Copy)]
 enum TradeSide {
@@ -43,9 +50,11 @@ struct TradeTick {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct QuantileThreshold {
-    low: f64,
-    high: f64,
+struct AmountThreshold {
+    medium_notional_threshold: f64,
+    large_notional_threshold: f64,
+    prev_mean: Option<f64>,
+    prev_std: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -130,7 +139,7 @@ impl TradeBar {
         Self::new(start_ms)
     }
 
-    fn update(&mut self, trade: &TradeTick, threshold: QuantileThreshold) {
+    fn update(&mut self, trade: &TradeTick, threshold: AmountThreshold) {
         let notional = trade.price * trade.amount;
         if !notional.is_finite() || notional <= 0.0 {
             return;
@@ -165,13 +174,13 @@ impl TradeBar {
             }
         }
 
-        if notional >= threshold.high {
+        if notional >= threshold.large_notional_threshold {
             self.large_order += notional;
             match trade.side {
                 TradeSide::Buy => self.large_buy += notional,
                 TradeSide::Sell => self.large_sell += notional,
             }
-        } else if notional >= threshold.low {
+        } else if notional >= threshold.medium_notional_threshold {
             self.medium_order += notional;
             match trade.side {
                 TradeSide::Buy => self.medium_buy += notional,
@@ -315,7 +324,7 @@ impl SymbolState {
         &mut self,
         trade: &TradeTick,
         runtime: &RuntimeConfig,
-        threshold: QuantileThreshold,
+        threshold: AmountThreshold,
     ) -> bool {
         let mut late_trade = false;
         let trade_bar_start_ms = align_to_period(trade.timestamp_ms, runtime.bar_ms);
@@ -418,20 +427,22 @@ impl SymbolState {
 }
 
 #[derive(Debug, Clone)]
-struct QuantileJsonEntry {
+struct AmountThresholdJsonEntry {
     symbol: Option<String>,
-    low: f64,
-    high: f64,
+    medium_notional_threshold: f64,
+    large_notional_threshold: f64,
+    prev_mean: Option<f64>,
+    prev_std: Option<f64>,
 }
 
-struct QuantileRedisStore {
+struct AmountThresholdRedisStore {
     settings: RedisSettings,
     client: redis::Client,
     conn: Option<redis::Connection>,
     last_warn: Instant,
 }
 
-impl QuantileRedisStore {
+impl AmountThresholdRedisStore {
     fn new(settings: RedisSettings) -> Result<Self> {
         let url = settings.connection_url();
         let client = redis::Client::open(url)?;
@@ -443,14 +454,14 @@ impl QuantileRedisStore {
         })
     }
 
-    fn load_quantiles_for_venue(
+    fn load_thresholds_for_venue(
         &mut self,
         venue_slug: &str,
         venue: TradingVenue,
-    ) -> Result<HashMap<String, QuantileThreshold>> {
+    ) -> Result<HashMap<String, AmountThreshold>> {
         let prefix_owned = self.settings.prefix.clone().filter(|p| !p.is_empty());
         let prefix = prefix_owned.as_deref();
-        let key_pattern = format!("{}:*:{}", venue_slug, QUANTILE_REDIS_KEY_SUFFIX);
+        let key_pattern = format!("{}:*:{}", venue_slug, AMOUNT_THRESHOLD_REDIS_KEY_SUFFIX);
         let full_pattern = with_prefix(prefix, &key_pattern);
 
         self.ensure_connected()?;
@@ -465,7 +476,7 @@ impl QuantileRedisStore {
         let mut out = HashMap::new();
         for full_key in keys {
             let logical_key = strip_prefix_with(prefix, &full_key).to_string();
-            let symbol_from_key = parse_symbol_from_quantile_key(&logical_key, venue_slug, venue);
+            let symbol_from_key = parse_symbol_from_threshold_key(&logical_key, venue_slug, venue);
             let raw: Option<String> = conn
                 .get(full_key.clone())
                 .with_context(|| format!("redis GET failed for key={}", full_key))?;
@@ -473,8 +484,8 @@ impl QuantileRedisStore {
                 continue;
             };
 
-            let parsed_entries = parse_quantile_entries(&raw_json)
-                .with_context(|| format!("parse quantile json failed: key={}", logical_key))?;
+            let parsed_entries = parse_threshold_entries(&raw_json)
+                .with_context(|| format!("parse threshold json failed: key={}", logical_key))?;
 
             for entry in parsed_entries {
                 let symbol = entry
@@ -488,18 +499,31 @@ impl QuantileRedisStore {
                 if symbol.is_empty() {
                     continue;
                 }
-                if !entry.low.is_finite() || !entry.high.is_finite() {
+                if !entry.medium_notional_threshold.is_finite()
+                    || !entry.large_notional_threshold.is_finite()
+                {
                     continue;
                 }
-                if entry.low <= 0.0 || entry.high <= 0.0 || entry.low > entry.high {
+                if entry.medium_notional_threshold <= 0.0
+                    || entry.large_notional_threshold <= 0.0
+                    || entry.medium_notional_threshold > entry.large_notional_threshold
+                {
+                    continue;
+                }
+                if entry.prev_mean.is_some_and(|v| !v.is_finite()) {
+                    continue;
+                }
+                if entry.prev_std.is_some_and(|v| !v.is_finite() || v <= 0.0) {
                     continue;
                 }
 
                 out.insert(
                     symbol,
-                    QuantileThreshold {
-                        low: entry.low,
-                        high: entry.high,
+                    AmountThreshold {
+                        medium_notional_threshold: entry.medium_notional_threshold,
+                        large_notional_threshold: entry.large_notional_threshold,
+                        prev_mean: entry.prev_mean,
+                        prev_std: entry.prev_std,
                     },
                 );
             }
@@ -525,6 +549,205 @@ impl QuantileRedisStore {
     }
 }
 
+#[derive(Debug, Clone)]
+struct PersistenceRuntime {
+    rocksdb_path: String,
+    retention_hours: u64,
+    symbols: HashSet<String>,
+}
+
+impl PersistenceRuntime {
+    fn from_config(cfg: &PersistenceConfig, venue: TradingVenue) -> Self {
+        let mut symbols = HashSet::new();
+        for raw in &cfg.symbols {
+            let normalized = normalize_symbol_for_venue(raw.trim(), venue);
+            if !normalized.is_empty() {
+                symbols.insert(normalized);
+            }
+        }
+        Self {
+            rocksdb_path: cfg.rocksdb_path.trim().to_string(),
+            retention_hours: cfg.retention_hours,
+            symbols,
+        }
+    }
+
+    fn enabled(&self) -> bool {
+        self.retention_hours > 0 && !self.symbols.is_empty()
+    }
+}
+
+struct TradeFlowFeatureRocksDbStore {
+    db: DB,
+    cf_opts: Options,
+    known_cf_names: HashSet<String>,
+    sync_writes: bool,
+}
+
+impl TradeFlowFeatureRocksDbStore {
+    fn open(path: &str, venue_slug: &str, symbols: &HashSet<String>) -> Result<Self> {
+        let path_ref = Path::new(path);
+        if let Some(parent) = path_ref.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("create rocksdb parent dir failed: {}", parent.display())
+                })?;
+            }
+        }
+
+        let mut db_opts = Options::default();
+        db_opts.create_if_missing(true);
+        db_opts.create_missing_column_families(true);
+        db_opts.set_compression_type(DBCompressionType::Lz4);
+
+        let mut cf_opts = Options::default();
+        cf_opts.set_compression_type(DBCompressionType::Lz4);
+
+        let mut cf_names: HashSet<String> = HashSet::new();
+        cf_names.insert("default".to_string());
+        if path_ref.exists() {
+            match DB::list_cf(&db_opts, path_ref) {
+                Ok(existing) => {
+                    for name in existing {
+                        cf_names.insert(name);
+                    }
+                }
+                Err(err) => {
+                    warn!(
+                        "list rocksdb cfs failed (continue with requested only): path={} err={}",
+                        path_ref.display(),
+                        err
+                    );
+                }
+            }
+        }
+        for symbol in symbols {
+            cf_names.insert(cf_name_for_symbol(venue_slug, symbol));
+        }
+
+        let mut cf_names_sorted: Vec<String> = cf_names.into_iter().collect();
+        cf_names_sorted.sort_unstable();
+        let descriptors: Vec<ColumnFamilyDescriptor> = cf_names_sorted
+            .iter()
+            .map(|name| ColumnFamilyDescriptor::new(name.clone(), cf_opts.clone()))
+            .collect();
+
+        let db = DB::open_cf_descriptors(&db_opts, path_ref, descriptors)
+            .with_context(|| format!("open rocksdb failed: {}", path_ref.display()))?;
+
+        let mut known_cf_names = HashSet::new();
+        for name in cf_names_sorted {
+            known_cf_names.insert(name);
+        }
+
+        Ok(Self {
+            db,
+            cf_opts,
+            known_cf_names,
+            sync_writes: false,
+        })
+    }
+
+    fn ensure_symbol_cfs(&mut self, venue_slug: &str, symbols: &HashSet<String>) -> Result<()> {
+        for symbol in symbols {
+            let cf_name = cf_name_for_symbol(venue_slug, symbol);
+            self.ensure_cf(&cf_name)?;
+        }
+        Ok(())
+    }
+
+    fn put_feature(
+        &mut self,
+        venue_slug: &str,
+        symbol: &str,
+        ts_ms: i64,
+        payload: &[u8],
+    ) -> Result<()> {
+        let cf_name = cf_name_for_symbol(venue_slug, symbol);
+        self.ensure_cf(&cf_name)?;
+
+        let Some(cf) = self.db.cf_handle(&cf_name) else {
+            anyhow::bail!("rocksdb cf missing after ensure: {}", cf_name);
+        };
+        let key = encode_ts_key(ts_ms);
+        let mut write_opts = WriteOptions::default();
+        write_opts.set_sync(self.sync_writes);
+        self.db
+            .put_cf_opt(cf, key, payload, &write_opts)
+            .with_context(|| {
+                format!(
+                    "rocksdb put failed: cf={} symbol={} ts_ms={}",
+                    cf_name, symbol, ts_ms
+                )
+            })?;
+        Ok(())
+    }
+
+    fn cleanup_before_for_venue(&self, venue_slug: &str, cutoff_ms: i64) -> Result<(usize, usize)> {
+        if cutoff_ms <= 0 {
+            return Ok((0, 0));
+        }
+
+        let start_key = [0u8; 8];
+        let end_key = encode_ts_key(cutoff_ms);
+        if end_key <= start_key {
+            return Ok((0, 0));
+        }
+
+        let mut touched_cfs = 0usize;
+        let mut deleted_ranges = 0usize;
+        let mut cf_names: Vec<String> = self.known_cf_names.iter().cloned().collect();
+        cf_names.sort_unstable();
+
+        for cf_name in cf_names {
+            if cf_name == "default" || !is_trade_flow_feature_cf_for_venue(&cf_name, venue_slug) {
+                continue;
+            }
+            let Some(cf) = self.db.cf_handle(&cf_name) else {
+                continue;
+            };
+
+            let mut iter = self
+                .db
+                .iterator_cf(cf, IteratorMode::From(&start_key, Direction::Forward));
+            let Some(first_item) = iter.next() else {
+                continue;
+            };
+            let (first_key, _) = first_item
+                .with_context(|| format!("rocksdb iterator failed while cleanup cf={}", cf_name))?;
+            if first_key.as_ref() >= end_key.as_slice() {
+                continue;
+            }
+
+            self.db
+                .delete_range_cf(cf, &start_key, &end_key)
+                .with_context(|| {
+                    format!(
+                        "rocksdb delete_range failed: cf={} cutoff_ms={}",
+                        cf_name, cutoff_ms
+                    )
+                })?;
+            self.db
+                .compact_range_cf(cf, Some(&start_key), Some(&end_key));
+            touched_cfs += 1;
+            deleted_ranges += 1;
+        }
+
+        Ok((touched_cfs, deleted_ranges))
+    }
+
+    fn ensure_cf(&mut self, cf_name: &str) -> Result<()> {
+        if self.known_cf_names.contains(cf_name) {
+            return Ok(());
+        }
+        self.db
+            .create_cf(cf_name, &self.cf_opts)
+            .with_context(|| format!("create rocksdb cf failed: {}", cf_name))?;
+        self.known_cf_names.insert(cf_name.to_string());
+        Ok(())
+    }
+}
+
 fn with_prefix(prefix: Option<&str>, key: &str) -> String {
     match prefix {
         Some(prefix) => format!("{}{}", prefix, key),
@@ -543,15 +766,20 @@ pub struct TradeFlowFeaturePubApp {
     venue_slug: String,
     venue_u8: u8,
     venue: TradingVenue,
+    config_path: String,
     config: TradeFlowFeaturePubConfig,
     subscriber: Subscriber<ipc::Service, [u8; TRADE_MAX_BYTES], ()>,
     publisher: TradeFlowFeaturePublisher,
     symbols: HashMap<String, SymbolState>,
-    quantiles: HashMap<String, QuantileThreshold>,
+    thresholds: HashMap<String, AmountThreshold>,
     online_symbols: HashSet<String>,
-    quantile_store: QuantileRedisStore,
-    last_quantile_reload: Instant,
-    quantile_reload_interval: Duration,
+    threshold_store: AmountThresholdRedisStore,
+    persistence: PersistenceRuntime,
+    rocksdb_store: Option<TradeFlowFeatureRocksDbStore>,
+    rocksdb_open_path: Option<String>,
+    last_rocksdb_warn: Instant,
+    last_threshold_reload: Instant,
+    threshold_reload_interval: Duration,
     trade_count: u64,
     late_trade_count: u64,
     last_log_stats: Instant,
@@ -570,29 +798,37 @@ impl TradeFlowFeaturePubApp {
 
         let subscriber = Self::create_subscriber(venue_slug, &config.data_source.trade_channel)?;
         let publisher = TradeFlowFeaturePublisher::new(venue_slug)?;
-        let quantile_store = QuantileRedisStore::new(config.redis.clone())?;
-        let quantile_reload_interval = Duration::from_secs(config.runtime.quantile_reload_secs);
+        let threshold_store = AmountThresholdRedisStore::new(config.redis.clone())?;
+        let threshold_reload_interval = Duration::from_secs(config.runtime.threshold_reload_secs);
+        let persistence = PersistenceRuntime::from_config(&config.persistence, venue);
 
         let mut app = Self {
             venue_slug: venue_slug.to_string(),
             venue_u8,
             venue,
+            config_path: config_path.to_string(),
             config,
             subscriber,
             publisher,
             symbols: HashMap::new(),
-            quantiles: HashMap::new(),
+            thresholds: HashMap::new(),
             online_symbols: HashSet::new(),
-            quantile_store,
-            last_quantile_reload: Instant::now() - quantile_reload_interval,
-            quantile_reload_interval,
+            threshold_store,
+            persistence,
+            rocksdb_store: None,
+            rocksdb_open_path: None,
+            last_rocksdb_warn: Instant::now() - Duration::from_secs(ROCKSDB_WARN_INTERVAL_SECS),
+            last_threshold_reload: Instant::now() - threshold_reload_interval,
+            threshold_reload_interval,
             trade_count: 0,
             late_trade_count: 0,
             last_log_stats: Instant::now(),
             timer_check_interval: Duration::from_micros(TIMER_CHECK_INTERVAL_MICROS),
             last_timer_check: Instant::now(),
         };
-        app.reload_quantiles(true);
+        app.ensure_persistence_ready(true);
+        app.reload_thresholds(true);
+        app.enforce_startup_symbol_threshold_subset();
         Ok(app)
     }
 
@@ -618,18 +854,21 @@ impl TradeFlowFeaturePubApp {
 
     pub fn run(&mut self) -> Result<()> {
         info!(
-            "TradeFlowFeaturePubApp[{}] started: channel={} bar_ms={} quantile_reload_secs={} redis={}:{} db={}",
+            "TradeFlowFeaturePubApp[{}] started: channel={} bar_ms={} threshold_reload_secs={} redis={}:{} db={} persist_path={} persist_hours={} persist_symbols={}",
             self.venue_slug,
             self.config.data_source.trade_channel,
             self.config.runtime.bar_ms,
-            self.config.runtime.quantile_reload_secs,
+            self.config.runtime.threshold_reload_secs,
             self.config.redis.host,
             self.config.redis.port,
-            self.config.redis.db
+            self.config.redis.db,
+            self.persistence.rocksdb_path,
+            self.persistence.retention_hours,
+            self.persistence.symbols.len()
         );
 
         loop {
-            self.maybe_reload_quantiles();
+            self.maybe_reload_runtime();
             let mut has_message = false;
 
             while let Some(sample) = self.subscriber.receive()? {
@@ -666,7 +905,7 @@ impl TradeFlowFeaturePubApp {
         if !self.online_symbols.contains(&trade.symbol) {
             return;
         }
-        let Some(threshold) = self.quantiles.get(&trade.symbol).copied() else {
+        let Some(threshold) = self.thresholds.get(&trade.symbol).copied() else {
             return;
         };
 
@@ -736,6 +975,8 @@ impl TradeFlowFeaturePubApp {
                 );
             }
 
+            self.maybe_persist_feature_msg(&symbol_norm, &msg);
+
             if !self.publisher.publish(&msg) {
                 warn!(
                     "failed to publish trade_flow_feature: venue={} symbol={} ts={}",
@@ -746,18 +987,230 @@ impl TradeFlowFeaturePubApp {
         Ok(())
     }
 
-    fn maybe_reload_quantiles(&mut self) {
-        if self.last_quantile_reload.elapsed() < self.quantile_reload_interval {
+    fn maybe_reload_runtime(&mut self) {
+        if self.last_threshold_reload.elapsed() < self.threshold_reload_interval {
             return;
         }
-        self.reload_quantiles(false);
+        self.last_threshold_reload = Instant::now();
+        self.reload_runtime_config();
+        self.reload_thresholds(false);
+        self.maybe_cleanup_persistence();
     }
 
-    fn reload_quantiles(&mut self, init: bool) {
-        self.last_quantile_reload = Instant::now();
+    fn reload_runtime_config(&mut self) {
+        let loaded = match TradeFlowFeaturePubConfig::load(&self.config_path) {
+            Ok(cfg) => cfg,
+            Err(err) => {
+                warn!("trade_flow_feature config reload failed: {}", err);
+                return;
+            }
+        };
+
+        if loaded.data_source.trade_channel != self.config.data_source.trade_channel {
+            warn!(
+                "trade_flow_feature config change ignored: trade_channel '{}' -> '{}' (requires restart)",
+                self.config.data_source.trade_channel,
+                loaded.data_source.trade_channel
+            );
+        }
+        if loaded.runtime.bar_ms != self.config.runtime.bar_ms {
+            warn!(
+                "trade_flow_feature config change ignored: bar_ms '{}' -> '{}' (requires restart)",
+                self.config.runtime.bar_ms, loaded.runtime.bar_ms
+            );
+        }
+
+        if loaded.runtime.threshold_reload_secs != self.config.runtime.threshold_reload_secs {
+            self.config.runtime.threshold_reload_secs = loaded.runtime.threshold_reload_secs;
+            self.threshold_reload_interval =
+                Duration::from_secs(self.config.runtime.threshold_reload_secs);
+            info!(
+                "trade_flow_feature threshold reload interval updated: {}s",
+                self.config.runtime.threshold_reload_secs
+            );
+        }
+
+        let old_redis_sig = redis_settings_signature(&self.config.redis);
+        let new_redis_sig = redis_settings_signature(&loaded.redis);
+        if old_redis_sig != new_redis_sig {
+            match AmountThresholdRedisStore::new(loaded.redis.clone()) {
+                Ok(store) => {
+                    self.threshold_store = store;
+                    self.config.redis = loaded.redis.clone();
+                    info!(
+                        "trade_flow_feature redis settings reloaded: {}:{} db={} prefix={:?}",
+                        self.config.redis.host,
+                        self.config.redis.port,
+                        self.config.redis.db,
+                        self.config.redis.prefix
+                    );
+                }
+                Err(err) => {
+                    warn!(
+                        "trade_flow_feature redis reload ignored due to error: {}",
+                        err
+                    );
+                }
+            }
+        }
+
+        self.apply_persistence_config(&loaded.persistence, false);
+    }
+
+    fn apply_persistence_config(&mut self, cfg: &PersistenceConfig, init: bool) {
+        let next = PersistenceRuntime::from_config(cfg, self.venue);
+        let changed = init
+            || self.persistence.rocksdb_path != next.rocksdb_path
+            || self.persistence.retention_hours != next.retention_hours
+            || self.persistence.symbols != next.symbols;
+
+        self.config.persistence = cfg.clone();
+        if !changed {
+            return;
+        }
+
+        self.persistence = next;
+        self.ensure_persistence_ready(init);
+    }
+
+    fn ensure_persistence_ready(&mut self, init: bool) {
+        if !self.persistence.enabled() {
+            if self.rocksdb_store.take().is_some() {
+                self.rocksdb_open_path = None;
+                info!(
+                    "trade_flow_feature persistence disabled: venue={} retention_hours={} symbols={}",
+                    self.venue_slug,
+                    self.persistence.retention_hours,
+                    self.persistence.symbols.len()
+                );
+            } else if init {
+                info!(
+                    "trade_flow_feature persistence disabled on startup: venue={} retention_hours={} symbols={}",
+                    self.venue_slug,
+                    self.persistence.retention_hours,
+                    self.persistence.symbols.len()
+                );
+            }
+            return;
+        }
+
+        let target_path = self.persistence.rocksdb_path.clone();
+        let need_open = self.rocksdb_store.is_none()
+            || self.rocksdb_open_path.as_deref() != Some(target_path.as_str());
+        if need_open {
+            match TradeFlowFeatureRocksDbStore::open(
+                &target_path,
+                &self.venue_slug,
+                &self.persistence.symbols,
+            ) {
+                Ok(store) => {
+                    self.rocksdb_store = Some(store);
+                    self.rocksdb_open_path = Some(target_path.clone());
+                    info!(
+                        "trade_flow_feature rocksdb {}opened: venue={} path={} retention_hours={} symbols={}",
+                        if init { "" } else { "re" },
+                        self.venue_slug,
+                        target_path,
+                        self.persistence.retention_hours,
+                        self.persistence.symbols.len()
+                    );
+                }
+                Err(err) => {
+                    self.warn_rocksdb_throttled(&format!(
+                        "trade_flow_feature rocksdb open failed: venue={} path={} err={:#}",
+                        self.venue_slug, target_path, err
+                    ));
+                    self.rocksdb_store = None;
+                    self.rocksdb_open_path = None;
+                    return;
+                }
+            }
+        }
+
+        if let Some(store) = self.rocksdb_store.as_mut() {
+            if let Err(err) = store.ensure_symbol_cfs(&self.venue_slug, &self.persistence.symbols) {
+                self.warn_rocksdb_throttled(&format!(
+                    "trade_flow_feature rocksdb ensure cfs failed: venue={} path={} err={:#}",
+                    self.venue_slug, self.persistence.rocksdb_path, err
+                ));
+            }
+        }
+    }
+
+    fn maybe_persist_feature_msg(&mut self, symbol: &str, msg: &TradeFlowFeatureMsg) {
+        if !self.persistence.enabled() || !self.persistence.symbols.contains(symbol) {
+            return;
+        }
+        if self.rocksdb_store.is_none() {
+            self.ensure_persistence_ready(false);
+        }
+        let Some(store) = self.rocksdb_store.as_mut() else {
+            return;
+        };
+
+        let payload = match msg.to_bytes() {
+            Ok(v) => v,
+            Err(err) => {
+                self.warn_rocksdb_throttled(&format!(
+                    "trade_flow_feature rocksdb encode failed: venue={} symbol={} ts={} err={:#}",
+                    self.venue_slug, symbol, msg.ts, err
+                ));
+                return;
+            }
+        };
+
+        if let Err(err) = store.put_feature(&self.venue_slug, symbol, msg.ts, payload.as_ref()) {
+            self.warn_rocksdb_throttled(&format!(
+                "trade_flow_feature rocksdb put failed: venue={} symbol={} ts={} err={:#}",
+                self.venue_slug, symbol, msg.ts, err
+            ));
+        }
+    }
+
+    fn maybe_cleanup_persistence(&mut self) {
+        if !self.persistence.enabled() {
+            return;
+        }
+        let Some(store) = self.rocksdb_store.as_ref() else {
+            return;
+        };
+
+        let retention_ms = (self.persistence.retention_hours as i128) * 3_600_000i128;
+        if retention_ms <= 0 {
+            return;
+        }
+        let retention_ms = retention_ms.min(i64::MAX as i128) as i64;
+        let cutoff_ms = now_millis().saturating_sub(retention_ms);
+        if cutoff_ms <= 0 {
+            return;
+        }
+
+        match store.cleanup_before_for_venue(&self.venue_slug, cutoff_ms) {
+            Ok((touched_cfs, deleted_ranges)) => {
+                if touched_cfs > 0 {
+                    info!(
+                        "trade_flow_feature rocksdb rolling cleanup: venue={} cutoff_ms={} retention_hours={} cfs={} ranges={}",
+                        self.venue_slug,
+                        cutoff_ms,
+                        self.persistence.retention_hours,
+                        touched_cfs,
+                        deleted_ranges
+                    );
+                }
+            }
+            Err(err) => {
+                self.warn_rocksdb_throttled(&format!(
+                    "trade_flow_feature rocksdb cleanup failed: venue={} cutoff_ms={} err={:#}",
+                    self.venue_slug, cutoff_ms, err
+                ));
+            }
+        }
+    }
+
+    fn reload_thresholds(&mut self, init: bool) {
         match self
-            .quantile_store
-            .load_quantiles_for_venue(&self.venue_slug, self.venue)
+            .threshold_store
+            .load_thresholds_for_venue(&self.venue_slug, self.venue)
         {
             Ok(new_map) => {
                 let mut symbols = HashSet::with_capacity(new_map.len());
@@ -765,58 +1218,108 @@ impl TradeFlowFeaturePubApp {
                     symbols.insert(symbol.clone());
                 }
 
-                self.quantiles = new_map;
+                self.thresholds = new_map;
                 self.online_symbols = symbols;
                 self.symbols
                     .retain(|symbol, _| self.online_symbols.contains(symbol));
 
                 info!(
-                    "trade_flow_feature quantiles {}loaded: venue={} online_symbols={} key_pattern='{}:*:{}'",
+                    "trade_flow_feature thresholds {}loaded: venue={} online_symbols={} with_prev_stats={} key_pattern='{}:*:{}'",
                     if init { "" } else { "re" },
                     self.venue_slug,
                     self.online_symbols.len(),
+                    self.thresholds
+                        .values()
+                        .filter(|threshold| {
+                            threshold.prev_mean.is_some() && threshold.prev_std.is_some()
+                        })
+                        .count(),
                     self.venue_slug,
-                    QUANTILE_REDIS_KEY_SUFFIX
+                    AMOUNT_THRESHOLD_REDIS_KEY_SUFFIX
                 );
             }
             Err(err) => {
-                self.quantile_store.warn_throttled(&format!(
-                    "trade_flow_feature quantile reload failed: venue={} err={:#}",
+                self.threshold_store.warn_throttled(&format!(
+                    "trade_flow_feature threshold reload failed: venue={} err={:#}",
                     self.venue_slug, err
                 ));
             }
         }
     }
+
+    fn warn_rocksdb_throttled(&mut self, msg: &str) {
+        if self.last_rocksdb_warn.elapsed() >= Duration::from_secs(ROCKSDB_WARN_INTERVAL_SECS) {
+            warn!("{}", msg);
+            self.last_rocksdb_warn = Instant::now();
+        }
+    }
+
+    fn enforce_startup_symbol_threshold_subset(&self) {
+        if self.persistence.symbols.is_empty() {
+            return;
+        }
+
+        let mut missing: Vec<String> = self
+            .persistence
+            .symbols
+            .iter()
+            .filter(|symbol| !self.thresholds.contains_key(*symbol))
+            .cloned()
+            .collect();
+        missing.sort_unstable();
+        missing.dedup();
+
+        if !missing.is_empty() {
+            panic!(
+                "startup validation failed: persistence.symbols must be subset of redis amount-threshold keys; venue={} missing_symbols={:?} loaded_threshold_symbols={}",
+                self.venue_slug,
+                missing,
+                self.thresholds.len()
+            );
+        }
+    }
 }
 
-fn parse_quantile_entries(raw: &str) -> Result<Vec<QuantileJsonEntry>> {
+fn parse_threshold_entries(raw: &str) -> Result<Vec<AmountThresholdJsonEntry>> {
     let value: Value = serde_json::from_str(raw)?;
     let mut out = Vec::new();
-    collect_quantile_entries(&value, &mut out);
+    collect_threshold_entries(&value, &mut out);
     Ok(out)
 }
 
-fn collect_quantile_entries(value: &Value, out: &mut Vec<QuantileJsonEntry>) {
+fn collect_threshold_entries(value: &Value, out: &mut Vec<AmountThresholdJsonEntry>) {
     match value {
         Value::Array(items) => {
             for item in items {
-                collect_quantile_entries(item, out);
+                collect_threshold_entries(item, out);
             }
         }
         Value::Object(map) => {
-            let low = map.get("low").and_then(json_as_f64);
-            let high = map.get("high").and_then(json_as_f64);
-            if let (Some(low), Some(high)) = (low, high) {
+            let medium_notional_threshold =
+                map.get("medium_notional_threshold").and_then(json_as_f64);
+            let large_notional_threshold =
+                map.get("large_notional_threshold").and_then(json_as_f64);
+            if let (Some(medium_notional_threshold), Some(large_notional_threshold)) =
+                (medium_notional_threshold, large_notional_threshold)
+            {
+                let prev_mean = map.get("prev_mean").and_then(json_as_f64);
+                let prev_std = map.get("prev_std").and_then(json_as_f64);
                 let symbol = map
                     .get("symbol")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                out.push(QuantileJsonEntry { symbol, low, high });
+                out.push(AmountThresholdJsonEntry {
+                    symbol,
+                    medium_notional_threshold,
+                    large_notional_threshold,
+                    prev_mean,
+                    prev_std,
+                });
             }
 
             for child in map.values() {
                 if child.is_array() || child.is_object() {
-                    collect_quantile_entries(child, out);
+                    collect_threshold_entries(child, out);
                 }
             }
         }
@@ -832,7 +1335,7 @@ fn json_as_f64(value: &Value) -> Option<f64> {
     }
 }
 
-fn parse_symbol_from_quantile_key(
+fn parse_symbol_from_threshold_key(
     key: &str,
     venue_slug: &str,
     venue_cfg: TradingVenue,
@@ -844,7 +1347,7 @@ fn parse_symbol_from_quantile_key(
     if parts.next().is_some() {
         return None;
     }
-    if !key_venue.eq_ignore_ascii_case(venue_slug) || suffix != QUANTILE_REDIS_KEY_SUFFIX {
+    if !key_venue.eq_ignore_ascii_case(venue_slug) || suffix != AMOUNT_THRESHOLD_REDIS_KEY_SUFFIX {
         return None;
     }
     let symbol = normalize_symbol_for_venue(symbol.trim(), venue_cfg);
@@ -853,6 +1356,37 @@ fn parse_symbol_from_quantile_key(
     } else {
         Some(symbol)
     }
+}
+
+fn redis_settings_signature(settings: &RedisSettings) -> String {
+    format!(
+        "{}:{}:{}:{:?}:{:?}:{:?}",
+        settings.host,
+        settings.port,
+        settings.db,
+        settings.username,
+        settings.password,
+        settings.prefix
+    )
+}
+
+fn cf_name_for_symbol(venue_slug: &str, symbol: &str) -> String {
+    format!(
+        "{}:{}:{}",
+        venue_slug,
+        symbol.to_uppercase(),
+        TRADE_FLOW_FEATURE_CF_SUFFIX
+    )
+}
+
+fn is_trade_flow_feature_cf_for_venue(cf_name: &str, venue_slug: &str) -> bool {
+    let prefix = format!("{}:", venue_slug);
+    cf_name.starts_with(&prefix) && cf_name.ends_with(TRADE_FLOW_FEATURE_CF_SUFFIX)
+}
+
+fn encode_ts_key(ts_ms: i64) -> [u8; 8] {
+    let ts_u64 = if ts_ms <= 0 { 0u64 } else { ts_ms as u64 };
+    ts_u64.to_be_bytes()
 }
 
 fn parse_trade(data: &[u8], venue: TradingVenue) -> Option<TradeTick> {

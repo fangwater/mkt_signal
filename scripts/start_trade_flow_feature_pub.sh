@@ -3,150 +3,58 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+VENUE_DIR_REGEX='^[a-z0-9]+-(futures|margin|spot|swap|perp|perpetual)$'
 
 usage() {
   cat <<'USAGE'
 Usage:
-  start_trade_flow_feature_pub.sh [--namespace <ns>] (--exchange <exchange> | <exchange> | <venue...>)
+  start_trade_flow_feature_pub.sh
+
+Behavior:
+  - 必须在单个 venue 部署目录下执行（例如 ~/trade_flow_feature/binance-futures）。
+  - venue 由当前目录名自动推断。
+  - 使用 pmdaemon 启动进程名: trade_flow_feature_pub_<venue>
+  - 可用 PMDAEMON_BIN 覆盖二进制名（默认 pmdaemon）
 
 Examples:
-  ./scripts/start_trade_flow_feature_pub.sh --exchange binance
-  ./scripts/start_trade_flow_feature_pub.sh okex
-  ./scripts/start_trade_flow_feature_pub.sh binance-futures
-  ./scripts/start_trade_flow_feature_pub.sh binance-futures binance-margin
-
-Notes:
-  - Exchange expands to default venues:
-      okex    -> okex-futures okex-margin
-      binance -> binance-futures binance-margin
-      bybit   -> bybit-futures bybit-margin
-      bitget  -> bitget-futures bitget-margin
-      gate    -> gate-futures gate-margin
-  - Namespace defaults to $PM2_NAMESPACE or the deploy directory name.
+  cd ~/trade_flow_feature/binance-futures
+  ./scripts/start_trade_flow_feature_pub.sh
 USAGE
 }
 
-KNOWN_EXCHANGES=("okex" "binance" "bybit" "bitget" "gate")
-
-is_known_exchange() {
-  local v="${1,,}"
-  for e in "${KNOWN_EXCHANGES[@]}"; do
-    if [[ "$v" == "$e" ]]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-default_venues_for_exchange() {
-  local exchange="${1,,}"
-  case "$exchange" in
-    okex) echo "okex-futures okex-margin" ;;
-    binance) echo "binance-futures binance-margin" ;;
-    bybit) echo "bybit-futures bybit-margin" ;;
-    bitget) echo "bitget-futures bitget-margin" ;;
-    gate) echo "gate-futures gate-margin" ;;
-    *)
-      echo ""
-      return 1
-      ;;
-  esac
-}
-
-# PM2 binary: prefer pm2, fallback to npx pm2
-PM2=(pm2)
-if ! command -v pm2 >/dev/null 2>&1; then
-  PM2=(npx pm2)
-fi
-
-# 可选：设置 PM2 namespace（默认使用部署目录名，可用环境变量覆盖）
-NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
-
-# Args parsing
-EXCHANGE=""
-VENUES=()
-POSITIONAL=()
-
-while [[ $# -gt 0 ]]; do
+if [[ $# -gt 0 ]]; then
   case "$1" in
-    --namespace)
-      NAMESPACE="${2:-}"
-      if [[ -z "$NAMESPACE" ]]; then
-        echo "[ERROR] --namespace 需要一个值" >&2
-        usage >&2
-        exit 1
-      fi
-      shift 2
-      ;;
-    --exchange)
-      EXCHANGE="${2:-}"
-      if [[ -z "$EXCHANGE" ]]; then
-        echo "[ERROR] --exchange 需要一个值" >&2
-        usage >&2
-        exit 1
-      fi
-      shift 2
-      ;;
-    --venue)
-      v="${2:-}"
-      if [[ -z "$v" ]]; then
-        echo "[ERROR] --venue 需要一个值" >&2
-        usage >&2
-        exit 1
-      fi
-      VENUES+=("$v")
-      shift 2
-      ;;
     -h|--help)
       usage
       exit 0
       ;;
     *)
-      POSITIONAL+=("$1")
-      shift
+      echo "[ERROR] 不支持参数: $*" >&2
+      usage >&2
+      exit 1
       ;;
   esac
-done
-
-if [[ -z "$EXCHANGE" && ${#POSITIONAL[@]} -gt 0 ]]; then
-  if is_known_exchange "${POSITIONAL[0]}"; then
-    EXCHANGE="${POSITIONAL[0]}"
-    POSITIONAL=("${POSITIONAL[@]:1}")
-  fi
 fi
 
-if [[ ${#VENUES[@]} -eq 0 && ${#POSITIONAL[@]} -gt 0 ]]; then
-  VENUES=("${POSITIONAL[@]}")
-fi
-
-# Infer exchange from deploy directory name for backward compatibility
-if [[ -z "$EXCHANGE" && ${#VENUES[@]} -eq 0 ]]; then
-  dir_name="$(basename "${BASE_DIR}")"
-  if [[ "$dir_name" =~ okex|OKEX ]]; then EXCHANGE="okex"; fi
-  if [[ "$dir_name" =~ binance|BINANCE ]]; then EXCHANGE="binance"; fi
-  if [[ "$dir_name" =~ bybit|BYBIT ]]; then EXCHANGE="bybit"; fi
-  if [[ "$dir_name" =~ bitget|BITGET ]]; then EXCHANGE="bitget"; fi
-  if [[ "$dir_name" =~ gate|GATE ]]; then EXCHANGE="gate"; fi
-fi
-
-if [[ ${#VENUES[@]} -eq 0 && -n "$EXCHANGE" ]]; then
-  read -r -a VENUES <<<"$(default_venues_for_exchange "$EXCHANGE")"
-fi
-
-if [[ ${#VENUES[@]} -eq 0 ]]; then
-  echo "[ERROR] No exchange/venues provided and could not infer from deploy directory name" >&2
-  usage >&2
+venue="$(basename "${BASE_DIR}" | tr '[:upper:]' '[:lower:]')"
+if [[ ! "$venue" =~ $VENUE_DIR_REGEX ]]; then
+  echo "[ERROR] 当前目录无法推断 venue: ${BASE_DIR}" >&2
+  echo "[ERROR] 期望目录名形如 <exchange>-<market>，例如 binance-futures" >&2
   exit 1
 fi
 
-# Candidate locations: deployed dir first, then repo targets
+PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
+PMDAEMON=("$PMDAEMON_BIN")
+if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
+  echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2
+  echo "[HINT] install with: cargo install pmdaemon" >&2
+  exit 1
+fi
+
 BIN_CANDIDATES=(
-  "${SCRIPT_DIR}/trade_flow_feature_pub"
-  "${SCRIPT_DIR}/target/release/trade_flow_feature_pub"
+  "${BASE_DIR}/trade_flow_feature_pub"
   "${SCRIPT_DIR}/../trade_flow_feature_pub"
   "${SCRIPT_DIR}/../target/release/trade_flow_feature_pub"
-  "${BASE_DIR}/trade_flow_feature_pub"
-  "${BASE_DIR}/target/release/trade_flow_feature_pub"
 )
 
 BIN_PATH=""
@@ -162,29 +70,43 @@ if [[ -z "$BIN_PATH" ]]; then
   exit 1
 fi
 
-start_one() {
-  local venue="$1"
-  local name="trade_flow_feature_pub_${venue}"
-  local rust_log="${RUST_LOG:-info}"
+name="trade_flow_feature_pub_${venue}"
+rust_log="${RUST_LOG:-info}"
+cfg_file="$(mktemp)"
+trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT
 
-  echo "[INFO] Restarting ${name}"
-  "${PM2[@]}" delete "$name" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
-
-  RUST_LOG="${rust_log}" "${PM2[@]}" start "$BIN_PATH" \
-    --name "$name" \
-    --namespace "$NAMESPACE" \
-    --cwd "$BASE_DIR" \
-    -- \
-    --venue "$venue"
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
-for venue in "${VENUES[@]}"; do
-  start_one "$venue"
-  sleep 1
-done
+json_name="$(json_escape "$name")"
+json_bin="$(json_escape "$BIN_PATH")"
+json_base="$(json_escape "$BASE_DIR")"
+json_venue="$(json_escape "$venue")"
+json_rust_log="$(json_escape "$rust_log")"
+
+cat >"$cfg_file" <<JSON
+{
+  "apps": [
+    {
+      "name": "${json_name}",
+      "script": "${json_bin}",
+      "args": ["--venue", "${json_venue}"],
+      "cwd": "${json_base}",
+      "env": {
+        "RUST_LOG": "${json_rust_log}"
+      }
+    }
+  ]
+}
+JSON
+
+echo "[INFO] Restarting ${name}"
+"${PMDAEMON[@]}" delete "$name" >/dev/null 2>&1 || true
+"${PMDAEMON[@]}" --config "$cfg_file" start --name "$name"
 
 echo ""
-echo "[INFO] Started venues: ${VENUES[*]}"
-echo "Namespace: ${NAMESPACE}"
-echo "Logs: ${PM2[*]} logs --namespace ${NAMESPACE} trade_flow_feature_pub_<venue>"
-echo "Status: ${PM2[*]} status --namespace ${NAMESPACE}"
+echo "[INFO] Started: ${name}"
+echo "Venue: ${venue}"
+echo "Logs: ${PMDAEMON[*]} logs ${name} --follow"
+echo "Status: ${PMDAEMON[*]} list"

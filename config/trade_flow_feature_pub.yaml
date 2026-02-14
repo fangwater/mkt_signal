@@ -1,4 +1,4 @@
-# Trade flow feature 发布配置（基于 trade 聚合 bar + Redis 分位阈值）
+# Trade flow feature 发布配置（基于 trade 聚合 bar + Redis 金额阈值）
 
 trade_flow_feature_pub:
   data_source:
@@ -6,8 +6,16 @@ trade_flow_feature_pub:
 
   runtime:
     bar_ms: 5000
-    # 3分钟热更新一次 amount 分位阈值
-    quantile_reload_secs: 180
+    # 3分钟热更新一次 amount 阈值
+    threshold_reload_secs: 180
+
+  persistence:
+    # RocksDB 数据目录（相对路径基于运行目录）
+    rocksdb_path: "data/trade_flow_feature_pub_rocksdb"
+    # 持久化保留小时数，按该窗口做 rolling 清理；0 表示不持久化
+    retention_hours: 0
+    # 仅对列表中的 symbol 做持久化（会按 venue 规则归一化）
+    symbols: []
 
   redis:
     host: "127.0.0.1"

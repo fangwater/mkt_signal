@@ -4,40 +4,65 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN_NAME="trade_flow_feature_pub"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
+KNOWN_EXCHANGES=("okex" "binance" "bybit" "bitget" "gate")
+
+is_known_exchange() {
+  local v="${1,,}"
+  for e in "${KNOWN_EXCHANGES[@]}"; do
+    if [[ "$v" == "$e" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+default_venues_for_exchange() {
+  local exchange="${1,,}"
+  case "$exchange" in
+    okex) echo "okex-futures okex-margin" ;;
+    binance) echo "binance-futures binance-margin" ;;
+    bybit) echo "bybit-futures bybit-margin" ;;
+    bitget) echo "bitget-futures bitget-margin" ;;
+    gate) echo "gate-futures gate-margin" ;;
+    *)
+      echo ""
+      return 1
+      ;;
+  esac
+}
 
 usage() {
   cat <<'USAGE'
 Usage:
-  deploy_trade_flow_feature_pub.sh [trade|test] [--dir <path>]
+  deploy_trade_flow_feature_pub.sh --exchange <exchange>
 
 Defaults:
-  trade -> $HOME/factor_pub
-  test  -> $HOME/factor_pub_test
+  固定部署根目录 -> $HOME/trade_flow_feature
+  目录结构 -> $HOME/trade_flow_feature/<venue>/
 
 Examples:
-  bash scripts/deploy_trade_flow_feature_pub.sh
-  bash scripts/deploy_trade_flow_feature_pub.sh trade
-  bash scripts/deploy_trade_flow_feature_pub.sh test
-  bash scripts/deploy_trade_flow_feature_pub.sh trade --dir "$HOME/factor_pub"
+  bash scripts/deploy_trade_flow_feature_pub.sh --exchange binance
+  bash scripts/deploy_trade_flow_feature_pub.sh --exchange okex
 
 Notes:
-  - Venue is selected at runtime via start_trade_flow_feature_pub.sh --venue <venue>
+  - Exchange expands to default venues:
+      okex    -> okex-futures okex-margin
+      binance -> binance-futures binance-margin
+      bybit   -> bybit-futures bybit-margin
+      bitget  -> bitget-futures bitget-margin
+      gate    -> gate-futures gate-margin
 USAGE
 }
 
 # 参数解析
-ENV_TYPE="trade"
-TARGET_DIR=""
+TARGET_ROOT="$HOME/trade_flow_feature"
+EXCHANGE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    trade|test)
-      ENV_TYPE="$1"
-      shift
-      ;;
-    --dir)
-      TARGET_DIR="${2:-}"
-      if [[ -z "$TARGET_DIR" ]]; then
-        echo "[ERROR] --dir 需要一个路径" >&2
+    --exchange)
+      EXCHANGE="${2:-}"
+      if [[ -z "$EXCHANGE" ]]; then
+        echo "[ERROR] --exchange 需要一个值" >&2
         usage >&2
         exit 1
       fi
@@ -48,44 +73,62 @@ while [[ $# -gt 0 ]]; do
       exit 0
       ;;
     *)
-      echo "[ERROR] 未知参数: $1"
+      echo "[ERROR] 未知参数: $1（仅支持 --exchange）" >&2
       usage >&2
       exit 1
       ;;
   esac
 done
 
-if [[ -z "$TARGET_DIR" ]]; then
-  case "$ENV_TYPE" in
-    trade) TARGET_DIR="$HOME/factor_pub" ;;
-    test) TARGET_DIR="$HOME/factor_pub_test" ;;
-  esac
+if [[ -z "$EXCHANGE" ]]; then
+  echo "[ERROR] 必须提供 --exchange" >&2
+  usage >&2
+  exit 1
 fi
+
+if ! is_known_exchange "$EXCHANGE"; then
+  echo "[ERROR] 不支持的 exchange: $EXCHANGE" >&2
+  usage >&2
+  exit 1
+fi
+
+read -r -a VENUES <<<"$(default_venues_for_exchange "$EXCHANGE")"
 
 echo "[INFO] 构建 $BIN_NAME (release)"
 cargo build --release --bin "$BIN_NAME"
 
-echo "[INFO] 部署 $BIN_NAME 到 $TARGET_DIR"
-mkdir -p "$TARGET_DIR"
-cp "$BIN_PATH" "$TARGET_DIR/"
-chmod +x "$TARGET_DIR/$BIN_NAME"
-
-# 同步启动/停止脚本到 scripts/
 SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
-SCRIPTS_TO_SYNC=("start_trade_flow_feature_pub.sh" "stop_trade_flow_feature_pub.sh")
-mkdir -p "$TARGET_DIR/scripts"
-for script in "${SCRIPTS_TO_SYNC[@]}"; do
-  if [[ -f "$SCRIPT_DIR_SRC/$script" ]]; then
-    rsync -a "$SCRIPT_DIR_SRC/$script" "$TARGET_DIR/scripts/"
-    chmod +x "$TARGET_DIR/scripts/$script"
+SCRIPTS_TO_SYNC=(
+  "start_trade_flow_feature_pub.sh"
+  "stop_trade_flow_feature_pub.sh"
+  "sync_trade_flow_thresholds.py"
+  "print_trade_flow_thresholds.py"
+)
+
+for venue in "${VENUES[@]}"; do
+  TARGET_DIR="${TARGET_ROOT%/}/${venue}"
+  echo "[INFO] 部署 $BIN_NAME 到 $TARGET_DIR"
+  mkdir -p "$TARGET_DIR"
+  cp "$BIN_PATH" "$TARGET_DIR/"
+  chmod +x "$TARGET_DIR/$BIN_NAME"
+
+  # 同步启动/停止脚本到 scripts/
+  mkdir -p "$TARGET_DIR/scripts"
+  for script in "${SCRIPTS_TO_SYNC[@]}"; do
+    if [[ -f "$SCRIPT_DIR_SRC/$script" ]]; then
+      rsync -a "$SCRIPT_DIR_SRC/$script" "$TARGET_DIR/scripts/"
+      chmod +x "$TARGET_DIR/scripts/$script"
+    fi
+  done
+
+  # 同步配置文件
+  mkdir -p "$TARGET_DIR/config"
+  if [[ -f "$ROOT_DIR/config/trade_flow_feature_pub.yaml" ]]; then
+    rsync -a "$ROOT_DIR/config/trade_flow_feature_pub.yaml" "$TARGET_DIR/config/"
   fi
 done
 
-# 同步配置文件
-mkdir -p "$TARGET_DIR/config"
-if [[ -f "$ROOT_DIR/config/trade_flow_feature_pub.yaml" ]]; then
-  rsync -a "$ROOT_DIR/config/trade_flow_feature_pub.yaml" "$TARGET_DIR/config/"
-fi
-
-echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"
-echo "[INFO] 启动示例: cd $TARGET_DIR && ./scripts/start_trade_flow_feature_pub.sh --venue binance-futures"
+echo "[INFO] $BIN_NAME 部署完成"
+echo "[INFO] base_dir: $TARGET_ROOT"
+echo "[INFO] venues: ${VENUES[*]}"
+echo "[INFO] 启动示例: cd ${TARGET_ROOT%/}/${VENUES[0]} && ./scripts/start_trade_flow_feature_pub.sh"
