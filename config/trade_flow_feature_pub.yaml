@@ -13,9 +13,3 @@ trade_flow_feature_pub:
     retention_hours: 0
     # 仅对列表中的 symbol 做持久化（会按 venue 规则归一化）
     symbols: []
-
-  redis:
-    host: "127.0.0.1"
-    port: 6379
-    db: 0
-    # prefix: ""

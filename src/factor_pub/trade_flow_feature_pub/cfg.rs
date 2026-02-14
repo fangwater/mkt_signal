@@ -4,16 +4,12 @@ use anyhow::Result;
 use serde::Deserialize;
 use std::fs;
 
-use crate::common::redis_client::RedisSettings;
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct TradeFlowFeaturePubConfig {
     #[serde(default)]
     pub runtime: RuntimeConfig,
     #[serde(default)]
     pub persistence: PersistenceConfig,
-    #[serde(default)]
-    pub redis: RedisSettings,
 }
 
 #[derive(Debug, Clone, Deserialize)]

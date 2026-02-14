@@ -34,6 +34,9 @@ const REDIS_WARN_INTERVAL_SECS: u64 = 60;
 const ROCKSDB_WARN_INTERVAL_SECS: u64 = 60;
 const TRADE_FLOW_FEATURE_CF_SUFFIX: &str = "trade_flow:feature";
 const FIXED_TRADE_CHANNEL: &str = "trade";
+const FIXED_REDIS_HOST: &str = "127.0.0.1";
+const FIXED_REDIS_PORT: u16 = 6379;
+const FIXED_REDIS_DB: i64 = 0;
 
 #[derive(Debug, Clone, Copy)]
 enum TradeSide {
@@ -800,7 +803,7 @@ impl TradeFlowFeaturePubApp {
 
         let subscriber = Self::create_subscriber(venue_slug)?;
         let publisher = TradeFlowFeaturePublisher::new(venue_slug)?;
-        let threshold_store = AmountThresholdRedisStore::new(config.redis.clone())?;
+        let threshold_store = AmountThresholdRedisStore::new(fixed_redis_settings())?;
         let threshold_reload_interval = Duration::from_secs(config.runtime.threshold_reload_secs);
         let persistence = PersistenceRuntime::from_config(&config.persistence, venue);
         let heartbeat_symbol = normalize_symbol_for_venue("BTCUSDT", venue);
@@ -862,9 +865,9 @@ impl TradeFlowFeaturePubApp {
             FIXED_TRADE_CHANNEL,
             self.config.runtime.bar_ms,
             self.config.runtime.threshold_reload_secs,
-            self.config.redis.host,
-            self.config.redis.port,
-            self.config.redis.db,
+            self.threshold_store.settings.host,
+            self.threshold_store.settings.port,
+            self.threshold_store.settings.db,
             self.persistence.rocksdb_path,
             self.persistence.retention_hours,
             self.persistence.symbols.len()
@@ -1032,30 +1035,6 @@ impl TradeFlowFeaturePubApp {
                 "trade_flow_feature threshold reload interval updated: {}s",
                 self.config.runtime.threshold_reload_secs
             );
-        }
-
-        let old_redis_sig = redis_settings_signature(&self.config.redis);
-        let new_redis_sig = redis_settings_signature(&loaded.redis);
-        if old_redis_sig != new_redis_sig {
-            match AmountThresholdRedisStore::new(loaded.redis.clone()) {
-                Ok(store) => {
-                    self.threshold_store = store;
-                    self.config.redis = loaded.redis.clone();
-                    info!(
-                        "trade_flow_feature redis settings reloaded: {}:{} db={} prefix={:?}",
-                        self.config.redis.host,
-                        self.config.redis.port,
-                        self.config.redis.db,
-                        self.config.redis.prefix
-                    );
-                }
-                Err(err) => {
-                    warn!(
-                        "trade_flow_feature redis reload ignored due to error: {}",
-                        err
-                    );
-                }
-            }
         }
 
         self.apply_persistence_config(&loaded.persistence, false);
@@ -1372,16 +1351,15 @@ fn parse_symbol_from_threshold_key(
     }
 }
 
-fn redis_settings_signature(settings: &RedisSettings) -> String {
-    format!(
-        "{}:{}:{}:{:?}:{:?}:{:?}",
-        settings.host,
-        settings.port,
-        settings.db,
-        settings.username,
-        settings.password,
-        settings.prefix
-    )
+fn fixed_redis_settings() -> RedisSettings {
+    RedisSettings {
+        host: FIXED_REDIS_HOST.to_string(),
+        port: FIXED_REDIS_PORT,
+        db: FIXED_REDIS_DB,
+        username: None,
+        password: None,
+        prefix: None,
+    }
 }
 
 fn cf_name_for_symbol(venue_slug: &str, symbol: &str) -> String {
