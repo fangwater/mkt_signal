@@ -1,5 +1,11 @@
-model_name = "xgb_mm_v1"
-model_path = "./models/xgb_mm_v1.json"
-n_features = 48
-input_service = "model_input/binance-futures/xgb_mm_v1"
-output_service = "model_output/binance-futures/xgb_mm_v1"
+model_manager_base_url = "http://127.0.0.1:6300"
+model_manager_request_timeout_ms = 5000
+
+# Optional auth settings for model_manager.
+# Keep empty when auth is disabled.
+model_manager_password = ""
+model_manager_bearer_token = ""
+
+# {model_name} is required in both templates.
+input_service_template = "model_input/binance-futures/{model_name}"
+output_service_template = "model_output/binance-futures/{model_name}"

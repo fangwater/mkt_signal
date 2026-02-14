@@ -573,8 +573,6 @@ struct AmountThresholdJsonEntry {
     symbol: Option<String>,
     medium_notional_threshold: f64,
     large_notional_threshold: f64,
-    prev_mean: Option<f64>,
-    prev_std: Option<f64>,
 }
 
 struct AmountThresholdRedisStore {
@@ -650,12 +648,6 @@ impl AmountThresholdRedisStore {
                     || entry.large_notional_threshold <= 0.0
                     || entry.medium_notional_threshold > entry.large_notional_threshold
                 {
-                    continue;
-                }
-                if entry.prev_mean.is_some_and(|v| !v.is_finite()) {
-                    continue;
-                }
-                if entry.prev_std.is_some_and(|v| !v.is_finite() || v <= 0.0) {
                     continue;
                 }
 
@@ -1539,8 +1531,6 @@ fn collect_threshold_entries(value: &Value, out: &mut Vec<AmountThresholdJsonEnt
             if let (Some(medium_notional_threshold), Some(large_notional_threshold)) =
                 (medium_notional_threshold, large_notional_threshold)
             {
-                let prev_mean = map.get("prev_mean").and_then(json_as_f64);
-                let prev_std = map.get("prev_std").and_then(json_as_f64);
                 let symbol = map
                     .get("symbol")
                     .and_then(|v| v.as_str())
@@ -1549,8 +1539,6 @@ fn collect_threshold_entries(value: &Value, out: &mut Vec<AmountThresholdJsonEnt
                     symbol,
                     medium_notional_threshold,
                     large_notional_threshold,
-                    prev_mean,
-                    prev_std,
                 });
             }
 

@@ -41,8 +41,6 @@ class PrintedRow:
     symbol: str
     medium_notional_threshold: float
     large_notional_threshold: float
-    prev_mean: Optional[float]
-    prev_std: Optional[float]
     suffix: str
     key: str
 
@@ -151,20 +149,14 @@ def collect_entries(
         elif symbol_from_key:
             symbol = symbol_from_key
 
-        prev_mean = parse_optional_f64(value.get("prev_mean"))
-        prev_std = parse_optional_f64(value.get("prev_std"))
-
         if symbol and medium_notional_threshold > 0.0 and large_notional_threshold > 0.0 and medium_notional_threshold <= large_notional_threshold:
-            if prev_std is None or prev_std > 0.0:
-                out.append(
-                    {
-                        "symbol": symbol,
-                        "medium_notional_threshold": medium_notional_threshold,
-                        "large_notional_threshold": large_notional_threshold,
-                        "prev_mean": prev_mean,
-                        "prev_std": prev_std,
-                    }
-                )
+            out.append(
+                {
+                    "symbol": symbol,
+                    "medium_notional_threshold": medium_notional_threshold,
+                    "large_notional_threshold": large_notional_threshold,
+                }
+            )
 
     for child in value.values():
         if isinstance(child, (dict, list)):
@@ -277,8 +269,6 @@ def main() -> int:
                     symbol=symbol,
                     medium_notional_threshold=float(entry["medium_notional_threshold"]),
                     large_notional_threshold=float(entry["large_notional_threshold"]),
-                    prev_mean=parse_optional_f64(entry.get("prev_mean")),
-                    prev_std=parse_optional_f64(entry.get("prev_std")),
                     suffix=suffix,
                     key=logical,
                 )
@@ -297,7 +287,7 @@ def main() -> int:
             print(f"parse_errors={parse_errors}", file=sys.stderr)
         return 0
 
-    headers = ["symbol", "medium_notional_threshold", "large_notional_threshold", "prev_mean", "prev_std", "source_suffix"]
+    headers = ["symbol", "medium_notional_threshold", "large_notional_threshold", "source_suffix"]
     if args.show_key:
         headers.append("source_key")
 
@@ -307,8 +297,6 @@ def main() -> int:
             row.symbol,
             format_num(row.medium_notional_threshold),
             format_num(row.large_notional_threshold),
-            format_num(row.prev_mean),
-            format_num(row.prev_std),
             row.suffix,
         ]
         if args.show_key:

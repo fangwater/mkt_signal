@@ -14,9 +14,7 @@ Redis value(JSON):
   {
     "symbol": "...",
     "medium_notional_threshold": ...,
-    "large_notional_threshold": ...,
-    "prev_mean": ...,
-    "prev_std": ...
+    "large_notional_threshold": ...
   }
 
 模式:
@@ -61,8 +59,6 @@ class ThresholdRow:
     symbol: str
     medium_notional_threshold: float
     large_notional_threshold: float
-    prev_mean: Optional[float]
-    prev_std: Optional[float]
 
 
 def parse_args() -> argparse.Namespace:
@@ -128,11 +124,6 @@ def validate_row(row: ThresholdRow) -> None:
         raise ValueError(f"symbol={row.symbol}: medium_notional_threshold/large_notional_threshold 必须 > 0")
     if row.medium_notional_threshold > row.large_notional_threshold:
         raise ValueError(f"symbol={row.symbol}: medium_notional_threshold 不能大于 large_notional_threshold")
-    if row.prev_mean is not None and not _is_finite(row.prev_mean):
-        raise ValueError(f"symbol={row.symbol}: prev_mean 必须是有限数值")
-    if row.prev_std is not None:
-        if (not _is_finite(row.prev_std)) or row.prev_std <= 0.0:
-            raise ValueError(f"symbol={row.symbol}: prev_std 必须是有限数值且 > 0")
 
 
 def json_file_path() -> Path:
@@ -142,14 +133,10 @@ def json_file_path() -> Path:
 def build_row_from_dict(symbol: str, obj: Dict[str, Any]) -> ThresholdRow:
     medium_notional_threshold = parse_required_f64(obj.get("medium_notional_threshold"), f"{symbol}.medium_notional_threshold")
     large_notional_threshold = parse_required_f64(obj.get("large_notional_threshold"), f"{symbol}.large_notional_threshold")
-    prev_mean = parse_optional_f64(obj.get("prev_mean"), f"{symbol}.prev_mean")
-    prev_std = parse_optional_f64(obj.get("prev_std"), f"{symbol}.prev_std")
     row = ThresholdRow(
         symbol=symbol.strip(),
         medium_notional_threshold=medium_notional_threshold,
         large_notional_threshold=large_notional_threshold,
-        prev_mean=prev_mean,
-        prev_std=prev_std,
     )
     validate_row(row)
     return row
@@ -234,10 +221,6 @@ def encode_value(row: ThresholdRow) -> str:
         "medium_notional_threshold": row.medium_notional_threshold,
         "large_notional_threshold": row.large_notional_threshold,
     }
-    if row.prev_mean is not None:
-        payload["prev_mean"] = row.prev_mean
-    if row.prev_std is not None:
-        payload["prev_std"] = row.prev_std
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -280,10 +263,6 @@ def row_to_json_obj(row: ThresholdRow) -> Dict[str, Any]:
         "medium_notional_threshold": row.medium_notional_threshold,
         "large_notional_threshold": row.large_notional_threshold,
     }
-    if row.prev_mean is not None:
-        out["prev_mean"] = row.prev_mean
-    if row.prev_std is not None:
-        out["prev_std"] = row.prev_std
     return out
 
 
@@ -299,14 +278,10 @@ def parse_row_from_redis_payload(
     symbol = symbol_from_key
     if isinstance(symbol_raw, str) and symbol_raw.strip():
         symbol = symbol_raw.strip()
-    prev_mean = parse_optional_f64(payload.get("prev_mean"), f"{symbol}.prev_mean")
-    prev_std = parse_optional_f64(payload.get("prev_std"), f"{symbol}.prev_std")
     row = ThresholdRow(
         symbol=symbol,
         medium_notional_threshold=medium_notional_threshold,
         large_notional_threshold=large_notional_threshold,
-        prev_mean=prev_mean,
-        prev_std=prev_std,
     )
     validate_row(row)
     return row

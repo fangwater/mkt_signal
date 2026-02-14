@@ -21,6 +21,23 @@ impl XgbModel {
         })
     }
 
+    pub fn load_from_bytes(model_bytes: &[u8], n_features: usize) -> Result<Self> {
+        if n_features == 0 {
+            anyhow::bail!("n_features must be > 0");
+        }
+        if model_bytes.is_empty() {
+            anyhow::bail!("model bytes must not be empty");
+        }
+
+        let booster = Booster::load_buffer(model_bytes)
+            .context("load xgboost model from in-memory bytes failed")?;
+
+        Ok(Self {
+            booster,
+            n_features,
+        })
+    }
+
     pub fn predict_one(&self, features: &[f32]) -> Result<f64> {
         if features.len() != self.n_features {
             anyhow::bail!(

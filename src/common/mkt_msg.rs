@@ -99,9 +99,7 @@ pub struct FeatureMsg {
     pub symbol_length: u32,
     pub symbol: String,
     pub ts_ms: i64,
-    pub seq_no: u64,
     pub feature_dim: u16,
-    pub flags: u16,
     pub features: Vec<f32>,
 }
 
@@ -963,7 +961,7 @@ impl PairMmResampleMsg {
 }
 
 impl FeatureMsg {
-    pub fn create(symbol: String, ts_ms: i64, seq_no: u64, flags: u16, features: Vec<f32>) -> Self {
+    pub fn create(symbol: String, ts_ms: i64, features: Vec<f32>) -> Self {
         let symbol_length = symbol.len() as u32;
         let feature_dim = features.len() as u16;
         Self {
@@ -971,9 +969,7 @@ impl FeatureMsg {
             symbol_length,
             symbol,
             ts_ms,
-            seq_no,
             feature_dim,
-            flags,
             features,
         }
     }
@@ -992,15 +988,13 @@ impl FeatureMsg {
             bail!("FeatureMsg feature_dim {} exceeds u16::MAX", feature_dim);
         }
 
-        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 8 + 2 + 2 + feature_dim * 4;
+        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 2 + feature_dim * 4;
         let mut buf = BytesMut::with_capacity(total_size);
         buf.put_u32_le(self.msg_type);
         buf.put_u32_le(self.symbol_length);
         buf.put(self.symbol.as_bytes());
         buf.put_i64_le(self.ts_ms);
-        buf.put_u64_le(self.seq_no);
         buf.put_u16_le(feature_dim as u16);
-        buf.put_u16_le(self.flags);
         for value in &self.features {
             buf.put_f32_le(*value);
         }
@@ -1008,7 +1002,7 @@ impl FeatureMsg {
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        if data.len() < 4 + 4 + 8 + 8 + 2 + 2 {
+        if data.len() < 4 + 4 + 8 + 2 {
             bail!("FeatureMsg too short: {}", data.len());
         }
 
@@ -1023,19 +1017,17 @@ impl FeatureMsg {
         }
 
         let symbol_len = cursor.get_u32_le() as usize;
-        if cursor.remaining() < symbol_len + 8 + 8 + 2 + 2 {
+        if cursor.remaining() < symbol_len + 8 + 2 {
             bail!(
                 "FeatureMsg truncated before body: remaining={} need={}",
                 cursor.remaining(),
-                symbol_len + 8 + 8 + 2 + 2
+                symbol_len + 8 + 2
             );
         }
 
         let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_len).to_vec())?;
         let ts_ms = cursor.get_i64_le();
-        let seq_no = cursor.get_u64_le();
         let feature_dim = cursor.get_u16_le() as usize;
-        let flags = cursor.get_u16_le();
 
         if cursor.remaining() < feature_dim * 4 {
             bail!(
@@ -1055,9 +1047,7 @@ impl FeatureMsg {
             symbol_length: symbol.len() as u32,
             symbol,
             ts_ms,
-            seq_no,
             feature_dim: feature_dim as u16,
-            flags,
             features,
         })
     }
