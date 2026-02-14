@@ -1,6 +1,7 @@
 use crate::cfg::Config;
 use crate::common::exchange::Exchange;
 use crate::signal::common::TradingVenue;
+use log::warn;
 use serde_json::Value;
 use std::collections::HashSet;
 
@@ -501,17 +502,17 @@ impl SubscribeMsgs {
         }
     }
 
-    fn get_inc_channel(exchange: &Exchange, venue: TradingVenue) -> String {
+    fn get_inc_channel(exchange: &Exchange, venue: TradingVenue) -> Option<String> {
         match exchange {
             Exchange::Binance => match venue {
-                TradingVenue::BinanceMargin => "depth@100ms".to_string(),
-                _ => "depth@100ms".to_string(),
+                TradingVenue::BinanceMargin => Some("depth@100ms".to_string()),
+                _ => Some("depth@100ms".to_string()),
             },
-            Exchange::Okex => "books".to_string(),
-            Exchange::Bybit => "orderbook.500".to_string(),
-            Exchange::Bitget => "books".to_string(),
-            Exchange::Gate => panic!("Gate.io does not support incremental orderbook"),
-            Exchange::Hyperliquid => "l2Book".to_string(),
+            Exchange::Okex => Some("books".to_string()),
+            Exchange::Bybit => Some("orderbook.500".to_string()),
+            Exchange::Bitget => Some("books".to_string()),
+            Exchange::Gate => None,
+            Exchange::Hyperliquid => Some("l2Book".to_string()),
         }
     }
 
@@ -665,7 +666,15 @@ impl SubscribeMsgs {
         let mut ask_bid_spread_msgs = Vec::new();
         let exchange = cfg.get_exchange();
         let inc_channel = if cfg.data_types.enable_incremental {
-            Some(SubscribeMsgs::get_inc_channel(&exchange, cfg.venue))
+            let ch = SubscribeMsgs::get_inc_channel(&exchange, cfg.venue);
+            if ch.is_none() {
+                warn!(
+                    "incremental orderbook is not supported for exchange={} venue={}; ignore data_types.enable_incremental=true",
+                    exchange,
+                    cfg.venue.data_pub_slug()
+                );
+            }
+            ch
         } else {
             None
         };

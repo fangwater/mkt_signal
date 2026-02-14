@@ -1,0 +1,98 @@
+{
+  "AAVEUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "ADAUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "ARBUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "ATOMUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "AVAXUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "BCHUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "BNBUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "BTCUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "DOGEUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "DOTUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "ETCUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "ETHUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "FILUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "HBARUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "LINKUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "LTCUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "ONDOUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "SOLUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "TONUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "TRUMPUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "TRXUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "WLDUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "XLMUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  },
+  "XRPUSDT": {
+    "medium_notional_threshold": 2000.0,
+    "large_notional_threshold": 10000.0
+  }
+}
