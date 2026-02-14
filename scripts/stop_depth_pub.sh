@@ -7,7 +7,7 @@ BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 usage() {
   cat <<'EOF'
 Usage:
-  stop_depth_pub.sh [--namespace <ns>] (--exchange <exchange> | <exchange> | <venue...>)
+  stop_depth_pub.sh (--exchange <exchange> | <exchange> | <venue...>)
 
 Examples:
   ./scripts/stop_depth_pub.sh --exchange binance
@@ -22,7 +22,7 @@ Notes:
       bybit   -> bybit-futures bybit-margin
       bitget  -> bitget-futures bitget-margin
       gate    -> gate-futures gate-margin
-  - Namespace defaults to $PM2_NAMESPACE or the deploy directory name.
+  - Managed by pmdaemon with process names depth_pub_<venue>.
 EOF
 }
 
@@ -53,14 +53,9 @@ default_venues_for_exchange() {
   esac
 }
 
-# PM2 binary: prefer pm2, fallback to npx pm2
-PM2=(pm2)
-if ! command -v pm2 >/dev/null 2>&1; then
-  PM2=(npx pm2)
-fi
-
-# Optional PM2 namespace; defaults to deploy dir name unless PM2_NAMESPACE is set
-NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
+PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
+PMDAEMON=("$PMDAEMON_BIN")
+KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
 # Args parsing
 EXCHANGE=""
@@ -69,15 +64,6 @@ POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --namespace)
-      NAMESPACE="${2:-}"
-      if [[ -z "$NAMESPACE" ]]; then
-        echo "[ERROR] --namespace 需要一个值" >&2
-        usage >&2
-        exit 1
-      fi
-      shift 2
-      ;;
     --exchange)
       EXCHANGE="${2:-}"
       if [[ -z "$EXCHANGE" ]]; then
@@ -139,16 +125,87 @@ if [[ ${#VENUES[@]} -eq 0 ]]; then
   exit 1
 fi
 
+if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
+  echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2
+  echo "[HINT] install with: cargo install pmdaemon" >&2
+  exit 1
+fi
+
+find_running_pids_for_venue() {
+  local venue="$1"
+  local pids=()
+  while IFS= read -r pid; do
+    if [[ -n "$pid" && "$pid" != "$$" && "$pid" != "$PPID" ]]; then
+      pids+=("$pid")
+    fi
+  done < <(
+    ps -eo pid=,args= | awk -v venue="$venue" -v base_dir="$BASE_DIR" '
+      index($0, "depth_pub") > 0 &&
+      index($0, "--venue " venue) > 0 &&
+      index($0, base_dir) > 0 &&
+      index($0, "awk -v venue=") == 0 &&
+      index($0, "stop_depth_pub.sh") == 0 {
+        print $1
+      }
+    '
+  )
+
+  if [[ ${#pids[@]} -gt 0 ]]; then
+    printf '%s\n' "${pids[@]}"
+  fi
+}
+
+cleanup_leaked_for_venue() {
+  local venue="$1"
+  local venue_arg="--venue ${venue}"
+  local pattern="${BASE_DIR}.*depth_pub.*--venue[[:space:]]+${venue}"
+
+  mapfile -t leaked_pids < <(find_running_pids_for_venue "$venue" || true)
+  if [[ ${#leaked_pids[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  echo "[WARN] Found leaked depth_pub process after pmdaemon delete: venue=${venue} pids=${leaked_pids[*]}"
+  echo "[INFO] Sending SIGTERM via pkill: pattern=${BASE_DIR} ... depth_pub ... ${venue_arg}"
+  pkill -TERM -f "$pattern" >/dev/null 2>&1 || true
+
+  local deadline=$((SECONDS + KILL_WAIT_SECS))
+  while [[ $SECONDS -lt $deadline ]]; do
+    mapfile -t leaked_pids < <(find_running_pids_for_venue "$venue" || true)
+    if [[ ${#leaked_pids[@]} -eq 0 ]]; then
+      break
+    fi
+    sleep 1
+  done
+
+  if [[ ${#leaked_pids[@]} -gt 0 ]]; then
+    echo "[WARN] SIGTERM timeout, sending SIGKILL via pkill: venue=${venue} pids=${leaked_pids[*]}"
+    pkill -KILL -f "$pattern" >/dev/null 2>&1 || true
+    sleep 1
+    mapfile -t leaked_pids < <(find_running_pids_for_venue "$venue" || true)
+  fi
+
+  if [[ ${#leaked_pids[@]} -gt 0 ]]; then
+    echo "[ERROR] Failed to kill leaked depth_pub process(es): venue=${venue} pids=${leaked_pids[*]}" >&2
+    return 1
+  fi
+
+  echo "[INFO] Leaked process cleanup done: venue=${venue}"
+  return 0
+}
+
 stop_one() {
   local venue="$1"
   local name="depth_pub_${venue}"
 
-  echo "[INFO] Deleting ${name} (namespace: ${NAMESPACE})"
-  if "${PM2[@]}" delete "$name" --namespace "$NAMESPACE"; then
-    echo "[INFO] Deleted ${name}"
+  echo "[INFO] Stopping ${name}"
+  if "${PMDAEMON[@]}" delete "$name" >/dev/null 2>&1; then
+    echo "[INFO] Stopped ${name}"
   else
-    echo "[WARN] ${name} not found in namespace ${NAMESPACE}"
+    echo "[WARN] ${name} not found"
   fi
+
+  cleanup_leaked_for_venue "$venue"
 }
 
 for venue in "${VENUES[@]}"; do
@@ -158,5 +215,4 @@ done
 
 echo ""
 echo "[INFO] Stopped venues: ${VENUES[*]}"
-echo "Namespace: ${NAMESPACE}"
-echo "To view remaining processes: ${PM2[*]} status --namespace ${NAMESPACE}"
+echo "To view remaining processes: ${PMDAEMON[*]} list"

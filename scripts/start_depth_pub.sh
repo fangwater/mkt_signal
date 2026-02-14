@@ -7,7 +7,7 @@ BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 usage() {
   cat <<'EOF'
 Usage:
-  start_depth_pub.sh [--namespace <ns>] (--exchange <exchange> | <exchange> | <venue...>)
+  start_depth_pub.sh (--exchange <exchange> | <exchange> | <venue...>)
 
 Examples:
   ./scripts/start_depth_pub.sh --exchange binance
@@ -22,7 +22,7 @@ Notes:
       bybit   -> bybit-futures bybit-margin
       bitget  -> bitget-futures bitget-margin
       gate    -> gate-futures gate-margin
-  - Namespace defaults to $PM2_NAMESPACE or the deploy directory name.
+  - Managed by pmdaemon with process names depth_pub_<venue>.
 EOF
 }
 
@@ -53,14 +53,8 @@ default_venues_for_exchange() {
   esac
 }
 
-# PM2 binary: prefer pm2, fallback to npx pm2
-PM2=(pm2)
-if ! command -v pm2 >/dev/null 2>&1; then
-  PM2=(npx pm2)
-fi
-
-# 可选：设置 PM2 namespace（默认使用部署目录名，可用环境变量覆盖）
-NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
+PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
+PMDAEMON=("$PMDAEMON_BIN")
 
 # Args parsing
 EXCHANGE=""
@@ -69,15 +63,6 @@ POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --namespace)
-      NAMESPACE="${2:-}"
-      if [[ -z "$NAMESPACE" ]]; then
-        echo "[ERROR] --namespace 需要一个值" >&2
-        usage >&2
-        exit 1
-      fi
-      shift 2
-      ;;
     --exchange)
       EXCHANGE="${2:-}"
       if [[ -z "$EXCHANGE" ]]; then
@@ -139,6 +124,12 @@ if [[ ${#VENUES[@]} -eq 0 ]]; then
   exit 1
 fi
 
+if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
+  echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2
+  echo "[HINT] install with: cargo install pmdaemon" >&2
+  exit 1
+fi
+
 # Candidate locations: deployed dir first, then repo targets
 BIN_CANDIDATES=(
   "${SCRIPT_DIR}/depth_pub"
@@ -162,20 +153,52 @@ if [[ -z "$BIN_PATH" ]]; then
   exit 1
 fi
 
+TMP_FILES=()
+cleanup_tmp_files() {
+  if [[ ${#TMP_FILES[@]} -gt 0 ]]; then
+    rm -f "${TMP_FILES[@]}" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_tmp_files EXIT
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
 start_one() {
   local venue="$1"
   local name="depth_pub_${venue}"
   local rust_log="${RUST_LOG:-info}"
+  local cfg_file
+  cfg_file="$(mktemp)"
+  TMP_FILES+=("$cfg_file")
+
+  local json_name json_bin json_base json_venue json_rust_log
+  json_name="$(json_escape "$name")"
+  json_bin="$(json_escape "$BIN_PATH")"
+  json_base="$(json_escape "$BASE_DIR")"
+  json_venue="$(json_escape "$venue")"
+  json_rust_log="$(json_escape "$rust_log")"
+
+  cat >"$cfg_file" <<CFG
+{
+  "apps": [
+    {
+      "name": "${json_name}",
+      "script": "${json_bin}",
+      "args": ["--venue", "${json_venue}"],
+      "cwd": "${json_base}",
+      "env": {
+        "RUST_LOG": "${json_rust_log}"
+      }
+    }
+  ]
+}
+CFG
 
   echo "[INFO] Restarting ${name}"
-  "${PM2[@]}" delete "$name" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
-
-  RUST_LOG="${rust_log}" "${PM2[@]}" start "$BIN_PATH" \
-    --name "$name" \
-    --namespace "$NAMESPACE" \
-    --cwd "$BASE_DIR" \
-    -- \
-    --venue "$venue"
+  "${PMDAEMON[@]}" delete "$name" >/dev/null 2>&1 || true
+  "${PMDAEMON[@]}" --config "$cfg_file" start --name "$name"
 }
 
 for venue in "${VENUES[@]}"; do
@@ -185,6 +208,5 @@ done
 
 echo ""
 echo "[INFO] Started venues: ${VENUES[*]}"
-echo "Namespace: ${NAMESPACE}"
-echo "Logs: ${PM2[*]} logs --namespace ${NAMESPACE} depth_pub_<venue>"
-echo "Status: ${PM2[*]} status --namespace ${NAMESPACE}"
+echo "Logs: ${PMDAEMON[*]} logs depth_pub_<venue> --follow"
+echo "Status: ${PMDAEMON[*]} list"

@@ -397,4 +397,19 @@ mod tests {
         assert_eq!(parsed_resp.timestamp_us, 555);
         assert_eq!(parsed_resp.amounts, vec![1.0, 2.0, 3.0]);
     }
+
+    #[test]
+    fn batch_req_rejects_truncated_payload() {
+        let mut payload = [0u8; BATCH_FIXED_LEN + 8];
+        payload[0..8].copy_from_slice(&777_i64.to_le_bytes());
+        payload[8..10].copy_from_slice(&(2_u16).to_le_bytes());
+        payload[10..12].fill(0);
+        payload[12..20].copy_from_slice(&101.0_f64.to_le_bytes());
+
+        let err = DepthQueryLoadTlenBatchReq::from_payload(&payload).unwrap_err();
+        assert!(
+            err.to_string().contains("truncated"),
+            "unexpected error: {err:#}"
+        );
+    }
 }

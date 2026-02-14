@@ -19,6 +19,7 @@ Examples:
 
 Notes:
   - Venue is selected at runtime via start_depth_pub.sh --venue <venue>
+  - Runtime process management is handled by pmdaemon.
 EOF
 }
 
