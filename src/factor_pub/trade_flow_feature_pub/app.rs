@@ -33,6 +33,7 @@ const AMOUNT_THRESHOLD_REDIS_KEY_SUFFIX: &str = "amount-threshold";
 const REDIS_WARN_INTERVAL_SECS: u64 = 60;
 const ROCKSDB_WARN_INTERVAL_SECS: u64 = 60;
 const TRADE_FLOW_FEATURE_CF_SUFFIX: &str = "trade_flow:feature";
+const FIXED_TRADE_CHANNEL: &str = "trade";
 
 #[derive(Debug, Clone, Copy)]
 enum TradeSide {
@@ -797,7 +798,7 @@ impl TradeFlowFeaturePubApp {
     ) -> Result<Self> {
         let config = TradeFlowFeaturePubConfig::load(config_path)?;
 
-        let subscriber = Self::create_subscriber(venue_slug, &config.data_source.trade_channel)?;
+        let subscriber = Self::create_subscriber(venue_slug)?;
         let publisher = TradeFlowFeaturePublisher::new(venue_slug)?;
         let threshold_store = AmountThresholdRedisStore::new(config.redis.clone())?;
         let threshold_reload_interval = Duration::from_secs(config.runtime.threshold_reload_secs);
@@ -837,14 +838,13 @@ impl TradeFlowFeaturePubApp {
 
     fn create_subscriber(
         venue: &str,
-        channel: &str,
     ) -> Result<Subscriber<ipc::Service, [u8; TRADE_MAX_BYTES], ()>> {
         let node_name = format!("factor_sub_{}_trade_flow_feature", venue.replace('-', "_"));
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
 
-        let service_name = format!("dat_pbs/{}/{}", venue, channel);
+        let service_name = format!("dat_pbs/{}/{}", venue, FIXED_TRADE_CHANNEL);
         let service = node
             .service_builder(&ServiceName::new(&service_name)?)
             .publish_subscribe::<[u8; TRADE_MAX_BYTES]>()
@@ -859,7 +859,7 @@ impl TradeFlowFeaturePubApp {
         info!(
             "TradeFlowFeaturePubApp[{}] started: channel={} bar_ms={} threshold_reload_secs={} redis={}:{} db={} persist_path={} persist_hours={} persist_symbols={}",
             self.venue_slug,
-            self.config.data_source.trade_channel,
+            FIXED_TRADE_CHANNEL,
             self.config.runtime.bar_ms,
             self.config.runtime.threshold_reload_secs,
             self.config.redis.host,
@@ -1017,13 +1017,6 @@ impl TradeFlowFeaturePubApp {
             }
         };
 
-        if loaded.data_source.trade_channel != self.config.data_source.trade_channel {
-            warn!(
-                "trade_flow_feature config change ignored: trade_channel '{}' -> '{}' (requires restart)",
-                self.config.data_source.trade_channel,
-                loaded.data_source.trade_channel
-            );
-        }
         if loaded.runtime.bar_ms != self.config.runtime.bar_ms {
             warn!(
                 "trade_flow_feature config change ignored: bar_ms '{}' -> '{}' (requires restart)",

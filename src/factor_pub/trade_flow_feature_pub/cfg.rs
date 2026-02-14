@@ -9,27 +9,11 @@ use crate::common::redis_client::RedisSettings;
 #[derive(Debug, Clone, Deserialize)]
 pub struct TradeFlowFeaturePubConfig {
     #[serde(default)]
-    pub data_source: DataSourceConfig,
-    #[serde(default)]
     pub runtime: RuntimeConfig,
     #[serde(default)]
     pub persistence: PersistenceConfig,
     #[serde(default)]
     pub redis: RedisSettings,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct DataSourceConfig {
-    #[serde(default = "default_trade_channel")]
-    pub trade_channel: String,
-}
-
-impl Default for DataSourceConfig {
-    fn default() -> Self {
-        Self {
-            trade_channel: default_trade_channel(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -93,9 +77,6 @@ impl TradeFlowFeaturePubConfig {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.data_source.trade_channel.trim().is_empty() {
-            anyhow::bail!("data_source.trade_channel must not be empty");
-        }
         if self.runtime.bar_ms <= 0 {
             anyhow::bail!("runtime.bar_ms must be > 0");
         }
@@ -112,10 +93,6 @@ impl TradeFlowFeaturePubConfig {
         }
         Ok(())
     }
-}
-
-fn default_trade_channel() -> String {
-    "trade".to_string()
 }
 
 fn default_bar_ms() -> i64 {
