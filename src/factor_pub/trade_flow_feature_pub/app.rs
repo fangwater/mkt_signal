@@ -766,6 +766,7 @@ pub struct TradeFlowFeaturePubApp {
     venue_slug: String,
     venue_u8: u8,
     venue: TradingVenue,
+    heartbeat_symbol: String,
     config_path: String,
     config: TradeFlowFeaturePubConfig,
     subscriber: Subscriber<ipc::Service, [u8; TRADE_MAX_BYTES], ()>,
@@ -801,11 +802,13 @@ impl TradeFlowFeaturePubApp {
         let threshold_store = AmountThresholdRedisStore::new(config.redis.clone())?;
         let threshold_reload_interval = Duration::from_secs(config.runtime.threshold_reload_secs);
         let persistence = PersistenceRuntime::from_config(&config.persistence, venue);
+        let heartbeat_symbol = normalize_symbol_for_venue("BTCUSDT", venue);
 
         let mut app = Self {
             venue_slug: venue_slug.to_string(),
             venue_u8,
             venue,
+            heartbeat_symbol,
             config_path: config_path.to_string(),
             config,
             subscriber,
@@ -955,12 +958,20 @@ impl TradeFlowFeaturePubApp {
                 continue;
             }
             let symbol_norm = normalize_symbol_for_venue(symbol, self.venue);
+            let feature_values = bar.to_feature_values();
             let msg = TradeFlowFeatureMsg::from_indexed_values(
                 symbol_norm.clone(),
                 self.venue_u8,
                 bar.start_ms,
-                &bar.to_feature_values(),
+                &feature_values,
             )?;
+
+            if symbol_norm == self.heartbeat_symbol {
+                info!(
+                    "trade_flow_feature heartbeat: venue={} symbol={} ts={} feature_values={:?}",
+                    self.venue_slug, symbol_norm, bar.start_ms, feature_values
+                );
+            }
 
             if should_log_symbol(&symbol_norm) {
                 info!(
@@ -1213,6 +1224,16 @@ impl TradeFlowFeaturePubApp {
             .load_thresholds_for_venue(&self.venue_slug, self.venue)
         {
             Ok(new_map) => {
+                if !new_map.contains_key(&self.heartbeat_symbol) {
+                    panic!(
+                        "trade_flow_feature heartbeat threshold missing: venue={} symbol={} key_pattern='{}:*:{}'",
+                        self.venue_slug,
+                        self.heartbeat_symbol,
+                        self.venue_slug,
+                        AMOUNT_THRESHOLD_REDIS_KEY_SUFFIX
+                    );
+                }
+
                 let mut symbols = HashSet::with_capacity(new_map.len());
                 for symbol in new_map.keys() {
                     symbols.insert(symbol.clone());
