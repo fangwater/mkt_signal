@@ -9,7 +9,5 @@ trade_flow_feature_pub:
   persistence:
     # RocksDB 数据目录（相对路径基于运行目录）
     rocksdb_path: "data/trade_flow_feature_pub_rocksdb"
-    # 持久化保留小时数，按该窗口做 rolling 清理；0 表示不持久化
-    retention_hours: 0
-    # 仅对列表中的 symbol 做持久化（会按 venue 规则归一化）
-    symbols: []
+    # 持久化保留小时数，默认 24h；0 表示不持久化
+    retention_hours: 24

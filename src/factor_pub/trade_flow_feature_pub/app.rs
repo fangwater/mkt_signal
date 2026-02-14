@@ -622,27 +622,18 @@ impl AmountThresholdRedisStore {
 struct PersistenceRuntime {
     rocksdb_path: String,
     retention_hours: u64,
-    symbols: HashSet<String>,
 }
 
 impl PersistenceRuntime {
-    fn from_config(cfg: &PersistenceConfig, venue: TradingVenue) -> Self {
-        let mut symbols = HashSet::new();
-        for raw in &cfg.symbols {
-            let normalized = normalize_symbol_for_venue(raw.trim(), venue);
-            if !normalized.is_empty() {
-                symbols.insert(normalized);
-            }
-        }
+    fn from_config(cfg: &PersistenceConfig) -> Self {
         Self {
             rocksdb_path: cfg.rocksdb_path.trim().to_string(),
             retention_hours: cfg.retention_hours,
-            symbols,
         }
     }
 
     fn enabled(&self) -> bool {
-        self.retention_hours > 0 && !self.symbols.is_empty()
+        self.retention_hours > 0
     }
 }
 
@@ -750,6 +741,39 @@ impl TradeFlowFeatureRocksDbStore {
                 )
             })?;
         Ok(())
+    }
+
+    fn cleanup_symbols_for_venue(
+        &mut self,
+        venue_slug: &str,
+        symbols: &HashSet<String>,
+    ) -> Result<usize> {
+        if symbols.is_empty() {
+            return Ok(0);
+        }
+
+        let mut dropped_cfs = 0usize;
+
+        let mut sorted_symbols: Vec<String> = symbols.iter().cloned().collect();
+        sorted_symbols.sort_unstable();
+
+        for symbol in sorted_symbols {
+            let cf_name = cf_name_for_symbol(venue_slug, &symbol);
+            if !self.known_cf_names.contains(&cf_name) || self.db.cf_handle(&cf_name).is_none() {
+                continue;
+            }
+
+            self.db.drop_cf(&cf_name).with_context(|| {
+                format!(
+                    "rocksdb retired symbol drop cf failed: cf={} symbol={}",
+                    cf_name, symbol
+                )
+            })?;
+            self.known_cf_names.remove(&cf_name);
+            dropped_cfs += 1;
+        }
+
+        Ok(dropped_cfs)
     }
 
     fn cleanup_before_for_venue(&self, venue_slug: &str, cutoff_ms: i64) -> Result<(usize, usize)> {
@@ -869,7 +893,7 @@ impl TradeFlowFeaturePubApp {
         let publisher = TradeFlowFeaturePublisher::new(venue_slug)?;
         let threshold_store = AmountThresholdRedisStore::new(fixed_redis_settings())?;
         let threshold_reload_interval = Duration::from_secs(config.runtime.threshold_reload_secs);
-        let persistence = PersistenceRuntime::from_config(&config.persistence, venue);
+        let persistence = PersistenceRuntime::from_config(&config.persistence);
         let heartbeat_symbol = normalize_symbol_for_venue("BTCUSDT", venue);
 
         let mut app = Self {
@@ -898,7 +922,6 @@ impl TradeFlowFeaturePubApp {
         };
         app.ensure_persistence_ready(true);
         app.reload_thresholds(true);
-        app.enforce_startup_symbol_threshold_subset();
         Ok(app)
     }
 
@@ -933,7 +956,7 @@ impl TradeFlowFeaturePubApp {
             self.threshold_store.settings.db,
             self.persistence.rocksdb_path,
             self.persistence.retention_hours,
-            self.persistence.symbols.len()
+            self.online_symbols.len()
         );
 
         loop {
@@ -1069,11 +1092,10 @@ impl TradeFlowFeaturePubApp {
     }
 
     fn apply_persistence_config(&mut self, cfg: &PersistenceConfig, init: bool) {
-        let next = PersistenceRuntime::from_config(cfg, self.venue);
+        let next = PersistenceRuntime::from_config(cfg);
         let changed = init
             || self.persistence.rocksdb_path != next.rocksdb_path
-            || self.persistence.retention_hours != next.retention_hours
-            || self.persistence.symbols != next.symbols;
+            || self.persistence.retention_hours != next.retention_hours;
 
         self.config.persistence = cfg.clone();
         if !changed {
@@ -1092,14 +1114,14 @@ impl TradeFlowFeaturePubApp {
                     "trade_flow_feature persistence disabled: venue={} retention_hours={} symbols={}",
                     self.venue_slug,
                     self.persistence.retention_hours,
-                    self.persistence.symbols.len()
+                    self.online_symbols.len()
                 );
             } else if init {
                 info!(
                     "trade_flow_feature persistence disabled on startup: venue={} retention_hours={} symbols={}",
                     self.venue_slug,
                     self.persistence.retention_hours,
-                    self.persistence.symbols.len()
+                    self.online_symbols.len()
                 );
             }
             return;
@@ -1112,7 +1134,7 @@ impl TradeFlowFeaturePubApp {
             match TradeFlowFeatureRocksDbStore::open(
                 &target_path,
                 &self.venue_slug,
-                &self.persistence.symbols,
+                &self.online_symbols,
             ) {
                 Ok(store) => {
                     self.rocksdb_store = Some(store);
@@ -1123,7 +1145,7 @@ impl TradeFlowFeaturePubApp {
                         self.venue_slug,
                         target_path,
                         self.persistence.retention_hours,
-                        self.persistence.symbols.len()
+                        self.online_symbols.len()
                     );
                 }
                 Err(err) => {
@@ -1139,7 +1161,7 @@ impl TradeFlowFeaturePubApp {
         }
 
         if let Some(store) = self.rocksdb_store.as_mut() {
-            if let Err(err) = store.ensure_symbol_cfs(&self.venue_slug, &self.persistence.symbols) {
+            if let Err(err) = store.ensure_symbol_cfs(&self.venue_slug, &self.online_symbols) {
                 self.warn_rocksdb_throttled(&format!(
                     "trade_flow_feature rocksdb ensure cfs failed: venue={} path={} err={:#}",
                     self.venue_slug, self.persistence.rocksdb_path, err
@@ -1149,7 +1171,7 @@ impl TradeFlowFeaturePubApp {
     }
 
     fn maybe_persist_feature_msg(&mut self, symbol: &str, msg: &TradeFlowFeatureMsg) {
-        if !self.persistence.enabled() || !self.persistence.symbols.contains(symbol) {
+        if !self.persistence.enabled() || !self.online_symbols.contains(symbol) {
             return;
         }
         if self.rocksdb_store.is_none() {
@@ -1218,6 +1240,42 @@ impl TradeFlowFeaturePubApp {
         }
     }
 
+    fn maybe_cleanup_retired_symbols(&mut self, retired_symbols: &HashSet<String>) {
+        if retired_symbols.is_empty() || !self.persistence.enabled() {
+            return;
+        }
+
+        if self.rocksdb_store.is_none() {
+            self.ensure_persistence_ready(false);
+        }
+
+        let result = match self.rocksdb_store.as_mut() {
+            Some(store) => store.cleanup_symbols_for_venue(&self.venue_slug, retired_symbols),
+            None => return,
+        };
+
+        match result {
+            Ok(dropped_cfs) => {
+                if dropped_cfs > 0 {
+                    info!(
+                        "trade_flow_feature retired symbol cleanup: venue={} retired_symbols={} dropped_cfs={}",
+                        self.venue_slug,
+                        retired_symbols.len(),
+                        dropped_cfs
+                    );
+                }
+            }
+            Err(err) => {
+                self.warn_rocksdb_throttled(&format!(
+                    "trade_flow_feature retired symbol cleanup failed: venue={} retired_symbols={} err={:#}",
+                    self.venue_slug,
+                    retired_symbols.len(),
+                    err
+                ));
+            }
+        }
+    }
+
     fn reload_thresholds(&mut self, init: bool) {
         match self
             .threshold_store
@@ -1239,8 +1297,9 @@ impl TradeFlowFeaturePubApp {
                     symbols.insert(symbol.clone());
                 }
 
-                let retired_symbols = self.online_symbols.difference(&symbols).count();
-                self.last_retired_symbols = retired_symbols;
+                let retired_symbols: HashSet<String> =
+                    self.online_symbols.difference(&symbols).cloned().collect();
+                self.last_retired_symbols = retired_symbols.len();
                 self.thresholds = new_map;
                 self.online_symbols = symbols;
                 self.symbols
@@ -1253,6 +1312,9 @@ impl TradeFlowFeaturePubApp {
                     self.online_symbols.len(),
                     self.last_retired_symbols
                 );
+
+                self.maybe_cleanup_retired_symbols(&retired_symbols);
+                self.ensure_persistence_ready(false);
             }
             Err(err) => {
                 self.threshold_store.warn_throttled(&format!(
@@ -1267,31 +1329,6 @@ impl TradeFlowFeaturePubApp {
         if self.last_rocksdb_warn.elapsed() >= Duration::from_secs(ROCKSDB_WARN_INTERVAL_SECS) {
             warn!("{}", msg);
             self.last_rocksdb_warn = Instant::now();
-        }
-    }
-
-    fn enforce_startup_symbol_threshold_subset(&self) {
-        if self.persistence.symbols.is_empty() {
-            return;
-        }
-
-        let mut missing: Vec<String> = self
-            .persistence
-            .symbols
-            .iter()
-            .filter(|symbol| !self.thresholds.contains_key(*symbol))
-            .cloned()
-            .collect();
-        missing.sort_unstable();
-        missing.dedup();
-
-        if !missing.is_empty() {
-            panic!(
-                "startup validation failed: persistence.symbols must be subset of redis amount-threshold keys; venue={} missing_symbols={:?} loaded_threshold_symbols={}",
-                self.venue_slug,
-                missing,
-                self.thresholds.len()
-            );
         }
     }
 }

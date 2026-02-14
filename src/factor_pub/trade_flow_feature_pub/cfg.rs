@@ -33,18 +33,15 @@ impl Default for RuntimeConfig {
 pub struct PersistenceConfig {
     #[serde(default = "default_persistence_rocksdb_path")]
     pub rocksdb_path: String,
-    #[serde(default)]
+    #[serde(default = "default_persistence_retention_hours")]
     pub retention_hours: u64,
-    #[serde(default)]
-    pub symbols: Vec<String>,
 }
 
 impl Default for PersistenceConfig {
     fn default() -> Self {
         Self {
             rocksdb_path: default_persistence_rocksdb_path(),
-            retention_hours: 0,
-            symbols: Vec::new(),
+            retention_hours: default_persistence_retention_hours(),
         }
     }
 }
@@ -82,11 +79,6 @@ impl TradeFlowFeaturePubConfig {
         if self.persistence.rocksdb_path.trim().is_empty() {
             anyhow::bail!("persistence.rocksdb_path must not be empty");
         }
-        for symbol in &self.persistence.symbols {
-            if symbol.trim().is_empty() {
-                anyhow::bail!("persistence.symbols contains empty symbol");
-            }
-        }
         Ok(())
     }
 }
@@ -101,4 +93,8 @@ fn default_threshold_reload_secs() -> u64 {
 
 fn default_persistence_rocksdb_path() -> String {
     "data/trade_flow_feature_pub_rocksdb".to_string()
+}
+
+fn default_persistence_retention_hours() -> u64 {
+    24
 }
