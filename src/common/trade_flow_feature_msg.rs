@@ -48,27 +48,25 @@ pub struct TradeFlowFeatureMsg {
     pub symbol: String,
     pub venue: u8,
     pub ts: i64,
-    pub values: [f64; TRADE_FLOW_FEATURE_DIM],
+    pub values: Vec<f64>,
 }
 
 impl TradeFlowFeatureMsg {
     pub fn from_indexed_values(symbol: String, venue: u8, ts: i64, values: &[f64]) -> Result<Self> {
-        if values.len() != TRADE_FLOW_FEATURE_DIM {
+        if values.len() < TRADE_FLOW_FEATURE_DIM {
             bail!(
-                "TradeFlowFeatureMsg expects {} values, got {}",
+                "TradeFlowFeatureMsg expects at least {} values, got {}",
                 TRADE_FLOW_FEATURE_DIM,
                 values.len()
             );
         }
-        let mut arr = [0.0f64; TRADE_FLOW_FEATURE_DIM];
-        arr.copy_from_slice(values);
         Ok(Self {
             msg_type: TRADE_FLOW_FEATURE_MSG_TYPE,
             symbol_length: symbol.len() as u32,
             symbol,
             venue,
             ts,
-            values: arr,
+            values: values.to_vec(),
         })
     }
 
@@ -80,22 +78,21 @@ impl TradeFlowFeatureMsg {
                 TRADE_FLOW_FEATURE_MSG_TYPE
             );
         }
-        let total_size = 4 + 4 + self.symbol_length as usize + 1 + 8 + (TRADE_FLOW_FEATURE_DIM * 8);
+        let total_size = 4 + 4 + self.symbol_length as usize + 1 + 8 + (self.values.len() * 8);
         let mut buf = BytesMut::with_capacity(total_size);
         buf.put_u32_le(self.msg_type);
         buf.put_u32_le(self.symbol_length);
         buf.put(self.symbol.as_bytes());
         buf.put_u8(self.venue);
         buf.put_i64_le(self.ts);
-        for value in self.values {
-            buf.put_f64_le(value);
+        for value in &self.values {
+            buf.put_f64_le(*value);
         }
         Ok(buf.freeze())
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        let value_bytes = TRADE_FLOW_FEATURE_DIM * 8;
-        let min_len = 4 + 4 + 1 + 8 + value_bytes;
+        let min_len = 4 + 4 + 1 + 8 + (TRADE_FLOW_FEATURE_DIM * 8);
         if data.len() < min_len {
             bail!("TradeFlowFeatureMsg too short: {}", data.len());
         }
@@ -110,7 +107,7 @@ impl TradeFlowFeatureMsg {
         }
 
         let symbol_len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
-        let need = match symbol_len.checked_add(1 + 8 + value_bytes) {
+        let need = match symbol_len.checked_add(1 + 8 + (TRADE_FLOW_FEATURE_DIM * 8)) {
             Some(v) => v,
             None => {
                 bail!(
@@ -156,9 +153,25 @@ impl TradeFlowFeatureMsg {
         ]);
         offset += 8;
 
-        let mut values = [0.0f64; TRADE_FLOW_FEATURE_DIM];
-        for value in &mut values {
-            *value = f64::from_le_bytes([
+        let value_bytes = data.len().saturating_sub(offset);
+        if value_bytes % 8 != 0 {
+            bail!(
+                "TradeFlowFeatureMsg invalid value bytes: {} (not aligned to f64)",
+                value_bytes
+            );
+        }
+        let value_count = value_bytes / 8;
+        if value_count < TRADE_FLOW_FEATURE_DIM {
+            bail!(
+                "TradeFlowFeatureMsg value count too small: {} < {}",
+                value_count,
+                TRADE_FLOW_FEATURE_DIM
+            );
+        }
+
+        let mut values = Vec::with_capacity(value_count);
+        for _ in 0..value_count {
+            values.push(f64::from_le_bytes([
                 data[offset],
                 data[offset + 1],
                 data[offset + 2],
@@ -167,7 +180,7 @@ impl TradeFlowFeatureMsg {
                 data[offset + 5],
                 data[offset + 6],
                 data[offset + 7],
-            ]);
+            ]));
             offset += 8;
         }
 
@@ -207,5 +220,19 @@ mod tests {
         assert_eq!(parsed.venue, original.venue);
         assert_eq!(parsed.ts, original.ts);
         assert_eq!(parsed.values, original.values);
+    }
+
+    #[test]
+    fn supports_variable_length_payload() {
+        let values: Vec<f64> = (0..(TRADE_FLOW_FEATURE_DIM + 80))
+            .map(|i| i as f64 * 0.1)
+            .collect();
+        let original =
+            TradeFlowFeatureMsg::from_indexed_values("ETHUSDT".to_string(), 2, 123_456, &values)
+                .expect("build message");
+        let bytes = original.to_bytes().expect("serialize");
+        let parsed = TradeFlowFeatureMsg::from_bytes(bytes.as_ref()).expect("parse");
+        assert_eq!(parsed.values.len(), TRADE_FLOW_FEATURE_DIM + 80);
+        assert_eq!(parsed.values, values);
     }
 }

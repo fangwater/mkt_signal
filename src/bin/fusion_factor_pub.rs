@@ -12,7 +12,7 @@ use mkt_signal::signal::common::TradingVenue;
 
 #[derive(Parser)]
 #[command(name = "fusion_factor_pub")]
-#[command(about = "Fusion factor pipeline from trade_flow_feature + depth snapshots")]
+#[command(about = "Fusion factor pipeline from unified trade_flow_feature stream")]
 struct Args {
     /// Trading venue (e.g., binance-futures, binance-margin, okex-futures)
     #[arg(short, long)]

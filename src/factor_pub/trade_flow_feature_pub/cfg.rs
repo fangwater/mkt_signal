@@ -7,9 +7,25 @@ use std::fs;
 #[derive(Debug, Clone, Deserialize)]
 pub struct TradeFlowFeaturePubConfig {
     #[serde(default)]
+    pub data_source: DataSourceConfig,
+    #[serde(default)]
     pub runtime: RuntimeConfig,
     #[serde(default)]
     pub persistence: PersistenceConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DataSourceConfig {
+    #[serde(default = "default_depth_channel")]
+    pub depth_channel: String,
+}
+
+impl Default for DataSourceConfig {
+    fn default() -> Self {
+        Self {
+            depth_channel: default_depth_channel(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -70,6 +86,15 @@ impl TradeFlowFeaturePubConfig {
     }
 
     pub fn validate(&self) -> Result<()> {
+        match self.data_source.depth_channel.as_str() {
+            "depth25" | "depth50" => {}
+            other => {
+                anyhow::bail!(
+                    "data_source.depth_channel must be one of depth25/depth50, got '{}'",
+                    other
+                );
+            }
+        }
         if self.runtime.bar_ms <= 0 {
             anyhow::bail!("runtime.bar_ms must be > 0");
         }
@@ -85,6 +110,10 @@ impl TradeFlowFeaturePubConfig {
 
 fn default_bar_ms() -> i64 {
     5_000
+}
+
+fn default_depth_channel() -> String {
+    "depth25".to_string()
 }
 
 fn default_threshold_reload_secs() -> u64 {

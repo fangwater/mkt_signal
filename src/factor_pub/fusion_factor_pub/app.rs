@@ -1,6 +1,6 @@
 //! Fusion Factor 数据通路应用
 //!
-//! 订阅 trade_flow_feature 与 depth 快照，trade_flow 到达时触发融合因子计算。
+//! 订阅 trade_flow_feature（包含 trade + depth）并触发融合因子计算。
 //! 当前先落地 factor_118，后续在同一框架上扩展全部因子。
 
 use anyhow::{Context, Result};
@@ -11,7 +11,6 @@ use log::{info, warn};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use super::cfg::{FusionFactorPubConfig, ModelManagerConfig};
@@ -24,15 +23,15 @@ use super::window_primitives::{
 };
 use crate::common::msg_parser::parse_trade_flow_feature;
 use crate::common::symbol_util::normalize_symbol_for_venue;
-use crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg;
-use crate::depth_pub::depth_msg::{DepthMsgType, DEPTH25_MAX_BYTES, DEPTH50_MAX_BYTES};
+use crate::common::trade_flow_feature_msg::{TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM};
 use crate::signal::common::TradingVenue;
 
-const TRADE_FLOW_MAX_BYTES: usize = 512;
+const TRADE_FLOW_MAX_BYTES: usize = 4096;
 const IDLE_SLEEP_MICROS: u64 = 200;
 const STATS_LOG_INTERVAL_SECS: u64 = 60;
 const MAX_SYMBOL_HISTORY: usize = 4096;
 const MAX_DEPTH_LEVELS_CACHE: usize = 20;
+const APPENDED_DEPTH_VALUES: usize = MAX_DEPTH_LEVELS_CACHE * 4;
 const FACTOR_118_WINDOW: usize = 120;
 const FACTOR_118_VWAP_LEVELS: usize = 5;
 const FIELD_OPEN: usize = 0;
@@ -60,43 +59,6 @@ const FIELD_NET_BUY_AMOUNT: usize = 26;
 const FIELD_NET_BUY_LARGE: usize = 29;
 const FIELD_NET_BUY_SMALL: usize = 31;
 const FACTOR_160_RANDOM_LEVELS: [usize; 10] = [18, 1, 19, 8, 10, 17, 6, 13, 4, 2];
-
-#[derive(Debug, Clone, Copy)]
-enum DepthChannel {
-    Depth25,
-    Depth50,
-}
-
-impl DepthChannel {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Depth25 => "depth25",
-            Self::Depth50 => "depth50",
-        }
-    }
-
-    fn from_cfg(value: &str) -> Result<Self> {
-        match value {
-            "depth25" => Ok(Self::Depth25),
-            "depth50" => Ok(Self::Depth50),
-            other => anyhow::bail!("unsupported depth channel: {}", other),
-        }
-    }
-
-    fn expected_msg_type(self) -> u32 {
-        match self {
-            Self::Depth25 => DepthMsgType::Depth25 as u32,
-            Self::Depth50 => DepthMsgType::Depth50 as u32,
-        }
-    }
-
-    fn level_count(self) -> usize {
-        match self {
-            Self::Depth25 => 25,
-            Self::Depth50 => 50,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy)]
 struct DepthLevel {
@@ -443,39 +405,18 @@ impl ExtraFactorId {
     }
 }
 
-enum DepthSubscriber {
-    Depth25(Subscriber<ipc::Service, [u8; DEPTH25_MAX_BYTES], ()>),
-    Depth50(Subscriber<ipc::Service, [u8; DEPTH50_MAX_BYTES], ()>),
-}
-
-impl DepthSubscriber {
-    fn receive_snapshot(&self, venue: TradingVenue) -> Result<Option<(String, DepthSnapshot)>> {
-        match self {
-            Self::Depth25(sub) => Ok(sub.receive()?.and_then(|sample| {
-                parse_depth_snapshot(sample.payload(), DepthChannel::Depth25, venue)
-            })),
-            Self::Depth50(sub) => Ok(sub.receive()?.and_then(|sample| {
-                parse_depth_snapshot(sample.payload(), DepthChannel::Depth50, venue)
-            })),
-        }
-    }
-}
-
 pub struct FusionFactorPubApp {
     venue_slug: String,
     venue: TradingVenue,
     trade_flow_subscriber: Subscriber<ipc::Service, [u8; TRADE_FLOW_MAX_BYTES], ()>,
-    depth_subscriber: DepthSubscriber,
     allowed_symbols: HashSet<String>,
     symbol_factor_plans: HashMap<String, SymbolFactorPlan>,
-    latest_depth_by_symbol: HashMap<String, Rc<DepthSnapshot>>,
     symbol_states: HashMap<String, SymbolCalcState>,
-    depth_count: u64,
+    depth_attached_count: u64,
     trade_flow_count: u64,
     trigger_count: u64,
     missing_depth_count: u64,
     factor_118_ready_count: u64,
-    depth_dropped_symbol_count: u64,
     trade_flow_dropped_symbol_count: u64,
     last_stats_log: Instant,
 }
@@ -484,7 +425,6 @@ impl FusionFactorPubApp {
     pub async fn new(config_path: &str, venue: TradingVenue) -> Result<Self> {
         let cfg = FusionFactorPubConfig::load(config_path)?;
         let venue_slug = venue.data_pub_slug().to_string();
-        let depth_channel = DepthChannel::from_cfg(cfg.data_source.depth_channel.as_str())?;
 
         let allowed_symbols: Vec<String> = cfg
             .symbols
@@ -511,33 +451,27 @@ impl FusionFactorPubApp {
 
         let trade_flow_subscriber =
             Self::create_trade_flow_subscriber(&venue_slug, &cfg.data_source.trade_flow_channel)?;
-        let depth_subscriber = Self::create_depth_subscriber(&venue_slug, depth_channel)?;
 
         info!(
-            "FusionFactorPubApp created: venue={} symbols={} trade_flow_channel=factor_pub/{}/{} depth_channel=depth_pubs/{}/{}",
+            "FusionFactorPubApp created: venue={} symbols={} trade_flow_channel=factor_pub/{}/{}",
             venue_slug,
             allowed_symbols.len(),
             venue_slug,
             cfg.data_source.trade_flow_channel,
-            venue_slug,
-            depth_channel.as_str()
         );
 
         Ok(Self {
             venue_slug,
             venue,
             trade_flow_subscriber,
-            depth_subscriber,
             allowed_symbols: allowed_symbols.into_iter().collect(),
             symbol_factor_plans,
-            latest_depth_by_symbol: HashMap::new(),
             symbol_states: HashMap::new(),
-            depth_count: 0,
+            depth_attached_count: 0,
             trade_flow_count: 0,
             trigger_count: 0,
             missing_depth_count: 0,
             factor_118_ready_count: 0,
-            depth_dropped_symbol_count: 0,
             trade_flow_dropped_symbol_count: 0,
             last_stats_log: Instant::now(),
         })
@@ -563,41 +497,9 @@ impl FusionFactorPubApp {
         Ok(subscriber)
     }
 
-    fn create_depth_subscriber(venue: &str, channel: DepthChannel) -> Result<DepthSubscriber> {
-        let node_name = format!(
-            "fusion_sub_{}_{}",
-            venue.replace('-', "_"),
-            channel.as_str()
-        );
-        let node = NodeBuilder::new()
-            .name(&NodeName::new(&node_name)?)
-            .create::<ipc::Service>()?;
-
-        let service_name = format!("depth_pubs/{}/{}", venue, channel.as_str());
-        let depth_subscriber = match channel {
-            DepthChannel::Depth25 => {
-                let service = node
-                    .service_builder(&ServiceName::new(&service_name)?)
-                    .publish_subscribe::<[u8; DEPTH25_MAX_BYTES]>()
-                    .open()?;
-                DepthSubscriber::Depth25(service.subscriber_builder().create()?)
-            }
-            DepthChannel::Depth50 => {
-                let service = node
-                    .service_builder(&ServiceName::new(&service_name)?)
-                    .publish_subscribe::<[u8; DEPTH50_MAX_BYTES]>()
-                    .open()?;
-                DepthSubscriber::Depth50(service.subscriber_builder().create()?)
-            }
-        };
-
-        info!("Subscribed to depth channel: {}", service_name);
-        Ok(depth_subscriber)
-    }
-
     pub fn run(&mut self) -> Result<()> {
         info!(
-            "FusionFactorPubApp[{}] started: symbols={} trade_flow=... depth=...",
+            "FusionFactorPubApp[{}] started: symbols={} trade_flow=single_stream",
             self.venue_slug,
             self.allowed_symbols.len()
         );
@@ -625,46 +527,27 @@ impl FusionFactorPubApp {
                 }
             }
 
-            // depth 读到空为止，并在单轮内按 symbol 合并到最后一条。
-            let mut depth_updates: HashMap<String, Rc<DepthSnapshot>> = HashMap::new();
-            while let Some((symbol, depth)) = self.depth_subscriber.receive_snapshot(self.venue)? {
-                has_message = true;
-                if !self.allowed_symbols.contains(&symbol) {
-                    self.depth_dropped_symbol_count =
-                        self.depth_dropped_symbol_count.saturating_add(1);
-                    continue;
-                }
-                depth_updates.insert(symbol, Rc::new(depth));
-                self.depth_count = self.depth_count.saturating_add(1);
-            }
-            for (symbol, depth) in depth_updates {
-                self.latest_depth_by_symbol.insert(symbol, depth);
-            }
-
             if !has_message {
                 std::thread::sleep(Duration::from_micros(IDLE_SLEEP_MICROS));
             }
 
             if self.last_stats_log.elapsed() >= Duration::from_secs(STATS_LOG_INTERVAL_SECS) {
                 info!(
-                    "FusionFactorPubApp[{}] stats: depth_msgs={} trade_flow_msgs={} triggers={} missing_depth={} factor118_ready={} depth_drop_symbols={} trade_drop_symbols={} depth_symbols={} calc_symbols={}",
+                    "FusionFactorPubApp[{}] stats: trade_flow_msgs={} triggers={} depth_attached={} missing_depth={} factor118_ready={} trade_drop_symbols={} calc_symbols={}",
                     self.venue_slug,
-                    self.depth_count,
                     self.trade_flow_count,
                     self.trigger_count,
+                    self.depth_attached_count,
                     self.missing_depth_count,
                     self.factor_118_ready_count,
-                    self.depth_dropped_symbol_count,
                     self.trade_flow_dropped_symbol_count,
-                    self.latest_depth_by_symbol.len(),
                     self.symbol_states.len(),
                 );
-                self.depth_count = 0;
                 self.trade_flow_count = 0;
                 self.trigger_count = 0;
+                self.depth_attached_count = 0;
                 self.missing_depth_count = 0;
                 self.factor_118_ready_count = 0;
-                self.depth_dropped_symbol_count = 0;
                 self.trade_flow_dropped_symbol_count = 0;
                 self.last_stats_log = Instant::now();
             }
@@ -679,20 +562,23 @@ impl FusionFactorPubApp {
         self.trade_flow_count = self.trade_flow_count.saturating_add(1);
         self.trigger_count = self.trigger_count.saturating_add(1);
 
-        let depth_opt = self.latest_depth_by_symbol.get(&symbol).cloned();
+        let depth_snapshot = parse_embedded_depth(&msg);
+        let depth_opt = depth_snapshot.as_ref();
         {
             let state = self.symbol_states.entry(symbol.clone()).or_default();
             state.push_trade_flow(&msg);
-            if let Some(depth) = depth_opt.as_deref() {
+            if let Some(depth) = depth_opt {
                 state.push_depth_metrics(depth);
             }
         }
 
         if depth_opt.is_none() {
             self.missing_depth_count = self.missing_depth_count.saturating_add(1);
+        } else {
+            self.depth_attached_count = self.depth_attached_count.saturating_add(1);
         }
 
-        let Some(eval_stats) = self.evaluate_ordered_factors(&symbol, depth_opt.as_deref()) else {
+        let Some(eval_stats) = self.evaluate_ordered_factors(&symbol, depth_opt) else {
             warn!(
                 "fusion-trigger: venue={} symbol={} trade_ts={} reason=missing_factor_plan",
                 self.venue_slug, symbol, msg.ts
@@ -4837,71 +4723,62 @@ fn last_opt(values: &[Option<f64>]) -> Option<f64> {
     finite_opt(values.last().copied().flatten())
 }
 
-fn parse_depth_snapshot(
-    data: &[u8],
-    channel: DepthChannel,
-    venue: TradingVenue,
-) -> Option<(String, DepthSnapshot)> {
-    if data.len() < 8 {
+fn parse_embedded_depth(msg: &TradeFlowFeatureMsg) -> Option<DepthSnapshot> {
+    if msg.values.len() < TRADE_FLOW_FEATURE_DIM + APPENDED_DEPTH_VALUES {
         return None;
     }
 
-    let msg_type = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-    if msg_type != channel.expected_msg_type() {
-        return None;
-    }
-
-    let levels = channel.level_count();
-    let symbol_len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
-    let min_len = 8 + symbol_len + 8 + levels * 16 * 2;
-    if data.len() < min_len {
-        return None;
-    }
-
-    let symbol_raw = std::str::from_utf8(&data[8..8 + symbol_len]).ok()?;
-    let symbol = normalize_symbol_for_venue(symbol_raw, venue);
-    if symbol.is_empty() {
-        return None;
-    }
-
-    let ts_offset = 8 + symbol_len;
     let mut bids = Vec::with_capacity(MAX_DEPTH_LEVELS_CACHE);
     let mut asks = Vec::with_capacity(MAX_DEPTH_LEVELS_CACHE);
+    let mut best_bid_ok = false;
+    let mut best_ask_ok = false;
 
-    let mut offset = ts_offset + 8;
-    for idx in 0..levels {
-        let price = read_f64_at(data, offset)?;
-        let amount = read_f64_at(data, offset + 8)?;
-        offset += 16;
-        if idx < MAX_DEPTH_LEVELS_CACHE {
-            bids.push(DepthLevel { price, amount });
+    let mut offset = TRADE_FLOW_FEATURE_DIM;
+    for idx in 0..MAX_DEPTH_LEVELS_CACHE {
+        let price_raw = msg.values[offset];
+        let amount_raw = msg.values[offset + 1];
+        offset += 2;
+
+        let price = if price_raw.is_finite() {
+            price_raw
+        } else {
+            0.0
+        };
+        let amount = if amount_raw.is_finite() {
+            amount_raw
+        } else {
+            0.0
+        };
+        if idx == 0 && price > 0.0 {
+            best_bid_ok = true;
         }
+        bids.push(DepthLevel { price, amount });
     }
 
-    for idx in 0..levels {
-        let price = read_f64_at(data, offset)?;
-        let amount = read_f64_at(data, offset + 8)?;
-        offset += 16;
-        if idx < MAX_DEPTH_LEVELS_CACHE {
-            asks.push(DepthLevel { price, amount });
+    for idx in 0..MAX_DEPTH_LEVELS_CACHE {
+        let price_raw = msg.values[offset];
+        let amount_raw = msg.values[offset + 1];
+        offset += 2;
+
+        let price = if price_raw.is_finite() {
+            price_raw
+        } else {
+            0.0
+        };
+        let amount = if amount_raw.is_finite() {
+            amount_raw
+        } else {
+            0.0
+        };
+        if idx == 0 && price > 0.0 {
+            best_ask_ok = true;
         }
+        asks.push(DepthLevel { price, amount });
     }
 
-    Some((symbol, DepthSnapshot { bids, asks }))
-}
-
-fn read_f64_at(data: &[u8], offset: usize) -> Option<f64> {
-    if data.len() < offset + 8 {
+    if !best_bid_ok || !best_ask_ok {
         return None;
     }
-    Some(f64::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-        data[offset + 4],
-        data[offset + 5],
-        data[offset + 6],
-        data[offset + 7],
-    ]))
+
+    Some(DepthSnapshot { bids, asks })
 }

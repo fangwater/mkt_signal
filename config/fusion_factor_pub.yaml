@@ -2,7 +2,6 @@
 fusion_factor_pub:
   data_source:
     trade_flow_channel: "trade_flow_feature"
-    depth_channel: "depth25"
 
   symbols:
     - "BTCUSDT"

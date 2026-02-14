@@ -16,15 +16,12 @@ pub struct FusionFactorPubConfig {
 pub struct DataSourceConfig {
     #[serde(default = "default_trade_flow_channel")]
     pub trade_flow_channel: String,
-    #[serde(default = "default_depth_channel")]
-    pub depth_channel: String,
 }
 
 impl Default for DataSourceConfig {
     fn default() -> Self {
         Self {
             trade_flow_channel: default_trade_flow_channel(),
-            depth_channel: default_depth_channel(),
         }
     }
 }
@@ -66,15 +63,6 @@ impl FusionFactorPubConfig {
         if self.data_source.trade_flow_channel.trim().is_empty() {
             anyhow::bail!("data_source.trade_flow_channel must not be empty");
         }
-        match self.data_source.depth_channel.as_str() {
-            "depth25" | "depth50" => {}
-            other => {
-                anyhow::bail!(
-                    "data_source.depth_channel must be one of depth25/depth50, got '{}'",
-                    other
-                );
-            }
-        }
         if self.symbols.is_empty() {
             anyhow::bail!("symbols must not be empty");
         }
@@ -97,10 +85,6 @@ impl FusionFactorPubConfig {
 
 fn default_trade_flow_channel() -> String {
     "trade_flow_feature".to_string()
-}
-
-fn default_depth_channel() -> String {
-    "depth25".to_string()
 }
 
 fn default_request_timeout_ms() -> u64 {

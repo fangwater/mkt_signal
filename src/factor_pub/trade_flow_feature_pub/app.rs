@@ -1,6 +1,6 @@
 //! Trade flow 特征应用主模块
 //!
-//! 订阅 trade 数据，按 bar 聚合，并输出 TradeFlowFeatureMsg
+//! 订阅 trade + depth 数据，按 bar 聚合，并输出附带深度尾部的 TradeFlowFeatureMsg
 
 use anyhow::{Context, Result};
 use iceoryx2::port::subscriber::Subscriber;
@@ -23,6 +23,7 @@ use crate::common::mkt_msg::MktMsgType;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::trade_flow_feature_msg::{TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM};
+use crate::depth_pub::depth_msg::{DepthMsgType, DEPTH25_MAX_BYTES, DEPTH50_MAX_BYTES};
 use crate::signal::common::TradingVenue;
 
 const TRADE_MAX_BYTES: usize = 64;
@@ -37,6 +38,8 @@ const FIXED_REDIS_HOST: &str = "127.0.0.1";
 const FIXED_REDIS_PORT: u16 = 6379;
 const FIXED_REDIS_DB: i64 = 0;
 const TRADE_DEDUP_WINDOW_MS: i64 = 10_000;
+const MAX_DEPTH_LEVELS_CACHE: usize = 20;
+const APPENDED_DEPTH_DIM: usize = MAX_DEPTH_LEVELS_CACHE * 4;
 
 #[derive(Debug, Clone, Copy)]
 enum TradeSide {
@@ -52,6 +55,73 @@ struct TradeTick {
     side: TradeSide,
     price: f64,
     amount: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DepthChannel {
+    Depth25,
+    Depth50,
+}
+
+impl DepthChannel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Depth25 => "depth25",
+            Self::Depth50 => "depth50",
+        }
+    }
+
+    fn from_cfg(value: &str) -> Result<Self> {
+        match value {
+            "depth25" => Ok(Self::Depth25),
+            "depth50" => Ok(Self::Depth50),
+            other => anyhow::bail!("unsupported depth channel: {}", other),
+        }
+    }
+
+    fn expected_msg_type(self) -> u32 {
+        match self {
+            Self::Depth25 => DepthMsgType::Depth25 as u32,
+            Self::Depth50 => DepthMsgType::Depth50 as u32,
+        }
+    }
+
+    fn level_count(self) -> usize {
+        match self {
+            Self::Depth25 => 25,
+            Self::Depth50 => 50,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DepthLevel {
+    price: f64,
+    amount: f64,
+}
+
+#[derive(Debug, Clone)]
+struct DepthSnapshot {
+    bids: Vec<DepthLevel>,
+    asks: Vec<DepthLevel>,
+}
+
+enum DepthSubscriber {
+    Depth25(Subscriber<ipc::Service, [u8; DEPTH25_MAX_BYTES], ()>),
+    Depth50(Subscriber<ipc::Service, [u8; DEPTH50_MAX_BYTES], ()>),
+}
+
+impl DepthSubscriber {
+    fn receive_snapshot(&self, venue: TradingVenue) -> Result<Option<(String, DepthSnapshot)>> {
+        match self {
+            Self::Depth25(sub) => Ok(sub.receive()?.and_then(|sample| {
+                parse_depth_snapshot(sample.payload(), DepthChannel::Depth25, venue)
+            })),
+            Self::Depth50(sub) => Ok(sub.receive()?.and_then(|sample| {
+                parse_depth_snapshot(sample.payload(), DepthChannel::Depth50, venue)
+            })),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -862,9 +932,12 @@ pub struct TradeFlowFeaturePubApp {
     heartbeat_symbol: String,
     config_path: String,
     config: TradeFlowFeaturePubConfig,
-    subscriber: Subscriber<ipc::Service, [u8; TRADE_MAX_BYTES], ()>,
+    depth_channel: DepthChannel,
+    trade_subscriber: Subscriber<ipc::Service, [u8; TRADE_MAX_BYTES], ()>,
+    depth_subscriber: DepthSubscriber,
     publisher: TradeFlowFeaturePublisher,
     symbols: HashMap<String, SymbolState>,
+    latest_depth_by_symbol: HashMap<String, DepthSnapshot>,
     thresholds: HashMap<String, AmountThreshold>,
     online_symbols: HashSet<String>,
     threshold_store: AmountThresholdRedisStore,
@@ -888,8 +961,10 @@ impl TradeFlowFeaturePubApp {
         venue: TradingVenue,
     ) -> Result<Self> {
         let config = TradeFlowFeaturePubConfig::load(config_path)?;
+        let depth_channel = DepthChannel::from_cfg(config.data_source.depth_channel.as_str())?;
 
-        let subscriber = Self::create_subscriber(venue_slug)?;
+        let trade_subscriber = Self::create_trade_subscriber(venue_slug)?;
+        let depth_subscriber = Self::create_depth_subscriber(venue_slug, depth_channel)?;
         let publisher = TradeFlowFeaturePublisher::new(venue_slug)?;
         let threshold_store = AmountThresholdRedisStore::new(fixed_redis_settings())?;
         let threshold_reload_interval = Duration::from_secs(config.runtime.threshold_reload_secs);
@@ -903,9 +978,12 @@ impl TradeFlowFeaturePubApp {
             heartbeat_symbol,
             config_path: config_path.to_string(),
             config,
-            subscriber,
+            depth_channel,
+            trade_subscriber,
+            depth_subscriber,
             publisher,
             symbols: HashMap::new(),
+            latest_depth_by_symbol: HashMap::new(),
             thresholds: HashMap::new(),
             online_symbols: HashSet::new(),
             threshold_store,
@@ -925,10 +1003,13 @@ impl TradeFlowFeaturePubApp {
         Ok(app)
     }
 
-    fn create_subscriber(
+    fn create_trade_subscriber(
         venue: &str,
     ) -> Result<Subscriber<ipc::Service, [u8; TRADE_MAX_BYTES], ()>> {
-        let node_name = format!("factor_sub_{}_trade_flow_feature", venue.replace('-', "_"));
+        let node_name = format!(
+            "factor_sub_{}_trade_flow_feature_trade",
+            venue.replace('-', "_")
+        );
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
@@ -944,11 +1025,44 @@ impl TradeFlowFeaturePubApp {
         Ok(subscriber)
     }
 
+    fn create_depth_subscriber(venue: &str, channel: DepthChannel) -> Result<DepthSubscriber> {
+        let node_name = format!(
+            "factor_sub_{}_trade_flow_feature_{}",
+            venue.replace('-', "_"),
+            channel.as_str()
+        );
+        let node = NodeBuilder::new()
+            .name(&NodeName::new(&node_name)?)
+            .create::<ipc::Service>()?;
+
+        let service_name = format!("depth_pubs/{}/{}", venue, channel.as_str());
+        let depth_subscriber = match channel {
+            DepthChannel::Depth25 => {
+                let service = node
+                    .service_builder(&ServiceName::new(&service_name)?)
+                    .publish_subscribe::<[u8; DEPTH25_MAX_BYTES]>()
+                    .open()?;
+                DepthSubscriber::Depth25(service.subscriber_builder().create()?)
+            }
+            DepthChannel::Depth50 => {
+                let service = node
+                    .service_builder(&ServiceName::new(&service_name)?)
+                    .publish_subscribe::<[u8; DEPTH50_MAX_BYTES]>()
+                    .open()?;
+                DepthSubscriber::Depth50(service.subscriber_builder().create()?)
+            }
+        };
+
+        info!("Subscribed to depth channel: {}", service_name);
+        Ok(depth_subscriber)
+    }
+
     pub fn run(&mut self) -> Result<()> {
         info!(
-            "TradeFlowFeaturePubApp[{}] started: channel={} bar_ms={} threshold_reload_secs={} redis={}:{} db={} persist_path={} persist_hours={} persist_symbols={}",
+            "TradeFlowFeaturePubApp[{}] started: trade_channel={} depth_channel={} bar_ms={} threshold_reload_secs={} redis={}:{} db={} persist_path={} persist_hours={} persist_symbols={}",
             self.venue_slug,
             FIXED_TRADE_CHANNEL,
+            self.depth_channel.as_str(),
             self.config.runtime.bar_ms,
             self.config.runtime.threshold_reload_secs,
             self.threshold_store.settings.host,
@@ -963,17 +1077,24 @@ impl TradeFlowFeaturePubApp {
             self.maybe_reload_runtime();
             let mut has_message = false;
 
-            while let Some(sample) = self.subscriber.receive()? {
+            while let Some((symbol, depth)) = self.depth_subscriber.receive_snapshot(self.venue)? {
+                has_message = true;
+                if !self.online_symbols.contains(&symbol) {
+                    continue;
+                }
+                self.latest_depth_by_symbol.insert(symbol, depth);
+            }
+
+            while let Some(sample) = self.trade_subscriber.receive()? {
                 has_message = true;
                 let data = sample.payload().to_vec();
                 if let Some(trade) = parse_trade(&data, self.venue) {
                     self.handle_trade(trade);
-                    self.maybe_close_due_bars()?;
                 }
             }
 
+            self.maybe_close_due_bars()?;
             if !has_message {
-                self.maybe_close_due_bars()?;
                 std::thread::sleep(Duration::from_micros(IDLE_SLEEP_MICROS));
             }
         }
@@ -1032,7 +1153,10 @@ impl TradeFlowFeaturePubApp {
                 continue;
             }
             let symbol_norm = normalize_symbol_for_venue(symbol, self.venue);
-            let feature_values = bar.to_feature_values();
+            let mut feature_values =
+                Vec::with_capacity(TRADE_FLOW_FEATURE_DIM + APPENDED_DEPTH_DIM);
+            feature_values.extend_from_slice(&bar.to_feature_values());
+            feature_values.extend_from_slice(&self.appended_depth_values(&symbol_norm));
             let msg = TradeFlowFeatureMsg::from_indexed_values(
                 symbol_norm.clone(),
                 self.venue_u8,
@@ -1050,6 +1174,29 @@ impl TradeFlowFeaturePubApp {
             }
         }
         Ok(())
+    }
+
+    fn appended_depth_values(&self, symbol: &str) -> [f64; APPENDED_DEPTH_DIM] {
+        let mut out = [f64::NAN; APPENDED_DEPTH_DIM];
+        let Some(depth) = self.latest_depth_by_symbol.get(symbol) else {
+            return out;
+        };
+
+        let mut offset = 0usize;
+        for level in depth.bids.iter().take(MAX_DEPTH_LEVELS_CACHE) {
+            out[offset] = level.price;
+            out[offset + 1] = level.amount;
+            offset += 2;
+        }
+
+        offset = MAX_DEPTH_LEVELS_CACHE * 2;
+        for level in depth.asks.iter().take(MAX_DEPTH_LEVELS_CACHE) {
+            out[offset] = level.price;
+            out[offset + 1] = level.amount;
+            offset += 2;
+        }
+
+        out
     }
 
     fn maybe_reload_runtime(&mut self) {
@@ -1085,6 +1232,13 @@ impl TradeFlowFeaturePubApp {
             info!(
                 "trade_flow_feature threshold reload interval updated: {}s",
                 self.config.runtime.threshold_reload_secs
+            );
+        }
+
+        if loaded.data_source.depth_channel != self.config.data_source.depth_channel {
+            warn!(
+                "trade_flow_feature config change ignored: depth_channel '{}' -> '{}' (requires restart)",
+                self.config.data_source.depth_channel, loaded.data_source.depth_channel
             );
         }
 
@@ -1303,6 +1457,8 @@ impl TradeFlowFeaturePubApp {
                 self.thresholds = new_map;
                 self.online_symbols = symbols;
                 self.symbols
+                    .retain(|symbol, _| self.online_symbols.contains(symbol));
+                self.latest_depth_by_symbol
                     .retain(|symbol, _| self.online_symbols.contains(symbol));
 
                 info!(
@@ -1533,6 +1689,75 @@ fn parse_trade(data: &[u8], venue: TradingVenue) -> Option<TradeTick> {
         price,
         amount,
     })
+}
+
+fn parse_depth_snapshot(
+    data: &[u8],
+    channel: DepthChannel,
+    venue: TradingVenue,
+) -> Option<(String, DepthSnapshot)> {
+    if data.len() < 8 {
+        return None;
+    }
+
+    let msg_type = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if msg_type != channel.expected_msg_type() {
+        return None;
+    }
+
+    let levels = channel.level_count();
+    let symbol_len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+    let min_len = 8 + symbol_len + 8 + levels * 16 * 2;
+    if data.len() < min_len {
+        return None;
+    }
+
+    let symbol_raw = std::str::from_utf8(&data[8..8 + symbol_len]).ok()?;
+    let symbol = normalize_symbol_for_venue(symbol_raw, venue);
+    if symbol.is_empty() {
+        return None;
+    }
+
+    let mut bids = Vec::with_capacity(MAX_DEPTH_LEVELS_CACHE);
+    let mut asks = Vec::with_capacity(MAX_DEPTH_LEVELS_CACHE);
+
+    let mut offset = 8 + symbol_len + 8;
+    for idx in 0..levels {
+        let price = read_f64_at(data, offset)?;
+        let amount = read_f64_at(data, offset + 8)?;
+        offset += 16;
+        if idx < MAX_DEPTH_LEVELS_CACHE {
+            bids.push(DepthLevel { price, amount });
+        }
+    }
+
+    for idx in 0..levels {
+        let price = read_f64_at(data, offset)?;
+        let amount = read_f64_at(data, offset + 8)?;
+        offset += 16;
+        if idx < MAX_DEPTH_LEVELS_CACHE {
+            asks.push(DepthLevel { price, amount });
+        }
+    }
+
+    Some((symbol, DepthSnapshot { bids, asks }))
+}
+
+fn read_f64_at(data: &[u8], offset: usize) -> Option<f64> {
+    if data.len() < offset + 8 {
+        return None;
+    }
+
+    Some(f64::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+        data[offset + 4],
+        data[offset + 5],
+        data[offset + 6],
+        data[offset + 7],
+    ]))
 }
 
 fn align_to_period(ts_ms: i64, period_ms: i64) -> i64 {
