@@ -12,7 +12,7 @@ use rocksdb::{
     ColumnFamilyDescriptor, DBCompressionType, Direction, IteratorMode, Options, WriteOptions, DB,
 };
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -21,14 +21,13 @@ use super::cfg::{PersistenceConfig, RuntimeConfig, TradeFlowFeaturePubConfig};
 use super::publisher::TradeFlowFeaturePublisher;
 use crate::common::mkt_msg::MktMsgType;
 use crate::common::redis_client::RedisSettings;
-use crate::common::symbol_util::{extract_assets_from_symbol, normalize_symbol_for_venue};
+use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::trade_flow_feature_msg::{TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM};
 use crate::signal::common::TradingVenue;
 
 const TRADE_MAX_BYTES: usize = 64;
 const IDLE_SLEEP_MICROS: u64 = 200;
 const TIMER_CHECK_INTERVAL_MICROS: u64 = 500;
-const LOG_BASE_SYMBOLS: [&str; 3] = ["BTC", "ETH", "SOL"];
 const AMOUNT_THRESHOLD_REDIS_KEY_SUFFIX: &str = "amount-threshold";
 const REDIS_WARN_INTERVAL_SECS: u64 = 60;
 const ROCKSDB_WARN_INTERVAL_SECS: u64 = 60;
@@ -37,6 +36,7 @@ const FIXED_TRADE_CHANNEL: &str = "trade";
 const FIXED_REDIS_HOST: &str = "127.0.0.1";
 const FIXED_REDIS_PORT: u16 = 6379;
 const FIXED_REDIS_DB: i64 = 0;
+const TRADE_DEDUP_WINDOW_MS: i64 = 10_000;
 
 #[derive(Debug, Clone, Copy)]
 enum TradeSide {
@@ -47,6 +47,7 @@ enum TradeSide {
 #[derive(Debug)]
 struct TradeTick {
     symbol: String,
+    trade_id: i64,
     timestamp_ms: i64,
     side: TradeSide,
     price: f64,
@@ -57,8 +58,6 @@ struct TradeTick {
 struct AmountThreshold {
     medium_notional_threshold: f64,
     large_notional_threshold: f64,
-    prev_mean: Option<f64>,
-    prev_std: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -430,6 +429,74 @@ impl SymbolState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TradeDedupKey {
+    symbol: String,
+    trade_id: i64,
+}
+
+struct TradeDedupLru {
+    window_ms: i64,
+    latest_ts_ms: i64,
+    entries: HashMap<TradeDedupKey, i64>,
+    order: VecDeque<(TradeDedupKey, i64)>,
+}
+
+impl TradeDedupLru {
+    fn new(window_ms: i64) -> Self {
+        Self {
+            window_ms: window_ms.max(1),
+            latest_ts_ms: 0,
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn is_duplicate_and_track(&mut self, symbol: &str, trade_id: i64, ts_ms: i64) -> bool {
+        if trade_id == 0 {
+            return false;
+        }
+
+        let ts_ms = ts_ms.max(0);
+        if ts_ms > self.latest_ts_ms {
+            self.latest_ts_ms = ts_ms;
+        }
+        self.evict_expired();
+
+        let key = TradeDedupKey {
+            symbol: symbol.to_string(),
+            trade_id,
+        };
+
+        if let Some(prev_ts) = self.entries.get(&key).copied() {
+            if ts_ms > prev_ts {
+                self.entries.insert(key.clone(), ts_ms);
+                self.order.push_back((key, ts_ms));
+            }
+            return true;
+        }
+
+        self.entries.insert(key.clone(), ts_ms);
+        self.order.push_back((key, ts_ms));
+        false
+    }
+
+    fn evict_expired(&mut self) {
+        let cutoff = self.latest_ts_ms.saturating_sub(self.window_ms);
+        while let Some((key, seen_ts)) = self.order.front() {
+            if *seen_ts > cutoff {
+                break;
+            }
+            let key = key.clone();
+            let seen_ts = *seen_ts;
+            self.order.pop_front();
+            if self.entries.get(&key).copied() == Some(seen_ts) {
+                self.entries.remove(&key);
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct AmountThresholdJsonEntry {
     symbol: Option<String>,
@@ -526,8 +593,6 @@ impl AmountThresholdRedisStore {
                     AmountThreshold {
                         medium_notional_threshold: entry.medium_notional_threshold,
                         large_notional_threshold: entry.large_notional_threshold,
-                        prev_mean: entry.prev_mean,
-                        prev_std: entry.prev_std,
                     },
                 );
             }
@@ -785,9 +850,8 @@ pub struct TradeFlowFeaturePubApp {
     last_rocksdb_warn: Instant,
     last_threshold_reload: Instant,
     threshold_reload_interval: Duration,
-    trade_count: u64,
-    late_trade_count: u64,
-    last_log_stats: Instant,
+    last_retired_symbols: usize,
+    trade_dedup_lru: TradeDedupLru,
     timer_check_interval: Duration,
     last_timer_check: Instant,
 }
@@ -827,9 +891,8 @@ impl TradeFlowFeaturePubApp {
             last_rocksdb_warn: Instant::now() - Duration::from_secs(ROCKSDB_WARN_INTERVAL_SECS),
             last_threshold_reload: Instant::now() - threshold_reload_interval,
             threshold_reload_interval,
-            trade_count: 0,
-            late_trade_count: 0,
-            last_log_stats: Instant::now(),
+            last_retired_symbols: 0,
+            trade_dedup_lru: TradeDedupLru::new(TRADE_DEDUP_WINDOW_MS),
             timer_check_interval: Duration::from_micros(TIMER_CHECK_INTERVAL_MICROS),
             last_timer_check: Instant::now(),
         };
@@ -890,20 +953,6 @@ impl TradeFlowFeaturePubApp {
                 self.maybe_close_due_bars()?;
                 std::thread::sleep(Duration::from_micros(IDLE_SLEEP_MICROS));
             }
-
-            if self.last_log_stats.elapsed() >= Duration::from_secs(60) {
-                info!(
-                    "TradeFlowFeaturePubApp[{}] stats: online_symbols={} trades={} late_trades={}",
-                    self.venue_slug,
-                    self.online_symbols.len(),
-                    self.trade_count,
-                    self.late_trade_count
-                );
-                self.publisher.log_stats();
-                self.trade_count = 0;
-                self.late_trade_count = 0;
-                self.last_log_stats = Instant::now();
-            }
         }
     }
 
@@ -915,19 +964,18 @@ impl TradeFlowFeaturePubApp {
             return;
         };
 
-        self.trade_count = self.trade_count.saturating_add(1);
-
-        let late_trade = {
-            let state = self
-                .symbols
-                .entry(trade.symbol.clone())
-                .or_insert_with(SymbolState::new);
-            state.apply_trade(&trade, &self.config.runtime, threshold)
-        };
-
-        if late_trade {
-            self.late_trade_count = self.late_trade_count.saturating_add(1);
+        if self.trade_dedup_lru.is_duplicate_and_track(
+            &trade.symbol,
+            trade.trade_id,
+            trade.timestamp_ms,
+        ) {
+            return;
         }
+        let state = self
+            .symbols
+            .entry(trade.symbol.clone())
+            .or_insert_with(SymbolState::new);
+        let _ = state.apply_trade(&trade, &self.config.runtime, threshold);
     }
 
     fn maybe_close_due_bars(&mut self) -> Result<()> {
@@ -968,26 +1016,6 @@ impl TradeFlowFeaturePubApp {
                 bar.start_ms,
                 &feature_values,
             )?;
-
-            if symbol_norm == self.heartbeat_symbol {
-                info!(
-                    "trade_flow_feature heartbeat: venue={} symbol={} ts={} feature_values={:?}",
-                    self.venue_slug, symbol_norm, bar.start_ms, feature_values
-                );
-            }
-
-            if should_log_symbol(&symbol_norm) {
-                info!(
-                    "trade-flow-feature: venue={} symbol={} ts={} close={} amount={} net_buy_amount={} net_buy_pct={}",
-                    self.venue_slug,
-                    symbol_norm,
-                    bar.start_ms,
-                    bar.close,
-                    bar.amount,
-                    bar.net_buy_amount,
-                    bar.net_buy_pct
-                );
-            }
 
             self.maybe_persist_feature_msg(&symbol_norm, &msg);
 
@@ -1211,24 +1239,19 @@ impl TradeFlowFeaturePubApp {
                     symbols.insert(symbol.clone());
                 }
 
+                let retired_symbols = self.online_symbols.difference(&symbols).count();
+                self.last_retired_symbols = retired_symbols;
                 self.thresholds = new_map;
                 self.online_symbols = symbols;
                 self.symbols
                     .retain(|symbol, _| self.online_symbols.contains(symbol));
 
                 info!(
-                    "trade_flow_feature thresholds {}loaded: venue={} online_symbols={} with_prev_stats={} key_pattern='{}:*:{}'",
+                    "trade_flow_feature symbols {}loaded: venue={} online_symbols={} retired_symbols={}",
                     if init { "" } else { "re" },
                     self.venue_slug,
                     self.online_symbols.len(),
-                    self.thresholds
-                        .values()
-                        .filter(|threshold| {
-                            threshold.prev_mean.is_some() && threshold.prev_std.is_some()
-                        })
-                        .count(),
-                    self.venue_slug,
-                    AMOUNT_THRESHOLD_REDIS_KEY_SUFFIX
+                    self.last_retired_symbols
                 );
             }
             Err(err) => {
@@ -1403,7 +1426,17 @@ fn parse_trade(data: &[u8], venue: TradingVenue) -> Option<TradeTick> {
     let symbol = normalize_symbol_for_venue(&symbol_raw, venue);
     let mut offset = 8 + symbol_len;
 
-    offset += 8; // trade_id
+    let trade_id = i64::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+        data[offset + 4],
+        data[offset + 5],
+        data[offset + 6],
+        data[offset + 7],
+    ]);
+    offset += 8;
     let timestamp_ms = i64::from_le_bytes([
         data[offset],
         data[offset + 1],
@@ -1457,6 +1490,7 @@ fn parse_trade(data: &[u8], venue: TradingVenue) -> Option<TradeTick> {
 
     Some(TradeTick {
         symbol,
+        trade_id,
         timestamp_ms,
         side,
         price,
@@ -1481,11 +1515,4 @@ fn now_millis() -> i64 {
     } else {
         millis as i64
     }
-}
-
-fn should_log_symbol(symbol: &str) -> bool {
-    let (base, _) = extract_assets_from_symbol(symbol);
-    LOG_BASE_SYMBOLS
-        .iter()
-        .any(|candidate| base.eq_ignore_ascii_case(candidate))
 }
