@@ -10,8 +10,7 @@ snapshot_requery_time: ""  # "--:--:--" 表示立即查询(30秒后)，空字符
 data_types:
   enable_incremental: false    # 增量orderbook数据
   enable_trade: false          # 逐笔成交数据
-  enable_kline: false          # K线数据
+  enable_kline: true           # K线数据
   enable_derivatives: true    # 衍生品指标数据（仅期货交易所）
   enable_ask_bid_spread: true # 买卖价差（最优买卖价）数据
   max_levels_per_msg: 50      # 每条增量消息最大档数(bids+asks)，超过则按比例截断
-
