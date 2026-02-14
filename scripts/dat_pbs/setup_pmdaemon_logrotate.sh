@@ -11,9 +11,9 @@ set -euo pipefail
 #   - /root/.pmdaemon/logs/*.log
 #
 # Usage:
-#   ./scripts/dat_pbs/setup_pmdaemon_logrotate.sh
-#   ./scripts/dat_pbs/setup_pmdaemon_logrotate.sh --dry-run
-#   ./scripts/dat_pbs/setup_pmdaemon_logrotate.sh --force-rotate
+#   ./setup_pmdaemon_logrotate.sh
+#   ./setup_pmdaemon_logrotate.sh --dry-run
+#   ./setup_pmdaemon_logrotate.sh --force-rotate
 
 CONFIG_FILE="/etc/logrotate.d/pmdaemon"
 MAX_SIZE="500M"

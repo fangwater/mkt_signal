@@ -18,7 +18,7 @@ Examples:
   bash scripts/dat_pbs/deploy_dat_pbs.sh --dir "$HOME/dat_pbs"
 
 Notes:
-  - Exchange is selected at runtime via scripts/dat_pbs/start_dat_pbs.sh --exchange <exchange>
+  - Exchange is selected at runtime via start_dat_pbs.sh --exchange <exchange>
   - This deploy variant is for dat_pbs processes managed by pmdaemon.
 EOF
 }
@@ -60,14 +60,13 @@ mkdir -p "$TARGET_DIR"
 cp "$BIN_PATH" "$TARGET_DIR/"
 chmod +x "$TARGET_DIR/$BIN_NAME"
 
-# 同步启动/停止脚本到 scripts/dat_pbs/
+# 同步启动/停止脚本到部署根目录
 SCRIPT_DIR_SRC="$ROOT_DIR/scripts/dat_pbs"
 SCRIPTS_TO_SYNC=("start_dat_pbs.sh" "stop_dat_pbs.sh" "setup_pmdaemon_logrotate.sh")
-mkdir -p "$TARGET_DIR/scripts/dat_pbs"
 for script in "${SCRIPTS_TO_SYNC[@]}"; do
   if [[ -f "$SCRIPT_DIR_SRC/$script" ]]; then
-    rsync -a "$SCRIPT_DIR_SRC/$script" "$TARGET_DIR/scripts/dat_pbs/"
-    chmod +x "$TARGET_DIR/scripts/dat_pbs/$script"
+    rsync -a "$SCRIPT_DIR_SRC/$script" "$TARGET_DIR/"
+    chmod +x "$TARGET_DIR/$script"
   fi
 done
 
@@ -81,4 +80,4 @@ if [[ -f "$ROOT_DIR/config/iceoryx2.toml" ]]; then
 fi
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"
-echo "[INFO] 启动示例: cd $TARGET_DIR && ./scripts/dat_pbs/start_dat_pbs.sh --exchange binance"
+echo "[INFO] 启动示例: cd $TARGET_DIR && ./start_dat_pbs.sh --exchange binance"

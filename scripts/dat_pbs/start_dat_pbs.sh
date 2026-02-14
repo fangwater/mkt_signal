@@ -2,7 +2,27 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BASE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+resolve_base_dir() {
+  local script_dir="$1"
+  local direct_candidate legacy_candidate
+  direct_candidate="$script_dir"
+  legacy_candidate="$(cd "${script_dir}/../.." && pwd)"
+
+  # New deploy layout: scripts are placed directly under dat_pbs root.
+  if [[ -d "${direct_candidate}/config" ]]; then
+    printf '%s\n' "$direct_candidate"
+    return 0
+  fi
+
+  # Backward compatibility: scripts under dat_pbs/scripts/dat_pbs.
+  if [[ -d "${legacy_candidate}/config" ]]; then
+    printf '%s\n' "$legacy_candidate"
+    return 0
+  fi
+
+  printf '%s\n' "$legacy_candidate"
+}
+BASE_DIR="$(resolve_base_dir "$SCRIPT_DIR")"
 
 usage() {
   cat <<'USAGE'
@@ -10,10 +30,10 @@ Usage:
   start_dat_pbs.sh (--exchange <exchange> | <exchange> | <venue...>)
 
 Examples:
-  ./scripts/dat_pbs/start_dat_pbs.sh --exchange binance
-  ./scripts/dat_pbs/start_dat_pbs.sh okex
-  ./scripts/dat_pbs/start_dat_pbs.sh binance-futures
-  ./scripts/dat_pbs/start_dat_pbs.sh binance-futures binance-margin
+  ./start_dat_pbs.sh --exchange binance
+  ./start_dat_pbs.sh okex
+  ./start_dat_pbs.sh binance-futures
+  ./start_dat_pbs.sh binance-futures binance-margin
 
 Notes:
   - Exchange expands to default venues:
