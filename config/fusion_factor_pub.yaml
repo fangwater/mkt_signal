@@ -10,5 +10,5 @@ fusion_factor_pub:
   # 启动时按 symbol 拉取有序 factor 列表，并固化到进程内
   model_manager:
     base_url: "http://127.0.0.1:6300"
-    model_name: "default_model"
+    model_name: "pairmm_xgb_v1"
     request_timeout_ms: 5000
