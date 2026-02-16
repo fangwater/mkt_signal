@@ -33,6 +33,7 @@ const AMOUNT_THRESHOLD_REDIS_KEY_SUFFIX: &str = "amount-threshold";
 const REDIS_WARN_INTERVAL_SECS: u64 = 60;
 const ROCKSDB_WARN_INTERVAL_SECS: u64 = 60;
 const MISSING_DEPTH_WARN_INTERVAL_SECS: u64 = 60;
+const PUBLISH_OUTCOME_LOG_INTERVAL_SECS: u64 = 10;
 const TRADE_FLOW_FEATURE_CF_SUFFIX: &str = "trade_flow:feature";
 const FIXED_TRADE_CHANNEL: &str = "trade";
 const FIXED_REDIS_HOST: &str = "127.0.0.1";
@@ -940,6 +941,11 @@ pub struct TradeFlowFeaturePubApp {
     last_rocksdb_warn: Instant,
     last_missing_depth_warn: Instant,
     missing_depth_drop_count: u64,
+    publish_success_count: u64,
+    publish_fail_invalid_count: u64,
+    publish_fail_missing_depth_count: u64,
+    publish_fail_send_count: u64,
+    last_publish_outcome_log: Instant,
     last_threshold_reload: Instant,
     threshold_reload_interval: Duration,
     last_retired_symbols: usize,
@@ -989,6 +995,11 @@ impl TradeFlowFeaturePubApp {
             last_missing_depth_warn: Instant::now()
                 - Duration::from_secs(MISSING_DEPTH_WARN_INTERVAL_SECS),
             missing_depth_drop_count: 0,
+            publish_success_count: 0,
+            publish_fail_invalid_count: 0,
+            publish_fail_missing_depth_count: 0,
+            publish_fail_send_count: 0,
+            last_publish_outcome_log: Instant::now(),
             last_threshold_reload: Instant::now() - threshold_reload_interval,
             threshold_reload_interval,
             last_retired_symbols: 0,
@@ -1121,6 +1132,7 @@ impl TradeFlowFeaturePubApp {
     }
 
     fn maybe_close_due_bars(&mut self) -> Result<()> {
+        self.log_publish_outcome_10s();
         if self.last_timer_check.elapsed() < self.timer_check_interval {
             return Ok(());
         }
@@ -1148,6 +1160,7 @@ impl TradeFlowFeaturePubApp {
     fn process_closed_bars(&mut self, symbol: &str, bars: Vec<TradeBar>) -> Result<()> {
         for bar in bars {
             if !bar.has_valid_ffill_fields() {
+                self.publish_fail_invalid_count = self.publish_fail_invalid_count.saturating_add(1);
                 continue;
             }
             let symbol_norm = normalize_symbol_for_venue(symbol, self.venue);
@@ -1155,6 +1168,8 @@ impl TradeFlowFeaturePubApp {
                 Vec::with_capacity(TRADE_FLOW_FEATURE_DIM + APPENDED_DEPTH_DIM);
             feature_values.extend_from_slice(&bar.to_feature_values());
             let Some(depth_values) = self.appended_depth_values(&symbol_norm) else {
+                self.publish_fail_missing_depth_count =
+                    self.publish_fail_missing_depth_count.saturating_add(1);
                 self.warn_missing_depth_throttled(&symbol_norm, bar.start_ms);
                 continue;
             };
@@ -1169,13 +1184,44 @@ impl TradeFlowFeaturePubApp {
             self.maybe_persist_feature_msg(&symbol_norm, &msg);
 
             if !self.publisher.publish(&msg) {
+                self.publish_fail_send_count = self.publish_fail_send_count.saturating_add(1);
                 warn!(
                     "failed to publish trade_flow_feature: venue={} symbol={} ts={}",
                     self.venue_slug, symbol_norm, bar.start_ms
                 );
+            } else {
+                self.publish_success_count = self.publish_success_count.saturating_add(1);
             }
         }
         Ok(())
+    }
+
+    fn log_publish_outcome_10s(&mut self) {
+        if self.last_publish_outcome_log.elapsed()
+            < Duration::from_secs(PUBLISH_OUTCOME_LOG_INTERVAL_SECS)
+        {
+            return;
+        }
+
+        let fail_total = self
+            .publish_fail_invalid_count
+            .saturating_add(self.publish_fail_missing_depth_count)
+            .saturating_add(self.publish_fail_send_count);
+        info!(
+            "TradeFlowFeaturePubApp[{}] publish_outcome_10s: success={} fail_total={} fail_invalid={} fail_missing_depth={} fail_send={}",
+            self.venue_slug,
+            self.publish_success_count,
+            fail_total,
+            self.publish_fail_invalid_count,
+            self.publish_fail_missing_depth_count,
+            self.publish_fail_send_count
+        );
+
+        self.last_publish_outcome_log = Instant::now();
+        self.publish_success_count = 0;
+        self.publish_fail_invalid_count = 0;
+        self.publish_fail_missing_depth_count = 0;
+        self.publish_fail_send_count = 0;
     }
 
     fn appended_depth_values(&self, symbol: &str) -> Option<[f64; APPENDED_DEPTH_DIM]> {
