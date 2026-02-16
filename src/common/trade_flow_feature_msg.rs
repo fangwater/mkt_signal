@@ -153,14 +153,25 @@ impl TradeFlowFeatureMsg {
         ]);
         offset += 8;
 
-        let value_bytes = data.len().saturating_sub(offset);
-        if value_bytes % 8 != 0 {
-            bail!(
-                "TradeFlowFeatureMsg invalid value bytes: {} (not aligned to f64)",
-                value_bytes
-            );
+        let mut value_end = data.len();
+        let value_bytes = value_end.saturating_sub(offset);
+        let remainder = value_bytes % 8;
+        if remainder != 0 {
+            // iceoryx fixed-size payload may append trailing zero padding bytes.
+            // If misalignment only comes from zero tail bytes, trim them and continue.
+            let tail_start = value_end - remainder;
+            let tail = &data[tail_start..value_end];
+            if tail.iter().all(|b| *b == 0) {
+                value_end = tail_start;
+            } else {
+                bail!(
+                    "TradeFlowFeatureMsg invalid value bytes: {} (not aligned to f64)",
+                    value_bytes
+                );
+            }
         }
-        let value_count = value_bytes / 8;
+
+        let value_count = value_end.saturating_sub(offset) / 8;
         if value_count < TRADE_FLOW_FEATURE_DIM {
             bail!(
                 "TradeFlowFeatureMsg value count too small: {} < {}",
@@ -170,7 +181,7 @@ impl TradeFlowFeatureMsg {
         }
 
         let mut values = Vec::with_capacity(value_count);
-        for _ in 0..value_count {
+        while offset + 8 <= value_end {
             values.push(f64::from_le_bytes([
                 data[offset],
                 data[offset + 1],
@@ -234,5 +245,49 @@ mod tests {
         let parsed = TradeFlowFeatureMsg::from_bytes(bytes.as_ref()).expect("parse");
         assert_eq!(parsed.values.len(), TRADE_FLOW_FEATURE_DIM + 80);
         assert_eq!(parsed.values, values);
+    }
+
+    #[test]
+    fn supports_fixed_buffer_zero_padding_with_unaligned_symbol_len() {
+        let values: Vec<f64> = (0..(TRADE_FLOW_FEATURE_DIM + 80))
+            .map(|i| i as f64 * 0.01 + 7.0)
+            .collect();
+        // len=8, which triggers non-8-aligned tail when wrapped in fixed 1024-byte IPC payload.
+        let original = TradeFlowFeatureMsg::from_indexed_values(
+            "BTCUSDTM".to_string(),
+            2,
+            1_735_000_123_456,
+            &values,
+        )
+        .expect("build message");
+        let bytes = original.to_bytes().expect("serialize");
+
+        let mut fixed = [0u8; 1024];
+        fixed[..bytes.len()].copy_from_slice(bytes.as_ref());
+
+        let parsed = TradeFlowFeatureMsg::from_bytes(&fixed).expect("parse padded payload");
+        assert_eq!(parsed.symbol, original.symbol);
+        assert_eq!(parsed.venue, original.venue);
+        assert_eq!(parsed.ts, original.ts);
+        assert!(parsed.values.len() >= values.len());
+        assert_eq!(&parsed.values[..values.len()], values.as_slice());
+    }
+
+    #[test]
+    fn rejects_misaligned_non_zero_tail() {
+        let values: Vec<f64> = (0..TRADE_FLOW_FEATURE_DIM).map(|i| i as f64).collect();
+        let msg = TradeFlowFeatureMsg::from_indexed_values("BTCUSDT".to_string(), 2, 123, &values)
+            .expect("build message");
+        let bytes = msg.to_bytes().expect("serialize");
+
+        let mut corrupted = bytes.to_vec();
+        corrupted.push(1);
+
+        let err =
+            TradeFlowFeatureMsg::from_bytes(&corrupted).expect_err("non-zero tail should error");
+        assert!(
+            err.to_string().contains("invalid value bytes"),
+            "unexpected error: {err}"
+        );
     }
 }
