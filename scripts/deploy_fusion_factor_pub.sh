@@ -51,6 +51,10 @@ Notes:
       bybit   -> bybit-futures bybit-margin
       bitget  -> bitget-futures bitget-margin
       gate    -> gate-futures gate-margin
+  - 每个 venue 会生成独立二进制:
+      fusion_factor_pub_<venue>
+    并额外创建兼容软链:
+      fusion_factor_pub -> fusion_factor_pub_<venue>
 USAGE
 }
 
@@ -104,10 +108,12 @@ SCRIPTS_TO_SYNC=(
 
 for venue in "${VENUES[@]}"; do
   TARGET_DIR="${TARGET_ROOT%/}/${venue}"
+  VENUE_BIN_NAME="${BIN_NAME}_${venue}"
   echo "[INFO] 部署 $BIN_NAME 到 $TARGET_DIR"
   mkdir -p "$TARGET_DIR"
-  cp "$BIN_PATH" "$TARGET_DIR/"
-  chmod +x "$TARGET_DIR/$BIN_NAME"
+  cp "$BIN_PATH" "$TARGET_DIR/$VENUE_BIN_NAME"
+  chmod +x "$TARGET_DIR/$VENUE_BIN_NAME"
+  ln -sfn "$VENUE_BIN_NAME" "$TARGET_DIR/$BIN_NAME"
 
   mkdir -p "$TARGET_DIR/scripts"
   for script in "${SCRIPTS_TO_SYNC[@]}"; do

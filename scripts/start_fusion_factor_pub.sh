@@ -13,6 +13,7 @@ Usage:
 Behavior:
   - 必须在单个 venue 部署目录下执行（例如 ~/fusion_factor/binance-futures）。
   - venue 由当前目录名自动推断。
+  - 优先使用 venue 专属二进制: fusion_factor_pub_<venue>
   - 使用 pmdaemon 启动进程名: fusion_factor_pub_<venue>
   - 可用 PMDAEMON_BIN 覆盖二进制名（默认 pmdaemon）
 
@@ -42,6 +43,7 @@ if [[ ! "$venue" =~ $VENUE_DIR_REGEX ]]; then
   echo "[ERROR] 期望目录名形如 <exchange>-<market>，例如 binance-futures" >&2
   exit 1
 fi
+VENUE_BIN_NAME="fusion_factor_pub_${venue}"
 
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 PMDAEMON=("$PMDAEMON_BIN")
@@ -52,7 +54,9 @@ if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1;
 fi
 
 BIN_CANDIDATES=(
+  "${BASE_DIR}/${VENUE_BIN_NAME}"
   "${BASE_DIR}/fusion_factor_pub"
+  "${SCRIPT_DIR}/../${VENUE_BIN_NAME}"
   "${SCRIPT_DIR}/../fusion_factor_pub"
   "${SCRIPT_DIR}/../target/release/fusion_factor_pub"
 )

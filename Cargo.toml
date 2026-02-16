@@ -109,20 +109,12 @@ name = "depth_pub"
 path = "src/bin/depth_pub.rs"
 
 [[bin]]
-name = "depth_factor_pub"
-path = "src/bin/depth_factor_pub.rs"
-
-[[bin]]
 name = "kline_pub"
 path = "src/bin/kline_pub.rs"
 
 [[bin]]
 name = "kline_factor_pub"
 path = "src/bin/kline_factor_pub.rs"
-
-[[bin]]
-name = "trade_factor_pub"
-path = "src/bin/trade_factor_pub.rs"
 
 [[bin]]
 name = "trade_flow_feature_pub"

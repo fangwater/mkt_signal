@@ -104,21 +104,17 @@ pm2 logs --namespace kline_pub kline_pub_binance-margin --lines 80
 
 ## 4. 部署并启动 factor_pub 系列（公共）
 
-这 4 个组件默认部署到同一目录 `~/factor_pub`，命名空间默认 `factor_pub`。
+这 2 个组件默认部署到同一目录 `~/factor_pub`，命名空间默认 `factor_pub`。
 
 ```bash
 unset PM2_NAMESPACE
 
 cd ~/crypto_mkt/mkt_signal
-bash scripts/deploy_depth_factor_pub.sh
 bash scripts/deploy_kline_factor_pub.sh
-bash scripts/deploy_trade_factor_pub.sh
 bash scripts/deploy_pairmm_resample.sh
 
 cd ~/factor_pub
-./scripts/start_depth_factor_pub.sh --exchange binance
 ./scripts/start_kline_factor_pub.sh --exchange binance
-./scripts/start_trade_factor_pub.sh --exchange binance
 ./scripts/start_pairmm_resample.sh --exchange binance
 ```
 
@@ -126,9 +122,7 @@ cd ~/factor_pub
 
 ```bash
 pm2 status --namespace factor_pub
-pm2 logs --namespace factor_pub depth_factor_pub_binance-futures --lines 80
 pm2 logs --namespace factor_pub kline_factor_pub_binance-futures --lines 80
-pm2 logs --namespace factor_pub trade_factor_pub_binance-futures --lines 80
 pm2 logs --namespace factor_pub pairmm_resample_binance-futures --lines 80
 ```
 
@@ -289,9 +283,7 @@ cd ~/$MM_ENV
 ```bash
 cd ~/factor_pub
 ./scripts/stop_pairmm_resample.sh --exchange binance
-./scripts/stop_trade_factor_pub.sh --exchange binance
 ./scripts/stop_kline_factor_pub.sh --exchange binance
-./scripts/stop_depth_factor_pub.sh --exchange binance
 
 cd ~/kline_pub
 ./scripts/stop_kline_pub.sh --exchange binance
