@@ -478,6 +478,27 @@ impl DepthPubApp {
         };
 
         if !state.orderbook.is_valid() {
+            let (bids, asks) = state.orderbook.get_depth(1);
+            let best_bid = bids.first().copied().unwrap_or((f64::NAN, f64::NAN));
+            let best_ask = asks.first().copied().unwrap_or((f64::NAN, f64::NAN));
+            let invalid_reason =
+                if state.orderbook.bids.is_empty() || state.orderbook.asks.is_empty() {
+                    "missing_side"
+                } else {
+                    "crossed_book"
+                };
+            warn!(
+                "Skip depth publish due to invalid orderbook: venue={} symbol={} reason={} best_bid=({:.8}, {:.8}) best_ask=({:.8}, {:.8}) bid_levels={} ask_levels={}",
+                self.venue_slug,
+                symbol,
+                invalid_reason,
+                best_bid.0,
+                best_bid.1,
+                best_ask.0,
+                best_ask.1,
+                state.orderbook.bids.len(),
+                state.orderbook.asks.len()
+            );
             return;
         }
 
