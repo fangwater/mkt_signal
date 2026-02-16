@@ -32,6 +32,7 @@ const IDLE_SLEEP_MICROS: u64 = 100;
 const DEDUP_WINDOW_SIZE: usize = 256;
 const KEEPALIVE_PUSH_INTERVAL_MS: u64 = 1000;
 const BTC_DEPTH25_LOG_INTERVAL_SECS: u64 = 30;
+const PUBLISH_OUTCOME_LOG_INTERVAL_SECS: u64 = 10;
 const DEPTH_QUERY_SERVICE_PREFIX: &str = "depth_queries";
 
 type DepthQueryServer = Server<ipc::Service, [u8], (), [u8], ()>;
@@ -98,10 +99,16 @@ pub struct DepthPubApp {
     /// 统计
     update_count: u64,
     push_count: u64,
+    publish_success_count: u64,
+    publish_fail_invalid_count: u64,
+    publish_fail_send_count: u64,
+    publish_fail_missing_side_count: u64,
+    publish_fail_crossed_book_count: u64,
     timer_check_counter: u64,
     idle_check_counter: u64,
     idle_check_every: u64,
     last_btc_depth25_log: Instant,
+    last_publish_outcome_log: Instant,
 }
 
 impl DepthPubApp {
@@ -154,10 +161,16 @@ impl DepthPubApp {
             push_interval,
             update_count: 0,
             push_count: 0,
+            publish_success_count: 0,
+            publish_fail_invalid_count: 0,
+            publish_fail_send_count: 0,
+            publish_fail_missing_side_count: 0,
+            publish_fail_crossed_book_count: 0,
             timer_check_counter: 0,
             idle_check_counter: 0,
             idle_check_every,
             last_btc_depth25_log: Instant::now(),
+            last_publish_outcome_log: Instant::now(),
         })
     }
 
@@ -433,6 +446,7 @@ impl DepthPubApp {
     /// 检查定时推送
     fn check_timer_push(&mut self) {
         self.log_btc_depth25();
+        self.log_publish_outcome_10s();
 
         let now = Instant::now();
         let symbols_to_push: Vec<String> = self
@@ -478,48 +492,78 @@ impl DepthPubApp {
         };
 
         if !state.orderbook.is_valid() {
-            let (bids, asks) = state.orderbook.get_depth(1);
-            let best_bid = bids.first().copied().unwrap_or((f64::NAN, f64::NAN));
-            let best_ask = asks.first().copied().unwrap_or((f64::NAN, f64::NAN));
-            let invalid_reason =
-                if state.orderbook.bids.is_empty() || state.orderbook.asks.is_empty() {
-                    "missing_side"
-                } else {
-                    "crossed_book"
-                };
-            warn!(
-                "Skip depth publish due to invalid orderbook: venue={} symbol={} reason={} best_bid=({:.8}, {:.8}) best_ask=({:.8}, {:.8}) bid_levels={} ask_levels={}",
-                self.venue_slug,
-                symbol,
-                invalid_reason,
-                best_bid.0,
-                best_bid.1,
-                best_ask.0,
-                best_ask.1,
-                state.orderbook.bids.len(),
-                state.orderbook.asks.len()
-            );
+            self.publish_fail_invalid_count = self.publish_fail_invalid_count.saturating_add(1);
+            if state.orderbook.bids.is_empty() || state.orderbook.asks.is_empty() {
+                self.publish_fail_missing_side_count =
+                    self.publish_fail_missing_side_count.saturating_add(1);
+            } else {
+                self.publish_fail_crossed_book_count =
+                    self.publish_fail_crossed_book_count.saturating_add(1);
+            }
             return;
         }
 
         let timestamp = state.orderbook.timestamp;
+        let mut attempted_channels = 0u8;
+        let mut sent_channels = 0u8;
 
         // Depth25
         if self.config.depth_levels.enable_depth25 {
+            attempted_channels = attempted_channels.saturating_add(1);
             let (bids, asks) = state.orderbook.get_depth(25);
             let msg = DepthMsg::depth25(symbol.to_string(), timestamp, bids, asks);
-            self.publisher.publish_depth25(&msg);
+            if self.publisher.publish_depth25(&msg) {
+                sent_channels = sent_channels.saturating_add(1);
+            }
         }
 
         // Depth50
         if self.config.depth_levels.enable_depth50 {
+            attempted_channels = attempted_channels.saturating_add(1);
             let (bids, asks) = state.orderbook.get_depth(50);
             let msg = DepthMsg::depth50(symbol.to_string(), timestamp, bids, asks);
-            self.publisher.publish_depth50(&msg);
+            if self.publisher.publish_depth50(&msg) {
+                sent_channels = sent_channels.saturating_add(1);
+            }
+        }
+
+        if attempted_channels == 0 || sent_channels > 0 {
+            self.publish_success_count = self.publish_success_count.saturating_add(1);
+        } else {
+            self.publish_fail_send_count = self.publish_fail_send_count.saturating_add(1);
         }
 
         state.last_push_time = Instant::now();
         self.push_count += 1;
+    }
+
+    fn log_publish_outcome_10s(&mut self) {
+        if self.last_publish_outcome_log.elapsed()
+            < Duration::from_secs(PUBLISH_OUTCOME_LOG_INTERVAL_SECS)
+        {
+            return;
+        }
+
+        let fail_total = self
+            .publish_fail_invalid_count
+            .saturating_add(self.publish_fail_send_count);
+        info!(
+            "DepthMsgApp[{}] publish_outcome_10s: success={} fail_total={} fail_invalid={} fail_send={} fail_missing_side={} fail_crossed_book={}",
+            self.venue_slug,
+            self.publish_success_count,
+            fail_total,
+            self.publish_fail_invalid_count,
+            self.publish_fail_send_count,
+            self.publish_fail_missing_side_count,
+            self.publish_fail_crossed_book_count
+        );
+
+        self.last_publish_outcome_log = Instant::now();
+        self.publish_success_count = 0;
+        self.publish_fail_invalid_count = 0;
+        self.publish_fail_send_count = 0;
+        self.publish_fail_missing_side_count = 0;
+        self.publish_fail_crossed_book_count = 0;
     }
 
     fn handle_query_request(&mut self, active_request: DepthQueryActiveRequest) {
