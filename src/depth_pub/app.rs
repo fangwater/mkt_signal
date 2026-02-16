@@ -7,8 +7,9 @@ use iceoryx2::active_request::ActiveRequest;
 use iceoryx2::port::{server::Server, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
+use indexmap::IndexSet;
 use log::{debug, info, warn};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use super::cfg::DepthPubConfig;
@@ -29,7 +30,7 @@ const INC_MAX_BYTES: usize = 2048;
 const TIMER_CHECK_EVERY_INCS: u64 = 500;
 const IDLE_SLEEP_MICROS: u64 = 100;
 /// 滑动窗口大小：用于去重的最近 update_id 数量
-const DEDUP_WINDOW_SIZE: usize = 256;
+const DEDUP_WINDOW_SIZE: usize = 4096 * 2;
 const KEEPALIVE_PUSH_INTERVAL_MS: u64 = 1000;
 const BTC_DEPTH25_LOG_INTERVAL_SECS: u64 = 30;
 const PUBLISH_OUTCOME_LOG_INTERVAL_SECS: u64 = 10;
@@ -42,11 +43,10 @@ type DepthQueryActiveRequest = ActiveRequest<ipc::Service, [u8], (), [u8], ()>;
 struct SymbolState {
     orderbook: OrderBook,
     last_push_time: Instant,
-    /// 滑动窗口：存储最近处理过的 (update_id, chunk_index)，用于去重
-    /// VecDeque 维护插入顺序（用于淘汰最旧的）
-    recent_msg_keys: VecDeque<(i64, u8)>,
-    /// HashSet 用于 O(1) 快速查找
-    msg_key_set: HashSet<(i64, u8)>,
+    /// 有序去重集合：保存最近处理过的 (update_id, chunk_index)
+    /// - Set 语义：O(1) 判重
+    /// - 保留插入顺序：窗口超限时移除最旧 key
+    dedup_msg_keys: IndexSet<(i64, u8)>,
 }
 
 impl SymbolState {
@@ -54,8 +54,7 @@ impl SymbolState {
         Self {
             orderbook: OrderBook::new(),
             last_push_time: Instant::now(),
-            recent_msg_keys: VecDeque::with_capacity(DEDUP_WINDOW_SIZE),
-            msg_key_set: HashSet::with_capacity(DEDUP_WINDOW_SIZE),
+            dedup_msg_keys: IndexSet::with_capacity(DEDUP_WINDOW_SIZE),
         }
     }
 
@@ -65,20 +64,16 @@ impl SymbolState {
     fn is_duplicate(&mut self, update_id: i64, chunk_index: u8) -> bool {
         let key = (update_id, chunk_index);
 
-        // O(1) 查找
-        if self.msg_key_set.contains(&key) {
+        // 已存在 => 重复
+        if !self.dedup_msg_keys.insert(key) {
             return true;
         }
 
-        // 不重复，加入窗口
-        if self.recent_msg_keys.len() >= DEDUP_WINDOW_SIZE {
-            // 淘汰最旧的
-            if let Some(old_key) = self.recent_msg_keys.pop_front() {
-                self.msg_key_set.remove(&old_key);
-            }
+        // 窗口超限时淘汰最旧 key（FIFO）
+        if self.dedup_msg_keys.len() > DEDUP_WINDOW_SIZE {
+            let _ = self.dedup_msg_keys.shift_remove_index(0);
         }
-        self.recent_msg_keys.push_back(key);
-        self.msg_key_set.insert(key);
+
         false
     }
 }
@@ -492,15 +487,23 @@ impl DepthPubApp {
         };
 
         if !state.orderbook.is_valid() {
-            self.publish_fail_invalid_count = self.publish_fail_invalid_count.saturating_add(1);
-            if state.orderbook.bids.is_empty() || state.orderbook.asks.is_empty() {
-                self.publish_fail_missing_side_count =
-                    self.publish_fail_missing_side_count.saturating_add(1);
+            let pruned_levels = state.orderbook.prune_crossed_by_best_update_id();
+            if pruned_levels > 0 && state.orderbook.is_valid() {
+                debug!(
+                    "Crossed-book pruned before publish: venue={} symbol={} strategy=best_level_update_id pruned_levels={}",
+                    self.venue_slug, symbol, pruned_levels
+                );
             } else {
-                self.publish_fail_crossed_book_count =
-                    self.publish_fail_crossed_book_count.saturating_add(1);
+                self.publish_fail_invalid_count = self.publish_fail_invalid_count.saturating_add(1);
+                if state.orderbook.bids.is_empty() || state.orderbook.asks.is_empty() {
+                    self.publish_fail_missing_side_count =
+                        self.publish_fail_missing_side_count.saturating_add(1);
+                } else {
+                    self.publish_fail_crossed_book_count =
+                        self.publish_fail_crossed_book_count.saturating_add(1);
+                }
+                return;
             }
-            return;
         }
 
         let timestamp = state.orderbook.timestamp;

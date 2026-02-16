@@ -78,6 +78,25 @@ impl OrderBookSide {
         }
     }
 
+    /// 获取最优档位 (price, amount, update_id)
+    pub fn best_level(&self, is_bid: bool) -> Option<(f64, f64, i64)> {
+        if is_bid {
+            self.levels
+                .iter()
+                .next_back()
+                .map(|(&price_key, &(amount, update_id))| {
+                    (key_to_price(price_key), amount, update_id)
+                })
+        } else {
+            self.levels
+                .iter()
+                .next()
+                .map(|(&price_key, &(amount, update_id))| {
+                    (key_to_price(price_key), amount, update_id)
+                })
+        }
+    }
+
     /// 获取档位数量
     pub fn len(&self) -> usize {
         self.levels.len()
@@ -90,6 +109,30 @@ impl OrderBookSide {
 
     pub fn is_empty(&self) -> bool {
         self.levels.is_empty()
+    }
+
+    /// 删除 <= 给定价格的所有档位，返回删除数量
+    pub fn remove_leq(&mut self, price: f64) -> usize {
+        let price_key = price_to_key(price);
+        let old_len = self.levels.len();
+        let split_key = match price_key.checked_add(1) {
+            Some(v) => v,
+            None => {
+                self.levels.clear();
+                return old_len;
+            }
+        };
+        let keep = self.levels.split_off(&split_key);
+        self.levels = keep;
+        old_len.saturating_sub(self.levels.len())
+    }
+
+    /// 删除 >= 给定价格的所有档位，返回删除数量
+    pub fn remove_geq(&mut self, price: f64) -> usize {
+        let price_key = price_to_key(price);
+        let old_len = self.levels.len();
+        let _removed = self.levels.split_off(&price_key);
+        old_len.saturating_sub(self.levels.len())
     }
 }
 
@@ -170,6 +213,63 @@ impl OrderBook {
         self.bids
             .amount_at_price(price)
             .or_else(|| self.asks.amount_at_price(price))
+    }
+
+    pub fn best_bid_price(&self) -> Option<f64> {
+        self.best_bid_level().map(|(price, _, _)| price)
+    }
+
+    pub fn best_ask_price(&self) -> Option<f64> {
+        self.best_ask_level().map(|(price, _, _)| price)
+    }
+
+    pub fn best_bid_level(&self) -> Option<(f64, f64, i64)> {
+        self.bids.best_level(true)
+    }
+
+    pub fn best_ask_level(&self) -> Option<(f64, f64, i64)> {
+        self.asks.best_level(false)
+    }
+
+    /// 裁剪所有 <= best_bid 的 asks，返回删除档位数
+    pub fn prune_asks_leq_best_bid(&mut self) -> usize {
+        let Some(best_bid) = self.best_bid_price() else {
+            return 0;
+        };
+        self.asks.remove_leq(best_bid)
+    }
+
+    /// 裁剪所有 >= best_ask 的 bids，返回删除档位数
+    pub fn prune_bids_geq_best_ask(&mut self) -> usize {
+        let Some(best_ask) = self.best_ask_price() else {
+            return 0;
+        };
+        self.bids.remove_geq(best_ask)
+    }
+
+    /// crossed-book 时根据 ask0/bid0 的 update_id 选择可信侧并裁剪对手盘：
+    /// - bid0.update_id > ask0.update_id: 保留 bid0，裁剪 asks <= bid0
+    /// - ask0.update_id > bid0.update_id: 保留 ask0，裁剪 bids >= ask0
+    /// - update_id 相等: 无法判定可信侧，不裁剪
+    pub fn prune_crossed_by_best_update_id(&mut self) -> usize {
+        let Some((best_bid_price, _, best_bid_update_id)) = self.best_bid_level() else {
+            return 0;
+        };
+        let Some((best_ask_price, _, best_ask_update_id)) = self.best_ask_level() else {
+            return 0;
+        };
+
+        if best_bid_price < best_ask_price {
+            return 0;
+        }
+
+        if best_bid_update_id > best_ask_update_id {
+            self.asks.remove_leq(best_bid_price)
+        } else if best_ask_update_id > best_bid_update_id {
+            self.bids.remove_geq(best_ask_price)
+        } else {
+            0
+        }
     }
 }
 
@@ -254,6 +354,67 @@ mod tests {
         assert!(ob.is_valid());
 
         ob.apply_update(&[(102.0, 1.0)], &[(101.0, 1.0)], 2, 1001);
+        assert!(!ob.is_valid());
+    }
+
+    #[test]
+    fn test_prune_crossed_asks_by_best_bid() {
+        let mut ob = OrderBook::new();
+        ob.apply_update(&[(100.0, 1.0)], &[(99.0, 1.0), (101.0, 1.0)], 1, 1000);
+        assert!(!ob.is_valid());
+
+        let removed = ob.prune_asks_leq_best_bid();
+        assert_eq!(removed, 1);
+        assert!(ob.is_valid());
+        assert_eq!(ob.best_ask_price(), Some(101.0));
+    }
+
+    #[test]
+    fn test_prune_crossed_bids_by_best_ask() {
+        let mut ob = OrderBook::new();
+        ob.apply_update(&[(102.0, 1.0), (99.0, 1.0)], &[(101.0, 1.0)], 1, 1000);
+        assert!(!ob.is_valid());
+
+        let removed = ob.prune_bids_geq_best_ask();
+        assert_eq!(removed, 1);
+        assert!(ob.is_valid());
+        assert_eq!(ob.best_bid_price(), Some(99.0));
+    }
+
+    #[test]
+    fn test_prune_crossed_prefers_newer_bid0_update_id() {
+        let mut ob = OrderBook::new();
+        ob.apply_update(&[(100.0, 1.0)], &[(101.0, 1.0), (103.0, 1.0)], 10, 1000);
+        ob.apply_update(&[(102.0, 1.0)], &[], 20, 1001);
+        assert!(!ob.is_valid());
+
+        let removed = ob.prune_crossed_by_best_update_id();
+        assert_eq!(removed, 1);
+        assert!(ob.is_valid());
+        assert_eq!(ob.best_ask_price(), Some(103.0));
+    }
+
+    #[test]
+    fn test_prune_crossed_prefers_newer_ask0_update_id() {
+        let mut ob = OrderBook::new();
+        ob.apply_update(&[(102.0, 1.0), (99.0, 1.0)], &[(103.0, 1.0)], 10, 1000);
+        ob.apply_update(&[], &[(101.0, 1.0)], 20, 1001);
+        assert!(!ob.is_valid());
+
+        let removed = ob.prune_crossed_by_best_update_id();
+        assert_eq!(removed, 1);
+        assert!(ob.is_valid());
+        assert_eq!(ob.best_bid_price(), Some(99.0));
+    }
+
+    #[test]
+    fn test_prune_crossed_no_action_when_best_update_id_equal() {
+        let mut ob = OrderBook::new();
+        ob.apply_update(&[(102.0, 1.0)], &[(101.0, 1.0), (103.0, 1.0)], 10, 1000);
+        assert!(!ob.is_valid());
+
+        let removed = ob.prune_crossed_by_best_update_id();
+        assert_eq!(removed, 0);
         assert!(!ob.is_valid());
     }
 

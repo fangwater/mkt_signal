@@ -189,6 +189,7 @@ crossbeam-channel = "0.5"
 libc = "0.2"
 zmq = "0.10"
 xgb = "3.0.5"
+indexmap = "2"
 
 [features]
 default = []
