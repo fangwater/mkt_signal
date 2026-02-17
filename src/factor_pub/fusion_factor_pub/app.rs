@@ -23,7 +23,9 @@ use super::window_primitives::{
 };
 use crate::common::msg_parser::parse_trade_flow_feature;
 use crate::common::symbol_util::normalize_symbol_for_venue;
-use crate::common::trade_flow_feature_msg::{TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM};
+use crate::common::trade_flow_feature_msg::{
+    TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM, TRADE_FLOW_FEATURE_MSG_TYPE,
+};
 use crate::signal::common::TradingVenue;
 
 const TRADE_FLOW_MAX_BYTES: usize = 1024;
@@ -540,15 +542,31 @@ impl FusionFactorPubApp {
             // trade_flow 是计算触发源，优先消费可降低触发延迟。
             while let Some(sample) = self.trade_flow_subscriber.receive()? {
                 has_message = true;
-                match parse_trade_flow_feature(sample.payload()) {
+                let payload = sample.payload();
+                let symbol_raw = match parse_trade_flow_symbol(payload) {
+                    Ok(v) => v,
+                    Err(err) => {
+                        self.trade_flow_decode_error_count =
+                            self.trade_flow_decode_error_count.saturating_add(1);
+                        self.trade_flow_decode_error_last =
+                            Some(format!("symbol pre-parse failed: {}", err));
+                        warn!(
+                            "trade_flow pre-parse failed: venue={} err={}",
+                            self.venue_slug, err
+                        );
+                        continue;
+                    }
+                };
+                let symbol = normalize_symbol_for_venue(symbol_raw, self.venue);
+                if !self.allowed_symbols.contains(&symbol) {
+                    self.trade_flow_dropped_symbol_count =
+                        self.trade_flow_dropped_symbol_count.saturating_add(1);
+                    self.record_dropped_symbol_sample(&symbol);
+                    continue;
+                }
+
+                match parse_trade_flow_feature(payload) {
                     Ok(msg) => {
-                        let symbol = normalize_symbol_for_venue(&msg.symbol, self.venue);
-                        if !self.allowed_symbols.contains(&symbol) {
-                            self.trade_flow_dropped_symbol_count =
-                                self.trade_flow_dropped_symbol_count.saturating_add(1);
-                            self.record_dropped_symbol_sample(&symbol);
-                            continue;
-                        }
                         self.on_trade_flow(symbol, msg);
                     }
                     Err(err) => {
@@ -556,8 +574,8 @@ impl FusionFactorPubApp {
                             self.trade_flow_decode_error_count.saturating_add(1);
                         self.trade_flow_decode_error_last = Some(err.to_string());
                         warn!(
-                            "trade_flow decode failed: venue={} err={}",
-                            self.venue_slug, err
+                            "trade_flow decode failed: venue={} symbol={} err={}",
+                            self.venue_slug, symbol, err
                         );
                     }
                 }
@@ -4875,6 +4893,39 @@ fn finite_opt(value: Option<f64>) -> Option<f64> {
 
 fn last_opt(values: &[Option<f64>]) -> Option<f64> {
     finite_opt(values.last().copied().flatten())
+}
+
+fn parse_trade_flow_symbol(data: &[u8]) -> Result<&str> {
+    if data.len() < 8 {
+        anyhow::bail!("trade_flow payload too short for header: {}", data.len());
+    }
+
+    let msg_type = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if msg_type != TRADE_FLOW_FEATURE_MSG_TYPE {
+        anyhow::bail!(
+            "invalid trade_flow msg_type={}, expected={}",
+            msg_type,
+            TRADE_FLOW_FEATURE_MSG_TYPE
+        );
+    }
+
+    let symbol_len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+    let symbol_end = 8usize
+        .checked_add(symbol_len)
+        .context("trade_flow symbol end overflow")?;
+    if symbol_end > data.len() {
+        anyhow::bail!(
+            "trade_flow symbol out of bounds: symbol_len={} payload_len={}",
+            symbol_len,
+            data.len()
+        );
+    }
+
+    let symbol = std::str::from_utf8(&data[8..symbol_end]).context("trade_flow symbol utf8")?;
+    if symbol.is_empty() {
+        anyhow::bail!("trade_flow symbol is empty");
+    }
+    Ok(symbol)
 }
 
 fn parse_embedded_depth(msg: &TradeFlowFeatureMsg) -> Option<DepthSnapshot> {
