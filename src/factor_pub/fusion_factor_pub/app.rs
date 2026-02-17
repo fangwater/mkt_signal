@@ -423,6 +423,7 @@ pub struct FusionFactorPubApp {
     symbol_factor_plans: HashMap<String, SymbolFactorPlan>,
     symbol_states: HashMap<String, SymbolCalcState>,
     depth_attached_count: u64,
+    trade_flow_raw_count: u64,
     trade_flow_count: u64,
     trigger_count: u64,
     missing_depth_count: u64,
@@ -489,6 +490,7 @@ impl FusionFactorPubApp {
             symbol_factor_plans,
             symbol_states: HashMap::new(),
             depth_attached_count: 0,
+            trade_flow_raw_count: 0,
             trade_flow_count: 0,
             trigger_count: 0,
             missing_depth_count: 0,
@@ -542,6 +544,7 @@ impl FusionFactorPubApp {
             // trade_flow 是计算触发源，优先消费可降低触发延迟。
             while let Some(sample) = self.trade_flow_subscriber.receive()? {
                 has_message = true;
+                self.trade_flow_raw_count = self.trade_flow_raw_count.saturating_add(1);
                 let payload = sample.payload();
                 let symbol_raw = match parse_trade_flow_symbol(payload) {
                     Ok(v) => v,
@@ -587,8 +590,9 @@ impl FusionFactorPubApp {
 
             if self.last_stats_log.elapsed() >= Duration::from_secs(STATS_LOG_INTERVAL_SECS) {
                 info!(
-                    "FusionFactorPubApp[{}] stats: trade_flow_msgs={} triggers={} decode_errors={} depth_attached={} missing_depth={} factor118_ready={} trade_drop_symbols={} drop_symbol_samples={:?} calc_symbols={} factor_plan={} factor_eval={} factor_ready={} factor_warming_up={} factor_invalid={} factor_missing_depth={} factor_unsupported={} last_decode_error={}",
+                    "FusionFactorPubApp[{}] stats: raw_msgs={} trade_flow_msgs={} triggers={} decode_errors={} depth_attached={} missing_depth={} factor118_ready={} trade_drop_symbols={} drop_symbol_samples={:?} calc_symbols={} factor_plan={} factor_eval={} factor_ready={} factor_warming_up={} factor_invalid={} factor_missing_depth={} factor_unsupported={} last_decode_error={}",
                     self.venue_slug,
+                    self.trade_flow_raw_count,
                     self.trade_flow_count,
                     self.trigger_count,
                     self.trade_flow_decode_error_count,
@@ -607,6 +611,7 @@ impl FusionFactorPubApp {
                     self.factor_unsupported_count,
                     self.trade_flow_decode_error_last.as_deref().unwrap_or("-"),
                 );
+                self.trade_flow_raw_count = 0;
                 self.trade_flow_count = 0;
                 self.trigger_count = 0;
                 self.trade_flow_decode_error_count = 0;
