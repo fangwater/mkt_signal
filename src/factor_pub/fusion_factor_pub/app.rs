@@ -29,6 +29,7 @@ use crate::signal::common::TradingVenue;
 const TRADE_FLOW_MAX_BYTES: usize = 1024;
 const IDLE_SLEEP_MICROS: u64 = 200;
 const STATS_LOG_INTERVAL_SECS: u64 = 60;
+const STEP_LOG_INTERVAL_SECS: u64 = 10;
 const MAX_SYMBOL_HISTORY: usize = 4096;
 const MAX_DEPTH_LEVELS_CACHE: usize = 20;
 const APPENDED_DEPTH_VALUES: usize = MAX_DEPTH_LEVELS_CACHE * 4;
@@ -323,6 +324,13 @@ struct FactorBinding {
 
 #[derive(Default)]
 struct OrderedEvalStats {
+    factor_plan_count: u64,
+    factor_evaluated_count: u64,
+    factor_ready_count: u64,
+    factor_warming_up_count: u64,
+    factor_invalid_value_count: u64,
+    factor_missing_depth_count: u64,
+    factor_unsupported_count: u64,
     factor118_ready_count: u64,
 }
 
@@ -418,7 +426,18 @@ pub struct FusionFactorPubApp {
     missing_depth_count: u64,
     factor_118_ready_count: u64,
     trade_flow_dropped_symbol_count: u64,
+    trade_flow_dropped_symbol_samples: Vec<String>,
+    trade_flow_decode_error_count: u64,
+    trade_flow_decode_error_last: Option<String>,
+    factor_plan_count: u64,
+    factor_evaluated_count: u64,
+    factor_ready_count: u64,
+    factor_warming_up_count: u64,
+    factor_invalid_value_count: u64,
+    factor_missing_depth_count: u64,
+    factor_unsupported_count: u64,
     last_stats_log: Instant,
+    last_step_log: Instant,
 }
 
 impl FusionFactorPubApp {
@@ -473,7 +492,18 @@ impl FusionFactorPubApp {
             missing_depth_count: 0,
             factor_118_ready_count: 0,
             trade_flow_dropped_symbol_count: 0,
+            trade_flow_dropped_symbol_samples: Vec::new(),
+            trade_flow_decode_error_count: 0,
+            trade_flow_decode_error_last: None,
+            factor_plan_count: 0,
+            factor_evaluated_count: 0,
+            factor_ready_count: 0,
+            factor_warming_up_count: 0,
+            factor_invalid_value_count: 0,
+            factor_missing_depth_count: 0,
+            factor_unsupported_count: 0,
             last_stats_log: Instant::now(),
+            last_step_log: Instant::now(),
         })
     }
 
@@ -516,14 +546,20 @@ impl FusionFactorPubApp {
                         if !self.allowed_symbols.contains(&symbol) {
                             self.trade_flow_dropped_symbol_count =
                                 self.trade_flow_dropped_symbol_count.saturating_add(1);
+                            self.record_dropped_symbol_sample(&symbol);
                             continue;
                         }
                         self.on_trade_flow(symbol, msg);
                     }
-                    Err(err) => warn!(
-                        "trade_flow decode failed: venue={} err={}",
-                        self.venue_slug, err
-                    ),
+                    Err(err) => {
+                        self.trade_flow_decode_error_count =
+                            self.trade_flow_decode_error_count.saturating_add(1);
+                        self.trade_flow_decode_error_last = Some(err.to_string());
+                        warn!(
+                            "trade_flow decode failed: venue={} err={}",
+                            self.venue_slug, err
+                        );
+                    }
                 }
             }
 
@@ -533,22 +569,42 @@ impl FusionFactorPubApp {
 
             if self.last_stats_log.elapsed() >= Duration::from_secs(STATS_LOG_INTERVAL_SECS) {
                 info!(
-                    "FusionFactorPubApp[{}] stats: trade_flow_msgs={} triggers={} depth_attached={} missing_depth={} factor118_ready={} trade_drop_symbols={} calc_symbols={}",
+                    "FusionFactorPubApp[{}] stats: trade_flow_msgs={} triggers={} decode_errors={} depth_attached={} missing_depth={} factor118_ready={} trade_drop_symbols={} drop_symbol_samples={:?} calc_symbols={} factor_plan={} factor_eval={} factor_ready={} factor_warming_up={} factor_invalid={} factor_missing_depth={} factor_unsupported={} last_decode_error={}",
                     self.venue_slug,
                     self.trade_flow_count,
                     self.trigger_count,
+                    self.trade_flow_decode_error_count,
                     self.depth_attached_count,
                     self.missing_depth_count,
                     self.factor_118_ready_count,
                     self.trade_flow_dropped_symbol_count,
+                    self.trade_flow_dropped_symbol_samples,
                     self.symbol_states.len(),
+                    self.factor_plan_count,
+                    self.factor_evaluated_count,
+                    self.factor_ready_count,
+                    self.factor_warming_up_count,
+                    self.factor_invalid_value_count,
+                    self.factor_missing_depth_count,
+                    self.factor_unsupported_count,
+                    self.trade_flow_decode_error_last.as_deref().unwrap_or("-"),
                 );
                 self.trade_flow_count = 0;
                 self.trigger_count = 0;
+                self.trade_flow_decode_error_count = 0;
+                self.trade_flow_decode_error_last = None;
                 self.depth_attached_count = 0;
                 self.missing_depth_count = 0;
                 self.factor_118_ready_count = 0;
                 self.trade_flow_dropped_symbol_count = 0;
+                self.trade_flow_dropped_symbol_samples.clear();
+                self.factor_plan_count = 0;
+                self.factor_evaluated_count = 0;
+                self.factor_ready_count = 0;
+                self.factor_warming_up_count = 0;
+                self.factor_invalid_value_count = 0;
+                self.factor_missing_depth_count = 0;
+                self.factor_unsupported_count = 0;
                 self.last_stats_log = Instant::now();
             }
         }
@@ -586,9 +642,32 @@ impl FusionFactorPubApp {
             return;
         };
 
+        self.factor_plan_count = self
+            .factor_plan_count
+            .saturating_add(eval_stats.factor_plan_count);
+        self.factor_evaluated_count = self
+            .factor_evaluated_count
+            .saturating_add(eval_stats.factor_evaluated_count);
+        self.factor_ready_count = self
+            .factor_ready_count
+            .saturating_add(eval_stats.factor_ready_count);
+        self.factor_warming_up_count = self
+            .factor_warming_up_count
+            .saturating_add(eval_stats.factor_warming_up_count);
+        self.factor_invalid_value_count = self
+            .factor_invalid_value_count
+            .saturating_add(eval_stats.factor_invalid_value_count);
+        self.factor_missing_depth_count = self
+            .factor_missing_depth_count
+            .saturating_add(eval_stats.factor_missing_depth_count);
+        self.factor_unsupported_count = self
+            .factor_unsupported_count
+            .saturating_add(eval_stats.factor_unsupported_count);
         self.factor_118_ready_count = self
             .factor_118_ready_count
             .saturating_add(eval_stats.factor118_ready_count);
+
+        self.maybe_log_calc_step(&symbol, &msg, depth_opt.is_some(), &eval_stats);
     }
 
     fn evaluate_ordered_factors(
@@ -614,18 +693,93 @@ impl FusionFactorPubApp {
 
         let plan = self.symbol_factor_plans.get(symbol)?;
         let mut stats = OrderedEvalStats::default();
+        stats.factor_plan_count = plan.ordered_factors.len() as u64;
 
         for binding in &plan.ordered_factors {
-            if let Some((_value, ready, _status)) =
-                self.compute_supported_factor(binding, factor_118_result, depth, series.as_ref())
+            match self.compute_supported_factor(binding, factor_118_result, depth, series.as_ref())
             {
-                if ready && binding.factor_id == Some(FusionFactorId::Factor118) {
-                    stats.factor118_ready_count = stats.factor118_ready_count.saturating_add(1);
+                Some((_value, ready, status)) => {
+                    stats.factor_evaluated_count = stats.factor_evaluated_count.saturating_add(1);
+                    if ready {
+                        stats.factor_ready_count = stats.factor_ready_count.saturating_add(1);
+                    } else {
+                        match status {
+                            "warming_up" => {
+                                stats.factor_warming_up_count =
+                                    stats.factor_warming_up_count.saturating_add(1);
+                            }
+                            "invalid_value" => {
+                                stats.factor_invalid_value_count =
+                                    stats.factor_invalid_value_count.saturating_add(1);
+                            }
+                            "missing_depth" => {
+                                stats.factor_missing_depth_count =
+                                    stats.factor_missing_depth_count.saturating_add(1);
+                            }
+                            _ => {}
+                        }
+                    }
+                    if ready && binding.factor_id == Some(FusionFactorId::Factor118) {
+                        stats.factor118_ready_count = stats.factor118_ready_count.saturating_add(1);
+                    }
+                }
+                None => {
+                    stats.factor_unsupported_count =
+                        stats.factor_unsupported_count.saturating_add(1);
                 }
             }
         }
 
         Some(stats)
+    }
+
+    fn record_dropped_symbol_sample(&mut self, symbol: &str) {
+        if self.trade_flow_dropped_symbol_samples.len() >= 5 {
+            return;
+        }
+        if !self
+            .trade_flow_dropped_symbol_samples
+            .iter()
+            .any(|s| s == symbol)
+        {
+            self.trade_flow_dropped_symbol_samples
+                .push(symbol.to_string());
+        }
+    }
+
+    fn maybe_log_calc_step(
+        &mut self,
+        symbol: &str,
+        msg: &TradeFlowFeatureMsg,
+        depth_attached: bool,
+        eval_stats: &OrderedEvalStats,
+    ) {
+        if self.last_step_log.elapsed() < Duration::from_secs(STEP_LOG_INTERVAL_SECS) {
+            return;
+        }
+        let history_len = self
+            .symbol_states
+            .get(symbol)
+            .map(|state| state.close.len())
+            .unwrap_or(0);
+        info!(
+            "FusionFactorPubApp[{}] calc-step: symbol={} trade_ts={} values={} depth_attached={} history_len={} factor_plan={} factor_eval={} factor_ready={} factor_warming_up={} factor_invalid={} factor_missing_depth={} factor_unsupported={} factor118_ready={}",
+            self.venue_slug,
+            symbol,
+            msg.ts,
+            msg.values.len(),
+            depth_attached,
+            history_len,
+            eval_stats.factor_plan_count,
+            eval_stats.factor_evaluated_count,
+            eval_stats.factor_ready_count,
+            eval_stats.factor_warming_up_count,
+            eval_stats.factor_invalid_value_count,
+            eval_stats.factor_missing_depth_count,
+            eval_stats.factor_unsupported_count,
+            eval_stats.factor118_ready_count,
+        );
+        self.last_step_log = Instant::now();
     }
 
     fn build_symbol_series(&self, symbol: &str) -> Option<SymbolSeries> {
