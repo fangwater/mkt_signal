@@ -941,6 +941,13 @@ pub struct TradeFlowFeaturePubApp {
     last_rocksdb_warn: Instant,
     last_missing_depth_warn: Instant,
     missing_depth_drop_count: u64,
+    recv_trade_raw_count: u64,
+    recv_trade_parse_ok_count: u64,
+    recv_trade_parse_fail_count: u64,
+    trade_filtered_offline_count: u64,
+    trade_threshold_miss_count: u64,
+    trade_dedup_drop_count: u64,
+    trade_late_count: u64,
     publish_success_count: u64,
     publish_fail_invalid_count: u64,
     publish_fail_missing_depth_count: u64,
@@ -995,6 +1002,13 @@ impl TradeFlowFeaturePubApp {
             last_missing_depth_warn: Instant::now()
                 - Duration::from_secs(MISSING_DEPTH_WARN_INTERVAL_SECS),
             missing_depth_drop_count: 0,
+            recv_trade_raw_count: 0,
+            recv_trade_parse_ok_count: 0,
+            recv_trade_parse_fail_count: 0,
+            trade_filtered_offline_count: 0,
+            trade_threshold_miss_count: 0,
+            trade_dedup_drop_count: 0,
+            trade_late_count: 0,
             publish_success_count: 0,
             publish_fail_invalid_count: 0,
             publish_fail_missing_depth_count: 0,
@@ -1096,9 +1110,15 @@ impl TradeFlowFeaturePubApp {
 
             while let Some(sample) = self.trade_subscriber.receive()? {
                 has_message = true;
+                self.recv_trade_raw_count = self.recv_trade_raw_count.saturating_add(1);
                 let data = sample.payload().to_vec();
                 if let Some(trade) = parse_trade(&data, self.venue) {
+                    self.recv_trade_parse_ok_count =
+                        self.recv_trade_parse_ok_count.saturating_add(1);
                     self.handle_trade(trade);
+                } else {
+                    self.recv_trade_parse_fail_count =
+                        self.recv_trade_parse_fail_count.saturating_add(1);
                 }
             }
 
@@ -1111,9 +1131,11 @@ impl TradeFlowFeaturePubApp {
 
     fn handle_trade(&mut self, trade: TradeTick) {
         if !self.online_symbols.contains(&trade.symbol) {
+            self.trade_filtered_offline_count = self.trade_filtered_offline_count.saturating_add(1);
             return;
         }
         let Some(threshold) = self.thresholds.get(&trade.symbol).copied() else {
+            self.trade_threshold_miss_count = self.trade_threshold_miss_count.saturating_add(1);
             return;
         };
 
@@ -1122,13 +1144,17 @@ impl TradeFlowFeaturePubApp {
             trade.trade_id,
             trade.timestamp_ms,
         ) {
+            self.trade_dedup_drop_count = self.trade_dedup_drop_count.saturating_add(1);
             return;
         }
         let state = self
             .symbols
             .entry(trade.symbol.clone())
             .or_insert_with(SymbolState::new);
-        let _ = state.apply_trade(&trade, &self.config.runtime, threshold);
+        let late_trade = state.apply_trade(&trade, &self.config.runtime, threshold);
+        if late_trade {
+            self.trade_late_count = self.trade_late_count.saturating_add(1);
+        }
     }
 
     fn maybe_close_due_bars(&mut self) -> Result<()> {
@@ -1208,8 +1234,15 @@ impl TradeFlowFeaturePubApp {
             .saturating_add(self.publish_fail_missing_depth_count)
             .saturating_add(self.publish_fail_send_count);
         info!(
-            "TradeFlowFeaturePubApp[{}] publish_outcome_10s: success={} fail_total={} fail_invalid={} fail_missing_depth={} fail_send={}",
+            "TradeFlowFeaturePubApp[{}] publish_outcome_10s: raw_trade_in={} trade_parse_ok={} trade_parse_fail={} trade_filtered_offline={} trade_threshold_miss={} trade_dedup_drop={} trade_late={} success={} fail_total={} fail_invalid={} fail_missing_depth={} fail_send={}",
             self.venue_slug,
+            self.recv_trade_raw_count,
+            self.recv_trade_parse_ok_count,
+            self.recv_trade_parse_fail_count,
+            self.trade_filtered_offline_count,
+            self.trade_threshold_miss_count,
+            self.trade_dedup_drop_count,
+            self.trade_late_count,
             self.publish_success_count,
             fail_total,
             self.publish_fail_invalid_count,
@@ -1218,6 +1251,13 @@ impl TradeFlowFeaturePubApp {
         );
 
         self.last_publish_outcome_log = Instant::now();
+        self.recv_trade_raw_count = 0;
+        self.recv_trade_parse_ok_count = 0;
+        self.recv_trade_parse_fail_count = 0;
+        self.trade_filtered_offline_count = 0;
+        self.trade_threshold_miss_count = 0;
+        self.trade_dedup_drop_count = 0;
+        self.trade_late_count = 0;
         self.publish_success_count = 0;
         self.publish_fail_invalid_count = 0;
         self.publish_fail_missing_depth_count = 0;
