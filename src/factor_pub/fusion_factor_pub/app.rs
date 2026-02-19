@@ -32,6 +32,7 @@ const TRADE_FLOW_MAX_BYTES: usize = 1024;
 const IDLE_SLEEP_MICROS: u64 = 200;
 const STATS_LOG_INTERVAL_SECS: u64 = 60;
 const STEP_LOG_INTERVAL_SECS: u64 = 10;
+const TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE: usize = 2048;
 const MAX_SYMBOL_HISTORY: usize = 4096;
 const MAX_DEPTH_LEVELS_CACHE: usize = 20;
 const APPENDED_DEPTH_VALUES: usize = MAX_DEPTH_LEVELS_CACHE * 4;
@@ -525,9 +526,30 @@ impl FusionFactorPubApp {
             .service_builder(&ServiceName::new(&service_name)?)
             .publish_subscribe::<[u8; TRADE_FLOW_MAX_BYTES]>()
             .open()?;
-        let subscriber = service.subscriber_builder().create()?;
+        let service_max_buffer = service.static_config().subscriber_max_buffer_size();
+        let service_history = service.static_config().history_size();
+        let requested_buffer = TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE.min(service_max_buffer.max(1));
+        if service_max_buffer < TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE {
+            warn!(
+                "trade_flow service buffer is smaller than requested: service={} service_subscriber_max_buffer_size={} requested_buffer_size={} history_size={} hint=restart producer with larger subscriber_max_buffer_size and clean stale iceoryx service if needed",
+                service_name,
+                service_max_buffer,
+                TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE,
+                service_history
+            );
+        }
+        let subscriber = service
+            .subscriber_builder()
+            .buffer_size(requested_buffer)
+            .create()?;
 
-        info!("Subscribed to trade_flow channel: {}", service_name);
+        info!(
+            "Subscribed to trade_flow channel: {} subscriber_buffer_size={} service_subscriber_max_buffer_size={} service_history_size={}",
+            service_name,
+            requested_buffer,
+            service_max_buffer,
+            service_history
+        );
         Ok(subscriber)
     }
 

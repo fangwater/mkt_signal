@@ -10,6 +10,8 @@ use log::{info, warn};
 use crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg;
 
 pub const TRADE_FLOW_FEATURE_MAX_BYTES: usize = 1024;
+const SUBSCRIBER_MAX_BUFFER_SIZE: usize = 8192;
+const HISTORY_SIZE: usize = 128;
 
 pub struct TradeFlowFeaturePublisher {
     venue_slug: String,
@@ -31,14 +33,18 @@ impl TradeFlowFeaturePublisher {
             .publish_subscribe::<[u8; TRADE_FLOW_FEATURE_MAX_BYTES]>()
             .max_publishers(1)
             .max_subscribers(10)
-            .history_size(128)
+            .history_size(HISTORY_SIZE)
+            .subscriber_max_buffer_size(SUBSCRIBER_MAX_BUFFER_SIZE)
             .open_or_create()?;
 
         let publisher = service.publisher_builder().create()?;
 
         info!(
-            "TradeFlowFeaturePublisher created: venue={} service={}",
-            venue_slug, service_path
+            "TradeFlowFeaturePublisher created: venue={} service={} history_size={} subscriber_max_buffer_size={}",
+            venue_slug,
+            service_path,
+            service.static_config().history_size(),
+            service.static_config().subscriber_max_buffer_size()
         );
 
         Ok(Self {
