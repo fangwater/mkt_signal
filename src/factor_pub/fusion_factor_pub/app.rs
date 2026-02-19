@@ -3,7 +3,7 @@
 //! 订阅 trade_flow_feature（包含 trade + depth）并触发融合因子计算。
 //! 当前先落地 factor_118，后续在同一框架上扩展全部因子。
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
@@ -528,16 +528,16 @@ impl FusionFactorPubApp {
             .open()?;
         let service_max_buffer = service.static_config().subscriber_max_buffer_size();
         let service_history = service.static_config().history_size();
-        let requested_buffer = TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE.min(service_max_buffer.max(1));
         if service_max_buffer < TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE {
-            warn!(
-                "trade_flow service buffer is smaller than requested: service={} service_subscriber_max_buffer_size={} requested_buffer_size={} history_size={} hint=restart producer with larger subscriber_max_buffer_size and clean stale iceoryx service if needed",
+            bail!(
+                "trade_flow service buffer is too small: service={} service_subscriber_max_buffer_size={} required_min_buffer_size={} history_size={} hint=restart producer with larger subscriber_max_buffer_size and clean stale iceoryx service",
                 service_name,
                 service_max_buffer,
                 TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE,
                 service_history
             );
         }
+        let requested_buffer = TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE;
         let subscriber = service
             .subscriber_builder()
             .buffer_size(requested_buffer)

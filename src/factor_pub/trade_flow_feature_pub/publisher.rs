@@ -1,6 +1,6 @@
 //! Trade flow feature 发布器
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use bytes::Bytes;
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
@@ -36,6 +36,16 @@ impl TradeFlowFeaturePublisher {
             .history_size(HISTORY_SIZE)
             .subscriber_max_buffer_size(SUBSCRIBER_MAX_BUFFER_SIZE)
             .open_or_create()?;
+
+        let actual_subscriber_buffer_size = service.static_config().subscriber_max_buffer_size();
+        if actual_subscriber_buffer_size < SUBSCRIBER_MAX_BUFFER_SIZE {
+            bail!(
+                "trade_flow_feature service has stale subscriber_max_buffer_size: service={} expected_min={} actual={} hint=stop producer/consumers, cleanup stale iceoryx service, then restart producer first",
+                service_path,
+                SUBSCRIBER_MAX_BUFFER_SIZE,
+                actual_subscriber_buffer_size
+            );
+        }
 
         let publisher = service.publisher_builder().create()?;
 
