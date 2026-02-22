@@ -827,16 +827,7 @@ impl FusionFactorPubApp {
         let factor_issues = if issue_count == 0 {
             "-".to_string()
         } else {
-            const MAX_PRINTED_ISSUES: usize = 8;
-            if issue_count <= MAX_PRINTED_ISSUES {
-                eval_result.factor_issues.join(",")
-            } else {
-                format!(
-                    "{},...+{}",
-                    eval_result.factor_issues[..MAX_PRINTED_ISSUES].join(","),
-                    issue_count - MAX_PRINTED_ISSUES
-                )
-            }
+            eval_result.factor_issues.join(",")
         };
         info!(
             "FusionFactorPubApp[{}] factor-step: symbol={} trade_ts={} eval_cost_us={} issue_count={} issues=[{}]",
