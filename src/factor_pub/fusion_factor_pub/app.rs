@@ -31,7 +31,6 @@ use crate::signal::common::TradingVenue;
 const TRADE_FLOW_MAX_BYTES: usize = 1024;
 const IDLE_SLEEP_MICROS: u64 = 200;
 const STATS_LOG_INTERVAL_SECS: u64 = 60;
-const STEP_LOG_INTERVAL_SECS: u64 = 10;
 const TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE: usize = 2048;
 const MAX_SYMBOL_HISTORY: usize = 4096;
 const MAX_DEPTH_LEVELS_CACHE: usize = 20;
@@ -441,7 +440,6 @@ pub struct FusionFactorPubApp {
     factor_missing_depth_count: u64,
     factor_unsupported_count: u64,
     last_stats_log: Instant,
-    last_step_log: Instant,
 }
 
 impl FusionFactorPubApp {
@@ -508,7 +506,6 @@ impl FusionFactorPubApp {
             factor_missing_depth_count: 0,
             factor_unsupported_count: 0,
             last_stats_log: Instant::now(),
-            last_step_log: Instant::now(),
         })
     }
 
@@ -583,7 +580,12 @@ impl FusionFactorPubApp {
                     }
                 };
                 let symbol = normalize_symbol_for_venue(symbol_raw, self.venue);
-                if !self.allowed_symbols.contains(&symbol) {
+                let symbol_allowed = self.allowed_symbols.contains(&symbol);
+                info!(
+                    "trade_flow recv: venue={} symbol={} allowed={}",
+                    self.venue_slug, symbol, symbol_allowed
+                );
+                if !symbol_allowed {
                     self.trade_flow_dropped_symbol_count =
                         self.trade_flow_dropped_symbol_count.saturating_add(1);
                     self.record_dropped_symbol_sample(&symbol);
@@ -799,9 +801,6 @@ impl FusionFactorPubApp {
         depth_attached: bool,
         eval_stats: &OrderedEvalStats,
     ) {
-        if self.last_step_log.elapsed() < Duration::from_secs(STEP_LOG_INTERVAL_SECS) {
-            return;
-        }
         let history_len = self
             .symbol_states
             .get(symbol)
@@ -824,7 +823,6 @@ impl FusionFactorPubApp {
             eval_stats.factor_unsupported_count,
             eval_stats.factor118_ready_count,
         );
-        self.last_step_log = Instant::now();
     }
 
     fn build_symbol_series(&self, symbol: &str) -> Option<SymbolSeries> {
