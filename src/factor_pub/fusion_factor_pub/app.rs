@@ -338,7 +338,7 @@ struct OrderedEvalStats {
 
 struct OrderedEvalResult {
     stats: OrderedEvalStats,
-    factor_values: Vec<String>,
+    factor_issues: Vec<String>,
 }
 
 struct SymbolSeries {
@@ -715,13 +715,7 @@ impl FusionFactorPubApp {
             .factor_118_ready_count
             .saturating_add(eval_result.stats.factor118_ready_count);
 
-        self.log_calc_step(
-            &symbol,
-            &msg,
-            depth_opt.is_some(),
-            eval_elapsed_us,
-            &eval_result,
-        );
+        self.log_calc_step(&symbol, msg.ts, eval_elapsed_us, &eval_result);
     }
 
     fn evaluate_ordered_factors(
@@ -748,7 +742,7 @@ impl FusionFactorPubApp {
         let plan = self.symbol_factor_plans.get(symbol)?;
         let mut result = OrderedEvalResult {
             stats: OrderedEvalStats::default(),
-            factor_values: Vec::with_capacity(plan.ordered_factors.len()),
+            factor_issues: Vec::with_capacity(plan.ordered_factors.len()),
         };
         result.stats.factor_plan_count = plan.ordered_factors.len() as u64;
 
@@ -756,17 +750,27 @@ impl FusionFactorPubApp {
             match self.compute_supported_factor(binding, factor_118_result, depth, series.as_ref())
             {
                 Some((value, ready, status)) => {
-                    result.factor_values.push(format!(
-                        "{}={}",
-                        binding.name,
-                        format_factor_value(value)
-                    ));
                     result.stats.factor_evaluated_count =
                         result.stats.factor_evaluated_count.saturating_add(1);
                     if ready {
                         result.stats.factor_ready_count =
                             result.stats.factor_ready_count.saturating_add(1);
+                        if value.is_nan() {
+                            result
+                                .factor_issues
+                                .push(format!("{}:nan_fill", binding.name));
+                        } else if value == 0.0 {
+                            result
+                                .factor_issues
+                                .push(format!("{}:zero_fill", binding.name));
+                        }
                     } else {
+                        let reason = if value.is_nan() {
+                            format!("{}:{}(nan)", binding.name, status)
+                        } else {
+                            format!("{}:{}", binding.name, status)
+                        };
+                        result.factor_issues.push(reason);
                         match status {
                             "warming_up" => {
                                 result.stats.factor_warming_up_count =
@@ -815,27 +819,21 @@ impl FusionFactorPubApp {
     fn log_calc_step(
         &mut self,
         symbol: &str,
-        msg: &TradeFlowFeatureMsg,
-        depth_attached: bool,
+        trade_ts: i64,
         eval_elapsed_us: u128,
         eval_result: &OrderedEvalResult,
     ) {
-        let history_len = self
-            .symbol_states
-            .get(symbol)
-            .map(|state| state.close.len())
-            .unwrap_or(0);
-        let factor_values = eval_result.factor_values.join(",");
+        if eval_result.factor_issues.is_empty() {
+            return;
+        }
+        let factor_issues = eval_result.factor_issues.join(",");
         info!(
-            "FusionFactorPubApp[{}] calc-step: symbol={} trade_ts={} eval_cost_us={} values={} depth_attached={} history_len={} factor_values=[{}]",
+            "FusionFactorPubApp[{}] factor-issue: symbol={} trade_ts={} eval_cost_us={} issues=[{}]",
             self.venue_slug,
             symbol,
-            msg.ts,
+            trade_ts,
             eval_elapsed_us,
-            msg.values.len(),
-            depth_attached,
-            history_len,
-            factor_values,
+            factor_issues,
         );
     }
 
@@ -4900,20 +4898,6 @@ fn std_pop(values: &[f64]) -> Option<f64> {
     } else {
         None
     }
-}
-
-fn format_factor_value(value: f64) -> String {
-    if value.is_nan() {
-        return "NaN".to_string();
-    }
-    if value.is_infinite() {
-        return if value.is_sign_positive() {
-            "Inf".to_string()
-        } else {
-            "-Inf".to_string()
-        };
-    }
-    format!("{:.10}", value)
 }
 
 fn push_with_limit(buf: &mut VecDeque<f64>, value: f64) {
