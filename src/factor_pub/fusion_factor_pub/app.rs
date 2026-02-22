@@ -823,16 +823,28 @@ impl FusionFactorPubApp {
         eval_elapsed_us: u128,
         eval_result: &OrderedEvalResult,
     ) {
-        if eval_result.factor_issues.is_empty() {
-            return;
-        }
-        let factor_issues = eval_result.factor_issues.join(",");
+        let issue_count = eval_result.factor_issues.len();
+        let factor_issues = if issue_count == 0 {
+            "-".to_string()
+        } else {
+            const MAX_PRINTED_ISSUES: usize = 8;
+            if issue_count <= MAX_PRINTED_ISSUES {
+                eval_result.factor_issues.join(",")
+            } else {
+                format!(
+                    "{},...+{}",
+                    eval_result.factor_issues[..MAX_PRINTED_ISSUES].join(","),
+                    issue_count - MAX_PRINTED_ISSUES
+                )
+            }
+        };
         info!(
-            "FusionFactorPubApp[{}] factor-issue: symbol={} trade_ts={} eval_cost_us={} issues=[{}]",
+            "FusionFactorPubApp[{}] factor-step: symbol={} trade_ts={} eval_cost_us={} issue_count={} issues=[{}]",
             self.venue_slug,
             symbol,
             trade_ts,
             eval_elapsed_us,
+            issue_count,
             factor_issues,
         );
     }
