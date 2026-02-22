@@ -2,7 +2,6 @@
 set -euo pipefail
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NAMESPACE="persist_exporter"
 PROC_NAME="persist_admin_server"
 
 BIN_PATH="${BASE_DIR}/persist_admin_server"
@@ -18,15 +17,44 @@ if [[ ! -f "${CFG_PATH}" ]]; then
   exit 1
 fi
 
-echo "[INFO] restarting ${PROC_NAME} (namespace=${NAMESPACE})"
-npx pm2 delete "${PROC_NAME}" --namespace "${NAMESPACE}" >/dev/null 2>&1 || true
+PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
+PMDAEMON=("$PMDAEMON_BIN")
 
-cd "${BASE_DIR}"
-RUST_LOG="${RUST_LOG:-info}" npx pm2 start "${BIN_PATH}" \
-  --name "${PROC_NAME}" \
-  --namespace "${NAMESPACE}" \
-  -- --config "${CFG_PATH}" --bind "${BIND_ADDR}"
+if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
+  echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2
+  echo "[HINT] install with: cargo install pmdaemon" >&2
+  exit 1
+fi
 
-echo "[INFO] started ${PROC_NAME} bind=${BIND_ADDR}"
-echo "[INFO] logs: npx pm2 logs --namespace ${NAMESPACE} ${PROC_NAME}"
+RUST_LOG="${RUST_LOG:-info}"
 
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+CFG_FILE="$(mktemp)"
+trap 'rm -f "$CFG_FILE" >/dev/null 2>&1 || true' EXIT
+
+cat >"$CFG_FILE" <<EOF
+{
+  "apps": [
+    {
+      "name": "$(json_escape "$PROC_NAME")",
+      "script": "$(json_escape "$BIN_PATH")",
+      "args": ["--config", "$(json_escape "$CFG_PATH")", "--bind", "$(json_escape "$BIND_ADDR")"],
+      "cwd": "$(json_escape "$BASE_DIR")",
+      "env": {
+        "RUST_LOG": "$(json_escape "$RUST_LOG")"
+      }
+    }
+  ]
+}
+EOF
+
+echo "[INFO] Restarting ${PROC_NAME}"
+"${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
+"${PMDAEMON[@]}" --config "$CFG_FILE" start --name "$PROC_NAME"
+
+echo "[INFO] Started ${PROC_NAME} bind=${BIND_ADDR}"
+echo "Logs: ${PMDAEMON[*]} logs ${PROC_NAME} --follow"
+echo "Status: ${PMDAEMON[*]} list"

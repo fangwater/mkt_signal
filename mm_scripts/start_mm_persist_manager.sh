@@ -3,7 +3,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
 
 BIN_CANDIDATES=(
   "${BASE_DIR}/persist_manager"
@@ -52,20 +51,48 @@ if [[ -z "$IPC_NS" ]]; then
   echo "[WARN] IPC_NAMESPACE not set; use default: ${IPC_NS}"
 fi
 
-PROC_NAME="${PM2_NAME:-mm_persist_manager_$(echo "${BASE_DIR##*/}" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9_-]/_/g')}"
+PROC_NAME="${PMDAEMON_NAME:-mm_persist_manager_$(echo "${BASE_DIR##*/}" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9_-]/_/g')}"
 RUST_LOG="${RUST_LOG:-info}"
+
+PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
+PMDAEMON=("$PMDAEMON_BIN")
+
+if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
+  echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2
+  echo "[HINT] install with: cargo install pmdaemon" >&2
+  exit 1
+fi
 
 mkdir -p "${BASE_DIR}/data/persist_manager" >/dev/null 2>&1 || true
 
-echo "[INFO] Restarting ${PROC_NAME} (namespace=${NAMESPACE})"
-npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
 
-(
-  cd "$BASE_DIR"
-  IPC_NAMESPACE="$IPC_NS" RUST_LOG="$RUST_LOG" npx pm2 start "$BIN_PATH" \
-    --name "$PROC_NAME" \
-    --namespace "$NAMESPACE"
-)
+CFG_FILE="$(mktemp)"
+trap 'rm -f "$CFG_FILE" >/dev/null 2>&1 || true' EXIT
+
+cat >"$CFG_FILE" <<EOF
+{
+  "apps": [
+    {
+      "name": "$(json_escape "$PROC_NAME")",
+      "script": "$(json_escape "$BIN_PATH")",
+      "args": [],
+      "cwd": "$(json_escape "$BASE_DIR")",
+      "env": {
+        "RUST_LOG": "$(json_escape "$RUST_LOG")",
+        "IPC_NAMESPACE": "$(json_escape "$IPC_NS")"
+      }
+    }
+  ]
+}
+EOF
+
+echo "[INFO] Restarting ${PROC_NAME} (ipc_namespace=${IPC_NS})"
+"${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
+"${PMDAEMON[@]}" --config "$CFG_FILE" start --name "$PROC_NAME"
 
 echo "[INFO] Started ${PROC_NAME} (ipc_namespace=${IPC_NS})"
-echo "[INFO] Logs: npx pm2 logs --namespace ${NAMESPACE} ${PROC_NAME}"
+echo "Logs: ${PMDAEMON[*]} logs ${PROC_NAME} --follow"
+echo "Status: ${PMDAEMON[*]} list"
