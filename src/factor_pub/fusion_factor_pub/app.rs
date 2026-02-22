@@ -334,7 +334,6 @@ struct OrderedEvalStats {
     factor_missing_depth_count: u64,
     factor_unsupported_count: u64,
     factor118_ready_count: u64,
-    factor_zero_fill_count: u64,
     factor_nan_fill_count: u64,
 }
 
@@ -717,8 +716,7 @@ impl FusionFactorPubApp {
             .factor_118_ready_count
             .saturating_add(eval_result.stats.factor118_ready_count);
 
-        self.log_calc_step(&symbol, msg.ts, eval_elapsed_us, &eval_result);
-        self.log_factor_summary(&symbol, &eval_result);
+        self.log_factor_summary(&symbol, eval_elapsed_us, &eval_result);
     }
 
     fn evaluate_ordered_factors(
@@ -817,34 +815,10 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn log_calc_step(
-        &mut self,
-        symbol: &str,
-        trade_ts: i64,
-        eval_elapsed_us: u128,
-        eval_result: &OrderedEvalResult,
-    ) {
-        let issue_count = eval_result.factor_issues.len();
-        let factor_issues = if issue_count == 0 {
-            "-".to_string()
-        } else {
-            eval_result.factor_issues.join(",")
-        };
-        info!(
-            "FusionFactorPubApp[{}] factor-step: symbol={} trade_ts={} eval_cost_us={} issue_count={} issues=[{}]",
-            self.venue_slug,
-            symbol,
-            trade_ts,
-            eval_elapsed_us,
-            issue_count,
-            factor_issues,
-        );
-    }
-
-    fn log_factor_summary(&self, symbol: &str, eval_result: &OrderedEvalResult) {
+    fn log_factor_summary(&self, symbol: &str, eval_cost_us: u128, eval_result: &OrderedEvalResult) {
         let s = &eval_result.stats;
-        let good = s.factor_ready_count.saturating_sub(s.factor_zero_fill_count + s.factor_nan_fill_count);
-        let bad = s.factor_warming_up_count + s.factor_invalid_value_count + s.factor_missing_depth_count + s.factor_zero_fill_count + s.factor_nan_fill_count;
+        let good = s.factor_ready_count.saturating_sub(s.factor_nan_fill_count);
+        let bad = s.factor_warming_up_count + s.factor_invalid_value_count + s.factor_missing_depth_count + s.factor_nan_fill_count;
 
         // 非 warming_up 的异常因子
         let non_warming_issues: Vec<&str> = eval_result
@@ -855,14 +829,14 @@ impl FusionFactorPubApp {
             .collect();
 
         info!(
-            "FusionFactorPubApp[{}] factor-summary: symbol={} plan={} good={} bad={} (warming_up={} zero_fill={} nan_fill={} invalid={} missing_depth={}) non_warming=[{}]",
+            "FusionFactorPubApp[{}] factor-summary: symbol={} plan={} good={} bad={} eval_cost_us={} (warming_up={} nan_fill={} invalid={} missing_depth={}) non_warming=[{}]",
             self.venue_slug,
             symbol,
             s.factor_plan_count,
             good,
             bad,
+            eval_cost_us,
             s.factor_warming_up_count,
-            s.factor_zero_fill_count,
             s.factor_nan_fill_count,
             s.factor_invalid_value_count,
             s.factor_missing_depth_count,
