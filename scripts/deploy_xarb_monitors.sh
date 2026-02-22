@@ -15,19 +15,19 @@ fi
 
 usage() {
   cat <<'EOF'
-用法: scripts/deploy_xarb_monitors.sh [trade|test] --open-venue <okex-futures> --hedge-venue <binance-futures> [--env-name okex-binance-xarb-trade] [--jobs <n>] [--cargo-target-dir <path>]
+用法: scripts/deploy_xarb_monitors.sh --open-venue <okex-futures> --hedge-venue <binance-futures> [--env-suffix xarb-trade] [--env-name okex-binance-xarb-trade] [--jobs <n>] [--cargo-target-dir <path>]
       scripts/deploy_xarb_monitors.sh --remote-host awsjp [--remote-repo <path>] [--remote-sync] [...]
 
 说明:
   - 构建并部署 xarb 所需的两侧账户 monitor（二进制为 okex_account_monitor / binance_account_monitor）。
-  - 输出到 $HOME/<open>-<hedge>-xarb-<trade|test>/（或 --env-name 指定）：
+  - 输出到 $HOME/<open>-<hedge>-<env_suffix>/（默认 env_suffix=xarb-trade，可通过 --env-suffix / --env-name 指定）：
       account_monitor_okex
       account_monitor_binance
       xarb_scripts/start_xarb_monitors.sh
       xarb_scripts/stop_xarb_monitors.sh
 
 示例:
-  scripts/deploy_xarb_monitors.sh trade --open-venue okex-futures --hedge-venue binance-futures
+  scripts/deploy_xarb_monitors.sh --open-venue okex-futures --hedge-venue binance-futures
   scripts/deploy_xarb_monitors.sh --env-name okex-binance-xarb-trade --open-venue okex-futures --hedge-venue binance-futures
 
 远程模式（可选）:
@@ -45,7 +45,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-ENV_TYPE="trade"
+ENV_SUFFIX="xarb-trade"
 ENV_NAME=""
 OPEN_VENUE=""
 HEDGE_VENUE=""
@@ -80,8 +80,13 @@ normalize_exchange() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     trade|test)
-      ENV_TYPE="$1"
-      shift
+      echo "[ERROR] 不再支持 trade/test 位置参数，请使用 --env-suffix 或 --env-name"
+      usage
+      exit 1
+      ;;
+    --env-suffix)
+      ENV_SUFFIX="${2:-xarb-trade}"
+      shift 2
       ;;
     --env-name)
       ENV_NAME="${2:-}"
@@ -127,7 +132,7 @@ fi
 OPEN_EXCHANGE="$(normalize_exchange "${OPEN_VENUE%%-*}")"
 HEDGE_EXCHANGE="$(normalize_exchange "${HEDGE_VENUE%%-*}")"
 if [[ -z "$ENV_NAME" ]]; then
-  ENV_NAME="${OPEN_EXCHANGE}-${HEDGE_EXCHANGE}-xarb-${ENV_TYPE}"
+  ENV_NAME="${OPEN_EXCHANGE}-${HEDGE_EXCHANGE}-${ENV_SUFFIX}"
 fi
 
 TARGET_DIR="$HOME/${ENV_NAME}"

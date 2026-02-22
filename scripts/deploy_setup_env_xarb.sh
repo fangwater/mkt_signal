@@ -16,12 +16,12 @@ fi
 # 生成 xarb 环境变量脚本（futures-only，跨所）
 #
 # 目录约定:
-#   $HOME/<open>-<hedge>-xarb-<trade|test>/
+#   $HOME/<open>-<hedge>-<env_suffix>/
 #   例如: $HOME/okex-binance-xarb-trade/
 #
 # 说明:
 #   - 只需要提供两个 venue（必须为 *-futures），exchange 会从 venue 前缀推断
-#   - IPC_NAMESPACE 会默认按 open/hedge/env_type 生成，避免与 fr 等环境冲突
+#   - IPC_NAMESPACE 会默认按 open/hedge/env_suffix 生成，避免与 fr 等环境冲突
 #   - env.sh 内会按 open/hedge 自动生成所需的凭证变量占位：
 #       - okex: OKX_API_KEY / OKX_API_SECRET / OKX_PASSPHRASE（3 个）
 #       - binance: BINANCE_API_KEY / BINANCE_API_SECRET（2 个）
@@ -29,11 +29,11 @@ fi
 
 usage() {
   cat <<'EOF'
-用法: scripts/deploy_setup_env_xarb.sh [trade|test] --open-venue <okex-futures> --hedge-venue <binance-futures> [--env-name okex-binance-xarb-trade] [--namespace <ns>]
+用法: scripts/deploy_setup_env_xarb.sh --open-venue <okex-futures> --hedge-venue <binance-futures> [--env-suffix xarb-trade] [--env-name okex-binance-xarb-trade] [--namespace <ns>]
       scripts/deploy_setup_env_xarb.sh --remote-host awsjp [--remote-repo <path>] [--remote-sync] [...]
 
 示例:
-  scripts/deploy_setup_env_xarb.sh trade --open-venue okex-futures --hedge-venue binance-futures
+  scripts/deploy_setup_env_xarb.sh --open-venue okex-futures --hedge-venue binance-futures
   scripts/deploy_setup_env_xarb.sh --env-name okex-binance-xarb-trade --open-venue okex-futures --hedge-venue binance-futures
 
 远程模式（可选）:
@@ -50,7 +50,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-ENV_TYPE="trade"
+ENV_SUFFIX="xarb-trade"
 ENV_NAME=""
 NAMESPACE=""
 OPEN_VENUE=""
@@ -59,8 +59,13 @@ HEDGE_VENUE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     trade|test)
-      ENV_TYPE="$1"
-      shift
+      echo "[ERROR] 不再支持 trade/test 位置参数，请使用 --env-suffix 或 --env-name"
+      usage
+      exit 1
+      ;;
+    --env-suffix)
+      ENV_SUFFIX="${2:-xarb-trade}"
+      shift 2
       ;;
     --env-name)
       ENV_NAME="${2:-}"
@@ -140,12 +145,13 @@ EOF
 }
 
 if [[ -z "$ENV_NAME" ]]; then
-  ENV_NAME="${OPEN_EXCHANGE}-${HEDGE_EXCHANGE}-xarb-${ENV_TYPE}"
+  ENV_NAME="${OPEN_EXCHANGE}-${HEDGE_EXCHANGE}-${ENV_SUFFIX}"
 fi
 
 if [[ -z "$NAMESPACE" ]]; then
   # IPC_NAMESPACE 不能包含 '/'，建议用 '_' 隔离
-  NAMESPACE="${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_xarb_${ENV_TYPE}"
+  ENV_SUFFIX_NS="${ENV_SUFFIX//-/_}"
+  NAMESPACE="${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_SUFFIX_NS}"
 fi
 
 TARGET_DIR="$HOME/${ENV_NAME}"
@@ -155,7 +161,7 @@ ENV_FILE="$TARGET_DIR/env.sh"
 cat > "$ENV_FILE" << EOF
 #!/usr/bin/env bash
 # 自动生成的环境配置文件（xarb）
-# 环境类型: $ENV_TYPE
+# 环境后缀: $ENV_SUFFIX
 # open venue: $OPEN_VENUE
 # hedge venue: $HEDGE_VENUE
 # 生成时间: $(date '+%Y-%m-%d %H:%M:%S')

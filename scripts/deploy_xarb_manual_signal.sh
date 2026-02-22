@@ -17,16 +17,16 @@ fi
 
 usage() {
   cat <<'EOF'
-用法: scripts/deploy_xarb_manual_signal.sh [trade|test] --open-venue <okex-futures> --hedge-venue <binance-futures> [--env-name okex-binance-xarb-trade] [--jobs <n>] [--cargo-target-dir <path>]
+用法: scripts/deploy_xarb_manual_signal.sh --open-venue <okex-futures> --hedge-venue <binance-futures> [--env-suffix xarb-trade] [--env-name okex-binance-xarb-trade] [--jobs <n>] [--cargo-target-dir <path>]
       scripts/deploy_xarb_manual_signal.sh --remote-host awsjp [--remote-repo <path>] [--remote-sync] [...]
 
 说明:
-  - 构建 manual_signal 并拷贝到 $HOME/<openEx>-<hedgeEx>-xarb-<trade|test>/（或 --env-name 指定）。
+  - 构建 manual_signal 并拷贝到 $HOME/<openEx>-<hedgeEx>-<env_suffix>/（默认 env_suffix=xarb-trade，可通过 --env-suffix / --env-name 指定）。
   - xarb 固定 futures 资产类型：open/hedge 都必须为 *-futures。
   - 目录名建议: <open>-<hedge>-xarb-trade（例如 okex-binance-xarb-trade）。
 
 示例:
-  scripts/deploy_xarb_manual_signal.sh trade --open-venue okex-futures --hedge-venue binance-futures
+  scripts/deploy_xarb_manual_signal.sh --open-venue okex-futures --hedge-venue binance-futures
   scripts/deploy_xarb_manual_signal.sh --env-name okex-binance-xarb-trade --open-venue okex-futures --hedge-venue binance-futures
 
 远程模式（可选）:
@@ -44,7 +44,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-ENV_TYPE="trade"
+ENV_SUFFIX="xarb-trade"
 ENV_NAME=""
 OPEN_VENUE=""
 HEDGE_VENUE=""
@@ -71,8 +71,13 @@ ensure_futures_venue() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     trade|test)
-      ENV_TYPE="$1"
-      shift
+      echo "[ERROR] 不再支持 trade/test 位置参数，请使用 --env-suffix 或 --env-name"
+      usage
+      exit 1
+      ;;
+    --env-suffix)
+      ENV_SUFFIX="${2:-xarb-trade}"
+      shift 2
       ;;
     --env-name)
       ENV_NAME="${2:-}"
@@ -125,7 +130,7 @@ if [[ "$HEDGE_EXCHANGE" == "okx" ]]; then
 fi
 
 if [[ -z "$ENV_NAME" ]]; then
-  ENV_NAME="${OPEN_EXCHANGE}-${HEDGE_EXCHANGE}-xarb-${ENV_TYPE}"
+  ENV_NAME="${OPEN_EXCHANGE}-${HEDGE_EXCHANGE}-${ENV_SUFFIX}"
 fi
 TARGET_DIR="$HOME/${ENV_NAME}"
 

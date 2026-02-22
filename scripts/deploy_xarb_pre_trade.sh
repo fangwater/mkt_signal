@@ -17,12 +17,11 @@ fi
 
 usage() {
   cat <<'EOF'
-用法: scripts/deploy_xarb_pre_trade.sh [trade|test] --open-venue <okex-futures> --hedge-venue <binance-futures> [--env-name okex-binance-xarb-trade]
-      scripts/deploy_xarb_pre_trade.sh [--open-venue <okex-futures>] [--hedge-venue <binance-futures>] [--env-suffix xarb-trade] [--env-name okex-binance-xarb-trade] [--jobs <n>] [--cargo-target-dir <path>] [--sync-scripts|--bin-only]
+用法: scripts/deploy_xarb_pre_trade.sh [--open-venue <okex-futures>] [--hedge-venue <binance-futures>] [--env-suffix xarb-trade] [--env-name okex-binance-xarb-trade] [--jobs <n>] [--cargo-target-dir <path>] [--sync-scripts|--bin-only]
       scripts/deploy_xarb_pre_trade.sh --remote-host awsjp [--remote-repo <path>] [--remote-sync] [...]
 
 说明:
-  - 构建 pre_trade 并拷贝到 $HOME/<open>-<hedge>-xarb-<trade|test>/（或使用 --env-suffix / --env-name 指定）。
+  - 构建 pre_trade 并拷贝到 $HOME/<open>-<hedge>-<env_suffix>/（默认 env_suffix=xarb-trade，可通过 --env-suffix / --env-name 指定）。
   - 跨所套利目录名约定: <open>-<hedge>-xarb-trade（例如 okex-binance-xarb-trade）。
   - xarb 固定 futures 资产类型：open/hedge 两侧都会被设置为 <exchange>-futures。
   - 同步辅助脚本:
@@ -39,7 +38,7 @@ usage() {
   - 建议先生成并配置 env.sh（用于 IPC_NAMESPACE/凭证等）：scripts/deploy_setup_env_xarb.sh --open-venue ... --hedge-venue ...
 
 示例:
-  scripts/deploy_xarb_pre_trade.sh trade --open-venue okex-futures --hedge-venue binance-futures
+  scripts/deploy_xarb_pre_trade.sh --open-venue okex-futures --hedge-venue binance-futures
   scripts/deploy_xarb_pre_trade.sh --env-name okex-binance-xarb-trade --open-venue okex-futures --hedge-venue binance-futures
 
 远程模式（可选）:
@@ -57,7 +56,6 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-ENV_TYPE="trade"
 ENV_SUFFIX="xarb-trade"
 ENV_NAME=""
 OPEN_VENUE=""
@@ -73,9 +71,9 @@ fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     trade|test)
-      ENV_TYPE="$1"
-      ENV_SUFFIX="xarb-${ENV_TYPE}"
-      shift
+      echo "[ERROR] 不再支持 trade/test 位置参数，请使用 --env-suffix 或 --env-name"
+      usage
+      exit 1
       ;;
     --env-suffix)
       ENV_SUFFIX="${2:-xarb-trade}"

@@ -15,7 +15,8 @@ fi
 
 usage() {
   cat <<'EOF'
-用法: scripts/deploy_xarb_order_query.sh [trade|test] --open-venue <okex-futures> --hedge-venue <binance-futures>
+用法: scripts/deploy_xarb_order_query.sh --open-venue <okex-futures> --hedge-venue <binance-futures>
+                                       [--env-suffix xarb-trade]
                                        [--env-name okex-binance-xarb-trade]
                                        [--port 18080]
                                        [--nginx-prefix /xarb/<env-name>/order_query]
@@ -25,7 +26,7 @@ usage() {
       scripts/deploy_xarb_order_query.sh --remote-host awsjp [--remote-repo <path>] [--remote-sync] [...]
 
 说明:
-  - 部署 Python webserver：order_query 到 $HOME/<open>-<hedge>-xarb-<trade|test>/（或 --env-name 指定）。
+  - 部署 Python webserver：order_query 到 $HOME/<open>-<hedge>-<env_suffix>/（默认 env_suffix=xarb-trade，可通过 --env-suffix / --env-name 指定）。
   - 同步文件到目标目录：
       order_query/ (后端+前端)
       scripts/export_all.sh
@@ -38,7 +39,7 @@ usage() {
     这样可以避免用“只有 order_query 的映射文件”去重建 nginx 站点，导致其他路径（如静态面板）被覆盖而 404。
 
 示例:
-  scripts/deploy_xarb_order_query.sh trade --open-venue okex-futures --hedge-venue binance-futures --port 18080
+  scripts/deploy_xarb_order_query.sh --open-venue okex-futures --hedge-venue binance-futures --port 18080
 
 远程模式（可选）:
   --remote-host <ssh_host>        在远端部署（用于目标机为 awsjp 的场景）
@@ -55,7 +56,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-ENV_TYPE="trade"
+ENV_SUFFIX="xarb-trade"
 ENV_NAME=""
 OPEN_VENUE=""
 HEDGE_VENUE=""
@@ -159,8 +160,13 @@ upsert_main_nginx_mapping() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     trade|test)
-      ENV_TYPE="$1"
-      shift
+      echo "[ERROR] 不再支持 trade/test 位置参数，请使用 --env-suffix 或 --env-name"
+      usage
+      exit 1
+      ;;
+    --env-suffix)
+      ENV_SUFFIX="${2:-xarb-trade}"
+      shift 2
       ;;
     --env-name)
       ENV_NAME="${2:-}"
@@ -225,7 +231,7 @@ if [[ "$HEDGE_EXCHANGE" == "okx" ]]; then
 fi
 
 if [[ -z "$ENV_NAME" ]]; then
-  ENV_NAME="${OPEN_EXCHANGE}-${HEDGE_EXCHANGE}-xarb-${ENV_TYPE}"
+  ENV_NAME="${OPEN_EXCHANGE}-${HEDGE_EXCHANGE}-${ENV_SUFFIX}"
 fi
 
 TARGET_DIR="$HOME/${ENV_NAME}"

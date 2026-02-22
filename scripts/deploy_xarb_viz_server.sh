@@ -17,7 +17,8 @@ fi
 
 usage() {
   cat <<'EOF'
-用法: scripts/deploy_xarb_viz_server.sh [trade|test] --open-venue <okex-futures> --hedge-venue <binance-futures>
+用法: scripts/deploy_xarb_viz_server.sh --open-venue <okex-futures> --hedge-venue <binance-futures>
+                                       [--env-suffix xarb-trade]
                                        [--env-name okex-binance-xarb-trade]
                                        [--bind 0.0.0.0] [--port 10111] [--port2 10112] [--no-port2] [--ws-path /ws]
                                        [--namespace <IPC_NAMESPACE>]
@@ -26,7 +27,7 @@ usage() {
       scripts/deploy_xarb_viz_server.sh --remote-host awsjp [--remote-repo <path>] [--remote-sync] [...]
 
 说明:
-  - 构建并部署 viz_server 到 xarb 环境目录 $HOME/<open>-<hedge>-xarb-<trade|test>/（或 --env-name 指定）。
+  - 构建并部署 viz_server 到 xarb 环境目录 $HOME/<open>-<hedge>-<env_suffix>/（默认 env_suffix=xarb-trade，可通过 --env-suffix / --env-name 指定）。
   - 会在目标目录生成/覆盖：config/viz.toml（仅开启 pre_trade resample 订阅）。
   - 默认会在同一个 viz_server 进程里开两个端口（便于 nginx 做不同 location 的 upstream 或灰度）：
       - --port  (默认 10111)
@@ -38,9 +39,9 @@ usage() {
   - 可选 --resample-suffix：订阅带后缀的两路通道（pre_trade_exposure_<suffix>, pre_trade_risk_<suffix>）
 
 示例:
-  scripts/deploy_xarb_viz_server.sh trade --open-venue okex-futures --hedge-venue binance-futures --port 10111
-  scripts/deploy_xarb_viz_server.sh trade --env-name okex-binance-xarb-trade --open-venue okex-futures --hedge-venue binance-futures
-  scripts/deploy_xarb_viz_server.sh trade --open-venue okex-futures --hedge-venue binance-futures --resample-suffix okex_binance_xarb
+  scripts/deploy_xarb_viz_server.sh --open-venue okex-futures --hedge-venue binance-futures --port 10111
+  scripts/deploy_xarb_viz_server.sh --env-name okex-binance-xarb-trade --open-venue okex-futures --hedge-venue binance-futures
+  scripts/deploy_xarb_viz_server.sh --open-venue okex-futures --hedge-venue binance-futures --resample-suffix okex_binance_xarb
 
 启动/停止（在目标目录）:
   source ./env.sh  # 可选，但推荐
@@ -62,7 +63,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-ENV_TYPE="trade"
+ENV_SUFFIX="xarb-trade"
 ENV_NAME=""
 OPEN_VENUE=""
 HEDGE_VENUE=""
@@ -121,8 +122,13 @@ infer_pair_from_name() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     trade|test)
-      ENV_TYPE="$1"
-      shift
+      echo "[ERROR] 不再支持 trade/test 位置参数，请使用 --env-suffix 或 --env-name"
+      usage
+      exit 1
+      ;;
+    --env-suffix)
+      ENV_SUFFIX="${2:-xarb-trade}"
+      shift 2
       ;;
     --env-name)
       ENV_NAME="${2:-}"
@@ -207,7 +213,7 @@ fi
 OPEN_EXCHANGE="${OPEN_VENUE%%-*}"
 HEDGE_EXCHANGE="${HEDGE_VENUE%%-*}"
 if [[ -z "$ENV_NAME" ]]; then
-  ENV_NAME="${OPEN_EXCHANGE}-${HEDGE_EXCHANGE}-xarb-${ENV_TYPE}"
+  ENV_NAME="${OPEN_EXCHANGE}-${HEDGE_EXCHANGE}-${ENV_SUFFIX}"
 fi
 
 TARGET_DIR="$HOME/${ENV_NAME}"
@@ -223,7 +229,8 @@ fi
 IPC_NAMESPACE="${IPC_NS_OVERRIDE:-${IPC_NAMESPACE:-}}"
 
 if [[ -z "$IPC_NAMESPACE" ]]; then
-  IPC_NAMESPACE="${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_xarb_${ENV_TYPE}"
+  ENV_SUFFIX_NS="${ENV_SUFFIX//-/_}"
+  IPC_NAMESPACE="${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_SUFFIX_NS}"
   echo "[WARN] 未读取到 $ENV_FILE 的 IPC_NAMESPACE，且未指定 --namespace；使用默认推断: $IPC_NAMESPACE"
   echo "[WARN] 建议先生成 env.sh：scripts/deploy_setup_env_xarb.sh --env-name ${ENV_NAME} --open-venue ${OPEN_VENUE} --hedge-venue ${HEDGE_VENUE}"
 fi

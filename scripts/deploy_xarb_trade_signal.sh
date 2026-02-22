@@ -17,11 +17,11 @@ fi
 
 usage() {
   cat <<'EOF'
-用法: scripts/deploy_xarb_trade_signal.sh [trade|test] --open-venue <okex-futures> --hedge-venue <binance-futures> [--env-name okex-binance-xarb-trade] [--jobs <n>] [--cargo-target-dir <path>] [--sync-scripts|--bin-only]
+用法: scripts/deploy_xarb_trade_signal.sh --open-venue <okex-futures> --hedge-venue <binance-futures> [--env-suffix xarb-trade] [--env-name okex-binance-xarb-trade] [--jobs <n>] [--cargo-target-dir <path>] [--sync-scripts|--bin-only]
       scripts/deploy_xarb_trade_signal.sh --remote-host awsjp [--remote-repo <path>] [--remote-sync] [...]
 
 说明:
-  - 构建 trade_signal 并拷贝到 $HOME/<openEx>-<hedgeEx>-xarb-<trade|test>/（或 --env-name 指定）。
+  - 构建 trade_signal 并拷贝到 $HOME/<openEx>-<hedgeEx>-<env_suffix>/（默认 env_suffix=xarb-trade，可通过 --env-suffix / --env-name 指定）。
   - xarb 固定 futures 资产类型：open/hedge 都必须为 *-futures。
   - trade_signal 启动时依赖 CWD 目录名推断分支与 Redis 前缀：
       - <exchange>_fr_trade / <exchange>_fr_test
@@ -29,7 +29,7 @@ usage() {
   - 默认只更新二进制；如需同步脚本请添加 --sync-scripts（或显式使用 --bin-only）
 
 示例:
-  scripts/deploy_xarb_trade_signal.sh trade --open-venue okex-futures --hedge-venue binance-futures
+  scripts/deploy_xarb_trade_signal.sh --open-venue okex-futures --hedge-venue binance-futures
   scripts/deploy_xarb_trade_signal.sh --env-name okex-binance-xarb-trade --open-venue okex-futures --hedge-venue binance-futures
 
 远程模式（可选）:
@@ -47,7 +47,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-ENV_TYPE="trade"
+ENV_SUFFIX="xarb-trade"
 ENV_NAME=""
 OPEN_VENUE=""
 HEDGE_VENUE=""
@@ -76,8 +76,13 @@ ensure_futures_venue() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     trade|test)
-      ENV_TYPE="$1"
-      shift
+      echo "[ERROR] 不再支持 trade/test 位置参数，请使用 --env-suffix 或 --env-name"
+      usage
+      exit 1
+      ;;
+    --env-suffix)
+      ENV_SUFFIX="${2:-xarb-trade}"
+      shift 2
       ;;
     --env-name)
       ENV_NAME="${2:-}"
@@ -147,7 +152,7 @@ if [[ "$HEDGE_EXCHANGE" == "okx" ]]; then
 fi
 
 if [[ -z "$ENV_NAME" ]]; then
-  ENV_NAME="${OPEN_EXCHANGE}-${HEDGE_EXCHANGE}-xarb-${ENV_TYPE}"
+  ENV_NAME="${OPEN_EXCHANGE}-${HEDGE_EXCHANGE}-${ENV_SUFFIX}"
 fi
 TARGET_DIR="$HOME/${ENV_NAME}"
 
