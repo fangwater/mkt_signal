@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{debug, info, warn};
+use log::{info, warn};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -336,6 +336,11 @@ struct OrderedEvalStats {
     factor118_ready_count: u64,
 }
 
+struct OrderedEvalResult {
+    stats: OrderedEvalStats,
+    factor_values: Vec<String>,
+}
+
 struct SymbolSeries {
     open: Vec<f64>,
     high: Vec<f64>,
@@ -580,17 +585,12 @@ impl FusionFactorPubApp {
                     }
                 };
                 let symbol = normalize_symbol_for_venue(symbol_raw, self.venue);
-                let symbol_allowed = self.allowed_symbols.contains(&symbol);
-                if !symbol_allowed {
+                if !self.allowed_symbols.contains(&symbol) {
                     self.trade_flow_dropped_symbol_count =
                         self.trade_flow_dropped_symbol_count.saturating_add(1);
                     self.record_dropped_symbol_sample(&symbol);
                     continue;
                 }
-                info!(
-                    "trade_flow recv: venue={} symbol={} allowed=true",
-                    self.venue_slug, symbol
-                );
 
                 match parse_trade_flow_feature(payload) {
                     Ok(msg) => {
@@ -681,48 +681,55 @@ impl FusionFactorPubApp {
             self.depth_attached_count = self.depth_attached_count.saturating_add(1);
         }
 
-        let Some(eval_stats) = self.evaluate_ordered_factors(&symbol, msg.ts, depth_opt) else {
+        let eval_started = Instant::now();
+        let Some(eval_result) = self.evaluate_ordered_factors(&symbol, depth_opt) else {
             warn!(
                 "fusion-trigger: venue={} symbol={} trade_ts={} reason=missing_factor_plan",
                 self.venue_slug, symbol, msg.ts
             );
             return;
         };
+        let eval_elapsed_us = eval_started.elapsed().as_micros();
 
         self.factor_plan_count = self
             .factor_plan_count
-            .saturating_add(eval_stats.factor_plan_count);
+            .saturating_add(eval_result.stats.factor_plan_count);
         self.factor_evaluated_count = self
             .factor_evaluated_count
-            .saturating_add(eval_stats.factor_evaluated_count);
+            .saturating_add(eval_result.stats.factor_evaluated_count);
         self.factor_ready_count = self
             .factor_ready_count
-            .saturating_add(eval_stats.factor_ready_count);
+            .saturating_add(eval_result.stats.factor_ready_count);
         self.factor_warming_up_count = self
             .factor_warming_up_count
-            .saturating_add(eval_stats.factor_warming_up_count);
+            .saturating_add(eval_result.stats.factor_warming_up_count);
         self.factor_invalid_value_count = self
             .factor_invalid_value_count
-            .saturating_add(eval_stats.factor_invalid_value_count);
+            .saturating_add(eval_result.stats.factor_invalid_value_count);
         self.factor_missing_depth_count = self
             .factor_missing_depth_count
-            .saturating_add(eval_stats.factor_missing_depth_count);
+            .saturating_add(eval_result.stats.factor_missing_depth_count);
         self.factor_unsupported_count = self
             .factor_unsupported_count
-            .saturating_add(eval_stats.factor_unsupported_count);
+            .saturating_add(eval_result.stats.factor_unsupported_count);
         self.factor_118_ready_count = self
             .factor_118_ready_count
-            .saturating_add(eval_stats.factor118_ready_count);
+            .saturating_add(eval_result.stats.factor118_ready_count);
 
-        self.maybe_log_calc_step(&symbol, &msg, depth_opt.is_some(), &eval_stats);
+        self.log_calc_step(
+            &symbol,
+            &msg,
+            depth_opt.is_some(),
+            eval_elapsed_us,
+            &eval_result,
+        );
     }
 
     fn evaluate_ordered_factors(
         &mut self,
         symbol: &str,
-        trade_ts: i64,
         depth: Option<&DepthSnapshot>,
-    ) -> Option<OrderedEvalStats> {
+    ) -> Option<OrderedEvalResult> {
         let needs_factor_118 = self
             .symbol_factor_plans
             .get(symbol)
@@ -740,67 +747,59 @@ impl FusionFactorPubApp {
         let series = self.build_symbol_series(symbol);
 
         let plan = self.symbol_factor_plans.get(symbol)?;
-        let mut stats = OrderedEvalStats::default();
-        stats.factor_plan_count = plan.ordered_factors.len() as u64;
+        let mut result = OrderedEvalResult {
+            stats: OrderedEvalStats::default(),
+            factor_values: Vec::with_capacity(plan.ordered_factors.len()),
+        };
+        result.stats.factor_plan_count = plan.ordered_factors.len() as u64;
 
         for binding in &plan.ordered_factors {
-            let factor_kind = if binding.factor_id.is_some() {
-                "fusion_factor"
-            } else if binding.extra_factor_id.is_some() {
-                "extra_factor"
-            } else {
-                "unmapped"
-            };
             match self.compute_supported_factor(binding, factor_118_result, depth, series.as_ref())
             {
                 Some((value, ready, status)) => {
-                    debug!(
-                        "factor-eval: venue={} symbol={} trade_ts={} factor={} kind={} value={} ready={} status={}",
-                        self.venue_slug,
-                        symbol,
-                        trade_ts,
+                    result.factor_values.push(format!(
+                        "{}={}",
                         binding.name,
-                        factor_kind,
-                        value,
-                        ready,
-                        status
-                    );
-                    stats.factor_evaluated_count = stats.factor_evaluated_count.saturating_add(1);
+                        format_factor_value(value)
+                    ));
+                    result.stats.factor_evaluated_count =
+                        result.stats.factor_evaluated_count.saturating_add(1);
                     if ready {
-                        stats.factor_ready_count = stats.factor_ready_count.saturating_add(1);
+                        result.stats.factor_ready_count =
+                            result.stats.factor_ready_count.saturating_add(1);
                     } else {
                         match status {
                             "warming_up" => {
-                                stats.factor_warming_up_count =
-                                    stats.factor_warming_up_count.saturating_add(1);
+                                result.stats.factor_warming_up_count =
+                                    result.stats.factor_warming_up_count.saturating_add(1);
                             }
                             "invalid_value" => {
-                                stats.factor_invalid_value_count =
-                                    stats.factor_invalid_value_count.saturating_add(1);
+                                result.stats.factor_invalid_value_count =
+                                    result.stats.factor_invalid_value_count.saturating_add(1);
                             }
                             "missing_depth" => {
-                                stats.factor_missing_depth_count =
-                                    stats.factor_missing_depth_count.saturating_add(1);
+                                result.stats.factor_missing_depth_count =
+                                    result.stats.factor_missing_depth_count.saturating_add(1);
                             }
                             _ => {}
                         }
                     }
                     if ready && binding.factor_id == Some(FusionFactorId::Factor118) {
-                        stats.factor118_ready_count = stats.factor118_ready_count.saturating_add(1);
+                        result.stats.factor118_ready_count =
+                            result.stats.factor118_ready_count.saturating_add(1);
                     }
                 }
                 None => {
-                    debug!(
-                        "factor-eval: venue={} symbol={} trade_ts={} factor={} kind={} value=- ready=false status=unsupported",
-                        self.venue_slug, symbol, trade_ts, binding.name, factor_kind
-                    );
-                    stats.factor_unsupported_count =
-                        stats.factor_unsupported_count.saturating_add(1);
+                    result
+                        .factor_values
+                        .push(format!("{}=unsupported", binding.name));
+                    result.stats.factor_unsupported_count =
+                        result.stats.factor_unsupported_count.saturating_add(1);
                 }
             }
         }
 
-        Some(stats)
+        Some(result)
     }
 
     fn record_dropped_symbol_sample(&mut self, symbol: &str) {
@@ -817,34 +816,38 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn maybe_log_calc_step(
+    fn log_calc_step(
         &mut self,
         symbol: &str,
         msg: &TradeFlowFeatureMsg,
         depth_attached: bool,
-        eval_stats: &OrderedEvalStats,
+        eval_elapsed_us: u128,
+        eval_result: &OrderedEvalResult,
     ) {
         let history_len = self
             .symbol_states
             .get(symbol)
             .map(|state| state.close.len())
             .unwrap_or(0);
+        let factor_values = eval_result.factor_values.join(",");
         info!(
-            "FusionFactorPubApp[{}] calc-step: symbol={} trade_ts={} values={} depth_attached={} history_len={} factor_plan={} factor_eval={} factor_ready={} factor_warming_up={} factor_invalid={} factor_missing_depth={} factor_unsupported={} factor118_ready={}",
+            "FusionFactorPubApp[{}] calc-step: symbol={} trade_ts={} eval_cost_us={} values={} depth_attached={} history_len={} factor_plan={} factor_eval={} factor_ready={} factor_warming_up={} factor_invalid={} factor_missing_depth={} factor_unsupported={} factor118_ready={} factor_values=[{}]",
             self.venue_slug,
             symbol,
             msg.ts,
+            eval_elapsed_us,
             msg.values.len(),
             depth_attached,
             history_len,
-            eval_stats.factor_plan_count,
-            eval_stats.factor_evaluated_count,
-            eval_stats.factor_ready_count,
-            eval_stats.factor_warming_up_count,
-            eval_stats.factor_invalid_value_count,
-            eval_stats.factor_missing_depth_count,
-            eval_stats.factor_unsupported_count,
-            eval_stats.factor118_ready_count,
+            eval_result.stats.factor_plan_count,
+            eval_result.stats.factor_evaluated_count,
+            eval_result.stats.factor_ready_count,
+            eval_result.stats.factor_warming_up_count,
+            eval_result.stats.factor_invalid_value_count,
+            eval_result.stats.factor_missing_depth_count,
+            eval_result.stats.factor_unsupported_count,
+            eval_result.stats.factor118_ready_count,
+            factor_values,
         );
     }
 
@@ -4471,23 +4474,16 @@ async fn load_symbol_factor_plans(
         }
 
         let printable: Vec<&str> = ordered_factors.iter().map(|f| f.name.as_str()).collect();
-        let mapped_count = ordered_factors
-            .iter()
-            .filter(|f| f.factor_id.is_some() || f.extra_factor_id.is_some())
-            .count();
         let unknown_names: Vec<&str> = ordered_factors
             .iter()
             .filter(|f| f.factor_id.is_none() && f.extra_factor_id.is_none())
             .map(|f| f.name.as_str())
             .collect();
+        let plan_text = printable.join(",");
+        let unknown_text = unknown_names.join(",");
         info!(
-            "startup-factors: symbol={} ordered_count={} mapped_count={} unknown_count={} ordered_names={:?} unknown_names={:?}",
-            symbol,
-            ordered_factors.len(),
-            mapped_count,
-            unknown_names.len(),
-            printable,
-            unknown_names
+            "factor-plan: symbol={} factors=[{}] unknown=[{}]",
+            symbol, plan_text, unknown_text
         );
 
         out.insert(symbol.clone(), SymbolFactorPlan { ordered_factors });
@@ -4916,6 +4912,20 @@ fn std_pop(values: &[f64]) -> Option<f64> {
     } else {
         None
     }
+}
+
+fn format_factor_value(value: f64) -> String {
+    if value.is_nan() {
+        return "NaN".to_string();
+    }
+    if value.is_infinite() {
+        return if value.is_sign_positive() {
+            "Inf".to_string()
+        } else {
+            "-Inf".to_string()
+        };
+    }
+    format!("{:.10}", value)
 }
 
 fn push_with_limit(buf: &mut VecDeque<f64>, value: f64) {
