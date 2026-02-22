@@ -449,33 +449,6 @@ pub struct FusionFactorPubApp {
     last_stats_log: Instant,
 }
 
-fn is_binary_factor(binding: &FactorBinding) -> bool {
-    matches!(
-        binding.factor_id,
-        Some(
-            FusionFactorId::TdPr001
-                | FusionFactorId::TdPr002
-                | FusionFactorId::TdPr003
-                | FusionFactorId::TdPr004
-                | FusionFactorId::TdPr005
-                | FusionFactorId::TdPr006
-                | FusionFactorId::TdPr007
-                | FusionFactorId::TdPr008
-                | FusionFactorId::TdPr009
-                | FusionFactorId::TdPr010
-                | FusionFactorId::TdPr011
-                | FusionFactorId::TdPr012
-                | FusionFactorId::TdPr013
-                | FusionFactorId::TdPr014
-                | FusionFactorId::TdPr015
-                | FusionFactorId::TdPr016
-                | FusionFactorId::TdPr017
-                | FusionFactorId::Baseline134
-                | FusionFactorId::Baseline135
-        )
-    )
-}
-
 impl FusionFactorPubApp {
     pub async fn new(config_path: &str, venue: TradingVenue) -> Result<Self> {
         let cfg = FusionFactorPubConfig::load(config_path)?;
@@ -791,12 +764,6 @@ impl FusionFactorPubApp {
                             result
                                 .factor_issues
                                 .push(format!("{}:nan_fill", binding.name));
-                        } else if value == 0.0 && !is_binary_factor(binding) {
-                            result.stats.factor_zero_fill_count =
-                                result.stats.factor_zero_fill_count.saturating_add(1);
-                            result
-                                .factor_issues
-                                .push(format!("{}:zero_fill", binding.name));
                         }
                     } else {
                         let reason = if value.is_nan() {
