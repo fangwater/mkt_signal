@@ -614,7 +614,7 @@ impl FusionFactorPubApp {
 
             if self.last_stats_log.elapsed() >= Duration::from_secs(STATS_LOG_INTERVAL_SECS) {
                 info!(
-                    "FusionFactorPubApp[{}] stats: raw_msgs={} trade_flow_msgs={} triggers={} decode_errors={} depth_attached={} missing_depth={} factor118_ready={} trade_drop_symbols={} drop_symbol_samples={:?} calc_symbols={} factor_plan={} factor_eval={} factor_ready={} factor_warming_up={} factor_invalid={} factor_missing_depth={} factor_unsupported={} last_decode_error={}",
+                    "FusionFactorPubApp[{}] stats: raw_msgs={} trade_flow_msgs={} triggers={} decode_errors={} depth_attached={} missing_depth={} factor118_ready={} trade_drop_symbols={} drop_symbol_samples={:?} calc_symbols={} factor_plan={} factor_eval={} factor_ready={} factor_warming_up={} factor_invalid={} factor_missing_depth={} last_decode_error={}",
                     self.venue_slug,
                     self.trade_flow_raw_count,
                     self.trade_flow_count,
@@ -632,7 +632,6 @@ impl FusionFactorPubApp {
                     self.factor_warming_up_count,
                     self.factor_invalid_value_count,
                     self.factor_missing_depth_count,
-                    self.factor_unsupported_count,
                     self.trade_flow_decode_error_last.as_deref().unwrap_or("-"),
                 );
                 self.trade_flow_raw_count = 0;
@@ -790,9 +789,6 @@ impl FusionFactorPubApp {
                     }
                 }
                 None => {
-                    result
-                        .factor_values
-                        .push(format!("{}=unsupported", binding.name));
                     result.stats.factor_unsupported_count =
                         result.stats.factor_unsupported_count.saturating_add(1);
                 }
@@ -831,7 +827,7 @@ impl FusionFactorPubApp {
             .unwrap_or(0);
         let factor_values = eval_result.factor_values.join(",");
         info!(
-            "FusionFactorPubApp[{}] calc-step: symbol={} trade_ts={} eval_cost_us={} values={} depth_attached={} history_len={} factor_plan={} factor_eval={} factor_ready={} factor_warming_up={} factor_invalid={} factor_missing_depth={} factor_unsupported={} factor118_ready={} factor_values=[{}]",
+            "FusionFactorPubApp[{}] calc-step: symbol={} trade_ts={} eval_cost_us={} values={} depth_attached={} history_len={} factor_values=[{}]",
             self.venue_slug,
             symbol,
             msg.ts,
@@ -839,14 +835,6 @@ impl FusionFactorPubApp {
             msg.values.len(),
             depth_attached,
             history_len,
-            eval_result.stats.factor_plan_count,
-            eval_result.stats.factor_evaluated_count,
-            eval_result.stats.factor_ready_count,
-            eval_result.stats.factor_warming_up_count,
-            eval_result.stats.factor_invalid_value_count,
-            eval_result.stats.factor_missing_depth_count,
-            eval_result.stats.factor_unsupported_count,
-            eval_result.stats.factor118_ready_count,
             factor_values,
         );
     }
