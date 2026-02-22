@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{info, warn};
+use log::{debug, info, warn};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -581,16 +581,16 @@ impl FusionFactorPubApp {
                 };
                 let symbol = normalize_symbol_for_venue(symbol_raw, self.venue);
                 let symbol_allowed = self.allowed_symbols.contains(&symbol);
-                info!(
-                    "trade_flow recv: venue={} symbol={} allowed={}",
-                    self.venue_slug, symbol, symbol_allowed
-                );
                 if !symbol_allowed {
                     self.trade_flow_dropped_symbol_count =
                         self.trade_flow_dropped_symbol_count.saturating_add(1);
                     self.record_dropped_symbol_sample(&symbol);
                     continue;
                 }
+                info!(
+                    "trade_flow recv: venue={} symbol={} allowed=true",
+                    self.venue_slug, symbol
+                );
 
                 match parse_trade_flow_feature(payload) {
                     Ok(msg) => {
@@ -681,7 +681,7 @@ impl FusionFactorPubApp {
             self.depth_attached_count = self.depth_attached_count.saturating_add(1);
         }
 
-        let Some(eval_stats) = self.evaluate_ordered_factors(&symbol, depth_opt) else {
+        let Some(eval_stats) = self.evaluate_ordered_factors(&symbol, msg.ts, depth_opt) else {
             warn!(
                 "fusion-trigger: venue={} symbol={} trade_ts={} reason=missing_factor_plan",
                 self.venue_slug, symbol, msg.ts
@@ -720,6 +720,7 @@ impl FusionFactorPubApp {
     fn evaluate_ordered_factors(
         &mut self,
         symbol: &str,
+        trade_ts: i64,
         depth: Option<&DepthSnapshot>,
     ) -> Option<OrderedEvalStats> {
         let needs_factor_118 = self
@@ -743,9 +744,27 @@ impl FusionFactorPubApp {
         stats.factor_plan_count = plan.ordered_factors.len() as u64;
 
         for binding in &plan.ordered_factors {
+            let factor_kind = if binding.factor_id.is_some() {
+                "fusion_factor"
+            } else if binding.extra_factor_id.is_some() {
+                "extra_factor"
+            } else {
+                "unmapped"
+            };
             match self.compute_supported_factor(binding, factor_118_result, depth, series.as_ref())
             {
-                Some((_value, ready, status)) => {
+                Some((value, ready, status)) => {
+                    debug!(
+                        "factor-eval: venue={} symbol={} trade_ts={} factor={} kind={} value={} ready={} status={}",
+                        self.venue_slug,
+                        symbol,
+                        trade_ts,
+                        binding.name,
+                        factor_kind,
+                        value,
+                        ready,
+                        status
+                    );
                     stats.factor_evaluated_count = stats.factor_evaluated_count.saturating_add(1);
                     if ready {
                         stats.factor_ready_count = stats.factor_ready_count.saturating_add(1);
@@ -771,6 +790,10 @@ impl FusionFactorPubApp {
                     }
                 }
                 None => {
+                    debug!(
+                        "factor-eval: venue={} symbol={} trade_ts={} factor={} kind={} value=- ready=false status=unsupported",
+                        self.venue_slug, symbol, trade_ts, binding.name, factor_kind
+                    );
                     stats.factor_unsupported_count =
                         stats.factor_unsupported_count.saturating_add(1);
                 }
