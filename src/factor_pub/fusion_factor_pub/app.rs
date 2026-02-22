@@ -334,6 +334,8 @@ struct OrderedEvalStats {
     factor_missing_depth_count: u64,
     factor_unsupported_count: u64,
     factor118_ready_count: u64,
+    factor_zero_fill_count: u64,
+    factor_nan_fill_count: u64,
 }
 
 struct OrderedEvalResult {
@@ -445,6 +447,33 @@ pub struct FusionFactorPubApp {
     factor_missing_depth_count: u64,
     factor_unsupported_count: u64,
     last_stats_log: Instant,
+}
+
+fn is_binary_factor(binding: &FactorBinding) -> bool {
+    matches!(
+        binding.factor_id,
+        Some(
+            FusionFactorId::TdPr001
+                | FusionFactorId::TdPr002
+                | FusionFactorId::TdPr003
+                | FusionFactorId::TdPr004
+                | FusionFactorId::TdPr005
+                | FusionFactorId::TdPr006
+                | FusionFactorId::TdPr007
+                | FusionFactorId::TdPr008
+                | FusionFactorId::TdPr009
+                | FusionFactorId::TdPr010
+                | FusionFactorId::TdPr011
+                | FusionFactorId::TdPr012
+                | FusionFactorId::TdPr013
+                | FusionFactorId::TdPr014
+                | FusionFactorId::TdPr015
+                | FusionFactorId::TdPr016
+                | FusionFactorId::TdPr017
+                | FusionFactorId::Baseline134
+                | FusionFactorId::Baseline135
+        )
+    )
 }
 
 impl FusionFactorPubApp {
@@ -716,6 +745,7 @@ impl FusionFactorPubApp {
             .saturating_add(eval_result.stats.factor118_ready_count);
 
         self.log_calc_step(&symbol, msg.ts, eval_elapsed_us, &eval_result);
+        self.log_factor_summary(&symbol, &eval_result);
     }
 
     fn evaluate_ordered_factors(
@@ -756,10 +786,14 @@ impl FusionFactorPubApp {
                         result.stats.factor_ready_count =
                             result.stats.factor_ready_count.saturating_add(1);
                         if value.is_nan() {
+                            result.stats.factor_nan_fill_count =
+                                result.stats.factor_nan_fill_count.saturating_add(1);
                             result
                                 .factor_issues
                                 .push(format!("{}:nan_fill", binding.name));
-                        } else if value == 0.0 {
+                        } else if value == 0.0 && !is_binary_factor(binding) {
+                            result.stats.factor_zero_fill_count =
+                                result.stats.factor_zero_fill_count.saturating_add(1);
                             result
                                 .factor_issues
                                 .push(format!("{}:zero_fill", binding.name));
@@ -837,6 +871,35 @@ impl FusionFactorPubApp {
             eval_elapsed_us,
             issue_count,
             factor_issues,
+        );
+    }
+
+    fn log_factor_summary(&self, symbol: &str, eval_result: &OrderedEvalResult) {
+        let s = &eval_result.stats;
+        let good = s.factor_ready_count.saturating_sub(s.factor_zero_fill_count + s.factor_nan_fill_count);
+        let bad = s.factor_warming_up_count + s.factor_invalid_value_count + s.factor_missing_depth_count + s.factor_zero_fill_count + s.factor_nan_fill_count;
+
+        // 非 warming_up 的异常因子
+        let non_warming_issues: Vec<&str> = eval_result
+            .factor_issues
+            .iter()
+            .filter(|s| !s.contains(":warming_up"))
+            .map(|s| s.as_str())
+            .collect();
+
+        info!(
+            "FusionFactorPubApp[{}] factor-summary: symbol={} plan={} good={} bad={} (warming_up={} zero_fill={} nan_fill={} invalid={} missing_depth={}) non_warming=[{}]",
+            self.venue_slug,
+            symbol,
+            s.factor_plan_count,
+            good,
+            bad,
+            s.factor_warming_up_count,
+            s.factor_zero_fill_count,
+            s.factor_nan_fill_count,
+            s.factor_invalid_value_count,
+            s.factor_missing_depth_count,
+            non_warming_issues.join(","),
         );
     }
 
