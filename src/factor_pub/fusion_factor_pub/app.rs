@@ -557,10 +557,16 @@ impl FusionFactorPubApp {
     }
 
     pub fn run(&mut self) -> Result<()> {
+        // Drain stale IPC messages buffered before this process started.
+        let mut drained = 0u64;
+        while self.trade_flow_subscriber.receive()?.is_some() {
+            drained += 1;
+        }
         info!(
-            "FusionFactorPubApp[{}] started: symbols={} trade_flow=single_stream",
+            "FusionFactorPubApp[{}] started: symbols={} trade_flow=single_stream drained_stale={}",
             self.venue_slug,
-            self.allowed_symbols.len()
+            self.allowed_symbols.len(),
+            drained,
         );
 
         loop {
