@@ -18,15 +18,12 @@ pub struct FusionFactorPubConfig {
 pub struct DataSourceConfig {
     #[serde(default = "default_trade_flow_channel")]
     pub trade_flow_channel: String,
-    #[serde(default = "default_trade_flow_feature_rocksdb_path")]
-    pub trade_flow_feature_rocksdb_path: String,
 }
 
 impl Default for DataSourceConfig {
     fn default() -> Self {
         Self {
             trade_flow_channel: default_trade_flow_channel(),
-            trade_flow_feature_rocksdb_path: default_trade_flow_feature_rocksdb_path(),
         }
     }
 }
@@ -86,14 +83,6 @@ impl FusionFactorPubConfig {
         if self.data_source.trade_flow_channel.trim().is_empty() {
             anyhow::bail!("data_source.trade_flow_channel must not be empty");
         }
-        if self
-            .data_source
-            .trade_flow_feature_rocksdb_path
-            .trim()
-            .is_empty()
-        {
-            anyhow::bail!("data_source.trade_flow_feature_rocksdb_path must not be empty");
-        }
         if self.symbols.is_empty() {
             anyhow::bail!("symbols must not be empty");
         }
@@ -116,10 +105,6 @@ impl FusionFactorPubConfig {
 
 fn default_trade_flow_channel() -> String {
     "trade_flow_feature".to_string()
-}
-
-fn default_trade_flow_feature_rocksdb_path() -> String {
-    "data/trade_flow_feature_pub_rocksdb".to_string()
 }
 
 fn default_request_timeout_ms() -> u64 {

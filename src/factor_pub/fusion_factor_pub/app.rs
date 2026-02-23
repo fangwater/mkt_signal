@@ -12,6 +12,7 @@ use reqwest::Client;
 use rocksdb::{ColumnFamilyDescriptor, IteratorMode, Options, DB};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::cfg::{FusionFactorPubConfig, ModelManagerConfig};
@@ -549,6 +550,7 @@ impl FusionFactorPubApp {
     pub async fn new(config_path: &str, venue: TradingVenue) -> Result<Self> {
         let cfg = FusionFactorPubConfig::load(config_path)?;
         let venue_slug = venue.data_pub_slug().to_string();
+        let trade_flow_feature_rocksdb_path = resolve_trade_flow_feature_rocksdb_path(&venue_slug)?;
 
         let allowed_symbols: Vec<String> = cfg
             .symbols
@@ -591,18 +593,14 @@ impl FusionFactorPubApp {
             allowed_symbols.len(),
             venue_slug,
             cfg.data_source.trade_flow_channel,
-            cfg.data_source.trade_flow_feature_rocksdb_path,
+            trade_flow_feature_rocksdb_path,
             cfg.output.service_path,
         );
 
         Ok(Self {
             venue_slug,
             venue,
-            trade_flow_feature_rocksdb_path: cfg
-                .data_source
-                .trade_flow_feature_rocksdb_path
-                .trim()
-                .to_string(),
+            trade_flow_feature_rocksdb_path,
             trade_flow_subscriber,
             publisher,
             allowed_symbols: allowed_symbols.into_iter().collect(),
@@ -5286,6 +5284,28 @@ fn feature_status_name(status: u8) -> &'static str {
         2 => "missing_depth",
         _ => "unknown",
     }
+}
+
+fn resolve_trade_flow_feature_rocksdb_path(venue_slug: &str) -> Result<String> {
+    let home = std::env::var("HOME")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let user = std::env::var("USER")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())?;
+            Some(format!("/home/{}", user))
+        })
+        .context("resolve rocksdb path failed: both HOME and USER are empty")?;
+
+    let mut path = PathBuf::from(home);
+    path.push("trade_flow_feature");
+    path.push(venue_slug);
+    path.push("data");
+    path.push("trade_flow_feature_pub_rocksdb");
+    Ok(path.to_string_lossy().to_string())
 }
 
 fn parse_trade_flow_symbol(data: &[u8]) -> Result<&str> {
