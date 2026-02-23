@@ -5290,12 +5290,18 @@ fn depth_corr_or_panic(
     match corr_result {
         Ok(Some(v)) if v.is_finite() => v,
         Ok(Some(v)) => {
+            if corr_inputs_degenerate(prices, vols) {
+                return 0.0;
+            }
             panic!(
                 "{} correlation non-finite: side={} corr={} prices={:?} vols={:?} depth={:?}",
                 factor_name, side, v, prices, vols, depth
             );
         }
         Ok(None) => {
+            if corr_inputs_degenerate(prices, vols) {
+                return 0.0;
+            }
             panic!(
                 "{} correlation unavailable: side={} reason=none prices={:?} vols={:?} depth={:?}",
                 factor_name, side, prices, vols, depth
@@ -5308,6 +5314,39 @@ fn depth_corr_or_panic(
             );
         }
     }
+}
+
+fn corr_inputs_degenerate(xs: &[f64], ys: &[f64]) -> bool {
+    let n = xs.len().min(ys.len());
+    if n < 2 {
+        return false;
+    }
+
+    let mut x = Vec::with_capacity(n);
+    let mut y = Vec::with_capacity(n);
+    for i in 0..n {
+        let xv = xs[i];
+        let yv = ys[i];
+        if xv.is_finite() && yv.is_finite() {
+            x.push(xv);
+            y.push(yv);
+        }
+    }
+    if x.len() < 2 {
+        return false;
+    }
+
+    let mean_x = x.iter().sum::<f64>() / x.len() as f64;
+    let mean_y = y.iter().sum::<f64>() / y.len() as f64;
+    let mut var_x = 0.0;
+    let mut var_y = 0.0;
+    for i in 0..x.len() {
+        let dx = x[i] - mean_x;
+        let dy = y[i] - mean_y;
+        var_x += dx * dx;
+        var_y += dy * dy;
+    }
+    var_x.abs() <= 1e-12 || var_y.abs() <= 1e-12
 }
 
 fn linear_regression_predict_last(values: &[f64]) -> Option<f64> {
