@@ -405,6 +405,34 @@ impl ReplayEvalSummary {
             || self.unsupported
             || self.non_warming_issue_count > 0
     }
+
+    fn abnormal_tags(&self) -> String {
+        let mut tags: Vec<&'static str> = Vec::new();
+        if self.missing_factor_plan {
+            tags.push("missing_factor_plan");
+        }
+        if self.invalid_value {
+            tags.push("invalid_value");
+        }
+        if self.nan_fill {
+            tags.push("nan_fill");
+        }
+        if self.missing_depth {
+            tags.push("missing_depth");
+        }
+        if self.unsupported {
+            tags.push("unsupported");
+        }
+        if self.non_warming_issue_count > 0 {
+            tags.push("non_warming_issue");
+        }
+
+        if tags.is_empty() {
+            "none".to_string()
+        } else {
+            tags.join("|")
+        }
+    }
 }
 
 struct SymbolSeries {
@@ -852,7 +880,7 @@ impl FusionFactorPubApp {
                     match latest_eval.as_ref() {
                         Some(latest) => {
                             info!(
-                                "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} loaded={} total_loaded={} latest_ts={} latest_status={} latest_warming_up={} latest_has_abnormal={} latest_invalid={} latest_nan_fill={} latest_missing_depth={} latest_unsupported={} latest_non_warming_issues={} latest_missing_factor_plan={}",
+                                "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} loaded={} total_loaded={} latest_ts={} latest_status={} latest_warming_up={} latest_has_abnormal={} latest_abnormal_tags={}",
                                 self.venue_slug,
                                 symbol,
                                 symbol_loaded,
@@ -861,12 +889,7 @@ impl FusionFactorPubApp {
                                 feature_status_name(latest.status),
                                 latest.warming_up,
                                 latest.has_abnormal(),
-                                latest.invalid_value,
-                                latest.nan_fill,
-                                latest.missing_depth,
-                                latest.unsupported,
-                                latest.non_warming_issue_count,
-                                latest.missing_factor_plan
+                                latest.abnormal_tags()
                             );
                         }
                         None => {
