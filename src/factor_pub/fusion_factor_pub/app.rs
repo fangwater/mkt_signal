@@ -9,6 +9,7 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
 use reqwest::Client;
+use rayon::prelude::*;
 use rocksdb::{ColumnFamilyDescriptor, IteratorMode, Options, DB};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -38,7 +39,6 @@ const STATS_LOG_INTERVAL_SECS: u64 = 60;
 const TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE: usize = 2048;
 const TRADE_FLOW_FEATURE_CF_SUFFIX: &str = "trade_flow:feature";
 const ROCKSDB_BOOTSTRAP_LOG_EVERY: usize = 12 * 60 * 4;
-const BASELINE_018_DROP_LOG_EVERY: u64 = 200;
 const BASELINE_018_MIN_SELL_VOLUME: f64 = 1e-12;
 const MAX_SYMBOL_HISTORY: usize = 4096;
 const MAX_DEPTH_LEVELS_CACHE: usize = 20;
@@ -362,6 +362,14 @@ struct ReplayEvalSummary {
     non_warming_issue_count: usize,
     missing_factor_plan: bool,
     dropped_input: bool,
+}
+
+struct BootstrapSymbolReplayResult {
+    symbol: String,
+    loaded: usize,
+    dropped: u64,
+    all_ready_seen: bool,
+    state: SymbolCalcState,
 }
 
 impl ReplayEvalSummary {
@@ -1017,18 +1025,6 @@ impl FusionFactorPubApp {
     ) -> Option<ReplayEvalSummary> {
         if self.should_drop_for_baseline_018(&symbol, &msg) {
             self.baseline_018_dropped_count = self.baseline_018_dropped_count.saturating_add(1);
-            if emit_output
-                && (self.baseline_018_dropped_count <= 3
-                    || self.baseline_018_dropped_count % BASELINE_018_DROP_LOG_EVERY == 0)
-            {
-                warn!(
-                    "fusion-trigger dropped: venue={} symbol={} trade_ts={} reason=baseline_018_sell_volume_non_positive sell_volume={}",
-                    self.venue_slug,
-                    symbol,
-                    msg.ts,
-                    msg.values[FIELD_SELL_VOLUME]
-                );
-            }
             return Some(ReplayEvalSummary::dropped_input());
         }
 
@@ -1146,23 +1142,31 @@ impl FusionFactorPubApp {
         symbol: &str,
         depth: Option<&DepthSnapshot>,
     ) -> Option<OrderedEvalResult> {
-        let needs_factor_118 = self
-            .symbol_factor_plans
-            .get(symbol)
-            .map(|plan| {
-                plan.ordered_factors
-                    .iter()
-                    .any(|factor| factor.factor_id == Some(FusionFactorId::Factor118))
-            })
-            .unwrap_or(false);
+        let plan = self.symbol_factor_plans.get(symbol)?.clone();
+        let needs_factor_118 = plan
+            .ordered_factors
+            .iter()
+            .any(|factor| factor.factor_id == Some(FusionFactorId::Factor118));
         let factor_118_result = if needs_factor_118 {
             depth.and_then(|d| self.compute_factor_118(symbol, d))
         } else {
             None
         };
         let series = self.build_symbol_series(symbol);
+        Some(Self::evaluate_ordered_factors_with_plan(
+            &plan,
+            factor_118_result,
+            depth,
+            series.as_ref(),
+        ))
+    }
 
-        let plan = self.symbol_factor_plans.get(symbol)?;
+    fn evaluate_ordered_factors_with_plan(
+        plan: &SymbolFactorPlan,
+        factor_118_result: Option<(f64, bool, usize)>,
+        depth: Option<&DepthSnapshot>,
+        series: Option<&SymbolSeries>,
+    ) -> OrderedEvalResult {
         let mut result = OrderedEvalResult {
             stats: OrderedEvalStats::default(),
             factor_issues: Vec::with_capacity(plan.ordered_factors.len()),
@@ -1175,8 +1179,7 @@ impl FusionFactorPubApp {
         let mut has_missing_depth = false;
 
         for binding in &plan.ordered_factors {
-            match self.compute_supported_factor(binding, factor_118_result, depth, series.as_ref())
-            {
+            match Self::compute_supported_factor(binding, factor_118_result, depth, series) {
                 Some((value, ready, status)) => {
                     result.stats.factor_evaluated_count =
                         result.stats.factor_evaluated_count.saturating_add(1);
@@ -1230,16 +1233,14 @@ impl FusionFactorPubApp {
             }
         }
 
-        // Determine status: MissingDepth > WarmingUp > AllReady
         result.status = if has_missing_depth {
-            2 // FeatureStatus::MissingDepth
+            2
         } else if has_warming_up {
-            1 // FeatureStatus::WarmingUp
+            1
         } else {
-            0 // FeatureStatus::AllReady
+            0
         };
-
-        Some(result)
+        result
     }
 
     fn record_dropped_symbol_sample(&mut self, symbol: &str) {
@@ -1257,7 +1258,15 @@ impl FusionFactorPubApp {
     }
 
     fn should_drop_for_baseline_018(&self, symbol: &str, msg: &TradeFlowFeatureMsg) -> bool {
-        if !self.symbols_need_baseline_018.contains(symbol) {
+        Self::should_drop_for_baseline_018_with_set(&self.symbols_need_baseline_018, symbol, msg)
+    }
+
+    fn should_drop_for_baseline_018_with_set(
+        symbols_need_baseline_018: &HashSet<String>,
+        symbol: &str,
+        msg: &TradeFlowFeatureMsg,
+    ) -> bool {
+        if !symbols_need_baseline_018.contains(symbol) {
             return false;
         }
         let sell_volume = msg.values[FIELD_SELL_VOLUME];
@@ -1303,7 +1312,11 @@ impl FusionFactorPubApp {
 
     fn build_symbol_series(&self, symbol: &str) -> Option<SymbolSeries> {
         let state = self.symbol_states.get(symbol)?;
-        Some(SymbolSeries {
+        Some(Self::build_symbol_series_from_state(state))
+    }
+
+    fn build_symbol_series_from_state(state: &SymbolCalcState) -> SymbolSeries {
+        SymbolSeries {
             open: state.open.iter().copied().collect(),
             high: state.high.iter().copied().collect(),
             low: state.low.iter().copied().collect(),
@@ -1360,11 +1373,10 @@ impl FusionFactorPubApp {
             ask_vwap20: state.ask_vwap20.iter().copied().collect(),
             factor_128_skew: state.factor_128_skew.iter().copied().collect(),
             factor_160_pct_change_mean: state.factor_160_pct_change_mean.iter().copied().collect(),
-        })
+        }
     }
 
     fn compute_supported_factor(
-        &self,
         binding: &FactorBinding,
         factor_118_result: Option<(f64, bool, usize)>,
         depth: Option<&DepthSnapshot>,
@@ -4887,9 +4899,15 @@ impl FusionFactorPubApp {
         symbol: &str,
         depth: &DepthSnapshot,
     ) -> Option<(f64, bool, usize)> {
-        let mid_price_diff = compute_mid_price_minus_bid_vwap(depth)?;
-
         let state = self.symbol_states.entry(symbol.to_string()).or_default();
+        Self::compute_factor_118_with_state(state, depth)
+    }
+
+    fn compute_factor_118_with_state(
+        state: &mut SymbolCalcState,
+        depth: &DepthSnapshot,
+    ) -> Option<(f64, bool, usize)> {
+        let mid_price_diff = compute_mid_price_minus_bid_vwap(depth)?;
         state.push_mid_price_diff(mid_price_diff);
 
         let series: Vec<f64> = state.factor_118_mid_price_diffs.iter().copied().collect();
