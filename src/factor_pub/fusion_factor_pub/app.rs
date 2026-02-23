@@ -823,34 +823,33 @@ impl FusionFactorPubApp {
         }
 
         info!(
-            "FusionFactorPubApp[{}] rocksdb cf-diagnose: path={} all_existing_cf_count={} all_existing_cf=[{}]",
+            "FusionFactorPubApp[{}] rocksdb cf-diagnose summary: path={} all_existing_cf_count={} expected_symbol_cf_count={} existing_symbol_cf_count={} missing_symbol_cf_count={}",
             self.venue_slug,
             self.trade_flow_feature_rocksdb_path,
             sorted_cf_names.len(),
-            sorted_cf_names.join(",")
+            expected_symbol_cfs.len(),
+            existing_symbol_cfs.len(),
+            missing_symbol_cfs.len()
         );
         info!(
-            "FusionFactorPubApp[{}] rocksdb cf-diagnose: expected_symbol_cf_count={} expected_symbol_cf=[{}]",
+            "FusionFactorPubApp[{}] rocksdb cf-diagnose: expected_symbol_cf=[{}]",
             self.venue_slug,
-            expected_symbol_cfs.len(),
             expected_symbol_cfs.join(",")
         );
         info!(
-            "FusionFactorPubApp[{}] rocksdb cf-diagnose: existing_symbol_cf_count={} existing_symbol_cf=[{}]",
+            "FusionFactorPubApp[{}] rocksdb cf-diagnose: existing_symbol_cf=[{}]",
             self.venue_slug,
-            existing_symbol_cfs.len(),
             existing_symbol_cfs.join(",")
         );
         if missing_symbol_cfs.is_empty() {
             info!(
-                "FusionFactorPubApp[{}] rocksdb cf-diagnose: missing_symbol_cf_count=0 missing_symbol_cf=[]",
+                "FusionFactorPubApp[{}] rocksdb cf-diagnose: missing_symbol_cf=[]",
                 self.venue_slug
             );
         } else {
             warn!(
-                "FusionFactorPubApp[{}] rocksdb cf-diagnose: missing_symbol_cf_count={} missing_symbol_cf=[{}]",
+                "FusionFactorPubApp[{}] rocksdb cf-diagnose: missing_symbol_cf=[{}]",
                 self.venue_slug,
-                missing_symbol_cfs.len(),
                 missing_symbol_cfs.join(",")
             );
         }
