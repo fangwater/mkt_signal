@@ -2,6 +2,7 @@
 fusion_factor_pub:
   data_source:
     trade_flow_channel: "trade_flow_feature"
+    trade_flow_feature_rocksdb_path: "data/trade_flow_feature_pub_rocksdb"
 
   symbols:
     - "BTCUSDT"

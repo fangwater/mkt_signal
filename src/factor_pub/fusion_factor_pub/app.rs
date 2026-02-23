@@ -9,6 +9,7 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
 use reqwest::Client;
+use rocksdb::{ColumnFamilyDescriptor, IteratorMode, Options, DB};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
@@ -34,6 +35,8 @@ const TRADE_FLOW_MAX_BYTES: usize = 1024;
 const IDLE_SLEEP_MICROS: u64 = 200;
 const STATS_LOG_INTERVAL_SECS: u64 = 60;
 const TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE: usize = 2048;
+const TRADE_FLOW_FEATURE_CF_SUFFIX: &str = "trade_flow:feature";
+const ROCKSDB_BOOTSTRAP_LOG_EVERY: usize = 200;
 const MAX_SYMBOL_HISTORY: usize = 4096;
 const MAX_DEPTH_LEVELS_CACHE: usize = 20;
 const APPENDED_DEPTH_VALUES: usize = MAX_DEPTH_LEVELS_CACHE * 4;
@@ -346,6 +349,64 @@ struct OrderedEvalResult {
     status: u8,
 }
 
+#[derive(Debug, Clone)]
+struct ReplayEvalSummary {
+    ts: i64,
+    status: u8,
+    warming_up: bool,
+    invalid_value: bool,
+    nan_fill: bool,
+    missing_depth: bool,
+    unsupported: bool,
+    non_warming_issue_count: usize,
+    missing_factor_plan: bool,
+}
+
+impl ReplayEvalSummary {
+    fn from_eval(ts: i64, eval_result: &OrderedEvalResult) -> Self {
+        let s = &eval_result.stats;
+        let non_warming_issue_count = eval_result
+            .factor_issues
+            .iter()
+            .filter(|issue| !issue.contains(":warming_up"))
+            .count();
+        Self {
+            ts,
+            status: eval_result.status,
+            warming_up: s.factor_warming_up_count > 0,
+            invalid_value: s.factor_invalid_value_count > 0,
+            nan_fill: s.factor_nan_fill_count > 0,
+            missing_depth: s.factor_missing_depth_count > 0,
+            unsupported: s.factor_unsupported_count > 0,
+            non_warming_issue_count,
+            missing_factor_plan: false,
+        }
+    }
+
+    fn missing_plan(ts: i64) -> Self {
+        Self {
+            ts,
+            status: u8::MAX,
+            warming_up: false,
+            invalid_value: false,
+            nan_fill: false,
+            missing_depth: false,
+            unsupported: false,
+            non_warming_issue_count: 0,
+            missing_factor_plan: true,
+        }
+    }
+
+    fn has_abnormal(self: &Self) -> bool {
+        self.missing_factor_plan
+            || self.invalid_value
+            || self.nan_fill
+            || self.missing_depth
+            || self.unsupported
+            || self.non_warming_issue_count > 0
+    }
+}
+
 struct SymbolSeries {
     open: Vec<f64>,
     high: Vec<f64>,
@@ -428,6 +489,7 @@ impl ExtraFactorId {
 pub struct FusionFactorPubApp {
     venue_slug: String,
     venue: TradingVenue,
+    trade_flow_feature_rocksdb_path: String,
     trade_flow_subscriber: Subscriber<ipc::Service, [u8; TRADE_FLOW_MAX_BYTES], ()>,
     publisher: FusionFactorPublisher,
     allowed_symbols: HashSet<String>,
@@ -487,27 +549,32 @@ impl FusionFactorPubApp {
             Self::create_trade_flow_subscriber(&venue_slug, &cfg.data_source.trade_flow_channel)?;
 
         let publisher_node_name = format!("fusion_pub_{}", venue_slug.replace('-', "_"));
-        let publisher =
-            FusionFactorPublisher::new(&publisher_node_name, &cfg.output.service_path)
-                .with_context(|| {
-                    format!(
-                        "create fusion factor publisher failed: service_path={}",
-                        cfg.output.service_path
-                    )
-                })?;
+        let publisher = FusionFactorPublisher::new(&publisher_node_name, &cfg.output.service_path)
+            .with_context(|| {
+                format!(
+                    "create fusion factor publisher failed: service_path={}",
+                    cfg.output.service_path
+                )
+            })?;
 
         info!(
-            "FusionFactorPubApp created: venue={} symbols={} trade_flow_channel=factor_pub/{}/{} output_service={}",
+            "FusionFactorPubApp created: venue={} symbols={} trade_flow_channel=factor_pub/{}/{} rocksdb_path={} output_service={}",
             venue_slug,
             allowed_symbols.len(),
             venue_slug,
             cfg.data_source.trade_flow_channel,
+            cfg.data_source.trade_flow_feature_rocksdb_path,
             cfg.output.service_path,
         );
 
         Ok(Self {
             venue_slug,
             venue,
+            trade_flow_feature_rocksdb_path: cfg
+                .data_source
+                .trade_flow_feature_rocksdb_path
+                .trim()
+                .to_string(),
             trade_flow_subscriber,
             publisher,
             allowed_symbols: allowed_symbols.into_iter().collect(),
@@ -578,6 +645,8 @@ impl FusionFactorPubApp {
     }
 
     pub fn run(&mut self) -> Result<()> {
+        self.bootstrap_from_rocksdb()?;
+
         // Drain stale IPC messages buffered before this process started.
         let mut drained = 0u64;
         while self.trade_flow_subscriber.receive()?.is_some() {
@@ -690,13 +759,167 @@ impl FusionFactorPubApp {
         }
     }
 
+    fn bootstrap_from_rocksdb(&mut self) -> Result<()> {
+        let started = Instant::now();
+        let mut symbol_list: Vec<String> = self.allowed_symbols.iter().cloned().collect();
+        symbol_list.sort_unstable();
+
+        let mut db_opts = Options::default();
+        db_opts.create_if_missing(false);
+        db_opts.create_missing_column_families(false);
+
+        let cf_names = match DB::list_cf(&db_opts, &self.trade_flow_feature_rocksdb_path) {
+            Ok(names) => names,
+            Err(err) => {
+                panic!(
+                    "fusion bootstrap list rocksdb cfs failed: path={} err={}",
+                    self.trade_flow_feature_rocksdb_path, err
+                );
+            }
+        };
+
+        let mut sorted_cf_names = cf_names;
+        sorted_cf_names.sort_unstable();
+        let cf_opts = Options::default();
+        let descriptors: Vec<ColumnFamilyDescriptor> = sorted_cf_names
+            .iter()
+            .map(|name| ColumnFamilyDescriptor::new(name.clone(), cf_opts.clone()))
+            .collect();
+        let db = match DB::open_cf_descriptors(
+            &db_opts,
+            &self.trade_flow_feature_rocksdb_path,
+            descriptors,
+        ) {
+            Ok(db) => db,
+            Err(err) => {
+                panic!(
+                    "fusion bootstrap open rocksdb failed: path={} err={}",
+                    self.trade_flow_feature_rocksdb_path, err
+                );
+            }
+        };
+
+        info!(
+            "FusionFactorPubApp[{}] rocksdb bootstrap start: path={} symbols={}",
+            self.venue_slug,
+            self.trade_flow_feature_rocksdb_path,
+            symbol_list.len()
+        );
+
+        let mut total_loaded = 0usize;
+        for symbol in symbol_list {
+            let cf_name = trade_flow_feature_cf_name(&self.venue_slug, &symbol);
+            let Some(cf) = db.cf_handle(&cf_name) else {
+                panic!(
+                    "fusion bootstrap missing rocksdb history: venue={} symbol={} cf={} path={}",
+                    self.venue_slug, symbol, cf_name, self.trade_flow_feature_rocksdb_path
+                );
+            };
+
+            let mut symbol_loaded = 0usize;
+            let iter = db.iterator_cf(cf, IteratorMode::Start);
+            for item in iter {
+                let (_, value) = item.with_context(|| {
+                    format!(
+                        "rocksdb iterator failed: venue={} symbol={} cf={} path={}",
+                        self.venue_slug, symbol, cf_name, self.trade_flow_feature_rocksdb_path
+                    )
+                })?;
+                let msg = parse_trade_flow_feature(value.as_ref()).with_context(|| {
+                    format!(
+                        "decode trade_flow_feature from rocksdb failed: venue={} symbol={} cf={} path={}",
+                        self.venue_slug, symbol, cf_name, self.trade_flow_feature_rocksdb_path
+                    )
+                })?;
+                let msg_symbol = normalize_symbol_for_venue(&msg.symbol, self.venue);
+                if msg_symbol != symbol {
+                    warn!(
+                        "FusionFactorPubApp[{}] rocksdb bootstrap skipped mismatched symbol: cf_symbol={} msg_symbol={} ts={} cf={}",
+                        self.venue_slug,
+                        symbol,
+                        msg_symbol,
+                        msg.ts,
+                        cf_name
+                    );
+                    continue;
+                }
+
+                let latest_eval = self.apply_trade_flow_msg(symbol.clone(), msg, false);
+                symbol_loaded += 1;
+                total_loaded += 1;
+
+                if symbol_loaded % ROCKSDB_BOOTSTRAP_LOG_EVERY == 0 {
+                    match latest_eval.as_ref() {
+                        Some(latest) => {
+                            info!(
+                                "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} loaded={} total_loaded={} latest_ts={} latest_status={} latest_warming_up={} latest_has_abnormal={} latest_invalid={} latest_nan_fill={} latest_missing_depth={} latest_unsupported={} latest_non_warming_issues={} latest_missing_factor_plan={}",
+                                self.venue_slug,
+                                symbol,
+                                symbol_loaded,
+                                total_loaded,
+                                latest.ts,
+                                feature_status_name(latest.status),
+                                latest.warming_up,
+                                latest.has_abnormal(),
+                                latest.invalid_value,
+                                latest.nan_fill,
+                                latest.missing_depth,
+                                latest.unsupported,
+                                latest.non_warming_issue_count,
+                                latest.missing_factor_plan
+                            );
+                        }
+                        None => {
+                            info!(
+                                "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} loaded={} total_loaded={} latest_eval=none",
+                                self.venue_slug, symbol, symbol_loaded, total_loaded
+                            );
+                        }
+                    }
+                }
+            }
+
+            if symbol_loaded == 0 {
+                panic!(
+                    "fusion bootstrap missing rocksdb history rows: venue={} symbol={} cf={} path={}",
+                    self.venue_slug, symbol, cf_name, self.trade_flow_feature_rocksdb_path
+                );
+            }
+
+            info!(
+                "FusionFactorPubApp[{}] rocksdb bootstrap symbol done: symbol={} loaded={} total_loaded={}",
+                self.venue_slug, symbol, symbol_loaded, total_loaded
+            );
+        }
+
+        info!(
+            "FusionFactorPubApp[{}] rocksdb bootstrap done: symbols={} total_loaded={} elapsed_ms={}",
+            self.venue_slug,
+            self.allowed_symbols.len(),
+            total_loaded,
+            started.elapsed().as_millis()
+        );
+        Ok(())
+    }
+
     fn on_trade_flow(
         &mut self,
         symbol: String,
         msg: crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg,
     ) {
-        self.trade_flow_count = self.trade_flow_count.saturating_add(1);
-        self.trigger_count = self.trigger_count.saturating_add(1);
+        let _ = self.apply_trade_flow_msg(symbol, msg, true);
+    }
+
+    fn apply_trade_flow_msg(
+        &mut self,
+        symbol: String,
+        msg: crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg,
+        emit_output: bool,
+    ) -> Option<ReplayEvalSummary> {
+        if emit_output {
+            self.trade_flow_count = self.trade_flow_count.saturating_add(1);
+            self.trigger_count = self.trigger_count.saturating_add(1);
+        }
 
         let depth_snapshot = parse_embedded_depth(&msg);
         let depth_opt = depth_snapshot.as_ref();
@@ -708,20 +931,30 @@ impl FusionFactorPubApp {
             }
         }
 
-        if depth_opt.is_none() {
-            self.missing_depth_count = self.missing_depth_count.saturating_add(1);
-        } else {
-            self.depth_attached_count = self.depth_attached_count.saturating_add(1);
+        if emit_output {
+            if depth_opt.is_none() {
+                self.missing_depth_count = self.missing_depth_count.saturating_add(1);
+            } else {
+                self.depth_attached_count = self.depth_attached_count.saturating_add(1);
+            }
         }
 
         let eval_started = Instant::now();
         let Some(eval_result) = self.evaluate_ordered_factors(&symbol, depth_opt) else {
-            warn!(
-                "fusion-trigger: venue={} symbol={} trade_ts={} reason=missing_factor_plan",
-                self.venue_slug, symbol, msg.ts
-            );
-            return;
+            if emit_output {
+                warn!(
+                    "fusion-trigger: venue={} symbol={} trade_ts={} reason=missing_factor_plan",
+                    self.venue_slug, symbol, msg.ts
+                );
+            }
+            return Some(ReplayEvalSummary::missing_plan(msg.ts));
         };
+
+        let replay_summary = ReplayEvalSummary::from_eval(msg.ts, &eval_result);
+        if !emit_output {
+            return Some(replay_summary);
+        }
+
         let eval_elapsed_us = eval_started.elapsed().as_micros();
 
         self.factor_plan_count = self
@@ -771,6 +1004,7 @@ impl FusionFactorPubApp {
                 );
             }
         }
+        Some(replay_summary)
     }
 
     fn evaluate_ordered_factors(
@@ -888,10 +1122,18 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn log_factor_summary(&self, symbol: &str, eval_cost_us: u128, eval_result: &OrderedEvalResult) {
+    fn log_factor_summary(
+        &self,
+        symbol: &str,
+        eval_cost_us: u128,
+        eval_result: &OrderedEvalResult,
+    ) {
         let s = &eval_result.stats;
         let good = s.factor_ready_count.saturating_sub(s.factor_nan_fill_count);
-        let bad = s.factor_warming_up_count + s.factor_invalid_value_count + s.factor_missing_depth_count + s.factor_nan_fill_count;
+        let bad = s.factor_warming_up_count
+            + s.factor_invalid_value_count
+            + s.factor_missing_depth_count
+            + s.factor_nan_fill_count;
 
         // 非 warming_up 的异常因子
         let non_warming_issues: Vec<&str> = eval_result
@@ -5003,6 +5245,24 @@ fn finite_opt(value: Option<f64>) -> Option<f64> {
 
 fn last_opt(values: &[Option<f64>]) -> Option<f64> {
     finite_opt(values.last().copied().flatten())
+}
+
+fn trade_flow_feature_cf_name(venue_slug: &str, symbol: &str) -> String {
+    format!(
+        "{}:{}:{}",
+        venue_slug,
+        symbol.to_uppercase(),
+        TRADE_FLOW_FEATURE_CF_SUFFIX
+    )
+}
+
+fn feature_status_name(status: u8) -> &'static str {
+    match status {
+        0 => "all_ready",
+        1 => "warming_up",
+        2 => "missing_depth",
+        _ => "unknown",
+    }
 }
 
 fn parse_trade_flow_symbol(data: &[u8]) -> Result<&str> {
