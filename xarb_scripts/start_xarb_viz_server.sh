@@ -4,8 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# 可选：PM2 namespace（默认使用部署目录名）
-PM2_NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
+PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
+PMDAEMON=("$PMDAEMON_BIN")
 
 BIN_CANDIDATES=(
   "${BASE_DIR}/viz_server"
@@ -31,7 +31,7 @@ usage() {
 用法: xarb_scripts/start_xarb_viz_server.sh [--cfg config/viz.toml]
 
 说明:
-  - 以 PM2 启动 viz_server，并按配置订阅 pre_trade 的 resample（positions/exposure/risk）并通过 WS 转发。
+  - 以 pmdaemon 启动 viz_server，并按配置订阅 pre_trade 的 resample（positions/exposure/risk）并通过 WS 转发。
   - 默认读取: ./config/viz.toml（可用 --cfg 指定，或设置环境变量 VIZ_CFG）。
 
 示例:
@@ -98,20 +98,56 @@ if [[ ! -f "$BASE_DIR/$CFG_PATH" ]]; then
   exit 1
 fi
 
-echo "[INFO] Restarting ${PROC_NAME} (namespace=${PM2_NAMESPACE} cfg=${CFG_PATH})"
-npx pm2 delete "$PROC_NAME" --namespace "$PM2_NAMESPACE" >/dev/null 2>&1 || true
+if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
+  echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2
+  echo "[HINT] install with: cargo install pmdaemon" >&2
+  exit 1
+fi
 
-(
-  cd "$BASE_DIR"
-  VIZ_CFG="$CFG_PATH" RUST_LOG="$RUST_LOG" npx pm2 start "$BIN_PATH" \
-    --name "$PROC_NAME" \
-    --namespace "$PM2_NAMESPACE"
-)
+TMP_FILES=()
+cleanup_tmp_files() {
+  if [[ ${#TMP_FILES[@]} -gt 0 ]]; then
+    rm -f "${TMP_FILES[@]}" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_tmp_files EXIT
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+cfg_file="$(mktemp)"
+TMP_FILES+=("$cfg_file")
+
+json_name="$(json_escape "$PROC_NAME")"
+json_bin="$(json_escape "$BIN_PATH")"
+json_base="$(json_escape "$BASE_DIR")"
+json_cfg="$(json_escape "$CFG_PATH")"
+json_rust_log="$(json_escape "$RUST_LOG")"
+
+cat >"$cfg_file" <<CFG
+{
+  "apps": [
+    {
+      "name": "${json_name}",
+      "script": "${json_bin}",
+      "args": [],
+      "cwd": "${json_base}",
+      "env": {
+        "VIZ_CFG": "${json_cfg}",
+        "RUST_LOG": "${json_rust_log}"
+      }
+    }
+  ]
+}
+CFG
+
+echo "[INFO] Restarting ${PROC_NAME} (cfg=${CFG_PATH})"
+"${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
+"${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
 
 echo ""
 echo "[INFO] Started viz_server"
-echo "Namespace: ${PM2_NAMESPACE}"
 echo "Config: ${CFG_PATH}"
-echo "Logs: npx pm2 logs --namespace ${PM2_NAMESPACE} ${PROC_NAME}"
-echo "Status: npx pm2 status --namespace ${PM2_NAMESPACE}"
-
+echo "Logs: ${PMDAEMON[*]} logs ${PROC_NAME} --follow"
+echo "Status: ${PMDAEMON[*]} list"

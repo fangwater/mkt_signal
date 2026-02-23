@@ -1,7 +1,7 @@
 {
   "env": {
-    "ANTHROPIC_AUTH_TOKEN": "sk-3a39974a18add043e82a997525c4cd6f",
-    "ANTHROPIC_BASE_URL": "https://claude.hanbbq.top",
+    "ANTHROPIC_AUTH_TOKEN": "sk-2TyJl2lap5fPK6F6tjyZh9OsowMSSLEWPODJiwZChWfqDDOg",
+    "ANTHROPIC_BASE_URL": "https://www.fucheers.top",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
   },
   "permissions": {

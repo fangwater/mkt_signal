@@ -20,7 +20,7 @@ usage() {
 用法: scripts/deploy_xarb_viz_server.sh --open-venue <okex-futures> --hedge-venue <binance-futures>
                                        [--env-suffix xarb-trade]
                                        [--env-name okex-binance-xarb-trade]
-                                       [--bind 0.0.0.0] [--port 10111] [--port2 10112] [--no-port2] [--ws-path /ws]
+                                       [--bind 0.0.0.0] [--ws-path /ws]
                                        [--namespace <IPC_NAMESPACE>]
                                        [--resample-suffix <suffix>] [--instance-label <label>]
                                        [--jobs <n>] [--cargo-target-dir <path>]
@@ -28,18 +28,15 @@ usage() {
 
 说明:
   - 构建并部署 viz_server 到 xarb 环境目录 $HOME/<open>-<hedge>-<env_suffix>/（默认 env_suffix=xarb-trade，可通过 --env-suffix / --env-name 指定）。
-  - 会在目标目录生成/覆盖：config/viz.toml（仅开启 pre_trade resample 订阅）。
-  - 默认会在同一个 viz_server 进程里开两个端口（便于 nginx 做不同 location 的 upstream 或灰度）：
-      - --port  (默认 10111)
-      - --port2 (默认 = port+1)
-    若不需要第二端口可用 --no-port2 关闭。
+  - 会在目标目录生成/覆盖：config/viz.toml（仅开启 pre_trade resample 订阅，单端口）。
+  - port 由 env-suffix 硬编码映射决定（xarb-trade → 10111），不支持的 env-suffix 会报错退出。
   - namespaces 字段对应 IceOryx 的 IPC_NAMESPACE（即 pre_trade 发布时使用的命名空间前缀）。
       - 若目标目录已存在 env.sh，则优先读取其中的 IPC_NAMESPACE
       - 否则可用 --namespace 显式指定；若不指定则按默认规则推断
   - 可选 --resample-suffix：订阅带后缀的两路通道（pre_trade_exposure_<suffix>, pre_trade_risk_<suffix>）
 
 示例:
-  scripts/deploy_xarb_viz_server.sh --open-venue okex-futures --hedge-venue binance-futures --port 10111
+  scripts/deploy_xarb_viz_server.sh --open-venue okex-futures --hedge-venue binance-futures
   scripts/deploy_xarb_viz_server.sh --env-name okex-binance-xarb-trade --open-venue okex-futures --hedge-venue binance-futures
   scripts/deploy_xarb_viz_server.sh --open-venue okex-futures --hedge-venue binance-futures --resample-suffix okex_binance_xarb
 
@@ -69,9 +66,6 @@ OPEN_VENUE=""
 HEDGE_VENUE=""
 
 BIND="0.0.0.0"
-PORT="10111"
-PORT2=""
-NO_PORT2="0"
 WS_PATH="/ws"
 
 IPC_NS_OVERRIDE=""
@@ -147,20 +141,12 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --port)
-      PORT="${2:-10111}"
-      shift 2
+      echo "[ERROR] --port 已移除，port 由 env-suffix 硬编码映射决定"
+      exit 1
       ;;
     --ws-path)
       WS_PATH="${2:-/ws}"
       shift 2
-      ;;
-    --port2)
-      PORT2="${2:-}"
-      shift 2
-      ;;
-    --no-port2)
-      NO_PORT2="1"
-      shift
       ;;
     --namespace)
       IPC_NS_OVERRIDE="${2:-}"
@@ -189,6 +175,15 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# ── env-suffix → port 硬编码映射 ──
+resolve_port_by_suffix() {
+  case "$1" in
+    xarb-trade) echo "10111" ;;
+    *) echo "[ERROR] 未知的 env-suffix: $1，无法确定 port" >&2; exit 1 ;;
+  esac
+}
+PORT="$(resolve_port_by_suffix "$ENV_SUFFIX")"
 
 if [[ -n "$ENV_NAME" && ( -z "$OPEN_VENUE" || -z "$HEDGE_VENUE" ) ]]; then
   if inferred="$(infer_pair_from_name "$ENV_NAME")" && [[ -n "$inferred" ]]; then
@@ -245,21 +240,7 @@ CARGO_TARGET_DIR_EFFECTIVE="$(xarb_effective_cargo_target_dir "$ROOT_DIR" "$CARG
 BIN_PATH="$(xarb_bin_path_release "$CARGO_TARGET_DIR_EFFECTIVE" "$BIN_NAME")"
 
 mkdir -p "$TARGET_DIR/config" "$TARGET_DIR/xarb_scripts"
-
-if [[ "$NO_PORT2" != "1" && -z "$PORT2" ]]; then
-  if [[ "$PORT" =~ ^[0-9]+$ ]]; then
-    PORT2="$((PORT + 1))"
-  fi
-fi
-if [[ "$NO_PORT2" == "1" ]]; then
-  PORT2=""
-fi
-if [[ -n "$PORT2" && "$PORT2" == "$PORT" ]]; then
-  echo "[ERROR] --port2 不能与 --port 相同: $PORT2"
-  exit 1
-fi
-
-echo "[INFO] 生成 viz 配置: $TARGET_DIR/config/viz.toml (namespaces=[\"$IPC_NAMESPACE\"] ports=${PORT}${PORT2:+,$PORT2})"
+echo "[INFO] 生成 viz 配置: $TARGET_DIR/config/viz.toml (namespaces=[\"$IPC_NAMESPACE\"] port=${PORT})"
 
 emit_server_block() {
   local bind="$1"
@@ -294,13 +275,7 @@ EOF
 
 }
 
-{
-  emit_server_block "$BIND" "$PORT" "$WS_PATH"
-  if [[ -n "$PORT2" ]]; then
-    echo ""
-    emit_server_block "$BIND" "$PORT2" "$WS_PATH"
-  fi
-} > "$TARGET_DIR/config/viz.toml"
+emit_server_block "$BIND" "$PORT" "$WS_PATH" > "$TARGET_DIR/config/viz.toml"
 
 mkdir -p "$TARGET_DIR/www"
 if [[ -f "$ROOT_DIR/docs/pre_trade_dashboard.html" ]]; then

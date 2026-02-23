@@ -4,8 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Optional: PM2 namespace (defaults to directory name)
-PM2_NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
+PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
+PMDAEMON=("$PMDAEMON_BIN")
 
 BIN_CANDIDATES=(
   "${BASE_DIR}/viz_server"
@@ -31,9 +31,8 @@ usage() {
 Usage: scripts/start_fr_viz_server.sh [--cfg config/viz.toml] [--exchange <binance|okex|gate|bybit|bitget>]
 
 Notes:
-  - Starts viz_server with PM2 using config/viz.toml (or VIZ_CFG / --cfg).
+  - Starts viz_server with pmdaemon using config/viz.toml (or VIZ_CFG / --cfg).
   - Exchange is inferred from the directory name (<exchange>_fr_<env>), unless --exchange is set.
-  - Default PM2 name uses the deploy dir name to avoid collisions.
 EOF
 }
 
@@ -90,7 +89,7 @@ if [[ -z "$EXCHANGE" ]]; then
   exit 1
 fi
 
-PROC_NAME="${PM2_NAME:-viz_server_${dir_tag}}"
+PROC_NAME="${PMDAEMON_NAME:-viz_server_${dir_tag}}"
 RUST_LOG="${RUST_LOG:-info}"
 
 if [[ ! -f "$BASE_DIR/$CFG_PATH" ]]; then
@@ -99,19 +98,56 @@ if [[ ! -f "$BASE_DIR/$CFG_PATH" ]]; then
   exit 1
 fi
 
-echo "[INFO] Restarting ${PROC_NAME} (namespace=${PM2_NAMESPACE} cfg=${CFG_PATH})"
-npx pm2 delete "$PROC_NAME" --namespace "$PM2_NAMESPACE" >/dev/null 2>&1 || true
+if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
+  echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2
+  echo "[HINT] install with: cargo install pmdaemon" >&2
+  exit 1
+fi
 
-(
-  cd "$BASE_DIR"
-  VIZ_CFG="$CFG_PATH" RUST_LOG="$RUST_LOG" npx pm2 start "$BIN_PATH" \
-    --name "$PROC_NAME" \
-    --namespace "$PM2_NAMESPACE"
-)
+TMP_FILES=()
+cleanup_tmp_files() {
+  if [[ ${#TMP_FILES[@]} -gt 0 ]]; then
+    rm -f "${TMP_FILES[@]}" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_tmp_files EXIT
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+cfg_file="$(mktemp)"
+TMP_FILES+=("$cfg_file")
+
+json_name="$(json_escape "$PROC_NAME")"
+json_bin="$(json_escape "$BIN_PATH")"
+json_base="$(json_escape "$BASE_DIR")"
+json_cfg="$(json_escape "$CFG_PATH")"
+json_rust_log="$(json_escape "$RUST_LOG")"
+
+cat >"$cfg_file" <<CFG
+{
+  "apps": [
+    {
+      "name": "${json_name}",
+      "script": "${json_bin}",
+      "args": [],
+      "cwd": "${json_base}",
+      "env": {
+        "VIZ_CFG": "${json_cfg}",
+        "RUST_LOG": "${json_rust_log}"
+      }
+    }
+  ]
+}
+CFG
+
+echo "[INFO] Restarting ${PROC_NAME} (cfg=${CFG_PATH})"
+"${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
+"${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
 
 echo ""
 echo "[INFO] Started viz_server"
-echo "Namespace: ${PM2_NAMESPACE}"
 echo "Config: ${CFG_PATH}"
-echo "Logs: npx pm2 logs --namespace ${PM2_NAMESPACE} ${PROC_NAME}"
-echo "Status: npx pm2 status --namespace ${PM2_NAMESPACE}"
+echo "Logs: ${PMDAEMON[*]} logs ${PROC_NAME} --follow"
+echo "Status: ${PMDAEMON[*]} list"
