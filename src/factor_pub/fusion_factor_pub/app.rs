@@ -9,7 +9,6 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
 use reqwest::Client;
-use rayon::prelude::*;
 use rocksdb::{ColumnFamilyDescriptor, IteratorMode, Options, DB};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
