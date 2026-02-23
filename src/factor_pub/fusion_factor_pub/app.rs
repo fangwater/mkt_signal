@@ -38,6 +38,8 @@ const STATS_LOG_INTERVAL_SECS: u64 = 60;
 const TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE: usize = 2048;
 const TRADE_FLOW_FEATURE_CF_SUFFIX: &str = "trade_flow:feature";
 const ROCKSDB_BOOTSTRAP_LOG_EVERY: usize = 200;
+const BASELINE_018_DROP_LOG_EVERY: u64 = 200;
+const BASELINE_018_MIN_SELL_VOLUME: f64 = 1e-12;
 const MAX_SYMBOL_HISTORY: usize = 4096;
 const MAX_DEPTH_LEVELS_CACHE: usize = 20;
 const APPENDED_DEPTH_VALUES: usize = MAX_DEPTH_LEVELS_CACHE * 4;
@@ -359,6 +361,7 @@ struct ReplayEvalSummary {
     unsupported: bool,
     non_warming_issue_count: usize,
     missing_factor_plan: bool,
+    dropped_input: bool,
 }
 
 impl ReplayEvalSummary {
@@ -377,6 +380,7 @@ impl ReplayEvalSummary {
             unsupported: s.factor_unsupported_count > 0,
             non_warming_issue_count,
             missing_factor_plan: false,
+            dropped_input: false,
         }
     }
 
@@ -389,6 +393,28 @@ impl ReplayEvalSummary {
             unsupported: false,
             non_warming_issue_count: 0,
             missing_factor_plan: true,
+            dropped_input: false,
+        }
+    }
+
+    fn dropped_input() -> Self {
+        Self {
+            status: u8::MAX,
+            invalid_value: false,
+            nan_fill: false,
+            missing_depth: false,
+            unsupported: false,
+            non_warming_issue_count: 0,
+            missing_factor_plan: false,
+            dropped_input: true,
+        }
+    }
+
+    fn status_name(&self) -> &'static str {
+        if self.dropped_input {
+            "dropped"
+        } else {
+            feature_status_name(self.status)
         }
     }
 
@@ -411,6 +437,9 @@ impl ReplayEvalSummary {
         }
         if self.non_warming_issue_count > 0 {
             tags.push("non_warming_issue");
+        }
+        if self.dropped_input {
+            tags.push("dropped_baseline_018_input");
         }
 
         if tags.is_empty() {
@@ -507,6 +536,7 @@ pub struct FusionFactorPubApp {
     trade_flow_subscriber: Subscriber<ipc::Service, [u8; TRADE_FLOW_MAX_BYTES], ()>,
     publisher: FusionFactorPublisher,
     allowed_symbols: HashSet<String>,
+    symbols_need_baseline_018: HashSet<String>,
     symbol_all_ready_seen: HashSet<String>,
     symbol_factor_plans: HashMap<String, SymbolFactorPlan>,
     symbol_states: HashMap<String, SymbolCalcState>,
@@ -518,6 +548,7 @@ pub struct FusionFactorPubApp {
     factor_118_ready_count: u64,
     trade_flow_dropped_symbol_count: u64,
     trade_flow_dropped_symbol_samples: Vec<String>,
+    baseline_018_dropped_count: u64,
     trade_flow_decode_error_count: u64,
     trade_flow_decode_error_last: Option<String>,
     factor_plan_count: u64,
@@ -560,6 +591,15 @@ impl FusionFactorPubApp {
                     allowed_symbols.len()
                 )
             })?;
+        let symbols_need_baseline_018: HashSet<String> = symbol_factor_plans
+            .iter()
+            .filter_map(|(symbol, plan)| {
+                plan.ordered_factors
+                    .iter()
+                    .any(|binding| binding.factor_id == Some(FusionFactorId::Baseline018))
+                    .then(|| symbol.clone())
+            })
+            .collect();
 
         let trade_flow_subscriber =
             Self::create_trade_flow_subscriber(&venue_slug, &cfg.data_source.trade_flow_channel)?;
@@ -590,6 +630,7 @@ impl FusionFactorPubApp {
             trade_flow_subscriber,
             publisher,
             allowed_symbols: allowed_symbols.into_iter().collect(),
+            symbols_need_baseline_018,
             symbol_all_ready_seen: HashSet::new(),
             symbol_factor_plans,
             symbol_states: HashMap::new(),
@@ -601,6 +642,7 @@ impl FusionFactorPubApp {
             factor_118_ready_count: 0,
             trade_flow_dropped_symbol_count: 0,
             trade_flow_dropped_symbol_samples: Vec::new(),
+            baseline_018_dropped_count: 0,
             trade_flow_decode_error_count: 0,
             trade_flow_decode_error_last: None,
             factor_plan_count: 0,
@@ -724,7 +766,7 @@ impl FusionFactorPubApp {
 
             if self.last_stats_log.elapsed() >= Duration::from_secs(STATS_LOG_INTERVAL_SECS) {
                 info!(
-                    "FusionFactorPubApp[{}] stats: raw_msgs={} trade_flow_msgs={} triggers={} decode_errors={} depth_attached={} missing_depth={} factor118_ready={} trade_drop_symbols={} drop_symbol_samples={:?} calc_symbols={} factor_plan={} factor_eval={} factor_ready={} factor_warming_up={} factor_invalid={} factor_missing_depth={} published={} publish_failed={} pub_total={} pub_dropped={} last_decode_error={}",
+                    "FusionFactorPubApp[{}] stats: raw_msgs={} trade_flow_msgs={} triggers={} decode_errors={} depth_attached={} missing_depth={} factor118_ready={} trade_drop_symbols={} baseline018_dropped={} drop_symbol_samples={:?} calc_symbols={} factor_plan={} factor_eval={} factor_ready={} factor_warming_up={} factor_invalid={} factor_missing_depth={} published={} publish_failed={} pub_total={} pub_dropped={} last_decode_error={}",
                     self.venue_slug,
                     self.trade_flow_raw_count,
                     self.trade_flow_count,
@@ -734,6 +776,7 @@ impl FusionFactorPubApp {
                     self.missing_depth_count,
                     self.factor_118_ready_count,
                     self.trade_flow_dropped_symbol_count,
+                    self.baseline_018_dropped_count,
                     self.trade_flow_dropped_symbol_samples,
                     self.symbol_states.len(),
                     self.factor_plan_count,
@@ -758,6 +801,7 @@ impl FusionFactorPubApp {
                 self.factor_118_ready_count = 0;
                 self.trade_flow_dropped_symbol_count = 0;
                 self.trade_flow_dropped_symbol_samples.clear();
+                self.baseline_018_dropped_count = 0;
                 self.factor_plan_count = 0;
                 self.factor_evaluated_count = 0;
                 self.factor_ready_count = 0;
@@ -774,6 +818,7 @@ impl FusionFactorPubApp {
 
     fn bootstrap_from_rocksdb(&mut self) -> Result<()> {
         let started = Instant::now();
+        let dropped_before = self.baseline_018_dropped_count;
         let mut symbol_list: Vec<String> = self.allowed_symbols.iter().cloned().collect();
         symbol_list.sort_unstable();
 
@@ -919,7 +964,7 @@ impl FusionFactorPubApp {
                                 symbol,
                                 symbol_loaded,
                                 total_loaded,
-                                feature_status_name(latest.status),
+                                latest.status_name(),
                                 latest.abnormal_tags()
                             );
                         }
@@ -947,10 +992,11 @@ impl FusionFactorPubApp {
         }
 
         info!(
-            "FusionFactorPubApp[{}] rocksdb bootstrap done: symbols={} total_loaded={} elapsed_ms={}",
+            "FusionFactorPubApp[{}] rocksdb bootstrap done: symbols={} total_loaded={} baseline018_dropped={} elapsed_ms={}",
             self.venue_slug,
             self.allowed_symbols.len(),
             total_loaded,
+            self.baseline_018_dropped_count.saturating_sub(dropped_before),
             started.elapsed().as_millis()
         );
         Ok(())
@@ -970,6 +1016,23 @@ impl FusionFactorPubApp {
         msg: crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg,
         emit_output: bool,
     ) -> Option<ReplayEvalSummary> {
+        if self.should_drop_for_baseline_018(&symbol, &msg) {
+            self.baseline_018_dropped_count = self.baseline_018_dropped_count.saturating_add(1);
+            if emit_output
+                && (self.baseline_018_dropped_count <= 3
+                    || self.baseline_018_dropped_count % BASELINE_018_DROP_LOG_EVERY == 0)
+            {
+                warn!(
+                    "fusion-trigger dropped: venue={} symbol={} trade_ts={} reason=baseline_018_sell_volume_non_positive sell_volume={}",
+                    self.venue_slug,
+                    symbol,
+                    msg.ts,
+                    msg.values[FIELD_SELL_VOLUME]
+                );
+            }
+            return Some(ReplayEvalSummary::dropped_input());
+        }
+
         if emit_output {
             self.trade_flow_count = self.trade_flow_count.saturating_add(1);
             self.trigger_count = self.trigger_count.saturating_add(1);
@@ -1192,6 +1255,14 @@ impl FusionFactorPubApp {
             self.trade_flow_dropped_symbol_samples
                 .push(symbol.to_string());
         }
+    }
+
+    fn should_drop_for_baseline_018(&self, symbol: &str, msg: &TradeFlowFeatureMsg) -> bool {
+        if !self.symbols_need_baseline_018.contains(symbol) {
+            return false;
+        }
+        let sell_volume = msg.values[FIELD_SELL_VOLUME];
+        !sell_volume.is_finite() || sell_volume <= BASELINE_018_MIN_SELL_VOLUME
     }
 
     fn log_factor_summary(
