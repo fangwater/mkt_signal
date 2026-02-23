@@ -8,6 +8,7 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
+use rayon::prelude::*;
 use reqwest::Client;
 use rocksdb::{ColumnFamilyDescriptor, IteratorMode, Options, DB};
 use serde::{Deserialize, Serialize};
@@ -369,6 +370,11 @@ struct BootstrapSymbolReplayResult {
     dropped: u64,
     all_ready_seen: bool,
     state: SymbolCalcState,
+}
+
+struct BootstrapSymbolRecords {
+    symbol: String,
+    records: Vec<TradeFlowFeatureMsg>,
 }
 
 impl ReplayEvalSummary {
@@ -920,7 +926,7 @@ impl FusionFactorPubApp {
             symbol_list.len()
         );
 
-        let mut total_loaded = 0usize;
+        let mut symbol_records = Vec::with_capacity(symbol_list.len());
         for symbol in symbol_list {
             let cf_name = trade_flow_feature_cf_name(&self.venue_slug, &symbol);
             let Some(cf) = db.cf_handle(&cf_name) else {
@@ -930,7 +936,7 @@ impl FusionFactorPubApp {
                 );
             };
 
-            let mut symbol_loaded = 0usize;
+            let mut records = Vec::new();
             let iter = db.iterator_cf(cf, IteratorMode::Start);
             for item in iter {
                 let (_, value) = item.with_context(|| {
@@ -958,42 +964,71 @@ impl FusionFactorPubApp {
                     continue;
                 }
 
-                let latest_eval = self.apply_trade_flow_msg(symbol.clone(), msg, false);
-                symbol_loaded += 1;
-                total_loaded += 1;
-
-                if symbol_loaded % ROCKSDB_BOOTSTRAP_LOG_EVERY == 0 {
-                    match latest_eval.as_ref() {
-                        Some(latest) => {
-                            info!(
-                                "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} loaded={} status={} abnormal={}",
-                                self.venue_slug,
-                                symbol,
-                                symbol_loaded,
-                                latest.status_name(),
-                                latest.abnormal_tags()
-                            );
-                        }
-                        None => {
-                            info!(
-                                "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} loaded={} latest_eval=none",
-                                self.venue_slug, symbol, symbol_loaded
-                            );
-                        }
-                    }
-                }
+                records.push(msg);
             }
 
-            if symbol_loaded == 0 {
+            if records.is_empty() {
                 panic!(
                     "fusion bootstrap missing rocksdb history rows: venue={} symbol={} cf={} path={}",
                     self.venue_slug, symbol, cf_name, self.trade_flow_feature_rocksdb_path
                 );
             }
 
+            symbol_records.push(BootstrapSymbolRecords { symbol, records });
+        }
+
+        let replay_threads = symbol_records.len().max(1).min(4);
+        info!(
+            "FusionFactorPubApp[{}] rocksdb bootstrap replay start: symbols={} threads={}",
+            self.venue_slug,
+            symbol_records.len(),
+            replay_threads
+        );
+        let venue_slug = self.venue_slug.clone();
+        let symbol_factor_plans = self.symbol_factor_plans.clone();
+        let symbols_need_baseline_018 = self.symbols_need_baseline_018.clone();
+        let thread_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(replay_threads)
+            .build()
+            .with_context(|| {
+                format!(
+                    "fusion bootstrap build rayon pool failed: venue={} threads={}",
+                    self.venue_slug, replay_threads
+                )
+            })?;
+        let mut replay_results = thread_pool.install(|| {
+            symbol_records
+                .into_par_iter()
+                .map(|symbol_records| {
+                    Self::replay_symbol_records(
+                        &venue_slug,
+                        &symbol_factor_plans,
+                        &symbols_need_baseline_018,
+                        symbol_records,
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        replay_results.sort_unstable_by(|a, b| a.symbol.cmp(&b.symbol));
+
+        let mut total_loaded = 0usize;
+        for symbol_result in replay_results {
+            total_loaded = total_loaded.saturating_add(symbol_result.loaded);
+            self.baseline_018_dropped_count = self
+                .baseline_018_dropped_count
+                .saturating_add(symbol_result.dropped);
+            if symbol_result.all_ready_seen {
+                self.symbol_all_ready_seen
+                    .insert(symbol_result.symbol.clone());
+            }
+            self.symbol_states
+                .insert(symbol_result.symbol.clone(), symbol_result.state);
             info!(
                 "FusionFactorPubApp[{}] rocksdb bootstrap symbol done: symbol={} loaded={} total_loaded={}",
-                self.venue_slug, symbol, symbol_loaded, total_loaded
+                self.venue_slug,
+                symbol_result.symbol,
+                symbol_result.loaded,
+                total_loaded
             );
         }
 
@@ -1006,6 +1041,102 @@ impl FusionFactorPubApp {
             started.elapsed().as_millis()
         );
         Ok(())
+    }
+
+    fn replay_symbol_records(
+        venue_slug: &str,
+        symbol_factor_plans: &HashMap<String, SymbolFactorPlan>,
+        symbols_need_baseline_018: &HashSet<String>,
+        symbol_records: BootstrapSymbolRecords,
+    ) -> BootstrapSymbolReplayResult {
+        let BootstrapSymbolRecords { symbol, records } = symbol_records;
+        let mut state = SymbolCalcState::default();
+        let mut loaded = 0usize;
+        let mut dropped = 0u64;
+        let mut all_ready_seen = false;
+        let plan = symbol_factor_plans.get(&symbol);
+        let needs_factor_118 = plan
+            .map(|plan| {
+                plan.ordered_factors
+                    .iter()
+                    .any(|factor| factor.factor_id == Some(FusionFactorId::Factor118))
+            })
+            .unwrap_or(false);
+
+        for msg in records {
+            let latest_eval = if Self::should_drop_for_baseline_018_with_set(
+                symbols_need_baseline_018,
+                &symbol,
+                &msg,
+            ) {
+                dropped = dropped.saturating_add(1);
+                ReplayEvalSummary::dropped_input()
+            } else {
+                let depth_snapshot = parse_embedded_depth(&msg);
+                let depth_opt = depth_snapshot.as_ref();
+                state.push_trade_flow(&msg);
+                if let Some(depth) = depth_opt {
+                    state.push_depth_metrics(depth);
+                }
+                match plan {
+                    Some(plan) => {
+                        let factor_118_result = if needs_factor_118 {
+                            depth_opt.and_then(|depth| {
+                                Self::compute_factor_118_with_state(&mut state, depth)
+                            })
+                        } else {
+                            None
+                        };
+                        let series = Self::build_symbol_series_from_state(&state);
+                        let eval_result = Self::evaluate_ordered_factors_with_plan(
+                            plan,
+                            factor_118_result,
+                            depth_opt,
+                            Some(&series),
+                        );
+                        if eval_result.status == 0 {
+                            all_ready_seen = true;
+                        } else if eval_result.status == 1 && all_ready_seen {
+                            let warming_factors: Vec<&str> = eval_result
+                                .factor_issues
+                                .iter()
+                                .filter(|issue| issue.contains(":warming_up"))
+                                .map(|issue| issue.as_str())
+                                .collect();
+                            panic!(
+                                "fusion factor regressed to warming_up after all_ready: venue={} symbol={} trade_ts={} warming_factors=[{}]",
+                                venue_slug,
+                                symbol,
+                                msg.ts,
+                                warming_factors.join(",")
+                            );
+                        }
+                        ReplayEvalSummary::from_eval(&eval_result)
+                    }
+                    None => ReplayEvalSummary::missing_plan(),
+                }
+            };
+            loaded = loaded.saturating_add(1);
+
+            if loaded % ROCKSDB_BOOTSTRAP_LOG_EVERY == 0 {
+                info!(
+                    "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} loaded={} status={} abnormal={}",
+                    venue_slug,
+                    symbol,
+                    loaded,
+                    latest_eval.status_name(),
+                    latest_eval.abnormal_tags()
+                );
+            }
+        }
+
+        BootstrapSymbolReplayResult {
+            symbol,
+            loaded,
+            dropped,
+            all_ready_seen,
+            state,
+        }
     }
 
     fn on_trade_flow(

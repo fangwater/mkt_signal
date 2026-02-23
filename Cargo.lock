@@ -2215,6 +2215,7 @@ dependencies = [
  "polars",
  "polars-time",
  "prettytable",
+ "rayon",
  "redis",
  "reqwest",
  "rocksdb",
