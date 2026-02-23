@@ -3926,7 +3926,24 @@ impl FusionFactorPubApp {
     }
 
     fn compute_baseline_196(series: &SymbolSeries) -> Option<f64> {
-        pct_change_last(&series.large_buy, 10)
+        let periods = 10usize;
+        if series.large_buy.len() <= periods {
+            return None;
+        }
+        let curr = *series.large_buy.last()?;
+        let prev = series.large_buy[series.large_buy.len() - 1 - periods];
+        if !curr.is_finite() || !prev.is_finite() {
+            return None;
+        }
+        if prev.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        let value = (curr - prev) / prev;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            Some(0.0)
+        }
     }
 
     fn compute_td_ti_010(series: &SymbolSeries) -> Option<f64> {
