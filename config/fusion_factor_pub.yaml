@@ -12,3 +12,6 @@ fusion_factor_pub:
     base_url: "http://127.0.0.1:6300"
     model_name: "pairmm_xgb_v1"
     request_timeout_ms: 5000
+
+  output:
+    service_path: "fusion_factor/binance-futures/pairmm_xgb_v1"

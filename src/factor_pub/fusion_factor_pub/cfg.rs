@@ -10,6 +10,8 @@ pub struct FusionFactorPubConfig {
     pub data_source: DataSourceConfig,
     pub symbols: Vec<String>,
     pub model_manager: ModelManagerConfig,
+    #[serde(default)]
+    pub output: OutputConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -36,6 +38,24 @@ pub struct ModelManagerConfig {
     pub bearer_token: Option<String>,
     #[serde(default = "default_request_timeout_ms")]
     pub request_timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OutputConfig {
+    #[serde(default = "default_output_service_path")]
+    pub service_path: String,
+}
+
+impl Default for OutputConfig {
+    fn default() -> Self {
+        Self {
+            service_path: default_output_service_path(),
+        }
+    }
+}
+
+fn default_output_service_path() -> String {
+    "fusion_factor/default/default".to_string()
 }
 
 #[derive(Debug, Deserialize)]

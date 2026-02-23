@@ -1976,7 +1976,7 @@ mod tests {
         let err = MonitorChannel::instance()
             .ensure_max_pos_u("FIL-USDT-SWAP", 2.0, 100.0)
             .unwrap_err();
-        assert!(err.contains("缺少 OKX 合约乘数"), "err={err}");
+        assert!(err.contains("缺少 OkexFutures 合约乘数"), "err={err}");
     }
 
     #[test]

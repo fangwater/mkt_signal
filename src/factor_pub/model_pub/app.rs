@@ -285,7 +285,8 @@ impl ModelPubApp {
                         return;
                     }
 
-                    runtime.model.predict_one(&feature.features)
+                    let f32_features: Vec<f32> = feature.features.iter().map(|&v| v as f32).collect();
+                    runtime.model.predict_one(&f32_features)
                 };
 
                 match predict_result {

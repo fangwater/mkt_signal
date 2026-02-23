@@ -1,6 +1,7 @@
 pub mod app;
 pub mod cfg;
 pub mod factor_enum;
+pub mod publisher;
 pub mod window_primitives;
 
 pub use factor_enum::{

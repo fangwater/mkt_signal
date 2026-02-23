@@ -15,12 +15,14 @@ use std::time::{Duration, Instant};
 
 use super::cfg::{FusionFactorPubConfig, ModelManagerConfig};
 use super::factor_enum::FusionFactorId;
+use super::publisher::FusionFactorPublisher;
 use super::window_primitives::{
     rolling_corr_last, rolling_kurt_last, rolling_mean_last, rolling_mean_last_with_min_periods,
     rolling_mean_series, rolling_mean_series_opt, rolling_rank_last, rolling_skew_last,
     rolling_std_last, rolling_sum_last_with_min_periods, rolling_sum_series,
     rolling_sum_series_opt, tail_skew_last_opt,
 };
+use crate::common::mkt_msg::FeatureMsg;
 use crate::common::msg_parser::parse_trade_flow_feature;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::trade_flow_feature_msg::{
@@ -340,6 +342,8 @@ struct OrderedEvalStats {
 struct OrderedEvalResult {
     stats: OrderedEvalStats,
     factor_issues: Vec<String>,
+    factor_values: Vec<f64>,
+    status: u8,
 }
 
 struct SymbolSeries {
@@ -425,6 +429,7 @@ pub struct FusionFactorPubApp {
     venue_slug: String,
     venue: TradingVenue,
     trade_flow_subscriber: Subscriber<ipc::Service, [u8; TRADE_FLOW_MAX_BYTES], ()>,
+    publisher: FusionFactorPublisher,
     allowed_symbols: HashSet<String>,
     symbol_factor_plans: HashMap<String, SymbolFactorPlan>,
     symbol_states: HashMap<String, SymbolCalcState>,
@@ -445,6 +450,8 @@ pub struct FusionFactorPubApp {
     factor_invalid_value_count: u64,
     factor_missing_depth_count: u64,
     factor_unsupported_count: u64,
+    published_count: u64,
+    publish_failed_count: u64,
     last_stats_log: Instant,
 }
 
@@ -479,18 +486,30 @@ impl FusionFactorPubApp {
         let trade_flow_subscriber =
             Self::create_trade_flow_subscriber(&venue_slug, &cfg.data_source.trade_flow_channel)?;
 
+        let publisher_node_name = format!("fusion_pub_{}", venue_slug.replace('-', "_"));
+        let publisher =
+            FusionFactorPublisher::new(&publisher_node_name, &cfg.output.service_path)
+                .with_context(|| {
+                    format!(
+                        "create fusion factor publisher failed: service_path={}",
+                        cfg.output.service_path
+                    )
+                })?;
+
         info!(
-            "FusionFactorPubApp created: venue={} symbols={} trade_flow_channel=factor_pub/{}/{}",
+            "FusionFactorPubApp created: venue={} symbols={} trade_flow_channel=factor_pub/{}/{} output_service={}",
             venue_slug,
             allowed_symbols.len(),
             venue_slug,
             cfg.data_source.trade_flow_channel,
+            cfg.output.service_path,
         );
 
         Ok(Self {
             venue_slug,
             venue,
             trade_flow_subscriber,
+            publisher,
             allowed_symbols: allowed_symbols.into_iter().collect(),
             symbol_factor_plans,
             symbol_states: HashMap::new(),
@@ -511,6 +530,8 @@ impl FusionFactorPubApp {
             factor_invalid_value_count: 0,
             factor_missing_depth_count: 0,
             factor_unsupported_count: 0,
+            published_count: 0,
+            publish_failed_count: 0,
             last_stats_log: Instant::now(),
         })
     }
@@ -621,7 +642,7 @@ impl FusionFactorPubApp {
 
             if self.last_stats_log.elapsed() >= Duration::from_secs(STATS_LOG_INTERVAL_SECS) {
                 info!(
-                    "FusionFactorPubApp[{}] stats: raw_msgs={} trade_flow_msgs={} triggers={} decode_errors={} depth_attached={} missing_depth={} factor118_ready={} trade_drop_symbols={} drop_symbol_samples={:?} calc_symbols={} factor_plan={} factor_eval={} factor_ready={} factor_warming_up={} factor_invalid={} factor_missing_depth={} last_decode_error={}",
+                    "FusionFactorPubApp[{}] stats: raw_msgs={} trade_flow_msgs={} triggers={} decode_errors={} depth_attached={} missing_depth={} factor118_ready={} trade_drop_symbols={} drop_symbol_samples={:?} calc_symbols={} factor_plan={} factor_eval={} factor_ready={} factor_warming_up={} factor_invalid={} factor_missing_depth={} published={} publish_failed={} pub_total={} pub_dropped={} last_decode_error={}",
                     self.venue_slug,
                     self.trade_flow_raw_count,
                     self.trade_flow_count,
@@ -639,6 +660,10 @@ impl FusionFactorPubApp {
                     self.factor_warming_up_count,
                     self.factor_invalid_value_count,
                     self.factor_missing_depth_count,
+                    self.published_count,
+                    self.publish_failed_count,
+                    self.publisher.published_count(),
+                    self.publisher.dropped_count(),
                     self.trade_flow_decode_error_last.as_deref().unwrap_or("-"),
                 );
                 self.trade_flow_raw_count = 0;
@@ -658,6 +683,8 @@ impl FusionFactorPubApp {
                 self.factor_invalid_value_count = 0;
                 self.factor_missing_depth_count = 0;
                 self.factor_unsupported_count = 0;
+                self.published_count = 0;
+                self.publish_failed_count = 0;
                 self.last_stats_log = Instant::now();
             }
         }
@@ -723,6 +750,27 @@ impl FusionFactorPubApp {
             .saturating_add(eval_result.stats.factor118_ready_count);
 
         self.log_factor_summary(&symbol, eval_elapsed_us, &eval_result);
+
+        // Publish FeatureMsg via iceoryx2
+        let ts_ms = msg.ts / 1000; // ts is in microseconds, convert to ms
+        let feature_msg =
+            FeatureMsg::create(symbol, ts_ms, eval_result.status, eval_result.factor_values);
+        match feature_msg.to_bytes() {
+            Ok(bytes) => {
+                if self.publisher.publish(&bytes) {
+                    self.published_count = self.published_count.saturating_add(1);
+                } else {
+                    self.publish_failed_count = self.publish_failed_count.saturating_add(1);
+                }
+            }
+            Err(e) => {
+                self.publish_failed_count = self.publish_failed_count.saturating_add(1);
+                warn!(
+                    "FusionFactorPubApp[{}] FeatureMsg serialize failed: {}",
+                    self.venue_slug, e
+                );
+            }
+        }
     }
 
     fn evaluate_ordered_factors(
@@ -750,8 +798,13 @@ impl FusionFactorPubApp {
         let mut result = OrderedEvalResult {
             stats: OrderedEvalStats::default(),
             factor_issues: Vec::with_capacity(plan.ordered_factors.len()),
+            factor_values: Vec::with_capacity(plan.ordered_factors.len()),
+            status: 0,
         };
         result.stats.factor_plan_count = plan.ordered_factors.len() as u64;
+
+        let mut has_warming_up = false;
+        let mut has_missing_depth = false;
 
         for binding in &plan.ordered_factors {
             match self.compute_supported_factor(binding, factor_118_result, depth, series.as_ref())
@@ -762,6 +815,7 @@ impl FusionFactorPubApp {
                     if ready {
                         result.stats.factor_ready_count =
                             result.stats.factor_ready_count.saturating_add(1);
+                        result.factor_values.push(value);
                         if value.is_nan() {
                             result.stats.factor_nan_fill_count =
                                 result.stats.factor_nan_fill_count.saturating_add(1);
@@ -770,6 +824,7 @@ impl FusionFactorPubApp {
                                 .push(format!("{}:nan_fill", binding.name));
                         }
                     } else {
+                        result.factor_values.push(f64::NAN);
                         let reason = if value.is_nan() {
                             format!("{}:{}(nan)", binding.name, status)
                         } else {
@@ -778,6 +833,7 @@ impl FusionFactorPubApp {
                         result.factor_issues.push(reason);
                         match status {
                             "warming_up" => {
+                                has_warming_up = true;
                                 result.stats.factor_warming_up_count =
                                     result.stats.factor_warming_up_count.saturating_add(1);
                             }
@@ -786,6 +842,7 @@ impl FusionFactorPubApp {
                                     result.stats.factor_invalid_value_count.saturating_add(1);
                             }
                             "missing_depth" => {
+                                has_missing_depth = true;
                                 result.stats.factor_missing_depth_count =
                                     result.stats.factor_missing_depth_count.saturating_add(1);
                             }
@@ -798,11 +855,21 @@ impl FusionFactorPubApp {
                     }
                 }
                 None => {
+                    result.factor_values.push(f64::NAN);
                     result.stats.factor_unsupported_count =
                         result.stats.factor_unsupported_count.saturating_add(1);
                 }
             }
         }
+
+        // Determine status: MissingDepth > WarmingUp > AllReady
+        result.status = if has_missing_depth {
+            2 // FeatureStatus::MissingDepth
+        } else if has_warming_up {
+            1 // FeatureStatus::WarmingUp
+        } else {
+            0 // FeatureStatus::AllReady
+        };
 
         Some(result)
     }

@@ -93,14 +93,34 @@ pub struct PairMmResampleMsg {
     pub values: Vec<f64>,
 }
 
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeatureStatus {
+    AllReady = 0,
+    WarmingUp = 1,
+    MissingDepth = 2,
+}
+
+impl FeatureStatus {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::AllReady,
+            1 => Self::WarmingUp,
+            2 => Self::MissingDepth,
+            _ => Self::WarmingUp,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FeatureMsg {
     pub msg_type: u32,
     pub symbol_length: u32,
     pub symbol: String,
     pub ts_ms: i64,
+    pub status: u8,
     pub feature_dim: u16,
-    pub features: Vec<f32>,
+    pub features: Vec<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -961,7 +981,7 @@ impl PairMmResampleMsg {
 }
 
 impl FeatureMsg {
-    pub fn create(symbol: String, ts_ms: i64, features: Vec<f32>) -> Self {
+    pub fn create(symbol: String, ts_ms: i64, status: u8, features: Vec<f64>) -> Self {
         let symbol_length = symbol.len() as u32;
         let feature_dim = features.len() as u16;
         Self {
@@ -969,11 +989,13 @@ impl FeatureMsg {
             symbol_length,
             symbol,
             ts_ms,
+            status,
             feature_dim,
             features,
         }
     }
 
+    /// Layout: msg_type(u32) | symbol_length(u32) | symbol | ts_ms(i64) | status(u8) | feature_dim(u16) | features(f64[])
     pub fn to_bytes(&self) -> Result<Bytes> {
         if self.msg_type != FEATURE_MSG_TYPE {
             bail!(
@@ -988,21 +1010,24 @@ impl FeatureMsg {
             bail!("FeatureMsg feature_dim {} exceeds u16::MAX", feature_dim);
         }
 
-        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 2 + feature_dim * 4;
+        // 4(msg_type) + 4(symbol_length) + symbol + 8(ts_ms) + 1(status) + 2(feature_dim) + feature_dim*8
+        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 1 + 2 + feature_dim * 8;
         let mut buf = BytesMut::with_capacity(total_size);
         buf.put_u32_le(self.msg_type);
         buf.put_u32_le(self.symbol_length);
         buf.put(self.symbol.as_bytes());
         buf.put_i64_le(self.ts_ms);
+        buf.put_u8(self.status);
         buf.put_u16_le(feature_dim as u16);
         for value in &self.features {
-            buf.put_f32_le(*value);
+            buf.put_f64_le(*value);
         }
         Ok(buf.freeze())
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        if data.len() < 4 + 4 + 8 + 2 {
+        // min: 4 + 4 + 0(symbol) + 8 + 1 + 2 = 19
+        if data.len() < 4 + 4 + 8 + 1 + 2 {
             bail!("FeatureMsg too short: {}", data.len());
         }
 
@@ -1017,29 +1042,31 @@ impl FeatureMsg {
         }
 
         let symbol_len = cursor.get_u32_le() as usize;
-        if cursor.remaining() < symbol_len + 8 + 2 {
+        // need: symbol + 8(ts_ms) + 1(status) + 2(feature_dim)
+        if cursor.remaining() < symbol_len + 8 + 1 + 2 {
             bail!(
                 "FeatureMsg truncated before body: remaining={} need={}",
                 cursor.remaining(),
-                symbol_len + 8 + 2
+                symbol_len + 8 + 1 + 2
             );
         }
 
         let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_len).to_vec())?;
         let ts_ms = cursor.get_i64_le();
+        let status = cursor.get_u8();
         let feature_dim = cursor.get_u16_le() as usize;
 
-        if cursor.remaining() < feature_dim * 4 {
+        if cursor.remaining() < feature_dim * 8 {
             bail!(
                 "FeatureMsg feature payload too short: remaining={} need={}",
                 cursor.remaining(),
-                feature_dim * 4
+                feature_dim * 8
             );
         }
 
         let mut features = Vec::with_capacity(feature_dim);
         for _ in 0..feature_dim {
-            features.push(cursor.get_f32_le());
+            features.push(cursor.get_f64_le());
         }
 
         Ok(Self {
@@ -1047,6 +1074,7 @@ impl FeatureMsg {
             symbol_length: symbol.len() as u32,
             symbol,
             ts_ms,
+            status,
             feature_dim: feature_dim as u16,
             features,
         })
