@@ -2265,7 +2265,7 @@ impl FusionFactorPubApp {
         }
         let sell_count = series.sell_count[n - 1];
         if sell_count.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         let value = series.sell_amount[n - 1] / sell_count;
         if value.is_finite() {
@@ -2282,7 +2282,7 @@ impl FusionFactorPubApp {
         }
         let buy_count = series.buy_count[n - 1];
         if buy_count.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some(series.buy_amount[n - 1] / buy_count))
     }
@@ -2345,7 +2345,7 @@ impl FusionFactorPubApp {
         let upper_shadow = series.high[n - 1] - series.open[n - 1].max(series.close[n - 1]);
         let range_hl = series.high[n - 1] - series.low[n - 1];
         if range_hl.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some(upper_shadow / range_hl))
     }
@@ -2363,7 +2363,7 @@ impl FusionFactorPubApp {
         let lower_shadow = series.open[n - 1].min(series.close[n - 1]) - series.low[n - 1];
         let range_hl = series.high[n - 1] - series.low[n - 1];
         if range_hl.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some(lower_shadow / range_hl))
     }
