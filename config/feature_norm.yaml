@@ -1,0 +1,4 @@
+# Feature normalization (z-score) 配置
+feature_norm:
+  model_name: "pairmm_xgb_v1"
+  window_size: 17280  # 24h / 5s

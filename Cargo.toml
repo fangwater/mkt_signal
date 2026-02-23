@@ -132,6 +132,10 @@ path = "src/bin/model_pub.rs"
 name = "fusion_factor_pub"
 path = "src/bin/fusion_factor_pub.rs"
 
+[[bin]]
+name = "feature_norm"
+path = "src/bin/feature_norm.rs"
+
 [dependencies]
 local-ip-address = "0.6"
 serde_yaml = "0.9"
