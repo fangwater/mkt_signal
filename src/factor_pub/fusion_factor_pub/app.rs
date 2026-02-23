@@ -21,8 +21,8 @@ use super::publisher::FusionFactorPublisher;
 use super::window_primitives::{
     rolling_corr_last, rolling_kurt_last, rolling_mean_last, rolling_mean_last_with_min_periods,
     rolling_mean_series, rolling_mean_series_opt, rolling_rank_last, rolling_skew_last,
-    rolling_std_last, rolling_sum_last_with_min_periods, rolling_sum_series,
-    rolling_sum_series_opt, tail_skew_last_opt,
+    rolling_sum_last_with_min_periods, rolling_sum_series, rolling_sum_series_opt,
+    tail_skew_last_opt,
 };
 use crate::common::mkt_msg::FeatureMsg;
 use crate::common::msg_parser::parse_trade_flow_feature;
@@ -959,19 +959,18 @@ impl FusionFactorPubApp {
                     match latest_eval.as_ref() {
                         Some(latest) => {
                             info!(
-                                "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} loaded={} total_loaded={} status={} abnormal={}",
+                                "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} loaded={} status={} abnormal={}",
                                 self.venue_slug,
                                 symbol,
                                 symbol_loaded,
-                                total_loaded,
                                 latest.status_name(),
                                 latest.abnormal_tags()
                             );
                         }
                         None => {
                             info!(
-                                "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} loaded={} total_loaded={} latest_eval=none",
-                                self.venue_slug, symbol, symbol_loaded, total_loaded
+                                "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} loaded={} latest_eval=none",
+                                self.venue_slug, symbol, symbol_loaded
                             );
                         }
                     }
@@ -3270,18 +3269,30 @@ impl FusionFactorPubApp {
 
     fn compute_baseline_080(series: &SymbolSeries) -> Option<f64> {
         let n = series.high.len().min(series.low.len());
-        if n < 10 {
+        let window = 10usize;
+        if n < window {
             return None;
         }
-        let highs = &series.high[..n];
-        let lows = &series.low[..n];
-        let corr = rolling_corr_last(highs, lows, 10, 1).ok().flatten()?;
-        let std_high = rolling_std_last(highs, 10).ok().flatten()?;
-        let std_low = rolling_std_last(lows, 10).ok().flatten()?;
-        if std_low.abs() <= 1e-12 {
+        let highs = &series.high[n - window..n];
+        let lows = &series.low[n - window..n];
+        if highs.iter().any(|v| !v.is_finite()) || lows.iter().any(|v| !v.is_finite()) {
             return None;
         }
-        let beta = corr * std_high / std_low;
+
+        let mean_high = highs.iter().sum::<f64>() / window as f64;
+        let mean_low = lows.iter().sum::<f64>() / window as f64;
+        let mut cov = 0.0;
+        let mut var_low = 0.0;
+        for i in 0..window {
+            let dh = highs[i] - mean_high;
+            let dl = lows[i] - mean_low;
+            cov += dh * dl;
+            var_low += dl * dl;
+        }
+        if var_low.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        let beta = cov / var_low;
         if beta.is_finite() {
             Some(beta)
         } else {
