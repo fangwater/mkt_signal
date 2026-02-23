@@ -2782,7 +2782,14 @@ impl FusionFactorPubApp {
         let vols: Vec<f64> = (0..10)
             .map(|i| depth_level_amount(&depth.bids, i))
             .collect();
-        rolling_corr_last(&prices, &vols, 10, 1).ok().flatten()
+        Some(depth_corr_or_panic(
+            "factor_107",
+            "bids",
+            depth,
+            &prices,
+            &vols,
+            rolling_corr_last(&prices, &vols, 10, 1),
+        ))
     }
 
     fn compute_factor_108(depth: &DepthSnapshot) -> Option<f64> {
@@ -2790,7 +2797,14 @@ impl FusionFactorPubApp {
         let vols: Vec<f64> = (0..10)
             .map(|i| depth_level_amount(&depth.asks, i))
             .collect();
-        rolling_corr_last(&prices, &vols, 10, 1).ok().flatten()
+        Some(depth_corr_or_panic(
+            "factor_108",
+            "asks",
+            depth,
+            &prices,
+            &vols,
+            rolling_corr_last(&prices, &vols, 10, 1),
+        ))
     }
 
     fn compute_factor_110(depth: &DepthSnapshot) -> Option<f64> {
@@ -5263,6 +5277,37 @@ fn corr_last_with_min_periods(
     }
     let out = cov / (var_x.sqrt() * var_y.sqrt());
     finite_opt(Some(out))
+}
+
+fn depth_corr_or_panic(
+    factor_name: &str,
+    side: &str,
+    depth: &DepthSnapshot,
+    prices: &[f64],
+    vols: &[f64],
+    corr_result: Result<Option<f64>>,
+) -> f64 {
+    match corr_result {
+        Ok(Some(v)) if v.is_finite() => v,
+        Ok(Some(v)) => {
+            panic!(
+                "{} correlation non-finite: side={} corr={} prices={:?} vols={:?} depth={:?}",
+                factor_name, side, v, prices, vols, depth
+            );
+        }
+        Ok(None) => {
+            panic!(
+                "{} correlation unavailable: side={} reason=none prices={:?} vols={:?} depth={:?}",
+                factor_name, side, prices, vols, depth
+            );
+        }
+        Err(err) => {
+            panic!(
+                "{} correlation failed: side={} err={} prices={:?} vols={:?} depth={:?}",
+                factor_name, side, err, prices, vols, depth
+            );
+        }
+    }
 }
 
 fn linear_regression_predict_last(values: &[f64]) -> Option<f64> {
