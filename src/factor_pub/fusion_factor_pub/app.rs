@@ -352,9 +352,7 @@ struct OrderedEvalResult {
 
 #[derive(Debug, Clone)]
 struct ReplayEvalSummary {
-    ts: i64,
     status: u8,
-    warming_up: bool,
     invalid_value: bool,
     nan_fill: bool,
     missing_depth: bool,
@@ -364,7 +362,7 @@ struct ReplayEvalSummary {
 }
 
 impl ReplayEvalSummary {
-    fn from_eval(ts: i64, eval_result: &OrderedEvalResult) -> Self {
+    fn from_eval(eval_result: &OrderedEvalResult) -> Self {
         let s = &eval_result.stats;
         let non_warming_issue_count = eval_result
             .factor_issues
@@ -372,9 +370,7 @@ impl ReplayEvalSummary {
             .filter(|issue| !issue.contains(":warming_up"))
             .count();
         Self {
-            ts,
             status: eval_result.status,
-            warming_up: s.factor_warming_up_count > 0,
             invalid_value: s.factor_invalid_value_count > 0,
             nan_fill: s.factor_nan_fill_count > 0,
             missing_depth: s.factor_missing_depth_count > 0,
@@ -384,11 +380,9 @@ impl ReplayEvalSummary {
         }
     }
 
-    fn missing_plan(ts: i64) -> Self {
+    fn missing_plan() -> Self {
         Self {
-            ts,
             status: u8::MAX,
-            warming_up: false,
             invalid_value: false,
             nan_fill: false,
             missing_depth: false,
@@ -396,15 +390,6 @@ impl ReplayEvalSummary {
             non_warming_issue_count: 0,
             missing_factor_plan: true,
         }
-    }
-
-    fn has_abnormal(self: &Self) -> bool {
-        self.missing_factor_plan
-            || self.invalid_value
-            || self.nan_fill
-            || self.missing_depth
-            || self.unsupported
-            || self.non_warming_issue_count > 0
     }
 
     fn abnormal_tags(&self) -> String {
@@ -927,15 +912,12 @@ impl FusionFactorPubApp {
                     match latest_eval.as_ref() {
                         Some(latest) => {
                             info!(
-                                "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} loaded={} total_loaded={} latest_ts={} latest_status={} latest_warming_up={} latest_has_abnormal={} latest_abnormal_tags={}",
+                                "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} loaded={} total_loaded={} status={} abnormal={}",
                                 self.venue_slug,
                                 symbol,
                                 symbol_loaded,
                                 total_loaded,
-                                latest.ts,
                                 feature_status_name(latest.status),
-                                latest.warming_up,
-                                latest.has_abnormal(),
                                 latest.abnormal_tags()
                             );
                         }
@@ -1017,10 +999,10 @@ impl FusionFactorPubApp {
                     self.venue_slug, symbol, msg.ts
                 );
             }
-            return Some(ReplayEvalSummary::missing_plan(msg.ts));
+            return Some(ReplayEvalSummary::missing_plan());
         };
 
-        let replay_summary = ReplayEvalSummary::from_eval(msg.ts, &eval_result);
+        let replay_summary = ReplayEvalSummary::from_eval(&eval_result);
         if !emit_output {
             return Some(replay_summary);
         }
