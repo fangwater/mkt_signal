@@ -811,10 +811,11 @@ impl FusionFactorPubApp {
             .iter()
             .map(|name| ColumnFamilyDescriptor::new(name.clone(), cf_opts.clone()))
             .collect();
-        let db = match DB::open_cf_descriptors(
+        let db = match DB::open_cf_descriptors_read_only(
             &db_opts,
             &self.trade_flow_feature_rocksdb_path,
             descriptors,
+            false,
         ) {
             Ok(db) => db,
             Err(err) => {
