@@ -3222,14 +3222,28 @@ impl FusionFactorPubApp {
         }
         let mut ratio = Vec::with_capacity(n);
         for i in 0..n {
+            let buy = series.buy_volume[i];
             let sell = series.sell_volume[i];
-            if sell.abs() <= 1e-12 {
+            if !buy.is_finite() || !sell.is_finite() || sell.abs() <= 1e-12 {
                 ratio.push(f64::NAN);
                 continue;
             }
-            ratio.push(series.buy_volume[i] / sell);
+            ratio.push(buy / sell);
         }
-        pct_change_last(&ratio, 60)
+        let curr = *ratio.last()?;
+        let prev = ratio[n - 1 - 60];
+        if !curr.is_finite() || !prev.is_finite() {
+            return None;
+        }
+        if prev.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        let value = (curr - prev) / prev;
+        if value.is_finite() {
+            Some(value)
+        } else {
+            Some(0.0)
+        }
     }
 
     fn compute_baseline_034(series: &SymbolSeries) -> Option<f64> {
