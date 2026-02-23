@@ -806,6 +806,55 @@ impl FusionFactorPubApp {
 
         let mut sorted_cf_names = cf_names;
         sorted_cf_names.sort_unstable();
+        let existing_cf_set: HashSet<String> = sorted_cf_names.iter().cloned().collect();
+        let mut expected_symbol_cfs: Vec<String> = symbol_list
+            .iter()
+            .map(|symbol| trade_flow_feature_cf_name(&self.venue_slug, symbol))
+            .collect();
+        expected_symbol_cfs.sort_unstable();
+        let mut existing_symbol_cfs = Vec::new();
+        let mut missing_symbol_cfs = Vec::new();
+        for cf in &expected_symbol_cfs {
+            if existing_cf_set.contains(cf) {
+                existing_symbol_cfs.push(cf.clone());
+            } else {
+                missing_symbol_cfs.push(cf.clone());
+            }
+        }
+
+        info!(
+            "FusionFactorPubApp[{}] rocksdb cf-diagnose: path={} all_existing_cf_count={} all_existing_cf=[{}]",
+            self.venue_slug,
+            self.trade_flow_feature_rocksdb_path,
+            sorted_cf_names.len(),
+            sorted_cf_names.join(",")
+        );
+        info!(
+            "FusionFactorPubApp[{}] rocksdb cf-diagnose: expected_symbol_cf_count={} expected_symbol_cf=[{}]",
+            self.venue_slug,
+            expected_symbol_cfs.len(),
+            expected_symbol_cfs.join(",")
+        );
+        info!(
+            "FusionFactorPubApp[{}] rocksdb cf-diagnose: existing_symbol_cf_count={} existing_symbol_cf=[{}]",
+            self.venue_slug,
+            existing_symbol_cfs.len(),
+            existing_symbol_cfs.join(",")
+        );
+        if missing_symbol_cfs.is_empty() {
+            info!(
+                "FusionFactorPubApp[{}] rocksdb cf-diagnose: missing_symbol_cf_count=0 missing_symbol_cf=[]",
+                self.venue_slug
+            );
+        } else {
+            warn!(
+                "FusionFactorPubApp[{}] rocksdb cf-diagnose: missing_symbol_cf_count={} missing_symbol_cf=[{}]",
+                self.venue_slug,
+                missing_symbol_cfs.len(),
+                missing_symbol_cfs.join(",")
+            );
+        }
+
         let cf_opts = Options::default();
         let descriptors: Vec<ColumnFamilyDescriptor> = sorted_cf_names
             .iter()
