@@ -507,6 +507,7 @@ pub struct FusionFactorPubApp {
     trade_flow_subscriber: Subscriber<ipc::Service, [u8; TRADE_FLOW_MAX_BYTES], ()>,
     publisher: FusionFactorPublisher,
     allowed_symbols: HashSet<String>,
+    symbol_all_ready_seen: HashSet<String>,
     symbol_factor_plans: HashMap<String, SymbolFactorPlan>,
     symbol_states: HashMap<String, SymbolCalcState>,
     depth_attached_count: u64,
@@ -589,6 +590,7 @@ impl FusionFactorPubApp {
             trade_flow_subscriber,
             publisher,
             allowed_symbols: allowed_symbols.into_iter().collect(),
+            symbol_all_ready_seen: HashSet::new(),
             symbol_factor_plans,
             symbol_states: HashMap::new(),
             depth_attached_count: 0,
@@ -992,7 +994,7 @@ impl FusionFactorPubApp {
         }
 
         let eval_started = Instant::now();
-        let Some(eval_result) = self.evaluate_ordered_factors(&symbol, depth_opt, msg.ts) else {
+        let Some(eval_result) = self.evaluate_ordered_factors(&symbol, depth_opt) else {
             if emit_output {
                 warn!(
                     "fusion-trigger: venue={} symbol={} trade_ts={} reason=missing_factor_plan",
@@ -1001,6 +1003,24 @@ impl FusionFactorPubApp {
             }
             return Some(ReplayEvalSummary::missing_plan());
         };
+
+        if eval_result.status == 0 {
+            self.symbol_all_ready_seen.insert(symbol.clone());
+        } else if eval_result.status == 1 && self.symbol_all_ready_seen.contains(&symbol) {
+            let warming_factors: Vec<&str> = eval_result
+                .factor_issues
+                .iter()
+                .filter(|issue| issue.contains(":warming_up"))
+                .map(|s| s.as_str())
+                .collect();
+            panic!(
+                "fusion factor regressed to warming_up after all_ready: venue={} symbol={} trade_ts={} warming_factors=[{}]",
+                self.venue_slug,
+                symbol,
+                msg.ts,
+                warming_factors.join(",")
+            );
+        }
 
         let replay_summary = ReplayEvalSummary::from_eval(&eval_result);
         if !emit_output {
@@ -1063,7 +1083,6 @@ impl FusionFactorPubApp {
         &mut self,
         symbol: &str,
         depth: Option<&DepthSnapshot>,
-        trade_ts: i64,
     ) -> Option<OrderedEvalResult> {
         let needs_factor_118 = self
             .symbol_factor_plans
@@ -1090,6 +1109,7 @@ impl FusionFactorPubApp {
         };
         result.stats.factor_plan_count = plan.ordered_factors.len() as u64;
 
+        let mut has_warming_up = false;
         let mut has_missing_depth = false;
 
         for binding in &plan.ordered_factors {
@@ -1119,15 +1139,9 @@ impl FusionFactorPubApp {
                         result.factor_issues.push(reason);
                         match status {
                             "warming_up" => {
-                                panic!(
-                                    "fusion factor none detected: venue={} symbol={} trade_ts={} factor={} status={} value={}",
-                                    self.venue_slug,
-                                    symbol,
-                                    trade_ts,
-                                    binding.name,
-                                    status,
-                                    value
-                                );
+                                has_warming_up = true;
+                                result.stats.factor_warming_up_count =
+                                    result.stats.factor_warming_up_count.saturating_add(1);
                             }
                             "invalid_value" => {
                                 result.stats.factor_invalid_value_count =
@@ -1157,6 +1171,8 @@ impl FusionFactorPubApp {
         // Determine status: MissingDepth > WarmingUp > AllReady
         result.status = if has_missing_depth {
             2 // FeatureStatus::MissingDepth
+        } else if has_warming_up {
+            1 // FeatureStatus::WarmingUp
         } else {
             0 // FeatureStatus::AllReady
         };
