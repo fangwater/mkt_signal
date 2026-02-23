@@ -804,22 +804,10 @@ impl FusionFactorPubApp {
             }
         };
 
-        let existing_cf_names: HashSet<String> = cf_names.into_iter().collect();
-        let mut required_cf_names: Vec<String> = vec!["default".to_string()];
-        for symbol in &symbol_list {
-            let cf_name = trade_flow_feature_cf_name(&self.venue_slug, symbol);
-            if !existing_cf_names.contains(&cf_name) {
-                panic!(
-                    "fusion bootstrap missing rocksdb history: venue={} symbol={} cf={} path={}",
-                    self.venue_slug, symbol, cf_name, self.trade_flow_feature_rocksdb_path
-                );
-            }
-            required_cf_names.push(cf_name);
-        }
-        required_cf_names.sort_unstable();
-
+        let mut sorted_cf_names = cf_names;
+        sorted_cf_names.sort_unstable();
         let cf_opts = Options::default();
-        let descriptors: Vec<ColumnFamilyDescriptor> = required_cf_names
+        let descriptors: Vec<ColumnFamilyDescriptor> = sorted_cf_names
             .iter()
             .map(|name| ColumnFamilyDescriptor::new(name.clone(), cf_opts.clone()))
             .collect();
