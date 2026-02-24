@@ -1117,7 +1117,7 @@ impl FusionFactorPubApp {
 
             if loaded % ROCKSDB_BOOTSTRAP_LOG_EVERY == 0 {
                 info!(
-                    "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} interval_loaded={} interval_calculated={} interval_reload={} interval_dropped={} interval_skipped={} interval_warming_up={} interval_other={} total_loaded={} total_calculated={} total_reload={} total_dropped={} total_skipped={}",
+                    "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} interval_loaded={} interval_calculated={} interval_reload={} interval_dropped={} interval_skipped={} interval_warming_up={} interval_other={}",
                     venue_slug,
                     symbol,
                     interval_loaded,
@@ -1126,12 +1126,7 @@ impl FusionFactorPubApp {
                     interval_dropped,
                     interval_skipped,
                     interval_warming_up,
-                    interval_other_status,
-                    loaded,
-                    calculated,
-                    reload,
-                    dropped,
-                    skipped
+                    interval_other_status
                 );
                 interval_loaded = 0;
                 interval_calculated = 0;
