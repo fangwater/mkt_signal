@@ -34,6 +34,7 @@ const REDIS_WARN_INTERVAL_SECS: u64 = 60;
 const ROCKSDB_WARN_INTERVAL_SECS: u64 = 60;
 const MISSING_DEPTH_WARN_INTERVAL_SECS: u64 = 60;
 const PUBLISH_OUTCOME_LOG_INTERVAL_SECS: u64 = 10;
+const PERSISTENCE_CLEANUP_INTERVAL_SECS: u64 = 7_200;
 const TRADE_FLOW_FEATURE_CF_SUFFIX: &str = "trade_flow:feature";
 const FIXED_TRADE_CHANNEL: &str = "trade";
 const FIXED_REDIS_HOST: &str = "127.0.0.1";
@@ -884,8 +885,6 @@ impl TradeFlowFeatureRocksDbStore {
                         cf_name, cutoff_ms
                     )
                 })?;
-            self.db
-                .compact_range_cf(cf, Some(&start_key), Some(&end_key));
             touched_cfs += 1;
             deleted_ranges += 1;
         }
@@ -955,6 +954,8 @@ pub struct TradeFlowFeaturePubApp {
     last_publish_outcome_log: Instant,
     last_threshold_reload: Instant,
     threshold_reload_interval: Duration,
+    cleanup_interval: Duration,
+    last_cleanup: Instant,
     last_retired_symbols: usize,
     trade_dedup_lru: TradeDedupLru,
     timer_check_interval: Duration,
@@ -976,6 +977,7 @@ impl TradeFlowFeaturePubApp {
         let publisher = TradeFlowFeaturePublisher::new(venue_slug)?;
         let threshold_store = AmountThresholdRedisStore::new(fixed_redis_settings())?;
         let threshold_reload_interval = Duration::from_secs(config.runtime.threshold_reload_secs);
+        let cleanup_interval = Duration::from_secs(PERSISTENCE_CLEANUP_INTERVAL_SECS);
         let persistence = PersistenceRuntime::from_config(&config.persistence);
         let heartbeat_symbol = normalize_symbol_for_venue("BTCUSDT", venue);
 
@@ -1016,6 +1018,9 @@ impl TradeFlowFeaturePubApp {
             last_publish_outcome_log: Instant::now(),
             last_threshold_reload: Instant::now() - threshold_reload_interval,
             threshold_reload_interval,
+            cleanup_interval,
+            // Avoid heavy cleanup right after startup; run it on its own cadence.
+            last_cleanup: Instant::now(),
             last_retired_symbols: 0,
             trade_dedup_lru: TradeDedupLru::new(TRADE_DEDUP_WINDOW_MS),
             timer_check_interval: Duration::from_micros(TIMER_CHECK_INTERVAL_MICROS),
@@ -1447,6 +1452,11 @@ impl TradeFlowFeaturePubApp {
     }
 
     fn maybe_cleanup_persistence(&mut self) {
+        if self.last_cleanup.elapsed() < self.cleanup_interval {
+            return;
+        }
+        self.last_cleanup = Instant::now();
+
         if !self.persistence.enabled() {
             return;
         }
@@ -1464,23 +1474,26 @@ impl TradeFlowFeaturePubApp {
             return;
         }
 
+        let started = Instant::now();
         match store.cleanup_before_for_venue(&self.venue_slug, cutoff_ms) {
             Ok((touched_cfs, deleted_ranges)) => {
-                if touched_cfs > 0 {
-                    info!(
-                        "trade_flow_feature rocksdb rolling cleanup: venue={} cutoff_ms={} retention_hours={} cfs={} ranges={}",
-                        self.venue_slug,
-                        cutoff_ms,
-                        self.persistence.retention_hours,
-                        touched_cfs,
-                        deleted_ranges
-                    );
-                }
+                info!(
+                    "trade_flow_feature rocksdb rolling cleanup: venue={} cutoff_ms={} retention_hours={} elapsed_ms={} cfs={} ranges={}",
+                    self.venue_slug,
+                    cutoff_ms,
+                    self.persistence.retention_hours,
+                    started.elapsed().as_millis(),
+                    touched_cfs,
+                    deleted_ranges
+                );
             }
             Err(err) => {
                 self.warn_rocksdb_throttled(&format!(
-                    "trade_flow_feature rocksdb cleanup failed: venue={} cutoff_ms={} err={:#}",
-                    self.venue_slug, cutoff_ms, err
+                    "trade_flow_feature rocksdb cleanup failed: venue={} cutoff_ms={} elapsed_ms={} err={:#}",
+                    self.venue_slug,
+                    cutoff_ms,
+                    started.elapsed().as_millis(),
+                    err
                 ));
             }
         }
