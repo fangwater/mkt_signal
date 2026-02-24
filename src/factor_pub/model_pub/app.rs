@@ -14,8 +14,8 @@ use super::cfg::ModelPubConfig;
 use super::model::XgbModel;
 use super::publisher::ModelPublisher;
 use crate::common::mkt_msg::{
-    FeatureMsg, ModelMsg, MODEL_STATUS_BAD_DIM, MODEL_STATUS_DECODE_ERR, MODEL_STATUS_INFER_ERR,
-    MODEL_STATUS_OK,
+    FeatureMsg, FeatureStatus, ModelMsg, MODEL_STATUS_BAD_DIM, MODEL_STATUS_DECODE_ERR,
+    MODEL_STATUS_INFER_ERR, MODEL_STATUS_OK,
 };
 use crate::common::rolling_welford::RollingWelford;
 use crate::factor_pub::fusion_factor_pub::publisher::FUSION_FACTOR_PAYLOAD_MAX_BYTES;
@@ -38,6 +38,7 @@ struct ModelPubStats {
     infer_latency_max_us: u64,
     infer_count: u64,
     cold_start_suppressed: u64,
+    reload_only: u64,
 }
 
 struct SymbolNormState {
@@ -316,6 +317,12 @@ impl ModelPubApp {
                     return;
                 }
 
+                // Reload: only update rolling z-score, skip inference
+                if feature.status == FeatureStatus::Reload as u8 {
+                    self.stats.reload_only += 1;
+                    return;
+                }
+
                 // Compute z-scores
                 let normalized: Vec<f64> = norm_state
                     .welford_vec
@@ -418,7 +425,7 @@ impl ModelPubApp {
         let norm_symbols = self.norm_states.len();
         let warmed_symbols = self.norm_states.values().filter(|s| s.sample_count >= self.min_samples).count();
         info!(
-            "ModelPubApp[{}@{}] stats: recv={} pub_ok={} pub_fail={} decode_err={} bad_dim={} infer_err={} symbol_miss={} cold_suppressed={} infer_count={} latency_avg={}us latency_max={}us norm_symbols={}/{} warmed",
+            "ModelPubApp[{}@{}] stats: recv={} pub_ok={} pub_fail={} decode_err={} bad_dim={} infer_err={} symbol_miss={} cold_suppressed={} reload_only={} infer_count={} latency_avg={}us latency_max={}us norm_symbols={}/{} warmed",
             self.model_name,
             self.venue,
             self.stats.recv_total,
@@ -429,6 +436,7 @@ impl ModelPubApp {
             self.stats.infer_err,
             self.stats.symbol_miss,
             self.stats.cold_start_suppressed,
+            self.stats.reload_only,
             self.stats.infer_count,
             avg_latency_us,
             self.stats.infer_latency_max_us,
