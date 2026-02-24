@@ -32,6 +32,9 @@ struct ModelPubStats {
     bad_dim: u64,
     infer_err: u64,
     symbol_miss: u64,
+    infer_latency_sum_us: u64,
+    infer_latency_max_us: u64,
+    infer_count: u64,
 }
 
 struct SymbolModelRuntime {
@@ -113,6 +116,15 @@ impl ModelPubApp {
                 model_name,
                 config.model_manager_base_url
             );
+        }
+
+        // Warmup: run one dummy predict per symbol to prime XGBoost internals
+        for (symbol, runtime) in &models_by_symbol {
+            let dummy = vec![0.0f32; runtime.feature_dim];
+            match runtime.model.predict_one(&dummy) {
+                Ok(_) => info!("warmup predict ok: model_name={} symbol={}", model_name, symbol),
+                Err(e) => warn!("warmup predict failed: model_name={} symbol={} err={}", model_name, symbol, e),
+            }
         }
 
         let subscriber = Self::create_subscriber(&model_name, &input_service)?;
@@ -286,7 +298,15 @@ impl ModelPubApp {
                     }
 
                     let f32_features: Vec<f32> = feature.features.iter().map(|&v| v as f32).collect();
-                    runtime.model.predict_one(&f32_features)
+                    let infer_start = Instant::now();
+                    let result = runtime.model.predict_one(&f32_features);
+                    let elapsed_us = infer_start.elapsed().as_micros() as u64;
+                    self.stats.infer_count += 1;
+                    self.stats.infer_latency_sum_us += elapsed_us;
+                    if elapsed_us > self.stats.infer_latency_max_us {
+                        self.stats.infer_latency_max_us = elapsed_us;
+                    }
+                    result
                 };
 
                 match predict_result {
@@ -341,8 +361,13 @@ impl ModelPubApp {
     }
 
     fn log_stats(&mut self) {
+        let avg_latency_us = if self.stats.infer_count > 0 {
+            self.stats.infer_latency_sum_us / self.stats.infer_count
+        } else {
+            0
+        };
         info!(
-            "ModelPubApp[{}] stats: recv_total={} publish_ok={} publish_fail={} decode_err={} bad_dim={} infer_err={} symbol_miss={}",
+            "ModelPubApp[{}] stats: recv={} pub_ok={} pub_fail={} decode_err={} bad_dim={} infer_err={} symbol_miss={} infer_count={} latency_avg={}us latency_max={}us",
             self.model_name,
             self.stats.recv_total,
             self.stats.publish_ok,
@@ -351,6 +376,9 @@ impl ModelPubApp {
             self.stats.bad_dim,
             self.stats.infer_err,
             self.stats.symbol_miss,
+            self.stats.infer_count,
+            avg_latency_us,
+            self.stats.infer_latency_max_us,
         );
         self.stats = ModelPubStats::default();
     }

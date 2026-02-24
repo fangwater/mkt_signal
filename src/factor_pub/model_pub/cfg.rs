@@ -85,7 +85,7 @@ fn default_model_manager_request_timeout_ms() -> u64 {
 }
 
 fn default_input_service_template() -> String {
-    "model_input/binance-futures/{model_name}".to_string()
+    "feature_norm/binance-futures/{model_name}".to_string()
 }
 
 fn default_output_service_template() -> String {
