@@ -1063,18 +1063,18 @@ impl FusionFactorPubApp {
             })
             .unwrap_or(false);
 
-        for msg in records {
+        for (idx, msg) in records.iter().enumerate() {
             let latest_eval = if Self::should_drop_for_baseline_018_with_set(
                 symbols_need_baseline_018,
                 &symbol,
-                &msg,
+                msg,
             ) {
                 dropped = dropped.saturating_add(1);
                 ReplayEvalSummary::dropped_input()
             } else {
-                let depth_snapshot = parse_embedded_depth(&msg);
+                let depth_snapshot = parse_embedded_depth(msg);
                 let depth_opt = depth_snapshot.as_ref();
-                state.push_trade_flow(&msg);
+                state.push_trade_flow(msg);
                 if let Some(depth) = depth_opt {
                     state.push_depth_metrics(depth);
                 }
@@ -1119,6 +1119,16 @@ impl FusionFactorPubApp {
             loaded = loaded.saturating_add(1);
 
             if loaded % ROCKSDB_BOOTSTRAP_LOG_EVERY == 0 {
+                if latest_eval.dropped_input {
+                    panic!(
+                        "fusion bootstrap checkpoint dropped input: venue={} symbol={} loaded={} checkpoint={} around=[{}]",
+                        venue_slug,
+                        symbol,
+                        loaded,
+                        ROCKSDB_BOOTSTRAP_LOG_EVERY,
+                        Self::format_trade_flow_window(&records, idx, 10)
+                    );
+                }
                 info!(
                     "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} loaded={} status={} abnormal={}",
                     venue_slug,
@@ -1137,6 +1147,36 @@ impl FusionFactorPubApp {
             all_ready_seen,
             state,
         }
+    }
+
+    fn format_trade_flow_window(
+        records: &[TradeFlowFeatureMsg],
+        center_idx: usize,
+        span: usize,
+    ) -> String {
+        let start = center_idx.saturating_sub(span);
+        let end = (center_idx + span).min(records.len().saturating_sub(1));
+        let mut lines = Vec::with_capacity(end.saturating_sub(start) + 1);
+        for idx in start..=end {
+            let msg = &records[idx];
+            let marker = if idx == center_idx { "*" } else { "-" };
+            lines.push(format!(
+                "{}idx={} ts={} volume={} buy_volume={} sell_volume={} count={} buy_count={} sell_count={} amount={} buy_amount={} sell_amount={}",
+                marker,
+                idx,
+                msg.ts,
+                msg.values.get(FIELD_VOLUME).copied().unwrap_or(f64::NAN),
+                msg.values.get(FIELD_BUY_VOLUME).copied().unwrap_or(f64::NAN),
+                msg.values.get(FIELD_SELL_VOLUME).copied().unwrap_or(f64::NAN),
+                msg.values.get(7).copied().unwrap_or(f64::NAN),
+                msg.values.get(FIELD_BUY_COUNT).copied().unwrap_or(f64::NAN),
+                msg.values.get(FIELD_SELL_COUNT).copied().unwrap_or(f64::NAN),
+                msg.values.get(FIELD_AMOUNT).copied().unwrap_or(f64::NAN),
+                msg.values.get(FIELD_BUY_AMOUNT).copied().unwrap_or(f64::NAN),
+                msg.values.get(FIELD_SELL_AMOUNT).copied().unwrap_or(f64::NAN),
+            ));
+        }
+        lines.join("; ")
     }
 
     fn on_trade_flow(
