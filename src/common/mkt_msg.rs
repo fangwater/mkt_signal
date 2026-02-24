@@ -99,6 +99,7 @@ pub enum FeatureStatus {
     AllReady = 0,
     WarmingUp = 1,
     MissingDepth = 2,
+    Reload = 3,
 }
 
 impl FeatureStatus {
@@ -107,6 +108,7 @@ impl FeatureStatus {
             0 => Self::AllReady,
             1 => Self::WarmingUp,
             2 => Self::MissingDepth,
+            3 => Self::Reload,
             _ => Self::WarmingUp,
         }
     }

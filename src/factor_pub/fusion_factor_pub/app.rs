@@ -25,7 +25,7 @@ use super::window_primitives::{
     rolling_sum_last_with_min_periods, rolling_sum_series, rolling_sum_series_opt,
     tail_skew_last_opt,
 };
-use crate::common::mkt_msg::FeatureMsg;
+use crate::common::mkt_msg::{FeatureMsg, FeatureStatus};
 use crate::common::msg_parser::parse_trade_flow_feature;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::trade_flow_feature_msg::{
@@ -364,6 +364,7 @@ struct BootstrapSymbolReplayResult {
     symbol: String,
     loaded: usize,
     calculated: u64,
+    reload: u64,
     dropped: u64,
     skipped: u64,
     all_ready_seen: bool,
@@ -376,9 +377,14 @@ struct BootstrapSymbolRecords {
 }
 
 impl ReplayEvalSummary {
-    fn from_eval(eval_result: &OrderedEvalResult) -> Self {
+    fn from_eval(eval_result: &OrderedEvalResult, mark_reload: bool) -> Self {
+        let status = if mark_reload && eval_result.status == FeatureStatus::AllReady as u8 {
+            FeatureStatus::Reload as u8
+        } else {
+            eval_result.status
+        };
         Self {
-            status: eval_result.status,
+            status,
             dropped_input: false,
             skipped_input: false,
         }
@@ -959,10 +965,12 @@ impl FusionFactorPubApp {
 
         let mut total_loaded = 0usize;
         let mut total_calculated = 0u64;
+        let mut total_reload = 0u64;
         let mut total_skipped = 0u64;
         for symbol_result in replay_results {
             total_loaded = total_loaded.saturating_add(symbol_result.loaded);
             total_calculated = total_calculated.saturating_add(symbol_result.calculated);
+            total_reload = total_reload.saturating_add(symbol_result.reload);
             total_skipped = total_skipped.saturating_add(symbol_result.skipped);
             self.baseline_018_dropped_count = self
                 .baseline_018_dropped_count
@@ -974,11 +982,12 @@ impl FusionFactorPubApp {
             self.symbol_states
                 .insert(symbol_result.symbol.clone(), symbol_result.state);
             info!(
-                "FusionFactorPubApp[{}] rocksdb bootstrap symbol done: symbol={} loaded={} calculated={} dropped={} skipped={} total_loaded={}",
+                "FusionFactorPubApp[{}] rocksdb bootstrap symbol done: symbol={} loaded={} calculated={} reload={} dropped={} skipped={} total_loaded={}",
                 self.venue_slug,
                 symbol_result.symbol,
                 symbol_result.loaded,
                 symbol_result.calculated,
+                symbol_result.reload,
                 symbol_result.dropped,
                 symbol_result.skipped,
                 total_loaded
@@ -986,11 +995,12 @@ impl FusionFactorPubApp {
         }
 
         info!(
-            "FusionFactorPubApp[{}] rocksdb bootstrap done: symbols={} total_loaded={} total_calculated={} baseline018_dropped={} total_skipped={} elapsed_ms={}",
+            "FusionFactorPubApp[{}] rocksdb bootstrap done: symbols={} total_loaded={} total_calculated={} total_reload={} baseline018_dropped={} total_skipped={} elapsed_ms={}",
             self.venue_slug,
             self.allowed_symbols.len(),
             total_loaded,
             total_calculated,
+            total_reload,
             self.baseline_018_dropped_count.saturating_sub(dropped_before),
             total_skipped,
             started.elapsed().as_millis()
@@ -1008,14 +1018,15 @@ impl FusionFactorPubApp {
         let mut state = SymbolCalcState::default();
         let mut loaded = 0usize;
         let mut calculated = 0u64;
+        let mut reload = 0u64;
         let mut dropped = 0u64;
         let mut skipped = 0u64;
         let mut all_ready_seen = false;
         let mut interval_loaded = 0u64;
         let mut interval_calculated = 0u64;
+        let mut interval_reload = 0u64;
         let mut interval_dropped = 0u64;
         let mut interval_skipped = 0u64;
-        let mut interval_all_ready = 0u64;
         let mut interval_warming_up = 0u64;
         let mut interval_other_status = 0u64;
         let plan = symbol_factor_plans.get(&symbol);
@@ -1077,7 +1088,7 @@ impl FusionFactorPubApp {
                                 warming_factors.join(",")
                             );
                         }
-                        ReplayEvalSummary::from_eval(&eval_result)
+                        ReplayEvalSummary::from_eval(&eval_result, true)
                     }
                     None => ReplayEvalSummary::missing_plan(),
                 }
@@ -1093,34 +1104,40 @@ impl FusionFactorPubApp {
                 calculated = calculated.saturating_add(1);
                 interval_calculated = interval_calculated.saturating_add(1);
                 match latest_eval.status {
-                    0 => interval_all_ready = interval_all_ready.saturating_add(1),
-                    1 => interval_warming_up = interval_warming_up.saturating_add(1),
+                    x if x == FeatureStatus::Reload as u8 => {
+                        reload = reload.saturating_add(1);
+                        interval_reload = interval_reload.saturating_add(1);
+                    }
+                    x if x == FeatureStatus::WarmingUp as u8 => {
+                        interval_warming_up = interval_warming_up.saturating_add(1);
+                    }
                     _ => interval_other_status = interval_other_status.saturating_add(1),
                 }
             }
 
             if loaded % ROCKSDB_BOOTSTRAP_LOG_EVERY == 0 {
                 info!(
-                    "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} interval_loaded={} interval_calculated={} interval_dropped={} interval_skipped={} interval_all_ready={} interval_warming_up={} interval_other={} total_loaded={} total_calculated={} total_dropped={} total_skipped={}",
+                    "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} interval_loaded={} interval_calculated={} interval_reload={} interval_dropped={} interval_skipped={} interval_warming_up={} interval_other={} total_loaded={} total_calculated={} total_reload={} total_dropped={} total_skipped={}",
                     venue_slug,
                     symbol,
                     interval_loaded,
                     interval_calculated,
+                    interval_reload,
                     interval_dropped,
                     interval_skipped,
-                    interval_all_ready,
                     interval_warming_up,
                     interval_other_status,
                     loaded,
                     calculated,
+                    reload,
                     dropped,
                     skipped
                 );
                 interval_loaded = 0;
                 interval_calculated = 0;
+                interval_reload = 0;
                 interval_dropped = 0;
                 interval_skipped = 0;
-                interval_all_ready = 0;
                 interval_warming_up = 0;
                 interval_other_status = 0;
             }
@@ -1130,6 +1147,7 @@ impl FusionFactorPubApp {
             symbol,
             loaded,
             calculated,
+            reload,
             dropped,
             skipped,
             all_ready_seen,
@@ -1212,7 +1230,7 @@ impl FusionFactorPubApp {
             );
         }
 
-        let replay_summary = ReplayEvalSummary::from_eval(&eval_result);
+        let replay_summary = ReplayEvalSummary::from_eval(&eval_result, false);
         if !emit_output {
             return Some(replay_summary);
         }
