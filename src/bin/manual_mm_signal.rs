@@ -30,13 +30,14 @@ use tokio_util::sync::CancellationToken;
 use mkt_signal::common::iceoryx_publisher::SignalPublisher;
 use mkt_signal::common::iceoryx_subscriber::GenericSignalSubscriber;
 use mkt_signal::common::ipc_service_name::build_service_name;
-use mkt_signal::common::mkt_msg::{get_msg_type, AskBidSpreadMsg, MktMsgType};
+use mkt_signal::common::mkt_msg::{get_msg_type, AskBidSpreadMsg, MktMsgType, ModelMsg, MODEL_STATUS_OK};
 use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::depth_pub::query_msg::{
     resp_status_name, DepthQueryHeader, DepthQueryLoadTlenBatchReq, DepthQueryLoadTlenBatchResp,
     DepthQueryType, DEPTH_QUERY_PAYLOAD, RESP_STATUS_OK,
 };
+use mkt_signal::factor_pub::model_pub::publisher::MODEL_PAYLOAD_MAX_BYTES;
 use mkt_signal::funding_rate::common::Quote;
 use mkt_signal::market_maker::manual_signal::{
     build_mm_hedge_ctx as build_mm_hedge_ctx_core, MmHedgeBuildInput,
@@ -58,8 +59,6 @@ const DEFAULT_BACKWARD_CHANNEL: &str = "trade_query";
 const DEFAULT_BIND: &str = "0.0.0.0";
 const DEFAULT_PORT: u16 = 6366;
 const ASKBID_PAYLOAD: usize = 64;
-const DEFAULT_SYMBOL_RELOAD_SECS: u64 = 60;
-const MM_SYMBOL_NAMESPACE: &str = "mm";
 const DEPTH_QUERY_SERVICE_PREFIX: &str = "depth_queries";
 const DEPTH_QUERY_RESPONSE_WAIT_RETRY: usize = 20;
 const DEPTH_QUERY_RESPONSE_WAIT_MS: u64 = 1;
@@ -81,6 +80,7 @@ struct ManualMmConfig {
     port: Option<u16>,
     bind: Option<String>,
     from_key: Option<String>,
+    model_service: String,
 }
 
 #[derive(Debug, Clone)]
@@ -95,7 +95,7 @@ struct AppCfg {
     price_offsets: Vec<f64>,
     next_query_delay_ms: u64,
     from_key: Vec<u8>,
-    symbol_key_suffix: String,
+    model_service: String,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -136,7 +136,7 @@ impl QuoteCache {
 struct AppState {
     cfg: AppCfg,
     quotes: Arc<RwLock<QuoteCache>>,
-    symbols: Arc<RwLock<SymbolCache>>,
+    model_scores: Arc<RwLock<ModelScoreCache>>,
     min_qty_table: Arc<RwLock<VenueMinQtyTable>>,
     mm_hedge_tlen: Arc<RwLock<Option<MmHedgeTlenSnapshot>>>,
     publish_tx: mpsc::UnboundedSender<PublishCmd>,
@@ -246,19 +246,23 @@ struct ConfigResponse {
     price_offsets: Vec<f64>,
     next_query_delay_ms: u64,
     from_key: String,
-    symbol_key_suffix: String,
+    model_service: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ModelScore {
+    score: f64,
+    fresh_ts_us: i64,
 }
 
 #[derive(Debug, Default)]
-struct SymbolCache {
-    symbols: Vec<String>,
-    last_reload_ts_us: i64,
+struct ModelScoreCache {
+    scores: HashMap<String, ModelScore>,
 }
 
 #[derive(Debug, Serialize)]
 struct SymbolsResponse {
     symbols: Vec<String>,
-    last_reload_ts_us: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -535,7 +539,7 @@ async fn load_config(path: &str) -> Result<AppCfg> {
         price_offsets,
         next_query_delay_ms,
         from_key,
-        symbol_key_suffix: venue.data_pub_slug().to_string(),
+        model_service: cfg.model_service,
     })
 }
 
@@ -583,41 +587,66 @@ fn get_redis_settings() -> RedisSettings {
     }
 }
 
-async fn symbol_list_reload_loop(
-    interval_secs: u64,
-    key_suffix: String,
-    symbols: Arc<RwLock<SymbolCache>>,
+fn spawn_model_listener(
+    model_service: String,
+    model_scores: Arc<RwLock<ModelScoreCache>>,
     token: CancellationToken,
 ) {
-    let redis = get_redis_settings();
-    let mut interval = tokio::time::interval(Duration::from_secs(interval_secs.max(1)));
-    let trade_key = format!("{MM_SYMBOL_NAMESPACE}_trade_symbols:{key_suffix}");
-    loop {
-        tokio::select! {
-            _ = token.cancelled() => break,
-            _ = interval.tick() => {
-                match RedisClient::connect(redis.clone()).await {
-                    Ok(mut client) => {
-                        let payload = client.get_string(&trade_key).await.ok().flatten();
-                        let Some(value) = payload else {
-                            panic!("missing redis key: {}", trade_key);
-                        };
-                        let list = serde_json::from_str::<Vec<String>>(&value)
-                            .unwrap_or_else(|err| panic!("invalid mm symbol list {}: {}", trade_key, err));
-                        let list: Vec<String> = list
-                            .into_iter()
-                            .map(|s| s.trim().to_uppercase())
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                        let mut cache = symbols.write();
-                        cache.symbols = list;
-                        cache.last_reload_ts_us = get_timestamp_us();
+    tokio::task::spawn_local(async move {
+        let node_name = format!("{}_model_listener", PROCESS_NAME);
+        let result: Result<()> = async {
+            let node = NodeBuilder::new()
+                .name(&NodeName::new(&node_name)?)
+                .create::<ipc::Service>()?;
+
+            let service = node
+                .service_builder(&ServiceName::new(&model_service)?)
+                .publish_subscribe::<[u8; MODEL_PAYLOAD_MAX_BYTES]>()
+                .max_publishers(1)
+                .max_subscribers(10)
+                .history_size(128)
+                .open_or_create()?;
+
+            let subscriber: Subscriber<ipc::Service, [u8; MODEL_PAYLOAD_MAX_BYTES], ()> =
+                service.subscriber_builder().create()?;
+
+            info!("manual_mm model listener ready: {}", model_service);
+
+            loop {
+                tokio::select! {
+                    _ = token.cancelled() => break,
+                    _ = tokio::time::sleep(Duration::from_millis(1)) => {
+                        while let Some(sample) = subscriber.receive()? {
+                            let payload = sample.payload();
+                            match ModelMsg::from_bytes(payload) {
+                                Ok(msg) => {
+                                    if msg.status != MODEL_STATUS_OK {
+                                        continue;
+                                    }
+                                    let symbol = msg.symbol.to_uppercase();
+                                    let mut cache = model_scores.write();
+                                    cache.scores.insert(symbol, ModelScore {
+                                        score: msg.score,
+                                        fresh_ts_us: get_timestamp_us(),
+                                    });
+                                }
+                                Err(err) => {
+                                    warn!("manual_mm: decode ModelMsg failed: {err}");
+                                }
+                            }
+                        }
                     }
-                    Err(err) => warn!("manual_mm: redis connect failed: {err:#}"),
                 }
             }
+
+            Ok(())
         }
-    }
+        .await;
+
+        if let Err(err) = result {
+            warn!("manual_mm model listener exited: {err:#}");
+        }
+    });
 }
 
 fn build_mm_hedge_ctx(
@@ -1089,16 +1118,15 @@ async fn api_config(State(st): State<AppState>) -> impl IntoResponse {
         price_offsets: st.cfg.price_offsets.clone(),
         next_query_delay_ms: st.cfg.next_query_delay_ms,
         from_key: String::from_utf8_lossy(&st.cfg.from_key).to_string(),
-        symbol_key_suffix: st.cfg.symbol_key_suffix.clone(),
+        model_service: st.cfg.model_service.clone(),
     })
 }
 
 async fn api_symbols(State(st): State<AppState>) -> impl IntoResponse {
-    let cache = st.symbols.read();
-    Json(SymbolsResponse {
-        symbols: cache.symbols.clone(),
-        last_reload_ts_us: cache.last_reload_ts_us,
-    })
+    let cache = st.model_scores.read();
+    let mut symbols: Vec<String> = cache.scores.keys().cloned().collect();
+    symbols.sort();
+    Json(SymbolsResponse { symbols })
 }
 
 async fn api_quote(
@@ -1188,6 +1216,28 @@ async fn api_mm_hedge_tlen(State(st): State<AppState>) -> impl IntoResponse {
     Json(snapshot).into_response()
 }
 
+#[derive(Debug, Serialize)]
+struct ModelScoreEntry {
+    symbol: String,
+    score: f64,
+    fresh_ts_us: i64,
+}
+
+async fn api_model_scores(State(st): State<AppState>) -> impl IntoResponse {
+    let cache = st.model_scores.read();
+    let mut entries: Vec<ModelScoreEntry> = cache
+        .scores
+        .iter()
+        .map(|(symbol, ms)| ModelScoreEntry {
+            symbol: symbol.clone(),
+            score: ms.score,
+            fresh_ts_us: ms.fresh_ts_us,
+        })
+        .collect();
+    entries.sort_by(|a, b| a.symbol.cmp(&b.symbol));
+    Json(entries).into_response()
+}
+
 async fn index() -> impl IntoResponse {
     Html(INDEX_HTML)
 }
@@ -1200,6 +1250,7 @@ async fn serve_http(addr: SocketAddr, state: AppState, token: CancellationToken)
         .route("/api/quote", get(api_quote))
         .route("/api/preview", post(api_preview))
         .route("/api/mm_hedge_tlen", get(api_mm_hedge_tlen))
+        .route("/api/model_scores", get(api_model_scores))
         .route("/api/send", post(api_send))
         .with_state(state);
 
@@ -1509,12 +1560,13 @@ const INDEX_HTML: &str = r#"<!doctype html>
 
       function renderCfg(cfg) {
         state.cfg = cfg;
-        els.cfgLine.textContent = `mm_trade_symbols:${cfg.symbol_key_suffix} | venue=${cfg.venue}`;
+        els.cfgLine.textContent = `model_service:${cfg.model_service} | venue=${cfg.venue}`;
         els.fromKey.value = cfg.from_key || '';
 
         const kv = [
           ['venue', cfg.venue],
           ['bind', `${cfg.bind}:${cfg.port}`],
+          ['model_service', cfg.model_service || ''],
           ['order_amount_u', cfg.order_amount_u],
           ['default_open_ttl_ms', cfg.default_open_ttl_ms],
           ['next_query_delay_ms', cfg.next_query_delay_ms],
@@ -1771,15 +1823,10 @@ async fn run(cfg: AppCfg, token: CancellationToken) -> Result<()> {
     let table = Arc::new(RwLock::new(table));
 
     let quotes = Arc::new(RwLock::new(QuoteCache::default()));
-    let symbols = Arc::new(RwLock::new(SymbolCache::default()));
+    let model_scores = Arc::new(RwLock::new(ModelScoreCache::default()));
     let mm_hedge_tlen = Arc::new(RwLock::new(None));
     spawn_ask_bid_listener(cfg.venue, quotes.clone(), token.clone());
-    tokio::task::spawn_local(symbol_list_reload_loop(
-        DEFAULT_SYMBOL_RELOAD_SECS,
-        cfg.symbol_key_suffix.clone(),
-        symbols.clone(),
-        token.clone(),
-    ));
+    spawn_model_listener(cfg.model_service.clone(), model_scores.clone(), token.clone());
 
     let (publish_tx, publish_rx) = mpsc::unbounded_channel();
     spawn_publisher_worker(cfg.clone(), table.clone(), publish_rx, token.clone());
@@ -1795,7 +1842,7 @@ async fn run(cfg: AppCfg, token: CancellationToken) -> Result<()> {
     let state = AppState {
         cfg: cfg.clone(),
         quotes,
-        symbols,
+        model_scores,
         min_qty_table: table.clone(),
         mm_hedge_tlen,
         publish_tx,
