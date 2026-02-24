@@ -40,7 +40,6 @@ const TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE: usize = 2048;
 const TRADE_FLOW_FEATURE_CF_SUFFIX: &str = "trade_flow:feature";
 const ROCKSDB_BOOTSTRAP_LOG_EVERY: usize = 12 * 60 * 4;
 const BASELINE_018_MIN_SELL_VOLUME: f64 = 1e-12;
-const EMPTY_TRADE_MIN_VOLUME: f64 = 1e-12;
 const MAX_SYMBOL_HISTORY: usize = 4096;
 const MAX_DEPTH_LEVELS_CACHE: usize = 20;
 const APPENDED_DEPTH_VALUES: usize = MAX_DEPTH_LEVELS_CACHE * 4;
@@ -357,7 +356,6 @@ struct OrderedEvalResult {
 struct ReplayEvalSummary {
     status: u8,
     dropped_input: bool,
-    skipped_input: bool,
 }
 
 struct BootstrapSymbolReplayResult {
@@ -366,7 +364,6 @@ struct BootstrapSymbolReplayResult {
     calculated: u64,
     reload: u64,
     dropped: u64,
-    skipped: u64,
     all_ready_seen: bool,
     state: SymbolCalcState,
 }
@@ -386,7 +383,6 @@ impl ReplayEvalSummary {
         Self {
             status,
             dropped_input: false,
-            skipped_input: false,
         }
     }
 
@@ -394,7 +390,6 @@ impl ReplayEvalSummary {
         Self {
             status: u8::MAX,
             dropped_input: false,
-            skipped_input: false,
         }
     }
 
@@ -402,15 +397,6 @@ impl ReplayEvalSummary {
         Self {
             status: u8::MAX,
             dropped_input: true,
-            skipped_input: false,
-        }
-    }
-
-    fn skipped_input() -> Self {
-        Self {
-            status: u8::MAX,
-            dropped_input: false,
-            skipped_input: true,
         }
     }
 }
@@ -966,12 +952,10 @@ impl FusionFactorPubApp {
         let mut total_loaded = 0usize;
         let mut total_calculated = 0u64;
         let mut total_reload = 0u64;
-        let mut total_skipped = 0u64;
         for symbol_result in replay_results {
             total_loaded = total_loaded.saturating_add(symbol_result.loaded);
             total_calculated = total_calculated.saturating_add(symbol_result.calculated);
             total_reload = total_reload.saturating_add(symbol_result.reload);
-            total_skipped = total_skipped.saturating_add(symbol_result.skipped);
             self.baseline_018_dropped_count = self
                 .baseline_018_dropped_count
                 .saturating_add(symbol_result.dropped);
@@ -982,27 +966,25 @@ impl FusionFactorPubApp {
             self.symbol_states
                 .insert(symbol_result.symbol.clone(), symbol_result.state);
             info!(
-                "FusionFactorPubApp[{}] rocksdb bootstrap symbol done: symbol={} loaded={} calculated={} reload={} dropped={} skipped={} total_loaded={}",
+                "FusionFactorPubApp[{}] rocksdb bootstrap symbol done: symbol={} loaded={} calculated={} reload={} dropped={} total_loaded={}",
                 self.venue_slug,
                 symbol_result.symbol,
                 symbol_result.loaded,
                 symbol_result.calculated,
                 symbol_result.reload,
                 symbol_result.dropped,
-                symbol_result.skipped,
                 total_loaded
             );
         }
 
         info!(
-            "FusionFactorPubApp[{}] rocksdb bootstrap done: symbols={} total_loaded={} total_calculated={} total_reload={} baseline018_dropped={} total_skipped={} elapsed_ms={}",
+            "FusionFactorPubApp[{}] rocksdb bootstrap done: symbols={} total_loaded={} total_calculated={} total_reload={} baseline018_dropped={} elapsed_ms={}",
             self.venue_slug,
             self.allowed_symbols.len(),
             total_loaded,
             total_calculated,
             total_reload,
             self.baseline_018_dropped_count.saturating_sub(dropped_before),
-            total_skipped,
             started.elapsed().as_millis()
         );
         Ok(())
@@ -1019,14 +1001,12 @@ impl FusionFactorPubApp {
         let mut loaded = 0usize;
         let mut calculated = 0u64;
         let mut reload = 0u64;
-        let mut dropped = 0u64;
-        let mut skipped = 0u64;
+        let dropped = 0u64;
         let mut all_ready_seen = false;
         let mut interval_loaded = 0u64;
         let mut interval_calculated = 0u64;
         let mut interval_reload = 0u64;
         let mut interval_dropped = 0u64;
-        let mut interval_skipped = 0u64;
         let mut interval_warming_up = 0u64;
         let mut interval_other_status = 0u64;
         let plan = symbol_factor_plans.get(&symbol);
@@ -1038,16 +1018,19 @@ impl FusionFactorPubApp {
             })
             .unwrap_or(false);
 
-        for msg in records.iter() {
-            let latest_eval = if Self::should_skip_for_empty_trade(msg) {
-                ReplayEvalSummary::skipped_input()
-            } else if Self::should_drop_for_baseline_018_with_set(
+        for (idx, msg) in records.iter().enumerate() {
+            let latest_eval = if Self::should_drop_for_baseline_018_with_set(
                 symbols_need_baseline_018,
                 &symbol,
                 msg,
             ) {
-                dropped = dropped.saturating_add(1);
-                ReplayEvalSummary::dropped_input()
+                panic!(
+                    "fusion bootstrap dropped input: venue={} symbol={} trade_ts={} reason=baseline_018_sell_volume_non_positive around=[{}]",
+                    venue_slug,
+                    symbol,
+                    msg.ts,
+                    Self::format_flow_depth_window(&records, idx, 3)
+                );
             } else {
                 let depth_snapshot = parse_embedded_depth(msg);
                 let depth_opt = depth_snapshot.as_ref();
@@ -1095,10 +1078,7 @@ impl FusionFactorPubApp {
             };
             loaded = loaded.saturating_add(1);
             interval_loaded = interval_loaded.saturating_add(1);
-            if latest_eval.skipped_input {
-                skipped = skipped.saturating_add(1);
-                interval_skipped = interval_skipped.saturating_add(1);
-            } else if latest_eval.dropped_input {
+            if latest_eval.dropped_input {
                 interval_dropped = interval_dropped.saturating_add(1);
             } else {
                 calculated = calculated.saturating_add(1);
@@ -1117,14 +1097,13 @@ impl FusionFactorPubApp {
 
             if loaded % ROCKSDB_BOOTSTRAP_LOG_EVERY == 0 {
                 info!(
-                    "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} interval_loaded={} interval_calculated={} interval_reload={} interval_dropped={} interval_skipped={} interval_warming_up={} interval_other={}",
+                    "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} interval_loaded={} interval_calculated={} interval_reload={} interval_dropped={} interval_warming_up={} interval_other={}",
                     venue_slug,
                     symbol,
                     interval_loaded,
                     interval_calculated,
                     interval_reload,
                     interval_dropped,
-                    interval_skipped,
                     interval_warming_up,
                     interval_other_status
                 );
@@ -1132,7 +1111,6 @@ impl FusionFactorPubApp {
                 interval_calculated = 0;
                 interval_reload = 0;
                 interval_dropped = 0;
-                interval_skipped = 0;
                 interval_warming_up = 0;
                 interval_other_status = 0;
             }
@@ -1144,10 +1122,29 @@ impl FusionFactorPubApp {
             calculated,
             reload,
             dropped,
-            skipped,
             all_ready_seen,
             state,
         }
+    }
+
+    fn format_flow_depth_window(
+        records: &[TradeFlowFeatureMsg],
+        center_idx: usize,
+        span: usize,
+    ) -> String {
+        let start = center_idx.saturating_sub(span);
+        let end = (center_idx + span).min(records.len().saturating_sub(1));
+        let mut lines = Vec::with_capacity(end.saturating_sub(start) + 1);
+        for idx in start..=end {
+            let msg = &records[idx];
+            let depth = parse_embedded_depth(msg);
+            let marker = if idx == center_idx { "*" } else { "-" };
+            lines.push(format!(
+                "{}idx={} ts={} symbol={} flow_values={:?} depth={:?}",
+                marker, idx, msg.ts, msg.symbol, msg.values, depth
+            ));
+        }
+        lines.join("; ")
     }
 
     fn on_trade_flow(
@@ -1164,10 +1161,6 @@ impl FusionFactorPubApp {
         msg: crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg,
         emit_output: bool,
     ) -> Option<ReplayEvalSummary> {
-        if Self::should_skip_for_empty_trade(&msg) {
-            return Some(ReplayEvalSummary::skipped_input());
-        }
-
         if self.should_drop_for_baseline_018(&symbol, &msg) {
             self.baseline_018_dropped_count = self.baseline_018_dropped_count.saturating_add(1);
             return Some(ReplayEvalSummary::dropped_input());
@@ -1404,15 +1397,6 @@ impl FusionFactorPubApp {
 
     fn should_drop_for_baseline_018(&self, symbol: &str, msg: &TradeFlowFeatureMsg) -> bool {
         Self::should_drop_for_baseline_018_with_set(&self.symbols_need_baseline_018, symbol, msg)
-    }
-
-    fn should_skip_for_empty_trade(msg: &TradeFlowFeatureMsg) -> bool {
-        let buy_volume = msg.values[FIELD_BUY_VOLUME];
-        let sell_volume = msg.values[FIELD_SELL_VOLUME];
-        buy_volume.is_finite()
-            && sell_volume.is_finite()
-            && buy_volume <= EMPTY_TRADE_MIN_VOLUME
-            && sell_volume <= EMPTY_TRADE_MIN_VOLUME
     }
 
     fn should_drop_for_baseline_018_with_set(
