@@ -40,6 +40,7 @@ const TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE: usize = 2048;
 const TRADE_FLOW_FEATURE_CF_SUFFIX: &str = "trade_flow:feature";
 const ROCKSDB_BOOTSTRAP_LOG_EVERY: usize = 12 * 60 * 4;
 const BASELINE_018_MIN_SELL_VOLUME: f64 = 1e-12;
+const EMPTY_TRADE_MIN_VOLUME: f64 = 1e-12;
 const MAX_SYMBOL_HISTORY: usize = 4096;
 const MAX_DEPTH_LEVELS_CACHE: usize = 20;
 const APPENDED_DEPTH_VALUES: usize = MAX_DEPTH_LEVELS_CACHE * 4;
@@ -362,6 +363,7 @@ struct ReplayEvalSummary {
     non_warming_issue_count: usize,
     missing_factor_plan: bool,
     dropped_input: bool,
+    skipped_input: bool,
 }
 
 struct BootstrapSymbolReplayResult {
@@ -394,6 +396,7 @@ impl ReplayEvalSummary {
             non_warming_issue_count,
             missing_factor_plan: false,
             dropped_input: false,
+            skipped_input: false,
         }
     }
 
@@ -407,6 +410,7 @@ impl ReplayEvalSummary {
             non_warming_issue_count: 0,
             missing_factor_plan: true,
             dropped_input: false,
+            skipped_input: false,
         }
     }
 
@@ -420,11 +424,28 @@ impl ReplayEvalSummary {
             non_warming_issue_count: 0,
             missing_factor_plan: false,
             dropped_input: true,
+            skipped_input: false,
+        }
+    }
+
+    fn skipped_input() -> Self {
+        Self {
+            status: u8::MAX,
+            invalid_value: false,
+            nan_fill: false,
+            missing_depth: false,
+            unsupported: false,
+            non_warming_issue_count: 0,
+            missing_factor_plan: false,
+            dropped_input: false,
+            skipped_input: true,
         }
     }
 
     fn status_name(&self) -> &'static str {
-        if self.dropped_input {
+        if self.skipped_input {
+            "skipped"
+        } else if self.dropped_input {
             "dropped"
         } else {
             feature_status_name(self.status)
@@ -453,6 +474,9 @@ impl ReplayEvalSummary {
         }
         if self.dropped_input {
             tags.push("dropped_baseline_018_input");
+        }
+        if self.skipped_input {
+            tags.push("skipped_empty_trade_flow");
         }
 
         if tags.is_empty() {
@@ -1064,7 +1088,9 @@ impl FusionFactorPubApp {
             .unwrap_or(false);
 
         for (idx, msg) in records.iter().enumerate() {
-            let latest_eval = if Self::should_drop_for_baseline_018_with_set(
+            let latest_eval = if Self::should_skip_for_empty_trade(msg) {
+                ReplayEvalSummary::skipped_input()
+            } else if Self::should_drop_for_baseline_018_with_set(
                 symbols_need_baseline_018,
                 &symbol,
                 msg,
@@ -1193,6 +1219,10 @@ impl FusionFactorPubApp {
         msg: crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg,
         emit_output: bool,
     ) -> Option<ReplayEvalSummary> {
+        if Self::should_skip_for_empty_trade(&msg) {
+            return Some(ReplayEvalSummary::skipped_input());
+        }
+
         if self.should_drop_for_baseline_018(&symbol, &msg) {
             self.baseline_018_dropped_count = self.baseline_018_dropped_count.saturating_add(1);
             return Some(ReplayEvalSummary::dropped_input());
@@ -1429,6 +1459,15 @@ impl FusionFactorPubApp {
 
     fn should_drop_for_baseline_018(&self, symbol: &str, msg: &TradeFlowFeatureMsg) -> bool {
         Self::should_drop_for_baseline_018_with_set(&self.symbols_need_baseline_018, symbol, msg)
+    }
+
+    fn should_skip_for_empty_trade(msg: &TradeFlowFeatureMsg) -> bool {
+        let buy_volume = msg.values[FIELD_BUY_VOLUME];
+        let sell_volume = msg.values[FIELD_SELL_VOLUME];
+        buy_volume.is_finite()
+            && sell_volume.is_finite()
+            && buy_volume <= EMPTY_TRADE_MIN_VOLUME
+            && sell_volume <= EMPTY_TRADE_MIN_VOLUME
     }
 
     fn should_drop_for_baseline_018_with_set(
