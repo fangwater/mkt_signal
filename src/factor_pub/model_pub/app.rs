@@ -108,6 +108,7 @@ pub struct ModelPubApp {
     norm_states: HashMap<String, SymbolNormState>,
     window_size: usize,
     min_samples: u64,
+    zscore_cap: f64,
     stats: ModelPubStats,
     last_log_stats: Instant,
 }
@@ -146,7 +147,7 @@ impl ModelPubApp {
         let publisher = ModelPublisher::new(&publisher_node, &output_service)?;
 
         info!(
-            "ModelPubApp started: venue={} model_name={} input={} output={} symbols={} window_size={} min_samples={}",
+            "ModelPubApp started: venue={} model_name={} input={} output={} symbols={} window_size={} min_samples={} zscore_cap={}",
             venue,
             model_name,
             input_service,
@@ -154,6 +155,7 @@ impl ModelPubApp {
             models_by_symbol.len(),
             config.window_size,
             config.min_samples,
+            config.zscore_cap,
         );
 
         Ok(Self {
@@ -166,6 +168,7 @@ impl ModelPubApp {
             norm_states: HashMap::new(),
             window_size: config.window_size,
             min_samples: config.min_samples,
+            zscore_cap: config.zscore_cap,
             stats: ModelPubStats::default(),
             last_log_stats: Instant::now(),
         })
@@ -327,7 +330,7 @@ impl ModelPubApp {
                 let normalized: Vec<f64> = norm_state
                     .welford_vec
                     .iter()
-                    .map(|w| w.zscore().unwrap_or(0.0))
+                    .map(|w| w.zscore_capped(self.zscore_cap).unwrap_or(0.0))
                     .collect();
 
                 // --- inference ---

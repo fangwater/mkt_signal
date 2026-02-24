@@ -19,6 +19,8 @@ pub struct ModelPubConfig {
     pub window_size: usize,
     #[serde(default = "default_min_samples")]
     pub min_samples: u64,
+    #[serde(default = "default_zscore_cap")]
+    pub zscore_cap: f64,
 }
 
 impl ModelPubConfig {
@@ -121,6 +123,10 @@ fn default_window_size() -> usize {
 
 fn default_min_samples() -> u64 {
     100
+}
+
+fn default_zscore_cap() -> f64 {
+    3.0
 }
 
 /// Infer venue from CWD directory name (e.g. ~/model_pub/binance-futures -> "binance-futures").

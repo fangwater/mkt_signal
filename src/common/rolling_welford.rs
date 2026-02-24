@@ -99,6 +99,20 @@ impl RollingWelford {
         Some((last - self.mean) / s)
     }
 
+    /// Z-score with 3σ clipping: clamp the latest value to [mean - k*std, mean + k*std]
+    /// before computing (clamped - mean) / std.
+    /// Returns `None` if fewer than 2 samples or std is zero.
+    #[inline]
+    pub fn zscore_capped(&self, k: f64) -> Option<f64> {
+        let s = self.std();
+        if self.buf.len() < 2 || s == 0.0 {
+            return None;
+        }
+        let last = *self.buf.back().unwrap();
+        let clamped = last.clamp(self.mean - k * s, self.mean + k * s);
+        Some((clamped - self.mean) / s)
+    }
+
     /// Reset to empty state.
     pub fn reset(&mut self) {
         self.buf.clear();

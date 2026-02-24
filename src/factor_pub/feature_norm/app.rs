@@ -176,7 +176,7 @@ impl FeatureNormApp {
         let normalized: Vec<f64> = state
             .welford_vec
             .iter()
-            .map(|rw| rw.zscore().unwrap_or(0.0))
+            .map(|rw| rw.zscore_capped(3.0).unwrap_or(0.0))
             .collect();
 
         // Track BTCUSDT for heartbeat

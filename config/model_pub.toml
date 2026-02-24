@@ -14,3 +14,4 @@ output_service_template = "model_output/{venue}/{model_name}"
 # Z-score normalization (rolling Welford)
 window_size = 17280       # 24h / 5s
 min_samples = 1000        # cold-start: suppress publishing until this many samples per symbol
+zscore_cap = 3.0          # clip to [-k*std, k*std] before z-score

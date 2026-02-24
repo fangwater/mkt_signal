@@ -373,6 +373,14 @@ struct BootstrapSymbolRecords {
     records: Vec<TradeFlowFeatureMsg>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct TradeFlowTsStat {
+    volume: f64,
+    buy_volume: f64,
+    sell_volume: f64,
+    count: f64,
+}
+
 impl ReplayEvalSummary {
     fn from_eval(eval_result: &OrderedEvalResult, mark_reload: bool) -> Self {
         let status = if mark_reload && eval_result.status == FeatureStatus::AllReady as u8 {
@@ -915,6 +923,19 @@ impl FusionFactorPubApp {
             symbol_records.push(BootstrapSymbolRecords { symbol, records });
         }
 
+        // TEMP DEBUG: keep a lightweight per-symbol, per-ts flow snapshot so panic logs can
+        // compare whether peer symbols are also empty/single-sided at the same timestamp.
+        // Remove after diagnosing bootstrap drop behavior.
+        let mut peer_ts_stats: HashMap<String, HashMap<i64, TradeFlowTsStat>> = HashMap::new();
+        for symbol_records in &symbol_records {
+            let mut by_ts: HashMap<i64, TradeFlowTsStat> =
+                HashMap::with_capacity(symbol_records.records.len());
+            for msg in &symbol_records.records {
+                by_ts.insert(msg.ts, Self::build_ts_stat(msg));
+            }
+            peer_ts_stats.insert(symbol_records.symbol.clone(), by_ts);
+        }
+
         let replay_threads = symbol_records.len().max(1).min(4);
         info!(
             "FusionFactorPubApp[{}] rocksdb bootstrap replay start: symbols={} threads={}",
@@ -925,6 +946,7 @@ impl FusionFactorPubApp {
         let venue_slug = self.venue_slug.clone();
         let symbol_factor_plans = self.symbol_factor_plans.clone();
         let symbols_need_baseline_018 = self.symbols_need_baseline_018.clone();
+        let peer_ts_stats = std::sync::Arc::new(peer_ts_stats);
         let thread_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(replay_threads)
             .build()
@@ -942,6 +964,7 @@ impl FusionFactorPubApp {
                         &venue_slug,
                         &symbol_factor_plans,
                         &symbols_need_baseline_018,
+                        &peer_ts_stats,
                         symbol_records,
                     )
                 })
@@ -994,6 +1017,7 @@ impl FusionFactorPubApp {
         venue_slug: &str,
         symbol_factor_plans: &HashMap<String, SymbolFactorPlan>,
         symbols_need_baseline_018: &HashSet<String>,
+        peer_ts_stats: &HashMap<String, HashMap<i64, TradeFlowTsStat>>,
         symbol_records: BootstrapSymbolRecords,
     ) -> BootstrapSymbolReplayResult {
         let BootstrapSymbolRecords { symbol, records } = symbol_records;
@@ -1025,11 +1049,12 @@ impl FusionFactorPubApp {
                 msg,
             ) {
                 panic!(
-                    "fusion bootstrap dropped input: venue={} symbol={} trade_ts={} reason=baseline_018_sell_volume_non_positive around=[{}]",
+                    "fusion bootstrap dropped input: venue={} symbol={} trade_ts={} reason=baseline_018_sell_volume_non_positive around=[{}] peer_ts=[{}]",
                     venue_slug,
                     symbol,
                     msg.ts,
-                    Self::format_flow_depth_window(&records, idx, 3)
+                    Self::format_flow_depth_window(&records, idx, 3),
+                    Self::format_peer_ts_snapshot(peer_ts_stats, &symbol, msg.ts)
                 );
             } else {
                 let depth_snapshot = parse_embedded_depth(msg);
@@ -1145,6 +1170,46 @@ impl FusionFactorPubApp {
             ));
         }
         lines.join("; ")
+    }
+
+    fn build_ts_stat(msg: &TradeFlowFeatureMsg) -> TradeFlowTsStat {
+        TradeFlowTsStat {
+            volume: msg.values.get(FIELD_VOLUME).copied().unwrap_or(f64::NAN),
+            buy_volume: msg
+                .values
+                .get(FIELD_BUY_VOLUME)
+                .copied()
+                .unwrap_or(f64::NAN),
+            sell_volume: msg
+                .values
+                .get(FIELD_SELL_VOLUME)
+                .copied()
+                .unwrap_or(f64::NAN),
+            count: msg.values.get(7).copied().unwrap_or(f64::NAN),
+        }
+    }
+
+    // TEMP DEBUG: compare all symbols at the same ts when bootstrap panic occurs.
+    // Remove after diagnosing empty-bar/single-side issues.
+    fn format_peer_ts_snapshot(
+        peer_ts_stats: &HashMap<String, HashMap<i64, TradeFlowTsStat>>,
+        current_symbol: &str,
+        ts: i64,
+    ) -> String {
+        let mut symbols: Vec<&str> = peer_ts_stats.keys().map(|s| s.as_str()).collect();
+        symbols.sort_unstable();
+        let mut parts = Vec::with_capacity(symbols.len());
+        for symbol in symbols {
+            let marker = if symbol == current_symbol { "*" } else { "-" };
+            match peer_ts_stats.get(symbol).and_then(|by_ts| by_ts.get(&ts)) {
+                Some(stat) => parts.push(format!(
+                    "{}symbol={} ts={} volume={} buy_volume={} sell_volume={} count={}",
+                    marker, symbol, ts, stat.volume, stat.buy_volume, stat.sell_volume, stat.count
+                )),
+                None => parts.push(format!("{}symbol={} ts={} missing", marker, symbol, ts)),
+            }
+        }
+        parts.join("; ")
     }
 
     fn on_trade_flow(
