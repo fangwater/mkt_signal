@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::fs;
 
@@ -15,6 +15,10 @@ pub struct ModelPubConfig {
     pub input_service_template: String,
     #[serde(default = "default_output_service_template")]
     pub output_service_template: String,
+    #[serde(default = "default_window_size")]
+    pub window_size: usize,
+    #[serde(default = "default_min_samples")]
+    pub min_samples: u64,
 }
 
 impl ModelPubConfig {
@@ -43,37 +47,56 @@ impl ModelPubConfig {
         if !self.output_service_template.contains("{model_name}") {
             anyhow::bail!("output_service_template must contain {{model_name}}");
         }
+        if self.window_size == 0 {
+            anyhow::bail!("window_size must be > 0");
+        }
+        if self.min_samples == 0 {
+            anyhow::bail!("min_samples must be > 0");
+        }
         Ok(())
     }
 
-    pub fn render_input_service(&self, model_name: &str) -> Result<String> {
+    pub fn render_input_service(&self, venue: &str, model_name: &str) -> Result<String> {
         render_service_template(
             "input_service_template",
             &self.input_service_template,
+            venue,
             model_name,
         )
     }
 
-    pub fn render_output_service(&self, model_name: &str) -> Result<String> {
+    pub fn render_output_service(&self, venue: &str, model_name: &str) -> Result<String> {
         render_service_template(
             "output_service_template",
             &self.output_service_template,
+            venue,
             model_name,
         )
     }
 }
 
-fn render_service_template(field_name: &str, template: &str, model_name: &str) -> Result<String> {
+fn render_service_template(
+    field_name: &str,
+    template: &str,
+    venue: &str,
+    model_name: &str,
+) -> Result<String> {
     let trimmed_model_name = model_name.trim();
     if trimmed_model_name.is_empty() {
         anyhow::bail!("model_name must not be empty");
+    }
+    let trimmed_venue = venue.trim();
+    if trimmed_venue.is_empty() {
+        anyhow::bail!("venue must not be empty");
     }
 
     if !template.contains("{model_name}") {
         anyhow::bail!("{field_name} must contain {{model_name}}");
     }
 
-    let rendered = template.replace("{model_name}", trimmed_model_name);
+    let rendered = template
+        .replace("{venue}", trimmed_venue)
+        .replace("{model_name}", trimmed_model_name);
     if rendered.trim().is_empty() {
         anyhow::bail!("{field_name} renders to empty value");
     }
@@ -85,9 +108,28 @@ fn default_model_manager_request_timeout_ms() -> u64 {
 }
 
 fn default_input_service_template() -> String {
-    "feature_norm/binance-futures/{model_name}".to_string()
+    "fusion_factor/{venue}/{model_name}".to_string()
 }
 
 fn default_output_service_template() -> String {
-    "model_output/binance-futures/{model_name}".to_string()
+    "model_output/{venue}/{model_name}".to_string()
+}
+
+fn default_window_size() -> usize {
+    17280
+}
+
+fn default_min_samples() -> u64 {
+    100
+}
+
+/// Infer venue from CWD directory name (e.g. ~/model_pub/binance-futures -> "binance-futures").
+pub fn infer_venue_from_cwd() -> Result<String> {
+    let cwd = std::env::current_dir().context("failed to get current directory")?;
+    let name = cwd
+        .file_name()
+        .context("CWD has no directory name")?
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    Ok(name)
 }

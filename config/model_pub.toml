@@ -6,6 +6,11 @@ model_manager_request_timeout_ms = 5000
 model_manager_password = ""
 model_manager_bearer_token = ""
 
-# {model_name} is required in both templates.
-input_service_template = "feature_norm/binance-futures/{model_name}"
-output_service_template = "model_output/binance-futures/{model_name}"
+# {venue} is inferred from CWD directory name at runtime.
+# {model_name} is passed as CLI argument.
+input_service_template = "fusion_factor/{venue}/{model_name}"
+output_service_template = "model_output/{venue}/{model_name}"
+
+# Z-score normalization (rolling Welford)
+window_size = 17280       # 24h / 5s
+min_samples = 100         # cold-start: suppress publishing until this many samples per symbol

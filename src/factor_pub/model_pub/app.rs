@@ -12,13 +12,15 @@ use std::time::{Duration, Instant};
 
 use super::cfg::ModelPubConfig;
 use super::model::XgbModel;
-use super::publisher::{ModelPublisher, MODEL_PAYLOAD_MAX_BYTES};
+use super::publisher::ModelPublisher;
 use crate::common::mkt_msg::{
     FeatureMsg, ModelMsg, MODEL_STATUS_BAD_DIM, MODEL_STATUS_DECODE_ERR, MODEL_STATUS_INFER_ERR,
     MODEL_STATUS_OK,
 };
+use crate::common::rolling_welford::RollingWelford;
+use crate::factor_pub::fusion_factor_pub::publisher::FUSION_FACTOR_PAYLOAD_MAX_BYTES;
 
-const INPUT_MAX_BYTES: usize = MODEL_PAYLOAD_MAX_BYTES;
+const INPUT_MAX_BYTES: usize = FUSION_FACTOR_PAYLOAD_MAX_BYTES;
 const IDLE_SLEEP_MICROS: u64 = 200;
 const LOG_INTERVAL_SECS: u64 = 60;
 const MODEL_FETCH_CONCURRENCY: usize = 8;
@@ -35,6 +37,12 @@ struct ModelPubStats {
     infer_latency_sum_us: u64,
     infer_latency_max_us: u64,
     infer_count: u64,
+    cold_start_suppressed: u64,
+}
+
+struct SymbolNormState {
+    welford_vec: Vec<RollingWelford>,
+    sample_count: u64,
 }
 
 struct SymbolModelRuntime {
@@ -91,10 +99,14 @@ struct LoginReq<'a> {
 
 pub struct ModelPubApp {
     model_name: String,
+    venue: String,
     input_service: String,
     subscriber: Subscriber<ipc::Service, [u8; INPUT_MAX_BYTES], ()>,
     publisher: ModelPublisher,
     models_by_symbol: HashMap<String, SymbolModelRuntime>,
+    norm_states: HashMap<String, SymbolNormState>,
+    window_size: usize,
+    min_samples: u64,
     stats: ModelPubStats,
     last_log_stats: Instant,
 }
@@ -106,8 +118,9 @@ impl ModelPubApp {
         let config = ModelPubConfig::load(config_path)?;
         config.validate()?;
 
-        let input_service = config.render_input_service(&model_name)?;
-        let output_service = config.render_output_service(&model_name)?;
+        let venue = super::cfg::infer_venue_from_cwd()?;
+        let input_service = config.render_input_service(&venue, &model_name)?;
+        let output_service = config.render_output_service(&venue, &model_name)?;
 
         let models_by_symbol = Self::load_models_from_model_manager(&config, &model_name).await?;
         if models_by_symbol.is_empty() {
@@ -132,19 +145,26 @@ impl ModelPubApp {
         let publisher = ModelPublisher::new(&publisher_node, &output_service)?;
 
         info!(
-            "ModelPubApp started: model_name={} input_service={} output_service={} loaded_symbols={}",
+            "ModelPubApp started: venue={} model_name={} input={} output={} symbols={} window_size={} min_samples={}",
+            venue,
             model_name,
             input_service,
             output_service,
-            models_by_symbol.len()
+            models_by_symbol.len(),
+            config.window_size,
+            config.min_samples,
         );
 
         Ok(Self {
             model_name,
+            venue,
             input_service,
             subscriber,
             publisher,
             models_by_symbol,
+            norm_states: HashMap::new(),
+            window_size: config.window_size,
+            min_samples: config.min_samples,
             stats: ModelPubStats::default(),
             last_log_stats: Instant::now(),
         })
@@ -270,46 +290,75 @@ impl ModelPubApp {
         match FeatureMsg::from_bytes(data) {
             Ok(feature) => {
                 let symbol_key = normalize_symbol_key(&feature.symbol);
-                let predict_result = {
-                    let Some(runtime) = self.models_by_symbol.get(&symbol_key) else {
-                        self.stats.symbol_miss = self.stats.symbol_miss.saturating_add(1);
-                        self.stats.infer_err = self.stats.infer_err.saturating_add(1);
-                        warn!(
-                            "model symbol not loaded: model_name={} symbol={} loaded_symbol_count={}",
-                            self.model_name,
-                            feature.symbol,
-                            self.models_by_symbol.len()
-                        );
-                        self.emit_result(
-                            &feature.symbol,
-                            feature.ts_ms,
-                            0.0,
-                            MODEL_STATUS_INFER_ERR,
-                        );
-                        return;
-                    };
 
-                    if feature.feature_dim as usize != runtime.feature_dim
-                        || feature.features.len() != runtime.feature_dim
-                    {
-                        self.stats.bad_dim = self.stats.bad_dim.saturating_add(1);
-                        self.emit_result(&feature.symbol, feature.ts_ms, 0.0, MODEL_STATUS_BAD_DIM);
-                        return;
-                    }
+                // --- z-score normalization ---
+                let dim = feature.features.len();
+                let window_size = self.window_size;
+                let norm_state = self.norm_states.entry(symbol_key.clone()).or_insert_with(|| SymbolNormState {
+                    welford_vec: (0..dim).map(|_| RollingWelford::new(window_size)).collect(),
+                    sample_count: 0,
+                });
 
-                    let f32_features: Vec<f32> = feature.features.iter().map(|&v| v as f32).collect();
-                    let infer_start = Instant::now();
-                    let result = runtime.model.predict_one(&f32_features);
-                    let elapsed_us = infer_start.elapsed().as_micros() as u64;
-                    self.stats.infer_count += 1;
-                    self.stats.infer_latency_sum_us += elapsed_us;
-                    if elapsed_us > self.stats.infer_latency_max_us {
-                        self.stats.infer_latency_max_us = elapsed_us;
-                    }
-                    result
+                // Always push into Welford (heartbeat), even during cold start
+                if norm_state.welford_vec.len() != dim {
+                    // dimension changed, reset
+                    norm_state.welford_vec = (0..dim).map(|_| RollingWelford::new(window_size)).collect();
+                    norm_state.sample_count = 0;
+                }
+                for (i, &val) in feature.features.iter().enumerate() {
+                    norm_state.welford_vec[i].push(val);
+                }
+                norm_state.sample_count += 1;
+
+                // Cold-start gating: suppress publishing until min_samples reached
+                if norm_state.sample_count < self.min_samples {
+                    self.stats.cold_start_suppressed += 1;
+                    return;
+                }
+
+                // Compute z-scores
+                let normalized: Vec<f64> = norm_state
+                    .welford_vec
+                    .iter()
+                    .map(|w| w.zscore().unwrap_or(0.0))
+                    .collect();
+
+                // --- inference ---
+                let Some(runtime) = self.models_by_symbol.get(&symbol_key) else {
+                    self.stats.symbol_miss = self.stats.symbol_miss.saturating_add(1);
+                    self.stats.infer_err = self.stats.infer_err.saturating_add(1);
+                    warn!(
+                        "model symbol not loaded: model_name={} symbol={} loaded_symbol_count={}",
+                        self.model_name,
+                        feature.symbol,
+                        self.models_by_symbol.len()
+                    );
+                    self.emit_result(
+                        &feature.symbol,
+                        feature.ts_ms,
+                        0.0,
+                        MODEL_STATUS_INFER_ERR,
+                    );
+                    return;
                 };
 
-                match predict_result {
+                if normalized.len() != runtime.feature_dim {
+                    self.stats.bad_dim = self.stats.bad_dim.saturating_add(1);
+                    self.emit_result(&feature.symbol, feature.ts_ms, 0.0, MODEL_STATUS_BAD_DIM);
+                    return;
+                }
+
+                let f32_features: Vec<f32> = normalized.iter().map(|&v| v as f32).collect();
+                let infer_start = Instant::now();
+                let result = runtime.model.predict_one(&f32_features);
+                let elapsed_us = infer_start.elapsed().as_micros() as u64;
+                self.stats.infer_count += 1;
+                self.stats.infer_latency_sum_us += elapsed_us;
+                if elapsed_us > self.stats.infer_latency_max_us {
+                    self.stats.infer_latency_max_us = elapsed_us;
+                }
+
+                match result {
                     Ok(score) => {
                         self.emit_result(&feature.symbol, feature.ts_ms, score, MODEL_STATUS_OK);
                     }
@@ -366,9 +415,12 @@ impl ModelPubApp {
         } else {
             0
         };
+        let norm_symbols = self.norm_states.len();
+        let warmed_symbols = self.norm_states.values().filter(|s| s.sample_count >= self.min_samples).count();
         info!(
-            "ModelPubApp[{}] stats: recv={} pub_ok={} pub_fail={} decode_err={} bad_dim={} infer_err={} symbol_miss={} infer_count={} latency_avg={}us latency_max={}us",
+            "ModelPubApp[{}@{}] stats: recv={} pub_ok={} pub_fail={} decode_err={} bad_dim={} infer_err={} symbol_miss={} cold_suppressed={} infer_count={} latency_avg={}us latency_max={}us norm_symbols={}/{} warmed",
             self.model_name,
+            self.venue,
             self.stats.recv_total,
             self.stats.publish_ok,
             self.stats.publish_fail,
@@ -376,9 +428,12 @@ impl ModelPubApp {
             self.stats.bad_dim,
             self.stats.infer_err,
             self.stats.symbol_miss,
+            self.stats.cold_start_suppressed,
             self.stats.infer_count,
             avg_latency_us,
             self.stats.infer_latency_max_us,
+            warmed_symbols,
+            norm_symbols,
         );
         self.stats = ModelPubStats::default();
     }
