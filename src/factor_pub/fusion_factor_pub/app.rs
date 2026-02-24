@@ -356,12 +356,6 @@ struct OrderedEvalResult {
 #[derive(Debug, Clone)]
 struct ReplayEvalSummary {
     status: u8,
-    invalid_value: bool,
-    nan_fill: bool,
-    missing_depth: bool,
-    unsupported: bool,
-    non_warming_issue_count: usize,
-    missing_factor_plan: bool,
     dropped_input: bool,
     skipped_input: bool,
 }
@@ -369,7 +363,9 @@ struct ReplayEvalSummary {
 struct BootstrapSymbolReplayResult {
     symbol: String,
     loaded: usize,
+    calculated: u64,
     dropped: u64,
+    skipped: u64,
     all_ready_seen: bool,
     state: SymbolCalcState,
 }
@@ -381,20 +377,8 @@ struct BootstrapSymbolRecords {
 
 impl ReplayEvalSummary {
     fn from_eval(eval_result: &OrderedEvalResult) -> Self {
-        let s = &eval_result.stats;
-        let non_warming_issue_count = eval_result
-            .factor_issues
-            .iter()
-            .filter(|issue| !issue.contains(":warming_up"))
-            .count();
         Self {
             status: eval_result.status,
-            invalid_value: s.factor_invalid_value_count > 0,
-            nan_fill: s.factor_nan_fill_count > 0,
-            missing_depth: s.factor_missing_depth_count > 0,
-            unsupported: s.factor_unsupported_count > 0,
-            non_warming_issue_count,
-            missing_factor_plan: false,
             dropped_input: false,
             skipped_input: false,
         }
@@ -403,12 +387,6 @@ impl ReplayEvalSummary {
     fn missing_plan() -> Self {
         Self {
             status: u8::MAX,
-            invalid_value: false,
-            nan_fill: false,
-            missing_depth: false,
-            unsupported: false,
-            non_warming_issue_count: 0,
-            missing_factor_plan: true,
             dropped_input: false,
             skipped_input: false,
         }
@@ -417,12 +395,6 @@ impl ReplayEvalSummary {
     fn dropped_input() -> Self {
         Self {
             status: u8::MAX,
-            invalid_value: false,
-            nan_fill: false,
-            missing_depth: false,
-            unsupported: false,
-            non_warming_issue_count: 0,
-            missing_factor_plan: false,
             dropped_input: true,
             skipped_input: false,
         }
@@ -431,58 +403,8 @@ impl ReplayEvalSummary {
     fn skipped_input() -> Self {
         Self {
             status: u8::MAX,
-            invalid_value: false,
-            nan_fill: false,
-            missing_depth: false,
-            unsupported: false,
-            non_warming_issue_count: 0,
-            missing_factor_plan: false,
             dropped_input: false,
             skipped_input: true,
-        }
-    }
-
-    fn status_name(&self) -> &'static str {
-        if self.skipped_input {
-            "skipped"
-        } else if self.dropped_input {
-            "dropped"
-        } else {
-            feature_status_name(self.status)
-        }
-    }
-
-    fn abnormal_tags(&self) -> String {
-        let mut tags: Vec<&'static str> = Vec::new();
-        if self.missing_factor_plan {
-            tags.push("missing_factor_plan");
-        }
-        if self.invalid_value {
-            tags.push("invalid_value");
-        }
-        if self.nan_fill {
-            tags.push("nan_fill");
-        }
-        if self.missing_depth {
-            tags.push("missing_depth");
-        }
-        if self.unsupported {
-            tags.push("unsupported");
-        }
-        if self.non_warming_issue_count > 0 {
-            tags.push("non_warming_issue");
-        }
-        if self.dropped_input {
-            tags.push("dropped_baseline_018_input");
-        }
-        if self.skipped_input {
-            tags.push("skipped_empty_trade_flow");
-        }
-
-        if tags.is_empty() {
-            "none".to_string()
-        } else {
-            tags.join("|")
         }
     }
 }
@@ -1036,8 +958,12 @@ impl FusionFactorPubApp {
         replay_results.sort_unstable_by(|a, b| a.symbol.cmp(&b.symbol));
 
         let mut total_loaded = 0usize;
+        let mut total_calculated = 0u64;
+        let mut total_skipped = 0u64;
         for symbol_result in replay_results {
             total_loaded = total_loaded.saturating_add(symbol_result.loaded);
+            total_calculated = total_calculated.saturating_add(symbol_result.calculated);
+            total_skipped = total_skipped.saturating_add(symbol_result.skipped);
             self.baseline_018_dropped_count = self
                 .baseline_018_dropped_count
                 .saturating_add(symbol_result.dropped);
@@ -1048,20 +974,25 @@ impl FusionFactorPubApp {
             self.symbol_states
                 .insert(symbol_result.symbol.clone(), symbol_result.state);
             info!(
-                "FusionFactorPubApp[{}] rocksdb bootstrap symbol done: symbol={} loaded={} total_loaded={}",
+                "FusionFactorPubApp[{}] rocksdb bootstrap symbol done: symbol={} loaded={} calculated={} dropped={} skipped={} total_loaded={}",
                 self.venue_slug,
                 symbol_result.symbol,
                 symbol_result.loaded,
+                symbol_result.calculated,
+                symbol_result.dropped,
+                symbol_result.skipped,
                 total_loaded
             );
         }
 
         info!(
-            "FusionFactorPubApp[{}] rocksdb bootstrap done: symbols={} total_loaded={} baseline018_dropped={} elapsed_ms={}",
+            "FusionFactorPubApp[{}] rocksdb bootstrap done: symbols={} total_loaded={} total_calculated={} baseline018_dropped={} total_skipped={} elapsed_ms={}",
             self.venue_slug,
             self.allowed_symbols.len(),
             total_loaded,
+            total_calculated,
             self.baseline_018_dropped_count.saturating_sub(dropped_before),
+            total_skipped,
             started.elapsed().as_millis()
         );
         Ok(())
@@ -1076,8 +1007,17 @@ impl FusionFactorPubApp {
         let BootstrapSymbolRecords { symbol, records } = symbol_records;
         let mut state = SymbolCalcState::default();
         let mut loaded = 0usize;
+        let mut calculated = 0u64;
         let mut dropped = 0u64;
+        let mut skipped = 0u64;
         let mut all_ready_seen = false;
+        let mut interval_loaded = 0u64;
+        let mut interval_calculated = 0u64;
+        let mut interval_dropped = 0u64;
+        let mut interval_skipped = 0u64;
+        let mut interval_all_ready = 0u64;
+        let mut interval_warming_up = 0u64;
+        let mut interval_other_status = 0u64;
         let plan = symbol_factor_plans.get(&symbol);
         let needs_factor_118 = plan
             .map(|plan| {
@@ -1087,7 +1027,7 @@ impl FusionFactorPubApp {
             })
             .unwrap_or(false);
 
-        for (idx, msg) in records.iter().enumerate() {
+        for msg in records.iter() {
             let latest_eval = if Self::should_skip_for_empty_trade(msg) {
                 ReplayEvalSummary::skipped_input()
             } else if Self::should_drop_for_baseline_018_with_set(
@@ -1143,66 +1083,58 @@ impl FusionFactorPubApp {
                 }
             };
             loaded = loaded.saturating_add(1);
+            interval_loaded = interval_loaded.saturating_add(1);
+            if latest_eval.skipped_input {
+                skipped = skipped.saturating_add(1);
+                interval_skipped = interval_skipped.saturating_add(1);
+            } else if latest_eval.dropped_input {
+                interval_dropped = interval_dropped.saturating_add(1);
+            } else {
+                calculated = calculated.saturating_add(1);
+                interval_calculated = interval_calculated.saturating_add(1);
+                match latest_eval.status {
+                    0 => interval_all_ready = interval_all_ready.saturating_add(1),
+                    1 => interval_warming_up = interval_warming_up.saturating_add(1),
+                    _ => interval_other_status = interval_other_status.saturating_add(1),
+                }
+            }
 
             if loaded % ROCKSDB_BOOTSTRAP_LOG_EVERY == 0 {
-                if latest_eval.dropped_input {
-                    panic!(
-                        "fusion bootstrap checkpoint dropped input: venue={} symbol={} loaded={} checkpoint={} around=[{}]",
-                        venue_slug,
-                        symbol,
-                        loaded,
-                        ROCKSDB_BOOTSTRAP_LOG_EVERY,
-                        Self::format_trade_flow_window(&records, idx, 10)
-                    );
-                }
                 info!(
-                    "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} loaded={} status={} abnormal={}",
+                    "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} interval_loaded={} interval_calculated={} interval_dropped={} interval_skipped={} interval_all_ready={} interval_warming_up={} interval_other={} total_loaded={} total_calculated={} total_dropped={} total_skipped={}",
                     venue_slug,
                     symbol,
+                    interval_loaded,
+                    interval_calculated,
+                    interval_dropped,
+                    interval_skipped,
+                    interval_all_ready,
+                    interval_warming_up,
+                    interval_other_status,
                     loaded,
-                    latest_eval.status_name(),
-                    latest_eval.abnormal_tags()
+                    calculated,
+                    dropped,
+                    skipped
                 );
+                interval_loaded = 0;
+                interval_calculated = 0;
+                interval_dropped = 0;
+                interval_skipped = 0;
+                interval_all_ready = 0;
+                interval_warming_up = 0;
+                interval_other_status = 0;
             }
         }
 
         BootstrapSymbolReplayResult {
             symbol,
             loaded,
+            calculated,
             dropped,
+            skipped,
             all_ready_seen,
             state,
         }
-    }
-
-    fn format_trade_flow_window(
-        records: &[TradeFlowFeatureMsg],
-        center_idx: usize,
-        span: usize,
-    ) -> String {
-        let start = center_idx.saturating_sub(span);
-        let end = (center_idx + span).min(records.len().saturating_sub(1));
-        let mut lines = Vec::with_capacity(end.saturating_sub(start) + 1);
-        for idx in start..=end {
-            let msg = &records[idx];
-            let marker = if idx == center_idx { "*" } else { "-" };
-            lines.push(format!(
-                "{}idx={} ts={} volume={} buy_volume={} sell_volume={} count={} buy_count={} sell_count={} amount={} buy_amount={} sell_amount={}",
-                marker,
-                idx,
-                msg.ts,
-                msg.values.get(FIELD_VOLUME).copied().unwrap_or(f64::NAN),
-                msg.values.get(FIELD_BUY_VOLUME).copied().unwrap_or(f64::NAN),
-                msg.values.get(FIELD_SELL_VOLUME).copied().unwrap_or(f64::NAN),
-                msg.values.get(7).copied().unwrap_or(f64::NAN),
-                msg.values.get(FIELD_BUY_COUNT).copied().unwrap_or(f64::NAN),
-                msg.values.get(FIELD_SELL_COUNT).copied().unwrap_or(f64::NAN),
-                msg.values.get(FIELD_AMOUNT).copied().unwrap_or(f64::NAN),
-                msg.values.get(FIELD_BUY_AMOUNT).copied().unwrap_or(f64::NAN),
-                msg.values.get(FIELD_SELL_AMOUNT).copied().unwrap_or(f64::NAN),
-            ));
-        }
-        lines.join("; ")
     }
 
     fn on_trade_flow(
@@ -5750,15 +5682,6 @@ fn trade_flow_feature_cf_name(venue_slug: &str, symbol: &str) -> String {
         symbol.to_uppercase(),
         TRADE_FLOW_FEATURE_CF_SUFFIX
     )
-}
-
-fn feature_status_name(status: u8) -> &'static str {
-    match status {
-        0 => "all_ready",
-        1 => "warming_up",
-        2 => "missing_depth",
-        _ => "unknown",
-    }
 }
 
 fn resolve_trade_flow_feature_rocksdb_path(venue_slug: &str) -> Result<String> {
