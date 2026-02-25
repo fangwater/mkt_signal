@@ -46,9 +46,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$MODEL_NAME" ]]; then
-  echo "[ERROR] 必须提供 --target <model_name>" >&2
-  usage >&2
-  exit 1
+  MODEL_NAME="binance-futures-mm-xgb-test"
+  echo "[INFO] 未指定 --target，使用默认 model_name: $MODEL_NAME"
 fi
 
 TARGET_DIR="$HOME/model_pub/${MODEL_NAME}"
