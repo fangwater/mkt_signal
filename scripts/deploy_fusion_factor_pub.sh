@@ -124,8 +124,8 @@ for venue in "${VENUES[@]}"; do
   done
 
   mkdir -p "$TARGET_DIR/config"
-  if [[ -f "$ROOT_DIR/config/fusion_factor_pub.yaml" ]]; then
-    rsync -a "$ROOT_DIR/config/fusion_factor_pub.yaml" "$TARGET_DIR/config/"
+  if [[ -f "$ROOT_DIR/config/fusion_factor_pub.toml" ]]; then
+    rsync -a "$ROOT_DIR/config/fusion_factor_pub.toml" "$TARGET_DIR/config/"
   fi
 done
 

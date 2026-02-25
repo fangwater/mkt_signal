@@ -74,8 +74,8 @@ if [[ -z "$BIN_PATH" ]]; then
   exit 1
 fi
 
-if [[ ! -f "${BASE_DIR}/config/fusion_factor_pub.yaml" ]]; then
-  echo "[ERROR] config not found: ${BASE_DIR}/config/fusion_factor_pub.yaml" >&2
+if [[ ! -f "${BASE_DIR}/config/fusion_factor_pub.toml" ]]; then
+  echo "[ERROR] config not found: ${BASE_DIR}/config/fusion_factor_pub.toml" >&2
   exit 1
 fi
 
@@ -92,7 +92,7 @@ json_name="$(json_escape "$name")"
 json_bin="$(json_escape "$BIN_PATH")"
 json_base="$(json_escape "$BASE_DIR")"
 json_venue="$(json_escape "$venue")"
-json_cfg="$(json_escape "config/fusion_factor_pub.yaml")"
+json_cfg="$(json_escape "config/fusion_factor_pub.toml")"
 json_rust_log="$(json_escape "$rust_log")"
 
 cat >"$cfg_file" <<JSON
@@ -118,6 +118,6 @@ echo "[INFO] Restarting ${name}"
 echo ""
 echo "[INFO] Started: ${name}"
 echo "Venue: ${venue}"
-echo "Config: ${BASE_DIR}/config/fusion_factor_pub.yaml"
+echo "Config: ${BASE_DIR}/config/fusion_factor_pub.toml"
 echo "Logs: ${PMDAEMON[*]} logs ${name} --follow"
 echo "Status: ${PMDAEMON[*]} list"

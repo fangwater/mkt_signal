@@ -13,10 +13,7 @@ use std::time::{Duration, Instant};
 use super::cfg::ModelPubConfig;
 use super::model::XgbModel;
 use super::publisher::ModelPublisher;
-use crate::common::mkt_msg::{
-    FeatureMsg, FeatureStatus, ModelMsg, MODEL_STATUS_BAD_DIM, MODEL_STATUS_DECODE_ERR,
-    MODEL_STATUS_INFER_ERR, MODEL_STATUS_OK,
-};
+use crate::common::mkt_msg::{FeatureMsg, FeatureStatus, ModelMsg, MODEL_STATUS_OK};
 use crate::common::rolling_welford::RollingWelford;
 use crate::factor_pub::fusion_factor_pub::publisher::FUSION_FACTOR_PAYLOAD_MAX_BYTES;
 
@@ -30,10 +27,6 @@ struct ModelPubStats {
     recv_total: u64,
     publish_ok: u64,
     publish_fail: u64,
-    decode_err: u64,
-    bad_dim: u64,
-    infer_err: u64,
-    symbol_miss: u64,
     infer_latency_sum_us: u64,
     infer_latency_max_us: u64,
     infer_count: u64,
@@ -345,22 +338,19 @@ impl ModelPubApp {
 
                 // --- inference ---
                 let Some(runtime) = self.models_by_symbol.get(&symbol_key) else {
-                    self.stats.symbol_miss = self.stats.symbol_miss.saturating_add(1);
-                    self.stats.infer_err = self.stats.infer_err.saturating_add(1);
-                    warn!(
+                    panic!(
                         "model symbol not loaded: model_name={} symbol={} loaded_symbol_count={}",
                         self.model_name,
                         feature.symbol,
                         self.models_by_symbol.len()
                     );
-                    self.emit_result(&feature.symbol, feature.ts_ms, 0.0, MODEL_STATUS_INFER_ERR);
-                    return;
                 };
 
                 if normalized.len() != runtime.feature_dim {
-                    self.stats.bad_dim = self.stats.bad_dim.saturating_add(1);
-                    self.emit_result(&feature.symbol, feature.ts_ms, 0.0, MODEL_STATUS_BAD_DIM);
-                    return;
+                    panic!(
+                        "feature dim mismatch: model_name={} symbol={} expected={} got={}",
+                        self.model_name, feature.symbol, runtime.feature_dim, normalized.len()
+                    );
                 }
 
                 let f32_features: Vec<f32> = normalized.iter().map(|&v| v as f32).collect();
@@ -378,27 +368,18 @@ impl ModelPubApp {
                         self.emit_result(&feature.symbol, feature.ts_ms, score, MODEL_STATUS_OK);
                     }
                     Err(err) => {
-                        self.stats.infer_err = self.stats.infer_err.saturating_add(1);
-                        warn!(
+                        panic!(
                             "Model inference failed: model_name={} symbol={} err={}",
                             self.model_name, feature.symbol, err
-                        );
-                        self.emit_result(
-                            &feature.symbol,
-                            feature.ts_ms,
-                            0.0,
-                            MODEL_STATUS_INFER_ERR,
                         );
                     }
                 }
             }
             Err(err) => {
-                self.stats.decode_err = self.stats.decode_err.saturating_add(1);
-                warn!(
+                panic!(
                     "Feature message decode failed: model_name={} input_service={} err={}",
                     self.model_name, self.input_service, err
                 );
-                self.emit_result("", 0, 0.0, MODEL_STATUS_DECODE_ERR);
             }
         }
     }
@@ -436,24 +417,30 @@ impl ModelPubApp {
             .values()
             .filter(|s| s.sample_count >= self.min_samples)
             .count();
+
+        let mut extra = String::new();
+        if self.stats.publish_fail > 0 {
+            extra.push_str(&format!(" pub_fail={}", self.stats.publish_fail));
+        }
+        if self.stats.cold_start_suppressed > 0 {
+            extra.push_str(&format!(" cold_suppressed={}", self.stats.cold_start_suppressed));
+        }
+        if self.stats.reload_only > 0 {
+            extra.push_str(&format!(" reload_only={}", self.stats.reload_only));
+        }
+
         info!(
-            "ModelPubApp[{}@{}] stats: recv={} pub_ok={} pub_fail={} decode_err={} bad_dim={} infer_err={} symbol_miss={} cold_suppressed={} reload_only={} infer_count={} latency_avg={}us latency_max={}us norm_symbols={}/{} warmed",
+            "ModelPubApp[{}@{}] recv={} pub={} infer={} lat_avg={}us lat_max={}us warmed={}/{}{}",
             self.model_name,
             self.venue,
             self.stats.recv_total,
             self.stats.publish_ok,
-            self.stats.publish_fail,
-            self.stats.decode_err,
-            self.stats.bad_dim,
-            self.stats.infer_err,
-            self.stats.symbol_miss,
-            self.stats.cold_start_suppressed,
-            self.stats.reload_only,
             self.stats.infer_count,
             avg_latency_us,
             self.stats.infer_latency_max_us,
             warmed_symbols,
             norm_symbols,
+            extra,
         );
         self.stats = ModelPubStats::default();
     }

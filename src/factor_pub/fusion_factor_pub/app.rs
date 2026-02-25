@@ -525,14 +525,15 @@ impl FusionFactorPubApp {
                 )
             })?;
         let trade_flow_subscriber =
-            Self::create_trade_flow_subscriber(&venue_slug, &cfg.data_source.trade_flow_channel)?;
+            Self::create_trade_flow_subscriber(&venue_slug, cfg.trade_flow_channel())?;
 
+        let output_service_path = cfg.output_service_path();
         let publisher_node_name = format!("fusion_pub_{}", venue_slug.replace('-', "_"));
-        let publisher = FusionFactorPublisher::new(&publisher_node_name, &cfg.output.service_path)
+        let publisher = FusionFactorPublisher::new(&publisher_node_name, &output_service_path)
             .with_context(|| {
                 format!(
                     "create fusion factor publisher failed: service_path={}",
-                    cfg.output.service_path
+                    output_service_path
                 )
             })?;
 
@@ -541,9 +542,9 @@ impl FusionFactorPubApp {
             venue_slug,
             allowed_symbols.len(),
             venue_slug,
-            cfg.data_source.trade_flow_channel,
+            cfg.trade_flow_channel(),
             trade_flow_feature_rocksdb_path,
-            cfg.output.service_path,
+            output_service_path,
         );
 
         Ok(Self {

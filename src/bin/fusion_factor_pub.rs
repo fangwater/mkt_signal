@@ -1,7 +1,7 @@
 //! Fusion Factor Publisher 入口
 //!
 //! 使用方式:
-//! cargo run --bin fusion_factor_pub -- --venue binance-futures --config config/fusion_factor_pub.yaml
+//! cargo run --bin fusion_factor_pub -- --venue binance-futures --config config/fusion_factor_pub.toml
 
 use anyhow::Result;
 use clap::Parser;
@@ -19,7 +19,7 @@ struct Args {
     venue: TradingVenue,
 
     /// Config path
-    #[arg(short, long, default_value = "config/fusion_factor_pub.yaml")]
+    #[arg(short, long, default_value = "config/fusion_factor_pub.toml")]
     config: String,
 }
 

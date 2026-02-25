@@ -77,7 +77,7 @@ The crate is both a library and a collection of binaries. Key modules:
 Each binary has a corresponding YAML in `config/`. Runtime config for `dat_pbs` is loaded from `$HOME/dat_pbs/config/mkt_cfg.yaml`. Key configs:
 
 - `config/mkt_cfg.yaml` — dual-connection settings, data type switches, IP bindings
-- `config/fusion_factor_pub.yaml` — fusion factor pipeline
+- `config/fusion_factor_pub.toml` — fusion factor pipeline
 - `config/depth_cfg.yaml` — depth publisher
 - `config/trade_flow_feature_pub.yaml` — trade flow features
 - `config/pairmm_resample.yaml` — pair MM resampling
