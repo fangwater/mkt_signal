@@ -1082,7 +1082,7 @@ impl FusionFactorPubApp {
                 corrected = true;
             }
         }
-        if corrected && matches!(symbol, "BTCUSDT" | "ETHUSDT" | "SOLUSDT") {
+        if corrected && symbol == "BTCUSDT" {
             warn!(
                 "zero volume/amount corrected to eps: symbol={} ts={}",
                 symbol, msg.ts
