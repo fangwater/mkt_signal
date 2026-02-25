@@ -865,6 +865,23 @@ impl FusionFactorPubApp {
                 );
             }
 
+            // 裁掉尾部连续的全零 volume/amount bar（rocksdb 写入了未完成的空槽位）
+            let before_trim = records.len();
+            while let Some(last) = records.last() {
+                if last.values[FIELD_VOLUME] == 0.0 && last.values[FIELD_AMOUNT] == 0.0 {
+                    records.pop();
+                } else {
+                    break;
+                }
+            }
+            let trimmed = before_trim - records.len();
+            if trimmed > 0 {
+                info!(
+                    "bootstrap tail trim: symbol={} trimmed={} remaining={}",
+                    symbol, trimmed, records.len()
+                );
+            }
+
             symbol_records.push(BootstrapSymbolRecords { symbol, records });
         }
 
