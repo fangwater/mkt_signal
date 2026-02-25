@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Model Pub Pipeline</title>
+<style>
+:root {
+  --bg: #0f172a; --card: #1e293b; --border: #334155;
+  --accent: #38bdf8; --accent2: #a78bfa; --accent3: #34d399; --accent4: #fb923c;
+  --text: #e2e8f0; --text-dim: #94a3b8;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--bg); color:var(--text); font-family:'Inter',-apple-system,sans-serif; padding:40px 20px; }
+.container { max-width:1200px; margin:0 auto; }
+h1 { text-align:center; font-size:2rem; font-weight:700; margin-bottom:8px;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));
+  -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.subtitle { text-align:center; color:var(--text-dim); font-size:.95rem; margin-bottom:48px; }
+h2 { font-size:1.3rem; margin:48px 0 20px; color:var(--accent); border-bottom:1px solid var(--border); padding-bottom:8px; }
+
+/* Pipeline stages */
+.stage { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:20px 24px; margin-bottom:0; position:relative; }
+.stage .tag { display:inline-block; font-size:.7rem; font-weight:600; padding:2px 8px; border-radius:4px; margin-bottom:8px; text-transform:uppercase; letter-spacing:.5px; }
+.tag-shared { background:#38bdf822; color:var(--accent); border:1px solid #38bdf844; }
+.tag-per-model { background:#a78bfa22; color:var(--accent2); border:1px solid #a78bfa44; }
+.stage .name { font-size:1.1rem; font-weight:700; margin-bottom:6px; }
+.stage .desc { color:var(--text-dim); font-size:.85rem; line-height:1.5; }
+.stage .ipc { font-family:'JetBrains Mono',monospace; font-size:.78rem; color:var(--accent3); margin-top:8px; }
+.stage .detail-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; }
+.stage .detail-item { background:#0f172a; border-radius:6px; padding:8px 12px; font-size:.8rem; }
+.stage .detail-item .label { color:var(--text-dim); font-size:.7rem; text-transform:uppercase; letter-spacing:.3px; }
+.stage .detail-item .val { color:var(--text); margin-top:2px; }
+
+/* Arrow connectors */
+.arrow { display:flex; justify-content:center; padding:6px 0; }
+.arrow svg { width:40px; height:32px; }
+.arrow-line { stroke:var(--accent); stroke-width:2; }
+.arrow-head { fill:var(--accent); }
+
+/* Fork section */
+.fork-label { text-align:center; color:var(--accent2); font-size:.85rem; font-weight:600; margin:16px 0 8px;
+  padding:6px 16px; background:#a78bfa15; border-radius:8px; display:inline-block; width:100%; }
+.fork-row { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:0; }
+.fork-row .stage { border-color:#a78bfa44; }
+
+/* Reuse section */
+.reuse-box { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:24px; margin-top:16px; }
+.reuse-box ul { list-style:none; padding:0; }
+.reuse-box li { padding:8px 0; border-bottom:1px solid var(--border); font-size:.9rem; line-height:1.6; display:flex; gap:10px; }
+.reuse-box li:last-child { border-bottom:none; }
+.reuse-box .num { color:var(--accent); font-weight:700; min-width:24px; }
+.layer-diagram { display:flex; flex-direction:column; align-items:center; gap:4px; margin:24px 0; }
+.layer { border-radius:8px; padding:10px 0; text-align:center; font-size:.85rem; font-weight:600; width:100%; max-width:700px; }
+.layer-shared { background:linear-gradient(90deg,#38bdf822,#34d39922); border:1px solid #38bdf844; color:var(--accent); }
+.layer-split { background:linear-gradient(90deg,#a78bfa22,#fb923c22); border:1px solid #a78bfa44; color:var(--accent2); }
+.layer-arrow { color:var(--text-dim); font-size:1.2rem; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>Model Pub Computation Pipeline</h1>
+<p class="subtitle">从交易所行情到模型推理输出的完整数据流</p>
+
+<!-- Stage 1: Exchange WS -->
+<div class="stage">
+  <span class="tag tag-shared">源头</span>
+  <div class="name">Exchange WebSocket</div>
+  <div class="desc">交易所实时行情推送 (Binance / OKEx / Gate / Bybit / Bitget / Hyperliquid)</div>
+  <div class="detail-grid">
+    <div class="detail-item"><div class="label">数据类型</div><div class="val">逐笔成交 · 盘口增量 · K线 · 资金费率</div></div>
+    <div class="detail-item"><div class="label">协议</div><div class="val">WebSocket (交易所私有格式)</div></div>
+  </div>
+</div>
+<div class="arrow"><svg viewBox="0 0 40 32"><line x1="20" y1="0" x2="20" y2="24" class="arrow-line"/><polygon points="14,22 20,32 26,22" class="arrow-head"/></svg></div>
+
+<!-- Stage 2: dat_pbs -->
+<div class="stage">
+  <span class="tag tag-shared">共享 · 全局唯一</span>
+  <div class="name">dat_pbs <span style="font-weight:400;color:var(--text-dim);font-size:.85rem">— 行情数据代理</span></div>
+  <div class="desc">双连接 + 自动重连，解析交易所私有协议，转为统一格式发布到 iceoryx2 共享内存</div>
+  <div class="detail-grid">
+    <div class="detail-item"><div class="label">输出频道</div><div class="val">dat_pbs/{venue}/incremental<br>dat_pbs/{venue}/trade<br>dat_pbs/{venue}/kline</div></div>
+    <div class="detail-item"><div class="label">传输</div><div class="val">iceoryx2 零拷贝共享内存<br>max_subscribers = 10<br>history = 128</div></div>
+  </div>
+</div>
+<div class="arrow"><svg viewBox="0 0 40 32"><line x1="20" y1="0" x2="20" y2="24" class="arrow-line"/><polygon points="14,22 20,32 26,22" class="arrow-head"/></svg></div>
+
+<!-- Stage 3: depth_pub -->
+<div class="stage">
+  <span class="tag tag-shared">共享 · 全局唯一</span>
+  <div class="name">depth_pub <span style="font-weight:400;color:var(--text-dim);font-size:.85rem">— 盘口快照维护</span></div>
+  <div class="desc">订阅 incremental 增量更新，维护本地 orderbook，定时推送 depth 快照</div>
+  <div class="detail-grid">
+    <div class="detail-item"><div class="label">输入</div><div class="val">dat_pbs/{venue}/incremental</div></div>
+    <div class="detail-item"><div class="label">输出</div><div class="val">dat_pbs/{venue}/depth25 或 depth50</div></div>
+  </div>
+</div>
+<div class="arrow"><svg viewBox="0 0 40 32"><line x1="20" y1="0" x2="20" y2="24" class="arrow-line"/><polygon points="14,22 20,32 26,22" class="arrow-head"/></svg></div>
+<!-- Stage 4: trade_flow_feature_pub -->
+<div class="stage">
+  <span class="tag tag-shared">共享 · 全局唯一</span>
+  <div class="name">trade_flow_feature_pub <span style="font-weight:400;color:var(--text-dim);font-size:.85rem">— 交易流特征聚合</span></div>
+  <div class="desc">订阅 trade + depth，按 5s 周期聚合成 bar，输出 112 维特征向量</div>
+  <div class="detail-grid">
+    <div class="detail-item"><div class="label">输入</div><div class="val">dat_pbs/{venue}/trade<br>dat_pbs/{venue}/depth25</div></div>
+    <div class="detail-item"><div class="label">输出 (112维)</div><div class="val">32维 trade flow (OHLCV, 买卖量, VWAP, 净买入)<br>80维 depth (20档bid+20档ask × 2)</div></div>
+  </div>
+  <div class="ipc">→ factor_pub/{venue}/trade_flow_feature</div>
+</div>
+
+<div class="arrow"><svg viewBox="0 0 40 32"><line x1="20" y1="0" x2="20" y2="24" class="arrow-line"/><polygon points="14,22 20,32 26,22" class="arrow-head"/></svg></div>
+
+<!-- Fork point -->
+<div class="fork-label">▼ 分叉点：每个模型独立实例，订阅同一个 trade_flow_feature 频道 ▼</div>
+
+<div class="fork-row" style="margin-top:12px;">
+  <div class="stage">
+    <span class="tag tag-per-model">Per-Model</span>
+    <div class="name" style="font-size:.95rem;">fusion_factor_pub<br><span style="color:var(--accent2);font-size:.8rem">model_A</span></div>
+    <div class="desc">按 model_manager 下发的 factor_plan 计算衍生因子：rolling mean/sum, correlation, skewness, kurtosis, 价格变化率 ...</div>
+    <div class="ipc">→ fusion_factor/{venue}/model_A</div>
+  </div>
+  <div class="stage">
+    <span class="tag tag-per-model">Per-Model</span>
+    <div class="name" style="font-size:.95rem;">fusion_factor_pub<br><span style="color:var(--accent2);font-size:.8rem">model_B</span></div>
+    <div class="desc">不同模型使用不同的因子组合，由 model_manager 动态配置</div>
+    <div class="ipc">→ fusion_factor/{venue}/model_B</div>
+  </div>
+  <div class="stage">
+    <span class="tag tag-per-model">Per-Model</span>
+    <div class="name" style="font-size:.95rem;">fusion_factor_pub<br><span style="color:var(--accent2);font-size:.8rem">model_C</span></div>
+    <div class="desc">新增模型只需部署新的 fusion + model 实例</div>
+    <div class="ipc">→ fusion_factor/{venue}/model_C</div>
+  </div>
+</div>
+
+<div class="arrow"><svg viewBox="0 0 40 32"><line x1="20" y1="0" x2="20" y2="24" class="arrow-line" style="stroke:var(--accent2)"/><polygon points="14,22 20,32 26,22" class="arrow-head" style="fill:var(--accent2)"/></svg></div>
+<!-- Stage 6: model_pub -->
+<div class="fork-row">
+  <div class="stage">
+    <span class="tag tag-per-model">Per-Model</span>
+    <div class="name" style="font-size:.95rem;">model_pub<br><span style="color:var(--accent2);font-size:.8rem">model_A</span></div>
+    <div class="desc">
+      ① Z-score 归一化 (Welford 滚动统计, 窗口=17280≈24h, 3σ clipping)<br>
+      ② 冷启动抑制 (&lt;1000 样本不推理)<br>
+      ③ XGBoost 推理 (per-symbol model)
+    </div>
+    <div class="ipc">→ model_output/{venue}/model_A</div>
+  </div>
+  <div class="stage">
+    <span class="tag tag-per-model">Per-Model</span>
+    <div class="name" style="font-size:.95rem;">model_pub<br><span style="color:var(--accent2);font-size:.8rem">model_B</span></div>
+    <div class="desc">同左：Z-score → 冷启动 → XGBoost</div>
+    <div class="ipc">→ model_output/{venue}/model_B</div>
+  </div>
+  <div class="stage">
+    <span class="tag tag-per-model">Per-Model</span>
+    <div class="name" style="font-size:.95rem;">model_pub<br><span style="color:var(--accent2);font-size:.8rem">model_C</span></div>
+    <div class="desc">同左：Z-score → 冷启动 → XGBoost</div>
+    <div class="ipc">→ model_output/{venue}/model_C</div>
+  </div>
+</div>
+
+<div class="arrow"><svg viewBox="0 0 40 32"><line x1="20" y1="0" x2="20" y2="24" class="arrow-line" style="stroke:var(--accent3)"/><polygon points="14,22 20,32 26,22" class="arrow-head" style="fill:var(--accent3)"/></svg></div>
+
+<!-- Stage 7: downstream -->
+<div class="stage" style="border-color:#34d39944; text-align:center;">
+  <span class="tag" style="background:#34d39922;color:var(--accent3);border:1px solid #34d39944;">下游</span>
+  <div class="name">trade_signal / 策略层</div>
+  <div class="desc">消费 ModelMsg.score，结合其他信号生成交易指令 → pre_trade → trade_engine</div>
+</div>
+
+<!-- Reuse explanation -->
+<h2>为什么可以复用？</h2>
+
+<div class="reuse-box">
+  <div class="layer-diagram">
+    <div class="layer layer-shared">🔗 共享层 (全局唯一，所有模型复用)</div>
+    <div class="layer" style="background:none;padding:2px;font-size:.8rem;">
+      dat_pbs → depth_pub → trade_flow_feature_pub
+    </div>
+    <div class="layer-arrow">▼</div>
+    <div class="layer layer-split">🔀 分叉层 (每个模型独立实例)</div>
+    <div class="layer" style="background:none;padding:2px;font-size:.8rem;">
+      fusion_factor_pub(model_X) → model_pub(model_X)
+    </div>
+  </div>
+
+  <ul>
+    <li><span class="num">1</span>IPC 路径设计：上游频道不带 model_name（如 <code style="color:var(--accent3)">factor_pub/{venue}/trade_flow_feature</code>），是公共路径，全局只需一套</li>
+    <li><span class="num">2</span>iceoryx2 多订阅者：支持 max_subscribers=10，多个 fusion_factor_pub 实例零拷贝读取同一份共享内存数据，无额外开销</li>
+    <li><span class="num">3</span>分叉点在 fusion_factor_pub：输出路径带 model_name（<code style="color:var(--accent2)">fusion_factor/{venue}/{model_name}</code>），不同模型从这里各走各的</li>
+    <li><span class="num">4</span>新增模型零侵入：只需部署一对 fusion_factor_pub + model_pub，上游 dat_pbs / depth_pub / trade_flow_feature_pub 完全不动，不增加交易所连接数</li>
+  </ul>
+</div>
+
+</div>
+</body>
+</html>

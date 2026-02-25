@@ -30,7 +30,9 @@ use tokio_util::sync::CancellationToken;
 use mkt_signal::common::iceoryx_publisher::SignalPublisher;
 use mkt_signal::common::iceoryx_subscriber::GenericSignalSubscriber;
 use mkt_signal::common::ipc_service_name::build_service_name;
-use mkt_signal::common::mkt_msg::{get_msg_type, AskBidSpreadMsg, MktMsgType, ModelMsg, MODEL_STATUS_OK};
+use mkt_signal::common::mkt_msg::{
+    get_msg_type, AskBidSpreadMsg, MktMsgType, ModelMsg, MODEL_STATUS_OK,
+};
 use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::depth_pub::query_msg::{
@@ -1826,7 +1828,11 @@ async fn run(cfg: AppCfg, token: CancellationToken) -> Result<()> {
     let model_scores = Arc::new(RwLock::new(ModelScoreCache::default()));
     let mm_hedge_tlen = Arc::new(RwLock::new(None));
     spawn_ask_bid_listener(cfg.venue, quotes.clone(), token.clone());
-    spawn_model_listener(cfg.model_service.clone(), model_scores.clone(), token.clone());
+    spawn_model_listener(
+        cfg.model_service.clone(),
+        model_scores.clone(),
+        token.clone(),
+    );
 
     let (publish_tx, publish_rx) = mpsc::unbounded_channel();
     spawn_publisher_worker(cfg.clone(), table.clone(), publish_rx, token.clone());

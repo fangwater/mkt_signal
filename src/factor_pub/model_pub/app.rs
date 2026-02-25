@@ -137,8 +137,14 @@ impl ModelPubApp {
         for (symbol, runtime) in &models_by_symbol {
             let dummy = vec![0.0f32; runtime.feature_dim];
             match runtime.model.predict_one(&dummy) {
-                Ok(_) => info!("warmup predict ok: model_name={} symbol={}", model_name, symbol),
-                Err(e) => warn!("warmup predict failed: model_name={} symbol={} err={}", model_name, symbol, e),
+                Ok(_) => info!(
+                    "warmup predict ok: model_name={} symbol={}",
+                    model_name, symbol
+                ),
+                Err(e) => warn!(
+                    "warmup predict failed: model_name={} symbol={} err={}",
+                    model_name, symbol, e
+                ),
             }
         }
 
@@ -298,15 +304,19 @@ impl ModelPubApp {
                 // --- z-score normalization ---
                 let dim = feature.features.len();
                 let window_size = self.window_size;
-                let norm_state = self.norm_states.entry(symbol_key.clone()).or_insert_with(|| SymbolNormState {
-                    welford_vec: (0..dim).map(|_| RollingWelford::new(window_size)).collect(),
-                    sample_count: 0,
-                });
+                let norm_state = self
+                    .norm_states
+                    .entry(symbol_key.clone())
+                    .or_insert_with(|| SymbolNormState {
+                        welford_vec: (0..dim).map(|_| RollingWelford::new(window_size)).collect(),
+                        sample_count: 0,
+                    });
 
                 // Always push into Welford (heartbeat), even during cold start
                 if norm_state.welford_vec.len() != dim {
                     // dimension changed, reset
-                    norm_state.welford_vec = (0..dim).map(|_| RollingWelford::new(window_size)).collect();
+                    norm_state.welford_vec =
+                        (0..dim).map(|_| RollingWelford::new(window_size)).collect();
                     norm_state.sample_count = 0;
                 }
                 for (i, &val) in feature.features.iter().enumerate() {
@@ -343,12 +353,7 @@ impl ModelPubApp {
                         feature.symbol,
                         self.models_by_symbol.len()
                     );
-                    self.emit_result(
-                        &feature.symbol,
-                        feature.ts_ms,
-                        0.0,
-                        MODEL_STATUS_INFER_ERR,
-                    );
+                    self.emit_result(&feature.symbol, feature.ts_ms, 0.0, MODEL_STATUS_INFER_ERR);
                     return;
                 };
 
@@ -426,7 +431,11 @@ impl ModelPubApp {
             0
         };
         let norm_symbols = self.norm_states.len();
-        let warmed_symbols = self.norm_states.values().filter(|s| s.sample_count >= self.min_samples).count();
+        let warmed_symbols = self
+            .norm_states
+            .values()
+            .filter(|s| s.sample_count >= self.min_samples)
+            .count();
         info!(
             "ModelPubApp[{}@{}] stats: recv={} pub_ok={} pub_fail={} decode_err={} bad_dim={} infer_err={} symbol_miss={} cold_suppressed={} reload_only={} infer_count={} latency_avg={}us latency_max={}us norm_symbols={}/{} warmed",
             self.model_name,

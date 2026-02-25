@@ -98,10 +98,9 @@ echo "[INFO] 构建 $BIN_NAME (release)"
 cargo build --release --bin "$BIN_NAME"
 
 SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
-SCRIPTS_TO_SYNC=(
+SCRIPTS_TO_DEPLOY=(
   "start_trade_flow_feature_pub.sh"
   "stop_trade_flow_feature_pub.sh"
-  "sync_trade_flow_thresholds.py"
   "print_trade_flow_thresholds.py"
 )
 
@@ -114,7 +113,7 @@ for venue in "${VENUES[@]}"; do
 
   # 同步启动/停止脚本到 scripts/
   mkdir -p "$TARGET_DIR/scripts"
-  for script in "${SCRIPTS_TO_SYNC[@]}"; do
+  for script in "${SCRIPTS_TO_DEPLOY[@]}"; do
     if [[ -f "$SCRIPT_DIR_SRC/$script" ]]; then
       rsync -a "$SCRIPT_DIR_SRC/$script" "$TARGET_DIR/scripts/"
       chmod +x "$TARGET_DIR/scripts/$script"
