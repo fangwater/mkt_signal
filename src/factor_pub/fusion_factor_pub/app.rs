@@ -39,7 +39,6 @@ const STATS_LOG_INTERVAL_SECS: u64 = 60;
 const TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE: usize = 2048;
 const TRADE_FLOW_FEATURE_CF_SUFFIX: &str = "trade_flow:feature";
 const ROCKSDB_BOOTSTRAP_LOG_EVERY: usize = 12 * 60 * 4;
-const BASELINE_018_MIN_SELL_VOLUME: f64 = 1e-12;
 const MAX_SYMBOL_HISTORY: usize = 4096;
 const MAX_DEPTH_LEVELS_CACHE: usize = 20;
 const APPENDED_DEPTH_VALUES: usize = MAX_DEPTH_LEVELS_CACHE * 4;
@@ -355,7 +354,6 @@ struct OrderedEvalResult {
 #[derive(Debug, Clone)]
 struct ReplayEvalSummary {
     status: u8,
-    dropped_input: bool,
 }
 
 struct BootstrapSymbolReplayResult {
@@ -363,7 +361,6 @@ struct BootstrapSymbolReplayResult {
     loaded: usize,
     calculated: u64,
     reload: u64,
-    dropped: u64,
     all_ready_seen: bool,
     state: SymbolCalcState,
 }
@@ -373,14 +370,6 @@ struct BootstrapSymbolRecords {
     records: Vec<TradeFlowFeatureMsg>,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct TradeFlowTsStat {
-    volume: f64,
-    buy_volume: f64,
-    sell_volume: f64,
-    count: f64,
-}
-
 impl ReplayEvalSummary {
     fn from_eval(eval_result: &OrderedEvalResult, mark_reload: bool) -> Self {
         let status = if mark_reload && eval_result.status == FeatureStatus::AllReady as u8 {
@@ -388,24 +377,11 @@ impl ReplayEvalSummary {
         } else {
             eval_result.status
         };
-        Self {
-            status,
-            dropped_input: false,
-        }
+        Self { status }
     }
 
     fn missing_plan() -> Self {
-        Self {
-            status: u8::MAX,
-            dropped_input: false,
-        }
-    }
-
-    fn dropped_input() -> Self {
-        Self {
-            status: u8::MAX,
-            dropped_input: true,
-        }
+        Self { status: u8::MAX }
     }
 }
 
@@ -495,7 +471,6 @@ pub struct FusionFactorPubApp {
     trade_flow_subscriber: Subscriber<ipc::Service, [u8; TRADE_FLOW_MAX_BYTES], ()>,
     publisher: FusionFactorPublisher,
     allowed_symbols: HashSet<String>,
-    symbols_need_baseline_018: HashSet<String>,
     symbol_all_ready_seen: HashSet<String>,
     symbol_factor_plans: HashMap<String, SymbolFactorPlan>,
     symbol_states: HashMap<String, SymbolCalcState>,
@@ -507,7 +482,6 @@ pub struct FusionFactorPubApp {
     factor_118_ready_count: u64,
     trade_flow_dropped_symbol_count: u64,
     trade_flow_dropped_symbol_samples: Vec<String>,
-    baseline_018_dropped_count: u64,
     trade_flow_decode_error_count: u64,
     trade_flow_decode_error_last: Option<String>,
     factor_plan_count: u64,
@@ -550,16 +524,6 @@ impl FusionFactorPubApp {
                     allowed_symbols.len()
                 )
             })?;
-        let symbols_need_baseline_018: HashSet<String> = symbol_factor_plans
-            .iter()
-            .filter_map(|(symbol, plan)| {
-                plan.ordered_factors
-                    .iter()
-                    .any(|binding| binding.factor_id == Some(FusionFactorId::Baseline018))
-                    .then(|| symbol.clone())
-            })
-            .collect();
-
         let trade_flow_subscriber =
             Self::create_trade_flow_subscriber(&venue_slug, &cfg.data_source.trade_flow_channel)?;
 
@@ -589,7 +553,6 @@ impl FusionFactorPubApp {
             trade_flow_subscriber,
             publisher,
             allowed_symbols: allowed_symbols.into_iter().collect(),
-            symbols_need_baseline_018,
             symbol_all_ready_seen: HashSet::new(),
             symbol_factor_plans,
             symbol_states: HashMap::new(),
@@ -601,7 +564,6 @@ impl FusionFactorPubApp {
             factor_118_ready_count: 0,
             trade_flow_dropped_symbol_count: 0,
             trade_flow_dropped_symbol_samples: Vec::new(),
-            baseline_018_dropped_count: 0,
             trade_flow_decode_error_count: 0,
             trade_flow_decode_error_last: None,
             factor_plan_count: 0,
@@ -725,7 +687,7 @@ impl FusionFactorPubApp {
 
             if self.last_stats_log.elapsed() >= Duration::from_secs(STATS_LOG_INTERVAL_SECS) {
                 info!(
-                    "FusionFactorPubApp[{}] stats: raw_msgs={} trade_flow_msgs={} triggers={} decode_errors={} depth_attached={} missing_depth={} factor118_ready={} trade_drop_symbols={} baseline018_dropped={} drop_symbol_samples={:?} calc_symbols={} factor_plan={} factor_eval={} factor_ready={} factor_warming_up={} factor_invalid={} factor_missing_depth={} published={} publish_failed={} pub_total={} pub_dropped={} last_decode_error={}",
+                    "FusionFactorPubApp[{}] stats: raw_msgs={} trade_flow_msgs={} triggers={} decode_errors={} depth_attached={} missing_depth={} factor118_ready={} trade_drop_symbols={} drop_symbol_samples={:?} calc_symbols={} factor_plan={} factor_eval={} factor_ready={} factor_warming_up={} factor_invalid={} factor_missing_depth={} published={} publish_failed={} pub_total={} pub_dropped={} last_decode_error={}",
                     self.venue_slug,
                     self.trade_flow_raw_count,
                     self.trade_flow_count,
@@ -735,7 +697,6 @@ impl FusionFactorPubApp {
                     self.missing_depth_count,
                     self.factor_118_ready_count,
                     self.trade_flow_dropped_symbol_count,
-                    self.baseline_018_dropped_count,
                     self.trade_flow_dropped_symbol_samples,
                     self.symbol_states.len(),
                     self.factor_plan_count,
@@ -760,7 +721,6 @@ impl FusionFactorPubApp {
                 self.factor_118_ready_count = 0;
                 self.trade_flow_dropped_symbol_count = 0;
                 self.trade_flow_dropped_symbol_samples.clear();
-                self.baseline_018_dropped_count = 0;
                 self.factor_plan_count = 0;
                 self.factor_evaluated_count = 0;
                 self.factor_ready_count = 0;
@@ -777,7 +737,6 @@ impl FusionFactorPubApp {
 
     fn bootstrap_from_rocksdb(&mut self) -> Result<()> {
         let started = Instant::now();
-        let dropped_before = self.baseline_018_dropped_count;
         let mut symbol_list: Vec<String> = self.allowed_symbols.iter().cloned().collect();
         symbol_list.sort_unstable();
 
@@ -923,19 +882,6 @@ impl FusionFactorPubApp {
             symbol_records.push(BootstrapSymbolRecords { symbol, records });
         }
 
-        // TEMP DEBUG: keep a lightweight per-symbol, per-ts flow snapshot so panic logs can
-        // compare whether peer symbols are also empty/single-sided at the same timestamp.
-        // Remove after diagnosing bootstrap drop behavior.
-        let mut peer_ts_stats: HashMap<String, HashMap<i64, TradeFlowTsStat>> = HashMap::new();
-        for symbol_records in &symbol_records {
-            let mut by_ts: HashMap<i64, TradeFlowTsStat> =
-                HashMap::with_capacity(symbol_records.records.len());
-            for msg in &symbol_records.records {
-                by_ts.insert(msg.ts, Self::build_ts_stat(msg));
-            }
-            peer_ts_stats.insert(symbol_records.symbol.clone(), by_ts);
-        }
-
         let replay_threads = symbol_records.len().max(1).min(4);
         info!(
             "FusionFactorPubApp[{}] rocksdb bootstrap replay start: symbols={} threads={}",
@@ -945,8 +891,6 @@ impl FusionFactorPubApp {
         );
         let venue_slug = self.venue_slug.clone();
         let symbol_factor_plans = self.symbol_factor_plans.clone();
-        let symbols_need_baseline_018 = self.symbols_need_baseline_018.clone();
-        let peer_ts_stats = std::sync::Arc::new(peer_ts_stats);
         let thread_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(replay_threads)
             .build()
@@ -960,13 +904,7 @@ impl FusionFactorPubApp {
             symbol_records
                 .into_par_iter()
                 .map(|symbol_records| {
-                    Self::replay_symbol_records(
-                        &venue_slug,
-                        &symbol_factor_plans,
-                        &symbols_need_baseline_018,
-                        &peer_ts_stats,
-                        symbol_records,
-                    )
+                    Self::replay_symbol_records(&venue_slug, &symbol_factor_plans, symbol_records)
                 })
                 .collect::<Vec<_>>()
         });
@@ -979,9 +917,6 @@ impl FusionFactorPubApp {
             total_loaded = total_loaded.saturating_add(symbol_result.loaded);
             total_calculated = total_calculated.saturating_add(symbol_result.calculated);
             total_reload = total_reload.saturating_add(symbol_result.reload);
-            self.baseline_018_dropped_count = self
-                .baseline_018_dropped_count
-                .saturating_add(symbol_result.dropped);
             if symbol_result.all_ready_seen {
                 self.symbol_all_ready_seen
                     .insert(symbol_result.symbol.clone());
@@ -989,25 +924,23 @@ impl FusionFactorPubApp {
             self.symbol_states
                 .insert(symbol_result.symbol.clone(), symbol_result.state);
             info!(
-                "FusionFactorPubApp[{}] rocksdb bootstrap symbol done: symbol={} loaded={} calculated={} reload={} dropped={} total_loaded={}",
+                "FusionFactorPubApp[{}] rocksdb bootstrap symbol done: symbol={} loaded={} calculated={} reload={} total_loaded={}",
                 self.venue_slug,
                 symbol_result.symbol,
                 symbol_result.loaded,
                 symbol_result.calculated,
                 symbol_result.reload,
-                symbol_result.dropped,
                 total_loaded
             );
         }
 
         info!(
-            "FusionFactorPubApp[{}] rocksdb bootstrap done: symbols={} total_loaded={} total_calculated={} total_reload={} baseline018_dropped={} elapsed_ms={}",
+            "FusionFactorPubApp[{}] rocksdb bootstrap done: symbols={} total_loaded={} total_calculated={} total_reload={} elapsed_ms={}",
             self.venue_slug,
             self.allowed_symbols.len(),
             total_loaded,
             total_calculated,
             total_reload,
-            self.baseline_018_dropped_count.saturating_sub(dropped_before),
             started.elapsed().as_millis()
         );
         Ok(())
@@ -1016,21 +949,20 @@ impl FusionFactorPubApp {
     fn replay_symbol_records(
         venue_slug: &str,
         symbol_factor_plans: &HashMap<String, SymbolFactorPlan>,
-        symbols_need_baseline_018: &HashSet<String>,
-        peer_ts_stats: &HashMap<String, HashMap<i64, TradeFlowTsStat>>,
         symbol_records: BootstrapSymbolRecords,
     ) -> BootstrapSymbolReplayResult {
-        let BootstrapSymbolRecords { symbol, records } = symbol_records;
+        let BootstrapSymbolRecords {
+            symbol,
+            mut records,
+        } = symbol_records;
         let mut state = SymbolCalcState::default();
         let mut loaded = 0usize;
         let mut calculated = 0u64;
         let mut reload = 0u64;
-        let dropped = 0u64;
         let mut all_ready_seen = false;
         let mut interval_loaded = 0u64;
         let mut interval_calculated = 0u64;
         let mut interval_reload = 0u64;
-        let mut interval_dropped = 0u64;
         let mut interval_warming_up = 0u64;
         let mut interval_other_status = 0u64;
         let plan = symbol_factor_plans.get(&symbol);
@@ -1042,100 +974,80 @@ impl FusionFactorPubApp {
             })
             .unwrap_or(false);
 
-        for (idx, msg) in records.iter().enumerate() {
-            let latest_eval = if Self::should_drop_for_baseline_018_with_set(
-                symbols_need_baseline_018,
-                &symbol,
-                msg,
-            ) {
-                panic!(
-                    "fusion bootstrap dropped input: venue={} symbol={} trade_ts={} reason=baseline_018_sell_volume_non_positive around=[{}] peer_ts=[{}]",
-                    venue_slug,
-                    symbol,
-                    msg.ts,
-                    Self::format_flow_depth_window(&records, idx, 3),
-                    Self::format_peer_ts_snapshot(peer_ts_stats, &symbol, msg.ts)
-                );
-            } else {
-                let depth_snapshot = parse_embedded_depth(msg);
-                let depth_opt = depth_snapshot.as_ref();
-                state.push_trade_flow(msg);
-                if let Some(depth) = depth_opt {
-                    state.push_depth_metrics(depth);
-                }
-                match plan {
-                    Some(plan) => {
-                        let factor_118_result = if needs_factor_118 {
-                            depth_opt.and_then(|depth| {
-                                Self::compute_factor_118_with_state(&mut state, depth)
-                            })
-                        } else {
-                            None
-                        };
-                        let series = Self::build_symbol_series_from_state(&state);
-                        let eval_result = Self::evaluate_ordered_factors_with_plan(
-                            plan,
-                            factor_118_result,
-                            depth_opt,
-                            Some(&series),
+        for msg in records.iter_mut() {
+            Self::validate_and_fix_trade_flow(venue_slug, &symbol, msg);
+            let depth_snapshot = parse_embedded_depth(msg);
+            let depth_opt = depth_snapshot.as_ref();
+            state.push_trade_flow(msg);
+            if let Some(depth) = depth_opt {
+                state.push_depth_metrics(depth);
+            }
+            let latest_eval = match plan {
+                Some(plan) => {
+                    let factor_118_result = if needs_factor_118 {
+                        depth_opt.and_then(|depth| {
+                            Self::compute_factor_118_with_state(&mut state, depth)
+                        })
+                    } else {
+                        None
+                    };
+                    let series = Self::build_symbol_series_from_state(&state);
+                    let eval_result = Self::evaluate_ordered_factors_with_plan(
+                        plan,
+                        factor_118_result,
+                        depth_opt,
+                        Some(&series),
+                    );
+                    if eval_result.status == 0 {
+                        all_ready_seen = true;
+                    } else if eval_result.status == 1 && all_ready_seen {
+                        let warming_factors: Vec<&str> = eval_result
+                            .factor_issues
+                            .iter()
+                            .filter(|issue| issue.contains(":warming_up"))
+                            .map(|issue| issue.as_str())
+                            .collect();
+                        panic!(
+                            "fusion factor regressed to warming_up after all_ready: venue={} symbol={} trade_ts={} warming_factors=[{}]",
+                            venue_slug,
+                            symbol,
+                            msg.ts,
+                            warming_factors.join(",")
                         );
-                        if eval_result.status == 0 {
-                            all_ready_seen = true;
-                        } else if eval_result.status == 1 && all_ready_seen {
-                            let warming_factors: Vec<&str> = eval_result
-                                .factor_issues
-                                .iter()
-                                .filter(|issue| issue.contains(":warming_up"))
-                                .map(|issue| issue.as_str())
-                                .collect();
-                            panic!(
-                                "fusion factor regressed to warming_up after all_ready: venue={} symbol={} trade_ts={} warming_factors=[{}]",
-                                venue_slug,
-                                symbol,
-                                msg.ts,
-                                warming_factors.join(",")
-                            );
-                        }
-                        ReplayEvalSummary::from_eval(&eval_result, true)
                     }
-                    None => ReplayEvalSummary::missing_plan(),
+                    ReplayEvalSummary::from_eval(&eval_result, true)
                 }
+                None => ReplayEvalSummary::missing_plan(),
             };
             loaded = loaded.saturating_add(1);
             interval_loaded = interval_loaded.saturating_add(1);
-            if latest_eval.dropped_input {
-                interval_dropped = interval_dropped.saturating_add(1);
-            } else {
-                calculated = calculated.saturating_add(1);
-                interval_calculated = interval_calculated.saturating_add(1);
-                match latest_eval.status {
-                    x if x == FeatureStatus::Reload as u8 => {
-                        reload = reload.saturating_add(1);
-                        interval_reload = interval_reload.saturating_add(1);
-                    }
-                    x if x == FeatureStatus::WarmingUp as u8 => {
-                        interval_warming_up = interval_warming_up.saturating_add(1);
-                    }
-                    _ => interval_other_status = interval_other_status.saturating_add(1),
+            calculated = calculated.saturating_add(1);
+            interval_calculated = interval_calculated.saturating_add(1);
+            match latest_eval.status {
+                x if x == FeatureStatus::Reload as u8 => {
+                    reload = reload.saturating_add(1);
+                    interval_reload = interval_reload.saturating_add(1);
                 }
+                x if x == FeatureStatus::WarmingUp as u8 => {
+                    interval_warming_up = interval_warming_up.saturating_add(1);
+                }
+                _ => interval_other_status = interval_other_status.saturating_add(1),
             }
 
             if loaded % ROCKSDB_BOOTSTRAP_LOG_EVERY == 0 {
                 info!(
-                    "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} interval_loaded={} interval_calculated={} interval_reload={} interval_dropped={} interval_warming_up={} interval_other={}",
+                    "FusionFactorPubApp[{}] rocksdb bootstrap progress: symbol={} interval_loaded={} interval_calculated={} interval_reload={} interval_warming_up={} interval_other={}",
                     venue_slug,
                     symbol,
                     interval_loaded,
                     interval_calculated,
                     interval_reload,
-                    interval_dropped,
                     interval_warming_up,
                     interval_other_status
                 );
                 interval_loaded = 0;
                 interval_calculated = 0;
                 interval_reload = 0;
-                interval_dropped = 0;
                 interval_warming_up = 0;
                 interval_other_status = 0;
             }
@@ -1146,70 +1058,49 @@ impl FusionFactorPubApp {
             loaded,
             calculated,
             reload,
-            dropped,
             all_ready_seen,
             state,
         }
     }
 
-    fn format_flow_depth_window(
-        records: &[TradeFlowFeatureMsg],
-        center_idx: usize,
-        span: usize,
-    ) -> String {
-        let start = center_idx.saturating_sub(span);
-        let end = (center_idx + span).min(records.len().saturating_sub(1));
-        let mut lines = Vec::with_capacity(end.saturating_sub(start) + 1);
-        for idx in start..=end {
-            let msg = &records[idx];
-            let depth = parse_embedded_depth(msg);
-            let marker = if idx == center_idx { "*" } else { "-" };
-            lines.push(format!(
-                "{}idx={} ts={} symbol={} flow_values={:?} depth={:?}",
-                marker, idx, msg.ts, msg.symbol, msg.values, depth
-            ));
-        }
-        lines.join("; ")
-    }
-
-    fn build_ts_stat(msg: &TradeFlowFeatureMsg) -> TradeFlowTsStat {
-        TradeFlowTsStat {
-            volume: msg.values.get(FIELD_VOLUME).copied().unwrap_or(f64::NAN),
-            buy_volume: msg
-                .values
-                .get(FIELD_BUY_VOLUME)
-                .copied()
-                .unwrap_or(f64::NAN),
-            sell_volume: msg
-                .values
-                .get(FIELD_SELL_VOLUME)
-                .copied()
-                .unwrap_or(f64::NAN),
-            count: msg.values.get(7).copied().unwrap_or(f64::NAN),
-        }
-    }
-
-    // TEMP DEBUG: compare all symbols at the same ts when bootstrap panic occurs.
-    // Remove after diagnosing empty-bar/single-side issues.
-    fn format_peer_ts_snapshot(
-        peer_ts_stats: &HashMap<String, HashMap<i64, TradeFlowTsStat>>,
-        current_symbol: &str,
-        ts: i64,
-    ) -> String {
-        let mut symbols: Vec<&str> = peer_ts_stats.keys().map(|s| s.as_str()).collect();
-        symbols.sort_unstable();
-        let mut parts = Vec::with_capacity(symbols.len());
-        for symbol in symbols {
-            let marker = if symbol == current_symbol { "*" } else { "-" };
-            match peer_ts_stats.get(symbol).and_then(|by_ts| by_ts.get(&ts)) {
-                Some(stat) => parts.push(format!(
-                    "{}symbol={} ts={} volume={} buy_volume={} sell_volume={} count={}",
-                    marker, symbol, ts, stat.volume, stat.buy_volume, stat.sell_volume, stat.count
-                )),
-                None => parts.push(format!("{}symbol={} ts={} missing", marker, symbol, ts)),
+    fn validate_and_fix_trade_flow(venue_slug: &str, symbol: &str, msg: &mut TradeFlowFeatureMsg) {
+        const PRICE_FIELDS: &[(usize, &str)] = &[
+            (FIELD_OPEN, "open"),
+            (FIELD_HIGH, "high"),
+            (FIELD_LOW, "low"),
+            (FIELD_CLOSE, "close"),
+            (FIELD_VWAP, "vwap"),
+            (FIELD_BUY_VWAP, "buy_vwap"),
+            (FIELD_SELL_VWAP, "sell_vwap"),
+        ];
+        for &(idx, name) in PRICE_FIELDS {
+            let v = msg.values[idx];
+            if v == 0.0 || !v.is_finite() {
+                panic!(
+                    "fusion input price is zero or non-finite: venue={} symbol={} ts={} field={} value={}",
+                    venue_slug, symbol, msg.ts, name, v
+                );
             }
         }
-        parts.join("; ")
+
+        const VOLUME_EPS: f64 = 1e-12;
+        const VOLUME_FIELDS: &[(usize, &str)] = &[
+            (FIELD_VOLUME, "volume"),
+            (FIELD_AMOUNT, "amount"),
+            (FIELD_BUY_AMOUNT, "buy_amount"),
+            (FIELD_SELL_AMOUNT, "sell_amount"),
+            (FIELD_BUY_VOLUME, "buy_volume"),
+            (FIELD_SELL_VOLUME, "sell_volume"),
+        ];
+        for &(idx, name) in VOLUME_FIELDS {
+            if msg.values[idx] == 0.0 {
+                warn!(
+                    "fusion input volume/amount is zero, correcting to eps: venue={} symbol={} ts={} field={}",
+                    venue_slug, symbol, msg.ts, name
+                );
+                msg.values[idx] = VOLUME_EPS;
+            }
+        }
     }
 
     fn on_trade_flow(
@@ -1223,13 +1114,10 @@ impl FusionFactorPubApp {
     fn apply_trade_flow_msg(
         &mut self,
         symbol: String,
-        msg: crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg,
+        mut msg: crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg,
         emit_output: bool,
     ) -> Option<ReplayEvalSummary> {
-        if self.should_drop_for_baseline_018(&symbol, &msg) {
-            self.baseline_018_dropped_count = self.baseline_018_dropped_count.saturating_add(1);
-            return Some(ReplayEvalSummary::dropped_input());
-        }
+        Self::validate_and_fix_trade_flow(&self.venue_slug, &symbol, &mut msg);
 
         if emit_output {
             self.trade_flow_count = self.trade_flow_count.saturating_add(1);
@@ -1458,22 +1346,6 @@ impl FusionFactorPubApp {
             self.trade_flow_dropped_symbol_samples
                 .push(symbol.to_string());
         }
-    }
-
-    fn should_drop_for_baseline_018(&self, symbol: &str, msg: &TradeFlowFeatureMsg) -> bool {
-        Self::should_drop_for_baseline_018_with_set(&self.symbols_need_baseline_018, symbol, msg)
-    }
-
-    fn should_drop_for_baseline_018_with_set(
-        symbols_need_baseline_018: &HashSet<String>,
-        symbol: &str,
-        msg: &TradeFlowFeatureMsg,
-    ) -> bool {
-        if !symbols_need_baseline_018.contains(symbol) {
-            return false;
-        }
-        let sell_volume = msg.values[FIELD_SELL_VOLUME];
-        !sell_volume.is_finite() || sell_volume <= BASELINE_018_MIN_SELL_VOLUME
     }
 
     fn log_factor_summary(
@@ -3439,10 +3311,6 @@ impl FusionFactorPubApp {
         for i in 0..n {
             let buy = series.buy_volume[i];
             let sell = series.sell_volume[i];
-            if !buy.is_finite() || !sell.is_finite() || sell.abs() <= 1e-12 {
-                ratio.push(f64::NAN);
-                continue;
-            }
             ratio.push(buy / sell);
         }
         let curr = *ratio.last()?;
@@ -3450,14 +3318,11 @@ impl FusionFactorPubApp {
         if !curr.is_finite() || !prev.is_finite() {
             return None;
         }
-        if prev.abs() <= 1e-12 {
-            return Some(0.0);
-        }
         let value = (curr - prev) / prev;
         if value.is_finite() {
             Some(value)
         } else {
-            Some(0.0)
+            None
         }
     }
 
@@ -3591,9 +3456,6 @@ impl FusionFactorPubApp {
             return None;
         }
         let sell = series.sell_amount[n - 1];
-        if sell.abs() <= 1e-12 {
-            return None;
-        }
         let value = series.buy_amount[n - 1] / sell;
         if value.is_finite() {
             Some(value)
