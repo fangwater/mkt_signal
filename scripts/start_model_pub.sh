@@ -7,45 +7,37 @@ BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 usage() {
   cat <<'USAGE'
 Usage:
-  start_model_pub.sh --model <model_name>
+  start_model_pub.sh
 
 Behavior:
-  - 使用 pmdaemon 启动 model_pub 进程
-  - 进程名: model_pub_<model_name>
+  - 必须在 model_pub 部署目录下执行（例如 ~/model_pub/binance-futures-mm-xgb-test）
+  - model_name 由当前目录名自动推断
+  - 使用 pmdaemon 启动进程名: model_pub_<model_name>
   - 可用 PMDAEMON_BIN 覆盖二进制名（默认 pmdaemon）
 
 Examples:
-  ./scripts/start_model_pub.sh --model binance-futures-mm-xgb-test
+  cd ~/model_pub/binance-futures-mm-xgb-test
+  ./scripts/start_model_pub.sh
 USAGE
 }
 
-MODEL_NAME=""
-while [[ $# -gt 0 ]]; do
+if [[ $# -gt 0 ]]; then
   case "$1" in
-    --model)
-      MODEL_NAME="${2:-}"
-      if [[ -z "$MODEL_NAME" ]]; then
-        echo "[ERROR] --model 需要一个值" >&2
-        usage >&2
-        exit 1
-      fi
-      shift 2
-      ;;
     -h|--help)
       usage
       exit 0
       ;;
     *)
-      echo "[ERROR] 未知参数: $1" >&2
+      echo "[ERROR] 不支持参数: $*" >&2
       usage >&2
       exit 1
       ;;
   esac
-done
+fi
 
+MODEL_NAME="$(basename "${BASE_DIR}")"
 if [[ -z "$MODEL_NAME" ]]; then
-  echo "[ERROR] 必须提供 --model" >&2
-  usage >&2
+  echo "[ERROR] 无法从目录名推断 model_name: ${BASE_DIR}" >&2
   exit 1
 fi
 

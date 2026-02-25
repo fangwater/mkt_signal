@@ -8,23 +8,25 @@ BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 usage() {
   cat <<'USAGE'
 Usage:
-  deploy_model_pub.sh [--target <dir>]
+  deploy_model_pub.sh [--target <model_name>]
 
-Defaults:
-  部署根目录 -> $HOME/model_pub（可用 --target 覆盖）
+Behavior:
+  - 不传 --target 时，使用 config/model_pub.toml 中默认的 model_name 推断
+  - 部署目录: ~/model_pub/<model_name>/
+  - toml 中的 {model_name} 会被替换为实际 model_name
 
 Examples:
+  bash scripts/deploy_model_pub.sh --target binance-futures-mm-xgb-test
   bash scripts/deploy_model_pub.sh
-  bash scripts/deploy_model_pub.sh --target /opt/model_pub
 USAGE
 }
 
-TARGET_DIR="$HOME/model_pub"
+MODEL_NAME=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --target)
-      TARGET_DIR="${2:-}"
-      if [[ -z "$TARGET_DIR" ]]; then
+      MODEL_NAME="${2:-}"
+      if [[ -z "$MODEL_NAME" ]]; then
         echo "[ERROR] --target 需要一个值" >&2
         usage >&2
         exit 1
@@ -43,10 +45,18 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -z "$MODEL_NAME" ]]; then
+  echo "[ERROR] 必须提供 --target <model_name>" >&2
+  usage >&2
+  exit 1
+fi
+
+TARGET_DIR="$HOME/model_pub/${MODEL_NAME}"
+
 echo "[INFO] 构建 $BIN_NAME (release)"
 cargo build --release --bin "$BIN_NAME"
 
-echo "[INFO] 部署 $BIN_NAME 到 $TARGET_DIR"
+echo "[INFO] 部署 $BIN_NAME 到 $TARGET_DIR (model_name=$MODEL_NAME)"
 mkdir -p "$TARGET_DIR"
 cp "$BIN_PATH" "$TARGET_DIR/$BIN_NAME"
 chmod +x "$TARGET_DIR/$BIN_NAME"
@@ -66,4 +76,6 @@ fi
 
 echo "[INFO] $BIN_NAME 部署完成"
 echo "[INFO] target_dir: $TARGET_DIR"
-echo "[INFO] 启动示例: cd $TARGET_DIR && ./scripts/start_model_pub.sh --model <model_name>"
+echo "[INFO] model_name: $MODEL_NAME"
+echo "[INFO] 启动: cd $TARGET_DIR && ./scripts/start_model_pub.sh"
+echo "[INFO] 停止: cd $TARGET_DIR && ./scripts/stop_model_pub.sh"

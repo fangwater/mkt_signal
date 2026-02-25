@@ -93,7 +93,6 @@ struct LoginReq<'a> {
 
 pub struct ModelPubApp {
     model_name: String,
-    venue: String,
     input_service: String,
     subscriber: Subscriber<ipc::Service, [u8; INPUT_MAX_BYTES], ()>,
     publisher: ModelPublisher,
@@ -113,9 +112,8 @@ impl ModelPubApp {
         let config = ModelPubConfig::load(config_path)?;
         config.validate()?;
 
-        let venue = super::cfg::infer_venue_from_cwd()?;
-        let input_service = config.render_input_service(&venue, &model_name)?;
-        let output_service = config.render_output_service(&venue, &model_name)?;
+        let input_service = config.render_input_service(&model_name)?;
+        let output_service = config.render_output_service(&model_name)?;
 
         let models_by_symbol = Self::load_models_from_model_manager(&config, &model_name).await?;
         if models_by_symbol.is_empty() {
@@ -146,8 +144,7 @@ impl ModelPubApp {
         let publisher = ModelPublisher::new(&publisher_node, &output_service)?;
 
         info!(
-            "ModelPubApp started: venue={} model_name={} input={} output={} symbols={} window_size={} min_samples={} zscore_cap={}",
-            venue,
+            "ModelPubApp started: model_name={} input={} output={} symbols={} window_size={} min_samples={} zscore_cap={}",
             model_name,
             input_service,
             output_service,
@@ -159,7 +156,6 @@ impl ModelPubApp {
 
         Ok(Self {
             model_name,
-            venue,
             input_service,
             subscriber,
             publisher,
@@ -430,9 +426,8 @@ impl ModelPubApp {
         }
 
         info!(
-            "ModelPubApp[{}@{}] recv={} pub={} infer={} lat_avg={}us lat_max={}us warmed={}/{}{}",
+            "ModelPubApp[{}] recv={} pub={} infer={} lat_avg={}us lat_max={}us warmed={}/{}{}",
             self.model_name,
-            self.venue,
             self.stats.recv_total,
             self.stats.publish_ok,
             self.stats.infer_count,

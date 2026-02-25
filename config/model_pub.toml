@@ -6,10 +6,9 @@ model_manager_request_timeout_ms = 5000
 model_manager_password = ""
 model_manager_bearer_token = ""
 
-# {venue} is inferred from CWD directory name at runtime.
-# {model_name} is passed as CLI argument.
-input_service_template = "fusion_factor/{venue}/{model_name}"
-output_service_template = "model_output/{venue}/{model_name}"
+# {model_name} is substituted from CLI argument at runtime.
+input_service = "fusion_factor/{model_name}"
+output_service = "model_output/{model_name}"
 
 # Z-score normalization (rolling Welford)
 window_size = 17280       # 24h / 5s
