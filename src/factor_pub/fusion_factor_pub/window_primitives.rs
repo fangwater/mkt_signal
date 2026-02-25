@@ -11,7 +11,8 @@ use polars_time::prelude::SeriesOpsTime;
 fn finite_or_none(value: Option<f64>) -> Option<f64> {
     match value {
         Some(v) if v.is_finite() => Some(v),
-        _ => None,
+        Some(_) => Some(0.0),
+        None => None,
     }
 }
 
@@ -25,7 +26,7 @@ fn series_from_opt(values: &[Option<f64>]) -> Series {
 
 fn last_f64(series: &Series) -> Option<f64> {
     let idx = series.len().saturating_sub(1);
-    finite_or_none(series.f64().ok()?.get(idx))
+    finite_or_none(series.f64().ok()?.get(idx)).or(Some(0.0))
 }
 
 pub fn rolling_mean_last(values: &[f64], window: usize) -> Result<Option<f64>> {
@@ -206,7 +207,7 @@ pub fn rolling_skew_last(values: &[f64], window: usize, bias: bool) -> Result<Op
         return Ok(None);
     }
     let rolling = series_from(values).rolling_skew(window, bias)?;
-    Ok(last_f64(&rolling))
+    Ok(last_f64(&rolling).or(Some(0.0)))
 }
 
 pub fn rolling_kurt_last(
@@ -225,7 +226,7 @@ pub fn rolling_kurt_last(
         .select([col("x").kurtosis(fisher, bias).alias("kurt")])
         .collect()?;
     let value = out.column("kurt")?.f64()?.get(0);
-    Ok(finite_or_none(value))
+    Ok(finite_or_none(value).or(Some(0.0)))
 }
 
 pub fn rolling_rank_last(values: &[f64], window: usize) -> Result<Option<f64>> {

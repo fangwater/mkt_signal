@@ -2345,7 +2345,7 @@ impl FusionFactorPubApp {
         if value.is_finite() {
             Some(value)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -2368,7 +2368,7 @@ impl FusionFactorPubApp {
         }
         let amount = series.amount[n - 1];
         if amount.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some(series.small_order[n - 1] / amount))
     }
@@ -2380,7 +2380,7 @@ impl FusionFactorPubApp {
         }
         let vwap = series.vwap[n - 1];
         if vwap.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some((series.close[n - 1] - vwap) / vwap))
     }
@@ -2402,7 +2402,7 @@ impl FusionFactorPubApp {
         if value.is_finite() {
             Some(value)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -2463,7 +2463,7 @@ impl FusionFactorPubApp {
             .iter()
             .map(|v| if v.is_finite() { Some(*v) } else { None })
             .collect();
-        tail_skew_last_opt(&valid, 10, 3, false).ok().flatten()
+        tail_skew_last_opt(&valid, 10, 3, false).ok().flatten().or(Some(0.0))
     }
 
     fn compute_factor_001(series: &SymbolSeries) -> Option<f64> {
@@ -2474,7 +2474,7 @@ impl FusionFactorPubApp {
         let d1 = series.bid_vwap20[n - 1] - series.bid_vwap20[n - 2];
         let d0 = series.bid_vwap20[n - 2] - series.bid_vwap20[n - 3];
         if !d1.is_finite() || !d0.is_finite() || d0.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         let value = (d1 - d0) / d0;
         finite_opt(Some(value))
@@ -2485,7 +2485,7 @@ impl FusionFactorPubApp {
         let ask = depth_sum_price(&depth.asks, 15);
         let den = bid + ask;
         if den.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some((bid - ask) / den))
     }
@@ -2499,7 +2499,7 @@ impl FusionFactorPubApp {
         }
         let den = bid_strength + ask_strength;
         if den.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some((bid_strength - ask_strength) / den))
     }
@@ -2524,7 +2524,7 @@ impl FusionFactorPubApp {
         let top5 = depth_sum_amount(&depth.asks, 5);
         let total = depth_sum_amount(&depth.asks, 20);
         if total.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some(top5 / total))
     }
@@ -2532,7 +2532,7 @@ impl FusionFactorPubApp {
     fn compute_factor_016(depth: &DepthSnapshot) -> Option<f64> {
         let total_ask_price = depth_sum_price(&depth.asks, 20);
         if (total_ask_price + 1e-6).abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         let mut weighted_depth = 0.0;
         for i in 0..20 {
@@ -2570,7 +2570,7 @@ impl FusionFactorPubApp {
         let bid_std = sample_std_last(&series.total_bid20, 10, 1)?;
         let ask_std = sample_std_last(&series.total_ask20, 10, 1)?;
         if ask_std.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some(bid_std / ask_std))
     }
@@ -2582,7 +2582,7 @@ impl FusionFactorPubApp {
             .filter(|v| v.is_finite())
             .sum::<f64>();
         if bottom17.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some(top3 / bottom17))
     }
@@ -2613,7 +2613,7 @@ impl FusionFactorPubApp {
             .ok()
             .flatten()?;
         if ma.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some(last / ma))
     }
@@ -2622,7 +2622,7 @@ impl FusionFactorPubApp {
         let bid = depth_vwap(&depth.bids, 5)?;
         let ask = depth_vwap(&depth.asks, 5)?;
         if ask.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some(bid / ask))
     }
@@ -2670,7 +2670,7 @@ impl FusionFactorPubApp {
             .ok()
             .flatten()?;
         if ma.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some(last / ma))
     }
@@ -2689,7 +2689,7 @@ impl FusionFactorPubApp {
         let ma30 = rolling_mean_last(&neg_diff, 30).ok().flatten()?;
         let ma300 = rolling_mean_last(&neg_diff, 300).ok().flatten()?;
         if ma300.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some(ma30 / ma300))
     }
@@ -2706,7 +2706,7 @@ impl FusionFactorPubApp {
             den += bidv + askv;
         }
         if den.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         let vwap = num / den;
         let (bid0p, bid0v) = depth_best_bid(depth);
@@ -2767,7 +2767,7 @@ impl FusionFactorPubApp {
         let bids: Vec<f64> = (0..5).map(|i| depth_level_amount(&depth.bids, i)).collect();
         let mean = bids.iter().sum::<f64>() / bids.len() as f64;
         if mean.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         let std = std_pop(&bids)?;
         finite_opt(Some(std / mean))
@@ -2793,7 +2793,7 @@ impl FusionFactorPubApp {
         let bid = depth_sum_amount(&depth.bids, 20);
         let ask = depth_sum_amount(&depth.asks, 20);
         if ask.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some(bid / ask))
     }
@@ -2831,7 +2831,7 @@ impl FusionFactorPubApp {
             }
         }
         if vals.is_empty() {
-            None
+            Some(0.0)
         } else {
             Some(vals.iter().sum::<f64>() / vals.len() as f64)
         }
@@ -2842,11 +2842,11 @@ impl FusionFactorPubApp {
             .map(|i| depth_level_amount(&depth.bids, i))
             .collect();
         if bids.iter().any(|v| !v.is_finite() || *v <= 0.0) {
-            return None;
+            return Some(0.0);
         }
         let den = bids.iter().map(|v| 1.0 / v).sum::<f64>();
         if den.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some(10.0 / den))
     }
@@ -2895,7 +2895,7 @@ impl FusionFactorPubApp {
             }
         }
         if cnt == 0 {
-            None
+            Some(0.0)
         } else {
             finite_opt(Some(sum / cnt as f64))
         }
@@ -2924,7 +2924,7 @@ impl FusionFactorPubApp {
             .ok()
             .flatten()?;
         if ma.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some(last / ma))
     }
@@ -2942,7 +2942,7 @@ impl FusionFactorPubApp {
         let top3 = depth_sum_amount(&depth.bids, 3);
         let total15 = depth_sum_amount(&depth.bids, 15);
         if total15.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some(top3 / total15))
     }
@@ -2959,7 +2959,7 @@ impl FusionFactorPubApp {
         let bid_var = bid_var * bid_var;
         let ask_var = ask_var * ask_var;
         if ask_var.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some(bid_var / ask_var))
     }
@@ -2971,7 +2971,7 @@ impl FusionFactorPubApp {
         }
         let mean = vals.iter().sum::<f64>() / vals.len() as f64;
         if mean.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         let std = std_pop(&vals)?;
         finite_opt(Some(std / mean))
@@ -2982,7 +2982,7 @@ impl FusionFactorPubApp {
         let ask = *series.total_ask20.last()?;
         let den = bid + ask;
         if den.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some((bid - ask) / den))
     }
@@ -3014,7 +3014,7 @@ impl FusionFactorPubApp {
             }
         }
         if cnt == 0 {
-            None
+            Some(0.0)
         } else {
             finite_opt(Some(sum / cnt as f64))
         }
@@ -3034,7 +3034,7 @@ impl FusionFactorPubApp {
             }
         }
         if cnt == 0 {
-            None
+            Some(0.0)
         } else {
             finite_opt(Some(sum / cnt as f64))
         }
@@ -3062,7 +3062,7 @@ impl FusionFactorPubApp {
         let spread = *series.spread.last()?;
         let mid = *series.mid_price.last()?;
         if mid.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some(spread / mid))
     }
@@ -3085,7 +3085,7 @@ impl FusionFactorPubApp {
         if value.is_finite() {
             Some(value)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -3093,13 +3093,13 @@ impl FusionFactorPubApp {
         let (bid0p, _) = depth_best_bid(depth);
         let (ask0p, _) = depth_best_ask(depth);
         if bid0p <= 0.0 || ask0p <= 0.0 {
-            return None;
+            return Some(0.0);
         }
         let value = ask0p.ln() - bid0p.ln();
         if value.is_finite() {
             Some(value)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -3122,7 +3122,7 @@ impl FusionFactorPubApp {
         if value.is_finite() {
             Some(value)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -3136,7 +3136,7 @@ impl FusionFactorPubApp {
         if value.is_finite() {
             Some(value)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -3150,7 +3150,7 @@ impl FusionFactorPubApp {
         if value.is_finite() {
             Some(value)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -3174,7 +3174,7 @@ impl FusionFactorPubApp {
         if value.is_finite() {
             Some(value)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -3186,13 +3186,13 @@ impl FusionFactorPubApp {
         let curr = series.ask_mean_volume_20[n - 1];
         let prev = series.ask_mean_volume_20[n - 11];
         if prev.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         let value = (curr - prev) / prev;
         if value.is_finite() {
             Some(value)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -3200,14 +3200,14 @@ impl FusionFactorPubApp {
         let asks: Vec<f64> = (0..5).map(|i| depth_level_amount(&depth.asks, i)).collect();
         let mean = asks.iter().sum::<f64>() / asks.len() as f64;
         if mean.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         let std = std_pop(&asks)?;
         let value = std / mean;
         if value.is_finite() {
             Some(value)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -3221,7 +3221,7 @@ impl FusionFactorPubApp {
         if value.is_finite() {
             Some(value)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -3239,7 +3239,7 @@ impl FusionFactorPubApp {
         if value.is_finite() {
             Some(value)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -3256,7 +3256,7 @@ impl FusionFactorPubApp {
         if value.is_finite() {
             Some(value)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -3265,13 +3265,13 @@ impl FusionFactorPubApp {
         let (ask0p, ask0v) = depth_best_ask(depth);
         let depth_mean = (bid0v + ask0v) / 2.0;
         if depth_mean.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         let value = (ask0p - ask0v) / depth_mean;
         if value.is_finite() {
             Some(value)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -3279,13 +3279,13 @@ impl FusionFactorPubApp {
         let (_, bid0v) = depth_best_bid(depth);
         let (_, ask0v) = depth_best_ask(depth);
         if ask0v.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         let value = bid0v / ask0v;
         if value.is_finite() {
             Some(value)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -3303,13 +3303,13 @@ impl FusionFactorPubApp {
         let curr = *ratio.last()?;
         let prev = ratio[n - 1 - 60];
         if !curr.is_finite() || !prev.is_finite() {
-            return None;
+            return Some(0.0);
         }
         let value = (curr - prev) / prev;
         if value.is_finite() {
             Some(value)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -3323,7 +3323,7 @@ impl FusionFactorPubApp {
         let macd: Vec<Option<f64>> = (0..n)
             .map(|i| match (fast[i], slow[i]) {
                 (Some(f), Some(s)) => finite_opt(Some(f - s)),
-                _ => None,
+                _ => Some(0.0),
             })
             .collect();
         let signal = rolling_mean_series_opt(&macd, 9, 9).ok()?;
@@ -3371,7 +3371,7 @@ impl FusionFactorPubApp {
         let highs = &series.high[n - window..n];
         let lows = &series.low[n - window..n];
         if highs.iter().any(|v| !v.is_finite()) || lows.iter().any(|v| !v.is_finite()) {
-            return None;
+            return Some(0.0);
         }
 
         let mean_high = highs.iter().sum::<f64>() / window as f64;
@@ -3391,7 +3391,7 @@ impl FusionFactorPubApp {
         if beta.is_finite() {
             Some(beta)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -3407,13 +3407,13 @@ impl FusionFactorPubApp {
         }
         let den = series.sell_amount[n - 1] - series.buy_amount[n - 1];
         if den.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         let value = (series.close[n - 1] - series.low[n - 1]) / den;
         if value.is_finite() {
             Some(value)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -3447,7 +3447,7 @@ impl FusionFactorPubApp {
         if value.is_finite() {
             Some(value)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -3475,7 +3475,7 @@ impl FusionFactorPubApp {
         let macd: Vec<Option<f64>> = (0..series.net_buy_amount.len())
             .map(|i| match (fast[i], slow[i]) {
                 (Some(f), Some(s)) => finite_opt(Some(f - s)),
-                _ => None,
+                _ => Some(0.0),
             })
             .collect();
         let signal = rolling_mean_series_opt(&macd, 9, 9).ok()?;
@@ -3488,7 +3488,7 @@ impl FusionFactorPubApp {
         let macd: Vec<Option<f64>> = (0..series.large_buy.len())
             .map(|i| match (fast[i], slow[i]) {
                 (Some(f), Some(s)) => finite_opt(Some(f - s)),
-                _ => None,
+                _ => Some(0.0),
             })
             .collect();
         let signal = rolling_mean_series_opt(&macd, 9, 9).ok()?;
@@ -3541,13 +3541,13 @@ impl FusionFactorPubApp {
                 let m = finite_opt(minus_ma[i])?;
                 let t = finite_opt(tr_ma[i])?;
                 if t.abs() <= 1e-12 {
-                    return None;
+                    return Some(0.0);
                 }
                 let plus_di = 100.0 * p / t;
                 let minus_di = 100.0 * m / t;
                 let den = plus_di + minus_di;
                 if den.abs() <= 1e-12 {
-                    return None;
+                    return Some(0.0);
                 }
                 finite_opt(Some((plus_di - minus_di).abs() / den * 100.0))
             })
@@ -3569,7 +3569,7 @@ impl FusionFactorPubApp {
         }
         let volatility = tail_quantile_last(&abs_diff, 30, 0.3)?;
         if volatility.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some(change / volatility))
     }
@@ -3636,7 +3636,7 @@ impl FusionFactorPubApp {
         let atr = rolling_mean_last(&tr, 14).ok().flatten()?;
         let close = series.close[n - 1];
         if close.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some((atr / close) * 100.0))
     }
@@ -3710,7 +3710,7 @@ impl FusionFactorPubApp {
         let pos_avg = rolling_mean_last(&pos, 12).ok().flatten()?;
         let neg_avg = rolling_mean_last(&neg, 26).ok().flatten()?;
         if neg_avg.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some(pos_avg / neg_avg))
     }
@@ -3775,7 +3775,7 @@ impl FusionFactorPubApp {
         }
         let den = series.volume[n - 1];
         if den.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some((series.close[n - 1] - series.open[n - 1]) / den))
     }
@@ -3815,7 +3815,7 @@ impl FusionFactorPubApp {
             .fold(f64::INFINITY, f64::min);
         let den = series.close[n - 1];
         if den.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some((min_close - den) / den))
     }
@@ -3831,7 +3831,7 @@ impl FusionFactorPubApp {
             .fold(f64::NEG_INFINITY, f64::max);
         let den = series.close[n - 1];
         if den.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some((max_close - den) / den))
     }
@@ -3872,13 +3872,13 @@ impl FusionFactorPubApp {
                 let m = finite_opt(minus_ma[i])?;
                 let t = finite_opt(tr_ma[i])?;
                 if t.abs() <= 1e-12 {
-                    return None;
+                    return Some(0.0);
                 }
                 let plus_di = 100.0 * p / t;
                 let minus_di = 100.0 * m / t;
                 let den = plus_di + minus_di;
                 if den.abs() <= 1e-12 {
-                    return None;
+                    return Some(0.0);
                 }
                 finite_opt(Some((plus_di - minus_di).abs() / den * 100.0))
             })
@@ -3907,7 +3907,7 @@ impl FusionFactorPubApp {
         }
         let den = tail.iter().sum::<f64>() / 120.0;
         if den.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some((series.high[n - 1] - series.close[n - 1]) / den))
     }
@@ -3932,7 +3932,7 @@ impl FusionFactorPubApp {
         }
         let den = tail.iter().sum::<f64>() / 30.0;
         if den.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some((series.close[n - 1] - series.low[n - 1]) / den))
     }
@@ -3997,7 +3997,7 @@ impl FusionFactorPubApp {
         let curr = *series.large_buy.last()?;
         let prev = series.large_buy[series.large_buy.len() - 1 - periods];
         if !curr.is_finite() || !prev.is_finite() {
-            return None;
+            return Some(0.0);
         }
         if prev.abs() <= 1e-12 {
             return Some(0.0);
@@ -4141,13 +4141,13 @@ impl FusionFactorPubApp {
         .ok()
         .flatten()?;
         if tr_ma.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         let plus_di = 100.0 * plus_ma / tr_ma;
         let minus_di = 100.0 * minus_ma / tr_ma;
         let den = plus_di + minus_di;
         if den.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some((plus_di - minus_di).abs() / den * 100.0))
     }
@@ -4162,7 +4162,7 @@ impl FusionFactorPubApp {
         let macd: Vec<Option<f64>> = (0..n)
             .map(|i| match (fast[i], slow[i]) {
                 (Some(f), Some(s)) => finite_opt(Some(f - s)),
-                _ => None,
+                _ => Some(0.0),
             })
             .collect();
         let signal = rolling_mean_series_opt(&macd, 9, 1).ok()?;
@@ -4201,7 +4201,7 @@ impl FusionFactorPubApp {
         .ok()
         .flatten()?;
         if t.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         finite_opt(Some(100.0 * m / t))
     }
@@ -4269,7 +4269,7 @@ impl FusionFactorPubApp {
                 .ok()
                 .flatten()?;
             if t.abs() <= 1e-12 {
-                None
+                Some(0.0)
             } else {
                 Some(b / t)
             }
@@ -4477,7 +4477,7 @@ impl FusionFactorPubApp {
         .flatten()?;
         let vol_ma = rolling_mean_last(&series.volume, 90).ok().flatten()?;
         if oc_ma.abs() <= 1e-12 || vol_ma.abs() <= 1e-12 {
-            return None;
+            return Some(0.0);
         }
         let var2 = oc / oc_ma;
         let var3 = series.volume[i] / vol_ma;
@@ -4535,7 +4535,7 @@ impl FusionFactorPubApp {
             .map(|i| {
                 let m = finite_opt(vol_ma[i])?;
                 if m.abs() <= 1e-12 {
-                    return None;
+                    return Some(0.0);
                 }
                 finite_opt(Some(series.volume[i] / m))
             })
@@ -4601,7 +4601,7 @@ impl FusionFactorPubApp {
         if value.is_finite() {
             Some(value)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -4627,7 +4627,7 @@ impl FusionFactorPubApp {
         if value.is_finite() {
             Some(value)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -4661,7 +4661,7 @@ impl FusionFactorPubApp {
         if value.is_finite() {
             Some(value)
         } else {
-            None
+            Some(0.0)
         }
     }
 
@@ -4779,7 +4779,7 @@ impl FusionFactorPubApp {
                     let value = series.amount[i] / vol;
                     finite_opt(Some(value))
                 } else {
-                    None
+                    Some(0.0)
                 }
             })
             .collect();
@@ -4796,7 +4796,7 @@ impl FusionFactorPubApp {
                 if v.abs() > 1e-12 {
                     finite_opt(Some(a / v))
                 } else {
-                    None
+                    Some(0.0)
                 }
             })
             .collect();
@@ -4808,19 +4808,19 @@ impl FusionFactorPubApp {
                 let num = finite_opt(*num)?;
                 let den = finite_opt(*den)?;
                 if den.abs() <= 1e-12 {
-                    return None;
+                    return Some(0.0);
                 }
                 let ratio = num / den;
                 if ratio > 0.0 {
                     finite_opt(Some(ratio.ln()))
                 } else {
-                    None
+                    Some(0.0)
                 }
             })
             .collect();
 
         let apb_roll = rolling_mean_series_opt(&apb, 18, 18).ok()?;
-        last_opt(&apb_roll)
+        last_opt(&apb_roll).or(Some(0.0))
     }
 
     fn compute_td_pt_004(series: &SymbolSeries) -> Option<f64> {
@@ -4841,7 +4841,7 @@ impl FusionFactorPubApp {
                 let hl = series.high[i] - series.low[i];
                 let vol_ma_i = finite_opt(vol_ma[i])?;
                 if hl.abs() <= 1e-12 || vol_ma_i.abs() <= 1e-12 {
-                    return None;
+                    return Some(0.0);
                 }
                 let value = (series.close[i] - series.open[i]) / hl * (series.volume[i] / vol_ma_i);
                 finite_opt(Some(value))
@@ -4887,7 +4887,7 @@ impl FusionFactorPubApp {
                 let d = finite_opt(*d)?;
                 let c = finite_opt(*c)?;
                 if c.abs() <= 1e-12 {
-                    return None;
+                    return Some(0.0);
                 }
                 finite_opt(Some((d / c).atan()))
             })
@@ -4897,7 +4897,7 @@ impl FusionFactorPubApp {
             .map(|p| {
                 let p = finite_opt(*p)?;
                 if p.abs() <= 1e-12 {
-                    return None;
+                    return Some(0.0);
                 }
                 finite_opt(Some((2.0 * std::f64::consts::PI) / p))
             })
@@ -5116,12 +5116,12 @@ fn compute_mid_price_minus_bid_vwap(depth: &DepthSnapshot) -> Option<f64> {
     let bid1 = depth.bids.first()?;
     let ask1 = depth.asks.first()?;
     if bid1.price <= 0.0 || ask1.price <= 0.0 {
-        return None;
+        return Some(0.0);
     }
 
     let mid_price = (bid1.price + ask1.price) / 2.0;
     if !mid_price.is_finite() || mid_price <= 0.0 {
-        return None;
+        return Some(0.0);
     }
 
     let mut sum_pxv = 0.0;
@@ -5133,7 +5133,7 @@ fn compute_mid_price_minus_bid_vwap(depth: &DepthSnapshot) -> Option<f64> {
         }
     }
     if sum_v <= 0.0 {
-        return None;
+        return Some(0.0);
     }
 
     let bid_vwap = sum_pxv / sum_v;
@@ -5141,7 +5141,7 @@ fn compute_mid_price_minus_bid_vwap(depth: &DepthSnapshot) -> Option<f64> {
     if diff.is_finite() {
         Some(diff)
     } else {
-        None
+        Some(0.0)
     }
 }
 
@@ -5248,13 +5248,13 @@ fn depth_vwap(levels: &[DepthLevel], limit: usize) -> Option<f64> {
         sum_v += level.amount;
     }
     if sum_v.abs() <= 1e-12 {
-        return None;
+        return Some(0.0);
     }
     let value = sum_pxv / sum_v;
     if value.is_finite() {
         Some(value)
     } else {
-        None
+        Some(0.0)
     }
 }
 
@@ -5312,7 +5312,7 @@ fn rank_last_average(values: &[f64], min_periods: usize) -> Option<f64> {
     }
     let last = *values.last()?;
     if !last.is_finite() {
-        return None;
+        return Some(0.0);
     }
     let mut lt = 0usize;
     let mut eq = 0usize;
@@ -5374,7 +5374,7 @@ fn corr_last_with_min_periods(
         var_y += dy * dy;
     }
     if var_x.abs() <= 1e-12 || var_y.abs() <= 1e-12 {
-        return None;
+        return Some(0.0);
     }
     let out = cov / (var_x.sqrt() * var_y.sqrt());
     finite_opt(Some(out))
@@ -5461,7 +5461,7 @@ fn linear_regression_predict_last(values: &[f64]) -> Option<f64> {
     let mut sum_xy = 0.0;
     for (i, y) in values.iter().enumerate() {
         if !y.is_finite() {
-            return None;
+            return Some(0.0);
         }
         let x = i as f64;
         sum_x += x;
@@ -5471,7 +5471,7 @@ fn linear_regression_predict_last(values: &[f64]) -> Option<f64> {
     }
     let denom = n * sum_xx - sum_x * sum_x;
     if denom.abs() <= 1e-12 {
-        return None;
+        return Some(0.0);
     }
     let slope = (n * sum_xy - sum_x * sum_y) / denom;
     let intercept = (sum_y - slope * sum_x) / n;
@@ -5486,7 +5486,7 @@ fn pct_change_last(values: &[f64], periods: usize) -> Option<f64> {
     let curr = *values.last()?;
     let prev = values[values.len() - 1 - periods];
     if !curr.is_finite() || !prev.is_finite() || prev.abs() <= 1e-12 {
-        return None;
+        return Some(0.0);
     }
     let value = (curr - prev) / prev;
     if value.is_finite() {
@@ -5508,7 +5508,7 @@ fn linear_regression_intercept(values: &[f64]) -> Option<f64> {
 
     for (i, y) in values.iter().enumerate() {
         if !y.is_finite() {
-            return None;
+            return Some(0.0);
         }
         let x = i as f64;
         sum_x += x;
@@ -5519,7 +5519,7 @@ fn linear_regression_intercept(values: &[f64]) -> Option<f64> {
 
     let denom = n * sum_xx - sum_x * sum_x;
     if denom.abs() <= 1e-12 {
-        return None;
+        return Some(0.0);
     }
     let slope = (n * sum_xy - sum_x * sum_y) / denom;
     let intercept = (sum_y - slope * sum_x) / n;
@@ -5543,7 +5543,7 @@ fn std_pop(values: &[f64]) -> Option<f64> {
         }
     }
     if cnt == 0 {
-        return None;
+        return Some(0.0);
     }
     let mean = sum / cnt as f64;
     let mut var_sum = 0.0;
@@ -5557,7 +5557,7 @@ fn std_pop(values: &[f64]) -> Option<f64> {
     if value.is_finite() {
         Some(value)
     } else {
-        None
+        Some(0.0)
     }
 }
 
@@ -5578,12 +5578,13 @@ fn push_opt_with_limit(buf: &mut VecDeque<Option<f64>>, value: Option<f64>) {
 fn finite_opt(value: Option<f64>) -> Option<f64> {
     match value {
         Some(v) if v.is_finite() => Some(v),
-        _ => None,
+        Some(_) => Some(0.0),
+        None => None,
     }
 }
 
 fn last_opt(values: &[Option<f64>]) -> Option<f64> {
-    finite_opt(values.last().copied().flatten())
+    finite_opt(values.last().copied().flatten()).or(Some(0.0))
 }
 
 fn trade_flow_feature_cf_name(venue_slug: &str, symbol: &str) -> String {
