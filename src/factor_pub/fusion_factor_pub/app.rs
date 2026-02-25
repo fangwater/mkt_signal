@@ -943,8 +943,28 @@ impl FusionFactorPubApp {
             })
             .unwrap_or(false);
 
-        for msg in records.iter_mut() {
-            let _ = Self::validate_and_fix_trade_flow(venue_slug, &symbol, msg);
+        let record_len = records.len();
+        for i in 0..record_len {
+            let corrected = Self::validate_and_fix_trade_flow(venue_slug, &symbol, &mut records[i]);
+            if corrected && symbol == "BTCUSDT" {
+                let fmt_msg = |m: &TradeFlowFeatureMsg| {
+                    format!(
+                        "ts={} volume={} amount={} buy_amount={} sell_amount={} buy_volume={} sell_volume={}",
+                        m.ts, m.values[FIELD_VOLUME], m.values[FIELD_AMOUNT],
+                        m.values[FIELD_BUY_AMOUNT], m.values[FIELD_SELL_AMOUNT],
+                        m.values[FIELD_BUY_VOLUME], m.values[FIELD_SELL_VOLUME],
+                    )
+                };
+                let prev2 = if i >= 2 { fmt_msg(&records[i - 2]) } else { "N/A".to_string() };
+                let prev1 = if i >= 1 { fmt_msg(&records[i - 1]) } else { "N/A".to_string() };
+                let next1 = if i + 1 < record_len { fmt_msg(&records[i + 1]) } else { "N/A".to_string() };
+                let next2 = if i + 2 < record_len { fmt_msg(&records[i + 2]) } else { "N/A".to_string() };
+                warn!(
+                    "bootstrap zero volume context: symbol={} idx={} current=[{}] | prev2=[{}] prev1=[{}] next1=[{}] next2=[{}]",
+                    symbol, i, fmt_msg(&records[i]), prev2, prev1, next1, next2,
+                );
+            }
+            let msg = &records[i];
             let depth_snapshot = parse_embedded_depth(msg);
             let depth_opt = depth_snapshot.as_ref();
             state.push_trade_flow(msg);
