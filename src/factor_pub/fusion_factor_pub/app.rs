@@ -1077,16 +1077,15 @@ impl FusionFactorPubApp {
         }
 
         const VOLUME_EPS: f64 = 1e-12;
-        const VOLUME_FIELDS: &[(usize, &str)] = &[
-            (FIELD_VOLUME, "volume"),
-            (FIELD_AMOUNT, "amount"),
-            (FIELD_BUY_AMOUNT, "buy_amount"),
-            (FIELD_SELL_AMOUNT, "sell_amount"),
-            (FIELD_BUY_VOLUME, "buy_volume"),
-            (FIELD_SELL_VOLUME, "sell_volume"),
-        ];
+        // buy/sell 分项在单边行情时为 0 是正常的，静默修正
+        for idx in [FIELD_BUY_AMOUNT, FIELD_SELL_AMOUNT, FIELD_BUY_VOLUME, FIELD_SELL_VOLUME] {
+            if msg.values[idx] == 0.0 {
+                msg.values[idx] = VOLUME_EPS;
+            }
+        }
+        // 总量 volume/amount 为 0 才是异常
         let mut corrected = false;
-        for &(idx, _name) in VOLUME_FIELDS {
+        for idx in [FIELD_VOLUME, FIELD_AMOUNT] {
             if msg.values[idx] == 0.0 {
                 msg.values[idx] = VOLUME_EPS;
                 corrected = true;
