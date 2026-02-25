@@ -738,7 +738,11 @@ impl FusionFactorPubApp {
     fn bootstrap_from_rocksdb(&mut self) -> Result<()> {
         let started = Instant::now();
         let mut symbol_list: Vec<String> = self.allowed_symbols.iter().cloned().collect();
-        symbol_list.sort_unstable();
+        symbol_list.sort_unstable_by(|a, b| {
+            let a_pri = if a == "BTCUSDT" { 0 } else { 1 };
+            let b_pri = if b == "BTCUSDT" { 0 } else { 1 };
+            a_pri.cmp(&b_pri).then_with(|| a.cmp(b))
+        });
 
         let mut db_opts = Options::default();
         db_opts.create_if_missing(false);
