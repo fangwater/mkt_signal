@@ -1093,14 +1093,18 @@ impl FusionFactorPubApp {
             (FIELD_BUY_VOLUME, "buy_volume"),
             (FIELD_SELL_VOLUME, "sell_volume"),
         ];
-        for &(idx, name) in VOLUME_FIELDS {
+        let mut corrected = false;
+        for &(idx, _name) in VOLUME_FIELDS {
             if msg.values[idx] == 0.0 {
-                warn!(
-                    "fusion input volume/amount is zero, correcting to eps: venue={} symbol={} ts={} field={}",
-                    venue_slug, symbol, msg.ts, name
-                );
                 msg.values[idx] = VOLUME_EPS;
+                corrected = true;
             }
+        }
+        if corrected && matches!(symbol, "BTCUSDT" | "ETHUSDT" | "SOLUSDT") {
+            warn!(
+                "zero volume/amount corrected to eps: symbol={} ts={}",
+                symbol, msg.ts
+            );
         }
     }
 
