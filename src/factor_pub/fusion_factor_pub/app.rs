@@ -774,33 +774,15 @@ impl FusionFactorPubApp {
         }
 
         info!(
-            "FusionFactorPubApp[{}] rocksdb cf-diagnose summary: path={} all_existing_cf_count={} expected_symbol_cf_count={} existing_symbol_cf_count={} missing_symbol_cf_count={}",
-            self.venue_slug,
-            self.trade_flow_feature_rocksdb_path,
+            "rocksdb cf-diagnose: total_cf={} expected={} existing={} missing={}",
             sorted_cf_names.len(),
             expected_symbol_cfs.len(),
             existing_symbol_cfs.len(),
             missing_symbol_cfs.len()
         );
-        info!(
-            "FusionFactorPubApp[{}] rocksdb cf-diagnose: expected_symbol_cf=[{}]",
-            self.venue_slug,
-            expected_symbol_cfs.join(",")
-        );
-        info!(
-            "FusionFactorPubApp[{}] rocksdb cf-diagnose: existing_symbol_cf=[{}]",
-            self.venue_slug,
-            existing_symbol_cfs.join(",")
-        );
-        if missing_symbol_cfs.is_empty() {
-            info!(
-                "FusionFactorPubApp[{}] rocksdb cf-diagnose: missing_symbol_cf=[]",
-                self.venue_slug
-            );
-        } else {
+        if !missing_symbol_cfs.is_empty() {
             warn!(
-                "FusionFactorPubApp[{}] rocksdb cf-diagnose: missing_symbol_cf=[{}]",
-                self.venue_slug,
+                "rocksdb cf-diagnose: missing_cf=[{}]",
                 missing_symbol_cfs.join(",")
             );
         }
@@ -5068,18 +5050,18 @@ async fn load_symbol_factor_plans(
             });
         }
 
-        let printable: Vec<&str> = ordered_factors.iter().map(|f| f.name.as_str()).collect();
         let unknown_names: Vec<&str> = ordered_factors
             .iter()
             .filter(|f| f.factor_id.is_none() && f.extra_factor_id.is_none())
             .map(|f| f.name.as_str())
             .collect();
-        let plan_text = printable.join(",");
-        let unknown_text = unknown_names.join(",");
-        info!(
-            "factor-plan: symbol={} factors=[{}] unknown=[{}]",
-            symbol, plan_text, unknown_text
-        );
+        if !unknown_names.is_empty() {
+            warn!(
+                "factor-plan: symbol={} unknown_factors=[{}]",
+                symbol,
+                unknown_names.join(",")
+            );
+        }
 
         out.insert(symbol.clone(), SymbolFactorPlan { ordered_factors });
     }
