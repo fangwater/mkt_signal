@@ -484,18 +484,21 @@ impl ResampleChannel {
             }
 
             let max_leverage = PreTradeParamsLoader::instance().max_leverage();
+            // total_equity 口径：若涉及合约 venue，已包含 UPL。
             let leverage = if total_equity.abs() <= f64::EPSILON {
                 0.0
             } else {
                 total_position / total_equity
             };
+            // 这里显式保留“纯现货权益”字段，便于与 total_equity(eq) 对照排查。
+            let spot_equity_usd = total_equity - um_unrealized_usd;
 
             let entry = PreTradeRiskResampleEntry {
                 ts_ms,
                 total_equity,
                 total_exposure: total_abs_exposure,
                 total_position,
-                spot_equity_usd: total_equity,
+                spot_equity_usd,
                 borrowed_usd,
                 interest_usd,
                 um_unrealized_usd,

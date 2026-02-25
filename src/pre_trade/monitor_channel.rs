@@ -311,7 +311,7 @@ impl MonitorChannel {
     ///
     /// 返回：
     /// - `exposures`: asset -> (open_qty, hedge_qty)，都按标的数量（base qty）表达
-    /// - `total_equity_usdt`: 以现货净头寸估算的 USDT 权益（不含合约未实现盈亏）
+    /// - `total_equity_usdt`: USDT 总权益（若涉及合约 venue，则已包含合约未实现盈亏）
     /// - `abs_total_exposure_usdt`: 各资产净敞口按 USDT 估值后取绝对值求和
     /// - `total_position_usdt`: 各资产现货/合约头寸按 USDT 估值后取绝对值求和
     /// - `total_um_unrealized_usdt`: 合约未实现盈亏（USDT 计价）
@@ -683,7 +683,7 @@ impl MonitorChannel {
         // total_equity 口径：
         // - 非 USDT 资产：只从 margin balance 统计（净头寸估值）
         // - USDT：按交易所维度单独维护（余额/负债/利息），无论 open/hedge 是否为 futures
-        // - 不包含合约未实现盈亏（UPL）
+        // - 若涉及 futures venue，则额外加上合约未实现盈亏（UPL）
         let mut total_equity_usdt: f64 = 0.0;
         for (idx, leg) in [&inner.open_leg, &inner.hedge_leg].iter().enumerate() {
             if same_venue && idx == 1 {
@@ -720,6 +720,11 @@ impl MonitorChannel {
                 total_um_unrealized_usdt += um.borrow().total_unrealized_pnl_usdt();
             }
         }
+        let has_futures_venue = matches!(&inner.open_leg, LegMgr::Futures { .. })
+            || (!same_venue && matches!(&inner.hedge_leg, LegMgr::Futures { .. }));
+        if has_futures_venue {
+            total_equity_usdt += total_um_unrealized_usdt;
+        }
 
         let mut total_position_usdt = 0.0;
         let mut abs_total_exposure_usdt = 0.0;
@@ -754,17 +759,18 @@ impl MonitorChannel {
 
             let state = Self::compute_basic_state(inner);
             let total_equity = state.total_equity_usdt;
+            let um_unrealized = state.total_um_unrealized_usdt;
             let total_position = state.total_position_usdt;
 
             if total_equity <= f64::EPSILON {
-                return Err("账户总权益近似为 0，无法计算杠杆率".to_string());
+                return Err("账户总权益(eq，含UPL如有合约)近似为 0，无法计算杠杆率".to_string());
             }
 
             let leverage = total_position / total_equity;
             if leverage > limit {
                 debug!(
-                    "当前杠杆 {:.4} 超过阈值 {:.4} (仓位={:.6}, 权益={:.6})",
-                    leverage, limit, total_position, total_equity
+                    "当前杠杆 {:.4} 超过阈值 {:.4} (仓位={:.6}, 权益eq={:.6}, UPL={:.6})",
+                    leverage, limit, total_position, total_equity, um_unrealized
                 );
                 return Err(format!("杠杆率 {:.2} 超过限制 {:.2}", leverage, limit));
             }
@@ -1362,7 +1368,7 @@ impl MonitorChannel {
         })
     }
 
-    /// 检查总敞口是否超过配置阈值
+    /// 检查总敞口是否超过配置阈值（分母为 eq，若涉及合约 venue 则含 UPL）
     pub fn check_total_exposure(&self) -> Result<(), String> {
         Self::with_inner(|inner| {
             let limit = PreTradeParamsLoader::instance().max_total_exposure_ratio();
@@ -1375,13 +1381,13 @@ impl MonitorChannel {
             let abs_total_usdt = state.abs_total_exposure_usdt;
 
             if total_equity <= f64::EPSILON {
-                return Err("账户总权益近似为 0，无法计算总敞口占比".to_string());
+                return Err("账户总权益(eq，含UPL如有合约)近似为 0，无法计算总敞口占比".to_string());
             }
 
             let ratio = abs_total_usdt / total_equity;
             if ratio > limit {
                 debug!(
-                    "总敞口占比 {:.4}% 超过阈值 {:.2}% (总敞口USDT={:.6}, 权益={:.6})",
+                    "总敞口占比 {:.4}% 超过阈值 {:.2}% (总敞口USDT={:.6}, 权益eq={:.6})",
                     ratio * 100.0,
                     limit * 100.0,
                     abs_total_usdt,
