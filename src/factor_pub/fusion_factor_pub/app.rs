@@ -8,7 +8,6 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
-use rayon::prelude::*;
 use reqwest::Client;
 use rocksdb::{ColumnFamilyDescriptor, IteratorMode, Options, DB};
 use serde::{Deserialize, Serialize};
@@ -865,32 +864,19 @@ impl FusionFactorPubApp {
             symbol_records.push(BootstrapSymbolRecords { symbol, records });
         }
 
-        let replay_threads = symbol_records.len().max(1).min(4);
         info!(
-            "FusionFactorPubApp[{}] rocksdb bootstrap replay start: symbols={} threads={}",
+            "FusionFactorPubApp[{}] rocksdb bootstrap replay start: symbols={} single-threaded",
             self.venue_slug,
             symbol_records.len(),
-            replay_threads
         );
         let venue_slug = self.venue_slug.clone();
         let symbol_factor_plans = self.symbol_factor_plans.clone();
-        let thread_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(replay_threads)
-            .build()
-            .with_context(|| {
-                format!(
-                    "fusion bootstrap build rayon pool failed: venue={} threads={}",
-                    self.venue_slug, replay_threads
-                )
-            })?;
-        let mut replay_results = thread_pool.install(|| {
-            symbol_records
-                .into_par_iter()
-                .map(|symbol_records| {
-                    Self::replay_symbol_records(&venue_slug, &symbol_factor_plans, symbol_records)
-                })
-                .collect::<Vec<_>>()
-        });
+        let mut replay_results: Vec<_> = symbol_records
+            .into_iter()
+            .map(|symbol_records| {
+                Self::replay_symbol_records(&venue_slug, &symbol_factor_plans, symbol_records)
+            })
+            .collect();
         replay_results.sort_unstable_by(|a, b| a.symbol.cmp(&b.symbol));
 
         let mut total_loaded = 0usize;
@@ -958,7 +944,7 @@ impl FusionFactorPubApp {
             .unwrap_or(false);
 
         for msg in records.iter_mut() {
-            Self::validate_and_fix_trade_flow(venue_slug, &symbol, msg);
+            let _ = Self::validate_and_fix_trade_flow(venue_slug, &symbol, msg);
             let depth_snapshot = parse_embedded_depth(msg);
             let depth_opt = depth_snapshot.as_ref();
             state.push_trade_flow(msg);
@@ -1046,7 +1032,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn validate_and_fix_trade_flow(venue_slug: &str, symbol: &str, msg: &mut TradeFlowFeatureMsg) {
+    fn validate_and_fix_trade_flow(venue_slug: &str, symbol: &str, msg: &mut TradeFlowFeatureMsg) -> bool {
         const PRICE_FIELDS: &[(usize, &str)] = &[
             (FIELD_OPEN, "open"),
             (FIELD_HIGH, "high"),
@@ -1088,6 +1074,7 @@ impl FusionFactorPubApp {
                 symbol, msg.ts
             );
         }
+        corrected
     }
 
     fn on_trade_flow(
@@ -1104,7 +1091,41 @@ impl FusionFactorPubApp {
         mut msg: crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg,
         emit_output: bool,
     ) -> Option<ReplayEvalSummary> {
-        Self::validate_and_fix_trade_flow(&self.venue_slug, &symbol, &mut msg);
+        let corrected = Self::validate_and_fix_trade_flow(&self.venue_slug, &symbol, &mut msg);
+
+        if corrected && symbol == "BTCUSDT" {
+            if let Some(state) = self.symbol_states.get(&symbol) {
+                let n = state.volume.len();
+                let prev2 = if n >= 2 {
+                    format!(
+                        "ts_offset=-2 volume={} amount={} buy_amount={} sell_amount={} buy_volume={} sell_volume={}",
+                        state.volume[n - 2], state.amount[n - 2],
+                        state.buy_amount[n - 2], state.sell_amount[n - 2],
+                        state.buy_volume[n - 2], state.sell_volume[n - 2],
+                    )
+                } else {
+                    "ts_offset=-2 N/A".to_string()
+                };
+                let prev1 = if n >= 1 {
+                    format!(
+                        "ts_offset=-1 volume={} amount={} buy_amount={} sell_amount={} buy_volume={} sell_volume={}",
+                        state.volume[n - 1], state.amount[n - 1],
+                        state.buy_amount[n - 1], state.sell_amount[n - 1],
+                        state.buy_volume[n - 1], state.sell_volume[n - 1],
+                    )
+                } else {
+                    "ts_offset=-1 N/A".to_string()
+                };
+                warn!(
+                    "zero volume/amount context: symbol={} current_ts={} current volume={} amount={} buy_amount={} sell_amount={} buy_volume={} sell_volume={} | {} | {}",
+                    symbol, msg.ts,
+                    msg.values[FIELD_VOLUME], msg.values[FIELD_AMOUNT],
+                    msg.values[FIELD_BUY_AMOUNT], msg.values[FIELD_SELL_AMOUNT],
+                    msg.values[FIELD_BUY_VOLUME], msg.values[FIELD_SELL_VOLUME],
+                    prev2, prev1,
+                );
+            }
+        }
 
         if emit_output {
             self.trade_flow_count = self.trade_flow_count.saturating_add(1);
