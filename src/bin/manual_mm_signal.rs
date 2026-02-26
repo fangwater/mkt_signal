@@ -39,6 +39,8 @@ use mkt_signal::depth_pub::query_msg::{
     resp_status_name, DepthQueryHeader, DepthQueryLoadTlenBatchReq, DepthQueryLoadTlenBatchResp,
     DepthQueryType, DEPTH_QUERY_PAYLOAD, RESP_STATUS_OK,
 };
+use mkt_signal::factor_pub::fusion_factor_pub::app::ExtraFactorId;
+use mkt_signal::factor_pub::fusion_factor_pub::fusion_factor_index_to_name;
 use mkt_signal::factor_pub::model_pub::publisher::MODEL_PAYLOAD_MAX_BYTES;
 use mkt_signal::funding_rate::common::Quote;
 use mkt_signal::market_maker::manual_signal::{
@@ -626,6 +628,29 @@ fn spawn_model_listener(
                                         continue;
                                     }
                                     let symbol = msg.symbol.to_uppercase();
+
+                                    // Log factor table for every message
+                                    if msg.feature_dim > 0 {
+                                        let mut table = format!(
+                                            "ModelMsg {} score={:.6} dim={}\n  {:>4} | {:>30} | {:>12}\n  {:-<4}-+-{:-<30}-+-{:-<12}",
+                                            symbol, msg.score, msg.feature_dim,
+                                            "idx", "factor_name", "zscore",
+                                            "", "", ""
+                                        );
+                                        for i in 0..msg.feature_dim as usize {
+                                            let idx = msg.factor_indices[i];
+                                            let name = fusion_factor_index_to_name(idx)
+                                                .or_else(|| ExtraFactorId::index_to_name(idx))
+                                                .unwrap_or("unknown");
+                                            let val = msg.factor_values[i];
+                                            table.push_str(&format!(
+                                                "\n  {:>4} | {:>30} | {:>12.6}",
+                                                idx, name, val
+                                            ));
+                                        }
+                                        info!("{}", table);
+                                    }
+
                                     let mut cache = model_scores.write();
                                     cache.scores.insert(symbol, ModelScore {
                                         score: msg.score,

@@ -7,9 +7,9 @@ use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::fs;
 
+use mkt_signal::common::trade_flow_feature_msg::TRADE_FLOW_FEATURE_FIELD_NAMES;
 use mkt_signal::factor_pub::factor_test::runner::run_scenario;
 use mkt_signal::factor_pub::factor_test::synthetic::generate_all_scenarios;
-use mkt_signal::common::trade_flow_feature_msg::TRADE_FLOW_FEATURE_FIELD_NAMES;
 
 #[derive(Parser)]
 #[command(name = "factor_test")]
@@ -45,8 +45,16 @@ fn main() -> Result<()> {
             }),
         );
 
-        let kline_ready = result.kline_factors.values().filter(|v| v.is_finite()).count();
-        let fusion_ready = result.fusion_factors.values().filter(|v| v.is_finite()).count();
+        let kline_ready = result
+            .kline_factors
+            .values()
+            .filter(|v| v.is_finite())
+            .count();
+        let fusion_ready = result
+            .fusion_factors
+            .values()
+            .filter(|v| v.is_finite())
+            .count();
         eprintln!(
             "scenario={} bars={} kline_factors={}/{} fusion_factors={}/{}",
             scenario.name,
@@ -66,7 +74,9 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn build_input_json(scenario: &mkt_signal::factor_pub::factor_test::synthetic::ScenarioData) -> Value {
+fn build_input_json(
+    scenario: &mkt_signal::factor_pub::factor_test::synthetic::ScenarioData,
+) -> Value {
     // Trade flow fields as named arrays
     let num_bars = scenario.trade_flow_msgs.len();
     let mut field_arrays: Vec<Vec<f64>> = vec![Vec::with_capacity(num_bars); 32];

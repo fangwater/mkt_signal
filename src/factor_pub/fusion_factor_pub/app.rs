@@ -462,6 +462,42 @@ impl ExtraFactorId {
             _ => None,
         }
     }
+
+    pub const fn as_index(self) -> u16 {
+        const EXTRA_FACTOR_BASE: u16 = 1000;
+        match self {
+            Self::AvgPrice => EXTRA_FACTOR_BASE,
+            Self::BuyAvgPrice => EXTRA_FACTOR_BASE + 1,
+            Self::SellAvgPrice => EXTRA_FACTOR_BASE + 2,
+            Self::SmallBuy => EXTRA_FACTOR_BASE + 3,
+            Self::SmallSell => EXTRA_FACTOR_BASE + 4,
+            Self::NetBuyLarge => EXTRA_FACTOR_BASE + 5,
+        }
+    }
+
+    pub fn from_index(index: u16) -> Option<Self> {
+        const EXTRA_FACTOR_BASE: u16 = 1000;
+        match index {
+            x if x == EXTRA_FACTOR_BASE => Some(Self::AvgPrice),
+            x if x == EXTRA_FACTOR_BASE + 1 => Some(Self::BuyAvgPrice),
+            x if x == EXTRA_FACTOR_BASE + 2 => Some(Self::SellAvgPrice),
+            x if x == EXTRA_FACTOR_BASE + 3 => Some(Self::SmallBuy),
+            x if x == EXTRA_FACTOR_BASE + 4 => Some(Self::SmallSell),
+            x if x == EXTRA_FACTOR_BASE + 5 => Some(Self::NetBuyLarge),
+            _ => None,
+        }
+    }
+
+    pub fn index_to_name(index: u16) -> Option<&'static str> {
+        Self::from_index(index).map(|id| match id {
+            Self::AvgPrice => "avg_price",
+            Self::BuyAvgPrice => "buy_avg_price",
+            Self::SellAvgPrice => "sell_avg_price",
+            Self::SmallBuy => "small_buy",
+            Self::SmallSell => "small_sell",
+            Self::NetBuyLarge => "net_buy_large",
+        })
+    }
 }
 
 pub struct FusionFactorPubApp {
@@ -879,7 +915,9 @@ impl FusionFactorPubApp {
             if trimmed > 0 {
                 info!(
                     "bootstrap tail trim: symbol={} trimmed={} remaining={}",
-                    symbol, trimmed, records.len()
+                    symbol,
+                    trimmed,
+                    records.len()
                 );
             }
 
@@ -903,8 +941,12 @@ impl FusionFactorPubApp {
         symbol_records_vec.sort_unstable_by(|a, b| a.symbol.cmp(&b.symbol));
 
         for sr in symbol_records_vec {
-            let symbol_result =
-                Self::replay_symbol_records(&venue_slug, &symbol_factor_plans, sr, &mut self.publisher);
+            let symbol_result = Self::replay_symbol_records(
+                &venue_slug,
+                &symbol_factor_plans,
+                sr,
+                &mut self.publisher,
+            );
             total_loaded = total_loaded.saturating_add(symbol_result.loaded);
             total_calculated = total_calculated.saturating_add(symbol_result.calculated);
             total_reload = total_reload.saturating_add(symbol_result.reload);
@@ -912,7 +954,8 @@ impl FusionFactorPubApp {
                 self.symbol_all_ready_seen
                     .insert(symbol_result.symbol.clone());
             }
-            total_bootstrap_published = total_bootstrap_published.saturating_add(symbol_result.bootstrap_published);
+            total_bootstrap_published =
+                total_bootstrap_published.saturating_add(symbol_result.bootstrap_published);
             self.symbol_states
                 .insert(symbol_result.symbol.clone(), symbol_result.state);
             info!(
@@ -1074,7 +1117,11 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn validate_and_fix_trade_flow(venue_slug: &str, symbol: &str, msg: &mut TradeFlowFeatureMsg) -> bool {
+    fn validate_and_fix_trade_flow(
+        venue_slug: &str,
+        symbol: &str,
+        msg: &mut TradeFlowFeatureMsg,
+    ) -> bool {
         const PRICE_FIELDS: &[(usize, &str)] = &[
             (FIELD_OPEN, "open"),
             (FIELD_HIGH, "high"),
@@ -1096,7 +1143,12 @@ impl FusionFactorPubApp {
 
         const VOLUME_EPS: f64 = 1e-12;
         // buy/sell 分项在单边行情时为 0 是正常的，静默修正
-        for idx in [FIELD_BUY_AMOUNT, FIELD_SELL_AMOUNT, FIELD_BUY_VOLUME, FIELD_SELL_VOLUME] {
+        for idx in [
+            FIELD_BUY_AMOUNT,
+            FIELD_SELL_AMOUNT,
+            FIELD_BUY_VOLUME,
+            FIELD_SELL_VOLUME,
+        ] {
             if msg.values[idx] == 0.0 {
                 msg.values[idx] = VOLUME_EPS;
             }
@@ -2529,7 +2581,10 @@ impl FusionFactorPubApp {
             .iter()
             .map(|v| if v.is_finite() { Some(*v) } else { None })
             .collect();
-        tail_skew_last_opt(&valid, 10, 3, false).ok().flatten().or(Some(0.0))
+        tail_skew_last_opt(&valid, 10, 3, false)
+            .ok()
+            .flatten()
+            .or(Some(0.0))
     }
 
     fn compute_factor_001(series: &SymbolSeries) -> Option<f64> {
@@ -5344,7 +5399,11 @@ fn tail_quantile_last(values: &[f64], window: usize, q: f64) -> Option<f64> {
     let hi = (lo + 1).min(n - 1);
     let frac = pos - lo as f64;
     let value = tail[lo] * (1.0 - frac) + tail[hi] * frac;
-    if value.is_finite() { Some(value) } else { None }
+    if value.is_finite() {
+        Some(value)
+    } else {
+        None
+    }
 }
 
 fn sample_std_last(values: &[f64], window: usize, min_periods: usize) -> Option<f64> {

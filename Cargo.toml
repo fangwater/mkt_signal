@@ -136,6 +136,14 @@ path = "src/bin/fusion_factor_pub.rs"
 name = "factor_test"
 path = "src/bin/factor_test.rs"
 
+[[bin]]
+name = "demo_bridge_pub"
+path = "src/bin/demo_bridge_pub.rs"
+
+[[bin]]
+name = "demo_bridge_sub"
+path = "src/bin/demo_bridge_sub.rs"
+
 [dependencies]
 local-ip-address = "0.6"
 serde_yaml = "0.9"

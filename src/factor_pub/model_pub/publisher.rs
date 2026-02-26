@@ -3,7 +3,7 @@ use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 
-pub const MODEL_PAYLOAD_MAX_BYTES: usize = 512;
+pub const MODEL_PAYLOAD_MAX_BYTES: usize = 2048;
 
 pub struct ModelPublisher {
     publisher: Publisher<ipc::Service, [u8; MODEL_PAYLOAD_MAX_BYTES], ()>,

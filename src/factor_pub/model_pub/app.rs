@@ -17,7 +17,9 @@ use super::model::Tl2cgenModel;
 use super::publisher::ModelPublisher;
 use crate::common::mkt_msg::{FeatureMsg, FeatureStatus, ModelMsg, MODEL_STATUS_OK};
 use crate::common::rolling_welford::RollingWelford;
+use crate::factor_pub::fusion_factor_pub::app::ExtraFactorId;
 use crate::factor_pub::fusion_factor_pub::publisher::FUSION_FACTOR_PAYLOAD_MAX_BYTES;
+use crate::factor_pub::fusion_factor_pub::FusionFactorId;
 
 const INPUT_MAX_BYTES: usize = FUSION_FACTOR_PAYLOAD_MAX_BYTES;
 const IDLE_SLEEP_MICROS: u64 = 200;
@@ -52,6 +54,7 @@ struct SymbolNormState {
 struct SymbolModelRuntime {
     feature_dim: usize,
     model: Tl2cgenModel,
+    factor_indices: Vec<u16>,
 }
 
 struct SymbolModelLoaded {
@@ -74,6 +77,12 @@ struct SymbolListItem {
 struct ModelBinaryPayload {
     model_binary: Vec<u8>,
     feature_dim: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct SymbolDetailResp {
+    #[serde(default)]
+    factors: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -386,6 +395,7 @@ impl ModelPubApp {
                 }
 
                 let f32_features: Vec<f32> = normalized.iter().map(|&v| v as f32).collect();
+                let factor_indices = runtime.factor_indices.clone();
                 let predict_start = Instant::now();
                 let result = runtime.model.predict_one_timed(&f32_features);
                 let predict_us = predict_start.elapsed().as_micros() as u64;
@@ -435,6 +445,8 @@ impl ModelPubApp {
                             feature.ts_ms,
                             output.score,
                             MODEL_STATUS_OK,
+                            &factor_indices,
+                            &f32_features,
                         );
                     }
                     Err(err) => {
@@ -454,8 +466,25 @@ impl ModelPubApp {
         }
     }
 
-    fn emit_result(&mut self, symbol: &str, ts_in_ms: i64, score: f64, status: u8) {
-        let msg = ModelMsg::create(symbol.to_string(), ts_in_ms, now_millis(), 0, score, status);
+    fn emit_result(
+        &mut self,
+        symbol: &str,
+        ts_in_ms: i64,
+        score: f64,
+        status: u8,
+        factor_indices: &[u16],
+        factor_values: &[f32],
+    ) {
+        let msg = ModelMsg::create(
+            symbol.to_string(),
+            ts_in_ms,
+            now_millis(),
+            0,
+            score,
+            status,
+            factor_indices.to_vec(),
+            factor_values.to_vec(),
+        );
         let bytes = match msg.to_bytes() {
             Ok(bytes) => bytes,
             Err(err) => {
@@ -801,11 +830,91 @@ async fn load_single_symbol_model(
             )
         })?;
 
+    let factor_indices = fetch_symbol_factor_indices(client, base_url, model_name, symbol, token)
+        .await
+        .with_context(|| {
+            format!(
+                "fetch symbol factor indices failed: model_name={} symbol={}",
+                model_name, symbol
+            )
+        })?;
+
+    if factor_indices.len() != feature_dim {
+        anyhow::bail!(
+            "factor indices count mismatch with feature_dim: model_name={} symbol={} indices={} feature_dim={}",
+            model_name, symbol, factor_indices.len(), feature_dim
+        );
+    }
+
     Ok(SymbolModelLoaded {
         symbol: symbol.to_string(),
         model_binary_bytes,
-        runtime: SymbolModelRuntime { feature_dim, model },
+        runtime: SymbolModelRuntime {
+            feature_dim,
+            model,
+            factor_indices,
+        },
     })
+}
+
+/// Map a factor name to its u16 index.
+/// FusionFactorId: 0..631, ExtraFactorId: 1000..1005.
+fn factor_name_to_index(name: &str) -> Option<u16> {
+    if let Some(fid) = FusionFactorId::from_name(name) {
+        return Some(fid.as_index());
+    }
+    if let Some(eid) = ExtraFactorId::from_name(name) {
+        return Some(eid.as_index());
+    }
+    None
+}
+
+async fn fetch_symbol_factor_indices(
+    client: &Client,
+    base_url: &str,
+    model_name: &str,
+    symbol: &str,
+    token: Option<&str>,
+) -> Result<Vec<u16>> {
+    let url = format!(
+        "{}/api/models/{}/symbols/{}",
+        base_url,
+        urlencoding::encode(model_name),
+        urlencoding::encode(symbol)
+    );
+
+    let mut req = client.get(&url);
+    if let Some(t) = token {
+        req = req.bearer_auth(t);
+    }
+
+    let resp = req
+        .send()
+        .await
+        .with_context(|| format!("GET {} failed", url))?
+        .error_for_status()
+        .with_context(|| format!("GET {} returned error status", url))?;
+
+    let detail: SymbolDetailResp = resp
+        .json()
+        .await
+        .with_context(|| format!("decode symbol detail failed: {}", url))?;
+
+    let mut indices = Vec::with_capacity(detail.factors.len());
+    for name in &detail.factors {
+        match factor_name_to_index(name) {
+            Some(idx) => indices.push(idx),
+            None => {
+                warn!(
+                    "unknown factor name in model plan, using u16::MAX: model_name={} symbol={} factor={}",
+                    model_name, symbol, name
+                );
+                indices.push(u16::MAX);
+            }
+        }
+    }
+
+    Ok(indices)
 }
 
 fn build_model_url(base_url: &str, path_or_url: &str) -> String {

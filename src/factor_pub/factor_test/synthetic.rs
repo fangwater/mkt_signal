@@ -65,11 +65,17 @@ fn make_depth(bids: Vec<(f64, f64)>, asks: Vec<(f64, f64)>) -> DepthSnapshot {
     DepthSnapshot {
         bids: bids
             .into_iter()
-            .map(|(p, a)| DepthLevel { price: p, amount: a })
+            .map(|(p, a)| DepthLevel {
+                price: p,
+                amount: a,
+            })
             .collect(),
         asks: asks
             .into_iter()
-            .map(|(p, a)| DepthLevel { price: p, amount: a })
+            .map(|(p, a)| DepthLevel {
+                price: p,
+                amount: a,
+            })
             .collect(),
     }
 }
@@ -107,7 +113,7 @@ fn generate_normal(seed: u64) -> ScenarioData {
 
     for i in 0..NUM_BARS {
         let ts = (i as i64 + 1) * 5_000_000; // 5s intervals in microseconds
-        // Random walk
+                                             // Random walk
         price += rng.uniform(-50.0, 50.0);
         if price < 30000.0 {
             price = 30000.0;
@@ -249,14 +255,14 @@ fn generate_edge_flat(seed: u64) -> ScenarioData {
         let sell_vwap = price;
 
         let mut values = vec![
-            price,        // open
-            price,        // high
-            price,        // low
-            price,        // close
-            volume,       // volume
-            amount,       // amount
+            price,          // open
+            price,          // high
+            price,          // low
+            price,          // close
+            volume,         // volume
+            amount,         // amount
             amount / 200.0, // avg_amount
-            200.0,        // count
+            200.0,          // count
             buy_count,
             sell_count,
             buy_amount,
@@ -343,22 +349,78 @@ fn generate_edge_extreme(seed: u64) -> ScenarioData {
         };
 
         let amount = volume * close;
-        let buy_amount = if is_extreme { 0.0 } else { rng.uniform(0.3, 0.7) * amount };
+        let buy_amount = if is_extreme {
+            0.0
+        } else {
+            rng.uniform(0.3, 0.7) * amount
+        };
         let sell_amount = if is_extreme { 0.0 } else { amount - buy_amount };
-        let buy_volume = if is_extreme { 0.0 } else { rng.uniform(0.3, 0.6) * volume };
+        let buy_volume = if is_extreme {
+            0.0
+        } else {
+            rng.uniform(0.3, 0.6) * volume
+        };
         let sell_volume = if is_extreme { 0.0 } else { volume - buy_volume };
-        let large_order = if is_extreme { 0.0 } else { rng.uniform(0.0, 15.0) };
-        let medium_order = if is_extreme { 0.0 } else { rng.uniform(3.0, 20.0) };
-        let small_order = if is_extreme { 0.0 } else { rng.uniform(5.0, 40.0) };
-        let large_buy = if is_extreme { 0.0 } else { rng.uniform(0.0, 8.0) };
-        let large_sell = if is_extreme { 0.0 } else { rng.uniform(0.0, 8.0) };
-        let medium_buy = if is_extreme { 0.0 } else { rng.uniform(1.0, 10.0) };
-        let medium_sell = if is_extreme { 0.0 } else { rng.uniform(1.0, 10.0) };
-        let small_buy = if is_extreme { 0.0 } else { rng.uniform(2.0, 20.0) };
-        let small_sell = if is_extreme { 0.0 } else { rng.uniform(2.0, 20.0) };
-        let vwap = if is_extreme { price } else { (open + close + high + low) / 4.0 };
-        let buy_vwap = if is_extreme { price } else { vwap + rng.uniform(-3.0, 3.0) };
-        let sell_vwap = if is_extreme { price } else { vwap + rng.uniform(-3.0, 3.0) };
+        let large_order = if is_extreme {
+            0.0
+        } else {
+            rng.uniform(0.0, 15.0)
+        };
+        let medium_order = if is_extreme {
+            0.0
+        } else {
+            rng.uniform(3.0, 20.0)
+        };
+        let small_order = if is_extreme {
+            0.0
+        } else {
+            rng.uniform(5.0, 40.0)
+        };
+        let large_buy = if is_extreme {
+            0.0
+        } else {
+            rng.uniform(0.0, 8.0)
+        };
+        let large_sell = if is_extreme {
+            0.0
+        } else {
+            rng.uniform(0.0, 8.0)
+        };
+        let medium_buy = if is_extreme {
+            0.0
+        } else {
+            rng.uniform(1.0, 10.0)
+        };
+        let medium_sell = if is_extreme {
+            0.0
+        } else {
+            rng.uniform(1.0, 10.0)
+        };
+        let small_buy = if is_extreme {
+            0.0
+        } else {
+            rng.uniform(2.0, 20.0)
+        };
+        let small_sell = if is_extreme {
+            0.0
+        } else {
+            rng.uniform(2.0, 20.0)
+        };
+        let vwap = if is_extreme {
+            price
+        } else {
+            (open + close + high + low) / 4.0
+        };
+        let buy_vwap = if is_extreme {
+            price
+        } else {
+            vwap + rng.uniform(-3.0, 3.0)
+        };
+        let sell_vwap = if is_extreme {
+            price
+        } else {
+            vwap + rng.uniform(-3.0, 3.0)
+        };
         let net_buy_amount = buy_amount - sell_amount;
         let net_buy_volume = buy_volume - sell_volume;
         let total_count = buy_count + sell_count;

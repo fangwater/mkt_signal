@@ -135,6 +135,9 @@ pub struct ModelMsg {
     pub seq_no: u64,
     pub score: f64,
     pub status: u8,
+    pub feature_dim: u16,
+    pub factor_indices: Vec<u16>,
+    pub factor_values: Vec<f32>,
 }
 
 #[allow(dead_code)]
@@ -1084,6 +1087,7 @@ impl FeatureMsg {
 }
 
 impl ModelMsg {
+    #[allow(clippy::too_many_arguments)]
     pub fn create(
         symbol: String,
         ts_in_ms: i64,
@@ -1091,8 +1095,16 @@ impl ModelMsg {
         seq_no: u64,
         score: f64,
         status: u8,
+        factor_indices: Vec<u16>,
+        factor_values: Vec<f32>,
     ) -> Self {
+        assert_eq!(
+            factor_indices.len(),
+            factor_values.len(),
+            "factor_indices and factor_values must have the same length"
+        );
         let symbol_length = symbol.len() as u32;
+        let feature_dim = factor_indices.len() as u16;
         Self {
             msg_type: MODEL_MSG_TYPE,
             symbol_length,
@@ -1102,6 +1114,9 @@ impl ModelMsg {
             seq_no,
             score,
             status,
+            feature_dim,
+            factor_indices,
+            factor_values,
         }
     }
 
@@ -1114,7 +1129,9 @@ impl ModelMsg {
             );
         }
 
-        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 8 + 8 + 8 + 1 + 7;
+        let dim = self.feature_dim as usize;
+        let total_size =
+            4 + 4 + self.symbol_length as usize + 8 + 8 + 8 + 8 + 1 + 7 + 2 + dim * 2 + dim * 4;
         let mut buf = BytesMut::with_capacity(total_size);
         buf.put_u32_le(self.msg_type);
         buf.put_u32_le(self.symbol_length);
@@ -1125,11 +1142,20 @@ impl ModelMsg {
         buf.put_f64_le(self.score);
         buf.put_u8(self.status);
         buf.put_slice(&[0u8; 7]);
+        // new fields: feature_dim + factor_indices + factor_values
+        buf.put_u16_le(self.feature_dim);
+        for &idx in &self.factor_indices {
+            buf.put_u16_le(idx);
+        }
+        for &val in &self.factor_values {
+            buf.put_f32_le(val);
+        }
         Ok(buf.freeze())
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        if data.len() < 4 + 4 + 8 + 8 + 8 + 8 + 1 + 7 {
+        // minimum: header + at least feature_dim(u16)
+        if data.len() < 4 + 4 + 8 + 8 + 8 + 8 + 1 + 7 + 2 {
             bail!("ModelMsg too short: {}", data.len());
         }
 
@@ -1144,11 +1170,11 @@ impl ModelMsg {
         }
 
         let symbol_len = cursor.get_u32_le() as usize;
-        if cursor.remaining() < symbol_len + 8 + 8 + 8 + 8 + 1 + 7 {
+        if cursor.remaining() < symbol_len + 8 + 8 + 8 + 8 + 1 + 7 + 2 {
             bail!(
                 "ModelMsg truncated before body: remaining={} need={}",
                 cursor.remaining(),
-                symbol_len + 8 + 8 + 8 + 8 + 1 + 7
+                symbol_len + 8 + 8 + 8 + 8 + 1 + 7 + 2
             );
         }
 
@@ -1160,6 +1186,26 @@ impl ModelMsg {
         let status = cursor.get_u8();
         cursor.advance(7);
 
+        let feature_dim = cursor.get_u16_le() as usize;
+        let needed = feature_dim * 2 + feature_dim * 4;
+        if cursor.remaining() < needed {
+            bail!(
+                "ModelMsg truncated in feature payload: remaining={} need={} dim={}",
+                cursor.remaining(),
+                needed,
+                feature_dim
+            );
+        }
+
+        let mut factor_indices = Vec::with_capacity(feature_dim);
+        for _ in 0..feature_dim {
+            factor_indices.push(cursor.get_u16_le());
+        }
+        let mut factor_values = Vec::with_capacity(feature_dim);
+        for _ in 0..feature_dim {
+            factor_values.push(cursor.get_f32_le());
+        }
+
         Ok(Self {
             msg_type,
             symbol_length: symbol.len() as u32,
@@ -1169,6 +1215,9 @@ impl ModelMsg {
             seq_no,
             score,
             status,
+            feature_dim: feature_dim as u16,
+            factor_indices,
+            factor_values,
         })
     }
 }

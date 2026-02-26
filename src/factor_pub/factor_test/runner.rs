@@ -8,8 +8,7 @@ use std::collections::{HashMap, VecDeque};
 use anyhow::Result;
 
 use crate::factor_pub::fusion_factor_pub::app::{
-    FusionFactorPubApp, SymbolCalcState,
-    FactorBinding, ExtraFactorId,
+    ExtraFactorId, FactorBinding, FusionFactorPubApp, SymbolCalcState,
 };
 use crate::factor_pub::fusion_factor_pub::FusionFactorId;
 use crate::factor_pub::kline_factor_pub::app as kline_app;
@@ -44,18 +43,19 @@ fn run_kline_factors(scenario: &ScenarioData) -> Result<HashMap<String, f64>> {
     let mut counts = VecDeque::new();
 
     for msg in &scenario.trade_flow_msgs {
-        closes.push_back(msg.values[3]);  // close
-        highs.push_back(msg.values[1]);   // high
-        lows.push_back(msg.values[2]);    // low
+        closes.push_back(msg.values[3]); // close
+        highs.push_back(msg.values[1]); // high
+        lows.push_back(msg.values[2]); // low
         volumes.push_back(msg.values[4]); // volume
-        counts.push_back(msg.values[7]);  // count
+        counts.push_back(msg.values[7]); // count
     }
 
     let factor_defs = default_kline_factor_defs();
     let mut results = HashMap::new();
 
     for def in &factor_defs {
-        let value = kline_app::compute_factor_value(def, &closes, &highs, &lows, &volumes, &counts)?;
+        let value =
+            kline_app::compute_factor_value(def, &closes, &highs, &lows, &volumes, &counts)?;
         let v = match value {
             Some(v) if v.is_finite() => v,
             _ => f64::NAN,
@@ -71,7 +71,11 @@ fn run_fusion_factors(scenario: &ScenarioData) -> Result<HashMap<String, f64>> {
     let mut state = SymbolCalcState::default();
 
     // Feed all bars sequentially (simulating real bootstrap)
-    for (msg, depth) in scenario.trade_flow_msgs.iter().zip(scenario.depth_snapshots.iter()) {
+    for (msg, depth) in scenario
+        .trade_flow_msgs
+        .iter()
+        .zip(scenario.depth_snapshots.iter())
+    {
         state.push_trade_flow(msg);
         state.push_depth_metrics(depth);
     }
@@ -105,7 +109,14 @@ fn run_fusion_factors(scenario: &ScenarioData) -> Result<HashMap<String, f64>> {
     }
 
     // Also compute ExtraFactorId variants
-    let extra_names = ["avg_price", "buy_avg_price", "sell_avg_price", "small_buy", "small_sell", "net_buy_large"];
+    let extra_names = [
+        "avg_price",
+        "buy_avg_price",
+        "sell_avg_price",
+        "small_buy",
+        "small_sell",
+        "net_buy_large",
+    ];
     for name in &extra_names {
         if let Some(extra_id) = ExtraFactorId::from_name(name) {
             let binding = FactorBinding {

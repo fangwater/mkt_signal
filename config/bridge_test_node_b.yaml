@@ -1,0 +1,34 @@
+# Bridge test: Node B (trade engine side)
+# Receives order_reqs/binance from Node A via ZMQ
+# Publishes to order_resps/binance -> forwards via ZMQ to Node A
+
+self_id: node_b
+
+nodes:
+  - id: node_a
+    addr: "tcp://127.0.0.1:15555"
+  - id: node_b
+    addr: "tcp://0.0.0.0:15556"
+
+routes:
+  # A -> B: order requests
+  - id: order_req_test
+    from:
+      node: node_a
+      service: "order_reqs/binance"
+      size: 4096
+    to:
+      node: node_b
+      service: "order_reqs/binance"
+      size: 4096
+
+  # B -> A: order responses
+  - id: order_resp_test
+    from:
+      node: node_b
+      service: "order_resps/binance"
+      size: 4096
+    to:
+      node: node_a
+      service: "order_resps/binance"
+      size: 4096
