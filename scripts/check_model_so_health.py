@@ -139,11 +139,62 @@ def check_single_so(so_path: str, symbol: str) -> Dict[str, Any]:
         return result
 
 
+def check_single_so_with_arity(so_path: str, symbol: str, predict_arity: int) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "symbol": symbol,
+        "so_path": so_path,
+        "predict_arity": predict_arity,
+        "status": "check_error",
+    }
+    try:
+        lib = ctypes.CDLL(so_path)
+
+        lib.get_num_feature.restype = ctypes.c_int
+        n_features = int(lib.get_num_feature())
+        result["n_features"] = n_features
+        if n_features <= 0:
+            result["status"] = "bad_dim"
+            result["detail"] = f"invalid get_num_feature={n_features}"
+            return result
+
+        arr = (Entry * n_features)()
+        for i in range(n_features):
+            arr[i].fvalue = 0.0
+
+        if predict_arity == 2:
+            lib.predict.argtypes = [ctypes.POINTER(Entry), ctypes.c_int]
+            lib.predict.restype = ctypes.c_float
+            predict_value = float(lib.predict(arr, 0))
+        elif predict_arity == 3:
+            lib.predict.argtypes = [ctypes.POINTER(Entry), ctypes.c_int, ctypes.c_int]
+            lib.predict.restype = ctypes.c_float
+            predict_value = float(lib.predict(arr, 0, 0))
+        else:
+            result["status"] = "check_error"
+            result["detail"] = f"unsupported predict_arity={predict_arity}, expected 2 or 3"
+            return result
+
+        result["predict"] = predict_value
+        if not math.isfinite(predict_value):
+            result["status"] = "non_finite"
+            result["detail"] = f"predict={predict_value}"
+            return result
+
+        result["status"] = "ok"
+        return result
+    except Exception as exc:  # noqa: BLE001
+        result["status"] = "check_error"
+        result["detail"] = f"{type(exc).__name__}: {exc}"
+        result["traceback"] = traceback.format_exc(limit=3)
+        return result
+
+
 def run_check_subprocess(
     script_path: str,
     so_path: str,
     symbol: str,
     timeout_sec: float,
+    predict_arity: int,
 ) -> Dict[str, Any]:
     cmd = [
         sys.executable,
@@ -153,6 +204,8 @@ def run_check_subprocess(
         so_path,
         "--symbol",
         symbol,
+        "--predict-arity",
+        str(predict_arity),
     ]
     try:
         proc = subprocess.run(
@@ -166,6 +219,7 @@ def run_check_subprocess(
         return {
             "symbol": symbol,
             "so_path": so_path,
+            "predict_arity": predict_arity,
             "status": "timeout",
             "detail": f"subprocess timeout after {timeout_sec:.1f}s",
         }
@@ -185,11 +239,12 @@ def run_check_subprocess(
             parsed.setdefault("so_path", so_path)
             return parsed
         return {
-            "symbol": symbol,
-            "so_path": so_path,
-            "status": "ok",
-            "detail": "no json output, returncode=0",
-        }
+                "symbol": symbol,
+                "so_path": so_path,
+                "predict_arity": predict_arity,
+                "status": "ok",
+                "detail": "no json output, returncode=0",
+            }
 
     if proc.returncode < 0:
         sig_num = -proc.returncode
@@ -198,6 +253,7 @@ def run_check_subprocess(
         return {
             "symbol": symbol,
             "so_path": so_path,
+            "predict_arity": predict_arity,
             "status": status,
             "signal": sig_num,
             "detail": f"terminated by signal {sig_num} ({sig_name})",
@@ -208,6 +264,7 @@ def run_check_subprocess(
         return {
             "symbol": symbol,
             "so_path": so_path,
+            "predict_arity": predict_arity,
             "status": "segfault",
             "detail": "subprocess exited 139",
             "stderr": stderr,
@@ -224,6 +281,7 @@ def run_check_subprocess(
     return {
         "symbol": symbol,
         "so_path": so_path,
+        "predict_arity": predict_arity,
         "status": "check_error",
         "detail": f"subprocess returncode={proc.returncode}",
         "stderr": stderr,
@@ -332,6 +390,12 @@ def parse_args() -> argparse.Namespace:
         help="optional path to write full json report",
     )
     parser.add_argument(
+        "--predict-arity",
+        type=int,
+        default=2,
+        help="predict function arity to call: 2 or 3 (default: 2)",
+    )
+    parser.add_argument(
         "--check-one",
         action="store_true",
         help=argparse.SUPPRESS,
@@ -363,7 +427,11 @@ def run_check_one_mode(args: argparse.Namespace) -> int:
         )
         return 2
 
-    result = check_single_so(args.so_path, args.symbol or os.path.basename(args.so_path))
+    result = check_single_so_with_arity(
+        args.so_path,
+        args.symbol or os.path.basename(args.so_path),
+        int(args.predict_arity),
+    )
     print(json.dumps(result, ensure_ascii=True, sort_keys=True))
     status = result.get("status", "check_error")
     if status == "ok":
@@ -389,6 +457,9 @@ def main() -> int:
     if args.timeout_sec <= 0:
         print("--timeout-sec must be > 0", file=sys.stderr)
         return 2
+    if args.predict_arity not in (2, 3):
+        print("--predict-arity must be 2 or 3", file=sys.stderr)
+        return 2
 
     model_name = args.model_name.strip()
     if not model_name:
@@ -409,7 +480,8 @@ def main() -> int:
     started_ms = now_ms()
     print(
         f"[info] start model_so health check: model={model_name} base_url={args.base_url} "
-        f"workers={args.workers} timeout={args.timeout_sec}s work_dir={work_model_dir}",
+        f"workers={args.workers} timeout={args.timeout_sec}s predict_arity={args.predict_arity} "
+        f"work_dir={work_model_dir}",
         flush=True,
     )
 
@@ -452,6 +524,7 @@ def main() -> int:
             so_path=so_path,
             symbol=symbol,
             timeout_sec=args.timeout_sec,
+            predict_arity=args.predict_arity,
         )
         check_res["so_bytes"] = fetch_res.get("so_bytes", 0)
         return check_res
@@ -513,6 +586,7 @@ def main() -> int:
         "base_url": args.base_url,
         "workers": args.workers,
         "timeout_sec": args.timeout_sec,
+        "predict_arity": args.predict_arity,
         "elapsed_ms": elapsed_ms,
         "counts": counts,
         "results": results,
