@@ -1,5 +1,5 @@
 model_manager_base_url = "http://127.0.0.1:6300"
-model_manager_request_timeout_ms = 5000
+model_manager_request_timeout_ms = 120000
 
 # Optional auth settings for model_manager.
 # Keep empty when auth is disabled.
