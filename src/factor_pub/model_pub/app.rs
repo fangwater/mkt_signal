@@ -281,6 +281,12 @@ impl ModelPubApp {
             while let Some(sample) = self.subscriber.receive()? {
                 has_message = true;
                 self.stats.recv_total += 1;
+                if self.stats.recv_total % 500 == 1 {
+                    info!(
+                        "ModelPub[{}] received: recv_total={} bytes={}",
+                        self.model_name, self.stats.recv_total, sample.payload().len()
+                    );
+                }
 
                 let data = sample.payload().to_vec();
                 self.process_input(&data);

@@ -1261,8 +1261,18 @@ impl FusionFactorPubApp {
             Ok(bytes) => {
                 if self.publisher.publish(&bytes) {
                     self.published_count = self.published_count.saturating_add(1);
+                    if self.published_count % 500 == 1 {
+                        info!(
+                            "FusionFactorPubApp[{}] published: symbol={} ts_ms={} bytes={} total={}",
+                            self.venue_slug, feature_msg.symbol, ts_ms, bytes.len(), self.published_count
+                        );
+                    }
                 } else {
                     self.publish_failed_count = self.publish_failed_count.saturating_add(1);
+                    warn!(
+                        "FusionFactorPubApp[{}] publish failed: symbol={} ts_ms={} total_failed={}",
+                        self.venue_slug, feature_msg.symbol, ts_ms, self.publish_failed_count
+                    );
                 }
             }
             Err(e) => {
