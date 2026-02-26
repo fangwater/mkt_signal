@@ -5338,8 +5338,13 @@ fn tail_quantile_last(values: &[f64], window: usize, q: f64) -> Option<f64> {
     }
     tail.sort_by(|a, b| a.total_cmp(b));
     let n = tail.len();
-    let idx = ((n - 1) as f64 * q).floor() as usize;
-    tail.get(idx).copied().filter(|v| v.is_finite())
+    // linear interpolation (matches pandas default)
+    let pos = (n - 1) as f64 * q;
+    let lo = pos.floor() as usize;
+    let hi = (lo + 1).min(n - 1);
+    let frac = pos - lo as f64;
+    let value = tail[lo] * (1.0 - frac) + tail[hi] * frac;
+    if value.is_finite() { Some(value) } else { None }
 }
 
 fn sample_std_last(values: &[f64], window: usize, min_periods: usize) -> Option<f64> {
