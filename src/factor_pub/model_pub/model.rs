@@ -1,9 +1,16 @@
 use anyhow::{Context, Result};
+use std::time::Instant;
 use xgb::{Booster, DMatrix};
 
 pub struct XgbModel {
     booster: Booster,
     n_features: usize,
+}
+
+pub struct PredictOneOutput {
+    pub score: f64,
+    pub dmatrix_us: u64,
+    pub xgb_predict_us: u64,
 }
 
 impl XgbModel {
@@ -39,6 +46,11 @@ impl XgbModel {
     }
 
     pub fn predict_one(&self, features: &[f32]) -> Result<f64> {
+        let output = self.predict_one_timed(features)?;
+        Ok(output.score)
+    }
+
+    pub fn predict_one_timed(&self, features: &[f32]) -> Result<PredictOneOutput> {
         if features.len() != self.n_features {
             anyhow::bail!(
                 "feature dim mismatch: got {}, expect {}",
@@ -47,17 +59,26 @@ impl XgbModel {
             );
         }
 
+        let dmatrix_start = Instant::now();
         let dmat = DMatrix::from_dense(features, 1)
             .context("build xgboost dmatrix from feature vector failed")?;
+        let dmatrix_us = dmatrix_start.elapsed().as_micros() as u64;
+
+        let xgb_predict_start = Instant::now();
         let pred = self
             .booster
             .predict(&dmat)
             .context("xgboost predict failed")?;
+        let xgb_predict_us = xgb_predict_start.elapsed().as_micros() as u64;
 
         let Some(score) = pred.first() else {
             anyhow::bail!("xgboost predict returned empty result");
         };
 
-        Ok(*score as f64)
+        Ok(PredictOneOutput {
+            score: *score as f64,
+            dmatrix_us,
+            xgb_predict_us,
+        })
     }
 }
