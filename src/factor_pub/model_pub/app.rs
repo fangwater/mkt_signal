@@ -71,6 +71,7 @@ struct ModelPayloadBody {
     model_json: String,
     metadata: ModelMetadata,
     #[serde(default)]
+    #[allow(dead_code)]
     dim_factors: Vec<Value>,
 }
 
