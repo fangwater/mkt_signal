@@ -362,6 +362,7 @@ struct BootstrapSymbolReplayResult {
     reload: u64,
     all_ready_seen: bool,
     state: SymbolCalcState,
+    publish_payloads: Vec<Vec<u8>>,
 }
 
 struct BootstrapSymbolRecords {
@@ -903,6 +904,7 @@ impl FusionFactorPubApp {
         let mut total_loaded = 0usize;
         let mut total_calculated = 0u64;
         let mut total_reload = 0u64;
+        let mut total_bootstrap_published = 0u64;
         for symbol_result in replay_results {
             total_loaded = total_loaded.saturating_add(symbol_result.loaded);
             total_calculated = total_calculated.saturating_add(symbol_result.calculated);
@@ -911,26 +913,33 @@ impl FusionFactorPubApp {
                 self.symbol_all_ready_seen
                     .insert(symbol_result.symbol.clone());
             }
+            let payload_count = symbol_result.publish_payloads.len() as u64;
+            for payload in &symbol_result.publish_payloads {
+                self.publisher.publish(payload);
+            }
+            total_bootstrap_published = total_bootstrap_published.saturating_add(payload_count);
             self.symbol_states
                 .insert(symbol_result.symbol.clone(), symbol_result.state);
             info!(
-                "FusionFactorPubApp[{}] rocksdb bootstrap symbol done: symbol={} loaded={} calculated={} reload={} total_loaded={}",
+                "FusionFactorPubApp[{}] rocksdb bootstrap symbol done: symbol={} loaded={} calculated={} reload={} published={} total_loaded={}",
                 self.venue_slug,
                 symbol_result.symbol,
                 symbol_result.loaded,
                 symbol_result.calculated,
                 symbol_result.reload,
+                payload_count,
                 total_loaded
             );
         }
 
         info!(
-            "FusionFactorPubApp[{}] rocksdb bootstrap done: symbols={} total_loaded={} total_calculated={} total_reload={} elapsed_ms={}",
+            "FusionFactorPubApp[{}] rocksdb bootstrap done: symbols={} total_loaded={} total_calculated={} total_reload={} total_published={} elapsed_ms={}",
             self.venue_slug,
             self.allowed_symbols.len(),
             total_loaded,
             total_calculated,
             total_reload,
+            total_bootstrap_published,
             started.elapsed().as_millis()
         );
         Ok(())
@@ -950,6 +959,7 @@ impl FusionFactorPubApp {
         let mut calculated = 0u64;
         let mut reload = 0u64;
         let mut all_ready_seen = false;
+        let mut publish_payloads: Vec<Vec<u8>> = Vec::new();
         let mut interval_loaded = 0u64;
         let mut interval_calculated = 0u64;
         let mut interval_reload = 0u64;
@@ -993,6 +1003,16 @@ impl FusionFactorPubApp {
                     );
                     if eval_result.status == 0 {
                         all_ready_seen = true;
+                        let ts_ms = msg.ts / 1000;
+                        let feature_msg = FeatureMsg::create(
+                            symbol.clone(),
+                            ts_ms,
+                            eval_result.status,
+                            eval_result.factor_values.clone(),
+                        );
+                        if let Ok(bytes) = feature_msg.to_bytes() {
+                            publish_payloads.push(bytes.to_vec());
+                        }
                     } else if eval_result.status == 1 && all_ready_seen {
                         let warming_factors: Vec<&str> = eval_result
                             .factor_issues
@@ -1053,6 +1073,7 @@ impl FusionFactorPubApp {
             reload,
             all_ready_seen,
             state,
+            publish_payloads,
         }
     }
 
