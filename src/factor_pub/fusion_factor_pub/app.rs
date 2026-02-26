@@ -362,7 +362,7 @@ struct BootstrapSymbolReplayResult {
     reload: u64,
     all_ready_seen: bool,
     state: SymbolCalcState,
-    publish_payloads: Vec<Vec<u8>>,
+    bootstrap_published: u64,
 }
 
 struct BootstrapSymbolRecords {
@@ -893,19 +893,18 @@ impl FusionFactorPubApp {
         );
         let venue_slug = self.venue_slug.clone();
         let symbol_factor_plans = self.symbol_factor_plans.clone();
-        let mut replay_results: Vec<_> = symbol_records
-            .into_iter()
-            .map(|symbol_records| {
-                Self::replay_symbol_records(&venue_slug, &symbol_factor_plans, symbol_records)
-            })
-            .collect();
-        replay_results.sort_unstable_by(|a, b| a.symbol.cmp(&b.symbol));
 
         let mut total_loaded = 0usize;
         let mut total_calculated = 0u64;
         let mut total_reload = 0u64;
         let mut total_bootstrap_published = 0u64;
-        for symbol_result in replay_results {
+
+        let mut symbol_records_vec: Vec<_> = symbol_records;
+        symbol_records_vec.sort_unstable_by(|a, b| a.symbol.cmp(&b.symbol));
+
+        for sr in symbol_records_vec {
+            let symbol_result =
+                Self::replay_symbol_records(&venue_slug, &symbol_factor_plans, sr, &mut self.publisher);
             total_loaded = total_loaded.saturating_add(symbol_result.loaded);
             total_calculated = total_calculated.saturating_add(symbol_result.calculated);
             total_reload = total_reload.saturating_add(symbol_result.reload);
@@ -913,11 +912,7 @@ impl FusionFactorPubApp {
                 self.symbol_all_ready_seen
                     .insert(symbol_result.symbol.clone());
             }
-            let payload_count = symbol_result.publish_payloads.len() as u64;
-            for payload in &symbol_result.publish_payloads {
-                self.publisher.publish(payload);
-            }
-            total_bootstrap_published = total_bootstrap_published.saturating_add(payload_count);
+            total_bootstrap_published = total_bootstrap_published.saturating_add(symbol_result.bootstrap_published);
             self.symbol_states
                 .insert(symbol_result.symbol.clone(), symbol_result.state);
             info!(
@@ -927,7 +922,7 @@ impl FusionFactorPubApp {
                 symbol_result.loaded,
                 symbol_result.calculated,
                 symbol_result.reload,
-                payload_count,
+                symbol_result.bootstrap_published,
                 total_loaded
             );
         }
@@ -949,6 +944,7 @@ impl FusionFactorPubApp {
         venue_slug: &str,
         symbol_factor_plans: &HashMap<String, SymbolFactorPlan>,
         symbol_records: BootstrapSymbolRecords,
+        publisher: &mut FusionFactorPublisher,
     ) -> BootstrapSymbolReplayResult {
         let BootstrapSymbolRecords {
             symbol,
@@ -959,7 +955,7 @@ impl FusionFactorPubApp {
         let mut calculated = 0u64;
         let mut reload = 0u64;
         let mut all_ready_seen = false;
-        let mut publish_payloads: Vec<Vec<u8>> = Vec::new();
+        let mut bootstrap_published = 0u64;
         let mut interval_loaded = 0u64;
         let mut interval_calculated = 0u64;
         let mut interval_reload = 0u64;
@@ -1011,7 +1007,8 @@ impl FusionFactorPubApp {
                             eval_result.factor_values.clone(),
                         );
                         if let Ok(bytes) = feature_msg.to_bytes() {
-                            publish_payloads.push(bytes.to_vec());
+                            publisher.publish(&bytes);
+                            bootstrap_published = bootstrap_published.saturating_add(1);
                         }
                     } else if eval_result.status == 1 && all_ready_seen {
                         let warming_factors: Vec<&str> = eval_result
@@ -1073,7 +1070,7 @@ impl FusionFactorPubApp {
             reload,
             all_ready_seen,
             state,
-            publish_payloads,
+            bootstrap_published,
         }
     }
 
