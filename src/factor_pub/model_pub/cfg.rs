@@ -121,7 +121,7 @@ fn render_service(template: &str, model_name: &str) -> Result<String> {
 }
 
 fn default_model_manager_request_timeout_ms() -> u64 {
-    5_000
+    120_000
 }
 
 fn default_model_binary_path() -> String {

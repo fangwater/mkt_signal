@@ -870,12 +870,19 @@ fn factor_name_to_index(name: &str) -> Option<u16> {
 }
 
 async fn fetch_symbol_factor_indices(
-    client: &Client,
+    _client: &Client,
     base_url: &str,
     model_name: &str,
     symbol: &str,
     token: Option<&str>,
 ) -> Result<Vec<u16>> {
+    // Use a dedicated short-timeout client — symbol detail is a fast JSON lookup,
+    // unlike model_so which compiles shared libraries and can take minutes.
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .context("build factor-indices client failed")?;
+
     let url = format!(
         "{}/api/models/{}/symbols/{}",
         base_url,
