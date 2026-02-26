@@ -35,7 +35,7 @@ use crate::signal::common::TradingVenue;
 const TRADE_FLOW_MAX_BYTES: usize = 1024;
 const IDLE_SLEEP_MICROS: u64 = 200;
 const STATS_LOG_INTERVAL_SECS: u64 = 60;
-const TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE: usize = 2048;
+const TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE: usize = 8192;
 const TRADE_FLOW_FEATURE_CF_SUFFIX: &str = "trade_flow:feature";
 const ROCKSDB_BOOTSTRAP_LOG_EVERY: usize = 12 * 60 * 4;
 const MAX_SYMBOL_HISTORY: usize = 4096;

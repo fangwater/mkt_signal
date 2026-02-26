@@ -270,7 +270,7 @@ impl ModelPubApp {
             .history_size(128)
             .open_or_create()?;
 
-        let subscriber = service.subscriber_builder().create()?;
+        let subscriber = service.subscriber_builder().buffer_size(8192).create()?;
         info!("Subscribed to feature channel: {}", service_path);
         Ok(subscriber)
     }
