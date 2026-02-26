@@ -29,9 +29,20 @@ struct ModelPubStats {
     publish_fail: u64,
     infer_latency_sum_us: u64,
     infer_latency_max_us: u64,
+    zscore_latency_sum_us: u64,
+    zscore_latency_max_us: u64,
+    predict_latency_sum_us: u64,
+    predict_latency_max_us: u64,
     infer_count: u64,
     cold_start_suppressed: u64,
     reload_only: u64,
+    /// Latest BTC snapshot for heartbeat logging
+    btc_raw_features: Option<Vec<f64>>,
+    btc_zscore: Option<Vec<f64>>,
+    btc_score: Option<f64>,
+    btc_infer_latency_us: Option<u64>,
+    btc_zscore_latency_us: Option<u64>,
+    btc_predict_latency_us: Option<u64>,
 }
 
 struct SymbolNormState {
@@ -345,11 +356,13 @@ impl ModelPubApp {
                 }
 
                 // Compute z-scores
+                let zscore_start = Instant::now();
                 let normalized: Vec<f64> = norm_state
                     .welford_vec
                     .iter()
                     .map(|w| w.zscore_capped(self.zscore_cap).unwrap_or(0.0))
                     .collect();
+                let zscore_us = zscore_start.elapsed().as_micros() as u64;
 
                 // --- inference ---
                 let Some(runtime) = self.models_by_symbol.get(&symbol_key) else {
@@ -369,17 +382,40 @@ impl ModelPubApp {
                 }
 
                 let f32_features: Vec<f32> = normalized.iter().map(|&v| v as f32).collect();
-                let infer_start = Instant::now();
+                let predict_start = Instant::now();
                 let result = runtime.model.predict_one(&f32_features);
-                let elapsed_us = infer_start.elapsed().as_micros() as u64;
+                let predict_us = predict_start.elapsed().as_micros() as u64;
+
+                let elapsed_us = zscore_us + predict_us;
                 self.stats.infer_count += 1;
                 self.stats.infer_latency_sum_us += elapsed_us;
                 if elapsed_us > self.stats.infer_latency_max_us {
                     self.stats.infer_latency_max_us = elapsed_us;
                 }
+                self.stats.zscore_latency_sum_us += zscore_us;
+                if zscore_us > self.stats.zscore_latency_max_us {
+                    self.stats.zscore_latency_max_us = zscore_us;
+                }
+                self.stats.predict_latency_sum_us += predict_us;
+                if predict_us > self.stats.predict_latency_max_us {
+                    self.stats.predict_latency_max_us = predict_us;
+                }
+
+                // Snapshot BTC for heartbeat logging
+                let is_btc = symbol_key.contains("BTC");
+                if is_btc {
+                    self.stats.btc_raw_features = Some(feature.features.clone());
+                    self.stats.btc_zscore = Some(normalized.clone());
+                    self.stats.btc_infer_latency_us = Some(elapsed_us);
+                    self.stats.btc_zscore_latency_us = Some(zscore_us);
+                    self.stats.btc_predict_latency_us = Some(predict_us);
+                }
 
                 match result {
                     Ok(score) => {
+                        if is_btc {
+                            self.stats.btc_score = Some(score);
+                        }
                         self.emit_result(&feature.symbol, feature.ts_ms, score, MODEL_STATUS_OK);
                     }
                     Err(err) => {
@@ -426,6 +462,16 @@ impl ModelPubApp {
         } else {
             0
         };
+        let avg_zscore_us = if self.stats.infer_count > 0 {
+            self.stats.zscore_latency_sum_us / self.stats.infer_count
+        } else {
+            0
+        };
+        let avg_predict_us = if self.stats.infer_count > 0 {
+            self.stats.predict_latency_sum_us / self.stats.infer_count
+        } else {
+            0
+        };
         let norm_symbols = self.norm_states.len();
         let warmed_symbols = self
             .norm_states
@@ -445,17 +491,42 @@ impl ModelPubApp {
         }
 
         info!(
-            "ModelPubApp[{}] recv={} pub={} infer={} lat_avg={}us lat_max={}us warmed={}/{}{}",
+            "ModelPubApp[{}] recv={} pub={} infer={} lat(avg/max): total={}us/{}us zscore={}us/{}us predict={}us/{}us warmed={}/{}{}",
             self.model_name,
             self.stats.recv_total,
             self.stats.publish_ok,
             self.stats.infer_count,
             avg_latency_us,
             self.stats.infer_latency_max_us,
+            avg_zscore_us,
+            self.stats.zscore_latency_max_us,
+            avg_predict_us,
+            self.stats.predict_latency_max_us,
             warmed_symbols,
             norm_symbols,
             extra,
         );
+
+        // BTC heartbeat: raw features, zscore, score, per-call latency breakdown
+        if let (Some(ref raw), Some(ref zscore)) = (&self.stats.btc_raw_features, &self.stats.btc_zscore) {
+            let raw_str: Vec<String> = raw.iter().map(|v| format!("{:.6}", v)).collect();
+            let zscore_str: Vec<String> = zscore.iter().map(|v| format!("{:.4}", v)).collect();
+            let score_str = self.stats.btc_score.map_or("N/A".to_string(), |s| format!("{:.6}", s));
+            let total_ms = self.stats.btc_infer_latency_us.unwrap_or(0) as f64 / 1000.0;
+            let zscore_ms = self.stats.btc_zscore_latency_us.unwrap_or(0) as f64 / 1000.0;
+            let predict_ms = self.stats.btc_predict_latency_us.unwrap_or(0) as f64 / 1000.0;
+            info!(
+                "ModelPubApp[{}] BTC heartbeat: raw=[{}] zscore=[{}] score={} lat: total={:.2}ms zscore={:.2}ms predict={:.2}ms",
+                self.model_name,
+                raw_str.join(", "),
+                zscore_str.join(", "),
+                score_str,
+                total_ms,
+                zscore_ms,
+                predict_ms,
+            );
+        }
+
         self.stats = ModelPubStats::default();
     }
 }
