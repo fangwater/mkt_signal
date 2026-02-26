@@ -60,15 +60,6 @@ mkdir -p "$TARGET_DIR"
 cp "$BIN_PATH" "$TARGET_DIR/$BIN_NAME"
 chmod +x "$TARGET_DIR/$BIN_NAME"
 
-# 部署 libxgboost.so 到同目录
-XGBOOST_SO="$ROOT_DIR/target/release/deps/libxgboost.so"
-if [[ -f "$XGBOOST_SO" ]]; then
-  cp "$XGBOOST_SO" "$TARGET_DIR/"
-  echo "[INFO] 已拷贝 libxgboost.so 到 $TARGET_DIR"
-else
-  echo "[WARN] libxgboost.so 未找到: $XGBOOST_SO" >&2
-fi
-
 mkdir -p "$TARGET_DIR/scripts"
 for script in start_model_pub.sh stop_model_pub.sh; do
   if [[ -f "$ROOT_DIR/scripts/$script" ]]; then
