@@ -22,6 +22,7 @@ impl FusionFactorPublisher {
             .publish_subscribe::<[u8; FUSION_FACTOR_PAYLOAD_MAX_BYTES]>()
             .max_publishers(1)
             .max_subscribers(10)
+            .subscriber_max_buffer_size(8192)
             .history_size(128)
             .open_or_create()?;
 
