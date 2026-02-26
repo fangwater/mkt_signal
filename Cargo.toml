@@ -132,6 +132,10 @@ path = "src/bin/model_pub.rs"
 name = "fusion_factor_pub"
 path = "src/bin/fusion_factor_pub.rs"
 
+[[bin]]
+name = "factor_test"
+path = "src/bin/factor_test.rs"
+
 [dependencies]
 local-ip-address = "0.6"
 serde_yaml = "0.9"
@@ -180,7 +184,7 @@ parking_lot = "0.12"
 crossbeam-channel = "0.5"
 libc = "0.2"
 zmq = "0.10"
-xgb = "3.0.5"
+libloading = "0.8"
 indexmap = "2"
 rayon = "1.10"
 

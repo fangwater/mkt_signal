@@ -70,87 +70,87 @@ const FIELD_NET_BUY_SMALL: usize = 31;
 const FACTOR_160_RANDOM_LEVELS: [usize; 10] = [18, 1, 19, 8, 10, 17, 6, 13, 4, 2];
 
 #[derive(Debug, Clone, Copy)]
-struct DepthLevel {
-    price: f64,
-    amount: f64,
+pub struct DepthLevel {
+    pub price: f64,
+    pub amount: f64,
 }
 
 #[derive(Debug, Clone)]
-struct DepthSnapshot {
-    bids: Vec<DepthLevel>,
-    asks: Vec<DepthLevel>,
+pub struct DepthSnapshot {
+    pub bids: Vec<DepthLevel>,
+    pub asks: Vec<DepthLevel>,
 }
 
 #[derive(Default)]
-struct SymbolCalcState {
-    factor_118_mid_price_diffs: VecDeque<f64>,
-    open: VecDeque<f64>,
-    high: VecDeque<f64>,
-    low: VecDeque<f64>,
-    close: VecDeque<f64>,
-    volume: VecDeque<f64>,
-    amount: VecDeque<f64>,
-    buy_count: VecDeque<f64>,
-    sell_count: VecDeque<f64>,
-    buy_amount: VecDeque<f64>,
-    sell_amount: VecDeque<f64>,
-    buy_volume: VecDeque<f64>,
-    sell_volume: VecDeque<f64>,
-    large_order: VecDeque<f64>,
-    large_buy: VecDeque<f64>,
-    large_sell: VecDeque<f64>,
-    small_order: VecDeque<f64>,
-    small_buy: VecDeque<f64>,
-    small_sell: VecDeque<f64>,
-    vwap: VecDeque<f64>,
-    buy_vwap: VecDeque<f64>,
-    sell_vwap: VecDeque<f64>,
-    net_buy_large: VecDeque<f64>,
-    net_buy_small: VecDeque<f64>,
-    net_buy_amount: VecDeque<f64>,
-    bid0v: VecDeque<f64>,
-    mid_price: VecDeque<f64>,
-    spread: VecDeque<f64>,
-    relative_spread: VecDeque<f64>,
-    bid_vwap20: VecDeque<f64>,
-    total_bid20: VecDeque<f64>,
-    total_ask20: VecDeque<f64>,
-    top10_bid_volume: VecDeque<f64>,
-    top10_ask_volume: VecDeque<f64>,
-    top10_bid_mean: VecDeque<f64>,
-    top10_ask_mean: VecDeque<f64>,
-    bid9v: VecDeque<f64>,
-    ask9v: VecDeque<f64>,
-    mean_bid_vol20: VecDeque<f64>,
-    mean_bid_price20: VecDeque<f64>,
-    avg_ask_price5: VecDeque<f64>,
-    ask_pv15_mean: VecDeque<f64>,
-    bid_pv15_mean: VecDeque<f64>,
-    factor_031_ratio: VecDeque<f64>,
-    factor_119_mid_minus_ask_vwap5: VecDeque<f64>,
-    total_volume20_sum: VecDeque<f64>,
-    factor_152_prev_price_diff10: Option<[f64; 10]>,
-    factor_152_pct_mean: VecDeque<Option<f64>>,
-    ask_vwap20: VecDeque<f64>,
-    ask_vwap_diff_5_20: VecDeque<f64>,
-    ask_mean_volume_20: VecDeque<f64>,
-    ask0v: VecDeque<f64>,
-    factor_128_ask_price_sum: VecDeque<f64>,
-    factor_128_diff_sum: VecDeque<Option<f64>>,
-    factor_128_skew: VecDeque<Option<f64>>,
-    factor_160_prev_ratios: Option<[f64; 10]>,
-    factor_160_pct_change_mean: VecDeque<Option<f64>>,
+pub struct SymbolCalcState {
+    pub factor_118_mid_price_diffs: VecDeque<f64>,
+    pub open: VecDeque<f64>,
+    pub high: VecDeque<f64>,
+    pub low: VecDeque<f64>,
+    pub close: VecDeque<f64>,
+    pub volume: VecDeque<f64>,
+    pub amount: VecDeque<f64>,
+    pub buy_count: VecDeque<f64>,
+    pub sell_count: VecDeque<f64>,
+    pub buy_amount: VecDeque<f64>,
+    pub sell_amount: VecDeque<f64>,
+    pub buy_volume: VecDeque<f64>,
+    pub sell_volume: VecDeque<f64>,
+    pub large_order: VecDeque<f64>,
+    pub large_buy: VecDeque<f64>,
+    pub large_sell: VecDeque<f64>,
+    pub small_order: VecDeque<f64>,
+    pub small_buy: VecDeque<f64>,
+    pub small_sell: VecDeque<f64>,
+    pub vwap: VecDeque<f64>,
+    pub buy_vwap: VecDeque<f64>,
+    pub sell_vwap: VecDeque<f64>,
+    pub net_buy_large: VecDeque<f64>,
+    pub net_buy_small: VecDeque<f64>,
+    pub net_buy_amount: VecDeque<f64>,
+    pub bid0v: VecDeque<f64>,
+    pub mid_price: VecDeque<f64>,
+    pub spread: VecDeque<f64>,
+    pub relative_spread: VecDeque<f64>,
+    pub bid_vwap20: VecDeque<f64>,
+    pub total_bid20: VecDeque<f64>,
+    pub total_ask20: VecDeque<f64>,
+    pub top10_bid_volume: VecDeque<f64>,
+    pub top10_ask_volume: VecDeque<f64>,
+    pub top10_bid_mean: VecDeque<f64>,
+    pub top10_ask_mean: VecDeque<f64>,
+    pub bid9v: VecDeque<f64>,
+    pub ask9v: VecDeque<f64>,
+    pub mean_bid_vol20: VecDeque<f64>,
+    pub mean_bid_price20: VecDeque<f64>,
+    pub avg_ask_price5: VecDeque<f64>,
+    pub ask_pv15_mean: VecDeque<f64>,
+    pub bid_pv15_mean: VecDeque<f64>,
+    pub factor_031_ratio: VecDeque<f64>,
+    pub factor_119_mid_minus_ask_vwap5: VecDeque<f64>,
+    pub total_volume20_sum: VecDeque<f64>,
+    pub factor_152_prev_price_diff10: Option<[f64; 10]>,
+    pub factor_152_pct_mean: VecDeque<Option<f64>>,
+    pub ask_vwap20: VecDeque<f64>,
+    pub ask_vwap_diff_5_20: VecDeque<f64>,
+    pub ask_mean_volume_20: VecDeque<f64>,
+    pub ask0v: VecDeque<f64>,
+    pub factor_128_ask_price_sum: VecDeque<f64>,
+    pub factor_128_diff_sum: VecDeque<Option<f64>>,
+    pub factor_128_skew: VecDeque<Option<f64>>,
+    pub factor_160_prev_ratios: Option<[f64; 10]>,
+    pub factor_160_pct_change_mean: VecDeque<Option<f64>>,
 }
 
 impl SymbolCalcState {
-    fn push_mid_price_diff(&mut self, value: f64) {
+    pub fn push_mid_price_diff(&mut self, value: f64) {
         self.factor_118_mid_price_diffs.push_back(value);
         if self.factor_118_mid_price_diffs.len() > MAX_SYMBOL_HISTORY {
             self.factor_118_mid_price_diffs.pop_front();
         }
     }
 
-    fn push_trade_flow(&mut self, msg: &TradeFlowFeatureMsg) {
+    pub fn push_trade_flow(&mut self, msg: &TradeFlowFeatureMsg) {
         push_with_limit(&mut self.open, msg.values[FIELD_OPEN]);
         push_with_limit(&mut self.high, msg.values[FIELD_HIGH]);
         push_with_limit(&mut self.low, msg.values[FIELD_LOW]);
@@ -177,7 +177,7 @@ impl SymbolCalcState {
         push_with_limit(&mut self.net_buy_amount, msg.values[FIELD_NET_BUY_AMOUNT]);
     }
 
-    fn push_depth_metrics(&mut self, depth: &DepthSnapshot) {
+    pub fn push_depth_metrics(&mut self, depth: &DepthSnapshot) {
         let (bid0p, bid0v) = depth_best_bid(depth);
         let (ask0p, ask0v) = depth_best_ask(depth);
 
@@ -324,10 +324,10 @@ struct SymbolFactorPlan {
 }
 
 #[derive(Debug, Clone)]
-struct FactorBinding {
-    name: String,
-    factor_id: Option<FusionFactorId>,
-    extra_factor_id: Option<ExtraFactorId>,
+pub struct FactorBinding {
+    pub name: String,
+    pub factor_id: Option<FusionFactorId>,
+    pub extra_factor_id: Option<ExtraFactorId>,
 }
 
 #[derive(Default)]
@@ -385,63 +385,63 @@ impl ReplayEvalSummary {
     }
 }
 
-struct SymbolSeries {
-    open: Vec<f64>,
-    high: Vec<f64>,
-    low: Vec<f64>,
-    close: Vec<f64>,
-    volume: Vec<f64>,
-    amount: Vec<f64>,
-    buy_count: Vec<f64>,
-    sell_count: Vec<f64>,
-    buy_amount: Vec<f64>,
-    sell_amount: Vec<f64>,
-    buy_volume: Vec<f64>,
-    sell_volume: Vec<f64>,
-    large_order: Vec<f64>,
-    large_buy: Vec<f64>,
-    large_sell: Vec<f64>,
-    small_order: Vec<f64>,
-    small_buy: Vec<f64>,
-    small_sell: Vec<f64>,
-    vwap: Vec<f64>,
-    buy_vwap: Vec<f64>,
-    sell_vwap: Vec<f64>,
-    net_buy_large: Vec<f64>,
-    net_buy_small: Vec<f64>,
-    net_buy_amount: Vec<f64>,
-    bid0v: Vec<f64>,
-    mid_price: Vec<f64>,
-    spread: Vec<f64>,
-    relative_spread: Vec<f64>,
-    bid_vwap20: Vec<f64>,
-    total_bid20: Vec<f64>,
-    total_ask20: Vec<f64>,
-    top10_bid_volume: Vec<f64>,
-    top10_ask_volume: Vec<f64>,
-    top10_bid_mean: Vec<f64>,
-    top10_ask_mean: Vec<f64>,
-    bid9v: Vec<f64>,
-    ask9v: Vec<f64>,
-    mean_bid_vol20: Vec<f64>,
-    mean_bid_price20: Vec<f64>,
-    avg_ask_price5: Vec<f64>,
-    ask_pv15_mean: Vec<f64>,
-    bid_pv15_mean: Vec<f64>,
-    factor_031_ratio: Vec<f64>,
-    factor_119_mid_minus_ask_vwap5: Vec<f64>,
-    total_volume20_sum: Vec<f64>,
-    factor_152_pct_mean: Vec<Option<f64>>,
-    ask_vwap_diff_5_20: Vec<f64>,
-    ask_mean_volume_20: Vec<f64>,
-    ask0v: Vec<f64>,
-    ask_vwap20: Vec<f64>,
-    factor_128_skew: Vec<Option<f64>>,
-    factor_160_pct_change_mean: Vec<Option<f64>>,
+pub struct SymbolSeries {
+    pub open: Vec<f64>,
+    pub high: Vec<f64>,
+    pub low: Vec<f64>,
+    pub close: Vec<f64>,
+    pub volume: Vec<f64>,
+    pub amount: Vec<f64>,
+    pub buy_count: Vec<f64>,
+    pub sell_count: Vec<f64>,
+    pub buy_amount: Vec<f64>,
+    pub sell_amount: Vec<f64>,
+    pub buy_volume: Vec<f64>,
+    pub sell_volume: Vec<f64>,
+    pub large_order: Vec<f64>,
+    pub large_buy: Vec<f64>,
+    pub large_sell: Vec<f64>,
+    pub small_order: Vec<f64>,
+    pub small_buy: Vec<f64>,
+    pub small_sell: Vec<f64>,
+    pub vwap: Vec<f64>,
+    pub buy_vwap: Vec<f64>,
+    pub sell_vwap: Vec<f64>,
+    pub net_buy_large: Vec<f64>,
+    pub net_buy_small: Vec<f64>,
+    pub net_buy_amount: Vec<f64>,
+    pub bid0v: Vec<f64>,
+    pub mid_price: Vec<f64>,
+    pub spread: Vec<f64>,
+    pub relative_spread: Vec<f64>,
+    pub bid_vwap20: Vec<f64>,
+    pub total_bid20: Vec<f64>,
+    pub total_ask20: Vec<f64>,
+    pub top10_bid_volume: Vec<f64>,
+    pub top10_ask_volume: Vec<f64>,
+    pub top10_bid_mean: Vec<f64>,
+    pub top10_ask_mean: Vec<f64>,
+    pub bid9v: Vec<f64>,
+    pub ask9v: Vec<f64>,
+    pub mean_bid_vol20: Vec<f64>,
+    pub mean_bid_price20: Vec<f64>,
+    pub avg_ask_price5: Vec<f64>,
+    pub ask_pv15_mean: Vec<f64>,
+    pub bid_pv15_mean: Vec<f64>,
+    pub factor_031_ratio: Vec<f64>,
+    pub factor_119_mid_minus_ask_vwap5: Vec<f64>,
+    pub total_volume20_sum: Vec<f64>,
+    pub factor_152_pct_mean: Vec<Option<f64>>,
+    pub ask_vwap_diff_5_20: Vec<f64>,
+    pub ask_mean_volume_20: Vec<f64>,
+    pub ask0v: Vec<f64>,
+    pub ask_vwap20: Vec<f64>,
+    pub factor_128_skew: Vec<Option<f64>>,
+    pub factor_160_pct_change_mean: Vec<Option<f64>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExtraFactorId {
+pub enum ExtraFactorId {
     AvgPrice,
     BuyAvgPrice,
     SellAvgPrice,
@@ -451,7 +451,7 @@ enum ExtraFactorId {
 }
 
 impl ExtraFactorId {
-    fn from_name(name: &str) -> Option<Self> {
+    pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "avg_price" => Some(Self::AvgPrice),
             "buy_avg_price" => Some(Self::BuyAvgPrice),
@@ -1443,7 +1443,7 @@ impl FusionFactorPubApp {
         Some(Self::build_symbol_series_from_state(state))
     }
 
-    fn build_symbol_series_from_state(state: &SymbolCalcState) -> SymbolSeries {
+    pub fn build_symbol_series_from_state(state: &SymbolCalcState) -> SymbolSeries {
         SymbolSeries {
             open: state.open.iter().copied().collect(),
             high: state.high.iter().copied().collect(),
@@ -1504,7 +1504,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_supported_factor(
+    pub fn compute_supported_factor(
         binding: &FactorBinding,
         factor_118_result: Option<(f64, bool, usize)>,
         depth: Option<&DepthSnapshot>,
@@ -2390,7 +2390,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn wrap_factor_value(value: Option<f64>) -> (f64, bool, &'static str) {
+    pub fn wrap_factor_value(value: Option<f64>) -> (f64, bool, &'static str) {
         match value {
             Some(v) if v.is_finite() => (v, true, "ready"),
             Some(v) => (v, false, "invalid_value"),
@@ -5211,32 +5211,32 @@ fn compute_mid_price_minus_bid_vwap(depth: &DepthSnapshot) -> Option<f64> {
     }
 }
 
-fn depth_best_bid(depth: &DepthSnapshot) -> (f64, f64) {
+pub fn depth_best_bid(depth: &DepthSnapshot) -> (f64, f64) {
     match depth.bids.first() {
         Some(level) => (level.price, level.amount),
         None => (f64::NAN, f64::NAN),
     }
 }
 
-fn depth_best_ask(depth: &DepthSnapshot) -> (f64, f64) {
+pub fn depth_best_ask(depth: &DepthSnapshot) -> (f64, f64) {
     match depth.asks.first() {
         Some(level) => (level.price, level.amount),
         None => (f64::NAN, f64::NAN),
     }
 }
 
-fn depth_level_amount(levels: &[DepthLevel], idx: usize) -> f64 {
+pub fn depth_level_amount(levels: &[DepthLevel], idx: usize) -> f64 {
     levels
         .get(idx)
         .map(|level| level.amount)
         .unwrap_or(f64::NAN)
 }
 
-fn depth_level_price(levels: &[DepthLevel], idx: usize) -> f64 {
+pub fn depth_level_price(levels: &[DepthLevel], idx: usize) -> f64 {
     levels.get(idx).map(|level| level.price).unwrap_or(f64::NAN)
 }
 
-fn depth_sum_amount(levels: &[DepthLevel], limit: usize) -> f64 {
+pub fn depth_sum_amount(levels: &[DepthLevel], limit: usize) -> f64 {
     levels
         .iter()
         .take(limit)
@@ -5245,7 +5245,7 @@ fn depth_sum_amount(levels: &[DepthLevel], limit: usize) -> f64 {
         .sum()
 }
 
-fn depth_mean_amount(levels: &[DepthLevel], limit: usize) -> f64 {
+pub fn depth_mean_amount(levels: &[DepthLevel], limit: usize) -> f64 {
     let mut sum = 0.0;
     let mut cnt = 0usize;
     for level in levels.iter().take(limit) {
@@ -5261,7 +5261,7 @@ fn depth_mean_amount(levels: &[DepthLevel], limit: usize) -> f64 {
     }
 }
 
-fn depth_mean_price(levels: &[DepthLevel], limit: usize) -> f64 {
+pub fn depth_mean_price(levels: &[DepthLevel], limit: usize) -> f64 {
     let mut sum = 0.0;
     let mut cnt = 0usize;
     for level in levels.iter().take(limit) {
@@ -5277,7 +5277,7 @@ fn depth_mean_price(levels: &[DepthLevel], limit: usize) -> f64 {
     }
 }
 
-fn depth_mean_pxv(levels: &[DepthLevel], limit: usize) -> f64 {
+pub fn depth_mean_pxv(levels: &[DepthLevel], limit: usize) -> f64 {
     let mut sum = 0.0;
     let mut cnt = 0usize;
     for level in levels.iter().take(limit) {
@@ -5294,7 +5294,7 @@ fn depth_mean_pxv(levels: &[DepthLevel], limit: usize) -> f64 {
     }
 }
 
-fn depth_sum_price(levels: &[DepthLevel], limit: usize) -> f64 {
+pub fn depth_sum_price(levels: &[DepthLevel], limit: usize) -> f64 {
     levels
         .iter()
         .take(limit)
@@ -5303,7 +5303,7 @@ fn depth_sum_price(levels: &[DepthLevel], limit: usize) -> f64 {
         .sum()
 }
 
-fn depth_vwap(levels: &[DepthLevel], limit: usize) -> Option<f64> {
+pub fn depth_vwap(levels: &[DepthLevel], limit: usize) -> Option<f64> {
     let mut sum_pxv = 0.0;
     let mut sum_v = 0.0;
     for level in levels.iter().take(limit) {
@@ -5627,21 +5627,21 @@ fn std_pop(values: &[f64]) -> Option<f64> {
     }
 }
 
-fn push_with_limit(buf: &mut VecDeque<f64>, value: f64) {
+pub fn push_with_limit(buf: &mut VecDeque<f64>, value: f64) {
     buf.push_back(value);
     if buf.len() > MAX_SYMBOL_HISTORY {
         buf.pop_front();
     }
 }
 
-fn push_opt_with_limit(buf: &mut VecDeque<Option<f64>>, value: Option<f64>) {
+pub fn push_opt_with_limit(buf: &mut VecDeque<Option<f64>>, value: Option<f64>) {
     buf.push_back(finite_opt(value));
     if buf.len() > MAX_SYMBOL_HISTORY {
         buf.pop_front();
     }
 }
 
-fn finite_opt(value: Option<f64>) -> Option<f64> {
+pub fn finite_opt(value: Option<f64>) -> Option<f64> {
     match value {
         Some(v) if v.is_finite() => Some(v),
         Some(_) => Some(0.0),

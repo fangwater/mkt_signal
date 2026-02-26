@@ -352,7 +352,7 @@ fn apply_clip(value: f64, factor: &FactorDefinition) -> f64 {
     }
 }
 
-fn compute_factor_value(
+pub fn compute_factor_value(
     factor: &FactorDefinition,
     closes: &VecDeque<f64>,
     highs: &VecDeque<f64>,
@@ -386,7 +386,7 @@ fn compute_factor_value(
     }
 }
 
-fn compute_rl_return_volatility(
+pub fn compute_rl_return_volatility(
     closes: &VecDeque<f64>,
     pct_change_period: usize,
     rolling_window: usize,
@@ -412,7 +412,7 @@ fn compute_rl_return_volatility(
     rolling_std_last(returns, rolling_window)
 }
 
-fn compute_hf_vol_std(closes: &VecDeque<f64>, window: usize) -> Result<Option<f64>> {
+pub fn compute_hf_vol_std(closes: &VecDeque<f64>, window: usize) -> Result<Option<f64>> {
     let required = window + 1;
     if closes.len() < required {
         return Ok(None);
@@ -432,7 +432,7 @@ fn compute_hf_vol_std(closes: &VecDeque<f64>, window: usize) -> Result<Option<f6
     rolling_std_last(returns, window)
 }
 
-fn compute_hf_highlow_range(
+pub fn compute_hf_highlow_range(
     highs: &VecDeque<f64>,
     lows: &VecDeque<f64>,
     window: usize,
@@ -453,7 +453,7 @@ fn compute_hf_highlow_range(
     rolling_mean_last(ranges, window)
 }
 
-fn compute_hf_spread_return(
+pub fn compute_hf_spread_return(
     closes: &VecDeque<f64>,
     return_period: usize,
     ma_window: usize,
@@ -479,7 +479,7 @@ fn compute_hf_spread_return(
     rolling_mean_last(returns, ma_window)
 }
 
-fn compute_hf_count_mean(counts: &VecDeque<f64>, window: usize) -> Result<Option<f64>> {
+pub fn compute_hf_count_mean(counts: &VecDeque<f64>, window: usize) -> Result<Option<f64>> {
     if counts.len() < window {
         return Ok(None);
     }
@@ -490,7 +490,7 @@ fn compute_hf_count_mean(counts: &VecDeque<f64>, window: usize) -> Result<Option
     rolling_mean_last(data, window)
 }
 
-fn compute_hf_vol_abs_pct_by_vol(
+pub fn compute_hf_vol_abs_pct_by_vol(
     closes: &VecDeque<f64>,
     volumes: &VecDeque<f64>,
     window: usize,
@@ -519,7 +519,7 @@ fn compute_hf_vol_abs_pct_by_vol(
     rolling_mean_last(values, window)
 }
 
-fn compute_hf_volume_mean(volumes: &VecDeque<f64>, window: usize) -> Result<Option<f64>> {
+pub fn compute_hf_volume_mean(volumes: &VecDeque<f64>, window: usize) -> Result<Option<f64>> {
     if volumes.len() < window {
         return Ok(None);
     }
@@ -529,7 +529,7 @@ fn compute_hf_volume_mean(volumes: &VecDeque<f64>, window: usize) -> Result<Opti
     rolling_mean_last(data, window)
 }
 
-fn compute_hf_price_volume_corr(
+pub fn compute_hf_price_volume_corr(
     closes: &VecDeque<f64>,
     volumes: &VecDeque<f64>,
     window: usize,
@@ -547,7 +547,7 @@ fn compute_hf_price_volume_corr(
     Ok(value)
 }
 
-fn compute_hf_vol_volume_combined(
+pub fn compute_hf_vol_volume_combined(
     closes: &VecDeque<f64>,
     volumes: &VecDeque<f64>,
     vol_window: usize,
@@ -568,7 +568,7 @@ fn compute_hf_vol_volume_combined(
     }
 }
 
-fn rolling_std_last(values: Vec<Option<f64>>, window: usize) -> Result<Option<f64>> {
+pub fn rolling_std_last(values: Vec<Option<f64>>, window: usize) -> Result<Option<f64>> {
     let series = Series::new("x".into(), values);
     let options = RollingOptionsFixedWindow {
         window_size: window,
@@ -586,7 +586,7 @@ fn rolling_std_last(values: Vec<Option<f64>>, window: usize) -> Result<Option<f6
     Ok(Some(value))
 }
 
-fn rolling_mean_last(values: Vec<Option<f64>>, window: usize) -> Result<Option<f64>> {
+pub fn rolling_mean_last(values: Vec<Option<f64>>, window: usize) -> Result<Option<f64>> {
     let series = Series::new("x".into(), values);
     let options = RollingOptionsFixedWindow {
         window_size: window,
@@ -604,7 +604,7 @@ fn rolling_mean_last(values: Vec<Option<f64>>, window: usize) -> Result<Option<f
     Ok(Some(value))
 }
 
-fn pearson_corr_last_window(xs: &[f64], ys: &[f64]) -> Option<f64> {
+pub fn pearson_corr_last_window(xs: &[f64], ys: &[f64]) -> Option<f64> {
     if xs.len() != ys.len() || xs.is_empty() {
         return None;
     }

@@ -5,6 +5,9 @@ model_manager_request_timeout_ms = 5000
 # Keep empty when auth is disabled.
 model_manager_password = ""
 model_manager_bearer_token = ""
+model_binary_path = "/api/models/{model_name}/model_so/{symbol}"
+model_binary_feature_dim_header = "x-model-feature-dim"
+model_binary_cache_dir = "/tmp/mkt_signal_model_pub"
 
 # {model_name} is substituted from CLI argument at runtime.
 input_service = "fusion_factor/{model_name}"

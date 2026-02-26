@@ -4,14 +4,16 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
-use reqwest::Client;
+use reqwest::{header::HeaderName, Client};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::cfg::ModelPubConfig;
-use super::model::XgbModel;
+use super::model::Tl2cgenModel;
 use super::publisher::ModelPublisher;
 use crate::common::mkt_msg::{FeatureMsg, FeatureStatus, ModelMsg, MODEL_STATUS_OK};
 use crate::common::rolling_welford::RollingWelford;
@@ -35,8 +37,8 @@ struct ModelPubStats {
     predict_latency_max_us: u64,
     dmatrix_latency_sum_us: u64,
     dmatrix_latency_max_us: u64,
-    xgb_predict_latency_sum_us: u64,
-    xgb_predict_latency_max_us: u64,
+    tl2cgen_predict_latency_sum_us: u64,
+    tl2cgen_predict_latency_max_us: u64,
     infer_count: u64,
     cold_start_suppressed: u64,
     reload_only: u64,
@@ -49,12 +51,12 @@ struct SymbolNormState {
 
 struct SymbolModelRuntime {
     feature_dim: usize,
-    model: XgbModel,
+    model: Tl2cgenModel,
 }
 
 struct SymbolModelLoaded {
     symbol: String,
-    model_json_bytes: usize,
+    model_binary_bytes: usize,
     runtime: SymbolModelRuntime,
 }
 
@@ -69,22 +71,8 @@ struct SymbolListItem {
     symbol: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct ModelPayloadResponse {
-    payload: ModelPayloadBody,
-}
-
-#[derive(Debug, Deserialize)]
-struct ModelPayloadBody {
-    model_json: String,
-    metadata: ModelMetadata,
-    #[serde(default)]
-    #[allow(dead_code)]
-    dim_factors: Vec<Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ModelMetadata {
+struct ModelBinaryPayload {
+    model_binary: Vec<u8>,
     feature_dim: usize,
 }
 
@@ -131,7 +119,7 @@ impl ModelPubApp {
             );
         }
 
-        // Warmup: run one dummy predict per symbol to prime XGBoost internals
+        // Warmup: run one dummy predict per symbol to prime tl2cgen shared library path
         let mut warmup_ok = 0usize;
         let mut warmup_fail: Vec<String> = Vec::new();
         for (symbol, runtime) in &models_by_symbol {
@@ -207,7 +195,7 @@ impl ModelPubApp {
             .context("build reqwest client failed")?;
 
         info!(
-            "startup-models: loading model payloads from model_manager base_url={} model_name={}",
+            "startup-models: loading binary model artifacts from model_manager base_url={} model_name={}",
             base_url, model_name
         );
 
@@ -235,32 +223,41 @@ impl ModelPubApp {
         );
 
         let token_owned = token.clone();
+        let config_owned = config.clone();
         let task_stream = stream::iter(symbols.into_iter().map(|symbol| {
             let client = client.clone();
             let base_url = base_url.to_string();
             let model_name = model_name.to_string();
             let token = token_owned.clone();
+            let config = config_owned.clone();
             async move {
-                load_single_symbol_model(&client, &base_url, &model_name, &symbol, token.as_deref())
-                    .await
+                load_single_symbol_model(
+                    &client,
+                    &base_url,
+                    &config,
+                    &model_name,
+                    &symbol,
+                    token.as_deref(),
+                )
+                .await
             }
         }))
         .buffer_unordered(fetch_parallel);
 
         let mut models = HashMap::with_capacity(total);
         let mut completed = 0usize;
-        let mut total_json_bytes = 0usize;
+        let mut total_model_bytes = 0usize;
         futures::pin_mut!(task_stream);
         while let Some(res) = task_stream.next().await {
             let loaded = res?;
             completed += 1;
-            total_json_bytes += loaded.model_json_bytes;
+            total_model_bytes += loaded.model_binary_bytes;
             models.insert(loaded.symbol.clone(), loaded.runtime);
         }
 
         info!(
-            "startup-models-loaded: model_name={} loaded={}/{} total_json_bytes={}",
-            model_name, completed, total, total_json_bytes
+            "startup-models-loaded: model_name={} loaded={}/{} total_model_bytes={}",
+            model_name, completed, total, total_model_bytes
         );
 
         Ok(models)
@@ -413,9 +410,9 @@ impl ModelPubApp {
                         if output.dmatrix_us > self.stats.dmatrix_latency_max_us {
                             self.stats.dmatrix_latency_max_us = output.dmatrix_us;
                         }
-                        self.stats.xgb_predict_latency_sum_us += output.xgb_predict_us;
-                        if output.xgb_predict_us > self.stats.xgb_predict_latency_max_us {
-                            self.stats.xgb_predict_latency_max_us = output.xgb_predict_us;
+                        self.stats.tl2cgen_predict_latency_sum_us += output.tl2cgen_predict_us;
+                        if output.tl2cgen_predict_us > self.stats.tl2cgen_predict_latency_max_us {
+                            self.stats.tl2cgen_predict_latency_max_us = output.tl2cgen_predict_us;
                         }
 
                         if symbol_key.contains("BTC") {
@@ -429,7 +426,7 @@ impl ModelPubApp {
                                 zscore_us,
                                 predict_us,
                                 output.dmatrix_us,
-                                output.xgb_predict_us,
+                                output.tl2cgen_predict_us,
                             );
                         }
 
@@ -499,8 +496,8 @@ impl ModelPubApp {
         } else {
             0
         };
-        let avg_xgb_predict_us = if self.stats.infer_count > 0 {
-            self.stats.xgb_predict_latency_sum_us / self.stats.infer_count
+        let avg_tl2cgen_predict_us = if self.stats.infer_count > 0 {
+            self.stats.tl2cgen_predict_latency_sum_us / self.stats.infer_count
         } else {
             0
         };
@@ -526,7 +523,7 @@ impl ModelPubApp {
         }
 
         info!(
-            "ModelPubApp[{}] recv={} pub={} infer={} lat(avg/max): total={}us/{}us zscore={}us/{}us predict={}us/{}us dmatrix={}us/{}us xgb_predict={}us/{}us warmed={}/{}{}",
+            "ModelPubApp[{}] recv={} pub={} infer={} lat(avg/max): total={}us/{}us zscore={}us/{}us predict={}us/{}us marshal={}us/{}us tl2cgen_predict={}us/{}us warmed={}/{}{}",
             self.model_name,
             self.stats.recv_total,
             self.stats.publish_ok,
@@ -539,8 +536,8 @@ impl ModelPubApp {
             self.stats.predict_latency_max_us,
             avg_dmatrix_us,
             self.stats.dmatrix_latency_max_us,
-            avg_xgb_predict_us,
-            self.stats.xgb_predict_latency_max_us,
+            avg_tl2cgen_predict_us,
+            self.stats.tl2cgen_predict_latency_max_us,
             warmed_symbols,
             norm_symbols,
             extra,
@@ -559,18 +556,21 @@ fn log_btc_heartbeat(
     infer_latency_us: u64,
     zscore_latency_us: u64,
     predict_latency_us: u64,
-    dmatrix_latency_us: u64,
-    xgb_predict_latency_us: u64,
+    marshal_latency_us: u64,
+    tl2cgen_predict_latency_us: u64,
 ) {
     let raw_str: Vec<String> = raw_features.iter().map(|v| format!("{:.6}", v)).collect();
-    let zscore_str: Vec<String> = zscore_features.iter().map(|v| format!("{:.4}", v)).collect();
+    let zscore_str: Vec<String> = zscore_features
+        .iter()
+        .map(|v| format!("{:.4}", v))
+        .collect();
     let total_ms = infer_latency_us as f64 / 1000.0;
     let zscore_ms = zscore_latency_us as f64 / 1000.0;
     let predict_ms = predict_latency_us as f64 / 1000.0;
-    let dmatrix_ms = dmatrix_latency_us as f64 / 1000.0;
-    let xgb_predict_ms = xgb_predict_latency_us as f64 / 1000.0;
+    let marshal_ms = marshal_latency_us as f64 / 1000.0;
+    let tl2cgen_predict_ms = tl2cgen_predict_latency_us as f64 / 1000.0;
     info!(
-        "ModelPubApp[{}] {} heartbeat: raw=[{}] zscore=[{}] score={:.6} lat: total={:.2}ms zscore={:.2}ms predict={:.2}ms dmatrix={:.2}ms xgb_predict={:.2}ms",
+        "ModelPubApp[{}] {} heartbeat: raw=[{}] zscore=[{}] score={:.6} lat: total={:.2}ms zscore={:.2}ms predict={:.2}ms marshal={:.2}ms tl2cgen_predict={:.2}ms",
         model_name,
         symbol,
         raw_str.join(", "),
@@ -579,8 +579,8 @@ fn log_btc_heartbeat(
         total_ms,
         zscore_ms,
         predict_ms,
-        dmatrix_ms,
-        xgb_predict_ms,
+        marshal_ms,
+        tl2cgen_predict_ms,
     );
 }
 
@@ -628,19 +628,24 @@ async fn fetch_model_symbols(
     Ok(out)
 }
 
-async fn fetch_symbol_model_payload(
+async fn fetch_symbol_model_binary(
     client: &Client,
     base_url: &str,
+    config: &ModelPubConfig,
     model_name: &str,
     symbol: &str,
     token: Option<&str>,
-) -> Result<ModelPayloadBody> {
-    let url = format!(
-        "{}/api/models/{}/model/{}",
-        base_url,
-        urlencoding::encode(model_name),
-        urlencoding::encode(symbol)
-    );
+) -> Result<ModelBinaryPayload> {
+    let relative_path = config
+        .render_model_binary_path(model_name, symbol)
+        .with_context(|| {
+            format!(
+                "render model binary path failed: model_name={} symbol={}",
+                model_name, symbol
+            )
+        })?;
+
+    let url = build_model_url(base_url, &relative_path);
 
     let mut req = client.get(&url);
     if let Some(token) = token {
@@ -654,12 +659,29 @@ async fn fetch_symbol_model_payload(
         .error_for_status()
         .with_context(|| format!("GET {} returned error status", url))?;
 
-    let payload: ModelPayloadResponse = resp
-        .json()
-        .await
-        .with_context(|| format!("decode model payload response failed: {}", url))?;
+    let feature_dim_header = parse_feature_dim_header_name(config)?;
+    let feature_dim = parse_feature_dim_value(resp.headers(), &feature_dim_header, &url)?;
+    if feature_dim == 0 {
+        anyhow::bail!(
+            "invalid model feature dim from response header '{}': 0, url={}",
+            feature_dim_header.as_str(),
+            url
+        );
+    }
 
-    Ok(payload.payload)
+    let model_binary = resp
+        .bytes()
+        .await
+        .with_context(|| format!("read binary model response failed: {}", url))?
+        .to_vec();
+    if model_binary.is_empty() {
+        anyhow::bail!("empty binary model payload: {}", url);
+    }
+
+    Ok(ModelBinaryPayload {
+        model_binary,
+        feature_dim,
+    })
 }
 
 async fn authenticate_model_manager(
@@ -731,50 +753,164 @@ fn sanitize_node_suffix(raw: &str) -> String {
 async fn load_single_symbol_model(
     client: &Client,
     base_url: &str,
+    config: &ModelPubConfig,
     model_name: &str,
     symbol: &str,
     token: Option<&str>,
 ) -> Result<SymbolModelLoaded> {
-    let payload = fetch_symbol_model_payload(client, base_url, model_name, symbol, token)
+    let payload = fetch_symbol_model_binary(client, base_url, config, model_name, symbol, token)
         .await
         .with_context(|| {
             format!(
-                "fetch symbol model payload failed: model_name={} symbol={}",
+                "fetch symbol model binary failed: model_name={} symbol={}",
                 model_name, symbol
             )
         })?;
 
-    if payload.model_json.trim().is_empty() {
-        anyhow::bail!(
-            "model payload has empty model_json: model_name={} symbol={}",
-            model_name,
-            symbol
-        );
-    }
-
-    let feature_dim = payload.metadata.feature_dim;
+    let feature_dim = payload.feature_dim;
     if feature_dim == 0 {
         anyhow::bail!(
-            "model payload has invalid feature_dim=0: model_name={} symbol={}",
+            "model binary payload has invalid feature_dim=0: model_name={} symbol={}",
             model_name,
             symbol
         );
     }
 
-    let model_json_bytes = payload.model_json.len();
-    let model = XgbModel::load_from_bytes(payload.model_json.as_bytes(), feature_dim)
+    let model_binary_bytes = payload.model_binary.len();
+    let model_path = persist_model_binary_to_cache(
+        &config.model_binary_cache_dir,
+        model_name,
+        symbol,
+        &payload.model_binary,
+    )
+    .with_context(|| {
+        format!(
+            "persist model binary to cache failed: model_name={} symbol={}",
+            model_name, symbol
+        )
+    })?;
+
+    let model = Tl2cgenModel::load_from_path(&model_path, Some(feature_dim))
         .with_context(|| {
             format!(
-                "load xgboost model from payload failed: model_name={} symbol={} feature_dim={}",
-                model_name, symbol, feature_dim
+                "load tl2cgen model from cache failed: model_name={} symbol={} feature_dim={} path={}",
+                model_name,
+                symbol,
+                feature_dim,
+                model_path.display()
             )
         })?;
 
     Ok(SymbolModelLoaded {
         symbol: symbol.to_string(),
-        model_json_bytes,
+        model_binary_bytes,
         runtime: SymbolModelRuntime { feature_dim, model },
     })
+}
+
+fn build_model_url(base_url: &str, path_or_url: &str) -> String {
+    let trimmed = path_or_url.trim();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return trimmed.to_string();
+    }
+    format!(
+        "{}/{}",
+        base_url.trim_end_matches('/'),
+        trimmed.trim_start_matches('/')
+    )
+}
+
+fn parse_feature_dim_header_name(config: &ModelPubConfig) -> Result<HeaderName> {
+    HeaderName::from_bytes(config.model_binary_feature_dim_header.trim().as_bytes()).with_context(
+        || {
+            format!(
+                "invalid feature dim header name: {}",
+                config.model_binary_feature_dim_header
+            )
+        },
+    )
+}
+
+fn parse_feature_dim_value(
+    headers: &reqwest::header::HeaderMap,
+    header_name: &HeaderName,
+    url: &str,
+) -> Result<usize> {
+    let value = headers.get(header_name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "missing feature dim header '{}' in binary model response: {}",
+            header_name.as_str(),
+            url
+        )
+    })?;
+
+    let raw = value.to_str().with_context(|| {
+        format!(
+            "feature dim header '{}' is not valid utf-8, url={}",
+            header_name.as_str(),
+            url
+        )
+    })?;
+
+    let parsed = raw.trim().parse::<usize>().with_context(|| {
+        format!(
+            "feature dim header '{}' is not a valid usize: value='{}' url={}",
+            header_name.as_str(),
+            raw,
+            url
+        )
+    })?;
+    Ok(parsed)
+}
+
+fn persist_model_binary_to_cache(
+    cache_root: &str,
+    model_name: &str,
+    symbol: &str,
+    model_binary: &[u8],
+) -> Result<PathBuf> {
+    if model_binary.is_empty() {
+        anyhow::bail!("model_binary must not be empty");
+    }
+
+    let root = Path::new(cache_root.trim());
+    if root.as_os_str().is_empty() {
+        anyhow::bail!("model_binary_cache_dir must not be empty");
+    }
+
+    let model_dir = root.join(sanitize_node_suffix(model_name));
+    fs::create_dir_all(&model_dir)
+        .with_context(|| format!("create model cache dir failed: {}", model_dir.display()))?;
+
+    let mut hasher = Sha256::new();
+    hasher.update(model_binary);
+    let digest = format!("{:x}", hasher.finalize());
+    let symbol_safe = sanitize_node_suffix(symbol);
+    let target = model_dir.join(format!("{}.{}.so", symbol_safe, &digest[..16]));
+    if target.exists() {
+        return Ok(target);
+    }
+
+    let tmp = model_dir.join(format!("{}.{}.tmp", symbol_safe, now_millis()));
+    fs::write(&tmp, model_binary)
+        .with_context(|| format!("write tmp model binary failed: {}", tmp.display()))?;
+    match fs::rename(&tmp, &target) {
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = fs::remove_file(&tmp);
+            return Ok(target);
+        }
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!(
+                    "atomic rename model binary failed: from={} to={}",
+                    tmp.display(),
+                    target.display()
+                )
+            });
+        }
+    }
+    Ok(target)
 }
 
 fn now_millis() -> i64 {

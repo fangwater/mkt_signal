@@ -1,6 +1,7 @@
 //! Factor Publisher 模块
 
 pub mod factor_index;
+pub mod factor_test;
 pub mod fusion_factor_pub;
 pub mod kline_factor_pub;
 pub mod model_pub;

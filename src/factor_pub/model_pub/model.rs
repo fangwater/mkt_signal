@@ -1,47 +1,82 @@
 use anyhow::{Context, Result};
+use libloading::{Library, Symbol};
+use std::cell::RefCell;
+use std::path::Path;
 use std::time::Instant;
-use xgb::{Booster, DMatrix};
 
-pub struct XgbModel {
-    booster: Booster,
+#[repr(C)]
+#[derive(Clone, Copy)]
+union Entry {
+    missing: i32,
+    fvalue: f32,
+}
+
+type PredictFn = unsafe extern "C" fn(*mut Entry, i32) -> f32;
+type GetNumFeatureFn = unsafe extern "C" fn() -> usize;
+
+pub struct Tl2cgenModel {
+    _library: Library,
+    predict_fn: PredictFn,
     n_features: usize,
+    input_buffer: RefCell<Vec<Entry>>,
 }
 
 pub struct PredictOneOutput {
     pub score: f64,
     pub dmatrix_us: u64,
-    pub xgb_predict_us: u64,
+    pub tl2cgen_predict_us: u64,
 }
 
-impl XgbModel {
-    pub fn load(model_path: &str, n_features: usize) -> Result<Self> {
+impl Tl2cgenModel {
+    pub fn load_from_path(path: &Path, expected_features: Option<usize>) -> Result<Self> {
+        let library = unsafe { Library::new(path) }
+            .with_context(|| format!("load tl2cgen shared library failed: {}", path.display()))?;
+
+        let predict_fn: PredictFn = unsafe {
+            let symbol: Symbol<PredictFn> = library.get(b"predict").with_context(|| {
+                format!(
+                    "resolve symbol 'predict' failed from shared library: {}",
+                    path.display()
+                )
+            })?;
+            *symbol
+        };
+
+        let get_num_feature_fn: GetNumFeatureFn = unsafe {
+            let symbol: Symbol<GetNumFeatureFn> =
+                library.get(b"get_num_feature").with_context(|| {
+                    format!(
+                        "resolve symbol 'get_num_feature' failed from shared library: {}",
+                        path.display()
+                    )
+                })?;
+            *symbol
+        };
+
+        let n_features = unsafe { get_num_feature_fn() };
         if n_features == 0 {
-            anyhow::bail!("n_features must be > 0");
+            anyhow::bail!(
+                "invalid tl2cgen model feature dim=0 from shared library: {}",
+                path.display()
+            );
+        }
+        if let Some(expected) = expected_features {
+            if expected != n_features {
+                anyhow::bail!(
+                    "feature dim mismatch from tl2cgen shared library: expected={} got={} path={}",
+                    expected,
+                    n_features,
+                    path.display()
+                );
+            }
         }
 
-        let booster = Booster::load(model_path)
-            .with_context(|| format!("load xgboost model failed: {}", model_path))?;
-
+        let input_buffer = vec![Entry { missing: -1 }; n_features];
         Ok(Self {
-            booster,
+            _library: library,
+            predict_fn,
             n_features,
-        })
-    }
-
-    pub fn load_from_bytes(model_bytes: &[u8], n_features: usize) -> Result<Self> {
-        if n_features == 0 {
-            anyhow::bail!("n_features must be > 0");
-        }
-        if model_bytes.is_empty() {
-            anyhow::bail!("model bytes must not be empty");
-        }
-
-        let booster = Booster::load_buffer(model_bytes)
-            .context("load xgboost model from in-memory bytes failed")?;
-
-        Ok(Self {
-            booster,
-            n_features,
+            input_buffer: RefCell::new(input_buffer),
         })
     }
 
@@ -59,26 +94,21 @@ impl XgbModel {
             );
         }
 
-        let dmatrix_start = Instant::now();
-        let dmat = DMatrix::from_dense(features, 1)
-            .context("build xgboost dmatrix from feature vector failed")?;
-        let dmatrix_us = dmatrix_start.elapsed().as_micros() as u64;
+        let marshal_start = Instant::now();
+        let mut buffer = self.input_buffer.borrow_mut();
+        for (i, &value) in features.iter().enumerate() {
+            buffer[i] = Entry { fvalue: value };
+        }
+        let marshal_us = marshal_start.elapsed().as_micros() as u64;
 
-        let xgb_predict_start = Instant::now();
-        let pred = self
-            .booster
-            .predict(&dmat)
-            .context("xgboost predict failed")?;
-        let xgb_predict_us = xgb_predict_start.elapsed().as_micros() as u64;
-
-        let Some(score) = pred.first() else {
-            anyhow::bail!("xgboost predict returned empty result");
-        };
+        let predict_start = Instant::now();
+        let score = unsafe { (self.predict_fn)(buffer.as_mut_ptr(), 0) };
+        let predict_us = predict_start.elapsed().as_micros() as u64;
 
         Ok(PredictOneOutput {
-            score: *score as f64,
-            dmatrix_us,
-            xgb_predict_us,
+            score: score as f64,
+            dmatrix_us: marshal_us,
+            tl2cgen_predict_us: predict_us,
         })
     }
 }
