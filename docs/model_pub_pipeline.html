@@ -144,20 +144,20 @@ h2 { font-size:1.3rem; margin:48px 0 20px; color:var(--accent); border-bottom:1p
     <div class="desc">
       ① Z-score 归一化 (Welford 滚动统计, 窗口=17280≈24h, 3σ clipping)<br>
       ② 冷启动抑制 (&lt;1000 样本不推理)<br>
-      ③ tl2cgen 推理 (per-symbol compiled model .so)
+      ③ ONNX 推理 (per-symbol ONNX model)
     </div>
     <div class="ipc">→ model_output/{venue}/model_A</div>
   </div>
   <div class="stage">
     <span class="tag tag-per-model">Per-Model</span>
     <div class="name" style="font-size:.95rem;">model_pub<br><span style="color:var(--accent2);font-size:.8rem">model_B</span></div>
-    <div class="desc">同左：Z-score → 冷启动 → tl2cgen</div>
+    <div class="desc">同左：Z-score → 冷启动 → ONNX</div>
     <div class="ipc">→ model_output/{venue}/model_B</div>
   </div>
   <div class="stage">
     <span class="tag tag-per-model">Per-Model</span>
     <div class="name" style="font-size:.95rem;">model_pub<br><span style="color:var(--accent2);font-size:.8rem">model_C</span></div>
-    <div class="desc">同左：Z-score → 冷启动 → tl2cgen</div>
+    <div class="desc">同左：Z-score → 冷启动 → ONNX</div>
     <div class="ipc">→ model_output/{venue}/model_C</div>
   </div>
 </div>

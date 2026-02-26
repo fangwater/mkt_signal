@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::cfg::ModelPubConfig;
-use super::model::Tl2cgenModel;
+use super::model::OnnxModel;
 use super::publisher::ModelPublisher;
 use crate::common::mkt_msg::{FeatureMsg, FeatureStatus, ModelMsg, MODEL_STATUS_OK};
 use crate::common::rolling_welford::RollingWelford;
@@ -37,10 +37,10 @@ struct ModelPubStats {
     zscore_latency_max_us: u64,
     predict_latency_sum_us: u64,
     predict_latency_max_us: u64,
-    dmatrix_latency_sum_us: u64,
-    dmatrix_latency_max_us: u64,
-    tl2cgen_predict_latency_sum_us: u64,
-    tl2cgen_predict_latency_max_us: u64,
+    marshal_latency_sum_us: u64,
+    marshal_latency_max_us: u64,
+    onnx_predict_latency_sum_us: u64,
+    onnx_predict_latency_max_us: u64,
     infer_count: u64,
     cold_start_suppressed: u64,
     reload_only: u64,
@@ -53,13 +53,13 @@ struct SymbolNormState {
 
 struct SymbolModelRuntime {
     feature_dim: usize,
-    model: Tl2cgenModel,
+    model: OnnxModel,
     factor_indices: Vec<u16>,
 }
 
 struct SymbolModelLoaded {
     symbol: String,
-    model_binary_bytes: usize,
+    model_onnx_bytes: usize,
     runtime: SymbolModelRuntime,
 }
 
@@ -74,8 +74,8 @@ struct SymbolListItem {
     symbol: String,
 }
 
-struct ModelBinaryPayload {
-    model_binary: Vec<u8>,
+struct ModelOnnxPayload {
+    model_onnx: Vec<u8>,
     feature_dim: usize,
 }
 
@@ -128,7 +128,7 @@ impl ModelPubApp {
             );
         }
 
-        // Warmup: run one dummy predict per symbol to prime tl2cgen shared library path
+        // Warmup one dummy predict per symbol to catch ONNX/runtime issues early.
         let mut warmup_ok = 0usize;
         let mut warmup_fail: Vec<String> = Vec::new();
         for (symbol, runtime) in &models_by_symbol {
@@ -204,7 +204,7 @@ impl ModelPubApp {
             .context("build reqwest client failed")?;
 
         info!(
-            "startup-models: loading binary model artifacts from model_manager base_url={} model_name={}",
+            "startup-models: loading ONNX model artifacts from model_manager base_url={} model_name={}",
             base_url, model_name
         );
 
@@ -260,7 +260,7 @@ impl ModelPubApp {
         while let Some(res) = task_stream.next().await {
             let loaded = res?;
             completed += 1;
-            total_model_bytes += loaded.model_binary_bytes;
+            total_model_bytes += loaded.model_onnx_bytes;
             models.insert(loaded.symbol.clone(), loaded.runtime);
         }
 
@@ -416,13 +416,13 @@ impl ModelPubApp {
                         if predict_us > self.stats.predict_latency_max_us {
                             self.stats.predict_latency_max_us = predict_us;
                         }
-                        self.stats.dmatrix_latency_sum_us += output.dmatrix_us;
-                        if output.dmatrix_us > self.stats.dmatrix_latency_max_us {
-                            self.stats.dmatrix_latency_max_us = output.dmatrix_us;
+                        self.stats.marshal_latency_sum_us += output.marshal_us;
+                        if output.marshal_us > self.stats.marshal_latency_max_us {
+                            self.stats.marshal_latency_max_us = output.marshal_us;
                         }
-                        self.stats.tl2cgen_predict_latency_sum_us += output.tl2cgen_predict_us;
-                        if output.tl2cgen_predict_us > self.stats.tl2cgen_predict_latency_max_us {
-                            self.stats.tl2cgen_predict_latency_max_us = output.tl2cgen_predict_us;
+                        self.stats.onnx_predict_latency_sum_us += output.onnx_predict_us;
+                        if output.onnx_predict_us > self.stats.onnx_predict_latency_max_us {
+                            self.stats.onnx_predict_latency_max_us = output.onnx_predict_us;
                         }
 
                         if symbol_key.contains("BTC") {
@@ -435,8 +435,8 @@ impl ModelPubApp {
                                 elapsed_us,
                                 zscore_us,
                                 predict_us,
-                                output.dmatrix_us,
-                                output.tl2cgen_predict_us,
+                                output.marshal_us,
+                                output.onnx_predict_us,
                             );
                         }
 
@@ -520,13 +520,13 @@ impl ModelPubApp {
         } else {
             0
         };
-        let avg_dmatrix_us = if self.stats.infer_count > 0 {
-            self.stats.dmatrix_latency_sum_us / self.stats.infer_count
+        let avg_marshal_us = if self.stats.infer_count > 0 {
+            self.stats.marshal_latency_sum_us / self.stats.infer_count
         } else {
             0
         };
-        let avg_tl2cgen_predict_us = if self.stats.infer_count > 0 {
-            self.stats.tl2cgen_predict_latency_sum_us / self.stats.infer_count
+        let avg_onnx_predict_us = if self.stats.infer_count > 0 {
+            self.stats.onnx_predict_latency_sum_us / self.stats.infer_count
         } else {
             0
         };
@@ -552,7 +552,7 @@ impl ModelPubApp {
         }
 
         info!(
-            "ModelPubApp[{}] recv={} pub={} infer={} lat(avg/max): total={}us/{}us zscore={}us/{}us predict={}us/{}us marshal={}us/{}us tl2cgen_predict={}us/{}us warmed={}/{}{}",
+            "ModelPubApp[{}] recv={} pub={} infer={} lat(avg/max): total={}us/{}us zscore={}us/{}us predict={}us/{}us marshal={}us/{}us onnx_predict={}us/{}us warmed={}/{}{}",
             self.model_name,
             self.stats.recv_total,
             self.stats.publish_ok,
@@ -563,10 +563,10 @@ impl ModelPubApp {
             self.stats.zscore_latency_max_us,
             avg_predict_us,
             self.stats.predict_latency_max_us,
-            avg_dmatrix_us,
-            self.stats.dmatrix_latency_max_us,
-            avg_tl2cgen_predict_us,
-            self.stats.tl2cgen_predict_latency_max_us,
+            avg_marshal_us,
+            self.stats.marshal_latency_max_us,
+            avg_onnx_predict_us,
+            self.stats.onnx_predict_latency_max_us,
             warmed_symbols,
             norm_symbols,
             extra,
@@ -586,7 +586,7 @@ fn log_btc_heartbeat(
     zscore_latency_us: u64,
     predict_latency_us: u64,
     marshal_latency_us: u64,
-    tl2cgen_predict_latency_us: u64,
+    onnx_predict_latency_us: u64,
 ) {
     let raw_str: Vec<String> = raw_features.iter().map(|v| format!("{:.6}", v)).collect();
     let zscore_str: Vec<String> = zscore_features
@@ -597,9 +597,9 @@ fn log_btc_heartbeat(
     let zscore_ms = zscore_latency_us as f64 / 1000.0;
     let predict_ms = predict_latency_us as f64 / 1000.0;
     let marshal_ms = marshal_latency_us as f64 / 1000.0;
-    let tl2cgen_predict_ms = tl2cgen_predict_latency_us as f64 / 1000.0;
+    let onnx_predict_ms = onnx_predict_latency_us as f64 / 1000.0;
     info!(
-        "ModelPubApp[{}] {} heartbeat: raw=[{}] zscore=[{}] score={:.6} lat: total={:.2}ms zscore={:.2}ms predict={:.2}ms marshal={:.2}ms tl2cgen_predict={:.2}ms",
+        "ModelPubApp[{}] {} heartbeat: raw=[{}] zscore=[{}] score={:.6} lat: total={:.2}ms zscore={:.2}ms predict={:.2}ms marshal={:.2}ms onnx_predict={:.2}ms",
         model_name,
         symbol,
         raw_str.join(", "),
@@ -609,7 +609,7 @@ fn log_btc_heartbeat(
         zscore_ms,
         predict_ms,
         marshal_ms,
-        tl2cgen_predict_ms,
+        onnx_predict_ms,
     );
 }
 
@@ -657,19 +657,19 @@ async fn fetch_model_symbols(
     Ok(out)
 }
 
-async fn fetch_symbol_model_binary(
+async fn fetch_symbol_model_onnx(
     client: &Client,
     base_url: &str,
     config: &ModelPubConfig,
     model_name: &str,
     symbol: &str,
     token: Option<&str>,
-) -> Result<ModelBinaryPayload> {
+) -> Result<ModelOnnxPayload> {
     let relative_path = config
-        .render_model_binary_path(model_name, symbol)
+        .render_model_onnx_path(model_name, symbol)
         .with_context(|| {
             format!(
-                "render model binary path failed: model_name={} symbol={}",
+                "render model ONNX artifact path failed: model_name={} symbol={}",
                 model_name, symbol
             )
         })?;
@@ -698,17 +698,17 @@ async fn fetch_symbol_model_binary(
         );
     }
 
-    let model_binary = resp
+    let model_onnx = resp
         .bytes()
         .await
-        .with_context(|| format!("read binary model response failed: {}", url))?
+        .with_context(|| format!("read ONNX model response failed: {}", url))?
         .to_vec();
-    if model_binary.is_empty() {
-        anyhow::bail!("empty binary model payload: {}", url);
+    if model_onnx.is_empty() {
+        anyhow::bail!("empty ONNX model payload: {}", url);
     }
 
-    Ok(ModelBinaryPayload {
-        model_binary,
+    Ok(ModelOnnxPayload {
+        model_onnx,
         feature_dim,
     })
 }
@@ -787,11 +787,11 @@ async fn load_single_symbol_model(
     symbol: &str,
     token: Option<&str>,
 ) -> Result<SymbolModelLoaded> {
-    let payload = fetch_symbol_model_binary(client, base_url, config, model_name, symbol, token)
+    let payload = fetch_symbol_model_onnx(client, base_url, config, model_name, symbol, token)
         .await
         .with_context(|| {
             format!(
-                "fetch symbol model binary failed: model_name={} symbol={}",
+                "fetch symbol model ONNX artifact failed: model_name={} symbol={}",
                 model_name, symbol
             )
         })?;
@@ -799,30 +799,30 @@ async fn load_single_symbol_model(
     let feature_dim = payload.feature_dim;
     if feature_dim == 0 {
         anyhow::bail!(
-            "model binary payload has invalid feature_dim=0: model_name={} symbol={}",
+            "model ONNX artifact payload has invalid feature_dim=0: model_name={} symbol={}",
             model_name,
             symbol
         );
     }
 
-    let model_binary_bytes = payload.model_binary.len();
-    let model_path = persist_model_binary_to_cache(
-        &config.model_binary_cache_dir,
+    let model_onnx_bytes = payload.model_onnx.len();
+    let model_path = persist_model_onnx_to_cache(
+        &config.model_onnx_cache_dir,
         model_name,
         symbol,
-        &payload.model_binary,
+        &payload.model_onnx,
     )
     .with_context(|| {
         format!(
-            "persist model binary to cache failed: model_name={} symbol={}",
+            "persist model ONNX artifact to cache failed: model_name={} symbol={}",
             model_name, symbol
         )
     })?;
 
-    let model = Tl2cgenModel::load_from_path(&model_path, Some(feature_dim))
+    let model = OnnxModel::load_from_path(&model_path, Some(feature_dim))
         .with_context(|| {
             format!(
-                "load tl2cgen model from cache failed: model_name={} symbol={} feature_dim={} path={}",
+                "load ONNX model from cache failed: model_name={} symbol={} feature_dim={} path={}",
                 model_name,
                 symbol,
                 feature_dim,
@@ -848,7 +848,7 @@ async fn load_single_symbol_model(
 
     Ok(SymbolModelLoaded {
         symbol: symbol.to_string(),
-        model_binary_bytes,
+        model_onnx_bytes,
         runtime: SymbolModelRuntime {
             feature_dim,
             model,
@@ -876,8 +876,7 @@ async fn fetch_symbol_factor_indices(
     symbol: &str,
     token: Option<&str>,
 ) -> Result<Vec<u16>> {
-    // Use a dedicated short-timeout client — symbol detail is a fast JSON lookup,
-    // unlike model_so which compiles shared libraries and can take minutes.
+    // Use a dedicated short-timeout client — symbol detail is a fast JSON lookup.
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -937,11 +936,11 @@ fn build_model_url(base_url: &str, path_or_url: &str) -> String {
 }
 
 fn parse_feature_dim_header_name(config: &ModelPubConfig) -> Result<HeaderName> {
-    HeaderName::from_bytes(config.model_binary_feature_dim_header.trim().as_bytes()).with_context(
+    HeaderName::from_bytes(config.model_onnx_feature_dim_header.trim().as_bytes()).with_context(
         || {
             format!(
                 "invalid feature dim header name: {}",
-                config.model_binary_feature_dim_header
+                config.model_onnx_feature_dim_header
             )
         },
     )
@@ -954,7 +953,7 @@ fn parse_feature_dim_value(
 ) -> Result<usize> {
     let value = headers.get(header_name).ok_or_else(|| {
         anyhow::anyhow!(
-            "missing feature dim header '{}' in binary model response: {}",
+            "missing feature dim header '{}' in ONNX model response: {}",
             header_name.as_str(),
             url
         )
@@ -979,19 +978,19 @@ fn parse_feature_dim_value(
     Ok(parsed)
 }
 
-fn persist_model_binary_to_cache(
+fn persist_model_onnx_to_cache(
     cache_root: &str,
     model_name: &str,
     symbol: &str,
-    model_binary: &[u8],
+    model_onnx: &[u8],
 ) -> Result<PathBuf> {
-    if model_binary.is_empty() {
-        anyhow::bail!("model_binary must not be empty");
+    if model_onnx.is_empty() {
+        anyhow::bail!("model_onnx must not be empty");
     }
 
     let root = Path::new(cache_root.trim());
     if root.as_os_str().is_empty() {
-        anyhow::bail!("model_binary_cache_dir must not be empty");
+        anyhow::bail!("model_onnx_cache_dir must not be empty");
     }
 
     let model_dir = root.join(sanitize_node_suffix(model_name));
@@ -999,17 +998,17 @@ fn persist_model_binary_to_cache(
         .with_context(|| format!("create model cache dir failed: {}", model_dir.display()))?;
 
     let mut hasher = Sha256::new();
-    hasher.update(model_binary);
+    hasher.update(model_onnx);
     let digest = format!("{:x}", hasher.finalize());
     let symbol_safe = sanitize_node_suffix(symbol);
-    let target = model_dir.join(format!("{}.{}.so", symbol_safe, &digest[..16]));
+    let target = model_dir.join(format!("{}.{}.onnx", symbol_safe, &digest[..16]));
     if target.exists() {
         return Ok(target);
     }
 
     let tmp = model_dir.join(format!("{}.{}.tmp", symbol_safe, now_millis()));
-    fs::write(&tmp, model_binary)
-        .with_context(|| format!("write tmp model binary failed: {}", tmp.display()))?;
+    fs::write(&tmp, model_onnx)
+        .with_context(|| format!("write tmp model ONNX artifact failed: {}", tmp.display()))?;
     match fs::rename(&tmp, &target) {
         Ok(_) => {}
         Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -1019,7 +1018,7 @@ fn persist_model_binary_to_cache(
         Err(err) => {
             return Err(err).with_context(|| {
                 format!(
-                    "atomic rename model binary failed: from={} to={}",
+                    "atomic rename model ONNX artifact failed: from={} to={}",
                     tmp.display(),
                     target.display()
                 )

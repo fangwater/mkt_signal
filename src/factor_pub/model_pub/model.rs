@@ -1,83 +1,50 @@
 use anyhow::{Context, Result};
-use libloading::{Library, Symbol};
-use std::cell::RefCell;
 use std::path::Path;
 use std::time::Instant;
+use tract_onnx::prelude::*;
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-union Entry {
-    missing: i32,
-    fvalue: f32,
-}
+type OnnxRunnable = SimplePlan<TypedFact, Box<dyn TypedOp>, TypedModel>;
 
-type PredictFn = unsafe extern "C" fn(*mut Entry, i32) -> f32;
-type GetNumFeatureFn = unsafe extern "C" fn() -> usize;
-
-pub struct Tl2cgenModel {
-    _library: Library,
-    predict_fn: PredictFn,
+pub struct OnnxModel {
+    model: OnnxRunnable,
     n_features: usize,
-    input_buffer: RefCell<Vec<Entry>>,
 }
 
 pub struct PredictOneOutput {
     pub score: f64,
-    pub dmatrix_us: u64,
-    pub tl2cgen_predict_us: u64,
+    pub marshal_us: u64,
+    pub onnx_predict_us: u64,
 }
 
-impl Tl2cgenModel {
+impl OnnxModel {
     pub fn load_from_path(path: &Path, expected_features: Option<usize>) -> Result<Self> {
-        let library = unsafe { Library::new(path) }
-            .with_context(|| format!("load tl2cgen shared library failed: {}", path.display()))?;
-
-        let predict_fn: PredictFn = unsafe {
-            let symbol: Symbol<PredictFn> = library.get(b"predict").with_context(|| {
-                format!(
-                    "resolve symbol 'predict' failed from shared library: {}",
-                    path.display()
-                )
-            })?;
-            *symbol
-        };
-
-        let get_num_feature_fn: GetNumFeatureFn = unsafe {
-            let symbol: Symbol<GetNumFeatureFn> =
-                library.get(b"get_num_feature").with_context(|| {
-                    format!(
-                        "resolve symbol 'get_num_feature' failed from shared library: {}",
-                        path.display()
-                    )
-                })?;
-            *symbol
-        };
-
-        let n_features = unsafe { get_num_feature_fn() };
-        if n_features == 0 {
-            anyhow::bail!(
-                "invalid tl2cgen model feature dim=0 from shared library: {}",
+        let n_features = expected_features.ok_or_else(|| {
+            anyhow::anyhow!(
+                "expected feature dim is required for ONNX model loading: path={}",
                 path.display()
-            );
-        }
-        if let Some(expected) = expected_features {
-            if expected != n_features {
-                anyhow::bail!(
-                    "feature dim mismatch from tl2cgen shared library: expected={} got={} path={}",
-                    expected,
-                    n_features,
-                    path.display()
-                );
-            }
+            )
+        })?;
+        if n_features == 0 {
+            anyhow::bail!("invalid ONNX model feature dim=0: {}", path.display());
         }
 
-        let input_buffer = vec![Entry { missing: -1 }; n_features];
-        Ok(Self {
-            _library: library,
-            predict_fn,
-            n_features,
-            input_buffer: RefCell::new(input_buffer),
-        })
+        let model = tract_onnx::onnx()
+            .model_for_path(path)
+            .with_context(|| format!("load ONNX model failed: {}", path.display()))?
+            .with_input_fact(0, f32::fact([1, n_features]).into())
+            .with_context(|| {
+                format!(
+                    "set ONNX input fact failed: path={} n_features={}",
+                    path.display(),
+                    n_features
+                )
+            })?
+            .into_optimized()
+            .with_context(|| format!("optimize ONNX model failed: {}", path.display()))?
+            .into_runnable()
+            .with_context(|| format!("build runnable ONNX model failed: {}", path.display()))?;
+
+        Ok(Self { model, n_features })
     }
 
     pub fn predict_one(&self, features: &[f32]) -> Result<f64> {
@@ -95,20 +62,47 @@ impl Tl2cgenModel {
         }
 
         let marshal_start = Instant::now();
-        let mut buffer = self.input_buffer.borrow_mut();
-        for (i, &value) in features.iter().enumerate() {
-            buffer[i] = Entry { fvalue: value };
-        }
+        let input = tract_ndarray::Array2::<f32>::from_shape_vec((1, self.n_features), features.to_vec())
+            .context("build ONNX input tensor failed")?;
+        let input_tensor: Tensor = input.into_tensor();
         let marshal_us = marshal_start.elapsed().as_micros() as u64;
 
         let predict_start = Instant::now();
-        let score = unsafe { (self.predict_fn)(buffer.as_mut_ptr(), 0) };
-        let predict_us = predict_start.elapsed().as_micros() as u64;
+        let outputs = self
+            .model
+            .run(tvec!(input_tensor.into()))
+            .context("run ONNX model failed")?;
+        let onnx_predict_us = predict_start.elapsed().as_micros() as u64;
+
+        let first = outputs
+            .get(0)
+            .ok_or_else(|| anyhow::anyhow!("ONNX model output is empty"))?;
+        let score = extract_first_scalar(first).context("extract ONNX score failed")?;
+        if !score.is_finite() {
+            anyhow::bail!("ONNX output is non-finite: {}", score);
+        }
 
         Ok(PredictOneOutput {
-            score: score as f64,
-            dmatrix_us: marshal_us,
-            tl2cgen_predict_us: predict_us,
+            score,
+            marshal_us,
+            onnx_predict_us,
         })
     }
+}
+
+fn extract_first_scalar(value: &TValue) -> Result<f64> {
+    if let Ok(view) = value.to_array_view::<f32>() {
+        if let Some(v) = view.iter().next() {
+            return Ok(*v as f64);
+        }
+    }
+    if let Ok(view) = value.to_array_view::<f64>() {
+        if let Some(v) = view.iter().next() {
+            return Ok(*v);
+        }
+    }
+    anyhow::bail!(
+        "unsupported ONNX output tensor type: {:?}",
+        value.datum_type()
+    );
 }
