@@ -1007,7 +1007,7 @@ impl FusionFactorPubApp {
                         let feature_msg = FeatureMsg::create(
                             symbol.clone(),
                             ts_ms,
-                            eval_result.status,
+                            FeatureStatus::Reload as u8,
                             eval_result.factor_values.clone(),
                         );
                         if let Ok(bytes) = feature_msg.to_bytes() {
