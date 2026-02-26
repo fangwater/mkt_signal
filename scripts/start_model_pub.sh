@@ -96,7 +96,8 @@ cat >"$cfg_file" <<JSON
       "args": ["${json_model}"],
       "cwd": "${json_base}",
       "env": {
-        "RUST_LOG": "${json_rust_log}"
+        "RUST_LOG": "${json_rust_log}",
+        "LD_LIBRARY_PATH": "${json_base}"
       }
     }
   ]
