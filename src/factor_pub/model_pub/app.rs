@@ -46,8 +46,6 @@ struct SymbolModelRuntime {
 
 struct SymbolModelLoaded {
     symbol: String,
-    feature_dim: usize,
-    factor_count: usize,
     model_json_bytes: usize,
     runtime: SymbolModelRuntime,
 }
@@ -125,18 +123,31 @@ impl ModelPubApp {
         }
 
         // Warmup: run one dummy predict per symbol to prime XGBoost internals
+        let mut warmup_ok = 0usize;
+        let mut warmup_fail: Vec<String> = Vec::new();
         for (symbol, runtime) in &models_by_symbol {
             let dummy = vec![0.0f32; runtime.feature_dim];
             match runtime.model.predict_one(&dummy) {
-                Ok(_) => info!(
-                    "warmup predict ok: model_name={} symbol={}",
-                    model_name, symbol
-                ),
-                Err(e) => warn!(
-                    "warmup predict failed: model_name={} symbol={} err={}",
-                    model_name, symbol, e
-                ),
+                Ok(_) => warmup_ok += 1,
+                Err(e) => {
+                    warn!(
+                        "warmup predict failed: model_name={} symbol={} err={}",
+                        model_name, symbol, e
+                    );
+                    warmup_fail.push(symbol.clone());
+                }
             }
+        }
+        if warmup_fail.is_empty() {
+            info!(
+                "warmup predict done: model_name={} all {}/{} ok",
+                model_name, warmup_ok, models_by_symbol.len()
+            );
+        } else {
+            warn!(
+                "warmup predict done: model_name={} ok={} failed={} failed_symbols={:?}",
+                model_name, warmup_ok, warmup_fail.len(), warmup_fail
+            );
         }
 
         let subscriber = Self::create_subscriber(&model_name, &input_service)?;
@@ -224,22 +235,19 @@ impl ModelPubApp {
 
         let mut models = HashMap::with_capacity(total);
         let mut completed = 0usize;
+        let mut total_json_bytes = 0usize;
         futures::pin_mut!(task_stream);
         while let Some(res) = task_stream.next().await {
             let loaded = res?;
             completed += 1;
-            info!(
-                "startup-model-loaded: model_name={} symbol={} feature_dim={} factor_count={} model_json_bytes={} progress={}/{}",
-                model_name,
-                loaded.symbol,
-                loaded.feature_dim,
-                loaded.factor_count,
-                loaded.model_json_bytes,
-                completed,
-                total
-            );
+            total_json_bytes += loaded.model_json_bytes;
             models.insert(loaded.symbol.clone(), loaded.runtime);
         }
+
+        info!(
+            "startup-models-loaded: model_name={} loaded={}/{} total_json_bytes={}",
+            model_name, completed, total, total_json_bytes
+        );
 
         Ok(models)
     }
@@ -256,7 +264,10 @@ impl ModelPubApp {
         let service = node
             .service_builder(&ServiceName::new(service_path)?)
             .publish_subscribe::<[u8; INPUT_MAX_BYTES]>()
-            .open()?;
+            .max_publishers(1)
+            .max_subscribers(10)
+            .history_size(128)
+            .open_or_create()?;
 
         let subscriber = service.subscriber_builder().create()?;
         info!("Subscribed to feature channel: {}", service_path);
@@ -618,7 +629,6 @@ async fn load_single_symbol_model(
         );
     }
 
-    let factor_count = payload.dim_factors.len();
     let model_json_bytes = payload.model_json.len();
     let model = XgbModel::load_from_bytes(payload.model_json.as_bytes(), feature_dim)
         .with_context(|| {
@@ -630,8 +640,6 @@ async fn load_single_symbol_model(
 
     Ok(SymbolModelLoaded {
         symbol: symbol.to_string(),
-        feature_dim,
-        factor_count,
         model_json_bytes,
         runtime: SymbolModelRuntime { feature_dim, model },
     })
