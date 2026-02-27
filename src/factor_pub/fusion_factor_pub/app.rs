@@ -27,6 +27,7 @@ use super::window_primitives::{
 };
 use crate::common::mkt_msg::{FeatureMsg, FeatureStatus};
 use crate::common::msg_parser::parse_trade_flow_feature;
+use crate::common::rolling_welford::RollingWelfordCovariance;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::trade_flow_feature_msg::{
     TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM, TRADE_FLOW_FEATURE_MSG_TYPE,
@@ -44,6 +45,9 @@ const MAX_DEPTH_LEVELS_CACHE: usize = 20;
 const APPENDED_DEPTH_VALUES: usize = MAX_DEPTH_LEVELS_CACHE * 4;
 const FACTOR_118_WINDOW: usize = 120;
 const FACTOR_118_VWAP_LEVELS: usize = 5;
+const ROLLING_CORR_CLOSE_VOLUME_14_WINDOW: usize = 14;
+const ROLLING_CORR_OPEN_VOLUME_300_WINDOW: usize = 300;
+const ROLLING_CORR_MID_MIDVOL_300_WINDOW: usize = 300;
 const FIELD_OPEN: usize = 0;
 const FIELD_HIGH: usize = 1;
 const FIELD_LOW: usize = 2;
@@ -141,6 +145,29 @@ pub struct SymbolCalcState {
     pub factor_128_skew: VecDeque<Option<f64>>,
     pub factor_160_prev_ratios: Option<[f64; 10]>,
     pub factor_160_pct_change_mean: VecDeque<Option<f64>>,
+    pub corr_close_volume_14_last: Option<f64>,
+    pub corr_open_volume_300_last: Option<f64>,
+    pub corr_mid_midvol_300_last: Option<f64>,
+}
+
+struct SymbolRollingStats {
+    corr_close_volume_14: RollingWelfordCovariance,
+    corr_open_volume_300: RollingWelfordCovariance,
+    corr_mid_midvol_300: RollingWelfordCovariance,
+}
+
+impl Default for SymbolRollingStats {
+    fn default() -> Self {
+        Self {
+            corr_close_volume_14: RollingWelfordCovariance::new(
+                ROLLING_CORR_CLOSE_VOLUME_14_WINDOW,
+            ),
+            corr_open_volume_300: RollingWelfordCovariance::new(
+                ROLLING_CORR_OPEN_VOLUME_300_WINDOW,
+            ),
+            corr_mid_midvol_300: RollingWelfordCovariance::new(ROLLING_CORR_MID_MIDVOL_300_WINDOW),
+        }
+    }
 }
 
 impl SymbolCalcState {
@@ -363,6 +390,7 @@ struct BootstrapSymbolReplayResult {
     reload: u64,
     all_ready_seen: bool,
     state: SymbolCalcState,
+    rolling_stats: SymbolRollingStats,
     bootstrap_published: u64,
 }
 
@@ -439,6 +467,9 @@ pub struct SymbolSeries<'a> {
     pub ask_vwap20: SplitSlice<'a, f64>,
     pub factor_128_skew: SplitSlice<'a, Option<f64>>,
     pub factor_160_pct_change_mean: SplitSlice<'a, Option<f64>>,
+    pub corr_close_volume_14_last: Option<f64>,
+    pub corr_open_volume_300_last: Option<f64>,
+    pub corr_mid_midvol_300_last: Option<f64>,
 }
 
 #[derive(Clone, Copy)]
@@ -597,6 +628,7 @@ pub struct FusionFactorPubApp {
     symbol_all_ready_seen: HashSet<String>,
     symbol_factor_plans: HashMap<String, SymbolFactorPlan>,
     symbol_states: HashMap<String, SymbolCalcState>,
+    symbol_rolling_stats: HashMap<String, SymbolRollingStats>,
     depth_attached_count: u64,
     trade_flow_raw_count: u64,
     trade_flow_count: u64,
@@ -680,6 +712,7 @@ impl FusionFactorPubApp {
             symbol_all_ready_seen: HashSet::new(),
             symbol_factor_plans,
             symbol_states: HashMap::new(),
+            symbol_rolling_stats: HashMap::new(),
             depth_attached_count: 0,
             trade_flow_raw_count: 0,
             trade_flow_count: 0,
@@ -1034,25 +1067,35 @@ impl FusionFactorPubApp {
                 sr,
                 &mut self.publisher,
             );
-            total_loaded = total_loaded.saturating_add(symbol_result.loaded);
-            total_calculated = total_calculated.saturating_add(symbol_result.calculated);
-            total_reload = total_reload.saturating_add(symbol_result.reload);
-            if symbol_result.all_ready_seen {
-                self.symbol_all_ready_seen
-                    .insert(symbol_result.symbol.clone());
+            let BootstrapSymbolReplayResult {
+                symbol,
+                loaded,
+                calculated,
+                reload,
+                all_ready_seen,
+                state,
+                rolling_stats,
+                bootstrap_published,
+            } = symbol_result;
+            total_loaded = total_loaded.saturating_add(loaded);
+            total_calculated = total_calculated.saturating_add(calculated);
+            total_reload = total_reload.saturating_add(reload);
+            if all_ready_seen {
+                self.symbol_all_ready_seen.insert(symbol.clone());
             }
             total_bootstrap_published =
-                total_bootstrap_published.saturating_add(symbol_result.bootstrap_published);
-            self.symbol_states
-                .insert(symbol_result.symbol.clone(), symbol_result.state);
+                total_bootstrap_published.saturating_add(bootstrap_published);
+            self.symbol_states.insert(symbol.clone(), state);
+            self.symbol_rolling_stats
+                .insert(symbol.clone(), rolling_stats);
             info!(
                 "FusionFactorPubApp[{}] rocksdb bootstrap symbol done: symbol={} loaded={} calculated={} reload={} published={} total_loaded={}",
                 self.venue_slug,
-                symbol_result.symbol,
-                symbol_result.loaded,
-                symbol_result.calculated,
-                symbol_result.reload,
-                symbol_result.bootstrap_published,
+                symbol,
+                loaded,
+                calculated,
+                reload,
+                bootstrap_published,
                 total_loaded
             );
         }
@@ -1091,6 +1134,7 @@ impl FusionFactorPubApp {
         let mut interval_reload = 0u64;
         let mut interval_warming_up = 0u64;
         let mut interval_other_status = 0u64;
+        let mut rolling_stats = SymbolRollingStats::default();
         let plan = symbol_factor_plans.get(&symbol);
         let needs_factor_118 = plan
             .map(|plan| {
@@ -1111,6 +1155,7 @@ impl FusionFactorPubApp {
             if let Some(depth) = depth_opt {
                 state.push_depth_metrics(depth);
             }
+            Self::update_symbol_rolling_stats(&mut state, &mut rolling_stats, msg, depth_opt);
             let latest_eval = match plan {
                 Some(plan) => {
                     let factor_118_result = if needs_factor_118 {
@@ -1200,6 +1245,7 @@ impl FusionFactorPubApp {
             reload,
             all_ready_seen,
             state,
+            rolling_stats,
             bootstrap_published,
         }
     }
@@ -1249,6 +1295,31 @@ impl FusionFactorPubApp {
             }
         }
         corrected
+    }
+
+    fn update_symbol_rolling_stats(
+        state: &mut SymbolCalcState,
+        rolling: &mut SymbolRollingStats,
+        msg: &TradeFlowFeatureMsg,
+        depth: Option<&DepthSnapshot>,
+    ) {
+        let open = msg.values[FIELD_OPEN];
+        let close = msg.values[FIELD_CLOSE];
+        let volume = msg.values[FIELD_VOLUME];
+
+        rolling.corr_open_volume_300.push(open, volume);
+        rolling.corr_close_volume_14.push(close, volume);
+        state.corr_open_volume_300_last = finite_opt(rolling.corr_open_volume_300.corr());
+        state.corr_close_volume_14_last = finite_opt(rolling.corr_close_volume_14.corr());
+
+        if let Some(depth) = depth {
+            let (bid0p, bid0v) = depth_best_bid(depth);
+            let (ask0p, ask0v) = depth_best_ask(depth);
+            let mid = (ask0p + bid0p) / 2.0;
+            let mid_vol = (bid0v + ask0v) / 2.0;
+            rolling.corr_mid_midvol_300.push(mid, mid_vol);
+            state.corr_mid_midvol_300_last = finite_opt(rolling.corr_mid_midvol_300.corr());
+        }
     }
 
     fn on_trade_flow(
@@ -1309,11 +1380,15 @@ impl FusionFactorPubApp {
         let depth_snapshot = parse_embedded_depth(&msg);
         let depth_opt = depth_snapshot.as_ref();
         {
-            let state = self.symbol_states.entry(symbol.clone()).or_default();
+            let (symbol_states, symbol_rolling_stats) =
+                (&mut self.symbol_states, &mut self.symbol_rolling_stats);
+            let state = symbol_states.entry(symbol.clone()).or_default();
+            let rolling = symbol_rolling_stats.entry(symbol.clone()).or_default();
             state.push_trade_flow(&msg);
             if let Some(depth) = depth_opt {
                 state.push_depth_metrics(depth);
             }
+            Self::update_symbol_rolling_stats(state, rolling, &msg, depth_opt);
         }
 
         if emit_output {
@@ -1640,6 +1715,9 @@ impl FusionFactorPubApp {
             factor_160_pct_change_mean: SplitSlice::from_parts(
                 state.factor_160_pct_change_mean.as_slices(),
             ),
+            corr_close_volume_14_last: state.corr_close_volume_14_last,
+            corr_open_volume_300_last: state.corr_open_volume_300_last,
+            corr_mid_midvol_300_last: state.corr_mid_midvol_300_last,
         }
     }
 
@@ -3204,6 +3282,9 @@ impl FusionFactorPubApp {
         if n < 300 {
             return None;
         }
+        if let Some(cached) = finite_opt(series.corr_mid_midvol_300_last) {
+            return Some(cached);
+        }
         let mid_vol: Vec<f64> = (0..n)
             .map(|i| (series.bid0v[i] + series.ask0v[i]) / 2.0)
             .collect();
@@ -3858,9 +3939,14 @@ impl FusionFactorPubApp {
     }
 
     fn compute_baseline_079(series: &SymbolSeries<'_>) -> Option<f64> {
-        rolling_corr_last(&series.close, &series.volume, 14, 1)
-            .ok()
-            .flatten()
+        if series.close.len().min(series.volume.len()) < 14 {
+            return None;
+        }
+        finite_opt(series.corr_close_volume_14_last).or_else(|| {
+            rolling_corr_last(&series.close, &series.volume, 14, 1)
+                .ok()
+                .flatten()
+        })
     }
 
     fn compute_baseline_100(series: &SymbolSeries<'_>) -> Option<f64> {
@@ -4825,10 +4911,12 @@ impl FusionFactorPubApp {
         if n < 100 {
             return None;
         }
-        let window = n.min(300);
-        rolling_corr_last(&series.open, &series.volume, window, 1)
-            .ok()
-            .flatten()
+        finite_opt(series.corr_open_volume_300_last).or_else(|| {
+            let window = n.min(300);
+            rolling_corr_last(&series.open, &series.volume, window, 1)
+                .ok()
+                .flatten()
+        })
     }
 
     fn compute_td_ti_034(series: &SymbolSeries<'_>) -> Option<f64> {

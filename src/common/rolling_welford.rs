@@ -150,9 +150,185 @@ impl RollingWelford {
     }
 }
 
+/// Online bivariate Welford accumulator for covariance/correlation.
+/// Uses a single pass and is numerically stable for long windows.
+pub struct WelfordCovariance {
+    n: usize,
+    mean_x: f64,
+    mean_y: f64,
+    m2_x: f64,
+    m2_y: f64,
+    c2_xy: f64,
+}
+
+impl WelfordCovariance {
+    pub fn new() -> Self {
+        Self {
+            n: 0,
+            mean_x: 0.0,
+            mean_y: 0.0,
+            m2_x: 0.0,
+            m2_y: 0.0,
+            c2_xy: 0.0,
+        }
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.n
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+
+    #[inline]
+    pub fn reset(&mut self) {
+        self.n = 0;
+        self.mean_x = 0.0;
+        self.mean_y = 0.0;
+        self.m2_x = 0.0;
+        self.m2_y = 0.0;
+        self.c2_xy = 0.0;
+    }
+
+    #[inline]
+    pub fn push(&mut self, x: f64, y: f64) {
+        self.n += 1;
+        let n = self.n as f64;
+
+        let dx = x - self.mean_x;
+        self.mean_x += dx / n;
+        let dy = y - self.mean_y;
+        self.mean_y += dy / n;
+
+        self.m2_x += dx * (x - self.mean_x);
+        self.m2_y += dy * (y - self.mean_y);
+        self.c2_xy += dx * (y - self.mean_y);
+    }
+
+    #[inline]
+    pub fn remove(&mut self, x: f64, y: f64) {
+        if self.n <= 1 {
+            self.reset();
+            return;
+        }
+
+        let n = self.n as f64;
+        let dx = x - self.mean_x;
+        let dy = y - self.mean_y;
+
+        let next_mean_x = self.mean_x - dx / (n - 1.0);
+        let next_mean_y = self.mean_y - dy / (n - 1.0);
+
+        self.m2_x -= dx * (x - next_mean_x);
+        self.m2_y -= dy * (y - next_mean_y);
+        self.c2_xy -= dx * (y - next_mean_y);
+
+        self.mean_x = next_mean_x;
+        self.mean_y = next_mean_y;
+        self.n -= 1;
+
+        // Guard against tiny negative drift from floating-point arithmetic.
+        if self.m2_x < 0.0 {
+            self.m2_x = 0.0;
+        }
+        if self.m2_y < 0.0 {
+            self.m2_y = 0.0;
+        }
+    }
+
+    #[inline]
+    pub fn corr(&self) -> Option<f64> {
+        if self.n < 2 {
+            return None;
+        }
+        let denom = self.m2_x.sqrt() * self.m2_y.sqrt();
+        if denom.abs() <= 1e-12 {
+            return None;
+        }
+        Some(self.c2_xy / denom)
+    }
+}
+
+/// Fixed-window rolling correlation built on top of Welford covariance with remove support.
+pub struct RollingWelfordCovariance {
+    buf: VecDeque<(f64, f64, bool)>,
+    capacity: usize,
+    invalid_count: usize,
+    stats: WelfordCovariance,
+}
+
+impl RollingWelfordCovariance {
+    pub fn new(capacity: usize) -> Self {
+        assert!(capacity > 0, "capacity must be positive");
+        Self {
+            buf: VecDeque::with_capacity(capacity),
+            capacity,
+            invalid_count: 0,
+            stats: WelfordCovariance::new(),
+        }
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.buf.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
+    #[inline]
+    pub fn reset(&mut self) {
+        self.buf.clear();
+        self.invalid_count = 0;
+        self.stats.reset();
+    }
+
+    #[inline]
+    pub fn push(&mut self, x: f64, y: f64) {
+        if self.buf.len() == self.capacity {
+            if let Some((ox, oy, finite)) = self.buf.pop_front() {
+                if finite {
+                    self.stats.remove(ox, oy);
+                } else {
+                    self.invalid_count = self.invalid_count.saturating_sub(1);
+                }
+            }
+        }
+
+        let finite = x.is_finite() && y.is_finite();
+        if finite {
+            self.stats.push(x, y);
+        } else {
+            self.invalid_count += 1;
+        }
+        self.buf.push_back((x, y, finite));
+    }
+
+    /// Correlation under fusion-factor semantics:
+    /// - fewer than 2 samples => None
+    /// - any non-finite pair in window => Some(0.0)
+    /// - degenerate variance => Some(0.0)
+    #[inline]
+    pub fn corr(&self) -> Option<f64> {
+        if self.buf.len() < 2 {
+            return None;
+        }
+        if self.invalid_count > 0 {
+            return Some(0.0);
+        }
+        self.stats.corr().or(Some(0.0))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
 
     fn naive_mean(v: &[f64]) -> f64 {
         v.iter().sum::<f64>() / v.len() as f64
@@ -221,5 +397,102 @@ mod tests {
         // last value is 99, mean ~49.5, std ~29.01
         assert!(z > 0.0);
         assert!((z - (99.0 - rw.mean()) / rw.std()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn welford_covariance_corr_works() {
+        let mut stats = WelfordCovariance::new();
+        for i in 1..=10 {
+            stats.push(i as f64, (i * 3) as f64);
+        }
+        let corr = stats.corr().expect("corr should exist");
+        assert!((corr - 1.0).abs() < 1e-12);
+
+        stats.reset();
+        for i in 1..=10 {
+            stats.push(i as f64, -(i as f64));
+        }
+        let corr = stats.corr().expect("corr should exist");
+        assert!((corr + 1.0).abs() < 1e-12);
+    }
+
+    fn naive_corr_like_fusion(window: &VecDeque<(f64, f64)>) -> Option<f64> {
+        if window.len() < 2 {
+            return None;
+        }
+        if window.iter().any(|(x, y)| !x.is_finite() || !y.is_finite()) {
+            return Some(0.0);
+        }
+
+        let n = window.len() as f64;
+        let sum_x = window.iter().map(|(x, _)| *x).sum::<f64>();
+        let sum_y = window.iter().map(|(_, y)| *y).sum::<f64>();
+        let sum_xx = window.iter().map(|(x, _)| x * x).sum::<f64>();
+        let sum_yy = window.iter().map(|(_, y)| y * y).sum::<f64>();
+        let sum_xy = window.iter().map(|(x, y)| x * y).sum::<f64>();
+
+        let cov = sum_xy - (sum_x * sum_y) / n;
+        let var_x = sum_xx - (sum_x * sum_x) / n;
+        let var_y = sum_yy - (sum_y * sum_y) / n;
+        if var_x.abs() <= 1e-12 || var_y.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        let out = cov / (var_x.sqrt() * var_y.sqrt());
+        if out.is_finite() {
+            Some(out)
+        } else {
+            Some(0.0)
+        }
+    }
+
+    #[test]
+    fn rolling_welford_covariance_matches_naive() {
+        let capacity = 64usize;
+        let mut rolling = RollingWelfordCovariance::new(capacity);
+        let mut naive: VecDeque<(f64, f64)> = VecDeque::with_capacity(capacity);
+
+        let mut seed = 0x1234_5678_9abc_def0u64;
+        let mut next = || {
+            // Simple deterministic LCG for repeatable tests.
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let u = (seed >> 11) as f64 / ((1u64 << 53) as f64);
+            2.0 * u - 1.0
+        };
+
+        for i in 0..5000 {
+            let mut x = next() * 1000.0 + i as f64 * 1e-3;
+            let mut y = next() * 1000.0 - i as f64 * 1e-3;
+            if i % 127 == 0 {
+                x = f64::NAN;
+            }
+            if i % 193 == 0 {
+                y = f64::INFINITY;
+            }
+
+            rolling.push(x, y);
+            if naive.len() == capacity {
+                naive.pop_front();
+            }
+            naive.push_back((x, y));
+
+            let got = rolling.corr();
+            let expected = naive_corr_like_fusion(&naive);
+            match (got, expected) {
+                (None, None) => {}
+                (Some(a), Some(b)) => {
+                    assert!(
+                        (a - b).abs() < 1e-7,
+                        "corr mismatch at i={}: got={} expected={}",
+                        i,
+                        a,
+                        b
+                    );
+                }
+                _ => panic!(
+                    "option mismatch at i={}: got={:?} expected={:?}",
+                    i, got, expected
+                ),
+            }
+        }
     }
 }

@@ -17,3 +17,4 @@ pub mod tick_math;
 pub mod time_util;
 pub mod trade_error_code;
 pub mod trade_flow_feature_msg;
+pub mod window_primitives;
