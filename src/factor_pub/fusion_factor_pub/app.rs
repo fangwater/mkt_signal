@@ -385,59 +385,59 @@ impl ReplayEvalSummary {
     }
 }
 
-pub struct SymbolSeries {
-    pub open: Vec<f64>,
-    pub high: Vec<f64>,
-    pub low: Vec<f64>,
-    pub close: Vec<f64>,
-    pub volume: Vec<f64>,
-    pub amount: Vec<f64>,
-    pub buy_count: Vec<f64>,
-    pub sell_count: Vec<f64>,
-    pub buy_amount: Vec<f64>,
-    pub sell_amount: Vec<f64>,
-    pub buy_volume: Vec<f64>,
-    pub sell_volume: Vec<f64>,
-    pub large_order: Vec<f64>,
-    pub large_buy: Vec<f64>,
-    pub large_sell: Vec<f64>,
-    pub small_order: Vec<f64>,
-    pub small_buy: Vec<f64>,
-    pub small_sell: Vec<f64>,
-    pub vwap: Vec<f64>,
-    pub buy_vwap: Vec<f64>,
-    pub sell_vwap: Vec<f64>,
-    pub net_buy_large: Vec<f64>,
-    pub net_buy_small: Vec<f64>,
-    pub net_buy_amount: Vec<f64>,
-    pub bid0v: Vec<f64>,
-    pub mid_price: Vec<f64>,
-    pub spread: Vec<f64>,
-    pub relative_spread: Vec<f64>,
-    pub bid_vwap20: Vec<f64>,
-    pub total_bid20: Vec<f64>,
-    pub total_ask20: Vec<f64>,
-    pub top10_bid_volume: Vec<f64>,
-    pub top10_ask_volume: Vec<f64>,
-    pub top10_bid_mean: Vec<f64>,
-    pub top10_ask_mean: Vec<f64>,
-    pub bid9v: Vec<f64>,
-    pub ask9v: Vec<f64>,
-    pub mean_bid_vol20: Vec<f64>,
-    pub mean_bid_price20: Vec<f64>,
-    pub avg_ask_price5: Vec<f64>,
-    pub ask_pv15_mean: Vec<f64>,
-    pub bid_pv15_mean: Vec<f64>,
-    pub factor_031_ratio: Vec<f64>,
-    pub factor_119_mid_minus_ask_vwap5: Vec<f64>,
-    pub total_volume20_sum: Vec<f64>,
-    pub factor_152_pct_mean: Vec<Option<f64>>,
-    pub ask_vwap_diff_5_20: Vec<f64>,
-    pub ask_mean_volume_20: Vec<f64>,
-    pub ask0v: Vec<f64>,
-    pub ask_vwap20: Vec<f64>,
-    pub factor_128_skew: Vec<Option<f64>>,
-    pub factor_160_pct_change_mean: Vec<Option<f64>>,
+pub struct SymbolSeries<'a> {
+    pub open: &'a [f64],
+    pub high: &'a [f64],
+    pub low: &'a [f64],
+    pub close: &'a [f64],
+    pub volume: &'a [f64],
+    pub amount: &'a [f64],
+    pub buy_count: &'a [f64],
+    pub sell_count: &'a [f64],
+    pub buy_amount: &'a [f64],
+    pub sell_amount: &'a [f64],
+    pub buy_volume: &'a [f64],
+    pub sell_volume: &'a [f64],
+    pub large_order: &'a [f64],
+    pub large_buy: &'a [f64],
+    pub large_sell: &'a [f64],
+    pub small_order: &'a [f64],
+    pub small_buy: &'a [f64],
+    pub small_sell: &'a [f64],
+    pub vwap: &'a [f64],
+    pub buy_vwap: &'a [f64],
+    pub sell_vwap: &'a [f64],
+    pub net_buy_large: &'a [f64],
+    pub net_buy_small: &'a [f64],
+    pub net_buy_amount: &'a [f64],
+    pub bid0v: &'a [f64],
+    pub mid_price: &'a [f64],
+    pub spread: &'a [f64],
+    pub relative_spread: &'a [f64],
+    pub bid_vwap20: &'a [f64],
+    pub total_bid20: &'a [f64],
+    pub total_ask20: &'a [f64],
+    pub top10_bid_volume: &'a [f64],
+    pub top10_ask_volume: &'a [f64],
+    pub top10_bid_mean: &'a [f64],
+    pub top10_ask_mean: &'a [f64],
+    pub bid9v: &'a [f64],
+    pub ask9v: &'a [f64],
+    pub mean_bid_vol20: &'a [f64],
+    pub mean_bid_price20: &'a [f64],
+    pub avg_ask_price5: &'a [f64],
+    pub ask_pv15_mean: &'a [f64],
+    pub bid_pv15_mean: &'a [f64],
+    pub factor_031_ratio: &'a [f64],
+    pub factor_119_mid_minus_ask_vwap5: &'a [f64],
+    pub total_volume20_sum: &'a [f64],
+    pub factor_152_pct_mean: &'a [Option<f64>],
+    pub ask_vwap_diff_5_20: &'a [f64],
+    pub ask_mean_volume_20: &'a [f64],
+    pub ask0v: &'a [f64],
+    pub ask_vwap20: &'a [f64],
+    pub factor_128_skew: &'a [Option<f64>],
+    pub factor_160_pct_change_mean: &'a [Option<f64>],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1033,7 +1033,7 @@ impl FusionFactorPubApp {
                     } else {
                         None
                     };
-                    let series = Self::build_symbol_series_from_state(&state);
+                    let series = Self::build_symbol_series_from_state(&mut state);
                     let eval_result = Self::evaluate_ordered_factors_with_plan(
                         plan,
                         factor_118_result,
@@ -1349,13 +1349,16 @@ impl FusionFactorPubApp {
         } else {
             None
         };
-        let series = self.build_symbol_series(symbol);
+        let series = {
+            let state = self.symbol_states.get_mut(symbol)?;
+            Self::build_symbol_series_from_state(state)
+        };
         let plan = self.symbol_factor_plans.get(symbol)?;
         Some(Self::evaluate_ordered_factors_with_plan(
             plan,
             factor_118_result,
             depth,
-            series.as_ref(),
+            Some(&series),
         ))
     }
 
@@ -1363,7 +1366,7 @@ impl FusionFactorPubApp {
         plan: &SymbolFactorPlan,
         factor_118_result: Option<(f64, bool, usize)>,
         depth: Option<&DepthSnapshot>,
-        series: Option<&SymbolSeries>,
+        series: Option<&SymbolSeries<'_>>,
     ) -> OrderedEvalResult {
         let mut result = OrderedEvalResult {
             stats: OrderedEvalStats::default(),
@@ -1492,69 +1495,60 @@ impl FusionFactorPubApp {
         );
     }
 
-    fn build_symbol_series(&self, symbol: &str) -> Option<SymbolSeries> {
-        let state = self.symbol_states.get(symbol)?;
-        Some(Self::build_symbol_series_from_state(state))
-    }
-
-    pub fn build_symbol_series_from_state(state: &SymbolCalcState) -> SymbolSeries {
+    pub fn build_symbol_series_from_state(state: &mut SymbolCalcState) -> SymbolSeries<'_> {
         SymbolSeries {
-            open: state.open.iter().copied().collect(),
-            high: state.high.iter().copied().collect(),
-            low: state.low.iter().copied().collect(),
-            close: state.close.iter().copied().collect(),
-            volume: state.volume.iter().copied().collect(),
-            amount: state.amount.iter().copied().collect(),
-            buy_count: state.buy_count.iter().copied().collect(),
-            sell_count: state.sell_count.iter().copied().collect(),
-            buy_amount: state.buy_amount.iter().copied().collect(),
-            sell_amount: state.sell_amount.iter().copied().collect(),
-            buy_volume: state.buy_volume.iter().copied().collect(),
-            sell_volume: state.sell_volume.iter().copied().collect(),
-            large_order: state.large_order.iter().copied().collect(),
-            large_buy: state.large_buy.iter().copied().collect(),
-            large_sell: state.large_sell.iter().copied().collect(),
-            small_order: state.small_order.iter().copied().collect(),
-            small_buy: state.small_buy.iter().copied().collect(),
-            small_sell: state.small_sell.iter().copied().collect(),
-            vwap: state.vwap.iter().copied().collect(),
-            buy_vwap: state.buy_vwap.iter().copied().collect(),
-            sell_vwap: state.sell_vwap.iter().copied().collect(),
-            net_buy_large: state.net_buy_large.iter().copied().collect(),
-            net_buy_small: state.net_buy_small.iter().copied().collect(),
-            net_buy_amount: state.net_buy_amount.iter().copied().collect(),
-            bid0v: state.bid0v.iter().copied().collect(),
-            mid_price: state.mid_price.iter().copied().collect(),
-            spread: state.spread.iter().copied().collect(),
-            relative_spread: state.relative_spread.iter().copied().collect(),
-            bid_vwap20: state.bid_vwap20.iter().copied().collect(),
-            total_bid20: state.total_bid20.iter().copied().collect(),
-            total_ask20: state.total_ask20.iter().copied().collect(),
-            top10_bid_volume: state.top10_bid_volume.iter().copied().collect(),
-            top10_ask_volume: state.top10_ask_volume.iter().copied().collect(),
-            top10_bid_mean: state.top10_bid_mean.iter().copied().collect(),
-            top10_ask_mean: state.top10_ask_mean.iter().copied().collect(),
-            bid9v: state.bid9v.iter().copied().collect(),
-            ask9v: state.ask9v.iter().copied().collect(),
-            mean_bid_vol20: state.mean_bid_vol20.iter().copied().collect(),
-            mean_bid_price20: state.mean_bid_price20.iter().copied().collect(),
-            avg_ask_price5: state.avg_ask_price5.iter().copied().collect(),
-            ask_pv15_mean: state.ask_pv15_mean.iter().copied().collect(),
-            bid_pv15_mean: state.bid_pv15_mean.iter().copied().collect(),
-            factor_031_ratio: state.factor_031_ratio.iter().copied().collect(),
-            factor_119_mid_minus_ask_vwap5: state
-                .factor_119_mid_minus_ask_vwap5
-                .iter()
-                .copied()
-                .collect(),
-            total_volume20_sum: state.total_volume20_sum.iter().copied().collect(),
-            factor_152_pct_mean: state.factor_152_pct_mean.iter().copied().collect(),
-            ask_vwap_diff_5_20: state.ask_vwap_diff_5_20.iter().copied().collect(),
-            ask_mean_volume_20: state.ask_mean_volume_20.iter().copied().collect(),
-            ask0v: state.ask0v.iter().copied().collect(),
-            ask_vwap20: state.ask_vwap20.iter().copied().collect(),
-            factor_128_skew: state.factor_128_skew.iter().copied().collect(),
-            factor_160_pct_change_mean: state.factor_160_pct_change_mean.iter().copied().collect(),
+            open: state.open.make_contiguous(),
+            high: state.high.make_contiguous(),
+            low: state.low.make_contiguous(),
+            close: state.close.make_contiguous(),
+            volume: state.volume.make_contiguous(),
+            amount: state.amount.make_contiguous(),
+            buy_count: state.buy_count.make_contiguous(),
+            sell_count: state.sell_count.make_contiguous(),
+            buy_amount: state.buy_amount.make_contiguous(),
+            sell_amount: state.sell_amount.make_contiguous(),
+            buy_volume: state.buy_volume.make_contiguous(),
+            sell_volume: state.sell_volume.make_contiguous(),
+            large_order: state.large_order.make_contiguous(),
+            large_buy: state.large_buy.make_contiguous(),
+            large_sell: state.large_sell.make_contiguous(),
+            small_order: state.small_order.make_contiguous(),
+            small_buy: state.small_buy.make_contiguous(),
+            small_sell: state.small_sell.make_contiguous(),
+            vwap: state.vwap.make_contiguous(),
+            buy_vwap: state.buy_vwap.make_contiguous(),
+            sell_vwap: state.sell_vwap.make_contiguous(),
+            net_buy_large: state.net_buy_large.make_contiguous(),
+            net_buy_small: state.net_buy_small.make_contiguous(),
+            net_buy_amount: state.net_buy_amount.make_contiguous(),
+            bid0v: state.bid0v.make_contiguous(),
+            mid_price: state.mid_price.make_contiguous(),
+            spread: state.spread.make_contiguous(),
+            relative_spread: state.relative_spread.make_contiguous(),
+            bid_vwap20: state.bid_vwap20.make_contiguous(),
+            total_bid20: state.total_bid20.make_contiguous(),
+            total_ask20: state.total_ask20.make_contiguous(),
+            top10_bid_volume: state.top10_bid_volume.make_contiguous(),
+            top10_ask_volume: state.top10_ask_volume.make_contiguous(),
+            top10_bid_mean: state.top10_bid_mean.make_contiguous(),
+            top10_ask_mean: state.top10_ask_mean.make_contiguous(),
+            bid9v: state.bid9v.make_contiguous(),
+            ask9v: state.ask9v.make_contiguous(),
+            mean_bid_vol20: state.mean_bid_vol20.make_contiguous(),
+            mean_bid_price20: state.mean_bid_price20.make_contiguous(),
+            avg_ask_price5: state.avg_ask_price5.make_contiguous(),
+            ask_pv15_mean: state.ask_pv15_mean.make_contiguous(),
+            bid_pv15_mean: state.bid_pv15_mean.make_contiguous(),
+            factor_031_ratio: state.factor_031_ratio.make_contiguous(),
+            factor_119_mid_minus_ask_vwap5: state.factor_119_mid_minus_ask_vwap5.make_contiguous(),
+            total_volume20_sum: state.total_volume20_sum.make_contiguous(),
+            factor_152_pct_mean: state.factor_152_pct_mean.make_contiguous(),
+            ask_vwap_diff_5_20: state.ask_vwap_diff_5_20.make_contiguous(),
+            ask_mean_volume_20: state.ask_mean_volume_20.make_contiguous(),
+            ask0v: state.ask0v.make_contiguous(),
+            ask_vwap20: state.ask_vwap20.make_contiguous(),
+            factor_128_skew: state.factor_128_skew.make_contiguous(),
+            factor_160_pct_change_mean: state.factor_160_pct_change_mean.make_contiguous(),
         }
     }
 
@@ -1562,7 +1556,7 @@ impl FusionFactorPubApp {
         binding: &FactorBinding,
         factor_118_result: Option<(f64, bool, usize)>,
         depth: Option<&DepthSnapshot>,
-        series: Option<&SymbolSeries>,
+        series: Option<&SymbolSeries<'_>>,
     ) -> Option<(f64, bool, &'static str)> {
         match binding.factor_id {
             Some(FusionFactorId::Factor118) => {
@@ -2417,7 +2411,7 @@ impl FusionFactorPubApp {
     }
 
     fn compute_extra_factor(
-        series: Option<&SymbolSeries>,
+        series: Option<&SymbolSeries<'_>>,
         extra_factor_id: ExtraFactorId,
     ) -> Option<f64> {
         let series = series?;
@@ -2452,7 +2446,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_factor_trades_015(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_trades_015(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.sell_amount.len().min(series.sell_count.len());
         if n == 0 {
             return None;
@@ -2469,7 +2463,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_factor_trades_014(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_trades_014(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.buy_amount.len().min(series.buy_count.len());
         if n == 0 {
             return None;
@@ -2481,7 +2475,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(series.buy_amount[n - 1] / buy_count))
     }
 
-    fn compute_factor_trades_018(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_trades_018(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.amount.len().min(series.small_order.len());
         if n == 0 {
             return None;
@@ -2493,7 +2487,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(series.small_order[n - 1] / amount))
     }
 
-    fn compute_factor_trades_025(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_trades_025(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.close.len().min(series.vwap.len());
         if n == 0 {
             return None;
@@ -2505,7 +2499,7 @@ impl FusionFactorPubApp {
         finite_opt(Some((series.close[n - 1] - vwap) / vwap))
     }
 
-    fn compute_factor_trades_028(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_trades_028(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.buy_amount.len().min(series.buy_count.len());
         if n == 0 {
             return None;
@@ -2513,7 +2507,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(series.buy_amount[n - 1] * series.buy_count[n - 1]))
     }
 
-    fn compute_factor_trades_029(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_trades_029(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.sell_amount.len().min(series.sell_count.len());
         if n == 0 {
             return None;
@@ -2526,7 +2520,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_factor_trades_034(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_trades_034(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .high
             .len()
@@ -2544,7 +2538,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(upper_shadow / range_hl))
     }
 
-    fn compute_factor_trades_035(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_trades_035(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .high
             .len()
@@ -2562,7 +2556,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(lower_shadow / range_hl))
     }
 
-    fn compute_factor_trades_048(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_trades_048(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.close.len();
         if n < 10 {
             return None;
@@ -2589,7 +2583,7 @@ impl FusionFactorPubApp {
             .or(Some(0.0))
     }
 
-    fn compute_factor_001(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_001(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.bid_vwap20.len();
         if n < 3 {
             return None;
@@ -2627,7 +2621,7 @@ impl FusionFactorPubApp {
         finite_opt(Some((bid_strength - ask_strength) / den))
     }
 
-    fn compute_factor_010(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_010(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.bid_vwap20.len();
         if n < 2 {
             return None;
@@ -2635,7 +2629,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(series.bid_vwap20[n - 1] - series.bid_vwap20[n - 2]))
     }
 
-    fn compute_factor_011(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_011(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.ask_vwap20.len();
         if n < 2 {
             return None;
@@ -2678,7 +2672,7 @@ impl FusionFactorPubApp {
         std_pop(&norm)
     }
 
-    fn compute_factor_019(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_019(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.bid_vwap20.len();
         if n < 2 {
             return None;
@@ -2689,7 +2683,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(curr - prev))
     }
 
-    fn compute_factor_021(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_021(series: &SymbolSeries<'_>) -> Option<f64> {
         let bid_std = sample_std_last(&series.total_bid20, 10, 1)?;
         let ask_std = sample_std_last(&series.total_ask20, 10, 1)?;
         if ask_std.abs() <= 1e-12 {
@@ -2724,13 +2718,13 @@ impl FusionFactorPubApp {
         rolling_kurt_last(&asks, 20, true, false).ok().flatten()
     }
 
-    fn compute_factor_031(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_031(series: &SymbolSeries<'_>) -> Option<f64> {
         rolling_rank_last(&series.factor_031_ratio, 500)
             .ok()
             .flatten()
     }
 
-    fn compute_factor_033(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_033(series: &SymbolSeries<'_>) -> Option<f64> {
         let last = *series.top10_bid_volume.last()?;
         let ma = rolling_mean_last(&series.top10_bid_volume, 30)
             .ok()
@@ -2763,31 +2757,31 @@ impl FusionFactorPubApp {
         std_pop(&asks)
     }
 
-    fn compute_factor_045(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_045(series: &SymbolSeries<'_>) -> Option<f64> {
         rolling_kurt_last(&series.top10_bid_mean, 30, true, false)
             .ok()
             .flatten()
     }
 
-    fn compute_factor_046(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_046(series: &SymbolSeries<'_>) -> Option<f64> {
         rolling_kurt_last(&series.top10_ask_mean, 30, true, false)
             .ok()
             .flatten()
     }
 
-    fn compute_factor_047(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_047(series: &SymbolSeries<'_>) -> Option<f64> {
         rolling_skew_last(&series.ask_pv15_mean, 60, false)
             .ok()
             .flatten()
     }
 
-    fn compute_factor_048(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_048(series: &SymbolSeries<'_>) -> Option<f64> {
         rolling_skew_last(&series.bid_pv15_mean, 60, false)
             .ok()
             .flatten()
     }
 
-    fn compute_factor_051(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_051(series: &SymbolSeries<'_>) -> Option<f64> {
         let last = *series.avg_ask_price5.last()?;
         let ma = rolling_mean_last(&series.avg_ask_price5, 300)
             .ok()
@@ -2798,7 +2792,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(last / ma))
     }
 
-    fn compute_factor_052(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_052(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.avg_ask_price5.len();
         if n < 300 {
             return None;
@@ -2837,23 +2831,23 @@ impl FusionFactorPubApp {
         finite_opt(Some(mid - vwap))
     }
 
-    fn compute_factor_055(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_055(series: &SymbolSeries<'_>) -> Option<f64> {
         rolling_sum_last_with_min_periods(&series.bid9v, 3, 3)
             .ok()
             .flatten()
     }
 
-    fn compute_factor_056(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_056(series: &SymbolSeries<'_>) -> Option<f64> {
         rolling_sum_last_with_min_periods(&series.ask9v, 3, 3)
             .ok()
             .flatten()
     }
 
-    fn compute_factor_057(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_057(series: &SymbolSeries<'_>) -> Option<f64> {
         finite_opt(series.total_volume20_sum.last().copied())
     }
 
-    fn compute_factor_060(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_060(series: &SymbolSeries<'_>) -> Option<f64> {
         pct_change_last(&series.mean_bid_vol20, 10)
     }
 
@@ -2937,7 +2931,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(std * std))
     }
 
-    fn compute_factor_094(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_094(series: &SymbolSeries<'_>) -> Option<f64> {
         tail_quantile_last(&series.avg_ask_price5, 100, 0.1)
     }
 
@@ -3024,7 +3018,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_factor_116(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_116(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.mean_bid_price20.len();
         if n < 50 {
             return None;
@@ -3041,7 +3035,7 @@ impl FusionFactorPubApp {
         rank_last_average(&diff3[n - tail_len..], 50)
     }
 
-    fn compute_factor_119(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_119(series: &SymbolSeries<'_>) -> Option<f64> {
         let last = *series.factor_119_mid_minus_ask_vwap5.last()?;
         let ma = rolling_mean_last(&series.factor_119_mid_minus_ask_vwap5, 120)
             .ok()
@@ -3100,7 +3094,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(std / mean))
     }
 
-    fn compute_factor_133(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_133(series: &SymbolSeries<'_>) -> Option<f64> {
         let bid = *series.total_bid20.last()?;
         let ask = *series.total_ask20.last()?;
         let den = bid + ask;
@@ -3110,7 +3104,7 @@ impl FusionFactorPubApp {
         finite_opt(Some((bid - ask) / den))
     }
 
-    fn compute_factor_134(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_134(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .mid_price
             .len()
@@ -3163,17 +3157,17 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_factor_151(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_151(series: &SymbolSeries<'_>) -> Option<f64> {
         rolling_skew_last(&series.total_volume20_sum, 45, false)
             .ok()
             .flatten()
     }
 
-    fn compute_factor_152(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_152(series: &SymbolSeries<'_>) -> Option<f64> {
         last_opt(&series.factor_152_pct_mean)
     }
 
-    fn compute_factor_164(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_164(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.bid0v.len();
         if n < 2 {
             return None;
@@ -3181,7 +3175,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(series.bid0v[n - 1] - series.bid0v[n - 2]))
     }
 
-    fn compute_factor_168(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_168(series: &SymbolSeries<'_>) -> Option<f64> {
         let spread = *series.spread.last()?;
         let mid = *series.mid_price.last()?;
         if mid.abs() <= 1e-12 {
@@ -3190,15 +3184,15 @@ impl FusionFactorPubApp {
         finite_opt(Some(spread / mid))
     }
 
-    fn compute_factor_170(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_170(series: &SymbolSeries<'_>) -> Option<f64> {
         pct_change_last(&series.mid_price, 120)
     }
 
-    fn compute_factor_175(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_175(series: &SymbolSeries<'_>) -> Option<f64> {
         sample_std_last(&series.spread, 5, 1)
     }
 
-    fn compute_factor_004(series: &SymbolSeries, depth: Option<&DepthSnapshot>) -> Option<f64> {
+    fn compute_factor_004(series: &SymbolSeries<'_>, depth: Option<&DepthSnapshot>) -> Option<f64> {
         let depth = depth?;
         let buy_vwap = *series.buy_vwap.last()?;
         let (bid0p, _) = depth_best_bid(depth);
@@ -3236,7 +3230,7 @@ impl FusionFactorPubApp {
         std_pop(&norm)
     }
 
-    fn compute_factor_022(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_022(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.relative_spread.len();
         if n < 2 {
             return None;
@@ -3249,7 +3243,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_factor_023(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_023(series: &SymbolSeries<'_>) -> Option<f64> {
         let values = &series.top10_bid_volume;
         let last = *values.last()?;
         let ma = rolling_mean_last_with_min_periods(values, 5, 1)
@@ -3263,7 +3257,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_factor_024(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_024(series: &SymbolSeries<'_>) -> Option<f64> {
         let values = &series.top10_ask_volume;
         let last = *values.last()?;
         let ma = rolling_mean_last_with_min_periods(values, 5, 1)
@@ -3284,7 +3278,7 @@ impl FusionFactorPubApp {
         rolling_kurt_last(&bids, 20, true, false).ok().flatten()
     }
 
-    fn compute_factor_032(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_032(series: &SymbolSeries<'_>) -> Option<f64> {
         rolling_mean_last(&series.ask_vwap_diff_5_20, 300)
             .ok()
             .flatten()
@@ -3301,7 +3295,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_factor_061(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_061(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.ask_mean_volume_20.len();
         if n <= 10 {
             return None;
@@ -3348,7 +3342,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_factor_128(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_128(series: &SymbolSeries<'_>) -> Option<f64> {
         let mean_series = rolling_mean_series_opt(&series.factor_128_skew, 300, 50).ok()?;
         last_opt(&mean_series)
     }
@@ -3366,11 +3360,11 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_factor_160(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_160(series: &SymbolSeries<'_>) -> Option<f64> {
         last_opt(&series.factor_160_pct_change_mean)
     }
 
-    fn compute_factor_165(series: &SymbolSeries) -> Option<f64> {
+    fn compute_factor_165(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.ask0v.len();
         if n < 2 {
             return None;
@@ -3412,7 +3406,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_baseline_018(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_018(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.buy_volume.len().min(series.sell_volume.len());
         if n <= 60 {
             return None;
@@ -3436,7 +3430,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_baseline_034(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_034(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.close.len();
         if n == 0 {
             return None;
@@ -3462,7 +3456,7 @@ impl FusionFactorPubApp {
         last_opt(&smmao)
     }
 
-    fn compute_baseline_045(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_045(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.buy_amount.len().min(series.sell_amount.len());
         let window = 90;
         if n < window {
@@ -3474,7 +3468,7 @@ impl FusionFactorPubApp {
         linear_regression_intercept(&tail)
     }
 
-    fn compute_baseline_047(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_047(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.small_buy.len().min(series.small_sell.len());
         if n < 300 {
             return None;
@@ -3485,7 +3479,7 @@ impl FusionFactorPubApp {
         rolling_mean_last(&diff, 300).ok().flatten()
     }
 
-    fn compute_baseline_080(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_080(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.high.len().min(series.low.len());
         let window = 10usize;
         if n < window {
@@ -3518,7 +3512,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_baseline_082(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_082(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .close
             .len()
@@ -3540,7 +3534,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_baseline_135(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_135(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .high
             .len()
@@ -3560,7 +3554,7 @@ impl FusionFactorPubApp {
         Some(if is_hangingman { 1.0 } else { 0.0 })
     }
 
-    fn compute_baseline_193(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_193(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.buy_amount.len().min(series.sell_amount.len());
         if n == 0 {
             return None;
@@ -3574,7 +3568,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_baseline_004(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_004(series: &SymbolSeries<'_>) -> Option<f64> {
         let s1 = rolling_mean_series(&series.close, 30, 30).ok()?;
         let s2 = rolling_mean_series_opt(&s1, 30, 30).ok()?;
         let s3 = rolling_mean_series_opt(&s2, 30, 30).ok()?;
@@ -3592,7 +3586,7 @@ impl FusionFactorPubApp {
         ))
     }
 
-    fn compute_baseline_007(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_007(series: &SymbolSeries<'_>) -> Option<f64> {
         let fast = rolling_mean_series(&series.net_buy_amount, 12, 12).ok()?;
         let slow = rolling_mean_series(&series.net_buy_amount, 26, 26).ok()?;
         let macd: Vec<Option<f64>> = (0..series.net_buy_amount.len())
@@ -3605,7 +3599,7 @@ impl FusionFactorPubApp {
         last_opt(&signal)
     }
 
-    fn compute_baseline_008(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_008(series: &SymbolSeries<'_>) -> Option<f64> {
         let fast = rolling_mean_series(&series.large_buy, 12, 12).ok()?;
         let slow = rolling_mean_series(&series.large_buy, 26, 26).ok()?;
         let macd: Vec<Option<f64>> = (0..series.large_buy.len())
@@ -3627,7 +3621,7 @@ impl FusionFactorPubApp {
         last_opt(&hist)
     }
 
-    fn compute_baseline_016(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_016(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .high
             .len()
@@ -3679,7 +3673,7 @@ impl FusionFactorPubApp {
         last_opt(&adx)
     }
 
-    fn compute_baseline_028(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_028(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.close.len();
         if n <= 30 {
             return None;
@@ -3697,7 +3691,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(change / volatility))
     }
 
-    fn compute_baseline_040(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_040(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.close.len().min(series.volume.len());
         if n < 360 {
             return None;
@@ -3719,7 +3713,7 @@ impl FusionFactorPubApp {
             .flatten()
     }
 
-    fn compute_baseline_046(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_046(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.large_buy.len().min(series.large_sell.len());
         if n < 30 {
             return None;
@@ -3730,12 +3724,12 @@ impl FusionFactorPubApp {
         linear_regression_predict_last(&tail)
     }
 
-    fn compute_baseline_073(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_073(series: &SymbolSeries<'_>) -> Option<f64> {
         let std = sample_std_last(&series.close, 5, 5)?;
         finite_opt(Some(std * std))
     }
 
-    fn compute_baseline_076(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_076(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .high
             .len()
@@ -3764,17 +3758,17 @@ impl FusionFactorPubApp {
         finite_opt(Some((atr / close) * 100.0))
     }
 
-    fn compute_baseline_079(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_079(series: &SymbolSeries<'_>) -> Option<f64> {
         rolling_corr_last(&series.close, &series.volume, 14, 1)
             .ok()
             .flatten()
     }
 
-    fn compute_baseline_100(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_100(series: &SymbolSeries<'_>) -> Option<f64> {
         rolling_mean_last(&series.close, 180).ok().flatten()
     }
 
-    fn compute_baseline_113(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_113(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.high.len().min(series.low.len());
         if n < 90 {
             return None;
@@ -3785,7 +3779,7 @@ impl FusionFactorPubApp {
         tail_quantile_last(&mid_log, 90, 0.2)
     }
 
-    fn compute_baseline_116(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_116(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .high
             .len()
@@ -3815,7 +3809,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(pos_sum - neg_sum))
     }
 
-    fn compute_baseline_117(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_117(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.close.len();
         if n < 26 {
             return None;
@@ -3838,7 +3832,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(pos_avg / neg_avg))
     }
 
-    fn compute_baseline_120(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_120(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .high
             .len()
@@ -3866,7 +3860,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(mean))
     }
 
-    fn compute_baseline_134(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_134(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .high
             .len()
@@ -3887,7 +3881,7 @@ impl FusionFactorPubApp {
         Some(if is_hammer { 1.0 } else { 0.0 })
     }
 
-    fn compute_baseline_137(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_137(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .close
             .len()
@@ -3903,7 +3897,7 @@ impl FusionFactorPubApp {
         finite_opt(Some((series.close[n - 1] - series.open[n - 1]) / den))
     }
 
-    fn compute_baseline_140(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_140(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.low.len().min(series.close.len());
         if n < 60 {
             return None;
@@ -3915,7 +3909,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(low_min - series.close[n - 1]))
     }
 
-    fn compute_baseline_141(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_141(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.high.len().min(series.close.len());
         if n < 60 {
             return None;
@@ -3927,7 +3921,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(high_max - series.close[n - 1]))
     }
 
-    fn compute_baseline_163(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_163(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.close.len();
         if n < 30 {
             return None;
@@ -3943,7 +3937,7 @@ impl FusionFactorPubApp {
         finite_opt(Some((min_close - den) / den))
     }
 
-    fn compute_baseline_164(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_164(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.close.len();
         if n < 30 {
             return None;
@@ -3959,7 +3953,7 @@ impl FusionFactorPubApp {
         finite_opt(Some((max_close - den) / den))
     }
 
-    fn compute_baseline_172(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_172(series: &SymbolSeries<'_>) -> Option<f64> {
         // Same ADX-style approximation as baseline_172 python formula.
         let n = series
             .high
@@ -4010,7 +4004,7 @@ impl FusionFactorPubApp {
         last_opt(&adx)
     }
 
-    fn compute_baseline_177(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_177(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .high
             .len()
@@ -4035,7 +4029,7 @@ impl FusionFactorPubApp {
         finite_opt(Some((series.high[n - 1] - series.close[n - 1]) / den))
     }
 
-    fn compute_baseline_178(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_178(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .high
             .len()
@@ -4060,7 +4054,7 @@ impl FusionFactorPubApp {
         finite_opt(Some((series.close[n - 1] - series.low[n - 1]) / den))
     }
 
-    fn compute_baseline_189(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_189(series: &SymbolSeries<'_>) -> Option<f64> {
         let short = rolling_mean_series(&series.close, 20, 20).ok()?;
         let long = rolling_mean_series(&series.close, 90, 90).ok()?;
         let x: Vec<f64> = (0..series.close.len())
@@ -4073,7 +4067,7 @@ impl FusionFactorPubApp {
         corr_last_with_min_periods(&x, &y, 100, 30)
     }
 
-    fn compute_baseline_191(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_191(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .high
             .len()
@@ -4112,7 +4106,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(k - d))
     }
 
-    fn compute_baseline_196(series: &SymbolSeries) -> Option<f64> {
+    fn compute_baseline_196(series: &SymbolSeries<'_>) -> Option<f64> {
         let periods = 10usize;
         if series.large_buy.len() <= periods {
             return None;
@@ -4133,14 +4127,14 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_td_ti_010(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_ti_010(series: &SymbolSeries<'_>) -> Option<f64> {
         let ema1 = rolling_mean_series(&series.close, 30, 30).ok()?;
         let ema2 = rolling_mean_series_opt(&ema1, 30, 30).ok()?;
         let ema3 = rolling_mean_series_opt(&ema2, 30, 30).ok()?;
         last_opt(&ema3)
     }
 
-    fn compute_td_ti_015(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_ti_015(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .close
             .len()
@@ -4179,11 +4173,11 @@ impl FusionFactorPubApp {
         finite_opt(Some(sum))
     }
 
-    fn compute_td_ti_031(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_ti_031(series: &SymbolSeries<'_>) -> Option<f64> {
         corr_last_with_min_periods(&series.large_order, &series.small_order, 60, 10)
     }
 
-    fn compute_td_ti_036(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_ti_036(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.high.len();
         let period = 14usize;
         if n < period + 1 {
@@ -4201,7 +4195,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(100.0 * argmax as f64 / period as f64))
     }
 
-    fn compute_td_ti_037(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_ti_037(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.low.len();
         let period = 14usize;
         if n < period + 1 {
@@ -4219,7 +4213,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(100.0 * argmin as f64 / period as f64))
     }
 
-    fn compute_td_mt_003(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_mt_003(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.close.len();
         if n < 90 {
             return None;
@@ -4231,7 +4225,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(sum / 30.0))
     }
 
-    fn compute_td_mt_008(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_mt_008(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .high
             .len()
@@ -4275,7 +4269,7 @@ impl FusionFactorPubApp {
         finite_opt(Some((plus_di - minus_di).abs() / den * 100.0))
     }
 
-    fn compute_td_mt_014(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_mt_014(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.close.len();
         if n == 0 {
             return None;
@@ -4294,7 +4288,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(m - s))
     }
 
-    fn compute_td_mt_015(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_mt_015(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .high
             .len()
@@ -4329,7 +4323,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(100.0 * m / t))
     }
 
-    fn compute_td_mt_039(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_mt_039(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.close.len().min(series.low.len());
         if n < 10 {
             return None;
@@ -4341,7 +4335,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(sum))
     }
 
-    fn compute_td_vi_010(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_vi_010(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.high.len().min(series.low.len());
         if n < 2 {
             return None;
@@ -4351,7 +4345,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(if hd > ld { hd } else { 0.0 }))
     }
 
-    fn compute_td_vi_011(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_vi_011(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.high.len().min(series.low.len());
         if n < 2 {
             return None;
@@ -4367,7 +4361,7 @@ impl FusionFactorPubApp {
             .flatten()
     }
 
-    fn compute_td_vi_025(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_vi_025(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .high
             .len()
@@ -4403,7 +4397,7 @@ impl FusionFactorPubApp {
         finite_opt(Some((4.0 * a7 + 2.0 * a14 + a28) / 7.0))
     }
 
-    fn compute_td_vi_026(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_vi_026(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .high
             .len()
@@ -4423,7 +4417,7 @@ impl FusionFactorPubApp {
         rolling_sum_last_with_min_periods(&x, 14, 1).ok().flatten()
     }
 
-    fn compute_td_vi_028(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_vi_028(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .high
             .len()
@@ -4438,15 +4432,15 @@ impl FusionFactorPubApp {
         rolling_sum_last_with_min_periods(&x, 14, 1).ok().flatten()
     }
 
-    fn compute_td_pt_001(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_pt_001(series: &SymbolSeries<'_>) -> Option<f64> {
         finite_opt(series.close.last().copied().map(f64::sin))
     }
 
-    fn compute_td_pt_002(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_pt_002(series: &SymbolSeries<'_>) -> Option<f64> {
         finite_opt(series.close.last().copied().map(f64::cos))
     }
 
-    fn compute_td_pt_010(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_pt_010(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .close
             .len()
@@ -4468,7 +4462,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(series.close[n - 1] - zc2))
     }
 
-    fn compute_td_pt_027(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_pt_027(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.close.len();
         if n < 14 {
             return None;
@@ -4485,21 +4479,21 @@ impl FusionFactorPubApp {
         Some(idx as f64)
     }
 
-    fn compute_td_ci_007(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_ci_007(series: &SymbolSeries<'_>) -> Option<f64> {
         let ma = rolling_mean_last_with_min_periods(&series.close, 30, 1)
             .ok()
             .flatten()?;
         finite_opt(Some(ma.sin()))
     }
 
-    fn compute_td_ci_008(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_ci_008(series: &SymbolSeries<'_>) -> Option<f64> {
         let ma = rolling_mean_last_with_min_periods(&series.close, 30, 1)
             .ok()
             .flatten()?;
         finite_opt(Some(ma.cos()))
     }
 
-    fn compute_td_pr_001(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_pr_001(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .close
             .len()
@@ -4517,7 +4511,7 @@ impl FusionFactorPubApp {
         Some(if inv_hammer { 1.0 } else { 0.0 })
     }
 
-    fn compute_td_pr_002(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_pr_002(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .close
             .len()
@@ -4535,7 +4529,7 @@ impl FusionFactorPubApp {
         Some(if hammer { 1.0 } else { 0.0 })
     }
 
-    fn compute_td_pr_007(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_pr_007(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.close.len().min(series.open.len());
         if n < 2 {
             return None;
@@ -4553,7 +4547,7 @@ impl FusionFactorPubApp {
         })
     }
 
-    fn compute_td_pr_015(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_pr_015(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .open
             .len()
@@ -4572,7 +4566,7 @@ impl FusionFactorPubApp {
         )
     }
 
-    fn compute_td_pr_016(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_pr_016(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .open
             .len()
@@ -4607,7 +4601,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(var1 * var2 * var3))
     }
 
-    fn compute_td_pr_017(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_pr_017(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .open
             .len()
@@ -4625,7 +4619,7 @@ impl FusionFactorPubApp {
         Some(if takuri { 100.0 } else { 0.0 })
     }
 
-    fn compute_tp_vpi_006(series: &SymbolSeries) -> Option<f64> {
+    fn compute_tp_vpi_006(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.close.len().min(series.volume.len());
         if n < 373 {
             return None;
@@ -4648,7 +4642,7 @@ impl FusionFactorPubApp {
         last_opt(&ma)
     }
 
-    fn compute_tp_vpi_014(series: &SymbolSeries) -> Option<f64> {
+    fn compute_tp_vpi_014(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.volume.len();
         if n < 39 {
             return None;
@@ -4667,7 +4661,7 @@ impl FusionFactorPubApp {
         last_opt(&ratio_ma)
     }
 
-    fn compute_tp_vpi_017(series: &SymbolSeries) -> Option<f64> {
+    fn compute_tp_vpi_017(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .high
             .len()
@@ -4700,7 +4694,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(pos_sum - neg_sum))
     }
 
-    fn compute_td_ti_026(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_ti_026(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .close
             .len()
@@ -4728,7 +4722,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_td_ti_033(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_ti_033(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.open.len().min(series.volume.len());
         if n < 100 {
             return None;
@@ -4739,7 +4733,7 @@ impl FusionFactorPubApp {
             .flatten()
     }
 
-    fn compute_td_ti_034(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_ti_034(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.net_buy_large.len().min(series.net_buy_small.len());
         if n < 2 {
             return None;
@@ -4754,7 +4748,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_tp_vpi_004(series: &SymbolSeries) -> Option<f64> {
+    fn compute_tp_vpi_004(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .close
             .len()
@@ -4788,7 +4782,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_tp_vpi_001(series: &SymbolSeries) -> Option<f64> {
+    fn compute_tp_vpi_001(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .close
             .len()
@@ -4818,7 +4812,7 @@ impl FusionFactorPubApp {
         last_opt(&ad)
     }
 
-    fn compute_tp_vpi_002(series: &SymbolSeries) -> Option<f64> {
+    fn compute_tp_vpi_002(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .close
             .len()
@@ -4849,7 +4843,7 @@ impl FusionFactorPubApp {
         last_opt(&ad_ma)
     }
 
-    fn compute_tp_vpi_005(series: &SymbolSeries) -> Option<f64> {
+    fn compute_tp_vpi_005(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.close.len().min(series.volume.len());
         if n == 0 {
             return None;
@@ -4872,7 +4866,7 @@ impl FusionFactorPubApp {
         last_opt(&obv)
     }
 
-    fn compute_tp_vpi_015(series: &SymbolSeries) -> Option<f64> {
+    fn compute_tp_vpi_015(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .close
             .len()
@@ -4889,7 +4883,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_td_pt_003(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_pt_003(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.amount.len().min(series.volume.len());
         if n == 0 {
             return None;
@@ -4946,7 +4940,7 @@ impl FusionFactorPubApp {
         last_opt(&apb_roll).or(Some(0.0))
     }
 
-    fn compute_td_pt_004(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_pt_004(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .close
             .len()
@@ -4989,7 +4983,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_td_ci_003(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_ci_003(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.close.len();
         if n == 0 {
             return None;
@@ -5029,7 +5023,7 @@ impl FusionFactorPubApp {
         last_opt(&result)
     }
 
-    fn compute_td_pr_005(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_pr_005(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series
             .close
             .len()
@@ -5057,7 +5051,7 @@ impl FusionFactorPubApp {
         Some(if morning_star { 1.0 } else { 0.0 })
     }
 
-    fn compute_td_pr_006(series: &SymbolSeries) -> Option<f64> {
+    fn compute_td_pr_006(series: &SymbolSeries<'_>) -> Option<f64> {
         let n = series.close.len().min(series.open.len());
         if n < 3 {
             return None;

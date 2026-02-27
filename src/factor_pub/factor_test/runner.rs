@@ -80,7 +80,7 @@ fn run_fusion_factors(scenario: &ScenarioData) -> Result<HashMap<String, f64>> {
         state.push_depth_metrics(depth);
     }
 
-    let series = FusionFactorPubApp::build_symbol_series_from_state(&state);
+    let series = FusionFactorPubApp::build_symbol_series_from_state(&mut state);
     let last_depth = scenario.depth_snapshots.last();
 
     // Build bindings for all FusionFactorId variants
