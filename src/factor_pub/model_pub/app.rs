@@ -819,16 +819,15 @@ async fn load_single_symbol_model(
         )
     })?;
 
-    let model = OnnxModel::load_from_path(&model_path, Some(feature_dim))
-        .with_context(|| {
-            format!(
-                "load ONNX model from cache failed: model_name={} symbol={} feature_dim={} path={}",
-                model_name,
-                symbol,
-                feature_dim,
-                model_path.display()
-            )
-        })?;
+    let model = OnnxModel::load_from_path(&model_path, Some(feature_dim)).with_context(|| {
+        format!(
+            "load ONNX model from cache failed: model_name={} symbol={} feature_dim={} path={}",
+            model_name,
+            symbol,
+            feature_dim,
+            model_path.display()
+        )
+    })?;
 
     let factor_indices = fetch_symbol_factor_indices(client, base_url, model_name, symbol, token)
         .await

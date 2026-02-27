@@ -62,21 +62,31 @@ fn make_trade_flow_msg(ts: i64, values: Vec<f64>) -> TradeFlowFeatureMsg {
 }
 
 fn make_depth(bids: Vec<(f64, f64)>, asks: Vec<(f64, f64)>) -> DepthSnapshot {
+    let mut bid_levels = [DepthLevel {
+        price: 0.0,
+        amount: 0.0,
+    }; DEPTH_LEVELS];
+    for (i, (p, a)) in bids.into_iter().take(DEPTH_LEVELS).enumerate() {
+        bid_levels[i] = DepthLevel {
+            price: p,
+            amount: a,
+        };
+    }
+
+    let mut ask_levels = [DepthLevel {
+        price: 0.0,
+        amount: 0.0,
+    }; DEPTH_LEVELS];
+    for (i, (p, a)) in asks.into_iter().take(DEPTH_LEVELS).enumerate() {
+        ask_levels[i] = DepthLevel {
+            price: p,
+            amount: a,
+        };
+    }
+
     DepthSnapshot {
-        bids: bids
-            .into_iter()
-            .map(|(p, a)| DepthLevel {
-                price: p,
-                amount: a,
-            })
-            .collect(),
-        asks: asks
-            .into_iter()
-            .map(|(p, a)| DepthLevel {
-                price: p,
-                amount: a,
-            })
-            .collect(),
+        bids: bid_levels,
+        asks: ask_levels,
     }
 }
 

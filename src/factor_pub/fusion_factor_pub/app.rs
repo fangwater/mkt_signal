@@ -77,8 +77,8 @@ pub struct DepthLevel {
 
 #[derive(Debug, Clone)]
 pub struct DepthSnapshot {
-    pub bids: Vec<DepthLevel>,
-    pub asks: Vec<DepthLevel>,
+    pub bids: [DepthLevel; MAX_DEPTH_LEVELS_CACHE],
+    pub asks: [DepthLevel; MAX_DEPTH_LEVELS_CACHE],
 }
 
 #[derive(Default)]
@@ -5788,8 +5788,14 @@ fn parse_embedded_depth(msg: &TradeFlowFeatureMsg) -> Option<DepthSnapshot> {
         return None;
     }
 
-    let mut bids = Vec::with_capacity(MAX_DEPTH_LEVELS_CACHE);
-    let mut asks = Vec::with_capacity(MAX_DEPTH_LEVELS_CACHE);
+    let mut bids = [DepthLevel {
+        price: 0.0,
+        amount: 0.0,
+    }; MAX_DEPTH_LEVELS_CACHE];
+    let mut asks = [DepthLevel {
+        price: 0.0,
+        amount: 0.0,
+    }; MAX_DEPTH_LEVELS_CACHE];
     let mut best_bid_ok = false;
     let mut best_ask_ok = false;
 
@@ -5812,7 +5818,7 @@ fn parse_embedded_depth(msg: &TradeFlowFeatureMsg) -> Option<DepthSnapshot> {
         if idx == 0 && price > 0.0 {
             best_bid_ok = true;
         }
-        bids.push(DepthLevel { price, amount });
+        bids[idx] = DepthLevel { price, amount };
     }
 
     for idx in 0..MAX_DEPTH_LEVELS_CACHE {
@@ -5833,7 +5839,7 @@ fn parse_embedded_depth(msg: &TradeFlowFeatureMsg) -> Option<DepthSnapshot> {
         if idx == 0 && price > 0.0 {
             best_ask_ok = true;
         }
-        asks.push(DepthLevel { price, amount });
+        asks[idx] = DepthLevel { price, amount };
     }
 
     if !best_bid_ok || !best_ask_ok {
