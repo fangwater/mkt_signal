@@ -1338,8 +1338,9 @@ impl FusionFactorPubApp {
         symbol: &str,
         depth: Option<&DepthSnapshot>,
     ) -> Option<OrderedEvalResult> {
-        let plan = self.symbol_factor_plans.get(symbol)?.clone();
-        let needs_factor_118 = plan
+        let needs_factor_118 = self
+            .symbol_factor_plans
+            .get(symbol)?
             .ordered_factors
             .iter()
             .any(|factor| factor.factor_id == Some(FusionFactorId::Factor118));
@@ -1349,8 +1350,9 @@ impl FusionFactorPubApp {
             None
         };
         let series = self.build_symbol_series(symbol);
+        let plan = self.symbol_factor_plans.get(symbol)?;
         Some(Self::evaluate_ordered_factors_with_plan(
-            &plan,
+            plan,
             factor_118_result,
             depth,
             series.as_ref(),

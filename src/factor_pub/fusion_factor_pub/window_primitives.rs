@@ -1,11 +1,9 @@
-//! Rolling window primitives backed by Polars.
+//! Rolling window primitives.
+//!
+//! `*_series*` helpers still use Polars for convenience.
 
 use anyhow::Result;
-use polars::lazy::dsl::pearson_corr;
-use polars::prelude::{
-    col, DataFrame, IntoLazy, NamedFrom, RankMethod, RankOptions, RollingOptionsFixedWindow,
-    RollingSeries, Series,
-};
+use polars::prelude::{NamedFrom, RollingOptionsFixedWindow, Series};
 use polars_time::prelude::SeriesOpsTime;
 
 fn finite_or_none(value: Option<f64>) -> Option<f64> {
@@ -24,21 +22,113 @@ fn series_from_opt(values: &[Option<f64>]) -> Series {
     Series::new("x".into(), values.to_vec())
 }
 
-fn last_f64(series: &Series) -> Option<f64> {
-    let idx = series.len().saturating_sub(1);
-    finite_or_none(series.f64().ok()?.get(idx)).or(Some(0.0))
+fn tail_exact(values: &[f64], window: usize) -> Option<&[f64]> {
+    if window == 0 || values.len() < window {
+        return None;
+    }
+    Some(&values[values.len() - window..])
+}
+
+fn tail_with_min_periods(values: &[f64], window: usize, min_periods: usize) -> Option<&[f64]> {
+    if window == 0 || min_periods == 0 || values.len() < min_periods {
+        return None;
+    }
+    let start = values.len().saturating_sub(window);
+    let tail = &values[start..];
+    if tail.len() < min_periods {
+        return None;
+    }
+    Some(tail)
+}
+
+fn has_non_finite(values: &[f64]) -> bool {
+    values.iter().any(|v| !v.is_finite())
+}
+
+fn mean(values: &[f64]) -> f64 {
+    values.iter().sum::<f64>() / values.len() as f64
+}
+
+fn skew_from_slice(values: &[f64], bias: bool) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    if has_non_finite(values) {
+        return Some(0.0);
+    }
+
+    let n = values.len() as f64;
+    let m = mean(values);
+    let mut m2 = 0.0;
+    let mut m3 = 0.0;
+    for v in values {
+        let d = *v - m;
+        let d2 = d * d;
+        m2 += d2;
+        m3 += d2 * d;
+    }
+    let m2 = m2 / n;
+    if m2.abs() <= 1e-12 {
+        return Some(0.0);
+    }
+    let m3 = m3 / n;
+    let mut out = m3 / m2.powf(1.5);
+    if !bias {
+        if values.len() < 3 {
+            return None;
+        }
+        out *= (n * (n - 1.0)).sqrt() / (n - 2.0);
+    }
+    finite_or_none(Some(out)).or(Some(0.0))
+}
+
+fn kurtosis_from_slice(values: &[f64], fisher: bool, bias: bool) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    if has_non_finite(values) {
+        return Some(0.0);
+    }
+
+    let n = values.len() as f64;
+    let m = mean(values);
+    let mut m2 = 0.0;
+    let mut m4 = 0.0;
+    for v in values {
+        let d = *v - m;
+        let d2 = d * d;
+        m2 += d2;
+        m4 += d2 * d2;
+    }
+    let m2 = m2 / n;
+    if m2.abs() <= 1e-12 {
+        return Some(0.0);
+    }
+    let m4 = m4 / n;
+    let g2 = m4 / (m2 * m2) - 3.0;
+
+    let mut out = if bias {
+        g2
+    } else {
+        if values.len() < 4 {
+            return None;
+        }
+        ((n - 1.0) / ((n - 2.0) * (n - 3.0))) * ((n + 1.0) * g2 + 6.0)
+    };
+    if !fisher {
+        out += 3.0;
+    }
+    finite_or_none(Some(out)).or(Some(0.0))
 }
 
 pub fn rolling_mean_last(values: &[f64], window: usize) -> Result<Option<f64>> {
-    if window == 0 || values.len() < window {
+    let Some(tail) = tail_exact(values, window) else {
         return Ok(None);
+    };
+    if has_non_finite(tail) {
+        return Ok(Some(0.0));
     }
-    let rolling = series_from(values).rolling_mean(RollingOptionsFixedWindow {
-        window_size: window,
-        min_periods: window,
-        ..Default::default()
-    })?;
-    Ok(last_f64(&rolling))
+    Ok(finite_or_none(Some(mean(tail))).or(Some(0.0)))
 }
 
 pub fn rolling_mean_last_with_min_periods(
@@ -46,15 +136,13 @@ pub fn rolling_mean_last_with_min_periods(
     window: usize,
     min_periods: usize,
 ) -> Result<Option<f64>> {
-    if window == 0 || min_periods == 0 || values.len() < min_periods {
+    let Some(tail) = tail_with_min_periods(values, window, min_periods) else {
         return Ok(None);
+    };
+    if has_non_finite(tail) {
+        return Ok(Some(0.0));
     }
-    let rolling = series_from(values).rolling_mean(RollingOptionsFixedWindow {
-        window_size: window,
-        min_periods,
-        ..Default::default()
-    })?;
-    Ok(last_f64(&rolling))
+    Ok(finite_or_none(Some(mean(tail))).or(Some(0.0)))
 }
 
 pub fn rolling_sum_last_with_min_periods(
@@ -62,27 +150,36 @@ pub fn rolling_sum_last_with_min_periods(
     window: usize,
     min_periods: usize,
 ) -> Result<Option<f64>> {
-    if window == 0 || min_periods == 0 || values.len() < min_periods {
+    let Some(tail) = tail_with_min_periods(values, window, min_periods) else {
         return Ok(None);
+    };
+    if has_non_finite(tail) {
+        return Ok(Some(0.0));
     }
-    let rolling = series_from(values).rolling_sum(RollingOptionsFixedWindow {
-        window_size: window,
-        min_periods,
-        ..Default::default()
-    })?;
-    Ok(last_f64(&rolling))
+    Ok(finite_or_none(Some(tail.iter().sum::<f64>())).or(Some(0.0)))
 }
 
 pub fn rolling_std_last(values: &[f64], window: usize) -> Result<Option<f64>> {
-    if window == 0 || values.len() < window {
+    let Some(tail) = tail_exact(values, window) else {
         return Ok(None);
+    };
+    if has_non_finite(tail) {
+        return Ok(Some(0.0));
     }
-    let rolling = series_from(values).rolling_std(RollingOptionsFixedWindow {
-        window_size: window,
-        min_periods: window,
-        ..Default::default()
-    })?;
-    Ok(last_f64(&rolling))
+    if tail.len() < 2 {
+        return Ok(Some(0.0));
+    }
+
+    let m = mean(tail);
+    let var = tail
+        .iter()
+        .map(|v| {
+            let d = *v - m;
+            d * d
+        })
+        .sum::<f64>()
+        / (tail.len() as f64 - 1.0);
+    Ok(finite_or_none(Some(var.sqrt())).or(Some(0.0)))
 }
 
 pub fn rolling_mean_series_opt(
@@ -165,49 +262,49 @@ pub fn tail_skew_last_opt(
     let end = values.len();
     let start = end.saturating_sub(window);
     let tail = &values[start..end];
-    let valid_count = tail.iter().filter(|v| v.is_some()).count();
-    if valid_count < min_periods {
+    let mut valid = Vec::with_capacity(tail.len());
+    for v in tail {
+        if let Some(vv) = v {
+            if vv.is_finite() {
+                valid.push(*vv);
+            } else {
+                valid.push(0.0);
+            }
+        }
+    }
+    if valid.len() < min_periods {
         return Ok(None);
     }
-    let df = DataFrame::new(vec![series_from_opt(tail).into()])?;
-    let out = df
-        .lazy()
-        .select([col("x").skew(bias).alias("skew")])
-        .collect()?;
-    let value = out.column("skew")?.f64()?.get(0);
-    Ok(finite_or_none(value))
+    Ok(skew_from_slice(&valid, bias))
 }
 
 pub fn rolling_min_last(values: &[f64], window: usize) -> Result<Option<f64>> {
-    if window == 0 || values.len() < window {
+    let Some(tail) = tail_exact(values, window) else {
         return Ok(None);
+    };
+    if has_non_finite(tail) {
+        return Ok(Some(0.0));
     }
-    let rolling = series_from(values).rolling_min(RollingOptionsFixedWindow {
-        window_size: window,
-        min_periods: window,
-        ..Default::default()
-    })?;
-    Ok(last_f64(&rolling))
+    let out = tail.iter().copied().reduce(f64::min);
+    Ok(finite_or_none(out).or(Some(0.0)))
 }
 
 pub fn rolling_max_last(values: &[f64], window: usize) -> Result<Option<f64>> {
-    if window == 0 || values.len() < window {
+    let Some(tail) = tail_exact(values, window) else {
         return Ok(None);
+    };
+    if has_non_finite(tail) {
+        return Ok(Some(0.0));
     }
-    let rolling = series_from(values).rolling_max(RollingOptionsFixedWindow {
-        window_size: window,
-        min_periods: window,
-        ..Default::default()
-    })?;
-    Ok(last_f64(&rolling))
+    let out = tail.iter().copied().reduce(f64::max);
+    Ok(finite_or_none(out).or(Some(0.0)))
 }
 
 pub fn rolling_skew_last(values: &[f64], window: usize, bias: bool) -> Result<Option<f64>> {
-    if window == 0 || values.len() < window {
+    let Some(tail) = tail_exact(values, window) else {
         return Ok(None);
-    }
-    let rolling = series_from(values).rolling_skew(window, bias)?;
-    Ok(last_f64(&rolling).or(Some(0.0)))
+    };
+    Ok(skew_from_slice(tail, bias).or(Some(0.0)))
 }
 
 pub fn rolling_kurt_last(
@@ -216,43 +313,42 @@ pub fn rolling_kurt_last(
     fisher: bool,
     bias: bool,
 ) -> Result<Option<f64>> {
-    if window == 0 || values.len() < window {
+    let Some(tail) = tail_exact(values, window) else {
         return Ok(None);
-    }
-    let tail = &values[values.len() - window..];
-    let df = DataFrame::new(vec![series_from(tail).into()])?;
-    let out = df
-        .lazy()
-        .select([col("x").kurtosis(fisher, bias).alias("kurt")])
-        .collect()?;
-    let value = out.column("kurt")?.f64()?.get(0);
-    Ok(finite_or_none(value).or(Some(0.0)))
+    };
+    Ok(kurtosis_from_slice(tail, fisher, bias).or(Some(0.0)))
 }
 
 pub fn rolling_rank_last(values: &[f64], window: usize) -> Result<Option<f64>> {
-    if window == 0 || values.len() < window {
+    let Some(tail) = tail_exact(values, window) else {
+        return Ok(None);
+    };
+    if has_non_finite(tail) {
+        return Ok(Some(0.0));
+    }
+    let Some(last) = tail.last().copied() else {
+        return Ok(None);
+    };
+    if !last.is_finite() {
+        return Ok(Some(0.0));
+    }
+
+    let mut lt = 0usize;
+    let mut eq = 0usize;
+    for v in tail {
+        if v.total_cmp(&last).is_lt() {
+            lt = lt.saturating_add(1);
+        } else if v.total_cmp(&last).is_eq() {
+            eq = eq.saturating_add(1);
+        }
+    }
+    if eq == 0 {
         return Ok(None);
     }
-    let tail = &values[values.len() - window..];
-    let df = DataFrame::new(vec![series_from(tail).into()])?;
-    let out = df
-        .lazy()
-        .select([col("x")
-            .rank(
-                RankOptions {
-                    method: RankMethod::Average,
-                    descending: false,
-                },
-                None,
-            )
-            .last()
-            .alias("rank_last")])
-        .collect()?;
-    let value = out.column("rank_last")?.f64()?.get(0);
-    Ok(finite_or_none(value))
+    Ok(Some(lt as f64 + (eq as f64 + 1.0) / 2.0))
 }
 
-pub fn rolling_corr_last(xs: &[f64], ys: &[f64], window: usize, ddof: u8) -> Result<Option<f64>> {
+pub fn rolling_corr_last(xs: &[f64], ys: &[f64], window: usize, _ddof: u8) -> Result<Option<f64>> {
     if window == 0 {
         return Ok(None);
     }
@@ -260,18 +356,30 @@ pub fn rolling_corr_last(xs: &[f64], ys: &[f64], window: usize, ddof: u8) -> Res
     if n < window {
         return Ok(None);
     }
-    let x_tail = &xs[n - window..n];
-    let y_tail = &ys[n - window..n];
-    let df = DataFrame::new(vec![
-        Series::new("x".into(), x_tail.to_vec()).into(),
-        Series::new("y".into(), y_tail.to_vec()).into(),
-    ])?;
-    let out = df
-        .lazy()
-        .select([pearson_corr(col("x"), col("y"), ddof).alias("corr")])
-        .collect()?;
-    let value = out.column("corr")?.f64()?.get(0);
-    Ok(finite_or_none(value))
+
+    let x_tail = &xs[n - window..];
+    let y_tail = &ys[n - window..];
+    if has_non_finite(x_tail) || has_non_finite(y_tail) {
+        return Ok(Some(0.0));
+    }
+
+    let mean_x = mean(x_tail);
+    let mean_y = mean(y_tail);
+    let mut cov = 0.0;
+    let mut var_x = 0.0;
+    let mut var_y = 0.0;
+    for i in 0..window {
+        let dx = x_tail[i] - mean_x;
+        let dy = y_tail[i] - mean_y;
+        cov += dx * dy;
+        var_x += dx * dx;
+        var_y += dy * dy;
+    }
+    if var_x.abs() <= 1e-12 || var_y.abs() <= 1e-12 {
+        return Ok(Some(0.0));
+    }
+    let out = cov / (var_x.sqrt() * var_y.sqrt());
+    Ok(finite_or_none(Some(out)).or(Some(0.0)))
 }
 
 #[cfg(test)]
