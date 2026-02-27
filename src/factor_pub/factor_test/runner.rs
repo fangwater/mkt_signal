@@ -8,7 +8,7 @@ use std::collections::{HashMap, VecDeque};
 use anyhow::Result;
 
 use crate::factor_pub::fusion_factor_pub::app::{
-    ExtraFactorId, FactorBinding, FusionFactorPubApp, SymbolCalcState,
+    DepthDerived, ExtraFactorId, FactorBinding, FusionFactorPubApp, SymbolCalcState,
 };
 use crate::factor_pub::fusion_factor_pub::FusionFactorId;
 use crate::factor_pub::kline_factor_pub::app as kline_app;
@@ -77,11 +77,15 @@ fn run_fusion_factors(scenario: &ScenarioData) -> Result<HashMap<String, f64>> {
         .zip(scenario.depth_snapshots.iter())
     {
         state.push_trade_flow(msg);
-        state.push_depth_metrics(depth);
+        let depth_derived = DepthDerived::from_snapshot(depth);
+        state.push_depth_metrics_derived(&depth_derived);
     }
 
     let series = FusionFactorPubApp::build_symbol_series_from_state(&mut state);
-    let last_depth = scenario.depth_snapshots.last();
+    let last_depth = scenario
+        .depth_snapshots
+        .last()
+        .map(DepthDerived::from_snapshot);
 
     // Build bindings for all FusionFactorId variants
     let mut results = HashMap::new();
@@ -96,7 +100,7 @@ fn run_fusion_factors(scenario: &ScenarioData) -> Result<HashMap<String, f64>> {
         let result = FusionFactorPubApp::compute_supported_factor(
             &binding,
             None, // factor_118_result: skip factor_118 (requires special state)
-            last_depth,
+            last_depth.as_ref(),
             Some(&series),
         );
 
@@ -127,7 +131,7 @@ fn run_fusion_factors(scenario: &ScenarioData) -> Result<HashMap<String, f64>> {
             let result = FusionFactorPubApp::compute_supported_factor(
                 &binding,
                 None,
-                last_depth,
+                last_depth.as_ref(),
                 Some(&series),
             );
             let v = match result {

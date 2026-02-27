@@ -236,6 +236,166 @@ pub fn rolling_sum_last_with_min_periods(
     Ok(finite_or_none(Some(sum)).or(Some(0.0)))
 }
 
+/// Last value equivalent of `rolling_mean_series(...)[-1]`.
+/// Preserves series semantics: non-finite values yield `Some(NaN)`.
+pub fn rolling_mean_last_from_series(
+    values: &(impl F64SeriesView + ?Sized),
+    window: usize,
+    min_periods: usize,
+) -> Result<Option<f64>> {
+    rolling_mean_at_from_series(values, values.len(), window, min_periods)
+}
+
+/// Last value equivalent of `rolling_sum_series(...)[-1]`.
+/// Preserves series semantics: non-finite values yield `Some(NaN)`.
+pub fn rolling_sum_last_from_series(
+    values: &(impl F64SeriesView + ?Sized),
+    window: usize,
+    min_periods: usize,
+) -> Result<Option<f64>> {
+    rolling_sum_at_from_series(values, values.len(), window, min_periods)
+}
+
+/// Value at `end_exclusive-1` equivalent of `rolling_mean_series(...)[idx]`.
+/// Preserves series semantics: non-finite values yield `Some(NaN)`.
+pub fn rolling_mean_at_from_series(
+    values: &(impl F64SeriesView + ?Sized),
+    end_exclusive: usize,
+    window: usize,
+    min_periods: usize,
+) -> Result<Option<f64>> {
+    let end = end_exclusive.min(values.len());
+    if window == 0 || min_periods == 0 || end < min_periods {
+        return Ok(None);
+    }
+    let start = end.saturating_sub(window);
+    let window_len = end - start;
+    if window_len < min_periods {
+        return Ok(None);
+    }
+    if has_non_finite(values, start, end) {
+        return Ok(Some(f64::NAN));
+    }
+    Ok(Some(mean(values, start, end)))
+}
+
+/// Value at `end_exclusive-1` equivalent of `rolling_sum_series(...)[idx]`.
+/// Preserves series semantics: non-finite values yield `Some(NaN)`.
+pub fn rolling_sum_at_from_series(
+    values: &(impl F64SeriesView + ?Sized),
+    end_exclusive: usize,
+    window: usize,
+    min_periods: usize,
+) -> Result<Option<f64>> {
+    let end = end_exclusive.min(values.len());
+    if window == 0 || min_periods == 0 || end < min_periods {
+        return Ok(None);
+    }
+    let start = end.saturating_sub(window);
+    let window_len = end - start;
+    if window_len < min_periods {
+        return Ok(None);
+    }
+    if has_non_finite(values, start, end) {
+        return Ok(Some(f64::NAN));
+    }
+    let mut sum = 0.0;
+    for i in start..end {
+        sum += values.value_at(i);
+    }
+    Ok(Some(sum))
+}
+
+/// Last value equivalent of `rolling_mean_series_opt(...)[-1]`.
+/// Preserves series semantics: non-finite values yield `Some(NaN)`.
+pub fn rolling_mean_last_opt_from_series(
+    values: &(impl OptF64SeriesView + ?Sized),
+    window: usize,
+    min_periods: usize,
+) -> Result<Option<f64>> {
+    rolling_mean_at_opt_from_series(values, values.len(), window, min_periods)
+}
+
+/// Last value equivalent of `rolling_sum_series_opt(...)[-1]`.
+/// Preserves series semantics: non-finite values yield `Some(NaN)`.
+pub fn rolling_sum_last_opt_from_series(
+    values: &(impl OptF64SeriesView + ?Sized),
+    window: usize,
+    min_periods: usize,
+) -> Result<Option<f64>> {
+    rolling_sum_at_opt_from_series(values, values.len(), window, min_periods)
+}
+
+/// Value at `end_exclusive-1` equivalent of `rolling_mean_series_opt(...)[idx]`.
+/// Preserves series semantics: non-finite values yield `Some(NaN)`.
+pub fn rolling_mean_at_opt_from_series(
+    values: &(impl OptF64SeriesView + ?Sized),
+    end_exclusive: usize,
+    window: usize,
+    min_periods: usize,
+) -> Result<Option<f64>> {
+    let end = end_exclusive.min(values.len());
+    if window == 0 || min_periods == 0 || end == 0 {
+        return Ok(None);
+    }
+    let start = end.saturating_sub(window);
+    let mut sum = 0.0;
+    let mut valid = 0usize;
+    let mut non_finite = 0usize;
+    for i in start..end {
+        if let Some(v) = values.value_at(i) {
+            valid += 1;
+            if v.is_finite() {
+                sum += v;
+            } else {
+                non_finite += 1;
+            }
+        }
+    }
+    if valid < min_periods {
+        return Ok(None);
+    }
+    if non_finite > 0 {
+        return Ok(Some(f64::NAN));
+    }
+    Ok(Some(sum / valid as f64))
+}
+
+/// Value at `end_exclusive-1` equivalent of `rolling_sum_series_opt(...)[idx]`.
+/// Preserves series semantics: non-finite values yield `Some(NaN)`.
+pub fn rolling_sum_at_opt_from_series(
+    values: &(impl OptF64SeriesView + ?Sized),
+    end_exclusive: usize,
+    window: usize,
+    min_periods: usize,
+) -> Result<Option<f64>> {
+    let end = end_exclusive.min(values.len());
+    if window == 0 || min_periods == 0 || end == 0 {
+        return Ok(None);
+    }
+    let start = end.saturating_sub(window);
+    let mut sum = 0.0;
+    let mut valid = 0usize;
+    let mut non_finite = 0usize;
+    for i in start..end {
+        if let Some(v) = values.value_at(i) {
+            valid += 1;
+            if v.is_finite() {
+                sum += v;
+            } else {
+                non_finite += 1;
+            }
+        }
+    }
+    if valid < min_periods {
+        return Ok(None);
+    }
+    if non_finite > 0 {
+        return Ok(Some(f64::NAN));
+    }
+    Ok(Some(sum))
+}
+
 pub fn rolling_std_last(
     values: &(impl F64SeriesView + ?Sized),
     window: usize,
@@ -598,11 +758,32 @@ mod tests {
         let y = vec![2.0, 4.0, 6.0, 8.0, 10.0];
 
         assert_eq!(rolling_mean_last(&x, 3).expect("mean failed"), Some(4.0));
+        assert_eq!(
+            rolling_mean_last_from_series(&x, 3, 3).expect("mean series failed"),
+            Some(4.0)
+        );
+        assert_eq!(
+            rolling_mean_at_from_series(&x, 4, 3, 3).expect("mean at failed"),
+            Some(3.0)
+        );
+        assert_eq!(
+            rolling_sum_at_from_series(&x, 5, 3, 3).expect("sum at failed"),
+            Some(12.0)
+        );
         assert_eq!(rolling_min_last(&x, 3).expect("min failed"), Some(3.0));
         assert_eq!(rolling_max_last(&x, 3).expect("max failed"), Some(5.0));
 
         let std = rolling_std_last(&x, 3).expect("std failed");
         assert!(std.is_some());
+
+        let opt = vec![Some(1.0), None, Some(3.0), Some(4.0)];
+        assert_eq!(
+            rolling_sum_at_opt_from_series(&opt, 4, 4, 3).expect("sum at opt failed"),
+            Some(8.0)
+        );
+        let mean_opt =
+            rolling_mean_at_opt_from_series(&opt, 4, 4, 3).expect("mean at opt failed");
+        assert!((mean_opt.expect("mean at opt none") - (8.0 / 3.0)).abs() < 1e-12);
 
         let rank_data = [1.0, 3.0, 2.0];
         let rank = rolling_rank_last(&rank_data[..], 3).expect("rank failed");

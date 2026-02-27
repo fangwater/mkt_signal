@@ -20,8 +20,10 @@ use super::cfg::{FusionFactorPubConfig, ModelManagerConfig};
 use super::factor_enum::FusionFactorId;
 use super::publisher::FusionFactorPublisher;
 use super::window_primitives::{
-    rolling_corr_last, rolling_kurt_last, rolling_mean_last, rolling_mean_last_with_min_periods,
-    rolling_mean_series, rolling_mean_series_opt, rolling_rank_last, rolling_skew_last,
+    rolling_corr_last, rolling_kurt_last, rolling_mean_at_from_series, rolling_mean_last,
+    rolling_mean_last_opt_from_series, rolling_mean_last_with_min_periods, rolling_mean_series,
+    rolling_mean_series_opt, rolling_rank_last, rolling_skew_last, rolling_sum_at_from_series,
+    rolling_sum_at_opt_from_series, rolling_sum_last_from_series, rolling_sum_last_opt_from_series,
     rolling_sum_last_with_min_periods, rolling_sum_series, rolling_sum_series_opt,
     tail_skew_last_opt, F64SeriesView, OptF64SeriesView,
 };
@@ -84,6 +86,175 @@ pub struct DepthLevel {
 pub struct DepthSnapshot {
     pub bids: [DepthLevel; MAX_DEPTH_LEVELS_CACHE],
     pub asks: [DepthLevel; MAX_DEPTH_LEVELS_CACHE],
+}
+
+#[derive(Debug, Clone)]
+pub struct DepthDerived {
+    pub bids: [DepthLevel; MAX_DEPTH_LEVELS_CACHE],
+    pub asks: [DepthLevel; MAX_DEPTH_LEVELS_CACHE],
+    bid_amount_prefix: [f64; MAX_DEPTH_LEVELS_CACHE + 1],
+    ask_amount_prefix: [f64; MAX_DEPTH_LEVELS_CACHE + 1],
+    bid_price_prefix: [f64; MAX_DEPTH_LEVELS_CACHE + 1],
+    ask_price_prefix: [f64; MAX_DEPTH_LEVELS_CACHE + 1],
+    bid_pxv_prefix: [f64; MAX_DEPTH_LEVELS_CACHE + 1],
+    ask_pxv_prefix: [f64; MAX_DEPTH_LEVELS_CACHE + 1],
+}
+
+impl DepthDerived {
+    pub fn from_snapshot(depth: &DepthSnapshot) -> Self {
+        let mut out = Self {
+            bids: depth.bids,
+            asks: depth.asks,
+            bid_amount_prefix: [0.0; MAX_DEPTH_LEVELS_CACHE + 1],
+            ask_amount_prefix: [0.0; MAX_DEPTH_LEVELS_CACHE + 1],
+            bid_price_prefix: [0.0; MAX_DEPTH_LEVELS_CACHE + 1],
+            ask_price_prefix: [0.0; MAX_DEPTH_LEVELS_CACHE + 1],
+            bid_pxv_prefix: [0.0; MAX_DEPTH_LEVELS_CACHE + 1],
+            ask_pxv_prefix: [0.0; MAX_DEPTH_LEVELS_CACHE + 1],
+        };
+        for i in 0..MAX_DEPTH_LEVELS_CACHE {
+            let b = out.bids[i];
+            let a = out.asks[i];
+            out.bid_amount_prefix[i + 1] =
+                out.bid_amount_prefix[i] + if b.amount.is_finite() { b.amount } else { 0.0 };
+            out.ask_amount_prefix[i + 1] =
+                out.ask_amount_prefix[i] + if a.amount.is_finite() { a.amount } else { 0.0 };
+            out.bid_price_prefix[i + 1] =
+                out.bid_price_prefix[i] + if b.price.is_finite() { b.price } else { 0.0 };
+            out.ask_price_prefix[i + 1] =
+                out.ask_price_prefix[i] + if a.price.is_finite() { a.price } else { 0.0 };
+            out.bid_pxv_prefix[i + 1] = out.bid_pxv_prefix[i]
+                + if b.price.is_finite() && b.amount.is_finite() {
+                    b.price * b.amount
+                } else {
+                    0.0
+                };
+            out.ask_pxv_prefix[i + 1] = out.ask_pxv_prefix[i]
+                + if a.price.is_finite() && a.amount.is_finite() {
+                    a.price * a.amount
+                } else {
+                    0.0
+                };
+        }
+        out
+    }
+
+    #[inline]
+    fn clamp_limit(limit: usize) -> usize {
+        limit.min(MAX_DEPTH_LEVELS_CACHE)
+    }
+
+    #[inline]
+    pub fn bid_amount(&self, idx: usize) -> f64 {
+        self.bids.get(idx).map(|l| l.amount).unwrap_or(f64::NAN)
+    }
+
+    #[inline]
+    pub fn ask_amount(&self, idx: usize) -> f64 {
+        self.asks.get(idx).map(|l| l.amount).unwrap_or(f64::NAN)
+    }
+
+    #[inline]
+    pub fn bid_price(&self, idx: usize) -> f64 {
+        self.bids.get(idx).map(|l| l.price).unwrap_or(f64::NAN)
+    }
+
+    #[inline]
+    pub fn ask_price(&self, idx: usize) -> f64 {
+        self.asks.get(idx).map(|l| l.price).unwrap_or(f64::NAN)
+    }
+
+    #[inline]
+    pub fn sum_bid_amount(&self, limit: usize) -> f64 {
+        self.bid_amount_prefix[Self::clamp_limit(limit)]
+    }
+
+    #[inline]
+    pub fn sum_ask_amount(&self, limit: usize) -> f64 {
+        self.ask_amount_prefix[Self::clamp_limit(limit)]
+    }
+
+    #[inline]
+    pub fn sum_bid_price(&self, limit: usize) -> f64 {
+        self.bid_price_prefix[Self::clamp_limit(limit)]
+    }
+
+    #[inline]
+    pub fn sum_ask_price(&self, limit: usize) -> f64 {
+        self.ask_price_prefix[Self::clamp_limit(limit)]
+    }
+
+    #[inline]
+    pub fn mean_bid_amount(&self, limit: usize) -> f64 {
+        let l = Self::clamp_limit(limit);
+        if l == 0 {
+            return f64::NAN;
+        }
+        self.sum_bid_amount(l) / l as f64
+    }
+
+    #[inline]
+    pub fn mean_ask_amount(&self, limit: usize) -> f64 {
+        let l = Self::clamp_limit(limit);
+        if l == 0 {
+            return f64::NAN;
+        }
+        self.sum_ask_amount(l) / l as f64
+    }
+
+    #[inline]
+    pub fn mean_bid_price(&self, limit: usize) -> f64 {
+        let l = Self::clamp_limit(limit);
+        if l == 0 {
+            return f64::NAN;
+        }
+        self.sum_bid_price(l) / l as f64
+    }
+
+    #[inline]
+    pub fn mean_ask_price(&self, limit: usize) -> f64 {
+        let l = Self::clamp_limit(limit);
+        if l == 0 {
+            return f64::NAN;
+        }
+        self.sum_ask_price(l) / l as f64
+    }
+
+    #[inline]
+    pub fn bid_vwap(&self, limit: usize) -> Option<f64> {
+        let l = Self::clamp_limit(limit);
+        if l == 0 {
+            return None;
+        }
+        let den = self.bid_amount_prefix[l];
+        if den.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        finite_opt(Some(self.bid_pxv_prefix[l] / den)).or(Some(0.0))
+    }
+
+    #[inline]
+    pub fn ask_vwap(&self, limit: usize) -> Option<f64> {
+        let l = Self::clamp_limit(limit);
+        if l == 0 {
+            return None;
+        }
+        let den = self.ask_amount_prefix[l];
+        if den.abs() <= 1e-12 {
+            return Some(0.0);
+        }
+        finite_opt(Some(self.ask_pxv_prefix[l] / den)).or(Some(0.0))
+    }
+
+    #[inline]
+    pub fn best_bid(&self) -> (f64, f64) {
+        (self.bid_price(0), self.bid_amount(0))
+    }
+
+    #[inline]
+    pub fn best_ask(&self) -> (f64, f64) {
+        (self.ask_price(0), self.ask_amount(0))
+    }
 }
 
 #[derive(Default)]
@@ -206,8 +377,13 @@ impl SymbolCalcState {
     }
 
     pub fn push_depth_metrics(&mut self, depth: &DepthSnapshot) {
-        let (bid0p, bid0v) = depth_best_bid(depth);
-        let (ask0p, ask0v) = depth_best_ask(depth);
+        let derived = DepthDerived::from_snapshot(depth);
+        self.push_depth_metrics_derived(&derived);
+    }
+
+    pub fn push_depth_metrics_derived(&mut self, depth: &DepthDerived) {
+        let (bid0p, bid0v) = depth.best_bid();
+        let (ask0p, ask0v) = depth.best_ask();
 
         let spread = ask0p - bid0p;
         let mid = (ask0p + bid0p) / 2.0;
@@ -221,10 +397,10 @@ impl SymbolCalcState {
         };
         push_with_limit(&mut self.relative_spread, rel_spread);
 
-        let top10_bid = depth_sum_amount(&depth.bids, 10);
-        let top10_ask = depth_sum_amount(&depth.asks, 10);
-        let total_bid20 = depth_sum_amount(&depth.bids, 20);
-        let total_ask20 = depth_sum_amount(&depth.asks, 20);
+        let top10_bid = depth.sum_bid_amount(10);
+        let top10_ask = depth.sum_ask_amount(10);
+        let total_bid20 = depth.sum_bid_amount(20);
+        let total_ask20 = depth.sum_ask_amount(20);
         push_with_limit(&mut self.total_bid20, total_bid20);
         push_with_limit(&mut self.total_ask20, total_ask20);
         push_with_limit(&mut self.total_volume20_sum, total_bid20 + total_ask20);
@@ -232,18 +408,15 @@ impl SymbolCalcState {
         push_with_limit(&mut self.top10_ask_volume, top10_ask);
         push_with_limit(&mut self.top10_bid_mean, top10_bid / 10.0);
         push_with_limit(&mut self.top10_ask_mean, top10_ask / 10.0);
-        push_with_limit(&mut self.bid9v, depth_level_amount(&depth.bids, 9));
-        push_with_limit(&mut self.ask9v, depth_level_amount(&depth.asks, 9));
-        push_with_limit(&mut self.mean_bid_vol20, depth_mean_amount(&depth.bids, 20));
-        push_with_limit(
-            &mut self.mean_bid_price20,
-            depth_mean_price(&depth.bids, 20),
-        );
-        push_with_limit(&mut self.avg_ask_price5, depth_mean_price(&depth.asks, 5));
+        push_with_limit(&mut self.bid9v, depth.bid_amount(9));
+        push_with_limit(&mut self.ask9v, depth.ask_amount(9));
+        push_with_limit(&mut self.mean_bid_vol20, depth.mean_bid_amount(20));
+        push_with_limit(&mut self.mean_bid_price20, depth.mean_bid_price(20));
+        push_with_limit(&mut self.avg_ask_price5, depth.mean_ask_price(5));
         push_with_limit(&mut self.ask_pv15_mean, depth_mean_pxv(&depth.asks, 15));
         push_with_limit(&mut self.bid_pv15_mean, depth_mean_pxv(&depth.bids, 15));
         let ratio_031 = {
-            let num = depth_mean_price(&depth.bids, 15);
+            let num = depth.mean_bid_price(15);
             if mid.abs() > 1e-12 {
                 num / mid
             } else {
@@ -252,9 +425,9 @@ impl SymbolCalcState {
         };
         push_with_limit(&mut self.factor_031_ratio, ratio_031);
 
-        let ask_vwap5 = depth_vwap(&depth.asks, 5);
-        let ask_vwap20 = depth_vwap(&depth.asks, 20);
-        let bid_vwap20 = depth_vwap(&depth.bids, 20);
+        let ask_vwap5 = depth.ask_vwap(5);
+        let ask_vwap20 = depth.ask_vwap(20);
+        let bid_vwap20 = depth.bid_vwap(20);
         push_with_limit(&mut self.bid_vwap20, bid_vwap20.unwrap_or(f64::NAN));
         let ask_vwap_diff = match (ask_vwap5, ask_vwap20) {
             (Some(a), Some(b)) => a - b,
@@ -268,12 +441,12 @@ impl SymbolCalcState {
             .unwrap_or(f64::NAN);
         push_with_limit(&mut self.factor_119_mid_minus_ask_vwap5, factor_119_diff);
 
-        let ask_mean20 = depth_mean_amount(&depth.asks, 20);
+        let ask_mean20 = depth.mean_ask_amount(20);
         push_with_limit(&mut self.ask_mean_volume_20, ask_mean20);
 
         push_with_limit(&mut self.ask0v, ask0v);
 
-        let ask_price_sum20 = depth_sum_price(&depth.asks, 20);
+        let ask_price_sum20 = depth.sum_ask_price(20);
         let prev_sum = self.factor_128_ask_price_sum.back().copied();
         push_with_limit(&mut self.factor_128_ask_price_sum, ask_price_sum20);
         let curr_diff = prev_sum.map(|prev| ask_price_sum20 - prev).or(Some(0.0));
@@ -285,8 +458,8 @@ impl SymbolCalcState {
 
         let mut curr_ratios = [f64::NAN; 10];
         for (k, level_idx) in FACTOR_160_RANDOM_LEVELS.iter().enumerate() {
-            let bid = depth_level_amount(&depth.bids, *level_idx);
-            let ask = depth_level_amount(&depth.asks, *level_idx);
+            let bid = depth.bid_amount(*level_idx);
+            let ask = depth.ask_amount(*level_idx);
             let den = bid + ask;
             curr_ratios[k] = if den.abs() > 1e-12 {
                 bid / den
@@ -318,8 +491,8 @@ impl SymbolCalcState {
 
         let mut curr_diff = [f64::NAN; 10];
         for (i, val) in curr_diff.iter_mut().enumerate() {
-            let bidp = depth_level_price(&depth.bids, i);
-            let askp = depth_level_price(&depth.asks, i);
+            let bidp = depth.bid_price(i);
+            let askp = depth.ask_price(i);
             *val = bidp - askp;
         }
         let pct_mean = self.factor_152_prev_price_diff10.and_then(|prev| {
@@ -1149,11 +1322,13 @@ impl FusionFactorPubApp {
             let corrected = Self::validate_and_fix_trade_flow(venue_slug, &symbol, &mut records[i]);
             let _ = corrected;
             let msg = &records[i];
-            let depth_snapshot = parse_embedded_depth(msg);
-            let depth_opt = depth_snapshot.as_ref();
+            let depth_derived = parse_embedded_depth(msg)
+                .as_ref()
+                .map(DepthDerived::from_snapshot);
+            let depth_opt = depth_derived.as_ref();
             state.push_trade_flow(msg);
             if let Some(depth) = depth_opt {
-                state.push_depth_metrics(depth);
+                state.push_depth_metrics_derived(depth);
             }
             Self::update_symbol_rolling_stats(&mut state, &mut rolling_stats, msg, depth_opt);
             let latest_eval = match plan {
@@ -1301,7 +1476,7 @@ impl FusionFactorPubApp {
         state: &mut SymbolCalcState,
         rolling: &mut SymbolRollingStats,
         msg: &TradeFlowFeatureMsg,
-        depth: Option<&DepthSnapshot>,
+        depth: Option<&DepthDerived>,
     ) {
         let open = msg.values[FIELD_OPEN];
         let close = msg.values[FIELD_CLOSE];
@@ -1313,8 +1488,8 @@ impl FusionFactorPubApp {
         state.corr_close_volume_14_last = finite_opt(rolling.corr_close_volume_14.corr());
 
         if let Some(depth) = depth {
-            let (bid0p, bid0v) = depth_best_bid(depth);
-            let (ask0p, ask0v) = depth_best_ask(depth);
+            let (bid0p, bid0v) = depth.best_bid();
+            let (ask0p, ask0v) = depth.best_ask();
             let mid = (ask0p + bid0p) / 2.0;
             let mid_vol = (bid0v + ask0v) / 2.0;
             rolling.corr_mid_midvol_300.push(mid, mid_vol);
@@ -1377,8 +1552,10 @@ impl FusionFactorPubApp {
             self.trigger_count = self.trigger_count.saturating_add(1);
         }
 
-        let depth_snapshot = parse_embedded_depth(&msg);
-        let depth_opt = depth_snapshot.as_ref();
+        let depth_derived = parse_embedded_depth(&msg)
+            .as_ref()
+            .map(DepthDerived::from_snapshot);
+        let depth_opt = depth_derived.as_ref();
         {
             let (symbol_states, symbol_rolling_stats) =
                 (&mut self.symbol_states, &mut self.symbol_rolling_stats);
@@ -1386,7 +1563,7 @@ impl FusionFactorPubApp {
             let rolling = symbol_rolling_stats.entry(symbol.clone()).or_default();
             state.push_trade_flow(&msg);
             if let Some(depth) = depth_opt {
-                state.push_depth_metrics(depth);
+                state.push_depth_metrics_derived(depth);
             }
             Self::update_symbol_rolling_stats(state, rolling, &msg, depth_opt);
         }
@@ -1498,7 +1675,7 @@ impl FusionFactorPubApp {
     fn evaluate_ordered_factors(
         &mut self,
         symbol: &str,
-        depth: Option<&DepthSnapshot>,
+        depth: Option<&DepthDerived>,
     ) -> Option<OrderedEvalResult> {
         let needs_factor_118 = self
             .symbol_factor_plans
@@ -1527,7 +1704,7 @@ impl FusionFactorPubApp {
     fn evaluate_ordered_factors_with_plan(
         plan: &SymbolFactorPlan,
         factor_118_result: Option<(f64, bool, usize)>,
-        depth: Option<&DepthSnapshot>,
+        depth: Option<&DepthDerived>,
         series: Option<&SymbolSeries<'_>>,
     ) -> OrderedEvalResult {
         let mut result = OrderedEvalResult {
@@ -1724,7 +1901,7 @@ impl FusionFactorPubApp {
     pub fn compute_supported_factor(
         binding: &FactorBinding,
         factor_118_result: Option<(f64, bool, usize)>,
-        depth: Option<&DepthSnapshot>,
+        depth: Option<&DepthDerived>,
         series: Option<&SymbolSeries<'_>>,
     ) -> Option<(f64, bool, &'static str)> {
         match binding.factor_id {
@@ -2766,7 +2943,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(value))
     }
 
-    fn compute_factor_003(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_003(depth: &DepthDerived) -> Option<f64> {
         let bid = depth_sum_price(&depth.bids, 15);
         let ask = depth_sum_price(&depth.asks, 15);
         let den = bid + ask;
@@ -2776,7 +2953,7 @@ impl FusionFactorPubApp {
         finite_opt(Some((bid - ask) / den))
     }
 
-    fn compute_factor_006(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_006(depth: &DepthDerived) -> Option<f64> {
         let mut ask_strength = 0.0;
         let mut bid_strength = 0.0;
         for i in 0..5 {
@@ -2806,7 +2983,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(series.ask_vwap20[n - 1] - series.ask_vwap20[n - 2]))
     }
 
-    fn compute_factor_014(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_014(depth: &DepthDerived) -> Option<f64> {
         let top5 = depth_sum_amount(&depth.asks, 5);
         let total = depth_sum_amount(&depth.asks, 20);
         if total.abs() <= 1e-12 {
@@ -2815,7 +2992,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(top5 / total))
     }
 
-    fn compute_factor_016(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_016(depth: &DepthDerived) -> Option<f64> {
         let total_ask_price = depth_sum_price(&depth.asks, 20);
         if (total_ask_price + 1e-6).abs() <= 1e-12 {
             return Some(0.0);
@@ -2831,7 +3008,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(weighted_depth))
     }
 
-    fn compute_factor_017(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_017(depth: &DepthDerived) -> Option<f64> {
         let bids: Vec<f64> = (0..20)
             .map(|i| depth_level_amount(&depth.bids, i))
             .collect();
@@ -2846,9 +3023,14 @@ impl FusionFactorPubApp {
         if n < 2 {
             return None;
         }
-        let ma = rolling_mean_series(&series.bid_vwap20, 5, 1).ok()?;
-        let curr = finite_opt(ma[n - 1])?;
-        let prev = finite_opt(ma[n - 2])?;
+        let curr = rolling_mean_at_from_series(&series.bid_vwap20, n, 5, 1)
+            .ok()
+            .flatten()
+            .and_then(|v| finite_opt(Some(v)))?;
+        let prev = rolling_mean_at_from_series(&series.bid_vwap20, n - 1, 5, 1)
+            .ok()
+            .flatten()
+            .and_then(|v| finite_opt(Some(v)))?;
         finite_opt(Some(curr - prev))
     }
 
@@ -2861,7 +3043,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(bid_std / ask_std))
     }
 
-    fn compute_factor_025(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_025(depth: &DepthDerived) -> Option<f64> {
         let top3 = depth_sum_amount(&depth.bids, 3);
         let bottom17 = (3..20)
             .map(|i| depth_level_amount(&depth.bids, i))
@@ -2873,14 +3055,14 @@ impl FusionFactorPubApp {
         finite_opt(Some(top3 / bottom17))
     }
 
-    fn compute_factor_027(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_027(depth: &DepthDerived) -> Option<f64> {
         let bids: Vec<f64> = (0..20)
             .map(|i| depth_level_amount(&depth.bids, i))
             .collect();
         rolling_skew_last(&bids, 20, false).ok().flatten()
     }
 
-    fn compute_factor_030(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_030(depth: &DepthDerived) -> Option<f64> {
         let asks: Vec<f64> = (0..20)
             .map(|i| depth_level_amount(&depth.asks, i))
             .collect();
@@ -2904,7 +3086,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(last / ma))
     }
 
-    fn compute_factor_035(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_035(depth: &DepthDerived) -> Option<f64> {
         let bid = depth_vwap(&depth.bids, 5)?;
         let ask = depth_vwap(&depth.asks, 5)?;
         if ask.abs() <= 1e-12 {
@@ -2913,13 +3095,13 @@ impl FusionFactorPubApp {
         finite_opt(Some(bid / ask))
     }
 
-    fn compute_factor_037(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_037(depth: &DepthDerived) -> Option<f64> {
         let bid5 = depth_vwap(&depth.bids, 5)?;
         let bid15 = depth_vwap(&depth.bids, 15)?;
         finite_opt(Some(bid5 - bid15))
     }
 
-    fn compute_factor_041(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_041(depth: &DepthDerived) -> Option<f64> {
         let asks: Vec<f64> = (0..10)
             .map(|i| depth_level_amount(&depth.asks, i))
             .collect();
@@ -2980,7 +3162,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(ma30 / ma300))
     }
 
-    fn compute_factor_054(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_054(depth: &DepthDerived) -> Option<f64> {
         let mut num = 0.0;
         let mut den = 0.0;
         for i in 0..20 {
@@ -3020,7 +3202,7 @@ impl FusionFactorPubApp {
         pct_change_last(&series.mean_bid_vol20, 10)
     }
 
-    fn compute_factor_063(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_063(depth: &DepthDerived) -> Option<f64> {
         let v = (0..10)
             .map(|i| depth_level_amount(&depth.bids, i))
             .filter(|x| x.is_finite())
@@ -3028,7 +3210,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(v))
     }
 
-    fn compute_factor_065(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_065(depth: &DepthDerived) -> Option<f64> {
         let v = (0..10)
             .map(|i| depth_level_amount(&depth.bids, i))
             .filter(|x| x.is_finite())
@@ -3036,7 +3218,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(v))
     }
 
-    fn compute_factor_066(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_066(depth: &DepthDerived) -> Option<f64> {
         let v = (0..10)
             .map(|i| depth_level_amount(&depth.asks, i))
             .filter(|x| x.is_finite())
@@ -3044,12 +3226,12 @@ impl FusionFactorPubApp {
         finite_opt(Some(v))
     }
 
-    fn compute_factor_074(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_074(depth: &DepthDerived) -> Option<f64> {
         let asks: Vec<f64> = (0..5).map(|i| depth_level_amount(&depth.asks, i)).collect();
         std_pop(&asks)
     }
 
-    fn compute_factor_075(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_075(depth: &DepthDerived) -> Option<f64> {
         let bids: Vec<f64> = (0..5).map(|i| depth_level_amount(&depth.bids, i)).collect();
         let mean = bids.iter().sum::<f64>() / bids.len() as f64;
         if mean.abs() <= 1e-12 {
@@ -3059,7 +3241,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(std / mean))
     }
 
-    fn compute_factor_077(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_077(depth: &DepthDerived) -> Option<f64> {
         let bids: Vec<f64> = (0..10)
             .map(|i| depth_level_amount(&depth.bids, i))
             .collect();
@@ -3069,13 +3251,13 @@ impl FusionFactorPubApp {
         rolling_corr_last(&bids, &asks, 10, 1).ok().flatten()
     }
 
-    fn compute_factor_086(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_086(depth: &DepthDerived) -> Option<f64> {
         let bid = depth_sum_amount(&depth.bids, 15);
         let ask = depth_sum_amount(&depth.asks, 15);
         finite_opt(Some(bid - ask))
     }
 
-    fn compute_factor_087(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_087(depth: &DepthDerived) -> Option<f64> {
         let bid = depth_sum_amount(&depth.bids, 20);
         let ask = depth_sum_amount(&depth.asks, 20);
         if ask.abs() <= 1e-12 {
@@ -3084,7 +3266,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(bid / ask))
     }
 
-    fn compute_factor_088(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_088(depth: &DepthDerived) -> Option<f64> {
         let bids: Vec<f64> = (0..10)
             .map(|i| depth_level_amount(&depth.bids, i))
             .collect();
@@ -3092,7 +3274,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(std * std))
     }
 
-    fn compute_factor_089(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_089(depth: &DepthDerived) -> Option<f64> {
         let asks: Vec<f64> = (0..10)
             .map(|i| depth_level_amount(&depth.asks, i))
             .collect();
@@ -3104,7 +3286,7 @@ impl FusionFactorPubApp {
         tail_quantile_last(&series.avg_ask_price5, 100, 0.1)
     }
 
-    fn compute_factor_097(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_097(depth: &DepthDerived) -> Option<f64> {
         let mut vals = Vec::with_capacity(10);
         for i in 0..10 {
             let b = depth_level_amount(&depth.bids, i);
@@ -3123,7 +3305,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_factor_102(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_102(depth: &DepthDerived) -> Option<f64> {
         let bids: Vec<f64> = (0..10)
             .map(|i| depth_level_amount(&depth.bids, i))
             .collect();
@@ -3137,7 +3319,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(10.0 / den))
     }
 
-    fn compute_factor_107(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_107(depth: &DepthDerived) -> Option<f64> {
         let prices: Vec<f64> = (0..10).map(|i| depth_level_price(&depth.bids, i)).collect();
         let vols: Vec<f64> = (0..10)
             .map(|i| depth_level_amount(&depth.bids, i))
@@ -3152,7 +3334,7 @@ impl FusionFactorPubApp {
         ))
     }
 
-    fn compute_factor_108(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_108(depth: &DepthDerived) -> Option<f64> {
         let prices: Vec<f64> = (0..10).map(|i| depth_level_price(&depth.asks, i)).collect();
         let vols: Vec<f64> = (0..10)
             .map(|i| depth_level_amount(&depth.asks, i))
@@ -3167,7 +3349,7 @@ impl FusionFactorPubApp {
         ))
     }
 
-    fn compute_factor_110(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_110(depth: &DepthDerived) -> Option<f64> {
         let (bid0p, _) = depth_best_bid(depth);
         let (ask0p, _) = depth_best_ask(depth);
         let mid = (bid0p + ask0p) / 2.0;
@@ -3215,7 +3397,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(last / ma))
     }
 
-    fn compute_factor_121(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_121(depth: &DepthDerived) -> Option<f64> {
         let mut asks: Vec<f64> = (0..10)
             .map(|i| depth_level_amount(&depth.asks, i))
             .collect();
@@ -3224,7 +3406,7 @@ impl FusionFactorPubApp {
         finite_opt(Some((asks[mid - 1] + asks[mid]) / 2.0))
     }
 
-    fn compute_factor_123(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_123(depth: &DepthDerived) -> Option<f64> {
         let top3 = depth_sum_amount(&depth.bids, 3);
         let total15 = depth_sum_amount(&depth.bids, 15);
         if total15.abs() <= 1e-12 {
@@ -3233,7 +3415,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(top3 / total15))
     }
 
-    fn compute_factor_124(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_124(depth: &DepthDerived) -> Option<f64> {
         let bids: Vec<f64> = (0..10)
             .map(|i| depth_level_amount(&depth.bids, i))
             .collect();
@@ -3250,7 +3432,7 @@ impl FusionFactorPubApp {
         finite_opt(Some(bid_var / ask_var))
     }
 
-    fn compute_factor_126(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_126(depth: &DepthDerived) -> Option<f64> {
         let mut vals = Vec::with_capacity(10);
         for i in 0..10 {
             vals.push(depth_level_amount(&depth.bids, i) + depth_level_amount(&depth.asks, i));
@@ -3293,7 +3475,7 @@ impl FusionFactorPubApp {
             .flatten()
     }
 
-    fn compute_factor_139(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_139(depth: &DepthDerived) -> Option<f64> {
         let mut sum = 0.0;
         let mut cnt = 0usize;
         for i in 0..5 {
@@ -3310,7 +3492,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_factor_144(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_144(depth: &DepthDerived) -> Option<f64> {
         let diffs: Vec<f64> = (0..15)
             .map(|i| depth_level_price(&depth.bids, i) - depth_level_price(&depth.asks, i))
             .collect();
@@ -3365,7 +3547,7 @@ impl FusionFactorPubApp {
         sample_std_last(&series.spread, 5, 1)
     }
 
-    fn compute_factor_004(series: &SymbolSeries<'_>, depth: Option<&DepthSnapshot>) -> Option<f64> {
+    fn compute_factor_004(series: &SymbolSeries<'_>, depth: Option<&DepthDerived>) -> Option<f64> {
         let depth = depth?;
         let buy_vwap = *series.buy_vwap.last()?;
         let (bid0p, _) = depth_best_bid(depth);
@@ -3379,7 +3561,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_factor_009(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_009(depth: &DepthDerived) -> Option<f64> {
         let (bid0p, _) = depth_best_bid(depth);
         let (ask0p, _) = depth_best_ask(depth);
         if bid0p <= 0.0 || ask0p <= 0.0 {
@@ -3393,7 +3575,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_factor_018(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_018(depth: &DepthDerived) -> Option<f64> {
         let asks: Vec<f64> = (0..20)
             .map(|i| depth_level_amount(&depth.asks, i))
             .collect();
@@ -3444,7 +3626,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_factor_029(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_029(depth: &DepthDerived) -> Option<f64> {
         let bids: Vec<f64> = (0..20)
             .map(|i| depth_level_amount(&depth.bids, i))
             .collect();
@@ -3457,7 +3639,7 @@ impl FusionFactorPubApp {
             .flatten()
     }
 
-    fn compute_factor_038(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_038(depth: &DepthDerived) -> Option<f64> {
         let vwap5 = depth_vwap(&depth.asks, 5)?;
         let vwap15 = depth_vwap(&depth.asks, 15)?;
         let value = vwap5 - vwap15;
@@ -3486,7 +3668,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_factor_076(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_076(depth: &DepthDerived) -> Option<f64> {
         let asks: Vec<f64> = (0..5).map(|i| depth_level_amount(&depth.asks, i)).collect();
         let mean = asks.iter().sum::<f64>() / asks.len() as f64;
         if mean.abs() <= 1e-12 {
@@ -3501,7 +3683,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_factor_096(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_096(depth: &DepthDerived) -> Option<f64> {
         let mut asks: Vec<f64> = (0..20)
             .map(|i| depth_level_amount(&depth.asks, i))
             .collect();
@@ -3516,11 +3698,13 @@ impl FusionFactorPubApp {
     }
 
     fn compute_factor_128(series: &SymbolSeries<'_>) -> Option<f64> {
-        let mean_series = rolling_mean_series_opt(&series.factor_128_skew, 300, 50).ok()?;
-        last_opt(&mean_series)
+        rolling_mean_last_opt_from_series(&series.factor_128_skew, 300, 50)
+            .ok()
+            .flatten()
+            .and_then(|v| finite_opt(Some(v)))
     }
 
-    fn compute_factor_156(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_156(depth: &DepthDerived) -> Option<f64> {
         let bid_prices: Vec<f64> = (0..10).map(|i| depth_level_price(&depth.bids, i)).collect();
         let ask_prices: Vec<f64> = (0..10).map(|i| depth_level_price(&depth.asks, i)).collect();
         let bid_std = std_pop(&bid_prices)?;
@@ -3550,7 +3734,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_factor_166(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_166(depth: &DepthDerived) -> Option<f64> {
         let (_, bid0v) = depth_best_bid(depth);
         let (ask0p, ask0v) = depth_best_ask(depth);
         let depth_mean = (bid0v + ask0v) / 2.0;
@@ -3565,7 +3749,7 @@ impl FusionFactorPubApp {
         }
     }
 
-    fn compute_factor_176(depth: &DepthSnapshot) -> Option<f64> {
+    fn compute_factor_176(depth: &DepthDerived) -> Option<f64> {
         let (_, bid0v) = depth_best_bid(depth);
         let (_, ask0v) = depth_best_ask(depth);
         if ask0v.abs() <= 1e-12 {
@@ -3767,16 +3951,29 @@ impl FusionFactorPubApp {
     }
 
     fn compute_baseline_007(series: &SymbolSeries<'_>) -> Option<f64> {
-        let fast = rolling_mean_series(&series.net_buy_amount, 12, 12).ok()?;
-        let slow = rolling_mean_series(&series.net_buy_amount, 26, 26).ok()?;
-        let macd: Vec<Option<f64>> = (0..series.net_buy_amount.len())
-            .map(|i| match (fast[i], slow[i]) {
+        let n = series.net_buy_amount.len();
+        if n < 9 {
+            return None;
+        }
+        let start = n - 9;
+        let mut macd_tail = Vec::with_capacity(9);
+        for end in start + 1..=n {
+            let fast = rolling_mean_at_from_series(&series.net_buy_amount, end, 12, 12)
+                .ok()
+                .flatten();
+            let slow = rolling_mean_at_from_series(&series.net_buy_amount, end, 26, 26)
+                .ok()
+                .flatten();
+            let macd = match (fast, slow) {
                 (Some(f), Some(s)) => finite_opt(Some(f - s)),
                 _ => Some(0.0),
-            })
-            .collect();
-        let signal = rolling_mean_series_opt(&macd, 9, 9).ok()?;
-        last_opt(&signal)
+            };
+            macd_tail.push(macd);
+        }
+        rolling_mean_last_opt_from_series(&macd_tail, 9, 9)
+            .ok()
+            .flatten()
+            .and_then(|v| finite_opt(Some(v)))
     }
 
     fn compute_baseline_008(series: &SymbolSeries<'_>) -> Option<f64> {
@@ -3849,8 +4046,10 @@ impl FusionFactorPubApp {
                 finite_opt(Some((plus_di - minus_di).abs() / den * 100.0))
             })
             .collect();
-        let adx = rolling_mean_series_opt(&dx, 14, 14).ok()?;
-        last_opt(&adx)
+        rolling_mean_last_opt_from_series(&dx, 14, 14)
+            .ok()
+            .flatten()
+            .and_then(|v| finite_opt(Some(v)))
     }
 
     fn compute_baseline_028(series: &SymbolSeries<'_>) -> Option<f64> {
@@ -4185,8 +4384,10 @@ impl FusionFactorPubApp {
                 finite_opt(Some((plus_di - minus_di).abs() / den * 100.0))
             })
             .collect();
-        let adx = rolling_mean_series_opt(&dx, 14, 14).ok()?;
-        last_opt(&adx)
+        rolling_mean_last_opt_from_series(&dx, 14, 14)
+            .ok()
+            .flatten()
+            .and_then(|v| finite_opt(Some(v)))
     }
 
     fn compute_baseline_177(series: &SymbolSeries<'_>) -> Option<f64> {
@@ -4313,8 +4514,10 @@ impl FusionFactorPubApp {
     fn compute_td_ti_010(series: &SymbolSeries<'_>) -> Option<f64> {
         let ema1 = rolling_mean_series(&series.close, 30, 30).ok()?;
         let ema2 = rolling_mean_series_opt(&ema1, 30, 30).ok()?;
-        let ema3 = rolling_mean_series_opt(&ema2, 30, 30).ok()?;
-        last_opt(&ema3)
+        rolling_mean_last_opt_from_series(&ema2, 30, 30)
+            .ok()
+            .flatten()
+            .and_then(|v| finite_opt(Some(v)))
     }
 
     fn compute_td_ti_015(series: &SymbolSeries<'_>) -> Option<f64> {
@@ -4821,9 +5024,19 @@ impl FusionFactorPubApp {
             };
             obv_delta.push(v);
         }
-        let obv = rolling_sum_series(&obv_delta, 360, 360).ok()?;
-        let ma = rolling_mean_series_opt(&obv, 14, 14).ok()?;
-        last_opt(&ma)
+        let start = n - 14;
+        let mut obv_tail = Vec::with_capacity(14);
+        for end in start + 1..=n {
+            obv_tail.push(
+                rolling_sum_at_from_series(&obv_delta, end, 360, 360)
+                    .ok()
+                    .flatten(),
+            );
+        }
+        rolling_mean_last_opt_from_series(&obv_tail, 14, 14)
+            .ok()
+            .flatten()
+            .and_then(|v| finite_opt(Some(v)))
     }
 
     fn compute_tp_vpi_014(series: &SymbolSeries<'_>) -> Option<f64> {
@@ -4831,18 +5044,25 @@ impl FusionFactorPubApp {
         if n < 39 {
             return None;
         }
-        let vol_ma = rolling_mean_series(&series.volume, 20, 20).ok()?;
-        let ratio: Vec<Option<f64>> = (0..n)
-            .map(|i| {
-                let m = finite_opt(vol_ma[i])?;
-                if m.abs() <= 1e-12 {
-                    return Some(0.0);
-                }
-                finite_opt(Some(series.volume[i] / m))
-            })
-            .collect();
-        let ratio_ma = rolling_mean_series_opt(&ratio, 20, 20).ok()?;
-        last_opt(&ratio_ma)
+        let start = n - 20;
+        let mut ratio_tail = Vec::with_capacity(20);
+        for end in start + 1..=n {
+            let ratio = rolling_mean_at_from_series(&series.volume, end, 20, 20)
+                .ok()
+                .flatten()
+                .and_then(|v| finite_opt(Some(v)))
+                .and_then(|m| {
+                    if m.abs() <= 1e-12 {
+                        return Some(0.0);
+                    }
+                    finite_opt(Some(series.volume[end - 1] / m))
+                });
+            ratio_tail.push(ratio);
+        }
+        rolling_mean_last_opt_from_series(&ratio_tail, 20, 20)
+            .ok()
+            .flatten()
+            .and_then(|v| finite_opt(Some(v)))
     }
 
     fn compute_tp_vpi_017(series: &SymbolSeries<'_>) -> Option<f64> {
@@ -4994,8 +5214,10 @@ impl FusionFactorPubApp {
             .into_iter()
             .map(|v| if v.is_finite() { Some(v) } else { None })
             .collect();
-        let ad = rolling_sum_series_opt(&clv_x_opt, 360, 360).ok()?;
-        last_opt(&ad)
+        rolling_sum_last_opt_from_series(&clv_x_opt, 360, 360)
+            .ok()
+            .flatten()
+            .and_then(|v| finite_opt(Some(v)))
     }
 
     fn compute_tp_vpi_002(series: &SymbolSeries<'_>) -> Option<f64> {
@@ -5024,9 +5246,19 @@ impl FusionFactorPubApp {
             .into_iter()
             .map(|v| if v.is_finite() { Some(v) } else { None })
             .collect();
-        let ad = rolling_sum_series_opt(&clv_x_opt, 360, 360).ok()?;
-        let ad_ma = rolling_mean_series_opt(&ad, 14, 14).ok()?;
-        last_opt(&ad_ma)
+        let start = n.saturating_sub(14);
+        let mut ad_tail = Vec::with_capacity(n - start);
+        for end in start + 1..=n {
+            ad_tail.push(
+                rolling_sum_at_opt_from_series(&clv_x_opt, end, 360, 360)
+                    .ok()
+                    .flatten(),
+            );
+        }
+        rolling_mean_last_opt_from_series(&ad_tail, 14, 14)
+            .ok()
+            .flatten()
+            .and_then(|v| finite_opt(Some(v)))
     }
 
     fn compute_tp_vpi_005(series: &SymbolSeries<'_>) -> Option<f64> {
@@ -5048,8 +5280,10 @@ impl FusionFactorPubApp {
             };
             obv_delta.push(delta);
         }
-        let obv = rolling_sum_series(&obv_delta, 360, 360).ok()?;
-        last_opt(&obv)
+        rolling_sum_last_from_series(&obv_delta, 360, 360)
+            .ok()
+            .flatten()
+            .and_then(|v| finite_opt(Some(v)))
     }
 
     fn compute_tp_vpi_015(series: &SymbolSeries<'_>) -> Option<f64> {
@@ -5122,8 +5356,11 @@ impl FusionFactorPubApp {
             })
             .collect();
 
-        let apb_roll = rolling_mean_series_opt(&apb, 18, 18).ok()?;
-        last_opt(&apb_roll).or(Some(0.0))
+        rolling_mean_last_opt_from_series(&apb, 18, 18)
+            .ok()
+            .flatten()
+            .and_then(|v| finite_opt(Some(v)))
+            .or(Some(0.0))
     }
 
     fn compute_td_pt_004(series: &SymbolSeries<'_>) -> Option<f64> {
@@ -5205,8 +5442,10 @@ impl FusionFactorPubApp {
                 finite_opt(Some((2.0 * std::f64::consts::PI) / p))
             })
             .collect();
-        let result = rolling_mean_series_opt(&inv_phase, 30, 1).ok()?;
-        last_opt(&result)
+        rolling_mean_last_opt_from_series(&inv_phase, 30, 1)
+            .ok()
+            .flatten()
+            .and_then(|v| finite_opt(Some(v)))
     }
 
     fn compute_td_pr_005(series: &SymbolSeries<'_>) -> Option<f64> {
@@ -5252,7 +5491,7 @@ impl FusionFactorPubApp {
     fn compute_factor_118(
         &mut self,
         symbol: &str,
-        depth: &DepthSnapshot,
+        depth: &DepthDerived,
     ) -> Option<(f64, bool, usize)> {
         let state = self.symbol_states.entry(symbol.to_string()).or_default();
         Self::compute_factor_118_with_state(state, depth)
@@ -5260,7 +5499,7 @@ impl FusionFactorPubApp {
 
     fn compute_factor_118_with_state(
         state: &mut SymbolCalcState,
-        depth: &DepthSnapshot,
+        depth: &DepthDerived,
     ) -> Option<(f64, bool, usize)> {
         let mid_price_diff = compute_mid_price_minus_bid_vwap(depth)?;
         state.push_mid_price_diff(mid_price_diff);
@@ -5415,7 +5654,7 @@ async fn authenticate_model_manager(
     Ok(Some(payload.token))
 }
 
-fn compute_mid_price_minus_bid_vwap(depth: &DepthSnapshot) -> Option<f64> {
+fn compute_mid_price_minus_bid_vwap(depth: &DepthDerived) -> Option<f64> {
     let bid1 = depth.bids.first()?;
     let ask1 = depth.asks.first()?;
     if bid1.price <= 0.0 || ask1.price <= 0.0 {
@@ -5448,14 +5687,14 @@ fn compute_mid_price_minus_bid_vwap(depth: &DepthSnapshot) -> Option<f64> {
     }
 }
 
-pub fn depth_best_bid(depth: &DepthSnapshot) -> (f64, f64) {
+pub fn depth_best_bid(depth: &DepthDerived) -> (f64, f64) {
     match depth.bids.first() {
         Some(level) => (level.price, level.amount),
         None => (f64::NAN, f64::NAN),
     }
 }
 
-pub fn depth_best_ask(depth: &DepthSnapshot) -> (f64, f64) {
+pub fn depth_best_ask(depth: &DepthDerived) -> (f64, f64) {
     match depth.asks.first() {
         Some(level) => (level.price, level.amount),
         None => (f64::NAN, f64::NAN),
@@ -5708,7 +5947,7 @@ fn corr_last_with_min_periods(
 fn depth_corr_or_panic(
     factor_name: &str,
     side: &str,
-    depth: &DepthSnapshot,
+    depth: &DepthDerived,
     prices: &[f64],
     vols: &[f64],
     corr_result: Result<Option<f64>>,
