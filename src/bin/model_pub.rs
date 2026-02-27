@@ -5,6 +5,7 @@
 use anyhow::Result;
 use clap::Parser;
 use log::info;
+use std::env;
 
 use mkt_signal::factor_pub::model_pub::app::ModelPubApp;
 
@@ -23,6 +24,7 @@ struct Args {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     env_logger::init();
+    set_onnx_env_fixed();
 
     let args = Args::parse();
     info!(
@@ -32,4 +34,11 @@ async fn main() -> Result<()> {
 
     let mut app = ModelPubApp::new(DEFAULT_CONFIG_PATH, &args.model_name).await?;
     app.run()
+}
+
+fn set_onnx_env_fixed() {
+    // Fixed runtime policy requested by user: avoid OpenMP oversubscription and busy-wait.
+    env::set_var("OMP_NUM_THREADS", "1");
+    env::set_var("OMP_WAIT_POLICY", "PASSIVE");
+    info!("model_pub ONNX env fixed: OMP_NUM_THREADS=1 OMP_WAIT_POLICY=PASSIVE");
 }
