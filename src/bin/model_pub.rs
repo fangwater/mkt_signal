@@ -26,7 +26,7 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
     info!(
-        "Starting model_pub: model_name={} config={}",
+        "Starting model_pub: model_name={} config={} backend=ort",
         args.model_name, DEFAULT_CONFIG_PATH
     );
 
