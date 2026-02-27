@@ -12,6 +12,7 @@ use reqwest::Client;
 use rocksdb::{ColumnFamilyDescriptor, IteratorMode, Options, DB};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::ops::Index;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -22,7 +23,7 @@ use super::window_primitives::{
     rolling_corr_last, rolling_kurt_last, rolling_mean_last, rolling_mean_last_with_min_periods,
     rolling_mean_series, rolling_mean_series_opt, rolling_rank_last, rolling_skew_last,
     rolling_sum_last_with_min_periods, rolling_sum_series, rolling_sum_series_opt,
-    tail_skew_last_opt,
+    tail_skew_last_opt, F64SeriesView, OptF64SeriesView,
 };
 use crate::common::mkt_msg::{FeatureMsg, FeatureStatus};
 use crate::common::msg_parser::parse_trade_flow_feature;
@@ -386,58 +387,144 @@ impl ReplayEvalSummary {
 }
 
 pub struct SymbolSeries<'a> {
-    pub open: &'a [f64],
-    pub high: &'a [f64],
-    pub low: &'a [f64],
-    pub close: &'a [f64],
-    pub volume: &'a [f64],
-    pub amount: &'a [f64],
-    pub buy_count: &'a [f64],
-    pub sell_count: &'a [f64],
-    pub buy_amount: &'a [f64],
-    pub sell_amount: &'a [f64],
-    pub buy_volume: &'a [f64],
-    pub sell_volume: &'a [f64],
-    pub large_order: &'a [f64],
-    pub large_buy: &'a [f64],
-    pub large_sell: &'a [f64],
-    pub small_order: &'a [f64],
-    pub small_buy: &'a [f64],
-    pub small_sell: &'a [f64],
-    pub vwap: &'a [f64],
-    pub buy_vwap: &'a [f64],
-    pub sell_vwap: &'a [f64],
-    pub net_buy_large: &'a [f64],
-    pub net_buy_small: &'a [f64],
-    pub net_buy_amount: &'a [f64],
-    pub bid0v: &'a [f64],
-    pub mid_price: &'a [f64],
-    pub spread: &'a [f64],
-    pub relative_spread: &'a [f64],
-    pub bid_vwap20: &'a [f64],
-    pub total_bid20: &'a [f64],
-    pub total_ask20: &'a [f64],
-    pub top10_bid_volume: &'a [f64],
-    pub top10_ask_volume: &'a [f64],
-    pub top10_bid_mean: &'a [f64],
-    pub top10_ask_mean: &'a [f64],
-    pub bid9v: &'a [f64],
-    pub ask9v: &'a [f64],
-    pub mean_bid_vol20: &'a [f64],
-    pub mean_bid_price20: &'a [f64],
-    pub avg_ask_price5: &'a [f64],
-    pub ask_pv15_mean: &'a [f64],
-    pub bid_pv15_mean: &'a [f64],
-    pub factor_031_ratio: &'a [f64],
-    pub factor_119_mid_minus_ask_vwap5: &'a [f64],
-    pub total_volume20_sum: &'a [f64],
-    pub factor_152_pct_mean: &'a [Option<f64>],
-    pub ask_vwap_diff_5_20: &'a [f64],
-    pub ask_mean_volume_20: &'a [f64],
-    pub ask0v: &'a [f64],
-    pub ask_vwap20: &'a [f64],
-    pub factor_128_skew: &'a [Option<f64>],
-    pub factor_160_pct_change_mean: &'a [Option<f64>],
+    pub open: SplitSlice<'a, f64>,
+    pub high: SplitSlice<'a, f64>,
+    pub low: SplitSlice<'a, f64>,
+    pub close: SplitSlice<'a, f64>,
+    pub volume: SplitSlice<'a, f64>,
+    pub amount: SplitSlice<'a, f64>,
+    pub buy_count: SplitSlice<'a, f64>,
+    pub sell_count: SplitSlice<'a, f64>,
+    pub buy_amount: SplitSlice<'a, f64>,
+    pub sell_amount: SplitSlice<'a, f64>,
+    pub buy_volume: SplitSlice<'a, f64>,
+    pub sell_volume: SplitSlice<'a, f64>,
+    pub large_order: SplitSlice<'a, f64>,
+    pub large_buy: SplitSlice<'a, f64>,
+    pub large_sell: SplitSlice<'a, f64>,
+    pub small_order: SplitSlice<'a, f64>,
+    pub small_buy: SplitSlice<'a, f64>,
+    pub small_sell: SplitSlice<'a, f64>,
+    pub vwap: SplitSlice<'a, f64>,
+    pub buy_vwap: SplitSlice<'a, f64>,
+    pub sell_vwap: SplitSlice<'a, f64>,
+    pub net_buy_large: SplitSlice<'a, f64>,
+    pub net_buy_small: SplitSlice<'a, f64>,
+    pub net_buy_amount: SplitSlice<'a, f64>,
+    pub bid0v: SplitSlice<'a, f64>,
+    pub mid_price: SplitSlice<'a, f64>,
+    pub spread: SplitSlice<'a, f64>,
+    pub relative_spread: SplitSlice<'a, f64>,
+    pub bid_vwap20: SplitSlice<'a, f64>,
+    pub total_bid20: SplitSlice<'a, f64>,
+    pub total_ask20: SplitSlice<'a, f64>,
+    pub top10_bid_volume: SplitSlice<'a, f64>,
+    pub top10_ask_volume: SplitSlice<'a, f64>,
+    pub top10_bid_mean: SplitSlice<'a, f64>,
+    pub top10_ask_mean: SplitSlice<'a, f64>,
+    pub bid9v: SplitSlice<'a, f64>,
+    pub ask9v: SplitSlice<'a, f64>,
+    pub mean_bid_vol20: SplitSlice<'a, f64>,
+    pub mean_bid_price20: SplitSlice<'a, f64>,
+    pub avg_ask_price5: SplitSlice<'a, f64>,
+    pub ask_pv15_mean: SplitSlice<'a, f64>,
+    pub bid_pv15_mean: SplitSlice<'a, f64>,
+    pub factor_031_ratio: SplitSlice<'a, f64>,
+    pub factor_119_mid_minus_ask_vwap5: SplitSlice<'a, f64>,
+    pub total_volume20_sum: SplitSlice<'a, f64>,
+    pub factor_152_pct_mean: SplitSlice<'a, Option<f64>>,
+    pub ask_vwap_diff_5_20: SplitSlice<'a, f64>,
+    pub ask_mean_volume_20: SplitSlice<'a, f64>,
+    pub ask0v: SplitSlice<'a, f64>,
+    pub ask_vwap20: SplitSlice<'a, f64>,
+    pub factor_128_skew: SplitSlice<'a, Option<f64>>,
+    pub factor_160_pct_change_mean: SplitSlice<'a, Option<f64>>,
+}
+
+#[derive(Clone, Copy)]
+pub struct SplitSlice<'a, T> {
+    first: &'a [T],
+    second: &'a [T],
+}
+
+impl<'a, T> SplitSlice<'a, T> {
+    pub fn from_parts(parts: (&'a [T], &'a [T])) -> Self {
+        Self {
+            first: parts.0,
+            second: parts.1,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.first.len() + self.second.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn get(&self, idx: usize) -> Option<&'a T> {
+        if idx < self.first.len() {
+            return self.first.get(idx);
+        }
+        self.second.get(idx.saturating_sub(self.first.len()))
+    }
+
+    pub fn last(&self) -> Option<&'a T> {
+        self.second.last().or_else(|| self.first.last())
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &'a T> {
+        self.first.iter().chain(self.second.iter())
+    }
+
+    pub fn range_iter(&self, start: usize, end: usize) -> impl Iterator<Item = &'a T> {
+        let len = self.len();
+        let start = start.min(len);
+        let end = end.min(len);
+        if start >= end {
+            return self.first[0..0].iter().chain(self.second[0..0].iter());
+        }
+
+        let left_len = self.first.len();
+        let left_start = start.min(left_len);
+        let left_end = end.min(left_len);
+        let right_start = start.saturating_sub(left_len).min(self.second.len());
+        let right_end = end.saturating_sub(left_len).min(self.second.len());
+
+        self.first[left_start..left_end]
+            .iter()
+            .chain(self.second[right_start..right_end].iter())
+    }
+}
+
+impl<T> Index<usize> for SplitSlice<'_, T> {
+    type Output = T;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        self.get(index)
+            .unwrap_or_else(|| panic!("split-slice index out of bounds: {}", index))
+    }
+}
+
+impl F64SeriesView for SplitSlice<'_, f64> {
+    fn len(&self) -> usize {
+        SplitSlice::len(self)
+    }
+
+    fn value_at(&self, idx: usize) -> f64 {
+        self[idx]
+    }
+}
+
+impl OptF64SeriesView for SplitSlice<'_, Option<f64>> {
+    fn len(&self) -> usize {
+        SplitSlice::len(self)
+    }
+
+    fn value_at(&self, idx: usize) -> Option<f64> {
+        self[idx]
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1497,58 +1584,62 @@ impl FusionFactorPubApp {
 
     pub fn build_symbol_series_from_state(state: &mut SymbolCalcState) -> SymbolSeries<'_> {
         SymbolSeries {
-            open: state.open.make_contiguous(),
-            high: state.high.make_contiguous(),
-            low: state.low.make_contiguous(),
-            close: state.close.make_contiguous(),
-            volume: state.volume.make_contiguous(),
-            amount: state.amount.make_contiguous(),
-            buy_count: state.buy_count.make_contiguous(),
-            sell_count: state.sell_count.make_contiguous(),
-            buy_amount: state.buy_amount.make_contiguous(),
-            sell_amount: state.sell_amount.make_contiguous(),
-            buy_volume: state.buy_volume.make_contiguous(),
-            sell_volume: state.sell_volume.make_contiguous(),
-            large_order: state.large_order.make_contiguous(),
-            large_buy: state.large_buy.make_contiguous(),
-            large_sell: state.large_sell.make_contiguous(),
-            small_order: state.small_order.make_contiguous(),
-            small_buy: state.small_buy.make_contiguous(),
-            small_sell: state.small_sell.make_contiguous(),
-            vwap: state.vwap.make_contiguous(),
-            buy_vwap: state.buy_vwap.make_contiguous(),
-            sell_vwap: state.sell_vwap.make_contiguous(),
-            net_buy_large: state.net_buy_large.make_contiguous(),
-            net_buy_small: state.net_buy_small.make_contiguous(),
-            net_buy_amount: state.net_buy_amount.make_contiguous(),
-            bid0v: state.bid0v.make_contiguous(),
-            mid_price: state.mid_price.make_contiguous(),
-            spread: state.spread.make_contiguous(),
-            relative_spread: state.relative_spread.make_contiguous(),
-            bid_vwap20: state.bid_vwap20.make_contiguous(),
-            total_bid20: state.total_bid20.make_contiguous(),
-            total_ask20: state.total_ask20.make_contiguous(),
-            top10_bid_volume: state.top10_bid_volume.make_contiguous(),
-            top10_ask_volume: state.top10_ask_volume.make_contiguous(),
-            top10_bid_mean: state.top10_bid_mean.make_contiguous(),
-            top10_ask_mean: state.top10_ask_mean.make_contiguous(),
-            bid9v: state.bid9v.make_contiguous(),
-            ask9v: state.ask9v.make_contiguous(),
-            mean_bid_vol20: state.mean_bid_vol20.make_contiguous(),
-            mean_bid_price20: state.mean_bid_price20.make_contiguous(),
-            avg_ask_price5: state.avg_ask_price5.make_contiguous(),
-            ask_pv15_mean: state.ask_pv15_mean.make_contiguous(),
-            bid_pv15_mean: state.bid_pv15_mean.make_contiguous(),
-            factor_031_ratio: state.factor_031_ratio.make_contiguous(),
-            factor_119_mid_minus_ask_vwap5: state.factor_119_mid_minus_ask_vwap5.make_contiguous(),
-            total_volume20_sum: state.total_volume20_sum.make_contiguous(),
-            factor_152_pct_mean: state.factor_152_pct_mean.make_contiguous(),
-            ask_vwap_diff_5_20: state.ask_vwap_diff_5_20.make_contiguous(),
-            ask_mean_volume_20: state.ask_mean_volume_20.make_contiguous(),
-            ask0v: state.ask0v.make_contiguous(),
-            ask_vwap20: state.ask_vwap20.make_contiguous(),
-            factor_128_skew: state.factor_128_skew.make_contiguous(),
-            factor_160_pct_change_mean: state.factor_160_pct_change_mean.make_contiguous(),
+            open: SplitSlice::from_parts(state.open.as_slices()),
+            high: SplitSlice::from_parts(state.high.as_slices()),
+            low: SplitSlice::from_parts(state.low.as_slices()),
+            close: SplitSlice::from_parts(state.close.as_slices()),
+            volume: SplitSlice::from_parts(state.volume.as_slices()),
+            amount: SplitSlice::from_parts(state.amount.as_slices()),
+            buy_count: SplitSlice::from_parts(state.buy_count.as_slices()),
+            sell_count: SplitSlice::from_parts(state.sell_count.as_slices()),
+            buy_amount: SplitSlice::from_parts(state.buy_amount.as_slices()),
+            sell_amount: SplitSlice::from_parts(state.sell_amount.as_slices()),
+            buy_volume: SplitSlice::from_parts(state.buy_volume.as_slices()),
+            sell_volume: SplitSlice::from_parts(state.sell_volume.as_slices()),
+            large_order: SplitSlice::from_parts(state.large_order.as_slices()),
+            large_buy: SplitSlice::from_parts(state.large_buy.as_slices()),
+            large_sell: SplitSlice::from_parts(state.large_sell.as_slices()),
+            small_order: SplitSlice::from_parts(state.small_order.as_slices()),
+            small_buy: SplitSlice::from_parts(state.small_buy.as_slices()),
+            small_sell: SplitSlice::from_parts(state.small_sell.as_slices()),
+            vwap: SplitSlice::from_parts(state.vwap.as_slices()),
+            buy_vwap: SplitSlice::from_parts(state.buy_vwap.as_slices()),
+            sell_vwap: SplitSlice::from_parts(state.sell_vwap.as_slices()),
+            net_buy_large: SplitSlice::from_parts(state.net_buy_large.as_slices()),
+            net_buy_small: SplitSlice::from_parts(state.net_buy_small.as_slices()),
+            net_buy_amount: SplitSlice::from_parts(state.net_buy_amount.as_slices()),
+            bid0v: SplitSlice::from_parts(state.bid0v.as_slices()),
+            mid_price: SplitSlice::from_parts(state.mid_price.as_slices()),
+            spread: SplitSlice::from_parts(state.spread.as_slices()),
+            relative_spread: SplitSlice::from_parts(state.relative_spread.as_slices()),
+            bid_vwap20: SplitSlice::from_parts(state.bid_vwap20.as_slices()),
+            total_bid20: SplitSlice::from_parts(state.total_bid20.as_slices()),
+            total_ask20: SplitSlice::from_parts(state.total_ask20.as_slices()),
+            top10_bid_volume: SplitSlice::from_parts(state.top10_bid_volume.as_slices()),
+            top10_ask_volume: SplitSlice::from_parts(state.top10_ask_volume.as_slices()),
+            top10_bid_mean: SplitSlice::from_parts(state.top10_bid_mean.as_slices()),
+            top10_ask_mean: SplitSlice::from_parts(state.top10_ask_mean.as_slices()),
+            bid9v: SplitSlice::from_parts(state.bid9v.as_slices()),
+            ask9v: SplitSlice::from_parts(state.ask9v.as_slices()),
+            mean_bid_vol20: SplitSlice::from_parts(state.mean_bid_vol20.as_slices()),
+            mean_bid_price20: SplitSlice::from_parts(state.mean_bid_price20.as_slices()),
+            avg_ask_price5: SplitSlice::from_parts(state.avg_ask_price5.as_slices()),
+            ask_pv15_mean: SplitSlice::from_parts(state.ask_pv15_mean.as_slices()),
+            bid_pv15_mean: SplitSlice::from_parts(state.bid_pv15_mean.as_slices()),
+            factor_031_ratio: SplitSlice::from_parts(state.factor_031_ratio.as_slices()),
+            factor_119_mid_minus_ask_vwap5: SplitSlice::from_parts(
+                state.factor_119_mid_minus_ask_vwap5.as_slices(),
+            ),
+            total_volume20_sum: SplitSlice::from_parts(state.total_volume20_sum.as_slices()),
+            factor_152_pct_mean: SplitSlice::from_parts(state.factor_152_pct_mean.as_slices()),
+            ask_vwap_diff_5_20: SplitSlice::from_parts(state.ask_vwap_diff_5_20.as_slices()),
+            ask_mean_volume_20: SplitSlice::from_parts(state.ask_mean_volume_20.as_slices()),
+            ask0v: SplitSlice::from_parts(state.ask0v.as_slices()),
+            ask_vwap20: SplitSlice::from_parts(state.ask_vwap20.as_slices()),
+            factor_128_skew: SplitSlice::from_parts(state.factor_128_skew.as_slices()),
+            factor_160_pct_change_mean: SplitSlice::from_parts(
+                state.factor_160_pct_change_mean.as_slices(),
+            ),
         }
     }
 
@@ -3113,11 +3204,12 @@ impl FusionFactorPubApp {
         if n < 300 {
             return None;
         }
-        let mid = &series.mid_price[..n];
         let mid_vol: Vec<f64> = (0..n)
             .map(|i| (series.bid0v[i] + series.ask0v[i]) / 2.0)
             .collect();
-        rolling_corr_last(mid, &mid_vol, 300, 1).ok().flatten()
+        rolling_corr_last(&series.mid_price, &mid_vol, 300, 1)
+            .ok()
+            .flatten()
     }
 
     fn compute_factor_139(depth: &DepthSnapshot) -> Option<f64> {
@@ -3485,19 +3577,26 @@ impl FusionFactorPubApp {
         if n < window {
             return None;
         }
-        let highs = &series.high[n - window..n];
-        let lows = &series.low[n - window..n];
-        if highs.iter().any(|v| !v.is_finite()) || lows.iter().any(|v| !v.is_finite()) {
-            return Some(0.0);
+        let start = n - window;
+        let mut sum_high = 0.0;
+        let mut sum_low = 0.0;
+        for i in start..n {
+            let h = series.high[i];
+            let l = series.low[i];
+            if !h.is_finite() || !l.is_finite() {
+                return Some(0.0);
+            }
+            sum_high += h;
+            sum_low += l;
         }
 
-        let mean_high = highs.iter().sum::<f64>() / window as f64;
-        let mean_low = lows.iter().sum::<f64>() / window as f64;
-        let mut cov = 0.0;
-        let mut var_low = 0.0;
-        for i in 0..window {
-            let dh = highs[i] - mean_high;
-            let dl = lows[i] - mean_low;
+        let mean_high = sum_high / window as f64;
+        let mean_low = sum_low / window as f64;
+        let mut cov: f64 = 0.0;
+        let mut var_low: f64 = 0.0;
+        for i in start..n {
+            let dh = series.high[i] - mean_high;
+            let dl = series.low[i] - mean_low;
             cov += dh * dl;
             var_low += dl * dl;
         }
@@ -3902,10 +4001,10 @@ impl FusionFactorPubApp {
         if n < 60 {
             return None;
         }
-        let low_min = series.low[n - 60..n]
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min);
+        let mut low_min = f64::INFINITY;
+        for i in n - 60..n {
+            low_min = f64::min(low_min, series.low[i]);
+        }
         finite_opt(Some(low_min - series.close[n - 1]))
     }
 
@@ -3914,10 +4013,10 @@ impl FusionFactorPubApp {
         if n < 60 {
             return None;
         }
-        let high_max = series.high[n - 60..n]
-            .iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, f64::max);
+        let mut high_max = f64::NEG_INFINITY;
+        for i in n - 60..n {
+            high_max = f64::max(high_max, series.high[i]);
+        }
         finite_opt(Some(high_max - series.close[n - 1]))
     }
 
@@ -3926,10 +4025,10 @@ impl FusionFactorPubApp {
         if n < 30 {
             return None;
         }
-        let min_close = series.close[n - 30..n]
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min);
+        let mut min_close = f64::INFINITY;
+        for i in n - 30..n {
+            min_close = f64::min(min_close, series.close[i]);
+        }
         let den = series.close[n - 1];
         if den.abs() <= 1e-12 {
             return Some(0.0);
@@ -3942,10 +4041,10 @@ impl FusionFactorPubApp {
         if n < 30 {
             return None;
         }
-        let max_close = series.close[n - 30..n]
-            .iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, f64::max);
+        let mut max_close = f64::NEG_INFINITY;
+        for i in n - 30..n {
+            max_close = f64::max(max_close, series.close[i]);
+        }
         let den = series.close[n - 1];
         if den.abs() <= 1e-12 {
             return Some(0.0);
@@ -4078,14 +4177,12 @@ impl FusionFactorPubApp {
         }
         let mut fastk = vec![f64::NAN; n];
         for i in 13..n {
-            let low_min = series.low[i + 1 - 14..i + 1]
-                .iter()
-                .copied()
-                .fold(f64::INFINITY, f64::min);
-            let high_max = series.high[i + 1 - 14..i + 1]
-                .iter()
-                .copied()
-                .fold(f64::NEG_INFINITY, f64::max);
+            let mut low_min = f64::INFINITY;
+            let mut high_max = f64::NEG_INFINITY;
+            for j in i + 1 - 14..i + 1 {
+                low_min = f64::min(low_min, series.low[j]);
+                high_max = f64::max(high_max, series.high[j]);
+            }
             let den = high_max - low_min;
             if den.abs() > 1e-12 {
                 fastk[i] = 100.0 * (series.close[i] - low_min) / den;
@@ -4183,13 +4280,14 @@ impl FusionFactorPubApp {
         if n < period + 1 {
             return None;
         }
-        let tail = &series.high[n - (period + 1)..n];
+        let start = n - (period + 1);
         let mut argmax = 0usize;
         let mut best = f64::NEG_INFINITY;
-        for (i, v) in tail.iter().enumerate() {
-            if *v > best {
-                best = *v;
-                argmax = i;
+        for i in start..n {
+            let v = series.high[i];
+            if v > best {
+                best = v;
+                argmax = i - start;
             }
         }
         finite_opt(Some(100.0 * argmax as f64 / period as f64))
@@ -4201,13 +4299,14 @@ impl FusionFactorPubApp {
         if n < period + 1 {
             return None;
         }
-        let tail = &series.low[n - (period + 1)..n];
+        let start = n - (period + 1);
         let mut argmin = 0usize;
         let mut best = f64::INFINITY;
-        for (i, v) in tail.iter().enumerate() {
-            if *v < best {
-                best = *v;
-                argmin = i;
+        for i in start..n {
+            let v = series.low[i];
+            if v < best {
+                best = v;
+                argmin = i - start;
             }
         }
         finite_opt(Some(100.0 * argmin as f64 / period as f64))
@@ -4450,14 +4549,12 @@ impl FusionFactorPubApp {
             return None;
         }
         let mid = (series.close[n - 1] + series.high[n - 1] + series.low[n - 1]) / 3.0;
-        let llv_low = series.low[n - 15..n]
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min);
-        let llv_high = series.high[n - 15..n]
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min);
+        let mut llv_low = f64::INFINITY;
+        let mut llv_high = f64::INFINITY;
+        for i in n - 15..n {
+            llv_low = f64::min(llv_low, series.low[i]);
+            llv_high = f64::min(llv_high, series.high[i]);
+        }
         let zc2 = mid - llv_high + llv_low;
         finite_opt(Some(series.close[n - 1] - zc2))
     }
@@ -4467,13 +4564,14 @@ impl FusionFactorPubApp {
         if n < 14 {
             return None;
         }
-        let tail = &series.close[n - 14..n];
+        let start = n - 14;
         let mut idx = 0usize;
         let mut best = f64::INFINITY;
-        for (i, v) in tail.iter().enumerate() {
-            if *v < best {
-                best = *v;
-                idx = i;
+        for i in start..n {
+            let v = series.close[i];
+            if v < best {
+                best = v;
+                idx = i - start;
             }
         }
         Some(idx as f64)
@@ -4728,7 +4826,7 @@ impl FusionFactorPubApp {
             return None;
         }
         let window = n.min(300);
-        rolling_corr_last(&series.open[..n], &series.volume[..n], window, 1)
+        rolling_corr_last(&series.open, &series.volume, window, 1)
             .ok()
             .flatten()
     }
@@ -4901,8 +4999,8 @@ impl FusionFactorPubApp {
             })
             .collect();
         let numerator = rolling_mean_series_opt(&vwap, 6, 6).ok()?;
-        let amount_roll = rolling_sum_series(&series.amount[..n], 6, 6).ok()?;
-        let volume_roll = rolling_sum_series(&series.volume[..n], 6, 6).ok()?;
+        let amount_roll = rolling_sum_series(&series.amount, 6, 6).ok()?;
+        let volume_roll = rolling_sum_series(&series.volume, 6, 6).ok()?;
 
         let denominator: Vec<Option<f64>> = amount_roll
             .iter()
@@ -4952,7 +5050,7 @@ impl FusionFactorPubApp {
             return None;
         }
 
-        let vol_ma = rolling_mean_series(&series.volume[..n], 120, 120).ok()?;
+        let vol_ma = rolling_mean_series(&series.volume, 120, 120).ok()?;
         let var1: Vec<Option<f64>> = (0..n)
             .map(|i| {
                 let hl = series.high[i] - series.low[i];
@@ -5375,15 +5473,22 @@ pub fn depth_vwap(levels: &[DepthLevel], limit: usize) -> Option<f64> {
     }
 }
 
-fn tail_quantile_last(values: &[f64], window: usize, q: f64) -> Option<f64> {
+fn tail_quantile_last(
+    values: &(impl F64SeriesView + ?Sized),
+    window: usize,
+    q: f64,
+) -> Option<f64> {
     if window == 0 || values.len() < window || !(0.0..=1.0).contains(&q) {
         return None;
     }
-    let mut tail: Vec<f64> = values[values.len() - window..]
-        .iter()
-        .copied()
-        .filter(|v| v.is_finite())
-        .collect();
+    let start = values.len() - window;
+    let mut tail = Vec::with_capacity(window);
+    for i in start..values.len() {
+        let v = values.value_at(i);
+        if v.is_finite() {
+            tail.push(v);
+        }
+    }
     if tail.is_empty() {
         return None;
     }
@@ -5402,16 +5507,22 @@ fn tail_quantile_last(values: &[f64], window: usize, q: f64) -> Option<f64> {
     }
 }
 
-fn sample_std_last(values: &[f64], window: usize, min_periods: usize) -> Option<f64> {
+fn sample_std_last(
+    values: &(impl F64SeriesView + ?Sized),
+    window: usize,
+    min_periods: usize,
+) -> Option<f64> {
     if window == 0 || min_periods == 0 || values.len() < min_periods {
         return None;
     }
     let start = values.len().saturating_sub(window);
-    let tail: Vec<f64> = values[start..]
-        .iter()
-        .copied()
-        .filter(|v| v.is_finite())
-        .collect();
+    let mut tail = Vec::with_capacity(values.len() - start);
+    for i in start..values.len() {
+        let v = values.value_at(i);
+        if v.is_finite() {
+            tail.push(v);
+        }
+    }
     if tail.len() < min_periods || tail.len() < 2 {
         return None;
     }
@@ -5461,8 +5572,8 @@ fn rank_last_average(values: &[f64], min_periods: usize) -> Option<f64> {
 }
 
 fn corr_last_with_min_periods(
-    xs: &[f64],
-    ys: &[f64],
+    xs: &(impl F64SeriesView + ?Sized),
+    ys: &(impl F64SeriesView + ?Sized),
     window: usize,
     min_periods: usize,
 ) -> Option<f64> {
@@ -5477,8 +5588,8 @@ fn corr_last_with_min_periods(
     let mut x = Vec::new();
     let mut y = Vec::new();
     for i in start..n {
-        let xv = xs[i];
-        let yv = ys[i];
+        let xv = xs.value_at(i);
+        let yv = ys.value_at(i);
         if xv.is_finite() && yv.is_finite() {
             x.push(xv);
             y.push(yv);
@@ -5605,12 +5716,12 @@ fn linear_regression_predict_last(values: &[f64]) -> Option<f64> {
     finite_opt(Some(pred))
 }
 
-fn pct_change_last(values: &[f64], periods: usize) -> Option<f64> {
+fn pct_change_last(values: &(impl F64SeriesView + ?Sized), periods: usize) -> Option<f64> {
     if periods == 0 || values.len() <= periods {
         return None;
     }
-    let curr = *values.last()?;
-    let prev = values[values.len() - 1 - periods];
+    let curr = values.value_at(values.len() - 1);
+    let prev = values.value_at(values.len() - 1 - periods);
     if !curr.is_finite() || !prev.is_finite() || prev.abs() <= 1e-12 {
         return Some(0.0);
     }
@@ -5709,8 +5820,11 @@ pub fn finite_opt(value: Option<f64>) -> Option<f64> {
     }
 }
 
-fn last_opt(values: &[Option<f64>]) -> Option<f64> {
-    finite_opt(values.last().copied().flatten()).or(Some(0.0))
+fn last_opt(values: &(impl OptF64SeriesView + ?Sized)) -> Option<f64> {
+    if values.len() == 0 {
+        return Some(0.0);
+    }
+    finite_opt(values.value_at(values.len() - 1)).or(Some(0.0))
 }
 
 fn trade_flow_feature_cf_name(venue_slug: &str, symbol: &str) -> String {
