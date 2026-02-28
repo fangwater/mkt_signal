@@ -129,6 +129,10 @@ name = "model_pub"
 path = "src/bin/model_pub.rs"
 
 [[bin]]
+name = "onnx_csv_predict"
+path = "src/bin/onnx_csv_predict.rs"
+
+[[bin]]
 name = "fusion_factor_pub"
 path = "src/bin/fusion_factor_pub.rs"
 

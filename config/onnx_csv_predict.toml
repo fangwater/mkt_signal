@@ -1,0 +1,11 @@
+model_manager_base_url = "http://54.64.147.69:6300"
+model_onnx_path = "/api/models/{model_name}/model_onnx/{symbol}"
+model_name = "binance-futures-mm-xgb-test"
+symbol = "BTCUSDT"
+model_manager_timeout_sec = 15.0
+input_csv = "/tmp/factor_pool_pipeline/rebuilt_features.csv"
+output_csv = "/tmp/factor_pool_pipeline/onnx_pred.csv"
+has_header = true
+delimiter = ","
+expected_feature_dim = 39
+log_every = 50000

@@ -1,0 +1,41 @@
+[model]
+# model_manager base URL
+base_url = "http://54.64.147.69:6300"
+# If empty, the script will auto-discover a single model for symbol.
+model_name = "binance-futures-mm-xgb-test"
+symbol = "BTCUSDT"
+group_key = ""
+timeout_sec = 15.0
+
+[input]
+# Source factor H5
+h5_path = "factor_pool/ETHUSDT.h5"
+# Optional; if empty, auto-select single key or /data
+h5_key = "data"
+# 0 means all rows
+head = 10000
+
+[output]
+# All relative output paths below are resolved against work_dir.
+work_dir = "/tmp/factor_pool_pipeline"
+rebuilt_h5 = "rebuilt_model_factors.h5"
+rebuilt_h5_key = "data"
+feature_csv = "rebuilt_features.csv"
+xgb_pred_csv = "xgb_pred.csv"
+onnx_pred_csv = "onnx_pred.csv"
+compare_csv = "pred_compare.csv"
+metrics_json = "metrics.json"
+rust_config_path = "onnx_csv_predict.toml"
+
+[runtime]
+xgb_nthread = 1
+rel_eps = 1e-8
+top_k = 10
+
+[rust_onnx]
+# "cargo_run" or "binary"
+mode = "cargo_run"
+cargo_bin = "cargo"
+bin_name = "onnx_csv_predict"
+binary_path = "target/release/onnx_csv_predict"
+log_every = 50000
