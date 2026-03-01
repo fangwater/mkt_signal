@@ -6,6 +6,14 @@ use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
+const BLACKLIST_SYMBOL_UPPER: &str = "\u{6211}\u{8E0F}\u{9A6C}\u{6765}\u{4E86}USDT";
+const BLACKLIST_SYMBOL_LOWER: &str = "\u{6211}\u{8E0F}\u{9A6C}\u{6765}\u{4E86}usdt";
+
+#[inline]
+fn is_blacklisted_symbol(symbol: &str) -> bool {
+    symbol == BLACKLIST_SYMBOL_UPPER || symbol == BLACKLIST_SYMBOL_LOWER
+}
+
 fn parse_json_f64(v: &serde_json::Value) -> Option<f64> {
     match v {
         serde_json::Value::Number(n) => n.as_f64(),
@@ -264,6 +272,9 @@ impl Parser for GateTickerParser {
                         Some(s) => s,
                         None => return 0,
                     };
+                    if is_blacklisted_symbol(symbol) {
+                        return 0;
+                    }
                     let ts = res
                         .get("t")
                         .and_then(parse_gate_ts_ms)
@@ -469,6 +480,9 @@ impl GateTradeParser {
             Some(s) => s,
             None => return 0,
         };
+        if is_blacklisted_symbol(symbol) {
+            return 0;
+        }
 
         let price = match trade
             .get("price")

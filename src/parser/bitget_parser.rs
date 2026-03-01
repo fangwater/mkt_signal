@@ -6,6 +6,14 @@ use bytes::Bytes;
 use log::debug;
 use tokio::sync::mpsc;
 
+const BLACKLIST_SYMBOL_UPPER: &str = "\u{6211}\u{8E0F}\u{9A6C}\u{6765}\u{4E86}USDT";
+const BLACKLIST_SYMBOL_LOWER: &str = "\u{6211}\u{8E0F}\u{9A6C}\u{6765}\u{4E86}usdt";
+
+#[inline]
+fn is_blacklisted_symbol(symbol: &str) -> bool {
+    symbol == BLACKLIST_SYMBOL_UPPER || symbol == BLACKLIST_SYMBOL_LOWER
+}
+
 /// Bitget 价差解析器：支持 ticker 和 books1
 #[derive(Clone)]
 pub struct BitgetAskBidSpreadParser;
@@ -33,6 +41,9 @@ impl Parser for BitgetAskBidSpreadParser {
                         Some(s) => s,
                         None => return 0,
                     };
+                    if is_blacklisted_symbol(symbol) {
+                        return 0;
+                    }
 
                     // 解析 data 数组
                     if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
@@ -606,6 +617,9 @@ impl Parser for BitgetTradeParser {
                     Some(s) => s,
                     None => return 0,
                 };
+                if is_blacklisted_symbol(symbol) {
+                    return 0;
+                }
 
                 let data_array = match json_value.get("data").and_then(|v| v.as_array()) {
                     Some(arr) => arr,
