@@ -14,7 +14,7 @@ Usage: scripts/stop_fr_viz_server.sh [--exchange <binance|okex|gate|bybit|bitget
 
 Notes:
   - Exchange is inferred from the directory name (<exchange>_fr_<env>), unless --exchange is set.
-  - Stops pmdaemon process: viz_server_<dir>
+  - Stops pmdaemon process: vz_<ex>_<env> (legacy viz_server_<dir> is also cleaned).
 EOF
 }
 
@@ -56,7 +56,29 @@ if [[ -z "$EXCHANGE" ]]; then
   exit 1
 fi
 
-PROC_NAME="${PMDAEMON_NAME:-viz_server_${dir_tag}}"
+short_exchange() {
+  case "${1,,}" in
+    binance) echo "bn" ;;
+    okex) echo "ok" ;;
+    bybit) echo "bb" ;;
+    bitget) echo "bg" ;;
+    gate) echo "gt" ;;
+    *)
+      echo "${1,,}" | sed -E 's/[^a-z0-9]+//g' | cut -c1-2
+      ;;
+  esac
+}
+
+env_tag="fr"
+if [[ "$dir_lc" =~ ^[a-z0-9]+[-_]fr[-_](.+)$ ]]; then
+  env_tag="$(echo "${BASH_REMATCH[1]}" | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//')"
+fi
+if [[ -z "$env_tag" ]]; then
+  env_tag="fr"
+fi
+
+PROC_NAME="${PMDAEMON_NAME:-vz_$(short_exchange "$EXCHANGE")_${env_tag}}"
+LEGACY_PROC_NAME="viz_server_${dir_tag}"
 
 if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
   echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2
@@ -124,7 +146,14 @@ cleanup_leaked() {
 }
 
 echo "[INFO] Deleting ${PROC_NAME}"
+deleted=false
 if "${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1; then
+  deleted=true
+fi
+if [[ "$LEGACY_PROC_NAME" != "$PROC_NAME" ]] && "${PMDAEMON[@]}" delete "$LEGACY_PROC_NAME" >/dev/null 2>&1; then
+  deleted=true
+fi
+if [[ "$deleted" == true ]]; then
   echo "[INFO] Deleted ${PROC_NAME}"
 else
   echo "[WARN] ${PROC_NAME} not found"

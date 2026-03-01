@@ -35,7 +35,8 @@ if [[ -z "$BIN_PATH" ]]; then
 fi
 
 dir_name="$(basename "${BASE_DIR}")"
-dir_tag="$(echo "${dir_name,,}" | sed 's/[^a-z0-9_-]/_/g')"
+dir_lc="${dir_name,,}"
+dir_tag="$(echo "${dir_lc}" | sed 's/[^a-z0-9_-]/_/g')"
 case "$dir_name" in
   okex_fr_*|*okex*|*OKEX*) EXCHANGE="okex" ;;
   binance_fr_*|*binance*|*BINANCE*) EXCHANGE="binance" ;;
@@ -47,7 +48,29 @@ case "$dir_name" in
     ;;
 esac
 
-PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-account_monitor_${dir_tag}}}"
+short_exchange() {
+  case "${1,,}" in
+    binance) echo "bn" ;;
+    okex) echo "ok" ;;
+    bybit) echo "bb" ;;
+    bitget) echo "bg" ;;
+    gate) echo "gt" ;;
+    *)
+      echo "${1,,}" | sed -E 's/[^a-z0-9]+//g' | cut -c1-2
+      ;;
+  esac
+}
+
+env_tag="fr"
+if [[ "$dir_lc" =~ ^[a-z0-9]+[-_]fr[-_](.+)$ ]]; then
+  env_tag="$(echo "${BASH_REMATCH[1]}" | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//')"
+fi
+if [[ -z "$env_tag" ]]; then
+  env_tag="fr"
+fi
+
+PROC_NAME="${PMDAEMON_NAME:-am_$(short_exchange "$EXCHANGE")_${env_tag}}"
+LEGACY_PROC_NAME="account_monitor_${dir_tag}"
 RUST_LOG="${RUST_LOG:-info}"
 
 json_escape() {
@@ -79,6 +102,7 @@ cat >"$cfg_file" <<JSON
 JSON
 
 echo "[INFO] 启动 ${PROC_NAME} (exchange=${EXCHANGE})"
+"${PMDAEMON[@]}" delete "$LEGACY_PROC_NAME" >/dev/null 2>&1 || true
 "${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
 "${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
 

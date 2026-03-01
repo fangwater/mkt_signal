@@ -33,6 +33,7 @@ Usage: scripts/start_fr_viz_server.sh [--cfg config/viz.toml] [--exchange <binan
 Notes:
   - Starts viz_server with pmdaemon using config/viz.toml (or VIZ_CFG / --cfg).
   - Exchange is inferred from the directory name (<exchange>_fr_<env>), unless --exchange is set.
+  - Process name format: vz_<ex>_<env> (legacy viz_server_<dir> is auto-cleaned).
 EOF
 }
 
@@ -89,7 +90,29 @@ if [[ -z "$EXCHANGE" ]]; then
   exit 1
 fi
 
-PROC_NAME="${PMDAEMON_NAME:-viz_server_${dir_tag}}"
+short_exchange() {
+  case "${1,,}" in
+    binance) echo "bn" ;;
+    okex) echo "ok" ;;
+    bybit) echo "bb" ;;
+    bitget) echo "bg" ;;
+    gate) echo "gt" ;;
+    *)
+      echo "${1,,}" | sed -E 's/[^a-z0-9]+//g' | cut -c1-2
+      ;;
+  esac
+}
+
+env_tag="fr"
+if [[ "$dir_lc" =~ ^[a-z0-9]+[-_]fr[-_](.+)$ ]]; then
+  env_tag="$(echo "${BASH_REMATCH[1]}" | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//')"
+fi
+if [[ -z "$env_tag" ]]; then
+  env_tag="fr"
+fi
+
+PROC_NAME="${PMDAEMON_NAME:-vz_$(short_exchange "$EXCHANGE")_${env_tag}}"
+LEGACY_PROC_NAME="viz_server_${dir_tag}"
 RUST_LOG="${RUST_LOG:-info}"
 
 if [[ ! -f "$BASE_DIR/$CFG_PATH" ]]; then
@@ -143,6 +166,7 @@ cat >"$cfg_file" <<CFG
 CFG
 
 echo "[INFO] Restarting ${PROC_NAME} (cfg=${CFG_PATH})"
+"${PMDAEMON[@]}" delete "$LEGACY_PROC_NAME" >/dev/null 2>&1 || true
 "${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
 "${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
 

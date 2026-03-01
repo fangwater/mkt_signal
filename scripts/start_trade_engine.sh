@@ -83,6 +83,21 @@ fi
 
 CLI_EXCHANGE="${1:-}"
 EXCHANGE=""
+ENV_TAG=""
+LEGACY_PROC_NAME=""
+
+short_exchange() {
+  case "${1,,}" in
+    binance) echo "bn" ;;
+    okex) echo "ok" ;;
+    bybit) echo "bb" ;;
+    bitget) echo "bg" ;;
+    gate) echo "gt" ;;
+    *)
+      echo "${1,,}" | sed -E 's/[^a-z0-9]+//g' | cut -c1-2
+      ;;
+  esac
+}
 
 if [[ "$NS" == "fr" ]]; then
   EXCHANGE="$SUFFIX"
@@ -90,6 +105,13 @@ if [[ "$NS" == "fr" ]]; then
     echo "[ERROR] exchange mismatch: dir exchange=${EXCHANGE} arg exchange=${CLI_EXCHANGE}" >&2
     exit 1
   fi
+  if [[ "$dir_lc" =~ ^[a-z0-9]+[-_]fr[-_](.+)$ ]]; then
+    ENV_TAG="$(echo "${BASH_REMATCH[1]}" | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//')"
+  fi
+  if [[ -z "$ENV_TAG" ]]; then
+    ENV_TAG="fr"
+  fi
+  LEGACY_PROC_NAME="trade_engine_${dir_tag}"
 elif [[ -n "$CLI_EXCHANGE" ]]; then
   EXCHANGE="$CLI_EXCHANGE"
 else
@@ -97,7 +119,11 @@ else
   exit 1
 fi
 
-PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-trade_engine_${dir_tag}}}"
+if [[ "$NS" == "fr" ]]; then
+  PROC_NAME="${PMDAEMON_NAME:-te_$(short_exchange "$EXCHANGE")_${ENV_TAG}}"
+else
+  PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-trade_engine_${dir_tag}}}"
+fi
 RUST_LOG="${RUST_LOG:-info}"
 
 json_escape() {
@@ -131,6 +157,9 @@ JSON
 
 echo "[INFO] Restarting ${PROC_NAME}"
 echo "[INFO] 本地 IP 配置来自 /home/<user>/config/mkt_cfg.yaml"
+if [[ -n "$LEGACY_PROC_NAME" && "$LEGACY_PROC_NAME" != "$PROC_NAME" ]]; then
+  "${PMDAEMON[@]}" delete "$LEGACY_PROC_NAME" >/dev/null 2>&1 || true
+fi
 "${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
 "${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
 
