@@ -18,9 +18,10 @@ use super::orderbook::OrderBook;
 use super::publisher::DepthMsgPublisher;
 use super::query_msg::{
     resp_status_name, DepthQueryHeader, DepthQueryLoadTlenBatchReq, DepthQueryLoadTlenBatchResp,
-    DepthQueryLoadTlenSingleReq, DepthQueryLoadTlenSingleResp, DepthQueryType, DEPTH_QUERY_PAYLOAD,
-    RESP_STATUS_BAD_REQUEST, RESP_STATUS_OK, RESP_STATUS_PAYLOAD_TOO_LARGE,
-    RESP_STATUS_UNSUPPORTED_TYPE,
+    DepthQueryLoadTlenSingleReq, DepthQueryLoadTlenSingleResp, DepthQueryTop5PriceTlenReq,
+    DepthQueryTop5PriceTlenResp, DepthQueryType, DEPTH_QUERY_PAYLOAD, RESP_STATUS_BAD_REQUEST,
+    RESP_STATUS_BOOK_INVALID, RESP_STATUS_OK, RESP_STATUS_PAYLOAD_TOO_LARGE,
+    RESP_STATUS_SYMBOL_MISSING, RESP_STATUS_UNSUPPORTED_TYPE,
 };
 use crate::signal::common::TradingVenue;
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
@@ -611,6 +612,13 @@ impl DepthPubApp {
                 status = st;
                 body_len = written;
             }
+            Some(DepthQueryType::Top5PriceTlen) => {
+                let resp_payload = &mut resp[payload_offset..];
+                let (st, written) =
+                    self.handle_top5_price_tlen_query(&header.symbol, req_payload, resp_payload);
+                status = st;
+                body_len = written;
+            }
             _ => {
                 let resp_payload = &mut resp[payload_offset..];
                 if !resp_payload.is_empty() {
@@ -715,6 +723,70 @@ impl DepthPubApp {
             }
             Err(err) => {
                 warn!("Depth query load_tlen batch resp write failed: {err:#}");
+                resp_payload[0] = RESP_STATUS_PAYLOAD_TOO_LARGE;
+                (RESP_STATUS_PAYLOAD_TOO_LARGE, 1)
+            }
+        }
+    }
+
+    fn handle_top5_price_tlen_query(
+        &self,
+        symbol: &str,
+        req_payload: &[u8],
+        resp_payload: &mut [u8],
+    ) -> (u8, usize) {
+        if resp_payload.len() < 2 {
+            return (RESP_STATUS_PAYLOAD_TOO_LARGE, 0);
+        }
+
+        let req = match DepthQueryTop5PriceTlenReq::from_payload(req_payload) {
+            Ok(v) => v,
+            Err(err) => {
+                warn!("Depth query top5 price+tlen req parse failed: {err:#}");
+                return (RESP_STATUS_BAD_REQUEST, 1);
+            }
+        };
+
+        let orderbook_symbol = if self.symbols.contains_key(symbol) {
+            symbol.to_string()
+        } else {
+            let upper = symbol.to_ascii_uppercase();
+            if self.symbols.contains_key(&upper) {
+                upper
+            } else {
+                return (RESP_STATUS_SYMBOL_MISSING, 1);
+            }
+        };
+
+        let Some(state) = self.symbols.get(&orderbook_symbol) else {
+            return (RESP_STATUS_SYMBOL_MISSING, 1);
+        };
+        if !state.orderbook.is_valid() {
+            return (RESP_STATUS_BOOK_INVALID, 1);
+        }
+
+        let (bids, asks) = state.orderbook.get_depth(5);
+        let top5_bids: Vec<(f64, f64)> = bids
+            .into_iter()
+            .map(|(price, amount)| (price, amount))
+            .collect();
+        let top5_asks: Vec<(f64, f64)> = asks
+            .into_iter()
+            .map(|(price, amount)| (price, amount))
+            .collect();
+
+        match DepthQueryTop5PriceTlenResp::write_to(
+            &mut resp_payload[1..],
+            req.timestamp_us,
+            &top5_bids,
+            &top5_asks,
+        ) {
+            Ok(written) => {
+                resp_payload[0] = RESP_STATUS_OK;
+                (RESP_STATUS_OK, 1 + written)
+            }
+            Err(err) => {
+                warn!("Depth query top5 price+tlen resp write failed: {err:#}");
                 resp_payload[0] = RESP_STATUS_PAYLOAD_TOO_LARGE;
                 (RESP_STATUS_PAYLOAD_TOO_LARGE, 1)
             }

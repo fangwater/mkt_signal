@@ -3,13 +3,16 @@ use anyhow::{anyhow, Result};
 pub const DEPTH_QUERY_PAYLOAD: usize = 256;
 const HEADER_LEN: usize = 2;
 const BATCH_FIXED_LEN: usize = 12;
+const TOP5_MAX_LEVELS: usize = 5;
+const TOP5_LEVEL_BYTES: usize = 16; // price(f64) + tlen(f64)
+const TOP5_FIXED_LEN: usize = 12; // ts(i64) + bid_count(u8) + ask_count(u8) + reserved(u16)
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DepthQueryType {
     LoadTlenSingle = 1,
     LoadTlenBatch = 2,
-    TopOfBook = 3,
+    Top5PriceTlen = 3,
     Stats = 4,
 }
 
@@ -18,7 +21,7 @@ impl DepthQueryType {
         match value {
             1 => Some(Self::LoadTlenSingle),
             2 => Some(Self::LoadTlenBatch),
-            3 => Some(Self::TopOfBook),
+            3 => Some(Self::Top5PriceTlen),
             4 => Some(Self::Stats),
             _ => None,
         }
@@ -339,6 +342,144 @@ impl DepthQueryLoadTlenBatchResp {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct DepthQueryTop5PriceTlenReq {
+    pub timestamp_us: i64,
+}
+
+impl DepthQueryTop5PriceTlenReq {
+    pub const REQ_LEN: usize = 8;
+
+    pub fn from_payload(payload: &[u8]) -> Result<Self> {
+        if payload.len() < Self::REQ_LEN {
+            return Err(anyhow!(
+                "depth query top5 price+tlen req too short: {} < {}",
+                payload.len(),
+                Self::REQ_LEN
+            ));
+        }
+        Ok(Self {
+            timestamp_us: i64::from_le_bytes(payload[0..8].try_into()?),
+        })
+    }
+
+    pub fn write_to(&self, payload: &mut [u8]) -> Result<usize> {
+        if payload.len() < Self::REQ_LEN {
+            return Err(anyhow!(
+                "depth query top5 price+tlen req write overflow: {} < {}",
+                payload.len(),
+                Self::REQ_LEN
+            ));
+        }
+        payload[0..8].copy_from_slice(&self.timestamp_us.to_le_bytes());
+        Ok(Self::REQ_LEN)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DepthQueryTop5PriceTlenResp {
+    pub timestamp_us: i64,
+    pub bids: Vec<(f64, f64)>,
+    pub asks: Vec<(f64, f64)>,
+}
+
+impl DepthQueryTop5PriceTlenResp {
+    pub fn from_payload(payload: &[u8]) -> Result<Self> {
+        if payload.len() < TOP5_FIXED_LEN {
+            return Err(anyhow!(
+                "depth query top5 price+tlen resp too short: {} < {}",
+                payload.len(),
+                TOP5_FIXED_LEN
+            ));
+        }
+
+        let timestamp_us = i64::from_le_bytes(payload[0..8].try_into()?);
+        let bid_count = payload[8] as usize;
+        let ask_count = payload[9] as usize;
+        if bid_count > TOP5_MAX_LEVELS || ask_count > TOP5_MAX_LEVELS {
+            return Err(anyhow!(
+                "depth query top5 price+tlen resp invalid level count: bid={} ask={}",
+                bid_count,
+                ask_count
+            ));
+        }
+
+        let required = TOP5_FIXED_LEN + (bid_count + ask_count) * TOP5_LEVEL_BYTES;
+        if payload.len() < required {
+            return Err(anyhow!(
+                "depth query top5 price+tlen resp truncated: {} < {}",
+                payload.len(),
+                required
+            ));
+        }
+
+        let mut offset = TOP5_FIXED_LEN;
+        let mut bids = Vec::with_capacity(bid_count);
+        for _ in 0..bid_count {
+            let price = f64::from_le_bytes(payload[offset..offset + 8].try_into()?);
+            let tlen = f64::from_le_bytes(payload[offset + 8..offset + 16].try_into()?);
+            bids.push((price, tlen));
+            offset += TOP5_LEVEL_BYTES;
+        }
+
+        let mut asks = Vec::with_capacity(ask_count);
+        for _ in 0..ask_count {
+            let price = f64::from_le_bytes(payload[offset..offset + 8].try_into()?);
+            let tlen = f64::from_le_bytes(payload[offset + 8..offset + 16].try_into()?);
+            asks.push((price, tlen));
+            offset += TOP5_LEVEL_BYTES;
+        }
+
+        Ok(Self {
+            timestamp_us,
+            bids,
+            asks,
+        })
+    }
+
+    pub fn write_to(
+        payload: &mut [u8],
+        timestamp_us: i64,
+        bids: &[(f64, f64)],
+        asks: &[(f64, f64)],
+    ) -> Result<usize> {
+        if bids.len() > TOP5_MAX_LEVELS || asks.len() > TOP5_MAX_LEVELS {
+            return Err(anyhow!(
+                "depth query top5 price+tlen resp level overflow: bid={} ask={}",
+                bids.len(),
+                asks.len()
+            ));
+        }
+
+        let required = TOP5_FIXED_LEN + (bids.len() + asks.len()) * TOP5_LEVEL_BYTES;
+        if payload.len() < required {
+            return Err(anyhow!(
+                "depth query top5 price+tlen resp write overflow: {} < {}",
+                payload.len(),
+                required
+            ));
+        }
+
+        payload[0..8].copy_from_slice(&timestamp_us.to_le_bytes());
+        payload[8] = bids.len() as u8;
+        payload[9] = asks.len() as u8;
+        payload[10..12].fill(0);
+
+        let mut offset = TOP5_FIXED_LEN;
+        for (price, tlen) in bids {
+            payload[offset..offset + 8].copy_from_slice(&price.to_le_bytes());
+            payload[offset + 8..offset + 16].copy_from_slice(&tlen.to_le_bytes());
+            offset += TOP5_LEVEL_BYTES;
+        }
+        for (price, tlen) in asks {
+            payload[offset..offset + 8].copy_from_slice(&price.to_le_bytes());
+            payload[offset + 8..offset + 16].copy_from_slice(&tlen.to_le_bytes());
+            offset += TOP5_LEVEL_BYTES;
+        }
+        Ok(required)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,5 +552,27 @@ mod tests {
             err.to_string().contains("truncated"),
             "unexpected error: {err:#}"
         );
+    }
+
+    #[test]
+    fn top5_req_resp_roundtrip() {
+        let mut req_buf = [0u8; 16];
+        let req = DepthQueryTop5PriceTlenReq { timestamp_us: 999 };
+        req.write_to(&mut req_buf).unwrap();
+        let parsed_req = DepthQueryTop5PriceTlenReq::from_payload(&req_buf).unwrap();
+        assert_eq!(parsed_req.timestamp_us, 999);
+
+        let mut resp_buf = [0u8; 256];
+        let resp_len = DepthQueryTop5PriceTlenResp::write_to(
+            &mut resp_buf,
+            999,
+            &[(101.0, 1.2), (100.5, 2.3)],
+            &[(101.5, 1.1)],
+        )
+        .unwrap();
+        let parsed_resp = DepthQueryTop5PriceTlenResp::from_payload(&resp_buf[..resp_len]).unwrap();
+        assert_eq!(parsed_resp.timestamp_us, 999);
+        assert_eq!(parsed_resp.bids, vec![(101.0, 1.2), (100.5, 2.3)]);
+        assert_eq!(parsed_resp.asks, vec![(101.5, 1.1)]);
     }
 }

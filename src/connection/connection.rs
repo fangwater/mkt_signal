@@ -553,7 +553,10 @@ pub fn construct_connection_with_ip(
         Exchange::Okex => Ok(Box::new(OkexConnection::new(base_connection))),
         Exchange::Bybit => Ok(Box::new(BybitConnection::new(base_connection))),
         Exchange::Bitget => Ok(Box::new(BitgetConnection::new(base_connection))),
-        Exchange::Gate => Ok(Box::new(GateConnection::new(base_connection, gate_is_futures))),
+        Exchange::Gate => Ok(Box::new(GateConnection::new(
+            base_connection,
+            gate_is_futures,
+        ))),
         Exchange::Hyperliquid => Ok(Box::new(HyperliquidConnection::new(base_connection))),
     }
 }
@@ -582,7 +585,10 @@ pub fn construct_connection(
         Exchange::Okex => Ok(Box::new(OkexConnection::new(base_connection))),
         Exchange::Bybit => Ok(Box::new(BybitConnection::new(base_connection))),
         Exchange::Bitget => Ok(Box::new(BitgetConnection::new(base_connection))),
-        Exchange::Gate => Ok(Box::new(GateConnection::new(base_connection, gate_is_futures))),
+        Exchange::Gate => Ok(Box::new(GateConnection::new(
+            base_connection,
+            gate_is_futures,
+        ))),
         Exchange::Hyperliquid => Ok(Box::new(HyperliquidConnection::new(base_connection))),
     }
 }

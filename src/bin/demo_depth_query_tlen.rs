@@ -10,8 +10,8 @@ use std::time::Duration;
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::depth_pub::query_msg::{
     resp_status_name, DepthQueryHeader, DepthQueryLoadTlenBatchReq, DepthQueryLoadTlenBatchResp,
-    DepthQueryLoadTlenSingleReq, DepthQueryLoadTlenSingleResp, DepthQueryType, DEPTH_QUERY_PAYLOAD,
-    RESP_STATUS_OK,
+    DepthQueryLoadTlenSingleReq, DepthQueryLoadTlenSingleResp, DepthQueryTop5PriceTlenReq,
+    DepthQueryTop5PriceTlenResp, DepthQueryType, DEPTH_QUERY_PAYLOAD, RESP_STATUS_OK,
 };
 use mkt_signal::signal::common::TradingVenue;
 
@@ -40,6 +40,10 @@ struct Args {
     /// Batch request prices in CSV, e.g. "101.0,101.5,102.0"
     #[arg(long)]
     prices: Option<String>,
+
+    /// Query top5 price+tlen and immediately re-query all 10 prices by batch
+    #[arg(long, default_value_t = false)]
+    top5: bool,
 }
 
 fn create_depth_query_client(venue: TradingVenue) -> Result<DepthQueryClient> {
@@ -168,13 +172,30 @@ fn query_batch(client: &DepthQueryClient, symbol: &str, prices: &[f64]) -> Resul
     Ok(resp.amounts)
 }
 
+fn query_top5(client: &DepthQueryClient, symbol: &str) -> Result<DepthQueryTop5PriceTlenResp> {
+    let mut req_buf = [0u8; DEPTH_QUERY_PAYLOAD];
+    let header_len =
+        DepthQueryHeader::write(&mut req_buf, DepthQueryType::Top5PriceTlen as u8, symbol)
+            .map_err(|err| anyhow!(err.to_string()))?;
+    let req = DepthQueryTop5PriceTlenReq {
+        timestamp_us: get_timestamp_us(),
+    };
+    let payload_len = req
+        .write_to(&mut req_buf[header_len..])
+        .map_err(|err| anyhow!(err.to_string()))?;
+    let req_len = header_len + payload_len;
+
+    let body = send_depth_query(client, &req_buf[..req_len], DepthQueryType::Top5PriceTlen)?;
+    DepthQueryTop5PriceTlenResp::from_payload(&body).map_err(|err| anyhow!(err.to_string()))
+}
+
 fn main() -> Result<()> {
     env_logger::init();
     let args = Args::parse();
 
-    if args.price.is_none() && args.prices.is_none() {
+    if args.price.is_none() && args.prices.is_none() && !args.top5 {
         return Err(anyhow!(
-            "at least one of --price or --prices must be provided"
+            "at least one of --price or --prices or --top5 must be provided"
         ));
     }
 
@@ -211,6 +232,50 @@ fn main() -> Result<()> {
         );
         for (price, amount) in prices.iter().zip(amounts.iter()) {
             println!("  price={} amount={}", price, amount);
+        }
+    }
+
+    if args.top5 {
+        let top5 = query_top5(&client, &symbol)?;
+        let mut prices = Vec::with_capacity(top5.bids.len() + top5.asks.len());
+        prices.extend(top5.bids.iter().map(|(price, _)| *price));
+        prices.extend(top5.asks.iter().map(|(price, _)| *price));
+
+        let rechecked = query_batch(&client, &symbol, &prices)?;
+        println!(
+            "TLEN_TOP5_RECHECK venue={} symbol={} bids={} asks={}",
+            args.venue.data_pub_slug(),
+            symbol,
+            top5.bids.len(),
+            top5.asks.len()
+        );
+
+        let mut idx = 0usize;
+        for (level, (price, tlen)) in top5.bids.iter().enumerate() {
+            let batch_tlen = rechecked.get(idx).copied().unwrap_or(-1.0);
+            let delta = batch_tlen - *tlen;
+            println!(
+                "  BID L{} price={} top5_tlen={} batch_tlen={} delta={}",
+                level + 1,
+                price,
+                tlen,
+                batch_tlen,
+                delta
+            );
+            idx += 1;
+        }
+        for (level, (price, tlen)) in top5.asks.iter().enumerate() {
+            let batch_tlen = rechecked.get(idx).copied().unwrap_or(-1.0);
+            let delta = batch_tlen - *tlen;
+            println!(
+                "  ASK L{} price={} top5_tlen={} batch_tlen={} delta={}",
+                level + 1,
+                price,
+                tlen,
+                batch_tlen,
+                delta
+            );
+            idx += 1;
         }
     }
 
