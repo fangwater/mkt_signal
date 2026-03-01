@@ -148,17 +148,49 @@ fn construct_subscribe_message(
             // Gate.io API 格式
             // 现货: spot.xxx, 合约: futures.xxx
             let channel_prefix = gate_channel_prefix_for_venue(venue);
-            let payload: Vec<String> = symbols.iter().map(|s| s.to_string()).collect();
+            let channel_name = format!("{}.{}", channel_prefix, channel);
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
-            serde_json::json!({
-                "time": timestamp,
-                "channel": format!("{}.{}", channel_prefix, channel),
-                "event": "subscribe",
-                "payload": payload
-            })
+
+            // Gate order_book_update 的 payload 与其他频道不同：
+            // - spot:    ["BTC_USDT", "100ms"]
+            // - futures: ["BTC_USDT", "100ms", "100"]
+            // 且按 symbol 逐条订阅，不能用 ["BTC_USDT", "ETH_USDT", ...] 这种批量格式。
+            if channel == "order_book_update" {
+                let mut per_symbol_msgs = Vec::new();
+                for symbol in symbols {
+                    let payload = match venue {
+                        TradingVenue::GateMargin => {
+                            serde_json::json!([symbol.as_str(), "100ms"])
+                        }
+                        TradingVenue::GateFutures => {
+                            serde_json::json!([symbol.as_str(), "100ms", "100"])
+                        }
+                        _ => serde_json::json!([symbol.as_str(), "100ms", "100"]),
+                    };
+                    per_symbol_msgs.push(serde_json::json!({
+                        "time": timestamp,
+                        "channel": channel_name,
+                        "event": "subscribe",
+                        "payload": payload
+                    }));
+                }
+                if per_symbol_msgs.len() == 1 {
+                    per_symbol_msgs.remove(0)
+                } else {
+                    Value::Array(per_symbol_msgs)
+                }
+            } else {
+                let payload: Vec<String> = symbols.iter().map(|s| s.to_string()).collect();
+                serde_json::json!({
+                    "time": timestamp,
+                    "channel": channel_name,
+                    "event": "subscribe",
+                    "payload": payload
+                })
+            }
         }
     }
 }
@@ -808,5 +840,64 @@ impl DerivativesMetricsSubscribeMsgs {
 
     pub fn get_active_symbols(&self) -> &HashSet<String> {
         &self.active_symbols
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gate_margin_order_book_update_subscribe_is_per_symbol_with_interval() {
+        let symbols = vec!["BTC_USDT".to_string(), "ETH_USDT".to_string()];
+        let msg = construct_subscribe_message(
+            &Exchange::Gate,
+            TradingVenue::GateMargin,
+            &symbols,
+            "order_book_update",
+        );
+
+        let arr = msg
+            .as_array()
+            .expect("gate margin order_book_update should generate message array");
+        assert_eq!(arr.len(), 2);
+
+        for item in arr {
+            assert_eq!(
+                item.get("channel").and_then(|v| v.as_str()),
+                Some("spot.order_book_update")
+            );
+            let payload = item
+                .get("payload")
+                .and_then(|v| v.as_array())
+                .expect("payload should be array");
+            assert_eq!(payload.len(), 2);
+            assert!(payload[0].as_str().unwrap_or("").ends_with("_USDT"));
+            assert_eq!(payload[1].as_str(), Some("100ms"));
+        }
+    }
+
+    #[test]
+    fn gate_futures_order_book_update_subscribe_has_level_param() {
+        let symbols = vec!["BTC_USDT".to_string()];
+        let msg = construct_subscribe_message(
+            &Exchange::Gate,
+            TradingVenue::GateFutures,
+            &symbols,
+            "order_book_update",
+        );
+
+        assert_eq!(
+            msg.get("channel").and_then(|v| v.as_str()),
+            Some("futures.order_book_update")
+        );
+        let payload = msg
+            .get("payload")
+            .and_then(|v| v.as_array())
+            .expect("payload should be array");
+        assert_eq!(payload.len(), 3);
+        assert_eq!(payload[0].as_str(), Some("BTC_USDT"));
+        assert_eq!(payload[1].as_str(), Some("100ms"));
+        assert_eq!(payload[2].as_str(), Some("100"));
     }
 }
