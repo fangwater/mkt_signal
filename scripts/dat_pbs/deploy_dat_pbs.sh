@@ -161,11 +161,9 @@ for venue in "${VENUES[@]}"; do
   echo "[INFO] 部署 $BIN_NAME 到 $TARGET_DIR"
   mkdir -p "$TARGET_DIR"
 
-  # 原子替换，避免 Text file busy。
-  tmp_bin="$(mktemp "$TARGET_DIR/${BIN_NAME}.new.XXXXXX")"
-  cp "$BIN_PATH" "$tmp_bin"
-  chmod +x "$tmp_bin"
-  mv -f "$tmp_bin" "$TARGET_DIR/$BIN_NAME"
+  # 直接覆盖二进制：若文件被运行中进程占用，会触发 Text file busy 并中断部署。
+  cp "$BIN_PATH" "$TARGET_DIR/"
+  chmod +x "$TARGET_DIR/$BIN_NAME"
 
   mkdir -p "$TARGET_DIR/scripts"
   for script in "${SCRIPTS_TO_DEPLOY[@]}"; do
