@@ -8,8 +8,6 @@
 默认端口示例：
 - viz server: `10031` / `10041` / `10042`
 - config server: `18031` / `18041` / `18042`
-- persist_manager: `19131` / `19141` / `19142`
-- manual_signal: `8931` / `8932` / `8933`
 
 ---
 
@@ -217,8 +215,6 @@ cd ~/binance_fr_hf02
 
 ## 步骤 4：部署 persist_manager
 
-> 端口必须 <= 65535；两套环境需要使用不同端口。
-
 ### 4.1 部署二进制与脚本
 
 ```bash
@@ -237,68 +233,26 @@ bash scripts/deploy_fr_persist_manager.sh \
   --env-name binance_fr_hf02
 ```
 
-### 4.2 启动（示例端口）
+### 4.2 启动
 
 ```bash
 cd ~/binance_fr_trade
-./scripts/start_fr_persist_manager.sh --port 19131
+./scripts/start_fr_persist_manager.sh
 
 cd ~/binance_fr_hf01
-./scripts/start_fr_persist_manager.sh --port 19141
+./scripts/start_fr_persist_manager.sh
 
 cd ~/binance_fr_hf02
-./scripts/start_fr_persist_manager.sh --port 19142
+./scripts/start_fr_persist_manager.sh
 ```
 
 ---
 
-## 步骤 5：部署 manual_signal
-
-> manual_signal 需要不同端口；并且要求 IPC_NAMESPACE 已设置（env.sh 或环境变量）。
-### 5.1 部署
-
-```bash
-cd ~/crypto_mkt/mkt_signal
-
-bash scripts/deploy_fr_manual_signal.sh \
-  --exchange binance \
-  --env-name binance_fr_trade \
-  --port 8931 \
-  --apply-nginx
-
-bash scripts/deploy_fr_manual_signal.sh \
-  --exchange binance \
-  --env-name binance_fr_hf01 \
-  --port 8932 \
-  --apply-nginx
-
-bash scripts/deploy_fr_manual_signal.sh \
-  --exchange binance \
-  --env-name binance_fr_hf02 \
-  --port 8933 \
-  --apply-nginx
-```
-
-### 5.2 启动
-
-```bash
-cd ~/binance_fr_trade
-./scripts/start_fr_manual_signal.sh --port 8931
-
-cd ~/binance_fr_hf01
-./scripts/start_fr_manual_signal.sh --port 8932
-
-cd ~/binance_fr_hf02
-./scripts/start_fr_manual_signal.sh --port 8933
-```
-
----
-
-## 步骤 6：部署 pre_trade
+## 步骤 5：部署 pre_trade
 
 > 注意：pre_trade 启动时会读取 Redis 中带目录前缀的 risk params；若缺失会 panic。
 
-### 6.1 部署二进制与脚本
+### 5.1 部署二进制与脚本
 
 ```bash
 cd ~/crypto_mkt/mkt_signal
@@ -316,7 +270,7 @@ bash scripts/deploy_fr_pre_trade.sh \
   --env-name binance_fr_hf02
 ```
 
-### 6.2 启动（如需）
+### 5.2 启动（如需）
 
 ```bash
 cd ~/binance_fr_trade
@@ -331,7 +285,7 @@ cd ~/binance_fr_hf02
 
 ---
 
-## 步骤 7：部署 trade_signal（只部署，不启动）
+## 步骤 6：部署 trade_signal（只部署，不启动）
 
 ```bash
 cd ~/crypto_mkt/mkt_signal

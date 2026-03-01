@@ -8,9 +8,9 @@ BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 usage() {
   cat <<'EOF'
 用法:
-  scripts/deploy_fr_manual_signal.sh [trade|test] --exchange <binance|okex|bybit|bitget|gate>
+  scripts/deploy_fr_manual_signal.sh --env-name <exchange>_fr_<suffix>
+                                      [--exchange <binance|okex|bybit|bitget|gate>]
                                       [--port <default>]
-                                      [--env-name <exchange>_fr_<suffix>]
                                       [--nginx-prefix /fr/<env-name>/manual_signal]
                                       [--nginx-port 4191]
                                       [--nginx-mapping-file $HOME/nginx_locations.txt]
@@ -21,7 +21,8 @@ usage() {
   - 构建并复制 manual_signal 到目标目录（不自动启动）。
   - 默认同步启动/停止脚本，并写入 nginx 映射（managed block）。
   - FR 目标目录:  $HOME/<exchange>_fr_<suffix>/
-  - env-name 必须匹配 <exchange>_fr_<suffix>（例如 binance_fr_trade / binance_fr_hf01）。
+  - env-name 必须匹配 <exchange>_fr_<suffix>（suffix 必填，例如 binance_fr_hf01）。
+  - exchange 可省略，会从 --env-name 推断（如 okex_fr_hf02 -> okex）。
 EOF
 }
 
@@ -118,7 +119,6 @@ upsert_main_nginx_mapping() {
   mv "$tmp" "$main_file"
 }
 
-ENV_TYPE="trade"
 EXCHANGE=""
 ENV_NAME=""
 PORT=""
@@ -133,10 +133,6 @@ APPLY_NGINX="0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    trade|test)
-      ENV_TYPE="$1"
-      shift
-      ;;
     --exchange)
       EXCHANGE="${2:-}"
       if [[ -z "$EXCHANGE" ]]; then
@@ -201,40 +197,55 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$EXCHANGE" ]]; then
-  echo "[ERROR] --exchange 必填"
-  usage
-  exit 1
-fi
-
-# 规范化为小写
-EXCHANGE="$(echo "$EXCHANGE" | tr 'A-Z' 'a-z')"
-case "$EXCHANGE" in
-  binance|okex|bybit|bitget|gate)
-    ;;
-  *)
-    echo "[ERROR] 不支持的 exchange: $EXCHANGE (支持: binance/okex/bybit/bitget/gate)"
-    exit 1
-    ;;
-esac
-
 normalize_env_name() {
   echo "$1" | tr 'A-Z' 'a-z'
+}
+
+normalize_exchange() {
+  local ex="${1,,}"
+  if [[ "$ex" == "okx" ]]; then
+    ex="okex"
+  fi
+  echo "$ex"
+}
+
+infer_exchange_from_env_name() {
+  local name="${1,,}"
+  if [[ "$name" =~ ^([a-z0-9]+)[-_]fr([_-].*)?$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+  fi
 }
 
 require_fr_env_name() {
   local exchange="$1"
   local name="$2"
-  if [[ ! "$name" =~ ^${exchange}_fr(_[a-z0-9][a-z0-9_-]*)?$ ]]; then
+  if [[ ! "$name" =~ ^${exchange}_fr_[a-z0-9][a-z0-9_-]*$ ]]; then
     echo "[ERROR] env-name must match ${exchange}_fr_<suffix> (got: ${name})" >&2
     exit 1
   fi
 }
 
 if [[ -z "$ENV_NAME" ]]; then
-  ENV_NAME="${EXCHANGE}_fr_${ENV_TYPE}"
+  echo "[ERROR] 需要使用 --env-name 指定部署环境名（例如 binance_fr_hf01）" >&2
+  usage
+  exit 1
 fi
 ENV_NAME="$(normalize_env_name "$ENV_NAME")"
+
+if [[ -z "$EXCHANGE" ]]; then
+  EXCHANGE="$(infer_exchange_from_env_name "$ENV_NAME")"
+fi
+EXCHANGE="$(normalize_exchange "$EXCHANGE")"
+case "$EXCHANGE" in
+  binance|okex|bybit|bitget|gate)
+    ;;
+  *)
+    echo "[ERROR] 无法从 --env-name 推断 exchange，或 --exchange 无效: $EXCHANGE (支持: binance/okex/bybit/bitget/gate)" >&2
+    usage
+    exit 1
+    ;;
+esac
+
 require_fr_env_name "$EXCHANGE" "$ENV_NAME"
 
 if [[ -z "$PORT" ]]; then

@@ -61,7 +61,7 @@ normalize_env_name() {
 require_fr_env_name() {
   local exchange="$1"
   local name="$2"
-  if [[ ! "$name" =~ ^${exchange}_fr(_[a-z0-9][a-z0-9_-]*)?$ ]]; then
+  if [[ ! "$name" =~ ^${exchange}_fr_[a-z0-9][a-z0-9_-]*$ ]]; then
     echo "[ERROR] env-name must match ${exchange}_fr_<suffix> (got: ${name})" >&2
     exit 1
   fi

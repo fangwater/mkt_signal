@@ -18,6 +18,8 @@ Goal: guide the full deploy sequence and **confirm before every shell command**.
 - **One command at a time**: Do not chain commands with `&&` or `;`.
 - **Manual steps**: For web UI steps (risk params), ask for confirmation before continuing.
 - **Env name** must match `okex_fr_<suffix>` and should be lowercase.
+- **All deploy commands must pass `--env-name`**: no legacy `trade/test` positional mode.
+- **Viz deploy must pass `--port`**: never rely on implicit default port.
 - **Env setup first**: `env.sh` must be created and configured before any deploy/start. Require IPC namespace, OKX credentials, and OKEX_LOAN_RATE_URL.
 - **Source before every start/stop**: Always `source ./env.sh` immediately before each process start/stop command.
 - **Source must be in same shell**: Environment does not persist across commands, so run start/stop via a single `bash -lc` command with `cd`, `source`, and the start/stop script on separate lines (no `&&` / `;`).
@@ -32,7 +34,6 @@ Goal: guide the full deploy sequence and **confirm before every shell command**.
 Default single-env ports:
 - config: 18011
 - viz: 10011
-- manual_signal: 8911
 
 If deploying multiple okex fr envs or the user provides a different mapping, stop and ask for the exact ports.
 
@@ -137,9 +138,10 @@ If deploying multiple okex fr envs or the user provides a different mapping, sto
 
 - Target env name (e.g. `okex_fr_trade`)
 - Target host for config UI (for user to open)
-- Confirmed ports (config/viz/manual_signal if needed)
+- Confirmed ports (config/viz)
+- Explicit `viz_port` (required by `deploy_fr_viz_server.sh`)
 - Confirmed OKX_API_KEY / OKX_API_SECRET / OKX_PASSPHRASE are set in env.sh (manual or interactive)
 - Confirmed OKEX_LOAN_RATE_URL (default `http://127.0.0.1:28901/rates`) and rate cache port
-- Confirm that manual_signal is excluded and trade_signal is deploy-only
+- Confirm that trade_signal is deploy-only
 
 If any input is missing, ask before proceeding.

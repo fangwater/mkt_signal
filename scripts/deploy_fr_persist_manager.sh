@@ -8,11 +8,14 @@ BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/deploy_fr_persist_manager.sh [trade|test] --exchange <binance|okex|bybit|bitget|gate> [--env-name <exchange>_fr_<suffix>] [--scripts-only|--bin-only]
+  scripts/deploy_fr_persist_manager.sh --env-name <exchange>_fr_<suffix>
+                                       [--exchange <binance|okex|bybit|bitget|gate>]
+                                       [--scripts-only|--bin-only]
 
 Notes:
   - Builds and copies persist_manager to $HOME/<exchange>_fr_<suffix>/ (does not auto-start).
-  - env-name must match <exchange>_fr_<suffix> (e.g. binance_fr_trade / binance_fr_hf01).
+  - env-name must match <exchange>_fr_<suffix> (suffix required, e.g. binance_fr_hf01).
+  - exchange can be omitted; it will be inferred from --env-name.
   - --scripts-only: sync scripts only
   - --bin-only: build and sync binary only
 EOF
@@ -23,18 +26,13 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-ENV_TYPE="trade"
-EXCHANGE="binance"
+EXCHANGE=""
 ENV_NAME=""
 DO_BUILD=1
 DO_SCRIPTS=1
 ONLY_MODE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    trade|test)
-      ENV_TYPE="$1"
-      shift
-      ;;
     --exchange)
       EXCHANGE="${2:-}"
       if [[ -z "$EXCHANGE" ]]; then
@@ -79,37 +77,55 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-EXCHANGE="$(echo "$EXCHANGE" | tr 'A-Z' 'a-z')"
-if [[ "$EXCHANGE" == "okx" ]]; then
-  EXCHANGE="okex"
-fi
-
-case "$EXCHANGE" in
-  binance|okex|bybit|bitget|gate)
-    ;;
-  *)
-    echo "[ERROR] Unsupported exchange: $EXCHANGE (allowed: binance/okex/bybit/bitget/gate)" >&2
-    exit 1
-    ;;
-esac
-
 normalize_env_name() {
   echo "$1" | tr 'A-Z' 'a-z'
+}
+
+normalize_exchange() {
+  local ex="${1,,}"
+  if [[ "$ex" == "okx" ]]; then
+    ex="okex"
+  fi
+  echo "$ex"
+}
+
+infer_exchange_from_env_name() {
+  local name="${1,,}"
+  if [[ "$name" =~ ^([a-z0-9]+)[-_]fr([_-].*)?$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+  fi
 }
 
 require_fr_env_name() {
   local exchange="$1"
   local name="$2"
-  if [[ ! "$name" =~ ^${exchange}_fr(_[a-z0-9][a-z0-9_-]*)?$ ]]; then
+  if [[ ! "$name" =~ ^${exchange}_fr_[a-z0-9][a-z0-9_-]*$ ]]; then
     echo "[ERROR] env-name must match ${exchange}_fr_<suffix> (got: ${name})" >&2
     exit 1
   fi
 }
 
 if [[ -z "$ENV_NAME" ]]; then
-  ENV_NAME="${EXCHANGE}_fr_${ENV_TYPE}"
+  echo "[ERROR] --env-name is required (e.g. binance_fr_hf01)" >&2
+  usage >&2
+  exit 1
 fi
 ENV_NAME="$(normalize_env_name "$ENV_NAME")"
+
+if [[ -z "$EXCHANGE" ]]; then
+  EXCHANGE="$(infer_exchange_from_env_name "$ENV_NAME")"
+fi
+EXCHANGE="$(normalize_exchange "$EXCHANGE")"
+case "$EXCHANGE" in
+  binance|okex|bybit|bitget|gate)
+    ;;
+  *)
+    echo "[ERROR] Unsupported exchange: $EXCHANGE (allowed: binance/okex/bybit/bitget/gate)" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
+
 require_fr_env_name "$EXCHANGE" "$ENV_NAME"
 
 TARGET_DIR="$HOME/${ENV_NAME}"

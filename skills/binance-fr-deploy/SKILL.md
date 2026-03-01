@@ -18,6 +18,8 @@ Goal: guide the full deploy sequence and **confirm before every shell command**.
 - **One command at a time**: Do not chain commands with `&&` or `;`.
 - **Manual steps**: For web UI steps (risk params), ask for confirmation before continuing.
 - **Env name** must match `binance_fr_<suffix>` and should be lowercase.
+- **All deploy commands must pass `--env-name`**: no legacy `trade/test` positional mode.
+- **Viz deploy must pass `--port`**: never rely on implicit default port.
 - **Env setup first**: `env.sh` must be created and configured before any deploy/start. Require IPC namespace, account mode, and API credentials.
 - **Source before every start/stop**: Always `source ./env.sh` immediately before each process start/stop command.
 - **Source must be in same shell**: Environment does not persist across commands, so run start/stop via a single `bash -lc` command with `cd`, `source`, and the start/stop script on separate lines (no `&&` / `;`).
@@ -30,14 +32,12 @@ Goal: guide the full deploy sequence and **confirm before every shell command**.
 ## Port rules (binance)
 
 Base envs:
-- trade: viz 10031, config 18031, persist 19131, manual 8931
-- hf01: viz 10041, config 18041, persist 19141, manual 8932
+- trade: viz 10031, config 18031
+- hf01: viz 10041, config 18041
 
 General rule for hfNN (NN as 2-digit number):
 - viz: 10040 + NN
 - config: 18040 + NN
-- persist: 19140 + NN
-- manual: 8931 + NN
 
 If any port conflicts or the user provides a different mapping, stop and ask.
 
@@ -106,7 +106,7 @@ If any port conflicts or the user provides a different mapping, stop and ask.
    - Deploy:
      - `bash scripts/deploy_fr_persist_manager.sh --exchange binance --env-name <env>`
    - Start (single command):
-     - `bash -lc 'cd ~/<env>\nsource ./env.sh\n./scripts/start_fr_persist_manager.sh --port <persist_port>'`
+     - `bash -lc 'cd ~/<env>\nsource ./env.sh\n./scripts/start_fr_persist_manager.sh'`
    - Check (PM2 status):
      - `npx pm2 list --namespace <env>`
    - Check (logs):
@@ -131,9 +131,10 @@ If any port conflicts or the user provides a different mapping, stop and ask.
 
 - Target env name (e.g. `binance_fr_hf02`)
 - Target host for config UI (for user to open)
-- Confirmed ports (computed from rules or provided by user)
+- Confirmed ports (config/viz)
+- Explicit `viz_port` (required by `deploy_fr_viz_server.sh`)
 - Confirmed BINANCE_ACCOUNT_MODE (defaults to UNIFIED; STANDARD only if explicitly requested)
 - Confirmed BINANCE_API_KEY / BINANCE_API_SECRET are set in env.sh (manual or interactive)
-- Confirm that manual_signal is excluded and trade_signal is deploy-only
+- Confirm that trade_signal is deploy-only
 
 If any input is missing, ask before proceeding.

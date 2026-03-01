@@ -6,9 +6,9 @@ BIN_NAME="viz_server"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy_fr_viz_server.sh [--exchange <binance|okex|gate|bybit|bitget>]
-                                      [--env-name <exchange>_fr_trade]
-                                      [--bind 0.0.0.0] [--port <default>]
+Usage: scripts/deploy_fr_viz_server.sh --env-name <exchange>_fr_<suffix>
+                                      [--exchange <binance|okex|gate|bybit|bitget>]
+                                      [--bind 0.0.0.0] --port <port>
                                       [--ws-path /ws]
                                       [--namespace <IPC_NAMESPACE>]
                                       [--instance-label <label>]
@@ -19,11 +19,12 @@ Usage: scripts/deploy_fr_viz_server.sh [--exchange <binance|okex|gate|bybit|bitg
                                       [--scripts-only|--bin-only]
 
 Notes:
-  - exchange 可省略，会从 --env-name 或当前目录名推断（格式如 binance-fr-trade / binance_fr_trade）。
-  - Deploys viz_server into $HOME/<exchange>_fr_trade/ (or --env-name).
+  - exchange 可省略，会从 --env-name 推断（格式如 binance_fr_hf01）。
+  - Deploys viz_server into $HOME/<env-name>/.
   - Generates config/viz.toml with pre_trade resample only.
   - Copies docs/pre_trade_dashboard.html into www/ and index.html.
-  - env-name 必须匹配 <exchange>_fr_<suffix>（例如 binance_fr_trade / binance_fr_hf01）。
+  - env-name 必须匹配 <exchange>_fr_<suffix>（suffix 必填，例如 binance_fr_hf01）。
+  - --port 必填（不再按 exchange 自动补默认端口）。
   - Default nginx prefix follows deploy dir name: /fr/<env-name> (e.g. /fr/binance_fr_trade).
   - Updates nginx mapping file with static + ws + healthz entries (managed block).
 EOF
@@ -34,7 +35,6 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-ENV_TYPE="trade"
 EXCHANGE=""
 ENV_NAME=""
 
@@ -72,21 +72,10 @@ normalize_env_name() {
 require_fr_env_name() {
   local exchange="$1"
   local name="$2"
-  if [[ ! "$name" =~ ^${exchange}_fr(_[a-z0-9][a-z0-9_-]*)?$ ]]; then
+  if [[ ! "$name" =~ ^${exchange}_fr_[a-z0-9][a-z0-9_-]*$ ]]; then
     echo "[ERROR] env-name must match ${exchange}_fr_<suffix> (got: ${name})" >&2
     exit 1
   fi
-}
-
-default_port_for_exchange() {
-  case "$1" in
-    okex) echo "10011" ;;
-    gate) echo "10021" ;;
-    binance) echo "10031" ;;
-    bybit) echo "10041" ;;
-    bitget) echo "10051" ;;
-    *) echo "10011" ;;
-  esac
 }
 
 infer_exchange_from_env_name() {
@@ -94,12 +83,6 @@ infer_exchange_from_env_name() {
   if [[ "$name" =~ ^([a-z0-9]+)[-_]fr([_-].*)?$ ]]; then
     echo "${BASH_REMATCH[1]}"
   fi
-}
-
-infer_exchange_from_cwd() {
-  local name
-  name="$(basename "$(pwd)")"
-  infer_exchange_from_env_name "$name"
 }
 
 upsert_main_nginx_mapping() {
@@ -279,19 +262,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$EXCHANGE" && -n "$ENV_NAME" ]]; then
-  EXCHANGE="$(infer_exchange_from_env_name "$ENV_NAME")"
-fi
-if [[ -z "$EXCHANGE" ]]; then
-  EXCHANGE="$(infer_exchange_from_cwd)"
-  if [[ -n "$EXCHANGE" && -z "$ENV_NAME" ]]; then
-    ENV_NAME="$(basename "$(pwd)")"
-  fi
-fi
-if [[ -z "$EXCHANGE" ]]; then
-  echo "[ERROR] missing exchange (use --exchange, --env-name, or run under <exchange>_fr_<env>)"
+if [[ -z "$ENV_NAME" ]]; then
+  echo "[ERROR] --env-name is required (e.g. binance_fr_hf01)"
   usage
   exit 1
+fi
+ENV_NAME="$(normalize_env_name "$ENV_NAME")"
+
+if [[ -z "$EXCHANGE" ]]; then
+  EXCHANGE="$(infer_exchange_from_env_name "$ENV_NAME")"
 fi
 EXCHANGE="$(normalize_exchange "$EXCHANGE")"
 case "$EXCHANGE" in
@@ -302,10 +281,6 @@ case "$EXCHANGE" in
     ;;
 esac
 
-if [[ -z "$ENV_NAME" ]]; then
-  ENV_NAME="${EXCHANGE}_fr_${ENV_TYPE}"
-fi
-ENV_NAME="$(normalize_env_name "$ENV_NAME")"
 require_fr_env_name "$EXCHANGE" "$ENV_NAME"
 
 if [[ -z "$INSTANCE_LABEL" ]]; then
@@ -313,7 +288,13 @@ if [[ -z "$INSTANCE_LABEL" ]]; then
 fi
 
 if [[ -z "$PORT" ]]; then
-  PORT="$(default_port_for_exchange "$EXCHANGE")"
+  echo "[ERROR] --port is required for fr viz deployment"
+  usage
+  exit 1
+fi
+if [[ ! "$PORT" =~ ^[0-9]+$ ]]; then
+  echo "[ERROR] --port must be a number: $PORT"
+  exit 1
 fi
 
 if [[ "$WS_PATH" != /* ]]; then
@@ -340,7 +321,7 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 IPC_NAMESPACE="${IPC_NS_OVERRIDE:-${IPC_NAMESPACE:-}}"
 if [[ -z "$IPC_NAMESPACE" ]]; then
-  IPC_NAMESPACE="${EXCHANGE}_fr_${ENV_TYPE}"
+  IPC_NAMESPACE="${ENV_NAME}"
   echo "[WARN] IPC_NAMESPACE not set (env.sh missing or empty). Using default: ${IPC_NAMESPACE}"
 fi
 
