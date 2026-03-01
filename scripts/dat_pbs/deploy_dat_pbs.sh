@@ -18,7 +18,7 @@ Examples:
   bash scripts/dat_pbs/deploy_dat_pbs.sh --dir "$HOME/dat_pbs"
 
 Notes:
-  - Exchange is selected at runtime via start_dat_pbs.sh --exchange <exchange>
+  - Exchange is selected at runtime via scripts/start_dat_pbs.sh --exchange <exchange>
   - This deploy variant is for dat_pbs processes managed by pmdaemon.
 EOF
 }
@@ -57,16 +57,20 @@ cargo build --release --bin "$BIN_NAME"
 
 echo "[INFO] 部署 $BIN_NAME 到 $TARGET_DIR"
 mkdir -p "$TARGET_DIR"
-cp "$BIN_PATH" "$TARGET_DIR/"
-chmod +x "$TARGET_DIR/$BIN_NAME"
+# 原子替换二进制，避免直接覆盖运行中文件触发 "Text file busy"
+tmp_bin="$(mktemp "$TARGET_DIR/${BIN_NAME}.new.XXXXXX")"
+cp "$BIN_PATH" "$tmp_bin"
+chmod +x "$tmp_bin"
+mv -f "$tmp_bin" "$TARGET_DIR/$BIN_NAME"
 
-# 同步启动/停止脚本到部署根目录
+# 同步启动/停止脚本到 scripts/（与 depth_pub 一致）
 SCRIPT_DIR_SRC="$ROOT_DIR/scripts/dat_pbs"
 SCRIPTS_TO_SYNC=("start_dat_pbs.sh" "stop_dat_pbs.sh" "setup_pmdaemon_logrotate.sh")
+mkdir -p "$TARGET_DIR/scripts"
 for script in "${SCRIPTS_TO_SYNC[@]}"; do
   if [[ -f "$SCRIPT_DIR_SRC/$script" ]]; then
-    rsync -a "$SCRIPT_DIR_SRC/$script" "$TARGET_DIR/"
-    chmod +x "$TARGET_DIR/$script"
+    rsync -a "$SCRIPT_DIR_SRC/$script" "$TARGET_DIR/scripts/"
+    chmod +x "$TARGET_DIR/scripts/$script"
   fi
 done
 
@@ -80,4 +84,4 @@ if [[ -f "$ROOT_DIR/config/iceoryx2.toml" ]]; then
 fi
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"
-echo "[INFO] 启动示例: cd $TARGET_DIR && ./start_dat_pbs.sh --exchange binance"
+echo "[INFO] 启动示例: cd $TARGET_DIR && ./scripts/start_dat_pbs.sh --exchange binance"

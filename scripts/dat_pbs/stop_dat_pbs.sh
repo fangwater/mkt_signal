@@ -4,13 +4,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 resolve_base_dir() {
   local script_dir="$1"
-  local direct_candidate legacy_candidate
+  local direct_candidate parent_candidate legacy_candidate
   direct_candidate="$script_dir"
+  parent_candidate="$(cd "${script_dir}/.." && pwd)"
   legacy_candidate="$(cd "${script_dir}/../.." && pwd)"
 
   # New deploy layout: scripts are placed directly under dat_pbs root.
   if [[ -d "${direct_candidate}/config" ]]; then
     printf '%s\n' "$direct_candidate"
+    return 0
+  fi
+
+  # Depth-style layout: scripts under dat_pbs/scripts.
+  if [[ -d "${parent_candidate}/config" ]]; then
+    printf '%s\n' "$parent_candidate"
     return 0
   fi
 
@@ -30,10 +37,10 @@ Usage:
   stop_dat_pbs.sh (--exchange <exchange> | <exchange> | <venue...>)
 
 Examples:
-  ./stop_dat_pbs.sh --exchange binance
-  ./stop_dat_pbs.sh okex
-  ./stop_dat_pbs.sh binance-futures
-  ./stop_dat_pbs.sh binance-futures binance-margin
+  ./scripts/stop_dat_pbs.sh --exchange binance
+  ./scripts/stop_dat_pbs.sh okex
+  ./scripts/stop_dat_pbs.sh binance-futures
+  ./scripts/stop_dat_pbs.sh binance-futures binance-margin
 
 Notes:
   - Exchange expands to default venues:
