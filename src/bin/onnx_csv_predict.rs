@@ -81,8 +81,8 @@ impl OnnxCsvPredictConfig {
     fn load(path: &Path) -> Result<Self> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("read config failed: {}", path.display()))?;
-        let cfg: Self =
-            toml::from_str(&content).with_context(|| format!("parse TOML failed: {}", path.display()))?;
+        let cfg: Self = toml::from_str(&content)
+            .with_context(|| format!("parse TOML failed: {}", path.display()))?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -104,7 +104,13 @@ impl OnnxCsvPredictConfig {
             anyhow::bail!("expected_feature_dim must be > 0 when provided");
         }
 
-        let has_remote = self.model_manager_base_url.as_deref().unwrap_or("").trim().len() > 0
+        let has_remote = self
+            .model_manager_base_url
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .len()
+            > 0
             || self.model_name.as_deref().unwrap_or("").trim().len() > 0
             || self.symbol.as_deref().unwrap_or("").trim().len() > 0;
         if has_remote {
@@ -165,11 +171,7 @@ impl OnnxCsvPredictConfig {
         if path.starts_with("http://") || path.starts_with("https://") {
             return Ok(path);
         }
-        Ok(format!(
-            "{}/{}",
-            base_url,
-            path.trim_start_matches('/')
-        ))
+        Ok(format!("{}/{}", base_url, path.trim_start_matches('/')))
     }
 }
 
@@ -220,9 +222,8 @@ fn run_predict(cfg: &OnnxCsvPredictConfig) -> Result<InferenceStats> {
     let output_csv = Path::new(cfg.output_csv.trim());
     if let Some(parent) = output_csv.parent() {
         if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("create output dir failed: {}", parent.display())
-            })?;
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create output dir failed: {}", parent.display()))?;
         }
     }
 
@@ -319,7 +320,9 @@ fn run_predict(cfg: &OnnxCsvPredictConfig) -> Result<InferenceStats> {
         if cfg.log_every > 0 && rows as usize % cfg.log_every == 0 {
             info!(
                 "onnx_csv_predict progress: rows={} feature_dim={} source_line={}",
-                rows, feature_dim, line_no + 1
+                rows,
+                feature_dim,
+                line_no + 1
             );
         }
     }
@@ -466,9 +469,7 @@ fn parse_feature_line(
         let parsed = raw.trim().parse::<f32>().with_context(|| {
             format!(
                 "parse feature float failed: line_no={} col={} raw={:?}",
-                line_no,
-                i,
-                raw
+                line_no, i, raw
             )
         })?;
         out.push(parsed);

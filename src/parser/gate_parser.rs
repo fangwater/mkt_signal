@@ -244,36 +244,50 @@ impl Parser for GateTickerParser {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
-                if event != "update" || !channel.ends_with(".book_ticker") {
+                if event != "update"
+                    || !(channel.ends_with(".book_ticker") || channel.ends_with(".tickers"))
+                {
                     return 0;
                 }
 
                 let result = json_value.get("result");
 
-                // futures.book_ticker：字段 s/b/B/a/A，时间戳在 result.t
+                // futures.book_ticker：字段 s/b/B/a/A
+                // spot.tickers：字段 currency_pair/highest_bid/lowest_ask
                 if let Some(res) = result.and_then(|v| v.as_object()) {
-                    let symbol = match res.get("s").and_then(|v| v.as_str()) {
+                    let symbol = match res
+                        .get("s")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| res.get("contract").and_then(|v| v.as_str()))
+                        .or_else(|| res.get("currency_pair").and_then(|v| v.as_str()))
+                    {
                         Some(s) => s,
                         None => return 0,
                     };
-                    let ts = res.get("t").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let ts = res
+                        .get("t")
+                        .and_then(parse_gate_ts_ms)
+                        .or_else(|| res.get("time_ms").and_then(parse_gate_ts_ms))
+                        .or_else(|| json_value.get("time_ms").and_then(parse_gate_ts_ms))
+                        .or_else(|| json_value.get("time").and_then(parse_gate_ts_ms))
+                        .unwrap_or(0);
                     let bid_price = res
                         .get("b")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| s.parse::<f64>().ok());
+                        .and_then(parse_json_f64)
+                        .or_else(|| res.get("highest_bid").and_then(parse_json_f64));
                     let ask_price = res
                         .get("a")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| s.parse::<f64>().ok());
+                        .and_then(parse_json_f64)
+                        .or_else(|| res.get("lowest_ask").and_then(parse_json_f64));
                     let bid_amount = res
                         .get("B")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| s.parse::<f64>().ok())
+                        .and_then(parse_json_f64)
+                        .or_else(|| res.get("best_bid_size").and_then(parse_json_f64))
                         .unwrap_or(0.0);
                     let ask_amount = res
                         .get("A")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| s.parse::<f64>().ok())
+                        .and_then(parse_json_f64)
+                        .or_else(|| res.get("best_ask_size").and_then(parse_json_f64))
                         .unwrap_or(0.0);
 
                     if let (Some(bp), Some(ap)) = (bid_price, ask_price) {
@@ -450,6 +464,7 @@ impl GateTradeParser {
             .and_then(|v| v.as_str())
             .or_else(|| trade.get("s").and_then(|v| v.as_str()))
             .or_else(|| trade.get("symbol").and_then(|v| v.as_str()))
+            .or_else(|| trade.get("currency_pair").and_then(|v| v.as_str()))
         {
             Some(s) => s,
             None => return 0,
@@ -584,6 +599,7 @@ impl GateIncParser {
             .and_then(|v| v.as_str())
             .or_else(|| item.get("contract").and_then(|v| v.as_str()))
             .or_else(|| item.get("symbol").and_then(|v| v.as_str()))
+            .or_else(|| item.get("currency_pair").and_then(|v| v.as_str()))
         {
             Some(s) => s,
             None => return 0,
@@ -918,6 +934,31 @@ mod tests {
     }
 
     #[test]
+    fn test_gate_trade_parse_spot_currency_pair() {
+        let parser = GateTradeParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let msg = r#"{
+            "time": 1764559450,
+            "time_ms": 1764559450123,
+            "channel": "spot.trades",
+            "event": "update",
+            "result": {
+                "id": 123456789,
+                "create_time_ms": "1764559450123",
+                "currency_pair": "BTC_USDT",
+                "side": "sell",
+                "amount": "0.12",
+                "price": "86500.5"
+            }
+        }"#;
+
+        let count = parser.parse(Bytes::from(msg), &tx);
+        assert_eq!(count, 1);
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[test]
     fn test_gate_inc_parse() {
         let parser = GateIncParser::with_max_levels(Some(2));
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -940,6 +981,28 @@ mod tests {
         let count = parser.parse(Bytes::from(msg), &tx);
         assert_eq!(count, 2);
         assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn test_gate_ticker_parse_spot_tickers() {
+        let parser = GateTickerParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let msg = r#"{
+            "time": 1764559257,
+            "time_ms": 1764559257161,
+            "channel": "spot.tickers",
+            "event": "update",
+            "result": {
+                "currency_pair": "BTC_USDT",
+                "lowest_ask": "86445.2",
+                "highest_bid": "86445.1"
+            }
+        }"#;
+
+        let count = parser.parse(Bytes::from(msg), &tx);
+        assert_eq!(count, 1);
         assert!(rx.try_recv().is_ok());
     }
 }

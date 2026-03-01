@@ -275,7 +275,11 @@ impl MktManager {
                     .await;
                 }
                 Exchange::Gate => {
-                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url_with_venue(
+                        &exchange,
+                        self.cfg.venue,
+                    )
+                    .to_string();
                     let parser = GateIncParser::with_max_levels(max_levels);
                     self.spawn_connection_with_mpsc(
                         exchange,
@@ -299,9 +303,6 @@ impl MktManager {
                         tx,
                     )
                     .await;
-                }
-                _ => {
-                    panic!("Unsupported exchange for inc parser: {}", exchange);
                 }
             }
         }
@@ -430,7 +431,11 @@ impl MktManager {
                     .await;
                 }
                 Exchange::Gate => {
-                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url_with_venue(
+                        &exchange,
+                        self.cfg.venue,
+                    )
+                    .to_string();
                     let parser = GateTradeParser::new();
                     self.spawn_connection_with_mpsc(
                         exchange,
@@ -455,9 +460,6 @@ impl MktManager {
                     )
                     .await;
                 }
-                _ => {
-                    error!("Unsupported exchange for trade parser: {}", exchange);
-                }
             }
         }
     }
@@ -468,7 +470,11 @@ impl MktManager {
         {
             BINANCE_SPOT_WS_URL.to_string()
         } else {
-            crate::sub_msg::SubscribeMsgs::get_exchange_kline_data_url(&exchange).to_string()
+            crate::sub_msg::SubscribeMsgs::get_exchange_kline_data_url_with_venue(
+                &exchange,
+                self.cfg.venue,
+            )
+            .to_string()
         };
 
         for i in 0..self.subscribe_msgs.get_kline_subscribe_msg_len() {
@@ -610,7 +616,11 @@ impl MktManager {
                     .await;
                 }
                 Exchange::Gate => {
-                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url_with_venue(
+                        &exchange,
+                        self.cfg.venue,
+                    )
+                    .to_string();
                     // Gate ticker 包含最优买卖价
                     let parser = GateTickerParser::new();
                     log::info!(
@@ -926,7 +936,8 @@ impl MktManager {
 
     async fn start_signal_connection(&mut self) {
         let exchange = self.cfg.get_exchange();
-        let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+        let url = SubscribeMsgs::get_exchange_mkt_data_url_with_venue(&exchange, self.cfg.venue)
+            .to_string();
         let signal_subscribe_msg = self.subscribe_msgs.get_time_signal_subscribe_msg();
         let tx = self.signal_tx.clone();
 

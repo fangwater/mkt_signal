@@ -544,6 +544,7 @@ pub fn construct_connection_with_ip(
     use crate::connection::hyperliquid_conn::HyperliquidConnection;
     use crate::connection::okex_conn::OkexConnection;
 
+    let gate_is_futures = url.contains("fx-ws.gateio.ws") || url.contains("/futures");
     let mut base_connection = MktConnection::new(url, subscribe_msg, tx, global_shutdown_rx);
     base_connection.local_ip = Some(local_ip);
 
@@ -552,7 +553,7 @@ pub fn construct_connection_with_ip(
         Exchange::Okex => Ok(Box::new(OkexConnection::new(base_connection))),
         Exchange::Bybit => Ok(Box::new(BybitConnection::new(base_connection))),
         Exchange::Bitget => Ok(Box::new(BitgetConnection::new(base_connection))),
-        Exchange::Gate => Ok(Box::new(GateConnection::new(base_connection, false))),
+        Exchange::Gate => Ok(Box::new(GateConnection::new(base_connection, gate_is_futures))),
         Exchange::Hyperliquid => Ok(Box::new(HyperliquidConnection::new(base_connection))),
     }
 }
@@ -573,6 +574,7 @@ pub fn construct_connection(
     use crate::connection::hyperliquid_conn::HyperliquidConnection;
     use crate::connection::okex_conn::OkexConnection;
 
+    let gate_is_futures = url.contains("fx-ws.gateio.ws") || url.contains("/futures");
     let base_connection = MktConnection::new(url, subscribe_msg, tx, global_shutdown_rx);
 
     match exchange {
@@ -580,7 +582,7 @@ pub fn construct_connection(
         Exchange::Okex => Ok(Box::new(OkexConnection::new(base_connection))),
         Exchange::Bybit => Ok(Box::new(BybitConnection::new(base_connection))),
         Exchange::Bitget => Ok(Box::new(BitgetConnection::new(base_connection))),
-        Exchange::Gate => Ok(Box::new(GateConnection::new(base_connection, false))),
+        Exchange::Gate => Ok(Box::new(GateConnection::new(base_connection, gate_is_futures))),
         Exchange::Hyperliquid => Ok(Box::new(HyperliquidConnection::new(base_connection))),
     }
 }

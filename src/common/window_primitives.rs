@@ -781,8 +781,7 @@ mod tests {
             rolling_sum_at_opt_from_series(&opt, 4, 4, 3).expect("sum at opt failed"),
             Some(8.0)
         );
-        let mean_opt =
-            rolling_mean_at_opt_from_series(&opt, 4, 4, 3).expect("mean at opt failed");
+        let mean_opt = rolling_mean_at_opt_from_series(&opt, 4, 4, 3).expect("mean at opt failed");
         assert!((mean_opt.expect("mean at opt none") - (8.0 / 3.0)).abs() < 1e-12);
 
         let rank_data = [1.0, 3.0, 2.0];

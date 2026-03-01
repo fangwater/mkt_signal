@@ -13,6 +13,14 @@ fn bitget_inst_type_for_venue(venue: TradingVenue) -> &'static str {
     }
 }
 
+fn gate_channel_prefix_for_venue(venue: TradingVenue) -> &'static str {
+    match venue {
+        TradingVenue::GateMargin => "spot",
+        TradingVenue::GateFutures => "futures",
+        _ => "futures",
+    }
+}
+
 fn hyperliquid_coin_from_internal(symbol: &str) -> String {
     let normalized = symbol.trim().to_uppercase().replace(['/', '-', '_'], "");
     normalized
@@ -139,7 +147,7 @@ fn construct_subscribe_message(
         Exchange::Gate => {
             // Gate.io API 格式
             // 现货: spot.xxx, 合约: futures.xxx
-            let channel_prefix = "futures"; // Default to futures for now
+            let channel_prefix = gate_channel_prefix_for_venue(venue);
             let payload: Vec<String> = symbols.iter().map(|s| s.to_string()).collect();
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -347,6 +355,16 @@ impl GatePerpsSubscribeMsgs {
     pub const MAX_CHANNELS_PER_CONNECTION: usize = 100;
 
     pub async fn new(cfg: &Config) -> Self {
+        if cfg.venue != TradingVenue::GateFutures {
+            warn!(
+                "gate derivatives metrics are only supported on gate-futures; current venue={} will skip derivatives subscriptions",
+                cfg.venue.data_pub_slug()
+            );
+            return Self {
+                ticker_stream_msgs: Vec::new(),
+            };
+        }
+
         let symbols: Vec<String> = cfg.get_symbols().await.unwrap();
         let batch_size = cfg.get_batch_size().min(Self::MAX_CHANNELS_PER_CONNECTION);
         let mut ticker_stream_msgs = Vec::new();
@@ -558,14 +576,20 @@ impl SubscribeMsgs {
             Exchange::Okex => "bbo-tbt".to_string(),
             Exchange::Bybit => "orderbook.1".to_string(),
             Exchange::Bitget => "books1".to_string(),
-            Exchange::Gate => "book_ticker".to_string(),
+            Exchange::Gate => match venue {
+                TradingVenue::GateMargin => "tickers".to_string(),
+                _ => "book_ticker".to_string(),
+            },
             Exchange::Hyperliquid => "bbo".to_string(),
         }
     }
 }
 
 impl SubscribeMsgs {
-    pub fn get_exchange_mkt_data_url(exchange: &Exchange) -> &'static str {
+    pub fn get_exchange_mkt_data_url_with_venue(
+        exchange: &Exchange,
+        venue: TradingVenue,
+    ) -> &'static str {
         match exchange {
             //币安u本位期货合约和现货
             Exchange::Binance => "wss://fstream.binance.com/ws",
@@ -573,15 +597,25 @@ impl SubscribeMsgs {
             Exchange::Okex => "wss://ws.okx.com:8443/ws/v5/public",
             //Bybitu本位期货合约和现货
             Exchange::Bybit => "wss://stream.bybit.com/v5/public/linear",
-            //Gate.io USDT 永续（futures 专用 endpoint）
-            Exchange::Gate => "wss://fx-ws.gateio.ws/v4/ws/usdt",
+            //Gate.io: 现货与合约分不同 endpoint
+            Exchange::Gate => match venue {
+                TradingVenue::GateMargin => "wss://api.gateio.ws/ws/v4/",
+                _ => "wss://fx-ws.gateio.ws/v4/ws/usdt",
+            },
             //Bitget
             Exchange::Bitget => "wss://ws.bitget.com/v2/ws/public",
             Exchange::Hyperliquid => "wss://api.hyperliquid.xyz/ws",
         }
     }
 
-    pub fn get_exchange_kline_data_url(exchange: &Exchange) -> &'static str {
+    pub fn get_exchange_mkt_data_url(exchange: &Exchange) -> &'static str {
+        Self::get_exchange_mkt_data_url_with_venue(exchange, TradingVenue::GateFutures)
+    }
+
+    pub fn get_exchange_kline_data_url_with_venue(
+        exchange: &Exchange,
+        venue: TradingVenue,
+    ) -> &'static str {
         match exchange {
             //币安u本位期货合约和现货
             Exchange::Binance => "wss://fstream.binance.com/ws",
@@ -589,12 +623,19 @@ impl SubscribeMsgs {
             Exchange::Okex => "wss://ws.okx.com:8443/ws/v5/business",
             //Bybitu本位期货合约和现货
             Exchange::Bybit => "wss://stream.bybit.com/v5/public/linear",
-            //Gate.io 现货和USDT合约 (K线也使用同一URL)
-            Exchange::Gate => "wss://fx-ws.gateio.ws/v4/ws/usdt",
+            //Gate.io: 现货与合约分不同 endpoint
+            Exchange::Gate => match venue {
+                TradingVenue::GateMargin => "wss://api.gateio.ws/ws/v4/",
+                _ => "wss://fx-ws.gateio.ws/v4/ws/usdt",
+            },
             //Bitget
             Exchange::Bitget => "wss://ws.bitget.com/v2/ws/public",
             Exchange::Hyperliquid => "wss://api.hyperliquid.xyz/ws",
         }
+    }
+
+    pub fn get_exchange_kline_data_url(exchange: &Exchange) -> &'static str {
+        Self::get_exchange_kline_data_url_with_venue(exchange, TradingVenue::GateFutures)
     }
 
     fn get_signal_subscribe_message(exchange: &Exchange, venue: TradingVenue) -> serde_json::Value {
@@ -633,14 +674,14 @@ impl SubscribeMsgs {
                 })
             }
             Exchange::Gate => {
-                // Gate.io 合约 ticker 作为信号源
+                let channel_prefix = gate_channel_prefix_for_venue(venue);
                 let timestamp = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_secs();
                 serde_json::json!({
                     "time": timestamp,
-                    "channel": "futures.tickers",
+                    "channel": format!("{}.tickers", channel_prefix),
                     "event": "subscribe",
                     "payload": ["BTC_USDT"]
                 })
