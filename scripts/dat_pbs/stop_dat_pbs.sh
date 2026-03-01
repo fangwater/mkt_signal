@@ -95,8 +95,11 @@ find_running_pids() {
       pids+=("$pid")
     fi
   done < <(
-    ps -eo pid=,args= | awk -v venue_arg="$venue_arg" -v base_dir="$BASE_DIR" '
-      index($0, "dat_pbs") > 0 && index($0, venue_arg) > 0 && index($0, base_dir) > 0 {
+    ps -eo pid=,args= | awk -v venue_arg="$venue_arg" '
+      index($0, "dat_pbs") > 0 &&
+      index($0, venue_arg) > 0 &&
+      index($0, "start_dat_pbs.sh") == 0 &&
+      index($0, "stop_dat_pbs.sh") == 0 {
         print $1
       }
     '
