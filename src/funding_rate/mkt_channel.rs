@@ -23,7 +23,7 @@ use crate::signal::common::TradingVenue;
 use crate::symbol_match::normalize_symbol_for_whitelist;
 
 // 常量定义
-const ASKBID_PAYLOAD: usize = 64;
+const ASKBID_PAYLOAD: usize = 128;
 const DERIVATIVES_PAYLOAD: usize = 128;
 const DERIVATIVES_HISTORY_SIZE: usize = 50;
 const DERIVATIVES_MAX_SUBSCRIBERS: usize = 10;

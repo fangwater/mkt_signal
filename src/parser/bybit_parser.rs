@@ -6,14 +6,6 @@ use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
-const BLACKLIST_SYMBOL_UPPER: &str = "\u{6211}\u{8E0F}\u{9A6C}\u{6765}\u{4E86}USDT";
-const BLACKLIST_SYMBOL_LOWER: &str = "\u{6211}\u{8E0F}\u{9A6C}\u{6765}\u{4E86}usdt";
-
-#[inline]
-fn is_blacklisted_symbol(symbol: &str) -> bool {
-    symbol == BLACKLIST_SYMBOL_UPPER || symbol == BLACKLIST_SYMBOL_LOWER
-}
-
 #[derive(Clone)]
 pub struct BybitSignalParser {
     source: SignalSource,
@@ -415,9 +407,6 @@ impl BybitTradeParser {
                     trade_data.get("T").and_then(|v| v.as_i64()), // 成交时间
                     trade_data.get("i").and_then(|v| v.as_str()), // 交易ID
                 ) {
-                    if is_blacklisted_symbol(symbol) {
-                        return 0;
-                    }
                     // Parse price and volume
                     if let (Ok(price), Ok(amount)) =
                         (price_str.parse::<f64>(), volume_str.parse::<f64>())
@@ -502,9 +491,6 @@ impl Parser for BybitAskBidSpreadParser {
                         let parts: Vec<&str> = topic.split('.').collect();
                         if parts.len() >= 3 {
                             let symbol = parts[2];
-                            if is_blacklisted_symbol(symbol) {
-                                return 0;
-                            }
 
                             // Parse data
                             if let Some(data) = json_value.get("data").and_then(|v| v.as_object()) {

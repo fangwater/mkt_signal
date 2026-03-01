@@ -16,7 +16,7 @@ use super::cfg::KlinePubConfig;
 use super::publisher::KlineMsgPublisher;
 use crate::common::mkt_msg::{KlineMsg, MktMsgType};
 
-const TRADE_MAX_BYTES: usize = 64;
+const TRADE_MAX_BYTES: usize = 128;
 const SIGNAL_MAX_BYTES: usize = 64;
 const IDLE_SLEEP_MICROS: u64 = 100;
 const TIMER_CHECK_INTERVAL_US: u64 = 500;

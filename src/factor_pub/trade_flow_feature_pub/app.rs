@@ -26,7 +26,7 @@ use crate::common::trade_flow_feature_msg::{TradeFlowFeatureMsg, TRADE_FLOW_FEAT
 use crate::depth_pub::depth_msg::{DepthMsgType, DEPTH25_MAX_BYTES, DEPTH50_MAX_BYTES};
 use crate::signal::common::TradingVenue;
 
-const TRADE_MAX_BYTES: usize = 64;
+const TRADE_MAX_BYTES: usize = 128;
 const IDLE_SLEEP_MICROS: u64 = 200;
 const TIMER_CHECK_INTERVAL_MICROS: u64 = 500;
 const AMOUNT_THRESHOLD_REDIS_KEY_SUFFIX: &str = "amount-threshold";

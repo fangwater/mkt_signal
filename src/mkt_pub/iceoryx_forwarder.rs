@@ -10,10 +10,10 @@ use iceoryx2::service::ipc;
 use log::{debug, info, warn, Level};
 use std::time::{Duration, Instant};
 
-const TRADE_MAX_BYTES: usize = 64;
+const TRADE_MAX_BYTES: usize = 128;
 const KLINE_MAX_BYTES: usize = 128;
 const DERIVATIVES_MAX_BYTES: usize = 128;
-const SPREAD_MAX_BYTES: usize = 64;
+const SPREAD_MAX_BYTES: usize = 128;
 const SIGNAL_MAX_BYTES: usize = 64;
 const INC_HISTORY_SIZE: usize = 100;
 const INC_MAX_SUBSCRIBERS: usize = 10;

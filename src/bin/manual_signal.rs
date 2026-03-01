@@ -46,7 +46,7 @@ use mkt_signal::symbol_match::normalize_symbol_for_whitelist;
 const PROCESS_NAME: &str = "manual_signal";
 const DEFAULT_SIGNAL_CHANNEL: &str = "trade_signal";
 const DEFAULT_BACKWARD_CHANNEL: &str = "trade_query";
-const ASKBID_PAYLOAD: usize = 64;
+const ASKBID_PAYLOAD: usize = 128;
 
 fn infer_default_venues(exchange: Exchange) -> (TradingVenue, TradingVenue) {
     match exchange {

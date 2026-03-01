@@ -9,14 +9,6 @@ use log::info;
 use std::collections::HashSet;
 use tokio::sync::mpsc;
 
-const BLACKLIST_SYMBOL_UPPER: &str = "\u{6211}\u{8E0F}\u{9A6C}\u{6765}\u{4E86}USDT";
-const BLACKLIST_SYMBOL_LOWER: &str = "\u{6211}\u{8E0F}\u{9A6C}\u{6765}\u{4E86}usdt";
-
-#[inline]
-fn is_blacklisted_symbol(symbol: &str) -> bool {
-    symbol == BLACKLIST_SYMBOL_UPPER || symbol == BLACKLIST_SYMBOL_LOWER
-}
-
 fn normalize_okex_symbol(symbol: &str) -> String {
     let mut upper = symbol.to_ascii_uppercase();
     if upper.ends_with("-SWAP") && upper.len() > 5 {
@@ -446,9 +438,6 @@ impl OkexTradeParser {
             trade_data.get("ts").and_then(|v| v.as_str()),     // 时间戳
         ) {
             let symbol = normalize_okex_symbol(symbol);
-            if is_blacklisted_symbol(&symbol) {
-                return 0;
-            }
             // Parse price, size, trade_id and timestamp
             if let (Ok(price), Ok(amount), Ok(trade_id), Ok(timestamp)) = (
                 price_str.parse::<f64>(),
@@ -520,9 +509,6 @@ impl Parser for OkexAskBidSpreadParser {
                                         spread_data.get("ts").and_then(|v| v.as_str()),
                                     ) {
                                         let symbol = normalize_okex_symbol(symbol);
-                                        if is_blacklisted_symbol(&symbol) {
-                                            continue;
-                                        }
                                         // Parse timestamp
                                         let timestamp = timestamp_str.parse::<i64>().unwrap_or(0);
 

@@ -7,14 +7,6 @@ use bytes::Bytes;
 use std::collections::HashSet;
 use tokio::sync::mpsc;
 
-const BINANCE_BLACKLIST_SYMBOL_UPPER: &str = "\u{6211}\u{8E0F}\u{9A6C}\u{6765}\u{4E86}USDT";
-const BINANCE_BLACKLIST_SYMBOL_LOWER: &str = "\u{6211}\u{8E0F}\u{9A6C}\u{6765}\u{4E86}usdt";
-
-#[inline]
-fn is_binance_blacklisted_symbol(symbol: &str) -> bool {
-    symbol == BINANCE_BLACKLIST_SYMBOL_UPPER || symbol == BINANCE_BLACKLIST_SYMBOL_LOWER
-}
-
 #[derive(Clone)]
 pub struct BinanceSignalParser {
     source: SignalSource,
@@ -72,9 +64,6 @@ impl Parser for BinanceKlineParser {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
                 // 从顶层s字段直接获取symbol
                 if let Some(symbol) = json_value.get("s").and_then(|v| v.as_str()) {
-                    if is_binance_blacklisted_symbol(symbol) {
-                        return 0;
-                    }
                     // 获取k对象中的K线数据
                     if let Some(kline_obj) = json_value.get("k") {
                         // 检查x字段 - 只处理已关闭的K线
@@ -196,9 +185,6 @@ impl BinanceDerivativesMetricsParser {
                 order_data.get("ap").and_then(|v| v.as_str()), // Average Price
                 order_data.get("T").and_then(|v| v.as_i64()), // Order Trade Time
             ) {
-                if is_binance_blacklisted_symbol(symbol) {
-                    return 0;
-                }
                 // Check if symbol is in the allowed list (case-insensitive)
                 let symbol_lower = symbol.to_lowercase();
                 if !self.symbols.contains(&symbol_lower) {
@@ -270,9 +256,6 @@ impl BinanceDerivativesMetricsParser {
                     item.get("E").and_then(|v| v.as_i64()),
                     item.get("T").and_then(|v| v.as_i64()),
                 ) {
-                    if is_binance_blacklisted_symbol(symbol) {
-                        return 0;
-                    }
                     // Check if symbol is in the allowed list (case-insensitive)
                     let symbol_lower = symbol.to_lowercase();
                     if !self.symbols.contains(&symbol_lower) {
@@ -551,9 +534,6 @@ impl BinanceSbeDepthSnapshotParser {
             Some((s, _)) => s.to_uppercase(),
             None => return 0,
         };
-        if is_binance_blacklisted_symbol(&symbol) {
-            return 0;
-        }
 
         // SBE timestamps are in microseconds; keep ms alignment with other parsers.
         let timestamp = event_time / 1000;
@@ -671,9 +651,6 @@ impl BinanceSbeDepthDiffParser {
             Some((s, _)) => s.to_uppercase(),
             None => return 0,
         };
-        if is_binance_blacklisted_symbol(&symbol) {
-            return 0;
-        }
 
         let timestamp = event_time / 1000;
         let chunks = split_levels(bids.len(), asks.len(), self.max_levels);
@@ -786,9 +763,6 @@ impl BinanceSbeBestBidAskParser {
             Some((s, _)) => s.to_uppercase(),
             None => return 0,
         };
-        if is_binance_blacklisted_symbol(&symbol) {
-            return 0;
-        }
 
         let timestamp = event_time / 1000;
         let bid_price = scale_mantissa(bid_price, price_exponent);
@@ -901,9 +875,6 @@ impl BinanceSbeTradeParser {
             Some((s, _)) => s.to_uppercase(),
             None => return 0,
         };
-        if is_binance_blacklisted_symbol(&symbol) {
-            return 0;
-        }
 
         let timestamp = event_time / 1000;
         let mut sent_count = 0;
@@ -1056,9 +1027,6 @@ impl BinanceSnapshotParser {
             json_value.get("bids").and_then(|v| v.as_array()),
             json_value.get("asks").and_then(|v| v.as_array()),
         ) {
-            if is_binance_blacklisted_symbol(symbol) {
-                return 0;
-            }
             // 计算拆分方案
             let chunks = split_levels(bids_array.len(), asks_array.len(), self.max_levels);
             let total_chunks = chunks.len();
@@ -1217,11 +1185,6 @@ impl BinanceIncParser {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .or_else(|| symbol_override.map(|s| s.to_uppercase()));
-        if let Some(ref symbol) = symbol {
-            if is_binance_blacklisted_symbol(symbol) {
-                return 0;
-            }
-        }
         if let (
             Some(symbol),
             Some(first_update_id),
@@ -1296,11 +1259,6 @@ impl BinanceIncParser {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .or_else(|| symbol_override.map(|s| s.to_uppercase()));
-        if let Some(ref symbol) = symbol {
-            if is_binance_blacklisted_symbol(symbol) {
-                return 0;
-            }
-        }
 
         if let (Some(symbol), Some(last_update_id), Some(bids_array), Some(asks_array)) = (
             symbol,
@@ -1412,9 +1370,6 @@ impl BinanceTradeParser {
             json_value.get("E").and_then(|v| v.as_i64()),  // 事件时间
             json_value.get("m").and_then(|v| v.as_bool()), // 买方是否是做市方
         ) {
-            if is_binance_blacklisted_symbol(symbol) {
-                return 0;
-            }
             // Parse price and quantity
             if let (Ok(price), Ok(amount)) = (price_str.parse::<f64>(), qty_str.parse::<f64>()) {
                 // Filter out zero values - 币安有时候price和amount会是0，过滤掉不发送
@@ -1465,9 +1420,6 @@ impl Parser for BinanceAskBidSpreadParser {
                     json_value.get("a").and_then(|v| v.as_str()), // best ask price
                     json_value.get("A").and_then(|v| v.as_str()), // best ask qty
                 ) {
-                    if is_binance_blacklisted_symbol(symbol) {
-                        return 0;
-                    }
                     let parse_ts = |key: &str| {
                         json_value.get(key).and_then(|v| {
                             v.as_i64()

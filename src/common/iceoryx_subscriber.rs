@@ -33,10 +33,10 @@ impl ChannelType {
     pub fn max_size(&self) -> usize {
         match self {
             ChannelType::Incremental => 2048,
-            ChannelType::Trade => 64,
+            ChannelType::Trade => 128,
             ChannelType::Kline => 128,
             ChannelType::Derivatives => 128,
-            ChannelType::AskBidSpread => 64,
+            ChannelType::AskBidSpread => 128,
             ChannelType::Signal => 64,
         }
     }
@@ -150,7 +150,7 @@ impl MultiChannelSubscriber {
                 let subscriber = service.subscriber_builder().create()?;
                 SubscriberEnum::Size2048(subscriber)
             }
-            ChannelType::Trade | ChannelType::AskBidSpread | ChannelType::Signal => {
+            ChannelType::Signal => {
                 let service = self
                     .node
                     .service_builder(&ServiceName::new(&service_name)?)
@@ -161,7 +161,10 @@ impl MultiChannelSubscriber {
                 let subscriber = service.subscriber_builder().create()?;
                 SubscriberEnum::Size64(subscriber)
             }
-            ChannelType::Kline | ChannelType::Derivatives => {
+            ChannelType::Trade
+            | ChannelType::AskBidSpread
+            | ChannelType::Kline
+            | ChannelType::Derivatives => {
                 let service = self
                     .node
                     .service_builder(&ServiceName::new(&service_name)?)
