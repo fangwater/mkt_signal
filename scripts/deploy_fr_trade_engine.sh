@@ -10,11 +10,13 @@ usage() {
 用法:
   scripts/deploy_fr_trade_engine.sh --env-name <exchange>_fr_<suffix>
                                     [--exchange <binance|okex|bybit|bitget|gate>]
+                                    [--bin-only]
 
 说明:
   - 统一通过 --env-name 指定 FR 环境（suffix 必填）。
   - exchange 可省略，会从 --env-name 推断（例如 binance_fr_hf01 -> binance）。
   - 目标目录: $HOME/<env-name>/
+  - --bin-only: 仅替换二进制，不同步启动/停止脚本。
 EOF
 }
 
@@ -25,6 +27,8 @@ fi
 
 EXCHANGE=""
 ENV_NAME=""
+DO_BUILD=1
+DO_SCRIPTS=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --exchange)
@@ -42,6 +46,11 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       shift 2
+      ;;
+    --bin-only)
+      DO_BUILD=1
+      DO_SCRIPTS=0
+      shift
       ;;
     -h|--help)
       usage
@@ -109,27 +118,37 @@ require_fr_env_name "$EXCHANGE" "$ENV_NAME"
 
 TARGET_DIR="$HOME/${ENV_NAME}"
 
-echo "[INFO] 构建 $BIN_NAME (release)"
-cargo build --release --bin "$BIN_NAME"
+if [[ "$DO_BUILD" -eq 1 ]]; then
+  echo "[INFO] 构建 $BIN_NAME (release)"
+  cargo build --release --bin "$BIN_NAME"
+fi
 
-echo "[INFO] 部署 $BIN_NAME 到 $TARGET_DIR"
+echo "[INFO] 部署二进制 $BIN_NAME 到 $TARGET_DIR"
 mkdir -p "$TARGET_DIR"
-mkdir -p "$TARGET_DIR/config"
-cp "$BIN_PATH" "$TARGET_DIR/"
-chmod +x "$TARGET_DIR/$BIN_NAME"
+if [[ "$DO_BUILD" -eq 1 ]]; then
+  mkdir -p "$TARGET_DIR/config"
+  cp "$BIN_PATH" "$TARGET_DIR/"
+  chmod +x "$TARGET_DIR/$BIN_NAME"
+fi
 
 # 同步启动/停止脚本
-SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
-SCRIPTS_TO_SYNC=("start_trade_engine.sh" "stop_trade_engine.sh")
-mkdir -p "$TARGET_DIR/scripts"
-for script in "${SCRIPTS_TO_SYNC[@]}"; do
-  if [[ -f "$SCRIPT_DIR_SRC/$script" ]]; then
-    rsync -a "$SCRIPT_DIR_SRC/$script" "$TARGET_DIR/scripts/"
-    chmod +x "$TARGET_DIR/scripts/$script"
-  fi
-done
+if [[ "$DO_SCRIPTS" -eq 1 ]]; then
+  SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
+  SCRIPTS_TO_SYNC=("start_trade_engine.sh" "stop_trade_engine.sh")
+  mkdir -p "$TARGET_DIR/scripts"
+  for script in "${SCRIPTS_TO_SYNC[@]}"; do
+    if [[ -f "$SCRIPT_DIR_SRC/$script" ]]; then
+      rsync -a "$SCRIPT_DIR_SRC/$script" "$TARGET_DIR/scripts/"
+      chmod +x "$TARGET_DIR/scripts/$script"
+    fi
+  done
+fi
 
 # trade_engine 读取 /home/<user>/config/mkt_cfg.yaml 的本地 IP；无需部署额外配置文件
 
 echo "[INFO] $BIN_NAME 部署完成到 $TARGET_DIR"
-echo "[INFO] 手动启动: cd $TARGET_DIR && ./scripts/start_trade_engine.sh"
+if [[ "$DO_SCRIPTS" -eq 1 ]]; then
+  echo "[INFO] 手动启动: cd $TARGET_DIR && ./scripts/start_trade_engine.sh"
+else
+  echo "[INFO] 本次为 --bin-only，仅替换二进制"
+fi
