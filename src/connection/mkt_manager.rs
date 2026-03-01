@@ -15,7 +15,8 @@ use crate::parser::bybit_parser::{
 };
 use crate::parser::default_parser::Parser;
 use crate::parser::gate_parser::{
-    GateDerivativesMetricsParser, GateKlineParser, GateSignalParser, GateTickerParser,
+    GateDerivativesMetricsParser, GateIncParser, GateKlineParser, GateSignalParser,
+    GateTickerParser, GateTradeParser,
 };
 use crate::parser::hyperliquid_parser::{
     HyperliquidAskBidSpreadParser, HyperliquidDerivativesMetricsParser, HyperliquidIncParser,
@@ -273,6 +274,19 @@ impl MktManager {
                     )
                     .await;
                 }
+                Exchange::Gate => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                    let parser = GateIncParser::with_max_levels(max_levels);
+                    self.spawn_connection_with_mpsc(
+                        exchange,
+                        url,
+                        subscribe_msg,
+                        format!("inc msg batch {}", i),
+                        parser,
+                        tx,
+                    )
+                    .await;
+                }
                 Exchange::Hyperliquid => {
                     let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
                     let parser = HyperliquidIncParser::with_max_levels(max_levels);
@@ -408,6 +422,19 @@ impl MktManager {
                     self.spawn_connection_with_mpsc(
                         exchange,
                         url.clone(),
+                        subscribe_msg,
+                        format!("trade msg batch {}", i),
+                        parser,
+                        tx,
+                    )
+                    .await;
+                }
+                Exchange::Gate => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                    let parser = GateTradeParser::new();
+                    self.spawn_connection_with_mpsc(
+                        exchange,
+                        url,
                         subscribe_msg,
                         format!("trade msg batch {}", i),
                         parser,

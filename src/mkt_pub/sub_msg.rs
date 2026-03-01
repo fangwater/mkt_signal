@@ -511,7 +511,7 @@ impl SubscribeMsgs {
             Exchange::Okex => Some("books".to_string()),
             Exchange::Bybit => Some("orderbook.500".to_string()),
             Exchange::Bitget => Some("books".to_string()),
-            Exchange::Gate => None,
+            Exchange::Gate => Some("order_book_update".to_string()),
             Exchange::Hyperliquid => Some("l2Book".to_string()),
         }
     }

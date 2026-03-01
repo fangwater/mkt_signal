@@ -1,9 +1,154 @@
 use crate::common::mkt_msg::{
-    AskBidSpreadMsg, FundingRateMsg, IndexPriceMsg, KlineMsg, MarkPriceMsg, SignalMsg, SignalSource,
+    AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, MarkPriceMsg,
+    SignalMsg, SignalSource, TradeMsg,
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use tokio::sync::mpsc;
+
+fn parse_json_f64(v: &serde_json::Value) -> Option<f64> {
+    match v {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(s) => s.parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+fn parse_json_i64(v: &serde_json::Value) -> Option<i64> {
+    match v {
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Some(i)
+            } else if let Some(u) = n.as_u64() {
+                i64::try_from(u).ok()
+            } else {
+                n.as_f64().map(|f| f as i64)
+            }
+        }
+        serde_json::Value::String(s) => s
+            .parse::<i64>()
+            .ok()
+            .or_else(|| s.parse::<f64>().ok().map(|f| f as i64)),
+        _ => None,
+    }
+}
+
+fn normalize_timestamp_to_ms(ts: i64) -> i64 {
+    if ts <= 0 {
+        return 0;
+    }
+    if ts < 1_000_000_000_000 {
+        ts * 1000
+    } else {
+        ts
+    }
+}
+
+fn parse_gate_ts_ms(v: &serde_json::Value) -> Option<i64> {
+    parse_json_i64(v).map(normalize_timestamp_to_ms)
+}
+
+fn parse_gate_level(level: &serde_json::Value) -> Option<Level> {
+    if let Some(arr) = level.as_array() {
+        if arr.len() >= 2 {
+            let price = parse_json_f64(&arr[0])?;
+            let amount = parse_json_f64(&arr[1])?;
+            if price > 0.0 {
+                return Some(Level::from_values(price, amount));
+            }
+        }
+        return None;
+    }
+
+    if let Some(obj) = level.as_object() {
+        let price = obj
+            .get("p")
+            .and_then(parse_json_f64)
+            .or_else(|| obj.get("price").and_then(parse_json_f64))?;
+        let amount = obj
+            .get("s")
+            .and_then(parse_json_f64)
+            .or_else(|| obj.get("size").and_then(parse_json_f64))
+            .or_else(|| obj.get("amount").and_then(parse_json_f64))
+            .unwrap_or(0.0);
+        if price > 0.0 {
+            return Some(Level::from_values(price, amount));
+        }
+    }
+
+    None
+}
+
+fn parse_gate_levels(raw: &serde_json::Value) -> Vec<Level> {
+    raw.as_array()
+        .map(|arr| arr.iter().filter_map(parse_gate_level).collect())
+        .unwrap_or_default()
+}
+
+fn split_levels(
+    total_bids: usize,
+    total_asks: usize,
+    max_levels: Option<usize>,
+) -> Vec<(usize, usize, usize, usize)> {
+    let total = total_bids + total_asks;
+
+    match max_levels {
+        Some(max) if total > max && max > 0 => {
+            let mut chunks = Vec::new();
+            let mut bids_sent = 0;
+            let mut asks_sent = 0;
+
+            while bids_sent < total_bids || asks_sent < total_asks {
+                let bids_remaining = total_bids - bids_sent;
+                let asks_remaining = total_asks - asks_sent;
+                let remaining = bids_remaining + asks_remaining;
+
+                let chunk_bids = if remaining <= max {
+                    bids_remaining
+                } else {
+                    let ratio = bids_remaining as f64 / remaining as f64;
+                    ((max as f64 * ratio).round() as usize)
+                        .max(1)
+                        .min(bids_remaining)
+                };
+                let chunk_asks = (max - chunk_bids).min(asks_remaining);
+
+                chunks.push((bids_sent, chunk_bids, asks_sent, chunk_asks));
+                bids_sent += chunk_bids;
+                asks_sent += chunk_asks;
+            }
+
+            chunks
+        }
+        _ => vec![(0, total_bids, 0, total_asks)],
+    }
+}
+
+fn fill_levels_with_offset(
+    bids: &[Level],
+    asks: &[Level],
+    bids_start: usize,
+    bids_count: usize,
+    asks_start: usize,
+    asks_count: usize,
+    inc_msg: &mut IncMsg,
+) {
+    for i in 0..bids_count {
+        let src_idx = bids_start + i;
+        if src_idx >= bids.len() {
+            break;
+        }
+        inc_msg.set_bid_level(i, bids[src_idx]);
+    }
+
+    for i in 0..asks_count {
+        let src_idx = asks_start + i;
+        if src_idx >= asks.len() {
+            break;
+        }
+        inc_msg.set_ask_level(i, asks[src_idx]);
+    }
+}
 
 /// Gate.io Signal Parser - 从 ticker 消息中提取时间戳作为信号
 #[derive(Clone)]
@@ -286,6 +431,291 @@ impl Parser for GateKlineParser {
     }
 }
 
+#[derive(Clone)]
+pub struct GateTradeParser;
+
+impl GateTradeParser {
+    pub fn new() -> Self {
+        Self
+    }
+
+    fn parse_trade_item(
+        &self,
+        trade: &serde_json::Value,
+        fallback_timestamp_ms: i64,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> usize {
+        let symbol = match trade
+            .get("contract")
+            .and_then(|v| v.as_str())
+            .or_else(|| trade.get("s").and_then(|v| v.as_str()))
+            .or_else(|| trade.get("symbol").and_then(|v| v.as_str()))
+        {
+            Some(s) => s,
+            None => return 0,
+        };
+
+        let price = match trade
+            .get("price")
+            .and_then(parse_json_f64)
+            .or_else(|| trade.get("p").and_then(parse_json_f64))
+            .or_else(|| trade.get("last").and_then(parse_json_f64))
+        {
+            Some(v) if v > 0.0 => v,
+            _ => return 0,
+        };
+
+        let raw_size = trade
+            .get("size")
+            .and_then(parse_json_f64)
+            .or_else(|| trade.get("amount").and_then(parse_json_f64))
+            .or_else(|| trade.get("qty").and_then(parse_json_f64));
+
+        let side = trade
+            .get("side")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_ascii_lowercase())
+            .and_then(|s| match s.as_str() {
+                "buy" | "bid" => Some('B'),
+                "sell" | "ask" => Some('S'),
+                _ => None,
+            })
+            .or_else(|| raw_size.map(|sz| if sz >= 0.0 { 'B' } else { 'S' }))
+            .unwrap_or('B');
+
+        let amount = raw_size
+            .map(|v| v.abs())
+            .or_else(|| trade.get("q").and_then(parse_json_f64))
+            .unwrap_or(0.0);
+        if amount <= 0.0 {
+            return 0;
+        }
+
+        let timestamp = trade
+            .get("create_time_ms")
+            .and_then(parse_gate_ts_ms)
+            .or_else(|| trade.get("timestamp_ms").and_then(parse_gate_ts_ms))
+            .or_else(|| trade.get("create_time").and_then(parse_gate_ts_ms))
+            .or_else(|| trade.get("t").and_then(parse_gate_ts_ms))
+            .unwrap_or(fallback_timestamp_ms);
+
+        let trade_id = trade
+            .get("id")
+            .and_then(parse_json_i64)
+            .or_else(|| trade.get("trade_id").and_then(parse_json_i64))
+            .or_else(|| trade.get("i").and_then(parse_json_i64))
+            .unwrap_or(0);
+
+        let trade_msg =
+            TradeMsg::create(symbol.to_string(), trade_id, timestamp, side, price, amount);
+        if tx.send(trade_msg.to_bytes()).is_ok() {
+            return 1;
+        }
+        0
+    }
+}
+
+impl Parser for GateTradeParser {
+    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Ok(json_str) = std::str::from_utf8(&msg) {
+            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
+                let channel = json_value
+                    .get("channel")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let event = json_value
+                    .get("event")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                if !channel.ends_with(".trades") || event != "update" {
+                    return 0;
+                }
+
+                let fallback_timestamp_ms = json_value
+                    .get("time_ms")
+                    .and_then(parse_gate_ts_ms)
+                    .or_else(|| json_value.get("time").and_then(parse_gate_ts_ms))
+                    .unwrap_or(0);
+
+                let mut sent = 0;
+                match json_value.get("result") {
+                    Some(serde_json::Value::Array(arr)) => {
+                        for item in arr {
+                            sent += self.parse_trade_item(item, fallback_timestamp_ms, tx);
+                        }
+                    }
+                    Some(item @ serde_json::Value::Object(_)) => {
+                        sent += self.parse_trade_item(item, fallback_timestamp_ms, tx);
+                    }
+                    _ => {}
+                }
+                return sent;
+            }
+        }
+        0
+    }
+}
+
+#[derive(Clone)]
+pub struct GateIncParser {
+    max_levels: Option<usize>,
+}
+
+impl GateIncParser {
+    pub fn new() -> Self {
+        Self { max_levels: None }
+    }
+
+    pub fn with_max_levels(max_levels: Option<usize>) -> Self {
+        Self { max_levels }
+    }
+
+    fn parse_inc_item(
+        &self,
+        root: &serde_json::Value,
+        item: &serde_json::Value,
+        channel: &str,
+        event: &str,
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> usize {
+        let symbol = match item
+            .get("s")
+            .and_then(|v| v.as_str())
+            .or_else(|| item.get("contract").and_then(|v| v.as_str()))
+            .or_else(|| item.get("symbol").and_then(|v| v.as_str()))
+        {
+            Some(s) => s,
+            None => return 0,
+        };
+
+        let bids = item
+            .get("b")
+            .map(parse_gate_levels)
+            .or_else(|| item.get("bids").map(parse_gate_levels))
+            .unwrap_or_default();
+        let asks = item
+            .get("a")
+            .map(parse_gate_levels)
+            .or_else(|| item.get("asks").map(parse_gate_levels))
+            .unwrap_or_default();
+
+        if bids.is_empty() && asks.is_empty() {
+            return 0;
+        }
+
+        let final_update_id = item
+            .get("u")
+            .and_then(parse_json_i64)
+            .or_else(|| item.get("last_update_id").and_then(parse_json_i64))
+            .or_else(|| item.get("seq").and_then(parse_json_i64))
+            .or_else(|| item.get("id").and_then(parse_json_i64))
+            .unwrap_or(0);
+        let first_update_id = item
+            .get("U")
+            .and_then(parse_json_i64)
+            .or_else(|| item.get("first_update_id").and_then(parse_json_i64))
+            .unwrap_or(final_update_id);
+
+        let timestamp = item
+            .get("t")
+            .and_then(parse_gate_ts_ms)
+            .or_else(|| item.get("timestamp").and_then(parse_gate_ts_ms))
+            .or_else(|| item.get("time_ms").and_then(parse_gate_ts_ms))
+            .or_else(|| root.get("time_ms").and_then(parse_gate_ts_ms))
+            .or_else(|| root.get("time").and_then(parse_gate_ts_ms))
+            .unwrap_or(0);
+
+        let is_snapshot = item
+            .get("is_snapshot")
+            .and_then(|v| v.as_bool())
+            .or_else(|| {
+                item.get("type")
+                    .and_then(|v| v.as_str())
+                    .map(|tp| tp.eq_ignore_ascii_case("snapshot"))
+            })
+            .unwrap_or_else(|| {
+                channel.ends_with(".order_book")
+                    || event.eq_ignore_ascii_case("snapshot")
+                    || event.eq_ignore_ascii_case("all")
+            });
+
+        let chunks = split_levels(bids.len(), asks.len(), self.max_levels);
+        let total_chunks = chunks.len();
+        let mut sent_count = 0;
+
+        for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
+            chunks.into_iter().enumerate()
+        {
+            let mut inc_msg = IncMsg::create(
+                symbol.to_string(),
+                first_update_id,
+                final_update_id,
+                timestamp,
+                is_snapshot,
+                bids_count as u32,
+                asks_count as u32,
+            );
+            inc_msg.set_chunk_index(chunk_idx as u8);
+            inc_msg.set_is_last(chunk_idx == total_chunks - 1);
+
+            fill_levels_with_offset(
+                &bids,
+                &asks,
+                bids_start,
+                bids_count,
+                asks_start,
+                asks_count,
+                &mut inc_msg,
+            );
+
+            if tx.send(inc_msg.to_bytes()).is_ok() {
+                sent_count += 1;
+            }
+        }
+        sent_count
+    }
+}
+
+impl Parser for GateIncParser {
+    fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Ok(json_str) = std::str::from_utf8(&msg) {
+            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
+                let channel = json_value
+                    .get("channel")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let event = json_value
+                    .get("event")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                if !(channel.ends_with(".order_book_update") || channel.ends_with(".order_book")) {
+                    return 0;
+                }
+                if event == "subscribe" || event == "unsubscribe" {
+                    return 0;
+                }
+
+                let mut sent = 0;
+                match json_value.get("result") {
+                    Some(serde_json::Value::Array(arr)) => {
+                        for item in arr {
+                            sent += self.parse_inc_item(&json_value, item, channel, event, tx);
+                        }
+                    }
+                    Some(item @ serde_json::Value::Object(_)) => {
+                        sent += self.parse_inc_item(&json_value, item, channel, event, tx);
+                    }
+                    _ => {}
+                }
+                return sent;
+            }
+        }
+        0
+    }
+}
+
 /// Gate.io 衍生品指标解析（基于 futures.tickers）
 #[derive(Clone)]
 pub struct GateDerivativesMetricsParser;
@@ -461,5 +891,55 @@ mod tests {
         let bytes = Bytes::from(msg_closed);
         let count = parser.parse(bytes, &tx);
         assert_eq!(count, 1); // 应该被处理
+    }
+
+    #[test]
+    fn test_gate_trade_parse() {
+        let parser = GateTradeParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let msg = r#"{
+            "time": 1764559450,
+            "time_ms": 1764559450123,
+            "channel": "futures.trades",
+            "event": "update",
+            "result": {
+                "id": 987654321,
+                "create_time_ms": "1764559450123.42",
+                "contract": "BTC_USDT",
+                "size": "-12",
+                "price": "86500.5"
+            }
+        }"#;
+
+        let count = parser.parse(Bytes::from(msg), &tx);
+        assert_eq!(count, 1);
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn test_gate_inc_parse() {
+        let parser = GateIncParser::with_max_levels(Some(2));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let msg = r#"{
+            "time": 1764559550,
+            "time_ms": 1764559550999,
+            "channel": "futures.order_book_update",
+            "event": "update",
+            "result": {
+                "s": "BTC_USDT",
+                "U": 100,
+                "u": 101,
+                "t": 1764559550999,
+                "b": [["86499.5", "3"], ["86499.4", "2"]],
+                "a": [["86500.5", "1"], ["86500.6", "2"]]
+            }
+        }"#;
+
+        let count = parser.parse(Bytes::from(msg), &tx);
+        assert_eq!(count, 2);
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_ok());
     }
 }
