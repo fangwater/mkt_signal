@@ -3,148 +3,100 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+VENUE_DIR_REGEX='^[a-z0-9]+-(futures|margin)$'
 
 usage() {
-  cat <<'EOF'
+  cat <<'USAGE'
 Usage:
-  stop_depth_pub.sh (--exchange <exchange> | <exchange> | <venue...>)
+  stop_depth_pub.sh
+
+Behavior:
+  - 必须在单个 venue 部署目录下执行（例如 ~/depth_pub/binance-futures）。
+  - venue 由当前目录名自动推断。
+  - 删除 pmdaemon 进程名: dp_<ex>_<market>（兼容旧名 depth_pub_<venue>）
+  - 可用 PMDAEMON_BIN 覆盖二进制名（默认 pmdaemon）
 
 Examples:
-  ./scripts/stop_depth_pub.sh --exchange binance
-  ./scripts/stop_depth_pub.sh okex
-  ./scripts/stop_depth_pub.sh binance-futures
-  ./scripts/stop_depth_pub.sh binance-futures binance-margin
-
-Notes:
-  - Exchange expands to default venues:
-      okex    -> okex-futures okex-margin
-      binance -> binance-futures binance-margin
-      bybit   -> bybit-futures bybit-margin
-      bitget  -> bitget-futures bitget-margin
-      gate    -> gate-futures gate-margin
-  - Managed by pmdaemon with process names depth_pub_<venue>.
-EOF
+  cd ~/depth_pub/binance-futures
+  ./scripts/stop_depth_pub.sh
+USAGE
 }
 
-KNOWN_EXCHANGES=("okex" "binance" "bybit" "bitget" "gate")
-
-is_known_exchange() {
-  local v="${1,,}"
-  for e in "${KNOWN_EXCHANGES[@]}"; do
-    if [[ "$v" == "$e" ]]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-default_venues_for_exchange() {
-  local exchange="${1,,}"
-  case "$exchange" in
-    okex) echo "okex-futures okex-margin" ;;
-    binance) echo "binance-futures binance-margin" ;;
-    bybit) echo "bybit-futures bybit-margin" ;;
-    bitget) echo "bitget-futures bitget-margin" ;;
-    gate) echo "gate-futures gate-margin" ;;
-    *)
-      echo ""
-      return 1
-      ;;
-  esac
-}
-
-PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
-PMDAEMON=("$PMDAEMON_BIN")
-KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
-
-# Args parsing
-EXCHANGE=""
-VENUES=()
-POSITIONAL=()
-
-while [[ $# -gt 0 ]]; do
+if [[ $# -gt 0 ]]; then
   case "$1" in
-    --exchange)
-      EXCHANGE="${2:-}"
-      if [[ -z "$EXCHANGE" ]]; then
-        echo "[ERROR] --exchange 需要一个值" >&2
-        usage >&2
-        exit 1
-      fi
-      shift 2
-      ;;
-    --venue)
-      v="${2:-}"
-      if [[ -z "$v" ]]; then
-        echo "[ERROR] --venue 需要一个值" >&2
-        usage >&2
-        exit 1
-      fi
-      VENUES+=("$v")
-      shift 2
-      ;;
     -h|--help)
       usage
       exit 0
       ;;
     *)
-      POSITIONAL+=("$1")
-      shift
+      echo "[ERROR] 不支持参数: $*" >&2
+      usage >&2
+      exit 1
       ;;
   esac
-done
+fi
 
-if [[ -z "$EXCHANGE" && ${#POSITIONAL[@]} -gt 0 ]]; then
-  if is_known_exchange "${POSITIONAL[0]}"; then
-    EXCHANGE="${POSITIONAL[0]}"
-    POSITIONAL=("${POSITIONAL[@]:1}")
+short_exchange() {
+  case "${1,,}" in
+    binance) echo "bn" ;;
+    okex) echo "ok" ;;
+    bybit) echo "bb" ;;
+    bitget) echo "bg" ;;
+    gate) echo "gt" ;;
+    *)
+      echo "${1,,}" | sed -E 's/[^a-z0-9]+//g' | cut -c1-2
+      ;;
+  esac
+}
+
+short_market() {
+  case "${1,,}" in
+    futures) echo "fu" ;;
+    margin) echo "mg" ;;
+    *)
+      echo "${1,,}" | sed -E 's/[^a-z0-9]+//g' | cut -c1-2
+      ;;
+  esac
+}
+
+venue_short_tag() {
+  local raw_venue="${1,,}"
+  if [[ "$raw_venue" =~ ^([a-z0-9]+)-([a-z0-9]+)$ ]]; then
+    echo "$(short_exchange "${BASH_REMATCH[1]}")_$(short_market "${BASH_REMATCH[2]}")"
+    return 0
   fi
-fi
+  echo "$raw_venue" | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//'
+}
 
-if [[ ${#VENUES[@]} -eq 0 && ${#POSITIONAL[@]} -gt 0 ]]; then
-  VENUES=("${POSITIONAL[@]}")
-fi
-
-# Infer exchange from deploy directory name for backward compatibility
-if [[ -z "$EXCHANGE" && ${#VENUES[@]} -eq 0 ]]; then
-  dir_name="$(basename "${BASE_DIR}")"
-  if [[ "$dir_name" =~ okex|OKEX ]]; then EXCHANGE="okex"; fi
-  if [[ "$dir_name" =~ binance|BINANCE ]]; then EXCHANGE="binance"; fi
-  if [[ "$dir_name" =~ bybit|BYBIT ]]; then EXCHANGE="bybit"; fi
-  if [[ "$dir_name" =~ bitget|BITGET ]]; then EXCHANGE="bitget"; fi
-  if [[ "$dir_name" =~ gate|GATE ]]; then EXCHANGE="gate"; fi
-fi
-
-if [[ ${#VENUES[@]} -eq 0 && -n "$EXCHANGE" ]]; then
-  read -r -a VENUES <<<"$(default_venues_for_exchange "$EXCHANGE")"
-fi
-
-if [[ ${#VENUES[@]} -eq 0 ]]; then
-  echo "[ERROR] No exchange/venues provided and could not infer from deploy directory name" >&2
-  usage >&2
+venue="$(basename "${BASE_DIR}" | tr '[:upper:]' '[:lower:]')"
+if [[ ! "$venue" =~ $VENUE_DIR_REGEX ]]; then
+  echo "[ERROR] 当前目录无法推断 venue: ${BASE_DIR}" >&2
+  echo "[ERROR] 期望目录名形如 <exchange>-<market>，例如 binance-futures" >&2
   exit 1
 fi
 
+PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
+PMDAEMON=("$PMDAEMON_BIN")
 if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
   echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2
   echo "[HINT] install with: cargo install pmdaemon" >&2
   exit 1
 fi
 
-find_running_pids_for_venue() {
-  local venue="$1"
+name="dp_$(venue_short_tag "$venue")"
+legacy_name="depth_pub_${venue}"
+KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
+
+find_running_pids() {
+  local venue_arg="--venue ${venue}"
   local pids=()
   while IFS= read -r pid; do
-    if [[ -n "$pid" && "$pid" != "$$" && "$pid" != "$PPID" ]]; then
+    if [[ -n "$pid" ]]; then
       pids+=("$pid")
     fi
   done < <(
-    ps -eo pid=,args= | awk -v venue="$venue" -v base_dir="$BASE_DIR" '
-      index($0, "depth_pub") > 0 &&
-      index($0, "--venue " venue) > 0 &&
-      index($0, base_dir) > 0 &&
-      index($0, "awk -v venue=") == 0 &&
-      index($0, "stop_depth_pub.sh") == 0 {
+    ps -eo pid=,args= | awk -v venue_arg="$venue_arg" -v base_dir="$BASE_DIR" '
+      index($0, "depth_pub") > 0 && index($0, venue_arg) > 0 && index($0, base_dir) > 0 {
         print $1
       }
     '
@@ -155,23 +107,29 @@ find_running_pids_for_venue() {
   fi
 }
 
-cleanup_leaked_for_venue() {
-  local venue="$1"
-  local venue_arg="--venue ${venue}"
-  local pattern="${BASE_DIR}.*depth_pub.*--venue[[:space:]]+${venue}"
+echo "[INFO] Stopping ${name}"
+stopped=false
+if "${PMDAEMON[@]}" delete "$name" >/dev/null 2>&1; then
+  stopped=true
+fi
+if [[ "$legacy_name" != "$name" ]] && "${PMDAEMON[@]}" delete "$legacy_name" >/dev/null 2>&1; then
+  stopped=true
+fi
+if [[ "$stopped" == true ]]; then
+  echo "[INFO] Stopped ${name}"
+else
+  echo "[WARN] ${name} not found"
+fi
 
-  mapfile -t leaked_pids < <(find_running_pids_for_venue "$venue" || true)
-  if [[ ${#leaked_pids[@]} -eq 0 ]]; then
-    return 0
-  fi
+mapfile -t leaked_pids < <(find_running_pids || true)
+if [[ ${#leaked_pids[@]} -gt 0 ]]; then
+  echo "[WARN] Found leaked process after pmdaemon delete: ${leaked_pids[*]}"
+  echo "[INFO] Sending SIGTERM to leaked process(es)"
+  kill "${leaked_pids[@]}" >/dev/null 2>&1 || true
 
-  echo "[WARN] Found leaked depth_pub process after pmdaemon delete: venue=${venue} pids=${leaked_pids[*]}"
-  echo "[INFO] Sending SIGTERM via pkill: pattern=${BASE_DIR} ... depth_pub ... ${venue_arg}"
-  pkill -TERM -f "$pattern" >/dev/null 2>&1 || true
-
-  local deadline=$((SECONDS + KILL_WAIT_SECS))
+  deadline=$((SECONDS + KILL_WAIT_SECS))
   while [[ $SECONDS -lt $deadline ]]; do
-    mapfile -t leaked_pids < <(find_running_pids_for_venue "$venue" || true)
+    mapfile -t leaked_pids < <(find_running_pids || true)
     if [[ ${#leaked_pids[@]} -eq 0 ]]; then
       break
     fi
@@ -179,40 +137,21 @@ cleanup_leaked_for_venue() {
   done
 
   if [[ ${#leaked_pids[@]} -gt 0 ]]; then
-    echo "[WARN] SIGTERM timeout, sending SIGKILL via pkill: venue=${venue} pids=${leaked_pids[*]}"
-    pkill -KILL -f "$pattern" >/dev/null 2>&1 || true
+    echo "[WARN] SIGTERM timeout, sending SIGKILL: ${leaked_pids[*]}"
+    kill -9 "${leaked_pids[@]}" >/dev/null 2>&1 || true
     sleep 1
-    mapfile -t leaked_pids < <(find_running_pids_for_venue "$venue" || true)
+    mapfile -t leaked_pids < <(find_running_pids || true)
   fi
 
   if [[ ${#leaked_pids[@]} -gt 0 ]]; then
-    echo "[ERROR] Failed to kill leaked depth_pub process(es): venue=${venue} pids=${leaked_pids[*]}" >&2
-    return 1
+    echo "[ERROR] Failed to kill leaked process(es): ${leaked_pids[*]}" >&2
+    exit 1
   fi
 
-  echo "[INFO] Leaked process cleanup done: venue=${venue}"
-  return 0
-}
-
-stop_one() {
-  local venue="$1"
-  local name="depth_pub_${venue}"
-
-  echo "[INFO] Stopping ${name}"
-  if "${PMDAEMON[@]}" delete "$name" >/dev/null 2>&1; then
-    echo "[INFO] Stopped ${name}"
-  else
-    echo "[WARN] ${name} not found"
-  fi
-
-  cleanup_leaked_for_venue "$venue"
-}
-
-for venue in "${VENUES[@]}"; do
-  stop_one "$venue"
-  sleep 1
-done
+  echo "[INFO] Leaked process cleanup done"
+fi
 
 echo ""
-echo "[INFO] Stopped venues: ${VENUES[*]}"
-echo "To view remaining processes: ${PMDAEMON[*]} list"
+echo "[INFO] Stopped: ${name}"
+echo "Venue: ${venue}"
+echo "Status: ${PMDAEMON[*]} list"

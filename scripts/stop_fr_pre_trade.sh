@@ -3,13 +3,23 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
+
+PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
+PMDAEMON=("$PMDAEMON_BIN")
+
+ensure_pmdaemon() {
+  if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
+    echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2
+    echo "[HINT] install with: cargo install pmdaemon" >&2
+    exit 1
+  fi
+}
 
 usage() {
-  cat <<'EOF'
+  cat <<'USAGE'
 Usage:
   scripts/stop_fr_pre_trade.sh
-EOF
+USAGE
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -31,11 +41,65 @@ case "$dir_name" in
     ;;
 esac
 
-PROC_NAME="${PM2_NAME:-pre_trade_${dir_tag}}"
+ensure_pmdaemon
 
-if npx pm2 describe "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1; then
-  echo "[INFO] Stopping $PROC_NAME (namespace: $NAMESPACE)"
-  npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE"
+PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-pre_trade_${dir_tag}}}"
+KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
+
+find_running_pids() {
+  local pids=()
+  while IFS= read -r pid; do
+    if [[ -n "$pid" ]]; then
+      pids+=("$pid")
+    fi
+  done < <(
+    ps -eo pid=,args= | awk -v base_dir="$BASE_DIR" '
+      index($0, "pre_trade") > 0 && index($0, base_dir) > 0 {
+        print $1
+      }
+    '
+  )
+
+  if [[ ${#pids[@]} -gt 0 ]]; then
+    printf '%s\n' "${pids[@]}"
+  fi
+}
+
+echo "[INFO] Stopping $PROC_NAME"
+if "${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1; then
+  echo "[INFO] Stopped $PROC_NAME"
 else
-  echo "[WARN] PM2 process not found: $PROC_NAME (namespace: $NAMESPACE)"
+  echo "[WARN] Process not found: $PROC_NAME"
 fi
+
+mapfile -t leaked_pids < <(find_running_pids || true)
+if [[ ${#leaked_pids[@]} -gt 0 ]]; then
+  echo "[WARN] Found leaked process after pmdaemon delete: ${leaked_pids[*]}"
+  echo "[INFO] Sending SIGTERM to leaked process(es)"
+  kill "${leaked_pids[@]}" >/dev/null 2>&1 || true
+
+  deadline=$((SECONDS + KILL_WAIT_SECS))
+  while [[ $SECONDS -lt $deadline ]]; do
+    mapfile -t leaked_pids < <(find_running_pids || true)
+    if [[ ${#leaked_pids[@]} -eq 0 ]]; then
+      break
+    fi
+    sleep 1
+  done
+
+  if [[ ${#leaked_pids[@]} -gt 0 ]]; then
+    echo "[WARN] SIGTERM timeout, sending SIGKILL: ${leaked_pids[*]}"
+    kill -9 "${leaked_pids[@]}" >/dev/null 2>&1 || true
+    sleep 1
+    mapfile -t leaked_pids < <(find_running_pids || true)
+  fi
+
+  if [[ ${#leaked_pids[@]} -gt 0 ]]; then
+    echo "[ERROR] Failed to kill leaked process(es): ${leaked_pids[*]}" >&2
+    exit 1
+  fi
+
+  echo "[INFO] Leaked process cleanup done"
+fi
+
+echo "Status: ${PMDAEMON[*]} list"

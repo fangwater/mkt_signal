@@ -37,13 +37,3 @@
 /xarb/okex-binance/ static:$HOME/okex-binance-xarb-trade/www/
 /xarb/okex-binance/ws http://127.0.0.1:10111/ws
 /xarb/okex-binance/healthz http://127.0.0.1:10111/healthz
-
-# xarb order_query (HTTP)
-# upstream 末尾带 /，用于将前缀 /xarb/okex-binance/order_query(/) strip 掉并转发给后端的 /
-
-# BEGIN managed: xarb order_query /xarb/okex-binance/order_query
-# xarb order_query (HTTP)
-# upstream 末尾带 /，用于将前缀 /xarb/okex-binance/order_query(/) strip 掉并转发给后端的 /
-/xarb/okex-binance/order_query http://127.0.0.1:18089/
-/xarb/okex-binance/order_query/ http://127.0.0.1:18089/
-# END managed: xarb order_query /xarb/okex-binance/order_query

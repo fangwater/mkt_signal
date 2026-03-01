@@ -3,7 +3,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
+
+PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
+PMDAEMON=("$PMDAEMON_BIN")
+if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
+  echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2
+  echo "[HINT] install with: cargo install pmdaemon" >&2
+  exit 1
+fi
 
 BIN_CANDIDATES=(
   "${SCRIPT_DIR}/trade_engine"
@@ -90,21 +97,45 @@ else
   exit 1
 fi
 
-PROC_NAME="${PM2_NAME:-trade_engine_${dir_tag}}"
+PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-trade_engine_${dir_tag}}}"
 RUST_LOG="${RUST_LOG:-info}"
 
-echo "[INFO] Restarting ${PROC_NAME} (namespace=${NAMESPACE})"
-echo "[INFO] 本地 IP 配置来自 /home/<user>/config/mkt_cfg.yaml"
-npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
 
-RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
-  --name "$PROC_NAME" \
-  --namespace "$NAMESPACE" \
-  -- \
-  --exchange "$EXCHANGE"
+cfg_file="$(mktemp)"
+trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT
+
+json_name="$(json_escape "$PROC_NAME")"
+json_bin="$(json_escape "$BIN_PATH")"
+json_base="$(json_escape "$BASE_DIR")"
+json_exchange="$(json_escape "$EXCHANGE")"
+json_rust_log="$(json_escape "$RUST_LOG")"
+
+cat >"$cfg_file" <<JSON
+{
+  "apps": [
+    {
+      "name": "${json_name}",
+      "script": "${json_bin}",
+      "args": ["--exchange", "${json_exchange}"],
+      "cwd": "${json_base}",
+      "env": {
+        "RUST_LOG": "${json_rust_log}"
+      }
+    }
+  ]
+}
+JSON
+
+echo "[INFO] Restarting ${PROC_NAME}"
+echo "[INFO] 本地 IP 配置来自 /home/<user>/config/mkt_cfg.yaml"
+"${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
+"${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
 
 echo ""
 echo "[INFO] Started trade_engine (exchange=${EXCHANGE})"
-echo "Namespace: ${NAMESPACE}"
-echo "Logs: npx pm2 logs --namespace ${NAMESPACE} ${PROC_NAME}"
-echo "Status: npx pm2 status --namespace ${NAMESPACE}"
+echo "Process: ${PROC_NAME}"
+echo "Logs: ${PMDAEMON[*]} logs ${PROC_NAME} --follow"
+echo "Status: ${PMDAEMON[*]} list"

@@ -4,8 +4,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# 可选：设置 PM2 namespace（默认使用部署目录名，可用环境变量覆盖）
-NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
+PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
+PMDAEMON=("$PMDAEMON_BIN")
+if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
+  echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2
+  echo "[HINT] install with: cargo install pmdaemon" >&2
+  exit 1
+fi
 
 BIN_CANDIDATES=(
   "${BASE_DIR}/account_monitor"
@@ -42,11 +47,41 @@ case "$dir_name" in
     ;;
 esac
 
-PM2_NAME="${PM2_NAME:-account_monitor_${dir_tag}}"
+PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-account_monitor_${dir_tag}}}"
+RUST_LOG="${RUST_LOG:-info}"
 
-echo "[INFO] 使用 PM2 启动 ${PM2_NAME} (namespace: ${NAMESPACE})"
-npx pm2 delete "$PM2_NAME" --namespace "$NAMESPACE" 2>/dev/null || true
-npx pm2 start "$BIN_PATH" --name "$PM2_NAME" --namespace "$NAMESPACE"
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
 
-echo "[INFO] ${PM2_NAME} 已启动"
-echo "[INFO] Logs: npx pm2 logs --namespace ${NAMESPACE} ${PM2_NAME}"
+cfg_file="$(mktemp)"
+trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT
+
+json_name="$(json_escape "$PROC_NAME")"
+json_bin="$(json_escape "$BIN_PATH")"
+json_base="$(json_escape "$BASE_DIR")"
+json_rust_log="$(json_escape "$RUST_LOG")"
+
+cat >"$cfg_file" <<JSON
+{
+  "apps": [
+    {
+      "name": "${json_name}",
+      "script": "${json_bin}",
+      "args": [],
+      "cwd": "${json_base}",
+      "env": {
+        "RUST_LOG": "${json_rust_log}"
+      }
+    }
+  ]
+}
+JSON
+
+echo "[INFO] 启动 ${PROC_NAME} (exchange=${EXCHANGE})"
+"${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
+"${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
+
+echo "[INFO] ${PROC_NAME} 已启动"
+echo "[INFO] Logs: ${PMDAEMON[*]} logs ${PROC_NAME} --follow"
+echo "[INFO] Status: ${PMDAEMON[*]} list"

@@ -4,6 +4,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
+PMDAEMON=("$PMDAEMON_BIN")
+
+ensure_pmdaemon() {
+  if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
+    echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2
+    echo "[HINT] install with: cargo install pmdaemon" >&2
+    exit 1
+  fi
+}
+
 BIN_CANDIDATES=(
   "${BASE_DIR}/trade_engine"
   "${SCRIPT_DIR}/trade_engine"
@@ -24,20 +35,17 @@ if [[ -z "$BIN_PATH" ]]; then
 fi
 
 usage() {
-  cat <<'EOF'
+  cat <<'USAGE'
 用法: xarb_scripts/start_xarb_trade_engine.sh
 
 说明:
   - 会基于部署目录名推断 open/hedge exchange（目录名需形如 <open>-<hedge>-xarb-...）
-  - 将以 PM2 启动两个进程：
+  - 将以 pmdaemon 启动两个进程：
       xarb_te_<open>_<hedge>_open   -> trade_engine --exchange <open>
       xarb_te_<open>_<hedge>_hedge  -> trade_engine --exchange <hedge>
   - 若存在 env.sh，会自动 source（用于 API credentials 等）
   - trade_engine 的本地 IP 从 /home/<user>/config/mkt_cfg.yaml 读取
-
-示例:
-  ./xarb_scripts/start_xarb_trade_engine.sh
-EOF
+USAGE
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -50,6 +58,8 @@ if [[ $# -gt 0 ]]; then
   usage
   exit 1
 fi
+
+ensure_pmdaemon
 
 ENV_FILE="${BASE_DIR}/env.sh"
 if [[ -f "$ENV_FILE" ]]; then
@@ -96,27 +106,66 @@ if [[ "$OPEN_EXCHANGE" == "$HEDGE_EXCHANGE" ]]; then
   exit 1
 fi
 
-pm2_start_one() {
-  local side="$1"
-  local exchange="$2"
-  local pm2_name="xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${side}"
+RUST_LOG="${RUST_LOG:-info}"
+IPC_NS="${IPC_NAMESPACE:-}"
 
-  local args=(--exchange "$exchange")
+TMP_CFGS=()
+cleanup_tmp_cfgs() {
+  if [[ ${#TMP_CFGS[@]} -gt 0 ]]; then
+    rm -f "${TMP_CFGS[@]}" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_tmp_cfgs EXIT
 
-  echo "[INFO] Restarting $pm2_name (exchange=$exchange)"
-  npx pm2 delete "$pm2_name" >/dev/null 2>&1 || true
-
-  npx pm2 start "$BIN_PATH" \
-    --name "$pm2_name" \
-    -- \
-    "${args[@]}"
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
-pm2_start_one "open" "$OPEN_EXCHANGE"
+start_one() {
+  local side="$1"
+  local exchange="$2"
+  local proc_name="xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${side}"
+
+  local cfg_file
+  cfg_file="$(mktemp)"
+  TMP_CFGS+=("$cfg_file")
+
+  local json_name json_bin json_base json_exchange json_rust_log json_ipc_ns
+  json_name="$(json_escape "$proc_name")"
+  json_bin="$(json_escape "$BIN_PATH")"
+  json_base="$(json_escape "$BASE_DIR")"
+  json_exchange="$(json_escape "$exchange")"
+  json_rust_log="$(json_escape "$RUST_LOG")"
+  json_ipc_ns="$(json_escape "$IPC_NS")"
+
+  cat >"$cfg_file" <<JSON
+{
+  "apps": [
+    {
+      "name": "${json_name}",
+      "script": "${json_bin}",
+      "args": ["--exchange", "${json_exchange}"],
+      "cwd": "${json_base}",
+      "env": {
+        "RUST_LOG": "${json_rust_log}",
+        "IPC_NAMESPACE": "${json_ipc_ns}"
+      }
+    }
+  ]
+}
+JSON
+
+  echo "[INFO] Restarting $proc_name (exchange=$exchange)"
+  "${PMDAEMON[@]}" delete "$proc_name" >/dev/null 2>&1 || true
+  "${PMDAEMON[@]}" --config "$cfg_file" start --name "$proc_name"
+}
+
+start_one "open" "$OPEN_EXCHANGE"
 sleep 0.5
-pm2_start_one "hedge" "$HEDGE_EXCHANGE"
+start_one "hedge" "$HEDGE_EXCHANGE"
 
 echo "[INFO] Started:"
 echo "  - xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_open"
 echo "  - xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_hedge"
-echo "[INFO] Logs: npx pm2 logs xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_open"
+echo "[INFO] Logs: ${PMDAEMON[*]} logs xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_open --follow"
+echo "[INFO] Status: ${PMDAEMON[*]} list"

@@ -3,7 +3,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
+
+PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
+PMDAEMON=("$PMDAEMON_BIN")
+
+ensure_pmdaemon() {
+  if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
+    echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2
+    echo "[HINT] install with: cargo install pmdaemon" >&2
+    exit 1
+  fi
+}
 
 BIN_CANDIDATES=(
   "${BASE_DIR}/trade_engine"
@@ -110,8 +120,7 @@ if [[ -z "$EXCHANGE" ]]; then
 fi
 
 EXCHANGE="$(normalize_exchange "$EXCHANGE")"
-
-PROC_NAME="${PM2_NAME:-mm_trade_engine_$(echo "${BASE_DIR##*/}" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9_-]/_/g')}"
+PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-mm_trade_engine_$(echo "${BASE_DIR##*/}" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9_-]/_/g')}}"
 RUST_LOG="${RUST_LOG:-info}"
 IPC_NS="${IPC_NAMESPACE:-}"
 if [[ -z "$IPC_NS" ]]; then
@@ -119,13 +128,43 @@ if [[ -z "$IPC_NS" ]]; then
   echo "[WARN] IPC_NAMESPACE not set; use default: ${IPC_NS}"
 fi
 
-npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+ensure_pmdaemon
 
-IPC_NAMESPACE="$IPC_NS" RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
-  --name "$PROC_NAME" \
-  --namespace "$NAMESPACE" \
-  -- \
-  --exchange "$EXCHANGE"
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+cfg_file="$(mktemp)"
+trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT
+
+json_name="$(json_escape "$PROC_NAME")"
+json_bin="$(json_escape "$BIN_PATH")"
+json_base="$(json_escape "$BASE_DIR")"
+json_exchange="$(json_escape "$EXCHANGE")"
+json_rust_log="$(json_escape "$RUST_LOG")"
+json_ipc_ns="$(json_escape "$IPC_NS")"
+
+cat >"$cfg_file" <<JSON
+{
+  "apps": [
+    {
+      "name": "${json_name}",
+      "script": "${json_bin}",
+      "args": ["--exchange", "${json_exchange}"],
+      "cwd": "${json_base}",
+      "env": {
+        "RUST_LOG": "${json_rust_log}",
+        "IPC_NAMESPACE": "${json_ipc_ns}"
+      }
+    }
+  ]
+}
+JSON
+
+echo "[INFO] Restarting ${PROC_NAME}"
+"${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
+"${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
 
 echo "[INFO] Started ${PROC_NAME} (exchange=${EXCHANGE}, ipc_namespace=${IPC_NS})"
-echo "[INFO] Logs: npx pm2 logs --namespace ${NAMESPACE} ${PROC_NAME}"
+echo "[INFO] Logs: ${PMDAEMON[*]} logs ${PROC_NAME} --follow"
+echo "[INFO] Status: ${PMDAEMON[*]} list"

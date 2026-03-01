@@ -4,8 +4,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# 可选：设置 PM2 namespace（默认使用部署目录名，可用环境变量覆盖）
-PM2_NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
+PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
+PMDAEMON=("$PMDAEMON_BIN")
+
+ensure_pmdaemon() {
+  if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
+    echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2
+    echo "[HINT] install with: cargo install pmdaemon" >&2
+    exit 1
+  fi
+}
 
 BIN_CANDIDATES=(
   "${BASE_DIR}/persist_manager"
@@ -27,14 +35,14 @@ if [[ -z "$BIN_PATH" ]]; then
 fi
 
 usage() {
-  cat <<'EOF'
+  cat <<'USAGE'
 用法: xarb_scripts/start_xarb_persist_manager.sh
 
 说明:
   - 需要在部署目录存在 env.sh（包含 IPC_NAMESPACE），否则 persist_manager 会 panic。
   - 会基于部署目录名推断 open/hedge exchange（目录名需形如 <open>-<hedge>-xarb-...）。
-  - 会以 PM2 启动 1 个进程：persist_manager_xarb_<open>_<hedge>
-EOF
+  - 会以 pmdaemon 启动 1 个进程：persist_manager_xarb_<open>_<hedge>
+USAGE
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -48,6 +56,8 @@ if [[ $# -gt 0 ]]; then
   exit 1
 fi
 
+ensure_pmdaemon
+
 ENV_FILE="${BASE_DIR}/env.sh"
 if [[ -f "$ENV_FILE" ]]; then
   # shellcheck disable=SC1090
@@ -55,6 +65,11 @@ if [[ -f "$ENV_FILE" ]]; then
 else
   echo "[ERROR] 未找到 env.sh：${ENV_FILE}"
   echo "[ERROR] 请先生成并配置：scripts/deploy_setup_env_xarb.sh --env-name $(basename "${BASE_DIR}") --open-venue <...> --hedge-venue <...>"
+  exit 1
+fi
+
+if [[ -z "${IPC_NAMESPACE:-}" ]]; then
+  echo "[ERROR] IPC_NAMESPACE 未设置（请 source env.sh）"
   exit 1
 fi
 
@@ -80,24 +95,47 @@ if [[ -z "$OPEN_EXCHANGE" || -z "$HEDGE_EXCHANGE" || "$OPEN_EXCHANGE" == "$HEDGE
   exit 1
 fi
 
-PROC_NAME="persist_manager_xarb_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}"
+PROC_NAME="${PMDAEMON_NAME:-persist_manager_xarb_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}}"
 RUST_LOG="${RUST_LOG:-info}"
 
 mkdir -p "${BASE_DIR}/data/persist_manager" >/dev/null 2>&1 || true
 
-echo "[INFO] Restarting ${PROC_NAME} (namespace=${PM2_NAMESPACE})"
-npx pm2 delete "$PROC_NAME" --namespace "$PM2_NAMESPACE" >/dev/null 2>&1 || true
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
 
-(
-  cd "$BASE_DIR"
-  RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
-    --name "$PROC_NAME" \
-    --namespace "$PM2_NAMESPACE" \
-    --
-)
+cfg_file="$(mktemp)"
+trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT
+
+json_name="$(json_escape "$PROC_NAME")"
+json_bin="$(json_escape "$BIN_PATH")"
+json_base="$(json_escape "$BASE_DIR")"
+json_rust_log="$(json_escape "$RUST_LOG")"
+json_ipc_ns="$(json_escape "$IPC_NAMESPACE")"
+
+cat >"$cfg_file" <<JSON
+{
+  "apps": [
+    {
+      "name": "${json_name}",
+      "script": "${json_bin}",
+      "args": [],
+      "cwd": "${json_base}",
+      "env": {
+        "RUST_LOG": "${json_rust_log}",
+        "IPC_NAMESPACE": "${json_ipc_ns}"
+      }
+    }
+  ]
+}
+JSON
+
+echo "[INFO] Restarting ${PROC_NAME}"
+"${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
+"${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
 
 echo ""
 echo "[INFO] Started persist_manager"
-echo "Namespace: ${PM2_NAMESPACE}"
-echo "Logs: npx pm2 logs --namespace ${PM2_NAMESPACE} ${PROC_NAME}"
-echo "Status: npx pm2 status --namespace ${PM2_NAMESPACE}"
+echo "Process: ${PROC_NAME}"
+echo "Logs: ${PMDAEMON[*]} logs ${PROC_NAME} --follow"
+echo "Status: ${PMDAEMON[*]} list"

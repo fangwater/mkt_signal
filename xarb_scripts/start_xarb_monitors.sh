@@ -4,33 +4,41 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
+PMDAEMON=("$PMDAEMON_BIN")
+
+ensure_pmdaemon() {
+  if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
+    echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2
+    echo "[HINT] install with: cargo install pmdaemon" >&2
+    exit 1
+  fi
+}
+
 usage() {
-  cat <<'EOF'
+  cat <<'USAGE'
 用法: xarb_scripts/start_xarb_monitors.sh
 
 说明:
   - 启动 xarb 所需的两侧账户 monitor（当前支持 okex + binance）。
   - 会优先从 env.sh 读取 OPEN_VENUE/HEDGE_VENUE 或 OPEN_EXCHANGE/HEDGE_EXCHANGE；
     若没有，则从部署目录名推断：<open>-<hedge>-xarb-...
-  - 会启动两个 PM2 进程：
+  - 会启动两个 pmdaemon 进程：
       xarb_am_<open>_<hedge>_open   -> account_monitor_<open_exchange>
       xarb_am_<open>_<hedge>_hedge  -> account_monitor_<hedge_exchange>
 
 前置:
   - 必须设置 IPC_NAMESPACE（建议在部署目录生成 env.sh）：
       scripts/deploy_setup_env_xarb.sh --env-name <open>-<hedge>-xarb-... --open-venue ... --hedge-venue ...
-
-示例:
-  cd $HOME/okex-binance-xarb-trade
-  source ./env.sh
-  ./xarb_scripts/start_xarb_monitors.sh
-EOF
+USAGE
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   usage
   exit 0
 fi
+
+ensure_pmdaemon
 
 ENV_FILE="${BASE_DIR}/env.sh"
 if [[ -f "$ENV_FILE" ]]; then
@@ -101,6 +109,7 @@ bin_for_exchange() {
       return 1
       ;;
   esac
+
   local candidates=(
     "${BASE_DIR}/account_monitor_${ex}"
     "${SCRIPT_DIR}/account_monitor_${ex}"
@@ -116,10 +125,22 @@ bin_for_exchange() {
   return 1
 }
 
+TMP_CFGS=()
+cleanup_tmp_cfgs() {
+  if [[ ${#TMP_CFGS[@]} -gt 0 ]]; then
+    rm -f "${TMP_CFGS[@]}" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_tmp_cfgs EXIT
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
 start_one() {
   local side="$1"
   local ex="$2"
-  local pm2_name="xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${side}"
+  local proc_name="xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${side}"
 
   local bin
   if ! bin="$(bin_for_exchange "$ex")"; then
@@ -129,9 +150,37 @@ start_one() {
     exit 1
   fi
 
-  echo "[INFO] Restarting $pm2_name (exchange=$ex namespace=$IPC_NAMESPACE)"
-  npx pm2 delete "$pm2_name" >/dev/null 2>&1 || true
-  npx pm2 start "$bin" --name "$pm2_name"
+  local cfg_file
+  cfg_file="$(mktemp)"
+  TMP_CFGS+=("$cfg_file")
+
+  local json_name json_bin json_base json_rust_log json_ipc_ns
+  json_name="$(json_escape "$proc_name")"
+  json_bin="$(json_escape "$bin")"
+  json_base="$(json_escape "$BASE_DIR")"
+  json_rust_log="$(json_escape "${RUST_LOG:-info}")"
+  json_ipc_ns="$(json_escape "$IPC_NAMESPACE")"
+
+  cat >"$cfg_file" <<JSON
+{
+  "apps": [
+    {
+      "name": "${json_name}",
+      "script": "${json_bin}",
+      "args": [],
+      "cwd": "${json_base}",
+      "env": {
+        "RUST_LOG": "${json_rust_log}",
+        "IPC_NAMESPACE": "${json_ipc_ns}"
+      }
+    }
+  ]
+}
+JSON
+
+  echo "[INFO] Restarting $proc_name (exchange=$ex namespace=$IPC_NAMESPACE)"
+  "${PMDAEMON[@]}" delete "$proc_name" >/dev/null 2>&1 || true
+  "${PMDAEMON[@]}" --config "$cfg_file" start --name "$proc_name"
 }
 
 start_one "open" "$OPEN_EXCHANGE"
@@ -141,4 +190,5 @@ start_one "hedge" "$HEDGE_EXCHANGE"
 echo "[INFO] Started:"
 echo "  - xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_open"
 echo "  - xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_hedge"
-echo "[INFO] Logs: npx pm2 logs xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_open"
+echo "[INFO] Logs: ${PMDAEMON[*]} logs xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_open --follow"
+echo "[INFO] Status: ${PMDAEMON[*]} list"

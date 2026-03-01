@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-VENUE_DIR_REGEX='^[a-z0-9]+-(futures|margin|spot|swap|perp|perpetual)$'
+VENUE_DIR_REGEX='^[a-z0-9]+-(futures|margin)$'
 
 usage() {
   cat <<'USAGE'
@@ -13,7 +13,7 @@ Usage:
 Behavior:
   - 必须在单个 venue 部署目录下执行（例如 ~/dat_pbs/binance-futures）。
   - venue 由当前目录名自动推断。
-  - 使用 pmdaemon 启动进程名: dat_pbs_<venue>
+  - 使用 pmdaemon 启动进程名: dps_<ex>_<market>（兼容删除旧名 dat_pbs_<venue>）
   - 可用 PMDAEMON_BIN 覆盖二进制名（默认 pmdaemon）
 
 Examples:
@@ -35,6 +35,38 @@ if [[ $# -gt 0 ]]; then
       ;;
   esac
 fi
+
+short_exchange() {
+  case "${1,,}" in
+    binance) echo "bn" ;;
+    okex) echo "ok" ;;
+    bybit) echo "bb" ;;
+    bitget) echo "bg" ;;
+    gate) echo "gt" ;;
+    *)
+      echo "${1,,}" | sed -E 's/[^a-z0-9]+//g' | cut -c1-2
+      ;;
+  esac
+}
+
+short_market() {
+  case "${1,,}" in
+    futures) echo "fu" ;;
+    margin) echo "mg" ;;
+    *)
+      echo "${1,,}" | sed -E 's/[^a-z0-9]+//g' | cut -c1-2
+      ;;
+  esac
+}
+
+venue_short_tag() {
+  local venue="${1,,}"
+  if [[ "$venue" =~ ^([a-z0-9]+)-([a-z0-9]+)$ ]]; then
+    echo "$(short_exchange "${BASH_REMATCH[1]}")_$(short_market "${BASH_REMATCH[2]}")"
+    return 0
+  fi
+  echo "$venue" | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//'
+}
 
 venue="$(basename "${BASE_DIR}" | tr '[:upper:]' '[:lower:]')"
 if [[ ! "$venue" =~ $VENUE_DIR_REGEX ]]; then
@@ -70,7 +102,8 @@ if [[ -z "$BIN_PATH" ]]; then
   exit 1
 fi
 
-name="dat_pbs_${venue}"
+name="dps_$(venue_short_tag "$venue")"
+legacy_name="dat_pbs_${venue}"
 rust_log="${RUST_LOG:-info}"
 cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT
@@ -102,6 +135,7 @@ cat >"$cfg_file" <<JSON
 JSON
 
 echo "[INFO] Restarting ${name}"
+"${PMDAEMON[@]}" delete "$legacy_name" >/dev/null 2>&1 || true
 "${PMDAEMON[@]}" delete "$name" >/dev/null 2>&1 || true
 "${PMDAEMON[@]}" --config "$cfg_file" start --name "$name"
 

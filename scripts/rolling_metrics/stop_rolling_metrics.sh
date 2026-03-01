@@ -18,7 +18,7 @@ USAGE
 infer_venues_from_dir() {
   local dir_name="${1,,}"
 
-  if [[ "$dir_name" =~ ^([a-z0-9]+-(margin|futures|spot|swap|perp|perpetual))[-_]([a-z0-9]+-(margin|futures|spot|swap|perp|perpetual))$ ]]; then
+  if [[ "$dir_name" =~ ^([a-z0-9]+-(margin|futures))[-_]([a-z0-9]+-(margin|futures))$ ]]; then
     echo "${BASH_REMATCH[1]},${BASH_REMATCH[3]}"
     return 0
   fi
@@ -26,14 +26,46 @@ infer_venues_from_dir() {
   return 1
 }
 
-sanitize_token() {
+short_exchange() {
+  case "${1,,}" in
+    binance) echo "bn" ;;
+    okex) echo "ok" ;;
+    bybit) echo "bb" ;;
+    bitget) echo "bg" ;;
+    gate) echo "gt" ;;
+    *)
+      echo "${1,,}" | sed -E 's/[^a-z0-9]+//g' | cut -c1-2
+      ;;
+  esac
+}
+
+short_market() {
+  case "${1,,}" in
+    futures) echo "fu" ;;
+    margin) echo "mg" ;;
+    *)
+      echo "${1,,}" | sed -E 's/[^a-z0-9]+//g' | cut -c1-2
+      ;;
+  esac
+}
+
+venue_short_tag() {
+  local raw_venue="${1,,}"
+  if [[ "$raw_venue" =~ ^([a-z0-9]+)-([a-z0-9]+)$ ]]; then
+    echo "$(short_exchange "${BASH_REMATCH[1]}")_$(short_market "${BASH_REMATCH[2]}")"
+    return 0
+  fi
+  echo "$raw_venue" | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//'
+}
+
+legacy_token() {
   echo "${1,,}" | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//'
 }
 
 validate_venue() {
   local v="${1,,}"
-  if [[ ! "$v" =~ ^[a-z0-9]+-(margin|futures|spot|swap|perp|perpetual)$ ]]; then
-    echo "[ERROR] invalid venue: $1 (expect <exchange>-<margin|futures|spot|swap>)" >&2
+  if [[ ! "$v" =~ ^[a-z0-9]+-(margin|futures)$ ]]; then
+    echo "[ERROR] invalid venue: $1 (expect <exchange>-<margin|futures>)" >&2
     exit 1
   fi
 }
@@ -94,10 +126,18 @@ if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1;
   exit 1
 fi
 
-PROC_NAME="rolling_metrics_$(sanitize_token "$OPEN_VENUE")_$(sanitize_token "$HEDGE_VENUE")"
+PROC_NAME="rm_$(venue_short_tag "$OPEN_VENUE")_$(venue_short_tag "$HEDGE_VENUE")"
+LEGACY_PROC_NAME="rolling_metrics_$(legacy_token "$OPEN_VENUE")_$(legacy_token "$HEDGE_VENUE")"
 
 echo "[INFO] Stopping ${PROC_NAME}"
+stopped=false
 if "${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1; then
+  stopped=true
+fi
+if [[ "$LEGACY_PROC_NAME" != "$PROC_NAME" ]] && "${PMDAEMON[@]}" delete "$LEGACY_PROC_NAME" >/dev/null 2>&1; then
+  stopped=true
+fi
+if [[ "$stopped" == true ]]; then
   echo "[INFO] Stopped ${PROC_NAME}"
 else
   echo "[WARN] ${PROC_NAME} not found"

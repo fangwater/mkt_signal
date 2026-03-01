@@ -3,7 +3,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
+
+PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
+PMDAEMON=("$PMDAEMON_BIN")
+
+ensure_pmdaemon() {
+  if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
+    echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2
+    echo "[HINT] install with: cargo install pmdaemon" >&2
+    exit 1
+  fi
+}
 
 BIN_CANDIDATES=(
   "${BASE_DIR}/pre_trade"
@@ -32,13 +42,13 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 usage() {
-  cat <<'EOF'
+  cat <<'USAGE'
 Usage:
   scripts/start_fr_pre_trade.sh [--open-venue <venue>] [--hedge-venue <venue>]
 
 Notes:
   - Default: no args, venues inferred from current directory.
-EOF
+USAGE
 }
 
 OPEN_VENUE=""
@@ -84,28 +94,65 @@ case "$dir_name" in
     ;;
 esac
 
-PROC_NAME="${PM2_NAME:-pre_trade_${dir_tag}}"
+PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-pre_trade_${dir_tag}}}"
 RUST_LOG="${RUST_LOG:-info}"
 ARGS=()
 if [[ -n "$OPEN_VENUE" ]]; then
   ARGS+=(--open-venue "$OPEN_VENUE" --hedge-venue "$HEDGE_VENUE")
 fi
 
-echo "[INFO] Restarting ${PROC_NAME} (namespace=${NAMESPACE})"
-npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+ensure_pmdaemon
 
-cd "$BASE_DIR"
-if [[ ${#ARGS[@]} -eq 0 ]]; then
-  RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
-    --name "$PROC_NAME" \
-    --namespace "$NAMESPACE"
-else
-  RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
-    --name "$PROC_NAME" \
-    --namespace "$NAMESPACE" \
-    -- \
-    "${ARGS[@]}"
-fi
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+build_json_array() {
+  local out="["
+  local first=1
+  local v=""
+  for v in "$@"; do
+    local esc
+    esc="$(json_escape "$v")"
+    if [[ $first -eq 0 ]]; then
+      out+=", "
+    fi
+    out+="\"${esc}\""
+    first=0
+  done
+  out+="]"
+  printf '%s' "$out"
+}
+
+cfg_file="$(mktemp)"
+trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT
+
+json_name="$(json_escape "$PROC_NAME")"
+json_bin="$(json_escape "$BIN_PATH")"
+json_base="$(json_escape "$BASE_DIR")"
+json_rust_log="$(json_escape "$RUST_LOG")"
+args_json="$(build_json_array "${ARGS[@]}")"
+
+cat >"$cfg_file" <<JSON
+{
+  "apps": [
+    {
+      "name": "${json_name}",
+      "script": "${json_bin}",
+      "args": ${args_json},
+      "cwd": "${json_base}",
+      "env": {
+        "RUST_LOG": "${json_rust_log}"
+      }
+    }
+  ]
+}
+JSON
+
+echo "[INFO] Restarting ${PROC_NAME}"
+"${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
+"${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
 
 echo "[INFO] Started ${PROC_NAME}"
-echo "[INFO] Logs: npx pm2 logs --namespace ${NAMESPACE} ${PROC_NAME}"
+echo "[INFO] Logs: ${PMDAEMON[*]} logs ${PROC_NAME} --follow"
+echo "[INFO] Status: ${PMDAEMON[*]} list"

@@ -3,7 +3,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-PM2_NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
+
+PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
+PMDAEMON=("$PMDAEMON_BIN")
+
+ensure_pmdaemon() {
+  if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
+    echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2
+    echo "[HINT] install with: cargo install pmdaemon" >&2
+    exit 1
+  fi
+}
 
 BIN_CANDIDATES=(
   "${BASE_DIR}/persist_manager"
@@ -36,10 +46,10 @@ else
 fi
 
 usage() {
-  cat <<'EOF'
+  cat <<'USAGE'
 Usage:
   scripts/start_fr_persist_manager.sh [--exchange <binance|okex|bybit|bitget|gate>]
-EOF
+USAGE
 }
 
 EXCHANGE=""
@@ -87,24 +97,49 @@ if [[ -z "${IPC_NAMESPACE:-}" ]]; then
   exit 1
 fi
 
-PROC_NAME="${PM2_NAME:-persist_manager_${dir_tag}}"
+ensure_pmdaemon
+
+PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-persist_manager_${dir_tag}}}"
 RUST_LOG="${RUST_LOG:-info}"
 
 mkdir -p "${BASE_DIR}/data/persist_manager" >/dev/null 2>&1 || true
 
-echo "[INFO] Restarting ${PROC_NAME} (namespace=${PM2_NAMESPACE})"
-npx pm2 delete "$PROC_NAME" --namespace "$PM2_NAMESPACE" >/dev/null 2>&1 || true
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
 
-(
-  cd "$BASE_DIR"
-  RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
-    --name "$PROC_NAME" \
-    --namespace "$PM2_NAMESPACE" \
-    --
-)
+cfg_file="$(mktemp)"
+trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT
+
+json_name="$(json_escape "$PROC_NAME")"
+json_bin="$(json_escape "$BIN_PATH")"
+json_base="$(json_escape "$BASE_DIR")"
+json_rust_log="$(json_escape "$RUST_LOG")"
+json_ipc_ns="$(json_escape "$IPC_NAMESPACE")"
+
+cat >"$cfg_file" <<JSON
+{
+  "apps": [
+    {
+      "name": "${json_name}",
+      "script": "${json_bin}",
+      "args": [],
+      "cwd": "${json_base}",
+      "env": {
+        "RUST_LOG": "${json_rust_log}",
+        "IPC_NAMESPACE": "${json_ipc_ns}"
+      }
+    }
+  ]
+}
+JSON
+
+echo "[INFO] Restarting ${PROC_NAME}"
+"${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
+"${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
 
 echo ""
 echo "[INFO] Started persist_manager"
-echo "Namespace: ${PM2_NAMESPACE}"
-echo "Logs: npx pm2 logs --namespace ${PM2_NAMESPACE} ${PROC_NAME}"
-echo "Status: npx pm2 status --namespace ${PM2_NAMESPACE}"
+echo "Process: ${PROC_NAME}"
+echo "Logs: ${PMDAEMON[*]} logs ${PROC_NAME} --follow"
+echo "Status: ${PMDAEMON[*]} list"
