@@ -5,6 +5,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN_NAME="dat_pbs"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 KNOWN_EXCHANGES=("okex" "binance" "bybit" "bitget" "gate")
+KNOWN_VENUES=(
+  "okex-futures" "okex-margin"
+  "binance-futures" "binance-margin"
+  "bybit-futures" "bybit-margin"
+  "bitget-futures" "bitget-margin"
+  "gate-futures" "gate-margin"
+)
 
 is_known_exchange() {
   local v="${1,,}"
@@ -31,10 +38,20 @@ default_venues_for_exchange() {
   esac
 }
 
+is_known_venue() {
+  local v="${1,,}"
+  for venue in "${KNOWN_VENUES[@]}"; do
+    if [[ "$v" == "$venue" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 usage() {
   cat <<'USAGE'
 Usage:
-  deploy_dat_pbs.sh --exchange <exchange> [--root <path>]
+  deploy_dat_pbs.sh (--exchange <exchange> | --venue <venue>...) [--root <path>]
 
 Defaults:
   固定部署根目录 -> $HOME/dat_pbs
@@ -43,6 +60,8 @@ Defaults:
 Examples:
   bash scripts/dat_pbs/deploy_dat_pbs.sh --exchange binance
   bash scripts/dat_pbs/deploy_dat_pbs.sh --exchange okex
+  bash scripts/dat_pbs/deploy_dat_pbs.sh --venue gate-futures
+  bash scripts/dat_pbs/deploy_dat_pbs.sh --venue binance-futures --venue binance-margin
   bash scripts/dat_pbs/deploy_dat_pbs.sh --exchange gate --root "$HOME/dat_pbs"
 
 Notes:
@@ -58,6 +77,7 @@ USAGE
 
 TARGET_ROOT="$HOME/dat_pbs"
 EXCHANGE=""
+VENUES_FROM_ARG=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --exchange)
@@ -67,6 +87,16 @@ while [[ $# -gt 0 ]]; do
         usage >&2
         exit 1
       fi
+      shift 2
+      ;;
+    --venue)
+      venue="${2:-}"
+      if [[ -z "$venue" ]]; then
+        echo "[ERROR] --venue 需要一个值" >&2
+        usage >&2
+        exit 1
+      fi
+      VENUES_FROM_ARG+=("${venue,,}")
       shift 2
       ;;
     --root|--dir)
@@ -90,19 +120,31 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$EXCHANGE" ]]; then
-  echo "[ERROR] 必须提供 --exchange" >&2
-  usage >&2
-  exit 1
-fi
+VENUES=()
+if [[ ${#VENUES_FROM_ARG[@]} -gt 0 ]]; then
+  for venue in "${VENUES_FROM_ARG[@]}"; do
+    if ! is_known_venue "$venue"; then
+      echo "[ERROR] 不支持的 venue: $venue" >&2
+      usage >&2
+      exit 1
+    fi
+    VENUES+=("$venue")
+  done
+else
+  if [[ -z "$EXCHANGE" ]]; then
+    echo "[ERROR] 必须提供 --exchange 或 --venue" >&2
+    usage >&2
+    exit 1
+  fi
 
-if ! is_known_exchange "$EXCHANGE"; then
-  echo "[ERROR] 不支持的 exchange: $EXCHANGE" >&2
-  usage >&2
-  exit 1
-fi
+  if ! is_known_exchange "$EXCHANGE"; then
+    echo "[ERROR] 不支持的 exchange: $EXCHANGE" >&2
+    usage >&2
+    exit 1
+  fi
 
-read -r -a VENUES <<<"$(default_venues_for_exchange "$EXCHANGE")"
+  read -r -a VENUES <<<"$(default_venues_for_exchange "$EXCHANGE")"
+fi
 
 echo "[INFO] 构建 $BIN_NAME (release)"
 cargo build --release --bin "$BIN_NAME"
