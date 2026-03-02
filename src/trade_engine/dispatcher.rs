@@ -4,6 +4,7 @@ use anyhow::{anyhow, Result};
 use hmac::{Hmac, Mac};
 use log::{debug, warn};
 use reqwest::{header::HeaderMap, Client};
+use serde_json::Value;
 use sha2::Sha256;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
@@ -235,12 +236,19 @@ impl Dispatcher {
 
                 let status = r.status();
                 let text = r.text().await.unwrap_or_default();
+                let suppress_http_warn = should_suppress_http_error_log(status.as_u16(), &text);
                 // 打印完整响应 JSON（调试模式）；4xx/5xx 同时以 warn 级别输出
                 debug!("dispatch response body (raw): {}", text);
                 if !status.is_success() {
-                    warn!("http {} body: {}", status.as_u16(), text);
+                    if suppress_http_warn {
+                        debug!("http {} body: [suppressed code=51169]", status.as_u16());
+                    } else {
+                        warn!("http {} body: {}", status.as_u16(), text);
+                    }
                 }
-                classify_http_and_log(status.as_u16(), &text);
+                if !suppress_http_warn {
+                    classify_http_and_log(status.as_u16(), &text);
+                }
                 debug!(
                     "dispatch response: status={}, ip_used_1m={:?}, acc_used_1m={:?}, body_len={}",
                     status.as_u16(),
@@ -422,4 +430,20 @@ fn classify_http_and_log(status: u16, body: &str) {
         "http classify: status={}, {}; 提示：{}",
         status, summary, hint
     );
+}
+
+fn parse_top_level_error_code(body: &str) -> Option<i32> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    let code = v.get("code")?;
+    if let Some(n) = code.as_i64() {
+        return i32::try_from(n).ok();
+    }
+    if let Some(s) = code.as_str() {
+        return s.parse::<i32>().ok();
+    }
+    None
+}
+
+fn should_suppress_http_error_log(status: u16, body: &str) -> bool {
+    status == 400 && parse_top_level_error_code(body) == Some(51169)
 }

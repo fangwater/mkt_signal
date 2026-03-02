@@ -68,6 +68,7 @@ pub struct HedgeArbStrategy {
     order_query_watchdog: Option<QueryWatchdog>,
     cancel_query_watchdog: Option<QueryWatchdog>,
     processed_cancel_updates: HashSet<i64>,
+    suppress_cleanup_detail_orders: HashSet<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,6 +130,7 @@ impl HedgeArbStrategy {
             order_query_watchdog: None,
             cancel_query_watchdog: None,
             processed_cancel_updates: HashSet::new(),
+            suppress_cleanup_detail_orders: HashSet::new(),
         };
         strategy
     }
@@ -2290,7 +2292,16 @@ impl HedgeArbStrategy {
         if self.open_order_id != 0 {
             if let Some(order) = mgr.get(self.open_order_id) {
                 if !order.status.is_terminal() {
-                    mgr.log_order_details(&order, "开仓订单未达到终结状态被清理", self.strategy_id);
+                    if !self
+                        .suppress_cleanup_detail_orders
+                        .contains(&order.client_order_id)
+                    {
+                        mgr.log_order_details(
+                            &order,
+                            "开仓订单未达到终结状态被清理",
+                            self.strategy_id,
+                        );
+                    }
                 }
             }
             let _ = mgr.remove(self.open_order_id);
@@ -2300,7 +2311,16 @@ impl HedgeArbStrategy {
         for id in &self.hedge_order_ids {
             if let Some(order) = mgr.get(*id) {
                 if !order.status.is_terminal() {
-                    mgr.log_order_details(&order, "对冲订单未达到终结状态被清理", self.strategy_id);
+                    if !self
+                        .suppress_cleanup_detail_orders
+                        .contains(&order.client_order_id)
+                    {
+                        mgr.log_order_details(
+                            &order,
+                            "对冲订单未达到终结状态被清理",
+                            self.strategy_id,
+                        );
+                    }
                 }
             }
             let _ = mgr.remove(*id);
@@ -2854,6 +2874,9 @@ impl HedgeArbStrategy {
         code_desc: &str,
         client_order_id: i64,
     ) {
+        if response.error_code() == 51169 {
+            self.suppress_cleanup_detail_orders.insert(client_order_id);
+        }
         warn!(
             "HedgeArbStrategy: strategy_id={} open_leg open_failed: req_type={} status={} code={}({}) client_order_id={}",
             self.strategy_id,
