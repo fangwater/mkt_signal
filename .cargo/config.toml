@@ -1,0 +1,6 @@
+[env]
+# Pin ONNX Runtime to repository-local third_party binaries.
+# This prevents ort/ort-sys from attempting network downloads during build.
+ORT_LIB_LOCATION = { value = "third_party/onnxruntime/linux-x86_64/lib", relative = true }
+ORT_PREFER_DYNAMIC_LINK = "1"
+ORT_SKIP_DOWNLOAD = "1"

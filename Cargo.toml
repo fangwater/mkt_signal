@@ -200,7 +200,7 @@ parking_lot = "0.12"
 crossbeam-channel = "0.5"
 libc = "0.2"
 zmq = "0.10"
-ort = { version = "2.0.0-rc.11", default-features = false, features = ["std", "ndarray", "download-binaries", "copy-dylibs", "tls-native"] }
+ort = { version = "2.0.0-rc.11", default-features = false, features = ["std", "ndarray"] }
 indexmap = "2"
 rayon = "1.10"
 
