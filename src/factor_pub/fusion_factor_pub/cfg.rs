@@ -8,6 +8,8 @@ use std::fs;
 pub struct FusionFactorPubConfig {
     pub symbols: Vec<String>,
     pub model_manager: ModelManagerConfig,
+    #[serde(default)]
+    pub rl_factor: RlFactorConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -20,6 +22,35 @@ pub struct ModelManagerConfig {
     pub bearer_token: Option<String>,
     #[serde(default = "default_request_timeout_ms")]
     pub request_timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RlFactorConfig {
+    #[serde(default = "default_rl_pct_change_period")]
+    pub pct_change_period: usize,
+    #[serde(default = "default_rl_rolling_window")]
+    pub rolling_window: usize,
+    #[serde(default = "default_rl_scale_factor")]
+    pub scale_factor: f64,
+    #[serde(default)]
+    pub clip: Option<ClipRange>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClipRange {
+    pub min: f64,
+    pub max: f64,
+}
+
+impl Default for RlFactorConfig {
+    fn default() -> Self {
+        Self {
+            pct_change_period: default_rl_pct_change_period(),
+            rolling_window: default_rl_rolling_window(),
+            scale_factor: default_rl_scale_factor(),
+            clip: None,
+        }
+    }
 }
 
 impl FusionFactorPubConfig {
@@ -47,6 +78,7 @@ impl FusionFactorPubConfig {
         if self.model_manager.request_timeout_ms == 0 {
             anyhow::bail!("model_manager.request_timeout_ms must be > 0");
         }
+        self.rl_factor.validate()?;
         Ok(())
     }
 
@@ -61,6 +93,48 @@ impl FusionFactorPubConfig {
     }
 }
 
+impl RlFactorConfig {
+    fn validate(&self) -> Result<()> {
+        if self.pct_change_period == 0 {
+            anyhow::bail!("rl_factor.pct_change_period must be > 0");
+        }
+        if self.rolling_window == 0 {
+            anyhow::bail!("rl_factor.rolling_window must be > 0");
+        }
+        if !self.scale_factor.is_finite() || self.scale_factor <= 0.0 {
+            anyhow::bail!("rl_factor.scale_factor must be finite and > 0");
+        }
+        if let Some(clip) = &self.clip {
+            clip.validate("rl_factor.clip")?;
+        }
+        Ok(())
+    }
+}
+
+impl ClipRange {
+    fn validate(&self, name: &str) -> Result<()> {
+        if !self.min.is_finite() || !self.max.is_finite() {
+            anyhow::bail!("{} min/max must be finite", name);
+        }
+        if self.min >= self.max {
+            anyhow::bail!("{} min must be < max", name);
+        }
+        Ok(())
+    }
+}
+
 fn default_request_timeout_ms() -> u64 {
     5_000
+}
+
+fn default_rl_pct_change_period() -> usize {
+    12
+}
+
+fn default_rl_rolling_window() -> usize {
+    30
+}
+
+fn default_rl_scale_factor() -> f64 {
+    1.0
 }

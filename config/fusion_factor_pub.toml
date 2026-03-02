@@ -13,3 +13,13 @@ symbols = [
 base_url = "http://127.0.0.1:6300"
 model_name = "binance-futures-mm-xgb-test"
 request_timeout_ms = 5000
+
+[rl_factor]
+# 保留历史单因子输出: factor_pub/{venue}/rl_return_volatility
+pct_change_period = 12
+rolling_window = 30
+scale_factor = 1.3
+
+[rl_factor.clip]
+min = 0.0003
+max = 0.005

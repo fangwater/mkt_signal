@@ -1,7 +1,7 @@
 # 部署 Binance 做市（MM）流程（公共服务 + MM 独立）
 
 本文按你确认的规则整理：
-- `dat_pbs` / `depth_pub` / `kline_pub` / `factor_pub` 属于**公共服务**，用各自默认目录命名空间；
+- `dat_pbs` / `depth_pub` / `kline_pub` / `fusion_factor_pub` / `pairmm_resample` 属于**公共服务**，用各自默认目录命名空间；
 - MM 服务（`trade_engine` / `pre_trade` / `persist_manager` / `manual_mm_signal` / `viz_server`）只放在 `binance_mm_<suffix>` 目录下，独立运行。
 
 ---
@@ -102,27 +102,33 @@ pm2 logs --namespace kline_pub kline_pub_binance-margin --lines 80
 
 ---
 
-## 4. 部署并启动 factor_pub 系列（公共）
-
-这 2 个组件默认部署到同一目录 `~/factor_pub`，命名空间默认 `factor_pub`。
+## 4. 部署并启动 fusion_factor_pub + pairmm_resample（公共）
 
 ```bash
 unset PM2_NAMESPACE
 
 cd ~/crypto_mkt/mkt_signal
-bash scripts/deploy_kline_factor_pub.sh
+bash scripts/deploy_fusion_factor_pub.sh --exchange binance
 bash scripts/deploy_pairmm_resample.sh
 
+cd ~/fusion_factor/binance-futures
+./scripts/start_fusion_factor_pub.sh
+
+cd ~/fusion_factor/binance-margin
+./scripts/start_fusion_factor_pub.sh
+
 cd ~/factor_pub
-./scripts/start_kline_factor_pub.sh --exchange binance
 ./scripts/start_pairmm_resample.sh --exchange binance
 ```
 
 检查：
 
 ```bash
+pmdaemon list | rg fusion_factor_pub
+pmdaemon logs fusion_factor_pub_binance-futures --lines 80
+pmdaemon logs fusion_factor_pub_binance-margin --lines 80
+
 pm2 status --namespace factor_pub
-pm2 logs --namespace factor_pub kline_factor_pub_binance-futures --lines 80
 pm2 logs --namespace factor_pub pairmm_resample_binance-futures --lines 80
 ```
 
@@ -256,11 +262,12 @@ pm2 logs --namespace "$MM_ENV" "viz_server_${MM_ENV}" --lines 80
 pm2 status --namespace dat_pbs
 pm2 status --namespace depth_pub
 pm2 status --namespace kline_pub
+pmdaemon list | rg fusion_factor_pub
 pm2 status --namespace factor_pub
 pm2 status --namespace "$MM_ENV"
 ```
 
-如果以上 5 个 namespace 都正常，即为“公共服务 + MM 服务”分层部署成功。
+如果以上检查都正常，即为“公共服务 + MM 服务”分层部署成功。
 
 ---
 
@@ -283,7 +290,12 @@ cd ~/$MM_ENV
 ```bash
 cd ~/factor_pub
 ./scripts/stop_pairmm_resample.sh --exchange binance
-./scripts/stop_kline_factor_pub.sh --exchange binance
+
+cd ~/fusion_factor/binance-futures
+./scripts/stop_fusion_factor_pub.sh
+
+cd ~/fusion_factor/binance-margin
+./scripts/stop_fusion_factor_pub.sh
 
 cd ~/kline_pub
 ./scripts/stop_kline_pub.sh --exchange binance

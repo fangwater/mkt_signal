@@ -6,75 +6,12 @@ use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
-use redis::Commands;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 
 use crate::common::mkt_msg::FactorValueMsg;
-use crate::common::redis_client::RedisSettings;
 use crate::factor_pub::factor_index::factor_name_to_index;
 
 const FACTOR_MAX_BYTES: usize = 256;
-const REDIS_WARN_INTERVAL_SECS: u64 = 60;
-
-struct RedisKvWriter {
-    settings: RedisSettings,
-    client: redis::Client,
-    conn: Option<redis::Connection>,
-    last_warn: Instant,
-}
-
-impl RedisKvWriter {
-    fn new(settings: RedisSettings) -> Result<Self> {
-        let url = settings.connection_url();
-        let client = redis::Client::open(url)?;
-        Ok(Self {
-            settings,
-            client,
-            conn: None,
-            last_warn: Instant::now() - Duration::from_secs(REDIS_WARN_INTERVAL_SECS),
-        })
-    }
-
-    fn write(&mut self, key: &str, payload: &[u8]) {
-        if self.conn.is_none() {
-            if let Err(err) = self.connect() {
-                self.warn_throttled("connect", &err);
-                return;
-            }
-        }
-
-        let full_key = self.prefixed_key(key);
-        let Some(conn) = self.conn.as_mut() else {
-            return;
-        };
-
-        if let Err(err) = conn.set::<_, _, ()>(full_key, payload) {
-            self.warn_throttled("set", &err);
-            self.conn = None;
-        }
-    }
-
-    fn connect(&mut self) -> redis::RedisResult<()> {
-        let conn = self.client.get_connection()?;
-        self.conn = Some(conn);
-        Ok(())
-    }
-
-    fn prefixed_key(&self, key: &str) -> String {
-        match &self.settings.prefix {
-            Some(prefix) if !prefix.is_empty() => format!("{}{}", prefix, key),
-            _ => key.to_string(),
-        }
-    }
-
-    fn warn_throttled(&mut self, action: &str, err: &redis::RedisError) {
-        if self.last_warn.elapsed() >= Duration::from_secs(REDIS_WARN_INTERVAL_SECS) {
-            warn!("Redis {} failed: {}", action, err);
-            self.last_warn = Instant::now();
-        }
-    }
-}
 
 #[derive(Default)]
 struct FactorStats {
@@ -86,7 +23,6 @@ pub struct FactorPublisher {
     venue_slug: String,
     factor_indices: HashMap<String, u16>,
     publishers: HashMap<String, Publisher<ipc::Service, [u8; FACTOR_MAX_BYTES], ()>>,
-    redis_writer: Option<RedisKvWriter>,
     stats: HashMap<String, FactorStats>,
 }
 
@@ -131,19 +67,10 @@ impl FactorPublisher {
             stats.insert(factor_name.clone(), FactorStats::default());
         }
 
-        let redis_writer = match RedisKvWriter::new(RedisSettings::default()) {
-            Ok(writer) => Some(writer),
-            Err(err) => {
-                warn!("Redis writer init failed: {}", err);
-                None
-            }
-        };
-
         Ok(Self {
             venue_slug: venue_slug.to_string(),
             factor_indices,
             publishers,
-            redis_writer,
             stats,
         })
     }
@@ -170,11 +97,6 @@ impl FactorPublisher {
             factor_index,
         );
         let bytes: Bytes = msg.to_bytes();
-
-        if let Some(writer) = self.redis_writer.as_mut() {
-            let key = format!("{}_{}_{}", factor_name, self.venue_slug, symbol);
-            writer.write(&key, bytes.as_ref());
-        }
 
         let Some(publisher) = self.publishers.get_mut(factor_name) else {
             warn!("Missing publisher for factor_name={}", factor_name);

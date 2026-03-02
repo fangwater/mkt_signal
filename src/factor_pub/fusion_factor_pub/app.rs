@@ -4,6 +4,7 @@
 //! 当前先落地 factor_118，后续在同一框架上扩展全部因子。
 
 use anyhow::{bail, Context, Result};
+use iceoryx2::port::publisher::Publisher;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
@@ -16,7 +17,10 @@ use std::ops::Index;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use super::cfg::{FusionFactorPubConfig, ModelManagerConfig};
+use super::cfg::{
+    ClipRange as FusionClipRange, FusionFactorPubConfig, ModelManagerConfig,
+    RlFactorConfig as FusionRlFactorConfig,
+};
 use super::factor_enum::FusionFactorId;
 use super::publisher::FusionFactorPublisher;
 use super::window_primitives::{
@@ -27,13 +31,15 @@ use super::window_primitives::{
     rolling_sum_last_with_min_periods, rolling_sum_series, rolling_sum_series_opt,
     tail_skew_last_opt, F64SeriesView, OptF64SeriesView,
 };
-use crate::common::mkt_msg::{FeatureMsg, FeatureStatus};
+use crate::common::mkt_msg::{FactorValueMsg, FeatureMsg, FeatureStatus};
 use crate::common::msg_parser::parse_trade_flow_feature;
 use crate::common::rolling_welford::RollingWelfordCovariance;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::trade_flow_feature_msg::{
     TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM, TRADE_FLOW_FEATURE_MSG_TYPE,
 };
+use crate::factor_pub::factor_index::factor_name_to_index;
+use crate::factor_pub::kline_factor_pub::app::compute_rl_return_volatility;
 use crate::signal::common::TradingVenue;
 
 const TRADE_FLOW_MAX_BYTES: usize = 1024;
@@ -47,6 +53,10 @@ const MAX_DEPTH_LEVELS_CACHE: usize = 20;
 const APPENDED_DEPTH_VALUES: usize = MAX_DEPTH_LEVELS_CACHE * 4;
 const FACTOR_118_WINDOW: usize = 120;
 const FACTOR_118_VWAP_LEVELS: usize = 5;
+const RL_FACTOR_NAME: &str = "rl_return_volatility";
+const RL_FACTOR_PAYLOAD_MAX_BYTES: usize = 256;
+const RL_FACTOR_PUBLISHER_HISTORY_SIZE: usize = 128;
+const RL_FACTOR_WARN_INTERVAL_SECS: u64 = 5;
 const ROLLING_CORR_CLOSE_VOLUME_14_WINDOW: usize = 14;
 const ROLLING_CORR_OPEN_VOLUME_300_WINDOW: usize = 300;
 const ROLLING_CORR_MID_MIDVOL_300_WINDOW: usize = 300;
@@ -75,6 +85,149 @@ const FIELD_NET_BUY_AMOUNT: usize = 26;
 const FIELD_NET_BUY_LARGE: usize = 29;
 const FIELD_NET_BUY_SMALL: usize = 31;
 const FACTOR_160_RANDOM_LEVELS: [usize; 10] = [18, 1, 19, 8, 10, 17, 6, 13, 4, 2];
+
+#[derive(Debug, Clone)]
+struct RlReturnVolatilityRuntimeConfig {
+    pct_change_period: usize,
+    rolling_window: usize,
+    scale_factor: f64,
+    clip: Option<FusionClipRange>,
+}
+
+impl RlReturnVolatilityRuntimeConfig {
+    fn from_fusion_config(cfg: &FusionRlFactorConfig) -> Result<Self> {
+        let pct_change_period = cfg.pct_change_period;
+        let rolling_window = cfg.rolling_window;
+        let required = pct_change_period + rolling_window;
+        if required > MAX_SYMBOL_HISTORY {
+            bail!(
+                "rl required history {} exceeds MAX_SYMBOL_HISTORY {}",
+                required,
+                MAX_SYMBOL_HISTORY
+            );
+        }
+
+        Ok(Self {
+            pct_change_period: cfg.pct_change_period,
+            rolling_window: cfg.rolling_window,
+            scale_factor: cfg.scale_factor,
+            clip: cfg.clip.clone(),
+        })
+    }
+
+    fn apply_scale_and_clip(&self, raw: f64) -> f64 {
+        let mut value = raw * self.scale_factor;
+        if let Some(clip) = &self.clip {
+            value = value.clamp(clip.min, clip.max);
+        }
+        value
+    }
+}
+
+struct RlFactorPublisher {
+    publisher: Publisher<ipc::Service, [u8; RL_FACTOR_PAYLOAD_MAX_BYTES], ()>,
+    factor_index: u16,
+    published_count: u64,
+    dropped_count: u64,
+    last_warn: Instant,
+}
+
+impl RlFactorPublisher {
+    fn new(venue_slug: &str) -> Result<Self> {
+        let Some(factor_index) = factor_name_to_index(RL_FACTOR_NAME) else {
+            bail!("missing factor index for '{}'", RL_FACTOR_NAME);
+        };
+
+        let node_name = format!("fusion_rl_pub_{}", venue_slug.replace('-', "_"));
+        let node = NodeBuilder::new()
+            .name(&NodeName::new(&node_name)?)
+            .create::<ipc::Service>()?;
+
+        let service_path = format!("factor_pub/{}/{}", venue_slug, RL_FACTOR_NAME);
+        let service = node
+            .service_builder(&ServiceName::new(&service_path)?)
+            .publish_subscribe::<[u8; RL_FACTOR_PAYLOAD_MAX_BYTES]>()
+            .max_publishers(1)
+            .max_subscribers(10)
+            .history_size(RL_FACTOR_PUBLISHER_HISTORY_SIZE)
+            .open_or_create()?;
+        let publisher = service.publisher_builder().create()?;
+
+        info!(
+            "RlFactorPublisher created: service={} factor_index={}",
+            service_path, factor_index
+        );
+
+        Ok(Self {
+            publisher,
+            factor_index,
+            published_count: 0,
+            dropped_count: 0,
+            last_warn: Instant::now() - Duration::from_secs(RL_FACTOR_WARN_INTERVAL_SECS),
+        })
+    }
+
+    fn publish(&mut self, symbol: &str, value: f64, timestamp_ms: i64, ready: bool) -> bool {
+        let msg = FactorValueMsg::create_with_factor_index(
+            symbol.to_string(),
+            value,
+            timestamp_ms,
+            ready,
+            self.factor_index,
+        );
+        let bytes = msg.to_bytes();
+        if bytes.len() > RL_FACTOR_PAYLOAD_MAX_BYTES {
+            self.warn_throttled(
+                "payload_too_large",
+                &format!(
+                    "len={} max={} symbol={}",
+                    bytes.len(),
+                    RL_FACTOR_PAYLOAD_MAX_BYTES,
+                    symbol
+                ),
+            );
+            self.dropped_count = self.dropped_count.saturating_add(1);
+            return false;
+        }
+
+        let mut buffer = [0u8; RL_FACTOR_PAYLOAD_MAX_BYTES];
+        buffer[..bytes.len()].copy_from_slice(&bytes);
+
+        match self.publisher.loan_uninit() {
+            Ok(sample) => {
+                let sample = sample.write_payload(buffer);
+                if sample.send().is_ok() {
+                    self.published_count = self.published_count.saturating_add(1);
+                    true
+                } else {
+                    self.warn_throttled("send", &symbol);
+                    self.dropped_count = self.dropped_count.saturating_add(1);
+                    false
+                }
+            }
+            Err(err) => {
+                self.warn_throttled("loan_uninit", &err);
+                self.dropped_count = self.dropped_count.saturating_add(1);
+                false
+            }
+        }
+    }
+
+    fn published_count(&self) -> u64 {
+        self.published_count
+    }
+
+    fn dropped_count(&self) -> u64 {
+        self.dropped_count
+    }
+
+    fn warn_throttled(&mut self, action: &str, detail: &dyn std::fmt::Debug) {
+        if self.last_warn.elapsed() >= Duration::from_secs(RL_FACTOR_WARN_INTERVAL_SECS) {
+            warn!("rl factor publish {} failed: {:?}", action, detail);
+            self.last_warn = Instant::now();
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct DepthLevel {
@@ -797,6 +950,8 @@ pub struct FusionFactorPubApp {
     trade_flow_feature_rocksdb_path: String,
     trade_flow_subscriber: Subscriber<ipc::Service, [u8; TRADE_FLOW_MAX_BYTES], ()>,
     publisher: FusionFactorPublisher,
+    rl_config: RlReturnVolatilityRuntimeConfig,
+    rl_publisher: RlFactorPublisher,
     allowed_symbols: HashSet<String>,
     symbol_all_ready_seen: HashSet<String>,
     symbol_factor_plans: HashMap<String, SymbolFactorPlan>,
@@ -821,6 +976,8 @@ pub struct FusionFactorPubApp {
     factor_unsupported_count: u64,
     published_count: u64,
     publish_failed_count: u64,
+    rl_published_count: u64,
+    rl_publish_failed_count: u64,
     last_stats_log: Instant,
 }
 
@@ -864,6 +1021,8 @@ impl FusionFactorPubApp {
                     output_service_path
                 )
             })?;
+        let rl_config = RlReturnVolatilityRuntimeConfig::from_fusion_config(&cfg.rl_factor)?;
+        let rl_publisher = RlFactorPublisher::new(&venue_slug)?;
 
         info!(
             "FusionFactorPubApp created: venue={} symbols={} trade_flow_channel=factor_pub/{}/{} rocksdb_path={} output_service={}",
@@ -874,6 +1033,16 @@ impl FusionFactorPubApp {
             trade_flow_feature_rocksdb_path,
             output_service_path,
         );
+        info!(
+            "FusionFactorPubApp[{}] rl config: factor={} source={} pct_change_period={} rolling_window={} scale_factor={} clip={:?}",
+            venue_slug,
+            RL_FACTOR_NAME,
+            "fusion_factor_pub.toml[rl_factor]",
+            rl_config.pct_change_period,
+            rl_config.rolling_window,
+            rl_config.scale_factor,
+            rl_config.clip
+        );
 
         Ok(Self {
             venue_slug,
@@ -881,6 +1050,8 @@ impl FusionFactorPubApp {
             trade_flow_feature_rocksdb_path,
             trade_flow_subscriber,
             publisher,
+            rl_config,
+            rl_publisher,
             allowed_symbols: allowed_symbols.into_iter().collect(),
             symbol_all_ready_seen: HashSet::new(),
             symbol_factor_plans,
@@ -905,6 +1076,8 @@ impl FusionFactorPubApp {
             factor_unsupported_count: 0,
             published_count: 0,
             publish_failed_count: 0,
+            rl_published_count: 0,
+            rl_publish_failed_count: 0,
             last_stats_log: Instant::now(),
         })
     }
@@ -1017,7 +1190,7 @@ impl FusionFactorPubApp {
 
             if self.last_stats_log.elapsed() >= Duration::from_secs(STATS_LOG_INTERVAL_SECS) {
                 info!(
-                    "FusionFactorPubApp[{}] stats: raw_msgs={} trade_flow_msgs={} triggers={} decode_errors={} depth_attached={} missing_depth={} factor118_ready={} trade_drop_symbols={} drop_symbol_samples={:?} calc_symbols={} factor_plan={} factor_eval={} factor_ready={} factor_warming_up={} factor_invalid={} factor_missing_depth={} published={} publish_failed={} pub_total={} pub_dropped={} last_decode_error={}",
+                    "FusionFactorPubApp[{}] stats: raw_msgs={} trade_flow_msgs={} triggers={} decode_errors={} depth_attached={} missing_depth={} factor118_ready={} trade_drop_symbols={} drop_symbol_samples={:?} calc_symbols={} factor_plan={} factor_eval={} factor_ready={} factor_warming_up={} factor_invalid={} factor_missing_depth={} published={} publish_failed={} pub_total={} pub_dropped={} rl_published={} rl_publish_failed={} rl_pub_total={} rl_pub_dropped={} last_decode_error={}",
                     self.venue_slug,
                     self.trade_flow_raw_count,
                     self.trade_flow_count,
@@ -1039,6 +1212,10 @@ impl FusionFactorPubApp {
                     self.publish_failed_count,
                     self.publisher.published_count(),
                     self.publisher.dropped_count(),
+                    self.rl_published_count,
+                    self.rl_publish_failed_count,
+                    self.rl_publisher.published_count(),
+                    self.rl_publisher.dropped_count(),
                     self.trade_flow_decode_error_last.as_deref().unwrap_or("-"),
                 );
                 self.trade_flow_raw_count = 0;
@@ -1060,6 +1237,8 @@ impl FusionFactorPubApp {
                 self.factor_unsupported_count = 0;
                 self.published_count = 0;
                 self.publish_failed_count = 0;
+                self.rl_published_count = 0;
+                self.rl_publish_failed_count = 0;
                 self.last_stats_log = Instant::now();
             }
         }
@@ -1497,6 +1676,50 @@ impl FusionFactorPubApp {
         }
     }
 
+    fn publish_rl_return_volatility(&mut self, symbol: &str, timestamp_ms: i64) {
+        let Some(state) = self.symbol_states.get(symbol) else {
+            self.rl_publish_failed_count = self.rl_publish_failed_count.saturating_add(1);
+            warn!(
+                "rl publish skipped: missing symbol state, venue={} symbol={}",
+                self.venue_slug, symbol
+            );
+            return;
+        };
+
+        let (value, ready) = match compute_rl_return_volatility(
+            &state.close,
+            self.rl_config.pct_change_period,
+            self.rl_config.rolling_window,
+        ) {
+            Ok(Some(raw)) => {
+                let scaled = self.rl_config.apply_scale_and_clip(raw);
+                if scaled.is_finite() {
+                    (scaled, true)
+                } else {
+                    (0.0, false)
+                }
+            }
+            Ok(None) => (0.0, false),
+            Err(err) => {
+                self.rl_publish_failed_count = self.rl_publish_failed_count.saturating_add(1);
+                warn!(
+                    "rl compute failed: venue={} symbol={} err={}",
+                    self.venue_slug, symbol, err
+                );
+                return;
+            }
+        };
+
+        if self
+            .rl_publisher
+            .publish(symbol, value, timestamp_ms, ready)
+        {
+            self.rl_published_count = self.rl_published_count.saturating_add(1);
+        } else {
+            self.rl_publish_failed_count = self.rl_publish_failed_count.saturating_add(1);
+        }
+    }
+
     fn on_trade_flow(
         &mut self,
         symbol: String,
@@ -1566,6 +1789,11 @@ impl FusionFactorPubApp {
                 state.push_depth_metrics_derived(depth);
             }
             Self::update_symbol_rolling_stats(state, rolling, &msg, depth_opt);
+        }
+
+        if emit_output {
+            // 与历史 kline_factor_pub 对齐: 继续发布单因子 rl_return_volatility 到旧 topic。
+            self.publish_rl_return_volatility(&symbol, msg.ts);
         }
 
         if emit_output {

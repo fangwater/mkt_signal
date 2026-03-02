@@ -38,7 +38,7 @@ Exchange WS
   → depth_pub        (order book)
   → kline_pub        (candlesticks)
   → trade_flow_feature_pub  (trade flow features)
-  → kline_factor_pub / fusion_factor_pub / model_pub  (ML factors + tl2cgen inference)
+  → fusion_factor_pub / pairmm_resample / model_pub  (ML factors + tl2cgen inference)
   → trade_signal     (signal generation: FR arb or XARB or MM)
   → pre_trade        (risk/exposure validation)
   → trade_engine     (order execution)
