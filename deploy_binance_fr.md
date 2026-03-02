@@ -1,13 +1,16 @@
-# 部署 binance_fr_trade + binance_fr_hf01 + binance_fr_hf02
+# 部署 Binance FR 环境（老组 + 新组）
 
-本文记录两套环境的部署步骤：
-- `binance_fr_trade`
-- `binance_fr_hf01`
-- `binance_fr_hf02`
+本文包含两组环境：
+- 老组：`binance_fr_trade` / `binance_fr_hf01` / `binance_fr_hf02`
+- 新组：`binance_fr_trade01` / `binance_fr_trade02` / `binance_fr_trade03`
 
-默认端口示例：
-- viz server: `10031` / `10041` / `10042`
-- config server: `18031` / `18041` / `18042`
+端口映射：
+- 老组（viz）：`10031` / `10041` / `10042`
+- 老组（config）：`18031` / `18041` / `18042`
+- 新组（viz）：`10051` / `10052` / `10053`
+- 新组（config）：`18051` / `18052` / `18053`
+
+说明：下文步骤以老组举例；新组流程完全一致，只需将 `env-name` 与端口替换为 `trade01/02/03` 对应值。
 
 ---
 

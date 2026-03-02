@@ -11,7 +11,9 @@ usage() {
 
 说明:
   - 只部署，不启动任何进程。
-  - 只支持固定 suffix：trade、hf01、hf02。
+  - 支持两组固定 suffix：
+      1) 老组：trade、hf01、hf02
+      2) 新组：trade01、trade02、trade03（独立环境）
   - 端口按 suffix 明文写死，不允许外部覆盖。
   - --bin: 仅替换二进制（不改脚本/配置/nginx）。
 EOF
@@ -52,7 +54,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$ENV_SUFFIX" ]]; then
-  echo "[ERROR] 需要传入 env suffix（trade|hf01|hf02）" >&2
+  echo "[ERROR] 需要传入 env suffix（trade|hf01|hf02|trade01|trade02|trade03）" >&2
   usage
   exit 1
 fi
@@ -72,8 +74,20 @@ case "$ENV_SUFFIX" in
     CONFIG_PORT="18042"
     VIZ_PORT="10042"
     ;;
+  trade01)
+    CONFIG_PORT="18051"
+    VIZ_PORT="10051"
+    ;;
+  trade02)
+    CONFIG_PORT="18052"
+    VIZ_PORT="10052"
+    ;;
+  trade03)
+    CONFIG_PORT="18053"
+    VIZ_PORT="10053"
+    ;;
   *)
-    echo "[ERROR] binance FR 只支持固定 suffix: trade|hf01|hf02（收到: ${ENV_SUFFIX}）" >&2
+    echo "[ERROR] binance FR 仅支持 suffix: trade|hf01|hf02|trade01|trade02|trade03（收到: ${ENV_SUFFIX}）" >&2
     exit 1
     ;;
 esac
