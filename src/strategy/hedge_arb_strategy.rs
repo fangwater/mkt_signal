@@ -3,6 +3,7 @@ use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
+use crate::pre_trade::signal_throttle::register_signal_throttle;
 use crate::pre_trade::{PersistChannel, SignalChannel, TradeEngHub};
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{
@@ -2874,6 +2875,18 @@ impl HedgeArbStrategy {
         code_desc: &str,
         client_order_id: i64,
     ) {
+        let open_side = if self.hedge_side == Side::Buy {
+            Side::Sell
+        } else {
+            Side::Buy
+        };
+        let _ = register_signal_throttle(
+            &self.open_symbol,
+            open_side,
+            &self.open_from_key,
+            response.error_code(),
+        );
+
         if response.error_code() == 51169 {
             self.suppress_cleanup_detail_orders.insert(client_order_id);
         }

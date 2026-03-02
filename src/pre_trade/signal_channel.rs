@@ -2,6 +2,7 @@ use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::ipc_service_name::build_service_name;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{OrderType, Side};
+use crate::pre_trade::signal_throttle::check_signal_throttle;
 use crate::signal::cancel_signal::{ArbCancelCtx, MmCancelCtx};
 use crate::signal::common::{SignalBytes, TradingVenue};
 use crate::signal::hedge_signal::{ArbHedgeCtx, MmHedgeCtx};
@@ -245,7 +246,23 @@ fn handle_trade_signal(signal: TradeSignal) {
                     return;
                 }
                 let hedging_symbol = open_ctx.get_hedging_symbol();
-                let side = open_ctx.get_side();
+                let Some(side) = open_ctx.get_side() else {
+                    warn!("ArbOpen: invalid side {}", open_ctx.side);
+                    return;
+                };
+                let from_key = String::from_utf8_lossy(&open_ctx.from_key);
+                if let Some(hit) = check_signal_throttle(&symbol, side, &from_key) {
+                    warn!(
+                        "ArbOpen: throttled by pre_trade block, symbol={} side={} tp={} remain_us={} last_code={} until_us={}, skip strategy construction",
+                        symbol,
+                        side.as_str(),
+                        hit.tp,
+                        hit.remaining_us,
+                        hit.last_error_code,
+                        hit.until_us
+                    );
+                    return;
+                }
                 let opening_venue = TradingVenue::from_u8(open_ctx.opening_leg.venue)
                     .unwrap_or(TradingVenue::BinanceMargin);
                 let hedging_venue = TradingVenue::from_u8(open_ctx.hedging_leg.venue)
@@ -279,7 +296,6 @@ fn handle_trade_signal(signal: TradeSignal) {
                     } else {
                         "MT"
                     };
-                    let from_key = String::from_utf8_lossy(&open_ctx.from_key);
                     let signal_price = open_ctx.price_value();
                     let signal_amount = open_ctx.amount_value();
                     info!(
@@ -346,6 +362,21 @@ fn handle_trade_signal(signal: TradeSignal) {
                             configured_hedge_venue,
                             opening_venue,
                             hedging_venue
+                        );
+                        return;
+                    }
+
+                    let from_key = String::from_utf8_lossy(&close_ctx.from_key);
+                    if let Some(hit) = check_signal_throttle(&opening_symbol, close_side, &from_key)
+                    {
+                        warn!(
+                            "ArbClose: throttled by pre_trade block, opening_symbol={} side={} tp={} remain_us={} last_code={} until_us={}, skip strategy construction",
+                            opening_symbol,
+                            close_side.as_str(),
+                            hit.tp,
+                            hit.remaining_us,
+                            hit.last_error_code,
+                            hit.until_us
                         );
                         return;
                     }
@@ -580,6 +611,23 @@ fn handle_trade_signal(signal: TradeSignal) {
             let symbol = open_ctx.get_opening_symbol().to_uppercase();
             if symbol.is_empty() {
                 warn!("MMOpen: empty symbol");
+                return;
+            }
+            let Some(side) = open_ctx.get_side() else {
+                warn!("MMOpen: invalid side {}", open_ctx.side);
+                return;
+            };
+            let from_key = String::from_utf8_lossy(&open_ctx.from_key);
+            if let Some(hit) = check_signal_throttle(&symbol, side, &from_key) {
+                warn!(
+                    "MMOpen: throttled by pre_trade block, symbol={} side={} tp={} remain_us={} last_code={} until_us={}, skip strategy construction",
+                    symbol,
+                    side.as_str(),
+                    hit.tp,
+                    hit.remaining_us,
+                    hit.last_error_code,
+                    hit.until_us
+                );
                 return;
             }
             if let Some(order_type) = OrderType::from_u8(open_ctx.order_type) {

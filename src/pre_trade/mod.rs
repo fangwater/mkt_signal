@@ -14,6 +14,7 @@ pub mod query_eng_channel;
 pub mod resample_channel;
 mod runner;
 pub mod signal_channel;
+pub mod signal_throttle;
 pub mod symbol_mapper;
 pub mod symbol_util;
 pub mod trade_eng_channel;
