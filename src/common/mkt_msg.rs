@@ -78,10 +78,10 @@ pub struct FactorValueMsg {
     pub msg_type: MktMsgType,
     pub symbol_length: u32,
     pub symbol: String,
-    pub value: f64,
     pub timestamp_ms: i64,
-    pub ready: bool,
-    pub factor_index: u16,
+    pub factor_indices: Vec<u16>,
+    pub factor_values: Vec<f64>,
+    pub factor_ready_flags: Vec<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -841,36 +841,169 @@ impl FactorValueMsg {
         factor_index: u16,
     ) -> Self {
         let symbol_length = symbol.len() as u32;
-
         Self {
             msg_type: MktMsgType::FactorValue,
             symbol_length,
             symbol,
-            value,
             timestamp_ms,
-            ready,
-            factor_index,
+            factor_indices: vec![factor_index],
+            factor_values: vec![value],
+            factor_ready_flags: vec![ready],
         }
     }
 
+    pub fn create_multi(
+        symbol: String,
+        timestamp_ms: i64,
+        factor_indices: Vec<u16>,
+        factor_values: Vec<f64>,
+        factor_ready_flags: Vec<bool>,
+    ) -> Result<Self> {
+        let symbol_length = symbol.len() as u32;
+        if factor_indices.is_empty() {
+            bail!("FactorValueMsg factor list must not be empty");
+        }
+        if factor_indices.len() != factor_values.len()
+            || factor_indices.len() != factor_ready_flags.len()
+        {
+            bail!(
+                "FactorValueMsg shape mismatch: indices={} values={} ready_flags={}",
+                factor_indices.len(),
+                factor_values.len(),
+                factor_ready_flags.len()
+            );
+        }
+        if factor_indices.len() > u16::MAX as usize {
+            bail!(
+                "FactorValueMsg factor count {} exceeds max {}",
+                factor_indices.len(),
+                u16::MAX as usize
+            );
+        }
+
+        Ok(Self {
+            msg_type: MktMsgType::FactorValue,
+            symbol_length,
+            symbol,
+            timestamp_ms,
+            factor_indices,
+            factor_values,
+            factor_ready_flags,
+        })
+    }
+
     pub fn factor_index(&self) -> u16 {
-        self.factor_index
+        self.factor_indices.first().copied().unwrap_or(0)
+    }
+
+    pub fn factor_count(&self) -> usize {
+        self.effective_factor_count()
+    }
+
+    pub fn factors(&self) -> impl Iterator<Item = (u16, f64, bool)> + '_ {
+        self.factor_indices
+            .iter()
+            .copied()
+            .zip(self.factor_values.iter().copied())
+            .zip(self.factor_ready_flags.iter().copied())
+            .map(|((idx, value), ready)| (idx, value, ready))
+    }
+
+    pub fn find_factor(&self, factor_index: u16) -> Option<(f64, bool)> {
+        self.factors()
+            .find(|(idx, _, _)| *idx == factor_index)
+            .map(|(_, value, ready)| (value, ready))
     }
 
     pub fn to_bytes(&self) -> Bytes {
-        // msg_type(4) + symbol_length(4) + symbol + value(8) + timestamp(8) + ready(1) + factor_index(2)
-        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 8 + 1 + 2;
+        // New layout:
+        // msg_type(u32) | symbol_len(u32) | symbol | timestamp_ms(i64) | factor_count(u16)
+        // | factor_count * [factor_index(u16) | value(f64) | ready(u8)]
+        let factor_count = self.effective_factor_count();
+        let symbol_bytes = self.symbol.as_bytes();
+        let symbol_len = symbol_bytes.len();
+        let total_size = 4 + 4 + symbol_len + 8 + 2 + factor_count * (2 + 8 + 1);
         let mut buf = BytesMut::with_capacity(total_size);
 
         buf.put_u32_le(self.msg_type as u32);
-        buf.put_u32_le(self.symbol_length);
-        buf.put(self.symbol.as_bytes());
-        buf.put_f64_le(self.value);
+        buf.put_u32_le(symbol_len as u32);
+        buf.put(symbol_bytes);
         buf.put_i64_le(self.timestamp_ms);
-        buf.put_u8(if self.ready { 1 } else { 0 });
-        buf.put_u16_le(self.factor_index);
+        buf.put_u16_le(factor_count as u16);
+        for idx in 0..factor_count {
+            buf.put_u16_le(self.factor_indices[idx]);
+            buf.put_f64_le(self.factor_values[idx]);
+            buf.put_u8(if self.factor_ready_flags[idx] { 1 } else { 0 });
+        }
 
         buf.freeze()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        if data.len() < 4 + 4 + 8 + 2 {
+            bail!("FactorValueMsg too short: {}", data.len());
+        }
+
+        let mut cursor = Bytes::copy_from_slice(data);
+        let msg_type = cursor.get_u32_le();
+        if msg_type != MktMsgType::FactorValue as u32 {
+            bail!(
+                "invalid FactorValueMsg type {}, expected {}",
+                msg_type,
+                MktMsgType::FactorValue as u32
+            );
+        }
+
+        let symbol_len = cursor.get_u32_le() as usize;
+        if cursor.remaining() < symbol_len + 8 + 2 {
+            bail!(
+                "FactorValueMsg truncated before body: remaining={} need={}",
+                cursor.remaining(),
+                symbol_len + 8 + 2
+            );
+        }
+
+        let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_len).to_vec())?;
+        let timestamp_ms = cursor.get_i64_le();
+        let factor_count = cursor.get_u16_le() as usize;
+        if factor_count == 0 {
+            bail!("FactorValueMsg factor_count must be > 0");
+        }
+        let needed = factor_count * (2 + 8 + 1);
+        if cursor.remaining() < needed {
+            bail!(
+                "FactorValueMsg truncated in factor payload: remaining={} need={} count={}",
+                cursor.remaining(),
+                needed,
+                factor_count
+            );
+        }
+
+        let mut factor_indices = Vec::with_capacity(factor_count);
+        let mut factor_values = Vec::with_capacity(factor_count);
+        let mut factor_ready_flags = Vec::with_capacity(factor_count);
+        for _ in 0..factor_count {
+            factor_indices.push(cursor.get_u16_le());
+            factor_values.push(cursor.get_f64_le());
+            factor_ready_flags.push(cursor.get_u8() != 0);
+        }
+
+        Ok(Self {
+            msg_type: MktMsgType::FactorValue,
+            symbol_length: symbol.len() as u32,
+            symbol,
+            timestamp_ms,
+            factor_indices,
+            factor_values,
+            factor_ready_flags,
+        })
+    }
+
+    fn effective_factor_count(&self) -> usize {
+        self.factor_indices
+            .len()
+            .min(self.factor_values.len())
+            .min(self.factor_ready_flags.len())
     }
 }
 

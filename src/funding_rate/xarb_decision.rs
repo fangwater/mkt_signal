@@ -5,7 +5,8 @@
 //! - only emits Open/Cancel (spread-only) and supports backward hedge queries
 
 use anyhow::{Context, Result};
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
+use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
@@ -24,7 +25,7 @@ use crate::common::bbo::Bbo;
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
-use crate::common::mkt_msg::MktMsgType;
+use crate::common::mkt_msg::FactorValueMsg;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
@@ -49,6 +50,9 @@ const DEFAULT_PNLU_KEY_SUFFIX: &str = "_pnlu_factor_thresholds";
 const PNLU_MAX_AGE_SECS: i64 = 30 * 60;
 const TARGET_FACTOR_NAME: &str = "rl_return_volatility";
 const TARGET_FACTOR_KEY_PREFIX: &str = TARGET_FACTOR_NAME;
+const FACTOR_VALUE_PAYLOAD_MAX_BYTES: usize = 256;
+const FACTOR_VALUE_HISTORY_SIZE: usize = 128;
+const FACTOR_VALUE_SUBSCRIBER_BUFFER_SIZE: usize = 1024;
 
 #[derive(Debug, Deserialize)]
 struct PnluFactorPayload {
@@ -154,80 +158,16 @@ impl PnluRedis {
             }
         }
     }
-
-    fn get_bytes(&mut self, key: &str) -> Result<Option<Vec<u8>>> {
-        if self.conn.is_none() {
-            self.conn =
-                Some(self.client.get_connection().with_context(|| {
-                    format!("PnluRedis: connect failed {}", self.settings.host)
-                })?);
-        }
-        let full_key = self.prefixed_key(key);
-        let conn = self
-            .conn
-            .as_mut()
-            .expect("PnluRedis: connection missing after init");
-        let result: redis::RedisResult<Option<Vec<u8>>> = conn.get(full_key);
-        match result {
-            Ok(value) => Ok(value),
-            Err(err) => {
-                self.conn = None;
-                Err(anyhow::anyhow!("PnluRedis: get failed: {}", err))
-            }
-        }
-    }
 }
 
 struct FactorValueLookupResult {
     key: String,
     symbol_key: String,
     ready: Option<bool>,
-    rl_return_volatility_factor: Option<f64>,
+    target_factor_value: Option<f64>,
     ts_ms: Option<i64>,
     factor_index: Option<u16>,
     note: String,
-}
-
-fn parse_factor_value_payload(
-    data: &[u8],
-    expected_factor_index: u16,
-) -> Result<FactorValueSnapshot> {
-    let mut cursor = Bytes::copy_from_slice(data);
-    if cursor.remaining() < 8 {
-        anyhow::bail!("payload too short");
-    }
-
-    let msg_type = cursor.get_u32_le();
-    if msg_type != MktMsgType::FactorValue as u32 {
-        anyhow::bail!("invalid msg_type {}", msg_type);
-    }
-
-    let symbol_len = cursor.get_u32_le() as usize;
-    if cursor.remaining() < symbol_len + 8 + 8 + 1 + 2 {
-        anyhow::bail!("payload missing symbol/value/ts/ready/factor_index");
-    }
-    cursor.advance(symbol_len);
-
-    let value = cursor.get_f64_le();
-    let timestamp_ms = cursor.get_i64_le();
-    let ready = cursor.get_u8() != 0;
-    let factor_index = cursor.get_u16_le();
-
-    if factor_index != expected_factor_index {
-        anyhow::bail!(
-            "factor_index mismatch for {}: expected={}, got={}",
-            TARGET_FACTOR_NAME,
-            expected_factor_index,
-            factor_index
-        );
-    }
-
-    Ok(FactorValueSnapshot {
-        value,
-        ready,
-        timestamp_ms,
-        factor_index,
-    })
 }
 
 fn min_qty_symbol_key(venue: TradingVenue, trade_symbol: &str) -> String {
@@ -291,6 +231,9 @@ thread_local! {
 pub struct XarbDecision {
     signal_pub: SignalPublisher,
     backward_sub: GenericSignalSubscriber,
+    factor_value_sub: Subscriber<ipc::Service, [u8; FACTOR_VALUE_PAYLOAD_MAX_BYTES], ()>,
+    target_factor_index: u16,
+    factor_value_cache: HashMap<(u16, String), FactorValueSnapshot>,
     channel_name: String,
     _node: Node<ipc::Service>,
 
@@ -321,79 +264,86 @@ impl XarbDecision {
         normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
     }
 
-    fn fetch_rl_return_volatility_factor(
+    fn poll_factor_value_updates(&mut self) {
+        loop {
+            match self.factor_value_sub.receive() {
+                Ok(Some(sample)) => {
+                    let payload = sample.payload();
+                    if payload.iter().all(|&b| b == 0) {
+                        continue;
+                    }
+                    let msg = match FactorValueMsg::from_bytes(payload) {
+                        Ok(msg) => msg,
+                        Err(err) => {
+                            warn!("XarbDecision: parse factor payload failed: {}", err);
+                            continue;
+                        }
+                    };
+
+                    let symbol_key = normalize_symbol_for_venue(&msg.symbol, self.venues.1);
+                    for (factor_index, value, ready) in msg.factors() {
+                        let cache_key = (factor_index, symbol_key.clone());
+                        let snapshot = FactorValueSnapshot {
+                            value,
+                            ready,
+                            timestamp_ms: msg.timestamp_ms,
+                            factor_index,
+                        };
+                        let should_update = self
+                            .factor_value_cache
+                            .get(&cache_key)
+                            .map(|prev| snapshot.timestamp_ms >= prev.timestamp_ms)
+                            .unwrap_or(true);
+                        if should_update {
+                            self.factor_value_cache.insert(cache_key, snapshot);
+                        }
+                    }
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    warn!("XarbDecision: factor subscriber receive error: {}", err);
+                    break;
+                }
+            }
+        }
+    }
+
+    fn lookup_target_factor_value(
         &mut self,
         hedge_symbol: &str,
         hedge_venue: TradingVenue,
     ) -> FactorValueLookupResult {
+        self.poll_factor_value_updates();
+
         let symbol_key = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
+        let cache_key = (self.target_factor_index, symbol_key.clone());
         let key = format!(
             "{}_{}_{}",
             TARGET_FACTOR_KEY_PREFIX,
             hedge_venue.data_pub_slug(),
             symbol_key
         );
-        let Some(expected_factor_index) = factor_name_to_index(TARGET_FACTOR_NAME) else {
-            return FactorValueLookupResult {
+
+        if let Some(snapshot) = self.factor_value_cache.get(&cache_key) {
+            FactorValueLookupResult {
+                key,
+                symbol_key,
+                ready: Some(snapshot.ready),
+                target_factor_value: Some(snapshot.value),
+                ts_ms: Some(snapshot.timestamp_ms),
+                factor_index: Some(snapshot.factor_index),
+                note: "ok".to_string(),
+            }
+        } else {
+            FactorValueLookupResult {
                 key,
                 symbol_key,
                 ready: None,
-                rl_return_volatility_factor: None,
+                target_factor_value: None,
                 ts_ms: None,
                 factor_index: None,
-                note: format!("missing_factor_index_mapping:{}", TARGET_FACTOR_NAME),
-            };
-        };
-
-        let raw = match self.pnlu_redis.get_bytes(&key) {
-            Ok(Some(bytes)) => bytes,
-            Ok(None) => {
-                return FactorValueLookupResult {
-                    key,
-                    symbol_key,
-                    ready: None,
-                    rl_return_volatility_factor: None,
-                    ts_ms: None,
-                    factor_index: None,
-                    note: "missing_key".to_string(),
-                }
+                note: "missing_ipc_snapshot".to_string(),
             }
-            Err(err) => {
-                return FactorValueLookupResult {
-                    key,
-                    symbol_key,
-                    ready: None,
-                    rl_return_volatility_factor: None,
-                    ts_ms: None,
-                    factor_index: None,
-                    note: format!("redis_error: {err}"),
-                }
-            }
-        };
-
-        let snapshot = match parse_factor_value_payload(&raw, expected_factor_index) {
-            Ok(val) => val,
-            Err(err) => {
-                return FactorValueLookupResult {
-                    key,
-                    symbol_key,
-                    ready: None,
-                    rl_return_volatility_factor: None,
-                    ts_ms: None,
-                    factor_index: None,
-                    note: format!("parse_error: {err}"),
-                }
-            }
-        };
-
-        FactorValueLookupResult {
-            key,
-            symbol_key,
-            ready: Some(snapshot.ready),
-            rl_return_volatility_factor: Some(snapshot.value),
-            ts_ms: Some(snapshot.timestamp_ms),
-            factor_index: Some(snapshot.factor_index),
-            note: "ok".to_string(),
         }
     }
 
@@ -467,6 +417,11 @@ impl XarbDecision {
 
         let signal_pub = SignalPublisher::new(DEFAULT_SIGNAL_CHANNEL)?;
         let backward_sub = Self::create_subscriber(&node, DEFAULT_BACKWARD_CHANNEL)?;
+        let factor_value_sub =
+            Self::create_factor_value_subscriber(&node, venues.1, TARGET_FACTOR_NAME)?;
+        let target_factor_index = factor_name_to_index(TARGET_FACTOR_NAME).ok_or_else(|| {
+            anyhow::anyhow!("missing factor index mapping for {}", TARGET_FACTOR_NAME)
+        })?;
 
         let price_offsets = vec![0.0002, 0.0004, 0.0006, 0.0008, 0.001];
         let open_min_qty_table = VenueMinQtyTable::new(venues.0);
@@ -492,6 +447,9 @@ impl XarbDecision {
         Ok(Self {
             signal_pub,
             backward_sub,
+            factor_value_sub,
+            target_factor_index,
+            factor_value_cache: HashMap::new(),
             channel_name: DEFAULT_SIGNAL_CHANNEL.to_string(),
             _node: node,
             price_offsets,
@@ -567,6 +525,31 @@ impl XarbDecision {
 
         let subscriber = service.subscriber_builder().create()?;
         Ok(GenericSignalSubscriber::Size4K(subscriber))
+    }
+
+    fn create_factor_value_subscriber(
+        node: &Node<ipc::Service>,
+        hedge_venue: TradingVenue,
+        factor_name: &str,
+    ) -> Result<Subscriber<ipc::Service, [u8; FACTOR_VALUE_PAYLOAD_MAX_BYTES], ()>> {
+        let service_name = format!("factor_pub/{}/{}", hedge_venue.data_pub_slug(), factor_name);
+        let service = node
+            .service_builder(&ServiceName::new(&service_name)?)
+            .publish_subscribe::<[u8; FACTOR_VALUE_PAYLOAD_MAX_BYTES]>()
+            .max_publishers(1)
+            .max_subscribers(10)
+            .history_size(FACTOR_VALUE_HISTORY_SIZE)
+            .subscriber_max_buffer_size(FACTOR_VALUE_SUBSCRIBER_BUFFER_SIZE)
+            .open_or_create()?;
+
+        info!(
+            "XarbDecision: subscribed factor stream service={}",
+            service_name
+        );
+        service
+            .subscriber_builder()
+            .create()
+            .context("failed to create factor subscriber")
     }
 
     pub fn make_spread_only_decision(
@@ -701,8 +684,8 @@ impl XarbDecision {
         }
         let pnlu_factor = pnlu_check.factor.unwrap_or(0.0);
         let rl_return_volatility_factor = self
-            .fetch_rl_return_volatility_factor(hedge_symbol, hedge_venue)
-            .rl_return_volatility_factor
+            .lookup_target_factor_value(hedge_symbol, hedge_venue)
+            .target_factor_value
             .unwrap_or(0.0);
 
         self.emit_open_signals(
@@ -808,8 +791,7 @@ impl XarbDecision {
             .check_pnlu_factor(open_symbol_key.as_str(), now)
             .factor
             .unwrap_or(0.0);
-        let rl_return_volatility_lookup =
-            self.fetch_rl_return_volatility_factor(&hedge_symbol, hedge_venue);
+        let target_factor_lookup = self.lookup_target_factor_value(&hedge_symbol, hedge_venue);
         let seq_threshold = self.hedge_aggressive_seq_threshold;
         let aggressive = query.request_seq >= seq_threshold;
         let default_offset = self.hedge_price_offset.abs();
@@ -881,7 +863,7 @@ impl XarbDecision {
             let from_key = self.build_hedge_from_key(
                 now,
                 pnlu_factor,
-                rl_return_volatility_lookup.rl_return_volatility_factor,
+                target_factor_lookup.target_factor_value,
                 pct_change,
                 spread_rate,
             );
@@ -911,10 +893,10 @@ impl XarbDecision {
         let mut offset_source = "config";
         let mut offset_note = String::new();
 
-        let ready = rl_return_volatility_lookup.ready.unwrap_or(false);
+        let ready = target_factor_lookup.ready.unwrap_or(false);
 
         if ready {
-            if let Some(value) = rl_return_volatility_lookup.rl_return_volatility_factor {
+            if let Some(value) = target_factor_lookup.target_factor_value {
                 if value.is_finite() && value > 0.0 {
                     offset = value;
                     offset_source = "rl_return_volatility_factor";
@@ -924,10 +906,10 @@ impl XarbDecision {
             } else {
                 offset_note = "missing_factor".to_string();
             }
-        } else if rl_return_volatility_lookup.note == "ok" {
+        } else if target_factor_lookup.note == "ok" {
             offset_note = "not_ready".to_string();
         } else {
-            offset_note = rl_return_volatility_lookup.note.clone();
+            offset_note = target_factor_lookup.note.clone();
         }
 
         if aggressive {
@@ -943,14 +925,14 @@ impl XarbDecision {
         info!(
             "XarbDecision: hedge query offset source={} key={} symbol={} venue={:?} norm_symbol={} ready={} factor={:?} factor_index={:?} ts_ms={:?} offset={:.6} default_offset={:.6} aggressive={} note={}",
             offset_source,
-            rl_return_volatility_lookup.key,
+            target_factor_lookup.key,
             hedge_symbol,
             hedge_venue,
-            rl_return_volatility_lookup.symbol_key,
+            target_factor_lookup.symbol_key,
             ready,
-            rl_return_volatility_lookup.rl_return_volatility_factor,
-            rl_return_volatility_lookup.factor_index,
-            rl_return_volatility_lookup.ts_ms,
+            target_factor_lookup.target_factor_value,
+            target_factor_lookup.factor_index,
+            target_factor_lookup.ts_ms,
             offset,
             default_offset,
             aggressive,
@@ -1030,7 +1012,7 @@ impl XarbDecision {
         let from_key = self.build_hedge_from_key(
             now,
             pnlu_factor,
-            rl_return_volatility_lookup.rl_return_volatility_factor,
+            target_factor_lookup.target_factor_value,
             pct_change,
             spread_rate,
         );
