@@ -1,9 +1,9 @@
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::order_manager::Side;
-use log::warn;
+use log::{info, warn};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 pub const SIGNAL_THROTTLE_TTL_US: i64 = 30 * 60 * 1_000_000;
 pub const SIGNAL_THROTTLE_ERROR_CODE: i32 = 51169;
@@ -24,6 +24,16 @@ struct SignalThrottleEntry {
 
 #[derive(Debug, Clone)]
 pub struct SignalThrottleHit {
+    pub tp: String,
+    pub remaining_us: i64,
+    pub until_us: i64,
+    pub last_error_code: i32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ActiveSignalThrottle {
+    pub symbol: String,
+    pub dir: String,
     pub tp: String,
     pub remaining_us: i64,
     pub until_us: i64,
@@ -62,6 +72,68 @@ pub fn register_signal_throttle(symbol: &str, dir: Side, from_key: &str, error_c
 pub fn check_signal_throttle(symbol: &str, dir: Side, from_key: &str) -> Option<SignalThrottleHit> {
     let now_us = get_timestamp_us();
     check_signal_throttle_at(symbol, dir, from_key, now_us)
+}
+
+pub fn snapshot_active_signal_throttles() -> Vec<ActiveSignalThrottle> {
+    let now_us = get_timestamp_us();
+    let mut guard = SIGNAL_THROTTLE_MAP.lock();
+    cleanup_expired(&mut guard, now_us);
+
+    let mut rows = Vec::with_capacity(guard.len());
+    for (key, entry) in guard.iter() {
+        rows.push(ActiveSignalThrottle {
+            symbol: key.symbol.clone(),
+            dir: side_label_from_u8(key.dir).to_string(),
+            tp: key.tp.clone(),
+            remaining_us: entry.ban_until_us.saturating_sub(now_us),
+            until_us: entry.ban_until_us,
+            last_error_code: entry.last_error_code,
+        });
+    }
+    drop(guard);
+
+    rows.sort_by(|a, b| {
+        (&a.symbol, &a.dir, &a.tp, a.until_us).cmp(&(&b.symbol, &b.dir, &b.tp, b.until_us))
+    });
+    rows
+}
+
+pub fn log_active_signal_throttles(max_details: usize) {
+    let rows = snapshot_active_signal_throttles();
+    if rows.is_empty() {
+        return;
+    }
+
+    let symbols: BTreeSet<&str> = rows.iter().map(|row| row.symbol.as_str()).collect();
+    let symbol_count = symbols.len();
+    let symbol_list = symbols.iter().copied().collect::<Vec<_>>().join(",");
+
+    info!(
+        "SignalThrottle: active_blocks={} active_symbols={} [{}]",
+        rows.len(),
+        symbol_count,
+        symbol_list
+    );
+
+    let detail_limit = max_details.max(1);
+    for row in rows.iter().take(detail_limit) {
+        info!(
+            "SignalThrottle: blocked symbol={} dir={} tp={} remain_s={} until_us={} code={}",
+            row.symbol,
+            row.dir,
+            row.tp,
+            row.remaining_us / 1_000_000,
+            row.until_us,
+            row.last_error_code
+        );
+    }
+
+    if rows.len() > detail_limit {
+        info!(
+            "SignalThrottle: ... {} more blocked entries omitted",
+            rows.len() - detail_limit
+        );
+    }
 }
 
 fn register_signal_throttle_at(
@@ -129,6 +201,12 @@ fn check_signal_throttle_at(
 
 fn cleanup_expired(map: &mut HashMap<SignalThrottleKey, SignalThrottleEntry>, now_us: i64) {
     map.retain(|_, entry| entry.ban_until_us > now_us);
+}
+
+fn side_label_from_u8(value: u8) -> &'static str {
+    Side::from_u8(value)
+        .map(|side| side.as_str())
+        .unwrap_or("UNKNOWN")
 }
 
 fn extract_tp_from_key_value_token(token: &str) -> Option<String> {
