@@ -328,7 +328,7 @@
           <div class="metric-card" id="metric-leverage">
             <h3>leverage</h3>
             <div class="value" id="risk-leverage">--</div>
-            <div class="hint">= total_position / (total_equity + um_unrealized_usd)</div>
+            <div class="hint">= total_position / total_equity</div>
           </div>
           <div class="metric-card">
             <h3>max_leverage</h3>
@@ -554,11 +554,8 @@
               ? spotEquityFromEntry
               : null;
 
-          // 统一前端口径：总权益 = total_equity(raw) + UM 未实现盈亏
-          const totalEquity =
-            totalEquityRaw !== null && umUnrealized !== null
-              ? totalEquityRaw + umUnrealized
-              : totalEquityRaw;
+          // 后端 risk.total_equity 口径已是 eq（若有合约则已包含 UPL），前端不再重复加一次 UPL。
+          const totalEquity = totalEquityRaw;
 
           const totalEquityFromSpotUm =
             spotEquity !== null && umUnrealized !== null
@@ -598,13 +595,13 @@
           const rows = [
             ["total_equity(raw)", totalEquityRaw, fmtUsd],
             ["um_unrealized_usd", umUnrealized, fmtUsd],
-            ["total_equity(eq=raw+um)", totalEquity, fmtUsd],
+            ["total_equity(eq)", totalEquity, fmtUsd],
             ["total_exposure", e ? e.total_exposure : null, fmtUsd],
             ["total_position", e ? e.total_position : null, fmtUsd],
             ["spot_equity_usd", spotEquity, fmtUsd],
             ["borrowed_usd", e ? e.borrowed_usd : null, fmtUsd],
             ["interest_usd", e ? e.interest_usd : null, fmtUsd],
-            ["total_equity(spot+um)", totalEquityFromSpotUm, fmtUsd],
+            ["total_equity(spot+um, check)", totalEquityFromSpotUm, fmtUsd],
             ["leverage(calc)", leverageCalc, fmtLev],
             ["leverage(raw)", leverageRaw, fmtLev],
             ["max_leverage", e ? e.max_leverage : null, fmtLev],
