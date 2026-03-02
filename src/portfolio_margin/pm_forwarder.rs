@@ -10,6 +10,7 @@
 //! fwd.send_raw(&bytes);
 //! ```
 use anyhow::{anyhow, Result};
+use iceoryx2::config::Config;
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
@@ -66,15 +67,16 @@ impl PmForwarder {
         };
 
         let service_name_obj = ServiceName::new(&service_name)?;
-        let service = match node
-            .service_builder(&service_name_obj)
-            .publish_subscribe::<[u8; PM_MAX_BYTES]>()
-            .max_publishers(1)
-            .max_subscribers(PM_MAX_SUBSCRIBERS)
-            .history_size(PM_HISTORY_SIZE)
-            .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE)
-            .open()
-        {
+        let service_builder = || {
+            node.service_builder(&service_name_obj)
+                .publish_subscribe::<[u8; PM_MAX_BYTES]>()
+                .max_publishers(1)
+                .max_subscribers(PM_MAX_SUBSCRIBERS)
+                .history_size(PM_HISTORY_SIZE)
+                .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE)
+        };
+
+        let service = match service_builder().open() {
             Ok(s) => {
                 info!("复用已存在的 IceOryx service: '{}'", service_name);
                 s
@@ -84,15 +86,7 @@ impl PmForwarder {
                     "打开已有 IceOryx service 失败，尝试 open_or_create: service='{}' err={:?}",
                     service_name, open_err
                 );
-                match node
-                    .service_builder(&service_name_obj)
-                    .publish_subscribe::<[u8; PM_MAX_BYTES]>()
-                    .max_publishers(1)
-                    .max_subscribers(PM_MAX_SUBSCRIBERS)
-                    .history_size(PM_HISTORY_SIZE)
-                    .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE)
-                    .open_or_create()
-                {
+                match service_builder().open_or_create() {
                     Ok(s) => s,
                     Err(create_err) => {
                         let open_text = format!("{:?}", open_err);
@@ -100,21 +94,46 @@ impl PmForwarder {
                         if is_corrupted_service_err(&open_text)
                             || is_corrupted_service_err(&create_text)
                         {
+                            warn!(
+                                "检测到 ServiceInCorruptedState，先尝试 dead-node cleanup 后重试: service='{}'",
+                                service_name
+                            );
+                            let cleanup =
+                                Node::<ipc::Service>::cleanup_dead_nodes(Config::global_config());
+                            warn!(
+                                "dead-node cleanup 完成: cleanups={}, failed_cleanups={}",
+                                cleanup.cleanups, cleanup.failed_cleanups
+                            );
+
+                            match service_builder().open_or_create() {
+                                Ok(s) => {
+                                    info!(
+                                        "dead-node cleanup 后恢复成功，已创建/打开 IceOryx service: '{}'",
+                                        service_name
+                                    );
+                                    s
+                                }
+                                Err(retry_err) => {
+                                    return Err(anyhow!(
+                                        "创建/打开 IceOryx service 失败: service='{}', open_err={:?}, create_err={:?}, retry_err={:?}; \
+检测到 ServiceInCorruptedState，已执行 dead-node cleanup 但仍失败。\
+请先停止该 service 的相关进程（仅 account_monitor 与其消费者）后重试。\
+若仍失败，再在维护窗口执行 scripts/cleanup_iceoryx.sh 并重启 iox-roudi。",
+                                        service_name,
+                                        open_err,
+                                        create_err,
+                                        retry_err
+                                    ));
+                                }
+                            }
+                        } else {
                             return Err(anyhow!(
-                                "创建/打开 IceOryx service 失败: service='{}', open_err={:?}, create_err={:?}; \
-检测到 ServiceInCorruptedState，通常是共享内存残留或 roUdi 异常退出导致。\
-请先停止相关进程，执行 scripts/cleanup_iceoryx.sh，重启 iox-roudi 后再拉起 account_monitor。",
+                                "创建/打开 IceOryx service 失败: service='{}', open_err={:?}, create_err={:?}",
                                 service_name,
                                 open_err,
                                 create_err
                             ));
                         }
-                        return Err(anyhow!(
-                            "创建/打开 IceOryx service 失败: service='{}', open_err={:?}, create_err={:?}",
-                            service_name,
-                            open_err,
-                            create_err
-                        ));
                     }
                 }
             }

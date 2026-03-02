@@ -148,6 +148,10 @@ path = "src/bin/demo_bridge_pub.rs"
 name = "demo_bridge_sub"
 path = "src/bin/demo_bridge_sub.rs"
 
+[[bin]]
+name = "iceoryx_dead_nodes_cleanup"
+path = "src/bin/iceoryx_dead_nodes_cleanup.rs"
+
 [dependencies]
 local-ip-address = "0.6"
 serde_yaml = "0.9"
