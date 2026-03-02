@@ -205,6 +205,8 @@ impl HedgeArbStrategy {
             -4007 => Some("STOP_PRICE_GREATER_THAN_MAX_PRICE/触发价大于最大值"),
             -4008 => Some("TICK_SIZE_LESS_THAN_ZERO/价格精度小于0"),
             -4009 => Some("MAX_PRICE_LESS_THAN_MIN_PRICE/最大价格小于最小价格"),
+            // Binance PAPI 资产抵押上限：短期重试通常无效，转入 residual 等后续流程处理。
+            51169 => Some("PLEDGED_COLLATERAL_LIMIT_REACHED/抵押上限已达"),
             _ => None,
         }
     }

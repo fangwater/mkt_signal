@@ -12,6 +12,7 @@ pub fn describe_trade_error_code(code: i32) -> Option<&'static str> {
         -2018 => Some("Balance insufficient"),
         -2019 => Some("Margin insufficient"),
         -2020 => Some("Unable to fill"),
+        51169 => Some("Token pledged collateral limit reached"),
         -4060 => Some("Invalid position side"),
         -4061 => Some("Position side not match"),
         -5022 => Some("Post Only rejected"),

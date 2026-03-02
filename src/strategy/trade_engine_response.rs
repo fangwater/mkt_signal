@@ -110,8 +110,11 @@ pub trait TradeEngineResponse {
 
     /// OKX: insufficient margin / loanable assets.
     fn is_insufficient_margin(&self) -> bool {
-        matches!(self.exchange_enum(), Some(Exchange::Okex))
-            && matches!(self.error_code(), 51008 | 51061)
+        match self.exchange_enum() {
+            Some(Exchange::Binance) => matches!(self.error_code(), -2018 | -2019 | 51169),
+            Some(Exchange::Okex) => matches!(self.error_code(), 51008 | 51061),
+            _ => false,
+        }
     }
 
     /// Cancel rejected / cancel failed because order is already terminal.
@@ -210,6 +213,18 @@ mod tests {
         let resp = TradeEngineResponseMessage::new(200, 1, okx_ex, 123, 51416);
         assert!(resp.is_cancel_rejected());
         assert!(resp.is_cancel_not_cancellable());
+    }
+
+    #[test]
+    fn detects_binance_insufficient_margin_like_codes() {
+        let binance_ex = crate::common::exchange::Exchange::Binance as u32;
+        let balance_insufficient = TradeEngineResponseMessage::new(400, 1, binance_ex, 123, -2018);
+        let margin_insufficient = TradeEngineResponseMessage::new(400, 1, binance_ex, 123, -2019);
+        let collateral_cap = TradeEngineResponseMessage::new(400, 1, binance_ex, 123, 51169);
+
+        assert!(balance_insufficient.is_insufficient_margin());
+        assert!(margin_insufficient.is_insufficient_margin());
+        assert!(collateral_cap.is_insufficient_margin());
     }
 
     #[test]

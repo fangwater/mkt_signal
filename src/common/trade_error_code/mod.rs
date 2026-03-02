@@ -40,6 +40,10 @@ mod tests {
             Some("Post Only rejected")
         );
         assert_eq!(
+            describe_trade_error_code(Exchange::Binance, 51169),
+            Some("Token pledged collateral limit reached")
+        );
+        assert_eq!(
             describe_trade_error_code(Exchange::Okex, 60013),
             Some("Invalid args")
         );

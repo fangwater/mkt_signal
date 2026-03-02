@@ -9,7 +9,7 @@
 //! let mut fwd = PmForwarder::new("binance")?;
 //! fwd.send_raw(&bytes);
 //! ```
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
@@ -28,6 +28,10 @@ pub struct PmForwarder {
     sent: u64,
     dropped: u64,
     max_seen: usize,
+}
+
+fn is_corrupted_service_err(err_text: &str) -> bool {
+    err_text.contains("ServiceInCorruptedState")
 }
 
 impl PmForwarder {
@@ -61,14 +65,60 @@ impl PmForwarder {
             }
         };
 
-        let service = node
-            .service_builder(&ServiceName::new(&service_name)?)
+        let service_name_obj = ServiceName::new(&service_name)?;
+        let service = match node
+            .service_builder(&service_name_obj)
             .publish_subscribe::<[u8; PM_MAX_BYTES]>()
             .max_publishers(1)
             .max_subscribers(PM_MAX_SUBSCRIBERS)
             .history_size(PM_HISTORY_SIZE)
             .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE)
-            .open_or_create()?;
+            .open()
+        {
+            Ok(s) => {
+                info!("复用已存在的 IceOryx service: '{}'", service_name);
+                s
+            }
+            Err(open_err) => {
+                warn!(
+                    "打开已有 IceOryx service 失败，尝试 open_or_create: service='{}' err={:?}",
+                    service_name, open_err
+                );
+                match node
+                    .service_builder(&service_name_obj)
+                    .publish_subscribe::<[u8; PM_MAX_BYTES]>()
+                    .max_publishers(1)
+                    .max_subscribers(PM_MAX_SUBSCRIBERS)
+                    .history_size(PM_HISTORY_SIZE)
+                    .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE)
+                    .open_or_create()
+                {
+                    Ok(s) => s,
+                    Err(create_err) => {
+                        let open_text = format!("{:?}", open_err);
+                        let create_text = format!("{:?}", create_err);
+                        if is_corrupted_service_err(&open_text)
+                            || is_corrupted_service_err(&create_text)
+                        {
+                            return Err(anyhow!(
+                                "创建/打开 IceOryx service 失败: service='{}', open_err={:?}, create_err={:?}; \
+检测到 ServiceInCorruptedState，通常是共享内存残留或 roUdi 异常退出导致。\
+请先停止相关进程，执行 scripts/cleanup_iceoryx.sh，重启 iox-roudi 后再拉起 account_monitor。",
+                                service_name,
+                                open_err,
+                                create_err
+                            ));
+                        }
+                        return Err(anyhow!(
+                            "创建/打开 IceOryx service 失败: service='{}', open_err={:?}, create_err={:?}",
+                            service_name,
+                            open_err,
+                            create_err
+                        ));
+                    }
+                }
+            }
+        };
 
         let publisher = service.publisher_builder().create()?;
         info!("PM forwarder publisher 创建成功");
