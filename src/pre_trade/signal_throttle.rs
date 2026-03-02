@@ -6,7 +6,8 @@ use parking_lot::Mutex;
 use std::collections::{BTreeSet, HashMap};
 
 pub const SIGNAL_THROTTLE_TTL_US: i64 = 30 * 60 * 1_000_000;
-pub const SIGNAL_THROTTLE_ERROR_CODE: i32 = 51169;
+pub const SIGNAL_THROTTLE_ERROR_CODE_UM_COLLATERAL_LIMIT: i32 = 51169;
+pub const SIGNAL_THROTTLE_ERROR_CODE_MARGIN_INSUFFICIENT: i32 = -2019;
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 struct SignalThrottleKey {
@@ -54,7 +55,11 @@ impl SignalThrottleKey {
 }
 
 pub fn is_throttle_error_code(error_code: i32) -> bool {
-    error_code == SIGNAL_THROTTLE_ERROR_CODE
+    matches!(
+        error_code,
+        SIGNAL_THROTTLE_ERROR_CODE_UM_COLLATERAL_LIMIT
+            | SIGNAL_THROTTLE_ERROR_CODE_MARGIN_INSUFFICIENT
+    )
 }
 
 pub fn register_signal_throttle(symbol: &str, dir: Side, from_key: &str, error_code: i32) -> bool {
@@ -261,9 +266,10 @@ mod tests {
     #[test]
     fn detects_throttle_error_code() {
         assert!(is_throttle_error_code(51169));
+        assert!(is_throttle_error_code(-2019));
         assert!(!is_throttle_error_code(51168));
         assert!(!is_throttle_error_code(516001));
-        assert!(!is_throttle_error_code(-2019));
+        assert!(!is_throttle_error_code(-2018));
     }
 
     #[test]
