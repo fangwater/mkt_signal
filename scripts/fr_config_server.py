@@ -570,7 +570,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       try {
         const data = await fetchJson(`${apiUrl('risk-params')}?${queryParams()}`);
         buildParamRows('risk-table', BOOTSTRAP.defaults.risk_params || {}, BOOTSTRAP.comments.risk_params || {}, BOOTSTRAP.order.risk || [], data.values || {});
-        setStatus('risk-status', '读取完成');
+        setStatus('risk-status', `读取完成: ${data.key || '-'}`);
       } catch (err) {
         setStatus('risk-status', `读取失败: ${err}`, false);
       }
@@ -585,12 +585,13 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           hedge_venue: hedgeVenueInput.value.trim(),
           values: collectParamValues('risk-table'),
         };
-        await fetchJson(apiUrl('risk-params'), {
+        const data = await fetchJson(apiUrl('risk-params'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
-        setStatus('risk-status', '保存成功');
+        setStatus('risk-status', `保存成功: ${data.key || '-'} (fields=${data.count || 0})`);
+        await loadRiskParams();
       } catch (err) {
         setStatus('risk-status', `保存失败: ${err}`, false);
       }
@@ -808,6 +809,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       openVenueInput.value = '';
       hedgeVenueInput.value = '';
       applyExchangeDefaults();
+      reloadAll();
     });
     openVenueInput.addEventListener('input', refreshKeySuffix);
     hedgeVenueInput.addEventListener('input', refreshKeySuffix);
@@ -1239,11 +1241,15 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/risk-params":
             try:
-                _, open_venue, hedge_venue, _ = self._resolve_request_context(params)
+                exchange, open_venue, hedge_venue, _ = self._resolve_request_context(params)
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
             key = build_risk_params_key(open_venue, hedge_venue)
+            print(
+                f"[risk-params][GET] exchange={exchange} open={open_venue} hedge={hedge_venue} key={key}"
+            )
+            sys.stdout.flush()
             values = read_hash(self.server.context.redis_client, key)
             if not values:
                 self._send_error(404, f"risk params not found: {key}")
@@ -1421,6 +1427,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
             key = build_risk_params_key(open_v, hedge_v)
             written = write_hash(self.server.context.redis_client, key, values)
+            print(
+                f"[risk-params][POST] exchange={exchange} open={open_v} hedge={hedge_v} "
+                f"key={key} fields={len(values)}"
+            )
+            sys.stdout.flush()
             self._send_json(200, {"key": key, "count": written})
             return
 
