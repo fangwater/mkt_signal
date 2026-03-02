@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check balance APIs for Binance and Gate.
+"""Check balance APIs for Binance, Gate and OKX.
 
 默认行为：
   - Binance:
@@ -9,11 +9,15 @@
   - Gate:
     1) 当前仅支持统一账户（UNIFIED）；
     2) 查询 /api/v4/unified/accounts。
+  - OKX:
+    1) 查询账户维度余额快照；
+    2) 走 /api/v5/account/balance（读取 totalEq 与 details）。
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import hmac
 import json
@@ -22,6 +26,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -106,15 +111,70 @@ def signed_get_gate(
         return False, 0, "", f"URLError: {exc.reason}", signed_path
 
 
+def utc_timestamp_iso_ms() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def sign_okx(timestamp: str, method: str, signed_path: str, body: str, secret: str) -> str:
+    payload = f"{timestamp}{method.upper()}{signed_path}{body}"
+    digest = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
+    return base64.b64encode(digest).decode("utf-8")
+
+
+def signed_get_okx(
+    base_url: str,
+    path: str,
+    params: Dict[str, Any],
+    api_key: str,
+    api_secret: str,
+    passphrase: str,
+    timeout: int,
+    simulated: bool,
+) -> Tuple[bool, int, str, Optional[str], str]:
+    query = urllib.parse.urlencode(sorted((k, str(v)) for k, v in params.items()), safe="-_.~")
+    signed_path = path if not query else f"{path}?{query}"
+    timestamp = utc_timestamp_iso_ms()
+    signature = sign_okx(timestamp, "GET", signed_path, "", api_secret)
+
+    url = f"{base_url.rstrip('/')}{signed_path}"
+    headers = {
+        "OK-ACCESS-KEY": api_key,
+        "OK-ACCESS-SIGN": signature,
+        "OK-ACCESS-TIMESTAMP": timestamp,
+        "OK-ACCESS-PASSPHRASE": passphrase,
+        "Content-Type": "application/json",
+    }
+    if simulated:
+        headers["x-simulated-trading"] = "1"
+
+    req = urllib.request.Request(url, method="GET", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            return True, resp.getcode(), body, None, signed_path
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        return False, exc.code, body, f"HTTPError: {exc.code} {exc.reason}", signed_path
+    except urllib.error.URLError as exc:
+        return False, 0, "", f"URLError: {exc.reason}", signed_path
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def parse_args() -> argparse.Namespace:
     default_exchange = os.environ.get("CHECK_BALANCE_EXCHANGE", "binance").strip().lower()
-    if default_exchange not in {"binance", "gate"}:
+    if default_exchange not in {"binance", "gate", "okex"}:
         default_exchange = "binance"
 
-    parser = argparse.ArgumentParser(description="检查 Binance / Gate 余额")
+    parser = argparse.ArgumentParser(description="检查 Binance / Gate / OKX 余额")
     parser.add_argument(
         "--exchange",
-        choices=["binance", "gate"],
+        choices=["binance", "gate", "okex"],
         default=default_exchange,
         help="交易所（默认 binance）",
     )
@@ -122,7 +182,7 @@ def parse_args() -> argparse.Namespace:
         "--mode",
         choices=["UNIFIED", "STANDARD", "AUTO"],
         default=None,
-        help="账户模式；默认 binance=AUTO、gate=UNIFIED。Gate 仅接受 UNIFIED",
+        help="账户模式；默认 binance=AUTO、gate=UNIFIED、okex=UNIFIED。Gate/OKX 不支持 STANDARD",
     )
     parser.add_argument(
         "--papi-url",
@@ -143,6 +203,17 @@ def parse_args() -> argparse.Namespace:
         "--gate-prefix",
         default=os.environ.get("GATE_API_PREFIX", "/api/v4"),
         help="Gate API 前缀路径",
+    )
+    parser.add_argument(
+        "--okx-url",
+        default=os.environ.get("OKX_BASE_URL", "https://www.okx.com"),
+        help="OKX REST 基础地址",
+    )
+    parser.add_argument(
+        "--okx-simulated",
+        action="store_true",
+        default=env_flag("OKX_SIMULATED_TRADING", False),
+        help="OKX 模拟盘（请求头 x-simulated-trading: 1）",
     )
     parser.add_argument(
         "--timeout",
@@ -419,6 +490,77 @@ def print_gate_unified_view(payload: Any, asset: str) -> None:
         print("无法识别 Gate 返回结构，请直接查看 Raw response。")
 
 
+def print_okx_account_balance_view(payload: Any, asset: str) -> None:
+    target = asset.upper()
+    if not isinstance(payload, dict):
+        print("无法识别 OKX 返回结构，请直接查看 Raw response。")
+        return
+
+    data = payload.get("data")
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        print("无法识别 OKX 返回结构（缺少 data[0]），请直接查看 Raw response。")
+        return
+
+    account = data[0]
+    details = account.get("details")
+    if not isinstance(details, list):
+        details = []
+
+    print("=== OKX ACCOUNT SUMMARY ===")
+    summary_fields = [
+        ("totalEq", "totalEq"),
+        ("adjEq", "adjEq"),
+        ("imr", "imr"),
+        ("mmr", "mmr"),
+        ("mgnRatio", "mgnRatio"),
+        ("notionalUsd", "notionalUsd"),
+        ("uTime", "uTime"),
+    ]
+    for key, label in summary_fields:
+        value = account.get(key)
+        if value not in (None, ""):
+            print(f"{label}: {value}")
+
+    print("\n=== OKX: assets with non-zero eq/liab ===")
+    printed_any = False
+    for item in details:
+        if not isinstance(item, dict):
+            continue
+        ccy = str(item.get("ccy", "")).upper() or "UNKNOWN"
+        eq = to_float(item.get("eq")) or 0.0
+        cash_bal = to_float(item.get("cashBal")) or 0.0
+        avail_eq = to_float(item.get("availEq")) or 0.0
+        liab = to_float(item.get("liab")) or 0.0
+        cross_liab = to_float(item.get("crossLiab")) or 0.0
+        iso_liab = to_float(item.get("isoLiab")) or 0.0
+        interest = to_float(item.get("interest")) or 0.0
+
+        if any(
+            abs(v) > 1e-12
+            for v in (eq, cash_bal, avail_eq, liab, cross_liab, iso_liab, interest)
+        ):
+            printed_any = True
+            print(
+                f"{ccy}: eq={eq}, cashBal={cash_bal}, availEq={avail_eq}, "
+                f"liab={liab}, crossLiab={cross_liab}, isoLiab={iso_liab}, interest={interest}"
+            )
+            print(json.dumps(item, indent=2, ensure_ascii=False))
+    if not printed_any:
+        print("none")
+
+    print(f"\n=== OKX: {target} balance (full response) ===")
+    found_target = False
+    for item in details:
+        if not isinstance(item, dict):
+            continue
+        ccy = str(item.get("ccy", "")).upper()
+        if ccy == target:
+            found_target = True
+            print(json.dumps(item, indent=2, ensure_ascii=False))
+    if not found_target:
+        print(f"{target} not found")
+
+
 def run_binance(args: argparse.Namespace) -> None:
     api_key = os.environ.get("BINANCE_API_KEY", "").strip()
     api_secret = os.environ.get("BINANCE_API_SECRET", "").strip()
@@ -523,10 +665,64 @@ def run_gate(args: argparse.Namespace) -> None:
     print_gate_unified_view(payload, args.asset)
 
 
+def run_okex(args: argparse.Namespace) -> None:
+    api_key = os.environ.get("OKX_API_KEY", "").strip()
+    api_secret = os.environ.get("OKX_API_SECRET", "").strip()
+    passphrase = os.environ.get("OKX_PASSPHRASE", "").strip()
+    if not api_key or not api_secret or not passphrase:
+        print("ERROR: set OKX_API_KEY / OKX_API_SECRET / OKX_PASSPHRASE")
+        return
+
+    mode_arg = normalize_mode(args.mode or "UNIFIED")
+    if mode_arg == "STANDARD":
+        print("ERROR: okex does not support --mode STANDARD")
+        return
+    mode_source = "--mode" if args.mode else "default(UNIFIED)"
+
+    success, status, body, error, signed_path = signed_get_okx(
+        base_url=args.okx_url,
+        path="/api/v5/account/balance",
+        params={},
+        api_key=api_key,
+        api_secret=api_secret,
+        passphrase=passphrase,
+        timeout=args.timeout,
+        simulated=args.okx_simulated,
+    )
+
+    status_text = status if status else "N/A"
+    print("Exchange: okex")
+    print(f"Mode: UNIFIED ({mode_source})")
+    print(f"Endpoint: {args.okx_url.rstrip('/')}{signed_path}")
+    print(f"Request success: {success} (status={status_text})")
+    if error:
+        print(f"Request error: {error}")
+    print("Raw response:")
+    print(body)
+
+    payload = parse_json_any(body)
+    if payload is None:
+        return
+    if not isinstance(payload, dict):
+        print("ERROR: invalid OKX response object")
+        return
+
+    code = str(payload.get("code", ""))
+    msg = str(payload.get("msg", ""))
+    api_success = success and (200 <= status < 300) and code == "0"
+    print(f"API success: {api_success} (code={code or 'N/A'}, msg={msg})")
+    if not api_success:
+        return
+
+    print_okx_account_balance_view(payload, args.asset)
+
+
 def main() -> None:
     args = parse_args()
     if args.exchange == "gate":
         run_gate(args)
+    elif args.exchange == "okex":
+        run_okex(args)
     else:
         run_binance(args)
 
