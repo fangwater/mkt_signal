@@ -89,6 +89,14 @@ pub struct StrategyParams {
     /// 信号冷却时间（秒）
     #[serde(default = "default_signal_cooldown")]
     pub signal_cooldown: u64,
+
+    /// 收益率模型输出通道（"-" 表示禁用）
+    #[serde(default = "default_return_model_service")]
+    pub return_model_service: String,
+
+    /// 环境模型输出通道（"-" 表示禁用）
+    #[serde(default = "default_environment_model_service")]
+    pub environment_model_service: String,
 }
 
 // 默认值函数
@@ -119,6 +127,12 @@ fn default_max_hedge_price_pct_change() -> f64 {
 fn default_signal_cooldown() -> u64 {
     5
 }
+fn default_return_model_service() -> String {
+    "return_model".to_string()
+}
+fn default_environment_model_service() -> String {
+    "environment_model".to_string()
+}
 
 impl Default for StrategyParams {
     fn default() -> Self {
@@ -132,6 +146,8 @@ impl Default for StrategyParams {
             hedge_aggressive_seq_threshold: default_hedge_aggressive_seq_threshold(),
             max_hedge_price_pct_change: default_max_hedge_price_pct_change(),
             signal_cooldown: default_signal_cooldown(),
+            return_model_service: default_return_model_service(),
+            environment_model_service: default_environment_model_service(),
         }
     }
 }
@@ -218,6 +234,40 @@ impl StrategyParams {
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or_else(default_signal_cooldown);
 
+        let return_model_service = match hash_map.get("return_model_service") {
+            Some(v) => {
+                let trimmed = v.trim();
+                if trimmed.is_empty() {
+                    panic!(
+                        "Redis hash '{}' return_model_service 为空，需显式配置通道名或 '-'",
+                        redis_key
+                    );
+                }
+                trimmed.to_string()
+            }
+            None => panic!(
+                "Redis hash '{}' 缺少 return_model_service，需显式配置通道名或 '-'",
+                redis_key
+            ),
+        };
+
+        let environment_model_service = match hash_map.get("environment_model_service") {
+            Some(v) => {
+                let trimmed = v.trim();
+                if trimmed.is_empty() {
+                    panic!(
+                        "Redis hash '{}' environment_model_service 为空，需显式配置通道名或 '-'",
+                        redis_key
+                    );
+                }
+                trimmed.to_string()
+            }
+            None => panic!(
+                "Redis hash '{}' 缺少 environment_model_service，需显式配置通道名或 '-'",
+                redis_key
+            ),
+        };
+
         Ok(Self {
             mode,
             order_amount,
@@ -228,6 +278,8 @@ impl StrategyParams {
             hedge_aggressive_seq_threshold,
             max_hedge_price_pct_change,
             signal_cooldown,
+            return_model_service,
+            environment_model_service,
         })
     }
 
@@ -254,6 +306,18 @@ impl StrategyParams {
         }
     }
 
+    fn parse_model_output_services(&self) -> Vec<String> {
+        let mut services = Vec::new();
+        for raw in [&self.return_model_service, &self.environment_model_service] {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() || trimmed == "-" {
+                continue;
+            }
+            services.push(trimmed.to_string());
+        }
+        services
+    }
+
     /// 应用参数到所有单例
     pub(crate) fn apply(&self) {
         // 1. 更新 decision（FR or xarb）
@@ -276,6 +340,7 @@ impl StrategyParams {
                 decision.update_hedge_aggressive_seq_threshold(self.hedge_aggressive_seq_threshold);
                 decision.update_max_hedge_price_pct_change(self.max_hedge_price_pct_change);
                 decision.update_signal_cooldown(self.signal_cooldown);
+                decision.update_model_output_services(self.parse_model_output_services());
             })
             .is_some();
 
@@ -288,8 +353,12 @@ impl StrategyParams {
         }
 
         info!(
-            "✅ 策略参数已更新: mode={}, amount={:.2}, cooldown={}s",
-            self.mode, self.order_amount, self.signal_cooldown
+            "✅ 策略参数已更新: mode={}, amount={:.2}, cooldown={}s, return_model_service={}, environment_model_service={}",
+            self.mode,
+            self.order_amount,
+            self.signal_cooldown,
+            self.return_model_service,
+            self.environment_model_service
         );
     }
 }

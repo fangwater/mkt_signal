@@ -16,6 +16,7 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
+use std::time::Instant;
 
 use super::common::{compute_spread_rate, Quote, ThresholdKey, VenuePair};
 use super::mkt_channel::MktChannel;
@@ -25,11 +26,12 @@ use crate::common::bbo::Bbo;
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
-use crate::common::mkt_msg::FactorValueMsg;
+use crate::common::mkt_msg::{FactorValueMsg, ModelMsg, MODEL_STATUS_OK};
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
 use crate::factor_pub::factor_index::factor_name_to_index;
+use crate::factor_pub::model_pub::publisher::MODEL_PAYLOAD_MAX_BYTES;
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{
@@ -53,6 +55,10 @@ const TARGET_FACTOR_KEY_PREFIX: &str = TARGET_FACTOR_NAME;
 const FACTOR_VALUE_PAYLOAD_MAX_BYTES: usize = 256;
 const FACTOR_VALUE_HISTORY_SIZE: usize = 128;
 const FACTOR_VALUE_SUBSCRIBER_BUFFER_SIZE: usize = 1024;
+const MODEL_OUTPUT_HISTORY_SIZE: usize = 128;
+const MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE: usize = 256;
+const MODEL_OUTPUT_POLL_MAX_PER_CHANNEL: usize = 256;
+const MODEL_OUTPUT_STATS_LOG_INTERVAL_SECS: u64 = 60;
 
 #[derive(Debug, Deserialize)]
 struct PnluFactorPayload {
@@ -83,6 +89,11 @@ struct FactorValueSnapshot {
     ready: bool,
     timestamp_ms: i64,
     factor_index: u16,
+}
+
+struct ModelOutputSubscriberEntry {
+    service_name: String,
+    subscriber: Subscriber<ipc::Service, [u8; MODEL_PAYLOAD_MAX_BYTES], ()>,
 }
 
 impl PnluCheckResult {
@@ -234,8 +245,14 @@ pub struct XarbDecision {
     factor_value_sub: Subscriber<ipc::Service, [u8; FACTOR_VALUE_PAYLOAD_MAX_BYTES], ()>,
     target_factor_index: u16,
     factor_value_cache: HashMap<(u16, String), FactorValueSnapshot>,
+    model_output_subscribers: Vec<ModelOutputSubscriberEntry>,
+    model_output_services: Vec<String>,
+    model_output_latest_scores: HashMap<(String, String), f64>,
+    model_output_msg_count: u64,
+    model_output_parse_err_count: u64,
+    model_output_last_log: Instant,
     channel_name: String,
-    _node: Node<ipc::Service>,
+    node: Node<ipc::Service>,
 
     price_offsets: Vec<f64>,
 
@@ -305,6 +322,70 @@ impl XarbDecision {
                     break;
                 }
             }
+        }
+    }
+
+    fn poll_model_output_updates(&mut self) {
+        if self.model_output_subscribers.is_empty() {
+            return;
+        }
+
+        for entry in &mut self.model_output_subscribers {
+            let mut polled = 0usize;
+            while polled < MODEL_OUTPUT_POLL_MAX_PER_CHANNEL {
+                match entry.subscriber.receive() {
+                    Ok(Some(sample)) => {
+                        polled += 1;
+                        let payload = sample.payload();
+                        if payload.iter().all(|&b| b == 0) {
+                            continue;
+                        }
+
+                        let msg = match ModelMsg::from_bytes(payload) {
+                            Ok(msg) => msg,
+                            Err(err) => {
+                                self.model_output_parse_err_count =
+                                    self.model_output_parse_err_count.saturating_add(1);
+                                warn!(
+                                    "XarbDecision: parse model_output payload failed service={} err={}",
+                                    entry.service_name, err
+                                );
+                                continue;
+                            }
+                        };
+
+                        if msg.status != MODEL_STATUS_OK {
+                            continue;
+                        }
+
+                        let symbol_key = normalize_symbol_for_venue(&msg.symbol, self.venues.1);
+                        let cache_key = (entry.service_name.clone(), symbol_key);
+                        self.model_output_latest_scores.insert(cache_key, msg.score);
+                        self.model_output_msg_count = self.model_output_msg_count.saturating_add(1);
+                    }
+                    Ok(None) => break,
+                    Err(err) => {
+                        warn!(
+                            "XarbDecision: model_output subscriber receive error service={} err={}",
+                            entry.service_name, err
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+
+        if self.model_output_last_log.elapsed().as_secs() >= MODEL_OUTPUT_STATS_LOG_INTERVAL_SECS {
+            info!(
+                "XarbDecision: model_output stats services={} latest_scores={} recv={} parse_err={}",
+                self.model_output_services.len(),
+                self.model_output_latest_scores.len(),
+                self.model_output_msg_count,
+                self.model_output_parse_err_count
+            );
+            self.model_output_last_log = Instant::now();
+            self.model_output_msg_count = 0;
+            self.model_output_parse_err_count = 0;
         }
     }
 
@@ -450,8 +531,14 @@ impl XarbDecision {
             factor_value_sub,
             target_factor_index,
             factor_value_cache: HashMap::new(),
+            model_output_subscribers: Vec::new(),
+            model_output_services: Vec::new(),
+            model_output_latest_scores: HashMap::new(),
+            model_output_msg_count: 0,
+            model_output_parse_err_count: 0,
+            model_output_last_log: Instant::now(),
             channel_name: DEFAULT_SIGNAL_CHANNEL.to_string(),
-            _node: node,
+            node,
             price_offsets,
             open_min_qty_table,
             hedge_min_qty_table,
@@ -552,6 +639,95 @@ impl XarbDecision {
             .context("failed to create factor subscriber")
     }
 
+    fn normalize_model_output_services(services: Vec<String>) -> Vec<String> {
+        let mut normalized = Vec::new();
+        for raw in services {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let service = trimmed.to_string();
+            if !normalized.iter().any(|s| s == &service) {
+                normalized.push(service);
+            }
+        }
+        normalized
+    }
+
+    fn create_model_output_subscriber(
+        node: &Node<ipc::Service>,
+        service_name: &str,
+    ) -> Result<Subscriber<ipc::Service, [u8; MODEL_PAYLOAD_MAX_BYTES], ()>> {
+        let service = node
+            .service_builder(&ServiceName::new(service_name)?)
+            .publish_subscribe::<[u8; MODEL_PAYLOAD_MAX_BYTES]>()
+            .max_publishers(1)
+            .max_subscribers(10)
+            .history_size(MODEL_OUTPUT_HISTORY_SIZE)
+            .subscriber_max_buffer_size(MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE)
+            .open_or_create()?;
+
+        service
+            .subscriber_builder()
+            .buffer_size(MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE)
+            .create()
+            .with_context(|| format!("failed to create model_output subscriber: {}", service_name))
+    }
+
+    pub fn update_model_output_services(&mut self, services: Vec<String>) {
+        let normalized = Self::normalize_model_output_services(services);
+        if normalized == self.model_output_services {
+            return;
+        }
+
+        if normalized.is_empty() {
+            self.model_output_services.clear();
+            self.model_output_subscribers.clear();
+            self.model_output_latest_scores.clear();
+            info!("XarbDecision: model_output subscriptions cleared");
+            return;
+        }
+
+        let mut subscribers = Vec::new();
+        for service_name in &normalized {
+            match Self::create_model_output_subscriber(&self.node, service_name) {
+                Ok(subscriber) => {
+                    subscribers.push(ModelOutputSubscriberEntry {
+                        service_name: service_name.clone(),
+                        subscriber,
+                    });
+                }
+                Err(err) => {
+                    warn!(
+                        "XarbDecision: subscribe model_output failed service={} err={:#}",
+                        service_name, err
+                    );
+                }
+            }
+        }
+
+        if subscribers.is_empty() {
+            warn!(
+                "XarbDecision: no model_output subscriber created, keep previous subscriptions count={}",
+                self.model_output_subscribers.len()
+            );
+            return;
+        }
+
+        self.model_output_services = normalized;
+        self.model_output_subscribers = subscribers;
+        self.model_output_latest_scores.clear();
+        self.model_output_msg_count = 0;
+        self.model_output_parse_err_count = 0;
+        self.model_output_last_log = Instant::now();
+        info!(
+            "XarbDecision: model_output subscriptions updated count={} services={:?} buffer_size={}",
+            self.model_output_subscribers.len(),
+            self.model_output_services,
+            MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE
+        );
+    }
+
     pub fn make_spread_only_decision(
         &mut self,
         open_symbol: &str,
@@ -559,6 +735,7 @@ impl XarbDecision {
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
     ) -> Result<Option<SignalType>> {
+        self.poll_model_output_updates();
         let spread_factor = SpreadFactor::instance();
         let now = get_timestamp_us();
         let symbol_list = SymbolList::instance();
@@ -1838,6 +2015,7 @@ impl XarbDecision {
                         return false;
                     }
                     let mut decision = decision_ref.unwrap().borrow_mut();
+                    decision.poll_model_output_updates();
                     match decision.backward_sub.receive_msg() {
                         Ok(Some(data)) => {
                             decision.handle_backward_query(data);
