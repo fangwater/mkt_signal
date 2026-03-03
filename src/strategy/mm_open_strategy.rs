@@ -2,7 +2,6 @@ use crate::common::time_util::get_timestamp_us;
 use crate::common::trade_error_code::describe_trade_error_code;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
-use crate::pre_trade::signal_throttle::register_signal_throttle;
 use crate::pre_trade::{PersistChannel, QueryEngHub, TradeEngHub};
 use crate::signal::cancel_signal::MmCancelCtx;
 use crate::signal::common::{ExecutionType, OrderStatus, SignalBytes, TimeInForce, TradingVenue};
@@ -1558,14 +1557,6 @@ impl Strategy for MarketMakerOpenStrategy {
                     code_desc,
                     client_order_id
                 );
-                if let Some(side) = self.open_side {
-                    let _ = register_signal_throttle(
-                        &self.open_symbol,
-                        side,
-                        &self.open_from_key,
-                        response.error_code(),
-                    );
-                }
                 self.alive_flag = false;
             }
             TradeRequestKind::Cancel => {

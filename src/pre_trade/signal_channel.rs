@@ -253,10 +253,9 @@ fn handle_trade_signal(signal: TradeSignal) {
                 let from_key = String::from_utf8_lossy(&open_ctx.from_key);
                 if let Some(hit) = check_signal_throttle(&symbol, side, &from_key) {
                     warn!(
-                        "ArbOpen: throttled by pre_trade block, symbol={} side={} tp={} remain_us={} last_code={} until_us={}, skip strategy construction",
+                        "ArbOpen: throttled by pre_trade block, symbol={} side={} remain_us={} last_code={} until_us={}, skip strategy construction",
                         symbol,
                         side.as_str(),
-                        hit.tp,
                         hit.remaining_us,
                         hit.last_error_code,
                         hit.until_us
@@ -362,21 +361,6 @@ fn handle_trade_signal(signal: TradeSignal) {
                             configured_hedge_venue,
                             opening_venue,
                             hedging_venue
-                        );
-                        return;
-                    }
-
-                    let from_key = String::from_utf8_lossy(&close_ctx.from_key);
-                    if let Some(hit) = check_signal_throttle(&opening_symbol, close_side, &from_key)
-                    {
-                        warn!(
-                            "ArbClose: throttled by pre_trade block, opening_symbol={} side={} tp={} remain_us={} last_code={} until_us={}, skip strategy construction",
-                            opening_symbol,
-                            close_side.as_str(),
-                            hit.tp,
-                            hit.remaining_us,
-                            hit.last_error_code,
-                            hit.until_us
                         );
                         return;
                     }
@@ -613,21 +597,8 @@ fn handle_trade_signal(signal: TradeSignal) {
                 warn!("MMOpen: empty symbol");
                 return;
             }
-            let Some(side) = open_ctx.get_side() else {
+            if open_ctx.get_side().is_none() {
                 warn!("MMOpen: invalid side {}", open_ctx.side);
-                return;
-            };
-            let from_key = String::from_utf8_lossy(&open_ctx.from_key);
-            if let Some(hit) = check_signal_throttle(&symbol, side, &from_key) {
-                warn!(
-                    "MMOpen: throttled by pre_trade block, symbol={} side={} tp={} remain_us={} last_code={} until_us={}, skip strategy construction",
-                    symbol,
-                    side.as_str(),
-                    hit.tp,
-                    hit.remaining_us,
-                    hit.last_error_code,
-                    hit.until_us
-                );
                 return;
             }
             if let Some(order_type) = OrderType::from_u8(open_ctx.order_type) {

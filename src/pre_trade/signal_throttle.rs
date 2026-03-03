@@ -1,19 +1,19 @@
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::order_manager::Side;
-use log::{info, warn};
+use log::{debug, info, warn};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::collections::{BTreeSet, HashMap};
 
-pub const SIGNAL_THROTTLE_TTL_US: i64 = 30 * 60 * 1_000_000;
+pub const SIGNAL_THROTTLE_TTL_US: i64 = 2 * 60 * 60 * 1_000_000;
 pub const SIGNAL_THROTTLE_ERROR_CODE_UM_COLLATERAL_LIMIT: i32 = 51169;
 pub const SIGNAL_THROTTLE_ERROR_CODE_MARGIN_INSUFFICIENT: i32 = -2019;
+pub const SIGNAL_THROTTLE_ERROR_CODE_OKX_BORROW_UNAVAILABLE: i32 = 51061;
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 struct SignalThrottleKey {
     symbol: String,
     dir: u8,
-    tp: String,
 }
 
 #[derive(Debug, Clone)]
@@ -25,7 +25,6 @@ struct SignalThrottleEntry {
 
 #[derive(Debug, Clone)]
 pub struct SignalThrottleHit {
-    pub tp: String,
     pub remaining_us: i64,
     pub until_us: i64,
     pub last_error_code: i32,
@@ -35,7 +34,6 @@ pub struct SignalThrottleHit {
 pub struct ActiveSignalThrottle {
     pub symbol: String,
     pub dir: String,
-    pub tp: String,
     pub remaining_us: i64,
     pub until_us: i64,
     pub last_error_code: i32,
@@ -45,11 +43,10 @@ static SIGNAL_THROTTLE_MAP: Lazy<Mutex<HashMap<SignalThrottleKey, SignalThrottle
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 impl SignalThrottleKey {
-    fn new(symbol: &str, dir: Side, from_key: &str) -> Self {
+    fn new(symbol: &str, dir: Side) -> Self {
         Self {
             symbol: symbol.trim().to_ascii_uppercase(),
             dir: dir.to_u8(),
-            tp: extract_tp_from_key(from_key),
         }
     }
 }
@@ -59,24 +56,22 @@ pub fn is_throttle_error_code(error_code: i32) -> bool {
         error_code,
         SIGNAL_THROTTLE_ERROR_CODE_UM_COLLATERAL_LIMIT
             | SIGNAL_THROTTLE_ERROR_CODE_MARGIN_INSUFFICIENT
+            | SIGNAL_THROTTLE_ERROR_CODE_OKX_BORROW_UNAVAILABLE
     )
 }
 
-pub fn register_signal_throttle(symbol: &str, dir: Side, from_key: &str, error_code: i32) -> bool {
+pub fn register_signal_throttle(symbol: &str, dir: Side, _from_key: &str, error_code: i32) -> bool {
     let now_us = get_timestamp_us();
-    register_signal_throttle_at(
-        symbol,
-        dir,
-        from_key,
-        error_code,
-        now_us,
-        SIGNAL_THROTTLE_TTL_US,
-    )
+    register_signal_throttle_at(symbol, dir, "", error_code, now_us, SIGNAL_THROTTLE_TTL_US)
 }
 
-pub fn check_signal_throttle(symbol: &str, dir: Side, from_key: &str) -> Option<SignalThrottleHit> {
+pub fn check_signal_throttle(
+    symbol: &str,
+    dir: Side,
+    _from_key: &str,
+) -> Option<SignalThrottleHit> {
     let now_us = get_timestamp_us();
-    check_signal_throttle_at(symbol, dir, from_key, now_us)
+    check_signal_throttle_at(symbol, dir, "", now_us)
 }
 
 pub fn snapshot_active_signal_throttles() -> Vec<ActiveSignalThrottle> {
@@ -89,7 +84,6 @@ pub fn snapshot_active_signal_throttles() -> Vec<ActiveSignalThrottle> {
         rows.push(ActiveSignalThrottle {
             symbol: key.symbol.clone(),
             dir: side_label_from_u8(key.dir).to_string(),
-            tp: key.tp.clone(),
             remaining_us: entry.ban_until_us.saturating_sub(now_us),
             until_us: entry.ban_until_us,
             last_error_code: entry.last_error_code,
@@ -97,9 +91,7 @@ pub fn snapshot_active_signal_throttles() -> Vec<ActiveSignalThrottle> {
     }
     drop(guard);
 
-    rows.sort_by(|a, b| {
-        (&a.symbol, &a.dir, &a.tp, a.until_us).cmp(&(&b.symbol, &b.dir, &b.tp, b.until_us))
-    });
+    rows.sort_by(|a, b| (&a.symbol, &a.dir, a.until_us).cmp(&(&b.symbol, &b.dir, b.until_us)));
     rows
 }
 
@@ -122,11 +114,10 @@ pub fn log_active_signal_throttles(max_details: usize) {
 
     let detail_limit = max_details.max(1);
     for row in rows.iter().take(detail_limit) {
-        info!(
-            "SignalThrottle: blocked symbol={} dir={} tp={} remain_s={} until_us={} code={}",
+        debug!(
+            "SignalThrottle: blocked symbol={} dir={} remain_s={} until_us={} code={}",
             row.symbol,
             row.dir,
-            row.tp,
             row.remaining_us / 1_000_000,
             row.until_us,
             row.last_error_code
@@ -134,7 +125,7 @@ pub fn log_active_signal_throttles(max_details: usize) {
     }
 
     if rows.len() > detail_limit {
-        info!(
+        debug!(
             "SignalThrottle: ... {} more blocked entries omitted",
             rows.len() - detail_limit
         );
@@ -144,7 +135,7 @@ pub fn log_active_signal_throttles(max_details: usize) {
 fn register_signal_throttle_at(
     symbol: &str,
     dir: Side,
-    from_key: &str,
+    _from_key: &str,
     error_code: i32,
     now_us: i64,
     ttl_us: i64,
@@ -158,8 +149,7 @@ fn register_signal_throttle_at(
     let mut guard = SIGNAL_THROTTLE_MAP.lock();
     cleanup_expired(&mut guard, now_us);
 
-    let key = SignalThrottleKey::new(symbol, dir, from_key);
-    let tp = key.tp.clone();
+    let key = SignalThrottleKey::new(symbol, dir);
     guard
         .entry(key.clone())
         .and_modify(|entry| {
@@ -174,10 +164,9 @@ fn register_signal_throttle_at(
         });
 
     warn!(
-        "SignalThrottle: register block symbol={} dir={} tp={} code={} block_for={}s until_us={}",
+        "SignalThrottle: register block symbol={} dir={} code={} block_for={}s until_us={}",
         key.symbol,
         dir.as_str(),
-        tp,
         error_code,
         ttl_us / 1_000_000,
         ban_until_us
@@ -188,16 +177,14 @@ fn register_signal_throttle_at(
 fn check_signal_throttle_at(
     symbol: &str,
     dir: Side,
-    from_key: &str,
+    _from_key: &str,
     now_us: i64,
 ) -> Option<SignalThrottleHit> {
-    let key = SignalThrottleKey::new(symbol, dir, from_key);
-    let tp = key.tp.clone();
+    let key = SignalThrottleKey::new(symbol, dir);
     let mut guard = SIGNAL_THROTTLE_MAP.lock();
     cleanup_expired(&mut guard, now_us);
     let entry = guard.get(&key)?;
     Some(SignalThrottleHit {
-        tp,
         remaining_us: entry.ban_until_us.saturating_sub(now_us),
         until_us: entry.ban_until_us,
         last_error_code: entry.last_error_code,
@@ -214,47 +201,6 @@ fn side_label_from_u8(value: u8) -> &'static str {
         .unwrap_or("UNKNOWN")
 }
 
-fn extract_tp_from_key_value_token(token: &str) -> Option<String> {
-    let trimmed = token.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    for separator in ['=', ':'] {
-        if let Some((k, v)) = trimmed.split_once(separator) {
-            if k.trim().eq_ignore_ascii_case("tp") {
-                let value = v.trim();
-                if !value.is_empty() {
-                    return Some(value.to_string());
-                }
-            }
-        }
-    }
-    None
-}
-
-fn extract_tp_from_key(from_key: &str) -> String {
-    let trimmed = from_key.trim();
-    if trimmed.is_empty() {
-        return "default".to_string();
-    }
-
-    for token in trimmed.split(|c: char| c == '|' || c == ',' || c == ';' || c.is_whitespace()) {
-        if let Some(tp) = extract_tp_from_key_value_token(token) {
-            return tp;
-        }
-    }
-
-    if let Some(first) = trimmed.split(':').next() {
-        let first = first.trim();
-        if !first.is_empty() {
-            return first.to_string();
-        }
-    }
-
-    trimmed.to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,20 +213,10 @@ mod tests {
     fn detects_throttle_error_code() {
         assert!(is_throttle_error_code(51169));
         assert!(is_throttle_error_code(-2019));
+        assert!(is_throttle_error_code(51061));
         assert!(!is_throttle_error_code(51168));
         assert!(!is_throttle_error_code(516001));
         assert!(!is_throttle_error_code(-2018));
-    }
-
-    #[test]
-    fn extracts_tp_from_key() {
-        assert_eq!(extract_tp_from_key("tp=12345|foo=bar"), "12345");
-        assert_eq!(extract_tp_from_key("x=1,tp:abc"), "abc");
-        assert_eq!(
-            extract_tp_from_key("1722333123000000:0.1:0.2"),
-            "1722333123000000"
-        );
-        assert_eq!(extract_tp_from_key(""), "default");
     }
 
     #[test]
@@ -302,7 +238,6 @@ mod tests {
 
         let hit1 = check_signal_throttle_at("BTCUSDT", Side::Buy, from_key, now_us + 1)
             .expect("throttle must be hit");
-        assert_eq!(hit1.tp, "1722333123000000");
         assert_eq!(hit1.last_error_code, 51169);
 
         let hit2 = check_signal_throttle_at("BTCUSDT", Side::Buy, from_key, now_us + ttl_us - 1);
