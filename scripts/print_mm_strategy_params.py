@@ -85,6 +85,8 @@ PARAM_COMMENTS: Dict[str, str] = {
     "hedge_offset_shift_out_k": "同向成交占优时区间外移系数",
     "hedge_offset_shift_in_k": "反向压力/迫切度下区间内移系数",
     "hedge_aggressive_seq_threshold": "对冲激进阈值(request_seq>=该值时不偏移，但仍为maker限价单)",
+    "return_model_service": "收益率模型输出通道名（'-' 表示禁用）",
+    "environment_model_service": "环境模型输出通道名（'-' 表示禁用）",
     "max_hedge_price_pct_change": "对冲价格最大变动阈值(%)，范围1-99，可为小数，超过则强制 taker",
     "signal_cooldown": "信号冷却时间(秒)",
 }
@@ -109,6 +111,8 @@ PARAM_PRINT_ORDER = [
     "hedge_offset_shift_out_k",
     "hedge_offset_shift_in_k",
     "hedge_aggressive_seq_threshold",
+    "return_model_service",
+    "environment_model_service",
     "max_hedge_price_pct_change",
     "signal_cooldown",
 ]

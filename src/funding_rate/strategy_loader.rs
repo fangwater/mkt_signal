@@ -234,38 +234,77 @@ impl StrategyParams {
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or_else(default_signal_cooldown);
 
+        let allow_missing_model_service = ns == "fr";
         let return_model_service = match hash_map.get("return_model_service") {
             Some(v) => {
                 let trimmed = v.trim();
                 if trimmed.is_empty() {
+                    if allow_missing_model_service {
+                        warn!(
+                            "Redis hash '{}' return_model_service 为空（ns=fr），按 '-' 处理",
+                            redis_key
+                        );
+                        "-".to_string()
+                    } else {
+                        panic!(
+                            "Redis hash '{}' return_model_service 为空，需显式配置通道名或 '-'",
+                            redis_key
+                        );
+                    }
+                } else {
+                    trimmed.to_string()
+                }
+            }
+            None => {
+                if allow_missing_model_service {
+                    warn!(
+                        "Redis hash '{}' 缺少 return_model_service（ns=fr），按 '-' 处理",
+                        redis_key
+                    );
+                    "-".to_string()
+                } else {
                     panic!(
-                        "Redis hash '{}' return_model_service 为空，需显式配置通道名或 '-'",
+                        "Redis hash '{}' 缺少 return_model_service，需显式配置通道名或 '-'",
                         redis_key
                     );
                 }
-                trimmed.to_string()
             }
-            None => panic!(
-                "Redis hash '{}' 缺少 return_model_service，需显式配置通道名或 '-'",
-                redis_key
-            ),
         };
 
         let environment_model_service = match hash_map.get("environment_model_service") {
             Some(v) => {
                 let trimmed = v.trim();
                 if trimmed.is_empty() {
+                    if allow_missing_model_service {
+                        warn!(
+                            "Redis hash '{}' environment_model_service 为空（ns=fr），按 '-' 处理",
+                            redis_key
+                        );
+                        "-".to_string()
+                    } else {
+                        panic!(
+                            "Redis hash '{}' environment_model_service 为空，需显式配置通道名或 '-'",
+                            redis_key
+                        );
+                    }
+                } else {
+                    trimmed.to_string()
+                }
+            }
+            None => {
+                if allow_missing_model_service {
+                    warn!(
+                        "Redis hash '{}' 缺少 environment_model_service（ns=fr），按 '-' 处理",
+                        redis_key
+                    );
+                    "-".to_string()
+                } else {
                     panic!(
-                        "Redis hash '{}' environment_model_service 为空，需显式配置通道名或 '-'",
+                        "Redis hash '{}' 缺少 environment_model_service，需显式配置通道名或 '-'",
                         redis_key
                     );
                 }
-                trimmed.to_string()
             }
-            None => panic!(
-                "Redis hash '{}' 缺少 environment_model_service，需显式配置通道名或 '-'",
-                redis_key
-            ),
         };
 
         Ok(Self {

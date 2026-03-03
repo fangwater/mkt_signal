@@ -101,6 +101,8 @@ STRATEGY_PARAMS = {
     "hedge_timeout": "60",
     "hedge_price_offset": "0.001",
     "hedge_aggressive_seq_threshold": "50",
+    "return_model_service": "-",
+    "environment_model_service": "-",
     "signal_cooldown": "5",
     "max_hedge_price_pct_change": "5"
 }
@@ -113,6 +115,8 @@ PARAM_COMMENTS: Dict[str, str] = {
     "hedge_timeout": "对冲订单超时(秒)",
     "hedge_price_offset": "对冲价格偏移(万分之几)",
     "hedge_aggressive_seq_threshold": "对冲激进阈值(request_seq>=该值时不偏移，但仍为maker限价单)",
+    "return_model_service": "收益率模型输出通道名（'-' 表示禁用）",
+    "environment_model_service": "环境模型输出通道名（'-' 表示禁用）",
     "max_hedge_price_pct_change": "对冲价格最大变动阈值(%)，范围1-99，可为小数，超过则强制 taker",
     "signal_cooldown": "信号冷却时间(秒)",
 }
