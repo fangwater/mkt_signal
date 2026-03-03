@@ -6,6 +6,13 @@ PROC_NAME="persist_admin_server"
 
 BIN_PATH="${BASE_DIR}/persist_admin_server"
 CFG_PATH="${BASE_DIR}/config/persist_auto_exporter.toml"
+ENV_PATH="${BASE_DIR}/config/persist_admin_server.env"
+
+if [[ -f "${ENV_PATH}" ]]; then
+  # shellcheck disable=SC1090
+  source "${ENV_PATH}"
+fi
+
 BIND_ADDR="${PERSIST_ADMIN_BIND:-0.0.0.0:10331}"
 
 if [[ ! -x "${BIN_PATH}" ]]; then

@@ -531,7 +531,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
     }
 
     async function reload() {
-      const targets = await api('/api/v1/targets');
+      const targets = await api('api/v1/targets');
       const tbody = document.getElementById('targets');
       tbody.innerHTML = '';
       for (const t of targets) {
@@ -541,7 +541,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
         tbody.appendChild(tr);
       }
 
-      const exports = await api('/api/v1/exports?limit=20');
+      const exports = await api('api/v1/exports?limit=20');
       document.getElementById('exports').textContent = JSON.stringify(exports, null, 2);
     }
 
@@ -553,23 +553,23 @@ const INDEX_HTML: &str = r#"<!doctype html>
         interval: document.getElementById('interval').value,
         enabled: document.getElementById('enabled').checked,
       };
-      await api('/api/v1/targets', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+      await api('api/v1/targets', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
       await reload();
     }
 
     async function toggleTarget(name, enabled) {
-      await api('/api/v1/targets/' + encodeURIComponent(name), { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled})});
+      await api('api/v1/targets/' + encodeURIComponent(name), { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled})});
       await reload();
     }
 
     async function delTarget(name) {
       if (!confirm('删除 target: ' + name + ' ?')) return;
-      await api('/api/v1/targets/' + encodeURIComponent(name), { method:'DELETE' });
+      await api('api/v1/targets/' + encodeURIComponent(name), { method:'DELETE' });
       await reload();
     }
 
     async function manualExport(name, mode) {
-      await api('/api/v1/targets/' + encodeURIComponent(name) + '/export', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mode})});
+      await api('api/v1/targets/' + encodeURIComponent(name) + '/export', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mode})});
       await reload();
     }
 
