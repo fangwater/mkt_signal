@@ -256,7 +256,6 @@ async fn main() -> Result<()> {
             // 3.2 启动 Binance PM 自动资金归集任务：
             // - pre_trade 重启后立即执行一次；
             // - 每天 UTC+8 12:00 执行一次；
-            // - 默认 2 小时最小间隔防抖，避免高权重接口被高频触发。
             if matches!(open_venue, TradingVenue::BinanceMargin)
                 || matches!(hedge_venue, TradingVenue::BinanceMargin)
             {
@@ -278,41 +277,15 @@ async fn main() -> Result<()> {
                             _ => "https://api.binance.com".to_string(),
                         };
 
-                        let min_interval_secs =
-                            match std::env::var("PRE_TRADE_PM_AUTO_COLLECTION_MIN_INTERVAL_SECS") {
-                                Ok(raw) => match raw.trim().parse::<u64>() {
-                                    Ok(v) if v > 0 => v,
-                                    _ => {
-                                        warn!(
-                                            "invalid PRE_TRADE_PM_AUTO_COLLECTION_MIN_INTERVAL_SECS='{}', fallback to 7200",
-                                            raw
-                                        );
-                                        7200
-                                    }
-                                },
-                                Err(_) => 7200,
-                            };
-                        let guard_file = std::env::var("PRE_TRADE_PM_AUTO_COLLECTION_GUARD_FILE")
-                            .ok()
-                            .and_then(|s| {
-                                if s.trim().is_empty() {
-                                    None
-                                } else {
-                                    Some(std::path::PathBuf::from(s))
-                                }
-                            });
-
                         info!(
-                            "auto collection enabled (binance-margin detected, account_mode={:?}, rest_base={}, min_interval_secs={})",
-                            binance_account_mode, rest_base, min_interval_secs
+                            "auto collection enabled (binance-margin detected, account_mode={:?}, rest_base={})",
+                            binance_account_mode, rest_base
                         );
                         AutoCollectionService::new(
                             rest_base,
                             binance_api_key,
                             binance_api_secret,
                             RestConstants::RECV_WINDOW_MS,
-                            Duration::from_secs(min_interval_secs),
-                            guard_file,
                         )
                         .start_startup_and_daily_task();
                     }

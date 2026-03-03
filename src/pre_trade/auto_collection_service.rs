@@ -5,7 +5,6 @@ use log::{debug, info, warn};
 use reqwest::Client;
 use sha2::Sha256;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -13,20 +12,14 @@ type HmacSha256 = Hmac<Sha256>;
 /// Binance PM 资金全量归集服务（UM -> Cross Margin）
 ///
 /// 调度策略：
-/// 1. pre_trade 启动后立即尝试一次；
+/// 1. pre_trade 启动后立即执行一次；
 /// 2. 之后每天 UTC+8 12:00 再执行一次。
-///
-/// 防抖策略：
-/// - 通过本地 guard 文件记录最近一次“尝试时间”（成功/失败都会记录）；
-/// - 若距上次尝试小于 `min_interval`，则跳过，避免高权重接口被频繁触发。
 pub struct AutoCollectionService {
     client: Client,
     rest_base: String,
     api_key: String,
     api_secret: String,
     recv_window_ms: u64,
-    min_interval: Duration,
-    guard_file: PathBuf,
 }
 
 impl AutoCollectionService {
@@ -35,8 +28,6 @@ impl AutoCollectionService {
         api_key: impl Into<String>,
         api_secret: impl Into<String>,
         recv_window_ms: u64,
-        min_interval: Duration,
-        guard_file: Option<PathBuf>,
     ) -> Self {
         Self {
             client: Client::new(),
@@ -44,20 +35,13 @@ impl AutoCollectionService {
             api_key: api_key.into(),
             api_secret: api_secret.into(),
             recv_window_ms,
-            min_interval,
-            guard_file: guard_file.unwrap_or_else(Self::default_guard_file),
         }
     }
 
     /// 启动“启动即执行 + 每天 UTC+8 12:00 执行”任务。
     pub fn start_startup_and_daily_task(self) {
         tokio::spawn(async move {
-            info!(
-                "自动资金归集服务已启动（startup + daily UTC+8 12:00, min_interval={}s, guard_file={})",
-                self.min_interval.as_secs(),
-                self.guard_file.display()
-            );
-
+            info!("自动资金归集服务已启动（startup + daily UTC+8 12:00）");
             self.try_auto_collect("startup").await;
 
             loop {
@@ -74,31 +58,6 @@ impl AutoCollectionService {
     }
 
     async fn try_auto_collect(&self, reason: &str) {
-        let now_ms = Utc::now().timestamp_millis();
-        if let Some(last_ms) = Self::read_last_attempt_ms(&self.guard_file) {
-            let elapsed_ms = now_ms.saturating_sub(last_ms);
-            let min_interval_ms = self.min_interval.as_millis() as i64;
-            if elapsed_ms >= 0 && elapsed_ms < min_interval_ms {
-                let remain_s = ((min_interval_ms - elapsed_ms) / 1000).max(0);
-                info!(
-                    "自动资金归集跳过: reason={} remain_s={} last_attempt_ms={} guard_file={}",
-                    reason,
-                    remain_s,
-                    last_ms,
-                    self.guard_file.display()
-                );
-                return;
-            }
-        }
-
-        if let Err(err) = Self::write_last_attempt_ms(&self.guard_file, now_ms) {
-            warn!(
-                "自动资金归集 guard 写入失败（继续执行归集）: file={} err={:#}",
-                self.guard_file.display(),
-                err
-            );
-        }
-
         match self.auto_collect_all_assets().await {
             Ok((status, body, used_weight)) => {
                 info!(
@@ -193,43 +152,6 @@ impl AutoCollectionService {
         };
 
         Duration::from_secs(wait_seconds as u64)
-    }
-
-    fn default_guard_file() -> PathBuf {
-        let dir_tag = std::env::current_dir()
-            .ok()
-            .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
-            .unwrap_or_else(|| "default".to_string());
-
-        let mut normalized = String::with_capacity(dir_tag.len());
-        for ch in dir_tag.chars() {
-            if ch.is_ascii_alphanumeric() {
-                normalized.push(ch.to_ascii_lowercase());
-            } else {
-                normalized.push('_');
-            }
-        }
-        if normalized.is_empty() {
-            normalized = "default".to_string();
-        }
-
-        PathBuf::from("/tmp").join(format!(
-            "mkt_signal_pm_auto_collection_{}.stamp",
-            normalized
-        ))
-    }
-
-    fn read_last_attempt_ms(path: &Path) -> Option<i64> {
-        let raw = std::fs::read_to_string(path).ok()?;
-        raw.trim().parse::<i64>().ok()
-    }
-
-    fn write_last_attempt_ms(path: &Path, ts_ms: i64) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, ts_ms.to_string())?;
-        Ok(())
     }
 }
 
