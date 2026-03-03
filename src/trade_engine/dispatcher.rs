@@ -237,11 +237,18 @@ impl Dispatcher {
                 let status = r.status();
                 let text = r.text().await.unwrap_or_default();
                 let suppress_http_warn = should_suppress_http_error_log(status.as_u16(), &text);
+                let top_level_code = parse_top_level_error_code(&text);
                 // 打印完整响应 JSON（调试模式）；4xx/5xx 同时以 warn 级别输出
                 debug!("dispatch response body (raw): {}", text);
                 if !status.is_success() {
                     if suppress_http_warn {
-                        debug!("http {} body: [suppressed code=51169]", status.as_u16());
+                        debug!(
+                            "http {} body: [suppressed code={}]",
+                            status.as_u16(),
+                            top_level_code
+                                .map(|c| c.to_string())
+                                .unwrap_or_else(|| "unknown".to_string())
+                        );
                     } else {
                         warn!("http {} body: {}", status.as_u16(), text);
                     }
@@ -445,5 +452,8 @@ fn parse_top_level_error_code(body: &str) -> Option<i32> {
 }
 
 fn should_suppress_http_error_log(status: u16, body: &str) -> bool {
-    status == 400 && parse_top_level_error_code(body) == Some(51169)
+    if status != 400 {
+        return false;
+    }
+    matches!(parse_top_level_error_code(body), Some(51169 | 51061))
 }

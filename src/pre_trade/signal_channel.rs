@@ -16,7 +16,7 @@ use bytes::Bytes;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::cell::OnceCell;
 use std::time::Duration;
 
@@ -252,7 +252,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                 };
                 let from_key = String::from_utf8_lossy(&open_ctx.from_key);
                 if let Some(hit) = check_signal_throttle(&symbol, side, &from_key) {
-                    warn!(
+                    debug!(
                         "ArbOpen: throttled by pre_trade block, symbol={} side={} remain_us={} last_code={} until_us={}, skip strategy construction",
                         symbol,
                         side.as_str(),

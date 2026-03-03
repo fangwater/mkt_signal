@@ -1,3 +1,4 @@
+pub mod auto_collection_service;
 pub mod auto_repay_service;
 pub mod basic_balance_manager;
 pub mod basic_exposure_manager;

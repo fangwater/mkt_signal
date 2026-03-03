@@ -5,6 +5,7 @@ use log::{info, warn};
 use mkt_signal::common::binance_account_mode::{init_binance_account_mode, BinanceAccountMode};
 use mkt_signal::common::redis_client::RedisSettings;
 use mkt_signal::common::time_util::get_timestamp_us;
+use mkt_signal::pre_trade::auto_collection_service::AutoCollectionService;
 use mkt_signal::pre_trade::auto_repay_service::AutoRepayService;
 use mkt_signal::pre_trade::monitor_channel::MonitorChannel;
 use mkt_signal::pre_trade::params_load::PreTradeParamsLoader;
@@ -250,6 +251,77 @@ async fn main() -> Result<()> {
                     RestConstants::RECV_WINDOW_MS,
                 )
                 .start_auto_repay_task();
+            }
+
+            // 3.2 启动 Binance PM 自动资金归集任务：
+            // - pre_trade 重启后立即执行一次；
+            // - 每天 UTC+8 12:00 执行一次；
+            // - 默认 2 小时最小间隔防抖，避免高权重接口被高频触发。
+            if matches!(open_venue, TradingVenue::BinanceMargin)
+                || matches!(hedge_venue, TradingVenue::BinanceMargin)
+            {
+                let is_unified = matches!(binance_account_mode, Some(BinanceAccountMode::Unified));
+                if is_unified {
+                    let binance_api_key = std::env::var("BINANCE_API_KEY").unwrap_or_default();
+                    let binance_api_secret = std::env::var("BINANCE_API_SECRET").unwrap_or_default();
+                    if binance_api_key.trim().is_empty() || binance_api_secret.trim().is_empty() {
+                        warn!(
+                            "BINANCE_API_KEY/SECRET missing; auto collection disabled (binance-margin detected)"
+                        );
+                    } else {
+                        let rest_base = match std::env::var("BINANCE_SAPI_URL")
+                            .or_else(|_| std::env::var("BINANCE_API_URL"))
+                            .or_else(|_| std::env::var("BINANCE_PAPI_URL"))
+                            .or_else(|_| std::env::var("BINANCE_FAPI_URL"))
+                        {
+                            Ok(url) if !url.trim().is_empty() => url,
+                            _ => "https://api.binance.com".to_string(),
+                        };
+
+                        let min_interval_secs =
+                            match std::env::var("PRE_TRADE_PM_AUTO_COLLECTION_MIN_INTERVAL_SECS") {
+                                Ok(raw) => match raw.trim().parse::<u64>() {
+                                    Ok(v) if v > 0 => v,
+                                    _ => {
+                                        warn!(
+                                            "invalid PRE_TRADE_PM_AUTO_COLLECTION_MIN_INTERVAL_SECS='{}', fallback to 7200",
+                                            raw
+                                        );
+                                        7200
+                                    }
+                                },
+                                Err(_) => 7200,
+                            };
+                        let guard_file = std::env::var("PRE_TRADE_PM_AUTO_COLLECTION_GUARD_FILE")
+                            .ok()
+                            .and_then(|s| {
+                                if s.trim().is_empty() {
+                                    None
+                                } else {
+                                    Some(std::path::PathBuf::from(s))
+                                }
+                            });
+
+                        info!(
+                            "auto collection enabled (binance-margin detected, account_mode={:?}, rest_base={}, min_interval_secs={})",
+                            binance_account_mode, rest_base, min_interval_secs
+                        );
+                        AutoCollectionService::new(
+                            rest_base,
+                            binance_api_key,
+                            binance_api_secret,
+                            RestConstants::RECV_WINDOW_MS,
+                            Duration::from_secs(min_interval_secs),
+                            guard_file,
+                        )
+                        .start_startup_and_daily_task();
+                    }
+                } else {
+                    info!(
+                        "auto collection disabled: account_mode={:?} (requires UNIFIED)",
+                        binance_account_mode
+                    );
+                }
             }
 
             // 4. 初始化 SignalChannel
