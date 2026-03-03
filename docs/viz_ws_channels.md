@@ -118,10 +118,8 @@
     "total_equity": 120000,
     "total_exposure": 50000,
     "total_position": 60000,
-    "spot_equity_usd": 129000,
     "borrowed_usd": 20000,
     "interest_usd": 1000,
-    "um_unrealized_usd": -9000,
     "leverage": 0.5,
     "max_leverage": 2.5
   }
@@ -129,7 +127,7 @@
 ```
 
 说明：
-- `total_equity` 的口径为 `eq = spot_equity_usd + um_unrealized_usd`（含合约未实现盈亏）。
+- `total_equity` 为唯一净值口径（上游账户权益口径，已包含合约影响）。
 - `leverage` 按 `total_position / total_equity(eq)` 计算，权益为 0 时置为 0。
 - `max_leverage` 来源于风险管控配置，帮助判断是否逼近杠杆上限。
 

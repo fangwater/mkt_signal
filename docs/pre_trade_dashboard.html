@@ -542,25 +542,9 @@
           el.riskMeta.classList.toggle("stale", meta.stale);
 
           const e = s && s.entry ? s.entry : null;
-          const umUnrealized =
-            e && isFiniteNumber(e.um_unrealized_usd) ? e.um_unrealized_usd : null;
-          const totalEquityRaw =
+          // 后端 risk.total_equity 是唯一净值口径（已包含合约影响），前端直接使用。
+          const totalEquity =
             e && isFiniteNumber(e.total_equity) ? e.total_equity : null;
-          const spotEquityFromEntry =
-            e && isFiniteNumber(e.spot_equity_usd) ? e.spot_equity_usd : null;
-
-          const spotEquity =
-            spotEquityFromEntry !== null
-              ? spotEquityFromEntry
-              : null;
-
-          // 后端 risk.total_equity 口径已是 eq（若有合约则已包含 UPL），前端不再重复加一次 UPL。
-          const totalEquity = totalEquityRaw;
-
-          const totalEquityFromSpotUm =
-            spotEquity !== null && umUnrealized !== null
-              ? spotEquity + umUnrealized
-              : null;
 
           const totalPosition =
             e && isFiniteNumber(e.total_position) ? e.total_position : null;
@@ -593,17 +577,12 @@
           }
 
           const rows = [
-            ["total_equity(raw)", totalEquityRaw, fmtUsd],
-            ["um_unrealized_usd", umUnrealized, fmtUsd],
-            ["total_equity(eq)", totalEquity, fmtUsd],
+            ["total_equity", totalEquity, fmtUsd],
             ["total_exposure", e ? e.total_exposure : null, fmtUsd],
             ["total_position", e ? e.total_position : null, fmtUsd],
-            ["spot_equity_usd", spotEquity, fmtUsd],
             ["borrowed_usd", e ? e.borrowed_usd : null, fmtUsd],
             ["interest_usd", e ? e.interest_usd : null, fmtUsd],
-            ["total_equity(spot+um, check)", totalEquityFromSpotUm, fmtUsd],
-            ["leverage(calc)", leverageCalc, fmtLev],
-            ["leverage(raw)", leverageRaw, fmtLev],
+            ["leverage", leverage, fmtLev],
             ["max_leverage", e ? e.max_leverage : null, fmtLev],
           ];
 
@@ -843,10 +822,8 @@
               total_equity: 120000,
               total_exposure: 58000,
               total_position: 72000,
-              spot_equity_usd: 120900,
               borrowed_usd: 12000,
               interest_usd: 350,
-              um_unrealized_usd: -900,
               leverage: 0.6,
               max_leverage: 2.5,
             },

@@ -311,7 +311,7 @@ impl MonitorChannel {
     ///
     /// 返回：
     /// - `exposures`: asset -> (open_qty, hedge_qty)，都按标的数量（base qty）表达
-    /// - `total_equity_usdt`: USDT 总权益（若涉及合约 venue，则已包含合约未实现盈亏）
+    /// - `total_equity_usdt`: USDT 总权益（eq 口径；若涉及合约 venue，会叠加 UPL）
     /// - `abs_total_exposure_usdt`: 各资产净敞口按 USDT 估值后取绝对值求和
     /// - `total_position_usdt`: 各资产现货/合约头寸按 USDT 估值后取绝对值求和
     /// - `total_um_unrealized_usdt`: 合约未实现盈亏（USDT 计价）
@@ -680,10 +680,10 @@ impl MonitorChannel {
             exposures.entry(asset).or_insert((0.0, 0.0)).1 += entry.exposure;
         }
 
-        // total_equity 口径：
+        // total_equity(eq) 口径：
         // - 非 USDT 资产：只从 margin balance 统计（净头寸估值）
         // - USDT：按交易所维度单独维护（余额/负债/利息），无论 open/hedge 是否为 futures
-        // - 若涉及 futures venue，则额外加上合约未实现盈亏（UPL）
+        // - futures 的 UPL 单独来自 BasicUmManager，后续按是否涉及 futures venue 条件叠加
         let mut total_equity_usdt: f64 = 0.0;
         for (idx, leg) in [&inner.open_leg, &inner.hedge_leg].iter().enumerate() {
             if same_venue && idx == 1 {
@@ -725,7 +725,6 @@ impl MonitorChannel {
         if has_futures_venue {
             total_equity_usdt += total_um_unrealized_usdt;
         }
-
         let mut total_position_usdt = 0.0;
         let mut abs_total_exposure_usdt = 0.0;
         for (asset, (open_qty, hedge_qty)) in &exposures {

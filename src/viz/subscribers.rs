@@ -160,7 +160,16 @@ fn spawn_pre_trade_risk_listener(
                 "source": label_for_msg.as_deref(),
                 "channel": channel_for_msg.as_str(),
                 "ts_ms": now_ts_ms,
-                "entry": entry,
+                "entry": {
+                    "ts_ms": entry.ts_ms,
+                    "total_equity": entry.total_equity,
+                    "total_exposure": entry.total_exposure,
+                    "total_position": entry.total_position,
+                    "borrowed_usd": entry.borrowed_usd,
+                    "interest_usd": entry.interest_usd,
+                    "leverage": entry.leverage,
+                    "max_leverage": entry.max_leverage,
+                },
             })) {
                 hub.broadcast(msg);
             }
