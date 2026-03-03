@@ -534,10 +534,8 @@ impl FrDecision {
                 hedge_venue
             );
         }
-
-        // 步骤2: 获取资费信号
-        let fr_signal = if in_dump {
-            // dump 列表：强制视为 close 信号，只要价差满足 close 条件即可
+        let rate_ready = RateFetcher::is_initial_ready(hedge_venue);
+        let spread_close_signal = || {
             if spread_factor.satisfy_forward_close(
                 open_venue,
                 open_symbol_key.as_str(),
@@ -553,6 +551,15 @@ impl FrDecision {
             ) {
                 Some(FrSignal::BackwardClose)
             } else {
+                None
+            }
+        };
+
+        // 步骤2: 获取资费信号
+        let fr_signal = if in_dump {
+            // dump 列表：强制视为 close 信号，只要价差满足 close 条件即可
+            let signal = spread_close_signal();
+            if signal.is_none() {
                 log::debug!(
                     "FrDecision dump close not satisfied open={} hedge={} open_venue={:?} hedge_venue={:?}",
                     open_symbol_key,
@@ -560,8 +567,29 @@ impl FrDecision {
                     open_venue,
                     hedge_venue
                 );
-                None
             }
+            signal
+        } else if !rate_ready {
+            // 费率未就绪时进入降级模式：仅允许基于价差触发 close，禁止 open。
+            let signal = spread_close_signal();
+            if signal.is_none() {
+                log::debug!(
+                    "FrDecision rate not ready, skip open and no spread-close signal open={} hedge={} open_venue={:?} hedge_venue={:?}",
+                    open_symbol_key,
+                    hedge_symbol_key,
+                    open_venue,
+                    hedge_venue
+                );
+            } else {
+                log::debug!(
+                    "FrDecision rate not ready, allow spread-close open={} hedge={} open_venue={:?} hedge_venue={:?}",
+                    open_symbol_key,
+                    hedge_symbol_key,
+                    open_venue,
+                    hedge_venue
+                );
+            }
+            signal
         } else {
             self.get_funding_rate_signal(
                 open_symbol_key.as_str(),
@@ -570,12 +598,12 @@ impl FrDecision {
             )?
         };
 
-        // 步骤3: 如果资费没有信号，返回 None
+        // 步骤3: 如果没有可执行信号，返回 None
         let fr_signal = match fr_signal {
             Some(s) => s,
             None => {
                 log::debug!(
-                    "FrDecision no funding-rate signal open={} hedge={} open_venue={:?} hedge_venue={:?}",
+                    "FrDecision no effective signal open={} hedge={} open_venue={:?} hedge_venue={:?}",
                     open_symbol_key,
                     hedge_symbol_key,
                     open_venue,
