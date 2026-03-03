@@ -1,3 +1,4 @@
+use crate::common::exchange::Exchange;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::order_manager::Side;
 use log::{debug, info, warn};
@@ -8,7 +9,8 @@ use std::collections::{BTreeSet, HashMap};
 pub const SIGNAL_THROTTLE_TTL_US: i64 = 2 * 60 * 60 * 1_000_000;
 pub const SIGNAL_THROTTLE_ERROR_CODE_UM_COLLATERAL_LIMIT: i32 = 51169;
 pub const SIGNAL_THROTTLE_ERROR_CODE_MARGIN_INSUFFICIENT: i32 = -2019;
-pub const SIGNAL_THROTTLE_ERROR_CODE_OKX_BORROW_UNAVAILABLE: i32 = 51061;
+// 51061: 借币池可借资产不足（Binance/OKX 都可能返回该 code）
+pub const SIGNAL_THROTTLE_ERROR_CODE_LOANABLE_ASSET_UNAVAILABLE: i32 = 51061;
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 struct SignalThrottleKey {
@@ -51,18 +53,34 @@ impl SignalThrottleKey {
     }
 }
 
-pub fn is_throttle_error_code(error_code: i32) -> bool {
-    matches!(
-        error_code,
+pub fn is_throttle_error_code(exchange: Option<Exchange>, error_code: i32) -> bool {
+    match error_code {
         SIGNAL_THROTTLE_ERROR_CODE_UM_COLLATERAL_LIMIT
-            | SIGNAL_THROTTLE_ERROR_CODE_MARGIN_INSUFFICIENT
-            | SIGNAL_THROTTLE_ERROR_CODE_OKX_BORROW_UNAVAILABLE
-    )
+        | SIGNAL_THROTTLE_ERROR_CODE_MARGIN_INSUFFICIENT => true,
+        SIGNAL_THROTTLE_ERROR_CODE_LOANABLE_ASSET_UNAVAILABLE => {
+            matches!(exchange, Some(Exchange::Binance))
+        }
+        _ => false,
+    }
 }
 
-pub fn register_signal_throttle(symbol: &str, dir: Side, _from_key: &str, error_code: i32) -> bool {
+pub fn register_signal_throttle(
+    symbol: &str,
+    dir: Side,
+    _from_key: &str,
+    exchange: Option<Exchange>,
+    error_code: i32,
+) -> bool {
     let now_us = get_timestamp_us();
-    register_signal_throttle_at(symbol, dir, "", error_code, now_us, SIGNAL_THROTTLE_TTL_US)
+    register_signal_throttle_at(
+        symbol,
+        dir,
+        "",
+        exchange,
+        error_code,
+        now_us,
+        SIGNAL_THROTTLE_TTL_US,
+    )
 }
 
 pub fn check_signal_throttle(
@@ -136,11 +154,12 @@ fn register_signal_throttle_at(
     symbol: &str,
     dir: Side,
     _from_key: &str,
+    exchange: Option<Exchange>,
     error_code: i32,
     now_us: i64,
     ttl_us: i64,
 ) -> bool {
-    if !is_throttle_error_code(error_code) {
+    if !is_throttle_error_code(exchange, error_code) {
         return false;
     }
 
@@ -211,12 +230,13 @@ mod tests {
 
     #[test]
     fn detects_throttle_error_code() {
-        assert!(is_throttle_error_code(51169));
-        assert!(is_throttle_error_code(-2019));
-        assert!(is_throttle_error_code(51061));
-        assert!(!is_throttle_error_code(51168));
-        assert!(!is_throttle_error_code(516001));
-        assert!(!is_throttle_error_code(-2018));
+        assert!(is_throttle_error_code(Some(Exchange::Binance), 51169));
+        assert!(is_throttle_error_code(Some(Exchange::Binance), -2019));
+        assert!(is_throttle_error_code(Some(Exchange::Binance), 51061));
+        assert!(!is_throttle_error_code(Some(Exchange::Okex), 51061));
+        assert!(!is_throttle_error_code(Some(Exchange::Binance), 51168));
+        assert!(!is_throttle_error_code(Some(Exchange::Binance), 516001));
+        assert!(!is_throttle_error_code(Some(Exchange::Binance), -2018));
     }
 
     #[test]
@@ -231,6 +251,7 @@ mod tests {
             symbol,
             Side::Buy,
             from_key,
+            Some(Exchange::Binance),
             51169,
             now_us,
             ttl_us
