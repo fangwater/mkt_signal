@@ -4,21 +4,17 @@
 //! - ignores funding/loan signals for Open decisions
 //! - only emits Open/Cancel (spread-only) and supports backward hedge queries
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use bytes::Bytes;
-use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
-use redis::Commands;
-use serde::Deserialize;
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
-use std::fmt;
 use std::rc::Rc;
-use std::time::Instant;
 
 use super::common::{compute_spread_rate, Quote, ThresholdKey, VenuePair};
+use super::factor_value_hub::{FactorValueHub, FactorValueLookupResult, PnluCheckResult};
 use super::mkt_channel::MktChannel;
 use super::spread_factor::SpreadFactor;
 use super::symbol_list::SymbolList;
@@ -26,12 +22,9 @@ use crate::common::bbo::Bbo;
 use crate::common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD};
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
-use crate::common::mkt_msg::{FactorValueMsg, ModelMsg, MODEL_STATUS_OK};
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
-use crate::factor_pub::factor_index::factor_name_to_index;
-use crate::factor_pub::model_pub::publisher::MODEL_PAYLOAD_MAX_BYTES;
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{
@@ -52,134 +45,6 @@ const DEFAULT_PNLU_KEY_SUFFIX: &str = "_pnlu_factor_thresholds";
 const PNLU_MAX_AGE_SECS: i64 = 30 * 60;
 const TARGET_FACTOR_NAME: &str = "rl_return_volatility";
 const TARGET_FACTOR_KEY_PREFIX: &str = TARGET_FACTOR_NAME;
-const FACTOR_VALUE_PAYLOAD_MAX_BYTES: usize = 256;
-const FACTOR_VALUE_HISTORY_SIZE: usize = 128;
-const FACTOR_VALUE_SUBSCRIBER_BUFFER_SIZE: usize = 1024;
-const MODEL_OUTPUT_HISTORY_SIZE: usize = 128;
-const MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE: usize = 256;
-const MODEL_OUTPUT_POLL_MAX_PER_CHANNEL: usize = 256;
-const MODEL_OUTPUT_STATS_LOG_INTERVAL_SECS: u64 = 60;
-
-#[derive(Debug, Deserialize)]
-struct PnluFactorPayload {
-    ts: Option<i64>,
-    target_ts: Option<i64>,
-    factor: Option<f64>,
-    quantiles: Option<Vec<f64>>,
-    thresholds: Option<Vec<f64>>,
-    ready: Option<bool>,
-}
-
-#[derive(Debug)]
-struct PnluCheckResult {
-    ok: bool,
-    reason: String,
-    factor: Option<f64>,
-    threshold: Option<f64>,
-    ts: Option<i64>,
-    target_ts: Option<i64>,
-    age_secs: Option<i64>,
-    ready: Option<bool>,
-    quantiles: Option<Vec<f64>>,
-}
-
-#[derive(Debug)]
-struct FactorValueSnapshot {
-    value: f64,
-    ready: bool,
-    timestamp_ms: i64,
-    factor_index: u16,
-}
-
-struct ModelOutputSubscriberEntry {
-    service_name: String,
-    subscriber: Subscriber<ipc::Service, [u8; MODEL_PAYLOAD_MAX_BYTES], ()>,
-}
-
-impl PnluCheckResult {
-    fn fail(reason: impl Into<String>) -> Self {
-        Self {
-            ok: false,
-            reason: reason.into(),
-            factor: None,
-            threshold: None,
-            ts: None,
-            target_ts: None,
-            age_secs: None,
-            ready: None,
-            quantiles: None,
-        }
-    }
-}
-
-struct PnluRedis {
-    settings: RedisSettings,
-    client: redis::Client,
-    conn: Option<redis::Connection>,
-}
-
-impl fmt::Debug for PnluRedis {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PnluRedis")
-            .field("host", &self.settings.host)
-            .field("port", &self.settings.port)
-            .field("db", &self.settings.db)
-            .field("prefix", &self.settings.prefix)
-            .finish()
-    }
-}
-
-impl PnluRedis {
-    fn new(settings: RedisSettings) -> Result<Self> {
-        let url = settings.connection_url();
-        let client = redis::Client::open(url.clone())
-            .with_context(|| format!("PnluRedis: invalid redis url: {url}"))?;
-        Ok(Self {
-            settings,
-            client,
-            conn: None,
-        })
-    }
-
-    fn prefixed_key(&self, key: &str) -> String {
-        match &self.settings.prefix {
-            Some(prefix) if !prefix.is_empty() => format!("{}{}", prefix, key),
-            _ => key.to_string(),
-        }
-    }
-
-    fn get_string(&mut self, key: &str) -> Result<Option<String>> {
-        if self.conn.is_none() {
-            self.conn =
-                Some(self.client.get_connection().with_context(|| {
-                    format!("PnluRedis: connect failed {}", self.settings.host)
-                })?);
-        }
-        let full_key = self.prefixed_key(key);
-        let conn = self
-            .conn
-            .as_mut()
-            .expect("PnluRedis: connection missing after init");
-        let result: redis::RedisResult<Option<String>> = conn.get(full_key);
-        match result {
-            Ok(value) => Ok(value),
-            Err(err) => {
-                self.conn = None;
-                Err(anyhow::anyhow!("PnluRedis: get failed: {}", err))
-            }
-        }
-    }
-}
-
-struct FactorValueLookupResult {
-    key: String,
-    symbol_key: String,
-    ready: Option<bool>,
-    target_factor_value: Option<f64>,
-    ts_ms: Option<i64>,
-    factor_index: Option<u16>,
-    note: String,
-}
 
 fn min_qty_symbol_key(venue: TradingVenue, trade_symbol: &str) -> String {
     match venue {
@@ -242,15 +107,7 @@ thread_local! {
 pub struct XarbDecision {
     signal_pub: SignalPublisher,
     backward_sub: GenericSignalSubscriber,
-    factor_value_sub: Subscriber<ipc::Service, [u8; FACTOR_VALUE_PAYLOAD_MAX_BYTES], ()>,
-    target_factor_index: u16,
-    factor_value_cache: HashMap<(u16, String), FactorValueSnapshot>,
-    model_output_subscribers: Vec<ModelOutputSubscriberEntry>,
-    model_output_services: Vec<String>,
-    model_output_latest_scores: HashMap<(String, String), f64>,
-    model_output_msg_count: u64,
-    model_output_parse_err_count: u64,
-    model_output_last_log: Instant,
+    factor_value_hub: FactorValueHub,
     channel_name: String,
     node: Node<ipc::Service>,
 
@@ -267,9 +124,6 @@ pub struct XarbDecision {
     hedge_aggressive_seq_threshold: u32,
     max_hedge_price_pct_change: f64, // percent, 1~99
 
-    pnlu_redis: PnluRedis,
-    pnlu_key_suffix: String,
-
     signal_cooldown_us: i64,
     last_open_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
     last_close_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
@@ -281,112 +135,8 @@ impl XarbDecision {
         normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
     }
 
-    fn poll_factor_value_updates(&mut self) {
-        loop {
-            match self.factor_value_sub.receive() {
-                Ok(Some(sample)) => {
-                    let payload = sample.payload();
-                    if payload.iter().all(|&b| b == 0) {
-                        continue;
-                    }
-                    let msg = match FactorValueMsg::from_bytes(payload) {
-                        Ok(msg) => msg,
-                        Err(err) => {
-                            warn!("XarbDecision: parse factor payload failed: {}", err);
-                            continue;
-                        }
-                    };
-
-                    let symbol_key = normalize_symbol_for_venue(&msg.symbol, self.venues.1);
-                    for (factor_index, value, ready) in msg.factors() {
-                        let cache_key = (factor_index, symbol_key.clone());
-                        let snapshot = FactorValueSnapshot {
-                            value,
-                            ready,
-                            timestamp_ms: msg.timestamp_ms,
-                            factor_index,
-                        };
-                        let should_update = self
-                            .factor_value_cache
-                            .get(&cache_key)
-                            .map(|prev| snapshot.timestamp_ms >= prev.timestamp_ms)
-                            .unwrap_or(true);
-                        if should_update {
-                            self.factor_value_cache.insert(cache_key, snapshot);
-                        }
-                    }
-                }
-                Ok(None) => break,
-                Err(err) => {
-                    warn!("XarbDecision: factor subscriber receive error: {}", err);
-                    break;
-                }
-            }
-        }
-    }
-
     fn poll_model_output_updates(&mut self) {
-        if self.model_output_subscribers.is_empty() {
-            return;
-        }
-
-        for entry in &mut self.model_output_subscribers {
-            let mut polled = 0usize;
-            while polled < MODEL_OUTPUT_POLL_MAX_PER_CHANNEL {
-                match entry.subscriber.receive() {
-                    Ok(Some(sample)) => {
-                        polled += 1;
-                        let payload = sample.payload();
-                        if payload.iter().all(|&b| b == 0) {
-                            continue;
-                        }
-
-                        let msg = match ModelMsg::from_bytes(payload) {
-                            Ok(msg) => msg,
-                            Err(err) => {
-                                self.model_output_parse_err_count =
-                                    self.model_output_parse_err_count.saturating_add(1);
-                                warn!(
-                                    "XarbDecision: parse model_output payload failed service={} err={}",
-                                    entry.service_name, err
-                                );
-                                continue;
-                            }
-                        };
-
-                        if msg.status != MODEL_STATUS_OK {
-                            continue;
-                        }
-
-                        let symbol_key = normalize_symbol_for_venue(&msg.symbol, self.venues.1);
-                        let cache_key = (entry.service_name.clone(), symbol_key);
-                        self.model_output_latest_scores.insert(cache_key, msg.score);
-                        self.model_output_msg_count = self.model_output_msg_count.saturating_add(1);
-                    }
-                    Ok(None) => break,
-                    Err(err) => {
-                        warn!(
-                            "XarbDecision: model_output subscriber receive error service={} err={}",
-                            entry.service_name, err
-                        );
-                        break;
-                    }
-                }
-            }
-        }
-
-        if self.model_output_last_log.elapsed().as_secs() >= MODEL_OUTPUT_STATS_LOG_INTERVAL_SECS {
-            info!(
-                "XarbDecision: model_output stats services={} latest_scores={} recv={} parse_err={}",
-                self.model_output_services.len(),
-                self.model_output_latest_scores.len(),
-                self.model_output_msg_count,
-                self.model_output_parse_err_count
-            );
-            self.model_output_last_log = Instant::now();
-            self.model_output_msg_count = 0;
-            self.model_output_parse_err_count = 0;
-        }
+        self.factor_value_hub.poll_model_output_updates();
     }
 
     fn lookup_target_factor_value(
@@ -394,38 +144,8 @@ impl XarbDecision {
         hedge_symbol: &str,
         hedge_venue: TradingVenue,
     ) -> FactorValueLookupResult {
-        self.poll_factor_value_updates();
-
-        let symbol_key = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
-        let cache_key = (self.target_factor_index, symbol_key.clone());
-        let key = format!(
-            "{}_{}_{}",
-            TARGET_FACTOR_KEY_PREFIX,
-            hedge_venue.data_pub_slug(),
-            symbol_key
-        );
-
-        if let Some(snapshot) = self.factor_value_cache.get(&cache_key) {
-            FactorValueLookupResult {
-                key,
-                symbol_key,
-                ready: Some(snapshot.ready),
-                target_factor_value: Some(snapshot.value),
-                ts_ms: Some(snapshot.timestamp_ms),
-                factor_index: Some(snapshot.factor_index),
-                note: "ok".to_string(),
-            }
-        } else {
-            FactorValueLookupResult {
-                key,
-                symbol_key,
-                ready: None,
-                target_factor_value: None,
-                ts_ms: None,
-                factor_index: None,
-                note: "missing_ipc_snapshot".to_string(),
-            }
-        }
+        self.factor_value_hub
+            .lookup_target_factor_value(hedge_symbol, hedge_venue)
     }
 
     pub fn is_initialized() -> bool {
@@ -498,45 +218,48 @@ impl XarbDecision {
 
         let signal_pub = SignalPublisher::new(DEFAULT_SIGNAL_CHANNEL)?;
         let backward_sub = Self::create_subscriber(&node, DEFAULT_BACKWARD_CHANNEL)?;
-        let factor_value_sub =
-            Self::create_factor_value_subscriber(&node, venues.1, TARGET_FACTOR_NAME)?;
-        let target_factor_index = factor_name_to_index(TARGET_FACTOR_NAME).ok_or_else(|| {
-            anyhow::anyhow!("missing factor index mapping for {}", TARGET_FACTOR_NAME)
-        })?;
-
-        let price_offsets = vec![0.0002, 0.0004, 0.0006, 0.0008, 0.001];
-        let open_min_qty_table = VenueMinQtyTable::new(venues.0);
-        let hedge_min_qty_table = VenueMinQtyTable::new(venues.1);
-        let pnlu_redis = PnluRedis::new(RedisSettings {
+        let pnlu_settings = RedisSettings {
             host: DEFAULT_PNLU_REDIS_HOST.to_string(),
             port: DEFAULT_PNLU_REDIS_PORT,
             db: DEFAULT_PNLU_REDIS_DB,
             username: None,
             password: None,
             prefix: None,
-        })?;
+        };
         let pnlu_key_suffix = DEFAULT_PNLU_KEY_SUFFIX.to_string();
+        let factor_value_hub = FactorValueHub::new(
+            &node,
+            venues.0,
+            venues.1,
+            TARGET_FACTOR_NAME,
+            TARGET_FACTOR_KEY_PREFIX,
+            pnlu_settings.clone(),
+            pnlu_key_suffix.clone(),
+            PNLU_MAX_AGE_SECS,
+        )?;
+        let pnlu_key_prefix = format!(
+            "pnlu:{}:{}:",
+            venues.0.data_pub_slug(),
+            venues.1.data_pub_slug()
+        );
+
+        let price_offsets = vec![0.0002, 0.0004, 0.0006, 0.0008, 0.001];
+        let open_min_qty_table = VenueMinQtyTable::new(venues.0);
+        let hedge_min_qty_table = VenueMinQtyTable::new(venues.1);
 
         info!(
-            "XarbDecision: pnlu redis configured host={} port={} db={} suffix={}",
-            pnlu_redis.settings.host,
-            pnlu_redis.settings.port,
-            pnlu_redis.settings.db,
+            "XarbDecision: pnlu redis configured host={} port={} db={} key_prefix={} suffix={}",
+            pnlu_settings.host,
+            pnlu_settings.port,
+            pnlu_settings.db,
+            pnlu_key_prefix,
             pnlu_key_suffix
         );
 
         Ok(Self {
             signal_pub,
             backward_sub,
-            factor_value_sub,
-            target_factor_index,
-            factor_value_cache: HashMap::new(),
-            model_output_subscribers: Vec::new(),
-            model_output_services: Vec::new(),
-            model_output_latest_scores: HashMap::new(),
-            model_output_msg_count: 0,
-            model_output_parse_err_count: 0,
-            model_output_last_log: Instant::now(),
+            factor_value_hub,
             channel_name: DEFAULT_SIGNAL_CHANNEL.to_string(),
             node,
             price_offsets,
@@ -549,8 +272,6 @@ impl XarbDecision {
             hedge_price_offset: 0.0003,
             hedge_aggressive_seq_threshold: 6,
             max_hedge_price_pct_change: 5.0,
-            pnlu_redis,
-            pnlu_key_suffix,
             signal_cooldown_us: 5_000_000,
             last_open_ts: Rc::new(RefCell::new(HashMap::new())),
             last_close_ts: Rc::new(RefCell::new(HashMap::new())),
@@ -614,118 +335,13 @@ impl XarbDecision {
         Ok(GenericSignalSubscriber::Size4K(subscriber))
     }
 
-    fn create_factor_value_subscriber(
-        node: &Node<ipc::Service>,
-        hedge_venue: TradingVenue,
-        factor_name: &str,
-    ) -> Result<Subscriber<ipc::Service, [u8; FACTOR_VALUE_PAYLOAD_MAX_BYTES], ()>> {
-        let service_name = format!("factor_pub/{}/{}", hedge_venue.data_pub_slug(), factor_name);
-        let service = node
-            .service_builder(&ServiceName::new(&service_name)?)
-            .publish_subscribe::<[u8; FACTOR_VALUE_PAYLOAD_MAX_BYTES]>()
-            .max_publishers(1)
-            .max_subscribers(10)
-            .history_size(FACTOR_VALUE_HISTORY_SIZE)
-            .subscriber_max_buffer_size(FACTOR_VALUE_SUBSCRIBER_BUFFER_SIZE)
-            .open_or_create()?;
-
-        info!(
-            "XarbDecision: subscribed factor stream service={}",
-            service_name
-        );
-        service
-            .subscriber_builder()
-            .create()
-            .context("failed to create factor subscriber")
-    }
-
-    fn normalize_model_output_services(services: Vec<String>) -> Vec<String> {
-        let mut normalized = Vec::new();
-        for raw in services {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let service = trimmed.to_string();
-            if !normalized.iter().any(|s| s == &service) {
-                normalized.push(service);
-            }
-        }
-        normalized
-    }
-
-    fn create_model_output_subscriber(
-        node: &Node<ipc::Service>,
-        service_name: &str,
-    ) -> Result<Subscriber<ipc::Service, [u8; MODEL_PAYLOAD_MAX_BYTES], ()>> {
-        let service = node
-            .service_builder(&ServiceName::new(service_name)?)
-            .publish_subscribe::<[u8; MODEL_PAYLOAD_MAX_BYTES]>()
-            .max_publishers(1)
-            .max_subscribers(10)
-            .history_size(MODEL_OUTPUT_HISTORY_SIZE)
-            .subscriber_max_buffer_size(MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE)
-            .open_or_create()?;
-
-        service
-            .subscriber_builder()
-            .buffer_size(MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE)
-            .create()
-            .with_context(|| format!("failed to create model_output subscriber: {}", service_name))
-    }
-
     pub fn update_model_output_services(&mut self, services: Vec<String>) {
-        let normalized = Self::normalize_model_output_services(services);
-        if normalized == self.model_output_services {
-            return;
-        }
+        self.factor_value_hub
+            .update_model_output_services(&self.node, services);
+    }
 
-        if normalized.is_empty() {
-            self.model_output_services.clear();
-            self.model_output_subscribers.clear();
-            self.model_output_latest_scores.clear();
-            info!("XarbDecision: model_output subscriptions cleared");
-            return;
-        }
-
-        let mut subscribers = Vec::new();
-        for service_name in &normalized {
-            match Self::create_model_output_subscriber(&self.node, service_name) {
-                Ok(subscriber) => {
-                    subscribers.push(ModelOutputSubscriberEntry {
-                        service_name: service_name.clone(),
-                        subscriber,
-                    });
-                }
-                Err(err) => {
-                    warn!(
-                        "XarbDecision: subscribe model_output failed service={} err={:#}",
-                        service_name, err
-                    );
-                }
-            }
-        }
-
-        if subscribers.is_empty() {
-            warn!(
-                "XarbDecision: no model_output subscriber created, keep previous subscriptions count={}",
-                self.model_output_subscribers.len()
-            );
-            return;
-        }
-
-        self.model_output_services = normalized;
-        self.model_output_subscribers = subscribers;
-        self.model_output_latest_scores.clear();
-        self.model_output_msg_count = 0;
-        self.model_output_parse_err_count = 0;
-        self.model_output_last_log = Instant::now();
-        info!(
-            "XarbDecision: model_output subscriptions updated count={} services={:?} buffer_size={}",
-            self.model_output_subscribers.len(),
-            self.model_output_services,
-            MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE
-        );
+    pub fn update_pnlu_key_suffix(&mut self, key_suffix: String) {
+        self.factor_value_hub.update_pnlu_key_suffix(key_suffix);
     }
 
     pub fn make_spread_only_decision(
@@ -1893,84 +1509,8 @@ impl XarbDecision {
         last_ts_map.borrow_mut().insert(key, now);
     }
 
-    fn normalize_pnlu_ts_us(ts: i64) -> Option<i64> {
-        if ts <= 0 {
-            return None;
-        }
-        let abs = ts.abs();
-        let ts_us = if abs > 1_000_000_000_000_000 {
-            ts
-        } else if abs > 1_000_000_000_000 {
-            ts.saturating_mul(1_000)
-        } else {
-            ts.saturating_mul(1_000_000)
-        };
-        Some(ts_us)
-    }
-
     fn check_pnlu_factor(&mut self, symbol_key: &str, now_us: i64) -> PnluCheckResult {
-        let key = format!("{}{}", symbol_key, self.pnlu_key_suffix);
-        let raw = match self.pnlu_redis.get_string(&key) {
-            Ok(Some(text)) => text,
-            Ok(None) => return PnluCheckResult::fail("missing_key"),
-            Err(err) => return PnluCheckResult::fail(format!("redis_error: {err}")),
-        };
-
-        let payload: PnluFactorPayload = match serde_json::from_str(&raw) {
-            Ok(val) => val,
-            Err(err) => return PnluCheckResult::fail(format!("invalid_json: {err}")),
-        };
-
-        let PnluFactorPayload {
-            ts,
-            target_ts,
-            factor,
-            quantiles,
-            thresholds,
-            ready,
-        } = payload;
-        let threshold = thresholds.as_ref().and_then(|vals| vals.first().copied());
-
-        let ts_us = ts.and_then(Self::normalize_pnlu_ts_us);
-        let age_secs = match ts_us {
-            Some(ts_us) if ts_us <= now_us => Some((now_us - ts_us) / 1_000_000),
-            Some(_) => return PnluCheckResult::fail("ts_in_future"),
-            None => None,
-        };
-        let fresh = match age_secs {
-            Some(age) => age <= PNLU_MAX_AGE_SECS,
-            None => false,
-        };
-        let missing_factor_or_threshold = factor.is_none() || threshold.is_none();
-        let factor_ok = match (factor, threshold) {
-            (Some(f), Some(t)) => f > t,
-            _ => false,
-        };
-
-        let ok = fresh && !missing_factor_or_threshold && factor_ok;
-        let reason = if ok {
-            "ok".to_string()
-        } else if ts_us.is_none() {
-            "missing_ts".to_string()
-        } else if !fresh {
-            "stale_ts".to_string()
-        } else if missing_factor_or_threshold {
-            "missing_factor_or_threshold".to_string()
-        } else {
-            "factor_not_gt_threshold".to_string()
-        };
-
-        PnluCheckResult {
-            ok,
-            reason,
-            factor,
-            threshold,
-            ts,
-            target_ts,
-            age_secs,
-            ready,
-            quantiles,
-        }
+        self.factor_value_hub.check_pnlu_factor(symbol_key, now_us)
     }
 
     fn log_pnlu_check(

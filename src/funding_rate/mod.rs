@@ -12,6 +12,7 @@
 pub mod common;
 pub mod config_loader;
 pub mod decision_router;
+pub mod factor_value_hub;
 pub mod fr_decision;
 pub mod fr_threshold_loader;
 pub mod funding_rate_factor;
