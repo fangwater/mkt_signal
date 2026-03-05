@@ -75,6 +75,8 @@ SYNC_FILES=(
   "scripts/model_score_rolling/stop_model_score_rolling.sh"
   "scripts/model_score_rolling/print_model_score_rolling_params.py"
   "scripts/model_score_rolling/sync_model_score_rolling_params.py"
+  "scripts/model_score_rolling/print_return_model_score_thresholds.py"
+  "scripts/model_score_rolling/sync_return_model_score_thresholds.py"
 )
 
 for file in "${SYNC_FILES[@]}"; do
