@@ -76,6 +76,24 @@ impl PnluCheckResult {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub enum EnvironmentSignalSource {
+    ModelOutput,
+    PnluFallback,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnvironmentSignalResult {
+    pub source: EnvironmentSignalSource,
+    pub allow_open: bool,
+    pub class_label: i8,
+    pub service_name: Option<String>,
+    pub symbol_key: String,
+    pub score: Option<f64>,
+    pub threshold: Option<f64>,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct FactorValueSnapshot {
     value: f64,
     ready: bool,
@@ -548,6 +566,78 @@ impl FactorValueHub {
             age_secs,
             ready,
             quantiles,
+        }
+    }
+
+    pub fn evaluate_environment_signal(
+        &mut self,
+        environment_model_service: Option<&str>,
+        hedge_symbol: &str,
+        hedge_venue: TradingVenue,
+        model_true_threshold: f64,
+        pnlu_symbol_key: &str,
+        now_us: i64,
+    ) -> EnvironmentSignalResult {
+        let normalized_service = environment_model_service
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != "-")
+            .map(str::to_string);
+
+        if let Some(service_name) = normalized_service {
+            let symbol_key = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
+            let cache_key = (service_name.clone(), symbol_key.clone());
+            match self.model_output_latest_scores.get(&cache_key).copied() {
+                Some(score) if score.is_finite() => {
+                    let allow_open = score >= model_true_threshold;
+                    EnvironmentSignalResult {
+                        source: EnvironmentSignalSource::ModelOutput,
+                        allow_open,
+                        class_label: if allow_open { 1 } else { 0 },
+                        service_name: Some(service_name),
+                        symbol_key,
+                        score: Some(score),
+                        threshold: Some(model_true_threshold),
+                        note: if allow_open {
+                            "model_score_ge_threshold".to_string()
+                        } else {
+                            "model_score_lt_threshold".to_string()
+                        },
+                    }
+                }
+                Some(_) => EnvironmentSignalResult {
+                    source: EnvironmentSignalSource::ModelOutput,
+                    allow_open: false,
+                    class_label: 0,
+                    service_name: Some(service_name),
+                    symbol_key,
+                    score: None,
+                    threshold: Some(model_true_threshold),
+                    note: "invalid_model_score".to_string(),
+                },
+                None => EnvironmentSignalResult {
+                    source: EnvironmentSignalSource::ModelOutput,
+                    allow_open: false,
+                    class_label: 0,
+                    service_name: Some(service_name),
+                    symbol_key,
+                    score: None,
+                    threshold: Some(model_true_threshold),
+                    note: "missing_model_score".to_string(),
+                },
+            }
+        } else {
+            let pnlu_check = self.check_pnlu_factor(pnlu_symbol_key, now_us);
+            let allow_open = pnlu_check.ok;
+            EnvironmentSignalResult {
+                source: EnvironmentSignalSource::PnluFallback,
+                allow_open,
+                class_label: if allow_open { 1 } else { 0 },
+                service_name: None,
+                symbol_key: pnlu_symbol_key.to_string(),
+                score: pnlu_check.factor,
+                threshold: pnlu_check.threshold,
+                note: format!("pnlu_fallback:{}", pnlu_check.reason),
+            }
         }
     }
 

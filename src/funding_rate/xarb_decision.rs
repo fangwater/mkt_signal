@@ -14,7 +14,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::common::{compute_spread_rate, Quote, ThresholdKey, VenuePair};
-use super::factor_value_hub::{FactorValueHub, FactorValueLookupResult, PnluCheckResult};
+use super::factor_value_hub::{
+    EnvironmentSignalResult, EnvironmentSignalSource, FactorValueHub, FactorValueLookupResult,
+};
 use super::mkt_channel::MktChannel;
 use super::spread_factor::SpreadFactor;
 use super::symbol_list::SymbolList;
@@ -45,6 +47,7 @@ const DEFAULT_PNLU_KEY_SUFFIX: &str = "_pnlu_factor_thresholds";
 const PNLU_MAX_AGE_SECS: i64 = 30 * 60;
 const TARGET_FACTOR_NAME: &str = "rl_return_volatility";
 const TARGET_FACTOR_KEY_PREFIX: &str = TARGET_FACTOR_NAME;
+const ENV_MODEL_TRUE_THRESHOLD_DEFAULT: f64 = 0.0;
 
 fn min_qty_symbol_key(venue: TradingVenue, trade_symbol: &str) -> String {
     match venue {
@@ -123,6 +126,9 @@ pub struct XarbDecision {
     hedge_price_offset: f64,
     hedge_aggressive_seq_threshold: u32,
     max_hedge_price_pct_change: f64, // percent, 1~99
+    return_model_service: Option<String>,
+    environment_model_service: Option<String>,
+    environment_model_true_threshold: f64,
 
     signal_cooldown_us: i64,
     last_open_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
@@ -133,6 +139,15 @@ pub struct XarbDecision {
 impl XarbDecision {
     fn normalize_symbol_key(symbol: &str) -> String {
         normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
+    }
+
+    fn normalize_model_service(raw: &str) -> Option<String> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed == "-" {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
     }
 
     fn poll_model_output_updates(&mut self) {
@@ -146,6 +161,23 @@ impl XarbDecision {
     ) -> FactorValueLookupResult {
         self.factor_value_hub
             .lookup_target_factor_value(hedge_symbol, hedge_venue)
+    }
+
+    fn evaluate_environment_signal(
+        &mut self,
+        open_symbol_key: &str,
+        hedge_symbol: &str,
+        hedge_venue: TradingVenue,
+        now_us: i64,
+    ) -> EnvironmentSignalResult {
+        self.factor_value_hub.evaluate_environment_signal(
+            self.environment_model_service.as_deref(),
+            hedge_symbol,
+            hedge_venue,
+            self.environment_model_true_threshold,
+            open_symbol_key,
+            now_us,
+        )
     }
 
     pub fn is_initialized() -> bool {
@@ -272,6 +304,9 @@ impl XarbDecision {
             hedge_price_offset: 0.0003,
             hedge_aggressive_seq_threshold: 6,
             max_hedge_price_pct_change: 5.0,
+            return_model_service: None,
+            environment_model_service: None,
+            environment_model_true_threshold: ENV_MODEL_TRUE_THRESHOLD_DEFAULT,
             signal_cooldown_us: 5_000_000,
             last_open_ts: Rc::new(RefCell::new(HashMap::new())),
             last_close_ts: Rc::new(RefCell::new(HashMap::new())),
@@ -338,6 +373,28 @@ impl XarbDecision {
     pub fn update_model_output_services(&mut self, services: Vec<String>) {
         self.factor_value_hub
             .update_model_output_services(&self.node, services);
+    }
+
+    pub fn update_model_service_roles(
+        &mut self,
+        return_model_service: String,
+        environment_model_service: String,
+    ) {
+        self.return_model_service = Self::normalize_model_service(&return_model_service);
+        let env_trimmed = environment_model_service.trim();
+        if !env_trimmed.is_empty() && env_trimmed != "-" {
+            panic!(
+                "XarbDecision: environment_model_service must be '-' (got '{}')",
+                env_trimmed
+            );
+        }
+        self.environment_model_service = None;
+        info!(
+            "XarbDecision: model roles updated return={:?} environment={:?} env_true_threshold={:.6}",
+            self.return_model_service,
+            self.environment_model_service,
+            self.environment_model_true_threshold
+        );
     }
 
     pub fn update_pnlu_key_suffix(&mut self, key_suffix: String) {
@@ -471,11 +528,25 @@ impl XarbDecision {
         if cooldown_hit {
             return Ok(None);
         }
-        let pnlu_check = self.check_pnlu_factor(open_symbol_key.as_str(), now);
-        if !pnlu_check.ok {
+        let environment_signal = self.evaluate_environment_signal(
+            open_symbol_key.as_str(),
+            hedge_symbol,
+            hedge_venue,
+            now,
+        );
+        if !environment_signal.allow_open {
+            self.log_environment_signal(
+                open_symbol_key.as_str(),
+                forward_open,
+                backward_open,
+                false,
+                &environment_signal,
+            );
             return Ok(None);
         }
-        let pnlu_factor = pnlu_check.factor.unwrap_or(0.0);
+        let environment_score = environment_signal
+            .score
+            .unwrap_or(environment_signal.class_label as f64);
         let rl_return_volatility_factor = self
             .lookup_target_factor_value(hedge_symbol, hedge_venue)
             .target_factor_value
@@ -487,17 +558,18 @@ impl XarbDecision {
             open_venue,
             hedge_venue,
             side,
-            pnlu_factor,
+            environment_signal.class_label,
+            environment_score,
             rl_return_volatility_factor,
         )?;
 
         self.update_last_ts(&self.last_open_ts, key, now);
-        self.log_pnlu_check(
+        self.log_environment_signal(
             open_symbol_key.as_str(),
             forward_open,
             backward_open,
             false,
-            &pnlu_check,
+            &environment_signal,
         );
 
         Ok(Some(SignalType::ArbOpen))
@@ -580,10 +652,15 @@ impl XarbDecision {
 
         let now = get_timestamp_us();
         let open_symbol_key = Self::normalize_symbol_key(&open_symbol);
-        let pnlu_factor = self
-            .check_pnlu_factor(open_symbol_key.as_str(), now)
-            .factor
-            .unwrap_or(0.0);
+        let environment_signal = self.evaluate_environment_signal(
+            open_symbol_key.as_str(),
+            &hedge_symbol,
+            hedge_venue,
+            now,
+        );
+        let environment_score = environment_signal
+            .score
+            .unwrap_or(environment_signal.class_label as f64);
         let target_factor_lookup = self.lookup_target_factor_value(&hedge_symbol, hedge_venue);
         let seq_threshold = self.hedge_aggressive_seq_threshold;
         let aggressive = query.request_seq >= seq_threshold;
@@ -655,7 +732,8 @@ impl XarbDecision {
             ctx.maker_only = false;
             let from_key = self.build_hedge_from_key(
                 now,
-                pnlu_factor,
+                environment_signal.class_label,
+                environment_score,
                 target_factor_lookup.target_factor_value,
                 pct_change,
                 spread_rate,
@@ -804,7 +882,8 @@ impl XarbDecision {
         ctx.spread_rate = spread_rate;
         let from_key = self.build_hedge_from_key(
             now,
-            pnlu_factor,
+            environment_signal.class_label,
+            environment_score,
             target_factor_lookup.target_factor_value,
             pct_change,
             spread_rate,
@@ -885,7 +964,8 @@ impl XarbDecision {
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
         side: Side,
-        pnlu_factor: f64,
+        environment_label: i8,
+        environment_score: f64,
         rl_return_volatility_factor: f64,
     ) -> Result<()> {
         let (open_quote, hedge_quote) =
@@ -897,7 +977,7 @@ impl XarbDecision {
         let batch_ts = get_timestamp_us();
         let spread_rate = compute_spread_rate(&open_quote, &hedge_quote);
         let from_key = format!(
-            "{batch_ts}:{pnlu_factor:.6}:{rl_return_volatility_factor:.6}:{spread_rate:.6}"
+            "{batch_ts}:env_label={environment_label}:env_score={environment_score:.6}:rl_return_volatility={rl_return_volatility_factor:.6}:spread={spread_rate:.6}"
         );
 
         for offset in &self.price_offsets {
@@ -1123,14 +1203,15 @@ impl XarbDecision {
     fn build_hedge_from_key(
         &self,
         now: i64,
-        pnlu_factor: f64,
+        environment_label: i8,
+        environment_score: f64,
         rl_return_volatility_factor: Option<f64>,
         pct_change: f64,
         spread_rate: f64,
     ) -> Vec<u8> {
         let rl_return_volatility_factor = rl_return_volatility_factor.unwrap_or(0.0);
         format!(
-            "{now}:{pnlu_factor:.6}:{rl_return_volatility_factor:.6}:{pct_change:.6}:{spread_rate:.6}"
+            "{now}:env_label={environment_label}:env_score={environment_score:.6}:rl_return_volatility={rl_return_volatility_factor:.6}:pct_change={pct_change:.6}:spread={spread_rate:.6}"
         )
         .into_bytes()
     }
@@ -1509,17 +1590,13 @@ impl XarbDecision {
         last_ts_map.borrow_mut().insert(key, now);
     }
 
-    fn check_pnlu_factor(&mut self, symbol_key: &str, now_us: i64) -> PnluCheckResult {
-        self.factor_value_hub.check_pnlu_factor(symbol_key, now_us)
-    }
-
-    fn log_pnlu_check(
+    fn log_environment_signal(
         &self,
         symbol_key: &str,
         forward_open: bool,
         backward_open: bool,
         cooldown_hit: bool,
-        result: &PnluCheckResult,
+        result: &EnvironmentSignalResult,
     ) {
         let direction = match (forward_open, backward_open) {
             (true, true) => "both",
@@ -1527,19 +1604,22 @@ impl XarbDecision {
             (false, true) => "backward",
             (false, false) => "none",
         };
+        let source = match result.source {
+            EnvironmentSignalSource::ModelOutput => "model_output",
+            EnvironmentSignalSource::PnluFallback => "pnlu_fallback",
+        };
         info!(
-            "XarbDecision: pnlu_check symbol={} dir={} ok={} reason={} factor={:?} threshold={:?} ts={:?} target_ts={:?} age_s={:?} ready={:?} quantiles={:?} cooldown_hit={}",
+            "XarbDecision: environment_check symbol={} dir={} allow_open={} class_label={} source={} service={:?} model_symbol={} score={:?} threshold={:?} note={} cooldown_hit={}",
             symbol_key,
             direction,
-            result.ok,
-            result.reason,
-            result.factor,
+            result.allow_open,
+            result.class_label,
+            source,
+            result.service_name,
+            result.symbol_key,
+            result.score,
             result.threshold,
-            result.ts,
-            result.target_ts,
-            result.age_secs,
-            result.ready,
-            result.quantiles,
+            result.note,
             cooldown_hit
         );
     }

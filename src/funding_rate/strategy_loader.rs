@@ -379,6 +379,10 @@ impl StrategyParams {
                 decision.update_hedge_aggressive_seq_threshold(self.hedge_aggressive_seq_threshold);
                 decision.update_max_hedge_price_pct_change(self.max_hedge_price_pct_change);
                 decision.update_signal_cooldown(self.signal_cooldown);
+                decision.update_model_service_roles(
+                    self.return_model_service.clone(),
+                    self.environment_model_service.clone(),
+                );
                 decision.update_model_output_services(self.parse_model_output_services());
             })
             .is_some();
