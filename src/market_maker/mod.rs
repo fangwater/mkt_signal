@@ -5,6 +5,7 @@
 pub mod hedge_scale;
 pub mod hedge_split;
 pub mod manual_signal;
+pub mod open_quote_plan;
 pub mod order_align;
 // pub mod mm_hedge_decision;
 pub mod signal;

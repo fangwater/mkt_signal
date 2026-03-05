@@ -71,11 +71,7 @@ def parse_args() -> argparse.Namespace:
 STRATEGY_PARAMS = {
     "order_amount": "100.0",
     "order_interval_ms": "5000",
-    "open_price_offsets": "[0.0002, 0.0004, 0.0006, 0.0008, 0.001, 0.0015, 0.002, 0.003, 0.004, 0.005]",
-    "open_vol_upper_scale": "0.0",
-    "open_vol_lower_scale": "0.0",
-    "open_price_offset_limit_upper": "0.0",
-    "open_price_offset_limit_lower": "0.0",
+    "orders_per_round": "8",
     "open_order_timeout": "120",
     "next_query_delay_ms": "30000",
     "hedge_vol_upper_scale": "0.0",
@@ -95,14 +91,18 @@ STRATEGY_PARAMS = {
     "max_hedge_price_pct_change": "5",
 }
 
+REMOVED_KEYS = [
+    "open_price_offsets",
+    "open_vol_upper_scale",
+    "open_vol_lower_scale",
+    "open_price_offset_limit_upper",
+    "open_price_offset_limit_lower",
+]
+
 PARAM_COMMENTS: Dict[str, str] = {
     "order_amount": "单笔下单量(USDT)",
     "order_interval_ms": "报单触发间隔(ms)",
-    "open_price_offsets": "开仓挂单档位(JSON数组)",
-    "open_vol_upper_scale": "开仓侧上界修正系数（基于波动率因子）",
-    "open_vol_lower_scale": "开仓侧下界修正系数（基于波动率因子）",
-    "open_price_offset_limit_upper": "开仓侧偏移上界（price_offset_limit）",
-    "open_price_offset_limit_lower": "开仓侧偏移下界（price_offset_limit）",
+    "orders_per_round": "每轮报单数量",
     "open_order_timeout": "开仓订单超时(秒)",
     "next_query_delay_ms": "对冲 query 触发间隔(ms)",
     "hedge_vol_upper_scale": "对冲侧上界修正系数（基于波动率因子，如 rl_return_volatility）",
@@ -125,11 +125,7 @@ PARAM_COMMENTS: Dict[str, str] = {
 PARAM_PRINT_ORDER = [
     "order_amount",
     "order_interval_ms",
-    "open_price_offsets",
-    "open_vol_upper_scale",
-    "open_vol_lower_scale",
-    "open_price_offset_limit_upper",
-    "open_price_offset_limit_lower",
+    "orders_per_round",
     "open_order_timeout",
     "next_query_delay_ms",
     "hedge_vol_upper_scale",
@@ -152,7 +148,11 @@ PARAM_PRINT_ORDER = [
 
 def sync_strategy_params(rds, key: str) -> int:
     rds.hset(key, mapping=STRATEGY_PARAMS)
+    if REMOVED_KEYS:
+        rds.hdel(key, *REMOVED_KEYS)
     print(f"✅ 已写入 {len(STRATEGY_PARAMS)} 个参数到 HASH '{key}'")
+    if REMOVED_KEYS:
+        print(f"🧹 已删除旧字段: {', '.join(REMOVED_KEYS)}")
     return len(STRATEGY_PARAMS)
 
 

@@ -69,6 +69,10 @@ pub struct StrategyParams {
     #[serde(default = "default_order_interval_ms")]
     pub order_interval_ms: u64,
 
+    /// MM 每轮报单数量
+    #[serde(default = "default_orders_per_round")]
+    pub orders_per_round: u32,
+
     /// 开仓挂单档位（JSON 数组）
     /// 例如: "[0.0002, 0.0004, 0.0006, 0.0008, 0.001]"
     #[serde(default = "default_price_offsets")]
@@ -117,6 +121,9 @@ fn default_order_amount() -> f32 {
 fn default_order_interval_ms() -> u64 {
     5_000
 }
+fn default_orders_per_round() -> u32 {
+    1
+}
 fn default_price_offsets() -> String {
     "[0.0002, 0.0004, 0.0006, 0.0008, 0.001]".to_string()
 }
@@ -151,6 +158,7 @@ impl Default for StrategyParams {
             mode: default_mode(),
             order_amount: default_order_amount(),
             order_interval_ms: default_order_interval_ms(),
+            orders_per_round: default_orders_per_round(),
             price_offsets: default_price_offsets(),
             open_order_timeout: default_open_order_timeout(),
             hedge_timeout: default_hedge_timeout(),
@@ -208,6 +216,25 @@ impl StrategyParams {
                 parsed as u64
             }
             None => default_order_interval_ms(),
+        };
+
+        let orders_per_round = match hash_map.get("orders_per_round") {
+            Some(raw) => {
+                let parsed = raw.parse::<i64>().unwrap_or_else(|_| {
+                    panic!(
+                        "Redis hash '{}' orders_per_round 无法解析为整数: {}",
+                        redis_key, raw
+                    )
+                });
+                if parsed <= 0 {
+                    panic!(
+                        "Redis hash '{}' orders_per_round 无效(需>0): {}",
+                        redis_key, parsed
+                    );
+                }
+                parsed as u32
+            }
+            None => default_orders_per_round(),
         };
 
         let price_offsets = hash_map
@@ -342,6 +369,7 @@ impl StrategyParams {
             mode,
             order_amount,
             order_interval_ms,
+            orders_per_round,
             price_offsets,
             open_order_timeout,
             hedge_timeout,
@@ -419,7 +447,10 @@ impl StrategyParams {
             })
             .is_some()
             || MmDecision::try_with_mut(|_decision| {
+                _decision.update_order_amount(self.order_amount);
                 _decision.update_order_interval_ms(self.order_interval_ms);
+                _decision.update_orders_per_round(self.orders_per_round);
+                _decision.update_open_order_timeout(self.open_order_timeout);
             })
             .is_some();
 
@@ -432,10 +463,11 @@ impl StrategyParams {
         }
 
         info!(
-            "✅ 策略参数已更新: mode={}, amount={:.2}, order_interval_ms={}, cooldown={}s, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: mode={}, amount={:.2}, order_interval_ms={}, orders_per_round={}, cooldown={}s, return_model_service={}, environment_model_service={}",
             self.mode,
             self.order_amount,
             self.order_interval_ms,
+            self.orders_per_round,
             self.signal_cooldown,
             self.return_model_service,
             self.environment_model_service

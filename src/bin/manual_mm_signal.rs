@@ -18,7 +18,6 @@ use iceoryx2::service::ipc;
 use log::{info, warn};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use serde_json;
 use std::collections::HashMap;
 use std::fs;
 use std::net::SocketAddr;
@@ -43,13 +42,15 @@ use mkt_signal::factor_pub::fusion_factor_pub::app::ExtraFactorId;
 use mkt_signal::factor_pub::fusion_factor_pub::fusion_factor_index_to_name;
 use mkt_signal::factor_pub::model_pub::publisher::MODEL_PAYLOAD_MAX_BYTES;
 use mkt_signal::funding_rate::common::Quote;
+use mkt_signal::funding_rate::factor_value_hub::FactorValueHub;
 use mkt_signal::market_maker::manual_signal::{
     build_mm_hedge_ctx as build_mm_hedge_ctx_core, MmHedgeBuildInput,
 };
-use mkt_signal::market_maker::order_align::{
-    align_order_for_venue, ensure_supported_mm_open_venue as ensure_supported_mm_open_venue_raw,
-    min_qty_symbol_key,
+use mkt_signal::market_maker::open_quote_plan::{
+    build_default_hedge_offsets, build_mm_from_key, build_mm_open_quote_plan,
+    resolve_mm_volatility, MmOpenPlanLevel,
 };
+use mkt_signal::market_maker::order_align::ensure_supported_mm_open_venue as ensure_supported_mm_open_venue_raw;
 use mkt_signal::pre_trade::order_manager::{OrderType, Side};
 use mkt_signal::signal::common::{SignalBytes, TradingLeg, TradingVenue};
 use mkt_signal::signal::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
@@ -66,6 +67,13 @@ const ASKBID_PAYLOAD: usize = 128;
 const DEPTH_QUERY_SERVICE_PREFIX: &str = "depth_queries";
 const DEPTH_QUERY_RESPONSE_WAIT_RETRY: usize = 20;
 const DEPTH_QUERY_RESPONSE_WAIT_MS: u64 = 1;
+const DEFAULT_PNLU_REDIS_HOST: &str = "127.0.0.1";
+const DEFAULT_PNLU_REDIS_PORT: u16 = 6379;
+const DEFAULT_PNLU_REDIS_DB: i64 = 0;
+const DEFAULT_PNLU_KEY_SUFFIX: &str = "_pnlu_factor_thresholds";
+const PNLU_MAX_AGE_SECS: i64 = 30 * 60;
+const TARGET_FACTOR_NAME: &str = "rl_return_volatility";
+const TARGET_FACTOR_KEY_PREFIX: &str = TARGET_FACTOR_NAME;
 
 type DepthQueryClient = Client<ipc::Service, [u8], (), [u8], ()>;
 
@@ -95,8 +103,10 @@ struct AppCfg {
     signal_channel: String,
     backward_channel: String,
     default_open_ttl_ms: u64,
+    open_order_ttl_us: i64,
     order_amount_u: f64,
-    price_offsets: Vec<f64>,
+    orders_per_round: u32,
+    hedge_offsets: Vec<f64>,
     next_query_delay_ms: u64,
     from_key: Vec<u8>,
     model_service: String,
@@ -176,39 +186,29 @@ struct ManualOpenResponse {
     ok: bool,
     published_at_us: i64,
     symbol: String,
-    levels: usize,
+    venue: TradingVenue,
+    bid: f64,
+    ask: f64,
+    quote_ts: i64,
+    exp_time_us: i64,
+    order_amount_u: f64,
+    orders_per_round: u32,
+    price_tick: f64,
+    qty_tick: f64,
+    from_key: String,
+    mid_price: f64,
+    volatility: f64,
+    band_lower: f64,
+    band_upper: f64,
+    factor_ready: bool,
+    factor_key: String,
+    factor_note: String,
+    levels: Vec<OpenPreviewLevel>,
     buy_orders: usize,
     sell_orders: usize,
 }
 
-#[derive(Debug, Clone)]
-struct PlannedOpenOrder {
-    side: Side,
-    offset: f64,
-    base_price: f64,
-    raw_price: f64,
-    raw_qty: f64,
-    aligned_price: f64,
-    aligned_qty: f64,
-    price_tick_count: i64,
-    qty_tick_count: i64,
-}
-
-#[derive(Debug, Clone)]
-struct ManualOpenPlan {
-    symbol: String,
-    bid: f64,
-    ask: f64,
-    quote_ts: i64,
-    now_us: i64,
-    exp_time_us: i64,
-    from_key: Vec<u8>,
-    price_tick: f64,
-    qty_tick: f64,
-    levels: Vec<PlannedOpenOrder>,
-}
-
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct OpenPreviewLevel {
     side: String,
     offset: f64,
@@ -222,35 +222,17 @@ struct OpenPreviewLevel {
 }
 
 #[derive(Debug, Serialize)]
-struct OpenPreviewResponse {
-    ok: bool,
-    symbol: String,
-    venue: TradingVenue,
-    bid: f64,
-    ask: f64,
-    quote_ts: i64,
-    preview_ts_us: i64,
-    exp_time_us: i64,
-    order_amount_u: f64,
-    price_tick: f64,
-    qty_tick: f64,
-    from_key: String,
-    levels: Vec<OpenPreviewLevel>,
-    buy_orders: usize,
-    sell_orders: usize,
-}
-
-#[derive(Debug, Serialize)]
 struct ConfigResponse {
     venue: TradingVenue,
     bind: String,
     port: u16,
     default_open_ttl_ms: u64,
     order_amount_u: f64,
-    price_offsets: Vec<f64>,
+    orders_per_round: u32,
     next_query_delay_ms: u64,
     from_key: String,
     model_service: String,
+    target_factor: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -515,7 +497,13 @@ async fn load_config(path: &str) -> Result<AppCfg> {
     }
 
     let order_amount_u = parse_required_f64(&params, "order_amount")?;
-    let price_offsets = parse_required_offsets(&params, "open_price_offsets")?;
+    let orders_per_round = parse_required_u32(&params, "orders_per_round")?;
+    if orders_per_round == 0 {
+        panic!(
+            "redis hash '{}' orders_per_round invalid(need >0): {}",
+            params_key, orders_per_round
+        );
+    }
     let open_timeout_s = parse_required_u64(&params, "open_order_timeout")?;
     let next_query_delay_ms = parse_required_u64(&params, "next_query_delay_ms")?;
     let _hedge_aggressive_seq_threshold =
@@ -524,13 +512,12 @@ async fn load_config(path: &str) -> Result<AppCfg> {
     let _signal_cooldown = parse_required_u64(&params, "signal_cooldown")?;
 
     let default_open_ttl_ms = open_timeout_s.saturating_mul(1000);
+    let open_order_ttl_us = (open_timeout_s as i64).saturating_mul(1_000_000);
 
     if !(order_amount_u > 0.0) {
         anyhow::bail!("order_amount must be > 0");
     }
-    if price_offsets.is_empty() {
-        anyhow::bail!("open_price_offsets is empty");
-    }
+    let hedge_offsets = build_default_hedge_offsets(orders_per_round);
 
     Ok(AppCfg {
         venue,
@@ -539,8 +526,10 @@ async fn load_config(path: &str) -> Result<AppCfg> {
         signal_channel,
         backward_channel,
         default_open_ttl_ms,
+        open_order_ttl_us,
         order_amount_u,
-        price_offsets,
+        orders_per_round,
+        hedge_offsets,
         next_query_delay_ms,
         from_key,
         model_service: cfg.model_service,
@@ -569,15 +558,6 @@ fn parse_required_u32(params: &HashMap<String, String>, key: &str) -> Result<u32
         .ok_or_else(|| anyhow::anyhow!("missing redis field: {}", key))?;
     raw.parse::<u32>()
         .with_context(|| format!("parse redis field '{}' failed: {}", key, raw))
-}
-
-fn parse_required_offsets(params: &HashMap<String, String>, key: &str) -> Result<Vec<f64>> {
-    let raw = params
-        .get(key)
-        .ok_or_else(|| anyhow::anyhow!("missing redis field: {}", key))?;
-    let offsets: Vec<f64> = serde_json::from_str(raw)
-        .with_context(|| format!("parse redis field '{}' failed: {}", key, raw))?;
-    Ok(offsets)
 }
 
 fn get_redis_settings() -> RedisSettings {
@@ -698,7 +678,7 @@ fn build_mm_hedge_ctx(
         symbol: &symbol,
         quote,
         order_amount_u: cfg.order_amount_u,
-        offsets: &cfg.price_offsets,
+        offsets: &cfg.hedge_offsets,
         next_query_delay_ms: cfg.next_query_delay_ms,
         from_key: cfg.from_key.clone(),
     };
@@ -924,10 +904,35 @@ fn spawn_publisher_worker(
         let publisher = SignalPublisher::new(&cfg.signal_channel)
             .with_context(|| format!("create SignalPublisher failed on '{}'", cfg.signal_channel))
             .expect("failed to create SignalPublisher");
+        let factor_node_name = format!("{}_factor_hub", PROCESS_NAME);
+        let factor_node = NodeBuilder::new()
+            .name(&NodeName::new(&factor_node_name).expect("invalid factor node name"))
+            .create::<ipc::Service>()
+            .expect("failed to create factor hub node");
+
+        let pnlu_settings = RedisSettings {
+            host: DEFAULT_PNLU_REDIS_HOST.to_string(),
+            port: DEFAULT_PNLU_REDIS_PORT,
+            db: DEFAULT_PNLU_REDIS_DB,
+            username: None,
+            password: None,
+            prefix: None,
+        };
+        let mut factor_value_hub = FactorValueHub::new(
+            &factor_node,
+            cfg.venue,
+            cfg.venue,
+            TARGET_FACTOR_NAME,
+            TARGET_FACTOR_KEY_PREFIX,
+            pnlu_settings,
+            DEFAULT_PNLU_KEY_SUFFIX.to_string(),
+            PNLU_MAX_AGE_SECS,
+        )
+        .expect("failed to create FactorValueHub for manual_mm_signal");
 
         info!(
-            "manual_mm signal publisher ready: channel={} venue={:?}",
-            cfg.signal_channel, cfg.venue
+            "manual_mm signal publisher ready: channel={} venue={:?} factor={}",
+            cfg.signal_channel, cfg.venue, TARGET_FACTOR_NAME
         );
 
         loop {
@@ -942,8 +947,13 @@ fn spawn_publisher_worker(
                             }
                         }
                         PublishCmd::ManualOpen { req, reply } => {
-                            let res =
-                                build_and_publish_open(&cfg, &publisher, &min_qty_table, req);
+                            let res = build_and_publish_open(
+                                &cfg,
+                                &publisher,
+                                &min_qty_table,
+                                &mut factor_value_hub,
+                                req,
+                            );
                             let _ = reply.send(res);
                         }
                     }
@@ -957,15 +967,52 @@ fn build_and_publish_open(
     cfg: &AppCfg,
     publisher: &SignalPublisher,
     min_qty_table: &Arc<RwLock<VenueMinQtyTable>>,
+    factor_value_hub: &mut FactorValueHub,
     req: ManualOpenRequest,
 ) -> Result<ManualOpenResponse> {
-    let plan = build_manual_open_plan(cfg, min_qty_table, req)?;
+    let symbol = req.symbol.trim().to_uppercase();
+    if symbol.is_empty() {
+        anyhow::bail!("symbol is empty");
+    }
+    if req.bid <= 0.0 || req.ask <= 0.0 || req.bid >= req.ask {
+        anyhow::bail!("invalid quote bid={} ask={}", req.bid, req.ask);
+    }
 
-    let mut buy_orders = 0usize;
-    let mut sell_orders = 0usize;
+    let now_us = get_timestamp_us();
+    let factor_lookup = factor_value_hub.lookup_target_factor_value(&symbol, cfg.venue);
+    let factor_ready = factor_lookup.ready.unwrap_or(false);
+    let volatility = resolve_mm_volatility(factor_lookup.target_factor_value, factor_ready);
+
+    let plan = {
+        let table_guard = min_qty_table.read();
+        build_mm_open_quote_plan(
+            cfg.venue,
+            &symbol,
+            Quote {
+                bid: req.bid,
+                ask: req.ask,
+                ts: req.quote_ts,
+            },
+            cfg.order_amount_u,
+            cfg.orders_per_round,
+            cfg.open_order_ttl_us,
+            volatility,
+            now_us,
+            &table_guard,
+        )
+        .map_err(anyhow::Error::msg)?
+    };
+
+    let from_key_override = req
+        .from_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
     for level in &plan.levels {
         let mut ctx = MmOpenCtx::new();
-        ctx.opening_leg = TradingLeg::new(cfg.venue, plan.bid, plan.ask, plan.quote_ts);
+        ctx.opening_leg = TradingLeg::new(cfg.venue, plan.quote.bid, plan.quote.ask, plan.quote.ts);
         ctx.set_opening_symbol(&plan.symbol);
         ctx.set_side(level.side);
         ctx.set_order_type(OrderType::Limit);
@@ -974,128 +1021,63 @@ fn build_and_publish_open(
         ctx.exp_time = plan.exp_time_us;
         ctx.create_ts = plan.now_us;
         ctx.price_offset = level.offset;
-        ctx.set_from_key(plan.from_key.clone());
+        let level_from_key = if let Some(v) = from_key_override.as_ref() {
+            v.to_string()
+        } else {
+            format!(
+                "{}:manual_click=1:return_model=true",
+                build_mm_from_key(plan.now_us, plan.orders_per_round, level.level_index, plan.band)
+            )
+        };
+        ctx.set_from_key(level_from_key.into_bytes());
 
         let signal = TradeSignal::create(SignalType::MMOpen, plan.now_us, 0.0, ctx.to_bytes());
         publisher.publish(&signal.to_bytes())?;
-
-        match level.side {
-            Side::Buy => buy_orders += 1,
-            Side::Sell => sell_orders += 1,
-        }
     }
+
+    let (levels, buy_orders, sell_orders) = plan_to_levels_and_counts(&plan.levels);
+    let from_key = if let Some(v) = from_key_override {
+        v
+    } else {
+        format!(
+            "{}:manual_click=1:return_model=true",
+            build_mm_from_key(plan.now_us, plan.orders_per_round, 0, plan.band)
+        )
+    };
 
     Ok(ManualOpenResponse {
         ok: true,
         published_at_us: plan.now_us,
         symbol: plan.symbol,
-        levels: cfg.price_offsets.len(),
+        venue: cfg.venue,
+        bid: plan.quote.bid,
+        ask: plan.quote.ask,
+        quote_ts: plan.quote.ts,
+        exp_time_us: plan.exp_time_us,
+        order_amount_u: plan.order_amount_u,
+        orders_per_round: plan.orders_per_round,
+        price_tick: plan.price_tick,
+        qty_tick: plan.qty_tick,
+        from_key,
+        mid_price: plan.band.mid_price,
+        volatility: plan.band.volatility,
+        band_lower: plan.band.lower_price,
+        band_upper: plan.band.upper_price,
+        factor_ready,
+        factor_key: factor_lookup.key,
+        factor_note: factor_lookup.note,
+        levels,
         buy_orders,
         sell_orders,
     })
 }
 
-fn build_manual_open_plan(
-    cfg: &AppCfg,
-    min_qty_table: &Arc<RwLock<VenueMinQtyTable>>,
-    req: ManualOpenRequest,
-) -> Result<ManualOpenPlan> {
-    let symbol = req.symbol.trim().to_uppercase();
-    if symbol.is_empty() {
-        anyhow::bail!("symbol is empty");
-    }
-
-    if req.bid <= 0.0 || req.ask <= 0.0 || req.bid >= req.ask {
-        anyhow::bail!("invalid quote bid={} ask={}", req.bid, req.ask);
-    }
-
-    let now = get_timestamp_us();
-    let exp_ms = cfg.default_open_ttl_ms;
-    let exp_time = if exp_ms > 0 {
-        now + (exp_ms as i64) * 1000
-    } else {
-        0
-    };
-
-    let from_key = req
-        .from_key
-        .map(|k| k.into_bytes())
-        .unwrap_or_else(|| cfg.from_key.clone());
-
-    let symbol_key = min_qty_symbol_key(cfg.venue, &symbol);
-    let table_guard = min_qty_table.read();
-    let price_tick = table_guard.price_tick(&symbol_key).unwrap_or(0.0);
-    let qty_tick = table_guard.step_size(&symbol_key).unwrap_or(0.0);
-    if price_tick <= 0.0 || qty_tick <= 0.0 {
-        anyhow::bail!(
-            "missing tick for {} (price_tick={}, qty_tick={})",
-            symbol_key,
-            price_tick,
-            qty_tick
-        );
-    }
-
-    let mut levels = Vec::with_capacity(cfg.price_offsets.len().saturating_mul(2));
-
-    for offset in &cfg.price_offsets {
-        let offset = offset.abs();
-        for side in [Side::Buy, Side::Sell] {
-            let base_price = match side {
-                Side::Buy => req.bid,
-                Side::Sell => req.ask,
-            };
-            let raw_price = match side {
-                Side::Buy => base_price * (1.0 - offset),
-                Side::Sell => base_price * (1.0 + offset),
-            };
-            if raw_price <= 0.0 {
-                continue;
-            }
-            let raw_qty = cfg.order_amount_u / raw_price;
-            if raw_qty <= 0.0 {
-                continue;
-            }
-
-            let (aligned_qty, aligned_price) =
-                align_order_for_venue(cfg.venue, &symbol_key, raw_qty, raw_price, &table_guard)
-                    .map_err(anyhow::Error::msg)?;
-
-            let mut ctx = MmOpenCtx::new();
-            let _ = ctx.set_price_with_tick_floor(aligned_price, price_tick);
-            let _ = ctx.set_amount_with_tick_floor(aligned_qty, qty_tick);
-            levels.push(PlannedOpenOrder {
-                side,
-                offset,
-                base_price,
-                raw_price,
-                raw_qty,
-                aligned_price,
-                aligned_qty,
-                price_tick_count: ctx.price_count(),
-                qty_tick_count: ctx.amount_count(),
-            });
-        }
-    }
-
-    Ok(ManualOpenPlan {
-        symbol,
-        bid: req.bid,
-        ask: req.ask,
-        quote_ts: req.quote_ts,
-        now_us: now,
-        exp_time_us: exp_time,
-        from_key,
-        price_tick,
-        qty_tick,
-        levels,
-    })
-}
-
-fn build_open_preview_response(cfg: &AppCfg, plan: ManualOpenPlan) -> OpenPreviewResponse {
+fn plan_to_levels_and_counts(
+    levels: &[MmOpenPlanLevel],
+) -> (Vec<OpenPreviewLevel>, usize, usize) {
     let mut buy_orders = 0usize;
     let mut sell_orders = 0usize;
-    let levels = plan
-        .levels
+    let levels = levels
         .iter()
         .map(|order| {
             match order.side {
@@ -1115,24 +1097,7 @@ fn build_open_preview_response(cfg: &AppCfg, plan: ManualOpenPlan) -> OpenPrevie
             }
         })
         .collect::<Vec<_>>();
-
-    OpenPreviewResponse {
-        ok: true,
-        symbol: plan.symbol,
-        venue: cfg.venue,
-        bid: plan.bid,
-        ask: plan.ask,
-        quote_ts: plan.quote_ts,
-        preview_ts_us: plan.now_us,
-        exp_time_us: plan.exp_time_us,
-        order_amount_u: cfg.order_amount_u,
-        price_tick: plan.price_tick,
-        qty_tick: plan.qty_tick,
-        from_key: String::from_utf8_lossy(&plan.from_key).to_string(),
-        levels,
-        buy_orders,
-        sell_orders,
-    }
+    (levels, buy_orders, sell_orders)
 }
 
 async fn api_config(State(st): State<AppState>) -> impl IntoResponse {
@@ -1142,17 +1107,25 @@ async fn api_config(State(st): State<AppState>) -> impl IntoResponse {
         port: st.cfg.port,
         default_open_ttl_ms: st.cfg.default_open_ttl_ms,
         order_amount_u: st.cfg.order_amount_u,
-        price_offsets: st.cfg.price_offsets.clone(),
+        orders_per_round: st.cfg.orders_per_round,
         next_query_delay_ms: st.cfg.next_query_delay_ms,
         from_key: String::from_utf8_lossy(&st.cfg.from_key).to_string(),
         model_service: st.cfg.model_service.clone(),
+        target_factor: TARGET_FACTOR_NAME.to_string(),
     })
 }
 
 async fn api_symbols(State(st): State<AppState>) -> impl IntoResponse {
-    let cache = st.model_scores.read();
-    let mut symbols: Vec<String> = cache.scores.keys().cloned().collect();
+    let model_cache = st.model_scores.read();
+    let quote_cache = st.quotes.read();
+    let mut symbols: Vec<String> = model_cache
+        .scores
+        .keys()
+        .chain(quote_cache.quotes.keys())
+        .cloned()
+        .collect();
     symbols.sort();
+    symbols.dedup();
     Json(SymbolsResponse { symbols })
 }
 
@@ -1212,32 +1185,6 @@ async fn api_send(
     }
 }
 
-async fn api_preview(
-    State(st): State<AppState>,
-    Json(req): Json<ApiOpenRequest>,
-) -> impl IntoResponse {
-    let symbol = req.symbol.trim().to_uppercase();
-    if symbol.is_empty() {
-        return (StatusCode::BAD_REQUEST, "symbol is empty").into_response();
-    }
-    let quote = st.quotes.read().get_valid(&symbol);
-    let Some(qt) = quote else {
-        return (StatusCode::BAD_REQUEST, "quote unavailable").into_response();
-    };
-    let req = ManualOpenRequest {
-        symbol,
-        bid: qt.bid,
-        ask: qt.ask,
-        quote_ts: qt.ts,
-        from_key: req.from_key,
-    };
-
-    match build_manual_open_plan(&st.cfg, &st.min_qty_table, req) {
-        Ok(plan) => Json(build_open_preview_response(&st.cfg, plan)).into_response(),
-        Err(err) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-    }
-}
-
 async fn api_mm_hedge_tlen(State(st): State<AppState>) -> impl IntoResponse {
     let snapshot = st.mm_hedge_tlen.read().clone();
     Json(snapshot).into_response()
@@ -1275,7 +1222,6 @@ async fn serve_http(addr: SocketAddr, state: AppState, token: CancellationToken)
         .route("/api/config", get(api_config))
         .route("/api/symbols", get(api_symbols))
         .route("/api/quote", get(api_quote))
-        .route("/api/preview", post(api_preview))
         .route("/api/mm_hedge_tlen", get(api_mm_hedge_tlen))
         .route("/api/model_scores", get(api_model_scores))
         .route("/api/send", post(api_send))
@@ -1458,10 +1404,9 @@ const INDEX_HTML: &str = r#"<!doctype html>
           </div>
           <div class="row" style="margin-top:10px;">
             <button id="refreshQuote">Refresh Quote</button>
-            <button id="preview">Preview MMOpen</button>
-            <button id="send">Send MMOpen</button>
+            <button id="send">一键发号 (RETURN=TRUE)</button>
           </div>
-          <div class="muted" id="actionHint" style="margin-top:8px;">请选择 symbol 后操作</div>
+          <div class="muted" id="actionHint" style="margin-top:8px;">请选择 symbol 后点击一键发号（默认 return model=true）</div>
         </section>
       </div>
 
@@ -1473,8 +1418,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
 
         <section class="panel">
           <div class="row-between">
-            <h3 style="font-size:15px;">MMOpen Preview</h3>
-            <div class="muted" id="previewMeta">No preview yet</div>
+            <h3 style="font-size:15px;">拆单报价结果</h3>
+            <div class="muted" id="splitMeta">No send yet</div>
           </div>
           <div class="table-wrap" style="margin-top:8px;">
             <table>
@@ -1492,10 +1437,10 @@ const INDEX_HTML: &str = r#"<!doctype html>
                   <th>qty_count</th>
                 </tr>
               </thead>
-              <tbody id="previewRows">
+              <tbody id="splitRows">
                 <tr><td colspan="10" class="muted" style="text-align:center;">No data</td></tr>
               </tbody>
-              <tfoot id="previewSummaryRows"></tfoot>
+              <tfoot id="splitSummaryRows"></tfoot>
             </table>
           </div>
         </section>
@@ -1538,7 +1483,6 @@ const INDEX_HTML: &str = r#"<!doctype html>
         cfg: null,
         symbols: [],
         selected: '',
-        lastPreview: null,
       };
 
       const els = {
@@ -1551,15 +1495,14 @@ const INDEX_HTML: &str = r#"<!doctype html>
         fromKey: document.getElementById('fromKey'),
         statusPill: document.getElementById('statusPill'),
         actionHint: document.getElementById('actionHint'),
-        previewRows: document.getElementById('previewRows'),
-        previewSummaryRows: document.getElementById('previewSummaryRows'),
-        previewMeta: document.getElementById('previewMeta'),
+        splitMeta: document.getElementById('splitMeta'),
+        splitRows: document.getElementById('splitRows'),
+        splitSummaryRows: document.getElementById('splitSummaryRows'),
         hedgeTlenMeta: document.getElementById('hedgeTlenMeta'),
         hedgeTlenRows: document.getElementById('hedgeTlenRows'),
         log: document.getElementById('log'),
         refreshQuote: document.getElementById('refreshQuote'),
         refreshHedgeTlen: document.getElementById('refreshHedgeTlen'),
-        preview: document.getElementById('preview'),
         send: document.getElementById('send'),
       };
 
@@ -1580,25 +1523,27 @@ const INDEX_HTML: &str = r#"<!doctype html>
       function updateButtons() {
         const symbol = els.symbol.value.trim().toUpperCase();
         const enabled = !!symbol;
-        els.preview.disabled = !enabled;
         els.send.disabled = !enabled;
-        els.actionHint.textContent = enabled ? '可先 Preview 确认，再 Send' : '请选择 symbol 后操作';
+        els.actionHint.textContent = enabled
+          ? '点击一键发号（默认 return model=true）'
+          : '请选择 symbol 后点击一键发号（默认 return model=true）';
       }
 
       function renderCfg(cfg) {
         state.cfg = cfg;
-        els.cfgLine.textContent = `model_service:${cfg.model_service} | venue=${cfg.venue}`;
-        els.fromKey.value = cfg.from_key || '';
+        els.cfgLine.textContent = `model_service:${cfg.model_service} | venue=${cfg.venue} | return_model_assumed=true`;
+        els.fromKey.value = '';
+        els.fromKey.placeholder = cfg.from_key || 'optional';
 
         const kv = [
           ['venue', cfg.venue],
           ['bind', `${cfg.bind}:${cfg.port}`],
           ['model_service', cfg.model_service || ''],
+          ['target_factor', cfg.target_factor || 'rl_return_volatility'],
           ['order_amount_u', cfg.order_amount_u],
+          ['orders_per_round', cfg.orders_per_round],
           ['default_open_ttl_ms', cfg.default_open_ttl_ms],
           ['next_query_delay_ms', cfg.next_query_delay_ms],
-          ['offset_count', (cfg.price_offsets || []).length],
-          ['offsets', JSON.stringify(cfg.price_offsets || [])],
           ['default_from_key', cfg.from_key || ''],
         ];
         els.cfgKv.innerHTML = kv
@@ -1623,12 +1568,12 @@ const INDEX_HTML: &str = r#"<!doctype html>
         }
       }
 
-      function renderPreview(preview) {
-        state.lastPreview = preview;
-        const rows = preview.levels || [];
+      function renderSplitResult(resp) {
+        const rows = resp.levels || [];
         if (!rows.length) {
-          els.previewRows.innerHTML = '<tr><td colspan="10" class="muted" style="text-align:center;">No levels</td></tr>';
-          els.previewSummaryRows.innerHTML = '';
+          els.splitRows.innerHTML = '<tr><td colspan="10" class="muted" style="text-align:center;">No levels</td></tr>';
+          els.splitSummaryRows.innerHTML = '';
+          els.splitMeta.textContent = `symbol=${resp.symbol || '-'} no levels`;
           return;
         }
 
@@ -1644,7 +1589,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
         }, 0);
         const totalAlignedNotional = buyNotional + sellNotional;
 
-        els.previewRows.innerHTML = rows.map((row) => {
+        els.splitRows.innerHTML = rows.map((row) => {
           const sideCls = row.side === 'buy' ? 'buy' : 'sell';
           const alignedNotional = Number(row.aligned_price) * Number(row.aligned_qty);
           return `
@@ -1663,7 +1608,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
           `;
         }).join('');
 
-        els.previewSummaryRows.innerHTML = `
+        els.splitSummaryRows.innerHTML = `
           <tr>
             <td class="buy">buy_subtotal</td>
             <td colspan="6">-</td>
@@ -1684,8 +1629,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
           </tr>
         `;
 
-        els.previewMeta.textContent =
-          `symbol=${preview.symbol} buy=${preview.buy_orders} sell=${preview.sell_orders} total_notional_u=${fmtNum(totalAlignedNotional, 4)} quote_ts=${preview.quote_ts}`;
+        els.splitMeta.textContent =
+          `symbol=${resp.symbol} buy=${resp.buy_orders} sell=${resp.sell_orders} total_notional_u=${fmtNum(totalAlignedNotional, 4)} mid=${fmtNum(resp.mid_price, 6)} vol=${fmtNum(resp.volatility, 6)} band=[${fmtNum(resp.band_lower, 6)},${fmtNum(resp.band_upper, 6)}] factor_ready=${resp.factor_ready} quote_ts=${resp.quote_ts}`;
       }
 
       function renderHedgeTlen(snapshot) {
@@ -1774,27 +1719,6 @@ const INDEX_HTML: &str = r#"<!doctype html>
         return payload;
       }
 
-      async function previewOpen() {
-        const payload = buildPayload();
-        const resp = await fetch('/api/preview', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-
-        const text = await resp.text();
-        if (!resp.ok) {
-          setStatus('PREVIEW_ERR', true);
-          setLog({ error: text });
-          return;
-        }
-
-        const data = JSON.parse(text);
-        renderPreview(data);
-        setStatus('PREVIEW_OK');
-        setLog(data);
-      }
-
       async function sendOpen() {
         const payload = buildPayload();
         const resp = await fetch('/api/send', {
@@ -1811,6 +1735,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
         }
 
         const data = JSON.parse(text);
+        renderSplitResult(data);
         setStatus('SEND_OK');
         setLog(data);
       }
@@ -1824,7 +1749,6 @@ const INDEX_HTML: &str = r#"<!doctype html>
       };
       els.refreshQuote.onclick = refreshQuote;
       els.refreshHedgeTlen.onclick = refreshHedgeTlen;
-      els.preview.onclick = previewOpen;
       els.send.onclick = sendOpen;
 
       (async () => {
@@ -1853,11 +1777,15 @@ async fn run(cfg: AppCfg, token: CancellationToken) -> Result<()> {
     let model_scores = Arc::new(RwLock::new(ModelScoreCache::default()));
     let mm_hedge_tlen = Arc::new(RwLock::new(None));
     spawn_ask_bid_listener(cfg.venue, quotes.clone(), token.clone());
-    spawn_model_listener(
-        cfg.model_service.clone(),
-        model_scores.clone(),
-        token.clone(),
-    );
+    if cfg.model_service.trim() != "-" {
+        spawn_model_listener(
+            cfg.model_service.clone(),
+            model_scores.clone(),
+            token.clone(),
+        );
+    } else {
+        info!("manual_mm: model_service disabled ('-'), symbol list only from manual input");
+    }
 
     let (publish_tx, publish_rx) = mpsc::unbounded_channel();
     spawn_publisher_worker(cfg.clone(), table.clone(), publish_rx, token.clone());
