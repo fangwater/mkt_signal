@@ -205,22 +205,46 @@ async fn reload_spread_thresholds(
     hedge_venue: TradingVenue,
 ) -> Result<()> {
     let redis_key = spread_thresholds_key(namespace, open_venue, hedge_venue);
+    let ns = normalize_namespace(namespace);
+    let strict_required = ns == "fr" || ns == "xarb";
 
     match RedisClient::connect(redis.clone()).await {
         Ok(mut client) => {
-            let spread_map = client
-                .hgetall_map(&redis_key)
-                .await
-                .with_context(|| format!("读取 Redis Hash 失败: {}", redis_key))?;
+            let spread_map = match client.hgetall_map(&redis_key).await {
+                Ok(map) => map,
+                Err(err) => {
+                    if strict_required {
+                        panic!(
+                            "读取 Redis Hash '{}' 失败，无法加载价差阈值: {:?}",
+                            redis_key, err
+                        );
+                    }
+                    warn!(
+                        "读取 Redis Hash 失败: {} ({:?}), 跳过价差阈值加载 (ns={})",
+                        redis_key, err, ns
+                    );
+                    return Ok(());
+                }
+            };
             if spread_map.is_empty() {
-                panic!("Redis hash '{}' 为空或不存在，无法加载价差阈值", redis_key);
+                if strict_required {
+                    panic!("Redis hash '{}' 为空或不存在，无法加载价差阈值", redis_key);
+                }
+                warn!(
+                    "Redis hash '{}' 为空或不存在，跳过价差阈值加载 (ns={})",
+                    redis_key, ns
+                );
+                return Ok(());
             }
             load_spread_thresholds(spread_map, open_venue, hedge_venue)
                 .with_context(|| format!("解析价差阈值失败 (key: {})", redis_key))?;
             info!("价差阈值重载成功 (key: {})", redis_key);
         }
         Err(err) => {
-            warn!("连接 Redis 加载价差阈值失败: {:?}", err);
+            if strict_required {
+                panic!("连接 Redis 失败，无法加载价差阈值: {:?}", err);
+            }
+            warn!("连接 Redis 加载价差阈值失败: {:?} (ns={})", err, ns);
         }
     }
     Ok(())

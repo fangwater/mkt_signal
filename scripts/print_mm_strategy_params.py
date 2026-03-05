@@ -67,6 +67,7 @@ def parse_args() -> argparse.Namespace:
 
 PARAM_COMMENTS: Dict[str, str] = {
     "order_amount": "单笔下单量(USDT)",
+    "order_interval_ms": "报单触发间隔(ms)",
     "open_price_offsets": "开仓挂单档位(JSON数组)",
     "open_vol_upper_scale": "开仓侧上界修正系数（基于波动率因子）",
     "open_vol_lower_scale": "开仓侧下界修正系数（基于波动率因子）",
@@ -93,6 +94,7 @@ PARAM_COMMENTS: Dict[str, str] = {
 
 PARAM_PRINT_ORDER = [
     "order_amount",
+    "order_interval_ms",
     "open_price_offsets",
     "open_vol_upper_scale",
     "open_vol_lower_scale",

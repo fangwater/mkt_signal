@@ -12,6 +12,7 @@ use crate::common::redis_client::{RedisClient, RedisSettings};
 
 use super::common::FactorMode;
 use super::fr_decision::FrDecision;
+use super::mm_decision::MmDecision;
 use super::spread_factor::SpreadFactor;
 use super::xarb_decision::XarbDecision;
 use crate::signal::common::TradingVenue;
@@ -37,6 +38,9 @@ fn strategy_params_key(
     hedge_venue: TradingVenue,
 ) -> String {
     let ns = normalize_namespace(namespace);
+    if ns == "mm" {
+        return format!("mm_strategy_params_{}", hedge_venue.data_pub_slug());
+    }
     let prefix = if ns == "fr" {
         "fr_strategy_params".to_string()
     } else {
@@ -60,6 +64,10 @@ pub struct StrategyParams {
     /// 单笔下单量（USDT）
     #[serde(default = "default_order_amount")]
     pub order_amount: f32,
+
+    /// MM 报单触发间隔（毫秒）
+    #[serde(default = "default_order_interval_ms")]
+    pub order_interval_ms: u64,
 
     /// 开仓挂单档位（JSON 数组）
     /// 例如: "[0.0002, 0.0004, 0.0006, 0.0008, 0.001]"
@@ -106,6 +114,9 @@ fn default_mode() -> String {
 fn default_order_amount() -> f32 {
     100.0
 }
+fn default_order_interval_ms() -> u64 {
+    5_000
+}
 fn default_price_offsets() -> String {
     "[0.0002, 0.0004, 0.0006, 0.0008, 0.001]".to_string()
 }
@@ -139,6 +150,7 @@ impl Default for StrategyParams {
         Self {
             mode: default_mode(),
             order_amount: default_order_amount(),
+            order_interval_ms: default_order_interval_ms(),
             price_offsets: default_price_offsets(),
             open_order_timeout: default_open_order_timeout(),
             hedge_timeout: default_hedge_timeout(),
@@ -178,6 +190,25 @@ impl StrategyParams {
             .get("order_amount")
             .and_then(|s| s.parse::<f32>().ok())
             .unwrap_or_else(default_order_amount);
+
+        let order_interval_ms = match hash_map.get("order_interval_ms") {
+            Some(raw) => {
+                let parsed = raw.parse::<i64>().unwrap_or_else(|_| {
+                    panic!(
+                        "Redis hash '{}' order_interval_ms 无法解析为整数: {}",
+                        redis_key, raw
+                    )
+                });
+                if parsed <= 0 {
+                    panic!(
+                        "Redis hash '{}' order_interval_ms 无效(需>0): {}",
+                        redis_key, parsed
+                    );
+                }
+                parsed as u64
+            }
+            None => default_order_interval_ms(),
+        };
 
         let price_offsets = hash_map
             .get("price_offsets")
@@ -234,7 +265,7 @@ impl StrategyParams {
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or_else(default_signal_cooldown);
 
-        let allow_missing_model_service = ns == "fr";
+        let allow_missing_model_service = ns == "fr" || ns == "mm";
         let return_model_service = match hash_map.get("return_model_service") {
             Some(v) => {
                 let trimmed = v.trim();
@@ -310,6 +341,7 @@ impl StrategyParams {
         Ok(Self {
             mode,
             order_amount,
+            order_interval_ms,
             price_offsets,
             open_order_timeout,
             hedge_timeout,
@@ -385,6 +417,10 @@ impl StrategyParams {
                 );
                 decision.update_model_output_services(self.parse_model_output_services());
             })
+            .is_some()
+            || MmDecision::try_with_mut(|_decision| {
+                _decision.update_order_interval_ms(self.order_interval_ms);
+            })
             .is_some();
 
         // 2. 更新 SpreadFactor 模式
@@ -396,9 +432,10 @@ impl StrategyParams {
         }
 
         info!(
-            "✅ 策略参数已更新: mode={}, amount={:.2}, cooldown={}s, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: mode={}, amount={:.2}, order_interval_ms={}, cooldown={}s, return_model_service={}, environment_model_service={}",
             self.mode,
             self.order_amount,
+            self.order_interval_ms,
             self.signal_cooldown,
             self.return_model_service,
             self.environment_model_service

@@ -16,8 +16,8 @@ use mkt_signal::signal::common::TradingVenue;
 // 使用模块化的 funding_rate
 use mkt_signal::funding_rate::{
     init_decision_branch, load_all_once_with_namespace, spawn_config_loader_with_namespace,
-    DecisionBranch, FrDecision, FundingRateFactor, MktChannel, RateFetcher, SpreadFactor,
-    SymbolList, XarbDecision,
+    DecisionBranch, FrDecision, FundingRateFactor, MktChannel, MmDecision, RateFetcher,
+    SpreadFactor, SymbolList, XarbDecision,
 };
 
 const PROCESS_NAME: &str = "trade_signal";
@@ -143,6 +143,32 @@ fn infer_xarb_venues_from_key_suffix(key_suffix: &str) -> Option<(TradingVenue, 
     Some((open, hedge))
 }
 
+fn key_suffix_looks_like_mm(key_suffix: &str) -> bool {
+    let lower = key_suffix.trim().to_ascii_lowercase();
+    lower.contains("_mm") || lower.contains("-mm")
+}
+
+fn infer_mm_venue_from_key_suffix(key_suffix: &str) -> Option<TradingVenue> {
+    let raw = key_suffix.trim().to_ascii_lowercase().replace('_', "-");
+    if raw.is_empty() {
+        return None;
+    }
+
+    if let Some(venue) = venue_from_slug(&raw) {
+        return Some(venue);
+    }
+
+    let exchange_candidate = if let Some((prefix, _)) = raw.split_once("-mm") {
+        prefix.trim().to_string()
+    } else {
+        raw.split('-').next().unwrap_or("").trim().to_string()
+    };
+    if exchange_candidate.is_empty() {
+        return None;
+    }
+    futures_venue_for_exchange(normalize_exchange_str(&exchange_candidate))
+}
+
 /// 主运行循环
 async fn run(
     branch: DecisionBranch,
@@ -168,6 +194,9 @@ async fn run(
         }
         DecisionBranch::Xarb => {
             XarbDecision::init_singleton(open_venue, hedge_venue).await?;
+        }
+        DecisionBranch::Mm => {
+            MmDecision::init_singleton(open_venue, hedge_venue).await?;
         }
     }
     info!("所有单例初始化完成");
@@ -314,6 +343,32 @@ async fn main() -> Result<()> {
                     Some(inferred),
                     open_venue,
                     hedge_venue,
+                )
+            }
+            Some((ns, suffix)) if ns.eq_ignore_ascii_case("mm") => {
+                let venue = infer_mm_venue_from_key_suffix(&suffix).with_context(|| {
+                    format!("failed to infer mm venue from CWD suffix='{}'", suffix)
+                })?;
+                (
+                    DecisionBranch::Mm,
+                    "mm".to_string(),
+                    venue.data_pub_slug().to_string(),
+                    None,
+                    venue,
+                    venue,
+                )
+            }
+            Some((_ns, suffix)) if key_suffix_looks_like_mm(&suffix) => {
+                let venue = infer_mm_venue_from_key_suffix(&suffix).with_context(|| {
+                    format!("failed to infer mm venue from CWD suffix='{}'", suffix)
+                })?;
+                (
+                    DecisionBranch::Mm,
+                    "mm".to_string(),
+                    venue.data_pub_slug().to_string(),
+                    None,
+                    venue,
+                    venue,
                 )
             }
             _ => {

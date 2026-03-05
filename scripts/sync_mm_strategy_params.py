@@ -70,6 +70,7 @@ def parse_args() -> argparse.Namespace:
 # Hash key: mm_strategy_params_{venue}
 STRATEGY_PARAMS = {
     "order_amount": "100.0",
+    "order_interval_ms": "5000",
     "open_price_offsets": "[0.0002, 0.0004, 0.0006, 0.0008, 0.001, 0.0015, 0.002, 0.003, 0.004, 0.005]",
     "open_vol_upper_scale": "0.0",
     "open_vol_lower_scale": "0.0",
@@ -96,6 +97,7 @@ STRATEGY_PARAMS = {
 
 PARAM_COMMENTS: Dict[str, str] = {
     "order_amount": "单笔下单量(USDT)",
+    "order_interval_ms": "报单触发间隔(ms)",
     "open_price_offsets": "开仓挂单档位(JSON数组)",
     "open_vol_upper_scale": "开仓侧上界修正系数（基于波动率因子）",
     "open_vol_lower_scale": "开仓侧下界修正系数（基于波动率因子）",
@@ -122,6 +124,7 @@ PARAM_COMMENTS: Dict[str, str] = {
 
 PARAM_PRINT_ORDER = [
     "order_amount",
+    "order_interval_ms",
     "open_price_offsets",
     "open_vol_upper_scale",
     "open_vol_lower_scale",

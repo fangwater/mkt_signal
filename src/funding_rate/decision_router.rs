@@ -1,7 +1,10 @@
 //! Decision router for trade_signal.
 //!
-//! Dispatches event-driven decision triggers to either `FrDecision` (single-venue FR)
-//! or `XarbDecision` (cross-venue xarb), based on a startup-selected branch.
+//! Dispatches event-driven decision triggers to one of:
+//! - `FrDecision` (single-venue FR)
+//! - `XarbDecision` (cross-venue xarb)
+//! - `MmDecision` (market-making framework)
+//! based on a startup-selected branch.
 
 use anyhow::Result;
 use log::{info, warn};
@@ -15,6 +18,7 @@ use crate::signal::common::TradingVenue;
 pub enum DecisionBranch {
     Fr,
     Xarb,
+    Mm,
 }
 
 thread_local! {
@@ -133,6 +137,13 @@ pub fn trigger_decision(
                     open_venue,
                     hedge_venue,
                 );
+            });
+        }
+        DecisionBranch::Mm => {
+            use super::mm_decision::MmDecision;
+            MmDecision::with_mut(|decision| {
+                let _ =
+                    decision.make_mm_decision(open_symbol, hedge_symbol, open_venue, hedge_venue);
             });
         }
     }

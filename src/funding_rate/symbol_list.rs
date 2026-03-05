@@ -145,6 +145,26 @@ impl SymbolList {
 
         // 读取建仓列表
         // （废弃）建仓列表现阶段未使用，留空
+        if ns == "mm" {
+            let trade_key = format!("{ns}_trade_symbols:{key_suffix}");
+            if let Ok(Some(value)) = client.get_string(&trade_key).await {
+                if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
+                    let normalized: HashSet<String> =
+                        symbols.iter().map(|s| s.to_uppercase()).collect();
+                    Self::with_inner_mut(|inner| {
+                        // MM 当前只维护一套交易列表，映射到正反两个方向以复用触发逻辑
+                        inner.fwd_trade_symbols = normalized.clone();
+                        inner.bwd_trade_symbols = normalized.clone();
+                        info!(
+                            "更新 MM 交易列表 {}: {} 个交易对",
+                            key_suffix,
+                            inner.fwd_trade_symbols.len()
+                        );
+                    });
+                }
+            }
+        }
+
         // 读取正套建仓列表
         let fwd_trade_key = format!("{ns}_fwd_trade_symbols:{key_suffix}");
         if let Ok(Some(value)) = client.get_string(&fwd_trade_key).await {
