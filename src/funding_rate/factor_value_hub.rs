@@ -93,6 +93,15 @@ pub struct EnvironmentSignalResult {
     pub note: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct ModelOutputScoreLookupResult {
+    pub service_name: String,
+    pub symbol_key: String,
+    pub subscribed: bool,
+    pub score: Option<f64>,
+    pub note: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct FactorValueSnapshot {
     value: f64,
@@ -638,6 +647,66 @@ impl FactorValueHub {
                 threshold: pnlu_check.threshold,
                 note: format!("pnlu_fallback:{}", pnlu_check.reason),
             }
+        }
+    }
+
+    pub fn lookup_model_output_score(
+        &mut self,
+        model_service: &str,
+        hedge_symbol: &str,
+        hedge_venue: TradingVenue,
+    ) -> ModelOutputScoreLookupResult {
+        self.poll_model_output_updates();
+
+        let service_name = model_service.trim().to_string();
+        let symbol_key = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
+        if service_name.is_empty() || service_name == "-" {
+            return ModelOutputScoreLookupResult {
+                service_name,
+                symbol_key,
+                subscribed: false,
+                score: None,
+                note: "service_disabled".to_string(),
+            };
+        }
+
+        let subscribed = self
+            .model_output_services
+            .iter()
+            .any(|s| s == &service_name);
+        if !subscribed {
+            return ModelOutputScoreLookupResult {
+                service_name,
+                symbol_key,
+                subscribed: false,
+                score: None,
+                note: "service_not_subscribed".to_string(),
+            };
+        }
+
+        let cache_key = (service_name.clone(), symbol_key.clone());
+        match self.model_output_latest_scores.get(&cache_key).copied() {
+            Some(score) if score.is_finite() => ModelOutputScoreLookupResult {
+                service_name,
+                symbol_key,
+                subscribed: true,
+                score: Some(score),
+                note: "ok".to_string(),
+            },
+            Some(_) => ModelOutputScoreLookupResult {
+                service_name,
+                symbol_key,
+                subscribed: true,
+                score: None,
+                note: "invalid_model_score".to_string(),
+            },
+            None => ModelOutputScoreLookupResult {
+                service_name,
+                symbol_key,
+                subscribed: true,
+                score: None,
+                note: "missing_model_score".to_string(),
+            },
         }
     }
 

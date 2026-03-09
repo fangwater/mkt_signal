@@ -67,7 +67,6 @@ pub fn is_throttle_error_code(exchange: Option<Exchange>, error_code: i32) -> bo
 pub fn register_signal_throttle(
     symbol: &str,
     dir: Side,
-    _from_key: &str,
     exchange: Option<Exchange>,
     error_code: i32,
 ) -> bool {
@@ -75,7 +74,6 @@ pub fn register_signal_throttle(
     register_signal_throttle_at(
         symbol,
         dir,
-        "",
         exchange,
         error_code,
         now_us,
@@ -83,13 +81,9 @@ pub fn register_signal_throttle(
     )
 }
 
-pub fn check_signal_throttle(
-    symbol: &str,
-    dir: Side,
-    _from_key: &str,
-) -> Option<SignalThrottleHit> {
+pub fn check_signal_throttle(symbol: &str, dir: Side) -> Option<SignalThrottleHit> {
     let now_us = get_timestamp_us();
-    check_signal_throttle_at(symbol, dir, "", now_us)
+    check_signal_throttle_at(symbol, dir, now_us)
 }
 
 pub fn snapshot_active_signal_throttles() -> Vec<ActiveSignalThrottle> {
@@ -153,7 +147,6 @@ pub fn log_active_signal_throttles(max_details: usize) {
 fn register_signal_throttle_at(
     symbol: &str,
     dir: Side,
-    _from_key: &str,
     exchange: Option<Exchange>,
     error_code: i32,
     now_us: i64,
@@ -193,12 +186,7 @@ fn register_signal_throttle_at(
     true
 }
 
-fn check_signal_throttle_at(
-    symbol: &str,
-    dir: Side,
-    _from_key: &str,
-    now_us: i64,
-) -> Option<SignalThrottleHit> {
+fn check_signal_throttle_at(symbol: &str, dir: Side, now_us: i64) -> Option<SignalThrottleHit> {
     let key = SignalThrottleKey::new(symbol, dir);
     let mut guard = SIGNAL_THROTTLE_MAP.lock();
     cleanup_expired(&mut guard, now_us);
@@ -243,28 +231,26 @@ mod tests {
     fn registers_and_expires_throttle() {
         clear_all();
         let symbol = "btcusdt";
-        let from_key = "1722333123000000:0.1:0.2";
         let now_us = 1_000_000;
         let ttl_us = 30;
 
         assert!(register_signal_throttle_at(
             symbol,
             Side::Buy,
-            from_key,
             Some(Exchange::Binance),
             51169,
             now_us,
             ttl_us
         ));
 
-        let hit1 = check_signal_throttle_at("BTCUSDT", Side::Buy, from_key, now_us + 1)
+        let hit1 = check_signal_throttle_at("BTCUSDT", Side::Buy, now_us + 1)
             .expect("throttle must be hit");
         assert_eq!(hit1.last_error_code, 51169);
 
-        let hit2 = check_signal_throttle_at("BTCUSDT", Side::Buy, from_key, now_us + ttl_us - 1);
+        let hit2 = check_signal_throttle_at("BTCUSDT", Side::Buy, now_us + ttl_us - 1);
         assert!(hit2.is_some());
 
-        let hit3 = check_signal_throttle_at("BTCUSDT", Side::Buy, from_key, now_us + ttl_us);
+        let hit3 = check_signal_throttle_at("BTCUSDT", Side::Buy, now_us + ttl_us);
         assert!(hit3.is_none());
     }
 }

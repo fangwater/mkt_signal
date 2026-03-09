@@ -41,14 +41,14 @@ use mkt_signal::depth_pub::query_msg::{
 use mkt_signal::factor_pub::fusion_factor_pub::app::ExtraFactorId;
 use mkt_signal::factor_pub::fusion_factor_pub::fusion_factor_index_to_name;
 use mkt_signal::factor_pub::model_pub::publisher::MODEL_PAYLOAD_MAX_BYTES;
+use mkt_signal::funding_rate::common::build_decision_from_key_base;
 use mkt_signal::funding_rate::common::Quote;
 use mkt_signal::funding_rate::factor_value_hub::FactorValueHub;
 use mkt_signal::market_maker::manual_signal::{
     build_mm_hedge_ctx as build_mm_hedge_ctx_core, MmHedgeBuildInput,
 };
 use mkt_signal::market_maker::open_quote_plan::{
-    build_default_hedge_offsets, build_mm_from_key, build_mm_open_quote_plan,
-    resolve_mm_volatility, MmOpenPlanLevel,
+    build_default_hedge_offsets, build_mm_open_quote_plan, MmOpenPlanLevel,
 };
 use mkt_signal::market_maker::order_align::ensure_supported_mm_open_venue as ensure_supported_mm_open_venue_raw;
 use mkt_signal::pre_trade::order_manager::{OrderType, Side};
@@ -151,7 +151,6 @@ struct AppState {
     cfg: AppCfg,
     quotes: Arc<RwLock<QuoteCache>>,
     model_scores: Arc<RwLock<ModelScoreCache>>,
-    min_qty_table: Arc<RwLock<VenueMinQtyTable>>,
     mm_hedge_tlen: Arc<RwLock<Option<MmHedgeTlenSnapshot>>>,
     publish_tx: mpsc::UnboundedSender<PublishCmd>,
 }
@@ -179,6 +178,7 @@ struct ManualOpenRequest {
     ask: f64,
     quote_ts: i64,
     from_key: Option<String>,
+    return_score: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -211,6 +211,7 @@ struct ManualOpenResponse {
 #[derive(Debug, Serialize, Clone)]
 struct OpenPreviewLevel {
     side: String,
+    side_level_index: usize,
     offset: f64,
     base_price: f64,
     raw_price: f64,
@@ -981,7 +982,16 @@ fn build_and_publish_open(
     let now_us = get_timestamp_us();
     let factor_lookup = factor_value_hub.lookup_target_factor_value(&symbol, cfg.venue);
     let factor_ready = factor_lookup.ready.unwrap_or(false);
-    let volatility = resolve_mm_volatility(factor_lookup.target_factor_value, factor_ready);
+    let volatility = factor_lookup
+        .target_factor_value
+        .filter(|v| v.is_finite())
+        .ok_or_else(|| {
+            anyhow!(
+                "missing or invalid volatility factor key={} note={}",
+                factor_lookup.key,
+                factor_lookup.note
+            )
+        })?;
 
     let plan = {
         let table_guard = min_qty_table.read();
@@ -1009,6 +1019,14 @@ fn build_and_publish_open(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
+    let default_from_key = build_decision_from_key_base(
+        plan.now_us,
+        req.return_score.filter(|v| v.is_finite()),
+        None,
+        Some(plan.band.volatility),
+        None,
+        None,
+    );
 
     for level in &plan.levels {
         let mut ctx = MmOpenCtx::new();
@@ -1024,10 +1042,7 @@ fn build_and_publish_open(
         let level_from_key = if let Some(v) = from_key_override.as_ref() {
             v.to_string()
         } else {
-            format!(
-                "{}:manual_click=1:return_model=true",
-                build_mm_from_key(plan.now_us, plan.orders_per_round, level.level_index, plan.band)
-            )
+            default_from_key.clone()
         };
         ctx.set_from_key(level_from_key.into_bytes());
 
@@ -1038,11 +1053,10 @@ fn build_and_publish_open(
     let (levels, buy_orders, sell_orders) = plan_to_levels_and_counts(&plan.levels);
     let from_key = if let Some(v) = from_key_override {
         v
+    } else if !plan.levels.is_empty() {
+        default_from_key
     } else {
-        format!(
-            "{}:manual_click=1:return_model=true",
-            build_mm_from_key(plan.now_us, plan.orders_per_round, 0, plan.band)
-        )
+        String::new()
     };
 
     Ok(ManualOpenResponse {
@@ -1072,9 +1086,7 @@ fn build_and_publish_open(
     })
 }
 
-fn plan_to_levels_and_counts(
-    levels: &[MmOpenPlanLevel],
-) -> (Vec<OpenPreviewLevel>, usize, usize) {
+fn plan_to_levels_and_counts(levels: &[MmOpenPlanLevel]) -> (Vec<OpenPreviewLevel>, usize, usize) {
     let mut buy_orders = 0usize;
     let mut sell_orders = 0usize;
     let levels = levels
@@ -1086,6 +1098,7 @@ fn plan_to_levels_and_counts(
             }
             OpenPreviewLevel {
                 side: order.side.as_str_lower().to_string(),
+                side_level_index: order.side_level_index,
                 offset: order.offset,
                 base_price: order.base_price,
                 raw_price: order.raw_price,
@@ -1161,12 +1174,20 @@ async fn api_send(
     let Some(qt) = quote else {
         return (StatusCode::BAD_REQUEST, "quote unavailable").into_response();
     };
+    let return_score = st
+        .model_scores
+        .read()
+        .scores
+        .get(&symbol)
+        .map(|ms| ms.score)
+        .filter(|v| v.is_finite());
     let req = ManualOpenRequest {
         symbol,
         bid: qt.bid,
         ask: qt.ask,
         quote_ts: qt.ts,
         from_key: req.from_key,
+        return_score,
     };
     let (tx, rx) = oneshot::channel();
     if st
@@ -1404,9 +1425,9 @@ const INDEX_HTML: &str = r#"<!doctype html>
           </div>
           <div class="row" style="margin-top:10px;">
             <button id="refreshQuote">Refresh Quote</button>
-            <button id="send">一键发号 (RETURN=TRUE)</button>
+            <button id="send">一键发号</button>
           </div>
-          <div class="muted" id="actionHint" style="margin-top:8px;">请选择 symbol 后点击一键发号（默认 return model=true）</div>
+          <div class="muted" id="actionHint" style="margin-top:8px;">请选择 symbol 后点击一键发号（默认 from_key 包含 ret_score/ret_thr/vol/env_score/env_thr，缺失时为 na）</div>
         </section>
       </div>
 
@@ -1426,6 +1447,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
               <thead>
                 <tr>
                   <th>side</th>
+                  <th>side_lvl</th>
                   <th>offset</th>
                   <th>base_price</th>
                   <th>raw_price</th>
@@ -1438,7 +1460,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
                 </tr>
               </thead>
               <tbody id="splitRows">
-                <tr><td colspan="10" class="muted" style="text-align:center;">No data</td></tr>
+                <tr><td colspan="11" class="muted" style="text-align:center;">No data</td></tr>
               </tbody>
               <tfoot id="splitSummaryRows"></tfoot>
             </table>
@@ -1525,13 +1547,13 @@ const INDEX_HTML: &str = r#"<!doctype html>
         const enabled = !!symbol;
         els.send.disabled = !enabled;
         els.actionHint.textContent = enabled
-          ? '点击一键发号（默认 return model=true）'
-          : '请选择 symbol 后点击一键发号（默认 return model=true）';
+          ? '点击一键发号（默认 from_key 包含 ret_score/ret_thr/vol/env_score/env_thr，缺失时为 na）'
+          : '请选择 symbol 后点击一键发号（默认 from_key 包含 ret_score/ret_thr/vol/env_score/env_thr，缺失时为 na）';
       }
 
       function renderCfg(cfg) {
         state.cfg = cfg;
-        els.cfgLine.textContent = `model_service:${cfg.model_service} | venue=${cfg.venue} | return_model_assumed=true`;
+        els.cfgLine.textContent = `model_service:${cfg.model_service} | venue=${cfg.venue}`;
         els.fromKey.value = '';
         els.fromKey.placeholder = cfg.from_key || 'optional';
 
@@ -1571,7 +1593,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
       function renderSplitResult(resp) {
         const rows = resp.levels || [];
         if (!rows.length) {
-          els.splitRows.innerHTML = '<tr><td colspan="10" class="muted" style="text-align:center;">No levels</td></tr>';
+          els.splitRows.innerHTML = '<tr><td colspan="11" class="muted" style="text-align:center;">No levels</td></tr>';
           els.splitSummaryRows.innerHTML = '';
           els.splitMeta.textContent = `symbol=${resp.symbol || '-'} no levels`;
           return;
@@ -1595,6 +1617,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
           return `
             <tr>
               <td class="${sideCls}">${row.side}</td>
+              <td>${row.side_level_index}</td>
               <td>${fmtNum(row.offset, 6)}</td>
               <td>${fmtNum(row.base_price, 6)}</td>
               <td>${fmtNum(row.raw_price, 6)}</td>
@@ -1611,19 +1634,19 @@ const INDEX_HTML: &str = r#"<!doctype html>
         els.splitSummaryRows.innerHTML = `
           <tr>
             <td class="buy">buy_subtotal</td>
-            <td colspan="6">-</td>
+            <td colspan="7">-</td>
             <td>${fmtNum(buyNotional, 4)}</td>
             <td colspan="2">-</td>
           </tr>
           <tr>
             <td class="sell">sell_subtotal</td>
-            <td colspan="6">-</td>
+            <td colspan="7">-</td>
             <td>${fmtNum(sellNotional, 4)}</td>
             <td colspan="2">-</td>
           </tr>
           <tr>
             <td>total</td>
-            <td colspan="6">-</td>
+            <td colspan="7">-</td>
             <td>${fmtNum(totalAlignedNotional, 4)}</td>
             <td colspan="2">-</td>
           </tr>
@@ -1802,7 +1825,6 @@ async fn run(cfg: AppCfg, token: CancellationToken) -> Result<()> {
         cfg: cfg.clone(),
         quotes,
         model_scores,
-        min_qty_table: table.clone(),
         mm_hedge_tlen,
         publish_tx,
     };

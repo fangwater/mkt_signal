@@ -13,9 +13,13 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::common::{compute_spread_rate, Quote, ThresholdKey, VenuePair};
+use super::common::{
+    build_decision_from_key_base, compute_spread_rate, Quote, ReturnScoreThresholdsResolved,
+    ThresholdKey, VenuePair,
+};
 use super::factor_value_hub::{
     EnvironmentSignalResult, EnvironmentSignalSource, FactorValueHub, FactorValueLookupResult,
+    ModelOutputScoreLookupResult,
 };
 use super::mkt_channel::MktChannel;
 use super::spread_factor::SpreadFactor;
@@ -129,6 +133,7 @@ pub struct XarbDecision {
     return_model_service: Option<String>,
     environment_model_service: Option<String>,
     environment_model_true_threshold: f64,
+    return_score_thresholds: HashMap<String, ReturnScoreThresholdsResolved>,
 
     signal_cooldown_us: i64,
     last_open_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
@@ -139,15 +144,6 @@ pub struct XarbDecision {
 impl XarbDecision {
     fn normalize_symbol_key(symbol: &str) -> String {
         normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
-    }
-
-    fn normalize_model_service(raw: &str) -> Option<String> {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() || trimmed == "-" {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
     }
 
     fn poll_model_output_updates(&mut self) {
@@ -161,6 +157,82 @@ impl XarbDecision {
     ) -> FactorValueLookupResult {
         self.factor_value_hub
             .lookup_target_factor_value(hedge_symbol, hedge_venue)
+    }
+
+    fn get_ready_return_model_score_lookup(
+        &mut self,
+        open_symbol_key: &str,
+        hedge_symbol: &str,
+        hedge_venue: TradingVenue,
+        signal_name: &str,
+    ) -> Option<ModelOutputScoreLookupResult> {
+        let Some(service_name) = self.return_model_service.clone() else {
+            return None;
+        };
+        let score_lookup = self.factor_value_hub.lookup_model_output_score(
+            &service_name,
+            hedge_symbol,
+            hedge_venue,
+        );
+        if score_lookup.subscribed && score_lookup.score.is_none() {
+            info!(
+                "XarbDecision: drop {} signal open_symbol={} hedge_symbol={} service={} model_symbol={} note={} (subscribed but score not ready)",
+                signal_name,
+                open_symbol_key,
+                hedge_symbol,
+                score_lookup.service_name,
+                score_lookup.symbol_key,
+                score_lookup.note
+            );
+            return None;
+        }
+        Some(score_lookup)
+    }
+
+    fn lookup_return_model_score_lookup(
+        &mut self,
+        hedge_symbol: &str,
+        hedge_venue: TradingVenue,
+    ) -> Option<ModelOutputScoreLookupResult> {
+        let Some(service_name) = self.return_model_service.clone() else {
+            return None;
+        };
+        Some(self.factor_value_hub.lookup_model_output_score(
+            &service_name,
+            hedge_symbol,
+            hedge_venue,
+        ))
+    }
+
+    fn lookup_return_score_thresholds(
+        &self,
+        model_symbol_key: &str,
+    ) -> Option<ReturnScoreThresholdsResolved> {
+        self.return_score_thresholds
+            .get(&model_symbol_key.to_ascii_uppercase())
+            .copied()
+    }
+
+    fn select_open_return_threshold(
+        &self,
+        side: Side,
+        thresholds: ReturnScoreThresholdsResolved,
+    ) -> f64 {
+        match side {
+            Side::Buy => thresholds.forward_open,
+            Side::Sell => thresholds.backward_open,
+        }
+    }
+
+    fn select_open_return_threshold_by_hedge_side(
+        &self,
+        hedge_side: Side,
+        thresholds: ReturnScoreThresholdsResolved,
+    ) -> f64 {
+        match hedge_side {
+            Side::Sell => thresholds.forward_open,
+            Side::Buy => thresholds.backward_open,
+        }
     }
 
     fn evaluate_environment_signal(
@@ -307,6 +379,7 @@ impl XarbDecision {
             return_model_service: None,
             environment_model_service: None,
             environment_model_true_threshold: ENV_MODEL_TRUE_THRESHOLD_DEFAULT,
+            return_score_thresholds: HashMap::new(),
             signal_cooldown_us: 5_000_000,
             last_open_ts: Rc::new(RefCell::new(HashMap::new())),
             last_close_ts: Rc::new(RefCell::new(HashMap::new())),
@@ -380,20 +453,36 @@ impl XarbDecision {
         return_model_service: String,
         environment_model_service: String,
     ) {
-        self.return_model_service = Self::normalize_model_service(&return_model_service);
-        let env_trimmed = environment_model_service.trim();
-        if !env_trimmed.is_empty() && env_trimmed != "-" {
+        let return_trimmed = return_model_service.trim();
+        if return_trimmed.is_empty() || return_trimmed == "-" {
             panic!(
-                "XarbDecision: environment_model_service must be '-' (got '{}')",
-                env_trimmed
+                "XarbDecision: return_model_service must not be '-' or empty (got '{}')",
+                return_trimmed
             );
         }
-        self.environment_model_service = None;
+        self.return_model_service = Some(return_trimmed.to_string());
+        let env_trimmed = environment_model_service.trim();
+        self.environment_model_service = if env_trimmed.is_empty() || env_trimmed == "-" {
+            None
+        } else {
+            Some(env_trimmed.to_string())
+        };
         info!(
             "XarbDecision: model roles updated return={:?} environment={:?} env_true_threshold={:.6}",
             self.return_model_service,
             self.environment_model_service,
             self.environment_model_true_threshold
+        );
+    }
+
+    pub fn update_return_score_thresholds(
+        &mut self,
+        thresholds: HashMap<String, ReturnScoreThresholdsResolved>,
+    ) {
+        self.return_score_thresholds = thresholds;
+        info!(
+            "XarbDecision: return score thresholds updated symbols={}",
+            self.return_score_thresholds.len(),
         );
     }
 
@@ -528,6 +617,53 @@ impl XarbDecision {
         if cooldown_hit {
             return Ok(None);
         }
+        let Some(score_lookup) = self.get_ready_return_model_score_lookup(
+            open_symbol_key.as_str(),
+            hedge_symbol,
+            hedge_venue,
+            "ArbOpen",
+        ) else {
+            return Ok(None);
+        };
+        let Some(return_score) = score_lookup.score.filter(|v| v.is_finite()) else {
+            info!(
+                "XarbDecision: drop ArbOpen open_symbol={} hedge_symbol={} service={} model_symbol={} note={} (score not ready)",
+                open_symbol_key,
+                hedge_symbol,
+                score_lookup.service_name,
+                score_lookup.symbol_key,
+                score_lookup.note
+            );
+            return Ok(None);
+        };
+        let Some(thresholds) = self.lookup_return_score_thresholds(&score_lookup.symbol_key) else {
+            warn!(
+                "XarbDecision: missing return score thresholds open_symbol={} hedge_symbol={} model_symbol={} venue={:?}, skip",
+                open_symbol_key,
+                hedge_symbol,
+                score_lookup.symbol_key,
+                hedge_venue
+            );
+            return Ok(None);
+        };
+        let return_threshold = self.select_open_return_threshold(side, thresholds);
+        let return_open_hit = match side {
+            Side::Buy => return_score > return_threshold,
+            Side::Sell => return_score < return_threshold,
+        };
+        if !return_open_hit {
+            info!(
+                "XarbDecision: skip ArbOpen by return score open_symbol={} hedge_symbol={} side={:?} score={:.8} ret_thr={:.8} service={} model_symbol={}",
+                open_symbol_key,
+                hedge_symbol,
+                side,
+                return_score,
+                return_threshold,
+                score_lookup.service_name,
+                score_lookup.symbol_key
+            );
+            return Ok(None);
+        }
         let environment_signal = self.evaluate_environment_signal(
             open_symbol_key.as_str(),
             hedge_symbol,
@@ -558,8 +694,11 @@ impl XarbDecision {
             open_venue,
             hedge_venue,
             side,
+            Some(return_score),
+            Some(return_threshold),
             environment_signal.class_label,
             environment_score,
+            environment_signal.threshold,
             rl_return_volatility_factor,
         )?;
 
@@ -658,6 +797,15 @@ impl XarbDecision {
             hedge_venue,
             now,
         );
+        let return_lookup = self.lookup_return_model_score_lookup(&hedge_symbol, hedge_venue);
+        let return_score = return_lookup
+            .as_ref()
+            .and_then(|lookup| lookup.score)
+            .filter(|v| v.is_finite());
+        let return_threshold = return_lookup.as_ref().and_then(|lookup| {
+            self.lookup_return_score_thresholds(&lookup.symbol_key)
+                .map(|thresholds| self.select_open_return_threshold_by_hedge_side(side, thresholds))
+        });
         let environment_score = environment_signal
             .score
             .unwrap_or(environment_signal.class_label as f64);
@@ -732,8 +880,11 @@ impl XarbDecision {
             ctx.maker_only = false;
             let from_key = self.build_hedge_from_key(
                 now,
+                return_score,
+                return_threshold,
                 environment_signal.class_label,
                 environment_score,
+                environment_signal.threshold,
                 target_factor_lookup.target_factor_value,
                 pct_change,
                 spread_rate,
@@ -882,8 +1033,11 @@ impl XarbDecision {
         ctx.spread_rate = spread_rate;
         let from_key = self.build_hedge_from_key(
             now,
+            return_score,
+            return_threshold,
             environment_signal.class_label,
             environment_score,
+            environment_signal.threshold,
             target_factor_lookup.target_factor_value,
             pct_change,
             spread_rate,
@@ -964,8 +1118,11 @@ impl XarbDecision {
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
         side: Side,
+        return_score: Option<f64>,
+        return_threshold: Option<f64>,
         environment_label: i8,
         environment_score: f64,
+        environment_threshold: Option<f64>,
         rl_return_volatility_factor: f64,
     ) -> Result<()> {
         let (open_quote, hedge_quote) =
@@ -976,9 +1133,16 @@ impl XarbDecision {
         // Use one batch timestamp for all grid offsets in this emit call.
         let batch_ts = get_timestamp_us();
         let spread_rate = compute_spread_rate(&open_quote, &hedge_quote);
-        let from_key = format!(
-            "{batch_ts}:env_label={environment_label}:env_score={environment_score:.6}:rl_return_volatility={rl_return_volatility_factor:.6}:spread={spread_rate:.6}"
+        let base_from_key = build_decision_from_key_base(
+            batch_ts,
+            return_score,
+            return_threshold,
+            Some(rl_return_volatility_factor),
+            Some(environment_score),
+            environment_threshold,
         );
+        let from_key =
+            format!("{base_from_key}:env_label={environment_label}:spread={spread_rate:.6}");
 
         for offset in &self.price_offsets {
             let ctx = self.build_open_context(
@@ -1203,15 +1367,25 @@ impl XarbDecision {
     fn build_hedge_from_key(
         &self,
         now: i64,
+        return_score: Option<f64>,
+        return_threshold: Option<f64>,
         environment_label: i8,
         environment_score: f64,
+        environment_threshold: Option<f64>,
         rl_return_volatility_factor: Option<f64>,
         pct_change: f64,
         spread_rate: f64,
     ) -> Vec<u8> {
-        let rl_return_volatility_factor = rl_return_volatility_factor.unwrap_or(0.0);
+        let base_from_key = build_decision_from_key_base(
+            now,
+            return_score,
+            return_threshold,
+            rl_return_volatility_factor,
+            Some(environment_score),
+            environment_threshold,
+        );
         format!(
-            "{now}:env_label={environment_label}:env_score={environment_score:.6}:rl_return_volatility={rl_return_volatility_factor:.6}:pct_change={pct_change:.6}:spread={spread_rate:.6}"
+            "{base_from_key}:env_label={environment_label}:pct_change={pct_change:.6}:spread={spread_rate:.6}"
         )
         .into_bytes()
     }

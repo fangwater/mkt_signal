@@ -14,17 +14,18 @@ use log::{info, warn};
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 
+use super::common::{build_decision_from_key_base, ReturnScoreThresholdsResolved};
 use super::factor_value_hub::FactorValueHub;
 use super::fr_decision::DEFAULT_SIGNAL_CHANNEL;
 use super::mkt_channel::MktChannel;
 use crate::common::iceoryx_publisher::SignalPublisher;
 use crate::common::redis_client::RedisSettings;
+use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
-use crate::market_maker::open_quote_plan::{
-    build_mm_from_key, build_mm_open_quote_plan, resolve_mm_volatility,
-};
+use crate::market_maker::open_quote_plan::build_mm_open_quote_plan;
 use crate::pre_trade::order_manager::{OrderType, Side};
-use crate::signal::common::{TradingLeg, TradingVenue};
+use crate::signal::cancel_signal::MmCancelCtx;
+use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
 use crate::signal::open_signal::MmOpenCtx;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
@@ -37,6 +38,7 @@ const DEFAULT_PNLU_KEY_SUFFIX: &str = "_pnlu_factor_thresholds";
 const PNLU_MAX_AGE_SECS: i64 = 30 * 60;
 const TARGET_FACTOR_NAME: &str = "rl_return_volatility";
 const TARGET_FACTOR_KEY_PREFIX: &str = TARGET_FACTOR_NAME;
+const ENV_MODEL_TRUE_THRESHOLD_DEFAULT: f64 = 0.0;
 
 thread_local! {
     static MM_DECISION: OnceCell<RefCell<MmDecision>> = OnceCell::new();
@@ -51,7 +53,11 @@ pub struct MmDecision {
     orders_per_round: u32,
     order_amount_u: f64,
     open_order_ttl_us: i64,
+    return_model_service: Option<String>,
+    environment_model_service: Option<String>,
+    environment_model_true_threshold: f64,
     last_report_ts_us: HashMap<String, i64>,
+    return_score_thresholds: HashMap<String, ReturnScoreThresholdsResolved>,
     open_min_qty_table: VenueMinQtyTable,
     factor_value_hub: FactorValueHub,
     // Keep Node alive for iceoryx resources.
@@ -121,7 +127,9 @@ impl MmDecision {
 
     fn new_sync(open_venue: TradingVenue, hedge_venue: TradingVenue) -> Result<Self> {
         let node_name = NodeName::new("mm_decision")?;
-        let node = NodeBuilder::new().name(&node_name).create::<ipc::Service>()?;
+        let node = NodeBuilder::new()
+            .name(&node_name)
+            .create::<ipc::Service>()?;
         let signal_pub = SignalPublisher::new(DEFAULT_SIGNAL_CHANNEL)?;
 
         let pnlu_settings = RedisSettings {
@@ -155,7 +163,11 @@ impl MmDecision {
             orders_per_round: 8,
             order_amount_u: 100.0,
             open_order_ttl_us: 120_000_000,
+            return_model_service: None,
+            environment_model_service: None,
+            environment_model_true_threshold: ENV_MODEL_TRUE_THRESHOLD_DEFAULT,
             last_report_ts_us: HashMap::new(),
+            return_score_thresholds: HashMap::new(),
             open_min_qty_table,
             factor_value_hub,
             _node: node,
@@ -233,10 +245,113 @@ impl MmDecision {
         );
     }
 
+    pub fn update_model_service_roles(
+        &mut self,
+        return_model_service: String,
+        environment_model_service: String,
+    ) {
+        let return_trimmed = return_model_service.trim();
+        if return_trimmed.is_empty() || return_trimmed == "-" {
+            panic!(
+                "MmDecision: return_model_service must not be '-' or empty (got '{}')",
+                return_trimmed
+            );
+        }
+        self.return_model_service = Some(return_trimmed.to_string());
+        let env_trimmed = environment_model_service.trim();
+        self.environment_model_service = if env_trimmed.is_empty() || env_trimmed == "-" {
+            None
+        } else {
+            Some(env_trimmed.to_string())
+        };
+        let mut services = vec![return_trimmed.to_string()];
+        if let Some(env_service) = self.environment_model_service.as_ref() {
+            if !services.iter().any(|service| service == env_service) {
+                services.push(env_service.clone());
+            }
+        }
+        self.factor_value_hub
+            .update_model_output_services(&self._node, services);
+        info!(
+            "MmDecision: model roles updated return={:?} environment={:?} env_true_threshold={:.6}",
+            self.return_model_service,
+            self.environment_model_service,
+            self.environment_model_true_threshold
+        );
+    }
+
+    fn evaluate_environment_signal(
+        &mut self,
+        open_symbol_key: &str,
+        hedge_symbol: &str,
+        hedge_venue: TradingVenue,
+        now_us: i64,
+    ) -> super::factor_value_hub::EnvironmentSignalResult {
+        self.factor_value_hub.evaluate_environment_signal(
+            self.environment_model_service.as_deref(),
+            hedge_symbol,
+            hedge_venue,
+            self.environment_model_true_threshold,
+            open_symbol_key,
+            now_us,
+        )
+    }
+
+    pub fn update_return_score_thresholds(
+        &mut self,
+        thresholds: HashMap<String, ReturnScoreThresholdsResolved>,
+    ) {
+        self.return_score_thresholds = thresholds;
+        info!(
+            "MmDecision: return score thresholds updated symbols={}",
+            self.return_score_thresholds.len(),
+        );
+    }
+
+    fn select_effective_return_threshold(
+        return_score: f64,
+        forward_hit: bool,
+        backward_hit: bool,
+        forward_threshold: f64,
+        backward_threshold: f64,
+    ) -> Option<f64> {
+        match (forward_hit, backward_hit) {
+            (true, false) => Some(forward_threshold),
+            (false, true) => Some(backward_threshold),
+            (true, true) => Some(if return_score >= 0.0 {
+                forward_threshold
+            } else {
+                backward_threshold
+            }),
+            (false, false) => None,
+        }
+    }
+
+    fn emit_mm_cancel_signal(
+        &mut self,
+        open_symbol: &str,
+        open_venue: TradingVenue,
+        open_quote: crate::funding_rate::common::Quote,
+        now_us: i64,
+        from_key: &str,
+    ) -> Result<()> {
+        let mut ctx = MmCancelCtx::new();
+        let open_trade_symbol = normalize_symbol_for_venue(open_symbol, open_venue);
+        ctx.opening_leg =
+            TradingLeg::new(open_venue, open_quote.bid, open_quote.ask, open_quote.ts);
+        ctx.set_opening_symbol(&open_trade_symbol);
+        ctx.trigger_ts = now_us;
+        ctx.set_from_key(from_key.as_bytes().to_vec());
+
+        let signal = TradeSignal::create(SignalType::MMCancel, now_us, 0.0, ctx.to_bytes());
+        self.signal_pub.publish(&signal.to_bytes())?;
+        Ok(())
+    }
+
     /// MM 报价逻辑：
     /// 1) 读取 midprice
     /// 2) 用 rl_return_volatility 计算价格区间 [mid*(1-vol), mid*(1+vol)]
-    /// 3) 按 orders_per_round 拆 K 档
+    /// 3) 以 mid 为中心双边拆档：每边 orders_per_round 档（总计 2K）
     /// 4) 每档按 order_amount_u 反推 qty 并对齐，直接发布 MMOpen
     pub fn make_mm_decision(
         &mut self,
@@ -258,16 +373,7 @@ impl MmDecision {
         }
 
         let now_us = get_timestamp_us();
-        let interval_us = (self.order_interval_ms as i64).saturating_mul(1_000);
         let symbol_key = normalize_symbol_for_whitelist(open_symbol, TradingVenue::OkexFutures);
-        let last_ts = self
-            .last_report_ts_us
-            .get(&symbol_key)
-            .copied()
-            .unwrap_or(0);
-        if last_ts > 0 && now_us.saturating_sub(last_ts) < interval_us {
-            return Ok(None);
-        }
 
         let mkt_channel = MktChannel::instance();
         let Some(open_quote) = mkt_channel.get_quote(open_symbol, open_venue) else {
@@ -291,7 +397,155 @@ impl MmDecision {
             .factor_value_hub
             .lookup_target_factor_value(hedge_symbol, hedge_venue);
         let factor_ready = factor_lookup.ready.unwrap_or(false);
-        let volatility = resolve_mm_volatility(factor_lookup.target_factor_value, factor_ready);
+        let volatility = factor_lookup.target_factor_value.filter(|v| v.is_finite());
+        let Some(service_name) = self.return_model_service.as_deref() else {
+            warn!(
+                "MmDecision: return_model_service not configured, skip decision symbol={}",
+                symbol_key
+            );
+            return Ok(None);
+        };
+
+        let score_lookup = self.factor_value_hub.lookup_model_output_score(
+            service_name,
+            hedge_symbol,
+            hedge_venue,
+        );
+        let Some(return_score) = score_lookup.score.filter(|v| v.is_finite()) else {
+            info!(
+                "MmDecision: drop decision symbol={} service={} model_symbol={} note={} (score not ready)",
+                symbol_key,
+                score_lookup.service_name,
+                score_lookup.symbol_key,
+                score_lookup.note
+            );
+            return Ok(None);
+        };
+
+        let threshold_symbol = score_lookup.symbol_key.to_ascii_uppercase();
+        let Some(thresholds) = self.return_score_thresholds.get(&threshold_symbol).copied() else {
+            warn!(
+                "MmDecision: missing return score thresholds symbol={} threshold_symbol={} venue={:?}, skip",
+                symbol_key, threshold_symbol, hedge_venue
+            );
+            return Ok(None);
+        };
+
+        let forward_open_hit = return_score > thresholds.forward_open;
+        let forward_cancel_hit = return_score < thresholds.forward_cancel;
+        let backward_open_hit = return_score < thresholds.backward_open;
+        let backward_cancel_hit = return_score > thresholds.backward_cancel;
+        let open_hit = forward_open_hit || backward_open_hit;
+        let cancel_hit = forward_cancel_hit || backward_cancel_hit;
+        if !open_hit && !cancel_hit {
+            info!(
+                "MmDecision: no action symbol={} score={:.8} fwd_open_hit={} bwd_open_hit={} fwd_cancel_hit={} bwd_cancel_hit={} service={} model_symbol={}",
+                symbol_key,
+                return_score,
+                forward_open_hit,
+                backward_open_hit,
+                forward_cancel_hit,
+                backward_cancel_hit,
+                score_lookup.service_name,
+                score_lookup.symbol_key,
+            );
+            return Ok(None);
+        }
+
+        let cancel_return_threshold = Self::select_effective_return_threshold(
+            return_score,
+            forward_cancel_hit,
+            backward_cancel_hit,
+            thresholds.forward_cancel,
+            thresholds.backward_cancel,
+        );
+        let open_return_threshold = Self::select_effective_return_threshold(
+            return_score,
+            forward_open_hit,
+            backward_open_hit,
+            thresholds.forward_open,
+            thresholds.backward_open,
+        );
+        let environment_signal =
+            self.evaluate_environment_signal(&symbol_key, hedge_symbol, hedge_venue, now_us);
+
+        if cancel_hit {
+            let from_key = build_decision_from_key_base(
+                now_us,
+                Some(return_score),
+                cancel_return_threshold,
+                volatility,
+                environment_signal.score,
+                environment_signal.threshold,
+            );
+            self.emit_mm_cancel_signal(open_symbol, open_venue, open_quote, now_us, &from_key)?;
+            info!(
+                "MmDecision: MMCancel symbol={} score={:.8} ret_thr={:?} fwd_cancel_hit={} bwd_cancel_hit={} fwd_cancel_th={:.8} bwd_cancel_th={:.8} service={} model_symbol={} env_src={:?} env_score={:?} env_thr={:?}",
+                symbol_key,
+                return_score,
+                cancel_return_threshold,
+                forward_cancel_hit,
+                backward_cancel_hit,
+                thresholds.forward_cancel,
+                thresholds.backward_cancel,
+                score_lookup.service_name,
+                score_lookup.symbol_key,
+                environment_signal.source,
+                environment_signal.score,
+                environment_signal.threshold,
+            );
+            return Ok(Some(SignalType::MMCancel));
+        }
+
+        if !environment_signal.allow_open {
+            info!(
+                "MmDecision: skip MMOpen by environment symbol={} score={:.8} ret_thr={:?} service={} model_symbol={} env_src={:?} env_score={:?} env_thr={:?} note={}",
+                symbol_key,
+                return_score,
+                open_return_threshold,
+                score_lookup.service_name,
+                score_lookup.symbol_key,
+                environment_signal.source,
+                environment_signal.score,
+                environment_signal.threshold,
+                environment_signal.note,
+            );
+            return Ok(None);
+        }
+
+        let Some(volatility) = volatility else {
+            info!(
+                "MmDecision: skip MMOpen symbol={} score={:.8} ret_thr={:?} service={} model_symbol={} factor_key={} factor_note={} (volatility missing)",
+                symbol_key,
+                return_score,
+                open_return_threshold,
+                score_lookup.service_name,
+                score_lookup.symbol_key,
+                factor_lookup.key,
+                factor_lookup.note,
+            );
+            return Ok(None);
+        };
+
+        let interval_us = (self.order_interval_ms as i64).saturating_mul(1_000);
+        let last_ts = self
+            .last_report_ts_us
+            .get(&symbol_key)
+            .copied()
+            .unwrap_or(0);
+        if last_ts > 0 && now_us.saturating_sub(last_ts) < interval_us {
+            return Ok(None);
+        }
+        self.last_report_ts_us.insert(symbol_key.clone(), now_us);
+        let from_key = build_decision_from_key_base(
+            now_us,
+            Some(return_score),
+            open_return_threshold,
+            Some(volatility),
+            environment_signal.score,
+            environment_signal.threshold,
+        );
+
         let plan = match build_mm_open_quote_plan(
             open_venue,
             open_symbol,
@@ -310,20 +564,13 @@ impl MmDecision {
             }
         };
 
-        // 进入本轮报价，更新时间戳（防止失败时高频重复触发）
-        self.last_report_ts_us.insert(symbol_key.clone(), now_us);
-
         let mut sent = 0usize;
         let mut sent_buy = 0usize;
         let mut sent_sell = 0usize;
         for level in &plan.levels {
             let mut ctx = MmOpenCtx::new();
-            ctx.opening_leg = TradingLeg::new(
-                open_venue,
-                plan.quote.bid,
-                plan.quote.ask,
-                plan.quote.ts,
-            );
+            ctx.opening_leg =
+                TradingLeg::new(open_venue, plan.quote.bid, plan.quote.ask, plan.quote.ts);
             ctx.set_opening_symbol(&plan.symbol);
             ctx.set_side(level.side);
             ctx.set_order_type(OrderType::Limit);
@@ -335,13 +582,7 @@ impl MmDecision {
             ctx.exp_time = plan.exp_time_us;
             ctx.create_ts = plan.now_us;
             ctx.price_offset = level.offset;
-            let from_key = build_mm_from_key(
-                plan.now_us,
-                self.orders_per_round,
-                level.level_index,
-                plan.band,
-            );
-            ctx.set_from_key(from_key.into_bytes());
+            ctx.set_from_key(from_key.as_bytes().to_vec());
 
             let signal = TradeSignal::create(SignalType::MMOpen, now_us, 0.0, ctx.to_bytes());
             if let Err(err) = self.signal_pub.publish(&signal.to_bytes()) {
@@ -360,7 +601,7 @@ impl MmDecision {
         }
 
         info!(
-            "MmDecision: quoted symbol={} channel={} now_us={} interval_ms={} orders_per_round={} sent={} buy={} sell={} mid={:.8} vol={:.8} vol_ready={} band=[{:.8}, {:.8}] factor_key={} factor_note={}",
+            "MmDecision: MMOpen symbol={} channel={} now_us={} interval_ms={} orders_per_round={} sent={} buy={} sell={} score={:.8} ret_thr={:?} fwd_open_hit={} bwd_open_hit={} fwd_open_th={:.8} bwd_open_th={:.8} mid={:.8} vol={:.8} factor_ready={} band=[{:.8}, {:.8}] factor_key={} factor_note={}",
             symbol_key,
             self.channel_name,
             now_us,
@@ -369,6 +610,12 @@ impl MmDecision {
             sent,
             sent_buy,
             sent_sell,
+            return_score,
+            open_return_threshold,
+            forward_open_hit,
+            backward_open_hit,
+            thresholds.forward_open,
+            thresholds.backward_open,
             plan.band.mid_price,
             plan.band.volatility,
             factor_ready,
@@ -378,6 +625,10 @@ impl MmDecision {
             factor_lookup.note,
         );
 
-        Ok(None)
+        if sent > 0 {
+            Ok(Some(SignalType::MMOpen))
+        } else {
+            Ok(None)
+        }
     }
 }

@@ -2883,7 +2883,6 @@ impl HedgeArbStrategy {
         let _ = register_signal_throttle(
             &self.open_symbol,
             open_side,
-            &self.open_from_key,
             response.exchange_enum(),
             response.error_code(),
         );

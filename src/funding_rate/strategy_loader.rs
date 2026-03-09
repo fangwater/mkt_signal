@@ -292,15 +292,22 @@ impl StrategyParams {
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or_else(default_signal_cooldown);
 
-        let allow_missing_model_service = ns == "fr" || ns == "mm";
+        let strict_return_model_required = ns == "xarb" || ns == "mm";
+        let strict_env_model_dash_only = false;
+        let allow_missing_model_service = ns == "fr";
         let return_model_service = match hash_map.get("return_model_service") {
             Some(v) => {
                 let trimmed = v.trim();
                 if trimmed.is_empty() {
-                    if allow_missing_model_service {
+                    if strict_return_model_required {
+                        panic!(
+                            "Redis hash '{}' return_model_service 为空（ns={}），不允许为空或 '-'",
+                            redis_key, ns
+                        );
+                    } else if allow_missing_model_service {
                         warn!(
-                            "Redis hash '{}' return_model_service 为空（ns=fr），按 '-' 处理",
-                            redis_key
+                            "Redis hash '{}' return_model_service 为空（ns={}），按 '-' 处理",
+                            redis_key, ns
                         );
                         "-".to_string()
                     } else {
@@ -309,15 +316,25 @@ impl StrategyParams {
                             redis_key
                         );
                     }
+                } else if strict_return_model_required && trimmed == "-" {
+                    panic!(
+                        "Redis hash '{}' return_model_service='-' 非法（ns={}），仅允许 environment_model_service='-'",
+                        redis_key, ns
+                    );
                 } else {
                     trimmed.to_string()
                 }
             }
             None => {
-                if allow_missing_model_service {
+                if strict_return_model_required {
+                    panic!(
+                        "Redis hash '{}' 缺少 return_model_service（ns={}），不允许缺失或 '-'",
+                        redis_key, ns
+                    );
+                } else if allow_missing_model_service {
                     warn!(
-                        "Redis hash '{}' 缺少 return_model_service（ns=fr），按 '-' 处理",
-                        redis_key
+                        "Redis hash '{}' 缺少 return_model_service（ns={}），按 '-' 处理",
+                        redis_key, ns
                     );
                     "-".to_string()
                 } else {
@@ -332,11 +349,19 @@ impl StrategyParams {
         let environment_model_service = match hash_map.get("environment_model_service") {
             Some(v) => {
                 let trimmed = v.trim();
-                if trimmed.is_empty() {
+                if strict_env_model_dash_only {
+                    if trimmed != "-" {
+                        panic!(
+                            "Redis hash '{}' environment_model_service='{}' 非法（ns={}），必须为 '-'",
+                            redis_key, trimmed, ns
+                        );
+                    }
+                    "-".to_string()
+                } else if trimmed.is_empty() {
                     if allow_missing_model_service {
                         warn!(
-                            "Redis hash '{}' environment_model_service 为空（ns=fr），按 '-' 处理",
-                            redis_key
+                            "Redis hash '{}' environment_model_service 为空（ns={}），按 '-' 处理",
+                            redis_key, ns
                         );
                         "-".to_string()
                     } else {
@@ -350,10 +375,15 @@ impl StrategyParams {
                 }
             }
             None => {
-                if allow_missing_model_service {
+                if strict_env_model_dash_only {
+                    panic!(
+                        "Redis hash '{}' 缺少 environment_model_service（ns={}），必须显式为 '-'",
+                        redis_key, ns
+                    );
+                } else if allow_missing_model_service {
                     warn!(
-                        "Redis hash '{}' 缺少 environment_model_service（ns=fr），按 '-' 处理",
-                        redis_key
+                        "Redis hash '{}' 缺少 environment_model_service（ns={}），按 '-' 处理",
+                        redis_key, ns
                     );
                     "-".to_string()
                 } else {
@@ -364,7 +394,6 @@ impl StrategyParams {
                 }
             }
         };
-
         Ok(Self {
             mode,
             order_amount,
@@ -451,6 +480,10 @@ impl StrategyParams {
                 _decision.update_order_interval_ms(self.order_interval_ms);
                 _decision.update_orders_per_round(self.orders_per_round);
                 _decision.update_open_order_timeout(self.open_order_timeout);
+                _decision.update_model_service_roles(
+                    self.return_model_service.clone(),
+                    self.environment_model_service.clone(),
+                );
             })
             .is_some();
 
