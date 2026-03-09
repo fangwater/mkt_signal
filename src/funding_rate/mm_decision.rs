@@ -23,6 +23,7 @@ use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
 use crate::market_maker::open_quote_plan::build_mm_open_quote_plan;
+use crate::market_maker::open_quote_plan::MmOpenQuotePlan;
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::signal::cancel_signal::MmCancelCtx;
 use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
@@ -397,6 +398,60 @@ impl MmDecision {
         Ok(())
     }
 
+    fn publish_mm_open_plan(
+        &mut self,
+        open_venue: TradingVenue,
+        now_us: i64,
+        plan: &MmOpenQuotePlan,
+        from_key: &str,
+        prediction_side: Option<Side>,
+    ) -> (usize, usize, usize) {
+        let mut sent = 0usize;
+        let mut sent_buy = 0usize;
+        let mut sent_sell = 0usize;
+
+        for level in &plan.levels {
+            if let Some(side) = prediction_side {
+                if level.side != side {
+                    continue;
+                }
+            }
+
+            let mut ctx = MmOpenCtx::new();
+            ctx.opening_leg =
+                TradingLeg::new(open_venue, plan.quote.bid, plan.quote.ask, plan.quote.ts);
+            ctx.set_opening_symbol(&plan.symbol);
+            ctx.set_side(level.side);
+            ctx.set_order_type(OrderType::Limit);
+            let _ = ctx.set_amount_with_tick_floor(level.aligned_qty, plan.qty_tick);
+            let _ = ctx.set_price_with_tick_floor(level.aligned_price, plan.price_tick);
+            if ctx.amount_count() <= 0 || ctx.price_count() <= 0 {
+                continue;
+            }
+            ctx.exp_time = plan.exp_time_us;
+            ctx.create_ts = plan.now_us;
+            ctx.price_offset = level.offset;
+            ctx.set_from_key(from_key.as_bytes().to_vec());
+
+            let signal = TradeSignal::create(SignalType::MMOpen, now_us, 0.0, ctx.to_bytes());
+            if let Err(err) = self.signal_pub.publish(&signal.to_bytes()) {
+                warn!(
+                    "MmDecision: publish MMOpen failed symbol={} idx={} side={:?} err={:?}",
+                    plan.symbol, level.level_index, level.side, err
+                );
+                continue;
+            }
+
+            sent += 1;
+            match level.side {
+                Side::Buy => sent_buy += 1,
+                Side::Sell => sent_sell += 1,
+            }
+        }
+
+        (sent, sent_buy, sent_sell)
+    }
+
     /// MM 报价逻辑：
     /// 1) 读取 midprice
     /// 2) 用 rl_return_volatility 计算价格区间 [mid*(1-vol), mid*(1+vol)]
@@ -447,6 +502,88 @@ impl MmDecision {
             .lookup_target_factor_value(hedge_symbol, hedge_venue);
         let factor_ready = factor_lookup.ready.unwrap_or(false);
         let volatility = factor_lookup.target_factor_value.filter(|v| v.is_finite());
+        let environment_signal =
+            self.evaluate_environment_signal(&symbol_key, hedge_symbol, hedge_venue, now_us);
+
+        let Some(volatility) = volatility else {
+            trace!(
+                "MmDecision: skip MMOpen symbol={} score=na ret_thr=na prediction_mode={} prediction_side=None factor_key={} factor_note={} (volatility missing)",
+                symbol_key,
+                self.prediction_mode,
+                factor_lookup.key,
+                factor_lookup.note,
+            );
+            return Ok(None);
+        };
+
+        let interval_us = (self.order_interval_ms as i64).saturating_mul(1_000);
+        let last_ts = self
+            .last_report_ts_us
+            .get(&symbol_key)
+            .copied()
+            .unwrap_or(0);
+        if last_ts > 0 && now_us.saturating_sub(last_ts) < interval_us {
+            return Ok(None);
+        }
+
+        if !self.prediction_mode {
+            self.last_report_ts_us.insert(symbol_key.clone(), now_us);
+            let from_key = build_decision_from_key_base(
+                now_us,
+                None,
+                None,
+                Some(volatility),
+                environment_signal.score,
+                environment_signal.threshold,
+            );
+
+            let plan = match build_mm_open_quote_plan(
+                open_venue,
+                open_symbol,
+                open_quote,
+                self.order_amount_u,
+                self.orders_per_round,
+                self.open_order_ttl_us,
+                volatility,
+                now_us,
+                &self.open_min_qty_table,
+            ) {
+                Ok(plan) => plan,
+                Err(err) => {
+                    warn!("MmDecision: build open quote plan failed: {}", err);
+                    return Ok(None);
+                }
+            };
+
+            let (sent, sent_buy, sent_sell) =
+                self.publish_mm_open_plan(open_venue, now_us, &plan, &from_key, None);
+
+            info!(
+                "MmDecision: MMOpen symbol={} channel={} now_us={} interval_ms={} orders_per_round={} sent={} buy={} sell={} prediction_mode=false mid={:.8} vol={:.8} factor_ready={} band=[{:.8}, {:.8}] factor_key={} factor_note={}",
+                symbol_key,
+                self.channel_name,
+                now_us,
+                self.order_interval_ms,
+                self.orders_per_round,
+                sent,
+                sent_buy,
+                sent_sell,
+                plan.band.mid_price,
+                plan.band.volatility,
+                factor_ready,
+                plan.band.lower_price,
+                plan.band.upper_price,
+                factor_lookup.key,
+                factor_lookup.note,
+            );
+
+            return if sent > 0 {
+                Ok(Some(SignalType::MMOpen))
+            } else {
+                Ok(None)
+            };
+        }
+
         let Some(service_name) = self.return_model_service.as_deref() else {
             warn!(
                 "MmDecision: return_model_service not configured, skip decision symbol={}",
@@ -507,9 +644,6 @@ impl MmDecision {
                 .map(|value| value.backward_cancel)
                 .unwrap_or(f64::NAN),
         );
-        let environment_signal =
-            self.evaluate_environment_signal(&symbol_key, hedge_symbol, hedge_venue, now_us);
-
         if cancel_hit {
             let mut cancel_sent = false;
 
@@ -518,7 +652,7 @@ impl MmDecision {
                     now_us,
                     return_score,
                     thresholds.map(|value| value.forward_cancel),
-                    volatility,
+                    Some(volatility),
                     environment_signal.score,
                     environment_signal.threshold,
                 );
@@ -538,7 +672,7 @@ impl MmDecision {
                     now_us,
                     return_score,
                     thresholds.map(|value| value.backward_cancel),
-                    volatility,
+                    Some(volatility),
                     environment_signal.score,
                     environment_signal.threshold,
                 );
@@ -573,22 +707,6 @@ impl MmDecision {
             }
         }
 
-        let Some(volatility) = volatility else {
-            trace!(
-                "MmDecision: skip MMOpen symbol={} score={:?} ret_thr={:?} prediction_mode={} prediction_side={:?} service={} model_symbol={} factor_key={} factor_note={} (volatility missing)",
-                symbol_key,
-                return_score,
-                open_return_threshold,
-                self.prediction_mode,
-                prediction_side,
-                score_lookup.service_name,
-                score_lookup.symbol_key,
-                factor_lookup.key,
-                factor_lookup.note,
-            );
-            return Ok(None);
-        };
-
         if self.prediction_mode && !prediction_ready {
             trace!(
                 "MmDecision: skip MMOpen by prediction symbol={} score={:?} ret_thr={:?} service={} model_symbol={} fwd_open_hit={} bwd_open_hit={} prediction_mode=true",
@@ -603,15 +721,6 @@ impl MmDecision {
             return Ok(None);
         }
 
-        let interval_us = (self.order_interval_ms as i64).saturating_mul(1_000);
-        let last_ts = self
-            .last_report_ts_us
-            .get(&symbol_key)
-            .copied()
-            .unwrap_or(0);
-        if last_ts > 0 && now_us.saturating_sub(last_ts) < interval_us {
-            return Ok(None);
-        }
         self.last_report_ts_us.insert(symbol_key.clone(), now_us);
         let from_key = build_decision_from_key_base(
             now_us,
@@ -640,46 +749,8 @@ impl MmDecision {
             }
         };
 
-        let mut sent = 0usize;
-        let mut sent_buy = 0usize;
-        let mut sent_sell = 0usize;
-        for level in &plan.levels {
-            if let Some(side) = prediction_side {
-                if level.side != side {
-                    continue;
-                }
-            }
-            let mut ctx = MmOpenCtx::new();
-            ctx.opening_leg =
-                TradingLeg::new(open_venue, plan.quote.bid, plan.quote.ask, plan.quote.ts);
-            ctx.set_opening_symbol(&plan.symbol);
-            ctx.set_side(level.side);
-            ctx.set_order_type(OrderType::Limit);
-            let _ = ctx.set_amount_with_tick_floor(level.aligned_qty, plan.qty_tick);
-            let _ = ctx.set_price_with_tick_floor(level.aligned_price, plan.price_tick);
-            if ctx.amount_count() <= 0 || ctx.price_count() <= 0 {
-                continue;
-            }
-            ctx.exp_time = plan.exp_time_us;
-            ctx.create_ts = plan.now_us;
-            ctx.price_offset = level.offset;
-            ctx.set_from_key(from_key.as_bytes().to_vec());
-
-            let signal = TradeSignal::create(SignalType::MMOpen, now_us, 0.0, ctx.to_bytes());
-            if let Err(err) = self.signal_pub.publish(&signal.to_bytes()) {
-                warn!(
-                    "MmDecision: publish MMOpen failed symbol={} idx={} side={:?} err={:?}",
-                    plan.symbol, level.level_index, level.side, err
-                );
-                continue;
-            }
-
-            sent += 1;
-            match level.side {
-                Side::Buy => sent_buy += 1,
-                Side::Sell => sent_sell += 1,
-            }
-        }
+        let (sent, sent_buy, sent_sell) =
+            self.publish_mm_open_plan(open_venue, now_us, &plan, &from_key, prediction_side);
 
         info!(
             "MmDecision: MMOpen symbol={} channel={} now_us={} interval_ms={} orders_per_round={} sent={} buy={} sell={} prediction_mode={} prediction_side={:?} score={:?} ret_thr={:?} fwd_open_hit={} bwd_open_hit={} fwd_open_th={:.8} bwd_open_th={:.8} mid={:.8} vol={:.8} factor_ready={} band=[{:.8}, {:.8}] factor_key={} factor_note={}",
