@@ -102,6 +102,10 @@ pub struct StrategyParams {
     #[serde(default = "default_signal_cooldown")]
     pub signal_cooldown: u64,
 
+    /// MM 是否启用方向预测（true=按 return score 过滤单边，false=双边同时报价）
+    #[serde(default = "default_prediction_mode")]
+    pub prediction_mode: bool,
+
     /// 收益率模型输出通道（"-" 表示禁用）
     #[serde(default = "default_return_model_service")]
     pub return_model_service: String,
@@ -145,6 +149,9 @@ fn default_max_hedge_price_pct_change() -> f64 {
 fn default_signal_cooldown() -> u64 {
     5
 }
+fn default_prediction_mode() -> bool {
+    false
+}
 fn default_return_model_service() -> String {
     "return_model".to_string()
 }
@@ -166,6 +173,7 @@ impl Default for StrategyParams {
             hedge_aggressive_seq_threshold: default_hedge_aggressive_seq_threshold(),
             max_hedge_price_pct_change: default_max_hedge_price_pct_change(),
             signal_cooldown: default_signal_cooldown(),
+            prediction_mode: default_prediction_mode(),
             return_model_service: default_return_model_service(),
             environment_model_service: default_environment_model_service(),
         }
@@ -291,6 +299,19 @@ impl StrategyParams {
             .get("signal_cooldown")
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or_else(default_signal_cooldown);
+        let prediction_mode = match hash_map.get("prediction_mode") {
+            Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" => true,
+                "false" | "0" | "no" | "off" | "" => false,
+                _ => {
+                    panic!(
+                        "Redis hash '{}' prediction_mode 非法（仅支持 true/false）: {}",
+                        redis_key, raw
+                    )
+                }
+            },
+            None => default_prediction_mode(),
+        };
 
         let strict_return_model_required = ns == "xarb" || ns == "mm";
         let strict_env_model_dash_only = false;
@@ -406,6 +427,7 @@ impl StrategyParams {
             hedge_aggressive_seq_threshold,
             max_hedge_price_pct_change,
             signal_cooldown,
+            prediction_mode,
             return_model_service,
             environment_model_service,
         })
@@ -480,6 +502,7 @@ impl StrategyParams {
                 _decision.update_order_interval_ms(self.order_interval_ms);
                 _decision.update_orders_per_round(self.orders_per_round);
                 _decision.update_open_order_timeout(self.open_order_timeout);
+                _decision.update_prediction_mode(self.prediction_mode);
                 _decision.update_model_service_roles(
                     self.return_model_service.clone(),
                     self.environment_model_service.clone(),
@@ -496,12 +519,13 @@ impl StrategyParams {
         }
 
         info!(
-            "✅ 策略参数已更新: mode={}, amount={:.2}, order_interval_ms={}, orders_per_round={}, cooldown={}s, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: mode={}, amount={:.2}, order_interval_ms={}, orders_per_round={}, cooldown={}s, prediction_mode={}, return_model_service={}, environment_model_service={}",
             self.mode,
             self.order_amount,
             self.order_interval_ms,
             self.orders_per_round,
             self.signal_cooldown,
+            self.prediction_mode,
             self.return_model_service,
             self.environment_model_service
         );

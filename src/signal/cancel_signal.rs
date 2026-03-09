@@ -1,3 +1,4 @@
+use crate::pre_trade::order_manager::Side;
 use crate::signal::common::{bytes_helper, SignalBytes, TradingLeg};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -28,6 +29,9 @@ pub struct MmCancelCtx {
 
     /// Leg symbol
     pub opening_symbol: [u8; 32],
+
+    /// Cancel side
+    pub side: u8,
 
     /// Trigger timestamp
     pub trigger_ts: i64,
@@ -144,6 +148,7 @@ impl MmCancelCtx {
                 ts: 0,
             },
             opening_symbol: [0u8; 32],
+            side: 0,
             trigger_ts: 0,
             from_key_len: 0,
             from_key: Vec::new(),
@@ -158,6 +163,16 @@ impl MmCancelCtx {
     /// Get opening leg symbol
     pub fn get_opening_symbol(&self) -> String {
         get_symbol(&self.opening_symbol)
+    }
+
+    /// Set cancel side
+    pub fn set_side(&mut self, side: Side) {
+        self.side = side.to_u8();
+    }
+
+    /// Get cancel side
+    pub fn get_side(&self) -> Side {
+        Side::from_u8(self.side).expect("MmCancelCtx side must be valid")
     }
 
     /// Set from key bytes (updates length)
@@ -273,6 +288,9 @@ impl SignalBytes for MmCancelCtx {
         // Opening leg
         write_leg(&mut buf, &self.opening_leg, &self.opening_symbol);
 
+        // Cancel side
+        buf.put_u8(self.side);
+
         // Trigger timestamp
         buf.put_i64_le(self.trigger_ts);
 
@@ -287,10 +305,15 @@ impl SignalBytes for MmCancelCtx {
         // Opening leg
         let (opening_leg, opening_symbol) = read_leg(&mut bytes, true, "opening leg")?;
 
-        // Trigger timestamp + from_key_len
-        if bytes.remaining() < 8 + 4 {
-            return Err("Not enough bytes for trigger timestamp".to_string());
+        if bytes.remaining() < 1 + 8 + 4 {
+            return Err("Not enough bytes for cancel side / trigger timestamp".to_string());
         }
+        let side = bytes.get_u8();
+        if Side::from_u8(side).is_none() {
+            return Err(format!("Invalid MmCancelCtx side: {}", side));
+        }
+
+        // Trigger timestamp + from_key_len
         let trigger_ts = bytes.get_i64_le();
         let from_key_len = bytes.get_u32_le() as usize;
 
@@ -310,6 +333,7 @@ impl SignalBytes for MmCancelCtx {
         Ok(MmCancelCtx {
             opening_leg,
             opening_symbol,
+            side,
             trigger_ts,
             from_key_len: from_key_len as u32,
             from_key,

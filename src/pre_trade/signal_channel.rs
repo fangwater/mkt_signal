@@ -629,6 +629,7 @@ fn handle_trade_signal(signal: TradeSignal) {
         SignalType::MMCancel => match MmCancelCtx::from_bytes(signal.context.clone()) {
             Ok(cancel_ctx) => {
                 let symbol = cancel_ctx.get_opening_symbol().to_uppercase();
+                let cancel_side = cancel_ctx.get_side();
                 let opening_venue = TradingVenue::from_u8(cancel_ctx.opening_leg.venue)
                     .unwrap_or(TradingVenue::BinanceMargin);
 
@@ -654,11 +655,12 @@ fn handle_trade_signal(signal: TradeSignal) {
                     return;
                 }
                 info!(
-                    "MMCancel: 找到 {} 个活跃策略 {:?}, symbol={} {:?}",
+                    "MMCancel: 找到 {} 个活跃策略 {:?}, symbol={} {:?} side={:?}",
                     candidate_ids.len(),
                     candidate_ids,
                     symbol,
-                    opening_venue
+                    opening_venue,
+                    cancel_side
                 );
                 for strategy_id in candidate_ids {
                     let exists = { strategy_mgr.borrow().contains(strategy_id) };
