@@ -1427,7 +1427,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
             <button id="refreshQuote">Refresh Quote</button>
             <button id="send">一键发号</button>
           </div>
-          <div class="muted" id="actionHint" style="margin-top:8px;">请选择 symbol 后点击一键发号（默认 from_key 包含 ret_score/ret_thr/vol/env_score/env_thr，缺失时为 na）</div>
+          <div class="muted" id="actionHint" style="margin-top:8px;">请选择 symbol 后点击一键发号（默认 from_key 包含 ret_score/ret_thr/vol/env_score/env_thr，缺失时为 0）</div>
         </section>
       </div>
 
@@ -1547,8 +1547,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
         const enabled = !!symbol;
         els.send.disabled = !enabled;
         els.actionHint.textContent = enabled
-          ? '点击一键发号（默认 from_key 包含 ret_score/ret_thr/vol/env_score/env_thr，缺失时为 na）'
-          : '请选择 symbol 后点击一键发号（默认 from_key 包含 ret_score/ret_thr/vol/env_score/env_thr，缺失时为 na）';
+          ? '点击一键发号（默认 from_key 包含 ret_score/ret_thr/vol/env_score/env_thr，缺失时为 0）'
+          : '请选择 symbol 后点击一键发号（默认 from_key 包含 ret_score/ret_thr/vol/env_score/env_thr，缺失时为 0）';
       }
 
       function renderCfg(cfg) {

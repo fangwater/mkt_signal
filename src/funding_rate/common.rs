@@ -221,23 +221,23 @@ pub fn build_decision_from_key_base(
     let return_score_text = return_score
         .filter(|v| v.is_finite())
         .map(|v| format!("{v:.8}"))
-        .unwrap_or_else(|| "na".to_string());
+        .unwrap_or_else(|| "0".to_string());
     let return_threshold_text = return_threshold
         .filter(|v| v.is_finite())
         .map(|v| format!("{v:.8}"))
-        .unwrap_or_else(|| "na".to_string());
+        .unwrap_or_else(|| "0".to_string());
     let volatility_text = volatility
         .filter(|v| v.is_finite())
         .map(|v| format!("{v:.8}"))
-        .unwrap_or_else(|| "na".to_string());
+        .unwrap_or_else(|| "0".to_string());
     let env_score_text = env_score
         .filter(|v| v.is_finite())
         .map(|v| format!("{v:.8}"))
-        .unwrap_or_else(|| "na".to_string());
+        .unwrap_or_else(|| "0".to_string());
     let env_threshold_text = env_threshold
         .filter(|v| v.is_finite())
         .map(|v| format!("{v:.8}"))
-        .unwrap_or_else(|| "na".to_string());
+        .unwrap_or_else(|| "0".to_string());
     format!(
         "{now_us}:ret_score={return_score_text}:ret_thr={return_threshold_text}:vol={volatility_text}:env_score={env_score_text}:env_thr={env_threshold_text}"
     )
