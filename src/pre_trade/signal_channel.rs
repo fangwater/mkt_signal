@@ -654,14 +654,6 @@ fn handle_trade_signal(signal: TradeSignal) {
                 if candidate_ids.is_empty() {
                     return;
                 }
-                info!(
-                    "MMCancel: 找到 {} 个活跃策略 {:?}, symbol={} {:?} side={:?}",
-                    candidate_ids.len(),
-                    candidate_ids,
-                    symbol,
-                    opening_venue,
-                    cancel_side
-                );
                 for strategy_id in candidate_ids {
                     let exists = { strategy_mgr.borrow().contains(strategy_id) };
                     if !exists {
@@ -669,12 +661,9 @@ fn handle_trade_signal(signal: TradeSignal) {
                     }
                     let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                     if let Some(mut strategy) = strategy_opt {
-                        info!("MMCancel: 处理策略 id={}", strategy_id);
                         strategy.handle_signal(&signal);
                         if strategy.is_active() {
                             strategy_mgr.borrow_mut().insert(strategy);
-                        } else {
-                            info!("MMCancel: 策略 id={} 已不活跃，不再放回", strategy_id);
                         }
                     }
                 }

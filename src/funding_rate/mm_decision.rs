@@ -516,74 +516,6 @@ impl MmDecision {
             return Ok(None);
         };
 
-        let interval_us = (self.order_interval_ms as i64).saturating_mul(1_000);
-        let last_ts = self
-            .last_report_ts_us
-            .get(&symbol_key)
-            .copied()
-            .unwrap_or(0);
-        if last_ts > 0 && now_us.saturating_sub(last_ts) < interval_us {
-            return Ok(None);
-        }
-
-        if !self.prediction_mode {
-            self.last_report_ts_us.insert(symbol_key.clone(), now_us);
-            let from_key = build_decision_from_key_base(
-                now_us,
-                None,
-                None,
-                Some(volatility),
-                environment_signal.score,
-                environment_signal.threshold,
-            );
-
-            let plan = match build_mm_open_quote_plan(
-                open_venue,
-                open_symbol,
-                open_quote,
-                self.order_amount_u,
-                self.orders_per_round,
-                self.open_order_ttl_us,
-                volatility,
-                now_us,
-                &self.open_min_qty_table,
-            ) {
-                Ok(plan) => plan,
-                Err(err) => {
-                    warn!("MmDecision: build open quote plan failed: {}", err);
-                    return Ok(None);
-                }
-            };
-
-            let (sent, sent_buy, sent_sell) =
-                self.publish_mm_open_plan(open_venue, now_us, &plan, &from_key, None);
-
-            info!(
-                "MmDecision: MMOpen symbol={} channel={} now_us={} interval_ms={} orders_per_round={} sent={} buy={} sell={} prediction_mode=false mid={:.8} vol={:.8} factor_ready={} band=[{:.8}, {:.8}] factor_key={} factor_note={}",
-                symbol_key,
-                self.channel_name,
-                now_us,
-                self.order_interval_ms,
-                self.orders_per_round,
-                sent,
-                sent_buy,
-                sent_sell,
-                plan.band.mid_price,
-                plan.band.volatility,
-                factor_ready,
-                plan.band.lower_price,
-                plan.band.upper_price,
-                factor_lookup.key,
-                factor_lookup.note,
-            );
-
-            return if sent > 0 {
-                Ok(Some(SignalType::MMOpen))
-            } else {
-                Ok(None)
-            };
-        }
-
         let Some(service_name) = self.return_model_service.as_deref() else {
             warn!(
                 "MmDecision: return_model_service not configured, skip decision symbol={}",
@@ -602,20 +534,21 @@ impl MmDecision {
         let thresholds = self.return_score_thresholds.get(&threshold_symbol).copied();
         if return_score.is_none() {
             trace!(
-                "MmDecision: return score not ready symbol={} service={} model_symbol={} note={} (cancel skipped, open falls back to vol/interval only)",
+                "MmDecision: return score not ready symbol={} service={} model_symbol={} note={} (skip open/cancel)",
                 symbol_key,
                 score_lookup.service_name,
                 score_lookup.symbol_key,
                 score_lookup.note
             );
-        } else if thresholds.is_none() {
+            return Ok(None);
+        } else if self.prediction_mode && thresholds.is_none() {
             trace!(
-                "MmDecision: missing return score thresholds symbol={} threshold_symbol={} venue={:?} (cancel skipped, open falls back to vol/interval only)",
+                "MmDecision: missing return score thresholds symbol={} threshold_symbol={} venue={:?} (prediction open skipped, cancel skipped)",
                 symbol_key, threshold_symbol, hedge_venue
             );
         }
 
-        let return_score_value = return_score.unwrap_or(f64::NAN);
+        let return_score_value = return_score.expect("checked above");
         let forward_cancel_hit = matches!(
             (return_score, thresholds),
             (Some(score), Some(thresholds)) if score < thresholds.forward_cancel
@@ -705,6 +638,20 @@ impl MmDecision {
                 );
                 return Ok(Some(SignalType::MMCancel));
             }
+        }
+
+        let interval_us = (self.order_interval_ms as i64).saturating_mul(1_000);
+        let last_ts = self
+            .last_report_ts_us
+            .get(&symbol_key)
+            .copied()
+            .unwrap_or(0);
+        if last_ts > 0 && now_us.saturating_sub(last_ts) < interval_us {
+            return Ok(None);
+        }
+
+        if self.prediction_mode && thresholds.is_none() {
+            return Ok(None);
         }
 
         if self.prediction_mode && !prediction_ready {

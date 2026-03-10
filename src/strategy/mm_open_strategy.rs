@@ -425,19 +425,11 @@ impl MarketMakerOpenStrategy {
         let cancel_side = ctx.get_side();
         if let Some(open_side) = self.open_side {
             if open_side != cancel_side {
-                debug!(
-                    "MarketMakerOpenStrategy: strategy_id={} MMCancel side mismatch cancel_side={:?} open_side={:?}, ignore",
-                    self.strategy_id, cancel_side, open_side
-                );
                 return;
             }
         }
 
         if self.open_order_id == 0 {
-            warn!(
-                "MarketMakerOpenStrategy: strategy_id={} cancel requested but open_order_id=0",
-                self.strategy_id
-            );
             return;
         }
 
