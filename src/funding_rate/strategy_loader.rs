@@ -70,8 +70,11 @@ pub struct StrategyParams {
     pub order_interval_ms: u64,
 
     /// MM 每轮报单数量
-    #[serde(default = "default_orders_per_round")]
-    pub orders_per_round: u32,
+    #[serde(default = "default_open_orders_per_round")]
+    pub open_orders_per_round: u32,
+
+    #[serde(default = "default_hedge_orders_per_round")]
+    pub hedge_orders_per_round: u32,
 
     /// 开仓挂单档位（JSON 数组）
     /// 例如: "[0.0002, 0.0004, 0.0006, 0.0008, 0.001]"
@@ -81,6 +84,21 @@ pub struct StrategyParams {
     /// 开仓订单超时（秒）
     #[serde(default = "default_open_order_timeout")]
     pub open_order_timeout: u64,
+
+    #[serde(default = "default_next_query_delay_ms")]
+    pub next_query_delay_ms: u64,
+
+    #[serde(default = "default_hedge_vol_multiplier")]
+    pub hedge_vol_multiplier: f64,
+
+    #[serde(default = "default_hedge_offset_ratio")]
+    pub hedge_offset_ratio: f64,
+
+    #[serde(default = "default_hedge_price_offset_limit_upper")]
+    pub hedge_price_offset_limit_upper: f64,
+
+    #[serde(default = "default_hedge_price_offset_limit_lower")]
+    pub hedge_price_offset_limit_lower: f64,
 
     /// 对冲订单超时（秒）
     #[serde(default = "default_hedge_timeout")]
@@ -125,14 +143,32 @@ fn default_order_amount() -> f32 {
 fn default_order_interval_ms() -> u64 {
     5_000
 }
-fn default_orders_per_round() -> u32 {
+fn default_open_orders_per_round() -> u32 {
     1
+}
+fn default_hedge_orders_per_round() -> u32 {
+    8
 }
 fn default_price_offsets() -> String {
     "[0.0002, 0.0004, 0.0006, 0.0008, 0.001]".to_string()
 }
 fn default_open_order_timeout() -> u64 {
     120
+}
+fn default_next_query_delay_ms() -> u64 {
+    30_000
+}
+fn default_hedge_vol_multiplier() -> f64 {
+    2.0
+}
+fn default_hedge_offset_ratio() -> f64 {
+    1.3
+}
+fn default_hedge_price_offset_limit_upper() -> f64 {
+    0.005
+}
+fn default_hedge_price_offset_limit_lower() -> f64 {
+    0.0003
 }
 fn default_hedge_timeout() -> u64 {
     30
@@ -165,9 +201,15 @@ impl Default for StrategyParams {
             mode: default_mode(),
             order_amount: default_order_amount(),
             order_interval_ms: default_order_interval_ms(),
-            orders_per_round: default_orders_per_round(),
+            open_orders_per_round: default_open_orders_per_round(),
+            hedge_orders_per_round: default_hedge_orders_per_round(),
             price_offsets: default_price_offsets(),
             open_order_timeout: default_open_order_timeout(),
+            next_query_delay_ms: default_next_query_delay_ms(),
+            hedge_vol_multiplier: default_hedge_vol_multiplier(),
+            hedge_offset_ratio: default_hedge_offset_ratio(),
+            hedge_price_offset_limit_upper: default_hedge_price_offset_limit_upper(),
+            hedge_price_offset_limit_lower: default_hedge_price_offset_limit_lower(),
             hedge_timeout: default_hedge_timeout(),
             hedge_price_offset: default_hedge_price_offset(),
             hedge_aggressive_seq_threshold: default_hedge_aggressive_seq_threshold(),
@@ -226,24 +268,29 @@ impl StrategyParams {
             None => default_order_interval_ms(),
         };
 
-        let orders_per_round = match hash_map.get("orders_per_round") {
+        let open_orders_per_round = match hash_map.get("open_orders_per_round") {
             Some(raw) => {
                 let parsed = raw.parse::<i64>().unwrap_or_else(|_| {
                     panic!(
-                        "Redis hash '{}' orders_per_round 无法解析为整数: {}",
+                        "Redis hash '{}' open_orders_per_round 无法解析为整数: {}",
                         redis_key, raw
                     )
                 });
                 if parsed <= 0 {
                     panic!(
-                        "Redis hash '{}' orders_per_round 无效(需>0): {}",
+                        "Redis hash '{}' open_orders_per_round 无效(需>0): {}",
                         redis_key, parsed
                     );
                 }
                 parsed as u32
             }
-            None => default_orders_per_round(),
+            None => default_open_orders_per_round(),
         };
+        let hedge_orders_per_round = hash_map
+            .get("hedge_orders_per_round")
+            .and_then(|s| s.parse::<u32>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or_else(default_hedge_orders_per_round);
 
         let price_offsets = hash_map
             .get("price_offsets")
@@ -254,6 +301,30 @@ impl StrategyParams {
             .get("open_order_timeout")
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or_else(default_open_order_timeout);
+        let next_query_delay_ms = hash_map
+            .get("next_query_delay_ms")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or_else(default_next_query_delay_ms);
+        let hedge_vol_multiplier = hash_map
+            .get("hedge_vol_multiplier")
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .unwrap_or_else(default_hedge_vol_multiplier);
+        let hedge_offset_ratio = hash_map
+            .get("hedge_offset_ratio")
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .unwrap_or_else(default_hedge_offset_ratio);
+        let hedge_price_offset_limit_upper = hash_map
+            .get("hedge_price_offset_limit_upper")
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|v| v.is_finite())
+            .unwrap_or_else(default_hedge_price_offset_limit_upper);
+        let hedge_price_offset_limit_lower = hash_map
+            .get("hedge_price_offset_limit_lower")
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|v| v.is_finite())
+            .unwrap_or_else(default_hedge_price_offset_limit_lower);
 
         let hedge_timeout = hash_map
             .get("hedge_timeout")
@@ -419,9 +490,15 @@ impl StrategyParams {
             mode,
             order_amount,
             order_interval_ms,
-            orders_per_round,
+            open_orders_per_round,
+            hedge_orders_per_round,
             price_offsets,
             open_order_timeout,
+            next_query_delay_ms,
+            hedge_vol_multiplier,
+            hedge_offset_ratio,
+            hedge_price_offset_limit_upper,
+            hedge_price_offset_limit_lower,
             hedge_timeout,
             hedge_price_offset,
             hedge_aggressive_seq_threshold,
@@ -500,7 +577,15 @@ impl StrategyParams {
             || MmDecision::try_with_mut(|_decision| {
                 _decision.update_order_amount(self.order_amount);
                 _decision.update_order_interval_ms(self.order_interval_ms);
-                _decision.update_orders_per_round(self.orders_per_round);
+                _decision.update_open_orders_per_round(self.open_orders_per_round);
+                _decision.update_mm_hedge_params(
+                    self.hedge_orders_per_round,
+                    self.hedge_vol_multiplier,
+                    self.hedge_offset_ratio,
+                    self.hedge_price_offset_limit_lower,
+                    self.hedge_price_offset_limit_upper,
+                    self.next_query_delay_ms,
+                );
                 _decision.update_open_order_timeout(self.open_order_timeout);
                 _decision.update_prediction_mode(self.prediction_mode);
                 _decision.update_model_service_roles(
@@ -519,11 +604,11 @@ impl StrategyParams {
         }
 
         info!(
-            "✅ 策略参数已更新: mode={}, amount={:.2}, order_interval_ms={}, orders_per_round={}, cooldown={}s, prediction_mode={}, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: mode={}, amount={:.2}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, return_model_service={}, environment_model_service={}",
             self.mode,
             self.order_amount,
             self.order_interval_ms,
-            self.orders_per_round,
+            self.open_orders_per_round,
             self.signal_cooldown,
             self.prediction_mode,
             self.return_model_service,

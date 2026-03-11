@@ -44,12 +44,11 @@ use mkt_signal::factor_pub::model_pub::publisher::MODEL_PAYLOAD_MAX_BYTES;
 use mkt_signal::funding_rate::common::build_decision_from_key_base;
 use mkt_signal::funding_rate::common::Quote;
 use mkt_signal::funding_rate::factor_value_hub::FactorValueHub;
-use mkt_signal::market_maker::manual_signal::{
-    build_mm_hedge_ctx as build_mm_hedge_ctx_core, MmHedgeBuildInput,
+use mkt_signal::market_maker::hedge_quote_plan::{
+    build_mm_hedge_ctx as build_mm_hedge_ctx_core, resolve_mm_hedge_signal_inputs,
+    MmHedgeBuildInput,
 };
-use mkt_signal::market_maker::open_quote_plan::{
-    build_default_hedge_offsets, build_mm_open_quote_plan, MmOpenPlanLevel,
-};
+use mkt_signal::market_maker::open_quote_plan::{build_mm_open_quote_plan, MmOpenPlanLevel};
 use mkt_signal::market_maker::order_align::ensure_supported_mm_open_venue as ensure_supported_mm_open_venue_raw;
 use mkt_signal::pre_trade::order_manager::{OrderType, Side};
 use mkt_signal::signal::common::{SignalBytes, TradingLeg, TradingVenue};
@@ -105,8 +104,12 @@ struct AppCfg {
     default_open_ttl_ms: u64,
     open_order_ttl_us: i64,
     order_amount_u: f64,
-    orders_per_round: u32,
-    hedge_offsets: Vec<f64>,
+    open_orders_per_round: u32,
+    hedge_orders_per_round: u32,
+    hedge_vol_multiplier: f64,
+    hedge_offset_ratio: f64,
+    hedge_price_offset_limit_upper: f64,
+    hedge_price_offset_limit_lower: f64,
     next_query_delay_ms: u64,
     from_key: Vec<u8>,
     model_service: String,
@@ -192,7 +195,7 @@ struct ManualOpenResponse {
     quote_ts: i64,
     exp_time_us: i64,
     order_amount_u: f64,
-    orders_per_round: u32,
+    open_orders_per_round: u32,
     price_tick: f64,
     qty_tick: f64,
     from_key: String,
@@ -229,7 +232,12 @@ struct ConfigResponse {
     port: u16,
     default_open_ttl_ms: u64,
     order_amount_u: f64,
-    orders_per_round: u32,
+    open_orders_per_round: u32,
+    hedge_orders_per_round: u32,
+    hedge_vol_multiplier: f64,
+    hedge_offset_ratio: f64,
+    hedge_price_offset_limit_upper: f64,
+    hedge_price_offset_limit_lower: f64,
     next_query_delay_ms: u64,
     from_key: String,
     model_service: String,
@@ -498,27 +506,43 @@ async fn load_config(path: &str) -> Result<AppCfg> {
     }
 
     let order_amount_u = parse_required_f64(&params, "order_amount")?;
-    let orders_per_round = parse_required_u32(&params, "orders_per_round")?;
-    if orders_per_round == 0 {
+    let open_orders_per_round = parse_required_u32(&params, "open_orders_per_round")?;
+    if open_orders_per_round == 0 {
         panic!(
-            "redis hash '{}' orders_per_round invalid(need >0): {}",
-            params_key, orders_per_round
+            "redis hash '{}' open_orders_per_round invalid(need >0): {}",
+            params_key, open_orders_per_round
+        );
+    }
+    let hedge_orders_per_round = parse_required_u32(&params, "hedge_orders_per_round")?;
+    if hedge_orders_per_round == 0 {
+        panic!(
+            "redis hash '{}' hedge_orders_per_round invalid(need >0): {}",
+            params_key, hedge_orders_per_round
         );
     }
     let open_timeout_s = parse_required_u64(&params, "open_order_timeout")?;
     let next_query_delay_ms = parse_required_u64(&params, "next_query_delay_ms")?;
-    let _hedge_aggressive_seq_threshold =
-        parse_required_u32(&params, "hedge_aggressive_seq_threshold")?;
-    let _max_hedge_price_pct_change = parse_required_f64(&params, "max_hedge_price_pct_change")?;
-    let _signal_cooldown = parse_required_u64(&params, "signal_cooldown")?;
-
+    let hedge_vol_multiplier = parse_required_f64(&params, "hedge_vol_multiplier")?;
+    let hedge_offset_ratio = parse_required_f64(&params, "hedge_offset_ratio")?;
+    let hedge_price_offset_limit_upper =
+        parse_required_f64(&params, "hedge_price_offset_limit_upper")?;
+    let hedge_price_offset_limit_lower =
+        parse_required_f64(&params, "hedge_price_offset_limit_lower")?;
     let default_open_ttl_ms = open_timeout_s.saturating_mul(1000);
     let open_order_ttl_us = (open_timeout_s as i64).saturating_mul(1_000_000);
 
     if !(order_amount_u > 0.0) {
         anyhow::bail!("order_amount must be > 0");
     }
-    let hedge_offsets = build_default_hedge_offsets(orders_per_round);
+    if !(hedge_vol_multiplier.is_finite() && hedge_vol_multiplier > 0.0) {
+        anyhow::bail!("hedge_vol_multiplier must be finite and > 0");
+    }
+    if !(hedge_offset_ratio.is_finite() && hedge_offset_ratio > 0.0) {
+        anyhow::bail!("hedge_offset_ratio must be finite and > 0");
+    }
+    if !hedge_price_offset_limit_upper.is_finite() || !hedge_price_offset_limit_lower.is_finite() {
+        anyhow::bail!("hedge price offset limits must be finite");
+    }
 
     Ok(AppCfg {
         venue,
@@ -529,8 +553,12 @@ async fn load_config(path: &str) -> Result<AppCfg> {
         default_open_ttl_ms,
         open_order_ttl_us,
         order_amount_u,
-        orders_per_round,
-        hedge_offsets,
+        open_orders_per_round,
+        hedge_orders_per_round,
+        hedge_vol_multiplier,
+        hedge_offset_ratio,
+        hedge_price_offset_limit_upper,
+        hedge_price_offset_limit_lower,
         next_query_delay_ms,
         from_key,
         model_service: cfg.model_service,
@@ -661,6 +689,7 @@ fn build_mm_hedge_ctx(
     cfg: &AppCfg,
     quotes: &Arc<RwLock<QuoteCache>>,
     table: &Arc<RwLock<VenueMinQtyTable>>,
+    factor_value_hub: &mut FactorValueHub,
     query: &MmHedgeSignalQueryMsg,
 ) -> Result<MmHedgeCtx> {
     let symbol = query.get_symbol().to_uppercase();
@@ -672,16 +701,24 @@ fn build_mm_hedge_ctx(
         .read()
         .get_valid(&symbol)
         .context("quote unavailable")?;
+    let (signal, volatility) =
+        resolve_mm_hedge_signal_inputs(factor_value_hub, &cfg.model_service, &symbol, cfg.venue)
+            .map_err(anyhow::Error::msg)?;
 
     let table_guard = table.read();
     let input = MmHedgeBuildInput {
         venue: cfg.venue,
         symbol: &symbol,
         quote,
+        volatility,
+        signal,
+        hedge_vol_multiplier: cfg.hedge_vol_multiplier,
+        hedge_offset_ratio: cfg.hedge_offset_ratio,
         order_amount_u: cfg.order_amount_u,
-        offsets: &cfg.hedge_offsets,
+        hedge_orders_per_round: cfg.hedge_orders_per_round,
+        offset_low: cfg.hedge_price_offset_limit_lower,
+        offset_high_limit: cfg.hedge_price_offset_limit_upper,
         next_query_delay_ms: cfg.next_query_delay_ms,
-        from_key: cfg.from_key.clone(),
     };
     build_mm_hedge_ctx_core(input, &table_guard, query).map_err(anyhow::Error::msg)
 }
@@ -768,6 +805,32 @@ fn spawn_backward_query_responder(
                     None
                 }
             };
+            let factor_node_name = format!("{}_hedge_factor_hub", PROCESS_NAME);
+            let factor_node = NodeBuilder::new()
+                .name(&NodeName::new(&factor_node_name)?)
+                .create::<ipc::Service>()?;
+            let pnlu_settings = RedisSettings {
+                host: DEFAULT_PNLU_REDIS_HOST.to_string(),
+                port: DEFAULT_PNLU_REDIS_PORT,
+                db: DEFAULT_PNLU_REDIS_DB,
+                username: None,
+                password: None,
+                prefix: None,
+            };
+            let mut factor_value_hub = FactorValueHub::new(
+                &factor_node,
+                cfg.venue,
+                cfg.venue,
+                TARGET_FACTOR_NAME,
+                TARGET_FACTOR_KEY_PREFIX,
+                pnlu_settings,
+                DEFAULT_PNLU_KEY_SUFFIX.to_string(),
+                PNLU_MAX_AGE_SECS,
+            )?;
+            if !cfg.model_service.trim().is_empty() && cfg.model_service.trim() != "-" {
+                factor_value_hub
+                    .update_model_output_services(&factor_node, vec![cfg.model_service.clone()]);
+            }
 
             let node = NodeBuilder::new()
                 .name(&NodeName::new(&node_name)?)
@@ -809,7 +872,13 @@ fn spawn_backward_query_responder(
                                     }
                                 };
 
-                                let ctx = match build_mm_hedge_ctx(&cfg, &quotes, &min_qty_table, &query) {
+                                let ctx = match build_mm_hedge_ctx(
+                                    &cfg,
+                                    &quotes,
+                                    &min_qty_table,
+                                    &mut factor_value_hub,
+                                    &query,
+                                ) {
                                     Ok(ctx) => ctx,
                                     Err(err) => {
                                         warn!("manual_mm: build hedge ctx failed: {err:#}");
@@ -1004,7 +1073,7 @@ fn build_and_publish_open(
                 ts: req.quote_ts,
             },
             cfg.order_amount_u,
-            cfg.orders_per_round,
+            cfg.open_orders_per_round,
             cfg.open_order_ttl_us,
             volatility,
             now_us,
@@ -1069,7 +1138,7 @@ fn build_and_publish_open(
         quote_ts: plan.quote.ts,
         exp_time_us: plan.exp_time_us,
         order_amount_u: plan.order_amount_u,
-        orders_per_round: plan.orders_per_round,
+        open_orders_per_round: plan.orders_per_round,
         price_tick: plan.price_tick,
         qty_tick: plan.qty_tick,
         from_key,
@@ -1120,7 +1189,12 @@ async fn api_config(State(st): State<AppState>) -> impl IntoResponse {
         port: st.cfg.port,
         default_open_ttl_ms: st.cfg.default_open_ttl_ms,
         order_amount_u: st.cfg.order_amount_u,
-        orders_per_round: st.cfg.orders_per_round,
+        open_orders_per_round: st.cfg.open_orders_per_round,
+        hedge_orders_per_round: st.cfg.hedge_orders_per_round,
+        hedge_vol_multiplier: st.cfg.hedge_vol_multiplier,
+        hedge_offset_ratio: st.cfg.hedge_offset_ratio,
+        hedge_price_offset_limit_upper: st.cfg.hedge_price_offset_limit_upper,
+        hedge_price_offset_limit_lower: st.cfg.hedge_price_offset_limit_lower,
         next_query_delay_ms: st.cfg.next_query_delay_ms,
         from_key: String::from_utf8_lossy(&st.cfg.from_key).to_string(),
         model_service: st.cfg.model_service.clone(),
@@ -1563,7 +1637,12 @@ const INDEX_HTML: &str = r#"<!doctype html>
           ['model_service', cfg.model_service || ''],
           ['target_factor', cfg.target_factor || 'rl_return_volatility'],
           ['order_amount_u', cfg.order_amount_u],
-          ['orders_per_round', cfg.orders_per_round],
+          ['open_orders_per_round', cfg.open_orders_per_round],
+          ['hedge_orders_per_round', cfg.hedge_orders_per_round],
+          ['hedge_vol_multiplier', cfg.hedge_vol_multiplier],
+          ['hedge_offset_ratio', cfg.hedge_offset_ratio],
+          ['hedge_price_offset_limit_upper', cfg.hedge_price_offset_limit_upper],
+          ['hedge_price_offset_limit_lower', cfg.hedge_price_offset_limit_lower],
           ['default_open_ttl_ms', cfg.default_open_ttl_ms],
           ['next_query_delay_ms', cfg.next_query_delay_ms],
           ['default_from_key', cfg.from_key || ''],

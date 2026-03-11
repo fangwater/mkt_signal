@@ -4,9 +4,10 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use log::info;
+use log::{debug, info};
 #[cfg(unix)]
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
+use tokio::time::{self, Duration};
 use tokio_util::sync::CancellationToken;
 
 use mkt_signal::common::exchange::Exchange;
@@ -169,6 +170,34 @@ fn infer_mm_venue_from_key_suffix(key_suffix: &str) -> Option<TradingVenue> {
     futures_venue_for_exchange(normalize_exchange_str(&exchange_candidate))
 }
 
+fn spawn_mm_open_worker(token: CancellationToken) {
+    tokio::task::spawn_local(async move {
+        let mut interval = time::interval(Duration::from_millis(200));
+        loop {
+            tokio::select! {
+                _ = token.cancelled() => break,
+                _ = interval.tick() => {
+                    MmDecision::with_mut(|decision| decision.process_open_interval());
+                }
+            }
+        }
+    });
+}
+
+fn spawn_mm_cancel_worker(token: CancellationToken) {
+    tokio::task::spawn_local(async move {
+        let mut interval = time::interval(Duration::from_millis(20));
+        loop {
+            tokio::select! {
+                _ = token.cancelled() => break,
+                _ = interval.tick() => {
+                    MmDecision::with_mut(|decision| decision.process_return_score_updates());
+                }
+            }
+        }
+    });
+}
+
 /// 主运行循环
 async fn run(
     branch: DecisionBranch,
@@ -233,6 +262,12 @@ async fn run(
         hedge_venue,
     );
     info!("配置加载器已启动（60秒定时重载）");
+
+    if matches!(branch, DecisionBranch::Mm) {
+        spawn_mm_open_worker(token.clone());
+        spawn_mm_cancel_worker(token.clone());
+        debug!("MM workers started open=interval cancel=return_score_update");
+    }
 
     // if matches!(branch, DecisionBranch::Fr) {
     //     tokio::task::spawn_local(async move {

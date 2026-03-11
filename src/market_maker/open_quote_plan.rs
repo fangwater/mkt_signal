@@ -1,9 +1,9 @@
-use crate::common::symbol_util::normalize_symbol_for_venue;
-use crate::common::tick_math::QuantizedValue;
 use crate::funding_rate::common::Quote;
-use crate::market_maker::order_align::{align_order_for_venue, min_qty_symbol_key};
+use crate::market_maker::quote_plan_levels::{
+    build_quote_plan_levels, QuotePlanLevel, QuotePlanLevelSpec,
+};
 use crate::pre_trade::order_manager::Side;
-use crate::signal::common::{align_price_ceil, align_price_floor, TradingVenue};
+use crate::signal::common::TradingVenue;
 use crate::signal::venue_min_qty_table::VenueMinQtyTable;
 
 #[derive(Debug, Clone, Copy)]
@@ -14,20 +14,7 @@ pub struct MmVolatilityBand {
     pub volatility: f64,
 }
 
-#[derive(Debug, Clone)]
-pub struct MmOpenPlanLevel {
-    pub level_index: usize,
-    pub side_level_index: usize,
-    pub side: Side,
-    pub offset: f64,
-    pub base_price: f64,
-    pub raw_price: f64,
-    pub raw_qty: f64,
-    pub aligned_price: f64,
-    pub aligned_qty: f64,
-    pub price_tick_count: i64,
-    pub qty_tick_count: i64,
-}
+pub type MmOpenPlanLevel = QuotePlanLevel;
 
 #[derive(Debug, Clone)]
 pub struct MmOpenQuotePlan {
@@ -43,7 +30,7 @@ pub struct MmOpenQuotePlan {
     pub levels: Vec<MmOpenPlanLevel>,
 }
 
-fn build_level_prices(mid: f64, vol: f64, levels_per_side: usize) -> Vec<(Side, usize, f64)> {
+fn build_level_specs(mid: f64, vol: f64, levels_per_side: usize) -> Vec<QuotePlanLevelSpec> {
     if levels_per_side == 0 {
         return Vec::new();
     }
@@ -55,10 +42,18 @@ fn build_level_prices(mid: f64, vol: f64, levels_per_side: usize) -> Vec<(Side, 
     let step = vol / levels_per_side as f64;
     for side_level_index in 1..=levels_per_side {
         let offset = step * side_level_index as f64;
-        let sell_price = mid * (1.0 + offset);
-        let buy_price = mid * (1.0 - offset);
-        out.push((Side::Sell, side_level_index, sell_price));
-        out.push((Side::Buy, side_level_index, buy_price));
+        out.push(QuotePlanLevelSpec {
+            side: Side::Sell,
+            side_level_index,
+            offset,
+            base_price: mid,
+        });
+        out.push(QuotePlanLevelSpec {
+            side: Side::Buy,
+            side_level_index,
+            offset,
+            base_price: mid,
+        });
     }
 
     out
@@ -102,134 +97,44 @@ pub fn build_mm_open_quote_plan(
         return Err("orders_per_round must be > 0".to_string());
     }
 
-    let trade_symbol = normalize_symbol_for_venue(symbol, venue);
-    if trade_symbol.is_empty() {
-        return Err(format!("normalized symbol is empty: {}", symbol));
-    }
-
-    let symbol_key_for_tick = min_qty_symbol_key(venue, &trade_symbol);
-    let price_tick = table.price_tick(&symbol_key_for_tick).unwrap_or(0.0);
-    let qty_tick = table.step_size(&symbol_key_for_tick).unwrap_or(0.0);
-    if price_tick <= 0.0 || qty_tick <= 0.0 {
-        return Err(format!(
-            "missing tick for {} (price_tick={}, qty_tick={})",
-            symbol_key_for_tick, price_tick, qty_tick
-        ));
-    }
-
     let mid_price = (quote.bid + quote.ask) * 0.5;
     if !mid_price.is_finite() || mid_price <= 0.0 {
         return Err(format!(
             "invalid mid_price symbol={} bid={} ask={}",
-            trade_symbol, quote.bid, quote.ask
+            symbol, quote.bid, quote.ask
         ));
     }
 
     if !volatility.is_finite() {
         return Err(format!(
             "invalid volatility symbol={} volatility={}",
-            trade_symbol, volatility
+            symbol, volatility
         ));
     }
     let vol = volatility;
     let lower_price = mid_price * (1.0 - vol);
     let upper_price = mid_price * (1.0 + vol);
-    let level_points = build_level_prices(mid_price, vol, orders_per_round as usize);
-    if level_points.is_empty() {
+    let specs = build_level_specs(mid_price, vol, orders_per_round as usize);
+    if specs.is_empty() {
         return Err(format!(
             "empty level prices symbol={} mid={:.8} lower={:.8} upper={:.8} levels_per_side={}",
-            trade_symbol, mid_price, lower_price, upper_price, orders_per_round
+            symbol, mid_price, lower_price, upper_price, orders_per_round
         ));
     }
-
-    let mut levels = Vec::with_capacity(level_points.len());
-    for (idx, (side, side_level_index, raw_price)) in level_points.iter().copied().enumerate() {
-        if !raw_price.is_finite() || raw_price <= 0.0 {
-            return Err(format!(
-                "invalid raw_price symbol={} side={:?} idx={} side_idx={} raw_price={}",
-                trade_symbol, side, idx, side_level_index, raw_price
-            ));
-        }
-
-        let aligned_raw_price = match side {
-            Side::Sell => align_price_ceil(raw_price, price_tick),
-            Side::Buy => align_price_floor(raw_price, price_tick),
-        };
-        if !aligned_raw_price.is_finite() || aligned_raw_price <= 0.0 {
-            return Err(format!(
-                "aligned raw_price invalid symbol={} side={:?} idx={} side_idx={} aligned_raw_price={}",
-                trade_symbol, side, idx, side_level_index, aligned_raw_price
-            ));
-        }
-        let raw_qty = order_amount_u / aligned_raw_price;
-        if !raw_qty.is_finite() || raw_qty <= 0.0 {
-            return Err(format!(
-                "invalid raw_qty symbol={} side={:?} idx={} side_idx={} raw_qty={}",
-                trade_symbol, side, idx, side_level_index, raw_qty
-            ));
-        }
-
-        let (aligned_qty, aligned_price) = align_order_for_venue(
-            venue,
-            &symbol_key_for_tick,
-            raw_qty,
-            aligned_raw_price,
-            table,
-        )?;
-
-        let Some(price_qv) = QuantizedValue::encode_floor(aligned_price, price_tick) else {
-            return Err(format!(
-                "invalid aligned_price quantization symbol={} side={:?} idx={} side_idx={} aligned_price={}",
-                trade_symbol, side, idx, side_level_index, aligned_price
-            ));
-        };
-        let Some(amount_qv) = QuantizedValue::encode_floor(aligned_qty, qty_tick) else {
-            return Err(format!(
-                "invalid aligned_qty quantization symbol={} side={:?} idx={} side_idx={} aligned_qty={}",
-                trade_symbol, side, idx, side_level_index, aligned_qty
-            ));
-        };
-        if price_qv.get_count() <= 0 || amount_qv.get_count() <= 0 {
-            return Err(format!(
-                "non-positive aligned qv symbol={} side={:?} idx={} side_idx={} price_cnt={} qty_cnt={}",
-                trade_symbol,
-                side,
-                idx,
-                side_level_index,
-                price_qv.get_count(),
-                amount_qv.get_count()
-            ));
-        }
-
-        let aligned_price_v = price_qv.get_val();
-        let aligned_qty_v = amount_qv.get_val();
-        let offset = ((aligned_price_v - mid_price) / mid_price).abs();
-        levels.push(MmOpenPlanLevel {
-            level_index: idx,
-            side_level_index,
-            side,
-            offset,
-            base_price: mid_price,
-            raw_price,
-            raw_qty,
-            aligned_price: aligned_price_v,
-            aligned_qty: aligned_qty_v,
-            price_tick_count: price_qv.get_count(),
-            qty_tick_count: amount_qv.get_count(),
-        });
-    }
+    let (price_tick, qty_tick, levels) =
+        build_quote_plan_levels(venue, symbol, order_amount_u, &specs, table)?;
 
     if levels.is_empty() {
         return Err(format!(
             "empty levels after alignment symbol={} levels_per_side={}",
-            trade_symbol, orders_per_round
+            symbol, orders_per_round
         ));
     }
-    if levels.len() != level_points.len() {
+    if levels.len() != specs.len() {
         return Err(format!(
             "aligned levels count mismatch symbol={} expected={} actual={}",
-            trade_symbol,
-            level_points.len(),
+            symbol,
+            specs.len(),
             levels.len()
         ));
     }
@@ -241,7 +146,7 @@ pub fn build_mm_open_quote_plan(
     };
 
     Ok(MmOpenQuotePlan {
-        symbol: trade_symbol,
+        symbol: symbol.to_uppercase(),
         quote,
         now_us,
         exp_time_us,
@@ -265,21 +170,21 @@ mod tests {
 
     #[test]
     fn level_prices_cover_both_sides_with_per_side_count() {
-        let points = build_level_prices(1.0, 0.0008, 8);
-        assert_eq!(points.len(), 16);
+        let specs = build_level_specs(1.0, 0.0008, 8);
+        assert_eq!(specs.len(), 16);
 
-        assert_eq!(points[0].0, Side::Sell);
-        assert_eq!(points[0].1, 1);
-        assert!((points[0].2 - 1.0001).abs() < 1e-12);
-        assert_eq!(points[1].0, Side::Buy);
-        assert_eq!(points[1].1, 1);
-        assert!((points[1].2 - 0.9999).abs() < 1e-12);
+        assert_eq!(specs[0].side, Side::Sell);
+        assert_eq!(specs[0].side_level_index, 1);
+        assert!((specs[0].offset - 0.0001).abs() < 1e-12);
+        assert_eq!(specs[1].side, Side::Buy);
+        assert_eq!(specs[1].side_level_index, 1);
+        assert!((specs[1].offset - 0.0001).abs() < 1e-12);
 
-        assert_eq!(points[14].0, Side::Sell);
-        assert_eq!(points[14].1, 8);
-        assert!((points[14].2 - 1.0008).abs() < 1e-12);
-        assert_eq!(points[15].0, Side::Buy);
-        assert_eq!(points[15].1, 8);
-        assert!((points[15].2 - 0.9992).abs() < 1e-12);
+        assert_eq!(specs[14].side, Side::Sell);
+        assert_eq!(specs[14].side_level_index, 8);
+        assert!((specs[14].offset - 0.0008).abs() < 1e-12);
+        assert_eq!(specs[15].side, Side::Buy);
+        assert_eq!(specs[15].side_level_index, 8);
+        assert!((specs[15].offset - 0.0008).abs() < 1e-12);
     }
 }

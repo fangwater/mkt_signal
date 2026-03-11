@@ -620,7 +620,7 @@ fn handle_trade_signal(signal: TradeSignal) {
             let mut strategy = MarketMakerOpenStrategy::new(strategy_id);
             strategy.handle_signal(&signal);
             if strategy.is_active() {
-                info!("✅ MMOpen: strategy_id={} 已创建并激活", strategy_id);
+                debug!("MMOpen: strategy activated id={}", strategy_id);
                 strategy_mgr.borrow_mut().insert(Box::new(strategy));
             } else {
                 warn!("⚠️ MMOpen: strategy_id={} 未激活", strategy_id);
@@ -629,7 +629,6 @@ fn handle_trade_signal(signal: TradeSignal) {
         SignalType::MMCancel => match MmCancelCtx::from_bytes(signal.context.clone()) {
             Ok(cancel_ctx) => {
                 let symbol = cancel_ctx.get_opening_symbol().to_uppercase();
-                let cancel_side = cancel_ctx.get_side();
                 let opening_venue = TradingVenue::from_u8(cancel_ctx.opening_leg.venue)
                     .unwrap_or(TradingVenue::BinanceMargin);
 
@@ -686,7 +685,7 @@ fn handle_trade_signal(signal: TradeSignal) {
                     if strategy.is_active() {
                         strategy_mgr.borrow_mut().insert(strategy);
                     } else {
-                        info!("MMHedge: 策略 id={} 已不活跃，不再放回", strategy_id);
+                        debug!("MMHedge: strategy inactive id={}", strategy_id);
                     }
                 }
             }

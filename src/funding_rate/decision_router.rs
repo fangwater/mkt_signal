@@ -140,11 +140,7 @@ pub fn trigger_decision(
             });
         }
         DecisionBranch::Mm => {
-            use super::mm_decision::MmDecision;
-            MmDecision::with_mut(|decision| {
-                let _ =
-                    decision.make_mm_decision(open_symbol, hedge_symbol, open_venue, hedge_venue);
-            });
+            let _ = (open_symbol, hedge_symbol, open_venue, hedge_venue);
         }
     }
 }

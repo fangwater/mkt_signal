@@ -102,6 +102,13 @@ pub struct ModelOutputScoreLookupResult {
     pub note: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct ModelOutputUpdateEvent {
+    pub service_name: String,
+    pub symbol_key: String,
+    pub score: f64,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct FactorValueSnapshot {
     value: f64,
@@ -334,9 +341,10 @@ impl FactorValueHub {
         }
     }
 
-    pub fn poll_model_output_updates(&mut self) {
+    pub fn poll_model_output_updates(&mut self) -> Vec<ModelOutputUpdateEvent> {
+        let mut events = Vec::new();
         if self.model_output_subscribers.is_empty() {
-            return;
+            return events;
         }
 
         for entry in &mut self.model_output_subscribers {
@@ -369,8 +377,14 @@ impl FactorValueHub {
 
                         let symbol_key = normalize_symbol_for_venue(&msg.symbol, self.hedge_venue);
                         let cache_key = (entry.service_name.clone(), symbol_key);
+                        let event = ModelOutputUpdateEvent {
+                            service_name: entry.service_name.clone(),
+                            symbol_key: cache_key.1.clone(),
+                            score: msg.score,
+                        };
                         self.model_output_latest_scores.insert(cache_key, msg.score);
                         self.model_output_msg_count = self.model_output_msg_count.saturating_add(1);
+                        events.push(event);
                     }
                     Ok(None) => break,
                     Err(err) => {
@@ -396,6 +410,8 @@ impl FactorValueHub {
             self.model_output_msg_count = 0;
             self.model_output_parse_err_count = 0;
         }
+
+        events
     }
 
     pub fn lookup_target_factor_value(
@@ -656,8 +672,16 @@ impl FactorValueHub {
         hedge_symbol: &str,
         hedge_venue: TradingVenue,
     ) -> ModelOutputScoreLookupResult {
-        self.poll_model_output_updates();
+        let _ = self.poll_model_output_updates();
+        self.cached_model_output_score(model_service, hedge_symbol, hedge_venue)
+    }
 
+    pub fn cached_model_output_score(
+        &self,
+        model_service: &str,
+        hedge_symbol: &str,
+        hedge_venue: TradingVenue,
+    ) -> ModelOutputScoreLookupResult {
         let service_name = model_service.trim().to_string();
         let symbol_key = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
         if service_name.is_empty() || service_name == "-" {
