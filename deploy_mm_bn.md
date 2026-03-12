@@ -21,8 +21,12 @@ bash scripts/deploy_mm_binance.sh beta --bin
 ```
 
 当前固定支持：
-- `beta` / `trade`：`config=18131`，`viz=10231`，`manual_mm_signal=6366`
+- `beta`：`config=18131`，`viz=10231`，`manual_mm_signal=6366`
 - `alpha`：`config=18132`，`viz=10232`，`manual_mm_signal=6367`
+
+不再提供 `trade` 这个官方综合部署 suffix。Binance MM 的固定环境入口只保留：
+- `binance_mm_alpha`
+- `binance_mm_beta`
 
 这一步会串行调用：
 - `deploy_mm_config_server.sh`

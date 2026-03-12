@@ -12,7 +12,7 @@ usage() {
 说明:
   - 只部署，不启动任何进程。
   - 目前支持固定 suffix:
-      1) beta / trade: 使用基础端口
+      1) beta: 使用基础端口
       2) alpha: 在基础端口上 +1
   - 固定端口（binance mm）:
       config_server = 18131
@@ -59,7 +59,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$ENV_SUFFIX" ]]; then
-  echo "[ERROR] 需要传入 env suffix（alpha|beta|trade）" >&2
+  echo "[ERROR] 需要传入 env suffix（alpha|beta）" >&2
   usage
   exit 1
 fi
@@ -67,7 +67,7 @@ fi
 ENV_SUFFIX="$(echo "$ENV_SUFFIX" | tr 'A-Z' 'a-z')"
 
 case "$ENV_SUFFIX" in
-  beta|trade)
+  beta)
     CONFIG_PORT="18131"
     VIZ_PORT="10231"
     MANUAL_SIGNAL_PORT="6366"
@@ -78,7 +78,7 @@ case "$ENV_SUFFIX" in
     MANUAL_SIGNAL_PORT="6367"
     ;;
   *)
-    echo "[ERROR] binance MM 仅支持 suffix: alpha|beta|trade（收到: ${ENV_SUFFIX}）" >&2
+    echo "[ERROR] binance MM 仅支持 suffix: alpha|beta（收到: ${ENV_SUFFIX}）" >&2
     exit 1
     ;;
 esac
