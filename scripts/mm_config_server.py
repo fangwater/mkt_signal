@@ -261,11 +261,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       font-size: 12px;
       color: #d7e8f6;
     }
-    .grid-2 {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 14px;
-    }
     .kv-table {
       display: grid;
       grid-template-columns: 220px 1fr 1.5fr;
@@ -348,23 +343,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
   <main>
     <section class="panel">
       <div class="section-header">
-        <h2>环境信息</h2>
-      </div>
-      <div class="grid-2">
-        <div>
-          <div class="hint">当前 server 以部署目录为上下文，MM 风控 key 会带上目录名作为前缀。</div>
-          <div class="hint">切换 exchange 会同步 venue，并刷新 symbol / strategy / risk / rolling / mapping / threshold 配置。</div>
-          <div class="hint">`model_name` 需要手动输入；浏览器会缓存最近使用过的值，便于下次快速选择。</div>
-        </div>
-        <div>
-          <div class="hint">return score 阈值 JSON 结构：</div>
-          <pre id="threshold-example" class="mono"></pre>
-        </div>
-      </div>
-    </section>
-
-    <section class="panel">
-      <div class="section-header">
         <h2>Symbol List</h2>
         <div class="actions">
           <button id="load-symbols" class="secondary">读取</button>
@@ -398,7 +376,10 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           <button id="save-risk">保存</button>
         </div>
       </div>
-      <div class="hint">MM 风控 key 使用 `<env_name>:<venue>:<venue>:pre_trade_risk_params`。</div>
+      <div class="hint">
+        MM 风控 key 格式为 `<env_name>:<open_venue>:<hedge_venue>:pre_trade_risk_params`；
+        当前 MM 默认 `open_venue=hedge_venue=venue`，所以中间的 venue 会重复一次。
+      </div>
       <div class="kv-table" id="risk-table"></div>
       <div id="risk-status" class="status"></div>
     </section>
@@ -450,6 +431,8 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         JSON 结构为 `{"SYMBOL": {"forward_open": "...", ...}}`。保存时会重写 Redis Hash
         `return_model_score_thresholds_{venue}`，并清理旧字段。
       </div>
+      <div class="hint">示例：</div>
+      <pre id="threshold-example" class="mono"></pre>
       <div class="mapping-grid" id="threshold-mapping"></div>
       <textarea id="thresholds-text" class="mono" spellcheck="false"></textarea>
       <div id="thresholds-status" class="status"></div>
@@ -611,7 +594,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       const container = document.getElementById(containerId);
       const keys = [];
       const seen = new Set();
-      [...order, ...Object.keys(defaults), ...Object.keys(values || {})].forEach((key) => {
+      [...order, ...Object.keys(defaults || {}), ...Object.keys(comments || {})].forEach((key) => {
         if (!seen.has(key)) {
           seen.add(key);
           keys.push(key);
@@ -687,7 +670,8 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         persistModelName(modelName);
         const modelVenue = data.model_venue || inferVenueFromModelName(modelName);
         const suffix = modelVenue ? `，model venue=${modelVenue}` : '';
-        setStatus('model-score-status', `已读取 ${data.key}${suffix}`, 'ok');
+        const staleHint = data.stale_count ? `，隐藏旧字段 ${data.stale_count} 个` : '';
+        setStatus('model-score-status', `已读取 ${data.count || 0} 个参数 ${data.key}${suffix}${staleHint}`, 'ok');
       } catch (err) {
         setStatus('model-score-status', `读取失败: ${formatError(err)}`, 'err');
         throw err;
@@ -743,7 +727,8 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           data.values || {}
         );
         renderThresholdMapping(data.values || {});
-        setStatus('return-mapping-status', `已读取 ${data.key}`, 'ok');
+        const staleHint = data.stale_count ? `，隐藏旧字段 ${data.stale_count} 个` : '';
+        setStatus('return-mapping-status', `已读取 ${data.count || 0} 个映射 ${data.key}${staleHint}`, 'ok');
       } catch (err) {
         setStatus('return-mapping-status', `读取失败: ${formatError(err)}`, 'err');
         throw err;
@@ -820,7 +805,8 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           BOOTSTRAP.order.strategy_params || [],
           data.values || {}
         );
-        setStatus('strategy-status', `已读取 ${Object.keys(data.values || {}).length} 个参数`, 'ok');
+        const staleHint = data.stale_count ? `，隐藏旧字段 ${data.stale_count} 个` : '';
+        setStatus('strategy-status', `已读取 ${data.count || 0} 个参数${staleHint}`, 'ok');
       } catch (err) {
         setStatus('strategy-status', `读取失败: ${formatError(err)}`, 'err');
         throw err;
@@ -868,7 +854,8 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           BOOTSTRAP.order.risk_params || [],
           data.values || {}
         );
-        setStatus('risk-status', `已读取 ${Object.keys(data.values || {}).length} 个参数`, 'ok');
+        const staleHint = data.stale_count ? `，隐藏旧字段 ${data.stale_count} 个` : '';
+        setStatus('risk-status', `已读取 ${data.count || 0} 个参数${staleHint}`, 'ok');
       } catch (err) {
         setStatus('risk-status', `读取失败: ${formatError(err)}`, 'err');
         throw err;
@@ -1217,6 +1204,32 @@ def sanitize_string_mapping(values: Any) -> Dict[str, str]:
     return out
 
 
+def ordered_schema_keys(
+    defaults: Dict[str, Any],
+    comments: Dict[str, str],
+    order: List[str],
+) -> List[str]:
+    keys: List[str] = []
+    seen = set()
+    for key in [*order, *defaults.keys(), *comments.keys()]:
+        if key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+    return keys
+
+
+def sanitize_mapping_by_schema(
+    values: Any,
+    defaults: Dict[str, Any],
+    comments: Dict[str, str],
+    order: List[str],
+) -> Dict[str, str]:
+    mapping = sanitize_string_mapping(values)
+    allowed = set(ordered_schema_keys(defaults, comments, order))
+    return {key: mapping[key] for key in mapping.keys() if key in allowed}
+
+
 def sanitize_return_mapping(values: Any) -> Dict[str, str]:
     mapping = sanitize_string_mapping(values)
     out: Dict[str, str] = {}
@@ -1245,6 +1258,13 @@ def serialize_model_score_params(values: Any) -> Dict[str, str]:
         else:
             serialized[normalized_key] = str(raw_value).strip()
     return serialized
+
+
+def serialize_model_score_params_by_schema(values: Any, model_name: str) -> Dict[str, str]:
+    defaults = build_default_model_score_params(model_name)
+    allowed = set(ordered_schema_keys(defaults, MODEL_SCORE_PARAM_COMMENTS, MODEL_SCORE_PARAM_ORDER))
+    serialized = serialize_model_score_params(values)
+    return {key: serialized[key] for key in serialized.keys() if key in allowed}
 
 
 def maybe_decode_json_string(raw: str) -> Any:
@@ -1369,6 +1389,19 @@ def flatten_return_threshold_values(values: Any) -> Dict[str, str]:
                 continue
             flat[f"{symbol}_{operation}"] = str(value).strip()
     return flat
+
+
+def filter_mapping_by_schema(
+    raw_values: Dict[str, str],
+    defaults: Dict[str, Any],
+    comments: Dict[str, str],
+    order: List[str],
+) -> Tuple[Dict[str, str], Dict[str, str]]:
+    allowed_keys = ordered_schema_keys(defaults, comments, order)
+    seen = set(allowed_keys)
+    filtered = {key: raw_values[key] for key in allowed_keys if key in raw_values}
+    stale = {key: value for key, value in raw_values.items() if key not in seen}
+    return filtered, stale
 
 
 def build_bootstrap(default_exchange: str, env_name: str) -> Dict[str, Any]:
@@ -1521,21 +1554,59 @@ class MMConfigStore:
 
     def read_strategy_params(self, venue: str) -> Dict[str, Any]:
         key = make_strategy_key(venue)
-        values = decode_hash(self.redis().hgetall(key))
-        return {"key": key, "values": values}
+        raw_values = decode_hash(self.redis().hgetall(key))
+        values, stale_values = filter_mapping_by_schema(
+            raw_values,
+            DEFAULT_STRATEGY_PARAMS,
+            STRATEGY_PARAM_COMMENTS,
+            STRATEGY_PARAM_ORDER,
+        )
+        return {
+            "key": key,
+            "values": values,
+            "raw_count": len(raw_values),
+            "count": len(values),
+            "stale_count": len(stale_values),
+            "stale_values": stale_values,
+        }
 
     def write_strategy_params(self, venue: str, values: Any) -> Dict[str, Any]:
         key = make_strategy_key(venue)
-        return self._write_hash_replace(key, values)
+        mapping = sanitize_mapping_by_schema(
+            values,
+            DEFAULT_STRATEGY_PARAMS,
+            STRATEGY_PARAM_COMMENTS,
+            STRATEGY_PARAM_ORDER,
+        )
+        return self._replace_hash(key, mapping)
 
     def read_risk_params(self, venue: str) -> Dict[str, Any]:
         key = make_risk_key(self._config.env_name, venue)
-        values = decode_hash(self.redis().hgetall(key))
-        return {"key": key, "values": values}
+        raw_values = decode_hash(self.redis().hgetall(key))
+        values, stale_values = filter_mapping_by_schema(
+            raw_values,
+            DEFAULT_RISK_PARAMS,
+            RISK_PARAM_COMMENTS,
+            RISK_PARAM_ORDER,
+        )
+        return {
+            "key": key,
+            "values": values,
+            "raw_count": len(raw_values),
+            "count": len(values),
+            "stale_count": len(stale_values),
+            "stale_values": stale_values,
+        }
 
     def write_risk_params(self, venue: str, values: Any) -> Dict[str, Any]:
         key = make_risk_key(self._config.env_name, venue)
-        return self._write_hash_replace(key, values)
+        mapping = sanitize_mapping_by_schema(
+            values,
+            DEFAULT_RISK_PARAMS,
+            RISK_PARAM_COMMENTS,
+            RISK_PARAM_ORDER,
+        )
+        return self._replace_hash(key, mapping)
 
     def read_return_thresholds(self, venue: str) -> Dict[str, Any]:
         key = make_return_threshold_key(venue)
@@ -1577,9 +1648,22 @@ class MMConfigStore:
     def read_return_mapping(self, venue: str) -> Dict[str, Any]:
         key = make_return_mapping_key(venue)
         raw = decode_hash(self.redis().hgetall(key))
+        filtered, stale_values = filter_mapping_by_schema(
+            raw,
+            RETURN_THRESHOLD_MAPPING,
+            RETURN_MAPPING_COMMENTS,
+            RETURN_THRESHOLD_OPERATIONS,
+        )
         values = dict(RETURN_THRESHOLD_MAPPING)
-        values.update(raw)
-        return {"key": key, "values": values}
+        values.update(filtered)
+        return {
+            "key": key,
+            "values": values,
+            "raw_count": len(raw),
+            "count": len(values),
+            "stale_count": len(stale_values),
+            "stale_values": stale_values,
+        }
 
     def write_return_mapping(self, venue: str, values: Any) -> Dict[str, Any]:
         key = make_return_mapping_key(venue)
@@ -1592,20 +1676,31 @@ class MMConfigStore:
         key = make_model_score_params_key(model_name)
         raw = decode_hash(self.redis().hgetall(key))
         if raw:
-            values = deserialize_model_score_params(raw)
+            filtered, stale_values = filter_mapping_by_schema(
+                raw,
+                build_default_model_score_params(model_name),
+                MODEL_SCORE_PARAM_COMMENTS,
+                MODEL_SCORE_PARAM_ORDER,
+            )
+            values = deserialize_model_score_params(filtered)
         else:
             values = build_default_model_score_params(model_name)
+            stale_values = {}
         return {
             "key": key,
             "source_key": make_model_score_threshold_source_key(model_name),
             "model_name": model_name,
             "model_venue": infer_venue_from_model_name(model_name),
             "values": values,
+            "raw_count": len(raw),
+            "count": len(values),
+            "stale_count": len(stale_values),
+            "stale_values": stale_values,
         }
 
     def write_model_score_rolling_params(self, model_name: str, values: Any) -> Dict[str, Any]:
         key = make_model_score_params_key(model_name)
-        mapping = serialize_model_score_params(values)
+        mapping = serialize_model_score_params_by_schema(values, model_name)
         if not mapping:
             raise ValueError("model score rolling params cannot be empty")
         result = self._replace_hash(key, mapping)
