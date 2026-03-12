@@ -2,13 +2,43 @@
 
 本文按你确认的规则整理：
 - `dat_pbs` / `depth_pub` / `kline_pub` / `fusion_factor_pub` / `pairmm_resample` 属于**公共服务**，用各自默认目录命名空间；
-- MM 服务（`trade_engine` / `pre_trade` / `persist_manager` / `manual_mm_signal` / `viz_server`）只放在 `binance_mm_<suffix>` 目录下，独立运行。
+- MM 服务（`trade_signal` / `trade_engine` / `pre_trade` / `persist_manager` / `manual_mm_signal` / `viz_server`）只放在 `binance_mm_<suffix>` 目录下，独立运行。
 
 ---
 
-## 0. 前置准备
+## 0. 一键 deploy-only（推荐）
 
-### 0.1 MM 环境变量（仅 MM 服务使用）
+如果你只是想像 `deploy_fr_binance.sh` 一样，先把 Binance MM 环境整体部署到 `~/binance_mm_<suffix>`，现在可以直接用：
+
+```bash
+cd ~/crypto_mkt/mkt_signal
+
+# 完整部署（不启动）
+bash scripts/deploy_mm_binance.sh beta
+
+# 仅替换二进制（不改脚本/配置/nginx）
+bash scripts/deploy_mm_binance.sh beta --bin
+```
+
+当前固定支持：
+- `beta` / `trade`：`config=18131`，`viz=10231`，`manual_mm_signal=6366`
+- `alpha`：`config=18132`，`viz=10232`，`manual_mm_signal=6367`
+
+这一步会串行调用：
+- `deploy_mm_config_server.sh`
+- `deploy_mm_account_monitor.sh`
+- `deploy_mm_trade_engine.sh`
+- `deploy_mm_signal.sh`
+- `deploy_mm_viz_server.sh`
+- `deploy_mm_persist_manager.sh`
+- `deploy_mm_pre_trade.sh`
+- `deploy_mm_manual_signal.sh`
+
+---
+
+## 1. 前置准备
+
+### 1.1 MM 环境变量（仅 MM 服务使用）
 
 ```bash
 export MM_SUFFIX=beta
@@ -16,7 +46,7 @@ export MM_ENV="binance_mm_${MM_SUFFIX}"
 export MM_VENUE="binance-futures"
 ```
 
-### 0.2 必要依赖与密钥
+### 1.2 必要依赖与密钥
 
 ```bash
 # trade_engine / pre_trade（binance）必需
@@ -32,7 +62,7 @@ python3 -m pip install --user redis
 
 ---
 
-## 1. 部署并启动 dat_pbs（公共）
+## 2. 部署并启动 dat_pbs（公共）
 
 > 不要给它传 `MM_ENV`，保持公共命名空间（默认 `dat_pbs`）。
 
@@ -56,7 +86,7 @@ pm2 logs --namespace dat_pbs dat_pbs_binance-margin --lines 80
 
 ---
 
-## 2. 部署并启动 depth_pub（公共）
+## 3. 部署并启动 depth_pub（公共）
 
 > 已清理：`deploy_depth_pub.sh` 仅支持 `[--dir]`，不再有 `trade/test` 参数。
 
@@ -80,7 +110,7 @@ pm2 logs --namespace depth_pub depth_pub_binance-margin --lines 80
 
 ---
 
-## 3. 部署并启动 kline_pub（公共）
+## 4. 部署并启动 kline_pub（公共）
 
 ```bash
 unset PM2_NAMESPACE
@@ -102,7 +132,7 @@ pm2 logs --namespace kline_pub kline_pub_binance-margin --lines 80
 
 ---
 
-## 4. 部署并启动 fusion_factor_pub + pairmm_resample（公共）
+## 5. 部署并启动 fusion_factor_pub + pairmm_resample（公共）
 
 ```bash
 unset PM2_NAMESPACE
@@ -134,7 +164,17 @@ pm2 logs --namespace factor_pub pairmm_resample_binance-futures --lines 80
 
 ---
 
-## 5. 部署 MM 专属服务（落到 `~/$MM_ENV`）
+## 6. 部署 MM 专属服务（落到 `~/$MM_ENV`）
+
+新增后，MM config server 也建议一起部署：
+
+```bash
+bash scripts/deploy_mm_config_server.sh \
+  --env-name "$MM_ENV" \
+  --exchange binance \
+  --port 18131 \
+  --apply-nginx
+```
 
 ```bash
 cd ~/crypto_mkt/mkt_signal
@@ -146,6 +186,10 @@ bash scripts/deploy_mm_account_monitor.sh \
 bash scripts/deploy_mm_trade_engine.sh \
   --exchange binance \
   --env-suffix "$MM_SUFFIX"
+
+bash scripts/deploy_mm_signal.sh \
+  --exchange binance \
+  --env-name "$MM_ENV"
 
 bash scripts/deploy_mm_pre_trade.sh \
   --exchange binance \
@@ -168,7 +212,7 @@ bash scripts/deploy_mm_viz_server.sh \
 
 如需自动更新并应用 Nginx 映射，可在最后一个命令追加 `--apply-nginx`。
 
-### 5.1 仅更新 trade_engine 后重启 pre_trade（你当前场景）
+### 6.1 仅更新 trade_engine 后重启 pre_trade（你当前场景）
 
 ```bash
 cd ~/$MM_ENV
@@ -195,9 +239,9 @@ pm2 logs --namespace "$MM_ENV" "mm_persist_manager_${MM_ENV}" --lines 80
 
 ---
 
-## 6. 初始化 Redis 参数（必须）
+## 7. 初始化 Redis 参数（必须）
 
-`manual_mm_signal` 和 `pre_trade` 启动前，必须先写入 Redis 参数。
+`trade_signal` / `manual_mm_signal` / `pre_trade` 启动前，必须先写入 Redis 参数。
 
 ```bash
 cd ~/$MM_ENV
@@ -223,7 +267,7 @@ python3 ./scripts/print_mm_risk_params.py
 
 ---
 
-## 7. 启动 MM 专属服务
+## 8. 启动 MM 专属服务
 
 > 这里需要 `IPC_NAMESPACE`，用于 MM 服务内部 IceOryx 通道隔离。
 
@@ -234,10 +278,11 @@ export IPC_NAMESPACE="$MM_ENV"
 unset PM2_NAMESPACE
 
 ./scripts/start_account_monitor.sh
+./scripts/start_trade_signal.sh
 ./mm_scripts/start_mm_trade_engine.sh binance
 ./mm_scripts/start_mm_pre_trade.sh
 ./mm_scripts/start_mm_persist_manager.sh
-# manual_mm_signal 用于 mock 测试，建议手动前台启动（不走 start/stop 脚本）
+# manual_mm_signal 用于 mock / 手工注入测试，按需启动
 ./manual_mm_signal --config config/manual_mm_signal.yaml
 ./mm_scripts/start_mm_viz_server.sh --exchange binance
 ```
@@ -247,6 +292,7 @@ unset PM2_NAMESPACE
 ```bash
 pm2 status --namespace "$MM_ENV"
 pm2 logs --namespace "$MM_ENV" "account_monitor_${MM_ENV}" --lines 80
+pm2 logs --namespace "$MM_ENV" "trade_signal_${MM_ENV}" --lines 80
 pm2 logs --namespace "$MM_ENV" "mm_trade_engine_${MM_ENV}" --lines 80
 pm2 logs --namespace "$MM_ENV" "mm_pre_trade_${MM_ENV}" --lines 80
 pm2 logs --namespace "$MM_ENV" "mm_persist_manager_${MM_ENV}" --lines 80
@@ -256,7 +302,7 @@ pm2 logs --namespace "$MM_ENV" "viz_server_${MM_ENV}" --lines 80
 
 ---
 
-## 8. 快速验收（按命名空间分组）
+## 9. 快速验收（按命名空间分组）
 
 ```bash
 pm2 status --namespace dat_pbs
@@ -271,21 +317,22 @@ pm2 status --namespace "$MM_ENV"
 
 ---
 
-## 9. 停止 / 重启（常用）
+## 10. 停止 / 重启（常用）
 
-### 9.1 停止 MM 专属
+### 10.1 停止 MM 专属
 
 ```bash
 cd ~/$MM_ENV
 ./mm_scripts/stop_mm_viz_server.sh --exchange binance
-# manual_mm_signal 为手动进程，按需 Ctrl+C 或 pkill 停止
+# manual_mm_signal 为手动/mock 进程，按需 Ctrl+C 或 pkill 停止
 ./mm_scripts/stop_mm_persist_manager.sh
 ./mm_scripts/stop_mm_pre_trade.sh
 ./mm_scripts/stop_mm_trade_engine.sh
+./scripts/stop_trade_signal.sh
 ./scripts/stop_account_monitor.sh
 ```
 
-### 9.2 停止公共层
+### 10.2 停止公共层
 
 ```bash
 cd ~/factor_pub
@@ -309,7 +356,7 @@ cd ~/dat_pbs
 
 ---
 
-## 10. 公共 Persist Auto Exporter（推荐）
+## 11. 公共 Persist Auto Exporter（推荐）
 
 > 这是公共服务，不是 MM 专属。用于统一管理所有导出 target（含 MM/xarb）。
 
