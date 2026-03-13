@@ -29,7 +29,7 @@ mod open;
 mod state;
 
 use cancel::MmCancelDecision;
-use from_key::append_tlen_query_error_to_from_key;
+use from_key::{append_mm_hedge_tlens_to_from_key, append_tlen_query_error_to_from_key};
 use open::MmOpenDecision;
 use state::MmDecisionState;
 
@@ -316,6 +316,14 @@ impl MmDecision {
             .query_batch_tick_indices(&hedge_symbol, &tick_indices)
         {
             Ok(tlens) => {
+                let batch_tick_tlens: Vec<(i64, f64)> = tick_indices
+                    .iter()
+                    .copied()
+                    .zip(tlens.iter().copied())
+                    .collect();
+                let base_from_key = String::from_utf8_lossy(&ctx.from_key).to_string();
+                let from_key = append_mm_hedge_tlens_to_from_key(&base_from_key, &batch_tick_tlens);
+                ctx.set_from_key(from_key.into_bytes());
                 ctx.tlen_values = tlens;
             }
             Err(err) => {

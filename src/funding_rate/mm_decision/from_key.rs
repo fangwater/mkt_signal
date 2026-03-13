@@ -85,6 +85,16 @@ pub(crate) fn append_mm_open_tlens_to_from_key(
     )
 }
 
+pub(crate) fn append_mm_hedge_tlens_to_from_key(
+    base_from_key: &str,
+    batch_tick_tlens: &[(i64, f64)],
+) -> String {
+    format!(
+        "{base_from_key}:batch_tlen={}",
+        format_batch_tlen_suffix(batch_tick_tlens)
+    )
+}
+
 pub(crate) fn append_tlen_query_error_to_from_key(base_from_key: &str, err: &str) -> String {
     let sanitized = err
         .chars()
