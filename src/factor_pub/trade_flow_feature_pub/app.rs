@@ -30,6 +30,7 @@ const TRADE_MAX_BYTES: usize = 128;
 const IDLE_SLEEP_MICROS: u64 = 200;
 const TIMER_CHECK_INTERVAL_MICROS: u64 = 500;
 const AMOUNT_THRESHOLD_REDIS_KEY_SUFFIX: &str = "amount-threshold";
+const REDIS_SCAN_COUNT: usize = 256;
 const REDIS_WARN_INTERVAL_SECS: u64 = 60;
 const ROCKSDB_WARN_INTERVAL_SECS: u64 = 60;
 const MISSING_DEPTH_WARN_INTERVAL_SECS: u64 = 60;
@@ -611,56 +612,70 @@ impl AmountThresholdRedisStore {
             anyhow::bail!("redis connection unavailable");
         };
 
-        let keys: Vec<String> = conn
-            .keys(full_pattern.clone())
-            .with_context(|| format!("redis KEYS failed for pattern={}", full_pattern))?;
-
         let mut out = HashMap::new();
-        for full_key in keys {
-            let logical_key = strip_prefix_with(prefix, &full_key).to_string();
-            let symbol_from_key = parse_symbol_from_threshold_key(&logical_key, venue_slug, venue);
-            let raw: Option<String> = conn
-                .get(full_key.clone())
-                .with_context(|| format!("redis GET failed for key={}", full_key))?;
-            let Some(raw_json) = raw else {
-                continue;
-            };
+        let mut cursor = 0u64;
+        loop {
+            let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(full_pattern.as_str())
+                .arg("COUNT")
+                .arg(REDIS_SCAN_COUNT)
+                .query(conn)
+                .with_context(|| format!("redis SCAN failed for pattern={}", full_pattern))?;
 
-            let parsed_entries = parse_threshold_entries(&raw_json)
-                .with_context(|| format!("parse threshold json failed: key={}", logical_key))?;
-
-            for entry in parsed_entries {
-                let symbol = entry
-                    .symbol
-                    .as_ref()
-                    .map(|s| normalize_symbol_for_venue(s.trim(), venue))
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| symbol_from_key.clone())
-                    .unwrap_or_default();
-
-                if symbol.is_empty() {
+            for full_key in keys {
+                let logical_key = strip_prefix_with(prefix, &full_key).to_string();
+                let symbol_from_key =
+                    parse_symbol_from_threshold_key(&logical_key, venue_slug, venue);
+                let raw: Option<String> = conn
+                    .get(full_key.clone())
+                    .with_context(|| format!("redis GET failed for key={}", full_key))?;
+                let Some(raw_json) = raw else {
                     continue;
-                }
-                if !entry.medium_notional_threshold.is_finite()
-                    || !entry.large_notional_threshold.is_finite()
-                {
-                    continue;
-                }
-                if entry.medium_notional_threshold <= 0.0
-                    || entry.large_notional_threshold <= 0.0
-                    || entry.medium_notional_threshold > entry.large_notional_threshold
-                {
-                    continue;
-                }
+                };
 
-                out.insert(
-                    symbol,
-                    AmountThreshold {
-                        medium_notional_threshold: entry.medium_notional_threshold,
-                        large_notional_threshold: entry.large_notional_threshold,
-                    },
-                );
+                let parsed_entries = parse_threshold_entries(&raw_json)
+                    .with_context(|| format!("parse threshold json failed: key={}", logical_key))?;
+
+                for entry in parsed_entries {
+                    let symbol = entry
+                        .symbol
+                        .as_ref()
+                        .map(|s| normalize_symbol_for_venue(s.trim(), venue))
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| symbol_from_key.clone())
+                        .unwrap_or_default();
+
+                    if symbol.is_empty() {
+                        continue;
+                    }
+                    if !entry.medium_notional_threshold.is_finite()
+                        || !entry.large_notional_threshold.is_finite()
+                    {
+                        continue;
+                    }
+                    if entry.medium_notional_threshold <= 0.0
+                        || entry.large_notional_threshold <= 0.0
+                        || entry.medium_notional_threshold > entry.large_notional_threshold
+                    {
+                        continue;
+                    }
+
+                    out.insert(
+                        symbol,
+                        AmountThreshold {
+                            medium_notional_threshold: entry.medium_notional_threshold,
+                            large_notional_threshold: entry.large_notional_threshold,
+                        },
+                    );
+                }
             }
+
+            if next_cursor == 0 {
+                break;
+            }
+            cursor = next_cursor;
         }
 
         Ok(out)
@@ -1116,8 +1131,7 @@ impl TradeFlowFeaturePubApp {
             while let Some(sample) = self.trade_subscriber.receive()? {
                 has_message = true;
                 self.recv_trade_raw_count = self.recv_trade_raw_count.saturating_add(1);
-                let data = sample.payload().to_vec();
-                if let Some(trade) = parse_trade(&data, self.venue) {
+                if let Some(trade) = parse_trade(sample.payload(), self.venue) {
                     self.recv_trade_parse_ok_count =
                         self.recv_trade_parse_ok_count.saturating_add(1);
                     self.handle_trade(trade);
@@ -1211,10 +1225,11 @@ impl TradeFlowFeaturePubApp {
                 bar.start_ms,
                 &feature_values,
             )?;
+            let payload = msg.to_bytes()?;
 
-            self.maybe_persist_feature_msg(&symbol_norm, &msg);
+            self.maybe_persist_feature_payload(&symbol_norm, bar.start_ms, payload.as_ref());
 
-            if !self.publisher.publish(&msg) {
+            if !self.publisher.publish(payload.as_ref(), &symbol_norm) {
                 self.publish_fail_send_count = self.publish_fail_send_count.saturating_add(1);
                 warn!(
                     "failed to publish trade_flow_feature: venue={} symbol={} ts={}",
@@ -1421,7 +1436,7 @@ impl TradeFlowFeaturePubApp {
         }
     }
 
-    fn maybe_persist_feature_msg(&mut self, symbol: &str, msg: &TradeFlowFeatureMsg) {
+    fn maybe_persist_feature_payload(&mut self, symbol: &str, ts_ms: i64, payload: &[u8]) {
         if !self.persistence.enabled() || !self.online_symbols.contains(symbol) {
             return;
         }
@@ -1432,21 +1447,10 @@ impl TradeFlowFeaturePubApp {
             return;
         };
 
-        let payload = match msg.to_bytes() {
-            Ok(v) => v,
-            Err(err) => {
-                self.warn_rocksdb_throttled(&format!(
-                    "trade_flow_feature rocksdb encode failed: venue={} symbol={} ts={} err={:#}",
-                    self.venue_slug, symbol, msg.ts, err
-                ));
-                return;
-            }
-        };
-
-        if let Err(err) = store.put_feature(&self.venue_slug, symbol, msg.ts, payload.as_ref()) {
+        if let Err(err) = store.put_feature(&self.venue_slug, symbol, ts_ms, payload) {
             self.warn_rocksdb_throttled(&format!(
                 "trade_flow_feature rocksdb put failed: venue={} symbol={} ts={} err={:#}",
-                self.venue_slug, symbol, msg.ts, err
+                self.venue_slug, symbol, ts_ms, err
             ));
         }
     }

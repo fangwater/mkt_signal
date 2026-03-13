@@ -1,13 +1,10 @@
 //! Trade flow feature 发布器
 
 use anyhow::{bail, Result};
-use bytes::Bytes;
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
-
-use crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg;
 
 pub const TRADE_FLOW_FEATURE_MAX_BYTES: usize = 1024;
 const SUBSCRIBER_MAX_BUFFER_SIZE: usize = 8192;
@@ -65,29 +62,20 @@ impl TradeFlowFeaturePublisher {
         })
     }
 
-    pub fn publish(&mut self, msg: &TradeFlowFeatureMsg) -> bool {
-        let bytes: Bytes = match msg.to_bytes() {
-            Ok(v) => v,
-            Err(err) => {
-                warn!("TradeFlowFeatureMsg encode failed: {}", err);
-                self.dropped += 1;
-                return false;
-            }
-        };
-
-        if bytes.len() > TRADE_FLOW_FEATURE_MAX_BYTES {
+    pub fn publish(&mut self, data: &[u8], symbol: &str) -> bool {
+        if data.len() > TRADE_FLOW_FEATURE_MAX_BYTES {
             warn!(
                 "TradeFlowFeature payload size {} exceeds max {} for symbol={}",
-                bytes.len(),
+                data.len(),
                 TRADE_FLOW_FEATURE_MAX_BYTES,
-                msg.symbol
+                symbol
             );
             self.dropped += 1;
             return false;
         }
 
         let mut buffer = [0u8; TRADE_FLOW_FEATURE_MAX_BYTES];
-        buffer[..bytes.len()].copy_from_slice(&bytes);
+        buffer[..data.len()].copy_from_slice(data);
 
         match self.publisher.loan_uninit() {
             Ok(sample) => {
