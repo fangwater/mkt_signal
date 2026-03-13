@@ -11,7 +11,6 @@ use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use axum::Json;
 use clap::Parser;
-use iceoryx2::port::client::Client;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
@@ -34,10 +33,7 @@ use mkt_signal::common::mkt_msg::{
 };
 use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
 use mkt_signal::common::time_util::get_timestamp_us;
-use mkt_signal::depth_pub::query_msg::{
-    resp_status_name, DepthQueryHeader, DepthQueryLoadTlenBatchReq, DepthQueryLoadTlenBatchResp,
-    DepthQueryType, DEPTH_QUERY_PAYLOAD, RESP_STATUS_OK,
-};
+use mkt_signal::depth_pub::query_client::DepthQueryClient;
 use mkt_signal::factor_pub::fusion_factor_pub::app::ExtraFactorId;
 use mkt_signal::factor_pub::fusion_factor_pub::fusion_factor_index_to_name;
 use mkt_signal::factor_pub::model_pub::publisher::MODEL_PAYLOAD_MAX_BYTES;
@@ -63,9 +59,6 @@ const DEFAULT_BACKWARD_CHANNEL: &str = "trade_query";
 const DEFAULT_BIND: &str = "0.0.0.0";
 const DEFAULT_PORT: u16 = 6366;
 const ASKBID_PAYLOAD: usize = 128;
-const DEPTH_QUERY_SERVICE_PREFIX: &str = "depth_queries";
-const DEPTH_QUERY_RESPONSE_WAIT_RETRY: usize = 20;
-const DEPTH_QUERY_RESPONSE_WAIT_MS: u64 = 1;
 const DEFAULT_PNLU_REDIS_HOST: &str = "127.0.0.1";
 const DEFAULT_PNLU_REDIS_PORT: u16 = 6379;
 const DEFAULT_PNLU_REDIS_DB: i64 = 0;
@@ -73,8 +66,6 @@ const DEFAULT_PNLU_KEY_SUFFIX: &str = "_pnlu_factor_thresholds";
 const PNLU_MAX_AGE_SECS: i64 = 30 * 60;
 const TARGET_FACTOR_NAME: &str = "rl_return_volatility";
 const TARGET_FACTOR_KEY_PREFIX: &str = TARGET_FACTOR_NAME;
-
-type DepthQueryClient = Client<ipc::Service, [u8], (), [u8], ()>;
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "manual_mm_signal")]
@@ -295,97 +286,6 @@ struct MmHedgeTlenSnapshot {
 #[derive(Debug, Deserialize)]
 struct QuoteQuery {
     symbol: String,
-}
-
-fn create_depth_query_client(venue: TradingVenue) -> Result<DepthQueryClient> {
-    let node_name = format!("{}_depth_query_client", PROCESS_NAME);
-    let node = NodeBuilder::new()
-        .name(&NodeName::new(&node_name)?)
-        .create::<ipc::Service>()?;
-
-    let service_name = format!("{}/{}", DEPTH_QUERY_SERVICE_PREFIX, venue.data_pub_slug());
-    let service = node
-        .service_builder(&ServiceName::new(&service_name)?)
-        .request_response::<[u8], [u8]>()
-        .open()?;
-
-    let client = service
-        .client_builder()
-        .initial_max_slice_len(DEPTH_QUERY_PAYLOAD)
-        .create()?;
-
-    info!("manual_mm depth query client ready: {}", service_name);
-    Ok(client)
-}
-
-fn query_tlen_batch(client: &DepthQueryClient, symbol: &str, prices: &[f64]) -> Result<Vec<f64>> {
-    if prices.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut req_buf = [0u8; DEPTH_QUERY_PAYLOAD];
-    let header_len =
-        DepthQueryHeader::write(&mut req_buf, DepthQueryType::LoadTlenBatch as u8, symbol)
-            .map_err(|err| anyhow!(err.to_string()))?;
-
-    let payload_len = DepthQueryLoadTlenBatchReq::write_to(
-        &mut req_buf[header_len..],
-        get_timestamp_us(),
-        prices,
-    )
-    .map_err(|err| anyhow!(err.to_string()))?;
-
-    let req_len = header_len + payload_len;
-    let pending = client
-        .loan_slice_uninit(req_len)
-        .map_err(|err| anyhow!("loan depth query request failed: {err:?}"))?
-        .write_from_slice(&req_buf[..req_len])
-        .send()
-        .map_err(|err| anyhow!("send depth query request failed: {err:?}"))?;
-
-    for _ in 0..DEPTH_QUERY_RESPONSE_WAIT_RETRY {
-        let maybe_response = pending
-            .receive()
-            .map_err(|err| anyhow!("receive depth query response failed: {err:?}"))?;
-
-        if let Some(response) = maybe_response {
-            let payload = response.payload();
-            if payload.len() < 2 {
-                return Err(anyhow!("depth query response too short: {}", payload.len()));
-            }
-
-            let header =
-                DepthQueryHeader::parse(payload).map_err(|err| anyhow!(err.to_string()))?;
-            if header.query_type != DepthQueryType::LoadTlenBatch as u8 {
-                return Err(anyhow!(
-                    "unexpected depth query type: {}",
-                    header.query_type
-                ));
-            }
-
-            let resp_payload = &payload[header.payload_offset..];
-            if resp_payload.is_empty() {
-                return Err(anyhow!("depth query response payload empty"));
-            }
-
-            let status = resp_payload[0];
-            if status != RESP_STATUS_OK {
-                return Err(anyhow!(
-                    "depth query status={}({})",
-                    status,
-                    resp_status_name(status)
-                ));
-            }
-
-            let resp = DepthQueryLoadTlenBatchResp::from_payload(&resp_payload[1..])
-                .map_err(|err| anyhow!(err.to_string()))?;
-            return Ok(resp.amounts);
-        }
-
-        std::thread::sleep(Duration::from_millis(DEPTH_QUERY_RESPONSE_WAIT_MS));
-    }
-
-    Err(anyhow!("depth query response timeout"))
 }
 
 fn build_mm_hedge_tlen_snapshot(
@@ -796,7 +696,7 @@ fn spawn_backward_query_responder(
         let service_path = build_service_name(&format!("signal_pubs/{}", cfg.backward_channel));
 
         let result: Result<()> = async move {
-            let depth_client = match create_depth_query_client(cfg.venue) {
+            let depth_client = match DepthQueryClient::new(cfg.venue) {
                 Ok(client) => Some(client),
                 Err(err) => {
                     warn!(
@@ -887,11 +787,14 @@ fn spawn_backward_query_responder(
                                 };
 
                                 let symbol = ctx.get_opening_symbol();
-                                let query_prices: Vec<f64> =
-                                    ctx.price_qv_list.iter().map(|qv| qv.get_val()).collect();
+                                let query_tick_indices: Vec<i64> = ctx
+                                    .price_qv_list
+                                    .iter()
+                                    .map(|qv| qv.get_count())
+                                    .collect();
 
                                 let tlen_query_result = if let Some(client) = depth_client.as_ref() {
-                                    query_tlen_batch(client, &symbol, &query_prices)
+                                    client.query_batch_tick_indices(&symbol, &query_tick_indices)
                                 } else {
                                     Err(anyhow!("depth query client unavailable"))
                                 };

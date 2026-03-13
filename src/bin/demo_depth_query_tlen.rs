@@ -1,25 +1,9 @@
 use anyhow::{anyhow, Result};
 use clap::Parser;
-use iceoryx2::port::client::Client;
-use iceoryx2::prelude::*;
-use iceoryx2::service::ipc;
-use log::info;
-use std::thread;
-use std::time::Duration;
 
-use mkt_signal::common::time_util::get_timestamp_us;
-use mkt_signal::depth_pub::query_msg::{
-    resp_status_name, DepthQueryHeader, DepthQueryLoadTlenBatchReq, DepthQueryLoadTlenBatchResp,
-    DepthQueryLoadTlenSingleReq, DepthQueryLoadTlenSingleResp, DepthQueryTop5PriceTlenReq,
-    DepthQueryTop5PriceTlenResp, DepthQueryType, DEPTH_QUERY_PAYLOAD, RESP_STATUS_OK,
-};
+use mkt_signal::depth_pub::query_client::DepthQueryClient;
+use mkt_signal::depth_pub::query_msg::{price_to_tick_index, tick_index_to_price};
 use mkt_signal::signal::common::TradingVenue;
-
-const DEPTH_QUERY_SERVICE_PREFIX: &str = "depth_queries";
-const RESPONSE_WAIT_RETRY: usize = 50;
-const RESPONSE_WAIT_MS: u64 = 2;
-
-type DepthQueryClient = Client<ipc::Service, [u8], (), [u8], ()>;
 
 #[derive(Parser, Debug)]
 #[command(name = "demo_depth_query_tlen")]
@@ -33,41 +17,49 @@ struct Args {
     #[arg(long)]
     symbol: String,
 
-    /// Single-price request
+    /// Single tick-index request
+    #[arg(long)]
+    tick_index: Option<i64>,
+
+    /// Batch tick-index request in CSV, e.g. "1010,1015,1020"
+    #[arg(long)]
+    tick_indices: Option<String>,
+
+    /// Single-price request (requires --price-tick)
     #[arg(long)]
     price: Option<f64>,
 
-    /// Batch request prices in CSV, e.g. "101.0,101.5,102.0"
+    /// Batch request prices in CSV (requires --price-tick)
     #[arg(long)]
     prices: Option<String>,
 
-    /// Query top5 price+tlen and immediately re-query all 10 prices by batch
+    /// Price tick for local float->tick_index conversion / display
+    #[arg(long)]
+    price_tick: Option<f64>,
+
+    /// Query top5 tick_index+tlen and immediately re-query all 10 levels by batch
     #[arg(long, default_value_t = false)]
     top5: bool,
 }
 
-fn create_depth_query_client(venue: TradingVenue) -> Result<DepthQueryClient> {
-    let node_name = format!("demo_depth_query_tlen_{}", venue.data_pub_slug());
-    let node = NodeBuilder::new()
-        .name(&NodeName::new(&node_name)?)
-        .create::<ipc::Service>()?;
-
-    let service_name = format!("{}/{}", DEPTH_QUERY_SERVICE_PREFIX, venue.data_pub_slug());
-    let service = node
-        .service_builder(&ServiceName::new(&service_name)?)
-        .request_response::<[u8], [u8]>()
-        .open()?;
-
-    let client = service
-        .client_builder()
-        .initial_max_slice_len(DEPTH_QUERY_PAYLOAD)
-        .create()?;
-
-    info!("depth query client ready: {}", service_name);
-    Ok(client)
+fn parse_csv_i64(raw: &str) -> Result<Vec<i64>> {
+    let values: Vec<i64> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(|token| {
+            token
+                .parse::<i64>()
+                .map_err(|err| anyhow!("invalid tick_index '{token}': {err}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if values.is_empty() {
+        return Err(anyhow!("tick_indices is empty"));
+    }
+    Ok(values)
 }
 
-fn parse_csv_prices(raw: &str) -> Result<Vec<f64>> {
+fn parse_csv_f64(raw: &str) -> Result<Vec<f64>> {
     let values: Vec<f64> = raw
         .split(',')
         .map(str::trim)
@@ -84,118 +76,34 @@ fn parse_csv_prices(raw: &str) -> Result<Vec<f64>> {
     Ok(values)
 }
 
-fn send_depth_query(
-    client: &DepthQueryClient,
-    req: &[u8],
-    expected_type: DepthQueryType,
-) -> Result<Vec<u8>> {
-    let pending = client
-        .loan_slice_uninit(req.len())
-        .map_err(|err| anyhow!("loan depth query request failed: {err:?}"))?
-        .write_from_slice(req)
-        .send()
-        .map_err(|err| anyhow!("send depth query request failed: {err:?}"))?;
-
-    for _ in 0..RESPONSE_WAIT_RETRY {
-        let maybe_response = pending
-            .receive()
-            .map_err(|err| anyhow!("receive depth query response failed: {err:?}"))?;
-        if let Some(response) = maybe_response {
-            let payload = response.payload();
-            let header =
-                DepthQueryHeader::parse(payload).map_err(|err| anyhow!(err.to_string()))?;
-            if header.query_type != expected_type as u8 {
-                return Err(anyhow!(
-                    "unexpected response query_type={}, expected={}",
-                    header.query_type,
-                    expected_type as u8
-                ));
-            }
-
-            let resp_payload = &payload[header.payload_offset..];
-            if resp_payload.is_empty() {
-                return Err(anyhow!("response payload is empty"));
-            }
-            let status = resp_payload[0];
-            if status != RESP_STATUS_OK {
-                return Err(anyhow!(
-                    "depth query failed: status={}({})",
-                    status,
-                    resp_status_name(status)
-                ));
-            }
-            return Ok(resp_payload[1..].to_vec());
-        }
-
-        thread::sleep(Duration::from_millis(RESPONSE_WAIT_MS));
+fn require_price_tick(args: &Args) -> Result<f64> {
+    let Some(price_tick) = args.price_tick else {
+        return Err(anyhow!(
+            "--price or --prices requires --price-tick for tick_index conversion"
+        ));
+    };
+    if !price_tick.is_finite() || price_tick <= 0.0 {
+        return Err(anyhow!("invalid --price-tick: {}", price_tick));
     }
-
-    Err(anyhow!("depth query response timeout"))
+    Ok(price_tick)
 }
 
-fn query_single(client: &DepthQueryClient, symbol: &str, price: f64) -> Result<f64> {
-    let mut req_buf = [0u8; DEPTH_QUERY_PAYLOAD];
-    let header_len =
-        DepthQueryHeader::write(&mut req_buf, DepthQueryType::LoadTlenSingle as u8, symbol)
-            .map_err(|err| anyhow!(err.to_string()))?;
-    let req = DepthQueryLoadTlenSingleReq {
-        timestamp_us: get_timestamp_us(),
-        price,
-    };
-    let payload_len = req
-        .write_to(&mut req_buf[header_len..])
-        .map_err(|err| anyhow!(err.to_string()))?;
-    let req_len = header_len + payload_len;
-
-    let body = send_depth_query(client, &req_buf[..req_len], DepthQueryType::LoadTlenSingle)?;
-    let resp = DepthQueryLoadTlenSingleResp::from_payload(&body)
-        .map_err(|err| anyhow!(err.to_string()))?;
-    Ok(resp.amount)
-}
-
-fn query_batch(client: &DepthQueryClient, symbol: &str, prices: &[f64]) -> Result<Vec<f64>> {
-    let mut req_buf = [0u8; DEPTH_QUERY_PAYLOAD];
-    let header_len =
-        DepthQueryHeader::write(&mut req_buf, DepthQueryType::LoadTlenBatch as u8, symbol)
-            .map_err(|err| anyhow!(err.to_string()))?;
-    let payload_len = DepthQueryLoadTlenBatchReq::write_to(
-        &mut req_buf[header_len..],
-        get_timestamp_us(),
-        prices,
-    )
-    .map_err(|err| anyhow!(err.to_string()))?;
-    let req_len = header_len + payload_len;
-
-    let body = send_depth_query(client, &req_buf[..req_len], DepthQueryType::LoadTlenBatch)?;
-    let resp =
-        DepthQueryLoadTlenBatchResp::from_payload(&body).map_err(|err| anyhow!(err.to_string()))?;
-    Ok(resp.amounts)
-}
-
-fn query_top5(client: &DepthQueryClient, symbol: &str) -> Result<DepthQueryTop5PriceTlenResp> {
-    let mut req_buf = [0u8; DEPTH_QUERY_PAYLOAD];
-    let header_len =
-        DepthQueryHeader::write(&mut req_buf, DepthQueryType::Top5PriceTlen as u8, symbol)
-            .map_err(|err| anyhow!(err.to_string()))?;
-    let req = DepthQueryTop5PriceTlenReq {
-        timestamp_us: get_timestamp_us(),
-    };
-    let payload_len = req
-        .write_to(&mut req_buf[header_len..])
-        .map_err(|err| anyhow!(err.to_string()))?;
-    let req_len = header_len + payload_len;
-
-    let body = send_depth_query(client, &req_buf[..req_len], DepthQueryType::Top5PriceTlen)?;
-    DepthQueryTop5PriceTlenResp::from_payload(&body).map_err(|err| anyhow!(err.to_string()))
+fn maybe_format_price(tick_index: i64, price_tick: Option<f64>) -> Option<f64> {
+    price_tick.and_then(|tick| tick_index_to_price(tick_index, tick))
 }
 
 fn main() -> Result<()> {
     env_logger::init();
     let args = Args::parse();
 
-    if args.price.is_none() && args.prices.is_none() && !args.top5 {
+    if args.tick_index.is_none()
+        && args.tick_indices.is_none()
+        && args.price.is_none()
+        && args.prices.is_none()
+        && !args.top5
+    {
         return Err(anyhow!(
-            "at least one of --price or --prices or --top5 must be provided"
+            "at least one of --tick-index/--tick-indices/--price/--prices/--top5 must be provided"
         ));
     }
 
@@ -204,77 +112,150 @@ fn main() -> Result<()> {
         return Err(anyhow!("symbol must not be empty"));
     }
 
-    let batch_prices = match args.prices.as_deref() {
-        Some(raw) => Some(parse_csv_prices(raw)?),
-        None => None,
+    let single_tick_index = match (args.tick_index, args.price) {
+        (Some(tick_index), None) => Some(tick_index),
+        (None, Some(price)) => {
+            let tick = require_price_tick(&args)?;
+            Some(
+                price_to_tick_index(price, tick)
+                    .ok_or_else(|| anyhow!("failed to convert price={} to tick_index", price))?,
+            )
+        }
+        (Some(_), Some(_)) => {
+            return Err(anyhow!("use either --tick-index or --price, not both"));
+        }
+        (None, None) => None,
     };
 
-    let client = create_depth_query_client(args.venue)?;
+    let batch_tick_indices = match (args.tick_indices.as_deref(), args.prices.as_deref()) {
+        (Some(raw), None) => Some(parse_csv_i64(raw)?),
+        (None, Some(raw)) => {
+            let tick = require_price_tick(&args)?;
+            let prices = parse_csv_f64(raw)?;
+            let tick_indices = prices
+                .into_iter()
+                .map(|price| {
+                    price_to_tick_index(price, tick)
+                        .ok_or_else(|| anyhow!("failed to convert price={} to tick_index", price))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Some(tick_indices)
+        }
+        (Some(_), Some(_)) => {
+            return Err(anyhow!("use either --tick-indices or --prices, not both"));
+        }
+        (None, None) => None,
+    };
 
-    if let Some(price) = args.price {
-        let amount = query_single(&client, &symbol, price)?;
-        println!(
-            "TLEN_SINGLE venue={} symbol={} price={} amount={}",
-            args.venue.data_pub_slug(),
-            symbol,
-            price,
-            amount
-        );
+    let client = DepthQueryClient::new(args.venue)?;
+
+    if let Some(tick_index) = single_tick_index {
+        let amount = client.query_single_tick_index(&symbol, tick_index)?;
+        if let Some(price) = maybe_format_price(tick_index, args.price_tick) {
+            println!(
+                "TLEN_SINGLE venue={} symbol={} tick_index={} price={} amount={}",
+                client.venue_slug(),
+                symbol,
+                tick_index,
+                price,
+                amount
+            );
+        } else {
+            println!(
+                "TLEN_SINGLE venue={} symbol={} tick_index={} amount={}",
+                client.venue_slug(),
+                symbol,
+                tick_index,
+                amount
+            );
+        }
     }
 
-    if let Some(prices) = batch_prices {
-        let amounts = query_batch(&client, &symbol, &prices)?;
+    if let Some(tick_indices) = batch_tick_indices {
+        let amounts = client.query_batch_tick_indices(&symbol, &tick_indices)?;
         println!(
             "TLEN_BATCH venue={} symbol={} count={}",
-            args.venue.data_pub_slug(),
+            client.venue_slug(),
             symbol,
-            prices.len()
+            tick_indices.len()
         );
-        for (price, amount) in prices.iter().zip(amounts.iter()) {
-            println!("  price={} amount={}", price, amount);
+        for (tick_index, amount) in tick_indices.iter().zip(amounts.iter()) {
+            if let Some(price) = maybe_format_price(*tick_index, args.price_tick) {
+                println!(
+                    "  tick_index={} price={} amount={}",
+                    tick_index, price, amount
+                );
+            } else {
+                println!("  tick_index={} amount={}", tick_index, amount);
+            }
         }
     }
 
     if args.top5 {
-        let top5 = query_top5(&client, &symbol)?;
-        let mut prices = Vec::with_capacity(top5.bids.len() + top5.asks.len());
-        prices.extend(top5.bids.iter().map(|(price, _)| *price));
-        prices.extend(top5.asks.iter().map(|(price, _)| *price));
+        let top5 = client.query_top5(&symbol)?;
+        let mut tick_indices = Vec::with_capacity(top5.bids.len() + top5.asks.len());
+        tick_indices.extend(top5.bids.iter().map(|(tick_index, _)| *tick_index));
+        tick_indices.extend(top5.asks.iter().map(|(tick_index, _)| *tick_index));
 
-        let rechecked = query_batch(&client, &symbol, &prices)?;
+        let rechecked = client.query_batch_tick_indices(&symbol, &tick_indices)?;
         println!(
             "TLEN_TOP5_RECHECK venue={} symbol={} bids={} asks={}",
-            args.venue.data_pub_slug(),
+            client.venue_slug(),
             symbol,
             top5.bids.len(),
             top5.asks.len()
         );
 
         let mut idx = 0usize;
-        for (level, (price, tlen)) in top5.bids.iter().enumerate() {
+        for (level, (tick_index, tlen)) in top5.bids.iter().enumerate() {
             let batch_tlen = rechecked.get(idx).copied().unwrap_or(-1.0);
             let delta = batch_tlen - *tlen;
-            println!(
-                "  BID L{} price={} top5_tlen={} batch_tlen={} delta={}",
-                level + 1,
-                price,
-                tlen,
-                batch_tlen,
-                delta
-            );
+            if let Some(price) = maybe_format_price(*tick_index, args.price_tick) {
+                println!(
+                    "  BID L{} tick_index={} price={} top5_tlen={} batch_tlen={} delta={}",
+                    level + 1,
+                    tick_index,
+                    price,
+                    tlen,
+                    batch_tlen,
+                    delta
+                );
+            } else {
+                println!(
+                    "  BID L{} tick_index={} top5_tlen={} batch_tlen={} delta={}",
+                    level + 1,
+                    tick_index,
+                    tlen,
+                    batch_tlen,
+                    delta
+                );
+            }
             idx += 1;
         }
-        for (level, (price, tlen)) in top5.asks.iter().enumerate() {
+
+        for (level, (tick_index, tlen)) in top5.asks.iter().enumerate() {
             let batch_tlen = rechecked.get(idx).copied().unwrap_or(-1.0);
             let delta = batch_tlen - *tlen;
-            println!(
-                "  ASK L{} price={} top5_tlen={} batch_tlen={} delta={}",
-                level + 1,
-                price,
-                tlen,
-                batch_tlen,
-                delta
-            );
+            if let Some(price) = maybe_format_price(*tick_index, args.price_tick) {
+                println!(
+                    "  ASK L{} tick_index={} price={} top5_tlen={} batch_tlen={} delta={}",
+                    level + 1,
+                    tick_index,
+                    price,
+                    tlen,
+                    batch_tlen,
+                    delta
+                );
+            } else {
+                println!(
+                    "  ASK L{} tick_index={} top5_tlen={} batch_tlen={} delta={}",
+                    level + 1,
+                    tick_index,
+                    tlen,
+                    batch_tlen,
+                    delta
+                );
+            }
             idx += 1;
         }
     }

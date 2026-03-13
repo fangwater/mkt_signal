@@ -69,6 +69,22 @@ impl OrderBookSide {
         result
     }
 
+    pub fn top_n_keys(&self, n: usize, is_bid: bool) -> Vec<(i64, f64)> {
+        let mut result = Vec::with_capacity(n);
+
+        if is_bid {
+            for (&price_key, &(amount, _)) in self.levels.iter().rev().take(n) {
+                result.push((price_key, amount));
+            }
+        } else {
+            for (&price_key, &(amount, _)) in self.levels.iter().take(n) {
+                result.push((price_key, amount));
+            }
+        }
+
+        result
+    }
+
     /// 获取最优档位价格 (price key)
     pub fn best_key(&self, is_bid: bool) -> Option<i64> {
         if is_bid {
@@ -105,6 +121,10 @@ impl OrderBookSide {
     pub fn amount_at_price(&self, price: f64) -> Option<f64> {
         let key = price_to_key(price);
         self.levels.get(&key).map(|(amount, _)| *amount)
+    }
+
+    pub fn amount_at_price_key(&self, price_key: i64) -> Option<f64> {
+        self.levels.get(&price_key).map(|(amount, _)| *amount)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -197,6 +217,12 @@ impl OrderBook {
         (bids, asks)
     }
 
+    pub fn get_depth_keys(&self, n: usize) -> (Vec<(i64, f64)>, Vec<(i64, f64)>) {
+        let bids = self.bids.top_n_keys(n, true);
+        let asks = self.asks.top_n_keys(n, false);
+        (bids, asks)
+    }
+
     /// 检查订单簿是否有效 (至少有一档买卖)
     pub fn is_valid(&self) -> bool {
         if self.bids.is_empty() || self.asks.is_empty() {
@@ -213,6 +239,12 @@ impl OrderBook {
         self.bids
             .amount_at_price(price)
             .or_else(|| self.asks.amount_at_price(price))
+    }
+
+    pub fn amount_at_price_key(&self, price_key: i64) -> Option<f64> {
+        self.bids
+            .amount_at_price_key(price_key)
+            .or_else(|| self.asks.amount_at_price_key(price_key))
     }
 
     pub fn best_bid_price(&self) -> Option<f64> {
@@ -275,13 +307,13 @@ impl OrderBook {
 
 /// 价格转换为整数 key (乘以 1e8)
 #[inline]
-fn price_to_key(price: f64) -> i64 {
-    (price * 100_000_000.0) as i64
+pub fn price_to_key(price: f64) -> i64 {
+    (price * 100_000_000.0).round() as i64
 }
 
 /// 整数 key 转换回价格
 #[inline]
-fn key_to_price(key: i64) -> f64 {
+pub fn key_to_price(key: i64) -> f64 {
     key as f64 / 100_000_000.0
 }
 
@@ -343,6 +375,14 @@ mod tests {
         assert_eq!(top_asks.len(), 2);
         assert_eq!(top_bids[0].0, 100.0); // 最高买价
         assert_eq!(top_asks[0].0, 101.0); // 最低卖价
+    }
+
+    #[test]
+    fn test_price_key_roundtrip_avoids_tick_truncation() {
+        let price = 72645.9;
+        let key = price_to_key(price);
+        let restored = key_to_price(key);
+        assert_eq!(restored, 72645.9);
     }
 
     #[test]

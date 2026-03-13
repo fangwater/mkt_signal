@@ -1,10 +1,14 @@
 use anyhow::{anyhow, Result};
+use std::io::{Read, Write};
+use std::path::PathBuf;
 
 pub const DEPTH_QUERY_PAYLOAD: usize = 256;
+pub const DEPTH_QUERY_SOCKET_PREFIX: &str = "/tmp/mkt_signal_depth_query";
 const HEADER_LEN: usize = 2;
+const FRAME_LEN: usize = 2;
 const BATCH_FIXED_LEN: usize = 12;
 const TOP5_MAX_LEVELS: usize = 5;
-const TOP5_LEVEL_BYTES: usize = 16; // price(f64) + tlen(f64)
+const TOP5_LEVEL_BYTES: usize = 16; // tick_index(i64) + tlen(f64)
 const TOP5_FIXED_LEN: usize = 12; // ts(i64) + bid_count(u8) + ask_count(u8) + reserved(u16)
 
 #[repr(u8)]
@@ -37,7 +41,7 @@ pub const RESP_STATUS_PAYLOAD_TOO_LARGE: u8 = 5;
 pub const RESP_STATUS_DEPTH_DISABLED: u8 = 6;
 
 /// tlen 查询返回值语义（适用于单价与批量查询）
-/// - `-1.0`: 查询输入非法或上下文非法（例如 symbol 无效、price 不满足 tick、订单簿不可用）
+/// - `-1.0`: 查询输入非法或上下文非法（例如 symbol 无效、tick_index 无效、订单簿不可用）
 /// - `0.0`: 查询合法，但该价格档位当前无量
 /// - `>0.0`: 查询合法，且档位上存在对应量
 pub const TLEN_QUERY_AMOUNT_INVALID: f64 = -1.0;
@@ -54,6 +58,83 @@ pub fn resp_status_name(status: u8) -> &'static str {
         RESP_STATUS_DEPTH_DISABLED => "depth_disabled",
         _ => "unknown",
     }
+}
+
+pub fn build_depth_query_socket_path(venue: &str) -> PathBuf {
+    let sanitized: String = venue
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    PathBuf::from(format!("{}_{}.sock", DEPTH_QUERY_SOCKET_PREFIX, sanitized))
+}
+
+pub fn price_to_tick_index(price: f64, tick: f64) -> Option<i64> {
+    if !price.is_finite() || !tick.is_finite() || tick <= 0.0 {
+        return None;
+    }
+
+    let steps = price / tick;
+    if !steps.is_finite() {
+        return None;
+    }
+
+    Some(steps.round() as i64)
+}
+
+pub fn tick_index_to_price(tick_index: i64, tick: f64) -> Option<f64> {
+    if !tick.is_finite() || tick <= 0.0 {
+        return None;
+    }
+
+    let price = tick_index as f64 * tick;
+    if price.is_finite() {
+        Some(price)
+    } else {
+        None
+    }
+}
+
+pub fn write_depth_query_frame<W: Write>(writer: &mut W, payload: &[u8]) -> Result<()> {
+    if payload.is_empty() {
+        return Err(anyhow!("depth query frame payload is empty"));
+    }
+    if payload.len() > u16::MAX as usize {
+        return Err(anyhow!(
+            "depth query frame payload too large: {}",
+            payload.len()
+        ));
+    }
+
+    writer.write_all(&(payload.len() as u16).to_le_bytes())?;
+    writer.write_all(payload)?;
+    writer.flush()?;
+    Ok(())
+}
+
+pub fn read_depth_query_frame<R: Read>(reader: &mut R, max_payload: usize) -> Result<Vec<u8>> {
+    let mut len_buf = [0u8; FRAME_LEN];
+    reader.read_exact(&mut len_buf)?;
+    let payload_len = u16::from_le_bytes(len_buf) as usize;
+    if payload_len == 0 {
+        return Err(anyhow!("depth query frame payload is empty"));
+    }
+    if payload_len > max_payload {
+        return Err(anyhow!(
+            "depth query frame payload too large: {} > {}",
+            payload_len,
+            max_payload
+        ));
+    }
+
+    let mut payload = vec![0u8; payload_len];
+    reader.read_exact(&mut payload)?;
+    Ok(payload)
 }
 
 #[derive(Debug, Clone)]
@@ -115,7 +196,7 @@ impl DepthQueryHeader {
 #[derive(Debug, Clone, Copy)]
 pub struct DepthQueryLoadTlenSingleReq {
     pub timestamp_us: i64,
-    pub price: f64,
+    pub tick_index: i64,
 }
 
 impl DepthQueryLoadTlenSingleReq {
@@ -131,10 +212,10 @@ impl DepthQueryLoadTlenSingleReq {
         }
 
         let timestamp_us = i64::from_le_bytes(payload[0..8].try_into()?);
-        let price = f64::from_le_bytes(payload[8..16].try_into()?);
+        let tick_index = i64::from_le_bytes(payload[8..16].try_into()?);
         Ok(Self {
             timestamp_us,
-            price,
+            tick_index,
         })
     }
 
@@ -147,7 +228,7 @@ impl DepthQueryLoadTlenSingleReq {
             ));
         }
         payload[0..8].copy_from_slice(&self.timestamp_us.to_le_bytes());
-        payload[8..16].copy_from_slice(&self.price.to_le_bytes());
+        payload[8..16].copy_from_slice(&self.tick_index.to_le_bytes());
         Ok(Self::REQ_LEN)
     }
 }
@@ -196,7 +277,7 @@ impl DepthQueryLoadTlenSingleResp {
 #[derive(Debug, Clone)]
 pub struct DepthQueryLoadTlenBatchReq {
     pub timestamp_us: i64,
-    pub prices: Vec<f64>,
+    pub tick_indices: Vec<i64>,
 }
 
 impl DepthQueryLoadTlenBatchReq {
@@ -210,12 +291,14 @@ impl DepthQueryLoadTlenBatchReq {
         }
 
         let timestamp_us = i64::from_le_bytes(payload[0..8].try_into()?);
-        let price_count = u16::from_le_bytes(payload[8..10].try_into()?) as usize;
-        if price_count == 0 {
-            return Err(anyhow!("depth query load_tlen batch req empty prices"));
+        let tick_index_count = u16::from_le_bytes(payload[8..10].try_into()?) as usize;
+        if tick_index_count == 0 {
+            return Err(anyhow!(
+                "depth query load_tlen batch req empty tick_indices"
+            ));
         }
 
-        let required = BATCH_FIXED_LEN + price_count * 8;
+        let required = BATCH_FIXED_LEN + tick_index_count * 8;
         if payload.len() < required {
             return Err(anyhow!(
                 "depth query load_tlen batch req truncated: {} < {}",
@@ -224,28 +307,32 @@ impl DepthQueryLoadTlenBatchReq {
             ));
         }
 
-        let mut prices = Vec::with_capacity(price_count);
+        let mut tick_indices = Vec::with_capacity(tick_index_count);
         let mut offset = BATCH_FIXED_LEN;
-        for _ in 0..price_count {
-            prices.push(f64::from_le_bytes(payload[offset..offset + 8].try_into()?));
+        for _ in 0..tick_index_count {
+            tick_indices.push(i64::from_le_bytes(payload[offset..offset + 8].try_into()?));
             offset += 8;
         }
 
         Ok(Self {
             timestamp_us,
-            prices,
+            tick_indices,
         })
     }
 
-    pub fn write_to(payload: &mut [u8], timestamp_us: i64, prices: &[f64]) -> Result<usize> {
-        if prices.is_empty() {
-            return Err(anyhow!("depth query load_tlen batch req empty prices"));
+    pub fn write_to(payload: &mut [u8], timestamp_us: i64, tick_indices: &[i64]) -> Result<usize> {
+        if tick_indices.is_empty() {
+            return Err(anyhow!(
+                "depth query load_tlen batch req empty tick_indices"
+            ));
         }
-        if prices.len() > u16::MAX as usize {
-            return Err(anyhow!("depth query load_tlen batch req too many prices"));
+        if tick_indices.len() > u16::MAX as usize {
+            return Err(anyhow!(
+                "depth query load_tlen batch req too many tick_indices"
+            ));
         }
 
-        let required = BATCH_FIXED_LEN + prices.len() * 8;
+        let required = BATCH_FIXED_LEN + tick_indices.len() * 8;
         if payload.len() < required {
             return Err(anyhow!(
                 "depth query load_tlen batch req write overflow: {} < {}",
@@ -255,12 +342,12 @@ impl DepthQueryLoadTlenBatchReq {
         }
 
         payload[0..8].copy_from_slice(&timestamp_us.to_le_bytes());
-        payload[8..10].copy_from_slice(&(prices.len() as u16).to_le_bytes());
+        payload[8..10].copy_from_slice(&(tick_indices.len() as u16).to_le_bytes());
         payload[10..12].fill(0);
 
         let mut offset = BATCH_FIXED_LEN;
-        for price in prices {
-            payload[offset..offset + 8].copy_from_slice(&price.to_le_bytes());
+        for tick_index in tick_indices {
+            payload[offset..offset + 8].copy_from_slice(&tick_index.to_le_bytes());
             offset += 8;
         }
         Ok(required)
@@ -270,7 +357,7 @@ impl DepthQueryLoadTlenBatchReq {
 #[derive(Debug, Clone)]
 pub struct DepthQueryLoadTlenBatchResp {
     pub timestamp_us: i64,
-    /// 与请求 prices 一一对应；每个元素语义同 `DepthQueryLoadTlenSingleResp::amount`
+    /// 与请求 tick_indices 一一对应；每个元素语义同 `DepthQueryLoadTlenSingleResp::amount`
     pub amounts: Vec<f64>,
 }
 
@@ -379,8 +466,8 @@ impl DepthQueryTop5PriceTlenReq {
 #[derive(Debug, Clone)]
 pub struct DepthQueryTop5PriceTlenResp {
     pub timestamp_us: i64,
-    pub bids: Vec<(f64, f64)>,
-    pub asks: Vec<(f64, f64)>,
+    pub bids: Vec<(i64, f64)>,
+    pub asks: Vec<(i64, f64)>,
 }
 
 impl DepthQueryTop5PriceTlenResp {
@@ -416,17 +503,17 @@ impl DepthQueryTop5PriceTlenResp {
         let mut offset = TOP5_FIXED_LEN;
         let mut bids = Vec::with_capacity(bid_count);
         for _ in 0..bid_count {
-            let price = f64::from_le_bytes(payload[offset..offset + 8].try_into()?);
+            let tick_index = i64::from_le_bytes(payload[offset..offset + 8].try_into()?);
             let tlen = f64::from_le_bytes(payload[offset + 8..offset + 16].try_into()?);
-            bids.push((price, tlen));
+            bids.push((tick_index, tlen));
             offset += TOP5_LEVEL_BYTES;
         }
 
         let mut asks = Vec::with_capacity(ask_count);
         for _ in 0..ask_count {
-            let price = f64::from_le_bytes(payload[offset..offset + 8].try_into()?);
+            let tick_index = i64::from_le_bytes(payload[offset..offset + 8].try_into()?);
             let tlen = f64::from_le_bytes(payload[offset + 8..offset + 16].try_into()?);
-            asks.push((price, tlen));
+            asks.push((tick_index, tlen));
             offset += TOP5_LEVEL_BYTES;
         }
 
@@ -440,8 +527,8 @@ impl DepthQueryTop5PriceTlenResp {
     pub fn write_to(
         payload: &mut [u8],
         timestamp_us: i64,
-        bids: &[(f64, f64)],
-        asks: &[(f64, f64)],
+        bids: &[(i64, f64)],
+        asks: &[(i64, f64)],
     ) -> Result<usize> {
         if bids.len() > TOP5_MAX_LEVELS || asks.len() > TOP5_MAX_LEVELS {
             return Err(anyhow!(
@@ -466,13 +553,13 @@ impl DepthQueryTop5PriceTlenResp {
         payload[10..12].fill(0);
 
         let mut offset = TOP5_FIXED_LEN;
-        for (price, tlen) in bids {
-            payload[offset..offset + 8].copy_from_slice(&price.to_le_bytes());
+        for (tick_index, tlen) in bids {
+            payload[offset..offset + 8].copy_from_slice(&tick_index.to_le_bytes());
             payload[offset + 8..offset + 16].copy_from_slice(&tlen.to_le_bytes());
             offset += TOP5_LEVEL_BYTES;
         }
-        for (price, tlen) in asks {
-            payload[offset..offset + 8].copy_from_slice(&price.to_le_bytes());
+        for (tick_index, tlen) in asks {
+            payload[offset..offset + 8].copy_from_slice(&tick_index.to_le_bytes());
             payload[offset + 8..offset + 16].copy_from_slice(&tlen.to_le_bytes());
             offset += TOP5_LEVEL_BYTES;
         }
@@ -503,12 +590,12 @@ mod tests {
         let mut req_buf = [0u8; 16];
         let req = DepthQueryLoadTlenSingleReq {
             timestamp_us: 123,
-            price: 456.5,
+            tick_index: 4565,
         };
         req.write_to(&mut req_buf).unwrap();
         let parsed_req = DepthQueryLoadTlenSingleReq::from_payload(&req_buf).unwrap();
         assert_eq!(parsed_req.timestamp_us, 123);
-        assert_eq!(parsed_req.price, 456.5);
+        assert_eq!(parsed_req.tick_index, 4565);
 
         let mut resp_buf = [0u8; 16];
         let resp = DepthQueryLoadTlenSingleResp {
@@ -525,11 +612,10 @@ mod tests {
     fn batch_req_resp_roundtrip() {
         let mut req_buf = [0u8; 64];
         let req_len =
-            DepthQueryLoadTlenBatchReq::write_to(&mut req_buf, 555, &[101.0, 102.0, 103.0])
-                .unwrap();
+            DepthQueryLoadTlenBatchReq::write_to(&mut req_buf, 555, &[1010, 1020, 1030]).unwrap();
         let parsed_req = DepthQueryLoadTlenBatchReq::from_payload(&req_buf[..req_len]).unwrap();
         assert_eq!(parsed_req.timestamp_us, 555);
-        assert_eq!(parsed_req.prices, vec![101.0, 102.0, 103.0]);
+        assert_eq!(parsed_req.tick_indices, vec![1010, 1020, 1030]);
 
         let mut resp_buf = [0u8; 64];
         let resp_len =
@@ -566,13 +652,22 @@ mod tests {
         let resp_len = DepthQueryTop5PriceTlenResp::write_to(
             &mut resp_buf,
             999,
-            &[(101.0, 1.2), (100.5, 2.3)],
-            &[(101.5, 1.1)],
+            &[(1010, 1.2), (1005, 2.3)],
+            &[(1015, 1.1)],
         )
         .unwrap();
         let parsed_resp = DepthQueryTop5PriceTlenResp::from_payload(&resp_buf[..resp_len]).unwrap();
         assert_eq!(parsed_resp.timestamp_us, 999);
-        assert_eq!(parsed_resp.bids, vec![(101.0, 1.2), (100.5, 2.3)]);
-        assert_eq!(parsed_resp.asks, vec![(101.5, 1.1)]);
+        assert_eq!(parsed_resp.bids, vec![(1010, 1.2), (1005, 2.3)]);
+        assert_eq!(parsed_resp.asks, vec![(1015, 1.1)]);
+    }
+
+    #[test]
+    fn tick_index_roundtrip() {
+        let tick = 0.1;
+        let tick_index = price_to_tick_index(72399.9, tick).unwrap();
+        assert_eq!(tick_index, 723999);
+        let price = tick_index_to_price(tick_index, tick).unwrap();
+        assert_eq!(price, 72399.9);
     }
 }
