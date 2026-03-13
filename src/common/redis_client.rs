@@ -10,7 +10,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 /// 通用的 Redis 连接配置
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct RedisSettings {
     #[serde(default = "default_redis_host")]
     pub host: String,

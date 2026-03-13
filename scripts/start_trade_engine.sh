@@ -126,6 +126,51 @@ else
 fi
 RUST_LOG="${RUST_LOG:-info}"
 
+find_trade_engine_pids() {
+  ps -eo pid=,args= | awk -v base_dir="${BASE_DIR}" -v exchange="${EXCHANGE}" '
+    index($0, base_dir "/") && index($0, "trade_engine --exchange " exchange) { print $1 }
+  '
+}
+
+stop_duplicate_trade_engines() {
+  mapfile -t stale_pids < <(find_trade_engine_pids)
+  if [[ "${#stale_pids[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  echo "[WARN] Found existing trade_engine instance(s) for ${BASE_DIR} exchange=${EXCHANGE}: ${stale_pids[*]}"
+  kill "${stale_pids[@]}" >/dev/null 2>&1 || true
+
+  for _ in {1..20}; do
+    sleep 0.2
+    mapfile -t stale_pids < <(find_trade_engine_pids)
+    if [[ "${#stale_pids[@]}" -eq 0 ]]; then
+      break
+    fi
+  done
+
+  if [[ "${#stale_pids[@]}" -gt 0 ]]; then
+    echo "[WARN] trade_engine still alive after SIGTERM, sending SIGKILL: ${stale_pids[*]}"
+    kill -9 "${stale_pids[@]}" >/dev/null 2>&1 || true
+    sleep 0.2
+  fi
+
+  mapfile -t stale_pids < <(find_trade_engine_pids)
+  if [[ "${#stale_pids[@]}" -gt 0 ]]; then
+    echo "[ERROR] Failed to remove duplicate trade_engine instance(s): ${stale_pids[*]}" >&2
+    exit 1
+  fi
+}
+
+verify_single_trade_engine() {
+  sleep 0.5
+  mapfile -t live_pids < <(find_trade_engine_pids)
+  if [[ "${#live_pids[@]}" -ne 1 ]]; then
+    echo "[ERROR] Expected exactly one trade_engine for ${BASE_DIR} exchange=${EXCHANGE}, found ${#live_pids[@]}: ${live_pids[*]}" >&2
+    exit 1
+  fi
+}
+
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
@@ -157,11 +202,13 @@ JSON
 
 echo "[INFO] Restarting ${PROC_NAME}"
 echo "[INFO] 本地 IP 配置来自 /home/<user>/config/mkt_cfg.yaml"
+stop_duplicate_trade_engines
 if [[ -n "$LEGACY_PROC_NAME" && "$LEGACY_PROC_NAME" != "$PROC_NAME" ]]; then
   "${PMDAEMON[@]}" delete "$LEGACY_PROC_NAME" >/dev/null 2>&1 || true
 fi
 "${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
 "${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
+verify_single_trade_engine
 
 echo ""
 echo "[INFO] Started trade_engine (exchange=${EXCHANGE})"

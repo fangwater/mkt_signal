@@ -106,6 +106,20 @@ def parse_number(value: Any) -> Optional[float]:
     return None
 
 
+def parse_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        val = value.strip().lower()
+        if val in {"true", "1", "yes", "y"}:
+            return True
+        if val in {"false", "0", "no", "n"}:
+            return False
+    return None
+
+
 def format_qty(value: float) -> str:
     text = f"{value:.12f}".rstrip("0").rstrip(".")
     if text == "-0":
@@ -167,6 +181,7 @@ def main() -> int:
     quanto = parse_number(contract_info.get("quanto_multiplier")) or 1.0
     min_contracts = parse_number(contract_info.get("order_size_min")) or 0.0
     step_contracts = parse_number(contract_info.get("order_size_step")) or 0.0
+    enable_decimal = parse_bool(contract_info.get("enable_decimal"))
 
     position = None
     pos_size = None
@@ -207,6 +222,8 @@ def main() -> int:
         return 1
 
     rounded_contracts = quantize_down(desired_contracts, step_contracts)
+    if step_contracts <= 0 and enable_decimal is False:
+        rounded_contracts = math.floor(abs(desired_contracts) + 1e-12)
     if rounded_contracts <= 0:
         print(
             f"Computed contracts <= 0 after step rounding (desired={desired_contracts}, step={step_contracts}).",
@@ -245,7 +262,11 @@ def main() -> int:
     }
 
     print(f"contract={contract} settle={settle}")
-    print(f"quanto_multiplier={contract_info.get('quanto_multiplier')} order_size_min={min_contracts} order_size_step={step_contracts}")
+    print(
+        f"quanto_multiplier={contract_info.get('quanto_multiplier')} "
+        f"order_size_min={min_contracts} order_size_step={step_contracts} "
+        f"enable_decimal={enable_decimal}"
+    )
     if position is not None:
         print(f"position_size={pos_size} contracts")
     print(f"requested_contracts={desired_contracts} -> rounded_contracts={rounded_contracts} side={side}")

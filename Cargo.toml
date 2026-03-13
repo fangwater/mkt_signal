@@ -125,10 +125,6 @@ name = "model_pub"
 path = "src/bin/model_pub.rs"
 
 [[bin]]
-name = "model_score_rolling"
-path = "src/bin/model_score_rolling.rs"
-
-[[bin]]
 name = "onnx_csv_predict"
 path = "src/bin/onnx_csv_predict.rs"
 

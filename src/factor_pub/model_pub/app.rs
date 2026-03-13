@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use super::cfg::ModelPubConfig;
 use super::model::OnnxModel;
 use super::publisher::ModelPublisher;
+use super::score_rolling::InlineScoreRolling;
 use crate::common::mkt_msg::{FeatureMsg, FeatureStatus, ModelMsg, MODEL_STATUS_OK};
 use crate::common::rolling_welford::RollingWelford;
 use crate::factor_pub::fusion_factor_pub::app::ExtraFactorId;
@@ -107,6 +108,7 @@ pub struct ModelPubApp {
     zscore_cap: f64,
     stats: ModelPubStats,
     last_log_stats: Instant,
+    score_rolling: InlineScoreRolling,
 }
 
 impl ModelPubApp {
@@ -164,9 +166,10 @@ impl ModelPubApp {
         let subscriber = Self::create_subscriber(&model_name, &input_service)?;
         let publisher_node = format!("model_pub_{}_out", sanitize_node_suffix(&model_name));
         let publisher = ModelPublisher::new(&publisher_node, &output_service)?;
+        let score_rolling = InlineScoreRolling::new(&model_name, &config.score_rolling).await?;
 
         info!(
-            "ModelPubApp started: model_name={} input={} output={} symbols={} window_size={} min_samples={} zscore_cap={}",
+            "ModelPubApp started: model_name={} input={} output={} symbols={} window_size={} min_samples={} zscore_cap={} post_process=score_rolling",
             model_name,
             input_service,
             output_service,
@@ -188,6 +191,7 @@ impl ModelPubApp {
             zscore_cap: config.zscore_cap,
             stats: ModelPubStats::default(),
             last_log_stats: Instant::now(),
+            score_rolling,
         })
     }
 
@@ -295,7 +299,7 @@ impl ModelPubApp {
         Ok(subscriber)
     }
 
-    pub fn run(&mut self) -> Result<()> {
+    pub async fn run(&mut self) -> Result<()> {
         loop {
             let mut has_message = false;
             while let Some(sample) = self.subscriber.receive()? {
@@ -311,11 +315,11 @@ impl ModelPubApp {
                 }
 
                 let data = sample.payload().to_vec();
-                self.process_input(&data);
+                self.process_input(&data).await?;
             }
 
             if !has_message {
-                std::thread::sleep(Duration::from_micros(IDLE_SLEEP_MICROS));
+                tokio::time::sleep(Duration::from_micros(IDLE_SLEEP_MICROS)).await;
             }
 
             if self.last_log_stats.elapsed() >= Duration::from_secs(LOG_INTERVAL_SECS) {
@@ -325,7 +329,7 @@ impl ModelPubApp {
         }
     }
 
-    fn process_input(&mut self, data: &[u8]) {
+    async fn process_input(&mut self, data: &[u8]) -> Result<()> {
         match FeatureMsg::from_bytes(data) {
             Ok(feature) => {
                 let symbol_key = normalize_symbol_key(&feature.symbol);
@@ -356,13 +360,13 @@ impl ModelPubApp {
                 // Cold-start gating: suppress publishing until min_samples reached
                 if norm_state.sample_count < self.min_samples {
                     self.stats.cold_start_suppressed += 1;
-                    return;
+                    return Ok(());
                 }
 
                 // Reload: only update rolling z-score, skip inference
                 if feature.status == FeatureStatus::Reload as u8 {
                     self.stats.reload_only += 1;
-                    return;
+                    return Ok(());
                 }
 
                 // Compute z-scores
@@ -447,7 +451,8 @@ impl ModelPubApp {
                             MODEL_STATUS_OK,
                             &factor_indices,
                             &f32_features,
-                        );
+                        )
+                        .await?;
                     }
                     Err(err) => {
                         panic!(
@@ -464,9 +469,10 @@ impl ModelPubApp {
                 );
             }
         }
+        Ok(())
     }
 
-    fn emit_result(
+    async fn emit_result(
         &mut self,
         symbol: &str,
         ts_in_ms: i64,
@@ -474,11 +480,12 @@ impl ModelPubApp {
         status: u8,
         factor_indices: &[u16],
         factor_values: &[f32],
-    ) {
+    ) -> Result<()> {
+        let ts_out_ms = now_millis();
         let msg = ModelMsg::create(
             symbol.to_string(),
             ts_in_ms,
-            now_millis(),
+            ts_out_ms,
             0,
             score,
             status,
@@ -493,15 +500,19 @@ impl ModelPubApp {
                     "Model result encode failed: model_name={} symbol={} err={}",
                     self.model_name, symbol, err
                 );
-                return;
+                return Ok(());
             }
         };
 
         if self.publisher.publish(bytes.as_ref()) {
             self.stats.publish_ok = self.stats.publish_ok.saturating_add(1);
+            self.score_rolling
+                .post_process_score(symbol, score, ts_out_ms)
+                .await?;
         } else {
             self.stats.publish_fail = self.stats.publish_fail.saturating_add(1);
         }
+        Ok(())
     }
 
     fn log_stats(&mut self) {

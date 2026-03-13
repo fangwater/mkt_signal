@@ -12,6 +12,7 @@ pub mod mkt_msg;
 pub mod msg_parser;
 pub mod redis_client;
 pub mod rolling_welford;
+pub mod sliding_quantile;
 pub mod symbol_util;
 pub mod tick_math;
 pub mod time_util;

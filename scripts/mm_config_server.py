@@ -98,17 +98,13 @@ try:
 except Exception:
     DEFAULT_MODEL_SCORE_ROLLING_PARAMS = {
         "max_length": 150_000,
-        "refresh_sec": 30,
-        "reload_param_sec": 3,
+        "reload_param_sec": 60,
         "rolling_window": 17_800,
         "min_periods": 100,
         "quantiles": [0.9, 0.8, 0.2, 0.1],
     }
 
 MODEL_SCORE_PARAM_COMMENTS = {
-    "input_services": "输入模型输出服务列表(JSON 数组)，通常为 [\"model_output/<model_name>\"]",
-    "output_hash_key": "rolling 服务输出的 Redis Hash key",
-    "refresh_sec": "rolling quantile 重算周期(秒)",
     "reload_param_sec": "配置热更新周期(秒)",
     "max_length": "环形缓冲最大长度",
     "rolling_window": "rolling 窗口长度",
@@ -116,9 +112,6 @@ MODEL_SCORE_PARAM_COMMENTS = {
     "quantiles": "需要计算的分位点(JSON 数组，如 [0.9,0.8,0.2,0.1])",
 }
 MODEL_SCORE_PARAM_ORDER = [
-    "input_services",
-    "output_hash_key",
-    "refresh_sec",
     "reload_param_sec",
     "max_length",
     "rolling_window",
@@ -386,7 +379,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
 
     <section class="panel">
       <div class="section-header">
-        <h2>Model Score Rolling Params</h2>
+        <h2>Model Pub Score Params</h2>
         <div class="actions">
           <button id="load-model-score" class="secondary">读取</button>
           <button id="reset-model-score" class="ghost">恢复默认</button>
@@ -394,7 +387,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         </div>
       </div>
       <div class="hint">
-        配置 Redis Hash `model_score_rolling_params_{model_name}`，用于决定 model score rolling 计算哪些 quantile。
+        配置 Redis Hash `model_score_rolling_params_{model_name}`，用于控制 `model_pub` 后处理的 score quantile 计算。
       </div>
       <div class="hint">rolling 输出 key：<span id="model-source-key" class="mono">-</span></div>
       <div class="kv-table" id="model-score-table"></div>
@@ -548,12 +541,8 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     }
 
     function defaultModelScoreParams(modelName) {
-      const effectiveModelName = (modelName || '').trim();
       return {
-        input_services: effectiveModelName ? [`model_output/${effectiveModelName}`] : [],
-        output_hash_key: effectiveModelName ? `model_score_rolling_thresholds_${effectiveModelName}` : '',
-        refresh_sec: BOOTSTRAP.defaults.model_score_rolling_params?.refresh_sec ?? 30,
-        reload_param_sec: BOOTSTRAP.defaults.model_score_rolling_params?.reload_param_sec ?? 3,
+        reload_param_sec: BOOTSTRAP.defaults.model_score_rolling_params?.reload_param_sec ?? 60,
         max_length: BOOTSTRAP.defaults.model_score_rolling_params?.max_length ?? 150000,
         rolling_window: BOOTSTRAP.defaults.model_score_rolling_params?.rolling_window ?? 17800,
         min_periods: BOOTSTRAP.defaults.model_score_rolling_params?.min_periods ?? 100,
@@ -1282,19 +1271,13 @@ def maybe_decode_json_string(raw: str) -> Any:
 def deserialize_model_score_params(values: Dict[str, str]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     for key, raw in values.items():
-        if key in {"input_services", "quantiles"}:
-            out[key] = maybe_decode_json_string(raw)
-        else:
-            out[key] = maybe_decode_json_string(raw)
+        out[key] = maybe_decode_json_string(raw)
     return out
 
 
 def build_default_model_score_params(model_name: str) -> Dict[str, Any]:
-    validated_model_name = validate_model_name(model_name)
-    defaults = {
-        "input_services": [f"model_output/{validated_model_name}"],
-        "output_hash_key": make_model_score_threshold_source_key(validated_model_name),
-    }
+    validate_model_name(model_name)
+    defaults = {}
     for key, value in DEFAULT_MODEL_SCORE_ROLLING_PARAMS.items():
         if isinstance(value, list):
             defaults[key] = list(value)

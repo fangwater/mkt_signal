@@ -17,11 +17,19 @@ struct IpClient {
     client: Client,
     /// used weight for 1m window (if header missing we approximate)
     used_weight_1m: u32,
+    window_started_at: Instant,
     cooldown_until: Option<Instant>,
     banned_until: Option<Instant>,
 }
 
 impl IpClient {
+    fn reset_if_window_elapsed(&mut self, now: Instant) {
+        if now.duration_since(self.window_started_at) >= Duration::from_secs(60) {
+            self.used_weight_1m = 0;
+            self.window_started_at = now;
+        }
+    }
+
     fn is_available(&self) -> bool {
         let now = Instant::now();
         if let Some(t) = self.cooldown_until {
@@ -42,6 +50,16 @@ impl IpClient {
 struct AccountState {
     key: ApiKey,
     used_orders_1m: u32,
+    window_started_at: Instant,
+}
+
+impl AccountState {
+    fn reset_if_window_elapsed(&mut self, now: Instant) {
+        if now.duration_since(self.window_started_at) >= Duration::from_secs(60) {
+            self.used_orders_1m = 0;
+            self.window_started_at = now;
+        }
+    }
 }
 
 pub struct Dispatcher {
@@ -61,10 +79,12 @@ impl Dispatcher {
                 .tcp_keepalive(Some(Duration::from_secs(30)))
                 .timeout(Duration::from_millis(RestConstants::TIMEOUT_MS));
             let client = builder.build()?;
+            let now = Instant::now();
             ip_clients.push(IpClient {
                 ip: *ip,
                 client,
                 used_weight_1m: 0,
+                window_started_at: now,
                 cooldown_until: None,
                 banned_until: None,
             });
@@ -79,6 +99,7 @@ impl Dispatcher {
             .map(|key| AccountState {
                 key,
                 used_orders_1m: 0,
+                window_started_at: Instant::now(),
             })
             .collect();
 
@@ -99,6 +120,16 @@ impl Dispatcher {
         })
     }
 
+    fn refresh_limit_windows(&mut self) {
+        let now = Instant::now();
+        for client in &mut self.ip_clients {
+            client.reset_if_window_elapsed(now);
+        }
+        for account in &mut self.accounts {
+            account.reset_if_window_elapsed(now);
+        }
+    }
+
     fn select_ip(&self, req_weight: u32) -> Option<usize> {
         let limit = LimitConstants::IP_WEIGHT_PER_MIN;
         let mut best: Option<(usize, f32)> = None; // index, score (remaining ratio)
@@ -107,6 +138,9 @@ impl Dispatcher {
                 continue;
             }
             let used = c.used_weight_1m as f32;
+            if used + req_weight as f32 > limit as f32 {
+                continue;
+            }
             let rem_ratio =
                 ((limit as f32 - used - req_weight as f32) / limit as f32).clamp(-1.0, 1.0);
             if best.map(|(_, s)| rem_ratio > s).unwrap_or(true) {
@@ -116,14 +150,26 @@ impl Dispatcher {
         best.map(|(i, _)| i)
     }
 
-    fn select_account(&self, hint: Option<&str>) -> Option<usize> {
+    fn select_account(&self, hint: Option<&str>, enforce_order_limit: bool) -> Option<usize> {
         if let Some(h) = hint {
-            return self.accounts.iter().position(|a| a.key.name == h);
+            let idx = self.accounts.iter().position(|a| a.key.name == h)?;
+            if enforce_order_limit
+                && self.accounts[idx].used_orders_1m >= LimitConstants::ACCOUNT_PER_MIN
+            {
+                return None;
+            }
+            return Some(idx);
+        }
+        if !enforce_order_limit {
+            return (!self.accounts.is_empty()).then_some(0);
         }
         let limit = LimitConstants::ACCOUNT_PER_MIN;
         let mut best: Option<(usize, f32)> = None; // index, score
         for (i, a) in self.accounts.iter().enumerate() {
             let used = a.used_orders_1m as f32;
+            if used >= limit as f32 {
+                continue;
+            }
             let rem_ratio = ((limit as f32 - used) / limit as f32).clamp(-1.0, 1.0);
             if best.map(|(_, s)| rem_ratio > s).unwrap_or(true) {
                 best = Some((i, rem_ratio));
@@ -133,12 +179,13 @@ impl Dispatcher {
     }
 
     pub async fn dispatch(&mut self, evt: OrderRequestEvent) -> Result<DispatchResponse> {
+        self.refresh_limit_windows();
         let ip_idx = self
             .select_ip(evt.weight())
             .ok_or_else(|| anyhow!("no available IP client (cooldown/banned or all saturated)"))?;
         let acc_idx = self
-            .select_account(evt.account.as_deref())
-            .ok_or_else(|| anyhow!("no available account key"))?;
+            .select_account(evt.account.as_deref(), evt.counts_toward_order_limit)
+            .ok_or_else(|| anyhow!("no available account key (all saturated)"))?;
 
         let ip = self.ip_clients[ip_idx].ip;
         // clone required account values to avoid borrow issues across mutation
@@ -167,16 +214,18 @@ impl Dispatcher {
                 (warn_ratio * 100.0) as u32
             );
         }
-        let acc_used = self.accounts[acc_idx].used_orders_1m;
-        let acc_limit = LimitConstants::ACCOUNT_PER_MIN;
-        if (acc_used as f32) / (acc_limit as f32) > warn_ratio {
-            warn!(
-                "Account {} order_count ~{}/{} > {}%",
-                account_name,
-                acc_used,
-                acc_limit,
-                (warn_ratio * 100.0) as u32
-            );
+        if evt.counts_toward_order_limit {
+            let acc_used = self.accounts[acc_idx].used_orders_1m;
+            let acc_limit = LimitConstants::ACCOUNT_PER_MIN;
+            if (acc_used as f32) / (acc_limit as f32) > warn_ratio {
+                warn!(
+                    "Account {} order_count ~{}/{} > {}%",
+                    account_name,
+                    acc_used,
+                    acc_limit,
+                    (warn_ratio * 100.0) as u32
+                );
+            }
         }
 
         let base_url = if evt.endpoint.starts_with("/fapi/") {
@@ -231,11 +280,21 @@ impl Dispatcher {
 
         match resp {
             Ok(r) => {
-                let (ip_used_1m, acc_used_1m) =
-                    self.update_limits_from_headers(ip_idx, acc_idx, r.headers());
+                let (ip_used_1m, acc_used_1m) = self.update_limits_from_headers(
+                    ip_idx,
+                    acc_idx,
+                    r.headers(),
+                    evt.counts_toward_order_limit,
+                );
 
                 let status = r.status();
                 let text = r.text().await.unwrap_or_default();
+                if is_duplicate_order_sent(status.as_u16(), &text) {
+                    panic!(
+                        "binance duplicate order detected: endpoint={} account={} ip={} req_id={:?} body={}",
+                        evt.endpoint, account_name, ip, evt.req_id, text
+                    );
+                }
                 let suppress_http_warn = should_suppress_http_error_log(status.as_u16(), &text);
                 let top_level_code = parse_top_level_error_code(&text);
                 // 打印完整响应 JSON（调试模式）；4xx/5xx 同时以 warn 级别输出
@@ -305,7 +364,9 @@ impl Dispatcher {
         ip_idx: usize,
         acc_idx: usize,
         headers: &HeaderMap,
+        fallback_increment_order_count: bool,
     ) -> (Option<u32>, Option<u32>) {
+        self.refresh_limit_windows();
         // Headers are case-insensitive and stored lowercase in reqwest
         // Prefer the "-1m" variants when available
         let mut ip_used_generic: Option<u32> = None;
@@ -353,7 +414,7 @@ impl Dispatcher {
 
         if let Some(x) = acc_final {
             self.accounts[acc_idx].used_orders_1m = x;
-        } else {
+        } else if fallback_increment_order_count {
             self.accounts[acc_idx].used_orders_1m =
                 self.accounts[acc_idx].used_orders_1m.saturating_add(1);
         }
@@ -363,6 +424,93 @@ impl Dispatcher {
             ip_used_1m, ip_used_generic, acc_used_1m, acc_used_generic
         );
         (ip_final, acc_final)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::header::{HeaderName, HeaderValue};
+    use std::net::{IpAddr, Ipv4Addr};
+
+    fn test_dispatcher() -> Dispatcher {
+        Dispatcher::new(
+            &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            &[ApiKey {
+                name: "default".to_string(),
+                key: "key".to_string(),
+                secret: "secret".to_string(),
+            }],
+        )
+        .expect("dispatcher")
+    }
+
+    #[test]
+    fn refresh_limit_windows_resets_stale_state() {
+        let mut dispatcher = test_dispatcher();
+        dispatcher.ip_clients[0].used_weight_1m = 123;
+        dispatcher.ip_clients[0].window_started_at = Instant::now() - Duration::from_secs(61);
+        dispatcher.accounts[0].used_orders_1m = 456;
+        dispatcher.accounts[0].window_started_at = Instant::now() - Duration::from_secs(61);
+
+        dispatcher.refresh_limit_windows();
+
+        assert_eq!(dispatcher.ip_clients[0].used_weight_1m, 0);
+        assert_eq!(dispatcher.accounts[0].used_orders_1m, 0);
+    }
+
+    #[test]
+    fn query_requests_do_not_increment_order_count_without_headers() {
+        let mut dispatcher = test_dispatcher();
+        dispatcher.accounts[0].used_orders_1m = 99;
+        let headers = HeaderMap::new();
+
+        let (_ip_used, acc_used) = dispatcher.update_limits_from_headers(0, 0, &headers, false);
+
+        assert_eq!(acc_used, None);
+        assert_eq!(dispatcher.accounts[0].used_orders_1m, 99);
+        assert_eq!(dispatcher.ip_clients[0].used_weight_1m, 1);
+    }
+
+    #[test]
+    fn order_headers_override_local_counter() {
+        let mut dispatcher = test_dispatcher();
+        dispatcher.accounts[0].used_orders_1m = 99;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-mbx-order-count-1m"),
+            HeaderValue::from_static("12"),
+        );
+
+        let (_ip_used, acc_used) = dispatcher.update_limits_from_headers(0, 0, &headers, true);
+
+        assert_eq!(acc_used, Some(12));
+        assert_eq!(dispatcher.accounts[0].used_orders_1m, 12);
+    }
+
+    #[test]
+    fn select_account_rejects_saturated_accounts_for_order_requests() {
+        let mut dispatcher = test_dispatcher();
+        dispatcher.accounts[0].used_orders_1m = LimitConstants::ACCOUNT_PER_MIN;
+
+        assert_eq!(dispatcher.select_account(None, true), None);
+        assert_eq!(dispatcher.select_account(None, false), Some(0));
+    }
+
+    #[test]
+    fn detects_duplicate_order_sent_response() {
+        assert!(is_duplicate_order_sent(
+            400,
+            r#"{"code":-2010,"msg":"Duplicate order sent."}"#
+        ));
+        assert!(!is_duplicate_order_sent(
+            400,
+            r#"{"code":-2010,"msg":"New order rejected"}"#
+        ));
+        assert!(!is_duplicate_order_sent(
+            200,
+            r#"{"code":-2010,"msg":"Duplicate order sent."}"#
+        ));
     }
 }
 
@@ -449,6 +597,23 @@ fn parse_top_level_error_code(body: &str) -> Option<i32> {
         return s.parse::<i32>().ok();
     }
     None
+}
+
+fn parse_top_level_error_msg(body: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    v.get("msg")
+        .and_then(|msg| msg.as_str())
+        .map(str::to_string)
+}
+
+fn is_duplicate_order_sent(status: u16, body: &str) -> bool {
+    if status != 400 {
+        return false;
+    }
+    matches!(
+        parse_top_level_error_msg(body).as_deref(),
+        Some("Duplicate order sent.")
+    )
 }
 
 fn should_suppress_http_error_log(status: u16, body: &str) -> bool {

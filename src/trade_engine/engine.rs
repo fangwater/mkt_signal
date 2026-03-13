@@ -541,6 +541,7 @@ impl TradeEngine {
                             weight: Some(weight),
                             account: None,
                             req_id: Some(msg.client_order_id.to_string()),
+                            counts_toward_order_limit: true,
                         };
 
                         let outcome = {
@@ -753,6 +754,7 @@ impl TradeEngine {
                                 weight: Some(weight),
                                 account: None,
                                 req_id: Some(msg.client_query_id.to_string()),
+                                counts_toward_order_limit: false,
                             };
 
                             let outcome = {

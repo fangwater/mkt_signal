@@ -14,8 +14,7 @@ MODEL_RE = r"[a-zA-Z0-9][a-zA-Z0-9._-]*"
 
 DEFAULTS = {
     "max_length": 150_000,
-    "refresh_sec": 30,
-    "reload_param_sec": 3,
+    "reload_param_sec": 60,
     "rolling_window": 17_800,
     "min_periods": 100,
     "quantiles": [0.9, 0.8, 0.2, 0.1],
@@ -73,9 +72,7 @@ def to_str(value: Any) -> str:
 
 def build_payload(model_name: str) -> Dict[str, str]:
     payload: Dict[str, Any] = {
-        "input_services": [f"model_output/{model_name}"],
         "output_hash_key": f"model_score_rolling_thresholds_{model_name}",
-        "refresh_sec": DEFAULTS["refresh_sec"],
         "reload_param_sec": DEFAULTS["reload_param_sec"],
         "max_length": DEFAULTS["max_length"],
         "rolling_window": DEFAULTS["rolling_window"],
@@ -124,7 +121,7 @@ def main() -> int:
         f"--model-name {model_name}"
     )
     print(
-        "  - start process in deploy dir: ./scripts/model_score_rolling/start_model_score_rolling.sh"
+        "  - model_pub will pick up redis params on the next reload cycle"
     )
     return 0
 

@@ -78,10 +78,7 @@ def maybe_decode_json(raw: str) -> Any:
 
 def build_output(kv: Dict[str, str]) -> Dict[str, Any]:
     known_fields = {
-        "input_services",
-        "input_service",
         "output_hash_key",
-        "refresh_sec",
         "reload_param_sec",
         "max_length",
         "rolling_window",

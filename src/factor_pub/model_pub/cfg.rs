@@ -2,6 +2,8 @@ use anyhow::Result;
 use serde::Deserialize;
 use std::fs;
 
+use super::score_rolling::ScoreRollingConfig;
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct ModelPubConfig {
     pub model_manager_base_url: String,
@@ -27,6 +29,8 @@ pub struct ModelPubConfig {
     pub min_samples: u64,
     #[serde(default = "default_zscore_cap")]
     pub zscore_cap: f64,
+    #[serde(default)]
+    pub score_rolling: ScoreRollingConfig,
 }
 
 impl ModelPubConfig {
@@ -76,6 +80,7 @@ impl ModelPubConfig {
         if self.min_samples == 0 {
             anyhow::bail!("min_samples must be > 0");
         }
+        self.score_rolling.validate()?;
         Ok(())
     }
 

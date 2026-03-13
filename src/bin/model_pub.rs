@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
     );
 
     let mut app = ModelPubApp::new(DEFAULT_CONFIG_PATH, &args.model_name).await?;
-    app.run()
+    app.run().await
 }
 
 fn set_onnx_env_fixed() {
