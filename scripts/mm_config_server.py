@@ -331,12 +331,12 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <button id="reload-all" class="ghost" title="批量读取">读取全部</button>
     </div>
     <div class="meta">
-      <span class="badge">symbol key: <span id="symbol-key" class="mono">-</span></span>
-      <span class="badge">strategy key: <span id="strategy-key" class="mono">-</span></span>
-      <span class="badge">risk key: <span id="risk-key" class="mono">-</span></span>
-      <span class="badge">model params key: <span id="model-params-key" class="mono">-</span></span>
-      <span class="badge">mapping key: <span id="mapping-key" class="mono">-</span></span>
-      <span class="badge">threshold key: <span id="threshold-key" class="mono">-</span></span>
+      <span class="badge mono" id="symbol-key">-</span>
+      <span class="badge mono" id="strategy-key">-</span>
+      <span class="badge mono" id="risk-key">-</span>
+      <span class="badge mono" id="model-params-key">-</span>
+      <span class="badge mono" id="mapping-key">-</span>
+      <span class="badge mono" id="threshold-key">-</span>
     </div>
   </header>
 
