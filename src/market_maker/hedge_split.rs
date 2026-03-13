@@ -8,6 +8,7 @@ pub struct HedgeLevel {
 
 #[derive(Debug, Clone, Copy)]
 pub struct HedgeSplitOrder {
+    pub level_index: usize,
     pub side: Side,
     pub price: f64,
     pub qty: f64,
@@ -122,6 +123,7 @@ pub fn split_hedge_orders_round_robin(
             continue;
         }
         orders.push(HedgeSplitOrder {
+            level_index: idx,
             side,
             price: level.price,
             qty,

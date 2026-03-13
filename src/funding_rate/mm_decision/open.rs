@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use super::super::mkt_channel::MktChannel;
 use super::super::symbol_list::SymbolList;
-use super::helpers::{build_from_key, select_prediction_side};
+use super::from_key::{build_from_key, select_prediction_side};
 use super::state::MmDecisionState;
 use crate::common::time_util::get_timestamp_us;
 use crate::market_maker::open_quote_plan::build_mm_open_quote_plan;

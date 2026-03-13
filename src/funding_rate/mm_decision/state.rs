@@ -10,6 +10,7 @@ use super::super::fr_decision::DEFAULT_SIGNAL_CHANNEL;
 use crate::common::iceoryx_publisher::SignalPublisher;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
+use crate::depth_pub::query_client::DepthQueryClient;
 use crate::market_maker::open_quote_plan::MmOpenQuotePlan;
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::signal::cancel_signal::MmCancelCtx;
@@ -29,6 +30,7 @@ pub(crate) const ENV_MODEL_TRUE_THRESHOLD_DEFAULT: f64 = 0.0;
 
 pub(crate) struct MmDecisionState {
     pub(crate) signal_pub: SignalPublisher,
+    pub(crate) depth_query_client: DepthQueryClient,
     pub(crate) open_venue: TradingVenue,
     pub(crate) hedge_venue: TradingVenue,
     pub(crate) order_interval_ms: u64,
@@ -57,6 +59,7 @@ impl MmDecisionState {
         hedge_venue: TradingVenue,
     ) -> Result<Self> {
         let signal_pub = SignalPublisher::new(DEFAULT_SIGNAL_CHANNEL)?;
+        let depth_query_client = DepthQueryClient::new(open_venue)?;
         let pnlu_settings = RedisSettings {
             host: DEFAULT_PNLU_REDIS_HOST.to_string(),
             port: DEFAULT_PNLU_REDIS_PORT,
@@ -78,6 +81,7 @@ impl MmDecisionState {
 
         Ok(Self {
             signal_pub,
+            depth_query_client,
             open_venue,
             hedge_venue,
             order_interval_ms: 5_000,
@@ -299,9 +303,17 @@ impl MmDecisionState {
         from_key: &str,
         prediction_side: Option<Side>,
     ) -> (usize, usize, usize) {
+        struct PreparedOpenSignal {
+            side: Side,
+            level_index: usize,
+            tick_index: i64,
+            ctx: MmOpenCtx,
+        }
+
         let mut sent = 0usize;
         let mut sent_buy = 0usize;
         let mut sent_sell = 0usize;
+        let mut prepared = Vec::with_capacity(plan.levels.len());
 
         for level in &plan.levels {
             if let Some(side) = prediction_side {
@@ -328,22 +340,78 @@ impl MmDecisionState {
             ctx.exp_time = plan.exp_time_us;
             ctx.create_ts = plan.now_us;
             ctx.price_offset = level.offset;
-            ctx.set_from_key(from_key.as_bytes().to_vec());
+            prepared.push(PreparedOpenSignal {
+                side: level.side,
+                level_index: level.level_index,
+                tick_index: ctx.price_count(),
+                ctx,
+            });
+        }
 
-            let signal = TradeSignal::create(SignalType::MMOpen, now_us, 0.0, ctx.to_bytes());
+        let batch_from_keys = if prepared.is_empty() {
+            Vec::new()
+        } else {
+            let tick_indices: Vec<i64> = prepared.iter().map(|item| item.tick_index).collect();
+            match self
+                .depth_query_client
+                .query_batch_tick_indices(&plan.symbol, &tick_indices)
+            {
+                Ok(tlens) => {
+                    let batch_tick_tlens: Vec<(i64, f64)> = tick_indices
+                        .iter()
+                        .copied()
+                        .zip(tlens.iter().copied())
+                        .collect();
+                    prepared
+                        .iter()
+                        .zip(tlens.iter().copied())
+                        .map(|(item, level_tlen)| {
+                            super::from_key::append_mm_open_tlens_to_from_key(
+                                from_key,
+                                item.tick_index,
+                                level_tlen,
+                                &batch_tick_tlens,
+                            )
+                        })
+                        .collect()
+                }
+                Err(err) => {
+                    log::warn!(
+                        "MmDecision: MMOpen tlen batch query failed symbol={} levels={} err={:#}",
+                        plan.symbol,
+                        prepared.len(),
+                        err
+                    );
+                    prepared
+                        .iter()
+                        .map(|_| {
+                            super::from_key::append_tlen_query_error_to_from_key(
+                                from_key,
+                                "batch_query_failed",
+                            )
+                        })
+                        .collect()
+                }
+            }
+        };
+
+        for (item, level_from_key) in prepared.iter_mut().zip(batch_from_keys.into_iter()) {
+            item.ctx.set_from_key(level_from_key.into_bytes());
+
+            let signal = TradeSignal::create(SignalType::MMOpen, now_us, 0.0, item.ctx.to_bytes());
             if let Err(err) = self.signal_pub.publish(&signal.to_bytes()) {
                 log::warn!(
                     "MmDecision: publish MMOpen failed symbol={} idx={} side={:?} err={:?}",
                     plan.symbol,
-                    level.level_index,
-                    level.side,
+                    item.level_index,
+                    item.side,
                     err
                 );
                 continue;
             }
 
             sent += 1;
-            match level.side {
+            match item.side {
                 Side::Buy => sent_buy += 1,
                 Side::Sell => sent_sell += 1,
             }

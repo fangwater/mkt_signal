@@ -78,6 +78,9 @@ pub struct MmHedgeCtx {
     /// Amount levels encoded by QuantizedValue (same encoding style as MmOpenCtx::amount_qv)
     pub amount_qv_list: Vec<QuantizedValue>,
 
+    /// Queried tlen values aligned with `price_qv_list`
+    pub tlen_values: Vec<f64>,
+
     /// Signal timestamp (microseconds)
     pub signal_ts: i64,
 
@@ -311,6 +314,7 @@ impl MmHedgeCtx {
             opening_symbol: [0u8; 32],
             price_qv_list: Vec::new(),
             amount_qv_list: Vec::new(),
+            tlen_values: Vec::new(),
             signal_ts: 0,
             next_query_ts: 0,
             from_key_len: 0,
@@ -512,6 +516,12 @@ impl SignalBytes for MmHedgeCtx {
             buf.put_i64_le(amount_qv.get_count());
         }
 
+        // tlen list
+        buf.put_u32_le(self.tlen_values.len() as u32);
+        for tlen in &self.tlen_values {
+            buf.put_f64_le(*tlen);
+        }
+
         // Signal timestamp
         buf.put_i64_le(self.signal_ts);
 
@@ -585,6 +595,30 @@ impl SignalBytes for MmHedgeCtx {
             ));
         }
 
+        if bytes.remaining() < 4 {
+            return Err("Not enough bytes for tlen_values length".to_string());
+        }
+        let tlen_len = bytes.get_u32_le() as usize;
+        if bytes.remaining() < tlen_len.saturating_mul(8) {
+            return Err(format!(
+                "Not enough bytes for tlen_values: need {}, have {}",
+                tlen_len.saturating_mul(8),
+                bytes.remaining()
+            ));
+        }
+        let mut tlen_values = Vec::with_capacity(tlen_len);
+        for _ in 0..tlen_len {
+            tlen_values.push(bytes.get_f64_le());
+        }
+
+        if !tlen_values.is_empty() && tlen_values.len() != price_qv_list.len() {
+            return Err(format!(
+                "price_qv_list/tlen_values length mismatch: price_len={} tlen_len={}",
+                price_qv_list.len(),
+                tlen_values.len()
+            ));
+        }
+
         if bytes.remaining() < 8 {
             return Err("Not enough bytes for signal_ts".to_string());
         }
@@ -622,6 +656,7 @@ impl SignalBytes for MmHedgeCtx {
             opening_symbol,
             price_qv_list,
             amount_qv_list,
+            tlen_values,
             signal_ts,
             next_query_ts,
             from_key_len: from_key_len as u32,
@@ -947,7 +982,9 @@ impl ArbHedgeSignalQueryMsg {
 
 #[cfg(test)]
 mod tests {
-    use super::MmHedgeSignalQueryMsg;
+    use super::{MmHedgeCtx, MmHedgeSignalQueryMsg};
+    use crate::common::tick_math::QuantizedValue;
+    use crate::signal::common::{SignalBytes, TradingLeg, TradingVenue};
 
     #[test]
     fn mm_hedge_query_from_bytes_accepts_zero_padding() {
@@ -974,5 +1011,29 @@ mod tests {
             .err()
             .unwrap()
             .contains("Unexpected non-zero trailing bytes"));
+    }
+
+    #[test]
+    fn mm_hedge_ctx_roundtrip_with_tlen_values() {
+        let mut ctx = MmHedgeCtx::new();
+        ctx.opening_leg = TradingLeg::new(TradingVenue::BinanceFutures, 100.0, 100.1, 123456);
+        ctx.set_opening_symbol("BTCUSDT");
+        ctx.price_qv_list
+            .push(QuantizedValue::from_parts(1, -1, 724310));
+        ctx.amount_qv_list
+            .push(QuantizedValue::from_parts(1, -3, 5000));
+        ctx.tlen_values.push(0.1234);
+        ctx.signal_ts = 111;
+        ctx.next_query_ts = 222;
+        ctx.set_from_key(b"fk".to_vec());
+
+        let parsed = MmHedgeCtx::from_bytes(ctx.to_bytes()).unwrap();
+        assert_eq!(parsed.get_opening_symbol(), "BTCUSDT");
+        assert_eq!(parsed.price_qv_list.len(), 1);
+        assert_eq!(parsed.amount_qv_list.len(), 1);
+        assert_eq!(parsed.tlen_values, vec![0.1234]);
+        assert_eq!(parsed.signal_ts, 111);
+        assert_eq!(parsed.next_query_ts, 222);
+        assert_eq!(parsed.from_key, b"fk");
     }
 }

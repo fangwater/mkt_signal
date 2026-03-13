@@ -14,6 +14,7 @@ use crate::common::iceoryx_publisher::SIGNAL_PAYLOAD;
 use crate::common::iceoryx_subscriber::GenericSignalSubscriber;
 use crate::common::ipc_service_name::build_service_name;
 use crate::common::time_util::get_timestamp_us;
+use crate::depth_pub::query_msg::TLEN_QUERY_AMOUNT_INVALID;
 use crate::market_maker::hedge_quote_plan::{
     build_mm_hedge_ctx as build_mm_hedge_ctx_core, resolve_mm_hedge_signal_inputs,
     MmHedgeBuildInput,
@@ -23,11 +24,12 @@ use crate::signal::hedge_signal::MmHedgeSignalQueryMsg;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 
 mod cancel;
-mod helpers;
+mod from_key;
 mod open;
 mod state;
 
 use cancel::MmCancelDecision;
+use from_key::append_tlen_query_error_to_from_key;
 use open::MmOpenDecision;
 use state::MmDecisionState;
 
@@ -298,6 +300,38 @@ impl MmDecision {
                 return;
             }
         };
+        let mut ctx = ctx;
+        let hedge_symbol = ctx.get_opening_symbol();
+        let tick_indices: Vec<i64> = ctx.price_qv_list.iter().map(|qv| qv.get_count()).collect();
+        if tick_indices.is_empty() {
+            warn!(
+                "MmDecision: MMHedge has empty tick_indices symbol={}",
+                symbol
+            );
+            return;
+        }
+        match self
+            .state
+            .depth_query_client
+            .query_batch_tick_indices(&hedge_symbol, &tick_indices)
+        {
+            Ok(tlens) => {
+                ctx.tlen_values = tlens;
+            }
+            Err(err) => {
+                warn!(
+                    "MmDecision: MMHedge tlen batch query failed symbol={} levels={} err={:#}",
+                    symbol,
+                    tick_indices.len(),
+                    err
+                );
+                ctx.tlen_values = vec![TLEN_QUERY_AMOUNT_INVALID; tick_indices.len()];
+                let base_from_key = String::from_utf8_lossy(&ctx.from_key).to_string();
+                let from_key =
+                    append_tlen_query_error_to_from_key(&base_from_key, "batch_query_failed");
+                ctx.set_from_key(from_key.into_bytes());
+            }
+        }
         let signal =
             TradeSignal::create(SignalType::MMHedge, get_timestamp_us(), 0.0, ctx.to_bytes());
         if let Err(err) = self.state.signal_pub.publish(&signal.to_bytes()) {

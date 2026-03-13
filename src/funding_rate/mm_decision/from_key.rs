@@ -55,3 +55,46 @@ pub(crate) fn build_from_key(
         env.threshold,
     )
 }
+
+fn format_tlen_value(value: f64) -> String {
+    if value.is_finite() {
+        format!("{value:.8}")
+    } else {
+        "nan".to_string()
+    }
+}
+
+pub(crate) fn format_batch_tlen_suffix(tick_tlens: &[(i64, f64)]) -> String {
+    tick_tlens
+        .iter()
+        .map(|(tick_index, tlen)| format!("{tick_index}@{}", format_tlen_value(*tlen)))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+pub(crate) fn append_mm_open_tlens_to_from_key(
+    base_from_key: &str,
+    level_tick_index: i64,
+    level_tlen: f64,
+    batch_tick_tlens: &[(i64, f64)],
+) -> String {
+    format!(
+        "{base_from_key}:px_tick={level_tick_index}:px_tlen={}:batch_tlen={}",
+        format_tlen_value(level_tlen),
+        format_batch_tlen_suffix(batch_tick_tlens)
+    )
+}
+
+pub(crate) fn append_tlen_query_error_to_from_key(base_from_key: &str, err: &str) -> String {
+    let sanitized = err
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ',') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    format!("{base_from_key}:tlen_query_err={sanitized}")
+}
