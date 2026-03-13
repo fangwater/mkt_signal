@@ -24,7 +24,7 @@ use crate::signal::hedge_signal::MmHedgeSignalQueryMsg;
 use crate::signal::trade_signal::{SignalType, TradeSignal};
 
 mod cancel;
-mod from_key;
+pub mod from_key;
 mod open;
 mod state;
 

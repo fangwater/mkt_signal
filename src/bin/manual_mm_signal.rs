@@ -34,12 +34,17 @@ use mkt_signal::common::mkt_msg::{
 use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::depth_pub::query_client::DepthQueryClient;
+use mkt_signal::depth_pub::query_msg::TLEN_QUERY_AMOUNT_INVALID;
 use mkt_signal::factor_pub::fusion_factor_pub::app::ExtraFactorId;
 use mkt_signal::factor_pub::fusion_factor_pub::fusion_factor_index_to_name;
 use mkt_signal::factor_pub::model_pub::publisher::MODEL_PAYLOAD_MAX_BYTES;
 use mkt_signal::funding_rate::common::build_decision_from_key_base;
 use mkt_signal::funding_rate::common::Quote;
 use mkt_signal::funding_rate::factor_value_hub::FactorValueHub;
+use mkt_signal::funding_rate::mm_decision::from_key::{
+    append_mm_hedge_tlens_to_from_key, append_mm_open_tlens_to_from_key,
+    append_tlen_query_error_to_from_key,
+};
 use mkt_signal::market_maker::hedge_quote_plan::{
     build_mm_hedge_ctx as build_mm_hedge_ctx_core, resolve_mm_hedge_signal_inputs,
     MmHedgeBuildInput,
@@ -190,6 +195,7 @@ struct ManualOpenResponse {
     price_tick: f64,
     qty_tick: f64,
     from_key: String,
+    level_from_keys: Vec<String>,
     mid_price: f64,
     volatility: f64,
     band_lower: f64,
@@ -214,6 +220,8 @@ struct OpenPreviewLevel {
     aligned_qty: f64,
     price_tick_count: i64,
     qty_tick_count: i64,
+    tlen: Option<f64>,
+    from_key: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -278,6 +286,7 @@ struct MmHedgeTlenSnapshot {
     signal_ts: i64,
     next_query_ts: i64,
     levels: usize,
+    from_key: String,
     query_ok: bool,
     query_err: Option<String>,
     rows: Vec<MmHedgeTlenLevel>,
@@ -321,6 +330,7 @@ fn build_mm_hedge_tlen_snapshot(
         signal_ts: ctx.signal_ts,
         next_query_ts: ctx.next_query_ts,
         levels: rows.len(),
+        from_key: String::from_utf8_lossy(&ctx.from_key).to_string(),
         query_ok: query_err.is_none(),
         query_err,
         rows,
@@ -772,7 +782,7 @@ fn spawn_backward_query_responder(
                                     }
                                 };
 
-                                let ctx = match build_mm_hedge_ctx(
+                                let mut ctx = match build_mm_hedge_ctx(
                                     &cfg,
                                     &quotes,
                                     &min_qty_table,
@@ -798,19 +808,45 @@ fn spawn_backward_query_responder(
                                 } else {
                                     Err(anyhow!("depth query client unavailable"))
                                 };
-                                let snapshot = match &tlen_query_result {
-                                    Ok(tlens) => build_mm_hedge_tlen_snapshot(
-                                        &symbol,
-                                        &ctx,
-                                        Some(tlens.as_slice()),
-                                        None,
-                                    ),
-                                    Err(err) => build_mm_hedge_tlen_snapshot(
-                                        &symbol,
-                                        &ctx,
-                                        None,
-                                        Some(err.to_string()),
-                                    ),
+                                let snapshot = match tlen_query_result {
+                                    Ok(tlens) => {
+                                        let batch_tick_tlens: Vec<(i64, f64)> = query_tick_indices
+                                            .iter()
+                                            .copied()
+                                            .zip(tlens.iter().copied())
+                                            .collect();
+                                        let base_from_key =
+                                            String::from_utf8_lossy(&ctx.from_key).to_string();
+                                        let from_key = append_mm_hedge_tlens_to_from_key(
+                                            &base_from_key,
+                                            &batch_tick_tlens,
+                                        );
+                                        ctx.set_from_key(from_key.into_bytes());
+                                        ctx.tlen_values = tlens;
+                                        build_mm_hedge_tlen_snapshot(
+                                            &symbol,
+                                            &ctx,
+                                            Some(ctx.tlen_values.as_slice()),
+                                            None,
+                                        )
+                                    }
+                                    Err(err) => {
+                                        let base_from_key =
+                                            String::from_utf8_lossy(&ctx.from_key).to_string();
+                                        let from_key = append_tlen_query_error_to_from_key(
+                                            &base_from_key,
+                                            "batch_query_failed",
+                                        );
+                                        ctx.set_from_key(from_key.into_bytes());
+                                        ctx.tlen_values =
+                                            vec![TLEN_QUERY_AMOUNT_INVALID; query_tick_indices.len()];
+                                        build_mm_hedge_tlen_snapshot(
+                                            &symbol,
+                                            &ctx,
+                                            Some(ctx.tlen_values.as_slice()),
+                                            Some(err.to_string()),
+                                        )
+                                    }
                                 };
                                 let rows_text = format_mm_hedge_tlen_rows(&snapshot.rows);
                                 *mm_hedge_tlen.write() = Some(snapshot.clone());
@@ -874,6 +910,13 @@ fn spawn_publisher_worker(
     token: CancellationToken,
 ) {
     tokio::task::spawn_local(async move {
+        let depth_client = match DepthQueryClient::new(cfg.venue) {
+            Ok(client) => Some(client),
+            Err(err) => {
+                warn!("manual_mm: depth query client unavailable for open path: {err:#}");
+                None
+            }
+        };
         let publisher = SignalPublisher::new(&cfg.signal_channel)
             .with_context(|| format!("create SignalPublisher failed on '{}'", cfg.signal_channel))
             .expect("failed to create SignalPublisher");
@@ -923,6 +966,7 @@ fn spawn_publisher_worker(
                             let res = build_and_publish_open(
                                 &cfg,
                                 &publisher,
+                                depth_client.as_ref(),
                                 &min_qty_table,
                                 &mut factor_value_hub,
                                 req,
@@ -939,6 +983,7 @@ fn spawn_publisher_worker(
 fn build_and_publish_open(
     cfg: &AppCfg,
     publisher: &SignalPublisher,
+    depth_client: Option<&DepthQueryClient>,
     min_qty_table: &Arc<RwLock<VenueMinQtyTable>>,
     factor_value_hub: &mut FactorValueHub,
     req: ManualOpenRequest,
@@ -991,15 +1036,25 @@ fn build_and_publish_open(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    let default_from_key = build_decision_from_key_base(
-        plan.now_us,
-        req.return_score.filter(|v| v.is_finite()),
-        None,
-        Some(plan.band.volatility),
-        None,
-        None,
-    );
+    let base_from_key = if let Some(v) = from_key_override {
+        v
+    } else {
+        build_decision_from_key_base(
+            plan.now_us,
+            req.return_score.filter(|v| v.is_finite()),
+            None,
+            Some(plan.band.volatility),
+            None,
+            None,
+        )
+    };
 
+    struct PreparedOpenSignal {
+        tick_index: i64,
+        ctx: MmOpenCtx,
+    }
+
+    let mut prepared = Vec::with_capacity(plan.levels.len());
     for level in &plan.levels {
         let mut ctx = MmOpenCtx::new();
         ctx.opening_leg = TradingLeg::new(cfg.venue, plan.quote.bid, plan.quote.ask, plan.quote.ts);
@@ -1008,28 +1063,94 @@ fn build_and_publish_open(
         ctx.set_order_type(OrderType::Limit);
         let _ = ctx.set_amount_with_tick_floor(level.aligned_qty, plan.qty_tick);
         let _ = ctx.set_price_with_tick_floor(level.aligned_price, plan.price_tick);
+        if ctx.amount_count() <= 0 || ctx.price_count() <= 0 {
+            continue;
+        }
         ctx.exp_time = plan.exp_time_us;
         ctx.create_ts = plan.now_us;
         ctx.price_offset = level.offset;
-        let level_from_key = if let Some(v) = from_key_override.as_ref() {
-            v.to_string()
-        } else {
-            default_from_key.clone()
-        };
-        ctx.set_from_key(level_from_key.into_bytes());
+        prepared.push(PreparedOpenSignal {
+            tick_index: ctx.price_count(),
+            ctx,
+        });
+    }
 
-        let signal = TradeSignal::create(SignalType::MMOpen, plan.now_us, 0.0, ctx.to_bytes());
+    let mut level_tlens = Vec::with_capacity(prepared.len());
+    let level_from_keys = if prepared.is_empty() {
+        Vec::new()
+    } else {
+        let tick_indices: Vec<i64> = prepared.iter().map(|item| item.tick_index).collect();
+        match depth_client {
+            Some(client) => match client.query_batch_tick_indices(&plan.symbol, &tick_indices) {
+                Ok(tlens) => {
+                    let batch_tick_tlens: Vec<(i64, f64)> = tick_indices
+                        .iter()
+                        .copied()
+                        .zip(tlens.iter().copied())
+                        .collect();
+                    level_tlens = tlens.iter().copied().map(Some).collect();
+                    prepared
+                        .iter()
+                        .zip(tlens.iter().copied())
+                        .map(|(item, level_tlen)| {
+                            append_mm_open_tlens_to_from_key(
+                                &base_from_key,
+                                item.tick_index,
+                                level_tlen,
+                                &batch_tick_tlens,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                }
+                Err(err) => {
+                    warn!(
+                        "manual_mm: MMOpen tlen batch query failed symbol={} levels={} err={:#}",
+                        plan.symbol,
+                        prepared.len(),
+                        err
+                    );
+                    level_tlens = vec![None; prepared.len()];
+                    prepared
+                        .iter()
+                        .map(|_| {
+                            append_tlen_query_error_to_from_key(
+                                &base_from_key,
+                                "batch_query_failed",
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                }
+            },
+            None => {
+                level_tlens = vec![None; prepared.len()];
+                prepared
+                    .iter()
+                    .map(|_| {
+                        append_tlen_query_error_to_from_key(
+                            &base_from_key,
+                            "depth_query_client_unavailable",
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            }
+        }
+    };
+
+    for (item, level_from_key) in prepared.iter_mut().zip(level_from_keys.iter()) {
+        item.ctx.set_from_key(level_from_key.clone().into_bytes());
+        let signal = TradeSignal::create(SignalType::MMOpen, plan.now_us, 0.0, item.ctx.to_bytes());
         publisher.publish(&signal.to_bytes())?;
     }
 
-    let (levels, buy_orders, sell_orders) = plan_to_levels_and_counts(&plan.levels);
-    let from_key = if let Some(v) = from_key_override {
-        v
-    } else if !plan.levels.is_empty() {
-        default_from_key
-    } else {
-        String::new()
-    };
+    let (mut levels, buy_orders, sell_orders) = plan_to_levels_and_counts(&plan.levels);
+    for ((level, level_from_key), tlen) in levels
+        .iter_mut()
+        .zip(level_from_keys.iter())
+        .zip(level_tlens.into_iter())
+    {
+        level.from_key = level_from_key.clone();
+        level.tlen = tlen;
+    }
 
     Ok(ManualOpenResponse {
         ok: true,
@@ -1044,7 +1165,8 @@ fn build_and_publish_open(
         open_orders_per_round: plan.orders_per_round,
         price_tick: plan.price_tick,
         qty_tick: plan.qty_tick,
-        from_key,
+        from_key: base_from_key,
+        level_from_keys,
         mid_price: plan.band.mid_price,
         volatility: plan.band.volatility,
         band_lower: plan.band.lower_price,
@@ -1079,6 +1201,8 @@ fn plan_to_levels_and_counts(levels: &[MmOpenPlanLevel]) -> (Vec<OpenPreviewLeve
                 aligned_qty: order.aligned_qty,
                 price_tick_count: order.price_tick_count,
                 qty_tick_count: order.qty_tick_count,
+                tlen: None,
+                from_key: String::new(),
             }
         })
         .collect::<Vec<_>>();
@@ -1419,6 +1543,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
             <h3 style="font-size:15px;">拆单报价结果</h3>
             <div class="muted" id="splitMeta">No send yet</div>
           </div>
+          <div class="muted" style="margin-top:8px;">MMOpen from_key</div>
+          <textarea id="openFromKeys" rows="5" readonly style="margin-top:6px;"></textarea>
           <div class="table-wrap" style="margin-top:8px;">
             <table>
               <thead>
@@ -1455,6 +1581,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
             <button id="refreshHedgeTlen">Refresh</button>
           </div>
           <div class="muted" id="hedgeTlenMeta">No MMHedge query yet</div>
+          <div class="muted" style="margin-top:8px;">MMHedge from_key</div>
+          <textarea id="hedgeFromKey" rows="4" readonly style="margin-top:6px;"></textarea>
           <div class="table-wrap" style="margin-top:8px; max-height:260px;">
             <table>
               <thead>
@@ -1495,9 +1623,11 @@ const INDEX_HTML: &str = r#"<!doctype html>
         statusPill: document.getElementById('statusPill'),
         actionHint: document.getElementById('actionHint'),
         splitMeta: document.getElementById('splitMeta'),
+        openFromKeys: document.getElementById('openFromKeys'),
         splitRows: document.getElementById('splitRows'),
         splitSummaryRows: document.getElementById('splitSummaryRows'),
         hedgeTlenMeta: document.getElementById('hedgeTlenMeta'),
+        hedgeFromKey: document.getElementById('hedgeFromKey'),
         hedgeTlenRows: document.getElementById('hedgeTlenRows'),
         log: document.getElementById('log'),
         refreshQuote: document.getElementById('refreshQuote'),
@@ -1577,9 +1707,16 @@ const INDEX_HTML: &str = r#"<!doctype html>
         if (!rows.length) {
           els.splitRows.innerHTML = '<tr><td colspan="11" class="muted" style="text-align:center;">No levels</td></tr>';
           els.splitSummaryRows.innerHTML = '';
+          els.openFromKeys.value = resp.from_key || '';
           els.splitMeta.textContent = `symbol=${resp.symbol || '-'} no levels`;
           return;
         }
+
+        const levelFromKeyText = (rows || []).map((row, idx) =>
+          `#${idx} side=${row.side} lvl=${row.side_level_index} tlen=${row.tlen == null ? 'NA' : fmtNum(row.tlen, 8)}\n${row.from_key || ''}`
+        ).join('\n\n');
+        els.openFromKeys.value =
+          `base_from_key:\n${resp.from_key || ''}\n\nlevel_from_keys:\n${levelFromKeyText}`;
 
         const buyNotional = rows.reduce((sum, row) => {
           if (row.side !== 'buy') return sum;
@@ -1641,6 +1778,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
       function renderHedgeTlen(snapshot) {
         if (!snapshot) {
           els.hedgeTlenMeta.textContent = 'No MMHedge query yet';
+          els.hedgeFromKey.value = '';
           els.hedgeTlenRows.innerHTML = '<tr><td colspan="7" class="muted" style="text-align:center;">No data</td></tr>';
           return;
         }
@@ -1649,6 +1787,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
         const errText = snapshot.query_err ? ` err=${snapshot.query_err}` : '';
         els.hedgeTlenMeta.textContent =
           `symbol=${snapshot.symbol} levels=${snapshot.levels} signal_ts=${snapshot.signal_ts} next_query_ts=${snapshot.next_query_ts} query_ok=${snapshot.query_ok}${errText}`;
+        els.hedgeFromKey.value = snapshot.from_key || '';
 
         if (!rows.length) {
           els.hedgeTlenRows.innerHTML = '<tr><td colspan="7" class="muted" style="text-align:center;">No levels</td></tr>';

@@ -72,7 +72,7 @@ pub(crate) fn format_batch_tlen_suffix(tick_tlens: &[(i64, f64)]) -> String {
         .join(",")
 }
 
-pub(crate) fn append_mm_open_tlens_to_from_key(
+pub fn append_mm_open_tlens_to_from_key(
     base_from_key: &str,
     level_tick_index: i64,
     level_tlen: f64,
@@ -85,7 +85,7 @@ pub(crate) fn append_mm_open_tlens_to_from_key(
     )
 }
 
-pub(crate) fn append_mm_hedge_tlens_to_from_key(
+pub fn append_mm_hedge_tlens_to_from_key(
     base_from_key: &str,
     batch_tick_tlens: &[(i64, f64)],
 ) -> String {
@@ -95,7 +95,7 @@ pub(crate) fn append_mm_hedge_tlens_to_from_key(
     )
 }
 
-pub(crate) fn append_tlen_query_error_to_from_key(base_from_key: &str, err: &str) -> String {
+pub fn append_tlen_query_error_to_from_key(base_from_key: &str, err: &str) -> String {
     let sanitized = err
         .chars()
         .map(|ch| {
