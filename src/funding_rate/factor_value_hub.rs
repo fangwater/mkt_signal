@@ -174,7 +174,7 @@ impl PnluRedis {
 
 pub struct FactorValueHub {
     hedge_venue: TradingVenue,
-    pnlu_key_prefix: String,
+    pnlu_profile: String,
     target_factor_index: u16,
     target_factor_key_prefix: String,
     factor_value_sub: Subscriber<ipc::Service, [u8; FACTOR_VALUE_PAYLOAD_MAX_BYTES], ()>,
@@ -212,15 +212,11 @@ impl FactorValueHub {
         } else {
             DEFAULT_PNLU_MAX_AGE_SECS
         };
-        let pnlu_key_prefix = format!(
-            "pnlu:{}:{}:",
-            open_venue.data_pub_slug(),
-            hedge_venue.data_pub_slug()
-        );
+        let pnlu_profile = Self::build_pnlu_profile(open_venue, hedge_venue);
 
         Ok(Self {
             hedge_venue,
-            pnlu_key_prefix,
+            pnlu_profile,
             target_factor_index,
             target_factor_key_prefix: target_factor_key_prefix.to_string(),
             factor_value_sub,
@@ -235,6 +231,18 @@ impl FactorValueHub {
             pnlu_key_suffix,
             pnlu_max_age_secs,
         })
+    }
+
+    fn build_pnlu_profile(open_venue: TradingVenue, hedge_venue: TradingVenue) -> String {
+        format!(
+            "{}-{}",
+            open_venue.data_pub_slug(),
+            hedge_venue.data_pub_slug()
+        )
+    }
+
+    fn build_pnlu_key(symbol_key: &str, key_suffix: &str, profile: &str) -> String {
+        format!("{symbol_key}{key_suffix}_{profile}")
     }
 
     fn create_factor_value_subscriber(
@@ -527,10 +535,7 @@ impl FactorValueHub {
     }
 
     pub fn check_pnlu_factor(&mut self, symbol_key: &str, now_us: i64) -> PnluCheckResult {
-        let key = format!(
-            "{}{}{}",
-            self.pnlu_key_prefix, symbol_key, self.pnlu_key_suffix
-        );
+        let key = Self::build_pnlu_key(symbol_key, &self.pnlu_key_suffix, &self.pnlu_profile);
         let raw = match self.pnlu_redis.get_string(&key) {
             Ok(Some(text)) => text,
             Ok(None) => return PnluCheckResult::fail("missing_key"),
@@ -744,6 +749,34 @@ impl FactorValueHub {
         info!(
             "FactorValueHub: pnlu key suffix updated suffix={}",
             self.pnlu_key_suffix
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FactorValueHub;
+    use crate::signal::common::TradingVenue;
+
+    #[test]
+    fn builds_profile_from_open_and_hedge_venues() {
+        let profile = FactorValueHub::build_pnlu_profile(
+            TradingVenue::OkexFutures,
+            TradingVenue::BinanceFutures,
+        );
+        assert_eq!(profile, "okex-futures-binance-futures");
+    }
+
+    #[test]
+    fn builds_pnlu_key_with_profile_suffix() {
+        let key = FactorValueHub::build_pnlu_key(
+            "ETHUSDT",
+            "_pnlu_factor_thresholds",
+            "binance-margin-binance-futures",
+        );
+        assert_eq!(
+            key,
+            "ETHUSDT_pnlu_factor_thresholds_binance-margin-binance-futures"
         );
     }
 }

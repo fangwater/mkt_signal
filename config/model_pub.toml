@@ -1,14 +1,6 @@
 model_manager_base_url = "http://127.0.0.1:6300"
 model_manager_request_timeout_ms = 120000
 
-# Optional auth settings for model_manager.
-# Keep empty when auth is disabled.
-model_manager_password = ""
-model_manager_bearer_token = ""
-model_onnx_path = "/api/models/{model_name}/model_onnx/{symbol}"
-model_onnx_feature_dim_header = "x-model-feature-dim"
-model_onnx_cache_dir = "/tmp/mkt_signal_model_pub_onnx"
-
 # {model_name} is substituted from CLI argument at runtime.
 input_service = "fusion_factor/{model_name}"
 output_service = "model_output/{model_name}"

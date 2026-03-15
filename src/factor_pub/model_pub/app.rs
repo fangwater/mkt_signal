@@ -5,7 +5,7 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
 use reqwest::{header::HeaderName, Client};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -26,6 +26,9 @@ const INPUT_MAX_BYTES: usize = FUSION_FACTOR_PAYLOAD_MAX_BYTES;
 const IDLE_SLEEP_MICROS: u64 = 200;
 const LOG_INTERVAL_SECS: u64 = 60;
 const MODEL_FETCH_CONCURRENCY: usize = 8;
+const MODEL_ONNX_PATH_TEMPLATE: &str = "/api/models/{model_name}/model_onnx/{symbol}";
+const MODEL_ONNX_FEATURE_DIM_HEADER: &str = "x-model-feature-dim";
+const MODEL_ONNX_CACHE_DIR: &str = "/tmp/mkt_signal_model_pub_onnx";
 
 #[derive(Default)]
 struct ModelPubStats {
@@ -84,16 +87,6 @@ struct ModelOnnxPayload {
 struct SymbolDetailResp {
     #[serde(default)]
     factors: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct LoginResp {
-    token: String,
-}
-
-#[derive(Debug, Serialize)]
-struct LoginReq<'a> {
-    password: &'a str,
 }
 
 pub struct ModelPubApp {
@@ -212,8 +205,7 @@ impl ModelPubApp {
             base_url, model_name
         );
 
-        let token = authenticate_model_manager(&client, config, base_url).await?;
-        let symbols = fetch_model_symbols(&client, base_url, model_name, token.as_deref()).await?;
+        let symbols = fetch_model_symbols(&client, base_url, model_name).await?;
         if symbols.is_empty() {
             anyhow::bail!(
                 "model_manager returned empty symbols for model={}",
@@ -235,24 +227,12 @@ impl ModelPubApp {
             model_name, fetch_parallel, total
         );
 
-        let token_owned = token.clone();
-        let config_owned = config.clone();
         let task_stream = stream::iter(symbols.into_iter().map(|symbol| {
             let client = client.clone();
             let base_url = base_url.to_string();
             let model_name = model_name.to_string();
-            let token = token_owned.clone();
-            let config = config_owned.clone();
             async move {
-                load_single_symbol_model(
-                    &client,
-                    &base_url,
-                    &config,
-                    &model_name,
-                    &symbol,
-                    token.as_deref(),
-                )
-                .await
+                load_single_symbol_model(&client, &base_url, &model_name, &symbol).await
             }
         }))
         .buffer_unordered(fetch_parallel);
@@ -628,7 +608,6 @@ async fn fetch_model_symbols(
     client: &Client,
     base_url: &str,
     model_name: &str,
-    token: Option<&str>,
 ) -> Result<Vec<String>> {
     let url = format!(
         "{}/api/models/{}/symbols",
@@ -636,12 +615,8 @@ async fn fetch_model_symbols(
         urlencoding::encode(model_name)
     );
 
-    let mut req = client.get(&url);
-    if let Some(token) = token {
-        req = req.bearer_auth(token);
-    }
-
-    let resp = req
+    let resp = client
+        .get(&url)
         .send()
         .await
         .with_context(|| format!("GET {} failed", url))?
@@ -671,35 +646,27 @@ async fn fetch_model_symbols(
 async fn fetch_symbol_model_onnx(
     client: &Client,
     base_url: &str,
-    config: &ModelPubConfig,
     model_name: &str,
     symbol: &str,
-    token: Option<&str>,
 ) -> Result<ModelOnnxPayload> {
-    let relative_path = config
-        .render_model_onnx_path(model_name, symbol)
-        .with_context(|| {
-            format!(
-                "render model ONNX artifact path failed: model_name={} symbol={}",
-                model_name, symbol
-            )
-        })?;
+    let relative_path = render_model_onnx_path(model_name, symbol).with_context(|| {
+        format!(
+            "render model ONNX artifact path failed: model_name={} symbol={}",
+            model_name, symbol
+        )
+    })?;
 
     let url = build_model_url(base_url, &relative_path);
 
-    let mut req = client.get(&url);
-    if let Some(token) = token {
-        req = req.bearer_auth(token);
-    }
-
-    let resp = req
+    let resp = client
+        .get(&url)
         .send()
         .await
         .with_context(|| format!("GET {} failed", url))?
         .error_for_status()
         .with_context(|| format!("GET {} returned error status", url))?;
 
-    let feature_dim_header = parse_feature_dim_header_name(config)?;
+    let feature_dim_header = parse_feature_dim_header_name()?;
     let feature_dim = parse_feature_dim_value(resp.headers(), &feature_dim_header, &url)?;
     if feature_dim == 0 {
         anyhow::bail!(
@@ -722,48 +689,6 @@ async fn fetch_symbol_model_onnx(
         model_onnx,
         feature_dim,
     })
-}
-
-async fn authenticate_model_manager(
-    client: &Client,
-    config: &ModelPubConfig,
-    base_url: &str,
-) -> Result<Option<String>> {
-    if let Some(token) = config
-        .model_manager_bearer_token
-        .as_ref()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-    {
-        return Ok(Some(token));
-    }
-
-    let Some(password) = config
-        .model_manager_password
-        .as_ref()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-    else {
-        return Ok(None);
-    };
-
-    let login_url = format!("{}/api/auth/login", base_url);
-    let resp = client
-        .post(&login_url)
-        .json(&LoginReq {
-            password: password.as_str(),
-        })
-        .send()
-        .await
-        .with_context(|| format!("POST {} failed", login_url))?
-        .error_for_status()
-        .with_context(|| format!("POST {} returned error status", login_url))?;
-
-    let payload: LoginResp = resp
-        .json()
-        .await
-        .with_context(|| format!("decode login response failed: {}", login_url))?;
-    Ok(Some(payload.token))
 }
 
 fn normalize_model_name(raw: &str) -> Result<String> {
@@ -793,12 +718,10 @@ fn sanitize_node_suffix(raw: &str) -> String {
 async fn load_single_symbol_model(
     client: &Client,
     base_url: &str,
-    config: &ModelPubConfig,
     model_name: &str,
     symbol: &str,
-    token: Option<&str>,
 ) -> Result<SymbolModelLoaded> {
-    let payload = fetch_symbol_model_onnx(client, base_url, config, model_name, symbol, token)
+    let payload = fetch_symbol_model_onnx(client, base_url, model_name, symbol)
         .await
         .with_context(|| {
             format!(
@@ -817,18 +740,13 @@ async fn load_single_symbol_model(
     }
 
     let model_onnx_bytes = payload.model_onnx.len();
-    let model_path = persist_model_onnx_to_cache(
-        &config.model_onnx_cache_dir,
-        model_name,
-        symbol,
-        &payload.model_onnx,
-    )
-    .with_context(|| {
-        format!(
-            "persist model ONNX artifact to cache failed: model_name={} symbol={}",
-            model_name, symbol
-        )
-    })?;
+    let model_path = persist_model_onnx_to_cache(model_name, symbol, &payload.model_onnx)
+        .with_context(|| {
+            format!(
+                "persist model ONNX artifact to cache failed: model_name={} symbol={}",
+                model_name, symbol
+            )
+        })?;
 
     let model = OnnxModel::load_from_path(&model_path, Some(feature_dim)).with_context(|| {
         format!(
@@ -840,7 +758,7 @@ async fn load_single_symbol_model(
         )
     })?;
 
-    let factor_indices = fetch_symbol_factor_indices(client, base_url, model_name, symbol, token)
+    let factor_indices = fetch_symbol_factor_indices(base_url, model_name, symbol)
         .await
         .with_context(|| {
             format!(
@@ -880,11 +798,9 @@ fn factor_name_to_index(name: &str) -> Option<u16> {
 }
 
 async fn fetch_symbol_factor_indices(
-    _client: &Client,
     base_url: &str,
     model_name: &str,
     symbol: &str,
-    token: Option<&str>,
 ) -> Result<Vec<u16>> {
     // Use a dedicated short-timeout client — symbol detail is a fast JSON lookup.
     let client = Client::builder()
@@ -899,12 +815,8 @@ async fn fetch_symbol_factor_indices(
         urlencoding::encode(symbol)
     );
 
-    let mut req = client.get(&url);
-    if let Some(t) = token {
-        req = req.bearer_auth(t);
-    }
-
-    let resp = req
+    let resp = client
+        .get(&url)
         .send()
         .await
         .with_context(|| format!("GET {} failed", url))?
@@ -945,15 +857,32 @@ fn build_model_url(base_url: &str, path_or_url: &str) -> String {
     )
 }
 
-fn parse_feature_dim_header_name(config: &ModelPubConfig) -> Result<HeaderName> {
-    HeaderName::from_bytes(config.model_onnx_feature_dim_header.trim().as_bytes()).with_context(
-        || {
-            format!(
-                "invalid feature dim header name: {}",
-                config.model_onnx_feature_dim_header
-            )
-        },
-    )
+fn render_model_onnx_path(model_name: &str, symbol: &str) -> Result<String> {
+    let trimmed_model = model_name.trim();
+    if trimmed_model.is_empty() {
+        anyhow::bail!("model_name must not be empty");
+    }
+    let trimmed_symbol = symbol.trim();
+    if trimmed_symbol.is_empty() {
+        anyhow::bail!("symbol must not be empty");
+    }
+
+    let rendered = MODEL_ONNX_PATH_TEMPLATE
+        .replace("{model_name}", &urlencoding::encode(trimmed_model))
+        .replace("{symbol}", &urlencoding::encode(trimmed_symbol));
+    if rendered.trim().is_empty() {
+        anyhow::bail!("model ONNX path renders to empty value");
+    }
+    Ok(rendered)
+}
+
+fn parse_feature_dim_header_name() -> Result<HeaderName> {
+    HeaderName::from_bytes(MODEL_ONNX_FEATURE_DIM_HEADER.as_bytes()).with_context(|| {
+        format!(
+            "invalid feature dim header name: {}",
+            MODEL_ONNX_FEATURE_DIM_HEADER
+        )
+    })
 }
 
 fn parse_feature_dim_value(
@@ -989,7 +918,6 @@ fn parse_feature_dim_value(
 }
 
 fn persist_model_onnx_to_cache(
-    cache_root: &str,
     model_name: &str,
     symbol: &str,
     model_onnx: &[u8],
@@ -998,7 +926,7 @@ fn persist_model_onnx_to_cache(
         anyhow::bail!("model_onnx must not be empty");
     }
 
-    let root = Path::new(cache_root.trim());
+    let root = Path::new(MODEL_ONNX_CACHE_DIR);
     if root.as_os_str().is_empty() {
         anyhow::bail!("model_onnx_cache_dir must not be empty");
     }

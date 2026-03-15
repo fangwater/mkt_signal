@@ -9,16 +9,6 @@ pub struct ModelPubConfig {
     pub model_manager_base_url: String,
     #[serde(default = "default_model_manager_request_timeout_ms")]
     pub model_manager_request_timeout_ms: u64,
-    #[serde(default)]
-    pub model_manager_password: Option<String>,
-    #[serde(default)]
-    pub model_manager_bearer_token: Option<String>,
-    #[serde(default = "default_model_onnx_path")]
-    pub model_onnx_path: String,
-    #[serde(default = "default_feature_dim_header")]
-    pub model_onnx_feature_dim_header: String,
-    #[serde(default = "default_model_onnx_cache_dir")]
-    pub model_onnx_cache_dir: String,
     #[serde(default = "default_input_service")]
     pub input_service: String,
     #[serde(default = "default_output_service")]
@@ -53,21 +43,6 @@ impl ModelPubConfig {
         if self.output_service.trim().is_empty() {
             anyhow::bail!("output_service must not be empty");
         }
-        if self.model_onnx_path.trim().is_empty() {
-            anyhow::bail!("model_onnx_path must not be empty");
-        }
-        if !self.model_onnx_path.contains("{model_name}") {
-            anyhow::bail!("model_onnx_path must contain {{model_name}}");
-        }
-        if !self.model_onnx_path.contains("{symbol}") {
-            anyhow::bail!("model_onnx_path must contain {{symbol}}");
-        }
-        if self.model_onnx_feature_dim_header.trim().is_empty() {
-            anyhow::bail!("model_onnx_feature_dim_header must not be empty");
-        }
-        if self.model_onnx_cache_dir.trim().is_empty() {
-            anyhow::bail!("model_onnx_cache_dir must not be empty");
-        }
         if !self.input_service.contains("{model_name}") {
             anyhow::bail!("input_service must contain {{model_name}}");
         }
@@ -91,26 +66,6 @@ impl ModelPubConfig {
     pub fn render_output_service(&self, model_name: &str) -> Result<String> {
         render_service(&self.output_service, model_name)
     }
-
-    pub fn render_model_onnx_path(&self, model_name: &str, symbol: &str) -> Result<String> {
-        let trimmed_model = model_name.trim();
-        if trimmed_model.is_empty() {
-            anyhow::bail!("model_name must not be empty");
-        }
-        let trimmed_symbol = symbol.trim();
-        if trimmed_symbol.is_empty() {
-            anyhow::bail!("symbol must not be empty");
-        }
-
-        let rendered = self
-            .model_onnx_path
-            .replace("{model_name}", &urlencoding::encode(trimmed_model))
-            .replace("{symbol}", &urlencoding::encode(trimmed_symbol));
-        if rendered.trim().is_empty() {
-            anyhow::bail!("model_onnx_path renders to empty value");
-        }
-        Ok(rendered)
-    }
 }
 
 fn render_service(template: &str, model_name: &str) -> Result<String> {
@@ -127,18 +82,6 @@ fn render_service(template: &str, model_name: &str) -> Result<String> {
 
 fn default_model_manager_request_timeout_ms() -> u64 {
     120_000
-}
-
-fn default_model_onnx_path() -> String {
-    "/api/models/{model_name}/model_onnx/{symbol}".to_string()
-}
-
-fn default_feature_dim_header() -> String {
-    "x-model-feature-dim".to_string()
-}
-
-fn default_model_onnx_cache_dir() -> String {
-    "/tmp/mkt_signal_model_pub_onnx".to_string()
 }
 
 fn default_input_service() -> String {

@@ -341,23 +341,15 @@ impl XarbDecision {
             pnlu_key_suffix.clone(),
             PNLU_MAX_AGE_SECS,
         )?;
-        let pnlu_key_prefix = format!(
-            "pnlu:{}:{}:",
-            venues.0.data_pub_slug(),
-            venues.1.data_pub_slug()
-        );
+        let pnlu_profile = format!("{}-{}", venues.0.data_pub_slug(), venues.1.data_pub_slug());
 
         let price_offsets = vec![0.0002, 0.0004, 0.0006, 0.0008, 0.001];
         let open_min_qty_table = VenueMinQtyTable::new(venues.0);
         let hedge_min_qty_table = VenueMinQtyTable::new(venues.1);
 
         info!(
-            "XarbDecision: pnlu redis configured host={} port={} db={} key_prefix={} suffix={}",
-            pnlu_settings.host,
-            pnlu_settings.port,
-            pnlu_settings.db,
-            pnlu_key_prefix,
-            pnlu_key_suffix
+            "XarbDecision: pnlu redis configured host={} port={} db={} key_pattern=<symbol>{}_{}",
+            pnlu_settings.host, pnlu_settings.port, pnlu_settings.db, pnlu_key_suffix, pnlu_profile
         );
 
         Ok(Self {
