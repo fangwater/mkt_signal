@@ -21,6 +21,49 @@ pub enum BasicAccountEventType {
     Error = 4999,
 }
 
+/// Basic 账户事件来源范围。
+///
+/// 说明：
+/// - 只有 Binance 需要区分 standard spot / standard um / unified
+/// - 其他交易所当前统一使用 unified 口径，便于 pre_trade 路由与理解
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BasicAccountScope {
+    Unknown = 0,
+    BinanceUnified = 1,
+    BinanceStdSpot = 2,
+    BinanceStdUm = 3,
+    OkexUnified = 10,
+    GateUnified = 11,
+    BitgetUnified = 12,
+}
+
+impl BasicAccountScope {
+    pub fn from_u32(value: u32) -> Self {
+        match value {
+            1 => Self::BinanceUnified,
+            2 => Self::BinanceStdSpot,
+            3 => Self::BinanceStdUm,
+            10 => Self::OkexUnified,
+            11 => Self::GateUnified,
+            12 => Self::BitgetUnified,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::BinanceUnified => "binance_unified",
+            Self::BinanceStdSpot => "binance_std_spot",
+            Self::BinanceStdUm => "binance_std_um",
+            Self::OkexUnified => "okex_unified",
+            Self::GateUnified => "gate_unified",
+            Self::BitgetUnified => "bitget_unified",
+        }
+    }
+}
+
 /// Basic 订单更新消息（仍用于 OKX WS 订单日志）
 ///
 /// 数量字段口径：
@@ -1138,26 +1181,63 @@ impl BasicBorrowInterestMsg {
 /// Basic 账户事件消息包装
 pub struct BasicAccountEventMsg {
     pub msg_type: BasicAccountEventType,
+    pub account_scope: BasicAccountScope,
     pub msg_length: u32,
     pub data: Bytes,
 }
 
 impl BasicAccountEventMsg {
-    pub fn create(msg_type: BasicAccountEventType, data: Bytes) -> Self {
+    pub fn create(
+        msg_type: BasicAccountEventType,
+        account_scope: BasicAccountScope,
+        data: Bytes,
+    ) -> Self {
         Self {
             msg_type,
+            account_scope,
             msg_length: data.len() as u32,
             data,
         }
     }
 
     pub fn to_bytes(&self) -> Bytes {
-        let mut buf = BytesMut::with_capacity(8 + self.data.len());
+        let mut buf = BytesMut::with_capacity(BASIC_ACCOUNT_EVENT_HEADER_LEN + self.data.len());
         buf.put_u32_le(self.msg_type as u32);
+        buf.put_u32_le(self.account_scope as u32);
         buf.put_u32_le(self.msg_length);
         buf.put(self.data.clone());
         buf.freeze()
     }
+}
+
+pub const BASIC_ACCOUNT_EVENT_HEADER_LEN: usize = 12;
+
+/// 解析 basic account event 头与 payload。
+#[inline]
+pub fn split_basic_account_event(
+    data: &[u8],
+) -> Option<(BasicAccountEventType, BasicAccountScope, &[u8])> {
+    if data.len() < BASIC_ACCOUNT_EVENT_HEADER_LEN {
+        return None;
+    }
+
+    let event_type = get_basic_event_type(data);
+    if matches!(event_type, BasicAccountEventType::Error) {
+        return None;
+    }
+
+    let account_scope = get_basic_account_scope(data);
+    let payload_len = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
+    let total_len = BASIC_ACCOUNT_EVENT_HEADER_LEN + payload_len;
+    if data.len() < total_len {
+        return None;
+    }
+
+    Some((
+        event_type,
+        account_scope,
+        &data[BASIC_ACCOUNT_EVENT_HEADER_LEN..total_len],
+    ))
 }
 
 /// 获取基础事件类型
@@ -1174,5 +1254,37 @@ pub fn get_basic_event_type(data: &[u8]) -> BasicAccountEventType {
         4004 => BasicAccountEventType::BorrowInterest,
         4005 => BasicAccountEventType::UnrealizedPnlUpdate,
         _ => BasicAccountEventType::Error,
+    }
+}
+
+/// 获取账户来源范围
+#[inline]
+pub fn get_basic_account_scope(data: &[u8]) -> BasicAccountScope {
+    if data.len() < 8 {
+        return BasicAccountScope::Unknown;
+    }
+    let scope_u32 = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+    BasicAccountScope::from_u32(scope_u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn basic_account_event_prefix_fields_round_trip() {
+        let payload = BasicBalanceMsg::create(123, "USDT".to_string(), 456.0).to_bytes();
+        let event = BasicAccountEventMsg::create(
+            BasicAccountEventType::BalanceUpdate,
+            BasicAccountScope::BinanceStdSpot,
+            payload.clone(),
+        )
+        .to_bytes();
+
+        let (event_type, scope, body) =
+            split_basic_account_event(&event).expect("should parse wrapped basic account event");
+        assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
+        assert_eq!(scope, BasicAccountScope::BinanceStdSpot);
+        assert_eq!(body, payload.as_ref());
     }
 }

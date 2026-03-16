@@ -135,14 +135,8 @@ fn print_usdt_summary(open_venue: TradingVenue, hedge_venue: TradingVenue, mon: 
         return;
     };
 
-    let open_snap = mon
-        .usdt_mgr(open_ex)
-        .map(|m| m.borrow().snapshot())
-        .unwrap_or_default();
-    let hedge_snap = mon
-        .usdt_mgr(hedge_ex)
-        .map(|m| m.borrow().snapshot())
-        .unwrap_or_default();
+    let open_snap = mon.usdt_snapshot_for_venue(open_venue).unwrap_or_default();
+    let hedge_snap = mon.usdt_snapshot_for_venue(hedge_venue).unwrap_or_default();
 
     let fmt_u = |v: f64| format!("{:.2}", v);
     let open_net = usdt_net_position(open_ex, &open_snap);
@@ -477,8 +471,8 @@ impl ResampleChannel {
                 }
             }
             // USDT 借贷/利息单独维护：USDT 本身按 1:1 计价
-            for (ex, s) in mon.usdt_snapshot_all() {
-                let _ = ex; // 仅用于日志与排查，此处汇总不区分交易所
+            for (scope, s) in mon.usdt_snapshot_all() {
+                let _ = scope; // 仅用于日志与排查，此处汇总不区分账户 scope
                 borrowed_usd += s.borrowed;
                 interest_usd += s.cumulative_interest;
             }

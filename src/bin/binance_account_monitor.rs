@@ -2,8 +2,8 @@ use anyhow::Result;
 use bytes::Bytes;
 use log::{debug, error, info, warn};
 use mkt_signal::common::basic_account_msg::{
-    get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
-    BasicPositionMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg,
+    split_basic_account_event, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
+    BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg,
 };
 use mkt_signal::common::binance_account_mode::{init_binance_account_mode, BinanceAccountMode};
 use mkt_signal::common::mkt_cfg::{home_mkt_cfg_path, load_local_ips_from_path};
@@ -106,6 +106,7 @@ async fn main() -> Result<()> {
                 rest_base: BINANCE_STD_FAPI_REST.to_string(),
                 listen_key_path: "/fapi/v1/listenKey".to_string(),
                 parse_balances_from_account_update: true,
+                account_scope: BasicAccountScope::BinanceStdUm,
                 stream_kind: UserStreamKind::ListenKeyUrl,
                 listen_key_rx: None,
             },
@@ -115,6 +116,7 @@ async fn main() -> Result<()> {
                 rest_base: BINANCE_STD_SPOT_REST.to_string(),
                 listen_key_path: "/api/v3/userDataStream".to_string(),
                 parse_balances_from_account_update: false,
+                account_scope: BasicAccountScope::BinanceStdSpot,
                 stream_kind: UserStreamKind::SpotWsApiSignature {
                     api_key: api_key.clone(),
                     api_secret: api_secret.clone(),
@@ -129,6 +131,7 @@ async fn main() -> Result<()> {
             rest_base: BINANCE_PM_REST.to_string(),
             listen_key_path: "/papi/v1/listenKey".to_string(),
             parse_balances_from_account_update: false,
+            account_scope: BasicAccountScope::BinanceUnified,
             stream_kind: UserStreamKind::ListenKeyUrl,
             listen_key_rx: None,
         }]
@@ -198,6 +201,7 @@ async fn main() -> Result<()> {
             evt_tx.clone(),
             session_max,
             cfg.parse_balances_from_account_update,
+            cfg.account_scope,
             cfg.stream_kind.clone(),
         );
 
@@ -211,6 +215,7 @@ async fn main() -> Result<()> {
             evt_tx.clone(),
             session_max,
             cfg.parse_balances_from_account_update,
+            cfg.account_scope,
             cfg.stream_kind,
         );
     }
@@ -266,6 +271,7 @@ struct UserStreamConfig {
     rest_base: String,
     listen_key_path: String,
     parse_balances_from_account_update: bool,
+    account_scope: BasicAccountScope,
     stream_kind: UserStreamKind,
     listen_key_rx: Option<watch::Receiver<String>>,
 }
@@ -279,6 +285,7 @@ fn spawn_user_stream_path(
     evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
     session_max: Option<Duration>,
     parse_balances_from_account_update: bool,
+    account_scope: BasicAccountScope,
     stream_kind: UserStreamKind,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -339,7 +346,10 @@ fn spawn_user_stream_path(
             let evt_tx_clone = evt_tx.clone();
             let local_ip_log = local_ip.clone();
             let consumer_name = name.clone();
-            let parser = BinanceBasicAccountEventParser::new(parse_balances_from_account_update);
+            let parser = BinanceBasicAccountEventParser::new(
+                parse_balances_from_account_update,
+                account_scope,
+            );
             tokio::spawn(async move {
                 loop {
                     tokio::select! {
@@ -402,15 +412,9 @@ fn spawn_user_stream_path(
 
 /// 打印解析后的账户事件（basic）
 fn log_parsed_event(msg: &Bytes) {
-    if msg.len() < 8 {
+    let Some((event_type, account_scope, payload)) = split_basic_account_event(msg.as_ref()) else {
         return;
-    }
-    let event_type = get_basic_event_type(msg.as_ref());
-    let payload_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
-    if msg.len() < 8 + payload_len {
-        return;
-    }
-    let payload = msg.slice(8..8 + payload_len);
+    };
 
     match event_type {
         BasicAccountEventType::OrderUpdate => {
@@ -421,7 +425,8 @@ fn log_parsed_event(msg: &Bytes) {
                     _ => "unknown",
                 };
                 info!(
-                    "Binance OrderUpdate: venue={} sym={} side={:?} x={} X={} cli_id={} ord_id={} price={} qty={} last_qty={} filled={}",
+                    "Binance OrderUpdate: scope={} venue={} sym={} side={:?} x={} X={} cli_id={} ord_id={} price={} qty={} last_qty={} filled={}",
+                    account_scope.as_str(),
                     venue,
                     m.symbol,
                     Side::from_u8(m.side).unwrap_or(Side::Buy),
@@ -443,32 +448,47 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::BalanceUpdate => {
             if let Ok(m) = BasicBalanceMsg::from_bytes(&payload) {
                 info!(
-                    "Binance BalanceUpdate: ts={} symbol={} balance={}",
-                    m.timestamp, m.symbol, m.balance
+                    "Binance BalanceUpdate: scope={} ts={} symbol={} balance={}",
+                    account_scope.as_str(),
+                    m.timestamp,
+                    m.symbol,
+                    m.balance
                 );
             }
         }
         BasicAccountEventType::PositionUpdate => {
             if let Ok(m) = BasicPositionMsg::from_bytes(&payload) {
                 info!(
-                    "Binance PositionUpdate: ts={} inst={} side={} amt={}",
-                    m.timestamp, m.inst_id, m.position_side, m.position_amount
+                    "Binance PositionUpdate: scope={} ts={} inst={} side={} amt={}",
+                    account_scope.as_str(),
+                    m.timestamp,
+                    m.inst_id,
+                    m.position_side,
+                    m.position_amount
                 );
             }
         }
         BasicAccountEventType::BorrowInterest => {
             if let Ok(m) = BasicBorrowInterestMsg::from_bytes(&payload) {
                 info!(
-                    "Binance BorrowInterest: ts={} symbol={} borrowed={} interest={}",
-                    m.timestamp, m.symbol, m.borrowed, m.interest
+                    "Binance BorrowInterest: scope={} ts={} symbol={} borrowed={} interest={}",
+                    account_scope.as_str(),
+                    m.timestamp,
+                    m.symbol,
+                    m.borrowed,
+                    m.interest
                 );
             }
         }
         BasicAccountEventType::UnrealizedPnlUpdate => {
             if let Ok(m) = BasicUmUnrealizedMsg::from_bytes(&payload) {
                 info!(
-                    "Binance UnrealizedPnl: ts={} inst={} side={} pnl={}",
-                    m.timestamp, m.inst_id, m.position_side, m.unrealized_pnl
+                    "Binance UnrealizedPnl: scope={} ts={} inst={} side={} pnl={}",
+                    account_scope.as_str(),
+                    m.timestamp,
+                    m.inst_id,
+                    m.position_side,
+                    m.unrealized_pnl
                 );
             }
         }
@@ -494,17 +514,10 @@ impl AccountEventDeduper {
 
     /// 检查是否应该转发此消息（返回 true 表示应该转发，false 表示重复消息）
     fn should_forward(&mut self, msg: &Bytes) -> bool {
-        if msg.len() < 8 {
+        let Some((event_type, account_scope, payload)) = split_basic_account_event(msg.as_ref())
+        else {
             return true;
-        }
-
-        let event_type = get_basic_event_type(msg.as_ref());
-        let payload_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
-        if msg.len() < 8 + payload_len {
-            return true;
-        }
-
-        let payload = msg.slice(8..8 + payload_len);
+        };
 
         let key_opt = match event_type {
             BasicAccountEventType::BalanceUpdate => BasicBalanceMsg::from_bytes(&payload)
@@ -530,6 +543,8 @@ impl AccountEventDeduper {
         let Some(key) = key_opt else {
             return true;
         };
+
+        let key = self.hash64(&[account_scope as u32 as u64, key]);
 
         if self.seen.contains(&key) {
             return false;

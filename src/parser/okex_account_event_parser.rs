@@ -1,7 +1,8 @@
 //! OKX 账户事件解析器（余额 / 持仓 / 订单）
 
 use crate::common::basic_account_msg::{
-    BasicAccountEventMsg, BasicAccountEventType, BasicBalanceMsg, BasicPositionMsg, OkexOrderMsg,
+    BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
+    BasicPositionMsg, OkexOrderMsg,
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
@@ -50,7 +51,11 @@ impl OkexAccountEventParser {
 
                 let msg = BasicBalanceMsg::create(timestamp, symbol, balance);
                 let payload = msg.to_bytes();
-                let event = BasicAccountEventMsg::create(msg.msg_type, payload);
+                let event = BasicAccountEventMsg::create(
+                    msg.msg_type,
+                    BasicAccountScope::OkexUnified,
+                    payload,
+                );
                 if tx.send(event.to_bytes()).is_ok() {
                     count += 1;
                 }
@@ -94,7 +99,11 @@ impl OkexAccountEventParser {
                 let msg =
                     BasicPositionMsg::create(timestamp, inst_id, position_side, position_amount);
                 let payload = msg.to_bytes();
-                let event = BasicAccountEventMsg::create(msg.msg_type(), payload);
+                let event = BasicAccountEventMsg::create(
+                    msg.msg_type(),
+                    BasicAccountScope::OkexUnified,
+                    payload,
+                );
                 if tx.send(event.to_bytes()).is_ok() {
                     count += 1;
                 }
@@ -192,7 +201,8 @@ impl OkexAccountEventParser {
             };
 
             let payload = msg.to_bytes();
-            let event = BasicAccountEventMsg::create(msg.msg_type, payload);
+            let event =
+                BasicAccountEventMsg::create(msg.msg_type, BasicAccountScope::OkexUnified, payload);
             if tx.send(event.to_bytes()).is_ok() {
                 count += 1;
             }

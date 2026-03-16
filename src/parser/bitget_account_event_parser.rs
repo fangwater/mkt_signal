@@ -1,8 +1,8 @@
 //! Bitget UTA 账户事件解析器（余额 / 持仓 / 订单）
 
 use crate::common::basic_account_msg::{
-    BasicAccountEventMsg, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
-    BasicPositionMsg, BasicUmUnrealizedMsg,
+    BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
+    BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
 };
 use crate::common::bitget_account_msg::BitgetBasicOrderMsg;
 use crate::parser::default_parser::Parser;
@@ -75,7 +75,11 @@ impl BitgetAccountEventParser {
             .unwrap_or(0.0);
         let balance_msg = BasicBalanceMsg::create(timestamp, coin.clone(), balance);
         let payload = balance_msg.to_bytes();
-        let event = BasicAccountEventMsg::create(BasicAccountEventType::BalanceUpdate, payload);
+        let event = BasicAccountEventMsg::create(
+            BasicAccountEventType::BalanceUpdate,
+            BasicAccountScope::BitgetUnified,
+            payload,
+        );
         if tx.send(event.to_bytes()).is_ok() {
             sent += 1;
         }
@@ -89,8 +93,11 @@ impl BitgetAccountEventParser {
         if borrowed > 0.0 || interest > 0.0 {
             let interest_msg = BasicBorrowInterestMsg::create(timestamp, coin, borrowed, interest);
             let payload = interest_msg.to_bytes();
-            let event =
-                BasicAccountEventMsg::create(BasicAccountEventType::BorrowInterest, payload);
+            let event = BasicAccountEventMsg::create(
+                BasicAccountEventType::BorrowInterest,
+                BasicAccountScope::BitgetUnified,
+                payload,
+            );
             if tx.send(event.to_bytes()).is_ok() {
                 sent += 1;
             }
@@ -147,8 +154,11 @@ impl BitgetAccountEventParser {
                 position_amount,
             );
             let pos_payload = position_msg.to_bytes();
-            let pos_event =
-                BasicAccountEventMsg::create(BasicAccountEventType::PositionUpdate, pos_payload);
+            let pos_event = BasicAccountEventMsg::create(
+                BasicAccountEventType::PositionUpdate,
+                BasicAccountScope::BitgetUnified,
+                pos_payload,
+            );
             if tx.send(pos_event.to_bytes()).is_ok() {
                 count += 1;
             }
@@ -161,6 +171,7 @@ impl BitgetAccountEventParser {
                 let pnl_payload = pnl_msg.to_bytes();
                 let pnl_event = BasicAccountEventMsg::create(
                     BasicAccountEventType::UnrealizedPnlUpdate,
+                    BasicAccountScope::BitgetUnified,
                     pnl_payload,
                 );
                 if tx.send(pnl_event.to_bytes()).is_ok() {
@@ -300,7 +311,11 @@ impl BitgetAccountEventParser {
             );
 
             let payload = msg.to_bytes();
-            let event = BasicAccountEventMsg::create(BasicAccountEventType::OrderUpdate, payload);
+            let event = BasicAccountEventMsg::create(
+                BasicAccountEventType::OrderUpdate,
+                BasicAccountScope::BitgetUnified,
+                payload,
+            );
             if tx.send(event.to_bytes()).is_ok() {
                 count += 1;
             }

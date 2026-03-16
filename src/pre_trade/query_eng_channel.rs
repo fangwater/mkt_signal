@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::common::basic_account_msg::{
-    get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
-    BasicPositionMsg, BasicUmUnrealizedMsg,
+    get_basic_event_type, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
+    BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
 };
 use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
@@ -213,6 +213,8 @@ impl QueryEngChannel {
                     let payload = sample.payload();
                     match QueryEngineResponseMessage::from_payload(payload) {
                         Ok(resp) => {
+                            let req_type = QueryRequestType::try_from(resp.req_type()).ok();
+
                             // Snapshot queries return basic account messages (no huge JSON body).
                             if matches!(
                                 resp.req_type(),
@@ -231,12 +233,75 @@ impl QueryEngChannel {
                                 let hedge_exchange =
                                     Exchange::from_str(hedge_venue.trade_engine_exchange())
                                         .unwrap_or(exchange_enum);
+                                let binance_is_standard =
+                                    mc.order_manager().borrow().binance_is_standard();
+                                let account_scope = match req_type {
+                                    Some(QueryRequestType::BinanceWsMarginQuery) => {
+                                        BasicAccountScope::BinanceStdSpot
+                                    }
+                                    Some(QueryRequestType::BinanceWsUMQuery) => {
+                                        BasicAccountScope::BinanceStdUm
+                                    }
+                                    Some(QueryRequestType::BinanceMarginQuery)
+                                    | Some(QueryRequestType::BinanceUMQuery) => {
+                                        BasicAccountScope::BinanceUnified
+                                    }
+                                    Some(QueryRequestType::OkexMarginQuery)
+                                    | Some(QueryRequestType::OkexUMQuery) => {
+                                        BasicAccountScope::OkexUnified
+                                    }
+                                    Some(QueryRequestType::GateUnifiedOrderQuery)
+                                    | Some(QueryRequestType::GateFuturesOrderQuery) => {
+                                        BasicAccountScope::GateUnified
+                                    }
+                                    _ => match exchange_enum {
+                                        Exchange::Binance => {
+                                            if binance_is_standard {
+                                                BasicAccountScope::Unknown
+                                            } else {
+                                                BasicAccountScope::BinanceUnified
+                                            }
+                                        }
+                                        Exchange::Okex => BasicAccountScope::OkexUnified,
+                                        Exchange::Gate => BasicAccountScope::GateUnified,
+                                        Exchange::Bitget => BasicAccountScope::BitgetUnified,
+                                        _ => BasicAccountScope::Unknown,
+                                    },
+                                };
+                                let scope_matches_venue =
+                                    |scope: BasicAccountScope, venue: TradingVenue| match venue {
+                                        TradingVenue::BinanceMargin => {
+                                            if binance_is_standard {
+                                                scope == BasicAccountScope::BinanceStdSpot
+                                            } else {
+                                                scope == BasicAccountScope::BinanceUnified
+                                            }
+                                        }
+                                        TradingVenue::BinanceFutures => {
+                                            if binance_is_standard {
+                                                scope == BasicAccountScope::BinanceStdUm
+                                            } else {
+                                                scope == BasicAccountScope::BinanceUnified
+                                            }
+                                        }
+                                        TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
+                                            scope == BasicAccountScope::OkexUnified
+                                        }
+                                        TradingVenue::GateMargin | TradingVenue::GateFutures => {
+                                            scope == BasicAccountScope::GateUnified
+                                        }
+                                        TradingVenue::BitgetMargin
+                                        | TradingVenue::BitgetFutures => {
+                                            scope == BasicAccountScope::BitgetUnified
+                                        }
+                                        _ => false,
+                                    };
 
                                 match event_type {
                                     BasicAccountEventType::BalanceUpdate => {
                                         if let Ok(m) = BasicBalanceMsg::from_bytes(body) {
                                             if m.symbol.eq_ignore_ascii_case("USDT") {
-                                                if let Some(usdt) = mc.usdt_mgr(exchange_enum) {
+                                                if let Some(usdt) = mc.usdt_mgr(account_scope) {
                                                     usdt.borrow_mut().apply_balance(&m);
                                                 }
                                             }
@@ -247,7 +312,12 @@ impl QueryEngChannel {
                                                     | TradingVenue::GateMargin
                                                     | TradingVenue::BitgetMargin
                                             ) {
-                                                if exchange_enum == open_exchange {
+                                                if exchange_enum == open_exchange
+                                                    && scope_matches_venue(
+                                                        account_scope,
+                                                        open_venue,
+                                                    )
+                                                {
                                                     if let Some(bal) = mc.open_balance_mgr() {
                                                         bal.borrow_mut().apply_balance(&m);
                                                     }
@@ -260,7 +330,12 @@ impl QueryEngChannel {
                                                     | TradingVenue::GateMargin
                                                     | TradingVenue::BitgetMargin
                                             ) {
-                                                if exchange_enum == hedge_exchange {
+                                                if exchange_enum == hedge_exchange
+                                                    && scope_matches_venue(
+                                                        account_scope,
+                                                        hedge_venue,
+                                                    )
+                                                {
                                                     if let Some(bal) = mc.hedge_balance_mgr() {
                                                         bal.borrow_mut().apply_balance(&m);
                                                     }
@@ -271,7 +346,7 @@ impl QueryEngChannel {
                                     BasicAccountEventType::BorrowInterest => {
                                         if let Ok(m) = BasicBorrowInterestMsg::from_bytes(body) {
                                             if m.symbol.eq_ignore_ascii_case("USDT") {
-                                                if let Some(usdt) = mc.usdt_mgr(exchange_enum) {
+                                                if let Some(usdt) = mc.usdt_mgr(account_scope) {
                                                     usdt.borrow_mut().apply_borrow_interest(&m);
                                                 }
                                             }
@@ -282,7 +357,12 @@ impl QueryEngChannel {
                                                     | TradingVenue::GateMargin
                                                     | TradingVenue::BitgetMargin
                                             ) {
-                                                if exchange_enum == open_exchange {
+                                                if exchange_enum == open_exchange
+                                                    && scope_matches_venue(
+                                                        account_scope,
+                                                        open_venue,
+                                                    )
+                                                {
                                                     if let Some(bal) = mc.open_balance_mgr() {
                                                         bal.borrow_mut().apply_borrow_interest(&m);
                                                     }
@@ -295,7 +375,12 @@ impl QueryEngChannel {
                                                     | TradingVenue::GateMargin
                                                     | TradingVenue::BitgetMargin
                                             ) {
-                                                if exchange_enum == hedge_exchange {
+                                                if exchange_enum == hedge_exchange
+                                                    && scope_matches_venue(
+                                                        account_scope,
+                                                        hedge_venue,
+                                                    )
+                                                {
                                                     if let Some(bal) = mc.hedge_balance_mgr() {
                                                         bal.borrow_mut().apply_borrow_interest(&m);
                                                     }
@@ -312,7 +397,12 @@ impl QueryEngChannel {
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
                                             ) {
-                                                if exchange_enum == open_exchange {
+                                                if exchange_enum == open_exchange
+                                                    && scope_matches_venue(
+                                                        account_scope,
+                                                        open_venue,
+                                                    )
+                                                {
                                                     if let Some((um, _)) = mc.open_um_mgr() {
                                                         um.borrow_mut().apply_position(&m);
                                                     }
@@ -325,7 +415,12 @@ impl QueryEngChannel {
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
                                             ) {
-                                                if exchange_enum == hedge_exchange {
+                                                if exchange_enum == hedge_exchange
+                                                    && scope_matches_venue(
+                                                        account_scope,
+                                                        hedge_venue,
+                                                    )
+                                                {
                                                     if let Some((um, _)) = mc.hedge_um_mgr() {
                                                         um.borrow_mut().apply_position(&m);
                                                     }
@@ -342,7 +437,12 @@ impl QueryEngChannel {
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
                                             ) {
-                                                if exchange_enum == open_exchange {
+                                                if exchange_enum == open_exchange
+                                                    && scope_matches_venue(
+                                                        account_scope,
+                                                        open_venue,
+                                                    )
+                                                {
                                                     if let Some((um, _)) = mc.open_um_mgr() {
                                                         um.borrow_mut().apply_unrealized_pnl(&m);
                                                     }
@@ -355,7 +455,12 @@ impl QueryEngChannel {
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
                                             ) {
-                                                if exchange_enum == hedge_exchange {
+                                                if exchange_enum == hedge_exchange
+                                                    && scope_matches_venue(
+                                                        account_scope,
+                                                        hedge_venue,
+                                                    )
+                                                {
                                                     if let Some((um, _)) = mc.hedge_um_mgr() {
                                                         um.borrow_mut().apply_unrealized_pnl(&m);
                                                     }
@@ -367,7 +472,7 @@ impl QueryEngChannel {
                                 }
                             }
 
-                            if let Ok(req_type) = QueryRequestType::try_from(resp.req_type()) {
+                            if let Some(req_type) = req_type {
                                 if matches!(
                                     req_type,
                                     QueryRequestType::BinanceMarginQuery

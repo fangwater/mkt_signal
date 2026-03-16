@@ -19,7 +19,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use log::{debug, error, info, warn};
 use mkt_signal::common::basic_account_msg::{
-    get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
+    split_basic_account_event, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
     BasicPositionMsg, BasicUmUnrealizedMsg, OkexOrderMsg,
 };
 use mkt_signal::common::mkt_cfg::{home_mkt_cfg_path, load_local_ips_from_path};
@@ -230,7 +230,11 @@ fn spawn_borrow_interest_poll(
                         Ok(items) => {
                             for msg in items {
                                 let payload = msg.to_bytes();
-                                let event = mkt_signal::common::basic_account_msg::BasicAccountEventMsg::create(msg.msg_type, payload);
+                                let event = mkt_signal::common::basic_account_msg::BasicAccountEventMsg::create(
+                                    msg.msg_type,
+                                    mkt_signal::common::basic_account_msg::BasicAccountScope::OkexUnified,
+                                    payload,
+                                );
                                 if let Err(e) = evt_tx.send(event.to_bytes()) {
                                     warn!("failed to send borrow interest msg: {}", e);
                                 }
@@ -339,22 +343,12 @@ fn spawn_okex_stream_path(
 
 /// 打印解析后的账户事件
 fn log_parsed_event(msg: &Bytes) {
-    if msg.len() < 8 {
+    let Some((okex_event_type, account_scope, payload)) = split_basic_account_event(msg.as_ref())
+    else {
         return;
-    }
-    let okex_event_type = get_basic_event_type(msg.as_ref());
-    let payload_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
-    if msg.len() < 8 + payload_len {
-        return;
-    }
-    let payload = msg.slice(8..8 + payload_len);
+    };
 
     if matches!(okex_event_type, BasicAccountEventType::Error) {
-        info!(
-            "OKEx basic msg: type={} payload_len={}",
-            u32::from_le_bytes([msg[0], msg[1], msg[2], msg[3]]),
-            payload_len
-        );
         return;
     }
 
@@ -363,7 +357,8 @@ fn log_parsed_event(msg: &Bytes) {
             if let Ok(m) = OkexOrderMsg::from_bytes(&payload) {
                 let order_status = m.state;
                 info!(
-                    "OKEx basic OrderUpdate: inst={} side={} state={} ord_id={} cli_id={} price={} qty={} filled={} update_time={}",
+                    "OKEx basic OrderUpdate: scope={} inst={} side={} state={} ord_id={} cli_id={} price={} qty={} filled={} update_time={}",
+                    account_scope.as_str(),
                     m.inst_id,
                     m.side,
                     OkexOrderMsg::state_to_str(order_status),
@@ -379,39 +374,55 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::BalanceUpdate => {
             if let Ok(m) = BasicBalanceMsg::from_bytes(&payload) {
                 info!(
-                    "OKEx basic BalanceUpdate: ts={} symbol={} balance={}",
-                    m.timestamp, m.symbol, m.balance
+                    "OKEx basic BalanceUpdate: scope={} ts={} symbol={} balance={}",
+                    account_scope.as_str(),
+                    m.timestamp,
+                    m.symbol,
+                    m.balance
                 );
             }
         }
         BasicAccountEventType::PositionUpdate => {
             if let Ok(m) = BasicPositionMsg::from_bytes(&payload) {
                 info!(
-                    "OKEx basic PositionUpdate: ts={} inst={} side={} amt={}",
-                    m.timestamp, m.inst_id, m.position_side, m.position_amount
+                    "OKEx basic PositionUpdate: scope={} ts={} inst={} side={} amt={}",
+                    account_scope.as_str(),
+                    m.timestamp,
+                    m.inst_id,
+                    m.position_side,
+                    m.position_amount
                 );
             }
         }
         BasicAccountEventType::BorrowInterest => {
             if let Ok(m) = BasicBorrowInterestMsg::from_bytes(&payload) {
                 info!(
-                    "OKEx basic BorrowInterest: ts={} symbol={} borrowed={} interest={}",
-                    m.timestamp, m.symbol, m.borrowed, m.interest
+                    "OKEx basic BorrowInterest: scope={} ts={} symbol={} borrowed={} interest={}",
+                    account_scope.as_str(),
+                    m.timestamp,
+                    m.symbol,
+                    m.borrowed,
+                    m.interest
                 );
             }
         }
         BasicAccountEventType::UnrealizedPnlUpdate => {
             if let Ok(m) = BasicUmUnrealizedMsg::from_bytes(&payload) {
                 info!(
-                    "OKEx basic UnrealizedPnl: ts={} inst={} side={} pnl={}",
-                    m.timestamp, m.inst_id, m.position_side, m.unrealized_pnl
+                    "OKEx basic UnrealizedPnl: scope={} ts={} inst={} side={} pnl={}",
+                    account_scope.as_str(),
+                    m.timestamp,
+                    m.inst_id,
+                    m.position_side,
+                    m.unrealized_pnl
                 );
             }
         }
         _ => {
             info!(
-                "OKEx basic msg: type={:?} payload_len={}",
-                okex_event_type, payload_len
+                "OKEx basic msg: scope={} type={:?}",
+                account_scope.as_str(),
+                okex_event_type
             );
         }
     }
@@ -435,17 +446,11 @@ impl AccountEventDeduper {
 
     /// 检查是否应该转发此消息（返回 true 表示应该转发，false 表示重复消息）
     fn should_forward(&mut self, msg: &Bytes) -> bool {
-        if msg.len() < 8 {
-            return true; // 格式不对的消息直接转发
-        }
-
-        let okex_event_type = get_basic_event_type(msg.as_ref());
-        let payload_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
-        if msg.len() < 8 + payload_len {
-            return true; // 格式不对的消息直接转发
-        }
-
-        let payload = msg.slice(8..8 + payload_len);
+        let Some((okex_event_type, account_scope, payload)) =
+            split_basic_account_event(msg.as_ref())
+        else {
+            return true;
+        };
 
         // 根据事件类型计算去重 key
         let key_opt = match okex_event_type {
@@ -472,6 +477,8 @@ impl AccountEventDeduper {
         let Some(key) = key_opt else {
             return true; // 解析失败，直接转发
         };
+
+        let key = self.hash64(&[account_scope as u32 as u64, key]);
 
         // 检查是否重复
         if self.seen.contains(&key) {

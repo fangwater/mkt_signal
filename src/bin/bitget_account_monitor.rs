@@ -11,7 +11,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use log::{debug, error, info, warn};
 use mkt_signal::common::basic_account_msg::{
-    get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
+    split_basic_account_event, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
     BasicPositionMsg, BasicUmUnrealizedMsg,
 };
 use mkt_signal::common::bitget_account_msg::BitgetBasicOrderMsg;
@@ -264,15 +264,9 @@ fn spawn_bitget_stream_path(
 }
 
 fn log_parsed_event(msg: &Bytes) {
-    if msg.len() < 8 {
+    let Some((event_type, account_scope, payload)) = split_basic_account_event(msg.as_ref()) else {
         return;
-    }
-    let event_type = get_basic_event_type(msg.as_ref());
-    let payload_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
-    if msg.len() < 8 + payload_len {
-        return;
-    }
-    let payload = msg.slice(8..8 + payload_len);
+    };
 
     if matches!(event_type, BasicAccountEventType::Error) {
         return;
@@ -282,7 +276,8 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::OrderUpdate => {
             if let Ok(m) = BitgetBasicOrderMsg::from_bytes(&payload) {
                 info!(
-                    "Bitget OrderUpdate: venue={} ts={} symbol={} oid={} cloid={} side={} type={} exec={} status={} maker={} px={} qty={} filled={} fill_px={}",
+                    "Bitget OrderUpdate: scope={} venue={} ts={} symbol={} oid={} cloid={} side={} type={} exec={} status={} maker={} px={} qty={} filled={} fill_px={}",
+                    account_scope.as_str(),
                     m.venue, m.event_time, m.symbol, m.order_id, m.client_order_id,
                     m.side, m.order_type, m.execution_type, m.order_status,
                     m.is_maker, m.price, m.quantity, m.cumulative_filled_quantity, m.last_executed_price
@@ -292,32 +287,47 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::BalanceUpdate => {
             if let Ok(m) = BasicBalanceMsg::from_bytes(&payload) {
                 info!(
-                    "Bitget BalanceUpdate: ts={} symbol={} balance={}",
-                    m.timestamp, m.symbol, m.balance
+                    "Bitget BalanceUpdate: scope={} ts={} symbol={} balance={}",
+                    account_scope.as_str(),
+                    m.timestamp,
+                    m.symbol,
+                    m.balance
                 );
             }
         }
         BasicAccountEventType::PositionUpdate => {
             if let Ok(m) = BasicPositionMsg::from_bytes(&payload) {
                 info!(
-                    "Bitget PositionUpdate: ts={} inst={} side={} pos={}",
-                    m.timestamp, m.inst_id, m.position_side, m.position_amount
+                    "Bitget PositionUpdate: scope={} ts={} inst={} side={} pos={}",
+                    account_scope.as_str(),
+                    m.timestamp,
+                    m.inst_id,
+                    m.position_side,
+                    m.position_amount
                 );
             }
         }
         BasicAccountEventType::UnrealizedPnlUpdate => {
             if let Ok(m) = BasicUmUnrealizedMsg::from_bytes(&payload) {
                 info!(
-                    "Bitget UnrealizedPnl: ts={} inst={} side={} pnl={}",
-                    m.timestamp, m.inst_id, m.position_side, m.unrealized_pnl
+                    "Bitget UnrealizedPnl: scope={} ts={} inst={} side={} pnl={}",
+                    account_scope.as_str(),
+                    m.timestamp,
+                    m.inst_id,
+                    m.position_side,
+                    m.unrealized_pnl
                 );
             }
         }
         BasicAccountEventType::BorrowInterest => {
             if let Ok(m) = BasicBorrowInterestMsg::from_bytes(&payload) {
                 info!(
-                    "Bitget BorrowInterest: ts={} symbol={} borrowed={} interest={}",
-                    m.timestamp, m.symbol, m.borrowed, m.interest
+                    "Bitget BorrowInterest: scope={} ts={} symbol={} borrowed={} interest={}",
+                    account_scope.as_str(),
+                    m.timestamp,
+                    m.symbol,
+                    m.borrowed,
+                    m.interest
                 );
             }
         }
@@ -341,17 +351,10 @@ impl AccountEventDeduper {
     }
 
     fn should_forward(&mut self, msg: &Bytes) -> bool {
-        if msg.len() < 8 {
+        let Some((event_type, account_scope, payload)) = split_basic_account_event(msg.as_ref())
+        else {
             return true;
-        }
-
-        let event_type = get_basic_event_type(msg.as_ref());
-        let payload_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
-        if msg.len() < 8 + payload_len {
-            return true;
-        }
-
-        let payload = msg.slice(8..8 + payload_len);
+        };
         let key_opt = match event_type {
             BasicAccountEventType::OrderUpdate => BitgetBasicOrderMsg::from_bytes(&payload)
                 .ok()
@@ -376,6 +379,8 @@ impl AccountEventDeduper {
         let Some(key) = key_opt else {
             return true;
         };
+
+        let key = self.hash64(&[account_scope as u32 as u64, key]);
 
         if self.seen.contains(&key) {
             return false;

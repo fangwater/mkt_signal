@@ -8,8 +8,9 @@ use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use crate::common::basic_account_msg::{
-    get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
-    BasicPositionMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg, GateBasicOrderMsg, OkexOrderMsg,
+    split_basic_account_event, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
+    BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg,
+    GateBasicOrderMsg, OkexOrderMsg,
 };
 use crate::common::bitget_account_msg::BitgetBasicOrderMsg;
 use crate::common::exchange::Exchange;
@@ -67,6 +68,46 @@ fn exchange_from_venue(venue: TradingVenue) -> Exchange {
         TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => Exchange::Bitget,
         _ => panic!("unsupported venue for pre_trade: {:?}", venue),
     }
+}
+
+fn scope_for_venue(
+    venue: TradingVenue,
+    binance_account_mode: Option<BinanceAccountMode>,
+) -> BasicAccountScope {
+    match venue {
+        TradingVenue::BinanceMargin => {
+            if binance_account_mode == Some(BinanceAccountMode::Standard) {
+                BasicAccountScope::BinanceStdSpot
+            } else {
+                BasicAccountScope::BinanceUnified
+            }
+        }
+        TradingVenue::BinanceFutures => {
+            if binance_account_mode == Some(BinanceAccountMode::Standard) {
+                BasicAccountScope::BinanceStdUm
+            } else {
+                BasicAccountScope::BinanceUnified
+            }
+        }
+        TradingVenue::OkexMargin | TradingVenue::OkexFutures => BasicAccountScope::OkexUnified,
+        TradingVenue::GateMargin | TradingVenue::GateFutures => BasicAccountScope::GateUnified,
+        TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
+            BasicAccountScope::BitgetUnified
+        }
+        _ => BasicAccountScope::Unknown,
+    }
+}
+
+fn scope_matches_venue(
+    incoming_scope: BasicAccountScope,
+    source_exchange: Exchange,
+    venue: TradingVenue,
+    binance_account_mode: Option<BinanceAccountMode>,
+) -> bool {
+    if incoming_scope == BasicAccountScope::Unknown {
+        return exchange_from_venue(venue) == source_exchange;
+    }
+    incoming_scope == scope_for_venue(venue, binance_account_mode)
 }
 
 // ==================== Deduplication Cache ====================
@@ -153,12 +194,6 @@ enum LegMgr {
 }
 
 impl LegMgr {
-    fn exchange(&self) -> Exchange {
-        match self {
-            LegMgr::Margin { exchange, .. } | LegMgr::Futures { exchange, .. } => *exchange,
-        }
-    }
-
     fn as_balance_mgr(&self) -> Option<Rc<RefCell<BasicBalanceManager>>> {
         match self {
             LegMgr::Margin { bal, .. } => Some(bal.clone()),
@@ -182,8 +217,8 @@ struct MonitorChannelInner {
     hedge_venue: TradingVenue,
     open_leg: LegMgr,
     hedge_leg: LegMgr,
-    /// USDT 单独维护：exchange -> manager（open/hedge 若同交易所则共享同一 Rc）
-    usdt_mgrs: HashMap<Exchange, Rc<RefCell<UsdtBalanceManager>>>,
+    /// USDT 单独维护：account_scope -> manager（Binance standard 下 margin/futures 分离）
+    usdt_mgrs: HashMap<BasicAccountScope, Rc<RefCell<UsdtBalanceManager>>>,
     /// 价格表（仍使用 Binance mark/index 价格作为统一估值源）
     price_table: Rc<RefCell<PriceTable>>,
     /// 各交易场所的最小下单量/步进信息
@@ -291,19 +326,34 @@ impl MonitorChannel {
         Self::with_inner(|inner| inner.hedge_venue)
     }
 
-    pub fn usdt_mgr(&self, exchange: Exchange) -> Option<Rc<RefCell<UsdtBalanceManager>>> {
-        Self::with_inner(|inner| inner.usdt_mgrs.get(&exchange).cloned())
+    pub fn usdt_mgr(&self, scope: BasicAccountScope) -> Option<Rc<RefCell<UsdtBalanceManager>>> {
+        Self::with_inner(|inner| inner.usdt_mgrs.get(&scope).cloned())
     }
 
-    pub fn usdt_snapshot_all(&self) -> Vec<(Exchange, UsdtBalanceSnapshot)> {
+    pub fn usdt_snapshot_all(&self) -> Vec<(BasicAccountScope, UsdtBalanceSnapshot)> {
         Self::with_inner(|inner| {
-            let mut out: Vec<(Exchange, UsdtBalanceSnapshot)> = inner
+            let mut out: Vec<(BasicAccountScope, UsdtBalanceSnapshot)> = inner
                 .usdt_mgrs
                 .iter()
-                .map(|(ex, mgr)| (*ex, mgr.borrow().snapshot()))
+                .map(|(scope, mgr)| (*scope, mgr.borrow().snapshot()))
                 .collect();
-            out.sort_by_key(|(ex, _)| *ex as u8);
+            out.sort_by_key(|(scope, _)| *scope as u32);
             out
+        })
+    }
+
+    pub fn usdt_snapshot_for_venue(&self, venue: TradingVenue) -> Option<UsdtBalanceSnapshot> {
+        Self::with_inner(|inner| {
+            let binance_mode = if inner.order_manager.borrow().binance_is_standard() {
+                Some(BinanceAccountMode::Standard)
+            } else {
+                Some(BinanceAccountMode::Unified)
+            };
+            let scope = scope_for_venue(venue, binance_mode);
+            inner
+                .usdt_mgrs
+                .get(&scope)
+                .map(|mgr| mgr.borrow().snapshot())
         })
     }
 
@@ -368,10 +418,15 @@ impl MonitorChannel {
                 return 0.0;
             };
             if asset.eq_ignore_ascii_case("USDT") {
-                let exchange = leg.exchange();
+                let binance_mode = if inner.order_manager.borrow().binance_is_standard() {
+                    Some(BinanceAccountMode::Standard)
+                } else {
+                    Some(BinanceAccountMode::Unified)
+                };
+                let scope = scope_for_venue(venue, binance_mode);
                 return inner
                     .usdt_mgrs
-                    .get(&exchange)
+                    .get(&scope)
                     .map(|m| m.borrow().net_usdt_position())
                     .unwrap_or(0.0);
             }
@@ -411,11 +466,21 @@ impl MonitorChannel {
         let open_exchange = exchange_from_venue(open_venue);
         let hedge_exchange = exchange_from_venue(hedge_venue);
 
-        // 初始化 USDT 管理器（按交易所维度，open/hedge 同交易所则共享）
-        let mut usdt_mgrs: HashMap<Exchange, Rc<RefCell<UsdtBalanceManager>>> = HashMap::new();
-        for ex in [open_exchange, hedge_exchange] {
+        // 初始化 USDT 管理器（按账户 scope 维度，Binance standard 下 margin/futures 分离）
+        let mut usdt_mgrs: HashMap<BasicAccountScope, Rc<RefCell<UsdtBalanceManager>>> =
+            HashMap::new();
+        for (scope, ex) in [
+            (
+                scope_for_venue(open_venue, binance_account_mode),
+                open_exchange,
+            ),
+            (
+                scope_for_venue(hedge_venue, binance_account_mode),
+                hedge_exchange,
+            ),
+        ] {
             usdt_mgrs
-                .entry(ex)
+                .entry(scope)
                 .or_insert_with(|| Rc::new(RefCell::new(UsdtBalanceManager::new(ex))));
         }
 
@@ -492,9 +557,12 @@ impl MonitorChannel {
                 service_name,
                 node_name,
                 ex,
+                open_venue,
+                hedge_venue,
                 open_leg.clone(),
                 hedge_leg.clone(),
-                usdt_mgrs.get(&ex).cloned(),
+                usdt_mgrs.clone(),
+                binance_account_mode,
                 strategy_mgr.clone(),
             );
         }
@@ -701,13 +769,13 @@ impl MonitorChannel {
                 total_equity_usdt += exposure_mgr.total_equity();
             }
         }
-        // 加上各交易所 USDT 的净头寸（open/hedge 同交易所不会重复）
-        for (ex, mgr) in &inner.usdt_mgrs {
+        // 加上各账户 scope 的 USDT 净头寸（Binance standard 下 margin/futures 分离）
+        for (scope, mgr) in &inner.usdt_mgrs {
             let net = mgr.borrow().net_usdt_position();
             if net.abs() <= 1e-12 {
                 continue;
             }
-            debug!("USDT net position: exchange={:?} net={:.6}", ex, net);
+            debug!("USDT net position: scope={} net={:.6}", scope.as_str(), net);
             total_equity_usdt += net;
         }
 
@@ -1034,9 +1102,12 @@ impl MonitorChannel {
         service_name: String,
         node_name: String,
         exchange: Exchange,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
         open_leg: LegMgr,
         hedge_leg: LegMgr,
-        usdt_mgr: Option<Rc<RefCell<UsdtBalanceManager>>>,
+        usdt_mgrs: HashMap<BasicAccountScope, Rc<RefCell<UsdtBalanceManager>>>,
+        binance_account_mode: Option<BinanceAccountMode>,
         strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
     ) {
         tokio::task::spawn_local(async move {
@@ -1117,26 +1188,14 @@ impl MonitorChannel {
                     match subscriber.receive() {
                         Ok(Some(sample)) => {
                             let payload = sample.payload();
-                            if payload.len() < 8 {
+                            let Some((msg_type, account_scope, data)) =
+                                split_basic_account_event(payload)
+                            else {
                                 continue;
-                            }
-
-                            let msg_type = get_basic_event_type(payload);
-                            if msg_type == BasicAccountEventType::Error {
-                                continue;
-                            }
-
-                            let body_len = u32::from_le_bytes([
-                                payload[4], payload[5], payload[6], payload[7],
-                            ]) as usize;
-                            let total = 8 + body_len;
-                            if total > payload.len() {
-                                continue;
-                            }
-                            let data = &payload[8..total];
+                            };
 
                             let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                            payload[..total].hash(&mut hasher);
+                            payload.hash(&mut hasher);
                             let key = hasher.finish();
                             if !dedup.insert_check(key) {
                                 continue;
@@ -1146,16 +1205,26 @@ impl MonitorChannel {
                                 BasicAccountEventType::BalanceUpdate => {
                                     if let Ok(msg) = BasicBalanceMsg::from_bytes(data) {
                                         if msg.symbol.eq_ignore_ascii_case("USDT") {
-                                            if let Some(mgr) = usdt_mgr.as_ref() {
+                                            if let Some(mgr) = usdt_mgrs.get(&account_scope) {
                                                 mgr.borrow_mut().apply_balance(&msg);
                                             }
                                         }
-                                        if exchange == open_leg.exchange() {
+                                        if scope_matches_venue(
+                                            account_scope,
+                                            exchange,
+                                            open_venue,
+                                            binance_account_mode,
+                                        ) {
                                             if let LegMgr::Margin { bal, .. } = &open_leg {
                                                 bal.borrow_mut().apply_balance(&msg);
                                             }
                                         }
-                                        if exchange == hedge_leg.exchange() {
+                                        if scope_matches_venue(
+                                            account_scope,
+                                            exchange,
+                                            hedge_venue,
+                                            binance_account_mode,
+                                        ) {
                                             if let LegMgr::Margin { bal, .. } = &hedge_leg {
                                                 bal.borrow_mut().apply_balance(&msg);
                                             }
@@ -1178,12 +1247,22 @@ impl MonitorChannel {
                                             );
                                             continue;
                                         }
-                                        if exchange == open_leg.exchange() {
+                                        if scope_matches_venue(
+                                            account_scope,
+                                            exchange,
+                                            open_venue,
+                                            binance_account_mode,
+                                        ) {
                                             if let LegMgr::Futures { um, .. } = &open_leg {
                                                 um.borrow_mut().apply_position(&msg);
                                             }
                                         }
-                                        if exchange == hedge_leg.exchange() {
+                                        if scope_matches_venue(
+                                            account_scope,
+                                            exchange,
+                                            hedge_venue,
+                                            binance_account_mode,
+                                        ) {
                                             if let LegMgr::Futures { um, .. } = &hedge_leg {
                                                 um.borrow_mut().apply_position(&msg);
                                             }
@@ -1192,12 +1271,22 @@ impl MonitorChannel {
                                 }
                                 BasicAccountEventType::UnrealizedPnlUpdate => {
                                     if let Ok(msg) = BasicUmUnrealizedMsg::from_bytes(data) {
-                                        if exchange == open_leg.exchange() {
+                                        if scope_matches_venue(
+                                            account_scope,
+                                            exchange,
+                                            open_venue,
+                                            binance_account_mode,
+                                        ) {
                                             if let LegMgr::Futures { um, .. } = &open_leg {
                                                 um.borrow_mut().apply_unrealized_pnl(&msg);
                                             }
                                         }
-                                        if exchange == hedge_leg.exchange() {
+                                        if scope_matches_venue(
+                                            account_scope,
+                                            exchange,
+                                            hedge_venue,
+                                            binance_account_mode,
+                                        ) {
                                             if let LegMgr::Futures { um, .. } = &hedge_leg {
                                                 um.borrow_mut().apply_unrealized_pnl(&msg);
                                             }
@@ -1207,16 +1296,26 @@ impl MonitorChannel {
                                 BasicAccountEventType::BorrowInterest => {
                                     if let Ok(msg) = BasicBorrowInterestMsg::from_bytes(data) {
                                         if msg.symbol.eq_ignore_ascii_case("USDT") {
-                                            if let Some(mgr) = usdt_mgr.as_ref() {
+                                            if let Some(mgr) = usdt_mgrs.get(&account_scope) {
                                                 mgr.borrow_mut().apply_borrow_interest(&msg);
                                             }
                                         }
-                                        if exchange == open_leg.exchange() {
+                                        if scope_matches_venue(
+                                            account_scope,
+                                            exchange,
+                                            open_venue,
+                                            binance_account_mode,
+                                        ) {
                                             if let LegMgr::Margin { bal, .. } = &open_leg {
                                                 bal.borrow_mut().apply_borrow_interest(&msg);
                                             }
                                         }
-                                        if exchange == hedge_leg.exchange() {
+                                        if scope_matches_venue(
+                                            account_scope,
+                                            exchange,
+                                            hedge_venue,
+                                            binance_account_mode,
+                                        ) {
                                             if let LegMgr::Margin { bal, .. } = &hedge_leg {
                                                 bal.borrow_mut().apply_borrow_interest(&msg);
                                             }
@@ -1905,9 +2004,10 @@ mod tests {
         let mut venue_min_qty_tables: HashMap<TradingVenue, Rc<VenueMinQtyTable>> = HashMap::new();
         venue_min_qty_tables.insert(TradingVenue::OkexFutures, Rc::new(okx_table));
 
-        let mut usdt_mgrs: HashMap<Exchange, Rc<RefCell<UsdtBalanceManager>>> = HashMap::new();
+        let mut usdt_mgrs: HashMap<BasicAccountScope, Rc<RefCell<UsdtBalanceManager>>> =
+            HashMap::new();
         usdt_mgrs.insert(
-            Exchange::Okex,
+            BasicAccountScope::OkexUnified,
             Rc::new(RefCell::new(UsdtBalanceManager::new(Exchange::Okex))),
         );
 

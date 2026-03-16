@@ -4,8 +4,8 @@
 //! - OrderUpdate 的 payload 使用 basic 层统一 schema：`BinanceBasicOrderMsg`
 
 use crate::common::basic_account_msg::{
-    BasicAccountEventMsg, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
-    BasicPositionMsg, BinanceBasicOrderMsg,
+    BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
+    BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg,
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
@@ -20,12 +20,14 @@ use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce};
 #[derive(Clone)]
 pub struct BinanceBasicAccountEventParser {
     parse_account_update_balances: bool,
+    account_scope: BasicAccountScope,
 }
 
 impl BinanceBasicAccountEventParser {
-    pub fn new(parse_account_update_balances: bool) -> Self {
+    pub fn new(parse_account_update_balances: bool, account_scope: BasicAccountScope) -> Self {
         Self {
             parse_account_update_balances,
+            account_scope,
         }
     }
 
@@ -168,7 +170,11 @@ impl BinanceBasicAccountEventParser {
             json.get("L").and_then(|v| v.as_str()).unwrap_or("")
         );
 
-        let event = BasicAccountEventMsg::create(BasicAccountEventType::OrderUpdate, bytes);
+        let event = BasicAccountEventMsg::create(
+            BasicAccountEventType::OrderUpdate,
+            self.account_scope,
+            bytes,
+        );
         if tx.send(event.to_bytes()).is_err() {
             return 0;
         }
@@ -302,7 +308,11 @@ impl BinanceBasicAccountEventParser {
             o.get("L").and_then(|v| v.as_str()).unwrap_or("")
         );
 
-        let event = BasicAccountEventMsg::create(BasicAccountEventType::OrderUpdate, bytes);
+        let event = BasicAccountEventMsg::create(
+            BasicAccountEventType::OrderUpdate,
+            self.account_scope,
+            bytes,
+        );
         if tx.send(event.to_bytes()).is_err() {
             return 0;
         }
@@ -325,7 +335,7 @@ impl BinanceBasicAccountEventParser {
 
         let msg = BasicBorrowInterestMsg::create(event_time, asset, principal, interest);
         let payload = msg.to_bytes();
-        let event = BasicAccountEventMsg::create(msg.msg_type, payload);
+        let event = BasicAccountEventMsg::create(msg.msg_type, self.account_scope, payload);
         if tx.send(event.to_bytes()).is_err() {
             return 0;
         }
@@ -361,7 +371,7 @@ impl BinanceBasicAccountEventParser {
 
             let msg = BasicBalanceMsg::create(event_time, asset, free_balance);
             let payload = msg.to_bytes();
-            let event = BasicAccountEventMsg::create(msg.msg_type, payload);
+            let event = BasicAccountEventMsg::create(msg.msg_type, self.account_scope, payload);
             if tx.send(event.to_bytes()).is_err() {
                 return count;
             }
@@ -405,7 +415,8 @@ impl BinanceBasicAccountEventParser {
                         .unwrap_or(0.0);
                     let msg = BasicBalanceMsg::create(event_time, asset, balance_value);
                     let payload = msg.to_bytes();
-                    let event = BasicAccountEventMsg::create(msg.msg_type, payload);
+                    let event =
+                        BasicAccountEventMsg::create(msg.msg_type, self.account_scope, payload);
                     if tx.send(event.to_bytes()).is_err() {
                         return count;
                     }
@@ -416,7 +427,7 @@ impl BinanceBasicAccountEventParser {
 
         // positions (merge by (symbol, side))
         if let Some(positions) = a.get("P").and_then(|v| v.as_array()) {
-            let mut position_map: HashMap<(String, char), f32> = HashMap::new();
+            let mut position_map: HashMap<(String, char), (f32, Option<f64>)> = HashMap::new();
             for position in positions {
                 let symbol = position
                     .get("s")
@@ -434,18 +445,41 @@ impl BinanceBasicAccountEventParser {
                     .and_then(|v| v.as_str())
                     .and_then(|s| s.parse::<f32>().ok())
                     .unwrap_or(0.0);
-                position_map.insert((symbol, position_side), position_amount);
+                let unrealized_pnl = position
+                    .get("up")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<f64>().ok());
+                position_map.insert((symbol, position_side), (position_amount, unrealized_pnl));
             }
 
-            for ((symbol, position_side), position_amount) in position_map {
+            for ((symbol, position_side), (position_amount, unrealized_pnl)) in position_map {
                 let msg =
                     BasicPositionMsg::create(event_time, symbol, position_side, position_amount);
                 let payload = msg.to_bytes();
-                let event = BasicAccountEventMsg::create(msg.msg_type, payload);
+                let event = BasicAccountEventMsg::create(msg.msg_type, self.account_scope, payload);
                 if tx.send(event.to_bytes()).is_err() {
                     return count;
                 }
                 count += 1;
+
+                if let Some(pnl) = unrealized_pnl {
+                    let pnl_msg = BasicUmUnrealizedMsg::create(
+                        event_time,
+                        msg.inst_id.clone(),
+                        position_side,
+                        pnl,
+                    );
+                    let pnl_payload = pnl_msg.to_bytes();
+                    let pnl_event = BasicAccountEventMsg::create(
+                        pnl_msg.msg_type,
+                        self.account_scope,
+                        pnl_payload,
+                    );
+                    if tx.send(pnl_event.to_bytes()).is_err() {
+                        return count;
+                    }
+                    count += 1;
+                }
             }
         }
 
@@ -480,5 +514,52 @@ impl Parser for BinanceBasicAccountEventParser {
             "outboundAccountPosition" => self.parse_outbound_account_position(event_json, tx),
             _ => 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::basic_account_msg::{
+        split_basic_account_event, BasicAccountScope, BasicPositionMsg, BasicUmUnrealizedMsg,
+    };
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn account_update_emits_scope_and_unrealized_pnl() {
+        let parser = BinanceBasicAccountEventParser::new(true, BasicAccountScope::BinanceStdUm);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let json = Bytes::from(
+            r#"{
+                "e":"ACCOUNT_UPDATE",
+                "E":1700000000000,
+                "a":{
+                    "B":[{"a":"USDT","cw":"101.5","wb":"101.5"}],
+                    "P":[{"s":"BTCUSDT","ps":"LONG","pa":"0.25","up":"12.34"}]
+                }
+            }"#,
+        );
+
+        let emitted = parser.parse(json, &tx);
+        assert_eq!(emitted, 3);
+
+        let wrapped_balance = rx.try_recv().expect("balance event");
+        let (_, scope, _) = split_basic_account_event(&wrapped_balance).expect("wrapped balance");
+        assert_eq!(scope, BasicAccountScope::BinanceStdUm);
+
+        let wrapped_position = rx.try_recv().expect("position event");
+        let (_, _, position_payload) =
+            split_basic_account_event(&wrapped_position).expect("wrapped position");
+        let position = BasicPositionMsg::from_bytes(position_payload).expect("position payload");
+        assert_eq!(position.inst_id, "BTCUSDT");
+        assert_eq!(position.position_side, 'L');
+
+        let wrapped_pnl = rx.try_recv().expect("pnl event");
+        let (_, pnl_scope, pnl_payload) =
+            split_basic_account_event(&wrapped_pnl).expect("wrapped pnl");
+        assert_eq!(pnl_scope, BasicAccountScope::BinanceStdUm);
+        let pnl = BasicUmUnrealizedMsg::from_bytes(pnl_payload).expect("pnl payload");
+        assert_eq!(pnl.inst_id, "BTCUSDT");
+        assert!((pnl.unrealized_pnl - 12.34).abs() < 1e-9);
     }
 }

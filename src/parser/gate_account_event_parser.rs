@@ -101,8 +101,8 @@
 //!   - `finish_as`（终态原因，用于映射 execution_type / order_status）
 
 use crate::common::basic_account_msg::{
-    BasicAccountEventMsg, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
-    GateBasicOrderMsg,
+    BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
+    BasicBorrowInterestMsg, GateBasicOrderMsg,
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
@@ -172,8 +172,11 @@ impl GateAccountEventParser {
                 if let Ok(balance) = balance_str.parse::<f64>() {
                     let msg = BasicBalanceMsg::create(timestamp, symbol.clone(), balance);
                     let payload = msg.to_bytes();
-                    let event =
-                        BasicAccountEventMsg::create(BasicAccountEventType::BalanceUpdate, payload);
+                    let event = BasicAccountEventMsg::create(
+                        BasicAccountEventType::BalanceUpdate,
+                        BasicAccountScope::GateUnified,
+                        payload,
+                    );
                     if tx.send(event.to_bytes()).is_ok() {
                         count += 1;
                     }
@@ -194,6 +197,7 @@ impl GateAccountEventParser {
                         let payload = msg.to_bytes();
                         let event = BasicAccountEventMsg::create(
                             BasicAccountEventType::BorrowInterest,
+                            BasicAccountScope::GateUnified,
                             payload,
                         );
                         if tx.send(event.to_bytes()).is_ok() {
@@ -343,8 +347,11 @@ impl GateAccountEventParser {
             );
 
             let payload = msg.to_bytes();
-            let event_msg =
-                BasicAccountEventMsg::create(BasicAccountEventType::OrderUpdate, payload);
+            let event_msg = BasicAccountEventMsg::create(
+                BasicAccountEventType::OrderUpdate,
+                BasicAccountScope::GateUnified,
+                payload,
+            );
             if tx.send(event_msg.to_bytes()).is_ok() {
                 count += 1;
             }
@@ -486,8 +493,11 @@ impl GateAccountEventParser {
             );
 
             let payload = msg.to_bytes();
-            let event_msg =
-                BasicAccountEventMsg::create(BasicAccountEventType::OrderUpdate, payload);
+            let event_msg = BasicAccountEventMsg::create(
+                BasicAccountEventType::OrderUpdate,
+                BasicAccountScope::GateUnified,
+                payload,
+            );
             if tx.send(event_msg.to_bytes()).is_ok() {
                 count += 1;
             }

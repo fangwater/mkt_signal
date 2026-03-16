@@ -18,7 +18,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use log::{error, info, warn};
 use mkt_signal::common::basic_account_msg::{
-    get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
+    split_basic_account_event, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
     BasicUmUnrealizedMsg, GateBasicOrderMsg,
 };
 use mkt_signal::common::mkt_cfg::{home_mkt_cfg_path, load_local_ips_from_path};
@@ -422,22 +422,11 @@ fn spawn_gate_stream_path(
 
 /// 打印解析后的账户事件
 fn log_parsed_event(msg: &Bytes) {
-    if msg.len() < 8 {
+    let Some((event_type, account_scope, payload)) = split_basic_account_event(msg.as_ref()) else {
         return;
-    }
-    let event_type = get_basic_event_type(msg.as_ref());
-    let payload_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
-    if msg.len() < 8 + payload_len {
-        return;
-    }
-    let payload = msg.slice(8..8 + payload_len);
+    };
 
     if matches!(event_type, BasicAccountEventType::Error) {
-        info!(
-            "Gate basic msg: type={} payload_len={}",
-            u32::from_le_bytes([msg[0], msg[1], msg[2], msg[3]]),
-            payload_len
-        );
         return;
     }
 
@@ -445,23 +434,31 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::BalanceUpdate => {
             if let Ok(m) = BasicBalanceMsg::from_bytes(&payload) {
                 info!(
-                    "Gate BalanceUpdate: ts={} symbol={} balance={}",
-                    m.timestamp, m.symbol, m.balance
+                    "Gate BalanceUpdate: scope={} ts={} symbol={} balance={}",
+                    account_scope.as_str(),
+                    m.timestamp,
+                    m.symbol,
+                    m.balance
                 );
             }
         }
         BasicAccountEventType::BorrowInterest => {
             if let Ok(m) = BasicBorrowInterestMsg::from_bytes(&payload) {
                 info!(
-                    "Gate BorrowInterest: ts={} symbol={} borrowed={} interest={}",
-                    m.timestamp, m.symbol, m.borrowed, m.interest
+                    "Gate BorrowInterest: scope={} ts={} symbol={} borrowed={} interest={}",
+                    account_scope.as_str(),
+                    m.timestamp,
+                    m.symbol,
+                    m.borrowed,
+                    m.interest
                 );
             }
         }
         BasicAccountEventType::OrderUpdate => {
             if let Ok(m) = GateBasicOrderMsg::from_bytes(&payload) {
                 info!(
-                    "Gate OrderUpdate: venue={} ts={} symbol={} oid={} cloid={} side={} type={} exec={} status={} maker={} px={} qty={} filled={} fill_px={}",
+                    "Gate OrderUpdate: scope={} venue={} ts={} symbol={} oid={} cloid={} side={} type={} exec={} status={} maker={} px={} qty={} filled={} fill_px={}",
+                    account_scope.as_str(),
                     m.venue, m.event_time, m.symbol, m.order_id, m.client_order_id,
                     m.side, m.order_type, m.execution_type, m.order_status,
                     m.is_maker, m.price, m.quantity, m.cumulative_filled_quantity, m.last_executed_price
@@ -471,15 +468,20 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::UnrealizedPnlUpdate => {
             if let Ok(m) = BasicUmUnrealizedMsg::from_bytes(&payload) {
                 info!(
-                    "Gate UnrealizedPnl: ts={} inst={} side={} pnl={}",
-                    m.timestamp, m.inst_id, m.position_side, m.unrealized_pnl
+                    "Gate UnrealizedPnl: scope={} ts={} inst={} side={} pnl={}",
+                    account_scope.as_str(),
+                    m.timestamp,
+                    m.inst_id,
+                    m.position_side,
+                    m.unrealized_pnl
                 );
             }
         }
         _ => {
             info!(
-                "Gate basic msg: type={:?} payload_len={}",
-                event_type, payload_len
+                "Gate basic msg: scope={} type={:?}",
+                account_scope.as_str(),
+                event_type
             );
         }
     }
@@ -503,17 +505,10 @@ impl AccountEventDeduper {
 
     /// 检查是否应该转发此消息（返回 true 表示应该转发，false 表示重复消息）
     fn should_forward(&mut self, msg: &Bytes) -> bool {
-        if msg.len() < 8 {
-            return true; // 格式不对的消息直接转发
-        }
-
-        let event_type = get_basic_event_type(msg.as_ref());
-        let payload_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
-        if msg.len() < 8 + payload_len {
-            return true; // 格式不对的消息直接转发
-        }
-
-        let payload = msg.slice(8..8 + payload_len);
+        let Some((event_type, account_scope, payload)) = split_basic_account_event(msg.as_ref())
+        else {
+            return true;
+        };
 
         // 根据事件类型计算去重 key
         let key_opt = match event_type {
@@ -537,6 +532,8 @@ impl AccountEventDeduper {
         let Some(key) = key_opt else {
             return true; // 解析失败，直接转发
         };
+
+        let key = self.hash64(&[account_scope as u32 as u64, key]);
 
         // 检查是否重复
         if self.seen.contains(&key) {
