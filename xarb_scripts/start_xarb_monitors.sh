@@ -21,7 +21,7 @@ usage() {
 
 说明:
   - 启动 xarb 所需的两侧账户 monitor（当前支持 okex + binance）。
-  - 会优先从 env.sh 读取 OPEN_VENUE/HEDGE_VENUE 或 OPEN_EXCHANGE/HEDGE_EXCHANGE；
+  - 会优先从 env.sh 读取 OPEN_VENUE/HEDGE_VENUE；
     若没有，则从部署目录名推断：<open>-<hedge>-xarb-...
   - 会启动两个 pmdaemon 进程：
       xarb_am_<open>_<hedge>_open   -> account_monitor_<open_exchange>
@@ -69,13 +69,12 @@ infer_pair_from_dir() {
   fi
 }
 
-OPEN_EXCHANGE="${OPEN_EXCHANGE:-}"
-HEDGE_EXCHANGE="${HEDGE_EXCHANGE:-}"
-
-if [[ -z "$OPEN_EXCHANGE" && -n "${OPEN_VENUE:-}" ]]; then
+OPEN_EXCHANGE=""
+HEDGE_EXCHANGE=""
+if [[ -n "${OPEN_VENUE:-}" ]]; then
   OPEN_EXCHANGE="${OPEN_VENUE%%-*}"
 fi
-if [[ -z "$HEDGE_EXCHANGE" && -n "${HEDGE_VENUE:-}" ]]; then
+if [[ -n "${HEDGE_VENUE:-}" ]]; then
   HEDGE_EXCHANGE="${HEDGE_VENUE%%-*}"
 fi
 

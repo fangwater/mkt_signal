@@ -183,10 +183,6 @@ export IPC_NAMESPACE='$NAMESPACE'
 export OPEN_VENUE='$OPEN_VENUE'
 export HEDGE_VENUE='$HEDGE_VENUE'
 
-# 两侧交易所（从 venue 推断）
-export OPEN_EXCHANGE='$OPEN_EXCHANGE'
-export HEDGE_EXCHANGE='$HEDGE_EXCHANGE'
-
 $(emit_all_creds_blocks "$OPEN_EXCHANGE" "$HEDGE_EXCHANGE")
 
 # RUST_LOG 配置
