@@ -321,6 +321,32 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       color: var(--muted);
       overflow-wrap: anywhere;
     }
+    .pair-list {
+      display: grid;
+      gap: 4px;
+    }
+    .pair-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+    .pair-row code {
+      font-size: 12px;
+    }
+    .pair-row .arrow {
+      color: var(--muted);
+      flex: 0 0 auto;
+    }
+    .pair-empty {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .pair-block {
+      margin: 0;
+    }
     @media (max-width: 980px) {
       .form-grid,
       .toolbar {
@@ -540,6 +566,36 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       return String(value);
     }
 
+    function formatThresholdPairs(item) {
+      const pairs = Array.isArray(item.threshold_pairs) ? item.threshold_pairs : [];
+      if (pairs.length) {
+        return `
+          <div class="pair-list">
+            ${pairs.map(pair => `
+              <div class="pair-row">
+                <code>${valueOrDash(pair.quantile)}</code>
+                <span class="arrow">-&gt;</span>
+                <code>${valueOrDash(pair.threshold)}</code>
+              </div>
+            `).join("")}
+          </div>
+        `;
+      }
+
+      const quantiles = Array.isArray(item.quantiles) ? item.quantiles : [];
+      const thresholds = Array.isArray(item.thresholds) ? item.thresholds : [];
+      if (quantiles.length && !thresholds.length) {
+        return `<div class="pair-empty">quantiles=${JSON.stringify(quantiles)}<br>thresholds=[]</div>`;
+      }
+      if (!quantiles.length && thresholds.length) {
+        return `<div class="pair-empty">quantiles=[]<br>thresholds=${JSON.stringify(thresholds)}</div>`;
+      }
+      if (quantiles.length || thresholds.length) {
+        return `<div class="pair-empty">quantiles=${JSON.stringify(quantiles)}<br>thresholds=${JSON.stringify(thresholds)}</div>`;
+      }
+      return `<div class="pair-empty">-</div>`;
+    }
+
     function renderCards(items) {
       cardsEl.innerHTML = "";
       if (!items.length) {
@@ -581,8 +637,8 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
               <strong>${valueOrDash(item.factor)}</strong>
             </div>
             <div class="mini">
-              <span>threshold</span>
-              <strong>${valueOrDash(item.threshold)}</strong>
+              <span>threshold pairs</span>
+              <div class="pair-block">${formatThresholdPairs(item)}</div>
             </div>
             <div class="mini">
               <span>ts</span>
@@ -820,6 +876,18 @@ def normalize_pnlu_ts_us(ts: Any) -> Optional[int]:
     return ts * 1_000_000
 
 
+def build_threshold_pairs(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    quantiles = payload.get("quantiles")
+    thresholds = payload.get("thresholds")
+    if not isinstance(quantiles, list) or not isinstance(thresholds, list):
+        return []
+
+    pairs: List[Dict[str, Any]] = []
+    for quantile, threshold in zip(quantiles, thresholds):
+        pairs.append({"quantile": quantile, "threshold": threshold})
+    return pairs
+
+
 @dataclass
 class AppConfig:
     host: str
@@ -998,10 +1066,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             }
 
         ready = payload.get("ready")
+        quantiles = payload.get("quantiles")
         thresholds = payload.get("thresholds")
-        threshold = None
-        if isinstance(thresholds, list) and thresholds:
-            threshold = thresholds[0]
+        threshold_pairs = build_threshold_pairs(payload)
+        threshold = threshold_pairs[0]["threshold"] if threshold_pairs else None
         ts = payload.get("ts")
         ts_us = normalize_pnlu_ts_us(ts)
         age_sec = None
@@ -1022,6 +1090,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             "note": note,
             "factor": payload.get("factor"),
             "threshold": threshold,
+            "threshold_pairs": threshold_pairs,
+            "quantiles": quantiles if isinstance(quantiles, list) else [],
+            "thresholds": thresholds if isinstance(thresholds, list) else [],
             "ts": ts,
             "age_sec": age_sec,
         }

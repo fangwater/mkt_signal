@@ -56,7 +56,8 @@ pub struct PnluCheckResult {
     pub target_ts: Option<i64>,
     pub age_secs: Option<i64>,
     pub ready: Option<bool>,
-    pub quantiles: Option<Vec<f64>>,
+    pub quantiles: Vec<f64>,
+    pub thresholds: Vec<f64>,
 }
 
 impl PnluCheckResult {
@@ -70,7 +71,8 @@ impl PnluCheckResult {
             target_ts: None,
             age_secs: None,
             ready: None,
-            quantiles: None,
+            quantiles: Vec::new(),
+            thresholds: Vec::new(),
         }
     }
 }
@@ -555,7 +557,9 @@ impl FactorValueHub {
             thresholds,
             ready,
         } = payload;
-        let threshold = thresholds.as_ref().and_then(|vals| vals.first().copied());
+        let quantiles = quantiles.unwrap_or_default();
+        let thresholds = thresholds.unwrap_or_default();
+        let threshold = thresholds.get(1).copied();
 
         let ts_us = ts.and_then(Self::normalize_pnlu_ts_us);
         let age_secs = match ts_us {
@@ -596,6 +600,7 @@ impl FactorValueHub {
             age_secs,
             ready,
             quantiles,
+            thresholds,
         }
     }
 
