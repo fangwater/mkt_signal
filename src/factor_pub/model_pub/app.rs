@@ -227,15 +227,18 @@ impl ModelPubApp {
             model_name, fetch_parallel, total
         );
 
-        let task_stream = stream::iter(symbols.into_iter().map(|symbol| {
-            let client = client.clone();
-            let base_url = base_url.to_string();
-            let model_name = model_name.to_string();
-            async move {
-                load_single_symbol_model(&client, &base_url, &model_name, &symbol).await
-            }
-        }))
-        .buffer_unordered(fetch_parallel);
+        let task_stream =
+            stream::iter(
+                symbols.into_iter().map(|symbol| {
+                    let client = client.clone();
+                    let base_url = base_url.to_string();
+                    let model_name = model_name.to_string();
+                    async move {
+                        load_single_symbol_model(&client, &base_url, &model_name, &symbol).await
+                    }
+                }),
+            )
+            .buffer_unordered(fetch_parallel);
 
         let mut models = HashMap::with_capacity(total);
         let mut completed = 0usize;
