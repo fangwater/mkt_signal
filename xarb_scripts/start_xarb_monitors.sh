@@ -24,8 +24,8 @@ usage() {
   - 会优先从 env.sh 读取 OPEN_VENUE/HEDGE_VENUE；
     若没有，则从部署目录名推断：<open>-<hedge>-xarb-...
   - 会启动两个 pmdaemon 进程：
-      xarb_am_<open>_<hedge>_open   -> account_monitor_<open_exchange>
-      xarb_am_<open>_<hedge>_hedge  -> account_monitor_<hedge_exchange>
+      xarb_am_<open>_<hedge>_<env>_open   -> account_monitor_<open_exchange>
+      xarb_am_<open>_<hedge>_<env>_hedge  -> account_monitor_<hedge_exchange>
 
 前置:
   - 必须设置 IPC_NAMESPACE（建议在部署目录生成 env.sh）：
@@ -69,6 +69,15 @@ infer_pair_from_dir() {
   fi
 }
 
+infer_env_tag_from_dir() {
+  local name="${1,,}"
+  if [[ "$name" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]xarb[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+    echo "${BASH_REMATCH[1]//-/_}"
+    return
+  fi
+  echo "xarb"
+}
+
 OPEN_EXCHANGE=""
 HEDGE_EXCHANGE=""
 if [[ -n "${OPEN_VENUE:-}" ]]; then
@@ -93,6 +102,8 @@ if [[ -z "$OPEN_EXCHANGE" || -z "$HEDGE_EXCHANGE" ]]; then
   usage
   exit 1
 fi
+
+ENV_TAG="$(infer_env_tag_from_dir "$(basename "$BASE_DIR")")"
 
 if [[ -z "${IPC_NAMESPACE:-}" ]]; then
   echo "[ERROR] IPC_NAMESPACE 未设置（请 source env.sh）"
@@ -139,7 +150,7 @@ json_escape() {
 start_one() {
   local side="$1"
   local ex="$2"
-  local proc_name="xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${side}"
+  local proc_name="xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}_${side}"
 
   local bin
   if ! bin="$(bin_for_exchange "$ex")"; then
@@ -189,9 +200,9 @@ if [[ "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
 fi
 
 echo "[INFO] Started:"
-echo "  - xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_open"
+echo "  - xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}_open"
 if [[ "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
-  echo "  - xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_hedge"
+  echo "  - xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}_hedge"
 fi
-echo "[INFO] Logs: ${PMDAEMON[*]} logs xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_open --follow"
+echo "[INFO] Logs: ${PMDAEMON[*]} logs xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}_open --follow"
 echo "[INFO] Status: ${PMDAEMON[*]} list"

@@ -59,6 +59,11 @@ if [[ "$HEDGE_EXCHANGE" == "okx" ]]; then
   HEDGE_EXCHANGE="okex"
 fi
 
+ENV_TAG="xarb"
+if [[ "$dir_lc" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]xarb[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+  ENV_TAG="${BASH_REMATCH[1]//-/_}"
+fi
+
 if [[ -z "$OPEN_EXCHANGE" || -z "$HEDGE_EXCHANGE" ]]; then
   echo "[ERROR] 无法从目录名推断 open/hedge (dir=$dir_name)，期望 <open>-<hedge>-xarb-..."
   exit 1
@@ -126,7 +131,7 @@ cleanup_leaked() {
 stop_one() {
   local side="$1"
   local exchange="$2"
-  local proc_name="xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${side}"
+  local proc_name="xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}_${side}"
 
   echo "[INFO] Stopping $proc_name"
   if "${PMDAEMON[@]}" delete "$proc_name" >/dev/null 2>&1; then

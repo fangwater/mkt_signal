@@ -3,11 +3,20 @@ set -euo pipefail
 
 # xarb trade_signal 启动脚本：
 # - 依赖部署目录名推断 xarb pair（目录名需形如 <open>-<hedge>-xarb-<trade|test>）
+# - 若存在 env.sh，会自动 source（用于 account mode / venue / credentials / RUST_LOG）
 # - 使用 PM2 namespace（默认=部署目录名，可用 PM2_NAMESPACE 覆盖）
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
+
+ENV_FILE="${BASE_DIR}/env.sh"
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+else
+  echo "[WARN] 未找到 env.sh：${ENV_FILE}"
+fi
 
 BIN_CANDIDATES=(
   "${BASE_DIR}/trade_signal"

@@ -41,7 +41,7 @@ usage() {
 说明:
   - 默认从 env.sh 读取 OPEN_VENUE/HEDGE_VENUE/IPC_NAMESPACE；若未提供则尝试从目录名推断 open/hedge。
   - 将以 pmdaemon 启动 1 个进程：
-      xarb_pt_<open>_<hedge> -> pre_trade --open-venue ... --hedge-venue ...
+      xarb_pt_<open>_<hedge>_<env> -> pre_trade --open-venue ... --hedge-venue ...
   - 建议先生成并配置 env.sh（包含 IPC_NAMESPACE/凭证等）：
       scripts/deploy_setup_env_xarb.sh --env-name <open>-<hedge>-xarb-... --open-venue ... --hedge-venue ...
 USAGE
@@ -125,6 +125,15 @@ infer_pair_from_dir() {
   fi
 }
 
+infer_env_tag_from_dir() {
+  local name="${1,,}"
+  if [[ "$name" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]xarb[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+    echo "${BASH_REMATCH[1]//-/_}"
+    return
+  fi
+  echo "xarb"
+}
+
 OPEN_VENUE="${CLI_OPEN_VENUE:-${OPEN_VENUE:-}}"
 HEDGE_VENUE="${CLI_HEDGE_VENUE:-${HEDGE_VENUE:-}}"
 
@@ -161,7 +170,8 @@ fi
 
 OPEN_EXCHANGE="${OPEN_VENUE%%-*}"
 HEDGE_EXCHANGE="${HEDGE_VENUE%%-*}"
-PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-xarb_pt_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}}}"
+ENV_TAG="$(infer_env_tag_from_dir "$dir_lc")"
+PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-xarb_pt_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}}}"
 
 args=(--open-venue "$OPEN_VENUE" --hedge-venue "$HEDGE_VENUE")
 if [[ -n "$RESAMPLE_SUFFIX" ]]; then

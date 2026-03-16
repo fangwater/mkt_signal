@@ -41,7 +41,7 @@ usage() {
 说明:
   - 需要在部署目录存在 env.sh（包含 IPC_NAMESPACE），否则 persist_manager 会 panic。
   - 会基于部署目录名推断 open/hedge exchange（目录名需形如 <open>-<hedge>-xarb-...）。
-  - 会以 pmdaemon 启动 1 个进程：persist_manager_xarb_<open>_<hedge>
+  - 会以 pmdaemon 启动 1 个进程：xarb_pm_<open>_<hedge>_<env>
 USAGE
 }
 
@@ -90,12 +90,17 @@ if [[ "$HEDGE_EXCHANGE" == "okx" ]]; then
   HEDGE_EXCHANGE="okex"
 fi
 
+ENV_TAG="xarb"
+if [[ "$dir_lc" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]xarb[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+  ENV_TAG="${BASH_REMATCH[1]//-/_}"
+fi
+
 if [[ -z "$OPEN_EXCHANGE" || -z "$HEDGE_EXCHANGE" ]]; then
   echo "[ERROR] 无法从目录名推断 open/hedge (dir=$dir_name)，期望 <open>-<hedge>-xarb-..."
   exit 1
 fi
 
-PROC_NAME="${PMDAEMON_NAME:-persist_manager_xarb_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}}"
+PROC_NAME="${PMDAEMON_NAME:-xarb_pm_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}}"
 RUST_LOG="${RUST_LOG:-info}"
 
 mkdir -p "${BASE_DIR}/data/persist_manager" >/dev/null 2>&1 || true

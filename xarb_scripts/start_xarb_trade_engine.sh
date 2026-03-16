@@ -41,8 +41,8 @@ usage() {
 说明:
   - 会基于部署目录名推断 open/hedge exchange（目录名需形如 <open>-<hedge>-xarb-...）
   - 将以 pmdaemon 启动两个进程：
-      xarb_te_<open>_<hedge>_open   -> trade_engine --exchange <open>
-      xarb_te_<open>_<hedge>_hedge  -> trade_engine --exchange <hedge>
+      xarb_te_<open>_<hedge>_<env>_open   -> trade_engine --exchange <open>
+      xarb_te_<open>_<hedge>_<env>_hedge  -> trade_engine --exchange <hedge>
   - 若存在 env.sh，会自动 source（用于 API credentials 等）
   - trade_engine 的本地 IP 从 /home/<user>/config/mkt_cfg.yaml 读取
 USAGE
@@ -87,6 +87,11 @@ if [[ "$HEDGE_EXCHANGE" == "okx" ]]; then
   HEDGE_EXCHANGE="okex"
 fi
 
+ENV_TAG="xarb"
+if [[ "$dir_lc" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]xarb[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+  ENV_TAG="${BASH_REMATCH[1]//-/_}"
+fi
+
 case "$OPEN_EXCHANGE" in
   binance|okex|bybit|bitget|gate) ;;
   *)
@@ -119,7 +124,7 @@ json_escape() {
 start_one() {
   local side="$1"
   local exchange="$2"
-  local proc_name="xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${side}"
+  local proc_name="xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}_${side}"
 
   local cfg_file
   cfg_file="$(mktemp)"
@@ -162,9 +167,9 @@ if [[ "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
 fi
 
 echo "[INFO] Started:"
-echo "  - xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_open"
+echo "  - xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}_open"
 if [[ "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
-  echo "  - xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_hedge"
+  echo "  - xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}_hedge"
 fi
-echo "[INFO] Logs: ${PMDAEMON[*]} logs xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_open --follow"
+echo "[INFO] Logs: ${PMDAEMON[*]} logs xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}_open --follow"
 echo "[INFO] Status: ${PMDAEMON[*]} list"

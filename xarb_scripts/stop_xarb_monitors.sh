@@ -50,6 +50,15 @@ normalize_exchange() {
   echo "$ex"
 }
 
+infer_env_tag_from_dir() {
+  local name="${1,,}"
+  if [[ "$name" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]xarb[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+    echo "${BASH_REMATCH[1]//-/_}"
+    return
+  fi
+  echo "xarb"
+}
+
 dir_name="$(basename "${BASE_DIR}")"
 dir_lc="${dir_name,,}"
 
@@ -64,6 +73,8 @@ if [[ -z "$OPEN_EXCHANGE" || -z "$HEDGE_EXCHANGE" ]]; then
   echo "[ERROR] 无法从目录名推断 open/hedge (dir=$dir_name)，期望 <open>-<hedge>-xarb-..."
   exit 1
 fi
+
+ENV_TAG="$(infer_env_tag_from_dir "$dir_name")"
 
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
@@ -126,7 +137,7 @@ cleanup_leaked() {
 stop_one() {
   local side="$1"
   local exchange="$2"
-  local proc_name="xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${side}"
+  local proc_name="xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}_${side}"
 
   echo "[INFO] Stopping $proc_name"
   if "${PMDAEMON[@]}" delete "$proc_name" >/dev/null 2>&1; then
