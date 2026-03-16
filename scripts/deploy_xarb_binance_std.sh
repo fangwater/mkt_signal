@@ -13,7 +13,7 @@ usage() {
   - 部署 Binance std 期现 xarb 环境：
       open=binance-margin
       hedge=binance-futures
-      BINANCE_ACCOUNT_MODE=standard
+      BINANCE_ACCOUNT_MODE=STANDARD
   - 环境目录固定为：$HOME/binance-binance-xarb-<suffix>
   - 只部署，不启动任何进程。
   - 支持 suffix: trade01、trade02、trade03
@@ -123,7 +123,7 @@ ensure_binance_standard_mode() {
     exit 1
   fi
 
-  local target='export BINANCE_ACCOUNT_MODE="standard"'
+  local target='export BINANCE_ACCOUNT_MODE="STANDARD"'
   if grep -Fqx "$target" "$env_file"; then
     return 0
   fi
@@ -138,7 +138,7 @@ path = pathlib.Path(sys.argv[1])
 text = path.read_text()
 text = re.sub(
     r'^export BINANCE_ACCOUNT_MODE=.*$',
-    'export BINANCE_ACCOUNT_MODE="standard"',
+    'export BINANCE_ACCOUNT_MODE="STANDARD"',
     text,
     count=1,
     flags=re.M,
