@@ -14,7 +14,9 @@ usage() {
 
 说明:
   - 会基于部署目录名推断 open/hedge exchange（目录名需形如 <open>-<hedge>-xarb-...）
-  - 停止 pmdaemon 进程：xarb_viz_<open>_<hedge>_<env>
+  - 停止 pmdaemon 进程：
+      跨所: xarb_viz_<open>_<hedge>_<env>
+      同所: xarb_viz_<exchange>_<env>
 EOF
 }
 
@@ -50,6 +52,9 @@ if [[ -z "$OPEN_EXCHANGE" || -z "$HEDGE_EXCHANGE" ]]; then
 fi
 
 PROC_NAME="xarb_viz_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}"
+if [[ "$OPEN_EXCHANGE" == "$HEDGE_EXCHANGE" ]]; then
+  PROC_NAME="xarb_viz_${OPEN_EXCHANGE}_${ENV_TAG}"
+fi
 
 if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1; then
   echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2

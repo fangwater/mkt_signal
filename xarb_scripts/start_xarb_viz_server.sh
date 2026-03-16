@@ -94,6 +94,9 @@ if [[ -z "$OPEN_EXCHANGE" || -z "$HEDGE_EXCHANGE" ]]; then
 fi
 
 PROC_NAME="xarb_viz_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}"
+if [[ "$OPEN_EXCHANGE" == "$HEDGE_EXCHANGE" ]]; then
+  PROC_NAME="xarb_viz_${OPEN_EXCHANGE}_${ENV_TAG}"
+fi
 RUST_LOG="${RUST_LOG:-info}"
 
 if [[ ! -f "$BASE_DIR/$CFG_PATH" ]]; then

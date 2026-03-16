@@ -21,7 +21,7 @@ usage() {
 
 说明:
   - 会基于部署目录名推断 open/hedge exchange（目录名需形如 <open>-<hedge>-xarb-...）
-  - 默认 all：停止两个 pmdaemon 进程
+  - 默认 all：跨所停止两个 pmdaemon 进程；同所只停止一个
 USAGE
 }
 
@@ -70,6 +70,25 @@ if [[ -z "$OPEN_EXCHANGE" || -z "$HEDGE_EXCHANGE" ]]; then
 fi
 
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
+
+proc_base_name() {
+  if [[ "$OPEN_EXCHANGE" == "$HEDGE_EXCHANGE" ]]; then
+    echo "xarb_te_${OPEN_EXCHANGE}_${ENV_TAG}"
+  else
+    echo "xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}"
+  fi
+}
+
+proc_name_for_side() {
+  local side="$1"
+  local base
+  base="$(proc_base_name)"
+  if [[ "$OPEN_EXCHANGE" == "$HEDGE_EXCHANGE" ]]; then
+    echo "$base"
+  else
+    echo "${base}_${side}"
+  fi
+}
 
 find_running_pids() {
   local exchange="$1"
@@ -131,7 +150,8 @@ cleanup_leaked() {
 stop_one() {
   local side="$1"
   local exchange="$2"
-  local proc_name="xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}_${side}"
+  local proc_name
+  proc_name="$(proc_name_for_side "$side")"
 
   echo "[INFO] Stopping $proc_name"
   if "${PMDAEMON[@]}" delete "$proc_name" >/dev/null 2>&1; then

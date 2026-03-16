@@ -23,9 +23,11 @@ usage() {
   - 启动 xarb 所需的两侧账户 monitor（当前支持 okex + binance）。
   - 会优先从 env.sh 读取 OPEN_VENUE/HEDGE_VENUE；
     若没有，则从部署目录名推断：<open>-<hedge>-xarb-...
-  - 会启动两个 pmdaemon 进程：
+  - 跨所会启动两个 pmdaemon 进程：
       xarb_am_<open>_<hedge>_<env>_open   -> account_monitor_<open_exchange>
       xarb_am_<open>_<hedge>_<env>_hedge  -> account_monitor_<hedge_exchange>
+  - 同所只启动一个 pmdaemon 进程：
+      xarb_am_<exchange>_<env> -> account_monitor_<exchange>
 
 前置:
   - 必须设置 IPC_NAMESPACE（建议在部署目录生成 env.sh）：
@@ -147,10 +149,30 @@ json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+proc_base_name() {
+  if [[ "$OPEN_EXCHANGE" == "$HEDGE_EXCHANGE" ]]; then
+    echo "xarb_am_${OPEN_EXCHANGE}_${ENV_TAG}"
+  else
+    echo "xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}"
+  fi
+}
+
+proc_name_for_side() {
+  local side="$1"
+  local base
+  base="$(proc_base_name)"
+  if [[ "$OPEN_EXCHANGE" == "$HEDGE_EXCHANGE" ]]; then
+    echo "$base"
+  else
+    echo "${base}_${side}"
+  fi
+}
+
 start_one() {
   local side="$1"
   local ex="$2"
-  local proc_name="xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}_${side}"
+  local proc_name
+  proc_name="$(proc_name_for_side "$side")"
 
   local bin
   if ! bin="$(bin_for_exchange "$ex")"; then
@@ -200,9 +222,9 @@ if [[ "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
 fi
 
 echo "[INFO] Started:"
-echo "  - xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}_open"
+echo "  - $(proc_name_for_side open)"
 if [[ "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
-  echo "  - xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}_hedge"
+  echo "  - $(proc_name_for_side hedge)"
 fi
-echo "[INFO] Logs: ${PMDAEMON[*]} logs xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}_open --follow"
+echo "[INFO] Logs: ${PMDAEMON[*]} logs $(proc_name_for_side open) --follow"
 echo "[INFO] Status: ${PMDAEMON[*]} list"

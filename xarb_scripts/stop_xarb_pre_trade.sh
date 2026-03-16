@@ -21,7 +21,9 @@ usage() {
 
 说明:
   - 会基于部署目录名推断 open/hedge exchange（目录名需形如 <open>-<hedge>-xarb-...）
-  - 停止 pmdaemon 进程：xarb_pt_<open>_<hedge>_<env>
+  - 停止 pmdaemon 进程：
+      跨所: xarb_pt_<open>_<hedge>_<env>
+      同所: xarb_pt_<exchange>_<env>
 USAGE
 }
 
@@ -94,7 +96,12 @@ fi
 OPEN_VENUE="$(ensure_xarb_venue "$OPEN_VENUE")"
 HEDGE_VENUE="$(ensure_xarb_venue "$HEDGE_VENUE")"
 
-PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-xarb_pt_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}}}"
+if [[ "$OPEN_EXCHANGE" == "$HEDGE_EXCHANGE" ]]; then
+  DEFAULT_PROC_NAME="xarb_pt_${OPEN_EXCHANGE}_${ENV_TAG}"
+else
+  DEFAULT_PROC_NAME="xarb_pt_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_${ENV_TAG}"
+fi
+PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-$DEFAULT_PROC_NAME}}"
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
 find_running_pids() {
