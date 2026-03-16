@@ -16,7 +16,7 @@ usage() {
       BINANCE_ACCOUNT_MODE=standard
   - 环境目录固定为：$HOME/binance-binance-xarb-<suffix>
   - 只部署，不启动任何进程。
-  - 支持 suffix: trade、trade01、trade02、trade03
+  - 支持 suffix: trade01、trade02、trade03
   - --bin: 跳过 env/config_server，仅更新主要进程部署产物
 EOF
 }
@@ -56,16 +56,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$ENV_SUFFIX" ]]; then
-  echo "[ERROR] 需要传入 env suffix（trade|trade01|trade02|trade03）" >&2
+  echo "[ERROR] 需要传入 env suffix（trade01|trade02|trade03）" >&2
   usage
   exit 1
 fi
 
 ENV_SUFFIX="$(echo "$ENV_SUFFIX" | tr 'A-Z' 'a-z')"
 case "$ENV_SUFFIX" in
-  trade)
-    CONFIG_PORT="18111"
-    ;;
   trade01)
     CONFIG_PORT="18151"
     ;;
@@ -76,7 +73,7 @@ case "$ENV_SUFFIX" in
     CONFIG_PORT="18153"
     ;;
   *)
-    echo "[ERROR] Binance std xarb 仅支持 suffix: trade|trade01|trade02|trade03（收到: ${ENV_SUFFIX}）" >&2
+    echo "[ERROR] Binance std xarb 仅支持 suffix: trade01|trade02|trade03（收到: ${ENV_SUFFIX}）" >&2
     exit 1
     ;;
 esac
