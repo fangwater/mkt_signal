@@ -65,6 +65,10 @@ pub struct StrategyParams {
     #[serde(default = "default_order_amount")]
     pub order_amount: f32,
 
+    /// xarb 开仓 plan 的波动边界缩放系数
+    #[serde(default = "default_open_scale")]
+    pub open_scale: f64,
+
     /// MM 报单触发间隔（毫秒）
     #[serde(default = "default_order_interval_ms")]
     pub order_interval_ms: u64,
@@ -124,6 +128,10 @@ pub struct StrategyParams {
     #[serde(default = "default_prediction_mode")]
     pub prediction_mode: bool,
 
+    /// xarb 是否启用 return score 拦截（false=只读取，不拦截开仓）
+    #[serde(default = "default_enable_return_score_model")]
+    pub enable_return_score_model: bool,
+
     /// 收益率模型输出通道（"-" 表示禁用）
     #[serde(default = "default_return_model_service")]
     pub return_model_service: String,
@@ -139,6 +147,9 @@ fn default_mode() -> String {
 }
 fn default_order_amount() -> f32 {
     100.0
+}
+fn default_open_scale() -> f64 {
+    1.0
 }
 fn default_order_interval_ms() -> u64 {
     5_000
@@ -188,6 +199,9 @@ fn default_signal_cooldown() -> u64 {
 fn default_prediction_mode() -> bool {
     false
 }
+fn default_enable_return_score_model() -> bool {
+    false
+}
 fn default_return_model_service() -> String {
     "return_model".to_string()
 }
@@ -200,6 +214,7 @@ impl Default for StrategyParams {
         Self {
             mode: default_mode(),
             order_amount: default_order_amount(),
+            open_scale: default_open_scale(),
             order_interval_ms: default_order_interval_ms(),
             open_orders_per_round: default_open_orders_per_round(),
             hedge_orders_per_round: default_hedge_orders_per_round(),
@@ -216,6 +231,7 @@ impl Default for StrategyParams {
             max_hedge_price_pct_change: default_max_hedge_price_pct_change(),
             signal_cooldown: default_signal_cooldown(),
             prediction_mode: default_prediction_mode(),
+            enable_return_score_model: default_enable_return_score_model(),
             return_model_service: default_return_model_service(),
             environment_model_service: default_environment_model_service(),
         }
@@ -248,6 +264,11 @@ impl StrategyParams {
             .get("order_amount")
             .and_then(|s| s.parse::<f32>().ok())
             .unwrap_or_else(default_order_amount);
+        let open_scale = hash_map
+            .get("open_scale")
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .unwrap_or_else(default_open_scale);
 
         let order_interval_ms = match hash_map.get("order_interval_ms") {
             Some(raw) => {
@@ -384,7 +405,22 @@ impl StrategyParams {
             None => default_prediction_mode(),
         };
 
-        let strict_return_model_required = ns == "xarb" || ns == "mm";
+        let enable_return_score_model = match hash_map.get("enable_return_score_model") {
+            Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" => true,
+                "false" | "0" | "no" | "off" | "" => false,
+                _ => {
+                    panic!(
+                        "Redis hash '{}' enable_return_score_model 非法（仅支持 true/false）: {}",
+                        redis_key, raw
+                    )
+                }
+            },
+            None => default_enable_return_score_model(),
+        };
+
+        let strict_return_model_required =
+            ns == "mm" || (ns == "xarb" && enable_return_score_model);
         let strict_env_model_dash_only = false;
         let allow_missing_model_service = ns == "fr";
         let return_model_service = match hash_map.get("return_model_service") {
@@ -489,6 +525,7 @@ impl StrategyParams {
         Ok(Self {
             mode,
             order_amount,
+            open_scale,
             order_interval_ms,
             open_orders_per_round,
             hedge_orders_per_round,
@@ -505,6 +542,7 @@ impl StrategyParams {
             max_hedge_price_pct_change,
             signal_cooldown,
             prediction_mode,
+            enable_return_score_model,
             return_model_service,
             environment_model_service,
         })
@@ -560,13 +598,15 @@ impl StrategyParams {
         .is_some()
             || XarbDecision::try_with_mut(|decision| {
                 decision.update_order_amount(self.order_amount);
-                decision.update_price_offsets(self.parse_price_offsets());
+                decision.update_open_scale(self.open_scale);
+                decision.update_open_orders_per_round(self.open_orders_per_round);
                 decision.update_open_order_timeout(self.open_order_timeout);
                 decision.update_hedge_timeout(self.hedge_timeout);
                 decision.update_hedge_price_offset(self.hedge_price_offset);
                 decision.update_hedge_aggressive_seq_threshold(self.hedge_aggressive_seq_threshold);
                 decision.update_max_hedge_price_pct_change(self.max_hedge_price_pct_change);
                 decision.update_signal_cooldown(self.signal_cooldown);
+                decision.update_enable_return_score_model(self.enable_return_score_model);
                 decision.update_model_service_roles(
                     self.return_model_service.clone(),
                     self.environment_model_service.clone(),
@@ -604,13 +644,15 @@ impl StrategyParams {
         }
 
         info!(
-            "✅ 策略参数已更新: mode={}, amount={:.2}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: mode={}, amount={:.2}, open_scale={:.4}, order_interval_ms={}, open_orders_per_round={}, cooldown={}s, prediction_mode={}, enable_return_score_model={}, return_model_service={}, environment_model_service={}",
             self.mode,
             self.order_amount,
+            self.open_scale,
             self.order_interval_ms,
             self.open_orders_per_round,
             self.signal_cooldown,
             self.prediction_mode,
+            self.enable_return_score_model,
             self.return_model_service,
             self.environment_model_service
         );

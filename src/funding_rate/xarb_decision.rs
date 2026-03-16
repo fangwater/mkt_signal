@@ -31,6 +31,9 @@ use crate::common::ipc_service_name::build_service_name;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
+use crate::market_maker::quote_plan_levels::{
+    build_quote_plan_levels, QuotePlanLevel, QuotePlanLevelSpec,
+};
 use crate::pre_trade::order_manager::{OrderType, Side};
 use crate::signal::cancel_signal::ArbCancelCtx;
 use crate::signal::common::{
@@ -52,6 +55,118 @@ const PNLU_MAX_AGE_SECS: i64 = 30 * 60;
 const TARGET_FACTOR_NAME: &str = "rl_return_volatility";
 const TARGET_FACTOR_KEY_PREFIX: &str = TARGET_FACTOR_NAME;
 const ENV_MODEL_TRUE_THRESHOLD_DEFAULT: f64 = 0.0;
+
+#[derive(Debug, Clone)]
+struct XarbOpenQuotePlan {
+    side: Side,
+    inner_price: f64,
+    outer_price: f64,
+    price_tick: f64,
+    qty_tick: f64,
+    levels: Vec<QuotePlanLevel>,
+}
+
+fn build_xarb_level_specs(
+    side: Side,
+    inner_price: f64,
+    volatility: f64,
+    level_count: usize,
+) -> Vec<QuotePlanLevelSpec> {
+    if level_count == 0 || !inner_price.is_finite() || inner_price <= 0.0 {
+        return Vec::new();
+    }
+    if !volatility.is_finite() || volatility < 0.0 {
+        return Vec::new();
+    }
+    if level_count == 1 || volatility <= 0.0 {
+        return vec![QuotePlanLevelSpec {
+            side,
+            side_level_index: 1,
+            offset: 0.0,
+            base_price: inner_price,
+        }];
+    }
+
+    let step = volatility / (level_count - 1) as f64;
+    (0..level_count)
+        .map(|idx| QuotePlanLevelSpec {
+            side,
+            side_level_index: idx + 1,
+            offset: step * idx as f64,
+            base_price: inner_price,
+        })
+        .collect()
+}
+
+fn build_xarb_open_quote_plan(
+    venue: TradingVenue,
+    symbol: &str,
+    quote: Quote,
+    order_amount_u: f64,
+    orders_per_round: u32,
+    side: Side,
+    volatility: f64,
+    table: &VenueMinQtyTable,
+) -> Result<XarbOpenQuotePlan, String> {
+    if symbol.trim().is_empty() {
+        return Err("symbol is empty".to_string());
+    }
+    if quote.bid <= 0.0 || quote.ask <= 0.0 || quote.bid >= quote.ask {
+        return Err(format!(
+            "invalid quote bid={} ask={} symbol={}",
+            quote.bid, quote.ask, symbol
+        ));
+    }
+    if !(order_amount_u.is_finite() && order_amount_u > 0.0) {
+        return Err(format!(
+            "invalid order_amount_u={} (must be finite and >0)",
+            order_amount_u
+        ));
+    }
+    if orders_per_round == 0 {
+        return Err("orders_per_round must be > 0".to_string());
+    }
+    if !volatility.is_finite() || volatility < 0.0 {
+        return Err(format!(
+            "invalid volatility symbol={} volatility={}",
+            symbol, volatility
+        ));
+    }
+
+    let inner_price = match side {
+        Side::Buy => quote.bid,
+        Side::Sell => quote.ask,
+    };
+    let outer_price = match side {
+        Side::Buy => inner_price * (1.0 - volatility),
+        Side::Sell => inner_price * (1.0 + volatility),
+    };
+    let specs = build_xarb_level_specs(side, inner_price, volatility, orders_per_round as usize);
+    if specs.is_empty() {
+        return Err(format!(
+            "empty xarb level specs symbol={} side={:?} inner={:.8} volatility={:.8} levels={}",
+            symbol, side, inner_price, volatility, orders_per_round
+        ));
+    }
+
+    let (price_tick, qty_tick, levels) =
+        build_quote_plan_levels(venue, symbol, order_amount_u, &specs, table)?;
+    if levels.is_empty() {
+        return Err(format!(
+            "empty levels after alignment symbol={} side={:?} levels={}",
+            symbol, side, orders_per_round
+        ));
+    }
+
+    Ok(XarbOpenQuotePlan {
+        side,
+        inner_price,
+        outer_price,
+        price_tick,
+        qty_tick,
+        levels,
+    })
+}
 
 fn min_qty_symbol_key(venue: TradingVenue, trade_symbol: &str) -> String {
     match venue {
@@ -118,18 +233,20 @@ pub struct XarbDecision {
     channel_name: String,
     node: Node<ipc::Service>,
 
-    price_offsets: Vec<f64>,
+    open_orders_per_round: u32,
 
     open_min_qty_table: VenueMinQtyTable,
     hedge_min_qty_table: VenueMinQtyTable,
     venues: VenuePair,
 
     order_amount: f32,
+    open_scale: f64,
     open_order_ttl_us: i64,
     hedge_timeout_mm_us: i64,
     hedge_price_offset: f64,
     hedge_aggressive_seq_threshold: u32,
     max_hedge_price_pct_change: f64, // percent, 1~99
+    enable_return_score_model: bool,
     return_model_service: Option<String>,
     environment_model_service: Option<String>,
     environment_model_true_threshold: f64,
@@ -157,36 +274,6 @@ impl XarbDecision {
     ) -> FactorValueLookupResult {
         self.factor_value_hub
             .lookup_target_factor_value(hedge_symbol, hedge_venue)
-    }
-
-    fn get_ready_return_model_score_lookup(
-        &mut self,
-        open_symbol_key: &str,
-        hedge_symbol: &str,
-        hedge_venue: TradingVenue,
-        signal_name: &str,
-    ) -> Option<ModelOutputScoreLookupResult> {
-        let Some(service_name) = self.return_model_service.clone() else {
-            return None;
-        };
-        let score_lookup = self.factor_value_hub.lookup_model_output_score(
-            &service_name,
-            hedge_symbol,
-            hedge_venue,
-        );
-        if score_lookup.subscribed && score_lookup.score.is_none() {
-            info!(
-                "XarbDecision: drop {} signal open_symbol={} hedge_symbol={} service={} model_symbol={} note={} (subscribed but score not ready)",
-                signal_name,
-                open_symbol_key,
-                hedge_symbol,
-                score_lookup.service_name,
-                score_lookup.symbol_key,
-                score_lookup.note
-            );
-            return None;
-        }
-        Some(score_lookup)
     }
 
     fn lookup_return_model_score_lookup(
@@ -343,7 +430,6 @@ impl XarbDecision {
         )?;
         let pnlu_profile = format!("{}-{}", venues.0.data_pub_slug(), venues.1.data_pub_slug());
 
-        let price_offsets = vec![0.0002, 0.0004, 0.0006, 0.0008, 0.001];
         let open_min_qty_table = VenueMinQtyTable::new(venues.0);
         let hedge_min_qty_table = VenueMinQtyTable::new(venues.1);
 
@@ -358,16 +444,18 @@ impl XarbDecision {
             factor_value_hub,
             channel_name: DEFAULT_SIGNAL_CHANNEL.to_string(),
             node,
-            price_offsets,
+            open_orders_per_round: 5,
             open_min_qty_table,
             hedge_min_qty_table,
             venues,
             order_amount: 100.0,
+            open_scale: 1.0,
             open_order_ttl_us: 120_000_000,
             hedge_timeout_mm_us: 30_000_000,
             hedge_price_offset: 0.0003,
             hedge_aggressive_seq_threshold: 6,
             max_hedge_price_pct_change: 5.0,
+            enable_return_score_model: false,
             return_model_service: None,
             environment_model_service: None,
             environment_model_true_threshold: ENV_MODEL_TRUE_THRESHOLD_DEFAULT,
@@ -446,13 +534,11 @@ impl XarbDecision {
         environment_model_service: String,
     ) {
         let return_trimmed = return_model_service.trim();
-        if return_trimmed.is_empty() || return_trimmed == "-" {
-            panic!(
-                "XarbDecision: return_model_service must not be '-' or empty (got '{}')",
-                return_trimmed
-            );
-        }
-        self.return_model_service = Some(return_trimmed.to_string());
+        self.return_model_service = if return_trimmed.is_empty() || return_trimmed == "-" {
+            None
+        } else {
+            Some(return_trimmed.to_string())
+        };
         let env_trimmed = environment_model_service.trim();
         self.environment_model_service = if env_trimmed.is_empty() || env_trimmed == "-" {
             None
@@ -460,11 +546,41 @@ impl XarbDecision {
             Some(env_trimmed.to_string())
         };
         info!(
-            "XarbDecision: model roles updated return={:?} environment={:?} env_true_threshold={:.6}",
+            "XarbDecision: model roles updated enable_return_score_model={} return={:?} environment={:?} env_true_threshold={:.6}",
+            self.enable_return_score_model,
             self.return_model_service,
             self.environment_model_service,
             self.environment_model_true_threshold
         );
+    }
+
+    pub fn update_enable_return_score_model(&mut self, enabled: bool) {
+        self.enable_return_score_model = enabled;
+        info!(
+            "XarbDecision: enable_return_score_model updated enabled={}",
+            self.enable_return_score_model
+        );
+    }
+
+    pub fn update_open_orders_per_round(&mut self, open_orders_per_round: u32) {
+        if open_orders_per_round == 0 {
+            warn!("XarbDecision: 忽略无效的 open_orders_per_round=0 更新请求");
+            return;
+        }
+        self.open_orders_per_round = open_orders_per_round;
+        info!(
+            "XarbDecision: open_orders_per_round 已更新，总档位 {}",
+            self.open_orders_per_round
+        );
+    }
+
+    pub fn update_open_scale(&mut self, open_scale: f64) {
+        if !(open_scale.is_finite() && open_scale > 0.0) {
+            warn!("XarbDecision: 忽略无效的 open_scale={}", open_scale);
+            return;
+        }
+        self.open_scale = open_scale;
+        info!("XarbDecision: open_scale 已更新为 {:.6}", self.open_scale);
     }
 
     pub fn update_return_score_thresholds(
@@ -609,52 +725,68 @@ impl XarbDecision {
         if cooldown_hit {
             return Ok(None);
         }
-        let Some(score_lookup) = self.get_ready_return_model_score_lookup(
-            open_symbol_key.as_str(),
-            hedge_symbol,
-            hedge_venue,
-            "ArbOpen",
-        ) else {
-            return Ok(None);
-        };
-        let Some(return_score) = score_lookup.score.filter(|v| v.is_finite()) else {
-            info!(
-                "XarbDecision: drop ArbOpen open_symbol={} hedge_symbol={} service={} model_symbol={} note={} (score not ready)",
-                open_symbol_key,
-                hedge_symbol,
-                score_lookup.service_name,
-                score_lookup.symbol_key,
-                score_lookup.note
-            );
-            return Ok(None);
-        };
-        let Some(thresholds) = self.lookup_return_score_thresholds(&score_lookup.symbol_key) else {
-            warn!(
-                "XarbDecision: missing return score thresholds open_symbol={} hedge_symbol={} model_symbol={} venue={:?}, skip",
-                open_symbol_key,
-                hedge_symbol,
-                score_lookup.symbol_key,
-                hedge_venue
-            );
-            return Ok(None);
-        };
-        let return_threshold = self.select_open_return_threshold(side, thresholds);
-        let return_open_hit = match side {
-            Side::Buy => return_score > return_threshold,
-            Side::Sell => return_score < return_threshold,
-        };
-        if !return_open_hit {
-            info!(
-                "XarbDecision: skip ArbOpen by return score open_symbol={} hedge_symbol={} side={:?} score={:.8} ret_thr={:.8} service={} model_symbol={}",
-                open_symbol_key,
-                hedge_symbol,
-                side,
-                return_score,
-                return_threshold,
-                score_lookup.service_name,
-                score_lookup.symbol_key
-            );
-            return Ok(None);
+        let return_lookup = self.lookup_return_model_score_lookup(hedge_symbol, hedge_venue);
+        let mut return_score = return_lookup
+            .as_ref()
+            .and_then(|lookup| lookup.score)
+            .filter(|v| v.is_finite());
+        let mut return_threshold = return_lookup.as_ref().and_then(|lookup| {
+            self.lookup_return_score_thresholds(&lookup.symbol_key)
+                .map(|thresholds| self.select_open_return_threshold(side, thresholds))
+        });
+
+        if self.enable_return_score_model {
+            let Some(score_lookup) = return_lookup else {
+                warn!(
+                    "XarbDecision: drop ArbOpen open_symbol={} hedge_symbol={} reason=missing_return_model_service",
+                    open_symbol_key,
+                    hedge_symbol
+                );
+                return Ok(None);
+            };
+            let Some(score_value) = score_lookup.score.filter(|v| v.is_finite()) else {
+                info!(
+                    "XarbDecision: drop ArbOpen open_symbol={} hedge_symbol={} service={} model_symbol={} note={} (score not ready)",
+                    open_symbol_key,
+                    hedge_symbol,
+                    score_lookup.service_name,
+                    score_lookup.symbol_key,
+                    score_lookup.note
+                );
+                return Ok(None);
+            };
+            let Some(threshold_value) = self
+                .lookup_return_score_thresholds(&score_lookup.symbol_key)
+                .map(|thresholds| self.select_open_return_threshold(side, thresholds))
+            else {
+                warn!(
+                    "XarbDecision: missing return score thresholds open_symbol={} hedge_symbol={} model_symbol={} venue={:?}, skip",
+                    open_symbol_key,
+                    hedge_symbol,
+                    score_lookup.symbol_key,
+                    hedge_venue
+                );
+                return Ok(None);
+            };
+            let return_open_hit = match side {
+                Side::Buy => score_value > threshold_value,
+                Side::Sell => score_value < threshold_value,
+            };
+            if !return_open_hit {
+                info!(
+                    "XarbDecision: skip ArbOpen by return score open_symbol={} hedge_symbol={} side={:?} score={:.8} ret_thr={:.8} service={} model_symbol={}",
+                    open_symbol_key,
+                    hedge_symbol,
+                    side,
+                    score_value,
+                    threshold_value,
+                    score_lookup.service_name,
+                    score_lookup.symbol_key
+                );
+                return Ok(None);
+            }
+            return_score = Some(score_value);
+            return_threshold = Some(threshold_value);
         }
         let environment_signal = self.evaluate_environment_signal(
             open_symbol_key.as_str(),
@@ -686,9 +818,8 @@ impl XarbDecision {
             open_venue,
             hedge_venue,
             side,
-            Some(return_score),
-            Some(return_threshold),
-            environment_signal.class_label,
+            return_score,
+            return_threshold,
             environment_score,
             environment_signal.threshold,
             rl_return_volatility_factor,
@@ -874,7 +1005,6 @@ impl XarbDecision {
                 now,
                 return_score,
                 return_threshold,
-                environment_signal.class_label,
                 environment_score,
                 environment_signal.threshold,
                 target_factor_lookup.target_factor_value,
@@ -1027,7 +1157,6 @@ impl XarbDecision {
             now,
             return_score,
             return_threshold,
-            environment_signal.class_label,
             environment_score,
             environment_signal.threshold,
             target_factor_lookup.target_factor_value,
@@ -1112,7 +1241,6 @@ impl XarbDecision {
         side: Side,
         return_score: Option<f64>,
         return_threshold: Option<f64>,
-        environment_label: i8,
         environment_score: f64,
         environment_threshold: Option<f64>,
         rl_return_volatility_factor: f64,
@@ -1125,6 +1253,7 @@ impl XarbDecision {
         // Use one batch timestamp for all grid offsets in this emit call.
         let batch_ts = get_timestamp_us();
         let spread_rate = compute_spread_rate(&open_quote, &hedge_quote);
+        let scaled_volatility = (rl_return_volatility_factor * self.open_scale).max(0.0);
         let base_from_key = build_decision_from_key_base(
             batch_ts,
             return_score,
@@ -1133,20 +1262,41 @@ impl XarbDecision {
             Some(environment_score),
             environment_threshold,
         );
-        let from_key =
-            format!("{base_from_key}:env_label={environment_label}:spread={spread_rate:.6}");
+        let from_key = format!(
+            "{base_from_key}:spread={spread_rate:.6}:open_scale={:.6}",
+            self.open_scale
+        );
 
-        for offset in &self.price_offsets {
-            let ctx = self.build_open_context(
+        let plan = match build_xarb_open_quote_plan(
+            open_venue,
+            open_symbol,
+            open_quote,
+            self.order_amount as f64,
+            self.open_orders_per_round,
+            side,
+            scaled_volatility,
+            self.table_for(open_venue),
+        ) {
+            Ok(plan) => plan,
+            Err(err) => {
+                warn!(
+                    "XarbDecision: build open quote plan failed open={} hedge={} side={:?} err={}",
+                    open_symbol, hedge_symbol, side, err
+                );
+                return Ok(());
+            }
+        };
+
+        for level in &plan.levels {
+            let ctx = self.build_open_context_from_level(
                 open_symbol,
                 hedge_symbol,
                 open_venue,
                 hedge_venue,
                 &open_quote,
                 &hedge_quote,
-                *offset,
+                level,
                 batch_ts,
-                side,
                 from_key.as_str(),
             );
 
@@ -1155,12 +1305,20 @@ impl XarbDecision {
         }
 
         info!(
-            "XarbDecision: emitted {} {:?} signal(s) to '{}' open={} hedge={}",
-            self.price_offsets.len(),
+            "XarbDecision: emitted {} {:?} signal(s) to '{}' open={} hedge={} side={:?} inner={:.8} outer={:.8} vol={:.8} open_scale={:.6} scaled_vol={:.8} price_tick={:.8} qty_tick={:.8}",
+            plan.levels.len(),
             SignalType::ArbOpen,
             self.channel_name,
             open_symbol,
-            hedge_symbol
+            hedge_symbol,
+            plan.side,
+            plan.inner_price,
+            plan.outer_price,
+            rl_return_volatility_factor,
+            self.open_scale,
+            scaled_volatility,
+            plan.price_tick,
+            plan.qty_tick
         );
 
         Ok(())
@@ -1183,17 +1341,41 @@ impl XarbDecision {
         let spread_rate = compute_spread_rate(&open_quote, &hedge_quote);
         let from_key = format!("{batch_ts}:dump:{spread_rate:.6}");
 
-        for offset in &self.price_offsets {
-            let ctx = self.build_open_context(
+        let volatility = self
+            .lookup_target_factor_value(hedge_symbol, hedge_venue)
+            .target_factor_value
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .unwrap_or(0.0);
+        let plan = match build_xarb_open_quote_plan(
+            open_venue,
+            open_symbol,
+            open_quote,
+            self.order_amount as f64,
+            self.open_orders_per_round,
+            side,
+            volatility,
+            self.table_for(open_venue),
+        ) {
+            Ok(plan) => plan,
+            Err(err) => {
+                warn!(
+                    "XarbDecision: build close quote plan failed open={} hedge={} side={:?} err={}",
+                    open_symbol, hedge_symbol, side, err
+                );
+                return Ok(());
+            }
+        };
+
+        for level in &plan.levels {
+            let ctx = self.build_open_context_from_level(
                 open_symbol,
                 hedge_symbol,
                 open_venue,
                 hedge_venue,
                 &open_quote,
                 &hedge_quote,
-                *offset,
+                level,
                 batch_ts,
-                side,
                 from_key.as_str(),
             );
 
@@ -1202,12 +1384,18 @@ impl XarbDecision {
         }
 
         info!(
-            "XarbDecision: emitted {} {:?} signal(s) to '{}' open={} hedge={}",
-            self.price_offsets.len(),
+            "XarbDecision: emitted {} {:?} signal(s) to '{}' open={} hedge={} side={:?} inner={:.8} outer={:.8} vol={:.8} price_tick={:.8} qty_tick={:.8}",
+            plan.levels.len(),
             SignalType::ArbClose,
             self.channel_name,
             open_symbol,
-            hedge_symbol
+            hedge_symbol,
+            plan.side,
+            plan.inner_price,
+            plan.outer_price,
+            volatility,
+            plan.price_tick,
+            plan.qty_tick
         );
 
         Ok(())
@@ -1242,7 +1430,7 @@ impl XarbDecision {
         Ok(())
     }
 
-    fn build_open_context(
+    fn build_open_context_from_level(
         &self,
         open_symbol: &str,
         hedge_symbol: &str,
@@ -1250,9 +1438,8 @@ impl XarbDecision {
         hedge_venue: TradingVenue,
         open_quote: &Quote,
         hedge_quote: &Quote,
-        price_offset: f64,
+        level: &QuotePlanLevel,
         now: i64,
-        side: Side,
         from_key: &str,
     ) -> ArbOpenCtx {
         let mut ctx = ArbOpenCtx::new();
@@ -1271,23 +1458,9 @@ impl XarbDecision {
         );
         ctx.set_hedging_symbol(&hedge_trade_symbol);
 
-        ctx.set_side(side);
+        ctx.set_side(level.side);
         ctx.set_order_type(OrderType::Limit);
-
-        let base_price = match side {
-            Side::Buy => open_quote.bid,
-            Side::Sell => open_quote.ask,
-        };
-        let raw_open_price = if base_price > 0.0 {
-            match side {
-                Side::Buy => base_price * (1.0 - price_offset),
-                Side::Sell => base_price * (1.0 + price_offset),
-            }
-        } else {
-            0.0
-        };
-        let aligned_open_price =
-            self.align_open_price_for_signal(open_venue, &open_trade_symbol, raw_open_price);
+        let aligned_open_price = level.aligned_price;
 
         let base_qty = self.convert_order_amount_to_aligned_base_qty(
             open_venue,
@@ -1297,7 +1470,7 @@ impl XarbDecision {
             open_quote,
             hedge_quote,
             aligned_open_price,
-            side,
+            level.side,
         );
         let aligned_open_qty = self.convert_aligned_base_qty_to_open_venue_qty(
             open_venue,
@@ -1341,7 +1514,7 @@ impl XarbDecision {
 
         ctx.exp_time = now + self.open_order_ttl_us;
         ctx.create_ts = now;
-        ctx.price_offset = price_offset;
+        ctx.price_offset = level.offset;
         ctx.spread_rate = compute_spread_rate(open_quote, hedge_quote);
 
         let spread_factor = SpreadFactor::instance();
@@ -1361,7 +1534,6 @@ impl XarbDecision {
         now: i64,
         return_score: Option<f64>,
         return_threshold: Option<f64>,
-        environment_label: i8,
         environment_score: f64,
         environment_threshold: Option<f64>,
         rl_return_volatility_factor: Option<f64>,
@@ -1376,10 +1548,7 @@ impl XarbDecision {
             Some(environment_score),
             environment_threshold,
         );
-        format!(
-            "{base_from_key}:env_label={environment_label}:pct_change={pct_change:.6}:spread={spread_rate:.6}"
-        )
-        .into_bytes()
+        format!("{base_from_key}:pct_change={pct_change:.6}:spread={spread_rate:.6}").into_bytes()
     }
 
     fn build_cancel_context(
@@ -1417,25 +1586,6 @@ impl XarbDecision {
             &self.open_min_qty_table
         } else {
             &self.hedge_min_qty_table
-        }
-    }
-
-    fn align_open_price_for_signal(
-        &self,
-        open_venue: TradingVenue,
-        open_symbol: &str,
-        raw_price: f64,
-    ) -> f64 {
-        if raw_price <= 0.0 {
-            return 0.0;
-        }
-        let table = self.table_for(open_venue);
-        let symbol_key = min_qty_symbol_key(open_venue, open_symbol);
-        let tick = table.price_tick(&symbol_key).unwrap_or(0.0);
-        if tick > 0.0 {
-            align_price_floor(raw_price, tick)
-        } else {
-            raw_price
         }
     }
 
@@ -1628,18 +1778,6 @@ impl XarbDecision {
         base_qty
     }
 
-    pub fn update_price_offsets(&mut self, offsets: Vec<f64>) {
-        if offsets.is_empty() {
-            warn!("XarbDecision: 忽略空的 price_offsets 更新请求");
-            return;
-        }
-        self.price_offsets = offsets;
-        info!(
-            "XarbDecision: price_offsets 已更新，总档位 {}",
-            self.price_offsets.len()
-        );
-    }
-
     pub fn update_open_order_timeout(&mut self, open_secs: u64) {
         if open_secs == 0 {
             warn!("XarbDecision: open_secs=0 无效，忽略更新");
@@ -1820,5 +1958,28 @@ impl XarbDecision {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_xarb_level_specs;
+    use crate::pre_trade::order_manager::Side;
+
+    #[test]
+    fn xarb_buy_plan_starts_from_bbo_and_reaches_vol_edge() {
+        let specs = build_xarb_level_specs(Side::Buy, 100.0, 0.01, 4);
+        assert_eq!(specs.len(), 4);
+        assert!((specs[0].offset - 0.0).abs() < 1e-12);
+        assert!((specs[1].offset - (0.01 / 3.0)).abs() < 1e-12);
+        assert!((specs[3].offset - 0.01).abs() < 1e-12);
+    }
+
+    #[test]
+    fn xarb_single_level_plan_joins_bbo() {
+        let specs = build_xarb_level_specs(Side::Sell, 100.0, 0.02, 1);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].side, Side::Sell);
+        assert!((specs[0].offset - 0.0).abs() < 1e-12);
     }
 }

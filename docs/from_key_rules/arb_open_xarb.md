@@ -3,23 +3,27 @@
 格式：
 
 ```text
-time:pnlu_factor:rl_factor:spread_rate
+time:ret_score=...:ret_thr=...:vol=...:env_score=...:env_thr=...:spread=...:open_scale=...
 ```
 
 字段说明：
 - `time`：`get_timestamp_us()`，微秒时间戳。
-- `pnlu_factor`：Redis 的 PNLU 因子，缺失时回退为 `0.000000`。
-- `rl_factor`：`rl_return_volatility` 因子，缺失时回退为 `0.000000`。
-- `spread_rate`：开仓腿与对冲腿的中间价价差率，计算公式为 `(mid_open - mid_hedge) / mid_open`。
+- `ret_score`：return score，缺失时回退为 `0`。
+- `ret_thr`：return threshold，缺失时回退为 `0`。
+- `vol`：原始 `rl_return_volatility` 因子值，未乘 `open_scale`。
+- `env_score`：环境分数；环境模型关闭时回退为 `pnlu` 口径。
+- `env_thr`：环境阈值；缺失时回退为 `0`。
+- `spread`：开仓腿与对冲腿的中间价价差率，计算公式为 `(mid_open - mid_hedge) / mid_open`。
+- `open_scale`：开仓 plan 的波动边界缩放系数。
 
 说明：
-- 为统一追踪，`ArbOpen` 的 `from_key` 现在同时携带 `pnlu_factor` 与 `rl_factor`。
-- 该调整不改变 Open 决策逻辑，只增加记录信息。
+- `ArbOpen` 的实际报价 plan 使用 `vol * open_scale` 作为单边展开边界。
+- `env_score/env_thr` 记录实际环境信号值；当环境模型关闭时，就是 `pnlu` 的值。
 
 示例：
 
 ```text
-1738912345678901:1.250000:0.001500:0.001234
+1738912345678901:ret_score=0.12345678:ret_thr=0.04500000:vol=0.00200000:env_score=0.00272464:env_thr=0.00167874:spread=0.001234:open_scale=1.200000
 ```
 
 代码来源：

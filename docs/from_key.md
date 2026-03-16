@@ -30,9 +30,9 @@
 ### XARB
 
 - `ArbOpen`
-  - `time:pnlu_factor:rl_factor:spread_rate`
+  - `time:ret_score=...:ret_thr=...:vol=...:env_score=...:env_thr=...:spread=...:open_scale=...`
 - `ArbHedge`
-  - `time:pnlu_factor:rl_factor:pct_change:threshold_pct:spread_rate`
+  - `time:ret_score=...:ret_thr=...:vol=...:env_score=...:env_thr=...:pct_change=...:spread=...`
 - `ArbClose`（dump 路径）
   - `time:dump:spread_rate`
 
