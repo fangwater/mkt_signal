@@ -1024,11 +1024,13 @@ impl Order {
                 // 余额判断：记录余额不足场景。STANDARD 模式走 spot ws-api，不传 sideEffectType。
                 if available_balance < required_amount {
                     let borrow_amount = required_amount - available_balance;
-                    warn!(
-                        "💰 余额不足将借币: 资产={} 需要={:.8} 可用={:.8} 需借={:.8} symbol={} side={:?} qty={:.4} price={:.6}",
-                        check_asset, required_amount, available_balance, borrow_amount,
-                        self.symbol, self.side, self.quantity, self.price
-                    );
+                    if !(use_binance_ws_margin && self.side == Side::Sell) {
+                        warn!(
+                            "💰 余额不足将借币: 资产={} 需要={:.8} 可用={:.8} 需借={:.8} symbol={} side={:?} qty={:.4} price={:.6}",
+                            check_asset, required_amount, available_balance, borrow_amount,
+                            self.symbol, self.side, self.quantity, self.price
+                        );
+                    }
                     if !use_binance_ws_margin {
                         params_parts.push("sideEffectType=MARGIN_BUY".to_string());
                     } else {

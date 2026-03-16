@@ -481,15 +481,17 @@ impl HedgeArbStrategy {
             let available_balance =
                 MonitorChannel::instance().balance_position_for_venue(venue, &check_asset);
             if available_balance + 1e-12 < required_amount {
-                error!(
-                    "HedgeArbStrategy: strategy_id={} BinanceMargin STANDARD 余额不足，拒绝开仓并标记策略不活跃 symbol={} side={:?} asset={} required={:.8} available={:.8}",
-                    self.strategy_id,
-                    symbol,
-                    open_side,
-                    check_asset,
-                    required_amount,
-                    available_balance
-                );
+                if open_side != Side::Sell {
+                    error!(
+                        "HedgeArbStrategy: strategy_id={} BinanceMargin STANDARD 余额不足，拒绝开仓并标记策略不活跃 symbol={} side={:?} asset={} required={:.8} available={:.8}",
+                        self.strategy_id,
+                        symbol,
+                        open_side,
+                        check_asset,
+                        required_amount,
+                        available_balance
+                    );
+                }
                 self.alive_flag = false;
                 return;
             }

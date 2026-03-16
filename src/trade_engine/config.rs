@@ -14,6 +14,7 @@ pub struct RestConstants;
 impl RestConstants {
     pub const BINANCE_BASE_URL: &'static str = "https://papi.binance.com";
     pub const BINANCE_FAPI_BASE_URL: &'static str = "https://fapi.binance.com";
+    pub const BINANCE_SAPI_BASE_URL: &'static str = "https://api.binance.com";
     pub const TIMEOUT_MS: u64 = 10_000;
     pub const RECV_WINDOW_MS: u64 = 5_000;
 }

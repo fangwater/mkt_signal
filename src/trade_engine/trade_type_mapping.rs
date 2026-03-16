@@ -16,7 +16,8 @@ impl TradeTypeMapping {
             | TradeRequestType::BinanceCancelAllUMConditionalOrders
             | TradeRequestType::BinanceCancelMarginOrder
             | TradeRequestType::BinanceModifyUMOrder
-            | TradeRequestType::BinanceUMSetLeverage => false,
+            | TradeRequestType::BinanceUMSetLeverage
+            | TradeRequestType::BinanceUniversalTransfer => false,
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
@@ -51,6 +52,7 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceCancelMarginOrder => "/papi/v1/margin/order",
             TradeRequestType::BinanceModifyUMOrder => "/papi/v1/um/order",
             TradeRequestType::BinanceUMSetLeverage => "/papi/v1/um/leverage",
+            TradeRequestType::BinanceUniversalTransfer => "/sapi/v1/asset/transfer",
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
@@ -85,6 +87,7 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceCancelMarginOrder => "DELETE",
             TradeRequestType::BinanceModifyUMOrder => "PUT",
             TradeRequestType::BinanceUMSetLeverage => "POST",
+            TradeRequestType::BinanceUniversalTransfer => "POST",
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
@@ -119,6 +122,7 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceCancelMarginOrder => 2,
             TradeRequestType::BinanceModifyUMOrder => 1,
             TradeRequestType::BinanceUMSetLeverage => 1,
+            TradeRequestType::BinanceUniversalTransfer => 900,
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
@@ -153,6 +157,7 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceCancelMarginOrder => true,
             TradeRequestType::BinanceModifyUMOrder => true,
             TradeRequestType::BinanceUMSetLeverage => true,
+            TradeRequestType::BinanceUniversalTransfer => true,
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
@@ -187,6 +192,7 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceCancelMarginOrder => true,
             TradeRequestType::BinanceModifyUMOrder => true,
             TradeRequestType::BinanceUMSetLeverage => true,
+            TradeRequestType::BinanceUniversalTransfer => true,
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
@@ -206,5 +212,43 @@ impl TradeTypeMapping {
                 unreachable!("Gate requests run via websocket; REST mapping not used")
             }
         }
+    }
+
+    pub fn counts_toward_order_limit(request_type: TradeRequestType) -> bool {
+        !matches!(request_type, TradeRequestType::BinanceUniversalTransfer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TradeTypeMapping;
+    use crate::trade_engine::trade_request::TradeRequestType;
+
+    #[test]
+    fn binance_universal_transfer_maps_to_sapi() {
+        assert!(!TradeTypeMapping::is_websocket(
+            TradeRequestType::BinanceUniversalTransfer
+        ));
+        assert_eq!(
+            TradeTypeMapping::get_endpoint(TradeRequestType::BinanceUniversalTransfer),
+            "/sapi/v1/asset/transfer"
+        );
+        assert_eq!(
+            TradeTypeMapping::get_method(TradeRequestType::BinanceUniversalTransfer),
+            "POST"
+        );
+        assert_eq!(
+            TradeTypeMapping::get_weight(TradeRequestType::BinanceUniversalTransfer),
+            900
+        );
+        assert!(TradeTypeMapping::requires_signature(
+            TradeRequestType::BinanceUniversalTransfer
+        ));
+        assert!(TradeTypeMapping::requires_api_key(
+            TradeRequestType::BinanceUniversalTransfer
+        ));
+        assert!(!TradeTypeMapping::counts_toward_order_limit(
+            TradeRequestType::BinanceUniversalTransfer
+        ));
     }
 }

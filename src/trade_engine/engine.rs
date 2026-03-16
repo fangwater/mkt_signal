@@ -541,7 +541,9 @@ impl TradeEngine {
                             weight: Some(weight),
                             account: None,
                             req_id: Some(msg.client_order_id.to_string()),
-                            counts_toward_order_limit: true,
+                            counts_toward_order_limit: TradeTypeMapping::counts_toward_order_limit(
+                                msg.req_type,
+                            ),
                         };
 
                         let outcome = {

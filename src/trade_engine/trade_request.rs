@@ -20,6 +20,7 @@ pub enum TradeRequestType {
     BinanceWsCancelUMOrder = 4014,              // 币安UM WebSocket 撤单请求
     BinanceWsNewMarginOrder = 4015,             // 币安现货(标准账户) WebSocket 下单请求
     BinanceWsCancelMarginOrder = 4016,          // 币安现货(标准账户) WebSocket 撤单请求
+    BinanceUniversalTransfer = 4017,            // 币安万向划转请求
     OkexNewMarginOrder = 5001,                  // Okex 下单（现货/杠杆）
     OkexNewUMOrder = 5002,                      // Okex 下单（合约/UM风格）
     OkexCancelMarginOrder = 5003,               // Okex 撤单（现货/杠杆）
@@ -66,6 +67,7 @@ impl TryFrom<u32> for TradeRequestType {
             4014 => Ok(TradeRequestType::BinanceWsCancelUMOrder),
             4015 => Ok(TradeRequestType::BinanceWsNewMarginOrder),
             4016 => Ok(TradeRequestType::BinanceWsCancelMarginOrder),
+            4017 => Ok(TradeRequestType::BinanceUniversalTransfer),
             5001 => Ok(TradeRequestType::OkexNewMarginOrder),
             5002 => Ok(TradeRequestType::OkexNewUMOrder),
             5003 => Ok(TradeRequestType::OkexCancelMarginOrder),
@@ -248,6 +250,38 @@ impl BinanceWsNewMarginOrderRequest {
         buf.put_i64_le(self.header.client_order_id);
         buf.put(self.params.clone());
 
+        buf.freeze()
+    }
+}
+
+// 币安万向划转请求
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct BinanceUniversalTransferRequest {
+    pub header: TradeRequestHeader,
+    pub params: Bytes, // 包含 type=...&asset=...&amount=... （其余由引擎补齐并签名）
+}
+
+impl BinanceUniversalTransferRequest {
+    pub fn create(create_time: i64, client_order_id: i64, params: Bytes) -> Self {
+        let header = TradeRequestHeader {
+            msg_type: TradeRequestType::BinanceUniversalTransfer as u32,
+            params_length: params.len() as u32,
+            create_time,
+            client_order_id,
+        };
+
+        Self { header, params }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 4 + 8 + 8 + self.params.len();
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.header.msg_type);
+        buf.put_u32_le(self.header.params_length);
+        buf.put_i64_le(self.header.create_time);
+        buf.put_i64_le(self.header.client_order_id);
+        buf.put(self.params.clone());
         buf.freeze()
     }
 }

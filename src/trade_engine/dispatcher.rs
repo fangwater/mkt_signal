@@ -65,6 +65,7 @@ impl AccountState {
 pub struct Dispatcher {
     base_url_papi: String,
     base_url_fapi: String,
+    base_url_sapi: String,
     ip_clients: Vec<IpClient>,
     accounts: Vec<AccountState>,
 }
@@ -111,10 +112,15 @@ impl Dispatcher {
             .ok()
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| RestConstants::BINANCE_FAPI_BASE_URL.to_string());
+        let base_url_sapi = std::env::var("BINANCE_SAPI_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| RestConstants::BINANCE_SAPI_BASE_URL.to_string());
 
         Ok(Self {
             base_url_papi,
             base_url_fapi,
+            base_url_sapi,
             ip_clients,
             accounts,
         })
@@ -230,6 +236,8 @@ impl Dispatcher {
 
         let base_url = if evt.endpoint.starts_with("/fapi/") {
             &self.base_url_fapi
+        } else if evt.endpoint.starts_with("/sapi/") {
+            &self.base_url_sapi
         } else {
             &self.base_url_papi
         };
