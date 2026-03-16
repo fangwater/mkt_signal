@@ -286,16 +286,16 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     <h1>XARB 配置中心</h1>
     <div class="toolbar">
       <div class="field">
-        <label for="exchange">Open Exchange</label>
-        <select id="exchange"></select>
+        <label for="env-name">Env</label>
+        <input id="env-name" readonly />
       </div>
       <div class="field">
         <label for="open-venue">Open Venue</label>
-        <input id="open-venue" />
+        <input id="open-venue" readonly />
       </div>
       <div class="field">
         <label for="hedge-venue">Hedge Venue</label>
-        <input id="hedge-venue" />
+        <input id="hedge-venue" readonly />
       </div>
       <div class="field">
         <label>Symbol Key Suffix</label>
@@ -441,7 +441,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
   <script>
     const BOOTSTRAP = __BOOTSTRAP__;
 
-    const exchangeSelect = document.getElementById('exchange');
+    const envNameInput = document.getElementById('env-name');
     const openVenueInput = document.getElementById('open-venue');
     const hedgeVenueInput = document.getElementById('hedge-venue');
     const keySuffixEl = document.getElementById('key-suffix');
@@ -458,22 +458,12 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       return raw === 'okx' ? 'okex' : raw;
     }
 
-    function fillExchanges() {
-      exchangeSelect.innerHTML = '';
-      BOOTSTRAP.exchanges.forEach(ex => {
-        const opt = document.createElement('option');
-        opt.value = ex;
-        opt.textContent = ex;
-        if (ex === BOOTSTRAP.default_exchange) opt.selected = true;
-        exchangeSelect.appendChild(opt);
-      });
-    }
-
-    function applyExchangeDefaults() {
+    function applyFixedContext() {
+      envNameInput.value = BOOTSTRAP.env_name || '';
       const defaultOpen = BOOTSTRAP.default_open_venue || '';
       const defaultHedge = BOOTSTRAP.default_hedge_venue || '';
-      if (!openVenueInput.value) openVenueInput.value = defaultOpen;
-      if (!hedgeVenueInput.value) hedgeVenueInput.value = defaultHedge;
+      openVenueInput.value = defaultOpen;
+      hedgeVenueInput.value = defaultHedge;
       refreshKeySuffix();
     }
 
@@ -504,9 +494,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
 
     function queryParams(extra = {}) {
       const params = new URLSearchParams();
-      params.set('exchange', normalizeExchange(exchangeSelect.value));
-      if (openVenueInput.value) params.set('open_venue', openVenueInput.value.trim());
-      if (hedgeVenueInput.value) params.set('hedge_venue', hedgeVenueInput.value.trim());
       Object.keys(extra).forEach(key => {
         if (extra[key]) params.set(key, extra[key]);
       });
@@ -590,7 +577,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       setStatus('sym-status', '保存中...');
       try {
         const payload = {
-          exchange: normalizeExchange(exchangeSelect.value),
           open_venue: openVenueInput.value.trim(),
           hedge_venue: hedgeVenueInput.value.trim(),
           dump_symbols: toList(document.getElementById('sym-dump').value),
@@ -609,7 +595,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     }
 
     function applySymbolDefaults() {
-      const ex = normalizeExchange(exchangeSelect.value);
+      const ex = normalizeExchange(BOOTSTRAP.default_exchange || '');
       const defaults = (BOOTSTRAP.defaults.symbol_lists || {})[ex] || {};
       document.getElementById('sym-dump').value = fromList(defaults.dump_symbols || []);
       document.getElementById('sym-fwd').value = fromList(defaults.fwd_trade_symbols || []);
@@ -632,7 +618,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       setStatus('risk-status', '保存中...');
       try {
         const payload = {
-          exchange: normalizeExchange(exchangeSelect.value),
           open_venue: openVenueInput.value.trim(),
           hedge_venue: hedgeVenueInput.value.trim(),
           values: collectParamValues('risk-table'),
@@ -669,7 +654,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       setStatus('strategy-status', '保存中...');
       try {
         const payload = {
-          exchange: normalizeExchange(exchangeSelect.value),
           open_venue: openVenueInput.value.trim(),
           hedge_venue: hedgeVenueInput.value.trim(),
           values: collectParamValues('strategy-table'),
@@ -705,7 +689,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       setStatus('funding-status', '保存中...');
       try {
         const payload = {
-          exchange: normalizeExchange(exchangeSelect.value),
           open_venue: openVenueInput.value.trim(),
           hedge_venue: hedgeVenueInput.value.trim(),
           values: collectParamValues('funding-table'),
@@ -765,7 +748,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           throw new Error(`factors JSON 无法解析: ${err}`);
         }
         const payload = {
-          exchange: normalizeExchange(exchangeSelect.value),
           open_venue: openVenueInput.value.trim(),
           hedge_venue: hedgeVenueInput.value.trim(),
           values: {
@@ -802,7 +784,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       setStatus('spread-status', '保存中...');
       try {
         const payload = {
-          exchange: normalizeExchange(exchangeSelect.value),
           open_venue: openVenueInput.value.trim(),
           hedge_venue: hedgeVenueInput.value.trim(),
           values: collectParamValues('spread-table'),
@@ -823,7 +804,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       try {
         const symbol = document.getElementById('spread-symbol').value.trim();
         const payload = {
-          exchange: normalizeExchange(exchangeSelect.value),
           open_venue: openVenueInput.value.trim(),
           hedge_venue: hedgeVenueInput.value.trim(),
           symbol,
@@ -850,16 +830,11 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       await loadSpreadMapping();
     }
 
-    fillExchanges();
-    applyExchangeDefaults();
+    applyFixedContext();
     buildParamRows('risk-table', BOOTSTRAP.defaults.risk_params || {}, BOOTSTRAP.comments.risk_params || {}, BOOTSTRAP.order.risk || [], {});
     buildParamRows('strategy-table', BOOTSTRAP.defaults.strategy_params || {}, BOOTSTRAP.comments.strategy_params || {}, BOOTSTRAP.order.strategy || [], {});
     buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, BOOTSTRAP.comments.funding_thresholds || {}, BOOTSTRAP.order.funding_thresholds || [], {});
     buildParamRows('spread-table', BOOTSTRAP.defaults.spread_mapping || {}, {}, BOOTSTRAP.order.spread_mapping || [], {});
-
-    exchangeSelect.addEventListener('change', refreshKeySuffix);
-    openVenueInput.addEventListener('input', refreshKeySuffix);
-    hedgeVenueInput.addEventListener('input', refreshKeySuffix);
 
     document.getElementById('sym-load').addEventListener('click', loadSymbolLists);
     document.getElementById('sym-save').addEventListener('click', saveSymbolLists);
@@ -1243,6 +1218,7 @@ def render_index_html(
     default_hedge_venue: Optional[str],
 ) -> str:
     bootstrap = {
+        "env_name": infer_dir_prefix_from_cwd() or "",
         "exchanges": SUPPORTED_EXCHANGES,
         "default_exchange": default_exchange,
         "default_open_venue": default_open_venue or "",
@@ -1324,19 +1300,52 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
+    def _fixed_context(self) -> Tuple[str, str, str, str]:
+        open_venue = self.server.context.default_open_venue
+        hedge_venue = self.server.context.default_hedge_venue
+        if not open_venue or not hedge_venue:
+            raise ValueError("xarb_config_server missing fixed open/hedge venue")
+        exchange = exchange_from_venue(open_venue) or self.server.context.default_exchange
+        key_suffix = make_key_suffix(open_venue, hedge_venue)
+        return exchange, open_venue, hedge_venue, key_suffix
+
+    def _validate_requested_context(
+        self,
+        exchange: Optional[str],
+        open_venue: Optional[str],
+        hedge_venue: Optional[str],
+    ) -> None:
+        fixed_exchange, fixed_open, fixed_hedge, _ = self._fixed_context()
+        if exchange and normalize_exchange(exchange) != fixed_exchange:
+            raise ValueError(
+                f"xarb_config_server is bound to exchange={fixed_exchange}, got {exchange}"
+            )
+        if open_venue and open_venue.strip().lower() != fixed_open:
+            raise ValueError(
+                f"xarb_config_server is bound to open_venue={fixed_open}, got {open_venue}"
+            )
+        if hedge_venue and hedge_venue.strip().lower() != fixed_hedge:
+            raise ValueError(
+                f"xarb_config_server is bound to hedge_venue={fixed_hedge}, got {hedge_venue}"
+            )
+
     def _resolve_request_context(self, params: Dict[str, List[str]]) -> Tuple[str, str, str, str]:
-        exchange = normalize_exchange(
-            (params.get("exchange") or [self.server.context.default_exchange])[0]
-        )
+        exchange = (params.get("exchange") or [None])[0]
         open_venue = (params.get("open_venue") or [None])[0]
         hedge_venue = (params.get("hedge_venue") or [None])[0]
-        return resolve_venues(
-            exchange,
-            open_venue,
-            hedge_venue,
-            self.server.context.default_open_venue,
-            self.server.context.default_hedge_venue,
+        self._validate_requested_context(exchange, open_venue, hedge_venue)
+        return self._fixed_context()
+
+    def _resolve_payload_context(self, payload: Dict[str, Any]) -> Tuple[str, str, str, str]:
+        exchange = payload.get("exchange")
+        open_venue = payload.get("open_venue")
+        hedge_venue = payload.get("hedge_venue")
+        self._validate_requested_context(
+            str(exchange) if exchange is not None else None,
+            str(open_venue) if open_venue is not None else None,
+            str(hedge_venue) if hedge_venue is not None else None,
         )
+        return self._fixed_context()
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -1463,19 +1472,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             sys.stdout.flush()
 
         if parsed.path == "/api/symbol-lists":
-            exchange = normalize_exchange(
-                str(payload.get("exchange") or self.server.context.default_exchange)
-            )
-            open_venue = payload.get("open_venue")
-            hedge_venue = payload.get("hedge_venue")
             try:
-                _, open_v, hedge_v, key_suffix = resolve_venues(
-                    exchange,
-                    open_venue,
-                    hedge_venue,
-                    self.server.context.default_open_venue,
-                    self.server.context.default_hedge_venue,
-                )
+                exchange, open_v, hedge_v, key_suffix = self._resolve_payload_context(payload)
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
@@ -1541,17 +1539,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/risk-params":
-            exchange = normalize_exchange(
-                str(payload.get("exchange") or self.server.context.default_exchange)
-            )
             try:
-                _, open_v, hedge_v, _ = resolve_venues(
-                    exchange,
-                    payload.get("open_venue"),
-                    payload.get("hedge_venue"),
-                    self.server.context.default_open_venue,
-                    self.server.context.default_hedge_venue,
-                )
+                exchange, open_v, hedge_v, _ = self._resolve_payload_context(payload)
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
@@ -1570,17 +1559,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/strategy-params":
-            exchange = normalize_exchange(
-                str(payload.get("exchange") or self.server.context.default_exchange)
-            )
             try:
-                _, open_v, hedge_v, _ = resolve_venues(
-                    exchange,
-                    payload.get("open_venue"),
-                    payload.get("hedge_venue"),
-                    self.server.context.default_open_venue,
-                    self.server.context.default_hedge_venue,
-                )
+                _, open_v, hedge_v, _ = self._resolve_payload_context(payload)
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
@@ -1594,17 +1574,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/funding-thresholds":
-            exchange = normalize_exchange(
-                str(payload.get("exchange") or self.server.context.default_exchange)
-            )
             try:
-                _, open_v, hedge_v, _ = resolve_venues(
-                    exchange,
-                    payload.get("open_venue"),
-                    payload.get("hedge_venue"),
-                    self.server.context.default_open_venue,
-                    self.server.context.default_hedge_venue,
-                )
+                _, open_v, hedge_v, _ = self._resolve_payload_context(payload)
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
@@ -1618,17 +1589,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/rolling-params":
-            exchange = normalize_exchange(
-                str(payload.get("exchange") or self.server.context.default_exchange)
-            )
             try:
-                _, open_v, hedge_v, _ = resolve_venues(
-                    exchange,
-                    payload.get("open_venue"),
-                    payload.get("hedge_venue"),
-                    self.server.context.default_open_venue,
-                    self.server.context.default_hedge_venue,
-                )
+                _, open_v, hedge_v, _ = self._resolve_payload_context(payload)
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
@@ -1643,17 +1605,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/spread-thresholds":
-            exchange = normalize_exchange(
-                str(payload.get("exchange") or self.server.context.default_exchange)
-            )
             try:
-                _, open_v, hedge_v, _ = resolve_venues(
-                    exchange,
-                    payload.get("open_venue"),
-                    payload.get("hedge_venue"),
-                    self.server.context.default_open_venue,
-                    self.server.context.default_hedge_venue,
-                )
+                _, open_v, hedge_v, _ = self._resolve_payload_context(payload)
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
@@ -1673,17 +1626,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/spread-thresholds/sync":
-            exchange = normalize_exchange(
-                str(payload.get("exchange") or self.server.context.default_exchange)
-            )
             try:
-                _, open_v, hedge_v, key_suffix = resolve_venues(
-                    exchange,
-                    payload.get("open_venue"),
-                    payload.get("hedge_venue"),
-                    self.server.context.default_open_venue,
-                    self.server.context.default_hedge_venue,
-                )
+                _, open_v, hedge_v, key_suffix = self._resolve_payload_context(payload)
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
