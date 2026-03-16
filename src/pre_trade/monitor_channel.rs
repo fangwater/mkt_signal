@@ -357,6 +357,17 @@ impl MonitorChannel {
         })
     }
 
+    pub fn account_scope_for_venue(&self, venue: TradingVenue) -> BasicAccountScope {
+        Self::with_inner(|inner| {
+            let binance_mode = if inner.order_manager.borrow().binance_is_standard() {
+                Some(BinanceAccountMode::Standard)
+            } else {
+                Some(BinanceAccountMode::Unified)
+            };
+            scope_for_venue(venue, binance_mode)
+        })
+    }
+
     /// 获取当前基础风控口径的快照（用于 resample/viz）
     ///
     /// 返回：

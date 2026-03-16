@@ -165,10 +165,14 @@ fn spawn_pre_trade_risk_listener(
                     "total_equity": entry.total_equity,
                     "total_exposure": entry.total_exposure,
                     "total_position": entry.total_position,
+                    "spot_equity_usd": entry.spot_equity_usd,
                     "borrowed_usd": entry.borrowed_usd,
                     "interest_usd": entry.interest_usd,
+                    "um_unrealized_usd": entry.um_unrealized_usd,
                     "leverage": entry.leverage,
                     "max_leverage": entry.max_leverage,
+                    "open_leg": entry.open_leg,
+                    "hedge_leg": entry.hedge_leg,
                 },
             })) {
                 hub.broadcast(msg);

@@ -82,6 +82,20 @@ pub struct PreTradeRiskResampleEntry {
     pub um_unrealized_usd: f64,
     pub leverage: f64,
     pub max_leverage: f64,
+    pub open_leg: PreTradeVenueRiskResampleEntry,
+    pub hedge_leg: PreTradeVenueRiskResampleEntry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreTradeVenueRiskResampleEntry {
+    pub venue: String,
+    pub total_equity: f64,
+    pub total_position: f64,
+    pub spot_equity_usd: f64,
+    pub borrowed_usd: f64,
+    pub interest_usd: f64,
+    pub um_unrealized_usd: f64,
+    pub leverage: f64,
 }
 
 macro_rules! impl_codec {

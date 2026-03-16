@@ -3,17 +3,23 @@ use crate::common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
 use crate::pre_trade::basic_exposure_manager::BasicExposureManager;
+use crate::pre_trade::basic_um_manager::BasicUmManager;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
+use crate::pre_trade::price_table::PriceEntry;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::usdt_balance_manager::UsdtBalanceSnapshot;
+use crate::common::min_qty_table::MinQtyTable;
 use crate::signal::common::TradingVenue;
 use crate::viz::resample::{
     PreTradeExposureResampleEntry, PreTradeExposureRow, PreTradeRiskResampleEntry,
+    PreTradeVenueRiskResampleEntry,
 };
 use anyhow::Result;
 use log::{debug, info, trace, warn};
 use std::cell::OnceCell;
+use std::collections::BTreeMap;
+use std::rc::Rc;
 use std::time::Duration;
 
 fn print_exposure_table(
@@ -124,6 +130,143 @@ fn usdt_net_position(exchange: Exchange, s: &UsdtBalanceSnapshot) -> f64 {
             s.balance - s.borrowed - s.cumulative_interest
         }
         _ => s.balance,
+    }
+}
+
+fn sum_position_usd(
+    exchange: Exchange,
+    balance_mgrs: &[&BasicBalanceManager],
+    um_mgrs: &[(&BasicUmManager, &MinQtyTable)],
+    price_snapshot: &BTreeMap<String, PriceEntry>,
+) -> f64 {
+    let price_mapper = create_symbol_mapper(exchange);
+    BasicExposureManager::compute_exposures_for_exchange(exchange, balance_mgrs, um_mgrs)
+        .into_iter()
+        .filter(|entry| !entry.asset.eq_ignore_ascii_case("USDT"))
+        .filter_map(|entry| {
+            let symbol = price_mapper.asset_to_price_symbol(&entry.asset);
+            let mark = price_snapshot.get(&symbol).map(|p| p.mark_price).unwrap_or(0.0);
+            if mark <= 0.0 {
+                None
+            } else {
+                Some(entry.exposure.abs() * mark)
+            }
+        })
+        .sum()
+}
+
+fn sum_borrow_interest_usd(
+    balance_mgr: &BasicBalanceManager,
+    price_snapshot: &BTreeMap<String, PriceEntry>,
+) -> (f64, f64) {
+    let exchange = balance_mgr.exchange();
+    let price_mapper = create_symbol_mapper(exchange);
+    let mut borrowed_usd = 0.0_f64;
+    let mut interest_usd = 0.0_f64;
+    for entry in BasicExposureManager::compute_exposures_for_exchange(
+        exchange,
+        std::slice::from_ref(&balance_mgr),
+        &[],
+    ) {
+        if entry.borrowed.abs() <= 1e-12 && entry.interest.abs() <= 1e-12 {
+            continue;
+        }
+        if entry.asset.eq_ignore_ascii_case("USDT") {
+            continue;
+        }
+        let symbol = price_mapper.asset_to_price_symbol(&entry.asset);
+        let mark = price_snapshot.get(&symbol).map(|p| p.mark_price).unwrap_or(0.0);
+        if mark <= 0.0 {
+            continue;
+        }
+        borrowed_usd += entry.borrowed * mark;
+        interest_usd += entry.interest * mark;
+    }
+    (borrowed_usd, interest_usd)
+}
+
+fn compute_leg_risk_entry(
+    mon: &MonitorChannel,
+    venue: TradingVenue,
+    include_usdt_scope: bool,
+    price_snapshot: &BTreeMap<String, PriceEntry>,
+) -> PreTradeVenueRiskResampleEntry {
+    let exchange = Exchange::from_str(venue.trade_engine_exchange()).unwrap_or(Exchange::Binance);
+    let mut total_equity = 0.0_f64;
+    let mut total_position = 0.0_f64;
+    let mut borrowed_usd = 0.0_f64;
+    let mut interest_usd = 0.0_f64;
+    let mut um_unrealized_usd = 0.0_f64;
+
+    let balance_mgr: Option<Rc<_>> = if mon.open_venue() == venue {
+        mon.open_balance_mgr()
+    } else if mon.hedge_venue() == venue {
+        mon.hedge_balance_mgr()
+    } else {
+        None
+    };
+    if let Some(balance_mgr) = balance_mgr {
+        let mgr = balance_mgr.borrow();
+        let mgr_ref: &BasicBalanceManager = &mgr;
+        let mut exposure_mgr = BasicExposureManager::new_from_sources(
+            exchange,
+            std::slice::from_ref(&mgr_ref),
+            &[],
+        );
+        exposure_mgr.revalue_with_prices(price_snapshot);
+        total_equity += exposure_mgr.total_equity();
+        total_position += sum_position_usd(exchange, std::slice::from_ref(&mgr_ref), &[], price_snapshot);
+        let (borrowed, interest) = sum_borrow_interest_usd(mgr_ref, price_snapshot);
+        borrowed_usd += borrowed;
+        interest_usd += interest;
+    }
+
+    let um_mgr: Option<(Rc<_>, Rc<_>)> = if mon.open_venue() == venue {
+        mon.open_um_mgr()
+    } else if mon.hedge_venue() == venue {
+        mon.hedge_um_mgr()
+    } else {
+        None
+    };
+    if let Some((um_mgr, min_qty_table)) = um_mgr {
+        let um = um_mgr.borrow();
+        let min_qty = min_qty_table.borrow();
+        let um_ref: &BasicUmManager = &um;
+        let min_qty_ref: &MinQtyTable = &min_qty;
+        total_position += sum_position_usd(
+            exchange,
+            &[],
+            std::slice::from_ref(&(um_ref, min_qty_ref)),
+            price_snapshot,
+        );
+        um_unrealized_usd += um_ref.total_unrealized_pnl_usdt();
+    }
+
+    if include_usdt_scope {
+        if let Some(snapshot) = mon.usdt_snapshot_for_venue(venue) {
+            total_equity += usdt_net_position(exchange, &snapshot);
+            borrowed_usd += snapshot.borrowed;
+            interest_usd += snapshot.cumulative_interest;
+        }
+    }
+
+    total_equity += um_unrealized_usd;
+    let spot_equity_usd = total_equity - um_unrealized_usd;
+    let leverage = if total_equity.abs() <= f64::EPSILON {
+        0.0
+    } else {
+        total_position / total_equity
+    };
+
+    PreTradeVenueRiskResampleEntry {
+        venue: venue.data_pub_slug().to_string(),
+        total_equity,
+        total_position,
+        spot_equity_usd,
+        borrowed_usd,
+        interest_usd,
+        um_unrealized_usd,
+        leverage,
     }
 }
 
@@ -435,48 +578,17 @@ impl ResampleChannel {
 
         // 发布风险数据
         if let Some(publisher) = self.risk_pub.as_ref() {
-            // borrowed/interest 只能从 basic balance stream 得到，按现货资产估值
-            let mut borrowed_usd = 0.0_f64;
-            let mut interest_usd = 0.0_f64;
-            for bal_mgr in [mon.open_balance_mgr(), mon.hedge_balance_mgr()]
-                .into_iter()
-                .flatten()
-            {
-                let mgr = bal_mgr.borrow();
-                let mgr_ref: &BasicBalanceManager = &*mgr;
-                let exchange = mgr.exchange();
-                let price_mapper = create_symbol_mapper(exchange);
-                let entries = BasicExposureManager::compute_exposures_for_exchange(
-                    exchange,
-                    std::slice::from_ref(&mgr_ref),
-                    &[],
-                );
-                for entry in entries {
-                    if entry.borrowed.abs() <= 1e-12 && entry.interest.abs() <= 1e-12 {
-                        continue;
-                    }
-                    if entry.asset.eq_ignore_ascii_case("USDT") {
-                        continue;
-                    }
-                    let symbol = price_mapper.asset_to_price_symbol(&entry.asset);
-                    let mark = price_snapshot
-                        .get(&symbol)
-                        .map(|p| p.mark_price)
-                        .unwrap_or(0.0);
-                    if mark <= 0.0 {
-                        continue;
-                    }
-                    borrowed_usd += entry.borrowed * mark;
-                    interest_usd += entry.interest * mark;
-                }
-            }
-            // USDT 借贷/利息单独维护：USDT 本身按 1:1 计价
-            for (scope, s) in mon.usdt_snapshot_all() {
-                let _ = scope; // 仅用于日志与排查，此处汇总不区分账户 scope
-                borrowed_usd += s.borrowed;
-                interest_usd += s.cumulative_interest;
-            }
-
+            let open_scope = mon.account_scope_for_venue(mon.open_venue());
+            let hedge_scope = mon.account_scope_for_venue(mon.hedge_venue());
+            let open_leg = compute_leg_risk_entry(&mon, mon.open_venue(), true, &price_snapshot);
+            let hedge_leg = compute_leg_risk_entry(
+                &mon,
+                mon.hedge_venue(),
+                open_scope != hedge_scope,
+                &price_snapshot,
+            );
+            let borrowed_usd = open_leg.borrowed_usd + hedge_leg.borrowed_usd;
+            let interest_usd = open_leg.interest_usd + hedge_leg.interest_usd;
             let max_leverage = PreTradeParamsLoader::instance().max_leverage();
             // total_equity 口径：若涉及合约 venue，已包含 UPL。
             let leverage = if total_equity.abs() <= f64::EPSILON {
@@ -498,6 +610,8 @@ impl ResampleChannel {
                 um_unrealized_usd,
                 leverage,
                 max_leverage,
+                open_leg,
+                hedge_leg,
             };
             if Self::publish_encoded(entry.to_bytes()?, publisher)? {
                 published += 1;
