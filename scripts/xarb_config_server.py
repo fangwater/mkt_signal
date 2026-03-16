@@ -97,6 +97,30 @@ def build_risk_params_key(open_venue: str, hedge_venue: str) -> str:
         return f"{dir_prefix}:{open_venue}:{hedge_venue}:pre_trade_risk_params"
     return f"{open_venue}:{hedge_venue}:pre_trade_risk_params"
 
+
+def venue_kind(venue: str) -> str:
+    raw = (venue or "").strip().lower()
+    if "-" not in raw:
+        return ""
+    return raw.split("-", 1)[1]
+
+
+def funding_thresholds_applicable(open_venue: Optional[str], hedge_venue: Optional[str]) -> bool:
+    if not open_venue or not hedge_venue:
+        return True
+    open_exchange = exchange_from_venue(open_venue)
+    hedge_exchange = exchange_from_venue(hedge_venue)
+    if not open_exchange or not hedge_exchange:
+        return True
+    if open_exchange != hedge_exchange:
+        return True
+
+    open_kind = venue_kind(open_venue)
+    hedge_kind = venue_kind(hedge_venue)
+    if open_kind in {"margin", "spot"} and hedge_kind in {"futures", "swap", "perp", "perpetual"}:
+        return False
+    return True
+
 try:
     import sync_xarb_risk_params as risk_defaults
 
@@ -310,7 +334,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <a href="#symbol-lists">Symbol Lists</a>
       <a href="#strategy-params">Strategy Params</a>
       <a href="#risk-params">Risk Params</a>
-      <a href="#funding-thresholds">Funding Thresholds</a>
+      <a id="funding-nav-link" href="#funding-thresholds">Funding Thresholds</a>
       <a href="#rolling-params">Rolling Params</a>
       <a href="#spread-thresholds">Spread Thresholds</a>
     </div>
@@ -825,15 +849,31 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       await loadSymbolLists();
       await loadStrategyParams();
       await loadRiskParams();
-      await loadFundingThresholds();
+      if (BOOTSTRAP.features?.funding_thresholds !== false) {
+        await loadFundingThresholds();
+      }
       await loadRollingParams();
       await loadSpreadMapping();
     }
 
     applyFixedContext();
+
+    function applyFeatureVisibility() {
+      const fundingEnabled = BOOTSTRAP.features?.funding_thresholds !== false;
+      const fundingPanel = document.getElementById('funding-thresholds');
+      const fundingNav = document.getElementById('funding-nav-link');
+      if (!fundingEnabled) {
+        if (fundingPanel) fundingPanel.style.display = 'none';
+        if (fundingNav) fundingNav.style.display = 'none';
+      }
+    }
+
+    applyFeatureVisibility();
     buildParamRows('risk-table', BOOTSTRAP.defaults.risk_params || {}, BOOTSTRAP.comments.risk_params || {}, BOOTSTRAP.order.risk || [], {});
     buildParamRows('strategy-table', BOOTSTRAP.defaults.strategy_params || {}, BOOTSTRAP.comments.strategy_params || {}, BOOTSTRAP.order.strategy || [], {});
-    buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, BOOTSTRAP.comments.funding_thresholds || {}, BOOTSTRAP.order.funding_thresholds || [], {});
+    if (BOOTSTRAP.features?.funding_thresholds !== false) {
+      buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, BOOTSTRAP.comments.funding_thresholds || {}, BOOTSTRAP.order.funding_thresholds || [], {});
+    }
     buildParamRows('spread-table', BOOTSTRAP.defaults.spread_mapping || {}, {}, BOOTSTRAP.order.spread_mapping || [], {});
 
     document.getElementById('sym-load').addEventListener('click', loadSymbolLists);
@@ -848,9 +888,11 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     document.getElementById('strategy-save').addEventListener('click', saveStrategyParams);
     document.getElementById('strategy-default').addEventListener('click', applyStrategyDefaults);
 
-    document.getElementById('funding-load').addEventListener('click', loadFundingThresholds);
-    document.getElementById('funding-save').addEventListener('click', saveFundingThresholds);
-    document.getElementById('funding-default').addEventListener('click', applyFundingDefaults);
+    if (BOOTSTRAP.features?.funding_thresholds !== false) {
+      document.getElementById('funding-load').addEventListener('click', loadFundingThresholds);
+      document.getElementById('funding-save').addEventListener('click', saveFundingThresholds);
+      document.getElementById('funding-default').addEventListener('click', applyFundingDefaults);
+    }
 
     document.getElementById('rolling-load').addEventListener('click', loadRollingParams);
     document.getElementById('rolling-save').addEventListener('click', saveRollingParams);
@@ -1223,6 +1265,11 @@ def render_index_html(
         "default_exchange": default_exchange,
         "default_open_venue": default_open_venue or "",
         "default_hedge_venue": default_hedge_venue or "",
+        "features": {
+            "funding_thresholds": funding_thresholds_applicable(
+                default_open_venue, default_hedge_venue
+            ),
+        },
         "exchange_defaults": EXCHANGE_DEFAULTS,
         "defaults": {
             "symbol_lists": get_symbol_defaults(),
