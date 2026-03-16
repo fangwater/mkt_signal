@@ -1548,7 +1548,7 @@ impl XarbDecision {
             Some(environment_score),
             environment_threshold,
         );
-        format!("{base_from_key}:pct_change={pct_change:.6}:spread={spread_rate:.6}").into_bytes()
+        format!("{base_from_key}:spread={spread_rate:.6}:pct_change={pct_change:.6}").into_bytes()
     }
 
     fn build_cancel_context(

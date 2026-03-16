@@ -103,7 +103,7 @@ PARAM_COMMENTS: Dict[str, str] = {
     "open_orders_per_round": "单边 plan 的档位数（从同侧盘口线性铺到 vol 边界）",
     "open_order_timeout": "开仓订单超时(秒)",
     "hedge_timeout": "对冲订单超时(秒)",
-    "hedge_price_offset": "对冲价格偏移(万分之几)",
+    "hedge_price_offset_fallback": "波动率因子不可用时的对冲默认价格偏移(万分之几)",
     "hedge_aggressive_seq_threshold": "对冲激进阈值(request_seq>=该值时不偏移，但仍为maker限价单)",
     "enable_return_score_model": "是否启用 return score 拦截(true/false，false=只读取/透传，不拦截开仓)",
     "return_model_service": "收益率模型输出通道名（'-' 表示不读取；配置通道名时 false 也会读取但不拦截）",

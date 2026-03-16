@@ -32,7 +32,7 @@
 - `ArbOpen`
   - `time:ret_score=...:ret_thr=...:vol=...:env_score=...:env_thr=...:spread=...:open_scale=...`
 - `ArbHedge`
-  - `time:ret_score=...:ret_thr=...:vol=...:env_score=...:env_thr=...:pct_change=...:spread=...`
+  - `time:ret_score=...:ret_thr=...:vol=...:env_score=...:env_thr=...:spread=...:pct_change=...`
 - `ArbClose`（dump 路径）
   - `time:dump:spread_rate`
 

@@ -352,10 +352,27 @@ impl StrategyParams {
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or_else(default_hedge_timeout);
 
-        let hedge_price_offset = hash_map
-            .get("hedge_price_offset")
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or_else(default_hedge_price_offset);
+        let hedge_price_offset = if ns == "xarb" {
+            match hash_map.get("hedge_price_offset_fallback") {
+                Some(raw) => raw.parse::<f64>().unwrap_or_else(|_| {
+                    panic!(
+                        "Redis hash '{}' hedge_price_offset_fallback 无法解析: {}",
+                        redis_key, raw
+                    )
+                }),
+                None => {
+                    panic!(
+                        "Redis hash '{}' 缺少 hedge_price_offset_fallback",
+                        redis_key
+                    );
+                }
+            }
+        } else {
+            hash_map
+                .get("hedge_price_offset")
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or_else(default_hedge_price_offset)
+        };
 
         let hedge_aggressive_seq_threshold = hash_map
             .get("hedge_aggressive_seq_threshold")

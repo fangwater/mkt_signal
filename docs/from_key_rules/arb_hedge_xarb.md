@@ -3,7 +3,7 @@
 格式：
 
 ```text
-time:ret_score=...:ret_thr=...:vol=...:env_score=...:env_thr=...:pct_change=...:spread=...
+time:ret_score=...:ret_thr=...:vol=...:env_score=...:env_thr=...:spread=...:pct_change=...
 ```
 
 字段说明：
@@ -13,8 +13,8 @@ time:ret_score=...:ret_thr=...:vol=...:env_score=...:env_thr=...:pct_change=...:
 - `vol`：`rl_return_volatility` 因子值，缺失时回退为 `0`。
 - `env_score`：环境分数；环境模型关闭时回退为 `pnlu` 口径。
 - `env_thr`：环境阈值；缺失时回退为 `0`。
-- `pct_change`：止损判断中的价差变动百分比。
 - `spread`：对冲信号生成时的中间价价差率。
+- `pct_change`：止损判断中的价差变动百分比。
 
 信号与查询字段口径：
 - hedge query 使用 `ArbHedgeSignalQueryMsg.hedge_base_qty`（base 口径数量）。
@@ -29,7 +29,7 @@ time:ret_score=...:ret_thr=...:vol=...:env_score=...:env_thr=...:pct_change=...:
 示例：
 
 ```text
-1738912345678901:ret_score=0.12345678:ret_thr=0.04500000:vol=0.00200000:env_score=0.00272464:env_thr=0.00167874:pct_change=0.006200:spread=0.001234
+1738912345678901:ret_score=0.12345678:ret_thr=0.04500000:vol=0.00200000:env_score=0.00272464:env_thr=0.00167874:spread=0.001234:pct_change=0.006200
 ```
 
 代码来源：
