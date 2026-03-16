@@ -95,6 +95,20 @@ struct QueryWatchdog {
 }
 
 impl HedgeArbStrategy {
+    fn extract_assets_from_symbol(symbol: &str) -> (String, String) {
+        let symbol_upper = symbol.to_uppercase();
+        const QUOTE_ASSETS: [&str; 7] = ["USDT", "USDC", "BUSD", "FDUSD", "BIDR", "TRY", "USD"];
+
+        for quote in QUOTE_ASSETS {
+            if symbol_upper.ends_with(quote) && symbol_upper.len() > quote.len() {
+                let base = &symbol_upper[..symbol_upper.len() - quote.len()];
+                return (base.to_string(), quote.to_string());
+            }
+        }
+
+        (symbol_upper, "USDT".to_string())
+    }
+
     pub fn new(id: i32, symbol: String) -> Self {
         let strategy = Self {
             strategy_id: id,
@@ -451,6 +465,35 @@ impl HedgeArbStrategy {
             Side::Buy => aligned_qty.abs(),
             Side::Sell => -aligned_qty.abs(),
         };
+
+        if !force_close
+            && venue == TradingVenue::BinanceMargin
+            && MonitorChannel::instance()
+                .order_manager()
+                .borrow()
+                .binance_is_standard()
+        {
+            let (base_asset, quote_asset) = Self::extract_assets_from_symbol(&symbol);
+            let (check_asset, required_amount) = match open_side {
+                Side::Buy => (quote_asset, aligned_qty * aligned_price),
+                Side::Sell => (base_asset, aligned_qty),
+            };
+            let available_balance =
+                MonitorChannel::instance().balance_position_for_venue(venue, &check_asset);
+            if available_balance + 1e-12 < required_amount {
+                error!(
+                    "HedgeArbStrategy: strategy_id={} BinanceMargin STANDARD 余额不足，拒绝开仓并标记策略不活跃 symbol={} side={:?} asset={} required={:.8} available={:.8}",
+                    self.strategy_id,
+                    symbol,
+                    open_side,
+                    check_asset,
+                    required_amount,
+                    available_balance
+                );
+                self.alive_flag = false;
+                return;
+            }
+        }
 
         // 8、检查杠杆：若绝对持仓不增加，则可跳过
         if force_close {

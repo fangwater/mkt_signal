@@ -1021,7 +1021,7 @@ impl Order {
                 let available_balance =
                     MonitorChannel::instance().balance_position_for_venue(self.venue, &check_asset);
 
-                // 余额判断：决定是否需要借币
+                // 余额判断：记录余额不足场景。STANDARD 模式走 spot ws-api，不传 sideEffectType。
                 if available_balance < required_amount {
                     let borrow_amount = required_amount - available_balance;
                     warn!(
@@ -1029,8 +1029,14 @@ impl Order {
                         check_asset, required_amount, available_balance, borrow_amount,
                         self.symbol, self.side, self.quantity, self.price
                     );
-                    // 余额不足，使用 MARGIN_BUY（有额度就买）
-                    params_parts.push("sideEffectType=MARGIN_BUY".to_string());
+                    if !use_binance_ws_margin {
+                        params_parts.push("sideEffectType=MARGIN_BUY".to_string());
+                    } else {
+                        info!(
+                            "BinanceMargin STANDARD mode: omit sideEffectType for symbol={} side={:?}",
+                            self.symbol, self.side
+                        );
+                    }
                 } else {
                     info!(
                         "✅ 余额充足: 资产={} 需要={:.8} 可用={:.8} symbol={} side={:?}",
