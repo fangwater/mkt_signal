@@ -123,7 +123,7 @@ ensure_binance_standard_mode() {
     exit 1
   fi
 
-  local target='export BINANCE_ACCOUNT_MODE="${BINANCE_ACCOUNT_MODE:-standard}"'
+  local target='export BINANCE_ACCOUNT_MODE="standard"'
   if grep -Fqx "$target" "$env_file"; then
     return 0
   fi
@@ -138,7 +138,7 @@ path = pathlib.Path(sys.argv[1])
 text = path.read_text()
 text = re.sub(
     r'^export BINANCE_ACCOUNT_MODE=.*$',
-    'export BINANCE_ACCOUNT_MODE="${BINANCE_ACCOUNT_MODE:-standard}"',
+    'export BINANCE_ACCOUNT_MODE="standard"',
     text,
     count=1,
     flags=re.M,
@@ -194,7 +194,8 @@ run_deploy bash scripts/deploy_xarb_viz_server.sh \
   --env-name "$ENV_NAME" \
   --env-suffix "$XARB_ENV_SUFFIX" \
   --open-venue "$OPEN_VENUE" \
-  --hedge-venue "$HEDGE_VENUE"
+  --hedge-venue "$HEDGE_VENUE" \
+  --apply-nginx
 
 run_deploy bash scripts/deploy_xarb_persist_manager.sh \
   --env-name "$ENV_NAME" \

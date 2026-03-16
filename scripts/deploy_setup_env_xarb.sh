@@ -144,6 +144,16 @@ EOF
   esac
 }
 
+emit_all_creds_blocks() {
+  local open_ex="$1"
+  local hedge_ex="$2"
+
+  emit_creds_block "$open_ex"
+  if [[ "$hedge_ex" != "$open_ex" ]]; then
+    emit_creds_block "$hedge_ex"
+  fi
+}
+
 if [[ -z "$ENV_NAME" ]]; then
   ENV_NAME="${OPEN_EXCHANGE}-${HEDGE_EXCHANGE}-${ENV_SUFFIX}"
 fi
@@ -177,8 +187,7 @@ export HEDGE_VENUE='$HEDGE_VENUE'
 export OPEN_EXCHANGE='$OPEN_EXCHANGE'
 export HEDGE_EXCHANGE='$HEDGE_EXCHANGE'
 
-$(emit_creds_block "$OPEN_EXCHANGE")
-$(emit_creds_block "$HEDGE_EXCHANGE")
+$(emit_all_creds_blocks "$OPEN_EXCHANGE" "$HEDGE_EXCHANGE")
 
 # RUST_LOG 配置
 export RUST_LOG="\${RUST_LOG:-info,funding_rate_signal=info,mkt_signal=info,hyper=warn,hyper_util=warn,h2=warn,reqwest=warn}"

@@ -22,6 +22,10 @@ usage() {
                                        [--env-name okex-binance-xarb-trade]
                                        [--bind 0.0.0.0] [--ws-path /ws]
                                        [--namespace <IPC_NAMESPACE>]
+                                       [--nginx-prefix /xarb/<env-name>]
+                                       [--nginx-port 4191]
+                                       [--nginx-mapping-file $HOME/nginx_locations.txt]
+                                       [--apply-nginx]
                                        [--resample-suffix <suffix>] [--instance-label <label>]
                                        [--jobs <n>] [--cargo-target-dir <path>]
       scripts/deploy_xarb_viz_server.sh --remote-host awsjp [--remote-repo <path>] [--remote-sync] [...]
@@ -33,6 +37,7 @@ usage() {
   - namespaces 字段对应 IceOryx 的 IPC_NAMESPACE（即 pre_trade 发布时使用的命名空间前缀）。
       - 若目标目录已存在 env.sh，则优先读取其中的 IPC_NAMESPACE
       - 否则可用 --namespace 显式指定；若不指定则按默认规则推断
+  - 可选写入 nginx mapping（默认路径 /xarb/<env-name>/），包含静态 dashboard、ws、healthz、snapshot。
   - 可选 --resample-suffix：订阅带后缀的两路通道（pre_trade_exposure_<suffix>, pre_trade_risk_<suffix>）
 
 示例:
@@ -73,9 +78,108 @@ RESAMPLE_SUFFIX=""
 INSTANCE_LABEL="xarb"
 CARGO_TARGET_DIR_OVERRIDE=""
 BUILD_JOBS=""
+NGINX_PREFIX=""
+NGINX_PORT="4191"
+NGINX_MAPPING_FILE=""
+APPLY_NGINX="0"
 if [[ -n "${XARB_REMOTE_RUN:-}" ]]; then
   BUILD_JOBS="1"
 fi
+
+normalize_env_name() {
+  echo "$1" | tr 'A-Z' 'a-z'
+}
+
+upsert_main_nginx_mapping() {
+  local main_file begin_marker end_marker tmp
+  if [[ -z "${NGINX_MAPPING_FILE}" ]]; then
+    NGINX_MAPPING_FILE="$HOME/nginx_locations.txt"
+  fi
+  main_file="${NGINX_MAPPING_FILE}"
+
+  if [[ ! -f "$main_file" ]]; then
+    if [[ -f "${ROOT_DIR}/config/nginx_locations.txt" ]]; then
+      mkdir -p "$(dirname "$main_file")" >/dev/null 2>&1 || true
+      cp "${ROOT_DIR}/config/nginx_locations.txt" "$main_file"
+      echo "[INFO] Initialized nginx mapping file: $main_file (from ${ROOT_DIR}/config/nginx_locations.txt)"
+    else
+      echo "[ERROR] Missing nginx mapping file: $main_file" >&2
+      echo "[ERROR] Also missing template: ${ROOT_DIR}/config/nginx_locations.txt" >&2
+      exit 1
+    fi
+  fi
+
+  if [[ "${NGINX_PREFIX}" != /* ]]; then
+    echo "[ERROR] --nginx-prefix must start with /: ${NGINX_PREFIX}" >&2
+    exit 1
+  fi
+
+  local base_prefix="${NGINX_PREFIX%/}"
+  local static_prefix="${base_prefix}/"
+  local ws_path="${WS_PATH}"
+  local ws_location="${base_prefix}${ws_path}"
+  local health_location="${base_prefix}/healthz"
+  local snapshot_location="${base_prefix}/snapshot"
+  local static_dir="${TARGET_DIR}/www/"
+
+  begin_marker="# BEGIN managed: xarb viz ${base_prefix}"
+  end_marker="# END managed: xarb viz ${base_prefix}"
+
+  if grep -Fqx "$begin_marker" "$main_file" && ! grep -Fqx "$end_marker" "$main_file"; then
+    echo "[ERROR] nginx_locations.txt has begin marker but missing end marker:" >&2
+    echo "        ${begin_marker}" >&2
+    exit 1
+  fi
+
+  tmp="$(mktemp)"
+  awk -v begin="$begin_marker" \
+      -v end="$end_marker" \
+      -v prefix="$base_prefix" \
+      -v static_prefix="$static_prefix" \
+      -v static_dir="$static_dir" \
+      -v ws_location="$ws_location" \
+      -v health_location="$health_location" \
+      -v snapshot_location="$snapshot_location" \
+      -v port="$PORT" \
+      -v ws_path="$ws_path" '
+    BEGIN { in_block = 0; replaced = 0 }
+    $0 == begin { in_block = 1; replaced = 1; next }
+    in_block && $0 == end {
+        in_block = 0;
+        print begin;
+        print "# xarb pre_trade dashboard (static) + viz_server (WS/healthz/snapshot)";
+        print static_prefix " static:" static_dir;
+        print ws_location " http://127.0.0.1:" port ws_path;
+        print health_location " http://127.0.0.1:" port "/healthz";
+        print snapshot_location " http://127.0.0.1:" port "/snapshot";
+        print end;
+        next
+    }
+    in_block { next }
+    {
+        if (substr($0, 1, length(prefix)) == prefix && substr($0, length(prefix) + 1, 1) ~ /[[:space:]]/) {
+            next
+        }
+        if (substr($0, 1, length(prefix) + 1) == (prefix "/") && substr($0, length(prefix) + 2, 1) ~ /[[:space:]]/) {
+            next
+        }
+        print
+    }
+    END {
+        if (!replaced) {
+            print "";
+            print begin;
+            print "# xarb pre_trade dashboard (static) + viz_server (WS/healthz/snapshot)";
+            print static_prefix " static:" static_dir;
+            print ws_location " http://127.0.0.1:" port ws_path;
+            print health_location " http://127.0.0.1:" port "/healthz";
+            print snapshot_location " http://127.0.0.1:" port "/snapshot";
+            print end;
+        }
+    }
+  ' "$main_file" >"$tmp"
+  mv "$tmp" "$main_file"
+}
 
 normalize_venue() {
   echo "${1,,}"
@@ -152,6 +256,22 @@ while [[ $# -gt 0 ]]; do
       IPC_NS_OVERRIDE="${2:-}"
       shift 2
       ;;
+    --nginx-prefix)
+      NGINX_PREFIX="${2:-}"
+      shift 2
+      ;;
+    --nginx-port)
+      NGINX_PORT="${2:-4191}"
+      shift 2
+      ;;
+    --nginx-mapping-file)
+      NGINX_MAPPING_FILE="${2:-}"
+      shift 2
+      ;;
+    --apply-nginx)
+      APPLY_NGINX="1"
+      shift
+      ;;
     --resample-suffix)
       RESAMPLE_SUFFIX="${2:-}"
       shift 2
@@ -206,6 +326,7 @@ if [[ -z "$OPEN_VENUE" || -z "$HEDGE_VENUE" ]]; then
   exit 1
 fi
 
+ENV_NAME="$(normalize_env_name "$ENV_NAME")"
 OPEN_VENUE="$(ensure_xarb_venue "$OPEN_VENUE")"
 HEDGE_VENUE="$(ensure_xarb_venue "$HEDGE_VENUE")"
 if [[ "$OPEN_VENUE" == "$HEDGE_VENUE" ]]; then
@@ -219,8 +340,19 @@ if [[ -z "$ENV_NAME" ]]; then
   ENV_NAME="${OPEN_EXCHANGE}-${HEDGE_EXCHANGE}-${ENV_SUFFIX}"
 fi
 
+if [[ "$WS_PATH" != /* ]]; then
+  WS_PATH="/$WS_PATH"
+fi
+
 TARGET_DIR="$HOME/${ENV_NAME}"
 mkdir -p "$TARGET_DIR"
+
+if [[ -z "$NGINX_PREFIX" ]]; then
+  NGINX_PREFIX="/xarb/${ENV_NAME}"
+fi
+if [[ -z "$NGINX_MAPPING_FILE" ]]; then
+  NGINX_MAPPING_FILE="$HOME/nginx_locations.txt"
+fi
 
 IPC_NAMESPACE=""
 ENV_FILE="$TARGET_DIR/env.sh"
@@ -286,23 +418,40 @@ EOF
 emit_server_block "$BIND" "$PORT" "$WS_PATH" > "$TARGET_DIR/config/viz.toml"
 
 mkdir -p "$TARGET_DIR/www"
-if [[ -f "$ROOT_DIR/docs/pre_trade_dashboard.html" ]]; then
+if [[ -f "$ROOT_DIR/docs/xarb_pre_trade_dashboard.html" ]]; then
+  cp "$ROOT_DIR/docs/xarb_pre_trade_dashboard.html" "$TARGET_DIR/www/xarb_pre_trade_dashboard.html"
+  cp "$ROOT_DIR/docs/xarb_pre_trade_dashboard.html" "$TARGET_DIR/www/pre_trade_dashboard.html"
+  cp "$ROOT_DIR/docs/xarb_pre_trade_dashboard.html" "$TARGET_DIR/www/index.html"
+  echo "[INFO] 已同步 dashboard: $TARGET_DIR/www/xarb_pre_trade_dashboard.html"
+elif [[ -f "$ROOT_DIR/docs/pre_trade_dashboard.html" ]]; then
   cp "$ROOT_DIR/docs/pre_trade_dashboard.html" "$TARGET_DIR/www/pre_trade_dashboard.html"
   cp "$ROOT_DIR/docs/pre_trade_dashboard.html" "$TARGET_DIR/www/index.html"
-  echo "[INFO] 已同步 dashboard: $TARGET_DIR/www/pre_trade_dashboard.html"
+  echo "[WARN] 缺少 xarb dashboard，回退到通用版: $TARGET_DIR/www/pre_trade_dashboard.html"
 fi
 
 EXTRA_FILES=(
   "xarb_scripts/start_xarb_viz_server.sh"
   "xarb_scripts/stop_xarb_viz_server.sh"
+  "scripts/setup_nginx_4191.sh"
 )
 for file in "${EXTRA_FILES[@]}"; do
   SRC="$ROOT_DIR/$file"
   if [[ -f "$SRC" ]]; then
-    rsync -a "$SRC" "$TARGET_DIR/$(dirname "$file")/"
+    DEST_DIR="$TARGET_DIR/$(dirname "$file")"
+    mkdir -p "$DEST_DIR"
+    rsync -a "$SRC" "$DEST_DIR/"
     chmod +x "$TARGET_DIR/$file" 2>/dev/null || true
   fi
 done
+
+upsert_main_nginx_mapping
+if [[ "${APPLY_NGINX}" == "1" ]]; then
+  echo "[INFO] Applying nginx config (PORT=${NGINX_PORT}, MAPPING_FILE=${NGINX_MAPPING_FILE})"
+  (
+    cd "$ROOT_DIR"
+    PORT="$NGINX_PORT" MAPPING_FILE="$NGINX_MAPPING_FILE" ./scripts/setup_nginx_4191.sh
+  )
+fi
 
 echo "[INFO] 部署 $BIN_NAME 到 $TARGET_DIR"
 if ! xarb_atomic_install "$BIN_PATH" "$TARGET_DIR/$BIN_NAME"; then
@@ -312,4 +461,5 @@ fi
 echo "[INFO] 部署完成: $TARGET_DIR"
 echo "[INFO] 启动: cd $TARGET_DIR && ./xarb_scripts/start_xarb_viz_server.sh"
 echo "[INFO] 停止: cd $TARGET_DIR && ./xarb_scripts/stop_xarb_viz_server.sh"
-echo "[INFO] dashboard(静态): $TARGET_DIR/www/ (建议用 nginx 或本地 http server 对外暴露)"
+echo "[INFO] dashboard nginx: ${NGINX_PREFIX}/"
+echo "[INFO] dashboard(静态): $TARGET_DIR/www/"
