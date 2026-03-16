@@ -48,8 +48,6 @@ def infer_pair_from_name(name: str) -> Optional[Tuple[str, str]]:
     hedge_ex = normalize_exchange(m.group(2))
     if open_ex not in SUPPORTED_EXCHANGES or hedge_ex not in SUPPORTED_EXCHANGES:
         return None
-    if open_ex == hedge_ex:
-        return None
     return open_ex, hedge_ex
 
 
@@ -57,6 +55,8 @@ def infer_xarb_venues_from_env_name(env_name: str) -> Optional[Tuple[str, str]]:
     pair = infer_pair_from_name(env_name)
     if not pair:
         return None
+    if pair[0] == pair[1]:
+        return f"{pair[0]}-margin", f"{pair[1]}-futures"
     return f"{pair[0]}-futures", f"{pair[1]}-futures"
 
 

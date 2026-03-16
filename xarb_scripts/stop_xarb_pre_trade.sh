@@ -30,6 +30,26 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
+normalize_venue() {
+  echo "${1,,}"
+}
+
+ensure_xarb_venue() {
+  local v
+  v="$(normalize_venue "$1")"
+  if [[ -z "$v" || ! "$v" =~ ^[a-z0-9]+-(margin|futures|spot|swap|perp|perpetual)$ ]]; then
+    echo "[ERROR] 非法 xarb venue: $1" >&2
+    exit 1
+  fi
+  echo "$v"
+}
+
+ENV_FILE="${BASE_DIR}/env.sh"
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+fi
+
 dir_name="$(basename "${BASE_DIR}")"
 dir_lc="${dir_name,,}"
 
@@ -47,19 +67,34 @@ if [[ "$HEDGE_EXCHANGE" == "okx" ]]; then
   HEDGE_EXCHANGE="okex"
 fi
 
-if [[ -z "$OPEN_EXCHANGE" || -z "$HEDGE_EXCHANGE" || "$OPEN_EXCHANGE" == "$HEDGE_EXCHANGE" ]]; then
+if [[ -z "$OPEN_EXCHANGE" || -z "$HEDGE_EXCHANGE" ]]; then
   echo "[ERROR] 无法从目录名推断 open/hedge (dir=$dir_name)，期望 <open>-<hedge>-xarb-..."
   exit 1
 fi
 
 ensure_pmdaemon
 
+OPEN_VENUE="${OPEN_VENUE:-}"
+HEDGE_VENUE="${HEDGE_VENUE:-}"
+if [[ -z "$OPEN_VENUE" || -z "$HEDGE_VENUE" ]]; then
+  if [[ "$OPEN_EXCHANGE" == "$HEDGE_EXCHANGE" ]]; then
+    OPEN_VENUE="${OPEN_VENUE:-${OPEN_EXCHANGE}-margin}"
+    HEDGE_VENUE="${HEDGE_VENUE:-${HEDGE_EXCHANGE}-futures}"
+  else
+    OPEN_VENUE="${OPEN_VENUE:-${OPEN_EXCHANGE}-futures}"
+    HEDGE_VENUE="${HEDGE_VENUE:-${HEDGE_EXCHANGE}-futures}"
+  fi
+fi
+
+OPEN_VENUE="$(ensure_xarb_venue "$OPEN_VENUE")"
+HEDGE_VENUE="$(ensure_xarb_venue "$HEDGE_VENUE")"
+
 PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-xarb_pt_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}}}"
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
 find_running_pids() {
-  local open_arg="--open-venue ${OPEN_EXCHANGE}-futures"
-  local hedge_arg="--hedge-venue ${HEDGE_EXCHANGE}-futures"
+  local open_arg="--open-venue ${OPEN_VENUE}"
+  local hedge_arg="--hedge-venue ${HEDGE_VENUE}"
   local pids=()
   while IFS= read -r pid; do
     if [[ -n "$pid" ]]; then

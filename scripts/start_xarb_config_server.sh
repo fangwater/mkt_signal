@@ -64,8 +64,13 @@ dir_tag="$(echo "${dir_name,,}" | sed 's/[^a-z0-9_-]/_/g')"
 
 if [[ -z "${DEFAULT_OPEN_VENUE:-}" || -z "${DEFAULT_HEDGE_VENUE:-}" ]]; then
   if inferred="$(infer_pair_from_name "$dir_name")" && [[ -n "$inferred" ]]; then
-    DEFAULT_OPEN_VENUE="${DEFAULT_OPEN_VENUE:-${inferred%%,*}-futures}"
-    DEFAULT_HEDGE_VENUE="${DEFAULT_HEDGE_VENUE:-${inferred##*,}-futures}"
+    if [[ "${inferred%%,*}" == "${inferred##*,}" ]]; then
+      DEFAULT_OPEN_VENUE="${DEFAULT_OPEN_VENUE:-${inferred%%,*}-margin}"
+      DEFAULT_HEDGE_VENUE="${DEFAULT_HEDGE_VENUE:-${inferred##*,}-futures}"
+    else
+      DEFAULT_OPEN_VENUE="${DEFAULT_OPEN_VENUE:-${inferred%%,*}-futures}"
+      DEFAULT_HEDGE_VENUE="${DEFAULT_HEDGE_VENUE:-${inferred##*,}-futures}"
+    fi
   fi
 fi
 

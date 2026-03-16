@@ -59,11 +59,11 @@ normalize_venue() {
   echo "${1,,}"
 }
 
-ensure_futures_venue() {
+ensure_xarb_venue() {
   local v
   v="$(normalize_venue "$1")"
-  if [[ -z "$v" || "$v" != *-futures ]]; then
-    echo "[ERROR] xarb 只支持 futures：venue 必须以 -futures 结尾: $1"
+  if [[ -z "$v" || ! "$v" =~ ^[a-z0-9]+-(margin|futures|spot|swap|perp|perpetual)$ ]]; then
+    echo "[ERROR] 非法 xarb venue: $1"
     exit 1
   fi
   echo "$v"
@@ -122,10 +122,10 @@ if [[ -z "$OPEN_VENUE" || -z "$HEDGE_VENUE" ]]; then
   exit 1
 fi
 
-OPEN_VENUE="$(ensure_futures_venue "$OPEN_VENUE")"
-HEDGE_VENUE="$(ensure_futures_venue "$HEDGE_VENUE")"
+OPEN_VENUE="$(ensure_xarb_venue "$OPEN_VENUE")"
+HEDGE_VENUE="$(ensure_xarb_venue "$HEDGE_VENUE")"
 if [[ "$OPEN_VENUE" == "$HEDGE_VENUE" ]]; then
-  echo "[ERROR] xarb 需要跨所：open=$OPEN_VENUE hedge=$HEDGE_VENUE"
+  echo "[ERROR] xarb open/hedge venue 不能完全相同：open=$OPEN_VENUE hedge=$HEDGE_VENUE"
   exit 1
 fi
 

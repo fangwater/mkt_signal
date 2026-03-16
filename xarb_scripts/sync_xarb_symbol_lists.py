@@ -65,8 +65,6 @@ def infer_pair_from_name(name: str) -> Optional[Tuple[str, str]]:
     hedge_ex = normalize_exchange(m.group(2))
     if open_ex not in SUPPORTED_EXCHANGES or hedge_ex not in SUPPORTED_EXCHANGES:
         return None
-    if open_ex == hedge_ex:
-        return None
     return open_ex, hedge_ex
 
 

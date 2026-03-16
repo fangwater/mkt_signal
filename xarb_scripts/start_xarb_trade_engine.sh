@@ -101,11 +101,6 @@ case "$HEDGE_EXCHANGE" in
     exit 1
     ;;
 esac
-if [[ "$OPEN_EXCHANGE" == "$HEDGE_EXCHANGE" ]]; then
-  echo "[ERROR] xarb 需要跨所：open=$OPEN_EXCHANGE hedge=$HEDGE_EXCHANGE"
-  exit 1
-fi
-
 RUST_LOG="${RUST_LOG:-info}"
 IPC_NS="${IPC_NAMESPACE:-}"
 
@@ -161,11 +156,15 @@ JSON
 }
 
 start_one "open" "$OPEN_EXCHANGE"
-sleep 0.5
-start_one "hedge" "$HEDGE_EXCHANGE"
+if [[ "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
+  sleep 0.5
+  start_one "hedge" "$HEDGE_EXCHANGE"
+fi
 
 echo "[INFO] Started:"
 echo "  - xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_open"
-echo "  - xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_hedge"
+if [[ "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
+  echo "  - xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_hedge"
+fi
 echo "[INFO] Logs: ${PMDAEMON[*]} logs xarb_te_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_open --follow"
 echo "[INFO] Status: ${PMDAEMON[*]} list"

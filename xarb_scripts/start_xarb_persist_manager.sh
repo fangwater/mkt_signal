@@ -90,7 +90,7 @@ if [[ "$HEDGE_EXCHANGE" == "okx" ]]; then
   HEDGE_EXCHANGE="okex"
 fi
 
-if [[ -z "$OPEN_EXCHANGE" || -z "$HEDGE_EXCHANGE" || "$OPEN_EXCHANGE" == "$HEDGE_EXCHANGE" ]]; then
+if [[ -z "$OPEN_EXCHANGE" || -z "$HEDGE_EXCHANGE" ]]; then
   echo "[ERROR] 无法从目录名推断 open/hedge (dir=$dir_name)，期望 <open>-<hedge>-xarb-..."
   exit 1
 fi

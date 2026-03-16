@@ -75,11 +75,15 @@ case "$NS" in
     open_ex="${SUFFIX%%-*}"
     rest="${SUFFIX#*-}"
     hedge_ex="${rest%%-*}"
-    if [[ -z "$open_ex" || -z "$hedge_ex" || "$open_ex" == "$hedge_ex" ]]; then
+    if [[ -z "$open_ex" || -z "$hedge_ex" ]]; then
       echo "[ERROR] invalid xarb dir suffix: ${SUFFIX} (expect like okex-binance)"
       exit 1
     fi
-    PM2_TAG="${open_ex}_${hedge_ex}"
+    if [[ "$open_ex" == "$hedge_ex" ]]; then
+      PM2_TAG="${open_ex}_std"
+    else
+      PM2_TAG="${open_ex}_${hedge_ex}"
+    fi
     ;;
   *)
     echo "[ERROR] not an xarb env dir: ${dir_name} (expect like okex-binance-xarb-trade)"
@@ -102,4 +106,3 @@ echo "[INFO] Started trade_signal (ns=${NS} suffix=${SUFFIX})"
 echo "Namespace: ${NAMESPACE}"
 echo "Logs: npx pm2 logs --namespace ${NAMESPACE} ${PROC_NAME}"
 echo "Status: npx pm2 status --namespace ${NAMESPACE}"
-

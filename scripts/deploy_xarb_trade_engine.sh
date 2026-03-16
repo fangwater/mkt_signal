@@ -23,7 +23,7 @@ usage() {
 说明:
   - 构建 trade_engine 并拷贝到 $HOME/<open>-<hedge>-<env_suffix>/ 目录（默认 env_suffix=xarb-trade）。
   - 跨所套利目录名约定: <open>-<hedge>-xarb-trade（例如 okex-binance-xarb-trade）。
-  - xarb 固定 futures 资产类型：open/hedge 两侧都会被设置为 <exchange>-futures。
+  - xarb 支持显式 open/hedge venue；trade_engine 仍按 exchange 维度启动。
   - 同步辅助脚本:
       xarb_scripts/start_xarb_trade_engine.sh
       xarb_scripts/stop_xarb_trade_engine.sh
@@ -123,11 +123,11 @@ normalize_venue() {
   echo "${1,,}"
 }
 
-ensure_futures_venue() {
+ensure_xarb_venue() {
   local v
   v="$(normalize_venue "$1")"
-  if [[ -z "$v" || "$v" != *-futures ]]; then
-    echo "[ERROR] xarb 只支持 futures：venue 必须以 -futures 结尾: $1"
+  if [[ -z "$v" || ! "$v" =~ ^[a-z0-9]+-(margin|futures|spot|swap|perp|perpetual)$ ]]; then
+    echo "[ERROR] 非法 xarb venue: $1"
     exit 1
   fi
   echo "$v"
@@ -135,8 +135,13 @@ ensure_futures_venue() {
 
 if [[ -n "$ENV_NAME" && ( -z "$OPEN_VENUE" || -z "$HEDGE_VENUE" ) ]]; then
   if inferred="$(infer_pair_from_name "$ENV_NAME")" && [[ -n "$inferred" ]]; then
-    OPEN_VENUE="${OPEN_VENUE:-${inferred%%,*}-futures}"
-    HEDGE_VENUE="${HEDGE_VENUE:-${inferred##*,}-futures}"
+    if [[ "${inferred%%,*}" == "${inferred##*,}" ]]; then
+      OPEN_VENUE="${OPEN_VENUE:-${inferred%%,*}-margin}"
+      HEDGE_VENUE="${HEDGE_VENUE:-${inferred##*,}-futures}"
+    else
+      OPEN_VENUE="${OPEN_VENUE:-${inferred%%,*}-futures}"
+      HEDGE_VENUE="${HEDGE_VENUE:-${inferred##*,}-futures}"
+    fi
   fi
 fi
 
@@ -146,11 +151,11 @@ if [[ -z "$OPEN_VENUE" || -z "$HEDGE_VENUE" ]]; then
   exit 1
 fi
 
-OPEN_VENUE="$(ensure_futures_venue "$OPEN_VENUE")"
-HEDGE_VENUE="$(ensure_futures_venue "$HEDGE_VENUE")"
+OPEN_VENUE="$(ensure_xarb_venue "$OPEN_VENUE")"
+HEDGE_VENUE="$(ensure_xarb_venue "$HEDGE_VENUE")"
 
 if [[ "$OPEN_VENUE" == "$HEDGE_VENUE" ]]; then
-  echo "[ERROR] xarb 需要跨所：open=$OPEN_VENUE hedge=$HEDGE_VENUE"
+  echo "[ERROR] xarb open/hedge venue 不能完全相同：open=$OPEN_VENUE hedge=$HEDGE_VENUE"
   exit 1
 fi
 

@@ -73,7 +73,7 @@ def infer_pair_from_name(name: str) -> Optional[Tuple[str, str]]:
         return None
     open_ex = normalize_exchange(m.group(1))
     hedge_ex = normalize_exchange(m.group(2))
-    if not open_ex or not hedge_ex or open_ex == hedge_ex:
+    if not open_ex or not hedge_ex:
         return None
     return open_ex, hedge_ex
 
@@ -86,7 +86,7 @@ def resolve_open_hedge(args: argparse.Namespace) -> Optional[Tuple[str, str]]:
     if args.open_venue and args.hedge_venue:
         open_ex = exchange_from_venue(args.open_venue)
         hedge_ex = exchange_from_venue(args.hedge_venue)
-        if not open_ex or not hedge_ex or open_ex == hedge_ex:
+        if not open_ex or not hedge_ex:
             return None
         return open_ex, hedge_ex
 

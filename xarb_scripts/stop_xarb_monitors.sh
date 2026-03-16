@@ -60,7 +60,7 @@ if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]([a-z0-9]+)[-_]xarb([_-].*)?$ ]]; then
   HEDGE_EXCHANGE="$(normalize_exchange "${BASH_REMATCH[2]}")"
 fi
 
-if [[ -z "$OPEN_EXCHANGE" || -z "$HEDGE_EXCHANGE" || "$OPEN_EXCHANGE" == "$HEDGE_EXCHANGE" ]]; then
+if [[ -z "$OPEN_EXCHANGE" || -z "$HEDGE_EXCHANGE" ]]; then
   echo "[ERROR] 无法从目录名推断 open/hedge (dir=$dir_name)，期望 <open>-<hedge>-xarb-..."
   exit 1
 fi
@@ -147,7 +147,9 @@ case "$MODE" in
     ;;
   all)
     stop_one "open" "$OPEN_EXCHANGE"
-    stop_one "hedge" "$HEDGE_EXCHANGE"
+    if [[ "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
+      stop_one "hedge" "$HEDGE_EXCHANGE"
+    fi
     ;;
 esac
 

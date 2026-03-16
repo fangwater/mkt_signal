@@ -89,7 +89,7 @@ if [[ -z "$OPEN_EXCHANGE" || -z "$HEDGE_EXCHANGE" ]]; then
   fi
 fi
 
-if [[ -z "$OPEN_EXCHANGE" || -z "$HEDGE_EXCHANGE" || "$OPEN_EXCHANGE" == "$HEDGE_EXCHANGE" ]]; then
+if [[ -z "$OPEN_EXCHANGE" || -z "$HEDGE_EXCHANGE" ]]; then
   echo "[ERROR] 无法确定 xarb open/hedge exchange（需 env.sh 或目录名 <open>-<hedge>-xarb-...）"
   usage
   exit 1
@@ -97,7 +97,7 @@ fi
 
 if [[ -z "${IPC_NAMESPACE:-}" ]]; then
   echo "[ERROR] IPC_NAMESPACE 未设置（请 source env.sh）"
-  echo "[ERROR] 建议: scripts/deploy_setup_env_xarb.sh --env-name $(basename "$BASE_DIR") --open-venue ${OPEN_EXCHANGE}-futures --hedge-venue ${HEDGE_EXCHANGE}-futures"
+  echo "[ERROR] 建议: scripts/deploy_setup_env_xarb.sh --env-name $(basename "$BASE_DIR") --open-venue ${OPEN_EXCHANGE}-margin --hedge-venue ${HEDGE_EXCHANGE}-futures"
   exit 1
 fi
 
@@ -146,7 +146,7 @@ start_one() {
   if ! bin="$(bin_for_exchange "$ex")"; then
     echo "[ERROR] 未找到 account monitor 二进制 for exchange=${ex}"
     echo "[ERROR] 期望存在: ${BASE_DIR}/account_monitor_${ex} 或 ${BASE_DIR}/${ex}_account_monitor"
-    echo "[ERROR] 请先部署: scripts/deploy_xarb_monitors.sh --env-name $(basename "$BASE_DIR") --open-venue ${OPEN_EXCHANGE}-futures --hedge-venue ${HEDGE_EXCHANGE}-futures"
+    echo "[ERROR] 请先部署: scripts/deploy_xarb_monitors.sh --env-name $(basename "$BASE_DIR") --open-venue ${OPEN_EXCHANGE}-margin --hedge-venue ${HEDGE_EXCHANGE}-futures"
     exit 1
   fi
 
@@ -184,11 +184,15 @@ JSON
 }
 
 start_one "open" "$OPEN_EXCHANGE"
-sleep 0.5
-start_one "hedge" "$HEDGE_EXCHANGE"
+if [[ "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
+  sleep 0.5
+  start_one "hedge" "$HEDGE_EXCHANGE"
+fi
 
 echo "[INFO] Started:"
 echo "  - xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_open"
-echo "  - xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_hedge"
+if [[ "$HEDGE_EXCHANGE" != "$OPEN_EXCHANGE" ]]; then
+  echo "  - xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_hedge"
+fi
 echo "[INFO] Logs: ${PMDAEMON[*]} logs xarb_am_${OPEN_EXCHANGE}_${HEDGE_EXCHANGE}_open --follow"
 echo "[INFO] Status: ${PMDAEMON[*]} list"

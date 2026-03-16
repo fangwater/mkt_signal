@@ -76,6 +76,9 @@ fn infer_venues_from_cwd() -> Option<(TradingVenue, TradingVenue)> {
     if parts.len() >= 3 && parts[2] == "xarb" {
         let open_ex = normalize_exchange(parts[0]);
         let hedge_ex = normalize_exchange(parts[1]);
+        if open_ex == hedge_ex {
+            return Some((margin_venue(open_ex)?, futures_venue(hedge_ex)?));
+        }
         return Some((futures_venue(open_ex)?, futures_venue(hedge_ex)?));
     }
 

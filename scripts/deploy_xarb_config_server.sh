@@ -70,10 +70,10 @@ require_xarb_env_name() {
   fi
 }
 
-ensure_futures_venue() {
+ensure_xarb_venue() {
   local v="${1,,}"
-  if [[ -z "$v" || "$v" != *-futures ]]; then
-    echo "[ERROR] xarb 只支持 futures venue: $1" >&2
+  if [[ -z "$v" || ! "$v" =~ ^[a-z0-9]+-(margin|futures|spot|swap|perp|perpetual)$ ]]; then
+    echo "[ERROR] 非法 xarb venue: $1" >&2
     exit 1
   fi
   echo "$v"
@@ -244,15 +244,20 @@ require_xarb_env_name "$ENV_NAME"
 
 if [[ -z "$OPEN_VENUE" || -z "$HEDGE_VENUE" ]]; then
   if inferred="$(infer_pair_from_env_name "$ENV_NAME")" && [[ -n "$inferred" ]]; then
-    OPEN_VENUE="${OPEN_VENUE:-${inferred%%,*}-futures}"
-    HEDGE_VENUE="${HEDGE_VENUE:-${inferred##*,}-futures}"
+    if [[ "${inferred%%,*}" == "${inferred##*,}" ]]; then
+      OPEN_VENUE="${OPEN_VENUE:-${inferred%%,*}-margin}"
+      HEDGE_VENUE="${HEDGE_VENUE:-${inferred##*,}-futures}"
+    else
+      OPEN_VENUE="${OPEN_VENUE:-${inferred%%,*}-futures}"
+      HEDGE_VENUE="${HEDGE_VENUE:-${inferred##*,}-futures}"
+    fi
   fi
 fi
 
-OPEN_VENUE="$(ensure_futures_venue "$OPEN_VENUE")"
-HEDGE_VENUE="$(ensure_futures_venue "$HEDGE_VENUE")"
+OPEN_VENUE="$(ensure_xarb_venue "$OPEN_VENUE")"
+HEDGE_VENUE="$(ensure_xarb_venue "$HEDGE_VENUE")"
 if [[ "$OPEN_VENUE" == "$HEDGE_VENUE" ]]; then
-  echo "[ERROR] xarb 需要跨所：open=${OPEN_VENUE} hedge=${HEDGE_VENUE}" >&2
+  echo "[ERROR] xarb open/hedge venue 不能完全相同：open=${OPEN_VENUE} hedge=${HEDGE_VENUE}" >&2
   exit 1
 fi
 

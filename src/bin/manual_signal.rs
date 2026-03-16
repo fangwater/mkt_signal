@@ -130,6 +130,18 @@ fn futures_venue_for_exchange(exchange: &str) -> Option<TradingVenue> {
     }
 }
 
+fn margin_venue_for_exchange(exchange: &str) -> Option<TradingVenue> {
+    match exchange {
+        "binance" => Some(TradingVenue::BinanceMargin),
+        "okex" | "okx" => Some(TradingVenue::OkexMargin),
+        "bybit" => Some(TradingVenue::BybitMargin),
+        "bitget" => Some(TradingVenue::BitgetMargin),
+        "gate" => Some(TradingVenue::GateMargin),
+        "hyperliquid" => Some(TradingVenue::HyperliquidMargin),
+        _ => None,
+    }
+}
+
 fn fr_symbol_key_suffix(open: TradingVenue, hedge: TradingVenue) -> String {
     format!("{}_{}", open.data_pub_slug(), hedge.data_pub_slug())
 }
@@ -145,7 +157,7 @@ fn infer_xarb_venues_from_key_suffix(key_suffix: &str) -> Option<(TradingVenue, 
     let open = futures_venue_for_exchange(open_ex)?;
     let hedge = futures_venue_for_exchange(hedge_ex)?;
     if open == hedge {
-        return None;
+        return Some((margin_venue_for_exchange(open_ex)?, hedge));
     }
     Some((open, hedge))
 }

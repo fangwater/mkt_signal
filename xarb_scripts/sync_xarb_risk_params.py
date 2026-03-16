@@ -46,10 +46,10 @@ def normalize_exchange(ex: str) -> str:
     return ex
 
 
-def ensure_futures_venue(venue: str) -> str:
+def ensure_xarb_venue(venue: str) -> str:
     v = (venue or "").strip().lower()
-    if not v.endswith("-futures"):
-        raise SystemExit(f"xarb 只支持 futures：venue 必须以 -futures 结尾: {venue}")
+    if not re.match(r"^[a-z0-9]+-(margin|futures|spot|swap|perp|perpetual)$", v):
+        raise SystemExit(f"xarb venue 非法: {venue}")
     return v
 
 
@@ -62,8 +62,6 @@ def infer_pair_from_name(name: str) -> Optional[Tuple[str, str]]:
     hedge_ex = normalize_exchange(m.group(2))
     if open_ex not in SUPPORTED_EXCHANGES or hedge_ex not in SUPPORTED_EXCHANGES:
         return None
-    if open_ex == hedge_ex:
-        return None
     return open_ex, hedge_ex
 
 
@@ -71,6 +69,8 @@ def infer_xarb_venues_from_env_name(env_name: str) -> Optional[Tuple[str, str]]:
     pair = infer_pair_from_name(env_name)
     if not pair:
         return None
+    if pair[0] == pair[1]:
+        return f"{pair[0]}-margin", f"{pair[1]}-futures"
     return f"{pair[0]}-futures", f"{pair[1]}-futures"
 
 
@@ -125,10 +125,10 @@ def parse_args() -> argparse.Namespace:
             "需要 --open-venue 与 --hedge-venue（futures-only），或使用 --env-name / 在目录名包含 '<open>-<hedge>-xarb-...' 以自动推断"
         )
 
-    args.open_venue = ensure_futures_venue(open_venue)
-    args.hedge_venue = ensure_futures_venue(hedge_venue)
+    args.open_venue = ensure_xarb_venue(open_venue)
+    args.hedge_venue = ensure_xarb_venue(hedge_venue)
     if args.open_venue == args.hedge_venue:
-        p.error(f"xarb 需要跨所：open={args.open_venue} hedge={args.hedge_venue}")
+        p.error(f"xarb open/hedge venue 不能完全相同：open={args.open_venue} hedge={args.hedge_venue}")
     return args
 
 

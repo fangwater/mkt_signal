@@ -39,7 +39,7 @@ usage() {
 用法: xarb_scripts/start_xarb_pre_trade.sh [--resample-suffix <suffix>] [--open-venue <okex-futures>] [--hedge-venue <binance-futures>]
 
 说明:
-  - 默认从 env.sh 读取 OPEN_VENUE/HEDGE_VENUE/IPC_NAMESPACE；若未提供则尝试从目录名推断 open/hedge，并默认 futures-only。
+  - 默认从 env.sh 读取 OPEN_VENUE/HEDGE_VENUE/IPC_NAMESPACE；若未提供则尝试从目录名推断 open/hedge。
   - 将以 pmdaemon 启动 1 个进程：
       xarb_pt_<open>_<hedge> -> pre_trade --open-venue ... --hedge-venue ...
   - 建议先生成并配置 env.sh（包含 IPC_NAMESPACE/凭证等）：
@@ -93,11 +93,11 @@ normalize_venue() {
   echo "${1,,}"
 }
 
-ensure_futures_venue() {
+ensure_xarb_venue() {
   local v
   v="$(normalize_venue "$1")"
-  if [[ -z "$v" || "$v" != *-futures ]]; then
-    echo "[ERROR] xarb 只支持 futures：venue 必须以 -futures 结尾: $1"
+  if [[ -z "$v" || ! "$v" =~ ^[a-z0-9]+-(margin|futures|spot|swap|perp|perpetual)$ ]]; then
+    echo "[ERROR] 非法 xarb venue: $1"
     exit 1
   fi
   echo "$v"
@@ -130,8 +130,13 @@ HEDGE_VENUE="${CLI_HEDGE_VENUE:-${HEDGE_VENUE:-}}"
 
 if [[ -z "$OPEN_VENUE" || -z "$HEDGE_VENUE" ]]; then
   if inferred="$(infer_pair_from_dir "$dir_lc")" && [[ -n "$inferred" ]]; then
-    OPEN_VENUE="${OPEN_VENUE:-${inferred%%,*}-futures}"
-    HEDGE_VENUE="${HEDGE_VENUE:-${inferred##*,}-futures}"
+    if [[ "${inferred%%,*}" == "${inferred##*,}" ]]; then
+      OPEN_VENUE="${OPEN_VENUE:-${inferred%%,*}-margin}"
+      HEDGE_VENUE="${HEDGE_VENUE:-${inferred##*,}-futures}"
+    else
+      OPEN_VENUE="${OPEN_VENUE:-${inferred%%,*}-futures}"
+      HEDGE_VENUE="${HEDGE_VENUE:-${inferred##*,}-futures}"
+    fi
   fi
 fi
 
@@ -141,10 +146,10 @@ if [[ -z "$OPEN_VENUE" || -z "$HEDGE_VENUE" ]]; then
   exit 1
 fi
 
-OPEN_VENUE="$(ensure_futures_venue "$OPEN_VENUE")"
-HEDGE_VENUE="$(ensure_futures_venue "$HEDGE_VENUE")"
+OPEN_VENUE="$(ensure_xarb_venue "$OPEN_VENUE")"
+HEDGE_VENUE="$(ensure_xarb_venue "$HEDGE_VENUE")"
 if [[ "$OPEN_VENUE" == "$HEDGE_VENUE" ]]; then
-  echo "[ERROR] xarb 需要跨所：open=$OPEN_VENUE hedge=$HEDGE_VENUE"
+  echo "[ERROR] xarb open/hedge venue 不能完全相同：open=$OPEN_VENUE hedge=$HEDGE_VENUE"
   exit 1
 fi
 
