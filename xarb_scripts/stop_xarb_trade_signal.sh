@@ -10,34 +10,31 @@ dir_lc="$(echo "${dir_name}" | tr 'A-Z' 'a-z')"
 
 infer_ns_and_suffix() {
   local name="$1"
+  python3 - "$name" <<'PY'
+import sys
 
-  for env_suffix in "_trade" "_test"; do
-    if [[ "$name" == *"$env_suffix" ]]; then
-      local base="${name%$env_suffix}"
-      base="${base%_}"
-      local ns="${base##*_}"
-      local prefix="${base%_*}"
-      if [[ -n "$ns" && -n "$prefix" ]]; then
-        echo "${ns} ${prefix}"
-        return 0
-      fi
-    fi
-  done
+name = sys.argv[1].strip().lower()
 
-  for env_suffix in "-trade" "-test"; do
-    if [[ "$name" == *"$env_suffix" ]]; then
-      local base="${name%$env_suffix}"
-      base="${base%-}"
-      local ns="${base##*-}"
-      local prefix="${base%-*}"
-      if [[ -n "$ns" && -n "$prefix" ]]; then
-        echo "${ns} ${prefix}"
-        return 0
-      fi
-    fi
-  done
+def split_last(value: str):
+    idx_dash = value.rfind("-")
+    idx_us = value.rfind("_")
+    idx = max(idx_dash, idx_us)
+    if idx <= 0 or idx >= len(value) - 1:
+        return None
+    return value[:idx], value[idx + 1:]
 
-  return 1
+first = split_last(name)
+if not first:
+    raise SystemExit(1)
+base, _env_tag = first
+second = split_last(base)
+if not second:
+    raise SystemExit(1)
+prefix, ns = second
+if not prefix or not ns:
+    raise SystemExit(1)
+print(ns, prefix)
+PY
 }
 
 NS=""
@@ -63,7 +60,7 @@ case "$NS" in
     fi
     ;;
   *)
-    echo "[ERROR] not an xarb env dir: ${dir_name} (expect like okex-binance-xarb-trade)"
+    echo "[ERROR] not an xarb env dir: ${dir_name} (expect like okex-binance-xarb-<env>)"
     exit 1
     ;;
 esac

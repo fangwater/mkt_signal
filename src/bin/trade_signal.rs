@@ -48,30 +48,26 @@ fn infer_namespace_and_key_suffix_from_cwd() -> Option<(String, String)> {
 
     let cwd: PathBuf = std::env::current_dir().ok()?;
     let name = cwd.file_name()?.to_string_lossy().to_ascii_lowercase();
+    parse_namespace_and_key_suffix(&name)
+}
 
-    for env_suffix in ["_trade", "_test"] {
-        if let Some(base) = name.strip_suffix(env_suffix) {
-            let base = base.trim_end_matches('_');
-            let (prefix, ns) = base.rsplit_once('_')?;
-            if prefix.is_empty() || ns.is_empty() {
-                return None;
-            }
-            return Some((ns.to_string(), prefix.to_string()));
+fn parse_namespace_and_key_suffix(name: &str) -> Option<(String, String)> {
+    fn split_last_segment(input: &str) -> Option<(&str, &str)> {
+        let idx = input.rfind(['-', '_'])?;
+        let (head, tail_with_sep) = input.split_at(idx);
+        let tail = tail_with_sep.get(1..)?;
+        if head.is_empty() || tail.is_empty() {
+            return None;
         }
+        Some((head, tail))
     }
 
-    for env_suffix in ["-trade", "-test"] {
-        if let Some(base) = name.strip_suffix(env_suffix) {
-            let base = base.trim_end_matches('-');
-            let (prefix, ns) = base.rsplit_once('-')?;
-            if prefix.is_empty() || ns.is_empty() {
-                return None;
-            }
-            return Some((ns.to_string(), prefix.to_string()));
-        }
+    let (base, _env_tag) = split_last_segment(name)?;
+    let (prefix, ns) = split_last_segment(base)?;
+    if prefix.is_empty() || ns.is_empty() {
+        return None;
     }
-
-    None
+    Some((ns.to_string(), prefix.to_string()))
 }
 
 fn normalize_exchange_str(raw: &str) -> &str {
@@ -434,9 +430,9 @@ async fn main() -> Result<()> {
             }
             _ => {
                 let exchange = args.exchange.with_context(|| {
-                "missing --exchange and failed to infer from CWD; use a dir like '<exchange>_fr_trade' or pass --exchange"
-                    .to_string()
-            })?;
+                    "missing --exchange and failed to infer from CWD; use a dir like '<prefix>_<namespace>_<env>' or pass --exchange"
+                        .to_string()
+                })?;
                 let (open_venue, hedge_venue) =
                     mkt_signal::funding_rate::common::venue_pair_for_exchange(exchange);
                 (
@@ -472,4 +468,33 @@ async fn main() -> Result<()> {
             token,
         ))
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_namespace_and_key_suffix;
+
+    #[test]
+    fn parse_xarb_dir_with_numeric_env_tag() {
+        let parsed = parse_namespace_and_key_suffix("binance-binance-xarb-trade01");
+        assert_eq!(
+            parsed,
+            Some(("xarb".to_string(), "binance-binance".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_fr_dir_with_numeric_env_tag() {
+        let parsed = parse_namespace_and_key_suffix("binance_fr_trade03");
+        assert_eq!(parsed, Some(("fr".to_string(), "binance".to_string())));
+    }
+
+    #[test]
+    fn parse_xarb_dir_with_plain_env_tag() {
+        let parsed = parse_namespace_and_key_suffix("okex-binance-xarb-test");
+        assert_eq!(
+            parsed,
+            Some(("xarb".to_string(), "okex-binance".to_string()))
+        );
+    }
 }

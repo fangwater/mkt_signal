@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # xarb trade_signal 启动脚本：
-# - 依赖部署目录名推断 xarb pair（目录名需形如 <open>-<hedge>-xarb-<trade|test>）
+# - 依赖部署目录名推断 xarb pair（目录名需形如 <open>-<hedge>-xarb-<env>）
 # - 若存在 env.sh，会自动 source（用于 account mode / venue / credentials / RUST_LOG）
 # - 使用 PM2 namespace（默认=部署目录名，可用 PM2_NAMESPACE 覆盖）
 
@@ -42,34 +42,31 @@ dir_lc="$(echo "${dir_name}" | tr 'A-Z' 'a-z')"
 
 infer_ns_and_suffix() {
   local name="$1"
+  python3 - "$name" <<'PY'
+import sys
 
-  for env_suffix in "_trade" "_test"; do
-    if [[ "$name" == *"$env_suffix" ]]; then
-      local base="${name%$env_suffix}"
-      base="${base%_}"
-      local ns="${base##*_}"
-      local prefix="${base%_*}"
-      if [[ -n "$ns" && -n "$prefix" ]]; then
-        echo "${ns} ${prefix}"
-        return 0
-      fi
-    fi
-  done
+name = sys.argv[1].strip().lower()
 
-  for env_suffix in "-trade" "-test"; do
-    if [[ "$name" == *"$env_suffix" ]]; then
-      local base="${name%$env_suffix}"
-      base="${base%-}"
-      local ns="${base##*-}"
-      local prefix="${base%-*}"
-      if [[ -n "$ns" && -n "$prefix" ]]; then
-        echo "${ns} ${prefix}"
-        return 0
-      fi
-    fi
-  done
+def split_last(value: str):
+    idx_dash = value.rfind("-")
+    idx_us = value.rfind("_")
+    idx = max(idx_dash, idx_us)
+    if idx <= 0 or idx >= len(value) - 1:
+        return None
+    return value[:idx], value[idx + 1:]
 
-  return 1
+first = split_last(name)
+if not first:
+    raise SystemExit(1)
+base, _env_tag = first
+second = split_last(base)
+if not second:
+    raise SystemExit(1)
+prefix, ns = second
+if not prefix or not ns:
+    raise SystemExit(1)
+print(ns, prefix)
+PY
 }
 
 NS=""
@@ -95,7 +92,7 @@ case "$NS" in
     fi
     ;;
   *)
-    echo "[ERROR] not an xarb env dir: ${dir_name} (expect like okex-binance-xarb-trade)"
+    echo "[ERROR] not an xarb env dir: ${dir_name} (expect like okex-binance-xarb-<env>)"
     exit 1
     ;;
 esac
