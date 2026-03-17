@@ -365,10 +365,9 @@ impl MmDecisionState {
                     prepared
                         .iter()
                         .zip(tlens.iter().copied())
-                        .map(|(item, level_tlen)| {
+                        .map(|(_, level_tlen)| {
                             super::from_key::append_mm_open_tlens_to_from_key(
                                 from_key,
-                                item.tick_index,
                                 level_tlen,
                                 &batch_tick_tlens,
                             )

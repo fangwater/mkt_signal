@@ -1092,10 +1092,9 @@ fn build_and_publish_open(
                     prepared
                         .iter()
                         .zip(tlens.iter().copied())
-                        .map(|(item, level_tlen)| {
+                        .map(|(_, level_tlen)| {
                             append_mm_open_tlens_to_from_key(
                                 &base_from_key,
-                                item.tick_index,
                                 level_tlen,
                                 &batch_tick_tlens,
                             )

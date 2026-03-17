@@ -74,12 +74,11 @@ pub(crate) fn format_batch_tlen_suffix(tick_tlens: &[(i64, f64)]) -> String {
 
 pub fn append_mm_open_tlens_to_from_key(
     base_from_key: &str,
-    level_tick_index: i64,
     level_tlen: f64,
     batch_tick_tlens: &[(i64, f64)],
 ) -> String {
     format!(
-        "{base_from_key}:px_tick={level_tick_index}:px_tlen={}:batch_tlen={}",
+        "{base_from_key}:tlen={}:batch_tlen={}",
         format_tlen_value(level_tlen),
         format_batch_tlen_suffix(batch_tick_tlens)
     )

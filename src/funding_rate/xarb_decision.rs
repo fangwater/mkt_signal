@@ -4,7 +4,7 @@
 //! - ignores funding/loan signals for Open decisions
 //! - only emits Open/Cancel (spread-only) and supports backward hedge queries
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bytes::Bytes;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
@@ -12,6 +12,7 @@ use log::{info, warn};
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use super::common::{
     build_decision_from_key_base, compute_spread_rate, Quote, ReturnScoreThresholdsResolved,
@@ -57,6 +58,19 @@ const PNLU_MAX_AGE_SECS: i64 = 30 * 60;
 const TARGET_FACTOR_NAME: &str = "rl_return_volatility";
 const TARGET_FACTOR_KEY_PREFIX: &str = TARGET_FACTOR_NAME;
 const ENV_MODEL_TRUE_THRESHOLD_DEFAULT: f64 = 0.0;
+const PANIC_ON_FIRST_OPEN_DRY_RUN_ENV: &str = "TRADE_SIGNAL_PANIC_ON_FIRST_OPEN_DRY_RUN";
+const INTERCEPT_SUMMARY_INTERVAL_SECS: u64 = 30;
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
 
 #[derive(Debug, Clone)]
 struct XarbOpenQuotePlan {
@@ -260,6 +274,49 @@ pub struct XarbDecision {
     last_open_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
     last_close_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
     last_cancel_ts: Rc<RefCell<HashMap<ThresholdKey, i64>>>,
+    intercept_summary: InterceptSummary,
+}
+
+struct InterceptSummary {
+    window_start: Instant,
+    counts: HashMap<String, u64>,
+}
+
+impl InterceptSummary {
+    fn new() -> Self {
+        Self {
+            window_start: Instant::now(),
+            counts: HashMap::new(),
+        }
+    }
+
+    fn record(&mut self, reason: impl Into<String>) {
+        *self.counts.entry(reason.into()).or_insert(0) += 1;
+    }
+
+    fn flush_if_due(&mut self) {
+        if self.window_start.elapsed() < Duration::from_secs(INTERCEPT_SUMMARY_INTERVAL_SECS)
+            || self.counts.is_empty()
+        {
+            return;
+        }
+
+        let mut items = self.counts.iter().collect::<Vec<_>>();
+        items.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        let total: u64 = items.iter().map(|(_, count)| **count).sum();
+        let summary = items
+            .into_iter()
+            .map(|(reason, count)| format!("{reason}={count}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        info!(
+            "XarbDecision: intercept_summary window={}s total={} {}",
+            INTERCEPT_SUMMARY_INTERVAL_SECS, total, summary
+        );
+        self.counts.clear();
+        self.window_start = Instant::now();
+    }
 }
 
 impl XarbDecision {
@@ -302,6 +359,11 @@ impl XarbDecision {
         self.return_score_thresholds
             .get(&model_symbol_key.to_ascii_uppercase())
             .copied()
+    }
+
+    fn record_intercept_summary(&mut self, reason: impl Into<String>) {
+        self.intercept_summary.record(reason);
+        self.intercept_summary.flush_if_due();
     }
 
     fn select_open_return_threshold(
@@ -472,6 +534,7 @@ impl XarbDecision {
             last_open_ts: Rc::new(RefCell::new(HashMap::new())),
             last_close_ts: Rc::new(RefCell::new(HashMap::new())),
             last_cancel_ts: Rc::new(RefCell::new(HashMap::new())),
+            intercept_summary: InterceptSummary::new(),
         })
     }
 
@@ -525,7 +588,10 @@ impl XarbDecision {
             .max_subscribers(32)
             .history_size(128)
             .subscriber_max_buffer_size(256)
-            .open_or_create()?;
+            .open_or_create()
+            .with_context(|| {
+                format!("failed to open/create backward signal service={service_name}")
+            })?;
 
         let subscriber = service.subscriber_builder().create()?;
         Ok(GenericSignalSubscriber::Size4K(subscriber))
@@ -743,37 +809,34 @@ impl XarbDecision {
                 .map(|thresholds| self.select_open_return_threshold(side, thresholds))
         });
 
-        if self.enable_return_score_model {
-            let Some(score_lookup) = return_lookup else {
-                warn!(
-                    "XarbDecision: drop ArbOpen open_symbol={} hedge_symbol={} reason=missing_return_model_service",
-                    open_symbol_key,
-                    hedge_symbol
-                );
+        if let Some(service_name) = self.return_model_service.clone() {
+            let Some(score_lookup) = return_lookup.as_ref() else {
+                self.record_intercept_summary(format!(
+                    "drop_open_missing_return_model_service:service={service_name}"
+                ));
                 return Ok(None);
             };
             let Some(score_value) = score_lookup.score.filter(|v| v.is_finite()) else {
-                info!(
-                    "XarbDecision: drop ArbOpen open_symbol={} hedge_symbol={} service={} model_symbol={} note={} (score not ready)",
-                    open_symbol_key,
-                    hedge_symbol,
-                    score_lookup.service_name,
-                    score_lookup.symbol_key,
+                self.record_intercept_summary(format!(
+                    "drop_open_score_not_ready:note={}",
                     score_lookup.note
-                );
+                ));
                 return Ok(None);
             };
+            return_score = Some(score_value);
+        }
+
+        if self.enable_return_score_model {
+            let score_lookup = return_lookup
+                .as_ref()
+                .expect("return_model_service should exist when enable_return_score_model=true");
+            let score_value = return_score
+                .expect("return_score should be ready when enable_return_score_model=true");
             let Some(threshold_value) = self
                 .lookup_return_score_thresholds(&score_lookup.symbol_key)
                 .map(|thresholds| self.select_open_return_threshold(side, thresholds))
             else {
-                warn!(
-                    "XarbDecision: missing return score thresholds open_symbol={} hedge_symbol={} model_symbol={} venue={:?}, skip",
-                    open_symbol_key,
-                    hedge_symbol,
-                    score_lookup.symbol_key,
-                    hedge_venue
-                );
+                self.record_intercept_summary("drop_open_missing_return_score_thresholds");
                 return Ok(None);
             };
             let return_open_hit = match side {
@@ -781,19 +844,9 @@ impl XarbDecision {
                 Side::Sell => score_value < threshold_value,
             };
             if !return_open_hit {
-                info!(
-                    "XarbDecision: skip ArbOpen by return score open_symbol={} hedge_symbol={} side={:?} score={:.8} ret_thr={:.8} service={} model_symbol={}",
-                    open_symbol_key,
-                    hedge_symbol,
-                    side,
-                    score_value,
-                    threshold_value,
-                    score_lookup.service_name,
-                    score_lookup.symbol_key
-                );
+                self.record_intercept_summary("skip_open_by_return_score");
                 return Ok(None);
             }
-            return_score = Some(score_value);
             return_threshold = Some(threshold_value);
         }
         let environment_signal = self.evaluate_environment_signal(
@@ -803,8 +856,7 @@ impl XarbDecision {
             now,
         );
         if !environment_signal.allow_open {
-            self.log_environment_signal(
-                open_symbol_key.as_str(),
+            self.record_environment_intercept_summary(
                 forward_open,
                 backward_open,
                 false,
@@ -815,10 +867,20 @@ impl XarbDecision {
         let environment_score = environment_signal
             .score
             .unwrap_or(environment_signal.class_label as f64);
-        let rl_return_volatility_factor = self
-            .lookup_target_factor_value(hedge_symbol, hedge_venue)
-            .target_factor_value
-            .unwrap_or(0.0);
+        let target_factor_lookup = self.lookup_target_factor_value(hedge_symbol, hedge_venue);
+        let rl_return_volatility_factor = match (
+            target_factor_lookup.ready,
+            target_factor_lookup.target_factor_value,
+        ) {
+            (Some(true), Some(value)) if value.is_finite() => value,
+            _ => {
+                self.record_intercept_summary(format!(
+                    "drop_open_target_factor_not_ready:note={}",
+                    target_factor_lookup.note
+                ));
+                return Ok(None);
+            }
+        };
 
         self.emit_open_signals(
             open_symbol_key.as_str(),
@@ -834,13 +896,6 @@ impl XarbDecision {
         )?;
 
         self.update_last_ts(&self.last_open_ts, key, now);
-        self.log_environment_signal(
-            open_symbol_key.as_str(),
-            forward_open,
-            backward_open,
-            false,
-            &environment_signal,
-        );
 
         Ok(Some(SignalType::ArbOpen))
     }
@@ -1264,6 +1319,7 @@ impl XarbDecision {
                 Some(quotes) => quotes,
                 None => return Ok(()),
             };
+        let panic_on_first_open_dry_run = env_flag(PANIC_ON_FIRST_OPEN_DRY_RUN_ENV);
         // Use one batch timestamp for all grid offsets in this emit call.
         let batch_ts = get_timestamp_us();
         let spread_rate = compute_spread_rate(&open_quote, &hedge_quote);
@@ -1313,6 +1369,27 @@ impl XarbDecision {
                 batch_ts,
                 from_key.as_str(),
             );
+
+            if panic_on_first_open_dry_run {
+                let from_key_str = String::from_utf8_lossy(&ctx.from_key);
+                warn!(
+                    "XarbDecision: dry-run trap hit first ArbOpen open={} hedge={} side={:?} price={:.8} qty={:.8} from_key='{}'",
+                    open_symbol,
+                    hedge_symbol,
+                    plan.side,
+                    ctx.price_value(),
+                    ctx.amount_value(),
+                    from_key_str
+                );
+                panic!(
+                    "{} triggered: first ArbOpen open={} hedge={} side={:?} from_key='{}'",
+                    PANIC_ON_FIRST_OPEN_DRY_RUN_ENV,
+                    open_symbol,
+                    hedge_symbol,
+                    plan.side,
+                    from_key_str
+                );
+            }
 
             let signal = TradeSignal::create(SignalType::ArbOpen, batch_ts, 0.0, ctx.to_bytes());
             self.signal_pub.publish(&signal.to_bytes())?;
@@ -1581,9 +1658,7 @@ impl XarbDecision {
                 &self.hedge_depth_query_client
             };
             match depth_query_client.query_single_tick_index(&open_trade_symbol, tick_index) {
-                Ok(tlen) => {
-                    format!("{from_key}:px_tick={tick_index}:px_tlen={tlen:.8}")
-                }
+                Ok(tlen) => format!("{from_key}:tlen={tlen:.8}"),
                 Err(err) => {
                     warn!(
                             "XarbDecision: open from_key tlen query failed open={} venue={:?} tick_index={} err={err:#}",
@@ -1662,9 +1737,7 @@ impl XarbDecision {
             &self.hedge_depth_query_client
         };
         match depth_query_client.query_single_tick_index(&hedge_trade_symbol, tick_index) {
-            Ok(tlen) => {
-                format!("{base_from_key}:px_tick={tick_index}:px_tlen={tlen:.8}").into_bytes()
-            }
+            Ok(tlen) => format!("{base_from_key}:tlen={tlen:.8}").into_bytes(),
             Err(err) => {
                 warn!(
                     "XarbDecision: hedge from_key tlen query failed hedge={} venue={:?} tick_index={} err={err:#}",
@@ -2020,9 +2093,8 @@ impl XarbDecision {
         last_ts_map.borrow_mut().insert(key, now);
     }
 
-    fn log_environment_signal(
-        &self,
-        symbol_key: &str,
+    fn record_environment_intercept_summary(
+        &mut self,
         forward_open: bool,
         backward_open: bool,
         cooldown_hit: bool,
@@ -2038,20 +2110,11 @@ impl XarbDecision {
             EnvironmentSignalSource::ModelOutput => "model_output",
             EnvironmentSignalSource::PnluFallback => "pnlu_fallback",
         };
-        info!(
-            "XarbDecision: environment_check symbol={} dir={} allow_open={} class_label={} source={} service={:?} model_symbol={} score={:?} threshold={:?} note={} cooldown_hit={}",
-            symbol_key,
-            direction,
-            result.allow_open,
-            result.class_label,
-            source,
-            result.service_name,
-            result.symbol_key,
-            result.score,
-            result.threshold,
-            result.note,
-            cooldown_hit
-        );
+        let service = result.service_name.as_deref().unwrap_or("-");
+        self.record_intercept_summary(format!(
+            "environment_block:dir={direction}:source={source}:service={service}:note={}:cooldown_hit={cooldown_hit}",
+            result.note
+        ));
     }
 
     pub fn spawn_backward_listener() {
