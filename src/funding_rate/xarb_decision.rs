@@ -31,6 +31,8 @@ use crate::common::ipc_service_name::build_service_name;
 use crate::common::redis_client::RedisSettings;
 use crate::common::symbol_util::normalize_symbol_for_venue;
 use crate::common::time_util::get_timestamp_us;
+use crate::depth_pub::query_client::DepthQueryClient;
+use crate::depth_pub::query_msg::price_to_tick_index;
 use crate::market_maker::quote_plan_levels::{
     build_quote_plan_levels, QuotePlanLevel, QuotePlanLevelSpec,
 };
@@ -238,6 +240,8 @@ pub struct XarbDecision {
     open_min_qty_table: VenueMinQtyTable,
     hedge_min_qty_table: VenueMinQtyTable,
     venues: VenuePair,
+    open_depth_query_client: DepthQueryClient,
+    hedge_depth_query_client: DepthQueryClient,
 
     order_amount: f32,
     open_scale: f64,
@@ -432,6 +436,8 @@ impl XarbDecision {
 
         let open_min_qty_table = VenueMinQtyTable::new(venues.0);
         let hedge_min_qty_table = VenueMinQtyTable::new(venues.1);
+        let open_depth_query_client = DepthQueryClient::new(venues.0)?;
+        let hedge_depth_query_client = DepthQueryClient::new(venues.1)?;
 
         info!(
             "XarbDecision: pnlu redis configured host={} port={} db={} key_pattern=<symbol>{}_{}",
@@ -448,6 +454,8 @@ impl XarbDecision {
             open_min_qty_table,
             hedge_min_qty_table,
             venues,
+            open_depth_query_client,
+            hedge_depth_query_client,
             order_amount: 100.0,
             open_scale: 1.0,
             open_order_ttl_us: 120_000_000,
@@ -1010,6 +1018,9 @@ impl XarbDecision {
                 target_factor_lookup.target_factor_value,
                 pct_change,
                 spread_rate,
+                hedge_venue,
+                &hedge_symbol,
+                market_price,
             );
             ctx.set_from_key(from_key);
 
@@ -1162,6 +1173,9 @@ impl XarbDecision {
             target_factor_lookup.target_factor_value,
             pct_change,
             spread_rate,
+            hedge_venue,
+            &hedge_symbol,
+            ctx.hedge_price_value(),
         );
         ctx.set_from_key(from_key);
 
@@ -1414,6 +1428,28 @@ impl XarbDecision {
                 None => return Ok(()),
             };
         let batch_ts = get_timestamp_us();
+        let spread_rate = compute_spread_rate(&open_quote, &hedge_quote);
+        let return_score = self
+            .lookup_return_model_score_lookup(hedge_symbol, hedge_venue)
+            .and_then(|lookup| lookup.score)
+            .filter(|v| v.is_finite());
+        let environment_signal =
+            self.evaluate_environment_signal(open_symbol, hedge_symbol, hedge_venue, batch_ts);
+        let environment_score = environment_signal
+            .score
+            .unwrap_or(environment_signal.class_label as f64);
+        let volatility = self
+            .lookup_target_factor_value(hedge_symbol, hedge_venue)
+            .target_factor_value;
+        let from_key = build_decision_from_key_base(
+            batch_ts,
+            return_score,
+            None,
+            volatility,
+            Some(environment_score),
+            environment_signal.threshold,
+        );
+        let from_key = format!("{from_key}:spread={spread_rate:.6}");
 
         let ctx = self.build_cancel_context(
             open_symbol,
@@ -1423,6 +1459,7 @@ impl XarbDecision {
             &open_quote,
             &hedge_quote,
             batch_ts,
+            &from_key,
         );
 
         let signal = TradeSignal::create(SignalType::ArbCancel, batch_ts, 0.0, ctx.to_bytes());
@@ -1524,7 +1561,46 @@ impl XarbDecision {
             super::common::FactorMode::MM => self.hedge_timeout_mm_us,
         };
 
-        ctx.set_from_key(from_key.as_bytes().to_vec());
+        let price_for_tlen = ctx.price_value();
+        let from_key_with_tlen = if !(raw_price_tick.is_finite() && raw_price_tick > 0.0) {
+            warn!(
+                "XarbDecision: open from_key missing price_tick open={} venue={:?} symbol_key={}",
+                open_trade_symbol, open_venue, symbol_key
+            );
+            format!("{from_key}:tlen_query_err=missing_price_tick")
+        } else if price_for_tlen <= 0.0 {
+            warn!(
+                "XarbDecision: open from_key invalid encoded price open={} venue={:?} price={:.8}",
+                open_trade_symbol, open_venue, price_for_tlen
+            );
+            format!("{from_key}:tlen_query_err=invalid_encoded_price")
+        } else if let Some(tick_index) = price_to_tick_index(price_for_tlen, raw_price_tick) {
+            let depth_query_client = if open_venue == self.venues.0 {
+                &self.open_depth_query_client
+            } else {
+                &self.hedge_depth_query_client
+            };
+            match depth_query_client.query_single_tick_index(&open_trade_symbol, tick_index) {
+                Ok(tlen) => {
+                    format!("{from_key}:px_tick={tick_index}:px_tlen={tlen:.8}")
+                }
+                Err(err) => {
+                    warn!(
+                            "XarbDecision: open from_key tlen query failed open={} venue={:?} tick_index={} err={err:#}",
+                            open_trade_symbol, open_venue, tick_index
+                        );
+                    format!("{from_key}:tlen_query_err=single_query_failed")
+                }
+            }
+        } else {
+            warn!(
+                    "XarbDecision: open from_key tick conversion failed open={} venue={:?} price={:.8} price_tick={:.8}",
+                    open_trade_symbol, open_venue, price_for_tlen, raw_price_tick
+                );
+            format!("{from_key}:tlen_query_err=invalid_price_or_tick")
+        };
+
+        ctx.set_from_key(from_key_with_tlen.into_bytes());
 
         ctx
     }
@@ -1539,6 +1615,9 @@ impl XarbDecision {
         rl_return_volatility_factor: Option<f64>,
         pct_change: f64,
         spread_rate: f64,
+        hedge_venue: TradingVenue,
+        hedge_symbol: &str,
+        hedge_price: f64,
     ) -> Vec<u8> {
         let base_from_key = build_decision_from_key_base(
             now,
@@ -1548,7 +1627,52 @@ impl XarbDecision {
             Some(environment_score),
             environment_threshold,
         );
-        format!("{base_from_key}:spread={spread_rate:.6}:pct_change={pct_change:.6}").into_bytes()
+        let base_from_key =
+            format!("{base_from_key}:spread={spread_rate:.6}:pct_change={pct_change:.6}");
+        let hedge_trade_symbol = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
+        let table = self.table_for(hedge_venue);
+        let symbol_key = min_qty_symbol_key(hedge_venue, &hedge_trade_symbol);
+        let raw_price_tick = table.price_tick(&symbol_key).unwrap_or(0.0);
+
+        if !(raw_price_tick.is_finite() && raw_price_tick > 0.0) {
+            warn!(
+                "XarbDecision: hedge from_key missing price_tick hedge={} venue={:?} symbol_key={}",
+                hedge_trade_symbol, hedge_venue, symbol_key
+            );
+            return format!("{base_from_key}:tlen_query_err=missing_price_tick").into_bytes();
+        }
+        if hedge_price <= 0.0 {
+            warn!(
+                "XarbDecision: hedge from_key invalid price hedge={} venue={:?} price={:.8}",
+                hedge_trade_symbol, hedge_venue, hedge_price
+            );
+            return format!("{base_from_key}:tlen_query_err=invalid_price").into_bytes();
+        }
+        let Some(tick_index) = price_to_tick_index(hedge_price, raw_price_tick) else {
+            warn!(
+                "XarbDecision: hedge from_key tick conversion failed hedge={} venue={:?} price={:.8} price_tick={:.8}",
+                hedge_trade_symbol, hedge_venue, hedge_price, raw_price_tick
+            );
+            return format!("{base_from_key}:tlen_query_err=invalid_price_or_tick").into_bytes();
+        };
+
+        let depth_query_client = if hedge_venue == self.venues.0 {
+            &self.open_depth_query_client
+        } else {
+            &self.hedge_depth_query_client
+        };
+        match depth_query_client.query_single_tick_index(&hedge_trade_symbol, tick_index) {
+            Ok(tlen) => {
+                format!("{base_from_key}:px_tick={tick_index}:px_tlen={tlen:.8}").into_bytes()
+            }
+            Err(err) => {
+                warn!(
+                    "XarbDecision: hedge from_key tlen query failed hedge={} venue={:?} tick_index={} err={err:#}",
+                    hedge_trade_symbol, hedge_venue, tick_index
+                );
+                format!("{base_from_key}:tlen_query_err=single_query_failed").into_bytes()
+            }
+        }
     }
 
     fn build_cancel_context(
@@ -1560,6 +1684,7 @@ impl XarbDecision {
         open_quote: &Quote,
         hedge_quote: &Quote,
         now: i64,
+        from_key: &str,
     ) -> ArbCancelCtx {
         let mut ctx = ArbCancelCtx::new();
         let open_trade_symbol = normalize_symbol_for_venue(open_symbol, open_venue);
@@ -1578,6 +1703,7 @@ impl XarbDecision {
         ctx.set_hedging_symbol(&hedge_trade_symbol);
 
         ctx.trigger_ts = now;
+        ctx.set_from_key(from_key.as_bytes().to_vec());
         ctx
     }
 

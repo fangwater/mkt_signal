@@ -3,7 +3,7 @@ use crate::signal::common::{bytes_helper, SignalBytes, TradingLeg};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 /// Generic arbitrage cancel signal context
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ArbCancelCtx {
     /// Opening leg
     pub opening_leg: TradingLeg,
@@ -19,6 +19,12 @@ pub struct ArbCancelCtx {
 
     /// Trigger timestamp
     pub trigger_ts: i64,
+
+    /// From key length
+    pub from_key_len: u32,
+
+    /// From key bytes
+    pub from_key: Vec<u8>,
 }
 
 /// Market maker cancel signal context
@@ -113,6 +119,8 @@ impl ArbCancelCtx {
             },
             hedging_symbol: [0u8; 32],
             trigger_ts: 0,
+            from_key_len: 0,
+            from_key: Vec::new(),
         }
     }
 
@@ -134,6 +142,12 @@ impl ArbCancelCtx {
     /// Get hedging leg symbol
     pub fn get_hedging_symbol(&self) -> String {
         get_symbol(&self.hedging_symbol)
+    }
+
+    /// Set from key bytes (updates length)
+    pub fn set_from_key(&mut self, from_key: Vec<u8>) {
+        self.from_key_len = from_key.len() as u32;
+        self.from_key = from_key;
     }
 }
 
@@ -194,6 +208,10 @@ impl SignalBytes for ArbCancelCtx {
 
         // Trigger timestamp
         buf.put_i64_le(self.trigger_ts);
+
+        let from_key_len = self.from_key.len() as u32;
+        buf.put_u32_le(from_key_len);
+        buf.put_slice(&self.from_key);
 
         buf.freeze()
     }
@@ -262,6 +280,26 @@ impl SignalBytes for ArbCancelCtx {
                 return Err("Not enough bytes for trigger timestamp".to_string());
             }
             let trigger_ts = bytes.get_i64_le();
+            let (from_key_len, from_key) = if bytes.remaining() == 0 {
+                (0u32, Vec::new())
+            } else {
+                if bytes.remaining() < 4 {
+                    return Err("Not enough bytes for ArbCancelCtx from_key_len".to_string());
+                }
+                let from_key_len = bytes.get_u32_le() as usize;
+                if bytes.remaining() < from_key_len {
+                    return Err(format!(
+                        "Not enough bytes for from_key: need {}, have {}",
+                        from_key_len,
+                        bytes.remaining()
+                    ));
+                }
+                let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
+                if bytes.remaining() != 0 {
+                    return Err("Unexpected trailing bytes for ArbCancelCtx".to_string());
+                }
+                (from_key_len as u32, from_key)
+            };
 
             Ok(ArbCancelCtx {
                 opening_leg,
@@ -269,6 +307,8 @@ impl SignalBytes for ArbCancelCtx {
                 hedging_leg,
                 hedging_symbol,
                 trigger_ts,
+                from_key_len,
+                from_key,
             })
         }
 
@@ -338,5 +378,46 @@ impl SignalBytes for MmCancelCtx {
             from_key_len: from_key_len as u32,
             from_key,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::signal::common::{TradingLeg, TradingVenue};
+
+    #[test]
+    fn arb_cancel_ctx_roundtrip_with_from_key() {
+        let mut ctx = ArbCancelCtx::new();
+        ctx.opening_leg = TradingLeg::new(TradingVenue::BinanceMargin, 100.0, 100.1, 123);
+        ctx.set_opening_symbol("BTCUSDT");
+        ctx.hedging_leg = TradingLeg::new(TradingVenue::BinanceFutures, 100.2, 100.3, 456);
+        ctx.set_hedging_symbol("BTCUSDT");
+        ctx.trigger_ts = 789;
+        ctx.set_from_key(b"fk".to_vec());
+
+        let parsed = ArbCancelCtx::from_bytes(ctx.to_bytes()).expect("roundtrip should succeed");
+        assert_eq!(parsed.get_opening_symbol(), "BTCUSDT");
+        assert_eq!(parsed.get_hedging_symbol(), "BTCUSDT");
+        assert_eq!(parsed.trigger_ts, 789);
+        assert_eq!(parsed.from_key, b"fk");
+    }
+
+    #[test]
+    fn arb_cancel_ctx_legacy_payload_without_from_key_still_decodes() {
+        let mut buf = BytesMut::new();
+        let opening_leg = TradingLeg::new(TradingVenue::BinanceMargin, 100.0, 100.1, 123);
+        let hedging_leg = TradingLeg::new(TradingVenue::BinanceFutures, 100.2, 100.3, 456);
+        let mut opening_symbol = [0u8; 32];
+        opening_symbol[..7].copy_from_slice(b"BTCUSDT");
+        let mut hedging_symbol = [0u8; 32];
+        hedging_symbol[..7].copy_from_slice(b"BTCUSDT");
+        write_leg(&mut buf, &opening_leg, &opening_symbol);
+        write_leg(&mut buf, &hedging_leg, &hedging_symbol);
+        buf.put_i64_le(789);
+
+        let parsed = ArbCancelCtx::from_bytes(buf.freeze()).expect("legacy payload should decode");
+        assert_eq!(parsed.trigger_ts, 789);
+        assert!(parsed.from_key.is_empty());
     }
 }
