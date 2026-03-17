@@ -132,16 +132,12 @@ pub(crate) fn build_parquet_order_updates(
     let mut tif_col = Vec::with_capacity(entries.len());
     let mut price_col = Vec::with_capacity(entries.len());
     let mut qty_col = Vec::with_capacity(entries.len());
-    let mut last_exec_qty_col = Vec::with_capacity(entries.len());
     let mut cumulative_col = Vec::with_capacity(entries.len());
     let mut status_col = Vec::with_capacity(entries.len());
     let mut raw_status_col = Vec::with_capacity(entries.len());
     let mut exec_type_col = Vec::with_capacity(entries.len());
     let mut raw_exec_type_col = Vec::with_capacity(entries.len());
     let mut venue_col = Vec::with_capacity(entries.len());
-    let mut avg_price_col = Vec::with_capacity(entries.len());
-    let mut last_price_col = Vec::with_capacity(entries.len());
-    let mut business_unit_col = Vec::with_capacity(entries.len());
 
     for (key_bytes, value_bytes) in entries {
         let key = String::from_utf8(key_bytes)?;
@@ -161,16 +157,12 @@ pub(crate) fn build_parquet_order_updates(
             time_in_force,
             price,
             quantity,
-            last_executed_qty,
             cumulative_filled_quantity,
             status,
             raw_status,
             execution_type,
             raw_execution_type,
             trading_venue,
-            average_price,
-            last_executed_price,
-            business_unit,
         } = record;
         key_col.push(key);
         ts_col.push(ts_us as i64);
@@ -184,16 +176,12 @@ pub(crate) fn build_parquet_order_updates(
         tif_col.push(time_in_force);
         price_col.push(price);
         qty_col.push(quantity);
-        last_exec_qty_col.push(last_executed_qty);
         cumulative_col.push(cumulative_filled_quantity);
         status_col.push(status);
         raw_status_col.push(raw_status);
         exec_type_col.push(execution_type);
         raw_exec_type_col.push(raw_execution_type);
         venue_col.push(trading_venue);
-        avg_price_col.push(average_price);
-        last_price_col.push(last_executed_price);
-        business_unit_col.push(business_unit);
     }
 
     let mut df = DataFrame::new(vec![
@@ -212,16 +200,12 @@ pub(crate) fn build_parquet_order_updates(
         Series::new("time_in_force".into(), tif_col),
         Series::new("price".into(), price_col),
         Series::new("quantity".into(), qty_col),
-        Series::new("last_executed_qty".into(), last_exec_qty_col),
         Series::new("cumulative_filled_quantity".into(), cumulative_col),
         Series::new("status".into(), status_col),
         Series::new("raw_status".into(), raw_status_col),
         Series::new("execution_type".into(), exec_type_col),
         Series::new("raw_execution_type".into(), raw_exec_type_col),
         Series::new("trading_venue".into(), venue_col),
-        Series::new("average_price".into(), avg_price_col.as_slice()),
-        Series::new("last_executed_price".into(), last_price_col.as_slice()),
-        Series::new("business_unit".into(), business_unit_col.as_slice()),
     ])?;
 
     let mut buf = Vec::new();
@@ -352,16 +336,12 @@ struct DecodedOrderRecord {
     time_in_force: String,
     price: f64,
     quantity: f64,
-    last_executed_qty: f64,
     cumulative_filled_quantity: f64,
     status: String,
     raw_status: String,
     execution_type: String,
     raw_execution_type: String,
     trading_venue: String,
-    average_price: Option<f64>,
-    last_executed_price: Option<f64>,
-    business_unit: Option<String>,
 }
 
 #[derive(Debug)]
@@ -440,16 +420,12 @@ fn decode_order_record(bytes: &[u8]) -> Result<DecodedOrderRecord> {
     let tif_raw = read_u8(&mut cursor, "order update time_in_force")?;
     let price = read_f64(&mut cursor, "order update price")?;
     let quantity = read_f64(&mut cursor, "order update quantity")?;
-    let last_executed_qty = read_f64(&mut cursor, "order update last_exec_qty")?;
     let cumulative_filled_quantity = read_f64(&mut cursor, "order update cumulative_qty")?;
     let status_raw = read_u8(&mut cursor, "order update status")?;
     let raw_status = read_string(&mut cursor)?;
     let execution_type_raw = read_u8(&mut cursor, "order update execution_type")?;
     let raw_execution_type = read_string(&mut cursor)?;
     let trading_venue_raw = read_u8(&mut cursor, "order update trading_venue")?;
-    let average_price = read_opt_f64(&mut cursor)?;
-    let last_executed_price = read_opt_f64(&mut cursor)?;
-    let business_unit = read_opt_string(&mut cursor)?;
 
     let side = Side::from_u8(side_raw)
         .map(|s| s.as_str().to_string())
@@ -481,16 +457,12 @@ fn decode_order_record(bytes: &[u8]) -> Result<DecodedOrderRecord> {
         time_in_force,
         price,
         quantity,
-        last_executed_qty,
         cumulative_filled_quantity,
         status,
         raw_status,
         execution_type,
         raw_execution_type,
         trading_venue,
-        average_price,
-        last_executed_price,
-        business_unit,
     })
 }
 
@@ -605,20 +577,6 @@ fn read_opt_string(cursor: &mut Bytes) -> Result<Option<String>> {
         return Ok(None);
     }
     read_string(cursor).map(Some)
-}
-
-fn read_opt_f64(cursor: &mut Bytes) -> Result<Option<f64>> {
-    if !cursor.has_remaining() {
-        return Err(anyhow!("payload too short to read f64 flag"));
-    }
-    let flag = cursor.get_u8();
-    if flag == 0 {
-        return Ok(None);
-    }
-    if cursor.remaining() < 8 {
-        return Err(anyhow!("payload too short to read f64 value"));
-    }
-    Ok(Some(cursor.get_f64_le()))
 }
 
 fn read_i64(cursor: &mut Bytes, field: &str) -> Result<i64> {

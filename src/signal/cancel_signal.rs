@@ -217,107 +217,42 @@ impl SignalBytes for ArbCancelCtx {
     }
 
     fn from_bytes(bytes: Bytes) -> Result<Self, String> {
-        fn detect_legacy_format(
-            bytes: &Bytes,
-            base_offset: usize,
-            tail_len: usize,
-        ) -> Option<bool> {
-            let total = bytes.len();
-            let mut new_match = false;
-            let mut old_match = false;
+        let mut bytes = bytes;
 
-            let open_len_idx_new = base_offset + 25;
-            if total > open_len_idx_new {
-                let open_len = bytes[open_len_idx_new] as usize;
-                if open_len <= 32 {
-                    let hedge_len_idx = base_offset + 51 + open_len;
-                    if total > hedge_len_idx {
-                        let hedge_len = bytes[hedge_len_idx] as usize;
-                        if hedge_len <= 32 {
-                            let expected = base_offset + 52 + open_len + hedge_len + tail_len;
-                            if total == expected {
-                                new_match = true;
-                            }
-                        }
-                    }
-                }
-            }
+        // Opening leg
+        let (opening_leg, opening_symbol) = read_leg(&mut bytes, true, "opening leg")?;
 
-            let open_len_idx_old = base_offset + 17;
-            if total > open_len_idx_old {
-                let open_len = bytes[open_len_idx_old] as usize;
-                if open_len <= 32 {
-                    let hedge_len_idx = base_offset + 35 + open_len;
-                    if total > hedge_len_idx {
-                        let hedge_len = bytes[hedge_len_idx] as usize;
-                        if hedge_len <= 32 {
-                            let expected = base_offset + 36 + open_len + hedge_len + tail_len;
-                            if total == expected {
-                                old_match = true;
-                            }
-                        }
-                    }
-                }
-            }
+        // Hedging leg
+        let (hedging_leg, hedging_symbol) = read_leg(&mut bytes, true, "hedging leg")?;
 
-            match (new_match, old_match) {
-                (true, false) => Some(false),
-                (false, true) => Some(true),
-                (true, true) => Some(false),
-                _ => None,
-            }
+        if bytes.remaining() < 8 + 4 {
+            return Err(
+                "Not enough bytes for ArbCancelCtx trigger timestamp / from_key_len".to_string(),
+            );
         }
-
-        fn parse(mut bytes: Bytes, with_ts: bool) -> Result<ArbCancelCtx, String> {
-            // Opening leg
-            let (opening_leg, opening_symbol) = read_leg(&mut bytes, with_ts, "opening leg")?;
-
-            // Hedging leg
-            let (hedging_leg, hedging_symbol) = read_leg(&mut bytes, with_ts, "hedging leg")?;
-
-            // Trigger timestamp
-            if bytes.remaining() < 8 {
-                return Err("Not enough bytes for trigger timestamp".to_string());
-            }
-            let trigger_ts = bytes.get_i64_le();
-            let (from_key_len, from_key) = if bytes.remaining() == 0 {
-                (0u32, Vec::new())
-            } else {
-                if bytes.remaining() < 4 {
-                    return Err("Not enough bytes for ArbCancelCtx from_key_len".to_string());
-                }
-                let from_key_len = bytes.get_u32_le() as usize;
-                if bytes.remaining() < from_key_len {
-                    return Err(format!(
-                        "Not enough bytes for from_key: need {}, have {}",
-                        from_key_len,
-                        bytes.remaining()
-                    ));
-                }
-                let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
-                if bytes.remaining() != 0 {
-                    return Err("Unexpected trailing bytes for ArbCancelCtx".to_string());
-                }
-                (from_key_len as u32, from_key)
-            };
-
-            Ok(ArbCancelCtx {
-                opening_leg,
-                opening_symbol,
-                hedging_leg,
-                hedging_symbol,
-                trigger_ts,
+        let trigger_ts = bytes.get_i64_le();
+        let from_key_len = bytes.get_u32_le() as usize;
+        if bytes.remaining() < from_key_len {
+            return Err(format!(
+                "Not enough bytes for from_key: need {}, have {}",
                 from_key_len,
-                from_key,
-            })
+                bytes.remaining()
+            ));
+        }
+        let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
+        if bytes.remaining() != 0 {
+            return Err("Unexpected trailing bytes for ArbCancelCtx".to_string());
         }
 
-        let format = detect_legacy_format(&bytes, 0, 8);
-        match format {
-            Some(true) => parse(bytes, false),
-            Some(false) => parse(bytes, true),
-            None => parse(bytes.clone(), true).or_else(|_| parse(bytes, false)),
-        }
+        Ok(ArbCancelCtx {
+            opening_leg,
+            opening_symbol,
+            hedging_leg,
+            hedging_symbol,
+            trigger_ts,
+            from_key_len: from_key_len as u32,
+            from_key,
+        })
     }
 }
 
@@ -401,23 +336,5 @@ mod tests {
         assert_eq!(parsed.get_hedging_symbol(), "BTCUSDT");
         assert_eq!(parsed.trigger_ts, 789);
         assert_eq!(parsed.from_key, b"fk");
-    }
-
-    #[test]
-    fn arb_cancel_ctx_legacy_payload_without_from_key_still_decodes() {
-        let mut buf = BytesMut::new();
-        let opening_leg = TradingLeg::new(TradingVenue::BinanceMargin, 100.0, 100.1, 123);
-        let hedging_leg = TradingLeg::new(TradingVenue::BinanceFutures, 100.2, 100.3, 456);
-        let mut opening_symbol = [0u8; 32];
-        opening_symbol[..7].copy_from_slice(b"BTCUSDT");
-        let mut hedging_symbol = [0u8; 32];
-        hedging_symbol[..7].copy_from_slice(b"BTCUSDT");
-        write_leg(&mut buf, &opening_leg, &opening_symbol);
-        write_leg(&mut buf, &hedging_leg, &hedging_symbol);
-        buf.put_i64_le(789);
-
-        let parsed = ArbCancelCtx::from_bytes(buf.freeze()).expect("legacy payload should decode");
-        assert_eq!(parsed.trigger_ts, 789);
-        assert!(parsed.from_key.is_empty());
     }
 }

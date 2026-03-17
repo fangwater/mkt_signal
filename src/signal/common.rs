@@ -522,9 +522,6 @@ impl TradingVenue {
             7 => Some(TradingVenue::BitgetFutures),
             8 => Some(TradingVenue::GateMargin),
             9 => Some(TradingVenue::GateFutures),
-            // 兼容旧值
-            10 => Some(TradingVenue::BybitFutures),
-            11 => Some(TradingVenue::GateFutures),
             12 => Some(TradingVenue::HyperliquidMargin),
             13 => Some(TradingVenue::HyperliquidFutures),
             _ => None,

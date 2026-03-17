@@ -92,16 +92,12 @@ fn order_update_used_len(payload: &[u8]) -> Option<usize> {
     skip_u8(&mut cursor)?; // time_in_force
     skip_f64(&mut cursor)?; // price
     skip_f64(&mut cursor)?; // quantity
-    skip_f64(&mut cursor)?; // last_time_executed_qty
     skip_f64(&mut cursor)?; // cumulative_filled_quantity
     skip_u8(&mut cursor)?; // status
     skip_string(&mut cursor)?; // raw_status
     skip_u8(&mut cursor)?; // execution_type
     skip_string(&mut cursor)?; // raw_execution_type
     skip_u8(&mut cursor)?; // trading_venue
-    skip_opt_f64(&mut cursor)?; // average_price
-    skip_opt_f64(&mut cursor)?; // last_executed_price
-    skip_opt_string(&mut cursor)?; // business_unit
 
     Some(payload.len().saturating_sub(cursor.remaining()))
 }
@@ -159,14 +155,6 @@ fn skip_opt_string(cursor: &mut Bytes) -> Option<()> {
         return Some(());
     }
     skip_string(cursor)
-}
-
-fn skip_opt_f64(cursor: &mut Bytes) -> Option<()> {
-    let flag = read_u8(cursor)?;
-    if flag == 0 {
-        return Some(());
-    }
-    skip_f64(cursor)
 }
 
 fn skip_i64(cursor: &mut Bytes) -> Option<()> {
