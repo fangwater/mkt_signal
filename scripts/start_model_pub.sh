@@ -72,6 +72,24 @@ if [[ ! -f "${BASE_DIR}/config/model_pub.toml" ]]; then
   exit 1
 fi
 
+ONNX_LIB_CANDIDATES=(
+  "${BASE_DIR}/third_party/onnxruntime/linux-x86_64/lib"
+  "${HOME}/crypto_mkt/mkt_signal/third_party/onnxruntime/linux-x86_64/lib"
+)
+
+ONNX_LIB_DIR=""
+for cand in "${ONNX_LIB_CANDIDATES[@]}"; do
+  if [[ -d "$cand" ]]; then
+    ONNX_LIB_DIR="$cand"
+    break
+  fi
+done
+
+if [[ -z "$ONNX_LIB_DIR" ]]; then
+  echo "[ERROR] ONNX runtime lib dir not found" >&2
+  exit 1
+fi
+
 name="model_pub_${MODEL_NAME}"
 rust_log="${RUST_LOG:-info}"
 cfg_file="$(mktemp)"
@@ -86,6 +104,7 @@ json_bin="$(json_escape "$BIN_PATH")"
 json_base="$(json_escape "$BASE_DIR")"
 json_model="$(json_escape "$MODEL_NAME")"
 json_rust_log="$(json_escape "$rust_log")"
+json_ld_library_path="$(json_escape "${ONNX_LIB_DIR}:${BASE_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}")"
 
 cat >"$cfg_file" <<JSON
 {
@@ -97,7 +116,7 @@ cat >"$cfg_file" <<JSON
       "cwd": "${json_base}",
       "env": {
         "RUST_LOG": "${json_rust_log}",
-        "LD_LIBRARY_PATH": "${json_base}"
+        "LD_LIBRARY_PATH": "${json_ld_library_path}"
       }
     }
   ]

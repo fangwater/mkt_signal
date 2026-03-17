@@ -25,7 +25,7 @@ use crate::factor_pub::fusion_factor_pub::FusionFactorId;
 const INPUT_MAX_BYTES: usize = FUSION_FACTOR_PAYLOAD_MAX_BYTES;
 const IDLE_SLEEP_MICROS: u64 = 200;
 const LOG_INTERVAL_SECS: u64 = 60;
-const MODEL_FETCH_CONCURRENCY: usize = 8;
+const MODEL_FETCH_CONCURRENCY: usize = 1;
 const MODEL_ONNX_PATH_TEMPLATE: &str = "/api/models/{model_name}/model_onnx/{symbol}";
 const MODEL_ONNX_FEATURE_DIM_HEADER: &str = "x-model-feature-dim";
 const MODEL_ONNX_CACHE_DIR: &str = "/tmp/mkt_signal_model_pub_onnx";
