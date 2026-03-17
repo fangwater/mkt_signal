@@ -242,6 +242,10 @@ impl QueryEngChannel {
                                     Some(QueryRequestType::BinanceWsUMQuery) => {
                                         BasicAccountScope::BinanceStdUm
                                     }
+                                    Some(QueryRequestType::BinanceUmBalanceSnapshotStd)
+                                    | Some(QueryRequestType::BinanceUmAccountSnapshotStd) => {
+                                        BasicAccountScope::BinanceStdUm
+                                    }
                                     Some(QueryRequestType::BinanceSpotAccountSnapshotStd) => {
                                         BasicAccountScope::BinanceStdSpot
                                     }

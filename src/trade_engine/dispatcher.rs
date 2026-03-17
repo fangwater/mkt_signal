@@ -236,7 +236,7 @@ impl Dispatcher {
 
         let base_url = if evt.endpoint.starts_with("/fapi/") {
             &self.base_url_fapi
-        } else if evt.endpoint.starts_with("/sapi/") {
+        } else if evt.endpoint.starts_with("/api/") || evt.endpoint.starts_with("/sapi/") {
             &self.base_url_sapi
         } else {
             &self.base_url_papi
