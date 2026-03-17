@@ -32,7 +32,7 @@ pub struct FrThresholdConfig {
 }
 
 /// 反套开仓借贷利率系数（默认 1.2）
-const BWD_OPEN_LOAN_RATE_MULTIPLIER: f64 = 1.2;
+pub const BWD_OPEN_LOAN_RATE_MULTIPLIER: f64 = 1.2;
 
 /// 资金费率因子单例
 pub struct FundingRateFactor {

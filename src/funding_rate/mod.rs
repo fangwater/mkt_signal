@@ -44,7 +44,7 @@ pub use spread_threshold_loader::load_from_redis as load_spread_thresholds;
 
 // 公共导出 - 单例访问器
 pub use decision_router::{init_decision_branch, trigger_decision, DecisionBranch};
-pub use fr_decision::FrDecision;
+pub use fr_decision::{FrDecision, FrSignalKind};
 pub use mkt_channel::MktChannel;
 pub use mm_decision::MmDecision;
 pub use rate_fetcher::{ExchangeConfig, RateFetcher, BINANCE_CONFIG, OKEX_CONFIG};

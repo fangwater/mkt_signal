@@ -49,6 +49,10 @@ name = "viz_server"
 path = "src/bin/viz_server.rs"
 
 [[bin]]
+name = "fr_signal_dashboard"
+path = "src/bin/fr_signal_dashboard.rs"
+
+[[bin]]
 name = "rolling_metrics"
 path = "src/bin/rolling_metrics.rs"
 

@@ -5,6 +5,7 @@ pub mod common;
 pub mod connection;
 pub mod depth_pub;
 pub mod factor_pub;
+pub mod fr_signal_dashboard;
 pub mod funding_rate;
 pub mod kline_pub;
 pub mod market_maker;

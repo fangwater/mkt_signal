@@ -7,6 +7,7 @@ use bytes::Bytes;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
+use serde::Serialize;
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -111,12 +112,56 @@ pub const DEFAULT_BACKWARD_CHANNEL: &str = "trade_query";
 // ========== 资费信号类型 ==========
 
 /// 资费信号类型（内部使用）
-#[derive(Debug, Clone, Copy)]
-enum FrSignal {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum FrSignalKind {
     ForwardOpen,   // 正套开仓
     ForwardClose,  // 正套平仓
     BackwardOpen,  // 反套开仓
     BackwardClose, // 反套平仓
+}
+
+impl FrSignalKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ForwardOpen => "FwdOpen",
+            Self::ForwardClose => "FwdClose",
+            Self::BackwardOpen => "BwdOpen",
+            Self::BackwardClose => "BwdClose",
+        }
+    }
+}
+
+fn resolve_fr_signal_from_flags(
+    forward_open: bool,
+    forward_close: bool,
+    backward_open: bool,
+    backward_close: bool,
+) -> Option<FrSignalKind> {
+    // 优先级规则1: forward_close 和 backward_open 冲突时，选择 backward_open
+    if forward_close && backward_open {
+        return Some(FrSignalKind::BackwardOpen);
+    }
+
+    // 优先级规则2: backward_close 和 forward_open 冲突时，选择 forward_open
+    if backward_close && forward_open {
+        return Some(FrSignalKind::ForwardOpen);
+    }
+
+    // 默认优先级: close > open
+    if forward_close {
+        return Some(FrSignalKind::ForwardClose);
+    }
+    if backward_close {
+        return Some(FrSignalKind::BackwardClose);
+    }
+    if forward_open {
+        return Some(FrSignalKind::ForwardOpen);
+    }
+    if backward_open {
+        return Some(FrSignalKind::BackwardOpen);
+    }
+
+    None
 }
 
 // ========== 核心决策类 ==========
@@ -542,14 +587,14 @@ impl FrDecision {
                 hedge_venue,
                 hedge_symbol_key.as_str(),
             ) {
-                Some(FrSignal::ForwardClose)
+                Some(FrSignalKind::ForwardClose)
             } else if spread_factor.satisfy_backward_close(
                 open_venue,
                 open_symbol_key.as_str(),
                 hedge_venue,
                 hedge_symbol_key.as_str(),
             ) {
-                Some(FrSignal::BackwardClose)
+                Some(FrSignalKind::BackwardClose)
             } else {
                 None
             }
@@ -615,7 +660,7 @@ impl FrDecision {
 
         // 步骤4: 根据资费信号验证对应的价差 satisfy
         let final_signal = match fr_signal {
-            FrSignal::ForwardOpen => {
+            FrSignalKind::ForwardOpen => {
                 if in_dump {
                     log::debug!(
                         "FrDecision forward_open blocked by dump list open={} hedge={} open_venue={:?} hedge_venue={:?}",
@@ -648,7 +693,7 @@ impl FrDecision {
                     None
                 }
             }
-            FrSignal::ForwardClose => {
+            FrSignalKind::ForwardClose => {
                 let spread_ok = spread_factor.satisfy_forward_close(
                     open_venue,
                     open_symbol_key.as_str(),
@@ -669,7 +714,7 @@ impl FrDecision {
                     None
                 }
             }
-            FrSignal::BackwardOpen => {
+            FrSignalKind::BackwardOpen => {
                 if in_dump {
                     log::debug!(
                         "FrDecision backward_open blocked by dump list open={} hedge={} open_venue={:?} hedge_venue={:?}",
@@ -702,7 +747,7 @@ impl FrDecision {
                     None
                 }
             }
-            FrSignal::BackwardClose => {
+            FrSignalKind::BackwardClose => {
                 let spread_ok = spread_factor.satisfy_backward_close(
                     open_venue,
                     open_symbol_key.as_str(),
@@ -784,12 +829,10 @@ impl FrDecision {
     /// 1. 如果同时满足 forward_close 和 backward_open，选择 backward_open
     /// 2. 如果同时满足 backward_close 和 forward_open，选择 forward_open
     /// 3. 否则按优先级：close > open
-    fn get_funding_rate_signal(
-        &self,
-        _open_symbol: &str,
+    pub fn evaluate_funding_rate_signal(
         hedge_symbol: &str,
         hedge_venue: TradingVenue,
-    ) -> Result<Option<FrSignal>> {
+    ) -> Result<Option<FrSignalKind>> {
         let fr_factor = FundingRateFactor::instance();
         let rate_fetcher = RateFetcher::instance();
 
@@ -814,69 +857,36 @@ impl FrDecision {
             );
         }
 
-        // 优先级规则1: forward_close 和 backward_open 冲突时，选择 backward_open
-        if forward_close && backward_open {
-            log::debug!(
-                "FrDecision funding-rate signal=BackwardOpen (conflict fwd_close/bwd_open) hedge={} venue={:?}",
-                hedge_symbol,
-                hedge_venue
-            );
-            return Ok(Some(FrSignal::BackwardOpen));
-        }
-
-        // 优先级规则2: backward_close 和 forward_open 冲突时，选择 forward_open
-        if backward_close && forward_open {
-            log::debug!(
-                "FrDecision funding-rate signal=ForwardOpen (conflict bwd_close/fwd_open) hedge={} venue={:?}",
-                hedge_symbol,
-                hedge_venue
-            );
-            return Ok(Some(FrSignal::ForwardOpen));
-        }
-
-        // 默认优先级: close > open
-        if forward_close {
-            log::debug!(
-                "FrDecision funding-rate signal=ForwardClose hedge={} venue={:?}",
-                hedge_symbol,
-                hedge_venue
-            );
-            return Ok(Some(FrSignal::ForwardClose));
-        }
-        if backward_close {
-            log::debug!(
-                "FrDecision funding-rate signal=BackwardClose hedge={} venue={:?}",
-                hedge_symbol,
-                hedge_venue
-            );
-            return Ok(Some(FrSignal::BackwardClose));
-        }
-
-        // 开仓信号
-        if forward_open {
-            log::debug!(
-                "FrDecision funding-rate signal=ForwardOpen hedge={} venue={:?}",
-                hedge_symbol,
-                hedge_venue
-            );
-            return Ok(Some(FrSignal::ForwardOpen));
-        }
-        if backward_open {
-            log::debug!(
-                "FrDecision funding-rate signal=BackwardOpen hedge={} venue={:?}",
-                hedge_symbol,
-                hedge_venue
-            );
-            return Ok(Some(FrSignal::BackwardOpen));
-        }
-
-        // 无资费信号
-        log::debug!(
-            "FrDecision no funding-rate condition met hedge={} venue={:?}",
-            hedge_symbol,
-            hedge_venue
+        let signal = resolve_fr_signal_from_flags(
+            forward_open,
+            forward_close,
+            backward_open,
+            backward_close,
         );
-        Ok(None)
+        if let Some(signal) = signal {
+            log::debug!(
+                "FrDecision funding-rate signal={} hedge={} venue={:?}",
+                signal.as_str(),
+                hedge_symbol,
+                hedge_venue
+            );
+        } else {
+            log::debug!(
+                "FrDecision no funding-rate condition met hedge={} venue={:?}",
+                hedge_symbol,
+                hedge_venue
+            );
+        }
+        Ok(signal)
+    }
+
+    fn get_funding_rate_signal(
+        &self,
+        _open_symbol: &str,
+        hedge_symbol: &str,
+        hedge_venue: TradingVenue,
+    ) -> Result<Option<FrSignalKind>> {
+        Self::evaluate_funding_rate_signal(hedge_symbol, hedge_venue)
     }
 
     /// 处理反向查询（来自 pre_trade 的 backward channel）
@@ -1570,12 +1580,12 @@ impl FrDecision {
         base_qty
     }
 
-    fn side_from_fr_signal(fr_signal: FrSignal) -> Side {
+    fn side_from_fr_signal(fr_signal: FrSignalKind) -> Side {
         match fr_signal {
-            FrSignal::ForwardOpen => Side::Buy,
-            FrSignal::BackwardOpen => Side::Sell,
-            FrSignal::ForwardClose => Side::Sell,
-            FrSignal::BackwardClose => Side::Buy,
+            FrSignalKind::ForwardOpen => Side::Buy,
+            FrSignalKind::BackwardOpen => Side::Sell,
+            FrSignalKind::ForwardClose => Side::Sell,
+            FrSignalKind::BackwardClose => Side::Buy,
         }
     }
 
@@ -1926,21 +1936,14 @@ impl FrDecision {
                 let backward_open = fr_factor.satisfy_backward_open(symbol, period, hedge_venue);
                 let backward_close = fr_factor.satisfy_backward_close(symbol, period, hedge_venue);
 
-                let fr_signal_label: &'static str = if forward_close && backward_open {
-                    "BwdOpen"
-                } else if backward_close && forward_open {
-                    "FwdOpen"
-                } else if forward_close {
-                    "FwdClose"
-                } else if backward_close {
-                    "BwdClose"
-                } else if forward_open {
-                    "FwdOpen"
-                } else if backward_open {
-                    "BwdOpen"
-                } else {
-                    "-"
-                };
+                let fr_signal_label: &'static str = resolve_fr_signal_from_flags(
+                    forward_open,
+                    forward_close,
+                    backward_open,
+                    backward_close,
+                )
+                .map(|signal| signal.as_str())
+                .unwrap_or("-");
 
                 let spread_fwd_open =
                     spread_factor.satisfy_forward_open(open_venue, symbol, hedge_venue, symbol);

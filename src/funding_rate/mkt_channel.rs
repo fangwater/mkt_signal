@@ -99,6 +99,24 @@ impl MktChannel {
     /// open/hedge 由调用方传入；每个 venue 都订阅 ask_bid_spread。
     /// 若某个 venue 是 futures，则额外订阅 funding/mark price 衍生品频道。
     pub fn init_singleton(open_venue: TradingVenue, hedge_venue: TradingVenue) -> Result<()> {
+        Self::init_singleton_with_mode(open_venue, hedge_venue, true)
+    }
+
+    /// 初始化只读单例并启动订阅任务，但不触发任何决策逻辑。
+    ///
+    /// 供 dashboard / 监控类服务复用实时行情与资费缓存，避免误发交易信号。
+    pub fn init_singleton_readonly(
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+    ) -> Result<()> {
+        Self::init_singleton_with_mode(open_venue, hedge_venue, false)
+    }
+
+    fn init_singleton_with_mode(
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+        trigger_decisions: bool,
+    ) -> Result<()> {
         let open_slug = open_venue.data_pub_slug();
         let hedge_slug = hedge_venue.data_pub_slug();
 
@@ -137,6 +155,7 @@ impl MktChannel {
         Self::spawn_askbid_listener(
             open_node,
             open_service,
+            trigger_decisions,
             open_venue,
             open_venue,
             hedge_venue,
@@ -145,6 +164,7 @@ impl MktChannel {
         Self::spawn_askbid_listener(
             hedge_node,
             hedge_service,
+            trigger_decisions,
             hedge_venue,
             open_venue,
             hedge_venue,
@@ -156,6 +176,7 @@ impl MktChannel {
             Self::spawn_derivatives_listener(
                 derivatives_node,
                 derivatives_service,
+                trigger_decisions,
                 open_venue,
                 open_venue,
                 hedge_venue,
@@ -169,6 +190,7 @@ impl MktChannel {
             Self::spawn_derivatives_listener(
                 derivatives_node,
                 derivatives_service,
+                trigger_decisions,
                 hedge_venue,
                 open_venue,
                 hedge_venue,
@@ -271,6 +293,7 @@ impl MktChannel {
     fn spawn_askbid_listener(
         node_name: String,
         service_name: String,
+        trigger_decisions: bool,
         this_venue: TradingVenue,
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
@@ -372,17 +395,19 @@ impl MktChannel {
                                     stats_last_symbol = sym.clone();
                                     stats_unique_symbols.insert(sym.clone());
 
-                                    let can_trigger = should_trigger_decision(&sym);
-                                    if can_trigger {
-                                        stats_triggerable_msgs += 1;
-                                        super::decision_router::trigger_decision(
-                                            &sym,
-                                            &sym,
-                                            open_venue,
-                                            hedge_venue,
-                                        );
-                                    } else if stats_unlisted_sample.len() < 10 {
-                                        stats_unlisted_sample.insert(sym.clone());
+                                    if trigger_decisions {
+                                        let can_trigger = should_trigger_decision(&sym);
+                                        if can_trigger {
+                                            stats_triggerable_msgs += 1;
+                                            super::decision_router::trigger_decision(
+                                                &sym,
+                                                &sym,
+                                                open_venue,
+                                                hedge_venue,
+                                            );
+                                        } else if stats_unlisted_sample.len() < 10 {
+                                            stats_unlisted_sample.insert(sym.clone());
+                                        }
                                     }
                                 }
 
@@ -427,6 +452,7 @@ impl MktChannel {
     fn spawn_derivatives_listener(
         node_name: String,
         service_name: String,
+        trigger_decisions: bool,
         feed_venue: TradingVenue,
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
@@ -499,17 +525,19 @@ impl MktChannel {
 
                                     // Funding Rate MA 重算后触发决策（事件驱动）
                                     if let Some(sym) = symbol_for_decision {
-                                        let can_trigger = should_trigger_decision(&sym);
-                                        if can_trigger {
-                                            stats_triggerable_msgs += 1;
-                                            super::decision_router::trigger_decision(
-                                                &sym,
-                                                &sym,
-                                                open_venue,
-                                                hedge_venue,
-                                            );
-                                        } else if stats_unlisted_sample.len() < 10 {
-                                            stats_unlisted_sample.insert(sym.clone());
+                                        if trigger_decisions {
+                                            let can_trigger = should_trigger_decision(&sym);
+                                            if can_trigger {
+                                                stats_triggerable_msgs += 1;
+                                                super::decision_router::trigger_decision(
+                                                    &sym,
+                                                    &sym,
+                                                    open_venue,
+                                                    hedge_venue,
+                                                );
+                                            } else if stats_unlisted_sample.len() < 10 {
+                                                stats_unlisted_sample.insert(sym.clone());
+                                            }
                                         }
                                     }
                                 }
