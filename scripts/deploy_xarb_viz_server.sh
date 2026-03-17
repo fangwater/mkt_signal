@@ -420,9 +420,17 @@ emit_server_block "$BIND" "$PORT" "$WS_PATH" > "$TARGET_DIR/config/viz.toml"
 mkdir -p "$TARGET_DIR/www"
 if [[ -f "$ROOT_DIR/docs/xarb_pre_trade_dashboard.html" ]]; then
   cp "$ROOT_DIR/docs/xarb_pre_trade_dashboard.html" "$TARGET_DIR/www/xarb_pre_trade_dashboard.html"
-  cp "$ROOT_DIR/docs/xarb_pre_trade_dashboard.html" "$TARGET_DIR/www/pre_trade_dashboard.html"
-  cp "$ROOT_DIR/docs/xarb_pre_trade_dashboard.html" "$TARGET_DIR/www/index.html"
-  echo "[INFO] 已同步 dashboard: $TARGET_DIR/www/xarb_pre_trade_dashboard.html"
+
+  DASHBOARD_SRC="$ROOT_DIR/docs/xarb_pre_trade_dashboard.html"
+  if [[ "$OPEN_VENUE" == "binance-margin" && "$HEDGE_VENUE" == "binance-futures" && -f "$ROOT_DIR/docs/xarb_binance_std_pre_trade_dashboard.html" ]]; then
+    DASHBOARD_SRC="$ROOT_DIR/docs/xarb_binance_std_pre_trade_dashboard.html"
+    cp "$ROOT_DIR/docs/xarb_binance_std_pre_trade_dashboard.html" "$TARGET_DIR/www/xarb_binance_std_pre_trade_dashboard.html"
+    echo "[INFO] 已同步 Binance std 专用 dashboard: $TARGET_DIR/www/xarb_binance_std_pre_trade_dashboard.html"
+  fi
+
+  cp "$DASHBOARD_SRC" "$TARGET_DIR/www/pre_trade_dashboard.html"
+  cp "$DASHBOARD_SRC" "$TARGET_DIR/www/index.html"
+  echo "[INFO] 已同步 dashboard: $TARGET_DIR/www/pre_trade_dashboard.html"
 elif [[ -f "$ROOT_DIR/docs/pre_trade_dashboard.html" ]]; then
   cp "$ROOT_DIR/docs/pre_trade_dashboard.html" "$TARGET_DIR/www/pre_trade_dashboard.html"
   cp "$ROOT_DIR/docs/pre_trade_dashboard.html" "$TARGET_DIR/www/index.html"

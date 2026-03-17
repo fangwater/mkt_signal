@@ -35,6 +35,10 @@ fn is_corrupted_service_err(err_text: &str) -> bool {
     err_text.contains("ServiceInCorruptedState")
 }
 
+fn is_publisher_capacity_err(err_text: &str) -> bool {
+    err_text.contains("ExceedsMaxSupportedPublishers")
+}
+
 impl PmForwarder {
     /// 创建 PM 转发器
     /// - `exchange` 交易所名（用于拼接服务名）
@@ -139,7 +143,33 @@ impl PmForwarder {
             }
         };
 
-        let publisher = service.publisher_builder().create()?;
+        let publisher = match service.publisher_builder().create() {
+            Ok(publisher) => publisher,
+            Err(err) => {
+                let err_text = format!("{:?}", err);
+                if is_publisher_capacity_err(&err_text) {
+                    warn!(
+                        "publisher create hit max-publishers, attempting dead-node cleanup: service='{}' err={:?}",
+                        service_name, err
+                    );
+                    let cleanup = Node::<ipc::Service>::cleanup_dead_nodes(Config::global_config());
+                    warn!(
+                        "dead-node cleanup 完成: cleanups={}, failed_cleanups={}",
+                        cleanup.cleanups, cleanup.failed_cleanups
+                    );
+                    service.publisher_builder().create().map_err(|retry_err| {
+                        anyhow!(
+                            "创建 PM publisher 失败: service='{}', err={:?}, retry_err={:?}",
+                            service_name,
+                            err,
+                            retry_err
+                        )
+                    })?
+                } else {
+                    return Err(err.into());
+                }
+            }
+        };
         info!("PM forwarder publisher 创建成功");
 
         Ok(Self {

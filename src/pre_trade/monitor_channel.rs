@@ -1132,49 +1132,44 @@ impl MonitorChannel {
                 // Gate 依赖 account_monitor 的 client_order_id，对缺失严格报错；
                 // 其他交易所允许先启动 pre_trade，再由 account_monitor 补上。
                 let service_name_obj = ServiceName::new(&service_name)?;
-                let service = if exchange == Exchange::Gate {
+                let service_builder = || {
                     node.service_builder(&service_name_obj)
                         .publish_subscribe::<[u8; ACCOUNT_PAYLOAD]>()
                         .max_publishers(1)
                         .max_subscribers(PM_MAX_SUBSCRIBERS)
                         .history_size(PM_HISTORY_SIZE)
                         .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE)
-                        .open()
-                        .unwrap_or_else(|err| {
-                            panic!(
-                                "打开账户 IceOryx service 失败（请先启动 account_monitor，并确认 IPC_NAMESPACE 一致）: service={} err={:?}",
-                                service_name, err
-                            )
-                        })
+                };
+                let require_existing_service = exchange == Exchange::Gate
+                    || (exchange == Exchange::Binance
+                        && binance_account_mode == Some(BinanceAccountMode::Standard));
+                let service = if require_existing_service {
+                    loop {
+                        match service_builder().open() {
+                            Ok(service) => break service,
+                            Err(err) => {
+                                warn!(
+                                    "waiting for account_monitor service: service={} exchange={:?} err={:?}",
+                                    service_name, exchange, err
+                                );
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+                            }
+                        }
+                    }
                 } else {
-                    match node
-                        .service_builder(&service_name_obj)
-                        .publish_subscribe::<[u8; ACCOUNT_PAYLOAD]>()
-                        .max_publishers(1)
-                        .max_subscribers(PM_MAX_SUBSCRIBERS)
-                        .history_size(PM_HISTORY_SIZE)
-                        .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE)
-                        .open()
-                    {
+                    match service_builder().open() {
                         Ok(service) => service,
                         Err(err) => {
                             warn!(
                                 "account_monitor service missing, continue with open_or_create: service={} err={:?}",
                                 service_name, err
                             );
-                            node.service_builder(&service_name_obj)
-                                .publish_subscribe::<[u8; ACCOUNT_PAYLOAD]>()
-                                .max_publishers(1)
-                                .max_subscribers(PM_MAX_SUBSCRIBERS)
-                                .history_size(PM_HISTORY_SIZE)
-                                .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE)
-                                .open_or_create()
-                                .unwrap_or_else(|err| {
-                                    panic!(
-                                        "创建账户 IceOryx service 失败: service={} err={:?}",
-                                        service_name, err
-                                    )
-                                })
+                            service_builder().open_or_create().unwrap_or_else(|err| {
+                                panic!(
+                                    "创建账户 IceOryx service 失败: service={} err={:?}",
+                                    service_name, err
+                                )
+                            })
                         }
                     }
                 };

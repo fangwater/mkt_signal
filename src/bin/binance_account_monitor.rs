@@ -1,9 +1,11 @@
 use anyhow::Result;
 use bytes::Bytes;
+use hmac::{Hmac, Mac};
 use log::{debug, error, info, warn};
 use mkt_signal::common::basic_account_msg::{
-    split_basic_account_event, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
-    BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, BinanceBasicOrderMsg,
+    get_basic_event_type, split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType,
+    BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg,
+    BasicUmUnrealizedMsg, BinanceBasicOrderMsg,
 };
 use mkt_signal::common::binance_account_mode::{init_binance_account_mode, BinanceAccountMode};
 use mkt_signal::common::mkt_cfg::{home_mkt_cfg_path, load_local_ips_from_path};
@@ -16,12 +18,21 @@ use mkt_signal::portfolio_margin::listen_key::BinanceListenKeyService;
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
 use mkt_signal::pre_trade::order_manager::Side;
 use mkt_signal::signal::common::{ExecutionType, OrderStatus};
+use mkt_signal::trade_engine::query_parsers::binance_margin_account_snapshot_std::parse_binance_margin_account_snapshot_std;
+use mkt_signal::trade_engine::query_parsers::binance_um_account_snapshot::parse_binance_um_account_snapshot;
+use mkt_signal::trade_engine::query_parsers::binance_um_balance_snapshot_std::parse_binance_um_balance_snapshot_std;
+use reqwest::Client;
+use sha2::Sha256;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::BTreeMap;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 use tokio::signal;
 use tokio::sync::{broadcast, watch};
+use url::form_urlencoded;
+
+type HmacSha256 = Hmac<Sha256>;
 
 /// 构造最终的用户数据 WS URL。
 /// 如果配置的 `ws_base` 已经以 `/ws` 结尾（例如 `.../pm/ws`），则直接追加 listenKey；
@@ -59,6 +70,131 @@ fn log_credential_preview(label: &str, value: &str) {
             label, len, first4, last4
         );
     }
+}
+
+async fn signed_get_binance(
+    client: &Client,
+    base_url: &str,
+    path: &str,
+    api_key: &str,
+    api_secret: &str,
+) -> Result<String> {
+    let mut params = BTreeMap::new();
+    params.insert("recvWindow".to_string(), "5000".to_string());
+    params.insert(
+        "timestamp".to_string(),
+        chrono::Utc::now().timestamp_millis().to_string(),
+    );
+
+    let mut serializer = form_urlencoded::Serializer::new(String::new());
+    for (k, v) in &params {
+        serializer.append_pair(k, v);
+    }
+    let query = serializer.finish();
+
+    let mut mac = HmacSha256::new_from_slice(api_secret.as_bytes())
+        .map_err(|_| anyhow::anyhow!("invalid binance api secret"))?;
+    mac.update(query.as_bytes());
+    let signature = hex::encode(mac.finalize().into_bytes());
+
+    let url = format!(
+        "{}{}?{}&signature={}",
+        base_url.trim_end_matches('/'),
+        path,
+        query,
+        signature
+    );
+
+    let resp = client
+        .get(url)
+        .header("X-MBX-APIKEY", api_key)
+        .send()
+        .await?;
+    let status = resp.status();
+    let body = resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!(
+            "binance signed GET failed: path={} status={} body={}",
+            path,
+            status.as_u16(),
+            body
+        );
+    }
+    Ok(body)
+}
+
+fn wrap_basic_payload(account_scope: BasicAccountScope, payload: Bytes) -> Option<Bytes> {
+    let event_type = get_basic_event_type(&payload);
+    if matches!(event_type, BasicAccountEventType::Error) {
+        return None;
+    }
+    Some(BasicAccountEventMsg::create(event_type, account_scope, payload).to_bytes())
+}
+
+async fn bootstrap_standard_snapshots(
+    api_key: &str,
+    api_secret: &str,
+    evt_tx: &tokio::sync::mpsc::UnboundedSender<Bytes>,
+) -> Result<()> {
+    let client = Client::builder().timeout(Duration::from_secs(10)).build()?;
+    let mut emitted = 0usize;
+
+    let um_balance_body = signed_get_binance(
+        &client,
+        "https://fapi.binance.com",
+        "/fapi/v2/balance",
+        api_key,
+        api_secret,
+    )
+    .await?;
+    if let Some(msgs) = parse_binance_um_balance_snapshot_std(&um_balance_body) {
+        for payload in msgs {
+            if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceStdUm, payload) {
+                let _ = evt_tx.send(wrapped);
+                emitted += 1;
+            }
+        }
+    }
+
+    let um_account_body = signed_get_binance(
+        &client,
+        "https://fapi.binance.com",
+        "/fapi/v2/account",
+        api_key,
+        api_secret,
+    )
+    .await?;
+    if let Some(msgs) = parse_binance_um_account_snapshot(&um_account_body) {
+        for payload in msgs {
+            if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceStdUm, payload) {
+                let _ = evt_tx.send(wrapped);
+                emitted += 1;
+            }
+        }
+    }
+
+    let margin_account_body = signed_get_binance(
+        &client,
+        "https://api.binance.com",
+        "/sapi/v1/margin/account",
+        api_key,
+        api_secret,
+    )
+    .await?;
+    if let Some(msgs) = parse_binance_margin_account_snapshot_std(&margin_account_body) {
+        for payload in msgs {
+            if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceStdSpot, payload) {
+                let _ = evt_tx.send(wrapped);
+                emitted += 1;
+            }
+        }
+    }
+
+    info!(
+        "bootstrap standard snapshots emitted {} basic account event(s)",
+        emitted
+    );
+    Ok(())
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -183,6 +319,13 @@ async fn main() -> Result<()> {
 
     // Channel to collect events from both paths and forward via Iceoryx
     let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
+
+    if binance_is_standard {
+        match bootstrap_standard_snapshots(&api_key, &api_secret, &evt_tx).await {
+            Ok(()) => info!("bootstrap standard snapshots completed"),
+            Err(err) => warn!("bootstrap standard snapshots failed: {err:#}"),
+        }
+    }
 
     // Create PM forwarder (account_pubs/binance/pm)
     let mut forwarder = PmForwarder::new("binance")?;

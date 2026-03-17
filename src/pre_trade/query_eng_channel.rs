@@ -300,9 +300,11 @@ impl QueryEngChannel {
                                 match event_type {
                                     BasicAccountEventType::BalanceUpdate => {
                                         if let Ok(m) = BasicBalanceMsg::from_bytes(body) {
+                                            let mut applied = false;
                                             if m.symbol.eq_ignore_ascii_case("USDT") {
                                                 if let Some(usdt) = mc.usdt_mgr(account_scope) {
                                                     usdt.borrow_mut().apply_balance(&m);
+                                                    applied = true;
                                                 }
                                             }
                                             if matches!(
@@ -320,6 +322,7 @@ impl QueryEngChannel {
                                                 {
                                                     if let Some(bal) = mc.open_balance_mgr() {
                                                         bal.borrow_mut().apply_balance(&m);
+                                                        applied = true;
                                                     }
                                                 }
                                             }
@@ -338,16 +341,29 @@ impl QueryEngChannel {
                                                 {
                                                     if let Some(bal) = mc.hedge_balance_mgr() {
                                                         bal.borrow_mut().apply_balance(&m);
+                                                        applied = true;
                                                     }
                                                 }
+                                            }
+                                            if applied {
+                                                info!(
+                                                    "snapshot balance applied: exchange={} req_type={} scope={} symbol={} balance={}",
+                                                    exchange,
+                                                    resp.req_type(),
+                                                    account_scope.as_str(),
+                                                    m.symbol,
+                                                    m.balance
+                                                );
                                             }
                                         }
                                     }
                                     BasicAccountEventType::BorrowInterest => {
                                         if let Ok(m) = BasicBorrowInterestMsg::from_bytes(body) {
+                                            let mut applied = false;
                                             if m.symbol.eq_ignore_ascii_case("USDT") {
                                                 if let Some(usdt) = mc.usdt_mgr(account_scope) {
                                                     usdt.borrow_mut().apply_borrow_interest(&m);
+                                                    applied = true;
                                                 }
                                             }
                                             if matches!(
@@ -365,6 +381,7 @@ impl QueryEngChannel {
                                                 {
                                                     if let Some(bal) = mc.open_balance_mgr() {
                                                         bal.borrow_mut().apply_borrow_interest(&m);
+                                                        applied = true;
                                                     }
                                                 }
                                             }
@@ -383,13 +400,26 @@ impl QueryEngChannel {
                                                 {
                                                     if let Some(bal) = mc.hedge_balance_mgr() {
                                                         bal.borrow_mut().apply_borrow_interest(&m);
+                                                        applied = true;
                                                     }
                                                 }
+                                            }
+                                            if applied {
+                                                info!(
+                                                    "snapshot borrow applied: exchange={} req_type={} scope={} symbol={} borrowed={} interest={}",
+                                                    exchange,
+                                                    resp.req_type(),
+                                                    account_scope.as_str(),
+                                                    m.symbol,
+                                                    m.borrowed,
+                                                    m.interest
+                                                );
                                             }
                                         }
                                     }
                                     BasicAccountEventType::PositionUpdate => {
                                         if let Ok(m) = BasicPositionMsg::from_bytes(body) {
+                                            let mut applied = false;
                                             if matches!(
                                                 open_venue,
                                                 TradingVenue::BinanceFutures
@@ -405,6 +435,7 @@ impl QueryEngChannel {
                                                 {
                                                     if let Some((um, _)) = mc.open_um_mgr() {
                                                         um.borrow_mut().apply_position(&m);
+                                                        applied = true;
                                                     }
                                                 }
                                             }
@@ -423,13 +454,26 @@ impl QueryEngChannel {
                                                 {
                                                     if let Some((um, _)) = mc.hedge_um_mgr() {
                                                         um.borrow_mut().apply_position(&m);
+                                                        applied = true;
                                                     }
                                                 }
+                                            }
+                                            if applied {
+                                                info!(
+                                                    "snapshot position applied: exchange={} req_type={} scope={} inst_id={} side={} amount={}",
+                                                    exchange,
+                                                    resp.req_type(),
+                                                    account_scope.as_str(),
+                                                    m.inst_id,
+                                                    m.position_side,
+                                                    m.position_amount
+                                                );
                                             }
                                         }
                                     }
                                     BasicAccountEventType::UnrealizedPnlUpdate => {
                                         if let Ok(m) = BasicUmUnrealizedMsg::from_bytes(body) {
+                                            let mut applied = false;
                                             if matches!(
                                                 open_venue,
                                                 TradingVenue::BinanceFutures
@@ -445,6 +489,7 @@ impl QueryEngChannel {
                                                 {
                                                     if let Some((um, _)) = mc.open_um_mgr() {
                                                         um.borrow_mut().apply_unrealized_pnl(&m);
+                                                        applied = true;
                                                     }
                                                 }
                                             }
@@ -463,8 +508,20 @@ impl QueryEngChannel {
                                                 {
                                                     if let Some((um, _)) = mc.hedge_um_mgr() {
                                                         um.borrow_mut().apply_unrealized_pnl(&m);
+                                                        applied = true;
                                                     }
                                                 }
+                                            }
+                                            if applied {
+                                                info!(
+                                                    "snapshot unrealized pnl applied: exchange={} req_type={} scope={} inst_id={} side={} pnl={}",
+                                                    exchange,
+                                                    resp.req_type(),
+                                                    account_scope.as_str(),
+                                                    m.inst_id,
+                                                    m.position_side,
+                                                    m.unrealized_pnl
+                                                );
                                             }
                                         }
                                     }

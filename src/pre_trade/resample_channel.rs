@@ -1,5 +1,6 @@
 use crate::common::exchange::Exchange;
 use crate::common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
+use crate::common::min_qty_table::MinQtyTable;
 use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
 use crate::pre_trade::basic_exposure_manager::BasicExposureManager;
@@ -9,7 +10,6 @@ use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::price_table::PriceEntry;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::usdt_balance_manager::UsdtBalanceSnapshot;
-use crate::common::min_qty_table::MinQtyTable;
 use crate::signal::common::TradingVenue;
 use crate::viz::resample::{
     PreTradeExposureResampleEntry, PreTradeExposureRow, PreTradeRiskResampleEntry,
@@ -145,7 +145,10 @@ fn sum_position_usd(
         .filter(|entry| !entry.asset.eq_ignore_ascii_case("USDT"))
         .filter_map(|entry| {
             let symbol = price_mapper.asset_to_price_symbol(&entry.asset);
-            let mark = price_snapshot.get(&symbol).map(|p| p.mark_price).unwrap_or(0.0);
+            let mark = price_snapshot
+                .get(&symbol)
+                .map(|p| p.mark_price)
+                .unwrap_or(0.0);
             if mark <= 0.0 {
                 None
             } else {
@@ -175,7 +178,10 @@ fn sum_borrow_interest_usd(
             continue;
         }
         let symbol = price_mapper.asset_to_price_symbol(&entry.asset);
-        let mark = price_snapshot.get(&symbol).map(|p| p.mark_price).unwrap_or(0.0);
+        let mark = price_snapshot
+            .get(&symbol)
+            .map(|p| p.mark_price)
+            .unwrap_or(0.0);
         if mark <= 0.0 {
             continue;
         }
@@ -208,14 +214,16 @@ fn compute_leg_risk_entry(
     if let Some(balance_mgr) = balance_mgr {
         let mgr = balance_mgr.borrow();
         let mgr_ref: &BasicBalanceManager = &mgr;
-        let mut exposure_mgr = BasicExposureManager::new_from_sources(
+        let mut exposure_mgr =
+            BasicExposureManager::new_from_sources(exchange, std::slice::from_ref(&mgr_ref), &[]);
+        exposure_mgr.revalue_with_prices(price_snapshot);
+        total_equity += exposure_mgr.total_equity();
+        total_position += sum_position_usd(
             exchange,
             std::slice::from_ref(&mgr_ref),
             &[],
+            price_snapshot,
         );
-        exposure_mgr.revalue_with_prices(price_snapshot);
-        total_equity += exposure_mgr.total_equity();
-        total_position += sum_position_usd(exchange, std::slice::from_ref(&mgr_ref), &[], price_snapshot);
         let (borrowed, interest) = sum_borrow_interest_usd(mgr_ref, price_snapshot);
         borrowed_usd += borrowed;
         interest_usd += interest;

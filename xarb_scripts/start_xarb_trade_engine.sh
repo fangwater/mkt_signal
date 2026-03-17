@@ -123,6 +123,10 @@ json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+shell_quote() {
+  printf '%q' "$1"
+}
+
 proc_base_name() {
   if [[ "$OPEN_EXCHANGE" == "$HEDGE_EXCHANGE" ]]; then
     echo "xarb_te_${OPEN_EXCHANGE}_${ENV_TAG}"
@@ -152,21 +156,22 @@ start_one() {
   cfg_file="$(mktemp)"
   TMP_CFGS+=("$cfg_file")
 
-  local json_name json_bin json_base json_exchange json_rust_log json_ipc_ns
+  local json_name json_base json_rust_log json_ipc_ns json_shell json_cmd cmd
   json_name="$(json_escape "$proc_name")"
-  json_bin="$(json_escape "$BIN_PATH")"
+  json_shell="$(json_escape "/bin/bash")"
   json_base="$(json_escape "$BASE_DIR")"
-  json_exchange="$(json_escape "$exchange")"
   json_rust_log="$(json_escape "$RUST_LOG")"
   json_ipc_ns="$(json_escape "$IPC_NS")"
+  cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; exec $(shell_quote "$BIN_PATH") --exchange $(shell_quote "$exchange")"
+  json_cmd="$(json_escape "$cmd")"
 
   cat >"$cfg_file" <<JSON
 {
   "apps": [
     {
       "name": "${json_name}",
-      "script": "${json_bin}",
-      "args": ["--exchange", "${json_exchange}"],
+      "script": "${json_shell}",
+      "args": ["-lc", "${json_cmd}"],
       "cwd": "${json_base}",
       "env": {
         "RUST_LOG": "${json_rust_log}",
