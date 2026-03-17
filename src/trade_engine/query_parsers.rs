@@ -1,7 +1,7 @@
 pub mod binance_margin_account_snapshot_std;
-pub mod binance_spot_account_snapshot_std;
 pub mod binance_margin_order;
 pub mod binance_pm_balance_snapshot;
+pub mod binance_spot_account_snapshot_std;
 pub mod binance_um_account_snapshot;
 pub mod binance_um_balance_snapshot_std;
 pub mod binance_um_order;

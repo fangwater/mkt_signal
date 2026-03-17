@@ -19,7 +19,7 @@ pub const QUERY_RESP_PAYLOAD: usize = 4_096;
 static SIGNAL_PUBLISH_DRY_RUN: AtomicBool = AtomicBool::new(false);
 
 pub struct GenericPublisher<const PAYLOAD: usize> {
-    publisher: Publisher<ipc::Service, [u8; PAYLOAD], ()>,
+    publisher: Option<Publisher<ipc::Service, [u8; PAYLOAD], ()>>,
     full_service: String,
     suppress_trade_signal_publish: bool,
     suppressed_publish_count: AtomicU64,
@@ -55,6 +55,21 @@ impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
 
     pub fn new_with_prefix(prefix: &str, channel_name: &str) -> anyhow::Result<Self> {
         let full_service = build_service_name(&format!("{}/{}", prefix, channel_name));
+        let suppress_trade_signal_publish =
+            prefix == "signal_pubs" && channel_name == "trade_signal";
+        if suppress_trade_signal_publish && signal_publish_dry_run_enabled() {
+            info!(
+                "IceOryx publisher dry-run bypass: {} (service not created)",
+                full_service
+            );
+            return Ok(Self {
+                publisher: None,
+                full_service,
+                suppress_trade_signal_publish,
+                suppressed_publish_count: AtomicU64::new(0),
+            });
+        }
+
         let service_name = ServiceName::new(&full_service)?;
 
         let node_id = format!("{}_{}", prefix, channel_name);
@@ -76,10 +91,9 @@ impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
         info!("IceOryx publisher created: {}", full_service);
 
         Ok(Self {
-            publisher,
+            publisher: Some(publisher),
             full_service,
-            suppress_trade_signal_publish: prefix == "signal_pubs"
-                && channel_name == "trade_signal",
+            suppress_trade_signal_publish,
             suppressed_publish_count: AtomicU64::new(0),
         })
     }
@@ -110,7 +124,10 @@ impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
         buffer[..data.len()].copy_from_slice(data);
 
         // Send via loan + write_payload pattern (same as forwarder)
-        let sample = self.publisher.loan_uninit()?;
+        let publisher = self.publisher.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("publisher unavailable for service={}", self.full_service)
+        })?;
+        let sample = publisher.loan_uninit()?;
         let sample = sample.write_payload(buffer);
         sample.send()?;
 

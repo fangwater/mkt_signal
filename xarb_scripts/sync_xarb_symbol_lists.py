@@ -85,8 +85,58 @@ def parse_args() -> argparse.Namespace:
 # ========== 交易对白名单配置 ==========
 
 DUMP_SYMBOLS: List[str] = []
-FWD_SYMBOLS: List[str] = []
-BWD_SYMBOLS: List[str] = []
+FWD_SYMBOLS: List[str] = [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "AAVEUSDT",
+    "ADAUSDT",
+    "ARBUSDT",
+    "ATOMUSDT",
+    "AVAXUSDT",
+    "BCHUSDT",
+    "BNBUSDT",
+    "DOGEUSDT",
+    "DOTUSDT",
+    "ETCUSDT",
+    "FILUSDT",
+    "HBARUSDT",
+    "LINKUSDT",
+    "LTCUSDT",
+    "ONDOUSDT",
+    "TONUSDT",
+    "TRUMPUSDT",
+    "TRXUSDT",
+    "WLDUSDT",
+    "XLMUSDT",
+    "XRPUSDT",
+]
+BWD_SYMBOLS: List[str] = [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "AAVEUSDT",
+    "ADAUSDT",
+    "ARBUSDT",
+    "ATOMUSDT",
+    "AVAXUSDT",
+    "BCHUSDT",
+    "BNBUSDT",
+    "DOGEUSDT",
+    "DOTUSDT",
+    "ETCUSDT",
+    "FILUSDT",
+    "HBARUSDT",
+    "LINKUSDT",
+    "LTCUSDT",
+    "ONDOUSDT",
+    "TONUSDT",
+    "TRUMPUSDT",
+    "TRXUSDT",
+    "WLDUSDT",
+    "XLMUSDT",
+    "XRPUSDT",
+]
 
 
 def resolve_key_suffix(args: argparse.Namespace) -> Optional[str]:

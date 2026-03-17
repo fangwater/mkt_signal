@@ -352,16 +352,7 @@ impl QueryEngChannel {
                                                     }
                                                 }
                                             }
-                                            if applied {
-                                                info!(
-                                                    "snapshot balance applied: exchange={} req_type={} scope={} symbol={} balance={}",
-                                                    exchange,
-                                                    resp.req_type(),
-                                                    account_scope.as_str(),
-                                                    m.symbol,
-                                                    m.balance
-                                                );
-                                            }
+                                            let _ = applied;
                                         }
                                     }
                                     BasicAccountEventType::BorrowInterest => {
@@ -411,17 +402,7 @@ impl QueryEngChannel {
                                                     }
                                                 }
                                             }
-                                            if applied {
-                                                info!(
-                                                    "snapshot borrow applied: exchange={} req_type={} scope={} symbol={} borrowed={} interest={}",
-                                                    exchange,
-                                                    resp.req_type(),
-                                                    account_scope.as_str(),
-                                                    m.symbol,
-                                                    m.borrowed,
-                                                    m.interest
-                                                );
-                                            }
+                                            let _ = applied;
                                         }
                                     }
                                     BasicAccountEventType::PositionUpdate => {
@@ -465,17 +446,7 @@ impl QueryEngChannel {
                                                     }
                                                 }
                                             }
-                                            if applied {
-                                                info!(
-                                                    "snapshot position applied: exchange={} req_type={} scope={} inst_id={} side={} amount={}",
-                                                    exchange,
-                                                    resp.req_type(),
-                                                    account_scope.as_str(),
-                                                    m.inst_id,
-                                                    m.position_side,
-                                                    m.position_amount
-                                                );
-                                            }
+                                            let _ = applied;
                                         }
                                     }
                                     BasicAccountEventType::UnrealizedPnlUpdate => {
@@ -519,17 +490,7 @@ impl QueryEngChannel {
                                                     }
                                                 }
                                             }
-                                            if applied {
-                                                info!(
-                                                    "snapshot unrealized pnl applied: exchange={} req_type={} scope={} inst_id={} side={} pnl={}",
-                                                    exchange,
-                                                    resp.req_type(),
-                                                    account_scope.as_str(),
-                                                    m.inst_id,
-                                                    m.position_side,
-                                                    m.unrealized_pnl
-                                                );
-                                            }
+                                            let _ = applied;
                                         }
                                     }
                                     _ => {}

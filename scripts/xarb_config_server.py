@@ -162,6 +162,58 @@ except Exception:
         "factors": {},
     }
 
+
+def clone_json_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: clone_json_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [clone_json_value(v) for v in value]
+    return value
+
+
+def build_xarb_rolling_defaults(
+    base_defaults: Dict[str, Any], spread_mapping: Dict[str, str]
+) -> Dict[str, Any]:
+    defaults = clone_json_value(base_defaults or {})
+    defaults.setdefault("MAX_LENGTH", 150_000)
+    defaults.setdefault("refresh_sec", 30)
+    defaults.setdefault("reload_param_sec", 3)
+
+    base_factors = defaults.get("factors")
+    if not isinstance(base_factors, dict):
+        base_factors = {}
+
+    factor_quantiles: Dict[str, set] = {
+        "bidask": set(),
+        "askbid": set(),
+        "spread": set(),
+    }
+    for field_ref in (spread_mapping or {}).values():
+        if not isinstance(field_ref, str):
+            continue
+        matched = re.fullmatch(r"(bidask|askbid|spread)_(\d+(?:\.\d+)?)", field_ref.strip())
+        if not matched:
+            continue
+        factor_name = matched.group(1)
+        raw = float(matched.group(2))
+        quantile = int(raw) if abs(raw - round(raw)) < 1e-9 else raw
+        factor_quantiles[factor_name].add(quantile)
+
+    factors: Dict[str, Dict[str, Any]] = {}
+    for factor_name, quantiles in factor_quantiles.items():
+        factor_cfg = clone_json_value(base_factors.get(factor_name) or {})
+        factor_cfg.setdefault("resample_interval_ms", 1_000)
+        factor_cfg.setdefault("rolling_window", 100_000)
+        factor_cfg.setdefault("min_periods", 1)
+        if quantiles:
+            factor_cfg["quantiles"] = sorted(quantiles)
+        else:
+            factor_cfg.setdefault("quantiles", [])
+        factors[factor_name] = factor_cfg
+
+    defaults["factors"] = factors
+    return defaults
+
 try:
     import sync_xarb_symbol_lists as symbol_defaults
 
@@ -178,6 +230,10 @@ try:
 except Exception:
     SPREAD_THRESHOLD_MAPPING = {}
     SPREAD_THRESHOLD_ORDER = []
+
+DEFAULT_ROLLING_PARAMS = build_xarb_rolling_defaults(
+    DEFAULT_ROLLING_PARAMS, SPREAD_THRESHOLD_MAPPING
+)
 
 INDEX_HTML_TEMPLATE = """<!doctype html>
 <html lang="zh-CN">

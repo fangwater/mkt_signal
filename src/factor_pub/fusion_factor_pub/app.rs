@@ -56,6 +56,7 @@ const FACTOR_118_VWAP_LEVELS: usize = 5;
 const RL_FACTOR_NAME: &str = "rl_return_volatility";
 const RL_FACTOR_PAYLOAD_MAX_BYTES: usize = 256;
 const RL_FACTOR_PUBLISHER_HISTORY_SIZE: usize = 128;
+const RL_FACTOR_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 1024;
 const RL_FACTOR_WARN_INTERVAL_SECS: u64 = 5;
 const ROLLING_CORR_CLOSE_VOLUME_14_WINDOW: usize = 14;
 const ROLLING_CORR_OPEN_VOLUME_300_WINDOW: usize = 300;
@@ -150,6 +151,7 @@ impl RlFactorPublisher {
             .max_publishers(1)
             .max_subscribers(10)
             .history_size(RL_FACTOR_PUBLISHER_HISTORY_SIZE)
+            .subscriber_max_buffer_size(RL_FACTOR_SUBSCRIBER_MAX_BUFFER_SIZE)
             .open_or_create()?;
         let publisher = service.publisher_builder().create()?;
 

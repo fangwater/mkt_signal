@@ -4,6 +4,7 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 
 pub const MODEL_PAYLOAD_MAX_BYTES: usize = 2048;
+const MODEL_OUTPUT_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 256;
 
 pub struct ModelPublisher {
     publisher: Publisher<ipc::Service, [u8; MODEL_PAYLOAD_MAX_BYTES], ()>,
@@ -20,6 +21,7 @@ impl ModelPublisher {
             .publish_subscribe::<[u8; MODEL_PAYLOAD_MAX_BYTES]>()
             .max_publishers(1)
             .max_subscribers(10)
+            .subscriber_max_buffer_size(MODEL_OUTPUT_SUBSCRIBER_MAX_BUFFER_SIZE)
             .history_size(128)
             .open_or_create()?;
 

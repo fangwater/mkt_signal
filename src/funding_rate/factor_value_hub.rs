@@ -260,7 +260,10 @@ impl FactorValueHub {
             .max_subscribers(10)
             .history_size(FACTOR_VALUE_HISTORY_SIZE)
             .subscriber_max_buffer_size(FACTOR_VALUE_SUBSCRIBER_BUFFER_SIZE)
-            .open_or_create()?;
+            .open_or_create()
+            .with_context(|| {
+                format!("failed to open/create factor subscriber service={service_name}")
+            })?;
 
         info!(
             "FactorValueHub: subscribed factor stream service={}",
@@ -283,7 +286,10 @@ impl FactorValueHub {
             .max_subscribers(10)
             .history_size(MODEL_OUTPUT_HISTORY_SIZE)
             .subscriber_max_buffer_size(MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE)
-            .open_or_create()?;
+            .open_or_create()
+            .with_context(|| {
+                format!("failed to open/create model_output subscriber service={service_name}")
+            })?;
 
         service
             .subscriber_builder()
