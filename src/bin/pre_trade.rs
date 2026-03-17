@@ -406,20 +406,41 @@ async fn main() -> Result<()> {
                     let send_snapshot_queries = || {
                         if need_binance_balance {
                             let now = get_timestamp_us();
-                            let req = GenericQueryRequest::create(
-                                if binance_is_standard {
-                                    QueryRequestType::BinanceUmBalanceSnapshotStd
-                                } else {
-                                    QueryRequestType::BinancePmBalanceSnapshot
-                                },
-                                now,
-                                now,
-                                Bytes::new(),
-                            );
-                            let _ = QueryEngHub::publish_query_request("binance", &req.to_bytes());
                             if binance_is_standard {
+                                let spot_req = GenericQueryRequest::create(
+                                    QueryRequestType::BinanceSpotAccountSnapshotStd,
+                                    now,
+                                    now,
+                                    Bytes::new(),
+                                );
+                                let _ = QueryEngHub::publish_query_request(
+                                    "binance",
+                                    &spot_req.to_bytes(),
+                                );
+                                info!("snapshot query sent: binance spot account snapshot (standard)");
+
+                                let um_req = GenericQueryRequest::create(
+                                    QueryRequestType::BinanceUmBalanceSnapshotStd,
+                                    now,
+                                    now,
+                                    Bytes::new(),
+                                );
+                                let _ = QueryEngHub::publish_query_request(
+                                    "binance",
+                                    &um_req.to_bytes(),
+                                );
                                 info!("snapshot query sent: binance UM balance snapshot (standard)");
                             } else {
+                                let req = GenericQueryRequest::create(
+                                    QueryRequestType::BinancePmBalanceSnapshot,
+                                    now,
+                                    now,
+                                    Bytes::new(),
+                                );
+                                let _ = QueryEngHub::publish_query_request(
+                                    "binance",
+                                    &req.to_bytes(),
+                                );
                                 info!("snapshot query sent: binance PM balance snapshot");
                             }
                         }

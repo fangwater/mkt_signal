@@ -218,7 +218,7 @@ impl QueryEngChannel {
                             // Snapshot queries return basic account messages (no huge JSON body).
                             if matches!(
                                 resp.req_type(),
-                                6101 | 6102 | 6103 | 6104 | 7101 | 7102 | 8101 | 8102
+                                6101 | 6102 | 6103 | 6104 | 6105 | 7101 | 7102 | 8101 | 8102
                             ) {
                                 let body = resp.body_bytes().as_ref();
                                 let event_type = get_basic_event_type(body);
@@ -241,6 +241,9 @@ impl QueryEngChannel {
                                     }
                                     Some(QueryRequestType::BinanceWsUMQuery) => {
                                         BasicAccountScope::BinanceStdUm
+                                    }
+                                    Some(QueryRequestType::BinanceSpotAccountSnapshotStd) => {
+                                        BasicAccountScope::BinanceStdSpot
                                     }
                                     Some(QueryRequestType::BinanceMarginQuery)
                                     | Some(QueryRequestType::BinanceUMQuery) => {

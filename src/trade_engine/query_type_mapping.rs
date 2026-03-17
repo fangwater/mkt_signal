@@ -13,6 +13,7 @@ impl QueryTypeMapping {
                 | QueryRequestType::BinanceUmAccountSnapshot
                 | QueryRequestType::BinanceUmBalanceSnapshotStd
                 | QueryRequestType::BinanceUmAccountSnapshotStd
+                | QueryRequestType::BinanceSpotAccountSnapshotStd
         )
     }
 
@@ -45,6 +46,7 @@ impl QueryTypeMapping {
             QueryRequestType::BinanceUmAccountSnapshot => "/papi/v1/um/account",
             QueryRequestType::BinanceUmBalanceSnapshotStd => "/fapi/v2/balance",
             QueryRequestType::BinanceUmAccountSnapshotStd => "/fapi/v2/account",
+            QueryRequestType::BinanceSpotAccountSnapshotStd => "/api/v3/account",
             QueryRequestType::OkexMarginQuery | QueryRequestType::OkexUMQuery => {
                 "/api/v5/trade/order"
             }
@@ -66,6 +68,7 @@ impl QueryTypeMapping {
             | QueryRequestType::BinanceUmAccountSnapshot
             | QueryRequestType::BinanceUmBalanceSnapshotStd
             | QueryRequestType::BinanceUmAccountSnapshotStd
+            | QueryRequestType::BinanceSpotAccountSnapshotStd
             | QueryRequestType::OkexMarginQuery
             | QueryRequestType::OkexUMQuery
             | QueryRequestType::OkexAccountBalanceSnapshot
@@ -92,6 +95,7 @@ impl QueryTypeMapping {
             QueryRequestType::BinanceUmAccountSnapshot => 1,
             QueryRequestType::BinanceUmBalanceSnapshotStd => 5,
             QueryRequestType::BinanceUmAccountSnapshotStd => 5,
+            QueryRequestType::BinanceSpotAccountSnapshotStd => 20,
             QueryRequestType::OkexMarginQuery | QueryRequestType::OkexUMQuery => 1,
             QueryRequestType::OkexAccountBalanceSnapshot => 1,
             QueryRequestType::OkexPositionsSnapshot => 1,

@@ -8,7 +8,7 @@ use anyhow::Result;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -390,7 +390,7 @@ impl MktChannel {
                                     let mut sample: Vec<String> =
                                         stats_unlisted_sample.iter().cloned().collect();
                                     sample.sort();
-                                    info!(
+                                    debug!(
                                         "askbid stats: venue={:?} total_msgs={} triggerable_msgs={} unique_symbols={} last_symbol={} unlisted_sample={}",
                                         this_venue,
                                         stats_total_msgs,
@@ -539,7 +539,7 @@ impl MktChannel {
                                 let mut sample: Vec<String> =
                                     stats_unlisted_sample.iter().cloned().collect();
                                 sample.sort();
-                                info!(
+                                debug!(
                                     "derivatives stats: venue={:?} funding_msgs={} mark_msgs={} triggerable_msgs={} unique_symbols={} last_symbol={} unlisted_sample={}",
                                     feed_venue,
                                     stats_funding_msgs,

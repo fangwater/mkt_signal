@@ -18,7 +18,7 @@ use mkt_signal::portfolio_margin::listen_key::BinanceListenKeyService;
 use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
 use mkt_signal::pre_trade::order_manager::Side;
 use mkt_signal::signal::common::{ExecutionType, OrderStatus};
-use mkt_signal::trade_engine::query_parsers::binance_margin_account_snapshot_std::parse_binance_margin_account_snapshot_std;
+use mkt_signal::trade_engine::query_parsers::binance_spot_account_snapshot_std::parse_binance_spot_account_snapshot_std;
 use mkt_signal::trade_engine::query_parsers::binance_um_account_snapshot::parse_binance_um_account_snapshot;
 use mkt_signal::trade_engine::query_parsers::binance_um_balance_snapshot_std::parse_binance_um_balance_snapshot_std;
 use reqwest::Client;
@@ -173,15 +173,15 @@ async fn bootstrap_standard_snapshots(
         }
     }
 
-    let margin_account_body = signed_get_binance(
+    let spot_account_body = signed_get_binance(
         &client,
         "https://api.binance.com",
-        "/sapi/v1/margin/account",
+        "/api/v3/account",
         api_key,
         api_secret,
     )
     .await?;
-    if let Some(msgs) = parse_binance_margin_account_snapshot_std(&margin_account_body) {
+    if let Some(msgs) = parse_binance_spot_account_snapshot_std(&spot_account_body) {
         for payload in msgs {
             if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceStdSpot, payload) {
                 let _ = evt_tx.send(wrapped);

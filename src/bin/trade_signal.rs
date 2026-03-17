@@ -11,6 +11,7 @@ use tokio::time::{self, Duration};
 use tokio_util::sync::CancellationToken;
 
 use mkt_signal::common::exchange::Exchange;
+use mkt_signal::common::iceoryx_publisher::configure_signal_publish_dry_run;
 use mkt_signal::common::redis_client::RedisSettings;
 use mkt_signal::signal::common::TradingVenue;
 
@@ -30,6 +31,10 @@ struct Args {
     /// Exchange to use
     #[arg(short, long)]
     exchange: Option<Exchange>,
+
+    /// Run full decision flow but do not emit trade_signal IPC messages
+    #[arg(long, default_value_t = false)]
+    no_emit_signals: bool,
 }
 
 fn get_redis_settings() -> RedisSettings {
@@ -188,6 +193,16 @@ fn infer_mm_venue_from_key_suffix(key_suffix: &str) -> Option<TradingVenue> {
     futures_venue_for_exchange(normalize_exchange_str(&exchange_candidate))
 }
 
+fn env_flag(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
+}
+
 fn spawn_mm_open_worker(token: CancellationToken) {
     tokio::task::spawn_local(async move {
         let mut interval = time::interval(Duration::from_millis(200));
@@ -337,6 +352,14 @@ async fn main() -> Result<()> {
 
     // 解析命令行参数
     let args = Args::parse();
+    let no_emit_signals = args.no_emit_signals || env_flag("TRADE_SIGNAL_NO_EMIT");
+    configure_signal_publish_dry_run(no_emit_signals);
+    if no_emit_signals {
+        info!(
+            "{} dry-run enabled: trade_signal messages will be suppressed",
+            PROCESS_NAME
+        );
+    }
     let (branch, symbol_namespace, symbol_key_suffix, exchange, open_venue, hedge_venue) =
         match infer_namespace_and_key_suffix_from_cwd() {
             Some((ns, suffix)) if ns.eq_ignore_ascii_case("xarb") => {
