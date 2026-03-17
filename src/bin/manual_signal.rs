@@ -32,6 +32,7 @@ use mkt_signal::common::iceoryx_subscriber::GenericSignalSubscriber;
 use mkt_signal::common::ipc_service_name::build_service_name;
 use mkt_signal::common::mkt_msg::{get_msg_type, AskBidSpreadMsg, MktMsgType};
 use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
+use mkt_signal::common::symbol_util::normalize_symbol_for_venue;
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::funding_rate::common::Quote;
 use mkt_signal::funding_rate::symbol_list::SymbolList;
@@ -160,6 +161,17 @@ fn infer_xarb_venues_from_key_suffix(key_suffix: &str) -> Option<(TradingVenue, 
         return Some((margin_venue_for_exchange(open_ex)?, hedge));
     }
     Some((open, hedge))
+}
+
+fn infer_xarb_venues_from_env() -> Option<(TradingVenue, TradingVenue)> {
+    let open = std::env::var("OPEN_VENUE").ok()?;
+    let hedge = std::env::var("HEDGE_VENUE").ok()?;
+    let open_venue = venue_from_slug(&open)?;
+    let hedge_venue = venue_from_slug(&hedge)?;
+    if open_venue == hedge_venue {
+        return None;
+    }
+    Some((open_venue, hedge_venue))
 }
 
 fn infer_symbol_key_suffix_from_cwd(symbol_namespace: &str) -> Option<String> {
@@ -438,13 +450,17 @@ struct QuoteLegResponse {
 #[derive(Debug, Serialize)]
 struct QuoteResponse {
     symbol: String,
+    opening_symbol: String,
+    hedging_symbol: String,
     open: Option<QuoteLegResponse>,
     hedge: Option<QuoteLegResponse>,
 }
 
 #[derive(Debug, Deserialize)]
 struct QuoteQuery {
-    symbol: String,
+    symbol: Option<String>,
+    opening_symbol: Option<String>,
+    hedging_symbol: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -484,6 +500,30 @@ fn compute_open_price(open_quote: Quote, side: Side, offset: f64) -> f64 {
         Side::Buy => base_price * (1.0 - offset),
         Side::Sell => base_price * (1.0 + offset),
     }
+}
+
+fn resolve_trade_symbols(
+    default_symbol: Option<&str>,
+    opening_symbol: Option<&str>,
+    hedging_symbol: Option<&str>,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> Result<(String, String)> {
+    let default_symbol = default_symbol.unwrap_or("").trim();
+    let opening_raw = opening_symbol.unwrap_or(default_symbol).trim();
+    let hedging_raw = hedging_symbol.unwrap_or(default_symbol).trim();
+
+    if opening_raw.is_empty() {
+        anyhow::bail!("opening symbol is empty");
+    }
+    if hedging_raw.is_empty() {
+        anyhow::bail!("hedging symbol is empty");
+    }
+
+    Ok((
+        normalize_symbol_for_venue(opening_raw, open_venue),
+        normalize_symbol_for_venue(hedging_raw, hedge_venue),
+    ))
 }
 
 fn compute_hedge_limit_price(hedge_quote: Quote, side: Side, offset: f64) -> f64 {
@@ -813,24 +853,14 @@ fn build_and_publish_manual(
     publisher: &SignalPublisher,
     req: ManualSendRequest,
 ) -> Result<ManualSendResponse> {
-    let symbol = req.symbol.trim().to_uppercase();
-    if symbol.is_empty() {
-        anyhow::bail!("symbol is empty");
-    }
-
     let kind = req.kind.clone();
-    let opening_symbol = req
-        .opening_symbol
-        .as_deref()
-        .unwrap_or(&symbol)
-        .trim()
-        .to_uppercase();
-    let hedging_symbol = req
-        .hedging_symbol
-        .as_deref()
-        .unwrap_or(&symbol)
-        .trim()
-        .to_uppercase();
+    let (opening_symbol, hedging_symbol) = resolve_trade_symbols(
+        Some(&req.symbol),
+        req.opening_symbol.as_deref(),
+        req.hedging_symbol.as_deref(),
+        cfg.open,
+        cfg.hedge,
+    )?;
 
     let now = get_timestamp_us();
     let signal_type = signal_type_for_kind(&req.kind);
@@ -1048,11 +1078,20 @@ async fn api_stats(State(st): State<AppState>) -> impl IntoResponse {
 }
 
 async fn api_quote(State(st): State<AppState>, Query(q): Query<QuoteQuery>) -> impl IntoResponse {
-    let sym = q.symbol.trim().to_uppercase();
+    let (opening_symbol, hedging_symbol) = match resolve_trade_symbols(
+        q.symbol.as_deref(),
+        q.opening_symbol.as_deref(),
+        q.hedging_symbol.as_deref(),
+        st.cfg.open,
+        st.cfg.hedge,
+    ) {
+        Ok(symbols) => symbols,
+        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    };
     let open = st
         .quotes
         .read()
-        .get_valid(st.cfg.open, &sym)
+        .get_valid(st.cfg.open, &opening_symbol)
         .map(|x| QuoteLegResponse {
             venue: st.cfg.open,
             bid: x.bid,
@@ -1062,7 +1101,7 @@ async fn api_quote(State(st): State<AppState>, Query(q): Query<QuoteQuery>) -> i
     let hedge = st
         .quotes
         .read()
-        .get_valid(st.cfg.hedge, &sym)
+        .get_valid(st.cfg.hedge, &hedging_symbol)
         .map(|x| QuoteLegResponse {
             venue: st.cfg.hedge,
             bid: x.bid,
@@ -1071,10 +1110,13 @@ async fn api_quote(State(st): State<AppState>, Query(q): Query<QuoteQuery>) -> i
         });
 
     Json(QuoteResponse {
-        symbol: sym,
+        symbol: q.symbol.unwrap_or_else(|| opening_symbol.clone()),
+        opening_symbol,
+        hedging_symbol,
         open,
         hedge,
     })
+    .into_response()
 }
 
 async fn api_send(
@@ -1140,7 +1182,17 @@ const INDEX_HTML: &str = r#"<!doctype html>
           </div>
           <div>
             <label class="muted">Selected</label>
-            <input id="symbol" placeholder="click from list" />
+            <input id="symbol" placeholder="base symbol" />
+          </div>
+        </div>
+        <div class="grid" style="margin-top:10px;">
+          <div>
+            <label class="muted">Opening symbol</label>
+            <input id="openingSymbol" placeholder="defaults to base symbol" />
+          </div>
+          <div>
+            <label class="muted">Hedging symbol</label>
+            <input id="hedgingSymbol" placeholder="defaults to base symbol" />
           </div>
         </div>
         <div style="margin-top:10px;">
@@ -1215,7 +1267,13 @@ const INDEX_HTML: &str = r#"<!doctype html>
         for (const s of items) {
           const li = document.createElement("li");
           li.textContent = s;
-          li.onclick = () => { $("symbol").value = s; state.selected = s; refreshQuote(); };
+          li.onclick = () => {
+            $("symbol").value = s;
+            $("openingSymbol").value = s;
+            $("hedgingSymbol").value = s;
+            state.selected = s;
+            refreshQuote();
+          };
           ul.appendChild(li);
         }
       }
@@ -1228,24 +1286,47 @@ const INDEX_HTML: &str = r#"<!doctype html>
       }
 
       async function refreshQuote() {
-        const sym = $("symbol").value.trim().toUpperCase();
-        if (!sym) return;
-        const r = await fetch(`${api("quote")}?symbol=${encodeURIComponent(sym)}`);
+        const symbol = $("symbol").value.trim().toUpperCase();
+        const openingSymbol = $("openingSymbol").value.trim().toUpperCase() || symbol;
+        const hedgingSymbol = $("hedgingSymbol").value.trim().toUpperCase() || symbol;
+        if (!openingSymbol || !hedgingSymbol) return;
+        const params = new URLSearchParams();
+        if (symbol) params.set("symbol", symbol);
+        params.set("opening_symbol", openingSymbol);
+        params.set("hedging_symbol", hedgingSymbol);
+        const r = await fetch(`${api("quote")}?${params.toString()}`);
+        if (!r.ok) {
+          $("quote").textContent = await r.text();
+          return;
+        }
         const j = await r.json();
-        const o = j.open ? `open(${j.open.venue}) bid=${j.open.bid} ask=${j.open.ask} ts=${j.open.ts}` : "open: N/A";
-        const h = j.hedge ? `hedge(${j.hedge.venue}) bid=${j.hedge.bid} ask=${j.hedge.ask} ts=${j.hedge.ts}` : "hedge: N/A";
+        const o = j.open ? `open(${j.open.venue}) ${j.opening_symbol} bid=${j.open.bid} ask=${j.open.ask} ts=${j.open.ts}` : `open(${j.opening_symbol}): N/A`;
+        const h = j.hedge ? `hedge(${j.hedge.venue}) ${j.hedging_symbol} bid=${j.hedge.bid} ask=${j.hedge.ask} ts=${j.hedge.ts}` : `hedge(${j.hedging_symbol}): N/A`;
         $("quote").textContent = `${o}\n${h}`;
       }
 
       async function send() {
         const symbol = $("symbol").value.trim().toUpperCase();
+        const openingSymbol = $("openingSymbol").value.trim().toUpperCase() || symbol;
+        const hedgingSymbol = $("hedgingSymbol").value.trim().toUpperCase() || symbol;
         const kind = $("kind").value;
         const hedgeMode = $("hedgeMode").value;
         const offset = parseFloat($("offset").value);
         const qty = parseFloat($("qty").value);
         $("resultBox").value = "";
-        if (!symbol) { $("resultBox").value = "symbol is empty"; return; }
-        const body = { symbol, kind, hedge_mode: hedgeMode, offset, qty };
+        if (!openingSymbol || !hedgingSymbol) {
+          $("resultBox").value = "opening/hedging symbol is empty";
+          return;
+        }
+        const body = {
+          symbol,
+          opening_symbol: openingSymbol,
+          hedging_symbol: hedgingSymbol,
+          kind,
+          hedge_mode: hedgeMode,
+          offset,
+          qty
+        };
         const r = await fetch(api("send"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
         const text = await r.text();
         if (!r.ok) {
@@ -1262,6 +1343,9 @@ const INDEX_HTML: &str = r#"<!doctype html>
       }
 
       $("q").addEventListener("input", renderList);
+      $("symbol").addEventListener("change", refreshQuote);
+      $("openingSymbol").addEventListener("change", refreshQuote);
+      $("hedgingSymbol").addEventListener("change", refreshQuote);
       $("send").addEventListener("click", send);
       setInterval(refreshQuote, 1000);
       setInterval(refreshStats, 2000);
@@ -1293,6 +1377,42 @@ async fn serve_http(addr: SocketAddr, state: AppState, token: CancellationToken)
         .with_graceful_shutdown(async move { token.cancelled().await })
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_trade_symbols;
+    use mkt_signal::signal::common::TradingVenue;
+
+    #[test]
+    fn resolve_trade_symbols_normalizes_for_xarb_venues() {
+        let (open, hedge) = resolve_trade_symbols(
+            Some("BTCUSDT"),
+            None,
+            None,
+            TradingVenue::OkexFutures,
+            TradingVenue::BinanceFutures,
+        )
+        .expect("symbols should resolve");
+
+        assert_eq!(open, "BTC-USDT-SWAP");
+        assert_eq!(hedge, "BTCUSDT");
+    }
+
+    #[test]
+    fn resolve_trade_symbols_accepts_per_leg_overrides() {
+        let (open, hedge) = resolve_trade_symbols(
+            Some("BTCUSDT"),
+            Some("ETH-USDT-SWAP"),
+            Some("ETHUSDT"),
+            TradingVenue::OkexFutures,
+            TradingVenue::BinanceFutures,
+        )
+        .expect("symbols should resolve");
+
+        assert_eq!(open, "ETH-USDT-SWAP");
+        assert_eq!(hedge, "ETHUSDT");
+    }
 }
 
 async fn run(args: Args, token: CancellationToken) -> Result<()> {
@@ -1399,7 +1519,7 @@ async fn main() -> Result<()> {
         (None, None) => {
             if let Some(venues) = infer_xarb_venues_from_key_suffix(&symbol_key_suffix) {
                 if symbol_namespace.eq_ignore_ascii_case("xarb") {
-                    venues
+                    infer_xarb_venues_from_env().unwrap_or(venues)
                 } else {
                     anyhow::bail!(
                         "CWD suggests cross-exchange symbol key suffix='{}' but --open/--hedge were not provided; please pass --open and --hedge explicitly",
