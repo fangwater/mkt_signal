@@ -1,4 +1,5 @@
 use crate::common::time_util::get_timestamp_us;
+use crate::funding_rate::mm_decision::from_key::append_mm_hedge_tlen_to_from_key;
 use crate::market_maker::hedge_split::{
     split_hedge_orders_round_robin, HedgeLevel, HedgeSplitOrder,
 };
@@ -131,15 +132,9 @@ impl MarketMakerHedgeStrategy {
         self.hedge_order_from_keys.clear();
     }
 
-    fn build_order_from_key(
-        &self,
-        batch_from_key: &[u8],
-        level_index: usize,
-        price: f64,
-        tlen: f64,
-    ) -> Vec<u8> {
+    fn build_order_from_key(&self, batch_from_key: &[u8], tlen: f64) -> Vec<u8> {
         let batch = String::from_utf8_lossy(batch_from_key);
-        format!("{batch}:level_idx={level_index}:px={price:.8}:tlen={tlen:.8}").into_bytes()
+        append_mm_hedge_tlen_to_from_key(&batch, tlen).into_bytes()
     }
 
     fn order_from_key_bytes(&self, client_order_id: i64) -> Vec<u8> {
@@ -372,8 +367,8 @@ impl MarketMakerHedgeStrategy {
                 }
             }
             let client_order_id = Self::compose_order_id(self.strategy_id, self.order_seq);
-            let tlen = ctx.tlen_values.get(level_index).copied().unwrap_or(-1.0);
-            let order_from_key = self.build_order_from_key(&ctx.from_key, level_index, price, tlen);
+            let tlen = ctx.tlen_values.get(level_index).copied().unwrap_or(0.0);
+            let order_from_key = self.build_order_from_key(&ctx.from_key, tlen);
             self.hedge_order_from_keys
                 .insert(client_order_id, order_from_key.clone());
             self.hedge_plan.push(HedgePlanOrder {

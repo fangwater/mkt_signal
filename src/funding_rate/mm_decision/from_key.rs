@@ -64,46 +64,39 @@ fn format_tlen_value(value: f64) -> String {
     }
 }
 
-pub(crate) fn format_batch_tlen_suffix(tick_tlens: &[(i64, f64)]) -> String {
-    tick_tlens
-        .iter()
-        .map(|(tick_index, tlen)| format!("{tick_index}@{}", format_tlen_value(*tlen)))
-        .collect::<Vec<_>>()
-        .join(",")
+pub fn append_mm_open_tlens_to_from_key(base_from_key: &str, level_tlen: f64) -> String {
+    format!("{base_from_key}:tlen={}", format_tlen_value(level_tlen))
 }
 
-pub fn append_mm_open_tlens_to_from_key(
-    base_from_key: &str,
-    level_tlen: f64,
-    batch_tick_tlens: &[(i64, f64)],
-) -> String {
-    format!(
-        "{base_from_key}:tlen={}:batch_tlen={}",
-        format_tlen_value(level_tlen),
-        format_batch_tlen_suffix(batch_tick_tlens)
-    )
+pub fn append_mm_hedge_tlen_to_from_key(base_from_key: &str, level_tlen: f64) -> String {
+    format!("{base_from_key}:tlen={}", format_tlen_value(level_tlen))
 }
 
-pub fn append_mm_hedge_tlens_to_from_key(
-    base_from_key: &str,
-    batch_tick_tlens: &[(i64, f64)],
-) -> String {
-    format!(
-        "{base_from_key}:batch_tlen={}",
-        format_batch_tlen_suffix(batch_tick_tlens)
-    )
-}
+#[cfg(test)]
+mod tests {
+    use super::{append_mm_hedge_tlen_to_from_key, append_mm_open_tlens_to_from_key};
 
-pub fn append_tlen_query_error_to_from_key(base_from_key: &str, err: &str) -> String {
-    let sanitized = err
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ',') {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    format!("{base_from_key}:tlen_query_err={sanitized}")
+    #[test]
+    fn mm_open_from_key_appends_only_single_tlen() {
+        let key = append_mm_open_tlens_to_from_key("123:ret_score=1", 4.25);
+        assert_eq!(key, "123:ret_score=1:tlen=4.25000000");
+    }
+
+    #[test]
+    fn mm_open_from_key_uses_zero_tlen_fallback() {
+        let key = append_mm_open_tlens_to_from_key("123:ret_score=1", 0.0);
+        assert_eq!(key, "123:ret_score=1:tlen=0.00000000");
+    }
+
+    #[test]
+    fn mm_hedge_from_key_appends_only_single_tlen() {
+        let key = append_mm_hedge_tlen_to_from_key("123:ret_score=1", 2.5);
+        assert_eq!(key, "123:ret_score=1:tlen=2.50000000");
+    }
+
+    #[test]
+    fn mm_hedge_from_key_uses_zero_tlen_fallback() {
+        let key = append_mm_hedge_tlen_to_from_key("123:ret_score=1", 0.0);
+        assert_eq!(key, "123:ret_score=1:tlen=0.00000000");
+    }
 }

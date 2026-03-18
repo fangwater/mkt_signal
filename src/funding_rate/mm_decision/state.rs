@@ -356,24 +356,13 @@ impl MmDecisionState {
                 .depth_query_client
                 .query_batch_tick_indices(&plan.symbol, &tick_indices)
             {
-                Ok(tlens) => {
-                    let batch_tick_tlens: Vec<(i64, f64)> = tick_indices
-                        .iter()
-                        .copied()
-                        .zip(tlens.iter().copied())
-                        .collect();
-                    prepared
-                        .iter()
-                        .zip(tlens.iter().copied())
-                        .map(|(_, level_tlen)| {
-                            super::from_key::append_mm_open_tlens_to_from_key(
-                                from_key,
-                                level_tlen,
-                                &batch_tick_tlens,
-                            )
-                        })
-                        .collect()
-                }
+                Ok(tlens) => prepared
+                    .iter()
+                    .zip(tlens.iter().copied())
+                    .map(|(_, level_tlen)| {
+                        super::from_key::append_mm_open_tlens_to_from_key(from_key, level_tlen)
+                    })
+                    .collect(),
                 Err(err) => {
                     log::warn!(
                         "MmDecision: MMOpen tlen batch query failed symbol={} levels={} err={:#}",
@@ -383,12 +372,7 @@ impl MmDecisionState {
                     );
                     prepared
                         .iter()
-                        .map(|_| {
-                            super::from_key::append_tlen_query_error_to_from_key(
-                                from_key,
-                                "batch_query_failed",
-                            )
-                        })
+                        .map(|_| super::from_key::append_mm_open_tlens_to_from_key(from_key, 0.0))
                         .collect()
                 }
             }

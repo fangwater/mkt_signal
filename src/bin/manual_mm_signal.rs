@@ -34,17 +34,13 @@ use mkt_signal::common::mkt_msg::{
 use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
 use mkt_signal::common::time_util::get_timestamp_us;
 use mkt_signal::depth_pub::query_client::DepthQueryClient;
-use mkt_signal::depth_pub::query_msg::TLEN_QUERY_AMOUNT_INVALID;
 use mkt_signal::factor_pub::fusion_factor_pub::app::ExtraFactorId;
 use mkt_signal::factor_pub::fusion_factor_pub::fusion_factor_index_to_name;
 use mkt_signal::factor_pub::model_pub::publisher::MODEL_PAYLOAD_MAX_BYTES;
 use mkt_signal::funding_rate::common::build_decision_from_key_base;
 use mkt_signal::funding_rate::common::Quote;
 use mkt_signal::funding_rate::factor_value_hub::FactorValueHub;
-use mkt_signal::funding_rate::mm_decision::from_key::{
-    append_mm_hedge_tlens_to_from_key, append_mm_open_tlens_to_from_key,
-    append_tlen_query_error_to_from_key,
-};
+use mkt_signal::funding_rate::mm_decision::from_key::append_mm_open_tlens_to_from_key;
 use mkt_signal::market_maker::hedge_quote_plan::{
     build_mm_hedge_ctx as build_mm_hedge_ctx_core, resolve_mm_hedge_signal_inputs,
     MmHedgeBuildInput,
@@ -810,18 +806,6 @@ fn spawn_backward_query_responder(
                                 };
                                 let snapshot = match tlen_query_result {
                                     Ok(tlens) => {
-                                        let batch_tick_tlens: Vec<(i64, f64)> = query_tick_indices
-                                            .iter()
-                                            .copied()
-                                            .zip(tlens.iter().copied())
-                                            .collect();
-                                        let base_from_key =
-                                            String::from_utf8_lossy(&ctx.from_key).to_string();
-                                        let from_key = append_mm_hedge_tlens_to_from_key(
-                                            &base_from_key,
-                                            &batch_tick_tlens,
-                                        );
-                                        ctx.set_from_key(from_key.into_bytes());
                                         ctx.tlen_values = tlens;
                                         build_mm_hedge_tlen_snapshot(
                                             &symbol,
@@ -831,15 +815,7 @@ fn spawn_backward_query_responder(
                                         )
                                     }
                                     Err(err) => {
-                                        let base_from_key =
-                                            String::from_utf8_lossy(&ctx.from_key).to_string();
-                                        let from_key = append_tlen_query_error_to_from_key(
-                                            &base_from_key,
-                                            "batch_query_failed",
-                                        );
-                                        ctx.set_from_key(from_key.into_bytes());
-                                        ctx.tlen_values =
-                                            vec![TLEN_QUERY_AMOUNT_INVALID; query_tick_indices.len()];
+                                        ctx.tlen_values = vec![0.0; query_tick_indices.len()];
                                         build_mm_hedge_tlen_snapshot(
                                             &symbol,
                                             &ctx,
@@ -1083,21 +1059,12 @@ fn build_and_publish_open(
         match depth_client {
             Some(client) => match client.query_batch_tick_indices(&plan.symbol, &tick_indices) {
                 Ok(tlens) => {
-                    let batch_tick_tlens: Vec<(i64, f64)> = tick_indices
-                        .iter()
-                        .copied()
-                        .zip(tlens.iter().copied())
-                        .collect();
                     level_tlens = tlens.iter().copied().map(Some).collect();
                     prepared
                         .iter()
                         .zip(tlens.iter().copied())
                         .map(|(_, level_tlen)| {
-                            append_mm_open_tlens_to_from_key(
-                                &base_from_key,
-                                level_tlen,
-                                &batch_tick_tlens,
-                            )
+                            append_mm_open_tlens_to_from_key(&base_from_key, level_tlen)
                         })
                         .collect::<Vec<_>>()
                 }
@@ -1111,12 +1078,7 @@ fn build_and_publish_open(
                     level_tlens = vec![None; prepared.len()];
                     prepared
                         .iter()
-                        .map(|_| {
-                            append_tlen_query_error_to_from_key(
-                                &base_from_key,
-                                "batch_query_failed",
-                            )
-                        })
+                        .map(|_| append_mm_open_tlens_to_from_key(&base_from_key, 0.0))
                         .collect::<Vec<_>>()
                 }
             },
@@ -1124,12 +1086,7 @@ fn build_and_publish_open(
                 level_tlens = vec![None; prepared.len()];
                 prepared
                     .iter()
-                    .map(|_| {
-                        append_tlen_query_error_to_from_key(
-                            &base_from_key,
-                            "depth_query_client_unavailable",
-                        )
-                    })
+                    .map(|_| append_mm_open_tlens_to_from_key(&base_from_key, 0.0))
                     .collect::<Vec<_>>()
             }
         }
